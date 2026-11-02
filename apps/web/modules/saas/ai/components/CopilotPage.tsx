@@ -135,6 +135,7 @@ import {
 } from "../../../../components/ai-elements/conversation";
 import { AgentInsightsSheet } from "../../agents/components/AgentInsightsSheet";
 import { ConversationToolPicker } from "../../agents/components/FabricChat/ConversationToolPicker";
+import { ORCHESTRATOR_SYSTEM_AGENT_IDS } from "../lib/capability-system-agents";
 import {
 	buildChatToolSelectionPayload,
 	resolveSelectedChatToolIds,
@@ -349,19 +350,6 @@ interface WorkflowIntegrationRecord {
 	isActive: boolean;
 	hasCredentials: boolean;
 }
-
-const ORCHESTRATOR_SYSTEM_AGENT_IDS = [
-	"project_document_generator",
-	"document_generator",
-	"task_planner",
-	"story_breakdown",
-	"code_executor",
-	"prompt_enhancer",
-	"api_agent",
-	"data_analyst",
-	"cuga_generalist",
-	"mcp_tool_executor",
-];
 
 function buildCapabilityExecutionOptions(params: {
 	selectedCapabilities: CapabilityItem[];

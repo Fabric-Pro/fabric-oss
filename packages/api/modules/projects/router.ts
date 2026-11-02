@@ -1,3 +1,5 @@
+import { boardStoriesProcedure } from "./procedures/stories/board-stories";
+import { searchDescriptionsProcedure } from "./procedures/stories/search-descriptions";
 // Backlog analysis procedures
 
 import { acknowledgeDecisionPrecheckProcedure } from "./procedures/acknowledge-decision-precheck";
@@ -1906,6 +1908,8 @@ export const projectsRouter = {
 	// User Stories & Tasks (Kanban)
 	stories: {
 		list: listStoriesProcedure,
+		board: boardStoriesProcedure,
+		searchDescriptions: searchDescriptionsProcedure,
 		// #1902 — meetings whose action items reference this work item (FR5/FR6).
 		listMeetingReferences: listMeetingReferencesProcedure,
 		listDuplicates: listDuplicatesProcedure,

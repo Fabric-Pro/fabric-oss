@@ -920,3 +920,5 @@ export {
 // by Fabric Loom via A2A agent delegation.
 
 export { codingRunFollowUpWorkflow } from "./coding-run-follow-up";
+
+export { remoteCodingRunWorkflow } from "./coding-run-workflow";

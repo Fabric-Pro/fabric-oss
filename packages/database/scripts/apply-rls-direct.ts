@@ -187,6 +187,10 @@ async function applyRLS() {
 			},
 			// Strict isolation: EITHER userId OR orgId, never both
 			{ name: "mcp_config", policy: "per_user_within_org" },
+			{
+				name: "mcp_durable_tool_call",
+				policy: "per_user_within_org",
+			},
 			{ name: "mcp_server", policy: "per_user_within_org_with_system" },
 			// Physical table names (snake_case @@map), NOT the PascalCase model
 			// names — otherwise `ALTER TABLE "OpenAPIService"` targets a
@@ -233,6 +237,9 @@ async function applyRLS() {
 			// per-member scope as the conversation it belongs to.
 			{ name: "conversation_turn", policy: "per_user_within_org" },
 			{ name: "conversation_turn_event", policy: "per_user_within_org" },
+			// Media stays owner-only at the RLS layer. The query helper separately
+			// grants live read access through a shared AgentConversation.
+			{ name: "chat_media_object", policy: "per_user_within_org" },
 			// Advisor summaries and preferences belong to a user within a tenant.
 			{ name: "episodic_memory", policy: "per_user_within_org" },
 			{

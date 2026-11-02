@@ -543,6 +543,65 @@ describe("Research interrupted replies", () => {
 			status: "completed",
 		});
 	});
+	it("retains text and clears the saved cursor when reconnecting live-only", async () => {
+		const first = makeSseResponse();
+		const second = makeSseResponse();
+		const fetch = vi
+			.spyOn(global, "fetch")
+			.mockResolvedValueOnce(first.response as unknown as Response)
+			.mockResolvedValueOnce(second.response as unknown as Response);
+		const cursor = (sequence: string) => ({
+			turnId: "example-turn",
+			runId: "example-run",
+			sequence,
+		});
+		const { result } = renderHook(() =>
+			useMultiAgentStream({ organizationId: "example-org" }),
+		);
+		act(() =>
+			result.current.sendToAgents(
+				"Example",
+				[{ agentId: "example-agent", name: "Example" }],
+				[],
+			),
+		);
+		await act(async () => {
+			first.enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+			first.enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: "First", eventCursor: cursor("1") })}`,
+			);
+		});
+		expect(
+			result.current.turns[0]?.agentResponses.get("example-agent"),
+		).toMatchObject({ content: "First", eventCursor: cursor("1") });
+		await act(async () => {
+			first.enqueueLine('data: {"type":"replay_unavailable"}');
+			first.enqueueLine('data: {"type":"stream_timeout"}');
+		});
+		expect(parseBody(fetch.mock.calls[1][1])).toMatchObject({
+			executionId: "orch-example",
+			eventReplay: false,
+		});
+		expect(parseBody(fetch.mock.calls[1][1]).afterEvent).toBeUndefined();
+		await act(async () => {
+			second.enqueueLine(
+				'data: {"type":"started","executionId":"orch-example","resumed":true}',
+			);
+			second.enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: " Second" })}`,
+			);
+			second.enqueueLine('data: {"type":"completed"}');
+		});
+		expect(
+			result.current.turns[0]?.agentResponses.get("example-agent"),
+		).toMatchObject({
+			content: "First Second",
+			eventCursor: undefined,
+			status: "completed",
+		});
+	});
 	it.each(["unidentified disconnect", "error", "invalid event"])(
 		"preserves buffered text and explains %s without starting another run",
 		async (failure) => {

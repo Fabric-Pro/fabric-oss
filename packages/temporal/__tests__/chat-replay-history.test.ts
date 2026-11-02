@@ -22,7 +22,7 @@ beforeAll(async () => {
 	});
 }, 60000);
 describe("chat replay query history compatibility", () => {
-	it.each([false, true])(
+	it.each([false, true, "old-worker"] as const)(
 		"replays unchanged commands with durable failure metadata=%s",
 		async (failed) => {
 			const env = await TestWorkflowEnvironment.createTimeSkipping({
@@ -36,9 +36,9 @@ describe("chat replay query history compatibility", () => {
 					identity: "example-worker",
 					workflowBundle: failed ? current : legacy,
 					activities: {
-						exampleOutput: async () => ({
+						runAgentIteration: async () => ({
 							response: `Example ${++call}`,
-							...(failed && call === 1
+							...(failed === true && call === 1
 								? { __fabricChatReplayUnavailable: true }
 								: {}),
 						}),
@@ -64,6 +64,15 @@ describe("chat replay query history compatibility", () => {
 					}
 					return handle.fetchHistory();
 				});
+				expect(
+					history.events?.filter(
+						(event) => event.markerRecordedEventAttributes,
+					),
+				).toEqual([]);
+				await Worker.runReplayHistory(
+					{ workflowBundle: legacy },
+					history,
+				);
 				await expect(
 					Worker.runReplayHistory(
 						{ workflowBundle: current },
@@ -77,3 +86,43 @@ describe("chat replay query history compatibility", () => {
 		60000,
 	);
 });
+
+it("replays a synthetic run whose earlier prefix was produced without journal metadata", async () => {
+	const env = await TestWorkflowEnvironment.createTimeSkipping({
+		client: { identity: "example-client" },
+	});
+	try {
+		const worker = await Worker.create({
+			connection: env.nativeConnection,
+			taskQueue: "example-legacy-prefix",
+			workflowBundle: legacy,
+			activities: {
+				runAgentIteration: async () => ({
+					response: "Unjournaled prefix",
+				}),
+			},
+		});
+		const history = await worker.runUntil(async () => {
+			const handle = await env.client.workflow.start(
+				"orchestratorExecutionWorkflow",
+				{
+					workflowId: "orch-example-legacy-prefix",
+					taskQueue: "example-legacy-prefix",
+					args: [true],
+				},
+			);
+			await handle.result();
+			return handle.fetchHistory();
+		});
+		expect(
+			history.events?.filter(
+				(event) => event.markerRecordedEventAttributes,
+			),
+		).toEqual([]);
+		await expect(
+			Worker.runReplayHistory({ workflowBundle: current }, history),
+		).resolves.toBeUndefined();
+	} finally {
+		await env.teardown();
+	}
+}, 60000);

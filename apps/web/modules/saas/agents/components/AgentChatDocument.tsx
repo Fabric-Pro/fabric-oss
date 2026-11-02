@@ -41,7 +41,7 @@ export function AgentChatDocument({
 
 	// Custom user agents have a dynamic `agentId`. Bind the assistant-message
 	// factory to that exact name so reasoning state is read from the matching
-	// `useCoAgent({ name })` channel. Without this, custom agents would
+	// agent's state. Without this, custom agents would
 	// silently read reasoning from the wrong agent's state.
 	const AssistantMessage = useMemo(
 		() => makeCopilotAssistantMessage({ agentName: effectiveAgentId }),

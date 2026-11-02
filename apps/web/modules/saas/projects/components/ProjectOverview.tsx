@@ -692,9 +692,9 @@ export function ProjectOverview({
 							Remote execution &amp; subscription offload
 						</p>
 						<p className="text-xs text-muted-foreground">
-							Choose where coding tasks run and whether quota
-							fallbacks rotate across subscription harnesses or
-							use your organization’s paid API provider.
+							Choose where coding tasks run. Fallback choices are
+							saved in this browser and do not configure server
+							execution.
 						</p>
 					</div>
 					{onNavigateToTab && (
@@ -782,6 +782,7 @@ export function ProjectOverview({
 								return (
 									<button
 										key={option.value}
+										aria-pressed={isSelected}
 										type="button"
 										onClick={() =>
 											updateDelegationPrefs({
@@ -807,7 +808,7 @@ export function ProjectOverview({
 					<div className="rounded-lg border border-border/70 bg-background p-3">
 						<p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
 							<RefreshCwIcon className="size-3.5 text-primary" />
-							Quota fallback choice
+							Browser fallback preference
 						</p>
 						<div className="mt-2 flex flex-col gap-1.5">
 							{FABRIC_AGENT_FALLBACK_POLICIES.slice(0, 2).map(

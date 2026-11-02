@@ -4,9 +4,7 @@
  * DocumentGeneratorEditor - Shared document editor component for document generator agents
  *
  * This component implements the 4-effect streaming pattern for document generation
- * with proper diff highlighting. It's used by both:
- * - Personal account: /app/agents/document-generator
- * - Organization account: /app/[org]/agents/[agentId]/chat (for document generator agents)
+ * with diff highlighting on /app/[org]/agents/[agentId]/chat.
  *
  * Features:
  * - TipTap rich-text editor with slash commands
@@ -28,13 +26,7 @@ import {
 import "@copilotkit/react-ui/styles.css";
 import "@saas/projects/components/DocumentEditor.css";
 
-import {
-	useCoAgent,
-	useCopilotAction,
-	useCopilotChat,
-	useCopilotChatInternal,
-	useCopilotReadable,
-} from "@copilotkit/react-core";
+import { useCopilotAction, useCopilotReadable } from "@copilotkit/react-core";
 import type { AssistantMessageProps } from "@copilotkit/react-ui";
 import { CopilotSidebar } from "@copilotkit/react-ui";
 import { MessageRole, TextMessage } from "@copilotkit/runtime-client-gql";
@@ -57,8 +49,13 @@ import {
 } from "@saas/projects/lib/diff-utils";
 import { advancedExtensions } from "@saas/projects/lib/tiptap-extensions-advanced";
 import { CopilotAssistantMessageForDocumentGenerator } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import {
+	useCopilotChatSessionActions,
+	useCopilotChatSessionSelector,
+} from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { createCopilotSidebarInput } from "@saas/shared/components/copilot/CopilotSidebarInput";
 import { CopilotUserMessage } from "@saas/shared/components/copilot/CopilotUserMessage";
+import { usePageAgent } from "@saas/shared/components/copilot/use-page-agent";
 import { useClarifyingQuestions } from "@saas/shared/components/copilot/useClarifyingQuestions";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -84,6 +81,13 @@ import { flushSync } from "react-dom";
 import { toast } from "sonner";
 import { getEditorMarkdownForSave } from "../../projects/lib/editor-markdown-save";
 
+const EMPTY_MESSAGES: [] = [];
+const PAGE_AGENT_KEYS = [
+	"document",
+	"documentType",
+	"ragContexts",
+	"focusAnchor",
+] as const;
 const extensions = [...advancedExtensions, SlashCommandsExtension];
 
 /**
@@ -168,8 +172,7 @@ interface AgentState {
 	/**
 	 * Per-turn reasoning trace populated by chat-node.ts via
 	 * `buildReasoningUpdate` from `@repo/agent-core/reasoning-trace`.
-	 * Must be declared here AND seeded in `useCoAgent`'s `initialState`
-	 * for the STATE_SNAPSHOT events to survive CopilotKit's key filter.
+	 * Seeded in initial state for a fresh run.
 	 */
 	reasoningByTurn?: Record<
 		number,
@@ -183,7 +186,7 @@ interface AgentState {
 }
 
 export interface DocumentGeneratorEditorProps {
-	/** Agent ID to use for the CoAgent hook */
+	/** Agent name to bind to the page subscription */
 	agentId?: string;
 	/** Title to display in the sidebar */
 	title?: string;
@@ -193,11 +196,10 @@ export interface DocumentGeneratorEditorProps {
 	suggestions?: Array<{ title: string; message: string }>;
 	/**
 	 * Optional pre-bound assistant message component. Defaults to the
-	 * `document_generator`-bound variant for the
-	 * `/app/agents/document-generator` page. Custom-agent callers
+	 * `document_generator`-bound variant. Custom-agent callers
 	 * (e.g. `AgentChatDocument`) must pass a `useMemo`'d factory bound
 	 * to their dynamic `agentId` so reasoning state is read from the
-	 * correct `useCoAgent` channel.
+	 * correct agent channel.
 	 */
 	AssistantMessage?: ComponentType<AssistantMessageProps>;
 }
@@ -213,15 +215,14 @@ export function DocumentGeneratorEditor({
 	const [currentDocument, setCurrentDocument] = useState("");
 	const [viewMode, setViewMode] = useState<"rich" | "raw">("rich");
 	const [rawContent, setRawContent] = useState("");
-	const { isLoading } = useCopilotChat();
-	// CopilotKit's live message store. `useCopilotChatInternal` (NOT
-	// `useCopilotChat`) is the correct read hook for the raw message array the
-	// sidebar renders from — the same store `CopilotPersistenceHook` subscribes
-	// to. CopilotKit 1.80 supplies the raw AG-UI transcript as `messages`.
-	// `setMessages` is the supported
-	// primitive for clearing/hydrating the transcript (same as DocumentEditor).
-	const { setMessages: setCopilotMessages, messages: internalMessages } =
-		useCopilotChatInternal();
+	const isLoading = useCopilotChatSessionSelector(
+		(session) => session.isLoading,
+	);
+	const { setMessages: setCopilotMessages } = useCopilotChatSessionActions();
+	// Persistence needs complete text, but only after the turn finishes.
+	const internalMessages = useCopilotChatSessionSelector((session) =>
+		session.isLoading ? EMPTY_MESSAGES : session.messages,
+	);
 
 	// Organization context for document uploads
 	const { organizationId } = useOrganizationContext();
@@ -259,7 +260,7 @@ export function DocumentGeneratorEditor({
 	//   1. `useCopilotReadable` with description containing "rag context" —
 	//      `project_document_generator` reads via `findReadableValue("rag context")`
 	//      against `input.context`.
-	//   2. `useCoAgent` state's `ragContexts` field — `document_generator`
+	//   2. `usePageAgent` state's `ragContexts` field — `document_generator`
 	//      reads `copilotKitState?.ragContexts` and ignores `input.context`
 	//      entirely (see `agents/langchain/document-generator/unified-server.ts:394`).
 	//
@@ -275,10 +276,10 @@ export function DocumentGeneratorEditor({
 	});
 
 	// Stable hook handed to the input factory below. It flushes the live editor
-	// content into the agent's `document` state field right before every chat
+	// content into the agent's `document` state field right before a chat
 	// send — the real closure is assigned to `syncDocumentBeforeSendRef.current`
-	// once `editor`/`setAgentStateRef` are declared (further down). `useCoAgent`
-	// is bidirectional, so an agent reply that omits `document` syncs an empty
+	// once `editor`/`setAgentStateRef` are declared (further down). Agent state
+	// is bidirectional, so an agent reply that omits `document` can sync an empty
 	// value back onto the frontend state; re-asserting it before each send keeps
 	// the agent able to see the open document's sections. Defined here so the
 	// factory memo can reference a stable identity without re-registering.
@@ -516,38 +517,31 @@ export function DocumentGeneratorEditor({
 		state: agentState,
 		setState: setAgentState,
 		nodeName,
-	} = useCoAgent<AgentState>({
-		name: agentId,
-		initialState: {
-			document: "",
-			documentType: "general",
+	} = usePageAgent<AgentState>(
+		agentId,
+		{
+			document: currentDocument,
+			documentType,
+			ragContexts: uploadedDocContexts,
 			error: undefined,
 			retryCount: 0,
-			// Declare reasoningByTurn in initialState so CopilotKit's
-			// useCoAgent doesn't filter it out of STATE_SNAPSHOT updates.
-			// Without this key, reasoning events arrive on the SSE wire but
-			// are dropped before reaching the CopilotAssistantMessage*
-			// subscriptions. Same rationale as DocumentEditor.tsx:1286.
+
 			reasoningByTurn: {},
 		},
-	});
+		PAGE_AGENT_KEYS,
+	);
 
-	// `useCoAgent` returns a new `setState` every render; reading it through
-	// a ref keeps our effects from depending on the identity AND lets us
-	// avoid the stale-closure trap of `setState({ ...agentState, ... })`,
-	// which would overwrite freshly-applied diff/accept changes with an
-	// outdated snapshot of `agentState`. We pass partial updates only;
-	// `useCoAgent`'s `setState` merges them with the live state.
+	// Effects write partial updates through the latest setter, preserving live
+	// fields that are absent from the selected page snapshot.
 	const setAgentStateRef = useRef(setAgentState);
 	setAgentStateRef.current = setAgentState;
 
 	// Keep the before-send sync closure (handed to the input factory above as
 	// `handleBeforeSend`) pointing at the latest `editor` + `setAgentStateRef`.
 	// Flushes the current editor markdown into `state.document` synchronously
-	// right before each send so the outgoing turn always carries the open
-	// document — guards against the bidirectional `useCoAgent` sync having
-	// clobbered it to empty. Partial-update form only (never spread stale
-	// `agentState`, per the note above).
+	// right before each send so the outgoing turn carries the open
+	// document, including after an agent snapshot cleared it. Use partial updates
+	// rather than spreading a stale `agentState`, per the note above.
 	syncDocumentBeforeSendRef.current = () => {
 		if (!editor) {
 			return;
@@ -697,10 +691,9 @@ export function DocumentGeneratorEditor({
 			const editorMarkdown = getEditorMarkdownForSave(editor) ?? "";
 			setCurrentDocument(editorMarkdown);
 			baselineRef.current = editorMarkdown; // Keep ref in sync
-			setAgentState({
-				...agentState,
-				document: editorMarkdown,
-			});
+			if (agentState?.document !== editorMarkdown) {
+				setAgentState({ document: editorMarkdown });
+			}
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [editorDocRef, isLoading]);
@@ -831,10 +824,9 @@ export function DocumentGeneratorEditor({
 			labels={chatLabels}
 			suggestions={suggestions}
 		>
-			{/* h-full (not h-screen): the page wraps this in an
-			    h-[calc(100vh-53px)] region below the breadcrumb. h-screen made the
-			    editor 100vh — 53px too tall — so it overflowed and the toolbar
-			    bled through the top of the AI Assistant panel. */}
+			{/* h-full (not h-screen): the page bounds this flex region below
+			    the breadcrumb. A viewport-height editor overflows that region
+			    and lets its toolbar bleed through the AI Assistant panel. */}
 			<div className="flex h-full min-h-0 flex-col">
 				{/* Header */}
 				<div className="flex items-center justify-between px-6 py-3 border-b bg-background gap-4">

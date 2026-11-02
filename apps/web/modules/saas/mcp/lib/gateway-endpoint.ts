@@ -75,8 +75,11 @@ import {
 } from "@repo/utils/oauth-project-resource";
 import { CLI_TARBALL_PATH } from "@saas/cli-distribution/lib/cli-discovery";
 import {
+	type AuthorizedConnectedServerToolCall,
+	authorizeConnectedServerTool,
 	createGatewaySession,
 	deleteGatewaySession,
+	executeAuthorizedConnectedServerTool,
 	executeConnectedServerTool,
 	executePlatformTool,
 	type GatewaySession,
@@ -105,6 +108,7 @@ import {
 } from "@saas/mcp/lib/gateway/discovery-tools";
 import {
 	attachFabricMcpAppMeta,
+	durableIdentityForGatewaySession,
 	executeWithDurableEnvelope,
 	FABRIC_MCP_APP_RESOURCES,
 	FABRIC_TOOL_UI_RESOURCE_MAP,
@@ -116,7 +120,13 @@ import {
 	checkPageCall,
 	pageCallSession,
 } from "@saas/mcp/lib/gateway/page-call-guard";
-import { PLATFORM_TOOL_DEFINITIONS } from "@saas/mcp/lib/gateway/platform-tools";
+import {
+	type AuthorizedPlatformToolCall,
+	authorizePlatformToolCall,
+	executeAuthorizedPlatformToolCall,
+	PLATFORM_TOOL_DEFINITIONS,
+	platformToolReplayAllowed,
+} from "@saas/mcp/lib/gateway/platform-tools";
 import {
 	boundProjectId,
 	pinnedProjectId,
@@ -146,6 +156,7 @@ import {
 import type {
 	GatewayActingContext,
 	GatewayCredential,
+	GatewayToolDefinition,
 	ServerSelection,
 	ToolCallResult,
 } from "@saas/mcp/lib/gateway/types";
@@ -829,12 +840,22 @@ function oauthClientIdOf(authResult: AuthResult): string | undefined {
 		: undefined;
 }
 
+function durableCredentialIdOf(authResult: AuthResult): string {
+	return (
+		authResult.keyIdentity?.credentialId ??
+		(authResult.credential === "service"
+			? "fabric-agent-service"
+			: authResult.userId)
+	);
+}
+
 function sameCredentialAuthority(
 	session: GatewaySession,
 	authResult: AuthResult,
 ): boolean {
 	if (
 		session.credential !== authResult.credential ||
+		session.credentialId !== durableCredentialIdOf(authResult) ||
 		session.oauthClientId !== oauthClientIdOf(authResult)
 	) {
 		return false;
@@ -958,6 +979,7 @@ async function getOrCreateSession(
 		email: authResult.email,
 		role: authResult.role,
 		credential: authResult.credential,
+		credentialId: durableCredentialIdOf(authResult),
 		oauthClientId: oauthClientIdOf(authResult),
 		actingContext: authResult.actingContext,
 		// The agent runtime proves itself on every request and names the page
@@ -1346,6 +1368,7 @@ export async function handleGatewayPost(
 						unknown
 					>,
 				),
+				request,
 			);
 			break;
 
@@ -1925,6 +1948,78 @@ async function handleToolsList(
  * `./gateway/page-call-guard`. That includes discovery's meta-tools, which a
  * page does not declare and so cannot reach.
  */
+type AuthorizedGatewayRequestCall =
+	| { kind: "dispatch"; call: AuthorizedGatewayToolCall }
+	| {
+			kind: "discovery";
+			toolName: string;
+			toolArgs: Record<string, unknown>;
+			tools: GatewayToolDefinition[];
+	  };
+
+async function authorizeGatewayRequestToolCall(
+	toolName: string,
+	toolArgs: Record<string, unknown>,
+	session: GatewaySession,
+	sessionId: string,
+): Promise<
+	| { ok: true; context: AuthorizedGatewayRequestCall }
+	| { ok: false; result: ToolCallResult }
+> {
+	if (
+		session.toolListMode !== "discovery" ||
+		!isDiscoveryToolName(toolName)
+	) {
+		const authorization = await authorizeDispatchToolCall(
+			toolName,
+			toolArgs,
+			session,
+			sessionId,
+		);
+		return authorization.ok
+			? {
+					ok: true,
+					context: { kind: "dispatch", call: authorization.context },
+				}
+			: authorization;
+	}
+	if (toolName === CALL_TOOL_NAME) {
+		const parsed = parseCallToolArguments(toolArgs);
+		if (!parsed.ok) {
+			return { ok: false, result: parsed.result };
+		}
+		const authorization = await authorizeDispatchToolCall(
+			parsed.name,
+			parsed.arguments,
+			session,
+			sessionId,
+		);
+		return authorization.ok
+			? {
+					ok: true,
+					context: { kind: "dispatch", call: authorization.context },
+				}
+			: authorization;
+	}
+	const { tools } = await getAggregatedTools(session);
+	return {
+		ok: true,
+		context: { kind: "discovery", toolName, toolArgs, tools },
+	};
+}
+
+async function executeAuthorizedGatewayRequestToolCall(
+	authorized: AuthorizedGatewayRequestCall,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	if (authorized.kind === "dispatch") {
+		return executeAuthorizedGatewayToolCall(authorized.call);
+	}
+	return authorized.toolName === SEARCH_TOOLS_NAME
+		? searchTools(session, authorized.tools, authorized.toolArgs)
+		: getToolSchema(session, authorized.tools, authorized.toolArgs);
+}
+
 async function handleToolsCall(
 	id: string | number,
 	params: Record<string, unknown> | undefined,
@@ -1932,6 +2027,7 @@ async function handleToolsCall(
 	sessionId: string,
 	pageFrameId: string | null,
 	durable = false,
+	request?: Request,
 ): Promise<NextResponse> {
 	const toolName = params?.name as string;
 	let toolArgs = (params?.arguments || {}) as Record<string, unknown>;
@@ -1976,22 +2072,60 @@ async function handleToolsCall(
 				)
 			: dispatchToolCall(toolName, toolArgs, callSession, sessionId);
 
-	const result = durable
-		? await executeWithDurableEnvelope({
+	let result: ToolCallResult;
+	if (durable) {
+		try {
+			result = await executeWithDurableEnvelope({
 				toolName,
 				toolArgs,
 				organizationId: callSession.organizationId,
 				userId: callSession.userId,
-				idempotencyKey:
-					typeof (
-						params?._meta as Record<string, unknown> | undefined
-					)?.idempotencyKey === "string"
-						? ((params?._meta as Record<string, unknown>)
-								.idempotencyKey as string)
-						: undefined,
-				execute: executeCall,
-			})
-		: await executeCall();
+				identity: (authorized) => {
+					const base = durableIdentityForGatewaySession(
+						callSession,
+						"gateway-discovery",
+					);
+					if (authorized.kind !== "dispatch") {
+						return base;
+					}
+					return {
+						...base,
+						serverBinding:
+							authorized.call.kind === "platform"
+								? "platform"
+								: authorized.call.call.configId,
+					};
+				},
+				request,
+				rpcParams: params,
+				authorize: () =>
+					authorizeGatewayRequestToolCall(
+						toolName,
+						toolArgs,
+						callSession,
+						sessionId,
+					),
+				execute: (authorized) =>
+					executeAuthorizedGatewayRequestToolCall(
+						authorized,
+						callSession,
+					),
+				// Connected servers may perform authorization inside callTool, after
+				// discovery succeeds. Replaying would bypass that remote check.
+				replayAllowed: (authorized) =>
+					authorized.kind === "dispatch" &&
+					authorized.call.kind === "platform" &&
+					platformToolReplayAllowed(authorized.call.call.toolName),
+			});
+		} catch (error) {
+			// The durable envelope records a claimed execution as FAILED before it
+			// rethrows. Convert only after that release has completed, matching the
+			// non-durable dispatch contract without leaving the key RUNNING.
+			result = gatewayToolExecutionError(toolName, error);
+		}
+	} else {
+		result = await executeCall();
+	}
 	return jsonRpcSuccess(id, result, sessionId);
 }
 
@@ -2041,16 +2175,258 @@ async function handleDiscoveryToolCall(
 	}
 }
 
+type AuthorizedGatewayToolCall =
+	| {
+			kind: "platform";
+			call: AuthorizedPlatformToolCall;
+			sessionId: string;
+	  }
+	| {
+			kind: "connected";
+			call: AuthorizedConnectedServerToolCall;
+			oneShotGrantId?: string;
+	  };
+
+type GatewayToolCallAuthorization =
+	| { ok: true; context: AuthorizedGatewayToolCall }
+	| { ok: false; result: ToolCallResult };
+
+function gatewayToolError(
+	error: string,
+	details: Record<string, unknown> = {},
+): ToolCallResult {
+	return {
+		content: [
+			{
+				type: "text",
+				text: JSON.stringify({ error, ...details }),
+			},
+		],
+		isError: true,
+	};
+}
+
+function gatewayToolExecutionError(
+	toolName: string,
+	error: unknown,
+): ToolCallResult {
+	console.error("[MCP Gateway] tools/call error:", {
+		toolName,
+		error: error instanceof Error ? error.message : error,
+		stack: error instanceof Error ? error.stack : undefined,
+	});
+	return gatewayToolError(
+		"Tool execution failed because of an internal error.",
+	);
+}
+
+type AuthorizedGatewayRoute =
+	| { kind: "platform" }
+	| {
+			kind: "connected";
+			servers: Awaited<ReturnType<typeof getAggregatedTools>>["servers"];
+			oneShotGrantId?: string;
+	  };
+
+type GatewayRouteAuthorization =
+	| { ok: true; context: AuthorizedGatewayRoute }
+	| { ok: false; result: ToolCallResult };
+
+/** Shared selection, scope and authority gate for durable and inline calls. */
+async function authorizeGatewayRoute(
+	toolName: string,
+	toolArgs: Record<string, unknown>,
+	session: GatewaySession,
+	sessionId: string,
+): Promise<GatewayRouteAuthorization> {
+	if (!selectionAllowsTool(session, toolName)) {
+		return {
+			ok: false,
+			result: gatewayToolError(selectionRefusalMessage(toolName), {
+				hint: `The "${SERVER_SELECTION_PARAM}" parameter is read when a session is created. Connect with a URL that names this tool or its server, or without the parameter, to use it.`,
+			}),
+		};
+	}
+	if (isPlatformToolName(toolName)) {
+		return { ok: true, context: { kind: "platform" } };
+	}
+	if (boundProjectId(session) !== null) {
+		return {
+			ok: false,
+			result: gatewayToolError(
+				`${toolName} is not available on a connection to one project.`,
+				{ hint: "Platform tools start with 'fabric_'." },
+			),
+		};
+	}
+	if (pinnedProjectId(session) !== null) {
+		return {
+			ok: false,
+			result: gatewayToolError(
+				`${toolName} is not available to the agent runtime on a meeting's project.`,
+				{ hint: "Platform tools start with 'fabric_'." },
+			),
+		};
+	}
+	if (!toolName.includes("__")) {
+		return {
+			ok: false,
+			result: gatewayToolError(`Unknown tool: ${toolName}`, {
+				hint: "Platform tools start with 'fabric_'. Connected server tools use 'servername__toolname' format.",
+			}),
+		};
+	}
+
+	const { tools, servers } = await getAggregatedTools(session);
+	const prefix = toolName.slice(0, toolName.indexOf("__"));
+	const providerInfo = resolveProviderKeyFromToolPrefix(prefix, servers);
+	const providerKey = providerInfo?.providerKey ?? `custom:${prefix}`;
+	const annotations = tools.find(
+		(tool) => tool.name === toolName,
+	)?.annotations;
+	const requiredScope = connectedToolScope(
+		toolName,
+		annotations,
+		session.credential,
+	);
+	if (!scopeSatisfied(session.scopes, requiredScope, session.credential)) {
+		return {
+			ok: false,
+			result: gatewayToolError(
+				`This ${credentialSubject(session.credential)} does not have the "${requiredScope.scope}" scope required by ${toolName}.`,
+			),
+		};
+	}
+
+	const authorityResult = await enforceAuthority({
+		toolName,
+		providerKey,
+		session,
+		annotations,
+		requestFingerprint: await generateRequestFingerprint(
+			toolName,
+			toolArgs,
+		),
+		boundRunType: "MCP_GATEWAY",
+		boundRunId: sessionId,
+	});
+	if (!authorityResult.authorized) {
+		return {
+			ok: false,
+			result: gatewayToolError("Authority required", {
+				reason: authorityResult.reason,
+				action: authorityResult.action,
+				pendingSessionId: authorityResult.pendingSessionId,
+				hint:
+					authorityResult.action === "request_authority"
+						? `Use fabric_request_authority to request access for provider "${providerKey}".`
+						: authorityResult.action === "approve_pending"
+							? `A pending authority request (session ${authorityResult.pendingSessionId}) needs approval in the Fabric UI.`
+							: `Current authority level is insufficient. Request WRITE access for "${providerKey}".`,
+				providerKey,
+			}),
+		};
+	}
+
+	return {
+		ok: true,
+		context: {
+			kind: "connected",
+			servers,
+			...(authorityResult.grant?.kind === "REQUEST" &&
+			authorityResult.grant.id
+				? { oneShotGrantId: authorityResult.grant.id }
+				: {}),
+		},
+	};
+}
+
 /**
- * Check and run one tool call: the server selection, then the platform tool,
- * the project-bound refusal, or the connected tool with its scope check,
- * runtime-authority gate and one-shot grant consumption. A direct
- * `tools/call` and discovery mode's `call_tool` both run here, so the two
- * cannot be checked differently.
- *
- * `sessionId` is the gateway session id of the HTTP request: the authority
- * gate binds grants to it, and an organization switch is written back to it.
+ * Ask the same platform/connected authorities execution uses, without running
+ * the tool body. Durable calls use this before claiming and before replay.
  */
+async function authorizeDispatchToolCall(
+	toolName: string,
+	toolArgs: Record<string, unknown>,
+	session: GatewaySession,
+	sessionId: string,
+): Promise<GatewayToolCallAuthorization> {
+	const route = await authorizeGatewayRoute(
+		toolName,
+		toolArgs,
+		session,
+		sessionId,
+	);
+	if (!route.ok) {
+		return route;
+	}
+	if (route.context.kind === "platform") {
+		const authorization = authorizePlatformToolCall(
+			toolName,
+			toolArgs,
+			session,
+		);
+		return authorization.ok
+			? {
+					ok: true,
+					context: {
+						kind: "platform",
+						call: authorization.context,
+						sessionId,
+					},
+				}
+			: authorization;
+	}
+
+	const connected = await authorizeConnectedServerTool(
+		toolName,
+		toolArgs,
+		session,
+		route.context.servers,
+	);
+	return connected.ok
+		? {
+				ok: true,
+				context: {
+					kind: "connected",
+					call: connected.context,
+					...(route.context.oneShotGrantId
+						? { oneShotGrantId: route.context.oneShotGrantId }
+						: {}),
+				},
+			}
+		: connected;
+}
+
+async function executeAuthorizedGatewayToolCall(
+	authorized: AuthorizedGatewayToolCall,
+): Promise<ToolCallResult> {
+	if (authorized.kind === "platform") {
+		const result = attachFabricMcpAppMeta(
+			authorized.call.toolName,
+			await executeAuthorizedPlatformToolCall(authorized.call),
+		);
+		if (
+			authorized.call.toolName === "fabric_switch_organization" &&
+			!result.isError
+		) {
+			updateSessionOrganization(
+				authorized.sessionId,
+				authorized.call.session.organizationId,
+			);
+		}
+		return result;
+	}
+
+	const result = await executeAuthorizedConnectedServerTool(authorized.call);
+	if (authorized.oneShotGrantId) {
+		const { consumeRequestGrant } = await import("@repo/database");
+		consumeRequestGrant(authorized.oneShotGrantId).catch(() => {});
+	}
+	return result;
+}
+
+/** Authorize and execute a direct or discovery-mode delegated tool call. */
 export async function dispatchToolCall(
 	toolName: string,
 	toolArgs: Record<string, unknown>,
@@ -2058,8 +2434,6 @@ export async function dispatchToolCall(
 	sessionId: string,
 ): Promise<ToolCallResult> {
 	try {
-		let result: ToolCallResult;
-
 		if (session.credential === "service") {
 			console.info("[MCP Gateway] service tool call", {
 				tool: toolName,
@@ -2072,221 +2446,37 @@ export async function dispatchToolCall(
 			});
 		}
 
-		// A tool the session's server selection leaves out is refused before
-		// any branch below can run it, request authority for it or contact its
-		// server. The selection is fixed when the session is created
-		// (`GatewaySession.serverSelection` is readonly), so nothing between
-		// this check and the dispatch can change its answer. Both executors
-		// repeat it, for any caller that reaches them another way.
-		if (!selectionAllowsTool(session, toolName)) {
-			result = {
-				content: [
-					{
-						type: "text" as const,
-						text: JSON.stringify({
-							error: selectionRefusalMessage(toolName),
-							hint: `The "${SERVER_SELECTION_PARAM}" parameter is read when a session is created. Connect with a URL that names this tool or its server, or without the parameter, to use it.`,
-						}),
-					},
-				],
-				isError: true,
-			};
-		} else if (isPlatformToolName(toolName)) {
-			// Platform tool
-			result = attachFabricMcpAppMeta(
+		const route = await authorizeGatewayRoute(
+			toolName,
+			toolArgs,
+			session,
+			sessionId,
+		);
+		if (!route.ok) {
+			return route.result;
+		}
+		if (route.context.kind === "platform") {
+			const result = attachFabricMcpAppMeta(
 				toolName,
 				await executePlatformTool(toolName, toolArgs, session),
 			);
-
-			// Handle org switch — persist to session store
 			if (toolName === "fabric_switch_organization" && !result.isError) {
 				updateSessionOrganization(sessionId, session.organizationId);
 			}
-		} else if (boundProjectId(session) !== null) {
-			// A connection to one project has the project's platform tools and
-			// nothing else: a connected server is the person's and the
-			// organization's, with no project to be held to.
-			result = {
-				content: [
-					{
-						type: "text" as const,
-						text: JSON.stringify({
-							error: `${toolName} is not available on a connection to one project.`,
-							hint: "Platform tools start with 'fabric_'.",
-						}),
-					},
-				],
-				isError: true,
-			};
-		} else if (pinnedProjectId(session) !== null) {
-			// A session limited to a meeting's project has the platform tools
-			// its grant names and no connected server's: those are the
-			// person's and the organization's, and `mcp:read`, which it holds
-			// to list them, would otherwise let a read of one through.
-			result = {
-				content: [
-					{
-						type: "text" as const,
-						text: JSON.stringify({
-							error: `${toolName} is not available to the agent runtime on a meeting's project.`,
-							hint: "Platform tools start with 'fabric_'.",
-						}),
-					},
-				],
-				isError: true,
-			};
-		} else if (toolName.includes("__")) {
-			// Connected server tool (namespaced) — enforce authority gate
-			const { tools, servers } = await getAggregatedTools(session);
-
-			// Resolve provider key from tool prefix
-			const separatorIndex = toolName.indexOf("__");
-			const prefix = toolName.slice(0, separatorIndex);
-			const providerInfo = resolveProviderKeyFromToolPrefix(
-				prefix,
-				servers,
-			);
-			const providerKey = providerInfo?.providerKey ?? `custom:${prefix}`;
-
-			// Find tool annotations from aggregated tools
-			const toolDef = tools.find((t) => t.name === toolName);
-			const annotations = toolDef?.annotations as
-				| {
-						readOnlyHint?: boolean;
-						destructiveHint?: boolean;
-				  }
-				| undefined;
-
-			// The credential's own scopes come first: a connected tool is read
-			// or write by the same classification the authority gate uses, and
-			// the key or sign-in must hold the matching scope before a runtime
-			// grant is even considered. An OAuth agent cannot hold `mcp:write`.
-			// `connectedToolScope` is the check discovery mode's search
-			// filters on (`./gateway/tool-eligibility`).
-			const requiredScope = connectedToolScope(
-				toolName,
-				annotations,
-				session.credential,
-			);
-			if (
-				!scopeSatisfied(
-					session.scopes,
-					requiredScope,
-					session.credential,
-				)
-			) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: JSON.stringify({
-								error: `This ${credentialSubject(session.credential)} does not have the "${requiredScope.scope}" scope required by ${toolName}.`,
-							}),
-						},
-					],
-					isError: true,
-				};
-			}
-
-			// Generate request fingerprint for one-shot grant matching
-			const fingerprint = await generateRequestFingerprint(
-				toolName,
-				toolArgs,
-			);
-
-			// Look up the authority session bound to this specific gateway session.
-			// If no session exists for this exact runId, the check will correctly deny —
-			// we pass boundRunId to ensure strict per-session binding.
-			const authorityResult = await enforceAuthority({
-				toolName,
-				providerKey,
-				session,
-				annotations,
-				requestFingerprint: fingerprint,
-				boundRunType: "MCP_GATEWAY",
-				boundRunId: sessionId, // Strict: only grants from THIS gateway session
-			});
-
-			if (!authorityResult.authorized) {
-				result = {
-					content: [
-						{
-							type: "text" as const,
-							text: JSON.stringify({
-								error: "Authority required",
-								reason: authorityResult.reason,
-								action: authorityResult.action,
-								pendingSessionId:
-									authorityResult.pendingSessionId,
-								hint:
-									authorityResult.action ===
-									"request_authority"
-										? `Use fabric_request_authority to request access for provider "${providerKey}".`
-										: authorityResult.action ===
-												"approve_pending"
-											? `A pending authority request (session ${authorityResult.pendingSessionId}) needs approval in the Fabric UI.`
-											: `Current authority level is insufficient. Request WRITE access for "${providerKey}".`,
-								providerKey,
-							}),
-						},
-					],
-					isError: true,
-				};
-			} else {
-				// Authority granted — execute the tool
-				result = await executeConnectedServerTool(
-					toolName,
-					toolArgs,
-					session,
-					servers,
-				);
-
-				// If the grant was a one-shot REQUEST, consume it
-				if (
-					authorityResult.grant?.kind === "REQUEST" &&
-					authorityResult.grant?.id
-				) {
-					const { consumeRequestGrant } = await import(
-						"@repo/database"
-					);
-					consumeRequestGrant(authorityResult.grant.id).catch(
-						() => {},
-					);
-				}
-			}
-		} else {
-			result = {
-				content: [
-					{
-						type: "text" as const,
-						text: JSON.stringify({
-							error: `Unknown tool: ${toolName}`,
-							hint: "Platform tools start with 'fabric_'. Connected server tools use 'servername__toolname' format.",
-						}),
-					},
-				],
-				isError: true,
-			};
+			return result;
 		}
-
+		const result = await executeConnectedServerTool(
+			toolName,
+			toolArgs,
+			session,
+			route.context.servers,
+		);
+		if (route.context.oneShotGrantId) {
+			const { consumeRequestGrant } = await import("@repo/database");
+			consumeRequestGrant(route.context.oneShotGrantId).catch(() => {});
+		}
 		return result;
 	} catch (error) {
-		console.error("[MCP Gateway] tools/call error:", {
-			toolName,
-			error: error instanceof Error ? error.message : error,
-			stack: error instanceof Error ? error.stack : undefined,
-		});
-
-		return {
-			content: [
-				{
-					type: "text",
-					text: JSON.stringify({
-						error: "Tool execution failed because of an internal error.",
-					}),
-				},
-			],
-			isError: true,
-		};
+		return gatewayToolExecutionError(toolName, error);
 	}
 }

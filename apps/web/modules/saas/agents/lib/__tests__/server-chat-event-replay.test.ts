@@ -4,9 +4,10 @@ import {
 	projectChatReplayEvent,
 } from "../server/chat-event-replay";
 
-const h = vi.hoisted(() => ({ read: vi.fn() }));
+const h = vi.hoisted(() => ({ read: vi.fn(), gap: vi.fn() }));
 vi.mock("@repo/database", () => ({
 	readConversationTurnEvents: h.read,
+	hasConversationTurnReplayGap: h.gap,
 	ChatEventReplayError: class ChatEventReplayError extends Error {},
 }));
 const scope = {
@@ -46,6 +47,7 @@ describe("authorized server replay", () => {
 		});
 		await replay();
 		expect(send).toHaveBeenCalledTimes(201);
+		expect(h.read).toHaveBeenCalledTimes(2);
 		expect(h.read.mock.calls[1][0]).toEqual({
 			scope,
 			after: row(200).cursor,
@@ -205,4 +207,56 @@ describe("authorized server replay", () => {
 			result: "Found",
 		});
 	});
+});
+
+it("cursorless marker prevents any rows from being read or sent", async () => {
+	h.gap.mockResolvedValue(true);
+	h.read.mockResolvedValue([row(1)]);
+	const send = vi.fn();
+	await expect(
+		createServerChatReplay({ scope, send, isClosed: () => false })(),
+	).rejects.toThrow("incomplete");
+	expect(send).not.toHaveBeenCalled();
+	expect(h.read).not.toHaveBeenCalled();
+});
+it("streams the first page before reading the second page", async () => {
+	const send = vi.fn();
+	h.gap.mockResolvedValue(false);
+	h.read
+		.mockResolvedValueOnce(
+			Array.from({ length: 200 }, (_, i) => row(i + 1)),
+		)
+		.mockImplementationOnce(async () => {
+			expect(send).toHaveBeenCalledTimes(200);
+			return [row(201)];
+		});
+	await createServerChatReplay({ scope, send, isClosed: () => false })();
+	expect(send).toHaveBeenCalledTimes(201);
+	expect(h.gap).toHaveBeenCalledOnce();
+});
+it("cursor-bearing replay skips the gap lookup", async () => {
+	h.gap.mockResolvedValue(true);
+	h.read.mockResolvedValue([row(2)]);
+	const send = vi.fn();
+	await createServerChatReplay({
+		scope,
+		after: row(1).cursor,
+		send,
+		isClosed: () => false,
+	})();
+	expect(h.gap).not.toHaveBeenCalled();
+	expect(send).toHaveBeenCalledOnce();
+});
+it("checks a marker again after an empty cursorless drain", async () => {
+	h.gap.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+	h.read.mockResolvedValueOnce([]).mockResolvedValueOnce([row(1)]);
+	const send = vi.fn();
+	const replay = createServerChatReplay({
+		scope,
+		send,
+		isClosed: () => false,
+	});
+	await replay();
+	await expect(replay()).rejects.toThrow("incomplete");
+	expect(send).not.toHaveBeenCalled();
 });

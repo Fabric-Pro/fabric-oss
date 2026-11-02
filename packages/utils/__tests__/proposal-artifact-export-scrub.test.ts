@@ -49,6 +49,111 @@ describe("scrubProposalExport", () => {
 		);
 	});
 
+	it("drops markers from a cards block and a columns block line by line, and keeps the rest of each line", () => {
+		const input = [
+			"## Approach",
+			"",
+			"```cards",
+			"%% fabric-visual: a1b2c3d4e5f6",
+			"01",
+			"**Route planning**",
+			"Plans each *stop* before `08:00` [S2].",
+			"",
+			"Pilot",
+			"**Example Harbor Co**",
+			"Three depots, twelve weeks.",
+			"```",
+			"",
+			"```columns",
+			"### Today",
+			"- Paper route sheets [S3]",
+			"- Calls to every depot",
+			"---",
+			"#### With the platform",
+			"One schedule every depot reads.",
+			"```",
+		].join("\n");
+		const result = scrubProposalExport(input);
+
+		expect(result.markdown).toBe(
+			input
+				.replace("`08:00` [S2].", "`08:00`.")
+				.replace("sheets [S3]", "sheets"),
+		);
+		expect(result.removedMarkers).toBe(2);
+		expect(result.removedSections).toBe(0);
+	});
+
+	it("scrubs every prose fence as the PDF and Word do, and leaves any other fence byte for byte", () => {
+		const input = [
+			"```cover",
+			"eyebrow: Proposal · Operations board [S1]",
+			"for: Example Harbor Co",
+			"version: [S2]",
+			"by: `[S1]` example.com",
+			"```",
+			"",
+			"```stat-tiles",
+			"Hours saved [S1]: 12",
+			"[S4]",
+			"```",
+			"",
+			"~~~Cards",
+			"Pilot",
+			"- [S5]",
+			"Twelve weeks [cite].",
+			"~~~",
+			"",
+			"```mermaid",
+			"flowchart TD",
+			'  a["Kickoff [S1]"] --> b',
+			"```",
+			"",
+			"```ts",
+			'const cite = "[S3]";',
+			"```",
+		].join("\n");
+		const result = scrubProposalExport(input);
+
+		expect(result.markdown).toBe(
+			[
+				"```cover",
+				"eyebrow: Proposal · Operations board",
+				"for: Example Harbor Co",
+				// A value that was only a marker goes with its key, so the
+				// cover still reads the block.
+				"by: `[S1]` example.com",
+				"```",
+				"",
+				"```stat-tiles",
+				"Hours saved: 12",
+				"```",
+				"",
+				"~~~Cards",
+				"Pilot",
+				"Twelve weeks.",
+				"~~~",
+				"",
+				"```mermaid",
+				"flowchart TD",
+				'  a["Kickoff [S1]"] --> b',
+				"```",
+				"",
+				"```ts",
+				'const cite = "[S3]";',
+				"```",
+			].join("\n"),
+		);
+		expect(result.removedMarkers).toBe(6);
+	});
+
+	it("keeps a cover line written as a bare key, which only lost markers may drop", () => {
+		const input = ["```cover", "version:", "eyebrow: Board", "```"].join(
+			"\n",
+		);
+		expect(scrub(input)).toBe(input);
+	});
+
 	it("keeps the document's own Appendix and TBD lines exactly as written", () => {
 		const input = [
 			"# Example Proposal",

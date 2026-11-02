@@ -114,7 +114,10 @@ vi.mock("@repo/agent-core/services/usage-logging", () => ({
 	logAgentUsageFromRunnableConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@copilotkit/sdk-js/langgraph", () => ({
+vi.mock("@copilotkit/sdk-js/langgraph", async () => ({
+	...(await vi.importActual<typeof import("@copilotkit/sdk-js/langgraph")>(
+		"@copilotkit/sdk-js/langgraph",
+	)),
 	convertActionsToDynamicStructuredTools: vi.fn().mockReturnValue([]),
 }));
 
@@ -4728,5 +4731,58 @@ describe("Project Document Generator Chat Node - Clarifying question block", () 
 				args: { question: QUESTION, options: OPTIONS },
 			}),
 		]);
+	});
+});
+
+describe("reply invocation provenance", () => {
+	it("marks the user-facing invocation with an attempt identity", async () => {
+		mockInvoke
+			.mockReset()
+			.mockResolvedValueOnce(new AIMessage({ content: "Example reply" }));
+		await chatNode(
+			createMockState({
+				messages: [new HumanMessage("Example request")],
+			}),
+		);
+		expect(mockInvoke.mock.calls[0][1].metadata.reply_attempt).toEqual(
+			expect.any(String),
+		);
+	});
+});
+
+describe("graph reply acceptance", () => {
+	it("accepts the checked synthetic reply after an inline document write", async () => {
+		const { projectDocumentGeneratorGraph } = await import("../agent");
+		mockInvoke.mockReset().mockResolvedValueOnce(
+			new AIMessage({
+				content: "Speculative commentary",
+				tool_calls: [
+					{
+						id: "write-1",
+						name: "write_document_local",
+						args: { document: "## Scope\nExample scope" },
+					},
+				],
+			}),
+		);
+		const stream = await projectDocumentGeneratorGraph.stream(
+			createMockState({
+				document: "## Scope\nOld scope",
+				messages: [new HumanMessage("Revise the scope")],
+			}),
+			{ streamMode: ["updates", "custom"] },
+		);
+		let accepted: string | undefined;
+		let checked: string | undefined;
+		for await (const [mode, data] of stream) {
+			if (mode === "custom" && data.replyCompletion) {
+				accepted = data.replyCompletion.text;
+			}
+			if (mode === "updates" && data.chat_node?.messages) {
+				checked = data.chat_node.messages.at(-1)?.content as string;
+			}
+		}
+		expect(checked).toBeTruthy();
+		expect(accepted).toBe(checked);
 	});
 });

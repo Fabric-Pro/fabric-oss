@@ -8,8 +8,13 @@
 
 import { createHash } from "node:crypto";
 import {
+	canCreateOrganizationPrompts,
+	canCreateProjectInOrganization,
 	canExecuteOrganizationAgents,
 	canRunOrganizationWorkflows,
+	canUpdateOrganizationPrompts,
+	canUseOrganizationAiChat,
+	canUseOrganizationIntegrations,
 	OAUTH_ACCESS_TOKEN_PREFIX,
 	verifyOAuthAccessToken,
 	verifyOrganizationApiKey,
@@ -32,7 +37,8 @@ function hasScope(scopes: string[], requiredScope: string): boolean {
 }
 
 /**
- * Scopes that need a second, live check against the owner's organization role.
+ * API-key actions that need a second, live check against the owner's
+ * organization role.
  *
  * A scope is escalation-prone when the permission behind it sits ABOVE the role
  * of the person who minted the key. There is no longer a floor to measure that
@@ -53,10 +59,11 @@ function hasScope(scopes: string[], requiredScope: string): boolean {
  *     stops working at their next call rather than when a human notices.
  *
  * What neither covers is a demotion that keeps the membership row: a member who
- * mints `agents:execute` and is demoted to viewer still holds a key carrying a
- * scope their role no longer backs. That is exactly the gap this map closes,
- * and `agents:execute` is the one entry that qualifies on this surface —
- * `AGENT_EXECUTE` is member-and-up, so the scope outlives the access.
+ * mints a write or execution scope and is demoted to viewer still holds a key
+ * carrying a scope their role no longer backs. This map pairs each affected
+ * action with its live permission query. Routes still enforce any additional
+ * object- or action-specific rule, such as the admin-or-owner requirement for
+ * organization prompts.
  *
  * `agents:read` and `agents:stream` are deliberately absent. Their permissions
  * sit in the viewer set, which every role holds, so a gate there could refuse
@@ -64,17 +71,55 @@ function hasScope(scopes: string[], requiredScope: string): boolean {
  * agents list filters on the organization alone, with no creator filter, so a
  * key sees exactly what its owner sees in the browser.
  */
-const OWNER_PERMISSION_GATES: Record<
-	string,
-	(userId: string, organizationId: string) => Promise<boolean>
-> = {
-	"agents:execute": canExecuteOrganizationAgents,
+type OwnerPermissionGate = {
+	scope: string;
+	holds: (userId: string, organizationId: string) => Promise<boolean>;
+};
+
+const OWNER_PERMISSION_GATES = {
+	"agents:execute": {
+		scope: "agents:execute",
+		holds: canExecuteOrganizationAgents,
+	},
+	"channels:write": {
+		scope: "channels:write",
+		holds: canUseOrganizationIntegrations,
+	},
+	"chats:write": {
+		scope: "chats:write",
+		holds: canUseOrganizationAiChat,
+	},
+	"integrations:execute": {
+		scope: "integrations:execute",
+		holds: canUseOrganizationIntegrations,
+	},
+	"knowledge:chat-search": {
+		scope: "knowledge:read",
+		holds: canUseOrganizationAiChat,
+	},
+	"projects:create": {
+		scope: "projects:write",
+		holds: canCreateProjectInOrganization,
+	},
+	"prompts:create": {
+		scope: "prompts:write",
+		holds: canCreateOrganizationPrompts,
+	},
+	"prompts:update": {
+		scope: "prompts:write",
+		holds: canUpdateOrganizationPrompts,
+	},
 	// The in-app start requires WORKSPACE_UPDATE, which the viewer role does
 	// not hold. A key minted by a member kept triggering workflows — runs
 	// that execute externally mutating nodes — after its owner was demoted,
 	// and a `*` key minted before the demotion did the same.
-	"workflows:run": canRunOrganizationWorkflows,
-};
+	"workflows:run": {
+		scope: "workflows:run",
+		holds: canRunOrganizationWorkflows,
+	},
+} satisfies Record<string, OwnerPermissionGate>;
+
+export type V1OwnerPermissionAction = keyof typeof OWNER_PERMISSION_GATES;
 
 /**
  * Does the key's owner still hold the organization permission behind `scope`?
@@ -87,20 +132,22 @@ async function ownerStillHoldsScope(
 	ctx: ExternalApiContext,
 	scope: string,
 ): Promise<boolean> {
-	const gate = OWNER_PERMISSION_GATES[scope];
+	const gate = OWNER_PERMISSION_GATES[scope as V1OwnerPermissionAction] as
+		| OwnerPermissionGate
+		| undefined;
 	if (!gate) {
 		return true;
 	}
 
-	// A personal key names no organization, so there is no role to consult.
-	// It resolves to the fail-closed null tenant on every procedure here and
-	// so reaches no organization's agents at all; refusing it would invent a
-	// boundary rather than enforce one.
+	// Authentication has not resolved a personal key's request organization yet.
+	// `/api/v1` calls `requireV1OwnerPermission` after resolving it; the external
+	// API keeps its null-tenant behavior and therefore has no organization role
+	// to consult at this stage.
 	if (!ctx.organizationId) {
 		return true;
 	}
 
-	return gate(ctx.userId, ctx.organizationId);
+	return gate.holds(ctx.userId, ctx.organizationId);
 }
 
 /**
@@ -116,6 +163,27 @@ function ownerPermissionRefusal(c: Context, scope: string) {
 		},
 		403,
 	);
+}
+
+/**
+ * Re-check the key creator's current permission in the organization a v1
+ * request resolved, after scope middleware and before the action's side effect.
+ * A missing organization fails closed, including for personal and wildcard
+ * keys.
+ */
+export async function requireV1OwnerPermission(
+	c: Context,
+	tenant: { userId: string; organizationId: string | null | undefined },
+	action: V1OwnerPermissionAction,
+): Promise<Response | null> {
+	const gate = OWNER_PERMISSION_GATES[action];
+	if (
+		!tenant.organizationId ||
+		!(await gate.holds(tenant.userId, tenant.organizationId))
+	) {
+		return ownerPermissionRefusal(c, gate.scope);
+	}
+	return null;
 }
 
 /**

@@ -422,6 +422,7 @@ describe("cleanDiagramSvg on a figure template", () => {
 		ink: "#14171f",
 		onInk: "#ffffff",
 		primary: "#1f3a6b",
+		label: "#8a5a00",
 		onPrimary: "#ffffff",
 		tint: "#e8edf5",
 		border: "#d4d6da",

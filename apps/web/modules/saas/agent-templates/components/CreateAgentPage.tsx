@@ -1049,7 +1049,11 @@ export function CreateAgentPage({
 			await queryClient.invalidateQueries({
 				queryKey: orpc.agentTemplates.instances.key(),
 			});
-			toast.success("Agent created successfully!");
+			if (result.triggerActivationError) {
+				toast.error(result.triggerActivationError);
+			} else {
+				toast.success("Agent created successfully!");
+			}
 			router.push(
 				`${basePath.replace(/\/agents$/, "")}/agents/${result.instance.id}`,
 			);
@@ -1182,8 +1186,8 @@ export function CreateAgentPage({
 					{/* Sticky action bar */}
 					<div className="sticky top-0 z-10 border-b border-border bg-card">
 						<div className="w-full px-6 py-3">
-							<div className="flex items-center justify-between">
-								<div className="flex items-center gap-3">
+							<div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+								<div className="flex min-w-0 items-center gap-3">
 									<div className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
 										<RobotIcon className="h-4 w-4 text-primary" />
 									</div>
@@ -1201,7 +1205,7 @@ export function CreateAgentPage({
 										</h1>
 									</div>
 								</div>
-								<div className="flex items-center gap-2">
+								<div className="flex min-w-0 flex-wrap items-center gap-2">
 									{!isEditMode && organizationId && (
 										<AgentDefinitionImportDialog
 											key={organizationId}
@@ -1261,9 +1265,9 @@ export function CreateAgentPage({
 					</div>
 
 					{/* Two-column layout */}
-					<div className="flex w-full">
+					<div className="flex w-full min-w-0 flex-col lg:flex-row">
 						{/* Main content */}
-						<div className="flex-1">
+						<div className="min-w-0 flex-1">
 							<div className="p-6 space-y-8">
 								{/* Section 1: Instructions */}
 								<section>
@@ -2687,7 +2691,7 @@ export function CreateAgentPage({
 						</div>
 
 						{/* Right Panel: Sidekick + Guide */}
-						<div className="sticky top-[53px] flex h-[calc(100vh-53px)] w-[346px] shrink-0 flex-col border-l border-border bg-card/50">
+						<div className="flex h-[calc(100vh-53px)] w-full min-w-0 shrink-0 flex-col border-t border-border bg-card/50 lg:sticky lg:top-[53px] lg:w-[346px] lg:border-t-0 lg:border-l">
 							{/* Tab bar */}
 							<div className="flex border-b border-border/60">
 								<button
@@ -2717,7 +2721,7 @@ export function CreateAgentPage({
 							</div>
 
 							{/* Tab content */}
-							<div className="flex-1 overflow-hidden">
+							<div className="min-h-0 min-w-0 flex-1 overflow-hidden">
 								{rightPanelTab === "sidekick" ? (
 									<AgentBuilderSidekick
 										agentId={effectiveAgentId}

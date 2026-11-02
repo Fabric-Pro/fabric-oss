@@ -10,6 +10,7 @@
  * Uses token exchange for AI provider configuration.
  */
 
+import { pickTraceState } from "@repo/agent-core/reasoning-trace";
 import { buildAgentConfigurable } from "@repo/agent-core/services/agent-configurable";
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -470,6 +471,7 @@ const { app, start } = createUnifiedServer(
 		// Stream from the LangGraph graph
 		const stream = await dataAnalystGraph.stream(
 			{
+				reasoningByTurn: pickTraceState(input.state, input.messages).reasoningByTurn,
 				messages,
 				systemPrompt: SYSTEM_PROMPT,
 			},

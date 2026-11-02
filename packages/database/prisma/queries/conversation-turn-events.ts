@@ -40,6 +40,8 @@ const REPLAY_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_EVENT_BYTES = 1024 * 1024;
 const MAX_EVENTS_PER_RUN = 20_000;
 
+export const CHAT_REPLAY_UNAVAILABLE_SOURCE_KEY = "replay-unavailable";
+
 export class ChatEventReplayError extends Error {}
 
 export interface ConversationEventScope {
@@ -102,7 +104,7 @@ export async function appendConversationTurnEventFromWorker(input: {
 			if (
 				!(
 					input.event === "execution.replay_unavailable" &&
-					input.sourceKey === "replay-unavailable"
+					input.sourceKey === CHAT_REPLAY_UNAVAILABLE_SOURCE_KEY
 				) &&
 				(await tx.conversationTurnEvent.count({
 					where: { turnId: turn.id, runId: input.runId },
@@ -132,19 +134,8 @@ export async function appendConversationTurnEventFromWorker(input: {
 	);
 }
 
-/** Every read is scoped through the parent turn, never just a cursor or copied tenant. */
-export async function readConversationTurnEvents(input: {
-	scope: ConversationEventScope;
-	after?: ChatEventCursor;
-}) {
-	const { scope, after } = input;
-	if (
-		after &&
-		(after.turnId !== scope.turnId || after.runId !== scope.runId)
-	) {
-		throw new ChatEventReplayError("Replay cursor belongs to another run");
-	}
-	const where = {
+function conversationTurnEventWhere(scope: ConversationEventScope) {
+	return {
 		turnId: scope.turnId,
 		runId: scope.runId,
 		organizationId: scope.organizationId,
@@ -157,6 +148,40 @@ export async function readConversationTurnEvents(input: {
 		},
 		expiresAt: { gt: new Date() },
 	};
+}
+
+/** Point lookup using the run's unique source key and the same scope as reads. */
+export async function hasConversationTurnReplayGap(
+	scope: ConversationEventScope,
+): Promise<boolean> {
+	return (
+		(await db.conversationTurnEvent.findUnique({
+			where: {
+				...conversationTurnEventWhere(scope),
+				turnId_runId_sourceKey: {
+					turnId: scope.turnId,
+					runId: scope.runId,
+					sourceKey: CHAT_REPLAY_UNAVAILABLE_SOURCE_KEY,
+				},
+			},
+			select: { id: true },
+		})) !== null
+	);
+}
+
+/** Every read is scoped through the parent turn, never just a cursor or copied tenant. */
+export async function readConversationTurnEvents(input: {
+	scope: ConversationEventScope;
+	after?: ChatEventCursor;
+}) {
+	const { scope, after } = input;
+	if (
+		after &&
+		(after.turnId !== scope.turnId || after.runId !== scope.runId)
+	) {
+		throw new ChatEventReplayError("Replay cursor belongs to another run");
+	}
+	const where = conversationTurnEventWhere(scope);
 	if (
 		after &&
 		!(await db.conversationTurnEvent.findFirst({

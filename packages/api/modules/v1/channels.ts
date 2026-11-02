@@ -14,7 +14,10 @@ import { type db, resolveWorkflowIntegrationForProvider } from "@repo/database";
 import { channelRegistry } from "@repo/integrations";
 import { decryptApiKey } from "@repo/utils";
 import type { Hono } from "hono";
-import { requireScope } from "../external-api/middleware/api-key-auth";
+import {
+	requireScope,
+	requireV1OwnerPermission,
+} from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { badRequest, notFound, ok, resolveV1Context } from "./helpers";
 
@@ -94,6 +97,14 @@ export function registerChannelRoutes(
 			);
 			if ("error" in ctx) {
 				return c.json({ error: { message: ctx.error } }, ctx.status);
+			}
+			const permissionRefusal = await requireV1OwnerPermission(
+				c,
+				ctx,
+				"channels:write",
+			);
+			if (permissionRefusal) {
+				return permissionRefusal;
 			}
 
 			const channel = c.req.param("channel");

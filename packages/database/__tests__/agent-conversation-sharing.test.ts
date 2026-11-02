@@ -14,6 +14,7 @@ const store = vi.hoisted(() => ({
 	rows: [] as Array<Record<string, unknown>>,
 	users: [] as Array<{ id: string; name: string }>,
 	queries: 0,
+	selection: undefined as Record<string, unknown> | undefined,
 }));
 
 vi.mock("../prisma/client", async () => {
@@ -28,16 +29,19 @@ vi.mock("../prisma/client", async () => {
 		db: {
 			agentConversation: {
 				findMany: async ({
+					select,
 					where,
 					orderBy,
 					skip = 0,
 					take,
 				}: {
 					where: Row;
+					select?: Record<string, unknown>;
 					orderBy?: Array<Record<string, "asc" | "desc">>;
 					skip?: number;
 					take?: number;
 				}) => {
+					store.selection = select;
 					store.queries += 1;
 					return sortRows(
 						(store.rows as Row[]).filter((r) =>
@@ -49,7 +53,19 @@ vi.mock("../prisma/client", async () => {
 							skip,
 							take === undefined ? undefined : skip + take,
 						)
-						.map(withUser);
+						.map((row) => {
+							const hydrated = withUser(row);
+							return select
+								? Object.fromEntries(
+										Object.keys(select).map((key) => [
+											key,
+											hydrated[
+												key as keyof typeof hydrated
+											],
+										]),
+									)
+								: hydrated;
+						});
 				},
 				count: async ({ where }: { where: Row }) => {
 					store.queries += 1;
@@ -157,6 +173,42 @@ beforeEach(() => {
 });
 
 describe("listAgentConversationsForViewer", () => {
+	it("selects only list response, ownership and cursor fields", async () => {
+		session({ trajectory: { nodes: [] }, metadata: null });
+		const { items } = await list("mine");
+		expect(Object.keys(items[0]).sort()).toEqual(
+			[
+				"id",
+				"agentId",
+				"userId",
+				"title",
+				"pinned",
+				"status",
+				"visibility",
+				"createdAt",
+				"updatedAt",
+				"metadata",
+				"messages",
+				"isOwn",
+				"owner",
+			].sort(),
+		);
+		expect(store.selection).toEqual({
+			id: true,
+			agentId: true,
+			userId: true,
+			title: true,
+			pinned: true,
+			status: true,
+			visibility: true,
+			createdAt: true,
+			updatedAt: true,
+			metadata: true,
+			messages: true,
+			user: { select: { id: true, name: true } },
+		});
+	});
+
 	it("lists only the viewer's own sessions as mine, shared ones included", async () => {
 		const privateOne = session({});
 		const sharedOne = session({ visibility: "ORGANIZATION" });

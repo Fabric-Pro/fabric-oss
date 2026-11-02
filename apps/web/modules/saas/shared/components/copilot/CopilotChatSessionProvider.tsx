@@ -38,8 +38,7 @@
  * where every call site now reads this context, the steady-state connect
  * count is two (sidebar + this provider) regardless of message count. Other surfaces
  * still hold direct `useCopilotChat` / `useCopilotChatInternal` calls of their
- * own (`DocumentGeneratorEditor`, `TaskPlannerEditor`,
- * `AiLoadingSync`, `AgentChatCode`); each of those adds one connect until it
+ * own (for example, `AiLoadingSync`); each of those adds one connect until it
  * is converted to read this context.
  *
  * `useCopilotChatSession()` throws when no provider is in scope rather than

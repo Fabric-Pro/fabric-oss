@@ -2,6 +2,15 @@ import type { UiMode } from "@repo/database";
 import type { QueryClient } from "@tanstack/react-query";
 import type { OrchestratorPreferenceFields } from "./orchestrator-preference-save-queue";
 
+export function resolveInitialUiMode(
+	preferences: { exists: boolean; uiMode: UiMode } | null,
+	modeFromUrl: string | null,
+): UiMode {
+	return preferences?.exists && modeFromUrl === "research"
+		? "advanced"
+		: (preferences?.uiMode ?? "simple");
+}
+
 /**
  * The cache key both the full page and the ⌘J drawer read the user's
  * orchestrator preferences from. Preferences are per (user × org), so the org

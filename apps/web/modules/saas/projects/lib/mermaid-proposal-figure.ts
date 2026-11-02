@@ -47,7 +47,9 @@ export function drawFigureTemplate(
 /**
  * What the export does with the fence (`diagram-printability.ts`), fed as
  * the export feeds it: without the caption line. The page numbers it and
- * notes it by that and by the engine that drew it.
+ * notes it by that and by the engine that drew it. An xychart after its
+ * leading `%%` lines is printable: the page hands it to beautiful-mermaid
+ * without them (`withoutLeadingChartComments`), as the export does.
  */
 export function livePrintability(code: string): DiagramPrintability {
 	return diagramPrintability(withDiagramCaption(code, null).trim());

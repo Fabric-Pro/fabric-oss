@@ -83,6 +83,9 @@ Environment Variables:
 	)
 	.hook("preAction", (thisCommand) => {
 		const opts = thisCommand.optsWithGlobals();
+		if (typeof opts.format === "string") {
+			process.env.FABRIC_FORMAT = opts.format;
+		}
 		if (opts.color === false) {
 			process.env.FABRIC_NO_COLOR = "1";
 		}

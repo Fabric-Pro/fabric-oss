@@ -43,9 +43,7 @@ import {
 	getEffectivePlanningAnalysis,
 	listTopicDecisions,
 	logDraftRefusal,
-	seedWorkingDraftIfAbsent,
 } from "@repo/database";
-import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
 import {
 	isRestrictingThread,
@@ -59,6 +57,7 @@ import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
 	schemaMismatchDetail,
+	seedWorkingDraftAfterCommit,
 } from "../publishing-shared";
 import {
 	type BlogPostDecision,
@@ -385,52 +384,20 @@ export async function generateBlogPostActivity(
 		};
 	}
 
-	// DV5/FR21: the first generation leaves the reader with something editable.
-	// Deliberately AFTER the draft commits and in its own transaction, not
-	// folded into `completeTopicDraft` — that helper is shared with the short
-	// post, which seeds only when explicitly requested, and a postType branch inside it would be
-	// exactly the flag deciding which product it is that keeping these two
-	// slices apart was meant to avoid.
-	//
-	// A crash between the two writes degrades rather than corrupts: the panel
-	// shows a READY candidate with no working draft, which is the state a
-	// regeneration produces anyway, and the adopt control resolves it.
-	const seeded = await seedWorkingDraftIfAbsent({
-		topicId,
-		projectId,
-		postType: "BLOG_POST",
-		sourceDraftId: draftId,
-		body: composeWorkingDraftBody(parsed.data),
-		updatedById: actorUserId,
-	});
-
-	if (seeded.status === "project_ineligible") {
-		// The project was archived between the draft write and this one. The
-		// draft is committed and READY, so this is not a failed generation —
-		// it is a topic nobody can act on any more.
-		logger.warn(
-			"[publishing-blog-post] project became ineligible before the working draft could be seeded",
-			{ draftId, topicId, projectId },
-		);
-	} else if (seeded.status === "source_not_found") {
-		// The draft this run just committed is no longer the READY row for this
-		// content type: a newer attempt overtook it in the gap. Same shape as
-		// SUPERSEDED, arriving one write later.
-		logger.info(
-			"[publishing-blog-post] draft was superseded before it could seed a working draft",
-			{ draftId, topicId, projectId },
-		);
-	} else if (seeded.status === "already_exists") {
-		// The ordinary regeneration path, and the FR35 guarantee working as
-		// designed. Debug, not warning: this is what most runs do.
-		logger.debug(
-			"[publishing-blog-post] topic already has a working draft; left untouched",
-			{ draftId, topicId, projectId },
-		);
-	}
+	const seededWorkingDraft = await seedWorkingDraftAfterCommit(
+		"[publishing-blog-post]",
+		{
+			topicId,
+			projectId,
+			postType: "BLOG_POST",
+			sourceDraftId: draftId,
+			body: composeWorkingDraftBody(parsed.data),
+			updatedById: actorUserId,
+		},
+	);
 
 	return {
 		status: "READY",
-		seededWorkingDraft: seeded.status === "seeded",
+		seededWorkingDraft,
 	};
 }

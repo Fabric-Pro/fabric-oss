@@ -10,7 +10,9 @@ import {
 import { db } from "../prisma/client";
 import {
 	appendConversationTurnEventFromWorker as append,
+	CHAT_REPLAY_UNAVAILABLE_SOURCE_KEY,
 	type ConversationEventScope,
+	hasConversationTurnReplayGap,
 	purgeExpiredConversationTurnEvents,
 	readConversationTurnEvents as read,
 } from "../prisma/queries/conversation-turn-events";
@@ -89,6 +91,34 @@ describe.skipIf(
 		);
 		await db.$executeRawUnsafe("DROP ROLE example_chat_replay_reader");
 		await db.$disconnect();
+	});
+
+	it("finds only an unexpired gap marker in the exact run scope", async () => {
+		expect(await hasConversationTurnReplayGap(scope)).toBe(false);
+		await append({
+			...event(CHAT_REPLAY_UNAVAILABLE_SOURCE_KEY),
+			event: "execution.replay_unavailable",
+		});
+		expect(await hasConversationTurnReplayGap(scope)).toBe(true);
+		for (const field of [
+			"organizationId",
+			"userId",
+			"turnId",
+			"runId",
+			"executionId",
+		] as const) {
+			expect(
+				await hasConversationTurnReplayGap({
+					...scope,
+					[field]: "example-other",
+				}),
+			).toBe(false);
+		}
+		await db.conversationTurnEvent.updateMany({
+			where: { turnId: scope.turnId },
+			data: { expiresAt: new Date(0) },
+		});
+		expect(await hasConversationTurnReplayGap(scope)).toBe(false);
 	});
 
 	it("serializes concurrent appends and returns each committed event once after a cursor", async () => {

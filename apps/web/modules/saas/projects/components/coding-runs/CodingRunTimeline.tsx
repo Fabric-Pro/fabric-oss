@@ -4,6 +4,7 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
+import { Checkbox } from "@ui/components/checkbox";
 import { Textarea } from "@ui/components/textarea";
 import {
 	AlertTriangleIcon,
@@ -25,7 +26,7 @@ import {
 	WorkflowIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { toast } from "sonner";
 import {
 	getExecutionChannelLabel,
@@ -61,6 +62,8 @@ export function CodingRunTimeline({
 	projectId,
 }: Props) {
 	const t = useTranslations("projects.remoteAgents");
+	const orphanCheckId = useId();
+	const [orphanChecked, setOrphanChecked] = useState(false);
 	const [followUpMessage, setFollowUpMessage] = useState("");
 	const queryClient = useQueryClient();
 
@@ -148,6 +151,26 @@ export function CodingRunTimeline({
 				err instanceof Error ? err.message : "Failed to send message",
 			);
 		},
+	});
+
+	const recoverRun = useMutation({
+		mutationFn: () =>
+			orpcClient.codingRuns.recover({
+				id: codingRunId,
+				organizationId: organizationId ?? null,
+				confirmOrphanCheck: true,
+			}),
+		onSuccess: () => {
+			setOrphanChecked(false);
+			queryClient.invalidateQueries({
+				queryKey: ["codingRun", codingRunId],
+			});
+			toast.success(t("recoveryClosed"));
+		},
+		onError: (error) =>
+			toast.error(
+				error instanceof Error ? error.message : t("recoveryFailed"),
+			),
 	});
 
 	if (isLoading) {
@@ -336,6 +359,42 @@ export function CodingRunTimeline({
 					{t("privateSession")}
 				</p>
 			)}
+
+			{!privateSession &&
+				run.status === "AWAITING_REVIEW" &&
+				run.events?.some((event) =>
+					[
+						"cancellation_unknown",
+						"continuation_recovery_required",
+					].includes(event.eventType),
+				) && (
+					<div
+						role="alert"
+						className="space-y-3 rounded-lg border border-border bg-muted/30 p-4"
+					>
+						<p className="text-sm">{t("recoveryWarning")}</p>
+						<label
+							htmlFor={orphanCheckId}
+							className="flex items-start gap-2 text-sm"
+						>
+							<Checkbox
+								id={orphanCheckId}
+								checked={orphanChecked}
+								onCheckedChange={(checked) =>
+									setOrphanChecked(checked === true)
+								}
+							/>
+							{t("orphanCheck")}
+						</label>
+						<Button
+							variant="outline"
+							disabled={!orphanChecked || recoverRun.isPending}
+							onClick={() => recoverRun.mutate()}
+						>
+							{t("closeRun")}
+						</Button>
+					</div>
+				)}
 
 			{isSpike && spikeRun && spikeStoryId && spikeProjectId && (
 				<SpikeRunCard

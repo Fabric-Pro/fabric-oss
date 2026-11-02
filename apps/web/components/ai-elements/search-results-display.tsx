@@ -35,7 +35,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { useMemo, useState } from "react";
-import { Response } from "./response";
+import { DeferredResponse as Response } from "./deferred-response";
 
 // Types matching our web search tool output
 interface SearchResult {

@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
 		const state = url.searchParams.get("state") ?? undefined;
 		const error = url.searchParams.get("error") ?? undefined;
 
-		// Call oRPC OAuth callback (public procedure)
+		// Call the session-bound oRPC OAuth callback.
 		const result = await orpcClient.mcp.oauth.callback({
 			code,
 			state,

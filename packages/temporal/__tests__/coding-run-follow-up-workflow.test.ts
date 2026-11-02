@@ -3,6 +3,7 @@ import { ApplicationFailure } from "@temporalio/common";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { bundleWorkflowCode, Worker } from "@temporalio/worker";
 import { beforeAll, describe, expect, it } from "vitest";
+import { withCodingLifecycleActivities } from "./fixtures/coding-lifecycle-activities";
 
 let bundle: Awaited<ReturnType<typeof bundleWorkflowCode>>;
 beforeAll(async () => {
@@ -40,7 +41,7 @@ describe("native session continuation workflow", () => {
 				connection: env.nativeConnection,
 				workflowBundle: bundle,
 				taskQueue: "example-continuation",
-				activities: {
+				activities: withCodingLifecycleActivities({
 					deliverCodingRunFollowUp: async (value: unknown) => {
 						calls.push({ kind: "send", input: value });
 						return { messageId: "example-message" };
@@ -73,7 +74,7 @@ describe("native session continuation workflow", () => {
 					cancelExecutionSession: async () => {
 						calls.push({ kind: "stop", input: null });
 					},
-				},
+				}),
 			});
 			const handle = await env.client.workflow.start(
 				"codingRunFollowUpWorkflow",
@@ -118,7 +119,7 @@ describe("native session continuation workflow", () => {
 					connection: env.nativeConnection,
 					workflowBundle: bundle,
 					taskQueue: workflowId,
-					activities: {
+					activities: withCodingLifecycleActivities({
 						deliverCodingRunFollowUp: async () => {
 							if (scenario === "delivery-denied") {
 								throw ApplicationFailure.nonRetryable(
@@ -163,7 +164,7 @@ describe("native session continuation workflow", () => {
 								);
 							}
 						},
-					},
+					}),
 				});
 				const handle = await env.client.workflow.start(
 					"codingRunFollowUpWorkflow",
@@ -209,7 +210,7 @@ it("replays the watchdog's confirmed-cleanup gate without marking uncertain nati
 			connection: env.nativeConnection,
 			workflowBundle,
 			taskQueue: "example-native-watchdog",
-			activities: {
+			activities: withCodingLifecycleActivities({
 				findStaleWeaveSessions: async () => ({
 					rows: [
 						{
@@ -227,6 +228,7 @@ it("replays the watchdog's confirmed-cleanup gate without marking uncertain nati
 					],
 				}),
 				cancelWeaveExecutionViaSignal: async () => true,
+				markClosedCodingRunRecoveryRequired: async () => {},
 				terminateWeaveWorkflow: async () => {},
 				cleanupWeaveResourcesActivity: async () => ({
 					destroyed: false,
@@ -235,7 +237,7 @@ it("replays the watchdog's confirmed-cleanup gate without marking uncertain nati
 				markWeaveExecutionStale: async () => {
 					staleMarks++;
 				},
-			},
+			}),
 		});
 		const handle = await env.client.workflow.start(
 			"weaveExecutionWatchdogWorkflow",
@@ -247,6 +249,15 @@ it("replays the watchdog's confirmed-cleanup gate without marking uncertain nati
 		);
 		await worker.runUntil(handle.result());
 		expect(staleMarks).toBe(0);
+		const history = await handle.fetchHistory();
+		expect(
+			history.events?.map(
+				(event) =>
+					event.activityTaskScheduledEventAttributes?.activityType
+						?.name,
+			),
+		).toContain("findStaleWeaveSessionsWithRuntime");
+
 		await Worker.runReplayHistory(
 			{ workflowBundle },
 			await handle.fetchHistory(),

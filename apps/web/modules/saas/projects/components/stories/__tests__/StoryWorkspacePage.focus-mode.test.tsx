@@ -87,6 +87,7 @@ vi.mock("@saas/projects/hooks/useDocumentAssistantHistoryEnabled", () => ({
 }));
 vi.mock("@saas/projects/hooks/useDocumentAssistantHistory", () => ({
 	useDocumentAssistantHistoryRealtimeSync: vi.fn(),
+	useRecordDocumentAssistantDiffOutcome: () => ({ mutateAsync: vi.fn() }),
 	useActiveDocumentAssistantConversation: () => ({
 		data: undefined,
 		isLoading: false,

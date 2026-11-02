@@ -1,9 +1,9 @@
 /**
- * Image Proxy Route
+ * Chat Media Proxy Route
  *
- * Generates a fresh signed URL for an S3 storage path and redirects to it.
- * This provides stable URLs for images stored in S3 - the proxy URL never expires,
- * while the underlying signed URL is generated on-demand with a short TTL.
+ * Generates a fresh signed URL for an uploaded/generated chat image or TTS audio
+ * and redirects to it. Chat documents are excluded because get-download-url.ts
+ * checks document ownership before signing their normal downloads.
  *
  * Security:
  * - Requires authenticated session
@@ -11,9 +11,17 @@
  */
 
 import { config } from "@repo/config";
+import { resolveChatMediaAccess } from "@repo/database";
 import { getSignedUrl } from "@repo/storage";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
+
+const ALLOWED_MEDIA_KINDS = new Set([
+	"chat-images",
+	"generated-images",
+	"tts-audio",
+]);
+const MEDIA_FILENAME_PATTERN = /^\d+-[a-z0-9]+\.[a-z0-9]+$/;
 
 export async function GET(request: NextRequest) {
 	const path = request.nextUrl.searchParams.get("path");
@@ -55,6 +63,45 @@ export async function GET(request: NextRequest) {
 	} else if (activeOrgId && ownerPrefix === activeOrgId) {
 		// Legacy org URLs without explicit orgId param — fall back to session org
 	} else {
+		return new Response(JSON.stringify({ error: "Forbidden" }), {
+			status: 403,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	const pathSegments = path.split("/");
+	if (pathSegments.length !== 3) {
+		return new Response(JSON.stringify({ error: "Forbidden" }), {
+			status: 403,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	const imageKind = pathSegments[1] ?? "";
+	if (!ALLOWED_MEDIA_KINDS.has(imageKind)) {
+		return new Response(JSON.stringify({ error: "Forbidden" }), {
+			status: 403,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	const filename = pathSegments[2] ?? "";
+	if (!MEDIA_FILENAME_PATTERN.test(filename)) {
+		return new Response(JSON.stringify({ error: "Forbidden" }), {
+			status: 403,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	const organizationId =
+		orgIdParam ??
+		(activeOrgId && ownerPrefix === activeOrgId ? activeOrgId : null);
+	const access = await resolveChatMediaAccess({
+		storageKey: path,
+		userId,
+		organizationId,
+	});
+	if (access === "deny") {
 		return new Response(JSON.stringify({ error: "Forbidden" }), {
 			status: 403,
 			headers: { "Content-Type": "application/json" },

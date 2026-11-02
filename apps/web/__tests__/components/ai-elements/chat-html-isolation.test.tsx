@@ -115,6 +115,60 @@ describe.each(["Response", "TypingResponse"] as const)(
 			expect(container.querySelector(".katex")).not.toBeNull();
 		});
 
+		it.each([false, true])(
+			"renders inline and display math without trusting inherited options (streaming=%s)",
+			(streaming) => {
+				const previous = Object.getOwnPropertyDescriptor(
+					Object.prototype,
+					"trust",
+				);
+				Object.defineProperty(Object.prototype, "trust", {
+					value: true,
+					writable: true,
+					configurable: true,
+				});
+				try {
+					const { container } = render(
+						message(
+							renderer,
+							String.raw`Inline $$x^2$$.
+
+$$
+\frac{x}{\sqrt{y}}+\sum_{i=1}^{n}i
+$$
+
+$$\href{javascript:alert(1)}{unsafe}$$
+
+$$\includegraphics{https://example.com/untrusted.png}$$`,
+							streaming,
+						),
+					);
+					expect(
+						container.querySelectorAll(".katex").length,
+					).toBeGreaterThanOrEqual(2);
+					expect(
+						container.querySelector(".katex-display"),
+					).not.toBeNull();
+					expect(container.querySelector("math")).not.toBeNull();
+					expect(
+						container.querySelector(
+							"a[href^='javascript:'], img, script",
+						),
+					).toBeNull();
+				} finally {
+					if (previous) {
+						Object.defineProperty(
+							Object.prototype,
+							"trust",
+							previous,
+						);
+					} else {
+						Reflect.deleteProperty(Object.prototype, "trust");
+					}
+				}
+			},
+		);
+
 		it("keeps fenced HTML readable and copyable", async () => {
 			const writeText = vi.fn().mockResolvedValue(undefined);
 			vi.stubGlobal("navigator", { clipboard: { writeText } });

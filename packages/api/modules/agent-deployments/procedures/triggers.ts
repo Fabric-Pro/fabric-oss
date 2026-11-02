@@ -6,15 +6,18 @@
 
 import { randomBytes } from "node:crypto";
 import { db, getAgentDeploymentById, type Prisma } from "@repo/database";
+import { hasPermission, resolveOrgPermissions } from "@repo/permissions";
 import { encryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
 	Permissions,
+	requireInputOrgPermission,
 	requirePermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { assertPersistedSlackTriggerBinding } from "../lib/sync-triggers";
 
 // =============================================================================
 // CREATE TRIGGER
@@ -57,8 +60,33 @@ function generateWebhookUrl(): string {
 	return `/api/webhooks/agent/${path}`;
 }
 
+async function requireDeploymentTriggerMembership(
+	deployment: { organizationId: string | null },
+	userId: string,
+	resolvedOrganizationId: string | undefined,
+): Promise<void> {
+	if ((deployment.organizationId ?? undefined) !== resolvedOrganizationId) {
+		throw new Error("Deployment not found or access denied");
+	}
+	if (deployment.organizationId) {
+		const membership = await verifyOrganizationMembership(
+			deployment.organizationId,
+			userId,
+		);
+		if (
+			!membership ||
+			!hasPermission(
+				resolveOrgPermissions(membership.role),
+				Permissions.AGENT_UPDATE,
+			)
+		) {
+			throw new Error("You don't have permission to manage triggers");
+		}
+	}
+}
+
 export const createTriggerProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(requireInputOrgPermission(Permissions.AGENT_UPDATE))
 	.input(createTriggerInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
@@ -86,6 +114,11 @@ export const createTriggerProcedure = tenantProtectedProcedure
 		if (!deployment) {
 			throw new Error("Deployment not found");
 		}
+		await requireDeploymentTriggerMembership(
+			deployment,
+			userId,
+			organizationId,
+		);
 
 		// Validate schedule config
 		if (input.type === "SCHEDULE") {
@@ -237,7 +270,7 @@ const updateTriggerInputSchema = z.object({
 });
 
 export const updateTriggerProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(requireInputOrgPermission(Permissions.AGENT_UPDATE))
 	.input(updateTriggerInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
@@ -265,6 +298,11 @@ export const updateTriggerProcedure = tenantProtectedProcedure
 		if (!deployment) {
 			throw new Error("Deployment not found or access denied");
 		}
+		await requireDeploymentTriggerMembership(
+			deployment,
+			userId,
+			organizationId,
+		);
 
 		// Validate schedule config if updating
 		if (trigger.type === "SCHEDULE" && input.config?.cronExpression) {
@@ -274,6 +312,25 @@ export const updateTriggerProcedure = tenantProtectedProcedure
 			}
 		}
 
+		const storedConfig =
+			(trigger.config as Record<string, unknown> | null) ?? {};
+		if (
+			input.isActive === true &&
+			(trigger.slackTeamId !== null || storedConfig.channel === "slack")
+		) {
+			if (trigger.organizationId !== organizationId) {
+				throw new Error(
+					"Slack trigger owner or organization is unavailable",
+				);
+			}
+			await assertPersistedSlackTriggerBinding(trigger);
+		}
+
+		await requireDeploymentTriggerMembership(
+			deployment,
+			userId,
+			organizationId,
+		);
 		const updated = await db.agentDeploymentTrigger.update({
 			where: { id: input.triggerId },
 			data: {
@@ -318,7 +375,7 @@ const deleteTriggerInputSchema = z.object({
 });
 
 export const deleteTriggerProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(requireInputOrgPermission(Permissions.AGENT_UPDATE))
 	.input(deleteTriggerInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
@@ -345,6 +402,11 @@ export const deleteTriggerProcedure = tenantProtectedProcedure
 		if (!deployment) {
 			throw new Error("Deployment not found or access denied");
 		}
+		await requireDeploymentTriggerMembership(
+			deployment,
+			userId,
+			organizationId,
+		);
 
 		await db.agentDeploymentTrigger.delete({
 			where: { id: input.triggerId },
@@ -363,7 +425,7 @@ const regenerateSecretInputSchema = z.object({
 });
 
 export const regenerateWebhookSecretProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(requireInputOrgPermission(Permissions.AGENT_UPDATE))
 	.input(regenerateSecretInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
@@ -394,6 +456,11 @@ export const regenerateWebhookSecretProcedure = tenantProtectedProcedure
 		if (!deployment) {
 			throw new Error("Deployment not found or access denied");
 		}
+		await requireDeploymentTriggerMembership(
+			deployment,
+			userId,
+			organizationId,
+		);
 
 		const newSecret = generateWebhookSecret();
 

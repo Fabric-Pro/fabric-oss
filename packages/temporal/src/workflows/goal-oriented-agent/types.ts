@@ -65,6 +65,7 @@ export interface GoalOrientedAgentInput {
 		storagePath: string;
 		mimeType: string;
 		name: string;
+		accessUserId?: string;
 	}>;
 }
 

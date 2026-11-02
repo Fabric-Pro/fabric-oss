@@ -1,5 +1,6 @@
 import type { RemoteAgentTarget } from "@repo/database";
 import { fetchAgentEndpoint } from "@repo/utils/agent-endpoint";
+import { ApplicationFailure } from "@temporalio/common";
 import { z } from "zod";
 import { getAuthHeaders } from "./auth";
 import {
@@ -66,161 +67,181 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 		externalStatus?: string;
 		providerMetadata?: Record<string, unknown>;
 	}> {
-		// Validate inputs
-		const validated = validateCreateSessionParams(params);
+		let requestMayHaveBeenSent = false;
+		try {
+			// Validate inputs
+			const validated = validateCreateSessionParams(params);
 
-		const llmConnection =
-			validated.llmConnection ??
-			params.llmConnection ??
-			(this.expectedTarget?.connectionId
-				? undefined
-				: getFabricAgentsDefaultConnection());
-		const model =
-			validated.model ??
-			params.model ??
-			(this.expectedTarget?.connectionId
-				? undefined
-				: getFabricAgentsDefaultModel());
-		const targetMachine = validated.targetMachine ?? params.targetMachine;
-		const headBranch = validated.headBranch ?? params.headBranch;
-		const fallbackPolicy =
-			validated.fallbackPolicy ?? params.fallbackPolicy;
+			const llmConnection =
+				validated.llmConnection ??
+				params.llmConnection ??
+				(this.expectedTarget?.connectionId
+					? undefined
+					: getFabricAgentsDefaultConnection());
+			const model =
+				validated.model ??
+				params.model ??
+				(this.expectedTarget?.connectionId
+					? undefined
+					: getFabricAgentsDefaultModel());
+			const targetMachine =
+				validated.targetMachine ?? params.targetMachine;
+			const headBranch = validated.headBranch ?? params.headBranch;
+			const fallbackPolicy =
+				validated.fallbackPolicy ?? params.fallbackPolicy;
 
-		debugLog("Creating Fabric Agents coding session", {
-			repoOwner: validated.repoOwner,
-			repoName: validated.repoName,
-			branch: validated.branch,
-			headBranch,
-			llmConnection,
-			model,
-			targetMachine,
-			fallbackPolicy,
-		});
-
-		const readiness = await this.executionReadiness(params);
-		const res = await this.request(`${this.controlPlaneUrl}/sessions`, {
-			method: "POST",
-			headers: getAuthHeaders(this.controlPlaneSecret),
-			signal: AbortSignal.timeout(240_000),
-			body: JSON.stringify({
+			debugLog("Creating Fabric Agents coding session", {
 				repoOwner: validated.repoOwner,
 				repoName: validated.repoName,
-				title: validated.title,
 				branch: validated.branch,
-				...(headBranch ? { headBranch } : {}),
-				codingRunId: validated.codingRunId ?? params.codingRunId,
-				workflowId: validated.workflowId ?? params.workflowId,
-				organizationId:
-					validated.organizationId ?? params.organizationId,
-				workingDirectory: validated.workingDirectory,
+				headBranch,
 				llmConnection,
 				model,
 				targetMachine,
 				...(fallbackPolicy ? { fallbackPolicy } : {}),
-			}),
-		});
+			});
 
-		if (!res.ok) {
-			const text = await res.text();
-			let code: unknown;
-			try {
-				code = JSON.parse(text).code;
-			} catch {
-				/* Non-JSON transport failure. */
-			}
-			if (code === "recovery_required") {
-				throw new RecoveryRequiredError();
-			}
-			if (res.status === 401 || res.status === 403) {
-				throw new AuthError(
+			const readiness = await this.executionReadiness(params);
+			const res = await this.request(
+				`${this.controlPlaneUrl}/sessions`,
+				{
+					method: "POST",
+					headers: getAuthHeaders(this.controlPlaneSecret),
+					signal: AbortSignal.timeout(240_000),
+					body: JSON.stringify({
+						repoOwner: validated.repoOwner,
+						repoName: validated.repoName,
+						title: validated.title,
+						branch: validated.branch,
+						...(headBranch ? { headBranch } : {}),
+						codingRunId:
+							validated.codingRunId ?? params.codingRunId,
+						workflowId: validated.workflowId ?? params.workflowId,
+						organizationId:
+							validated.organizationId ?? params.organizationId,
+						workingDirectory: validated.workingDirectory,
+						llmConnection,
+						model,
+						targetMachine,
+						...(fallbackPolicy ? { fallbackPolicy } : {}),
+					}),
+				},
+				() => {
+					requestMayHaveBeenSent = true;
+				},
+			);
+
+			if (!res.ok) {
+				const text = await res.text();
+				let code: unknown;
+				try {
+					code = JSON.parse(text).code;
+				} catch {
+					/* Non-JSON transport failure. */
+				}
+				if (code === "recovery_required") {
+					throw new RecoveryRequiredError();
+				}
+				if (res.status === 401 || res.status === 403) {
+					throw new AuthError(
+						"BACKGROUND_AGENTS",
+						`Authentication failed: ${text}`,
+					);
+				}
+				if (
+					res.status === 400 ||
+					res.status === 404 ||
+					res.status === 409 ||
+					res.status === 422
+				) {
+					throw new SessionValidationError(
+						"BACKGROUND_AGENTS",
+						`Session validation failed (${res.status}): ${text}`,
+					);
+				}
+				throw new NetworkError(
 					"BACKGROUND_AGENTS",
-					`Authentication failed: ${text}`,
+					`${this.controlPlaneUrl}/sessions`,
+					res.status,
+					new Error(text),
 				);
 			}
+
+			const data = (await res.json()) as {
+				sessionId: string;
+				externalUrl?: string;
+				externalStatus?: string;
+				providerMetadata?: Record<string, unknown>;
+			};
 			if (
-				res.status === 400 ||
-				res.status === 404 ||
-				res.status === 409 ||
-				res.status === 422
+				typeof data.sessionId !== "string" ||
+				data.sessionId.trim().length === 0
 			) {
 				throw new SessionValidationError(
 					"BACKGROUND_AGENTS",
-					`Session validation failed (${res.status}): ${text}`,
+					"Provider returned an empty sessionId",
 				);
 			}
-			throw new NetworkError(
-				"BACKGROUND_AGENTS",
-				`${this.controlPlaneUrl}/sessions`,
-				res.status,
-				new Error(text),
-			);
-		}
-
-		const data = (await res.json()) as {
-			sessionId: string;
-			externalUrl?: string;
-			externalStatus?: string;
-			providerMetadata?: Record<string, unknown>;
-		};
-		if (
-			typeof data.sessionId !== "string" ||
-			data.sessionId.trim().length === 0
-		) {
-			throw new SessionValidationError(
-				"BACKGROUND_AGENTS",
-				"Provider returned an empty sessionId",
-			);
-		}
-		if (data.externalUrl) {
-			let valid = false;
-			try {
-				const link = new URL(data.externalUrl);
-				const controlPlane = new URL(this.controlPlaneUrl);
-				valid =
-					!link.username &&
-					!link.password &&
-					((/^fabricagents[0-9]*:$/.test(link.protocol) &&
-						link.hostname === "workspace" &&
-						!link.search &&
-						!link.hash) ||
-						((link.protocol === "https:" ||
-							link.protocol === controlPlane.protocol) &&
-							link.origin === controlPlane.origin));
-			} catch {
-				/* Invalid URI is rejected before it reaches product links. */
+			if (data.externalUrl) {
+				let valid = false;
+				try {
+					const link = new URL(data.externalUrl);
+					const controlPlane = new URL(this.controlPlaneUrl);
+					valid =
+						!link.username &&
+						!link.password &&
+						((/^fabricagents[0-9]*:$/.test(link.protocol) &&
+							link.hostname === "workspace" &&
+							!link.search &&
+							!link.hash) ||
+							((link.protocol === "https:" ||
+								link.protocol === controlPlane.protocol) &&
+								link.origin === controlPlane.origin));
+				} catch {
+					/* Invalid URI is rejected before it reaches product links. */
+				}
+				if (!valid) {
+					throw new SessionValidationError(
+						"BACKGROUND_AGENTS",
+						"Provider returned an untrusted session link",
+					);
+				}
 			}
-			if (!valid) {
-				throw new SessionValidationError(
-					"BACKGROUND_AGENTS",
-					"Provider returned an untrusted session link",
-				);
-			}
-		}
-		debugLog("Fabric Agents coding session created", {
-			sessionId: data.sessionId,
-			externalUrl: data.externalUrl,
-		});
+			debugLog("Fabric Agents coding session created", {
+				sessionId: data.sessionId,
+				externalUrl: data.externalUrl,
+			});
 
-		return {
-			sessionId: data.sessionId,
-			...(data.externalUrl ? { externalUrl: data.externalUrl } : {}),
-			...(data.externalStatus
-				? { externalStatus: data.externalStatus }
-				: {}),
-			providerMetadata: {
-				...data.providerMetadata,
-				...(fallbackPolicy ? { fallbackPolicy } : {}),
-				...(llmConnection ? { llmConnection } : {}),
-				...(model ? { model } : {}),
-				...(targetMachine ? { targetMachine } : {}),
-				executionRuntime: "fabric-agent-server",
-				executionTarget: {
-					...this.expectedTarget,
-					url: this.controlPlaneUrl,
-					profileId: readiness.profileId,
+			return {
+				sessionId: data.sessionId,
+				...(data.externalUrl ? { externalUrl: data.externalUrl } : {}),
+				...(data.externalStatus
+					? { externalStatus: data.externalStatus }
+					: {}),
+				providerMetadata: {
+					...data.providerMetadata,
+					...(fallbackPolicy ? { fallbackPolicy } : {}),
+					...(llmConnection ? { llmConnection } : {}),
+					...(model ? { model } : {}),
+					...(targetMachine ? { targetMachine } : {}),
+					executionRuntime: "fabric-agent-server",
+					executionTarget: {
+						...this.expectedTarget,
+						url: this.controlPlaneUrl,
+						profileId: readiness.profileId,
+					},
 				},
-			},
-		};
+			};
+		} catch (error) {
+			if (!requestMayHaveBeenSent) {
+				throw ApplicationFailure.create({
+					message: `Coding session was not created: ${error instanceof Error ? error.message : String(error)}`,
+					type: "CODING_SESSION_NOT_CREATED",
+					nonRetryable: false,
+				});
+			}
+			throw error;
+		}
 	}
 
 	async sendPrompt(
@@ -334,9 +355,9 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 		if (!sessionRes.ok) {
 			const text = await sessionRes.text();
 			if (sessionRes.status === 404) {
-				throw new SessionValidationError(
-					"BACKGROUND_AGENTS",
+				throw ApplicationFailure.nonRetryable(
 					`Session ${sessionId} not found`,
+					"SESSION_NOT_FOUND",
 				);
 			}
 			throw new NetworkError(
@@ -574,6 +595,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 	private async request(
 		url: string,
 		options: RequestInit = {},
+		beforeSend?: () => void,
 	): Promise<Response> {
 		let requestOptions = options;
 		if (this.expectedTarget?.connectionId) {
@@ -593,6 +615,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			this.expectedTarget?.connectionId || this.registration
 				? fetchAgentEndpoint
 				: fetch;
+		beforeSend?.();
 		return send(url, {
 			...requestOptions,
 			redirect: "error",

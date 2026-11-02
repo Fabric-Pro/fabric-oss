@@ -5,6 +5,7 @@ import {
 } from "@tanstack/react-query";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildAgentInstanceChatHref } from "../../../agents/lib/fabric-agent-links";
 
@@ -267,4 +268,59 @@ describe("agent builder save refreshes cached chat targets", () => {
 			queryClient.clear();
 		},
 	);
+});
+
+it("navigates to a created agent when trigger activation failed, without inviting another create", async () => {
+	vi.mocked(toast.success).mockClear();
+	vi.mocked(toast.error).mockClear();
+	const warning =
+		"Agent created, but its triggers were not activated. Open the agent to enable them by editing it.";
+	h.create.mockResolvedValue({
+		instance: createdInstance,
+		triggerActivationError: warning,
+	});
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	const view = render(
+		<QueryClientProvider client={queryClient}>
+			<TooltipProvider>
+				<CreateAgentPage
+					template={{
+						id: "example-template",
+						slug: "example-template",
+						name: "Example Template",
+						displayName: "Example Template",
+						description: "Example template description",
+						category: "GENERAL",
+						heroEmojis: [],
+						instructions: "Use project context.",
+					}}
+					organizationId="example-org"
+					basePath="/app/example-org"
+					mode="create"
+					initialValues={{
+						name: "Example Created Agent",
+						description: "Example agent description",
+						instructions: "Use project context.",
+					}}
+				/>
+			</TooltipProvider>
+		</QueryClientProvider>,
+	);
+	await act(async () => {
+		fireEvent.click(view.getByRole("button", { name: "Create Agent" }));
+	});
+	await waitFor(() =>
+		expect(h.push).toHaveBeenCalledWith(
+			"/app/example-org/agents/example-created-agent",
+		),
+	);
+	expect(h.create).toHaveBeenCalledTimes(1);
+	expect(toast.error).toHaveBeenCalledWith(warning);
+	expect(toast.success).not.toHaveBeenCalledWith(
+		"Agent created successfully!",
+	);
+	view.unmount();
+	queryClient.clear();
 });

@@ -11,16 +11,40 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserStory } from "../../../lib/stories/types";
 
+const previewCallback = vi.hoisted(() => ({
+	current: undefined as ((data: unknown) => void) | undefined,
+}));
+vi.mock("@tanstack/react-query", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@tanstack/react-query")>();
+	return {
+		...actual,
+		useMutation: (
+			options: Parameters<typeof actual.useMutation>[0],
+			...rest: unknown[]
+		) => {
+			if (
+				options?.mutationFn?.toString().includes("checkPmSyncConflicts")
+			) {
+				previewCallback.current = options.onSuccess as (
+					data: unknown,
+				) => void;
+			}
+			return actual.useMutation(options, ...(rest as []));
+		},
+	};
+});
 const checkPmSyncConflicts = vi.fn();
 const resolveConflict = vi.fn();
 const invalidatePmSyncState = vi.fn();
 const useInvalidatePmSyncStateMock = vi.fn(() => invalidatePmSyncState);
 const toastError = vi.fn();
+const loadDetail = vi.fn();
 
 vi.mock("../pm-sync/use-invalidate-pm-sync-state", () => ({
 	useInvalidatePmSyncState: (...args: unknown[]) =>
@@ -94,8 +118,22 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						}),
 					},
 				},
-				list: { queryKey: () => ["stories-list"] },
-				get: { queryKey: () => ["stories-get"] },
+				board: { queryKey: () => ["stories-list"] },
+				get: {
+					queryOptions: (o: { input: unknown }) => ({
+						queryKey: ["stories-get", o.input],
+						queryFn: async () => {
+							await loadDetail();
+							return {
+								story: {
+									description:
+										"Fabric-side description with extra local detail.",
+								},
+							};
+						},
+					}),
+					queryKey: () => ["stories-get"],
+				},
 				queueForKanban: {
 					mutationOptions: () => ({ mutationFn: async () => ({}) }),
 				},
@@ -211,6 +249,7 @@ beforeEach(() => {
 	invalidatePmSyncState.mockReset();
 	useInvalidatePmSyncStateMock.mockClear();
 	toastError.mockClear();
+	loadDetail.mockReset().mockResolvedValue(undefined);
 	checkPmSyncConflicts.mockResolvedValue({
 		results: [
 			{
@@ -263,4 +302,50 @@ describe("StoryCard — conflict resolve invalidation wiring", () => {
 		await waitFor(() => expect(toastError).toHaveBeenCalled());
 		expect(invalidatePmSyncState).not.toHaveBeenCalled();
 	});
+});
+
+it("recovers from failed full-story fetch on the conflict action", async () => {
+	loadDetail.mockRejectedValueOnce(new Error("offline"));
+	renderConflictCard();
+	await userEvent.click(
+		screen.getByRole("button", { name: /PM sync conflict/i }),
+	);
+	await waitFor(() =>
+		expect(toastError).toHaveBeenCalledWith("detailLoadFailed"),
+	);
+	await userEvent.click(
+		screen.getByRole("button", { name: /PM sync conflict/i }),
+	);
+	await waitFor(() => expect(loadDetail).toHaveBeenCalledTimes(2));
+	expect(await screen.findByRole("dialog")).toBeInTheDocument();
+});
+
+it("clears a prefetched PM preview when conflict detail fails", async () => {
+	loadDetail.mockRejectedValueOnce(new Error("offline"));
+	renderConflictCard();
+	await act(async () =>
+		previewCallback.current?.({
+			results: [
+				{
+					hasConflict: true,
+					pmCurrent: {
+						title: "Earlier PM preview",
+						description: "Earlier description",
+					},
+					pmTool: "azure-devops",
+				},
+			],
+		}),
+	);
+	await waitFor(() =>
+		expect(toastError).toHaveBeenCalledWith("detailLoadFailed"),
+	);
+	await userEvent.click(
+		screen.getByRole("button", { name: /PM sync conflict/i }),
+	);
+	expect(await screen.findByRole("dialog")).toBeInTheDocument();
+	expect(screen.queryByText("Earlier PM preview")).toBeNull();
+	await waitFor(() =>
+		expect(screen.getByText("PM-side edited title")).toBeInTheDocument(),
+	);
 });

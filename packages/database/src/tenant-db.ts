@@ -57,6 +57,7 @@ const STRICT_ISOLATION_TABLES = new Set([
 const PER_USER_ORG_TABLES = new Set([
 	"MCPServer", // Each user installs servers with their own credentials
 	"MCPConfig", // Each org member has their own MCP credentials
+	"McpDurableToolCall", // One member's idempotency receipts within an organization
 	"OpenAPIService", // Each user has their own OpenAPI service installations
 	"OpenAPIServiceConfig", // Each org member has their own service configs
 	"AiChat", // Per-user conversations, even within an org
@@ -70,6 +71,7 @@ const PER_USER_ORG_TABLES = new Set([
 	"EpisodicMemory", // A user's Advisor conversation summaries
 	"OrchestratorMemoryPreferences", // Includes the user's learned patterns
 	"ConversationTurnAttempt", // One model request a user's chat turn reserved
+	"ChatMediaObject", // A user's chat image or audio ownership record
 	"DocumentEval", // An eval run initiated by a specific user
 	"AgentWorkspaceFile", // A user's virtual workspace artifacts
 	"ProjectUserPreference", // Per-user-per-project settings

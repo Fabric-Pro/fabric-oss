@@ -900,7 +900,7 @@ describe("generateWebinarScriptActivity — the asset clamp", () => {
 describe("generateWebinarScriptActivity — the write surface", () => {
 	// The card's guarantee: generating a webinar script publishes nothing,
 	// pushes nothing to a feed, creates no asset and mutates no tag.
-	it("imports ONLY the reads and the two writes the guarantee allows", () => {
+	it("imports ONLY the reads and the one write the guarantee allows", () => {
 		expect(
 			databaseValueImports(
 				join(__dirname, "../generate-webinar-script.ts"),
@@ -913,7 +913,6 @@ describe("generateWebinarScriptActivity — the write surface", () => {
 			"getEffectivePlanningAnalysis",
 			"listTopicDecisions",
 			"logDraftRefusal",
-			"seedWorkingDraftIfAbsent",
 		]);
 	});
 
@@ -1629,4 +1628,17 @@ describe("generateWebinarScriptActivity — a refusal restricts", () => {
 		const call = raiseDraftQuestionsForTopic.mock.calls[0]?.[0];
 		expect(call.questions[0].subject).toBe("the latency chart");
 	});
+});
+
+it("keeps READY when seeding throws", async () => {
+	seedWorkingDraftIfAbsent.mockRejectedValue(new Error("seed failed"));
+	await expect(run()).resolves.toEqual({
+		status: "READY",
+		seededWorkingDraft: false,
+	});
+	expect(generateObject).toHaveBeenCalledTimes(1);
+	expect(logger.warn).toHaveBeenCalledWith(
+		"[publishing-webinar-script] failed to seed a working draft",
+		expect.objectContaining({ error: "seed failed" }),
+	);
 });

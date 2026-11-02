@@ -1,7 +1,8 @@
 /**
  * The Word file's look (Fizzy #2946): page geometry, type sizes and spacing,
- * the brand's colours and fonts as Word names them, the document styles and
- * the list numbering.
+ * the brand's colours and fonts as Word names them (the neutral style's
+ * print faces, which the file embeds, or the brand's own), the document
+ * styles and the list numbering.
  */
 
 import { PROPOSAL_PAGE_SIZE } from "@repo/utils/proposal-artifact/proposal-theme";
@@ -19,10 +20,16 @@ import {
 	LevelFormat,
 } from "docx";
 import type { List } from "mdast";
+import {
+	DOCX_EMBEDDED_FAMILIES,
+	DOCX_MONO_MEDIUM_FAMILY,
+	type DocxFontRole,
+} from "./embedded-fonts";
 import type {
 	BuildDocxInput,
 	DocxColors,
 	ListDefinition,
+	MonoMedium,
 	Writer,
 } from "./writer";
 
@@ -120,8 +127,13 @@ export const FURNITURE_SIZE = 15;
 export const EYEBROW_SIZE = 16;
 export const PARTY_LABEL_SIZE = 15;
 export const PARTY_NAME_SIZE = 24;
+/** A party's second and third lines from the cover fence, under its name. */
+export const PARTY_LINE_SIZE = 20;
+/** The cover fence's line about the client, under the logos. */
+export const ORGANIZATION_SIZE = 14;
 export const DATE_SIZE = 20;
-export const STAT_VALUE_SIZE = 44;
+/** Print's 1.6em and 0.76em of its 10.5 pt body, to the nearest half point. */
+export const STAT_VALUE_SIZE = 34;
 export const STAT_LABEL_SIZE = 16;
 
 /** Letter spacing of the uppercase labels, in twentieths of a point. */
@@ -153,6 +165,8 @@ export const STAT_TILE_GAP = 216;
 export const LOGO_MAX_WIDTH = 2.75 * 1440;
 export const LOGO_MAX_HEIGHT = 0.75 * 1440;
 export const HERO_MAX_HEIGHT = 3.25 * 1440;
+/** The proposer logo at the top of the cover letter: smaller than the cover's. */
+export const LETTER_LOGO_MAX_HEIGHT = 0.5 * 1440;
 
 /** The cover eyebrow and the one fixed line of a diagram that did not render. */
 export const COVER_EYEBROW = "Proposal";
@@ -199,6 +213,7 @@ export function docxColors(paint: ProposalThemePaint): DocxColors {
 		heading: hex(paint.heading),
 		primary: hex(paint.primary),
 		onPrimary: hex(paint.onPrimary),
+		label: hex(paint.label),
 		muted: hex(paint.muted),
 		border: hex(paint.border),
 		tint: hex(paint.tint),
@@ -206,35 +221,83 @@ export function docxColors(paint: ProposalThemePaint): DocxColors {
 	};
 }
 
-/** The family every Word ships, written for the neutral style. */
-const DOCX_NEUTRAL_FONT = "Arial";
+const FONT_ROLES: readonly DocxFontRole[] = ["display", "body", "mono"];
+
+/**
+ * The roles set in the neutral style: those the brand chose no font for, and
+ * those whose chosen name the paint refused. The Word file embeds their
+ * faces; a role the brand chose keeps its name and embeds nothing, even when
+ * that name is one of the neutral families.
+ */
+export function neutralFontRoles(
+	tokens: BuildDocxInput["tokens"],
+	paint: ProposalThemePaint,
+): DocxFontRole[] {
+	const chosen = (token: SourcedValue<string>, painted: string) =>
+		token.source !== "DEFAULT" && safeFontFamily(token.value) === painted;
+	return FONT_ROLES.filter(
+		(role) => !chosen(tokens.proposer.fonts[role], paint.fonts[role]),
+	);
+}
+
+/**
+ * The families the Word file names for the fonts the brand chose, as the
+ * paint resolved them. None is embedded, and no embedded face of another
+ * weight may fill a slot of one of these families (see `embedded-fonts.ts`).
+ */
+export function brandFontFamilies(
+	tokens: BuildDocxInput["tokens"],
+	paint: ProposalThemePaint,
+): string[] {
+	const neutral = neutralFontRoles(tokens, paint);
+	return FONT_ROLES.filter((role) => !neutral.includes(role)).map(
+		(role) => paint.fonts[role],
+	);
+}
 
 /**
  * The families the Word file names: a font the brand chose, as the paint
- * resolved it, or Arial for the neutral default and for any name the paint
- * refused.
+ * resolved it, or for a neutral role the print face the file embeds
+ * (Poppins, Inter, JetBrains Mono). Bold runs name the same family and set
+ * bold, and Word takes the face in that family's bold slot.
  */
 export function docxFonts(
 	tokens: BuildDocxInput["tokens"],
 	paint: ProposalThemePaint,
 ): ProposalThemePaint["fonts"] {
-	const pick = (token: SourcedValue<string>, painted: string) =>
-		token.source !== "DEFAULT" && safeFontFamily(token.value) === painted
-			? painted
-			: DOCX_NEUTRAL_FONT;
-	const fonts = tokens.proposer.fonts;
+	const neutral = neutralFontRoles(tokens, paint);
+	const family = (role: DocxFontRole) =>
+		neutral.includes(role)
+			? DOCX_EMBEDDED_FAMILIES[role]
+			: paint.fonts[role];
 	return {
-		display: pick(fonts.display, paint.fonts.display),
-		body: pick(fonts.body, paint.fonts.body),
-		mono: pick(fonts.mono, paint.fonts.mono),
+		display: family("display"),
+		body: family("body"),
+		mono: family("mono"),
 	};
+}
+
+/**
+ * How mono text print sets at weight 500 is set. A neutral mono role names
+ * the Medium face the file embeds under its own family, not bold. A brand's
+ * mono family is set bold: a run names a regular or a bold face, nothing
+ * between, and the brand's faces are not embedded.
+ */
+export function docxMonoMedium(
+	tokens: BuildDocxInput["tokens"],
+	paint: ProposalThemePaint,
+): MonoMedium {
+	return neutralFontRoles(tokens, paint).includes("mono")
+		? { font: DOCX_MONO_MEDIUM_FAMILY }
+		: { font: paint.fonts.mono, bold: true };
 }
 
 /**
  * The document's styles. Every built-in style docx would otherwise colour
  * (the headings in Word's blue, the title, hyperlinks) is replaced whole, so
  * no default colour survives: docx spreads a style's `run` over its default
- * at the top level, and a full `run` drops the default's colour.
+ * at the top level, and a full `run` drops the default's colour. Headings
+ * and the title are ink, as in print; links keep the heading colour.
  */
 export function documentStyles(
 	writer: Writer,
@@ -245,7 +308,7 @@ export function documentStyles(
 			font: fonts.display,
 			size: HEADING_SIZES[level - 1],
 			bold: true,
-			color: colors.heading,
+			color: colors.ink,
 		},
 		paragraph: {
 			spacing: { ...HEADING_SPACING[level - 1], line: 264 },
@@ -281,7 +344,7 @@ export function documentStyles(
 					font: fonts.display,
 					size: TITLE_SIZE,
 					bold: true,
-					color: colors.heading,
+					color: colors.ink,
 				},
 				paragraph: {
 					spacing: { before: 0, after: 360, line: 252 },
@@ -352,10 +415,10 @@ export function listLevels(
 					hanging: LIST_HANGING,
 				},
 			},
-			// Print's markers: bullets in the brand colour, numbers muted.
+			// Print's markers: bullets in the label colour, numbers muted.
 			run: list.ordered
 				? { font: fonts.body, color: colors.muted, bold: true }
-				: { font: fonts.body, color: colors.primary },
+				: { font: fonts.body, color: colors.label },
 		},
 	}));
 }

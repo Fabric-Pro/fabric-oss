@@ -11,7 +11,7 @@ export type { SelectedAgent } from "./agent-selection";
 // Components
 export { ChatInput } from "./ChatInput";
 export { ChatWelcome } from "./ChatWelcome";
-export { InteractiveContentPanel } from "./InteractiveContentPanel";
+export { DeferredInteractiveContentPanel as InteractiveContentPanel } from "./DeferredInteractiveContentPanel";
 export * from "./interactive-content";
 export { ToolCallList } from "./ToolCallList";
 // Types

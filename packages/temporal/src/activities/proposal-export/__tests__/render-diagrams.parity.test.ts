@@ -6,8 +6,9 @@
  *
  * The live side is the page's own rule (`isLiveFigureCounted`) fed what the
  * page's engines do with each fence: its figure template, else
- * beautiful-mermaid on the fence with the role classes appended, else
- * mermaid.js. mermaid.js needs a browser; whether it draws a fence never
+ * beautiful-mermaid on the fence with the role classes appended and, for a
+ * chart, its leading `%%` lines stripped, else mermaid.js. mermaid.js
+ * needs a browser; whether it draws a fence never
  * changes the number, which the test checks for every fence. The export
  * side is `renderExportDiagrams` and `diagramFigureNumbers`. beautiful-mermaid
  * runs for real on both sides, but refuses a fence marked as below, as no
@@ -21,6 +22,7 @@ import {
 	figurePaletteOf,
 	isLiveFigureCounted,
 	type LiveDiagramEngine,
+	withoutLeadingChartComments,
 } from "@repo/utils/proposal-artifact/diagram-printability";
 import { tryRenderFigure } from "@repo/utils/proposal-artifact/proposal-figures";
 import {
@@ -100,6 +102,60 @@ const GANTT = [
 	"  Design :a1, 2026-01-01, 10d",
 ].join("\n");
 
+/** A plan the gantt template draws. */
+const GANTT_TEMPLATE = [
+	"%% figure: gantt",
+	"gantt",
+	"  title Pilot schedule",
+	"  dateFormat YYYY-MM-DD",
+	"  section Build",
+	"  Routing :a1, 2026-11-02, 3w",
+	"  section Pilot",
+	"  Region one :b1, after a1, 4w",
+	"  Pilot review :milestone, m1, 2026-12-21, 0d",
+].join("\n");
+
+/** Thirteen bars, one past the bars template's limit. */
+const THIRTEEN_BARS = [
+	"%% figure: bars",
+	"xychart-beta horizontal",
+	`  x-axis [${Array.from({ length: 13 }, (_, index) => `c${index}`).join(", ")}]`,
+	`  bar [${Array.from({ length: 13 }, (_, index) => index + 1).join(", ")}]`,
+].join("\n");
+
+/** Architecture layers the layers template draws. */
+const LAYERS_TEMPLATE = [
+	"%% figure: layers",
+	"flowchart TB",
+	'subgraph experience["Experience<br/>who uses it"]',
+	'  e1["Crew app"]',
+	'  e2["Dispatcher console"]',
+	"end",
+	'subgraph services["Services"]',
+	'  s1["Routing"]',
+	'  s2["Work orders"]',
+	"end",
+	'subgraph crosscutting["Cross-cutting"]',
+	'  x1["Identity"]',
+	"end",
+].join("\n");
+
+/** Two teams and the forum they share, as the team template draws them. */
+const TEAM_TEMPLATE = [
+	"%% figure: team",
+	"flowchart LR",
+	'subgraph pod["Example Studio pod"]',
+	'  p1["Engagement lead<br/>Owns scope and the weekly review"]',
+	'  p2["Senior engineer"]',
+	"end",
+	'subgraph client["Example Harbor Co"]',
+	'  c1["Operations sponsor<br/>Approves milestones"]',
+	"end",
+	'r["Weekly review"]',
+	"p1 --> r",
+	"c1 --> r",
+].join("\n");
+
 /** The fences, as the export receives them: without a caption line. */
 const FENCES: readonly [name: string, source: string][] = [
 	[
@@ -126,6 +182,43 @@ const FENCES: readonly [name: string, source: string][] = [
 		`flowchart TD\n  a[${LAYOUT_TIMES_OUT}] --> b[Launch]`,
 	],
 	["a sequence diagram", "sequenceDiagram\n  A->>B: Hello"],
+	[
+		"a bar chart template",
+		[
+			"%% figure: bars",
+			"xychart-beta horizontal",
+			'  x-axis ["Expected · 5% uplift", Baseline]',
+			"  bar [12, 4]",
+			"  line [10, 10]",
+		].join("\n"),
+	],
+	[
+		// Two bar series: the template refuses it, beautiful-mermaid draws
+		// it as a plain chart.
+		"a bar chart its template refuses",
+		[
+			"%% figure: bars",
+			"xychart-beta horizontal",
+			"  x-axis [North, South]",
+			"  bar [1, 2]",
+			"  bar [3, 4]",
+		].join("\n"),
+	],
+	["thirteen bars, past the bars template", THIRTEEN_BARS],
+	[
+		"a sequence diagram after a comment",
+		"%% notes\nsequenceDiagram\n  A->>B: hi",
+	],
+	["a gantt chart its template draws", GANTT_TEMPLATE],
+	[
+		"a gantt chart its template refuses",
+		GANTT_TEMPLATE.replace(
+			"  section Build",
+			"  excludes weekends\n  section Build",
+		),
+	],
+	["a layers figure its template draws", LAYERS_TEMPLATE],
+	["a team figure its template draws", TEAM_TEMPLATE],
 ];
 
 /**
@@ -141,7 +234,12 @@ async function liveEngine(source: string): Promise<LiveDiagramEngine | null> {
 	}
 	const { renderMermaidSVG } = await import("beautiful-mermaid");
 	try {
-		renderMermaidSVG(withVisualRoleClassDefs(source, paint).trim(), {});
+		renderMermaidSVG(
+			withoutLeadingChartComments(
+				withVisualRoleClassDefs(source, paint).trim(),
+			),
+			{},
+		);
 		return "beautiful-mermaid";
 	} catch {
 		return null;
@@ -177,7 +275,25 @@ describe("figure numbers on the live page and in the exports", () => {
 
 		// A broken fence takes no number on either side; one whose layout
 		// ran out of time keeps its number, so the figure after it does too.
-		expect(live).toEqual([1, 2, null, null, 3, 4, null, 5, 6]);
+		expect(live).toEqual([
+			1,
+			2,
+			null,
+			null,
+			3,
+			4,
+			null,
+			5,
+			6,
+			7,
+			8,
+			9,
+			10,
+			11,
+			12,
+			13,
+			14,
+		]);
 		expect(diagramFigureNumbers(diagrams)).toEqual(live);
 		expect(diagrams.map((diagram) => diagram.kind)).toEqual([
 			"svg",
@@ -189,10 +305,135 @@ describe("figure numbers on the live page and in the exports", () => {
 			"omitted",
 			"placeholder",
 			"svg",
+			"svg",
+			"svg",
+			"svg",
+			"placeholder",
+			"svg",
+			"placeholder",
+			"svg",
+			"svg",
 		]);
 		expect(warnings).toEqual([
 			{ code: "DIAGRAM_PLACEHOLDER", count: 3 },
-			{ code: "DIAGRAM_NOT_PRINTABLE", count: 3 },
+			{ code: "DIAGRAM_NOT_PRINTABLE", count: 5 },
 		]);
+	});
+
+	it("match for a bar chart its template draws and for ones it refuses", async () => {
+		const source = (name: string) =>
+			FENCES.find(([fence]) => fence === name)?.[1] ?? "";
+		const drawnBars = source("a bar chart template");
+		const refused = [
+			source("a bar chart its template refuses"),
+			source("thirteen bars, past the bars template"),
+		];
+		expect(await liveEngine(drawnBars)).toBe("template");
+		// A refused bar chart opens with `%%` lines, which beautiful-mermaid
+		// finds no chart behind; the live page strips them, as the export
+		// does, so the chart draws and prints alike.
+		for (const refusedBars of refused) {
+			expect(await liveEngine(refusedBars)).toBe("beautiful-mermaid");
+			const printability = diagramPrintability(refusedBars.trim());
+			expect(printability).toBe("printable");
+			expect(isLiveFigureCounted(printability, "beautiful-mermaid")).toBe(
+				true,
+			);
+		}
+
+		const { diagrams, warnings } = await renderExportDiagrams({
+			sources: [drawnBars, ...refused],
+			paint,
+			browser: null,
+			withPng: false,
+			deadline: Date.now() + 60_000,
+			layout: inProcessLayout,
+		});
+		expect(diagrams.map((diagram) => diagram.kind)).toEqual([
+			"svg",
+			"svg",
+			"svg",
+		]);
+		expect(diagramFigureNumbers(diagrams)).toEqual([1, 2, 3]);
+		expect(warnings).toEqual([]);
+		// The template draws the first; beautiful-mermaid the others.
+		const svgs = diagrams.map((diagram) =>
+			diagram.kind === "svg" ? diagram.svg : "",
+		);
+		expect(svgs[0]).toContain('role="img"');
+		for (const svg of svgs.slice(1)) {
+			expect(svg).not.toContain('role="img"');
+			expect(svg).toContain("xychart");
+		}
+	});
+
+	it("match for layers and team figures their templates draw and a team one refuses", async () => {
+		// A team figure needs two subgraphs; with one, the template refuses
+		// it and beautiful-mermaid draws the fence as a flowchart.
+		const refusedTeam = TEAM_TEMPLATE.replace(
+			/subgraph client[\s\S]*?end\n/,
+			"",
+		).replace("c1 --> r", "p2 --> r");
+		expect(refusedTeam).not.toContain("subgraph client");
+		expect(await liveEngine(LAYERS_TEMPLATE)).toBe("template");
+		expect(await liveEngine(TEAM_TEMPLATE)).toBe("template");
+		expect(await liveEngine(refusedTeam)).toBe("beautiful-mermaid");
+		for (const source of [LAYERS_TEMPLATE, TEAM_TEMPLATE, refusedTeam]) {
+			expect(diagramPrintability(source.trim())).toBe("printable");
+		}
+
+		const { diagrams, warnings } = await renderExportDiagrams({
+			sources: [LAYERS_TEMPLATE, TEAM_TEMPLATE, refusedTeam],
+			paint,
+			browser: null,
+			withPng: false,
+			deadline: Date.now() + 60_000,
+			layout: inProcessLayout,
+		});
+		expect(diagrams.map((diagram) => diagram.kind)).toEqual([
+			"svg",
+			"svg",
+			"svg",
+		]);
+		expect(diagramFigureNumbers(diagrams)).toEqual([1, 2, 3]);
+		expect(warnings).toEqual([]);
+		// The templates draw the first two; beautiful-mermaid the third.
+		const svgs = diagrams.map((diagram) =>
+			diagram.kind === "svg" ? diagram.svg : "",
+		);
+		expect(svgs[0]).toContain('role="img"');
+		expect(svgs[1]).toContain('role="img"');
+		expect(svgs[2]).not.toContain('role="img"');
+	});
+
+	it("match for a gantt chart its template draws and for one it refuses", async () => {
+		const drawn = GANTT_TEMPLATE;
+		const refused = FENCES.find(
+			([name]) => name === "a gantt chart its template refuses",
+		)?.[1];
+		if (!refused) {
+			throw new Error("expected the refused gantt fence");
+		}
+		expect(await liveEngine(drawn)).toBe("template");
+		// A refused gantt is a kind only mermaid.js draws: a numbered
+		// placeholder in print, as before it had a template.
+		expect(await liveEngine(refused)).toBeNull();
+		expect(diagramPrintability(refused.trim())).toBe("liveOnly");
+		expect(isLiveFigureCounted("liveOnly", "mermaid")).toBe(true);
+
+		const { diagrams, warnings } = await renderExportDiagrams({
+			sources: [drawn, refused],
+			paint,
+			browser: null,
+			withPng: false,
+			deadline: Date.now() + 60_000,
+			layout: inProcessLayout,
+		});
+		expect(diagrams.map((diagram) => diagram.kind)).toEqual([
+			"svg",
+			"placeholder",
+		]);
+		expect(diagramFigureNumbers(diagrams)).toEqual([1, 2]);
+		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 }]);
 	});
 });

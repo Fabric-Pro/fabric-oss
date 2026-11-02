@@ -15,6 +15,7 @@
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@ui/components/card";
+import { Markdown } from "@ui/components/markdown";
 import { cn } from "@ui/lib";
 import {
 	BookOpen,
@@ -92,6 +93,15 @@ const SOURCE_TYPE_CONFIG: Record<
 		icon: <Users className="h-3 w-3" />,
 		color: "text-violet-600",
 	},
+};
+
+const REPORT_MARKDOWN_COMPONENTS = {
+	img: () => null,
+	a: ({ href, children }: React.ComponentProps<"a">) => (
+		<a href={href} target="_blank" rel="noopener noreferrer">
+			{children}
+		</a>
+	),
 };
 
 export function ResearchReportCard({
@@ -287,9 +297,14 @@ export function ResearchReportCard({
 								</button>
 								{expandedSections.has(idx) && (
 									<div className="px-3 pb-3 text-sm leading-relaxed border-t">
-										<p className="mt-2 whitespace-pre-wrap">
+										<Markdown
+											className="mt-2"
+											components={
+												REPORT_MARKDOWN_COMPONENTS
+											}
+										>
 											{section.content}
-										</p>
+										</Markdown>
 										{section.citations.length > 0 && (
 											<div className="mt-2 flex flex-wrap gap-1">
 												{section.citations.map(

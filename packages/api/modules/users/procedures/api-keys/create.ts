@@ -15,13 +15,13 @@ import {
 } from "../../../../orpc/procedures";
 
 // Available scopes for API keys
-const API_KEY_SCOPES = [
+export const API_KEY_SCOPES = [
 	// MCP
 	"mcp:read", // Read MCP tools/resources
 	"mcp:write", // Execute MCP tools
 	// Browser automation
-	"browser:read", // Read browser automation results
-	"browser:write", // Execute browser automation tasks
+	"browser:read", // List automation templates
+	"browser:write", // Run browser automation tasks, templates and web content extraction
 	// Agents
 	"agents:read", // Read agent metadata, list available agents
 	"agents:execute", // Trigger agent executions via API
@@ -32,6 +32,8 @@ const API_KEY_SCOPES = [
 	"projects:write", // Create and update projects
 	"features:read", // Read features/stories
 	"features:write", // Create and update features/stories
+	"kanban:read", // List the caller's Fabric Kanban queue and read their identity
+	"kanban:write", // Pull and complete the caller's Fabric Kanban items
 	"workflows:read", // Read workflows and executions
 	"workflows:write", // Create, edit, publish, pause and resume workflows
 	"workflows:run", // Trigger workflow executions

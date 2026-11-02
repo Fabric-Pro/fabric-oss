@@ -289,9 +289,9 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_features",
 		description:
-			"Lists a project's backlog: features AND bugs (each row has 'kind'; filter with kind), with identifier, status, priority, size, draftingStage and task counts. " +
-			"Only draftingStage='PUBLISHED' items are fully specified and ready to implement; for ones ready to start, also filter by the Backlog statusId from fabric_get_project_statuses. " +
-			"A row's id is the featureId for the feature and task tools, bugs included.",
+			"Lists project features and bugs with identifier, kind, status, priority, size, draftingStage and task counts. " +
+			"Use draftingStage='PUBLISHED' for fully specified items; for ready work, also use the Backlog statusId from fabric_get_project_statuses. " +
+			"Each row id is its featureId.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -332,6 +332,14 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					type: "string",
 					description:
 						"Match on title, description or identifier (e.g. 'F-001')",
+				},
+				assignedToMe: {
+					type: "boolean",
+					description: "Assigned to current user",
+				},
+				assigneeId: {
+					type: "string",
+					description: "Assigned user or 'me'",
 				},
 				limit: {
 					type: "number",
@@ -1485,44 +1493,74 @@ const FAMILY_HANDLERS: ReadonlyMap<string, PlatformToolHandler> = new Map([
 	...MEMORY_WRITE_TOOLS.handlers,
 ]);
 
+export type AuthorizedPlatformToolCall = {
+	toolName: string;
+	args: Record<string, unknown>;
+	session: GatewaySession;
+};
+
+export type PlatformToolAuthorization =
+	| { ok: true; context: AuthorizedPlatformToolCall }
+	| { ok: false; result: ToolCallResult };
+
 /**
- * Execute a platform tool by name.
- * All DB imports are dynamic to avoid pulling Prisma into the module scope.
+ * Run every platform check that precedes the tool handler. Durable replay asks
+ * this same function before it claims or returns a receipt.
  */
-export async function executePlatformTool(
+export function authorizePlatformToolCall(
 	toolName: string,
 	requestedArgs: Record<string, unknown>,
 	session: GatewaySession,
-): Promise<ToolCallResult> {
+): PlatformToolAuthorization {
 	if (
 		session.credential === "service" &&
 		!serviceSessionHasTool(session, toolName)
 	) {
-		return errorResult(
-			`${toolName} is not available to this agent runtime.`,
-		);
+		return {
+			ok: false,
+			result: errorResult(
+				`${toolName} is not available to this agent runtime.`,
+			),
+		};
 	}
 	// A session opened from a project's URL has the project's tools, on the
 	// project: see ./project-binding.
 	const bound = bindToolCall(toolName, requestedArgs, session);
 	if (!bound.ok) {
-		return errorResult(bound.message);
+		return { ok: false, result: errorResult(bound.message) };
 	}
-	const args = bound.args;
 
 	// A platform tool the session's server selection leaves out is not run:
 	// see ./server-selection.
 	if (!selectionAllowsTool(session, toolName)) {
-		return errorResult(selectionRefusalMessage(toolName));
+		return {
+			ok: false,
+			result: errorResult(selectionRefusalMessage(toolName)),
+		};
 	}
 
 	const required = platformToolScope(toolName);
 	if (!scopeSatisfied(session.scopes, required, session.credential)) {
-		return errorResult(
-			`This ${credentialSubject(session.credential)} does not have the "${required.scope}" scope required by ${toolName}.`,
-		);
+		return {
+			ok: false,
+			result: errorResult(
+				`This ${credentialSubject(session.credential)} does not have the "${required.scope}" scope required by ${toolName}.`,
+			),
+		};
 	}
 
+	return { ok: true, context: { toolName, args: bound.args, session } };
+}
+
+/**
+ * Execute a platform handler after {@link authorizePlatformToolCall} succeeds.
+ * All DB imports are dynamic to avoid pulling Prisma into the module scope.
+ */
+export async function executeAuthorizedPlatformToolCall({
+	toolName,
+	args,
+	session,
+}: AuthorizedPlatformToolCall): Promise<ToolCallResult> {
 	try {
 		switch (toolName) {
 			case "fabric_get_identity":
@@ -1625,6 +1663,31 @@ export async function executePlatformTool(
 				`${toolName} failed because of an internal error. Nothing was confirmed; try again.`,
 		);
 	}
+}
+
+/** Authorize and execute one platform tool call. */
+export async function executePlatformTool(
+	toolName: string,
+	requestedArgs: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const authorization = authorizePlatformToolCall(
+		toolName,
+		requestedArgs,
+		session,
+	);
+	return authorization.ok
+		? executeAuthorizedPlatformToolCall(authorization.context)
+		: authorization.result;
+}
+
+/**
+ * Only the self-identity tool has no handler-level resource or permission
+ * check. Other platform tools execute normally but bypass stored replay until
+ * their live handler authority can be factored into the preflight above.
+ */
+export function platformToolReplayAllowed(toolName: string): boolean {
+	return toolName === "fabric_get_identity";
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -2137,7 +2200,6 @@ async function handleListFeatures(
 
 	const limit = Math.min((args.limit as number) ?? 50, 100);
 	const offset = (args.offset as number) ?? 0;
-
 	const assignedToMe = args.assignedToMe === true || args.assigneeId === "me";
 	const targetAssigneeId = assignedToMe
 		? session.userId
@@ -2167,8 +2229,8 @@ async function handleListFeatures(
 		// Omitted => both features and bugs, which is what this tool has always
 		// returned; the filter only makes the split addressable.
 		kind: args.kind as StoryKindValue | undefined,
-		search: args.search as string | undefined,
 		assigneeId: targetAssigneeId,
+		search: args.search as string | undefined,
 		limit,
 		offset,
 	});

@@ -1,6 +1,7 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Label } from "@ui/components/label";
 import {
@@ -66,7 +67,7 @@ export function EstimateConfidenceSelector({
 		},
 		onSuccess: (result, requested) => {
 			void queryClient.invalidateQueries({
-				queryKey: ["projects", "stories"],
+				queryKey: orpc.projects.stories.board.key(),
 			});
 			const persisted =
 				(result.story

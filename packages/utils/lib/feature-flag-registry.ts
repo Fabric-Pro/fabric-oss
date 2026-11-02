@@ -358,6 +358,69 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Works only together with COPILOTKIT_ORCHESTRATOR_CHAT: the multi-agent turn runs on the agent runtime's Orchestrator engine, which refuses it for an organization either switch is off for. Read in the browser for the organization on screen and fixed when the chat mounts. Off, the Orchestrator chat's picker keeps one agent or model, exactly as before. On, the full Fabric AI page's picker takes up to four, and a message with two or more picked starts one Orchestrator workflow per pick; the launcher drawer keeps one pick either way. The env var is a new name that no deployment sets, so the registry default governs.",
 	},
+	COPILOTKIT_LIBRARY_CHAT: {
+		label: "Library document chat on the agent runtime",
+		description:
+			"Runs a library's Chat with Documents dialog through the agent runtime, so the answer streams in as the model writes it and its sources arrive with it.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_LIBRARY_CHAT",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read in the browser for the organization on screen and fixed when the dialog mounts, so a flip takes effect on the next page load; the runtime's library-chat engine also refuses a run for an organization it is off for. A personal library is read under the organization on screen, as every runtime request runs in one; a viewer with no organization on screen stays on the old route. Off, the dialog asks /api/workspaces/chat and shows the whole answer at once, exactly as before. On, it streams from /api/agents/runtime with the same workspace access check, retrieval, prompt and billing, with two differences: each run counts against the caller's oRPC request budget, and a dialog closed before the model is asked makes no model call (and bills no answer), where the route answered it anyway. Nothing is saved either way. The env var is a new name that no deployment sets, so the registry default governs.",
+	},
+	COPILOTKIT_ATLAS_CHAT: {
+		label: "Atlas codebase chat on the agent runtime",
+		description:
+			"Runs the Atlas tab's codebase chat through the agent runtime, with the same project, AI chat and capability checks, the same saved conversations and the same graph focus.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_ATLAS_CHAT",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read in the browser for the organization on screen and fixed when the chat panel mounts, so a flip takes effect on the next page load; the runtime's atlas-chat engine also refuses a run for an organization it is off for. Only the single-repository chat moves; the System map chat stays on atlas.systemChat. Project guests, viewers and anyone with no organization on screen stay on the oRPC procedure, because the runtime evaluates AI chat permission in the organization on screen. Off, the panel streams from atlas.chat exactly as before. On, it streams from /api/agents/runtime under the conversation's own id, with the same checks, request budget, prompt, persistence, billing and audit rows, and these differences: AI chat permission is judged in the organization on screen, which owns the project, so a member whose session's active organization is another one where they lack it is admitted on the runtime but refused by atlas.chat; a run the runtime refuses before the access checks, such as a spent request budget, writes no failure row; two tabs answering in the same conversation at once are refused with 'This chat is still answering.'; and an answer still streaming 270 seconds after the request began stops there and is saved as interrupted, because the runtime route ends a request at 300 seconds (atlas.chat's route allows 800). The env var is a new name that no deployment sets, so the registry default governs.",
+	},
+	COPILOTKIT_SIDEKICK_CHAT: {
+		label: "Agent Builder Sidekick on the agent runtime",
+		description:
+			"Runs the Agent Builder Sidekick through the agent runtime, with the same access checks, model, tools and billing as its own route.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_SIDEKICK_CHAT",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read in the browser for the organization on screen and fixed when the Sidekick panel mounts, so a flip takes effect on the next panel or page load; the runtime's agent-builder-sidekick engine also refuses a run for an organization it is off for. A viewer with no organization on screen stays on the old route. Off, the panel streams from /api/agents/sidekick/stream exactly as before. On, it streams from /api/agents/runtime; suggestion cards, form auto-apply and instruction accept are unchanged, and a new agent's turn needs membership of the organization on screen. Each run also counts against the caller's oRPC request budget. Nothing is saved either way. The env var is a new name that no deployment sets, so the registry default governs.",
+	},
+	COPILOTKIT_WEAVE_REFINE_CHAT: {
+		label: "Weave plan refinement on the agent runtime",
+		description:
+			"Runs Create Plan's Refine request with AI chat through the agent runtime, so the assistant's reply streams in as the model writes it and the improved request is written into the form when it ends.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_WEAVE_REFINE_CHAT",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read in the browser for the organization on screen and fixed when the form mounts, so a flip takes effect on the next page load; the runtime's weave-refine engine also refuses a run for an organization it is off for. A viewer with no organization on screen stays on the old procedure. Off, the form calls weave.plans.refine and shows each reply whole, exactly as before. On, it streams from /api/agents/runtime with the same per-user request limit (one budget shared with oRPC), project permission (AGENT_EXECUTE), organization match, organization and project access checks, prompt, parsing, usage recording and audit rows; a usage-limit or missing-provider refusal shows its own message rather than a wrapped refinement failure, and any other model failure a generic one. Nothing is saved either way. The env var is a new name that no deployment sets, so the registry default governs.",
+	},
+	COPILOTKIT_RESEARCH_RUNS: {
+		label: "Deep Research runs on the agent runtime",
+		description:
+			"Runs the Fabric AI page's Deep Research mode through the agent runtime, so a research run is saved as a conversation, survives a reload or a closed tab, can be stopped, and its clarifying question is answered through the runtime.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_RESEARCH_RUNS",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read in the browser for the organization on screen and fixed when the Fabric AI page mounts, so a flip takes effect on the next page load; the runtime's deep-researcher engine also refuses a run, connect or stop for an organization it is off for. Off, Deep Research streams from /api/agents/workflow-templates/stream and saves nothing, exactly as before. On, members whose role may create and update conversations use /api/agents/runtime with the stream route's membership check, and each run is saved as a Fabric AI conversation in Research mode; project guests and viewers stay on the stream route either way. Turning it off leaves runs already started running to their end, but the page no longer follows or reopens them in Research mode. The env var is a new name that no deployment sets, so the registry default governs.",
+	},
+	COPILOTKIT_CUGA_CHAT: {
+		label: "CUGA generalist chat on the agent runtime",
+		description:
+			"Runs the CUGA generalist chat through the agent runtime, so its reply, reasoning, tool calls and artifacts arrive as agent-runtime events.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_CUGA_CHAT",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read in the browser for the organization on screen and fixed when the chat mounts, so a flip takes effect on the next chat or page load; the runtime's cuga-generalist engine also refuses a run for an organization it is off for. Off, the chat asks /api/agents/a2a/send exactly as before. On, it asks /api/agents/runtime with the same SYSTEM-agent lookup, endpoint check, membership check, model and AI token; the reply still arrives whole, and a relay that runs past about four minutes ends with an error instead of being cut off. Two more differences: each run counts against the caller's oRPC request budget, and leaving the chat mid-reply ends the relay to the agent, where the route ran it to its end. Nothing is saved either way. The env var is a new name that no deployment sets, so the registry default governs.",
+	},
+	COPILOTKIT_DATA_ANALYST_CHAT: {
+		label: "Data analyst chat on the agent runtime",
+		description:
+			"Runs the Data Analyst agent's chat page through the agent runtime, showing its tool calls and charts as they arrive.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_DATA_ANALYST_CHAT",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read in the browser for the organization on screen and fixed when the chat mounts; the runtime's data-analyst engine also refuses a run for an organization it is off for. Off, the Data Analyst chat page keeps its CopilotKit chat on /api/copilotkit, unchanged. On, the page runs the agent through the agent runtime with the same service key, tenant headers and AI token: only organization members are served (project guests, whom the old chat served, are refused), a member may start 20 runs a minute, a run ends after 240 seconds (the old chat allowed 800), the browser's options, state and tools never reach the agent, remote images in replies are not loaded, and nothing is saved. The env var is a new name that no deployment sets, so the registry default governs.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

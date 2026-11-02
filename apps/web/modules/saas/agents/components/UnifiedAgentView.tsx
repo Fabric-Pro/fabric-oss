@@ -170,12 +170,7 @@ export function UnifiedAgentView() {
 		}
 
 		if (favoritedOnly) {
-			filtered = filtered.filter(
-				(item) =>
-					Boolean(
-						item.isFavorited || item.isPinned || item.isFeatured,
-					) || item._type === "instance",
-			);
+			filtered = filtered.filter(isFavoritedAgent);
 		}
 
 		if (certifiedOnly) {
@@ -509,4 +504,12 @@ export function UnifiedAgentView() {
 				))}
 		</div>
 	);
+}
+
+export function isFavoritedAgent(item: {
+	isFavorited?: boolean;
+	isPinned?: boolean;
+	isFeatured?: boolean;
+}): boolean {
+	return Boolean(item.isFavorited || item.isPinned || item.isFeatured);
 }

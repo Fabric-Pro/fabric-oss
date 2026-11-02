@@ -64,6 +64,7 @@ import {
 	type ClarifyingQuestionFrequency,
 	useClarifyingQuestions,
 } from "@saas/shared/components/copilot/useClarifyingQuestions";
+import { findDiffProposal } from "../hooks/find-diff-proposal";
 import { CustomMessages } from "./copilot/CustomMessages";
 import { DocumentAssistantOutcomesProvider } from "./copilot/DocumentAssistantOutcomesProvider";
 import {
@@ -2618,138 +2619,11 @@ function DocumentEditorInner({
 	const { isUserGenerationActive, markUserRunInitiated, clearUserRunMark } =
 		useUserRunSignal(isLoading);
 
-	// Spec §3.8 FR-23 (Group G) — locate the most recent diff-producing
-	// tool call in the live chat history so the DiffReviewBar can stamp
-	// accept/reject outcomes on the correct entry inside the persisted
-	// conversation messages JSON.
-	//
-	// Supported tool names (must match what the LangGraph agent actually
-	// emits — confirmed on staging via API inspection of persisted blobs):
-	//   - `write_document_local` — legacy GQL-format inline write
-	//   - `confirm_changes`      — current AGUI-format diff confirmation
-	//
-	// Handles BOTH live message shapes CopilotKit 1.52 surfaces:
-	//
-	//   (a) GQL-format ActionExecutionMessage — has the `isActionExecutionMessage()`
-	//       discriminator method, `name`, and `parentMessageId`. We map
-	//       `messageId ← parentMessageId` (the assistant text turn that
-	//       authored the call) and `toolCallId ← action.id`.
-	//
-	//   (b) AGUI-format assistant tool-call message — `{role:"assistant",
-	//       toolCalls:[{id, type:"function", function:{name, arguments}}]}`
-	//       with NO methods. We support both the top-level `tc.name`
-	//       (older shape) and the nested `tc.function.name` (current
-	//       OpenAI shape staging actually emits). The "parent" text
-	//       message is the immediately-prior assistant text turn
-	//       (CopilotKit splits a single turn into text + tool-calls);
-	//       we walk backwards to find it, mirroring the persistence
-	//       walker's behaviour in `CopilotPersistenceHook`.
-	//
-	// `messageId` MUST line up with the parent text message's id because
-	// the server-side persistence merge (PR #1143) puts toolCalls on the
-	// text message, so DiffOutcomeChip can find them.
-	const DIFF_TOOL_NAMES: ReadonlyArray<string> = [
-		"write_document_local",
-		"confirm_changes",
-	];
-	const lastWriteDocumentLocalToolCall = useMemo(() => {
-		const messagesToWalk = internalMessagesForToolCallMatcher;
-		if (!messagesToWalk || messagesToWalk.length === 0) {
-			return null;
-		}
-		for (let i = messagesToWalk.length - 1; i >= 0; i--) {
-			const m = messagesToWalk[i];
-			if (!m) {
-				continue;
-			}
-			const asMaybeAction = m as {
-				isActionExecutionMessage?: () => boolean;
-				id?: string;
-				name?: string;
-				parentMessageId?: string | null;
-				role?: string;
-				toolCalls?: unknown;
-			};
-			// Path (a): GQL-format ActionExecutionMessage.
-			if (
-				typeof asMaybeAction.isActionExecutionMessage === "function" &&
-				asMaybeAction.isActionExecutionMessage()
-			) {
-				if (
-					typeof asMaybeAction.id === "string" &&
-					typeof asMaybeAction.name === "string" &&
-					DIFF_TOOL_NAMES.includes(asMaybeAction.name)
-				) {
-					return {
-						messageId:
-							asMaybeAction.parentMessageId ?? asMaybeAction.id,
-						toolCallId: asMaybeAction.id,
-					};
-				}
-				continue;
-			}
-			// Path (b): AGUI-format tool-call-only assistant message.
-			if (
-				asMaybeAction.role === "assistant" &&
-				Array.isArray(asMaybeAction.toolCalls) &&
-				asMaybeAction.toolCalls.length > 0
-			) {
-				for (const rawTc of asMaybeAction.toolCalls as unknown[]) {
-					if (!rawTc || typeof rawTc !== "object") {
-						continue;
-					}
-					const tc = rawTc as {
-						id?: unknown;
-						name?: unknown;
-						function?: { name?: unknown };
-					};
-					const tcId = typeof tc.id === "string" ? tc.id : null;
-					const tcName =
-						typeof tc.name === "string"
-							? tc.name
-							: typeof tc.function?.name === "string"
-								? tc.function.name
-								: null;
-					if (!tcId || !tcName) {
-						continue;
-					}
-					if (!DIFF_TOOL_NAMES.includes(tcName)) {
-						continue;
-					}
-					// Find the parent text message (immediately-prior
-					// assistant text turn). Walk backwards from i-1,
-					// stopping at the first user message (turn boundary).
-					let parentTextId: string | null = null;
-					for (let p = i - 1; p >= 0; p--) {
-						const prev = messagesToWalk[p] as {
-							id?: string;
-							role?: string;
-							content?: unknown;
-						};
-						if (!prev?.id) {
-							continue;
-						}
-						if (prev.role === "user") {
-							break;
-						}
-						if (
-							prev.role === "assistant" &&
-							typeof prev.content === "string" &&
-							prev.content.length > 0
-						) {
-							parentTextId = prev.id;
-							break;
-						}
-					}
-					return {
-						messageId: parentTextId ?? asMaybeAction.id ?? tcId,
-						toolCallId: tcId,
-					};
-				}
-			}
-		}
-		return null;
-	}, [internalMessagesForToolCallMatcher]);
+	const lastWriteDocumentLocalToolCall = useMemo(
+		() => findDiffProposal(internalMessagesForToolCallMatcher),
+		[internalMessagesForToolCallMatcher],
+	);
+
 	// Where the outcome of the proposal under review is stamped: by the
 	// review bar's buttons, and by the chat card's, which read it when
 	// clicked (Fizzy #2946).

@@ -25,6 +25,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { verifyUserApiKey } from "@repo/api/modules/users/procedures/api-keys";
 import { auth } from "@repo/auth";
+import { gatewayAuthenticateHeader } from "@repo/auth/lib/oauth-scopes";
 import { isOrganizationLive } from "@repo/database";
 import {
 	type BrowserAutomationInput,
@@ -33,6 +34,7 @@ import {
 	type HybridExecutionInput,
 	type TemplateExecutionInput,
 } from "@repo/temporal";
+import { getBaseUrl } from "@repo/utils";
 import {
 	type McpWorkflowAiRouting,
 	mcpWorkflowAiRouting,
@@ -46,12 +48,10 @@ import {
 } from "@saas/mcp/lib/record-cli-reach";
 import { recordOrganizationRefusal } from "@saas/mcp/lib/record-organization-refusal";
 import type { NextRequest } from "next/server";
-import {
-	executePlatformTool,
-	PLATFORM_TOOL_DEFINITIONS,
-} from "../../modules/saas/mcp/lib/gateway/platform-tools";
+import { browserToolScope } from "../../modules/saas/mcp/lib/gateway/browser-tool-scope";
 import {
 	attachFabricMcpAppMeta,
+	durableIdentityForGatewaySession,
 	executeWithDurableEnvelope,
 	FABRIC_MCP_APP_RESOURCES,
 	FABRIC_TOOL_UI_RESOURCE_MAP,
@@ -59,6 +59,17 @@ import {
 	isStatelessMcpRequest,
 	readFabricMcpAppResource,
 } from "../../modules/saas/mcp/lib/gateway/mcp-apps";
+import {
+	authorizePlatformToolCall,
+	executeAuthorizedPlatformToolCall,
+	executePlatformTool,
+	PLATFORM_TOOL_DEFINITIONS,
+	platformToolReplayAllowed,
+} from "../../modules/saas/mcp/lib/gateway/platform-tools";
+import {
+	credentialSubject,
+	scopeSatisfied,
+} from "../../modules/saas/mcp/lib/gateway/tool-scope";
 import type {
 	GatewayCredential,
 	GatewaySession,
@@ -167,6 +178,8 @@ type OrganizationRefusal =
 type AuthOutcome =
 	| { status: "authenticated"; authResult: AuthResult }
 	| { status: "anonymous" }
+	| { status: "unauthenticated"; message: string }
+	| { status: "wrong_resource"; message: string }
 	| { status: "refused"; refusal: OrganizationRefusal };
 
 const ANONYMOUS_AUTH: AuthOutcome = { status: "anonymous" };
@@ -693,28 +706,43 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 
 		if (rawKey.startsWith("fat_")) {
 			const { verifyOAuthAccessToken } = await import("@repo/database");
-			const { getBaseUrl } = await import("@repo/utils");
-			const token = await verifyOAuthAccessToken?.(rawKey, {
+			const token = await verifyOAuthAccessToken(rawKey, {
 				appUrl: getBaseUrl(),
 				audience: "mcp",
 			});
-			if (
-				token?.valid &&
-				token.audience !== "api" &&
-				token.organizationId
-			) {
-				return authenticatedAs({
-					userId: token.userId,
-					organizationId: token.organizationId,
-					userName: token.userName || "Unknown",
-					email: token.email,
-					role: (token.role as "user" | "admin") || "user",
-					credential: "oauth",
-					scopes: token.scopes,
-					keyIdentity: toOAuthClientIdentity(token.clientRowId),
-				});
+			if (!token.valid) {
+				return {
+					status: "unauthenticated",
+					message: "The OAuth access token is invalid or expired.",
+				};
 			}
-			return ANONYMOUS_AUTH;
+			if (token.projectId !== null) {
+				return {
+					status: "wrong_resource",
+					message:
+						"This access token is limited to one project. Connect to that project's MCP gateway instead.",
+				};
+			}
+			// Organization grants are the only OAuth grants valid at the
+			// organization-wide resource. Project grants carry the explicit
+			// "mcp" audience and are refused above; organization grants carry null.
+			if (token.audience !== null) {
+				return {
+					status: "wrong_resource",
+					message:
+						"This access token was not issued for the organization-wide MCP resource.",
+				};
+			}
+			return authenticatedAs({
+				userId: token.userId,
+				organizationId: token.organizationId,
+				userName: token.userName || "Unknown",
+				email: token.email,
+				role: (token.role as "user" | "admin") || "user",
+				credential: "oauth",
+				scopes: token.scopes,
+				keyIdentity: toOAuthClientIdentity(token.clientRowId),
+			});
 		}
 
 		const result = await verifyUserApiKey(rawKey);
@@ -1305,6 +1333,25 @@ function createOrganizationRefusalResponse(
 	}
 }
 
+function createOAuthRefusalResponse(
+	outcome: Extract<
+		AuthOutcome,
+		{ status: "unauthenticated" | "wrong_resource" }
+	>,
+): Response {
+	return Response.json(
+		{ error: outcome.message },
+		{
+			status: 401,
+			headers: {
+				"WWW-Authenticate": gatewayAuthenticateHeader(getBaseUrl(), {
+					invalidToken: true,
+				}),
+			},
+		},
+	);
+}
+
 /**
  * Decide whether a stored session may be reused for this request.
  *
@@ -1327,6 +1374,12 @@ function checkStoredSessionAuth(
 ): Response | null {
 	if (authOutcome.status === "refused") {
 		return createOrganizationRefusalResponse(authOutcome.refusal);
+	}
+	if (
+		authOutcome.status === "unauthenticated" ||
+		authOutcome.status === "wrong_resource"
+	) {
+		return createOAuthRefusalResponse(authOutcome);
 	}
 
 	if (!storedAuthResult) {
@@ -1389,6 +1442,7 @@ function buildGatewaySession(
 		email: authResult.email,
 		role: authResult.role,
 		credential: authResult.credential,
+		credentialId: authResult.keyIdentity?.credentialId ?? authResult.userId,
 		scopes: authResult.scopes,
 		createdAt: now,
 		expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
@@ -1740,6 +1794,67 @@ interface McpWorkflowCaller {
 	aiRouting: McpWorkflowAiRouting;
 }
 
+const BROWSER_PERMISSION_ERROR =
+	"Your current organization role does not have permission to use this tool.";
+const BROWSER_PERMISSION_UNAVAILABLE_ERROR =
+	"Could not verify your organization permission; try again.";
+
+async function browserPermissionError(
+	name: string,
+	userId: string,
+	organizationId: string | undefined,
+): Promise<string | null> {
+	if (!organizationId) {
+		return BROWSER_PERMISSION_UNAVAILABLE_ERROR;
+	}
+	try {
+		const {
+			canExecuteOrganizationAgents,
+			canCreateOrganizationContext,
+			canManageOrganizationReportTemplates,
+			canReadOrganizationReportTemplates,
+		} = await import("@repo/database");
+		let permitted: boolean;
+		switch (name) {
+			case "run_browser_task":
+			case "run_hybrid_task":
+				permitted = await canExecuteOrganizationAgents(
+					userId,
+					organizationId,
+				);
+				break;
+			case "extract_web_content":
+				permitted = await canCreateOrganizationContext(
+					userId,
+					organizationId,
+				);
+				break;
+			case "execute_template":
+				permitted = await canManageOrganizationReportTemplates(
+					userId,
+					organizationId,
+				);
+				break;
+			case "list_templates":
+				permitted = await canReadOrganizationReportTemplates(
+					userId,
+					organizationId,
+				);
+				break;
+			default:
+				return BROWSER_PERMISSION_UNAVAILABLE_ERROR;
+		}
+		return permitted ? null : BROWSER_PERMISSION_ERROR;
+	} catch (error) {
+		console.error("[MCP Gateway] Browser tool permission check failed:", {
+			toolName: name,
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
+		return BROWSER_PERMISSION_UNAVAILABLE_ERROR;
+	}
+}
+
 async function executeRunBrowserTask(
 	args: Record<string, unknown>,
 	caller: McpWorkflowCaller,
@@ -1759,6 +1874,14 @@ async function executeRunBrowserTask(
 			takeScreenshotAfterEachAction: args.takeScreenshots as boolean,
 			takeScreenshotOnError: true,
 		};
+		const permissionError = await browserPermissionError(
+			"run_browser_task",
+			userId,
+			organizationId,
+		);
+		if (permissionError) {
+			return { success: false, error: permissionError };
+		}
 
 		const handle = await client.workflow.start(
 			"browserAutomationWorkflow",
@@ -1799,6 +1922,14 @@ async function executeRunHybridTask(
 			fallbackOnError: args.fallbackOnError as boolean,
 			variables: args.variables as Record<string, unknown>,
 		};
+		const permissionError = await browserPermissionError(
+			"run_hybrid_task",
+			userId,
+			organizationId,
+		);
+		if (permissionError) {
+			return { success: false, error: permissionError };
+		}
 
 		const handle = await client.workflow.start("hybridExecutionWorkflow", {
 			taskQueue: BROWSER_TASK_QUEUE,
@@ -1835,6 +1966,24 @@ async function executeTemplate(
 			parameterValues: args.parameters as Record<string, unknown>,
 			takeScreenshots: args.takeScreenshots as boolean,
 		};
+		const { db } = await import("@repo/database");
+		const template = organizationId
+			? await db.automationTemplate.findFirst({
+					where: { id: input.templateId, organizationId },
+					select: { id: true },
+				})
+			: null;
+		if (!template) {
+			return { success: false, error: "Template not found" };
+		}
+		const permissionError = await browserPermissionError(
+			"execute_template",
+			userId,
+			organizationId,
+		);
+		if (permissionError) {
+			return { success: false, error: permissionError };
+		}
 
 		const handle = await client.workflow.start(
 			"templateExecutionWorkflow",
@@ -1864,13 +2013,7 @@ async function executeListTemplates(
 ): Promise<{ success: boolean; result?: unknown; error?: string }> {
 	try {
 		const { db } = await import("@repo/database");
-		const where: Record<string, unknown> = {
-			OR: [
-				{ userId },
-				{ isPublic: true },
-				...(organizationId ? [{ organizationId }] : []),
-			],
-		};
+		const where: Record<string, unknown> = { organizationId };
 
 		if (args.category) {
 			where.category = args.category;
@@ -1878,6 +2021,14 @@ async function executeListTemplates(
 
 		if (args.tags && Array.isArray(args.tags) && args.tags.length > 0) {
 			where.tags = { hasSome: args.tags };
+		}
+		const permissionError = await browserPermissionError(
+			"list_templates",
+			userId,
+			organizationId,
+		);
+		if (permissionError) {
+			return { success: false, error: permissionError };
 		}
 
 		const templates = await db.automationTemplate.findMany({
@@ -1928,6 +2079,14 @@ async function executeExtractWebContent(
 			selectors: args.selectors as BrowserRagIngestionInput["selectors"],
 			waitForSelector: args.waitForSelector as string,
 		};
+		const permissionError = await browserPermissionError(
+			"extract_web_content",
+			userId,
+			organizationId,
+		);
+		if (permissionError) {
+			return { success: false, error: permissionError };
+		}
 
 		const handle = await client.workflow.start(
 			"browserRagIngestionWorkflow",
@@ -2369,6 +2528,7 @@ function createRequestSession(
 		sessionExpiresAt?: string;
 		hydrateExistingSession?: boolean;
 		routeOptions?: McpRouteOptions;
+		durableRequest?: Request;
 	},
 ): RequestSession {
 	const subscriptions = new Set(options?.subscriptions ?? []);
@@ -2480,46 +2640,83 @@ function createRequestSession(
 					],
 				} as any;
 			}
+			const gatewaySession = session.gatewaySession;
 
 			if (BROWSER_TOOL_DEFINITIONS.some((tool) => tool.name === name)) {
+				const required = browserToolScope(name);
+				if (!required) {
+					return {
+						isError: true,
+						content: [
+							{ type: "text", text: `Unknown tool: ${name}` },
+						],
+					} as any;
+				}
+				if (
+					!scopeSatisfied(
+						gatewaySession.scopes,
+						required,
+						gatewaySession.credential,
+					)
+				) {
+					return {
+						isError: true,
+						content: [
+							{
+								type: "text",
+								text: `This ${credentialSubject(gatewaySession.credential)} does not have the "${required.scope}" scope required by ${name}.`,
+							},
+						],
+					} as any;
+				}
 				return (await handleBrowserToolCall(
 					name,
 					args,
-					session.gatewaySession,
+					gatewaySession,
 				)) as any;
 			}
 
 			if (PLATFORM_TOOL_DEFINITIONS.some((tool) => tool.name === name)) {
-				const rawMeta = (
-					requestMessage.params as Record<string, unknown>
-				)._meta as Record<string, unknown> | undefined;
 				const durable = isDurableMcpToolRequest(
-					null,
+					options?.durableRequest,
 					requestMessage.params as Record<string, unknown>,
 					args,
 				);
 				const runPlatform = async () =>
 					attachFabricMcpAppMeta(
 						name,
-						await executePlatformTool(
-							name,
-							args,
-							session.gatewaySession!,
-						),
+						await executePlatformTool(name, args, gatewaySession),
 					);
 				const result = (
 					durable
 						? await executeWithDurableEnvelope({
 								toolName: name,
 								toolArgs: args,
-								organizationId:
-									session.gatewaySession.organizationId,
-								userId: session.gatewaySession.userId,
-								idempotencyKey:
-									typeof rawMeta?.idempotencyKey === "string"
-										? rawMeta.idempotencyKey
-										: undefined,
-								execute: runPlatform,
+								organizationId: gatewaySession.organizationId,
+								userId: gatewaySession.userId,
+								identity: durableIdentityForGatewaySession(
+									gatewaySession,
+									"platform",
+								),
+								request: options?.durableRequest,
+								rpcParams: requestMessage.params as Record<
+									string,
+									unknown
+								>,
+								authorize: async () =>
+									authorizePlatformToolCall(
+										name,
+										args,
+										gatewaySession,
+									),
+								execute: async (authorized) =>
+									attachFabricMcpAppMeta(
+										name,
+										await executeAuthorizedPlatformToolCall(
+											authorized,
+										),
+									),
+								replayAllowed: platformToolReplayAllowed(name),
 							})
 						: await runPlatform()
 				) as any;
@@ -2660,6 +2857,12 @@ async function handlePostRequest(
 	if (authOutcome.status === "refused") {
 		return createOrganizationRefusalResponse(authOutcome.refusal);
 	}
+	if (
+		authOutcome.status === "unauthenticated" ||
+		authOutcome.status === "wrong_resource"
+	) {
+		return createOAuthRefusalResponse(authOutcome);
+	}
 	const authResult = authResultOf(authOutcome);
 
 	// A DEACTIVATED ORGANIZATION REFUSES HERE TOO.
@@ -2757,6 +2960,7 @@ async function handlePostRequest(
 						subscriptions: durableSession.subscriptions,
 						sessionExpiresAt: durableSession.core.expiresAt,
 						routeOptions,
+						durableRequest: request,
 					},
 				);
 				await session.server.connect(session.transport);
@@ -2771,6 +2975,7 @@ async function handlePostRequest(
 
 		const session = createRequestSession(authResult, {
 			routeOptions,
+			durableRequest: request,
 		});
 		await session.server.connect(session.transport);
 		return session.transport.handleRequest(request);
@@ -2792,6 +2997,7 @@ async function handlePostRequest(
 			enableSessionManagement: true,
 			sessionExpiresAt: durableSession.core.expiresAt,
 			routeOptions,
+			durableRequest: request,
 		});
 
 		// An initialize opens its own session, so there is nothing stored for
@@ -2817,6 +3023,7 @@ async function handlePostRequest(
 		const session = createRequestSession(authResult, {
 			enableSessionManagement: false,
 			routeOptions,
+			durableRequest: request,
 		});
 		(session.transport as any)._initialized = true;
 		await session.server.connect(session.transport);
@@ -2867,6 +3074,7 @@ async function handlePostRequest(
 			subscriptions: durableSession.subscriptions,
 			sessionExpiresAt: durableSession.core.expiresAt,
 			routeOptions,
+			durableRequest: request,
 		},
 	);
 	await session.server.connect(session.transport);

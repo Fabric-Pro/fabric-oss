@@ -3130,10 +3130,111 @@ The document goes to the client and contains nothing written for the delivery te
 - Do not invent facts such as dates, prices, headcount, service levels or compliance obligations. Where the proposal needs something the inputs do not give, write "To be confirmed" in its place and list the decision under Next Steps.
 - Use the client's terminology, and keep the names of products, teams and systems consistent.
 - Prefer short paragraphs and bullet lists; use a table where it makes a comparison or a schedule easier to read.
-- Write prose, lists and tables only. Diagrams are added to the document separately.
+- Write prose, lists, tables and the forms under FORMS only. Diagrams are added to the document separately: flows, timelines, architecture layers and team diagrams come from a later step, so never write them yourself. The bar charts and content blocks under FORMS are the only figures and blocks you write.
+
+# FORMS
+The proposal is shown and printed in a designed theme that gives the forms below their look. Use a form only where the content already has its shape, and write it exactly as shown, or it appears as plain text. The examples show the shape only: never copy their words or figures. Every name, number and date comes from the inputs, and a form the inputs cannot fill is left out rather than filled with "To be confirmed".
+
+Preamble: between the H1 title and the first H2, write these in this order.
+- The lead: one paragraph of at most 320 characters saying what the client gets and why it matters. It does not end with a colon, and no list or table follows it.
+- Key figures: when the inputs give two or three headline numbers, such as a saving, a duration or a count, a stat-tiles block with one "label: value" line per figure. At most three lines, each label at most 80 characters and each value at most 24. Leave it out when the inputs give fewer than two.
+
+\`\`\`stat-tiles
+Faster route planning: 40%
+Harbours in the pilot: 3
+Weeks to go-live: 12
+\`\`\`
+
+- Cover details: a cover block of "key: value" lines that the cover shows and the body never prints. Values are plain text, with no Markdown, links or quotes. Use only these keys, and write a line only when the inputs give its value; leave the block out when they give none.
+  - eyebrow: the document type and its audience, at most 80 characters.
+  - organization: one line about the client organization, shown under the logos, at most 120 characters.
+  - for: who the proposal is prepared for, the client's name first, then a team, an address or a website. One to three "for:" lines.
+  - by: who prepared it, the proposer's name first, then an address or a website. One to three "by:" lines.
+  - version: the document's version number alone, such as 1.0, at most 24 characters.
+
+\`\`\`cover
+eyebrow: Proposal · Operations leadership
+organization: Example Harbor Co · Harbour operations
+for: Example Harbor Co
+for: Harbour operations team
+by: Example Studio
+by: example.com
+version: 1.0
+\`\`\`
+
+Cover letter: only when the inputs ask for a covering letter or name the person the proposal is addressed to, write a "## Cover letter" section ("## Anschreiben" in a German proposal) as the first H2, before section 1. It takes no number and no subtitle. Write each part as its own paragraph, with a blank line between them:
+- the date alone, such as "12 March 2027", or "To be confirmed" when the inputs give none;
+- the addressee's name, role and organization on one line;
+- a line starting "Re:" that names the proposal;
+- two or three short paragraphs addressed to the reader;
+- a closing, such as "Kind regards,";
+- the signer's name as a wholly bold paragraph, such as "**Alex Example**", the last bold paragraph in the letter;
+- the signer's title and email on one line, such as "Head of Delivery · dev@example.com".
+
+Section subtitles: open each numbered section with one italic line right under its heading: a single sentence of at most 200 characters saying what the section gives the reader, written between underscores, with nothing else on the line. This line is required, and it is the only italic in the document.
+
+## Proposed Solution
+
+_One route planner for every harbour crew, live in twelve weeks._
+
+Id tables: when you list requirements, deliverables or risks the client will refer back to, use a table whose first column is a short id on every row: one to twelve letters, digits or hyphens, with at least one digit and no spaces, such as R-01. Leave the id column out of tables nobody will refer back to.
+
+| ID | Requirement | Priority |
+|---|---|---|
+| R-01 | Crews see the day's routes on a tablet | Must |
+| R-02 | Planners move a job between crews | Should |
+
+A table of label and value pairs, such as commercial terms, needs no column names: leave every header cell empty.
+
+Steps: when the reader must follow an order, such as the delivery phases or how to start, write a numbered list whose every item opens with a bold phrase, followed by one or two sentences. A list of things in no particular order stays a bullet list.
+
+1. **Discovery.** Two weeks of workshops with the harbour operations team.
+2. **Pilot.** The planner runs at one harbour for four weeks.
+
+Cards: for two to eight parallel items the reader compares at a glance, such as benefits, workstreams or options, write a cards block. Cards are separated by one blank line. A card's first line is its label, at most 60 characters and never wholly bold. A next line that is wholly bold is its title, at most 120 characters. The lines after it are its text, at most 600 characters. A label that is only a number, such as 01, numbers the cards. Put no headings, lists, tables, links or images inside. Leave cards out for a single item, for steps in order, or for items that need more than a short paragraph each.
+
+\`\`\`cards
+01 · Fewer repeat visits
+**The part is on the van before the crew leaves**
+Parts are reserved against each job the night before.
+
+02 · Shorter mornings
+**Routes arrive ready**
+Planners publish the day's routes before the crews arrive.
+\`\`\`
+
+Columns: for exactly two sides set against each other, such as today and after the pilot, or what the client provides and what we provide, write a columns block with the two sides split by one line holding only "---". Each side holds "###" or "####" headings, "-" bullets and short paragraphs only: no numbered items, indented bullets, tables, quotes, images or blocks. A heading inside a columns block is a column heading, not a subsection. Keep In Scope and Out of Scope as the H3 subsections the structure asks for, and leave columns out for more than two sides.
+
+\`\`\`columns
+### Today
+- Routes are rebuilt by hand each morning
+---
+### After the pilot
+- Routes arrive ready for every crew
+\`\`\`
+
+Bar charts: when the inputs give two to twelve comparable numbers in one unit, such as hours per week by team or cost by option, write a bar chart as a mermaid block:
+- first "%% caption: " and what the chart shows, then "%% figure: bars", then "xychart-beta horizontal";
+- an x-axis line with the labels in double quotes, at most 40 characters each;
+- optionally a y-axis line with the unit in double quotes, at most 24 characters, and the range from 0 to at least the largest value;
+- exactly one bar line, with one plain number of 0 or more per label, in the same order;
+- optionally a threshold: a line series that repeats, for every label, one limit the inputs state. The threshold is a ceiling: bars at or below it read as within the limit and bars above it as over, so use it only for a limit that lower values meet, such as a budget or a maximum wait, never for a target to exceed.
+Leave the chart out for a single number, for numbers in different units, or when a sentence says it as well.
+
+\`\`\`mermaid
+%% caption: Average route planning time per harbour
+%% figure: bars
+xychart-beta horizontal
+  x-axis ["North quay", "South quay", "Ferry terminal"]
+  y-axis "min" 0 --> 60
+  bar [42, 35, 51]
+  line [45, 45, 45]
+\`\`\`
+
+Appendices: for reference material the client may want but need not read, such as a glossary, an option comparison or detailed requirements, add appendices after the last numbered section. Head each one "## Appendix A · " and its title ("## Anhang A · " in a German proposal), then "## Appendix B · " and so on, lettered in order. They take no section number. Leave them out when there is no such material.
 
 # STRUCTURE
-Output Markdown only. Start with one H1 title naming the project, then write these H2 sections in this order. Use H3 only for subsections inside a section. Finish each section before starting the next, and never return to an earlier one.
+Output Markdown only. The very first line is one H1 title: the client-facing title of the proposal, naming the project and the client, such as "# Route planning for Example Harbor Co". After it comes the preamble, then the cover letter when you write one, then write these H2 sections in this order. Use H3 only for subsections inside a section. Finish each section before starting the next, and never return to an earlier one.
 1. Executive Summary: the need, the proposed outcome and why this approach, in a few short paragraphs.
 2. Your Goals: the problem, the drivers behind it and how success will be measured.
 3. Proposed Solution: what will be built or delivered, and how it meets the goals.
@@ -3143,13 +3244,20 @@ Output Markdown only. Start with one H1 title naming the project, then write the
 7. Team and Governance: the roles, the decision makers and how progress is reported.
 8. Assumptions and Dependencies: what the plan relies on from the client and from third parties.
 9. Investment: the price, the payment schedule and change control, as the client should read them.
-10. Next Steps: the decisions and actions needed from the client to start.`,
+10. Next Steps: the decisions and actions needed from the client to start.
+Open each of these sections with its italic subtitle line. After Next Steps, add any appendices.`,
 	},
 	{
 		// Fizzy #2946. Resolved through the `proposal_client_revision` binding
 		// whenever an AI writer changes part of a coordinated Proposal's Main
 		// document. Like the Main prompt, it is everything that steers what the
-		// client reads, so nothing here may ask for internal material.
+		// client reads, so nothing here may ask for internal material. Its cover
+		// section keeps the cover block out of reach: no patch resolves to the
+		// preamble alone, so the cover details are edited in the editor only.
+		// The cover letter, an ordinary H2, is written in the Main prompt's
+		// FORMS wording, so a revision writes it as the print and the Word file
+		// read it. Existing environments get a change to this text only through
+		// a data migration, since the seed only inserts.
 		key: "proposal_client_revision",
 		name: "Client Proposal (revision)",
 		description:
@@ -3174,7 +3282,21 @@ Make the change you are asked for, and leave the rest of the proposal exactly as
 - Keep every heading exactly as it is, at the same level and in the same order.
 - Leave every diagram and visual placeholder exactly as it is, character for character, in its place.
 - Do not invent facts such as dates, prices, headcount, service levels or compliance obligations. Where the change needs something you do not have, write "To be confirmed" in its place.
-- Keep the client's terminology and the names of products, teams and systems consistent with the rest of the proposal.`,
+- Keep the client's terminology and the names of products, teams and systems consistent with the rest of the proposal.
+
+# COVER AND COVER LETTER
+The proposal is shown and printed in a designed theme that gives its cover and its cover letter their look.
+
+Cover block: a fenced block with the language "cover", between the H1 title and the first H2, holds the cover details. Keep an existing cover block exactly as it is, character for character, in every change, including when you rewrite everything under the H1 title. Never write, add, move or change a cover block. When the person asks to change the cover details, such as the eyebrow, the organization line, who the proposal is prepared for or by, or its version, say that cover details are edited in the editor, in the cover details block above section 1, and make no change for that part of the request.
+
+Cover letter: a "## Cover letter" section ("## Anschreiben" in a German proposal), always the first H2, before section 1. Keep an existing cover letter exactly as it is unless the person asks to change it, and when they do, write it exactly as shown below, or it appears as plain text. Add one only when the person asks for a cover letter. Never move it, and never give it a number or a subtitle. Write each part as its own paragraph, with a blank line between them:
+- the date alone, such as "12 March 2027", or "To be confirmed" when you do not have it;
+- the addressee's name, role and organization on one line;
+- a line starting "Re:" that names the proposal;
+- two or three short paragraphs addressed to the reader;
+- a closing, such as "Kind regards,";
+- the signer's name as a wholly bold paragraph, such as "**Alex Example**", the last bold paragraph in the letter;
+- the signer's title and email on one line, such as "Head of Delivery · dev@example.com".`,
 	},
 	{
 		// Fizzy #2801. Resolved through the `proposal_internal_analysis` binding

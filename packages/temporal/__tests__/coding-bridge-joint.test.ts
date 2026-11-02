@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { withCodingLifecycleActivities } from "./fixtures/coding-lifecycle-activities";
 
 const activityDb = vi.hoisted(() => ({
 	adapter: undefined as any,
@@ -245,7 +246,7 @@ describe.skipIf(!sourceRoot)(
 					connection: env.nativeConnection,
 					taskQueue: "example-joint-acceptance",
 					workflowBundle,
-					activities: {
+					activities: withCodingLifecycleActivities({
 						createExecutionSession: activity.createExecutionSession,
 						sendExecutionPrompt: activity.sendExecutionPrompt,
 						pollExecutionStatus: activity.pollExecutionStatus,
@@ -267,7 +268,7 @@ describe.skipIf(!sourceRoot)(
 						buildImplementationPrompt: async () => "complete",
 						syncCodingRunArtifacts: async () => ({}),
 						cleanupWeaveResourcesActivity: async () => {},
-					},
+					}),
 				});
 				const workflowId = "example-joint-workflow";
 				const handle = await env.client.workflow.start(

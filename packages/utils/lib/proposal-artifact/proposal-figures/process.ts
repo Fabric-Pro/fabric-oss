@@ -20,6 +20,7 @@ import {
 	labelElements,
 	MONO_EM,
 	num,
+	outlinedBox,
 	spoken,
 	svgDocument,
 	textElement,
@@ -222,7 +223,7 @@ export function processFigureSvg(
 		const boxTop = rowTops[box.row];
 		const height = rowHeights[box.row];
 		body.push(
-			`<rect class="step" x="${num(box.x)}" y="${num(boxTop)}" width="${num(boxWidth)}" height="${num(height)}" rx="4" fill="${box.highlight ? colors.tint : colors.surface}" stroke="${colors.border}"/>`,
+			`<rect class="step" ${outlinedBox(box.x, boxTop, boxWidth, height)} rx="4" fill="${box.highlight ? colors.tint : colors.surface}" stroke="${colors.border}"/>`,
 		);
 		const squareX = box.x + PROCESS_PAD;
 		const squareY = boxTop + PROCESS_PAD;

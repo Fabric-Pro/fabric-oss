@@ -4,23 +4,16 @@
  * membership is checked before model resolution and credential exchange.
  */
 
-import { type A2AMessage, SecureA2AClient } from "@repo/agent-core";
-import {
-	buildEffectiveBaseUrl,
-	getAIModelWithMetadata,
-	getRAGProviderConfigForModel,
-} from "@repo/ai";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
-import { issueAIToken } from "@repo/ai-token";
 import { auth } from "@repo/auth";
-import {
-	getActiveSystemRegisteredAgent,
-	isOrganizationMember,
-} from "@repo/database";
-import { AiUsageLimitExceededError } from "@repo/payments";
-import { agentEndpointRefusal } from "@repo/utils/agent-endpoint";
 import { headers } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
+import {
+	admitA2ARelay,
+	readA2ATaskReply,
+	resolveA2ARelayAIConfig,
+	sendA2ARelayMessage,
+} from "./a2a-send-turn";
 
 interface A2ASendRequest {
 	agentId: string;
@@ -74,265 +67,55 @@ export async function POST(req: NextRequest) {
 			);
 		}
 
-		// Only platform-admin registrations and operator seeds can create SYSTEM
-		// agents (the registry create procedures enforce this). Ignore caller URLs:
-		// the AI token is exchangeable for provider credentials. Keep service
-		// authentication unset on this relay, as before.
-		const agent = await getActiveSystemRegisteredAgent(agentId);
-		if (!agent?.deploymentUrl) {
+		const admission = await admitA2ARelay({
+			userId: session.user.id,
+			agentId,
+			organizationId,
+		});
+		if (!admission.ok) {
 			return NextResponse.json(
-				{ error: "Agent not found" },
-				{ status: 404 },
-			);
-		}
-		const agentUrl = agent.deploymentUrl;
-		// The relay requires an ACTIVE SYSTEM registration in every environment.
-		// No safe fetch here: SYSTEM agents may sit on private hostnames.
-		// Loopback and host.docker.internal are allowlisted by default only
-		// outside production; otherwise endpoint-check exemptions require
-		// AGENT_DISCOVERY_ALLOWED_HOSTS.
-		const endpointRefusal = agentEndpointRefusal(agentUrl);
-		if (endpointRefusal) {
-			return NextResponse.json(
-				{ error: endpointRefusal },
-				{ status: 400 },
+				{ error: admission.error },
+				{ status: admission.status },
 			);
 		}
 
-		// The organization is caller-supplied too, and it is not decorative:
-		// it selects the AI model and RAG config below and is stamped into the
-		// AI token this route issues. Nothing downstream re-checks it.
-		if (
-			organizationId &&
-			!(await isOrganizationMember(session.user.id, organizationId))
-		) {
+		const ai = await resolveA2ARelayAIConfig({
+			userId: session.user.id,
+			organizationId,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
+		if (!ai.ok) {
 			return NextResponse.json(
 				{
-					error: `Access denied: you are not a member of organization ${organizationId}`,
-				},
-				{ status: 403 },
-			);
-		}
-
-		// Issue AI token for secure credential exchange
-		let aiToken: string | undefined;
-		let aiModel: string | undefined;
-		let aiProvider: string | undefined;
-		let aiBaseUrl: string | undefined;
-
-		try {
-			// Get AI model with metadata using centralized entry point
-			// A person sent this message, so it may run on their ChatGPT plan
-			// or one the organization shares (Fizzy #2770).
-			const { metadata, trackUsage } = await getAIModelWithMetadata(
-				{ taskType: "TOOL_CALLING" },
-				{ userId: session.user.id, organizationId, planEligible: true },
-			);
-			const onPlan = metadata.provider === "OPENAI_CHATGPT_PLAN";
-
-			// Track usage (fire-and-forget)
-			trackUsage();
-
-			// Get raw provider config for base URL
-			const providerConfig = await getRAGProviderConfigForModel(
-				{ userId: session.user.id, organizationId },
-				metadata,
-			);
-
-			aiToken = await issueAIToken({
-				userId: session.user.id,
-				organizationId,
-				impersonated: Boolean(session.session.impersonatedBy),
-				source: "a2a-proxy",
-				// The same decision as the resolution above, so the agent's key
-				// exchange lands on the same plan, or on the member's own key
-				// while the plans are spent; never while impersonating.
-				planEligible: onPlan || Boolean(metadata.planSpentPersonalKey),
-			});
-
-			aiModel = metadata.modelString;
-			aiProvider = metadata.provider;
-			// A plan has no base URL; the organization's would point the agent
-			// at the wrong provider.
-			aiBaseUrl = onPlan
-				? undefined
-				: buildEffectiveBaseUrl(
-						metadata.provider,
-						providerConfig.baseUrl || undefined,
-					) || undefined;
-
-			console.log("[A2A Send] Issued AI token for user:", {
-				userId: session.user.id,
-				organizationId,
-				aiProvider,
-				aiModel,
-			});
-		} catch (error) {
-			// AI usage-limit chokepoint hit a HARD limit.
-			// The default `Continue without AI
-			// config` branch silently masks the block and lets the
-			// agent fall through with no token; surface the structured
-			// payload directly so the caller renders the shared
-			// destructive toast and stops the request.
-			if (error instanceof AiUsageLimitExceededError) {
-				return NextResponse.json(
-					{
-						error: error.message,
-						code: "AI_USAGE_LIMIT_EXCEEDED",
-						data: {
-							limitId: error.limitId,
-							dimension: error.dimension,
-							window: error.window,
-							used: error.used.toString(),
-							max: error.max.toString(),
-							manageLimitsUrl: error.manageLimitsUrl,
-						},
+					error: ai.limit.message,
+					code: "AI_USAGE_LIMIT_EXCEEDED",
+					data: {
+						limitId: ai.limit.limitId,
+						dimension: ai.limit.dimension,
+						window: ai.limit.window,
+						used: ai.limit.used.toString(),
+						max: ai.limit.max.toString(),
+						manageLimitsUrl: ai.limit.manageLimitsUrl,
 					},
-					{ status: 429 },
-				);
-			}
-			console.warn("[A2A Send] Failed to issue AI token:", error);
-			// Continue without AI config - agent will use its own defaults
+				},
+				{ status: 429 },
+			);
 		}
 
-		// Create secure A2A client
-		const client = new SecureA2AClient({
-			timeout: 120000, // 2 minutes for agent response
-			sourceAgent: "fabric-web",
-		});
-
-		// Build the A2A message with proper structure (parts array required)
-		const a2aMessage: A2AMessage = {
-			role: "user",
-			parts: [{ type: "text", text: message.content }],
-			metadata: {
-				...message.metadata,
-				history: history || [],
-			},
-		};
-
-		console.log("[A2A Send] Sending message to agent:", {
-			agentUrl,
-			contentLength: message.content.length,
-			hasHistory: !!history?.length,
+		const task = await sendA2ARelayMessage({
+			agentUrl: admission.agentUrl,
+			content: message.content,
+			metadata: message.metadata,
+			history,
 			contextId,
-			hasAiToken: !!aiToken,
-			userId: session.user.id,
-		});
-
-		// Send message via secure A2A protocol with tenant context and AI config
-		const task = await client.sendMessageSecure(
-			agentUrl,
-			a2aMessage,
-			{
+			tenant: {
 				userId: session.user.id,
 				organizationId: organizationId || null,
 			},
-			{
-				contextId: contextId || undefined,
-				metadata: message.metadata,
-				aiConfig:
-					aiToken && aiModel && aiProvider
-						? {
-								token: aiToken,
-								model: aiModel,
-								provider: aiProvider,
-								baseUrl: aiBaseUrl,
-							}
-						: undefined,
-			},
-		);
-
-		console.log("[A2A Send] Received task:", {
-			taskId: task.id,
-			status: task.status,
-			hasArtifacts: !!task.artifacts?.length,
+			aiConfig: ai.aiConfig,
 		});
 
-		// Extract response from task
-		let responseContent = "";
-		let toolCalls: Array<{ name: string; args: unknown; result: unknown }> =
-			[];
-		let reasoning: string | undefined;
-
-		// Check task messages for the agent response
-		if (task.messages && task.messages.length > 0) {
-			const lastMessage = task.messages[task.messages.length - 1];
-			if (lastMessage.role === "agent" && lastMessage.parts) {
-				// Extract text from parts
-				for (const part of lastMessage.parts) {
-					if (part.type === "text") {
-						responseContent += part.text;
-					}
-					// Check for reasoning in data parts
-					if (part.type === "data") {
-						const data = part.data as Record<string, unknown>;
-						if (
-							data.reasoning &&
-							typeof data.reasoning === "string"
-						) {
-							reasoning = data.reasoning;
-						}
-					}
-				}
-			}
-		}
-
-		// Also check task metadata for reasoning
-		if (
-			!reasoning &&
-			task.metadata?.reasoning &&
-			typeof task.metadata.reasoning === "string"
-		) {
-			reasoning = task.metadata.reasoning;
-		}
-
-		// Check artifacts for structured output
-		if (task.artifacts && task.artifacts.length > 0) {
-			for (const artifact of task.artifacts) {
-				if (artifact.parts) {
-					for (const part of artifact.parts) {
-						if (part.type === "text") {
-							// If we don't have response content yet, use the artifact text
-							if (!responseContent) {
-								responseContent = part.text;
-							}
-						}
-						if (part.type === "data") {
-							// Extract tool calls if present in data
-							const data = part.data as Record<string, unknown>;
-							if (data.toolCalls) {
-								toolCalls = data.toolCalls as typeof toolCalls;
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Fallback: use task status message if no content
-		if (!responseContent && task.status === "completed") {
-			responseContent = "Task completed successfully.";
-		}
-
-		if (!responseContent && task.status === "failed") {
-			// Check metadata for error info
-			const errorInfo = task.metadata?.error as
-				| { message?: string }
-				| undefined;
-			responseContent =
-				errorInfo?.message || "Task failed with unknown error.";
-		}
-
-		return NextResponse.json({
-			response: responseContent,
-			contextId: task.contextId || contextId,
-			taskId: task.id,
-			status: task.status,
-			toolCalls,
-			artifacts: task.artifacts,
-			reasoning,
-		});
+		return NextResponse.json(readA2ATaskReply(task, contextId));
 	} catch (error) {
 		console.error("[A2A Send] Error:", error);
 

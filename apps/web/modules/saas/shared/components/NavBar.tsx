@@ -570,6 +570,7 @@ export function NavBar({
 						{/* Pinned + New CTA */}
 						<div className="shrink-0 px-3 pt-3">
 							<Link
+								data-onboarding-target="nav-new"
 								href={`${effectiveBasePath}/projects/new`}
 								onClick={() => setIsMobileMenuOpen(false)}
 								className="flex h-9 min-h-[36px] shrink-0 w-full items-center gap-2.5 rounded-[6px] border border-[#E5C5C0] bg-[#F3E2E0] px-3 text-sm font-semibold text-foreground transition-colors duration-150 hover:bg-[#EBD3D0] dark:border-[#FF5C4D]/25 dark:bg-[#FF3621]/[0.16] dark:hover:bg-[#FF3621]/[0.24] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
@@ -853,6 +854,7 @@ export function NavBar({
 							<div className="mt-3 hidden shrink-0 md:flex md:w-full md:items-center md:justify-center">
 								{showLabels ? (
 									<Link
+										data-onboarding-target="nav-new"
 										href={`${effectiveBasePath}/projects/new`}
 										className="flex h-9 min-h-[36px] shrink-0 w-full items-center gap-2.5 rounded-[6px] border border-[#F2CEBD] bg-[#FDF1EB] px-3 text-sm font-semibold text-foreground transition-colors duration-150 hover:bg-[#F9E3D8] dark:border-[#FF8547]/30 dark:bg-[#EA580C]/[0.16] dark:hover:bg-[#EA580C]/[0.24] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 									>
@@ -866,6 +868,7 @@ export function NavBar({
 								) : (
 									<RailTooltip label="New">
 										<Link
+											data-onboarding-target="nav-new"
 											href={`${effectiveBasePath}/projects/new`}
 											aria-label="New"
 											className="mx-auto flex size-9 min-h-[36px] min-w-[36px] shrink-0 items-center justify-center rounded-[8px] border border-[#F2CEBD] bg-[#FDF1EB] text-foreground transition-colors duration-150 hover:bg-[#F9E3D8] dark:border-[#FF8547]/30 dark:bg-[#EA580C]/[0.16] dark:hover:bg-[#EA580C]/[0.24] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"

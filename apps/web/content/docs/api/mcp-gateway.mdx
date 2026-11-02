@@ -42,6 +42,15 @@ to the project: an organization key must belong to the organization hosting it.
 
 A new organization API key starts with `mcp:read` only. `mcp:write` satisfies every write tool, so a key that holds it can change workflows, pages and features; for an agent that should do one thing, give the key the narrow scope instead (`workflows:write`, `frames:write`, `features:write`, and so on). Keys created earlier keep the scopes they were given.
 
+The Fabric Kanban API uses separate scopes rather than the MCP umbrella:
+`kanban:read` lists the caller's queue and identity, while `kanban:write` pulls
+and completes the caller's items. Neither scope implies the other. Under your
+organization's **Settings → API keys**, create a key and select **Kanban Read**
+and **Kanban Write**. A read-only organization role can select only **Kanban
+Read**, so its key cannot pull or complete items. Existing keys without these
+scopes need to be replaced from the same settings page before they can use
+these routes.
+
 Without valid credentials the gateway answers `401` with
 `WWW-Authenticate: Bearer resource_metadata="https://your-fabric.com/.well-known/oauth-protected-resource/api/mcp-gateway/projects/<project-id>", scope="mcp:read instructions:read instructions:write offline_access"`
 (the organization-wide URL names `.../oauth-protected-resource/api/mcp-gateway`),
@@ -370,24 +379,27 @@ Standard API rate limits apply. The gateway does not add additional rate limitin
 
 Clients that do not persist `Mcp-Session-Id` across requests (such as serverless workers, one-shot CLI invocations, or stateless desktop bridges) can send `X-Mcp-Stateless: true` or append `?stateless=1` to `/mcp` or `/api/mcp-gateway`. Each request is authenticated and executed independently without requiring an `initialize` handshake first.
 
-### Durable Temporal Tool Execution
+### Idempotent Durable Tool Calls
 
-Long-running or side-effecting `tools/call` requests can opt into durable execution backed by Temporal workflows:
+`tools/call` requests can opt into Fabric's 24-hour database-backed idempotency store:
 
 - **Headers**: `X-Mcp-Durable: true` and optional `X-Mcp-Idempotency-Key: <key>`
 - **JSON-RPC `_meta`**: `{ "_meta": { "durable": true, "idempotencyKey": "<key>" } }`
+- **Tool arguments**: `_durable: true` and optional `_idempotencyKey: "<key>"`
 
-When enabled, the gateway deterministic workflow ID `mcp-durable-<organizationId>-<toolName>-<idempotencyKey>` deduplicates retries and records execution metadata in `_meta.durableExecution`.
+The gateway binds a receipt to the authenticated organization, authenticated user, credential identity, bound or pinned project, selected server or MCP configuration, tool name, key, and a canonical SHA-256 hash of the tool arguments. It claims that receipt before running the tool. Reusing the same key and arguments never runs a completed call again. When the tool's stored result is safe to return, the gateway replays it. Otherwise it returns a non-error completion receipt with the execution ID and completion time, sets `_meta.durableExecution.resultWithheld: true`, and directs the client to the matching get/list tool for current state without including the stored result. Reusing the key with different arguments is refused, and a live `RUNNING` call asks the client to retry later. Failed and expired receipts can be reclaimed; a `RUNNING` receipt becomes stale and reclaimable after 10 minutes.
+
+An organization is required. Without an explicit key the tool still runs, but `_meta.durableExecution` reports `deduplicated: false`, `stored: false`, and `reason: "no_idempotency_key"`; the gateway does not derive a key. Metadata reports the truthful `fabric-idempotency-store` (or `inline`) engine, receipt `executionId`, status, replay and storage state, and timestamps. If saving the completion receipt fails after the tool succeeds, the gateway returns the tool result and reports that it was not stored.
 
 ### Interactive MCP Apps (`ui://fabric/*`)
 
-The gateway advertises the `io.modelcontextprotocol/ui` extension (`2026-01-26`), attaches `_meta.ui.resourceUri` to both standard and durable `tools/call` results, and serves self-contained `text/html;profile=mcp-app` views via `resources/list` and `resources/read`:
+The gateway advertises the standard `resources` capability, attaches `_meta.ui.resourceUri` to supported `tools/call` results, and serves self-contained `text/html;profile=mcp-app` views via `resources/list` and `resources/read`:
 
 | Resource URI | Companion Tools | Purpose |
 |---|---|---|
 | `ui://fabric/project-dashboard` | `fabric_list_projects`, `fabric_get_project`, `fabric_list_frames`, `fabric_get_frame`, `fabric_list_workspaces`, `fabric_get_workspace`, `fabric_list_artifacts`, `fabric_get_artifact`, `fabric_get_identity` | Interactive **Fabric Projects** and **Fabric Artifacts & Workspaces** cards with 1-click portal and Fabric Desktop launch actions |
 | `ui://fabric/agent-delegation` | `fabric_list_features` (`assignedToMe: true`), `fabric_get_feature`, `fabric_list_project_pm_assigned_items`, `fabric_list_tickets`, `fabric_delegate_agent` | Interactive **Fabric Tickets & Backlog** (`Tickets Assigned to You`) and **Agent Delegation** cards with 1-click **Start Ticket in Fabric Desktop** and **Delegate Ticket to Remote Server** actions |
-| `ui://fabric/workflow-visualizer` | `fabric_list_workflows`, `fabric_get_workflow`, `fabric_execute_workflow` | Visual DAG inspector for Temporal workflows |
+| `ui://fabric/workflow-visualizer` | `fabric_list_workflows`, `fabric_get_workflow`, `fabric_execute_workflow` | Visual DAG inspector for workflow results |
 | `ui://fabric/genie-insights` | `fabric_query_workspace`, `fabric_search_knowledge`, `fabric_list_documents`, `fabric_get_document` | Databricks Genie Agents and Lakebase hybrid RAG insight card |
 | `ui://fabric/visualize` | `fabric_visualize` | Declarative A2UI v0.9.1 multi-component canvas (`KpiGrid`, `BarChart`, `LineChart`, `DataTable`, `BadgeList`, `Timeline`) |
 

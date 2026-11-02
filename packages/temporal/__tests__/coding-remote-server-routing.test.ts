@@ -168,3 +168,37 @@ it("prevents new prompts after disconnect while allowing confirmed cleanup", asy
 		adapter().cancelSession("example-session"),
 	).resolves.toBeUndefined();
 });
+
+it.each(["disconnected", "readiness"])(
+	"classifies %s before POST as definitely not created",
+	async (scenario) => {
+		if (scenario === "disconnected") {
+			f.disabled = true;
+		} else {
+			vi.spyOn(
+				FabricBackgroundAdapter.prototype,
+				"executionReadiness",
+			).mockRejectedValueOnce(new Error("Not ready"));
+		}
+		await expect(
+			adapter().createSession({
+				repoOwner: "example-org",
+				repoName: "example-repo",
+			}),
+		).rejects.toMatchObject({
+			type: "CODING_SESSION_NOT_CREATED",
+			nonRetryable: false,
+		});
+		expect(paths).not.toContain("/sessions");
+	},
+);
+
+it("rejects invalid creation parameters before a session POST", async () => {
+	await expect(
+		adapter().createSession({ repoOwner: "", repoName: "example-repo" }),
+	).rejects.toMatchObject({
+		type: "CODING_SESSION_NOT_CREATED",
+		nonRetryable: false,
+	});
+	expect(paths).toEqual([]);
+});

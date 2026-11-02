@@ -1,6 +1,7 @@
 import {
 	ChatEventReplayError,
 	type ConversationEventScope,
+	hasConversationTurnReplayGap,
 	readConversationTurnEvents,
 } from "@repo/database";
 import type { ChatExecutionEvent } from "@repo/temporal";
@@ -10,7 +11,7 @@ import {
 	parseOrchestratorStreamEvent,
 } from "../orchestrator-stream-protocol";
 
-/** Distinguish a failed permission check from an unavailable transport cache. */
+/** Preserve the cause of a replay authorization lookup for access classification. */
 export class ChatReplayAuthorizationError extends Error {
 	constructor(cause: unknown) {
 		super(
@@ -28,7 +29,7 @@ export function projectChatReplayEvent(
 ): OrchestratorStreamInput | null {
 	switch (event.event) {
 		case "execution.replay_unavailable":
-			return { type: "error", message: event.data.message };
+			return { type: "replay_unavailable" };
 		case "execution.text_delta":
 			return { type: "text_delta", content: event.data.text };
 		case "execution.iteration_start":
@@ -74,12 +75,17 @@ export function createServerChatReplay(input: {
 	validateIntegrity?: () => Promise<void>;
 }) {
 	let after = input.after;
+	const fullReplay = !input.after;
+	let delivered = false;
 	let lastAuthorization = 0;
 	const authorize = async () => {
 		if (input.authorize && Date.now() - lastAuthorization >= 5000) {
 			try {
 				await input.authorize();
 			} catch (error) {
+				if (error instanceof ChatEventReplayError) {
+					throw error;
+				}
 				throw new ChatReplayAuthorizationError(error);
 			}
 			lastAuthorization = Date.now();
@@ -90,6 +96,13 @@ export function createServerChatReplay(input: {
 		// Serialize wakeups with polling so a cursor is never delivered twice.
 		while (!input.isClosed()) {
 			await authorize();
+			if (
+				fullReplay &&
+				!delivered &&
+				(await hasConversationTurnReplayGap(input.scope))
+			) {
+				throw new ChatEventReplayError("Replay output is incomplete");
+			}
 			const rows = await readConversationTurnEvents({
 				scope: input.scope,
 				after,
@@ -110,8 +123,10 @@ export function createServerChatReplay(input: {
 						"Unsupported chat replay event",
 					);
 				}
-				if (projected.type === "error") {
-					throw new ChatEventReplayError(projected.message);
+				if (projected.type === "replay_unavailable") {
+					throw new ChatEventReplayError(
+						"Replay output is incomplete",
+					);
 				}
 				const event = parseOrchestratorStreamEvent({
 					...projected,
@@ -121,6 +136,7 @@ export function createServerChatReplay(input: {
 					throw new ChatEventReplayError("Invalid chat replay event");
 				}
 				input.send(event);
+				delivered = true;
 				after = row.cursor;
 			}
 			if (rows.length < 200) {

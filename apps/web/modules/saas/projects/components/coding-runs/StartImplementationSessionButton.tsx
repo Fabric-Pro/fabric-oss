@@ -6,11 +6,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { CodeIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { type ComponentProps, useState } from "react";
+import { type ComponentProps, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { orpcClient } from "../../../../shared/lib/orpc-client";
 import { hasActiveCodingRunOnStory } from "../../lib/coding-run-visibility";
 import {
+	DEFAULT_PROJECT_DELEGATION_PREFERENCES,
 	type ExecutionChannel,
 	type ExecutionProvider,
 	getExecutionProviderLabel,
@@ -136,7 +137,12 @@ export function StartImplementationSessionButton({
 	const _effectiveProvider =
 		initialExecutionProvider ?? recommendation.provider;
 	const isKanbanLocal = false;
-	const delegationPrefs = loadProjectDelegationPreferences(projectId);
+	const [delegationPrefs, setDelegationPrefs] = useState(
+		DEFAULT_PROJECT_DELEGATION_PREFERENCES,
+	);
+	useEffect(() => {
+		setDelegationPrefs(loadProjectDelegationPreferences(projectId));
+	}, [projectId, isOpen]);
 	const [serverId, setServerId] = useState("");
 	const servers = useQuery({
 		queryKey: ["remoteAgentServers", projectId, organizationId],
@@ -160,7 +166,7 @@ export function StartImplementationSessionButton({
 	const invalidateStoryQueries = async () => {
 		await Promise.all([
 			queryClient.invalidateQueries({
-				queryKey: orpc.projects.stories.list.queryKey({
+				queryKey: orpc.projects.stories.board.queryKey({
 					input: { projectId, organizationId },
 				}),
 			}),
@@ -298,7 +304,10 @@ export function StartImplementationSessionButton({
 				readinessReason={readinessReason}
 				selectedServerUrl={selectedServer?.url}
 				serverId={selectedServerId}
-				serverRequired={servers.data?.enabled === true}
+				serverRequired={
+					servers.data?.enabled === true &&
+					!servers.data.hasDefaultServer
+				}
 				serverLoading={servers.isPending || servers.isError}
 				serverPicker={
 					servers.isPending ? (
@@ -322,6 +331,7 @@ export function StartImplementationSessionButton({
 							organizationId={organizationId}
 							servers={servers.data.servers}
 							canShare={servers.data.canShare}
+							hasDefaultServer={servers.data.hasDefaultServer}
 							value={selectedServerId ?? ""}
 							onChange={setServerId}
 						/>

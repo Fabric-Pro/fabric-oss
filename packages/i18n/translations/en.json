@@ -487,6 +487,7 @@
 			"dontHaveAnAccount": "Don't have an account yet?",
 			"forgotPassword": "Forgot password?",
 			"hints": {
+				"passwordSet": "Password set. Sign in with your new password.",
 				"invalidCredentials": "The email or password you entered are invalid. Please try again.",
 				"linkSent": {
 					"message": "We have sent you a link to continue. Please check your inbox.",
@@ -965,7 +966,7 @@
 			"launcher": "Get started",
 			"next": "Next",
 			"noProject": {
-				"body": "Projects are home base in Fabric — your documents, roadmap, agents, and code map all live inside one. Create your first project to explore this area.",
+				"body": "Projects are home base in Fabric — your documents, roadmap, agents, and code map all live inside one. Use New in the navigation to create your first project.",
 				"title": "Create your first project"
 			},
 			"pointer": {
@@ -1111,6 +1112,7 @@
 		"roles": {
 			"admin": "Admin",
 			"member": "Member",
+			"none": "No role",
 			"owner": "Owner"
 		},
 		"settings": {
@@ -1905,6 +1907,8 @@
 				"weave": {
 					"session": {
 						"terminated_on_exit": "Weave session ended",
+						"continuation_requested": "Coding session continuation requested",
+						"recovery_closed": "Coding session recovery closed",
 						"terminated_stale": "Weave session killed (stale)"
 					}
 				},
@@ -3256,6 +3260,11 @@
 	},
 	"projects": {
 		"remoteAgents": {
+			"recoveryWarning": "The remote outcome is unknown. Check the original server for an orphaned session and stop it before starting another run. Closing this record does not stop remote work.",
+			"orphanCheck": "I checked the original server for orphaned work.",
+			"closeRun": "Close run",
+			"recoveryClosed": "Run closed. You can start another run.",
+			"recoveryFailed": "Could not close the run.",
 			"portalAiErrorTitle": "AI assistant unavailable",
 			"portalAiErrorHelp": "The AI assistant could not start. Retry or check your Portal AI configuration. Remote assignment remains available from Start work.",
 			"openServer": "Open server",
@@ -5245,6 +5254,14 @@
 				}
 			},
 			"roadmapUi": {
+				"detailLoading": "Loading feature…",
+				"detailLoadFailed": "Could not load feature. Please try again.",
+				"descriptionSearch": {
+					"pending": "Searching descriptions…",
+					"failed": "Descriptions could not be searched.",
+					"skipped": "Query too long: descriptions were not searched.",
+					"retry": "Retry"
+				},
 				"title": "Roadmap",
 				"aboutLabel": "About this roadmap",
 				"aboutTitle": "Work item flow, delivery stages, and execution pressure",
@@ -10088,6 +10105,7 @@
 			"showDiagram": "Return to the rendered diagram. Any unsaved edits to the source are discarded.",
 			"editDiagramSource": "Open the Mermaid source in an editable panel. Ctrl+Enter saves.",
 			"editStatTilesSource": "Edit source",
+			"editBlockSource": "Edit source",
 			"addCaption": "Add a short caption underneath the diagram. It travels with the diagram when the document is saved.",
 			"editDiagramInChat": "Scroll to the Fabric Agent chat, where this diagram can be edited. The embed here is view-only and always shows the latest saved scene.",
 			"removeDiagramPlaceholder": {

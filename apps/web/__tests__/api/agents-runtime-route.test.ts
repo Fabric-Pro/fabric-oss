@@ -10,6 +10,8 @@
  *   - the caller's own thread reaches the engine, built for the caller in
  *     the resolved organization; routes outside the runtime are 404.
  */
+import { EventType } from "@ag-ui/client";
+import type { RunStream } from "@saas/agents/runtime/engine";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -22,6 +24,25 @@ const m = vi.hoisted(() => ({
 	engineConnect: vi.fn(),
 	engineStop: vi.fn(),
 	orchestratorEngine: vi.fn(),
+	orchestratorRun: vi.fn(),
+	libraryEngine: vi.fn(),
+	libraryRun: vi.fn(),
+	libraryConnect: vi.fn(),
+	sidekickEngine: vi.fn(),
+	sidekickRun: vi.fn(),
+	weaveEngine: vi.fn(),
+	weaveRun: vi.fn(),
+	weaveConnect: vi.fn(),
+	weaveStop: vi.fn(),
+	researchEngine: vi.fn(),
+	researchRun: vi.fn(),
+	researchConnect: vi.fn(),
+	researchStop: vi.fn(),
+	cugaEngine: vi.fn(),
+	cugaRun: vi.fn(),
+	cugaConnect: vi.fn(),
+	dataAnalystEngine: vi.fn(),
+	dataAnalystRun: vi.fn(),
 }));
 
 vi.mock("@saas/auth/lib/server", () => ({ getSession: () => m.getSession() }));
@@ -61,7 +82,112 @@ vi.mock("@saas/agents/runtime/orchestrator-engine", () => ({
 		constructor(caller: unknown, streamWindowMs: unknown) {
 			m.orchestratorEngine(caller, streamWindowMs);
 		}
-		run = async () => undefined;
+		run = (...args: unknown[]) => m.orchestratorRun(...args);
+		connect = async () => undefined;
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+vi.mock("@saas/agents/runtime/library-chat-engine", () => ({
+	LIBRARY_CHAT_AGENT_ID: "library-chat",
+	LibraryChatEngine: class {
+		constructor(caller: unknown) {
+			m.libraryEngine(caller);
+		}
+		run = (...args: unknown[]) => m.libraryRun(...args);
+		connect = (...args: unknown[]) => m.libraryConnect(...args);
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+// The Atlas chat's engine as the route meets it: built per request for the
+// caller; a run holds its response open until the test releases it.
+const atlas = vi.hoisted(() => ({
+	engine: vi.fn(),
+	runs: [] as Array<{ request: unknown; stream: RunStream }>,
+	connect: vi.fn(),
+	release: () => {},
+}));
+
+vi.mock("@saas/agents/runtime/atlas-chat-engine", () => ({
+	ATLAS_CHAT_AGENT_ID: "atlas-chat",
+	AtlasChatEngine: class {
+		constructor(caller: unknown) {
+			atlas.engine(caller);
+		}
+		run = (request: unknown, stream: RunStream) => {
+			atlas.runs.push({ request, stream });
+			return new Promise<void>((resolve) => {
+				atlas.release = resolve;
+			});
+		};
+		connect = (...args: unknown[]) => atlas.connect(...args);
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+vi.mock("@saas/agents/runtime/sidekick-engine", () => ({
+	SIDEKICK_AGENT_ID: "agent-builder-sidekick",
+	SidekickEngine: class {
+		constructor(caller: unknown) {
+			m.sidekickEngine(caller);
+		}
+		run = (...args: unknown[]) => m.sidekickRun(...args);
+		connect = async () => undefined;
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+vi.mock("@saas/agents/runtime/weave-refine-engine", () => ({
+	WEAVE_REFINE_AGENT_ID: "weave-refine",
+	WeaveRefineEngine: class {
+		constructor(caller: unknown) {
+			m.weaveEngine(caller);
+		}
+		run = (...args: unknown[]) => m.weaveRun(...args);
+		connect = (...args: unknown[]) => m.weaveConnect(...args);
+		isRunning = async () => false;
+		stop = (...args: unknown[]) => m.weaveStop(...args);
+	},
+}));
+
+vi.mock("@saas/agents/runtime/research-engine", () => ({
+	RESEARCH_AGENT_ID: "deep-researcher",
+	ResearchEngine: class {
+		constructor(caller: unknown) {
+			m.researchEngine(caller);
+		}
+		run = (...args: unknown[]) => m.researchRun(...args);
+		connect = (...args: unknown[]) => m.researchConnect(...args);
+		isRunning = async () => false;
+		stop = (...args: unknown[]) => m.researchStop(...args);
+	},
+}));
+
+vi.mock("@saas/agents/runtime/cuga-generalist-engine", () => ({
+	CUGA_GENERALIST_AGENT_ID: "cuga-generalist",
+	CugaGeneralistEngine: class {
+		constructor(caller: unknown) {
+			m.cugaEngine(caller);
+		}
+		run = (...args: unknown[]) => m.cugaRun(...args);
+		connect = (...args: unknown[]) => m.cugaConnect(...args);
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+vi.mock("@saas/agents/runtime/data-analyst-engine", () => ({
+	DATA_ANALYST_AGENT_ID: "data-analyst",
+	DataAnalystEngine: class {
+		constructor(caller: unknown) {
+			m.dataAnalystEngine(caller);
+		}
+		run = (...args: unknown[]) => m.dataAnalystRun(...args);
 		connect = async () => undefined;
 		isRunning = async () => false;
 		stop = async () => false;
@@ -132,9 +258,66 @@ beforeEach(() => {
 	m.engineConnect.mockResolvedValue(undefined);
 	m.engineRun.mockResolvedValue(undefined);
 	m.engineStop.mockResolvedValue(true);
+	m.orchestratorRun.mockResolvedValue(undefined);
+	m.libraryRun.mockResolvedValue(undefined);
+	m.libraryConnect.mockResolvedValue(undefined);
+	m.sidekickRun.mockResolvedValue(undefined);
+	m.weaveRun.mockResolvedValue(undefined);
+	m.weaveConnect.mockResolvedValue(undefined);
+	m.weaveStop.mockResolvedValue(true);
+	m.cugaRun.mockResolvedValue(undefined);
+	m.cugaConnect.mockResolvedValue(undefined);
+	m.dataAnalystRun.mockResolvedValue(undefined);
 });
 
 describe("/api/agents/runtime", () => {
+	it("refuses an announced body over 8 MiB before building a runtime", async () => {
+		const response = await POST(
+			new Request(`${BASE}/agent/fabric-direct/run`, {
+				method: "POST",
+				headers: { "Content-Length": String(8 * 1024 * 1024 + 1) },
+				body: body(THREAD),
+			}),
+		);
+		expect(response.status).toBe(413);
+		expect(m.engineCaller).not.toHaveBeenCalled();
+		expect(m.engineRun).not.toHaveBeenCalled();
+	});
+
+	it.each(["run", "connect", "stop/thread-example-0001"])(
+		"refuses an actual oversized body on %s even with a lying length",
+		async (path) => {
+			const response = await POST(
+				new Request(`${BASE}/agent/fabric-direct/${path}`, {
+					method: "POST",
+					headers: { "content-length": "1" },
+					body: "x".repeat(8 * 1024 * 1024 + 1),
+				}),
+			);
+			expect(response.status).toBe(413);
+			expect(m.engineCaller).not.toHaveBeenCalled();
+			expect(m.findConversation).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([401, 403])(
+		"checks admission before reading a body (%s)",
+		async (status) => {
+			if (status === 401) {
+				m.getSession.mockResolvedValue(null);
+			} else {
+				m.hasOrganizationTie.mockResolvedValue(false);
+			}
+			const request = new Request(`${BASE}/agent/fabric-direct/run`, {
+				method: "POST",
+				headers: { "content-length": String(8 * 1024 * 1024 + 1) },
+				body: body(THREAD),
+			});
+			expect((await POST(request)).status).toBe(status);
+			expect(request.bodyUsed).toBe(false);
+		},
+	);
+
 	it("answers 401 without a session and builds no runtime", async () => {
 		m.getSession.mockResolvedValue(null);
 
@@ -215,22 +398,396 @@ describe("/api/agents/runtime", () => {
 		expect(m.engineRun).toHaveBeenCalled();
 	});
 
+	it("detaches a durable response without asking the engine to stop its workflow", async () => {
+		let stream: RunStream | undefined;
+		let release = () => {};
+		const running = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		m.engineRun.mockImplementation(
+			async (_request: unknown, tail: RunStream) => {
+				stream = tail;
+				await running;
+			},
+		);
+		const response = await run(THREAD);
+		await vi.waitFor(() => expect(stream).toBeDefined());
+		const reader = response.body?.getReader();
+		if (!reader) {
+			throw new Error("Expected an SSE response body");
+		}
+		const cancelled = reader.cancel();
+		try {
+			await vi.waitFor(() => expect(stream?.isClosed()).toBe(true));
+			expect(m.engineStop).not.toHaveBeenCalled();
+		} finally {
+			release();
+			await cancelled;
+			reader.releaseLock();
+		}
+	});
+
 	it("lists the Direct and Orchestrator agents on info and serves no routes beyond the runtime's", async () => {
 		const info = await GET(new Request(`${BASE}/info`));
 		expect(info.status).toBe(200);
 		const listed = JSON.stringify(await info.json());
 		expect(listed).toContain("fabric-direct");
 		expect(listed).toContain("fabric-orchestrator");
+		expect(listed).toContain("deep-researcher");
 		expect(m.orchestratorEngine).toHaveBeenCalledWith(
 			expect.objectContaining({ userId: USER }),
 			240000,
+		);
+		expect(m.researchEngine).toHaveBeenCalledWith(
+			expect.objectContaining({ userId: USER, organizationId: ORG }),
 		);
 
 		const threads = await GET(new Request(`${BASE}/threads`));
 		expect(threads.status).toBe(404);
 	});
 
+	it("leaves a request/reply agent's thread to its engine, and still checks the conversation agents' threads", async () => {
+		// The thread id names someone else's conversation.
+		m.findConversation.mockResolvedValue({
+			userId: "user-example-2",
+			organizationId: ORG,
+		});
+
+		const libraryRun = await post("/agent/library-chat/run", THREAD);
+		await libraryRun.text();
+		const libraryConnect = await post(
+			"/agent/library-chat/connect",
+			THREAD,
+		);
+		await libraryConnect.text();
+
+		expect(libraryRun.status).toBe(200);
+		expect(libraryConnect.status).toBe(200);
+		expect(m.libraryEngine).toHaveBeenCalledWith(
+			expect.objectContaining({ userId: USER, organizationId: ORG }),
+		);
+		expect(m.libraryRun).toHaveBeenCalledWith(
+			expect.objectContaining({ threadId: THREAD }),
+			expect.anything(),
+		);
+		expect(m.libraryConnect).toHaveBeenCalledWith(
+			THREAD,
+			expect.anything(),
+		);
+
+		for (const response of [
+			await post("/agent/fabric-direct/run", THREAD),
+			await post("/agent/fabric-orchestrator/run", THREAD),
+			await post("/agent/fabric-orchestrator/connect", THREAD),
+			await post("/agent/deep-researcher/run", THREAD),
+			await post("/agent/deep-researcher/connect", THREAD),
+			// A stop names only a thread and reaches every engine.
+			await POST(
+				new Request(`${BASE}/agent/library-chat/stop/${THREAD}`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ runId: "run-example-0001" }),
+				}),
+			),
+		]) {
+			expect(response.status).toBe(403);
+		}
+		expect(m.engineRun).not.toHaveBeenCalled();
+		expect(m.orchestratorRun).not.toHaveBeenCalled();
+		expect(m.engineStop).not.toHaveBeenCalled();
+		expect(m.researchRun).not.toHaveBeenCalled();
+		expect(m.researchConnect).not.toHaveBeenCalled();
+		expect(m.researchStop).not.toHaveBeenCalled();
+	});
+
+	it("lists the library chat on info", async () => {
+		const info = await GET(new Request(`${BASE}/info`));
+
+		expect(JSON.stringify(await info.json())).toContain("library-chat");
+	});
+
+	it("a Sidekick run reaches the Sidekick engine built for the caller without a conversation check", async () => {
+		const response = await post(
+			"/agent/agent-builder-sidekick/run",
+			THREAD,
+			OTHER_ORG,
+		);
+		await response.text();
+
+		expect(response.status).toBe(200);
+		expect(m.sidekickEngine).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: USER,
+				organizationId: OTHER_ORG,
+			}),
+		);
+		expect(m.sidekickRun).toHaveBeenCalledWith(
+			expect.objectContaining({ threadId: THREAD }),
+			expect.anything(),
+		);
+		expect(m.findConversation).not.toHaveBeenCalled();
+	});
+
+	it("lists agent-builder-sidekick on info", async () => {
+		const info = await GET(new Request(`${BASE}/info`));
+
+		expect(JSON.stringify(await info.json())).toContain(
+			'"agent-builder-sidekick"',
+		);
+	});
+
+	it("leaves a weave-refine run and connect to its engine, built for the caller, and still checks a stop", async () => {
+		// The thread id names someone else's conversation.
+		m.findConversation.mockResolvedValue({
+			userId: "user-example-2",
+			organizationId: ORG,
+		});
+
+		const weaveRun = await post("/agent/weave-refine/run", THREAD);
+		await weaveRun.text();
+		const weaveConnect = await post("/agent/weave-refine/connect", THREAD);
+		await weaveConnect.text();
+		const weaveStop = await POST(
+			new Request(`${BASE}/agent/weave-refine/stop/${THREAD}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ runId: "run-example-0001" }),
+			}),
+		);
+
+		expect(weaveRun.status).toBe(200);
+		expect(weaveConnect.status).toBe(200);
+		expect(m.weaveEngine).toHaveBeenCalledWith(
+			expect.objectContaining({ userId: USER, organizationId: ORG }),
+		);
+		expect(m.weaveRun).toHaveBeenCalledWith(
+			expect.objectContaining({ threadId: THREAD }),
+			expect.anything(),
+		);
+		expect(m.weaveConnect).toHaveBeenCalledWith(THREAD, expect.anything());
+		expect(weaveStop.status).toBe(403);
+		expect(m.weaveStop).not.toHaveBeenCalled();
+	});
+
+	it("lists weave-refine on info", async () => {
+		const info = await GET(new Request(`${BASE}/info`));
+
+		expect(JSON.stringify(await info.json())).toContain('"weave-refine"');
+	});
+
+	it("does not instantiate the retired CUGA engine for direct run or connect links", async () => {
+		m.findConversation.mockResolvedValue({
+			userId: USER,
+			organizationId: ORG,
+		});
+
+		const cugaRun = await post("/agent/cuga-generalist/run", THREAD);
+		await cugaRun.text();
+		const cugaConnect = await post(
+			"/agent/cuga-generalist/connect",
+			THREAD,
+		);
+		await cugaConnect.text();
+
+		expect(cugaRun.status).toBeGreaterThanOrEqual(400);
+		expect(cugaConnect.status).toBeGreaterThanOrEqual(400);
+		expect(m.cugaEngine).not.toHaveBeenCalled();
+		expect(m.cugaRun).not.toHaveBeenCalled();
+		expect(m.cugaConnect).not.toHaveBeenCalled();
+
+		const stopped = await POST(
+			new Request(`${BASE}/agent/cuga-generalist/stop/${THREAD}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ runId: "run-example-0001" }),
+			}),
+		);
+		expect(stopped.status).toBeGreaterThanOrEqual(400);
+	});
+
+	it("does not advertise the retired CUGA chat on info", async () => {
+		const info = await GET(new Request(`${BASE}/info`));
+
+		expect(JSON.stringify(await info.json())).not.toContain(
+			"cuga-generalist",
+		);
+	});
+
+	it("routes the data analyst to the engine bound to the resolved organization", async () => {
+		m.findConversation.mockResolvedValue({
+			userId: "another-example-user",
+			organizationId: ORG,
+		});
+		const response = await post(
+			"/agent/data-analyst/run",
+			THREAD,
+			OTHER_ORG,
+		);
+		await response.text();
+		expect(response.status).toBe(200);
+		expect(m.dataAnalystEngine).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: USER,
+				organizationId: OTHER_ORG,
+			}),
+		);
+		expect(m.dataAnalystRun).toHaveBeenCalledWith(
+			expect.objectContaining({ threadId: THREAD }),
+			expect.anything(),
+		);
+		expect(m.findConversation).not.toHaveBeenCalled();
+	});
+
+	it("lists the data analyst on info", async () => {
+		const info = await GET(new Request(`${BASE}/info`));
+		expect(JSON.stringify(await info.json())).toContain('"data-analyst"');
+	});
+
 	it("keeps its function window above the longest stream window", () => {
 		expect(maxDuration).toBe(300);
+	});
+});
+
+describe("/api/agents/runtime — the Atlas chat", () => {
+	beforeEach(() => {
+		atlas.runs.length = 0;
+		atlas.connect.mockResolvedValue(undefined);
+	});
+
+	it("lists atlas-chat on info and builds its engine for the caller", async () => {
+		const info = await GET(
+			new Request(`${BASE}/info`, {
+				headers: { "x-fabric-organization-id": ORG },
+			}),
+		);
+
+		expect(JSON.stringify(await info.json())).toContain("atlas-chat");
+		expect(atlas.engine).toHaveBeenCalledWith(
+			expect.objectContaining({ userId: USER, organizationId: ORG }),
+		);
+	});
+
+	it("leaves its run and connect on any thread to the engine, and still refuses a stop on someone else's conversation", async () => {
+		// The thread id names another user's AgentConversation.
+		m.findConversation.mockResolvedValue({
+			userId: "user-example-2",
+			organizationId: ORG,
+		});
+
+		const running = await post("/agent/atlas-chat/run", THREAD);
+		await vi.waitFor(() => expect(atlas.runs).toHaveLength(1));
+		atlas.release();
+		await running.text();
+		const connected = await post("/agent/atlas-chat/connect", THREAD);
+		await connected.text();
+		const stopped = await POST(
+			new Request(`${BASE}/agent/atlas-chat/stop/${THREAD}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ runId: "run-example-0001" }),
+			}),
+		);
+
+		expect(running.status).toBe(200);
+		expect(connected.status).toBe(200);
+		expect(atlas.runs[0]?.request).toMatchObject({ threadId: THREAD });
+		expect(atlas.connect).toHaveBeenCalledWith(THREAD, expect.anything());
+		expect(stopped.status).toBe(403);
+	});
+
+	it("closes the engine's stream when the client aborts the request", async () => {
+		const client = new AbortController();
+
+		const response = await POST(
+			new Request(`${BASE}/agent/atlas-chat/run`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: body(THREAD),
+				signal: client.signal,
+			}),
+		);
+		await vi.waitFor(() => expect(atlas.runs).toHaveLength(1));
+		const stream = atlas.runs[0]?.stream;
+		expect(stream?.isClosed()).toBe(false);
+
+		client.abort();
+
+		await vi.waitFor(() => expect(stream?.isClosed()).toBe(true));
+		atlas.release();
+		expect(response.status).toBe(200);
+	});
+
+	it("closes the engine's stream when the response reader cancels without aborting the request", async () => {
+		const client = new AbortController();
+		const response = await POST(
+			new Request(`${BASE}/agent/atlas-chat/run`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: body(THREAD),
+				signal: client.signal,
+			}),
+		);
+		await vi.waitFor(() => expect(atlas.runs).toHaveLength(1));
+		const stream = atlas.runs[0]?.stream;
+		expect(stream?.isClosed()).toBe(false);
+		const reader = response.body?.getReader();
+		if (!reader) {
+			throw new Error("Expected an SSE response body");
+		}
+		const cancelled = reader.cancel();
+		try {
+			expect(client.signal.aborted).toBe(false);
+			await vi.waitFor(() => expect(stream?.isClosed()).toBe(true));
+		} finally {
+			atlas.release();
+			await cancelled;
+			reader.releaseLock();
+		}
+	});
+
+	it("cancels a started response promptly and clears the SDK keep-alive timers", async () => {
+		const timeout = vi.spyOn(globalThis, "setTimeout");
+		const clear = vi.spyOn(globalThis, "clearTimeout");
+		try {
+			const response = await post("/agent/atlas-chat/run", THREAD);
+			await vi.waitFor(() => expect(atlas.runs).toHaveLength(1));
+			const stream = atlas.runs[0]?.stream;
+			const reader = response.body?.getReader();
+			if (!reader || !stream) {
+				throw new Error("Expected a running SSE response");
+			}
+			try {
+				stream.emit({
+					type: EventType.RUN_STARTED,
+					threadId: THREAD,
+					runId: "run-example-0001",
+				});
+				const first = await reader.read();
+				expect(new TextDecoder().decode(first.value)).toContain(
+					"RUN_STARTED",
+				);
+				await reader.cancel();
+				await vi.waitFor(() => expect(stream.isClosed()).toBe(true));
+				const keepAliveTimers = timeout.mock.calls.flatMap(
+					(args, index) =>
+						args[1] === 15_000
+							? [timeout.mock.results[index]?.value]
+							: [],
+				);
+				expect(keepAliveTimers.length).toBeGreaterThan(0);
+				await vi.waitFor(() => {
+					for (const timer of keepAliveTimers) {
+						expect(clear).toHaveBeenCalledWith(timer);
+					}
+				});
+			} finally {
+				atlas.release();
+				await reader.cancel();
+				reader.releaseLock();
+			}
+		} finally {
+			timeout.mockRestore();
+			clear.mockRestore();
+		}
 	});
 });

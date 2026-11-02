@@ -1,5 +1,88 @@
 # fabric-app
 
+## 1.16.35
+
+### Patch Changes
+
+- 6f670d4: Agent chats stop request-bound work when the browser disconnects and keep cleanup running until partial replies are saved.
+- 6f670d4: Stop the recurring-error scan filing autoscaler metric gaps that a revision rollout, a replica start or a brief metrics outage explains.
+- 6f670d4: Stop request-bound agent replies when their response closes, preserving interrupted Atlas answers while durable conversations continue after a viewer disconnects. Load registered agent chat data directly through its authorized server procedures instead of making two HTTP calls back to the application before rendering.
+- 6f670d4: Flowchart node labels of 40 characters or more are now broken into lines on a document page and when a document is downloaded, and in a client proposal's PDF wherever that prints larger than the label on one line, so most labels of 40 to 59 characters with dashes or narrow letters no longer run past their box.
+- 6f670d4: A document generation that fails part-way now falls back to a fresh generation or fails, instead of saving the partial text as a complete document.
+- 6f670d4: Log which Temporal activity failed and why once it runs out of retries, instead of only a generic failure message.
+- 6f670d4: Show every member's role on the organization Members page instead of a blank field when the viewer cannot assign that role.
+- 6f670d4: Let project and organization admins connect and configure PM tools, which until now only owners could do.
+- 6f670d4: The last card of a process or timeline figure, and the last box of a layers figure without a cross-cutting column, now print their outline in full instead of losing their right edge at the page column.
+- 6f670d4: Wait for the organization context before loading a registered agent's Try workspace, avoiding a transient access error during navigation.
+- 6f670d4: Setting a first password now signs you out cleanly and asks you to sign in with it, instead of trapping you in a redirect loop on a blank page.
+
+## 1.16.34
+
+### Patch Changes
+
+- da69d10: Keep the AI Assistant's tool and reasoning trace and the document visible throughout a reply, and keep the assistant's context intact after stopping a reply, instead of resetting them at every step.
+- da69d10: Stop showing an "AI request failed" error when you press Stop on an AI Assistant reply.
+- da69d10: Show the AI Assistant's reply word by word as it is written in the document editor, on the feature page and in the publishing topic assistant, instead of all at once when it finishes.
+- da69d10: Reduce redundant re-rendering in the backlog chat and the prompt Enhance page while the AI Assistant is working, so both stay responsive during a reply.
+- da69d10: Keep agent chat and try workspaces clear of navigation so their breadcrumbs, responses, charts and message controls remain visible when the sidebar changes size.
+- da69d10: Give fullscreen charts the dialog's remaining height and scale pie radii to fit short or narrow viewports. Keep chat engine controls named when their text labels are hidden on mobile.
+- da69d10: Browser automation tools on the MCP endpoint now require the matching API key scope and the key creator's current organization permission, list and run only the caller's organization's templates, and organization keys can select dedicated browser read and write scopes.
+- da69d10: Load Excalidraw styles with the canvas widget and defer rich search-result rendering, so empty chats do not request their styles. Run independent AI configuration status reads concurrently while retaining tenant checks, fallback behavior and dependent embedding resolution.
+- da69d10: Restore Atlas messages when reopening the current conversation, hide Sidekick execution payloads from assistant bubbles, keep agent-builder actions reachable on narrow screens, and render research source descriptions as text instead of broken links.
+- da69d10: Preserve completed tool results in agent chat streams so Data Analyst can display tool output and charts. Keep the agent-builder Sidekick composer reachable on narrow screens.
+- da69d10: AI usage charts include all usage in the selected period, and activity totals require fewer database queries.
+- da69d10: Confluence pages can now be added as project context from your Confluence Integration when no Confluence MCP server is configured.
+- da69d10: Add organization-controlled rollout of the agent runtime for Sidekick, library document chat, plan refinement, CUGA, Data Analyst, Deep Research, and Atlas. Each new rollout switch defaults to off, and the existing chat routes remain available.
+- da69d10: The Agent Builder Sidekick can run on the agent runtime (COPILOTKIT_SIDEKICK_CHAT), and runtime chats show their routes' plan and usage-limit toasts.
+- da69d10: The date picker now opens its calendar on the month of the selected date instead of the current month.
+- da69d10: Starting a new Direct chat no longer makes it reopen as an Orchestrator chat carrying another conversation's history.
+- da69d10: Add Fabric UI Kit MCP App resources (`ui://fabric/*`), A2UI v0.9.1 interactive card rendering (`fabric_visualize`), stateless MCP mode, idempotent durable tool calls, and CLI commands for agent delegation (`fabric agents delegate`, `fabric agents desktop`, `fabric agents subscriptions`) and MCP discovery (`fabric mcp tools`, `fabric mcp call`, `fabric mcp apps`).
+- da69d10: Reconstruct bounded chat requests from their URL and public fields so Next.js request proxies work with private-field Request implementations. Preserve the existing 8 MiB limit and request cancellation.
+- da69d10: Show "Accepted" or "Rejected" on a feature page AI Assistant change once you decide on it, instead of leaving it on "Pending", and keep it after reloading the page.
+- da69d10: Update follow-redirects to 1.16.2, which fixes a case where custom credential headers could be forwarded when an HTTP request made through axios followed a redirect.
+- da69d10: Keep agent chat composers clear of the floating launcher and wrap starter descriptions within narrow workspaces.
+- da69d10: Agent deployments now stop accepting new runs when their owner leaves the organization, and trigger changes require current organization access.
+- da69d10: Interactive MCP app views now refuse MCP servers on internal network addresses and no longer show error details from the server, and saved MCP credentials are only sent to the server address they were saved with.
+- da69d10: Moved the remaining `@hono/node-server` 1.x copies, used through the MCP SDK and CopilotKit runtime, onto the patched 2.1.3 release, so no installed version is affected by the `serveStatic` path-decoding bypass (GHSA-rmxm-3fg6-px4f).
+- da69d10: Updated the agent and MCP wrapper HTTP servers to `@hono/node-server` 2.1.3, which fixes a `serveStatic` path-decoding bypass (GHSA-rmxm-3fg6-px4f), and refreshed the pinned CI actions (setup-node, docker/login-action, CodeQL and the TruffleHog wrapper).
+- da69d10: The Fabric Kanban API now requires API keys with the new Kanban read and write scopes; create a replacement under your organization's Settings → API keys and select Kanban Read and Kanban Write, or Kanban Read alone for a read-only role.
+- da69d10: AI agents use less CPU while streaming long documents, because LangChain is upgraded to parse a streamed tool call's arguments when they are read instead of again on every chunk.
+- da69d10: Improve conversation history loading by fetching only the data needed for list entries.
+- da69d10: Load the feature board and roadmap with much smaller responses by searching feature descriptions on the server, and show when a description search is still running, failed, or was skipped.
+- da69d10: Public API keys now act only within their creator's current role in the organization, so a viewer's key, or a key whose owner was demoted, can no longer run agents, create projects, chat, run workflows or use integrations.
+- da69d10: Flowchart labels no longer spill out of their boxes on a document page or when a document is downloaded as PDF or Word: long node labels are broken into lines, and the diagram is drawn in one font family instead of a font list no font matched. On a client proposal's page, a flowchart is laid out as its PDF prints it: one too small to read on paper is drawn top-down or with its labels broken, and a tall one keeps its labels on one line so it still fits a page. The document's diagram text is not changed.
+- da69d10: Keep Fabric AI Direct and Orchestrator chats responsive while an answer streams: the Direct status caption no longer flips between two labels several times a second, and the Orchestrator applies streamed text in batches instead of redrawing the chat for every piece.
+- da69d10: Update telemetry, agent validation, provider utilities and GraphQL dependencies to maintained security fixes, and use the unified agent servers during development.
+- da69d10: Connecting an MCP server through OAuth now completes only for the signed-in account that started the connection, with that account's access to the server configuration checked again, and each authorization link can be used once.
+- da69d10: The Fabric AI page no longer crashes when a new chat's first message goes to several agents.
+- da69d10: Reloading during a message sent to several agents no longer shows the question twice, and reopening the chat keeps every agent it was sent to picked.
+- da69d10: The chat image link now serves only chat images and generated images, so an organization member can no longer use it to open another member's private chat document.
+- da69d10: Run coding tasks on a compatible Fabric Agents server with authenticated execution readiness, confirmed cancellation of owned background work, and durable continuation of completed sessions with synchronized pull request results.
+- da69d10: Notification webhooks now refuse endpoints whose hostname resolves to an internal network address.
+- da69d10: Identity-provider ID tokens are discarded instead of stored unencrypted when encryption fails during sign-in or account linking.
+- da69d10: OpenAPI service onboarding no longer resolves external `$ref` references in a spec, and spec downloads, tool test requests and saved base URLs now go through the outbound address guard, so they cannot reach local files or private network addresses.
+- da69d10: Protect code-index checkout and manifest paths with owner-only POSIX modes or a checked Windows DACL for the current identity and SYSTEM. Keep published manifest files protected after atomic replacement, and make source-invariant tests independent of external grep.
+- da69d10: Client Proposals can now hold card grids, two-column blocks, bar charts with a threshold line and project timelines (Gantt), drawn in the editor, the PDF and the Word file, and a generated Proposal now writes these forms itself, together with a title, key figures, section subtitles and, where useful, a cover letter. The PDF follows a business-case design: darker headings with labels in the brand colour, a cover that can carry the document type, the client's organization, the prepared-for and prepared-by details and a version, a cover letter page after the cover, a contents page numbered 1, 2, 3 with appendices listed by letter, and tables without a header row when the header is left empty. Word files now embed the same typefaces as the PDF, the visuals step can add architecture-layer and team diagrams, and chat edits keep the cover details as they are and write a cover letter in the same form.
+- da69d10: Long-form Publishing Suite drafts (blog posts, case studies, stakeholder emails, webinar scripts and newsletter blurbs) no longer regenerate and report themselves superseded when creating the editable working draft fails after the draft was saved.
+- da69d10: Opening a question notification while already viewing that publishing topic now switches to the Summary & Questions view, opens the group that holds the question, and scrolls to it; on a feature page already open, it now scrolls to the question.
+- da69d10: Load rich chat renderers and unselected agent interfaces when needed so empty chats do not wait for code highlighting, charts or document editors. Give fullscreen charts an accessible description and measure their host before mounting, preserving window resizing.
+- da69d10: Chat images, generated images and text-to-speech audio now open only for their creator or for organization members who can currently see the conversation they came from, and text-to-speech audio links in chat now work.
+- da69d10: The recurring-error scan no longer proposes bugs for Key Vault secret-sync failures canceled during Container Apps rollouts that recover within minutes.
+- da69d10: The recurring-error scan stops proposing bugs for Container Apps replica scheduling waits, autoscaler checks that run before a new revision exists, and readiness-check failures while a replica starts or shuts down when matching lifecycle events explain them.
+- da69d10: The recurring-error scan no longer files bugs for KEDA external-metric failures that come from a revision being retired, or from a brief metrics-service outage that hits several apps at the same moment.
+- da69d10: The unused Kanban webhook endpoint has been removed; the Fabric Kanban CLI continues to use the authenticated Kanban API.
+- da69d10: The Document Generator agent's chat no longer re-renders its whole editor on every assistant update, and the standalone Document Generator, Task Planner and custom agent editor pages, which nothing in the app linked to, have been removed.
+- da69d10: Recover missed Research and Orchestrator chat output when reconnecting to existing workflows, using retained text and tool events with scoped resume cursors to prevent duplicate output. Recovery preserves partial replies, respects cancellation and current access, and never resubmits the original message or re-executes tools.
+- da69d10: Canceling an email change now holds even if the verification link is opened while the service that records cancellations cannot be reached; the link asks you to try again instead of completing the change.
+- da69d10: The Fabric Kanban API now rechecks credential-owner permissions and limits queue updates to work queued by that owner.
+- da69d10: Resetting your password now signs out every existing session immediately, and the reset reports an error if those sessions could not be signed out.
+- da69d10: Slack agent triggers now use the Slack workspace from the agent owner's own Slack connection instead of a workspace id supplied with the trigger, and incoming Slack messages only reach triggers whose owner is still connected to that workspace; a cleared Channel ID still means any channel.
+- da69d10: Bound chat transport to 8 MiB while retaining long Orchestrator threads through the canonical history window. Update chat math and multipart security dependencies, and backport removal of automatic PostgreSQL username telemetry. Stabilize the initial control deck and composer layout, and reuse the Analyst registry query across its page and chat.
+- da69d10: The tool router now checks the caller's organization role on every tool request, so viewers can no longer call tools through a connection shared with the organization.
+- da69d10: Reduce database index overhead while preserving usage reporting and code search lookups.
+- da69d10: Vercel no longer builds a preview for every branch push, and the web app's Vercel build no longer repeats the type check that CI already runs on every pull request.
+- da69d10: Former organization members can no longer delete shared workspaces they created, and workspace update, archive, restore and delete now act only on workspaces in the organization you are working in.
+
 ## 1.16.33
 
 ### Patch Changes

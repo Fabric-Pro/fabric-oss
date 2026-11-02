@@ -69,35 +69,44 @@ export function diagramDisplayWidth({
 }
 
 /**
- * The width and smallest label size an SVG string declares: its `width`
- * attribute (or its viewBox) and its smallest `font-size`. Null when it
- * declares no width in px, as the mermaid.js fallback's `width="100%"`.
+ * The width, height and smallest label size an SVG string declares: its
+ * `width` and `height` attributes (or its viewBox) and its smallest
+ * `font-size`. Null when it declares no width in px, as the mermaid.js
+ * fallback's `width="100%"`; the height is null when it declares none.
  */
 export function readSvgNaturalSize(
 	svg: string,
-): { width: number; labelPx: number } | null {
+): { width: number; height: number | null; labelPx: number } | null {
 	const open = /<svg\b[^>]*>/i.exec(svg)?.[0];
 	if (!open) {
 		return null;
 	}
+	const viewBox =
+		/\sviewBox="[-0-9.]+[\s,]+[-0-9.]+[\s,]+([0-9.]+)(?:[\s,]+([0-9.]+))?/i.exec(
+			open,
+		);
 	const widthAttr = /\swidth="([0-9.]+)(px)?"/i.exec(open)?.[1];
 	let width = widthAttr ? Number.parseFloat(widthAttr) : Number.NaN;
 	if (!Number.isFinite(width)) {
 		if (/\swidth="/i.test(open)) {
 			return null;
 		}
-		const viewBox =
-			/\sviewBox="[-0-9.]+[\s,]+[-0-9.]+[\s,]+([0-9.]+)/i.exec(open)?.[1];
-		width = viewBox ? Number.parseFloat(viewBox) : Number.NaN;
+		width = viewBox?.[1] ? Number.parseFloat(viewBox[1]) : Number.NaN;
 	}
 	if (!(width > 0)) {
 		return null;
+	}
+	const heightAttr = /\sheight="([0-9.]+)(px)?"/i.exec(open)?.[1];
+	let height = heightAttr ? Number.parseFloat(heightAttr) : Number.NaN;
+	if (!Number.isFinite(height) && !/\sheight="/i.test(open)) {
+		height = viewBox?.[2] ? Number.parseFloat(viewBox[2]) : Number.NaN;
 	}
 	const sizes = [...svg.matchAll(/font-size(?:="|:\s*)([0-9.]+)/gi)]
 		.map((match) => Number.parseFloat(match[1] ?? ""))
 		.filter((size) => size > 0);
 	return {
 		width,
+		height: height > 0 ? height : null,
 		labelPx: sizes.length > 0 ? Math.min(...sizes) : MIN_DIAGRAM_LABEL_PX,
 	};
 }

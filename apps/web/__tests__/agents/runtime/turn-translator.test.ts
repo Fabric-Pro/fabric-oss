@@ -519,3 +519,26 @@ describe("TurnTranslator", () => {
 		).toBe("tool-2");
 	});
 });
+
+it("keeps the heartbeat caption when both poll sources change, including away and back", () => {
+	const { events, emit } = collect();
+	const translator = new TurnTranslator("example-turn", emit);
+	for (const phase of ["streaming", "tool_input", "streaming"]) {
+		translator.beginPoll();
+		translator.apply({ phase, message: phase }, "heartbeat");
+		translator.apply({ phase: "executing_ai", message: "Workflow" });
+	}
+	translator.beginPoll();
+	translator.apply({ phase: "streaming" }, "heartbeat");
+	translator.apply({ phase: "executing_ai" });
+	const phases = events.flatMap((event) =>
+		event.type === EventType.STATE_DELTA
+			? event.delta.flatMap((patch) =>
+					"value" in patch && patch.path === "/progress"
+						? [patch.value.phase]
+						: [],
+				)
+			: [],
+	);
+	expect(phases).toEqual(["streaming", "tool_input", "streaming"]);
+});

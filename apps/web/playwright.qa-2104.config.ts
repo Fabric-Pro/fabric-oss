@@ -6,7 +6,8 @@ import { defineConfig, devices } from "@playwright/test";
  *
  * Separate from playwright.config.ts because that one hardcodes
  * baseURL=localhost:3001 and starts a local web server. This one targets a
- * running deployment (the PR's Vercel preview) and starts nothing.
+ * running deployment of the branch under test and starts nothing. Branch
+ * previews no longer build automatically (see apps/web/scripts/vercel-ignore.sh).
  *
  * Run:
  *   QA_BASE_URL=https://<preview-host> \

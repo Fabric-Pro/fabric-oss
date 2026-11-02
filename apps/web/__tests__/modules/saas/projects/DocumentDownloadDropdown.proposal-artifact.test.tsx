@@ -664,6 +664,63 @@ describe("DocumentDownloadDropdown — server export of a client-document Propos
 		expect(markdown).not.toContain("Kickoff notes");
 		expect(rec.calls).toEqual(["projects.documents.get"]);
 	});
+
+	it("downloads the Markdown without a storage key or a signed URL, even when an image could not be fetched", async () => {
+		const signed =
+			"https://storage.example.com/document-media/project-example/document-example/x.png?X-Amz-Signature=abc";
+		rec.handlers["projects.documents.get"] = async () => ({
+			document: {
+				content: [
+					"# Example proposal",
+					"",
+					`<img src="${signed}" alt="Site plan" width="320" data-s3-key="document-media/project-example/document-example/x.png" data-caption="The site today" />`,
+					"",
+					`Read [the brief](${signed}) before the workshop.`,
+				].join("\n"),
+			},
+		});
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockRejectedValue(new Error("offline"));
+		try {
+			await choose("Markdown (.md)");
+
+			await waitFor(() => expect(rec.downloads).toHaveLength(1));
+			const markdown = await readBlobText(rec.downloads[0].blob);
+			expect(fetchSpy).toHaveBeenCalledWith(signed);
+			expect(markdown).not.toMatch(
+				/document-media|X-Amz|storage\.example\.com/,
+			);
+			expect(markdown).toContain("The site today");
+			expect(markdown).toContain("Read the brief before the workshop.");
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	it("draws a diagram without the storage references in its labels, since a drawn label is out of the text scrub's reach", async () => {
+		rec.handlers["projects.documents.get"] = async () => ({
+			document: {
+				content: [
+					"# Example proposal",
+					"",
+					"```mermaid",
+					"flowchart LR",
+					'  A["Brief document-media/project-example/document-example/x.pdf"] --> B[Build]',
+					"```",
+				].join("\n"),
+			},
+		});
+		await choose("Markdown (.md)");
+
+		await waitFor(() => expect(rec.downloads).toHaveLength(1));
+		expect(rec.mermaidSources).toHaveLength(1);
+		expect(rec.mermaidSources[0]).toContain('A["Brief "] --> B[Build]');
+		expect(rec.mermaidSources[0]).not.toContain("document-media");
+		expect(await readBlobText(rec.downloads[0].blob)).not.toContain(
+			"document-media",
+		);
+	});
 });
 
 // ── Everything else: today's browser export ──────────────────────────────

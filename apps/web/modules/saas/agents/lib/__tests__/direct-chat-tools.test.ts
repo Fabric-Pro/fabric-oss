@@ -17,77 +17,23 @@ describe("direct chat tool metadata", () => {
 		expect(getSelectedConversationToolIds({ mode: "direct" })).toBeNull();
 	});
 
-	it("merges selected tool ids with existing metadata", () => {
-		const metadata = mergeDirectConversationMetadata({
-			existing: { mode: "direct", custom: true },
-			documentChatId: "chat-1",
-			instanceId: "inst-1",
-			selectedMcpConfigIds: ["cfg-9"],
-		});
-
-		expect(metadata).toMatchObject({
-			mode: "direct",
-			custom: true,
-			documentChatId: "chat-1",
-			instanceId: "inst-1",
-			selectedMcpConfigIds: ["cfg-9"],
-		});
-	});
-
-	it("removes explicit tool selection when resetting to defaults", () => {
-		const metadata = mergeDirectConversationMetadata({
-			existing: { selectedMcpConfigIds: ["cfg-9"], mode: "direct" },
-		});
-
-		expect(metadata).toEqual({ mode: "direct" });
-	});
-
-	it("does not flip a thread another engine recorded (#2040)", () => {
-		for (const mode of ["research", "orchestrator"]) {
-			expect(
-				mergeDirectConversationMetadata({ existing: { mode } }).mode,
-			).toBe(mode);
-		}
-	});
-
-	it("records Direct on a thread with no mode yet", () => {
-		expect(mergeDirectConversationMetadata({}).mode).toBe("direct");
-		expect(
-			mergeDirectConversationMetadata({ existing: { mode: "" } }).mode,
-		).toBe("direct");
-	});
-});
-
-describe("direct chat instance pin control", () => {
-	it("clears an instance explicitly with null while preserving unrelated metadata", () => {
+	it("creates fresh Direct settings", () => {
 		expect(
 			mergeDirectConversationMetadata({
-				existing: {
-					instanceId: "example-agent",
-					mode: "research",
-					custom: true,
-					documentChatId: "example-document-chat",
-				},
-				instanceId: null,
+				documentChatId: "chat-1",
+				instanceId: "inst-1",
+				selectedMcpConfigIds: ["cfg-9"],
 			}),
 		).toEqual({
-			mode: "research",
-			custom: true,
-			documentChatId: "example-document-chat",
+			mode: "direct",
+			documentChatId: "chat-1",
+			instanceId: "inst-1",
+			selectedMcpConfigIds: ["cfg-9"],
 		});
 	});
-	it("preserves an existing instance when the caller leaves it unspecified", () => {
-		const existing = {
-			instanceId: "example-agent",
+	it("omits unset settings", () => {
+		expect(mergeDirectConversationMetadata({ instanceId: null })).toEqual({
 			mode: "direct",
-			custom: true,
-		};
-		expect(mergeDirectConversationMetadata({ existing })).toEqual(existing);
-		expect(
-			mergeDirectConversationMetadata({
-				existing,
-				instanceId: undefined,
-			}),
-		).toEqual(existing);
+		});
 	});
 });

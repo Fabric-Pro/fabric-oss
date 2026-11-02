@@ -117,12 +117,12 @@ import {
 	ConversationContent,
 	ConversationScrollButton,
 } from "../../../../../components/ai-elements/conversation";
+import { DeferredResponse as Response } from "../../../../../components/ai-elements/deferred-response";
 import { McpAppFrame } from "../../../../../components/ai-elements/McpAppFrame";
 import {
 	Message,
 	MessageContent,
 } from "../../../../../components/ai-elements/message";
-import { Response } from "../../../../../components/ai-elements/response";
 import { Sources } from "../../../../../components/ai-elements/sources";
 import { useChatConfirmation } from "../../hooks/useChatConfirmation";
 import { useDirectChatStream } from "../../hooks/useDirectChatStream";
@@ -170,11 +170,14 @@ import {
 } from "./shared";
 import { AnsweredByModel } from "./shared/AnsweredByModel";
 import { ApiBillingNotice } from "./shared/ApiBillingNotice";
+import { hasActiveContext } from "./shared/active-context";
 import {
 	getSelectedAgentInstanceId,
 	shouldPersistAgentSelection,
 } from "./shared/agent-selection";
 import { shouldShowAssistantActionCards } from "./shared/assistant-action-cards";
+import { ChatComposerHeader } from "./shared/ChatComposerHeader";
+import { ChatRestoreLoading } from "./shared/ChatRestoreLoading";
 import { MemoizedRow } from "./shared/MemoizedRow";
 import { SkillAutocomplete } from "./shared/SkillAutocomplete";
 import { SkillSuggestionChips } from "./shared/SkillSuggestionChips";
@@ -1431,6 +1434,13 @@ export const FabricDirectChat = forwardRef<
 	// IMPORTANT: Don't reset if we already have streaming messages from this session
 	// This prevents clearing the conversation when URL is updated after first message
 	useEffect(() => {
+		if (
+			activeConversation &&
+			externalConversationId &&
+			activeConversation.id !== externalConversationId
+		) {
+			return;
+		}
 		if (activeConversation && externalConversationId) {
 			const selectedIds = getSelectedConversationToolIds(
 				activeConversation.metadata,
@@ -2045,24 +2055,64 @@ export const FabricDirectChat = forwardRef<
 		toast.success("Conversation exported as Markdown");
 	}, [messages]);
 
+	const lastSentConversationSettings = useRef(
+		new Map<string, Record<string, unknown>>(),
+	);
+
 	useEffect(() => {
-		if (!conversationId) {
+		if (
+			!conversationId ||
+			(savedConversationIdRef.current !== conversationId &&
+				activeConversation?.id !== conversationId)
+		) {
 			return;
 		}
-
+		const stored =
+			lastSentConversationSettings.current.get(conversationId) ??
+			(activeConversation?.id === conversationId
+				? (activeConversation.metadata as Record<
+						string,
+						unknown
+					> | null)
+				: null);
+		const storedTools = getSelectedConversationToolIds(stored);
+		const selected = selectedConversationMcpIds;
+		const sameTools =
+			storedTools === null || selected === null
+				? storedTools === selected
+				: storedTools.length === selected.length &&
+					selected.every((id) => new Set(storedTools).has(id));
+		// Compare with the last queued settings, including completed writes (Fizzy #3472).
+		if (
+			stored !== null &&
+			sameTools &&
+			(stored?.instanceId ?? null) === (activeInstanceId ?? null) &&
+			(!currentDocumentChatId ||
+				stored?.documentChatId === currentDocumentChatId)
+		) {
+			return;
+		}
 		const updateInput = {
-			id: conversationId,
+			conversationId,
 			organizationId: organizationId ?? undefined,
-			metadata: mergeDirectConversationMetadata({
-				existing: activeConversation?.metadata ?? undefined,
-				documentChatId: currentDocumentChatId,
+			engine: "direct" as const,
+			settings: {
+				...(currentDocumentChatId
+					? { documentChatId: currentDocumentChatId }
+					: {}),
 				instanceId: activeInstanceId ?? null,
-				selectedMcpConfigIds: selectedConversationMcpIds ?? undefined,
-			}),
+				selectedMcpConfigIds: selectedConversationMcpIds ?? null,
+			},
 		};
+		lastSentConversationSettings.current.set(
+			conversationId,
+			updateInput.settings,
+		);
 		const persistSelection = async () => {
 			try {
-				await orpcClient.agents.conversations.update(updateInput);
+				await orpcClient.agents.conversations.updateSettings(
+					updateInput,
+				);
 			} catch (error) {
 				console.error(
 					"[FabricDirectChat] Failed to persist conversation tool selection:",
@@ -2089,7 +2139,7 @@ export const FabricDirectChat = forwardRef<
 	}, [
 		conversationId,
 		organizationId,
-		activeConversation?.metadata,
+		activeConversation,
 		currentDocumentChatId,
 		activeInstanceId,
 		selectedConversationMcpIds,
@@ -3048,6 +3098,17 @@ export const FabricDirectChat = forwardRef<
 	// The composer. Docked under the conversation once there are messages;
 	// on the landing it sits under the heading inside ChatWelcome, so it is
 	// built once here and placed by `isWelcome`.
+	const composerContext = {
+		workspaceIds: attachedWorkspaceIds,
+		projectId: attachedProjectId,
+		mcpConfigIds:
+			selectedConversationMcpIds ?? enabledMcpConfigIds ?? undefined,
+	};
+	const showComposerActions =
+		showToolPicker ||
+		hasActiveContext(composerContext) ||
+		Boolean(attachedCodeContext?.filePath) ||
+		resolvedCodeReferences.length > 0;
 	const composer = (
 		<div className={cn(isWelcome ? "p-0" : "bg-background px-4 pt-2 pb-3")}>
 			<div
@@ -3196,159 +3257,257 @@ export const FabricDirectChat = forwardRef<
 							)
 						}
 						headerSlot={
-							hasMounted && (
-								<div className="flex flex-col gap-2">
-									<div className="flex flex-wrap items-center gap-2">
-										{showAgentPicker ? (
-											<AgentModelPicker
-												selectedAgents={
-													selectedAgent
-														? [selectedAgent]
-														: []
-												}
-												onToggleAgent={
-													handleToggleAgent
-												}
-												organizationId={organizationId}
-												catalog={agentPickerCatalog}
-											/>
-										) : null}
-										{/* The picker's own trigger is a
+							<div className="flex w-full min-w-0 flex-col gap-2">
+								<ChatComposerHeader
+									showSelection={
+										showAgentPicker ||
+										Boolean(activeInstanceId)
+									}
+									showActions={showComposerActions}
+									selection={
+										hasMounted && (
+											<>
+												{showAgentPicker ? (
+													<AgentModelPicker
+														selectedAgents={
+															selectedAgent
+																? [
+																		selectedAgent,
+																	]
+																: []
+														}
+														onToggleAgent={
+															handleToggleAgent
+														}
+														organizationId={
+															organizationId
+														}
+														catalog={
+															agentPickerCatalog
+														}
+													/>
+												) : null}
+												{/* The picker's own trigger is a
 										    static label, so without this
 										    the only way to see what is
 										    picked is to reopen the
 										    popover. */}
-										{activeInstanceId ||
-										(showAgentPicker && selectedAgent) ? (
-											<Badge
-												variant="secondary"
-												className="gap-1 rounded-full"
-											>
-												<RobotIcon className="h-3 w-3" />
-												<AgentVersionIdentity
-													name={
-														selectedInstanceId ||
-														!activeInstanceId
-															? selectedAgent?.name
-															: undefined
-													}
-													instanceId={
-														activeInstanceId
-													}
-													organizationId={
-														organizationId
-													}
-												/>
-												{inactiveProviderNote && (
-													<span
-														title={
-															inactiveProviderNote
-														}
-														className="text-highlight-ink"
+												{activeInstanceId ||
+												(showAgentPicker &&
+													selectedAgent) ? (
+													<Badge
+														variant="secondary"
+														className="gap-1 rounded-full"
 													>
-														not applied
-													</span>
-												)}
-												{selectedAgent && (
-													<button
-														type="button"
-														onClick={() =>
-															handleToggleAgent(
-																selectedAgent,
-															)
-														}
-														aria-label={`Clear ${selectedAgent.name}`}
-														className="ml-0.5 text-muted-foreground hover:text-foreground transition-colors"
-													>
-														<XIcon className="h-3 w-3" />
-													</button>
-												)}
-											</Badge>
-										) : null}
-										<ActiveContextIndicator
-											workspaceIds={attachedWorkspaceIds}
-											projectId={attachedProjectId}
-											onProjectRemove={
-												onProjectRemove ||
-												selectedInstanceId
-													? removeProject
-													: undefined
-											}
-											projectRemoveDisabled={
-												isRemovingProject
-											}
-											mcpConfigIds={
-												selectedConversationMcpIds ??
-												enabledMcpConfigIds ??
-												undefined
-											}
-											organizationId={organizationId}
-										/>
-										{attachedCodeContext?.filePath ? (
-											<Badge
-												variant="secondary"
-												className="gap-1 rounded-full"
-											>
-												<FileIcon className="h-3 w-3" />
-												{attachedCodeContext.filePath}
-												{formatLineRangeLabel(
-													attachedCodeContext.lineStart,
-													attachedCodeContext.lineEnd,
-												)}
-											</Badge>
-										) : null}
-										{resolvedCodeReferences.map((ref) => (
-											<Badge
-												key={ref.fullMatch}
-												variant="outline"
-												className="rounded-full"
-											>
-												{formatCodeReference(ref)}
-											</Badge>
-										))}
-										{showToolPicker ? (
-											<Button
-												type="button"
-												variant="ghost"
-												size="sm"
-												className="h-6 gap-1.5 rounded-full border border-border/80 bg-muted/40 px-2.5 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-												onClick={() =>
-													setConversationToolPickerOpen(
-														true,
-													)
+														<RobotIcon className="h-3 w-3" />
+														<AgentVersionIdentity
+															name={
+																selectedInstanceId ||
+																!activeInstanceId
+																	? selectedAgent?.name
+																	: undefined
+															}
+															instanceId={
+																activeInstanceId
+															}
+															organizationId={
+																organizationId
+															}
+														/>
+														{inactiveProviderNote && (
+															<span
+																title={
+																	inactiveProviderNote
+																}
+																className="text-highlight-ink"
+															>
+																not applied
+															</span>
+														)}
+														{selectedAgent && (
+															<button
+																type="button"
+																onClick={() =>
+																	handleToggleAgent(
+																		selectedAgent,
+																	)
+																}
+																aria-label={`Clear ${selectedAgent.name}`}
+																className="ml-0.5 text-muted-foreground hover:text-foreground transition-colors"
+															>
+																<XIcon className="h-3 w-3" />
+															</button>
+														)}
+													</Badge>
+												) : null}
+											</>
+										)
+									}
+								>
+									{hasMounted && (
+										<>
+											<ActiveContextIndicator
+												className="flex-nowrap"
+												{...composerContext}
+												onProjectRemove={
+													onProjectRemove ||
+													selectedInstanceId
+														? removeProject
+														: undefined
 												}
-											>
-												<Wrench className="h-3 w-3" />
-												Chat tools
-											</Button>
-										) : null}
-									</div>
-									{attachedCodeContext?.filePath ||
-									resolvedCodeReferencePreviews.length > 0 ? (
-										<div className="space-y-2 rounded-lg border border-border/70 bg-muted/25 p-3">
-											<div className="flex items-center justify-between gap-3">
-												<div>
-													<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-														Code context preview
-													</p>
-													<p className="text-xs text-muted-foreground">
-														Fabric Agent will use
-														this code context in the
-														next reply.
-													</p>
-												</div>
+												projectRemoveDisabled={
+													isRemovingProject
+												}
+												organizationId={organizationId}
+											/>
+											{attachedCodeContext?.filePath ? (
 												<Badge
 													variant="secondary"
-													className="rounded-full"
+													className="gap-1 rounded-full"
 												>
-													{resolvedCodeReferencePreviews.length >
-													0
-														? `${resolvedCodeReferencePreviews.length} resolved ref${resolvedCodeReferencePreviews.length > 1 ? "s" : ""}`
-														: "Attached code"}
+													<FileIcon className="h-3 w-3" />
+													{
+														attachedCodeContext.filePath
+													}
+													{formatLineRangeLabel(
+														attachedCodeContext.lineStart,
+														attachedCodeContext.lineEnd,
+													)}
 												</Badge>
+											) : null}
+											{resolvedCodeReferences.map(
+												(ref) => (
+													<Badge
+														key={ref.fullMatch}
+														variant="outline"
+														className="rounded-full"
+													>
+														{formatCodeReference(
+															ref,
+														)}
+													</Badge>
+												),
+											)}
+											{showToolPicker ? (
+												<Button
+													type="button"
+													variant="ghost"
+													size="sm"
+													className="h-6 gap-1.5 rounded-full border border-border/80 bg-muted/40 px-2.5 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+													onClick={() =>
+														setConversationToolPickerOpen(
+															true,
+														)
+													}
+												>
+													<Wrench className="h-3 w-3" />
+													Chat tools
+												</Button>
+											) : null}
+										</>
+									)}
+								</ChatComposerHeader>
+								{attachedCodeContext?.filePath ||
+								resolvedCodeReferencePreviews.length > 0 ? (
+									<div className="space-y-2 rounded-lg border border-border/70 bg-muted/25 p-3">
+										<div className="flex items-center justify-between gap-3">
+											<div>
+												<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+													Code context preview
+												</p>
+												<p className="text-xs text-muted-foreground">
+													Fabric Agent will use this
+													code context in the next
+													reply.
+												</p>
 											</div>
-											{attachedCodeContext?.filePath ? (
-												<Collapsible defaultOpen>
+											<Badge
+												variant="secondary"
+												className="rounded-full"
+											>
+												{resolvedCodeReferencePreviews.length >
+												0
+													? `${resolvedCodeReferencePreviews.length} resolved ref${resolvedCodeReferencePreviews.length > 1 ? "s" : ""}`
+													: "Attached code"}
+											</Badge>
+										</div>
+										{attachedCodeContext?.filePath ? (
+											<Collapsible defaultOpen>
+												<CollapsibleTrigger asChild>
+													<Button
+														variant="ghost"
+														size="sm"
+														className="flex h-auto w-full items-start justify-between px-0 py-1 text-left hover:bg-transparent"
+													>
+														<div className="space-y-1">
+															<div className="flex items-center gap-2 text-sm font-medium">
+																<FileCode2 className="size-4 text-primary" />
+																<span>
+																	Attached
+																	code
+																</span>
+															</div>
+															<p className="text-xs text-muted-foreground">
+																{
+																	attachedCodeContext.filePath
+																}
+																{formatLineRangeLabel(
+																	attachedCodeContext.lineStart,
+																	attachedCodeContext.lineEnd,
+																)}
+															</p>
+														</div>
+														<ChevronDown className="size-4 text-muted-foreground" />
+													</Button>
+												</CollapsibleTrigger>
+												<CollapsibleContent className="space-y-2 pt-1">
+													<div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+														{attachedCodeContext.branch ? (
+															<Badge
+																variant="outline"
+																className="gap-1 rounded-full"
+															>
+																<GitBranch className="size-3" />
+																{
+																	attachedCodeContext.branch
+																}
+															</Badge>
+														) : null}
+														{attachedCodeContext.repoName ? (
+															<Badge
+																variant="outline"
+																className="rounded-full"
+															>
+																{
+																	attachedCodeContext.repoName
+																}
+															</Badge>
+														) : null}
+													</div>
+													{attachedCodeContext.snippet ? (
+														<pre className="overflow-x-auto rounded-lg border border-border/70 bg-background px-3 py-2 text-xs text-foreground">
+															<code>
+																{
+																	attachedCodeContext.snippet
+																}
+															</code>
+														</pre>
+													) : (
+														<p className="text-xs text-muted-foreground">
+															This attached file
+															range will be
+															included with your
+															next message.
+														</p>
+													)}
+												</CollapsibleContent>
+											</Collapsible>
+										) : null}
+										{resolvedCodeReferencePreviews.map(
+											(preview) => (
+												<Collapsible
+													key={preview.ref.fullMatch}
+												>
 													<CollapsibleTrigger asChild>
 														<Button
 															variant="ghost"
@@ -3359,186 +3518,101 @@ export const FabricDirectChat = forwardRef<
 																<div className="flex items-center gap-2 text-sm font-medium">
 																	<FileCode2 className="size-4 text-primary" />
 																	<span>
-																		Attached
-																		code
+																		{formatCodeReference(
+																			preview.ref,
+																		)}
 																	</span>
 																</div>
 																<p className="text-xs text-muted-foreground">
-																	{
-																		attachedCodeContext.filePath
-																	}
-																	{formatLineRangeLabel(
-																		attachedCodeContext.lineStart,
-																		attachedCodeContext.lineEnd,
-																	)}
+																	Resolved
+																	from the
+																	connected
+																	repository
+																	{preview.branch
+																		? ` on ${preview.branch}`
+																		: ""}
+																	{preview
+																		.relatedFiles
+																		.length >
+																	0
+																		? ` with ${preview.relatedFiles.length} related file${preview.relatedFiles.length > 1 ? "s" : ""}`
+																		: ""}
+																	.
 																</p>
 															</div>
 															<ChevronDown className="size-4 text-muted-foreground" />
 														</Button>
 													</CollapsibleTrigger>
 													<CollapsibleContent className="space-y-2 pt-1">
-														<div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-															{attachedCodeContext.branch ? (
+														<div className="flex flex-wrap gap-2">
+															{preview.branch ? (
 																<Badge
 																	variant="outline"
 																	className="gap-1 rounded-full"
 																>
 																	<GitBranch className="size-3" />
 																	{
-																		attachedCodeContext.branch
+																		preview.branch
 																	}
 																</Badge>
 															) : null}
-															{attachedCodeContext.repoName ? (
-																<Badge
-																	variant="outline"
-																	className="rounded-full"
-																>
-																	{
-																		attachedCodeContext.repoName
-																	}
-																</Badge>
-															) : null}
+															<Badge
+																variant="secondary"
+																className="rounded-full"
+															>
+																{preview
+																	.relatedFiles
+																	.length > 0
+																	? `${preview.relatedFiles.length} related file${preview.relatedFiles.length > 1 ? "s" : ""}`
+																	: "Primary file only"}
+															</Badge>
 														</div>
-														{attachedCodeContext.snippet ? (
-															<pre className="overflow-x-auto rounded-lg border border-border/70 bg-background px-3 py-2 text-xs text-foreground">
-																<code>
-																	{
-																		attachedCodeContext.snippet
-																	}
-																</code>
-															</pre>
+														{preview.relatedFiles
+															.length > 0 ? (
+															<div className="space-y-1">
+																<p className="text-xs font-medium text-muted-foreground">
+																	Included
+																	related
+																	files
+																</p>
+																<div className="flex flex-wrap gap-2">
+																	{preview.relatedFiles.map(
+																		(
+																			filePath,
+																		) => (
+																			<Badge
+																				key={
+																					filePath
+																				}
+																				variant="outline"
+																				className="gap-1 rounded-full"
+																			>
+																				<FileIcon className="size-3" />
+																				{
+																					filePath
+																				}
+																			</Badge>
+																		),
+																	)}
+																</div>
+															</div>
 														) : (
 															<p className="text-xs text-muted-foreground">
-																This attached
-																file range will
-																be included with
-																your next
-																message.
+																No
+																high-confidence
+																related local
+																files were added
+																for this
+																reference.
 															</p>
 														)}
 													</CollapsibleContent>
 												</Collapsible>
-											) : null}
-											{resolvedCodeReferencePreviews.map(
-												(preview) => (
-													<Collapsible
-														key={
-															preview.ref
-																.fullMatch
-														}
-													>
-														<CollapsibleTrigger
-															asChild
-														>
-															<Button
-																variant="ghost"
-																size="sm"
-																className="flex h-auto w-full items-start justify-between px-0 py-1 text-left hover:bg-transparent"
-															>
-																<div className="space-y-1">
-																	<div className="flex items-center gap-2 text-sm font-medium">
-																		<FileCode2 className="size-4 text-primary" />
-																		<span>
-																			{formatCodeReference(
-																				preview.ref,
-																			)}
-																		</span>
-																	</div>
-																	<p className="text-xs text-muted-foreground">
-																		Resolved
-																		from the
-																		connected
-																		repository
-																		{preview.branch
-																			? ` on ${preview.branch}`
-																			: ""}
-																		{preview
-																			.relatedFiles
-																			.length >
-																		0
-																			? ` with ${preview.relatedFiles.length} related file${preview.relatedFiles.length > 1 ? "s" : ""}`
-																			: ""}
-																		.
-																	</p>
-																</div>
-																<ChevronDown className="size-4 text-muted-foreground" />
-															</Button>
-														</CollapsibleTrigger>
-														<CollapsibleContent className="space-y-2 pt-1">
-															<div className="flex flex-wrap gap-2">
-																{preview.branch ? (
-																	<Badge
-																		variant="outline"
-																		className="gap-1 rounded-full"
-																	>
-																		<GitBranch className="size-3" />
-																		{
-																			preview.branch
-																		}
-																	</Badge>
-																) : null}
-																<Badge
-																	variant="secondary"
-																	className="rounded-full"
-																>
-																	{preview
-																		.relatedFiles
-																		.length >
-																	0
-																		? `${preview.relatedFiles.length} related file${preview.relatedFiles.length > 1 ? "s" : ""}`
-																		: "Primary file only"}
-																</Badge>
-															</div>
-															{preview
-																.relatedFiles
-																.length > 0 ? (
-																<div className="space-y-1">
-																	<p className="text-xs font-medium text-muted-foreground">
-																		Included
-																		related
-																		files
-																	</p>
-																	<div className="flex flex-wrap gap-2">
-																		{preview.relatedFiles.map(
-																			(
-																				filePath,
-																			) => (
-																				<Badge
-																					key={
-																						filePath
-																					}
-																					variant="outline"
-																					className="gap-1 rounded-full"
-																				>
-																					<FileIcon className="size-3" />
-																					{
-																						filePath
-																					}
-																				</Badge>
-																			),
-																		)}
-																	</div>
-																</div>
-															) : (
-																<p className="text-xs text-muted-foreground">
-																	No
-																	high-confidence
-																	related
-																	local files
-																	were added
-																	for this
-																	reference.
-																</p>
-															)}
-														</CollapsibleContent>
-													</Collapsible>
-												),
-											)}
-										</div>
-									) : null}
-								</div>
-							)
+											),
+										)}
+									</div>
+								) : null}
+							</div>
 						}
 					/>
 				</div>
@@ -3551,6 +3625,9 @@ export const FabricDirectChat = forwardRef<
 		</div>
 	);
 
+	if (externalConversationId && !hasMounted) {
+		return <ChatRestoreLoading />;
+	}
 	return (
 		<div className="flex h-full overflow-hidden">
 			<div className="flex min-w-0 flex-1 flex-col">

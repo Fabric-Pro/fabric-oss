@@ -26,6 +26,7 @@ import {
 	type DirectStreamInput,
 	directStreamEventSchema,
 	limitSchema,
+	sourceSchema,
 } from "./direct-stream-protocol";
 
 /**
@@ -128,7 +129,7 @@ const executionSchema = z.object({ executionId: z.string() });
 
 const reasoningDurationSchema = z.object({ durationMs: z.number() });
 
-const sourcesValueSchema = z.object({ sources: z.unknown() });
+const sourcesValueSchema = z.object({ sources: z.array(sourceSchema) });
 
 const partialErrorSchema = z.object({
 	message: z.string(),

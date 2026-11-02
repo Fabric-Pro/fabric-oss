@@ -1014,18 +1014,23 @@ describe("generateCaseStudyActivity — the write surface", () => {
 	// distinguishes nothing. This set does: pulling in ANY additional database
 	// helper turns it red, whether it is a publisher, a feed writer, an asset
 	// creator, a tag mutator or another working-draft writer, and whether or not
-	// this file thought to name it.
+	// this file thought to name it. That holds for this file's
+	// direct imports only: the walker does not follow imports, so a
+	// writer reached through `../publishing-shared` needs that module's
+	// own guard, as the working-draft seed has in
+	// `seed-working-draft-after-commit.test.ts`.
 	//
 	// Widening the list is allowed. It just has to be a deliberate edit here,
 	// with the new name justified against the guarantee above.
-	it("imports ONLY the reads and the two writes the guarantee allows", () => {
+	it("imports ONLY the reads and the one write the guarantee allows", () => {
 		expect(
 			databaseValueImports(join(__dirname, "../generate-case-study.ts")),
 		).toEqual([
-			// The two writes. `completeTopicDraft` finishes the row this run
-			// already owns; `seedWorkingDraftIfAbsent` is create-only by
-			// construction, which is what makes FR35 hold without a condition
-			// here having to be right.
+			// The one direct write. `completeTopicDraft` finishes the row this
+			// run already owns. The working-draft seed is reached through
+			// `../publishing-shared`, and its own guard pins it to the
+			// create-only `seedWorkingDraftIfAbsent`, which is what makes FR35
+			// hold without a condition here having to be right.
 			"completeTopicDraft",
 			// Reads.
 			"db",
@@ -1043,7 +1048,6 @@ describe("generateCaseStudyActivity — the write surface", () => {
 			// line for a refused terminal write; it takes no client and
 			// touches no row. Added deliberately, as this guard requires.
 			"logDraftRefusal",
-			"seedWorkingDraftIfAbsent",
 		]);
 	});
 
@@ -1575,4 +1579,17 @@ describe("generateCaseStudyActivity — the asset confirmation loop", () => {
 			call.questions.map((q: { subject: string }) => q.subject),
 		).toEqual(["customer logo"]);
 	});
+});
+
+it("keeps READY when seeding throws", async () => {
+	seedWorkingDraftIfAbsent.mockRejectedValue(new Error("seed failed"));
+	await expect(run()).resolves.toEqual({
+		status: "READY",
+		seededWorkingDraft: false,
+	});
+	expect(generateObject).toHaveBeenCalledTimes(1);
+	expect(logger.warn).toHaveBeenCalledWith(
+		"[publishing-case-study] failed to seed a working draft",
+		expect.objectContaining({ error: "seed failed" }),
+	);
 });

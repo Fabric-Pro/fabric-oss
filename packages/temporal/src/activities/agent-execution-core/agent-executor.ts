@@ -38,6 +38,11 @@ import {
 } from "../../workflows/orchestrator/usage-attribution";
 import { getAgentMemoryTools } from "../agent-memory";
 import { createRunAgentTool } from "../agentic-loop";
+import {
+	canUseChatMedia,
+	chatMediaProxyUrl,
+	uploadRecordedChatMedia,
+} from "../chat-media";
 import { buildProviderOptions } from "../direct-chat/build-provider-options";
 import { createBuiltInTools } from "../direct-chat/built-in-tools";
 import {
@@ -425,6 +430,8 @@ export async function executeAgentTurn(
 			conversationHistory,
 			userMessage,
 			imageRefs,
+			userId,
+			organizationId,
 		);
 
 		// Get AI model - use override if provided, otherwise use dynamic selection
@@ -1013,7 +1020,6 @@ async function loadBuiltInToolsForAgent(
 						};
 					}
 
-					const { uploadFile } = await import("@repo/storage");
 					const speech = await synthesizeToolSpeech({
 						usageConversationId,
 						...(usageOrigin ? { usageOrigin } : {}),
@@ -1028,19 +1034,20 @@ async function loadBuiltInToolsForAgent(
 					}
 
 					const audioBuffer = speech.audio;
-					const audioKey = `tts/${userId}/${Date.now()}.mp3`;
-					await uploadFile(audioKey, audioBuffer, {
-						bucket:
-							process.env
-								.NEXT_PUBLIC_CHAT_DOCUMENTS_BUCKET_NAME ||
-							"chat-documents",
+					const audioKey = await uploadRecordedChatMedia({
+						data: audioBuffer,
 						contentType: "audio/mpeg",
+						extension: "mp3",
+						storageKind: "tts-audio",
+						recordKind: "TTS_AUDIO",
+						userId,
+						organizationId,
+						conversationId: usageConversationId,
 					});
-
-					const orgParam = organizationId
-						? `&orgId=${encodeURIComponent(organizationId)}`
-						: "";
-					const audioUrl = `/api/storage/image?path=${encodeURIComponent(audioKey)}${orgParam}`;
+					const audioUrl = chatMediaProxyUrl(
+						audioKey,
+						organizationId,
+					);
 					const wordCount = ttsText.split(/\s+/).length;
 
 					return {
@@ -1237,7 +1244,10 @@ async function buildConversationMessages(
 		storagePath: string;
 		mimeType: string;
 		name: string;
+		accessUserId?: string;
 	}>,
+	userId?: string,
+	organizationId?: string,
 ): Promise<
 	Array<{
 		role: "user" | "assistant";
@@ -1267,6 +1277,18 @@ async function buildConversationMessages(
 		];
 
 		for (const ref of imageRefs) {
+			if (
+				!userId ||
+				!(await canUseChatMedia({
+					storageKey: ref.storagePath,
+					userId: ref.accessUserId ?? userId,
+					organizationId,
+				}))
+			) {
+				throw new Error(
+					"Attached image is not available to this execution",
+				);
+			}
 			try {
 				const { data } = await downloadFile(ref.storagePath, {
 					bucket,

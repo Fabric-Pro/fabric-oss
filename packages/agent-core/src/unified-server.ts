@@ -18,6 +18,7 @@ import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { type A2AAgentExecutor, A2AServer } from "./a2a/server";
 import type { AgentSkill, Artifact } from "./a2a/types";
+import { AgUiToolResults } from "./ag-ui-tool-results";
 import {
 	createAuthMiddleware,
 	isAuthEnabled,
@@ -27,6 +28,8 @@ import {
 	createRateLimitMiddleware,
 	loadRateLimitConfigFromEnv,
 } from "./middleware/rate-limit";
+import { isHumanMessage } from "./reasoning-trace/extract";
+import { isPlainTraceMap, pickTraceState } from "./reasoning-trace/seed";
 import {
 	type AICredentials,
 	extractAIToken,
@@ -415,7 +418,9 @@ function serverResolvedAgentConfig<T extends Record<string, unknown>>(
 	const bodyHint = (key: string): unknown => {
 		for (let i = matchingSources.length - 1; i >= 0; i--) {
 			const source = matchingSources[i];
-			if (source && Object.hasOwn(source, key)) return source[key];
+			if (source && Object.hasOwn(source, key)) {
+				return source[key];
+			}
 		}
 		return undefined;
 	};
@@ -526,6 +531,10 @@ export type LangGraphStreamExecutor = (
  * Used for CopilotKit's useCoAgent which expects updates events with node names
  */
 export interface LangGraphStreamEvent {
+	reply?: { roundId: string; attemptId: string } & (
+		| { type: "delta" | "accept"; text: string }
+		| { type: "discard"; text?: string }
+	);
 	/** The node that produced this update */
 	nodeName: string;
 	/** State updates from this node */
@@ -606,7 +615,8 @@ export function getUserFacingError(
 
 /**
  * Coalesces droppable stream events when the consumer isn't draining.
- * Snapshot-style events are cumulative — each supersedes the previous — so
+ * Droppable previews must carry self-contained values for the same keys; each
+ * supersedes the previous preview. With that executor contract,
  * while desiredSize <= 0 we hold only the LATEST pending event instead of
  * enqueueing unboundedly, and flush it once the consumer drains (or at
  * stream end). Bounds memory when the client is slow or dead — otherwise a
@@ -1711,11 +1721,20 @@ export function createUnifiedServer(
 								},
 							);
 
-							// Accumulate state for final values event — this must happen
-							// for EVERY event regardless of whether it gets coalesced
-							// below, since finalState is the authoritative snapshot sent
-							// in the terminal "values" event.
-							finalState = { ...finalState, ...sanitizedState };
+							// Accumulate state for the terminal "end"/"values" events and
+							// the thread's stored state — the authoritative record of
+							// what the run produced. Every node update counts, whether
+							// or not it is coalesced below. A droppable preview does
+							// not: it is a write still being streamed, and folding it in
+							// left the last one in "values" as the run's document when
+							// the run ended without writing (Fizzy #2946). Previews
+							// still reach the client as "updates".
+							if (event.droppable !== true) {
+								finalState = {
+									...finalState,
+									...sanitizedState,
+								};
+							}
 
 							// Send updates event for each node update
 							// Format: { nodeName: { ...stateUpdates } }
@@ -3008,6 +3027,9 @@ export function createUnifiedServer(
 						}
 					}, 15_000); // every 15s — aggressive to survive multi-layer proxies
 
+					let closeReplyTranscript = () => {};
+					let finishReplyOnError = () => {};
+
 					try {
 						// Send RUN_STARTED
 						sendEvent({
@@ -3025,11 +3047,47 @@ export function createUnifiedServer(
 						// this" from "nobody on the client can run this". See the
 						// warning at the end of this branch.
 						const emittedToolCallNames = new Set<string>();
-						// Track emitted text messages to avoid duplicates across STATE_SNAPSHOTs
+						// Track emitted text messages to avoid duplicates across state updates
 						const emittedTextMessageKeys = new Set<string>();
 
 						// Use platform streaming if available
 						if (platformStreamAgent) {
+							// Clear the discarded attempt in the base as well as graph seeds,
+							// including when this run emits no replacement trace.
+							const runBaseState =
+								body.state !== null &&
+								typeof body.state === "object"
+									? {
+											...body.state,
+											...pickTraceState(
+												body.state,
+												body.messages,
+											),
+										}
+									: body.state;
+							const initialSnapshot = buildTerminalSnapshot(
+								runBaseState,
+								{},
+							);
+							// Seed delivered keys from the same filtered base sent to the browser.
+							if (
+								runBaseState !== null &&
+								typeof runBaseState === "object"
+							) {
+								sendEvent({
+									type: "STATE_SNAPSHOT",
+									snapshot: initialSnapshot,
+								});
+							}
+
+							const streamReplies =
+								c.req.header("X-Fabric-Reply-Transport") ===
+								"in-request-v1";
+							runtimeConfig.configurable = {
+								...runtimeConfig.configurable,
+								reply_streaming: streamReplies,
+							};
+
 							const generator = platformStreamAgent(
 								serverResolvedAgentConfig(
 									c.req.raw.headers,
@@ -3052,13 +3110,9 @@ export function createUnifiedServer(
 							// Track final state for final snapshot
 							let finalState: Record<string, unknown> = {};
 
-							// Coalesces interim STATE_SNAPSHOT events derived from a
-							// `droppable` generator event (per-token predictive-state
-							// previews) when the client isn't draining the stream. A
-							// STATE_SNAPSHOT from a regular (non-droppable) node update,
-							// and every other event type — TOOL_CALL, RUN_*, message,
-							// interrupt — is never gated and must all be delivered.
-							const snapshotGate = new CoalescingEventGate<
+							// Gate cumulative writes rather than patches: replacing a held preview
+							// preserves writes to other keys, including undefined tombstones.
+							const deltaGate = new CoalescingEventGate<
 								Record<string, unknown>
 							>({
 								warn: (msg, meta) =>
@@ -3068,20 +3122,249 @@ export function createUnifiedServer(
 									),
 							});
 
-							// Every non-gated sendEvent call inside the streaming loop
-							// below must route through this so a pending coalesced
-							// snapshot is never delivered AFTER an event derived from
-							// newer state (e.g. a STATE_SNAPSHOT held under backpressure
-							// arriving after the TOOL_CALL events built from the state
-							// that superseded it).
+							// This map follows delivery, so a preview dropped by the gate cannot
+							// create a remove path that the browser has not received.
+							const delivered = new Map(
+								Object.entries(initialSnapshot),
+							);
+							const sendStateDelta = (
+								writes: Record<string, unknown>,
+							) => {
+								const delta: Array<
+									| {
+											op: "add";
+											path: string;
+											value: unknown;
+									  }
+									| { op: "remove"; path: string }
+								> = [];
+								for (const [key, value] of Object.entries(
+									writes,
+								)) {
+									if (key === "messages") {
+										continue;
+									}
+									const path = `/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+									if (value === undefined) {
+										if (delivered.has(key)) {
+											delta.push({ op: "remove", path });
+											delivered.delete(key);
+										}
+									} else if (
+										!delivered.has(key) ||
+										delivered.get(key) !== value
+									) {
+										delta.push({ op: "add", path, value });
+										delivered.set(key, value);
+									}
+								}
+								if (delta.length > 0) {
+									sendEvent({ type: "STATE_DELTA", delta });
+								}
+							};
+
+							const transcript = [
+								...(body.messages || []),
+							] as Array<Record<string, unknown>>;
+							const toolMessages = new Map<
+								string,
+								Record<string, unknown>
+							>();
+
+							const toolResults = new AgUiToolResults();
 							const sendEventWithBarrier = (
 								event: Record<string, unknown>,
 							) => {
-								const pending = snapshotGate.flush();
+								const pending = deltaGate.flush();
 								if (pending !== null) {
-									sendEvent(pending);
+									sendStateDelta(pending);
 								}
+								if (
+									streamReplies &&
+									event.type === "TOOL_CALL_START"
+								) {
+									const toolMessage = {
+										id: `tool-message-${event.toolCallId}`,
+										role: "assistant",
+										toolCalls: [
+											{
+												id: event.toolCallId,
+												type: "function",
+												function: {
+													name: event.toolCallName,
+													arguments: "",
+												},
+											},
+										],
+									};
+									event.parentMessageId = toolMessage.id;
+									toolMessages.set(
+										String(event.toolCallId),
+										toolMessage,
+									);
+									transcript.push(toolMessage);
+								}
+								if (
+									streamReplies &&
+									event.type === "TOOL_CALL_ARGS"
+								) {
+									const toolMessage = toolMessages.get(
+										String(event.toolCallId),
+									);
+									if (toolMessage) {
+										(
+											toolMessage.toolCalls as Array<{
+												function: { arguments: string };
+											}>
+										)[0].function.arguments += event.delta;
+									}
+								}
+
+								toolResults.observe(event);
 								sendEvent(event);
+							};
+
+							// Accepted rounds are authoritative; tokens are a provisional suffix.
+							const acceptedRounds = new Map<string, string>();
+							let active:
+								| {
+										roundId: string;
+										attemptId: string;
+										text: string;
+								  }
+								| undefined;
+							let displayed = "";
+							let replyHandled = false;
+							const prefix = () =>
+								[...acceptedRounds.values()]
+									.filter(Boolean)
+									.join("\n\n");
+							const ensureMessage = () => {
+								if (!hasStartedMessage) {
+									sendEventWithBarrier({
+										type: "TEXT_MESSAGE_START",
+										messageId,
+										role: "assistant",
+									});
+									transcript.push({
+										id: messageId,
+										role: "assistant",
+										content: "",
+									});
+									hasStartedMessage = true;
+								}
+							};
+							let sentCorrection = false;
+							const sendTranscript = () =>
+								sendEventWithBarrier({
+									type: "MESSAGES_SNAPSHOT",
+									messages: transcript.map((item) => ({
+										...item,
+									})),
+								});
+							closeReplyTranscript = () => {
+								if (sentCorrection) {
+									// compactEvents moves corrections after merged text; the final transcript wins on replay.
+									sendTranscript();
+									sentCorrection = false;
+								}
+							};
+							finishReplyOnError = () => {
+								if (streamReplies) {
+									closeReplyTranscript();
+									if (hasStartedMessage) {
+										sendEventWithBarrier({
+											type: "TEXT_MESSAGE_END",
+											messageId,
+										});
+									}
+								}
+							};
+
+							const setText = (
+								text: string,
+								speculative = false,
+							) => {
+								if (text === displayed) {
+									return;
+								}
+								ensureMessage();
+								const previous = displayed;
+								displayed = text;
+								const message = transcript.find(
+									(item) => item.id === messageId,
+								);
+								if (message) {
+									message.content = text;
+								}
+								if (
+									speculative ||
+									(!active && text.startsWith(previous))
+								) {
+									sendEventWithBarrier({
+										type: "TEXT_MESSAGE_CONTENT",
+										messageId,
+										delta: text.slice(previous.length),
+									});
+								} else {
+									sentCorrection = true;
+									sendTranscript();
+								}
+							};
+							const emitReply = (
+								operation: NonNullable<
+									LangGraphStreamEvent["reply"]
+								>,
+							) => {
+								if (operation.type === "delta") {
+									if (acceptedRounds.has(operation.roundId)) {
+										return;
+									}
+									if (
+										active &&
+										active.attemptId !== operation.attemptId
+									) {
+										setText(prefix());
+										active = undefined;
+									}
+									active ??= {
+										roundId: operation.roundId,
+										attemptId: operation.attemptId,
+										text: "",
+									};
+									active.text += operation.text;
+									setText(
+										[prefix(), active.text]
+											.filter(Boolean)
+											.join("\n\n"),
+										true,
+									);
+								} else if (operation.type === "discard") {
+									setText(prefix());
+									active = undefined;
+								} else {
+									acceptedRounds.set(
+										operation.roundId,
+										operation.text,
+									);
+									setText(prefix());
+									active = undefined;
+								}
+							};
+							const terminalText = (text: string) => {
+								if (active) {
+									emitReply({ type: "discard", ...active });
+								}
+								if (
+									![...acceptedRounds.values()].includes(text)
+								) {
+									emitReply({
+										type: "accept",
+										roundId: "terminal",
+										attemptId: "terminal",
+										text,
+									});
+								}
 							};
 
 							let currentStep: string | null = null;
@@ -3114,7 +3397,7 @@ export function createUnifiedServer(
 								currentStep = newStep;
 							};
 
-							// Track emitted tool calls to avoid duplicates across STATE_SNAPSHOT events
+							// Track emitted tool calls to avoid duplicates across state updates
 							// Pre-populate with tool call IDs from INPUT messages to avoid re-emitting historical tool calls
 							const emittedToolCalls = new Set<string>();
 
@@ -3170,342 +3453,431 @@ export function createUnifiedServer(
 								},
 							);
 
-							for await (const event of generator) {
-								// Handle step transitions based on node name
-								if (event.nodeName) {
-									transitionStep(event.nodeName);
-								}
-
-								// Convert LangGraph platform events to AG-UI events
-								if (event.state) {
-									// Sanitize state for CopilotKit compatibility
-									// This converts LangChain messages to the format CopilotKit expects
-									// and preserves tool_calls for renderAndWaitForResponse actions
-									const sanitizedState =
-										sanitizeStateForCopilotKitWithLog(
-											event.state,
-										);
-
-									// Update final state with sanitized version
-									finalState = {
-										...finalState,
-										...sanitizedState,
-									};
-
-									// Log the state update being sent (verbose for debugging)
-									console.log(
-										`[UnifiedServer:${config.name}] Sending STATE_SNAPSHOT:`,
-										{
-											runId,
-											threadId,
-											nodeName: event.nodeName,
-											hasDocument:
-												!!sanitizedState.document,
-											documentLength:
-												(
-													sanitizedState.document as string
-												)?.length || 0,
-											hasStreamingContent:
-												!!sanitizedState.streamingContent,
-											streamingContentLength:
-												(
-													sanitizedState.streamingContent as string
-												)?.length || 0,
-											stateKeys:
-												Object.keys(sanitizedState),
-										},
-									);
-
-									// State updates become STATE_SNAPSHOT
-									// CopilotKit's useCoAgent uses this for document/state updates
-									// Include nodeName for frontend node tracking (used by useCoAgent's nodeName)
-									const snapshotEvent = {
-										type: "STATE_SNAPSHOT",
-										snapshot: sanitizedState,
-										// Include node name for frontend tracking
-										nodeName: event.nodeName,
-									};
-									if (event.droppable === true) {
-										for (const ev of snapshotGate.offer(
-											snapshotEvent,
-											controller.desiredSize,
-										)) {
-											sendEvent(ev);
-										}
-									} else {
-										// A snapshot derived from a regular (non-preview)
-										// node update is a delta the frontend must see —
-										// flush any pending preview first to preserve
-										// ordering, then deliver this one directly.
-										sendEventWithBarrier(snapshotEvent);
+							try {
+								for await (const event of generator) {
+									if (streamReplies && event.reply) {
+										replyHandled = true;
+										emitReply(event.reply);
+									}
+									if (
+										event.reply &&
+										Object.keys(event.state).length === 0
+									) {
+										continue;
 									}
 
-									// Emit TOOL_CALL events for frontend actions to trigger useCopilotAction handlers
-									// Backend tools (write_document_local, enhance_prompt_local, apply_document_patches)
-									// use predict_state streaming or server-side assembly and must NOT be emitted to
-									// the frontend — their results flow via state.document/STATE_SNAPSHOT instead.
-									// Track emitted tool calls to avoid duplicates across multiple STATE_SNAPSHOTs
-									const BACKEND_TOOLS = [
-										// Document-editing tools whose results flow via state.document
-										"write_document_local",
-										"apply_document_patches",
-										"enhance_prompt_local",
-										// Server-side tools (executed by tool_node, not frontend).
-										// Every server-side tool from project-document-generator's
-										// tool-node.ts must appear here, otherwise the raw tool call
-										// leaks to the frontend and confuses the CopilotKit runtime.
-										"search_project_knowledge",
-										"read_project_source",
-										// Microsoft Teams tools
-										"search_teams_messages",
-										"get_chat_messages",
-										"get_full_message",
-										"list_message_replies",
-										"list_linked_chats",
-										"list_linked_channels",
-										"get_teams_channel_messages",
-										"get_message_hosted_content",
-										// Slack tools
-										"search_slack_messages",
-										"get_channel_messages",
-										// Repository code search tools
-										"search_repository_code",
-										"get_repository_file",
-										"list_repository_structure",
-									];
+									// Handle step transitions based on node name
+									if (event.nodeName) {
+										transitionStep(event.nodeName);
+									}
 
-									if (
-										Array.isArray(sanitizedState.messages)
-									) {
-										const allMessages =
-											sanitizedState.messages as Array<
-												Record<string, unknown>
-											>;
+									// Convert LangGraph platform events to AG-UI events
+									if (event.state) {
+										// Sanitize state for CopilotKit compatibility
+										// This converts LangChain messages to the format CopilotKit expects
+										// and preserves tool_calls for renderAndWaitForResponse actions
+										// Keep undefined writes in accumulation: the terminal snapshot's
+										// JSON serialization omits them and error handling sees the clear.
+										const sanitizedState =
+											sanitizeStateForCopilotKitWithLog(
+												event.state,
+											);
 
-										// Find the LAST AI text message from the CURRENT turn only
-										// We must not re-emit AI text from previous conversation turns.
-										// To identify the current turn boundary, find the last human message
-										// and only look for AI text AFTER it.
-										// NOTE: We use emittedTextMessageKeys (not hasStartedMessage) to
-										// de-duplicate, so that follow-up AI responses after tool execution
-										// are emitted as new messages.
-										{
-											// Find the last human message index (current turn boundary)
+										// Trace writes replace one turn, not the prior turns' maps.
+										for (const key of [
+											"toolCallsByTurn",
+											"reasoningByTurn",
+										]) {
+											// Trace maps keep their per-turn merge when no map was written.
+											if (
+												sanitizedState[key] ===
+												undefined
+											) {
+												delete sanitizedState[key];
+												continue;
+											}
+											if (
+												isPlainTraceMap(
+													sanitizedState[key],
+												)
+											) {
+												const base =
+													isPlainTraceMap(
+														runBaseState,
+													) &&
+													isPlainTraceMap(
+														runBaseState[key],
+													)
+														? runBaseState[key]
+														: {};
+												sanitizedState[key] = {
+													...base,
+													...(isPlainTraceMap(
+														finalState[key],
+													)
+														? finalState[key]
+														: {}),
+													...sanitizedState[key],
+												};
+											}
+										}
+										finalState = {
+											...finalState,
+											...sanitizedState,
+										};
+
+										// Log the state update being sent (verbose for debugging)
+										console.log(
+											`[UnifiedServer:${config.name}] Sending STATE_DELTA:`,
+											{
+												runId,
+												threadId,
+												nodeName: event.nodeName,
+												hasDocument:
+													!!sanitizedState.document,
+												documentLength:
+													(
+														sanitizedState.document as string
+													)?.length || 0,
+												hasStreamingContent:
+													!!sanitizedState.streamingContent,
+												streamingContentLength:
+													(
+														sanitizedState.streamingContent as string
+													)?.length || 0,
+												stateKeys:
+													Object.keys(sanitizedState),
+											},
+										);
+
+										if (event.droppable === true) {
+											for (const writes of deltaGate.offer(
+												finalState,
+												controller.desiredSize,
+											)) {
+												sendStateDelta(writes);
+											}
+										} else {
+											// Flush before computing removes against the browser's delivered keys.
+											const pending = deltaGate.flush();
+											if (pending !== null) {
+												sendStateDelta(pending);
+											}
+											sendStateDelta(finalState);
+										}
+
+										// Emit TOOL_CALL events for frontend actions to trigger useCopilotAction handlers
+										// Backend tools (write_document_local, enhance_prompt_local, apply_document_patches)
+										// use predict_state streaming or server-side assembly and must NOT be emitted to
+										// the frontend — their results flow via state.document/STATE_DELTA instead.
+										// Track emitted tool calls to avoid duplicates across state updates
+										const BACKEND_TOOLS = [
+											// Document-editing tools whose results flow via state.document
+											"write_document_local",
+											"apply_document_patches",
+											"enhance_prompt_local",
+											// Server-side tools (executed by tool_node, not frontend).
+											// Every server-side tool from project-document-generator's
+											// tool-node.ts must appear here, otherwise the raw tool call
+											// leaks to the frontend and confuses the CopilotKit runtime.
+											"search_project_knowledge",
+											"read_project_source",
+											// Microsoft Teams tools
+											"search_teams_messages",
+											"get_chat_messages",
+											"get_full_message",
+											"list_message_replies",
+											"list_linked_chats",
+											"list_linked_channels",
+											"get_teams_channel_messages",
+											"get_message_hosted_content",
+											// Slack tools
+											"search_slack_messages",
+											"get_channel_messages",
+											// Repository code search tools
+											"search_repository_code",
+											"get_repository_file",
+											"list_repository_structure",
+										];
+
+										if (
+											Array.isArray(
+												sanitizedState.messages,
+											)
+										) {
+											const allMessages =
+												sanitizedState.messages as Array<
+													Record<string, unknown>
+												>;
 											let lastHumanIndex = -1;
 											for (
 												let i = allMessages.length - 1;
 												i >= 0;
 												i--
 											) {
-												const mType =
-													(allMessages[i]
-														.type as string) || "";
-												if (mType === "human") {
+												if (
+													isHumanMessage(
+														allMessages[i],
+													)
+												) {
 													lastHumanIndex = i;
 													break;
 												}
 											}
 
-											let lastAiContent: string | null =
-												null;
-											for (
-												let i = allMessages.length - 1;
-												i > lastHumanIndex;
-												i--
-											) {
-												const m = allMessages[i];
-												const mType =
-													(m.type as string) || "";
-												const mContent =
-													extractStringContent(
-														m.content,
-													) || undefined;
-												if (
-													mType === "ai" &&
-													mContent &&
-													mContent.trim()
+											// Find the LAST AI text message from the CURRENT turn only
+											// We must not re-emit AI text from previous conversation turns.
+											// To identify the current turn boundary, find the last human message
+											// and only look for AI text AFTER it.
+											// NOTE: We use emittedTextMessageKeys (not hasStartedMessage) to
+											// de-duplicate, so that follow-up AI responses after tool execution
+											// are emitted as new messages.
+											{
+												let lastAiContent:
+													| string
+													| null = null;
+												let lastAiIdentity = "";
+												for (
+													let i =
+														allMessages.length - 1;
+													i > lastHumanIndex;
+													i--
 												) {
-													lastAiContent = mContent;
-													break;
+													const m = allMessages[i];
+													const mType =
+														(m.type as string) ||
+														"";
+													const mContent =
+														extractStringContent(
+															m.content,
+														) || undefined;
+													if (
+														mType === "ai" &&
+														mContent &&
+														mContent.trim()
+													) {
+														lastAiContent =
+															mContent;
+														lastAiIdentity = String(
+															m.id ?? i,
+														);
+														break;
+													}
 												}
-											}
 
-											if (lastAiContent) {
-												const msgKey = `${lastAiContent.slice(0, 50)}_${lastAiContent.length}`;
 												if (
-													!emittedTextMessageKeys.has(
-														msgKey,
-													)
+													streamReplies &&
+													!replyHandled &&
+													lastAiContent
 												) {
-													emittedTextMessageKeys.add(
-														msgKey,
-													);
+													emitReply({
+														type: "accept",
+														roundId: `state-${lastAiIdentity}`,
+														attemptId: "state",
+														text: lastAiContent,
+													});
+												}
+												if (
+													lastAiContent &&
+													!streamReplies
+												) {
+													const msgKey = `${lastAiContent.slice(0, 50)}_${lastAiContent.length}`;
+													if (
+														!emittedTextMessageKeys.has(
+															msgKey,
+														)
+													) {
+														emittedTextMessageKeys.add(
+															msgKey,
+														);
 
-													console.log(
-														`[UnifiedServer:${config.name}] Emitting TEXT_MESSAGE events for AI text response:`,
-														{
-															contentLength:
-																lastAiContent.length,
-															contentPreview:
-																lastAiContent.slice(
-																	0,
-																	100,
-																),
-															isFollowUp:
-																hasStartedMessage,
-														},
-													);
+														console.log(
+															`[UnifiedServer:${config.name}] Emitting TEXT_MESSAGE events for AI text response:`,
+															{
+																contentLength:
+																	lastAiContent.length,
+																contentPreview:
+																	lastAiContent.slice(
+																		0,
+																		100,
+																	),
+																isFollowUp:
+																	hasStartedMessage,
+															},
+														);
 
-													// Keep a single open message for the entire run.
-													// Appending follow-up content (after tool execution)
-													// to the same message keeps CopilotKit's isLoading=true
-													// so users can't type while the agent is still working.
-													if (!hasStartedMessage) {
-														sendEventWithBarrier({
-															type: "TEXT_MESSAGE_START",
-															messageId,
-															role: "assistant",
-														});
-													} else {
-														// Visual separator between initial text and follow-up
+														// Keep a single open message for the entire run.
+														// Appending follow-up content (after tool execution)
+														// to the same message keeps CopilotKit's isLoading=true
+														// so users can't type while the agent is still working.
+														if (
+															!hasStartedMessage
+														) {
+															sendEventWithBarrier(
+																{
+																	type: "TEXT_MESSAGE_START",
+																	messageId,
+																	role: "assistant",
+																},
+															);
+														} else {
+															// Visual separator between initial text and follow-up
+															sendEventWithBarrier(
+																{
+																	type: "TEXT_MESSAGE_CONTENT",
+																	messageId,
+																	delta: "\n\n",
+																},
+															);
+														}
+
 														sendEventWithBarrier({
 															type: "TEXT_MESSAGE_CONTENT",
 															messageId,
-															delta: "\n\n",
+															delta: lastAiContent,
 														});
+
+														hasStartedMessage = true;
 													}
-
-													sendEventWithBarrier({
-														type: "TEXT_MESSAGE_CONTENT",
-														messageId,
-														delta: lastAiContent,
-													});
-
-													hasStartedMessage = true;
 												}
 											}
-										}
 
-										// Emit TOOL_CALL events for frontend actions
-										for (const msg of allMessages) {
-											const hasToolCalls =
-												msg.tool_calls &&
-												Array.isArray(msg.tool_calls) &&
-												(msg.tool_calls as unknown[])
-													.length > 0;
-											if (hasToolCalls) {
-												for (const toolCall of msg.tool_calls as Array<
-													Record<string, unknown>
-												>) {
-													const toolName =
-														(toolCall.name as string) ||
-														((
-															toolCall.function as Record<
+											// Emit TOOL_CALL events for frontend actions
+											for (const msg of allMessages.slice(
+												lastHumanIndex + 1,
+											)) {
+												const hasToolCalls =
+													msg.tool_calls &&
+													Array.isArray(
+														msg.tool_calls,
+													) &&
+													(
+														msg.tool_calls as unknown[]
+													).length > 0;
+												if (hasToolCalls) {
+													for (const toolCall of msg.tool_calls as Array<
+														Record<string, unknown>
+													>) {
+														const toolName =
+															(toolCall.name as string) ||
+															((
+																toolCall.function as Record<
+																	string,
+																	unknown
+																>
+															)?.name as string);
+														const toolId =
+															(toolCall.id as string) ||
+															`tool_${Date.now()}`;
+														const toolArgs =
+															(toolCall.args as Record<
 																string,
 																unknown
-															>
-														)?.name as string);
-													const toolId =
-														(toolCall.id as string) ||
-														`tool_${Date.now()}`;
-													const toolArgs =
-														(toolCall.args as Record<
-															string,
-															unknown
-														>) ||
-														(
-															toolCall.function as Record<
-																string,
-																unknown
-															>
-														)?.arguments;
+															>) ||
+															(
+																toolCall.function as Record<
+																	string,
+																	unknown
+																>
+															)?.arguments;
 
-													// Emit for frontend actions (anything that's not a backend streaming tool)
-													if (
-														toolName &&
-														!BACKEND_TOOLS.includes(
-															toolName,
-														)
-													) {
-														// Use a module-level Set to track emitted tool calls per run
+														// Emit for frontend actions (anything that's not a backend streaming tool)
 														if (
-															!emittedToolCalls.has(
-																toolId,
+															toolName &&
+															!BACKEND_TOOLS.includes(
+																toolName,
 															)
 														) {
-															emittedToolCalls.add(
-																toolId,
-															);
-
-															console.log(
-																`[UnifiedServer:${config.name}] Emitting TOOL_CALL events for frontend action:`,
-																{
+															// Use a module-level Set to track emitted tool calls per run
+															if (
+																!emittedToolCalls.has(
 																	toolId,
-																	toolName,
-																	hasArgs:
-																		!!toolArgs,
-																},
-															);
+																)
+															) {
+																emittedToolCalls.add(
+																	toolId,
+																);
 
-															sendEventWithBarrier(
-																{
-																	type: "TOOL_CALL_START",
-																	toolCallId:
+																console.log(
+																	`[UnifiedServer:${config.name}] Emitting TOOL_CALL events for frontend action:`,
+																	{
 																		toolId,
-																	toolCallName:
 																		toolName,
-																},
-															);
+																		hasArgs:
+																			!!toolArgs,
+																	},
+																);
 
-															// Send the actual tool arguments
-															const argsString =
-																typeof toolArgs ===
-																"string"
-																	? toolArgs
-																	: JSON.stringify(
-																			toolArgs ||
-																				{},
-																		);
-															sendEventWithBarrier(
-																{
-																	type: "TOOL_CALL_ARGS",
-																	toolCallId:
-																		toolId,
-																	delta: argsString,
-																},
-															);
+																sendEventWithBarrier(
+																	{
+																		type: "TOOL_CALL_START",
+																		toolCallId:
+																			toolId,
+																		toolCallName:
+																			toolName,
+																	},
+																);
 
-															sendEventWithBarrier(
-																{
-																	type: "TOOL_CALL_END",
-																	toolCallId:
-																		toolId,
-																},
-															);
+																// Send the actual tool arguments
+																const argsString =
+																	typeof toolArgs ===
+																	"string"
+																		? toolArgs
+																		: JSON.stringify(
+																				toolArgs ||
+																					{},
+																			);
+																sendEventWithBarrier(
+																	{
+																		type: "TOOL_CALL_ARGS",
+																		toolCallId:
+																			toolId,
+																		delta: argsString,
+																	},
+																);
 
-															hasEmittedToolCalls = true;
-															emittedToolCallNames.add(
-																toolName,
-															);
+																sendEventWithBarrier(
+																	{
+																		type: "TOOL_CALL_END",
+																		toolCallId:
+																			toolId,
+																	},
+																);
+
+																hasEmittedToolCalls = true;
+																emittedToolCallNames.add(
+																	toolName,
+																);
+															}
 														}
 													}
 												}
 											}
 										}
 									}
-								}
 
-								// If this is the final event from a node, transition to null (close step)
-								if (event.isFinal && event.nodeName) {
-									transitionStep(null);
+									for (const result of toolResults.collect(
+										event.state.messages,
+									)) {
+										sendEventWithBarrier(result);
+									}
+
+									// If this is the final event from a node, transition to null (close step)
+									if (event.isFinal && event.nodeName) {
+										transitionStep(null);
+									}
+								}
+							} finally {
+								if (streamReplies && active) {
+									emitReply({ type: "discard", ...active });
 								}
 							}
 
-							// Flush any coalesced interim STATE_SNAPSHOT before the
+							// Flush any coalesced interim STATE_DELTA before the
 							// terminal snapshot / run-finished events below.
-							const pendingSnapshot = snapshotGate.flush();
-							if (pendingSnapshot !== null) {
-								sendEvent(pendingSnapshot);
+							const pendingDelta = deltaGate.flush();
+							if (pendingDelta !== null) {
+								sendStateDelta(pendingDelta);
 							}
 
 							// Make sure to close any remaining step
@@ -3516,11 +3888,11 @@ export function createUnifiedServer(
 							// turns without document payload (e.g. post-confirmation
 							// acknowledgments) leaves the frontend waiting until the
 							// browser times out.
-							// Merge incoming body.state so client-managed fields
+							// Merge the run's filtered base so client-managed fields
 							// (projectId, organizationId, promptId, ...) survive the
 							// snapshot — useCoAgent replaces state from this payload.
 							const terminalSnapshot = buildTerminalSnapshot(
-								body.state,
+								runBaseState,
 								finalState,
 							);
 							console.log(
@@ -3579,7 +3951,9 @@ export function createUnifiedServer(
 								? `${terminalError.slice(0, 50)}_${terminalError.length}`
 								: null;
 
-							if (
+							if (streamReplies && terminalError) {
+								terminalText(terminalError);
+							} else if (
 								terminalError &&
 								terminalErrorKey &&
 								!emittedTextMessageKeys.has(terminalErrorKey)
@@ -3629,6 +4003,7 @@ export function createUnifiedServer(
 								// Skip fallback if tool calls were emitted — CopilotKit will handle
 								// the tool execution and follow-up agent invocation.
 								!hasStartedMessage &&
+								!(streamReplies && replyHandled) &&
 								!hasEmittedToolCalls &&
 								finalState.messages &&
 								Array.isArray(finalState.messages)
@@ -3665,7 +4040,12 @@ export function createUnifiedServer(
 									}
 								}
 
-								if (fallbackContent) {
+								if (streamReplies) {
+									terminalText(
+										fallbackContent ||
+											EMPTY_RESPONSE_FALLBACK,
+									);
+								} else if (fallbackContent) {
 									console.log(
 										`[UnifiedServer:${config.name}] Emitting fallback TEXT_MESSAGE from final state:`,
 										{
@@ -3703,6 +4083,15 @@ export function createUnifiedServer(
 									});
 									hasStartedMessage = true;
 								}
+							}
+
+							if (
+								streamReplies &&
+								replyHandled &&
+								!prefix().trim() &&
+								!hasEmittedToolCalls
+							) {
+								terminalText(EMPTY_RESPONSE_FALLBACK);
 							}
 
 							// The one way a run still ends with nothing on
@@ -3819,6 +4208,8 @@ export function createUnifiedServer(
 							hasStartedMessage = true;
 						}
 
+						closeReplyTranscript();
+
 						// Send TEXT_MESSAGE_END if we started a message
 						if (hasStartedMessage) {
 							sendEvent({
@@ -3850,6 +4241,8 @@ export function createUnifiedServer(
 								`[UnifiedServer:${config.name}] Stream ended (client disconnected)`,
 							);
 						}
+						finishReplyOnError();
+
 						sendEvent({
 							type: "RUN_ERROR",
 							message:

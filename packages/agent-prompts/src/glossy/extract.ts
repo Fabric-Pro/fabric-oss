@@ -33,8 +33,15 @@ import {
 	wrapGlossyUntrusted,
 } from "./untrusted";
 
-/** A concrete kind, or `auto` for a slot that lets the model choose. */
-export type GlossyExtractPromptKind = GlossyDetectableKind | "auto";
+/**
+ * A concrete kind, or `auto` for a slot that lets the model choose. `layers`
+ * and `team` are asked for only by a Proposal (Fizzy #2946).
+ */
+export type GlossyExtractPromptKind =
+	| GlossyDetectableKind
+	| "layers"
+	| "team"
+	| "auto";
 
 /** Bound on the editor's style direction (KTD13). */
 export const GLOSSY_STYLE_DIRECTION_MAX_CHARS = 500;
@@ -58,8 +65,32 @@ export const GLOSSY_EDIT_INSTRUCTION_MAX_CHARS = 500;
  */
 export const GLOSSY_EDIT_SOURCE_MAX_CHARS = 4_000;
 
-/** The kinds an edit may return: the ones drawn as a diagram. */
-export const GLOSSY_EDITABLE_KINDS = ["timeline", "flow", "org_chart"] as const;
+/**
+ * The kinds an edit may return: the ones drawn as a diagram. Edit with
+ * instructions exists for a Proposal only, so the list includes the
+ * Proposal's own layers and team kinds (Fizzy #2946).
+ */
+export const GLOSSY_EDITABLE_KINDS = [
+	"timeline",
+	"flow",
+	"org_chart",
+	"layers",
+	"team",
+] as const;
+
+/**
+ * The kinds an edit may return when the diagram's kind was not stored
+ * (`auto`). Layers and team are left out: the visuals step always writes
+ * their figure line, so an edit of one asks for its own kind, and offering
+ * them here would take the answer's schema past Anthropic's limit of 16
+ * union-typed parameters, which turns a native structured call into a
+ * prompt-steered one.
+ */
+export const GLOSSY_EDIT_AUTO_KINDS = [
+	"timeline",
+	"flow",
+	"org_chart",
+] as const satisfies readonly (typeof GLOSSY_EDITABLE_KINDS)[number][];
 
 /**
  * Structural words a kind may use although the section does not; the same
@@ -89,6 +120,24 @@ export const GLOSSY_KIND_FIELD_RULES: Readonly<
 };
 
 /**
+ * Field rules for the kinds only a Proposal extracts (Fizzy #2946), drawn by
+ * its layers and team figure templates; bounds match
+ * `proposalVisualSpecSchema` in @repo/utils. Listed under their own heading,
+ * only with `proposalArtifact`.
+ */
+const PROPOSAL_KIND_FIELD_RULES: Readonly<Record<"layers" | "team", string>> = {
+	layers: "in the layers field, 2–8 layers, top to bottom in the order the section gives them. Each has name: the layer's name as the section writes it (≤60), description: optional, what the layer is for in a few words (≤120), and components: 1–5 per layer, each a component as the section names it (≤120). crosscutting: capabilities the section says span every layer, as name (≤60), optional description (≤120), and items, 1–6 names (≤120); null when the section names none.",
+	team: "proposer: the team the proposal offers; client: the client's own people. Each side has name: the team or organization as the section writes it (≤60), an optional description (≤120), and members: 1–10, each with role: the role as the section writes it (≤120), name: the person's name only when the section gives it (≤60), and description: an optional short detail such as what they own (≤240). Both sides need at least one member the section names. shared: one forum or rhythm the section says both sides take part in, such as a weekly steering meeting (≤120); null when it names none.",
+};
+
+const PROPOSAL_KINDS = [
+	"## More kinds for this Proposal",
+	...Object.entries(PROPOSAL_KIND_FIELD_RULES).map(
+		([kind, rules]) => `- ${kind}: ${rules}`,
+	),
+];
+
+/**
  * Label bounds for a Proposal's diagrams, so the label a reader sees at page
  * width is the label that was checked. The Proposal template in @repo/utils
  * wraps a title onto two short lines, leaves out a detail that repeats it,
@@ -101,6 +150,8 @@ const PROPOSAL_LABEL_RULES = [
 	"- flow: label is a short title of at most 32 characters; description only when it adds information the title does not already give, at most 28 characters, otherwise null.",
 	"- Never repeat the title in the description, and never copy the source bullet into the description with a shortened copy as the title.",
 	"- org_chart: label is the role or person in a few words.",
+	"- layers: every layer name and component is a few words, at most 24 characters; five components share one row.",
+	"- team: role is a few words, at most 28 characters; description only when it adds information the role does not already give, at most 28 characters, otherwise null.",
 	"Shorten by dropping words, as the fidelity rules allow; never add words to fit.",
 ];
 
@@ -147,7 +198,9 @@ export function buildGlossyExtractInstructions(
 		"",
 		'When the requested kind is "auto", choose whichever kind above fits the section best, guided by the slot hint when there is one, and set spec.kind to it.',
 		"",
-		...(options.proposalArtifact ? [...PROPOSAL_LABEL_RULES, ""] : []),
+		...(options.proposalArtifact
+			? [...PROPOSAL_KINDS, "", ...PROPOSAL_LABEL_RULES, ""]
+			: []),
 		...(options.editInstruction ? [...EDIT_RULES, ""] : []),
 		GLOSSY_UNTRUSTED_GUIDANCE,
 	].join("\n");

@@ -1,6 +1,8 @@
 "use client";
 
+import { isRetiredSystemAgent } from "@repo/agent-types";
 import { AgentInstanceDetail } from "@saas/agent-templates/components/AgentInstanceDetail";
+import { RetiredAgentNotice } from "@saas/agents/components/RetiredAgentNotice";
 import {
 	getAgentSelectionSummary,
 	getBuiltInCapability,
@@ -13,7 +15,6 @@ import { getIntegration } from "@saas/workflows/lib/plugins/registry";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
-import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -25,7 +26,6 @@ import {
 } from "@ui/components/card";
 import { Separator } from "@ui/components/separator";
 import {
-	AlertCircle,
 	ArrowLeft,
 	ArrowRightIcon,
 	CheckCircleIcon,
@@ -88,12 +88,6 @@ export default function OrganizationAgentDetailsPage() {
 
 	const agentsBasePath = `${basePath}/agents`;
 
-	// CUIDs are 25-char lowercase alphanumeric — these are template instance IDs.
-	// Registered agents use slug-format agentIds (e.g. "deep-researcher", "prompt_enhancer").
-	// Skip the registry lookup entirely for instance IDs to avoid a 404 console error.
-	const isInstanceId =
-		agentId.length >= 20 && /^[a-z][a-z0-9]+$/.test(agentId);
-
 	// Fetch agent details from registry
 	const {
 		data: agent,
@@ -109,7 +103,6 @@ export default function OrganizationAgentDetailsPage() {
 			}
 		},
 		retry: false,
-		enabled: !isInstanceId,
 	});
 
 	// Parse metadata for additional info
@@ -277,11 +270,9 @@ export default function OrganizationAgentDetailsPage() {
 		router.push(`${agentsBasePath}/${agentId}/${routingInfo.route}`);
 	};
 
-	// Render instance view immediately — no registry query needed
-	if (isInstanceId) {
-		return <AgentInstanceDetail instanceId={agentId} basePath={basePath} />;
+	if (agent && isRetiredSystemAgent(agent)) {
+		return <RetiredAgentNotice basePath={basePath} />;
 	}
-
 	if (isLoading) {
 		return (
 			<div className="flex items-center justify-center min-h-[400px]">
@@ -294,30 +285,7 @@ export default function OrganizationAgentDetailsPage() {
 	}
 
 	if (error || !agent) {
-		// Registry lookup failed — fall back to instance view
-		if (error || !agent) {
-			return (
-				<AgentInstanceDetail instanceId={agentId} basePath={basePath} />
-			);
-		}
-		return (
-			<div className="container py-8">
-				<Alert variant="error">
-					<AlertCircle className="h-4 w-4" />
-					<AlertTitle>Error</AlertTitle>
-					<AlertDescription>Agent not found</AlertDescription>
-				</Alert>
-				<div className="mt-4">
-					<Button
-						variant="outline"
-						onClick={() => router.push(agentsBasePath)}
-					>
-						<ArrowLeft className="h-4 w-4 mr-2" />
-						Back to Agents
-					</Button>
-				</div>
-			</div>
-		);
+		return <AgentInstanceDetail instanceId={agentId} basePath={basePath} />;
 	}
 
 	const statusInfo = getStatusInfo();

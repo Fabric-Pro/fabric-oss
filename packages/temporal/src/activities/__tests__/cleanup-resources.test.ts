@@ -111,7 +111,7 @@ describe("cleanupWeaveResourcesActivity", () => {
 			weaveExecutionId: "wexec-1",
 		});
 
-		expect(result).toEqual({ destroyed: false, alreadyTerminal: true });
+		expect(result).toEqual({ destroyed: true, alreadyTerminal: true });
 		expect(mocks.getProviderMock).not.toHaveBeenCalled();
 		expect(mocks.cancelSessionMock).not.toHaveBeenCalled();
 
@@ -269,7 +269,7 @@ describe("cleanupWeaveResourcesActivity — DB reconciliation", () => {
 		});
 
 		// Still the no-op teardown contract for a null session…
-		expect(result).toEqual({ destroyed: false, alreadyTerminal: true });
+		expect(result).toEqual({ destroyed: true, alreadyTerminal: true });
 		expect(mocks.getProviderMock).not.toHaveBeenCalled();
 
 		// …but the DB reconciliation ran anyway (the headline bug case:
@@ -507,3 +507,35 @@ describe("native cleanup confirmation", () => {
 		expect(result.destroyed).toBe(false);
 	});
 });
+
+it.each(["weave", "coding_run"])(
+	"bridge-on closes a %s row with no session through real cleanup",
+	async (kind) => {
+		vi.stubEnv("FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED", "true");
+		try {
+			const result = await cleanupWeaveResourcesActivity({
+				...BASE_INPUT,
+				sessionId: null,
+				providerMetadata: { executionRuntime: "fabric-agent-server" },
+				exitReason: "failure",
+				...(kind === "weave"
+					? { weaveExecutionId: "example-execution" }
+					: { codingRunId: "example-run" }),
+			});
+			expect(result.destroyed).toBe(true);
+			expect(mocks.getProviderMock).not.toHaveBeenCalled();
+			if (kind === "weave") {
+				expect(mocks.weaveExecutionUpdateManyMock).toHaveBeenCalledWith(
+					expect.objectContaining({
+						data: expect.objectContaining({ status: "FAILED" }),
+					}),
+				);
+				expect(mocks.weavePlanUpdateManyMock).toHaveBeenCalledWith(
+					expect.objectContaining({ data: { status: "APPROVED" } }),
+				);
+			}
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	},
+);

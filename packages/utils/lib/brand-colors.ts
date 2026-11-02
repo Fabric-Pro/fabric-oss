@@ -93,6 +93,15 @@ export function rgbToHex(r: number, g: number, b: number): string {
 	return `#${channel(r)}${channel(g)}${channel(b)}`;
 }
 
+/** `weight` of `color` over `base`, both `#rrggbb`, as `#rrggbb`. */
+export function mixHex(color: string, base: string, weight: number): string {
+	const channel = (hex: string, offset: number) =>
+		Number.parseInt(hex.slice(offset, offset + 2), 16);
+	const blend = (offset: number) =>
+		channel(color, offset) * weight + channel(base, offset) * (1 - weight);
+	return rgbToHex(blend(1), blend(3), blend(5));
+}
+
 export interface BrandColorValue {
 	hex: string;
 	hue: string;
@@ -179,7 +188,7 @@ export const brandColorValues: Record<string, BrandColorValue> = {
 	},
 };
 
-/** The brand an organization without a stored choice gets (Fabric crimson). */
+/** Fallback for resolved export palettes. The dashboard uses warm orange when unset. */
 const DEFAULT_BRAND_COLOR = "red";
 
 /**

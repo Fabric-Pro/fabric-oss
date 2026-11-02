@@ -224,7 +224,7 @@ const WORKSPACE_GROUP: GsGroup = {
 			id: "projects",
 			label: "Projects",
 			description:
-				"Each project is a workspace for one initiative — its docs, roadmap, agents, and code map live together.",
+				"Use New in the navigation to create a project. Each project is a workspace for one initiative — its docs, roadmap, agents, and code map live together.",
 			icon: FolderKanbanIcon,
 			anchor: "nav-projects",
 			href: ({ basePath }) => `${basePath}/projects`,
@@ -246,7 +246,7 @@ const WORKSPACE_GROUP: GsGroup = {
 			id: "agents",
 			label: "AI Agents",
 			description:
-				"Build and manage AI agents, plus the Skills and Templates that extend what they can do. Every agent runs in Genie — the full-page chat that is also the conversation the floating button opens.",
+				"Find Genie Agents and Runs & History under AI/ML, plus the Skills and Templates that extend what agents can do. Every agent runs in Genie — the full-page chat that is also the conversation the floating button opens.",
 			icon: BotIcon,
 			anchor: "nav-agents",
 			href: ({ basePath }) => `${basePath}/agents`,
@@ -255,7 +255,7 @@ const WORKSPACE_GROUP: GsGroup = {
 			id: "workflows",
 			label: "Workflows",
 			description:
-				"Design multi-step automations that chain agents, tools, and approvals together.",
+				"Explore the Visual Workflow Studio under Operations and create workflows that chain agents, tools, and approvals together.",
 			icon: WorkflowIcon,
 			anchor: "nav-workflows",
 			href: ({ basePath }) => `${basePath}/workflows`,

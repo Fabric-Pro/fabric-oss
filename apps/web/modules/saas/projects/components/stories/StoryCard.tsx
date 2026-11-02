@@ -9,7 +9,7 @@ import {
 	pmDetectedTypeDisplayName,
 } from "@repo/utils";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -151,6 +151,7 @@ import {
 	type SecondaryKind,
 	selectSecondaryMetadata,
 } from "./secondary-overflow";
+import { useDetailLoadFeedback } from "./use-detail-load-feedback";
 import {
 	useInvalidateStoryAfterRegeneration,
 	useStoryKindRegeneration,
@@ -403,7 +404,25 @@ function StoryCardImpl({
 		direction: "push" | "pull";
 	} | null>(null);
 	const [pmFailurePanelOpen, setPmFailurePanelOpen] = useState(false);
+	const tDetailLoad = useTranslations("projects.stories.roadmapUi");
 	const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
+	const conflictDetail = useQuery({
+		...orpc.projects.stories.get.queryOptions({
+			input: { projectId, storyId: story.id, organizationId },
+		}),
+		enabled: conflictDialogOpen,
+	});
+
+	useDetailLoadFeedback(
+		conflictDialogOpen,
+		conflictDetail,
+		() => {
+			setConflictDialogOpen(false);
+			setPmConflictPreview(null);
+		},
+		tDetailLoad("detailLoadFailed"),
+	);
+
 	const [pmConflictPreview, setPmConflictPreview] =
 		useState<ConflictPreview | null>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -534,7 +553,7 @@ function StoryCardImpl({
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({
-				queryKey: orpc.projects.stories.list.queryKey({
+				queryKey: orpc.projects.stories.board.queryKey({
 					input: {
 						projectId,
 						organizationId: organizationId ?? null,
@@ -577,7 +596,7 @@ function StoryCardImpl({
 	// Right-click acts on the whole selection when this row is part of a
 	// multi-selection; otherwise it acts on just this card.
 	const bulkMode = isSelected && selectedCount > 1 && bulkActions != null;
-	const storiesListQueryKey = orpc.projects.stories.list.queryKey({
+	const storiesListQueryKey = orpc.projects.stories.board.queryKey({
 		input: {
 			projectId,
 			organizationId: organizationId ?? null,
@@ -2538,8 +2557,16 @@ function StoryCardImpl({
 			    push-time surface. `preview` is passed when StoryCard already
 			    holds a fetched PM-side snapshot; otherwise the dialog fetches
 			    its own single-item preview on open. */}
+			{conflictDialogOpen && conflictDetail.isFetching && (
+				<output
+					aria-live="polite"
+					className="text-xs text-muted-foreground"
+				>
+					{tDetailLoad("detailLoading")}
+				</output>
+			)}
 			<ConflictResolveDialog
-				open={conflictDialogOpen}
+				open={conflictDialogOpen && !!conflictDetail.data}
 				onOpenChange={(open) => {
 					setConflictDialogOpen(open);
 					if (!open) {
@@ -2551,7 +2578,7 @@ function StoryCardImpl({
 				itemType={story.kind === "BUG" ? "bug" : "story"}
 				entityId={story.id}
 				fabricTitle={story.title}
-				fabricDescription={story.description ?? ""}
+				fabricDescription={conflictDetail.data?.story.description ?? ""}
 				fabricUpdatedAt={story.lastEditedAt}
 				fabricAuthor={story.lastEditedByName}
 				fabricSource={story.lastEditedSource}

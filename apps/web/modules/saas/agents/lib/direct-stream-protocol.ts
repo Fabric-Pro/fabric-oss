@@ -39,6 +39,15 @@ export const limitSchema = z.object({
 		.optional(),
 }) satisfies z.ZodType<LimitSignal>;
 
+export const sourceSchema = z.object({
+	id: z.string(),
+	title: z.string(),
+	type: z.enum(["document", "web", "other"]),
+	excerpt: z.string().optional(),
+	similarity: z.number().optional(),
+	metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
 const workflowConfirmationSchema = z.object({
 	workflowId: z.string(),
 	workflowName: z.string(),
@@ -111,16 +120,7 @@ export const directStreamEventSchema = z.discriminatedUnion("type", [
 	}),
 	z.object({
 		type: z.literal("sources"),
-		sources: z.array(
-			z.object({
-				id: z.string(),
-				title: z.string(),
-				type: z.enum(["document", "web", "other"]),
-				excerpt: z.string().optional(),
-				similarity: z.number().optional(),
-				metadata: z.record(z.string(), z.unknown()).optional(),
-			}),
-		),
+		sources: z.array(sourceSchema),
 	}),
 	z.object({
 		type: z.literal("error"),

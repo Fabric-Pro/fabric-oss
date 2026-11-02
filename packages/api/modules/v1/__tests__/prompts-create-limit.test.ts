@@ -22,10 +22,10 @@ vi.mock("@repo/database", () => ({
 vi.mock("../../external-api/middleware/api-key-auth", () => ({
 	requireScope: () => async (_c: unknown, next: () => Promise<unknown>) =>
 		next(),
+	requireV1OwnerPermission: async () => null,
 }));
 
-// The caller is an organization admin: the role check is not this file's
-// subject (see prompts-write-permissions.test.ts), the body limit is.
+// This file isolates the content limit; prompt-role behavior has its own suite.
 vi.mock("../../organizations/lib/membership", () => ({
 	verifyOrganizationMembership: async () => ({
 		organization: { id: "org-1" },

@@ -213,31 +213,56 @@ describe("agents.conversations.list: what a list item is", () => {
 		});
 	});
 
-	it("lists a session with its visibility and who owns it, and without its messages", async () => {
-		const result = (await invoke(LIST, {
-			agentId: AGENT,
-			scope: "mine",
-			limit: 50,
-		})) as { conversations: Array<Record<string, unknown>> };
-
-		expect(result.conversations).toEqual([
-			{
-				id: "conv-1",
+	it.each([false, true])(
+		"lists a session without changing its response when using a lean row: %s",
+		async (lean) => {
+			if (lean) {
+				const stored = row();
+				mocks.listAgentConversationsForViewer.mockResolvedValue({
+					items: [
+						{
+							id: stored.id,
+							agentId: stored.agentId,
+							userId: stored.userId,
+							title: stored.title,
+							pinned: stored.pinned,
+							status: stored.status,
+							visibility: stored.visibility,
+							createdAt: stored.createdAt,
+							updatedAt: stored.updatedAt,
+							metadata: stored.metadata,
+							messages: stored.messages,
+							isOwn: true,
+							owner: OWNER,
+						},
+					],
+				});
+			}
+			const result = (await invoke(LIST, {
 				agentId: AGENT,
-				title: "Quarterly plan",
-				messageCount: 2,
-				pinned: true,
-				status: "ACTIVE",
-				visibility: "PRIVATE",
-				createdAt: "2026-10-01T10:00:00.000Z",
-				updatedAt: "2026-10-02T10:00:00.000Z",
-				lastMessage: "x".repeat(100),
-				metadata: { mode: "orchestrator" },
-				isOwn: true,
-				owner: OWNER,
-			},
-		]);
-	});
+				scope: "mine",
+				limit: 50,
+			})) as { conversations: Array<Record<string, unknown>> };
+
+			expect(result.conversations).toEqual([
+				{
+					id: "conv-1",
+					agentId: AGENT,
+					title: "Quarterly plan",
+					messageCount: 2,
+					pinned: true,
+					status: "ACTIVE",
+					visibility: "PRIVATE",
+					createdAt: "2026-10-01T10:00:00.000Z",
+					updatedAt: "2026-10-02T10:00:00.000Z",
+					lastMessage: "x".repeat(100),
+					metadata: { mode: "orchestrator" },
+					isOwn: true,
+					owner: OWNER,
+				},
+			]);
+		},
+	);
 });
 
 describe("agents.conversations.list: scope, search and cursor paging", () => {

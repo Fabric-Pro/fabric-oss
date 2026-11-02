@@ -1,15 +1,19 @@
 "use client";
 
+import type { AiErrorToastAction } from "@saas/shared/components/copilot/copilot-error-toast";
+import { Button } from "@ui/components/button";
 import { AlertCircle } from "lucide-react";
-import { Response } from "../../../../../../components/ai-elements/response";
+import { DeferredResponse as Response } from "../../../../../../components/ai-elements/deferred-response";
 
 /** Keep the partial answer readable while explaining why the turn stopped. */
 export function ChatFailureNotice({
 	content,
 	error,
+	action,
 }: {
 	content?: string;
 	error: string;
+	action?: AiErrorToastAction;
 }) {
 	return (
 		<div className="space-y-3">
@@ -24,7 +28,19 @@ export function ChatFailureNotice({
 					className="mt-0.5 size-4 shrink-0 text-destructive"
 					aria-hidden="true"
 				/>
-				<p className="min-w-0 break-words">{error}</p>
+				<div className="min-w-0 space-y-3">
+					<p className="break-words">{error}</p>
+					{action && (
+						<Button
+							type="button"
+							size="sm"
+							variant="outline"
+							onClick={action.onClick}
+						>
+							{action.label}
+						</Button>
+					)}
+				</div>
 			</div>
 		</div>
 	);

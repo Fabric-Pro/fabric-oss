@@ -16,7 +16,7 @@
  */
 
 import { canUseWorkflowIntegrations, db } from "@repo/database";
-import { decryptApiKey } from "@repo/utils";
+import { readSlackConnectionIdentity } from "./connection-identity";
 
 interface AddSlackReactionInput {
 	teamId: string;
@@ -75,20 +75,9 @@ async function resolveSlackBotToken(
 		});
 
 		if (integration?.credentials) {
-			let credentialsJson: string;
-			try {
-				credentialsJson = decryptApiKey(integration.credentials);
-			} catch {
-				credentialsJson = integration.credentials;
-			}
-
-			const parsed = JSON.parse(credentialsJson) as Record<
-				string,
-				string
-			>;
-			const token = parsed.access_token || parsed.apiKey;
-			if (token) {
-				return token;
+			const identity = await readSlackConnectionIdentity(integration);
+			if (identity.accessToken && identity.teamId === teamId) {
+				return identity.accessToken;
 			}
 		}
 	}
@@ -104,6 +93,12 @@ export async function addSlackReaction(
 	input: AddSlackReactionInput,
 ): Promise<AddSlackReactionResult> {
 	try {
+		if (
+			!/^[A-Z0-9]+$/.test(input.teamId) ||
+			!/^[A-Z0-9]+$/.test(input.channel)
+		) {
+			throw new Error("Invalid Slack team or channel ID");
+		}
 		const token = await resolveSlackBotToken(
 			input.teamId,
 			input.userId,

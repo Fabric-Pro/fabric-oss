@@ -32,6 +32,7 @@ const mockTemporalCancel = vi.fn();
 const mockTemporalStart = vi.fn();
 const mockTemporalDescribe = vi.fn();
 const mockGetTemporalClient = vi.fn();
+let ownerPermissionAllowed = true;
 
 vi.mock("@repo/database", () => ({
 	resolveUserOrganization: vi.fn(async () => ({
@@ -94,6 +95,19 @@ vi.mock("../../external-api/middleware/api-key-auth", () => ({
 	requireScope: () => async (_c: unknown, next: () => Promise<void>) => {
 		await next();
 	},
+	requireV1OwnerPermission: async (
+		c: { json: (body: unknown, status: number) => unknown },
+		_context: unknown,
+		scope: string,
+	) =>
+		ownerPermissionAllowed
+			? null
+			: c.json(
+					{
+						error: `The key's owner no longer holds the access required for ${scope} in this organization`,
+					},
+					403,
+				),
 }));
 
 import { registerWorkflowRoutes } from "../workflows";
@@ -142,6 +156,7 @@ function execRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	ownerPermissionAllowed = true;
 	mockGetWorkflowById.mockResolvedValue({
 		id: "wf-1",
 		name: "wf",
@@ -150,6 +165,33 @@ beforeEach(() => {
 		projectId: null,
 	});
 	mockIsTemporalAvailable.mockResolvedValue(false);
+});
+
+describe("workflow writes require the key owner's live WORKSPACE_UPDATE", () => {
+	it.each([
+		["/workflows/wf-1/trigger", mockCreateExecutionWithinConcurrencyCap],
+		[
+			"/workflows/wf-1/executions/exec-1/cancel",
+			mockUpdateWorkflowExecution,
+		],
+	] as const)(
+		"refuses a viewer's personal key on POST %s before the side effect",
+		async (path, sideEffect) => {
+			ownerPermissionAllowed = false;
+
+			const response = await makeApp().request(path, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "{}",
+			});
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({
+				error: "The key's owner no longer holds the access required for workflows:run in this organization",
+			});
+			expect(sideEffect).not.toHaveBeenCalled();
+		},
+	);
 });
 
 /** Temporal's typed errors are matched by name, so a named Error stands in. */

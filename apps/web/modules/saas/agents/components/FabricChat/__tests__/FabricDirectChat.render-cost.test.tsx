@@ -339,8 +339,8 @@ vi.mock("@/components/ai-elements/message", () => ({
 // Every render of a message body is recorded, so the test can tell which
 // rows rendered again when the last one streamed a token.
 const responseRenders = vi.hoisted(() => [] as string[]);
-vi.mock("@/components/ai-elements/response", () => ({
-	Response: ({ children }: { children: React.ReactNode }) => {
+vi.mock("@/components/ai-elements/deferred-response", () => ({
+	DeferredResponse: ({ children }: { children: React.ReactNode }) => {
 		responseRenders.push(String(children));
 		return <div>{children}</div>;
 	},

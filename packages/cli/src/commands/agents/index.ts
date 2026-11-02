@@ -9,7 +9,12 @@ import type { FabricAgent } from "@fabricorg/sdk";
 import { Command } from "commander";
 import { getClient } from "../../lib/client.js";
 import { resolveContext } from "../../lib/context.js";
-import { printError, printOutput, printRecord } from "../../lib/output.js";
+import {
+	printError,
+	printOutput,
+	printRecord,
+	resolveOutputFormat,
+} from "../../lib/output.js";
 
 const ALLOWED_DELEGATE_TARGETS = new Set(["desktop", "remote"]);
 const ALLOWED_DELEGATE_HARNESSES = new Set([
@@ -82,11 +87,7 @@ export function buildAgentsCommand(): Command {
 		.option("--personal", "Retired — context is organization-only")
 		.option("--status <status>", "Filter: ACTIVE|INACTIVE|DEPRECATED")
 		.option("--limit <n>", "Max results", "50")
-		.option(
-			"--format <format>",
-			"Output format: table|json|yaml|csv",
-			"table",
-		)
+		.option("--format <format>", "Output format: table|json|yaml|csv")
 		.option("-q, --quiet", "Print IDs only")
 		.action(
 			async (opts: {
@@ -94,7 +95,7 @@ export function buildAgentsCommand(): Command {
 				personal?: boolean;
 				status?: string;
 				limit: string;
-				format: string;
+				format?: string;
 				quiet?: boolean;
 			}) => {
 				const ctx = resolveContext(opts.personal, opts.org, false);
@@ -139,11 +140,11 @@ export function buildAgentsCommand(): Command {
 		.description("Show agent details")
 		.option("--org <slug>", "Organization context")
 		.option("--personal", "Retired — context is organization-only")
-		.option("--format <format>", "Output format: table|json|yaml", "table")
+		.option("--format <format>", "Output format: table|json|yaml")
 		.action(
 			async (
 				id: string,
-				opts: { org?: string; personal?: boolean; format: string },
+				opts: { org?: string; personal?: boolean; format?: string },
 			) => {
 				const ctx = resolveContext(opts.personal, opts.org, false);
 				const client = getClient();
@@ -156,7 +157,7 @@ export function buildAgentsCommand(): Command {
 					printError((err as Error).message, 1);
 				}
 
-				const fmt = opts.format as "table" | "json" | "yaml";
+				const fmt = resolveOutputFormat(opts.format);
 				if (fmt === "json" || fmt === "yaml") {
 					printOutput(agent, { format: fmt });
 					return;
@@ -182,7 +183,7 @@ export function buildAgentsCommand(): Command {
 		.option("--org <slug>", "Organization context")
 		.option("--personal", "Retired — context is organization-only")
 		.option("--input <json>", 'Input JSON (e.g. \'{"key":"value"}\')')
-		.option("--format <format>", "Output format: table|json|yaml", "table")
+		.option("--format <format>", "Output format: table|json|yaml")
 		.action(
 			async (
 				id: string,
@@ -190,7 +191,7 @@ export function buildAgentsCommand(): Command {
 					org?: string;
 					personal?: boolean;
 					input?: string;
-					format: string;
+					format?: string;
 				},
 			) => {
 				const ctx = resolveContext(opts.personal, opts.org, false);
@@ -215,7 +216,7 @@ export function buildAgentsCommand(): Command {
 					printError((err as Error).message, 1);
 				}
 
-				const fmt = opts.format as "table" | "json" | "yaml";
+				const fmt = resolveOutputFormat(opts.format);
 				if (fmt === "json" || fmt === "yaml") {
 					printOutput(result, { format: fmt });
 					return;
@@ -265,13 +266,9 @@ export function buildAgentsCommand(): Command {
 		.option("--prompt <text>", "Task prompt to dispatch")
 		.option(
 			"--durable",
-			"Execute inside a durable Temporal workflow envelope",
+			"Request durable handling when the generated link is opened",
 		)
-		.option(
-			"--format <format>",
-			"Output format: table|json|yaml|plain",
-			"table",
-		)
+		.option("--format <format>", "Output format: table|json|yaml|plain")
 		.option("-q, --quiet", "Print delegation URL only")
 		.addHelpText(
 			"after",
@@ -294,7 +291,7 @@ Examples:
 				fallback: string;
 				prompt?: string;
 				durable?: boolean;
-				format: string;
+				format?: string;
 				quiet?: boolean;
 			}) => {
 				if (!ALLOWED_DELEGATE_TARGETS.has(opts.target)) {
@@ -352,7 +349,9 @@ Examples:
 				}
 
 				const payload = {
-					status: "ready",
+					status: "link_created",
+					message:
+						"A link was created locally. No task was dispatched by this command.",
 					target,
 					harness: opts.harness,
 					model: opts.model ?? "default",
@@ -366,7 +365,7 @@ Examples:
 					remoteDelegationUrl,
 				};
 
-				const fmt = opts.format as "table" | "json" | "yaml" | "plain";
+				const fmt = resolveOutputFormat(opts.format);
 				if (fmt === "json" || fmt === "yaml" || fmt === "plain") {
 					printOutput(payload, { format: fmt });
 					return;
@@ -382,7 +381,7 @@ Examples:
 					Model: payload.model,
 					"Fallback Policy": payload.fallbackPolicy,
 					"Billing Mode": "Subscription Credits (0 API Key Spend)",
-					Durable: payload.durable ? "yes (Temporal)" : "no",
+					Durable: payload.durable ? "requested in link" : "no",
 					"Delegation URL": payload.delegationUrl,
 				});
 			},
@@ -402,11 +401,7 @@ Examples:
 			"allSessions",
 		)
 		.option("--prompt <text>", "Pre-filled prompt for a new chat")
-		.option(
-			"--format <format>",
-			"Output format: table|json|yaml|plain",
-			"table",
-		)
+		.option("--format <format>", "Output format: table|json|yaml|plain")
 		.option("-q, --quiet", "Print deep link URL only")
 		.action(
 			async (opts: {
@@ -414,7 +409,7 @@ Examples:
 				projectSlug?: string;
 				view: string;
 				prompt?: string;
-				format: string;
+				format?: string;
 				quiet?: boolean;
 			}) => {
 				if (!ALLOWED_DESKTOP_VIEWS.has(opts.view)) {
@@ -452,7 +447,7 @@ Examples:
 					projectSlug: opts.projectSlug ?? null,
 				};
 
-				const fmt = opts.format as "table" | "json" | "yaml" | "plain";
+				const fmt = resolveOutputFormat(opts.format);
 				if (fmt === "json" || fmt === "yaml" || fmt === "plain") {
 					printOutput(payload, { format: fmt });
 					return;
@@ -470,7 +465,7 @@ Examples:
 	agents
 		.command("subscriptions")
 		.description(
-			"Inspect and verify Remote Fabric Agents Server subscription credits and fallback harnesses",
+			"List known Remote Fabric Agents Server harness choices without checking availability",
 		)
 		.option(
 			"--server-url <url>",
@@ -478,16 +473,12 @@ Examples:
 			process.env.FABRIC_AGENTS_SERVER_URL ??
 				"https://agents.example.com",
 		)
-		.option(
-			"--format <format>",
-			"Output format: table|json|yaml|plain",
-			"table",
-		)
+		.option("--format <format>", "Output format: table|json|yaml|plain")
 		.option("-q, --quiet", "Print harness IDs only")
 		.action(
 			async (opts: {
 				serverUrl: string;
-				format: string;
+				format?: string;
 				quiet?: boolean;
 			}) => {
 				normalizeValidatedServerUrl(opts.serverUrl);
@@ -496,35 +487,35 @@ Examples:
 						id: "claude-max",
 						name: "Claude (Opus 4.6 / Sonnet 4.6)",
 						billing: "subscription_oauth",
-						credits: "active",
+						credits: "not_checked",
 						fallbackOrder: 1,
 					},
 					{
 						id: "codex",
 						name: "Codex (GPT-5.4 / o3)",
 						billing: "subscription_oauth",
-						credits: "active",
+						credits: "not_checked",
 						fallbackOrder: 2,
 					},
 					{
 						id: "droid-cli",
 						name: "Droid (Factory Multi-Model)",
 						billing: "subscription_oauth",
-						credits: "active",
+						credits: "not_checked",
 						fallbackOrder: 3,
 					},
 					{
 						id: "grok-cli",
 						name: "Grok (Grok 4 Heavy / Fast)",
 						billing: "subscription_oauth",
-						credits: "active",
+						credits: "not_checked",
 						fallbackOrder: 4,
 					},
 					{
 						id: "kimi-cli",
 						name: "Kimi (Kimi K2.5 Thinking)",
 						billing: "subscription_oauth",
-						credits: "active",
+						credits: "not_checked",
 						fallbackOrder: 5,
 					},
 				];

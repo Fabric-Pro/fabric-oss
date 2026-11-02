@@ -142,6 +142,8 @@ export interface UserStory {
 	title: string;
 	description?: string | null;
 	acceptanceCriteria?: string | null;
+	hasDescription?: boolean;
+	hasAcceptanceCriteria?: boolean;
 	statusId: string;
 	kind: StoryKind;
 	priority: StoryPriority;
@@ -743,14 +745,41 @@ export function transformStatus(status: ProjectStoryStatus): StoryStatus {
 	};
 }
 
-/**
- * Transform DB story to UI type
- */
+function normalizeCodingRun<T extends { providerMetadata?: unknown }>(
+	run: T | undefined,
+):
+	| (Omit<T, "providerMetadata"> & {
+			providerMetadata: Record<string, unknown> | null;
+	  })
+	| null {
+	if (!run) {
+		return null;
+	}
+	const metadata = run.providerMetadata;
+	return {
+		...run,
+		providerMetadata:
+			metadata !== null &&
+			typeof metadata === "object" &&
+			!Array.isArray(metadata)
+				? (metadata as Record<string, unknown>)
+				: null,
+	};
+}
+
+/** Transform a full or board story to the shared UI shape. */
 export function transformStory(
 	// `labels` is omitted: it is sync-owned state for the GitLab label↔status
 	// pipeline, stripped by list-stories.ts / get-story.ts before it reaches the
 	// client, and no longer a user-facing concept.
-	story: Omit<DbUserStory, "labels"> & {
+	story: Omit<
+		DbUserStory,
+		"labels" | "description" | "acceptanceCriteria" | "releaseNotes"
+	> & {
+		description?: string | null;
+		acceptanceCriteria?: string | null;
+		hasDescription?: boolean;
+		hasAcceptanceCriteria?: boolean;
 		tasks?: Array<
 			DbStoryTask & {
 				codingRuns?: Array<{
@@ -766,7 +795,7 @@ export function transformStory(
 					pullRequestNumber: number | null;
 					externalUrl?: string | null;
 					externalStatus?: string | null;
-					providerMetadata?: Record<string, unknown> | null;
+					providerMetadata?: unknown;
 					createdAt: Date;
 				}>;
 			}
@@ -781,7 +810,7 @@ export function transformStory(
 			pullRequestNumber: number | null;
 			externalUrl?: string | null;
 			externalStatus?: string | null;
-			providerMetadata?: Record<string, unknown> | null;
+			providerMetadata?: unknown;
 			storyTask?: {
 				id: string;
 				identifier: string;
@@ -805,6 +834,8 @@ export function transformStory(
 		identifier: story.identifier,
 		title: story.title,
 		description: story.description,
+		hasDescription: story.hasDescription,
+		hasAcceptanceCriteria: story.hasAcceptanceCriteria,
 		acceptanceCriteria: story.acceptanceCriteria,
 		statusId: story.statusId,
 		kind: story.kind,
@@ -838,7 +869,7 @@ export function transformStory(
 			repositoryOwner: task.repositoryOwner,
 			repositoryName: task.repositoryName,
 			targetBranch: task.targetBranch,
-			latestCodingRun: task.codingRuns?.[0] ?? null,
+			latestCodingRun: normalizeCodingRun(task.codingRuns?.[0]),
 		})),
 		assigneeId: story.assigneeId,
 		createdById: story.createdById,
@@ -897,7 +928,7 @@ export function transformStory(
 		dependsOnPhases: story.dependsOnPhases ?? [],
 		estimateConfidence: (story.estimateConfidence ??
 			null) as EstimateConfidence | null,
-		latestCodingRun: story.codingRuns?.[0] ?? null,
+		latestCodingRun: normalizeCodingRun(story.codingRuns?.[0]),
 		latestKanbanQueue: story.kanbanQueue?.[0] ?? null,
 	};
 }

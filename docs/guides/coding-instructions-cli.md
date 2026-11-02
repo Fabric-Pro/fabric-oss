@@ -188,6 +188,15 @@ instead (the Connect dialog's "CI or headless? Use an API key" section mints one
 fabric auth login --key <api-key> --base-url https://example.com
 ```
 
+For the Fabric Kanban CLI, create an organization API key under **Settings →
+API keys** and select **Kanban Read** and **Kanban Write**. It needs both scopes
+to list and pull work and to report completion; neither scope implies the
+other. A viewer can select only **Kanban Read**, so that key can list work but
+cannot pull or complete it. Keys without these scopes must be
+replaced from the same settings page. The coding-instructions purpose keeps its
+separate `mcp:read`, `instructions:read`, `instructions:write` and
+`memory:write` set.
+
 A credential belongs to one deployment. The CLI keeps one profile per
 deployment, keyed by its origin (`https://example.com`), in the same
 owner-only config file; a sign-in also records the `issuer` that granted it. A
@@ -2237,13 +2246,15 @@ the checks.
 | MCP lesson tool (file name and frontmatter) | `apps/web/modules/saas/mcp/lib/gateway/instruction-lessons.ts` |
 | Stop hook command (`lesson-prompt`) | `packages/cli/src/lib/instructions/lesson-prompt.ts` |
 
-Three scopes, one per authority:
+Five scopes, one per authority:
 
 | Scope | Reaches | Live permission re-checked per call |
 |---|---|---|
 | `instructions:read` | `GET .../instructions/published`, `POST .../published/download`, `POST .../published/files`: `check`, `sync`, `init`, `doctor`, and the MCP tool `fabric_instruction_checks`; `GET .../instructions/proposals/open`: the open-proposal check `push` makes before sending; `POST /instructions/checkouts/resolve`: which projects a checkout's repository belongs to | `INSTRUCTION_READ` |
 | `instructions:write` | `POST .../instructions/changes`: `push`, and the MCP tools `fabric_propose_project_instruction_change` and `fabric_add_instruction_lesson` | `INSTRUCTION_READ` |
 | `instructions:publish` | `POST .../instructions/versions`: `push --publish` | `INSTRUCTION_CREATE` |
+| `kanban:read` | `GET /api/fabric-kanban/queue` and `GET /api/fabric-kanban/me`: list the caller's queue and identity | `STORY_READ` for queue listing |
+| `kanban:write` | `POST /api/fabric-kanban/queue` and `POST /api/fabric-kanban/complete`: pull and complete the caller's items | `STORY_UPDATE` |
 
 The scope is a ceiling and never a grant: every route independently re-checks
 that the key's creator still holds the permission the Coding Instructions tab

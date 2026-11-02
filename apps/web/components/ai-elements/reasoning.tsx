@@ -11,7 +11,7 @@ import { cn } from "@ui/lib";
 import { ChevronDownIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 import { createContext, memo, useContext, useEffect, useState } from "react";
-import { Response } from "./response";
+import { DeferredResponse as Response } from "./deferred-response";
 import { Shimmer } from "./shimmer";
 
 type ReasoningContextValue = {

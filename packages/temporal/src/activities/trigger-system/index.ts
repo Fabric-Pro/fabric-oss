@@ -13,6 +13,7 @@ import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
 import {
 	db,
 	hasProjectAccess,
+	isDeploymentOwnerCurrentMember,
 	isProjectReadOnly,
 	type Prisma,
 	resolveWorkflowIntegrationForProvider,
@@ -78,6 +79,9 @@ export async function loadTriggerConfig({
 	});
 
 	if (!trigger) {
+		return null;
+	}
+	if (!(await isDeploymentOwnerCurrentMember(trigger.deployment))) {
 		return null;
 	}
 
@@ -282,6 +286,7 @@ async function invokeAgentInJob({
 	// Hoisted outside the try so the catch-path return carries the binding
 	// too — error notices are replies as well and must obey the gate.
 	let boundProjectId: string | undefined;
+	let membershipLookupFailed = false;
 
 	try {
 		// Load deployment configuration
@@ -296,7 +301,17 @@ async function invokeAgentInJob({
 			organizationId,
 		});
 
-		if (!deployment) {
+		let ownerIsMember = false;
+		if (deployment) {
+			try {
+				ownerIsMember =
+					await isDeploymentOwnerCurrentMember(deployment);
+			} catch (error) {
+				membershipLookupFailed = true;
+				throw error;
+			}
+		}
+		if (!deployment || !ownerIsMember) {
 			return {
 				success: false,
 				response: "",
@@ -505,6 +520,9 @@ async function invokeAgentInJob({
 			projectId: boundProjectId,
 		};
 	} catch (error) {
+		if (membershipLookupFailed) {
+			throw error;
+		}
 		console.error("[TriggerSystem] Agent invocation failed:", error);
 		const usageLimitError = findAiUsageLimitError(error);
 		return {
@@ -975,67 +993,6 @@ export async function postToChannel({
 			error: err instanceof Error ? err.message : String(err),
 		};
 	}
-}
-
-/**
- * Resolve which AgentDeploymentTrigger should handle an inbound channel
- * message. Matches by `type = CHANNEL_MESSAGE` + `config.channel = <slug>`,
- * with optional `config.chatIdPattern` filtering on the incoming channelId.
- *
- * Returns the trigger plus a tenant context (the trigger owner) — anyone in
- * the bound channel effectively reaches the agent as the trigger owner,
- * matching the slack model.
- */
-export async function matchTriggerForChannel({
-	channel,
-	channelId,
-}: {
-	channel: string;
-	channelId: string;
-}): Promise<{
-	triggerId: string;
-	deploymentId: string;
-	userId: string | null;
-	organizationId: string | null;
-} | null> {
-	const candidates = await db.agentDeploymentTrigger.findMany({
-		where: {
-			isActive: true,
-			type: "CHANNEL_MESSAGE",
-		},
-		select: {
-			id: true,
-			deploymentId: true,
-			userId: true,
-			organizationId: true,
-			config: true,
-		},
-	});
-
-	const match = candidates.find((row) => {
-		const cfg = (row.config as Record<string, unknown>) ?? {};
-		if (cfg.channel !== channel) {
-			return false;
-		}
-		const pattern = cfg.chatIdPattern;
-		if (typeof pattern !== "string" || pattern.length === 0) {
-			return true; // any chat
-		}
-		try {
-			return new RegExp(pattern).test(channelId);
-		} catch {
-			return false;
-		}
-	});
-	if (!match) {
-		return null;
-	}
-	return {
-		triggerId: match.id,
-		deploymentId: match.deploymentId,
-		userId: match.userId,
-		organizationId: match.organizationId,
-	};
 }
 
 // Always background work, whatever started the run: a run from before the

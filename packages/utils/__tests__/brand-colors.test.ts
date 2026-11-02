@@ -5,6 +5,7 @@ import {
 	DARK_INK,
 	findBrandColor,
 	LIGHT_INK,
+	mixHex,
 	normalizeHexColor,
 	readableForegroundFor,
 	relativeLuminance,
@@ -177,5 +178,17 @@ describe("rgbToHex", () => {
 		expect(rgbToHex(13, 148, 136)).toBe("#0d9488");
 		expect(rgbToHex(0.4, 254.6, -3)).toBe("#00ff00");
 		expect(rgbToHex(300, 0, 0)).toBe("#ff0000");
+	});
+});
+
+describe("mixHex", () => {
+	it("returns the base at weight 0 and the colour at weight 1", () => {
+		expect(mixHex("#0d9488", "#ffffff", 0)).toBe("#ffffff");
+		expect(mixHex("#0d9488", "#ffffff", 1)).toBe("#0d9488");
+	});
+
+	it("blends each channel by the weight, rounded", () => {
+		expect(mixHex("#000000", "#ffffff", 0.5)).toBe("#808080");
+		expect(mixHex("#ff0000", "#0000ff", 0.25)).toBe("#4000bf");
 	});
 });

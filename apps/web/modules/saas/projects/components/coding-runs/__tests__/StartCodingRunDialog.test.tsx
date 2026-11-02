@@ -162,7 +162,7 @@ describe("StartCodingRunDialog", () => {
 		});
 		fireEvent.click(
 			screen.getByRole("radio", {
-				name: /Use organization's paid API provider/i,
+				name: /Prefer organization’s paid API provider/i,
 			}),
 		);
 

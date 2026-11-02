@@ -31,7 +31,10 @@ vi.mock("../audit-timing-middleware", () => ({
 	hasCuratedAuditWritten: () => false,
 }));
 
-import { auditActivityMiddleware } from "../audit-activity-middleware";
+import {
+	auditActivityMiddleware,
+	recordProcedureActivity,
+} from "../audit-activity-middleware";
 
 /** Drive the middleware the way oRPC does: options object, then input. */
 async function runMiddleware(args: {
@@ -177,5 +180,48 @@ describe("activity row tenant resolution", () => {
 			{},
 		);
 		expect(result).toBe(original);
+	});
+});
+
+describe("the activity row for a call outside oRPC", () => {
+	const context = {
+		headers: new Headers(),
+		user: { id: "user_1", email: "u@example.com", name: "U" },
+		session: { id: "sess_1", activeOrganizationId: "org_session" },
+	};
+	const call = {
+		path: ["atlas", "chat"],
+		input: {
+			projectId: "proj_1",
+			organizationId: "org_abc",
+			messages: [{ role: "user", content: "How does auth work?" }],
+		},
+	};
+
+	it("recordProcedureActivity writes the middleware's activity row", () => {
+		recordProcedureActivity(context, call);
+
+		expect(recorded.calls).toEqual([
+			{
+				action: "activity.atlas.chat",
+				category: "activity",
+				outcome: "success",
+				severity: "info",
+				organizationId: "org_abc",
+				projectId: "proj_1",
+				metadata: { procedure: "atlas.chat" },
+			},
+		]);
+	});
+
+	it("recordProcedureActivity writes nothing while capture is disabled or the path is skipped", () => {
+		process.env.FABRIC_AUDIT_ACTIVITY_CAPTURE_DISABLED = "true";
+		recordProcedureActivity(context, call);
+		delete process.env.FABRIC_AUDIT_ACTIVITY_CAPTURE_DISABLED;
+
+		process.env.FABRIC_AUDIT_ACTIVITY_CAPTURE_SKIP_PATHS = "atlas.chat";
+		recordProcedureActivity(context, call);
+
+		expect(recorded.calls).toHaveLength(0);
 	});
 });

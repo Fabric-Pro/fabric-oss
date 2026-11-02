@@ -10,6 +10,13 @@
  * crosses requests. A thread that belongs to someone else — another user, or
  * the caller in another organization — is refused here before the runtime
  * sees the request, and again by the engine.
+ *
+ * Request/reply chats (`InProcessEngine`, e.g. the library chat) run inside
+ * the request: their threads name no `AgentConversation`, so their runs and
+ * connects skip the conversation check here, and each engine checks its own
+ * resource (a workspace, a project, the Atlas chat's AtlasConversation)
+ * before any model call. Most save nothing; the Atlas chat persists through
+ * its own service.
  */
 import {
 	CopilotRuntime,
@@ -22,20 +29,47 @@ import {
 	resolveRequestedOrganization,
 } from "@repo/api/lib/requested-organization";
 import {
+	ATLAS_CHAT_AGENT_ID,
+	AtlasChatEngine,
+} from "@saas/agents/runtime/atlas-chat-engine";
+import {
+	DATA_ANALYST_AGENT_ID,
+	DataAnalystEngine,
+} from "@saas/agents/runtime/data-analyst-engine";
+import {
 	DIRECT_AGENT_ID,
 	DirectEngine,
 } from "@saas/agents/runtime/direct-engine";
+import type { RuntimeEngine } from "@saas/agents/runtime/engine";
 import {
 	FabricRuntimeAgent,
 	FabricTemporalRunner,
 	resolveStreamWindowMs,
 } from "@saas/agents/runtime/fabric-temporal-runner";
 import {
+	LIBRARY_CHAT_AGENT_ID,
+	LibraryChatEngine,
+} from "@saas/agents/runtime/library-chat-engine";
+import {
 	ORCHESTRATOR_AGENT_ID,
 	ORCHESTRATOR_STREAM_WINDOW_MS,
 	OrchestratorEngine,
 } from "@saas/agents/runtime/orchestrator-engine";
+import { withBoundedAgentRequestBody } from "@saas/agents/runtime/request-body";
+import {
+	RESEARCH_AGENT_ID,
+	ResearchEngine,
+} from "@saas/agents/runtime/research-engine";
+import { createAgentResponseLifetime } from "@saas/agents/runtime/response-lifetime";
+import {
+	SIDEKICK_AGENT_ID,
+	SidekickEngine,
+} from "@saas/agents/runtime/sidekick-engine";
 import { readThreadAccess } from "@saas/agents/runtime/thread";
+import {
+	WEAVE_REFINE_AGENT_ID,
+	WeaveRefineEngine,
+} from "@saas/agents/runtime/weave-refine-engine";
 import { getSession } from "@saas/auth/lib/server";
 import { z } from "zod";
 
@@ -83,6 +117,21 @@ async function threadOf(
 	}
 }
 
+/**
+ * A run or connect for a request/reply agent: its engine, not this
+ * endpoint, checks the thread's resource. A stop names only a thread and
+ * reaches every engine, so it keeps the conversation check.
+ */
+function runsInProcess(
+	route: RouteInfo,
+	inProcessEngines: Readonly<Record<string, RuntimeEngine>>,
+): boolean {
+	return (
+		(route.method === "agent/run" || route.method === "agent/connect") &&
+		Object.hasOwn(inProcessEngines, route.agentId)
+	);
+}
+
 async function handle(request: Request): Promise<Response> {
 	const session = await getSession();
 	if (!session) {
@@ -104,6 +153,10 @@ async function handle(request: Request): Promise<Response> {
 	if (!resolution.ok) {
 		return forbiddenOrganizationResponse(resolution);
 	}
+	const runtimeRequest = await withBoundedAgentRequestBody(request);
+	if (runtimeRequest instanceof Response) {
+		return runtimeRequest;
+	}
 	const caller = {
 		userId: session.user.id,
 		organizationId: resolution.organizationId,
@@ -115,10 +168,28 @@ async function handle(request: Request): Promise<Response> {
 	};
 
 	const requestedWindow = request.headers.get(STREAM_WINDOW_HEADER);
+	// Request/reply chats run inside the request (`InProcessEngine`). Their
+	// threads are no `AgentConversation`: each engine checks its own resource
+	// or the organization's membership before anything runs. Each is gated
+	// per organization by its own flag.
+	const inProcessEngines: Record<string, RuntimeEngine> = {
+		[LIBRARY_CHAT_AGENT_ID]: new LibraryChatEngine(caller),
+		[ATLAS_CHAT_AGENT_ID]: new AtlasChatEngine(caller),
+		[SIDEKICK_AGENT_ID]: new SidekickEngine(caller),
+		[WEAVE_REFINE_AGENT_ID]: new WeaveRefineEngine(caller),
+		[DATA_ANALYST_AGENT_ID]: new DataAnalystEngine(caller),
+	};
 	const runtime = new CopilotRuntime({
 		agents: {
 			[DIRECT_AGENT_ID]: new FabricRuntimeAgent(),
 			[ORCHESTRATOR_AGENT_ID]: new FabricRuntimeAgent(),
+			[RESEARCH_AGENT_ID]: new FabricRuntimeAgent(),
+			...Object.fromEntries(
+				Object.keys(inProcessEngines).map((agentId) => [
+					agentId,
+					new FabricRuntimeAgent(),
+				]),
+			),
 		},
 		runner: new FabricTemporalRunner(
 			{
@@ -131,6 +202,9 @@ async function handle(request: Request): Promise<Response> {
 						ORCHESTRATOR_STREAM_WINDOW_MS,
 					),
 				),
+				// Gated per organization by `COPILOTKIT_RESEARCH_RUNS`.
+				[RESEARCH_AGENT_ID]: new ResearchEngine(caller),
+				...inProcessEngines,
 			},
 			resolveStreamWindowMs(requestedWindow),
 		),
@@ -142,10 +216,13 @@ async function handle(request: Request): Promise<Response> {
 		// tenant headers.
 		forwardHeaders: { denyPrefixes: ["x-ai-", "x-tenant-"] },
 	});
+	const responseLifetime = createAgentResponseLifetime(runtimeRequest);
 	const handleRequest = createCopilotRuntimeHandler({
 		runtime,
 		basePath: BASE_PATH,
 		hooks: {
+			// Close the source before the SDK tees it for its after-request hook.
+			onResponse: ({ response }) => responseLifetime.response(response),
 			onBeforeHandler: async ({ route, request: routed }) => {
 				const threadId = await threadOf(route, routed);
 				if (threadId === undefined) {
@@ -155,7 +232,10 @@ async function handle(request: Request): Promise<Response> {
 						"Not an agent runtime route.",
 					);
 				}
-				if (threadId === null) {
+				if (
+					threadId === null ||
+					runsInProcess(route, inProcessEngines)
+				) {
 					return;
 				}
 				const access = await readThreadAccess(threadId, caller);
@@ -169,7 +249,9 @@ async function handle(request: Request): Promise<Response> {
 			},
 		},
 	});
-	return handleRequest(request);
+	return responseLifetime.response(
+		await handleRequest(responseLifetime.request),
+	);
 }
 
 export async function GET(request: Request): Promise<Response> {
@@ -183,7 +265,9 @@ export async function POST(request: Request): Promise<Response> {
 export const runtime = "nodejs";
 // The longest stream window (the Orchestrator engine's
 // `ORCHESTRATOR_STREAM_WINDOW_MS`, 240 s, which a response may overrun by up
-// to 20 s to end at a quiet point) plus room to deliver the reconnect. A
-// turn's admission, billing and up to two minutes of document retrieval run
+// to 20 s to end at a quiet point) plus room to deliver the reconnect.
+// Data Analyst bounds its request at DATA_ANALYST_RUN_LIMIT_MS (240 s from
+// the turn's start), leaving 30 s for admission after the same headroom.
+// A turn's admission, billing and up to two minutes of document retrieval run
 // inside the first window.
 export const maxDuration = 300;

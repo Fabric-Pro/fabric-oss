@@ -25,7 +25,7 @@ import {
 	XCircle,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Response } from "../../../../../components/ai-elements/response";
+import { DeferredResponse as Response } from "../../../../../components/ai-elements/deferred-response";
 
 /**
  * Simplified step type for inline display

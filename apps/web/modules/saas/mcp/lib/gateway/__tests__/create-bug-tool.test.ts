@@ -1266,6 +1266,17 @@ describe("fabric_list_features — work-item kind", () => {
 		expect(schema.required).not.toContain("kind");
 	});
 
+	it("declares the assigned-to-me and explicit assignee filters", () => {
+		const definition = PLATFORM_TOOL_DEFINITIONS.find(
+			(t) => t.name === "fabric_list_features",
+		);
+		const schema = definition?.inputSchema as {
+			properties: Record<string, { type?: string }>;
+		};
+		expect(schema.properties.assignedToMe.type).toBe("boolean");
+		expect(schema.properties.assigneeId.type).toBe("string");
+	});
+
 	it("exposes kind on every returned row", async () => {
 		const body = payload(
 			await executePlatformTool(
@@ -1300,6 +1311,53 @@ describe("fabric_list_features — work-item kind", () => {
 		expect(mocks.listStorySummaries).toHaveBeenCalledWith(
 			expect.objectContaining({ projectId: "proj-1", kind: "BUG" }),
 		);
+	});
+
+	it("filters by assignee before pagination so a match beyond page one is returned with correct paging", async () => {
+		mocks.listStorySummaries.mockResolvedValue({
+			stories: [
+				{
+					id: "s-assigned-page-two",
+					identifier: "51",
+					title: "Assigned after the first page",
+					kind: "FEATURE",
+					status: { id: "st1", name: "Backlog", color: "#fff" },
+					priority: "P2_MEDIUM",
+					size: null,
+					storyPoints: null,
+					draftingStage: "PUBLISHED",
+					assigneeId: session.userId,
+					taskCount: 0,
+					completedTaskCount: 0,
+					externalUrl: null,
+					createdAt: new Date("2026-01-01T00:00:00Z"),
+					updatedAt: new Date("2026-01-01T00:00:00Z"),
+				},
+			],
+			total: 1,
+		});
+
+		const body = payload(
+			await executePlatformTool(
+				"fabric_list_features",
+				{
+					projectId: "proj-1",
+					assignedToMe: true,
+					limit: 50,
+					offset: 0,
+				},
+				session,
+			),
+		);
+
+		expect(mocks.listStorySummaries).toHaveBeenCalledWith(
+			expect.objectContaining({ assigneeId: session.userId }),
+		);
+		expect(body.features.map((story: { id: string }) => story.id)).toEqual([
+			"s-assigned-page-two",
+		]);
+		expect(body.total).toBe(1);
+		expect(body.hasMore).toBe(false);
 	});
 
 	it("leaves kind undefined when the caller omits it, so both types return", async () => {

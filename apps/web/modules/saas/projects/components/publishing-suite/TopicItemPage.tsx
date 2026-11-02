@@ -7,6 +7,7 @@ import {
 import { InterfaceModeToggle } from "@saas/agents/components/InterfaceModeToggle";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useAiSidebarExpanded } from "@saas/shared/components/copilot/ai-sidebar-layout";
+import { useLocationHash } from "@shared/hooks/use-location-hash";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -225,16 +226,23 @@ export function TopicItemPage({
 	const viewerUserId = user?.id ?? null;
 	const pathname = usePathname();
 	const searchParams = useSearchParams();
+	const hash = useLocationHash();
+	const lastQuestionHash = useRef("");
 	const [questionArrival, setQuestionArrival] = useState(false);
 	useEffect(() => {
+		if (!/^#q-[0-9a-z_-]+$/i.test(hash)) {
+			lastQuestionHash.current = "";
+			return;
+		}
 		if (
-			/^#q-[0-9a-z_-]+$/i.test(window.location.hash) &&
+			hash !== lastQuestionHash.current &&
 			searchParams.get("mode") !== "simple"
 		) {
+			lastQuestionHash.current = hash;
 			setQuestionArrival(true);
 			setTab("summaryQuestions");
 		}
-	}, []);
+	}, [hash, searchParams]);
 	const mode =
 		searchParams.get("mode") === "advanced" ||
 		(searchParams.get("mode") !== "simple" && questionArrival)

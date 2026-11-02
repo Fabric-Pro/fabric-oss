@@ -65,7 +65,6 @@ import {
 	CopilotAssistantMessageForDocumentGenerator,
 	CopilotAssistantMessageForPromptEnhancer,
 	CopilotAssistantMessageForStoryBreakdown,
-	CopilotAssistantMessageForTaskPlanner,
 	makeCopilotAssistantMessage,
 } from "../CopilotAssistantMessage";
 
@@ -145,13 +144,6 @@ describe("Module-scope exports — displayNames", () => {
 				}
 			).displayName,
 		).toBe("CopilotAssistantMessage[prompt_enhancer]");
-	});
-
-	it("CopilotAssistantMessageForTaskPlanner is bound to task_planner", () => {
-		expect(
-			(CopilotAssistantMessageForTaskPlanner as { displayName?: string })
-				.displayName,
-		).toBe("CopilotAssistantMessage[task_planner]");
 	});
 
 	it("CopilotAssistantMessageForDocumentGenerator is bound to document_generator", () => {
@@ -234,22 +226,6 @@ describe("Module-scope exports — runtime useAgentStateReadOnly wiring", () => 
 		expect(useAgentStateReadOnlyMock).toHaveBeenCalledWith(
 			"prompt_enhancer",
 		);
-	});
-
-	it("ForTaskPlanner calls useAgentStateReadOnly('task_planner') on render", () => {
-		setupHookDefaults();
-		useAgentStateReadOnlyMock.mockClear();
-		render(
-			<CopilotAssistantMessageForTaskPlanner
-				message={{ id: "m4", content: "hi" } as never}
-				isLoading={false}
-				isGenerating={false}
-				isCurrentMessage={true}
-				onRegenerate={() => undefined}
-				onCopy={() => undefined}
-			/>,
-		);
-		expect(useAgentStateReadOnlyMock).toHaveBeenCalledWith("task_planner");
 	});
 
 	it("ForDocumentGenerator calls useAgentStateReadOnly('document_generator') on render", () => {

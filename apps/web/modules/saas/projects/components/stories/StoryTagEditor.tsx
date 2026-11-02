@@ -61,7 +61,7 @@ export function StoryTagEditor({
 	const tagsListKey = orpc.projects.stories.tags.list.queryKey({
 		input: { projectId, organizationId },
 	});
-	const storiesListKey = orpc.projects.stories.list.queryKey({
+	const storiesListKey = orpc.projects.stories.board.queryKey({
 		input: { projectId, organizationId },
 	});
 	const storyGetKey = orpc.projects.stories.get.queryKey({

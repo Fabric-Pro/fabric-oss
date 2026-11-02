@@ -67,15 +67,32 @@ Implemented:
   Replaying output never dispatches a tool, starts a workflow or submits approval.
   Pending approvals and cancellation are refreshed from authoritative workflow
   state rather than replayed as commands.
-- Replay reads recheck current run/project access, fail on expired or mismatched
+- Replay reads recheck current run/project access, degrade to live forwarding on expired or mismatched
   cursors, and stop delivery after observation cancellation. The replay window is
   24 hours from turn admission, with at most 20,000 output entries per run (plus
   one gap marker) and 1 MiB per entry. Credential fields are redacted before storage. Expired rows are removed
   in bounded batches by the daily request-span
   retention activity; deleting a turn cascades to its output. Storage failures or
-  output limits stop replay explicitly, while workflow execution remains separate.
+  output limits emit a non-terminal `replay_unavailable` notice and switch to live
+  forwarding. Clients reconnect without replay or a cursor. Orchestrator resumes defer clearing
+  displayed text until the next delta; `completed.response` restores the full answer.
+  Research retains its existing live-only append behavior;
+  only definite `ChatRunAccessError` denials (direct or wrapped) remain fatal. Temporary
+  authorization lookup errors during `createChatReplayObserver.initialize` or re-check
+  degrade an already-authorized connection to live-only.
   Journal failure also survives worker changes through a private activity-result
-  flag and a query-only workflow interceptor. Redis wakes serialized reads;
+  flag and `chat-replay-workflow-interceptor`. That interceptor conservatively flags
+  failures of `chatReplayProducerActivities`, including old-worker failures, without
+  altering the activity error; failed non-producers do not flag. The interceptor adds
+  no workflow commands. While old and new workers overlap during a rollout, a
+  producer that runs on an old worker writes no journal rows and is flagged only when
+  it completes, so a cursorless reload in that window can replay an incomplete journal.
+  `createServerChatReplay` checks the run's gap marker with a scoped point lookup
+  before reading a cursorless backlog, then streams one page at a time with
+  integrity checks before delivery. Wake-driven drains are throttled to about once
+  per second; a multi-page drain checks integrity once per page. Empty cursorless drains recheck the marker
+  until the first row is sent. Cursor-bearing replay skips the point lookup and
+  can deliver valid continuations up to a gap. Redis wakes serialized reads;
   terminal results remain available after journal expiry or gaps.
 - Partial answers and failure reasons remain separate in the UI and persisted
   Research/Orchestrator history. Pending tool cards settle on failed transport.
@@ -121,8 +138,7 @@ Apply the additive replay-journal migration and RLS policies before updating
 workers and web/API. Updated workers persist output independently of browser or
 Redis availability; updated browsers explicitly opt in to cursor replay. Older
 clients continue using live events. The existing daily request-span retention
-schedule also purges expired replay output, independently of the request-span
-retention period. No workflow command/control-flow change is required.
+schedule runs the replay purge in `request-span-retention.ts`, registered by `schedules.ts`. When `FABRIC_REQUEST_SPAN_RETENTION_ENABLED=false`, registration does not create the schedule; an existing schedule keeps running until deleted. Reads still hide expired rows.
 
 Roll out updated Temporal workers before the web/API change. The controller retains
 legacy signal semantics on replay while exposing acknowledged decisions to older

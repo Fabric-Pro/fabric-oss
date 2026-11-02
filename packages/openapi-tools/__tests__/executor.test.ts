@@ -5,6 +5,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ParsedOpenAPITool, ToolExecutionConfig } from "../src/types";
 
+const mockPinnedFetch = vi.fn(
+	(url: string, init?: RequestInit, _opts?: unknown) => fetch(url, init),
+);
+vi.mock("@repo/utils/url-security", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@repo/utils/url-security")>();
+	return {
+		...actual,
+		safeFetchOutboundPinned: (
+			url: string,
+			init?: RequestInit,
+			options?: Parameters<typeof actual.safeFetchOutboundPinned>[2],
+		) =>
+			/^http:\/\/(?:127\.0\.0\.1|10\.0\.0\.1)\//.test(url)
+				? actual.safeFetchOutboundPinned(url, init, options)
+				: mockPinnedFetch(url, init, options),
+	};
+});
+
 // Mock the logger
 vi.mock("@repo/logs", () => ({
 	logger: {
@@ -76,6 +95,7 @@ const postTool: ParsedOpenAPITool = {
 describe("OpenAPI Executor", () => {
 	beforeEach(() => {
 		mockFetch.mockReset();
+		mockPinnedFetch.mockClear();
 	});
 
 	afterEach(() => {
@@ -83,6 +103,87 @@ describe("OpenAPI Executor", () => {
 	});
 
 	describe("executeOpenAPITool", () => {
+		it("guards the agent tool execution wrapper", async () => {
+			const { createOpenAPIAgentTool } = await import(
+				"../src/lib/loader"
+			);
+			const agentTool = createOpenAPIAgentTool(
+				{
+					id: "example-tool",
+					name: "listExamples",
+					description: null,
+					method: "GET",
+					path: "/examples",
+					operationId: "listExamples",
+					parametersSchema: null,
+					requestBodySchema: null,
+					responseSchema: null,
+					tags: [],
+				},
+				{
+					baseUrl: "http://127.0.0.1",
+					authType: "NONE",
+					authKey: null,
+					authValue: null,
+					authLocation: null,
+				},
+			);
+			await expect(agentTool.execute({})).resolves.toMatchObject({
+				success: false,
+				error: "OpenAPI tool URL is not a permitted public address",
+			});
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+
+		it("passes redirect and content controls to the pinned guard", async () => {
+			mockFetch.mockResolvedValueOnce(
+				new Response("", {
+					status: 302,
+					headers: { location: "http://127.0.0.1/private" },
+				}),
+			);
+			const { executeOpenAPITool } = await import("../src/lib/executor");
+			const result = await executeOpenAPITool({
+				tool: sampleTool,
+				config: {
+					baseUrl: "https://api.example.com",
+					authType: "NONE",
+				},
+				arguments: { petId: "1" },
+			});
+			expect(mockPinnedFetch).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.any(Object),
+				expect.objectContaining({
+					followRedirects: false,
+					allowedContentTypes: ["*/*"],
+					timeoutMs: 30_000,
+				}),
+			);
+			expect(result.success).toBe(false);
+			expect(result.error).toBe("OpenAPI tool redirects are not allowed");
+			expect(result.headers).toBeUndefined();
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+		});
+
+		it.each(["http://127.0.0.1", "http://10.0.0.1"])(
+			"reports a blocked private base URL without its address: %s",
+			async (baseUrl) => {
+				const { executeOpenAPITool } = await import(
+					"../src/lib/executor"
+				);
+				const result = await executeOpenAPITool({
+					tool: sampleTool,
+					config: { baseUrl, authType: "NONE" },
+					arguments: { petId: "1" },
+				});
+				expect(result).toMatchObject({
+					success: false,
+					error: "OpenAPI tool URL is not a permitted public address",
+				});
+				expect(mockFetch).not.toHaveBeenCalled();
+			},
+		);
 		it("should build correct URL with path parameters", async () => {
 			mockFetch.mockResolvedValueOnce({
 				ok: true,

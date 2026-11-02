@@ -48,6 +48,11 @@ export interface MultiAgentRuntimeHost {
 	onAnalyticsEvent?: (name: string, payload: Record<string, unknown>) => void;
 	/** The AI usage limit stopped the turn or an agent: the refusal's body. */
 	onUsageLimit?: (body: unknown) => void;
+	/**
+	 * The turn's first run started, called once: by then the server has
+	 * saved the turn's conversation, so a new chat can take it as its own.
+	 */
+	onStarted?: () => void;
 }
 
 export class MultiAgentRuntimeTurn {
@@ -56,6 +61,7 @@ export class MultiAgentRuntimeTurn {
 	/** Text held per agent, applied together after `TEXT_BATCH_MS`. */
 	private heldText = new Map<string, string>();
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
+	private started = false;
 
 	constructor(
 		readonly threadId: string,
@@ -172,8 +178,12 @@ export class MultiAgentRuntimeTurn {
 		this.host.onView(this.view);
 	}
 
-	/** Side effects a signal carries: analytics, and the usage-limit toast. */
+	/** Side effects a signal carries: the start, analytics, and the usage-limit toast. */
 	private notify(signal: MultiAgentSignal): void {
+		if (signal.kind === "run-started" && !this.started) {
+			this.started = true;
+			this.host.onStarted?.();
+		}
 		if (
 			signal.kind === "agent-event" &&
 			(signal.event.type === "mcp_default_tool_invoked" ||

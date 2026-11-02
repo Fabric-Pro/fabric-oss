@@ -8,9 +8,9 @@
  * owner was demoted to a read-only role that may list them and not run them
  * (Fizzy #2380, QA round two).
  *
- * These pin the role gate, and just as importantly pin where it does NOT apply:
- * on the reads, whose permissions every role holds, and on a personal key,
- * which names no organization to hold a role in.
+ * These pin the role gate, and just as importantly pin where it does not apply:
+ * on reads whose permissions every role holds. A personal key has no tenant at
+ * authentication time, so v1 routes repeat the check after resolving one.
  */
 
 import { Hono } from "hono";
@@ -23,6 +23,11 @@ const mocks = vi.hoisted(() => ({
 	verifyOAuthAccessToken: vi.fn(),
 	canExecuteOrganizationAgents: vi.fn(),
 	canRunOrganizationWorkflows: vi.fn(),
+	canCreateProjectInOrganization: vi.fn(),
+	canUseOrganizationAiChat: vi.fn(),
+	canUseOrganizationIntegrations: vi.fn(),
+	canCreateOrganizationPrompts: vi.fn(),
+	canUpdateOrganizationPrompts: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => {
@@ -34,6 +39,11 @@ vi.mock("@repo/database", async (importOriginal) => {
 		verifyOAuthAccessToken: mocks.verifyOAuthAccessToken,
 		canExecuteOrganizationAgents: mocks.canExecuteOrganizationAgents,
 		canRunOrganizationWorkflows: mocks.canRunOrganizationWorkflows,
+		canCreateProjectInOrganization: mocks.canCreateProjectInOrganization,
+		canUseOrganizationAiChat: mocks.canUseOrganizationAiChat,
+		canUseOrganizationIntegrations: mocks.canUseOrganizationIntegrations,
+		canCreateOrganizationPrompts: mocks.canCreateOrganizationPrompts,
+		canUpdateOrganizationPrompts: mocks.canUpdateOrganizationPrompts,
 	};
 });
 
@@ -44,7 +54,12 @@ vi.mock("../../../users/procedures/api-keys/verify", () => ({
 }));
 
 import type { ExternalApiVariables } from "../../types";
-import { requireApiKey, requireScope } from "../api-key-auth";
+import {
+	requireApiKey,
+	requireScope,
+	requireV1OwnerPermission,
+	type V1OwnerPermissionAction,
+} from "../api-key-auth";
 
 const ORG_KEY = "org_aaaaaaaa_secret";
 const PERSONAL_KEY = "fab_bbbbbbbb_secret";
@@ -77,6 +92,194 @@ beforeEach(() => {
 	mocks.verifyOAuthAccessToken.mockReset();
 	mocks.canExecuteOrganizationAgents.mockReset().mockResolvedValue(true);
 	mocks.canRunOrganizationWorkflows.mockReset().mockResolvedValue(true);
+	mocks.canCreateProjectInOrganization.mockReset().mockResolvedValue(true);
+	mocks.canUseOrganizationAiChat.mockReset().mockResolvedValue(true);
+	mocks.canUseOrganizationIntegrations.mockReset().mockResolvedValue(true);
+	mocks.canCreateOrganizationPrompts.mockReset().mockResolvedValue(true);
+	mocks.canUpdateOrganizationPrompts.mockReset().mockResolvedValue(true);
+});
+
+function appWithResolvedV1Permission(action: string, scope: string) {
+	const app = new Hono<{ Variables: ExternalApiVariables }>();
+	app.use("*", requireApiKey());
+	app.get("/thing", requireScope(scope), async (c) => {
+		const refusal = await requireV1OwnerPermission(
+			c,
+			{ userId: "user-99", organizationId: "org-resolved" },
+			action as V1OwnerPermissionAction,
+		);
+		return refusal ?? c.json({ ok: true });
+	});
+	return app;
+}
+
+describe("v1 owner permission after organization resolution", () => {
+	const actionCases = [
+		[
+			"agents:execute",
+			"agents:execute",
+			mocks.canExecuteOrganizationAgents,
+		],
+		[
+			"channels:write",
+			"channels:write",
+			mocks.canUseOrganizationIntegrations,
+		],
+		["chats:write", "chats:write", mocks.canUseOrganizationAiChat],
+		[
+			"integrations:execute",
+			"integrations:execute",
+			mocks.canUseOrganizationIntegrations,
+		],
+		[
+			"knowledge:chat-search",
+			"knowledge:read",
+			mocks.canUseOrganizationAiChat,
+		],
+		[
+			"projects:create",
+			"projects:write",
+			mocks.canCreateProjectInOrganization,
+		],
+		["prompts:create", "prompts:write", mocks.canCreateOrganizationPrompts],
+		["prompts:update", "prompts:write", mocks.canUpdateOrganizationPrompts],
+		["workflows:run", "workflows:run", mocks.canRunOrganizationWorkflows],
+	] as const satisfies readonly [
+		V1OwnerPermissionAction,
+		string,
+		ReturnType<typeof vi.fn>,
+	][];
+	const permissionHelpers = [
+		mocks.canExecuteOrganizationAgents,
+		mocks.canUseOrganizationIntegrations,
+		mocks.canUseOrganizationAiChat,
+		mocks.canCreateProjectInOrganization,
+		mocks.canCreateOrganizationPrompts,
+		mocks.canUpdateOrganizationPrompts,
+		mocks.canRunOrganizationWorkflows,
+	];
+
+	it.each(actionCases)(
+		"maps %s to its live permission helper and %s refusal",
+		async (action, scope, expectedHelper) => {
+			expectedHelper.mockResolvedValue(false);
+			const app = new Hono();
+			app.get("/thing", async (c) => {
+				const refusal = await requireV1OwnerPermission(
+					c,
+					{ userId: "user-99", organizationId: "org-resolved" },
+					action,
+				);
+				return refusal ?? c.json({ ok: true });
+			});
+
+			const response = await app.request("/thing");
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({
+				error: `The key's owner no longer holds the access required for ${scope} in this organization`,
+			});
+			expect(expectedHelper).toHaveBeenCalledExactlyOnceWith(
+				"user-99",
+				"org-resolved",
+			);
+			for (const helper of new Set(permissionHelpers)) {
+				if (helper !== expectedHelper) {
+					expect(helper).not.toHaveBeenCalled();
+				}
+			}
+		},
+	);
+
+	it("refuses a viewer's personal key in the organization the request resolved", async () => {
+		mocks.verifyUserApiKey.mockResolvedValue({
+			valid: true,
+			keyId: "key-2",
+			userId: "user-99",
+			scopes: ["agents:execute"],
+		});
+		mocks.canExecuteOrganizationAgents.mockResolvedValue(false);
+
+		const response = await call(
+			appWithResolvedV1Permission("agents:execute", "agents:execute"),
+			PERSONAL_KEY,
+		);
+
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({
+			error: "The key's owner no longer holds the access required for agents:execute in this organization",
+		});
+		expect(mocks.canExecuteOrganizationAgents).toHaveBeenCalledWith(
+			"user-99",
+			"org-resolved",
+		);
+	});
+
+	it("refuses a demoted owner even when the personal key has wildcard scope", async () => {
+		mocks.verifyUserApiKey.mockResolvedValue({
+			valid: true,
+			keyId: "key-2",
+			userId: "user-99",
+			scopes: ["*"],
+		});
+		mocks.canExecuteOrganizationAgents.mockResolvedValue(false);
+
+		const response = await call(
+			appWithResolvedV1Permission("agents:execute", "agents:execute"),
+			PERSONAL_KEY,
+		);
+
+		expect(response.status).toBe(403);
+	});
+
+	it("allows a member whose live permission still holds", async () => {
+		mocks.verifyUserApiKey.mockResolvedValue({
+			valid: true,
+			keyId: "key-2",
+			userId: "user-99",
+			scopes: ["agents:execute"],
+		});
+
+		const response = await call(
+			appWithResolvedV1Permission("agents:execute", "agents:execute"),
+			PERSONAL_KEY,
+		);
+
+		expect(response.status).toBe(200);
+	});
+
+	it("fails closed when no organization was resolved", async () => {
+		mocks.verifyUserApiKey.mockResolvedValue({
+			valid: true,
+			keyId: "key-2",
+			userId: "user-99",
+			scopes: ["agents:execute"],
+		});
+		const app = new Hono<{ Variables: ExternalApiVariables }>();
+		app.use("*", requireApiKey());
+		app.get("/thing", requireScope("agents:execute"), async (c) => {
+			const authModule = await import("../api-key-auth");
+			const gate = Reflect.get(
+				authModule,
+				"requireV1OwnerPermission",
+			) as (
+				context: typeof c,
+				tenant: { userId: string; organizationId: string | null },
+				action: string,
+			) => Promise<Response | null>;
+			const refusal = await gate(
+				c,
+				{ userId: "user-99", organizationId: null },
+				"agents:execute",
+			);
+			return refusal ?? c.json({ ok: true });
+		});
+
+		const response = await call(app, PERSONAL_KEY);
+
+		expect(response.status).toBe(403);
+		expect(mocks.canExecuteOrganizationAgents).not.toHaveBeenCalled();
+	});
 });
 
 describe("agents:execute — the owner's current role", () => {

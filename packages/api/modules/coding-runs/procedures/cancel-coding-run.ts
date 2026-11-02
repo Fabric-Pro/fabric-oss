@@ -15,6 +15,7 @@ import { ORPCError } from "@orpc/client";
 import {
 	canEditProject,
 	getCodingRun,
+	markCodingRunRecoveryRequired,
 	updateCodingRunStatus,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
@@ -95,57 +96,108 @@ export const cancelCodingRunProcedure = tenantProtectedProcedure
 			});
 		}
 
-		if (
+		const native =
 			run.provider === "BACKGROUND_AGENTS" &&
-			(run.providerMetadata as Record<string, unknown> | null)
-				?.executionRuntime === "fabric-agent-server"
-		) {
-			const { isFabricAgentsBridgeEnabled } = await import(
-				"@repo/temporal/coding-execution-rollout"
-			);
-			if (!isFabricAgentsBridgeEnabled()) {
+			(run.providerMetadata as { executionRuntime?: string } | null)
+				?.executionRuntime === "fabric-agent-server";
+		const workflowId = run.workflowId ?? codingRunWorkflowId(run.id);
+		if (native) {
+			const temporal = await getTemporalClient();
+			const handle = temporal.workflow.getHandle(workflowId);
+			let running = false;
+			let absent = false;
+			try {
+				running = (await handle.describe()).status.name === "RUNNING";
+			} catch (error) {
+				if (
+					error instanceof Error &&
+					error.name === "WorkflowNotFoundError"
+				) {
+					absent = true;
+				} else {
+					throw error;
+				}
+			}
+			if (!run.providerSessionId && absent) {
+				await updateCodingRunStatus(run.id, "CANCELLED");
+				return { status: "cancelled" };
+			}
+			let stopFailed = false;
+			if (run.providerSessionId) {
+				try {
+					const { getCodingExecutionProvider } = await import(
+						"@repo/temporal/coding-execution"
+					);
+					await getCodingExecutionProvider(
+						run.provider,
+						run.providerMetadata,
+					).cancelSession(run.providerSessionId);
+				} catch {
+					stopFailed = true;
+				}
+			}
+			if (running) {
+				try {
+					await handle.signal("cancelCodingRun");
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						error.name === "WorkflowNotFoundError"
+					) {
+						try {
+							running =
+								(await handle.describe()).status.name ===
+								"RUNNING";
+						} catch (descriptionError) {
+							if (
+								!(descriptionError instanceof Error) ||
+								descriptionError.name !==
+									"WorkflowNotFoundError"
+							) {
+								throw descriptionError;
+							}
+							running = false;
+							absent = true;
+						}
+						if (!run.providerSessionId && absent) {
+							await updateCodingRunStatus(run.id, "CANCELLED");
+							return { status: "cancelled" };
+						}
+					} else if (!stopFailed) {
+						throw error;
+					}
+				}
+				if (running && !stopFailed) {
+					return { status: "cancelling" };
+				}
+			}
+			if (stopFailed || !run.providerSessionId) {
+				await markCodingRunRecoveryRequired({
+					codingRunId: run.id,
+					workflowId: run.workflowId,
+					organizationId: organizationId ?? null,
+					payload: {
+						message:
+							"Remote shutdown is unconfirmed. Check the original server for orphaned work, then use Close run after the workflow closes.",
+					},
+				});
 				throw new ORPCError("CONFLICT", {
 					message:
-						"Restore the native execution mode before cancelling this run",
+						"Remote shutdown is unconfirmed. Check the original server for orphaned work, then use Close run in the run dialog after the workflow closes.",
 				});
 			}
-		}
-		if (
-			run.provider === "BACKGROUND_AGENTS" &&
-			run.providerSessionId &&
-			(run.providerMetadata as Record<string, unknown> | null)
-				?.executionRuntime === "fabric-agent-server"
-		) {
-			const { isFabricAgentsBridgeEnabled } = await import(
-				"@repo/temporal/coding-execution-rollout"
-			);
-			if (!isFabricAgentsBridgeEnabled()) {
-				throw new ORPCError("CONFLICT", {
-					message:
-						"Restore this run's native execution configuration before cancelling it",
-				});
-			}
-			const { getCodingExecutionProvider } = await import(
-				"@repo/temporal/coding-execution"
-			);
-			// A signal ACK is not a remote stop ACK. Preserve the active row on unknown outcomes.
-			await getCodingExecutionProvider(
-				run.provider,
-				run.providerMetadata,
-			).cancelSession(run.providerSessionId);
+			await updateCodingRunStatus(run.id, "CANCELLED");
+			return { status: "cancelled" };
 		}
 
 		// Signal the Temporal workflow to cancel. The workflow id is
 		// deterministic, so an empty column only means post-start bookkeeping
 		// failed, not that no execution exists: always address the derived id
 		// and let Temporal say whether anything is there.
-		const workflowId = run.workflowId ?? codingRunWorkflowId(run.id);
-		let signalDelivered = false;
 		try {
 			const temporal = await getTemporalClient();
 			const handle = temporal.workflow.getHandle(workflowId);
 			await handle.signal("cancelCodingRun");
-			signalDelivered = true;
 		} catch (error) {
 			// WorkflowNotFoundError means it's already done — safe to mark cancelled.
 			// Any other error (e.g. Temporal unavailable) means the agent may still
@@ -157,21 +209,6 @@ export const cancelCodingRunProcedure = tenantProtectedProcedure
 				throw new ORPCError("INTERNAL_SERVER_ERROR", {
 					message: `Failed to cancel workflow: ${error instanceof Error ? error.message : "Unknown error"}`,
 				});
-			}
-		}
-
-		if (run.provider === "BACKGROUND_AGENTS" && !run.providerSessionId) {
-			const { isFabricAgentsBridgeEnabled } = await import(
-				"@repo/temporal/coding-execution-rollout"
-			);
-			if (isFabricAgentsBridgeEnabled()) {
-				if (!signalDelivered) {
-					throw new ORPCError("CONFLICT", {
-						message:
-							"The workflow is unavailable and native session creation has no confirmed outcome. Reconcile work on the original server before starting another run.",
-					});
-				}
-				return { status: "cancelling" };
 			}
 		}
 

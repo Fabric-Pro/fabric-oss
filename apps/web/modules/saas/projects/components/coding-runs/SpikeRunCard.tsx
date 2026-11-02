@@ -120,7 +120,7 @@ export function SpikeRunCard({
 					queryKey: ["codingRun", run.id],
 				}),
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.key(),
+					queryKey: orpc.projects.stories.board.key(),
 				}),
 				invalidateStoryReadiness(queryClient, { projectId, storyId }),
 			]);

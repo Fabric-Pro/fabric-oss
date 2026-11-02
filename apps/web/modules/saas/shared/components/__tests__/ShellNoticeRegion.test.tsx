@@ -185,8 +185,6 @@ describe("ShellNoticeRegion", () => {
 	it.each([
 		"/app/example-org/projects/proj-1/documents/doc-1",
 		"/app/example-org/projects/proj-1/stories/story-1",
-		"/app/example-org/agents/document-generator",
-		"/app/example-org/agents/task-planner",
 		"/app/example-org/agents/fabric-ai",
 		"/app/example-org/agents/agent-1/try",
 	])("yields on the full-bleed route %s", (route) => {

@@ -10,7 +10,7 @@ import { useCallback } from "react";
  * PmSyncChip). One source of truth for the query families that render
  * PM-sync state, so no surface can go stale when another one acts:
  *
- *  - projects.stories.list        → roadmap card pill + cloud-icon overlay
+ *  - projects.stories.board        → roadmap card pill + cloud-icon overlay
  *  - projects.stories.get         → editor copy of the story
  *  - projects.reviewCenter.items  → Review Center grouped list
  *  - projects.reviewCenter.count  → Review Center toolbar badge
@@ -40,7 +40,7 @@ export function useInvalidatePmSyncState(
 	return useCallback(async () => {
 		await Promise.all(
 			[
-				orpc.projects.stories.list.key({ input: { projectId } }),
+				orpc.projects.stories.board.key({ input: { projectId } }),
 				orpc.projects.stories.get.key({ input: { projectId } }),
 				orpc.projects.reviewCenter.items.key({ input: { projectId } }),
 				orpc.projects.reviewCenter.count.key({ input: { projectId } }),

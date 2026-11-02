@@ -212,7 +212,7 @@ vi.mock("@shared/lib/orpc-query-utils", async (importOriginal) => ({
 				queryKey: () => ["projects-get"],
 			},
 			stories: {
-				list: { queryKey: () => ["stories-list"] },
+				board: { queryKey: () => ["stories-list"] },
 			},
 		},
 	},

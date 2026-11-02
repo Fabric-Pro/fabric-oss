@@ -1,3 +1,4 @@
+import { logger } from "@repo/logs";
 import {
 	effectivePlanningAnalysis,
 	renderAnalysisProse,
@@ -485,4 +486,17 @@ describe("generateBlogPostActivity — a soft-closed question restricts", () => 
 		expect(prompt.slice(heading)).toContain("example-org");
 		expect(prompt).not.toContain("May we name example-org?");
 	});
+});
+
+it("keeps READY when seeding throws", async () => {
+	seedWorkingDraftIfAbsent.mockRejectedValue(new Error("seed failed"));
+	await expect(run()).resolves.toEqual({
+		status: "READY",
+		seededWorkingDraft: false,
+	});
+	expect(generateObject).toHaveBeenCalledTimes(1);
+	expect(logger.warn).toHaveBeenCalledWith(
+		"[publishing-blog-post] failed to seed a working draft",
+		expect.objectContaining({ error: "seed failed" }),
+	);
 });

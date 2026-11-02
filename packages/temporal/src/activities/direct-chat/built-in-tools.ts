@@ -17,7 +17,6 @@ import {
 } from "@repo/database";
 import { withDefaultFeature } from "@repo/rag/lib/embedding/usage";
 import { createProvider, type WebSearchResult } from "@repo/search";
-import { uploadFile } from "@repo/storage";
 import { getBaseUrl } from "@repo/utils";
 import {
 	rethrowIfDispatchStopped,
@@ -32,6 +31,7 @@ import {
 	type SecondaryUsageInput,
 	secondaryUsageFields,
 } from "../../workflows/orchestrator/usage-attribution";
+import { chatMediaProxyUrl, uploadRecordedChatMedia } from "../chat-media";
 import { resolveSearchProviderForTenant } from "../lib/get-search-provider";
 import { getAllFabricAiTools } from "../orchestrator/tools/fabric-ai-tools";
 import { jsonSchemaToZod } from "../orchestrator/utils";
@@ -1720,21 +1720,19 @@ export async function createFabricTool(
 					}
 
 					const audioBuffer = speech.audio;
-					const audioKey = `tts/${userId}/${Date.now()}.mp3`;
 					throwIfDispatchStopped();
-					await uploadFile(audioKey, audioBuffer, {
-						bucket:
-							process.env
-								.NEXT_PUBLIC_CHAT_DOCUMENTS_BUCKET_NAME ||
-							"chat-documents",
+					const audioKey = await uploadRecordedChatMedia({
+						data: audioBuffer,
 						contentType: "audio/mpeg",
+						extension: "mp3",
+						storageKind: "tts-audio",
+						recordKind: "TTS_AUDIO",
+						userId,
+						organizationId,
+						conversationId: context.usageConversationId,
 					});
-
-					const orgParam = organizationId
-						? `&orgId=${encodeURIComponent(organizationId)}`
-						: "";
 					return {
-						audioUrl: `/api/storage/image?path=${encodeURIComponent(audioKey)}${orgParam}`,
+						audioUrl: chatMediaProxyUrl(audioKey, organizationId),
 						format: "mp3",
 						response: "Audio generated successfully.",
 					};

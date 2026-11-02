@@ -12,11 +12,16 @@
  *   - The icon variant carries an `aria-label` and tooltip.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserStory } from "../../../lib/stories/types";
 import { StoryDownloadDropdown } from "../StoryDownloadDropdown";
+
+const getStory = vi.hoisted(() => vi.fn());
+vi.mock("@shared/lib/orpc-client", () => ({
+	orpcClient: { projects: { stories: { get: getStory } } },
+}));
 
 // Mock the renderer module — every test asserts on these mocks rather than
 // on the real jsPDF / docx libraries (which need a DOM canvas / fonts).
@@ -188,4 +193,31 @@ describe("StoryDownloadDropdown", () => {
 		expect(trigger).toBeInTheDocument();
 		expect(trigger.getAttribute("aria-label")).toMatch(/storyDownload/i);
 	});
+});
+
+it("shows pending feedback during Markdown detail fetch and retries after failure", async () => {
+	let reject!: (reason: Error) => void;
+	getStory
+		.mockImplementationOnce(
+			() =>
+				new Promise((_resolve, r) => {
+					reject = r;
+				}),
+		)
+		.mockResolvedValue({ story: buildStory() });
+	render(
+		<StoryDownloadDropdown
+			story={buildStory({ description: undefined, hasDescription: true })}
+			project={PROJECT}
+		/>,
+	);
+	await userEvent.click(screen.getByRole("button", { name: /action/i }));
+	await userEvent.click(screen.getByRole("menuitem", { name: /markdown/i }));
+	expect(screen.getByRole("button", { name: /action/i })).toBeDisabled();
+	await act(async () => reject(new Error("offline")));
+	await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
+	expect(screen.getByRole("button", { name: /action/i })).toBeEnabled();
+	await userEvent.click(screen.getByRole("button", { name: /action/i }));
+	await userEvent.click(screen.getByRole("menuitem", { name: /markdown/i }));
+	await waitFor(() => expect(triggerBlobDownloadMock).toHaveBeenCalled());
 });

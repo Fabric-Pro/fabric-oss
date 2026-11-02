@@ -103,7 +103,7 @@ export function AcceptSpikeDialog({
 					queryKey: ["codingRun", codingRunId],
 				}),
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.key(),
+					queryKey: orpc.projects.stories.board.key(),
 				}),
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.stories.get.key(),

@@ -15,7 +15,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						queryKey: () => ["t"],
 					},
 				},
-				list: { queryKey: () => ["list"] },
+				board: { queryKey: () => ["list"] },
 				get: { queryKey: () => ["get"] },
 			},
 		},

@@ -30,6 +30,7 @@ import {
 import type { AssertAssignable } from "@saas/agents/lib/chat-stream-protocol";
 import type { DirectStreamInput } from "@saas/agents/lib/direct-stream-protocol";
 import { encodeDirectStreamEvent } from "@saas/agents/lib/direct-stream-protocol";
+import { ProgressPhaseTracker } from "@saas/agents/lib/progress-phase-tracker";
 import { getSession } from "@saas/auth/lib/server";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
@@ -1498,7 +1499,7 @@ export async function handleTemporalWorkflow(
 				}
 
 				// Track state for change detection
-				let lastPhase = "";
+				const progressPhases = new ProgressPhaseTracker();
 				let isComplete = false;
 				const startTime = Date.now();
 				let lastHeartbeatAt = Date.now();
@@ -1668,6 +1669,7 @@ export async function handleTemporalWorkflow(
 							}
 							isComplete = true;
 						} else {
+							progressPhases.beginPoll();
 							// First, check for activity heartbeat details (real-time tool calls)
 							// This provides real-time updates during activity execution
 							const pendingActivities =
@@ -1708,10 +1710,11 @@ export async function handleTemporalWorkflow(
 
 									// Send progress update from heartbeat
 									if (
-										heartbeatDetails.phase &&
-										heartbeatDetails.phase !== lastPhase
+										progressPhases.changed(
+											"heartbeat",
+											heartbeatDetails.phase,
+										)
 									) {
-										lastPhase = heartbeatDetails.phase;
 										{
 											const payload = {
 												type: "progress" as const,
@@ -1749,10 +1752,11 @@ export async function handleTemporalWorkflow(
 
 								// Send phase change events (if not already sent from heartbeat)
 								if (
-									progress?.phase &&
-									progress.phase !== lastPhase
+									progressPhases.changed(
+										"workflow",
+										progress?.phase,
+									)
 								) {
-									lastPhase = progress.phase;
 									{
 										const payload = {
 											type: "progress" as const,

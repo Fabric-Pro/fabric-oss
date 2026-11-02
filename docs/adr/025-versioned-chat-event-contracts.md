@@ -63,11 +63,17 @@ These fields are observation positions, never execution or approval authority.
 The route resolves current ownership, organization membership, project access and
 the pinned run before reading the journal, and periodically rechecks access while
 delivering output. A cursor for another run, a missing entry or an expired entry
-ends observation explicitly rather than silently skipping a gap or starting work.
+disables replay for that connection and emits a non-terminal `replay_unavailable`
+notice. Redis live forwarding continues and clients reconnect without replay or a
+cursor. When a resumed window loses continuity, the Orchestrator client replaces its
+text on the next delta, as a resumed window did before the journal (#2269). Only a definite `ChatRunAccessError`, direct or carried by
+`ChatReplayAuthorizationError`, ends observation. Other authorization lookup errors in
+`createChatReplayObserver.initialize` or its re-check degrade the already-authorized
+connection to live-only.
 
 Primary-run activity publishers append text, tool, iteration, limit and compaction
 output before notifying Redis. Cursor-bearing Redis notifications wake a serialized
-journal drain immediately, independently of slower workflow status polling.
+journal drain independently of slower workflow status polling, with wake-driven drains throttled to about once per second. Multi-page drains check integrity once per page. Terminal observation forces a final integrity check.
 A one-second journal poll covers lost notifications without adding a database
 read to every 200 ms workflow-status poll. Small text chunks are coalesced for up to 50 ms
 or 8 KiB of text; buffers drain before a later event or activity completion.
@@ -83,16 +89,24 @@ bounded to 20,000 output entries per physical run (plus one gap marker) and 1 Mi
 per entry. Credential keys use the shared denylist before storage; a narrow
 allowlist preserves ordinary tool fields such as `mapping` and `maxTokens`,
 while still recursively redacting credentials inside them. Expired rows are not readable and are purged in bounded
-batches by daily request-span retention. Turn erasure
+batches by `purgeExpiredConversationTurnEvents` from `request-span-retention.ts` on the request-span retention schedule registered in `schedules.ts`. When `FABRIC_REQUEST_SPAN_RETENTION_ENABLED=false`, registration does not create the schedule; an existing schedule keeps running until deleted. Reads still hide expired rows. Turn erasure
 cascades to its journal. A failed append never advertises a resumable position;
-known output gaps stop observation while the workflow continues independently.
+known output gaps disable replay while live observation continues.
 An activity interceptor records an unavailable flag in its Temporal result when
-journaling fails, overflows its 32-entry pending queue, or the activity retried.
-A query-only workflow interceptor rebuilds a sticky integrity flag from those
+journaling fails, overflows its 32-entry pending queue, or a retried activity publishes output. Activities that publish nothing do not flag retries.
+A workflow interceptor rebuilds a sticky integrity flag from those
 recorded results, strips the private field before workflow code consumes them,
-and schedules no commands. Readers check that flag after reading journal rows
-and before delivery, so another worker cannot silently splice past a failed
-producer even if the database gap-marker write also failed. Legacy histories
+and adds no workflow commands. While old and new workers overlap during a rollout, a
+producer that runs on an old worker writes no journal rows and is flagged only when it
+completes, so a cursorless reload in that window can replay an incomplete journal. The activity interceptor flushes output and rethrows the
+original failure unchanged. The workflow interceptor conservatively flags any failed
+activity in `chatReplayProducerActivities`, including failures from old workers whose
+journal state is unknown; failed non-producers do not flag. Missing metadata from the
+output activity families in `chatReplayProducerActivities` also disables replay during
+mixed-worker rollout. Readers check that flag after reading journal rows
+with wake-driven drains throttled to about once per second; a multi-page drain
+checks once per page, and terminal delivery checks again, so readers detect recorded producer failures even if the database gap-marker
+write also failed. Legacy histories
 without the flag retain their results and command sequence. Journal appends retry
 one transient failure with the same source key; definitive output limits stop
 immediately. Activities retain heartbeats while draining, and Redis commands
@@ -101,7 +115,13 @@ Uncommitted provider output cannot be recovered from this journal, and legacy
 workers still provide live-only updates. The final workflow result remains the
 authoritative answer. Terminal turn records bypass the transport cache, including
 expired cursors and incomplete journals; a newly terminal workflow drains its tail
-before delivering its outcome. Access-check failures never use that fallback.
+before delivering its outcome. Definite access denials do not use that fallback.
+`createServerChatReplay` checks the run's gap marker through a scoped unique-key
+lookup before reading a cursorless backlog. It streams pages without staging the
+full backlog and validates workflow integrity before delivering each page. Empty
+cursorless drains recheck the marker until the first row is sent. Replay with a
+cursor skips the point lookup and can deliver valid continuations up to a gap
+marker.
 
 The flag-gated `/api/agents/runtime` transport is a separate rollout. This
 milestone adds cursors to the Orchestrator stream endpoint and its Research and

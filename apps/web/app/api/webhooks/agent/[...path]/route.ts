@@ -12,7 +12,12 @@
  */
 
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { checkExecutionQuota, db, type Prisma } from "@repo/database";
+import {
+	checkExecutionQuota,
+	db,
+	isDeploymentOwnerCurrentMember,
+	type Prisma,
+} from "@repo/database";
 import { type ExecutionRequest, getTemporalClient } from "@repo/temporal";
 import { decryptApiKeyMaybe } from "@repo/utils";
 import { type NextRequest, NextResponse } from "next/server";
@@ -117,6 +122,12 @@ export async function POST(
 		});
 
 		if (!trigger) {
+			return NextResponse.json(
+				{ error: "Webhook not found" },
+				{ status: 404 },
+			);
+		}
+		if (!(await isDeploymentOwnerCurrentMember(trigger.deployment))) {
 			return NextResponse.json(
 				{ error: "Webhook not found" },
 				{ status: 404 },
@@ -237,6 +248,12 @@ export async function POST(
 			return NextResponse.json(
 				{ error: quotaCheck.reason || "Execution quota exceeded" },
 				{ status: 429 },
+			);
+		}
+		if (!(await isDeploymentOwnerCurrentMember(trigger.deployment))) {
+			return NextResponse.json(
+				{ error: "Webhook not found" },
+				{ status: 404 },
 			);
 		}
 

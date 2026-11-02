@@ -40,6 +40,7 @@ vi.mock("@repo/database", async () => ({
 		"@repo/database/prisma/queries/lib/mcp-oauth-binding",
 	)),
 	clearRefreshFailures: vi.fn(),
+	consumeOauthState: vi.fn(async () => true),
 	createOauthState: vi.fn(),
 	db: { mCPConfig: { update: vi.fn() } },
 	deleteOauthState: vi.fn(),
@@ -87,6 +88,7 @@ vi.mock("../../../../orpc/procedures", () => {
 	});
 	return {
 		publicProcedure: chainable,
+		protectedProcedure: chainable,
 		tenantProtectedProcedure: chainable,
 		requirePermission: () => () => ({}),
 		Permissions: {

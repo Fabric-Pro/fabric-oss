@@ -1,6 +1,6 @@
 /**
  * LangGraph Server Entry Point for Backlog Updater Agent
- * This file is required by @langchain/langgraph-cli to run the agent as a server
+ * Graph exports for external LangGraph tooling.
  */
 
 import { backlogUpdaterGraph } from "./agent.js";

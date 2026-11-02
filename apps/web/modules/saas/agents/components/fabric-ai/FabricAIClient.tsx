@@ -43,6 +43,7 @@ import {
 } from "@saas/agents/lib/interface-mode-engine";
 import {
 	orchestratorPreferencesQueryKey,
+	resolveInitialUiMode,
 	setCachedUiMode,
 } from "@saas/agents/lib/interface-mode-preference";
 import {
@@ -50,6 +51,8 @@ import {
 	pendingProjectOnOpen,
 } from "@saas/agents/lib/pending-project";
 import dynamic from "next/dynamic";
+import { isInitialChatRestorePending } from "../../lib/initial-chat-restore";
+import { ChatRestoreLoading } from "../FabricChat/shared/ChatRestoreLoading";
 
 // Dynamic imports for heavy components to improve initial load time
 const FabricDirectChat = dynamic(
@@ -59,7 +62,6 @@ const FabricDirectChat = dynamic(
 		),
 	{
 		loading: () => <ChatLoadingSkeleton />,
-		ssr: false,
 	},
 );
 
@@ -70,7 +72,6 @@ const FabricTemporalOrchestratorChat = dynamic(
 		).then((mod) => ({ default: mod.FabricTemporalOrchestratorChat })),
 	{
 		loading: () => <ChatLoadingSkeleton />,
-		ssr: false,
 	},
 );
 
@@ -96,33 +97,16 @@ const OrchestratorConfigPanel = dynamic(
 	},
 );
 
-const WorkflowProgressPanel = dynamic(
-	() =>
-		import(
-			"@saas/agents/components/WorkflowTemplateChat/WorkflowProgressPanel"
-		).then((mod) => ({ default: mod.WorkflowProgressPanel })),
-	{ ssr: false },
-);
-
-const WorkflowResultViewer = dynamic(
-	() =>
-		import(
-			"@saas/agents/components/WorkflowTemplateChat/WorkflowResultViewer"
-		).then((mod) => ({ default: mod.WorkflowResultViewer })),
-	{ ssr: false },
-);
-
 import { buildInstanceSystemPrompt } from "@saas/agent-templates/lib/build-instance-system-prompt";
 import { ProjectAttachmentPanel } from "@saas/agents/components/FabricChat/ProjectAttachmentPanel";
-import { ChatInput } from "@saas/agents/components/FabricChat/shared/ChatInput";
 import {
 	type WorkspaceFile,
 	WorkspacePanel,
 } from "@saas/agents/components/WorkspacePanel";
 import { useConversationHistory } from "@saas/agents/hooks/useConversationHistory";
 import { useMultiAgentOffered } from "@saas/agents/hooks/useMultiAgentChat";
+import { useResearchRunStream } from "@saas/agents/hooks/useResearchRunStream";
 import { useSavedAgentUnavailableNotice } from "@saas/agents/hooks/useSavedAgentUnavailableNotice";
-import { useWorkflowTemplateStream } from "@saas/agents/hooks/useWorkflowTemplateStream";
 import { useWorkspaceFiles } from "@saas/agents/hooks/useWorkspaceFiles";
 import { useSession } from "@saas/auth/hooks/use-session";
 import {
@@ -130,7 +114,6 @@ import {
 	useEffectiveOrganizationId,
 	useOrganizationContext,
 } from "@saas/organizations/hooks/use-organization-context";
-import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { SparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { SidebarEdgeHandle } from "@saas/shared/components/SidebarEdgeHandle";
@@ -176,13 +159,13 @@ import {
 	Scale,
 	ScanSearch,
 	Settings2,
-	Sparkles,
 	Wrench,
 	Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+	type CSSProperties,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -205,6 +188,8 @@ import {
 } from "../../../../../components/ai-elements/context";
 import { EngineMismatchNotice } from "../EngineMismatchNotice";
 import { ConversationHistoryPanel, FramesPanel } from "./components";
+import deckLayout from "./control-deck-layout.module.css";
+import { DeepResearchInlineChat } from "./DeepResearchInlineChat";
 
 // Loading skeleton for chat components - prevents CLS during dynamic import
 function ChatLoadingSkeleton() {
@@ -374,7 +359,12 @@ export default function FabricAIPage({
 	const [deepResearchEnabled, setDeepResearchEnabled] = useState(
 		modeFromUrl === "research",
 	);
-	const [sidebarOpen, setSidebarOpen] = useState(false);
+	const [sidebarOpen, setSidebarOpen] = useState(true);
+	// Open sidebar by default on desktop only
+	useEffect(() => {
+		setSidebarOpen(window.innerWidth >= 768);
+	}, []);
+	// Default to history so the page lands on prior runs first.
 	const [activeTab, setActiveTab] = useState<TabType>("tools");
 	const contextProjectId = searchParams.get("projectId");
 	const contextProjectName = searchParams.get("projectName");
@@ -396,7 +386,7 @@ export default function FabricAIPage({
 	const effectiveInstanceId = instanceIdFromUrl || restoredInstanceId;
 
 	// Fetch agent template instance when instanceId is provided (from URL or restored from conversation)
-	const { data: instanceData } = useQuery({
+	const { data: instanceData, isLoading: isInstanceLoading } = useQuery({
 		queryKey: [
 			"agentTemplates",
 			"instances",
@@ -624,7 +614,9 @@ export default function FabricAIPage({
 	// simple hides the engine control and starts new chats on the Orchestrator
 	// (iterative preset), advanced restores the full surface. Persisted per
 	// (user × org) alongside the Loom prefs above.
-	const [uiMode, setUiMode] = useState<"simple" | "advanced">("simple");
+	const [uiMode, setUiMode] = useState<"simple" | "advanced">(
+		resolveInitialUiMode(initialPreferences, modeFromUrl),
+	);
 	const lastPersistedUiModeRef = useRef<"simple" | "advanced" | null>(null);
 	// The last `uiMode` seen in the shared preferences cache — see the
 	// adoption effect below the hydration effect.
@@ -1077,6 +1069,9 @@ export default function FabricAIPage({
 							agentInstance?.description ?? undefined
 						}
 						instanceToolConfig={instanceToolConfig}
+						isInstanceLoading={
+							Boolean(effectiveInstanceId) && isInstanceLoading
+						}
 						contextLaunch={{
 							projectId: contextProjectId,
 							projectName: contextProjectName,
@@ -1166,6 +1161,7 @@ interface FabricChatContentProps {
 	instanceId?: string;
 	agentInstanceName?: string;
 	agentInstanceDescription?: string;
+	isInstanceLoading: boolean;
 	instanceToolConfig?: {
 		mcpConfigIds: string[];
 		enabledFabricToolIds: string[];
@@ -1216,12 +1212,14 @@ function FabricChatContent({
 	agentInstanceName,
 	agentInstanceDescription,
 	instanceToolConfig,
+	isInstanceLoading,
 	contextLaunch,
 	onInstanceIdRestored,
 }: FabricChatContentProps) {
 	// Past conversations, reachable in both interface modes. Simple mode
 	// hides the control deck that used to be the only way to them.
 	const [historyOpen, setHistoryOpen] = useState(false);
+	const [initialConversationId] = useState(conversationIdFromUrl);
 	// Key to force remount of chat component when starting new chat
 	// This ensures all state is completely reset
 	const [chatInstanceKey, setChatInstanceKey] = useState(0);
@@ -1280,38 +1278,6 @@ function FabricChatContent({
 				return "high";
 		}
 	}, [reasoningMode]);
-
-	// Deep Research workflow stream
-	const [deepResearchQuery, setDeepResearchQuery] = useState("");
-	const [deepResearchHasInteracted, setDeepResearchHasInteracted] =
-		useState(false);
-	const deepResearchStream = useWorkflowTemplateStream({
-		templateSlug: "deep-researcher",
-		organizationId: organizationId ?? undefined,
-		reasoningEffort: researchReasoningEffort,
-	});
-
-	// Reset deep research state when toggling off or starting new chat
-	const resetDeepResearch = useCallback(() => {
-		deepResearchStream.reset();
-		setDeepResearchHasInteracted(false);
-		setDeepResearchQuery("");
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- reset is stable from useCallback
-	}, [deepResearchStream.reset]);
-
-	// Handle sending a deep research query
-	const handleDeepResearchSend = useCallback(
-		async (queryText: string) => {
-			if (!queryText.trim() || deepResearchStream.isLoading) {
-				return;
-			}
-			setDeepResearchHasInteracted(true);
-			setDeepResearchQuery(queryText);
-			await deepResearchStream.sendQuery(queryText);
-		},
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- sendQuery/isLoading are stable
-		[deepResearchStream.sendQuery, deepResearchStream.isLoading],
-	);
 
 	// Session-level selected templates that persist across new conversations (remounts)
 	const [sessionTemplates, setSessionTemplates] = useState<
@@ -1631,6 +1597,42 @@ function FabricChatContent({
 		},
 		[selectConversationInternal, onConversationChange],
 	);
+
+	// Deep Research. On the agent runtime a run is saved as a Research
+	// conversation: opening one of the reader's own on the Research surface
+	// shows its saved result (or its run, while it still goes).
+	const researchConversationId =
+		deepResearchEnabled &&
+		activeConversation?.isOwn &&
+		activeConversation.id === activeConversationId &&
+		restoreFromConversationMetadata(activeConversation.metadata).mode ===
+			"research"
+			? activeConversation.id
+			: null;
+	const handleResearchConversationStarted = useCallback(
+		(threadId: string) => {
+			// Lock the engine now, not when the fetched conversation arrives.
+			setConversationEngine("research");
+			onConversationChange(threadId);
+			refetchList();
+		},
+		[onConversationChange, refetchList],
+	);
+	const deepResearchStream = useResearchRunStream({
+		templateSlug: "deep-researcher",
+		organizationId: organizationId ?? undefined,
+		reasoningEffort: researchReasoningEffort,
+		executionMode: reasoningMode,
+		conversationId: researchConversationId,
+		onConversationStarted: handleResearchConversationStarted,
+		onStopFailed: () => toast.message("Couldn't stop the research."),
+	});
+
+	// "New Research": leave the reopened conversation, if any, and start over.
+	const handleNewResearch = useCallback(() => {
+		selectConversation(null);
+		deepResearchStream.reset();
+	}, [selectConversation, deepResearchStream.reset]);
 
 	const handleContinuedChat = useCallback(
 		(chat: ContinuedChat) => {
@@ -2138,9 +2140,9 @@ function FabricChatContent({
 		if (activeConversationId === null) {
 			setDocumentChatId(null);
 			setConversationEngine(null);
-			resetDeepResearch();
+			deepResearchStream.reset();
 		}
-	}, [activeConversationId, resetDeepResearch]);
+	}, [activeConversationId, deepResearchStream.reset]);
 
 	// Note: We no longer attach workspaces per-conversation.
 	// Workspace settings are now global user preferences (like MCP/agents/tools)
@@ -2210,6 +2212,9 @@ function FabricChatContent({
 		sidebarWidth,
 		viewportWidth,
 	]);
+	const deckStyle: CSSProperties & { "--control-deck-width": string } = {
+		"--control-deck-width": `${effectiveSidebarWidth}px`,
+	};
 
 	// Handle resize drag
 	const handleMouseDown = useCallback(
@@ -2315,7 +2320,7 @@ function FabricChatContent({
 		setConversationEngine(null);
 		setExpandHandoff(null);
 		dispatchFrameOrigin({ type: "clear" });
-		resetDeepResearch();
+		deepResearchStream.reset();
 		setActiveTab("history");
 		handleClearAllPrioritized();
 		setChatInstanceKey((prev) => prev + 1);
@@ -2344,36 +2349,29 @@ function FabricChatContent({
 				/>
 			)}
 
-			{/* Left Sidebar - use CSS containment to prevent layout shifts.
-			    Simple mode drops it entirely rather than leaving the collapsed
-			    icon rail behind: `sidebarOpen` is held false for the whole mode,
-			    so every rail button would move its own highlight and open
-			    nothing — a control that answers a click by doing nothing reads
-			    as broken, not as hidden (Fizzy #2040). */}
+			{/* Simple mode omits the control deck and its collapsed rail. */}
 			{chrome.showControlDeck && (
 				<div
 					ref={sidebarRef}
-					style={
-						sidebarOpen
-							? {
-									width: effectiveSidebarWidth,
-									minWidth: effectiveSidebarWidth,
-									maxWidth: effectiveSidebarWidth,
-								}
-							: { width: 40, minWidth: 40, maxWidth: 40 }
-					}
+					style={deckStyle}
 					className={cn(
-						"relative flex flex-shrink-0",
+						deckLayout.deck,
+						sidebarOpen && deckLayout.open,
+						sidebarOpen &&
+							isMobileViewport &&
+							deckLayout.mobileOpen,
 						sidebarOpen ? "overflow-visible" : "overflow-hidden",
-						isCompactViewport &&
-							sidebarOpen &&
-							"absolute inset-y-0 left-0 z-20 shadow-[0_24px_80px_rgba(0,0,0,0.45)]",
 						!isCompactViewport && !sidebarOpen && "border-r-0",
 						"transition-[width,min-width,max-width] duration-200 ease-out",
 					)}
 				>
 					{sidebarOpen ? (
-						<div className="flex h-full min-w-0 flex-1 flex-col border-r border-border bg-sidebar">
+						<div
+							className={cn(
+								deckLayout.panel,
+								"h-full min-w-0 flex-1 flex-col border-r border-border bg-sidebar",
+							)}
+						>
 							<div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
 								<p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
 									Workspace
@@ -2762,11 +2760,8 @@ function FabricChatContent({
 				</div>
 			)}
 
-			{/* Main Chat Area - fixed minimum width to prevent CLS */}
-			<div
-				className="flex-1 flex flex-col min-w-0"
-				style={{ minWidth: isCompactViewport ? 0 : 400 }}
-			>
+			{/* Main Chat Area */}
+			<div className="flex-1 flex flex-col min-w-0 min-[1180px]:min-w-[400px]">
 				{/* Header */}
 				<header className="no-scrollbar flex items-center gap-2 border-b border-border bg-background px-3 py-1.5 sm:px-4 md:px-5 lg:h-11 lg:py-0 overflow-x-auto overflow-y-hidden">
 					<div className="flex shrink-0 items-center gap-2">
@@ -2895,11 +2890,6 @@ function FabricChatContent({
 												<button
 													type="button"
 													aria-label="Direct"
-													aria-pressed={
-														loomPrefsHydrated &&
-														!useOrchestrator &&
-														!deepResearchEnabled
-													}
 													disabled={
 														engineLockedToConversation
 													}
@@ -2944,11 +2934,6 @@ function FabricChatContent({
 												<button
 													type="button"
 													aria-label="Orchestrator"
-													aria-pressed={
-														loomPrefsHydrated &&
-														useOrchestrator &&
-														!deepResearchEnabled
-													}
 													disabled={
 														engineLockedToConversation
 													}
@@ -2997,10 +2982,6 @@ function FabricChatContent({
 												<button
 													type="button"
 													aria-label="Research"
-													aria-pressed={
-														loomPrefsHydrated &&
-														deepResearchEnabled
-													}
 													disabled={
 														engineLockedToConversation
 													}
@@ -3213,7 +3194,15 @@ function FabricChatContent({
 				)}
 				{/* Chat Area */}
 				<div className="flex-1 min-h-0">
-					{activeConversation && !activeConversation.isOwn ? (
+					{isInstanceLoading ||
+					isInitialChatRestorePending({
+						initialId: initialConversationId,
+						requestedId: conversationIdFromUrl,
+						conversation: activeConversation,
+						engineReady: conversationEngine !== null,
+					}) ? (
+						<ChatRestoreLoading />
+					) : activeConversation && !activeConversation.isOwn ? (
 						/* A conversation another person shared: read-only, with
 						   one way on, a chat of the reader's own. */
 						<SharedSessionView
@@ -3229,11 +3218,9 @@ function FabricChatContent({
 						   - Aggregates findings into structured report
 						*/
 						<DeepResearchInlineChat
-							hasInteracted={deepResearchHasInteracted}
-							query={deepResearchQuery}
 							stream={deepResearchStream}
-							onSend={handleDeepResearchSend}
-							onReset={resetDeepResearch}
+							onSend={deepResearchStream.sendQuery}
+							onReset={handleNewResearch}
 							organizationId={organizationId}
 							reasoningMode={reasoningMode}
 						/>
@@ -3435,251 +3422,6 @@ function FabricChatContent({
 							}
 							initialAttachedFiles={handoffForChat?.attachments}
 						/>
-					)}
-				</div>
-			</div>
-		</div>
-	);
-}
-
-/**
- * DeepResearchInlineChat - Inline deep research UI for the Fabric Loom page
- *
- * Uses the same shared ChatInput component as Direct/Orchestrator modes.
- * Renders research progress and results as chat-style messages in the
- * scrollable area above the input.
- */
-const DEEP_RESEARCH_SUGGESTIONS = [
-	{
-		label: "AI agents & autonomous systems",
-		description:
-			"Multi-agent orchestration, tool use & memory architectures",
-		icon: RobotIcon,
-		iconTone: "border-primary/20 bg-primary/10 text-primary",
-		prompt: "What are the latest developments in AI agents and autonomous systems?",
-	},
-	{
-		label: "RAG application approaches",
-		description: "Hybrid retrieval, reranking & agentic context pipelines",
-		icon: ScanSearch,
-		iconTone:
-			"border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-400",
-		prompt: "Compare different approaches to building RAG applications",
-	},
-	{
-		label: "Open source vs proprietary LLMs",
-		description:
-			"Cost, latency, reasoning benchmarks & governance trade-offs",
-		icon: Scale,
-		iconTone:
-			"border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400",
-		prompt: "Analyze the current state of open source LLMs vs proprietary models",
-	},
-	{
-		label: "Prompt engineering best practices",
-		description: "Structured outputs, evaluation harnesses & guardrails",
-		icon: Sparkles,
-		iconTone:
-			"border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-		prompt: "Research best practices for prompt engineering in production systems",
-	},
-];
-
-interface DeepResearchInlineChatProps {
-	hasInteracted: boolean;
-	query: string;
-	stream: ReturnType<typeof useWorkflowTemplateStream>;
-	onSend: (query: string) => void;
-	onReset: () => void;
-	organizationId?: string;
-	reasoningMode?: ReasoningMode;
-}
-
-function DeepResearchInlineChat({
-	hasInteracted,
-	query,
-	stream,
-	onSend,
-	onReset,
-	organizationId,
-	reasoningMode,
-}: DeepResearchInlineChatProps) {
-	const [inputValue, setInputValue] = useState("");
-	const messagesEndRef = useRef<HTMLDivElement>(null);
-
-	const handleSend = useCallback(() => {
-		const text = inputValue.trim();
-		if (!text || stream.isLoading) {
-			return;
-		}
-		setInputValue("");
-		onSend(text);
-	}, [inputValue, stream.isLoading, onSend]);
-
-	// Auto-scroll to bottom when new content appears
-	useEffect(() => {
-		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-	}, [
-		stream.state.phase,
-		stream.state.subAgentResults.length,
-		stream.hasResults,
-	]);
-
-	return (
-		<div className="flex flex-col h-full">
-			{/* Scrollable message area — same structure as Direct/Orchestrator */}
-			<div className="flex-1 overflow-y-auto">
-				<div className="mx-auto max-w-3xl px-4 py-6">
-					{/* Welcome state — matching Orchestrator's hero layout */}
-					{!hasInteracted && (
-						<div className="flex flex-col items-center justify-center pt-12 pb-8">
-							<div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 shadow-2xs">
-								<Globe className="h-6 w-6 text-primary" />
-							</div>
-							<h2 className="text-2xl font-semibold tracking-tight text-foreground mb-1.5">
-								Deep Research
-							</h2>
-							<p className="text-sm text-muted-foreground max-w-md text-center mb-8">
-								Ask a research question. It will be decomposed,
-								investigated in parallel, and synthesized into a
-								structured report.
-							</p>
-
-							{/* Starter messages — modern vector icons + subtle descriptions */}
-							<div className="grid w-full max-w-2xl gap-2.5 sm:grid-cols-2">
-								{DEEP_RESEARCH_SUGGESTIONS.map((s) => {
-									const SuggestionIcon = s.icon;
-									return (
-										<button
-											key={s.prompt}
-											type="button"
-											onClick={() => {
-												setInputValue("");
-												onSend(s.prompt);
-											}}
-											className="group flex items-start gap-3 rounded-lg border border-border/70 bg-card p-3.5 text-left text-sm shadow-2xs transition-colors hover:border-primary/30 hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-										>
-											<span
-												className={cn(
-													"mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border",
-													s.iconTone,
-												)}
-											>
-												<SuggestionIcon className="size-4" />
-											</span>
-											<span className="min-w-0 flex-1">
-												<span className="block font-medium text-foreground group-hover:text-primary transition-colors leading-snug">
-													{s.label}
-												</span>
-												<span className="mt-0.5 block text-xs text-muted-foreground line-clamp-1">
-													{s.description}
-												</span>
-											</span>
-										</button>
-									);
-								})}
-							</div>
-						</div>
-					)}
-
-					{/* Chat-style messages once research starts */}
-					{hasInteracted && (
-						<div className="space-y-4">
-							{/* User query — styled like a user message bubble */}
-							{query && (
-								<div className="flex justify-end">
-									<div className="max-w-[80%] rounded-lg rounded-tr-md bg-primary/10 px-4 py-3">
-										<p className="text-sm whitespace-pre-wrap">
-											{query}
-										</p>
-									</div>
-								</div>
-							)}
-
-							{/* Assistant response area */}
-							<div className="flex gap-3">
-								<div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
-									<Globe className="h-4 w-4 text-primary" />
-								</div>
-								<div className="min-w-0 flex-1 space-y-4">
-									{/* Progress panel */}
-									{!stream.isComplete && (
-										<WorkflowProgressPanel
-											state={stream.state}
-											progressPercentage={
-												stream.progress.percentage
-											}
-											onClarificationResponse={
-												stream.sendClarificationResponse
-											}
-										/>
-									)}
-
-									{/* Error */}
-									{stream.state.error && (
-										<div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
-											<p className="text-sm text-destructive">
-												{stream.state.error}
-											</p>
-										</div>
-									)}
-
-									{/* Results */}
-									{stream.hasResults &&
-										stream.state.result && (
-											<WorkflowResultViewer
-												result={stream.state.result}
-												instanceId="deep-research-inline"
-												organizationId={organizationId}
-											/>
-										)}
-
-									{/* New Research button after completion */}
-									{stream.isComplete && (
-										<Button
-											variant="outline"
-											size="sm"
-											onClick={onReset}
-											className="mt-2"
-										>
-											<Sparkles className="h-4 w-4 mr-2" />
-											New Research
-										</Button>
-									)}
-								</div>
-							</div>
-						</div>
-					)}
-
-					<div ref={messagesEndRef} />
-				</div>
-			</div>
-
-			{/* Shared ChatInput — same component used by Direct/Orchestrator */}
-			<div className="border-t border-border/60 bg-background/80 px-4 py-3">
-				<div className="mx-auto max-w-3xl space-y-2">
-					<ChatInput
-						value={inputValue}
-						onChange={setInputValue}
-						onSend={handleSend}
-						isLoading={stream.isLoading}
-						disabled={stream.isRunning}
-						placeholder={
-							stream.isRunning
-								? "Research in progress..."
-								: "Ask a research question..."
-						}
-						showAttachButton={false}
-					/>
-					{reasoningMode && reasoningMode !== "balanced" && (
-						<p className="text-[11px] text-muted-foreground text-center">
-							{reasoningMode === "lite" &&
-								"Fast mode — minimal reasoning"}
-							{reasoningMode === "deep" &&
-								"Thorough mode — deep reasoning enabled"}
-							{reasoningMode === "planner" &&
-								"Planner mode — high reasoning enabled"}
-						</p>
 					)}
 				</div>
 			</div>

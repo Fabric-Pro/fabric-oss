@@ -34,8 +34,8 @@ import {
 	useState,
 } from "react";
 import { CodeBlock } from "./code-block";
+import { DeferredResponse as Response } from "./deferred-response";
 import { McpAppFrame } from "./McpAppFrame";
-import { Response } from "./response";
 import {
 	isWebSearchOutput,
 	SearchLoadingState,

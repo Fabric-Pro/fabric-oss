@@ -20,12 +20,11 @@ export default async function Layout({ children }: PropsWithChildren) {
 		redirect("/auth/login");
 	}
 
-	// Forced password rotation (SOC 2 CC6.1). The middleware (proxy.ts) also
-	// redirects here, but it reads the flag from the UNSIGNED `session_data`
-	// cookie, which a user can edit to bypass the gate. This server-side check
-	// uses the DB-backed session (getSession → `disableCookieCache: true`), so a
-	// tampered cookie has no effect. `/change-password` lives outside the `/app`
-	// segment (it is not wrapped by this layout), so this cannot loop.
+	// Forced password rotation (SOC 2 CC6.1). This server-side check uses the
+	// DB-backed session; `getSession` keeps `disableCookieCache: true` as defense
+	// in depth if the global cache setting changes. `/change-password` lives
+	// outside the `/app` segment (it is not wrapped by this layout), so this
+	// cannot loop.
 	if (session.user.mustChangePassword) {
 		redirect("/change-password");
 	}

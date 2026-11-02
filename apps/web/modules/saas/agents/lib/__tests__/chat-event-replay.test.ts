@@ -54,3 +54,19 @@ describe("chat replay acknowledgement", () => {
 		).toThrow("invalid replay cursor");
 	});
 });
+
+it("forgets the cursor and stops committing after live fallback", () => {
+	const replay = createChatEventReplay({
+		turnId: "example-turn",
+		runId: "example-run",
+		sequence: "1",
+	});
+	replay.disable();
+	replay.commit({
+		turnId: "example-turn",
+		runId: "example-run",
+		sequence: "2",
+	});
+	expect(replay.enabled).toBe(false);
+	expect(replay.cursor).toBeUndefined();
+});

@@ -375,6 +375,7 @@ export function StartCodingRunDialog({
 								return (
 									<button
 										key={option.value}
+										aria-pressed={isSelected}
 										type="button"
 										disabled={isLoading}
 										onClick={() =>
@@ -470,20 +471,21 @@ export function StartCodingRunDialog({
 							<div className="flex items-center gap-2">
 								<RefreshCwIcon className="size-3.5 text-primary" />
 								<p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-									When subscription tokens reach quota limit
+									Browser fallback preference
 								</p>
 							</div>
 							<Badge
 								variant="outline"
 								className="rounded-full border-primary/25 bg-primary/5 px-2 py-0.5 text-[10px] text-primary"
 							>
-								Resilient routing
+								Saved preference only
 							</Badge>
 						</div>
 
 						<fieldset className="grid gap-2">
 							<legend className="sr-only">
-								Quota fallback policy
+								Fallback preference (saved in this browser; not
+								applied to execution)
 							</legend>
 							{FABRIC_AGENT_FALLBACK_POLICIES.map((policy) => {
 								const isSelected =

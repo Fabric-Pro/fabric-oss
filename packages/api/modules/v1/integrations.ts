@@ -35,7 +35,10 @@ import {
 import { OAUTH_APP_ROW_NAMES } from "@repo/database/prisma/queries/lib/oauth-app-row";
 import { decryptApiKey } from "@repo/utils";
 import type { Hono } from "hono";
-import { requireScope } from "../external-api/middleware/api-key-auth";
+import {
+	requireScope,
+	requireV1OwnerPermission,
+} from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { badRequest, notFound, ok, resolveV1Context } from "./helpers";
 
@@ -377,6 +380,14 @@ export function registerIntegrationRoutes(
 			if ("error" in ctx) {
 				return c.json({ error: { message: ctx.error } }, ctx.status);
 			}
+			const permissionRefusal = await requireV1OwnerPermission(
+				c,
+				ctx,
+				"integrations:execute",
+			);
+			if (permissionRefusal) {
+				return permissionRefusal;
+			}
 
 			const slug = c.req.param("slug");
 			const operation = c.req.param("operation");
@@ -517,6 +528,14 @@ export function registerIntegrationRoutes(
 			if ("error" in ctx) {
 				return c.json({ error: { message: ctx.error } }, ctx.status);
 			}
+			const permissionRefusal = await requireV1OwnerPermission(
+				c,
+				ctx,
+				"integrations:execute",
+			);
+			if (permissionRefusal) {
+				return permissionRefusal;
+			}
 			const owned = await db.integrationApproval.findFirst({
 				where: {
 					id,
@@ -612,6 +631,14 @@ export function registerIntegrationRoutes(
 			);
 			if ("error" in ctx) {
 				return c.json({ error: { message: ctx.error } }, ctx.status);
+			}
+			const permissionRefusal = await requireV1OwnerPermission(
+				c,
+				ctx,
+				"integrations:execute",
+			);
+			if (permissionRefusal) {
+				return permissionRefusal;
 			}
 			const owned = await db.integrationApproval.findFirst({
 				where: {

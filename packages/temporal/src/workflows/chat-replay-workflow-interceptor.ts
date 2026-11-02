@@ -7,8 +7,9 @@ import type {
 	WorkflowOutboundCallsInterceptor,
 } from "@temporalio/workflow";
 import { defineQuery, setHandler, workflowInfo } from "@temporalio/workflow";
+import { chatReplayProducerActivities } from "../lib/chat-replay-producers";
 
-/** Query-only state: rebuilt from activity results without scheduling commands. */
+/** Integrity state rebuilt from recorded activity outcomes without adding workflow commands. */
 export const interceptors = (): WorkflowInterceptors => {
 	let unavailable = false;
 	const enabled = () =>
@@ -56,9 +57,18 @@ export const interceptors = (): WorkflowInterceptors => {
 							}
 							return value;
 						}
+						if (
+							enabled() &&
+							chatReplayProducerActivities.has(input.activityType)
+						) {
+							unavailable = true;
+						}
 						return result;
 					} catch (error) {
-						if (enabled()) {
+						if (
+							enabled() &&
+							chatReplayProducerActivities.has(input.activityType)
+						) {
 							unavailable = true;
 						}
 						throw error;

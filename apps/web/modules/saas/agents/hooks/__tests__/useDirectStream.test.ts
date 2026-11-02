@@ -618,3 +618,34 @@ describe("useDirectStream — model override", () => {
 		});
 	});
 });
+
+it("preserves contextInfo identity across caption updates but replaces it for text", async () => {
+	const { response, enqueueLine, enqueueDone } = makeSseResponse();
+	vi.spyOn(global, "fetch").mockResolvedValue(response as Response);
+	const { result } = renderHook(() => useDirectStream());
+	let sending: Promise<string | null> | undefined;
+	act(() => {
+		sending = result.current.sendMessage("hi");
+	});
+	await act(async () => {
+		enqueueLine('data: {"type":"started","executionId":"example-run"}');
+	});
+	const before = result.current.contextInfo;
+	await act(async () => {
+		enqueueLine('data: {"type":"progress","message":"Working"}');
+	});
+	expect(result.current.messages[1].statusLabel).toBe("Working");
+	expect(result.current.contextInfo).toBe(before);
+	await act(async () => {
+		enqueueLine('data: {"type":"text","content":"longer response"}');
+	});
+	expect(result.current.contextInfo).not.toBe(before);
+	expect(result.current.contextInfo.estimatedTokens).toBeGreaterThan(
+		before.estimatedTokens,
+	);
+	await act(async () => {
+		enqueueLine('data: {"type":"done"}');
+		enqueueDone();
+		await sending;
+	});
+});

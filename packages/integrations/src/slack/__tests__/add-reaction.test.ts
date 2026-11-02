@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const findFirstTrigger = vi.fn();
 const findFirstIntegration = vi.fn();
+const updateIntegration = vi.fn();
 const canUseWorkflowIntegrations = vi.fn();
 
 vi.mock("@repo/database", () => ({
@@ -13,12 +14,14 @@ vi.mock("@repo/database", () => ({
 		},
 		workflowIntegration: {
 			findFirst: (...args: unknown[]) => findFirstIntegration(...args),
+			updateMany: (...args: unknown[]) => updateIntegration(...args),
 		},
 	},
 }));
 
 vi.mock("@repo/utils", () => ({
 	decryptApiKey: (v: string) => v,
+	encryptApiKey: (v: string) => `encrypted:${v}`,
 }));
 
 import { addSlackReaction } from "../add-reaction";
@@ -30,6 +33,7 @@ describe("addSlackReaction", () => {
 	beforeEach(() => {
 		findFirstTrigger.mockReset();
 		findFirstIntegration.mockReset();
+		updateIntegration.mockReset().mockResolvedValue({ count: 1 });
 		canUseWorkflowIntegrations.mockReset().mockResolvedValue(true);
 		fetchMock.mockReset();
 		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
@@ -44,7 +48,10 @@ describe("addSlackReaction", () => {
 			deployment: { id: "dep-1" },
 		});
 		findFirstIntegration.mockResolvedValue({
-			credentials: JSON.stringify({ access_token: "xoxb-test" }),
+			credentials: JSON.stringify({
+				access_token: "xoxb-test",
+				team_id: "T1",
+			}),
 		});
 		fetchMock.mockResolvedValue({
 			ok: true,
@@ -81,7 +88,10 @@ describe("addSlackReaction", () => {
 	it("returns error result when Slack responds with missing_scope", async () => {
 		findFirstTrigger.mockResolvedValue({ deployment: { id: "dep-1" } });
 		findFirstIntegration.mockResolvedValue({
-			credentials: JSON.stringify({ access_token: "xoxb-stale" }),
+			credentials: JSON.stringify({
+				access_token: "xoxb-stale",
+				team_id: "T1",
+			}),
 		});
 		fetchMock.mockResolvedValue({
 			ok: true,
@@ -100,6 +110,71 @@ describe("addSlackReaction", () => {
 		expect(result.error).toBe("missing_scope");
 	});
 
+	it("reacts with a legacy connection after verifying and storing its team", async () => {
+		findFirstTrigger.mockResolvedValue({ deployment: { id: "dep-1" } });
+		findFirstIntegration.mockResolvedValue({
+			id: "connection-example",
+			userId: "u1",
+			organizationId: "o1",
+			credentials: JSON.stringify({ access_token: "xoxb-test" }),
+		});
+		fetchMock
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ ok: true, team_id: "T1" }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ ok: true }),
+			});
+		const result = await addSlackReaction({
+			teamId: "T1",
+			channel: "C1",
+			timestamp: "1700000000.000100",
+			name: "eyes",
+			userId: "u1",
+			organizationId: "o1",
+		});
+		expect(result.ok).toBe(true);
+		expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+			"https://slack.com/api/auth.test",
+			"https://slack.com/api/reactions.add",
+		]);
+		expect(updateIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					id: "connection-example",
+					credentials: '{"access_token":"xoxb-test"}',
+				},
+			}),
+		);
+	});
+
+	it("refuses a legacy connection when auth.test returns no team", async () => {
+		findFirstTrigger.mockResolvedValue({ deployment: { id: "dep-1" } });
+		findFirstIntegration.mockResolvedValue({
+			id: "connection-example",
+			credentials: JSON.stringify({ access_token: "xoxb-test" }),
+		});
+		fetchMock.mockResolvedValue({
+			ok: true,
+			json: async () => ({ ok: true }),
+		});
+		const result = await addSlackReaction({
+			teamId: "T1",
+			channel: "C1",
+			timestamp: "1700000000.000100",
+			name: "eyes",
+			userId: "u1",
+			organizationId: "o1",
+		});
+		expect(result.ok).toBe(false);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0][0]).toBe(
+			"https://slack.com/api/auth.test",
+		);
+	});
+
 	it("returns error result when no Slack integration exists for the team", async () => {
 		findFirstTrigger.mockResolvedValue(null);
 
@@ -116,10 +191,56 @@ describe("addSlackReaction", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it("refuses a trigger whose connection belongs to a different team", async () => {
+		findFirstTrigger.mockResolvedValue({ deployment: { id: "dep-1" } });
+		findFirstIntegration.mockResolvedValue({
+			credentials: JSON.stringify({
+				access_token: "xoxb-test",
+				team_id: "T0OTHER",
+			}),
+		});
+		const result = await addSlackReaction({
+			teamId: "T1",
+			channel: "C1",
+			timestamp: "1700000000.000100",
+			name: "eyes",
+			userId: "u1",
+			organizationId: "o1",
+		});
+		expect(result.ok).toBe(false);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses malformed team and channel IDs before calling Slack", async () => {
+		findFirstTrigger.mockResolvedValue({ deployment: { id: "dep-1" } });
+		findFirstIntegration.mockResolvedValue({
+			credentials: JSON.stringify({
+				access_token: "xoxb-test",
+				team_id: "T1",
+			}),
+		});
+		for (const ids of [
+			{ teamId: "T1.*", channel: "C1" },
+			{ teamId: "T1", channel: "C1.*" },
+		]) {
+			const result = await addSlackReaction({
+				...ids,
+				timestamp: "1700000000.000100",
+				name: "eyes",
+				userId: "u1",
+			});
+			expect(result.ok).toBe(false);
+		}
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
 	it("falls back to apiKey when access_token is absent in credentials", async () => {
 		findFirstTrigger.mockResolvedValue({ deployment: { id: "dep-1" } });
 		findFirstIntegration.mockResolvedValue({
-			credentials: JSON.stringify({ apiKey: "xoxb-legacy" }),
+			credentials: JSON.stringify({
+				apiKey: "xoxb-legacy",
+				team_id: "T1",
+			}),
 		});
 		fetchMock.mockResolvedValue({
 			ok: true,
@@ -171,7 +292,10 @@ describe("addSlackReaction", () => {
 	it("reads a personal connection when no organization is named", async () => {
 		findFirstTrigger.mockResolvedValue({ deployment: { id: "dep-1" } });
 		findFirstIntegration.mockResolvedValue({
-			credentials: JSON.stringify({ access_token: "xoxb-personal" }),
+			credentials: JSON.stringify({
+				access_token: "xoxb-personal",
+				team_id: "T1",
+			}),
 		});
 		fetchMock.mockResolvedValue({
 			ok: true,

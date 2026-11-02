@@ -316,7 +316,7 @@ export function ScanFindingsList({
 				// Also refresh the roadmap/board AND any open work-item detail so
 				// every view reflects the new blocked state (chip, filter, badge).
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.key(),
+					queryKey: orpc.projects.stories.board.key(),
 				});
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.stories.get.key(),

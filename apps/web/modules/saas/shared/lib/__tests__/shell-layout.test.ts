@@ -112,9 +112,8 @@ describe("isFullBleedRoute", () => {
 	it.each([
 		`${org}/projects/proj-1/documents/doc-1`,
 		`${org}/projects/proj-1/stories/story-1`,
-		`${org}/agents/document-generator`,
-		`${org}/agents/task-planner`,
 		`${org}/agents/fabric-ai`,
+		`${org}/agents/agent-1/chat`,
 		`${org}/agents/agent-1/try`,
 		`${org}/agents/agent-1/enhance`,
 		`${org}/prompts/prompt-1/enhance`,

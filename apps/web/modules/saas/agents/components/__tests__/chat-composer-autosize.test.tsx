@@ -35,9 +35,17 @@ vi.mock("../FabricChat/shared/AgentVersionIdentity", () => ({
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({ organizationId: "org-1" }),
 }));
+// The CUGA chat reads its transport's rollout flag; off, it keeps the relay.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
 
 vi.mock("@ai-sdk/react", () => ({
 	useChat: () => ({ messages: [], status: "ready", sendMessage: vi.fn() }),
+}));
+// The Sidekick's transport reads a feature flag; no provider is mounted here.
+vi.mock("@saas/agents/hooks/useRuntimeChatTransport", () => ({
+	useRuntimeChatTransport: () => "legacy",
 }));
 vi.mock("@saas/ai/hooks/useLimitToast", () => ({
 	useLimitToast: () => vi.fn(),

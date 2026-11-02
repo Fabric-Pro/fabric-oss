@@ -194,6 +194,10 @@ export const orchestratorStreamEventSchema = z.discriminatedUnion("type", [
 		clarificationId: z.string(),
 	}),
 	z.object({
+		type: z.literal("replay_unavailable"),
+		reason: z.literal("query_not_registered").optional(),
+	}),
+	z.object({
 		type: z.literal("stream_timeout"),
 		executionId: z.string().optional(),
 		message: z.string().optional(),

@@ -529,7 +529,9 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 
 		try {
 			await temporal.workflow.start(
-				"codingRunWorkflow",
+				nativeExecutionMetadata?.executionTarget?.connectionId
+					? "remoteCodingRunWorkflow"
+					: "codingRunWorkflow",
 				withCorrelationMemo({
 					taskQueue: "agents",
 					workflowId,

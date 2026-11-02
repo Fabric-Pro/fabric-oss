@@ -69,7 +69,7 @@ export function WeaveDashboard({
 
 	// Fetch features (user stories) for linking plans
 	const { data: storiesData } = useQuery(
-		orpc.projects.stories.list.queryOptions({
+		orpc.projects.stories.board.queryOptions({
 			input: { projectId, organizationId: organizationId ?? null },
 		}),
 	);

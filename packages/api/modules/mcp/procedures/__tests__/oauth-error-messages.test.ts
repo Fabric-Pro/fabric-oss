@@ -16,6 +16,7 @@ vi.mock("@repo/database", () => ({
 	// The config's server is one its tenant may use (see the tenant tests).
 	getMcpServerForTenant: async () => ({ isSystemProvided: true }),
 	clearRefreshFailures: vi.fn(),
+	consumeOauthState: vi.fn(async () => true),
 	createOauthState: vi.fn(),
 	db: {},
 	deleteOauthState: vi.fn(),
@@ -59,6 +60,7 @@ vi.mock("../../../../orpc/procedures", () => {
 	});
 	return {
 		publicProcedure: chainable,
+		protectedProcedure: chainable,
 		tenantProtectedProcedure: chainable,
 		requirePermission: () => () => ({}),
 		Permissions: {

@@ -1,6 +1,7 @@
 "use client";
 
 import { currentAnswerReply } from "@repo/utils/publishing-restrictions";
+import { useLocationHash } from "@shared/hooks/use-location-hash";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -341,8 +342,8 @@ export function TopicQuestionsPanel({
 	useScrollToQuestion(isActive && !isLoading);
 
 	/**
-	 * Open the collapsed group that holds the linked question — once, on
-	 * arrival.
+	 * Open the collapsed group that holds the linked question on arrival,
+	 * including a new fragment while this panel stays mounted.
 	 *
 	 * Answered and Possibly resolved start collapsed, so a card in either is not
 	 * in the page and the scroll above finds nothing. This opens the group the
@@ -363,14 +364,16 @@ export function TopicQuestionsPanel({
 	 * `isLoading` false whenever a cached list exists. The fragment check is
 	 * `useScrollToQuestion`'s, so the two agree on what names a question.
 	 */
+	const hash = useLocationHash();
 	const arrival = useRef({ hash: "", done: false });
 	useEffect(() => {
-		if (!isActive || isLoading || typeof window === "undefined") {
-			return;
-		}
-		const hash = window.location.hash;
 		const id = hash.slice(3);
 		if (!hash.startsWith("#q-") || !/^[0-9a-z_-]+$/i.test(id)) {
+			// A later link to the same question starts a fresh arrival.
+			arrival.current = { hash: "", done: false };
+			return;
+		}
+		if (!isActive || isLoading) {
 			return;
 		}
 		if (arrival.current.hash !== hash) {
@@ -395,7 +398,7 @@ export function TopicQuestionsPanel({
 		if (linked && !isFetching) {
 			arrival.current.done = true;
 		}
-	}, [isActive, isLoading, isFetching, threads]);
+	}, [isActive, isLoading, isFetching, threads, hash]);
 
 	const assignableMembers = useMemo<AssignableMember[]>(() => {
 		const rows = members.map((m) => ({

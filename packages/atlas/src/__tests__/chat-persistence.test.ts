@@ -101,6 +101,7 @@ import { AtlasService } from "../service";
 const ctx = { userId: "user-1", organizationId: "org-1" };
 
 interface StreamTextOptions {
+	abortSignal?: AbortSignal;
 	messages: { role: string; content: string }[];
 	onEnd: (event: {
 		text: string;
@@ -192,6 +193,15 @@ async function consumeAll(stream: AsyncGenerator<string>): Promise<string> {
 }
 
 describe("chat — user turn persisted before streaming", () => {
+	it("passes the caller's abort signal to the model stream without changing legacy calls", async () => {
+		const service = new AtlasService(ctx);
+		const controller = new AbortController();
+		await service.chat({ ...chatInput, abortSignal: controller.signal });
+		expect(streamTextOptions.abortSignal).toBe(controller.signal);
+		await service.chat(chatInput);
+		expect(streamTextOptions.abortSignal).toBeUndefined();
+	});
+
 	it("appends the user message BEFORE streamText is invoked", async () => {
 		const service = new AtlasService(ctx);
 		await service.chat(chatInput);

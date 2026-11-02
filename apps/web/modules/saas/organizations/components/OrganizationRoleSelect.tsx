@@ -7,6 +7,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
+import { useTranslations } from "next-intl";
 
 export function OrganizationRoleSelect({
 	value,
@@ -19,6 +20,7 @@ export function OrganizationRoleSelect({
 	disabled?: boolean;
 	excludeRoles?: OrganizationMemberRole[];
 }) {
+	const t = useTranslations();
 	const organizationMemberRoles = useOrganizationMemberRoles();
 
 	const roleOptions = Object.entries(organizationMemberRoles)
@@ -27,14 +29,22 @@ export function OrganizationRoleSelect({
 			label,
 		}))
 		.filter(
+			// The current value always stays: Radix renders an empty trigger for
+			// a value no option matches, so excluding it would blank the row.
 			(option) =>
+				option.value === value ||
 				!excludeRoles?.includes(option.value as OrganizationMemberRole),
 		);
+	const hasKnownRole = roleOptions.some((option) => option.value === value);
 
 	return (
-		<Select value={value} onValueChange={onSelect} disabled={disabled}>
+		<Select
+			value={hasKnownRole ? value : ""}
+			onValueChange={onSelect}
+			disabled={disabled}
+		>
 			<SelectTrigger>
-				<SelectValue />
+				<SelectValue placeholder={t("organizations.roles.none")} />
 			</SelectTrigger>
 			<SelectContent>
 				{roleOptions.map((option) => (

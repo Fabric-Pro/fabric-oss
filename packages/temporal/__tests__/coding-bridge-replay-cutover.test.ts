@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { bundleWorkflowCode, Worker } from "@temporalio/worker";
 import { beforeAll, describe, expect, it } from "vitest";
+import { withCodingLifecycleActivities } from "./fixtures/coding-lifecycle-activities";
 
 let workflowBundle: Awaited<ReturnType<typeof bundleWorkflowCode>>;
 beforeAll(async () => {
@@ -55,7 +56,7 @@ describe("native bridge cutover history compatibility", () => {
 					taskQueue: "example-cutover-queue",
 					identity: "example-worker",
 					workflowBundle,
-					activities: {
+					activities: withCodingLifecycleActivities({
 						updateCodingRunStatusActivity: async () => {},
 						addCodingRunEventActivity: async () => {},
 						buildImplementationPrompt: async () => "Synthetic work",
@@ -80,7 +81,7 @@ describe("native bridge cutover history compatibility", () => {
 						}),
 						cleanupWeaveResourcesActivity: async () => {},
 						cancelExecutionSession: async () => {},
-					},
+					}),
 				});
 				const handle = await env.client.workflow.start(
 					"codingRunWorkflow",
@@ -137,7 +138,7 @@ it("cancels native creation before dispatching a prompt and replays the cancella
 			connection: env.nativeConnection,
 			workflowBundle,
 			taskQueue: workflowId,
-			activities: {
+			activities: withCodingLifecycleActivities({
 				buildImplementationPrompt: async () => "Synthetic work",
 				createExecutionSession: async () => {
 					await env.client.workflow
@@ -163,7 +164,7 @@ it("cancels native creation before dispatching a prompt and replays the cancella
 					destroyed: true,
 					alreadyTerminal: false,
 				}),
-			},
+			}),
 		});
 		const handle = await env.client.workflow.start("codingRunWorkflow", {
 			workflowId,
@@ -197,6 +198,174 @@ it("cancels native creation before dispatching a prompt and replays the cancella
 			await handle.fetchHistory(),
 			workflowId,
 		);
+	} finally {
+		await env.teardown();
+	}
+}, 60_000);
+
+it.each(["not-created", "not-created-cancelled", "ambiguous"])(
+	"replays the native creation failure history: %s",
+	async (scenario) => {
+		const { ApplicationFailure } = await import("@temporalio/common");
+		const env = await TestWorkflowEnvironment.createTimeSkipping();
+		const statuses: Array<{ status: string; data?: unknown }> = [];
+		const workflowId = `example-creation-${scenario}`;
+		try {
+			const worker = await Worker.create({
+				connection: env.nativeConnection,
+				workflowBundle,
+				taskQueue: workflowId,
+				activities: withCodingLifecycleActivities({
+					buildImplementationPrompt: async () => "Implement",
+					createExecutionSession: async () => {
+						if (scenario === "not-created-cancelled") {
+							await env.client.workflow
+								.getHandle(workflowId)
+								.signal("cancelCodingRun");
+						}
+						throw ApplicationFailure.nonRetryable(
+							"Example creation failed",
+							scenario === "ambiguous"
+								? "Error"
+								: "CODING_SESSION_NOT_CREATED",
+						);
+					},
+					updateCodingRunStatusActivity: async (value: {
+						status: string;
+					}) => {
+						statuses.push(value);
+					},
+					addCodingRunEventActivity: async () => {},
+					cleanupWeaveResourcesActivity: async () => ({
+						destroyed: true,
+						alreadyTerminal: true,
+					}),
+				}),
+			});
+			const handle = await env.client.workflow.start(
+				"codingRunWorkflow",
+				{
+					workflowId,
+					taskQueue: workflowId,
+					args: [
+						{
+							codingRunId: "example-run",
+							projectId: "example-project",
+							storyId: "example-story",
+							userId: "example-user",
+							organizationId: "example-org",
+							provider: "BACKGROUND_AGENTS",
+							repositoryOwner: "example-org",
+							repositoryName: "example-repo",
+							storyTitle: "Example",
+							fabricAgentsBridgeEnabled: true,
+						},
+					],
+				},
+			);
+			await worker.runUntil(handle.result());
+			expect(statuses.at(-1)?.status).toBe(
+				scenario === "ambiguous"
+					? "AWAITING_REVIEW"
+					: scenario === "not-created-cancelled"
+						? "CANCELLED"
+						: "FAILED",
+			);
+			const history = await handle.fetchHistory();
+			const create = history.events?.find(
+				(event) =>
+					event.activityTaskScheduledEventAttributes?.activityType
+						?.name === "createExecutionSession",
+			);
+			expect(
+				create?.activityTaskScheduledEventAttributes?.retryPolicy
+					?.maximumAttempts,
+			).toBe(1);
+			await Worker.runReplayHistory(
+				{ workflowBundle },
+				history,
+				workflowId,
+			);
+		} finally {
+			await env.teardown();
+		}
+	},
+	60_000,
+);
+
+it("classifies the installed SDK's unregistered remote creation failure and replays its bounded retries", async () => {
+	const env = await TestWorkflowEnvironment.createTimeSkipping();
+	const statuses: Array<{ status: string; data?: { lastError?: string } }> =
+		[];
+	const workflowId = "example-unregistered-remote-create";
+	try {
+		const worker = await Worker.create({
+			connection: env.nativeConnection,
+			workflowBundle,
+			taskQueue: workflowId,
+			activities: withCodingLifecycleActivities({
+				buildImplementationPrompt: async () => "Implement",
+				updateCodingRunStatusActivity: async (input) => {
+					statuses.push(input);
+				},
+				addCodingRunEventActivity: async () => {},
+				cleanupRemoteWeaveResourcesActivity: async () => ({
+					destroyed: true,
+					alreadyTerminal: true,
+				}),
+			}),
+		});
+		const handle = await env.client.workflow.start(
+			"remoteCodingRunWorkflow",
+			{
+				workflowId,
+				taskQueue: workflowId,
+				args: [
+					{
+						codingRunId: "example-run",
+						projectId: "example-project",
+						storyId: "example-story",
+						userId: "example-user",
+						organizationId: "example-org",
+						provider: "BACKGROUND_AGENTS",
+						repositoryOwner: "example-org",
+						repositoryName: "example-repo",
+						storyTitle: "Example",
+						fabricAgentsBridgeEnabled: true,
+						providerMetadata: {
+							executionRuntime: "fabric-agent-server",
+							executionTarget: {
+								connectionId: "example-connection",
+							},
+						},
+					},
+				],
+			},
+		);
+		expect(await worker.runUntil(handle.result())).toMatchObject({
+			status: "failed",
+		});
+		expect(statuses.at(-1)).toMatchObject({
+			status: "FAILED",
+			data: { lastError: expect.stringContaining("not created") },
+		});
+		expect(statuses.map((value) => value.status)).not.toContain(
+			"AWAITING_REVIEW",
+		);
+		const history = await handle.fetchHistory();
+		const creates = history.events?.filter(
+			(event) =>
+				event.activityTaskScheduledEventAttributes?.activityType
+					?.name === "createRemoteExecutionSession",
+		);
+		expect(creates).toHaveLength(3);
+		for (const event of creates ?? []) {
+			expect(
+				event.activityTaskScheduledEventAttributes?.retryPolicy
+					?.maximumAttempts,
+			).toBe(1);
+		}
+		await Worker.runReplayHistory({ workflowBundle }, history, workflowId);
 	} finally {
 		await env.teardown();
 	}

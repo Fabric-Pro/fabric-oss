@@ -1,3 +1,7 @@
+import {
+	confluencePageContentProcedure,
+	confluencePagesProcedure,
+} from "./procedures/confluence-pages";
 import { getRecentSlackMessagesProcedure } from "./procedures/get-recent-slack-messages";
 import { getRecentTeamsMessagesProcedure } from "./procedures/get-recent-teams-messages";
 import { getSlackContextProcedure } from "./procedures/get-slack-context";
@@ -9,6 +13,10 @@ import { genericOAuthProcedures } from "./procedures/oauth";
 import { getTeamsEventsStatusProcedure } from "./procedures/teams-events";
 
 export const integrationsRouter = {
+	confluence: {
+		pages: confluencePagesProcedure,
+		pageContent: confluencePageContentProcedure,
+	},
 	github: githubOAuthProcedures,
 	gitlab: {
 		...gitlabOAuthProcedures,

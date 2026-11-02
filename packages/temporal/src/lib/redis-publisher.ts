@@ -14,6 +14,7 @@ import {
 
 import {
 	appendConversationTurnEventFromWorker,
+	CHAT_REPLAY_UNAVAILABLE_SOURCE_KEY,
 	ChatEventReplayError,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -202,6 +203,10 @@ export interface ExecutionEvent<Name extends string = string> {
 const replayQueues = new WeakMap<Context, Promise<void>>();
 const replayQueueSizes = new WeakMap<Context, number>();
 const MAX_PENDING_REPLAY_EVENTS = 32;
+const replayLiveEvents = new WeakMap<
+	Context,
+	Set<(metadata: Record<string, unknown>) => Promise<void>>
+>();
 const replayOrdinals = new WeakMap<Context, number>();
 const replayFailures = new Map<
 	string,
@@ -317,6 +322,21 @@ function queueReplayEvent<const Name extends string>(
 	if (!workflow) {
 		return publishEvent(executionId, event);
 	}
+	let liveEvents = replayLiveEvents.get(context);
+	if (!liveEvents) {
+		liveEvents = new Set();
+		replayLiveEvents.set(context, liveEvents);
+	}
+	const pendingLive = liveEvents;
+	let livePublication: Promise<void> | undefined;
+	const publishLive = (metadata: Record<string, unknown>) => {
+		livePublication ??= publishEvent(executionId, {
+			...event,
+			...metadata,
+		}).finally(() => pendingLive.delete(publishLive));
+		return livePublication;
+	};
+	pendingLive.add(publishLive);
 	const queueSize = replayQueueSizes.get(context) ?? 0;
 	if (queueSize >= MAX_PENDING_REPLAY_EVENTS) {
 		markExecutionReplayUnavailable(context);
@@ -324,7 +344,13 @@ function queueReplayEvent<const Name extends string>(
 			expiresAt: Date.now() + 24 * 60 * 60 * 1000,
 			nextMarkerAttemptAt: 0,
 		});
-		return Promise.resolve();
+		// Release the waiting live payloads in admission order; the journal queue
+		// may still be blocked on its first database write.
+		return Promise.all(
+			[...pendingLive].map((publish) =>
+				publish({ replayUnavailable: true }),
+			),
+		).then(() => {});
 	}
 	replayQueueSizes.set(context, queueSize + 1);
 	const ordinal = replayOrdinals.get(context) ?? 0;
@@ -344,7 +370,7 @@ function queueReplayEvent<const Name extends string>(
 				appendConversationTurnEventFromWorker({
 					executionId,
 					runId: workflow.runId,
-					sourceKey: "replay-unavailable",
+					sourceKey: CHAT_REPLAY_UNAVAILABLE_SOURCE_KEY,
 					event: "execution.replay_unavailable",
 					data: {
 						message:
@@ -360,10 +386,7 @@ function queueReplayEvent<const Name extends string>(
 							Date.now() + RETRY_BACKOFF_MS;
 						await markUnavailable();
 					}
-					await publishEvent(executionId, {
-						...event,
-						replayUnavailable: true,
-					});
+					await publishLive({ replayUnavailable: true });
 					return;
 				}
 				const eventCursor = await appendReplayEvent({
@@ -389,7 +412,7 @@ function queueReplayEvent<const Name extends string>(
 				);
 				metadata = { replayUnavailable: true };
 			}
-			await publishEvent(executionId, { ...event, ...metadata });
+			await publishLive(metadata);
 		})
 		.finally(() => {
 			replayQueueSizes.set(

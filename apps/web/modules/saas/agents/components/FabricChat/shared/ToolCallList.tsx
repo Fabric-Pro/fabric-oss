@@ -21,7 +21,8 @@ import {
 	ToolInput,
 	ToolOutput,
 } from "../../../../../../components/ai-elements/tool";
-import { ChartCard, isChartArtifact } from "../cards/ChartCard";
+import { isChartArtifact } from "../cards/chart-artifact";
+import { DeferredChartCard as ChartCard } from "../cards/DeferredChartCard";
 import type { ToolCallItem } from "./types";
 
 export interface ToolCallListProps {

@@ -72,6 +72,7 @@ export async function observeResearchStream(
 			executionId: string,
 			signal: AbortSignal,
 			afterEvent?: ChatEventCursor,
+			eventReplay?: boolean,
 		) => Promise<Response>;
 	},
 ): Promise<void> {
@@ -95,6 +96,7 @@ export async function observeResearchStream(
 					executionId,
 					signal,
 					replay.cursor,
+					replay.enabled,
 				);
 				signal.throwIfAborted();
 				if (!response.ok) {
@@ -117,6 +119,9 @@ export async function observeResearchStream(
 				readChunk: (reader) => readChunk(reader, signal),
 				onEvent: (event) => {
 					signal.throwIfAborted();
+					if (event.type === "replay_unavailable") {
+						replay.disable();
+					}
 					if (!replay.accept(event.eventCursor)) {
 						return;
 					}

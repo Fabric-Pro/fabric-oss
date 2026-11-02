@@ -21,7 +21,11 @@ import {
 import { logger } from "@repo/logs";
 import { sendEmail } from "@repo/mail";
 import { decryptApiKey, toAbsoluteUrl } from "@repo/utils";
-import { getUnsafeUrlReason } from "@repo/utils/url-security";
+import {
+	getBlockedOutboundReason,
+	getUnsafeUrlReason,
+	safeFetchOutbound,
+} from "@repo/utils/url-security";
 
 export type NotificationDeliveryActivityInput = {
 	notificationId: string;
@@ -283,12 +287,10 @@ export async function sendNotificationWebhookActivity(
 
 	const url = decryptApiKey(prefs.encryptedWebhookUrl);
 
-	// SSRF guard (consistent with the repo's other user-URL outbound paths via
-	// @repo/utils): public http(s) is allowed, but loopback/private/link-local
-	// hosts and cloud-metadata endpoints (169.254.169.254, metadata.*) are
-	// rejected. An unsafe URL is a permanent misconfiguration, so we log + give
-	// up rather than throwing (which would trigger pointless retries). This does
-	// not affect the other channels — the workflow fans out via allSettled.
+	// Reject unsafe URL text before building the signed request. The outbound
+	// guard below also validates every DNS answer in the socket lookup used for
+	// the connection and refuses redirects. A blocked target is a permanent
+	// misconfiguration, so it settles without a Temporal retry.
 	const unsafeReason = getUnsafeUrlReason(url);
 	if (unsafeReason) {
 		logger.warn(
@@ -321,17 +323,30 @@ export async function sendNotificationWebhookActivity(
 
 	let response: Response;
 	try {
-		response = await fetch(url, {
+		response = await safeFetchOutbound(url, {
 			method: "POST",
 			headers,
 			body,
-			// Don't follow redirects — a redirect to an internal host would
-			// bypass the SSRF check above. Cap the request so a slow endpoint
-			// can't hold the activity slot until the Temporal timeout fires.
+			// The guard keeps redirects fail-closed. Cap the request so a slow
+			// endpoint cannot hold the activity slot until Temporal times out.
 			redirect: "error",
 			signal: AbortSignal.timeout(10_000),
 		});
 	} catch (error) {
+		const blockedReason = getBlockedOutboundReason(error);
+		if (blockedReason) {
+			logger.warn(
+				{
+					channel: "webhook",
+					notificationId: notification.id,
+					type: notification.type,
+					reason: blockedReason,
+					timestamp: new Date().toISOString(),
+				},
+				"[notification-delivery] webhook blocked — unsafe target URL",
+			);
+			return { delivered: false, reason: "unsafe-url" };
+		}
 		logger.warn(
 			{
 				channel: "webhook",

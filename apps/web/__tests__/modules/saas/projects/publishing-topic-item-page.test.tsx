@@ -4582,3 +4582,82 @@ it("Edit text marks the displayed Advanced format read", () => {
 		expect.objectContaining({ postType: "BLOG_POST" }),
 	);
 });
+
+it.each(["", "mode=simple"])(
+	"same-topic soft question navigation respects explicit Simple (%s)",
+	(params) => {
+		navigation.params = "";
+		window.history.replaceState(null, "", window.location.pathname);
+		const view = renderPage();
+		expect(screen.getByRole("button", { name: "simple" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		window.history.pushState(null, "", "#q-example-linked");
+		navigation.params = params;
+		view.rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+		expect(
+			screen.getByRole("button", {
+				name: params ? "simple" : "advanced",
+			}),
+		).toHaveAttribute("aria-pressed", "true");
+		if (!params) {
+			expect(
+				screen.getByRole("tab", { name: /Summary & Questions/ }),
+			).toHaveAttribute("aria-selected", "true");
+		}
+	},
+);
+
+it("repeat question arrival after changing view opens Advanced again", () => {
+	navigation.params = "";
+	window.history.pushState(null, "", "#q-example-linked");
+	const view = renderPage();
+	expect(screen.getByRole("button", { name: "advanced" })).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	fireEvent.click(screen.getByRole("button", { name: "simple" }));
+	// The history mock updates params but does not update the browser URL.
+	const target = vi
+		.mocked(window.history.replaceState)
+		.mock.calls.at(-1)?.[2];
+	window.history.pushState(null, "", String(target));
+	view.rerender(
+		<TopicItemPage
+			projectId="proj-1"
+			topicId="topic-1"
+			organizationId={null}
+			canEdit
+		/>,
+	);
+	expect(window.location.hash).toBe("");
+	expect(screen.getByRole("button", { name: "simple" })).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	window.history.pushState(null, "", "#q-example-linked");
+	navigation.params = "";
+	view.rerender(
+		<TopicItemPage
+			projectId="proj-1"
+			topicId="topic-1"
+			organizationId={null}
+			canEdit
+		/>,
+	);
+	expect(screen.getByRole("button", { name: "advanced" })).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	expect(
+		screen.getByRole("tab", { name: /Summary & Questions/ }),
+	).toHaveAttribute("aria-selected", "true");
+});

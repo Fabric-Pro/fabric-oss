@@ -311,12 +311,13 @@ async function applyProgress(
 	handle: { query: <T>(name: string) => Promise<T> },
 	translator: TurnTranslator,
 ): Promise<void> {
+	translator.beginPoll();
 	for (const activity of raw.pendingActivities ?? []) {
 		const details = decodeHeartbeatDetails<ActivityHeartbeatDetails>(
 			activity.heartbeatDetails,
 		);
 		if (details) {
-			translator.apply(details);
+			translator.apply(details, "heartbeat");
 		}
 	}
 	const progress = await handle

@@ -140,8 +140,8 @@ export const STEP_UP_RESTORABLE_FAILURE_CODES = [
  */
 export interface StepUpGrantStore {
 	/**
-	 * Whether this account has an ACTIVE second factor, read fresh from the
-	 * database rather than from the (cookie-cacheable) session user.
+	 * Whether this account has an ACTIVE second factor, read independently from
+	 * the database rather than relying only on the resolved session user.
 	 *
 	 * True iff `user.twoFactorEnabled` is set OR a `two_factor` row exists for
 	 * the user with `verified: true`. The OR is load-bearing in both directions,
@@ -586,11 +586,9 @@ export function createPrismaStepUpGrantStore(
 ): StepUpGrantStore {
 	return {
 		async isTwoFactorActive(userId) {
-			// Both halves read fresh from the database. The session user cannot be
-			// trusted for this: `session.cookieCache` serves a snapshot up to five
-			// minutes old (`../auth.ts`), so a user whose 2FA was enabled moments
-			// ago would still look unenrolled — and unenrolled is the UNGATED
-			// branch.
+			// Both halves read from the database at this security boundary. Enrollment
+			// can be represented by either the user flag or a verified factor row, so
+			// the UNGATED branch must not rely on the session projection alone.
 			const [user, verifiedRow] = await Promise.all([
 				client.user.findUnique({
 					where: { id: userId },
@@ -622,8 +620,8 @@ export function createPrismaStepUpGrantStore(
 		async consume(sessionId, userId, grantedAt, now) {
 			// The whole admission decision, in one statement:
 			//  - `id` + `userId` bind the grant to this caller's own session;
-			//  - `expiresAt: { gt: now }` refuses a revoked or expired session even
-			//    while the cookie cache would still resolve it;
+			//  - `expiresAt: { gt: now }` independently refuses a revoked or expired
+			//    session at the grant store;
 			//  - the exact `twoFactorStepUpGrantedAt` match means a stale cookie
 			//    cannot spend a grant minted later;
 			//  - clearing the column here is what makes it single-use: two

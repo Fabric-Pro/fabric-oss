@@ -3,7 +3,8 @@
  * fence with a `%% figure:` line draws its SVG template in the theme's
  * paint, through the diagram sanitizer, instead of a Mermaid layout. Every
  * other document, a page without the theme's paint and a source the
- * template refuses draw the fence as Mermaid, as before. A drawn figure
+ * template refuses draw the fence as Mermaid, as before; a chart without
+ * its leading `%%` lines, as print draws it. A drawn figure
  * carries the hooks the theme numbers it by, and a template shrinks to
  * 550 px before it scrolls.
  *
@@ -230,6 +231,192 @@ describe("figure templates", () => {
 	});
 });
 
+describe("bar chart template", () => {
+	/** A brand with an accent, so the label colour is not the primary. */
+	const BRANDED: ProposalThemePaint = resolveThemePaint(
+		buildProposalThemeTokens({
+			organization: null,
+			style: { primaryColor: "#1f3a8a", accentColors: ["#8a5a00"] },
+			brandKit: null,
+			recipient: null,
+		}),
+	);
+
+	const barsBody = [
+		MARKER,
+		"%% caption: Hours saved per week",
+		"%% figure: bars",
+		"xychart-beta horizontal",
+		'  x-axis ["Expected · 5% uplift", "Faster review", Baseline]',
+		'  y-axis "h" 0 --> 20',
+		"  bar [12, 15, 4]",
+		"  line [12, 12, 12]",
+	];
+
+	it("draws a bar chart from its template in the theme's paint, threshold included", async () => {
+		expect(BRANDED.label).not.toBe(BRANDED.primary);
+		const { container } = render(
+			<DiagramHarness
+				markdown={doc(barsBody)}
+				visual={{ paint: BRANDED }}
+			/>,
+		);
+		const [svg] = await drawnSvgs(container);
+
+		expect(svg?.getAttribute("role")).toBe("img");
+		expect(svg?.getAttribute("width")).toBe("662");
+		expect(svg?.querySelector("title")?.textContent).toBe(
+			"Hours saved per week",
+		);
+		expect(svg?.querySelector("desc")?.textContent).toContain(
+			"Expected · 5% uplift: 12 h",
+		);
+		const fills = [...(svg?.querySelectorAll("rect.bar") ?? [])].map(
+			(bar) => bar.getAttribute("fill"),
+		);
+		expect(fills).toHaveLength(3);
+		expect(fills[0]).toBe(BRANDED.primary);
+		expect(fills[2]).toBe(BRANDED.primary);
+		expect(fills[1]).not.toBe(BRANDED.primary);
+		// The dashed threshold survives the sanitizer, in the label colour.
+		const line = svg?.querySelector("line.threshold");
+		expect(line?.getAttribute("stroke")).toBe(BRANDED.label);
+		expect(line?.getAttribute("stroke-dasharray")).toBe("4 3");
+		expect(svg?.getAttribute("style")).toBeNull();
+		expect(renderer.native).toEqual([]);
+		expect(container.querySelectorAll(".pa-figure-counted")).toHaveLength(
+			1,
+		);
+	});
+
+	it("draws a bar chart with beautiful-mermaid while the theme's paint is not worn", async () => {
+		const { container } = render(
+			<DiagramHarness
+				markdown={doc(barsBody)}
+				visual={{ paint: null }}
+			/>,
+		);
+		const [svg] = await drawnSvgs(container);
+
+		// beautiful-mermaid finds a chart on its first line only: the page
+		// hands it the chart without its leading `%%` lines, as print does,
+		// so the figure keeps its number while the paint loads.
+		expectMermaidDrawing(svg);
+		expect(svg?.textContent).toContain("Faster review");
+		expect(renderer.native).toEqual([]);
+		expect(container.querySelectorAll(".pa-figure-counted")).toHaveLength(
+			1,
+		);
+	});
+
+	it("draws a bar chart its template refuses with beautiful-mermaid, numbered and printed as drawn", async () => {
+		const thirteen = [
+			MARKER,
+			"%% caption: Hours saved per team",
+			"%% figure: bars",
+			"xychart-beta horizontal",
+			`  x-axis [${Array.from({ length: 13 }, (_, index) => `Team${index + 1}`).join(", ")}]`,
+			`  bar [${Array.from({ length: 13 }, (_, index) => index + 1).join(", ")}]`,
+		];
+		const { container } = render(
+			<DiagramHarness
+				markdown={doc(thirteen)}
+				visual={{ paint: BRANDED }}
+			/>,
+		);
+		const [svg] = await drawnSvgs(container);
+
+		expectMermaidDrawing(svg);
+		expect(svg?.textContent).toContain("Team13");
+		expect(renderer.native).toEqual([]);
+		expect(container.querySelectorAll(".pa-figure-counted")).toHaveLength(
+			1,
+		);
+		expect(
+			container.querySelector("[data-diagram-not-printable]"),
+		).toBeNull();
+	});
+});
+
+describe("gantt template", () => {
+	const ganttBody = [
+		MARKER,
+		"%% caption: Pilot schedule by workstream",
+		"%% figure: gantt",
+		"gantt",
+		"  title Pilot schedule",
+		"  dateFormat YYYY-MM-DD",
+		"  section Build",
+		"  Routing :a1, 2026-11-02, 3w",
+		"  section Pilot",
+		"  Region one :b1, after a1, 4w",
+		"  Pilot review :milestone, m1, 2026-12-21, 0d",
+	];
+
+	it("draws a gantt from its template in the theme's paint, milestone included", async () => {
+		const { container } = render(
+			<DiagramHarness
+				markdown={doc(ganttBody)}
+				visual={{ paint: NAVY }}
+			/>,
+		);
+		const [svg] = await drawnSvgs(container);
+
+		expect(svg?.getAttribute("role")).toBe("img");
+		expect(svg?.getAttribute("width")).toBe("662");
+		expect(svg?.querySelector("title")?.textContent).toBe(
+			"Pilot schedule by workstream",
+		);
+		expect(svg?.querySelector("desc")?.textContent).toContain(
+			"Build: Routing, 2026-11-02 to 2026-11-22.",
+		);
+		const fills = [...(svg?.querySelectorAll("rect.task") ?? [])].map(
+			(bar) => bar.getAttribute("fill"),
+		);
+		expect(fills).toEqual([NAVY.muted, NAVY.primary]);
+		// The diamond and its dashed line survive the sanitizer.
+		expect(svg?.querySelector("path.milestone")?.getAttribute("fill")).toBe(
+			NAVY.label,
+		);
+		expect(
+			svg
+				?.querySelector("line.milestone-guide")
+				?.getAttribute("stroke-dasharray"),
+		).toBe("3 3");
+		expect(svg?.getAttribute("style")).toBeNull();
+		expect(renderer.native).toEqual([]);
+		expect(container.querySelectorAll(".pa-figure-counted")).toHaveLength(
+			1,
+		);
+		expect(
+			container.querySelector("[data-diagram-not-printable]"),
+		).toBeNull();
+	});
+
+	it("draws a gantt its template refuses with mermaid.js, numbered and noted as left out of the PDF", async () => {
+		const refused = ganttBody.map((line) =>
+			line === "  Routing :a1, 2026-11-02, 3w"
+				? "  Routing :crit, a1, 2026-11-02, 3w"
+				: line,
+		);
+		const { container } = render(
+			<DiagramHarness markdown={doc(refused)} visual={{ paint: NAVY }} />,
+		);
+		const [svg] = await drawnSvgs(container);
+
+		expect(renderer.native).toHaveLength(1);
+		expect(renderer.native[0]).toContain("Routing :crit, a1");
+		expect(svg?.textContent).toBe("Fallback");
+		// Print keeps a numbered placeholder for it, so the page numbers it.
+		expect(container.querySelectorAll(".pa-figure-counted")).toHaveLength(
+			1,
+		);
+		expect(
+			container.querySelector("[data-diagram-not-printable]"),
+		).not.toBeNull();
+	});
+});
+
 describe("figure numbering hooks", () => {
 	it("marks a drawn figure as counted and its caption as the numbered line", async () => {
 		const { container } = render(
@@ -336,15 +523,13 @@ describe("figure sizing", () => {
 
 	it("keeps the label rule for a Mermaid diagram in the same column", async () => {
 		columnOf(400);
+		// Top-down, so it is drawn as written: on a Proposal's page a sideways
+		// chain this wide is drawn top-down to print, and then fits the column.
 		const wide = [
-			"flowchart LR",
+			"flowchart TD",
 			...Array.from(
-				{ length: 8 },
-				(_, index) => `  n${index}["Step ${index}"]`,
-			),
-			...Array.from(
-				{ length: 7 },
-				(_, index) => `  n${index} --> n${index + 1}`,
+				{ length: 12 },
+				(_, index) => `  r[Start] --> n${index}["Step ${index}"]`,
 			),
 		];
 		const { container } = render(

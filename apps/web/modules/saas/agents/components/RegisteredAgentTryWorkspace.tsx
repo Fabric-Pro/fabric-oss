@@ -1,6 +1,14 @@
 "use client";
 
+import { isRetiredSystemAgent } from "@repo/agent-types";
+import { config } from "@repo/config";
 import { FabricTemporalOrchestratorChat } from "@saas/agents/components/FabricChat/FabricTemporalOrchestratorChat";
+import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
+import { useSidebarCollapse } from "@saas/shared/contexts/SidebarCollapseContext";
+import {
+	SHELL_LAUNCHER_CLEARANCE_CLASS,
+	shellDockOffsetClass,
+} from "@saas/shared/lib/shell-layout";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
@@ -14,9 +22,11 @@ import {
 	BreadcrumbSeparator,
 } from "@ui/components/breadcrumb";
 import { Button } from "@ui/components/button";
+import { cn } from "@ui/lib";
 import { AlertCircle, HomeIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { RetiredAgentNotice } from "./RetiredAgentNotice";
 
 type Props = {
 	agentId: string;
@@ -30,6 +40,8 @@ export function RegisteredAgentTryWorkspace({
 	organizationId,
 }: Props) {
 	const router = useRouter();
+	const { isFullscreen } = useFullscreen();
+	const { isCollapsed } = useSidebarCollapse();
 	const agentsPath = `${basePath}/agents`;
 
 	const {
@@ -49,10 +61,14 @@ export function RegisteredAgentTryWorkspace({
 				id: agentId,
 				organizationId: organizationId ?? null,
 			}),
+		enabled: Boolean(organizationId),
 		retry: false,
 	});
 
-	if (isLoading) {
+	if (agent && isRetiredSystemAgent(agent)) {
+		return <RetiredAgentNotice basePath={basePath} />;
+	}
+	if (!organizationId || isLoading) {
 		return (
 			<div className="flex min-h-[400px] items-center justify-center">
 				<Spinner className="mr-2 size-4 text-primary" />
@@ -111,8 +127,17 @@ export function RegisteredAgentTryWorkspace({
 	}
 
 	return (
-		<div className="fixed inset-0 bg-background">
-			<div className="flex items-center gap-3 border-b bg-background px-6 py-2.5">
+		<div
+			className={cn(
+				"fixed inset-y-0 right-0 left-0 flex min-h-0 flex-col bg-background",
+				SHELL_LAUNCHER_CLEARANCE_CLASS,
+				config.ui.saas.useSidebarLayout && [
+					"top-16 md:top-0",
+					shellDockOffsetClass(isFullscreen || isCollapsed),
+				],
+			)}
+		>
+			<div className="flex shrink-0 items-center gap-3 border-b bg-background px-6 py-2.5">
 				<Button
 					variant="ghost"
 					size="icon"
@@ -153,7 +178,7 @@ export function RegisteredAgentTryWorkspace({
 				</Breadcrumb>
 			</div>
 
-			<div className="h-[calc(100vh-53px)]">
+			<div className="min-h-0 flex-1">
 				<FabricTemporalOrchestratorChat
 					organizationId={organizationId ?? undefined}
 					reasoningMode="balanced"

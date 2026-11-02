@@ -140,7 +140,7 @@ export function usePmSyncProgressPoll({
 		if (!workflowId) {
 			return;
 		}
-		const storiesQueryKey = orpc.projects.stories.list.queryKey({
+		const storiesQueryKey = orpc.projects.stories.board.queryKey({
 			input: { projectId, organizationId },
 		});
 

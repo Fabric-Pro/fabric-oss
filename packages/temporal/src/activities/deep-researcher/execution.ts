@@ -14,6 +14,7 @@ import { heartbeat } from "@temporalio/activity";
 import type { SubTask } from "../../workflows/deep-researcher";
 import { retrieveWorkspaceDocumentsActivity } from "../direct-chat/rag-retrieval";
 import { getAiModelWithSelection } from "../orchestrator/utils/model-selector";
+import { extractResearchSourceUrls } from "./source-references";
 
 // =============================================================================
 // Heartbeat Helper
@@ -387,8 +388,7 @@ Provide your complete findings now.`;
 		// Extract confidence from the response (look for explicit mentions)
 		const confidence = extractConfidence(result.text);
 
-		// Extract sources — prefer URLs from tool results if available
-		const sources = extractSources(result.text);
+		const sources = extractResearchSourceUrls(result.text);
 
 		// Merge RAG document sources with web sources extracted from text
 		const allSources = [
@@ -514,7 +514,7 @@ Structure your response clearly with sections as appropriate.`;
 		);
 
 		// Extract sources and merge with RAG document sources
-		const webSources = extractSources(result.text);
+		const webSources = extractResearchSourceUrls(result.text);
 		const allSources = [
 			...ragResult.sources.map((s) => s.url ?? s.name),
 			...webSources,
@@ -571,52 +571,6 @@ function extractConfidence(text: string): number {
 
 	// Default confidence if not explicitly stated
 	return 70;
-}
-
-/**
- * Extract source references from response text.
- *
- * Looks for URLs, citations, and source mentions.
- */
-function extractSources(text: string): string[] {
-	const sources = new Set<string>();
-
-	// Extract URLs
-	const urlPattern = /https?:\/\/[^\s)>\]]+/g;
-	const urlMatches = text.match(urlPattern);
-	if (urlMatches) {
-		for (const url of urlMatches) {
-			sources.add(url);
-		}
-	}
-
-	// Extract source mentions (e.g., "Source: Wikipedia", "According to MDN")
-	const sourcePatterns = [
-		/Source:\s*([^\n]+)/gi,
-		/According to\s+([^\n.,]+)/gi,
-		/Referenced from\s+([^\n.,]+)/gi,
-		/Based on\s+([^\n.,]+)/gi,
-	];
-
-	for (const pattern of sourcePatterns) {
-		const matches = text.matchAll(pattern);
-		for (const match of matches) {
-			if (match[1]?.trim()) {
-				sources.add(match[1].trim());
-			}
-		}
-	}
-
-	// Extract markdown link titles
-	const linkPattern = /\[([^\]]+)\]\([^)]+\)/g;
-	const linkMatches = text.matchAll(linkPattern);
-	for (const match of linkMatches) {
-		if (match[1]?.trim()) {
-			sources.add(match[1].trim());
-		}
-	}
-
-	return Array.from(sources).slice(0, 20); // Limit to 20 sources
 }
 
 /**

@@ -830,3 +830,18 @@ describe("scanRecurringErrorsForProject — incident clusters", () => {
 		);
 	});
 });
+
+it("carries platform deploy-noise counts without counting them as declined signatures", async () => {
+	summarize.mockResolvedValue(
+		Object.assign([], {
+			platformNoiseSetAside: 25,
+			platformNoiseByRule: { "key-vault-canceled": 25 },
+			platformNoiseApps: ["example-app"],
+		}),
+	);
+	const result = await scanRecurringErrorsForProject(INPUT);
+	expect(result.platformNoiseSetAside).toBe(25);
+	expect(result.platformNoiseByRule).toEqual({ "key-vault-canceled": 25 });
+	expect(result.suppressed).toBe(0);
+	expect(result.groupsAboveThreshold).toBe(0);
+});

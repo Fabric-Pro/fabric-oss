@@ -39,24 +39,24 @@ export const FABRIC_AGENT_FALLBACK_POLICIES: readonly FabricAgentFallbackPolicyO
 	[
 		{
 			value: "subscription_harnesses",
-			label: "Fallback to other subscription harnesses",
-			badge: "Recommended · Zero API cost",
+			label: "Prefer other subscription harnesses",
+			badge: "Browser preference",
 			description:
-				"Automatically rotate across your enabled subscription harnesses (Claude, Codex, Droid, Grok, Kimi) when the primary harness reaches its subscription quota.",
+				"Saved in this browser only. This preference does not configure server execution or billing.",
 		},
 		{
 			value: "org_paid_api",
-			label: "Use organization's paid API provider",
-			badge: "Guaranteed SLA",
+			label: "Prefer organization’s paid API provider",
+			badge: "Browser preference",
 			description:
-				"Switch to your organization's configured paid AI provider (Databricks Mosaic AI, Anthropic API, OpenAI API, Bedrock, or Vertex) when subscription tokens are spent.",
+				"Saved in this browser only. This preference does not configure server execution or billing.",
 		},
 		{
 			value: "pause_on_limit",
-			label: "Pause & wait for subscription reset",
-			badge: "Strict",
+			label: "Prefer waiting for subscription reset",
+			badge: "Browser preference",
 			description:
-				"Keep the coding session pinned to the selected harness and pause execution in place until your subscription quota window resets.",
+				"Saved in this browser only. This preference does not configure server execution or billing.",
 		},
 	] as const;
 

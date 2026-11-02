@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ToolCallResult } from "./types";
+import type { GatewaySession, ToolCallResult } from "./types";
 import {
 	buildFabricVisualizePayload,
 	FABRIC_BRAND,
@@ -97,12 +97,12 @@ export const FABRIC_MCP_APP_RESOURCES: readonly FabricMcpAppResourceDescriptor[]
 		},
 		{
 			uri: "ui://fabric/workflow-visualizer",
-			name: "Fabric Visual Data Prep & Durable Temporal Workflow Inspector",
+			name: "Fabric Visual Data Prep & Durable Workflow Inspector",
 			description:
-				"Interactive Fabric-branded DAG pipeline stepper and Temporal workflow execution monitor with step-by-step stage diagrams and durable replay metadata.",
+				"Interactive Fabric-branded DAG pipeline stepper and workflow execution monitor with step-by-step stage diagrams and durable call metadata.",
 			mimeType: "text/html;profile=mcp-app",
 			_meta: createResourceMeta(
-				"Step through Fabric Visual Data Prep pipelines and durable Temporal workflow executions interactively.",
+				"Step through Fabric Visual Data Prep pipelines and workflow executions interactively.",
 			),
 		},
 		{
@@ -178,7 +178,7 @@ export const FABRIC_TOOL_UI_RESOURCE_MAP: Readonly<Record<string, string>> = {
 	fabric_list_operations: "ui://fabric/agent-delegation",
 	fabric_call: "ui://fabric/agent-delegation",
 
-	// Workflows & Durable Temporal Execution -> Workflow Visualizer Card
+	// Workflows and durable execution -> Workflow Visualizer Card
 	fabric_list_workflows: "ui://fabric/workflow-visualizer",
 	fabric_get_workflow: "ui://fabric/workflow-visualizer",
 	fabric_execute_workflow: "ui://fabric/workflow-visualizer",
@@ -203,19 +203,7 @@ export const FABRIC_TOOL_UI_RESOURCE_MAP: Readonly<Record<string, string>> = {
 	visualize: "ui://fabric/visualize",
 };
 
-/**
- * Tools whose underlying execution is backed by Temporal workflows by default.
- */
-const TEMPORAL_BACKED_MCP_TOOLS: ReadonlySet<string> = new Set([
-	"fabric_execute_workflow",
-	"fabric_get_workflow_execution",
-	"run_browser_task",
-	"run_hybrid_task",
-	"execute_template",
-	"extract_web_content",
-]);
-
-const FABRIC_VIEW_CSS = String.raw`
+const FABRIC_VIEW_CSS = `
 .viz-foot { display: flex; flex-direction: column; gap: 8px; }
 .viz-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; }
 .viz-sources > summary { cursor: pointer; font: 500 13px/20px var(--k-font); color: var(--k-muted); }
@@ -593,44 +581,41 @@ function buildFabricMcpViewScript(options: {
       });
 
       var chipRow = el("div", "fb-meta-row");
-      add(
-        chipRow,
-        K.chip(v && v.billingMode ? String(v.billingMode) : "Subscription Credits Active", "ok"),
-        K.chip("Fallback: " + ((v && (v.fallbackPolicy || v.fallback)) || "subscription_harnesses"), "info"),
-        K.chip("Durable Temporal Envelope", "ok")
-      );
+      if (v && v.billingMode) add(chipRow, K.chip(String(v.billingMode), "ok"));
+      add(chipRow, K.chip("Fallback: " + ((v && (v.fallbackPolicy || v.fallback)) || "subscription_harnesses"), "info"));
+      var durableMeta = S.r && S.r._meta && S.r._meta.durableExecution;
+      if (durableMeta && durableMeta.stored === true) {
+        add(chipRow, K.chip(durableMeta.replayed ? "Stored Call · Replayed" : "Stored Durable Call", "ok"));
+      }
       add(card.body, chipRow);
 
-      var harnesses = (v && Array.isArray(v.harnesses) && v.harnesses.length) ? v.harnesses : [
-        { id: "claude-max", label: "Claude (Opus 4.6 / Sonnet 4.6)", spec: "Subscription OAuth · Primary" },
-        { id: "codex", label: "Codex (GPT-5.4 / o3)", spec: "ChatGPT Pro/Team Subscription" },
-        { id: "droid-cli", label: "Droid (Factory Multi-Model)", spec: "Subscription OAuth" },
-        { id: "grok-cli", label: "Grok (Grok 4 Heavy / Fast)", spec: "Subscription OAuth" },
-        { id: "kimi-cli", label: "Kimi (K2.5 Thinking)", spec: "Subscription OAuth" }
-      ];
-
-      var tiles = K.choiceTiles({
-        label: "Subscription Harness",
-        value: (v && v.harness) || S.harness,
-        items: harnesses.map(function (h) {
-          return {
-            value: String(h.id || h.slug || h.name),
-            label: String(h.label || h.name || h.id),
-            spec: String(h.spec || h.status || h.mode || "Active")
-          };
-        }),
-        onChange: function (val) {
-          S.harness = val;
-          tell("User selected subscription harness " + val, { harness: val, target: S.mode === 0 ? "remote" : "desktop" });
-        }
-      });
-      add(card.body, tiles);
+      var harnesses = (v && Array.isArray(v.harnesses)) ? v.harnesses : [];
+      if (harnesses.length) {
+        var tiles = K.choiceTiles({
+          label: "Subscription Harness",
+          value: (v && v.harness) || S.harness,
+          items: harnesses.map(function (h) {
+            return {
+              value: String(h.id || h.slug || h.name),
+              label: String(h.label || h.name || h.id),
+              spec: String(h.spec || h.status || h.mode || "Status not checked")
+            };
+          }),
+          onChange: function (val) {
+            S.harness = val;
+            tell("User selected subscription harness " + val, { harness: val, target: S.mode === 0 ? "remote" : "desktop" });
+          }
+        });
+        add(card.body, tiles);
+      } else {
+        add(card.body, K.callout({ tone: "info", title: "Harness status unavailable", text: "This result did not include a subscription harness listing." }));
+      }
 
       if (items.length && !(v && Array.isArray(v.harnesses))) {
         var rows = items.slice(0, 6).map(function (it) {
           return [
             String(it.title || it.name || it.slug || it.id || "Item"),
-            String(it.status || it.priority || it.mode || "ready"),
+            String(it.status || it.priority || it.mode || "Status unavailable"),
             String(it.source || it.category || it.description || "Fabric").slice(0, 48)
           ];
         });
@@ -659,12 +644,14 @@ function buildFabricMcpViewScript(options: {
     function drawWorkflowCard(v) {
       var items = extractItems(v);
       var wf = (v && (v.workflow || v.execution || v)) || {};
-      var wfTitle = wf.name || wf.title || wf.workflowId || (items.length ? items.length + " Fabric Workflows" : CFG.title);
-      var rawSteps = (wf && Array.isArray(wf.steps) && wf.steps) || (items.length ? items : [
-        { id: "ingest", name: "Ingest & Validate Context", status: "COMPLETED", detail: "Tenant-isolated input verified in Temporal activity." },
-        { id: "transform", name: "Visual Data Prep & Agent Transform", status: "COMPLETED", detail: "Structured transformation and schema validation complete." },
-        { id: "persist", name: "Durable Checkpoint & Audit", status: "COMPLETED", detail: "Persisted with deterministic replay history and audit log." }
-      ]);
+      var durableExecution = S.r && S.r._meta && S.r._meta.durableExecution;
+      var wfTitle = wf.name || wf.title || (items.length ? items.length + " Fabric Workflows" : CFG.title);
+      var rawSteps = (wf && Array.isArray(wf.steps) && wf.steps) || (items.length ? items : []);
+      if (!rawSteps.length) {
+        var emptyCard = K.card({ mark: CFG.mark, eyebrow: "FABRIC WORKFLOWS", eyebrowMeta: "No execution data", title: String(wfTitle), sub: CFG.subtitle, tools: [K.expandButton()], label: String(wfTitle) });
+        add(emptyCard.body, K.callout({ tone: "info", title: "No workflow steps returned", text: "Run or inspect a workflow to view its reported steps." }));
+        return emptyCard;
+      }
 
       var nodes = rawSteps.slice(0, 6).map(function (st, idx) {
         return { id: "s" + idx, text: String(st.name || st.title || st.label || st.id || ("Step " + (idx + 1))).slice(0, 32) };
@@ -688,17 +675,17 @@ function buildFabricMcpViewScript(options: {
         sc.zoom = false;
         return {
           title: String(st.name || st.title || st.label || ("Step " + (idx + 1))),
-          body: String(st.detail || st.description || st.summary || ("Status: " + (st.status || "READY"))),
-          tip: wf.workflowId ? ("Temporal Workflow ID: " + wf.workflowId) : "Executed durably via Temporal workflow engine",
+          body: String(st.detail || st.description || st.summary || (st.status ? ("Status: " + st.status) : "No detail reported")),
+          tip: durableExecution && durableExecution.executionId ? ("Durable execution ID: " + durableExecution.executionId) : "Reported by the tool result",
           scene: sc
         };
       });
 
       return K.stepper({
         title: String(wfTitle),
-        level: (wf.status || "Durable Temporal"),
+        level: (wf.status || "Workflow"),
         label: String(wfTitle),
-        caption: "Fabric Visual Data Prep & Durable Temporal Pipeline",
+        caption: "Fabric Visual Data Prep & Workflow Pipeline",
         steps: steps,
         start: S.step,
         stateKey: "wf:" + String(wfTitle),
@@ -852,7 +839,7 @@ export function readFabricMcpAppResource(
 			tool: "fabric_list_features",
 		},
 		"ui://fabric/workflow-visualizer": {
-			badge: "Durable Temporal",
+			badge: "Durable Workflow",
 			tool: "fabric_list_workflows",
 		},
 		"ui://fabric/genie-insights": {
@@ -923,18 +910,108 @@ export function isStatelessMcpRequest(request: Request): boolean {
 
 export interface DurableExecutionMetadata {
 	durable: true;
-	engine: "temporal";
-	workflowId: string;
-	runId: string;
-	taskQueue: string;
-	idempotencyKey: string;
-	organizationId: string | null;
-	toolName: string;
+	engine: "fabric-idempotency-store" | "inline";
+	executionId: string | null;
+	idempotencyKey: string | null;
+	status: "RUNNING" | "COMPLETED" | "FAILED";
+	replayed: boolean;
+	deduplicated: boolean;
+	stored: boolean;
 	startedAt: string;
-	completedAt: string;
-	durationMs: number;
-	status: "COMPLETED" | "FAILED";
+	completedAt: string | null;
+	resultWithheld?: boolean;
+	reason?: "no_idempotency_key" | "storage_failed" | "authorization_refused";
+	retryable?: boolean;
 }
+
+interface DurableToolCallRecord {
+	id: string;
+	argsHash: string;
+	status: "RUNNING" | "COMPLETED" | "FAILED";
+	result: unknown | null;
+	createdAt?: Date;
+	startedAt?: Date;
+	updatedAt?: Date;
+	completedAt: Date | null;
+}
+
+export interface DurableToolCallStore {
+	claim(input: {
+		organizationId: string;
+		userId: string;
+		credentialKind: string;
+		credentialId: string;
+		projectBinding: string | null;
+		serverBinding: string;
+		toolName: string;
+		idempotencyKey: string;
+		argsHash: string;
+	}): Promise<{
+		kind: "claimed" | "replay" | "conflict" | "in_progress";
+		call: DurableToolCallRecord;
+	}>;
+	complete(input: {
+		executionId: string;
+		claimUpdatedAt?: Date;
+		result: Record<string, unknown>;
+		status: "COMPLETED" | "FAILED";
+	}): Promise<void>;
+}
+
+export interface DurableToolCallIdentity {
+	credentialKind: string;
+	credentialId: string;
+	projectBinding: string | null;
+	serverBinding: string;
+}
+
+/**
+ * Build the replay boundary from the authenticated gateway session. A legacy
+ * in-memory session without a persisted credential id is isolated to its own
+ * session id instead of being allowed to share receipts with another key.
+ */
+export function durableIdentityForGatewaySession(
+	session: GatewaySession,
+	serverBinding: string,
+): DurableToolCallIdentity {
+	return {
+		credentialKind: session.credential,
+		credentialId:
+			session.credentialId ??
+			session.oauthClientId ??
+			`gateway-session:${session.sessionId}`,
+		projectBinding:
+			session.projectId ??
+			session.pinnedProjectId ??
+			session.pageProjectId ??
+			null,
+		serverBinding,
+	};
+}
+
+export type DurableToolAuthorization<Context> =
+	| { ok: true; context: Context }
+	| { ok: false; result: ToolCallResult };
+
+const databaseDurableToolCallStore: DurableToolCallStore = {
+	async claim(input) {
+		const { claimMcpDurableToolCall } = await import("@repo/database");
+		return claimMcpDurableToolCall(input);
+	},
+	async complete(input) {
+		if (!input.claimUpdatedAt) {
+			throw new Error(
+				"MCP durable claim is missing its completion fence",
+			);
+		}
+		const { completeMcpDurableToolCall } = await import("@repo/database");
+		await completeMcpDurableToolCall({
+			...input,
+			claimUpdatedAt: input.claimUpdatedAt,
+			result: input.result as never,
+		});
+	},
+};
 
 /**
  * Checks whether a tool call request asks for durable execution via headers,
@@ -970,67 +1047,103 @@ export function isDurableMcpToolRequest(
 	return false;
 }
 
-/**
- * Computes a deterministic idempotency key and Temporal-compatible workflow ID
- * for a durable MCP tool call.
- */
-function computeDurableWorkflowIdentity(options: {
-	organizationId: string | null;
-	userId: string;
-	toolName: string;
-	toolArgs: Record<string, unknown>;
-	explicitIdempotencyKey?: string;
-}): { workflowId: string; idempotencyKey: string; runId: string } {
-	const {
-		organizationId: rawOrganizationId,
-		userId,
-		toolName,
-		toolArgs,
-		explicitIdempotencyKey,
-	} = options;
-	const organizationId = rawOrganizationId ?? "org_default";
+function canonicalizeJson(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map(canonicalizeJson);
+	}
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>)
+				.filter(([, child]) => child !== undefined)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([key, child]) => [key, canonicalizeJson(child)]),
+		);
+	}
+	return value;
+}
+
+function durableArgsHash(toolArgs: Record<string, unknown>): string {
 	const cleanArgs = { ...toolArgs };
 	delete cleanArgs._durable;
 	delete cleanArgs._idempotencyKey;
+	return createHash("sha256")
+		.update(JSON.stringify(canonicalizeJson(cleanArgs)))
+		.digest("hex");
+}
 
-	const idempotencyKey =
-		explicitIdempotencyKey ||
-		(typeof toolArgs._idempotencyKey === "string" &&
-		toolArgs._idempotencyKey.trim()
-			? toolArgs._idempotencyKey.trim()
-			: createHash("sha256")
-					.update(
-						JSON.stringify({
-							organizationId,
-							userId,
-							toolName,
-							args: cleanArgs,
-						}),
-					)
-					.digest("hex")
-					.slice(0, 24));
+function resolveDurableIdempotencyKey(options: {
+	request?: Request | null;
+	rpcParams?: Record<string, unknown>;
+	toolArgs: Record<string, unknown>;
+	explicitIdempotencyKey?: string;
+	idempotencyKey?: string;
+}): string | null {
+	const meta = options.rpcParams?._meta as
+		| Record<string, unknown>
+		| undefined;
+	const candidates = [
+		options.request?.headers.get("x-mcp-idempotency-key"),
+		meta?.idempotencyKey,
+		options.explicitIdempotencyKey ?? options.idempotencyKey,
+		options.toolArgs._idempotencyKey,
+	];
+	for (const candidate of candidates) {
+		if (typeof candidate === "string" && candidate.trim()) {
+			return candidate.trim();
+		}
+	}
+	return null;
+}
 
-	const workflowId = `mcp-durable-${organizationId}-${toolName}-${idempotencyKey}`;
-	const runId = createHash("sha256")
-		.update(`${workflowId}:${Date.now()}`)
-		.digest("hex")
-		.slice(0, 32);
+function durableToolError(
+	message: string,
+	durableExecution: DurableExecutionMetadata,
+): ToolCallResult & { _meta: { durableExecution: DurableExecutionMetadata } } {
+	return {
+		isError: true,
+		content: [{ type: "text", text: message }],
+		_meta: { durableExecution },
+	};
+}
 
-	return { workflowId, idempotencyKey, runId };
+function recordStartedAt(
+	call: DurableToolCallRecord,
+	claimKind: "claimed" | "replay" | "conflict" | "in_progress",
+): string {
+	return (
+		(claimKind === "claimed" ? call.updatedAt : call.createdAt) ??
+		call.startedAt ??
+		call.createdAt ??
+		call.updatedAt ??
+		new Date()
+	).toISOString();
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+	return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 
 /**
- * Executes an MCP tool call inside a durable execution envelope with
- * deterministic Temporal workflow correlation metadata and UI resource linking.
+ * Claims and completes a tenant- and user-bound durable execution receipt around
+ * an MCP tool call. Calls without an explicit key still execute, but are not
+ * represented as deduplicated or stored.
  */
-export async function executeWithDurableEnvelope(options: {
+export async function executeWithDurableEnvelope<Context>(options: {
 	toolName: string;
 	toolArgs: Record<string, unknown>;
 	organizationId: string | null;
 	userId: string;
+	identity:
+		| DurableToolCallIdentity
+		| ((context: Context) => DurableToolCallIdentity);
+	request?: Request | null;
+	rpcParams?: Record<string, unknown>;
 	explicitIdempotencyKey?: string;
 	idempotencyKey?: string;
-	execute: () => Promise<ToolCallResult>;
+	authorize: () => Promise<DurableToolAuthorization<Context>>;
+	execute: (context: Context) => Promise<ToolCallResult>;
+	replayAllowed?: boolean | ((context: Context) => boolean);
+	store?: DurableToolCallStore;
 }): Promise<
 	ToolCallResult & {
 		_meta?: Record<string, unknown> & {
@@ -1040,42 +1153,11 @@ export async function executeWithDurableEnvelope(options: {
 		};
 	}
 > {
-	const startedAtMs = Date.now();
-	const startedAt = new Date(startedAtMs).toISOString();
-	const { workflowId, idempotencyKey, runId } =
-		computeDurableWorkflowIdentity({
-			organizationId: options.organizationId,
-			userId: options.userId,
-			toolName: options.toolName,
-			toolArgs: options.toolArgs,
-			explicitIdempotencyKey:
-				options.explicitIdempotencyKey ?? options.idempotencyKey,
-		});
-
-	const result = await options.execute();
-	const completedAtMs = Date.now();
-	const completedAt = new Date(completedAtMs).toISOString();
-
-	const durableExecution: DurableExecutionMetadata = {
-		durable: true,
-		engine: "temporal",
-		workflowId,
-		runId,
-		taskQueue: TEMPORAL_BACKED_MCP_TOOLS.has(options.toolName)
-			? "workflow-builder"
-			: "fabric-mcp-durable-tools",
-		idempotencyKey,
-		organizationId: options.organizationId,
-		toolName: options.toolName,
-		startedAt,
-		completedAt,
-		durationMs: Math.max(0, completedAtMs - startedAtMs),
-		status: result.isError ? "FAILED" : "COMPLETED",
-	};
-
 	const uiResourceUri = FABRIC_TOOL_UI_RESOURCE_MAP[options.toolName];
-
-	return {
+	const withMetadata = (
+		result: ToolCallResult,
+		durableExecution: DurableExecutionMetadata,
+	) => ({
 		...result,
 		_meta: {
 			...((result as { _meta?: Record<string, unknown> })._meta ?? {}),
@@ -1087,7 +1169,232 @@ export async function executeWithDurableEnvelope(options: {
 					}
 				: {}),
 		},
+	});
+	const requestedAt = new Date();
+	const idempotencyKey = resolveDurableIdempotencyKey(options);
+
+	if (!options.organizationId) {
+		return durableToolError("Durable execution requires an organization.", {
+			durable: true,
+			engine: "fabric-idempotency-store",
+			executionId: null,
+			idempotencyKey,
+			status: "FAILED",
+			replayed: false,
+			deduplicated: false,
+			stored: false,
+			startedAt: requestedAt.toISOString(),
+			completedAt: new Date().toISOString(),
+		});
+	}
+
+	const authorization = await options.authorize();
+	if (!authorization.ok) {
+		return withMetadata(authorization.result, {
+			durable: true,
+			engine: "inline",
+			executionId: null,
+			idempotencyKey,
+			status: "FAILED",
+			replayed: false,
+			deduplicated: false,
+			stored: false,
+			reason: "authorization_refused",
+			startedAt: requestedAt.toISOString(),
+			completedAt: new Date().toISOString(),
+		});
+	}
+
+	const replayAllowed =
+		typeof options.replayAllowed === "function"
+			? options.replayAllowed(authorization.context)
+			: options.replayAllowed !== false;
+	if (!idempotencyKey) {
+		const result = await options.execute(authorization.context);
+		return withMetadata(result, {
+			durable: true,
+			engine: "inline",
+			executionId: null,
+			idempotencyKey: null,
+			status: result.isError ? "FAILED" : "COMPLETED",
+			replayed: false,
+			deduplicated: false,
+			stored: false,
+			reason: "no_idempotency_key",
+			startedAt: requestedAt.toISOString(),
+			completedAt: new Date().toISOString(),
+		});
+	}
+
+	const store = options.store ?? databaseDurableToolCallStore;
+	const identity =
+		typeof options.identity === "function"
+			? options.identity(authorization.context)
+			: options.identity;
+	let claim: Awaited<ReturnType<DurableToolCallStore["claim"]>>;
+	try {
+		claim = await store.claim({
+			organizationId: options.organizationId,
+			userId: options.userId,
+			credentialKind: identity.credentialKind,
+			credentialId: identity.credentialId,
+			projectBinding: identity.projectBinding,
+			serverBinding: identity.serverBinding,
+			toolName: options.toolName,
+			idempotencyKey,
+			argsHash: durableArgsHash(options.toolArgs),
+		});
+	} catch (error) {
+		console.error("[MCP Durable] Failed to claim tool call:", {
+			toolName: options.toolName,
+			error: error instanceof Error ? error.message : error,
+		});
+		return durableToolError(
+			"Durable execution is temporarily unavailable.",
+			{
+				durable: true,
+				engine: "fabric-idempotency-store",
+				executionId: null,
+				idempotencyKey,
+				status: "FAILED",
+				replayed: false,
+				deduplicated: true,
+				stored: false,
+				reason: "storage_failed",
+				startedAt: requestedAt.toISOString(),
+				completedAt: new Date().toISOString(),
+			},
+		);
+	}
+
+	const baseMetadata = {
+		durable: true as const,
+		engine: "fabric-idempotency-store" as const,
+		executionId: claim.call.id,
+		idempotencyKey,
+		deduplicated: true,
+		stored: true,
+		startedAt: recordStartedAt(claim.call, claim.kind),
 	};
+	if (claim.kind === "conflict") {
+		return durableToolError(
+			"This idempotency key was already used with different arguments.",
+			{
+				...baseMetadata,
+				status: "FAILED",
+				replayed: false,
+				completedAt: new Date().toISOString(),
+			},
+		);
+	}
+	if (claim.kind === "in_progress") {
+		return durableToolError(
+			"A tool call with this idempotency key is already in progress. Retry later.",
+			{
+				...baseMetadata,
+				status: "RUNNING",
+				replayed: false,
+				retryable: true,
+				completedAt: null,
+			},
+		);
+	}
+	if (claim.kind === "replay") {
+		const completedAt =
+			claim.call.completedAt ??
+			claim.call.updatedAt ??
+			claim.call.createdAt ??
+			new Date();
+		if (!replayAllowed) {
+			return withMetadata(
+				{
+					content: [
+						{
+							type: "text",
+							text: `Durable call ${claim.call.id} with this idempotency key already completed at ${completedAt.toISOString()}. Status: COMPLETED. The stored result is not replayed for ${options.toolName}. Use a matching get/list tool to read the current state.`,
+						},
+					],
+				},
+				{
+					...baseMetadata,
+					status: "COMPLETED",
+					replayed: false,
+					resultWithheld: true,
+					completedAt: completedAt.toISOString(),
+				},
+			);
+		}
+		const replayed = (claim.call.result ?? {
+			isError: true,
+			content: [
+				{ type: "text", text: "Stored durable result is unavailable." },
+			],
+		}) as unknown as ToolCallResult;
+		return withMetadata(replayed, {
+			...baseMetadata,
+			status: "COMPLETED",
+			replayed: true,
+			completedAt: completedAt.toISOString(),
+		});
+	}
+
+	let result: ToolCallResult;
+	try {
+		result = await options.execute(authorization.context);
+	} catch (error) {
+		try {
+			await store.complete({
+				executionId: claim.call.id,
+				claimUpdatedAt: claim.call.updatedAt,
+				result: {
+					isError: true,
+					content: [
+						{
+							type: "text",
+							text: "Tool execution failed before returning a result.",
+						},
+					],
+				},
+				status: "FAILED",
+			});
+		} catch (completionError) {
+			console.error("[MCP Durable] Failed to release thrown tool call:", {
+				executionId: claim.call.id,
+				toolName: options.toolName,
+				error:
+					completionError instanceof Error
+						? completionError.message
+						: completionError,
+			});
+		}
+		throw error;
+	}
+	const status = result.isError ? "FAILED" : "COMPLETED";
+	const completedAt = new Date();
+	let stored = true;
+	try {
+		await store.complete({
+			executionId: claim.call.id,
+			claimUpdatedAt: claim.call.updatedAt,
+			result: jsonRecord(result),
+			status,
+		});
+	} catch (error) {
+		stored = false;
+		console.error("[MCP Durable] Failed to persist completed tool call:", {
+			executionId: claim.call.id,
+			toolName: options.toolName,
+			error: error instanceof Error ? error.message : error,
+		});
+	}
+	return withMetadata(result, {
+		...baseMetadata,
+		status,
+		replayed: false,
+		stored,
+		...(stored ? {} : { reason: "storage_failed" as const }),
+		completedAt: completedAt.toISOString(),
+	});
 }
 
 /**

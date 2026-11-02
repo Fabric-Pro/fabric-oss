@@ -217,7 +217,7 @@ async function installPMMocks(
 	);
 
 	await page.route(
-		"**/api/rpc/projects/stories/listPMTickets**",
+		"**/api/rpc/projects/stories/boardPMTickets**",
 		async (route: Route) => {
 			const req = route.request();
 			let input: ListPMTicketsInput = { projectId: TEST_DATA.projectId };

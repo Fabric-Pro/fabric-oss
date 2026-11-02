@@ -10,6 +10,7 @@ import {
 	createCodingRun,
 	db,
 	isProjectReadOnly,
+	markCodingRunRecoveryRequired,
 	updateCodingRunStatus,
 } from "@repo/database";
 import type {
@@ -133,6 +134,7 @@ export interface UpdateCodingRunStatusInput {
 	codingRunId: string;
 	status: CodingRunStatus;
 	data?: {
+		lastError?: string;
 		providerSessionId?: string;
 		pullRequestUrl?: string;
 		pullRequestNumber?: number;
@@ -245,8 +247,9 @@ export async function createExecutionSession(
 	// the Weave delegation path (product decision 2026-07-23: code repos ARE
 	// in read-only scope). Non-retryable — retrying cannot succeed until an
 	// admin disables the mode.
-	await failIfProjectReadOnly(input.projectId);
+	let provider: ReturnType<typeof getCodingExecutionProvider>;
 	try {
+		await failIfProjectReadOnly(input.projectId);
 		if (
 			input.provider === "BACKGROUND_AGENTS" &&
 			input.fabricAgentsBridgeEnabled !== undefined &&
@@ -270,10 +273,31 @@ export async function createExecutionSession(
 				"INVALID_SESSION",
 			);
 		}
-		const provider = getCodingExecutionProvider(
+		provider = getCodingExecutionProvider(
 			input.provider,
 			"providerMetadata" in input ? input.providerMetadata : undefined,
 		);
+	} catch (error) {
+		if (
+			input.provider === "BACKGROUND_AGENTS" &&
+			input.fabricAgentsBridgeEnabled === true
+		) {
+			throw ApplicationFailure.create({
+				message: `Coding session was not created: ${error instanceof Error ? error.message : String(error)}`,
+				type: "CODING_SESSION_NOT_CREATED",
+				nonRetryable: false,
+			});
+		}
+		if (
+			error instanceof AuthError ||
+			error instanceof RuntimeNotFoundError ||
+			error instanceof SessionValidationError
+		) {
+			throw ApplicationFailure.nonRetryable(error.message, error.name);
+		}
+		throw error;
+	}
+	try {
 		const rawFallbackPolicy =
 			input.providerMetadata &&
 			typeof input.providerMetadata === "object" &&
@@ -616,11 +640,46 @@ export async function syncCodingRunArtifacts(
 			existingRun?.status === "AWAITING_REVIEW"
 				? "AWAITING_REVIEW"
 				: "PR_OPENED";
-		await updateCodingRunStatus(input.codingRunId, nextStatus, {
+		const data = {
 			pullRequestUrl: prArtifact.url,
 			pullRequestNumber,
 			pullRequestBranch: status.branchName ?? undefined,
-		});
+		};
+		if (
+			(
+				input.providerMetadata as
+					| { executionRuntime?: string }
+					| undefined
+			)?.executionRuntime === "fabric-agent-server"
+		) {
+			const workflowId =
+				Context.current().info.workflowExecution?.workflowId;
+			if (!workflowId) {
+				throw ApplicationFailure.nonRetryable(
+					"Missing workflow identity for native artifact synchronization",
+					"INVALID_SESSION",
+				);
+			}
+			await db.codingRun.updateMany({
+				where: {
+					id: input.codingRunId,
+					providerSessionId: input.sessionId,
+					OR: [{ workflowId }, { workflowId: null }],
+					status: {
+						in: [
+							"QUEUED",
+							"STARTING",
+							"RUNNING",
+							"AWAITING_REVIEW",
+							"PR_OPENED",
+						],
+					},
+				},
+				data: { status: nextStatus, ...data },
+			});
+		} else {
+			await updateCodingRunStatus(input.codingRunId, nextStatus, data);
+		}
 		return {
 			pullRequestUrl: prArtifact.url,
 			pullRequestNumber,
@@ -686,4 +745,62 @@ export async function cancelExecutionSession(
 		"providerMetadata" in input ? input.providerMetadata : undefined,
 	);
 	await provider.cancelSession(input.sessionId);
+}
+
+// Remote-target activity names are absent from workers predating target support.
+export {
+	createExecutionSession as createRemoteExecutionSession,
+	sendExecutionPrompt as sendRemoteExecutionPrompt,
+	pollExecutionStatus as pollRemoteExecutionStatus,
+	syncCodingRunArtifacts as syncRemoteCodingRunArtifacts,
+	cancelExecutionSession as cancelRemoteExecutionSession,
+};
+
+export async function recordCodingRunRecoveryActivity(
+	input: Parameters<typeof markCodingRunRecoveryRequired>[0],
+): Promise<void> {
+	await markCodingRunRecoveryRequired(input);
+}
+
+export async function updateCodingRunStatusGuardedActivity(
+	input: UpdateCodingRunStatusInput & {
+		workflowId: string;
+		expectedStatuses: CodingRunStatus[];
+	},
+): Promise<void> {
+	const updated = await db.codingRun.updateMany({
+		where: {
+			id: input.codingRunId,
+			OR: [{ workflowId: input.workflowId }, { workflowId: null }],
+			status: { in: input.expectedStatuses },
+		},
+		data: { status: input.status, ...input.data },
+	});
+	if (updated.count && input.status === "COMPLETED") {
+		const run = await db.codingRun.findUnique({
+			where: { id: input.codingRunId },
+		});
+		if (run) {
+			try {
+				await dispatchLifecycleEvent({
+					resource: "coding_run",
+					event: "completed",
+					projectId: run.projectId,
+					userId: run.userId,
+					organizationId: run.organizationId ?? null,
+					entityId: run.id,
+					data: {
+						storyId: run.storyId,
+						storyTaskId: run.storyTaskId,
+						codingRunId: run.id,
+					},
+				});
+			} catch (error) {
+				console.warn(
+					"[LifecycleDispatcher] Coding run completed dispatch failed:",
+					error,
+				);
+			}
+		}
+	}
 }

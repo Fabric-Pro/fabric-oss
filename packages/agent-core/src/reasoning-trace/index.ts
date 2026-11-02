@@ -28,5 +28,6 @@ export {
 	extractTextFromContent,
 	isHumanMessage,
 } from "./extract";
+export { pickTraceState } from "./seed";
 export type { ReasoningTurnEntry } from "./state";
 export { reasoningByTurnAnnotation } from "./state";

@@ -2,10 +2,8 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { authClient } from "@repo/auth/client";
-import { config } from "@repo/config";
 import { useAuthErrorMessages } from "@saas/auth/hooks/errors-messages";
 import { useSession } from "@saas/auth/hooks/use-session";
-import { useRouter } from "@shared/hooks/router";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
 import {
@@ -40,7 +38,6 @@ type FormValues = z.infer<typeof formSchema>;
 export function ResetPasswordForm() {
 	const t = useTranslations();
 	const { user } = useSession();
-	const router = useRouter();
 	const { getAuthErrorMessage } = useAuthErrorMessages();
 	const searchParams = useSearchParams();
 	const token = searchParams.get("token");
@@ -69,7 +66,13 @@ export function ResetPasswordForm() {
 			}
 
 			if (user) {
-				router.push(config.auth.redirectAfterSignIn);
+				// The reset revoked every session of the account, this one too,
+				// and the cached user would have the login page send them straight
+				// back into the app (Fizzy #2221). A hard navigation drops that
+				// cache. The password is already saved, so a failed sign-out must
+				// not read as a failed reset.
+				await authClient.signOut().catch(() => undefined);
+				window.location.href = "/auth/login?passwordSet=1";
 			}
 		} catch (e) {
 			const body =

@@ -10,6 +10,7 @@
  * This gives users fine-grained control over what the orchestrator can use.
  */
 
+import { isRetiredSystemAgent } from "@repo/agent-types";
 import { sessionQueryKey } from "@saas/auth/lib/api";
 import { McpLogo } from "@saas/mcp/components/McpLogo";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
@@ -346,13 +347,6 @@ const SYSTEM_AGENTS = [
 		name: "Data Analyst",
 		description:
 			"Data analysis, visualization, charts, reports from MCP data sources",
-		scope: "SYSTEM" as const,
-	},
-	{
-		id: "cuga_generalist",
-		name: "CUGA Generalist Agent",
-		description:
-			"Browser automation, API orchestration, code execution, task decomposition",
 		scope: "SYSTEM" as const,
 	},
 	{
@@ -2405,8 +2399,28 @@ export function useOrchestratorConfig(
 		return prioritizedIntegrationIds.filter((id) => validIds.has(id));
 	}, [integrationsData, prioritizedIntegrationIds]);
 
+	const availableAgentPreferences = useMemo(() => {
+		const isAvailable = (agentId: string) => {
+			const registered = registeredAgentsData?.agents.find(
+				(agent) => agent.agentId === agentId,
+			);
+			return !isRetiredSystemAgent({
+				agentId,
+				scope:
+					registered?.scope === "USER" ||
+					registered?.scope === "ORGANIZATION"
+						? registered.scope
+						: "SYSTEM",
+			});
+		};
+		return {
+			enabled: enabledAgentIds.filter(isAvailable),
+			prioritized: prioritizedAgentIds.filter(isAvailable),
+		};
+	}, [enabledAgentIds, prioritizedAgentIds, registeredAgentsData]);
+
 	return {
-		enabledAgentIds,
+		enabledAgentIds: availableAgentPreferences.enabled,
 		// Return filtered IDs that only include configs in the current tenant context
 		enabledMcpConfigIds: currentTenantMcpConfigIds,
 		enabledWorkspaceIds,
@@ -2414,7 +2428,7 @@ export function useOrchestratorConfig(
 		enabledIntegrationIds: currentTenantIntegrationIds,
 		// Prioritization state
 		prioritizedToolIds,
-		prioritizedAgentIds,
+		prioritizedAgentIds: availableAgentPreferences.prioritized,
 		prioritizedMcpConfigIds: currentTenantPrioritizedMcpConfigIds,
 		prioritizedIntegrationIds: currentTenantPrioritizedIntegrationIds,
 		// Toggle handlers

@@ -24,7 +24,7 @@ import {
 } from "@repo/ai/lib/turn-budget-estimate";
 import { wrapModelWithTurnBudget } from "@repo/ai/lib/turn-budget-middleware";
 import { fetchCredentialsByProvider, logAiUsageAsync } from "@repo/database";
-import { downloadFile, getSignedUrl, uploadFile } from "@repo/storage";
+import { downloadFile, getSignedUrl } from "@repo/storage";
 import {
 	dispatchBudgetSend,
 	dispatchSendSignal,
@@ -35,6 +35,11 @@ import {
 	type SecondaryUsageInput,
 	secondaryUsageFields,
 } from "../workflows/orchestrator/usage-attribution";
+import {
+	ChatMediaPersistenceError,
+	canUseChatMedia,
+	uploadRecordedChatMedia,
+} from "./chat-media";
 import {
 	activityAbortSignal,
 	assertTurnDispatchable,
@@ -148,6 +153,7 @@ async function generateImageActivityInternal(
 		inputImagePath,
 		gatewayModel,
 		turnScope,
+		usageConversationId,
 	} = params;
 
 	if (!prompt || prompt.trim().length === 0) {
@@ -173,6 +179,7 @@ async function generateImageActivityInternal(
 					organizationId,
 					startTime,
 					turnScope,
+					usageConversationId,
 				});
 				break;
 
@@ -186,6 +193,7 @@ async function generateImageActivityInternal(
 					organizationId,
 					startTime,
 					turnScope,
+					usageConversationId,
 				});
 				break;
 
@@ -202,6 +210,9 @@ async function generateImageActivityInternal(
 				});
 		}
 	} catch (error) {
+		if (error instanceof ChatMediaPersistenceError) {
+			throw error;
+		}
 		// In a chat turn a stop (a refused dispatch, a cancelled activity)
 		// is not a failed image: rethrown so the turn ends cancelled.
 		if (turnScope) {
@@ -301,6 +312,7 @@ async function generateWithGateway(params: {
 	organizationId?: string;
 	startTime: number;
 	turnScope?: TurnScope;
+	usageConversationId?: string;
 }): Promise<ImageGenerationResult> {
 	const { turnScope } = params;
 	// The activity's cancellation, for a turn's requests only (other callers
@@ -313,6 +325,7 @@ async function generateWithGateway(params: {
 		userId,
 		organizationId,
 		startTime,
+		usageConversationId,
 	} = params;
 	// If no explicit gatewayModel, resolve from user's IMAGE model preference
 	let model: string;
@@ -387,16 +400,20 @@ async function generateWithGateway(params: {
 
 		// Download input image from S3 storage (for editing workflows)
 		// SECURITY: Images are resolved from S3 storage paths, never from arbitrary URLs.
-		// Tenant prefix check prevents cross-tenant object reads.
+		// The ownership record and any conversation share are evaluated live.
 		if (inputImagePath) {
-			const expectedPrefix = organizationId || userId;
-			const pathPrefix = inputImagePath.split("/")[0];
-			if (pathPrefix !== expectedPrefix) {
+			if (
+				!(await canUseChatMedia({
+					storageKey: inputImagePath,
+					userId,
+					organizationId,
+				}))
+			) {
 				return {
 					success: false,
 					provider: "gateway",
 					model,
-					error: `Input image path does not belong to the current tenant (path=${pathPrefix}, expected=${expectedPrefix}, orgId=${organizationId}, userId=${userId})`,
+					error: "Input image is not available to the current user",
 					durationMs: Date.now() - startTime,
 				};
 			}
@@ -482,6 +499,7 @@ async function generateWithGateway(params: {
 			startTime,
 			text: result.text || undefined,
 			turnScope,
+			usageConversationId,
 		});
 	}
 
@@ -530,6 +548,7 @@ async function generateWithGateway(params: {
 		organizationId,
 		startTime,
 		turnScope,
+		usageConversationId,
 	});
 }
 
@@ -542,6 +561,7 @@ async function uploadGatewayImage(params: {
 	startTime: number;
 	text?: string;
 	turnScope?: TurnScope;
+	usageConversationId?: string;
 }): Promise<ImageGenerationResult> {
 	const {
 		buffer,
@@ -552,16 +572,9 @@ async function uploadGatewayImage(params: {
 		startTime,
 		text,
 		turnScope,
+		usageConversationId,
 	} = params;
 	const extension = mediaType.split("/")[1] || "png";
-	const timestamp = Date.now();
-	const hash = Math.random().toString(36).substring(2, 10);
-	const ownerPrefix = organizationId || userId;
-	const storagePath = `${ownerPrefix}/generated-images/${timestamp}-${hash}.${extension}`;
-
-	console.log(
-		`[ImageGeneration] Uploading gateway image to storage: ${storagePath}`,
-	);
 
 	// Immediately before the upload, after the image came back: in a chat
 	// turn nothing is stored once the turn has stopped or the activity was
@@ -569,9 +582,15 @@ async function uploadGatewayImage(params: {
 	if (turnScope) {
 		throwIfTurnStopped();
 	}
-	await uploadFile(storagePath, buffer, {
-		bucket: GENERATED_IMAGES_BUCKET,
+	const storagePath = await uploadRecordedChatMedia({
+		data: buffer,
 		contentType: mediaType,
+		extension,
+		storageKind: "generated-images",
+		recordKind: "GENERATED_IMAGE",
+		userId,
+		organizationId,
+		conversationId: usageConversationId,
 	});
 
 	const imageUrl = await getSignedUrl(storagePath, {
@@ -717,10 +736,18 @@ async function generateWithGemini(params: {
 	organizationId?: string;
 	startTime: number;
 	turnScope?: TurnScope;
+	usageConversationId?: string;
 }): Promise<ImageGenerationResult> {
 	const { turnScope } = params;
-	const { prompt, aspectRatio, model, userId, organizationId, startTime } =
-		params;
+	const {
+		prompt,
+		aspectRatio,
+		model,
+		userId,
+		organizationId,
+		startTime,
+		usageConversationId,
+	} = params;
 	const geminiModel = model || DEFAULT_GEMINI_MODEL;
 
 	const apiKey = process.env.GOOGLE_AI_STUDIO_API_KEY;
@@ -827,22 +854,20 @@ async function generateWithGemini(params: {
 	const imageBuffer = Buffer.from(imagePart.inlineData.data, "base64");
 	const mimeType = imagePart.inlineData.mimeType || "image/png";
 	const extension = mimeType.split("/")[1] || "png";
-	const timestamp = Date.now();
-	const hash = Math.random().toString(36).substring(2, 10);
-	const ownerPrefix = organizationId || userId;
-	const storagePath = `${ownerPrefix}/generated-images/${timestamp}-${hash}.${extension}`;
-
-	console.log(
-		`[ImageGeneration] Uploading Gemini image to storage: ${storagePath}`,
-	);
 
 	// Immediately before the upload (see uploadGatewayImage).
 	if (turnScope) {
 		throwIfTurnStopped();
 	}
-	await uploadFile(storagePath, imageBuffer, {
-		bucket: GENERATED_IMAGES_BUCKET,
+	const storagePath = await uploadRecordedChatMedia({
+		data: imageBuffer,
 		contentType: mimeType,
+		extension,
+		storageKind: "generated-images",
+		recordKind: "GENERATED_IMAGE",
+		userId,
+		organizationId,
+		conversationId: usageConversationId,
 	});
 
 	// Get a signed download URL (1 hour expiry) for immediate use

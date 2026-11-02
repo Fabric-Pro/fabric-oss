@@ -11,6 +11,7 @@ const f = vi.hoisted(() => ({
 	ready: vi.fn(),
 	audit: vi.fn(),
 	enabled: true,
+	defaultConfigured: true,
 }));
 vi.mock("@repo/database", () => ({
 	db: { project: { findUnique: f.project } },
@@ -26,6 +27,13 @@ vi.mock("@repo/temporal/coding-execution-rollout", () => ({
 	isFabricAgentsBridgeEnabled: () => f.enabled,
 }));
 vi.mock("@repo/temporal/coding-execution", () => ({
+	getBackgroundAgentsUrl: () => {
+		if (!f.defaultConfigured) {
+			throw new Error("Missing config");
+		}
+		return "https://deployment.example.com";
+	},
+	getBackgroundAgentsSecret: () => "example-secret",
 	FabricBackgroundAdapter: class {
 		executionReadiness = f.ready;
 	},
@@ -145,6 +153,27 @@ it("keeps disabled rollout compatible without requiring the new table", async ()
 	f.enabled = false;
 	expect(
 		await f.handlers["GET /coding-runs/remote-servers"]({ input, context }),
-	).toEqual({ enabled: false, canShare: false, servers: [] });
+	).toEqual({
+		enabled: false,
+		hasDefaultServer: false,
+		canShare: false,
+		servers: [],
+	});
 	expect(f.list).not.toHaveBeenCalled();
+});
+
+it("reports deployment server availability without returning its URL", async () => {
+	f.defaultConfigured = true;
+	const result = await f.handlers["GET /coding-runs/remote-servers"]({
+		input,
+		context,
+	});
+	expect(result.hasDefaultServer).toBe(true);
+	expect(JSON.stringify(result)).not.toContain("deployment.example.com");
+	f.defaultConfigured = false;
+	const absent = await f.handlers["GET /coding-runs/remote-servers"]({
+		input,
+		context,
+	});
+	expect(absent.hasDefaultServer).toBe(false);
 });

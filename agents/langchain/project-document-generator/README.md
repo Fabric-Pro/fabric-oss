@@ -48,10 +48,16 @@ pnpm dev
 
 ### 4. Verify Server is Running
 ```bash
-curl http://localhost:8125/ok
+curl http://localhost:8129/ok
 ```
 
-Visit API docs: http://localhost:8125/docs
+The unified server handles AG-UI and A2A on port 8129. Agent discovery is
+available at http://localhost:8129/.well-known/agent.json. The standalone
+`dev:a2a` command remains available on port 8229 when only A2A is needed;
+run it separately from the unified server.
+
+Use `pnpm start` for the built unified server, which includes A2A. The
+`start:a2a` alias is removed because the build emits only the unified server.
 
 ---
 

@@ -5,7 +5,7 @@
 
 > **Precedence**: This document is a **strict specification**, not guidelines. Treat it as mandatory for all frontend implementation.
 >
-> **Related**: For the full Databricks Workspace (DuBois) design system specification, token contrast tables, and component anatomy, see [`design.md`](../design.md). For React component patterns and CSS methodology, see `fabric/standards/frontend/components.md` and `fabric/standards/frontend/css.md`. This guide focuses on visual consistency, design tokens, and component reuse.
+> **Related**: For React component patterns and CSS methodology, see `fabric/standards/frontend/components.md` and `fabric/standards/frontend/css.md`. This guide focuses on visual consistency, design tokens, and component reuse.
 
 ---
 
@@ -204,7 +204,7 @@ today and are being reconciled, so do not read them as precedent.
 
 ### Focus States
 
-- Use `focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background` on buttons, toggles, and tabs, `focus-visible:outline-hidden focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring` on text inputs, and `focus:outline-hidden focus:border-ring focus:ring-1 focus:ring-ring` on `SelectTrigger` for crisp Databricks Crimson focus indicators
+- Use `focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background` on buttons, toggles, and tabs, `focus-visible:outline-hidden focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring` on text inputs, and `focus:outline-hidden focus:border-ring focus:ring-1 focus:ring-ring` on `SelectTrigger` for crisp Warm Bright Orange focus indicators
 - Prefer `focus-visible:outline-hidden` / `focus:outline-hidden` over `outline-none` so `forced-colors: active` (Windows High Contrast) retains a visible focus outline
 
 ### Loading States

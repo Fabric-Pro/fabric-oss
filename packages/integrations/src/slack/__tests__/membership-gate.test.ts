@@ -81,6 +81,22 @@ describe("getSlackCredentials", () => {
 		});
 	});
 
+	it("returns a legacy connection's token without requiring auth.test", async () => {
+		findFirst.mockResolvedValue({
+			id: "integration-example-legacy",
+			credentials: JSON.stringify({ access_token: "xoxb-test" }),
+		});
+		await expect(
+			getSlackCredentials("user-example-1", "org-example-1"),
+		).resolves.toEqual(
+			expect.objectContaining({
+				accessToken: "xoxb-test",
+				teamId: undefined,
+			}),
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
 	it("reads a personal connection when no organization is named", async () => {
 		await getSlackCredentials("user-example-1");
 

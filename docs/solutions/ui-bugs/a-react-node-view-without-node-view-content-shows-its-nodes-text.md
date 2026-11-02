@@ -62,7 +62,7 @@ The review state is the exception. While the node's text carries a `diffInsert` 
 
 Once every change is accepted or rejected, the marks are gone, and the view goes back to drawing the diagram with the source hidden.
 
-The stat tiles node (`tiptap-stat-tiles-extension.tsx`) is a sibling with the same shape. It always renders its `NodeViewContent` as a `pre` and clips it with `sr-only` while the source is closed, rather than leaving it out.
+The stat tiles, cards and columns nodes are siblings with the same shape. Their shared view (`tiptap-fenced-block-view.tsx`) always renders the `NodeViewContent` as a `pre` and clips it with `sr-only` while the source is closed, rather than leaving it out.
 
 ## How to test
 

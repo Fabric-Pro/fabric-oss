@@ -7,12 +7,15 @@ import {
 	buildFabricDesktopNewSessionUrl,
 	buildFabricDesktopViewUrl,
 	buildRemoteAgentServerDelegationUrl,
+	DEFAULT_PROJECT_DELEGATION_PREFERENCES,
 	FABRIC_AGENT_CONNECTIONS,
 	FABRIC_AGENT_FALLBACK_POLICIES,
 	type FabricAgentFallbackPolicy,
 	loadProjectDelegationPreferences,
 	saveProjectDelegationPreferences,
 } from "@saas/projects/lib/implementation-session-labels";
+import { orpcClient } from "@shared/lib/orpc-client";
+import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -24,7 +27,6 @@ import {
 import { cn } from "@ui/lib";
 import {
 	Building2Icon,
-	CheckCircle2Icon,
 	CheckIcon,
 	CopyIcon,
 	CpuIcon,
@@ -71,16 +73,28 @@ export function LaunchFabricDesktopBar({
 	const [connectOpen, setConnectOpen] = useState(false);
 	const [copiedMcp, setCopiedMcp] = useState(false);
 	const [remotePanelOpen, setRemotePanelOpen] = useState(false);
-	const [prefs, setPrefs] = useState(() =>
-		loadProjectDelegationPreferences(projectId),
+	const [prefs, setPrefs] = useState(DEFAULT_PROJECT_DELEGATION_PREFERENCES);
+	const servers = useQuery({
+		queryKey: ["remoteAgentServers", projectId, resolvedOrganizationId],
+		queryFn: () =>
+			orpcClient.codingRuns.remoteServers.list({
+				projectId,
+				organizationId: resolvedOrganizationId,
+			}),
+		retry: false,
+	});
+	const teamServer = servers.data?.servers.find(
+		(server) => server.scope === "TEAM",
 	);
-	const [remoteUrl, setRemoteUrl] = useState(() =>
-		prefs.preferredServerScope === "TEAM"
-			? "https://agents.example.com"
-			: webUiUrl || "http://127.0.0.1:9100",
-	);
+	const effectiveScope =
+		prefs.preferredServerScope === "TEAM" && !teamServer
+			? "PRIVATE"
+			: prefs.preferredServerScope;
+	const defaultRemoteUrl =
+		effectiveScope === "TEAM" ? teamServer?.url : webUiUrl;
+	const [customRemoteUrl, setCustomRemoteUrl] = useState<string | null>(null);
+	const remoteUrl = customRemoteUrl ?? defaultRemoteUrl;
 	const [taskPrompt, setTaskPrompt] = useState(prompt ?? "");
-	const [subscriptionVerified, setSubscriptionVerified] = useState(true);
 	const [embedRemoteWebUi, setEmbedRemoteWebUi] = useState(false);
 
 	useEffect(() => {
@@ -99,11 +113,6 @@ export function LaunchFabricDesktopBar({
 		const next = { ...prefs, ...patch };
 		setPrefs(next);
 		saveProjectDelegationPreferences(projectId, next);
-		if (patch.preferredServerScope === "TEAM") {
-			setRemoteUrl("https://agents.example.com");
-		} else if (patch.preferredServerScope === "PRIVATE") {
-			setRemoteUrl(webUiUrl || "http://127.0.0.1:9100");
-		}
 	};
 
 	const newSessionDeepLink = buildFabricDesktopNewSessionUrl({
@@ -117,7 +126,7 @@ export function LaunchFabricDesktopBar({
 	const mcpGateway = origin ? gatewayUrl(origin, projectId) : "";
 
 	const remoteDelegationUrl = buildRemoteAgentServerDelegationUrl({
-		serverUrl: remoteUrl,
+		serverUrl: remoteUrl ?? "",
 		projectName,
 		projectId,
 		origin: origin || null,
@@ -148,19 +157,16 @@ export function LaunchFabricDesktopBar({
 		}
 	};
 
-	const handleVerifySubscriptionCredits = () => {
-		setSubscriptionVerified(true);
-		toast.success(
-			`Verified ${activeConnection.label} (${activeConnection.subscriptionBadge}) subscription credits on ${prefs.preferredServerScope === "TEAM" ? "Company Remote Server" : "Local Fabric Agents Server"}.`,
-		);
-	};
-
 	const handleDispatchRemoteSession = () => {
-		toast.success(
-			`Delegated "${projectName}" to ${prefs.preferredServerScope === "TEAM" ? "Company Remote Server" : "Local Fabric Agents Server"} using ${activeConnection.label} subscription credits.`,
-		);
-		if (typeof window !== "undefined") {
-			window.open(remoteDelegationUrl, "_blank", "noopener,noreferrer");
+		if (!remoteUrl) {
+			return;
+		}
+		const opened = window.open(remoteDelegationUrl, "_blank");
+		if (opened) {
+			opened.opener = null;
+			toast.success(
+				`Opened ${effectiveScope === "TEAM" ? teamServer?.name : "Local Server"} in a new tab`,
+			);
 		}
 	};
 
@@ -179,23 +185,10 @@ export function LaunchFabricDesktopBar({
 						variant="outline"
 						className="border-primary/30 bg-primary/5 text-[10px] font-medium text-primary"
 					>
-						Subscription Credits Active
+						Subscription status not checked
 					</Badge>
 				</div>
 				<div className="flex items-center gap-1.5">
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						className="h-7 gap-1 px-2 text-[11px]"
-						onClick={handleVerifySubscriptionCredits}
-						data-testid="verify-subscription-credits-button"
-					>
-						<CheckCircle2Icon className="size-3 text-success" />
-						{subscriptionVerified
-							? "Subscription Credits Verified"
-							: "Verify Subscription Credits"}
-					</Button>
 					<Button
 						type="button"
 						variant="ghost"
@@ -245,14 +238,16 @@ export function LaunchFabricDesktopBar({
 					<div className="grid grid-cols-2 gap-1.5">
 						<button
 							type="button"
-							onClick={() =>
+							aria-pressed={effectiveScope === "PRIVATE"}
+							onClick={() => {
+								setCustomRemoteUrl(null);
 								updatePrefs({
 									preferredServerScope: "PRIVATE",
-								})
-							}
+								});
+							}}
 							className={cn(
 								"flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors",
-								prefs.preferredServerScope === "PRIVATE"
+								effectiveScope === "PRIVATE"
 									? "border-primary bg-primary/10 text-primary"
 									: "border-border/70 bg-muted/20 text-muted-foreground hover:text-foreground",
 							)}
@@ -262,14 +257,22 @@ export function LaunchFabricDesktopBar({
 						</button>
 						<button
 							type="button"
-							onClick={() =>
+							aria-pressed={effectiveScope === "TEAM"}
+							disabled={!teamServer}
+							title={
+								!teamServer
+									? "Register a company server to use this option"
+									: undefined
+							}
+							onClick={() => {
+								setCustomRemoteUrl(null);
 								updatePrefs({
 									preferredServerScope: "TEAM",
-								})
-							}
+								});
+							}}
 							className={cn(
 								"flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors",
-								prefs.preferredServerScope === "TEAM"
+								effectiveScope === "TEAM"
 									? "border-primary bg-primary/10 text-primary"
 									: "border-border/70 bg-muted/20 text-muted-foreground hover:text-foreground",
 							)}
@@ -278,6 +281,12 @@ export function LaunchFabricDesktopBar({
 							Company Server
 						</button>
 					</div>
+					{!teamServer && (
+						<p className="text-xs text-muted-foreground">
+							Company Server needs a registered team server. Local
+							Server is selected until one is available.
+						</p>
+					)}
 				</div>
 
 				<div className="space-y-1.5">
@@ -292,6 +301,7 @@ export function LaunchFabricDesktopBar({
 							return (
 								<button
 									key={option.value}
+									aria-pressed={selected}
 									type="button"
 									onClick={() =>
 										updatePrefs({
@@ -326,6 +336,7 @@ export function LaunchFabricDesktopBar({
 								return (
 									<button
 										key={policy.value}
+										aria-pressed={selected}
 										type="button"
 										onClick={() =>
 											updatePrefs({
@@ -354,8 +365,8 @@ export function LaunchFabricDesktopBar({
 			<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
 				<input
 					type="url"
-					value={remoteUrl}
-					onChange={(event) => setRemoteUrl(event.target.value)}
+					value={remoteUrl ?? ""}
+					onChange={(event) => setCustomRemoteUrl(event.target.value)}
 					placeholder="http://127.0.0.1:9100 or https://agents.example.com"
 					aria-label="Fabric Agents Remote Server URL"
 					className="h-8 w-full rounded-md border border-input bg-background px-2.5 font-mono text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring sm:w-64"
@@ -373,6 +384,7 @@ export function LaunchFabricDesktopBar({
 						type="button"
 						size="sm"
 						className="h-8 gap-1.5 px-3 text-xs"
+						disabled={!remoteUrl}
 						onClick={handleDispatchRemoteSession}
 						data-testid="dispatch-remote-server-button"
 					>
@@ -401,7 +413,8 @@ export function LaunchFabricDesktopBar({
 						className="h-8 gap-1 px-2.5 text-xs"
 					>
 						<a
-							href={remoteDelegationUrl}
+							href={remoteUrl ? remoteDelegationUrl : undefined}
+							aria-disabled={!remoteUrl}
 							target="_blank"
 							rel="noopener noreferrer"
 							data-testid="open-remote-server-webui-link"
@@ -421,7 +434,7 @@ export function LaunchFabricDesktopBar({
 					<div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-muted/30 px-3 py-1.5 text-xs">
 						<span className="font-medium text-foreground">
 							Fabric Agents Remote Server Web UI (
-							{prefs.preferredServerScope === "TEAM"
+							{effectiveScope === "TEAM"
 								? "Organization Remote Server"
 								: "Personal Remote Server"}
 							)
@@ -441,6 +454,10 @@ export function LaunchFabricDesktopBar({
 			)}
 		</div>
 	) : null;
+
+	if (!servers.data?.enabled) {
+		return null;
+	}
 
 	if (compact) {
 		return (
@@ -595,7 +612,8 @@ export function LaunchFabricDesktopBar({
 							<code className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">
 								agy
 							</code>
-							) with automatic fallback and stateless MCP Apps.
+							) with saved fallback preferences and stateless MCP
+							Apps.
 						</p>
 					</div>
 				</div>
@@ -688,7 +706,10 @@ export function LaunchFabricDesktopBar({
 							className="h-8 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
 						>
 							<a
-								href={remoteDelegationUrl}
+								href={
+									remoteUrl ? remoteDelegationUrl : undefined
+								}
+								aria-disabled={!remoteUrl}
 								target="_blank"
 								rel="noopener noreferrer"
 							>

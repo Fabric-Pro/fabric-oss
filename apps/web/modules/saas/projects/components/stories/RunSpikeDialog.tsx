@@ -129,7 +129,7 @@ export function RunSpikeDialog({
 				}),
 				queryClient.invalidateQueries({ queryKey: ["codingRun"] }),
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.key(),
+					queryKey: orpc.projects.stories.board.key(),
 				}),
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.stories.get.queryKey({

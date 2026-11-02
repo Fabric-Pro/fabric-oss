@@ -99,7 +99,7 @@ export function StoryPriorityControl({
 				queryKey: orpc.projects.stories.get.key(),
 			});
 			queryClient.invalidateQueries({
-				queryKey: orpc.projects.stories.list.key(),
+				queryKey: orpc.projects.stories.board.key(),
 			});
 		},
 	});
@@ -245,7 +245,7 @@ export function StoryPriorityControl({
 										});
 										queryClient.invalidateQueries({
 											queryKey:
-												orpc.projects.stories.list.key(),
+												orpc.projects.stories.board.key(),
 										});
 									}}
 								/>

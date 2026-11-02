@@ -53,6 +53,7 @@ export interface DeploymentExecutionInput {
 		storagePath: string;
 		mimeType: string;
 		name: string;
+		accessUserId?: string;
 	}>;
 }
 

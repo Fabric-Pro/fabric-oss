@@ -12,10 +12,33 @@ import type {
 	FabricMcpServer,
 } from "@fabricorg/sdk";
 import { Command } from "commander";
-import { getClient } from "../../lib/client.js";
-import { getApiKey, getBaseUrl } from "../../lib/config.js";
+import { getClient, getMcpAuthenticatedFetch } from "../../lib/client.js";
 import { resolveContext } from "../../lib/context.js";
 import { printError, printOutput, printRecord } from "../../lib/output.js";
+
+export async function resolveMcpOrganizationId(
+	organization: string | undefined,
+	client?: Pick<ReturnType<typeof getClient>, "orgs">,
+): Promise<string | undefined> {
+	if (!organization) {
+		return undefined;
+	}
+	const organizationClient = client ?? getClient();
+	let organizations: Awaited<ReturnType<typeof organizationClient.orgs.list>>;
+	try {
+		organizations = await organizationClient.orgs.list();
+	} catch (error) {
+		printError((error as Error).message, 1);
+	}
+	const match = organizations.find(
+		(candidate) =>
+			candidate.id === organization || candidate.slug === organization,
+	);
+	if (!match) {
+		printError(`Organization not found: ${organization}`, 4);
+	}
+	return match.id;
+}
 
 export function buildMcpCommand(): Command {
 	const mcp = new Command("mcp").description(
@@ -233,10 +256,10 @@ export function buildMcpCommand(): Command {
 			true,
 		)
 		.option(
-			"--format <format>",
-			"Output format: table|json|yaml|plain",
-			"table",
+			"--no-stateless",
+			"Use a persistent MCP session instead of stateless mode",
 		)
+		.option("--format <format>", "Output format: table|json|yaml|plain")
 		.option("-q, --quiet", "Print tool names only")
 		.action(
 			async (opts: {
@@ -244,22 +267,16 @@ export function buildMcpCommand(): Command {
 				project?: string;
 				mode: string;
 				stateless?: boolean;
-				format: string;
+				format?: string;
 				quiet?: boolean;
 			}) => {
-				const apiKey = getApiKey();
-				if (!apiKey) {
-					printError(
-						"Not authenticated. Run `fabric auth login` or set FABRIC_API_KEY.",
-						3,
-					);
-				}
-				const base = (getBaseUrl() ?? "https://app.fabric.pro").replace(
-					/\/+$/,
-					"",
-				);
+				const auth = getMcpAuthenticatedFetch({
+					project: opts.project,
+				});
+				const organizationId = await resolveMcpOrganizationId(opts.org);
+				const base = auth.origin.replace(/\/+$/, "");
 				const path = opts.project
-					? `/api/mcp-gateway/projects/${opts.project}`
+					? `/api/mcp-gateway/projects/${encodeURIComponent(opts.project)}`
 					: "/api/mcp-gateway";
 				const url = new URL(`${base}${path}`);
 				if (opts.mode === "discovery") {
@@ -272,10 +289,10 @@ export function buildMcpCommand(): Command {
 				const headers: Record<string, string> = {
 					"Content-Type": "application/json",
 					Accept: "application/json",
-					Authorization: `Bearer ${apiKey}`,
 				};
-				if (opts.org) {
-					headers["X-Organization-Id"] = opts.org;
+				headers.Authorization = auth.authorizationHeader;
+				if (organizationId) {
+					headers["X-Organization-Id"] = organizationId;
 				}
 				if (opts.stateless) {
 					headers["X-Mcp-Stateless"] = "true";
@@ -283,7 +300,7 @@ export function buildMcpCommand(): Command {
 
 				let res: Response;
 				try {
-					res = await fetch(url.toString(), {
+					res = await auth.fetch(url.toString(), {
 						method: "POST",
 						headers,
 						body: JSON.stringify({
@@ -338,7 +355,7 @@ export function buildMcpCommand(): Command {
 	// -- call ----------------------------------------------------------------
 	mcp.command("call <tool>")
 		.description(
-			"Execute a Fabric MCP tool over Streamable HTTP (supports stateless and durable Temporal execution)",
+			"Execute a Fabric MCP tool over Streamable HTTP with optional 24-hour idempotent durable calls",
 		)
 		.option("--org <slug>", "Organization ID or slug")
 		.option("--project <id>", "Project ID to scope the gateway connection")
@@ -349,18 +366,18 @@ export function buildMcpCommand(): Command {
 			true,
 		)
 		.option(
+			"--no-stateless",
+			"Use a persistent MCP session instead of stateless mode",
+		)
+		.option(
 			"--durable",
-			"Execute inside a durable Temporal workflow envelope (X-Mcp-Durable: true)",
+			"Use the Fabric idempotency store (X-Mcp-Durable: true)",
 		)
 		.option(
 			"--idempotency-key <key>",
-			"Deterministic idempotency key for durable execution",
+			"Explicit key for 24-hour durable-call deduplication",
 		)
-		.option(
-			"--format <format>",
-			"Output format: table|json|yaml|plain",
-			"json",
-		)
+		.option("--format <format>", "Output format: table|json|yaml|plain")
 		.action(
 			async (
 				tool: string,
@@ -371,16 +388,9 @@ export function buildMcpCommand(): Command {
 					stateless?: boolean;
 					durable?: boolean;
 					idempotencyKey?: string;
-					format: string;
+					format?: string;
 				},
 			) => {
-				const apiKey = getApiKey();
-				if (!apiKey) {
-					printError(
-						"Not authenticated. Run `fabric auth login` or set FABRIC_API_KEY.",
-						3,
-					);
-				}
 				let toolArgs: Record<string, unknown> = {};
 				try {
 					toolArgs = JSON.parse(opts.input);
@@ -388,12 +398,13 @@ export function buildMcpCommand(): Command {
 					printError("--input must be valid JSON", 2);
 				}
 
-				const base = (getBaseUrl() ?? "https://app.fabric.pro").replace(
-					/\/+$/,
-					"",
-				);
+				const auth = getMcpAuthenticatedFetch({
+					project: opts.project,
+				});
+				const organizationId = await resolveMcpOrganizationId(opts.org);
+				const base = auth.origin.replace(/\/+$/, "");
 				const path = opts.project
-					? `/api/mcp-gateway/projects/${opts.project}`
+					? `/api/mcp-gateway/projects/${encodeURIComponent(opts.project)}`
 					: "/api/mcp-gateway";
 				const url = new URL(`${base}${path}`);
 				if (opts.stateless) {
@@ -403,10 +414,10 @@ export function buildMcpCommand(): Command {
 				const headers: Record<string, string> = {
 					"Content-Type": "application/json",
 					Accept: "application/json",
-					Authorization: `Bearer ${apiKey}`,
 				};
-				if (opts.org) {
-					headers["X-Organization-Id"] = opts.org;
+				headers.Authorization = auth.authorizationHeader;
+				if (organizationId) {
+					headers["X-Organization-Id"] = organizationId;
 				}
 				if (opts.stateless) {
 					headers["X-Mcp-Stateless"] = "true";
@@ -414,10 +425,13 @@ export function buildMcpCommand(): Command {
 				if (opts.durable) {
 					headers["X-Mcp-Durable"] = "true";
 				}
+				if (opts.idempotencyKey) {
+					headers["X-Mcp-Idempotency-Key"] = opts.idempotencyKey;
+				}
 
 				let res: Response;
 				try {
-					res = await fetch(url.toString(), {
+					res = await auth.fetch(url.toString(), {
 						method: "POST",
 						headers,
 						body: JSON.stringify({
@@ -471,14 +485,14 @@ export function buildMcpCommand(): Command {
 			"List or inspect built-in MCP Apps (ui://fabric/*) for native rendering in Fabric Desktop",
 		)
 		.option("--uri <uri>", "Read a specific ui://fabric/* MCP App resource")
-		.option(
-			"--format <format>",
-			"Output format: table|json|yaml|plain",
-			"table",
-		)
+		.option("--format <format>", "Output format: table|json|yaml|plain")
 		.option("-q, --quiet", "Print MCP App URIs only")
 		.action(
-			async (opts: { uri?: string; format: string; quiet?: boolean }) => {
+			async (opts: {
+				uri?: string;
+				format?: string;
+				quiet?: boolean;
+			}) => {
 				const apps = [
 					{
 						uri: "ui://fabric/project-dashboard",
@@ -494,7 +508,7 @@ export function buildMcpCommand(): Command {
 					},
 					{
 						uri: "ui://fabric/workflow-visualizer",
-						name: "Fabric Visual Data Prep & Durable Temporal Workflow Inspector",
+						name: "Fabric Visual Data Prep & Durable Workflow Inspector",
 						mimeType: "text/html;profile=mcp-app",
 						linkedTool: "fabric_execute_workflow",
 					},

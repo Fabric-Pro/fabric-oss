@@ -19,6 +19,7 @@ import {
 	type LangGraphStreamEvent,
 	PredictiveToolArgsAccumulator,
 } from "@repo/agent-core";
+import { pickTraceState } from "@repo/agent-core/reasoning-trace";
 import { v4 as uuidv4 } from "uuid";
 import { promptEnhancerGraph } from "./agent.js";
 import { createInvokeAgent, normalizeMessages } from "./invoke-agent.js";
@@ -226,6 +227,8 @@ const { app, start } = createUnifiedServer(
 		// This is critical for the agent to know if it's after a confirmation
 		const stream = await promptEnhancerGraph.stream(
 			{
+				reasoningByTurn: pickTraceState(input.state, input.messages)
+					.reasoningByTurn,
 				messages,
 				promptId,
 				promptName,

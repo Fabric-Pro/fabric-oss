@@ -296,7 +296,7 @@ FR3b requires parity for every personal-level feature *regardless of whether the
 | Item | What has no counterpart | If not funded |
 |---|---|---|
 | Automation templates | **Built 2026-08-27** — the three routes now exist organization-rooted, and the list, card and editor derive every navigation from the active base path instead of the personal one | The feature becomes unreachable when the personal route tree goes |
-| The task-planner agent | **Built 2026-08-27** — the workspace moved into the agents module and both trees mount it; agent-register was repaired alongside it | Same |
+| The task-planner agent | The unlinked standalone workspace is removed. The backend agent remains available through the orchestrator and general agent chat. | No standalone workspace |
 | The vector store | Personal embeddings live in a shared collection; each organization gets a physically separate one. There is no operation that moves a user between them | Migrated users get retrieval from neither collection |
 | The project-guest presentation | Covered separately as PO-6 — repeated here only so the label's population is complete | See PO-6 |
 
@@ -433,9 +433,7 @@ A navigation-based comparison is structurally blind to any route no navigation e
 
 | Route | Disposition + reason |
 |---|---|
-| `/app/agents/document-generator` | `remove` — the component's own doc-comment states the split, and organization context reaches the identical component through the dynamic chat route |
 | `/app/agents/cuga-generalist` | `remove` — same; the organization chat route special-cases these agent ids |
-| `/app/agents/task-planner` | **Built 2026-08-27** — was `build equivalent`. The workspace moved to `apps/web/modules/saas/agents/components/TaskPlannerWorkspace.tsx` and both route trees mount it; it already read its tenant from the organization context hook, so no per-context copy was needed |
 | `/app/agents/register` | **Repaired 2026-08-27** — was `repair`. The organization group now has a static `register` segment, so the slug-prefixed link no longer falls through to the dynamic agent route with the literal `"register"` as an id. The form moved to `apps/web/modules/saas/agents/components/RegisterExternalAgent.tsx`; its post-registration redirect hard-coded the personal agents list and now follows the active base path |
 
 ### S5 Navigation parity — on the right evidence
@@ -853,13 +851,13 @@ Step 3, classification by what carries the tenant value. Counts are files and re
 
 `[source]` throughout. The key-authenticated protocol surfaces do not appear as direct writers — they reach the shared write layer through procedures — but they still supply tenancy, and both supply personal.
 
-**Consequence.** A request already in flight, a session cached in a signed cookie, an API key issued months ago, a webhook fired externally, a registered schedule, or a workflow already started can each produce a personal-context row *after* that user's rows have moved. `[inferred]` A scan taken inside that window can come back clean while the retired mode is still writable — so a clean scan is evidence about a moment, not about a state, and neither completion nor rollback can be demonstrated from it. This cost lands on every disposition at once and cannot be paid per item.
+**Consequence.** A request that already resolved its session, an API key issued months ago, a webhook fired externally, a registered schedule, or a workflow already started can each produce a personal-context row *after* that user's rows have moved. `[inferred]` A scan taken inside that window can come back clean while the retired mode is still writable — so a clean scan is evidence about a moment, not about a state, and neither completion nor rollback can be demonstrated from it. This cost lands on every disposition at once and cannot be paid per item.
 
 **What would have to be true for the mode to be non-writable** — stated as conditions, not as work:
 
 1. No resolver on any path yields a null, undefined, or empty organization for an authenticated caller — across all three resolvers plus the two protocol surfaces that supply the value without consulting them.
 2. No credential in circulation can *only* resolve to personal. The personal API key model has no organization column at all, so every already-issued key is structurally incapable of naming one. `[source]`
-3. No session in flight still carries a null active organization — including the signed cookie cache, trusted for up to five minutes without a database read. `[source]`
+3. No request that already resolved its session still carries a null active organization. New session resolutions read the database because the signed session cookie cache is disabled. `[source]`
 4. No registered schedule and no already-started workflow still holds a null organization in its payload, and none can be replayed with one.
 5. No linked record a webhook derives tenancy from still resolves to a null organization.
 6. The project-guest write carve-out no longer presents a personal workspace inside a host organization.

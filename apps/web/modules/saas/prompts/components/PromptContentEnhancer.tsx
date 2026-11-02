@@ -1,11 +1,6 @@
 "use client";
 
-import {
-	useCoAgent,
-	useCopilotAction,
-	useCopilotChat,
-	useCopilotReadable,
-} from "@copilotkit/react-core";
+import { useCopilotAction, useCopilotReadable } from "@copilotkit/react-core";
 import { CopilotSidebar } from "@copilotkit/react-ui";
 import { promptContentProblem } from "@repo/utils/prompt-content";
 import {
@@ -14,7 +9,9 @@ import {
 	useConfirmChangesVerdictCard,
 } from "@saas/agents/copilot/useConfirmChangesVerdict";
 import { CopilotAssistantMessageForPromptEnhancer } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import { useCopilotChatSessionSelector } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useReseedAgentStateOnRunStart } from "@saas/shared/components/copilot/use-agent-state-reseed";
+import { usePageAgent } from "@saas/shared/components/copilot/use-page-agent";
 import "@copilotkit/react-ui/styles.css";
 import "./PromptContentEnhancer.css";
 import { diffPartialText, diffToHtml } from "@saas/projects/lib/diff-utils";
@@ -68,11 +65,7 @@ interface AgentState {
 	focusAnchor?: string;
 	error?: string;
 	retryCount?: number;
-	/**
-	 * Per-turn reasoning trace populated by enhance-node.ts. Declared here
-	 * AND seeded in `useCoAgent`'s `initialState` for STATE_SNAPSHOT events
-	 * to survive CopilotKit's key filter.
-	 */
+	/** Per-turn reasoning trace populated by enhance-node.ts. */
 	reasoningByTurn?: Record<
 		number,
 		{
@@ -83,6 +76,8 @@ interface AgentState {
 		}
 	>;
 }
+
+const PROMPT_ENHANCER_STATE_KEYS = ["streamingContent"] as const;
 
 // Get format display name
 function getFormatDisplayName(format: PromptFormat): string {
@@ -149,7 +144,9 @@ export function PromptContentEnhancer({
 	const [displayContent, setDisplayContent] = useState(() =>
 		escapeForDisplay(initialContent),
 	);
-	const { isLoading: isAILoading } = useCopilotChat();
+	const isAILoading = useCopilotChatSessionSelector(
+		(session) => session.isLoading,
+	);
 	const contentErrorId = useId();
 	const contentProblem = promptContentProblem(currentContent);
 
@@ -162,35 +159,33 @@ export function PromptContentEnhancer({
 		currentContentRef.current = currentContent;
 	}, [currentContent]);
 
-	// Initialize CopilotKit agent state
+	// Keep the run-start seed aligned with the current editor text.
 	const {
 		state: agentState,
 		setState: setAgentState,
 		nodeName,
-	} = useCoAgent<AgentState>({
-		name: "prompt_enhancer",
-		initialState: {
+	} = usePageAgent<AgentState>(
+		"prompt_enhancer",
+		{
 			promptId,
 			promptName,
 			promptDescription,
 			format,
 			category,
 			tags,
-			currentContent: initialContent,
+			currentContent,
 			enhancementType: "general",
 			userInstructions: undefined,
-			enhancedContent: initialContent,
-			streamingContent: initialContent,
+			enhancedContent: currentContent,
+			streamingContent: currentContent,
 			explanation: undefined,
 			focusAnchor: undefined,
 			error: undefined,
 			retryCount: 0,
-			// Declare reasoningByTurn in initialState so CopilotKit's
-			// useCoAgent doesn't filter it out of STATE_SNAPSHOT updates.
-			// Same rationale as DocumentEditor.tsx:1286.
 			reasoningByTurn: {},
 		},
-	});
+		PROMPT_ENHANCER_STATE_KEYS,
+	);
 
 	// Restore browser context after a fresh-thread connect clears state.
 	// `currentContent` follows the spread: the agent enhances that field, and
@@ -231,11 +226,10 @@ export function PromptContentEnhancer({
 			});
 			agentStateInitializedRef.current = true;
 			setAgentState({
-				...agentState,
 				currentContent: initialContent,
 				enhancedContent: initialContent,
 				streamingContent: initialContent,
-			});
+			} as AgentState);
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [initialContent]);
@@ -332,9 +326,8 @@ export function PromptContentEnhancer({
 		// Only sync when user is actually editing
 		setDisplayContent(escapeForDisplay(currentContent));
 		setAgentState({
-			...agentState,
 			streamingContent: currentContent,
-		});
+		} as AgentState);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [currentContent]);
 
@@ -423,7 +416,6 @@ export function PromptContentEnhancer({
 							baselineRef.current = newContent;
 							if (agentStateRef.current) {
 								setAgentState({
-									...agentStateRef.current,
 									currentContent: newContent,
 									enhancedContent: newContent,
 									streamingContent: newContent,
@@ -439,7 +431,6 @@ export function PromptContentEnhancer({
 							setDisplayContent(escapeForDisplay(oldContent));
 							if (agentStateRef.current) {
 								setAgentState({
-									...agentStateRef.current,
 									streamingContent: oldContent,
 									enhancedContent: oldContent,
 								} as AgentState);

@@ -17,14 +17,7 @@
  */
 
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
-import {
-	filterWorkspaceIdsForTenant,
-	getInstanceWithTemplate,
-	getOrganizationMembership,
-	getTemplateWorkflow,
-} from "@repo/database";
 import type {
-	DeepResearcherInput,
 	DeepResearcherOutput,
 	DeepResearcherProgress,
 	SubAgentResult,
@@ -32,7 +25,11 @@ import type {
 import { getTemporalClient } from "@repo/temporal";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
-import { v4 as uuidv4 } from "uuid";
+import {
+	admitWorkflowTemplateRun,
+	newWorkflowTemplateExecutionId,
+	startDeepResearcherWorkflow,
+} from "../workflow-template-run";
 
 const POLL_INTERVAL = 200; // Poll every 200ms
 const MAX_POLL_DURATION = 600000; // 10 minutes max
@@ -66,153 +63,17 @@ export async function POST(request: NextRequest) {
 		const userId = session.user.id;
 		const body = await request.json();
 
-		const {
+		// The request's checks and the workflow's input, shared with the
+		// agent runtime's deep-researcher engine.
+		const admitted = await admitWorkflowTemplateRun(userId, body);
+		if (admitted instanceof Response) {
+			return admitted;
+		}
+		const { templateSlug } = admitted;
+		const executionId = newWorkflowTemplateExecutionId(
+			userId,
 			templateSlug,
-			instanceId,
-			query,
-			context,
-			organizationId,
-			maxSubAgents,
-			maxIterations,
-			successCriteria,
-			reasoningEffort,
-		} = body;
-
-		// Validate required fields
-		if (!templateSlug || !query) {
-			return new Response(
-				JSON.stringify({
-					error: "templateSlug and query are required",
-				}),
-				{
-					status: 400,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
-		}
-
-		// Check if template has a dedicated workflow
-		const workflowConfig = getTemplateWorkflow(templateSlug);
-		if (!workflowConfig) {
-			return new Response(
-				JSON.stringify({
-					error: `Template "${templateSlug}" does not have a dedicated workflow. Use the Orchestrator instead.`,
-					code: "NO_WORKFLOW",
-				}),
-				{
-					status: 400,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
-		}
-
-		// Verify organization membership if organizationId provided
-		if (organizationId) {
-			const membership = await getOrganizationMembership(
-				organizationId,
-				userId,
-			);
-			if (!membership) {
-				return new Response(
-					JSON.stringify({
-						error: "You are not a member of this organization",
-						code: "FORBIDDEN",
-					}),
-					{
-						status: 403,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
-			}
-		}
-
-		// If instanceId provided, validate access
-		let instanceContext: string | undefined;
-		let instanceWorkspaceIds: string[] = [];
-		if (instanceId) {
-			const instance = await getInstanceWithTemplate(
-				instanceId,
-				userId,
-				organizationId ?? null,
-			);
-			if (!instance) {
-				return new Response(
-					JSON.stringify({
-						error: "Instance not found or access denied",
-						code: "INSTANCE_NOT_FOUND",
-					}),
-					{
-						status: 404,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
-			}
-
-			// Extract workspace IDs for RAG. The instance row is tenant-checked
-			// above, but the ids it stores are not: rows saved before instance
-			// writes bound workspaces to the instance's organization can name
-			// another organization's workspace. Narrow them here so a foreign id
-			// never enters the workflow input or its history.
-			const { allowed, dropped } = await filterWorkspaceIdsForTenant({
-				workspaceIds: instance.workspaceIds ?? [],
-				userId,
-				organizationId: organizationId ?? null,
-			});
-			if (dropped.length > 0) {
-				console.warn(
-					"[Workflow Template Stream] Dropping workspaces outside the instance's organization",
-					{ userId, instanceId, dropped },
-				);
-			}
-			instanceWorkspaceIds = allowed;
-
-			// Build instance context from goal and custom instructions
-			const contextParts: string[] = [];
-
-			// Add goal if available
-			if (instance.goal) {
-				contextParts.push(`Goal: ${instance.goal}`);
-			}
-
-			// Add instance description
-			if (instance.description) {
-				contextParts.push(`Instance Notes: ${instance.description}`);
-			}
-
-			// Extract custom instructions (role, additionalContext, constraints)
-			if (
-				instance.customInstructions &&
-				typeof instance.customInstructions === "object"
-			) {
-				const custom = instance.customInstructions as {
-					role?: string;
-					additionalContext?: string;
-					constraints?: string;
-				};
-
-				if (custom.role) {
-					contextParts.push(
-						`Custom Role Instructions: ${custom.role}`,
-					);
-				}
-				if (custom.additionalContext) {
-					contextParts.push(
-						`Additional Context: ${custom.additionalContext}`,
-					);
-				}
-				if (custom.constraints) {
-					contextParts.push(`Constraints: ${custom.constraints}`);
-				}
-			}
-
-			if (contextParts.length > 0) {
-				instanceContext = contextParts.join("\n\n");
-			}
-		}
-
-		// Generate unique execution ID with userId prefix for authorization checks
-		// Format: wf-{userId}-{templateSlug}-{uuid}
-		const executionId = `wf-${userId}-${templateSlug}-${uuidv4()}`;
+		);
 
 		// Get Temporal client
 		const temporalClient = await getTemporalClient();
@@ -258,40 +119,11 @@ export async function POST(request: NextRequest) {
 					// Build workflow input based on template type
 					// Currently only supporting deep-researcher
 					if (templateSlug === "deep-researcher") {
-						const workflowInput: DeepResearcherInput = {
-							executionId,
-							query,
-							userId,
-							organizationId,
-							instanceId,
-							context: context || instanceContext,
-							maxSubAgents:
-								maxSubAgents ??
-								workflowConfig.defaultMaxSubAgents,
-							maxIterations:
-								maxIterations ??
-								workflowConfig.defaultMaxIterations,
-							successCriteria,
-							reasoningEffort,
-							workspaceIds:
-								instanceWorkspaceIds.length > 0
-									? instanceWorkspaceIds
-									: undefined,
-						};
-
 						// Start the workflow
-						const handle = await temporalClient.workflow.start(
-							workflowConfig.workflowName,
-							{
-								taskQueue: workflowConfig.taskQueue,
-								workflowId: executionId,
-								// A person asked this research question and
-								// watches it stream, so every step may run on
-								// their ChatGPT plan (Fizzy #2770).
-								args: [
-									{ ...workflowInput, planEligible: true },
-								],
-							},
+						const handle = await startDeepResearcherWorkflow(
+							temporalClient,
+							admitted,
+							executionId,
 						);
 
 						console.log(

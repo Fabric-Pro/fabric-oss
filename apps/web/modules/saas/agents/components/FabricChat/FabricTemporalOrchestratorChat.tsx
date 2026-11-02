@@ -101,6 +101,7 @@ import {
 	ConversationContent,
 	ConversationScrollButton,
 } from "../../../../../components/ai-elements/conversation";
+import { DeferredResponse as Response } from "../../../../../components/ai-elements/deferred-response";
 import {
 	McpAppFrame,
 	prefetchMcpAppHtml,
@@ -119,7 +120,6 @@ import {
 	ReasoningContent,
 	ReasoningTrigger,
 } from "../../../../../components/ai-elements/reasoning";
-import { Response } from "../../../../../components/ai-elements/response";
 import { generateMessageId } from "../../hooks/useConversationHistory";
 import { useEscToStopOrClose } from "../../hooks/useEscToStopOrClose";
 import { useOrchestratorChatStream } from "../../hooks/useOrchestratorChatStream";
@@ -154,7 +154,8 @@ import { CarriedOverContextBanner } from "./CarriedOverContextBanner";
 import { ContextCompactionNotice } from "./ContextCompactionNotice";
 import { ConversationHandoffCard } from "./ConversationHandoffCard";
 import { ConversationToolPicker } from "./ConversationToolPicker";
-import { ChartCard, isChartArtifact } from "./cards/ChartCard";
+import { isChartArtifact } from "./cards/chart-artifact";
+import { DeferredChartCard as ChartCard } from "./cards/DeferredChartCard";
 import {
 	MultiAgentPickBadges,
 	MultiAgentTurnRow,
@@ -208,7 +209,10 @@ import {
 import { AnsweredByModel } from "./shared/AnsweredByModel";
 import { AnsweredClarification } from "./shared/AnsweredClarification";
 import { ApiBillingNotice } from "./shared/ApiBillingNotice";
+import { hasActiveContext } from "./shared/active-context";
+import { ChatComposerHeader } from "./shared/ChatComposerHeader";
 import { ChatFailureNotice } from "./shared/ChatFailureNotice";
+import { ChatRestoreLoading } from "./shared/ChatRestoreLoading";
 import { MemoizedRow } from "./shared/MemoizedRow";
 import { TruncationNotice } from "./shared/TruncationNotice";
 import { toToolCallItems } from "./shared/tool-call-items";
@@ -731,7 +735,7 @@ export function FabricTemporalOrchestratorChat({
 		onConversationStarted: (startedConversationId) =>
 			void handleConversationStarted(startedConversationId),
 	});
-	const restoreExtraAgents = multiAgent.restoreExtras;
+	const restoreSavedAgents = multiAgent.restoreSaved;
 
 	// Hydrate once. The FR13 "agent no longer available" notice belongs to the
 	// surface (page or drawer), not to either engine — see
@@ -748,11 +752,11 @@ export function FabricTemporalOrchestratorChat({
 		agentSelectionHydratedRef.current = true;
 		const [first, ...rest] = data.selectedAgents;
 		const initial = first ?? data.defaultAgent;
-		if (initial) {
-			setSelectedAgent(initial as SelectedAgent);
-		}
-		restoreExtraAgents(rest as SelectedAgent[]);
-	}, [agentSelectionQuery.data, showAgentPicker, restoreExtraAgents]);
+		restoreSavedAgents(
+			initial ? (initial as SelectedAgent) : undefined,
+			rest as SelectedAgent[],
+		);
+	}, [agentSelectionQuery.data, showAgentPicker, restoreSavedAgents]);
 
 	// The picks: the first is the orchestrator's model; with multi-agent
 	// turns (`COPILOTKIT_MULTI_AGENT_CHAT`) agents picked after it send the
@@ -2187,8 +2191,9 @@ export function FabricTemporalOrchestratorChat({
 	// turn: its progress and any pending approval stream in again, Stop and
 	// approvals reach it, and it is saved from here when it ends, like a turn
 	// sent here. Never while this tab is sending or streaming one itself.
+	// A multi-agent turn is followed by `useMultiAgentChat` instead.
 	const runningTurn = completedExecutions.find(
-		(execution) => execution.inProgress,
+		(execution) => execution.inProgress && !execution.multiAgent,
 	);
 	useEffect(() => {
 		if (
@@ -3148,6 +3153,18 @@ export function FabricTemporalOrchestratorChat({
 		},
 	];
 
+	const composerContext = {
+		workspaceIds: attachedWorkspaceIds,
+		mcpConfigIds: selectedConversationMcpIds ?? enabledToolIds ?? undefined,
+		agentIds: enabledAgentIds || undefined,
+		fabricToolIds: enabledFabricToolIds || undefined,
+		integrationIds: enabledIntegrationIds || undefined,
+		projectId: attachedProjectId,
+	};
+	const showComposerActions =
+		!compactMode ||
+		(showToolPicker && !lockConversationToolPicker) ||
+		hasActiveContext(composerContext);
 	const welcomeTitle =
 		welcomeMode === "focused-agent"
 			? `Work with ${_agentName}`
@@ -3296,7 +3313,7 @@ export function FabricTemporalOrchestratorChat({
 					pendingApproval={isAwaitingApproval}
 					isLoading={isLoading}
 					variant={isWelcome ? "hero" : "default"}
-					placeholder="Ask your question... (type @ to mention a template)"
+					placeholder="Ask Fabric anything... (type @ to mention a template)"
 					attachTooltip="Attach files"
 					attachDisabled={false}
 					onAttachClick={handleAttachClick}
@@ -3372,13 +3389,13 @@ export function FabricTemporalOrchestratorChat({
 					onMergedMcpConfigIdsChange={setTemplateMcpConfigIds}
 					onMergedFabricToolIdsChange={setTemplateFabricToolIds}
 					headerSlot={
-						hasMounted && (
-							<div className="flex flex-wrap items-center justify-between gap-2">
-								{/* Rendered only when opted in, so the
-								    surfaces that leave the picker off
-								    keep this row's original layout. */}
-								{showAgentPicker && (
-									<div className="flex flex-wrap items-center gap-2">
+						<ChatComposerHeader
+							showSelection={showAgentPicker}
+							showActions={showComposerActions}
+							selection={
+								hasMounted &&
+								showAgentPicker && (
+									<div className="flex items-center gap-2">
 										<AgentModelPicker
 											selectedAgents={[
 												...(selectedAgent
@@ -3445,99 +3462,96 @@ export function FabricTemporalOrchestratorChat({
 											onRemove={multiAgent.toggle}
 										/>
 									</div>
-								)}
-								<ActiveContextIndicator
-									workspaceIds={attachedWorkspaceIds}
-									mcpConfigIds={
-										selectedConversationMcpIds ??
-										enabledToolIds ??
-										undefined
-									}
-									agentIds={enabledAgentIds || undefined}
-									fabricToolIds={
-										enabledFabricToolIds || undefined
-									}
-									integrationIds={
-										enabledIntegrationIds || undefined
-									}
-									projectId={attachedProjectId}
-									onProjectRemove={removeProject}
-									projectRemoveDisabled={isRemovingProject}
-									prioritizedToolIds={prioritizedToolIds}
-									prioritizedAgentIds={prioritizedAgentIds}
-									prioritizedMcpConfigIds={
-										prioritizedMcpConfigIds
-									}
-									prioritizedIntegrationIds={
-										prioritizedIntegrationIds
-									}
-									onToolPrioritize={onToolPrioritize}
-									onAgentPrioritize={onAgentPrioritize}
-									onMcpPrioritize={onMcpPrioritize}
-									onIntegrationPrioritize={
-										onIntegrationPrioritize
-									}
-									organizationId={organizationId}
-								/>
-								{showToolPicker &&
-									!lockConversationToolPicker && (
-										<Button
-											type="button"
-											variant="ghost"
-											size="sm"
-											className="h-6 gap-1.5 rounded-full border border-border/80 bg-muted/40 px-2.5 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+								)
+							}
+						>
+							{hasMounted && (
+								<>
+									<ActiveContextIndicator
+										className="flex-nowrap"
+										{...composerContext}
+										onProjectRemove={removeProject}
+										projectRemoveDisabled={
+											isRemovingProject
+										}
+										prioritizedToolIds={prioritizedToolIds}
+										prioritizedAgentIds={
+											prioritizedAgentIds
+										}
+										prioritizedMcpConfigIds={
+											prioritizedMcpConfigIds
+										}
+										prioritizedIntegrationIds={
+											prioritizedIntegrationIds
+										}
+										onToolPrioritize={onToolPrioritize}
+										onAgentPrioritize={onAgentPrioritize}
+										onMcpPrioritize={onMcpPrioritize}
+										onIntegrationPrioritize={
+											onIntegrationPrioritize
+										}
+										organizationId={organizationId}
+									/>
+									{showToolPicker &&
+										!lockConversationToolPicker && (
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												onClick={() =>
+													setConversationToolPickerOpen(
+														true,
+													)
+												}
+											>
+												<Wrench className="mr-2 h-4 w-4" />
+												Chat tools
+											</Button>
+										)}
+									{!compactMode &&
+										(state.plan ||
+											artifactSources.length > 0 ||
+											documentArtifacts.length > 0) && (
+											<ArtifactsPanelTrigger
+												onClick={() =>
+													setIsArtifactsPanelOpen(
+														true,
+													)
+												}
+												planSteps={
+													state.plan?.steps.length ||
+													0
+												}
+												completedSteps={completedSteps}
+												documentsCount={
+													documentArtifacts.length
+												}
+												sourcesCount={
+													artifactSources.length
+												}
+												isActive={isArtifactsPanelOpen}
+											/>
+										)}
+									{!compactMode && (
+										<MemoryPanelTrigger
 											onClick={() =>
-												setConversationToolPickerOpen(
-													true,
-												)
+												setIsMemoryPanelOpen(true)
 											}
-										>
-											<Wrench className="h-3 w-3" />
-											Chat tools
-										</Button>
-									)}
-								{!compactMode &&
-									(state.plan ||
-										artifactSources.length > 0 ||
-										documentArtifacts.length > 0) && (
-										<ArtifactsPanelTrigger
-											onClick={() =>
-												setIsArtifactsPanelOpen(true)
-											}
-											planSteps={
-												state.plan?.steps.length || 0
-											}
-											completedSteps={completedSteps}
-											documentsCount={
-												documentArtifacts.length
-											}
-											sourcesCount={
-												artifactSources.length
-											}
-											isActive={isArtifactsPanelOpen}
+											isActive={isMemoryPanelOpen}
 										/>
 									)}
-								{!compactMode && (
-									<MemoryPanelTrigger
-										onClick={() =>
-											setIsMemoryPanelOpen(true)
-										}
-										isActive={isMemoryPanelOpen}
-									/>
-								)}
-							</div>
-						)
+								</>
+							)}
+						</ChatComposerHeader>
 					}
 				/>
-				{!isWelcome && !compactMode && (
-					<p className="mt-1.5 text-center text-xs text-muted-foreground">
-						Always review the accuracy of responses.
-					</p>
-				)}
 			</div>
 		</div>
 	);
 
+	if (activeConversationId && !hasMounted) {
+		return <ChatRestoreLoading />;
+	}
 	return (
 		<div className="flex h-full overflow-hidden">
 			<div className="flex min-w-0 flex-1 flex-col">

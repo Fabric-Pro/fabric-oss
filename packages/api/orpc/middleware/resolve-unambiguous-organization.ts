@@ -7,13 +7,11 @@
  * `tenantContextMiddleware` builds its context from
  * `session.activeOrganizationId` and nothing else. That pointer is maintained
  * from the browser, and there are several ordinary ways for it to be empty on
- * a request whose page is unambiguously inside one organization: the signed
- * `session_data` cookie is a rolling snapshot, so a Prisma write cannot make a
- * repaired row visible to the API for up to five minutes; the client-side
- * alignment that CAN refresh that cookie runs once per organization and is
- * deliberately not retried after a refusal; and a bare `/app` load resolves no
- * organization at all by design, so links that redirect into an organization
- * arrive with the pointer still empty.
+ * a request whose page is unambiguously inside one organization: the
+ * client-side alignment runs once per organization and is deliberately not
+ * retried after a refusal; and a bare `/app` load resolves no organization at
+ * all by design, so links that redirect into an organization arrive with the
+ * session pointer still empty.
  *
  * Every one of those produced the same user-visible outcome on the prompt
  * deletion path: a refusal whose copy promises that reloading the page will

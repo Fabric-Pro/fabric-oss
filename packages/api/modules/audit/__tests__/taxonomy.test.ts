@@ -309,7 +309,8 @@ describe("audit.taxonomy handler", () => {
 		// + 1 project.document_analysis.resolved (a saved revision applied a
 		// finding's recommendation and recorded it as Resolved; stable key,
 		// run id and version only, never text), plus native session continuation = 225.
-		expect(result.actions).toHaveLength(225);
+		// Manual closure of unknown remote work records a separate recovery action.
+		expect(result.actions).toHaveLength(226);
 		expect(result.actions).toContain("org.member.left");
 		expect(result.actions).toContain("org.chat_approval.decided");
 		expect(result.actions).toContain("org.chat_run.cancel_requested");
@@ -501,6 +502,7 @@ describe("audit.taxonomy handler", () => {
 		expect(result.actions).toContain(
 			"weave.session.continuation_requested",
 		);
+		expect(result.actions).toContain("weave.session.recovery_closed");
 		// Atlas analysis lifecycle + per-node regenerate
 		// + monitored-branch configuration.
 		expect(result.actions).toContain("atlas.analysis.requested");

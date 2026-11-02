@@ -444,10 +444,11 @@ export function useMultiAgentStream({
 				const resumeBody = (
 					executionId: string,
 					afterEvent?: ChatEventCursor,
+					eventReplay = true,
 				) =>
 					JSON.stringify({
-						eventReplay: true,
-						afterEvent,
+						eventReplay,
+						afterEvent: eventReplay ? afterEvent : undefined,
 						executionId,
 						organizationId,
 						conversationId: executionOptions?.conversationId,
@@ -584,13 +585,22 @@ export function useMultiAgentStream({
 					executionId: resumeExecutionId,
 					afterEvent: resumeCursor,
 					signal,
-					reattach: (executionId, resumeSignal, afterEvent) =>
+					reattach: (
+						executionId,
+						resumeSignal,
+						afterEvent,
+						eventReplay,
+					) =>
 						fetch(
 							"/api/agents/fabric-ai/orchestrator-temporal/stream",
 							{
 								method: "POST",
 								headers: { "Content-Type": "application/json" },
-								body: resumeBody(executionId, afterEvent),
+								body: resumeBody(
+									executionId,
+									afterEvent,
+									eventReplay,
+								),
 								signal: resumeSignal,
 							},
 						),
@@ -599,6 +609,12 @@ export function useMultiAgentStream({
 							return;
 						}
 						switch (data.type) {
+							case "replay_unavailable":
+								updateResponse((prev) => ({
+									...prev,
+									eventCursor: undefined,
+								}));
+								break;
 							case "started":
 								updateResponse((prev) => ({
 									...prev,

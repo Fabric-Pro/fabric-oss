@@ -280,6 +280,57 @@ describe("detectGlossyOpportunities", () => {
 		expect(proposal.prompt).toContain('<glossy_section ref="sec-1">');
 	});
 
+	it("keeps layers and team only for a Proposal's visuals step (Fizzy #2946)", async () => {
+		const answer = [
+			{ sectionRef: "sec-1", kind: "layers", reason: "Three layers." },
+			{ sectionRef: "sec-2", kind: "team", reason: "Both teams." },
+		];
+		modelReturns(answer);
+		modelReturns(answer);
+		const input = {
+			...context,
+			documentType: "PROPOSAL",
+			sections: sections(2),
+		};
+
+		const glossy = await detectGlossyOpportunities(input);
+		const proposal = await detectGlossyOpportunities({
+			...input,
+			proposalArtifact: true,
+		});
+
+		expect(glossy).toMatchObject({ opportunities: [], discarded: 2 });
+		expect(proposal).toMatchObject({
+			discarded: 0,
+			opportunities: [
+				{ sectionKey: "key-0", kind: "layers" },
+				{ sectionKey: "key-1", kind: "team" },
+			],
+		});
+		const [glossyCall, proposalCall] = mocks.generateObject.mock.calls.map(
+			([call]) => call,
+		);
+		const kindDescription = (call: {
+			schema: {
+				shape: {
+					opportunities: {
+						element: { shape: { kind: { description?: string } } };
+					};
+				};
+			};
+		}) => call.schema.shape.opportunities.element.shape.kind.description;
+		expect(kindDescription(glossyCall)).toBe(
+			"One of: timeline, comparison, stat, flow, org_chart.",
+		);
+		expect(kindDescription(proposalCall)).toBe(
+			"One of: timeline, comparison, stat, flow, org_chart, layers, team.",
+		);
+		expect(glossyCall.instructions).not.toContain("layers");
+		expect(proposalCall.instructions).toContain(
+			"## More visual kinds for this Proposal",
+		);
+	});
+
 	it("degrades to no opportunities when the response is truncated", async () => {
 		mocks.generateObject.mockRejectedValueOnce(noObjectError("length"));
 

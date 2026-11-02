@@ -6,7 +6,8 @@
  */
 
 import { config } from "@repo/config";
-import { getSignedUrl, uploadFile } from "@repo/storage";
+import { recordChatMediaObject } from "@repo/database";
+import { deleteFile, getSignedUrl, uploadFile } from "@repo/storage";
 import { CHAT_IMAGE_UPLOAD_MAX_BYTES } from "@saas/agents/lib/chat-image-upload-limit";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
@@ -100,6 +101,26 @@ export async function POST(request: NextRequest) {
 			bucket,
 			contentType: file.type,
 		});
+
+		try {
+			await recordChatMediaObject({
+				storageKey: storagePath,
+				kind: "UPLOADED_IMAGE",
+				userId,
+				organizationId: organizationId ?? null,
+				conversationId: null,
+			});
+		} catch (error) {
+			try {
+				await deleteFile(storagePath, { bucket });
+			} catch (cleanupError) {
+				console.error(
+					"[Upload Image] Failed to clean up unrecorded object:",
+					cleanupError,
+				);
+			}
+			throw error;
+		}
 
 		// Get a signed download URL (1 hour expiry)
 		const url = await getSignedUrl(storagePath, {

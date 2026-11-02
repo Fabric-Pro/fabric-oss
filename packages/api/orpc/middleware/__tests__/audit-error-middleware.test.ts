@@ -57,6 +57,7 @@ vi.mock("@repo/observability", () => ({
 }));
 
 import { createHash } from "node:crypto";
+import { ORPCError } from "@orpc/client";
 import { runWithCorrelationId } from "@repo/utils/correlation-id";
 import {
 	recordAuthorizedProject,
@@ -72,6 +73,7 @@ import {
 	auditErrorMiddleware,
 	REDACTED_BODY_FIELDS,
 	REDACTED_SECRET_FIELDS,
+	recordProcedureFailure,
 } from "../audit-error-middleware";
 import { sanitizeInput } from "../audit-error-sanitize";
 
@@ -1666,5 +1668,44 @@ describe("auditErrorMiddleware — span flush (v2 item 4)", () => {
 		]);
 		// Either called with no args, or called with undefined — both valid.
 		expect(mocks.flushSpansOnFailureMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("recordProcedureFailure — a call outside oRPC", () => {
+	it("writes the failure row for a call outside oRPC", async () => {
+		await recordProcedureFailure(
+			new ORPCError("FORBIDDEN", {
+				message: "Missing required permission: ai:chat",
+			}),
+			buildContext(),
+			{
+				projectId: "project-example-1",
+				organizationId: "org-example-1",
+				conversationId: "conversation-example-1",
+				messages: [{ role: "user", content: "How does auth work?" }],
+			},
+			["atlas", "chat"],
+		);
+
+		expect(mocks.hasOrganizationTieMock).toHaveBeenCalledWith(
+			"user-1",
+			"org-example-1",
+		);
+		expect(mocks.recordAuditMock).toHaveBeenCalledTimes(1);
+		const row = mocks.recordAuditMock.mock.calls[0]?.[0];
+		expect(row).toMatchObject({
+			action: "error.permission_denied",
+			outcome: "failure",
+			organizationId: "org-example-1",
+			projectId: null,
+			resource: { type: "procedure", id: "atlas.chat" },
+		});
+		expect(row.metadata.input.messages).toEqual([
+			{
+				role: "user",
+				content: expect.objectContaining({ redacted: true }),
+			},
+		]);
+		expect(JSON.stringify(row)).not.toContain("How does auth work?");
 	});
 });

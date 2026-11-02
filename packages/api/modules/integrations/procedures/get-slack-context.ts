@@ -12,51 +12,13 @@
 
 import { ORPCError } from "@orpc/server";
 import { db } from "@repo/database";
-import { decryptApiKey, encryptApiKey } from "@repo/utils";
+import { readSlackConnectionIdentity } from "@repo/integrations/slack";
 import { z } from "zod";
 import {
 	Permissions,
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-
-interface StoredSlackCredentials {
-	access_token?: string;
-	team_id?: string;
-	team_name?: string;
-	bot_user_id?: string;
-	[key: string]: unknown;
-}
-
-async function fetchSlackAuthTest(accessToken: string): Promise<{
-	teamId?: string;
-	teamName?: string;
-	botUserId?: string;
-}> {
-	const response = await fetch("https://slack.com/api/auth.test", {
-		headers: { Authorization: `Bearer ${accessToken}` },
-	});
-	if (!response.ok) {
-		return {};
-	}
-	const data = (await response.json()) as {
-		ok: boolean;
-		team_id?: string;
-		team?: string;
-		bot_id?: string;
-		user_id?: string;
-	};
-	if (!data.ok) {
-		return {};
-	}
-	return {
-		teamId: data.team_id,
-		teamName: data.team,
-		// auth.test returns user_id which IS the bot's user id when called with
-		// a bot token (xoxb-). bot_id is a different identifier.
-		botUserId: data.user_id,
-	};
-}
 
 export const getSlackContextProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.INTEGRATION_READ))
@@ -103,61 +65,24 @@ export const getSlackContextProcedure = tenantProtectedProcedure
 			return null;
 		}
 
-		let credentials: StoredSlackCredentials;
+		let identity: Awaited<ReturnType<typeof readSlackConnectionIdentity>>;
 		try {
-			let json: string;
-			try {
-				json = decryptApiKey(integration.credentials);
-			} catch {
-				json = integration.credentials;
-			}
-			credentials = JSON.parse(json) as StoredSlackCredentials;
-		} catch {
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: "Slack credentials are corrupted",
-			});
-		}
-
-		// Happy path: fields were captured during OAuth.
-		if (credentials.team_id) {
-			return {
-				teamId: credentials.team_id,
-				teamName: credentials.team_name ?? null,
-				botUserId: credentials.bot_user_id ?? null,
-			};
-		}
-
-		// Legacy path: fall back to auth.test and backfill.
-		if (!credentials.access_token) {
-			return null;
-		}
-
-		const fetched = await fetchSlackAuthTest(credentials.access_token);
-		if (!fetched.teamId) {
-			return null;
-		}
-
-		const updated: StoredSlackCredentials = {
-			...credentials,
-			team_id: fetched.teamId,
-			team_name: fetched.teamName,
-			bot_user_id: fetched.botUserId,
-		};
-		try {
-			await db.workflowIntegration.update({
-				where: { id: integration.id },
-				data: { credentials: encryptApiKey(JSON.stringify(updated)) },
-			});
+			identity = await readSlackConnectionIdentity(integration);
 		} catch (error) {
-			console.warn(
-				"[getSlackContext] Failed to backfill credentials cache",
-				error,
-			);
+			throw new ORPCError("INTERNAL_SERVER_ERROR", {
+				message:
+					error instanceof Error &&
+					error.message.startsWith("Slack credentials are corrupted")
+						? "Slack credentials are corrupted"
+						: "Could not verify the connected Slack workspace",
+			});
 		}
-
+		if (!identity.teamId) {
+			return null;
+		}
 		return {
-			teamId: fetched.teamId,
-			teamName: fetched.teamName ?? null,
-			botUserId: fetched.botUserId ?? null,
+			teamId: identity.teamId,
+			teamName: identity.teamName ?? null,
+			botUserId: identity.botUserId ?? null,
 		};
 	});

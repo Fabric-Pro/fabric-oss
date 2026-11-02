@@ -131,6 +131,15 @@ export function applyReasoningDuration(
 	assistantMessageId: string,
 	durationMs: number,
 ): DirectStreamMessage[] {
+	if (
+		!messages.some(
+			(m) =>
+				m.id === assistantMessageId &&
+				m.reasoningDurationMs !== durationMs,
+		)
+	) {
+		return messages;
+	}
 	return messages.map((m) => {
 		if (m.id !== assistantMessageId) {
 			return m;
@@ -400,13 +409,23 @@ export function applyDirectStreamEvent(
 			// caption is replaced by the answer as soon as text arrives.
 			const phaseLabel = data.message || data.phase;
 			if (phaseLabel) {
-				setMessages((prev) =>
-					prev.map((m) =>
+				setMessages((prev) => {
+					const label = String(phaseLabel);
+					if (
+						!prev.some(
+							(m) =>
+								m.id === assistantMessageId &&
+								m.statusLabel !== label,
+						)
+					) {
+						return prev;
+					}
+					return prev.map((m) =>
 						m.id === assistantMessageId
-							? { ...m, statusLabel: String(phaseLabel) }
+							? { ...m, statusLabel: label }
 							: m,
-					),
-				);
+					);
+				});
 			}
 			break;
 		}

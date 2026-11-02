@@ -151,8 +151,15 @@ export interface LogSourceAdapter {
 	 * `scope.organizationId`, unless the adapter was built for the deployment's
 	 * designated operator project.
 	 */
-	summarizeErrorGroups?(scope: ErrorGroupScope): Promise<RawErrorGroup[]>;
+	summarizeErrorGroups?(scope: ErrorGroupScope): Promise<ErrorGroupSummary>;
 }
+
+/** Array result kept compatible with adapters that do not report platform noise. */
+export type ErrorGroupSummary = RawErrorGroup[] & {
+	platformNoiseSetAside?: number;
+	platformNoiseByRule?: Record<string, number>;
+	platformNoiseApps?: string[];
+};
 
 /** What the recurring-error scan asks a log source for. Hard bounds. */
 export interface ErrorGroupScope {

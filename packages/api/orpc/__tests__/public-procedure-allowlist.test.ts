@@ -43,10 +43,6 @@ const ALLOWED: Record<string, string> = {
 		"Reached from a link in an email by someone who may not be signed in — that is the point of the revoke path.",
 	"integrations/procedures/teams-events.ts":
 		"Receives Teams event callbacks from Microsoft, authenticated by the request's own signature.",
-	"kanban/procedures/webhook.ts":
-		"Webhook receiver for the local kanban CLI.",
-	"mcp/procedures/oauth.ts": "OAuth callback for MCP server connections.",
-	"mcp/procedures/atlassian-cloud.ts": "Atlassian OAuth/discovery callback.",
 	"projects/procedures/code-indexing/github-webhook.ts":
 		"GitHub push webhook, verified by its signature header.",
 	"runtime/procedures/resolve-tenant.ts":

@@ -1,92 +1,134 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
+import { beforeEach, expect, it, vi } from "vitest";
 import { LaunchFabricDesktopBar } from "../LaunchFabricDesktopBar";
 
-vi.mock("sonner", () => ({
-	toast: {
-		success: vi.fn(),
-		error: vi.fn(),
-		info: vi.fn(),
-	},
+const f = vi.hoisted(() => ({ list: vi.fn() }));
+vi.mock("@shared/lib/orpc-client", () => ({
+	orpcClient: { codingRuns: { remoteServers: { list: f.list } } },
 }));
-
-describe("LaunchFabricDesktopBar", () => {
-	it("renders both Launch Fabric Desktop and Delegate to Remote Server buttons and opens the subscription delegation panel", () => {
-		render(
-			<LaunchFabricDesktopBar
-				projectId="proj_123"
-				projectName="Payments V2"
-				webUiUrl="https://agents.example.com"
-			/>,
-		);
-
-		const desktopLink = screen.getByTestId("launch-fabric-desktop-button");
-		expect(desktopLink).toBeInTheDocument();
-		expect(desktopLink.getAttribute("href")).toContain(
-			"fabricagents://action/new-chat?name=Payments+V2",
-		);
-
-		const delegateBtn = screen.getByTestId(
-			"delegate-remote-agent-server-button",
-		);
-		expect(delegateBtn).toBeInTheDocument();
-
-		fireEvent.click(delegateBtn);
-
-		const panel = screen.getByTestId("remote-server-delegation-panel");
-		expect(panel).toBeInTheDocument();
-
-		// Select Claude Max subscription harness
-		fireEvent.click(screen.getByText("Claude"));
-
-		const verifyBtn = screen.getByTestId(
-			"verify-subscription-credits-button",
-		);
-		expect(verifyBtn).toHaveTextContent(/Subscription Credits Verified/i);
-
-		const webUiLink = screen.getByTestId("open-remote-server-webui-link");
-		expect(webUiLink.getAttribute("href")).toContain(
-			"https://agents.example.com/?",
-		);
-		expect(webUiLink.getAttribute("href")).toContain("harness=claude-max");
-		expect(webUiLink.getAttribute("href")).toContain(
-			"fallback=subscription_harnesses",
-		);
-
-		// Toggle the embedded Remote Server Web UI directly inside the Fabric Portal
-		const embedToggleBtn = screen.getByTestId(
-			"toggle-embedded-remote-webui-button",
-		);
-		fireEvent.click(embedToggleBtn);
-
-		const embeddedContainer = screen.getByTestId(
-			"embedded-remote-server-webui",
-		);
-		expect(embeddedContainer).toBeInTheDocument();
-		const iframe = screen.getByTitle("Fabric Agents Remote Server Web UI");
-		expect(iframe.getAttribute("src")).toContain(
-			"https://agents.example.com/?",
-		);
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationContext: () => ({ organizationId: "example-org" }),
+}));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+beforeEach(() => {
+	localStorage.clear();
+	vi.clearAllMocks();
+});
+function mount(enabled = true, team = true) {
+	f.list.mockResolvedValue({
+		enabled,
+		servers: team
+			? [
+					{
+						id: "example-team",
+						name: "Team server",
+						scope: "TEAM",
+						url: "https://team.example.com",
+					},
+				]
+			: [],
 	});
-
-	it("renders compact mode with both Desktop and Remote Server delegation controls", () => {
-		render(
+	return render(
+		<QueryClientProvider
+			client={
+				new QueryClient({
+					defaultOptions: { queries: { retry: false } },
+				})
+			}
+		>
 			<LaunchFabricDesktopBar
-				projectId="proj_123"
-				projectSlug="payments-v2"
-				compact
-			/>,
-		);
-
-		expect(
-			screen.getByTestId("launch-fabric-desktop-button"),
-		).toBeInTheDocument();
-		const delegateBtn = screen.getByTestId(
-			"delegate-remote-agent-server-button",
-		);
-		fireEvent.click(delegateBtn);
-		expect(
-			screen.getByTestId("remote-server-delegation-panel"),
-		).toBeInTheDocument();
+				projectId="example-project"
+				projectName="Example"
+				webUiUrl="https://private.example.com"
+			/>
+		</QueryClientProvider>,
+	);
+}
+it("uses the registered team URL without claiming verified credits and toasts only after opening", async () => {
+	mount();
+	fireEvent.click(
+		await screen.findByTestId("delegate-remote-agent-server-button"),
+	);
+	expect(
+		screen.queryByText(/Credits (Verified|Active)/i),
+	).not.toBeInTheDocument();
+	expect(screen.getByTestId("open-remote-server-webui-link")).toHaveAttribute(
+		"href",
+		expect.stringContaining("https://team.example.com/?"),
+	);
+	const open = vi.spyOn(window, "open").mockReturnValue(null);
+	fireEvent.click(screen.getByTestId("dispatch-remote-server-button"));
+	expect(toast.success).not.toHaveBeenCalled();
+	open.mockReturnValue({ opener: window } as Window);
+	fireEvent.click(screen.getByTestId("dispatch-remote-server-button"));
+	expect(toast.success).toHaveBeenCalledWith(
+		"Opened Team server in a new tab",
+	);
+	open.mockRestore();
+});
+it("uses PRIVATE effectively without overwriting TEAM preference when no team server exists", async () => {
+	const {
+		saveProjectDelegationPreferences,
+		DEFAULT_PROJECT_DELEGATION_PREFERENCES,
+	} = await import("../../../lib/implementation-session-labels");
+	saveProjectDelegationPreferences("example-project", {
+		...DEFAULT_PROJECT_DELEGATION_PREFERENCES,
+		preferredServerScope: "TEAM",
 	});
+	const storedPreference = localStorage.getItem(
+		"fabric-project-delegation-prefs-example-project",
+	);
+	mount(true, false);
+	fireEvent.click(
+		await screen.findByTestId("delegate-remote-agent-server-button"),
+	);
+	expect(
+		screen.getByRole("button", { name: "Company Server" }),
+	).toBeDisabled();
+	expect(screen.getByTestId("dispatch-remote-server-button")).toBeEnabled();
+	expect(
+		screen.getByRole("button", { name: "Local Server" }),
+	).toHaveAttribute("aria-pressed", "true");
+	expect(
+		screen.getByRole("button", { name: "Company Server" }),
+	).toHaveAttribute("aria-pressed", "false");
+	expect(
+		screen.getByText(/Company Server needs a registered team server/),
+	).toBeVisible();
+	expect(
+		localStorage.getItem("fabric-project-delegation-prefs-example-project"),
+	).toBe(storedPreference);
+	expect(screen.getByTestId("open-remote-server-webui-link")).toHaveAttribute(
+		"href",
+		expect.stringContaining("https://private.example.com/?"),
+	);
+});
+it("hides the launcher when the bridge is disabled", async () => {
+	mount(false);
+	await waitFor(() => expect(f.list).toHaveBeenCalled());
+	expect(
+		screen.queryByTestId("launch-fabric-desktop-bar"),
+	).not.toBeInTheDocument();
+});
+it("embeds the live Remote Server Web UI inside the Fabric Portal and links documentation", async () => {
+	mount();
+	fireEvent.click(
+		await screen.findByTestId("delegate-remote-agent-server-button"),
+	);
+	expect(screen.getByTestId("launch-desktop-bar-docs-link")).toHaveAttribute(
+		"href",
+		"/docs/features/projects#delegating-coding-runs-to-fabric-agents",
+	);
+	fireEvent.click(screen.getByTestId("toggle-embedded-remote-webui-button"));
+	expect(
+		screen.getByTestId("embedded-remote-server-webui"),
+	).toBeInTheDocument();
+	expect(
+		screen.getByTitle("Fabric Agents Remote Server Web UI"),
+	).toHaveAttribute(
+		"src",
+		expect.stringContaining("https://team.example.com/?"),
+	);
 });

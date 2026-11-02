@@ -1,4 +1,7 @@
+import { createRequire } from "node:module";
+import { EventSchemas } from "@ag-ui/core/schemas";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { applyPatch, type Operation } from "fast-json-patch";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createUnifiedServer,
@@ -38,23 +41,230 @@ function createTestApp(events: LangGraphStreamEvent[]) {
 		undefined,
 		async function* () {
 			for (const event of events) {
+				if (event.nodeName === "throw") {
+					throw new Error("Example failure");
+				}
+				if (event.nodeName === "abort") {
+					throw new DOMException("Example abort", "AbortError");
+				}
 				yield event;
 			}
 		},
 	).app;
 }
 
-async function readAgUiEvents(response: Response) {
+describe("AG-UI tool result transport", () => {
+	const requestHeaders = {
+		"Content-Type": "application/json",
+		"X-Forwarded-For": "192.0.2.48",
+	};
+	it.each([true, false])(
+		"keeps large structured success=%s parseable on the real stream",
+		async (success) => {
+			const response = await createTestApp([
+				{
+					nodeName: "agent_node",
+					state: {
+						messages: [
+							new AIMessage({
+								content: "",
+								tool_calls: [
+									{
+										id: "chart-large",
+										name: "create_chart",
+										args: { chartType: "bar" },
+									},
+								],
+							}),
+						],
+					},
+				},
+				{
+					nodeName: "tool_node",
+					state: {
+						messages: [
+							new ToolMessage({
+								tool_call_id: "chart-large",
+								content: JSON.stringify({
+									success,
+									message: "x".repeat(6000),
+									password: "example-secret-value",
+								}),
+							}),
+						],
+					},
+				},
+			]).request("/", {
+				method: "POST",
+				headers: requestHeaders,
+				body: JSON.stringify({
+					messages: [{ role: "user", content: "Chart example" }],
+				}),
+			});
+			const events = await readAgUiEvents(response);
+			const result = events.find(
+				(event) => event.type === "TOOL_CALL_RESULT",
+			);
+			expect(typeof result?.content).toBe("string");
+			if (typeof result?.content !== "string")
+				throw new Error("Missing tool result");
+			expect(JSON.parse(result.content)).toMatchObject({
+				success,
+				truncated: true,
+			});
+			expect(result.content.length).toBeLessThanOrEqual(4001);
+			expect(result.content).not.toContain("example-secret-value");
+		},
+	);
+	it("does not replay prior-turn calls or results from cumulative executor state", async () => {
+		const messages = [
+			new AIMessage({
+				content: "",
+				tool_calls: [
+					{ id: "historical-call", name: "create_chart", args: {} },
+				],
+			}),
+			new ToolMessage({
+				tool_call_id: "historical-call",
+				content: '{"success":true}',
+			}),
+			new HumanMessage("New question"),
+			new AIMessage({
+				content: "",
+				tool_calls: [
+					{ id: "current-call", name: "create_chart", args: {} },
+				],
+			}),
+			new ToolMessage({
+				tool_call_id: "current-call",
+				content: '{"success":true}',
+			}),
+		];
+		const response = await createTestApp([
+			{ nodeName: "agent_node", state: { messages } },
+		]).request("/", {
+			method: "POST",
+			headers: requestHeaders,
+			body: JSON.stringify({
+				messages: [{ role: "user", content: "New question" }],
+			}),
+		});
+		const events = await readAgUiEvents(response);
+		expect(
+			events
+				.filter((event) => event.type === "TOOL_CALL_RESULT")
+				.map((event) => event.toolCallId),
+		).toEqual(["current-call"]);
+		expect(
+			events
+				.filter((event) => event.type === "TOOL_CALL_START")
+				.map((event) => event.toolCallId),
+		).toEqual(["current-call"]);
+	});
+	it.each(["instance", "serialized"])(
+		"retains %s tool results before later node messages replace them",
+		async (shape) => {
+			const tool = new ToolMessage({
+				tool_call_id: "chart-example",
+				content: '{"success":true}',
+			});
+			const response = await createTestApp([
+				{
+					nodeName: "agent_node",
+					state: {
+						messages: [
+							new AIMessage({
+								content: "",
+								tool_calls: [
+									{
+										id: "chart-example",
+										name: "create_chart",
+										args: { chartType: "bar" },
+									},
+								],
+							}),
+						],
+					},
+				},
+				{
+					nodeName: "tool_node",
+					state: {
+						messages: [shape === "instance" ? tool : tool.toJSON()],
+					},
+				},
+				{
+					nodeName: "agent_node",
+					state: { messages: [new AIMessage("Created chart")] },
+				},
+			]).request("/", {
+				method: "POST",
+				headers: requestHeaders,
+				body: JSON.stringify({
+					messages: [{ role: "user", content: "Chart example" }],
+				}),
+			});
+			const events = await readAgUiEvents(response);
+			const results = events.filter(
+				(event) => event.type === "TOOL_CALL_RESULT",
+			);
+			expect(results).toEqual([
+				expect.objectContaining({
+					toolCallId: "chart-example",
+					content: '{"success":true}',
+				}),
+			]);
+			expect(
+				events.findIndex((event) => event.type === "TOOL_CALL_END"),
+			).toBeLessThan(
+				events.findIndex((event) => event.type === "TOOL_CALL_RESULT"),
+			);
+			expect(
+				events.findIndex((event) => event.type === "TOOL_CALL_RESULT"),
+			).toBeLessThan(
+				events.findIndex((event) => event.type === "RUN_FINISHED"),
+			);
+		},
+	);
+});
+
+async function readSseEvents(response: Response) {
 	const body = await response.text();
 
 	return body.split("\n\n").flatMap((chunk) =>
 		chunk
 			.split("\n")
 			.filter((line) => line.startsWith("data: "))
-			.map(
-				(line) => JSON.parse(line.slice(6)) as Record<string, unknown>,
-			),
+			.map((line) => {
+				const event = JSON.parse(line.slice(6)) as Record<
+					string,
+					unknown
+				>;
+				return event;
+			}),
 	);
+}
+
+async function readAgUiEvents(response: Response) {
+	const events = await readSseEvents(response);
+	for (const event of events) {
+		EventSchemas.parse(event);
+	}
+	return events;
+}
+
+function applyClientEvent(
+	state: Record<string, unknown>,
+	raw: Record<string, unknown>,
+) {
+	const event = EventSchemas.parse(JSON.parse(JSON.stringify(raw)));
+	if (event.type === "STATE_SNAPSHOT") {
+		return event.snapshot as Record<string, unknown>;
+	}
+	if (event.type === "STATE_DELTA") {
+		return applyPatch(state, event.delta as Operation[], true, false)
+			.newDocument;
+	}
+	return state;
 }
 
 describe("createUnifiedServer AG-UI streaming", () => {
@@ -67,6 +277,487 @@ describe("createUnifiedServer AG-UI streaming", () => {
 	afterEach(() => {
 		vi.unstubAllEnvs();
 	});
+
+	it.each([false, true])(
+		"resets the regenerated turn's trace with new trace writes %s",
+		async (writesTrace) => {
+			const base = {
+				reasoningByTurn: {
+					"1": { text: "earlier" },
+					"2": { text: "old" },
+				},
+				toolCallsByTurn: {
+					"1": [{ id: "earlier" }],
+					"2": [{ id: "old" }],
+				},
+			};
+			const fresh = {
+				reasoningByTurn: { "2": { text: "new" } },
+				toolCallsByTurn: { "2": [{ id: "new" }] },
+			};
+			const events = await readAgUiEvents(
+				await createTestApp([
+					{
+						nodeName: "answer",
+						state: writesTrace ? fresh : { response: "No trace" },
+					},
+				]).request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Real-IP": "192.0.2.3",
+					},
+					body: JSON.stringify({
+						state: base,
+						messages: [
+							{ role: "user", content: "First" },
+							{ role: "assistant", content: "Answer" },
+							{ role: "user", content: "Regenerate" },
+						],
+					}),
+				}),
+			);
+			const start = events.find((e) => e.type === "STATE_SNAPSHOT")
+				?.snapshot as typeof base;
+			expect(start.reasoningByTurn).toEqual({
+				"1": base.reasoningByTurn[1],
+			});
+			expect(start.toolCallsByTurn).toEqual({
+				"1": base.toolCallsByTurn[1],
+			});
+			for (const event of events) {
+				if (event.type === "STATE_DELTA") {
+					for (const op of event.delta as Array<{
+						path: string;
+						value: unknown;
+					}>) {
+						if (op.path === "/reasoningByTurn") {
+							expect(op.value).toEqual({
+								"1": base.reasoningByTurn[1],
+								...fresh.reasoningByTurn,
+							});
+						}
+						if (op.path === "/toolCallsByTurn") {
+							expect(op.value).toEqual({
+								"1": base.toolCallsByTurn[1],
+								...fresh.toolCallsByTurn,
+							});
+						}
+					}
+				}
+			}
+			const end = events.find((e) => e.nodeName === "end")
+				?.snapshot as typeof base;
+			expect(end.reasoningByTurn).toEqual({
+				"1": base.reasoningByTurn[1],
+				...(writesTrace ? fresh.reasoningByTurn : {}),
+			});
+			expect(end.toolCallsByTurn).toEqual({
+				"1": base.toolCallsByTurn[1],
+				...(writesTrace ? fresh.toolCallsByTurn : {}),
+			});
+		},
+	);
+
+	// Use a synthetic IP for these requests because the rate-limit store is shared
+	// across test apps, and the existing reply cases use the default IP budget.
+	it.each([false, true])(
+		"clears undefined writes after earlier step %s and retains merged traces",
+		async (earlierStep) => {
+			const base = {
+				document: "client document",
+				toolCallsByTurn: { "1": [] },
+				reasoningByTurn: { "1": { text: "earlier" } },
+			};
+			const written = {
+				document: "step document",
+				toolCallsByTurn: { "2": [] },
+				reasoningByTurn: { "2": { text: "new" } },
+			};
+			const events = await readAgUiEvents(
+				await createTestApp([
+					...(earlierStep
+						? [{ nodeName: "draft", state: written }]
+						: []),
+					{
+						nodeName: "clear",
+						state: {
+							document: undefined,
+							toolCallsByTurn: undefined,
+							reasoningByTurn: undefined,
+							someKey: "x",
+						},
+					},
+					{
+						nodeName: "empty",
+						state: { document: undefined, neverHeld: undefined },
+					},
+				]).request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Real-IP": "192.0.2.42",
+					},
+					body: JSON.stringify({ state: base, messages: [] }),
+				}),
+			);
+			let client: Record<string, unknown> = {};
+			for (const event of events) {
+				client = applyClientEvent(client, event);
+				if (
+					(event.type === "STATE_DELTA" && client.someKey === "x") ||
+					event.nodeName === "end"
+				) {
+					// The former shallow accumulation overwrote document with undefined;
+					// JSON omitted it from the terminal snapshot despite its graph reducer.
+					expect(client.document).toBeUndefined();
+					expect(client).not.toHaveProperty("document");
+					expect(client.toolCallsByTurn).toEqual({
+						...base.toolCallsByTurn,
+						...(earlierStep ? written.toolCallsByTurn : {}),
+					});
+					expect(client.reasoningByTurn).toEqual({
+						...base.reasoningByTurn,
+						...(earlierStep ? written.reasoningByTurn : {}),
+					});
+				}
+			}
+			expect(events.filter((e) => e.type === "STATE_DELTA")).toHaveLength(
+				earlierStep ? 2 : 1,
+			);
+			expect(
+				events
+					.flatMap((e) =>
+						e.type === "STATE_DELTA"
+							? (e.delta as Operation[])
+							: [],
+					)
+					.some((op) => op.path === "/neverHeld"),
+			).toBe(false);
+		},
+	);
+
+	it("clears a retry error before terminal text and the terminal snapshot", async () => {
+		const events = await readAgUiEvents(
+			await createTestApp([
+				{
+					nodeName: "chat",
+					state: { error: "Retrying... (attempt 1/3)" },
+				},
+				{
+					nodeName: "chat",
+					state: {
+						error: undefined,
+						response: "Real reply",
+						messages: [{ type: "ai", content: "Real reply" }],
+					},
+				},
+			]).request("/", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Real-IP": "192.0.2.42",
+				},
+				body: JSON.stringify({ state: {}, messages: [] }),
+			}),
+		);
+		const text = events
+			.filter((e) => e.type === "TEXT_MESSAGE_CONTENT")
+			.map((e) => e.delta)
+			.join("");
+		expect(text).not.toContain("Retrying...");
+		expect(text).toBe("Real reply");
+		let client: Record<string, unknown> = {};
+		let sawClear = false;
+		for (const event of events) {
+			client = applyClientEvent(client, event);
+			if (
+				event.type === "STATE_DELTA" &&
+				client.response === "Real reply"
+			) {
+				sawClear = true;
+				expect(client).not.toHaveProperty("error");
+			}
+		}
+		expect(sawClear).toBe(true);
+		expect(
+			events.find((e) => e.nodeName === "end")?.snapshot,
+		).not.toHaveProperty("error");
+	});
+
+	it("sends only the keys a preview changed, not the accumulated state", async () => {
+		const events = await readAgUiEvents(
+			await createTestApp([
+				{
+					nodeName: "chat",
+					state: {
+						toolCallsByTurn: { "1": [{ id: "example-tool" }] },
+					},
+				},
+				...Array.from({ length: 3 }, (_, i) => ({
+					nodeName: "chat",
+					droppable: true,
+					state: { streamingContent: `preview ${i}` },
+				})),
+			]).request("/", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Real-IP": "192.0.2.42",
+				},
+				body: JSON.stringify({
+					state: {
+						document: "base document",
+						projectId: "example-project",
+					},
+					messages: [],
+				}),
+			}),
+		);
+		const previewDeltas = events
+			.filter((e) => e.type === "STATE_DELTA")
+			.map((e) => (e.delta as Operation[]).map((op) => op.path))
+			.filter((paths) => paths.includes("/streamingContent"));
+		expect(previewDeltas.length).toBeGreaterThan(0);
+		for (const paths of previewDeltas) {
+			expect(paths).toEqual(["/streamingContent"]);
+		}
+	});
+
+	it.each(["end", "step", "tool"])(
+		"applies coalesced undefined writes before %s barriers",
+		async (barrier) => {
+			const burst: LangGraphStreamEvent[] = [
+				{
+					nodeName: "chat",
+					droppable: true,
+					state: { fromPreview: "held", document: undefined },
+				},
+				{
+					nodeName: "chat",
+					droppable: true,
+					state: { fromPreview: undefined, absent: undefined },
+				},
+				...Array.from({ length: 10 }, (_, i) => ({
+					nodeName: "chat",
+					droppable: true,
+					state: { progress: i },
+				})),
+			];
+			const events = await readAgUiEvents(
+				await createTestApp([
+					...burst,
+					...(barrier === "end"
+						? []
+						: [
+								{
+									nodeName:
+										barrier === "step" ? "next" : "chat",
+									state:
+										barrier === "tool"
+											? {
+													messages: [
+														{
+															type: "ai",
+															content: "",
+															tool_calls: [
+																{
+																	id: "example-call",
+																	name: "example_action",
+																	args: {},
+																},
+															],
+														},
+													],
+												}
+											: {
+													fromPreview: undefined,
+													document: undefined,
+												},
+								},
+							]),
+				]).request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Real-IP": "192.0.2.42",
+					},
+					body: JSON.stringify({
+						state: { document: "base document" },
+						messages: [],
+					}),
+				}),
+			);
+			let client: Record<string, unknown> = {};
+			let deltas = 0;
+			for (const event of events) {
+				client = applyClientEvent(client, event);
+				if (event.type === "STATE_DELTA") {
+					deltas++;
+					expect(client).not.toHaveProperty("document");
+					expect(client).not.toHaveProperty("fromPreview");
+					expect(client).not.toHaveProperty("absent");
+				}
+				if (
+					event.type === "TOOL_CALL_START" ||
+					(event.type === "STEP_STARTED" &&
+						event.stepName === "next") ||
+					event.nodeName === "end"
+				) {
+					expect(client.progress).toBe(9);
+				}
+			}
+			expect(deltas).toBeGreaterThan(0);
+			expect(deltas).toBeLessThan(burst.length);
+			expect(client).not.toHaveProperty("document");
+		},
+	);
+
+	it.each(["complete", "throw", "abort"])(
+		"preserves client context with partial steps on %s",
+		async (ending) => {
+			const base = {
+				document: "original",
+				projectId: "example-project",
+				messages: [{ type: "human", content: "Earlier" }],
+				focusAnchor: "stale",
+				error: "stale",
+				retryCount: 2,
+				toolCallsByTurn: { "1": [], "2": [] },
+				reasoningByTurn: { "1": { text: "earlier" } },
+			};
+			const app = createTestApp([
+				{
+					nodeName: "chat",
+					state: {
+						"a/b~c": "escaped",
+						toolCallsByTurn: { "3": [] },
+						reasoningByTurn: { "3": { text: "new" } },
+						messages: [{ type: "ai", content: "Reply" }],
+					},
+				},
+				{
+					nodeName: "next",
+					state: {
+						status: "working",
+						toolCallsByTurn: { "4": [] },
+						reasoningByTurn: { "4": { text: "later" } },
+					},
+				},
+				...(ending === "complete"
+					? []
+					: [{ nodeName: ending, state: {} }]),
+			]);
+			const events = await readAgUiEvents(
+				await app.request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Real-IP": "192.0.2.1",
+					},
+					body: JSON.stringify({
+						state: base,
+						messages: [
+							{ role: "user", content: "Continue" },
+							{
+								role: "assistant",
+								content: "",
+								toolCalls: [
+									{
+										id: "first",
+										type: "function",
+										function: {
+											name: "create_view",
+											arguments: "{}",
+										},
+									},
+								],
+							},
+							{
+								role: "tool",
+								toolCallId: "first",
+								content: "Done",
+							},
+						],
+					}),
+				}),
+			);
+			let state: Record<string, unknown> = { ...base };
+			let deltas = 0;
+			for (const event of events) {
+				if (event.type === "STATE_SNAPSHOT") {
+					state = event.snapshot as Record<string, unknown>;
+				}
+				if (event.type === "STATE_DELTA") {
+					deltas++;
+					for (const op of event.delta as Array<{
+						op: string;
+						path: string;
+						value: unknown;
+					}>) {
+						expect(op.op).toBe("add");
+						expect(op.path).not.toBe("/messages");
+					}
+					state = applyClientEvent(state, event);
+					expect(state.document).toBe("original");
+					expect(state.messages).toEqual(base.messages);
+				}
+			}
+			expect(deltas).toBe(2);
+			expect(state).toMatchObject({
+				document: "original",
+				projectId: "example-project",
+				"a/b~c": "escaped",
+				status: "working",
+				toolCallsByTurn: { "1": [], "2": [], "3": [], "4": [] },
+				reasoningByTurn: {
+					"1": { text: "earlier" },
+					"3": { text: "new" },
+					"4": { text: "later" },
+				},
+			});
+			for (const key of ["focusAnchor", "error", "retryCount"]) {
+				expect(state).not.toHaveProperty(key);
+			}
+			expect(
+				events.filter(
+					(e) => e.type === "STATE_SNAPSHOT" && e.nodeName === "end",
+				),
+			).toHaveLength(ending === "complete" ? 1 : 0);
+			if (ending === "complete") {
+				expect(state.messages).toEqual([
+					{ type: "ai", content: "Reply" },
+				]);
+			}
+			expect(events[1]).toMatchObject({ type: "STATE_SNAPSHOT" });
+		},
+	);
+
+	it.each([undefined, null, 7, "invalid"])(
+		"omits the base for non-object state %s and skips messages-only deltas",
+		async (state) => {
+			const events = await readAgUiEvents(
+				await createTestApp([
+					{ nodeName: "chat", state: { messages: [] } },
+					{ nodeName: "empty", state: {} },
+				]).request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Real-IP": "192.0.2.1",
+					},
+					body: JSON.stringify({ state, messages: [] }),
+				}),
+			);
+			expect(events.filter((e) => e.type === "STATE_DELTA")).toEqual([]);
+			expect(
+				events.filter((e) => e.type === "STATE_SNAPSHOT"),
+			).toHaveLength(1);
+			expect(
+				events.find((e) => e.type === "STATE_SNAPSHOT")?.nodeName,
+			).toBe("end");
+		},
+	);
 
 	it.each([undefined, "caller-thread"])(
 		"forwards the AG-UI thread and preserves explicit thread %s",
@@ -740,33 +1431,25 @@ describe("createUnifiedServer terminal errors", () => {
 			{ nodeName: "node_b", state: { document: "DELTA_B" } },
 		]);
 
-		const snapshots = events.filter(
-			(e) => e.type === "STATE_SNAPSHOT",
-		) as Array<{ nodeName?: string; snapshot?: { document?: string } }>;
-
-		// Sanity check that backpressure was actually exercised — otherwise
-		// this test would pass trivially without the gate doing anything.
-		const previewSnapshots = snapshots.filter((s) =>
-			s.snapshot?.document?.startsWith("preview-"),
+		const deltas = events.filter((e) => e.type === "STATE_DELTA");
+		const values = deltas.flatMap((e) =>
+			(e.delta as Array<{ path: string; value: unknown }>)
+				.filter((op) => op.path === "/document")
+				.map((op) => op.value),
 		);
-		expect(previewSnapshots.length).toBeLessThan(16);
-
-		// Both node deltas reached the output exactly once (by originating
-		// node, not just content — the terminal "end" snapshot also carries
-		// the final document value and must not be conflated with the
-		// interim delta it came from). Coalescing never applies to
-		// non-droppable events.
-		expect(snapshots.filter((s) => s.nodeName === "node_a")).toHaveLength(
-			1,
-		);
-		expect(snapshots.filter((s) => s.nodeName === "node_b")).toHaveLength(
-			1,
-		);
+		expect(
+			values.filter((v) => String(v).startsWith("preview-")).length,
+		).toBeGreaterThan(0);
+		expect(
+			values.filter((v) => String(v).startsWith("preview-")).length,
+		).toBeLessThan(16);
+		expect(values.filter((v) => v === "DELTA_A")).toHaveLength(1);
+		expect(values.filter((v) => v === "DELTA_B")).toHaveLength(1);
 	});
 
 	it("flushes a held droppable preview BEFORE the tool-call events derived from newer state (barrier ordering)", async () => {
 		// A burst of droppable previews builds up a pending, coalesced
-		// snapshot under backpressure; the very next event is a non-droppable
+		// delta under backpressure; the very next event is a non-droppable
 		// delta carrying a frontend tool call. The barrier must flush the
 		// pending preview first, so the frontend never processes a TOOL_CALL
 		// against state older than what it was just shown.
@@ -806,28 +1489,24 @@ describe("createUnifiedServer terminal errors", () => {
 		);
 		expect(toolCallStartIdx).toBeGreaterThan(-1);
 
-		// Every "preview N" STATE_SNAPSHOT from the interim (non-terminal)
+		// Every "preview N" STATE_DELTA from the interim (non-terminal)
 		// stream, by its position in the full event stream. The terminal
 		// "end" snapshot is excluded: it carries the shallow-merged
 		// finalState, which still has `document: "preview N"` from whichever
 		// preview last set it — that's an unrelated artifact of the terminal
 		// snapshot always reflecting the last-known value, not evidence of
-		// gate ordering.
-		const previewIndexes = events.reduce<number[]>((acc, e, i) => {
-			const evt = e as {
-				nodeName?: string;
-				snapshot?: { document?: string };
-			};
-			if (
-				e.type === "STATE_SNAPSHOT" &&
-				evt.nodeName !== "end" &&
-				typeof evt.snapshot?.document === "string" &&
-				/^preview \d+$/.test(evt.snapshot.document)
-			) {
-				acc.push(i);
-			}
-			return acc;
-		}, []);
+		// gate ordering. (`/runs/stream` leaves previews out of its terminal
+		// state; see the tests for it below.)
+		const previewIndexes = events.flatMap((e, i) =>
+			e.type === "STATE_DELTA" &&
+			(e.delta as Array<{ path: string; value: unknown }>).some(
+				(op) =>
+					op.path === "/document" &&
+					/^preview \d+$/.test(String(op.value)),
+			)
+				? [i]
+				: [],
+		);
 
 		// Some previews were coalesced away (backpressure actually occurred) —
 		// otherwise this test would pass trivially without the gate doing
@@ -843,7 +1522,7 @@ describe("createUnifiedServer terminal errors", () => {
 
 	it("flushes a held step-A droppable preview BEFORE STEP_FINISHED(A)/STEP_STARTED(B) on a step boundary", async () => {
 		// A step transition is itself derived from event state (transitionStep
-		// runs at the top of the loop, ahead of the STATE_SNAPSHOT for that
+		// runs at the top of the loop, ahead of the STATE_DELTA for that
 		// event). If a step-A preview is still held when a step-B event
 		// arrives, STEP_FINISHED(A) must not be delivered ahead of it — the
 		// consumer would otherwise see the step close before the last state
@@ -871,25 +1550,20 @@ describe("createUnifiedServer terminal errors", () => {
 		expect(stepFinishedAIdx).toBeGreaterThan(-1);
 		expect(stepStartedBIdx).toBeGreaterThan(stepFinishedAIdx);
 
-		// Every surviving "preview N" STATE_SNAPSHOT from the interim stream,
+		// Every surviving "preview N" STATE_DELTA from the interim stream,
 		// excluding the terminal "end" snapshot (same reasoning as the test
 		// above — its shallow-merged finalState carries a stale "preview N"
 		// document value unrelated to gate ordering).
-		const previewIndexes = events.reduce<number[]>((acc, e, i) => {
-			const evt = e as {
-				nodeName?: string;
-				snapshot?: { document?: string };
-			};
-			if (
-				e.type === "STATE_SNAPSHOT" &&
-				evt.nodeName !== "end" &&
-				typeof evt.snapshot?.document === "string" &&
-				/^preview \d+$/.test(evt.snapshot.document)
-			) {
-				acc.push(i);
-			}
-			return acc;
-		}, []);
+		const previewIndexes = events.flatMap((e, i) =>
+			e.type === "STATE_DELTA" &&
+			(e.delta as Array<{ path: string; value: unknown }>).some(
+				(op) =>
+					op.path === "/document" &&
+					/^preview \d+$/.test(String(op.value)),
+			)
+				? [i]
+				: [],
+		);
 
 		// Backpressure actually coalesced some previews away — otherwise this
 		// test proves nothing about the gate.
@@ -980,6 +1654,162 @@ describe("stripEmptyResponseFallbacks", () => {
 		const messages = [null, "raw", 42];
 
 		expect(stripEmptyResponseFallbacks(messages)).toEqual(messages);
+	});
+});
+
+// A `/runs/stream` caller (the document generation activity) takes the
+// terminal `values` event as what the run produced. A droppable preview is a
+// write still being streamed, so it must reach the caller as an update and
+// never stand in for a document the run did not write (Fizzy #2946).
+describe("/runs/stream terminal state and droppable previews", () => {
+	beforeEach(() => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	const previews = (...documents: string[]): LangGraphStreamEvent[] =>
+		documents.map((document) => ({
+			nodeName: "chat_node",
+			state: { streamingContent: document, document },
+			droppable: true,
+		}));
+
+	/** The chat node ending its run without a tool call. */
+	const endsWithoutWrite: LangGraphStreamEvent = {
+		nodeName: "chat_node",
+		state: {
+			messages: [{ type: "ai", content: "Here is my plan." }],
+			streamingContent: "",
+		},
+	};
+
+	const writes = (document: string): LangGraphStreamEvent => ({
+		nodeName: "chat_node",
+		state: { document, streamingContent: document },
+	});
+
+	// The rate limiter's store is module-wide; a bucket of its own keeps
+	// these requests from spending the later describes' shared one.
+	const headers = {
+		"Content-Type": "application/json",
+		"X-Real-IP": "198.51.100.7",
+	};
+
+	async function runStream(
+		path: string,
+		events: LangGraphStreamEvent[],
+	): Promise<Array<{ event: string; data: unknown }>> {
+		const response = await createTestApp(events).request(path, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				input: { messages: [{ role: "user", content: "Write it." }] },
+			}),
+		});
+		expect(response.status).toBe(200);
+		const body = await response.text();
+		return body.split("\n\n").flatMap((chunk) => {
+			const event = /^event: (.+)$/m.exec(chunk)?.[1];
+			const data = /^data: (.+)$/m.exec(chunk)?.[1];
+			return event && data !== undefined
+				? [{ event, data: JSON.parse(data) as unknown }]
+				: [];
+		});
+	}
+
+	const valuesOf = (sse: Array<{ event: string; data: unknown }>) =>
+		sse.filter((e) => e.event === "values").map((e) => e.data) as Array<
+			Record<string, unknown>
+		>;
+
+	const endUpdateOf = (sse: Array<{ event: string; data: unknown }>) =>
+		(
+			sse.find(
+				(e) =>
+					e.event === "updates" &&
+					typeof e.data === "object" &&
+					e.data !== null &&
+					"end" in e.data,
+			)?.data as { end: Record<string, unknown> } | undefined
+		)?.end;
+
+	it("streams the previews but ends with no document when the run wrote none", async () => {
+		const sse = await runStream("/runs/stream", [
+			...previews("## Overview", "## Overview\n\nThe problem"),
+			endsWithoutWrite,
+		]);
+
+		const streamedPreviews = sse.filter(
+			(e) =>
+				e.event === "updates" &&
+				(e.data as { chat_node?: { document?: string } }).chat_node
+					?.document === "## Overview\n\nThe problem",
+		);
+		expect(streamedPreviews).toHaveLength(1);
+
+		const values = valuesOf(sse);
+		expect(values).toHaveLength(1);
+		expect(values[0]).not.toHaveProperty("document");
+		expect(values[0]?.streamingContent).toBe("");
+		expect(endUpdateOf(sse)).not.toHaveProperty("document");
+	});
+
+	it("keeps no preview in the thread's stored state", async () => {
+		const app = createTestApp([
+			...previews("## Overview\n\nThe problem"),
+			endsWithoutWrite,
+		]);
+		const response = await app.request(
+			"/threads/example-thread/runs/stream",
+			{
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					input: {
+						messages: [{ role: "user", content: "Write it." }],
+					},
+				}),
+			},
+		);
+		expect(response.status).toBe(200);
+		await response.text();
+
+		const state = (await (
+			await app.request("/threads/example-thread/state", { headers })
+		).json()) as { values: Record<string, unknown> };
+		expect(state.values).toHaveProperty("streamingContent", "");
+		expect(state.values).not.toHaveProperty("document");
+	});
+
+	it("ends with the written document when the write follows its previews", async () => {
+		const sse = await runStream("/runs/stream", [
+			...previews("## Overview", "## Overview\n\nThe problem"),
+			writes("## Overview\n\nThe problem, solved."),
+		]);
+
+		expect(valuesOf(sse)[0]?.document).toBe(
+			"## Overview\n\nThe problem, solved.",
+		);
+		expect(endUpdateOf(sse)?.document).toBe(
+			"## Overview\n\nThe problem, solved.",
+		);
+	});
+
+	it("keeps the written document over previews of a later write that never lands", async () => {
+		const sse = await runStream("/runs/stream", [
+			writes("## Overview\n\nThe problem, solved."),
+			...previews("## Overview\n\nA second draft"),
+			endsWithoutWrite,
+		]);
+
+		expect(valuesOf(sse)[0]?.document).toBe(
+			"## Overview\n\nThe problem, solved.",
+		);
 	});
 });
 
@@ -1537,7 +2367,7 @@ describe("A2A graph failures", () => {
 			expect(response.status).toBe(200);
 			const task = path.endsWith("stream")
 				? await (async () => {
-						const events = await readAgUiEvents(
+						const events = await readSseEvents(
 							new Response(
 								(await response.text()).replace(
 									"data: [DONE]",
@@ -1589,7 +2419,7 @@ describe("A2A graph failures", () => {
 			});
 			if (path.endsWith("stream")) {
 				expect(
-					await readAgUiEvents(
+					await readSseEvents(
 						new Response(
 							(await response.text()).replace("data: [DONE]", ""),
 						),
@@ -1663,7 +2493,7 @@ it.each(
 			});
 			let task: { status: string; metadata: { error?: string } };
 			if (path.endsWith("stream")) {
-				const events = await readAgUiEvents(
+				const events = await readSseEvents(
 					new Response(
 						(await response.text()).replace("data: [DONE]", ""),
 					),
@@ -2258,6 +3088,435 @@ describe("executor input credential boundary", () => {
 				expect(runtime?.runtime_only_secret).toBe(
 					"example-runtime-secret",
 				);
+			}
+		},
+	);
+});
+
+describe("speculative reply operations", () => {
+	it.each(["accepted", ""])(
+		"reconciles a provisional reply to %j before finish",
+		async (text) => {
+			const events = await readAgUiEvents(
+				await createTestApp([
+					{
+						nodeName: "chat_node",
+						state: {},
+						reply: {
+							type: "delta",
+							roundId: "round-1",
+							attemptId: "attempt-1",
+							text: "draft",
+						},
+					},
+					{
+						nodeName: "chat_node",
+						state: {},
+						reply: {
+							type: "accept",
+							roundId: "round-1",
+							attemptId: "attempt-1",
+							text,
+						},
+					},
+				]).request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Fabric-Reply-Transport": "in-request-v1",
+					},
+					body: JSON.stringify({
+						messages: [
+							{
+								id: "history-1",
+								role: "user",
+								content: "Example request",
+							},
+						],
+					}),
+				}),
+			);
+			let messages: Record<string, unknown>[] = [
+				{ id: "history-1", role: "user", content: "Example request" },
+			];
+			for (const event of events) {
+				if (event.type === "TEXT_MESSAGE_START") {
+					messages.push({
+						id: event.messageId,
+						role: "assistant",
+						content: "",
+					});
+				}
+				if (event.type === "TEXT_MESSAGE_CONTENT") {
+					const message = messages.find(
+						(m) => m.id === event.messageId,
+					);
+					if (message) {
+						message.content = String(message.content) + event.delta;
+					}
+				}
+				if (event.type === "MESSAGES_SNAPSHOT") {
+					messages = event.messages as Record<string, unknown>[];
+				}
+			}
+			expect(
+				events.find((e) => e.type === "TEXT_MESSAGE_CONTENT")?.delta,
+			).toBe("draft");
+			expect(messages[0].id).toBe("history-1");
+			expect(
+				messages
+					.filter((m) => m.role === "assistant")
+					.map((m) => m.content)
+					.join(""),
+			).toBe(text || EMPTY_RESPONSE_FALLBACK);
+			expect(
+				events.findIndex((e) => e.type === "MESSAGES_SNAPSHOT"),
+			).toBeLessThan(events.findIndex((e) => e.type === "RUN_FINISHED"));
+		},
+	);
+});
+
+describe("reply round lifecycle", () => {
+	const operation = (
+		type: "delta" | "accept" | "discard",
+		roundId: string,
+		attemptId: string,
+		text = "",
+	): LangGraphStreamEvent => ({
+		nodeName: "chat_node",
+		state: {},
+		reply: { type, roundId, attemptId, text },
+	});
+	it("preserves accepted rounds, history and tool cards across retries and errors", async () => {
+		const input = [
+			{ id: "history-1", role: "user", content: "Example request" },
+		];
+		const events = await readAgUiEvents(
+			await createTestApp([
+				operation("delta", "0", "a", "same"),
+				operation("accept", "0", "a", "same"),
+				{
+					nodeName: "chat_node",
+					state: {
+						messages: [
+							new AIMessage({
+								content: "same",
+								tool_calls: [
+									{
+										id: "tool-1",
+										name: "confirm_changes",
+										args: { example: true },
+									},
+								],
+							}),
+						],
+					},
+				},
+				operation("delta", "1", "b", "discard this"),
+				operation("discard", "1", "b"),
+				operation("delta", "1", "c", "also discard"),
+				operation("discard", "1", "c"),
+				operation("delta", "1", "d", "same"),
+				operation("accept", "1", "d", "same"),
+				operation("delta", "1", "d", "same"),
+				{ nodeName: "chat_node", state: { error: "Example failure" } },
+			]).request("/", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Fabric-Reply-Transport": "in-request-v1",
+				},
+				body: JSON.stringify({ messages: input }),
+			}),
+		);
+		let messages: Record<string, unknown>[] = [...input];
+		for (const event of events) {
+			if (event.type === "TEXT_MESSAGE_START") {
+				messages.push({
+					id: event.messageId,
+					role: "assistant",
+					content: "",
+				});
+			}
+			if (event.type === "TEXT_MESSAGE_CONTENT") {
+				const message = messages.find((m) => m.id === event.messageId);
+				if (message) {
+					message.content = String(message.content) + event.delta;
+				}
+			}
+			if (event.type === "TOOL_CALL_START") {
+				messages.push({
+					id: event.parentMessageId,
+					role: "assistant",
+					toolCalls: [{ id: event.toolCallId }],
+				});
+			}
+			if (event.type === "MESSAGES_SNAPSHOT") {
+				messages = event.messages as Record<string, unknown>[];
+				expect(messages.some((m) => m.toolCalls)).toBe(true);
+			}
+		}
+		expect(
+			events.filter((e) => e.type === "TEXT_MESSAGE_START"),
+		).toHaveLength(1);
+		expect(messages[0]).toEqual(input[0]);
+		expect(
+			messages.find((m) => m.id !== "history-1" && m.content)?.content,
+		).toBe("same\n\nsame\n\nExample failure");
+		expect(
+			events.filter((e) => e.type === "MESSAGES_SNAPSHOT"),
+		).toHaveLength(3);
+		expect(
+			events.findIndex((e) => e.type === "TEXT_MESSAGE_CONTENT"),
+		).toBeLessThan(events.findIndex((e) => e.type === "STATE_SNAPSHOT"));
+	});
+
+	it("keeps durable and unknown transports on whole-message delivery", async () => {
+		for (const signal of [undefined, "durable-v1", "invalid"]) {
+			const events = await readAgUiEvents(
+				await createTestApp([
+					operation("delta", "0", "a", "raw"),
+					operation("accept", "0", "a", "checked"),
+					{
+						nodeName: "chat_node",
+						state: { messages: [new AIMessage("checked")] },
+					},
+				]).request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						...(signal
+							? { "X-Fabric-Reply-Transport": signal }
+							: {}),
+					},
+					body: JSON.stringify({
+						messages: [{ role: "user", content: "Example" }],
+					}),
+				}),
+			);
+			expect(
+				events.filter((e) => e.type === "MESSAGES_SNAPSHOT"),
+			).toEqual([]);
+			expect(
+				events
+					.filter((e) => e.type === "TEXT_MESSAGE_CONTENT")
+					.map((e) => e.delta),
+			).toEqual(["checked"]);
+		}
+	});
+});
+
+describe("reply provider fallback", () => {
+	it("completes single-chunk and callback-free replies without a correction snapshot", async () => {
+		for (const withChunk of [true, false]) {
+			const reply = {
+				roundId: "round-1",
+				attemptId: "attempt-1",
+				text: "Example reply",
+			};
+			const source: LangGraphStreamEvent[] = withChunk
+				? [
+						{
+							nodeName: "chat_node",
+							state: {},
+							reply: { ...reply, type: "delta" },
+						},
+					]
+				: [];
+			source.push({
+				nodeName: "chat_node",
+				state: {},
+				reply: { ...reply, type: "accept" },
+			});
+			const response = await createTestApp(source).request("/", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Fabric-Reply-Transport": "in-request-v1",
+				},
+				body: JSON.stringify({ messages: [] }),
+			});
+			expect(response.status).toBe(200);
+			const events = await readAgUiEvents(response);
+			expect(
+				events
+					.filter((event) => event.type === "TEXT_MESSAGE_CONTENT")
+					.map((event) => event.delta),
+			).toEqual(["Example reply"]);
+			expect(
+				events.filter((event) => event.type === "MESSAGES_SNAPSHOT"),
+			).toEqual([]);
+			expect(
+				events.filter((event) => event.type === "STATE_SNAPSHOT"),
+			).toHaveLength(1);
+			expect(events.at(-1)?.type).toBe("RUN_FINISHED");
+		}
+	});
+});
+
+describe("reply reconnect compaction", () => {
+	const runtimeRequire = createRequire(
+		createRequire(import.meta.url).resolve("@copilotkit/runtime"),
+	);
+	const { compactEvents, HttpAgent } = runtimeRequire("@ag-ui/client");
+	const { from } = createRequire(runtimeRequire.resolve("@ag-ui/client"))(
+		"rxjs",
+	);
+	const history = [
+		{ id: "history-1", role: "user", content: "Example request" },
+	];
+	const reply = (
+		type: "delta" | "accept" | "discard",
+		roundId: string,
+		text = "",
+		attemptId = "attempt-1",
+	): LangGraphStreamEvent => ({
+		nodeName: "chat_node",
+		state: {},
+		reply: { type, roundId, attemptId, text },
+	});
+	const card: LangGraphStreamEvent = {
+		nodeName: "chat_node",
+		state: {
+			messages: [
+				new AIMessage({
+					content: "",
+					tool_calls: [
+						{
+							id: "clarify-1",
+							name: "ask_clarifying_question",
+							args: { question: "Example question" },
+						},
+					],
+				}),
+			],
+		},
+	};
+	async function reduce(events: Record<string, unknown>[]) {
+		const agent = new HttpAgent({
+			url: "https://example.com",
+			initialMessages: structuredClone(history),
+		});
+		agent.run = () => from(events);
+		try {
+			await agent.runAgent();
+		} catch (error) {
+			if (events.at(-1)?.type !== "RUN_ERROR") {
+				throw error;
+			}
+		}
+		return agent.messages;
+	}
+	it.each([
+		{
+			name: "retry",
+			source: [
+				reply("delta", "0", "draft"),
+				reply("discard", "0"),
+				reply("delta", "0", "final", "attempt-2"),
+				reply("accept", "0", "final", "attempt-2"),
+			],
+			expected: "final",
+		},
+		{
+			name: "rewrite followed by another round",
+			source: [
+				reply("delta", "0", "draft"),
+				reply("accept", "0", "checked"),
+				reply("delta", "1", "next"),
+				reply("accept", "1", "next"),
+			],
+			expected: "checked\n\nnext",
+		},
+		{
+			name: "accepted empty with a clarifying card",
+			source: [
+				reply("delta", "0", "draft"),
+				reply("accept", "0", ""),
+				card,
+			],
+			expected: "",
+		},
+		{
+			name: "terminal error after retry",
+			source: [
+				reply("delta", "0", "draft"),
+				reply("discard", "0"),
+				{ nodeName: "chat_node", state: { error: "Example failure" } },
+			],
+			expected: "Example failure",
+		},
+		{
+			name: "empty callback-free provider",
+			source: [reply("accept", "0", "")],
+			expected: EMPTY_RESPONSE_FALLBACK,
+		},
+		{
+			name: "empty reply fallback",
+			source: [reply("delta", "0", "draft"), reply("accept", "0", "")],
+			expected: EMPTY_RESPONSE_FALLBACK,
+		},
+		{
+			name: "exception cleanup",
+			source: [
+				reply("delta", "0", "draft"),
+				reply("accept", "0", "checked"),
+				reply("delta", "1", "discarded"),
+				{ nodeName: "throw", state: {} },
+			],
+			expected: "checked",
+		},
+		{
+			name: "abort cleanup",
+			source: [
+				reply("delta", "0", "draft"),
+				reply("accept", "0", "checked"),
+				reply("delta", "1", "discarded"),
+				{ nodeName: "abort", state: {} },
+			],
+			expected: "checked",
+		},
+	])(
+		"replays $name as the live accepted transcript",
+		async ({ name, source, expected }) => {
+			const events = await readAgUiEvents(
+				await createTestApp(source).request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Fabric-Reply-Transport": "in-request-v1",
+						"X-Forwarded-For": "192.0.2.47",
+					},
+					body: JSON.stringify({ messages: history }),
+				}),
+			);
+			const live = await reduce(events);
+			expect(live[0]).toEqual(history[0]);
+			expect(
+				live
+					.filter(
+						(message: { role: string; toolCalls?: unknown }) =>
+							message.role === "assistant" && !message.toolCalls,
+					)
+					.map((message: { content: string }) => message.content)
+					.join(""),
+				JSON.stringify(events),
+			).toBe(expected);
+			if (name.includes("card")) {
+				expect(
+					live.some(
+						(message: { toolCalls?: unknown }) => message.toolCalls,
+					),
+				).toBe(true);
+			}
+			expect(await reduce(compactEvents(events))).toEqual(live);
+			const end = events.findIndex(
+				(event) =>
+					event.type === "TEXT_MESSAGE_END" ||
+					event.type === "RUN_ERROR",
+			);
+			if (events.some((event) => event.type === "MESSAGES_SNAPSHOT")) {
+				expect(events[end - 1]?.type).toBe("MESSAGES_SNAPSHOT");
 			}
 		},
 	);

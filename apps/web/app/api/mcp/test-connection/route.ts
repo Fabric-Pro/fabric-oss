@@ -14,6 +14,7 @@ import {
 import {
 	assertMcpServerUrlResolved,
 	fetchMcpServer,
+	mcpServerUrlsMatch,
 } from "@repo/mcp/lib/server-url-guard";
 import { decryptApiKey } from "@repo/utils";
 import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
@@ -80,6 +81,24 @@ function unauthorizedMcpConfigResponse(): NextResponse {
 			},
 		} satisfies TestResult,
 		{ status: 403 },
+	);
+}
+
+const SAVED_CREDENTIAL_URL_MISMATCH_MESSAGE =
+	"The saved credentials are only sent to the saved server address. Save the new address, or enter the credentials again, to test it.";
+
+function savedCredentialUrlMismatchResponse(): NextResponse {
+	return NextResponse.json(
+		{
+			success: false,
+			message: SAVED_CREDENTIAL_URL_MISMATCH_MESSAGE,
+			error: {
+				type: "SAVED_CREDENTIAL_URL_MISMATCH",
+				message: SAVED_CREDENTIAL_URL_MISMATCH_MESSAGE,
+				statusCode: 400,
+			},
+		} satisfies TestResult,
+		{ status: 400 },
 	);
 }
 
@@ -164,6 +183,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 					);
 				}
 
+				// Preserve authorization failures before inspecting the requested
+				// destination, then refuse it before resolving or decrypting a
+				// stored credential. The guarded transport fetch repeats the check
+				// at connection time and refuses redirects.
+				try {
+					await assertMcpServerUrlResolved(input.baseUrl);
+				} catch (error) {
+					return disallowedMcpDestinationResponse(error);
+				}
+
 				// Handle different auth types. A GitLab personal server is
 				// tested with the person's GitLab connection whatever auth
 				// type the request names: an API key stored on such a row is
@@ -171,23 +200,53 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 				const isGitLabPersonalConfig = isGitLabPersonalMcpServerKey(
 					cfg.mcpServer?.key,
 				);
-				if (input.authType === "OAUTH2" || isGitLabPersonalConfig) {
+				const configuredServerUrl =
+					cfg.baseUrl || cfg.mcpServer?.defaultUrl;
+				const mayUseStoredCredential =
+					!!configuredServerUrl &&
+					mcpServerUrlsMatch(configuredServerUrl, input.baseUrl);
+				const hasRequestCredential =
+					(input.authType === "API_KEY" && !!input.apiKey) ||
+					(input.authType === "OAUTH2" && !!input.oauthAccessToken);
+				const hasStoredCredential =
+					isGitLabPersonalConfig ||
+					!!cfg.encryptedApiKey ||
+					!!cfg.encryptedAccessToken ||
+					!!cfg.encryptedRefreshToken;
+				if (
+					!mayUseStoredCredential &&
+					hasStoredCredential &&
+					!hasRequestCredential
+				) {
+					return savedCredentialUrlMismatchResponse();
+				}
+				if (hasRequestCredential) {
+					// A credential entered for this test belongs to the requested
+					// address, not to the saved config. Use it without reading or
+					// refreshing the stored credential.
+					effectiveInput = {
+						...input,
+						transportFetch: undefined,
+					};
+				} else if (
+					mayUseStoredCredential &&
+					(input.authType === "OAUTH2" || isGitLabPersonalConfig)
+				) {
 					// Pass the config's own scope. `sessionOrganizationId` may
 					// be a sticky active org while the user is testing a
 					// personal config (cfg.organizationId === null), which
 					// would make getValidAccessToken reject on org mismatch.
 					// GitLab personal servers resolve to the person's GitLab
-					// connection token, and only for the URL this request
-					// actually tests: one on another origin than the
-					// credential's (the request's `baseUrl` may differ from the
-					// saved one) gets no token, as does an unusable
-					// connection — both read as "no token" below. The token
-					// then travels only through the returned GitLab fetch.
+					// connection token only after the exact configured endpoint
+					// match above. An unusable connection reads as "no token"
+					// below; a usable token travels only through the returned
+					// GitLab fetch.
 					const transportAuth = await getValidMcpTransportAuth({
 						configId: input.configId,
 						userId: session.user.id,
 						organizationId: cfg.organizationId,
 						endpoint: input.baseUrl,
+						expectedGrantGeneration: cfg.oauthGrantGeneration,
 					}).catch((error: unknown) => {
 						if (error instanceof GitLabMcpCredentialError) {
 							return null;
@@ -222,7 +281,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 						oauthAccessToken: accessToken,
 						transportFetch: transportAuth?.fetch,
 					};
-				} else if (input.authType === "API_KEY") {
+				} else if (
+					mayUseStoredCredential &&
+					input.authType === "API_KEY"
+				) {
 					// Decrypt and use the stored API key
 					if (!cfg.encryptedApiKey) {
 						return NextResponse.json(
@@ -301,26 +363,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 					{ status: 500 },
 				);
 			}
-		}
-
-		// SSRF guard, shared with the persisted-config client in @repo/mcp so
-		// a URL that passes the test here is the same URL the client will
-		// later accept. Resolves the hostname; the only exceptions are the
-		// operator's MCP_SERVER_ALLOWED_HOSTS and Fabric's own /api/mcp/* routes.
-		try {
-			await assertMcpServerUrlResolved(effectiveInput.baseUrl);
-		} catch (error) {
-			return NextResponse.json(
-				{
-					success: false,
-					message: "Base URL is not allowed",
-					error: {
-						type: "URL_NOT_ALLOWED",
-						message: `Testing connections to private, loopback, or local network addresses is not allowed. ${error instanceof Error ? error.message : String(error)}`,
-					},
-				} satisfies TestResult,
-				{ status: 400 },
-			);
+		} else {
+			try {
+				await assertMcpServerUrlResolved(input.baseUrl);
+			} catch (error) {
+				return disallowedMcpDestinationResponse(error);
+			}
 		}
 
 		// Perform the connection test with a hard timeout so the server never hangs
@@ -378,6 +426,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 			{ status: 500 },
 		);
 	}
+}
+
+function disallowedMcpDestinationResponse(error: unknown): NextResponse {
+	return NextResponse.json(
+		{
+			success: false,
+			message: "Base URL is not allowed",
+			error: {
+				type: "URL_NOT_ALLOWED",
+				message: `Testing connections to private, loopback, or local network addresses is not allowed. ${error instanceof Error ? error.message : String(error)}`,
+			},
+		} satisfies TestResult,
+		{ status: 400 },
+	);
 }
 
 /**

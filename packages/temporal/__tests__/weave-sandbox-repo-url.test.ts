@@ -72,3 +72,45 @@ describe("createSandboxActivity repo URL parsing", () => {
 		expect(createSession).not.toHaveBeenCalled();
 	});
 });
+
+it("keeps transient native readiness failures retryable through the sandbox activity", async () => {
+	vi.stubEnv("FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED", "true");
+	vi.stubEnv("BACKGROUND_AGENTS_URL", "https://example.com");
+	vi.stubEnv(
+		"BACKGROUND_AGENTS_INTERNAL_SECRET",
+		"example-synthetic-service-secret-for-readiness-tests",
+	);
+	const fetchMock = vi.fn(
+		async (_url: Parameters<typeof fetch>[0]) =>
+			new Response("Temporary outage", { status: 503 }),
+	);
+	vi.stubGlobal("fetch", fetchMock);
+	try {
+		const { FabricBackgroundAdapter } = await import(
+			"../src/lib/coding-execution/background-agents-provider"
+		);
+		const adapter = new FabricBackgroundAdapter();
+		createSession.mockImplementation((params) =>
+			adapter.createSession(params),
+		);
+		await expect(
+			createSandboxActivity({
+				userId: "example-user",
+				organizationId: "example-org",
+				repoUrl: "https://github.com/example-org/example-repo",
+				branch: "main",
+				fabricAgentsBridgeEnabled: true,
+			}),
+		).rejects.toMatchObject({
+			type: "CODING_SESSION_NOT_CREATED",
+			nonRetryable: false,
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"https://example.com/sessions/readiness",
+		);
+	} finally {
+		vi.unstubAllEnvs();
+		vi.unstubAllGlobals();
+	}
+});

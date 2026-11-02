@@ -16,6 +16,10 @@ import {
 	useShowAiUsageLimitToast,
 } from "@saas/payments/lib/ai-usage-limit-toast";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	INITIAL_WORKFLOW_TEMPLATE_STATE,
+	workflowTemplateStreamView,
+} from "../lib/workflow-template-state";
 
 // Types matching the Deep Researcher workflow
 export interface SubAgentResult {
@@ -110,26 +114,6 @@ export interface UseWorkflowTemplateStreamOptions {
 	reasoningEffort?: "none" | "light" | "medium" | "high";
 }
 
-const initialState: WorkflowTemplateState = {
-	executionId: null,
-	status: "idle",
-	phase: "idle",
-	message: "",
-	complexity: null,
-	progress: {
-		subAgentsTotal: 0,
-		subAgentsCompleted: 0,
-		subAgentsFailed: 0,
-	},
-	iteration: {
-		current: 0,
-		max: 3,
-	},
-	subAgentResults: [],
-	result: null,
-	error: null,
-};
-
 export function useWorkflowTemplateStream(
 	options: UseWorkflowTemplateStreamOptions,
 ) {
@@ -144,7 +128,9 @@ export function useWorkflowTemplateStream(
 	} = options;
 
 	// State
-	const [state, setState] = useState<WorkflowTemplateState>(initialState);
+	const [state, setState] = useState<WorkflowTemplateState>(
+		INITIAL_WORKFLOW_TEMPLATE_STATE,
+	);
 	const [isLoading, setIsLoading] = useState(false);
 	const [query, setQuery] = useState("");
 
@@ -192,7 +178,7 @@ export function useWorkflowTemplateStream(
 			setQuery(queryText);
 			setIsLoading(true);
 			setState((_prev) => ({
-				...initialState,
+				...INITIAL_WORKFLOW_TEMPLATE_STATE,
 				status: "running",
 				phase: "initializing",
 				message: "Starting workflow...",
@@ -593,7 +579,7 @@ export function useWorkflowTemplateStream(
 		// Clear executionIdRef to avoid returning stale values
 		executionIdRef.current = null;
 
-		setState(initialState);
+		setState(INITIAL_WORKFLOW_TEMPLATE_STATE);
 		setIsLoading(false);
 		setQuery("");
 	}, []);
@@ -700,27 +686,6 @@ export function useWorkflowTemplateStream(
 		sendClarificationResponse,
 
 		// Computed
-		isRunning: state.status === "running",
-		isComplete:
-			state.status === "completed" ||
-			state.status === "failed" ||
-			state.status === "cancelled",
-		hasResults:
-			state.result !== null &&
-			(state.result.text !== null ||
-				state.result.summary !== null ||
-				state.result.keyFindings.length > 0 ||
-				state.result.structuredReport !== null),
-		progress: {
-			...state.progress,
-			percentage:
-				state.progress.subAgentsTotal > 0
-					? Math.round(
-							(state.progress.subAgentsCompleted /
-								state.progress.subAgentsTotal) *
-								100,
-						)
-					: 0,
-		},
+		...workflowTemplateStreamView(state),
 	};
 }

@@ -219,7 +219,7 @@ jobs:
           npm_config_audit: "false"
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Matches root package.json `engines.node` (^22.23.4 || >=24.22.1) and the
           # temporal-tests job below. This job used to pin 20; the prompt
@@ -287,6 +287,31 @@ jobs:
             throw new Error("Chat replay integration tests must execute without skips or failures");
           }
           NODE
+
+      - name: Run MCP durable-call concurrency against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/mcp-durable-tool-calls.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=mcp-durable-tool-calls-results.json
+
+      - name: 'Guard: assert the MCP durable-call suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/mcp-durable-tool-calls-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          if (files !== 1 || total !== 8 || passed !== 8 || skipped > 0) {
+            console.error(`::error::expected one MCP durable-call file with 8 passes and zero skips; files=${files} total=${total} passed=${passed} skipped=${skipped}`);
+            process.exit(1);
+          }
+          EOF
 
       - name: Run the tenant-db RLS context suite against real Postgres
         env:
@@ -1875,7 +1900,7 @@ jobs:
           npm_config_audit: "false"
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Matches root package.json `engines.node` (^22.23.4 || >=24.22.1) and unit-tests.yml.
           # The suite under test ships on 22, so pinning an older major here would

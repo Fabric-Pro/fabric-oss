@@ -1,4 +1,6 @@
 import { type AGUIEvent, EventType, type Interrupt } from "@ag-ui/client";
+import type { StreamModelInfo } from "../hooks/useDirectStream";
+import { readPersistedModel } from "./direct-chat-history";
 import {
 	MULTI_AGENT_RUN_EVENT,
 	type MultiAgentRecordAgent,
@@ -39,6 +41,8 @@ export type MultiAgentSignal =
 			error?: string;
 			/** The tool calls its `completed` event carried (some arrive only there). */
 			toolCalls?: CompletedToolCall[];
+			/** The model that served its answer (may differ from its pick). */
+			model?: StreamModelInfo;
 			/** Its failure's code and data (`AI_USAGE_LIMIT_EXCEEDED` and its limits). */
 			code?: string;
 			data?: unknown;
@@ -114,19 +118,21 @@ function endOf(
 	if (recorded.success) {
 		return recordedEnd(memberKey, recorded.data);
 	}
-	const completed = orchestratorStreamEventSchema.safeParse({
+	const parsed = orchestratorStreamEventSchema.safeParse({
 		...value,
 		type: "completed",
 	});
+	const completed =
+		parsed.success && parsed.data.type === "completed"
+			? parsed.data
+			: undefined;
 	return {
 		kind: "agent-ended",
 		memberKey,
 		status: value.status === "cancelled" ? "cancelled" : "complete",
 		answer: typeof value.response === "string" ? value.response : undefined,
-		toolCalls:
-			completed.success && completed.data.type === "completed"
-				? completed.data.toolCalls
-				: undefined,
+		toolCalls: completed?.toolCalls,
+		model: completed?.model,
 	};
 }
 
@@ -140,6 +146,7 @@ function recordedEnd(
 		status: agent.status === "running" ? "error" : agent.status,
 		answer: agent.answer,
 		error: agent.error,
+		model: readPersistedModel(agent.record),
 	};
 }
 

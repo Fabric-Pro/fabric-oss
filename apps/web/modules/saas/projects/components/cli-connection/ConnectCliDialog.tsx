@@ -1,5 +1,6 @@
 "use client";
 
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -78,7 +79,9 @@ const DONE_LABEL = "Done";
  *   already tells the connected tool what to load, so there is no sentence to
  *   paste.
  *
- * The mint, the scopes and the configuration are identical either way.
+ * The mint and configuration are shared. Each purpose has its own fixed scope
+ * set, and a viewer's project-purpose set omits the Kanban write scope that the
+ * server's role clamp would refuse.
  */
 export type ConnectCliPurpose = "project" | "coding-instructions";
 
@@ -87,16 +90,20 @@ export type ConnectCliPurpose = "project" | "coding-instructions";
 /* -------------------------------------------------------------------------- */
 
 /**
- * The scopes the minted key carries — read-only, and no picker.
+ * The scopes a project-purpose key carries, with no picker.
  *
  * NOT the procedure's `["mcp:read", "mcp:write"]` default. `scopeSatisfied` in
  * `@saas/mcp/lib/gateway/platform-tools` short-circuits on `mcp:write` and
  * returns true for EVERY tool, writes included, so the default pair is a
  * full-access grant wearing a two-item list. Handing that out from a banner is
  * out of this feature's scope; `mcp:read` satisfies exactly the tools whose
- * `kind` is `"read"`, which is what the reader is promised above.
+ * `kind` is `"read"`. The two dedicated Kanban scopes let the CLI list, pull
+ * and complete only the current person's queue without receiving the MCP
+ * umbrella write authority.
  */
-const ISSUED_KEY_SCOPES = ["mcp:read"] as const;
+const ISSUED_KEY_SCOPES = ["mcp:read", "kanban:read", "kanban:write"] as const;
+
+const READ_ONLY_ISSUED_KEY_SCOPES = ["mcp:read", "kanban:read"] as const;
 
 /**
  * The coding-instructions purpose also offers the CLI route, whose REST
@@ -105,8 +112,8 @@ const ISSUED_KEY_SCOPES = ["mcp:read"] as const;
  * `mcp:read` does not apply there). A key minted for that purpose carries
  * it, so the CLI a CI job runs works with the key it just created.
  *
- * `instructions:write` is the one non-read scope this dialog ever mints, and
- * it is here because the CLI it configures now has `fabric instructions push`
+ * `instructions:write` is the first non-read scope the coding-instructions
+ * purpose mints. It is here because the CLI it configures now has `fabric instructions push`
  * and the MCP gateway has `fabric_propose_project_instruction_change`. Both
  * open a PROPOSAL: a suggestion held for review, published by nobody but a
  * person with edit rights in the tab.
@@ -147,10 +154,17 @@ const ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS = [
 
 type IssuedKeyScope = (typeof ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS)[number];
 
-function issuedKeyScopes(purpose: ConnectCliPurpose): IssuedKeyScope[] {
+type ProjectIssuedKeyScope = (typeof ISSUED_KEY_SCOPES)[number];
+
+function issuedKeyScopes(
+	purpose: ConnectCliPurpose,
+	isReadOnlyRole: boolean,
+): Array<IssuedKeyScope | ProjectIssuedKeyScope> {
 	return purpose === "coding-instructions"
 		? [...ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS]
-		: [...ISSUED_KEY_SCOPES];
+		: isReadOnlyRole
+			? [...READ_ONLY_ISSUED_KEY_SCOPES]
+			: [...ISSUED_KEY_SCOPES];
 }
 
 /**
@@ -177,14 +191,15 @@ const ISSUED_KEY_EXPIRY_DAYS = 90;
 
 /**
  * What the key grants, said before anything is minted (R27): who it acts as,
- * what it can do and when it stops. The second card is corrected for the one
- * purpose whose key can write something — a coding-instructions key carries
- * `instructions:write`, so "it cannot change anything" would be false for it.
- * What that scope actually reaches is the proposal path, a suggestion somebody
- * with edit rights approves or rejects in the tab, and the card says exactly
- * that rather than downgrading the promise to a vague one.
+ * what it can do and when it stops. The second card follows the purpose and
+ * role: coding-instructions keys disclose their proposal and memory writes,
+ * member project keys disclose Kanban updates, and viewer project keys stay
+ * read-only because their scope set omits `kanban:write`.
  */
-function keyFactsFor(purpose: ConnectCliPurpose): KeyFact[] {
+function keyFactsFor(
+	purpose: ConnectCliPurpose,
+	isReadOnlyRole: boolean,
+): KeyFact[] {
 	return [
 		{
 			label: "Acts as",
@@ -195,7 +210,9 @@ function keyFactsFor(purpose: ConnectCliPurpose): KeyFact[] {
 			value:
 				purpose === "coding-instructions"
 					? "Read, suggest instruction changes for an editor to approve, and write files to project memory folders (committed without review where a project admin allowed direct push)"
-					: "Read only. It cannot change anything",
+					: isReadOnlyRole
+						? "Read project context and list your Fabric Kanban items. It cannot change anything"
+						: "Read project context and pull or complete your Fabric Kanban items",
 		},
 		{
 			label: "Expires",
@@ -319,6 +336,8 @@ export function ConnectCliDialog({
 	localSetup = null,
 	onKeyIssued,
 }: ConnectCliDialogProps) {
+	const { userRole } = useOrganizationContext();
+	const isReadOnlyRole = userRole === "viewer";
 	const [rawKey, setRawKey] = useState<string | null>(null);
 	/** The most recent copy, for the second or so its control reads "Copied". */
 	const [copied, raiseCopied, lowerCopied] =
@@ -378,7 +397,7 @@ export function ConnectCliDialog({
 			await orpcClient.organizations.apiKeys.create({
 				organizationId,
 				name: ISSUED_KEY_NAME,
-				scopes: issuedKeyScopes(purpose),
+				scopes: issuedKeyScopes(purpose, isReadOnlyRole),
 				expiresInDays: ISSUED_KEY_EXPIRY_DAYS,
 			}),
 		onSuccess: (data) => {
@@ -588,7 +607,7 @@ export function ConnectCliDialog({
 							copyButtonRef={initialFocusRef}
 							createFailed={createKeyMutation.error !== null}
 							creating={createKeyMutation.isPending}
-							facts={keyFactsFor(purpose)}
+							facts={keyFactsFor(purpose, isReadOnlyRole)}
 							keyCopied={keyCopied}
 							keyIssued={keyIssued}
 							onCopyConfiguration={() =>

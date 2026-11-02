@@ -26,11 +26,8 @@ export function OrganizationThemeProvider({
 }: OrganizationThemeProviderProps) {
 	useEffect(() => {
 		const root = document.documentElement;
-		const explicitBrand =
-			brandColor && brandColor !== "red"
-				? findBrandColor(brandColor)
-				: null;
-		// Defaults to Warm Bright Orange when no explicit non-red organization brand is set.
+		const explicitBrand = brandColor ? findBrandColor(brandColor) : null;
+		// Defaults to Warm Bright Orange when no explicit organization brand is set.
 		const colorValues = explicitBrand ?? {
 			hex: "#bc3e0b",
 			hue: "17",

@@ -222,7 +222,7 @@ export function useOrchestratorStream(
 				// Start the streaming workflow
 				// Pass conversationId so backend can fetch attached workspaces if workspaceIds is empty
 				const initialRequestBody = JSON.stringify({
-					eventReplay: true,
+					eventReplay: eventReplayRef.current.enabled,
 					message: content.trim(),
 					history: history.map((m) => ({
 						role: m.role,
@@ -259,7 +259,7 @@ export function useOrchestratorStream(
 				const buildResumeRequestBody = () =>
 					executionIdRef.current
 						? JSON.stringify({
-								eventReplay: true,
+								eventReplay: eventReplayRef.current.enabled,
 								afterEvent: eventReplayRef.current.cursor,
 								executionId: executionIdRef.current,
 								organizationId,
@@ -462,6 +462,16 @@ export function useOrchestratorStream(
 							dispatchOnLine: true,
 							parse: parseOrchestratorStreamEvent,
 							onEvent: (data) => {
+								if (data.type === "replay_unavailable") {
+									// Continuity is lost: fall back to the resumed window's deferred clear.
+									if (isResume) {
+										turn.deferClearOnNextDelta(
+											assistantMessage.id,
+										);
+									}
+									eventReplayRef.current.disable();
+									return;
+								}
 								if (
 									sendController.signal.aborted ||
 									!eventReplayRef.current.accept(
@@ -500,7 +510,8 @@ export function useOrchestratorStream(
 								handleStreamEvent(
 									data,
 									assistantMessage.id,
-									Boolean(eventReplayRef.current.cursor),
+									Boolean(eventReplayRef.current.cursor) &&
+										eventReplayRef.current.enabled,
 								);
 								eventReplayRef.current.commit(data.eventCursor);
 							},
@@ -554,6 +565,8 @@ export function useOrchestratorStream(
 						// close, so hold it in case we end up not resuming.
 						streamError = error;
 					}
+
+					turn.flushStreamingText();
 
 					// Stop wins over everything: the optimistic flip has
 					// already written the final `cancelled` state.

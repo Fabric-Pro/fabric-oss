@@ -7,7 +7,15 @@ import { ChatStreamProtocolError } from "./chat-stream-protocol";
 /** Advance only after the consumer applied the event; snapshot events have no cursor. */
 export function createChatEventReplay(initial?: ChatEventCursor) {
 	let cursor = initial;
+	let enabled = true;
 	return {
+		get enabled() {
+			return enabled;
+		},
+		disable() {
+			enabled = false;
+			cursor = undefined;
+		},
 		get cursor() {
 			return cursor;
 		},
@@ -23,7 +31,7 @@ export function createChatEventReplay(initial?: ChatEventCursor) {
 			return !cursor || BigInt(next.sequence) > BigInt(cursor.sequence);
 		},
 		commit(next: ChatEventCursor | undefined) {
-			if (next) {
+			if (enabled && next) {
 				cursor = next;
 			}
 		},

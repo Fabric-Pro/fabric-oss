@@ -7,6 +7,7 @@ import {
 	selectChangedFilesFromManifestActivity,
 	walkFileTreeActivity,
 } from "../code-indexing";
+import { expectPrivateCodeIndexPath } from "./helpers/code-index-privacy";
 
 // Exercises the on-disk manifest mechanism end-to-end at the activity level:
 // the full-index slice reads AND the incremental changed-subset path (the code
@@ -127,7 +128,7 @@ describe("legacy manifest links", () => {
 				}
 				expect(fs.readFileSync(target, "utf8")).toBe("keep me");
 				expect(fs.lstatSync(manifest).isSymbolicLink()).toBe(false);
-				expect(fs.statSync(manifest).mode & 0o777).toBe(0o600);
+				expectPrivateCodeIndexPath(manifest, 0o600);
 			} finally {
 				fs.rmSync(parent, { recursive: true, force: true });
 			}

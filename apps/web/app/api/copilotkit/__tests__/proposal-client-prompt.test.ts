@@ -33,6 +33,8 @@ const mocks = vi.hoisted(() => ({
 	getBoundPromptForAgent: vi.fn(),
 	buildSettledDecisionsBlock: vi.fn(),
 	readThreadAccess: vi.fn(),
+	issueAIToken: vi.fn(async () => "ai-token"),
+	trackUsage: vi.fn(),
 	logger: { warn: vi.fn(), error: vi.fn(), debug: vi.fn(), info: vi.fn() },
 	session: { user: { id: "user-1" }, session: {} as Record<string, unknown> },
 }));
@@ -111,7 +113,7 @@ vi.mock("@repo/ai/lib/chatgpt-plan/pool", () => ({
 
 vi.mock("@repo/ai-token", () => ({
 	AI_TOKEN_HEADER: "X-AI-Token",
-	issueAIToken: async () => "ai-token",
+	issueAIToken: mocks.issueAIToken,
 }));
 
 vi.mock("@repo/api/lib/rate-limit", () => ({
@@ -166,7 +168,7 @@ vi.mock("../org-model", () => ({
 			provider: "OPENAI",
 			canonicalName: "gpt-5",
 		},
-		trackUsage: () => {},
+		trackUsage: mocks.trackUsage,
 	}),
 }));
 
@@ -863,6 +865,8 @@ describe("/api/copilotkit — chat on a client Proposal", () => {
 			const response = await call({ organizationId });
 
 			expect(response.status).toBe(403);
+			expect(mocks.issueAIToken).not.toHaveBeenCalled();
+			expect(mocks.trackUsage).not.toHaveBeenCalled();
 			expect(mocks.handleRequest).not.toHaveBeenCalled();
 			expect(mocks.isProposalClientDocument).not.toHaveBeenCalled();
 			expect(mocks.findBoundProposalPrompt).not.toHaveBeenCalled();

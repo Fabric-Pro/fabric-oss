@@ -5,7 +5,8 @@
 
 import type { ProposalThemePaint } from "@repo/utils/proposal-artifact/theme-tokens";
 import { type IParagraphOptions, type Table, TextRun } from "docx";
-import type { Nodes } from "mdast";
+import type { Heading, Nodes } from "mdast";
+import type { CoverFence, CoverLetter } from "../document-content";
 import { eachNode, type PreparedExportMarkdown } from "../markdown";
 import type {
 	ExportDiagram,
@@ -22,7 +23,10 @@ export interface BuildDocxInput {
 	tokens: ExportThemeTokens;
 	projectId: string;
 	documentId: string;
-	/** The document's title, for the cover, the running header and the footer. */
+	/**
+	 * The document record's title. The file prints under Main's leading H1
+	 * instead when Main opens with one (see `printedTitle`).
+	 */
 	title: string;
 	/** The date as the cover and the footer print it, already formatted. */
 	dateLabel: string;
@@ -39,6 +43,8 @@ export interface DocxColors {
 	heading: string;
 	primary: string;
 	onPrimary: string;
+	/** Small labels on the paper, such as list bullets. */
+	label: string;
 	muted: string;
 	border: string;
 	tint: string;
@@ -54,8 +60,30 @@ export interface ListDefinition {
 
 export interface Writer {
 	input: BuildDocxInput;
+	/**
+	 * The title the file prints under, for the cover, the running header and
+	 * footer, and the file's properties: Main's leading H1, or the record's.
+	 */
+	title: string;
+	/** Main's leading H1 when it is the title, which the body leaves out. */
+	titleHeading: Heading | null;
+	/**
+	 * The preamble's cover fence the cover reads its details from, which the
+	 * body leaves out, or null.
+	 */
+	coverFence: CoverFence | null;
+	/**
+	 * Main's cover letter, written in a section of its own after the cover
+	 * and left out of the body, or null.
+	 */
+	letter: CoverLetter | null;
 	colors: DocxColors;
 	fonts: ProposalThemePaint["fonts"];
+	/**
+	 * How mono text print sets at weight 500 (eyebrows, labels, header
+	 * cells) is set; see `docxMonoMedium`.
+	 */
+	monoMedium: MonoMedium;
 	/** Link reference definitions, by their normalised identifier. */
 	definitions: ReadonlyMap<string, string>;
 	/** One numbering definition per list node, in document order. */
@@ -91,6 +119,9 @@ export interface BlockContext {
 
 /** What a block emits: paragraph options, built once spacing is settled, or a table. */
 export type Out = { paragraph: IParagraphOptions } | { table: Table };
+
+/** The font and weight of mono text print sets at 500. */
+export type MonoMedium = Pick<RunStyle, "font" | "bold">;
 
 /** How a run of inline text is set. */
 export interface RunStyle {

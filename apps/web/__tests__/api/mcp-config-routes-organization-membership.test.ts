@@ -17,6 +17,8 @@
  * `packages/database/__tests__/organization-permissions-mcp.test.ts`; here it
  * only decides which answer each route receives.
  */
+
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -26,6 +28,7 @@ const mocks = vi.hoisted(() => ({
 	canReadOrganizationMcpConfigs: vi.fn(),
 	canConnectOrganizationMcpConfigs: vi.fn(),
 	isOrganizationMember: vi.fn(),
+	hasOrganizationTie: vi.fn(),
 	getMcpConfigById: vi.fn(),
 	getMcpConfigByIdInternal: vi.fn(),
 	mcpConfigFindFirst: vi.fn(),
@@ -36,6 +39,8 @@ const mocks = vi.hoisted(() => ({
 	closeMcpClient: vi.fn(),
 	getDetailedMcpToolInfo: vi.fn(),
 	canMcpToolsHandleTask: vi.fn(),
+	claimMcpDurableToolCall: vi.fn(),
+	completeMcpDurableToolCall: vi.fn(),
 }));
 
 vi.mock("@saas/auth/lib/server", () => ({
@@ -55,8 +60,11 @@ vi.mock("@repo/database", async (importOriginal) => {
 		canConnectOrganizationMcpConfigs:
 			mocks.canConnectOrganizationMcpConfigs,
 		isOrganizationMember: mocks.isOrganizationMember,
+		hasOrganizationTie: mocks.hasOrganizationTie,
 		getMcpConfigById: mocks.getMcpConfigById,
 		getMcpConfigByIdInternal: mocks.getMcpConfigByIdInternal,
+		claimMcpDurableToolCall: mocks.claimMcpDurableToolCall,
+		completeMcpDurableToolCall: mocks.completeMcpDurableToolCall,
 		db: {
 			...actual.db,
 			mCPConfig: {
@@ -140,7 +148,10 @@ beforeEach(() => {
 	vi.spyOn(console, "log").mockImplementation(() => {});
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 	vi.spyOn(console, "error").mockImplementation(() => {});
-	mocks.getSaasSession.mockResolvedValue({ user: { id: USER_ID } });
+	mocks.getSaasSession.mockResolvedValue({
+		user: { id: USER_ID },
+		session: { activeOrganizationId: ORG_ID },
+	});
 	mocks.getAuthSession.mockResolvedValue({
 		user: { id: USER_ID },
 		session: {},
@@ -158,6 +169,44 @@ beforeEach(() => {
 	mocks.invalidateMcpClientCache.mockResolvedValue(undefined);
 	mocks.closeMcpClient.mockResolvedValue(undefined);
 	mocks.getDetailedMcpToolInfo.mockResolvedValue([]);
+	mocks.hasOrganizationTie.mockResolvedValue(true);
+	let durableRow:
+		| {
+				id: string;
+				argsHash: string;
+				status: "RUNNING" | "COMPLETED";
+				result: Record<string, unknown> | null;
+				createdAt: Date;
+				updatedAt: Date;
+				completedAt: Date | null;
+		  }
+		| undefined;
+	mocks.claimMcpDurableToolCall.mockImplementation(
+		async (input: { argsHash: string }) => {
+			if (durableRow?.status === "COMPLETED") {
+				return { kind: "replay", call: durableRow };
+			}
+			durableRow = {
+				id: "execution-example",
+				argsHash: input.argsHash,
+				status: "RUNNING",
+				result: null,
+				createdAt: new Date(),
+				updatedAt: new Date(),
+				completedAt: null,
+			};
+			return { kind: "claimed", call: durableRow };
+		},
+	);
+	mocks.completeMcpDurableToolCall.mockImplementation(
+		async (input: { result: Record<string, unknown> }) => {
+			if (durableRow) {
+				durableRow.status = "COMPLETED";
+				durableRow.result = input.result;
+				durableRow.completedAt = new Date();
+			}
+		},
+	);
 });
 
 describe("POST /api/mcp-app/call-tool", () => {
@@ -196,7 +245,7 @@ describe("POST /api/mcp-app/call-tool", () => {
 		});
 	});
 
-	it("leaves the personal arm unchecked", async () => {
+	it("resolves an omitted organization from the authenticated session", async () => {
 		const res = await callTool(
 			post("/api/mcp-app/call-tool", {
 				...body,
@@ -204,10 +253,63 @@ describe("POST /api/mcp-app/call-tool", () => {
 			}),
 		);
 		expect(res.status).toBe(404);
-		expect(membershipQuestionsAsked()).toEqual([]);
 		expect(mocks.getMcpConfigById).toHaveBeenCalledWith("cfg-1", {
 			userId: USER_ID,
-			organizationId: undefined,
+			organizationId: ORG_ID,
+		});
+	});
+
+	it("refuses an omitted organization when the session has no active organization", async () => {
+		mocks.getSaasSession.mockResolvedValue({
+			user: { id: USER_ID },
+			session: { activeOrganizationId: null },
+		});
+
+		const res = await callTool(
+			post("/api/mcp-app/call-tool", {
+				...body,
+				organizationId: undefined,
+			}),
+		);
+
+		expect(res.status).toBe(403);
+		expect(await res.json()).toMatchObject({
+			error: "Forbidden",
+			message: "No organization is active for this session",
+		});
+		expect(mocks.getMcpConfigById).not.toHaveBeenCalled();
+	});
+
+	it("executes and replays a platform call through the real durable helper", async () => {
+		asRole("member");
+		const requestBody = {
+			configId: "platform",
+			toolName: "fabric_get_identity",
+			args: {},
+			_meta: { durable: true, idempotencyKey: "example-key" },
+		};
+		const first = await callTool(
+			post("/api/mcp-app/call-tool", requestBody),
+		);
+		const replay = await callTool(
+			post("/api/mcp-app/call-tool", requestBody),
+		);
+
+		expect(first.status).toBe(200);
+		expect(replay.status).toBe(200);
+		expect(mocks.claimMcpDurableToolCall).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: ORG_ID,
+				userId: USER_ID,
+				credentialKind: "session",
+				credentialId: USER_ID,
+				projectBinding: null,
+				serverBinding: "platform",
+			}),
+		);
+		expect(mocks.completeMcpDurableToolCall).toHaveBeenCalledOnce();
+		expect(await replay.json()).toMatchObject({
+			_meta: { durableExecution: { replayed: true } },
 		});
 	});
 });
@@ -287,6 +389,29 @@ describe("POST /api/mcp-app/invoke", () => {
 		expect(res.status).toBe(404);
 		expect(membershipQuestionsAsked()).toEqual([]);
 		expect(mocks.createMcpClientForConfig).not.toHaveBeenCalled();
+	});
+
+	it("does not return an upstream response body when tool discovery fails", async () => {
+		asRole("member");
+		const upstreamBody = "private upstream response body";
+		mocks.createMcpClientForConfig.mockResolvedValue({
+			client: {
+				tools: async () => {
+					throw new StreamableHTTPError(
+						502,
+						`Error POSTing to endpoint: ${upstreamBody}`,
+					);
+				},
+			},
+			serverUrl: "https://mcp.example.com",
+		});
+
+		const res = await invoke(post("/api/mcp-app/invoke", body));
+		const responseBody = await res.json();
+
+		expect(res.status).toBe(500);
+		expect(responseBody).toEqual({ error: "Failed to invoke MCP tool" });
+		expect(JSON.stringify(responseBody)).not.toContain(upstreamBody);
 	});
 });
 

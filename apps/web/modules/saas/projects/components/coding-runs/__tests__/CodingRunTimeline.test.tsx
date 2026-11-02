@@ -3,8 +3,9 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CodingRunTimeline } from "../CodingRunTimeline";
 
-const { mockGetCodingRun, mockSendFollowUp } = vi.hoisted(() => ({
+const { mockGetCodingRun, mockSendFollowUp, mockRecover } = vi.hoisted(() => ({
 	mockSendFollowUp: vi.fn(),
+	mockRecover: vi.fn(),
 	mockGetCodingRun: vi.fn(async () => ({
 		id: "run_1",
 		status: "RUNNING",
@@ -40,6 +41,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 		codingRuns: {
 			get: mockGetCodingRun,
 			sendFollowUp: mockSendFollowUp,
+			recover: mockRecover,
 		},
 	},
 }));
@@ -368,6 +370,49 @@ it("directs native checkpoints to the authenticated client without treating text
 			expect(
 				screen.queryByPlaceholderText("Reply to the agent…"),
 			).not.toBeInTheDocument();
+		},
+	);
+});
+
+it("offers explicit orphan-check recovery for ambiguous rows and frees the run through the API", async () => {
+	const base = await mockGetCodingRun();
+	await mockGetCodingRun.withImplementation(
+		async () =>
+			({
+				...base,
+				status: "AWAITING_REVIEW",
+				events: [
+					{
+						id: "example-event",
+						eventType: "cancellation_unknown",
+						createdAt: new Date().toISOString(),
+						payloadJson: {},
+					},
+				],
+			}) as any,
+		async () => {
+			mockRecover.mockResolvedValue({ status: "failed" });
+			renderWithQueryClient(
+				<CodingRunTimeline
+					codingRunId="example-run"
+					organizationId="example-org"
+				/>,
+			);
+			const button = await screen.findByRole("button", {
+				name: "closeRun",
+			});
+			expect(button).toBeDisabled();
+			fireEvent.click(
+				screen.getByRole("checkbox", { name: "orphanCheck" }),
+			);
+			fireEvent.click(button);
+			await waitFor(() =>
+				expect(mockRecover).toHaveBeenCalledWith({
+					id: "example-run",
+					organizationId: "example-org",
+					confirmOrphanCheck: true,
+				}),
+			);
 		},
 	);
 });

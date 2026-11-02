@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 /**
  * Tests for the Document Pipeline section of ProjectOverview.
  *
@@ -12,7 +13,7 @@
  * next-intl is mocked globally in apps/web/vitest.setup.ts.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render as baseRender, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -34,6 +35,23 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 		basePath: "/app/example-org",
 	}),
 }));
+
+vi.mock("@shared/lib/orpc-client", () => ({
+	orpcClient: {
+		codingRuns: {
+			remoteServers: {
+				list: async () => ({ enabled: false, servers: [] }),
+			},
+		},
+	},
+}));
+const render: typeof baseRender = (ui, options) =>
+	baseRender(
+		<QueryClientProvider client={new QueryClient()}>
+			{ui}
+		</QueryClientProvider>,
+		options,
+	);
 
 import { ProjectOverview } from "../ProjectOverview";
 
@@ -64,11 +82,19 @@ function renderOverview(
 	onNavigateToTab?: (tabId: string) => void,
 ) {
 	return render(
-		<ProjectOverview
-			project={makeProject(documents)}
-			projectId="p1"
-			onNavigateToTab={onNavigateToTab}
-		/>,
+		<QueryClientProvider
+			client={
+				new QueryClient({
+					defaultOptions: { queries: { retry: false } },
+				})
+			}
+		>
+			<ProjectOverview
+				project={makeProject(documents)}
+				projectId="p1"
+				onNavigateToTab={onNavigateToTab}
+			/>
+		</QueryClientProvider>,
 	);
 }
 
@@ -239,7 +265,7 @@ describe("ProjectOverview — opening a document from the pipeline", () => {
 		expect(screen.getByText("claude-sonnet-5-5")).toBeInTheDocument();
 
 		const paidApiFallbackButton = screen.getByRole("button", {
-			name: /Use organization's paid API provider/i,
+			name: /Prefer organization’s paid API provider/i,
 		});
 		await userEvent.click(paidApiFallbackButton);
 		expect(paidApiFallbackButton).toHaveAttribute("aria-pressed", "true");

@@ -27,6 +27,7 @@ import { cn } from "@ui/lib";
 import { FolderKanban, FolderOpen, Info, Plug2, Star, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useMemo } from "react";
+import { hasActiveContext } from "./active-context";
 
 // System agents list (matching OrchestratorConfigPanel)
 const SYSTEM_AGENTS: Record<string, string> = {
@@ -596,13 +597,14 @@ export function ActiveContextIndicator({
 	const projectName = projectData?.project?.name ?? "Project";
 
 	// Don't render anything if no context
-	const hasContext =
-		workspaceIds.length > 0 ||
-		mcpConfigIds.length > 0 ||
-		agentIds.length > 0 ||
-		fabricToolIds.length > 0 ||
-		integrationIds.length > 0 ||
-		!!projectId;
+	const hasContext = hasActiveContext({
+		workspaceIds,
+		mcpConfigIds,
+		agentIds,
+		fabricToolIds,
+		integrationIds,
+		projectId,
+	});
 
 	if (!hasContext) {
 		return null;

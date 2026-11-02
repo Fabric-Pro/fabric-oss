@@ -10,12 +10,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		findUser: vi.fn(),
+		createUserApiKey: vi.fn(),
 		context: {} as Record<string, unknown>,
 	},
 }));
 
 vi.mock("@repo/database", () => ({
-	createUserApiKey: vi.fn(),
+	createUserApiKey: mocks.createUserApiKey,
 	db: { user: { findUnique: mocks.findUser } },
 	listUserApiKeys: vi.fn(),
 }));
@@ -154,5 +155,44 @@ describe("GET /auth/whoami", () => {
 			"org-example-beta",
 		]);
 		expect(data).not.toHaveProperty("projectContext");
+	});
+});
+
+describe("POST /auth/keys", () => {
+	it("accepts the dedicated Kanban scopes when the caller holds both", async () => {
+		mocks.context = {
+			keyType: "personal",
+			keyPrefix: "fab_example",
+			userId: "user-1",
+			organizationId: null,
+			scopes: ["keys:write", "kanban:read", "kanban:write"],
+		};
+		mocks.createUserApiKey.mockResolvedValue({
+			id: "key-kanban",
+			name: "Fabric Kanban",
+			keyPrefix: "fab_example",
+			scopes: ["kanban:read", "kanban:write"],
+			expiresAt: null,
+			createdAt: new Date("2026-11-01T00:00:00Z"),
+		});
+
+		const response = await createPublicV1Routes().fetch(
+			new Request("http://localhost/auth/keys", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					name: "Fabric Kanban",
+					scopes: ["kanban:read", "kanban:write"],
+				}),
+			}),
+		);
+
+		expect(response.status).toBe(201);
+		expect(mocks.createUserApiKey).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: "user-1",
+				scopes: ["kanban:read", "kanban:write"],
+			}),
+		);
 	});
 });

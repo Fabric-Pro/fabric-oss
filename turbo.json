@@ -246,9 +246,11 @@
 			// Dropping the edge also drops the guarantee that `next build` and
 			// `tsc` never overlap, which apps/web/next.config.ts documents as a
 			// 16 GB OOM. Nothing here can express "these two tasks must not be
-			// concurrent", so apps/web/vercel.json now chains `turbo type-check`
-			// and `turbo build` with `&&` instead of asking for both in one
-			// invocation. Do not re-merge them.
+			// concurrent", so the root `pnpm build` script chains `turbo
+			// type-check` and `turbo build` with `&&` instead of asking for both
+			// in one invocation. Do not re-merge them. (The Vercel build in
+			// apps/web/vercel.json runs only `turbo build`; CI owns the type
+			// check.)
 			"dependsOn": ["typegen", "generate", "^generate", "^build"],
 			"outputs": [],
 			// Same list as the generic `type-check` task, tsgo files included.

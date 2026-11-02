@@ -442,13 +442,14 @@ export async function safeFetchOutbound(
 // Pinned outbound fetch (plan Slice 4 prerequisite)
 // =============================================================================
 //
-// `safeFetchOutbound` above validates the literal hostname only: a public
-// DNS name that resolves to a private address (or that is rebound between
-// validation and connect) still reaches the internal network. The pinned
-// variant resolves every A/AAAA answer first, rejects the host if ANY answer
-// is private / link-local / loopback / CGNAT / unspecified, and then connects
-// to one pre-validated address through an undici Agent whose `lookup` returns
-// that address. The request itself keeps the ORIGINAL hostname, so TLS SNI,
+// `safeFetchOutbound` above checks the literal URL, then connects through an
+// undici Agent whose `lookup` (`createSafeOutboundLookup`) refuses the host
+// if any DNS answer is unsafe, so the connection only uses checked addresses.
+// It does not follow redirects. The pinned variant also follows redirects
+// safely and applies a response policy: it resolves every A/AAAA answer
+// first, rejects the host if ANY answer is private / link-local / loopback /
+// CGNAT / unspecified, and then connects to one pre-validated address
+// through an undici Agent whose `lookup` returns that address. The request itself keeps the ORIGINAL hostname, so TLS SNI,
 // certificate verification and the `Host` header are unchanged (never connect
 // to a bare IP over HTTPS). Redirects are followed manually (max 3) and every
 // hop is re-validated the same way.

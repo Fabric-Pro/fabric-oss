@@ -748,6 +748,143 @@ export async function getStoriesForKanban(projectId: string) {
 	return { statuses, stories };
 }
 
+type BoardScalar = Exclude<
+	keyof typeof Prisma.UserStoryScalarFieldEnum,
+	"description" | "acceptanceCriteria" | "releaseNotes" | "labels"
+>;
+const boardScalars = () =>
+	Object.fromEntries(
+		Object.values(Prisma.UserStoryScalarFieldEnum)
+			.filter(
+				(field) =>
+					![
+						"description",
+						"acceptanceCriteria",
+						"releaseNotes",
+						"labels",
+					].includes(field),
+			)
+			.map((field) => [field, true]),
+	) as { [K in BoardScalar]: true };
+
+// ECMAScript WhiteSpace and LineTerminator code points used by String.trim().
+const trimWhitespace =
+	"\u0009\u000a\u000b\u000c\u000d \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
+export function storyTextPresent(column: "description" | "acceptanceCriteria") {
+	const field =
+		column === "description"
+			? Prisma.sql`"description"`
+			: Prisma.sql`"acceptanceCriteria"`;
+	return Prisma.sql`CASE WHEN ${field} IS NULL OR octet_length(${field}) = 0 THEN false WHEN translate(left(${field}, 64), ${trimWhitespace}, '') <> '' THEN true ELSE translate(${field}, ${trimWhitespace}, '') <> '' END`;
+}
+
+export async function getStoriesForBoard(projectId: string) {
+	const [statuses, stories, flags] = await Promise.all([
+		db.projectStoryStatus.findMany({
+			where: { projectId },
+			orderBy: { order: "asc" },
+		}),
+		db.userStory.findMany({
+			where: { projectId },
+			select: {
+				...boardScalars(),
+				status: true,
+				tags: {
+					select: { id: true, value: true, createdById: true },
+				},
+				tasks: {
+					orderBy: { order: "asc" },
+					include: {
+						codingRuns: {
+							take: 1,
+							orderBy: { createdAt: "desc" as const },
+							select: {
+								id: true,
+								executionChannel: true,
+								provider: true,
+								status: true,
+								providerSessionId: true,
+								pullRequestUrl: true,
+								pullRequestNumber: true,
+								externalUrl: true,
+								externalStatus: true,
+								providerMetadata: true,
+								createdAt: true,
+							},
+						},
+					},
+				},
+				codingRuns: {
+					take: 1,
+					orderBy: { createdAt: "desc" as const },
+					select: {
+						id: true,
+						executionChannel: true,
+						provider: true,
+						status: true,
+						providerSessionId: true,
+						pullRequestUrl: true,
+						pullRequestNumber: true,
+						externalUrl: true,
+						externalStatus: true,
+						providerMetadata: true,
+						storyTask: {
+							select: {
+								id: true,
+								identifier: true,
+								title: true,
+							},
+						},
+						createdAt: true,
+					},
+				},
+			},
+			orderBy: { order: "asc" },
+		}),
+		db.$queryRaw<
+			Array<{
+				id: string;
+				hasDescription: boolean;
+				hasAcceptanceCriteria: boolean;
+			}>
+		>(Prisma.sql`
+ SELECT id, ${storyTextPresent("description")} AS "hasDescription",
+ ${storyTextPresent("acceptanceCriteria")} AS "hasAcceptanceCriteria"
+ FROM "user_story" WHERE "projectId" = ${projectId}`),
+	]);
+
+	const flagsById = new Map(flags.map((row) => [row.id, row]));
+	return {
+		statuses,
+		stories: stories.map((story) => ({
+			...story,
+			hasDescription: flagsById.get(story.id)?.hasDescription ?? false,
+			hasAcceptanceCriteria:
+				flagsById.get(story.id)?.hasAcceptanceCriteria ?? false,
+		})),
+	};
+}
+
+export async function searchStoryDescriptions(
+	projectId: string,
+	needles: string[],
+) {
+	if (needles.length === 0) {
+		return [];
+	}
+	return db.$queryRaw<Array<{ id: string; needles: string[] }>>(Prisma.sql`
+ SELECT id, needles FROM (
+ SELECT id, ARRAY(
+   SELECT n.needle FROM unnest(ARRAY[${Prisma.join(needles)}]::text[]) WITH ORDINALITY AS n(needle, ordinality)
+   WHERE strpos(d, n.needle) > 0 ORDER BY n.ordinality
+ ) AS needles
+ FROM (
+   SELECT s.id, lower(s.description) AS d FROM "user_story" s
+   WHERE s."projectId" = ${projectId} OFFSET 0
+ ) descriptions OFFSET 0
+ ) matches WHERE cardinality(needles) > 0 ORDER BY id`);
+}
+
 /**
  * Shared include for the single-story reads below. Kept as a const so
  * getStoryByIdWithSourceMeeting can extend it without duplicating the body.

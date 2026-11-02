@@ -78,6 +78,8 @@ export interface GatewaySession {
 	role: "user" | "admin";
 	/** How this session authenticated. See `GatewayCredential`. */
 	credential: GatewayCredential;
+	/** Persisted key/client id, the user id for a browser session, or the service id. */
+	credentialId?: string;
 	/**
 	 * The `OauthClient` row of the agent that signed in, for the `oauth`
 	 * credential; absent for every other. Writes name it as their author's agent.

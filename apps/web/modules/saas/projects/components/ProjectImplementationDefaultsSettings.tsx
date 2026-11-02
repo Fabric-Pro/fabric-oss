@@ -107,10 +107,13 @@ export function ProjectImplementationDefaultsSettings({
 
 	const handleSaveDefaults = () => {
 		saveProjectDelegationPreferences(project.id, prefs);
-		toast.success("Saved Fabric Agents delegation defaults", {
-			description:
-				"New coding runs in this project will pre-select your chosen server target, subscription harness, model, and fallback policy.",
-		});
+		toast.success(
+			"Saved Fabric Agents delegation defaults in this browser",
+			{
+				description:
+					"Preferences are saved in this browser only, not shared with teammates. Fallback preferences do not configure server execution.",
+			},
+		);
 	};
 
 	return (
@@ -176,8 +179,9 @@ export function ProjectImplementationDefaultsSettings({
 								</strong>{" "}
 								using your CLI subscriptions (Claude, Codex,
 								ChatGPT Plus/Pro, Droid, Grok, Kimi,
-								Antigravity, Cursor), and choose how runs behave
-								when subscription quotas are reached.
+								Antigravity, Cursor), and save browser
+								preferences for when subscription quotas are
+								reached.
 							</p>
 						</div>
 					</div>
@@ -186,7 +190,7 @@ export function ProjectImplementationDefaultsSettings({
 						size="sm"
 						onClick={handleSaveDefaults}
 					>
-						Save delegation defaults
+						Save delegation defaults in this browser
 					</Button>
 				</div>
 
@@ -314,6 +318,7 @@ export function ProjectImplementationDefaultsSettings({
 							return (
 								<button
 									key={option.value}
+									aria-pressed={isSelected}
 									type="button"
 									onClick={() =>
 										updatePrefs({
@@ -412,7 +417,7 @@ export function ProjectImplementationDefaultsSettings({
 						<div className="flex items-center gap-2">
 							<RefreshCwIcon className="size-4 text-primary" />
 							<p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-								3. Quota &amp; rate-limit fallback choice
+								3. Browser fallback preference
 							</p>
 						</div>
 						<Badge
@@ -425,7 +430,7 @@ export function ProjectImplementationDefaultsSettings({
 
 					<fieldset className="grid gap-2.5 lg:grid-cols-3">
 						<legend className="sr-only">
-							Project quota fallback policy
+							Browser fallback preference
 						</legend>
 						{FABRIC_AGENT_FALLBACK_POLICIES.map((policyOption) => {
 							const isSelected =
@@ -485,8 +490,9 @@ export function ProjectImplementationDefaultsSettings({
 					{prefs.fallbackPolicy === "subscription_harnesses" && (
 						<div className="rounded-lg border border-border/60 bg-background p-3">
 							<p className="text-xs font-medium text-foreground">
-								Enabled backup subscription harnesses (rotates
-								in order when quota is reached):
+								Preferred backup subscription harnesses (saved
+								in this browser; no automatic rotation; in order
+								when quota is reached):
 							</p>
 							<div className="mt-2 flex flex-wrap gap-1.5">
 								{FABRIC_AGENT_CONNECTIONS.filter(

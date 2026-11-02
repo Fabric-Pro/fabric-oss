@@ -23,6 +23,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { validateOpenAPIBaseUrl } from "../lib/base-url";
 
 // Input schemas
 const authTypeEnum = z.enum(["NONE", "API_KEY", "BEARER", "BASIC", "OAUTH2"]);
@@ -106,6 +107,10 @@ export const servicesProcedures = {
 					message: `Failed to parse OpenAPI spec: ${error instanceof Error ? error.message : "Unknown error"}`,
 				});
 			}
+			validateOpenAPIBaseUrl(
+				data.baseUrl ?? parsedSpec.baseUrl,
+				data.baseUrl ? "saved" : "spec",
+			);
 
 			// Encrypt auth value if provided
 			const encryptedAuthValue = authValue
@@ -279,6 +284,7 @@ export const servicesProcedures = {
 		.handler(async ({ input, context }) => {
 			const userId = context.user.id;
 			const { id, organizationId, authValue, ...data } = input;
+			validateOpenAPIBaseUrl(data.baseUrl);
 
 			if (organizationId) {
 				const membership = await verifyOrganizationMembership(
@@ -432,6 +438,7 @@ export const servicesProcedures = {
 					"@repo/openapi-tools"
 				);
 				const parsedSpec = await parseOpenAPISpec(service.specUrl);
+				validateOpenAPIBaseUrl(service.baseUrl);
 
 				// Sync tools
 				const tools = await syncOpenAPIServiceTools({

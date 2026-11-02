@@ -8,7 +8,10 @@
  * item would hide everything after it from that scrubber. So the parsed tree
  * is scrubbed again by the same rules, where block boundaries are exact:
  * Source Index sections at the top level, citation markers in text, and links
- * whose whole text is a marker.
+ * whose whole text is a marker. Neither scrubber reads inside a code fence,
+ * but a cards, columns or stat tiles fence prints as prose, and the cover
+ * prints a cover fence's values, so their lines lose their markers too, by
+ * the one rule both scrubbers share (`scrubProseFence`).
  *
  * Text and code, fences and diagrams included, lose any token that refers
  * to a stored object (an upload's media path or a presigned URL), so a link
@@ -28,9 +31,11 @@
 
 import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
 import {
+	isProseFenceLanguage,
 	isSourceIndexHeading,
 	scrubCitationText,
 	scrubProposalExport,
+	scrubProseFence,
 } from "@repo/utils/proposal-artifact/export-scrub";
 import { parseMarkdownAst } from "@repo/utils/proposal-artifact/markdown-ast";
 import { isDiagramFence } from "@repo/utils/proposal-artifact/section-hash";
@@ -99,13 +104,43 @@ const MARKER_LINK_TEXT =
 /** The start of an image tag, whether or not the rest is well formed. */
 const IMAGE_TAG_START = /^\s*<img\s/i;
 
+/** A double-quoted string on one line of a diagram's source. */
+const DIAGRAM_QUOTED_TEXT = /"([^"\n]*)"/g;
+
+/** A flowchart edge label: the text between pipes after an arrow. */
+const DIAGRAM_EDGE_LABEL = /(-->|-\.->|==>|---|-\.-|===)\|([^|\n]*)\|/g;
+
+/**
+ * A diagram fence's source without citation markers in the text it prints:
+ * quoted text (node labels, a chart's title, axis labels and unit) and edge
+ * labels. Nothing else is touched, because unquoted brackets are diagram
+ * syntax (`A[S3]` is a node). A marker written inside backticks stays, as
+ * it does in prose: the export never rewrites code.
+ */
+function scrubDiagramFence(value: string): string {
+	return value
+		.replace(DIAGRAM_QUOTED_TEXT, (quoted, inner: string) => {
+			const scrubbed = scrubCitationText(inner);
+			return scrubbed.count === 0 ? quoted : `"${scrubbed.text.trim()}"`;
+		})
+		.replace(DIAGRAM_EDGE_LABEL, (label, arrow: string, inner: string) => {
+			const scrubbed = scrubCitationText(inner);
+			if (scrubbed.count === 0) {
+				return label;
+			}
+			// A label left empty goes with its pipes: `||` is no edge syntax.
+			const text = scrubbed.text.trim();
+			return text === "" ? arrow : `${arrow}|${text}|`;
+		});
+}
+
 /**
  * The tree scrubbed by the line scrubber's rules: top-level Source Index
  * sections (the heading and everything up to the next heading of the same
- * or a higher level), citation markers in text, and marker links. Storage
- * references leave text and code, links to stored objects keep only
- * their text, and a paragraph that is an image tag the parser could not
- * read becomes raw HTML.
+ * or a higher level), citation markers in text and in prose fences, and
+ * marker links. Storage references leave text and code, links to stored
+ * objects keep only their text, and a paragraph that is an image tag the
+ * parser could not read becomes raw HTML.
  */
 function scrubTree(root: Root, markdown: string): void {
 	const kept: RootContent[] = [];
@@ -136,6 +171,17 @@ function scrubTree(root: Root, markdown: string): void {
 		if (node.type === "text") {
 			node.value = withoutStorageReferences(
 				scrubCitationText(node.value).text,
+			);
+		} else if (node.type === "code" && isProseFenceLanguage(node.lang)) {
+			node.value = withoutStorageReferences(
+				scrubProseFence(node.value, node.lang ?? "").text,
+			);
+		} else if (
+			node.type === "code" &&
+			isDiagramFence(node.lang, node.value)
+		) {
+			node.value = withoutStorageReferences(
+				scrubDiagramFence(node.value),
 			);
 		} else if (node.type === "inlineCode" || node.type === "code") {
 			node.value = withoutStorageReferences(node.value);

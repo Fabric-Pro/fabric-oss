@@ -56,7 +56,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						options.input,
 					],
 				},
-				list: {
+				board: {
 					queryKey: (options: { input: Record<string, unknown> }) => [
 						"stories",
 						"list",

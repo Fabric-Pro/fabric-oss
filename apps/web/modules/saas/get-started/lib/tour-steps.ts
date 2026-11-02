@@ -135,6 +135,7 @@ export type OnboardingArea =
 export const ONBOARDING_ANCHORS = {
 	navNexus: "nav-nexus",
 	navProjects: "nav-projects",
+	navNew: "nav-new",
 	navTodos: "nav-todos",
 	launcher: "onboarding-launcher",
 	/** The mobile hamburger — small-screen fallback anchor for sidebar steps. */

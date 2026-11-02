@@ -55,6 +55,7 @@ export function RemoteAgentServerPicker({
 	organizationId,
 	servers,
 	canShare,
+	hasDefaultServer = false,
 	value,
 	onChange,
 }: {
@@ -62,6 +63,7 @@ export function RemoteAgentServerPicker({
 	organizationId?: string | null;
 	servers: RemoteAgentServerOption[];
 	canShare: boolean;
+	hasDefaultServer?: boolean;
 	value: string;
 	onChange: (id: string) => void;
 }) {
@@ -204,6 +206,7 @@ export function RemoteAgentServerPicker({
 				<div className="inline-flex items-center rounded-md border border-border/70 bg-muted/30 p-0.5 text-xs">
 					<button
 						type="button"
+						aria-pressed={scopeFilter === "ALL"}
 						onClick={() => setScopeFilter("ALL")}
 						className={cn(
 							"rounded px-2 py-0.5 text-[11px] font-medium transition-colors",
@@ -216,6 +219,7 @@ export function RemoteAgentServerPicker({
 					</button>
 					<button
 						type="button"
+						aria-pressed={scopeFilter === "PRIVATE"}
 						onClick={() => setScopeFilter("PRIVATE")}
 						className={cn(
 							"inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors",
@@ -229,6 +233,7 @@ export function RemoteAgentServerPicker({
 					</button>
 					<button
 						type="button"
+						aria-pressed={scopeFilter === "TEAM"}
 						onClick={() => setScopeFilter("TEAM")}
 						className={cn(
 							"inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors",
@@ -304,7 +309,9 @@ export function RemoteAgentServerPicker({
 				value={value}
 				onChange={(event) => onChange(event.target.value)}
 			>
-				<option value="">{t("choose")}</option>
+				<option value="">
+					{hasDefaultServer ? "Deployment server" : t("choose")}
+				</option>
 				<optgroup label={t("mine")}>
 					{privateServers.map((server) => (
 						<option key={server.id} value={server.id}>

@@ -58,6 +58,7 @@ describe("Research stream observation", () => {
 			"orch-example",
 			run.controller.signal,
 			undefined,
+			true,
 		);
 		expect(run.onEvent.mock.calls.map(([event]) => event.type)).toEqual([
 			"started",
@@ -116,6 +117,7 @@ describe("Research stream observation", () => {
 			"orch-example",
 			run.controller.signal,
 			cursor("1"),
+			true,
 		);
 		expect(
 			run.onEvent.mock.calls
@@ -274,4 +276,36 @@ describe("Research stream observation", () => {
 		expect(run.reattach).not.toHaveBeenCalled();
 		expect(vi.getTimerCount()).toBe(0);
 	});
+});
+
+it("reconnects live-only after replay is disabled without discarding output", async () => {
+	const run = observe(
+		stream(
+			started,
+			{
+				type: "text_delta",
+				content: "Prefix",
+				eventCursor: {
+					turnId: "example-turn",
+					runId: "example-run",
+					sequence: "1",
+				},
+			},
+			{ type: "replay_unavailable" },
+			{ type: "text_delta", content: " Tail" },
+			timeout,
+		),
+	);
+	await run.result;
+	expect(run.reattach).toHaveBeenCalledWith(
+		"orch-example",
+		run.controller.signal,
+		undefined,
+		false,
+	);
+	expect(
+		run.onEvent.mock.calls
+			.filter(([e]) => e.type === "text_delta")
+			.map(([e]) => e.content),
+	).toEqual(["Prefix", " Tail"]);
 });

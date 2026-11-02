@@ -833,10 +833,10 @@ export function PendingBacklogProposalsInbox({
 		// Rejected reflects immediately.
 		queryClient.invalidateQueries({ queryKey: backlogQueryKey });
 		// Approving a proposal can create or update UserStory rows that the
-		// Roadmap reads from `projects.stories.list`. Invalidate it so the
+		// Roadmap reads from `projects.stories.board`. Invalidate it so the
 		// new/updated features appear without a manual page refresh.
 		queryClient.invalidateQueries({
-			queryKey: orpc.projects.stories.list.queryKey({
+			queryKey: orpc.projects.stories.board.queryKey({
 				input: { projectId, organizationId },
 			}),
 		});

@@ -120,7 +120,7 @@ export function ProjectKanbanRouteView({
 		}),
 	);
 	const { data: storiesData, isLoading: storiesLoading } = useQuery(
-		orpc.projects.stories.list.queryOptions({
+		orpc.projects.stories.board.queryOptions({
 			input: { projectId, organizationId },
 		}),
 	);
@@ -523,7 +523,7 @@ export function ProjectKanbanRouteView({
 			onClose={() => setChatOpen(false)}
 			onChangesApplied={() => {
 				void queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.queryKey({
+					queryKey: orpc.projects.stories.board.queryKey({
 						input: { projectId, organizationId },
 					}),
 				});

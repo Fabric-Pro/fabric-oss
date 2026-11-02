@@ -7,7 +7,28 @@
 import Table from "cli-table3";
 import { getOutputFormat } from "./config.js";
 
-type OutputFormat = "table" | "json" | "yaml" | "csv" | "plain" | "quiet";
+export type OutputFormat =
+	| "table"
+	| "json"
+	| "yaml"
+	| "csv"
+	| "plain"
+	| "quiet";
+
+const OUTPUT_FORMATS = new Set<OutputFormat>([
+	"table",
+	"json",
+	"yaml",
+	"csv",
+	"plain",
+	"quiet",
+]);
+
+export function resolveOutputFormat(format?: string): OutputFormat {
+	return format && OUTPUT_FORMATS.has(format as OutputFormat)
+		? (format as OutputFormat)
+		: getOutputFormat();
+}
 
 export interface OutputOptions {
 	format?: OutputFormat;
@@ -42,7 +63,7 @@ export function shouldDisableColor(
 
 /** Print data to stdout in the selected format. */
 export function printOutput(data: unknown, opts: OutputOptions = {}): void {
-	const format = opts.format ?? (getOutputFormat() as OutputFormat);
+	const format = resolveOutputFormat(opts.format);
 
 	if (format === "json") {
 		process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
@@ -131,7 +152,7 @@ export function printRecord(
 	data: Record<string, unknown>,
 	opts: OutputOptions = {},
 ): void {
-	const format = opts.format ?? (getOutputFormat() as OutputFormat);
+	const format = resolveOutputFormat(opts.format);
 	if (format === "json" || format === "yaml" || format === "plain") {
 		printOutput(data, opts);
 		return;

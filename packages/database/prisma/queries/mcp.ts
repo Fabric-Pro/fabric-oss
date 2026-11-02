@@ -1480,6 +1480,26 @@ export async function getOauthState(state: string) {
 	return db.mCPOAuthState.findUnique({ where: { state } });
 }
 
+/** Spend a live state with one conditional write, before exchanging its code. */
+export async function consumeOauthState(
+	state: Pick<
+		NonNullable<Awaited<ReturnType<typeof getOauthState>>>,
+		"id" | "state" | "configId" | "userId" | "organizationId"
+	>,
+): Promise<boolean> {
+	const result = await db.mCPOAuthState.deleteMany({
+		where: {
+			id: state.id,
+			state: state.state,
+			configId: state.configId,
+			userId: state.userId,
+			organizationId: state.organizationId,
+			expiresAt: { gt: new Date() },
+		},
+	});
+	return result.count === 1;
+}
+
 export async function deleteOauthState(state: string) {
 	await db.mCPOAuthState.delete({ where: { state } }).catch(() => {});
 }

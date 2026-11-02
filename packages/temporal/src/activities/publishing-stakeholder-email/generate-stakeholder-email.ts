@@ -92,7 +92,6 @@ import {
 	getEffectivePlanningAnalysis,
 	listTopicDecisions,
 	logDraftRefusal,
-	seedWorkingDraftIfAbsent,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
@@ -110,6 +109,7 @@ import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
 	schemaMismatchDetail,
+	seedWorkingDraftAfterCommit,
 } from "../publishing-shared";
 import {
 	boundSettledApprovals,
@@ -542,57 +542,26 @@ export async function generateStakeholderEmailActivity(
 		};
 	}
 
-	// DV5/FR21: the first generation leaves the reader with something editable.
-	// Deliberately AFTER the draft commits and in its own transaction, not
-	// folded into `completeTopicDraft` — that helper is shared with the short
-	// post, which must not seed (DV4).
-	//
 	// `composeStakeholderEmailWorkingDraftBody` comes from `@repo/utils` rather
 	// than being composed here: `@repo/api` re-composes the same text when a
 	// stored version is adopted, and the two must agree byte-for-byte. The Blog
 	// Post sibling duplicated its composer into the API layer and the copies
 	// were pinned by nothing for two releases; one shared function makes the
 	// drift impossible instead of documenting the risk of it.
-	//
-	// A crash between the two writes degrades rather than corrupts: the panel
-	// shows a READY candidate with no working draft, which is the state a
-	// regeneration produces anyway, and the adopt control resolves it.
-	const seeded = await seedWorkingDraftIfAbsent({
-		topicId,
-		projectId,
-		postType: "STAKEHOLDER_EMAIL",
-		sourceDraftId: draftId,
-		body: composeStakeholderEmailWorkingDraftBody(document),
-		updatedById: actorUserId,
-	});
-
-	if (seeded.status === "project_ineligible") {
-		// The project was archived between the draft write and this one. The
-		// draft is committed and READY, so this is not a failed generation —
-		// it is a topic nobody can act on any more.
-		logger.warn(
-			"[publishing-stakeholder-email] project became ineligible before the working draft could be seeded",
-			{ draftId, topicId, projectId },
-		);
-	} else if (seeded.status === "source_not_found") {
-		// The draft this run just committed is no longer the READY row for this
-		// content type: a newer attempt overtook it in the gap. Same shape as
-		// SUPERSEDED, arriving one write later.
-		logger.info(
-			"[publishing-stakeholder-email] draft was superseded before it could seed a working draft",
-			{ draftId, topicId, projectId },
-		);
-	} else if (seeded.status === "already_exists") {
-		// The ordinary regeneration path, and the FR35 guarantee working as
-		// designed. Debug, not warning: this is what most runs do.
-		logger.debug(
-			"[publishing-stakeholder-email] topic already has a working draft; left untouched",
-			{ draftId, topicId, projectId },
-		);
-	}
+	const seededWorkingDraft = await seedWorkingDraftAfterCommit(
+		"[publishing-stakeholder-email]",
+		{
+			topicId,
+			projectId,
+			postType: "STAKEHOLDER_EMAIL",
+			sourceDraftId: draftId,
+			body: composeStakeholderEmailWorkingDraftBody(document),
+			updatedById: actorUserId,
+		},
+	);
 
 	return {
 		status: "READY",
-		seededWorkingDraft: seeded.status === "seeded",
+		seededWorkingDraft,
 	};
 }

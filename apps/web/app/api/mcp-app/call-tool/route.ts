@@ -1,14 +1,51 @@
-import { callMcpTool } from "@repo/mcp";
-import { isReadOnlyBlockedOutput } from "@repo/utils";
+import {
+	forbiddenOrganizationResponse,
+	resolveRequestedOrganization,
+} from "@repo/api/lib/requested-organization";
+import { callMcpTool, guardToolWriteForReadOnly } from "@repo/mcp";
+import {
+	isReadOnlyBlockedOutput,
+	type ReadOnlyBlockedOutput,
+} from "@repo/utils";
 import { getSession } from "@saas/auth/lib/server";
 import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
 import {
 	executeWithDurableEnvelope,
 	isDurableMcpToolRequest,
 } from "@saas/mcp/lib/gateway/mcp-apps";
-import { executePlatformTool } from "@saas/mcp/lib/gateway/platform-tools";
+import {
+	authorizePlatformToolCall,
+	executeAuthorizedPlatformToolCall,
+	executePlatformTool,
+	platformToolReplayAllowed,
+} from "@saas/mcp/lib/gateway/platform-tools";
 import { isPlatformToolName } from "@saas/mcp/lib/gateway/tool-eligibility";
+import type { ToolCallResult } from "@saas/mcp/lib/gateway/types";
 import type { NextRequest } from "next/server";
+
+const READ_ONLY_BLOCK_META_KEY = "fabric/readOnlyBlocked";
+
+function asToolCallResult(result: unknown): ToolCallResult {
+	if (!isReadOnlyBlockedOutput(result)) {
+		return result as ToolCallResult;
+	}
+	return {
+		isError: true,
+		content: [{ type: "text", text: result.error }],
+		_meta: { [READ_ONLY_BLOCK_META_KEY]: result },
+	};
+}
+
+function readOnlyBlockFromResult(
+	result: unknown,
+): ReadOnlyBlockedOutput | null {
+	if (isReadOnlyBlockedOutput(result)) {
+		return result;
+	}
+	const stored = (result as { _meta?: Record<string, unknown> } | null)
+		?._meta?.[READ_ONLY_BLOCK_META_KEY];
+	return isReadOnlyBlockedOutput(stored) ? stored : null;
+}
 
 /**
  * MCP App Tool Call Proxy
@@ -43,7 +80,14 @@ export async function POST(request: NextRequest) {
 			projectId,
 			durable,
 			idempotencyKey,
+			_meta: requestMetadata,
 		} = await request.json();
+		const rpcParams =
+			requestMetadata &&
+			typeof requestMetadata === "object" &&
+			!Array.isArray(requestMetadata)
+				? { _meta: requestMetadata as Record<string, unknown> }
+				: undefined;
 
 		if (!configId || !toolName) {
 			return Response.json(
@@ -53,12 +97,21 @@ export async function POST(request: NextRequest) {
 		}
 
 		const userId = session.user.id;
+		const organizationResolution = await resolveRequestedOrganization({
+			userId,
+			requestedOrganizationId: organizationId,
+			activeOrganizationId: session.session.activeOrganizationId,
+		});
+		if (!organizationResolution.ok) {
+			return forbiddenOrganizationResponse(organizationResolution);
+		}
+		const resolvedOrganizationId = organizationResolution.organizationId;
 
 		// Executing a tool needs MCP_CONNECT in the named organization, checked
 		// before the config is read: the config's own token outlives membership.
 		const authorization = await authorizeMcpConfigRequest({
 			userId,
-			organizationId,
+			organizationId: resolvedOrganizationId,
 			action: "connect",
 		});
 		if (!authorization.ok) {
@@ -70,12 +123,13 @@ export async function POST(request: NextRequest) {
 			const gatewaySession = {
 				sessionId: `mcp-app-${userId}`,
 				userId,
-				organizationId: organizationId ?? null,
+				organizationId: resolvedOrganizationId,
 				projectId: projectId ?? null,
 				userName: session.user.name || "",
 				email: session.user.email || "",
 				role: (session.user.role as "user" | "admin") || "user",
 				credential: "session" as const,
+				credentialId: userId,
 				scopes: ["*"],
 				createdAt: new Date(),
 				expiresAt: new Date(Date.now() + 60 * 60 * 1000),
@@ -83,42 +137,73 @@ export async function POST(request: NextRequest) {
 			const toolArgs = (args || {}) as Record<string, unknown>;
 			const shouldRunDurable =
 				durable === true ||
-				isDurableMcpToolRequest(request, undefined, toolArgs);
+				isDurableMcpToolRequest(request, rpcParams, toolArgs);
 
-			const runPlatform = () =>
-				callMcpTool({
-					toolName,
-					projectId,
-					execute: () =>
-						executePlatformTool(toolName, toolArgs, gatewaySession),
-				});
+			const runPlatform = async () =>
+				asToolCallResult(
+					await callMcpTool({
+						toolName,
+						projectId,
+						execute: () =>
+							executePlatformTool(
+								toolName,
+								toolArgs,
+								gatewaySession,
+							),
+					}),
+				);
 
-			const rawResult = await runPlatform();
-			if (isReadOnlyBlockedOutput(rawResult)) {
+			const rawResult = shouldRunDurable
+				? await executeWithDurableEnvelope({
+						toolName,
+						toolArgs,
+						organizationId: resolvedOrganizationId,
+						userId,
+						identity: {
+							credentialKind: "session",
+							credentialId: userId,
+							projectBinding: projectId ?? null,
+							serverBinding: "platform",
+						},
+						request,
+						rpcParams,
+						explicitIdempotencyKey:
+							typeof idempotencyKey === "string"
+								? idempotencyKey
+								: undefined,
+						authorize: async () => {
+							const blocked = await guardToolWriteForReadOnly(
+								projectId,
+								toolName,
+							);
+							return blocked
+								? {
+										ok: false as const,
+										result: asToolCallResult(blocked),
+									}
+								: authorizePlatformToolCall(
+										toolName,
+										toolArgs,
+										gatewaySession,
+									);
+						},
+						execute: (authorized) =>
+							executeAuthorizedPlatformToolCall(authorized),
+						replayAllowed: platformToolReplayAllowed(toolName),
+					})
+				: await runPlatform();
+			const readOnlyBlock = readOnlyBlockFromResult(rawResult);
+			if (readOnlyBlock) {
 				return Response.json(
 					{
-						error: rawResult.error,
-						errorCode: rawResult.code,
+						error: readOnlyBlock.error,
+						errorCode: readOnlyBlock.code,
 					},
 					{ status: 409 },
 				);
 			}
 
-			const finalResult = shouldRunDurable
-				? await executeWithDurableEnvelope({
-						toolName,
-						toolArgs,
-						organizationId: organizationId ?? null,
-						userId,
-						idempotencyKey:
-							typeof idempotencyKey === "string"
-								? idempotencyKey
-								: undefined,
-						execute: async () => rawResult,
-					})
-				: rawResult;
-
-			return Response.json(finalResult);
+			return Response.json(rawResult);
 		}
 
 		// Use @modelcontextprotocol/sdk Client directly for tool execution
@@ -132,6 +217,9 @@ export async function POST(request: NextRequest) {
 			"@modelcontextprotocol/sdk/client/streamableHttp.js"
 		);
 		const { getMcpConfigById } = await import("@repo/database");
+		const { assertMcpServerUrlResolved, fetchMcpServer } = await import(
+			"@repo/mcp/lib/server-url-guard"
+		);
 		// Resolves GitLab personal servers through the person's GitLab
 		// connection; every other config through its own MCPConfig token.
 		const { getValidMcpTransportAuth } = await import("@repo/mcp");
@@ -140,7 +228,7 @@ export async function POST(request: NextRequest) {
 		// Get MCP config from database
 		const mcpConfig = await getMcpConfigById(configId, {
 			userId,
-			organizationId,
+			organizationId: resolvedOrganizationId,
 		});
 
 		if (!mcpConfig) {
@@ -171,6 +259,7 @@ export async function POST(request: NextRequest) {
 				{ status: 400 },
 			);
 		}
+		await assertMcpServerUrlResolved(serverUrl);
 
 		// Build auth headers
 		const headers: Record<string, string> = {};
@@ -195,8 +284,9 @@ export async function POST(request: NextRequest) {
 			const auth = await getValidMcpTransportAuth({
 				configId,
 				userId,
-				organizationId,
+				organizationId: resolvedOrganizationId,
 				endpoint: serverUrl,
+				expectedGrantGeneration: mcpConfig.oauthGrantGeneration,
 			});
 			if (auth.accessToken) {
 				headers.Authorization = `Bearer ${auth.accessToken}`;
@@ -227,14 +317,14 @@ export async function POST(request: NextRequest) {
 		const transport =
 			configTransport === "SSE"
 				? new SSEClientTransport(url, {
-						...(transportFetch ? { fetch: transportFetch } : {}),
+						fetch: transportFetch ?? fetchMcpServer,
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }
 								: undefined,
 					})
 				: new StreamableHTTPClientTransport(url, {
-						...(transportFetch ? { fetch: transportFetch } : {}),
+						fetch: transportFetch ?? fetchMcpServer,
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }
@@ -245,6 +335,10 @@ export async function POST(request: NextRequest) {
 			{ name: "fabric-mcp-app-host", version: "1.0.0" },
 			{ capabilities: {} },
 		);
+		const toolArgs = (args || {}) as Record<string, unknown>;
+		const shouldRunDurable =
+			durable === true ||
+			isDurableMcpToolRequest(request, rpcParams, toolArgs);
 
 		try {
 			await client.connect(transport);
@@ -253,21 +347,67 @@ export async function POST(request: NextRequest) {
 			// blocked while the project is read-only. The raw SDK
 			// client is kept (its CallToolResult shape is what the iframe
 			// renderer expects); only the block case short-circuits.
-			const result = await callMcpTool({
-				toolName,
-				projectId,
-				execute: () =>
-					client.callTool({
-						name: toolName,
-						arguments: args || {},
+			const runTool = async () =>
+				asToolCallResult(
+					await callMcpTool({
+						toolName,
+						projectId,
+						execute: () =>
+							client.callTool({
+								name: toolName,
+								arguments: toolArgs,
+							}),
 					}),
-			});
+				);
+			const result = shouldRunDurable
+				? await executeWithDurableEnvelope({
+						toolName,
+						toolArgs,
+						organizationId: resolvedOrganizationId,
+						userId,
+						identity: {
+							credentialKind: "session",
+							credentialId: userId,
+							projectBinding: projectId ?? null,
+							serverBinding: configId,
+						},
+						request,
+						rpcParams,
+						explicitIdempotencyKey:
+							typeof idempotencyKey === "string"
+								? idempotencyKey
+								: undefined,
+						authorize: async () => {
+							const blocked = await guardToolWriteForReadOnly(
+								projectId,
+								toolName,
+							);
+							return blocked
+								? {
+										ok: false as const,
+										result: asToolCallResult(blocked),
+									}
+								: { ok: true as const, context: undefined };
+						},
+						execute: async () =>
+							asToolCallResult(
+								await client.callTool({
+									name: toolName,
+									arguments: toolArgs,
+								}),
+							),
+						// A configured server may authorize inside callTool. A live
+						// connection alone cannot prove that the call is still allowed.
+						replayAllowed: false,
+					})
+				: await runTool();
 
-			if (isReadOnlyBlockedOutput(result)) {
+			const readOnlyBlock = readOnlyBlockFromResult(result);
+			if (readOnlyBlock) {
 				return Response.json(
 					{
-						error: result.error,
-						errorCode: result.code,
+						error: readOnlyBlock.error,
+						errorCode: readOnlyBlock.code,
 					},
 					{ status: 409 },
 				);
@@ -283,12 +423,7 @@ export async function POST(request: NextRequest) {
 			stack: error instanceof Error ? error.stack : undefined,
 		});
 		return Response.json(
-			{
-				error:
-					error instanceof Error
-						? error.message
-						: "Failed to call MCP tool",
-			},
+			{ error: "Failed to call MCP tool" },
 			{ status: 500 },
 		);
 	}

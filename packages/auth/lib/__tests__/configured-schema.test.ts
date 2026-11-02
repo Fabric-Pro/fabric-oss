@@ -1,4 +1,5 @@
 /** Keep every production auth plugin compatible with the generated Prisma schema. */
+import { createEmailVerificationToken } from "better-auth/api";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 
 const observed = vi.hoisted(() => ({
@@ -6,7 +7,17 @@ const observed = vi.hoisted(() => ({
 	verification: [] as Array<Record<string, unknown>>,
 }));
 
+const emailRevocation = vi.hoisted(() => ({
+	exact: vi.fn().mockResolvedValue("clear"),
+	tuple: vi.fn().mockResolvedValue("clear"),
+}));
+
 vi.mock("@repo/mail", () => ({ sendEmail: observed.email }));
+
+vi.mock("../email-verify-blocklist", () => ({
+	getEmailVerifyJWTBlockStatus: emailRevocation.exact,
+	getEmailChangeRevocationStatus: emailRevocation.tuple,
+}));
 
 vi.mock("@repo/database", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@repo/database")>();
@@ -111,5 +122,61 @@ it("sends a magic link through the production handler with the existing user sch
 	expect(JSON.parse(String(observed.verification[0].value))).toEqual({
 		type: "magic-link",
 		email: "dev@example.com",
+	});
+});
+
+it.each(["change-email-confirmation", "change-email-verification"] as const)(
+	"refuses a %s request in the production hook when a revocation read is unavailable",
+	async (requestType) => {
+		emailRevocation.tuple.mockResolvedValueOnce("unavailable");
+		const { auth } = await import("../../auth");
+		const baseURL = String(auth.options.baseURL);
+		const token = await createEmailVerificationToken(
+			"example-auth-secret-for-configured-schema-tests",
+			"old@example.com",
+			"new@example.com",
+			3600,
+			{ requestType },
+		);
+
+		const response = await auth.handler(
+			new Request(
+				`${baseURL}/api/auth/verify-email?token=${encodeURIComponent(token)}`,
+			),
+		);
+
+		expect(response.status).toBe(503);
+		expect(await response.json()).toMatchObject({
+			message:
+				"Email verification is temporarily unavailable. Please try again.",
+		});
+	},
+);
+
+it("uses AUTH_SECRET for the production hook when BETTER_AUTH_SECRET is unset", async () => {
+	const fallbackSecret = "example-auth-secret-fallback-for-hook-tests";
+	vi.stubEnv("BETTER_AUTH_SECRET", undefined);
+	vi.stubEnv("AUTH_SECRET", fallbackSecret);
+	emailRevocation.tuple.mockResolvedValueOnce("unavailable");
+	const { auth } = await import("../../auth");
+	const baseURL = String(auth.options.baseURL);
+	const token = await createEmailVerificationToken(
+		fallbackSecret,
+		"old@example.com",
+		"new@example.com",
+		3600,
+		{ requestType: "change-email-verification" },
+	);
+
+	const response = await auth.handler(
+		new Request(
+			`${baseURL}/api/auth/verify-email?token=${encodeURIComponent(token)}`,
+		),
+	);
+
+	expect(response.status).toBe(503);
+	expect(await response.json()).toMatchObject({
+		message:
+			"Email verification is temporarily unavailable. Please try again.",
 	});
 });

@@ -1263,7 +1263,7 @@ Fabric provides three MCP entry points backed by the same authentication model a
 
 | Entry Point | URL / Command | Transport | Purpose |
 |---|---|---|---|
-| **Primary MCP Gateway** | `POST /api/mcp-gateway` (or `/api/mcp-gateway/projects/<id>`) | Streamable HTTP (`2025-11-25`) | Full 169-tool platform catalog + connected 3rd-party MCP servers + OAuth 2.1 PKCE + project scoping + durable Temporal execution |
+| **Primary MCP Gateway** | `POST /api/mcp-gateway` (or `/api/mcp-gateway/projects/<id>`) | Streamable HTTP (`2025-11-25`) | Full 169-tool platform catalog + connected 3rd-party MCP servers + OAuth 2.1 PKCE + project scoping + 24-hour idempotent durable calls |
 | **Canonical `/mcp` Endpoint** | `POST /mcp` (`?stateless=1` supported) | Streamable HTTP (`2025-11-25`) | Short-path MCP endpoint for clients that auto-discover `/mcp` and `.well-known/oauth-protected-resource` |
 | **Stdio Bridge (`@fabricorg/sdk-mcp`)** | `fabric mcp serve` / `npx -y @fabricorg/sdk-mcp` | `stdio` JSON-RPC | Local stdio process for stdio-only desktop clients using `fabric login` credentials |
 
@@ -1281,7 +1281,9 @@ When connected from an MCP App-capable host (Fabric Desktop, Claude Desktop, cla
 
 - **`ui://fabric/project-dashboard`** — Renders **Fabric Projects** and **Fabric Artifacts & Workspaces** cards for `fabric_list_projects`, `fabric_get_project`, `fabric_list_frames`, `fabric_get_frame`, `fabric_list_workspaces`, and `fabric_list_artifacts`.
 - **`ui://fabric/agent-delegation`** — Renders **Tickets Assigned to You** (`fabric_list_features` with `assignedToMe: true`, `fabric_list_project_pm_assigned_items`, `fabric_list_tickets`) and **Agent Delegation & Subscription Credits** cards with 1-click handoff to Fabric Desktop (`fabricagents://`) or a Remote Fabric Agents Server.
-- **`ui://fabric/workflow-visualizer`** — Renders DAG pipeline steps and durable Temporal workflow execution status (`fabric_list_workflows`, `fabric_execute_workflow`).
+- **`ui://fabric/workflow-visualizer`** — Renders DAG pipeline steps returned by workflow tools (`fabric_list_workflows`, `fabric_execute_workflow`); it does not invent steps when a result omits them.
+
+Durable calls use the authenticated user, organization, credential, project binding, and selected server or MCP configuration, not tool arguments, as authorization context. Send `X-Mcp-Durable: true` (or `_meta.durable: true`) and an explicit key in `X-Mcp-Idempotency-Key`, `_meta.idempotencyKey`, or `_idempotencyKey`. A matching completed call within 24 hours never runs again: the gateway either replays a safe stored result or returns a non-error receipt with the execution ID and completion time. A receipt with `_meta.durableExecution.resultWithheld: true` omits the historical result and tells the client to use the matching get/list tool for current state. A live call with that key reports that it is in progress; a failed or expired receipt, or a `RUNNING` receipt older than 10 minutes, can be reclaimed. Without a key, the tool runs normally and reports that it was not deduplicated.
 - **`ui://fabric/genie-insights`** — Renders workspace RAG citations, documents, and Lakebase query results (`fabric_query_workspace`, `fabric_search_knowledge`).
 - **`ui://fabric/visualize`** — Renders custom multi-surface A2UI v0.9.1 interactive charts, tables, comparisons, and plans (`fabric_visualize`).
 

@@ -7,12 +7,27 @@
  * too narrow silently loses events — so it gets tests rather than just a comment.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const recorded = vi.hoisted(() => ({
+	calls: [] as Array<{ context: unknown; input: Record<string, unknown> }>,
+}));
+
+vi.mock("../../../lib/audit", () => ({
+	recordAuditFromRequest: (
+		context: unknown,
+		input: Record<string, unknown>,
+	) => {
+		recorded.calls.push({ context, input });
+	},
+}));
+
 import {
 	deriveActivityAction,
 	hasReadShapedName,
 	isCapturableMethod,
 	readDeclaredMethod,
+	recordProcedureActivity,
 	shouldCapture,
 	shouldSkipPath,
 } from "../audit-activity-middleware";
@@ -126,5 +141,74 @@ describe("shouldSkipPath", () => {
 	it("does not skip an ordinary mutation", () => {
 		expect(shouldSkipPath("projects.create")).toBe(false);
 		expect(shouldSkipPath("audit.apiKeys.create")).toBe(false);
+	});
+});
+
+describe("recordProcedureActivity", () => {
+	const REFINE_PATH = ["weave", "plans", "refine"];
+	const context = {
+		headers: new Headers(),
+		user: { id: "user-example-1", email: "dev@example.com", name: "Dev" },
+	};
+
+	afterEach(() => {
+		recorded.calls.length = 0;
+		vi.unstubAllEnvs();
+	});
+
+	it("writes the procedure's success row in the given organization and project", () => {
+		recordProcedureActivity(context, {
+			path: REFINE_PATH,
+			input: {
+				organizationId: "org-example-1",
+				projectId: "project-example-1",
+			},
+		});
+
+		expect(recorded.calls).toEqual([
+			{
+				context,
+				input: {
+					action: "activity.weave.plans.refine",
+					category: "activity",
+					outcome: "success",
+					severity: "info",
+					organizationId: "org-example-1",
+					projectId: "project-example-1",
+					metadata: { procedure: "weave.plans.refine" },
+				},
+			},
+		]);
+	});
+
+	it("writes nothing while capture is disabled", () => {
+		vi.stubEnv("FABRIC_AUDIT_ACTIVITY_CAPTURE_DISABLED", "true");
+
+		recordProcedureActivity(context, {
+			path: REFINE_PATH,
+			input: { organizationId: "org-example-1" },
+		});
+
+		expect(recorded.calls).toEqual([]);
+	});
+
+	it("writes nothing for a skipped path", () => {
+		vi.stubEnv("FABRIC_AUDIT_ACTIVITY_CAPTURE_SKIP_PATHS", "weave.plans.*");
+
+		recordProcedureActivity(context, {
+			path: REFINE_PATH,
+			input: { organizationId: "org-example-1" },
+		});
+
+		expect(recorded.calls).toEqual([]);
+	});
+
+	it("writes nothing without an actor", () => {
+		recordProcedureActivity(
+			{ headers: new Headers() },
+			{ path: REFINE_PATH, input: { organizationId: "org-example-1" } },
+		);
+
+		expect(recorded.calls).toEqual([]);
 	});
 });

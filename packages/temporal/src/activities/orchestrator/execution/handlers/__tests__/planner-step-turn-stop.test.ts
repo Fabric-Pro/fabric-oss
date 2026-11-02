@@ -41,6 +41,8 @@ vi.mock("@repo/database", () => ({
 		h.fetchCredentialsByIdAndProviderInTenant,
 	fetchCredentialsByProvider: vi.fn(),
 	logAiUsageAsync: vi.fn(),
+	recordChatMediaObject: vi.fn(),
+	resolveChatMediaAccess: vi.fn().mockResolvedValue("allow"),
 	db: {},
 }));
 
@@ -50,7 +52,11 @@ vi.mock("@repo/ai", () => ({
 	resolveOpenAiApiKey: h.resolveOpenAiApiKey,
 }));
 
-vi.mock("@repo/storage", () => ({ uploadFile: h.uploadFile }));
+vi.mock("@repo/storage", () => ({
+	uploadFile: h.uploadFile,
+	deleteFile: vi.fn(),
+	getFileMetadata: vi.fn(),
+}));
 vi.mock("../../../../fabric-ai", () => ({
 	transcribeAudioActivity: h.transcribeAudioActivity,
 }));

@@ -26,7 +26,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				addActionItemLink,
 				removeActionItemLink,
 			},
-			stories: { list: listStories },
+			stories: { board: listStories },
 		},
 	},
 }));
@@ -215,3 +215,18 @@ describe("removing a link (FR3)", () => {
 		).toBeInTheDocument();
 	});
 });
+
+vi.mock("@shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		projects: {
+			stories: {
+				board: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: ["board", input],
+						queryFn: () => listStories(input),
+					}),
+				},
+			},
+		},
+	},
+}));

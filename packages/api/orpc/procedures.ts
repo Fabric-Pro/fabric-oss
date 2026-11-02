@@ -297,6 +297,7 @@ export const tenantProtectedProcedure = protectedProcedure.use(
 export { getOrganizationIdFromContext, getTenantFilterFromContext };
 export { Permissions } from "@repo/permissions";
 export {
+	assertInputOrgMatchesAuthorizedProject,
 	assertProjectPermission,
 	authorizeInputOrganization,
 	getPermissionFromMiddleware,

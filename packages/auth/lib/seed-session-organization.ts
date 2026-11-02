@@ -15,12 +15,12 @@
  *
  * ## Two mount points, one rule
  *
- * The row and the signed session cookie are produced inside one request body,
- * and Better Auth drains `session.create.after` hooks AFTER that body returns.
- * Seeding only from there wrote the organization to the row while the cookie
- * the API reads still carried none. `seedSessionOrganizationOnCreate` is the
- * create-time path: it returns the patch that shapes the row about to be
- * written, so one write produces a row and a cookie that agree.
+ * The row and the response's session projection are produced inside one
+ * request body, and Better Auth drains `session.create.after` hooks AFTER that
+ * body returns. Seeding only from there wrote the organization to the row while
+ * the initial response still carried none. `seedSessionOrganizationOnCreate`
+ * is the create-time path: it returns the patch that shapes the row about to be
+ * written, so the row and response agree.
  *
  * It cannot be the only path. The create-time hook runs strictly ahead of
  * invitation reconciliation and organization creation, so a new signup or an
@@ -86,8 +86,8 @@ async function resolveSeedOrganizationId(session: {
  * The create-time path, for `databaseHooks.session.create.before`.
  *
  * Returns the patch Better Auth merges into the row it is about to create, so
- * the row and the signed session cookie carry the organization from the same
- * write. Returns `undefined` when there is nothing to seed.
+ * the row and the response session carry the organization from the same write.
+ * Returns `undefined` when there is nothing to seed.
  *
  * The return values are a contract with the library, not a style choice, and
  * all three were read in the installed `db/with-hooks.mjs`:

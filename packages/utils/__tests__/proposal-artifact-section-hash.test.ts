@@ -6,6 +6,7 @@ import {
 	documentProseHash,
 	findSection,
 	isCurrentSectionVersion,
+	isDiagramFence,
 	PREAMBLE_SECTION_KEY,
 	type SectionMap,
 } from "../lib/proposal-artifact/section-hash";
@@ -564,6 +565,70 @@ describe("findSection and isCurrentSectionVersion", () => {
 		expect(isCurrentSectionVersion("p1:0123456789abcdef")).toBe(true);
 		expect(isCurrentSectionVersion("p2:scope#0")).toBe(false);
 		expect(isCurrentSectionVersion("scope#0")).toBe(false);
+	});
+});
+
+describe("isDiagramFence", () => {
+	it("never reads a stat tiles, cards or columns fence as a diagram", () => {
+		expect(isDiagramFence("stat-tiles", "Timeline: 6 weeks")).toBe(false);
+		expect(
+			isDiagramFence(
+				"cards",
+				lines("timeline risks", "**Block release**", "Two weeks."),
+			),
+		).toBe(false);
+		expect(isDiagramFence("columns", lines("graph", "---", "Text."))).toBe(
+			false,
+		);
+		expect(isDiagramFence("CARDS", "timeline risks")).toBe(false);
+		expect(isDiagramFence("Columns", "graph TD")).toBe(false);
+	});
+
+	it("never reads a cover fence as a diagram, even one opening with a keyword", () => {
+		expect(
+			isDiagramFence(
+				"cover",
+				lines("eyebrow: Proposal", "for: Example Harbor Co"),
+			),
+		).toBe(false);
+		expect(
+			isDiagramFence(
+				"cover",
+				lines("block partners: Example Harbor Co", "version: 2"),
+			),
+		).toBe(false);
+		expect(isDiagramFence("Cover", "block partners")).toBe(false);
+		expect(isDiagramFence("text", "block partners")).toBe(true);
+	});
+
+	it("still reads a diagram language or a first-line keyword elsewhere", () => {
+		expect(isDiagramFence("mermaid", "Anything")).toBe(true);
+		expect(isDiagramFence(null, "graph TD\n  A-->B")).toBe(true);
+		expect(isDiagramFence("text", "Timeline of the pilot")).toBe(true);
+		expect(isDiagramFence("text", "Plain notes")).toBe(false);
+	});
+
+	it("counts a cards or columns fence that opens with a keyword as content", () => {
+		expect(
+			sameSection("```cards\nTimeline risks\n**Block release**\n```", ""),
+		).toBe(false);
+		expect(sameSection("```columns\ngraph\n---\nText.\n```", "")).toBe(
+			false,
+		);
+	});
+
+	it("counts a cover fence's values, never its visual marker", () => {
+		const cover = (marker: string, version: string) =>
+			`\`\`\`cover\n${marker}\nblock partners: Example Harbor Co\nversion: ${version}\n\`\`\``;
+
+		expect(sameSection(cover("", "2"), "")).toBe(false);
+		expect(sameSection(cover("", "2"), cover("", "3"))).toBe(false);
+		expect(
+			sameSection(
+				cover("%% fabric-visual: a1b2c3d4e5f6", "2"),
+				cover("%% fabric-visual: b1c2d3e4f5a6", "2"),
+			),
+		).toBe(true);
 	});
 });
 

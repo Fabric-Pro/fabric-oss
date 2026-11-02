@@ -20,7 +20,6 @@
 import { db, recordAudit } from "@repo/database";
 import type { CodingRunProvider } from "@repo/database/prisma/generated/client";
 import { log } from "@temporalio/activity";
-import { isFabricAgentsBridgeEnabled } from "../../lib/coding-execution/bridge-rollout";
 import { getCodingExecutionProvider } from "../../lib/coding-execution/registry";
 
 const NON_TERMINAL_EXECUTION_STATUSES = [
@@ -95,10 +94,9 @@ export async function cleanupWeaveResourcesActivity(
 	// status and un-wedge the parent plan.
 	const native =
 		input.provider === "BACKGROUND_AGENTS" &&
-		(isFabricAgentsBridgeEnabled() ||
-			(input.providerMetadata as Record<string, unknown> | undefined)
-				?.executionRuntime === "fabric-agent-server");
-	if (!native) {
+		(input.providerMetadata as Record<string, unknown> | null | undefined)
+			?.executionRuntime === "fabric-agent-server";
+	if (!native || !input.sessionId) {
 		await reconcileWeaveExecutionState(input);
 	}
 
@@ -106,9 +104,6 @@ export async function cleanupWeaveResourcesActivity(
 		await reconcileWeaveExecutionState(input);
 		writeTerminatedOnExitAudit(input, { outcome: "success" });
 		return { destroyed: true, alreadyTerminal: false };
-	}
-	if (native && !input.sessionId) {
-		return { destroyed: false, alreadyTerminal: false };
 	}
 	if (!input.sessionId) {
 		// Workflow exited before a session was created — there is nothing
@@ -118,7 +113,7 @@ export async function cleanupWeaveResourcesActivity(
 		// outcome: failure" for this case was misleading — no teardown
 		// actually failed, there was simply no session.
 		writeTerminatedOnExitAudit(input, { outcome: "success" });
-		return { destroyed: false, alreadyTerminal: true };
+		return { destroyed: true, alreadyTerminal: true };
 	}
 
 	let destroyed = false;

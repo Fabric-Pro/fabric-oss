@@ -35,6 +35,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as deepResearcherActivities from "../activities/deep-researcher";
+import { extractMeaningfulErrorMessage } from "./meaningful-error-message";
 
 // =============================================================================
 // Types
@@ -707,8 +708,13 @@ export async function deepResearcherWorkflow(
 			structuredReport: state.structuredReport ?? undefined,
 		};
 	} catch (error) {
-		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
+		// The deepest meaningful cause, not Temporal's generic "Activity
+		// task failed": an activity's usage-limit refusal then reaches the
+		// output as its own message, which the clients map to the limit.
+		const errorMessage = extractMeaningfulErrorMessage(
+			error,
+			"Unknown error",
+		);
 
 		log.error("Deep researcher workflow failed", {
 			executionId: state.executionId,

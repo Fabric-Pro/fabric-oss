@@ -17,7 +17,6 @@ CUGA patterns enhance AI agents with:
 
 ### Location
 - **Agent**: `agents/langchain/task-planner/`
-- **UI Page**: `apps/web/app/(saas)/app/agents/task-planner/page.tsx`
 
 ### Features
 - Breaks down features/requirements into hierarchical subtasks
@@ -43,10 +42,9 @@ interface DecomposedTask {
 ```
 
 ### Usage
-1. Navigate to `/app/agents/task-planner`
-2. Describe a feature or project requirement
-3. Agent returns decomposed tasks with risk analysis
-4. Review execution plan with parallelization recommendations
+1. Select Task Planner in the agent registry and describe a feature or project requirement
+2. Agent returns decomposed tasks with risk analysis
+3. Review execution plan with parallelization recommendations
 
 ---
 

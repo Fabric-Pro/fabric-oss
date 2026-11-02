@@ -13,6 +13,7 @@ import type {
 	DirectChatToolCall,
 	DirectChatWorkflowOutput,
 } from "@repo/temporal";
+import { DIRECT_EXECUTION_MODE } from "@saas/agents/lib/conversation-turn-mode";
 import type { CompletedTurnSettlement } from "@saas/agents/lib/server/conversation-turn-admission";
 import { toolCallToPersistedStatus } from "@saas/agents/lib/tool-call-status";
 import {
@@ -21,8 +22,7 @@ import {
 } from "../../../../app/api/agents/fabric-ai/stream/turn-events";
 import type { TurnPartial } from "./turn-translator";
 
-/** `ConversationTurn.executionMode` of a Direct turn. */
-export const DIRECT_EXECUTION_MODE = "direct";
+export { DIRECT_EXECUTION_MODE } from "@saas/agents/lib/conversation-turn-mode";
 
 /**
  * A message as the Direct chat saves it: the conversation message plus the

@@ -114,7 +114,7 @@ export function StageRequestsInbox({
 				queryKey: stageRequestsQueryKey(projectId, organizationId),
 			}),
 			queryClient.invalidateQueries({
-				queryKey: orpc.projects.stories.list.queryKey({
+				queryKey: orpc.projects.stories.board.queryKey({
 					input: { projectId, organizationId },
 				}),
 			}),

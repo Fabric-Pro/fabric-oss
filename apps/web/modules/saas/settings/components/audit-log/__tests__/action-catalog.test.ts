@@ -205,3 +205,13 @@ describe("resourceIcon", () => {
 		expect(unknown).not.toBe(known);
 	});
 });
+
+it.each([
+	"weave.session.continuation_requested",
+	"weave.session.recovery_closed",
+])("describes the added lifecycle action %s", (key) => {
+	const descriptor = describeAction(key);
+	expect(descriptor.key).toBe(key);
+	expect(descriptor.category).toBe("weave");
+	expect(descriptor.label).not.toBe("Unknown action");
+});

@@ -11,6 +11,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import packageJson from "../package.json";
 import {
 	buildFabricVisualizePayload,
 	FABRIC_BRAND,
@@ -110,7 +111,7 @@ export interface CreateFabricMcpServerOptions {
 	fabric: FabricLike;
 	/** Server name reported on the MCP handshake. Default `"fabric"`. */
 	name?: string;
-	/** Server version. Default `"0.1.0"`. */
+	/** Server version. Defaults to this package's published version. */
 	version?: string;
 }
 
@@ -126,7 +127,7 @@ export function createFabricMcpServer(
 	const fabric = options.fabric;
 	const server = new McpServer({
 		name: options.name ?? "fabric",
-		version: options.version ?? "0.1.17",
+		version: options.version ?? packageJson.version,
 	});
 
 	// Register all built-in Fabric MCP App resources (`ui://fabric/*`)
@@ -322,11 +323,10 @@ export function createFabricMcpServer(
 	server.registerTool(
 		"fabric_delegate_agent",
 		{
-			title: "Delegate Task to Fabric Desktop or Remote Fabric Agents Server",
+			title: "Create a Fabric Agent Task Link",
 			description:
-				"Delegate a coding or workspace task to either Fabric Desktop (fabricagents:// deep link) " +
-				"or a Remote Fabric Agents Server using subscription harnesses (Claude, Codex, Droid, Grok, Kimi) " +
-				"with configurable fallback policies.",
+				"Build a Fabric Desktop deep link and Remote Fabric Agents Server URL for a coding or workspace task. " +
+				"This tool does not dispatch or execute the task.",
 			inputSchema: {
 				target: z
 					.enum(["desktop", "remote"])
@@ -376,7 +376,7 @@ export function createFabricMcpServer(
 					.boolean()
 					.optional()
 					.describe(
-						"Whether to track execution inside a durable Temporal workflow envelope.",
+						"Record that the generated link requests durable handling; this local tool does not execute or deduplicate the task.",
 					),
 			},
 			_meta: withFabricApp("ui://fabric/agent-delegation"),
@@ -404,6 +404,9 @@ export function createFabricMcpServer(
 			query.set("fallback", selectedFallback);
 			query.set("input", prompt);
 			query.set("send", "true");
+			if (durable) {
+				query.set("durable", "true");
+			}
 
 			const desktopDeepLink = `fabricagents://action/new-chat?${query.toString()}`;
 			const baseRemoteUrl = (
@@ -412,14 +415,23 @@ export function createFabricMcpServer(
 			const remoteUrl = `${baseRemoteUrl}/?${query.toString()}`;
 
 			const payload = {
-				status: "delegated",
+				status: "link_created",
+				message:
+					"Links were created locally. No task was dispatched and no remote subscription status was checked.",
 				title: projectSlug
-					? `Delegated to ${projectSlug}`
-					: "Fabric Agent Delegation Ready",
+					? `Delegation link for ${projectSlug}`
+					: "Fabric Agent Link Ready",
 				target,
 				harness: selectedHarness,
 				fallbackPolicy: selectedFallback,
-				durable: Boolean(durable),
+				durableRequested: Boolean(durable),
+				durableExecution: {
+					durable: false,
+					engine: "local-link-builder",
+					deduplicated: false,
+					stored: false,
+					reason: "not_executed",
+				},
 				desktopDeepLink,
 				remoteDelegationUrl: remoteUrl,
 				uiResourceUri: "ui://fabric/agent-delegation",
@@ -441,9 +453,9 @@ export function createFabricMcpServer(
 	server.registerTool(
 		"fabric_subscription_status",
 		{
-			title: "Check Fabric Remote Server Subscription Credits & Harnesses",
+			title: "List Fabric Remote Server Harness Choices",
 			description:
-				"Inspect connected subscription harnesses (Claude, Codex, Droid, Grok, Kimi) and fallback routing on the Fabric Agents Server.",
+				"List the known subscription harness choices and fallback routing without contacting a Fabric Agents Server. Availability and credits are not checked.",
 			inputSchema: {
 				serverUrl: z
 					.string()
@@ -458,38 +470,41 @@ export function createFabricMcpServer(
 			const payload = {
 				title: "Fabric Subscription Harnesses & Credits",
 				serverUrl: serverUrl || "https://agents.example.com",
+				status: "not_checked",
+				message:
+					"This SDK tool did not contact the remote server; harness availability and subscription credits are unknown.",
 				billingMode: "subscription_tokens",
 				fallbackPolicy: "subscription_harnesses",
 				harnesses: [
 					{
 						id: "claude-max",
 						label: "Claude (Opus 4.6 / Sonnet 4.6)",
-						status: "active",
-						auth: "subscription_oauth",
+						status: "unknown",
+						auth: "not_checked",
 					},
 					{
 						id: "codex",
 						label: "Codex (GPT-5.4 / o3)",
-						status: "active",
-						auth: "subscription_oauth",
+						status: "unknown",
+						auth: "not_checked",
 					},
 					{
 						id: "droid-cli",
 						label: "Droid (Factory Multi-Model)",
-						status: "active",
-						auth: "subscription_oauth",
+						status: "unknown",
+						auth: "not_checked",
 					},
 					{
 						id: "grok-cli",
 						label: "Grok (Grok 4 Heavy / Fast)",
-						status: "active",
-						auth: "subscription_oauth",
+						status: "unknown",
+						auth: "not_checked",
 					},
 					{
 						id: "kimi-cli",
 						label: "Kimi (Kimi K2.5 Thinking)",
-						status: "active",
-						auth: "subscription_oauth",
+						status: "unknown",
+						auth: "not_checked",
 					},
 				],
 			};

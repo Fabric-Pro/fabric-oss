@@ -244,8 +244,6 @@ interface VisualDataPrepStudioProps {
 export function VisualDataPrepStudio({
 	connectionsHref,
 	onCreateWorkflow,
-	onOpenWorkflow,
-	workflows = [],
 }: VisualDataPrepStudioProps) {
 	const [operatorSearch, setOperatorSearch] = useState("");
 	const [popoverSearch, setPopoverSearch] = useState("");
@@ -381,18 +379,12 @@ export function VisualDataPrepStudio({
 					{/* Secondary studio query tab (Databricks Visual Data Prep style) */}
 					<button
 						type="button"
-						onClick={() => {
-							if (workflows[0]) {
-								onOpenWorkflow?.(workflows[0].id);
-							} else {
-								onCreateWorkflow?.();
-							}
-						}}
+						onClick={onCreateWorkflow}
 						className="flex h-8 items-center gap-1.5 rounded-t-md px-3 text-xs text-muted-foreground transition-colors hover:bg-background/60 hover:text-foreground"
 					>
 						<FileSpreadsheetIcon className="size-3.5 shrink-0" />
 						<span className="truncate max-w-[160px]">
-							New Query {new Date().toISOString().slice(0, 10)}
+							New workflow
 						</span>
 					</button>
 
@@ -420,6 +412,9 @@ export function VisualDataPrepStudio({
 					<button
 						type="button"
 						aria-label="More options"
+						disabled
+						aria-disabled="true"
+						aria-description="Coming soon"
 						className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
 					>
 						<MoreVerticalIcon className="size-3.5" />
@@ -428,23 +423,27 @@ export function VisualDataPrepStudio({
 						type="button"
 						variant="outline"
 						size="sm"
-						onClick={onCreateWorkflow}
+						disabled
+						aria-disabled="true"
+						aria-description="Coming soon"
 						className="h-7 gap-1.5 rounded-md px-2.5 text-xs font-medium"
 					>
 						<PlayIcon className="size-3 fill-current" />
 						Run all
 					</Button>
 					<span
-						title="Cluster / Engine Ready"
+						title="Visual workflow draft"
 						className="flex size-7 items-center justify-center rounded-md border border-border bg-background"
 					>
-						<span className="size-2.5 rounded-full border-2 border-[#16A34A]" />
+						<span className="size-2.5 rounded-full border-2 border-muted-foreground" />
 					</span>
 					<button
 						type="button"
 						title="Schedule workflow"
 						aria-label="Schedule workflow"
-						onClick={onCreateWorkflow}
+						disabled
+						aria-disabled="true"
+						aria-description="Coming soon"
 						className="flex size-7 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
 					>
 						<CalendarIcon className="size-3.5" />
@@ -453,7 +452,9 @@ export function VisualDataPrepStudio({
 						type="button"
 						title="Export / Share workflow"
 						aria-label="Export or share workflow"
-						onClick={onCreateWorkflow}
+						disabled
+						aria-disabled="true"
+						aria-description="Coming soon"
 						className="flex size-7 items-center justify-center rounded-md bg-[#1B6EC2] text-white hover:bg-[#155a9e]"
 					>
 						<Share2Icon className="size-3.5" />
@@ -490,7 +491,9 @@ export function VisualDataPrepStudio({
 					</button>
 					<button
 						type="button"
-						onClick={onCreateWorkflow}
+						disabled
+						aria-disabled="true"
+						aria-description="Coming soon"
 						title="Workspace files"
 						aria-label="Workspace files"
 						className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -499,7 +502,9 @@ export function VisualDataPrepStudio({
 					</button>
 					<button
 						type="button"
-						onClick={onCreateWorkflow}
+						disabled
+						aria-disabled="true"
+						aria-description="Coming soon"
 						title="Catalog & Lakebase"
 						aria-label="Catalog and Lakebase"
 						className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -646,6 +651,9 @@ export function VisualDataPrepStudio({
 							<button
 								type="button"
 								aria-label="Undo"
+								disabled
+								aria-disabled="true"
+								aria-description="Coming soon"
 								className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
 							>
 								<Undo2Icon className="size-3.5" />
@@ -653,6 +661,9 @@ export function VisualDataPrepStudio({
 							<button
 								type="button"
 								aria-label="Redo"
+								disabled
+								aria-disabled="true"
+								aria-description="Coming soon"
 								className="rounded p-1 text-muted-foreground/50"
 							>
 								<Redo2Icon className="size-3.5" />
@@ -661,6 +672,9 @@ export function VisualDataPrepStudio({
 							<button
 								type="button"
 								aria-label="Fit view"
+								disabled
+								aria-disabled="true"
+								aria-description="Coming soon"
 								className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
 							>
 								<Maximize2Icon className="size-3.5" />
@@ -668,6 +682,9 @@ export function VisualDataPrepStudio({
 							<button
 								type="button"
 								aria-label="Zoom in"
+								disabled
+								aria-disabled="true"
+								aria-description="Coming soon"
 								className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
 							>
 								<ZoomInIcon className="size-3.5" />
@@ -675,6 +692,9 @@ export function VisualDataPrepStudio({
 							<button
 								type="button"
 								aria-label="Zoom out"
+								disabled
+								aria-disabled="true"
+								aria-description="Coming soon"
 								className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
 							>
 								<ZoomOutIcon className="size-3.5" />
@@ -682,6 +702,9 @@ export function VisualDataPrepStudio({
 							<button
 								type="button"
 								aria-label="Auto layout"
+								disabled
+								aria-disabled="true"
+								aria-description="Coming soon"
 								className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
 							>
 								<GitMergeIcon className="size-3.5" />
@@ -689,6 +712,9 @@ export function VisualDataPrepStudio({
 							<button
 								type="button"
 								aria-label="Favorite workflow"
+								disabled
+								aria-disabled="true"
+								aria-description="Coming soon"
 								className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
 							>
 								<StarIcon className="size-3.5" />
@@ -725,9 +751,9 @@ export function VisualDataPrepStudio({
 												<div className="absolute -top-9 left-1/2 -translate-x-1/2 flex items-center gap-0.5 rounded-md border border-border bg-background px-1.5 py-0.5 shadow-xs">
 													<button
 														type="button"
-														onClick={
-															onCreateWorkflow
-														}
+														disabled
+														aria-disabled="true"
+														aria-description="Coming soon"
 														title="Open full workflow editor"
 														aria-label="Edit operator"
 														className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -1152,7 +1178,9 @@ export function VisualDataPrepStudio({
 				<div className="hidden sm:flex w-9 shrink-0 flex-col items-center gap-2 border-l border-border bg-muted/20 py-2.5">
 					<button
 						type="button"
-						onClick={onCreateWorkflow}
+						disabled
+						aria-disabled="true"
+						aria-description="Coming soon"
 						title="Run history"
 						aria-label="Run history"
 						className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"

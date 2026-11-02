@@ -47,7 +47,12 @@ export const listRemoteServersProcedure = base
 	.input(projectInput)
 	.handler(async ({ input, context }) => {
 		if (!isFabricAgentsBridgeEnabled()) {
-			return { enabled: false, canShare: false, servers: [] };
+			return {
+				enabled: false,
+				hasDefaultServer: false,
+				canShare: false,
+				servers: [],
+			};
 		}
 		const organizationId = await projectOrganization(input.projectId);
 		const admin = await requireOrgMembership(
@@ -55,7 +60,18 @@ export const listRemoteServersProcedure = base
 			organizationId,
 			["owner", "admin"],
 		);
+		const { getBackgroundAgentsUrl, getBackgroundAgentsSecret } =
+			await import("@repo/temporal/coding-execution");
+		let hasDefaultServer = false;
+		try {
+			hasDefaultServer = Boolean(
+				getBackgroundAgentsUrl() && getBackgroundAgentsSecret(),
+			);
+		} catch {
+			// Missing or invalid deployment configuration requires a registered server.
+		}
 		return {
+			hasDefaultServer,
 			enabled: isFabricAgentsBridgeEnabled(),
 			canShare: !!admin,
 			servers: (

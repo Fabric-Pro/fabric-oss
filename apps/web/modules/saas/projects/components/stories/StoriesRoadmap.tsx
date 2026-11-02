@@ -224,6 +224,11 @@ import { StoryList } from "./StoryList";
 import { StoryTile } from "./StoryTile";
 import { useSyncLogDeepLink } from "./sync-log-deep-link";
 import { useConsumeSearchParam } from "./use-consume-search-param";
+import {
+	DescriptionSearchStatus,
+	useDescriptionSearch,
+} from "./use-description-search";
+import { useDetailLoadFeedback } from "./use-detail-load-feedback";
 import { useClassifyTracks } from "./useClassifyTracks";
 import { useDuplicateCheckPrefetch } from "./useDuplicateCheckPrefetch";
 import { useExportEstimate } from "./useExportEstimate";
@@ -256,7 +261,7 @@ const DRAG_DROP_ANIMATION: DropAnimation = {
 
 // ---- Query key helpers ----
 const getStoriesQueryKey = (projectId: string, organizationId: string | null) =>
-	orpc.projects.stories.list.queryKey({
+	orpc.projects.stories.board.queryKey({
 		input: { projectId, organizationId },
 	});
 const _getStatusesQueryKey = (
@@ -728,7 +733,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 		isLoading: storiesLoading,
 		refetch: refetchStories,
 	} = useQuery({
-		...orpc.projects.stories.list.queryOptions({
+		...orpc.projects.stories.board.queryOptions({
 			input: { projectId, organizationId },
 		}),
 		refetchInterval: (query) => {
@@ -739,6 +744,30 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 			return false;
 		},
 	});
+
+	const descriptionSearch = useDescriptionSearch(
+		projectId,
+		organizationId,
+		roadmapFilters.q,
+		storiesData?.stories,
+	);
+	const descriptionMatches = descriptionSearch.matches;
+	const weaveDetail = useQuery({
+		...orpc.projects.stories.get.queryOptions({
+			input: { projectId, storyId: weaveStoryId ?? "", organizationId },
+		}),
+		enabled: weaveDialogOpen && weaveStoryId !== null,
+	});
+
+	useDetailLoadFeedback(
+		weaveDialogOpen,
+		weaveDetail,
+		() => {
+			setWeaveDialogOpen(false);
+			setWeaveStoryId(null);
+		},
+		tUi("detailLoadFailed"),
+	);
 
 	// ---- Duplicate detection (semantic scan + resolve) ----
 	const {
@@ -907,9 +936,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 	// every card recompute on each render.
 	const stories: UserStory[] = useMemo(
 		() =>
-			(storiesData?.stories ?? []).map((story) =>
-				transformStory(story as Parameters<typeof transformStory>[0]),
-			),
+			(storiesData?.stories ?? []).map((story) => transformStory(story)),
 		[storiesData?.stories],
 	);
 
@@ -1221,6 +1248,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 		let filtered = applyRoadmapFilters(
 			visibleStories,
 			semanticRankById ? { ...roadmapFilters, q: "" } : roadmapFilters,
+			{ descriptionMatches },
 		);
 		// The "Possible duplicates" facet is applied here rather than inside the
 		// pure `applyRoadmapFilters` because the duplicate-link data lives in the
@@ -1272,7 +1300,11 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 			// ranking — so it narrows like any other keyword ranking.
 			return narrow(
 				filtered.sort(
-					compareStoriesByRelevance(roadmapFilters.q, fallbackSort),
+					compareStoriesByRelevance(
+						roadmapFilters.q,
+						fallbackSort,
+						descriptionMatches,
+					),
 				),
 			);
 		}
@@ -1287,7 +1319,11 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 		// items the query actually names (Fizzy #1937 follow-up).
 		return narrow(
 			filtered.sort(
-				compareStoriesByRelevance(roadmapFilters.q, fallbackSort),
+				compareStoriesByRelevance(
+					roadmapFilters.q,
+					fallbackSort,
+					descriptionMatches,
+				),
 			),
 		);
 	}, [
@@ -1299,6 +1335,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 		roadmapOrderMap,
 		semanticRankById,
 		showBodyMatches,
+		descriptionMatches,
 	]);
 	const sortedStories = searchResult.stories;
 	const bodyMatchCount = searchResult.collapsedCount;
@@ -1325,7 +1362,10 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 			return computeMatchPercentById(sortedStories, semanticRankById);
 		}
 		const scoreById = new Map<string, number>();
-		const score = scoreStoryAgainstQuery(roadmapFilters.q);
+		const score = scoreStoryAgainstQuery(
+			roadmapFilters.q,
+			descriptionMatches,
+		);
 		for (const s of sortedStories) {
 			const value = score(s);
 			if (value > 0) {
@@ -1333,7 +1373,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 			}
 		}
 		return computeMatchPercentById(sortedStories, scoreById);
-	}, [roadmapFilters.q, semanticRankById, sortedStories]);
+	}, [roadmapFilters.q, semanticRankById, sortedStories, descriptionMatches]);
 
 	const groupedByTrack = useMemo(
 		() => groupStoriesByTrack(sortedStories, showClosed),
@@ -1394,7 +1434,11 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 					(semanticRankById.get(a.id) ?? 0),
 			);
 		}
-		const matched = selectHiddenMatches(stories, roadmapFilters);
+		const matched = selectHiddenMatches(
+			stories,
+			roadmapFilters,
+			descriptionMatches,
+		);
 		const scoped = roadmapFilters.duplicatesOnly
 			? matched.filter((s) => getDuplicateInfo(s.id) !== undefined)
 			: matched;
@@ -1412,6 +1456,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 		semanticRankById,
 		searchResult.narrowed,
 		showBodyMatches,
+		descriptionMatches,
 	]);
 	const hiddenMatchCount = hiddenMatches.length;
 
@@ -3135,6 +3180,18 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 					)}
 				</output>
 
+				{weaveDialogOpen && weaveDetail.isFetching && (
+					<output
+						aria-live="polite"
+						className="text-xs text-muted-foreground"
+					>
+						{tUi("detailLoading")}
+					</output>
+				)}
+				<DescriptionSearchStatus
+					status={descriptionSearch.status}
+					retry={descriptionSearch.retry}
+				/>
 				{/* Filters */}
 				<RoadmapFilterToolbar
 					lanesCount={
@@ -4032,9 +4089,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 				{/* Weave Execution Dialog — triggered from StoryCard dropdown */}
 				{weaveStoryId &&
 					(() => {
-						const weaveStory = stories.find(
-							(s) => s.id === weaveStoryId,
-						);
+						const weaveStory = weaveDetail.data?.story;
 						return (
 							<ExecuteWithWeaveButton
 								projectId={projectId}
@@ -4050,7 +4105,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 								repoUrl={
 									projectData?.project?.repositoryUrl || ""
 								}
-								open={weaveDialogOpen}
+								open={weaveDialogOpen && !!weaveDetail.data}
 								onOpenChange={(open) => {
 									setWeaveDialogOpen(open);
 									if (!open) {

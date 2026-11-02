@@ -160,7 +160,7 @@ function getValidExternalUrl(
 }
 
 /**
- * Apply a partial patch to a single story inside a cached `stories.list`
+ * Apply a partial patch to a single story inside a cached `stories.board`
  * response. Defensive: returns `data` unchanged when the shape doesn't
  * match (e.g. cache cleared mid-mutation).
  */
@@ -256,10 +256,10 @@ export function PmSyncCloudToggle({
 	// when `showLabel`).
 	const armedUnlinked = state === "synced" && !externalId;
 
-	// Cache keys — invalidate the same `stories.list` (and `stories.get` for
+	// Cache keys — invalidate the same `stories.board` (and `stories.get` for
 	// the editor) the surface depends on so a successful PATCH refreshes
 	// every mounted view.
-	const storiesListQueryKey = orpc.projects.stories.list.queryKey({
+	const storiesListQueryKey = orpc.projects.stories.board.queryKey({
 		input: { projectId, organizationId },
 	});
 	const storyGetQueryKey = orpc.projects.stories.get.queryKey({

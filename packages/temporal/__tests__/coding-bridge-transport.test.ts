@@ -5,11 +5,13 @@ let server: Server;
 let url: string;
 let profile: string;
 let artifactStatus: number;
+let sessionStatus: number;
 let session: Record<string, unknown>;
 let mutations: number;
 beforeEach(async () => {
 	profile = "example-profile";
 	artifactStatus = 200;
+	sessionStatus = 200;
 	mutations = 0;
 	session = {
 		id: "example-session",
@@ -37,6 +39,7 @@ beforeEach(async () => {
 			mutations++;
 			res.end(JSON.stringify({ ok: true }));
 		} else {
+			res.statusCode = sessionStatus;
 			res.end(JSON.stringify(session));
 		}
 	});
@@ -107,4 +110,19 @@ describe("native coding transport guarantees", () => {
 		).rejects.toBeDefined();
 		expect(AbortSignal.timeout).toHaveBeenCalledWith(20_000);
 	});
+});
+
+it("reports a missing native session as a structured non-retryable failure", async () => {
+	sessionStatus = 404;
+	await expect(
+		(await adapter()).getSessionStatus("example-session"),
+	).rejects.toMatchObject({ type: "SESSION_NOT_FOUND", nonRetryable: true });
+});
+it("retains ambiguity when the session POST returns a malformed response", async () => {
+	const error = await (await adapter())
+		.createSession({ repoOwner: "example-org", repoName: "example-repo" })
+		.catch((error) => error);
+	expect(mutations).toBe(1);
+	expect(error).not.toMatchObject({ type: "CODING_SESSION_NOT_CREATED" });
+	expect(error).toBeInstanceOf(Error);
 });

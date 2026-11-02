@@ -11,7 +11,10 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { findAgUiRunError } from "../ag-ui-run-error";
+import {
+	findAgUiRunError,
+	isIntentionalAbortRunError,
+} from "../ag-ui-run-error";
 
 function eventStream(...chunks: string[]): Response {
 	const encoder = new TextEncoder();
@@ -27,6 +30,23 @@ function eventStream(...chunks: string[]): Response {
 		{ headers: { "content-type": "text/event-stream" } },
 	);
 }
+
+describe("isIntentionalAbortRunError", () => {
+	it("recognizes only the abort code", () => {
+		expect(isIntentionalAbortRunError({ code: "abort" })).toBe(true);
+		expect(
+			isIntentionalAbortRunError({
+				code: "INCOMPLETE_STREAM",
+				message: "This operation was aborted",
+			}),
+		).toBe(false);
+		expect(
+			isIntentionalAbortRunError({
+				message: "This operation was aborted",
+			}),
+		).toBe(false);
+	});
+});
 
 describe("findAgUiRunError", () => {
 	it("finds the RUN_ERROR that a healthy 200 carried, from the real captured frame", async () => {
@@ -118,6 +138,45 @@ describe("findAgUiRunError", () => {
 		);
 
 		await expect(findAgUiRunError(dying)).rejects.toThrow("network died");
+	});
+
+	it("carries the frame's metadata.fabric", async () => {
+		const fabric = {
+			status: 429,
+			code: "subscription_sharing_usage_limit_exceeded",
+			resetAt: "2026-10-30T15:00:00.000Z",
+		};
+		const found = await findAgUiRunError(
+			eventStream(
+				`data: ${JSON.stringify({
+					type: "RUN_ERROR",
+					message: "Plan spent",
+					code: "subscription_sharing_usage_limit_exceeded",
+					metadata: { fabric },
+				})}\n`,
+			),
+		);
+
+		expect(found).toEqual({
+			message: "Plan spent",
+			code: "subscription_sharing_usage_limit_exceeded",
+			fabric,
+		});
+	});
+
+	it("ignores a non-object metadata.fabric", async () => {
+		const found = await findAgUiRunError(
+			eventStream(
+				`data: ${JSON.stringify({
+					type: "RUN_ERROR",
+					message: "boom",
+					metadata: { fabric: ["not", "a", "body"] },
+				})}\n`,
+			),
+		);
+
+		expect(found).toEqual({ message: "boom", code: undefined });
+		expect(found).not.toHaveProperty("fabric");
 	});
 
 	it("does not read a response that is not an event stream", async () => {

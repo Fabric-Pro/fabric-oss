@@ -14,7 +14,6 @@ import {
 	getAgentTemplateInstance,
 	incrementDeploymentQuota,
 	type Prisma,
-	resolveWorkflowIntegrationForProvider,
 	setDeploymentSupervisor,
 } from "@repo/database";
 import { getScheduleClient, getTemporalClient } from "@repo/temporal";
@@ -32,7 +31,8 @@ import { verifyOrganizationMembership } from "../../organizations/lib/membership
 import {
 	buildSlackChannelConfig,
 	mapTriggerType,
-	resolveSlackIds,
+	resolveBoundSlackIds,
+	validateSlackTriggerConfigs,
 } from "../lib/sync-triggers";
 
 const deployInputSchema = z.object({
@@ -93,6 +93,10 @@ export const deployProcedure = tenantProtectedProcedure
 		if (!isOwner && !isOrgInstance) {
 			throw new Error("You don't have access to this agent instance");
 		}
+		await validateSlackTriggerConfigs(instance.triggers, {
+			userId: instance.userId,
+			organizationId: instance.organizationId,
+		});
 
 		// Check if already deployed
 		const existingDeployment = await getAgentDeploymentByInstanceId(
@@ -219,6 +223,8 @@ export const deployProcedure = tenantProtectedProcedure
 				instanceTriggers: instance.triggers as InstanceTrigger[] | null,
 				userId,
 				organizationId,
+				slackOwnerId: instance.userId,
+				slackOrganizationId: instance.organizationId,
 			});
 
 			return {
@@ -308,40 +314,6 @@ interface ActivatedTrigger {
 }
 
 /**
- * Check if an integration is configured for the user/organization.
- *
- * TENANT ISOLATION NOTE: This function intentionally uses an OR pattern to check
- * if credentials exist at EITHER the organization level OR the user's personal level.
- * This is a credential discovery/fallback mechanism, NOT a data query:
- * - In org context: First check for org-level Slack integration, fallback to user's personal
- * - In personal context: Only check user's personal Slack integration
- *
- * This OR pattern is SAFE here because:
- * 1. We're only checking for credential EXISTENCE (boolean result), not returning data
- * 2. The user must have access to use those credentials (they own them or are in the org)
- * 3. No sensitive data is leaked - just whether integration is configured
- */
-async function isIntegrationConfigured(
-	provider: "SLACK" | string,
-	userId: string,
-	organizationId?: string,
-): Promise<boolean> {
-	// Only check known providers
-	if (provider !== "SLACK") {
-		// Unknown provider, assume not required
-		return true;
-	}
-
-	const integration = await resolveWorkflowIntegrationForProvider(
-		"SLACK",
-		userId,
-		organizationId,
-	);
-
-	return integration !== null;
-}
-
-/**
  * Generate webhook secret for trigger authentication
  */
 function generateWebhookSecret(): string {
@@ -366,6 +338,8 @@ interface ActivateTriggerInput {
 	instanceTriggers: InstanceTrigger[] | null;
 	userId: string;
 	organizationId?: string;
+	slackOwnerId: string;
+	slackOrganizationId: string | null;
 }
 
 /**
@@ -375,7 +349,7 @@ interface ActivateTriggerInput {
  * with generated webhook secrets and URLs.
  * Also creates Temporal schedules for SCHEDULE triggers.
  */
-async function activateInstanceTriggers(
+export async function activateInstanceTriggers(
 	input: ActivateTriggerInput,
 ): Promise<ActivatedTrigger[]> {
 	const {
@@ -385,29 +359,12 @@ async function activateInstanceTriggers(
 		instanceTriggers,
 		userId,
 		organizationId,
+		slackOwnerId,
+		slackOrganizationId,
 	} = input;
 
 	if (!instanceTriggers || instanceTriggers.length === 0) {
 		return [];
-	}
-
-	// Check Slack integration if any Slack triggers are present
-	const hasSlackTriggers = instanceTriggers.some(
-		(t) => t.type === "slack" && t.enabled !== false,
-	);
-	let slackIntegrationConfigured = false;
-
-	if (hasSlackTriggers) {
-		slackIntegrationConfigured = await isIntegrationConfigured(
-			"SLACK",
-			userId,
-			organizationId,
-		);
-		if (!slackIntegrationConfigured) {
-			console.warn(
-				`[Deploy] Slack triggers requested but Slack integration not configured for deployment ${deploymentId}`,
-			);
-		}
 	}
 
 	// Pre-load any existing trigger rows so we can reconcile rather than
@@ -439,14 +396,6 @@ async function activateInstanceTriggers(
 			continue;
 		}
 
-		// Skip Slack triggers if integration not configured (with warning)
-		if (trigger.type === "slack" && !slackIntegrationConfigured) {
-			console.warn(
-				`[Deploy] Skipping Slack trigger for deployment ${deploymentId} - integration not configured`,
-			);
-			continue;
-		}
-
 		// Map instance trigger type to deployment trigger type
 		const deploymentType = mapTriggerType(trigger.type);
 		if (!deploymentType) {
@@ -464,8 +413,12 @@ async function activateInstanceTriggers(
 		const timezone = trigger.config?.timezone || "UTC";
 		const isSlackInstance = trigger.type.toLowerCase() === "slack";
 		const { slackChannelId, slackTeamId } = isSlackInstance
-			? resolveSlackIds(
+			? await resolveBoundSlackIds(
 					trigger.config as Record<string, unknown> | undefined,
+					{
+						userId: slackOwnerId,
+						organizationId: slackOrganizationId,
+					},
 				)
 			: { slackChannelId: null, slackTeamId: null };
 
@@ -477,9 +430,7 @@ async function activateInstanceTriggers(
 				)
 			: ((trigger.config || {}) as Prisma.InputJsonValue);
 
-		// teamId is the tenant boundary for Slack — see sync-triggers.ts for
-		// the full reasoning. Without it the trigger is unscoped and we
-		// mark the row inactive until the user reconfigures.
+		// Slack identifiers were bound to the instance owner's connection.
 		const writeIsActive = isSlackInstance ? Boolean(slackTeamId) : true;
 
 		try {
@@ -500,6 +451,12 @@ async function activateInstanceTriggers(
 							timezone,
 							slackChannelId,
 							slackTeamId,
+							...(isSlackInstance
+								? {
+										userId: slackOwnerId,
+										organizationId: slackOrganizationId,
+									}
+								: {}),
 						},
 					})
 				: await db.agentDeploymentTrigger.create({
@@ -516,8 +473,10 @@ async function activateInstanceTriggers(
 							timezone,
 							slackChannelId,
 							slackTeamId,
-							userId,
-							organizationId,
+							userId: isSlackInstance ? slackOwnerId : userId,
+							organizationId: isSlackInstance
+								? slackOrganizationId
+								: organizationId,
 						},
 					});
 

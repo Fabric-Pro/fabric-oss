@@ -14,8 +14,16 @@
  * fail here until it is wired up too. (Fizzy #2236)
  */
 
-import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -24,6 +32,35 @@ const packagesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const read = (relativePath: string): string =>
 	readFileSync(join(packagesDir, relativePath), "utf-8");
+
+function findChunkCallers(root: string, directories: string[]): string[] {
+	const callers: string[] = [];
+	function walk(relativePath: string): void {
+		for (const entry of readdirSync(join(root, relativePath), {
+			withFileTypes: true,
+		})) {
+			if (entry.name === "__tests__" || entry.name === "node_modules") {
+				continue;
+			}
+			const file = `${relativePath}/${entry.name}`;
+			if (entry.isDirectory()) {
+				walk(file);
+			} else if (
+				entry.isFile() &&
+				entry.name.endsWith(".ts") &&
+				readFileSync(join(root, file), "utf8").includes("chunkText(")
+			) {
+				callers.push(file);
+			}
+		}
+	}
+	for (const directory of directories) {
+		if (existsSync(join(root, directory))) {
+			walk(directory);
+		}
+	}
+	return callers.sort();
+}
 
 const INGESTION_PATHS = [
 	{
@@ -114,13 +151,12 @@ describe("project-context ingestion chunking", () => {
 			"rag/test-rag.ts": "developer script, not a runtime path",
 		};
 
-		const callers = execSync(
-			"grep -rl --include=*.ts 'chunkText(' rag temporal/src api apps 2>/dev/null || true",
-			{ cwd: packagesDir, encoding: "utf-8" },
-		)
-			.split("\n")
-			.map((line) => line.trim())
-			.filter((line) => line.length > 0 && !line.includes("__tests__"));
+		const callers = findChunkCallers(packagesDir, [
+			"rag",
+			"temporal/src",
+			"api",
+			"../apps",
+		]);
 
 		const unrouted = callers.filter((file) => {
 			if (CHUNK_CALLER_EXEMPT[file]) {
@@ -140,6 +176,26 @@ describe("project-context ingestion chunking", () => {
 				"with a reason. An unrouted ingestion path accepts an API spec and " +
 				"silently shreds it — the upload still succeeds.",
 		).toEqual([]);
+	});
+
+	it("discovery includes a new nested caller and excludes test and dependency fixtures", () => {
+		const root = mkdtempSync(join(tmpdir(), "chunk-callers-test-"));
+		try {
+			for (const file of [
+				"src/new/nested.ts",
+				"src/__tests__/fixture.ts",
+				"src/node_modules/fixture.ts",
+				"src/not-typescript.js",
+			]) {
+				mkdirSync(dirname(join(root, file)), { recursive: true });
+				writeFileSync(join(root, file), "chunkText(source)");
+			}
+			expect(findChunkCallers(root, ["src", "missing"])).toEqual([
+				"src/new/nested.ts",
+			]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("bulk re-embed still depends on the embeddedAt filter it is safe because of", () => {

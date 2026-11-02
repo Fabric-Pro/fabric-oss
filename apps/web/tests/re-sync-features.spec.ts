@@ -115,7 +115,7 @@ async function installStoriesMock(
 	stories: StoryFixture[] = [SYNCED_STORY, UNSYNCED_STORY],
 ): Promise<void> {
 	await page.route(
-		"**/api/rpc/projects/stories/list**",
+		"**/api/rpc/projects/stories/board**",
 		async (route: Route) => {
 			await route.fulfill({
 				status: 200,
@@ -297,7 +297,7 @@ function buildListResponse(input: ListPMTicketsInput) {
 
 async function installPMListMock(page: Page): Promise<void> {
 	await page.route(
-		"**/api/rpc/projects/stories/listPMTickets**",
+		"**/api/rpc/projects/stories/boardPMTickets**",
 		async (route: Route) => {
 			const req = route.request();
 			let input: ListPMTicketsInput = {

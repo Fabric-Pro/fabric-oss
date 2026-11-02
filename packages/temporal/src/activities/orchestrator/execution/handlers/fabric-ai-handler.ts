@@ -13,6 +13,10 @@ import {
 } from "@repo/utils/dispatch-guard";
 import { synthesizeToolSpeech } from "../../../../lib/text-to-speech";
 import {
+	chatMediaProxyUrl,
+	uploadRecordedChatMedia,
+} from "../../../chat-media";
+import {
 	createFirstClassFrame,
 	editFirstClassFrameBlock,
 	getFirstClassFrame,
@@ -1129,10 +1133,6 @@ export class FabricAiHandler implements StepHandler {
 				const ttsStartTime = Date.now();
 
 				// Use OpenAI TTS API
-				const { uploadFile: uploadAudio } = await import(
-					"@repo/storage"
-				);
-
 				const speech = await synthesizeToolSpeech({
 					usageConversationId: input.conversationId,
 					userId: input.userId,
@@ -1146,23 +1146,25 @@ export class FabricAiHandler implements StepHandler {
 				}
 
 				const audioBuffer = speech.audio;
-				const audioKey = `tts/${input.userId}/${Date.now()}.mp3`;
 
 				// Immediately before the upload, after the speech request and
 				// the reading of its body: nothing is stored once the chat turn
 				// this step serves has stopped. A no-op outside a turn.
 				throwIfDispatchStopped();
-				await uploadAudio(audioKey, audioBuffer, {
-					bucket:
-						process.env.NEXT_PUBLIC_CHAT_DOCUMENTS_BUCKET_NAME ||
-						"chat-documents",
+				const audioKey = await uploadRecordedChatMedia({
+					data: audioBuffer,
 					contentType: "audio/mpeg",
+					extension: "mp3",
+					storageKind: "tts-audio",
+					recordKind: "TTS_AUDIO",
+					userId: input.userId,
+					organizationId: input.organizationId,
+					conversationId: input.conversationId,
 				});
-
-				const orgParam = input.organizationId
-					? `&orgId=${encodeURIComponent(input.organizationId)}`
-					: "";
-				const audioUrl = `/api/storage/image?path=${encodeURIComponent(audioKey)}${orgParam}`;
+				const audioUrl = chatMediaProxyUrl(
+					audioKey,
+					input.organizationId,
+				);
 
 				// Estimate duration: ~150 words per minute average
 				const wordCount = ttsText.split(/\s+/).length;

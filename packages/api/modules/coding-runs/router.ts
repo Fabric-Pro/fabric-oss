@@ -10,6 +10,7 @@ import { discardSpikeProcedure } from "./procedures/discard-spike";
 import { getCodingRunProcedure } from "./procedures/get-coding-run";
 import { listCodingRunsProcedure } from "./procedures/list-coding-runs";
 import { pollLiveStatusProcedure } from "./procedures/poll-live-status";
+import { recoverCodingRunProcedure } from "./procedures/recover-coding-run";
 import {
 	connectRemoteServerProcedure,
 	disconnectRemoteServerProcedure,
@@ -30,6 +31,7 @@ export const codingRunsRouter = {
 	get: getCodingRunProcedure,
 	list: listCodingRunsProcedure,
 	cancel: cancelCodingRunProcedure,
+	recover: recoverCodingRunProcedure,
 	pollLiveStatus: pollLiveStatusProcedure,
 	sendFollowUp: sendFollowUpProcedure,
 	// Spike runs (plan Slice 3)

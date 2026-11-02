@@ -13,6 +13,7 @@ import {
 	configuredOperatorProjectId,
 	createAzureMonitorLogSourceAdapter,
 	createOperatorErrorScanAdapter,
+	PLATFORM_NOISE_RULES,
 	parseErrorGroupResponse,
 } from "../azure-monitor-log-source";
 
@@ -37,6 +38,23 @@ describe("buildErrorGroupQuery", () => {
 		expect(q).toContain("| where Occurrences >= 5");
 		expect(q).toContain("| take 25");
 		expect(q).toContain("by Kind = _kind, GroupKey = _key");
+	});
+
+	it("omits deploy noise classification for tenant-scoped queries", () => {
+		const q = buildErrorGroupQuery(SCOPE, { requireTenantPredicate: true });
+		for (const token of [
+			"_proof",
+			"_noise",
+			"_revision",
+			"_replica",
+			...PLATFORM_NOISE_RULES.map((rule) => rule.id),
+			"_setAside",
+			"context canceled",
+			"platform-noise",
+			"AzureKeyVault",
+		]) {
+			expect(q).not.toContain(token);
+		}
 	});
 
 	it("reads only error severity and above", () => {
@@ -143,8 +161,49 @@ describe("parseErrorGroupResponse", () => {
 		"ExceptionType",
 	].map((name) => ({ name }));
 
+	it("separates set-aside telemetry from groups even without a group key or times", () => {
+		const result = parseErrorGroupResponse({
+			tables: [
+				{
+					columns,
+					rows: [
+						[
+							"platform-noise",
+							"",
+							25,
+							null,
+							null,
+							0,
+							'["example-app"]',
+							"[]",
+							"",
+						],
+						[
+							"platform",
+							"ReplicaUnhealthy",
+							7,
+							"a",
+							"b",
+							0,
+							"[]",
+							"[]",
+							"",
+						],
+					],
+				},
+			],
+		});
+		expect(result.platformNoiseSetAside).toBe(25);
+		expect(result.platformNoiseApps).toEqual(["example-app"]);
+		expect(result.groups.map((group) => group.kind)).toEqual(["platform"]);
+	});
+	it("returns zero set-aside events without telemetry", () => {
+		expect(parseErrorGroupResponse(null).platformNoiseSetAside).toBe(0);
+		expect(parseErrorGroupResponse(null).platformNoiseApps).toEqual([]);
+	});
+
 	it("converts the summarize envelope, parsing dynamic columns from JSON", () => {
-		const groups = parseErrorGroupResponse({
+		const { groups } = parseErrorGroupResponse({
 			tables: [
 				{
 					columns,
@@ -180,7 +239,7 @@ describe("parseErrorGroupResponse", () => {
 	});
 
 	it("drops rows without a usable key, count or time range", () => {
-		const groups = parseErrorGroupResponse({
+		const { groups } = parseErrorGroupResponse({
 			tables: [
 				{
 					columns,
@@ -217,7 +276,7 @@ describe("parseErrorGroupResponse", () => {
 			'["ReplicaUnhealthy: Readiness probe failed"]',
 			"",
 		];
-		const groups = parseErrorGroupResponse({
+		const { groups } = parseErrorGroupResponse({
 			tables: [
 				{ columns, rows: [row("platform"), row("something-else")] },
 			],
@@ -230,8 +289,8 @@ describe("parseErrorGroupResponse", () => {
 	});
 
 	it("returns nothing for shapes it does not recognise", () => {
-		expect(parseErrorGroupResponse(null)).toEqual([]);
-		expect(parseErrorGroupResponse({ tables: "x" })).toEqual([]);
+		expect(parseErrorGroupResponse(null).groups).toEqual([]);
+		expect(parseErrorGroupResponse({ tables: "x" }).groups).toEqual([]);
 	});
 });
 
@@ -336,4 +395,306 @@ describe("createOperatorErrorScanAdapter", () => {
 		vi.stubEnv("FABRIC_BUG_ANALYSIS_LOG_ALLOW_SHARED_WORKSPACE", "false");
 		expect(createOperatorErrorScanAdapter("proj_operator")).not.toBeNull();
 	});
+});
+
+it("key-vault-canceled requires all proof clauses and event recheck", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| join kind=leftouter (_noise0 | extend _proven0 = true) on _app, $left.TimeGenerated == $right.failAt",
+	);
+	const q = buildErrorGroupQuery(SCOPE);
+	expect(q).toContain(
+		'let _proof0_0 = _systemLogs\n| where _reason in ("SyncingSecretFromAzureKeyVaultForContainerAppSucceeded")\n| where isnotempty(_app)\n| project _app, okAt = TimeGenerated;\nlet _noise0_0 = _systemLogs\n| where _reason in ("SyncingSecretFromAzureKeyVaultForContainerAppFailed", "FetchingSecretFromAzureKeyVaultFailed") and _log endswith "context canceled"\n| where isnotempty(_app)\n| distinct _app, failAt = TimeGenerated\n| join kind=inner (_proof0_0) on _app\n| where failAt < okAt and okAt <= failAt + 15m\n| distinct _app, failAt;\nlet _noise0 = union _noise0_0\n| distinct _app, failAt;',
+	);
+	expect(q).toContain(
+		'| extend _rule0 = coalesce(_proven0, false) and _reason in ("SyncingSecretFromAzureKeyVaultForContainerAppFailed", "FetchingSecretFromAzureKeyVaultFailed") and _log endswith "context canceled"',
+	);
+});
+
+it("replica-scheduling requires all proof clauses and event recheck", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| join kind=leftouter (_noise1 | extend _proven1 = true) on _revision, $left.TimeGenerated == $right.failAt",
+	);
+	const q = buildErrorGroupQuery(SCOPE);
+	expect(q).toContain(
+		'let _proof1_0 = _systemLogs\n| where _reason in ("AssigningReplica")\n| where isnotempty(_revision)\n| project _revision, okAt = TimeGenerated;\nlet _noise1_0 = _systemLogs\n| where _reason in ("AssigningReplicaFailed") and _log endswith "Waiting for infrastructure to be ready"\n| where isnotempty(_revision)\n| distinct _revision, failAt = TimeGenerated\n| join kind=inner (_proof1_0) on _revision\n| where failAt < okAt and okAt <= failAt + 2m\n| distinct _revision, failAt;\nlet _noise1 = union _noise1_0\n| distinct _revision, failAt;',
+	);
+	expect(q).toContain(
+		'| extend _rule1 = coalesce(_proven1, false) and _reason in ("AssigningReplicaFailed") and _log endswith "Waiting for infrastructure to be ready"',
+	);
+});
+
+it("revision-autoscaler requires all proof clauses and event recheck", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| join kind=leftouter (_noise2 | extend _proven2 = true) on _revision, $left.TimeGenerated == $right.failAt",
+	);
+	const q = buildErrorGroupQuery(SCOPE);
+	expect(q).toContain(
+		'let _proof2_0 = _systemLogs\n| where _reason in ("KEDAScalersStarted")\n| where isnotempty(_revision)\n| project _revision, okAt = TimeGenerated;\nlet _noise2_0 = _systemLogs\n| where _reason in ("ScaledObjectCheckFailed") and _log endswith "Target resource doesn\'t exist"\n| where isnotempty(_revision)\n| distinct _revision, failAt = TimeGenerated\n| join kind=inner (_proof2_0) on _revision\n| where failAt <= okAt and okAt <= failAt + 2m\n| distinct _revision, failAt;\nlet _noise2 = union _noise2_0\n| distinct _revision, failAt;',
+	);
+	expect(q).toContain(
+		'| extend _rule2 = coalesce(_proven2, false) and _reason in ("ScaledObjectCheckFailed") and _log endswith "Target resource doesn\'t exist"',
+	);
+});
+
+it("replica-readiness requires all proof clauses and event recheck", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| join kind=leftouter (_noise3 | extend _proven3 = true) on _replica, $left.TimeGenerated == $right.failAt",
+	);
+	const q = buildErrorGroupQuery(SCOPE);
+	expect(q).toContain(
+		'let _proof3_0 = _systemLogs\n| where _reason in ("StoppingContainer")\n| where isnotempty(_replica)\n| project _replica, okAt = TimeGenerated;\nlet _noise3_0 = _systemLogs\n| where _reason in ("ReplicaUnhealthy") and _log startswith "Readiness probe failed"\n| where isnotempty(_replica)\n| distinct _replica, failAt = TimeGenerated\n| join kind=inner (_proof3_0) on _replica\n| where okAt <= failAt and okAt >= failAt - 5m\n| distinct _replica, failAt;\nlet _proof3_1 = _systemLogs\n| where _reason in ("ContainerStarted")\n| where isnotempty(_replica)\n| project _replica, okAt = TimeGenerated;\nlet _noise3_1 = _systemLogs\n| where _reason in ("ReplicaUnhealthy") and _log startswith "Readiness probe failed"\n| where isnotempty(_replica)\n| distinct _replica, failAt = TimeGenerated\n| join kind=inner (_proof3_1) on _replica\n| where okAt <= failAt and okAt >= failAt - 2m\n| distinct _replica, failAt;\nlet _noise3 = union _noise3_0, _noise3_1\n| distinct _replica, failAt;',
+	);
+	expect(q).toContain(
+		'| extend _rule3 = coalesce(_proven3, false) and _reason in ("ReplicaUnhealthy") and _log startswith "Readiness probe failed"',
+	);
+});
+
+it("shares only the autoscaler metric reasons, with teardown first", () => {
+	const reasons = PLATFORM_NOISE_RULES.flatMap((rule) => [
+		...rule.failureReasons,
+	]);
+	expect(
+		new Set(
+			reasons.filter(
+				(reason, index) => reasons.indexOf(reason) !== index,
+			),
+		),
+	).toEqual(
+		new Set(["FailedGetExternalMetric", "FailedComputeMetricsReplicas"]),
+	);
+	expect(PLATFORM_NOISE_RULES.slice(4).map((rule) => rule.id)).toEqual([
+		"autoscaler-teardown",
+		"metrics-service-blip",
+		"autoscaler-replica-start",
+		"resource-metrics-blip",
+	]);
+});
+
+it("autoscaler-replica-start requires all proof clauses and event recheck", () => {
+	const q = buildErrorGroupQuery(SCOPE);
+	expect(q).toContain(
+		'let _proof6_0 = _systemLogs\n| where _reason in ("ContainerStarted")\n| where isnotempty(_revision)',
+	);
+	expect(q).toContain(
+		'let _noise6_0 = _systemLogs\n| where _reason in ("FailedComputeMetricsReplicas")',
+	);
+	expect(q).toContain("| where okAt <= failAt and okAt >= failAt - 2m");
+	expect(q).toContain(
+		'| extend _rule6 = coalesce(_proven6, false) and _reason in ("FailedComputeMetricsReplicas") and _log endswith "(pods might be unready)"',
+	);
+});
+
+it("resource-metrics-blip requires all proof clauses and event recheck", () => {
+	const q = buildErrorGroupQuery(SCOPE);
+	expect(q).toContain(
+		'let _failures7 = materialize(_systemLogs\n| where _reason in ("FailedComputeMetricsReplicas") and _log endswith "(get pods.metrics.k8s.io)"\n| where isnotempty(_app)',
+	);
+	expect(q).toContain(
+		'| extend _rule7 = coalesce(_proven7, false) and _reason in ("FailedComputeMetricsReplicas") and _log endswith "(get pods.metrics.k8s.io)"',
+	);
+});
+
+it("never sets aside a readiness failure on simultaneity alone", () => {
+	const simultaneous = PLATFORM_NOISE_RULES.filter((rule) =>
+		rule.proofs.some((proof) => "kind" in proof),
+	);
+	const cpuRules = simultaneous.filter((rule) =>
+		rule.failureReasons.includes("FailedComputeMetricsReplicas"),
+	);
+
+	expect(cpuRules.map((rule) => rule.id)).toEqual(["resource-metrics-blip"]);
+	expect(cpuRules[0]?.log?.value).not.toContain("pods might be unready");
+});
+
+it("keeps external and CPU metric failures out of each other's peer count", () => {
+	const families = PLATFORM_NOISE_RULES.filter((rule) =>
+		rule.proofs.some((proof) => "kind" in proof),
+	).map((rule) => [...rule.failureReasons]);
+
+	expect(families).toEqual([
+		["FailedGetExternalMetric"],
+		["FailedComputeMetricsReplicas"],
+	]);
+});
+
+it("leaves every other CPU metric failure to be reported", () => {
+	const rule = PLATFORM_NOISE_RULES.find(
+		(candidate) => candidate.id === "autoscaler-replica-start",
+	);
+	expect(rule?.log).toEqual({
+		operator: "endswith",
+		value: "(pods might be unready)",
+	});
+	expect(rule?.key).toBe("revision");
+});
+it("sums noise rows and unions capped apps", () => {
+	const result = parseErrorGroupResponse({
+		tables: [
+			{
+				columns: ["Kind", "GroupKey", "Occurrences", "Components"].map(
+					(name) => ({ name }),
+				),
+				rows: [
+					[
+						"platform-noise",
+						"key-vault-canceled",
+						25,
+						["example-app"],
+					],
+					[
+						"platform-noise",
+						"replica-readiness",
+						3,
+						["example-app", "example-app-2"],
+					],
+				],
+			},
+		],
+	});
+	expect(result.platformNoiseSetAside).toBe(28);
+	expect(result.platformNoiseByRule).toEqual({
+		"key-vault-canceled": 25,
+		"replica-readiness": 3,
+	});
+	expect(result.platformNoiseApps).toEqual(["example-app", "example-app-2"]);
+	expect(parseErrorGroupResponse(null).platformNoiseByRule).toEqual({});
+});
+
+it("removes explained events before grouping and reports rules outside the cap", () => {
+	const q = buildErrorGroupQuery(SCOPE);
+	expect(q.indexOf("let _proof0_0")).toBeLessThan(
+		q.indexOf("| where _level in~"),
+	);
+	expect(q.indexOf("| where not(_setAside)")).toBeLessThan(
+		q.indexOf('by Kind = "platform"'),
+	);
+	expect(q.indexOf('Kind = "platform-noise"')).toBeGreaterThan(
+		q.indexOf("| take 25"),
+	);
+	expect(q).toContain(
+		'| extend _noiseRule = case(_rule0, "key-vault-canceled", _rule1, "replica-scheduling", _rule2, "revision-autoscaler", _rule3, "replica-readiness", _rule4, "autoscaler-teardown", _rule5, "metrics-service-blip", _rule6, "autoscaler-replica-start", _rule7, "resource-metrics-blip", "")',
+	);
+	expect(q).toContain("by GroupKey = _noiseRule");
+	expect(q).toContain(
+		'| where Occurrences > 0 | extend Kind = "platform-noise"',
+	);
+	expect(q).toContain('column_ifexists("RevisionName_s", "")');
+	expect(q).toContain('column_ifexists("RevisionName", "")');
+	expect(q).toContain('column_ifexists("ReplicaName_s", "")');
+	expect(q).toContain('column_ifexists("ReplicaName", "")');
+});
+
+it("requires all clauses: A proof reason", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		'let _proof4_0 = _systemLogs\n| where _reason in ("ScaledObjectDeleted")\n| where isnotempty(_revision)\n| project _revision, okAt = TimeGenerated;',
+	);
+});
+it("requires all clauses: A failure reason", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		'let _noise4_0 = _systemLogs\n| where _reason in ("FailedGetExternalMetric", "FailedComputeMetricsReplicas")\n| where isnotempty(_revision)',
+	);
+});
+it("requires all clauses: A before direction", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| where okAt <= failAt and okAt >= failAt - 1m",
+	);
+});
+it("requires all clauses: A after direction", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| where failAt <= okAt and okAt <= failAt + 1m",
+	);
+});
+it("requires all clauses: A revision join", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| join kind=inner (_proof4_0) on _revision",
+	);
+});
+it("requires all clauses: A second revision join", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| join kind=inner (_proof4_1) on _revision",
+	);
+});
+it("requires all clauses: A union", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"let _noise4 = union _noise4_0, _noise4_1",
+	);
+});
+it("requires all clauses: A event recheck", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		'| extend _rule4 = coalesce(_proven4, false) and _reason in ("FailedGetExternalMetric", "FailedComputeMetricsReplicas")\n',
+	);
+});
+it("requires all clauses: B failure reason", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		'let _failures5 = materialize(_systemLogs\n| where _reason in ("FailedGetExternalMetric")\n| where isnotempty(_app)',
+	);
+});
+it("requires all clauses: B minimum apps", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain("| where apps >= 3;");
+});
+it("requires all clauses: B simultaneous window", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| where peerAt >= failAt - 1m and peerAt <= failAt + 1m",
+	);
+});
+it("requires all clauses: B adjacent bins", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| mv-expand _bucket = pack_array(_b - 1m, _b, _b + 1m) to typeof(datetime)) on _bucket",
+	);
+});
+it("requires all clauses: B simultaneous join", () => {
+	// kind=inner matters: the default innerunique keeps one left row per
+	// bucket, so all but one app in a same-minute burst would go uncounted.
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| extend _bucket = bin(failAt, 1m)\n| join kind=inner (_failures5\n| project peerApp = _app, peerAt = failAt\n| extend _b = bin(peerAt, 1m)",
+	);
+});
+it("requires all clauses: B persistence join", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| extend _bucket = bin(failAt, 15m)\n| join kind=inner (_failures5\n| project _app, peerAt = failAt\n| extend _b = bin(peerAt, 15m)",
+	);
+});
+it("requires all clauses: B distinct apps", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| summarize apps = count_distinct(peerApp) by _app, failAt",
+	);
+});
+it("requires all clauses: B persistence window", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| where peerAt >= failAt - 15m and peerAt <= failAt + 15m",
+	);
+});
+it("requires all clauses: B persistence bins", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| mv-expand _bucket = pack_array(_b - 15m, _b, _b + 15m) to typeof(datetime)) on _app, _bucket",
+	);
+});
+it("requires all clauses: B distinct minutes", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| summarize minutes = count_distinct(bin(peerAt, 1m)) by _app, failAt",
+	);
+});
+it("requires all clauses: B maximum minutes", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain("| where minutes <= 3");
+});
+it("requires all clauses: B result join", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| join kind=leftouter (_noise5 | extend _proven5 = true) on _app, $left.TimeGenerated == $right.failAt",
+	);
+});
+it("requires all clauses: B event recheck", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		'| extend _rule5 = coalesce(_proven5, false) and _reason in ("FailedGetExternalMetric")\n',
+	);
+});
+
+it("requires all clauses: A second proof reason", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		'let _proof4_1 = _systemLogs\n| where _reason in ("ScaledObjectDeleted")\n| where isnotempty(_revision)\n| project _revision, okAt = TimeGenerated;',
+	);
+});
+it("requires all clauses: A result join", () => {
+	expect(buildErrorGroupQuery(SCOPE)).toContain(
+		"| join kind=leftouter (_noise4 | extend _proven4 = true) on _revision, $left.TimeGenerated == $right.failAt",
+	);
 });

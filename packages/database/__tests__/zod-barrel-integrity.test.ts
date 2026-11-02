@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -26,13 +25,21 @@ describe("generated zod barrel", () => {
 				"The staged-content guard has no Prisma Decimal pattern",
 			);
 		}
+		// This BRE is a literal string with one escaped dot, so its JavaScript
+		// equivalent is exact. A more complex hook pattern needs a new check.
+		expect(pattern).toBe(String.raw`Prisma\.Decimal`);
 		for (const raw of [
 			"z.instanceof(Prisma.Decimal, {})",
 			"z.custom<InstanceType<typeof Prisma.Decimal>>((v) => Prisma.Decimal.isDecimal(v), {})",
 		]) {
-			expect(
-				spawnSync("grep", ["-q", pattern], { input: raw }).status,
-			).toBe(0);
+			expect(new RegExp(pattern).test(raw)).toBe(true);
+		}
+		for (const scalar of [
+			"PrismaXDecimal",
+			"decimalScalarSchema",
+			"z.number()",
+		]) {
+			expect(new RegExp(pattern).test(scalar)).toBe(false);
 		}
 	});
 

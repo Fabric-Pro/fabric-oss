@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { contrastRatio } from "../lib/brand-colors";
 import {
 	flowToMermaid,
 	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
@@ -8,16 +9,22 @@ import {
 } from "../lib/glossy/visual-templates";
 import { withDiagramCaption } from "../lib/proposal-artifact/diagram-caption";
 import {
+	barsFigureSvg,
+	barsOverGrey,
 	FIGURE_LINE,
 	FIGURE_WIDTH,
 	type FigureModel,
 	type FigurePalette,
+	ganttFigureSvg,
 	layersFigureSvg,
+	parseBarsSource,
 	parseFigureSource,
+	parseGanttSource,
 	processFigureSvg,
 	readFigureKind,
 	renderFigureSvg,
 	teamFigureSvg,
+	tryRenderFigure,
 	withFigureKind,
 } from "../lib/proposal-artifact/proposal-figures";
 
@@ -29,6 +36,7 @@ const PALETTE: FigurePalette = {
 	ink: "#16171a",
 	onInk: "#ffffff",
 	primary: "#c2410c",
+	label: "#9a3412",
 	onPrimary: "#ffffff",
 	tint: "#fbefe9",
 	border: "#d9dade",
@@ -208,8 +216,11 @@ describe("figure line", () => {
 		expect(
 			readFigureKind(lines("flowchart TD", "%% figure: process")),
 		).toBe(null);
-		expect(readFigureKind(lines("%% figure: gantt", "flowchart TD"))).toBe(
+		expect(readFigureKind(lines("%% figure: pie", "flowchart TD"))).toBe(
 			null,
+		);
+		expect(readFigureKind(lines("%% figure: gantt", "gantt"))).toBe(
+			"gantt",
 		);
 		expect(FIGURE_LINE.test("%% figure: layers")).toBe(true);
 	});
@@ -1119,5 +1130,1319 @@ describe("renderFigureSvg", () => {
 			renderFigureSvg("layers", chainSource(3), PALETTE, {}),
 		).toBeNull();
 		expect(renderFigureSvg("process", LAYERS, PALETTE, {})).toBeNull();
+	});
+});
+
+describe("bars figure", () => {
+	const INTER_ADVANCE = 12 * 0.62;
+	const MONO_ADVANCE = 12 * 0.66 + 0.6;
+
+	const SIX_BARS = lines(
+		MARKER,
+		"%% caption: Hours saved per week",
+		"%% figure: bars",
+		"xychart-beta horizontal",
+		'  title "Weekly hours saved"',
+		'  x-axis "Scenario" ["Expected · 5% uplift", "Faster review, fewer loops", Rollout, "Baseline", "Stretch goal", "Pilot team"]',
+		'  y-axis "h" 0 --> 20',
+		"  bar [12, 9.5, 15, 4, 18, 12.0]",
+		"  line [12, 12, 12, 12, 12, 12]",
+	);
+
+	interface DrawnBar {
+		x: number;
+		width: number;
+		fill: string;
+	}
+
+	function barsOf(svg: string): DrawnBar[] {
+		return Array.from(
+			svg.matchAll(
+				/<rect class="bar" x="([\d.]+)" y="[\d.]+" width="([\d.]+)" height="14" rx="2" fill="(#[0-9a-f]+)"\/>/g,
+			),
+		).map((match) => ({
+			x: Number(match[1]),
+			width: Number(match[2]),
+			fill: match[3],
+		}));
+	}
+
+	/** Each `<text>` of `className`: its x, anchor, fill and text. */
+	function textsOf(svg: string, className: string) {
+		return Array.from(
+			svg.matchAll(
+				new RegExp(
+					`<text class="${className}" ([^>]*)>([^<]*)</text>`,
+					"g",
+				),
+			),
+		).map(([, attributes, text]) => ({
+			x: Number(/\bx="([\d.]+)"/.exec(attributes)?.[1]),
+			anchor: /text-anchor="(\w+)"/.exec(attributes)?.[1] ?? "start",
+			fill: /\bfill="([^"]+)"/.exec(attributes)?.[1],
+			text,
+		}));
+	}
+
+	function drawn(source: string, palette = PALETTE): string {
+		return svgOf(renderFigureSvg("bars", source, palette, {}));
+	}
+
+	it("reads the figure line and draws through the bars parser", () => {
+		expect(readFigureKind(SIX_BARS)).toBe("bars");
+		expect(parseFigureSource(SIX_BARS)).toBeNull();
+		const svg = svgOf(tryRenderFigure(SIX_BARS, PALETTE, {}));
+		expectPrintGeometry(svg);
+		expectSafeSvg(svg);
+		expect(renderFigureSvg("process", SIX_BARS, PALETTE, {})).toBeNull();
+	});
+
+	it("parses labels, values as written, the unit, the range and the threshold", () => {
+		expect(parseBarsSource(SIX_BARS)).toEqual({
+			title: "Weekly hours saved",
+			unit: "h",
+			axisMax: { value: 20, text: "20" },
+			bars: [
+				{ label: "Expected · 5% uplift", value: 12, text: "12" },
+				{
+					label: "Faster review, fewer loops",
+					value: 9.5,
+					text: "9.5",
+				},
+				{ label: "Rollout", value: 15, text: "15" },
+				{ label: "Baseline", value: 4, text: "4" },
+				{ label: "Stretch goal", value: 18, text: "18" },
+				{ label: "Pilot team", value: 12, text: "12.0" },
+			],
+			threshold: { value: 12, text: "12" },
+		});
+	});
+
+	it("draws six bars: within the threshold in the primary, above it in a readable grey", () => {
+		const svg = drawn(SIX_BARS);
+		expectPrintGeometry(svg);
+		const bars = barsOf(svg);
+		expect(bars).toHaveLength(6);
+		const grey = barsOverGrey(PALETTE.ink, PALETTE.surface);
+		expect(bars.map((bar) => bar.fill)).toEqual([
+			PALETTE.primary,
+			PALETTE.primary,
+			grey,
+			PALETTE.primary,
+			grey,
+			PALETTE.primary,
+		]);
+		expect(grey).not.toBe(PALETTE.primary);
+		expect(contrastRatio(grey, PALETTE.surface)).toBeGreaterThanOrEqual(3);
+		// Lighter than the ink: mixed only as far as the floor needs.
+		expect(contrastRatio(grey, PALETTE.surface)).toBeLessThan(
+			contrastRatio(PALETTE.ink, PALETTE.surface),
+		);
+		// Bars scale to the value: 15 is 1.25 times 12.
+		expect(bars[2].width / bars[0].width).toBeCloseTo(1.25, 2);
+		// Every value prints as written, in mono muted, after its bar.
+		const values = textsOf(svg, "bar-value");
+		expect(values.map((value) => value.text)).toEqual([
+			"12",
+			"9.5",
+			"15",
+			"4",
+			"18",
+			"12.0",
+		]);
+		values.forEach((value, index) => {
+			expect(value.fill).toBe(PALETTE.muted);
+			expect(value.x).toBeCloseTo(
+				bars[index].x + bars[index].width + 6,
+				0,
+			);
+		});
+		expect(svg).toMatch(/<text class="bar-value"[^>]*JetBrains Mono/);
+	});
+
+	it("draws the dashed threshold and its text at the threshold's x, in the label colour", () => {
+		const svg = drawn(SIX_BARS);
+		const line =
+			/<line class="threshold" x1="([\d.]+)" y1="[\d.]+" x2="([\d.]+)" y2="[\d.]+" stroke="([^"]+)" stroke-width="1.3" stroke-dasharray="4 3"\/>/.exec(
+				svg,
+			);
+		expect(line).not.toBeNull();
+		const x = Number(line?.[1]);
+		expect(Number(line?.[2])).toBe(x);
+		expect(line?.[3]).toBe(PALETTE.label);
+		// The first bar is exactly at the threshold: it ends on the line.
+		const [atThreshold] = barsOf(svg);
+		expect(atThreshold.x + atThreshold.width).toBeCloseTo(x, 0);
+		expect(textsOf(svg, "threshold-label")).toEqual([
+			{ x, anchor: "middle", fill: PALETTE.label, text: "12 h" },
+		]);
+		expect(svg).toMatch(/<text class="threshold-label"[^>]*JetBrains Mono/);
+	});
+
+	it("marks the axis ends in mono muted, the maximum with its unit", () => {
+		const svg = drawn(SIX_BARS);
+		const ends = textsOf(svg, "axis-end");
+		expect(ends.map((end) => end.text)).toEqual(["0", "20 h"]);
+		for (const end of ends) {
+			expect(end.fill).toBe(PALETTE.muted);
+		}
+		const [first] = barsOf(svg);
+		expect(ends[0].x).toBe(first.x);
+		// The scale's maximum is where a bar of 20 would end.
+		const twenty = first.x + (first.width / 12) * 20;
+		expect(ends[1]).toMatchObject({ anchor: "end" });
+		expect(ends[1].x).toBeCloseTo(twenty, 0);
+	});
+
+	it("labels the figure by its caption, then its chart title, then its kind", () => {
+		expect(drawn(SIX_BARS)).toContain("<title>Weekly hours saved</title>");
+		expect(
+			svgOf(
+				renderFigureSvg("bars", SIX_BARS, PALETTE, {
+					caption: "Hours saved per week",
+				}),
+			),
+		).toContain("<title>Hours saved per week</title>");
+		const untitled = lines(
+			"xychart-beta",
+			"  x-axis [North, South]",
+			"  bar [3, 7]",
+		);
+		expect(drawn(untitled)).toContain("<title>Bar chart</title>");
+	});
+
+	it("describes every full label with its value, in order, and the threshold", () => {
+		const desc = /<desc>([^<]*)<\/desc>/.exec(drawn(SIX_BARS))?.[1];
+		expect(desc).toBe(
+			"Values in order: Expected · 5% uplift: 12 h; Faster review, fewer loops: 9.5 h; Rollout: 15 h (above the threshold); Baseline: 4 h; Stretch goal: 18 h (above the threshold); Pilot team: 12.0 h. Threshold: 12 h.",
+		);
+	});
+
+	it("cuts a 40-character label left of the bars and keeps a value at the maximum inside the figure", () => {
+		const label = "Expected · 5% uplift across every region";
+		expect(Array.from(label)).toHaveLength(40);
+		const svg = drawn(
+			lines(
+				"xychart-beta horizontal",
+				`  x-axis ["${label}", "Short"]`,
+				"  bar [1000, 40]",
+			),
+		);
+		expectPrintGeometry(svg);
+		const [top] = barsOf(svg);
+		const [cut] = textsOf(svg, "bar-label");
+		expect(cut.text).not.toBe(label);
+		expect(cut.text.endsWith("…")).toBe(true);
+		expect(label.startsWith(cut.text.slice(0, -1))).toBe(true);
+		expect(cut.x).toBe(0);
+		expect(Array.from(cut.text).length * INTER_ADVANCE).toBeLessThanOrEqual(
+			top.x,
+		);
+		// 1000 is its own round maximum: the bar takes the whole bar area.
+		const [value] = textsOf(svg, "bar-value");
+		expect(value.text).toBe("1000");
+		expect(value.x + 4 * MONO_ADVANCE).toBeLessThanOrEqual(
+			FIGURE_WIDTH + 0.05,
+		);
+		expect(value.x + 4 * MONO_ADVANCE).toBeGreaterThan(FIGURE_WIDTH - 1);
+		expect(svg).toContain(
+			`<desc>Values in order: ${label}: 1000; Short: 40.</desc>`,
+		);
+	});
+
+	it("gives the label column only the room its longest label needs", () => {
+		const svg = drawn(
+			lines("xychart-beta", "  x-axis [Q1, Q2, Q3]", "  bar [3, 5, 4]"),
+		);
+		const [bar] = barsOf(svg);
+		expect(bar.x).toBe(Math.ceil(2 * INTER_ADVANCE) + 12);
+	});
+
+	it("draws every bar in the primary and no threshold without a line series", () => {
+		const svg = drawn(
+			lines(
+				"xychart-beta horizontal",
+				'  x-axis ["Expected · 5% uplift", Baseline, Stretch]',
+				"  bar [12, 30, 4]",
+			),
+		);
+		expect(barsOf(svg).map((bar) => bar.fill)).toEqual([
+			PALETTE.primary,
+			PALETTE.primary,
+			PALETTE.primary,
+		]);
+		expect(svg).not.toContain("threshold");
+		expect(svg).not.toContain("<line");
+		expect(svg).not.toContain(PALETTE.label);
+	});
+
+	it("draws `xychart` without `horizontal` as the same chart", () => {
+		const body = (header: string) =>
+			lines(header, '  x-axis ["North", South]', "  bar [3, 7]");
+		const expected = drawn(body("xychart-beta horizontal"));
+		expect(drawn(body("xychart"))).toBe(expected);
+		expect(drawn(body("xychart-beta"))).toBe(expected);
+		expect(drawn(body("xychart horizontal"))).toBe(expected);
+	});
+
+	it("scales to the axis maximum only when it holds every value and the threshold", () => {
+		const ends = (source: string) =>
+			textsOf(drawn(source), "axis-end").map((end) => end.text);
+		const chart = (...rest: string[]) =>
+			lines("xychart-beta", "  x-axis [North, South]", ...rest);
+		expect(ends(chart('  y-axis "h" 0 --> 40', "  bar [3, 7]"))).toEqual([
+			"0",
+			"40 h",
+		]);
+		// Below a value: rounded up from the largest value instead.
+		expect(ends(chart('  y-axis "h" 0 --> 10', "  bar [3, 17]"))).toEqual([
+			"0",
+			"20 h",
+		]);
+		// Below the threshold, too.
+		expect(
+			ends(chart("  y-axis 0 --> 10", "  bar [3, 7]", "  line [12, 12]")),
+		).toEqual(["0", "15"]);
+		expect(ends(chart("  bar [3, 7]"))).toEqual(["0", "8"]);
+		expect(ends(chart("  bar [0.12, 0.07]"))).toEqual(["0", "0.15"]);
+		expect(ends(chart("  bar [1.2, 0.4]"))).toEqual(["0", "1.5"]);
+		expect(ends(chart("  bar [0, 0]"))).toEqual(["0", "1"]);
+		expect(ends(chart("  bar [1000000000, 2]"))).toEqual([
+			"0",
+			"1000000000",
+		]);
+	});
+
+	it("keeps the threshold text inside the figure when the threshold is the maximum", () => {
+		const svg = drawn(
+			lines(
+				"xychart-beta",
+				"  x-axis [North, South]",
+				'  y-axis "hours a week" 0 --> 10',
+				"  bar [3, 7]",
+				"  line [10, 10]",
+			),
+		);
+		const [label] = textsOf(svg, "threshold-label");
+		const half = (Array.from("10 hours a week").length * MONO_ADVANCE) / 2;
+		expect(label.text).toBe("10 hours a week");
+		expect(label.x + half).toBeLessThanOrEqual(FIGURE_WIDTH + 0.05);
+		const [end] = textsOf(svg, "axis-end").slice(1);
+		expect(end.x).toBeLessThanOrEqual(FIGURE_WIDTH);
+	});
+
+	it("reads quoted commas, escapes markup, and accepts comments and semicolons", () => {
+		const model = parseBarsSource(
+			lines(
+				"%% figure: bars",
+				"xychart-beta",
+				"%% a note",
+				'  x-axis ["A, then B", "<b>Tom & Jerry</b>"];',
+				"  bar [1, 2];",
+			),
+		);
+		expect(model?.bars.map((bar) => bar.label)).toEqual([
+			"A, then B",
+			"<b>Tom & Jerry</b>",
+		]);
+		const svg = drawn(
+			lines(
+				"xychart-beta",
+				'  x-axis ["A, then B", "<b>Tom & Jerry</b>"]',
+				"  bar [1, 2]",
+			),
+		);
+		expect(svg).toContain("&lt;b&gt;Tom &amp; Jerry&lt;/b&gt;");
+		expect(svg).not.toContain("<b>");
+		expectSafeSvg(svg);
+	});
+
+	it("paints with a palette written in short hex", () => {
+		const short: FigurePalette = {
+			...PALETTE,
+			ink: "#111",
+			surface: "#fff",
+			primary: "#c40",
+			label: "#930",
+		};
+		const svg = drawn(SIX_BARS, short);
+		const grey = barsOverGrey("#111", "#fff");
+		expect(grey).toMatch(/^#[0-9a-f]{6}$/);
+		expect(contrastRatio(grey, "#ffffff")).toBeGreaterThanOrEqual(3);
+		expect(barsOf(svg).map((bar) => bar.fill)).toContain(grey);
+	});
+
+	it("is deterministic, checks the palette and the id prefix, and ignores extra paint", () => {
+		expect(drawn(SIX_BARS)).toBe(drawn(SIX_BARS));
+		expect(
+			renderFigureSvg(
+				"bars",
+				SIX_BARS,
+				{ ...PALETTE, accent: "#123456" } as FigurePalette,
+				{},
+			),
+		).toBe(drawn(SIX_BARS));
+		expect(() =>
+			renderFigureSvg(
+				"bars",
+				SIX_BARS,
+				{ ...PALETTE, label: 'red" onload="x' },
+				{},
+			),
+		).toThrow(TypeError);
+		const { label: _label, ...withoutLabel } = PALETTE;
+		expect(() =>
+			renderFigureSvg(
+				"bars",
+				SIX_BARS,
+				withoutLabel as FigurePalette,
+				{},
+			),
+		).toThrow(TypeError);
+		expect(
+			tryRenderFigure(SIX_BARS, withoutLabel as FigurePalette),
+		).toBeNull();
+		expect(() =>
+			renderFigureSvg("bars", SIX_BARS, PALETTE, { idPrefix: "1bad" }),
+		).toThrow(TypeError);
+	});
+
+	it.each([
+		["two bar series", ["  bar [1, 2]", "  bar [3, 4]"]],
+		["a line that is not flat", ["  bar [1, 2]", "  line [5, 6]"]],
+		["two line series", ["  bar [1, 2]", "  line [5, 5]", "  line [6, 6]"]],
+		["a negative value", ["  bar [-1, 2]"]],
+		["a signed value", ["  bar [+1, 2]"]],
+		["a quoted value", ['  bar ["1", 2]']],
+		["a value past the limit", ["  bar [1000000001, 2]"]],
+		["a value written too long", ["  bar [1.000000000000000, 2]"]],
+		["a bar series shorter than the axis", ["  bar [1]"]],
+		["a line series shorter than the axis", ["  bar [1, 2]", "  line [5]"]],
+		["no bar series", []],
+		["an axis minimum other than 0", ["  y-axis 2 --> 10", "  bar [3, 4]"]],
+		["a negative axis minimum", ["  y-axis -5 --> 10", "  bar [3, 4]"]],
+		["an empty axis range", ["  y-axis 0 --> 0", "  bar [0, 0]"]],
+		[
+			"two y-axes",
+			["  y-axis 0 --> 10", "  y-axis 0 --> 20", "  bar [1, 2]"],
+		],
+		[
+			"a unit past 24 characters",
+			[
+				'  y-axis "hours of review saved each week" 0 --> 10',
+				"  bar [1, 2]",
+			],
+		],
+		["an unknown statement", ["  bar [1, 2]", "  accTitle: Hours"]],
+		["a trailing comment", ["  bar [1, 2] %% note"]],
+		["two titles", ['  title "A"', '  title "B"', "  bar [1, 2]"]],
+	])("refuses %s", (_, rest) => {
+		const source = lines(
+			"%% figure: bars",
+			"xychart-beta horizontal",
+			"  x-axis [North, South]",
+			...rest,
+		);
+		expect(parseBarsSource(source)).toBeNull();
+		expect(renderFigureSvg("bars", source, PALETTE, {})).toBeNull();
+	});
+
+	it.each([
+		[
+			"an init directive",
+			[
+				"%%{init: {}}%%",
+				"xychart-beta",
+				"  x-axis [A, B]",
+				"  bar [1, 2]",
+			],
+		],
+		[
+			"frontmatter",
+			[
+				"---",
+				"title: x",
+				"---",
+				"xychart-beta",
+				"  x-axis [A, B]",
+				"  bar [1, 2]",
+			],
+		],
+		[
+			"a vertical chart",
+			["xychart-beta vertical", "  x-axis [A, B]", "  bar [1, 2]"],
+		],
+		[
+			"a header in capitals",
+			["XYCHART-BETA", "  x-axis [A, B]", "  bar [1, 2]"],
+		],
+		["a flowchart", ["flowchart TD", "  a --> b"]],
+		["no x-axis", ["xychart-beta", "  bar [1, 2]"]],
+		[
+			"a numeric x-axis",
+			["xychart-beta", "  x-axis 0 --> 10", "  bar [1, 2]"],
+		],
+		[
+			"two x-axes",
+			[
+				"xychart-beta",
+				"  x-axis [A, B]",
+				"  x-axis [C, D]",
+				"  bar [1, 2]",
+			],
+		],
+		["one bar", ["xychart-beta", "  x-axis [A]", "  bar [1]"]],
+		[
+			"thirteen bars",
+			[
+				"xychart-beta",
+				`  x-axis [${Array.from({ length: 13 }, (_, index) => `c${index}`).join(", ")}]`,
+				`  bar [${Array.from({ length: 13 }, () => "1").join(", ")}]`,
+			],
+		],
+		[
+			"a label past 40 characters",
+			[
+				"xychart-beta",
+				'  x-axis ["Expected · 5% uplift across every regions", B]',
+				"  bar [1, 2]",
+			],
+		],
+		[
+			"an unquoted label with a space",
+			["xychart-beta", "  x-axis [North east, South]", "  bar [1, 2]"],
+		],
+		[
+			"an empty label",
+			["xychart-beta", '  x-axis ["", South]', "  bar [1, 2]"],
+		],
+		[
+			"an empty item",
+			["xychart-beta", "  x-axis [North,, South]", "  bar [1, 2]"],
+		],
+		[
+			"an unclosed quote",
+			["xychart-beta", '  x-axis ["North, South]', "  bar [1, 2]"],
+		],
+		[
+			"a Markdown label",
+			["xychart-beta", '  x-axis ["`**North**`", South]', "  bar [1, 2]"],
+		],
+		[
+			"text after the list",
+			["xychart-beta", "  x-axis [North, South] extra", "  bar [1, 2]"],
+		],
+	])("refuses %s", (_, source) => {
+		expect(parseBarsSource(lines(...source))).toBeNull();
+	});
+
+	it("passes the export cleaner's allowlist with its threshold line", () => {
+		expectSafeSvg(drawn(SIX_BARS));
+		expect(drawn(SIX_BARS)).toMatch(/^<svg [^>]*role="img"/);
+	});
+
+	it("draws directly from a parsed model", () => {
+		const model = parseBarsSource(SIX_BARS);
+		if (!model) {
+			throw new Error("expected the bars source to parse");
+		}
+		expect(barsFigureSvg(model, PALETTE)).toBe(drawn(SIX_BARS));
+	});
+});
+
+describe("gantt figure", () => {
+	/** A `YYYY-MM-DD` date as the parser counts it: days since 1970, UTC. */
+	const day = (iso: string) => Date.parse(`${iso}T00:00:00Z`) / 86_400_000;
+
+	const PLAN = lines(
+		MARKER,
+		"%% caption: Pilot schedule by workstream",
+		"%% figure: gantt",
+		"gantt",
+		"  title Pilot schedule",
+		"  dateFormat YYYY-MM-DD",
+		"  section Discovery",
+		"  Interviews :d1, 2026-11-02, 2w",
+		"  Signature :milestone, m0, 2026-11-02, 0d",
+		"  section Build",
+		"  Routing :b1, after d1, 21d",
+		"  Work orders :b2, after b1, 3w",
+		"  First route live :milestone, m1, 2026-12-07, 0d",
+		"  section Pilot",
+		"  Region one :p1, after b2, 4w",
+		"  Pilot review :milestone, m2, 2027-02-01, 0d",
+	);
+
+	/** Each `<text>` of `className`: its x, y, anchor, fill and text. */
+	function textsOf(svg: string, className: string) {
+		return Array.from(
+			svg.matchAll(
+				new RegExp(
+					`<text class="${className}" ([^>]*)>(.*?)</text>`,
+					"g",
+				),
+			),
+		).map(([, attributes, text]) => ({
+			x: Number(/\bx="([\d.]+)"/.exec(attributes)?.[1]),
+			y: Number(/\by="([\d.]+)"/.exec(attributes)?.[1]),
+			anchor: /text-anchor="(\w+)"/.exec(attributes)?.[1] ?? "start",
+			fill: /\bfill="([^"]+)"/.exec(attributes)?.[1],
+			text: text
+				.replace(/<[^>]+>/g, " ")
+				.replace(/\s+/g, " ")
+				.trim(),
+		}));
+	}
+
+	function tasksOf(svg: string) {
+		return Array.from(
+			svg.matchAll(
+				/<rect class="task" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="14" rx="2" fill="(#[0-9a-f]+)"\/>/g,
+			),
+		).map((match) => ({
+			x: Number(match[1]),
+			y: Number(match[2]),
+			width: Number(match[3]),
+			fill: match[4],
+		}));
+	}
+
+	function gridOf(svg: string): number[] {
+		return Array.from(
+			svg.matchAll(/<line class="grid" x1="([\d.]+)"/g),
+		).map((match) => Number(match[1]));
+	}
+
+	function drawn(source: string, palette = PALETTE): string {
+		return svgOf(renderFigureSvg("gantt", source, palette, {}));
+	}
+
+	function plan(...rest: string[]): string {
+		return lines(
+			"%% figure: gantt",
+			"gantt",
+			"  dateFormat YYYY-MM-DD",
+			...rest,
+		);
+	}
+
+	it("reads the figure line and draws through the gantt parser", () => {
+		expect(readFigureKind(PLAN)).toBe("gantt");
+		expect(parseFigureSource(PLAN)).toBeNull();
+		const svg = svgOf(tryRenderFigure(PLAN, PALETTE, {}));
+		expectPrintGeometry(svg);
+		expectSafeSvg(svg);
+		expect(renderFigureSvg("process", PLAN, PALETTE, {})).toBeNull();
+		expect(
+			renderFigureSvg("gantt", chainSource(3), PALETTE, {}),
+		).toBeNull();
+	});
+
+	it("parses sections, tasks after one another, weeks and milestones", () => {
+		expect(parseGanttSource(PLAN)).toEqual({
+			title: "Pilot schedule",
+			sections: ["Discovery", "Build", "Pilot"],
+			tasks: [
+				{
+					id: "d1",
+					name: "Interviews",
+					section: 0,
+					start: day("2026-11-02"),
+					end: day("2026-11-16"),
+				},
+				{
+					id: "b1",
+					name: "Routing",
+					section: 1,
+					start: day("2026-11-16"),
+					end: day("2026-12-07"),
+				},
+				{
+					id: "b2",
+					name: "Work orders",
+					section: 1,
+					start: day("2026-12-07"),
+					end: day("2026-12-28"),
+				},
+				{
+					id: "p1",
+					name: "Region one",
+					section: 2,
+					start: day("2026-12-28"),
+					end: day("2027-01-25"),
+				},
+			],
+			milestones: [
+				{
+					id: "m0",
+					name: "Signature",
+					section: 0,
+					day: day("2026-11-02"),
+				},
+				{
+					id: "m1",
+					name: "First route live",
+					section: 1,
+					day: day("2026-12-07"),
+				},
+				{
+					id: "m2",
+					name: "Pilot review",
+					section: 2,
+					day: day("2027-02-01"),
+				},
+			],
+		});
+	});
+
+	it("reads keywords in any case, a milestone as the start of a task after it, and a plan without a title", () => {
+		const model = parseGanttSource(
+			plan(
+				"  Section Build",
+				"  Kickoff :milestone, k, 2026-11-02, 0d",
+				"  Routing :r1, after k, 1d",
+			).replace("dateFormat", "DATEFORMAT"),
+		);
+		expect(model?.title).toBeNull();
+		expect(model?.sections).toEqual(["Build"]);
+		expect(model?.tasks[0]).toMatchObject({
+			start: day("2026-11-02"),
+			end: day("2026-11-03"),
+		});
+	});
+
+	it("numbers a week column for every week, from the plan's first day", () => {
+		const svg = drawn(PLAN);
+		// 2026-11-02 to 2027-02-01 is thirteen weeks.
+		const weeks = textsOf(svg, "week");
+		expect(weeks.map((week) => week.text)).toEqual(
+			Array.from({ length: 13 }, (_, index) => `W${index + 1}`),
+		);
+		const grid = gridOf(svg);
+		expect(grid).toHaveLength(14);
+		const origin = grid[0];
+		const end = grid[grid.length - 1];
+		expect(end).toBeCloseTo(FIGURE_WIDTH - 8, 0);
+		const column = (end - origin) / 13;
+		weeks.forEach((week, index) => {
+			expect(week.x).toBeCloseTo(origin + (index + 0.5) * column, 0);
+			expect(week.anchor).toBe("middle");
+			expect(week.fill).toBe(PALETTE.muted);
+		});
+		// The date week 1 begins, in the label column.
+		const [start] = textsOf(svg, "week-start");
+		expect(start?.text).toBe("2026-11-02");
+		expect(start?.x).toBeLessThan(origin);
+	});
+
+	it("draws each task from its first day to its last, the first section muted and the others in the primary", () => {
+		const svg = drawn(PLAN);
+		const grid = gridOf(svg);
+		const origin = grid[0];
+		const dayWidth = (grid[grid.length - 1] - origin) / (13 * 7);
+		const tasks = tasksOf(svg);
+		expect(tasks.map((task) => task.fill)).toEqual([
+			PALETTE.muted,
+			PALETTE.primary,
+			PALETTE.primary,
+			PALETTE.primary,
+		]);
+		// Routing starts on day 14 and lasts 21 days, inset by a pixel.
+		expect(tasks[1]?.x).toBeCloseTo(origin + 14 * dayWidth + 1, 0);
+		expect(tasks[1]?.width).toBeCloseTo(21 * dayWidth - 2, 0);
+		// Back to back, the next task's bar starts after a gap.
+		const routing = tasks[1];
+		const workOrders = tasks[2];
+		if (!routing || !workOrders) {
+			throw new Error("expected the tasks");
+		}
+		expect(workOrders.x).toBeGreaterThan(routing.x + routing.width);
+		expect(workOrders.y).toBeGreaterThan(routing.y);
+	});
+
+	it("draws every bar in the primary with one section", () => {
+		const svg = drawn(
+			plan(
+				"  section Build",
+				"  Routing :a1, 2026-11-02, 1w",
+				"  Work orders :a2, after a1, 1w",
+			),
+		);
+		expect(tasksOf(svg).map((task) => task.fill)).toEqual([
+			PALETTE.primary,
+			PALETTE.primary,
+		]);
+	});
+
+	it("puts every name in the label column, ending before the first week, and every section heading in mono capitals", () => {
+		const svg = drawn(PLAN);
+		const origin = gridOf(svg)[0];
+		const labels = textsOf(svg, "task-label");
+		expect(labels.map((label) => label.text)).toEqual([
+			"Interviews",
+			"Routing",
+			"Work orders",
+			"Region one",
+		]);
+		for (const label of labels) {
+			expect(label.anchor).toBe("end");
+			expect(label.x).toBeLessThanOrEqual(origin - 12);
+			expect(label.fill).toBe(PALETTE.ink);
+		}
+		for (const task of tasksOf(svg)) {
+			expect(task.x).toBeGreaterThanOrEqual(origin);
+			expect(task.x + task.width).toBeLessThanOrEqual(FIGURE_WIDTH);
+		}
+		const headings = textsOf(svg, "section");
+		expect(headings.map((heading) => heading.text)).toEqual([
+			"DISCOVERY",
+			"BUILD",
+			"PILOT",
+		]);
+		expect(svg).toContain(
+			'class="section" x="0" y="41" font-family="\'JetBrains Mono\', ui-monospace, monospace"',
+		);
+	});
+
+	it("cuts a long name with an ellipsis within the 200 px label column", () => {
+		const long = "A programme of work far longer than the label column";
+		const svg = drawn(
+			plan("  section Build", `  ${long} :a1, 2026-11-02, 2w`),
+		);
+		const [label] = textsOf(svg, "task-label");
+		expect(label?.text.endsWith("…")).toBe(true);
+		expect(
+			Array.from(label?.text ?? "").length * 12 * 0.62,
+		).toBeLessThanOrEqual(200);
+		expect(gridOf(svg)[0]).toBe(212);
+		expect(svg).toContain(
+			`<desc>Week 1 begins 2026-11-02. Build: ${long}, `,
+		);
+	});
+
+	it("draws each milestone as a diamond in the label colour on a dashed line, with its name and date", () => {
+		const svg = drawn(PLAN);
+		const diamonds = Array.from(
+			svg.matchAll(
+				/<path class="milestone" d="M ([\d.]+) [^"]*" fill="([^"]+)"\/>/g,
+			),
+		);
+		expect(diamonds).toHaveLength(3);
+		for (const [, , fill] of diamonds) {
+			expect(fill).toBe(PALETTE.label);
+		}
+		const guides = Array.from(
+			svg.matchAll(/<line class="milestone-guide" ([^>]*)\/>/g),
+		);
+		expect(guides).toHaveLength(3);
+		for (const [, attributes] of guides) {
+			expect(attributes).toContain(`stroke="${PALETTE.label}"`);
+			expect(attributes).toContain('stroke-dasharray="3 3"');
+		}
+		const grid = gridOf(svg);
+		// The last milestone, on the plan's last day, sits on the last line.
+		expect(Number(diamonds[2]?.[1])).toBeCloseTo(grid[grid.length - 1], 0);
+		expect(
+			textsOf(svg, "milestone-label").map((label) => label.text),
+		).toEqual(["Signature", "First route live", "Pilot review"]);
+		const dates = textsOf(svg, "milestone-date");
+		expect(dates.map((date) => date.text)).toEqual([
+			"2026-11-02",
+			"2026-12-07",
+			"2027-02-01",
+		]);
+		for (const date of dates) {
+			expect(date.fill).toBe(PALETTE.label);
+		}
+	});
+
+	it("moves a milestone label that would touch the one before it to a line of its own, inside the figure", () => {
+		const svg = drawn(
+			plan(
+				"  section Build",
+				"  Routing :a1, 2026-11-02, 4w",
+				"  Contract signed :milestone, m1, 2026-11-30, 0d",
+				"  Review with the operations sponsor :milestone, m2, 2026-12-01, 0d",
+			),
+		);
+		const labels = textsOf(svg, "milestone-label");
+		expect(labels).toHaveLength(2);
+		expect(labels[1]?.y).toBeGreaterThan(labels[0]?.y ?? 0);
+		// The second name wraps to two lines, then its date.
+		expect(labels[1]?.text).toBe("Review with the operations sponsor");
+		const [, secondDate] = textsOf(svg, "milestone-date");
+		expect(secondDate?.y).toBe((labels[1]?.y ?? 0) + 32);
+		const height = Number(/height="([\d.]+)"/.exec(svg)?.[1]);
+		expect(height).toBeGreaterThan((secondDate?.y ?? 0) + 3);
+		for (const label of [...labels, ...textsOf(svg, "milestone-date")]) {
+			expect(label.x).toBeLessThanOrEqual(FIGURE_WIDTH);
+		}
+	});
+
+	it("thins the week numbers of a long plan so they never touch", () => {
+		const svg = drawn(
+			plan(
+				"  section Year",
+				"  A year of work :y1, 2026-01-05, 52w",
+				"  Midpoint :milestone, mm, 2026-07-06, 0d",
+			),
+		);
+		const weeks = textsOf(svg, "week");
+		expect(weeks.map((week) => week.text)).toEqual(
+			Array.from({ length: 13 }, (_, index) => `W${index * 4 + 1}`),
+		);
+		const width = 3 * (12 * 0.66 + 0.6);
+		for (let index = 1; index < weeks.length; index += 1) {
+			expect(
+				(weeks[index]?.x ?? 0) - (weeks[index - 1]?.x ?? 0),
+			).toBeGreaterThanOrEqual(width);
+		}
+		expectPrintGeometry(svg);
+	});
+
+	it("describes the start, every task with its dates in section order, and the milestones", () => {
+		expect(/<desc>([^<]*)<\/desc>/.exec(drawn(PLAN))?.[1]).toBe(
+			"Week 1 begins 2026-11-02. Discovery: Interviews, 2026-11-02 to 2026-11-15. Build: Routing, 2026-11-16 to 2026-12-06; Work orders, 2026-12-07 to 2026-12-27. Pilot: Region one, 2026-12-28 to 2027-01-24. Milestones: Signature, 2026-11-02; First route live, 2026-12-07; Pilot review, 2027-02-01.",
+		);
+		expect(
+			drawn(plan("  section Build", "  Kickoff :k1, 2026-11-02, 1d")),
+		).toContain("Build: Kickoff, 2026-11-02.</desc>");
+	});
+
+	it("labels the figure by its caption, then its chart title, then its kind", () => {
+		const model = parseGanttSource(PLAN);
+		if (!model) {
+			throw new Error("expected the plan to parse");
+		}
+		expect(ganttFigureSvg(model, PALETTE, { caption: "Plan" })).toContain(
+			"<title>Plan</title>",
+		);
+		expect(ganttFigureSvg(model, PALETTE)).toContain(
+			"<title>Pilot schedule</title>",
+		);
+		expect(ganttFigureSvg({ ...model, title: null }, PALETTE)).toContain(
+			"<title>Gantt chart</title>",
+		);
+	});
+
+	it("escapes markup in names", () => {
+		const svg = drawn(
+			plan(
+				"  section <b>Build</b> & run",
+				'  Route "A" <script> :a1, 2026-11-02, 1w',
+			),
+		);
+		expectSafeSvg(svg);
+		expect(svg).not.toContain("<script>");
+		expect(svg).not.toContain("<b>");
+		expect(drawnTexts(svg)).toContain("Route &quot;A&quot; &lt;script&gt;");
+		expect(drawnTexts(svg)).toContain("&lt;B&gt;BUILD&lt;/B&gt; &amp; RUN");
+	});
+
+	it("is deterministic, checks the palette and the id prefix, and ignores extra paint", () => {
+		expect(drawn(PLAN)).toBe(drawn(PLAN));
+		expect(
+			renderFigureSvg(
+				"gantt",
+				PLAN,
+				{ ...PALETTE, accent: "#123456" } as FigurePalette,
+				{},
+			),
+		).toBe(drawn(PLAN));
+		expect(() =>
+			renderFigureSvg(
+				"gantt",
+				PLAN,
+				{ ...PALETTE, label: 'red" onload="x' },
+				{},
+			),
+		).toThrow(TypeError);
+		expect(() =>
+			renderFigureSvg("gantt", PLAN, PALETTE, { idPrefix: "1bad" }),
+		).toThrow(TypeError);
+		const { label: _label, ...withoutLabel } = PALETTE;
+		expect(tryRenderFigure(PLAN, withoutLabel as FigurePalette)).toBeNull();
+	});
+
+	it.each([
+		["a tag", ["  section A", "  Routing :crit, a1, 2026-11-02, 1w"]],
+		["a done tag", ["  section A", "  Routing :done, a1, 2026-11-02, 1w"]],
+		[
+			"a tag word as the id",
+			["  section A", "  Routing :crit, 2026-11-02, 1w"],
+		],
+		["no id", ["  section A", "  Routing :2026-11-02, 1w"]],
+		[
+			"an end date",
+			["  section A", "  Routing :a1, 2026-11-02, 2026-11-20"],
+		],
+		[
+			"a duration in hours",
+			["  section A", "  Routing :a1, 2026-11-02, 24h"],
+		],
+		["a zero-day task", ["  section A", "  Routing :a1, 2026-11-02, 0d"]],
+		[
+			"a fractional duration",
+			["  section A", "  Routing :a1, 2026-11-02, 1.5w"],
+		],
+		[
+			"a date that does not exist",
+			["  section A", "  Routing :a1, 2026-02-30, 1w"],
+		],
+		[
+			"`after` an unknown id",
+			["  section A", "  Routing :a1, after x9, 1w"],
+		],
+		[
+			"`after` a task declared below",
+			[
+				"  section A",
+				"  Routing :a1, after a2, 1w",
+				"  Orders :a2, 2026-11-02, 1w",
+			],
+		],
+		[
+			"`after` two ids",
+			[
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+				"  Orders :a2, 2026-11-02, 1w",
+				"  Review :a3, after a1 a2, 1w",
+			],
+		],
+		[
+			"a duplicate id",
+			[
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+				"  Orders :a1, 2026-11-09, 1w",
+			],
+		],
+		[
+			"a milestone that lasts",
+			[
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+				"  Live :milestone, m1, 2026-11-09, 1d",
+			],
+		],
+		[
+			"a milestone after a task",
+			[
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+				"  Live :milestone, m1, after a1, 0d",
+			],
+		],
+		[
+			"a milestone alone",
+			["  section A", "  Live :milestone, m1, 2026-11-09, 0d"],
+		],
+		["a task before the first section", ["  Routing :a1, 2026-11-02, 1w"]],
+		[
+			"excluded days",
+			[
+				"  excludes weekends",
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+			],
+		],
+		[
+			"an axis format",
+			["  axisFormat %d", "  section A", "  Routing :a1, 2026-11-02, 1w"],
+		],
+		[
+			"a today marker",
+			[
+				"  todayMarker off",
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+			],
+		],
+		[
+			"a click line",
+			[
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+				'  click a1 href "https://example.com"',
+			],
+		],
+		[
+			"an accessible title",
+			[
+				"  accTitle: Plan",
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+			],
+		],
+		[
+			"a second date format",
+			[
+				"  dateFormat YYYY-MM-DD",
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+			],
+		],
+		[
+			"two titles",
+			[
+				"  title A",
+				"  title B",
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+			],
+		],
+		[
+			"a line that is no statement",
+			["  section A", "  Routing a1 2026-11-02 1w"],
+		],
+		[
+			"a comment after the data",
+			["  section A", "  Routing :a1, 2026-11-02, 1w # note"],
+		],
+		["a semicolon", ["  section A", "  Routing :a1, 2026-11-02, 1w;"]],
+		[
+			"a single-percent comment",
+			["  section A", "  % note", "  Routing :a1, 2026-11-02, 1w"],
+		],
+		[
+			"a name past 60 characters",
+			["  section A", `  ${"Routing ".repeat(8)}:a1, 2026-11-02, 1w`],
+		],
+		[
+			"a plan past 52 weeks",
+			["  section A", "  Routing :a1, 2026-01-05, 53w"],
+		],
+		[
+			"21 tasks",
+			[
+				"  section A",
+				...Array.from(
+					{ length: 21 },
+					(_, index) => `  Task ${index} :t${index}, 2026-11-02, 1w`,
+				),
+			],
+		],
+		[
+			"9 milestones",
+			[
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+				...Array.from(
+					{ length: 9 },
+					(_, index) =>
+						`  Mark ${index} :milestone, m${index}, 2026-11-02, 0d`,
+				),
+			],
+		],
+		[
+			"9 sections",
+			Array.from({ length: 9 }, (_, index) => [
+				`  section S${index}`,
+				`  Task ${index} :t${index}, 2026-11-02, 1w`,
+			]).flat(),
+		],
+	])("refuses %s", (_, rest) => {
+		const source = plan(...rest);
+		expect(parseGanttSource(source)).toBeNull();
+		expect(renderFigureSvg("gantt", source, PALETTE, {})).toBeNull();
+	});
+
+	it.each([
+		[
+			"an init directive",
+			[
+				"%%{init: {}}%%",
+				"gantt",
+				"  dateFormat YYYY-MM-DD",
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+			],
+		],
+		[
+			"frontmatter",
+			[
+				"---",
+				"title: x",
+				"---",
+				"gantt",
+				"  dateFormat YYYY-MM-DD",
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+			],
+		],
+		[
+			"a header in capitals",
+			[
+				"GANTT",
+				"  dateFormat YYYY-MM-DD",
+				"  section A",
+				"  Routing :a1, 2026-11-02, 1w",
+			],
+		],
+		[
+			"no date format",
+			["gantt", "  section A", "  Routing :a1, 2026-11-02, 1w"],
+		],
+		[
+			"another date format",
+			[
+				"gantt",
+				"  dateFormat DD-MM-YYYY",
+				"  section A",
+				"  Routing :a1, 02-11-2026, 1w",
+			],
+		],
+		["no task", ["gantt", "  dateFormat YYYY-MM-DD", "  section A"]],
+		["a flowchart", ["flowchart TD", "  a --> b"]],
+	])("refuses %s", (_, source) => {
+		expect(parseGanttSource(lines(...source))).toBeNull();
+	});
+
+	it("passes the export cleaner's allowlist with its milestones", () => {
+		expectSafeSvg(drawn(PLAN));
+		expect(drawn(PLAN)).toMatch(/^<svg [^>]*role="img"/);
+	});
+});
+
+describe("figure outlines", () => {
+	interface PaintedRect {
+		left: number;
+		top: number;
+		right: number;
+		bottom: number;
+	}
+
+	/**
+	 * Every `<rect>` as the area it paints: its box, widened on each side by
+	 * half its stroke (1 when `stroke` is set without a width).
+	 */
+	function paintedRects(svg: string): PaintedRect[] {
+		return Array.from(svg.matchAll(/<rect ([^>]*)\/>/g)).map(
+			([, attributes]) => {
+				const read = (name: string) =>
+					new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(
+						attributes,
+					)?.[1];
+				const half =
+					read("stroke") === undefined
+						? 0
+						: Number(read("stroke-width") ?? 1) / 2;
+				const x = Number(read("x") ?? 0);
+				const y = Number(read("y") ?? 0);
+				return {
+					left: x - half,
+					top: y - half,
+					right: x + Number(read("width")) + half,
+					bottom: y + Number(read("height")) + half,
+				};
+			},
+		);
+	}
+
+	const timeline = () =>
+		timelineToMermaid(
+			{
+				kind: "timeline",
+				items: [
+					{ date: "Week 1", label: "Kickoff" },
+					{ date: "Weeks 2-5", label: "First build" },
+					{ date: "Weeks 6-9", label: "Pilot region" },
+					{ date: "Weeks 10-12", label: "Review" },
+				],
+			},
+			PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+		);
+
+	it.each<[string, () => string | null]>([
+		[
+			"a process filling its row",
+			() => processFigureSvg(parsed(chainSource(4)), PALETTE, {}),
+		],
+		[
+			"a process with a loop",
+			() =>
+				processFigureSvg(
+					parsed(chainSource(5, ["n5 -.->|Next| n1"])),
+					PALETTE,
+					{},
+				),
+		],
+		[
+			"a timeline filling its row",
+			() =>
+				processFigureSvg(parsed(timeline()), PALETTE, { dated: true }),
+		],
+		["layers", () => layersFigureSvg(parsed(LAYERS), PALETTE, {})],
+		[
+			"layers without a cross-cutting column",
+			() =>
+				layersFigureSvg(
+					parsed(
+						lines(
+							"flowchart TB",
+							"subgraph a",
+							'x["Only"]',
+							'y["Second"]',
+							"end",
+						),
+					),
+					PALETTE,
+					{},
+				),
+		],
+		["a team", () => teamFigureSvg(parsed(TEAM), PALETTE, {})],
+		[
+			"a bar chart",
+			() =>
+				renderFigureSvg(
+					"bars",
+					lines(
+						"xychart-beta horizontal",
+						'  x-axis ["Baseline", "Pilot"]',
+						"  bar [4, 20]",
+						"  line [20, 20]",
+					),
+					PALETTE,
+					{},
+				),
+		],
+		[
+			"a gantt chart",
+			() =>
+				renderFigureSvg(
+					"gantt",
+					lines(
+						"gantt",
+						"  dateFormat YYYY-MM-DD",
+						"  section Build",
+						"  Routing :b1, 2026-11-02, 3w",
+						"  Done :milestone, m1, 2026-11-23, 0d",
+					),
+					PALETTE,
+					{},
+				),
+		],
+	])("paints every outline of %s inside the figure", (_name, draw) => {
+		const svg = svgOf(draw());
+		const height = Number(
+			/viewBox="0 0 662 ([\d.]+)"/.exec(svg)?.[1] ?? Number.NaN,
+		);
+		const rects = paintedRects(svg);
+		expect(rects.length).toBeGreaterThan(0);
+		const epsilon = 1e-6;
+		const outside = rects.flatMap((rect, index) =>
+			[
+				rect.left < -epsilon ? `rect ${index} left ${rect.left}` : "",
+				rect.top < -epsilon ? `rect ${index} top ${rect.top}` : "",
+				rect.right > FIGURE_WIDTH + epsilon
+					? `rect ${index} right ${rect.right}`
+					: "",
+				rect.bottom > height + epsilon
+					? `rect ${index} bottom ${rect.bottom} of ${height}`
+					: "",
+			].filter(Boolean),
+		);
+		expect(outside).toEqual([]);
 	});
 });

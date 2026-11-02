@@ -54,6 +54,76 @@ vi.mock("@saas/agents/runtime/orchestrator-engine", () => ({
 	},
 }));
 
+vi.mock("@saas/agents/runtime/library-chat-engine", () => ({
+	LIBRARY_CHAT_AGENT_ID: "library-chat",
+	LibraryChatEngine: class {
+		run = async () => undefined;
+		connect = async () => undefined;
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+vi.mock("@saas/agents/runtime/atlas-chat-engine", () => ({
+	ATLAS_CHAT_AGENT_ID: "atlas-chat",
+	AtlasChatEngine: class {
+		run = async () => undefined;
+		connect = async () => undefined;
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+vi.mock("@saas/agents/runtime/sidekick-engine", () => ({
+	SIDEKICK_AGENT_ID: "agent-builder-sidekick",
+	SidekickEngine: class {
+		run = async () => undefined;
+		connect = async () => undefined;
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+vi.mock("@saas/agents/runtime/weave-refine-engine", () => ({
+	WEAVE_REFINE_AGENT_ID: "weave-refine",
+	WeaveRefineEngine: class {
+		run = async () => undefined;
+		connect = async () => undefined;
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+vi.mock("@saas/agents/runtime/research-engine", () => ({
+	RESEARCH_AGENT_ID: "deep-researcher",
+	ResearchEngine: class {
+		run = async () => undefined;
+		connect = async () => undefined;
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+vi.mock("@saas/agents/runtime/cuga-generalist-engine", () => ({
+	CUGA_GENERALIST_AGENT_ID: "cuga-generalist",
+	CugaGeneralistEngine: class {
+		run = async () => undefined;
+		connect = async () => undefined;
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
+vi.mock("@saas/agents/runtime/data-analyst-engine", () => ({
+	DATA_ANALYST_AGENT_ID: "data-analyst",
+	DataAnalystEngine: class {
+		run = async () => undefined;
+		connect = async () => undefined;
+		isRunning = async () => false;
+		stop = async () => false;
+	},
+}));
+
 const { POST } = await import("@/app/api/agents/runtime/[[...path]]/route");
 
 const USER = "user-example-1";

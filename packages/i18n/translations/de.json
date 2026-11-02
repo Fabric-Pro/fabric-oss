@@ -399,6 +399,7 @@
 			"dontHaveAnAccount": "Du hast noch kein Konto?",
 			"forgotPassword": "Passwort vergessen?",
 			"hints": {
+				"passwordSet": "Passwort festgelegt. Melde dich mit deinem neuen Passwort an.",
 				"invalidCredentials": "Die von dir eingegebenen Anmeldeinformationen sind ungültig. \nBitte versuche es erneut.",
 				"linkSent": {
 					"message": "Wir haben dir einen Link zum Fortfahren gesendet. \nBitte überprüfe deinen Posteingang.",
@@ -868,6 +869,7 @@
 		"roles": {
 			"admin": "Administration",
 			"member": "Mitglied",
+			"none": "Keine Rolle",
 			"owner": "Eigentümer"
 		},
 		"settings": {
@@ -1559,6 +1561,8 @@
 				"weave": {
 					"session": {
 						"terminated_on_exit": "Weave-Sitzung beendet",
+						"continuation_requested": "Fortsetzung der Coding-Sitzung angefordert",
+						"recovery_closed": "Wiederherstellung der Coding-Sitzung abgeschlossen",
 						"terminated_stale": "Weave-Sitzung abgebrochen (überfällig)"
 					}
 				},
@@ -2923,6 +2927,11 @@
 	},
 	"projects": {
 		"remoteAgents": {
+			"recoveryWarning": "Das Ergebnis auf dem Server ist unbekannt. Prüfe den ursprünglichen Server auf eine verwaiste Sitzung und stoppe sie, bevor du einen neuen Lauf startest. Das Schließen dieses Eintrags stoppt keine entfernten Prozesse.",
+			"orphanCheck": "Ich habe den ursprünglichen Server auf verwaiste Prozesse geprüft.",
+			"closeRun": "Lauf schließen",
+			"recoveryClosed": "Lauf geschlossen. Du kannst einen neuen Lauf starten.",
+			"recoveryFailed": "Der Lauf konnte nicht geschlossen werden.",
 			"portalAiErrorTitle": "KI-Assistent nicht verfügbar",
 			"portalAiErrorHelp": "Der KI-Assistent konnte nicht gestartet werden. Versuchen Sie es erneut oder prüfen Sie die Portal-KI-Konfiguration. Remote-Zuweisungen sind weiterhin über „Arbeit starten“ verfügbar.",
 			"openServer": "Server öffnen",
@@ -4084,6 +4093,14 @@
 				}
 			},
 			"roadmapUi": {
+				"detailLoading": "Feature wird geladen…",
+				"detailLoadFailed": "Feature konnte nicht geladen werden. Bitte erneut versuchen.",
+				"descriptionSearch": {
+					"pending": "Beschreibungen werden durchsucht…",
+					"failed": "Beschreibungen konnten nicht durchsucht werden.",
+					"skipped": "Suchanfrage zu lang: Beschreibungen wurden nicht durchsucht.",
+					"retry": "Erneut versuchen"
+				},
 				"title": "Roadmap",
 				"aboutLabel": "Über diese Roadmap",
 				"aboutTitle": "Arbeitselemente, Lieferphasen und Prioritäten",
@@ -6592,7 +6609,8 @@
 			"showDiagram": "Zurück zum gerenderten Diagramm. Nicht gespeicherte Änderungen am Quelltext werden verworfen.",
 			"editDiagramSource": "Öffnet den Mermaid-Quelltext in einem bearbeitbaren Feld. Strg+Enter speichert.",
 			"addCaption": "Fügt unter dem Diagramm eine kurze Bildunterschrift hinzu. Sie bleibt beim Speichern des Dokuments mit dem Diagramm verbunden.",
-			"editStatTilesSource": "Quelltext bearbeiten"
+			"editStatTilesSource": "Quelltext bearbeiten",
+			"editBlockSource": "Quelltext bearbeiten"
 		},
 		"stories": {
 			"groupBy": "Wähle die Spuren, in die die Roadmap gruppiert wird.",

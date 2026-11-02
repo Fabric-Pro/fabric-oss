@@ -53,6 +53,7 @@ const m = vi.hoisted(() => ({
 		| undefined
 		| ((channel: string, message: string) => void),
 	limitMetric: vi.fn(),
+	resolveChatMediaAccessBatch: vi.fn(),
 }));
 
 vi.mock("@saas/auth/lib/server", () => ({
@@ -98,6 +99,7 @@ vi.mock("@repo/temporal", () => ({
 vi.mock("@repo/database", () => ({
 	CARRIED_OVER_MARKER_PREFIX: "[carried-over]",
 	readConversationTurnEvents: m.replayRead,
+	hasConversationTurnReplayGap: vi.fn().mockResolvedValue(false),
 	ChatEventReplayError: class ChatEventReplayError extends Error {},
 	getConversationTurnContinuationSnapshot: (...args: unknown[]) =>
 		m.continuationSnapshot(...args),
@@ -110,6 +112,8 @@ vi.mock("@repo/database", () => ({
 	getConversationProject: vi.fn(async () => null),
 	hasProjectAccess: vi.fn(async () => true),
 	hasOrganizationTie: (...args: unknown[]) => m.hasOrganizationTie(...args),
+	resolveChatMediaAccessBatch: (...args: unknown[]) =>
+		m.resolveChatMediaAccessBatch(...args),
 	admitConversationTurn: (...args: unknown[]) =>
 		m.admitConversationTurn(...args),
 	// No multi-agent turn in these conversations (see multi-agent-admission.test.ts).
@@ -239,6 +243,10 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 			trackUsage: m.trackUsage,
 		});
 		m.hasOrganizationTie.mockResolvedValue(true);
+		m.resolveChatMediaAccessBatch.mockImplementation(
+			async ({ storageKeys }: { storageKeys: string[] }) =>
+				new Map(storageKeys.map((storageKey) => [storageKey, "allow"])),
+		);
 		m.memberFindFirst.mockResolvedValue({ id: "member-1" });
 		m.abandonConversationTurnStart.mockResolvedValue(true);
 		m.finalizeOrphanedConversationTurn.mockResolvedValue({
@@ -281,6 +289,75 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		m.getHandle.mockImplementation((id: string) => completedHandle(id));
 		m.getTemporalClient.mockResolvedValue({
 			workflow: { start: m.start, getHandle: m.getHandle },
+		});
+	});
+
+	it("refuses another member's private attached image before admitting or starting the turn", async () => {
+		const storageKey = `${ORG_ID}/chat-images/1794200000000-abc123xy.png`;
+		m.resolveChatMediaAccessBatch.mockResolvedValueOnce(
+			new Map([[storageKey, "deny"]]),
+		);
+
+		const response = await post(
+			newTurnBody({
+				attachedImageUrls: [storageKey],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		expect(m.resolveChatMediaAccessBatch).toHaveBeenCalledWith({
+			storageKeys: [storageKey],
+			userId: USER_ID,
+			organizationId: ORG_ID,
+		});
+		expect(m.admitConversationTurn).not.toHaveBeenCalled();
+		expect(m.start).not.toHaveBeenCalled();
+	});
+
+	it("refuses an attached image when the batch omits its decision", async () => {
+		m.resolveChatMediaAccessBatch.mockResolvedValueOnce(new Map());
+
+		const response = await post(
+			newTurnBody({
+				attachedImageUrls: [
+					`${ORG_ID}/chat-images/1794200000000-abc123xy.png`,
+				],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		expect(m.admitConversationTurn).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["a non-array", "example-path"],
+		["a non-string entry", [{}]],
+		["an empty path", [""]],
+	])("refuses attachedImageUrls containing %s", async (_case, value) => {
+		const response = await post(newTurnBody({ attachedImageUrls: value }));
+
+		expect(response.status).toBe(400);
+		expect(m.resolveChatMediaAccessBatch).not.toHaveBeenCalled();
+		expect(m.admitConversationTurn).not.toHaveBeenCalled();
+	});
+
+	it("admits more than five accessible attached images through one batched decision", async () => {
+		const storageKeys = Array.from(
+			{ length: 6 },
+			(_, index) =>
+				`${ORG_ID}/chat-images/179420000000${index}-image${index}.png`,
+		);
+
+		const response = await post(
+			newTurnBody({ attachedImageUrls: storageKeys }),
+		);
+
+		expect(response.status).toBe(200);
+		expect(m.resolveChatMediaAccessBatch).toHaveBeenCalledTimes(1);
+		expect(m.resolveChatMediaAccessBatch).toHaveBeenCalledWith({
+			storageKeys,
+			userId: USER_ID,
+			organizationId: ORG_ID,
 		});
 	});
 
@@ -819,6 +896,38 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		expect(m.finalizeConversationTurn).not.toHaveBeenCalled();
 	});
 
+	it.each(["research", "direct"])(
+		"refuses an existing %s run key before following it as Orchestrator",
+		async (executionMode) => {
+			m.admitConversationTurn.mockResolvedValue({
+				outcome: "existing",
+				turn: turnRow({ executionMode, status: "COMPLETED" }),
+			});
+			const response = await post(newTurnBody());
+			expect(response.status).toBe(422);
+			await expect(response.json()).resolves.toMatchObject({
+				code: "RUN_ID_REUSED",
+			});
+			expect(m.start).not.toHaveBeenCalled();
+			expect(m.getHandle).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a research conflict without settling it as an Orchestrator turn", async () => {
+		m.admitConversationTurn.mockResolvedValueOnce({
+			outcome: "conflict",
+			turn: turnRow({ executionMode: "research", status: "ACTIVE" }),
+		});
+		const response = await post(newTurnBody());
+		expect(response.status).toBe(409);
+		await expect(response.json()).resolves.toMatchObject({
+			code: "TURN_IN_PROGRESS",
+		});
+		expect(m.getHandle).not.toHaveBeenCalled();
+		expect(m.finalizeConversationTurn).not.toHaveBeenCalled();
+		expect(m.start).not.toHaveBeenCalled();
+	});
+
 	it("reconciles a conflicting turn whose workflow is gone, then admits the new turn", async () => {
 		m.admitConversationTurn
 			.mockResolvedValueOnce({
@@ -1060,6 +1169,7 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 			m.replayRead.mockImplementation(async () => {
 				readCount++;
 				if (transient && readCount === 1) {
+					terminal = true;
 					throw new Error("Connection reset");
 				}
 				if (readCount === (transient ? 2 : 1)) {
@@ -1095,7 +1205,14 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 			const completed = events.findIndex(
 				(event) => event.type === "completed",
 			);
-			expect(tail).toBeGreaterThan(-1);
+			if (transient) {
+				expect(tail).toBe(-1);
+				expect(
+					events.some((event) => event.type === "replay_unavailable"),
+				).toBe(true);
+			} else {
+				expect(tail).toBeGreaterThan(-1);
+			}
 			expect(completed).toBeGreaterThan(tail);
 			expect(events.some((event) => event.type === "error")).toBe(false);
 		},
@@ -1258,7 +1375,8 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		).toBe("done");
 		expect(events.some((event) => event.type === "error")).toBe(false);
 	});
-	it("stops on a live replay-unavailable notification", async () => {
+	it("continues live on a replay-unavailable notification", async () => {
+		let terminal = false;
 		process.env.REDIS_URL = "redis://127.0.0.1:6379";
 		m.getConversationTurnForExecution.mockResolvedValue(
 			turnRow({ executionId: EXEC_A, status: "ACTIVE" }),
@@ -1267,10 +1385,12 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 			workflowId: EXEC_A,
 			describe: async () => ({
 				runId: "example-run",
-				status: { name: "RUNNING" },
+				status: { name: terminal ? "COMPLETED" : "RUNNING" },
 				memo: { userId: USER_ID, organizationId: ORG_ID },
 			}),
+			result: async () => ({ status: "completed", response: "Final" }),
 			query: async () => {
+				terminal = true;
 				m.redisMessage?.(
 					"example",
 					JSON.stringify({
@@ -1289,25 +1409,30 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 				eventReplay: true,
 			}),
 		);
-		expect(events.some((event) => event.type === "error")).toBe(true);
+		expect(events.some((event) => event.type === "error")).toBe(false);
 		expect(
 			events.some(
 				(event) =>
 					event.type === "text_delta" || event.type === "completed",
 			),
-		).toBe(false);
+		).toBe(true);
 	});
-	it("pins replay to the authorized physical run and refuses a changed run", async () => {
+	it("degrades replay when the authorized physical run changes", async () => {
 		let now = Date.now();
 		let runId = "example-run";
+		let terminal = false;
 		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 		try {
 			m.getHandle.mockReturnValue({
 				workflowId: EXEC_A,
 				describe: async () => ({
 					runId,
-					status: { name: "RUNNING" },
+					status: { name: terminal ? "COMPLETED" : "RUNNING" },
 					memo: { userId: USER_ID, organizationId: ORG_ID },
+				}),
+				result: async () => ({
+					status: "completed",
+					response: "Final",
 				}),
 				query: async () => ({}),
 			});
@@ -1317,6 +1442,7 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 			m.replayRead.mockImplementation(async () => {
 				now += 6000;
 				runId = "example-other-run";
+				terminal = true;
 				return [];
 			});
 			const events = await readEvents(
@@ -1329,10 +1455,10 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 			expect(m.replayRead.mock.calls[0][0].scope.runId).toBe(
 				"example-run",
 			);
-			expect(events.some((event) => event.type === "error")).toBe(true);
-			expect(events.some((event) => event.type === "completed")).toBe(
-				false,
-			);
+			expect(events.some((event) => event.type === "error")).toBe(false);
+			expect(
+				events.some((event) => event.type === "replay_unavailable"),
+			).toBe(true);
 		} finally {
 			clock.mockRestore();
 		}

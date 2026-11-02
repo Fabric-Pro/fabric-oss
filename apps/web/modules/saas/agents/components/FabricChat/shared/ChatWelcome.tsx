@@ -234,13 +234,13 @@ export function ChatWelcome({
 				{suggestions.length > 0 && (
 					<ul className="mt-6 w-full divide-y divide-border border-b border-border">
 						{suggestions.map((suggestion) => (
-							<li key={suggestion.value}>
+							<li key={suggestion.value} className="min-w-0">
 								<button
 									type="button"
 									onClick={() =>
 										onSuggestionClick(suggestion.value)
 									}
-									className="flex w-full items-start gap-2.5 px-2 py-2.5 text-left text-sm leading-5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+									className="flex min-w-0 w-full items-start gap-2.5 px-2 py-2.5 text-left text-sm leading-5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 								>
 									{suggestion.icon && (
 										<span
@@ -256,7 +256,7 @@ export function ChatWelcome({
 											{suggestion.icon}
 										</span>
 									)}
-									<span className="min-w-0 break-words">
+									<span className="min-w-0 whitespace-normal break-words">
 										<span className="font-medium text-foreground">
 											{suggestion.label}
 										</span>
@@ -264,7 +264,7 @@ export function ChatWelcome({
 											<>
 												{" "}
 												&mdash;{" "}
-												<span className="text-muted-foreground">
+												<span className="whitespace-normal break-words text-muted-foreground">
 													{suggestion.description}
 												</span>
 											</>
@@ -273,7 +273,7 @@ export function ChatWelcome({
 											<>
 												{" "}
 												&mdash;{" "}
-												<span className="text-muted-foreground">
+												<span className="whitespace-normal break-words text-muted-foreground">
 													{suggestion.value}
 												</span>
 											</>

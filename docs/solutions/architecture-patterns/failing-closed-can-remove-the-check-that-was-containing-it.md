@@ -113,4 +113,4 @@ Related, and worth reading together:
 - `docs/solutions/architecture-patterns/removing-a-fallback-promotes-every-path-that-relied-on-it.md` — the same blast-radius question asked from the other side: which paths did this fallback keep rare?
 - `docs/solutions/conventions/a-normalizer-is-not-a-gate.md` — why a resolver that always produces a value cannot be the gate; `tenantContextMiddleware` was exactly that shape.
 - `docs/solutions/architecture-patterns/reversing-a-safety-invariant-narrow-it-do-not-delete-it.md` — the personal arm was narrowed, not deleted, for the reason ADR-018 gives.
-- `docs/solutions/integration-issues/a-database-write-cannot-reach-a-cached-session.md` — the cookie-cache mechanism behind the stale pointer this gate exists for.
+- `docs/solutions/integration-issues/a-database-write-cannot-reach-a-cached-session.md` — the historical cookie-cache mechanism behind the stale pointer this gate was built to contain, and why that cache is now disabled.

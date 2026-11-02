@@ -17,9 +17,44 @@ const consumerRequire = createRequire(consumerPackage);
 test("node-fetch resolves the reviewed Busboy security release", () => {
 	assert.equal(
 		consumerRequire("@fastify/busboy/package.json").version,
-		"3.2.1",
+		"3.2.2",
 	);
 });
+
+for (const lineBreak of ["\r", "\n"]) {
+	for (const parameter of ["name", "filename"]) {
+		test(`raw ${JSON.stringify(lineBreak)} in ${parameter} is not exposed by multipart parsing`, async () => {
+			const { Request } = consumerRequire("@whatwg-node/node-fetch");
+			const disposition =
+				parameter === "name"
+					? `name="before${lineBreak}after"`
+					: `name="upload"; filename="before${lineBreak}after.txt"`;
+			const body = [
+				"--example-boundary",
+				`Content-Disposition: form-data; ${disposition}`,
+				"Content-Type: text/plain",
+				"",
+				"untrusted part",
+				"--example-boundary",
+				'Content-Disposition: form-data; name="safe"',
+				"",
+				"retained",
+				"--example-boundary--",
+				"",
+			].join("\r\n");
+			const parsed = await new Request("https://example.com/upload", {
+				method: "POST",
+				headers: {
+					"content-type":
+						"multipart/form-data; boundary=example-boundary",
+				},
+				body,
+			}).formData();
+			assert.deepEqual([...parsed.keys()], ["safe"]);
+			assert.equal(parsed.get("safe"), "retained");
+		});
+	}
+}
 
 test("ordinary multipart fields and files remain compatible through node-fetch", async () => {
 	const { Request, FormData, File } = consumerRequire(

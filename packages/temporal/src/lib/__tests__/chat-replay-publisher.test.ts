@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock("@repo/database", () => ({
 	appendConversationTurnEventFromWorker: h.append,
+	CHAT_REPLAY_UNAVAILABLE_SOURCE_KEY: "replay-unavailable",
 	ChatEventReplayError: class ChatEventReplayError extends Error {},
 	purgeExpiredConversationTurnEvents: h.purge,
 }));
@@ -193,9 +194,16 @@ describe("worker replay publication", () => {
 				data: { iteration: iteration + 2 },
 			}),
 		);
+		await vi.waitFor(() => expect(h.publish).toHaveBeenCalledTimes(41));
+		expect(
+			h.publish.mock.calls.map(
+				([, payload]) => JSON.parse(payload).data.iteration,
+			),
+		).toEqual(Array.from({ length: 41 }, (_, index) => index + 1));
 		release(cursor);
 		await Promise.all([first, ...backlog]);
 		await flushExecutionEvents();
+		expect(h.publish).toHaveBeenCalledTimes(41);
 		expect(h.append.mock.calls.length).toBeLessThanOrEqual(2);
 		expect(executionReplayUnavailable(h.current())).toBe(true);
 		expect(h.append).toHaveBeenCalledWith(

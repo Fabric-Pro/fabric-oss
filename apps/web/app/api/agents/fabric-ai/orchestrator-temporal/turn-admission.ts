@@ -36,6 +36,10 @@ import type {
 } from "@repo/temporal";
 import { turnBudgetForExecutionMode } from "@repo/temporal/turn-budget-policy";
 import {
+	isOrchestratorTurn,
+	RESEARCH_EXECUTION_MODE,
+} from "@saas/agents/lib/conversation-turn-mode";
+import {
 	admitTurn,
 	type CompletedTurnSettlement,
 	isTerminalTurnStatus,
@@ -338,7 +342,17 @@ export async function admitChatTurn(args: {
 		newExecutionId: () => `orch-${uuidv4()}`,
 		budget: turnBudgetForExecutionMode(args.executionMode as ExecutionMode),
 		settleCompleted: settleCompletedOrchestratorTurn,
+		ownsTurn: (turn) => turn.executionMode !== RESEARCH_EXECUTION_MODE,
 	});
+	if (admission.kind === "existing" && !isOrchestratorTurn(admission.turn)) {
+		return {
+			kind: "refused",
+			response: json(422, {
+				code: "RUN_ID_REUSED",
+				message: "This run id already belongs to another run.",
+			}),
+		};
+	}
 	if (admission.kind !== "refused") {
 		return admission;
 	}

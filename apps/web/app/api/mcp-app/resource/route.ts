@@ -101,6 +101,9 @@ export async function POST(request: NextRequest) {
 			"@modelcontextprotocol/sdk/client/streamableHttp.js"
 		);
 		const { getMcpConfigById } = await import("@repo/database");
+		const { assertMcpServerUrlResolved, fetchMcpServer } = await import(
+			"@repo/mcp/lib/server-url-guard"
+		);
 		// Resolves GitLab personal servers through the person's GitLab
 		// connection; every other config through its own MCPConfig token.
 		const { getValidMcpTransportAuth } = await import("@repo/mcp");
@@ -140,6 +143,7 @@ export async function POST(request: NextRequest) {
 				{ status: 400 },
 			);
 		}
+		await assertMcpServerUrlResolved(serverUrl);
 
 		// Build auth headers
 		const headers: Record<string, string> = {};
@@ -166,6 +170,7 @@ export async function POST(request: NextRequest) {
 				userId,
 				organizationId,
 				endpoint: serverUrl,
+				expectedGrantGeneration: mcpConfig.oauthGrantGeneration,
 			});
 			if (auth.accessToken) {
 				headers.Authorization = `Bearer ${auth.accessToken}`;
@@ -196,14 +201,14 @@ export async function POST(request: NextRequest) {
 		const transport =
 			configTransport === "SSE"
 				? new SSEClientTransport(url, {
-						...(transportFetch ? { fetch: transportFetch } : {}),
+						fetch: transportFetch ?? fetchMcpServer,
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }
 								: undefined,
 					})
 				: new StreamableHTTPClientTransport(url, {
-						...(transportFetch ? { fetch: transportFetch } : {}),
+						fetch: transportFetch ?? fetchMcpServer,
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }
@@ -250,12 +255,7 @@ export async function POST(request: NextRequest) {
 			stack: error instanceof Error ? error.stack : undefined,
 		});
 		return Response.json(
-			{
-				error:
-					error instanceof Error
-						? error.message
-						: "Failed to fetch MCP App resource",
-			},
+			{ error: "Failed to fetch MCP App resource" },
 			{ status: 500 },
 		);
 	}

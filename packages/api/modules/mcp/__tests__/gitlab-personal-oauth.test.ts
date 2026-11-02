@@ -41,7 +41,9 @@ vi.mock("@repo/database", async (importOriginal) => ({
 	},
 	getMcpConfigByIdInternal: async () => state.config,
 	getOauthState: async () => state.oauthState,
+	getOrganizationMembership: vi.fn(async () => ({ role: "admin" })),
 	clearRefreshFailures: vi.fn(async () => undefined),
+	consumeOauthState: vi.fn(async () => true),
 	createOauthState: vi.fn(async () => undefined),
 	deleteOauthState: vi.fn(async () => undefined),
 	saveMcpOAuthGrant: vi.fn(async () => {
@@ -105,6 +107,7 @@ vi.mock("../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: builder,
 		publicProcedure: builder,
+		protectedProcedure: builder,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
 		// The real resolver's rule for the organization a request names (the
@@ -400,6 +403,7 @@ describe("mcp.oauth.callback — GitLab personal server on gitlab.com", () => {
 		);
 
 		const result = await handlerOf(oauthProcedures.callback)({
+			context: { user: { id: "user-2" } },
 			input: { code: "code", state: "state" },
 		});
 
@@ -483,6 +487,7 @@ describe("mcp.oauth.callback — GitLab personal server on a self-hosted instanc
 		);
 
 		const result = await handlerOf(oauthProcedures.callback)({
+			context: { user: { id: "user-2" } },
 			input: { code: "code", state: "state" },
 		});
 
@@ -557,6 +562,7 @@ describe("mcp.oauth.callback — GitLab personal server on a self-hosted instanc
 		);
 
 		const outcome = await handlerOf(oauthProcedures.callback)({
+			context: { user: { id: "user-2" } },
 			input: { code: "code", state: "state" },
 		}).catch((error: unknown) => error);
 
@@ -604,6 +610,7 @@ describe("mcp.oauth.callback — GitLab personal server on a self-hosted instanc
 		};
 
 		const outcome = await handlerOf(oauthProcedures.callback)({
+			context: { user: { id: "user-2" } },
 			input: { code: "code", state: "state" },
 		}).catch((error: unknown) => error);
 

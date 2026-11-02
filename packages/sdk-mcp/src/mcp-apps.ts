@@ -113,12 +113,12 @@ export const FABRIC_MCP_APP_RESOURCES: readonly FabricMcpAppResourceDescriptor[]
 		},
 		{
 			uri: "ui://fabric/workflow-visualizer",
-			name: "Fabric Visual Data Prep & Durable Temporal Workflow Inspector",
+			name: "Fabric Visual Data Prep & Durable Workflow Inspector",
 			description:
-				"Interactive Fabric-branded DAG pipeline stepper and Temporal workflow execution monitor with step-by-step stage diagrams and durable replay metadata.",
+				"Interactive Fabric-branded DAG pipeline stepper and workflow execution monitor with step-by-step stage diagrams and durable call metadata.",
 			mimeType: "text/html;profile=mcp-app",
 			_meta: createResourceMeta(
-				"Step through Fabric Visual Data Prep pipelines and durable Temporal workflow executions interactively.",
+				"Step through Fabric Visual Data Prep pipelines and workflow executions interactively.",
 			),
 		},
 		{
@@ -144,7 +144,7 @@ export const FABRIC_MCP_APP_RESOURCES: readonly FabricMcpAppResourceDescriptor[]
 		},
 	] as const;
 
-const FABRIC_VIEW_CSS = String.raw`
+const FABRIC_VIEW_CSS = `
 .viz-foot { display: flex; flex-direction: column; gap: 8px; }
 .viz-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; }
 .viz-sources > summary { cursor: pointer; font: 500 13px/20px var(--k-font); color: var(--k-muted); }
@@ -511,44 +511,41 @@ function buildFabricMcpViewScript(options: {
       });
 
       var chipRow = el("div", "fb-meta-row");
-      add(
-        chipRow,
-        K.chip(v && v.billingMode ? String(v.billingMode) : "Subscription Credits Active", "ok"),
-        K.chip("Fallback: " + ((v && (v.fallbackPolicy || v.fallback)) || "subscription_harnesses"), "info"),
-        K.chip("Durable Temporal Envelope", "ok")
-      );
+      if (v && v.billingMode) add(chipRow, K.chip(String(v.billingMode), "ok"));
+      add(chipRow, K.chip("Fallback: " + ((v && (v.fallbackPolicy || v.fallback)) || "subscription_harnesses"), "info"));
+      var durableMeta = S.r && S.r._meta && S.r._meta.durableExecution;
+      if (durableMeta && durableMeta.stored === true) {
+        add(chipRow, K.chip(durableMeta.replayed ? "Stored Call · Replayed" : "Stored Durable Call", "ok"));
+      }
       add(card.body, chipRow);
 
-      var harnesses = (v && Array.isArray(v.harnesses) && v.harnesses.length) ? v.harnesses : [
-        { id: "claude-max", label: "Claude (Opus 4.6 / Sonnet 4.6)", spec: "Subscription OAuth · Primary" },
-        { id: "codex", label: "Codex (GPT-5.4 / o3)", spec: "ChatGPT Pro/Team Subscription" },
-        { id: "droid-cli", label: "Droid (Factory Multi-Model)", spec: "Subscription OAuth" },
-        { id: "grok-cli", label: "Grok (Grok 4 Heavy / Fast)", spec: "Subscription OAuth" },
-        { id: "kimi-cli", label: "Kimi (K2.5 Thinking)", spec: "Subscription OAuth" }
-      ];
-
-      var tiles = K.choiceTiles({
-        label: "Subscription Harness",
-        value: (v && v.harness) || S.harness,
-        items: harnesses.map(function (h) {
-          return {
-            value: String(h.id || h.slug || h.name),
-            label: String(h.label || h.name || h.id),
-            spec: String(h.spec || h.status || h.mode || "Active")
-          };
-        }),
-        onChange: function (val) {
-          S.harness = val;
-          tell("User selected subscription harness " + val, { harness: val, target: S.mode === 0 ? "remote" : "desktop" });
-        }
-      });
-      add(card.body, tiles);
+      var harnesses = (v && Array.isArray(v.harnesses)) ? v.harnesses : [];
+      if (harnesses.length) {
+        var tiles = K.choiceTiles({
+          label: "Subscription Harness",
+          value: (v && v.harness) || S.harness,
+          items: harnesses.map(function (h) {
+            return {
+              value: String(h.id || h.slug || h.name),
+              label: String(h.label || h.name || h.id),
+              spec: String(h.spec || h.status || h.mode || "Status not checked")
+            };
+          }),
+          onChange: function (val) {
+            S.harness = val;
+            tell("User selected subscription harness " + val, { harness: val, target: S.mode === 0 ? "remote" : "desktop" });
+          }
+        });
+        add(card.body, tiles);
+      } else {
+        add(card.body, K.callout({ tone: "info", title: "Harness status unavailable", text: "This result did not include a subscription harness listing." }));
+      }
 
       if (items.length && !(v && Array.isArray(v.harnesses))) {
         var rows = items.slice(0, 6).map(function (it) {
           return [
             String(it.title || it.name || it.slug || it.operation || it.id || "Item"),
-            String(it.status || it.priority || it.mode || it.riskLevel || "ready"),
+            String(it.status || it.priority || it.mode || it.riskLevel || "Status unavailable"),
             String(it.source || it.category || it.description || "Fabric").slice(0, 48)
           ];
         });
@@ -576,12 +573,14 @@ function buildFabricMcpViewScript(options: {
     function drawWorkflowCard(v) {
       var items = extractItems(v);
       var wf = (v && (v.workflow || v.execution || v)) || {};
-      var wfTitle = wf.name || wf.title || wf.workflowId || (items.length ? items.length + " Fabric Workflows" : CFG.title);
-      var rawSteps = (wf && Array.isArray(wf.steps) && wf.steps) || (items.length ? items : [
-        { id: "ingest", name: "Ingest & Validate Context", status: "COMPLETED", detail: "Tenant-isolated input verified in Temporal activity." },
-        { id: "transform", name: "Visual Data Prep & Agent Transform", status: "COMPLETED", detail: "Structured transformation and schema validation complete." },
-        { id: "persist", name: "Durable Checkpoint & Audit", status: "COMPLETED", detail: "Persisted with deterministic replay history and audit log." }
-      ]);
+      var durableExecution = S.r && S.r._meta && S.r._meta.durableExecution;
+      var wfTitle = wf.name || wf.title || (items.length ? items.length + " Fabric Workflows" : CFG.title);
+      var rawSteps = (wf && Array.isArray(wf.steps) && wf.steps) || (items.length ? items : []);
+      if (!rawSteps.length) {
+        var emptyCard = K.card({ mark: CFG.mark, eyebrow: "FABRIC WORKFLOWS", eyebrowMeta: "No execution data", title: String(wfTitle), sub: CFG.subtitle, tools: [K.expandButton()], label: String(wfTitle) });
+        add(emptyCard.body, K.callout({ tone: "info", title: "No workflow steps returned", text: "Run or inspect a workflow to view its reported steps." }));
+        return emptyCard;
+      }
 
       var nodes = rawSteps.slice(0, 6).map(function (st, idx) {
         return { id: "s" + idx, text: String(st.name || st.title || st.label || st.id || ("Step " + (idx + 1))).slice(0, 32) };
@@ -605,17 +604,17 @@ function buildFabricMcpViewScript(options: {
         sc.zoom = false;
         return {
           title: String(st.name || st.title || st.label || ("Step " + (idx + 1))),
-          body: String(st.detail || st.description || st.summary || ("Status: " + (st.status || "READY"))),
-          tip: wf.workflowId ? ("Temporal Workflow ID: " + wf.workflowId) : "Executed durably via Temporal workflow engine",
+          body: String(st.detail || st.description || st.summary || (st.status ? ("Status: " + st.status) : "No detail reported")),
+          tip: durableExecution && durableExecution.executionId ? ("Durable execution ID: " + durableExecution.executionId) : "Reported by the tool result",
           scene: sc
         };
       });
 
       return K.stepper({
         title: String(wfTitle),
-        level: (wf.status || "Durable Temporal"),
+        level: (wf.status || "Workflow"),
         label: String(wfTitle),
-        caption: "Fabric Visual Data Prep & Durable Temporal Pipeline",
+        caption: "Fabric Visual Data Prep & Workflow Pipeline",
         steps: steps,
         start: S.step,
         stateKey: "wf:" + String(wfTitle),
@@ -727,7 +726,7 @@ export function readFabricMcpAppResource(
 			tool: "fabric_delegate_agent",
 		},
 		"ui://fabric/workflow-visualizer": {
-			badge: "Durable Temporal",
+			badge: "Durable Workflow",
 			tool: "fabric_call",
 		},
 		"ui://fabric/genie-insights": {
