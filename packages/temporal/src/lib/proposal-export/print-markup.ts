@@ -1,12 +1,13 @@
 /**
- * The small pieces both halves of the Proposal's print page write with
- * (Fizzy #2946): escaping, the `data:` URL of a raster, and a node's plain
- * text. The cover and the body each import them from here, so neither
- * depends on the other.
+ * The small pieces the Proposal's print page writes with (Fizzy #2946):
+ * escaping, the `data:` URL of a raster, a node's plain text, a `<style>`
+ * element and the running footer's title. The cover and the body each
+ * import them from here, so neither depends on the other.
  */
 
 import type { Nodes, Paragraph } from "mdast";
 import { readUploadedImageTag } from "./document-content";
+import { exportFailure } from "./failures";
 import { eachNode, flatText } from "./markdown";
 import type { ExportRaster } from "./types";
 
@@ -68,4 +69,30 @@ export function isImageParagraph(node: Paragraph): boolean {
 		}
 	});
 	return image;
+}
+
+/** Longest document title the footer shows, in characters. */
+const FOOTER_TITLE_LIMIT = 60;
+
+/**
+ * The title as the footer shows it: cut at a word to
+ * {@link FOOTER_TITLE_LIMIT} characters with an ellipsis, so the footer
+ * stays on one line beside the page counter.
+ */
+export function footerTitle(title: string): string {
+	const characters = Array.from(title);
+	if (characters.length <= FOOTER_TITLE_LIMIT) {
+		return title;
+	}
+	const cut = characters.slice(0, FOOTER_TITLE_LIMIT - 1).join("");
+	const atWord = cut.replace(/\s+\S*$/u, "");
+	return `${(atWord.length > 0 ? atWord : cut).trimEnd()}…`;
+}
+
+/** A stylesheet for a `<style>` element, which nothing in it may close. */
+export function styleElement(css: string): string {
+	if (/<\/style/i.test(css)) {
+		throw exportFailure("EXPORT_FAILED");
+	}
+	return `<style>${css}</style>`;
 }

@@ -198,10 +198,10 @@ export function ProjectSettingsNav({
 						type="button"
 						onClick={() => onTabChange(tab.id)}
 						className={cn(
-							"group flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors whitespace-nowrap lg:whitespace-normal cursor-pointer",
+							"group flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors whitespace-nowrap lg:whitespace-normal cursor-pointer",
 							isActive
-								? "bg-accent text-foreground"
-								: "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+								? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+								: "text-foreground hover:bg-foreground/[0.06]",
 							tab.destructive &&
 								isActive &&
 								"bg-destructive/10 text-destructive",
@@ -213,12 +213,25 @@ export function ProjectSettingsNav({
 						<Icon
 							className={cn(
 								"size-4 shrink-0",
+								isActive && !tab.destructive
+									? "text-primary"
+									: "text-foreground",
 								tab.destructive && "text-destructive/70",
 							)}
 						/>
 						<div className="hidden min-w-0 lg:block">
 							<div className="flex items-center gap-2">
-								<span className="font-medium text-[13px]">
+								<span
+									className={cn(
+										"text-[13px]",
+										isActive
+											? "font-semibold text-primary"
+											: "font-normal text-foreground",
+										tab.destructive &&
+											isActive &&
+											"text-destructive",
+									)}
+								>
 									{tab.label}
 								</span>
 								{isConfigured && !tab.destructive && (

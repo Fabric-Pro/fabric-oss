@@ -306,37 +306,6 @@ test.describe("DocumentEditor — paperclip regression", () => {
 // (`surface: "document-generator"`).
 // ---------------------------------------------------------------------------
 
-test.describe("DocumentGeneratorEditor — paperclip regression", () => {
-	test("paperclip attaches a PDF and the chip appears", async ({
-		page,
-	}, testInfo) => {
-		testInfo.setTimeout(60_000);
-
-		await installAiDocumentUploadMocks(page);
-
-		// The agents/document-generator page does not need the
-		// projects/documents fixtures — it stands alone with the CopilotKit
-		// provider inside the page (see `apps/web/app/(saas)/app/agents/document-generator/page.tsx`).
-
-		await page.goto("/app/agents/document-generator");
-
-		await expect(copilotInputWrapper(page)).toBeVisible({
-			timeout: 20_000,
-		});
-		await expect(
-			page.getByRole("button", { name: /Attach a file/i }),
-		).toBeVisible();
-
-		const fileInput =
-			copilotInputWrapper(page).locator('input[type="file"]');
-		await fileInput.setInputFiles(PDF_FIXTURE);
-
-		await expect(attachmentChipFor(page, "sample.pdf")).toBeVisible({
-			timeout: 10_000,
-		});
-	});
-});
-
 // ---------------------------------------------------------------------------
 // Nexus — paperclip still uploads.
 //

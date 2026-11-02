@@ -10,61 +10,25 @@
  * Updates KanbanQueue status to COMPLETED and stores the branch name.
  */
 
-import { createHash } from "node:crypto";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
-
-type AuthContext =
-	| { type: "org"; organizationId: string }
-	| { type: "user"; userId: string; organizationId: null };
-
-async function authenticate(request: NextRequest): Promise<AuthContext | null> {
-	const authHeader = request.headers.get("Authorization");
-	if (!authHeader?.startsWith("Bearer ")) {
-		return null;
-	}
-	const rawKey = authHeader.slice(7);
-	const keyHash = createHash("sha256").update(rawKey).digest("hex");
-
-	const orgKey = await db.organizationApiKey.findFirst({
-		where: {
-			keyHash,
-			isActive: true,
-			OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-		},
-		select: { id: true, organizationId: true },
-	});
-	if (orgKey) {
-		await db.organizationApiKey.update({
-			where: { id: orgKey.id },
-			data: { lastUsedAt: new Date(), usageCount: { increment: 1 } },
-		});
-		return { type: "org", organizationId: orgKey.organizationId };
-	}
-
-	const userKey = await db.userApiKey.findFirst({
-		where: {
-			keyHash,
-			isActive: true,
-			OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-		},
-		select: { id: true, userId: true },
-	});
-	if (userKey) {
-		await db.userApiKey.update({
-			where: { id: userKey.id },
-			data: { lastUsedAt: new Date(), usageCount: { increment: 1 } },
-		});
-		return { type: "user", userId: userKey.userId, organizationId: null };
-	}
-
-	return null;
-}
+import {
+	authenticateKanbanRequest,
+	canUpdateKanbanProject,
+	kanbanPermissionRefusal,
+	requireKanbanScope,
+} from "../auth";
 
 export async function POST(request: NextRequest) {
-	const auth = await authenticate(request);
+	const auth = await authenticateKanbanRequest(request, {
+		allowLaunchToken: false,
+	});
 	if (!auth) {
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+	}
+	const scopeRefusal = requireKanbanScope(auth, "kanban:write");
+	if (scopeRefusal) {
+		return scopeRefusal;
 	}
 
 	let body: { queueItemId?: string; branchName?: string; commit?: string };
@@ -89,10 +53,18 @@ export async function POST(request: NextRequest) {
 	const item = await db.kanbanQueue.findFirst({
 		where: {
 			id: queueItemId,
-			organizationId: auth.type === "org" ? auth.organizationId : null,
+			...(auth.organizationId
+				? { organizationId: auth.organizationId }
+				: {}),
+			createdById: auth.userId,
 			status: "PULLED",
 		},
-		select: { id: true, storyId: true },
+		select: {
+			id: true,
+			organizationId: true,
+			projectId: true,
+			storyId: true,
+		},
 	});
 
 	if (!item) {
@@ -102,14 +74,36 @@ export async function POST(request: NextRequest) {
 		);
 	}
 
-	await db.kanbanQueue.update({
-		where: { id: queueItemId },
+	if (
+		!(await canUpdateKanbanProject(auth, {
+			id: item.projectId,
+			organizationId: item.organizationId,
+		}))
+	) {
+		return kanbanPermissionRefusal(
+			"The credential owner no longer has permission to update this Kanban item",
+		);
+	}
+
+	const result = await db.kanbanQueue.updateMany({
+		where: {
+			id: queueItemId,
+			organizationId: item.organizationId,
+			createdById: auth.userId,
+			status: "PULLED",
+		},
 		data: {
 			status: "COMPLETED",
 			completedAt: new Date(),
 			...(branchName ? { branchName } : {}),
 		},
 	});
+	if (result.count === 0) {
+		return NextResponse.json(
+			{ error: "Queue item not found or not in PULLED status" },
+			{ status: 404 },
+		);
+	}
 
 	return NextResponse.json({ ok: true, queueItemId });
 }

@@ -83,7 +83,7 @@ export function StoryActionsMenu({
 	const targetKind: "BUG" | "FEATURE" =
 		story.kind === "BUG" ? "FEATURE" : "BUG";
 	const [convertDialogOpen, setConvertDialogOpen] = useState(false);
-	const storiesListQueryKey = orpc.projects.stories.list.queryKey({
+	const storiesListQueryKey = orpc.projects.stories.board.queryKey({
 		input: { projectId, organizationId: organizationId ?? null },
 	});
 

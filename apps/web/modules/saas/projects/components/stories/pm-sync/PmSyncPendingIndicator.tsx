@@ -27,7 +27,7 @@ export function PmSyncPendingIndicator({
 			aria-label={compactLabel ? label : undefined}
 			className={cn(
 				"inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted px-2 py-0.5",
-				"text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground",
+				"text-[10px] font-medium uppercase tracking-wide text-muted-foreground",
 				"motion-safe:animate-pulse",
 				className,
 			)}

@@ -83,6 +83,7 @@ import { OrganizationApiKeysSettings } from "../OrganizationApiKeysSettings";
  */
 const READ_ONLY_SCOPES = new Set([
 	"mcp:read",
+	"browser:read",
 	"projects:read",
 	"agents:read",
 	"agents:stream",
@@ -96,6 +97,7 @@ const READ_ONLY_SCOPES = new Set([
 	// proposal path, which is what a viewer can already do in the Coding
 	// Instructions tab on `INSTRUCTION_READ`.
 	"instructions:write",
+	"kanban:read",
 	"chats:read",
 	"system_health:read",
 	"status_updates:read",
@@ -168,6 +170,12 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 		);
 
 		expect(await screen.findByLabelText("MCP Read")).toBeInTheDocument();
+		expect(
+			await screen.findByLabelText("Browser Read"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByLabelText("Browser Write"),
+		).not.toBeInTheDocument();
 		// A viewer may request the new instructions scope too — it maps to
 		// `INSTRUCTION_READ`, which the org viewer permission set already
 		// carries.
@@ -182,6 +190,8 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 		expect(
 			await screen.findByLabelText("Instructions Write"),
 		).toBeInTheDocument();
+		expect(await screen.findByLabelText("Kanban Read")).toBeInTheDocument();
+		expect(screen.queryByLabelText("Kanban Write")).not.toBeInTheDocument();
 		// Its sibling is withheld, for the opposite reason: publishing without
 		// review needs `INSTRUCTION_CREATE`, which a viewer does not hold, so
 		// the server would refuse the whole request.
@@ -270,9 +280,44 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 		).toBeInTheDocument();
 		expect(screen.getByLabelText("Workflows Write")).toBeInTheDocument();
 		expect(screen.getByLabelText("Frames Write")).toBeInTheDocument();
+		expect(screen.getByLabelText("Browser Write")).toBeInTheDocument();
+		expect(screen.getByLabelText("Kanban Write")).toBeInTheDocument();
 		expect(
 			screen.queryByText(/Your role in this organization is read-only/i),
 		).not.toBeInTheDocument();
+	});
+
+	it("sends a viewer-selected browser read scope", async () => {
+		const user = userEvent.setup();
+		renderSettings();
+		await user.click(
+			screen.getByRole("button", { name: /create api key/i }),
+		);
+		await user.click(await screen.findByLabelText("Browser Read"));
+		await user.type(screen.getByLabelText("Key Name"), "Browser reader");
+		await user.click(screen.getByRole("button", { name: "Create Key" }));
+		await waitFor(() => expect(createApiKeyMock).toHaveBeenCalledTimes(1));
+		expect(createApiKeyMock.mock.calls[0][0].scopes).toEqual([
+			"mcp:read",
+			"browser:read",
+		]);
+	});
+
+	it("sends a member-selected browser write scope", async () => {
+		userRole = "member";
+		const user = userEvent.setup();
+		renderSettings();
+		await user.click(
+			screen.getByRole("button", { name: /create api key/i }),
+		);
+		await user.click(await screen.findByLabelText("Browser Write"));
+		await user.type(screen.getByLabelText("Key Name"), "Browser runner");
+		await user.click(screen.getByRole("button", { name: "Create Key" }));
+		await waitFor(() => expect(createApiKeyMock).toHaveBeenCalledTimes(1));
+		expect(createApiKeyMock.mock.calls[0][0].scopes).toEqual([
+			"mcp:read",
+			"browser:write",
+		]);
 	});
 
 	it("says MCP Write grants every write tool and points to the narrower scopes", async () => {

@@ -99,7 +99,7 @@ export function StoryPriorityControl({
 				queryKey: orpc.projects.stories.get.key(),
 			});
 			queryClient.invalidateQueries({
-				queryKey: orpc.projects.stories.list.key(),
+				queryKey: orpc.projects.stories.board.key(),
 			});
 		},
 	});
@@ -153,7 +153,7 @@ export function StoryPriorityControl({
 							// the item's priority, so the name can't be verb-only.
 							aria-label={`${priorityBandLabel(priority)} — ${t("viewFullHistory")}`}
 							onClick={() => setHistoryOpen(true)}
-							className="inline-flex items-center gap-1 rounded transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="inline-flex items-center gap-1 rounded transition-opacity hover:opacity-80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<PriorityBand
 								priority={priority}
@@ -180,7 +180,7 @@ export function StoryPriorityControl({
 								// the header's one priority-bearing element silent
 								// about what the priority IS.
 								aria-label={`${priorityBandLabel(priority)} — ${t("changePriority")}`}
-								className="inline-flex items-center gap-1 rounded transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								className="inline-flex items-center gap-1 rounded transition-opacity hover:opacity-80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 							>
 								<PriorityBand
 									priority={priority}
@@ -245,7 +245,7 @@ export function StoryPriorityControl({
 										});
 										queryClient.invalidateQueries({
 											queryKey:
-												orpc.projects.stories.list.key(),
+												orpc.projects.stories.board.key(),
 										});
 									}}
 								/>
@@ -258,7 +258,7 @@ export function StoryPriorityControl({
 							setOpen(false);
 							setHistoryOpen(true);
 						}}
-						className="inline-flex items-center gap-1 rounded-sm text-primary-ink text-xs hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						className="inline-flex items-center gap-1 rounded-sm text-primary-ink text-xs hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						<HistoryIcon aria-hidden className="size-3" />
 						{t("viewFullHistory")}

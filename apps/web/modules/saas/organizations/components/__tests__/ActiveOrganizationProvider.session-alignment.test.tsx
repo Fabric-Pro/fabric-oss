@@ -5,17 +5,14 @@
  *
  * Landing on /app/{slug} does not move the session by itself. The post-login
  * hop writes the session row with Prisma; a bare /app load redirects into the
- * first membership and writes nothing. Either way the API can still disagree,
- * because `protectedProcedure` reads the session through Better Auth's signed
- * `session_data` cookie — a five-minute snapshot that a database write cannot
- * touch. Until it expires, `tenantContextMiddleware` builds its tenant context
- * from the organization the caller has left, and any oRPC call that falls back
- * to the session (rather than passing an explicit, URL-derived organization id)
- * resolves against the wrong tenant.
+ * first membership and writes nothing. The API can therefore still disagree:
+ * `tenantContextMiddleware` builds its tenant context from the authoritative
+ * session row, and any oRPC call that falls back to the session (rather than
+ * passing an explicit, URL-derived organization id) resolves against the wrong
+ * tenant until that row is aligned.
  *
- * Only a caller that can set cookies closes that, which a Server Component
- * cannot — so the client does it via the same `setActive` the switcher uses,
- * which refreshes the cookie cache and the row together.
+ * The client closes that through the same validated `setActive` operation the
+ * switcher uses, updating the session row before dependent queries resume.
  *
  * These tests pin that it fires exactly when the two disagree, stays silent
  * when they agree, holds the page back only while the correction is in flight,
@@ -178,8 +175,8 @@ describe("session alignment with the workspace on screen", () => {
 				organizationId: "org-2",
 			});
 		});
-		// The cached session has to follow, or the effect sees a stale value and
-		// fires again on the next render.
+		// The client query's session snapshot has to follow, or the effect sees a
+		// stale value and fires again on the next render.
 		await waitFor(() => {
 			expect(queryClientStub.setQueryData).toHaveBeenCalledWith(
 				["session"],

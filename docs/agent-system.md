@@ -10,6 +10,9 @@ Dynamic agent creation, delegation, and execution on Temporal infrastructure.
 For the incremental chat, governance, knowledge, publication, observability and
 channel roadmap, see [Agent productization](features/agent-productization.md).
 
+For the proposed boundary between durable workflows and fixed request-scoped
+chat adapters, see [Chat runtime execution boundaries](adr/026-chat-runtime-execution-boundaries.md).
+
 ## Agent Type Taxonomy
 
 | Type | Framework Enum | Execution Pattern | Autonomy |

@@ -37,6 +37,7 @@ import { runWithDispatchRequestSizer } from "@repo/utils/dispatch-guard";
 import { Context, heartbeat } from "@temporalio/activity";
 import { CancelledFailure } from "@temporalio/common";
 import { asSchema, type ModelMessage } from "ai";
+import { flushExecutionEvents } from "../../../lib/execution-output-drain";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
 import type { DirectChatUsageLimitRefusal } from "../../../types";
 import type {
@@ -1480,7 +1481,7 @@ async function runAgentIterationRound(
 			// Re-fired on retry so any partially streamed text from the failed
 			// attempt is replaced rather than appended to in the UI.
 			if (input.executionId) {
-				publishExecutionEvent(input.executionId, {
+				await publishExecutionEvent(input.executionId, {
 					event: "execution.iteration_start",
 					data:
 						attempt > 1
@@ -1548,7 +1549,7 @@ async function runAgentIterationRound(
 
 					// Publish text delta via Redis pub/sub for real-time streaming
 					if (input.executionId && part.text) {
-						publishExecutionEvent(input.executionId, {
+						void publishExecutionEvent(input.executionId, {
 							event: "execution.text_delta",
 							data: { text: separator + part.text },
 						});
@@ -1647,6 +1648,7 @@ async function runAgentIterationRound(
 				}
 			}
 
+			await flushExecutionEvents();
 			elapsed = Date.now() - attemptStartTime;
 
 			// A cancel aborted the request: report the activity cancelled
@@ -1802,7 +1804,7 @@ async function runAgentIterationRound(
 				classifyLimitError(streamError || resolveError) ||
 				undefined;
 			if (limitSignal && input.executionId) {
-				publishExecutionEvent(input.executionId, {
+				await publishExecutionEvent(input.executionId, {
 					event: "execution.limit_signal",
 					data: limitSignal,
 				});
@@ -1849,7 +1851,7 @@ async function runAgentIterationRound(
 			);
 			const limitSignal = classifyLimitError(streamError) || undefined;
 			if (limitSignal && input.executionId) {
-				publishExecutionEvent(input.executionId, {
+				await publishExecutionEvent(input.executionId, {
 					event: "execution.limit_signal",
 					data: limitSignal,
 				});
@@ -1935,7 +1937,7 @@ async function runAgentIterationRound(
 		// generic "something went wrong."
 		const limitSignal = classifyLimitError(error) || undefined;
 		if (limitSignal && input.executionId) {
-			publishExecutionEvent(input.executionId, {
+			await publishExecutionEvent(input.executionId, {
 				event: "execution.limit_signal",
 				data: limitSignal,
 			});
@@ -1969,8 +1971,12 @@ async function runAgentIterationRound(
 			usageUnknown: true,
 		};
 	} finally {
-		if (backgroundHeartbeatId !== undefined) {
-			clearInterval(backgroundHeartbeatId);
+		try {
+			await flushExecutionEvents();
+		} finally {
+			if (backgroundHeartbeatId !== undefined) {
+				clearInterval(backgroundHeartbeatId);
+			}
 		}
 	}
 }

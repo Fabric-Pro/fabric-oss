@@ -19,6 +19,7 @@ import {
 } from "@langchain/core/messages";
 import type { AgentSkill } from "@repo/agent-core";
 import { PredictiveToolArgsAccumulator } from "@repo/agent-core/predictive-tool-args";
+import { pickTraceState } from "@repo/agent-core/reasoning-trace";
 import { buildAgentConfigurable } from "@repo/agent-core/services/agent-configurable";
 import {
 	type AgentRuntimeConfig,
@@ -46,6 +47,7 @@ import {
 	PUBLISHING_TOPIC_READABLE,
 	readPublishingTopic,
 } from "./publishing-topic.js";
+import type { AgentState } from "./state";
 import { DEFAULT_RECURSION_LIMIT } from "./utils/index.js";
 
 /**
@@ -1173,6 +1175,9 @@ const { app, start } = createUnifiedServer(
 		// This is critical for the agent to know if it's after a confirmation
 		const stream = await projectDocumentGeneratorGraph.stream(
 			{
+				...pickTraceState<
+					AgentState["toolCallsByTurn"][number][number]
+				>(input.state, input.messages),
 				messages,
 				documentType,
 				// An artifact Proposal takes no project context or rag context
@@ -1250,14 +1255,19 @@ const { app, start } = createUnifiedServer(
 					| undefined,
 			},
 			{
-				// Use both "updates" and "messages" to get node updates AND LLM token streaming
+				// Custom events delimit reply attempts and checked node completion.
 				signal: config?.signal,
-				streamMode: ["updates", "messages"] as const,
+				streamMode: ["updates", "messages", "custom"] as const,
 				// Pass AI provider configuration from CopilotKit
 				configurable: config?.configurable,
 				recursionLimit: DEFAULT_RECURSION_LIMIT,
 			},
 		);
+
+		const streamReplies =
+			!artifactProposal && config?.configurable?.reply_streaming === true;
+		let round = 0;
+		let attemptId = "";
 
 		// Track state for streaming content
 		let lastNodeName = "chat_node";
@@ -1280,7 +1290,44 @@ const { app, start } = createUnifiedServer(
 			// 2. Message chunks: [streamMode, messageChunk]
 			const [streamMode, data] = chunk as [string, unknown];
 
-			if (streamMode === "updates") {
+			if (streamMode === "custom" && streamReplies) {
+				const custom = data as {
+					replyAttempt?: string;
+					replyCompletion?: { retry: boolean; text: string };
+				};
+				if (custom.replyAttempt) {
+					if (attemptId) {
+						yield {
+							nodeName: "chat_node",
+							state: {},
+							reply: {
+								type: "discard",
+								roundId: String(round),
+								attemptId,
+							},
+						};
+					}
+					attemptId = custom.replyAttempt;
+				}
+				if (custom.replyCompletion) {
+					yield {
+						nodeName: "chat_node",
+						state: {},
+						reply: {
+							type: custom.replyCompletion.retry
+								? "discard"
+								: "accept",
+							roundId: String(round),
+							attemptId,
+							text: custom.replyCompletion.text,
+						},
+					};
+					if (!custom.replyCompletion.retry) {
+						round++;
+					}
+					attemptId = "";
+				}
+			} else if (streamMode === "updates") {
 				// Node update - chunk is in format { nodeName: stateUpdate }
 				for (const [nodeName, stateUpdate] of Object.entries(
 					data as Record<string, unknown>,
@@ -1325,7 +1372,50 @@ const { app, start } = createUnifiedServer(
 				// Message chunk - extract tool call arguments for predictive state updates
 				// This enables real-time streaming of document content as it's being generated
 				const messageChunk = data as [unknown, unknown];
-				const [message] = messageChunk;
+				const [message, metadataValue] = messageChunk;
+				const metadata = metadataValue as
+					| Record<string, unknown>
+					| undefined;
+				const replyMessage = message as {
+					id?: string;
+					content?: unknown;
+					constructor?: { name?: string };
+				};
+				if (
+					streamReplies &&
+					metadata?.langgraph_node === "chat_node" &&
+					typeof metadata.reply_attempt === "string" &&
+					metadata.reply_attempt === attemptId &&
+					replyMessage.constructor?.name === "AIMessageChunk"
+				) {
+					// Completed chain messages are reconciliation input, not token deltas.
+					const content = replyMessage.content;
+					const text =
+						typeof content === "string"
+							? content
+							: Array.isArray(content)
+								? content
+										.filter(
+											(block) =>
+												block?.type === "text" &&
+												typeof block.text === "string",
+										)
+										.map((block) => block.text)
+										.join("")
+								: "";
+					if (text) {
+						yield {
+							nodeName: "chat_node",
+							state: {},
+							reply: {
+								type: "delta",
+								roundId: String(round),
+								attemptId,
+								text,
+							},
+						};
+					}
+				}
 
 				// Debug: Log what we receive (first few chunks only)
 				if (streamUpdateCount < 5) {

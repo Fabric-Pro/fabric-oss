@@ -58,7 +58,10 @@ import {
 	showSyncError,
 	showSyncSuccess,
 } from "../../hooks/useAgentConfigPersistence";
-import { resetOrchestratorPreferenceSaveQueueForTests } from "../../lib/orchestrator-preference-save-queue";
+import {
+	enqueueOrchestratorPreferences,
+	resetOrchestratorPreferenceSaveQueueForTests,
+} from "../../lib/orchestrator-preference-save-queue";
 import { useOrchestratorConfig } from "../OrchestratorConfigPanel";
 
 const orgAgentKey =
@@ -73,7 +76,6 @@ const systemAgentIds = [
 	"prompt_enhancer",
 	"api_agent",
 	"data_analyst",
-	"cuga_generalist",
 	"mcp_tool_executor",
 ];
 
@@ -148,6 +150,87 @@ async function settleLoad() {
 }
 
 describe("saved orchestrator agent preferences", () => {
+	it.each([
+		{ queuedAgents: ["cuga_generalist", "data_analyst"] },
+		{ queuedAgents: [] },
+	])(
+		"filters queued retired picks while preserving explicit empty selection %j",
+		async ({ queuedAgents }) => {
+			enqueueOrchestratorPreferences(
+				{ userId: "example-user", organizationId: "example-org" },
+				{ enabledAgentIds: queuedAgents },
+				() => "example-user",
+				new QueryClient(),
+			);
+			const { result } = mountConfig(["example-db-agent"]);
+			await settleLoad();
+			expect(result.current.enabledAgentIds).toEqual(
+				queuedAgents.filter((id) => id !== "cuga_generalist"),
+			);
+		},
+	);
+	it.each(["database", "local"])(
+		"excludes retired SYSTEM picks from effective %s preferences without clearing other settings",
+		async (source) => {
+			const saved = [
+				"cuga_generalist",
+				"data_analyst",
+				"custom-cuga",
+				"template-instance:example-instance",
+			];
+			if (source === "local")
+				localStorage.setItem(orgAgentKey, JSON.stringify(saved));
+			localStorage.setItem(
+				getOrganizationStorageKey(
+					STORAGE_KEYS.PRIORITIZED_AGENTS,
+					"example-org",
+					"example-user",
+				),
+				JSON.stringify(saved),
+			);
+			const { result } = mountConfig(saved);
+			if (source === "local")
+				expect(result.current.enabledAgentIds).not.toContain(
+					"cuga_generalist",
+				);
+			await settleLoad();
+			expect(result.current.enabledAgentIds).toEqual(saved.slice(1));
+			expect(result.current.prioritizedAgentIds).toEqual(saved.slice(1));
+			expect(result.current.enabledWorkspaceIds).toEqual([
+				"example-workspace",
+			]);
+			expect(result.current.enabledMcpConfigIds).toContain("example-mcp");
+		},
+	);
+	it("rejects a legacy alias with an unknown registry scope", async () => {
+		registry.agents = [
+			{
+				agentId: "cuga_generalist",
+				scope: "UNKNOWN",
+				framework: "A2A",
+				status: "ACTIVE",
+			},
+		];
+		const { result } = mountConfig(["cuga_generalist", "data_analyst"]);
+		await settleLoad();
+		expect(result.current.enabledAgentIds).toEqual(["data_analyst"]);
+	});
+	it("preserves a currently registered organization agent that owns a legacy alias", async () => {
+		registry.agents = [
+			{
+				agentId: "cuga_generalist",
+				scope: "ORGANIZATION",
+				framework: "A2A",
+				status: "ACTIVE",
+			},
+		];
+		const { result } = mountConfig(["cuga_generalist", "data_analyst"]);
+		await settleLoad();
+		expect(result.current.enabledAgentIds).toEqual([
+			"cuga_generalist",
+			"data_analyst",
+		]);
+	});
 	it("hydrates saved lists on remount using the same query cache without another save", async () => {
 		const first = mountConfig(["example-old-agent"]);
 		await settleLoad();

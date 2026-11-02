@@ -86,7 +86,7 @@ export function OrganizationBrandColorForm() {
 		return null;
 	}
 
-	const currentColor = brandColorData || "red";
+	const currentColor = brandColorData ?? null;
 
 	return (
 		<SettingsItem
@@ -102,6 +102,7 @@ export function OrganizationBrandColorForm() {
 						<TooltipTrigger asChild>
 							<button
 								type="button"
+								aria-pressed={currentColor === color.id}
 								onClick={() =>
 									updateBrandColorMutation.mutate(color.id)
 								}

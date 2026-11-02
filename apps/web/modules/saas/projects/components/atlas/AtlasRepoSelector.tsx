@@ -74,7 +74,7 @@ export function AtlasRepoSelector({
 									{repo.repositoryName}
 								</span>
 								{repo.isDefault && (
-									<span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+									<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
 										{t("default")}
 									</span>
 								)}

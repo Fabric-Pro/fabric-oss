@@ -16,10 +16,12 @@ import {
 	getAgentDeploymentById,
 	incrementExecutionCounts,
 	incrementExecutionQuota,
+	isDeploymentOwnerCurrentMember,
 	type Prisma,
 	updateCurrentExecutions,
 	updateExecutionStatus,
 } from "@repo/database";
+import { ApplicationFailure } from "@temporalio/common";
 import { getTemporalClient } from "../client";
 
 // =============================================================================
@@ -137,6 +139,18 @@ export async function startAgentExecution(
 		triggerId,
 		timeoutMs,
 	} = input;
+	// Refuse before creating an execution row. The input tenant is only used to
+	// locate the deployment; membership is checked against the stored owner.
+	const deployment = await getAgentDeploymentById(deploymentId, {
+		userId,
+		organizationId,
+	});
+	if (!deployment || !(await isDeploymentOwnerCurrentMember(deployment))) {
+		throw ApplicationFailure.nonRetryable(
+			"Deployment unavailable",
+			"AGENT_DEPLOYMENT_OWNER_NOT_MEMBER",
+		);
+	}
 
 	try {
 		// Create execution record in database
@@ -168,11 +182,6 @@ export async function startAgentExecution(
 		const client = await getTemporalClient();
 
 		// Get the deployment's task queue and instance config for workflow routing
-		const deployment = await getAgentDeploymentById(deploymentId, {
-			userId,
-			organizationId,
-		});
-
 		// Use the "agents" task queue which the worker actually polls
 		// The deployment.taskQueue was using sharded queues (agents-org-shared-shard-X)
 		// that no worker was polling, causing workflows to hang indefinitely

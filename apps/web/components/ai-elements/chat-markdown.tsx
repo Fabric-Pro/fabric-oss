@@ -170,7 +170,7 @@ export const chatMarkdownComponents = {
 		</h6>
 	),
 	table: ({ children, ...props }: any) => (
-		<div className="my-4 overflow-x-auto rounded-xl border border-border/60 bg-background/50 shadow-sm">
+		<div className="my-4 overflow-x-auto rounded-lg border border-border/60 bg-background/50 shadow-sm">
 			<table
 				style={{ color: "inherit" }}
 				className="w-full min-w-[32rem] border-collapse text-left text-sm"
@@ -200,7 +200,7 @@ export const chatMarkdownComponents = {
 	),
 	th: ({ children, ...props }: any) => (
 		<th
-			className="px-4 py-2.5 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+			className="px-4 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wide text-muted-foreground"
 			{...props}
 		>
 			{children}
@@ -247,7 +247,7 @@ export const chatMarkdownComponents = {
 
 		if (isMermaidBlock(language, code)) {
 			return (
-				<div className="my-4 overflow-hidden rounded-2xl border border-border/60 bg-background/60">
+				<div className="my-4 overflow-hidden rounded-lg border border-border/60 bg-background/60">
 					<Mermaid chart={code} />
 				</div>
 			);

@@ -48,6 +48,12 @@ const m = vi.hoisted(() => ({
 	getConversationTurnOwnerForExecution: vi.fn(),
 	getConversationTurnByKey: vi.fn(),
 	continuationSnapshot: vi.fn(),
+	replayRead: vi.fn(),
+	redisMessage: undefined as
+		| undefined
+		| ((channel: string, message: string) => void),
+	limitMetric: vi.fn(),
+	resolveChatMediaAccessBatch: vi.fn(),
 }));
 
 vi.mock("@saas/auth/lib/server", () => ({
@@ -64,7 +70,25 @@ vi.mock("@repo/agent-core/backend", () => ({
 	getDefaultEnabledMcpConfigIds: vi.fn(async () => []),
 }));
 vi.mock("@repo/observability", () => ({
-	metricsTracker: { trackAiLimitSignal: vi.fn() },
+	metricsTracker: { trackAiLimitSignal: m.limitMetric },
+}));
+vi.mock("ioredis", () => ({
+	default: class {
+		on(
+			event: string,
+			listener: (channel: string, message: string) => void,
+		) {
+			if (event === "message") {
+				m.redisMessage = listener;
+			}
+			return this;
+		}
+		async connect() {}
+		async subscribe() {}
+		unsubscribe() {}
+		quit() {}
+		disconnect() {}
+	},
 }));
 vi.mock("@repo/payments", () => ({
 	AiUsageLimitExceededError: class AiUsageLimitExceededError extends Error {},
@@ -74,6 +98,9 @@ vi.mock("@repo/temporal", () => ({
 }));
 vi.mock("@repo/database", () => ({
 	CARRIED_OVER_MARKER_PREFIX: "[carried-over]",
+	readConversationTurnEvents: m.replayRead,
+	hasConversationTurnReplayGap: vi.fn().mockResolvedValue(false),
+	ChatEventReplayError: class ChatEventReplayError extends Error {},
 	getConversationTurnContinuationSnapshot: (...args: unknown[]) =>
 		m.continuationSnapshot(...args),
 	db: {
@@ -85,6 +112,8 @@ vi.mock("@repo/database", () => ({
 	getConversationProject: vi.fn(async () => null),
 	hasProjectAccess: vi.fn(async () => true),
 	hasOrganizationTie: (...args: unknown[]) => m.hasOrganizationTie(...args),
+	resolveChatMediaAccessBatch: (...args: unknown[]) =>
+		m.resolveChatMediaAccessBatch(...args),
 	admitConversationTurn: (...args: unknown[]) =>
 		m.admitConversationTurn(...args),
 	// No multi-agent turn in these conversations (see multi-agent-admission.test.ts).
@@ -168,6 +197,7 @@ function completedHandle(
 	return {
 		workflowId,
 		describe: vi.fn(async () => ({
+			runId: "example-run",
 			status: { name: "COMPLETED" },
 			memo: { userId: USER_ID, organizationId: ORG_ID },
 		})),
@@ -202,6 +232,7 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		m.replayRead.mockReset().mockResolvedValue([]);
 		delete process.env.CACHE_HOST;
 		delete process.env.REDIS_URL;
 		m.getSession.mockResolvedValue({
@@ -212,6 +243,10 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 			trackUsage: m.trackUsage,
 		});
 		m.hasOrganizationTie.mockResolvedValue(true);
+		m.resolveChatMediaAccessBatch.mockImplementation(
+			async ({ storageKeys }: { storageKeys: string[] }) =>
+				new Map(storageKeys.map((storageKey) => [storageKey, "allow"])),
+		);
 		m.memberFindFirst.mockResolvedValue({ id: "member-1" });
 		m.abandonConversationTurnStart.mockResolvedValue(true);
 		m.finalizeOrphanedConversationTurn.mockResolvedValue({
@@ -254,6 +289,75 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		m.getHandle.mockImplementation((id: string) => completedHandle(id));
 		m.getTemporalClient.mockResolvedValue({
 			workflow: { start: m.start, getHandle: m.getHandle },
+		});
+	});
+
+	it("refuses another member's private attached image before admitting or starting the turn", async () => {
+		const storageKey = `${ORG_ID}/chat-images/1794200000000-abc123xy.png`;
+		m.resolveChatMediaAccessBatch.mockResolvedValueOnce(
+			new Map([[storageKey, "deny"]]),
+		);
+
+		const response = await post(
+			newTurnBody({
+				attachedImageUrls: [storageKey],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		expect(m.resolveChatMediaAccessBatch).toHaveBeenCalledWith({
+			storageKeys: [storageKey],
+			userId: USER_ID,
+			organizationId: ORG_ID,
+		});
+		expect(m.admitConversationTurn).not.toHaveBeenCalled();
+		expect(m.start).not.toHaveBeenCalled();
+	});
+
+	it("refuses an attached image when the batch omits its decision", async () => {
+		m.resolveChatMediaAccessBatch.mockResolvedValueOnce(new Map());
+
+		const response = await post(
+			newTurnBody({
+				attachedImageUrls: [
+					`${ORG_ID}/chat-images/1794200000000-abc123xy.png`,
+				],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		expect(m.admitConversationTurn).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["a non-array", "example-path"],
+		["a non-string entry", [{}]],
+		["an empty path", [""]],
+	])("refuses attachedImageUrls containing %s", async (_case, value) => {
+		const response = await post(newTurnBody({ attachedImageUrls: value }));
+
+		expect(response.status).toBe(400);
+		expect(m.resolveChatMediaAccessBatch).not.toHaveBeenCalled();
+		expect(m.admitConversationTurn).not.toHaveBeenCalled();
+	});
+
+	it("admits more than five accessible attached images through one batched decision", async () => {
+		const storageKeys = Array.from(
+			{ length: 6 },
+			(_, index) =>
+				`${ORG_ID}/chat-images/179420000000${index}-image${index}.png`,
+		);
+
+		const response = await post(
+			newTurnBody({ attachedImageUrls: storageKeys }),
+		);
+
+		expect(response.status).toBe(200);
+		expect(m.resolveChatMediaAccessBatch).toHaveBeenCalledTimes(1);
+		expect(m.resolveChatMediaAccessBatch).toHaveBeenCalledWith({
+			storageKeys,
+			userId: USER_ID,
+			organizationId: ORG_ID,
 		});
 	});
 
@@ -792,6 +896,38 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		expect(m.finalizeConversationTurn).not.toHaveBeenCalled();
 	});
 
+	it.each(["research", "direct"])(
+		"refuses an existing %s run key before following it as Orchestrator",
+		async (executionMode) => {
+			m.admitConversationTurn.mockResolvedValue({
+				outcome: "existing",
+				turn: turnRow({ executionMode, status: "COMPLETED" }),
+			});
+			const response = await post(newTurnBody());
+			expect(response.status).toBe(422);
+			await expect(response.json()).resolves.toMatchObject({
+				code: "RUN_ID_REUSED",
+			});
+			expect(m.start).not.toHaveBeenCalled();
+			expect(m.getHandle).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a research conflict without settling it as an Orchestrator turn", async () => {
+		m.admitConversationTurn.mockResolvedValueOnce({
+			outcome: "conflict",
+			turn: turnRow({ executionMode: "research", status: "ACTIVE" }),
+		});
+		const response = await post(newTurnBody());
+		expect(response.status).toBe(409);
+		await expect(response.json()).resolves.toMatchObject({
+			code: "TURN_IN_PROGRESS",
+		});
+		expect(m.getHandle).not.toHaveBeenCalled();
+		expect(m.finalizeConversationTurn).not.toHaveBeenCalled();
+		expect(m.start).not.toHaveBeenCalled();
+	});
+
 	it("reconciles a conflicting turn whose workflow is gone, then admits the new turn", async () => {
 		m.admitConversationTurn
 			.mockResolvedValueOnce({
@@ -989,26 +1125,378 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		expect(events.map((e) => e.type)).not.toContain("error");
 	});
 
-	it("returns the stored result when reattaching to a turn that already ended", async () => {
+	it("rejects malformed replay cursors before opening a stream", async () => {
+		const response = await post({
+			executionId: EXEC_A,
+			eventReplay: true,
+			afterEvent: {
+				turnId: "example-turn",
+				runId: "example-run",
+				sequence: "-1",
+			},
+		});
+		expect(response.status).toBe(400);
+		expect(m.replayRead).not.toHaveBeenCalled();
+	});
+	it.each([false, true])(
+		"drains the terminal tail and retries transient journal reads (transient=%s)",
+		async (transient) => {
+			let terminal = false;
+			let readCount = 0;
+			const handle = {
+				workflowId: EXEC_A,
+				describe: vi.fn(async () => ({
+					runId: "example-run",
+					status: { name: terminal ? "COMPLETED" : "RUNNING" },
+					memo: { userId: USER_ID, organizationId: ORG_ID },
+				})),
+				query: vi.fn(async (name: string) =>
+					name === "chatReplayStatus"
+						? { version: 1, unavailable: false }
+						: {},
+				),
+				result: vi.fn(async () => ({
+					status: "completed",
+					response: "Final",
+					toolCalls: [],
+					totalDurationMs: 1,
+				})),
+			};
+			m.getHandle.mockReturnValue(handle);
+			m.getConversationTurnForExecution.mockResolvedValue(
+				turnRow({ executionId: EXEC_A, status: "ACTIVE" }),
+			);
+			m.replayRead.mockImplementation(async () => {
+				readCount++;
+				if (transient && readCount === 1) {
+					terminal = true;
+					throw new Error("Connection reset");
+				}
+				if (readCount === (transient ? 2 : 1)) {
+					terminal = true;
+					return [];
+				}
+				if (readCount === (transient ? 3 : 2)) {
+					return [
+						{
+							event: "execution.text_delta",
+							data: { text: "Tail" },
+							cursor: {
+								turnId: turnRow().id,
+								runId: "example-run",
+								sequence: "1",
+							},
+						},
+					];
+				}
+				return [];
+			});
+			const events = await readEvents(
+				await post({
+					executionId: EXEC_A,
+					organizationId: ORG_ID,
+					eventReplay: true,
+				}),
+			);
+			const tail = events.findIndex(
+				(event) =>
+					event.type === "text_delta" && event.content === "Tail",
+			);
+			const completed = events.findIndex(
+				(event) => event.type === "completed",
+			);
+			if (transient) {
+				expect(tail).toBe(-1);
+				expect(
+					events.some((event) => event.type === "replay_unavailable"),
+				).toBe(true);
+			} else {
+				expect(tail).toBeGreaterThan(-1);
+			}
+			expect(completed).toBeGreaterThan(tail);
+			expect(events.some((event) => event.type === "error")).toBe(false);
+		},
+	);
+	it("uses cursor-bearing Redis events to wake replay while workflow polling is blocked, and retains limit metrics", async () => {
+		process.env.REDIS_URL = "redis://127.0.0.1:6379";
+		let terminal = false;
+		let pollingBlocked = false;
+		let wokeWhileBlocked = false;
+		let releasePoll: () => void = () => {};
+		const eventCursor = {
+			turnId: turnRow().id,
+			runId: "example-run",
+			sequence: "1",
+		};
+		const handle = {
+			workflowId: EXEC_A,
+			describe: async () => ({
+				runId: "example-run",
+				status: { name: terminal ? "COMPLETED" : "RUNNING" },
+				memo: { userId: USER_ID, organizationId: ORG_ID },
+			}),
+			query: async (name: string) => {
+				if (name === "chatReplayStatus") {
+					return { version: 1, unavailable: false };
+				}
+				if (name === "progress" && !terminal) {
+					pollingBlocked = true;
+					const wait = new Promise<void>((resolve) => {
+						releasePoll = resolve;
+					});
+					m.redisMessage?.(
+						"example",
+						JSON.stringify({
+							event: "execution.limit_signal",
+							data: { kind: "token_budget", provider: "example" },
+							eventCursor,
+						}),
+					);
+					await wait;
+					pollingBlocked = false;
+				}
+				return {};
+			},
+			result: async () => ({
+				status: "completed",
+				response: "Final",
+				toolCalls: [],
+				totalDurationMs: 1,
+			}),
+		};
+		m.getHandle.mockReturnValue(handle);
 		m.getConversationTurnForExecution.mockResolvedValue(
-			turnRow({
-				status: "CANCELLED",
+			turnRow({ executionId: EXEC_A, status: "ACTIVE" }),
+		);
+		m.replayRead.mockImplementation(async () => {
+			if (pollingBlocked) {
+				wokeWhileBlocked = true;
+				terminal = true;
+				releasePoll();
+				return [
+					{
+						event: "execution.text_delta",
+						data: { text: "Tail" },
+						cursor: eventCursor,
+					},
+				];
+			}
+			return [];
+		});
+		const events = await readEvents(
+			await post({
 				executionId: EXEC_A,
-				responseText: "partial answer",
-				terminalAt: new Date(),
+				organizationId: ORG_ID,
+				eventReplay: true,
 			}),
 		);
-
-		const events = await readEvents(
-			await post({ executionId: EXEC_A, organizationId: ORG_ID }),
+		expect(wokeWhileBlocked).toBe(true);
+		expect(
+			events.filter((event) => event.type === "text_delta"),
+		).toHaveLength(1);
+		expect(m.limitMetric).toHaveBeenCalledExactlyOnceWith(
+			"token_budget",
+			"example",
 		);
-
-		expect(m.getHandle).not.toHaveBeenCalled();
-		expect(events.find((e) => e.type === "completed")).toMatchObject({
-			status: "cancelled",
-			response: "partial answer",
-		});
 	});
+	it("does not use terminal-result fallback after access is revoked during replay", async () => {
+		let now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			m.getHandle.mockReturnValue({
+				workflowId: EXEC_A,
+				describe: async () => ({
+					runId: "example-run",
+					status: { name: "COMPLETED" },
+					memo: { userId: USER_ID, organizationId: ORG_ID },
+				}),
+				query: async () => ({ version: 1, unavailable: false }),
+				result: async () => ({
+					status: "completed",
+					response: "Must not leak",
+					toolCalls: [],
+				}),
+			});
+			m.getConversationTurnForExecution.mockResolvedValue(
+				turnRow({ executionId: EXEC_A, status: "ACTIVE" }),
+			);
+			m.replayRead.mockImplementation(async () => {
+				now += 6000;
+				m.memberFindFirst.mockResolvedValue(null);
+				return [
+					{
+						event: "execution.text_delta",
+						data: { text: "Must not leak" },
+						cursor: {
+							turnId: turnRow().id,
+							runId: "example-run",
+							sequence: "1",
+						},
+					},
+				];
+			});
+			const events = await readEvents(
+				await post({
+					executionId: EXEC_A,
+					organizationId: ORG_ID,
+					eventReplay: true,
+				}),
+			);
+			expect(
+				events.some(
+					(event) =>
+						event.type === "completed" ||
+						event.type === "text_delta",
+				),
+			).toBe(false);
+			expect(events.some((event) => event.type === "error")).toBe(true);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+	it("returns an authorized final result when the journal has a gap", async () => {
+		const { ChatEventReplayError } = await import("@repo/database");
+		m.getHandle.mockReturnValue(completedHandle(EXEC_A));
+		m.getConversationTurnForExecution.mockResolvedValue(
+			turnRow({ executionId: EXEC_A, status: "ACTIVE" }),
+		);
+		m.replayRead.mockRejectedValue(
+			new ChatEventReplayError("Replay incomplete"),
+		);
+		const events = await readEvents(
+			await post({
+				executionId: EXEC_A,
+				organizationId: ORG_ID,
+				eventReplay: true,
+			}),
+		);
+		expect(
+			events.find((event) => event.type === "completed")?.response,
+		).toBe("done");
+		expect(events.some((event) => event.type === "error")).toBe(false);
+	});
+	it("continues live on a replay-unavailable notification", async () => {
+		let terminal = false;
+		process.env.REDIS_URL = "redis://127.0.0.1:6379";
+		m.getConversationTurnForExecution.mockResolvedValue(
+			turnRow({ executionId: EXEC_A, status: "ACTIVE" }),
+		);
+		m.getHandle.mockReturnValue({
+			workflowId: EXEC_A,
+			describe: async () => ({
+				runId: "example-run",
+				status: { name: terminal ? "COMPLETED" : "RUNNING" },
+				memo: { userId: USER_ID, organizationId: ORG_ID },
+			}),
+			result: async () => ({ status: "completed", response: "Final" }),
+			query: async () => {
+				terminal = true;
+				m.redisMessage?.(
+					"example",
+					JSON.stringify({
+						event: "execution.text_delta",
+						data: { text: "Unsafe tail" },
+						replayUnavailable: true,
+					}),
+				);
+				return {};
+			},
+		});
+		const events = await readEvents(
+			await post({
+				executionId: EXEC_A,
+				organizationId: ORG_ID,
+				eventReplay: true,
+			}),
+		);
+		expect(events.some((event) => event.type === "error")).toBe(false);
+		expect(
+			events.some(
+				(event) =>
+					event.type === "text_delta" || event.type === "completed",
+			),
+		).toBe(true);
+	});
+	it("degrades replay when the authorized physical run changes", async () => {
+		let now = Date.now();
+		let runId = "example-run";
+		let terminal = false;
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			m.getHandle.mockReturnValue({
+				workflowId: EXEC_A,
+				describe: async () => ({
+					runId,
+					status: { name: terminal ? "COMPLETED" : "RUNNING" },
+					memo: { userId: USER_ID, organizationId: ORG_ID },
+				}),
+				result: async () => ({
+					status: "completed",
+					response: "Final",
+				}),
+				query: async () => ({}),
+			});
+			m.getConversationTurnForExecution.mockResolvedValue(
+				turnRow({ executionId: EXEC_A, status: "ACTIVE" }),
+			);
+			m.replayRead.mockImplementation(async () => {
+				now += 6000;
+				runId = "example-other-run";
+				terminal = true;
+				return [];
+			});
+			const events = await readEvents(
+				await post({
+					executionId: EXEC_A,
+					organizationId: ORG_ID,
+					eventReplay: true,
+				}),
+			);
+			expect(m.replayRead.mock.calls[0][0].scope.runId).toBe(
+				"example-run",
+			);
+			expect(events.some((event) => event.type === "error")).toBe(false);
+			expect(
+				events.some((event) => event.type === "replay_unavailable"),
+			).toBe(true);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+	it.each([false, true])(
+		"returns the stored result when reattaching to a turn that already ended (replay=%s)",
+		async (eventReplay) => {
+			m.getConversationTurnForExecution.mockResolvedValue(
+				turnRow({
+					status: "CANCELLED",
+					executionId: EXEC_A,
+					responseText: "partial answer",
+					terminalAt: new Date(),
+				}),
+			);
+
+			const events = await readEvents(
+				await post({
+					executionId: EXEC_A,
+					organizationId: ORG_ID,
+					eventReplay,
+					afterEvent: eventReplay
+						? {
+								turnId: "example-turn",
+								runId: "example-run",
+								sequence: "1",
+							}
+						: undefined,
+				}),
+			);
+
+			expect(m.getHandle).not.toHaveBeenCalled();
+			expect(events.find((e) => e.type === "completed")).toMatchObject({
+				status: "cancelled",
+				response: "partial answer",
+			});
+		},
+	);
 
 	it.each([
 		{ version: 1, kind: "time_limit", used: 2700, limit: 2700 },

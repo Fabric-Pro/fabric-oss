@@ -246,6 +246,23 @@ describe("parent-scoped RLS policy SQL", () => {
 });
 
 describe("getParentScopedFilter (tenant-db extension)", () => {
+	it("keeps remote server queries tenant-filtered when the actor is also an external project guest", async () => {
+		const ctx = createOrganizationContext("example-org", "example-user");
+		ctx.allowedProjectIds.push("example-invited-project");
+		await runWithTenantContext(ctx, async () => {
+			expect(getParentScopedFilter("ProjectRemoteAgentServer")).toEqual({
+				AND: [
+					{
+						OR: [
+							{ project: { organizationId: "example-org" } },
+							{ projectId: { in: ["example-invited-project"] } },
+						],
+					},
+					{ OR: [{ userId: "example-user" }, { scope: "TEAM" }] },
+				],
+			});
+		});
+	});
 	it("returns null for models that are not parent-scoped", async () => {
 		await runWithTenantContext(
 			createPersonalContext("user-1"),

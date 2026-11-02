@@ -75,7 +75,7 @@ export function JobHubPanel({ open, onOpenChange }: Props) {
 					<span className="app-editorial-label">
 						{t("sectionLabel")}
 					</span>
-					<SheetTitle className="font-serif font-normal text-2xl">
+					<SheetTitle className="font-semibold text-2xl">
 						{t("title")}
 					</SheetTitle>
 					<SheetDescription>{t("description")}</SheetDescription>
@@ -117,7 +117,7 @@ export function JobHubPanel({ open, onOpenChange }: Props) {
 				</div>
 
 				{data?.retentionDays ? (
-					<p className="mt-4 border-t border-border pt-3 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+					<p className="mt-4 border-t border-border pt-3 text-[10px] uppercase tracking-wide text-muted-foreground">
 						{t("retentionNote", { days: data.retentionDays })}
 					</p>
 				) : null}

@@ -300,7 +300,7 @@ export function IncidentTimelineList() {
 				<div className="flex flex-wrap items-center gap-2">
 					<h2
 						id="incident-timeline-heading"
-						className="font-serif text-2xl font-normal tracking-tight text-foreground/95"
+						className="text-2xl font-semibold tracking-tight text-foreground/95"
 					>
 						Incident history
 					</h2>
@@ -562,7 +562,7 @@ function TimelineEntryCard({
 					onClick={onToggle}
 					aria-expanded={expanded}
 					aria-controls={panelId}
-					className="flex w-full items-start gap-3 rounded-md p-4 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+					className="flex w-full items-start gap-3 rounded-md p-4 text-left transition-colors hover:bg-accent/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40"
 				>
 					<span
 						aria-hidden="true"
@@ -690,7 +690,7 @@ function EntryEventTimeline({ entry }: { entry: TimelineEntry }) {
 		<div className="space-y-3">
 			{/* Summary line — gives admins a one-glance "is there anything
 			 * worth reading here?" before scanning the full list. */}
-			<p className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+			<p className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
 				<span>Event history</span>
 				<span aria-hidden="true">·</span>
 				<span>{events.length} total</span>
@@ -828,7 +828,7 @@ function FilterChip({
 					onClick={onClick}
 					aria-pressed={active}
 					className={cn(
-						"inline-flex h-7 items-center gap-1.5 rounded-md border px-3 text-xs uppercase tracking-[0.15em] transition-colors",
+						"inline-flex h-7 items-center gap-1.5 rounded-md border px-3 text-xs uppercase tracking-wide transition-colors",
 						active
 							? "border-primary/60 bg-primary/10 text-foreground"
 							: "border-border/60 bg-card text-muted-foreground hover:border-border",

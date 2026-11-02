@@ -847,7 +847,7 @@ export function StakeholderEmailPanel({
 					</p>
 				</>
 			) : (
-				<div className="rounded-xl border border-border bg-muted/40 p-4">
+				<div className="rounded-lg border border-border bg-muted/40 p-4">
 					<p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
 						{working.body}
 					</p>
@@ -893,7 +893,7 @@ export function StakeholderEmailPanel({
 				// expensively. The other four states get no banner: the email's
 				// own prose carries them, and a warning on every draft is a
 				// warning nobody reads.
-				<section className="space-y-1 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
+				<section className="space-y-1 rounded-lg border border-highlight/40 bg-highlight/10 p-4">
 					<h3 className="publishing-label">
 						Release status not confirmed
 					</h3>
@@ -925,7 +925,7 @@ export function StakeholderEmailPanel({
 							{OTHER_VERSION_NOTE}
 						</p>
 					) : null}
-					<dl className="space-y-3 rounded-xl border border-border bg-card p-4 text-sm">
+					<dl className="space-y-3 rounded-lg border border-border bg-card p-4 text-sm">
 						<div className="space-y-0.5">
 							<dt className="font-medium">Release status</dt>
 							<dd className="text-muted-foreground leading-relaxed">
@@ -1124,17 +1124,13 @@ export function StakeholderEmailPanel({
 			) : null}
 
 			{doc ? (
-				<>
-					{safetyDoc?.safetyNote ? (
-						<GeneralizationNotes
-							heading="What the draft wrote around"
-							note={safetyDoc.safetyNote}
-							describesAnotherVersion={
-								noteDescribesAnotherVersion
-							}
-						/>
-					) : null}
-				</>
+				safetyDoc?.safetyNote ? (
+					<GeneralizationNotes
+						heading="What the draft wrote around"
+						note={safetyDoc.safetyNote}
+						describesAnotherVersion={noteDescribesAnotherVersion}
+					/>
+				) : null
 			) : !isGenerating &&
 				attempt?.status !== "FAILED" &&
 				!working?.hasBody ? (

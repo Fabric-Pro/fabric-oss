@@ -98,3 +98,5 @@ export function classifyTemporalClientError(
 	// happened; anything else is a local, definite failure.
 	return sawServiceError ? "transient" : "definite";
 }
+
+export { QueryNotRegisteredError } from "@temporalio/client";

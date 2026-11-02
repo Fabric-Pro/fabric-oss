@@ -57,6 +57,7 @@ vi.mock("../../../lib/validate-connections", async (importOriginal) => ({
 }));
 vi.mock("../../../../agent-deployments/lib/sync-triggers", () => ({
 	syncDeploymentTriggers: vi.fn(),
+	validateSlackTriggerConfigs: vi.fn(),
 }));
 vi.mock("../../../../../orpc/procedures", async (importOriginal) => {
 	const actual =

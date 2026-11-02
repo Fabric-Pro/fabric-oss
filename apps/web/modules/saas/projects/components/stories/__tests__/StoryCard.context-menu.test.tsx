@@ -65,11 +65,20 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						}),
 					},
 				},
-				list: {
+				board: {
 					queryKey: () => ["stories-list"],
 					key: () => ["stories-list"],
 				},
 				get: {
+					queryOptions: (o: { input: unknown }) => ({
+						queryKey: ["stories-get", o.input],
+						queryFn: async () => ({
+							story: {
+								description:
+									"Fabric-side description with extra local detail.",
+							},
+						}),
+					}),
 					queryKey: () => ["stories-get"],
 					key: () => ["stories-get"],
 				},

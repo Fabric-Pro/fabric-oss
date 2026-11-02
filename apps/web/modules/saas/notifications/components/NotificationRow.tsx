@@ -128,7 +128,7 @@ export function NotificationRow({
 						{notification.snippet}
 					</span>
 				) : null}
-				<span className="mt-1 block text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70">
+				<span className="mt-1 block text-[10px] uppercase tracking-wide text-muted-foreground/70">
 					{formatDistanceToNow(created, { addSuffix: true })}
 				</span>
 			</span>
@@ -139,7 +139,7 @@ export function NotificationRow({
 	);
 
 	const baseClass =
-		"group flex items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:bg-muted/40";
+		"group flex items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-hidden focus-visible:bg-muted/40";
 
 	// Archived rows are not actionable — they render as a static row so the
 	// nested Restore button doesn't violate the "no button-in-button" rule.

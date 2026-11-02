@@ -106,6 +106,8 @@ export interface ScanRecurringErrorsResult {
 	grouped: number;
 	notedOnStory: number;
 	suppressed: number;
+	platformNoiseSetAside?: number;
+	platformNoiseByRule?: Record<string, number>;
 	failures: number;
 }
 
@@ -120,6 +122,8 @@ interface ScanContext extends ScanRecurringErrorsInput {
 	similarityThreshold: number;
 	scannedAt: Date;
 	errors: string[];
+	platformNoiseSetAside?: number;
+	platformNoiseByRule?: Record<string, number>;
 	/** Occurrences to note on each open bug, written once when the scan ends. */
 	storyNotes: Map<
 		string,
@@ -562,13 +566,14 @@ async function scanLogs(
 		if (!source) {
 			return { configured: false, groups: 0 };
 		}
-		groups = mergeErrorGroups(
-			await source.summarize({
-				lookbackMinutes: ctx.windowHours * 60,
-				minOccurrences: ctx.threshold,
-				maxGroups: MAX_GROUPS_PER_SCAN,
-			}),
-		)
+		const rawGroups = await source.summarize({
+			lookbackMinutes: ctx.windowHours * 60,
+			minOccurrences: ctx.threshold,
+			maxGroups: MAX_GROUPS_PER_SCAN,
+		});
+		ctx.platformNoiseByRule = rawGroups.platformNoiseByRule ?? {};
+		ctx.platformNoiseSetAside = rawGroups.platformNoiseSetAside ?? 0;
+		groups = mergeErrorGroups(rawGroups)
 			// Merging can only raise a count, but the platform filter is not
 			// trusted to have applied the threshold: below it, nothing happens.
 			.filter((group) => group.occurrences >= ctx.threshold)
@@ -748,6 +753,8 @@ async function scan(
 		projectId: input.projectId,
 		logSourceConfigured: logs.configured,
 		groups: logs.groups,
+		platformNoiseByRule: ctx.platformNoiseByRule ?? {},
+		platformNoiseSetAside: ctx.platformNoiseSetAside ?? 0,
 		clusters,
 		failures: ctx.errors.length,
 		...tally,
@@ -756,6 +763,8 @@ async function scan(
 		status: ctx.errors.length > 0 ? "completed-with-errors" : "completed",
 		logSourceConfigured: logs.configured,
 		groupsAboveThreshold: logs.groups,
+		platformNoiseByRule: ctx.platformNoiseByRule ?? {},
+		platformNoiseSetAside: ctx.platformNoiseSetAside ?? 0,
 		clusters,
 		failures: ctx.errors.length,
 		...tally,

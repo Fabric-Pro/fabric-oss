@@ -118,7 +118,7 @@ export function RoadmapSortControl({
 				</TooltipContent>
 			</Tooltip>
 			<PopoverContent align="end" className="w-60 p-2">
-				<p className="mb-1.5 px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+				<p className="mb-1.5 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 					{t(mode === "plain" ? "sortAll" : "sortLanes")}
 				</p>
 				<div className="space-y-0.5">

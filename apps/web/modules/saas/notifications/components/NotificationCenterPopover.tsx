@@ -47,7 +47,7 @@ export function NotificationCenterPopover() {
 					<p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
 						{t("sectionLabel")}
 					</p>
-					<h2 className="font-serif text-lg leading-tight text-foreground">
+					<h2 className="font-semibold text-lg leading-tight text-foreground">
 						{t("title")}
 					</h2>
 				</div>

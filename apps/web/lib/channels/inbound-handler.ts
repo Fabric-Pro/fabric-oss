@@ -8,9 +8,12 @@
  * No webhook reconfiguration required for existing Slack installs.
  */
 
-import { db } from "@repo/database";
+import { db, isDeploymentOwnerCurrentMember } from "@repo/database";
 import { channelRegistry } from "@repo/integrations";
-import { addSlackReaction } from "@repo/integrations/slack";
+import {
+	addSlackReaction,
+	getSlackCredentials,
+} from "@repo/integrations/slack";
 import { getTemporalClient } from "@repo/temporal";
 import { type NextRequest, NextResponse } from "next/server";
 import { fanoutSlackMonitorEvent } from "./slack-monitor-fanout";
@@ -88,6 +91,11 @@ export async function handleChannelInbound(
 				: message.channelId;
 		})();
 	}
+	const validSlackIds =
+		channel !== "slack" ||
+		(/^[A-Z0-9]+$/.test(slackTeamId) &&
+			/^[A-Z0-9]+$/.test(slackChannelId) &&
+			message.channelId === `${slackTeamId}/${slackChannelId}`);
 
 	// Slack channel monitor fanout — runs in parallel with the agent-trigger
 	// dispatch path below. We deliberately catch+log here so a monitor outage
@@ -95,7 +103,7 @@ export async function handleChannelInbound(
 	// triggers are the live conversational path).
 	if (channel === "slack") {
 		try {
-			if (slackTeamId) {
+			if (validSlackIds) {
 				await fanoutSlackMonitorEvent({
 					slackTeamId,
 					channelId: slackChannelId,
@@ -131,19 +139,27 @@ export async function handleChannelInbound(
 		message.messageKind === "app_mention" ||
 		message.messageKind === "direct_message";
 
-	const candidates = isTriggerEligible
-		? await db.agentDeploymentTrigger.findMany({
-				where: { isActive: true, type: "CHANNEL_MESSAGE" },
-				select: {
-					id: true,
-					deploymentId: true,
-					userId: true,
-					organizationId: true,
-					config: true,
-				},
-			})
-		: [];
-	const trigger = candidates.find((row) => {
+	const candidates =
+		isTriggerEligible && validSlackIds
+			? await db.agentDeploymentTrigger.findMany({
+					where: {
+						isActive: true,
+						type: "CHANNEL_MESSAGE",
+						...(channel === "slack" ? { slackTeamId } : {}),
+					},
+					...(channel === "slack"
+						? { orderBy: { id: "asc" as const } }
+						: {}),
+					select: {
+						id: true,
+						deploymentId: true,
+						userId: true,
+						organizationId: true,
+						config: true,
+					},
+				})
+			: [];
+	const matchesChannel = (row: (typeof candidates)[number]) => {
 		const cfg = (row.config as Record<string, unknown>) ?? {};
 		if (cfg.channel !== channel) {
 			return false;
@@ -157,7 +173,40 @@ export async function handleChannelInbound(
 		} catch {
 			return false;
 		}
-	});
+	};
+	const connectedOwners = new Map<string, boolean>();
+	const isConnectedOwner = async (row: (typeof candidates)[number]) => {
+		if (!row.userId || !row.organizationId) {
+			return false;
+		}
+		const key = `${row.userId}:${row.organizationId}`;
+		if (connectedOwners.has(key)) {
+			return connectedOwners.get(key) === true;
+		}
+		let matches = false;
+		try {
+			const credentials = await getSlackCredentials(
+				row.userId,
+				row.organizationId,
+				true,
+			);
+			matches = credentials.teamId === slackTeamId;
+		} catch {
+			// Missing or unreadable credentials cannot authorize dispatch.
+		}
+		connectedOwners.set(key, matches);
+		return matches;
+	};
+	let trigger: (typeof candidates)[number] | undefined;
+	for (const row of candidates) {
+		if (
+			matchesChannel(row) &&
+			(channel !== "slack" || (await isConnectedOwner(row)))
+		) {
+			trigger = row;
+			break;
+		}
+	}
 
 	const now = new Date();
 	const timeoutAt = new Date(now.getTime() + THREAD_TIMEOUT_MS);
@@ -168,6 +217,15 @@ export async function handleChannelInbound(
 			threadId: message.threadId,
 		},
 	};
+	const previousMapping =
+		channel === "slack" && trigger
+			? await db.channelThreadMapping.findUnique({
+					where,
+					select: { triggerId: true },
+				})
+			: null;
+	const triggerChanged =
+		previousMapping !== null && previousMapping.triggerId !== trigger?.id;
 	const mapping = await db.channelThreadMapping.upsert({
 		where,
 		create: {
@@ -186,6 +244,7 @@ export async function handleChannelInbound(
 			status: "active",
 			lastMessageAt: now,
 			timeoutAt,
+			...(triggerChanged ? { workflowId: null } : {}),
 			...(trigger
 				? {
 						userId: trigger.userId ?? "system",
@@ -209,24 +268,20 @@ export async function handleChannelInbound(
 	if (
 		channel === "slack" &&
 		isTriggerEligible &&
-		slackTeamId &&
+		validSlackIds &&
 		message.providerTs
 	) {
 		const reactionName = trigger ? "eyes" : "x";
-		// Bot-token lookup is tenant-scoped on userId; orphan case has no
-		// trigger context, so source userId/orgId from any active trigger
-		// owned by an installer for this workspace. If none exists or the
-		// trigger has no userId we can't resolve a token — skip silently.
 		const reactionOwner =
 			trigger ??
-			(await db.agentDeploymentTrigger.findFirst({
-				where: {
-					slackTeamId,
-					isActive: true,
-					userId: { not: null },
-				},
-				select: { userId: true, organizationId: true },
-			}));
+			(await (async () => {
+				for (const row of candidates) {
+					if (await isConnectedOwner(row)) {
+						return row;
+					}
+				}
+				return undefined;
+			})());
 		if (reactionOwner?.userId) {
 			void addSlackReaction({
 				teamId: slackTeamId,
@@ -251,6 +306,27 @@ export async function handleChannelInbound(
 			`[channels:${channel}] mapping ${mapping.id} captured but no matching trigger`,
 			{ channelId: message.channelId, threadId: message.threadId },
 		);
+		return NextResponse.json({
+			ok: true,
+			mappingId: mapping.id,
+			channel,
+			channelId: message.channelId,
+			threadId: message.threadId,
+			dispatched: false,
+			reason: "no_matching_trigger",
+		});
+	}
+
+	const deployment = await db.agentDeployment.findUnique({
+		where: { id: trigger.deploymentId },
+		select: { userId: true, organizationId: true },
+	});
+	if (
+		!deployment ||
+		deployment.userId !== trigger.userId ||
+		deployment.organizationId !== trigger.organizationId ||
+		!(await isDeploymentOwnerCurrentMember(deployment))
+	) {
 		return NextResponse.json({
 			ok: true,
 			mappingId: mapping.id,

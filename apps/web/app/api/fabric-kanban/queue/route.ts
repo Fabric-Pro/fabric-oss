@@ -2,7 +2,8 @@
  * Fabric Kanban Queue API
  *
  * Called by the fabric-kanban CLI to pull pending implementation items.
- * Authentication: Organization API key in the Authorization header.
+ * Authentication: organization key, personal key, or launch token in the
+ * Authorization header.
  * Project resolution: Git remote URL matched against project.repositoryUrl.
  *
  * Items are always scoped to the user who owns the API key (createdById),
@@ -12,10 +13,15 @@
  * POST /api/fabric-kanban/queue                 — mark items as PULLED
  */
 
-import { createHash } from "node:crypto";
-import { verifyKanbanLaunchToken } from "@repo/api/modules/kanban/procedures/create-token";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
+import {
+	authenticateKanbanRequest,
+	canReadKanbanProject,
+	canUpdateKanbanProject,
+	kanbanPermissionRefusal,
+	requireKanbanScope,
+} from "../auth";
 
 function normalizeRepoUrl(raw: string): string {
 	let url = raw.trim();
@@ -28,72 +34,14 @@ function normalizeRepoUrl(raw: string): string {
 	return url.toLowerCase();
 }
 
-type AuthContext = {
-	/** The user who owns or created the API key — always present */
-	userId: string;
-	organizationId: string | null;
-};
-
-async function authenticate(request: NextRequest): Promise<AuthContext | null> {
-	const authHeader = request.headers.get("Authorization");
-	if (!authHeader?.startsWith("Bearer ")) {
-		return null;
-	}
-	const rawKey = authHeader.slice(7);
-	const keyHash = createHash("sha256").update(rawKey).digest("hex");
-
-	// Try org API key first — use createdByUserId so we know which user is pulling
-	const orgKey = await db.organizationApiKey.findFirst({
-		where: {
-			keyHash,
-			isActive: true,
-			OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+function projectNotFound(repoUrl: string) {
+	return NextResponse.json(
+		{
+			error: "No project found for this repository URL in your organization",
+			repoUrl,
 		},
-		select: { id: true, organizationId: true, createdByUserId: true },
-	});
-	if (orgKey) {
-		await db.organizationApiKey.update({
-			where: { id: orgKey.id },
-			data: { lastUsedAt: new Date(), usageCount: { increment: 1 } },
-		});
-		return {
-			userId: orgKey.createdByUserId,
-			organizationId: orgKey.organizationId,
-		};
-	}
-
-	// Fall back to personal API key
-	const userKey = await db.userApiKey.findFirst({
-		where: {
-			keyHash,
-			isActive: true,
-			OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-		},
-		select: { id: true, userId: true },
-	});
-	if (userKey) {
-		await db.userApiKey.update({
-			where: { id: userKey.id },
-			data: { lastUsedAt: new Date(), usageCount: { increment: 1 } },
-		});
-		return { userId: userKey.userId, organizationId: null };
-	}
-
-	// Fall back to short-lived JWT issued by the exchange-token endpoint.
-	// This lets the kanban CLI authenticate queue requests using the token
-	// it received during the embed launch handshake, without needing a
-	// separately configured long-lived API key.
-	try {
-		const claims = await verifyKanbanLaunchToken(rawKey);
-		return {
-			userId: claims.sub,
-			organizationId: claims.organizationId ?? null,
-		};
-	} catch {
-		// Not a valid JWT — fall through to null
-	}
-
-	return null;
+		{ status: 404 },
+	);
 }
 
 /**
@@ -103,9 +51,15 @@ async function authenticate(request: NextRequest): Promise<AuthContext | null> {
  * matching the given repo URL. Each developer only sees their own queue.
  */
 export async function GET(request: NextRequest) {
-	const auth = await authenticate(request);
+	const auth = await authenticateKanbanRequest(request, {
+		allowLaunchToken: true,
+	});
 	if (!auth) {
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+	}
+	const scopeRefusal = requireKanbanScope(auth, "kanban:read");
+	if (scopeRefusal) {
+		return scopeRefusal;
 	}
 
 	const repoUrl = request.nextUrl.searchParams.get("repoUrl");
@@ -123,7 +77,7 @@ export async function GET(request: NextRequest) {
 		where: {
 			...(auth.organizationId
 				? { organizationId: auth.organizationId }
-				: { userId: auth.userId, organizationId: null }),
+				: { organizationId: { not: null } }),
 			repositoryUrl: {
 				in: [normalized, `${normalized}.git`],
 				mode: "insensitive",
@@ -133,6 +87,7 @@ export async function GET(request: NextRequest) {
 		select: {
 			id: true,
 			name: true,
+			organizationId: true,
 			repositoryUrl: true,
 			repositoryOwner: true,
 			repositoryName: true,
@@ -141,16 +96,29 @@ export async function GET(request: NextRequest) {
 	});
 
 	if (projects.length === 0) {
-		return NextResponse.json(
-			{
-				error: "No project found for this repository URL in your organization",
-				repoUrl: normalized,
-			},
-			{ status: 404 },
+		return projectNotFound(normalized);
+	}
+
+	const authorizedProjects = [];
+	for (const project of projects) {
+		if (await canReadKanbanProject(auth, project)) {
+			authorizedProjects.push(project);
+		}
+	}
+	if (authorizedProjects.length === 0) {
+		return projectNotFound(normalized);
+	}
+	if (
+		auth.type === "personal-key" &&
+		new Set(authorizedProjects.map((project) => project.organizationId))
+			.size > 1
+	) {
+		return kanbanPermissionRefusal(
+			"The personal key resolves to more than one organization for this repository",
 		);
 	}
 
-	const projectIds = projects.map((p) => p.id);
+	const projectIds = authorizedProjects.map((project) => project.id);
 
 	// Always filter by the user who queued the items — each developer only
 	// pulls their own queue regardless of whether they used an org or personal key
@@ -177,9 +145,17 @@ export async function GET(request: NextRequest) {
 			},
 		},
 	});
+	const firstProject = authorizedProjects[0];
 
 	return NextResponse.json({
-		project: projects[0],
+		project: {
+			id: firstProject.id,
+			name: firstProject.name,
+			repositoryUrl: firstProject.repositoryUrl,
+			repositoryOwner: firstProject.repositoryOwner,
+			repositoryName: firstProject.repositoryName,
+			defaultBranch: firstProject.defaultBranch,
+		},
 		pendingCount: items.length,
 		items: items.map((item) => ({
 			id: item.id,
@@ -202,9 +178,15 @@ export async function GET(request: NextRequest) {
  * Only marks items that belong to the authenticated user.
  */
 export async function POST(request: NextRequest) {
-	const auth = await authenticate(request);
+	const auth = await authenticateKanbanRequest(request, {
+		allowLaunchToken: true,
+	});
 	if (!auth) {
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+	}
+	const scopeRefusal = requireKanbanScope(auth, "kanban:write");
+	if (scopeRefusal) {
+		return scopeRefusal;
 	}
 
 	let body: { itemIds?: string[] };
@@ -225,11 +207,37 @@ export async function POST(request: NextRequest) {
 		);
 	}
 
-	// Only mark items that this user queued — prevents one user marking
-	// another user's items as pulled
-	const result = await db.kanbanQueue.updateMany({
+	const items = await db.kanbanQueue.findMany({
 		where: {
 			id: { in: itemIds },
+			...(auth.organizationId
+				? { organizationId: auth.organizationId }
+				: {}),
+			createdById: auth.userId,
+			status: "PENDING",
+		},
+		select: { id: true, projectId: true, organizationId: true },
+	});
+	for (const item of items) {
+		if (
+			!(await canUpdateKanbanProject(auth, {
+				id: item.projectId,
+				organizationId: item.organizationId,
+			}))
+		) {
+			return kanbanPermissionRefusal(
+				"The credential owner no longer has permission to pull this Kanban item",
+			);
+		}
+	}
+	const authorizedItemIds = items.map((item) => item.id);
+
+	const result = await db.kanbanQueue.updateMany({
+		where: {
+			id: { in: authorizedItemIds },
+			...(auth.organizationId
+				? { organizationId: auth.organizationId }
+				: {}),
 			createdById: auth.userId,
 			status: "PENDING",
 		},

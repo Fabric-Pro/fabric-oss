@@ -48,7 +48,7 @@ export function AiRecommendedItemMenu({
 			});
 			for (const queryKey of [
 				orpc.projects.stories.get.key(),
-				orpc.projects.stories.list.key(),
+				orpc.projects.stories.board.key(),
 				orpc.projects.aiRecommended.listBatches.key(),
 				orpc.projects.aiRecommended.previewBatch.key(),
 				["capability-gates", projectId],

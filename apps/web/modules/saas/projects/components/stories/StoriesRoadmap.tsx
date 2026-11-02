@@ -223,6 +223,11 @@ import { StoryList } from "./StoryList";
 import { StoryTile } from "./StoryTile";
 import { useSyncLogDeepLink } from "./sync-log-deep-link";
 import { useConsumeSearchParam } from "./use-consume-search-param";
+import {
+	DescriptionSearchStatus,
+	useDescriptionSearch,
+} from "./use-description-search";
+import { useDetailLoadFeedback } from "./use-detail-load-feedback";
 import { useClassifyTracks } from "./useClassifyTracks";
 import { useDuplicateCheckPrefetch } from "./useDuplicateCheckPrefetch";
 import { useExportEstimate } from "./useExportEstimate";
@@ -255,7 +260,7 @@ const DRAG_DROP_ANIMATION: DropAnimation = {
 
 // ---- Query key helpers ----
 const getStoriesQueryKey = (projectId: string, organizationId: string | null) =>
-	orpc.projects.stories.list.queryKey({
+	orpc.projects.stories.board.queryKey({
 		input: { projectId, organizationId },
 	});
 const _getStatusesQueryKey = (
@@ -727,7 +732,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		isLoading: storiesLoading,
 		refetch: refetchStories,
 	} = useQuery({
-		...orpc.projects.stories.list.queryOptions({
+		...orpc.projects.stories.board.queryOptions({
 			input: { projectId, organizationId },
 		}),
 		refetchInterval: (query) => {
@@ -738,6 +743,30 @@ export function StoriesRoadmap({ projectId }: Props) {
 			return false;
 		},
 	});
+
+	const descriptionSearch = useDescriptionSearch(
+		projectId,
+		organizationId,
+		roadmapFilters.q,
+		storiesData?.stories,
+	);
+	const descriptionMatches = descriptionSearch.matches;
+	const weaveDetail = useQuery({
+		...orpc.projects.stories.get.queryOptions({
+			input: { projectId, storyId: weaveStoryId ?? "", organizationId },
+		}),
+		enabled: weaveDialogOpen && weaveStoryId !== null,
+	});
+
+	useDetailLoadFeedback(
+		weaveDialogOpen,
+		weaveDetail,
+		() => {
+			setWeaveDialogOpen(false);
+			setWeaveStoryId(null);
+		},
+		tUi("detailLoadFailed"),
+	);
 
 	// ---- Duplicate detection (semantic scan + resolve) ----
 	const {
@@ -906,9 +935,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 	// every card recompute on each render.
 	const stories: UserStory[] = useMemo(
 		() =>
-			(storiesData?.stories ?? []).map((story) =>
-				transformStory(story as Parameters<typeof transformStory>[0]),
-			),
+			(storiesData?.stories ?? []).map((story) => transformStory(story)),
 		[storiesData?.stories],
 	);
 
@@ -1220,6 +1247,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		let filtered = applyRoadmapFilters(
 			visibleStories,
 			semanticRankById ? { ...roadmapFilters, q: "" } : roadmapFilters,
+			{ descriptionMatches },
 		);
 		// The "Possible duplicates" facet is applied here rather than inside the
 		// pure `applyRoadmapFilters` because the duplicate-link data lives in the
@@ -1271,7 +1299,11 @@ export function StoriesRoadmap({ projectId }: Props) {
 			// ranking — so it narrows like any other keyword ranking.
 			return narrow(
 				filtered.sort(
-					compareStoriesByRelevance(roadmapFilters.q, fallbackSort),
+					compareStoriesByRelevance(
+						roadmapFilters.q,
+						fallbackSort,
+						descriptionMatches,
+					),
 				),
 			);
 		}
@@ -1286,7 +1318,11 @@ export function StoriesRoadmap({ projectId }: Props) {
 		// items the query actually names (Fizzy #1937 follow-up).
 		return narrow(
 			filtered.sort(
-				compareStoriesByRelevance(roadmapFilters.q, fallbackSort),
+				compareStoriesByRelevance(
+					roadmapFilters.q,
+					fallbackSort,
+					descriptionMatches,
+				),
 			),
 		);
 	}, [
@@ -1298,6 +1334,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		roadmapOrderMap,
 		semanticRankById,
 		showBodyMatches,
+		descriptionMatches,
 	]);
 	const sortedStories = searchResult.stories;
 	const bodyMatchCount = searchResult.collapsedCount;
@@ -1324,7 +1361,10 @@ export function StoriesRoadmap({ projectId }: Props) {
 			return computeMatchPercentById(sortedStories, semanticRankById);
 		}
 		const scoreById = new Map<string, number>();
-		const score = scoreStoryAgainstQuery(roadmapFilters.q);
+		const score = scoreStoryAgainstQuery(
+			roadmapFilters.q,
+			descriptionMatches,
+		);
 		for (const s of sortedStories) {
 			const value = score(s);
 			if (value > 0) {
@@ -1332,7 +1372,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 			}
 		}
 		return computeMatchPercentById(sortedStories, scoreById);
-	}, [roadmapFilters.q, semanticRankById, sortedStories]);
+	}, [roadmapFilters.q, semanticRankById, sortedStories, descriptionMatches]);
 
 	const groupedByTrack = useMemo(
 		() => groupStoriesByTrack(sortedStories, showClosed),
@@ -1393,7 +1433,11 @@ export function StoriesRoadmap({ projectId }: Props) {
 					(semanticRankById.get(a.id) ?? 0),
 			);
 		}
-		const matched = selectHiddenMatches(stories, roadmapFilters);
+		const matched = selectHiddenMatches(
+			stories,
+			roadmapFilters,
+			descriptionMatches,
+		);
 		const scoped = roadmapFilters.duplicatesOnly
 			? matched.filter((s) => getDuplicateInfo(s.id) !== undefined)
 			: matched;
@@ -1411,6 +1455,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		semanticRankById,
 		searchResult.narrowed,
 		showBodyMatches,
+		descriptionMatches,
 	]);
 	const hiddenMatchCount = hiddenMatches.length;
 
@@ -2903,7 +2948,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		return (
 			<div className="space-y-4">
 				{[1, 2, 3, 4].map((i) => (
-					<Skeleton key={i} className="h-32 w-full rounded-xl" />
+					<Skeleton key={i} className="h-32 w-full rounded-lg" />
 				))}
 			</div>
 		);
@@ -3097,6 +3142,18 @@ export function StoriesRoadmap({ projectId }: Props) {
 					)}
 				</output>
 
+				{weaveDialogOpen && weaveDetail.isFetching && (
+					<output
+						aria-live="polite"
+						className="text-xs text-muted-foreground"
+					>
+						{tUi("detailLoading")}
+					</output>
+				)}
+				<DescriptionSearchStatus
+					status={descriptionSearch.status}
+					retry={descriptionSearch.retry}
+				/>
 				{/* Filters */}
 				<RoadmapFilterToolbar
 					lanesCount={
@@ -3256,7 +3313,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 										<button
 											type="button"
 											onClick={toggleShowClosed}
-											className="underline underline-offset-2 text-primary hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-sm"
+											className="underline underline-offset-2 text-primary hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-sm"
 										>
 											Show hidden work items
 										</button>
@@ -3574,7 +3631,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 																			items.length
 																		}
 																	</span>
-																	<span className="[writing-mode:vertical-rl] text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+																	<span className="[writing-mode:vertical-rl] text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 																		{
 																			section.label
 																		}
@@ -3659,7 +3716,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 																				: undefined
 																		}
 																	/>
-																	<span className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+																	<span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 																		{
 																			section.label
 																		}
@@ -3811,7 +3868,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 															aria-expanded={
 																!isCollapsed
 															}
-															className="group/section flex flex-1 items-center gap-2 py-2 text-left transition-colors hover:text-foreground focus-visible:outline-none"
+															className="group/section flex flex-1 items-center gap-2 py-2 text-left transition-colors hover:text-foreground focus-visible:outline-hidden"
 														>
 															<ChevronDownIcon
 																aria-hidden
@@ -3841,7 +3898,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 																		: undefined
 																}
 															/>
-															<span className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+															<span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 																{section.label}
 															</span>
 															<span className="text-[11px] tabular-nums text-muted-foreground/50">
@@ -3890,7 +3947,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 						createPortal(
 							<DragOverlay dropAnimation={DRAG_DROP_ANIMATION}>
 								{activeStory && (
-									<div className="flex w-full max-w-xl items-center gap-2.5 rounded-xl border border-primary/40 bg-card px-3 py-2.5 shadow-2xl ring-1 ring-primary/10 cursor-grabbing">
+									<div className="flex w-full max-w-xl items-center gap-2.5 rounded-lg border border-primary/40 bg-card px-3 py-2.5 shadow-2xl ring-1 ring-primary/10 cursor-grabbing">
 										<StoryKindIcon
 											kind={activeStory.kind}
 											priority={activeStory.priority}
@@ -3994,9 +4051,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 				{/* Weave Execution Dialog — triggered from StoryCard dropdown */}
 				{weaveStoryId &&
 					(() => {
-						const weaveStory = stories.find(
-							(s) => s.id === weaveStoryId,
-						);
+						const weaveStory = weaveDetail.data?.story;
 						return (
 							<ExecuteWithWeaveButton
 								projectId={projectId}
@@ -4012,7 +4067,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 								repoUrl={
 									projectData?.project?.repositoryUrl || ""
 								}
-								open={weaveDialogOpen}
+								open={weaveDialogOpen && !!weaveDetail.data}
 								onOpenChange={(open) => {
 									setWeaveDialogOpen(open);
 									if (!open) {

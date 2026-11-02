@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
 	stripInternalStoryFields,
 	stripInternalStoryFieldsFromMany,
+	stripRemoteCodingRunSummary,
 } from "../strip-internal-story-fields";
 
 const storyRow = {
@@ -85,5 +86,63 @@ describe("stripInternalStoryFieldsFromMany", () => {
 
 	it("returns an empty array unchanged", () => {
 		expect(stripInternalStoryFieldsFromMany([])).toEqual([]);
+	});
+});
+
+it("keeps registered runtime bindings out of shared story and task summaries", () => {
+	const run = {
+		id: "example-run",
+		status: "RUNNING",
+		externalUrl: "https://private.example.com",
+		providerSessionId: "example-native-session",
+		providerMetadata: {
+			executionTarget: {
+				connectionId: "example-connection",
+				url: "https://private.example.com",
+			},
+		},
+		pullRequestUrl: "https://github.com/example-org/example-repo/pull/1",
+	};
+	const story = { codingRuns: [run], tasks: [{ codingRuns: [run] }] };
+	const result = stripInternalStoryFields(story);
+	expect(JSON.stringify(result)).not.toContain("private.example.com");
+	expect(JSON.stringify(result)).not.toContain("example-native-session");
+	expect(result.codingRuns[0].pullRequestUrl).toBe(run.pullRequestUrl);
+	expect(story.codingRuns[0].providerSessionId).toBe(
+		"example-native-session",
+	);
+});
+
+describe("shared coding run summaries", () => {
+	it("preserves legacy links when no registered execution target is present", () => {
+		const legacy = {
+			externalUrl: "https://legacy.example.com/session/example",
+			providerMetadata: null,
+		};
+		expect(stripRemoteCodingRunSummary(legacy)).toBe(legacy);
+	});
+	it("removes runtime text, bindings and events before a registered run enters a shared feed or AI context", () => {
+		const run = {
+			status: "RUNNING",
+			pullRequestUrl:
+				"https://github.com/example-org/example-repo/pull/1",
+			externalUrl: "https://private.example.com/session/example-native",
+			externalStatus: "Private runtime detail",
+			workingDirectory: "/example/private-checkout",
+			events: [{ text: "Private runtime detail" }],
+			providerMetadata: {
+				executionTarget: {
+					connectionId: "example-connection",
+					profileId: "example-profile",
+				},
+			},
+		};
+		const summary = stripRemoteCodingRunSummary(run);
+		expect(summary.status).toBe("RUNNING");
+		expect(summary.pullRequestUrl).toBe(run.pullRequestUrl);
+		expect(JSON.stringify(summary)).not.toMatch(
+			/private\.example|Private runtime|private-checkout|example-profile|example-connection/,
+		);
+		expect(run.externalUrl).toContain("private.example.com");
 	});
 });

@@ -952,7 +952,7 @@ export function AiAdoptionDashboard() {
 		<div className="space-y-8">
 			<div className="flex flex-wrap items-center justify-between gap-3">
 				<div>
-					<h1 className="font-serif text-2xl">AI Adoption</h1>
+					<h1 className="font-semibold text-2xl">AI Adoption</h1>
 					<p className="text-muted-foreground text-sm">
 						How AI-generated output is received across the platform.
 					</p>

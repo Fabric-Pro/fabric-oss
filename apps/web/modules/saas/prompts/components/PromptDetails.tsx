@@ -548,7 +548,7 @@ export function PromptDetails({
 					    column whenever the actions were wide. */}
 					<div className="flex-1 flex flex-col gap-3 min-w-0">
 						<div className="flex items-baseline gap-2 flex-wrap min-w-0">
-							<h1 className="min-w-0 break-words text-3xl font-normal tracking-tight">
+							<h1 className="min-w-0 break-words text-xl font-semibold tracking-tight">
 								{prompt.name}
 							</h1>
 							{!prompt.isPublic && (

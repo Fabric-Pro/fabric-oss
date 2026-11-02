@@ -79,10 +79,7 @@ export function PmSyncDiffModal({
 				}}
 			>
 				<DialogHeader className="space-y-2">
-					<DialogTitle
-						className="font-normal text-2xl"
-						style={{ fontFamily: "var(--font-serif)" }}
-					>
+					<DialogTitle className="font-semibold text-2xl">
 						{pmError
 							? `Couldn't check ${pmToolName}`
 							: "PM ticket has changed"}

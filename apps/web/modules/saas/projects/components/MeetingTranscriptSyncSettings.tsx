@@ -965,7 +965,7 @@ export function MeetingTranscriptSyncSettings({
 				{/* Header */}
 				<div className="flex items-start justify-between gap-3 p-4 sm:p-5">
 					<div className="flex min-w-0 items-center gap-3">
-						<div className="shrink-0 rounded-xl bg-primary/10 p-2.5">
+						<div className="shrink-0 rounded-lg bg-primary/10 p-2.5">
 							<VideoIcon className="size-5 text-primary" />
 						</div>
 						<div className="min-w-0">
@@ -1005,7 +1005,7 @@ export function MeetingTranscriptSyncSettings({
 				) : !hasLinkedMeetings ? (
 					/* Empty state */
 					<div className="border-t border-foreground/10 p-4 sm:p-5">
-						<div className="rounded-xl border border-dashed border-foreground/20 p-8 text-center">
+						<div className="rounded-lg border border-dashed border-foreground/20 p-8 text-center">
 							<VideoIcon className="mx-auto mb-3 size-10 text-muted-foreground" />
 							<p className="mb-2 text-sm text-muted-foreground">
 								No meetings linked to this project
@@ -1179,7 +1179,7 @@ export function MeetingTranscriptSyncSettings({
 									return (
 										<div
 											key={meeting.id}
-											className={`rounded-xl border border-foreground/10 ${
+											className={`rounded-lg border border-foreground/10 ${
 												isDeactivated
 													? "bg-muted"
 													: "bg-card"
@@ -1655,7 +1655,7 @@ export function MeetingTranscriptSyncSettings({
 											<span
 												// biome-ignore lint/a11y/noNoninteractiveTabindex: the disabled switch fires no pointer/focus events, so the span is the focusable Tooltip trigger that surfaces the "enable sync first" reason to keyboard + AT users.
 												tabIndex={0}
-												className="inline-flex rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+												className="inline-flex rounded-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
 											>
 												<Switch
 													id="meeting-transcript-auto-analyze-toggle"
@@ -1693,7 +1693,7 @@ export function MeetingTranscriptSyncSettings({
 				{canEdit && (deletedMeetings?.length ?? 0) > 0 && (
 					<div className="border-t border-foreground/10">
 						<div className="flex items-center justify-between gap-3 bg-muted/40 px-4 py-2">
-							<span className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+							<span className="font-semibold text-[11px] text-muted-foreground uppercase tracking-wide">
 								Recently deleted
 							</span>
 							<span className="text-muted-foreground text-xs">

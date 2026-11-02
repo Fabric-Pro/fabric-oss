@@ -174,3 +174,11 @@ it("restores the current editor content after a fresh-thread wipe", () => {
 		}),
 	);
 });
+
+vi.mock("@saas/shared/components/copilot/use-page-agent", () => ({
+	usePageAgent: () => ({ state: {}, setState: vi.fn(), nodeName: undefined }),
+}));
+vi.mock("@saas/shared/components/copilot/CopilotChatSessionProvider", () => ({
+	useCopilotChatSessionSelector: (selector: any) =>
+		selector({ isLoading: false }),
+}));

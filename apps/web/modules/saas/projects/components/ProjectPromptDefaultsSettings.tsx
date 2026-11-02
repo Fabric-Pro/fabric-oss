@@ -452,7 +452,7 @@ export function ProjectPromptDefaultsSettings({
 									)
 								}
 								className={cn(
-									"inline-flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 font-medium text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+									"inline-flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 font-medium text-xs transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 									active
 										? "border-foreground/30 bg-muted text-foreground"
 										: "border-border text-muted-foreground hover:text-foreground",

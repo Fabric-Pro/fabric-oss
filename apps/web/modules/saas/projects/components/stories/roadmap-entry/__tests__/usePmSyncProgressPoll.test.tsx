@@ -24,9 +24,9 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				],
 			},
 			stories: {
-				list: {
+				board: {
 					queryKey: (args: { input: unknown }) => [
-						"stories.list",
+						"stories.board",
 						args.input,
 					],
 				},

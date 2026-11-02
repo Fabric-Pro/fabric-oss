@@ -16,7 +16,7 @@ export function InfoTip({ setting, text }: { setting: string; text: string }) {
 			<TooltipTrigger asChild>
 				<button
 					aria-label={t("tooltipLabel", { setting })}
-					className="inline-flex rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					className="inline-flex rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					type="button"
 				>
 					<InfoIcon aria-hidden className="size-3.5" />

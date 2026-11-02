@@ -198,6 +198,56 @@ function lastAssistant(
 }
 
 describe("a new chat's turn", () => {
+	it("windows persisted history larger than 8 MiB before serializing a follow-up, preserving its newest context and run", async () => {
+		const history = Array.from({ length: 100 }, (_, index) => ({
+			role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+			content: `${String(index).padStart(3, "0")}:${"x".repeat(99_996)}`,
+		}));
+		expect(
+			new TextEncoder().encode(JSON.stringify(history)).byteLength,
+		).toBeGreaterThan(8 * 1024 * 1024);
+		respond = (request) =>
+			sse([
+				...opened(request.body.threadId, request.body.runId),
+				finished(request.body.threadId, request.body.runId, "Done"),
+			]);
+		const { result } = render({ conversationId: "conversation-1" });
+		await act(async () => {
+			await result.current.sendMessage("Newest question", history);
+		});
+		const run = requests[0];
+		expect(
+			new TextEncoder().encode(JSON.stringify(run?.body)).byteLength,
+		).toBeLessThan(8 * 1024 * 1024);
+		expect(run?.body.threadId).toBe("conversation-1");
+		expect(
+			run?.body.messages.slice(0, -1).map((message) => message.content),
+		).toEqual(history.slice(-6).map((message) => message.content));
+		expect(run?.body.messages.at(-1)).toEqual({
+			id: `${run?.body.runId}:user`,
+			role: "user",
+			content: "Newest question",
+		});
+		expect(result.current.state.status).toBe("completed");
+
+		const multiAgentSend = vi.fn(async () => undefined);
+		const multi = render({
+			conversationId: "conversation-1",
+			multiAgentSend,
+		});
+		await act(async () => {
+			await multi.result.current.sendMessage("Newest question", history);
+		});
+		expect(multiAgentSend).toHaveBeenCalledWith(
+			expect.objectContaining({
+				threadId: "conversation-1",
+				content: "Newest question",
+				history: history.slice(-6),
+			}),
+		);
+		expect(requests).toHaveLength(1);
+	});
+
 	it("runs on a new thread, reports its conversation, and ends with the run's answer", async () => {
 		respond = (request) =>
 			sse([

@@ -8,14 +8,14 @@ const alertVariants = cva(
 	{
 		variants: {
 			variant: {
-				default: "bg-background text-foreground",
+				default: "border-border bg-card text-foreground",
 				primary:
-					"border-primary/20 bg-primary/10 text-primary [&>svg]:text-primary",
-				error: "border-destructive/20 bg-destructive/10 text-destructive [&>svg]:text-destructive",
+					"border-primary/30 bg-card text-primary [&>svg]:text-primary",
+				error: "border-destructive/30 bg-card text-destructive [&>svg]:text-destructive",
 				success:
-					"border-success/20 bg-success/10 text-success [&>svg]:text-success",
+					"border-success/30 bg-card text-success [&>svg]:text-success",
 				warning:
-					"border-yellow-500/20 bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 [&>svg]:text-yellow-700 dark:[&>svg]:text-yellow-400",
+					"border-highlight/30 bg-card text-highlight-ink dark:text-highlight [&>svg]:text-highlight-ink dark:[&>svg]:text-highlight",
 			},
 		},
 		defaultVariants: {

@@ -42,7 +42,7 @@ function CopyChip({
 		<button
 			aria-describedby={describedBy}
 			aria-label={copied ? undefined : label}
-			className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-background/20 bg-background/10 px-2.5 font-medium text-background text-xs transition-colors hover:bg-background/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-background dark:border-border dark:bg-foreground/5 dark:text-foreground dark:focus-visible:ring-ring dark:hover:bg-foreground/10"
+			className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-background/20 bg-background/10 px-2.5 font-medium text-background text-xs transition-colors hover:bg-background/20 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-background dark:border-border dark:bg-foreground/5 dark:text-foreground dark:focus-visible:ring-ring dark:hover:bg-foreground/10"
 			onClick={onCopy}
 			ref={buttonRef}
 			type="button"

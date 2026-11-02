@@ -1,6 +1,9 @@
 # MCP CLI Integration
 
-This document describes the integration of `mcp-cli` into Fabric Portal as a runtime tool for AI agents, enabling dynamic MCP server discovery and tool execution.
+- **Audience**: Developers and operators
+- **Owner**: Platform engineering
+
+This document describes the integration of `mcp-cli` and the official `@fabricorg/cli` / `@fabricorg/sdk-mcp` packages with Fabric Portal for AI agent delegation, stateless/durable MCP tool execution, and interactive MCP Apps (`ui://fabric/*`).
 
 ## Overview
 
@@ -284,11 +287,95 @@ mcp-cli  # Should list servers
 
 Check server configuration and ensure required environment variables are set.
 
+## `@fabricorg/cli` and `@fabricorg/sdk-mcp` Commands
+
+The published `@fabricorg/cli` and `@fabricorg/sdk-mcp` packages expose first-class terminal commands and programmatic helpers for Fabric Agents, MCP Gateway tool calls, and interactive MCP Apps. The MCP SDK reports the version from its own package metadata.
+
+### Agent Delegation & Subscriptions (`fabric agents`)
+
+```bash
+# Delegate a coding task to a remote Fabric Agents server or local harness
+fabric agents delegate \
+  --project <project-id> \
+  --prompt "Audit tenant isolation across project procedures" \
+  --target fabric-remote \
+  --harness claude
+
+# Generate or open a deep link for Fabric Agents Desktop (fabric-agents://handoff?...)
+fabric agents desktop --project <project-id> --harness claude --print-url
+
+# List known subscription harness choices (availability is not checked)
+fabric agents subscriptions --json
+```
+
+### MCP Gateway, Durable Tool Execution & MCP Apps (`fabric mcp`)
+
+```bash
+# List tools exposed by the Fabric MCP Gateway (stateless by default; use --no-stateless for a persistent session)
+fabric mcp tools --stateless
+
+# Execute an MCP tool with a 24-hour idempotency receipt
+fabric mcp call <tool-name> --durable --idempotency-key <key> --input '{"projectId":"proj_123"}'
+
+# List or inspect interactive Fabric MCP Apps (ui://fabric/*)
+fabric mcp apps
+fabric mcp apps --uri ui://fabric/visualize --json
+
+# Run a local stdio MCP server bridged to your Fabric organization
+fabric mcp serve --project <project-id>
+```
+
+Durable calls are scoped to the authenticated organization, user, credential identity, project binding, selected server or MCP configuration, tool, key, and canonical argument hash. A matching completed call is not executed again for 24 hours. The gateway either replays a safe stored result or returns a non-error receipt containing the execution ID and completion time. When `_meta.durableExecution.resultWithheld` is `true`, the historical result is omitted and the receipt directs the caller to the matching get/list tool for current state. A live call reports that it is in progress, while a failed or expired receipt, or a `RUNNING` receipt older than 10 minutes, can be reclaimed. Without `--idempotency-key`, `--durable` runs the tool without deduplication and reports `reason: "no_idempotency_key"`.
+
+### Built-in Interactive MCP Apps (`ui://fabric/*`)
+
+Both the HTTP MCP Gateway (`/mcp` and `/api/mcp-gateway`) and `@fabricorg/sdk-mcp` serve self-contained `text/html;profile=mcp-app` resources built with the Fabric UI Kit (`#bc3e0b` warm vermilion palette, 3-arc Fabric mark, SHA-256 script CSP, and A2UI v0.9.1 runtime). Users can sign in using OAuth 2.1 with PKCE (`Bearer fat_xxx`), Personal API Keys (`Bearer fab_xxx`), Organization API Keys (`Bearer org_xxx`), or `fabric login` and ask the MCP server for their projects, artifacts, and assigned tickets:
+
+| Resource URI | Companion Tools | Description |
+|---|---|---|
+| `ui://fabric/project-dashboard` | `fabric_list_projects`, `fabric_get_project`, `fabric_list_frames`, `fabric_get_frame`, `fabric_list_workspaces`, `fabric_get_workspace`, `fabric_list_artifacts`, `fabric_get_artifact`, `fabric_get_identity` | Interactive **Fabric Projects** and **Fabric Artifacts & Workspaces** cards with KPI metrics, artifact surface/kind badges, and 1-click **Open Artifact in Portal**, **Open in Fabric Desktop**, and **My Assigned Tickets** actions |
+| `ui://fabric/agent-delegation` | `fabric_list_features` (`assignedToMe: true`), `fabric_get_feature`, `fabric_list_project_pm_assigned_items`, `fabric_list_tickets`, `fabric_delegate_agent`, `fabric_subscription_status` | Interactive **Fabric Tickets & Backlog** (`Tickets Assigned to You`) and **Agent Delegation** cards with ticket priority/status/task progress and 1-click **Start Ticket in Fabric Desktop** or **Delegate Ticket to Remote Server** actions |
+| `ui://fabric/workflow-visualizer` | `fabric_list_workflows`, `fabric_get_workflow`, `fabric_execute_workflow` | Visual DAG pipeline inspector for workflow steps actually returned by the server |
+| `ui://fabric/genie-insights` | `fabric_query_workspace`, `fabric_search_knowledge`, `fabric_list_documents`, `fabric_get_document` | Databricks Genie Agents & Lakebase workspace card with hybrid RAG citations, SQL, and metric summaries |
+| `ui://fabric/visualize` | `fabric_visualize` | Declarative A2UI v0.9.1 canvas rendering KpiGrid, BarChart, LineChart, DataTable, BadgeList, and Timeline |
+
+### The 3 MCP Entry Points & When to Use Each
+
+Fabric exposes the same workspace catalog, authentication model, and `ui://fabric/*` MCP Apps across three transport entry points so every MCP client can connect using its preferred standard:
+
+| Entry Point | Production URL / Command | Transport | Best For |
+|---|---|---|---|
+| **1. Primary MCP Gateway** *(Recommended)* | `https://fabric.pro/api/mcp-gateway` or `https://fabric.pro/api/mcp-gateway/projects/<project-id>` | Streamable HTTP (`2025-11-25`) | **Claude Code, Codex CLI, Cursor, VS Code, Fabric Desktop, Remote Fabric Agents Server** — exposes all 169 platform tools + connected 3rd-party MCP servers + OAuth 2.1 PKCE browser sign-in + project scoping + 24-hour idempotent durable calls |
+| **2. Canonical `/mcp` Short-Path** | `https://fabric.pro/mcp` (`?stateless=1` supported) | Streamable HTTP (`2025-11-25`) | **claude.ai, ChatGPT Connectors, OpenCode, and MCP App hosts** that expect the canonical `/mcp` root path with `.well-known/oauth-protected-resource` discovery |
+| **3. Local Stdio Bridge (`@fabricorg/sdk-mcp`)** | `fabric mcp serve` (or `npx -y @fabricorg/sdk-mcp`) | `stdio` JSON-RPC | **Stdio-only desktop clients or local scripts** that prefer spawning a local process authenticated via `fabric login` (`~/.config/fabric/config.json`) or `FABRIC_API_KEY` |
+
+#### Production Setup Commands
+
+```bash
+# Claude Code (Zero-Key Browser OAuth 2.1 PKCE)
+claude mcp add --transport http fabric https://fabric.pro/api/mcp-gateway
+
+# Codex CLI
+codex mcp add fabric --url https://fabric.pro/api/mcp-gateway
+
+# OpenCode (~/.config/opencode/opencode.json)
+# { "mcp": { "fabric": { "type": "remote", "url": "https://fabric.pro/mcp", "enabled": true } } }
+
+# Local Stdio Bridge (Claude Desktop / Cursor stdio mode)
+npm install -g @fabricorg/cli@latest @fabricorg/sdk-mcp@latest
+fabric login --url https://fabric.pro
+fabric mcp serve
+```
+
 ## Related Files
 
 - `services/fabric-ai-server/internal/tools/mcpcli/mcpcli.go` - Go wrapper
 - `services/fabric-ai-server/internal/server/delegated.go` - HTTP endpoints
 - `packages/fabric-ai/client.ts` - TypeScript client methods
+- `packages/sdk-mcp/src/mcp-apps.ts` - SDK MCP Apps & A2UI v0.9.1 catalog
+- `packages/cli/src/commands/agents/index.ts` - `fabric agents` CLI commands
+- `packages/cli/src/commands/mcp/index.ts` - `fabric mcp` CLI commands
+- `apps/web/modules/saas/mcp/lib/gateway/mcp-apps.ts` - Gateway MCP Apps and durable idempotency receipts
 - `packages/temporal/src/activities/orchestrator/tools/fabric-ai-tools.ts` - Virtual tool definitions
 - `packages/temporal/src/activities/orchestrator/execution/handlers/fabric-ai-handler.ts` - Tool handlers
 

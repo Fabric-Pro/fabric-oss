@@ -26,6 +26,10 @@ const { membersFn, listAttachments } = vi.hoisted(() => ({
 // The now-always-rendered StoryAttachmentsButton eagerly queries the
 // attachment list on mount (#1778) — stub it so this file stays focused on
 // details/provenance wiring (mirrors StoryWorkspacePage.attachments-wiring.test.tsx).
+vi.mock("@saas/shared/components/PortalAiGate", () => ({
+	PortalAiGate: ({ children }: { children: import("react").ReactNode }) =>
+		children,
+}));
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: { projects: { stories: { listAttachments } } },
 }));

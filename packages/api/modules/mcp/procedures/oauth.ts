@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/server";
 import {
 	allowlistDcrClientMetadata,
 	clearRefreshFailures,
+	consumeOauthState,
 	createOauthState,
 	credentialFingerprintMatches,
 	db,
@@ -44,7 +45,7 @@ import { z } from "zod";
 import {
 	authorizeInputOrganization,
 	Permissions,
-	publicProcedure,
+	protectedProcedure,
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -60,6 +61,11 @@ import {
 	serializeOAuthFlowSnapshot,
 	snapshotFromBinding,
 } from "../lib/oauth-authorization-server";
+import {
+	assertMcpOAuthConfigAccess,
+	assertMcpOAuthStateBoundToCaller,
+	assertMcpOAuthStateConsumed,
+} from "../lib/oauth-callback-guard";
 import {
 	generateCodeChallenge,
 	generateCodeVerifier,
@@ -838,7 +844,7 @@ export const oauthProcedures = {
 			return { authorizationUrl, state };
 		}),
 
-	callback: publicProcedure
+	callback: protectedProcedure
 		.use(requirePermission(Permissions.MCP_UPDATE))
 		.route({
 			method: "GET",
@@ -876,7 +882,7 @@ export const oauthProcedures = {
 					.optional(),
 			}),
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			if (input.error) {
 				return { success: false, message: input.error };
 			}
@@ -886,8 +892,9 @@ export const oauthProcedures = {
 			}
 
 			const stateRecord = await getOauthState(input.state);
+			await assertMcpOAuthStateBoundToCaller(stateRecord, context?.user);
 			if (!stateRecord) {
-				return { success: false, message: "Invalid state" };
+				throw new ORPCError("FORBIDDEN");
 			}
 
 			// Check if state is expired
@@ -907,8 +914,7 @@ export const oauthProcedures = {
 			}
 
 			// Verify organization context matches to prevent cross-tenant token injection
-			// stateRecord.organizationId is null for personal, string for org
-			// cfg.organizationId is null for personal, string for org
+			// User-owned configs can also carry an organization ID.
 			if (stateRecord.organizationId !== cfg.organizationId) {
 				return {
 					success: false,
@@ -916,6 +922,7 @@ export const oauthProcedures = {
 						"Organization context mismatch - OAuth flow was initiated in a different context",
 				};
 			}
+			await assertMcpOAuthConfigAccess(cfg, context.user);
 
 			// As in `start`: never complete a flow for a config whose server its
 			// tenant may not use.
@@ -1050,6 +1057,7 @@ export const oauthProcedures = {
 				body,
 				redirect: "error",
 			};
+			assertMcpOAuthStateConsumed(await consumeOauthState(stateRecord));
 			// A GitLab exchange goes through the GitLab outbound path (a
 			// self-hosted instance through the outbound guard); a redirect
 			// is refused either way, as `safeFetchOutbound` does for every

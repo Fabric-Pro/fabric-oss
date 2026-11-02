@@ -1888,6 +1888,37 @@ describe("cleanupDocument — numeric and footnote markers", () => {
 		expect(sectionByHeading(result, "Notes").markdown).toBe(body);
 	});
 
+	it("leaves a cards block and a columns block byte for byte", () => {
+		const body = [
+			"```cards",
+			"%% fabric-visual: a1b2c3d4e5f6",
+			"01",
+			"**Route planning**",
+			"Plans each *stop* before `08:00` [1].",
+			"",
+			"Pilot",
+			"**Example Harbor Co**",
+			"Three depots, twelve weeks (Reference 6).",
+			"```",
+			"",
+			"```columns",
+			"### Today",
+			"- Paper route sheets [1]",
+			"- Calls to every depot",
+			"---",
+			"#### With the platform",
+			"One schedule every depot reads.",
+			"```",
+		].join("\n");
+		const result = cleanupDocument(
+			`## Notes\n${body}\n\n${numberedSources}`,
+			"PROPOSAL",
+		);
+
+		expect(headings(result.sections)).toEqual(["Notes"]);
+		expect(sectionByHeading(result, "Notes").markdown).toBe(body);
+	});
+
 	it("moves a footnote definition to the appendix sources", () => {
 		const result = cleanupDocument(
 			[

@@ -23,17 +23,20 @@ const REPO_ROOT = resolve(__dirname, "../../../../..");
 
 const REVIEWED: Record<string, string> = {
 	// Chat routes a person types into.
-	"apps/web/app/api/agents/a2a/send/route.ts":
-		"A2A message a person sends to an agent",
+	"apps/web/app/api/agents/a2a/send/a2a-send-turn.ts":
+		"A2A message a person sends to an agent (the a2a/send route and the agent runtime's cuga-generalist engine)",
 	"apps/web/app/api/agents/fabric-ai/stream/direct-turn.ts":
 		"Direct chat turn (the stream route and the agent runtime's Direct engine)",
 	"apps/web/app/api/agents/fabric-ai/orchestrator-temporal/route.ts":
 		"Orchestrator chat turn",
 	"apps/web/app/api/agents/fabric-ai/orchestrator-temporal/orchestrator-turn.ts":
 		"Orchestrator chat turn (the stream route, the Fabric Agent drawer in Simple mode, and the agent runtime's Orchestrator engine)",
-	"apps/web/app/api/agents/sidekick/stream/route.ts": "Sidekick chat turn",
-	"apps/web/app/api/copilotkit/route.ts": "CopilotKit chat and agents",
-	"apps/web/app/api/workspaces/chat/route.ts": "Workspace chat turn",
+	"apps/web/app/api/agents/sidekick/stream/sidekick-turn.ts":
+		"Sidekick chat turn (the stream route and the agent runtime's agent-builder-sidekick engine)",
+	"apps/web/app/api/copilotkit/agent-request.ts":
+		"CopilotKit chat and agents, and the runtime data analyst",
+	"apps/web/app/api/workspaces/chat/workspace-chat-turn.ts":
+		"Workspace chat turn (the library dialog's route and the agent runtime's library-chat engine)",
 	// One-shot generations a person clicked and waits for.
 	"apps/web/app/api/ai/generate/route.ts": "Inline generation",
 	"apps/web/app/api/ai/generate-workflow/route.ts": "Workflow draft",
@@ -124,8 +127,8 @@ const REVIEWED: Record<string, string> = {
 		"Skill automation fired by a story a person moved by hand",
 	"packages/api/modules/weave/procedures/start-execution.ts":
 		"Weave plan execution a person starts",
-	"apps/web/app/api/agents/workflow-templates/stream/route.ts":
-		"Deep research a person asks for and watches stream",
+	"apps/web/app/api/agents/workflow-templates/workflow-template-run.ts":
+		"Deep research a person asks for and watches stream (the stream route and the agent runtime's deep-researcher engine)",
 	// Plumbing that carries or reads the flag; sets it for no one.
 	"apps/web/app/api/ai/keys/exchange/route.ts": "Reads the token claim",
 	"packages/ai-token/lib/issuer.ts": "Writes the claim it is given",
@@ -227,7 +230,7 @@ describe("code that may mark AI work as a member's own", () => {
 			.filter((file) =>
 				readFileSync(file, "utf8").includes("planEligible"),
 			)
-			.map((file) => relative(REPO_ROOT, file))
+			.map((file) => relative(REPO_ROOT, file).replaceAll("\\", "/"))
 			.sort();
 		expect(marking).toEqual(Object.keys(REVIEWED).sort());
 	});

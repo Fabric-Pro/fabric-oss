@@ -95,7 +95,7 @@ export function NotificationsPage() {
 					<p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
 						{t("sectionLabel")}
 					</p>
-					<h1 className="font-serif text-3xl text-foreground">
+					<h1 className="font-semibold text-xl text-foreground">
 						{t("title")}
 					</h1>
 				</div>

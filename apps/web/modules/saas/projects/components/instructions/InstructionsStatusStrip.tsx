@@ -37,7 +37,7 @@ export function InstructionsStatusFacts({ children }: { children: ReactNode }) {
 		<dl
 			data-testid="instructions-status-strip"
 			data-onboarding-target="coding-instructions-status"
-			className="m-0 flex flex-wrap gap-y-3 rounded-[10px] border border-border bg-card py-3"
+			className="m-0 flex flex-wrap gap-y-3 rounded-lg border border-border bg-card py-3"
 		>
 			{children}
 		</dl>

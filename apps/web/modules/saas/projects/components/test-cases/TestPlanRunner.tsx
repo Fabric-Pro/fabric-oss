@@ -259,7 +259,7 @@ export function TestPlanRunner({
 					<div className="space-y-4">
 						<div className="space-y-1.5">
 							<div className="flex items-center justify-between gap-2">
-								<span className="font-medium text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+								<span className="font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 									{t("run.progress", {
 										current: index + 1,
 										total,

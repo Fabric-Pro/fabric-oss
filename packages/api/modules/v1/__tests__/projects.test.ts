@@ -6,6 +6,8 @@ const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		getProjectByIdForExternalApi: vi.fn(),
 		resolveV1Context: vi.fn(),
+		createProject: vi.fn(),
+		ownerPermissionAllowed: true,
 	},
 }));
 
@@ -14,7 +16,7 @@ vi.mock("@repo/database", () => ({
 		kind: "resolved" as const,
 		organizationId: "org-test",
 	})),
-	createProject: vi.fn(),
+	createProject: mocks.createProject,
 	getProjectAccessById: vi.fn(),
 	getProjectByIdForExternalApi: mocks.getProjectByIdForExternalApi,
 	listProjects: vi.fn(),
@@ -25,6 +27,23 @@ vi.mock("../../external-api/middleware/api-key-auth", () => ({
 	requireScope:
 		() => async (_context: unknown, next: () => Promise<unknown>) =>
 			next(),
+	requireV1OwnerPermission: async (
+		c: { json: (body: unknown, status: number) => unknown },
+		_context: unknown,
+		action: string,
+	) => {
+		if (action !== "projects:create") {
+			throw new Error(`Unexpected project permission action: ${action}`);
+		}
+		return mocks.ownerPermissionAllowed
+			? null
+			: c.json(
+					{
+						error: "The key's owner no longer holds the access required for projects:write in this organization",
+					},
+					403,
+				);
+	},
 }));
 
 vi.mock("../helpers", () => ({
@@ -52,9 +71,60 @@ function buildApp() {
 beforeEach(() => {
 	mocks.getProjectByIdForExternalApi.mockReset();
 	mocks.resolveV1Context.mockReset();
+	mocks.createProject.mockReset().mockResolvedValue({
+		id: "project-1",
+		name: "Example project",
+		description: null,
+		status: "DRAFT",
+		color: null,
+		icon: null,
+		userId: "api-user-1",
+		organizationId: "org-test",
+		repositoryUrl: null,
+		createdAt: new Date("2026-10-31T00:00:00.000Z"),
+		updatedAt: new Date("2026-10-31T00:00:00.000Z"),
+	});
+	mocks.ownerPermissionAllowed = true;
 	mocks.resolveV1Context.mockResolvedValue({
 		userId: "api-user-1",
 		organizationId: null,
+	});
+});
+
+describe("POST /projects", () => {
+	it("refuses a viewer's personal key before creating a project", async () => {
+		mocks.ownerPermissionAllowed = false;
+		mocks.resolveV1Context.mockResolvedValue({
+			userId: "api-user-1",
+			organizationId: "org-test",
+		});
+
+		const response = await buildApp().request("/projects", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ name: "Example project" }),
+		});
+
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({
+			error: "The key's owner no longer holds the access required for projects:write in this organization",
+		});
+		expect(mocks.createProject).not.toHaveBeenCalled();
+	});
+
+	it("allows a member's personal key to create a project", async () => {
+		mocks.resolveV1Context.mockResolvedValue({
+			userId: "api-user-1",
+			organizationId: "org-test",
+		});
+		const response = await buildApp().request("/projects", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ name: "Example project" }),
+		});
+
+		expect(response.status).toBe(201);
+		expect(mocks.createProject).toHaveBeenCalledOnce();
 	});
 });
 

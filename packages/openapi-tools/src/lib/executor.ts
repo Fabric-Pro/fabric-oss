@@ -5,6 +5,11 @@
  */
 
 import { logger } from "@repo/logs";
+import {
+	PINNED_FETCH_ANY_CONTENT_TYPE,
+	safeFetchOutboundPinned,
+	UnsafeOutboundUrlError,
+} from "@repo/utils/url-security";
 import type {
 	ParsedOpenAPITool,
 	ToolExecutionConfig,
@@ -47,10 +52,25 @@ export async function executeOpenAPITool(
 		const timeoutId = setTimeout(() => controller.abort(), timeout);
 
 		try {
-			const response = await fetch(url, {
-				...requestInit,
-				signal: controller.signal,
-			});
+			const response = await safeFetchOutboundPinned(
+				url,
+				{
+					...requestInit,
+					signal: controller.signal,
+				},
+				{
+					allowedContentTypes: [PINNED_FETCH_ANY_CONTENT_TYPE],
+					followRedirects: false,
+					timeoutMs: timeout,
+				},
+			);
+			if (response.status >= 300 && response.status < 400) {
+				return {
+					success: false,
+					error: "OpenAPI tool redirects are not allowed",
+					responseTime: Date.now() - startTime,
+				};
+			}
 
 			const responseTime = Date.now() - startTime;
 			const responseHeaders: Record<string, string> = {};
@@ -97,6 +117,13 @@ export async function executeOpenAPITool(
 		}
 	} catch (error) {
 		const responseTime = Date.now() - startTime;
+		if (error instanceof UnsafeOutboundUrlError) {
+			return {
+				success: false,
+				error: "OpenAPI tool URL is not a permitted public address",
+				responseTime,
+			};
+		}
 
 		if (error instanceof Error && error.name === "AbortError") {
 			return {

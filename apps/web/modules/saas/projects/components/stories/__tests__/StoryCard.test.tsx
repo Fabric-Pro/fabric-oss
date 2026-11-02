@@ -84,8 +84,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						}),
 					},
 				},
-				list: { queryKey: () => ["stories-list"] },
-				get: { queryKey: () => ["stories-get"] },
+				board: { queryKey: () => ["stories-list"] },
+				get: {
+					queryOptions: (o: { input: unknown }) => ({
+						queryKey: ["stories-get", o.input],
+						queryFn: async () => ({
+							story: {
+								description:
+									"Fabric-side description with extra local detail.",
+							},
+						}),
+					}),
+					queryKey: () => ["stories-get"],
+				},
 				queueForKanban: {
 					mutationOptions: () => ({ mutationFn: async () => ({}) }),
 				},

@@ -75,7 +75,7 @@ export function DocumentEditorAiUnavailable({
 						Reload page
 					</Button>
 				</div>
-				<article className="prose prose-stone dark:prose-invert max-w-none rounded-xl border border-border bg-card p-8 prose-pre:overflow-auto prose-pre:bg-muted prose-pre:border prose-pre:border-border prose-headings:font-serif prose-headings:font-normal">
+				<article className="prose prose-stone dark:prose-invert max-w-none rounded-lg border border-border bg-card p-8 prose-pre:overflow-auto prose-pre:bg-muted prose-pre:border prose-pre:border-border prose-headings:font-sans prose-headings:font-semibold">
 					{content.trim() ? (
 						<ReactMarkdown remarkPlugins={[remarkGfm]}>
 							{content}

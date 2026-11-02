@@ -102,6 +102,7 @@ import {
 	DuplicateTurnMessageIdError,
 	saveConversationTurn,
 	TurnMessageIdConflictError,
+	updateAgentConversation,
 	updateConversationSettings,
 } from "../prisma/queries/agent-conversations";
 
@@ -940,3 +941,82 @@ describe("updateConversationSettings", () => {
 		});
 	}
 });
+
+describe("Direct settings and metadata replacement (Fizzy #3472)", () => {
+	for (const engine of ["direct", "orchestrator"] as const) {
+		for (const mode of [undefined, "direct", "orchestrator", "research"]) {
+			it(`fills missing mode only: ${engine}, ${mode}`, async () => {
+				lockedRow([], { mode, instanceId: "old" });
+				await updateConversationSettings({
+					id: CONV_ID,
+					userId: USER_ID,
+					organizationId: ORG_ID,
+					engine,
+					settings: { instanceId: null },
+				});
+				expect(written().metadata).toMatchObject({
+					mode: mode ?? engine,
+				});
+				expect(written().metadata).not.toHaveProperty("instanceId");
+			});
+		}
+	}
+	it("defaults missing mode to orchestrator", async () => {
+		lockedRow([], {});
+		await updateConversationSettings({
+			id: CONV_ID,
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			settings: {},
+		});
+		expect(written().metadata).toMatchObject({ mode: "orchestrator" });
+	});
+	for (const executions of [undefined, [{ id: "stored" }]]) {
+		it(`protects stored executions ${JSON.stringify(executions)} and drops latestTurn under lock`, async () => {
+			lockedRow([], executions ? { executions } : {});
+			await updateAgentConversation({
+				id: CONV_ID,
+				userId: USER_ID,
+				organizationId: ORG_ID,
+				metadata: {
+					latestTurn: { id: "forged" },
+					executions: [{ id: "forged" }],
+					mode: "direct",
+				},
+			});
+			expect(written().metadata).not.toHaveProperty("latestTurn");
+			if (executions) {
+				expect(written().metadata).toHaveProperty(
+					"executions",
+					executions,
+				);
+			} else {
+				expect(written().metadata).not.toHaveProperty("executions");
+			}
+			expect(mocks.$transactionMock).toHaveBeenCalledWith(
+				expect.any(Function),
+				{ isolationLevel: "ReadCommitted" },
+			);
+			expect(mocks.queryRawMock.mock.calls[0][0].join("")).toMatch(
+				/FOR UPDATE$/,
+			);
+			expect(mocks.queryRawMock.mock.invocationCallOrder[0]).toBeLessThan(
+				mocks.updateMock.mock.invocationCallOrder[0],
+			);
+		});
+	}
+});
+
+for (const organizationId of [null, undefined, ""]) {
+	it(`rejects metadata replacement without organization: ${organizationId}`, async () => {
+		await expect(
+			updateAgentConversation({
+				id: CONV_ID,
+				userId: USER_ID,
+				organizationId,
+				metadata: {},
+			}),
+		).rejects.toThrow("Conversation not found or access denied");
+		expect(mocks.queryRawMock).not.toHaveBeenCalled();
+	});
+}

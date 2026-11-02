@@ -11,6 +11,10 @@ import { generateObject, NoObjectGeneratedError, zodSchema } from "@repo/ai";
 // Imported from the SUBPATH (not @repo/ai root) so it stays unmocked in tests
 // that mock the root module, as in update-with-context-core.ts.
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import {
+	PROPOSAL_ONLY_VISUAL_KINDS,
+	type ProposalOnlyVisualKind,
+} from "@repo/utils/glossy/visual-spec";
 import { z } from "zod";
 import {
 	type GlossyAiProviderNotConfigured,
@@ -26,43 +30,67 @@ import {
  * remaining budget as `limit`. The model's answer is untrusted output, so it
  * is filtered here rather than by the schema — one bad item must not fail
  * the whole call:
- * - a ref this call did not issue, or a kind outside the five, is discarded;
+ * - a ref this call did not issue, or a kind outside the five (seven for a
+ *   Proposal), is discarded;
  * - a kind the section already shows (a slot or existing diagram) is discarded;
  * - at most one opportunity per section and `limit` in total (at most eight);
  * - reasons are plain text capped at 160 characters (KTD13).
  *
  * Style direction is deliberately not an input (KTD8).
+ *
+ * A Proposal's visuals step (`proposalArtifact`, Fizzy #2946) may also be
+ * offered `layers` and `team`, which only the Proposal draws; Glossy's kinds,
+ * prompt and output schema are unchanged.
  */
 
 const DETECTION_LOG = "[GlossyDetect]";
+
+/** The kinds a Proposal's visuals step may be offered: Glossy's and its own. */
+export type ProposalDetectableKind =
+	| GlossyDetectableKind
+	| ProposalOnlyVisualKind;
+
+const PROPOSAL_DETECTABLE_KINDS: readonly ProposalDetectableKind[] = [
+	...GLOSSY_DETECTABLE_KINDS,
+	...PROPOSAL_ONLY_VISUAL_KINDS,
+];
 
 /**
  * The model names sections by ref. Every field is a plain string so that a
  * stray value is filtered in code instead of failing schema validation.
  */
-export const GlossyDetectionOutputSchema = z.object({
-	opportunities: z
-		.array(
-			z.object({
-				sectionRef: z
-					.string()
-					.describe(
-						"The section's ref, exactly as given in the input.",
-					),
-				kind: z
-					.string()
-					.describe(`One of: ${GLOSSY_DETECTABLE_KINDS.join(", ")}.`),
-				reason: z
-					.string()
-					.describe(
-						`One short plain-text sentence, at most ${GLOSSY_REASON_MAX_CHARS} characters, saying what in the section suits the kind.`,
-					),
-			}),
-		)
-		.describe(
-			"At most one entry per section. An empty list when no section suits a visual.",
-		),
-});
+function detectionOutputSchema(kinds: readonly string[]) {
+	return z.object({
+		opportunities: z
+			.array(
+				z.object({
+					sectionRef: z
+						.string()
+						.describe(
+							"The section's ref, exactly as given in the input.",
+						),
+					kind: z.string().describe(`One of: ${kinds.join(", ")}.`),
+					reason: z
+						.string()
+						.describe(
+							`One short plain-text sentence, at most ${GLOSSY_REASON_MAX_CHARS} characters, saying what in the section suits the kind.`,
+						),
+				}),
+			)
+			.describe(
+				"At most one entry per section. An empty list when no section suits a visual.",
+			),
+	});
+}
+
+export const GlossyDetectionOutputSchema = detectionOutputSchema(
+	GLOSSY_DETECTABLE_KINDS,
+);
+
+/** Glossy's schema, naming the Proposal's own kinds among the choices too. */
+const ProposalDetectionOutputSchema = detectionOutputSchema(
+	PROPOSAL_DETECTABLE_KINDS,
+);
 
 export interface GlossyDetectionSection {
 	sectionKey: string;
@@ -83,23 +111,34 @@ export interface DetectGlossyOpportunitiesInput extends GlossyModelContext {
 	limit?: number;
 	/**
 	 * The Proposal artifact's visuals step: adds audience guidance to the
-	 * instructions (Fizzy #2946). Unset for Glossy, whose prompt is unchanged.
+	 * instructions and offers the Proposal's own kinds (Fizzy #2946). Unset
+	 * for Glossy, whose prompt is unchanged.
 	 */
 	proposalArtifact?: boolean;
 }
 
-export interface GlossyOpportunity {
+/** A Proposal's visuals step, which may get back `layers` and `team` too. */
+export interface DetectProposalOpportunitiesInput
+	extends Omit<DetectGlossyOpportunitiesInput, "proposalArtifact"> {
+	proposalArtifact: true;
+}
+
+export interface GlossyOpportunity<
+	Kind extends ProposalDetectableKind = GlossyDetectableKind,
+> {
 	sectionKey: string;
-	kind: GlossyDetectableKind;
+	kind: Kind;
 	/** Plain text, at most 160 characters. */
 	reason: string;
 }
 
-export type GlossyDetectionResult =
+export type GlossyDetectionResult<
+	Kind extends ProposalDetectableKind = GlossyDetectableKind,
+> =
 	| {
 			status: "detected";
 			/** In document order. */
-			opportunities: GlossyOpportunity[];
+			opportunities: GlossyOpportunity<Kind>[];
 			/** Model entries dropped by the filters above. */
 			discarded: number;
 	  }
@@ -112,14 +151,22 @@ export type GlossyDetectionResult =
 	| GlossyAiProviderNotConfigured;
 
 const DETECTABLE = new Set<string>(GLOSSY_DETECTABLE_KINDS);
+const PROPOSAL_DETECTABLE = new Set<string>(PROPOSAL_DETECTABLE_KINDS);
 
 function sectionRef(index: number): string {
 	return `sec-${index + 1}`;
 }
 
+export function detectGlossyOpportunities(
+	input: DetectProposalOpportunitiesInput,
+): Promise<GlossyDetectionResult<ProposalDetectableKind>>;
+export function detectGlossyOpportunities(
+	input: DetectGlossyOpportunitiesInput,
+): Promise<GlossyDetectionResult>;
 export async function detectGlossyOpportunities(
 	input: DetectGlossyOpportunitiesInput,
-): Promise<GlossyDetectionResult> {
+): Promise<GlossyDetectionResult<ProposalDetectableKind>> {
+	const proposal = input.proposalArtifact === true;
 	const limit = Math.max(
 		0,
 		Math.min(
@@ -162,7 +209,11 @@ export async function detectGlossyOpportunities(
 	try {
 		({ object } = await generateObject({
 			model,
-			schema: zodSchema(GlossyDetectionOutputSchema),
+			schema: zodSchema(
+				proposal
+					? ProposalDetectionOutputSchema
+					: GlossyDetectionOutputSchema,
+			),
 			instructions,
 			prompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
@@ -187,28 +238,29 @@ export async function detectGlossyOpportunities(
 	const refs = new Map(
 		input.sections.map((_section, index) => [sectionRef(index), index]),
 	);
+	const detectable = proposal ? PROPOSAL_DETECTABLE : DETECTABLE;
 	const taken = new Set<string>();
-	const kept: Array<GlossyOpportunity & { order: number }> = [];
+	const kept: Array<
+		GlossyOpportunity<ProposalDetectableKind> & { order: number }
+	> = [];
 	for (const entry of object.opportunities) {
 		if (kept.length >= limit) {
 			break;
 		}
 		const index = refs.get(entry.sectionRef.trim());
 		const kind = entry.kind.trim();
-		if (index === undefined || !DETECTABLE.has(kind)) {
+		if (index === undefined || !detectable.has(kind)) {
 			continue;
 		}
 		const section = input.sections[index];
-		if (
-			taken.has(section.sectionKey) ||
-			section.reservedKinds?.includes(kind as GlossyDetectableKind)
-		) {
+		const reserved: readonly string[] = section.reservedKinds ?? [];
+		if (taken.has(section.sectionKey) || reserved.includes(kind)) {
 			continue;
 		}
 		taken.add(section.sectionKey);
 		kept.push({
 			sectionKey: section.sectionKey,
-			kind: kind as GlossyDetectableKind,
+			kind: kind as ProposalDetectableKind,
 			reason:
 				boundGlossyField(entry.reason, GLOSSY_REASON_MAX_CHARS) ?? "",
 			order: index,

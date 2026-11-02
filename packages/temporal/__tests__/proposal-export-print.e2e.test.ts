@@ -19,7 +19,9 @@
  * its own and measured: the cover's size and whether its body ends above the
  * parties, and each figure template's width, text size and whether its text
  * stays inside its boxes. The PDFs are then read for their embedded faces,
- * the contents page, the figure numbers and the glyph spacing.
+ * the cover's details, the cover letter's page, the contents page and the
+ * pages it points at, the figure numbers, the page two short figures share
+ * and the glyph spacing.
  *
  * A synthetic frame goes through the frame export's own launch and print,
  * and its PDF gets the same glyph-spacing check: both launch with the
@@ -74,6 +76,7 @@ import {
 	prepareExportMarkdown,
 } from "../src/lib/proposal-export/markdown";
 import type {
+	ExportDiagram,
 	ExportRaster,
 	ExportThemeTokens,
 	ProposalExportWarning,
@@ -81,12 +84,25 @@ import type {
 import {
 	BROKEN_FENCE_TEXT,
 	COVER_LEAD,
+	FULL_APPENDIX_HEADING,
+	FULL_APPENDIX_LETTER,
+	FULL_COVER,
 	FULL_FIGURE_COUNT,
+	FULL_FLOWCHART_FIGURE,
+	FULL_GANTT_FENCE,
+	FULL_GANTT_FIGURE,
+	FULL_GANTT_MILESTONE,
+	FULL_LAYERS_FIGURE,
+	FULL_LETTER,
 	FULL_PROPOSAL,
+	FULL_REFUSED_BARS_CAPTION,
+	FULL_REFUSED_BARS_FENCE,
+	FULL_REFUSED_BARS_FIGURE,
 	FULL_SECTIONS,
 	FULL_TEMPLATE_FENCES,
 	FULL_TITLE,
 	GENERATED_FIGURE_COUNT,
+	GENERATED_H1,
 	GENERATED_PROPOSAL,
 	GENERATED_SECTIONS,
 	GENERATED_TITLE,
@@ -483,6 +499,29 @@ interface PrintGeometry {
 		texts: number;
 	}[];
 	problems: FigureTextProblem[];
+	forms: PrintedForms;
+}
+
+/** Card grids, column pairs and headerless tables as the print page lays them out. */
+interface PrintedForms {
+	cardGrids: {
+		three: boolean;
+		/** Each card's width as a share of the grid's width. */
+		shares: number[];
+		/** How far apart the tops of the first row's cards are, in px. */
+		firstRowTopSpread: number;
+		smallestTextPx: number;
+		breakInside: string[];
+	}[];
+	columnPairs: {
+		columns: number;
+		shares: number[];
+		topSpread: number;
+	}[];
+	headerlessTables: {
+		hasHead: boolean;
+		firstRowBackground: string;
+	}[];
 }
 
 /**
@@ -621,7 +660,86 @@ async function measurePrintPage(
 			},
 			{ figures: [...templateFigures], epsilon: EPSILON_PX },
 		);
-		return { cover, ...measured };
+
+		// Fragmentation rules only apply in print, so read them there.
+		await page.emulateMedia({ media: "print" });
+		const forms: PrintedForms = await page.evaluate(
+			(classes) => {
+				const spread = (values: number[]) =>
+					values.length === 0
+						? 0
+						: Math.max(...values) - Math.min(...values);
+				const cardGrids = Array.from(
+					document.querySelectorAll(`.${classes.cards}`),
+				).map((grid) => {
+					const width = grid.getBoundingClientRect().width;
+					const cards = Array.from(
+						grid.querySelectorAll(`:scope > .${classes.card}`),
+					);
+					const boxes = cards.map((card) =>
+						card.getBoundingClientRect(),
+					);
+					const perRow = grid.classList.contains(classes.cardsThree)
+						? 3
+						: 2;
+					const texts = Array.from(
+						grid.querySelectorAll(`.${classes.cardText}`),
+					);
+					return {
+						three: grid.classList.contains(classes.cardsThree),
+						shares: boxes.map((box) => box.width / width),
+						firstRowTopSpread: spread(
+							boxes.slice(0, perRow).map((box) => box.top),
+						),
+						smallestTextPx: Math.min(
+							...texts.map((text) =>
+								Number.parseFloat(
+									getComputedStyle(text).fontSize,
+								),
+							),
+						),
+						breakInside: cards.map(
+							(card) => getComputedStyle(card).breakInside,
+						),
+					};
+				});
+				const columnPairs = Array.from(
+					document.querySelectorAll(`.${classes.columns}`),
+				).map((pair) => {
+					const width = pair.getBoundingClientRect().width;
+					const boxes = Array.from(
+						pair.querySelectorAll(`:scope > .${classes.column}`),
+					).map((column) => column.getBoundingClientRect());
+					return {
+						columns: boxes.length,
+						shares: boxes.map((box) => box.width / width),
+						topSpread: spread(boxes.map((box) => box.top)),
+					};
+				});
+				const headerlessTables = Array.from(
+					document.querySelectorAll(`table.${classes.headerless}`),
+				).map((table) => {
+					const firstCell = table.querySelector("tbody > tr > td");
+					return {
+						hasHead: table.querySelector("thead") !== null,
+						firstRowBackground: firstCell
+							? getComputedStyle(firstCell).backgroundColor
+							: "",
+					};
+				});
+				return { cardGrids, columnPairs, headerlessTables };
+			},
+			{
+				cards: PROPOSAL_THEME_CLASSES.cards,
+				cardsThree: PROPOSAL_THEME_CLASSES.cardsThree,
+				card: PROPOSAL_THEME_CLASSES.card,
+				cardText: PROPOSAL_THEME_CLASSES.cardText,
+				columns: PROPOSAL_THEME_CLASSES.columns,
+				column: PROPOSAL_THEME_CLASSES.column,
+				headerless: PROPOSAL_PRINT_CLASSES.headerless,
+			},
+		);
+		return { cover, ...measured, forms };
 	} finally {
 		await browser.close().catch(() => undefined);
 	}
@@ -631,6 +749,7 @@ interface PrintedFixture {
 	pdf: Buffer;
 	pages: string[];
 	geometry: PrintGeometry;
+	diagrams: ExportDiagram[];
 	diagramWarnings: ProposalExportWarning[];
 	templateFigures: number[];
 }
@@ -666,13 +785,17 @@ async function printFixture(
 			dateLabel: DATE_LABEL,
 			pass,
 		});
-	// Figure ids follow the fences' order, 1-based.
-	const templateFigures = prepared.diagramSources.flatMap((source, index) =>
-		readFigureKind(source) !== null &&
-		diagrams.diagrams[index]?.kind === "svg"
+	// Figure ids follow the fences' order, 1-based. A fence with a figure
+	// line its template refuses draws as Mermaid (a bars fence as a plain
+	// chart), without the template's `role="img"`.
+	const templateFigures = prepared.diagramSources.flatMap((source, index) => {
+		const diagram = diagrams.diagrams[index];
+		return readFigureKind(source) !== null &&
+			diagram?.kind === "svg" &&
+			/^<svg [^>]*\brole="img"/.test(diagram.svg)
 			? [index + 1]
-			: [],
-	);
+			: [];
+	});
 	const geometry = await measurePrintPage(
 		buildHtml({ kind: "final", pageNumbers: null }).html,
 		templateFigures,
@@ -687,6 +810,7 @@ async function printFixture(
 		pdf,
 		pages,
 		geometry,
+		diagrams: diagrams.diagrams,
 		diagramWarnings: diagrams.warnings,
 		templateFigures,
 	};
@@ -706,6 +830,29 @@ const framePrint = once(async () => {
 
 /** A heading as the contents page should list it: its typed number gone. */
 const withoutNumber = (heading: string) => heading.replace(/^\d+\.\s+/, "");
+
+/** Text with no whitespace, in capitals: how a letter-spaced label compares. */
+const label = (text: string) => compact(text).toUpperCase();
+
+const escapeRegExp = (text: string) =>
+	text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The page number the contents page prints for an entry, read from the
+ * entry's own line ("1Executive summary4"): its number or letter, its title,
+ * then the page.
+ */
+function contentsPageNumber(
+	contents: string,
+	number: string,
+	title: string,
+): number | null {
+	const line = new RegExp(
+		`^${escapeRegExp(number)}${escapeRegExp(title)}(\\d+)$`,
+		"m",
+	).exec(contents);
+	return line ? Number(line[1]) : null;
+}
 
 describe.skipIf(SKIP_BROWSER_E2E)("Proposal PDF printed by Chromium", () => {
 	it(
@@ -745,6 +892,8 @@ describe.skipIf(SKIP_BROWSER_E2E)(
 				sections: FULL_SECTIONS,
 				figures: FULL_FIGURE_COUNT,
 				templates: FULL_TEMPLATE_FENCES.length,
+				// The cover, then the cover letter's page.
+				contentsPage: 2,
 			},
 			{
 				name: "generated-shape",
@@ -752,6 +901,8 @@ describe.skipIf(SKIP_BROWSER_E2E)(
 				sections: GENERATED_SECTIONS,
 				figures: GENERATED_FIGURE_COUNT,
 				templates: GENERATED_FIGURE_COUNT,
+				// No letter: the contents follow the cover.
+				contentsPage: 1,
 			},
 		] as const;
 
@@ -760,11 +911,11 @@ describe.skipIf(SKIP_BROWSER_E2E)(
 			async () => {
 				const printed = await fullPrint();
 
-				// The broken fence left out, the gantt a placeholder, and no
-				// diagram printing its labels below the floor.
+				// The broken fence left out, the gantt drawn from its template,
+				// the refused bars drawn as a plain chart, and no diagram
+				// printing its labels below the floor.
 				expect(printed.diagramWarnings).toEqual([
 					{ code: "DIAGRAM_PLACEHOLDER", count: 1 },
-					{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 },
 				]);
 				expect(printed.templateFigures).toEqual(
 					FULL_TEMPLATE_FENCES.map((index) => index + 1),
@@ -841,7 +992,7 @@ describe.skipIf(SKIP_BROWSER_E2E)(
 					const { pages } = await fixture.print();
 
 					expect(compact(pages[0] ?? "")).not.toMatch(/Page/i);
-					const contents = compact(pages[1] ?? "");
+					const contents = compact(pages[fixture.contentsPage] ?? "");
 					expect(contents.toUpperCase()).toContain("CONTENTS");
 					for (const section of fixture.sections) {
 						expect(
@@ -851,9 +1002,14 @@ describe.skipIf(SKIP_BROWSER_E2E)(
 							),
 							section.heading,
 						).toBe(1);
-						expect(contents).not.toContain(
-							compact(section.heading),
-						);
+						// An appendix has no typed number to leave out.
+						if (
+							withoutNumber(section.heading) !== section.heading
+						) {
+							expect(contents).not.toContain(
+								compact(section.heading),
+							);
+						}
 					}
 				},
 				FIXTURE_BUDGET_MS,
@@ -899,12 +1055,284 @@ describe.skipIf(SKIP_BROWSER_E2E)(
 				for (const part of BROKEN_FENCE_TEXT) {
 					expect(text).not.toContain(compact(part));
 				}
-				// The gantt after it still prints, as a numbered placeholder.
+				// The gantt after it still prints, numbered after the figures
+				// before the broken fence.
 				expect(text).toContain(
 					compact(
-						`Figure ${FULL_FIGURE_COUNT}. Pilot schedule by workstream`,
+						`Figure ${FULL_GANTT_FIGURE}. Pilot schedule by workstream`,
 					),
 				);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"lays the full fixture's card grids out two to a row, three when there are three, and keeps each card whole",
+			async () => {
+				const { cardGrids } = (await fullPrint()).geometry.forms;
+
+				expect(cardGrids.map((grid) => grid.three)).toEqual([
+					false,
+					false,
+					true,
+				]);
+				for (const [index, grid] of cardGrids.entries()) {
+					const [low, high] = grid.three ? [0.29, 0.34] : [0.45, 0.5];
+					for (const share of grid.shares) {
+						expect(share, `grid ${index}`).toBeGreaterThan(low);
+						expect(share, `grid ${index}`).toBeLessThan(high);
+					}
+					expect(
+						grid.firstRowTopSpread,
+						`grid ${index}`,
+					).toBeLessThanOrEqual(EPSILON_PX);
+					// 9 pt or more: the label alone is set smaller.
+					expect(
+						grid.smallestTextPx,
+						`grid ${index}`,
+					).toBeGreaterThanOrEqual(12);
+					expect(new Set(grid.breakInside)).toEqual(
+						new Set(["avoid"]),
+					);
+				}
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"sets the full fixture's two columns side by side",
+			async () => {
+				const { columnPairs } = (await fullPrint()).geometry.forms;
+
+				expect(columnPairs).toHaveLength(1);
+				const [pair] = columnPairs;
+				expect(pair?.columns).toBe(2);
+				for (const share of pair?.shares ?? []) {
+					expect(share).toBeGreaterThan(0.42);
+					expect(share).toBeLessThan(0.5);
+				}
+				expect(pair?.topSpread).toBeLessThanOrEqual(EPSILON_PX);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"prints the full fixture's table with an empty header row without that row",
+			async () => {
+				const { headerlessTables } = (await fullPrint()).geometry.forms;
+
+				expect(headerlessTables).toEqual([
+					{ hasHead: false, firstRowBackground: "rgba(0, 0, 0, 0)" },
+				]);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"numbers the full fixture's contents, its appendix by letter, and opens the appendix as Appendix A",
+			async () => {
+				const { pages } = await fullPrint();
+				const contents = compact(pages[2] ?? "");
+				const text = compact(pages.join("\n"));
+				const numbered = FULL_SECTIONS.filter(
+					(section) => section.heading !== FULL_APPENDIX_HEADING,
+				);
+
+				for (const [index, section] of numbered.entries()) {
+					const title = compact(withoutNumber(section.heading));
+					expect(contents, section.heading).toContain(
+						`${index + 1}${title}`,
+					);
+				}
+				expect(contents).toContain(
+					`${FULL_APPENDIX_LETTER}${compact(FULL_APPENDIX_HEADING)}`,
+				);
+				expect(text).toContain(`APPENDIX${FULL_APPENDIX_LETTER}`);
+				// The appendix uses up no section number.
+				expect(text).not.toContain(`SECTION${numbered.length + 1}`);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"prints the full fixture's cover fence on the cover, in place of the defaults, and nowhere else",
+			async () => {
+				const { pages } = await fullPrint();
+				const cover = label(pages[0] ?? "");
+				const rest = compact(pages.slice(1).join("\n"));
+
+				expect(cover).toContain(label(FULL_COVER.eyebrow));
+				expect(cover).toContain(label(FULL_COVER.organization));
+				for (const line of [
+					...FULL_COVER.forLines,
+					...FULL_COVER.byLines,
+				]) {
+					expect(cover, line).toContain(label(line));
+				}
+				expect(cover).toContain(
+					label(`${DATE_LABEL} · Version ${FULL_COVER.version}`),
+				);
+				// The eyebrow replaces the fixed "Proposal".
+				expect(cover).not.toContain("PROPOSAL");
+				// The fence never prints as a block, on the cover or after it.
+				for (const key of ["eyebrow:", "organization:", "version:"]) {
+					expect(cover).not.toContain(label(key));
+					expect(rest).not.toContain(compact(key));
+				}
+				expect(rest).not.toContain(compact(FULL_COVER.byLines[1]));
+				// The fence after the stat tiles strands nothing: the lead
+				// stays on the cover, and only there.
+				expect(label(pages[0] ?? "")).toContain(label(COVER_LEAD));
+				expect(rest).not.toContain(compact(COVER_LEAD));
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"prints the full fixture's cover letter on page 2, between the cover and the contents, with the running footer",
+			async () => {
+				const { pages } = await fullPrint();
+				const letter = compact(pages[1] ?? "");
+				const text = compact(pages.join("\n"));
+
+				expect(letter).toContain(label(FULL_LETTER.heading));
+				expect(letter.toUpperCase()).toContain(label(FULL_LETTER.date));
+				expect(letter).toContain(compact(FULL_LETTER.subject));
+				expect(letter).toContain(compact(FULL_LETTER.signer));
+				expect(letter).toContain(compact(FULL_LETTER.signerRole));
+				expect(letter).toContain("Page2of");
+				// Not a section and not the contents.
+				expect(letter.toUpperCase()).not.toContain("CONTENTS");
+				expect(letter).not.toContain("SECTION");
+				// Printed once, on its own page: the body leaves it out.
+				expect(occurrences(text, compact(FULL_LETTER.subject))).toBe(1);
+				expect(compact(pages[0] ?? "")).not.toContain(
+					compact(FULL_LETTER.subject),
+				);
+				const contents = label(pages[2] ?? "");
+				expect(contents).toContain("CONTENTS");
+				expect(contents).not.toContain(label(FULL_LETTER.heading));
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"points each of the full fixture's contents entries at the page its opener prints on, past the letter",
+			async () => {
+				const { pages } = await fullPrint();
+				const contents = pages[2] ?? "";
+				let numbered = 0;
+				let previous = 3;
+
+				for (const section of FULL_SECTIONS) {
+					const title = withoutNumber(section.heading);
+					const appendix = section.heading === FULL_APPENDIX_HEADING;
+					if (!appendix) {
+						numbered++;
+					}
+					const page = contentsPageNumber(
+						contents,
+						appendix ? FULL_APPENDIX_LETTER : String(numbered),
+						title,
+					);
+					expect(page, section.heading).not.toBeNull();
+					// Sections start after the cover, the letter and the
+					// contents, in order.
+					expect(page ?? 0, section.heading).toBeGreaterThan(
+						previous,
+					);
+					previous = page ?? previous;
+					const opener = compact(pages[(page ?? 0) - 1] ?? "");
+					expect(opener, section.heading).toContain(
+						appendix
+							? `APPENDIX${FULL_APPENDIX_LETTER}`
+							: `SECTION${numbered}`,
+					);
+					expect(opener, section.heading).toContain(
+						compact(section.heading),
+					);
+				}
+				expect(
+					contentsPageNumber(
+						contents,
+						"1",
+						withoutNumber(FULL_SECTIONS[0]?.heading ?? ""),
+					),
+				).toBe(4);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"prints the full fixture's short flowchart on its opener's page, under the layers figure, rather than alone on the next",
+			async () => {
+				const { pages } = await fullPrint();
+				const pageOf = (figure: number) =>
+					pages.findIndex((page) =>
+						compact(page).includes(`Figure${figure}.`),
+					);
+
+				const layers = pageOf(FULL_LAYERS_FIGURE);
+				expect(layers).toBeGreaterThan(0);
+				expect(pageOf(FULL_FLOWCHART_FIGURE)).toBe(layers);
+				expect(compact(pages[layers] ?? "")).toContain("SECTION4");
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"draws the full fixture's gantt from its template, with its milestone",
+			async () => {
+				const printed = await fullPrint();
+				const diagram = printed.diagrams[FULL_GANTT_FENCE];
+
+				expect(diagram?.kind).toBe("svg");
+				const svg = diagram?.kind === "svg" ? diagram.svg : "";
+				expect(svg).toMatch(/^<svg [^>]*\brole="img"/);
+				expect(svg).toContain(FULL_GANTT_MILESTONE);
+				expect(printed.templateFigures).toContain(FULL_GANTT_FENCE + 1);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"prints the full fixture's bars fence its template refuses as a drawn chart, numbered in order",
+			async () => {
+				const printed = await fullPrint();
+				const diagram = printed.diagrams[FULL_REFUSED_BARS_FENCE];
+				const text = compact(printed.pages.join("\n"));
+
+				expect(diagram?.kind).toBe("svg");
+				const svg = diagram?.kind === "svg" ? diagram.svg : "";
+				expect(svg).not.toMatch(/^<svg [^>]*\brole="img"/);
+				expect(svg).toContain("xychart-bar");
+				expect(printed.templateFigures).not.toContain(
+					FULL_REFUSED_BARS_FENCE + 1,
+				);
+				expect(text).toContain(
+					compact(
+						`Figure ${FULL_REFUSED_BARS_FIGURE}. ${FULL_REFUSED_BARS_CAPTION}`,
+					),
+				);
+				// Drawn, not a placeholder: its last category label prints.
+				expect(text).toContain("W13");
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"prints the generated Main's own title on the cover, and never on a page of its own",
+			async () => {
+				const { pages } = await generatedPrint();
+				const text = compact(pages.join("\n"));
+
+				// The cover, the contents page, then one page per section.
+				expect(pages).toHaveLength(GENERATED_SECTIONS.length + 2);
+				expect(compact(pages[0] ?? "")).toContain(
+					compact(GENERATED_H1),
+				);
+				// The document's own name gives way to the title Main opens with.
+				expect(text).not.toContain(compact(GENERATED_TITLE));
 			},
 			FIXTURE_BUDGET_MS,
 		);

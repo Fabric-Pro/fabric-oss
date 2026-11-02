@@ -68,10 +68,10 @@ export function ProjectReports({ projectId: _projectId }: Props) {
 				getStartedPageId="reports"
 				badges={
 					<>
-						<div className="rounded-full border border-border/60 bg-background/50 px-3 py-1.5 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+						<div className="rounded-full border border-border/60 bg-background/50 px-3 py-1.5 text-xs uppercase tracking-wide text-muted-foreground">
 							{templates.length} templates available
 						</div>
-						<div className="rounded-full border border-border/60 bg-background/50 px-3 py-1.5 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+						<div className="rounded-full border border-border/60 bg-background/50 px-3 py-1.5 text-xs uppercase tracking-wide text-muted-foreground">
 							{instances.length} configured instances
 						</div>
 					</>
@@ -79,38 +79,38 @@ export function ProjectReports({ projectId: _projectId }: Props) {
 				aside={
 					<div className="flex h-full flex-col justify-between">
 						<div>
-							<p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								Reporting Rhythm
 							</p>
 							<div className="mt-4 grid grid-cols-3 gap-3">
-								<div className="rounded-2xl border border-border/60 bg-background/50 p-3 text-center">
+								<div className="rounded-lg border border-border/60 bg-background/50 p-3 text-center">
 									<p className="text-2xl font-semibold tabular-nums text-foreground">
 										{instances.length}
 									</p>
-									<p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+									<p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
 										Total
 									</p>
 								</div>
-								<div className="rounded-2xl border border-border/60 bg-background/50 p-3 text-center">
+								<div className="rounded-lg border border-border/60 bg-background/50 p-3 text-center">
 									<p className="text-2xl font-semibold tabular-nums text-primary">
 										{activeInstances}
 									</p>
-									<p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+									<p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
 										Active
 									</p>
 								</div>
-								<div className="rounded-2xl border border-border/60 bg-background/50 p-3 text-center">
+								<div className="rounded-lg border border-border/60 bg-background/50 p-3 text-center">
 									<p className="text-2xl font-semibold tabular-nums text-foreground/75">
 										{pausedInstances}
 									</p>
-									<p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+									<p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
 										Paused
 									</p>
 								</div>
 							</div>
 						</div>
-						<div className="mt-6 rounded-2xl border border-border/60 bg-card/40 p-4">
-							<p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+						<div className="mt-6 rounded-lg border border-border/60 bg-card/40 p-4">
+							<p className="text-xs uppercase tracking-wide text-muted-foreground">
 								Quick Focus
 							</p>
 							<p className="mt-2 text-sm text-foreground/85">

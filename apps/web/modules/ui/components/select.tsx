@@ -25,7 +25,7 @@ const SelectTrigger = ({
 			// below its content width inside the flex row so the clamp actually
 			// engages instead of overflowing the fixed `h-9` box and overlapping
 			// the label above / helper text below.
-			"flex h-9 w-full items-center justify-between gap-2 rounded-md bg-background border border-input px-3 py-2 text-base ring-offset-background placeholder:text-foreground/40 focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 [&>span]:min-w-0",
+			"flex h-9 w-full items-center justify-between gap-2 rounded-md bg-background border border-input px-3 py-2 text-base md:text-sm text-foreground transition-colors duration-150 ring-offset-background data-[placeholder]:text-muted-foreground hover:border-muted-foreground focus:outline-hidden focus:border-ring focus:ring-1 focus:ring-ring data-[state=open]:border-ring data-[state=open]:ring-1 data-[state=open]:ring-ring aria-invalid:border-destructive focus:aria-invalid:border-destructive focus:aria-invalid:ring-destructive data-[state=open]:aria-invalid:border-destructive data-[state=open]:aria-invalid:ring-destructive disabled:border-input disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 [&>span]:min-w-0",
 			className,
 		)}
 		{...props}
@@ -61,7 +61,7 @@ const SelectContent = ({
 	<SelectPrimitive.Portal>
 		<SelectPrimitive.Content
 			className={cn(
-				"data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 relative z-50 min-w-[8rem] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md data-[state=closed]:animate-out data-[state=open]:animate-in",
+				"data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 relative z-50 min-w-[8rem] overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md data-[state=closed]:animate-out data-[state=open]:animate-in",
 				position === "popper"
 					? "data-[side=left]:-translate-x-1 data-[side=top]:-translate-y-1 data-[side=right]:translate-x-1 data-[side=bottom]:translate-y-1"
 					: "",
@@ -90,7 +90,7 @@ const SelectLabel = ({
 }: React.ComponentProps<typeof SelectPrimitive.Label>) => (
 	<SelectPrimitive.Label
 		className={cn(
-			"px-2 py-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground",
+			"px-2.5 py-1.5 text-xs font-semibold text-muted-foreground",
 			className,
 		)}
 		{...props}
@@ -104,14 +104,14 @@ const SelectItem = ({
 }: React.ComponentProps<typeof SelectPrimitive.Item>) => (
 	<SelectPrimitive.Item
 		className={cn(
-			"relative flex w-full cursor-default select-none items-center rounded-md py-1.5 pr-8 pl-2 text-sm outline-hidden focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50",
+			"relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pr-8 pl-2.5 text-sm transition-colors duration-150 focus:outline-hidden focus:bg-accent focus:text-accent-foreground data-[state=checked]:font-medium data-disabled:pointer-events-none data-disabled:opacity-50",
 			className,
 		)}
 		{...props}
 	>
 		<span className="absolute right-2 flex size-3.5 items-center justify-center">
 			<SelectPrimitive.ItemIndicator>
-				<CheckIcon className="size-4" />
+				<CheckIcon className="size-4 text-primary" />
 			</SelectPrimitive.ItemIndicator>
 		</span>
 		<SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>

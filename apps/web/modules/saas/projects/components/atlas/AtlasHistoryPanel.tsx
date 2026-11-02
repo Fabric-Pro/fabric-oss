@@ -336,7 +336,7 @@ export function AtlasHistoryPanel({
 		<div className="flex flex-col">
 			<header className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2.5">
 				<div className="flex items-center gap-2">
-					<h3 className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+					<h3 className="text-[11px] uppercase tracking-wide text-muted-foreground">
 						{t("title")}
 					</h3>
 					{total > 0 && (

@@ -145,7 +145,7 @@ function PriorityRowImpl({
 					<button
 						type="button"
 						aria-label={`Reorder ${story.identifier}, position ${rank} of ${total}`}
-						className="mt-0.5 hidden cursor-grab touch-none rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:block"
+						className="mt-0.5 hidden cursor-grab touch-none rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring sm:block"
 						{...attributes}
 						{...listeners}
 					>
@@ -174,7 +174,7 @@ function PriorityRowImpl({
 							className={cn(
 								// `break-words`: a pasted URL or a space-less mega-
 								// token can't push the row into horizontal scroll.
-								"rounded-sm break-words font-medium text-foreground text-sm leading-snug hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+								"rounded-sm break-words font-medium text-foreground text-sm leading-snug hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 								isComplete &&
 									"text-muted-foreground line-through decoration-muted-foreground/40",
 							)}
@@ -215,7 +215,7 @@ function PriorityRowImpl({
 													?.focus();
 											});
 										}}
-										className="inline-flex items-center gap-1 rounded transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										className="inline-flex items-center gap-1 rounded transition-opacity hover:opacity-80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 									>
 										<PriorityBand
 											priority={story.priority}
@@ -295,7 +295,7 @@ function PriorityRowImpl({
 					aria-expanded={expanded}
 					aria-controls={detailId}
 					aria-label={`Details for ${story.identifier}`}
-					className="mt-0.5 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					className="mt-0.5 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 				>
 					<ChevronRightIcon
 						aria-hidden
@@ -350,7 +350,7 @@ function PriorityRowImpl({
 						</ul>
 						<Link
 							href={decisionLogHref}
-							className="inline-block rounded-sm text-primary-ink hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="inline-block rounded-sm text-primary-ink hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							{undisplayedQuestions > 0
 								? t("answerInDecisionLogMore", {
@@ -374,7 +374,7 @@ function PriorityRowImpl({
 					(story.createdFromProposalId && proposalHref ? (
 						<Link
 							href={proposalHref}
-							className="inline-flex items-center gap-1 rounded-sm text-primary-ink hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="inline-flex items-center gap-1 rounded-sm text-primary-ink hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							{t("createdFromProposal")}
 							{/* Chevron, not an up-right arrow: this navigates
@@ -397,7 +397,7 @@ function PriorityRowImpl({
 						href={story.externalUrl}
 						target="_blank"
 						rel="noopener noreferrer"
-						className="inline-flex items-center gap-1 rounded-sm text-primary-ink hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						className="inline-flex items-center gap-1 rounded-sm text-primary-ink hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						{t("openLinkedTicket")}
 						<ExternalLinkIcon aria-hidden className="size-3" />

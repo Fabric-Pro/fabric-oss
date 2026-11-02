@@ -1,5 +1,7 @@
 "use client";
 
+import { useLocationHash } from "@shared/hooks/use-location-hash";
+
 import { useEffect } from "react";
 
 /** Retry window covering hydration before giving up (~2s at 200ms). */
@@ -26,11 +28,11 @@ const RETRY_DELAY_MS = 200;
  * `querySelector` would miss every time.
  */
 export function useScrollToQuestion(ready: boolean): void {
+	const hash = useLocationHash();
 	useEffect(() => {
 		if (typeof window === "undefined" || !ready) {
 			return;
 		}
-		const hash = window.location.hash;
 		if (!hash.startsWith("#q-")) {
 			return;
 		}
@@ -82,5 +84,5 @@ export function useScrollToQuestion(ready: boolean): void {
 				clearTimeout(retryTimer);
 			}
 		};
-	}, [ready]);
+	}, [ready, hash]);
 }

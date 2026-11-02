@@ -12,7 +12,10 @@ import {
 	updateProject,
 } from "@repo/database";
 import type { Hono } from "hono";
-import { requireScope } from "../external-api/middleware/api-key-auth";
+import {
+	requireScope,
+	requireV1OwnerPermission,
+} from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import {
 	badRequest,
@@ -109,6 +112,14 @@ export function registerProjectRoutes(
 		);
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
+		}
+		const permissionRefusal = await requireV1OwnerPermission(
+			c,
+			ctx,
+			"projects:create",
+		);
+		if (permissionRefusal) {
+			return permissionRefusal;
 		}
 
 		let body: {

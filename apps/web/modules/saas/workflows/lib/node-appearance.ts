@@ -56,14 +56,12 @@ const ICONS_BY_NAME: Record<string, NodeIcon> = {
 type NodeTint = "trigger" | "ai" | "web" | "logic" | "integration" | "notify";
 
 const TILE_CLASSES: Record<NodeTint, string> = {
-	trigger:
-		"bg-[color-mix(in_srgb,var(--atlas-cat-integration)_16%,transparent)] text-[var(--atlas-cat-integration)]",
-	ai: "bg-[color-mix(in_srgb,var(--atlas-cat-infra)_16%,transparent)] text-[var(--atlas-cat-infra)]",
-	web: "bg-[color-mix(in_srgb,var(--atlas-cat-ops)_16%,transparent)] text-[var(--atlas-cat-ops)]",
-	logic: "bg-[color-mix(in_srgb,var(--atlas-cat-security)_16%,transparent)] text-[var(--atlas-cat-security)]",
-	integration:
-		"bg-[color-mix(in_srgb,var(--atlas-cat-ai)_16%,transparent)] text-[var(--atlas-cat-ai)]",
-	notify: "bg-[color-mix(in_srgb,var(--atlas-cat-data)_16%,transparent)] text-[var(--atlas-cat-data)]",
+	trigger: "bg-[#4F46E5] text-white shadow-2xs",
+	ai: "bg-[#8B5CF6] text-white shadow-2xs",
+	web: "bg-[#0284C7] text-white shadow-2xs",
+	logic: "bg-[#0D9488] text-white shadow-2xs",
+	integration: "bg-[#D97706] text-white shadow-2xs",
+	notify: "bg-[#2563EB] text-white shadow-2xs",
 };
 
 const ICON_CLASSES: Record<NodeTint, string> = {

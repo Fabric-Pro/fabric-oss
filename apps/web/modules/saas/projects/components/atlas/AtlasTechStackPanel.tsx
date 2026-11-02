@@ -260,7 +260,7 @@ export function AtlasTechStackPanel({
 		<div className="space-y-5">
 			{grouped.map(({ group, rows }) => (
 				<div key={group}>
-					<p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/70">
+					<p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
 						{t(GROUP_LABEL_KEY[group])}
 					</p>
 					<ul className="space-y-0.5">{rows.map(renderRow)}</ul>
@@ -295,7 +295,7 @@ export function AtlasTechStackPanel({
 						>
 							<AccordionTrigger className="py-2.5 hover:no-underline">
 								<span className="flex items-center gap-2">
-									<span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/70">
+									<span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
 										{t(GROUP_LABEL_KEY[group])}
 									</span>
 									<span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground/70">
@@ -317,19 +317,19 @@ export function AtlasTechStackPanel({
 
 	return (
 		<Collapsible open={open} onOpenChange={setOpen}>
-			<div className="rounded-xl border border-border/60 bg-card/95 shadow-sm">
+			<div className="rounded-lg border border-border/60 bg-card/95 shadow-sm">
 				<CollapsibleTrigger asChild>
 					<button
 						type="button"
-						className="flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						<div className="flex items-center gap-2">
-							<span className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+							<span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								{t("title")}
 							</span>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<span className="rounded text-muted-foreground/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+									<span className="rounded text-muted-foreground/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
 										<InfoIcon
 											aria-hidden="true"
 											className="size-3"

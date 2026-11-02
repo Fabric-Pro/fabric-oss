@@ -1,3 +1,4 @@
+import { RETIRED_SYSTEM_AGENT_IDS } from "@repo/agent-types";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 interface ConversationRow {
@@ -128,6 +129,20 @@ beforeEach(() => {
 	]);
 	mocks.countAgents.mockResolvedValue(1);
 	mocks.groupBy.mockImplementation(fakeGroupBy);
+});
+
+it("passes retired SYSTEM exclusions to both paged discovery and its total", async () => {
+	await invoke();
+	expect(mocks.listAgents).toHaveBeenCalledWith(
+		expect.objectContaining({
+			excludeSystemAgentIds: RETIRED_SYSTEM_AGENT_IDS,
+		}),
+	);
+	expect(mocks.countAgents).toHaveBeenCalledWith(
+		expect.objectContaining({
+			excludeSystemAgentIds: RETIRED_SYSTEM_AGENT_IDS,
+		}),
+	);
 });
 
 describe("listRegisteredAgents conversation counts", () => {

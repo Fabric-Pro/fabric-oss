@@ -1,12 +1,11 @@
 "use client";
 
-import "@excalidraw/excalidraw/index.css";
 import { cn } from "@ui/lib";
 import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
 
 const Excalidraw = dynamic(
-	async () => (await import("@excalidraw/excalidraw")).Excalidraw,
+	async () => (await import("./excalidraw-runtime")).Excalidraw,
 	{ ssr: false },
 );
 

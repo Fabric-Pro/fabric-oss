@@ -133,25 +133,7 @@ type Props = {
 /**
  * Full-detail review view for a single proposed backlog change.
  *
- * Solves the "approve before reviewed" UX gap: the AI-Update tray's
- * inline list shows ~200-char previews per item, which is not enough
- * to make an informed approval decision. This dialog opens from the
- * tray and renders the COMPLETE proposed change — full title, full
- * description, full acceptance criteria, full reasoning, parent
- * relationships, and (for updates) a stacked before/after diff that
- * does not truncate.
- *
- * Design notes:
- *   - Approve / Reject mutate the parent `selected` set so the user can
- *     toggle which items will be applied without leaving the dialog.
- *   - Prev / Next walk the list one item at a time. The parent records
- *     each visited index in `reviewedIndexes` so the user can see what
- *     they have already opened on returning to the list.
- *   - Mirrors the visual language of `PmSyncDiffModal` (header uses
- *     the serif `--font-serif`, identifying badges, monospace IDs) so
- *     the experience feels consistent across PM-sync and AI-Update
- *     diff flows.
- */
+ * Solves the "approve before reviewed"UX gap: the AI-Update tray's * inline list shows ~200-char previews per item, which is not enough * to make an informed approval decision. This dialog opens from the * tray and renders the COMPLETE proposed change — full title, full * description, full acceptance criteria, full reasoning, parent * relationships, and (for updates) a stacked before/after diff that * does not truncate. * * Design notes: * - Approve / Reject mutate the parent `selected` set so the user can * toggle which items will be applied without leaving the dialog. * - Prev / Next walk the list one item at a time. The parent records * each visited index in `reviewedIndexes` so the user can see what * they have already opened on returning to the list. * - Mirrors the visual language of `PmSyncDiffModal` (header uses * the serif `--font-semibold`, identifying badges, monospace IDs) so * the experience feels consistent across PM-sync and AI-Update * diff flows. */
 export function BacklogChangeDetailDialog({
 	open,
 	onOpenChange,
@@ -248,10 +230,7 @@ export function BacklogChangeDetailDialog({
 					{index + 1} of {totalCount}
 				</span>
 				<DialogHeader className="space-y-2 p-6 pb-4 pr-24 border-b shrink-0">
-					<DialogTitle
-						className="font-normal text-2xl"
-						style={{ fontFamily: "var(--font-serif)" }}
-					>
+					<DialogTitle className="font-semibold text-2xl">
 						{isCreate ? "New" : "Update"}: {change.title.to}
 					</DialogTitle>
 					<div className="flex items-center gap-2 flex-wrap">
@@ -566,7 +545,7 @@ export function BacklogChangeDetailDialog({
 
 					{/* Source + reasoning — context for why the AI proposed this. */}
 					<div className="rounded-md border border-dashed bg-muted/30 p-3 space-y-1">
-						<p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+						<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 							Why this was proposed
 						</p>
 						<p className="text-xs text-muted-foreground">
@@ -688,17 +667,17 @@ function DetailKindSelector({
 				break;
 			case "Home":
 				e.preventDefault();
-				if (selected !== options[0]!.value) {
-					onChange(options[0]!.value);
+				if (selected !== options[0]?.value) {
+					onChange(options[0]?.value);
 				}
-				focusOption(options[0]!.value);
+				focusOption(options[0]?.value);
 				break;
 			case "End":
 				e.preventDefault();
-				if (selected !== options[options.length - 1]!.value) {
-					onChange(options[options.length - 1]!.value);
+				if (selected !== options[options.length - 1]?.value) {
+					onChange(options[options.length - 1]?.value);
 				}
-				focusOption(options[options.length - 1]!.value);
+				focusOption(options[options.length - 1]?.value);
 				break;
 		}
 	};
@@ -728,7 +707,7 @@ function DetailKindSelector({
 								}
 							}}
 							className={cn(
-								"px-2 py-0.5 text-xs rounded font-medium leading-tight transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer",
+								"px-2 py-0.5 text-xs rounded font-medium leading-tight transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring cursor-pointer",
 								isActive
 									? opt.value === "BUG"
 										? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300"
@@ -848,7 +827,7 @@ function DetailDiffSection({
 			<div className="flex items-center justify-between gap-2">
 				<h3
 					id={headingId}
-					className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground"
+					className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground"
 				>
 					{label}
 					{isRejected && (
@@ -867,7 +846,7 @@ function DetailDiffSection({
 			</div>
 			{showFrom && (
 				<div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
-					<p className="text-[10px] uppercase tracking-[0.18em] text-destructive/80 mb-1">
+					<p className="text-[10px] uppercase tracking-wide text-destructive/80 mb-1">
 						Before
 					</p>
 					{/* Diff signal lives on the box chrome + Before/After
@@ -892,7 +871,7 @@ function DetailDiffSection({
 				{showFrom && (
 					<p
 						className={cn(
-							"text-[10px] uppercase tracking-[0.18em] mb-1",
+							"text-[10px] uppercase tracking-wide mb-1",
 							isRejected
 								? "text-muted-foreground"
 								: "text-success/80",
@@ -934,7 +913,7 @@ function MetadataField({
 	return (
 		<div className={cn("space-y-1", isRejected && "opacity-60")}>
 			<div className="flex items-center justify-between gap-2">
-				<p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+				<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 					{label}
 					{isRejected && changed && (
 						<span className="ml-2 normal-case tracking-normal text-[10px] text-muted-foreground/80">

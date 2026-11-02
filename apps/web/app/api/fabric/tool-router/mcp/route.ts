@@ -12,11 +12,15 @@
  * - tools/call - Execute a tool
  */
 
-import { fetchCredentialsByProvider } from "@repo/database";
+import {
+	canConnectOrganizationMcpConfigs,
+	canReadOrganizationMcpConfigs,
+	fetchCredentialsByProvider,
+} from "@repo/database";
 import { NextResponse } from "next/server";
 import {
-	TOOL_ROUTER_CALL_SCOPE,
 	sessionMayCallTools,
+	TOOL_ROUTER_CALL_SCOPE,
 	validateSession,
 } from "../session/route";
 
@@ -133,6 +137,19 @@ export async function POST(req: Request) {
 				});
 
 			case "tools/list":
+				if (
+					organizationId &&
+					!(await canReadOrganizationMcpConfigs(
+						userId,
+						organizationId,
+					))
+				) {
+					return jsonRpcError(
+						body.id,
+						-32003,
+						"Your organization role does not allow listing tools.",
+					);
+				}
 				return handleToolsList(body.id, userId, organizationId);
 
 			case "tools/call":
@@ -146,6 +163,19 @@ export async function POST(req: Request) {
 						body.id,
 						-32600,
 						`This API key does not have the "${TOOL_ROUTER_CALL_SCOPE}" scope required to execute tools.`,
+					);
+				}
+				if (
+					organizationId &&
+					!(await canConnectOrganizationMcpConfigs(
+						userId,
+						organizationId,
+					))
+				) {
+					return jsonRpcError(
+						body.id,
+						-32003,
+						"Your organization role does not allow calling tools.",
 					);
 				}
 				return handleToolsCall(

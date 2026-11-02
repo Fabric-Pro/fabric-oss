@@ -14,7 +14,10 @@ export {
 	getGatewaySession,
 	updateSessionOrganization,
 } from "./session-store";
+export type { AuthorizedConnectedServerToolCall } from "./tool-aggregator";
 export {
+	authorizeConnectedServerTool,
+	executeAuthorizedConnectedServerTool,
 	executeConnectedServerTool,
 	getAggregatedTools,
 	validateServerSelection,

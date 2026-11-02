@@ -17,7 +17,7 @@ export function NotificationsEmptyState({ message }: { message?: string }) {
 			<p className="relative mt-4 text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
 				{t("sectionLabel")}
 			</p>
-			<h3 className="relative mt-2 font-serif text-xl text-foreground">
+			<h3 className="relative mt-2 font-semibold text-xl text-foreground">
 				{t("empty.title")}
 			</h3>
 			<p className="relative mt-1 max-w-xs text-sm text-muted-foreground">

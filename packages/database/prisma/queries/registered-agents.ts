@@ -18,23 +18,21 @@ import type { RegisteredAgent } from "../generated/client";
  *
  * Personal agents are NEVER accessible in org context and vice versa.
  */
-export async function listRegisteredAgents({
+function registeredAgentWhere({
 	userId,
 	organizationId,
 	framework,
 	status,
 	scope,
-	limit = 50,
-	offset = 0,
+	excludeSystemAgentIds = [],
 }: {
 	userId: string;
 	organizationId?: string;
 	framework?: string;
 	status?: string;
 	scope?: string;
-	limit?: number;
-	offset?: number;
-}): Promise<RegisteredAgent[]> {
+	excludeSystemAgentIds?: readonly string[];
+}): Prisma.RegisteredAgentWhereInput {
 	// XOR PATTERN: Strict context isolation
 	const scopeConditions: Prisma.RegisteredAgentWhereInput[] = [
 		{ scope: "SYSTEM" },
@@ -48,15 +46,36 @@ export async function listRegisteredAgents({
 		scopeConditions.push({ scope: "USER", userId });
 	}
 
-	const where: Prisma.RegisteredAgentWhereInput = {
+	return {
 		OR: scopeConditions,
+		...(excludeSystemAgentIds.length > 0 && {
+			NOT: {
+				scope: "SYSTEM",
+				agentId: { in: [...excludeSystemAgentIds] },
+			},
+		}),
 		...(framework && { framework }),
 		...(status && { status }),
 		...(scope && { scope }),
 	};
+}
 
+export async function listRegisteredAgents({
+	limit = 50,
+	offset = 0,
+	...filters
+}: {
+	userId: string;
+	organizationId?: string;
+	framework?: string;
+	status?: string;
+	scope?: string;
+	excludeSystemAgentIds?: readonly string[];
+	limit?: number;
+	offset?: number;
+}): Promise<RegisteredAgent[]> {
 	return db.registeredAgent.findMany({
-		where,
+		where: registeredAgentWhere(filters),
 		orderBy: { createdAt: "desc" },
 		take: limit,
 		skip: offset,
@@ -175,25 +194,23 @@ export async function countRegisteredAgents({
 	organizationId,
 	framework,
 	status,
+	excludeSystemAgentIds = [],
 }: {
 	userId: string;
 	organizationId?: string;
 	framework?: string;
 	status?: string;
+	excludeSystemAgentIds?: readonly string[];
 }): Promise<number> {
-	const where: Prisma.RegisteredAgentWhereInput = {
-		OR: [
-			{ scope: "USER", userId },
-			...(organizationId
-				? [{ scope: "ORGANIZATION", organizationId }]
-				: []),
-			{ scope: "SYSTEM" },
-		],
-		...(framework && { framework }),
-		...(status && { status }),
-	};
-
-	return db.registeredAgent.count({ where });
+	return db.registeredAgent.count({
+		where: registeredAgentWhere({
+			userId,
+			organizationId,
+			framework,
+			status,
+			excludeSystemAgentIds,
+		}),
+	});
 }
 
 /** Consecutive failed probes required before an agent is marked ERROR. */

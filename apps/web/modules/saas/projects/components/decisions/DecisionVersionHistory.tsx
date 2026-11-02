@@ -276,7 +276,7 @@ export function DecisionVersionHistory({
 										status={viewing.status}
 									/>
 								</div>
-								<DialogTitle className="break-words font-serif text-xl font-normal">
+								<DialogTitle className="break-words text-xl font-semibold">
 									{comparing && canCompare
 										? `Comparing v${viewing.version} with current (v${currentVersion})`
 										: viewing.title}

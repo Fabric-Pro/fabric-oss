@@ -200,7 +200,7 @@ test.describe("F-1166 PM sync — conflict path", () => {
 		// (with or without the resolve-success invalidation).
 		await expect(dialog).not.toBeVisible({ timeout: 10_000 });
 		// resolveConflict's mock flipped the fixture to PENDING; the
-		// resolve-success invalidation refetches stories.list and the conflict
+		// resolve-success invalidation refetches stories.board and the conflict
 		// pill unmounts. Nothing else can refetch inside this window (60s
 		// staleTime; the 3s PENDING poll can't start from a CONFLICT-only
 		// cache), so this assertion fails if the invalidation regresses.

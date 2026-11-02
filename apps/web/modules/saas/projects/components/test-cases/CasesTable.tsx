@@ -135,7 +135,7 @@ export function CasesTableHeader({
 			// `overflow-x` silently capturing sticky descendants.
 			style={{ top: stickyTop }}
 			className={cn(
-				"sticky z-20 hidden rounded-t-xl border-border border-b px-3 @[670px]:grid @[670px]:gap-x-2",
+				"sticky z-20 hidden rounded-t-lg border-border border-b px-3 @[670px]:grid @[670px]:gap-x-2",
 				// OPAQUE. `bg-muted/55` let every row scroll straight through the
 				// header — two sets of text drawn over each other, which is what
 				// the table looked "corrupted" by. A sticky bar has to actually
@@ -235,7 +235,7 @@ export function CasesTableHeader({
 							{ column: label },
 						)}
 						className={cn(
-							"inline-flex min-w-0 items-center gap-1 rounded text-left uppercase tracking-[0.08em] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+							"inline-flex min-w-0 items-center gap-1 rounded text-left uppercase tracking-[0.08em] transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 							active && "text-foreground",
 						)}
 					>
@@ -338,15 +338,13 @@ export function CasesEmpty({
 	const t = useTranslations("projects.testCases");
 	return (
 		<div className="flex flex-col items-center gap-2.5 px-6 py-16 text-center">
-			<span className="inline-flex size-13 items-center justify-center rounded-2xl border bg-muted p-3">
+			<span className="inline-flex size-13 items-center justify-center rounded-lg border bg-muted p-3">
 				<ClipboardCheckIcon
 					aria-hidden="true"
 					className="size-6 text-muted-foreground"
 				/>
 			</span>
-			<h3 className="font-serif text-xl font-normal">
-				{t("empty.cases")}
-			</h3>
+			<h3 className="text-xl font-semibold">{t("empty.cases")}</h3>
 			<p className="max-w-lg text-muted-foreground text-sm leading-relaxed">
 				{t("empty.casesHint")}
 			</p>
@@ -391,7 +389,7 @@ export function CasesNoMatches({
 	const t = useTranslations("projects.testCases");
 	return (
 		<div className="flex flex-col items-center gap-2.5 px-6 py-14 text-center">
-			<span className="inline-flex size-11 items-center justify-center rounded-xl border bg-muted p-2.5">
+			<span className="inline-flex size-11 items-center justify-center rounded-lg border bg-muted p-2.5">
 				<SearchXIcon
 					aria-hidden="true"
 					className="size-5 text-muted-foreground"

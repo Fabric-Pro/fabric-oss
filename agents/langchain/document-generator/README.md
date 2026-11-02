@@ -49,7 +49,8 @@ pnpm dev
 curl http://localhost:8124/ok
 ```
 
-Visit API docs: http://localhost:8124/docs
+The unified server handles AG-UI and A2A on port 8124. Agent discovery is
+available at http://localhost:8124/.well-known/agent.json.
 
 ---
 
@@ -129,8 +130,7 @@ for await (const chunk of stream) {
 ```
 document-generator/
 ├── agent.ts              # Agent graph definition
-├── server.ts             # LangGraph server entry point
-├── langgraph.json        # LangGraph configuration
+├── unified-server.ts     # AG-UI and A2A server entry point
 ├── package.json          # Dependencies
 ├── tsconfig.json         # TypeScript config
 ├── Dockerfile            # Docker image
@@ -194,15 +194,19 @@ Optional:
 
 ## Troubleshooting
 
-### "In-mem server for JS graphs is not supported"
-**Solution**: Use `npx @langchain/langgraph-cli@latest dev` instead of `langgraph dev`
+### Development server
 
-This is already configured in `package.json`:
-```json
-"scripts": {
-  "dev": "npx @langchain/langgraph-cli@latest dev --host localhost --port 8124"
-}
+Run the existing unified server directly:
+```bash
+pnpm dev
 ```
+
+It serves both protocols on port 8124 without downloading another server.
+The standalone `dev:a2a` command remains available on port 8224 when only A2A
+is needed; run it separately from the unified server.
+
+Use `pnpm start` for the built unified server, which includes A2A. The
+`start:a2a` alias is removed because the build emits only the unified server.
 
 ### Port 8124 Already in Use
 ```bash

@@ -264,7 +264,7 @@ export function RoadmapSettingsMenu({
 				<div>
 					<p
 						id={headingId}
-						className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground"
+						className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
 					>
 						{t("settings")}
 					</p>
@@ -372,7 +372,7 @@ export function RoadmapSettingsMenu({
 						{/* Card fields — drag to reorder; Title is always first. */}
 						<div className="space-y-2">
 							<div className="flex items-center justify-between">
-								<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+								<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 									{t("cardFields")}
 								</p>
 								<span className="text-[10px] text-muted-foreground/50">

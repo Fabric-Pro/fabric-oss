@@ -622,6 +622,121 @@ describe("editVisual", () => {
 		expect(edit.appendProposalVisualSpec).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		[
+			"layers",
+			[
+				"## Architecture",
+				"",
+				"The platform has a channels layer with the web shop and the mobile app, and a services layer with orders and billing.",
+			],
+			{
+				kind: "layers",
+				title: null,
+				layers: [
+					{
+						name: "Channels",
+						description: null,
+						components: ["Web shop", "Mobile app"],
+					},
+					{
+						name: "Services",
+						description: null,
+						components: ["Orders", "Billing"],
+					},
+				],
+				crosscutting: null,
+			},
+		],
+		[
+			"team",
+			[
+				"## Team",
+				"",
+				"Example Studio provides a delivery lead and an engineer. Example Retail provides a product owner.",
+			],
+			{
+				kind: "team",
+				title: null,
+				proposer: {
+					name: "Example Studio",
+					description: null,
+					members: [
+						{
+							role: "Delivery lead",
+							name: null,
+							description: null,
+						},
+						{ role: "Engineer", name: null, description: null },
+					],
+				},
+				client: {
+					name: "Example Retail",
+					description: null,
+					members: [
+						{
+							role: "Product owner",
+							name: null,
+							description: null,
+						},
+					],
+				},
+				shared: null,
+			},
+		],
+	] as const)(
+		"keeps the %s figure line on an edit of a stored diagram of that kind",
+		async (kind, section, spec) => {
+			const body = [
+				`%% fabric-visual: ${MARKED_ID}`,
+				`%% figure: ${kind}`,
+				"flowchart TD",
+				'subgraph l0["Old"]',
+				'l0c0["Old"]',
+				"end",
+			].join("\n");
+			const document = world.documents.get(DOC_A);
+			if (document) {
+				document.content = [
+					"# Example Proposal",
+					"",
+					...section,
+					"",
+					"```mermaid",
+					body,
+					"```",
+				].join("\n");
+			}
+			edit.getLatestProposalVisualSpec.mockResolvedValue({
+				...(await edit.getLatestProposalVisualSpec()),
+				kind,
+			});
+			modelReturns(spec);
+
+			const result = await editVisual(USERS.editor, {
+				fenceSourceHash: visualSourceHash(body),
+			});
+
+			expect(result).toMatchObject({ status: "CANDIDATE", kind });
+			const fence = String(result.fence);
+			expect(fence.split("\n").slice(0, 3)).toEqual([
+				`%% fabric-visual: ${MARKED_ID}`,
+				`%% figure: ${kind}`,
+				"flowchart TD",
+			]);
+			// The extraction was asked for the stored kind, not best fit.
+			expect(lastModelCall().prompt).toContain(
+				`Requested kind: ${kind}.`,
+			);
+			expect(
+				edit.appendProposalVisualSpec.mock.calls[0][0],
+			).toMatchObject({
+				kind,
+				sourceHash: visualSourceHash(fence),
+			});
+		},
+	);
+
 	it("answers UNSUPPORTED_DIAGRAM for a gantt chart", async () => {
 		const result = await editVisual(USERS.editor, {
 			visualId: undefined,

@@ -88,6 +88,31 @@ describe.each<{
 		deadlineLabel: "ORCHESTRATOR_STREAM_WINDOW_MS",
 	},
 	{
+		// The Atlas chat answers inside the request; its answer stops in
+		// time for the service to save the partial and the run to end.
+		name: "agents/runtime (Atlas chat)",
+		routePath: "app/api/agents/runtime/[[...path]]/route.ts",
+		deadlinePath: "modules/saas/agents/runtime/atlas-chat-engine.ts",
+		deadlinePattern: /ATLAS_ANSWER_WINDOW_MS = (\d+)/,
+		deadlineLabel: "ATLAS_ANSWER_WINDOW_MS",
+	},
+	{
+		// The CUGA engine ends its relay to the agent at this deadline, so
+		// the run ends with an error before the platform cuts the response.
+		name: "agents/runtime (CUGA relay)",
+		routePath: "app/api/agents/runtime/[[...path]]/route.ts",
+		deadlinePath: "modules/saas/agents/runtime/cuga-generalist-engine.ts",
+		deadlinePattern: /CUGA_RELAY_DEADLINE_MS = (\d+)/,
+		deadlineLabel: "CUGA_RELAY_DEADLINE_MS",
+	},
+	{
+		name: "agents/runtime (data-analyst)",
+		routePath: "app/api/agents/runtime/[[...path]]/route.ts",
+		deadlinePath: "modules/saas/agents/runtime/data-analyst-engine.ts",
+		deadlinePattern: /DATA_ANALYST_RUN_LIMIT_MS = (\d+)/,
+		deadlineLabel: "DATA_ANALYST_RUN_LIMIT_MS",
+	},
+	{
 		name: "orchestrator-temporal/stream",
 		routePath:
 			"app/api/agents/fabric-ai/orchestrator-temporal/stream/route.ts",

@@ -23,7 +23,11 @@
  *    or the 1,000-batch safety cap (5M rows) fires.
  */
 
-import { db } from "@repo/database";
+import {
+	db,
+	purgeExpiredConversationTurnEvents,
+	purgeExpiredMcpDurableToolCalls,
+} from "@repo/database";
 import { logger } from "@repo/logs";
 
 /** Batch size per DELETE statement. */
@@ -63,6 +67,42 @@ function readRetentionDays(): number {
 }
 
 export async function purgeExpiredRequestSpansActivity(): Promise<PurgeExpiredRequestSpansResult> {
+	// MCP idempotency receipts share this existing daily retention activity so
+	// no workflow control flow changes and no new schedule is required.
+	try {
+		for (let batch = 0; batch < MAX_BATCHES; batch++) {
+			if ((await purgeExpiredMcpDurableToolCalls()) === 0) {
+				break;
+			}
+			if (batch === MAX_BATCHES - 1) {
+				logger.warn(
+					"[McpDurableRetention] Expired receipt purge reached its batch limit",
+				);
+			}
+		}
+	} catch {
+		logger.warn(
+			"[McpDurableRetention] Expired receipt purge failed; continuing request-span retention",
+		);
+	}
+	// Replay output is a separate, short-lived transport cache. Purge it even
+	// when an operator retains request spans, without touching chat history.
+	try {
+		for (let batch = 0; batch < MAX_BATCHES; batch++) {
+			if ((await purgeExpiredConversationTurnEvents()) === 0) {
+				break;
+			}
+			if (batch === MAX_BATCHES - 1) {
+				logger.warn(
+					"[ChatReplayRetention] Expired-output purge reached its batch limit",
+				);
+			}
+		}
+	} catch {
+		logger.warn(
+			"[ChatReplayRetention] Expired-output purge failed; continuing request-span retention",
+		);
+	}
 	const retentionDays = readRetentionDays();
 
 	if (retentionDays <= 0) {

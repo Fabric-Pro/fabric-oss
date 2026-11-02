@@ -27,8 +27,8 @@ export const UserAvatar = ({
 
 	return (
 		<Avatar ref={ref} className={className}>
-			<AvatarImage src={avatarSrc} />
-			<AvatarFallback className="bg-secondary/10 text-secondary">
+			<AvatarImage src={avatarSrc} className="object-cover" />
+			<AvatarFallback className="rounded-[inherit] bg-primary font-mono font-medium text-primary-foreground">
 				{initials}
 			</AvatarFallback>
 		</Avatar>

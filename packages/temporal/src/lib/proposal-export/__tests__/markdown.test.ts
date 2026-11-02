@@ -21,6 +21,7 @@ vi.mock(
 	},
 );
 
+import { coverFence } from "../document-content";
 import { prepareExportMarkdown } from "../markdown";
 
 /** A node without its source positions, so only what is printed is checked. */
@@ -123,6 +124,156 @@ describe("prepareExportMarkdown", () => {
 				.filter((node) => node.type === "heading")
 				.map((node) => JSON.stringify(node)),
 		).toHaveLength(2);
+	});
+
+	it("drops citation markers from cards, columns and stat tiles line by line, and leaves any other fence as written", () => {
+		const fences = prepareExportMarkdown(
+			[
+				"```cards",
+				"01",
+				"**Route planning**",
+				"Saves 12 hours a week [S2]",
+				"[S4]",
+				"Before `[S1]` each morning.",
+				"",
+				"Pilot",
+				"Twelve weeks.",
+				"```",
+				"",
+				"```Columns",
+				"### Today",
+				"- Paper route sheets [cite]",
+				"- [S5]",
+				"---",
+				"One schedule.",
+				"```",
+				"",
+				"```stat-tiles",
+				"Hours saved [S1]: 12",
+				"Pilot sites: 3 [S3]",
+				"```",
+				"",
+				"```text",
+				"Literal [S1] stays.",
+				"```",
+			].join("\n"),
+		).root.children.map((node) => (node.type === "code" ? node.value : ""));
+
+		expect(fences).toEqual([
+			[
+				"01",
+				"**Route planning**",
+				"Saves 12 hours a week",
+				// A line of markers alone goes, so the card is not split.
+				"Before `[S1]` each morning.",
+				"",
+				"Pilot",
+				"Twelve weeks.",
+			].join("\n"),
+			["### Today", "- Paper route sheets", "---", "One schedule."].join(
+				"\n",
+			),
+			["Hours saved: 12", "Pilot sites: 3"].join("\n"),
+			"Literal [S1] stays.",
+		]);
+	});
+
+	it("drops citation markers from a cover fence's values line by line, so the cover still reads it", () => {
+		const prepared = prepareExportMarkdown(
+			[
+				"# Proposal for Example Harbor Co",
+				"",
+				"```cover",
+				"eyebrow: Proposal · Operations board [S1]",
+				"for: Example Harbor Co [S3]",
+				"for: 1 Example Quay [S2, S4]",
+				"[S5]",
+				"by: Example Delivery Team [cite]",
+				"by: `[S1]` example.com",
+				"version: 12",
+				"```",
+				"",
+				"## 1. Summary",
+			].join("\n"),
+		);
+		const cover = prepared.root.children.find(
+			(node) => node.type === "code",
+		);
+
+		expect(cover?.type === "code" && cover.lang).toBe("cover");
+		expect(cover?.type === "code" && cover.value).toBe(
+			[
+				"eyebrow: Proposal · Operations board",
+				"for: Example Harbor Co",
+				"for: 1 Example Quay",
+				// A line of markers alone goes, rather than stay a line the
+				// cover would refuse.
+				"by: Example Delivery Team",
+				// A marker written inside backticks stays, as in prose.
+				"by: `[S1]` example.com",
+				"version: 12",
+			].join("\n"),
+		);
+		expect(prepared.diagramSources).toEqual([]);
+	});
+
+	it("drops a cover line whose whole value was a marker, so the cover still reads the block", () => {
+		const prepared = prepareExportMarkdown(
+			[
+				"```cover",
+				"eyebrow: Proposal · Operations board",
+				"version: [S2]",
+				"for: \\[S1\\]",
+				"```",
+				"",
+				"## 1. Summary",
+			].join("\n"),
+		);
+		const cover = prepared.root.children[0];
+
+		expect(cover?.type === "code" && cover.value).toBe(
+			"eyebrow: Proposal · Operations board",
+		);
+		expect(coverFence(prepared.root)?.details).toMatchObject({
+			eyebrow: "Proposal · Operations board",
+			version: null,
+			forLines: [],
+		});
+	});
+
+	it("drops citation markers from a diagram's quoted text, so a bar chart's labels print without them", () => {
+		const prepared = prepareExportMarkdown(
+			[
+				"## Figures",
+				"",
+				"```mermaid",
+				"%% figure: bars",
+				"xychart-beta horizontal",
+				'  title "Payback by scenario [cite]"',
+				'  x-axis ["Cost [S3]", "Revenue", "Savings [S1, S2]"]',
+				'  y-axis "months [S4]" 0 --> 30',
+				"  bar [9, 4, 12]",
+				"```",
+				"",
+				"```mermaid",
+				"flowchart LR",
+				'  A["Intake [S2]"] --> B[S3]',
+				"  B -->|Approved [S5]| C[Done]",
+				"  C -.->|[cite]| D[Archive]",
+				"```",
+			].join("\n"),
+		);
+		const [bars, flow] = prepared.diagramSources;
+
+		expect(bars).not.toMatch(/\[(?:S\d|cite)/);
+		expect(bars).toContain('title "Payback by scenario"');
+		expect(bars).toContain('x-axis ["Cost", "Revenue", "Savings"]');
+		expect(bars).toContain('y-axis "months" 0 --> 30');
+		// Quoted and edge labels lose their markers; an unquoted bracket is a
+		// node shape.
+		expect(flow).toContain('A["Intake"] --> B[S3]');
+		expect(flow).toContain("B -->|Approved| C[Done]");
+		expect(flow).toContain("C -.-> D[Archive]");
 	});
 
 	it("keeps a Sources section of prose in the parsed tree", () => {

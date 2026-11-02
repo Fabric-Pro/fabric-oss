@@ -20,7 +20,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 const sendMessageSecure = vi.fn();
-vi.mock("@repo/agent-core", () => ({
+vi.mock("@repo/agent-core/a2a", () => ({
 	SecureA2AClient: class {
 		sendMessageSecure = (...args: unknown[]) => sendMessageSecure(...args);
 	},

@@ -99,7 +99,7 @@ export function MessageAttachmentList({ attachments, align = "end" }: Props) {
 										href={att.previewUrl}
 										target="_blank"
 										rel="noreferrer"
-										className="block overflow-hidden rounded-md border border-border bg-muted/40 shadow-sm motion-safe:transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card"
+										className="block overflow-hidden rounded-md border border-border bg-muted/40 shadow-sm motion-safe:transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card"
 									>
 										{/* biome-ignore lint/a11y/useAltText: dynamic */}
 										<img
@@ -155,7 +155,7 @@ export function MessageAttachmentList({ attachments, align = "end" }: Props) {
 										href={att.previewUrl}
 										target="_blank"
 										rel="noreferrer"
-										className="inline-flex items-center gap-1 rounded-sm hover:text-foreground motion-safe:transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card"
+										className="inline-flex items-center gap-1 rounded-sm hover:text-foreground motion-safe:transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card"
 									>
 										<Paperclip
 											className="size-2.5"

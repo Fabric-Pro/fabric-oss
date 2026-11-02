@@ -4,15 +4,12 @@
  * Uses a lightweight LLM call to help users iteratively refine
  * their plan request before submitting to Pattern. The LLM asks
  * clarifying questions and structures the request for better plan quality.
+ * The agent runtime's `weave-refine` engine streams the same turn
+ * (`../lib/refine-request-turn.ts`, `../lib/refine-response.ts`).
  */
 
 import { ORPCError } from "@orpc/server";
-import {
-	generateText,
-	getAIModelWithMetadata,
-	logModelUsageAsync,
-} from "@repo/ai";
-import { db, hasProjectAccess } from "@repo/database";
+import { generateText } from "@repo/ai";
 import { z } from "zod";
 import { rethrowChatGptPlanRefusal } from "../../../lib/chatgpt-plan-errors";
 import {
@@ -21,6 +18,15 @@ import {
 	requireProjectPermission,
 	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import {
+	assertRefineProjectAccess,
+	buildRefinePrompt,
+	resolveRefineModel,
+} from "../lib/refine-request-turn";
+import {
+	parseRefineResponse,
+	REFINE_SYSTEM_PROMPT,
+} from "../lib/refine-response";
 
 const RefineRequestInputSchema = z.object({
 	projectId: z.string(),
@@ -39,26 +45,6 @@ const RefineRequestInputSchema = z.object({
 		)
 		.default([]),
 });
-
-const SYSTEM_PROMPT = `You are helping a user refine a task description for an AI agent team (Fabric Weave).
-The team includes: Thread (code analysis), Spindle (external research), Shuttle (implementation), Weft (quality review), and Warp (security audit).
-
-Your job:
-1. Ask clarifying questions about scope, constraints, edge cases, and acceptance criteria
-2. After each exchange, produce an improved version of the request
-3. When the request is clear enough for the agent team to execute well, say so
-
-Be concise and direct. Focus on what the agents need to know:
-- What exactly should change or be built?
-- Are there specific files, endpoints, or components involved?
-- What are the acceptance criteria?
-- Are there security or performance constraints?
-- Should any existing behavior be preserved?
-
-Respond in this format:
-FEEDBACK: <your clarifying question or confirmation>
-UPDATED_MESSAGE: <the improved request incorporating all context so far>
-READY: <true if the request is clear enough, false if more detail would help>`;
 
 export const refineRequestProcedure = protectedProcedure
 	.use(requireProjectPermission(Permissions.AGENT_EXECUTE))
@@ -79,101 +65,31 @@ export const refineRequestProcedure = protectedProcedure
 			userId,
 		);
 
-		const hasAccess = await hasProjectAccess(
+		await assertRefineProjectAccess(
 			input.projectId,
 			userId,
 			organizationId,
 		);
 
-		if (!hasAccess) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You don't have access to this project",
-			});
-		}
-
-		// Fetch project context for the LLM
-		const project = await db.project.findUnique({
-			where: { id: input.projectId },
-			select: { name: true, description: true, techStack: true },
+		const prompt = await buildRefinePrompt({
+			projectId: input.projectId,
+			currentMessage: input.currentMessage,
+			refinementInput: input.refinementInput,
+			history: input.history,
 		});
 
-		const projectContext = project
-			? `Project: ${project.name}${project.techStack?.length ? `\nTech stack: ${project.techStack.join(", ")}` : ""}${project.description ? `\nDescription: ${project.description}` : ""}`
-			: "";
-
-		// Build the conversation for the LLM
-		const conversationParts: string[] = [];
-		if (projectContext) {
-			conversationParts.push(
-				`<project-context>\n${projectContext}\n</project-context>`,
-			);
-		}
-		conversationParts.push(
-			`Current plan request:\n${input.currentMessage}`,
-		);
-
-		if (input.history.length > 0) {
-			conversationParts.push(
-				"\nPrevious refinement exchanges:",
-				...input.history.map(
-					(h) =>
-						`${h.role === "user" ? "User" : "Assistant"}: ${h.content}`,
-				),
-			);
-		}
-
-		conversationParts.push(
-			`\nUser's latest input: ${input.refinementInput}`,
-		);
-
-		const startTime = Date.now();
-
 		try {
-			const { model, metadata, trackUsage } =
-				await getAIModelWithMetadata(
-					{ taskType: "SIMPLE" },
-					{ userId, organizationId: organizationId ?? undefined },
-				);
+			const model = await resolveRefineModel({ userId, organizationId });
 
-			trackUsage();
-
-			const { text, usage } = await generateText({
+			const { text } = await generateText({
 				model,
-				instructions: SYSTEM_PROMPT,
-				prompt: conversationParts.join("\n\n"),
+				instructions: REFINE_SYSTEM_PROMPT,
+				prompt,
 			});
-
-			logModelUsageAsync({
-				context: {
-					userId,
-					organizationId: organizationId ?? undefined,
-				},
-				metadata,
-				taskType: "SIMPLE",
-				usage,
-				latencyMs: Date.now() - startTime,
-				projectId: input.projectId,
-			});
-
-			// Parse the structured response
-			const feedbackMatch = text.match(
-				/FEEDBACK:\s*([\s\S]*?)(?=\nUPDATED_MESSAGE:|$)/,
-			);
-			const updatedMessageMatch = text.match(
-				/UPDATED_MESSAGE:\s*([\s\S]*?)(?=\nREADY:|$)/,
-			);
-			const readyMatch = text.match(/READY:\s*(true|false)/i);
-
-			const feedback = feedbackMatch?.[1]?.trim() || text;
-			const updatedMessage =
-				updatedMessageMatch?.[1]?.trim() || input.currentMessage;
-			const isReady = readyMatch?.[1]?.toLowerCase() === "true";
 
 			return {
 				success: true,
-				feedback,
-				updatedMessage,
-				isReady,
+				...parseRefineResponse(text, input.currentMessage),
 			};
 		} catch (error) {
 			rethrowChatGptPlanRefusal(error);

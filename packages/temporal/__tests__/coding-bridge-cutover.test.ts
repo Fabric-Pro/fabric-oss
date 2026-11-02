@@ -15,6 +15,21 @@ beforeEach(async () => {
 		const body = parts.length
 			? JSON.parse(Buffer.concat(parts).toString())
 			: {};
+		if (req.url === "/sessions/readiness") {
+			res.setHeader("Content-Type", "application/json");
+			res.end(
+				JSON.stringify({
+					protocolVersion: 2,
+					profileId: "example-profile",
+					ready: true,
+					capabilities: {
+						durableReceipts: true,
+						wholeRunCancellation: true,
+					},
+				}),
+			);
+			return;
+		}
 		calls.push({ path: req.url ?? "", body });
 		res.setHeader("Content-Type", "application/json");
 		if (req.url === "/webhook") {

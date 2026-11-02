@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { store, approvals, member, actor, calls, db } = await vi.hoisted(
-	async () => {
+const { store, approvals, member, actor, calls, db, ownerPermission } =
+	await vi.hoisted(async () => {
 		const { createWorkflowIntegrationStore } = await import(
 			"../../integrations/__tests__/procedures/workflow-integration-store"
 		);
@@ -100,9 +100,16 @@ const { store, approvals, member, actor, calls, db } = await vi.hoisted(
 				},
 			},
 		};
-		return { store, approvals, member, actor, calls, db };
-	},
-);
+		return {
+			store,
+			approvals,
+			member,
+			actor,
+			calls,
+			db,
+			ownerPermission: { allowed: true },
+		};
+	});
 vi.mock("@repo/database/prisma/client", () => ({ db }));
 vi.mock("@repo/database", async () => ({
 	db,
@@ -114,6 +121,19 @@ vi.mock("@repo/utils", () => ({ decryptApiKey: (value: string) => value }));
 vi.mock("../../external-api/middleware/api-key-auth", () => ({
 	requireScope: () => async (_c: unknown, next: () => Promise<void>) =>
 		next(),
+	requireV1OwnerPermission: async (
+		c: { json: (body: unknown, status: number) => unknown },
+		_context: unknown,
+		scope: string,
+	) =>
+		ownerPermission.allowed
+			? null
+			: c.json(
+					{
+						error: `The key's owner no longer holds the access required for ${scope} in this organization`,
+					},
+					403,
+				),
 }));
 vi.mock("../helpers", () => ({
 	resolveV1Context: async () => ({ ...actor }),
@@ -186,7 +206,32 @@ beforeEach(() => {
 	calls.length = 0;
 	actor.userId = "requester";
 	member.mockReset().mockResolvedValue({ id: "member-example" });
+	ownerPermission.allowed = true;
 });
+
+describe("integration actions require the key owner's live INTEGRATION_USE", () => {
+	it.each([
+		"/integrations/gmail/read",
+		"/integrations/approvals/approval-missing/approve",
+		"/integrations/approvals/approval-missing/deny",
+	])(
+		"refuses a viewer's personal key on POST %s before executing or deciding",
+		async (path) => {
+			seed("requester-connection", "requester");
+			ownerPermission.allowed = false;
+
+			const response = await post(path);
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({
+				error: "The key's owner no longer holds the access required for integrations:execute in this organization",
+			});
+			expect(calls).toEqual([]);
+			expect(approvals).toEqual([]);
+		},
+	);
+});
+
 describe("v1 connection identity", () => {
 	it("does not execute or advertise another member's private Gmail grant", async () => {
 		seed("private", "teammate");

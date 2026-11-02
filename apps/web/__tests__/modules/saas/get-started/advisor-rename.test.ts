@@ -63,12 +63,12 @@ const assistantBody = stringAt("onboarding.tour.steps.assistant.body");
 const allItems = GET_STARTED_GROUPS.flatMap((group) => group.items);
 
 describe("Get Started — Advisor rename", () => {
-	it("the tour step introduces Advisor by name", () => {
-		expect(assistantTitle).toBe("Meet Advisor, your AI assistant");
+	it("the tour step introduces Genie by name", () => {
+		expect(assistantTitle).toBe("Meet Genie, your AI assistant");
 	});
 
-	it("the tour step body names Advisor and not Nexus", () => {
-		expect(assistantBody).toContain("Advisor");
+	it("the tour step body names Genie and not Nexus", () => {
+		expect(assistantBody).toContain("Genie");
 		expect(assistantBody).not.toContain("Nexus");
 	});
 

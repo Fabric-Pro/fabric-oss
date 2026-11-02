@@ -269,10 +269,10 @@ export function AtlasOverview({
 		<div className="space-y-4">
 			{isLoading ? (
 				<div className="space-y-4">
-					<Skeleton className="h-72 w-full rounded-xl" />
+					<Skeleton className="h-72 w-full rounded-lg" />
 					<div className="grid gap-4 lg:grid-cols-2">
-						<Skeleton className="h-80 w-full rounded-xl" />
-						<Skeleton className="h-80 w-full rounded-xl" />
+						<Skeleton className="h-80 w-full rounded-lg" />
+						<Skeleton className="h-80 w-full rounded-lg" />
 					</div>
 				</div>
 			) : (
@@ -286,7 +286,7 @@ export function AtlasOverview({
 					    six headline stats with the language mix + analysed-commit
 					    footer beneath. Below lg the two columns stack (text → stats
 					    → languages). */}
-					<div className="overflow-hidden rounded-xl border border-border/60">
+					<div className="overflow-hidden rounded-lg border border-border/60">
 						<div className="grid gap-px bg-border/60 lg:grid-cols-[1.8fr_1fr]">
 							{/* LEFT — summary + inline tour. */}
 							<div className="relative overflow-hidden bg-card px-6 py-5 lg:px-7 lg:py-6">
@@ -315,7 +315,7 @@ export function AtlasOverview({
 									<EditorialLabel>
 										{t("heroLabel")}
 									</EditorialLabel>
-									<h2 className="mt-3 max-w-[26ch] font-serif text-2xl font-normal leading-tight tracking-tight text-foreground lg:text-[1.75rem]">
+									<h2 className="mt-3 max-w-[26ch] text-2xl font-semibold leading-tight tracking-tight text-foreground lg:text-[1.75rem]">
 										{heroTitle}
 									</h2>
 									{/* Interactive onboarding walkthrough, inline in
@@ -361,7 +361,7 @@ export function AtlasOverview({
 														aria-hidden="true"
 														className="size-3.5 shrink-0"
 													/>
-													<span className="truncate text-[10px] font-semibold uppercase tracking-[0.12em]">
+													<span className="truncate text-[10px] font-semibold uppercase tracking-wide">
 														{stat.label}
 													</span>
 												</div>
@@ -475,7 +475,7 @@ export function AtlasOverview({
 					    with the Business capabilities card beside it. */}
 					<div className="grid gap-4 lg:grid-cols-2 lg:items-stretch">
 						{/* Business capabilities. */}
-						<section className="rounded-xl border border-border/60 bg-card p-5">
+						<section className="rounded-lg border border-border/60 bg-card p-5">
 							<div className="mb-3 flex items-center justify-between gap-2">
 								<h3 className="text-sm font-medium text-foreground">
 									{t("capabilitiesTitle")}
@@ -486,7 +486,7 @@ export function AtlasOverview({
 										onClick={() =>
 											onOpenNode("BUSINESS", "")
 										}
-										className="flex items-center gap-1 rounded text-xs text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										className="flex items-center gap-1 rounded text-xs text-primary transition-colors hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 									>
 										{t("capabilitiesViewAll", {
 											count: allCapabilities.length,
@@ -572,13 +572,13 @@ export function AtlasOverview({
 						</section>
 
 						{/* Tech stack. */}
-						<section className="flex flex-col rounded-xl border border-border/60 bg-card p-5">
+						<section className="flex flex-col rounded-lg border border-border/60 bg-card p-5">
 							<div className="mb-3 flex items-center justify-between gap-2">
 								<h3 className="text-sm font-medium text-foreground">
 									{t("techStackTitle")}
 								</h3>
 								{techEcosystem && (
-									<span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/70">
+									<span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
 										{techEcosystem}
 									</span>
 								)}
@@ -643,7 +643,7 @@ function CapabilityRow({
 					<button
 						type="button"
 						onClick={onOpen}
-						className="group flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						className="group flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						<span
 							role="img"

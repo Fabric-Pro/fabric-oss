@@ -172,3 +172,35 @@ it("hashes directory files by sorted relative name and raw bytes", () => {
 it("rejects a directory in place of the seed file", () => {
 	expect(() => seedContentHash(folder)).toThrow(/not a regular file/);
 });
+
+it("includes only the supplied configuration in a stable order", () => {
+	const endpoint = "https://agent.example.com";
+	const configuration = { DATA_ANALYST_URL: endpoint, DOCKER_CONTAINER: "" };
+	const before = seedContentHash(seedFile, [], configuration);
+	expect(
+		seedContentHash(seedFile, [], {
+			DOCKER_CONTAINER: "",
+			DATA_ANALYST_URL: endpoint,
+		}),
+	).toBe(before);
+	expect(seedContentHash(seedFile, [], {})).toBe(seedContentHash(seedFile));
+	expect(before).not.toBe(seedContentHash(seedFile));
+	expect(before).toMatch(/^[0-9a-f]{16}$/);
+	expect(before).not.toContain(endpoint);
+	for (const changed of [
+		{ ...configuration, DATA_ANALYST_URL: "https://other.example.com" },
+		{ ...configuration, DATA_ANALYST_URL: "" },
+		{ ...configuration, DOCKER_CONTAINER: "true" },
+	])
+		expect(seedContentHash(seedFile, [], changed)).not.toBe(before);
+});
+
+it("does not change other seed hashes when a system-agent endpoint changes", () => {
+	const before = seedContentHash(seedFile, [folder]);
+	vi.stubEnv("DATA_ANALYST_URL", "https://agent.example.com");
+	try {
+		expect(seedContentHash(seedFile, [folder])).toBe(before);
+	} finally {
+		vi.unstubAllEnvs();
+	}
+});

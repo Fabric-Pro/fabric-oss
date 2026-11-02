@@ -980,21 +980,14 @@ export function AiUsageActivityView({
 					className="block h-3.5 w-0.5 shrink-0 bg-primary"
 					aria-hidden="true"
 				/>
-				<p className="font-sans text-[11px] font-normal uppercase tracking-[0.25em] text-primary">
+				<p className="font-sans text-[11px] font-semibold uppercase tracking-wide text-primary">
 					AI Usage
 				</p>
 			</div>
-			<h1
-				className="text-3xl leading-tight tracking-tight lg:text-4xl"
-				style={{
-					fontFamily:
-						"var(--font-serif, 'EB Garamond', Georgia, serif)",
-					fontWeight: 400,
-				}}
-			>
+			<h1 className="text-2xl font-semibold leading-tight tracking-tight ">
 				Activity history
 			</h1>
-			<p className="max-w-2xl text-muted-foreground italic">
+			<p className="max-w-2xl text-muted-foreground">
 				Tokens, time, and cost for completed AI activities. Use this to
 				monitor usage patterns and reason about cost and efficiency.
 			</p>
@@ -1186,7 +1179,7 @@ export function AiUsageActivityView({
 				    row wraps cleanly without orphan rows. */}
 				<div className="space-y-1.5">
 					<div className="flex items-center justify-between">
-						<p className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground/70">
+						<p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
 							Filters
 						</p>
 						{hasActiveFilters ? (
@@ -2522,7 +2515,7 @@ function DateTimePanel({
 	if (!value) {
 		return (
 			<div className="flex flex-col gap-3 p-4">
-				<p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+				<p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 					{label}
 				</p>
 				<div className="flex flex-col gap-2 rounded-md border border-dashed border-border bg-muted/20 p-4">
@@ -2591,7 +2584,7 @@ function DateTimePanel({
 	return (
 		<div className="flex flex-col gap-3 p-4">
 			<div className="flex items-center justify-between">
-				<p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+				<p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 					{label}
 				</p>
 				<button

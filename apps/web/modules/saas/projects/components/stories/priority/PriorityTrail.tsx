@@ -110,7 +110,7 @@ export function PriorityTrail({
 							type="button"
 							onClick={() => setDialogOpen(true)}
 							aria-label={trailHint}
-							className="inline-flex shrink-0 items-center rounded text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="inline-flex shrink-0 items-center rounded text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<HistoryIcon aria-hidden className="size-3.5" />
 						</button>

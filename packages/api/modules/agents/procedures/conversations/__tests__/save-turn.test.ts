@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
 	procedures: new Map<string, { middlewares: unknown[]; handler: Handler }>(),
 	current: [] as unknown[],
 	path: "",
+	schemas: new Map<string, { parse: (input: unknown) => unknown }>(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => ({
@@ -67,7 +68,10 @@ vi.mock("../../../../../orpc/procedures", async (importOriginal) => {
 			mocks.path = route.path;
 			return builder;
 		},
-		input: () => builder,
+		input: (schema: { parse: (input: unknown) => unknown }) => {
+			mocks.schemas.set(mocks.path, schema);
+			return builder;
+		},
 		output: () => builder,
 		handler: (fn: Handler) => {
 			mocks.procedures.set(mocks.path, {
@@ -357,6 +361,21 @@ describe("saveTurn — not found", () => {
 });
 
 describe("updateSettings", () => {
+	it("passes Direct engine and nullable pin through settings updates", async () => {
+		await invoke(UPDATE_SETTINGS, {
+			conversationId: "conv-1",
+			organizationId: ACTIVE_ORG,
+			engine: "direct",
+			settings: { instanceId: null },
+		});
+		expect(mocks.updateConversationSettings).toHaveBeenCalledWith({
+			id: "conv-1",
+			userId: USER_ID,
+			organizationId: ACTIVE_ORG,
+			engine: "direct",
+			settings: { instanceId: null },
+		});
+	});
 	const settingsInput = {
 		conversationId: "conv-1",
 		settings: { executionMode: "deep", selectedMcpConfigIds: null },
@@ -411,5 +430,29 @@ describe("updateSettings", () => {
 		);
 
 		expect(error.code).toBe("NOT_FOUND");
+	});
+});
+
+it("keeps saveTurn rejecting null instance pins and strips engine hints", () => {
+	const turnSchema = mocks.schemas.get(SAVE_TURN);
+	if (!turnSchema) {
+		throw new Error("Missing turn schema");
+	}
+	expect(() =>
+		turnSchema.parse({ ...turnInput, settings: { instanceId: null } }),
+	).toThrow();
+	expect(
+		turnSchema.parse({ ...turnInput, engine: "direct" }),
+	).not.toHaveProperty("engine");
+	expect(
+		mocks.schemas.get(UPDATE_SETTINGS)?.parse({
+			conversationId: "conv-1",
+			engine: "direct",
+			settings: { instanceId: null, mode: "direct" },
+		}),
+	).toEqual({
+		conversationId: "conv-1",
+		engine: "direct",
+		settings: { instanceId: null },
 	});
 });

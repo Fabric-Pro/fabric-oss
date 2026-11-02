@@ -38,8 +38,11 @@ vi.mock("@repo/database", () => ({
 	logAiUsageAsync: vi.fn(),
 	resolveModel: vi.fn(),
 	checkConversationTurnDispatchable: h.checkDispatchable,
+	recordChatMediaObject: vi.fn(),
+	resolveChatMediaAccess: vi.fn().mockResolvedValue("allow"),
 }));
 vi.mock("@repo/storage", () => ({
+	deleteFile: vi.fn(),
 	downloadFile: h.downloadFile,
 	getSignedUrl: vi.fn().mockResolvedValue("https://signed.example/image.png"),
 	uploadFile: h.uploadFile,

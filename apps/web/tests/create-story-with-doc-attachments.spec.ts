@@ -160,7 +160,7 @@ async function installMocks(page: Page, state: MockState): Promise<void> {
 	await page.route("**/api/rpc/projects/stories/statuses/list**", (route) =>
 		fulfillJson(route, buildStatusesPayload()),
 	);
-	await page.route("**/api/rpc/projects/stories/list**", (route) =>
+	await page.route("**/api/rpc/projects/stories/board**", (route) =>
 		fulfillJson(route, { stories: [] }),
 	);
 	await page.route("**/api/rpc/projects/stories/pmCapabilities**", (route) =>
@@ -188,8 +188,9 @@ async function installMocks(page: Page, state: MockState): Promise<void> {
 		fulfillEmpty(route),
 	);
 	// listAttachments — empty on the board; the detail view would query it.
-	await page.route("**/api/rpc/projects/stories/listAttachments**", (route) =>
-		fulfillJson(route, { attachments: [] }),
+	await page.route(
+		"**/api/rpc/projects/stories/boardAttachments**",
+		(route) => fulfillJson(route, { attachments: [] }),
 	);
 
 	// ----- Create-story mutation -----

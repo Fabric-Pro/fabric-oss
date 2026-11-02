@@ -162,7 +162,7 @@ function DecisionTableRow({
 			}}
 			tabIndex={0}
 			className={cn(
-				"group cursor-pointer border-b border-l-2 border-l-transparent transition-colors last:border-b-0 hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none",
+				"group cursor-pointer border-b border-l-2 border-l-transparent transition-colors last:border-b-0 hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-hidden",
 				pinned && "border-l-primary bg-primary/[0.04]",
 			)}
 		>

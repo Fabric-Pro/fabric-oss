@@ -43,6 +43,7 @@ import {
 } from "@saas/agents/lib/interface-mode-engine";
 import {
 	orchestratorPreferencesQueryKey,
+	resolveInitialUiMode,
 	setCachedUiMode,
 } from "@saas/agents/lib/interface-mode-preference";
 import {
@@ -50,6 +51,8 @@ import {
 	pendingProjectOnOpen,
 } from "@saas/agents/lib/pending-project";
 import dynamic from "next/dynamic";
+import { isInitialChatRestorePending } from "../../lib/initial-chat-restore";
+import { ChatRestoreLoading } from "../FabricChat/shared/ChatRestoreLoading";
 
 // Dynamic imports for heavy components to improve initial load time
 const FabricDirectChat = dynamic(
@@ -59,7 +62,6 @@ const FabricDirectChat = dynamic(
 		),
 	{
 		loading: () => <ChatLoadingSkeleton />,
-		ssr: false,
 	},
 );
 
@@ -70,7 +72,6 @@ const FabricTemporalOrchestratorChat = dynamic(
 		).then((mod) => ({ default: mod.FabricTemporalOrchestratorChat })),
 	{
 		loading: () => <ChatLoadingSkeleton />,
-		ssr: false,
 	},
 );
 
@@ -96,33 +97,16 @@ const OrchestratorConfigPanel = dynamic(
 	},
 );
 
-const WorkflowProgressPanel = dynamic(
-	() =>
-		import(
-			"@saas/agents/components/WorkflowTemplateChat/WorkflowProgressPanel"
-		).then((mod) => ({ default: mod.WorkflowProgressPanel })),
-	{ ssr: false },
-);
-
-const WorkflowResultViewer = dynamic(
-	() =>
-		import(
-			"@saas/agents/components/WorkflowTemplateChat/WorkflowResultViewer"
-		).then((mod) => ({ default: mod.WorkflowResultViewer })),
-	{ ssr: false },
-);
-
 import { buildInstanceSystemPrompt } from "@saas/agent-templates/lib/build-instance-system-prompt";
 import { ProjectAttachmentPanel } from "@saas/agents/components/FabricChat/ProjectAttachmentPanel";
-import { ChatInput } from "@saas/agents/components/FabricChat/shared/ChatInput";
 import {
 	type WorkspaceFile,
 	WorkspacePanel,
 } from "@saas/agents/components/WorkspacePanel";
 import { useConversationHistory } from "@saas/agents/hooks/useConversationHistory";
 import { useMultiAgentOffered } from "@saas/agents/hooks/useMultiAgentChat";
+import { useResearchRunStream } from "@saas/agents/hooks/useResearchRunStream";
 import { useSavedAgentUnavailableNotice } from "@saas/agents/hooks/useSavedAgentUnavailableNotice";
-import { useWorkflowTemplateStream } from "@saas/agents/hooks/useWorkflowTemplateStream";
 import { useWorkspaceFiles } from "@saas/agents/hooks/useWorkspaceFiles";
 import { useSession } from "@saas/auth/hooks/use-session";
 import {
@@ -130,6 +114,7 @@ import {
 	useEffectiveOrganizationId,
 	useOrganizationContext,
 } from "@saas/organizations/hooks/use-organization-context";
+import { SparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { SidebarEdgeHandle } from "@saas/shared/components/SidebarEdgeHandle";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
@@ -158,6 +143,7 @@ import {
 	Brain,
 	CheckCircle2,
 	ChevronLeft,
+	ChevronRight,
 	File as FileIcon,
 	FolderKanban,
 	FolderOpen,
@@ -168,17 +154,18 @@ import {
 	LayoutGrid,
 	Maximize2,
 	Minimize2,
+	PanelLeft,
 	Plus,
 	Scale,
 	ScanSearch,
 	Settings2,
-	Sparkles,
 	Wrench,
 	Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+	type CSSProperties,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -201,6 +188,8 @@ import {
 } from "../../../../../components/ai-elements/context";
 import { EngineMismatchNotice } from "../EngineMismatchNotice";
 import { ConversationHistoryPanel, FramesPanel } from "./components";
+import deckLayout from "./control-deck-layout.module.css";
+import { DeepResearchInlineChat } from "./DeepResearchInlineChat";
 
 // Loading skeleton for chat components - prevents CLS during dynamic import
 function ChatLoadingSkeleton() {
@@ -370,12 +359,10 @@ export default function FabricAIPage({
 	const [deepResearchEnabled, setDeepResearchEnabled] = useState(
 		modeFromUrl === "research",
 	);
-	const [sidebarOpen, setSidebarOpen] = useState(false);
+	const [sidebarOpen, setSidebarOpen] = useState(true);
 	// Open sidebar by default on desktop only
 	useEffect(() => {
-		if (typeof window !== "undefined" && window.innerWidth >= 768) {
-			setSidebarOpen(true);
-		}
+		setSidebarOpen(window.innerWidth >= 768);
 	}, []);
 	// Default to history so the page lands on prior runs first.
 	const [activeTab, setActiveTab] = useState<TabType>("tools");
@@ -399,7 +386,7 @@ export default function FabricAIPage({
 	const effectiveInstanceId = instanceIdFromUrl || restoredInstanceId;
 
 	// Fetch agent template instance when instanceId is provided (from URL or restored from conversation)
-	const { data: instanceData } = useQuery({
+	const { data: instanceData, isLoading: isInstanceLoading } = useQuery({
 		queryKey: [
 			"agentTemplates",
 			"instances",
@@ -627,7 +614,9 @@ export default function FabricAIPage({
 	// simple hides the engine control and starts new chats on the Orchestrator
 	// (iterative preset), advanced restores the full surface. Persisted per
 	// (user × org) alongside the Loom prefs above.
-	const [uiMode, setUiMode] = useState<"simple" | "advanced">("simple");
+	const [uiMode, setUiMode] = useState<"simple" | "advanced">(
+		resolveInitialUiMode(initialPreferences, modeFromUrl),
+	);
 	const lastPersistedUiModeRef = useRef<"simple" | "advanced" | null>(null);
 	// The last `uiMode` seen in the shared preferences cache — see the
 	// adoption effect below the hydration effect.
@@ -1004,7 +993,7 @@ export default function FabricAIPage({
 					},
 					{ label: agentInstance.name },
 				]
-			: [{ label: "Advisor" }]),
+			: [{ label: "Genie" }]),
 	];
 
 	return (
@@ -1022,7 +1011,7 @@ export default function FabricAIPage({
 			{/* Breadcrumbs - hidden on mobile, shown from sm up */}
 			<div
 				className={cn(
-					"hidden items-center justify-between border-b bg-transparent px-4 py-3 md:px-6 md:py-4",
+					"hidden h-12 shrink-0 items-center justify-between border-b bg-transparent px-4 md:px-6",
 					!isFullscreen && "sm:flex",
 				)}
 			>
@@ -1038,7 +1027,7 @@ export default function FabricAIPage({
 			</div>
 
 			{/* Content - Full height */}
-			<div className={isFullscreen ? "h-screen" : "h-[calc(100vh-65px)]"}>
+			<div className={isFullscreen ? "h-screen" : "h-[calc(100vh-48px)]"}>
 				<AgentErrorBoundary>
 					<FabricChatContent
 						key={JSON.stringify([
@@ -1080,6 +1069,9 @@ export default function FabricAIPage({
 							agentInstance?.description ?? undefined
 						}
 						instanceToolConfig={instanceToolConfig}
+						isInstanceLoading={
+							Boolean(effectiveInstanceId) && isInstanceLoading
+						}
 						contextLaunch={{
 							projectId: contextProjectId,
 							projectName: contextProjectName,
@@ -1169,6 +1161,7 @@ interface FabricChatContentProps {
 	instanceId?: string;
 	agentInstanceName?: string;
 	agentInstanceDescription?: string;
+	isInstanceLoading: boolean;
 	instanceToolConfig?: {
 		mcpConfigIds: string[];
 		enabledFabricToolIds: string[];
@@ -1219,12 +1212,14 @@ function FabricChatContent({
 	agentInstanceName,
 	agentInstanceDescription,
 	instanceToolConfig,
+	isInstanceLoading,
 	contextLaunch,
 	onInstanceIdRestored,
 }: FabricChatContentProps) {
 	// Past conversations, reachable in both interface modes. Simple mode
 	// hides the control deck that used to be the only way to them.
 	const [historyOpen, setHistoryOpen] = useState(false);
+	const [initialConversationId] = useState(conversationIdFromUrl);
 	// Key to force remount of chat component when starting new chat
 	// This ensures all state is completely reset
 	const [chatInstanceKey, setChatInstanceKey] = useState(0);
@@ -1283,38 +1278,6 @@ function FabricChatContent({
 				return "high";
 		}
 	}, [reasoningMode]);
-
-	// Deep Research workflow stream
-	const [deepResearchQuery, setDeepResearchQuery] = useState("");
-	const [deepResearchHasInteracted, setDeepResearchHasInteracted] =
-		useState(false);
-	const deepResearchStream = useWorkflowTemplateStream({
-		templateSlug: "deep-researcher",
-		organizationId: organizationId ?? undefined,
-		reasoningEffort: researchReasoningEffort,
-	});
-
-	// Reset deep research state when toggling off or starting new chat
-	const resetDeepResearch = useCallback(() => {
-		deepResearchStream.reset();
-		setDeepResearchHasInteracted(false);
-		setDeepResearchQuery("");
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- reset is stable from useCallback
-	}, [deepResearchStream.reset]);
-
-	// Handle sending a deep research query
-	const handleDeepResearchSend = useCallback(
-		async (queryText: string) => {
-			if (!queryText.trim() || deepResearchStream.isLoading) {
-				return;
-			}
-			setDeepResearchHasInteracted(true);
-			setDeepResearchQuery(queryText);
-			await deepResearchStream.sendQuery(queryText);
-		},
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- sendQuery/isLoading are stable
-		[deepResearchStream.sendQuery, deepResearchStream.isLoading],
-	);
 
 	// Session-level selected templates that persist across new conversations (remounts)
 	const [sessionTemplates, setSessionTemplates] = useState<
@@ -1634,6 +1597,42 @@ function FabricChatContent({
 		},
 		[selectConversationInternal, onConversationChange],
 	);
+
+	// Deep Research. On the agent runtime a run is saved as a Research
+	// conversation: opening one of the reader's own on the Research surface
+	// shows its saved result (or its run, while it still goes).
+	const researchConversationId =
+		deepResearchEnabled &&
+		activeConversation?.isOwn &&
+		activeConversation.id === activeConversationId &&
+		restoreFromConversationMetadata(activeConversation.metadata).mode ===
+			"research"
+			? activeConversation.id
+			: null;
+	const handleResearchConversationStarted = useCallback(
+		(threadId: string) => {
+			// Lock the engine now, not when the fetched conversation arrives.
+			setConversationEngine("research");
+			onConversationChange(threadId);
+			refetchList();
+		},
+		[onConversationChange, refetchList],
+	);
+	const deepResearchStream = useResearchRunStream({
+		templateSlug: "deep-researcher",
+		organizationId: organizationId ?? undefined,
+		reasoningEffort: researchReasoningEffort,
+		executionMode: reasoningMode,
+		conversationId: researchConversationId,
+		onConversationStarted: handleResearchConversationStarted,
+		onStopFailed: () => toast.message("Couldn't stop the research."),
+	});
+
+	// "New Research": leave the reopened conversation, if any, and start over.
+	const handleNewResearch = useCallback(() => {
+		selectConversation(null);
+		deepResearchStream.reset();
+	}, [selectConversation, deepResearchStream.reset]);
 
 	const handleContinuedChat = useCallback(
 		(chat: ContinuedChat) => {
@@ -2141,9 +2140,9 @@ function FabricChatContent({
 		if (activeConversationId === null) {
 			setDocumentChatId(null);
 			setConversationEngine(null);
-			resetDeepResearch();
+			deepResearchStream.reset();
 		}
-	}, [activeConversationId, resetDeepResearch]);
+	}, [activeConversationId, deepResearchStream.reset]);
 
 	// Note: We no longer attach workspaces per-conversation.
 	// Workspace settings are now global user preferences (like MCP/agents/tools)
@@ -2151,8 +2150,8 @@ function FabricChatContent({
 
 	// Resizable sidebar state
 	const MIN_SIDEBAR_WIDTH = 240;
-	const MAX_SIDEBAR_WIDTH = 468;
-	const DEFAULT_SIDEBAR_WIDTH = 350;
+	const MAX_SIDEBAR_WIDTH = 440;
+	const DEFAULT_SIDEBAR_WIDTH = 304;
 
 	// Start with default width to avoid hydration mismatch
 	const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -2188,7 +2187,7 @@ function FabricChatContent({
 	const isMobileViewport = viewportWidth < 768;
 	const effectiveSidebarWidth = useMemo(() => {
 		if (!sidebarOpen) {
-			return 48;
+			return 40;
 		}
 
 		if (isMobileViewport) {
@@ -2213,6 +2212,9 @@ function FabricChatContent({
 		sidebarWidth,
 		viewportWidth,
 	]);
+	const deckStyle: CSSProperties & { "--control-deck-width": string } = {
+		"--control-deck-width": `${effectiveSidebarWidth}px`,
+	};
 
 	// Handle resize drag
 	const handleMouseDown = useCallback(
@@ -2318,7 +2320,7 @@ function FabricChatContent({
 		setConversationEngine(null);
 		setExpandHandoff(null);
 		dispatchFrameOrigin({ type: "clear" });
-		resetDeepResearch();
+		deepResearchStream.reset();
 		setActiveTab("history");
 		handleClearAllPrioritized();
 		setChatInstanceKey((prev) => prev + 1);
@@ -2347,56 +2349,54 @@ function FabricChatContent({
 				/>
 			)}
 
-			{/* Left Sidebar - use CSS containment to prevent layout shifts.
-			    Simple mode drops it entirely rather than leaving the collapsed
-			    icon rail behind: `sidebarOpen` is held false for the whole mode,
-			    so every rail button would move its own highlight and open
-			    nothing — a control that answers a click by doing nothing reads
-			    as broken, not as hidden (Fizzy #2040). */}
+			{/* Simple mode omits the control deck and its collapsed rail. */}
 			{chrome.showControlDeck && (
 				<div
 					ref={sidebarRef}
-					style={
-						sidebarOpen
-							? {
-									width: effectiveSidebarWidth,
-									minWidth: effectiveSidebarWidth,
-									maxWidth: effectiveSidebarWidth,
-								}
-							: { width: 48, minWidth: 48, maxWidth: 48 }
-					}
+					style={deckStyle}
 					className={cn(
-						"relative flex flex-shrink-0",
+						deckLayout.deck,
+						sidebarOpen && deckLayout.open,
+						sidebarOpen &&
+							isMobileViewport &&
+							deckLayout.mobileOpen,
 						sidebarOpen ? "overflow-visible" : "overflow-hidden",
-						isCompactViewport &&
-							sidebarOpen &&
-							"absolute inset-y-0 left-0 z-20 shadow-[0_24px_80px_rgba(0,0,0,0.45)]",
 						!isCompactViewport && !sidebarOpen && "border-r-0",
 						"transition-[width,min-width,max-width] duration-200 ease-out",
 					)}
 				>
 					{sidebarOpen ? (
-						<div className="flex h-full min-w-0 flex-1 flex-col border-r border-border bg-sidebar">
-							<div className="border-b border-border px-3 pt-2.5 pb-2">
-								<div className="flex items-center justify-between gap-2 px-2.5 pb-2">
-									<p className="fab-label">Control deck</p>
-									{isCompactViewport ? (
-										<Button
-											variant="ghost"
-											size="icon"
-											className="h-8 w-8 rounded-[4px] text-muted-foreground hover:text-foreground"
-											onClick={() =>
-												setSidebarOpen(false)
-											}
-										>
-											<ChevronLeft className="h-4 w-4" />
-										</Button>
-									) : null}
-								</div>
+						<div
+							className={cn(
+								deckLayout.panel,
+								"h-full min-w-0 flex-1 flex-col border-r border-border bg-sidebar",
+							)}
+						>
+							<div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
+								<p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+									Workspace
+								</p>
+								<Button
+									variant="ghost"
+									size="icon"
+									aria-label="Collapse control deck"
+									className="h-7 w-7 rounded text-muted-foreground hover:text-foreground"
+									onClick={() => setSidebarOpen(false)}
+								>
+									<ChevronLeft className="h-3.5 w-3.5" />
+								</Button>
+							</div>
 
-								{/* Tabs wrap into one or two short rows instead of a
-								    column that ate a third of the deck. */}
-								<div className="flex flex-wrap gap-1">
+							<div className="border-b border-border px-2.5 py-2">
+								{/* Balanced 3-column DuBois segmented tab grid for History, Agents, Tools, Files, Projects, Frames */}
+								<div
+									className={cn(
+										"grid gap-1 rounded-md border border-border/80 bg-muted/40 p-1",
+										tabs.length >= 5
+											? "grid-cols-3"
+											: "grid-cols-2",
+									)}
+								>
 									{tabs.map((tab) => (
 										<button
 											key={tab.id}
@@ -2404,14 +2404,23 @@ function FabricChatContent({
 											onClick={() => setActiveTab(tab.id)}
 											aria-pressed={activeTab === tab.id}
 											className={cn(
-												"flex cursor-pointer items-center gap-1.5 rounded-[4px] border px-2 py-1 text-[12px] transition-colors",
+												"flex h-7 w-full cursor-pointer items-center justify-center gap-1.5 rounded px-1.5 text-[11px] font-medium whitespace-nowrap transition-colors",
 												activeTab === tab.id
-													? "border-border bg-accent text-foreground"
-													: "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+													? "bg-card font-semibold text-primary shadow-2xs ring-1 ring-border/60"
+													: "text-muted-foreground hover:bg-background/60 hover:text-foreground",
 											)}
 										>
-											<tab.icon className="h-3.5 w-3.5 shrink-0" />
-											<span>{tab.label}</span>
+											<tab.icon
+												className={cn(
+													"h-3 w-3 shrink-0",
+													activeTab === tab.id
+														? "text-primary"
+														: "text-muted-foreground",
+												)}
+											/>
+											<span className="truncate">
+												{tab.label}
+											</span>
 										</button>
 									))}
 								</div>
@@ -2671,26 +2680,40 @@ function FabricChatContent({
 							</div>
 						</div>
 					) : (
-						<div className="flex h-full w-full flex-col items-center gap-2 border-r border-border bg-sidebar px-1 py-2.5">
-							{tabs.map((tab) => (
+						<div className="flex h-full w-full flex-col items-center border-r border-border/70 bg-sidebar/60">
+							<div className="flex h-11 w-full shrink-0 items-center justify-center border-b border-border">
 								<Button
-									key={tab.id}
-									variant={
-										activeTab === tab.id
-											? "secondary"
-											: "ghost"
-									}
-									size="icon-sm"
-									onClick={() => {
-										setActiveTab(tab.id);
-										setSidebarOpen(true);
-									}}
-									className="h-9 w-9 rounded-md"
-									title={tab.label}
+									variant="ghost"
+									size="icon"
+									aria-label="Expand control deck"
+									className="h-7 w-7 rounded text-muted-foreground hover:text-foreground"
+									onClick={() => setSidebarOpen(true)}
 								>
-									<tab.icon className="h-4 w-4" />
+									<ChevronRight className="h-3.5 w-3.5" />
 								</Button>
-							))}
+							</div>
+							<div className="flex flex-col items-center gap-1 px-1 py-2">
+								{tabs.map((tab) => (
+									<Button
+										key={tab.id}
+										variant="ghost"
+										size="icon-sm"
+										onClick={() => {
+											setActiveTab(tab.id);
+											setSidebarOpen(true);
+										}}
+										className={cn(
+											"h-8 w-8 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground",
+											activeTab === tab.id &&
+												"bg-primary/[0.12] text-primary",
+										)}
+										title={tab.label}
+										aria-label={tab.label}
+									>
+										<tab.icon className="h-3.5 w-3.5" />
+									</Button>
+								))}
+							</div>
 						</div>
 					)}
 
@@ -2701,12 +2724,10 @@ function FabricChatContent({
 							expandLabel="Expand control deck"
 							collapseLabel="Collapse control deck"
 							// The rail's handle sits at the viewport's middle. This
-							// column starts under the 65px breadcrumb bar, so its
-							// own middle is 32.5px lower; lift the handle to match.
+							// column starts under the 48px (h-12) breadcrumb bar, so its
+							// own middle is 24px lower; lift the handle to match.
 							style={{
-								top: isFullscreen
-									? "50%"
-									: "calc(50% - 32.5px)",
+								top: isFullscreen ? "50%" : "calc(50% - 24px)",
 							}}
 						/>
 					) : null}
@@ -2739,28 +2760,57 @@ function FabricChatContent({
 				</div>
 			)}
 
-			{/* Main Chat Area - fixed minimum width to prevent CLS */}
-			<div
-				className="flex-1 flex flex-col min-w-0"
-				style={{ minWidth: isCompactViewport ? 0 : 400 }}
-			>
+			{/* Main Chat Area */}
+			<div className="flex-1 flex flex-col min-w-0 min-[1180px]:min-w-[400px]">
 				{/* Header */}
-				<header className="flex items-center gap-2 border-b border-border/60 bg-background/30 px-3 py-2 backdrop-blur-sm sm:gap-3 sm:px-4 sm:py-3 md:px-6 lg:h-16 lg:gap-4 lg:py-0 overflow-x-auto overflow-y-hidden">
-					<div className="flex shrink-0 items-center gap-3">
-						<h1 className="hidden text-[15px] font-medium leading-none text-foreground lg:block">
-							Advisor
+				<header className="no-scrollbar flex items-center gap-2 border-b border-border bg-background px-3 py-1.5 sm:px-4 md:px-5 lg:h-11 lg:py-0 overflow-x-auto overflow-y-hidden">
+					<div className="flex shrink-0 items-center gap-2">
+						{chrome.showControlDeck && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										variant="ghost"
+										size="icon-sm"
+										aria-label={
+											sidebarOpen
+												? "Hide workspace panel"
+												: "Show workspace panel"
+										}
+										aria-pressed={sidebarOpen}
+										onClick={() =>
+											setSidebarOpen(!sidebarOpen)
+										}
+										className={cn(
+											"h-7 w-7 text-muted-foreground hover:text-foreground",
+											sidebarOpen &&
+												"bg-accent text-foreground",
+										)}
+									>
+										<PanelLeft className="h-3.5 w-3.5" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">
+									{sidebarOpen
+										? "Hide workspace panel"
+										: "Show workspace panel"}
+								</TooltipContent>
+							</Tooltip>
+						)}
+						<SparklesIcon className="h-4 w-4 shrink-0 text-primary" />
+						<h1 className="text-[13px] font-semibold leading-none text-foreground">
+							{agentInstanceName || "Genie"}
 						</h1>
 					</div>
-					<div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2.5">
+					<div className="ml-auto flex shrink-0 items-center gap-1.5">
 						{/* New run button */}
 						<Button
 							variant="outline"
 							size="sm"
-							className="h-9 px-2.5"
+							className="h-7 px-2 text-xs"
 							title="New run"
 							onClick={handleNewChat}
 						>
-							<Plus className="h-4 w-4" />
+							<Plus className="h-3.5 w-3.5" />
 							<span className="hidden lg:inline ml-1">New</span>
 						</Button>
 
@@ -2770,11 +2820,11 @@ function FabricChatContent({
 								<Button
 									variant="outline"
 									size="sm"
-									className="h-9 w-9 px-0"
+									className="h-7 w-7 px-0"
 									aria-label="Conversation history"
 									onClick={() => setHistoryOpen(true)}
 								>
-									<History className="h-4 w-4" />
+									<History className="h-3.5 w-3.5" />
 								</Button>
 							</TooltipTrigger>
 							<TooltipContent side="bottom">
@@ -2788,7 +2838,7 @@ function FabricChatContent({
 								<Button
 									variant="outline"
 									size="sm"
-									className="h-9 w-9 px-0"
+									className="h-7 w-7 px-0"
 									aria-pressed={isFullscreen}
 									aria-label={
 										isFullscreen
@@ -2798,9 +2848,9 @@ function FabricChatContent({
 									onClick={onToggleFullscreen}
 								>
 									{isFullscreen ? (
-										<Minimize2 className="h-4 w-4" />
+										<Minimize2 className="h-3.5 w-3.5" />
 									) : (
-										<Maximize2 className="h-4 w-4" />
+										<Maximize2 className="h-3.5 w-3.5" />
 									)}
 								</Button>
 							</TooltipTrigger>
@@ -2822,6 +2872,7 @@ function FabricChatContent({
 						 * engine it was created on in both modes.
 						 */}
 						<InterfaceModeToggle
+							compact
 							value={uiMode}
 							onChange={onUiModeChange}
 							disabled={
@@ -2831,13 +2882,14 @@ function FabricChatContent({
 
 						{uiMode === "advanced" && (
 							<>
-								{/* Agent Mode Toggle — with visible label */}
+								{/* Agent Mode Toggle — Databricks segmented pills */}
 								<TooltipProvider>
-									<div className="flex items-center gap-1 rounded-md border border-border/60 bg-card/35 p-1">
+									<div className="flex items-center gap-0.5 rounded-full border border-border bg-muted/60 p-0.5">
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<button
 													type="button"
+													aria-label="Direct"
 													disabled={
 														engineLockedToConversation
 													}
@@ -2850,7 +2902,7 @@ function FabricChatContent({
 														);
 													}}
 													className={cn(
-														"flex h-9 items-center justify-center rounded-md px-2.5 gap-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+														"flex h-6 items-center justify-center rounded-full px-2.5 gap-1 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
 														// Suppress active highlight until persisted prefs
 														// hydrate, otherwise the tab paints "Orchestrator
 														// is active" on first render and visibly snaps to
@@ -2859,11 +2911,11 @@ function FabricChatContent({
 														loomPrefsHydrated &&
 															!useOrchestrator &&
 															!deepResearchEnabled
-															? "bg-background shadow-sm text-foreground"
-															: "hover:bg-background/50 text-muted-foreground",
+															? "border border-border bg-card shadow-2xs text-foreground"
+															: "border border-transparent hover:text-foreground text-muted-foreground",
 													)}
 												>
-													<Wrench className="h-4 w-4" />
+													<Wrench className="h-3 w-3" />
 													<span className="hidden text-xs font-medium sm:inline">
 														Direct
 													</span>
@@ -2881,6 +2933,7 @@ function FabricChatContent({
 											<TooltipTrigger asChild>
 												<button
 													type="button"
+													aria-label="Orchestrator"
 													disabled={
 														engineLockedToConversation
 													}
@@ -2901,16 +2954,16 @@ function FabricChatContent({
 														}
 													}}
 													className={cn(
-														"flex h-9 items-center justify-center rounded-md px-2.5 gap-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+														"flex h-6 items-center justify-center rounded-full px-2.5 gap-1 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
 														// See "Direct" branch above — same hydration gate.
 														loomPrefsHydrated &&
 															useOrchestrator &&
 															!deepResearchEnabled
-															? "bg-background shadow-sm text-primary"
-															: "hover:bg-background/50 text-muted-foreground",
+															? "border border-border bg-card shadow-2xs text-foreground"
+															: "border border-transparent hover:text-foreground text-muted-foreground",
 													)}
 												>
-													<Brain className="h-4 w-4" />
+													<Brain className="h-3 w-3" />
 													<span className="hidden text-xs font-medium sm:inline">
 														Orchestrator
 													</span>
@@ -2928,6 +2981,7 @@ function FabricChatContent({
 											<TooltipTrigger asChild>
 												<button
 													type="button"
+													aria-label="Research"
 													disabled={
 														engineLockedToConversation
 													}
@@ -2940,15 +2994,15 @@ function FabricChatContent({
 														);
 													}}
 													className={cn(
-														"flex h-9 items-center justify-center rounded-md px-2.5 gap-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+														"flex h-6 items-center justify-center rounded-full px-2.5 gap-1 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
 														// See "Direct" branch above — same hydration gate.
 														loomPrefsHydrated &&
 															deepResearchEnabled
-															? "bg-background shadow-sm text-secondary"
-															: "hover:bg-background/50 text-muted-foreground",
+															? "border border-border bg-card shadow-2xs text-foreground"
+															: "border border-transparent hover:text-foreground text-muted-foreground",
 													)}
 												>
-													<Globe className="h-4 w-4" />
+													<Globe className="h-3 w-3" />
 													<span className="hidden text-xs font-medium sm:inline">
 														Research
 													</span>
@@ -2965,12 +3019,9 @@ function FabricChatContent({
 									</div>
 								</TooltipProvider>
 
-								{/* Divider */}
-								<div className="hidden h-8 w-px bg-border/70 md:block" />
-
 								{/* Reasoning Mode Selector — hidden below md */}
 								<TooltipProvider>
-									<div className="hidden md:flex items-center gap-1 rounded-md border border-border/60 bg-card/35 p-1">
+									<div className="hidden md:flex items-center gap-0.5 rounded-full border border-border bg-muted/60 p-0.5">
 										{(
 											[
 												"lite",
@@ -2986,24 +3037,32 @@ function FabricChatContent({
 													<TooltipTrigger asChild>
 														<button
 															type="button"
+															aria-label={
+																config.label
+															}
+															aria-pressed={
+																loomPrefsHydrated &&
+																reasoningMode ===
+																	mode
+															}
 															onClick={() =>
 																setReasoningMode(
 																	mode,
 																)
 															}
 															className={cn(
-																"flex h-9 w-9 items-center justify-center rounded-md transition-colors",
+																"flex h-6 w-6 items-center justify-center rounded-full transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 																// Same hydration gate as the chat-mode tabs.
 																loomPrefsHydrated &&
 																	reasoningMode ===
 																		mode
-																	? "bg-background shadow-sm"
-																	: "hover:bg-background/50",
+																	? "border border-border bg-card shadow-2xs"
+																	: "border border-transparent hover:bg-background/50",
 															)}
 														>
 															<Icon
 																className={cn(
-																	"h-4 w-4",
+																	"h-3 w-3",
 																	config.color,
 																)}
 															/>
@@ -3135,7 +3194,15 @@ function FabricChatContent({
 				)}
 				{/* Chat Area */}
 				<div className="flex-1 min-h-0">
-					{activeConversation && !activeConversation.isOwn ? (
+					{isInstanceLoading ||
+					isInitialChatRestorePending({
+						initialId: initialConversationId,
+						requestedId: conversationIdFromUrl,
+						conversation: activeConversation,
+						engineReady: conversationEngine !== null,
+					}) ? (
+						<ChatRestoreLoading />
+					) : activeConversation && !activeConversation.isOwn ? (
 						/* A conversation another person shared: read-only, with
 						   one way on, a chat of the reader's own. */
 						<SharedSessionView
@@ -3151,11 +3218,9 @@ function FabricChatContent({
 						   - Aggregates findings into structured report
 						*/
 						<DeepResearchInlineChat
-							hasInteracted={deepResearchHasInteracted}
-							query={deepResearchQuery}
 							stream={deepResearchStream}
-							onSend={handleDeepResearchSend}
-							onReset={resetDeepResearch}
+							onSend={deepResearchStream.sendQuery}
+							onReset={handleNewResearch}
 							organizationId={organizationId}
 							reasoningMode={reasoningMode}
 						/>
@@ -3287,7 +3352,7 @@ function FabricChatContent({
 							systemPrompt={systemPrompt}
 							instanceId={instanceId}
 							starterMessages={resolvedAgentStarterMessages}
-							agentName={agentInstanceName || "Advisor"}
+							agentName={agentInstanceName || "Genie"}
 							agentDescription={
 								agentInstanceDescription ||
 								"Durable multi-agent orchestration powered by Temporal."
@@ -3357,232 +3422,6 @@ function FabricChatContent({
 							}
 							initialAttachedFiles={handoffForChat?.attachments}
 						/>
-					)}
-				</div>
-			</div>
-		</div>
-	);
-}
-
-/**
- * DeepResearchInlineChat - Inline deep research UI for the Fabric Loom page
- *
- * Uses the same shared ChatInput component as Direct/Orchestrator modes.
- * Renders research progress and results as chat-style messages in the
- * scrollable area above the input.
- */
-const DEEP_RESEARCH_SUGGESTIONS = [
-	{
-		label: "AI agents & autonomous systems",
-		emoji: "🤖",
-		prompt: "What are the latest developments in AI agents and autonomous systems?",
-	},
-	{
-		label: "RAG application approaches",
-		emoji: "🔍",
-		prompt: "Compare different approaches to building RAG applications",
-	},
-	{
-		label: "Open source vs proprietary LLMs",
-		emoji: "⚖️",
-		prompt: "Analyze the current state of open source LLMs vs proprietary models",
-	},
-	{
-		label: "Prompt engineering best practices",
-		emoji: "✍️",
-		prompt: "Research best practices for prompt engineering in production systems",
-	},
-];
-
-interface DeepResearchInlineChatProps {
-	hasInteracted: boolean;
-	query: string;
-	stream: ReturnType<typeof useWorkflowTemplateStream>;
-	onSend: (query: string) => void;
-	onReset: () => void;
-	organizationId?: string;
-	reasoningMode?: ReasoningMode;
-}
-
-function DeepResearchInlineChat({
-	hasInteracted,
-	query,
-	stream,
-	onSend,
-	onReset,
-	organizationId,
-	reasoningMode,
-}: DeepResearchInlineChatProps) {
-	const [inputValue, setInputValue] = useState("");
-	const messagesEndRef = useRef<HTMLDivElement>(null);
-
-	const handleSend = useCallback(() => {
-		const text = inputValue.trim();
-		if (!text || stream.isLoading) {
-			return;
-		}
-		setInputValue("");
-		onSend(text);
-	}, [inputValue, stream.isLoading, onSend]);
-
-	// Auto-scroll to bottom when new content appears
-	useEffect(() => {
-		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-	}, [
-		stream.state.phase,
-		stream.state.subAgentResults.length,
-		stream.hasResults,
-	]);
-
-	return (
-		<div className="flex flex-col h-full">
-			{/* Scrollable message area — same structure as Direct/Orchestrator */}
-			<div className="flex-1 overflow-y-auto">
-				<div className="mx-auto max-w-3xl px-4 py-6">
-					{/* Welcome state — matching Orchestrator's hero layout */}
-					{!hasInteracted && (
-						<div className="flex flex-col items-center justify-center pt-12 pb-8">
-							<div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-secondary/10 mb-5">
-								<Globe className="h-8 w-8 text-secondary" />
-							</div>
-							<h2
-								className="text-2xl text-foreground/85 mb-2"
-								style={{
-									fontFamily:
-										"var(--font-serif, 'EB Garamond', Georgia, serif)",
-									fontWeight: 400,
-								}}
-							>
-								Deep Research
-							</h2>
-							<p className="text-sm text-muted-foreground max-w-md text-center mb-8">
-								Ask a research question. It will be decomposed,
-								investigated in parallel, and synthesized into a
-								structured report.
-							</p>
-
-							{/* Starter messages — same pattern as Orchestrator */}
-							<div className="grid w-full max-w-2xl gap-2 sm:grid-cols-2">
-								{DEEP_RESEARCH_SUGGESTIONS.map((s) => (
-									<button
-										key={s.prompt}
-										type="button"
-										onClick={() => {
-											setInputValue("");
-											onSend(s.prompt);
-										}}
-										className="flex items-start gap-3 rounded-xl border border-border/60 bg-card/40 p-3 text-left text-sm transition-colors hover:bg-muted/60"
-									>
-										<span className="text-lg shrink-0">
-											{s.emoji}
-										</span>
-										<span className="text-muted-foreground leading-snug">
-											{s.label}
-										</span>
-									</button>
-								))}
-							</div>
-						</div>
-					)}
-
-					{/* Chat-style messages once research starts */}
-					{hasInteracted && (
-						<div className="space-y-4">
-							{/* User query — styled like a user message bubble */}
-							{query && (
-								<div className="flex justify-end">
-									<div className="max-w-[80%] rounded-2xl rounded-tr-md bg-primary/10 px-4 py-3">
-										<p className="text-sm whitespace-pre-wrap">
-											{query}
-										</p>
-									</div>
-								</div>
-							)}
-
-							{/* Assistant response area */}
-							<div className="flex gap-3">
-								<div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary/10 mt-1">
-									<Globe className="h-4 w-4 text-secondary" />
-								</div>
-								<div className="min-w-0 flex-1 space-y-4">
-									{/* Progress panel */}
-									{!stream.isComplete && (
-										<WorkflowProgressPanel
-											state={stream.state}
-											progressPercentage={
-												stream.progress.percentage
-											}
-											onClarificationResponse={
-												stream.sendClarificationResponse
-											}
-										/>
-									)}
-
-									{/* Error */}
-									{stream.state.error && (
-										<div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
-											<p className="text-sm text-destructive">
-												{stream.state.error}
-											</p>
-										</div>
-									)}
-
-									{/* Results */}
-									{stream.hasResults &&
-										stream.state.result && (
-											<WorkflowResultViewer
-												result={stream.state.result}
-												instanceId="deep-research-inline"
-												organizationId={organizationId}
-											/>
-										)}
-
-									{/* New Research button after completion */}
-									{stream.isComplete && (
-										<Button
-											variant="outline"
-											size="sm"
-											onClick={onReset}
-											className="mt-2"
-										>
-											<Sparkles className="h-4 w-4 mr-2" />
-											New Research
-										</Button>
-									)}
-								</div>
-							</div>
-						</div>
-					)}
-
-					<div ref={messagesEndRef} />
-				</div>
-			</div>
-
-			{/* Shared ChatInput — same component used by Direct/Orchestrator */}
-			<div className="border-t border-border/60 bg-background/80 px-4 py-3">
-				<div className="mx-auto max-w-3xl space-y-2">
-					<ChatInput
-						value={inputValue}
-						onChange={setInputValue}
-						onSend={handleSend}
-						isLoading={stream.isLoading}
-						disabled={stream.isRunning}
-						placeholder={
-							stream.isRunning
-								? "Research in progress..."
-								: "Ask a research question..."
-						}
-						showAttachButton={false}
-					/>
-					{reasoningMode && reasoningMode !== "balanced" && (
-						<p className="text-[11px] text-muted-foreground text-center">
-							{reasoningMode === "lite" &&
-								"Fast mode — minimal reasoning"}
-							{reasoningMode === "deep" &&
-								"Thorough mode — deep reasoning enabled"}
-							{reasoningMode === "planner" &&
-								"Planner mode — high reasoning enabled"}
-						</p>
 					)}
 				</div>
 			</div>

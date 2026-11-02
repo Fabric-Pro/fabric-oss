@@ -202,6 +202,9 @@ export const editProposalVisualProcedure = tenantProtectedProcedure
 						visualId: located.keptId,
 					})
 				: null;
+			// The stored kind is what the diagram is redrawn as, the
+			// Proposal's layers and team included, so the candidate keeps the
+			// figure line the visuals step wrote; anything else is best fit.
 			const kind =
 				latest && isEditableKind(latest.kind) ? latest.kind : "auto";
 

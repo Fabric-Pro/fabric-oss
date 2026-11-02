@@ -155,7 +155,7 @@ export type ConflictPreview = {
  *                    The dialog does NOT invalidate queries itself: every
  *                    caller (StoryCard, ReviewCenterRow, PmSyncChip) wires
  *                    this to the shared useInvalidatePmSyncState helper,
- *                    which refreshes stories.list / stories.get /
+ *                    which refreshes stories.board / stories.get /
  *                    reviewCenter.items / reviewCenter.count together.
  *
  * T7 (StoryCard): already holds `pmConflictPreview` + `story.title/description`.
@@ -843,12 +843,9 @@ export function ConflictResolveDialog(props: ConflictResolveDialogProps) {
 				}}
 			>
 				<DialogHeader className="space-y-1.5">
-					<DialogTitle
-						className="font-normal text-2xl"
-						style={{ fontFamily: "var(--font-serif)" }}
-					>
+					<DialogTitle className="font-semibold text-2xl">
 						{identifier ? (
-							<span className="mr-2 align-middle font-sans text-sm font-medium tracking-wide text-muted-foreground">
+							<span className="mr-2 align-middle font-sans text-sm font-medium text-muted-foreground">
 								{identifier}
 							</span>
 						) : null}

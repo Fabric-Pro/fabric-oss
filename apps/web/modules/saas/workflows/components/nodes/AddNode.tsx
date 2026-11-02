@@ -10,9 +10,9 @@ type AddNodeData = {
 
 export function AddNode({ data }: NodeProps & { data?: AddNodeData }) {
 	return (
-		<div className="flex w-[360px] flex-col items-center justify-center gap-6 rounded-[10px] border border-dashed border-input bg-card p-8">
+		<div className="flex w-[360px] flex-col items-center justify-center gap-6 rounded-lg border border-dashed border-input bg-card p-8">
 			<div className="text-center">
-				<h1 className="mb-2 font-serif text-2xl">
+				<h1 className="mb-2 font-semibold text-2xl">
 					AI Workflow Builder
 				</h1>
 				<p className="text-muted-foreground text-sm">

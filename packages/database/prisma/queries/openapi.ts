@@ -5,6 +5,7 @@
  * Follows the same patterns as MCP queries for consistency.
  */
 
+import { getUnsafeUrlReason } from "@repo/utils/url-security";
 import { db } from "../client";
 import type { Prisma } from "../generated/client";
 import type {
@@ -39,6 +40,12 @@ export interface CreateOpenAPIServiceInput {
 	organizationId?: string | null;
 }
 
+function assertSafeBaseUrl(baseUrl: string | null | undefined): void {
+	if (baseUrl && getUnsafeUrlReason(baseUrl)) {
+		throw new Error("OpenAPI base URL must be a permitted public address");
+	}
+}
+
 /**
  * Create a new OpenAPI service
  *
@@ -52,6 +59,7 @@ export async function createOpenAPIService({
 	createdById,
 	...data
 }: CreateOpenAPIServiceInput) {
+	assertSafeBaseUrl(data.baseUrl);
 	if (!userId) {
 		throw new Error(
 			"OpenAPI service must have a userId (for personal or per-user org installations)",
@@ -178,6 +186,7 @@ export async function updateOpenAPIService({
 		specHash: string;
 	}>;
 }) {
+	assertSafeBaseUrl(data.baseUrl);
 	const existing = await db.openAPIService.findFirst({
 		where: {
 			id,
@@ -434,6 +443,7 @@ export async function updateOpenAPIServiceConfig({
 		disabledTools: string[];
 	}>;
 }) {
+	assertSafeBaseUrl(data.baseUrlOverride);
 	return db.openAPIServiceConfig.update({
 		where: { id },
 		data,

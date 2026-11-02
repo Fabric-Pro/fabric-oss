@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatFailureNotice } from "../shared/ChatFailureNotice";
 
@@ -9,6 +9,20 @@ vi.mock("@/components/ai-elements/response", () => ({
 }));
 
 describe("ChatFailureNotice", () => {
+	it("keeps the recovery action inside the styled alert", () => {
+		const onClick = vi.fn();
+		render(
+			<ChatFailureNotice
+				error="Provider balance exhausted"
+				action={{ label: "Manage provider", onClick }}
+			/>,
+		);
+		const button = screen.getByRole("button", { name: "Manage provider" });
+		expect(screen.getByRole("alert")).toContainElement(button);
+		fireEvent.click(button);
+		expect(onClick).toHaveBeenCalledOnce();
+	});
+
 	it("keeps the partial answer outside the failure alert", () => {
 		render(
 			<ChatFailureNotice

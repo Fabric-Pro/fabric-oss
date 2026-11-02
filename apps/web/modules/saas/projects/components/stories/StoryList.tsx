@@ -20,7 +20,7 @@ export function StoryList({
 	const t = useTranslations("projects.stories.listRow");
 	return (
 		<section
-			className="overflow-x-auto rounded-lg border border-border/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+			className="overflow-x-auto rounded-lg border border-border/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 			aria-label={t("items")}
 			// biome-ignore lint/a11y/noNoninteractiveTabindex: A labelled scroll region needs keyboard access to overflow columns.
 			tabIndex={0}

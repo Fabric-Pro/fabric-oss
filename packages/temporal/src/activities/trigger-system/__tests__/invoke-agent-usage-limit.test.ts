@@ -6,14 +6,17 @@ const stubs = vi.hoisted(() => ({
 	getAgentDeploymentById: vi.fn(),
 	generateText: vi.fn(),
 	modelContext: vi.fn(),
+	ownerMember: vi.fn(),
+	triggerFindFirst: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
-	db: {},
+	db: { agentDeploymentTrigger: { findFirst: stubs.triggerFindFirst } },
 	hasProjectAccess: vi.fn(),
 	isProjectReadOnly: vi.fn(),
 	resolveWorkflowIntegrationForProvider: vi.fn(),
 	getAgentDeploymentById: stubs.getAgentDeploymentById,
+	isDeploymentOwnerCurrentMember: stubs.ownerMember,
 	getBuiltInToolConfig: () => undefined,
 	extractEnabledBuiltInToolKeys: () => [],
 	mapBuiltInKeysToFabricToolIds: () => [],
@@ -40,7 +43,7 @@ vi.mock("../../agentic-loop/step-cache-breakpoint", () => ({
 	makeToolLoopPrepareStep: () => undefined,
 }));
 
-import { invokeAgent } from "../index";
+import { invokeAgent, loadTriggerConfig } from "../index";
 
 const INPUT = {
 	agentId: "agent1",
@@ -62,9 +65,67 @@ const LIMIT = new AiUsageLimitExceededError({
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	stubs.ownerMember.mockResolvedValue(true);
 	stubs.getAgentDeploymentById.mockResolvedValue({
 		instance: { name: "Example agent", toolConnections: {}, template: {} },
 	});
+});
+
+it("refuses a removed deployment owner before invoking the model", async () => {
+	stubs.ownerMember.mockResolvedValue(false);
+	const result = await invokeAgent(INPUT);
+	expect(result.success).toBe(false);
+	expect(stubs.generateText).not.toHaveBeenCalled();
+});
+
+it("propagates an unreadable owner membership before invoking the model", async () => {
+	stubs.ownerMember.mockRejectedValue(new Error("lookup failed"));
+	await expect(invokeAgent(INPUT)).rejects.toThrow("lookup failed");
+	expect(stubs.generateText).not.toHaveBeenCalled();
+});
+
+it("does not load a removed owner's trigger configuration", async () => {
+	stubs.triggerFindFirst.mockResolvedValue({
+		id: "trigger-example",
+		deploymentId: "deployment-example",
+		deployment: {
+			userId: "owner-example",
+			organizationId: "example-org",
+			instance: { name: "Example agent" },
+		},
+		isActive: true,
+		config: {},
+	});
+	stubs.ownerMember.mockResolvedValue(false);
+	await expect(
+		loadTriggerConfig({
+			triggerId: "trigger-example",
+			userId: "owner-example",
+			organizationId: "example-org",
+		}),
+	).resolves.toBeNull();
+});
+
+it("propagates an unreadable owner membership while loading a trigger", async () => {
+	stubs.triggerFindFirst.mockResolvedValue({
+		id: "trigger-example",
+		deploymentId: "deployment-example",
+		deployment: {
+			userId: "owner-example",
+			organizationId: "example-org",
+			instance: { name: "Example agent" },
+		},
+		isActive: true,
+		config: {},
+	});
+	stubs.ownerMember.mockRejectedValue(new Error("lookup failed"));
+	await expect(
+		loadTriggerConfig({
+			triggerId: "trigger-example",
+			userId: "owner-example",
+			organizationId: "example-org",
+		}),
+	).rejects.toThrow("lookup failed");
 });
 
 it.each([

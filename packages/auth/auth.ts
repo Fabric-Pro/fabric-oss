@@ -29,16 +29,12 @@ import {
 	username,
 } from "better-auth/plugins";
 import { parse as parseCookies } from "cookie";
-import { jwtVerify } from "jose";
 import { emitAuthAuditEvent } from "./lib/audit-events";
 import { validateAuthBootEnv } from "./lib/boot-validate";
 import { checkLoginAllowed } from "./lib/brute-force";
 import { getTrustedClientIpFromRequest } from "./lib/client-ip";
 import { withEmailVerificationCallback as buildConfirmEmailUrl } from "./lib/email-verification-callback";
-import {
-	isEmailChangeRevoked,
-	isEmailVerifyJWTBlocked,
-} from "./lib/email-verify-blocklist";
+import { assertEmailVerifyNotRevoked } from "./lib/email-verify-revocation";
 import { ensureUserHasOrganization } from "./lib/ensure-user-organization";
 import { buildInvitationToken } from "./lib/invitation-token";
 import { runInviteReconciliationForUser } from "./lib/invite-reconciliation";
@@ -72,6 +68,7 @@ import {
 	seedSessionOrganization,
 	seedSessionOrganizationOnCreate,
 } from "./lib/seed-session-organization";
+import { sessionRevocationOptions } from "./lib/session-revocation-options";
 import { socialProviders } from "./lib/social-providers";
 import { buildTrustedOrigins } from "./lib/trusted-origins";
 import { verifyTurnstileToken } from "./lib/turnstile";
@@ -194,7 +191,7 @@ function getClientIp(request: Request): string {
 // emit `recordAudit` directly because they receive structured event
 // objects rather than a raw ctx.
 
-const authOptions = {
+export const authOptions = {
 	baseURL: appUrl,
 	trustedOrigins,
 	appName: config.appName,
@@ -209,11 +206,8 @@ const authOptions = {
 		cookiePrefix: config.auth.cookiePrefix,
 	},
 	session: {
+		...sessionRevocationOptions.session,
 		expiresIn: config.auth.sessionCookieMaxAge,
-		cookieCache: {
-			enabled: true,
-			maxAge: 5 * 60,
-		},
 		// Non-zero freshAge gates the endpoints that use Better Auth's
 		// `freshSessionMiddleware` behind a recent authentication instead of
 		// trusting any 30-day-old session. In 1.6.22 that is exactly one route,
@@ -221,9 +215,8 @@ const authOptions = {
 		//
 		// It does NOT cover the 2FA management endpoints. Those use
 		// `sensitiveSessionMiddleware`, which is a different control: it
-		// re-reads the session from the server-side store with the cookie cache
-		// bypassed (`dist/api/routes/session.mjs:307-313,328-335`) so a revoked
-		// session cannot authorize the call, and never looks at session age.
+		// re-reads the session from the server-side store so a revoked session
+		// cannot authorize the call, and never looks at session age.
 		// Second-factor freshness on `/two-factor/*` comes from the step-up
 		// grant in ./lib/two-factor-management-step-up.ts instead.
 		freshAge: 60 * 10,
@@ -247,15 +240,15 @@ const authOptions = {
 	databaseHooks: {
 		account: {
 			// SOC 2 CC6.1 (register E10): encrypt Account.idToken at rest. Better
-			// Auth's `encryptOAuthTokens` covers access/refresh but stores the
-			// OIDC ID token raw. Verified against the installed Better Auth source
-			// and Fabric code that the STORED idToken is never read back
-			// (`parseAccountOutput` strips it; only fresh provider-response tokens
-			// are decoded), so encrypting the column is write-only-safe and needs
-			// no decrypt path. Uses the shared rotation-aware primitive; the
-			// isEncryptedApiKey guard makes the hook idempotent. Fails open (store
-			// as received) so an encryption misconfiguration can never break
-			// sign-in — every other encrypt site already fails loudly.
+			// Auth's `encryptOAuthTokens` covers access/refresh but stores the OIDC
+			// ID token raw. Better Auth 1.7 reads the stored value for generic-OAuth
+			// provider logout and its get/refresh-access-token endpoints. Fabric does
+			// not register that plugin or a social provider logout handler, and current
+			// Fabric code calls neither token endpoint. Since the normal stored value
+			// is ciphertext and Fabric has no decrypt path, the column is effectively
+			// write-only here. The isEncryptedApiKey guard keeps the hook idempotent;
+			// if encryption fails, storing null discards the token without aborting
+			// sign-in or account linking.
 			create: {
 				before: async (account) => {
 					if (
@@ -271,9 +264,10 @@ const authOptions = {
 							};
 						} catch (error) {
 							logger.error(
-								"[Auth] Failed to encrypt idToken on account create — storing as received:",
+								"[Auth] Failed to encrypt idToken on account create — discarding it:",
 								error,
 							);
+							return { data: { idToken: null } };
 						}
 					}
 					return undefined;
@@ -294,9 +288,10 @@ const authOptions = {
 							};
 						} catch (error) {
 							logger.error(
-								"[Auth] Failed to encrypt idToken on account update — storing as received:",
+								"[Auth] Failed to encrypt idToken on account update — discarding it:",
 								error,
 							);
+							return { data: { idToken: null } };
 						}
 					}
 					return undefined;
@@ -406,12 +401,11 @@ const authOptions = {
 			create: {
 				before: async (session) => {
 					// Give the session its organization while the row is
-					// being SHAPED, not after it has been written. The row
-					// and the signed session cookie are produced inside one
-					// request body, and Better Auth drains the after-hooks
-					// below only once that body has returned — so seeding
-					// from there alone left the cookie the API reads naming
-					// no organization until the browser aligned it.
+					// being SHAPED, not after it has been written. Better Auth
+					// builds the response's session projection from that shaped
+					// row, then drains the after-hooks below only once the body
+					// has returned. Seeding only from there left the initial
+					// response naming no organization until the browser aligned it.
 					//
 					// The return-value contract with the library is
 					// documented on `seedSessionOrganizationOnCreate` in
@@ -1221,12 +1215,8 @@ const authOptions = {
 
 			// /verify-email — reject JWTs that were revoked via the
 			// "this wasn't me" flow (revoke-email-change procedure).
-			// Two checks: (1) exact-token blocklist — covers JWT 1
-			// (change-email-confirmation) whose hash we captured at revoke
-			// time; (2) tuple revocation — decode the JWT and match against
-			// SHA-256(oldEmail|newEmail), which also catches JWT 2
-			// (change-email-verification) since Better Auth 1.4.9 mints it
-			// with the same {email, updateTo} payload as JWT 1.
+			// The shared guard verifies the signature before deciding from
+			// `updateTo` whether both revocation reads must fail closed.
 			if (ctx.path === "/verify-email") {
 				const verifyTokenStr = (
 					ctx.query as { token?: unknown } | undefined
@@ -1235,46 +1225,11 @@ const authOptions = {
 					typeof verifyTokenStr === "string" &&
 					verifyTokenStr.length > 0
 				) {
-					if (await isEmailVerifyJWTBlocked(verifyTokenStr)) {
-						throw new APIError("BAD_REQUEST", {
-							message: "This verification link has been revoked.",
-						});
-					}
-					try {
-						const secret = process.env.BETTER_AUTH_SECRET;
-						if (secret) {
-							const { payload } = await jwtVerify(
-								verifyTokenStr,
-								new TextEncoder().encode(secret),
-								{ algorithms: ["HS256"] },
-							);
-							const email =
-								typeof payload.email === "string"
-									? payload.email
-									: undefined;
-							const updateTo =
-								typeof payload.updateTo === "string"
-									? payload.updateTo
-									: undefined;
-							if (
-								email &&
-								updateTo &&
-								(await isEmailChangeRevoked(email, updateTo))
-							) {
-								throw new APIError("BAD_REQUEST", {
-									message:
-										"This verification link has been revoked.",
-								});
-							}
-						}
-					} catch (err) {
-						// Re-throw our own block so it doesn't get swallowed.
-						if (err instanceof APIError) {
-							throw err;
-						}
-						// jose threw on a bad/expired JWT — let Better Auth's
-						// own handler produce the canonical error response.
-					}
+					await assertEmailVerifyNotRevoked(
+						verifyTokenStr,
+						process.env.BETTER_AUTH_SECRET ??
+							process.env.AUTH_SECRET,
+					);
 				}
 			}
 
@@ -1551,7 +1506,7 @@ const authOptions = {
 		},
 	},
 	emailAndPassword: {
-		enabled: true,
+		...sessionRevocationOptions.emailAndPassword,
 		// All signups require email verification before sign-in, regardless of
 		// invite-only mode (closes H5 — auto-sign-in without verification).
 		autoSignIn: false,

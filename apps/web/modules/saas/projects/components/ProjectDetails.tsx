@@ -72,6 +72,7 @@ import { useDocumentChangeRefresh } from "../hooks/use-document-change-refresh";
 import { useProjectTabWarmup } from "../hooks/use-project-tab-warmup";
 import { defaultProjectTabForProfile } from "../lib/default-project-tab";
 import { AgentActivityTab } from "./AgentActivityTab";
+import { LaunchFabricDesktopBar } from "./coding-runs/LaunchFabricDesktopBar";
 import { InstructionDraftsProvider } from "./instructions/InstructionDrafts";
 import { loadCodingInstructionsTab } from "./instructions/lib/coding-instructions-warmup";
 // ProjectHeader is always visible, keep static import
@@ -375,7 +376,7 @@ function CodeAnalysisBanner({
 	).length;
 
 	return (
-		<div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+		<div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
 			<div className="flex items-start gap-3">
 				<div className="rounded-lg bg-primary/10 p-2">
 					<GithubIcon className="size-5 text-primary" />
@@ -938,9 +939,9 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 	if (isLoading) {
 		return (
 			<div className="space-y-6">
-				<Skeleton className="h-32 w-full rounded-xl" />
-				<Skeleton className="h-12 w-full rounded-xl" />
-				<Skeleton className="h-96 w-full rounded-xl" />
+				<Skeleton className="h-32 w-full rounded-lg" />
+				<Skeleton className="h-12 w-full rounded-lg" />
+				<Skeleton className="h-96 w-full rounded-lg" />
 			</div>
 		);
 	}
@@ -962,7 +963,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 		if (!canDeleteProject) {
 			return (
 				<div className="flex flex-col items-center justify-center py-12">
-					<div className="mb-4 rounded-2xl bg-muted p-4">
+					<div className="mb-4 rounded-lg bg-muted p-4">
 						<FolderIcon className="size-8 text-muted-foreground" />
 					</div>
 					<p className="mb-2 font-medium text-foreground/70">
@@ -1004,7 +1005,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 
 				{/* Deleted Project Warning Card */}
 				<div className="flex flex-col items-center justify-center py-12">
-					<div className="mb-6 rounded-2xl bg-destructive/10 p-6">
+					<div className="mb-6 rounded-lg bg-destructive/10 p-6">
 						<AlertTriangleIcon className="size-12 text-destructive" />
 					</div>
 
@@ -1249,7 +1250,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 											aria-haspopup="menu"
 											aria-expanded={moreOpen}
 											className={cn(
-												"-mb-px relative flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 pt-2 pb-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+												"-mb-px relative flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 pt-2 pb-2.5 text-sm transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
 												activeOverflowTab
 													? "border-foreground font-medium text-foreground"
 													: "border-transparent text-muted-foreground hover:text-foreground",
@@ -1285,7 +1286,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 									<PopoverContent
 										align="end"
 										sideOffset={6}
-										className="w-60 rounded-xl p-1.5"
+										className="w-60 rounded-lg p-1.5"
 									>
 										<div
 											role="menu"
@@ -1294,7 +1295,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 										>
 											{overflowGroups.map((group) => (
 												<div key={group.label}>
-													<p className="px-2.5 pt-2 pb-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+													<p className="px-2.5 pt-2 pb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
 														{group.label}
 													</p>
 													{group.tabs.map((tab) => {
@@ -1569,6 +1570,10 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 						)}
 						{activeTab === "kanban" && (
 							<div className="space-y-6">
+								<LaunchFabricDesktopBar
+									projectId={projectId}
+									projectName={project.name}
+								/>
 								<ProjectSectionHero
 									eyebrow="Coding Agents"
 									title="Local coding agents, built in"
@@ -1579,7 +1584,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 											className="flex h-full flex-col justify-center gap-4"
 											data-onboarding-target="kanban-quickstart"
 										>
-											<p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+											<p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
 												Quick start
 											</p>
 											<ol className="space-y-3 text-sm text-muted-foreground">
@@ -1634,7 +1639,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 									}
 								/>
 								<div
-									className="h-[calc(100vh-8rem)] min-h-[900px] overflow-hidden rounded-xl border border-border"
+									className="h-[calc(100vh-8rem)] min-h-[900px] overflow-hidden rounded-lg border border-border"
 									data-onboarding-target="kanban-board"
 								>
 									<ProjectKanbanRouteView

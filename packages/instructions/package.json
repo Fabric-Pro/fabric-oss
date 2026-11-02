@@ -21,7 +21,7 @@
 		"@repo/tsconfig": "workspace:*",
 		"@types/archiver": "^7.0.0",
 		"@types/node": "^24.10.0",
-		"vitest": "^4.1.11"
+		"vitest": "^4.1.12"
 	},
 	"dependencies": {
 		"@orpc/client": "^1.15.2",

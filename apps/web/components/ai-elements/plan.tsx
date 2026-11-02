@@ -55,7 +55,7 @@ export function Plan({
 	return (
 		<div
 			className={cn(
-				"rounded-xl border bg-card shadow-sm overflow-hidden",
+				"rounded-xl border border-border bg-card shadow-2xs overflow-hidden",
 				className,
 			)}
 			{...props}
@@ -64,30 +64,30 @@ export function Plan({
 			<button
 				type="button"
 				onClick={() => setIsCollapsed(!isCollapsed)}
-				className="w-full flex items-start gap-3 p-4 text-left hover:bg-muted/50 transition-colors"
+				className="w-full flex items-start gap-2.5 px-3.5 py-2.5 text-left hover:bg-muted/40 transition-colors"
 			>
 				{/* Document Icon */}
 				<div className="shrink-0 mt-0.5">
-					<FileTextIcon className="h-5 w-5 text-muted-foreground" />
+					<FileTextIcon className="h-4 w-4 text-primary" />
 				</div>
 
 				{/* Title and Description */}
 				<div className="flex-1 min-w-0 space-y-1">
 					<div className="flex items-center gap-2">
-						<h3 className="font-semibold text-sm leading-tight">
+						<h3 className="font-medium text-xs text-foreground leading-tight">
 							{title}
 						</h3>
 						{/* Progress badge */}
-						<span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+						<span className="text-[11px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">
 							{completedSteps}/{totalSteps}
 						</span>
 						{inProgressSteps > 0 && (
-							<LoaderIcon className="h-3 w-3 text-blue-500 animate-spin" />
+							<LoaderIcon className="h-3 w-3 text-primary animate-spin" />
 						)}
 					</div>
 					{description && (
 						<p
-							className="text-sm text-muted-foreground leading-relaxed truncate"
+							className="text-xs text-muted-foreground leading-relaxed truncate"
 							title={description}
 						>
 							{description.length > 200
@@ -101,7 +101,7 @@ export function Plan({
 				<div className="shrink-0">
 					<ChevronDownIcon
 						className={cn(
-							"h-5 w-5 text-muted-foreground transition-transform duration-200",
+							"h-4 w-4 text-muted-foreground transition-transform duration-200",
 							isCollapsed && "-rotate-90",
 						)}
 					/>
@@ -110,10 +110,10 @@ export function Plan({
 
 			{/* Collapsible Content */}
 			{!isCollapsed && (
-				<div className="px-4 pb-4 pt-0 border-t">
+				<div className="px-3.5 pb-3.5 pt-0 border-t border-border">
 					{/* Progress bar */}
 					{totalSteps > 1 && (
-						<div className="mb-4 pt-4">
+						<div className="mb-3 pt-3">
 							<div className="flex items-center justify-between text-xs text-muted-foreground mb-1.5">
 								<span>Progress</span>
 								<span className="font-medium">
@@ -123,9 +123,9 @@ export function Plan({
 									%
 								</span>
 							</div>
-							<div className="h-1.5 bg-muted rounded-full overflow-hidden">
+							<div className="h-1 bg-muted rounded-full overflow-hidden">
 								<div
-									className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-500 ease-out"
+									className="h-full bg-primary transition-all duration-500 ease-out"
 									style={{
 										width: `${(completedSteps / totalSteps) * 100}%`,
 									}}
@@ -135,7 +135,7 @@ export function Plan({
 					)}
 
 					{/* Steps List */}
-					<div className={cn("space-y-2", totalSteps <= 1 && "pt-4")}>
+					<div className={cn("space-y-2", totalSteps <= 1 && "pt-3")}>
 						{steps.map((step, index) => (
 							<PlanStepItem
 								key={step.id}
@@ -160,15 +160,17 @@ function PlanStepItem({ step, index, level = 0 }: PlanStepItemProps) {
 	const getStatusIcon = () => {
 		switch (step.status) {
 			case "completed":
-				return <CheckCircle2Icon className="size-4 text-green-500" />;
+				return <CheckCircle2Icon className="size-3.5 text-success" />;
 			case "in-progress":
 				return (
-					<LoaderIcon className="size-4 text-blue-500 animate-spin" />
+					<LoaderIcon className="size-3.5 text-primary animate-spin" />
 				);
 			case "failed":
-				return <XCircleIcon className="size-4 text-red-500" />;
+				return <XCircleIcon className="size-3.5 text-destructive" />;
 			default:
-				return <CircleIcon className="size-4 text-muted-foreground" />;
+				return (
+					<CircleIcon className="size-3.5 text-muted-foreground" />
+				);
 		}
 	};
 
@@ -179,7 +181,7 @@ function PlanStepItem({ step, index, level = 0 }: PlanStepItemProps) {
 			case "in-progress":
 				return "text-foreground font-medium";
 			case "failed":
-				return "text-red-500";
+				return "text-destructive";
 			default:
 				return "text-muted-foreground";
 		}

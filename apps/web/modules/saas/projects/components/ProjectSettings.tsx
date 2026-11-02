@@ -374,7 +374,7 @@ export function ProjectSettings({
 	};
 
 	const sectionTitleClass =
-		"text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground";
+		"text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 
 	// Admin-configurable settings (Read-only mode, clarifying-question frequency)
 	// are gated on PROJECT_SETTINGS_EDIT. Prefer the server's capability flag,
@@ -710,16 +710,16 @@ export function ProjectSettings({
 				)}
 
 				{settingsTab === "danger" && canDelete && (
-					<Card className="rounded-2xl border border-destructive/30 bg-destructive/[0.04]">
+					<Card className="rounded-lg border border-destructive/30 bg-destructive/[0.04]">
 						<div className="p-6">
 							<p className={sectionTitleClass}>Danger Zone</p>
 							<h3 className="mt-2 text-lg font-semibold">
 								Delete this project
 							</h3>
 
-							<div className="mt-5 rounded-xl border border-destructive/20 bg-background/60 p-5">
+							<div className="mt-5 rounded-lg border border-destructive/20 bg-background/60 p-5">
 								<div className="flex items-start gap-3">
-									<div className="rounded-xl border border-destructive/15 bg-destructive/10 p-2">
+									<div className="rounded-lg border border-destructive/15 bg-destructive/10 p-2">
 										<AlertTriangleIcon
 											className="h-5 w-5 text-destructive"
 											aria-hidden

@@ -334,7 +334,7 @@ export async function assertProjectPermission(
  * resolvers (`resolveBoundOrganization`) and `assertInputOrgMatchesProject`.
  * A non-string value is left to the input schema.
  */
-function assertInputOrgMatchesAuthorizedProject(
+export function assertInputOrgMatchesAuthorizedProject(
 	inputOrganizationId: unknown,
 	authorized: AuthorizedProject,
 ): void {

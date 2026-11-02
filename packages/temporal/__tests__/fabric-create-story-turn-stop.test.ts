@@ -74,6 +74,8 @@ vi.mock("@repo/ai/lib/story-title-generator", () => ({
 
 vi.mock("@repo/database", () => ({
 	logAiUsageAsync: h.logAiUsageAsync,
+	recordChatMediaObject: vi.fn(),
+	resolveChatMediaAccess: vi.fn().mockResolvedValue("allow"),
 	// The turn guard and its ledger.
 	checkConversationTurnDispatchable: h.checkDispatchable,
 	reserveConversationTurnAttempt: h.reserve,
@@ -132,7 +134,11 @@ vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({
 	formatLiveContextForPrompt: vi.fn(() => null),
 }));
 vi.mock("@repo/search", () => ({ createProvider: vi.fn() }));
-vi.mock("@repo/storage", () => ({ uploadFile: h.uploadFile }));
+vi.mock("@repo/storage", () => ({
+	uploadFile: h.uploadFile,
+	deleteFile: vi.fn(),
+	getFileMetadata: vi.fn(),
+}));
 vi.mock("../src/lib/lifecycle-dispatcher", () => ({
 	dispatchLifecycleEvent: h.dispatchLifecycleEvent,
 }));

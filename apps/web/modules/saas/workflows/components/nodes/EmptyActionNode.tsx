@@ -38,7 +38,7 @@ export const EmptyActionNode = memo(
 
 				<div
 					className={cn(
-						"flex w-[300px] cursor-pointer items-center gap-3 rounded-[10px] border border-dashed bg-card px-3.5 py-3",
+						"flex w-[300px] cursor-pointer items-center gap-3 rounded-lg border border-dashed bg-card px-3.5 py-3",
 						"motion-safe:transition-[border-color,box-shadow] motion-safe:duration-150",
 						selected
 							? "border-foreground ring-[3px] ring-foreground/10"

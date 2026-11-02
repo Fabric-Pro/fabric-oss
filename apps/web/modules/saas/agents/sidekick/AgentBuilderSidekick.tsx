@@ -1,6 +1,5 @@
 "use client";
 
-import { type UIMessage, useChat } from "@ai-sdk/react";
 import { classifyLimitError } from "@repo/ai/limits";
 import { useLimitToast } from "@saas/ai/hooks/useLimitToast";
 import {
@@ -11,7 +10,7 @@ import {
 import { useAutoResizeTextarea } from "@saas/shared/hooks/use-auto-resize-textarea";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
-import { DefaultChatTransport } from "ai";
+import type { UIMessage } from "ai";
 import { Loader2Icon, SendIcon, SparklesIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import remarkDirective from "remark-directive";
@@ -20,6 +19,8 @@ import { SidekickSuggestionHost } from "./markdown/SidekickSuggestionHost";
 import { sidekickSuggestionDirective } from "./markdown/sidekickSuggestionDirective";
 import { useSidekickForm } from "./SidekickFormContext";
 import type { SidekickEntityType } from "./SidekickSuggestionsContext";
+import { sidekickDisplayText } from "./sidekick-display-text";
+import { useSidekickChat } from "./useSidekickChat";
 
 // ---- Types ----
 
@@ -96,11 +97,6 @@ export function AgentBuilderSidekick({
 	const scrollContainerRef = useRef<HTMLDivElement>(null);
 	const hasAutoStartedRef = useRef(false);
 
-	// Store the getSnapshot function ref so the transport reads the
-	// freshest form state lazily at send time (not on every render).
-	const getSnapshotRef = useRef(getSnapshot);
-	getSnapshotRef.current = getSnapshot;
-
 	// Memoized remark plugins array — stable reference to avoid unnecessary
 	// re-renders of the Response component.
 	const remarkPlugins = useMemo(
@@ -114,56 +110,36 @@ export function AgentBuilderSidekick({
 		[],
 	);
 
-	// Build transport that adapts the AI SDK message format to the
-	// Sidekick streaming route's expected request body.
-	const transport = useMemo(
-		() =>
-			new DefaultChatTransport({
-				api: "/api/agents/sidekick/stream",
-				prepareSendMessagesRequest: ({ messages }) => {
-					// Send the full AI SDK messages array (preserves tool call structure)
-					// plus custom fields the route needs.
-					return {
-						body: {
-							agentId,
-							entityType,
-							formSnapshot: getSnapshotRef.current(),
-							messages,
-						},
-					};
-				},
-			}),
-		[agentId, entityType],
-	);
-
 	const showLimitToast = useLimitToast();
 	const showAiUsageLimitToast = useShowAiUsageLimitToast();
-	const { messages, status, sendMessage } = useChat({
-		id: `sidekick-${agentId}`,
-		transport,
-		onError: (error) => {
-			// AI usage-limit short-circuit.
-			// The Sidekick stream route returns a 429 with
-			// `code: "AI_USAGE_LIMIT_EXCEEDED"` when the chokepoint
-			// blocks; AI SDK's `useChat` surfaces the JSON body via
-			// `error.cause` (newer versions) or as `error` (older).
-			// Probe both so the rich payload reaches the shared toast
-			// regardless of SDK version, then short-circuit so the
-			// generic limit-toast fallback below doesn't double-fire.
-			const aiUsageLimitPayload =
-				findAiUsageLimitPayloadFromUseChat(error);
-			if (aiUsageLimitPayload) {
-				showAiUsageLimitToast(aiUsageLimitPayload);
-				return;
-			}
+	const handleChatError = (error: unknown) => {
+		// AI usage-limit short-circuit.
+		// The Sidekick stream route returns a 429 with
+		// `code: "AI_USAGE_LIMIT_EXCEEDED"` when the chokepoint
+		// blocks; AI SDK's `useChat` surfaces the JSON body via
+		// `error.cause` (newer versions) or as `error` (older).
+		// Probe both so the rich payload reaches the shared toast
+		// regardless of SDK version, then short-circuit so the
+		// generic limit-toast fallback below doesn't double-fire.
+		const aiUsageLimitPayload = findAiUsageLimitPayloadFromUseChat(error);
+		if (aiUsageLimitPayload) {
+			showAiUsageLimitToast(aiUsageLimitPayload);
+			return;
+		}
 
-			console.error("[AgentBuilderSidekick] Stream error:", error);
-			// Surface provider / token-budget limit exhaustion.
-			const limitSignal = classifyLimitError(error);
-			if (limitSignal) {
-				showLimitToast(limitSignal);
-			}
-		},
+		console.error("[AgentBuilderSidekick] Stream error:", error);
+		// Surface provider / token-budget limit exhaustion.
+		const limitSignal = classifyLimitError(error);
+		if (limitSignal) {
+			showLimitToast(limitSignal);
+		}
+	};
+	// The hooks read the freshest form state and this handler at use time.
+	const { messages, status, sendMessage } = useSidekickChat({
+		agentId,
+		entityType,
+		getSnapshot,
+		onError: handleChatError,
 	});
 
 	const isStreaming = status === "streaming" || status === "submitted";
@@ -406,7 +382,7 @@ export function AgentBuilderSidekick({
 	);
 
 	return (
-		<div className="flex h-full flex-col">
+		<div className="flex h-full min-w-0 flex-col">
 			{/* Messages area */}
 			<div
 				ref={scrollContainerRef}
@@ -460,7 +436,7 @@ export function AgentBuilderSidekick({
 						onKeyDown={handleKeyDown}
 						placeholder="Ask Sidekick for suggestions..."
 						disabled={isStreaming}
-						className="max-h-48 min-h-[80px] flex-1 resize-none"
+						className="max-h-48 min-h-[80px] min-w-0 flex-1 resize-none"
 						rows={3}
 						aria-label="Message Sidekick"
 					/>
@@ -528,7 +504,7 @@ const MessageBubble = memo(function MessageBubble({
 					components={markdownComponents}
 					streaming
 				>
-					{textContent}
+					{sidekickDisplayText(textContent)}
 				</Response>
 			</div>
 		</div>

@@ -143,6 +143,22 @@ export function recordAuthorizedProject(project: AuthorizedProject): boolean {
 }
 
 /**
+ * Run `fn` in a fresh holder with `project` already authorized. For a caller
+ * outside oRPC that goes on working for a project it authorized earlier (the
+ * agent runtime's turns), so whatever reads the binding, such as the error
+ * capture's attribution, sees what it would see inside the procedure's call.
+ */
+export function runWithAuthorizedProject<T>(
+	project: AuthorizedProject,
+	fn: () => T,
+): T {
+	return runWithProjectBindingHolder(() => {
+		recordAuthorizedProject(project);
+		return fn();
+	});
+}
+
+/**
  * The binding's answer to "which organization does this request run in", for
  * the organization resolvers.
  *

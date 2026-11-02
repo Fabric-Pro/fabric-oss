@@ -191,7 +191,7 @@ export function FeatureCoverageList({ projectId }: Props) {
 				</div>
 			) : rows.length === 0 ? (
 				<div
-					className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed py-16 text-center"
+					className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-16 text-center"
 					style={{
 						backgroundImage:
 							"radial-gradient(circle, color-mix(in srgb, var(--muted-foreground) 13%, transparent) 1px, transparent 1px)",
@@ -199,7 +199,7 @@ export function FeatureCoverageList({ projectId }: Props) {
 					}}
 				>
 					<TargetIcon className="size-8 text-muted-foreground/60" />
-					<h3 className="font-serif text-xl font-normal">
+					<h3 className="text-xl font-semibold">
 						{hasFilters
 							? t("features.emptyFiltered")
 							: t("features.empty")}

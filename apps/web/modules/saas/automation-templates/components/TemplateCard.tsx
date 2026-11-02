@@ -62,7 +62,7 @@ export function TemplateCard({ template, onExecute, onDelete }: Props) {
 		: "Never used";
 
 	return (
-		<div className="group flex flex-col overflow-hidden rounded-xl border bg-card/50 transition-all hover:border-primary/30 hover:shadow-lg">
+		<div className="group flex flex-col overflow-hidden rounded-lg border bg-card/50 transition-all hover:border-primary/30 hover:shadow-lg">
 			{/* Header */}
 			<div className="flex items-start justify-between p-4 pb-2">
 				<div className="flex items-center gap-2">

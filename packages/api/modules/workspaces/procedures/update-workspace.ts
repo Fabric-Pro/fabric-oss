@@ -3,6 +3,7 @@ import {
 	archiveWorkspace,
 	canManageWorkspace,
 	deleteWorkspace,
+	getWorkspaceAccessContext,
 	reactivateWorkspace,
 	updateWorkspace,
 } from "@repo/database";
@@ -12,6 +13,22 @@ import {
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+
+async function requireWorkspaceInActiveOrganization(
+	workspaceId: string,
+	userId: string,
+	activeOrganizationId: string | null,
+) {
+	const workspace = await getWorkspaceAccessContext(workspaceId, userId);
+	if (
+		!workspace?.organizationId ||
+		workspace.organizationId !== activeOrganizationId
+	) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "You don't have access to this workspace",
+		});
+	}
+}
 
 /**
  * Update a workspace
@@ -36,6 +53,11 @@ export const updateWorkspaceProcedure = tenantProtectedProcedure
 			});
 		}
 
+		await requireWorkspaceInActiveOrganization(
+			input.workspaceId,
+			user.id,
+			context.tenantContext.organizationId,
+		);
 		const workspace = await updateWorkspace(input.workspaceId, user.id, {
 			name: input.name,
 			description: input.description,
@@ -64,6 +86,11 @@ export const archiveWorkspaceProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
+		await requireWorkspaceInActiveOrganization(
+			input.workspaceId,
+			user.id,
+			context.tenantContext.organizationId,
+		);
 		const workspace = await archiveWorkspace(input.workspaceId, user.id);
 
 		return {
@@ -86,6 +113,11 @@ export const reactivateWorkspaceProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
+		await requireWorkspaceInActiveOrganization(
+			input.workspaceId,
+			user.id,
+			context.tenantContext.organizationId,
+		);
 		const workspace = await reactivateWorkspace(input.workspaceId, user.id);
 
 		return {
@@ -108,6 +140,11 @@ export const deleteWorkspaceProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
+		await requireWorkspaceInActiveOrganization(
+			input.workspaceId,
+			user.id,
+			context.tenantContext.organizationId,
+		);
 		await deleteWorkspace(input.workspaceId, user.id);
 
 		return { success: true };

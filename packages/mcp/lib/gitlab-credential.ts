@@ -33,6 +33,7 @@ import type {
 import {
 	authorizeMcpConfigAccess,
 	getMcpConfigById,
+	getMcpOAuthGrantGeneration,
 	getValidAccessToken,
 	isGitLabPersonalMcpServerKey,
 	isOrganizationMember,
@@ -45,6 +46,7 @@ import {
 	parseGitLabOrigin,
 	readStoredGitLabConnectionStatus,
 } from "@repo/integrations/gitlab";
+import { mcpServerUrlsMatch } from "./server-url-guard";
 
 export type GitLabMcpCredentialErrorCode =
 	| "not-owner"
@@ -293,9 +295,17 @@ export async function getValidMcpTransportAuth(args: {
 	userId: string;
 	organizationId?: string | null;
 	endpoint: string;
+	expectedGrantGeneration?: number;
 }): Promise<{ accessToken: string | null; fetch?: GitLabMcpFetch }> {
-	const { endpoint, ...access } = args;
+	const { endpoint, expectedGrantGeneration, ...access } = args;
 	const cfg = await authorizeMcpConfigAccess(access);
+	const configuredEndpoint = cfg.baseUrl || cfg.mcpServer?.defaultUrl;
+	if (
+		!configuredEndpoint ||
+		!mcpServerUrlsMatch(configuredEndpoint, endpoint)
+	) {
+		return { accessToken: null };
+	}
 	// Keyed on the server, not `authType`: a GitLab personal config of any
 	// auth type resolves through the person's connection, never its own row.
 	if (isGitLabPersonalMcpConfig(cfg)) {
@@ -306,7 +316,24 @@ export async function getValidMcpTransportAuth(args: {
 			endpoint,
 		});
 	}
-	return { accessToken: await getValidAccessToken(access) };
+	if (
+		cfg.authType === "OAUTH2" &&
+		expectedGrantGeneration !== undefined &&
+		cfg.oauthGrantGeneration !== expectedGrantGeneration
+	) {
+		return { accessToken: null };
+	}
+	const accessToken = await getValidAccessToken(access);
+	if (
+		accessToken &&
+		cfg.authType === "OAUTH2" &&
+		expectedGrantGeneration !== undefined &&
+		(await getMcpOAuthGrantGeneration(args.configId)) !==
+			expectedGrantGeneration
+	) {
+		return { accessToken: null };
+	}
+	return { accessToken };
 }
 
 /**

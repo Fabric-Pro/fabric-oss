@@ -1,3 +1,9 @@
+import { COVER_LANGUAGE } from "@repo/utils/proposal-artifact/cover-fence";
+import {
+	CARDS_LANGUAGE,
+	COLUMNS_LANGUAGE,
+} from "@repo/utils/proposal-artifact/proposal-blocks";
+import { STAT_TILES_LANGUAGE } from "@repo/utils/proposal-artifact/stat-tiles";
 import {
 	Extension,
 	Mark,
@@ -27,21 +33,37 @@ import { common, createLowlight } from "lowlight";
 import { ImageLoadFallback } from "./image-load-fallback-extension";
 import { MediaImportPlaceholder } from "./media-import-placeholder-extension";
 import { buildMentionExtension } from "./mention-extension";
+import { CoverBlock } from "./tiptap-cover-extension";
 import { ExcalidrawEmbed } from "./tiptap-excalidraw-embed-extension";
+import { isFencePreInAnyCase } from "./tiptap-fenced-block-view";
 import { DocumentImage } from "./tiptap-image-extension";
 import { ImageUploadPlaceholder } from "./tiptap-image-upload-extension";
 import { MERMAID_LANGUAGES, MermaidBlock } from "./tiptap-mermaid-extension";
-import { isStatTilesPre, StatTilesBlock } from "./tiptap-stat-tiles-extension";
+import { CardsBlock, ColumnsBlock } from "./tiptap-proposal-blocks-extension";
+import { StatTilesBlock } from "./tiptap-stat-tiles-extension";
 import { VisualSlot } from "./tiptap-visual-slot-extension";
 
 // Create lowlight instance for syntax highlighting
 const lowlight = createLowlight(common);
 
 /**
- * The code block's stat tiles guard: above the default 50 that `MermaidBlock`
- * leaves its content sniff at, below `StatTilesBlock`'s own rule (70).
+ * The fence languages whose body is content a Proposal draws, never a
+ * diagram, whatever its first line holds.
  */
-const STAT_TILES_CODE_BLOCK_PRIORITY = 60;
+const CONTENT_FENCE_LANGUAGES = [
+	STAT_TILES_LANGUAGE,
+	CARDS_LANGUAGE,
+	COLUMNS_LANGUAGE,
+	COVER_LANGUAGE,
+] as const;
+
+/**
+ * The code block's content fence guard: above the default 50 that
+ * `MermaidBlock` leaves its content sniff at, below the rules (70) that the
+ * content fence nodes (`StatTilesBlock`, `CardsBlock`, `ColumnsBlock`,
+ * `CoverBlock`) claim their fences with.
+ */
+const CONTENT_FENCE_GUARD_PRIORITY = 60;
 
 /**
  * Extended CodeBlockLowlight that excludes mermaid languages
@@ -62,18 +84,32 @@ const CodeBlockLowlightNoMermaid = CodeBlockLowlight.extend({
 	marks: "diffInsert diffDelete",
 	parseHTML() {
 		return [
-			// A ```stat-tiles fence (Fizzy #2946) in an editor that does not
-			// register `StatTilesBlock` stays a code block of that language.
-			// Without this rule `MermaidBlock`'s first-line sniff claims a block
-			// whose first label is "Timeline savings" or "Pie share", and the
-			// save then rewrites its fence as ```mermaid. Where `StatTilesBlock`
-			// is registered, its higher-priority rule wins over this one.
+			// A ```stat-tiles, ```cards, ```columns or ```cover fence (Fizzy
+			// #2946) that no content fence node claims stays a code block of
+			// its language. Without this rule `MermaidBlock`'s first-line sniff
+			// claims a block whose first line is "Timeline savings" or "graph
+			// notes", and the save then rewrites its fence as ```mermaid.
+			// Where the nodes are registered, their higher-priority rules win
+			// over this one.
+			//
+			// The language is matched in any case, while the nodes match only
+			// their lower-case one. The markdown load lowercases a fence's
+			// language, but an AI edit under review writes an added fence's
+			// language as the model wrote it, and pasted HTML keeps its own.
+			// The prose hash and the print never read a ```Cards fence as a
+			// diagram, so the editor keeps it a code block of that language
+			// too, or the two would number figures differently.
 			{
 				tag: "pre",
-				priority: STAT_TILES_CODE_BLOCK_PRIORITY,
+				priority: CONTENT_FENCE_GUARD_PRIORITY,
 				preserveWhitespace: "full",
 				getAttrs: (node) =>
-					isStatTilesPre(node as HTMLElement) ? {} : false,
+					isFencePreInAnyCase(
+						node as HTMLElement,
+						CONTENT_FENCE_LANGUAGES,
+					)
+						? {}
+						: false,
 			},
 			{
 				tag: "pre",
@@ -443,10 +479,12 @@ const InlineCode = Mark.create({
  */
 export interface RichDocumentExtensionOptions {
 	/**
-	 * Draw ```` ```stat-tiles ```` fences as Proposal stat tiles (Fizzy
-	 * #2946). Only the project document editor and the Proposal live pane
-	 * turn this on; elsewhere the fence stays an ordinary code block, which
-	 * keeps the same markdown on save.
+	 * Draw ```` ```stat-tiles ````, ```` ```cards ```` and
+	 * ```` ```columns ```` fences as Proposal stat tiles, card grids and two
+	 * columns, and a ```` ```cover ```` fence as a summary of the cover
+	 * details (Fizzy #2946). Only the project document editor and the
+	 * Proposal live pane turn this on; elsewhere each fence stays an ordinary
+	 * code block, which keeps the same markdown on save.
 	 */
 	statTiles?: boolean;
 }
@@ -496,10 +534,14 @@ function buildSharedRichDocumentExtensions(
 		// which uses Mark extensions (<em>, <s>) - they are processed independently
 		MermaidBlock,
 
-		// Proposal stat tiles — opt-in, see `RichDocumentExtensionOptions`.
-		// Its `<pre>` rule outranks the mermaid sniff and the code block, so
-		// a tile labelled "Timeline savings" stays a tile.
-		...(statTiles ? [StatTilesBlock] : []),
+		// Proposal stat tiles, card grids, two columns and cover details —
+		// opt-in, see `RichDocumentExtensionOptions`. Their `<pre>` rules
+		// outrank the mermaid sniff and the code block, so a tile labelled
+		// "Timeline savings" stays a tile and a card labelled "Timeline
+		// risks" a card.
+		...(statTiles
+			? [StatTilesBlock, CardsBlock, ColumnsBlock, CoverBlock]
+			: []),
 
 		// Excalidraw diagram embed — interactive canvas inline in the document.
 		// Recognizes `<excalidraw-embed data-resource-uri=… data-config-id=…>`

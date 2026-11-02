@@ -5,7 +5,7 @@
  *   1. Synced story renders with no PM-sync badge.
  *   2. User inline-renames the title (a manual edit via stories.update).
  *   3. update-story flips the row's lastPmSyncStatus to PENDING — the next
- *      stories.list refetch surfaces the PmSyncPendingIndicator on the card.
+ *      stories.board refetch surfaces the PmSyncPendingIndicator on the card.
  *   4. The mocked sync activity completes; lastPmSyncStatus becomes SUCCESS
  *      (which renders no badge per spec §7.2). The PM "side-effect"
  *      (containerName/PM tool reflecting update) is asserted via the
@@ -19,17 +19,17 @@
  * Run with:
  *   pnpm --filter web e2e tests/pm-sync/happy-path.spec.ts
  */
-import { type Route, expect, test } from "@playwright/test";
+import { expect, type Route, test } from "@playwright/test";
 import {
-	PM_TOOL_NAME,
-	SYNCED_STORY,
-	TEST_DATA,
 	gotoRoadmap,
 	installCapabilitiesAndStatuses,
 	installStoriesListMock,
 	orpcJsonResponse,
+	PM_TOOL_NAME,
+	SYNCED_STORY,
 	skipIfNoData,
 	startInlineRename,
+	TEST_DATA,
 } from "./_helpers";
 
 test.describe("F-1166 PM sync — happy path", () => {

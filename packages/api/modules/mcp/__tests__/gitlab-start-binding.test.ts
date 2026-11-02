@@ -38,6 +38,7 @@ vi.mock("@repo/database", async (importOriginal) => ({
 	},
 	getMcpConfigByIdInternal: async (id: string) =>
 		state.fake.db.mCPConfig.findUnique({ where: { id } } as never),
+	consumeOauthState: vi.fn(async () => true),
 	createOauthState: vi.fn(async () => "state-1"),
 }));
 
@@ -89,6 +90,7 @@ vi.mock("../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: builder,
 		publicProcedure: builder,
+		protectedProcedure: builder,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
 		authorizeInputOrganization: async () => "org-example",

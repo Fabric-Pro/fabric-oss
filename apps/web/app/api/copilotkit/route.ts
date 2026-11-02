@@ -43,33 +43,7 @@ import {
 	WRITE_TASK_PLAN_TOOL,
 } from "@repo/agent-tools";
 import type { BaseAgentState } from "@repo/agent-types";
-import {
-	CHATGPT_PLAN_EXHAUSTED_CODE,
-	SubscriptionPlanExhaustedError,
-} from "@repo/agent-types/chatgpt-plan-fetch";
-import {
-	buildEffectiveBaseUrl,
-	type getAIModelWithMetadata,
-	getRAGProviderConfig,
-	isReasoningModelName,
-	resolveModelWithProvider,
-} from "@repo/ai";
-import { chatGptPlanReconnectRefusal } from "@repo/ai/lib/chatgpt-plan/agent-config";
-import {
-	enterAiInteractiveContext,
-	isAiImpersonatedRequest,
-} from "@repo/ai/lib/chatgpt-plan/interactive-context";
-import { resolveChatGptPlanModel } from "@repo/ai/lib/chatgpt-plan/models";
-import {
-	chatGptPlanApiBillingOption,
-	chatGptPlanSpentError,
-} from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
-import {
-	chatGptPlanInteractiveApiFallback,
-	chatGptPlanPersonalKeyFallback,
-	pickChatGptPlanSource,
-} from "@repo/ai/lib/chatgpt-plan/pool";
-import { AI_TOKEN_HEADER, issueAIToken } from "@repo/ai-token";
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
 import {
 	forbiddenOrganizationResponse,
@@ -77,13 +51,16 @@ import {
 } from "@repo/api/lib/requested-organization";
 import { auth } from "@repo/auth";
 import { logger } from "@repo/logs";
-import { AiUsageLimitExceededError } from "@repo/payments";
+import { withBoundedAgentRequestBody } from "@saas/agents/runtime/request-body";
 import { readThreadAccess } from "@saas/agents/runtime/thread";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
-import { AI_TOKEN_TTL_SECONDS } from "./config";
+import {
+	dataAnalystUrl,
+	issueCopilotAgentRequest,
+	resolveCopilotTenant,
+} from "./agent-request";
 import { copilotDurableRuntime } from "./durable-runs";
-import { resolveCopilotOrgModel } from "./org-model";
 import {
 	readDocumentIdParam,
 	readSingleRouteEnvelope,
@@ -99,22 +76,6 @@ import { ProposalPropsRedactingRunner } from "./proposal-run-runner";
 // why backend `actions` are incompatible with external LangGraph agents
 // and how the equivalent surface now lives in
 // `useDefaultMcpInlineRender.tsx` as frontend `useCopilotAction`s.
-
-// AG-UI makes several polls per agent connection. A short cache window
-// collapses repeated AI-provider lookups for the same tenant
-// without making provider switches feel sticky. Tunable for tests/incidents.
-const TENANT_CACHE_TTL_MS = Number.parseInt(
-	process.env.COPILOTKIT_TENANT_CACHE_TTL_MS ?? "60000",
-	10,
-);
-
-// Cap unbounded growth: a large tenant with sparse usage would otherwise
-// accumulate one entry per (user, org) forever. Insertion-order Map +
-// oldest-first eviction is enough — TTL still handles freshness.
-const TENANT_CACHE_MAX_ENTRIES = Number.parseInt(
-	process.env.COPILOTKIT_TENANT_CACHE_MAX_ENTRIES ?? "500",
-	10,
-);
 
 // ─── Module-scope agent registry ─────────────────────────────────────────
 // Agents are static: deploymentUrl/graphId/tools come from env + constants.
@@ -353,7 +314,7 @@ const AGENT_DEFINITIONS: LangGraphAgentConfig[] = [
 		displayName: "Data Analyst",
 		description:
 			"Data analysis agent that connects to MCP data sources (HubSpot, Attio, Google Sheets, databases) to analyze data, generate insights, and create visualizations",
-		deploymentUrl: process.env.DATA_ANALYST_URL || "http://localhost:8130",
+		deploymentUrl: dataAnalystUrl(),
 		graphId: "data_analyst",
 		langsmithApiKey: process.env.LANGSMITH_API_KEY,
 		tools: [],
@@ -365,34 +326,6 @@ const AGENT_DEFINITIONS: LangGraphAgentConfig[] = [
 			"visualization",
 			"charts",
 			"business-intelligence",
-		],
-		agentConfig: {
-			temperature: 0.3,
-			maxTokens: 4000,
-			timeout: 120000,
-			recursionLimit: 25,
-			predictiveStates: [],
-		},
-	},
-	{
-		name: "cuga_generalist",
-		displayName: "CUGA Generalist Agent",
-		description:
-			"Configurable Universal Generalist Agent (CUGA) - A powerful multi-capability agent that handles browser automation with full Playwright support, multi-API orchestration with variable management, Python code execution with sandbox support, and intelligent task decomposition.",
-		deploymentUrl: process.env.CUGA_AGENT_URL || "http://localhost:8140",
-		graphId: "cuga_generalist",
-		langsmithApiKey: process.env.LANGSMITH_API_KEY,
-		tools: [],
-		language: "python",
-		version: "1.0.0",
-		tags: [
-			"browser",
-			"automation",
-			"api",
-			"code",
-			"planning",
-			"generalist",
-			"cuga",
 		],
 		agentConfig: {
 			temperature: 0.3,
@@ -451,143 +384,6 @@ function buildAgentRegistry(): AgentRegistry {
 // per (userId, organizationId). Stores the Promise so that concurrent first-
 // misses dedupe into a single fetch. Rejected promises evict so the next
 // request retries cleanly.
-
-type AIModelResult = Awaited<ReturnType<typeof getAIModelWithMetadata>>;
-type ProviderConfig = Awaited<ReturnType<typeof getRAGProviderConfig>>;
-
-interface TenantConfig {
-	/** Null for an organization with no provider whose member runs on their own plan. */
-	aiGatewayUrl: string | null;
-	providerConfig: ProviderConfig | null;
-	metadata: AIModelResult["metadata"];
-	trackUsage: AIModelResult["trackUsage"];
-}
-
-class TenantConfigError extends Error {
-	code: string;
-	httpStatus: number;
-	constructor(code: string, message: string, httpStatus = 400) {
-		super(message);
-		this.code = code;
-		this.httpStatus = httpStatus;
-	}
-}
-
-const tenantCache = new Map<
-	string,
-	{ promise: Promise<TenantConfig>; expiresAt: number }
->();
-
-function tenantCacheKey(userId: string, organizationId?: string): string {
-	return `${userId}:${organizationId ?? ""}`;
-}
-
-async function getTenantConfig(
-	userId: string,
-	organizationId: string | undefined,
-): Promise<TenantConfig> {
-	const key = tenantCacheKey(userId, organizationId);
-	const now = Date.now();
-	const cached = tenantCache.get(key);
-	if (cached && cached.expiresAt > now) {
-		return cached.promise;
-	}
-
-	const promise = (async () => {
-		const [aiModelResult, providerConfig] = await Promise.all([
-			// The agents' plan decision is made per request below.
-			resolveCopilotOrgModel({ userId, organizationId }),
-			getRAGProviderConfig({ userId, organizationId }).catch(
-				(error: unknown) => error as Error,
-			),
-		]);
-
-		if (!aiModelResult) {
-			const { model: planModel } = await resolveChatGptPlanModel({
-				userId,
-				organizationId,
-				taskType: "COMPLEX",
-			});
-			return {
-				aiGatewayUrl: null,
-				providerConfig: null,
-				metadata: {
-					modelString: planModel,
-					provider: "OPENAI_CHATGPT_PLAN" as const,
-					configId: null,
-					configSource: null,
-					selectionSource: "chatgpt_plan",
-					canonicalName: planModel,
-					billingMode: "external_provider" as const,
-					billingCustomerId: null,
-				},
-				trackUsage: () => {},
-			};
-		}
-		if (providerConfig instanceof Error) {
-			throw providerConfig;
-		}
-
-		const { metadata, trackUsage } = aiModelResult;
-		const aiGatewayUrl = buildEffectiveBaseUrl(
-			metadata.provider,
-			providerConfig.baseUrl || undefined,
-		);
-
-		if (!aiGatewayUrl) {
-			throw new TenantConfigError(
-				"NO_AI_GATEWAY_URL",
-				"No AI gateway URL configured. Please configure your AI provider's base URL in Settings → AI Providers.",
-			);
-		}
-
-		return {
-			aiGatewayUrl,
-			providerConfig,
-			metadata,
-			trackUsage,
-		};
-	})();
-
-	tenantCache.set(key, {
-		promise,
-		expiresAt: now + TENANT_CACHE_TTL_MS,
-	});
-	// Evict the oldest entry when over capacity. Map preserves insertion order.
-	if (tenantCache.size > TENANT_CACHE_MAX_ENTRIES) {
-		const firstKey = tenantCache.keys().next().value;
-		if (firstKey !== undefined && firstKey !== key) {
-			tenantCache.delete(firstKey);
-		}
-	}
-	promise.catch(() => {
-		// Evict failed entries so the next request retries fresh instead of
-		// being stuck with a poisoned cache slot for TENANT_CACHE_TTL_MS.
-		if (tenantCache.get(key)?.promise === promise) {
-			tenantCache.delete(key);
-		}
-	});
-
-	return promise;
-}
-
-/** A 429 the fetch interceptor shows as "every plan is spent until …" (Fizzy #2770). */
-function planExhaustedResponse(
-	error: SubscriptionPlanExhaustedError,
-	apiBillingOption: boolean,
-	personalKeyOption: boolean,
-): Response {
-	return new Response(
-		JSON.stringify({
-			error: error.message,
-			code: CHATGPT_PLAN_EXHAUSTED_CODE,
-			resetAt: error.resetAt?.toISOString() ?? null,
-			apiBillingOption,
-			personalKeyOption,
-		}),
-		{ status: 429, headers: { "Content-Type": "application/json" } },
-	);
-}
 
 /**
  * POST is the ONLY method this route exports — do not add a `GET`.
@@ -707,169 +503,33 @@ export async function POST(req: NextRequest) {
 			return forbiddenOrganizationResponse(organizationResolution);
 		}
 		const organizationId = organizationResolution.organizationId;
+		const boundedRequest = await withBoundedAgentRequestBody(req);
+		if (boundedRequest instanceof Response) {
+			return boundedRequest;
+		}
 
 		// Only a turn (`agent/run`) is refused for a spent ChatGPT plan and
 		// has its run input rewritten: the mount-time `info` /
 		// `agent/connect` calls must still succeed and resolve nothing.
-		const envelope = await readSingleRouteEnvelope(req);
+		const envelope = await readSingleRouteEnvelope(boundedRequest);
 		const isAgentRun = envelope?.method === "agent/run";
 		// A suggestion runs the agent too, so it gets the same resolution.
 		const invokesAgent = isAgentRun || envelope?.method === "agent/suggest";
 
-		let tenantConfig: TenantConfig;
-		let agentOnPlan: boolean;
-		let planEligible: boolean;
-		let planModelHint: string | null = null;
-		// The member's own key the agents run on while the plans are spent
-		// (Fizzy #3085), with the model the key exchange will resolve on it.
-		let personalKeyHint: { provider: string; model: string } | null = null;
-		try {
-			tenantConfig = await getTenantConfig(
-				session.user.id,
-				organizationId,
-			);
-			// A person is driving this request, so the agents may run on their
-			// own ChatGPT plan where they turned it on (Fizzy #2939), or on one
-			// the organization shares with members who have none (Fizzy #2770).
-			// The exchange makes the same decision from the token's claim; the
-			// hints below only have to agree with it.
-			const plan = await pickChatGptPlanSource({
-				userId: session.user.id,
-				organizationId,
-				planEligible: true,
-			});
-			// Under "Use API billing" a spent plan hands the agents to the
-			// organization's provider (Fizzy #3048); the exchange, still
-			// resolving the member's own work, makes the same call and audits it.
-			const apiFallback =
-				plan !== null &&
-				"exhausted" in plan &&
-				(await chatGptPlanInteractiveApiFallback(plan, organizationId));
-			// Where the organization would stop the member's work instead, a
-			// personal key they opted in runs it (Fizzy #3085); the exchange,
-			// resolving the same member's own work, makes the same call.
-			const personalKey =
-				plan !== null && "exhausted" in plan && !apiFallback
-					? await chatGptPlanPersonalKeyFallback(plan, {
-							userId: session.user.id,
-							organizationId,
-						})
-					: null;
-			if (personalKey?.config?.provider) {
-				const resolved = await resolveModelWithProvider(
-					"COMPLEX",
-					{ userId: session.user.id, organizationId },
-					{ providerConfig: personalKey.config },
-				);
-				personalKeyHint = {
-					provider: personalKey.config.provider,
-					model: resolved.modelString,
-				};
-			}
-			planEligible = plan !== null;
-			agentOnPlan = plan !== null && !apiFallback && !personalKeyHint;
-			if (
-				plan &&
-				"exhausted" in plan &&
-				!apiFallback &&
-				!personalKeyHint &&
-				isAgentRun
-			) {
-				return planExhaustedResponse(
-					chatGptPlanSpentError(plan),
-					chatGptPlanApiBillingOption(
-						plan,
-						tenantConfig.providerConfig !== null,
-					),
-					personalKey !== null,
-				);
-			}
-			if (plan && agentOnPlan) {
-				// The task the key exchange resolves for agents, on the plan the
-				// pick chose, so the hint and the model the agent finally uses
-				// agree. Inside this try: a plan that serves no usable model is
-				// the 409 below, not a 500.
-				planModelHint = (
-					await resolveChatGptPlanModel({
-						userId: session.user.id,
-						organizationId,
-						taskType: "COMPLEX",
-						...("source" in plan && { source: plan.source }),
-					})
-				).model;
-			}
-		} catch (error) {
-			if (error instanceof SubscriptionPlanExhaustedError) {
-				return planExhaustedResponse(
-					error,
-					false,
-					error.personalKeyOption,
-				);
-			}
-			// The member's plan is on here but needs reconnecting: refuse rather
-			// than run the agents on the organization's API billing.
-			const reconnect = chatGptPlanReconnectRefusal(error);
-			if (reconnect) {
-				return new Response(JSON.stringify(reconnect.body), {
-					status: reconnect.status,
-					headers: { "Content-Type": "application/json" },
-				});
-			}
-			// AI usage-limit chokepoint hit a HARD limit.
-			// Surface the rich payload so the client
-			// fetch interceptor can render the shared destructive toast
-			// instead of the generic "AI service is busy" 429 copy.
-			if (error instanceof AiUsageLimitExceededError) {
-				return new Response(
-					JSON.stringify({
-						error: error.message,
-						code: "AI_USAGE_LIMIT_EXCEEDED",
-						data: {
-							limitId: error.limitId,
-							dimension: error.dimension,
-							window: error.window,
-							used: error.used.toString(),
-							max: error.max.toString(),
-							manageLimitsUrl: error.manageLimitsUrl,
-						},
-					}),
-					{
-						status: 429,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
-			}
-			if (error instanceof TenantConfigError) {
-				return new Response(
-					JSON.stringify({ error: error.message, code: error.code }),
-					{
-						status: error.httpStatus,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
-			}
-			logger.error("[CopilotKit] Failed to resolve tenant config", {
-				error,
-			});
-			return new Response(
-				JSON.stringify({
-					error:
-						error instanceof Error
-							? error.message
-							: "No AI provider configured. Please configure an AI provider in Settings → AI Providers.",
-					code: "AI_GATEWAY_MISSING",
-				}),
-				{
-					status: 400,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
+		const resolution = await resolveCopilotTenant({
+			userId: session.user.id,
+			organizationId,
+			isAgentRun,
+		});
+		if (!resolution.ok) {
+			return resolution.response;
 		}
+		const { tenant } = resolution;
 
 		// What the chat may do on its document (Fizzy #2946), resolved per
 		// run and written into the run input the agent receives. The editor
 		// adds `documentId` to the query beside `organizationId`.
-		let runtimeRequest: Request = req;
+		let runtimeRequest: Request = boundedRequest;
 		if (
 			envelope &&
 			!invokesAgent &&
@@ -882,7 +542,7 @@ export async function POST(req: NextRequest) {
 			const sent = envelope.body as Record<string, unknown>;
 			const stripped = withoutClientProposalProps(sent);
 			if (stripped !== sent) {
-				runtimeRequest = withEnvelope(req, {
+				runtimeRequest = withEnvelope(boundedRequest, {
 					...envelope,
 					body: stripped,
 				});
@@ -918,119 +578,22 @@ export async function POST(req: NextRequest) {
 			}
 			// A malformed run input is left for the runtime to refuse.
 			if (runInput) {
-				runtimeRequest = withEnvelope(req, {
+				runtimeRequest = withEnvelope(boundedRequest, {
 					...envelope,
 					body: rewriteAgentRunBody(runInput, resolution.config),
 				});
 			}
 		}
 
-		const { aiGatewayUrl, providerConfig, metadata, trackUsage } =
-			tenantConfig;
-
-		// Track usage (fire-and-forget) — kept per-request to preserve
-		// existing usage-accounting semantics.
-		trackUsage();
-
-		// The agents' hints follow the plan, or the member's own key, where
-		// one serves this request. Neither may be pointed at the
-		// organization's base URL or deployment: the agent would send that
-		// key there.
-		const agentOffOrgProvider = agentOnPlan || personalKeyHint !== null;
-		const agentProvider = agentOnPlan
-			? "OPENAI_CHATGPT_PLAN"
-			: (personalKeyHint?.provider ?? metadata.provider);
-		const agentModel =
-			agentOnPlan && planModelHint
-				? planModelHint
-				: (personalKeyHint?.model ?? metadata.modelString);
-		const agentGatewayUrl = agentOffOrgProvider ? null : aiGatewayUrl;
-		const agentDeploymentName = agentOffOrgProvider
-			? undefined
-			: providerConfig?.deploymentName;
-
-		// Issue a short-lived AI token instead of passing the raw API key.
-		// Agents will exchange this token for the actual API key via
-		// /api/ai/keys/exchange. Per-request: tokens are short-lived by design.
-		let aiToken: string;
-		try {
-			aiToken = await issueAIToken({
-				userId: session.user.id,
-				organizationId,
-				impersonated: isAiImpersonatedRequest(),
-				source: "copilotkit",
-				expirySeconds: AI_TOKEN_TTL_SECONDS,
-				// The same decision as the hints above: never while an admin
-				// acts as the member (Fizzy #2939).
-				planEligible,
-			});
-		} catch (error) {
-			logger.error("[CopilotKit] Failed to issue AI token", { error });
-			return new Response(
-				JSON.stringify({
-					error: "Failed to issue AI token. Please check AI_TOKEN_SECRET is configured.",
-					code: "AI_TOKEN_ISSUE_FAILED",
-				}),
-				{
-					status: 500,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
-		}
-
-		logger.debug("[CopilotKit] Request config", {
+		const issued = await issueCopilotAgentRequest({
 			userId: session.user.id,
-			organizationId: organizationId ?? "none",
-			provider: metadata.provider,
-			modelSource: metadata.selectionSource || "fallback",
-			model: metadata.modelString,
-			gatewayUrl: aiGatewayUrl,
+			organizationId,
+			tenant,
 		});
-
-		// Build per-request headers (carries fresh AI token + tenant context).
-		// LangGraphHttpAgent only forwards url+headers on the wire, so per-user
-		// state lives here rather than on the cached adapter.
-		const agentApiKey = process.env.AGENT_API_KEY?.trim();
-		if (!agentApiKey) {
-			logger.error(
-				"[CopilotKit] AGENT_API_KEY is not set — self-hosted agents will reject requests with 401",
-			);
+		if (!issued.ok) {
+			return issued.response;
 		}
-		// Org metadata describes agentModel only while the org resolution supplies it.
-		const agentIsReasoning =
-			!agentOffOrgProvider && agentModel === metadata.modelString
-				? isReasoningModelName(metadata.canonicalName)
-				: null;
-		const agentHeaders = {
-			...(agentIsReasoning !== null && {
-				"X-AI-Is-Reasoning": String(agentIsReasoning),
-			}),
-			// Service-to-service auth — verified by agent-core auth middleware
-			// against the AGENT_API_KEY secret each agent container has.
-			...(agentApiKey && {
-				Authorization: `Bearer ${agentApiKey}`,
-			}),
-			// Tenant context for user/org identification
-			"X-Tenant-User-ID": session.user.id,
-			...(organizationId && {
-				"X-Tenant-Organization-ID": organizationId,
-			}),
-			// AI token - agents exchange this for API credentials via /api/ai/keys/exchange
-			// This replaces the insecure X-AI-API-Key header with a short-lived JWT
-			[AI_TOKEN_HEADER]: aiToken,
-			// Model/provider hints (not sensitive) - agents may use these or fetch fresh config
-			...(agentModel && {
-				"X-AI-Model": agentModel,
-			}),
-			...(agentGatewayUrl && { "X-AI-Base-URL": agentGatewayUrl }),
-			...(agentProvider && {
-				"X-AI-Provider": agentProvider,
-			}),
-			// Azure AI Foundry deployment name (user-defined in Azure portal)
-			...(agentDeploymentName && {
-				"X-AI-Deployment-Name": agentDeploymentName,
-			}),
-		};
+		const { headers: agentHeaders, settings } = issued.request;
 
 		// Build LangGraphHttpAgent wrappers from the module-scope registry.
 		// Cheap: each is just a {url, headers} container.
@@ -1040,7 +603,12 @@ export async function POST(req: NextRequest) {
 				const adapter = agent as LangGraphAgentAdapter<BaseAgentState>;
 				agents[adapter.name] = new LangGraphHttpAgent({
 					url: adapter.getDeploymentUrl(),
-					headers: agentHeaders,
+					headers: {
+						...agentHeaders,
+						...(adapter.name === "project_document_generator" && {
+							"X-Fabric-Reply-Transport": "in-request-v1",
+						}),
+					},
 				});
 			}
 		}
@@ -1092,20 +660,7 @@ export async function POST(req: NextRequest) {
 		);
 		const durable = await copilotDurableRuntime(
 			caller,
-			{
-				modelHints: {
-					...(agentModel && { model: agentModel }),
-					...(agentProvider && { provider: agentProvider }),
-					...(agentGatewayUrl && { baseUrl: agentGatewayUrl }),
-					...(agentDeploymentName && {
-						deploymentName: agentDeploymentName,
-					}),
-					...(agentIsReasoning !== null && {
-						isReasoning: agentIsReasoning,
-					}),
-				},
-				aiToken,
-			},
+			settings,
 			inProcessRunner,
 		);
 		const runtime = new CopilotRuntime({
@@ -1120,8 +675,10 @@ export async function POST(req: NextRequest) {
 			// The handler forwards the browser's `x-*` headers the server did
 			// not set, and agent-core falls back to `X-AI-Base-URL` and
 			// `X-AI-Deployment-Name` when the token exchange has none. Tenant
-			// and model context come only from `agentHeaders`.
-			forwardHeaders: { denyPrefixes: ["x-ai-", "x-tenant-"] },
+			// and model context and Fabric control headers come from server config.
+			forwardHeaders: {
+				denyPrefixes: ["x-ai-", "x-tenant-", "x-fabric-"],
+			},
 		});
 
 		// The same handler the v1 endpoint built, permissive CORS included,
@@ -1146,8 +703,8 @@ export async function POST(req: NextRequest) {
 				userId: session.user.id,
 				organizationId,
 				retryAfter: upstreamResponse.headers.get("Retry-After"),
-				provider: metadata.provider,
-				gatewayUrl: aiGatewayUrl,
+				provider: tenant.config.metadata.provider,
+				gatewayUrl: tenant.config.aiGatewayUrl,
 			});
 			const taggedHeaders = new Headers(upstreamResponse.headers);
 			taggedHeaders.set("X-Rate-Limit-Source", "upstream");

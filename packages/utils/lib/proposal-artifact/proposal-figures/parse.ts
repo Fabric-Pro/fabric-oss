@@ -15,8 +15,19 @@ import { VISUAL_MARKER_PATTERN } from "../stat-tiles";
 // The figure line
 // ---------------------------------------------------------------------------
 
-/** The templates a fence may ask for. A timeline draws as a dated process. */
-export const FIGURE_KINDS = ["process", "timeline", "layers", "team"] as const;
+/**
+ * The templates a fence may ask for. A timeline draws as a dated process;
+ * bars read an `xychart` source and gantt a `gantt` source instead of a
+ * flowchart.
+ */
+export const FIGURE_KINDS = [
+	"process",
+	"timeline",
+	"layers",
+	"team",
+	"bars",
+	"gantt",
+] as const;
 export type FigureKind = (typeof FIGURE_KINDS)[number];
 
 /** A figure line, trimmed, capturing the kind as written. */

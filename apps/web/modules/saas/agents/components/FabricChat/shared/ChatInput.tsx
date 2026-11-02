@@ -888,14 +888,11 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 				{/* Top slot - attached files, tool suggestions, etc. */}
 				{topSlot}
 
-				{/* Main Input Container */}
+				{/* Main Input Container — Databricks Genie rounded composer */}
 				<div
 					ref={containerRef}
 					className={cn(
-						"relative border transition-colors",
-						hero
-							? "rounded-[24px] border-border bg-background shadow-[var(--fab-composer-shadow)] focus-within:border-foreground/30"
-							: "rounded-[24px] border-border bg-background shadow-[var(--fab-composer-shadow)] focus-within:border-foreground/30",
+						"relative rounded-2xl border border-border bg-sidebar dark:bg-card transition-colors focus-within:border-ring focus-within:ring-1 focus-within:ring-ring",
 					)}
 				>
 					{/* Template autocomplete dropdown */}
@@ -952,9 +949,8 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 
 					<div
 						className={cn(
-							"flex gap-2",
-							hero ? "items-center" : "items-end",
-							hero ? "py-1 pl-3 pr-1" : "p-3",
+							"flex items-end gap-2",
+							hero ? "px-3 py-2" : "px-3 py-2.5",
 						)}
 					>
 						{/* Attachment button */}
@@ -965,12 +961,8 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 										type="button"
 										variant="ghost"
 										size="icon"
-										className={cn(
-											"h-9 w-9 shrink-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
-											hero
-												? "rounded-full"
-												: "rounded-xl",
-										)}
+										aria-label={attachTooltip}
+										className="h-8 w-8 shrink-0 rounded-full border border-border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 										onClick={onAttachClick}
 										disabled={isLoading || attachDisabled}
 									>
@@ -1003,8 +995,8 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 							className={cn(
 								"flex-1 max-h-[200px] resize-none border-0 bg-transparent focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0",
 								hero
-									? "h-10 min-h-[40px] px-2 py-2 text-[16px] leading-6 placeholder:text-muted-foreground"
-									: "min-h-[44px] px-2 py-2 text-[15px] placeholder:text-muted-foreground/50",
+									? "h-9 min-h-[36px] px-2 py-1.5 text-base md:text-sm leading-5 placeholder:text-muted-foreground"
+									: "min-h-[40px] px-2 py-1.5 text-base md:text-sm leading-5 placeholder:text-muted-foreground",
 							)}
 							disabled={isLoading || disabled}
 						/>
@@ -1054,7 +1046,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 											"h-9 w-9 shrink-0 transition-colors",
 											hero
 												? "rounded-full"
-												: "rounded-xl",
+												: "rounded-lg",
 											!hasSpeechSupport &&
 												"text-muted-foreground opacity-40",
 											hasSpeechSupport &&
@@ -1110,14 +1102,9 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 											size="icon"
 											onClick={onStop}
 											aria-label={STOP_BUTTON_LABEL}
-											className={cn(
-												"shrink-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
-												hero
-													? "h-10 w-10 rounded-full"
-													: "h-9 w-9 rounded-xl",
-											)}
+											className="h-8 w-8 shrink-0 rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 										>
-											<StopCircle className="h-5 w-5" />
+											<StopCircle className="h-4 w-4" />
 										</Button>
 									</TooltipTrigger>
 									<TooltipContent side="top">
@@ -1131,12 +1118,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 									size="icon"
 									autoLoading={false}
 									aria-label="Send"
-									className={cn(
-										"shrink-0 transition-colors",
-										hero
-											? "h-10 w-10 rounded-full disabled:opacity-100 disabled:bg-muted-foreground/60 disabled:text-background"
-											: "h-9 w-9 rounded-xl",
-									)}
+									className="h-8 w-8 shrink-0 rounded-full transition-colors disabled:opacity-100 disabled:bg-muted-foreground/30 disabled:text-muted-foreground"
 								>
 									{isLoading && (
 										<Loader2 className="h-4 w-4 animate-spin" />

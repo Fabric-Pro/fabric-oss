@@ -25,7 +25,7 @@
  * @module project-document-generator
  */
 
-import { START, StateGraph } from "@langchain/langgraph";
+import { getWriter, START, StateGraph } from "@langchain/langgraph";
 
 // State
 import { type AgentState, AgentStateAnnotation } from "./state";
@@ -138,7 +138,40 @@ export function shouldContinue(state: AgentState): "tool_node" | "__end__" {
 export const projectDocumentGeneratorGraph = new StateGraph(
 	AgentStateAnnotation,
 )
-	.addNode("chat_node", chatNode)
+	.addNode("chat_node", async (state, config) => {
+		const result = await chatNode(state, config);
+		const update = result.update as Partial<AgentState> | undefined;
+		const retry = result.goto === "chat_node";
+		const returned = update?.messages ?? [];
+		const previousIds = new Set(
+			state.messages.map((message) => message.id),
+		);
+		const fresh = returned.filter(
+			(message) =>
+				!state.messages.includes(message) &&
+				(!message.id || !previousIds.has(message.id)),
+		);
+		const accepted = fresh
+			.filter((message) => {
+				const type =
+					"_getType" in message
+						? message._getType()
+						: (message as { role?: string }).role;
+				return type === "ai" || type === "assistant";
+			})
+			.at(-1);
+		const text = !accepted
+			? ""
+			: typeof accepted.content === "string"
+				? accepted.content
+				: accepted.content
+						.filter((block) => block.type === "text")
+						.map((block) => block.text)
+						.join("");
+
+		getWriter(config)?.({ replyCompletion: { retry, text } });
+		return result;
+	})
 	.addNode("tool_node", toolNode)
 	.addEdge(START, "chat_node")
 	.addConditionalEdges("chat_node", shouldContinue)

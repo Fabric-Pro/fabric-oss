@@ -6,7 +6,9 @@ import { Spinner } from "@shared/components/Spinner";
 import { UserAvatar } from "@shared/components/UserAvatar";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation } from "@tanstack/react-query";
-import { X } from "lucide-react";
+import { Button } from "@ui/components/button";
+import { CameraIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { CropImageDialog } from "./CropImageDialog";
@@ -22,6 +24,7 @@ export function UserAvatarUpload({
 	onDeleteSuccess?: () => void;
 	onDeleteError?: () => void;
 }) {
+	const t = useTranslations();
 	const { user, reloadSession } = useSession();
 	const [uploading, setUploading] = useState(false);
 	const [deleting, setDeleting] = useState(false);
@@ -34,7 +37,7 @@ export function UserAvatarUpload({
 
 	const busy = uploading || deleting;
 
-	const { getRootProps, getInputProps } = useDropzone({
+	const { getRootProps, getInputProps, open } = useDropzone({
 		onDrop: (acceptedFiles) => {
 			setImage(acceptedFiles[0]);
 			setCropDialogOpen(true);
@@ -116,35 +119,63 @@ export function UserAvatarUpload({
 
 	return (
 		<>
-			<div className="relative size-24">
+			<div className="flex flex-wrap items-center gap-5">
 				<div
-					className="relative size-24 rounded-full"
+					className="group relative size-24 shrink-0 rounded-md"
 					{...getRootProps()}
 				>
 					<input {...getInputProps()} />
 					<UserAvatar
-						className="size-24 cursor-pointer text-xl"
+						className="size-24 cursor-pointer rounded-md text-xl"
 						avatarUrl={user.image}
 						name={user.name ?? ""}
 					/>
+					<div
+						aria-hidden="true"
+						className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-md bg-background/70 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+					>
+						<CameraIcon className="size-5 text-foreground" />
+					</div>
 
 					{busy && (
-						<div className="absolute inset-0 z-20 flex items-center justify-center bg-card/90 rounded-full">
+						<div className="absolute inset-0 z-20 flex items-center justify-center rounded-md bg-card/90">
 							<Spinner className="size-6" />
 						</div>
 					)}
 				</div>
-
-				{user.image && !busy && (
-					<button
-						type="button"
-						onClick={onDeleteAvatar}
-						className="absolute -top-1 -right-1 z-10 flex size-6 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90 transition-colors"
-						aria-label="Remove avatar"
-					>
-						<X className="size-3.5" />
-					</button>
-				)}
+				<div className="space-y-1.5">
+					<div className="flex flex-wrap items-center gap-2">
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={open}
+							disabled={busy}
+						>
+							<UploadIcon className="size-4" />
+							{user.image
+								? t("organizations.settings.logo.replace")
+								: t("organizations.settings.logo.change")}
+						</Button>
+						{user.image ? (
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								onClick={onDeleteAvatar}
+								disabled={busy}
+								aria-label="Remove avatar"
+								className="text-muted-foreground hover:text-destructive"
+							>
+								<Trash2Icon className="size-4" />
+								{t("organizations.settings.logo.remove")}
+							</Button>
+						) : null}
+					</div>
+					<p className="max-w-xs text-muted-foreground text-xs">
+						{t("organizations.settings.logo.hint")}
+					</p>
+				</div>
 			</div>
 
 			<CropImageDialog

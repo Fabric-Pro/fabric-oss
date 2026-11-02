@@ -178,11 +178,7 @@ export async function canExportOrganizationAuditLog(
  * Returns `true` if `userId` may run agents in `organizationId`, matching
  * `requirePermission(AGENT_EXECUTE)`.
  *
- * The read siblings deliberately have no helper. `AGENT_READ` and
- * `AGENT_TEMPLATE_READ` sit in the viewer set — every role holds them — so a
- * gate on `agents:read` could refuse nobody and would only suggest, falsely,
- * that reading agents is narrower than it is. Executing them is member-and-up,
- * which is the line worth checking.
+ * Executing agents is member-and-up, which is the line worth checking here.
  */
 export async function canExecuteOrganizationAgents(
 	userId: string,
@@ -192,6 +188,112 @@ export async function canExecuteOrganizationAgents(
 		userId,
 		organizationId,
 		Permissions.AGENT_EXECUTE,
+	);
+}
+
+/**
+ * Returns whether the user's current organization role holds `AGENT_READ`.
+ * This named helper is used by non-oRPC media reads, where a missing membership
+ * or an unrecognized role must revoke access on the next request.
+ */
+export async function canReadOrganizationAgents(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.AGENT_READ,
+	);
+}
+
+/** Matches the AI chat procedures' `requirePermission(AI_CHAT)` gate. */
+export async function canUseOrganizationAiChat(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.AI_CHAT,
+	);
+}
+
+/** Matches integration execution surfaces guarded by `INTEGRATION_USE`. */
+export async function canUseOrganizationIntegrations(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.INTEGRATION_USE,
+	);
+}
+
+/**
+ * Checks the `PROMPT_CREATE` half of organization-prompt creation.
+ * The in-app and v1 handlers separately require an admin-or-owner membership.
+ */
+export async function canCreateOrganizationPrompts(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.PROMPT_CREATE,
+	);
+}
+
+/**
+ * Checks the `PROMPT_UPDATE` half of organization-prompt updates.
+ * The in-app and v1 handlers separately require an admin-or-owner membership.
+ */
+export async function canUpdateOrganizationPrompts(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.PROMPT_UPDATE,
+	);
+}
+
+/** Matches the automation template list procedure's REPORT_TEMPLATE_READ gate. */
+export async function canReadOrganizationReportTemplates(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.REPORT_TEMPLATE_READ,
+	);
+}
+
+/** Matches the automation template execution procedure's REPORT_TEMPLATE_MANAGE gate. */
+export async function canManageOrganizationReportTemplates(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.REPORT_TEMPLATE_MANAGE,
+	);
+}
+
+/** Browser content ingestion creates context from external content. */
+export async function canCreateOrganizationContext(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.CONTEXT_CREATE,
 	);
 }
 

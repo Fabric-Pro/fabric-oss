@@ -4,17 +4,13 @@
  * Sidekick helps users configure their agents by making structured suggestions
  * (tools, instructions, skills, etc.) that appear as accept/reject cards.
  * Uses AI SDK streamText with tool calling and returns a UI message stream.
- * Conversation history is persisted to AgentConversation for multi-turn context.
+ * Nothing is saved: the client sends the whole conversation with every turn.
+ * The turn itself (`sidekick-turn.ts`) is shared with the agent runtime's
+ * `agent-builder-sidekick` engine.
  */
 
-import { ORPCError } from "@orpc/client";
-import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import {
-	convertToModelMessages,
 	createUIMessageStreamResponse,
-	getAIModelWithMetadata,
-	isStepCount,
-	streamText,
 	toUIMessageStream,
 	type UIMessage,
 } from "@repo/ai";
@@ -23,37 +19,23 @@ import {
 	chatGptPlanReconnectRefusal,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
-import { makeAppendedStepCacheBreakpoint } from "@repo/ai/prompt-cache";
-import { createSidekickTools } from "@repo/ai/sidekick";
-import { NEW_AGENT_ID } from "@repo/ai/sidekick/constants";
-import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
-import {
-	authorizeInputOrganization,
-	Permissions,
-} from "@repo/api/orpc/procedures";
-import {
-	db,
-	getOrganizationMembership,
-	getRegisteredAgentById,
-} from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
+import { sidekickRunPropsSchema } from "@saas/agents/lib/sidekick-runtime-protocol";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
-import { buildSidekickPromptCacheRequest } from "./prompt-cache";
+import {
+	authorizeSidekickEntity,
+	checkSidekickRateLimit,
+	streamSidekickTurn,
+} from "./sidekick-turn";
 import { sidekickStreamErrorText } from "./stream-error-text";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const sidekickStreamSchema = z.object({
-	agentId: z.string().min(1).max(200),
-	// Discriminates server-side authz: "registered" looks up RegisteredAgent;
-	// "instance" looks up AgentTemplateInstance; "new" skips lookup entirely.
-	// Defaults to "registered" for backward compat with the builder page.
-	entityType: z.enum(["registered", "instance", "new"]).default("registered"),
+const sidekickStreamSchema = sidekickRunPropsSchema.extend({
 	conversationId: z.string().max(200).optional(),
-	formSnapshot: z.record(z.string(), z.unknown()),
 	messages: z.array(z.any()),
 });
 
@@ -77,11 +59,7 @@ export async function POST(request: NextRequest) {
 		const userId = session.user.id;
 
 		// Rate limit: use AI preset (20 requests per minute per user)
-		const rateLimitResult = await checkRateLimit(
-			`sidekick-stream:${userId}`,
-			RATE_LIMIT_PRESETS.ai.limit,
-			RATE_LIMIT_PRESETS.ai.windowMs,
-		);
+		const rateLimitResult = await checkSidekickRateLimit(userId);
 		if (!rateLimitResult.allowed) {
 			return new Response(
 				JSON.stringify({
@@ -126,228 +104,31 @@ export async function POST(request: NextRequest) {
 			messages: clientMessages,
 		} = parseResult.data;
 
-		// Resolve tenant from the *entity being edited*, not from the
-		// session's active organization. A user can open an instance from a
-		// different org than their active one; we must
-		// run model/tool resolution against that tenant, not the session's.
-		const sessionOrganizationId =
-			session.session?.activeOrganizationId ?? undefined;
-		let effectiveOrganizationId: string | undefined = sessionOrganizationId;
-
-		// Verify the user has access to the target entity before streaming.
-		// Branches by entityType so Sidekick can assist both RegisteredAgent
-		// config editing and AgentTemplateInstance form editing.
-		const isNewAgent = entityType === "new" || agentId === NEW_AGENT_ID;
-		if (!isNewAgent) {
-			if (entityType === "registered") {
-				const agent = await getRegisteredAgentById(agentId);
-				if (!agent) {
-					return new Response(
-						JSON.stringify({ error: "Agent not found" }),
-						{
-							status: 404,
-							headers: { "Content-Type": "application/json" },
-						},
-					);
-				}
-				if (agent.scope === "SYSTEM") {
-					return new Response(
-						JSON.stringify({
-							error: "System agents cannot be modified via Sidekick",
-						}),
-						{
-							status: 403,
-							headers: { "Content-Type": "application/json" },
-						},
-					);
-				}
-				if (agent.scope === "USER" && agent.userId !== userId) {
-					return new Response(
-						JSON.stringify({ error: "Forbidden" }),
-						{
-							status: 403,
-							headers: { "Content-Type": "application/json" },
-						},
-					);
-				}
-				if (agent.scope === "ORGANIZATION") {
-					if (!agent.organizationId) {
-						return new Response(
-							JSON.stringify({ error: "Forbidden" }),
-							{
-								status: 403,
-								headers: { "Content-Type": "application/json" },
-							},
-						);
-					}
-					const membership = await getOrganizationMembership(
-						agent.organizationId,
-						userId,
-					);
-					if (!membership) {
-						return new Response(
-							JSON.stringify({ error: "Forbidden" }),
-							{
-								status: 403,
-								headers: { "Content-Type": "application/json" },
-							},
-						);
-					}
-				}
-				// The registered agent's tenant wins over the session's active org.
-				effectiveOrganizationId = agent.organizationId ?? undefined;
-			} else {
-				// authorizeInputOrganization checks membership, organization liveness,
-				// and AGENT_TEMPLATE_READ in the instance's organization, including for its creator.
-				const instance = await db.agentTemplateInstance.findUnique({
-					where: { id: agentId },
-					select: { userId: true, organizationId: true },
-				});
-				if (!instance || !instance.organizationId) {
-					return new Response(
-						JSON.stringify({ error: "Agent not found" }),
-						{
-							status: 404,
-							headers: { "Content-Type": "application/json" },
-						},
-					);
-				}
-				try {
-					await authorizeInputOrganization(
-						Permissions.AGENT_TEMPLATE_READ,
-						instance.organizationId,
-						{
-							user: { id: userId },
-							session: {
-								activeOrganizationId:
-									sessionOrganizationId ?? null,
-							},
-						},
-						{ requireOrganization: true },
-					);
-				} catch (error) {
-					if (
-						!(error instanceof ORPCError) ||
-						(error.code !== "FORBIDDEN" &&
-							error.code !== "UNAUTHORIZED")
-					) {
-						throw error;
-					}
-					return new Response(
-						JSON.stringify({ error: "Forbidden" }),
-						{
-							status: 403,
-							headers: { "Content-Type": "application/json" },
-						},
-					);
-				}
-				effectiveOrganizationId = instance.organizationId;
-			}
-		}
-
-		// Convert client UIMessages to model messages (preserves tool call structure)
-		const uiMessages = clientMessages as UIMessage[];
-		const modelMessages = await convertToModelMessages(uiMessages);
-
-		// Strip prior <agent_context> blocks from all user messages to prevent
-		// quadratic token growth (each turn previously accumulated all prior snapshots).
-		const agentContextRegex =
-			/<agent_context>\n[\s\S]*?\n<\/agent_context>\n\n/g;
-		for (const msg of modelMessages) {
-			if (msg.role !== "user") {
-				continue;
-			}
-			if (typeof msg.content === "string") {
-				msg.content = msg.content.replace(agentContextRegex, "");
-			} else if (Array.isArray(msg.content)) {
-				for (const part of msg.content) {
-					if (part.type === "text" && "text" in part) {
-						part.text = part.text.replace(agentContextRegex, "");
-					}
-				}
-			}
-		}
-
-		// Inject fresh <agent_context> into the last user message so the LLM
-		// sees the current form state alongside the user's request.
-		const contextBlock = `<agent_context>\n${JSON.stringify(formSnapshot)}\n</agent_context>\n\n`;
-		for (let i = modelMessages.length - 1; i >= 0; i--) {
-			const msg = modelMessages[i];
-			if (msg.role === "user") {
-				if (typeof msg.content === "string") {
-					msg.content = contextBlock + msg.content;
-				} else if (Array.isArray(msg.content)) {
-					const textPart = msg.content.find((p) => p.type === "text");
-					if (textPart && "text" in textPart) {
-						textPart.text = contextBlock + textPart.text;
-					}
-				}
-				break;
-			}
-		}
-
-		// Get AI model via centralized entry point — use the entity's tenant
-		// so model catalog + billing resolve against the right org.
-		const {
-			model: aiModel,
-			metadata,
-			trackUsage,
-		} = await getAIModelWithMetadata(
-			{ taskType: "CHAT" },
-			{
-				userId,
-				organizationId: effectiveOrganizationId,
-				featureKey: "chat-agent",
-				// A person is typing this turn, so it may run on their own
-				// ChatGPT plan where they turned it on (Fizzy #2939).
-				planEligible: true,
-			},
-		);
-
-		// Track usage (fire-and-forget)
-		trackUsage();
-
-		// Create Sidekick tools. Persistence-capable tools only engage for
-		// "registered" agents; "new" and "instance" fall through to the
-		// auto-apply path so the frontend writes changes straight into the
-		// form state.
-		const tools = createSidekickTools({
-			agentId,
-			entityType: isNewAgent ? "new" : entityType,
+		// The tenant is the entity's own organization, not the session's
+		// active one (`authorizeSidekickEntity`).
+		const access = await authorizeSidekickEntity({
 			userId,
-			organizationId: effectiveOrganizationId,
+			agentId,
+			entityType,
+			sessionOrganizationId:
+				session.session?.activeOrganizationId ?? undefined,
 		});
-		guardToolsAgainstRepeatedCalls(tools, {
-			onRepeat: (toolName, count) => {
-				console.warn("Sidekick tool returned a repeated result", {
-					toolName,
-					count,
-				});
-			},
-		});
+		if (!access.ok) {
+			return new Response(JSON.stringify({ error: access.error }), {
+				status: access.status,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
 
-		// Stream the response using the full message history from the client
-		// (includes tool calls and results with proper structure)
-		const promptCacheRequest = buildSidekickPromptCacheRequest({
-			provider: metadata.provider,
-			modelString: metadata.modelString,
-			messages: modelMessages,
-		});
-		// Each tool round resends the history and every earlier round. The
-		// history marker placed above serves the next turn, so the rolling
-		// per-step marker keeps it and moves only over this turn's rounds.
-		const prepareStep = makeAppendedStepCacheBreakpoint({
-			provider: metadata.provider,
-			modelString: metadata.modelString,
-			hasTools: Object.keys(tools).length > 0,
-		});
-		const result = streamText({
-			model: aiModel,
-			instructions: promptCacheRequest.system,
-			messages: promptCacheRequest.messages,
-			tools,
-			stopWhen: isStepCount(5),
-			...(prepareStep ? { prepareStep } : {}),
+		// The full message history from the client (includes tool calls and
+		// results with proper structure).
+		const result = await streamSidekickTurn({
+			userId,
+			agentId,
+			entityType: access.entityType,
+			organizationId: access.organizationId,
+			messages: clientMessages as UIMessage[],
+			formSnapshot,
 		});
 
 		// Return UI message stream response.

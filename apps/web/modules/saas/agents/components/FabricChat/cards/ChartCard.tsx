@@ -11,8 +11,10 @@ import { Button } from "@ui/components/button";
 import {
 	Dialog,
 	DialogContent,
+	DialogDescription,
 	DialogHeader,
 	DialogTitle,
+	DialogTrigger,
 } from "@ui/components/dialog";
 import { cn } from "@ui/lib";
 import {
@@ -25,7 +27,7 @@ import {
 	PieChart as PieChartIcon,
 	TrendingUp,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
 	Area,
 	AreaChart,
@@ -45,6 +47,7 @@ import {
 	XAxis,
 	YAxis,
 } from "recharts";
+import type { ChartArtifact, ChartConfig } from "./chart-artifact";
 
 // Vibrant chart color palette
 const CHART_COLORS = [
@@ -58,32 +61,41 @@ const CHART_COLORS = [
 	"#ec4899", // pink-500
 ];
 
-interface ChartConfig {
-	xAxis: string;
-	yAxis: string | string[];
-	title?: string;
-	series?: string;
-	stacked?: boolean;
-	showLegend?: boolean;
-}
-
-interface ChartArtifact {
-	type: "chart";
-	id: string;
-	chartType: "line" | "bar" | "pie" | "area" | "scatter";
-	data: Record<string, unknown>[];
-	config: ChartConfig;
-	metadata?: {
-		createdAt?: string;
-		sourceDescription?: string;
-		dataPointCount?: number;
-		totalValue?: number;
-	};
-}
-
 interface ChartCardProps {
 	artifact: ChartArtifact;
 	className?: string;
+}
+
+function FullscreenChart({ children }: { children: ReactNode }) {
+	const host = useRef<HTMLDivElement>(null);
+	const [size, setSize] = useState({ width: 0, height: 0 });
+	useEffect(() => {
+		const element = host.current;
+		if (!element) {
+			return;
+		}
+		const measure = () => {
+			const { width, height } = element.getBoundingClientRect();
+			setSize((previous) =>
+				previous.width === width && previous.height === height
+					? previous
+					: { width, height },
+			);
+		};
+		measure();
+		const observer = new ResizeObserver(measure);
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, []);
+	return (
+		<div ref={host} className="h-full w-full">
+			{size.width > 0 && size.height > 0 && (
+				<ResponsiveContainer width={size.width} height={size.height}>
+					{children}
+				</ResponsiveContainer>
+			)}
+		</div>
+	);
 }
 
 function getChartIcon(chartType: string) {
@@ -273,8 +285,6 @@ export function ChartCard({ artifact, className }: ChartCardProps) {
 		[artifact.data, config],
 	);
 
-	const chartHeight = isFullscreen ? 500 : 300;
-
 	const renderChart = useMemo(() => {
 		const commonProps = {
 			data: data as any[],
@@ -391,17 +401,19 @@ export function ChartCard({ artifact, className }: ChartCardProps) {
 
 			case "pie":
 				return (
-					<PieChart>
+					<PieChart
+						margin={{ top: 5, right: 48, bottom: 5, left: 48 }}
+					>
 						<Pie
 							data={data as any[]}
 							cx="50%"
 							cy="50%"
 							labelLine={true}
-							label={({ name, percent }) =>
-								`${name}: ${((percent ?? 0) * 100).toFixed(0)}%`
+							label={({ percent }) =>
+								`${((percent ?? 0) * 100).toFixed(0)}%`
 							}
-							outerRadius={100}
-							innerRadius={40}
+							outerRadius="70%"
+							innerRadius="28%"
 							dataKey={yAxisFields[0]}
 							nameKey={xAxisField}
 							paddingAngle={2}
@@ -479,7 +491,7 @@ export function ChartCard({ artifact, className }: ChartCardProps) {
 	};
 
 	return (
-		<>
+		<Dialog open={isFullscreen} onOpenChange={setIsFullscreen}>
 			<div
 				className={cn(
 					"rounded-lg border bg-card overflow-hidden",
@@ -487,9 +499,9 @@ export function ChartCard({ artifact, className }: ChartCardProps) {
 				)}
 			>
 				{/* Header */}
-				<div className="px-3 py-2 border-b bg-muted/50 flex items-center justify-between">
-					<div className="flex items-center gap-2">
-						<Icon className="h-4 w-4 text-muted-foreground" />
+				<div className="px-3 py-2 border-b bg-muted/50 flex flex-wrap items-center justify-between gap-2">
+					<div className="flex min-w-0 flex-wrap items-center gap-2">
+						<Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
 						<span className="text-sm font-medium">
 							{config.title ||
 								`${chartType.charAt(0).toUpperCase() + chartType.slice(1)} Chart`}
@@ -504,30 +516,35 @@ export function ChartCard({ artifact, className }: ChartCardProps) {
 						)}
 					</div>
 
-					<div className="flex items-center gap-1">
+					<div className="flex shrink-0 items-center gap-1">
 						<Button
 							variant="ghost"
 							size="icon-sm"
 							onClick={handleDownload}
-							className="h-7 w-7"
+							className="size-11 sm:size-7"
 							title="Download data as CSV"
 						>
 							<Download className="h-3.5 w-3.5" />
 						</Button>
-						<Button
-							variant="ghost"
-							size="icon-sm"
-							onClick={() => setIsFullscreen(true)}
-							className="h-7 w-7"
-							title="View fullscreen"
-						>
-							<Maximize2 className="h-3.5 w-3.5" />
-						</Button>
+						<DialogTrigger asChild>
+							<Button
+								variant="ghost"
+								size="icon-sm"
+								className="size-11 sm:size-7"
+								title="View fullscreen"
+							>
+								<Maximize2 className="h-3.5 w-3.5" />
+							</Button>
+						</DialogTrigger>
 						<Button
 							variant="ghost"
 							size="icon-sm"
 							onClick={() => setIsExpanded(!isExpanded)}
-							className="h-7 w-7"
+							className="size-11 sm:size-7"
+							aria-label={
+								isExpanded ? "Collapse chart" : "Expand chart"
+							}
+							aria-expanded={isExpanded}
 						>
 							{isExpanded ? (
 								<ChevronUp className="h-3.5 w-3.5" />
@@ -541,7 +558,7 @@ export function ChartCard({ artifact, className }: ChartCardProps) {
 				{/* Chart */}
 				{isExpanded && (
 					<div className="p-4">
-						<ResponsiveContainer width="100%" height={chartHeight}>
+						<ResponsiveContainer width="100%" height={300}>
 							{renderChart}
 						</ResponsiveContainer>
 						{metadata?.sourceDescription && (
@@ -554,43 +571,21 @@ export function ChartCard({ artifact, className }: ChartCardProps) {
 			</div>
 
 			{/* Fullscreen Dialog */}
-			<Dialog open={isFullscreen} onOpenChange={setIsFullscreen}>
-				<DialogContent className="max-w-4xl h-[80vh]">
-					<DialogHeader>
-						<DialogTitle className="flex items-center gap-2">
-							<Icon className="h-5 w-5" />
-							{config.title ||
-								`${chartType.charAt(0).toUpperCase() + chartType.slice(1)} Chart`}
-						</DialogTitle>
-					</DialogHeader>
-					<div className="flex-1 p-4">
-						<ResponsiveContainer width="100%" height="100%">
-							{renderChart}
-						</ResponsiveContainer>
-					</div>
-				</DialogContent>
-			</Dialog>
-		</>
-	);
-}
-
-/**
- * Type guard to check if an object is a ChartArtifact
- */
-export function isChartArtifact(obj: unknown): obj is ChartArtifact {
-	if (!obj || typeof obj !== "object") {
-		return false;
-	}
-	const artifact = obj as Record<string, unknown>;
-	return (
-		artifact.type === "chart" &&
-		typeof artifact.id === "string" &&
-		typeof artifact.chartType === "string" &&
-		["line", "bar", "pie", "area", "scatter"].includes(
-			artifact.chartType as string,
-		) &&
-		Array.isArray(artifact.data) &&
-		artifact.config !== null &&
-		typeof artifact.config === "object"
+			<DialogContent className="flex h-[80vh] max-w-4xl flex-col">
+				<DialogHeader className="shrink-0">
+					<DialogTitle className="flex items-center gap-2">
+						<Icon className="h-5 w-5" />
+						{config.title ||
+							`${chartType.charAt(0).toUpperCase() + chartType.slice(1)} Chart`}
+					</DialogTitle>
+					<DialogDescription className="sr-only">
+						Expanded chart. Resize the window to adjust the view.
+					</DialogDescription>
+				</DialogHeader>
+				<div className="min-h-0 min-w-0 flex-1 p-4">
+					<FullscreenChart>{renderChart}</FullscreenChart>
+				</div>
+			</DialogContent>
+		</Dialog>
 	);
 }

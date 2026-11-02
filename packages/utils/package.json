@@ -5,11 +5,12 @@
 		"@types/mustache": "^4.2.6",
 		"@types/node": "^24.10.0",
 		"@types/nunjucks": "^3.2.6",
-		"vitest": "^4.1.11"
+		"vitest": "^4.1.12"
 	},
 	"main": "./index.ts",
 	"type": "module",
 	"exports": {
+		"./chat-event-cursor": "./lib/chat-event-cursor.ts",
 		"./conversation-turn-charge": {
 			"types": "./lib/conversation-turn-charge.ts",
 			"import": "./lib/conversation-turn-charge.ts",
@@ -314,6 +315,11 @@
 			"types": "./lib/adf-text.ts",
 			"import": "./lib/adf-text.ts",
 			"default": "./lib/adf-text.ts"
+		},
+		"./confluence-storage-markdown": {
+			"types": "./lib/confluence-storage-markdown.ts",
+			"import": "./lib/confluence-storage-markdown.ts",
+			"default": "./lib/confluence-storage-markdown.ts"
 		},
 		"./correlation-id": {
 			"types": "./lib/correlation-id.ts",
@@ -645,10 +651,35 @@
 			"import": "./lib/proposal-artifact/diagram-printability.ts",
 			"default": "./lib/proposal-artifact/diagram-printability.ts"
 		},
+		"./proposal-artifact/diagram-label-wrap": {
+			"types": "./lib/proposal-artifact/diagram-label-wrap.ts",
+			"import": "./lib/proposal-artifact/diagram-label-wrap.ts",
+			"default": "./lib/proposal-artifact/diagram-label-wrap.ts"
+		},
 		"./proposal-artifact/stat-tiles": {
 			"types": "./lib/proposal-artifact/stat-tiles.ts",
 			"import": "./lib/proposal-artifact/stat-tiles.ts",
 			"default": "./lib/proposal-artifact/stat-tiles.ts"
+		},
+		"./proposal-artifact/proposal-blocks": {
+			"types": "./lib/proposal-artifact/proposal-blocks.ts",
+			"import": "./lib/proposal-artifact/proposal-blocks.ts",
+			"default": "./lib/proposal-artifact/proposal-blocks.ts"
+		},
+		"./proposal-artifact/cover-fence": {
+			"types": "./lib/proposal-artifact/cover-fence.ts",
+			"import": "./lib/proposal-artifact/cover-fence.ts",
+			"default": "./lib/proposal-artifact/cover-fence.ts"
+		},
+		"./proposal-artifact/cover-letter-heading": {
+			"types": "./lib/proposal-artifact/cover-letter-heading.ts",
+			"import": "./lib/proposal-artifact/cover-letter-heading.ts",
+			"default": "./lib/proposal-artifact/cover-letter-heading.ts"
+		},
+		"./proposal-artifact/storage-references": {
+			"types": "./lib/proposal-artifact/storage-references.ts",
+			"import": "./lib/proposal-artifact/storage-references.ts",
+			"default": "./lib/proposal-artifact/storage-references.ts"
 		},
 		"./proposal-artifact/export-scrub": {
 			"types": "./lib/proposal-artifact/export-scrub.ts",

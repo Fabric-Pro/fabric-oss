@@ -197,8 +197,8 @@
 		"menu": {
 			"accountSettings": "Account settings",
 			"admin": "Admin",
-			"aiChatbot": "Advisor",
-			"aiChatbotLegacy": "Advisor",
+			"aiChatbot": "Genie",
+			"aiChatbotLegacy": "Genie",
 			"documentGenerator": "Document Generator",
 			"organizationSettings": "Organization settings",
 			"prompts": "Prompts",
@@ -630,6 +630,7 @@
 		"fallbackHeadline": "Release note"
 	},
 	"common": {
+		"loading": "Loading…",
 		"confirmation": {
 			"cancel": "Cancel",
 			"confirm": "Confirm"
@@ -964,7 +965,7 @@
 			"launcher": "Get started",
 			"next": "Next",
 			"noProject": {
-				"body": "Projects are home base in Fabric — your documents, roadmap, agents, and code map all live inside one. Create your first project to explore this area.",
+				"body": "Projects are home base in Fabric — your documents, roadmap, agents, and code map all live inside one. Use New in the navigation to create your first project.",
 				"title": "Create your first project"
 			},
 			"pointer": {
@@ -990,8 +991,8 @@
 					"title": "Connect your own tools"
 				},
 				"assistant": {
-					"body": "Advisor is your always-on AI teammate. Ask it to plan work, draft specs, or answer questions about your projects — right from the sidebar.",
-					"title": "Meet Advisor, your AI assistant"
+					"body": "Genie is your always-on AI teammate. Ask it to plan work, draft specs, or answer questions about your projects — right from the sidebar.",
+					"title": "Meet Genie, your AI assistant"
 				},
 				"atlas": {
 					"body": "Atlas maps your repository into an interactive graph of modules, dependencies, and how they connect — so you can understand any codebase fast.",
@@ -1027,7 +1028,7 @@
 				},
 				"roadmap": {
 					"title": "Plan on the Roadmap",
-					"body": "The Roadmap work area shows your work items in the selected layout. Browse, prioritize and track the work here, then sync it to your PM tool. Use the controls above it to filter, sort or change the view."
+					"body": "The Roadmap work area shows your work items in the selected layout. Browse, prioritize and track work, then sync it to your PM tool. When remote servers are enabled, use Start work → Fabric Agents in Coding to choose your own or a team server and follow its session."
 				},
 				"todos": {
 					"body": "To Do gathers what you owe across this workspace — action items your meetings produced and to-dos you wrote yourself — into one list you can snooze, reassign, and tick off.",
@@ -1904,6 +1905,8 @@
 				"weave": {
 					"session": {
 						"terminated_on_exit": "Weave session ended",
+						"continuation_requested": "Coding session continuation requested",
+						"recovery_closed": "Coding session recovery closed",
 						"terminated_stale": "Weave session killed (stale)"
 					}
 				},
@@ -3254,6 +3257,46 @@
 		"welcome": "Welcome {name}!"
 	},
 	"projects": {
+		"remoteAgents": {
+			"recoveryWarning": "The remote outcome is unknown. Check the original server for an orphaned session and stop it before starting another run. Closing this record does not stop remote work.",
+			"orphanCheck": "I checked the original server for orphaned work.",
+			"closeRun": "Close run",
+			"recoveryClosed": "Run closed. You can start another run.",
+			"recoveryFailed": "Could not close the run.",
+			"portalAiErrorTitle": "AI assistant unavailable",
+			"portalAiErrorHelp": "The AI assistant could not start. Retry or check your Portal AI configuration. Remote assignment remains available from Start work.",
+			"openServer": "Open server",
+			"portalAiTitle": "Portal AI grooming is not configured",
+			"portalAiHelp": "Configure a Portal AI provider to use assisted grooming. You can still assign this feature to a remote agent from Start work; it uses credentials on the selected server.",
+			"configurePortalAi": "Configure Portal AI",
+			"privateLabel": "Private session",
+			"privateSession": "This session runs on another developer’s private server. Project progress and pull requests are visible; its conversation and controls are private.",
+			"loadingServers": "Loading remote servers…",
+			"loadServersFailed": "Could not load remote servers. Try again before assigning work.",
+			"title": "Remote server",
+			"choose": "Choose a remote server",
+			"mine": "My servers",
+			"team": "Team servers",
+			"privateHelp": "Only you can assign work to this connection. It uses the accounts signed in on your server.",
+			"teamHelp": "Project members can assign work using the accounts configured on this shared server.",
+			"emptyHelp": "Choose a team server or connect your own. Provider and Git credentials stay on the remote host.",
+			"connect": "Connect a remote server",
+			"connectionHelp": "Connect an existing Fabric Agents server that the Portal API and worker can reach. Use its dedicated execution service secret, not a provider API key or desktop sign-in token.",
+			"name": "Connection name",
+			"url": "Server URL",
+			"secret": "Execution service secret",
+			"visibility": "Who can use this connection",
+			"verify": "Verify and connect",
+			"disconnect": "Disconnect from new work",
+			"conversation": "Remote session",
+			"conversationHelp": "Recent conversation from the actual remote session. Open Fabric Agents to resolve tool approvals or sign-in requests.",
+			"openBrowser": "Open in browser",
+			"loading": "Loading remote conversation…",
+			"retry": "Retry",
+			"noMessages": "No conversation messages are available yet.",
+			"you": "Developer",
+			"agent": "Agent"
+		},
 		"engagement": {
 			"sectionLabel": "Engagement",
 			"title": "How this engagement is run",
@@ -5209,6 +5252,14 @@
 				}
 			},
 			"roadmapUi": {
+				"detailLoading": "Loading feature…",
+				"detailLoadFailed": "Could not load feature. Please try again.",
+				"descriptionSearch": {
+					"pending": "Searching descriptions…",
+					"failed": "Descriptions could not be searched.",
+					"skipped": "Query too long: descriptions were not searched.",
+					"retry": "Retry"
+				},
 				"title": "Roadmap",
 				"aboutLabel": "About this roadmap",
 				"aboutTitle": "Work item flow, delivery stages, and execution pressure",
@@ -10052,6 +10103,7 @@
 			"showDiagram": "Return to the rendered diagram. Any unsaved edits to the source are discarded.",
 			"editDiagramSource": "Open the Mermaid source in an editable panel. Ctrl+Enter saves.",
 			"editStatTilesSource": "Edit source",
+			"editBlockSource": "Edit source",
 			"addCaption": "Add a short caption underneath the diagram. It travels with the diagram when the document is saved.",
 			"editDiagramInChat": "Scroll to the Fabric Agent chat, where this diagram can be edited. The embed here is view-only and always shows the latest saved scene.",
 			"removeDiagramPlaceholder": {

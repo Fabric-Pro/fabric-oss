@@ -22,8 +22,8 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-	type MeetingTranscriptViewData,
 	MeetingTranscriptPageView,
+	type MeetingTranscriptViewData,
 } from "../MeetingTranscriptPageView";
 
 // `next/link` works in jsdom, but mock it to a plain anchor so href assertions
@@ -86,8 +86,8 @@ describe("MeetingTranscriptPageView — heading + metadata", () => {
 					"meeting-transcript-eyebrow",
 			);
 		expect(heroHeading).toBeDefined();
-		// Hero title uses the editorial serif treatment (CLAUDE.md / D7).
-		expect(heroHeading?.className).toMatch(/font-serif/);
+		// Hero title uses the DuBois semibold sans treatment (design.md).
+		expect(heroHeading?.className).toMatch(/font-semibold/);
 	});
 
 	it("falls back to 'Meeting transcript' when the subject is null", () => {

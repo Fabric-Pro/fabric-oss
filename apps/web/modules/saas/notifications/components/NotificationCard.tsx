@@ -120,7 +120,7 @@ export function NotificationCard({
 				<span
 					data-testid="notification-card-chip"
 					className={cn(
-						"inline-flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em]",
+						"inline-flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
 						isUnread
 							? "bg-primary/15 text-primary"
 							: "bg-muted text-muted-foreground",
@@ -131,7 +131,7 @@ export function NotificationCard({
 						{context ? `${category} · ${context}` : category}
 					</span>
 				</span>
-				<span className="ml-auto flex shrink-0 items-center gap-2 text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70">
+				<span className="ml-auto flex shrink-0 items-center gap-2 text-[10px] uppercase tracking-wide text-muted-foreground/70">
 					{notification.actor?.name ? (
 						<span className="max-w-[10ch] truncate">
 							{notification.actor.name}
@@ -190,7 +190,7 @@ export function NotificationCard({
 	);
 
 	const baseClass = cn(
-		"group block rounded-lg border p-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+		"group block rounded-lg border p-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 		isUnread
 			? "border-primary/40 bg-primary/[0.03]"
 			: "border-border bg-card",

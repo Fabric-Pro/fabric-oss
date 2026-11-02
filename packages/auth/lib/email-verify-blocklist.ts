@@ -1,7 +1,7 @@
 /**
  * Server-side revocation for Better Auth's stateless email-change JWTs.
  *
- * Better Auth 1.4.9 issues two JWTs during a change-email flow, both with
+ * Better Auth 1.7.7 issues two JWTs during a change-email flow, both with
  * payload `{email: OLD, updateTo: NEW}` and differing only in `requestType`:
  *   1. `change-email-confirmation` — sent to OLD address; click spawns JWT 2
  *   2. `change-email-verification` — sent to NEW address; click commits the
@@ -20,10 +20,9 @@
  *
  * TTL is 2 h, comfortably beyond Better Auth's default 1 h JWT expiry.
  *
- * Read paths fail open: if Redis is unavailable when checking the markers,
- * the verify-email request is allowed to proceed. The blast radius is bounded
- * by the JWT expiry, and breaking all email verification when Redis is down
- * is worse than briefly accepting verifications during an outage.
+ * Read paths distinguish a clear marker lookup from a configured Redis read
+ * failure. Plain email verification remains fail-open, but email-change JWTs
+ * are refused unless both the exact-token and tuple reads completed clearly.
  *
  * Write paths fail closed: `markEmailChangeRevoked` throws if the marker
  * cannot be persisted. The revoke handler must not return success when the
@@ -40,12 +39,26 @@ const JWT_KEY_PREFIX = "email-verify-block:";
 const TUPLE_KEY_PREFIX = "email-change-revoked:";
 const TTL_SEC = 7200;
 
+export type EmailRevocationStatus = "clear" | "revoked" | "unavailable";
+
+function statusWithoutRedisClient(): EmailRevocationStatus {
+	if (
+		process.env.UPSTASH_REDIS_REST_URL ||
+		process.env.UPSTASH_REDIS_REST_TOKEN
+	) {
+		return "unavailable";
+	}
+	// markEmailChangeRevoked throws when Redis is not configured, so no
+	// cancellation could have been recorded and reported as successful.
+	return "clear";
+}
+
 function jwtKey(jwt: string): string {
 	return JWT_KEY_PREFIX + createHash("sha256").update(jwt).digest("hex");
 }
 
 // Both JWT 1 (change-email-confirmation) and JWT 2 (change-email-verification)
-// in Better Auth 1.4.9 carry the same `{email: OLD, updateTo: NEW}` payload —
+// in Better Auth 1.7.7 carry the same `{email: OLD, updateTo: NEW}` payload —
 // only `requestType` differs. A single tuple marker covers both, including
 // JWT 2 which we never see directly (Better Auth mints it on JWT 1 click).
 function tupleKey(oldEmail: string, newEmail: string): string {
@@ -67,17 +80,19 @@ export async function blockEmailVerifyJWT(jwt: string): Promise<void> {
 	}
 }
 
-export async function isEmailVerifyJWTBlocked(jwt: string): Promise<boolean> {
+export async function getEmailVerifyJWTBlockStatus(
+	jwt: string,
+): Promise<EmailRevocationStatus> {
 	const redis = getAuthRedisClient();
 	if (!redis) {
-		return false;
+		return statusWithoutRedisClient();
 	}
 	try {
 		const hit = await redis.get(jwtKey(jwt));
-		return hit !== null;
+		return hit === null ? "clear" : "revoked";
 	} catch (err) {
 		logger.warn({ event: "email_verify_blocklist.read_error", err });
-		return false;
+		return "unavailable";
 	}
 }
 
@@ -99,19 +114,19 @@ export async function markEmailChangeRevoked(
 	}
 }
 
-export async function isEmailChangeRevoked(
+export async function getEmailChangeRevocationStatus(
 	email: string,
 	updateTo: string,
-): Promise<boolean> {
+): Promise<EmailRevocationStatus> {
 	const redis = getAuthRedisClient();
 	if (!redis) {
-		return false;
+		return statusWithoutRedisClient();
 	}
 	try {
 		const hit = await redis.get(tupleKey(email, updateTo));
-		return hit !== null;
+		return hit === null ? "clear" : "revoked";
 	} catch (err) {
 		logger.warn({ event: "email_change_revoked.read_error", err });
-		return false;
+		return "unavailable";
 	}
 }

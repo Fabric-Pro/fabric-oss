@@ -26,17 +26,24 @@ import {
 	type ComponentProps,
 	createContext,
 	type HTMLAttributes,
+	lazy,
+	Suspense,
 	useCallback,
 	useContext,
 	useMemo,
 	useState,
 } from "react";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import {
 	oneDark,
 	oneLight,
 } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { toast } from "sonner";
+
+const SyntaxHighlighter = lazy(() =>
+	import("react-syntax-highlighter").then((module) => ({
+		default: module.Prism,
+	})),
+);
 
 type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
 	code: string;
@@ -489,16 +496,26 @@ export const CodeBlock = ({
 						"[&_pre]:!bg-transparent [&_code]:!bg-transparent",
 					)}
 				>
-					<SyntaxHighlighter
-						language={normalizedLang}
-						style={resolvedTheme === "dark" ? oneDark : oneLight}
-						customStyle={customStyle}
-						showLineNumbers={showLineNumbers}
-						wrapLines={isWrapped}
-						wrapLongLines={isWrapped}
+					<Suspense
+						fallback={
+							<pre className="m-0 bg-transparent p-4 font-mono text-sm">
+								<code>{code}</code>
+							</pre>
+						}
 					>
-						{code}
-					</SyntaxHighlighter>
+						<SyntaxHighlighter
+							language={normalizedLang}
+							style={
+								resolvedTheme === "dark" ? oneDark : oneLight
+							}
+							customStyle={customStyle}
+							showLineNumbers={showLineNumbers}
+							wrapLines={isWrapped}
+							wrapLongLines={isWrapped}
+						>
+							{code}
+						</SyntaxHighlighter>
+					</Suspense>
 				</div>
 
 				{/* HTML preview dialog */}

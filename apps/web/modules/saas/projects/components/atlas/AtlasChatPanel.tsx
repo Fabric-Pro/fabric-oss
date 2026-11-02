@@ -32,18 +32,31 @@
  *   - Matching is longest-first, case-sensitive, whole-token (word boundary).
  *   - Regex-safe: special chars in labels are escaped.
  *
- * Streaming consumption:
- *   1. `orpcClient.atlas.chat(input)` returns an oRPC event iterator.
- *   2. The client `for await`s it directly: string events are text deltas
- *      concatenated into the in-progress assistant bubble as they arrive.
- *   3. After the deltas the server may yield ONE terminal object sentinel —
- *      `{ type: "atlas-chat-interrupted" }` (the turn was cut short and
- *      salvaged server-side) or `{ type: "atlas-chat-persist-failed" }` (the
- *      finished turn could not be saved) — mapped to the inline interrupted
- *      marker / warning toast respectively.
+ * Streaming consumption — two transports, picked once when the panel mounts
+ * (`COPILOTKIT_ATLAS_CHAT`, `atlas-chat-client.ts`):
+ *   1. Route (the default, and always the System map chat):
+ *      `orpcClient.atlas.chat(input)` (or `systemChat`) returns an oRPC event
+ *      iterator; string events are text deltas.
+ *   2. Agent runtime (flag on, an organization on screen, an owner, admin or
+ *      member there, single-repository chat): the `atlas-chat` agent runs on
+ *      the conversation's own id and streams the answer as AG-UI text. A send
+ *      whose conversation could not be created stays on the route.
+ *   3. Either way, text is concatenated into the in-progress assistant bubble
+ *      as it arrives, and the turn may end with ONE terminal sentinel —
+ *      `atlas-chat-interrupted` (the turn was cut short and salvaged
+ *      server-side) or `atlas-chat-persist-failed` (the finished turn could
+ *      not be saved) — mapped to the inline interrupted marker / warning
+ *      toast respectively.
  */
 import type { ConversationSummary, GraphMode } from "@repo/atlas/types";
+import type { RuntimeChatTransport } from "@saas/agents/hooks/useRuntimeChatTransport";
+import { useRuntimeEligible } from "@saas/agents/hooks/useRuntimeEligible";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import {
+	type AtlasChatSink,
+	consumeAtlasRouteStream,
+	streamAtlasRuntime,
+} from "@saas/projects/lib/atlas-chat-client";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import {
@@ -119,31 +132,6 @@ interface ChatMessage {
 	content: string;
 	/** The stored/streamed reply was cut short (abort, disconnect, error). */
 	interrupted?: boolean;
-}
-
-/**
- * Terminal stream sentinels the server may append after the text deltas —
- * exactly one of them (or neither) ends a turn:
- *  - "atlas-chat-interrupted": the assistant turn was cut short (provider
- *    error / disconnect) and salvaged server-side as interrupted.
- *  - "atlas-chat-persist-failed": the turn finished but could not be saved
- *    to history.
- * Text deltas are plain strings, so any object event is already out-of-band;
- * the `type` check keeps it precise (unknown objects are ignored).
- */
-type ChatStreamSentinel =
-	| "atlas-chat-interrupted"
-	| "atlas-chat-persist-failed";
-
-function chatStreamSentinelOf(value: unknown): ChatStreamSentinel | null {
-	if (typeof value !== "object" || value === null) {
-		return null;
-	}
-	const type = (value as { type?: unknown }).type;
-	return type === "atlas-chat-interrupted" ||
-		type === "atlas-chat-persist-failed"
-		? type
-		: null;
 }
 
 interface AtlasChatPanelProps {
@@ -266,7 +254,7 @@ function NodeLinkifiedText({
 						key={i}
 						type="button"
 						onClick={() => onFocusNode(seg.key)}
-						className="inline-flex items-center gap-0.5 rounded bg-primary/10 px-1 py-0.5 text-[0.8em] font-medium text-primary underline-offset-2 hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						className="inline-flex items-center gap-0.5 rounded bg-primary/10 px-1 py-0.5 text-[0.8em] font-medium text-primary underline-offset-2 hover:bg-primary/20 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						aria-label={`Focus node: ${seg.label}`}
 					>
 						{seg.label}
@@ -340,11 +328,21 @@ export function AtlasChatPanel({
 }: AtlasChatPanelProps) {
 	const t = useTranslations("projects.atlas.chat");
 	const { organizationId } = useOrganizationContext();
+	const runtimeEligible = useRuntimeEligible(
+		"COPILOTKIT_ATLAS_CHAT",
+		organizationId ?? undefined,
+	);
+	// Chosen once, when the panel mounts. Only the single-repository chat has
+	// a runtime agent: the System map chat stays on `atlas.systemChat`.
+	const [transport] = useState<RuntimeChatTransport>(() =>
+		runtimeEligible && !systemScope ? "runtime" : "legacy",
+	);
 	const queryClient = useQueryClient();
 	const inputId = useId();
 
 	// Active conversation id (null = "new, unsaved conversation").
 	const [conversationId, setConversationId] = useState<string | null>(null);
+	const [selectionVersion, setSelectionVersion] = useState(0);
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [input, setInput] = useState("");
 	const [streaming, setStreaming] = useState(false);
@@ -444,7 +442,7 @@ export function AtlasChatPanel({
 	// snapshot never clobbers local state.
 	useEffect(() => {
 		const detail = conversationDetailQuery.data;
-		if (!detail || streaming) {
+		if (!detail || detail.id !== conversationId || streaming) {
 			return;
 		}
 		if (loadedConvIdRef.current === detail.id) {
@@ -476,7 +474,12 @@ export function AtlasChatPanel({
 				interrupted: m.interrupted === true || undefined,
 			})),
 		);
-	}, [conversationDetailQuery.data, streaming]);
+	}, [
+		conversationDetailQuery.data,
+		conversationId,
+		selectionVersion,
+		streaming,
+	]);
 
 	// --- Conversation mutations -------------------------------------------
 	const updateConversationMutation = useMutation(
@@ -601,49 +604,18 @@ export function AtlasChatPanel({
 					}
 				}
 
-				const iterator = systemScope
-					? await orpcClient.atlas.systemChat(
-							{
-								projectId,
-								mode,
-								focusNodeKey: focusNodeKey ?? undefined,
-								repositoryIntegrationIds:
-									systemScope.repositoryIntegrationIds,
-								organizationId: organizationId ?? null,
-								messages: history,
-								conversationId: activeConvId ?? undefined,
-							},
-							{ signal: controller.signal },
-						)
-					: await orpcClient.atlas.chat(
-							{
-								projectId,
-								mode,
-								focusNodeKey: focusNodeKey ?? undefined,
-								repositoryIntegrationId:
-									repositoryIntegrationId ?? undefined,
-								organizationId: organizationId ?? null,
-								messages: history,
-								conversationId: activeConvId ?? undefined,
-							},
-							{ signal: controller.signal },
-						);
-
-				// The server streams plain text deltas as oRPC events, then may
-				// append ONE terminal object sentinel: "atlas-chat-interrupted"
-				// (cut short, salvaged server-side) or
-				// "atlas-chat-persist-failed" (finished but not saved).
-				// Provider errors end the stream NORMALLY (no exception), so the
-				// sentinels — plus the defensive empty-end below — are the only
-				// signal the turn went wrong.
+				// Either transport streams the text, then may end with ONE
+				// terminal sentinel: "atlas-chat-interrupted" (cut short,
+				// salvaged server-side) or "atlas-chat-persist-failed"
+				// (finished but not saved). Provider errors end the stream
+				// NORMALLY (no exception), so the sentinels — plus the
+				// defensive empty-end below — are the only signal the turn
+				// went wrong.
 				let assistantText = "";
 				let persistFailureNotified = false;
 				let interruptedNotified = false;
-				for await (const delta of iterator) {
-					if (controller.signal.aborted) {
-						break;
-					}
-					if (typeof delta === "string") {
+				const sink: AtlasChatSink = {
+					onDelta: (delta) => {
 						assistantText += delta;
 						setMessages((prev) =>
 							prev.map((m) =>
@@ -652,36 +624,92 @@ export function AtlasChatPanel({
 									: m,
 							),
 						);
-						continue;
-					}
-					const sentinel = chatStreamSentinelOf(delta);
-					if (
-						sentinel === "atlas-chat-persist-failed" &&
-						!persistFailureNotified
-					) {
-						// Keep the rendered answer — only the history write
-						// failed, and the warning fires at most once per send.
-						// The local thread is now AHEAD of the server copy, so
-						// pin it against re-hydration until the user switches.
-						persistFailureNotified = true;
-						hydratedSnapshotRef.current = "pinned";
-						toast.warning(t("turnNotSaved"));
-					} else if (
-						sentinel === "atlas-chat-interrupted" &&
-						!interruptedNotified
-					) {
-						// Mirror the server's salvage immediately: mark the
-						// partial (or drop an empty bubble) without a reload.
-						interruptedNotified = true;
-						finalizeInterrupted();
-						if (assistantText === "") {
-							// Nothing was rendered — never leave the user with
-							// silence (the empty bubble was just dropped).
-							toast.error(t("error"), {
-								description: t("interrupted"),
-							});
+					},
+					onSentinel: (sentinel) => {
+						if (
+							sentinel === "atlas-chat-persist-failed" &&
+							!persistFailureNotified
+						) {
+							// Keep the rendered answer — only the history write
+							// failed, and the warning fires at most once per
+							// send. The local thread is now AHEAD of the server
+							// copy, so pin it against re-hydration until the
+							// user switches.
+							persistFailureNotified = true;
+							hydratedSnapshotRef.current = "pinned";
+							toast.warning(t("turnNotSaved"));
+						} else if (
+							sentinel === "atlas-chat-interrupted" &&
+							!interruptedNotified
+						) {
+							// Mirror the server's salvage immediately: mark the
+							// partial (or drop an empty bubble) without a reload.
+							interruptedNotified = true;
+							finalizeInterrupted();
+							if (assistantText === "") {
+								// Nothing was rendered — never leave the user
+								// with silence (the empty bubble was just
+								// dropped).
+								toast.error(t("error"), {
+									description: t("interrupted"),
+								});
+							}
 						}
-					}
+					},
+				};
+
+				// The runtime runs under the conversation's own id, so a send
+				// whose conversation could not be created stays on the route.
+				if (transport === "runtime" && activeConvId) {
+					await streamAtlasRuntime(
+						{
+							conversationId: activeConvId,
+							organizationId: organizationId ?? undefined,
+							props: {
+								projectId,
+								repositoryIntegrationId:
+									repositoryIntegrationId ?? null,
+								mode,
+								focusNodeKey: focusNodeKey ?? undefined,
+							},
+							messages: history,
+							signal: controller.signal,
+						},
+						sink,
+					);
+				} else {
+					const iterator = systemScope
+						? await orpcClient.atlas.systemChat(
+								{
+									projectId,
+									mode,
+									focusNodeKey: focusNodeKey ?? undefined,
+									repositoryIntegrationIds:
+										systemScope.repositoryIntegrationIds,
+									organizationId: organizationId ?? null,
+									messages: history,
+									conversationId: activeConvId ?? undefined,
+								},
+								{ signal: controller.signal },
+							)
+						: await orpcClient.atlas.chat(
+								{
+									projectId,
+									mode,
+									focusNodeKey: focusNodeKey ?? undefined,
+									repositoryIntegrationId:
+										repositoryIntegrationId ?? undefined,
+									organizationId: organizationId ?? null,
+									messages: history,
+									conversationId: activeConvId ?? undefined,
+								},
+								{ signal: controller.signal },
+							);
+					await consumeAtlasRouteStream(
+						iterator,
+						controller.signal,
+						sink,
+					);
 				}
 
 				if (controller.signal.aborted) {
@@ -745,6 +773,7 @@ export function AtlasChatPanel({
 			conversationsListKey,
 			t,
 			queryClient,
+			transport,
 		],
 	);
 
@@ -787,6 +816,7 @@ export function AtlasChatPanel({
 			// Force the hydration effect to reload this conversation from the
 			// server (even if re-selecting the same id after clearing).
 			loadedConvIdRef.current = null;
+			setSelectionVersion((version) => version + 1);
 			setConversationId(conv.id);
 			setMessages([]);
 			setShowConversationList(false);
@@ -943,7 +973,7 @@ export function AtlasChatPanel({
 						<button
 							type="button"
 							onClick={() => handleSelectConversation(conv)}
-							className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
 								{conv.title}
@@ -1067,7 +1097,7 @@ export function AtlasChatPanel({
 	return (
 		<section
 			aria-label={t("regionLabel")}
-			className="flex h-full flex-col rounded-xl border border-border/60 bg-card"
+			className="flex h-full flex-col rounded-lg border border-border/60 bg-card"
 		>
 			<header className="flex items-center gap-2 border-b border-border/60 px-4 py-3">
 				<SparklesIcon
@@ -1129,7 +1159,7 @@ export function AtlasChatPanel({
 				   history never grows the panel. */
 				<div className="flex min-h-0 flex-1 flex-col">
 					<div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
-						<span className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+						<span className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							{t("conversations")}
 						</span>
 						<div className="flex items-center gap-1.5">
@@ -1174,7 +1204,7 @@ export function AtlasChatPanel({
 											key={bucket}
 											className="flex flex-col gap-0.5"
 										>
-											<p className="px-2 pb-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+											<p className="px-2 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
 												{t(BUCKET_LABEL_KEY[bucket])}
 											</p>
 											<ul className="flex flex-col gap-0.5 overflow-x-hidden">
@@ -1199,7 +1229,7 @@ export function AtlasChatPanel({
 												setOlderExpanded((v) => !v)
 											}
 											aria-expanded={olderExpanded}
-											className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 										>
 											<ChevronDownIcon
 												aria-hidden="true"
@@ -1288,7 +1318,7 @@ export function AtlasChatPanel({
 												void send(suggestion)
 											}
 											disabled={streaming}
-											className="w-full rounded-lg border border-border/60 bg-card px-3 py-2 text-left text-[12.5px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+											className="w-full rounded-lg border border-border/60 bg-card px-3 py-2 text-left text-[12.5px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 										>
 											{suggestion}
 										</button>
@@ -1327,7 +1357,7 @@ export function AtlasChatPanel({
 								>
 									<div
 										className={cn(
-											"min-w-0 max-w-full overflow-hidden rounded-2xl px-3.5 py-2 text-sm",
+											"min-w-0 max-w-full overflow-hidden rounded-lg px-3.5 py-2 text-sm",
 											message.role === "user"
 												? "bg-primary text-primary-foreground"
 												: "bg-muted text-foreground",
@@ -1380,7 +1410,7 @@ export function AtlasChatPanel({
 					<label htmlFor={inputId} className="sr-only">
 						{t("inputLabel")}
 					</label>
-					<div className="flex items-end gap-2 rounded-xl border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
+					<div className="flex items-end gap-2 rounded-lg border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
 						<Textarea
 							id={inputId}
 							ref={textareaRef}

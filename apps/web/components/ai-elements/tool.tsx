@@ -34,8 +34,8 @@ import {
 	useState,
 } from "react";
 import { CodeBlock } from "./code-block";
+import { DeferredResponse as Response } from "./deferred-response";
 import { McpAppFrame } from "./McpAppFrame";
-import { Response } from "./response";
 import {
 	isWebSearchOutput,
 	SearchLoadingState,
@@ -484,7 +484,7 @@ export const Tool = ({
 		>
 			<div
 				className={cn(
-					"not-prose mb-4 w-full max-w-full min-w-0 rounded-lg border bg-card overflow-hidden",
+					"not-prose mb-3 w-full max-w-full min-w-0 rounded-xl border border-border bg-card shadow-2xs overflow-hidden",
 					className,
 				)}
 				{...props}

@@ -46,6 +46,7 @@ vi.mock("@repo/database", async () => ({
 	)),
 	clearRefreshFailures: (...args: unknown[]) =>
 		clearRefreshFailuresMock(...args),
+	consumeOauthState: vi.fn(async () => true),
 	createOauthState: (...args: unknown[]) => createOauthStateMock(...args),
 	db: { mCPConfig: { update: vi.fn() } },
 	deleteOauthState: (...args: unknown[]) => deleteOauthStateMock(...args),
@@ -90,6 +91,7 @@ vi.mock("../../../../orpc/procedures", () => {
 	});
 	return {
 		publicProcedure: chainable,
+		protectedProcedure: chainable,
 		tenantProtectedProcedure: chainable,
 		requirePermission: () => () => ({}),
 		Permissions: {
@@ -112,10 +114,11 @@ vi.mock("@orpc/server", () => ({
 import { oauthClientFingerprint } from "../../lib/oauth-authorization-server";
 import { oauthProcedures } from "../oauth";
 
-const handler = (
+const callbackHandler = (
 	oauthProcedures.callback as unknown as {
 		_handler: (args: {
 			input: { code?: string; state?: string; error?: string };
+			context?: { user: { id: string } };
 		}) => Promise<{
 			success: boolean;
 			message: string;
@@ -123,6 +126,8 @@ const handler = (
 		}>;
 	}
 )._handler;
+const handler: typeof callbackHandler = ({ input, context }) =>
+	callbackHandler({ input, context: context ?? { user: { id: "user_1" } } });
 
 function tokenResponse(body: Record<string, unknown> = {}) {
 	return {

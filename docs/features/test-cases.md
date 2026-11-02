@@ -109,7 +109,7 @@ On delete, `removeTestCaseContext` starts `contextDeletionWorkflow` (same queue)
 
 ### 6. Work-item link & coverage rollup
 
-`WorkItemLinkControl` searches features via `orpc.projects.stories.list` and links a case to a `UserStory` (the link-work-item procedure verifies the story belongs to the project), optionally tagging an `acceptanceCriterionRef`. The link shows from both sides: on the case (its linked features) and on the feature workspace (`stories/StoryWorkspace.tsx`), which renders a small read-only **"Tested by N cases"** line backed by `countTestCasesForStory` via `orpc.projects.testCases.coverageForStory`. This is the light rollup — not a coverage engine.
+`WorkItemLinkControl` searches features via `orpc.projects.stories.board` and links a case to a `UserStory` (the link-work-item procedure verifies the story belongs to the project), optionally tagging an `acceptanceCriterionRef`. The link shows from both sides: on the case (its linked features) and on the feature workspace (`stories/StoryWorkspace.tsx`), which renders a small read-only **"Tested by N cases"** line backed by `countTestCasesForStory` via `orpc.projects.testCases.coverageForStory`. This is the light rollup — not a coverage engine.
 
 ## File map
 

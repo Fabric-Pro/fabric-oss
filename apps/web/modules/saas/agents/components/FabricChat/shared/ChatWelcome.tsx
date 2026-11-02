@@ -16,7 +16,7 @@
  * Used by both Direct and Orchestrator chat modes.
  */
 
-import { Button } from "@ui/components/button";
+import { SparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { cn } from "@ui/lib";
 import {
 	ArrowRight,
@@ -129,111 +129,17 @@ const DEFAULT_CATEGORIES: ExampleCategory[] = [
 			"Break this feature into implementation tasks",
 			"Create a sprint plan for the MVP release",
 		],
-		color: "text-secondary",
-		bgColor: "bg-secondary/10",
+		color: "text-primary",
+		bgColor: "bg-primary/10",
 	},
 ];
 
-/**
- * The marks that drift around the composer. Positions are percentages of
- * the glyph field, which extends past the composer on both sides so the
- * marks sit in the margins, not over the input. Three carry a colour; the
- * rest are ink at low opacity (see .advisor-glyph in globals.css).
- */
-const GLYPHS: Array<{
-	char: string;
-	left: string;
-	top: string;
-	delay: number;
-	duration: number;
-	dx: number;
-	color?: string;
-}> = [
-	{ char: ".", left: "5%", top: "-8%", delay: 0, duration: 9, dx: 3 },
-	{ char: "/", left: "9%", top: "22%", delay: 1.4, duration: 11, dx: -2 },
-	{ char: "@", left: "8%", top: "68%", delay: 2.8, duration: 10, dx: 2 },
-	{ char: "=", left: "12%", top: "96%", delay: 0.9, duration: 12, dx: -3 },
-	{
-		char: "+",
-		left: "1%",
-		top: "118%",
-		delay: 3.6,
-		duration: 9.5,
-		dx: 2,
-		color: "#cf8b17",
-	},
-	{ char: ":", left: "3%", top: "44%", delay: 5.2, duration: 10.5, dx: -2 },
-	{ char: "%", left: "97%", top: "-14%", delay: 2.1, duration: 11, dx: -3 },
-	{
-		char: "o",
-		left: "88%",
-		top: "36%",
-		delay: 0.4,
-		duration: 9,
-		dx: 2,
-		color: "#208858",
-	},
-	{ char: "+", left: "85%", top: "62%", delay: 4.4, duration: 12, dx: -2 },
-	{ char: ".", left: "86%", top: "78%", delay: 1.9, duration: 8.5, dx: 3 },
-	{
-		char: "×",
-		left: "91%",
-		top: "96%",
-		delay: 3.1,
-		duration: 10,
-		dx: -2,
-		color: "#dc2828",
-	},
-	{ char: "*", left: "95%", top: "56%", delay: 6.1, duration: 11.5, dx: 2 },
-	{ char: "-", left: "13%", top: "8%", delay: 4.9, duration: 10, dx: 3 },
-];
-
-function GlyphField() {
-	return (
-		<div
-			aria-hidden="true"
-			className="pointer-events-none absolute -inset-x-40 -top-16 -bottom-16 hidden lg:block"
-		>
-			{GLYPHS.map((g) => (
-				<span
-					key={`${g.char}-${g.left}-${g.top}`}
-					className="advisor-glyph"
-					style={
-						{
-							left: g.left,
-							top: g.top,
-							color: g.color,
-							"--glyph-delay": `${g.delay}s`,
-							"--glyph-duration": `${g.duration}s`,
-							"--glyph-dx": `${g.dx}px`,
-						} as React.CSSProperties
-					}
-				>
-					{g.char}
-				</span>
-			))}
-		</div>
-	);
-}
-
-function ResumeLink({
-	resume,
-	tucked = false,
-}: {
-	resume: ChatWelcomeResume;
-	/** Tucked under the composer, which overlaps its top edge. */
-	tucked?: boolean;
-}) {
+function ResumeLink({ resume }: { resume: ChatWelcomeResume }) {
 	return (
 		<button
 			type="button"
 			onClick={resume.onResume}
-			className={cn(
-				"group flex w-full items-center gap-2 bg-muted/50 px-5 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted",
-				tucked
-					? "rounded-[6px_6px_16px_16px] pt-7 pb-3"
-					: "rounded-md border border-border/60 py-3",
-			)}
+			className="group flex w-full items-center gap-2 rounded-md border border-border/60 bg-muted/50 px-5 py-3 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 		>
 			<History className="size-4 shrink-0" />
 			<span className="min-w-0 truncate text-foreground">
@@ -262,147 +168,122 @@ export function ChatWelcome({
 	className,
 }: ChatWelcomeProps) {
 	const flat = categories.length === 0;
+	const resolvedSubtitle =
+		subtitle === undefined
+			? "Research and analyze your workspace with AI agents"
+			: subtitle;
 
 	return (
 		<div
 			className={cn(
-				"flex-1 min-h-0 flex flex-col items-center justify-start sm:justify-center overflow-y-auto overflow-x-hidden px-4 py-8 sm:px-6 sm:py-12",
+				"flex-1 min-h-0 flex flex-col items-center justify-start overflow-y-auto overflow-x-hidden px-4 py-8 sm:px-6 sm:py-12",
 				className,
 			)}
 		>
 			<div
 				className={cn(
-					"w-full min-w-0 flex flex-col items-center",
-					flat ? "max-w-4xl" : "max-w-3xl space-y-8",
+					"w-full min-w-0 flex flex-col items-center sm:my-auto",
+					flat ? "max-w-2xl" : "max-w-2xl space-y-6",
 				)}
 			>
-				{/* The heading, alone: no logo tile, no subtitle unless one is given. */}
-				<div className="w-full px-0 text-center sm:px-6">
+				{/* Databricks Genie style centered emblem + heading + subtitle */}
+				<div className="w-full px-0 text-center">
+					<div className="mb-3 flex items-center justify-center">
+						<SparklesIcon className="size-9" aria-hidden="true" />
+					</div>
 					<h1
 						className={cn(
 							"text-foreground",
 							flat
 								? "advisor-title"
-								: "text-[clamp(1.7rem,3.2vw,2.4rem)] font-normal leading-[1.1] tracking-[-0.025em]",
+								: "text-2xl font-semibold leading-8 tracking-[-0.015em]",
 						)}
 					>
 						{title}
 					</h1>
-					{subtitle && (
-						<p className="mx-auto mt-3 max-w-2xl text-[15px] leading-7 text-muted-foreground">
-							{subtitle}
+					{resolvedSubtitle && (
+						<p className="mx-auto mt-1.5 max-w-xl text-sm leading-5 text-muted-foreground">
+							{resolvedSubtitle}
 						</p>
 					)}
 				</div>
 
-				{/* Composer, with the glyph field behind it and the last
-				    conversation tucked under it. */}
+				{/* Composer directly under the heading, with accuracy caption and recent conversation */}
 				{composer && (
-					<div className="relative mt-10 w-full sm:mt-14 sm:px-6">
-						<GlyphField />
-						<div className="relative z-10">{composer}</div>
+					<div className="relative mt-6 w-full">
+						<div>{composer}</div>
+						<p className="mt-2 px-1 text-center text-xs text-muted-foreground">
+							Always review the accuracy of responses.
+						</p>
 						{resume && (
-							<div className="relative z-0 -mt-4 px-3">
-								<ResumeLink resume={resume} tucked />
+							<div className="mt-3">
+								<ResumeLink resume={resume} />
 							</div>
 						)}
 					</div>
 				)}
 
-				{/* Without a composer (the orchestrator puts its own under the
-				    landing), the last conversation stands on its own. */}
+				{/* Without a composer, the last conversation stands on its own. */}
 				{!composer && resume && (
-					<div className="mt-8 w-full sm:px-6">
+					<div className="mt-6 w-full">
 						<ResumeLink resume={resume} />
 					</div>
 				)}
 
-				{/* Starters */}
-				{suggestions.length > 0 &&
-					(flat ? (
-						<ul
-							className={cn(
-								"grid w-full gap-x-6 gap-y-0.5 sm:grid-cols-2 sm:px-6",
-								composer ? "mt-10 sm:mt-12" : "mt-8",
-							)}
-						>
-							{suggestions.map((suggestion) => (
-								<li key={suggestion.value}>
-									<button
-										type="button"
-										onClick={() =>
-											onSuggestionClick(suggestion.value)
-										}
-										className="flex w-full items-center gap-2 rounded-[4px] px-2.5 py-2 text-left text-[13px] font-medium leading-5 text-muted-foreground transition-colors hover:bg-accent"
-									>
+				{/* Starters — Databricks Genie Agents full-width divider rows */}
+				{suggestions.length > 0 && (
+					<ul className="mt-6 w-full divide-y divide-border border-b border-border">
+						{suggestions.map((suggestion) => (
+							<li key={suggestion.value} className="min-w-0">
+								<button
+									type="button"
+									onClick={() =>
+										onSuggestionClick(suggestion.value)
+									}
+									className="flex min-w-0 w-full items-start gap-2.5 px-2 py-2.5 text-left text-sm leading-5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+								>
+									{suggestion.icon && (
 										<span
-											className="flex size-4 shrink-0 items-center justify-center [&_svg]:size-4"
-											style={{
-												color:
-													suggestion.color ??
-													"var(--fab-accent)",
-											}}
+											className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-4"
+											style={
+												suggestion.color
+													? {
+															color: suggestion.color,
+														}
+													: undefined
+											}
 										>
 											{suggestion.icon}
 										</span>
-										<span className="min-w-0 truncate">
-											<span className="text-foreground">
-												{suggestion.label}
-											</span>
-											{suggestion.description ? (
-												<>
-													{" "}
-													&mdash;{" "}
+									)}
+									<span className="min-w-0 whitespace-normal break-words">
+										<span className="font-medium text-foreground">
+											{suggestion.label}
+										</span>
+										{suggestion.description ? (
+											<>
+												{" "}
+												&mdash;{" "}
+												<span className="whitespace-normal break-words text-muted-foreground">
 													{suggestion.description}
-												</>
-											) : (
-												<> &mdash; {suggestion.value}</>
-											)}
-										</span>
-									</button>
-								</li>
-							))}
-						</ul>
-					) : (
-						<div className="space-y-4">
-							<div className="flex flex-wrap items-center justify-center gap-2">
-								{suggestions.slice(0, 3).map((chip, index) => (
-									<Button
-										key={`suggestion-top-${index}`}
-										variant="outline"
-										className="rounded-md border-border/60 bg-card/35 px-4 py-2.5 h-auto text-sm font-medium hover:bg-accent hover:border-primary/40 transition-all"
-										onClick={() =>
-											onSuggestionClick(chip.value)
-										}
-									>
-										<span className="mr-2 flex items-center justify-center text-primary/75">
-											{chip.icon}
-										</span>
-										{chip.label}
-									</Button>
-								))}
-							</div>
-							{suggestions.length > 3 && (
-								<div className="flex flex-wrap items-center justify-center gap-2">
-									{suggestions.slice(3).map((chip, index) => (
-										<Button
-											key={`suggestion-bottom-${index}`}
-											variant="outline"
-											className="rounded-md border-border/60 bg-card/35 px-4 py-2.5 h-auto text-sm font-medium hover:bg-accent hover:border-primary/40 transition-all"
-											onClick={() =>
-												onSuggestionClick(chip.value)
-											}
-										>
-											<span className="mr-2 flex items-center justify-center text-primary/75">
-												{chip.icon}
-											</span>
-											{chip.label}
-										</Button>
-									))}
-								</div>
-							)}
-						</div>
-					))}
+												</span>
+											</>
+										) : suggestion.value !==
+											suggestion.label ? (
+											<>
+												{" "}
+												&mdash;{" "}
+												<span className="whitespace-normal break-words text-muted-foreground">
+													{suggestion.value}
+												</span>
+											</>
+										) : null}
+									</span>
+								</button>
+							</li>
+						))}
+					</ul>
+				)}
 
 				{/* Example Categories */}
 				{categories.length > 0 && (

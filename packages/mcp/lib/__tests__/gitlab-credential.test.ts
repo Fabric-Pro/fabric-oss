@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockGetMcpConfigById = vi.fn();
 const mockGetValidAccessToken = vi.fn();
+const mockGetMcpOAuthGrantGeneration = vi.fn();
 const mockAuthorizeMcpConfigAccess = vi.fn();
 const mockCredentialWrite = vi.fn();
 const mockIsOrganizationMember = vi.fn();
@@ -29,6 +30,8 @@ vi.mock("@repo/database", () => ({
 		mockIsOrganizationMember(...args),
 	getValidAccessToken: (...args: unknown[]) =>
 		mockGetValidAccessToken(...args),
+	getMcpOAuthGrantGeneration: (...args: unknown[]) =>
+		mockGetMcpOAuthGrantGeneration(...args),
 	authorizeMcpConfigAccess: (...args: unknown[]) =>
 		mockAuthorizeMcpConfigAccess(...args),
 	// Every credential write the database-backed provider can make; the
@@ -67,7 +70,8 @@ vi.mock("@repo/utils/oauth-refresh", () => ({
 }));
 
 // No DNS: the destination guard is not under test here.
-vi.mock("../server-url-guard", () => ({
+vi.mock("../server-url-guard", async (importOriginal) => ({
+	...(await importOriginal<object>()),
 	assertMcpServerUrlResolved: async () => undefined,
 	fetchMcpServer: (input: string | URL, init?: RequestInit) =>
 		fetch(input, init),
@@ -166,6 +170,7 @@ beforeEach(async () => {
 	transports.length = 0;
 	mockGetMcpConfigById.mockReset();
 	mockGetValidAccessToken.mockReset();
+	mockGetMcpOAuthGrantGeneration.mockReset();
 	mockAuthorizeMcpConfigAccess.mockReset();
 	mockCredentialWrite.mockReset();
 	mockGetGitLabConnectionToken.mockReset();
@@ -469,7 +474,7 @@ describe("createMcpClientForConfig — the GitLab transport fetch", () => {
 });
 
 describe("getValidMcpTransportAuth", () => {
-	it("refuses an endpoint on another origin than the credential, even when the saved config matches", async () => {
+	it("withholds the GitLab token from an endpoint the config does not name", async () => {
 		mockAuthorizeMcpConfigAccess.mockResolvedValue(gitlabConfig());
 		mockGetGitLabConnectionToken.mockResolvedValue(connectionToken());
 
@@ -480,7 +485,23 @@ describe("getValidMcpTransportAuth", () => {
 				organizationId: "org_a",
 				endpoint: "https://other.example.com/mcp",
 			}),
-		).rejects.toMatchObject({ code: "origin-mismatch" });
+		).resolves.toEqual({ accessToken: null });
+		expect(mockGetGitLabConnectionToken).not.toHaveBeenCalled();
+	});
+
+	it("withholds the GitLab token from a different path on the same origin", async () => {
+		mockAuthorizeMcpConfigAccess.mockResolvedValue(gitlabConfig());
+		mockGetGitLabConnectionToken.mockResolvedValue(connectionToken());
+
+		await expect(
+			getValidMcpTransportAuth({
+				configId: "cfg_gl",
+				userId: "user_a",
+				organizationId: "org_a",
+				endpoint: "https://gitlab.com/api/v4/admin",
+			}),
+		).resolves.toEqual({ accessToken: null });
+		expect(mockGetGitLabConnectionToken).not.toHaveBeenCalled();
 	});
 
 	it("answers the credential's own endpoint with the token and its GitLab fetch", async () => {
@@ -500,19 +521,94 @@ describe("getValidMcpTransportAuth", () => {
 
 	it("keeps the generic token and no fetch for every other server", async () => {
 		mockAuthorizeMcpConfigAccess.mockResolvedValue(
-			gitlabConfig({ mcpServer: { key: "linear", defaultUrl: null } }),
+			gitlabConfig({
+				baseUrl: "https://mcp.example.com/mcp",
+				authType: "OAUTH2",
+				oauthGrantGeneration: 4,
+				mcpServer: { key: "linear", defaultUrl: null },
+			}),
 		);
 		mockGetValidAccessToken.mockResolvedValue("generic-token");
+		mockGetMcpOAuthGrantGeneration.mockResolvedValue(4);
 
 		const auth = await getValidMcpTransportAuth({
 			configId: "cfg_gl",
 			userId: "user_a",
 			organizationId: "org_a",
 			endpoint: "https://mcp.example.com/mcp",
+			expectedGrantGeneration: 4,
 		});
 
 		expect(auth).toEqual({ accessToken: "generic-token" });
 		expect(mockGetGitLabConnectionToken).not.toHaveBeenCalled();
+	});
+
+	it("withholds a generic stored token from a different endpoint", async () => {
+		mockAuthorizeMcpConfigAccess.mockResolvedValue(
+			gitlabConfig({
+				baseUrl: "https://mcp.example.com/mcp",
+				authType: "OAUTH2",
+				oauthGrantGeneration: 4,
+				mcpServer: { key: "linear", defaultUrl: null },
+			}),
+		);
+
+		await expect(
+			getValidMcpTransportAuth({
+				configId: "cfg_gl",
+				userId: "user_a",
+				organizationId: "org_a",
+				endpoint: "https://mcp.example.com/admin",
+				expectedGrantGeneration: 4,
+			}),
+		).resolves.toEqual({ accessToken: null });
+		expect(mockGetValidAccessToken).not.toHaveBeenCalled();
+	});
+
+	it("withholds a token when the OAuth grant generation changes while it is resolved", async () => {
+		mockAuthorizeMcpConfigAccess.mockResolvedValue(
+			gitlabConfig({
+				baseUrl: "https://mcp.example.com/mcp",
+				authType: "OAUTH2",
+				oauthGrantGeneration: 4,
+				mcpServer: { key: "linear", defaultUrl: null },
+			}),
+		);
+		mockGetValidAccessToken.mockResolvedValue("superseded-token");
+		mockGetMcpOAuthGrantGeneration.mockResolvedValue(5);
+
+		await expect(
+			getValidMcpTransportAuth({
+				configId: "cfg_gl",
+				userId: "user_a",
+				organizationId: "org_a",
+				endpoint: "https://mcp.example.com/mcp",
+				expectedGrantGeneration: 4,
+			}),
+		).resolves.toEqual({ accessToken: null });
+		expect(mockGetValidAccessToken).toHaveBeenCalledTimes(1);
+	});
+
+	it("withholds a token before resolution when the caller's grant generation is already stale", async () => {
+		mockAuthorizeMcpConfigAccess.mockResolvedValue(
+			gitlabConfig({
+				baseUrl: "https://mcp.example.com/mcp",
+				authType: "OAUTH2",
+				oauthGrantGeneration: 5,
+				mcpServer: { key: "linear", defaultUrl: null },
+			}),
+		);
+
+		await expect(
+			getValidMcpTransportAuth({
+				configId: "cfg_gl",
+				userId: "user_a",
+				organizationId: "org_a",
+				endpoint: "https://mcp.example.com/mcp",
+				expectedGrantGeneration: 4,
+			}),
+		).resolves.toEqual({ accessToken: null });
+		expect(mockGetValidAccessToken).not.toHaveBeenCalled();
 	});
 });
 

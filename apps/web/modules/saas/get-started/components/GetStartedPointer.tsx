@@ -391,7 +391,7 @@ export function GetStartedPointer({ calloutEnabled = true, children }: Props) {
 						type="button"
 						onClick={() => setCalloutOpen(false)}
 						aria-label={t("onboarding.tour.pointer.notNow")}
-						className="-mr-1 -mt-1 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+						className="-mr-1 -mt-1 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 					>
 						<XIcon className="size-4" />
 					</button>

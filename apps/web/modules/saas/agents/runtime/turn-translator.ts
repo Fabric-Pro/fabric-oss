@@ -16,6 +16,7 @@ import {
 	partialTurnEvent,
 	type TurnErrorEvent,
 } from "../../../../app/api/agents/fabric-ai/stream/turn-events";
+import { ProgressPhaseTracker } from "../lib/progress-phase-tracker";
 
 /** Sends one AG-UI event to the stream (a no-op once the client is gone). */
 export type Emit = (event: AGUIEvent) => void;
@@ -148,7 +149,7 @@ export class TurnTranslator {
 	private reasoningSent = 0;
 	private textOpen = false;
 	private reasoningOpen = false;
-	private phase: string | undefined;
+	private readonly progressPhases = new ProgressPhaseTracker();
 	private readonly tools = new Map<string, ToolProgress>();
 	/** The answer as far as it has been seen, kept for a turn that stops early. */
 	responseText = "";
@@ -180,8 +181,12 @@ export class TurnTranslator {
 		};
 	}
 
-	apply(snapshot: TurnSnapshot): void {
-		this.applyProgress(snapshot);
+	beginPoll(): void {
+		this.progressPhases.beginPoll();
+	}
+
+	apply(snapshot: TurnSnapshot, source = "workflow"): void {
+		this.applyProgress(snapshot, source);
 		this.applyReasoning(snapshot.reasoningText);
 		for (const toolCall of snapshot.toolCalls ?? []) {
 			this.applyToolCall(toolCall);
@@ -216,6 +221,7 @@ export class TurnTranslator {
 			});
 			return;
 		}
+		this.beginPoll();
 		this.apply(result);
 		if (result.reasoningDurationMs !== undefined) {
 			this.emit({
@@ -324,11 +330,13 @@ export class TurnTranslator {
 	}
 
 	/** A phase change, as the stream route's `progress` event: the client's `state.progress`. */
-	private applyProgress(snapshot: TurnSnapshot): void {
-		if (!snapshot.phase || snapshot.phase === this.phase) {
+	private applyProgress(snapshot: TurnSnapshot, source: string): void {
+		if (
+			!snapshot.phase ||
+			!this.progressPhases.changed(source, snapshot.phase)
+		) {
 			return;
 		}
-		this.phase = snapshot.phase;
 		const progress: DirectTurnProgress = {
 			phase: snapshot.phase,
 			message: snapshot.message || "Processing...",

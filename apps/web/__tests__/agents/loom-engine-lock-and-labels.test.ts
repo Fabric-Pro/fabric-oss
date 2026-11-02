@@ -45,6 +45,20 @@ describe("engine pills while a conversation is loaded", () => {
 		expect(disabled).toHaveLength(3);
 	});
 
+	it.each(["Direct", "Orchestrator", "Research"])(
+		"names the %s pill when its visible label is hidden on mobile",
+		(name) => {
+			const pill = source
+				.match(/<button[\s\S]*?<\/button>/g)
+				?.find(
+					(button) =>
+						button.includes("engineLockedToConversation") &&
+						new RegExp(`>\\s*${name}\\s*</span>`).test(button),
+				);
+			expect(pill).toContain(`aria-label="${name}"`);
+		},
+	);
+
 	it("explains the lock in each pill's tooltip", () => {
 		// Silent disabling is the same defect in a quieter form: the user
 		// still has no idea why the control does nothing.

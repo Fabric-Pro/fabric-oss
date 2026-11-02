@@ -19,6 +19,10 @@
  * removed from it can splice what is left into a tag (see
  * `docs/solutions/security-issues/a-sanitizer-that-deletes-can-reassemble-what-it-removed.md`).
  *
+ * A cover letter, Main's first section when its heading names one, prints
+ * on a page of its own between the cover and the contents page. It is not a
+ * section: it has no opener, number, contents entry or page marker.
+ *
  * Chromium has no `target-counter()`, so the contents page gets its page
  * numbers from two passes over the same page. The `locate` pass puts a text
  * marker ({@link pageMarkerText}) in every section opener and leaves every
@@ -29,6 +33,13 @@
  */
 
 import {
+	CARDS_LANGUAGE,
+	COLUMNS_LANGUAGE,
+	parseCards,
+	parseColumns,
+} from "@repo/utils/proposal-artifact/proposal-blocks";
+import {
+	PROPOSAL_LABEL_ATTRIBUTE,
 	PROPOSAL_PRINT_CLASSES,
 	PROPOSAL_THEME_ATTRIBUTE,
 	PROPOSAL_THEME_CLASSES,
@@ -56,22 +67,29 @@ import type {
 	Table,
 } from "mdast";
 import {
+	appendixLabels,
 	bodyStyle,
 	type CoverContent,
 	contentsHtml,
 	coverHtml,
 	coverPreamble,
 	hasHeroImage,
+	type LetterContent,
+	letterHtml,
 } from "./build-cover-html";
 import {
+	type CoverLetter,
+	coverLetter,
+	hasEmptyHeaderRow,
+	isCoverFence,
 	isDocumentMediaKey,
 	isWideTable,
+	printedTitle,
 	rawHtmlFallback,
 	readUploadedImageTag,
 	safeLinkHref,
 	type UploadedImageTag,
 } from "./document-content";
-import { exportFailure } from "./failures";
 import { PRINT_FONTS, printFontFaceCss, printTokensOf } from "./fonts";
 import {
 	eachNode,
@@ -79,12 +97,16 @@ import {
 	flatText,
 	type PreparedExportMarkdown,
 } from "./markdown";
+import { cardsHtml, columnsHtml } from "./print-blocks";
+import { letterContent, letterNodes } from "./print-letter";
 import {
 	dataUrl,
 	escapeHtml,
+	footerTitle,
 	isImageParagraph,
 	plainText,
 	present,
+	styleElement,
 } from "./print-markup";
 import {
 	diagramFigureNumbers,
@@ -130,7 +152,10 @@ export interface BuildThemeHtmlInput {
 	tokens: ExportThemeTokens;
 	projectId: string;
 	documentId: string;
-	/** The document's title, plain text. */
+	/**
+	 * The document record's title, plain text. The page prints under Main's
+	 * leading H1 instead when Main opens with one (see `printedTitle`).
+	 */
 	title: string;
 	/** The cover's date, already formatted by the caller. */
 	dateLabel: string;
@@ -286,10 +311,24 @@ class BodyRenderer {
 	private readonly lifted = new Set<Nodes>();
 	/** Each diagram's "Figure n." number, as the Word file numbers it. */
 	private readonly figureNumbers: readonly (number | null)[];
+	/** Main's cover letter, which prints on its own page, or null. */
+	private readonly letter: CoverLetter | null;
+	/** The letter's heading and blocks, which the body leaves out. */
+	private readonly letterNodes: ReadonlySet<Nodes>;
+	/**
+	 * The title the page prints under: Main's leading H1, which the body
+	 * then leaves out, or the record's title.
+	 */
+	readonly title: string;
 
 	constructor(private readonly input: BuildThemeHtmlInput) {
 		this.collectDefinitions(input.prepared.root);
 		this.figureNumbers = diagramFigureNumbers(input.diagrams);
+		const title = printedTitle(input.prepared.root, input.title);
+		this.title = title.text;
+		if (title.heading) {
+			this.lifted.add(title.heading);
+		}
 		this.preamble = coverPreamble(input.prepared.root);
 		if (this.preamble.lead) {
 			this.lifted.add(this.preamble.lead);
@@ -297,20 +336,43 @@ class BodyRenderer {
 		if (this.preamble.figures) {
 			this.lifted.add(this.preamble.figures.node);
 		}
+		if (this.preamble.cover) {
+			this.lifted.add(this.preamble.cover.node);
+		}
+		this.letter = coverLetter(input.prepared.root);
+		this.letterNodes = letterNodes(this.letter);
 	}
 
 	/**
-	 * The cover's lead and key figures. Called before {@link body}, so a
-	 * footnote the lead references keeps its place in the numbering.
+	 * The cover's title, lead and key figures. Called before {@link body}, so
+	 * a footnote the lead references keeps its place in the numbering.
 	 */
 	cover(): CoverContent {
 		const lead = this.preamble.lead
 			? this.phrasing(this.preamble.lead.children)
 			: null;
 		return {
+			title: this.title,
 			lead: lead === null || lead.trim() === "" ? null : lead,
 			figures: this.preamble.figures?.items ?? [],
+			details: this.preamble.cover?.details ?? null,
 		};
+	}
+
+	/**
+	 * The cover letter's blocks, or null without a letter. Called after
+	 * {@link cover} and before {@link body}, in reading order, so its
+	 * footnotes are numbered where a reader meets them. Its date, subject
+	 * line, signer and the line under the signer each carry their role's
+	 * class; every other block prints as it would in a section.
+	 */
+	letterContent(): LetterContent | null {
+		return this.letter
+			? letterContent(this.letter, {
+					flow: (node) => this.flow(node),
+					paragraphContent: (node) => this.paragraphContent(node),
+				})
+			: null;
 	}
 
 	count(code: ProposalExportWarningCode, by = 1): void {
@@ -333,6 +395,10 @@ class BodyRenderer {
 		const children = this.input.prepared.root.children;
 		for (let index = 0; index < children.length; index++) {
 			const node = children[index];
+			// The letter prints on its own page, before the contents.
+			if (node && this.letterNodes.has(node)) {
+				continue;
+			}
 			if (node?.type === "heading" && node.depth === 2) {
 				const subtitle = subtitleOf(children[index + 1]);
 				if (subtitle) {
@@ -345,8 +411,11 @@ class BodyRenderer {
 				);
 				const next = children[index + 1];
 				if (next?.type === "table" && isWideTable(next)) {
+					const table = this.tableMarkup(next);
 					parts.push(
-						`<section class="${PRINT.landscape}">${opener}${this.tableMarkup(next)}</section>`,
+						table === ""
+							? opener
+							: `<section class="${PRINT.landscape}">${opener}${table}</section>`,
 					);
 					index++;
 				} else {
@@ -396,7 +465,12 @@ class BodyRenderer {
 		const lead = subtitle
 			? `<p>${this.phrasing(subtitle.children)}</p>`
 			: "";
-		return `<header class="${THEME.sectionOpener}" id="${id}">${graphic}${marker}<h2>${this.phrasing(children)}</h2>${lead}</header>`;
+		// An appendix shows its own label in place of "Section N".
+		const appendix = appendixLabels(title);
+		const opener = appendix
+			? `<header class="${THEME.sectionOpener} ${PRINT.appendix}" id="${id}" ${PROPOSAL_LABEL_ATTRIBUTE}="${escapeHtml(appendix.opener)}">`
+			: `<header class="${THEME.sectionOpener}" id="${id}">`;
+		return `${opener}${graphic}${marker}<h2>${this.phrasing(children)}</h2>${lead}</header>`;
 	}
 
 	/**
@@ -536,6 +610,11 @@ class BodyRenderer {
 		if (diagramIndex !== undefined) {
 			return this.diagram(diagramIndex, exportDiagramCaption(node.value));
 		}
+		// The cover prints the one it reads and the editor shows any other
+		// as a card, so only a refused one prints, as code.
+		if (isCoverFence(node)) {
+			return "";
+		}
 		if (node.lang === STAT_TILES_LANGUAGE) {
 			const parsed = parseStatTiles(node.value);
 			// A refused block prints as code, as the page shows it.
@@ -547,6 +626,18 @@ class BodyRenderer {
 					)
 					.join("");
 				return `<dl class="${THEME.statTiles}">${tiles}</dl>`;
+			}
+		}
+		if (node.lang === CARDS_LANGUAGE) {
+			const parsed = parseCards(node.value);
+			if (parsed.ok) {
+				return cardsHtml(parsed.items);
+			}
+		}
+		if (node.lang === COLUMNS_LANGUAGE) {
+			const parsed = parseColumns(node.value);
+			if (parsed.ok) {
+				return columnsHtml(parsed.columns);
 			}
 		}
 		const language =
@@ -590,13 +681,22 @@ class BodyRenderer {
 
 	private table(node: Table): string {
 		const table = this.tableMarkup(node);
-		return isWideTable(node)
+		return table !== "" && isWideTable(node)
 			? `<section class="${PRINT.landscape}">${table}</section>`
 			: table;
 	}
 
+	/**
+	 * A data table. A header row with nothing in it is left out, and the
+	 * table is marked so its zebra still leaves the first row plain; a table
+	 * with nothing else prints nothing.
+	 */
 	private tableMarkup(node: Table): string {
 		const [head, ...rows] = node.children;
+		const headerless = hasEmptyHeaderRow(node);
+		if (headerless && rows.length === 0) {
+			return "";
+		}
 		const cells = (
 			tag: "th" | "td",
 			row: (typeof node.children)[number],
@@ -608,15 +708,17 @@ class BodyRenderer {
 					return `<${tag}${style}>${this.phrasing(cell.children)}</${tag}>`;
 				})
 				.join("");
-		const thead = head
-			? `<thead><tr>${cells("th", head)}</tr></thead>`
-			: "";
+		const thead =
+			head && !headerless
+				? `<thead><tr>${cells("th", head)}</tr></thead>`
+				: "";
 		const tbody =
 			rows.length > 0
 				? `<tbody>${rows.map((row) => `<tr>${cells("td", row)}</tr>`).join("")}</tbody>`
 				: "";
 		const ids = hasIdColumn(node) ? ` ${THEME.idColumn}` : "";
-		return `<table class="${THEME.dataTable}${ids}">${thead}${tbody}</table>`;
+		const plain = headerless ? ` ${PRINT.headerless}` : "";
+		return `<table class="${THEME.dataTable}${ids}${plain}">${thead}${tbody}</table>`;
 	}
 
 	/** Raw HTML where a block stands. */
@@ -823,32 +925,6 @@ class BodyRenderer {
 	}
 }
 
-/** Longest document title the footer shows, in characters. */
-const FOOTER_TITLE_LIMIT = 60;
-
-/**
- * The title as the footer shows it: cut at a word to
- * {@link FOOTER_TITLE_LIMIT} characters with an ellipsis, so the footer
- * stays on one line beside the page counter.
- */
-function footerTitle(title: string): string {
-	const characters = Array.from(title);
-	if (characters.length <= FOOTER_TITLE_LIMIT) {
-		return title;
-	}
-	const cut = characters.slice(0, FOOTER_TITLE_LIMIT - 1).join("");
-	const atWord = cut.replace(/\s+\S*$/u, "");
-	return `${(atWord.length > 0 ? atWord : cut).trimEnd()}…`;
-}
-
-/** A stylesheet for a `<style>` element, which nothing in it may close. */
-function styleElement(css: string): string {
-	if (/<\/style/i.test(css)) {
-		throw exportFailure("EXPORT_FAILED");
-	}
-	return `<style>${css}</style>`;
-}
-
 /**
  * The print page of one pass. Sections and warnings are the same for both
  * passes of one input.
@@ -857,13 +933,17 @@ export function buildThemeHtml(
 	input: BuildThemeHtmlInput,
 ): BuildThemeHtmlResult {
 	const renderer = new BodyRenderer(input);
-	// The cover's lead before the body, as a reader meets them; the body
-	// before the contents page, which lists the sections it found.
+	// The cover's lead and the letter before the body, as a reader meets
+	// them; the body before the contents page, which lists the sections it
+	// found.
 	const cover = renderer.cover();
+	const letter = renderer.letterContent();
 	const body = renderer.body();
 	const sections = renderer.sections;
 
-	const title = input.title.trim();
+	// Main's leading H1, when it is the title, else the record's title. The
+	// download keeps the record's name; that is the caller's.
+	const title = renderer.title;
 	const proposer = present(input.tokens.proposer.name.value);
 	const runningFooter = [
 		proposer,
@@ -903,6 +983,7 @@ export function buildThemeHtml(
 		"</head>",
 		`<body ${PROPOSAL_THEME_ATTRIBUTE}="print"${bodyStyle(input.tokens)}>`,
 		coverHtml(input, cover),
+		...(letter ? [letterHtml(input, letter)] : []),
 		contentsHtml(sections, input.pass, title),
 		body,
 		"</body>",

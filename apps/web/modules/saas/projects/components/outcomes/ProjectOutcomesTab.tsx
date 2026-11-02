@@ -77,11 +77,11 @@ export function ProjectOutcomesTab({
 
 	return (
 		<div className="grid gap-6">
-			<section className="rounded-2xl border border-border bg-card p-5 sm:p-6">
+			<section className="rounded-lg border border-border bg-card p-5 sm:p-6">
 				<div className="flex flex-wrap items-start justify-between gap-4">
 					<div>
 						<span className="editorial-label">{t("label")}</span>
-						<h2 className="mt-2 font-serif text-2xl font-normal">
+						<h2 className="mt-2 text-2xl font-semibold">
 							{t("title")}
 						</h2>
 						<p className="mt-1 max-w-prose text-sm text-muted-foreground">
@@ -193,7 +193,7 @@ export function ProjectOutcomesTab({
 			<section
 				aria-label={t("preview")}
 				data-onboarding-target="outcomes-preview"
-				className="rounded-2xl border border-dashed border-border bg-background"
+				className="rounded-lg border border-dashed border-border bg-background"
 			>
 				<div className="border-b border-border px-5 py-3 sm:px-6">
 					<span className="editorial-label">{t("preview")}</span>

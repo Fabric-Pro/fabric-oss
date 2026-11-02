@@ -17,7 +17,11 @@ export interface RuntimeCaller {
 /** One SSE response an engine writes a run (or a reconnect) into. */
 export interface RunStream {
 	emit: Emit;
-	/** True once the client went away. The run itself is never cancelled for it. */
+	/**
+	 * True once the client went away. A Temporal engine never cancels its
+	 * run for it; `InProcessEngine`, whose turn lives in the request, takes
+	 * it as a stop: it aborts the turn and frees the thread.
+	 */
 	isClosed: () => boolean;
 	/**
 	 * When this response stops tailing (epoch ms): the engine then sends

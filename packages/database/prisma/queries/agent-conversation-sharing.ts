@@ -33,6 +33,23 @@ export type AgentConversationForViewer = AgentConversation & {
 	owner: AgentConversationOwner;
 };
 
+export type AgentConversationListForViewer = Pick<
+	AgentConversationForViewer,
+	| "id"
+	| "agentId"
+	| "userId"
+	| "title"
+	| "pinned"
+	| "status"
+	| "visibility"
+	| "createdAt"
+	| "updatedAt"
+	| "metadata"
+	| "messages"
+	| "isOwn"
+	| "owner"
+>;
+
 export class AgentConversationCursorError extends Error {
 	constructor() {
 		super("The cursor is not valid");
@@ -162,7 +179,7 @@ export async function listAgentConversationsForViewer({
 	cursor?: string;
 	limit: number;
 	offset?: number;
-}): Promise<{ items: AgentConversationForViewer[]; nextCursor?: string }> {
+}): Promise<{ items: AgentConversationListForViewer[]; nextCursor?: string }> {
 	const { userId, organizationId, scope } = filter;
 	assertOrganization(organizationId);
 	const take = Math.min(
@@ -177,7 +194,20 @@ export async function listAgentConversationsForViewer({
 			...listFilter(filter),
 			...(after ? afterCursor(after, scope) : {}),
 		},
-		include: { user: { select: { id: true, name: true } } },
+		select: {
+			id: true,
+			agentId: true,
+			userId: true,
+			title: true,
+			pinned: true,
+			status: true,
+			visibility: true,
+			createdAt: true,
+			updatedAt: true,
+			metadata: true,
+			messages: true,
+			user: { select: { id: true, name: true } },
+		},
 		orderBy:
 			scope === "mine"
 				? [{ pinned: "desc" }, { updatedAt: "desc" }, { id: "desc" }]
@@ -223,11 +253,7 @@ export async function getAgentConversationForViewer({
 }): Promise<AgentConversationForViewer | null> {
 	assertOrganization(organizationId);
 	const row = await db.agentConversation.findFirst({
-		where: {
-			id,
-			organizationId,
-			OR: [{ userId }, { visibility: "ORGANIZATION" }],
-		},
+		where: agentConversationViewerWhere({ id, userId, organizationId }),
 		include: { user: { select: { id: true, name: true } } },
 	});
 	if (!row) {
@@ -238,6 +264,24 @@ export async function getAgentConversationForViewer({
 		...(await withConversationTurnResults(conversation)),
 		isOwn: conversation.userId === userId,
 		owner: user,
+	};
+}
+
+/** The canonical owner-or-currently-shared predicate for conversation reads. */
+export function agentConversationViewerWhere({
+	id,
+	userId,
+	organizationId,
+}: {
+	id: string;
+	userId: string;
+	organizationId: string;
+}) {
+	assertOrganization(organizationId);
+	return {
+		id,
+		organizationId,
+		OR: [{ userId }, { visibility: "ORGANIZATION" as const }],
 	};
 }
 

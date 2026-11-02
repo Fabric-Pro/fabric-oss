@@ -57,7 +57,7 @@ export function useReviewCenterItems(projectId: string, enabled: boolean) {
 /**
  * Returns a callback that refreshes every PM-sync surface after a row action:
  * `reviewCenter.items` + `reviewCenter.count` (the grouped list + the toolbar
- * badge) AND the roadmap/editor story queries (`stories.list` / `stories.get`).
+ * badge) AND the roadmap/editor story queries (`stories.board` / `stories.get`).
  * A row action must clear the conflict pill on the card behind the sheet, not
  * just its own list and badge — so this delegates to the shared helper.
  */

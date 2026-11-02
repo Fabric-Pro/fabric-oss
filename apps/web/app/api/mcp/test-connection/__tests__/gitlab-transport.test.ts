@@ -6,25 +6,27 @@
  * outbound fetch.
  *
  *   - Test Connection connects to the URL in the REQUEST, which may differ
- *     from the saved config: the token is attached only when that URL is on
- *     the credential's origin.
- *   - The MCP App routes (call-tool, resource) build SDK transports
- *     themselves: both transport variants must use the GitLab fetch.
+ *     from the saved config: a saved token is withheld and the test stops
+ *     unless the request supplies a fresh credential for that URL.
+ *   - The MCP App routes build SDK transports themselves: both transport
+ *     variants must use the GitLab fetch.
  */
 import type { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
 	config: null as Record<string, unknown> | null,
 	getValidAccessToken: vi.fn(),
+	getMcpOAuthGrantGeneration: vi.fn(),
 	getGitLabConnectionToken: vi.fn(),
 	safeFetchOutbound: vi.fn(),
+	decryptApiKey: vi.fn(),
+	connectError: null as Error | null,
 	transports: [] as Array<{
 		kind: "sse" | "http";
 		url: URL;
 		opts: Record<string, unknown>;
 	}>,
-	fetchMcpServer: vi.fn(),
 }));
 
 const session = {
@@ -48,12 +50,17 @@ vi.mock("@repo/database", () => ({
 	// The GitLab credential checks the caller still belongs to the config's
 	// organization; they do.
 	isOrganizationMember: async () => true,
+	// call-tool resolves the requested organization on the server and checks
+	// the caller's tie to it (resolveRequestedOrganization); they have one.
+	hasOrganizationTie: async () => true,
 	// The MCP App routes check the caller's organization role before they
 	// load the config (Fizzy #2897); this caller holds both permissions.
 	canReadOrganizationMcpConfigs: async () => true,
 	canConnectOrganizationMcpConfigs: async () => true,
 	getValidAccessToken: (...args: unknown[]) =>
 		state.getValidAccessToken(...args),
+	getMcpOAuthGrantGeneration: (...args: unknown[]) =>
+		state.getMcpOAuthGrantGeneration(...args),
 }));
 
 vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
@@ -67,12 +74,19 @@ vi.mock("@repo/utils/url-security", async (importOriginal) => ({
 	safeFetchOutbound: (...args: unknown[]) => state.safeFetchOutbound(...args),
 }));
 
-// No DNS: the generic destination guard is not under test here.
-vi.mock("@repo/mcp/lib/server-url-guard", async (importOriginal) => ({
+vi.mock("@repo/utils", async (importOriginal) => ({
 	...(await importOriginal<object>()),
-	assertMcpServerUrlResolved: async () => undefined,
-	fetchMcpServer: state.fetchMcpServer,
+	decryptApiKey: (...args: unknown[]) => state.decryptApiKey(...args),
 }));
+
+const lookupMock = vi.fn();
+vi.mock("node:dns", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:dns")>();
+	return {
+		...actual,
+		lookup: (...args: unknown[]) => lookupMock(...args),
+	};
+});
 
 vi.mock("@modelcontextprotocol/sdk/client/sse.js", () => ({
 	SSEClientTransport: class {
@@ -81,24 +95,30 @@ vi.mock("@modelcontextprotocol/sdk/client/sse.js", () => ({
 		}
 	},
 }));
-vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
-	StreamableHTTPClientTransport: class {
-		constructor(url: URL, opts: Record<string, unknown>) {
-			state.transports.push({ kind: "http", url, opts });
-		}
-	},
-}));
+vi.mock(
+	"@modelcontextprotocol/sdk/client/streamableHttp.js",
+	async (importOriginal) => ({
+		...(await importOriginal<object>()),
+		StreamableHTTPClientTransport: class {
+			constructor(url: URL, opts: Record<string, unknown>) {
+				state.transports.push({ kind: "http", url, opts });
+			}
+		},
+	}),
+);
 // The connection itself is not under test: stop right after the transport
 // is built.
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
 	Client: class {
 		async connect() {
-			throw new Error("not connecting in tests");
+			throw state.connectError ?? new Error("not connecting in tests");
 		}
 		async close() {}
 	},
 }));
 
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { fetchMcpServer } from "@repo/mcp/lib/server-url-guard";
 import { POST as callTool } from "../../../mcp-app/call-tool/route";
 import { POST as readResource } from "../../../mcp-app/resource/route";
 import { POST as testConnection } from "../route";
@@ -117,6 +137,25 @@ function gitlabConfig(overrides: Record<string, unknown> = {}) {
 		mcpServer: {
 			key: "gitlab-official",
 			defaultUrl: OFFICIAL_URL,
+			transport: "HTTP",
+		},
+		...overrides,
+	};
+}
+
+function genericConfig(overrides: Record<string, unknown> = {}) {
+	return {
+		id: "cfg_generic",
+		userId: "user_a",
+		organizationId: "org_a",
+		enabled: true,
+		baseUrl: "https://mcp.example.com/api/mcp",
+		transport: "HTTP",
+		authType: "NONE",
+		oauthGrantGeneration: 4,
+		mcpServer: {
+			key: "custom",
+			defaultUrl: null,
 			transport: "HTTP",
 		},
 		...overrides,
@@ -149,7 +188,7 @@ async function expectGitLabFetch(index: number) {
 		| TransportFetch
 		| undefined;
 	expect(transportFetch).toBeTypeOf("function");
-	expect(transportFetch).not.toBe(state.fetchMcpServer);
+	expect(transportFetch).not.toBe(fetchMcpServer);
 	const network = vi.fn(async () => new Response("{}"));
 	vi.stubGlobal("fetch", network);
 	await expect(
@@ -161,16 +200,35 @@ async function expectGitLabFetch(index: number) {
 		OFFICIAL_URL,
 		expect.objectContaining({ redirect: "error" }),
 	);
-	expect(state.fetchMcpServer).not.toHaveBeenCalled();
 }
 
 beforeEach(() => {
 	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
+	vi.stubEnv("NODE_ENV", "production");
+	vi.stubEnv("MCP_SERVER_ALLOWED_HOSTS", "");
+	lookupMock.mockReset();
+	lookupMock.mockImplementation(
+		(
+			_hostname: string,
+			_options: unknown,
+			callback: (
+				error: Error | null,
+				addresses: { address: string; family: number }[],
+			) => void,
+		) => callback(null, [{ address: "93.184.216.34", family: 4 }]),
+	);
 	state.transports.length = 0;
 	state.config = gitlabConfig();
+	state.connectError = null;
 	state.getValidAccessToken.mockReset();
-	state.fetchMcpServer.mockReset();
+	state.getMcpOAuthGrantGeneration.mockReset();
+	state.getMcpOAuthGrantGeneration.mockResolvedValue(4);
 	state.safeFetchOutbound.mockReset();
+	state.decryptApiKey.mockReset();
+	state.decryptApiKey.mockImplementation((value: string) =>
+		value.replace(/^enc:/, ""),
+	);
 	state.getGitLabConnectionToken.mockReset();
 	state.getGitLabConnectionToken.mockResolvedValue({
 		ok: true,
@@ -186,7 +244,7 @@ beforeEach(() => {
 });
 
 describe("POST /api/mcp/test-connection — GitLab personal server", () => {
-	it("attaches no token when the request's URL is on another origin than the credential", async () => {
+	it("reports that a saved token is withheld from another requested endpoint", async () => {
 		const response = await testConnection(
 			jsonRequest({
 				configId: "cfg_gl",
@@ -198,8 +256,13 @@ describe("POST /api/mcp/test-connection — GitLab personal server", () => {
 
 		const body = await response.json();
 		expect(response.status).toBe(400);
-		expect(body.error?.type).toBe("OAUTH_ACCESS_TOKEN_REQUIRED");
-		// No transport, so no request carried the token anywhere.
+		expect(body).toMatchObject({
+			success: false,
+			message:
+				"The saved credentials are only sent to the saved server address. Save the new address, or enter the credentials again, to test it.",
+			error: { type: "SAVED_CREDENTIAL_URL_MISMATCH" },
+		});
+		expect(state.getGitLabConnectionToken).not.toHaveBeenCalled();
 		expect(state.transports).toHaveLength(0);
 	});
 
@@ -217,6 +280,10 @@ describe("POST /api/mcp/test-connection — GitLab personal server", () => {
 		expect(headersOf(0).Authorization).toBe("Bearer personal-token");
 		await expectGitLabFetch(0);
 	});
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
 });
 
 // The server decides, not the auth type: a GitLab config saved as API_KEY
@@ -353,4 +420,256 @@ describe("POST /api/mcp-app/resource — GitLab personal server", () => {
 			await expectGitLabFetch(0);
 		});
 	}
+});
+
+describe("MCP App configured-server address guard", () => {
+	const routes = [
+		{
+			name: "call-tool",
+			invoke: () =>
+				callTool(
+					jsonRequest({
+						configId: "cfg_generic",
+						toolName: "list_items",
+						organizationId: "org_a",
+					}),
+				),
+			genericError: "Failed to call MCP tool",
+		},
+		{
+			name: "resource",
+			invoke: () =>
+				readResource(
+					jsonRequest({
+						configId: "cfg_generic",
+						resourceUri: "ui://example/app",
+						organizationId: "org_a",
+					}),
+				),
+			genericError: "Failed to fetch MCP App resource",
+		},
+	];
+
+	it.each(routes)(
+		"$name refuses a link-local configured address before constructing a transport",
+		async ({ invoke, genericError }) => {
+			state.config = genericConfig({
+				baseUrl: "http://169.254.169.254/latest/meta-data/",
+			});
+
+			const response = await invoke();
+			const body = await response.json();
+			expect(response.status).toBe(500);
+			expect(body.error).toBe(genericError);
+			expect(state.transports).toHaveLength(0);
+		},
+	);
+
+	it.each(routes)(
+		"$name refuses a configured hostname resolving to 10.x before constructing a transport",
+		async ({ invoke, genericError }) => {
+			state.config = genericConfig({
+				baseUrl: "https://mcp.internal.example/api/mcp",
+			});
+			lookupMock.mockImplementation(
+				(
+					_hostname: string,
+					_options: unknown,
+					callback: (
+						error: Error | null,
+						addresses: { address: string; family: number }[],
+					) => void,
+				) => callback(null, [{ address: "10.20.30.40", family: 4 }]),
+			);
+
+			const response = await invoke();
+			const body = await response.json();
+			expect(response.status).toBe(500);
+			expect(body.error).toBe(genericError);
+			expect(state.transports).toHaveLength(0);
+		},
+	);
+
+	for (const route of routes) {
+		for (const transport of ["HTTP", "SSE"] as const) {
+			it(`${route.name} hands the ${transport} transport the guarded fetch`, async () => {
+				state.config = genericConfig({ transport });
+
+				await route.invoke();
+
+				expect(state.transports).toHaveLength(1);
+				expect(state.transports[0]?.opts.fetch).toBe(fetchMcpServer);
+			});
+		}
+	}
+
+	it.each(routes)(
+		"$name does not echo an SDK upstream response body",
+		async ({ invoke, genericError }) => {
+			state.config = genericConfig();
+			const upstreamBody = "private upstream response body";
+			// This is the SDK's real exported error class and constructor shape
+			// from @modelcontextprotocol/sdk/dist/cjs/client/streamableHttp.js.
+			state.connectError = new StreamableHTTPError(
+				502,
+				`Error POSTing to endpoint: ${upstreamBody}`,
+			);
+
+			const response = await invoke();
+			const body = await response.json();
+			expect(response.status).toBe(500);
+			expect(body.error).toBe(genericError);
+			expect(JSON.stringify(body)).not.toContain(upstreamBody);
+		},
+	);
+});
+
+describe("POST /api/mcp/test-connection — stored credential destination", () => {
+	it.each([
+		"http://127.0.0.1:7233/mcp",
+		"http://169.254.169.254/latest/meta-data/",
+	])(
+		"refuses stored-config destination %s before decrypting or constructing a transport",
+		async (baseUrl) => {
+			state.config = genericConfig({
+				baseUrl,
+				authType: "API_KEY",
+				encryptedApiKey: "enc:stored-secret",
+			});
+
+			const response = await testConnection(
+				jsonRequest({
+					configId: "cfg_generic",
+					authType: "API_KEY",
+					transport: "HTTP",
+					baseUrl,
+				}),
+			);
+
+			expect(response.status).toBe(400);
+			expect(state.decryptApiKey).not.toHaveBeenCalled();
+			expect(state.transports).toHaveLength(0);
+		},
+	);
+
+	it("refuses a stored-config hostname resolving to 10.x before decrypting or constructing a transport", async () => {
+		const baseUrl = "https://mcp.internal.example/api/mcp";
+		state.config = genericConfig({
+			baseUrl,
+			authType: "API_KEY",
+			encryptedApiKey: "enc:stored-secret",
+		});
+		lookupMock.mockImplementation(
+			(
+				_hostname: string,
+				_options: unknown,
+				callback: (
+					error: Error | null,
+					addresses: { address: string; family: number }[],
+				) => void,
+			) => callback(null, [{ address: "10.20.30.40", family: 4 }]),
+		);
+
+		const response = await testConnection(
+			jsonRequest({
+				configId: "cfg_generic",
+				authType: "API_KEY",
+				transport: "HTTP",
+				baseUrl,
+			}),
+		);
+
+		expect(response.status).toBe(400);
+		expect(state.decryptApiKey).not.toHaveBeenCalled();
+		expect(state.transports).toHaveLength(0);
+	});
+
+	it("does not decrypt or attach a stored API key for a different requested endpoint", async () => {
+		state.config = genericConfig({
+			authType: "API_KEY",
+			encryptedApiKey: "enc:stored-secret",
+			apiKeyMethod: "BEARER",
+		});
+
+		const response = await testConnection(
+			jsonRequest({
+				configId: "cfg_generic",
+				authType: "API_KEY",
+				transport: "HTTP",
+				baseUrl: "https://other.example.com/api/mcp",
+			}),
+		);
+
+		const body = await response.json();
+		expect(response.status).toBe(400);
+		expect(body).toMatchObject({
+			success: false,
+			message:
+				"The saved credentials are only sent to the saved server address. Save the new address, or enter the credentials again, to test it.",
+			error: { type: "SAVED_CREDENTIAL_URL_MISMATCH" },
+		});
+		expect(state.decryptApiKey).not.toHaveBeenCalled();
+		expect(state.transports).toHaveLength(0);
+	});
+
+	it("uses a fresh API key for a different requested endpoint instead of the stored key", async () => {
+		state.config = genericConfig({
+			authType: "API_KEY",
+			encryptedApiKey: "enc:stored-secret",
+			apiKeyMethod: "BEARER",
+		});
+
+		await testConnection(
+			jsonRequest({
+				configId: "cfg_generic",
+				authType: "API_KEY",
+				apiKey: "fresh-secret",
+				apiKeyMethod: "BEARER",
+				transport: "HTTP",
+				baseUrl: "https://other.example.com/api/mcp",
+			}),
+		);
+
+		expect(state.decryptApiKey).not.toHaveBeenCalled();
+		expect(state.transports).toHaveLength(1);
+		expect(headersOf(0).Authorization).toBe("Bearer fresh-secret");
+	});
+
+	it("can test a different endpoint anonymously when the config has no saved credential", async () => {
+		state.config = genericConfig({ authType: "NONE" });
+
+		await testConnection(
+			jsonRequest({
+				configId: "cfg_generic",
+				authType: "NONE",
+				transport: "HTTP",
+				baseUrl: "https://other.example.com/api/mcp",
+			}),
+		);
+
+		expect(state.decryptApiKey).not.toHaveBeenCalled();
+		expect(state.transports).toHaveLength(1);
+		expect(headersOf(0)).toEqual({});
+	});
+
+	it("attaches the stored API key when only a trailing slash differs", async () => {
+		state.config = genericConfig({
+			baseUrl: "https://mcp.example.com/api/mcp/",
+			authType: "API_KEY",
+			encryptedApiKey: "enc:stored-secret",
+			apiKeyMethod: "BEARER",
+		});
+
+		await testConnection(
+			jsonRequest({
+				configId: "cfg_generic",
+				authType: "API_KEY",
+				transport: "HTTP",
+				baseUrl: "https://mcp.example.com/api/mcp",
+			}),
+		);
+
+		expect(state.decryptApiKey).toHaveBeenCalledWith("enc:stored-secret");
+		expect(headersOf(0).Authorization).toBe("Bearer stored-secret");
+	});
 });

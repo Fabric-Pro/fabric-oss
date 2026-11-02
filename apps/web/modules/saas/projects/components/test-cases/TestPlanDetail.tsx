@@ -311,7 +311,7 @@ export function TestPlanDetail({
 							}
 						/>
 					</div>
-					<h2 className="mt-1 break-words font-serif text-2xl font-normal leading-tight">
+					<h2 className="mt-1 break-words text-2xl font-semibold leading-tight">
 						{plan.name}
 					</h2>
 					{plan.description && (

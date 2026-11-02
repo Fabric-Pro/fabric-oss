@@ -399,7 +399,7 @@ export function ToolsSheet({
 					typeof cap.icon === "function" ? (
 						<div
 							className={cn(
-								"flex h-12 w-12 items-center justify-center rounded-xl",
+								"flex h-12 w-12 items-center justify-center rounded-lg",
 								cap.iconBgClassName ?? "bg-muted",
 							)}
 						>
@@ -546,10 +546,10 @@ export function ToolsSheet({
 
 						{/* Configuration form */}
 						{!detailView && configuring && configuringPlugin && (
-							<div className="mb-6 p-5 border rounded-xl bg-muted/30">
+							<div className="mb-6 p-5 border rounded-lg bg-muted/30">
 								<div className="flex items-center justify-between mb-5">
 									<div className="flex items-center gap-4">
-										<div className="w-14 h-14 rounded-xl bg-white dark:bg-slate-800 flex items-center justify-center shadow-lg border">
+										<div className="w-14 h-14 rounded-lg bg-white dark:bg-slate-800 flex items-center justify-center shadow-lg border">
 											<configuringPlugin.icon className="h-8 w-8" />
 										</div>
 										<div>
@@ -842,7 +842,7 @@ export function ToolsSheet({
 																	"function" ? (
 																		<div
 																			className={cn(
-																				"flex h-10 w-10 items-center justify-center rounded-xl",
+																				"flex h-10 w-10 items-center justify-center rounded-lg",
 																				tool.iconBgClassName ??
 																					"bg-muted",
 																			)}
@@ -1197,7 +1197,7 @@ function CapabilityCard({
 	return (
 		<Card
 			className={cn(
-				"min-h-[168px] rounded-3xl border p-5 cursor-pointer transition-colors hover:border-primary/40",
+				"min-h-[168px] rounded-lg border p-5 cursor-pointer transition-colors hover:border-primary/40",
 				selected &&
 					"border-emerald-500/50 bg-emerald-50/50 dark:bg-emerald-950/20",
 			)}
@@ -1209,7 +1209,7 @@ function CapabilityCard({
 						{leading ? (
 							<div className="shrink-0">{leading}</div>
 						) : (
-							<div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted" />
+							<div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted" />
 						)}
 						<div className="min-w-0">
 							<div className="flex items-center gap-2">
@@ -1244,7 +1244,7 @@ function CapabilityCard({
 						type="button"
 						size="sm"
 						variant={selected ? "secondary" : "outline"}
-						className="shrink-0 rounded-xl px-4"
+						className="shrink-0 rounded-lg px-4"
 					>
 						{selected ? "Added" : "+ Add"}
 					</Button>

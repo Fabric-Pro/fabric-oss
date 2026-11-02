@@ -428,6 +428,15 @@ var sandboxWorkerEnv = enableSandboxWorker ? [
   { name: 'SANDBOX_AUTH_SECRET', secretRef: 'sandbox-auth-secret' }
 ] : []
 
+@description('Opt in to the Fabric Agents coding bridge. Must match the API setting; drain active/paused runs and native background work before changing it or the execution target.')
+param fabricAgentsExecutionBridgeEnabled bool = false
+
+@description('Host-local Fabric Agents provider connection slug. Keep aligned with the API deployment.')
+param fabricAgentsDefaultConnection string = ''
+
+@description('Catalogued model on the selected Fabric Agents host. Keep aligned with the API deployment.')
+param fabricAgentsDefaultModel string = ''
+
 // Background Agents (Coding Runs) secrets
 var backgroundAgentsSecrets = [
   { name: 'background-agents-url', keyVaultUrl: '${kvBaseUrl}/background-agents-url', identity: managedIdentity.id }
@@ -436,6 +445,9 @@ var backgroundAgentsSecrets = [
 
 // Background Agents (Coding Runs) environment variables
 var backgroundAgentsEnv = [
+  { name: 'FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED', value: string(fabricAgentsExecutionBridgeEnabled) }
+  { name: 'FABRIC_AGENTS_DEFAULT_CONNECTION', value: fabricAgentsDefaultConnection }
+  { name: 'FABRIC_AGENTS_DEFAULT_MODEL', value: fabricAgentsDefaultModel }
   { name: 'BACKGROUND_AGENTS_URL', secretRef: 'background-agents-url' }
   { name: 'BACKGROUND_AGENTS_INTERNAL_SECRET', secretRef: 'background-agents-internal-secret' }
 ]

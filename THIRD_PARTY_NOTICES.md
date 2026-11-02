@@ -66,16 +66,28 @@ font files are bundled unmodified, with their licence, in
 `Inter-Regular.woff2`, `Inter-SemiBold.woff2`, `Inter-Bold.woff2` and
 `Inter-ExtraBold.woff2`, from the `web/` folder of the official v4.1 release.
 
+The Word export embeds two static TrueType faces of the same release, bundled
+unmodified beside them (font version 4.001), from the `extras/ttf/` folder of
+https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip (SHA-256
+`9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e`):
+
+| File | SHA-256 |
+|---|---|
+| `Inter-Regular.ttf` | `40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82` |
+| `Inter-Bold.ttf` | `288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f` |
+
 Copyright (c) 2016 The Inter Project Authors. Licensed under the **SIL Open
 Font License, Version 1.1**; the full licence text is
 `packages/temporal/src/lib/proposal-export/fonts/LICENSE.txt`.
 
 ### Poppins typeface (https://github.com/itfoundry/Poppins)
 
-The Proposal export embeds Poppins 4.003 in the PDFs it prints, for headings
-(Fizzy #2946). The font file is bundled unmodified, with its licence, in
-`packages/temporal/src/lib/proposal-export/fonts/`: `Poppins-Bold.ttf`, from
-the `ofl/poppins/` folder of the google/fonts repository.
+The Proposal export embeds Poppins 4.004 (the version its name table records)
+in the PDFs it prints and in the Word files it writes, for headings (Fizzy
+#2946). The font file is bundled unmodified, with its licence, in
+`packages/temporal/src/lib/proposal-export/fonts/`: `Poppins-Bold.ttf`
+(SHA-256 `983676516167748b74de6f4771fb384c664fd913acb8b471122ecacf5da5ea6c`),
+from the `ofl/poppins/` folder of the google/fonts repository.
 
 Copyright 2020 The Poppins Project Authors. Licensed under the **SIL Open Font
 License, Version 1.1**; the full licence text is
@@ -83,12 +95,25 @@ License, Version 1.1**; the full licence text is
 
 ### JetBrains Mono typeface (https://github.com/JetBrains/JetBrainsMono)
 
-The Proposal export embeds JetBrains Mono 2.200 in the PDFs it prints, for
-eyebrows, labels and captions (Fizzy #2946). The font files are bundled
-unmodified, with their licence, in
+The Proposal export embeds JetBrains Mono 2.305 (the version its name table
+records) in the PDFs it prints, for eyebrows, labels and captions (Fizzy
+#2946). The font files are bundled unmodified, with their licence, in
 `packages/temporal/src/lib/proposal-export/fonts/`:
 `JetBrainsMono-Regular.woff2` and `JetBrainsMono-Medium.woff2`, from the
-`fonts/webfonts/` folder of the JetBrains/JetBrainsMono repository.
+`fonts/webfonts/` folder of the JetBrains/JetBrainsMono repository at commit
+`02bb50b082dad9ef8a0f33ac393839202b760223`.
+
+The Word export embeds two static TrueType faces built in that same commit,
+bundled unmodified beside them, each from
+`https://raw.githubusercontent.com/JetBrains/JetBrainsMono/02bb50b082dad9ef8a0f33ac393839202b760223/fonts/ttf/<file>`:
+
+| File | SHA-256 |
+|---|---|
+| `JetBrainsMono-Regular.ttf` | `e6fd0d7e91550b3ed2b735d4312474362c4716edc4fc0577a0f61ed782d5aed1` |
+| `JetBrainsMono-Medium.ttf` | `d16e6dc99672734698d629705f617c79f6eb6040f5113efe3a145204dc988109` |
+
+No tagged release carries 2.305 (the latest, v2.304, predates it), so the files
+come from the commit whose web fonts are the ones bundled.
 
 Copyright 2020 The JetBrains Mono Project Authors. Licensed under the **SIL
 Open Font License, Version 1.1**; the full licence text is

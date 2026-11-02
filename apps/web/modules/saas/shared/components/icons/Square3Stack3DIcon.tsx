@@ -8,23 +8,16 @@ export function Square3Stack3DIcon(props: SVGProps<SVGSVGElement>) {
 			height="1em"
 			fill="none"
 			viewBox="0 0 24 24"
+			stroke="currentColor"
+			strokeWidth={1.5}
+			strokeLinecap="round"
+			strokeLinejoin="round"
 			aria-hidden="true"
 			{...props}
 		>
-			<path
-				fill="currentColor"
-				fillRule="evenodd"
-				d="M2 7c3.333-2 6.666-4.001 10-6 3.334 1.999 6.667 4 10 6l-10 6L2 7Z"
-				clipRule="evenodd"
-			/>
-			<path
-				fill="currentColor"
-				d="M4.083 10.75 2 12l10 6 10-6-2.083-1.25L12 15.5l-7.917-4.75Z"
-			/>
-			<path
-				fill="currentColor"
-				d="m2 17 2.083-1.25L12 20.5l7.917-4.75L22 17l-10 6-10-6Z"
-			/>
+			<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
+			<path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" />
+			<path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" />
 		</svg>
 	);
 }

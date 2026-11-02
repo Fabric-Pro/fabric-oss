@@ -156,7 +156,7 @@ export function ReportTemplateCard({
 
 	return (
 		<div
-			className="group relative flex flex-col h-full p-5 rounded-2xl border bg-card hover:border-primary/50 hover:shadow-lg transition-all duration-300"
+			className="group relative flex flex-col h-full p-5 rounded-lg border bg-card hover:border-primary/50 hover:shadow-lg transition-all duration-300"
 			data-onboarding-target="reports-template-card"
 		>
 			{/* Header with icon and title */}
@@ -164,7 +164,7 @@ export function ReportTemplateCard({
 				{/* Modern category-based avatar */}
 				<div
 					className={cn(
-						"w-14 h-14 rounded-2xl bg-gradient-to-br flex items-center justify-center shadow-lg flex-shrink-0",
+						"w-14 h-14 rounded-lg bg-gradient-to-br flex items-center justify-center shadow-lg flex-shrink-0",
 						categoryGradient,
 					)}
 				>

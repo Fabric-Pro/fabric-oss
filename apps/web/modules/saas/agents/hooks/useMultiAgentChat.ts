@@ -124,11 +124,16 @@ export function useMultiAgentChat(options: {
 	useEffect(() => () => turnRef.current?.dispose(), []);
 
 	const openTurn = useCallback(
-		(threadId: string, initial: MultiAgentTurnView) => {
+		(
+			threadId: string,
+			initial: MultiAgentTurnView,
+			onStarted?: () => void,
+		) => {
 			turnRef.current?.dispose();
 			const turn = new MultiAgentRuntimeTurn(threadId, initial, {
 				organizationId: optionsRef.current.organizationId,
 				onView: setView,
+				onStarted,
 				onAnalyticsEvent: (name, payload) =>
 					hostRef.current.trackEvent(name, payload),
 				onUsageLimit: (body) => {
@@ -172,6 +177,8 @@ export function useMultiAgentChat(options: {
 	// not start here, and spent on that conversation's first latest turn.
 	const restoreArmedRef = useRef(false);
 	const startedHereRef = useRef<string | null>(null);
+	/** The picks came from a reopened turn: the saved picks arriving later keep them. */
+	const pickedFromTurnRef = useRef(false);
 	const conversationId = options.conversationId;
 	useEffect(() => {
 		restoreArmedRef.current =
@@ -188,6 +195,7 @@ export function useMultiAgentChat(options: {
 		}
 		const [first, ...rest] = multiAgentPicks(latestRecord);
 		if (first && rest.length > 0) {
+			pickedFromTurnRef.current = true;
 			optionsRef.current.setFirst(first);
 			setExtras(rest.slice(0, MAX_MULTI_AGENTS - 1));
 		}
@@ -239,11 +247,21 @@ export function useMultiAgentChat(options: {
 		[enabled, setExtras],
 	);
 
-	/** The member's saved picks beyond the first, restored at hydration. */
-	const restoreExtras = useCallback(
-		(agents: SelectedAgent[]) => {
+	/**
+	 * The member's saved picks, restored at hydration, unless a reopened
+	 * turn's agents were picked already: a model kept in this chat only is
+	 * never saved, so the saved picks would drop it.
+	 */
+	const restoreSaved = useCallback(
+		(first: SelectedAgent | undefined, rest: SelectedAgent[]) => {
+			if (pickedFromTurnRef.current) {
+				return;
+			}
+			if (first) {
+				optionsRef.current.setFirst(first);
+			}
 			if (enabled) {
-				setExtras(agents.slice(0, MAX_MULTI_AGENTS - 1));
+				setExtras(rest.slice(0, MAX_MULTI_AGENTS - 1));
 			}
 		},
 		[enabled, setExtras],
@@ -272,15 +290,24 @@ export function useMultiAgentChat(options: {
 				return;
 			}
 			const turnKey = `${MULTI_AGENT_KEY_PREFIX}${newClientRequestKey()}`;
+			// A new chat takes the conversation once the run has started it,
+			// as the single-agent turn does: before that it is not saved, and
+			// the page would read it as gone.
+			const startsConversation = current.conversationId !== run.threadId;
+			if (startsConversation) {
+				startedHereRef.current = run.threadId;
+			}
 			const turn = openTurn(
 				run.threadId,
 				pendingMultiAgentTurn(turnKey, run.content, picks),
+				startsConversation
+					? () =>
+							optionsRef.current.onConversationStarted(
+								run.threadId,
+							)
+					: undefined,
 			);
 			startedAtRef.current = Date.now();
-			if (current.conversationId !== run.threadId) {
-				startedHereRef.current = run.threadId;
-				current.onConversationStarted(run.threadId);
-			}
 			await turn.send({
 				messages: [
 					...run.history.map((message, index) => ({
@@ -396,7 +423,7 @@ export function useMultiAgentChat(options: {
 		enabled,
 		extraAgents: enabled ? extraAgents : [],
 		toggle,
-		restoreExtras,
+		restoreSaved,
 		showsLive,
 		liveView,
 		view,

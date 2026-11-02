@@ -90,16 +90,16 @@ export function ProjectHeader({
 			{/* Identity row: title · status · meta · actions — one compact line
 			    that lets the page below breathe (replaces the tall hero card). */}
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-				<h1 className="min-w-0 text-[1.6rem] font-normal tracking-tight text-foreground/90">
+				<h1 className="min-w-0 text-xl font-semibold tracking-[-0.015em] text-foreground">
 					<ProjectTitleInlineEdit
 						projectId={project.id}
 						organizationId={organizationId}
 						name={project.name}
 						canEdit={canEdit ?? false}
 						renderDisplay={(name) => (
-							<span className="text-foreground/90">{name}</span>
+							<span className="text-foreground">{name}</span>
 						)}
-						inputClassName="h-9 bg-transparent text-[1.6rem] font-normal border-primary/40"
+						inputClassName="h-9 bg-transparent text-xl font-semibold border-primary/40"
 					/>
 				</h1>
 
@@ -135,7 +135,7 @@ export function ProjectHeader({
 					{project.projectTypes.map((type) => (
 						<span
 							key={type}
-							className="app-soft-badge rounded-full px-2.5 py-0.5 text-xs"
+							className="app-soft-badge rounded-sm px-2 py-0.5 text-xs"
 						>
 							{type}
 						</span>
@@ -217,7 +217,7 @@ export function ProjectHeader({
 					{project.tags.map((tag) => (
 						<span
 							key={tag}
-							className="app-soft-badge rounded-full px-2.5 py-0.5 text-xs"
+							className="app-soft-badge rounded-sm px-2 py-0.5 text-xs"
 						>
 							{tag}
 						</span>

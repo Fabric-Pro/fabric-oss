@@ -427,7 +427,7 @@ function TestResultRow({
 								<button
 									type="button"
 									onClick={() => onSelectCase(matchedCase.id)}
-									className="rounded font-mono text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+									className="rounded font-mono text-primary underline-offset-2 hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 								>
 									{matchedCase.identifier}
 								</button>

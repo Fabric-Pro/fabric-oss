@@ -63,7 +63,7 @@ function ProjectVisual({ invite }: { invite: WelcomeWidgetEntry }) {
 				src={invite.heroImageUrl ?? undefined}
 				alt={invite.projectName}
 				onError={() => setImgFailed(true)}
-				className="size-16 shrink-0 rounded-xl object-cover"
+				className="size-16 shrink-0 rounded-lg object-cover"
 			/>
 		);
 	}
@@ -72,7 +72,7 @@ function ProjectVisual({ invite }: { invite: WelcomeWidgetEntry }) {
 		<div
 			aria-hidden="true"
 			className={cn(
-				"flex size-16 shrink-0 items-center justify-center rounded-xl font-medium text-2xl",
+				"flex size-16 shrink-0 items-center justify-center rounded-lg font-medium text-2xl",
 				!invite.color && "bg-muted text-muted-foreground",
 			)}
 			style={invite.color ? { backgroundColor: invite.color } : undefined}
@@ -247,7 +247,7 @@ export function ProjectInviteWelcomeWidget({
 	return (
 		<section
 			aria-labelledby="invite-welcome-heading"
-			className="rounded-2xl border bg-card p-5 shadow-sm motion-safe:animate-in motion-safe:fade-in"
+			className="rounded-lg border bg-card p-5 shadow-sm motion-safe:animate-in motion-safe:fade-in"
 		>
 			<div className="flex items-start justify-between gap-3">
 				<span className="app-editorial-label">New Project</span>
@@ -266,7 +266,7 @@ export function ProjectInviteWelcomeWidget({
 				<div className="min-w-0 flex-1">
 					<h2
 						id="invite-welcome-heading"
-						className="font-serif text-xl leading-snug"
+						className="font-semibold text-xl leading-snug"
 					>
 						{headline}
 					</h2>

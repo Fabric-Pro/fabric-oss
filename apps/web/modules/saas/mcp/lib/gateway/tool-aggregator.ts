@@ -578,30 +578,50 @@ async function discoverToolsLive(
 	return Promise.race([discoveryPromise(), timeoutPromise]);
 }
 
+export type AuthorizedConnectedServerToolCall = {
+	namespacedToolName: string;
+	args: Record<string, unknown>;
+	configId: string;
+	displayName: string;
+	execute: (args: unknown, ctx: unknown) => Promise<unknown>;
+};
+
+export type ConnectedServerToolAuthorization =
+	| { ok: true; context: AuthorizedConnectedServerToolCall }
+	| { ok: false; result: ToolCallResult };
+
+function connectedToolError(
+	error: string,
+	details: Record<string, unknown> = {},
+): ToolCallResult {
+	return {
+		content: [
+			{ type: "text", text: JSON.stringify({ error, ...details }) },
+		],
+		isError: true,
+	};
+}
+
 /**
- * Execute a connected server tool.
- * Parses the namespaced tool name, finds the right config, and executes.
+ * Resolve and authorize a connected-server call through the same client/config
+ * path execution uses. This checks the live config permission and tool list but
+ * does not invoke the upstream tool.
  */
-export async function executeConnectedServerTool(
+export async function authorizeConnectedServerTool(
 	namespacedToolName: string,
 	args: Record<string, unknown>,
 	session: GatewaySession,
 	servers: ConnectedServerInfo[],
-): Promise<ToolCallResult> {
+): Promise<ConnectedServerToolAuthorization> {
 	// Never on a session bound to one project, whatever reached this far: a
 	// connected server is the person's and the organization's, and has no
 	// project to be held to.
 	if (boundProjectId(session) !== null) {
 		return {
-			content: [
-				{
-					type: "text",
-					text: JSON.stringify({
-						error: "Connected server tools are not available on a connection to one project.",
-					}),
-				},
-			],
-			isError: true,
+			ok: false,
+			result: connectedToolError(
+				"Connected server tools are not available on a connection to one project.",
+			),
 		};
 	}
 
@@ -610,15 +630,10 @@ export async function executeConnectedServerTool(
 	// reach a deselected tool's upstream.
 	if (!selectionAllowsTool(session, namespacedToolName)) {
 		return {
-			content: [
-				{
-					type: "text",
-					text: JSON.stringify({
-						error: selectionRefusalMessage(namespacedToolName),
-					}),
-				},
-			],
-			isError: true,
+			ok: false,
+			result: connectedToolError(
+				selectionRefusalMessage(namespacedToolName),
+			),
 		};
 	}
 
@@ -626,15 +641,10 @@ export async function executeConnectedServerTool(
 	const separatorIndex = namespacedToolName.indexOf("__");
 	if (separatorIndex === -1) {
 		return {
-			content: [
-				{
-					type: "text",
-					text: JSON.stringify({
-						error: `Invalid tool name: ${namespacedToolName}`,
-					}),
-				},
-			],
-			isError: true,
+			ok: false,
+			result: connectedToolError(
+				`Invalid tool name: ${namespacedToolName}`,
+			),
 		};
 	}
 
@@ -645,15 +655,10 @@ export async function executeConnectedServerTool(
 	const server = servers.find((s) => s.toolPrefix === prefix);
 	if (!server) {
 		return {
-			content: [
-				{
-					type: "text",
-					text: JSON.stringify({
-						error: `No connected server found for prefix "${prefix}"`,
-					}),
-				},
-			],
-			isError: true,
+			ok: false,
+			result: connectedToolError(
+				`No connected server found for prefix "${prefix}"`,
+			),
 		};
 	}
 
@@ -706,25 +711,24 @@ export async function executeConnectedServerTool(
 		)[originalToolName];
 		if (!tool?.execute) {
 			return {
-				content: [
-					{
-						type: "text",
-						text: JSON.stringify({
-							error: `Tool "${originalToolName}" not found on ${server.displayName}`,
-							availableTools: Object.keys(tools),
-						}),
-					},
-				],
-				isError: true,
+				ok: false,
+				result: connectedToolError(
+					`Tool "${originalToolName}" not found on ${server.displayName}`,
+					{ availableTools: Object.keys(tools) },
+				),
 			};
 		}
 
-		const result = await tool.execute(args, {
-			toolCallId: `${namespacedToolName}-${Date.now()}`,
-			messages: [],
-		});
-
-		return parseMcpToolResult(result);
+		return {
+			ok: true,
+			context: {
+				namespacedToolName,
+				args,
+				configId: server.configId,
+				displayName: server.displayName,
+				execute: tool.execute,
+			},
+		};
 	} catch (error) {
 		const message =
 			error instanceof Error ? error.message : "Tool execution failed";
@@ -734,12 +738,53 @@ export async function executeConnectedServerTool(
 			stack: error instanceof Error ? error.stack : undefined,
 		});
 		return {
-			content: [
-				{ type: "text", text: JSON.stringify({ error: message }) },
-			],
-			isError: true,
+			ok: false,
+			result: connectedToolError(message),
 		};
 	}
+}
+
+/** Invoke a connected tool after {@link authorizeConnectedServerTool}. */
+export async function executeAuthorizedConnectedServerTool({
+	namespacedToolName,
+	args,
+	execute,
+}: AuthorizedConnectedServerToolCall): Promise<ToolCallResult> {
+	try {
+		return parseMcpToolResult(
+			await execute(args, {
+				toolCallId: `${namespacedToolName}-${Date.now()}`,
+				messages: [],
+			}),
+		);
+	} catch (error) {
+		const message =
+			error instanceof Error ? error.message : "Tool execution failed";
+		console.error("[MCP Gateway] Connected tool error:", {
+			namespacedToolName,
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
+		return connectedToolError(message);
+	}
+}
+
+/** Authorize and execute one connected-server tool call. */
+export async function executeConnectedServerTool(
+	namespacedToolName: string,
+	args: Record<string, unknown>,
+	session: GatewaySession,
+	servers: ConnectedServerInfo[],
+): Promise<ToolCallResult> {
+	const authorization = await authorizeConnectedServerTool(
+		namespacedToolName,
+		args,
+		session,
+		servers,
+	);
+	return authorization.ok
+		? executeAuthorizedConnectedServerTool(authorization.context)
+		: authorization.result;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

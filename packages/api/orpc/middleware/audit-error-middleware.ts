@@ -829,11 +829,13 @@ async function enrichContextFromHeaders(
 }
 
 /**
- * Internal: build the metadata payload + emit one audit row. Wrapped in
- * a try/catch so a failure here CANNOT break the error response. On
- * failure we log a structured `console.error` so operators see it.
+ * Build the metadata payload + emit one audit row. Wrapped in a try/catch
+ * so a failure here CANNOT break the error response. On failure we log a
+ * structured `console.error` so operators see it. Also called by a door
+ * outside oRPC that serves a procedure (the agent runtime's Atlas chat), so
+ * a refusal there writes the row this middleware would; never throws.
  */
-async function captureError(
+export async function recordProcedureFailure(
 	err: unknown,
 	rawContext: AuditRequestContext & {
 		_auditFailureEmitted?: boolean;
@@ -1019,13 +1021,13 @@ export const auditErrorMiddleware = os
 			// Best-effort capture. We have access to the request's input
 			// via the second arg; user-written bodies are summarized
 			// (REDACTED_BODY_FIELDS), then the sanitizer redacts sensitive
-			// keys and only then truncates to 8KiB. captureError is async
-			// (it re-resolves session via auth.api.getSession) but we MUST
-			// re-throw synchronously to preserve error timing for the
+			// keys and only then truncates to 8KiB. recordProcedureFailure is
+			// async (it re-resolves session via auth.api.getSession) but we
+			// MUST re-throw synchronously to preserve error timing for the
 			// client — so we fire it without await. The function is
 			// self-contained: its own outer try/catch handles all failures,
 			// so an unhandled rejection here is impossible.
-			void captureError(err, context, input, path);
+			void recordProcedureFailure(err, context, input, path);
 			throw err;
 		}
 	});
@@ -1033,14 +1035,14 @@ export const auditErrorMiddleware = os
 /**
  * Internal exports for tests.
  *
- * `captureError` is the pure capture function; tests can call it
+ * `recordProcedureFailure` is the pure capture function; tests can call it
  * directly to avoid spinning up the full oRPC framework.
  */
 export {
 	ALWAYS_SKIP_PATHS,
 	REDACTED_BODY_FIELDS,
 	REDACTED_SECRET_FIELDS,
-	captureError as __captureErrorForTest,
+	recordProcedureFailure as __captureErrorForTest,
 	redactBodyFields as __redactBodyFieldsForTest,
 	readSkipPatterns as __readSkipPatternsForTest,
 	shouldSkip as __shouldSkipForTest,

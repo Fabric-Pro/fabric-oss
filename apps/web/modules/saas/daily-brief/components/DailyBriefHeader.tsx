@@ -59,7 +59,7 @@ export function DailyBriefHeader({
 	const toggleDisabled = cursor === null;
 
 	return (
-		<header className="relative overflow-hidden rounded-2xl border border-border bg-card">
+		<header className="relative overflow-hidden rounded-lg border border-border bg-card">
 			<div
 				className="pointer-events-none absolute inset-0 opacity-40"
 				style={{
@@ -74,7 +74,7 @@ export function DailyBriefHeader({
 				<div className="min-w-0">
 					<span className="editorial-label">Daily Brief</span>
 					<div className="mt-4 flex items-center gap-1.5">
-						<h1 className="font-serif text-4xl font-normal leading-[1.1] text-foreground sm:text-5xl">
+						<h1 className="text-xl font-semibold leading-[1.1] text-foreground ">
 							Here's what moved today.
 						</h1>
 						<PageTourButton pageId="daily-brief" />
@@ -108,7 +108,7 @@ export function DailyBriefHeader({
 										onTimeWindowChange(opt.value)
 									}
 									className={cn(
-										"rounded-sm px-3 py-1.5 text-xs font-medium uppercase tracking-[0.14em] transition-colors duration-200",
+										"rounded-sm px-3 py-1.5 text-xs font-medium uppercase tracking-wide transition-colors duration-200",
 										active
 											? "bg-card text-foreground shadow-sm"
 											: "text-muted-foreground hover:text-foreground",

@@ -543,7 +543,7 @@ export function PullFromPMDialog({
 											}}
 											className={cn(
 												"w-full flex items-start gap-3 rounded-md px-3 py-2.5 text-left cursor-pointer",
-												"transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+												"transition-colors hover:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
 												isSelected && "bg-primary/8",
 												isSynced && "opacity-75",
 											)}

@@ -1,8 +1,15 @@
 /**
  * Block content of the Word writer (Fizzy #2946): paragraphs, headings,
- * lists, callouts, code, diagrams and block raw HTML.
+ * lists, callouts, code, diagrams and block raw HTML, and the cover
+ * letter's paragraphs in their roles.
  */
 
+import {
+	CARDS_LANGUAGE,
+	COLUMNS_LANGUAGE,
+	parseCards,
+	parseColumns,
+} from "@repo/utils/proposal-artifact/proposal-blocks";
 import {
 	parseStatTiles,
 	STAT_TILES_LANGUAGE,
@@ -25,7 +32,13 @@ import type {
 	Paragraph as MdParagraph,
 	RootContent,
 } from "mdast";
-import { rawHtmlFallback, readUploadedImageTag } from "../document-content";
+import {
+	isCoverFence,
+	type LetterRole,
+	letterRoles,
+	rawHtmlFallback,
+	readUploadedImageTag,
+} from "../document-content";
 import { exportDiagramCaption, flatText } from "../markdown";
 import type { ExportDiagram } from "../types";
 import { fitImage, imageRun, inlineChildren, uploadedImageRun } from "./inline";
@@ -37,7 +50,9 @@ import {
 	CODE_INDENT,
 	CODE_SIZE,
 	DIAGRAM_UNAVAILABLE,
+	EYEBROW_SIZE,
 	HEADING_SIZES,
+	LABEL_TRACKING,
 	LIST_HANGING,
 	LIST_ITEM_AFTER,
 	LIST_LEVELS,
@@ -47,7 +62,13 @@ import {
 	SINGLE_LINE,
 	SYMBOL_FONT,
 } from "./styles";
-import { renderTable, spacerParagraph, statTilesTable } from "./tables";
+import {
+	cardsTable,
+	columnsTable,
+	renderTable,
+	spacerParagraph,
+	statTilesTable,
+} from "./tables";
 import {
 	type BlockContext,
 	bodyRunStyle,
@@ -64,10 +85,11 @@ import {
 // Blocks
 // ---------------------------------------------------------------------------
 
+/** A heading's runs: ink, as print sets them; a link keeps the link colour. */
 function headingRunStyle(writer: Writer, level: number): RunStyle {
 	return {
 		font: writer.fonts.display,
-		color: writer.colors.heading,
+		color: writer.colors.ink,
 		size: HEADING_SIZES[level - 1],
 		bold: true,
 		linkColor: writer.colors.heading,
@@ -164,6 +186,10 @@ export function renderBlock(
 ): void {
 	switch (node.type) {
 		case "heading": {
+			// The H1 that is the title is on the cover, never alone in the body.
+			if (node === writer.titleHeading) {
+				return;
+			}
 			const level = Math.min(Math.max(node.depth, 1), 6);
 			if (level === 2) {
 				const title = proseText(flatText(node)).trim();
@@ -264,11 +290,18 @@ function renderParagraph(
 	extra: {
 		prefix?: ParagraphChild[];
 		options?: IParagraphOptions;
+		/** The runs' base style, the body's unless given. */
+		style?: RunStyle;
 	} = {},
 ): void {
 	const children = [
 		...(extra.prefix ?? []),
-		...inlineChildren(writer, node.children, bodyRunStyle(writer), context),
+		...inlineChildren(
+			writer,
+			node.children,
+			extra.style ?? bodyRunStyle(writer),
+			context,
+		),
 	];
 	// A paragraph of nothing but left-out images leaves no gap behind.
 	if (children.length === 0 && !extra.options?.numbering) {
@@ -360,10 +393,10 @@ function renderList(
 
 /**
  * A fence: a diagram's render or its placeholder caption (nothing for one
- * left out), stat tiles when
- * the block is valid, and otherwise a shaded monospace block that keeps its
- * lines. A diagram is looked up by its node, never by counting fences, so
- * it can never take another fence's render.
+ * left out), stat tiles, cards or columns when the block is valid, nothing
+ * for a cover fence the parser takes, and otherwise a shaded monospace
+ * block that keeps its lines. A diagram is looked up by its node, never by
+ * counting fences, so it can never take another fence's render.
  */
 function renderCode(
 	writer: Writer,
@@ -371,6 +404,11 @@ function renderCode(
 	out: Out[],
 	context: BlockContext,
 ): void {
+	// The cover shows the details of the one it reads, and the editor shows
+	// any other as a card; only a refused one prints, as code.
+	if (isCoverFence(node)) {
+		return;
+	}
 	const diagramIndex = writer.input.prepared.diagramIndex.get(node);
 	if (diagramIndex !== undefined) {
 		renderDiagram(
@@ -389,6 +427,22 @@ function renderCode(
 		const parsed = parseStatTiles(node.value);
 		if (parsed.ok) {
 			out.push({ table: statTilesTable(writer, parsed.items, context) });
+			out.push({ paragraph: spacerParagraph() });
+			return;
+		}
+	}
+	if (node.lang === CARDS_LANGUAGE) {
+		const parsed = parseCards(node.value);
+		if (parsed.ok) {
+			out.push({ table: cardsTable(writer, parsed.items, context) });
+			out.push({ paragraph: spacerParagraph() });
+			return;
+		}
+	}
+	if (node.lang === COLUMNS_LANGUAGE) {
+		const parsed = parseColumns(node.value);
+		if (parsed.ok) {
+			out.push({ table: columnsTable(writer, parsed.columns, context) });
 			out.push({ paragraph: spacerParagraph() });
 			return;
 		}
@@ -617,4 +671,65 @@ function renderHtmlBlock(
 					}),
 		),
 	});
+}
+
+/** How each role of a cover letter's paragraphs is set, as print sets it. */
+function letterRoleStyle(
+	writer: Writer,
+	role: LetterRole,
+): { style: RunStyle; options: IParagraphOptions } {
+	const body = bodyRunStyle(writer);
+	switch (role) {
+		case "date":
+			return {
+				style: {
+					...writer.monoMedium,
+					color: writer.colors.label,
+					size: EYEBROW_SIZE,
+					allCaps: true,
+					characterSpacing: LABEL_TRACKING,
+				},
+				options: { spacing: { after: 360 } },
+			};
+		case "subject":
+			return { style: { ...body, bold: true }, options: {} };
+		case "signer":
+			return {
+				style: body,
+				options: { spacing: { before: 360, after: 40 } },
+			};
+		case "signerRole":
+			return {
+				style: { ...body, color: writer.colors.muted },
+				options: {},
+			};
+	}
+}
+
+/**
+ * The cover letter's blocks: its date, subject line, signer and the line
+ * under the signer set in their roles, as print sets them, and every other
+ * block as the body writes it.
+ */
+export function renderLetter(
+	writer: Writer,
+	nodes: readonly RootContent[],
+	out: Out[],
+	context: BlockContext,
+): void {
+	const roles = letterRoles(nodes);
+	for (const node of nodes) {
+		const role = node.type === "paragraph" ? roles.get(node) : undefined;
+		if (node.type === "paragraph" && role !== undefined) {
+			renderParagraph(
+				writer,
+				node,
+				out,
+				context,
+				letterRoleStyle(writer, role),
+			);
+		} else {
+			renderBlock(writer, node, out, context);
+		}
+	}
 }

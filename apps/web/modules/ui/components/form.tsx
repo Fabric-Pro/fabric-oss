@@ -124,7 +124,7 @@ const FormDescription = ({
 	return (
 		<p
 			id={formDescriptionId}
-			className={cn("text-foreground/60 text-sm", className)}
+			className={cn("text-muted-foreground text-xs", className)}
 			{...props}
 		/>
 	);
@@ -145,7 +145,7 @@ const FormMessage = ({
 	return (
 		<p
 			id={formMessageId}
-			className={cn("font-normal text-destructive text-sm", className)}
+			className={cn("font-normal text-destructive text-xs", className)}
 			{...props}
 		>
 			{body}

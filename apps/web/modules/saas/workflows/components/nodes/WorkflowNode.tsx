@@ -40,15 +40,15 @@ export function WorkflowNodeComponent({
 		<div
 			data-testid={`workflow-node-${nodeType}`}
 			className={cn(
-				"relative flex w-[300px] items-center gap-3 rounded-[10px] border bg-card px-3.5 py-3 text-card-foreground",
-				"motion-safe:transition-[border-color,box-shadow] motion-safe:duration-150",
+				"relative flex w-[300px] items-center gap-3 rounded-lg border-2 border-dashed bg-card px-3.5 py-3 text-card-foreground shadow-2xs",
+				"motion-safe:transition-[border-color,box-shadow,background-color] motion-safe:duration-150",
 				selected
-					? "border-foreground ring-[3px] ring-foreground/10"
+					? "border-[#0284C7] bg-[#E0F2FE]/70 dark:bg-[#0284C7]/20 ring-[3px] ring-[#0284C7]/15"
 					: step?.status === "COMPLETED"
-						? "border-success/40"
+						? "border-success/60 bg-success/5"
 						: step?.status === "FAILED"
-							? "border-destructive/50"
-							: "border-border",
+							? "border-destructive/60 bg-destructive/5"
+							: "border-[#0284C7]/45 bg-[#E0F2FE]/35 dark:bg-[#0284C7]/10 hover:border-[#0284C7]/80",
 			)}
 		>
 			{nodeType !== "trigger" && (

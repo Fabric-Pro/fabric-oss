@@ -161,7 +161,7 @@ export function ContentTypesChecklist({
 	return (
 		<section
 			className={cn(
-				"rounded-xl",
+				"rounded-lg",
 				// A popover draws its own surface; a second border and card
 				// background inside one reads as a panel within a panel.
 				!alwaysOpen && "border border-border bg-card",
@@ -228,7 +228,7 @@ export function ContentTypesChecklist({
 						}
 						return (
 							<div key={group.key}>
-								<p className="pt-3 pb-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+								<p className="pt-3 pb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
 									{group.label}
 								</p>
 								{rows.map((p) => (
@@ -255,7 +255,7 @@ export function ContentTypesChecklist({
 
 					{unclassified.length > 0 ? (
 						<div>
-							<p className="pt-3 pb-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+							<p className="pt-3 pb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
 								{buckets.size === 0
 									? "Available"
 									: "Not classified by the analysis"}

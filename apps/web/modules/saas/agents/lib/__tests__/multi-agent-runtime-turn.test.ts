@@ -60,7 +60,7 @@ const started: AGUIEvent = {
 	runId: KEY,
 };
 
-function turn() {
+function turn(onStarted?: () => void) {
 	const views: MultiAgentTurnView[] = [];
 	const runtimeTurn = new MultiAgentRuntimeTurn(
 		"thread-1",
@@ -68,7 +68,11 @@ function turn() {
 			{ agentId: "model:alpha", name: "Alpha" },
 			{ agentId: "model:beta", name: "Beta" },
 		]),
-		{ organizationId: "org-1", onView: (view) => views.push(view) },
+		{
+			organizationId: "org-1",
+			onView: (view) => views.push(view),
+			onStarted,
+		},
 	);
 	return { runtimeTurn, views };
 }
@@ -120,6 +124,57 @@ describe("a multi-agent turn over the runtime", () => {
 			},
 		});
 		expect(runtimeTurn.current.status).toBe("ended");
+	});
+
+	it("reports the start once, when the run has started, not when it is sent", async () => {
+		m.responses.push(
+			[
+				started,
+				{ type: EventType.CUSTOM, name: "fabric.reconnect", value: {} },
+			],
+			[
+				started,
+				{
+					type: EventType.RUN_FINISHED,
+					threadId: "thread-1",
+					runId: KEY,
+					outcome: { type: "success" },
+				},
+			],
+		);
+		const requestsAtStart: number[] = [];
+		const { runtimeTurn } = turn(() =>
+			requestsAtStart.push(m.requests.length),
+		);
+
+		await runtimeTurn.send({
+			messages: [{ id: "q", role: "user", content: "Compare the plans" }],
+			agentIds: ["model:alpha", "model:beta"],
+			forwardedProps: {},
+		});
+
+		expect(requestsAtStart).toEqual([1]);
+	});
+
+	it("does not report a start the runtime refused before it", async () => {
+		m.responses.push([
+			{
+				type: EventType.RUN_ERROR,
+				code: "AI_USAGE_LIMIT",
+				message: "Limit reached",
+			},
+		]);
+		const onStarted = vi.fn();
+		const { runtimeTurn } = turn(onStarted);
+
+		await runtimeTurn.send({
+			messages: [{ id: "q", role: "user", content: "Compare the plans" }],
+			agentIds: ["model:alpha", "model:beta"],
+			forwardedProps: {},
+		});
+
+		expect(runtimeTurn.current.status).toBe("refused");
+		expect(onStarted).not.toHaveBeenCalled();
 	});
 
 	it("ends when a connect finds no run (the turn is saved)", async () => {

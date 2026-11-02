@@ -205,7 +205,7 @@ export function ReadinessBar({
 				<TooltipTrigger asChild>
 					<button
 						type="button"
-						className="flex items-center gap-2 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded border-0 bg-transparent p-0 text-left font-normal"
+						className="flex items-center gap-2 cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded border-0 bg-transparent p-0 text-left font-normal"
 					>
 						<span className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
 							{labelText}

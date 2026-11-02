@@ -96,7 +96,7 @@ export function ForceChangePasswordForm() {
 	return (
 		<div>
 			<div className="mb-6 text-center">
-				<h1 className="font-serif text-2xl">{t("title")}</h1>
+				<h1 className="font-semibold text-2xl">{t("title")}</h1>
 				<p className="mt-2 text-sm text-muted-foreground">
 					{t("subtitle")}
 				</p>

@@ -37,11 +37,15 @@ export function CodingRunDialog({
 				id: codingRunId,
 				organizationId: organizationId ?? null,
 			}),
-		onSuccess: () => {
+		onSuccess: (result) => {
 			queryClient.invalidateQueries({
 				queryKey: ["codingRun", codingRunId],
 			});
-			toast.success("Coding run cancelled");
+			toast.success(
+				result.status === "cancelling"
+					? "Cancellation requested; waiting for the agent to stop"
+					: "Coding run cancelled",
+			);
 		},
 		onError: () => {
 			toast.error("Failed to cancel coding run");
@@ -53,14 +57,14 @@ export function CodingRunDialog({
 			<DialogContent className="sm:max-w-2xl">
 				<DialogHeader className="space-y-4 text-left">
 					<div className="flex items-start gap-3">
-						<div className="flex size-11 shrink-0 items-center justify-center rounded-2xl border border-primary/20 bg-primary/10 shadow-sm">
+						<div className="flex size-11 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 shadow-sm">
 							<CodeIcon className="size-5 text-primary" />
 						</div>
 						<div className="min-w-0 flex-1 space-y-2 pr-8">
 							<div className="flex flex-wrap items-center gap-2">
 								<Badge
 									variant="outline"
-									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-[0.16em] text-primary"
+									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
 								>
 									<SparklesIcon className="mr-1 size-3" />
 									Fabric Agents Session
@@ -70,14 +74,15 @@ export function CodingRunDialog({
 								Implementation session
 							</DialogTitle>
 							<DialogDescription className="max-w-[56ch] text-sm leading-6">
-								Track isolated worktree progress on Fabric
-								Agents, reply to agent prompts, jump directly
-								into the desktop or Web UI session, and inspect
-								the opened pull request.
+								Track work on Fabric Agents, read the remote
+								conversation, continue completed work, and
+								inspect the pull request. Resolve native
+								approvals in the authenticated Fabric Agents
+								client.
 							</DialogDescription>
 							{featureTitle && (
-								<div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2">
-									<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+								<div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+									<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 										Feature
 									</p>
 									<p className="mt-1 line-clamp-2 text-sm font-medium text-foreground">
@@ -95,7 +100,7 @@ export function CodingRunDialog({
 					</div>
 				</DialogHeader>
 
-				<div className="rounded-2xl border border-border/60 bg-card/70 p-4 shadow-sm">
+				<div className="rounded-lg border border-border/60 bg-card/70 p-4 shadow-sm">
 					<CodingRunTimeline
 						codingRunId={codingRunId}
 						organizationId={organizationId}

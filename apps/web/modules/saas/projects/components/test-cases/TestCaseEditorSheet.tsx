@@ -500,7 +500,7 @@ export function TestCaseEditorSheet({
 									</div>
 								)}
 							</div>
-							<SheetTitle className="break-words font-serif font-normal text-2xl leading-tight">
+							<SheetTitle className="break-words font-semibold text-2xl leading-tight">
 								{isEdit
 									? title || t("title")
 									: t("actions.new")}

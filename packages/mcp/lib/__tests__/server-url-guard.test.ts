@@ -28,6 +28,7 @@ import {
 	getMcpServerBlockedReason,
 	getMcpServerUrlBlockReason,
 	MCP_SERVER_ALLOWED_HOSTS_ENV,
+	mcpServerUrlsMatch,
 } from "../server-url-guard";
 
 const ORIGINAL_ALLOWED = process.env[MCP_SERVER_ALLOWED_HOSTS_ENV];
@@ -285,5 +286,58 @@ describe("the operator's exceptions", () => {
 		expect(
 			getMcpServerUrlBlockReason("http://localhost:3000/mcp"),
 		).not.toBeNull();
+	});
+});
+
+describe("stored credential endpoint binding", () => {
+	it("treats a trailing slash and an explicit default port as the same endpoint", () => {
+		expect(
+			mcpServerUrlsMatch(
+				"https://mcp.example.com:443/api/mcp/",
+				"https://mcp.example.com/api/mcp",
+			),
+		).toBe(true);
+	});
+
+	it("rejects a different origin", () => {
+		expect(
+			mcpServerUrlsMatch(
+				"https://mcp.example.com/api/mcp",
+				"https://other.example.com/api/mcp",
+			),
+		).toBe(false);
+	});
+
+	it("rejects a different normalized path", () => {
+		expect(
+			mcpServerUrlsMatch(
+				"https://mcp.example.com/api/mcp",
+				"https://mcp.example.com/api/admin",
+			),
+		).toBe(false);
+	});
+
+	it("rejects a different query string", () => {
+		expect(
+			mcpServerUrlsMatch(
+				"https://mcp.example.com/api/mcp?tenant=one",
+				"https://mcp.example.com/api/mcp?tenant=two",
+			),
+		).toBe(false);
+	});
+
+	it("rejects different URL credentials", () => {
+		expect(
+			mcpServerUrlsMatch(
+				"https://alice:one@mcp.example.com/api/mcp",
+				"https://alice:two@mcp.example.com/api/mcp",
+			),
+		).toBe(false);
+	});
+
+	it("rejects an invalid endpoint", () => {
+		expect(
+			mcpServerUrlsMatch("not a URL", "https://mcp.example.com/mcp"),
+		).toBe(false);
 	});
 });

@@ -72,9 +72,20 @@ describe("/api/copilotkit organization binding", () => {
 
 	it("checks membership before the tenant config is resolved", () => {
 		const resolveAt = source.indexOf("resolveRequestedOrganization({");
-		const tenantConfigAt = source.indexOf("await getTenantConfig(");
+		const tenantConfigAt = source.indexOf("await resolveCopilotTenant(");
 		expect(resolveAt).toBeGreaterThan(-1);
 		expect(tenantConfigAt).toBeGreaterThan(resolveAt);
+	});
+
+	it("passes the caller's bound organization into the shared request builder", () => {
+		const requestSource = read(
+			join(process.cwd(), "app/api/copilotkit/agent-request.ts"),
+		);
+		expect(requestSource).not.toMatch(
+			/from\s+"@repo\/api\/lib\/requested-organization"/,
+		);
+		expect(requestSource).not.toContain("resolveRequestedOrganization(");
+		expect(requestSource).not.toContain("searchParams");
 	});
 });
 

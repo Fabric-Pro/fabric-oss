@@ -871,7 +871,7 @@ export function CopilotHistoryDrawer({
 								role="listbox"
 								aria-label="Conversations"
 								tabIndex={0}
-								className="flex-1 overflow-y-auto px-2 py-3 focus-visible:outline-none"
+								className="flex-1 overflow-y-auto px-2 py-3 focus-visible:outline-hidden"
 							>
 								{listQuery.isLoading ? (
 									<div className="space-y-2 px-2">
@@ -1233,13 +1233,7 @@ function ViewerBody({
 			isForkPending={isForkPending}
 		/>
 	);
-}
-
-/**
- * Empty-state for the no-conversations case. Uses the editorial label
- * pattern (thin red bar prefix + uppercase tracked) and a serif heading
- * via the global `--font-serif` token.
- */
+} /** * Empty-state for the no-conversations case. Uses the editorial label * pattern (thin red bar prefix + uppercase tracked) and a serif heading * via the global `--font-semibold` token. */
 function EmptyState() {
 	return (
 		<div className="flex flex-col items-start gap-3 px-4 py-10">
@@ -1252,10 +1246,7 @@ function EmptyState() {
 					Chat history
 				</span>
 			</div>
-			<h2
-				className="text-xl font-normal leading-snug text-foreground"
-				style={{ fontFamily: "var(--font-serif)" }}
-			>
+			<h2 className="text-xl font-semibold leading-snug text-foreground">
 				No conversations yet.
 			</h2>
 			<p className="text-xs text-muted-foreground">

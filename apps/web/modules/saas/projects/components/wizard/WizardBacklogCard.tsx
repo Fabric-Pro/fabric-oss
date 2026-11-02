@@ -307,11 +307,11 @@ export function WizardBacklogCard({
 
 	return (
 		<div
-			className="rounded-2xl border border-border bg-card p-5"
+			className="rounded-lg border border-border bg-card p-5"
 			data-testid="backlog-card"
 		>
 			<div className="flex items-center gap-3">
-				<span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-muted">
+				<span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-muted">
 					<Link2Icon className="h-5 w-5 text-muted-foreground" />
 				</span>
 				<div className="min-w-0 flex-1">

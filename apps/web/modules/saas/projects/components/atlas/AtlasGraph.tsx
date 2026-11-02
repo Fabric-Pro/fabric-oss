@@ -41,11 +41,11 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type {
+	AtlasEdgeKind,
+	AtlasNodeKind,
 	GraphEdge,
 	GraphMode,
 	GraphNode,
-	AtlasEdgeKind,
-	AtlasNodeKind,
 } from "@repo/atlas/types";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -91,31 +91,31 @@ import {
 	useState,
 } from "react";
 import { toast } from "sonner";
+import {
+	AtlasConnectionEditDialog,
+	type ConnectionEditTarget,
+} from "./AtlasConnectionEditDialog";
+import {
+	AtlasConnectionsList,
+	type ConnectionsCreateInput,
+} from "./AtlasConnectionsList";
+import { AtlasGraphLegend, type LegendConnection } from "./AtlasGraphLegend";
+import { AtlasGraphNode, type AtlasNodeData } from "./AtlasGraphNode";
+import { AtlasStagedEditsBar } from "./AtlasStagedEditsBar";
 import { resolveNodeCategory } from "./atlas-categories";
 import {
 	type ConnectionNodeOption,
 	type ConnectionRow,
 	type EdgeEndpoints,
-	SOLO_EDGE_KINDS,
 	edgeKindColorVar,
+	SOLO_EDGE_KINDS,
 	soloEdgeKindKey,
 } from "./atlas-edges";
-import {
-	type ConnectionEditTarget,
-	AtlasConnectionEditDialog,
-} from "./AtlasConnectionEditDialog";
-import {
-	type ConnectionsCreateInput,
-	AtlasConnectionsList,
-} from "./AtlasConnectionsList";
-import { type LegendConnection, AtlasGraphLegend } from "./AtlasGraphLegend";
-import { AtlasGraphNode, type AtlasNodeData } from "./AtlasGraphNode";
-import { AtlasStagedEditsBar } from "./AtlasStagedEditsBar";
+import { fuzzyScore } from "./atlas-utils";
 import {
 	endpointSignature,
 	type StagedGraphEdits,
 } from "./use-staged-graph-edits";
-import { fuzzyScore } from "./atlas-utils";
 
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 72;
@@ -1260,7 +1260,7 @@ function GraphCanvas({
 							type="button"
 							onClick={() => setQuery("")}
 							aria-label={t("searchClear")}
-							className="absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<XIcon aria-hidden="true" className="size-3.5" />
 						</button>
@@ -1296,7 +1296,7 @@ function GraphCanvas({
 									? t("nodeListLabel")
 									: tConn("regionLabel")
 							}
-							className="absolute right-0 top-full z-30 mt-2 max-h-[60vh] w-[19rem] max-w-[85vw] overflow-y-auto rounded-xl border border-border/60 bg-background shadow-md"
+							className="absolute right-0 top-full z-30 mt-2 max-h-[60vh] w-[19rem] max-w-[85vw] overflow-y-auto rounded-lg border border-border/60 bg-background shadow-md"
 						>
 							{/* Nodes ⇄ Connections segmented toggle. */}
 							<div className="sticky top-0 z-20 flex items-center gap-1 border-b border-border/60 bg-background/95 p-1.5 backdrop-blur-sm">
@@ -1309,7 +1309,7 @@ function GraphCanvas({
 												aria-pressed={listTab === tab}
 												onClick={() => setListTab(tab)}
 												className={cn(
-													"flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+													"flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 													listTab === tab
 														? "bg-card text-foreground shadow-sm"
 														: "text-muted-foreground hover:text-foreground",
@@ -1408,7 +1408,7 @@ function GraphCanvas({
 																)
 															}
 															className={cn(
-																"flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+																"flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 																node.key ===
 																	selectedKey &&
 																	"bg-accent",
@@ -1450,7 +1450,7 @@ function GraphCanvas({
 																			)
 																		}
 																		className={cn(
-																			"flex shrink-0 items-center gap-0.5 rounded-lg px-1.5 text-[11px] tabular-nums transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+																			"flex shrink-0 items-center gap-0.5 rounded-lg px-1.5 text-[11px] tabular-nums transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 																			expanded
 																				? "text-foreground"
 																				: "text-muted-foreground hover:text-foreground",
@@ -1480,7 +1480,7 @@ function GraphCanvas({
 																	side="right"
 																	className="max-w-xs"
 																>
-																	<p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-70">
+																	<p className="mb-1 text-[10px] font-semibold uppercase tracking-wide opacity-70">
 																		{t(
 																			"referencesTitle",
 																		)}
@@ -1552,7 +1552,7 @@ function GraphCanvas({
 																						edge.target,
 																					)
 																				}
-																				className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+																				className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 																			>
 																				<CornerDownRightIcon
 																					aria-hidden="true"
@@ -1742,7 +1742,7 @@ function GraphCanvas({
 						nodeStrokeWidth={2}
 						maskColor="color-mix(in srgb, var(--background) 60%, transparent)"
 						style={{ backgroundColor: "var(--card)" }}
-						className="rounded-xl border border-border/40"
+						className="rounded-lg border border-border/40"
 					/>
 				</ReactFlow>
 

@@ -117,10 +117,7 @@ export function DuplicateScanCompletionDialog({
 				}}
 			>
 				<DialogHeader>
-					<DialogTitle
-						className="font-normal text-xl"
-						style={{ fontFamily: "var(--font-serif)" }}
-					>
+					<DialogTitle className="font-semibold text-xl">
 						{verificationIncomplete
 							? t("scanIncompleteTitle")
 							: hasDuplicates

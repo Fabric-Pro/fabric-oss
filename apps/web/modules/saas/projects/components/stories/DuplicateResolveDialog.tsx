@@ -281,7 +281,7 @@ function KindBadge({
 				identifier: story.identifier,
 				kind: label,
 			})}
-			className="inline-flex shrink-0 items-center rounded-full border border-border bg-card px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground"
+			className="inline-flex shrink-0 items-center rounded-full border border-border bg-card px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
 		>
 			{label}
 		</span>
@@ -1680,10 +1680,7 @@ export function DuplicateResolveDialog({
 						    ticket cards below. */}
 						<div className="flex items-start justify-between gap-3 pr-8">
 							<div className="flex min-w-0 items-center gap-2">
-								<DialogTitle
-									className="font-normal text-xl"
-									style={{ fontFamily: "var(--font-serif)" }}
-								>
+								<DialogTitle className="font-semibold text-xl">
 									{t(
 										isOverlap
 											? "dialogTitleOverlap"

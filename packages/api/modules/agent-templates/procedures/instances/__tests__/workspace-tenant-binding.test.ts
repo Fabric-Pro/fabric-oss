@@ -17,6 +17,8 @@ const {
 	mockGetWorkspaceAccessContext,
 	mockUpdateAgentTemplateInstance,
 	mockVerifyOrganizationMembership,
+	mockValidateSlackTriggerConfigs,
+	mockSyncDeploymentTriggers,
 } = vi.hoisted(() => ({
 	mockCreateAgentTemplateInstance: vi.fn(),
 	mockGetAgentTemplate: vi.fn(),
@@ -24,6 +26,8 @@ const {
 	mockGetWorkspaceAccessContext: vi.fn(),
 	mockUpdateAgentTemplateInstance: vi.fn(),
 	mockVerifyOrganizationMembership: vi.fn(),
+	mockValidateSlackTriggerConfigs: vi.fn(),
+	mockSyncDeploymentTriggers: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -58,7 +62,10 @@ vi.mock("../../../lib/validate-connections", async (importOriginal) => {
 });
 
 vi.mock("../../../../agent-deployments/lib/sync-triggers", () => ({
-	syncDeploymentTriggers: vi.fn(),
+	syncDeploymentTriggers: (...a: unknown[]) =>
+		mockSyncDeploymentTriggers(...a),
+	validateSlackTriggerConfigs: (...a: unknown[]) =>
+		mockValidateSlackTriggerConfigs(...a),
 }));
 
 vi.mock("../../../../organizations/lib/membership", () => ({
@@ -129,6 +136,8 @@ const createInput = (workspaceIds: string[]) => ({
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockValidateSlackTriggerConfigs.mockResolvedValue(undefined);
+	mockSyncDeploymentTriggers.mockResolvedValue(undefined);
 	mockVerifyOrganizationMembership.mockResolvedValue({ id: "member-1" });
 	mockGetAgentTemplate.mockResolvedValue({
 		id: "template-1",
@@ -143,6 +152,84 @@ beforeEach(() => {
 		organizationId: ORG_A,
 	});
 	mockUpdateAgentTemplateInstance.mockResolvedValue({ id: "instance-1" });
+});
+
+it("refuses an invalid Slack trigger before creating an instance", async () => {
+	mockValidateSlackTriggerConfigs.mockRejectedValue(
+		new Error(
+			"Slack trigger workspace does not match the connected workspace",
+		),
+	);
+	await expect(
+		createHandler({
+			input: {
+				...createInput([]),
+				triggers: [{ type: "slack", config: { teamId: "T0OTHER" } }],
+			},
+			context,
+		}),
+	).rejects.toThrow(
+		"Slack trigger workspace does not match the connected workspace",
+	);
+	expect(mockCreateAgentTemplateInstance).not.toHaveBeenCalled();
+});
+
+it("refuses an invalid Slack trigger before updating an instance", async () => {
+	mockValidateSlackTriggerConfigs.mockRejectedValue(
+		new Error(
+			"Connect Slack in Settings > Integrations before enabling this trigger",
+		),
+	);
+	await expect(
+		updateHandler({
+			input: {
+				id: "instance-1",
+				triggers: [{ type: "slack", config: { teamId: "T0EXAMPLE" } }],
+			},
+			context,
+		}),
+	).rejects.toThrow(
+		"Connect Slack in Settings > Integrations before enabling this trigger",
+	);
+	expect(mockUpdateAgentTemplateInstance).not.toHaveBeenCalled();
+});
+
+it("validates another member's agent against the agent owner's connection", async () => {
+	mockGetAgentTemplateInstance.mockResolvedValue({
+		id: "instance-1",
+		userId: "owner-example",
+		organizationId: ORG_A,
+	});
+	await updateHandler({
+		input: {
+			id: "instance-1",
+			triggers: [{ type: "slack", config: { teamId: "T0EXAMPLE" } }],
+		},
+		context,
+	});
+	expect(mockValidateSlackTriggerConfigs).toHaveBeenCalledWith(
+		expect.anything(),
+		{ userId: "owner-example", organizationId: ORG_A },
+	);
+});
+
+it("surfaces a trigger sync failure after creating an instance", async () => {
+	mockSyncDeploymentTriggers.mockRejectedValue(
+		new Error("Slack connection changed"),
+	);
+	const result = await createHandler({
+		input: {
+			...createInput([]),
+			triggers: [{ type: "slack", config: { teamId: "T0EXAMPLE" } }],
+		},
+		context,
+	});
+	expect(result).toEqual({
+		instance: { id: "instance-1" },
+		triggerActivationError:
+			"Agent created, but its triggers were not activated. Open the agent to enable them by editing it.",
+	});
+	expect(mockCreateAgentTemplateInstance).toHaveBeenCalledTimes(1);
 });
 
 describe("createInstanceProcedure — workspace tenant binding", () => {

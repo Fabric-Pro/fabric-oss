@@ -14,8 +14,8 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@hono/node-server": "^2.0.11",
-		"@langchain/core": "^1.2.9",
+		"@hono/node-server": "^2.1.3",
+		"@langchain/core": "^1.3.2",
 		"@langchain/langgraph": "^1.4.14",
 		"@repo/agent-core": "workspace:*",
 		"@repo/agent-runtime": "workspace:*",
@@ -31,6 +31,6 @@
 		"tsup": "^8.5.0",
 		"tsx": "^4.19.2",
 		"typescript": "^5.3.0",
-		"vitest": "^4.1.11"
+		"vitest": "^4.1.12"
 	}
 }

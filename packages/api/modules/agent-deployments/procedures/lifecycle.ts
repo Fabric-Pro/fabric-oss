@@ -19,6 +19,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { assertPersistedSlackTriggerBinding } from "../lib/sync-triggers";
 
 // =============================================================================
 // PAUSE
@@ -230,7 +231,9 @@ export const terminateDeploymentProcedure = tenantProtectedProcedure
  * - Marks webhook triggers as inactive
  * - Pauses Temporal schedules for cron triggers
  */
-async function pauseDeploymentTriggers(deploymentId: string): Promise<void> {
+export async function pauseDeploymentTriggers(
+	deploymentId: string,
+): Promise<void> {
 	// Get all active triggers
 	const triggers = await db.agentDeploymentTrigger.findMany({
 		where: {
@@ -265,19 +268,19 @@ async function pauseDeploymentTriggers(deploymentId: string): Promise<void> {
 
 	// Mark all triggers as paused (via a metadata field, not isActive)
 	// We use isActive=false during pause so webhooks don't fire
-	await db.agentDeploymentTrigger.updateMany({
-		where: {
-			deploymentId,
-			isActive: true,
-		},
-		data: {
-			isActive: false,
-			config: {
-				// Store that this was paused (not manually disabled)
-				_pausedByLifecycle: true,
+	for (const trigger of triggers) {
+		await db.agentDeploymentTrigger.update({
+			where: { id: trigger.id },
+			data: {
+				isActive: false,
+				config: {
+					...((trigger.config as Record<string, unknown> | null) ??
+						{}),
+					_pausedByLifecycle: true,
+				},
 			},
-		},
-	});
+		});
+	}
 }
 
 /**
@@ -285,7 +288,9 @@ async function pauseDeploymentTriggers(deploymentId: string): Promise<void> {
  * - Reactivates webhook triggers that were paused
  * - Resumes Temporal schedules for cron triggers
  */
-async function resumeDeploymentTriggers(deploymentId: string): Promise<void> {
+export async function resumeDeploymentTriggers(
+	deploymentId: string,
+): Promise<void> {
 	// Get triggers that were paused by lifecycle
 	const triggers = await db.agentDeploymentTrigger.findMany({
 		where: {
@@ -332,6 +337,23 @@ async function resumeDeploymentTriggers(deploymentId: string): Promise<void> {
 	for (const trigger of pausedTriggers) {
 		const config = trigger.config as Record<string, unknown> | null;
 		const { _pausedByLifecycle, ...restConfig } = config || {};
+		if (trigger.slackTeamId !== null || restConfig.channel === "slack") {
+			try {
+				await assertPersistedSlackTriggerBinding({
+					...trigger,
+					config: restConfig,
+				});
+			} catch {
+				console.warn(
+					"[AgentDeployments] Slack trigger binding failed during resume",
+					{
+						triggerId: trigger.id,
+						deploymentId,
+					},
+				);
+				continue;
+			}
+		}
 
 		await db.agentDeploymentTrigger.update({
 			where: { id: trigger.id },

@@ -111,7 +111,7 @@ export function AtlasConnectionEditDialog({
 
 				<div className="space-y-4 py-1">
 					<div className="space-y-1.5">
-						<Label className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+						<Label className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							{t("kind")}
 						</Label>
 						<Select value={kind} onValueChange={setKind}>
@@ -140,7 +140,7 @@ export function AtlasConnectionEditDialog({
 						</Select>
 					</div>
 					<div className="space-y-1.5">
-						<Label className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+						<Label className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							{t("description")}
 						</Label>
 						<Textarea

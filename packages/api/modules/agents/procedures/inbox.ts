@@ -8,6 +8,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { stripRemoteCodingRunSummary } from "../../projects/lib/strip-internal-story-fields";
 
 const inboxStatusSchema = z.enum([
 	"all",
@@ -235,28 +236,31 @@ export const listAgentInbox = tenantProtectedProcedure
 					},
 				},
 			}),
-			db.codingRun.findMany({
-				where: tenantWhere,
-				orderBy: { updatedAt: "desc" },
-				take: input.limit,
-				select: {
-					id: true,
-					status: true,
-					provider: true,
-					executionChannel: true,
-					externalUrl: true,
-					pullRequestUrl: true,
-					createdAt: true,
-					updatedAt: true,
-					project: { select: { id: true, name: true } },
-					story: {
-						select: { id: true, identifier: true, title: true },
+			db.codingRun
+				.findMany({
+					where: tenantWhere,
+					orderBy: { updatedAt: "desc" },
+					take: input.limit,
+					select: {
+						id: true,
+						status: true,
+						provider: true,
+						executionChannel: true,
+						externalUrl: true,
+						providerMetadata: true,
+						pullRequestUrl: true,
+						createdAt: true,
+						updatedAt: true,
+						project: { select: { id: true, name: true } },
+						story: {
+							select: { id: true, identifier: true, title: true },
+						},
+						storyTask: {
+							select: { id: true, identifier: true, title: true },
+						},
 					},
-					storyTask: {
-						select: { id: true, identifier: true, title: true },
-					},
-				},
-			}),
+				})
+				.then((runs) => runs.map(stripRemoteCodingRunSummary)),
 			db.agentTask.findMany({
 				where: tenantWhere,
 				orderBy: { updatedAt: "desc" },

@@ -762,7 +762,7 @@ export function ConnectionsPageContent({
 					))}
 				</div>
 			) : (
-				<div className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
+				<div className="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
 					No connections match your current filters.
 				</div>
 			)}
@@ -783,12 +783,45 @@ function IntegrationGroup({
 }) {
 	return (
 		<Collapsible defaultOpen>
-			<CollapsibleTrigger className="group/heading mb-3 inline-flex items-center gap-1.5 text-[15px] font-medium text-foreground">
+			<CollapsibleTrigger className="group/heading mb-3.5 inline-flex items-center gap-2 text-[14px] font-semibold text-foreground">
+				<svg
+					viewBox="0 0 24 24"
+					fill="none"
+					aria-hidden="true"
+					className="size-4 shrink-0 text-[#FF3621] dark:text-[#FF6B5B]"
+				>
+					<path
+						d="M12 2.75 3.75 7.35 12 11.95 20.25 7.35 16.5 5.25"
+						stroke="currentColor"
+						strokeWidth="2.1"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+					/>
+					<path
+						d="M3.75 10.65v2.7L12 17.95l8.25-4.6v-2.7L12 15.25 3.75 10.65Z"
+						stroke="currentColor"
+						strokeWidth="1.9"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+					/>
+					<path
+						d="M3.75 16.55 12 21.25l8.25-4.7v-2.4"
+						stroke="currentColor"
+						strokeWidth="2.1"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+					/>
+				</svg>
 				{title}
-				<ChevronDown className="size-4 text-muted-foreground transition-transform group-data-[state=closed]/heading:-rotate-90" />
+				<ChevronDown
+					aria-hidden="true"
+					className="size-4 text-muted-foreground transition-transform group-data-[state=closed]/heading:-rotate-90"
+				/>
 			</CollapsibleTrigger>
 			<CollapsibleContent>
-				<div className="grid gap-3 sm:grid-cols-2">{children}</div>
+				<div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
+					{children}
+				</div>
 			</CollapsibleContent>
 		</Collapsible>
 	);

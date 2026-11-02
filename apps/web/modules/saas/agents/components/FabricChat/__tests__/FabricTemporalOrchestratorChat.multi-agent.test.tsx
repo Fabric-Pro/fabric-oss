@@ -24,8 +24,17 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
+import {
+	type ComponentProps,
+	type ReactNode,
+	startTransition,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MultiAgentSendRun } from "../../../lib/orchestrator-stream-types";
 
@@ -44,6 +53,20 @@ const m = vi.hoisted(() => ({
 				signal: AbortSignal,
 		  ) => Promise<void>),
 	cancelEvents: [] as Array<Record<string, unknown>>,
+	attach: vi.fn(),
+	savedSelection: undefined as
+		| undefined
+		| {
+				selectedAgents: Array<{ agentId: string; name: string }>;
+				defaultAgent: null;
+		  },
+	/** The chat's model listing (the picker's and the answered-by label's). */
+	modelListing: undefined as
+		| undefined
+		| {
+				models: Array<{ canonicalName: string; displayName: string }>;
+				chatgptPlan?: { source: "own" | "shared"; models: [] };
+		  },
 }));
 
 vi.mock("../../../hooks/useOrchestratorChatStream", () => ({
@@ -65,7 +88,7 @@ vi.mock("../../../hooks/useOrchestratorChatStream", () => ({
 				handoffRecommended: null,
 			},
 			sendMessage: vi.fn(async () => null),
-			attach: vi.fn(),
+			attach: m.attach,
 			sendApproval: vi.fn(),
 			sendClarification: vi.fn(),
 			sendFollowUp: vi.fn(),
@@ -167,7 +190,16 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 		await importOriginal<typeof import("@tanstack/react-query")>();
 	return {
 		...actual,
-		useQuery: () => ({ data: undefined, isLoading: false }),
+		// The member's saved picks, once a test has them arrive.
+		useQuery: (options: { queryKey: unknown[] }) => {
+			const data =
+				options.queryKey[0] === "chat-agent-selection"
+					? m.savedSelection
+					: options.queryKey[0] === "ai-models-available"
+						? m.modelListing
+						: undefined;
+			return { data, isLoading: false, isSuccess: data !== undefined };
+		},
 	};
 });
 
@@ -183,7 +215,8 @@ vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 }));
 
 vi.mock("next-intl", () => ({
-	useTranslations: () => (key: string) => key,
+	useTranslations: () => (key: string, values?: { model?: string }) =>
+		values?.model ? `${key}: ${values.model}` : key,
 }));
 
 vi.mock(
@@ -202,6 +235,63 @@ vi.mock(
 
 const ALPHA = { agentId: "model:alpha", name: "Alpha" };
 const BETA = { agentId: "model:beta", name: "Beta" };
+
+/** The model a member's completion names (`AnswerModelInfo`). */
+interface ServedModel {
+	id: string;
+	canonicalName?: string;
+	provider?: string;
+	viaPlan: boolean;
+}
+/** The organization's shared ChatGPT plan answered the Alpha pick. */
+const SERVED_BY_PLAN: ServedModel = {
+	id: "gpt-plan-example",
+	canonicalName: "gpt-plan-example",
+	provider: "OPENAI_CHATGPT_PLAN",
+	viaPlan: true,
+};
+const SERVED_AS_PICKED: ServedModel = {
+	id: "beta",
+	canonicalName: "beta",
+	provider: "OPENAI",
+	viaPlan: false,
+};
+const SHARED_PLAN_LISTING = {
+	models: [
+		{ canonicalName: "alpha", displayName: "Alpha Model" },
+		{ canonicalName: "beta", displayName: "Beta Model" },
+	],
+	chatgptPlan: { source: "shared" as const, models: [] as [] },
+};
+
+/** The answer block an agent's answer renders in. */
+function answerBlock(text: string): HTMLElement {
+	const block = screen.getByText(text).closest<HTMLElement>(".group");
+	if (!block) {
+		throw new Error(`No answer block holds "${text}"`);
+	}
+	return block;
+}
+
+/**
+ * The Alpha block names the plan's model (not in the listing, so its id) and
+ * says its pick was not applied, with the pick-status note; the Beta block
+ * names its own model, by the listing's name, and nothing more.
+ */
+function expectServedLabels(alphaText: string, betaText: string) {
+	const alpha = within(answerBlock(alphaText));
+	expect(alpha.getAllByText(/^answeredByModel: /)).toEqual([
+		alpha.getByText("answeredByModel: gpt-plan-example"),
+	]);
+	expect(alpha.getByText("not applied").getAttribute("title")).toMatch(
+		/shared ChatGPT plan is on/,
+	);
+	const beta = within(answerBlock(betaText));
+	expect(beta.getAllByText(/^answeredByModel: /)).toEqual([
+		beta.getByText("answeredByModel: Beta Model"),
+	]);
+	expect(beta.queryByText("not applied")).toBeNull();
+}
 
 vi.mock("../shared", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../shared")>()),
@@ -260,6 +350,8 @@ beforeEach(() => {
 	m.runs.length = 0;
 	m.respond = null;
 	m.cancelEvents.length = 0;
+	m.savedSelection = undefined;
+	m.modelListing = undefined;
 	window.HTMLElement.prototype.scrollIntoView = vi.fn();
 });
 
@@ -269,12 +361,13 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-function renderChat(props: Record<string, unknown> = {}) {
-	const client = new QueryClient({
-		defaultOptions: { mutations: { retry: false } },
-	});
-	return render(
-		<QueryClientProvider client={client}>
+const queryClient = new QueryClient({
+	defaultOptions: { mutations: { retry: false } },
+});
+
+function chatElement(props: Record<string, unknown>) {
+	return (
+		<QueryClientProvider client={queryClient}>
 			<FabricTemporalOrchestratorChat
 				organizationId="org_1"
 				reasoningMode="balanced"
@@ -282,8 +375,66 @@ function renderChat(props: Record<string, unknown> = {}) {
 				multiAgentOffered
 				{...props}
 			/>
-		</QueryClientProvider>,
+		</QueryClientProvider>
 	);
+}
+
+function renderChat(props: Record<string, unknown> = {}) {
+	queryClient.clear();
+	return render(chatElement(props));
+}
+
+/**
+ * A conversation whose last turn went to Alpha and Beta: as saved when the
+ * turn ended, or as the admission saved it while both still answer (a
+ * reload mid-turn reads that).
+ */
+function savedConversation(
+	stage: "final" | "running",
+	served: [ServedModel?, ServedModel?] = [],
+) {
+	const executionId = "orch-ma_saved-0001";
+	const final = stage === "final";
+	const agent = (index: number, name: string, answerText: string) => ({
+		index,
+		agentId: `model:${name.toLowerCase()}`,
+		name,
+		memberKey: index === 0 ? "ma_saved-0001" : `ma_saved-0001_a${index}`,
+		executionId: index === 0 ? executionId : `${executionId}_a${index}`,
+		turnId: `turn-${index}`,
+		status: final ? "complete" : "running",
+		...(final ? { answer: answerText } : {}),
+		...(served[index] ? { record: { model: served[index] } } : {}),
+	});
+	return {
+		activeConversationId: "conv_saved",
+		activeConversation: {
+			id: "conv_saved",
+			messages: [],
+			metadata: {
+				mode: "orchestrator",
+				executions: [
+					{
+						id: executionId,
+						userMessage: "Compare the plans",
+						status: final ? "completed" : "running",
+						startedAt: "2026-10-30T10:00:00.000Z",
+						...(final
+							? { completedAt: "2026-10-30T10:01:00.000Z" }
+							: { inProgress: true }),
+						multiAgent: {
+							version: 1,
+							final,
+							agents: [
+								agent(0, "Alpha", "Saved plan A"),
+								agent(1, "Beta", "Saved plan B"),
+							],
+						},
+					},
+				],
+			},
+		},
+	};
 }
 
 /**
@@ -309,6 +460,82 @@ async function sendPrepared(forwardedProps: Record<string, unknown> = {}) {
 		await Promise.resolve();
 	});
 	return { sending };
+}
+
+type PageConversation = ComponentProps<
+	typeof FabricTemporalOrchestratorChat
+>["activeConversation"];
+
+/**
+ * The Fabric AI page's hold on the chat's conversation, as `FabricAIClient`
+ * keeps it: a created conversation goes into the URL (a navigation, so a
+ * transition), the URL selects it, its stored copy is read, and a selected
+ * conversation that reads as gone clears the URL again. Fails the test past
+ * a render budget: a conversation adopted before it is saved reads as gone,
+ * and the selection then swings between it and none while the URL lags.
+ */
+function AdoptingPage({
+	isSaved,
+	onAdoptedUnsaved,
+}: {
+	isSaved: (id: string) => boolean;
+	onAdoptedUnsaved: (id: string) => void;
+}) {
+	const [url, setUrl] = useState<string | null>(null);
+	const [selected, setSelected] = useState<string | null>(null);
+	const [read, setRead] = useState<{
+		id: string;
+		conversation: PageConversation;
+	} | null>(null);
+	const renders = useRef(0);
+	renders.current += 1;
+	if (renders.current > 400) {
+		throw new Error("The page re-rendered without end");
+	}
+	const navigate = useCallback((id: string | null) => {
+		startTransition(() => setUrl(id));
+	}, []);
+	useEffect(() => {
+		if (!selected) {
+			return;
+		}
+		const conversation = isSaved(selected)
+			? { id: selected, messages: [], metadata: { mode: "orchestrator" } }
+			: null;
+		if (!conversation) {
+			onAdoptedUnsaved(selected);
+		}
+		setRead({ id: selected, conversation });
+	}, [selected, isSaved, onAdoptedUnsaved]);
+	useEffect(() => {
+		if (url && url !== selected) {
+			setSelected(url);
+		} else if (!url && selected) {
+			setSelected(null);
+		}
+	}, [url, selected]);
+	const conversation =
+		read && read.id === selected ? read.conversation : undefined;
+	useEffect(() => {
+		if (url && selected === url && conversation === null) {
+			navigate(null);
+			setSelected(null);
+		}
+	}, [url, selected, conversation, navigate]);
+	return (
+		<>
+			<p data-testid="page-conversation">{selected ?? ""}</p>
+			<FabricTemporalOrchestratorChat
+				organizationId="org_1"
+				reasoningMode="balanced"
+				showAgentPicker
+				multiAgentOffered
+				activeConversationId={selected}
+				activeConversation={conversation}
+				onConversationCreated={navigate}
+			/>
+		</>
+	);
 }
 
 function pickBoth() {
@@ -490,51 +717,47 @@ describe("FabricTemporalOrchestratorChat — a message to several agents", () =>
 		);
 	});
 
-	it("picks the agents of a reopened conversation's multi-agent turn again, and shows its answers", async () => {
-		const executionId = "orch-ma_saved-0001";
-		renderChat({
-			activeConversationId: "conv_saved",
-			activeConversation: {
-				id: "conv_saved",
-				messages: [],
-				metadata: {
-					mode: "orchestrator",
-					executions: [
-						{
-							id: executionId,
-							userMessage: "Compare the plans",
-							status: "completed",
-							multiAgent: {
-								version: 1,
-								final: true,
-								agents: [
-									{
-										index: 0,
-										agentId: "model:alpha",
-										name: "Alpha",
-										memberKey: "ma_saved-0001",
-										executionId,
-										turnId: "turn-0",
-										status: "complete",
-										answer: "Saved plan A",
-									},
-									{
-										index: 1,
-										agentId: "model:beta",
-										name: "Beta",
-										memberKey: "ma_saved-0001_a1",
-										executionId: "orch-ma_saved-0001_a1",
-										turnId: "turn-1",
-										status: "complete",
-										answer: "Saved plan B",
-									},
-								],
-							},
-						},
-					],
-				},
-			},
+	it("adopts a new chat's conversation only once the run has started it, so the page does not loop on a conversation not yet saved", async () => {
+		const saved = new Set<string>();
+		const adoptedBeforeSaved: string[] = [];
+		m.respond = async (input, emit) => {
+			// The server saves the conversation a moment after the request.
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			saved.add(input.threadId);
+			answer(input.runId, emit, ["Plan A", "Plan B"]);
+			emit({
+				type: EventType.RUN_FINISHED,
+				threadId: input.threadId,
+				runId: input.runId,
+				outcome: { type: "success" },
+			});
+		};
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				<AdoptingPage
+					isSaved={(id) => saved.has(id)}
+					onAdoptedUnsaved={(id) => adoptedBeforeSaved.push(id)}
+				/>
+			</QueryClientProvider>,
+		);
+		pickBoth();
+		const { sending } = await sendPrepared();
+		await act(async () => {
+			await sending;
 		});
+
+		expect(adoptedBeforeSaved).toEqual([]);
+		await waitFor(() => {
+			expect(screen.getByText("Plan A")).toBeTruthy();
+			expect(screen.getByText("Plan B")).toBeTruthy();
+		});
+		expect(screen.getByTestId("page-conversation").textContent).toBe(
+			"thread-1",
+		);
+	});
+
+	it("picks the agents of a reopened conversation's multi-agent turn again, and shows its answers", async () => {
+		renderChat(savedConversation("final"));
 
 		await waitFor(() =>
 			expect(screen.getByTestId("picked").textContent).toBe(
@@ -544,5 +767,105 @@ describe("FabricTemporalOrchestratorChat — a message to several agents", () =>
 		expect(screen.getByText("Saved plan A")).toBeTruthy();
 		expect(screen.getByText("Saved plan B")).toBeTruthy();
 		expect(m.streamOptions?.multiAgentSend).toBeTypeOf("function");
+	});
+
+	it("names the model that answered each agent, and says when a model pick was not applied", async () => {
+		m.modelListing = SHARED_PLAN_LISTING;
+		m.respond = async (input, emit) => {
+			answer(input.runId, emit, ["Plan A", "Plan B"]);
+			const ends: Array<[string, string, ServedModel]> = [
+				[input.runId, "Plan A", SERVED_BY_PLAN],
+				[`${input.runId}_a1`, "Plan B", SERVED_AS_PICKED],
+			];
+			for (const [memberKey, response, model] of ends) {
+				emit({
+					type: EventType.SUBAGENT_FINISHED,
+					subagentRunId: memberKey,
+					result: { status: "completed", response, model },
+					outcome: { type: "success" },
+				});
+			}
+			emit({
+				type: EventType.RUN_FINISHED,
+				threadId: "thread-1",
+				runId: input.runId,
+				outcome: { type: "success" },
+			});
+		};
+		renderChat();
+		pickBoth();
+		const { sending } = await sendPrepared();
+		await act(async () => {
+			await sending;
+		});
+
+		await waitFor(() => expectServedLabels("Plan A", "Plan B"));
+	});
+
+	it("keeps each agent's answered-by label and not-applied note when the turn is reopened", async () => {
+		m.modelListing = SHARED_PLAN_LISTING;
+		renderChat(
+			savedConversation("final", [SERVED_BY_PLAN, SERVED_AS_PICKED]),
+		);
+
+		await waitFor(() => expectServedLabels("Saved plan A", "Saved plan B"));
+	});
+
+	it("keeps the reopened turn's picks when the member's saved picks arrive after them", async () => {
+		const props = savedConversation("final");
+		const { rerender } = renderChat(props);
+		await waitFor(() =>
+			expect(screen.getByTestId("picked").textContent).toBe(
+				"model:alpha,model:beta",
+			),
+		);
+
+		// A model kept in this chat only is never saved: the store has the first.
+		m.savedSelection = { selectedAgents: [ALPHA], defaultAgent: null };
+		rerender(chatElement(props));
+
+		await waitFor(() =>
+			expect(screen.getByTestId("picked").textContent).toBe(
+				"model:alpha,model:beta",
+			),
+		);
+	});
+
+	it("picks the member's saved agents in a chat with no multi-agent turn to reopen", async () => {
+		m.savedSelection = {
+			selectedAgents: [ALPHA, BETA],
+			defaultAgent: null,
+		};
+		renderChat();
+
+		await waitFor(() =>
+			expect(screen.getByTestId("picked").textContent).toBe(
+				"model:alpha,model:beta",
+			),
+		);
+	});
+
+	it("follows a turn still running at reload as the agents' turn only, never as a single agent's", async () => {
+		m.respond = async (input, emit) => {
+			answer("ma_saved-0001", emit, ["Live plan A", "Live plan B"]);
+			emit({
+				type: EventType.RUN_FINISHED,
+				threadId: input.threadId,
+				runId: "ma_saved-0001",
+				outcome: { type: "success" },
+			});
+		};
+		renderChat(savedConversation("running"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Live plan A")).toBeTruthy();
+			expect(screen.getByText("Live plan B")).toBeTruthy();
+		});
+		expect(m.runs[0]?.threadId).toBe("conv_saved");
+		expect(m.attach).not.toHaveBeenCalled();
+		expect(screen.getAllByText("Compare the plans")).toHaveLength(1);
+		expect(screen.getByTestId("picked").textContent).toBe(
+			"model:alpha,model:beta",
+		);
 	});
 });

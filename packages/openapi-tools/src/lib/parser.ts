@@ -8,6 +8,12 @@
 import { createHash } from "node:crypto";
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { logger } from "@repo/logs";
+import { parseJsonOrYamlSafe } from "@repo/utils/safe-yaml";
+import {
+	PINNED_FETCH_DEFAULT_CONTENT_TYPES,
+	safeFetchOutboundPinned,
+	UnsafeOutboundUrlError,
+} from "@repo/utils/url-security";
 import type { OpenAPI, OpenAPIV3, OpenAPIV3_1 } from "openapi-types";
 import type {
 	AuthSchemeInfo,
@@ -37,6 +43,43 @@ const HTTP_METHODS = [
 	"head",
 ] as const;
 
+const REF_OPTIONS = { resolve: { external: false, file: false, http: false } };
+const SPEC_MAX_BYTES = 25 * 1024 * 1024;
+const SPEC_CONTENT_TYPES = [
+	...PINNED_FETCH_DEFAULT_CONTENT_TYPES,
+	"application/vnd.oai.openapi+json",
+	"application/vnd.oai.openapi",
+	"application/octet-stream",
+	"text/x-yaml",
+];
+
+function rejectExternalRefs(
+	value: unknown,
+	seen = new WeakSet<object>(),
+): void {
+	if (!value || typeof value !== "object" || seen.has(value)) {
+		return;
+	}
+	seen.add(value);
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			rejectExternalRefs(item, seen);
+		}
+		return;
+	}
+	for (const [key, child] of Object.entries(value)) {
+		if (
+			key === "$ref" &&
+			typeof child === "string" &&
+			child !== "#" &&
+			!child.startsWith("#/")
+		) {
+			throw new Error("External OpenAPI references are not supported");
+		}
+		rejectExternalRefs(child, seen);
+	}
+}
+
 /**
  * Parse an OpenAPI specification from URL or content
  */
@@ -45,16 +88,24 @@ export async function parseOpenAPISpec(
 	options: { isUrl?: boolean } = { isUrl: true },
 ): Promise<ParsedOpenAPISpec> {
 	try {
-		let api: OpenAPI.Document;
 		let specContent: string;
 
 		if (options.isUrl) {
-			// Fetch and parse from URL
-			const response = await fetch(specUrlOrContent, {
-				headers: {
-					Accept: "application/json, application/yaml, text/yaml",
+			// Fetch the document through the outbound guard.
+			const response = await safeFetchOutboundPinned(
+				specUrlOrContent,
+				{
+					headers: {
+						Accept: SPEC_CONTENT_TYPES.join(", "),
+					},
 				},
-			});
+				{
+					allowedContentTypes: SPEC_CONTENT_TYPES,
+					followRedirects: true,
+					maxBytes: SPEC_MAX_BYTES,
+					timeoutMs: 30_000,
+				},
+			);
 
 			if (!response.ok) {
 				throw new Error(
@@ -63,12 +114,20 @@ export async function parseOpenAPISpec(
 			}
 
 			specContent = await response.text();
-			api = await SwaggerParser.parse(specUrlOrContent);
 		} else {
-			// Parse from content directly
 			specContent = specUrlOrContent;
-			api = await SwaggerParser.parse(JSON.parse(specContent));
 		}
+
+		const document = parseJsonOrYamlSafe(specContent, {
+			maxBytes: SPEC_MAX_BYTES,
+			maxDepth: 1_000,
+			maxAliasCount: 1_000,
+		});
+		rejectExternalRefs(document);
+		const api = await SwaggerParser.parse(
+			document as OpenAPI.Document,
+			REF_OPTIONS,
+		);
 
 		// Validate OpenAPI 3.x
 		if (!isOpenAPI3(api)) {
@@ -78,6 +137,7 @@ export async function parseOpenAPISpec(
 		// Dereference to resolve $ref pointers
 		const dereferencedApi = (await SwaggerParser.dereference(
 			api,
+			REF_OPTIONS,
 		)) as OpenAPI3Document;
 
 		// Calculate spec hash for change detection
@@ -106,9 +166,16 @@ export async function parseOpenAPISpec(
 		};
 	} catch (error) {
 		logger.error("Failed to parse OpenAPI spec", {
-			error,
-			specUrl: specUrlOrContent,
+			error:
+				error instanceof UnsafeOutboundUrlError
+					? "Blocked outbound URL"
+					: error,
 		});
+		if (error instanceof UnsafeOutboundUrlError) {
+			throw new Error(
+				"OpenAPI spec URL is not a permitted public address",
+			);
+		}
 		throw error;
 	}
 }

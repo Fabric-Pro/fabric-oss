@@ -315,9 +315,9 @@ function CodeBasedReviewStep({ formData }: { formData: ProjectFormData }) {
 			</div>
 
 			{/* Primary Repository */}
-			<div className="rounded-2xl border border-border bg-card p-5">
+			<div className="rounded-lg border border-border bg-card p-5">
 				<div className="flex items-center gap-3">
-					<div className="rounded-xl border border-border bg-muted p-2.5">
+					<div className="rounded-lg border border-border bg-muted p-2.5">
 						{primaryRepo.provider === "gitlab" ? (
 							<GitBranchIcon className="size-5 text-orange-500" />
 						) : (
@@ -365,7 +365,7 @@ function CodeBasedReviewStep({ formData }: { formData: ProjectFormData }) {
 						{additionalRepos.map((repo) => (
 							<div
 								key={repo.fullName}
-								className="flex items-center gap-2 rounded-xl border border-border bg-muted p-3"
+								className="flex items-center gap-2 rounded-lg border border-border bg-muted p-3"
 							>
 								{repo.provider === "gitlab" ? (
 									<GitBranchIcon className="size-4 text-orange-500 shrink-0" />
@@ -401,7 +401,7 @@ function CodeBasedReviewStep({ formData }: { formData: ProjectFormData }) {
 					{docsToGenerate.map((doc) => (
 						<div
 							key={doc.type}
-							className="rounded-xl border border-border bg-muted p-4"
+							className="rounded-lg border border-border bg-muted p-4"
 						>
 							<div className="flex items-center gap-2">
 								<CodeIcon className="size-4 text-primary" />
@@ -418,7 +418,7 @@ function CodeBasedReviewStep({ formData }: { formData: ProjectFormData }) {
 			</div>
 
 			{/* Time Estimate */}
-			<div className="flex items-start gap-3 rounded-2xl border border-primary/20 bg-primary/5 p-4">
+			<div className="flex items-start gap-3 rounded-lg border border-primary/20 bg-primary/5 p-4">
 				<ClockIcon className="mt-0.5 size-5 shrink-0 text-primary" />
 				<div>
 					<p className="font-medium text-sm">
@@ -472,9 +472,9 @@ function ProjectReviewSummary({
 	const topFeatures = features.slice(0, 5);
 
 	return (
-		<div className="rounded-[26px] border border-border bg-card p-6">
+		<div className="rounded-lg border border-border bg-card p-6">
 			<div className="mb-6">
-				<p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
+				<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 					Review
 				</p>
 				<h2 className="mt-2 text-2xl font-semibold tracking-tight">
@@ -488,9 +488,9 @@ function ProjectReviewSummary({
 			</div>
 
 			<div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
-				<div className="overflow-hidden rounded-[22px] border border-border bg-muted/40">
+				<div className="overflow-hidden rounded-lg border border-border bg-muted/40">
 					<div className="border-b border-border px-5 py-4">
-						<p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+						<p className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							Project Brief
 						</p>
 						<p className="mt-2 text-lg font-semibold text-foreground">
@@ -506,8 +506,8 @@ function ProjectReviewSummary({
 				</div>
 
 				<div className="space-y-4">
-					<div className="rounded-2xl border border-border bg-muted/40 p-4">
-						<p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+					<div className="rounded-lg border border-border bg-muted/40 p-4">
+						<p className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							Project Shape
 						</p>
 						<div className="mt-3 flex flex-wrap gap-2">
@@ -528,9 +528,9 @@ function ProjectReviewSummary({
 						</div>
 					</div>
 
-					<div className="rounded-2xl border border-border bg-muted/40 p-4">
+					<div className="rounded-lg border border-border bg-muted/40 p-4">
 						<div className="flex items-center justify-between gap-3">
-							<p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+							<p className="text-[11px] uppercase tracking-wide text-muted-foreground">
 								Tech Stack
 							</p>
 							<p className="text-xs text-muted-foreground">
@@ -555,9 +555,9 @@ function ProjectReviewSummary({
 						</div>
 					</div>
 
-					<div className="rounded-2xl border border-border bg-muted/40 p-4">
+					<div className="rounded-lg border border-border bg-muted/40 p-4">
 						<div className="flex items-center justify-between gap-3">
-							<p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+							<p className="text-[11px] uppercase tracking-wide text-muted-foreground">
 								Feature Snapshot
 							</p>
 							<p className="text-xs text-muted-foreground">
@@ -569,7 +569,7 @@ function ProjectReviewSummary({
 								topFeatures.map((feature, index) => (
 									<div
 										key={`${feature}-${index}`}
-										className="rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground/85"
+										className="rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground/85"
 									>
 										{feature}
 									</div>
@@ -2191,14 +2191,7 @@ export function ProjectCreationWizard({
 		<div className="mx-auto max-w-5xl space-y-8">
 			{/* Header — plain page title, not a card. */}
 			<div className="px-1">
-				<h1
-					className="text-4xl tracking-tight"
-					style={{
-						fontFamily:
-							"var(--font-sans, 'EB Garamond', Georgia, serif)",
-						fontWeight: 400,
-					}}
-				>
+				<h1 className="font-semibold text-xl tracking-tight">
 					{isEditMode && !isDraftResume
 						? "Edit Project"
 						: "Create New Project"}

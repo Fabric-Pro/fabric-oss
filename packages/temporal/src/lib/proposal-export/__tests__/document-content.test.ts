@@ -7,12 +7,16 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	coverLetter,
 	isDocumentMediaKey,
+	letterRoles,
 	namesStoredObject,
 	rawHtmlFallback,
 	readUploadedImageTag,
 	safeLinkHref,
 } from "../document-content";
+import { prepareExportMarkdown } from "../markdown";
+import { plainText } from "../print-markup";
 
 const PROJECT = "project-example-1";
 const DOCUMENT = "document-example-1";
@@ -204,5 +208,36 @@ describe("raw HTML that is not an accepted upload", () => {
 			),
 		).toBe(true);
 		expect(namesStoredObject('<a href="https://example.com">')).toBe(false);
+	});
+});
+
+describe("letterRoles", () => {
+	/** Each letter paragraph's text and role, in order. */
+	const rolesOf = (letter: string) => {
+		const found = coverLetter(
+			prepareExportMarkdown(`## Cover letter\n\n${letter}\n\n## Overview`)
+				.root,
+		);
+		const roles = letterRoles(found?.nodes ?? []);
+		return (found?.nodes ?? []).map((node) => [
+			plainText(node),
+			node.type === "paragraph" ? (roles.get(node) ?? null) : null,
+		]);
+	};
+
+	it("takes a short first line with a digit as the date", () => {
+		expect(rolesOf("23 October 2026\n\nDear Jordan Example,")).toEqual([
+			["23 October 2026", "date"],
+			["Dear Jordan Example,", null],
+		]);
+	});
+
+	it("leaves a short first line without a digit as prose, so a salutation never prints as the date", () => {
+		expect(
+			rolesOf("Dear Jordan Example,\n\nThank you for the conversation."),
+		).toEqual([
+			["Dear Jordan Example,", null],
+			["Thank you for the conversation.", null],
+		]);
 	});
 });

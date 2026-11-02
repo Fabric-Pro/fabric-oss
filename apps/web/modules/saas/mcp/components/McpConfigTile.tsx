@@ -217,10 +217,10 @@ export function McpConfigTile({
 		<div
 			data-managed-default={isManagedDefault ? "true" : undefined}
 			className={cn(
-				"app-surface group relative flex flex-col overflow-hidden rounded-2xl transition-[border-color,box-shadow,background-color]",
+				"app-surface group relative flex flex-col overflow-hidden rounded-lg transition-[border-color,box-shadow,background-color] duration-150",
 				isManagedDefault
-					? "border-border/80"
-					: "hover:border-primary/25 hover:shadow-md hover:shadow-foreground/5",
+					? "border-border"
+					: "hover:border-primary/40 hover:shadow-xs",
 			)}
 		>
 			{/* Header */}
@@ -233,8 +233,8 @@ export function McpConfigTile({
 					repositoryUrl={config.mcpServer?.repositoryUrl}
 					defaultUrl={config.baseUrl || config.mcpServer?.defaultUrl}
 					size={36}
-					className="h-9 w-9 rounded-xl ring-1 ring-border/60"
-					fallbackClassName="bg-violet-50 text-violet-600 dark:bg-violet-900/20 dark:text-violet-400"
+					className="h-9 w-9 rounded-md ring-1 ring-border"
+					fallbackClassName="bg-primary/10 text-primary"
 				/>
 
 				{/* Content */}

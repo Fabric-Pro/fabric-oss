@@ -44,7 +44,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			stories: {
-				list: {
+				board: {
 					queryKey: (...args: unknown[]) => listQueryKey(...args),
 				},
 				get: {

@@ -1050,7 +1050,7 @@ export function WeavePlanList({
 													planCheckboxes,
 												);
 											return (
-												<div className="mb-4 rounded-xl border border-primary/15 bg-primary/[0.04] p-3 text-sm text-muted-foreground">
+												<div className="mb-4 rounded-lg border border-primary/15 bg-primary/[0.04] p-3 text-sm text-muted-foreground">
 													<div className="flex items-start justify-between gap-3">
 														<div>
 															<p className="font-medium text-foreground">
@@ -1427,7 +1427,7 @@ export function WeavePlanList({
 													plan.id
 												] && (
 													<div className="rounded-lg border border-border/60 bg-muted/20 p-2 space-y-1 mb-2">
-														<p className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+														<p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 															Previous version
 														</p>
 														{previousCheckboxesByPlan[

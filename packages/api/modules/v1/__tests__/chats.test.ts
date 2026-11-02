@@ -20,6 +20,7 @@ const mockCreateAiChat = vi.fn();
 const mockUpdateAiChatForTenant = vi.fn();
 const mockDeleteAiChatForTenant = vi.fn();
 const mockHasProjectAccess = vi.fn();
+let ownerPermissionAllowed = true;
 
 const mockGetAIModelWithMetadata = vi.fn();
 const mockGenerateText = vi.fn();
@@ -70,6 +71,19 @@ vi.mock("../../external-api/middleware/api-key-auth", () => ({
 	requireScope: () => async (_c: unknown, next: () => Promise<void>) => {
 		await next();
 	},
+	requireV1OwnerPermission: async (
+		c: { json: (body: unknown, status: number) => unknown },
+		_context: unknown,
+		scope: string,
+	) =>
+		ownerPermissionAllowed
+			? null
+			: c.json(
+					{
+						error: `The key's owner no longer holds the access required for ${scope} in this organization`,
+					},
+					403,
+				),
 }));
 
 import { registerChatRoutes } from "../chats";
@@ -127,9 +141,40 @@ function chatRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	ownerPermissionAllowed = true;
 });
 
 // --- Tests ---------------------------------------------------------------
+
+describe("v1 chats — the key owner's live AI_CHAT permission", () => {
+	it.each([
+		["POST", "/chats", { title: "Plan" }],
+		["PATCH", "/chats/chat-1", { title: "Renamed" }],
+		["DELETE", "/chats/chat-1", undefined],
+		["POST", "/chats/chat-1/messages", { content: "Hello" }],
+	] as const)(
+		"refuses a viewer's personal key on %s %s before any chat side effect",
+		async (method, path, body) => {
+			ownerPermissionAllowed = false;
+			const app = makeApp();
+
+			const response = await app.request(path, {
+				method,
+				headers: { "content-type": "application/json" },
+				...(body === undefined ? {} : { body: JSON.stringify(body) }),
+			});
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({
+				error: "The key's owner no longer holds the access required for chats:write in this organization",
+			});
+			expect(mockCreateAiChat).not.toHaveBeenCalled();
+			expect(mockUpdateAiChatForTenant).not.toHaveBeenCalled();
+			expect(mockDeleteAiChatForTenant).not.toHaveBeenCalled();
+			expect(mockGenerateText).not.toHaveBeenCalled();
+		},
+	);
+});
 
 describe("v1 chats — GET/POST/PATCH/DELETE", () => {
 	it("GET /chats lists the organization a personal key resolves to", async () => {

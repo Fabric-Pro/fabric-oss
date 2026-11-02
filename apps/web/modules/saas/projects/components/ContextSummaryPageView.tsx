@@ -78,7 +78,7 @@ export function ContextSummaryPageView({ summary, backHref }: Props) {
 					<Link
 						href={backHref}
 						aria-label="Back to project context"
-						className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground motion-safe:transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+						className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground motion-safe:transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 					>
 						<ArrowLeftIcon className="size-4" aria-hidden="true" />
 					</Link>
@@ -137,7 +137,7 @@ export function ContextSummaryPageView({ summary, backHref }: Props) {
 							/>
 						</div>
 						<h1
-							className="font-serif text-3xl font-normal leading-tight tracking-tight text-foreground sm:text-4xl"
+							className="text-xl font-semibold leading-tight tracking-tight text-foreground "
 							aria-describedby="context-summary-eyebrow"
 						>
 							{summary.projectName}
@@ -174,9 +174,9 @@ export function ContextSummaryPageView({ summary, backHref }: Props) {
 				id="context-summary-main"
 				className="mx-auto w-full max-w-4xl px-6 py-8"
 			>
-				<h2 className="sr-only">Summary</h2>
+				<h2 className="font-semibold sr-only">Summary</h2>
 				{hasContent ? (
-					<article className="prose prose-stone dark:prose-invert max-w-none rounded-xl border border-border bg-card p-8 prose-headings:font-serif prose-headings:font-normal prose-pre:overflow-auto prose-pre:border prose-pre:border-border prose-pre:bg-muted">
+					<article className="prose prose-stone dark:prose-invert max-w-none rounded-lg border border-border bg-card p-8 prose-headings:font-sans prose-headings:font-semibold prose-pre:overflow-auto prose-pre:border prose-pre:border-border prose-pre:bg-muted">
 						<ContextSummaryMarkdown
 							content={summary.content}
 							references={summary.references}
@@ -186,7 +186,7 @@ export function ContextSummaryPageView({ summary, backHref }: Props) {
 						/>
 					</article>
 				) : (
-					<div className="rounded-xl border border-border bg-muted/30 p-8 text-center text-muted-foreground text-sm">
+					<div className="rounded-lg border border-border bg-muted/30 p-8 text-center text-muted-foreground text-sm">
 						This summary has no content yet.
 					</div>
 				)}

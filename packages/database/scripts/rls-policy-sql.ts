@@ -161,6 +161,49 @@ export function buildProjectMemberOrTenantPolicySQL(
 						`;
 }
 
+/** Project access plus connection-owner consent; no personal tenant branch. */
+function remoteAgentServerPredicates() {
+	const table = "project_remote_agent_server";
+	const predicate = `current_tenant_type() = 'organization'
+		AND EXISTS (SELECT 1 FROM "project" AS host WHERE host.id = "${table}"."projectId" AND host."organizationId" IS NOT NULL)
+		AND ${projectMemberOrTenantPredicate(table, "projectId")}
+		AND ("${table}"."scope" = 'TEAM' OR "${table}"."userId" = current_user_id())`;
+	const writePredicate = `${predicate} AND (
+		("${table}"."scope" = 'PRIVATE' AND "${table}"."userId" = current_user_id())
+		OR ("${table}"."scope" = 'TEAM' AND EXISTS (
+			SELECT 1 FROM "member" AS admin JOIN "project" AS host ON host."organizationId" = admin."organizationId"
+			WHERE host.id = "${table}"."projectId" AND admin."userId" = current_user_id() AND admin.role IN ('owner', 'admin')
+		))
+	)`;
+	return { table, predicate, writePredicate };
+}
+
+export function buildRemoteAgentServerPolicySQL(): string {
+	const { table, predicate } = remoteAgentServerPredicates();
+	return `CREATE POLICY tenant_isolation ON "${table}" FOR SELECT USING (${predicate})`;
+}
+
+export function buildRemoteAgentServerWritePolicies(): Array<{
+	name: string;
+	sql: string;
+}> {
+	const { table, writePredicate } = remoteAgentServerPredicates();
+	return [
+		{
+			name: "remote_server_insert",
+			sql: `CREATE POLICY remote_server_insert ON "${table}" FOR INSERT WITH CHECK (${writePredicate})`,
+		},
+		{
+			name: "remote_server_update",
+			sql: `CREATE POLICY remote_server_update ON "${table}" FOR UPDATE USING (${writePredicate}) WITH CHECK (${writePredicate})`,
+		},
+		{
+			name: "remote_server_delete",
+			sql: `CREATE POLICY remote_server_delete ON "${table}" FOR DELETE USING (${writePredicate})`,
+		},
+	];
+}
+
 /**
  * The `project_member_or_tenant` predicate on its own, shared by that policy
  * and by `project_member_or_tenant_consistent` below.

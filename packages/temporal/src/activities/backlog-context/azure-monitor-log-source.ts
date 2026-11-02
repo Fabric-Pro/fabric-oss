@@ -23,6 +23,7 @@
  */
 import type {
 	ErrorGroupScope,
+	ErrorGroupSummary,
 	LogQueryScope,
 	LogSeverity,
 	LogSourceAdapter,
@@ -134,6 +135,207 @@ const MAX_GROUP_COMPONENTS = 5;
  * its revision.
  */
 const PLATFORM_EVENTS_NOT_FAILURES = ["Completed", "ScaledObjectDeleted"];
+export interface PlatformNoiseRule {
+	id: string;
+	failureReasons: readonly string[];
+	log?: { operator: "endswith" | "startswith"; value: string };
+	key: "app" | "revision" | "replica";
+	proofs: readonly (
+		| {
+				reasons: readonly string[];
+				direction: "after" | "at-or-after" | "before";
+				gapMinutes: number;
+		  }
+		| {
+				kind: "simultaneous";
+				minApps: number;
+				withinMinutes: number;
+				persistence: {
+					maxDistinctMinutes: number;
+					spanMinutes: number;
+				};
+		  }
+	)[];
+}
+
+export const PLATFORM_NOISE_RULES: readonly PlatformNoiseRule[] = [
+	{
+		id: "key-vault-canceled",
+		failureReasons: [
+			"SyncingSecretFromAzureKeyVaultForContainerAppFailed",
+			"FetchingSecretFromAzureKeyVaultFailed",
+		],
+		log: { operator: "endswith", value: "context canceled" },
+		key: "app",
+		proofs: [
+			{
+				reasons: [
+					"SyncingSecretFromAzureKeyVaultForContainerAppSucceeded",
+				],
+				direction: "after",
+				gapMinutes: 15,
+			},
+		],
+	},
+	{
+		id: "replica-scheduling",
+		failureReasons: ["AssigningReplicaFailed"],
+		log: {
+			operator: "endswith",
+			value: "Waiting for infrastructure to be ready",
+		},
+		key: "revision",
+		proofs: [
+			{
+				reasons: ["AssigningReplica"],
+				direction: "after",
+				gapMinutes: 2,
+			},
+		],
+	},
+	{
+		id: "revision-autoscaler",
+		failureReasons: ["ScaledObjectCheckFailed"],
+		log: { operator: "endswith", value: "Target resource doesn't exist" },
+		key: "revision",
+		proofs: [
+			{
+				reasons: ["KEDAScalersStarted"],
+				direction: "at-or-after",
+				gapMinutes: 2,
+			},
+		],
+	},
+	{
+		id: "replica-readiness",
+		failureReasons: ["ReplicaUnhealthy"],
+		log: { operator: "startswith", value: "Readiness probe failed" },
+		key: "replica",
+		proofs: [
+			{
+				reasons: ["StoppingContainer"],
+				direction: "before",
+				gapMinutes: 5,
+			},
+			{
+				reasons: ["ContainerStarted"],
+				direction: "before",
+				gapMinutes: 2,
+			},
+		],
+	},
+	{
+		id: "autoscaler-teardown",
+		failureReasons: ["FailedGetExternalMetric"],
+		key: "revision",
+		proofs: [
+			{
+				reasons: ["ScaledObjectDeleted"],
+				direction: "before",
+				gapMinutes: 1,
+			},
+			{
+				reasons: ["ScaledObjectDeleted"],
+				direction: "at-or-after",
+				gapMinutes: 1,
+			},
+		],
+	},
+	{
+		id: "metrics-service-blip",
+		failureReasons: ["FailedGetExternalMetric"],
+		key: "app",
+		proofs: [
+			{
+				kind: "simultaneous",
+				minApps: 3,
+				withinMinutes: 1,
+				persistence: { maxDistinctMinutes: 3, spanMinutes: 15 },
+			},
+		],
+	},
+];
+
+function noisePredicate(rule: PlatformNoiseRule): string {
+	return `_reason in (${rule.failureReasons.map(kqlStringLiteral).join(", ")}) ${rule.log ? `and _log ${rule.log.operator} ${kqlStringLiteral(rule.log.value)}` : ""}`.trimEnd();
+}
+
+function noiseClassification(): string[] {
+	const clauses: string[] = [];
+	PLATFORM_NOISE_RULES.forEach((rule, index) => {
+		const key = `_${rule.key}`;
+		rule.proofs.forEach((proof, proofIndex) => {
+			if ("kind" in proof) {
+				const { withinMinutes, minApps, persistence } = proof;
+				// Expand only adjacent time buckets, then compare actual timestamps.
+				// Exact distinct counts avoid approximation at the classification thresholds.
+				clauses.push(
+					`let _failures${index} = materialize(_systemLogs`,
+					`| where ${noisePredicate(rule)}`,
+					`| where isnotempty(${key})`,
+					`| distinct ${key}, failAt = TimeGenerated);`,
+					`let _simultaneous${index} = _failures${index}`,
+					`| extend _bucket = bin(failAt, ${withinMinutes}m)`,
+					`| join kind=inner (_failures${index}`,
+					`| project peerApp = ${key}, peerAt = failAt`,
+					`| extend _b = bin(peerAt, ${withinMinutes}m)`,
+					`| mv-expand _bucket = pack_array(_b - ${withinMinutes}m, _b, _b + ${withinMinutes}m) to typeof(datetime)) on _bucket`,
+					`| where peerAt >= failAt - ${withinMinutes}m and peerAt <= failAt + ${withinMinutes}m`,
+					`| summarize apps = count_distinct(peerApp) by ${key}, failAt`,
+					`| where apps >= ${minApps};`,
+					`let _noise${index}_${proofIndex} = _simultaneous${index}`,
+					`| extend _bucket = bin(failAt, ${persistence.spanMinutes}m)`,
+					`| join kind=inner (_failures${index}`,
+					`| project ${key}, peerAt = failAt`,
+					`| extend _b = bin(peerAt, ${persistence.spanMinutes}m)`,
+					`| mv-expand _bucket = pack_array(_b - ${persistence.spanMinutes}m, _b, _b + ${persistence.spanMinutes}m) to typeof(datetime)) on ${key}, _bucket`,
+					`| where peerAt >= failAt - ${persistence.spanMinutes}m and peerAt <= failAt + ${persistence.spanMinutes}m`,
+					`| summarize minutes = count_distinct(bin(peerAt, 1m)) by ${key}, failAt`,
+					`| where minutes <= ${persistence.maxDistinctMinutes}`,
+					`| distinct ${key}, failAt;`,
+				);
+				return;
+			}
+			// after is strict; KEDA accepts ties explicitly. before includes ties because
+			// shutdown/startup events can share the readiness event's timestamp.
+			const time =
+				proof.direction === "before"
+					? `okAt <= failAt and okAt >= failAt - ${proof.gapMinutes}m`
+					: `failAt ${proof.direction === "after" ? "<" : "<="} okAt and okAt <= failAt + ${proof.gapMinutes}m`;
+			clauses.push(
+				`let _proof${index}_${proofIndex} = _systemLogs`,
+				`| where _reason in (${proof.reasons.map(kqlStringLiteral).join(", ")})`,
+				`| where isnotempty(${key})`,
+				`| project ${key}, okAt = TimeGenerated;`,
+				`let _noise${index}_${proofIndex} = _systemLogs`,
+				`| where ${noisePredicate(rule)}`,
+				`| where isnotempty(${key})`,
+				`| distinct ${key}, failAt = TimeGenerated`,
+				`| join kind=inner (_proof${index}_${proofIndex}) on ${key}`,
+				`| where ${time}`,
+				`| distinct ${key}, failAt;`,
+			);
+		});
+		clauses.push(
+			`let _noise${index} = union ${rule.proofs.map((_, i) => `_noise${index}_${i}`).join(", ")}`,
+			`| distinct ${key}, failAt;`,
+		);
+	});
+	clauses.push("let _classified = materialize(_systemLogs");
+	PLATFORM_NOISE_RULES.forEach((rule, index) => {
+		clauses.push(
+			`| join kind=leftouter (_noise${index} | extend _proven${index} = true) on _${rule.key}, $left.TimeGenerated == $right.failAt`,
+			`| extend _rule${index} = coalesce(_proven${index}, false) and ${noisePredicate(rule)}`,
+		);
+	});
+	clauses.push(
+		`| extend _noiseRule = case(${PLATFORM_NOISE_RULES.map((rule, i) => `_rule${i}, ${kqlStringLiteral(rule.id)}`).join(", ")}, "")`,
+		"| extend _setAside = isnotempty(_noiseRule)",
+		");",
+	);
+	return clauses;
+}
+
 /** Trace groups key on this much of the normalized message. */
 const TRACE_KEY_CHARS = 300;
 
@@ -205,15 +407,25 @@ export function buildErrorGroupQuery(
 		clauses.push("_appErrors");
 	} else {
 		clauses.push(
-			"let _platformEvents = union isfuzzy=true ContainerAppSystemLogs_CL, ContainerAppSystemLogs, (datatable(TimeGenerated: datetime)[])",
+			"let _systemLogs = materialize(union isfuzzy=true ContainerAppSystemLogs_CL, ContainerAppSystemLogs, (datatable(TimeGenerated: datetime)[])",
 			window,
 			// The classic table suffixes its columns; the resource-specific one
 			// does not, and there `Type` carries the event's level.
+			// RevisionName_s and ReplicaName_s were observed on 2026-10-31.
+			// Unsuffixed revision/replica names follow the existing column_ifexists
+			// pattern; their resource-specific schema has not been observed.
 			'| extend _level = iff(isnotempty(tostring(column_ifexists("Type_s", ""))), tostring(column_ifexists("Type_s", "")), tostring(column_ifexists("Type", "")))',
-			'| where _level in~ ("Warning", "Error")',
 			'| extend _reason = coalesce(tostring(column_ifexists("Reason_s", "")), tostring(column_ifexists("Reason", "")))',
 			'| extend _app = coalesce(tostring(column_ifexists("ContainerAppName_s", "")), tostring(column_ifexists("ContainerAppName", "")))',
 			'| extend _log = coalesce(tostring(column_ifexists("Log_s", "")), tostring(column_ifexists("Log", "")))',
+			'| extend _revision = coalesce(tostring(column_ifexists("RevisionName_s", "")), tostring(column_ifexists("RevisionName", "")))',
+			'| extend _replica = coalesce(tostring(column_ifexists("ReplicaName_s", "")), tostring(column_ifexists("ReplicaName", "")))',
+			");",
+			...noiseClassification(),
+			"let _platformEvents = _classified",
+			"| where not(_setAside)",
+			'| where _level in~ ("Warning", "Error")',
+
 			`| where isnotempty(_reason) and _reason !in~ (${PLATFORM_EVENTS_NOT_FAILURES.map((reason) => `"${reason}"`).join(", ")})`,
 			// Not `reason: log`. A reason such as SyncingSecret...Failed is an
 			// identifier the redaction step reads as a secret's name, and it
@@ -228,7 +440,7 @@ export function buildErrorGroupQuery(
 			].join(", "),
 			'  by Kind = "platform", GroupKey = _reason',
 			'| extend AffectedUsers = 0, ExceptionType = "";',
-			"union _appErrors, _platformEvents",
+			"let _groups = union _appErrors, _platformEvents",
 		);
 	}
 	clauses.push(
@@ -236,6 +448,14 @@ export function buildErrorGroupQuery(
 		"| order by Occurrences desc",
 		`| take ${Math.max(1, Math.floor(scope.maxGroups))}`,
 	);
+	if (!requireTenant) {
+		clauses.push(
+			";",
+			"union _groups, (_classified | where _setAside",
+			`| summarize Occurrences = count(), Components = make_set_if(_app, isnotempty(_app), ${MAX_GROUP_COMPONENTS}) by GroupKey = _noiseRule`,
+			'| where Occurrences > 0 | extend Kind = "platform-noise")',
+		);
+	}
 	return clauses.join("\n");
 }
 
@@ -266,9 +486,41 @@ function errorGroupKind(value: unknown): RawErrorGroup["kind"] {
  * tested against a captured payload. Rows that do not carry a usable key,
  * count and time range are dropped rather than guessed at.
  */
-export function parseErrorGroupResponse(payload: unknown): RawErrorGroup[] {
+export function parseErrorGroupResponse(payload: unknown): {
+	groups: RawErrorGroup[];
+	platformNoiseSetAside: number;
+	platformNoiseByRule: Record<string, number>;
+	platformNoiseApps: string[];
+} {
+	let platformNoiseSetAside = 0;
+	const platformNoiseByRule: Record<string, number> = {};
+	let platformNoiseApps: string[] = [];
 	const groups: RawErrorGroup[] = [];
 	for (const record of tableRecords(payload)) {
+		if (record.Kind === "platform-noise") {
+			const count = Number(record.Occurrences);
+			if (Number.isFinite(count) && count > 0) {
+				platformNoiseSetAside += count;
+				if (typeof record.GroupKey === "string" && record.GroupKey) {
+					const key = record.GroupKey;
+					Object.defineProperty(platformNoiseByRule, key, {
+						value:
+							(Object.hasOwn(platformNoiseByRule, key)
+								? platformNoiseByRule[key]
+								: 0) + count,
+						enumerable: true,
+						configurable: true,
+					});
+				}
+				platformNoiseApps = [
+					...new Set([
+						...platformNoiseApps,
+						...stringArray(record.Components, MAX_GROUP_COMPONENTS),
+					]),
+				].slice(0, MAX_GROUP_COMPONENTS);
+			}
+			continue;
+		}
 		const key = record.GroupKey;
 		const occurrences = Number(record.Occurrences);
 		if (
@@ -299,7 +551,12 @@ export function parseErrorGroupResponse(payload: unknown): RawErrorGroup[] {
 					: undefined,
 		});
 	}
-	return groups;
+	return {
+		groups,
+		platformNoiseSetAside,
+		platformNoiseApps,
+		platformNoiseByRule,
+	};
 }
 
 interface LogAnalyticsTable {
@@ -571,7 +828,7 @@ export function createAzureMonitorLogSourceAdapter(
 		},
 		async summarizeErrorGroups(
 			scope: ErrorGroupScope,
-		): Promise<RawErrorGroup[]> {
+		): Promise<ErrorGroupSummary> {
 			const payload = await runQuery(
 				buildErrorGroupQuery(scope, {
 					requireTenantPredicate:
@@ -579,16 +836,28 @@ export function createAzureMonitorLogSourceAdapter(
 						options.operatorErrorScan !== true,
 				}),
 			);
-			const groups = parseErrorGroupResponse(payload);
+			const {
+				groups,
+				platformNoiseSetAside,
+				platformNoiseApps,
+				platformNoiseByRule,
+			} = parseErrorGroupResponse(payload);
 			logger.info(
 				"[RecurringErrors] Azure Monitor returned error groups",
 				{
 					workspaceId: options.workspaceId,
 					count: groups.length,
+					platformNoiseByRule,
+					platformNoiseSetAside,
+					platformNoiseApps,
 					operatorScan: options.operatorErrorScan === true,
 				},
 			);
-			return groups.slice(0, scope.maxGroups);
+			return Object.assign(groups.slice(0, scope.maxGroups), {
+				platformNoiseByRule,
+				platformNoiseSetAside,
+				platformNoiseApps,
+			});
 		},
 	};
 }

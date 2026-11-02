@@ -188,6 +188,8 @@ export interface ExecuteAgentTurnInput {
 		storagePath: string;
 		mimeType: string;
 		name: string;
+		/** Authenticated API actor that uploaded this image; absent on legacy inputs. */
+		accessUserId?: string;
 	}>;
 	/** Built-in tool names to load (e.g., "image-generation") */
 	builtInToolNames?: string[];

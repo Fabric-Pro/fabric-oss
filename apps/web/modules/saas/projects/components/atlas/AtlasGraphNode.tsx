@@ -1,6 +1,6 @@
 "use client";
 
-import type { GraphNodeMetrics, AtlasNodeKind } from "@repo/atlas/types";
+import type { AtlasNodeKind, GraphNodeMetrics } from "@repo/atlas/types";
 import { cn } from "@ui/lib";
 /**
  * Custom React Flow node for the Atlas graph. A compact card: a colour-chip
@@ -57,7 +57,7 @@ function AtlasGraphNodeImpl({ data }: { data: AtlasNodeData }) {
 	return (
 		<div
 			className={cn(
-				"group relative flex items-start gap-2.5 rounded-xl border bg-card px-2.5 py-2 text-left shadow-sm motion-safe:transition-[border-color,box-shadow,opacity]",
+				"group relative flex items-start gap-2.5 rounded-lg border bg-card px-2.5 py-2 text-left shadow-sm motion-safe:transition-[border-color,box-shadow,opacity]",
 				data.dimmed ? "opacity-35" : "opacity-100",
 				accentBorder
 					? "border-[color:var(--node-accent)]"

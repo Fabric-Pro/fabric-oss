@@ -34,7 +34,6 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
 import { AgentTemplateCard } from "./AgentTemplateCard";
-import { AgentTemplatesHero } from "./AgentTemplatesHero";
 import { TemplatePreviewSheet } from "./TemplatePreviewSheet";
 
 const categories = [
@@ -42,73 +41,73 @@ const categories = [
 		value: "all",
 		label: "All Agents",
 		icon: LayoutGridIcon,
-		color: "text-slate-600 dark:text-slate-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "DATA",
 		label: "Data",
 		icon: BarChart3Icon,
-		color: "text-blue-600 dark:text-blue-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "ENGINEERING",
 		label: "Engineering",
 		icon: CodeIcon,
-		color: "text-success dark:text-green-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "SALES",
 		label: "Sales",
 		icon: BriefcaseIcon,
-		color: "text-amber-600 dark:text-amber-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "SUPPORT",
 		label: "Support",
 		icon: HeadphonesIcon,
-		color: "text-purple-600 dark:text-purple-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "MARKETING",
 		label: "Marketing",
 		icon: MegaphoneIcon,
-		color: "text-pink-600 dark:text-pink-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "PRODUCT",
 		label: "Product",
 		icon: RocketIcon,
-		color: "text-cyan-600 dark:text-cyan-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "KNOWLEDGE",
 		label: "Knowledge",
 		icon: BookOpenIcon,
-		color: "text-indigo-600 dark:text-indigo-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "PRODUCTIVITY",
 		label: "Productivity",
 		icon: ZapIcon,
-		color: "text-highlight dark:text-yellow-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "FINANCE",
 		label: "Finance",
 		icon: WalletIcon,
-		color: "text-emerald-600 dark:text-emerald-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "LEGAL",
 		label: "Legal",
 		icon: ScaleIcon,
-		color: "text-slate-600 dark:text-slate-400",
+		color: "text-muted-foreground",
 	},
 	{
 		value: "OPERATIONS",
 		label: "Operations",
 		icon: SettingsIcon,
-		color: "text-highlight dark:text-orange-400",
+		color: "text-muted-foreground",
 	},
 ];
 
@@ -261,14 +260,12 @@ export function AgentTemplatesList({
 
 	return (
 		<div className="space-y-4">
-			<AgentTemplatesHero />
-
 			{/* One toolbar: categories on the left, search and actions on
 			    the right. The onboarding anchors stay where they were. */}
-			<div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+			<div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
 				<div
 					data-onboarding-target="agent-templates-category-filter"
-					className="flex flex-wrap items-center gap-1"
+					className="flex flex-wrap items-center gap-2"
 				>
 					{categories.map((cat) => {
 						const Icon = cat.icon;
@@ -280,54 +277,49 @@ export function AgentTemplatesList({
 								onClick={() => setCategoryFilter(cat.value)}
 								aria-pressed={selected}
 								className={cn(
-									"flex items-center gap-1.5 rounded-[6px] border px-2.5 py-1.5 text-[13px] transition-colors",
+									"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 									selected
-										? "border-border bg-accent text-foreground"
-										: "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+										? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
+										: "border-border bg-card text-foreground hover:bg-muted/60",
 								)}
 							>
-								<Icon
-									className={cn(
-										"h-3.5 w-3.5",
-										selected ? "" : cat.color,
-									)}
-								/>
+								<Icon className="size-4 text-foreground" />
 								{cat.label}
 							</button>
 						);
 					})}
 				</div>
 
-				<div className="flex flex-wrap items-center gap-2">
+				<div className="flex flex-wrap items-center gap-2 shrink-0">
 					<div
 						data-onboarding-target="agent-templates-search"
-						className="relative w-full sm:w-64"
+						className="relative w-full sm:w-56"
 					>
-						<SearchIcon className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+						<SearchIcon className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
 						<SearchInput
 							placeholder="Search templates..."
 							value={searchQuery}
 							onChange={(e) => setSearchQuery(e.target.value)}
-							className="h-9 pl-9 text-sm"
+							className="h-8 pl-8"
 						/>
 					</div>
 					<Button
 						data-onboarding-target="agent-templates-create-agent"
 						asChild
-						variant="outline"
+						variant="primary"
 						size="sm"
 					>
 						<Link
 							href={`${basePath.replace("agent-templates", "agents")}/create`}
 						>
-							<PlusIcon className="h-4 w-4" />
+							<PlusIcon className="size-3.5" />
 							Create New Agent
 						</Link>
 					</Button>
 					{user?.role === "admin" && (
-						<Button asChild size="sm">
+						<Button asChild variant="outline" size="sm">
 							<Link href={`${basePath}/new`}>
-								<PlusIcon className="h-4 w-4" />
+								<PlusIcon className="size-3.5" />
 								Create New Template
 							</Link>
 						</Button>
@@ -338,27 +330,26 @@ export function AgentTemplatesList({
 			{/* Content */}
 			{isLoading ? (
 				<div className="flex justify-center py-16">
-					<Spinner className="h-8 w-8" />
+					<Spinner className="h-6 w-6" />
 				</div>
 			) : templates.length === 0 ? (
-				<div className="text-center py-16 space-y-4">
-					<div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center mx-auto">
-						<SparklesIcon className="w-8 h-8 text-muted-foreground" />
-					</div>
-					<div>
-						<h3 className="text-base font-medium">
-							No templates found
-						</h3>
-						<p className="text-muted-foreground text-sm">
+				<div className="flex flex-col items-center justify-center py-16 text-center space-y-3">
+					<SparklesIcon
+						className="size-10 text-muted-foreground/45"
+						strokeWidth={1.5}
+						aria-hidden="true"
+					/>
+					<div className="space-y-1">
+						<p className="text-sm text-muted-foreground">
 							{debouncedSearch
 								? "No templates match your search"
-								: "Get started by creating your first template"}
+								: "No templates found"}
 						</p>
 					</div>
 					{user?.role === "admin" && (
-						<Button asChild>
+						<Button asChild size="sm" variant="outline">
 							<Link href={`${basePath}/new`}>
-								<PlusIcon className="h-4 w-4" />
+								<PlusIcon className="size-3.5" />
 								Create New Template
 							</Link>
 						</Button>

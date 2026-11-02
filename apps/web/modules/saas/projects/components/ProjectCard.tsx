@@ -268,7 +268,7 @@ export function ProjectCard({
 		// biome-ignore lint/a11y/useSemanticElements: card contains nested interactive elements (Checkbox, buttons); cannot use <button>
 		<div
 			className={cn(
-				"group relative flex flex-col rounded-xl border bg-card transition-colors hover:border-primary/30 hover:bg-muted/20",
+				"group relative flex flex-col rounded-lg border bg-card transition-colors hover:border-primary/30 hover:bg-muted/20",
 				isDeleted && "opacity-70",
 				isCardInteractive && "cursor-pointer",
 				isSelected && "border-primary ring-2 ring-primary/20",

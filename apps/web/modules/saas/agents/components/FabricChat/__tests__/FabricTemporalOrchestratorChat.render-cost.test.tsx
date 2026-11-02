@@ -235,8 +235,8 @@ vi.mock("../ConversationToolPicker", () => ({
 }));
 
 const responseRenders = vi.hoisted(() => [] as string[]);
-vi.mock("@/components/ai-elements/response", () => ({
-	Response: ({ children }: { children: ReactNode }) => {
+vi.mock("@/components/ai-elements/deferred-response", () => ({
+	DeferredResponse: ({ children }: { children: ReactNode }) => {
 		responseRenders.push(String(children));
 		return <div>{children}</div>;
 	},

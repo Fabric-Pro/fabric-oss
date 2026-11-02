@@ -42,6 +42,7 @@ import {
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
+import { isOrchestratorTurn } from "@saas/agents/lib/conversation-turn-mode";
 import { multiAgentRunRequestSchema } from "@saas/agents/lib/multi-agent-runtime-protocol";
 import { mergeOrchestratorConversationMetadata } from "@saas/agents/lib/orchestrator-conversation-tools";
 import {
@@ -68,7 +69,6 @@ import {
 	startTurnWorkflow,
 } from "../../../../app/api/agents/fabric-ai/orchestrator-temporal/turn-admission";
 import { RUN_ID_PATTERN } from "./direct-engine";
-import { DIRECT_EXECUTION_MODE } from "./direct-turn-record";
 import type { RunStream, RuntimeCaller, RuntimeEngine } from "./engine";
 import { isMultiAgentLead } from "./multi-agent-group";
 import { MultiAgentTurns } from "./multi-agent-turns";
@@ -402,7 +402,7 @@ export class OrchestratorEngine implements RuntimeEngine {
 		}
 		if (byKey) {
 			return byKey.conversationId === threadId &&
-				byKey.executionMode !== DIRECT_EXECUTION_MODE &&
+				isOrchestratorTurn(byKey) &&
 				!isTerminalTurnStatus(byKey.status)
 				? this.cancelTurn(byKey)
 				: false;
@@ -467,7 +467,7 @@ export class OrchestratorEngine implements RuntimeEngine {
 		return true;
 	}
 
-	/** The thread's latest Orchestrator turn (null when the latest is a Direct one). */
+	/** The thread's latest Orchestrator turn (null when the latest is another engine's). */
 	private async latestTurn(
 		threadId: string,
 	): Promise<ConversationTurn | null> {
@@ -476,9 +476,7 @@ export class OrchestratorEngine implements RuntimeEngine {
 			userId: this.caller.userId,
 			organizationId: this.caller.organizationId,
 		});
-		return latest && latest.executionMode !== DIRECT_EXECUTION_MODE
-			? latest
-			: null;
+		return latest && isOrchestratorTurn(latest) ? latest : null;
 	}
 
 	/**

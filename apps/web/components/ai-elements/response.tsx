@@ -9,7 +9,7 @@ import {
 } from "./chat-markdown";
 import { normalizeTextToMarkdown } from "./text-normalizer";
 
-interface ResponseProps {
+export interface ResponseProps {
 	children?: string;
 	className?: string;
 	components?: Record<string, any>;

@@ -31,11 +31,11 @@ import {
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useWeaveRefinement } from "../hooks/useWeaveRefinement";
 
-interface RefinementMessage {
-	role: "user" | "assistant";
-	content: string;
-}
+const BUBBLE_CLASSES = "text-sm rounded-md px-3 py-2 whitespace-pre-wrap";
+const ASSISTANT_BUBBLE_CLASSES =
+	"bg-card text-muted-foreground mr-6 border border-border";
 
 interface CreatePlanFormProps {
 	onSubmit: (data: {
@@ -63,13 +63,14 @@ export function CreatePlanForm({
 
 	// Refinement chat state
 	const [showRefinement, setShowRefinement] = useState(false);
-	const [refinementMessages, setRefinementMessages] = useState<
-		RefinementMessage[]
-	>([]);
 	const [refinementInput, setRefinementInput] = useState("");
-	const [isThinking, setIsThinking] = useState(false);
-	const [isReady, setIsReady] = useState(false);
 	const scrollEndRef = useRef<HTMLDivElement>(null);
+	// Lives in the form, not the collapsible panel, so a reply still lands
+	// while the panel is closed.
+	const refinement = useWeaveRefinement({
+		projectId,
+		onUpdatedMessage: setMessage,
+	});
 
 	// Fetch templates for this project
 	const { data: templatesData } = useQuery({
@@ -116,8 +117,9 @@ export function CreatePlanForm({
 		if (scrollEndRef.current) {
 			scrollEndRef.current.scrollIntoView({ behavior: "smooth" });
 		}
-	}, [refinementMessages, isThinking]);
+	}, [refinement.messages, refinement.isThinking, refinement.pendingReply]);
 
+	const { isThinking, send: sendRefinement } = refinement;
 	const handleSendRefinement = useCallback(async () => {
 		const trimmed = refinementInput.trim();
 		if (!trimmed || isThinking) {
@@ -131,47 +133,12 @@ export function CreatePlanForm({
 			return;
 		}
 
-		// Append user message
-		const userMsg: RefinementMessage = { role: "user", content: trimmed };
-		setRefinementMessages((prev) => [...prev, userMsg]);
 		setRefinementInput("");
-		setIsThinking(true);
-
-		try {
-			const result = await orpcClient.weave.plans.refine({
-				projectId,
-				organizationId: organizationId ?? null,
-				currentMessage: message,
-				refinementInput: trimmed,
-				history: refinementMessages,
-			});
-
-			// Update the main message with the AI-improved version
-			setMessage(result.updatedMessage);
-			setIsReady(result.isReady);
-
-			const assistantMsg: RefinementMessage = {
-				role: "assistant",
-				content: result.feedback,
-			};
-			setRefinementMessages((prev) => [...prev, assistantMsg]);
-		} catch (error) {
-			toast.error(
-				`Refinement failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-			);
-			// Remove the user message on failure
-			setRefinementMessages((prev) => prev.slice(0, -1));
-		} finally {
-			setIsThinking(false);
-		}
-	}, [
-		refinementInput,
-		isThinking,
-		message,
-		projectId,
-		organizationId,
-		refinementMessages,
-	]);
+		await sendRefinement({
+			refinementInput: trimmed,
+			currentMessage: message,
+		});
+	}, [refinementInput, isThinking, message, sendRefinement]);
 
 	const handleRefinementKeyDown = (
 		e: React.KeyboardEvent<HTMLInputElement>,
@@ -307,7 +274,7 @@ export function CreatePlanForm({
 							request for better plan quality.
 						</p>
 
-						{isReady && (
+						{refinement.isReady && (
 							<div className="flex items-center gap-2 rounded-md bg-secondary/10 border border-secondary/20 px-3 py-2 text-sm text-secondary">
 								<CheckCircle2Icon className="size-4 shrink-0" />
 								Request looks clear — ready to create plan.
@@ -315,27 +282,36 @@ export function CreatePlanForm({
 						)}
 
 						{/* Message list */}
-						{refinementMessages.length > 0 && (
+						{refinement.messages.length > 0 && (
 							<ScrollArea className="max-h-56">
 								<div className="space-y-2 pr-2">
-									{refinementMessages.map((msg, idx) => (
+									{refinement.messages.map((msg, idx) => (
 										<div
 											key={`${msg.role}-${idx}`}
-											className={`text-sm rounded-md px-3 py-2 whitespace-pre-wrap ${
+											className={`${BUBBLE_CLASSES} ${
 												msg.role === "user"
 													? "bg-primary/10 text-foreground ml-6"
-													: "bg-card text-muted-foreground mr-6 border border-border"
+													: ASSISTANT_BUBBLE_CLASSES
 											}`}
 										>
 											{msg.content}
 										</div>
 									))}
-									{isThinking && (
-										<div className="bg-card text-muted-foreground mr-6 border border-border text-sm rounded-md px-3 py-2 flex items-center gap-2">
-											<Loader2Icon className="size-3 animate-spin" />
-											Thinking…
-										</div>
-									)}
+									{isThinking &&
+										(refinement.pendingReply ? (
+											<div
+												className={`${BUBBLE_CLASSES} ${ASSISTANT_BUBBLE_CLASSES}`}
+											>
+												{refinement.pendingReply}
+											</div>
+										) : (
+											<div
+												className={`${BUBBLE_CLASSES} ${ASSISTANT_BUBBLE_CLASSES} flex items-center gap-2`}
+											>
+												<Loader2Icon className="size-3 animate-spin" />
+												Thinking…
+											</div>
+										))}
 									<div ref={scrollEndRef} />
 								</div>
 							</ScrollArea>
@@ -366,7 +342,7 @@ export function CreatePlanForm({
 						</div>
 
 						{/* Finalize button — shown after at least one exchange */}
-						{refinementMessages.length >= 2 && (
+						{refinement.messages.length >= 2 && (
 							<Button
 								type="button"
 								size="sm"

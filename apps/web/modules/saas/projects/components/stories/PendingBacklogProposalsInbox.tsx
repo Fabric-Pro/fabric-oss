@@ -833,10 +833,10 @@ export function PendingBacklogProposalsInbox({
 		// Rejected reflects immediately.
 		queryClient.invalidateQueries({ queryKey: backlogQueryKey });
 		// Approving a proposal can create or update UserStory rows that the
-		// Roadmap reads from `projects.stories.list`. Invalidate it so the
+		// Roadmap reads from `projects.stories.board`. Invalidate it so the
 		// new/updated features appear without a manual page refresh.
 		queryClient.invalidateQueries({
-			queryKey: orpc.projects.stories.list.queryKey({
+			queryKey: orpc.projects.stories.board.queryKey({
 				input: { projectId, organizationId },
 			}),
 		});
@@ -1296,7 +1296,7 @@ export function PendingBacklogProposalsInbox({
 					>
 						<div className="relative z-10">
 							<ArchiveIcon className="mx-auto mb-4 size-10 text-muted-foreground" />
-							<h3 className="font-serif text-2xl font-normal leading-tight text-foreground">
+							<h3 className="text-2xl font-semibold leading-tight text-foreground">
 								No rejected proposals
 							</h3>
 							<p className="mt-2 text-sm text-muted-foreground">
@@ -1345,7 +1345,7 @@ export function PendingBacklogProposalsInbox({
 				>
 					<div className="relative z-10">
 						<CheckCircle2Icon className="mx-auto mb-4 size-10 text-muted-foreground" />
-						<h3 className="font-serif text-2xl font-normal leading-tight text-foreground">
+						<h3 className="text-2xl font-semibold leading-tight text-foreground">
 							All caught up
 						</h3>
 						<p className="mt-2 text-sm text-muted-foreground">
@@ -1892,7 +1892,7 @@ export function PendingBacklogProposalsInbox({
 								{headerContent.eyebrow}
 							</span>
 						</div>
-						<SheetTitle className="font-serif text-2xl font-normal leading-tight">
+						<SheetTitle className="text-2xl font-semibold leading-tight">
 							{headerContent.title}
 						</SheetTitle>
 						<SheetDescription>

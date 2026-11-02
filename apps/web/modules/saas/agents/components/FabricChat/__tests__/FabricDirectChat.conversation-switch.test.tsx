@@ -21,6 +21,10 @@ import type { FrameLaunchContext } from "../../../lib/expand-handoff";
 // Capture every render of the button so the test can assert on its
 // props. We re-export a vi.fn from the mock and read it back below.
 const insertDiagramButtonMock = vi.fn();
+const metadataUpdateMock = vi.hoisted(() => vi.fn());
+const settingsWriteMock = vi.hoisted(() =>
+	vi.fn(async (..._args: unknown[]) => ({})),
+);
 vi.mock(
 	"@saas/projects/components/excalidraw-auto-insert/ChatMessageInsertDiagramButton",
 	() => ({
@@ -199,7 +203,9 @@ vi.mock("@shared/lib/orpc-client", () => ({
 			conversations: {
 				create: (...args: unknown[]) => createConversationMock(...args),
 				addMessage: (...args: unknown[]) => addMessageMock(...args),
-				update: vi.fn(),
+				update: metadataUpdateMock,
+				updateSettings: (...args: unknown[]) =>
+					settingsWriteMock(...args),
 			},
 		},
 		users: {
@@ -226,6 +232,23 @@ const stopMock = vi.fn(() => {
 	hookState.isLoading = false;
 });
 const streamOptionsMock = vi.fn();
+
+const startedOptionsMock = vi.hoisted(() => vi.fn());
+vi.mock("@saas/agents/hooks/useDirectChatStream", async (importOriginal) => {
+	const actual =
+		await importOriginal<
+			typeof import("@saas/agents/hooks/useDirectChatStream")
+		>();
+	return {
+		...actual,
+		useDirectChatStream: (
+			options: Parameters<typeof actual.useDirectChatStream>[0],
+		) => {
+			startedOptionsMock(options);
+			return actual.useDirectChatStream(options);
+		},
+	};
+});
 
 vi.mock("@saas/agents/hooks/useDirectStream", () => ({
 	useDirectStream: (options: unknown) => {
@@ -283,11 +306,6 @@ vi.mock("@saas/agents/lib/derive-trajectory", () => ({
 vi.mock("@saas/agents/lib/tool-call-status", () => ({
 	persistedToToolCallStatus: (s: string) => s,
 	toolCallToPersistedStatus: (s: string) => s,
-}));
-
-vi.mock("@saas/agents/lib/direct-chat-tools", () => ({
-	getSelectedConversationToolIds: () => [],
-	mergeDirectConversationMetadata: (m: unknown) => m,
 }));
 
 vi.mock("@saas/agents/lib/code-references", () => ({
@@ -474,6 +492,8 @@ function streamTurnInA(options: { streaming: boolean }) {
 }
 
 beforeEach(() => {
+	settingsWriteMock.mockClear();
+	metadataUpdateMock.mockClear();
 	listModelsMock.mockReset();
 	hookState.messages = [];
 	hookState.isLoading = false;
@@ -740,3 +760,42 @@ vi.mock("next-intl", () => ({
 	useTranslations: () => (key: string, values?: { model?: string }) =>
 		key === "answeredByModel" ? `Answered by ${values?.model}` : key,
 }));
+
+describe("settings ownership (Fizzy #3472)", () => {
+	it("saves a runtime-created conversation without using another detail as its baseline", async () => {
+		const { ui } = harness();
+		render(ui("conv_A", { ...convA, metadata: { instanceId: "old" } }));
+		await act(async () => {});
+		settingsWriteMock.mockClear();
+		await act(async () => {
+			startedOptionsMock.mock.calls
+				.at(-1)?.[0]
+				.onConversationStarted("conv_B");
+		});
+		await act(async () => {});
+		expect(settingsWriteMock).toHaveBeenCalledWith({
+			conversationId: "conv_B",
+			organizationId: "org_example",
+			engine: "direct",
+			settings: { instanceId: null, selectedMcpConfigIds: null },
+		});
+	});
+	it("sends settings only and clears absent selections and pins", async () => {
+		const { ui } = harness();
+		render(ui("conv_A", { ...convA, metadata: { instanceId: "old" } }));
+		await act(async () => {});
+		expect(settingsWriteMock).toHaveBeenCalledWith({
+			conversationId: "conv_A",
+			organizationId: "org_example",
+			engine: "direct",
+			settings: { instanceId: null, selectedMcpConfigIds: null },
+		});
+		expect(metadataUpdateMock).not.toHaveBeenCalled();
+	});
+	it("skips matching settings", async () => {
+		const { ui } = harness();
+		render(ui("conv_A", { ...convA, metadata: {} }));
+		await act(async () => {});
+		expect(settingsWriteMock).not.toHaveBeenCalled();
+	});
+});

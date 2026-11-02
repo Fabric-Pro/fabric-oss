@@ -3,8 +3,9 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CodingRunTimeline } from "../CodingRunTimeline";
 
-const { mockGetCodingRun, mockSendFollowUp } = vi.hoisted(() => ({
+const { mockGetCodingRun, mockSendFollowUp, mockRecover } = vi.hoisted(() => ({
 	mockSendFollowUp: vi.fn(),
+	mockRecover: vi.fn(),
 	mockGetCodingRun: vi.fn(async () => ({
 		id: "run_1",
 		status: "RUNNING",
@@ -40,6 +41,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 		codingRuns: {
 			get: mockGetCodingRun,
 			sendFollowUp: mockSendFollowUp,
+			recover: mockRecover,
 		},
 	},
 }));
@@ -62,6 +64,41 @@ beforeEach(() => {
 });
 
 describe("CodingRunTimeline", () => {
+	it("shows project progress without offering controls or native access to another developer's private session", async () => {
+		const base = await mockGetCodingRun();
+		await mockGetCodingRun.withImplementation(
+			async () => ({
+				...base,
+				provider: "BACKGROUND_AGENTS",
+				externalUrl: null,
+				providerSessionId: null,
+				providerMetadata: {
+					executionRuntime: "fabric-agent-server",
+					privateSession: true,
+				},
+			}),
+			async () => {
+				renderWithQueryClient(
+					<CodingRunTimeline
+						codingRunId="example-private-run"
+						organizationId="example-org"
+						onCancel={vi.fn()}
+					/>,
+				);
+				expect(
+					await screen.findByText("privateSession"),
+				).toBeInTheDocument();
+				expect(
+					screen.queryByRole("button", { name: "Cancel Session" }),
+				).not.toBeInTheDocument();
+				expect(
+					screen.queryByRole("link", {
+						name: /Open in Fabric Agents/,
+					}),
+				).not.toBeInTheDocument();
+			},
+		);
+	});
 	it("emphasizes the primary task for task-scoped implementation sessions", async () => {
 		renderWithQueryClient(
 			<CodingRunTimeline codingRunId="run_1" organizationId="org_1" />,
@@ -177,7 +214,8 @@ it("keeps the draft and request identity when a follow-up needs a retry", async 
 		async () => ({
 			...base,
 			provider: "BACKGROUND_AGENTS",
-			status: "AWAITING_REVIEW",
+			status: "COMPLETED",
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
 		}),
 		async () => {
 			mockSendFollowUp
@@ -256,7 +294,8 @@ it("retains the unresolved prompt identity after the dialog unmounts and reopens
 		async () => ({
 			...base,
 			provider: "BACKGROUND_AGENTS",
-			status: "AWAITING_REVIEW",
+			status: "COMPLETED",
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
 		}),
 		async () => {
 			mockSendFollowUp
@@ -302,6 +341,77 @@ it("retains the unresolved prompt identity after the dialog unmounts and reopens
 				expect(
 					sessionStorage.getItem("coding-prompt:example-remount-run"),
 				).toBeNull(),
+			);
+		},
+	);
+});
+
+it("directs native checkpoints to the authenticated client without treating text as approval", async () => {
+	const base = await mockGetCodingRun();
+	await mockGetCodingRun.withImplementation(
+		async () => ({
+			...base,
+			provider: "BACKGROUND_AGENTS",
+			status: "AWAITING_REVIEW",
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
+		}),
+		async () => {
+			renderWithQueryClient(
+				<CodingRunTimeline
+					codingRunId="example-checkpoint"
+					organizationId="example-org"
+				/>,
+			);
+			expect(
+				await screen.findByText(
+					/Sending a reply here does not approve them/,
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByPlaceholderText("Reply to the agent…"),
+			).not.toBeInTheDocument();
+		},
+	);
+});
+
+it("offers explicit orphan-check recovery for ambiguous rows and frees the run through the API", async () => {
+	const base = await mockGetCodingRun();
+	await mockGetCodingRun.withImplementation(
+		async () =>
+			({
+				...base,
+				status: "AWAITING_REVIEW",
+				events: [
+					{
+						id: "example-event",
+						eventType: "cancellation_unknown",
+						createdAt: new Date().toISOString(),
+						payloadJson: {},
+					},
+				],
+			}) as any,
+		async () => {
+			mockRecover.mockResolvedValue({ status: "failed" });
+			renderWithQueryClient(
+				<CodingRunTimeline
+					codingRunId="example-run"
+					organizationId="example-org"
+				/>,
+			);
+			const button = await screen.findByRole("button", {
+				name: "closeRun",
+			});
+			expect(button).toBeDisabled();
+			fireEvent.click(
+				screen.getByRole("checkbox", { name: "orphanCheck" }),
+			);
+			fireEvent.click(button);
+			await waitFor(() =>
+				expect(mockRecover).toHaveBeenCalledWith({
+					id: "example-run",
+					organizationId: "example-org",
+					confirmOrphanCheck: true,
+				}),
 			);
 		},
 	);

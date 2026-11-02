@@ -351,7 +351,7 @@ export function SlackChannelPickerDialog({
 										setSearchQuery(e.target.value)
 									}
 									aria-label="Search Slack channels"
-									className="w-full rounded-lg border bg-background py-2 pl-9 pr-3 text-sm placeholder:text-foreground/40 focus:outline-none focus:ring-1 focus:ring-ring"
+									className="w-full rounded-sm border border-input bg-card py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground hover:border-muted-foreground focus-visible:border-ring focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 								/>
 							</div>
 

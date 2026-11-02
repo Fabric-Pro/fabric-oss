@@ -54,6 +54,21 @@ export function OrgSettingsLayoutClient({
 			},
 		];
 
+		const accountMatch = pathname.match(/\/settings\/account\/([^/]+)/);
+		if (accountMatch) {
+			const accountTitles: Record<string, string> = {
+				profile: "Account",
+				security: "Security",
+				notifications: "Notifications",
+				"connected-agents": "Connected Agents",
+				"danger-zone": "Account Danger Zone",
+			};
+			items.push({
+				label: accountTitles[accountMatch[1]] ?? "Account",
+			});
+			return items;
+		}
+
 		const settingsMatch = pathname.match(/\/settings\/([^/]+)/);
 		if (settingsMatch) {
 			const pageSlug = settingsMatch[1];

@@ -89,7 +89,7 @@ export function AutomationLinkFields({
 								target="_blank"
 								rel="noreferrer"
 								aria-label={t("fields.automationUrlOpenAria")}
-								className="inline-flex items-center gap-1 rounded text-primary text-xs transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								className="inline-flex items-center gap-1 rounded text-primary text-xs transition-colors hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 							>
 								<ExternalLinkIcon
 									aria-hidden="true"

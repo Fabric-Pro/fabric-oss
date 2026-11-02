@@ -35,8 +35,14 @@ import { FocusModeToggle } from "@saas/shared/components/FocusModeToggle";
 import { useFocusMode } from "@saas/shared/contexts/FocusModeContext";
 import { SubscribeToggle } from "@saas/subscriptions/components/SubscribeToggle";
 import { formatDistanceToNow } from "date-fns";
+import { findDiffProposal } from "../../hooks/find-diff-proposal";
+import { useDiffOutcomeStamp } from "../../hooks/use-diff-outcome-stamp";
 import { CustomMessages } from "../copilot/CustomMessages";
 import { DocumentAssistantOutcomesProvider } from "../copilot/DocumentAssistantOutcomesProvider";
+import {
+	equalDocumentAssistantMessages,
+	selectDocumentAssistantMessages,
+} from "../copilot/document-assistant-message-projection";
 import { HydratedMessagesProvider } from "../copilot/HydratedMessagesContext";
 import type { AiReadinessData } from "./maturation/ReadinessBar";
 import "@copilotkit/react-ui/styles.css";
@@ -1472,8 +1478,8 @@ export function StoryWorkspace({
 	const [isAwaitingConfirmation, setIsAwaitingConfirmation] = useState(false);
 	// Callbacks for the DiffReviewBar to trigger accept/reject
 	const confirmCallbacksRef = useRef<{
-		accept: () => void;
-		reject: () => void;
+		accept: () => boolean;
+		reject: () => boolean;
 	} | null>(null);
 
 	/**
@@ -1849,7 +1855,7 @@ export function StoryWorkspace({
 	 * however the surface that registered it scoped its organization argument.
 	 */
 	const storiesListQueryKey = useMemo(
-		() => orpc.projects.stories.list.key({ input: { projectId } }),
+		() => orpc.projects.stories.board.key({ input: { projectId } }),
 		[projectId],
 	);
 
@@ -4158,6 +4164,7 @@ export function StoryWorkspace({
 					// "Latest ref" pattern doc-comment above.
 					void recordOutcomeRef.current({ accepted: false });
 					respond?.({ accepted: false });
+					return false;
 				};
 
 				const handleAccept = () => {
@@ -4222,7 +4229,7 @@ export function StoryWorkspace({
 						}
 						void recordOutcomeRef.current({ accepted: false });
 						respond?.({ accepted: false });
-						return;
+						return false;
 					}
 
 					void recordVerdict(true);
@@ -4500,6 +4507,7 @@ export function StoryWorkspace({
 					setPendingChangeBullets(null);
 
 					respond?.({ accepted: true });
+					return true;
 				};
 
 				// Keep diff highlighting visible and expose callbacks for DiffReviewBar.
@@ -4615,12 +4623,34 @@ export function StoryWorkspace({
 	 * own accepted/rejected state machine and needs to know not to latch
 	 * "✓ Accepted" over a resolution that threw.
 	 */
+	const proposalMessages = useCopilotChatSessionSelector(
+		selectDocumentAssistantMessages,
+		equalDocumentAssistantMessages,
+	);
+	const proposal = useMemo(
+		() => findDiffProposal(proposalMessages),
+		[proposalMessages],
+	);
+	const diffOutcomeAudit = {
+		conversationId: activeAssistantConversationId,
+		projectId,
+		organizationId,
+		messageId: proposal?.messageId ?? null,
+		toolCallId: proposal?.toolCallId ?? null,
+	};
+	const diffOutcomeAuditRef = useRef(diffOutcomeAudit);
+	diffOutcomeAuditRef.current = diffOutcomeAudit;
+	const stampReviewOutcome = useDiffOutcomeStamp();
+	const resolvingReviewRef = useRef(false);
+
 	const resolvePendingReview = useCallback(
 		async (action: "accept" | "reject"): Promise<boolean> => {
+			const audit = diffOutcomeAuditRef.current;
 			const callbacks = confirmCallbacksRef.current;
-			if (!callbacks) {
+			if (!callbacks || resolvingReviewRef.current) {
 				return false;
 			}
+			resolvingReviewRef.current = true;
 			setReviewResolution({ action, status: "pending" });
 			try {
 				// #1929, the crux. Both callbacks splice the server's
@@ -4659,11 +4689,20 @@ export function StoryWorkspace({
 				}
 				serverDescriptionRef.current = freshStory.description ?? null;
 
-				if (action === "accept") {
-					callbacks.accept();
-				} else {
-					callbacks.reject();
-				}
+				// The proposal's one recorded outcome, matching what `respond`
+				// told the agent. The review bar gets no `outcomeAudit`: while
+				// any change is still marked, Reject All restores the pre-run
+				// baseline (Effect 4 holds `baselineRef` back), so a change
+				// accepted on its own is not the proposal's outcome, and
+				// stamping it would leave the chip on "Accepted" (Fizzy #3446).
+				const accepted =
+					action === "accept"
+						? callbacks.accept()
+						: callbacks.reject();
+				void stampReviewOutcome(
+					audit,
+					accepted === true ? "accepted" : "rejected",
+				);
 				return true;
 			} catch (error) {
 				// Covers the fresh read as well as the callbacks: a failed read
@@ -4681,9 +4720,11 @@ export function StoryWorkspace({
 							: undefined,
 				});
 				return false;
+			} finally {
+				resolvingReviewRef.current = false;
 			}
 		},
-		[queryClient, projectId, story.id, organizationId],
+		[queryClient, projectId, story.id, organizationId, stampReviewOutcome],
 	);
 	// See `resolvePendingReviewRef`'s declaration for why this is a render-body
 	// assignment and why the renderer above can rely on it.
@@ -6469,7 +6510,7 @@ export function StoryWorkspace({
 																isStagePickerLoading
 															}
 															aria-label="Change maturation status"
-															className="flex items-center gap-2 px-2 h-8 -ml-2 rounded-md hover:bg-muted/40 transition-colors group focus:outline-none focus-visible:outline-none focus-visible:bg-muted/40 disabled:opacity-50 disabled:cursor-not-allowed"
+															className="flex items-center gap-2 px-2 h-8 -ml-2 rounded-md hover:bg-muted/40 transition-colors group focus:outline-none focus-visible:outline-hidden focus-visible:bg-muted/40 disabled:opacity-50 disabled:cursor-not-allowed"
 														>
 															<span
 																className="size-2 rounded-full shrink-0"
@@ -6608,7 +6649,7 @@ export function StoryWorkspace({
 																	<button
 																		type="button"
 																		aria-label="Change drafting stage"
-																		className="flex items-center gap-2 px-2 h-8 -ml-2 rounded-md hover:bg-muted/40 transition-colors group focus:outline-none focus-visible:outline-none focus-visible:bg-muted/40"
+																		className="flex items-center gap-2 px-2 h-8 -ml-2 rounded-md hover:bg-muted/40 transition-colors group focus:outline-none focus-visible:outline-hidden focus-visible:bg-muted/40"
 																	>
 																		{/* Progress steps. When the feature is CLOSED the
 													  steps render but all dots are blank/muted — the
@@ -7586,7 +7627,7 @@ export function StoryWorkspace({
 																		"pendingReview.regionLabel",
 																	)}
 																	data-testid="spec-tab-review-region"
-																	className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+																	className="focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 																>
 																	{/* Confirm-time change summary (v2 only) —
 																	  advisory, sits above the diff bar; renders
@@ -7771,7 +7812,7 @@ export function StoryWorkspace({
 																		queryClient.invalidateQueries(
 																			{
 																				queryKey:
-																					orpc.projects.stories.list.key(),
+																					orpc.projects.stories.board.key(),
 																			},
 																		);
 																	}}

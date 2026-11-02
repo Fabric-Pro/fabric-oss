@@ -76,6 +76,7 @@ model User {
   createdMcpServers          MCPServer[]                   @relation("MCPServerCreatedBy")
   ownedMcpServers            MCPServer[]                   @relation("MCPServerOwnerUser")
   mcpConfigs                 MCPConfig[]
+  mcpDurableToolCalls        McpDurableToolCall[]
   aiChatMcpConfigs           AiChatMcpConfig[]
   authoritySessions          AuthoritySession[]
   registeredAgentSuggestions RegisteredAgentSuggestion[]
@@ -115,6 +116,7 @@ model User {
   openAPIServicesCreated     OpenAPIService[]              @relation("OpenAPIServiceCreatedBy")
   openAPIServiceConfigs      OpenAPIServiceConfig[]
   agentConversations         AgentConversation[]
+  chatMediaObjects           ChatMediaObject[]
   conversationTurns          ConversationTurn[]
   registeredAgents           RegisteredAgent[]
   modelPreferences           UserModelPreference[]
@@ -844,6 +846,7 @@ model Organization {
   deletionReminderSentAt           DateTime?
   mcpServers                       MCPServer[]
   mcpConfigs                       MCPConfig[]
+  mcpDurableToolCalls              McpDurableToolCall[]
   aiChatMcpConfigs                 AiChatMcpConfig[]
   authoritySessions                AuthoritySession[]
   registeredAgentSuggestions       RegisteredAgentSuggestion[]
@@ -872,6 +875,7 @@ model Organization {
   openAPIServices                  OpenAPIService[]
   openAPIServiceConfigs            OpenAPIServiceConfig[]
   agentConversations               AgentConversation[]
+  chatMediaObjects                 ChatMediaObject[]
   conversationTurns                ConversationTurn[]
   registeredAgents                 RegisteredAgent[]
   modelPreferences                 OrganizationModelPreference[]
@@ -1213,7 +1217,6 @@ model Purchase {
   organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user           User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([subscriptionId])
   @@map("purchase")
 }
 
@@ -1227,8 +1230,6 @@ model AiCreditAccount {
   organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user           User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([organizationId])
-  @@index([userId])
   @@map("ai_credit_account")
 }
 
@@ -2000,6 +2001,7 @@ model AgentConversation {
 
   // Advisor turns started in this conversation (see ConversationTurn).
   turns ConversationTurn[]
+  chatMediaObjects ChatMediaObject[]
 
   @@index([userId, agentId])
   @@index([organizationId, agentId])
@@ -2019,6 +2021,42 @@ enum AgentConversationStatus {
 enum AgentConversationVisibility {
   PRIVATE
   ORGANIZATION
+}
+
+/// Ownership and optional conversation-sharing evidence for media stored in
+/// the chat-documents bucket. A null conversation keeps the object creator-only.
+model ChatMediaObject {
+  id             String        @id @default(cuid())
+  storageKey     String        @unique
+  kind           ChatMediaKind
+  userId         String
+  organizationId String?
+  conversationId String?
+  createdAt      DateTime      @default(now())
+
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation AgentConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([organizationId])
+  @@index([conversationId])
+  @@map("chat_media_object")
+}
+
+/// Global rollout evidence for legacy chat media. The singleton cutoff is
+/// written when this schema reaches an environment, not when code is built.
+model ChatMediaSettings {
+  id             String   @id
+  legacyCutoffAt DateTime
+
+  @@map("chat_media_settings")
+}
+
+enum ChatMediaKind {
+  UPLOADED_IMAGE
+  GENERATED_IMAGE
+  TTS_AUDIO
 }
 
 /// One user message's run in an Advisor chat (the orchestrator workflow a chat
@@ -2119,7 +2157,9 @@ model ConversationTurn {
   organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   conversation AgentConversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
   attempts     ConversationTurnAttempt[]
+  events       ConversationTurnEvent[]
 
+  @@unique([id, organizationId, userId])
   @@unique([userId, organizationId, clientRequestKey])
   @@unique([conversationId, generation])
   @@index([conversationId, status])
@@ -2135,6 +2175,29 @@ enum ConversationTurnStatus {
   FAILED
   LIMITED
   CANCELLED
+}
+
+/// Short-lived replay of output produced by one physical Temporal run.
+/// Tenant copies are constrained to the parent turn. The global sequence is
+/// allocated under the turn row lock so commits cannot overtake one another.
+model ConversationTurnEvent {
+  id             BigInt   @id @default(autoincrement())
+  turnId         String
+  organizationId String
+  userId         String
+  runId          String
+  sourceKey      String
+  event          String
+  data           Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  turn ConversationTurn @relation(fields: [turnId, organizationId, userId], references: [id, organizationId, userId], onDelete: Cascade)
+
+  @@unique([turnId, runId, sourceKey])
+  @@index([turnId, runId, id])
+  @@index([expiresAt, id])
+  @@map("conversation_turn_event")
 }
 
 enum ConversationTurnBudgetEnforcement {
@@ -2705,6 +2768,8 @@ model Project {
   scheduledPermanentDeleteAt DateTime? // 7 days after deletedAt
   deletionReminderSentAt     DateTime? // Track when reminder email was sent
   deletedMeetingArchives     DeletedMeetingArchive[]
+
+  remoteAgentServers ProjectRemoteAgentServer[]
 
   @@index([userId])
   @@index([deletedAt])
@@ -8267,7 +8332,6 @@ model DocumentLock {
   user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  @@index([documentId])
   @@index([userId])
   @@index([expiresAt])
   @@index([organizationId])
@@ -9884,7 +9948,6 @@ model ArchitectureDecisionVersion {
   organization         Organization?        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([architectureDecisionId, version])
-  @@index([architectureDecisionId, version])
   @@index([userId])
   @@index([organizationId])
   @@map("architecture_decision_version")
@@ -13126,6 +13189,44 @@ model MCPConfig {
   @@map("mcp_config")
 }
 
+enum McpDurableToolCallStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// A 24-hour idempotency receipt for one authenticated MCP tool call.
+/// The replay key includes the tenant, actor, credential, resource binding and
+/// selected server/config so a stored result cannot cross an authorization
+/// boundary that a fresh call would have to pass.
+model McpDurableToolCall {
+  id             String                   @id @default(cuid())
+  organizationId String
+  userId         String
+  credentialKind String                   @default("")
+  credentialId   String                   @default("")
+  /// Empty string means no bound, pinned or page project.
+  projectBinding String                   @default("")
+  /// `platform`, a connected MCP config id, or a gateway meta-tool namespace.
+  serverBinding  String                   @default("")
+  toolName       String
+  idempotencyKey String
+  argsHash       String
+  status         McpDurableToolCallStatus @default(RUNNING)
+  result         Json?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+  completedAt    DateTime?
+  expiresAt      DateTime
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId, credentialKind, credentialId, projectBinding, serverBinding, toolName, idempotencyKey], name: "replayKey", map: "mcp_durable_tool_call_replay_key")
+  @@index([expiresAt, id])
+  @@map("mcp_durable_tool_call")
+}
+
 model MCPOAuthState {
   id                          String    @id @default(cuid())
   state                       String    @unique
@@ -14815,6 +14916,30 @@ enum WorkflowIntegrationUsageScope {
   ORGANIZATION_SHARED
 }
 
+/// A project connection to a Fabric Agents execution profile. Provider/Git
+/// credentials stay on that host; only its service HMAC secret is encrypted here.
+/// PRIVATE connections are usable only by their owner within the organization.
+/// Migration-owned CHECK restricts scope to PRIVATE/TEAM; apply:rls installs
+/// the project and connection-owner policy before non-worker access.
+model ProjectRemoteAgentServer {
+  id              String   @id @default(cuid())
+  projectId       String
+  userId          String
+  name            String
+  scope           String   @default("PRIVATE")
+  url             String
+  profileId       String
+  encryptedSecret String
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, isActive])
+  @@index([userId])
+  @@map("project_remote_agent_server")
+}
+
 model WorkflowIntegration {
   id             String                        @id @default(cuid())
   workflowId     String? // Optional - can be user/org level
@@ -15253,7 +15378,6 @@ model AgentWorkspaceFile {
   @@index([path])
   @@index([fileType])
   @@index([status])
-  @@index([shareToken])
   @@index([isPublic])
   @@index([createdAt])
   @@map("agent_workspace_file")
@@ -15549,7 +15673,6 @@ model WorkspaceDocumentChunk {
   document WorkspaceDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@index([documentId])
-  @@index([qdrantId])
   @@map("workspace_document_chunk")
 }
 
@@ -15690,7 +15813,6 @@ model ProjectConversation {
 
   @@unique([conversationId])
   @@index([projectId])
-  @@index([conversationId])
   @@map("project_conversation")
 }
 
@@ -15881,7 +16003,6 @@ model AiModel {
   userPreferences  UserModelPreference[]
   orgPreferences   OrganizationModelPreference[]
 
-  @@index([canonicalName])
   @@index([family])
   @@index([isActive])
   @@index([speedTier])
@@ -16356,9 +16477,10 @@ model AiUsageLog {
   @@index([featureKey, createdAt])
   // Background-job attribution (Fizzy #1894): per-pipeline volume/cost and
   // "system vs user" filtered views.
-  @@index([jobType, createdAt])
-  @@index([frameId, createdAt])
-  @@index([workflowExecutionId, createdAt])
+  // Migration-only partial indexes on (frameId, createdAt),
+  // (workflowExecutionId, createdAt), and (jobType, createdAt), each excluding nulls.
+  // Keep partialIndexes disabled: enabling it makes drift detect the existing
+  // migration-only partial indexes across other models as unmanaged objects.
   @@map("ai_usage_log")
 }
 
@@ -16757,7 +16879,6 @@ model TemplateInstanceArtifactChunk {
   organization Organization?            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([artifactId])
-  @@index([qdrantId])
   @@index([userId])
   @@index([organizationId])
   @@map("template_instance_artifact_chunk")
@@ -16883,7 +17004,6 @@ model ReportArtifactChunk {
   organization Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([artifactId])
-  @@index([qdrantId])
   @@index([userId])
   @@index([organizationId])
   @@map("report_artifact_chunk")
@@ -17704,7 +17824,6 @@ model SlackEventReceipt {
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([slackTeamId])
-  @@index([slackEventId])
   @@index([userId])
   @@index([organizationId])
   @@map("slack_event_receipt")
@@ -17729,7 +17848,6 @@ model TeamsEventReceipt {
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([channelId, receivedAt])
-  @@index([teamsEventId])
   @@index([userId])
   @@index([organizationId])
   @@map("teams_event_receipt")
@@ -18379,7 +18497,6 @@ model OrganizationEvalBudget {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  @@index([organizationId])
   @@map("organization_eval_budget")
 }
 
@@ -19413,7 +19530,6 @@ model SyncedResource {
   @@unique([connectionId, externalId])
   @@index([connectionId])
   @@index([workspaceId])
-  @@index([documentId])
   @@index([syncStatus])
   @@map("synced_resource")
 }
@@ -20695,7 +20811,6 @@ model ProjectWeaveConfig {
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  @@index([projectId])
   @@index([userId, organizationId])
   @@map("project_weave_config")
 }

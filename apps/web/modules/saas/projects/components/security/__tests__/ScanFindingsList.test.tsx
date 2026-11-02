@@ -49,7 +49,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 				},
 				stories: {
 					setBlocked: passthrough,
-					list: passthrough,
+					board: passthrough,
 					get: passthrough,
 				},
 			},

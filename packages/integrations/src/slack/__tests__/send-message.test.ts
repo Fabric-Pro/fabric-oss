@@ -8,33 +8,42 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { canUseWorkflowIntegrations, findFirstTrigger, findFirstIntegration } =
-	vi.hoisted(() => ({
-		canUseWorkflowIntegrations: vi.fn(),
-		findFirstTrigger: vi.fn(),
-		findFirstIntegration: vi.fn(),
-	}));
+const {
+	canUseWorkflowIntegrations,
+	findFirstTrigger,
+	findFirstIntegration,
+	updateIntegration,
+} = vi.hoisted(() => ({
+	canUseWorkflowIntegrations: vi.fn(),
+	findFirstTrigger: vi.fn(),
+	findFirstIntegration: vi.fn(),
+	updateIntegration: vi.fn(),
+}));
 
 vi.mock("@repo/database", () => ({
 	canUseWorkflowIntegrations,
 	db: {
 		agentDeploymentTrigger: { findFirst: findFirstTrigger },
-		workflowIntegration: { findFirst: findFirstIntegration },
+		workflowIntegration: {
+			findFirst: findFirstIntegration,
+			updateMany: updateIntegration,
+		},
 	},
 }));
 
 vi.mock("@repo/utils", () => ({
 	decryptApiKey: (value: string) => value,
+	encryptApiKey: (value: string) => `encrypted:${value}`,
 }));
 
 import { sendSlackMessage } from "../send-message";
 
 const NO_TOKEN =
-	"No Slack bot token found for team T-example. Connect Slack in Settings > Integrations.";
+	"No Slack bot token found for team T0EXAMPLE. Connect Slack in Settings > Integrations.";
 
 const message = {
-	teamId: "T-example",
-	channel: "C-example",
+	teamId: "T0EXAMPLE",
+	channel: "C0EXAMPLE",
 	text: "Done.",
 	threadTs: "1700000000.000100",
 	userId: "user-example-1",
@@ -46,10 +55,14 @@ describe("sendSlackMessage", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		updateIntegration.mockResolvedValue({ count: 1 });
 		canUseWorkflowIntegrations.mockResolvedValue(true);
 		findFirstTrigger.mockResolvedValue({ deployment: { id: "dep-1" } });
 		findFirstIntegration.mockResolvedValue({
-			credentials: JSON.stringify({ access_token: "xoxb-test" }),
+			credentials: JSON.stringify({
+				access_token: "xoxb-test",
+				team_id: "T0EXAMPLE",
+			}),
 		});
 		fetchMock.mockResolvedValue({
 			ok: true,
@@ -101,7 +114,7 @@ describe("sendSlackMessage", () => {
 		expect(url).toBe("https://slack.com/api/chat.postMessage");
 		expect(init.headers.Authorization).toBe("Bearer xoxb-test");
 		expect(JSON.parse(init.body)).toEqual({
-			channel: "C-example",
+			channel: "C0EXAMPLE",
 			text: "Done.",
 			thread_ts: "1700000000.000100",
 		});
@@ -123,6 +136,58 @@ describe("sendSlackMessage", () => {
 		});
 	});
 
+	it("posts with a legacy connection after verifying and storing its team", async () => {
+		findFirstIntegration.mockResolvedValue({
+			id: "connection-example",
+			userId: "user-example-1",
+			organizationId: "org-example-1",
+			credentials: JSON.stringify({ access_token: "xoxb-test" }),
+		});
+		fetchMock
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ ok: true, team_id: "T0EXAMPLE" }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ ok: true, ts: "1700000000.000200" }),
+			});
+		const result = await sendSlackMessage({
+			...message,
+			organizationId: "org-example-1",
+		});
+		expect(result.ok).toBe(true);
+		expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+			"https://slack.com/api/auth.test",
+			"https://slack.com/api/chat.postMessage",
+		]);
+		expect(updateIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					id: "connection-example",
+					credentials: '{"access_token":"xoxb-test"}',
+				},
+			}),
+		);
+	});
+
+	it("refuses a legacy connection when team verification cannot be reached", async () => {
+		findFirstIntegration.mockResolvedValue({
+			id: "connection-example",
+			credentials: JSON.stringify({ access_token: "xoxb-test" }),
+		});
+		fetchMock.mockRejectedValue(new Error("network unavailable"));
+		const result = await sendSlackMessage({
+			...message,
+			organizationId: "org-example-1",
+		});
+		expect(result.ok).toBe(false);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0][0]).toBe(
+			"https://slack.com/api/auth.test",
+		);
+	});
+
 	it("returns a failed result when the membership check itself fails", async () => {
 		canUseWorkflowIntegrations.mockRejectedValue(new Error("db down"));
 
@@ -132,6 +197,32 @@ describe("sendSlackMessage", () => {
 		});
 
 		expect(result).toEqual({ ok: false, error: "db down" });
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses a trigger whose connection belongs to a different team", async () => {
+		findFirstIntegration.mockResolvedValue({
+			credentials: JSON.stringify({
+				access_token: "xoxb-test",
+				team_id: "T0OTHER",
+			}),
+		});
+		const result = await sendSlackMessage({
+			...message,
+			organizationId: "org-example-1",
+		});
+		expect(result.ok).toBe(false);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses malformed team and channel IDs before calling Slack", async () => {
+		for (const ids of [
+			{ teamId: "T0EXAMPLE.*", channel: "C0EXAMPLE" },
+			{ teamId: "T0EXAMPLE", channel: "C0EXAMPLE.*" },
+		]) {
+			const result = await sendSlackMessage({ ...message, ...ids });
+			expect(result.ok).toBe(false);
+		}
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });

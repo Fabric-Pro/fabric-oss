@@ -88,7 +88,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 		orpc: {
 			projects: {
 				stories: {
-					list: makeLeaf("stories.list"),
+					board: makeLeaf("stories.board"),
 					pmCapabilities: makeLeaf("stories.pmCapabilities"),
 				},
 				scan: {
@@ -117,7 +117,7 @@ beforeAll(() => {
 	HTMLElement.prototype.scrollIntoView ??= () => {};
 });
 
-/** Open work items returned as reattach targets by the `stories.list` query. */
+/** Open work items returned as reattach targets by the `stories.board` query. */
 const STORY_TARGETS = [
 	{
 		id: "story-target",
@@ -133,7 +133,7 @@ function primePM(configured: boolean, detectedType: string | null = null) {
 		if (opts?.__leaf === "stories.pmCapabilities") {
 			return { data: { configured, detectedType } };
 		}
-		// stories.list — reattach targets
+		// stories.board — reattach targets
 		return { data: { stories: STORY_TARGETS } };
 	});
 }

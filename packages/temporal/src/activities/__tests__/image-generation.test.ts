@@ -1,14 +1,22 @@
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { logAiUsageAsync } = vi.hoisted(() => ({ logAiUsageAsync: vi.fn() }));
+const { logAiUsageAsync, recordChatMediaObject, resolveChatMediaAccess } =
+	vi.hoisted(() => ({
+		logAiUsageAsync: vi.fn(),
+		recordChatMediaObject: vi.fn(),
+		resolveChatMediaAccess: vi.fn(),
+	}));
 
 vi.mock("@repo/database", () => ({
 	fetchCredentialsByProvider: vi.fn(),
 	logAiUsageAsync,
 	resolveModel: vi.fn(),
+	recordChatMediaObject,
+	resolveChatMediaAccess,
 }));
 vi.mock("@repo/storage", () => ({
+	deleteFile: vi.fn(),
 	downloadFile: vi.fn(),
 	getSignedUrl: vi.fn().mockResolvedValue("https://signed.example/image.png"),
 	uploadFile: vi.fn().mockResolvedValue(undefined),
@@ -28,6 +36,10 @@ vi.mock("@repo/ai", () => ({
 }));
 
 import { generateImageActivity } from "../image-generation";
+
+beforeEach(() => {
+	resolveChatMediaAccess.mockReset().mockResolvedValue("allow");
+});
 
 describe("generateImageActivity — usage marker (Fizzy #1894)", () => {
 	beforeEach(() => logAiUsageAsync.mockReset());
@@ -181,6 +193,92 @@ describe("image conversation attribution", () => {
 			);
 		},
 	);
+
+	it("records a generated image with the supplied conversation candidate before signing", async () => {
+		recordChatMediaObject.mockClear();
+		const { generateText, getRAGProviderConfig } = await import("@repo/ai");
+		vi.mocked(getRAGProviderConfig).mockResolvedValue({
+			apiKey: "key-example",
+			provider: "VERCEL_GATEWAY",
+		} as never);
+		vi.mocked(generateText).mockResolvedValue({
+			text: "boat",
+			files: [
+				{ uint8Array: new Uint8Array([1]), mediaType: "image/png" },
+			],
+		} as never);
+
+		const result = await generateImageActivity({
+			prompt: "boat",
+			provider: "gateway",
+			userId: "user-example",
+			organizationId: "org-example",
+			usageConversationId: "conversation-example",
+		});
+
+		expect(result.success).toBe(true);
+		expect(recordChatMediaObject).toHaveBeenCalledWith({
+			storageKey: expect.stringMatching(
+				/^org-example\/generated-images\/\d+-[a-z0-9]+\.png$/,
+			),
+			kind: "GENERATED_IMAGE",
+			userId: "user-example",
+			organizationId: "org-example",
+			conversationId: "conversation-example",
+		});
+	});
+
+	it("throws when a generated upload cannot be recorded so the activity can retry", async () => {
+		const { generateText, getRAGProviderConfig } = await import("@repo/ai");
+		vi.mocked(getRAGProviderConfig).mockResolvedValue({
+			apiKey: "key-example",
+			provider: "VERCEL_GATEWAY",
+		} as never);
+		vi.mocked(generateText).mockResolvedValue({
+			files: [
+				{ uint8Array: new Uint8Array([1]), mediaType: "image/png" },
+			],
+		} as never);
+		recordChatMediaObject.mockRejectedValueOnce(new Error("unavailable"));
+
+		await expect(
+			generateImageActivity({
+				prompt: "boat",
+				provider: "gateway",
+				userId: "user-example",
+			}),
+		).rejects.toMatchObject({ name: "ChatMediaPersistenceError" });
+	});
+});
+
+describe("input image access", () => {
+	it("refuses a private peer inputImagePath before downloading or calling the model", async () => {
+		resolveChatMediaAccess.mockResolvedValueOnce("deny");
+		const { generateText, getRAGProviderConfig } = await import("@repo/ai");
+		const { downloadFile } = await import("@repo/storage");
+		vi.mocked(generateText).mockClear();
+		vi.mocked(downloadFile).mockClear();
+		vi.mocked(getRAGProviderConfig).mockResolvedValue({
+			apiKey: "key-example",
+			provider: "VERCEL_GATEWAY",
+		} as never);
+
+		const result = await generateImageActivity({
+			prompt: "edit the image",
+			provider: "gateway",
+			userId: "example-viewer",
+			organizationId: "example-org",
+			inputImagePath:
+				"example-org/generated-images/1794200000000-abc123xy.png",
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			error: "Input image is not available to the current user",
+		});
+		expect(downloadFile).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
+	});
 });
 
 it.each(["OPENROUTER", "CLOUDFLARE_AI"])(

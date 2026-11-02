@@ -39,7 +39,7 @@ export function CoverageSummary({
 	return (
 		<section
 			aria-labelledby="qa-coverage-summary"
-			className="rounded-xl border bg-card p-4"
+			className="rounded-lg border bg-card p-4"
 		>
 			<h3 id="qa-coverage-summary" className="app-editorial-label">
 				{t("heading")}

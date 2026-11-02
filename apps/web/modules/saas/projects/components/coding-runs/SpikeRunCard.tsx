@@ -120,7 +120,7 @@ export function SpikeRunCard({
 					queryKey: ["codingRun", run.id],
 				}),
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.key(),
+					queryKey: orpc.projects.stories.board.key(),
 				}),
 				invalidateStoryReadiness(queryClient, { projectId, storyId }),
 			]);
@@ -138,7 +138,7 @@ export function SpikeRunCard({
 	return (
 		<article
 			className={cn(
-				"rounded-2xl border border-border/60 bg-card",
+				"rounded-lg border border-border/60 bg-card",
 				compact ? "p-4" : "p-5",
 				isDemoReady && "border-secondary/40",
 				className,
@@ -150,7 +150,7 @@ export function SpikeRunCard({
 					<div className="flex flex-wrap items-center gap-2">
 						<Badge
 							variant="outline"
-							className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-[0.16em] text-primary"
+							className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
 						>
 							<FlaskConicalIcon className="mr-1 size-3" />
 							{t("kindBadge")}
@@ -237,10 +237,10 @@ export function SpikeRunCard({
 
 			{preview && (
 				<section className="mt-4 space-y-2">
-					<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						{t("findingsLabel")}
 					</p>
-					<div className="prose prose-sm dark:prose-invert max-w-none rounded-xl border border-border/50 bg-muted/30 p-3 text-sm leading-6">
+					<div className="prose prose-sm dark:prose-invert max-w-none rounded-lg border border-border/50 bg-muted/30 p-3 text-sm leading-6">
 						<FindingsMarkdown>
 							{showFullFindings
 								? (run.findings ?? "")
@@ -267,7 +267,7 @@ export function SpikeRunCard({
 
 			{run.playNotes && (
 				<section className="mt-4 space-y-2">
-					<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						{t("playNotesLabel")}
 					</p>
 					<p className="whitespace-pre-wrap text-sm leading-6 text-foreground/85">

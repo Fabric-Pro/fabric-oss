@@ -160,3 +160,13 @@ describe("DeliveryTrackSelector", () => {
 		await waitFor(() => expect(onChanged).toHaveBeenCalledWith("SPIKE"));
 	});
 });
+
+vi.mock("@shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		projects: {
+			stories: {
+				board: { key: () => [["projects", "stories", "board"]] },
+			},
+		},
+	},
+}));

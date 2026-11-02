@@ -264,6 +264,174 @@ describe("FEATURE_FLAG_REGISTRY", () => {
 		).toBe(true);
 	});
 
+	// The library document chat's runtime transport rolls out the same way.
+	it("registers COPILOTKIT_LIBRARY_CHAT off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_LIBRARY_CHAT.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_LIBRARY_CHAT",
+		);
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_LIBRARY_CHAT.default).toBe(
+			false,
+		);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("COPILOTKIT_LIBRARY_CHAT");
+		expect(resolveFlag("COPILOTKIT_LIBRARY_CHAT", {}, {}).enabled).toBe(
+			false,
+		);
+		expect(
+			resolveFlag("COPILOTKIT_LIBRARY_CHAT", { org: true }, {}).enabled,
+		).toBe(true);
+		expect(
+			resolveFlag(
+				"COPILOTKIT_LIBRARY_CHAT",
+				{ org: false, global: true },
+				{},
+			).enabled,
+		).toBe(false);
+	});
+
+	// The Atlas codebase chat's runtime transport rolls out the same way.
+	it("registers COPILOTKIT_ATLAS_CHAT off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_ATLAS_CHAT.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_ATLAS_CHAT",
+		);
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_ATLAS_CHAT.default).toBe(false);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("COPILOTKIT_ATLAS_CHAT");
+		expect(resolveFlag("COPILOTKIT_ATLAS_CHAT", {}, {}).enabled).toBe(
+			false,
+		);
+		expect(
+			resolveFlag("COPILOTKIT_ATLAS_CHAT", { org: true }, {}).enabled,
+		).toBe(true);
+		expect(
+			resolveFlag(
+				"COPILOTKIT_ATLAS_CHAT",
+				{ org: false, global: true },
+				{},
+			).enabled,
+		).toBe(false);
+	});
+
+	// The Agent Builder Sidekick's runtime transport rolls out the same way.
+	it("registers COPILOTKIT_SIDEKICK_CHAT off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_SIDEKICK_CHAT.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_SIDEKICK_CHAT",
+		);
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_SIDEKICK_CHAT.default).toBe(
+			false,
+		);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("COPILOTKIT_SIDEKICK_CHAT");
+		expect(resolveFlag("COPILOTKIT_SIDEKICK_CHAT", {}, {}).enabled).toBe(
+			false,
+		);
+		expect(
+			resolveFlag("COPILOTKIT_SIDEKICK_CHAT", { org: true }, {}).enabled,
+		).toBe(true);
+		expect(
+			resolveFlag(
+				"COPILOTKIT_SIDEKICK_CHAT",
+				{ org: false, global: true },
+				{},
+			).enabled,
+		).toBe(false);
+	});
+
+	// Create Plan's refinement chat's runtime transport rolls out the same way.
+	it("registers COPILOTKIT_WEAVE_REFINE_CHAT off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_WEAVE_REFINE_CHAT.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_WEAVE_REFINE_CHAT",
+		);
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_WEAVE_REFINE_CHAT.default).toBe(
+			false,
+		);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain(
+			"COPILOTKIT_WEAVE_REFINE_CHAT",
+		);
+		expect(
+			resolveFlag("COPILOTKIT_WEAVE_REFINE_CHAT", {}, {}).enabled,
+		).toBe(false);
+		expect(
+			resolveFlag("COPILOTKIT_WEAVE_REFINE_CHAT", { org: true }, {})
+				.enabled,
+		).toBe(true);
+		expect(
+			resolveFlag(
+				"COPILOTKIT_WEAVE_REFINE_CHAT",
+				{ org: false, global: true },
+				{},
+			).enabled,
+		).toBe(false);
+	});
+
+	// Deep Research's runtime transport rolls out the same way.
+	it("registers COPILOTKIT_RESEARCH_RUNS off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_RESEARCH_RUNS.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_RESEARCH_RUNS",
+		);
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_RESEARCH_RUNS.default).toBe(
+			false,
+		);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("COPILOTKIT_RESEARCH_RUNS");
+		expect(resolveFlag("COPILOTKIT_RESEARCH_RUNS", {}, {}).enabled).toBe(
+			false,
+		);
+		expect(
+			resolveFlag("COPILOTKIT_RESEARCH_RUNS", { org: true }, {}).enabled,
+		).toBe(true);
+		expect(
+			resolveFlag(
+				"COPILOTKIT_RESEARCH_RUNS",
+				{ org: false, global: true },
+				{},
+			).enabled,
+		).toBe(false);
+	});
+
+	// The CUGA chat's runtime transport rolls out the same way.
+	it("registers COPILOTKIT_CUGA_CHAT off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_CUGA_CHAT.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_CUGA_CHAT",
+		);
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_CUGA_CHAT.default).toBe(false);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("COPILOTKIT_CUGA_CHAT");
+		expect(resolveFlag("COPILOTKIT_CUGA_CHAT", {}, {}).enabled).toBe(false);
+		expect(
+			resolveFlag("COPILOTKIT_CUGA_CHAT", { org: true }, {}).enabled,
+		).toBe(true);
+		expect(
+			resolveFlag(
+				"COPILOTKIT_CUGA_CHAT",
+				{ org: false, global: true },
+				{},
+			).enabled,
+		).toBe(false);
+	});
+
+	// The Data Analyst chat's runtime transport rolls out the same way.
+	it("registers COPILOTKIT_DATA_ANALYST_CHAT off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_DATA_ANALYST_CHAT.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_DATA_ANALYST_CHAT",
+		);
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_DATA_ANALYST_CHAT.default).toBe(
+			false,
+		);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain(
+			"COPILOTKIT_DATA_ANALYST_CHAT",
+		);
+		expect(
+			resolveFlag("COPILOTKIT_DATA_ANALYST_CHAT", {}, {}).enabled,
+		).toBe(false);
+		expect(
+			resolveFlag("COPILOTKIT_DATA_ANALYST_CHAT", { org: true }, {})
+				.enabled,
+		).toBe(true);
+		expect(
+			resolveFlag(
+				"COPILOTKIT_DATA_ANALYST_CHAT",
+				{ org: false, global: true },
+				{},
+			).enabled,
+		).toBe(false);
+	});
+
 	// The two #1694 flags are deliberately independent: the shortcuts work from
 	// recency alone, so a fault on the favorite write surface must not force the
 	// shortcuts off with it.

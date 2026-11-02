@@ -59,9 +59,14 @@ const stableSerialize = (value: unknown): string => {
 export function createOrchestratorExecutionObserver({
 	emit,
 	reattach,
+	beforeState,
+	fatalPollError,
 }: {
 	emit: OrchestratorEventSink;
 	reattach: () => Promise<OrchestratorRunHandle>;
+	/** Drain committed output after observing status, before emitting state or completion. */
+	beforeState?: (terminal: boolean) => Promise<void>;
+	fatalPollError?: (error: unknown) => boolean;
 }) {
 	const sendEvent = <T extends OrchestratorStreamInput>(
 		payload: T & AssertAssignable<T, OrchestratorStreamInput>,
@@ -581,6 +586,15 @@ export function createOrchestratorExecutionObserver({
 	): Promise<OrchestratorPollResult> => {
 		try {
 			const description = await handle.describe();
+			await beforeState?.(
+				[
+					"COMPLETED",
+					"FAILED",
+					"CANCELLED",
+					"TERMINATED",
+					"TIMED_OUT",
+				].includes(description.status.name),
+			);
 			switch (description.status.name) {
 				case "CONTINUED_AS_NEW":
 					return { complete: false, handle: await reattach() };
@@ -630,6 +644,9 @@ export function createOrchestratorExecutionObserver({
 					return { complete: false, handle };
 			}
 		} catch (pollError) {
+			if (fatalPollError?.(pollError)) {
+				throw pollError;
+			}
 			console.error("[Orchestrator Stream] Poll error:", pollError);
 			return { complete: false, handle };
 		}

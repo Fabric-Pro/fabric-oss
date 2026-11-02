@@ -555,7 +555,7 @@ function StatusMarker({ status }: { status: string }) {
 
 function EmptyState({ children }: { children: React.ReactNode }) {
 	return (
-		<p className="rounded-xl border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
+		<p className="rounded-lg border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
 			{children}
 		</p>
 	);

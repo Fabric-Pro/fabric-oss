@@ -65,9 +65,6 @@ vi.mock("@saas/automation-templates/components/TemplateEditor", () => ({
 		/>
 	),
 }));
-vi.mock("@saas/agents/components/TaskPlannerWorkspace", () => ({
-	TaskPlannerWorkspace: () => <div data-testid="task-planner" />,
-}));
 vi.mock("@saas/agents/components/RegisterExternalAgent", () => ({
 	RegisterExternalAgent: () => <div data-testid="register-agent" />,
 }));
@@ -82,7 +79,6 @@ import type { ActiveOrganization } from "@repo/auth";
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import { ActiveOrganizationContext } from "@saas/organizations/lib/active-organization-context";
 import OrgRegisterAgentPage from "../../../app/(saas)/app/(organizations)/[organizationSlug]/agents/register/page";
-import OrgTaskPlannerPage from "../../../app/(saas)/app/(organizations)/[organizationSlug]/agents/task-planner/page";
 import OrgTemplateDetailsPage from "../../../app/(saas)/app/(organizations)/[organizationSlug]/automation-templates/[id]/page";
 import OrgNewTemplatePage from "../../../app/(saas)/app/(organizations)/[organizationSlug]/automation-templates/new/page";
 import OrgTemplatesPage from "../../../app/(saas)/app/(organizations)/[organizationSlug]/automation-templates/page";
@@ -164,15 +160,11 @@ describe("automation templates — organization-rooted routes (R11)", () => {
 	});
 });
 
-describe("agents — organization-rooted task-planner and register (R11, R13)", () => {
+describe("agents — organization-rooted register (R13)", () => {
 	// These paired each surface against its personal twin. The twin is gone
 	// (R1) — `/app/agents` is a redirect now — so what is left to assert is
 	// that the organization surface still mounts, which was always the half
 	// that mattered.
-	it("renders the task planner under the organization slug", () => {
-		render(OrgTaskPlannerPage() as ReactElement);
-		expect(screen.getByTestId("task-planner")).toBeDefined();
-	});
 
 	it("renders agent-register under the organization slug", () => {
 		render(OrgRegisterAgentPage() as ReactElement);
@@ -253,7 +245,7 @@ describe("agents — organization-rooted task-planner and register (R11, R13)", 
 			true,
 		);
 		expect(existsSync(path.join(orgAgents, "task-planner/page.tsx"))).toBe(
-			true,
+			false,
 		);
 		// The dynamic sibling that used to swallow it is still there — the fix
 		// is precedence, not its removal.

@@ -42,3 +42,13 @@ it("keeps single-date month arrows inside the calendar and navigates both ways",
 	await user.click(previous);
 	expect(screen.getByRole("dialog")).toHaveTextContent("October 2026");
 });
+
+it("opens on the selected date's month rather than the current month", async () => {
+	render(
+		<DatePicker value={new Date(2020, 1, 10)} aria-label="Created from" />,
+	);
+	await userEvent
+		.setup()
+		.click(screen.getByRole("button", { name: /^Created from/ }));
+	expect(screen.getByRole("dialog")).toHaveTextContent("February 2020");
+});

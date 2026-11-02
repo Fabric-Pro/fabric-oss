@@ -268,8 +268,41 @@ describe("Proposal artifact options (Fizzy #2946)", () => {
 		);
 		expect(proposal).toContain('appendix="true"');
 		expect(glossy).not.toContain("## Audience");
-		// Guidance is added, nothing else changes.
-		expect(proposal.replace(/## Audience\n(?:- .*\n)+\n/, "")).toBe(glossy);
+		// Guidance and the Proposal's own kinds are added, nothing else changes.
+		expect(
+			proposal
+				.replace(/## Audience\n(?:- .*\n)+\n/, "")
+				.replace(
+					/## More visual kinds for this Proposal\n(?:- .*\n)+\n/,
+					"",
+				),
+		).toBe(glossy);
+	});
+
+	it("offers detection the Proposal's layers and team kinds under their own heading", () => {
+		const glossy = buildGlossyDetectInstructions("PROPOSAL");
+		const proposal = buildGlossyDetectInstructions("PROPOSAL", {
+			proposalArtifact: true,
+		});
+		const block =
+			/## More visual kinds for this Proposal\n((?:- .*\n)+)\n/.exec(
+				proposal,
+			)?.[1] ?? "";
+		expect(
+			block
+				.trim()
+				.split("\n")
+				.map((line) => line.slice(2, line.indexOf(":"))),
+		).toEqual(["layers", "team"]);
+		expect(block).toContain(
+			"A list of the proposer's roles alone is not a team.",
+		);
+		// After Glossy's own kinds, which stay as they are.
+		expect(proposal.indexOf("## More visual kinds")).toBeGreaterThan(
+			proposal.indexOf("- org_chart:"),
+		);
+		expect(glossy).not.toContain("layers");
+		expect(glossy).not.toMatch(/- team:/);
 	});
 
 	it("marks an appendix section with an attribute, beside the kinds it already shows", () => {
@@ -307,8 +340,47 @@ describe("Proposal artifact options (Fizzy #2946)", () => {
 		expect(glossy).not.toContain("at most 32 characters");
 		expect(glossy).not.toContain("Never repeat the title");
 		expect(
-			proposal.replace(/## Labels for this Proposal\n(?:.*\n)+?\n/, ""),
+			proposal
+				.replace(/## More kinds for this Proposal\n(?:.*\n)+?\n/, "")
+				.replace(/## Labels for this Proposal\n(?:.*\n)+?\n/, ""),
 		).toBe(glossy);
+	});
+
+	it("gives extraction the field rules and label bounds of layers and team", () => {
+		const glossy = buildGlossyExtractInstructions("PROPOSAL");
+		const proposal = buildGlossyExtractInstructions("PROPOSAL", {
+			proposalArtifact: true,
+		});
+		const block =
+			/## More kinds for this Proposal\n((?:- .*\n)+)\n/.exec(
+				proposal,
+			)?.[1] ?? "";
+		expect(
+			block
+				.trim()
+				.split("\n")
+				.map((line) => line.slice(2, line.indexOf(":"))),
+		).toEqual(["layers", "team"]);
+		expect(block).toContain(
+			"in the layers field, 2–8 layers, top to bottom",
+		);
+		expect(block).toContain(
+			"name: the person's name only when the section gives it (≤60)",
+		);
+		expect(proposal).toContain(
+			"- layers: every layer name and component is a few words, at most 24 characters",
+		);
+		expect(proposal).toContain(
+			"- team: role is a few words, at most 28 characters",
+		);
+		expect(glossy).not.toContain("## More kinds for this Proposal");
+		expect(
+			buildGlossyExtractPrompt({
+				kind: "layers",
+				heading: "Architecture",
+				markdown: "Three layers.",
+			}),
+		).toContain("Requested kind: layers.");
 	});
 });
 
@@ -331,6 +403,9 @@ describe("Edit with instructions (Fizzy #2946)", () => {
 		expect(editing).toContain("## Editing an existing diagram");
 		expect(editing).toContain(
 			"The current diagram is not a source of facts.",
+		);
+		expect(editing).toContain(
+			'When the requested kind is "auto", choose timeline, flow, or org_chart, whichever the current diagram shows.',
 		);
 		expect(
 			editing.replace(/## Editing an existing diagram\n(?:.*\n)+?\n/, ""),

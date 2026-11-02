@@ -1,9 +1,9 @@
 "use client";
 
 import type {
+	AtlasNodeNeighbor,
 	GraphMode,
 	NodeOverrideHistoryEntry,
-	AtlasNodeNeighbor,
 } from "@repo/atlas/types";
 /**
  * Compact detail card for the currently-selected graph node (floats over the
@@ -364,7 +364,7 @@ export function AtlasNodePanel({
 				key={`${neighbor.direction}-${neighbor.key}`}
 				type="button"
 				onClick={() => onSelectNode(neighbor.key)}
-				className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-border/60 bg-muted/50 px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:border-[color:var(--chip-color)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-border/60 bg-muted/50 px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:border-[color:var(--chip-color)] hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 				style={{ "--chip-color": chipColor } as CSSProperties}
 			>
 				<span
@@ -391,7 +391,7 @@ export function AtlasNodePanel({
 		const overflow = items.length - shown.length;
 		return (
 			<div>
-				<p className="mb-1.5 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+				<p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
 					{label}
 				</p>
 				<div className="flex flex-wrap gap-1.5">
@@ -400,7 +400,7 @@ export function AtlasNodePanel({
 						<button
 							type="button"
 							onClick={() => setExpanded(true)}
-							className="rounded-lg border border-dashed border-border/60 px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="rounded-lg border border-dashed border-border/60 px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							{t("moreChips", { count: overflow })}
 						</button>
@@ -417,7 +417,7 @@ export function AtlasNodePanel({
 			className="rounded-md px-1.5 py-1.5 transition-colors hover:bg-muted/50"
 		>
 			<div className="flex items-center justify-between gap-2">
-				<span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+				<span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 					{t(`historyField.${entry.field}`)}
 				</span>
 				<span className="shrink-0 text-[11px] text-muted-foreground">
@@ -446,7 +446,7 @@ export function AtlasNodePanel({
 	return (
 		<section
 			aria-label={t("regionLabel")}
-			className="flex h-full flex-col rounded-xl border bg-card"
+			className="flex h-full flex-col rounded-lg border bg-card"
 			style={
 				{
 					"--cc": accent,
@@ -463,7 +463,7 @@ export function AtlasNodePanel({
 						<button
 							type="button"
 							aria-label={categoryLabel}
-							className="-ml-1 flex min-w-0 flex-1 cursor-help items-center gap-2 rounded-lg px-1 py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="-ml-1 flex min-w-0 flex-1 cursor-help items-center gap-2 rounded-lg px-1 py-1 text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<span
 								aria-hidden="true"
@@ -480,7 +480,7 @@ export function AtlasNodePanel({
 								/>
 							</span>
 							<span
-								className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-[0.16em]"
+								className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide"
 								style={{ color: accent }}
 							>
 								{categoryLabel}
@@ -526,7 +526,7 @@ export function AtlasNodePanel({
 								<h3
 									ref={headingRef}
 									tabIndex={-1}
-									className="font-serif text-lg leading-tight text-foreground focus-visible:outline-none"
+									className="font-semibold text-lg leading-tight text-foreground focus-visible:outline-hidden"
 								>
 									{detail?.label ?? t("notFound")}
 								</h3>
@@ -543,7 +543,7 @@ export function AtlasNodePanel({
 							{/* Description — editable, with regenerate + history. */}
 							<div>
 								<div className="mb-1.5 flex items-center justify-between gap-2">
-									<p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+									<p className="text-[11px] uppercase tracking-wide text-muted-foreground">
 										{t("description")}
 									</p>
 									{!editingDescription && (
@@ -561,7 +561,7 @@ export function AtlasNodePanel({
 																aria-label={t(
 																	"history",
 																)}
-																className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+																className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 															>
 																<ClockIcon
 																	aria-hidden="true"
@@ -579,7 +579,7 @@ export function AtlasNodePanel({
 													className="w-80 p-0"
 												>
 													<div className="border-b border-border/60 px-3 py-2">
-														<p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+														<p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
 															{t("historyTitle")}
 														</p>
 													</div>
@@ -629,7 +629,7 @@ export function AtlasNodePanel({
 															aria-label={t(
 																"editDescription",
 															)}
-															className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+															className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 														>
 															<PencilIcon
 																aria-hidden="true"
@@ -660,7 +660,7 @@ export function AtlasNodePanel({
 															aria-expanded={
 																showRegenerate
 															}
-															className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+															className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 														>
 															<RefreshCwIcon
 																aria-hidden="true"
@@ -851,7 +851,7 @@ export function AtlasNodePanel({
 												onClick={() =>
 													setDescExpanded((v) => !v)
 												}
-												className="mt-1 text-xs font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+												className="mt-1 text-xs font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 											>
 												{descExpanded
 													? t("showLess")
@@ -965,7 +965,7 @@ export function AtlasNodePanel({
 											setShowDetails((v) => !v)
 										}
 										aria-expanded={showDetails}
-										className="flex w-full items-center justify-between gap-2 text-[11px] uppercase tracking-[0.16em] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										className="flex w-full items-center justify-between gap-2 text-[11px] uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 									>
 										{t("moreDetails")}
 										<ChevronDownIcon
@@ -980,7 +980,7 @@ export function AtlasNodePanel({
 										<div className="mt-3 space-y-4">
 											{metricEntries.length > 0 && (
 												<div>
-													<p className="mb-1.5 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+													<p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
 														{t("metricsTitle")}
 													</p>
 													<dl className="grid grid-cols-2 gap-2">
@@ -1022,7 +1022,7 @@ export function AtlasNodePanel({
 											)}
 											{detail?.documentation && (
 												<div>
-													<p className="mb-1.5 flex items-center gap-1.5 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+													<p className="mb-1.5 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
 														<FileTextIcon
 															aria-hidden="true"
 															className="size-3.5"

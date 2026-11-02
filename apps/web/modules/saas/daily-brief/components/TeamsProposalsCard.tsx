@@ -55,7 +55,7 @@ export function TeamsProposalsCard({
 								>
 									{item.status}
 								</span>
-								<span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+								<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
 									{item.changeCount} change
 									{item.changeCount === 1 ? "" : "s"}
 								</span>

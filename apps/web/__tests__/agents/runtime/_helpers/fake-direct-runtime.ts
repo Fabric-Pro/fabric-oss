@@ -1,12 +1,12 @@
 /**
- * An in-memory world for the agent runtime's Direct engine tests: the
- * conversation and `ConversationTurn` tables (with the admission, cancel and
- * finalize rules of the real queries), Temporal workflows, and the Direct
- * route's admission and start. Test files mock the real modules with the
- * parts of `fakeWorld` (each `vi.mock` factory imports this module) and
- * read and drive `fakeWorld.state`.
+ * An in-memory world for the agent runtime's Direct and deep-researcher
+ * engine tests: the conversation and `ConversationTurn` tables (with the
+ * admission, cancel and finalize rules of the real queries), feature flags,
+ * Temporal workflows (with their queries and signals), and the Direct
+ * route's and the workflow-template run's admission and start. Test files
+ * mock the real modules with the parts of `fakeWorld` (each `vi.mock`
+ * factory imports this module) and read and drive `fakeWorld.state`.
  */
-import type { DirectChatWorkflowOutput } from "@repo/temporal";
 
 export interface FakeTurn {
 	id: string;
@@ -26,10 +26,20 @@ export interface FakeTurn {
 
 export interface FakeWorkflow {
 	status: string;
-	result?: DirectChatWorkflowOutput;
+	result?: unknown;
 	progress?: Record<string, unknown>;
+	/** Answers to named queries; `progress` answers any query not here. */
+	queries?: Record<string, unknown>;
 	memo: { userId: string; organizationId: string };
 	runId: string;
+}
+
+export interface FakeSignal {
+	executionId: string;
+	name: string;
+	args: unknown[];
+	/** The status of the execution's turn when the signal was sent. */
+	turnStatus: string | undefined;
 }
 
 export interface SavedTurn {
@@ -81,7 +91,34 @@ const state = {
 	refusal: null as (() => Response) | null,
 	/** What starting the next workflow throws. */
 	startError: null as Error | null,
+	/** The feature flags that are on. */
+	flags: new Set<string>(),
+	/** Each flag read, with the organization it was read for. */
+	flagChecks: [] as Array<{ flag: string; organizationId?: string }>,
+	signals: [] as FakeSignal[],
+	/** What sending a signal throws (it is still recorded). */
+	signalError: null as Error | null,
+	/** Signals and cancels sent to Temporal, in order (`signal:<name>`, `cancel`). */
+	controls: [] as string[],
+	/** The research run's writes and calls, in order. */
+	calls: [] as FakeCall[],
+	/** Runs as each call is logged, before it goes on. */
+	onCall: null as ((call: FakeCall) => void) | null,
+	/** The executions `describe` was asked about, in order. */
+	describes: [] as string[],
+	/**
+	 * Statuses `describe` reports for an execution before its workflow's
+	 * own, one per call: a workflow that ends between two reads.
+	 */
+	describeStatuses: new Map<string, string[]>(),
 };
+
+type FakeCall = "admit" | "conversation" | "turn" | "save" | "start";
+
+function logCall(call: FakeCall) {
+	state.calls.push(call);
+	state.onCall?.(call);
+}
 
 function reset(owner: { userId: string; organizationId: string }) {
 	state.conversations.clear();
@@ -96,6 +133,15 @@ function reset(owner: { userId: string; organizationId: string }) {
 	state.seq = 0;
 	state.refusal = null;
 	state.startError = null;
+	state.flags.clear();
+	state.flagChecks.length = 0;
+	state.signals.length = 0;
+	state.signalError = null;
+	state.controls.length = 0;
+	state.calls.length = 0;
+	state.onCall = null;
+	state.describes.length = 0;
+	state.describeStatuses.clear();
 	state.workflowOwner = { ...owner };
 }
 
@@ -125,12 +171,14 @@ function handleFor(executionId: string) {
 	return {
 		workflowId: executionId,
 		describe: async () => {
+			state.describes.push(executionId);
 			const workflow = state.workflows.get(executionId);
 			if (!workflow) {
 				throw notFound();
 			}
+			const scripted = state.describeStatuses.get(executionId)?.shift();
 			return {
-				status: { name: workflow.status },
+				status: { name: scripted ?? workflow.status },
 				raw: { pendingActivities: [] },
 				runId: workflow.runId,
 				memo: workflow.memo,
@@ -146,12 +194,29 @@ function handleFor(executionId: string) {
 			}
 			return workflow.result;
 		},
-		query: async () => {
+		query: async (name?: string) => {
 			const workflow = state.workflows.get(executionId);
+			if (name && workflow?.queries && name in workflow.queries) {
+				return workflow.queries[name];
+			}
 			if (!workflow?.progress) {
 				throw new Error("query not registered");
 			}
 			return workflow.progress;
+		},
+		signal: async (name: string, ...args: unknown[]) => {
+			state.signals.push({
+				executionId,
+				name,
+				args,
+				turnStatus: state.turns.find(
+					(turn) => turn.executionId === executionId,
+				)?.status,
+			});
+			state.controls.push(`signal:${name}`);
+			if (state.signalError) {
+				throw state.signalError;
+			}
 		},
 		cancel: async () => {
 			const workflow = state.workflows.get(executionId);
@@ -159,6 +224,7 @@ function handleFor(executionId: string) {
 				workflow.status = "CANCELLED";
 			}
 			state.cancels.push(executionId);
+			state.controls.push("cancel");
 		},
 	};
 }
@@ -181,6 +247,10 @@ const database = {
 				state.conversations.get(where.id) ?? null,
 		},
 	},
+	isFeatureEnabled: async (flag: string, organizationId?: string) => {
+		state.flagChecks.push({ flag, organizationId });
+		return state.flags.has(flag);
+	},
 	createAgentConversation: async (
 		args: Omit<FakeConversation, "messages">,
 	) => {
@@ -189,6 +259,7 @@ const database = {
 		}
 		const conversation = { ...args, messages: [] };
 		state.conversations.set(args.id, conversation);
+		logCall("conversation");
 		return conversation;
 	},
 	getAgentConversationById: async (args: {
@@ -212,6 +283,7 @@ const database = {
 	saveConversationTurn: async (args: SavedTurn) => {
 		state.saves.push(args);
 		state.writeOrder.push("save");
+		logCall("save");
 		const conversation = state.conversations.get(args.id);
 		if (!conversation) {
 			throw new Error("no conversation");
@@ -299,6 +371,7 @@ const database = {
 			generation: state.seq,
 		};
 		state.turns.push(turn);
+		logCall("turn");
 		return { outcome: "created", turn: copy(turn) };
 	},
 	getConversationTurnForExecution: async (args: { executionId: string }) => {
@@ -462,13 +535,59 @@ const directTurn = {
 		if (state.startError) {
 			throw state.startError;
 		}
-		state.starts.push(input);
-		state.workflows.set(input.executionId, {
-			...state.onStart(input),
-			memo: { ...state.workflowOwner },
-			runId: `temporal-run-${state.starts.length}`,
+		return startWorkflow(input);
+	},
+};
+
+function startWorkflow(input: WorkflowInput) {
+	state.starts.push(input);
+	state.workflows.set(input.executionId, {
+		...state.onStart(input),
+		memo: { ...state.workflowOwner },
+		runId: `temporal-run-${state.starts.length}`,
+	});
+	return handleFor(input.executionId);
+}
+
+/**
+ * The workflow-template run's admission and start (`workflow-template-run`),
+ * as the deep-researcher engine uses them. A start is recorded with the
+ * question as its `message`.
+ */
+const researchRun = {
+	admitWorkflowTemplateRun: async (
+		userId: string,
+		body: Record<string, unknown>,
+	) => {
+		logCall("admit");
+		if (state.refusal) {
+			return state.refusal();
+		}
+		state.admittedBodies.push(body);
+		return {
+			templateSlug: body.templateSlug,
+			workflowConfig: {
+				workflowName: "deepResearcherWorkflow",
+				taskQueue: "fabric-worker",
+			},
+			input: { ...body, userId },
+		};
+	},
+	startDeepResearcherWorkflow: async (
+		_temporalClient: unknown,
+		run: { input: Record<string, unknown> },
+		executionId: string,
+	) => {
+		logCall("start");
+		if (state.startError) {
+			throw state.startError;
+		}
+		return startWorkflow({
+			executionId,
+			conversationId: null,
+			message: run.input.query,
+			approvedToolCall: null,
 		});
-		return handleFor(input.executionId);
 	},
 };
 
@@ -510,5 +629,6 @@ export const fakeWorld = {
 	database,
 	temporal,
 	directTurn,
+	researchRun,
 	authorizedChatRun,
 };

@@ -113,7 +113,7 @@ function AgentBuilderInner({
 							</span>
 						</div>
 
-						<h1 className="mb-8 font-serif text-2xl font-normal text-foreground">
+						<h1 className="mb-8 text-2xl font-semibold text-foreground">
 							Agent Builder
 						</h1>
 
@@ -348,7 +348,7 @@ export function AgentBuilderPage({ agentId }: AgentBuilderPageProps) {
 		return (
 			<div className="flex h-[calc(100vh-53px)] items-center justify-center">
 				<div className="text-center">
-					<h2 className="font-serif text-xl text-foreground">
+					<h2 className="font-semibold text-xl text-foreground">
 						Agent not found
 					</h2>
 					<p className="mt-2 text-sm text-muted-foreground">

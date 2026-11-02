@@ -889,7 +889,7 @@ export function createCopilotSidebarInput(config: CopilotSidebarInputConfig) {
 						isDraggingFile ? "opacity-100" : "opacity-0",
 					)}
 				>
-					<span className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+					<span className="text-xs font-medium text-muted-foreground">
 						Drop to attach
 					</span>
 				</div>

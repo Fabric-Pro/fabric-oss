@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
 	type ComparisonVisualSpec,
 	type FlowVisualSpec,
+	type LayersVisualSpec,
 	type OrgChartVisualSpec,
 	type StatVisualSpec,
+	type TeamVisualSpec,
 	type TimelineVisualSpec,
 	visualSpecSchema,
 } from "../lib/glossy/visual-spec";
@@ -13,17 +15,25 @@ import {
 	escapeMermaidLabel,
 	escapeXmlText,
 	flowToMermaid,
+	layersToMermaid,
 	orgChartToMermaid,
 	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
 	proposalFigureKind,
 	proposalVisualTemplateOptions,
 	SVG_CARD_FONT_STACK,
 	statToSvgCard,
+	teamToMermaid,
 	timelineToMermaid,
 	VISUAL_COLOR_PLACEHOLDERS,
 	visualSpecToMermaid,
 	visualSpecToSvgCard,
 } from "../lib/glossy/visual-templates";
+import {
+	type FigurePalette,
+	parseFigureSource,
+	renderFigureSvg,
+	withFigureKind,
+} from "../lib/proposal-artifact/proposal-figures";
 
 describe("escapeMermaidLabel", () => {
 	const ZWSP = "\u200B";
@@ -1101,6 +1111,242 @@ describe("proposalFigureKind (Fizzy #2946)", () => {
 			visualSpecToMermaid(flow, PROPOSAL_VISUAL_TEMPLATE_OPTIONS),
 		).not.toContain("%% figure:");
 		expect(visualSpecToMermaid(flow)).not.toContain("%% figure:");
+	});
+});
+
+describe("layers and team (Fizzy #2946)", () => {
+	const PALETTE: FigurePalette = {
+		ink: "#16171a",
+		onInk: "#ffffff",
+		primary: "#c2410c",
+		label: "#9a3412",
+		onPrimary: "#ffffff",
+		tint: "#fbefe9",
+		border: "#d9dade",
+		surface: "#ffffff",
+		muted: "#5b5e66",
+	};
+
+	const LAYERS: LayersVisualSpec = {
+		kind: "layers",
+		layers: [
+			{
+				name: "Channels",
+				description: "Where customers order",
+				components: ["Web shop", "Mobile app"],
+			},
+			{ name: "Services", components: ["Orders", "Billing", "Search"] },
+			{ name: "Data", components: ["Order store"] },
+		],
+		crosscutting: {
+			name: "Operations",
+			items: ["Monitoring", "Identity"],
+		},
+	};
+
+	const TEAM: TeamVisualSpec = {
+		kind: "team",
+		proposer: {
+			name: "Example Studio",
+			description: "Delivery pod",
+			members: [
+				{ role: "Delivery lead", name: "Alex Example" },
+				{ role: "Engineer", description: "Builds the services" },
+			],
+		},
+		client: {
+			name: "Example Retail",
+			members: [{ role: "Product owner" }, { role: "Operations lead" }],
+		},
+		shared: "Weekly steering meeting",
+	};
+
+	/** The fence body as a Proposal writes it: the figure line, then the source. */
+	function proposalFence(spec: LayersVisualSpec | TeamVisualSpec): string {
+		return withFigureKind(
+			visualSpecToMermaid(spec, proposalVisualTemplateOptions(spec)),
+			proposalFigureKind(spec),
+		);
+	}
+
+	it("writes layers as one subgraph per layer and a crosscutting column, with roles and no edges", () => {
+		expect(
+			layersToMermaid(LAYERS, PROPOSAL_VISUAL_TEMPLATE_OPTIONS).split(
+				"\n",
+			),
+		).toEqual([
+			"flowchart TD",
+			'subgraph l0["Channels<br/>Where customers order"]',
+			'l0c0["Web shop"]',
+			'l0c1["Mobile app"]',
+			"end",
+			'subgraph l1["Services"]',
+			'l1c0["Orders"]',
+			'l1c1["Billing"]',
+			'l1c2["Search"]',
+			"end",
+			'subgraph l2["Data"]',
+			'l2c0["Order store"]',
+			"end",
+			'subgraph crosscutting["Operations"]',
+			'x0["Monitoring"]',
+			'x1["Identity"]',
+			"end",
+			"class l0c0 surface",
+			"class l0c1 surface",
+			"class l1c0 surface",
+			"class l1c1 surface",
+			"class l1c2 surface",
+			"class l2c0 surface",
+			"class x0 surface",
+			"class x1 surface",
+		]);
+	});
+
+	it("writes a team as the proposer's subgraph, then the client's, then the shared forum", () => {
+		expect(
+			teamToMermaid(TEAM, PROPOSAL_VISUAL_TEMPLATE_OPTIONS).split("\n"),
+		).toEqual([
+			"flowchart TD",
+			'subgraph proposer["Example Studio<br/>Delivery pod"]',
+			'p0["Delivery lead<br/>Alex Example"]',
+			'p1["Engineer<br/>Builds the services"]',
+			"end",
+			'subgraph client["Example Retail"]',
+			'c0["Product owner"]',
+			'c1["Operations lead"]',
+			"end",
+			's0["Weekly steering meeting"]',
+			"class p0 surface",
+			"class p1 surface",
+			"class c0 surface",
+			"class c1 surface",
+			"class s0 surface",
+		]);
+	});
+
+	it.each([
+		["layers", LAYERS],
+		["team", TEAM],
+		["a team without a shared forum", { ...TEAM, shared: undefined }],
+		[
+			"layers without a crosscutting column",
+			{ ...LAYERS, crosscutting: undefined },
+		],
+	] as const)("asks for its figure, and the template draws %s", (_, spec) => {
+		const body = proposalFence(spec);
+		const kind = spec.kind;
+
+		expect(body.split("\n")[0]).toBe(`%% figure: ${kind}`);
+		expect(parseFigureSource(body)).not.toBeNull();
+		expect(renderFigureSvg(kind, body, PALETTE)).toMatch(/^<svg[\s>]/);
+	});
+
+	it("draws the largest layers and team the schema allows", () => {
+		const long = (prefix: string) =>
+			`${prefix} ${"word ".repeat(30)}`.slice(0, 120).trim();
+		const layers: LayersVisualSpec = {
+			kind: "layers",
+			layers: Array.from({ length: 8 }, (_, layer) => ({
+				name: long(`Layer ${layer}`).slice(0, 60),
+				description: long("Purpose"),
+				components: Array.from({ length: 5 }, (_, index) =>
+					long(`Part ${index}`),
+				),
+			})),
+			crosscutting: {
+				name: long("Across").slice(0, 60),
+				description: long("Detail"),
+				items: Array.from({ length: 6 }, (_, index) =>
+					long(`Item ${index}`),
+				),
+			},
+		};
+		const member = (index: number) => ({
+			role: long(`Role ${index}`),
+			name: long("Name").slice(0, 60),
+			description: long("Owns").slice(0, 240),
+		});
+		const team: TeamVisualSpec = {
+			kind: "team",
+			proposer: {
+				name: long("Ours").slice(0, 60),
+				description: long("Pod"),
+				members: Array.from({ length: 10 }, (_, index) =>
+					member(index),
+				),
+			},
+			client: {
+				name: long("Theirs").slice(0, 60),
+				description: long("Client"),
+				members: Array.from({ length: 10 }, (_, index) =>
+					member(index),
+				),
+			},
+			shared: long("Forum"),
+		};
+		for (const spec of [layers, team]) {
+			const body = proposalFence(spec);
+			expect(renderFigureSvg(spec.kind, body, PALETTE)).toMatch(
+				/^<svg[\s>]/,
+			);
+		}
+	});
+
+	it("quotes every spec string and never writes it as an id", () => {
+		const injection = 'x"]\nclick l0c0 call evil()\n%%{init: {}}%%';
+		const layers = layersToMermaid({
+			kind: "layers",
+			layers: [
+				{ name: injection, components: [injection] },
+				{ name: "Data", components: ["Store"] },
+			],
+			crosscutting: { name: injection, items: [injection] },
+		});
+		const team = teamToMermaid({
+			kind: "team",
+			proposer: { name: injection, members: [{ role: injection }] },
+			client: { name: "Client", members: [{ role: "Owner" }] },
+			shared: injection,
+		});
+		for (const source of [layers, team]) {
+			expect(source).not.toContain('"]\nclick');
+			expect(source).not.toMatch(/^click /m);
+			expect(source).not.toContain("%%{");
+			expect(parseFigureSource(source)).not.toBeNull();
+		}
+	});
+
+	it("cuts long labels at a word, leaving a detail that repeats its title out", () => {
+		const source = teamToMermaid({
+			kind: "team",
+			proposer: {
+				name: "Example Studio",
+				members: [
+					{
+						role: "Lead",
+						description: "Lead",
+						name: "A person with a rather long name here",
+					},
+				],
+			},
+			client: { name: "Client", members: [{ role: "Owner" }] },
+		});
+		expect(source).toContain('p0["Lead<br/>A person with a rather…"]');
+	});
+
+	it("dispatches layers and team, and asks for their own figures", () => {
+		expect(visualSpecToMermaid(LAYERS)).toBe(layersToMermaid(LAYERS));
+		expect(visualSpecToMermaid(TEAM)).toBe(teamToMermaid(TEAM));
+		expect(proposalFigureKind(LAYERS)).toBe("layers");
+		expect(proposalFigureKind(TEAM)).toBe("team");
+		expect(proposalVisualTemplateOptions(TEAM).wrapTitle).toBe(false);
+	});
+
+	it("writes colour placeholders in Glossy's colour mode", () => {
+		expect(layersToMermaid(LAYERS)).toContain(
+			"style l0c0 fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER",
+		);
 	});
 });
 

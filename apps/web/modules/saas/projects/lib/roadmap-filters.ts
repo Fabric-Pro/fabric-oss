@@ -371,7 +371,7 @@ type SearchToken = { raw: string; normalized: string };
  * still finds a new plain-numeric `11` row. An all-whitespace query trims to
  * "" → no tokens → no search filter.
  */
-function buildSearchTokens(query: string): SearchToken[] {
+export function buildSearchTokens(query: string): SearchToken[] {
 	const needle = query.trim().toLowerCase();
 	if (!needle) {
 		return [];
@@ -443,7 +443,10 @@ export function partitionByNameMatch(
 export function applyRoadmapFilters(
 	stories: UserStory[],
 	filters: RoadmapFilters,
-	options?: { allowClosedInStageFilter?: boolean },
+	options?: {
+		allowClosedInStageFilter?: boolean;
+		descriptionMatches?: ReadonlyMap<string, string[]>;
+	},
 ): UserStory[] {
 	const searchTokens = buildSearchTokens(filters.q);
 	const kindFilter = filters.kind.length > 0 ? new Set(filters.kind) : null;
@@ -523,12 +526,22 @@ export function applyRoadmapFilters(
 				story.title,
 				story.identifier,
 				story.externalId ?? "",
-				story.description ?? "",
+				options?.descriptionMatches ? "" : (story.description ?? ""),
 				STORY_SOURCE_LABELS[normalizedSource],
 			]
 				.join("\n")
 				.toLowerCase();
-			if (!matchesEveryToken(haystack, searchTokens)) {
+			if (
+				!searchTokens.every(
+					(token) =>
+						matchesEveryToken(haystack, [token]) ||
+						(options?.descriptionMatches?.get(story.id) ?? []).some(
+							(needle) =>
+								needle === token.raw ||
+								needle === token.normalized,
+						),
+				)
+			) {
 				return false;
 			}
 		}
@@ -572,10 +585,16 @@ export function applyRoadmapFilters(
 				return false;
 			}
 		}
-		if (filters.missingDesc && !isBlank(story.description)) {
+		if (
+			filters.missingDesc &&
+			(story.hasDescription ?? !isBlank(story.description))
+		) {
 			return false;
 		}
-		if (filters.missingAc && !isBlank(story.acceptanceCriteria)) {
+		if (
+			filters.missingAc &&
+			(story.hasAcceptanceCriteria ?? !isBlank(story.acceptanceCriteria))
+		) {
 			return false;
 		}
 		// AI bug-triage flag; always false for features (set at bug creation,
@@ -640,10 +659,11 @@ export function applyRoadmapFilters(
 export function selectHiddenMatches(
 	stories: UserStory[],
 	filters: RoadmapFilters,
+	descriptionMatches?: ReadonlyMap<string, string[]>,
 ): UserStory[] {
 	return applyRoadmapFilters(
 		stories.filter((s) => s.draftingStage === "CLOSED"),
 		filters,
-		{ allowClosedInStageFilter: true },
+		{ allowClosedInStageFilter: true, descriptionMatches },
 	);
 }

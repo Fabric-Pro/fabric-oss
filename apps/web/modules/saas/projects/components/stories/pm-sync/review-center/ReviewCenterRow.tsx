@@ -176,7 +176,7 @@ export function ReviewCenterRow({
 					</p>
 				</div>
 				{pmToolLabel && (
-					<span className="flex shrink-0 items-center gap-1 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+					<span className="flex shrink-0 items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
 						<PmToolBrandIcon
 							pmToolType={item.pmTool}
 							className="size-3.5"

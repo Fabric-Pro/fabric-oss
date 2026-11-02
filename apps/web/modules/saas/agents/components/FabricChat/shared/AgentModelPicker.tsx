@@ -309,7 +309,7 @@ export function AgentModelPicker({
 							}
 							value={agentSearch}
 							onChange={(e) => setAgentSearch(e.target.value)}
-							className="w-full pl-7 pr-3 py-1.5 text-xs bg-muted/40 rounded-md border border-border/50 outline-none focus:ring-1 focus:ring-primary/30 focus:border-primary/40 text-foreground placeholder:text-muted-foreground/50 transition-colors"
+							className="w-full pl-7 pr-3 py-1.5 text-xs bg-card rounded-sm border border-input outline-hidden focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring text-foreground placeholder:text-muted-foreground transition-colors"
 						/>
 					</div>
 				</div>
@@ -343,7 +343,7 @@ export function AgentModelPicker({
 					))}
 					{chatgptPlan && (
 						<div data-testid="agent-picker-chatgpt-plan">
-							<p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60">
+							<p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 								Runs on your{" "}
 								{chatgptPlan.source === "shared"
 									? "organization's shared ChatGPT plan"
@@ -413,7 +413,7 @@ export function AgentModelPicker({
 						<div>
 							{/* Redundant when it is the only section. */}
 							{!modelsOnly && (
-								<p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60">
+								<p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 									Models
 								</p>
 							)}
@@ -453,7 +453,7 @@ export function AgentModelPicker({
 					{/* Agents section */}
 					{filteredAgents.length > 0 && (
 						<div>
-							<p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60">
+							<p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 								Agents
 							</p>
 							{filteredAgents.map((agent) => {

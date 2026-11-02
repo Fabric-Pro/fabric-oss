@@ -167,7 +167,7 @@ export function BasicInfoStep({
 	// (no blur, no semi-transparent card fill) and no glassy inner shadow.
 	// Replaces the pre-redesign glassy chrome the 2026-05-23
 	// unified-context-uploader spec (§7.7/§17) deferred to this follow-up.
-	const sectionClassName = "rounded-xl border border-border bg-card p-5";
+	const sectionClassName = "rounded-lg border border-border bg-card p-5";
 	const todayIso = new Date().toLocaleDateString("en-CA");
 	const briefLength = formData.description.trim().length;
 	const briefTooShort = briefLength <= MIN_DESCRIPTION_LENGTH;
@@ -347,9 +347,9 @@ export function BasicInfoStep({
 
 	return (
 		<div className="space-y-6">
-			<div className="rounded-xl border border-border bg-card p-6">
+			<div className="rounded-lg border border-border bg-card p-6">
 				<div className="mb-6 max-w-3xl">
-					<p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						Step 1
 					</p>
 					<h2 className="mt-2 text-2xl font-semibold tracking-tight">
@@ -392,7 +392,7 @@ export function BasicInfoStep({
 							onChange={(e) =>
 								updateFormData({ name: e.target.value })
 							}
-							className={`h-12 rounded-xl border-border bg-background ${isDuplicateName || nameError ? "border-destructive focus-visible:ring-destructive" : ""}`}
+							className={`h-10 rounded-md border-input bg-card ${isDuplicateName || nameError ? "border-destructive focus-visible:ring-destructive" : ""}`}
 							aria-invalid={
 								isDuplicateName || nameError ? true : undefined
 							}
@@ -423,7 +423,7 @@ export function BasicInfoStep({
 						) : null}
 					</div>
 
-					<div className="overflow-hidden rounded-xl border border-border bg-muted/40">
+					<div className="overflow-hidden rounded-lg border border-border bg-muted/40">
 						<div className="flex flex-col gap-4 border-b border-border px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
 							<div>
 								<Label
@@ -682,7 +682,7 @@ export function BasicInfoStep({
 
 			{/* Engagement profile + optional vision (plan §1.2, §1.4) */}
 			{showEngagementProfile && (
-				<div className="rounded-2xl border border-border/60 bg-card p-5">
+				<div className="rounded-lg border border-border/60 bg-card p-5">
 					<EngagementProfilePicker
 						value={formData.engagementProfile}
 						onChange={(engagementProfile) =>
@@ -844,14 +844,14 @@ export function BasicInfoStep({
 								key={type.value}
 								type="button"
 								onClick={() => toggleProjectType(type.value)}
-								className={`group relative flex items-center gap-4 rounded-2xl border px-4 py-3 text-left transition-colors ${
+								className={`group relative flex items-center gap-4 rounded-lg border px-4 py-3 text-left transition-colors ${
 									isSelected
 										? "border-primary bg-accent"
 										: "border-border bg-muted/40 hover:border-primary/40 hover:bg-accent"
 								}`}
 							>
 								<div
-									className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border ${
+									className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border ${
 										isSelected
 											? "border-primary/40 bg-primary/10"
 											: "border-border bg-background"

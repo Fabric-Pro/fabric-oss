@@ -412,25 +412,21 @@ const nextConfig: NextConfig = {
 	// function-size report at the tail of that build; the trace weight today is
 	// ordinary dependency size, not this.
 
-	// When the Vercel buildCommand runs the type-check as a SEPARATE turbo
-	// task (NEXT_TYPECHECK_SPLIT=true), skip the in-build check: Next 16's
-	// checker re-checks the full app (~120s) on every build and does not
-	// honor incremental .tsbuildinfo state. The split `tsc --noEmit` task
-	// DOES (measured: cold 138s → warm 23s via the .tsbuildinfo persisted in
-	// .next/cache) and still fails the same deployment on type errors.
+	// With NEXT_TYPECHECK_SPLIT=true the type check runs somewhere other than
+	// `next build`, so skip the in-build check: Next 16's checker re-checks
+	// the full app (~120s) on every build and does not honor incremental
+	// .tsbuildinfo state.
 	//
-	// The two MUST NOT overlap: running them in parallel OOM-killed the 16 GB
-	// build machine (next@6GB heap + tsc@6GB heap + Turbopack native memory).
-	// That used to be guaranteed by `@repo/web#type-check` dependsOn `build`;
-	// it now depends on `typegen` instead, so the ordering lives in
-	// apps/web/vercel.json, which runs `turbo type-check` and `turbo build` as
-	// two `&&`-chained invocations (type-check first, so a type error fails
-	// before the expensive build). tsc still sees fresh .next/types route
-	// validations — `next typegen` writes the identical routes.d.ts /
-	// validator.ts / cache-life.d.ts set — so gate fidelity is unchanged.
-	// The root `pnpm build` uses the same split and the same `&&` ordering:
-	// under the 6144 MB cap in apps/web/package.json the in-build check runs
-	// out of heap. Plain `next build` (Docker) keeps the in-build check.
+	// - The Vercel buildCommand (apps/web/vercel.json) sets it and runs no
+	//   type check at all: the required CI type-check job already gates every
+	//   PR head, so repeating it cost ~1 minute of every Vercel build.
+	// - The root `pnpm build` sets it and runs `turbo type-check` first, as a
+	//   separate `&&`-chained invocation. The two MUST NOT overlap: running
+	//   them in parallel OOM-killed the 16 GB build machine (next@6GB heap +
+	//   tsc@6GB heap + Turbopack native memory). Under the 6144 MB cap in
+	//   apps/web/package.json the in-build check also runs out of heap.
+	//
+	// Plain `next build` (Docker) keeps the in-build check.
 	typescript: {
 		ignoreBuildErrors: process.env.NEXT_TYPECHECK_SPLIT === "true",
 	},

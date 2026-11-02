@@ -43,6 +43,7 @@
 
 import { ORPCError } from "@orpc/server";
 import {
+	consumeOauthState,
 	createOauthState,
 	deleteOauthState,
 	getMcpConfigByIdInternal,
@@ -58,11 +59,16 @@ import {
 import { z } from "zod";
 import {
 	Permissions,
-	publicProcedure,
+	protectedProcedure,
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import {
+	assertMcpOAuthConfigAccess,
+	assertMcpOAuthStateBoundToCaller,
+	assertMcpOAuthStateConsumed,
+} from "../lib/oauth-callback-guard";
 import {
 	generateCodeChallenge,
 	generateCodeVerifier,
@@ -248,7 +254,7 @@ export const atlassianCloudProcedures = {
 	 * the first one (matches the user's primary site). A future
 	 * enhancement could let the user choose during the consent flow.
 	 */
-	callback: publicProcedure
+	callback: protectedProcedure
 		.use(requirePermission(Permissions.MCP_UPDATE))
 		.route({
 			method: "GET",
@@ -265,7 +271,7 @@ export const atlassianCloudProcedures = {
 			}),
 		)
 		.output(z.object({ success: z.boolean(), message: z.string() }))
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			if (input.error) {
 				return {
 					success: false,
@@ -289,8 +295,9 @@ export const atlassianCloudProcedures = {
 			}
 
 			const stateRecord = await getOauthState(input.state);
+			await assertMcpOAuthStateBoundToCaller(stateRecord, context?.user);
 			if (!stateRecord) {
-				return { success: false, message: "Invalid state" };
+				throw new ORPCError("FORBIDDEN");
 			}
 
 			const now = new Date();
@@ -313,6 +320,7 @@ export const atlassianCloudProcedures = {
 						"Organization context mismatch — Atlassian Cloud OAuth was initiated in a different context",
 				};
 			}
+			await assertMcpOAuthConfigAccess(cfg, context.user);
 
 			assertSafeOutboundUrl(TOKEN_ENDPOINT);
 			const tokenBody = new URLSearchParams({
@@ -326,6 +334,7 @@ export const atlassianCloudProcedures = {
 				tokenBody.set("code_verifier", stateRecord.codeVerifier);
 			}
 
+			assertMcpOAuthStateConsumed(await consumeOauthState(stateRecord));
 			const tokenRes = await safeFetchOutbound(TOKEN_ENDPOINT, {
 				method: "POST",
 				headers: {

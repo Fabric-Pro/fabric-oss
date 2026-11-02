@@ -1,6 +1,7 @@
 "use client";
 
 import { SearchInput } from "@ui/components/search-input";
+import { cn } from "@ui/lib";
 import { PlugIcon, SearchIcon } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
@@ -67,11 +68,11 @@ export function AddStepPalette({
 					aria-label={group.category}
 					className="flex flex-col gap-1"
 				>
-					<h3 className="px-0.5 pb-1 font-mono text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
+					<h3 className="px-0.5 pb-1 text-xs font-medium text-muted-foreground">
 						{group.category}
 					</h3>
 					{group.nodes.map((node) => {
-						const { Icon } = getNodeAppearance(
+						const { Icon, tileClass } = getNodeAppearance(
 							node.type,
 							node.defaultData,
 						);
@@ -84,13 +85,18 @@ export function AddStepPalette({
 								onClick={() =>
 									onAdd(node.type, node.defaultData)
 								}
-								className="flex items-center gap-2.5 rounded-lg p-2 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring motion-safe:transition-colors"
+								className="flex items-center gap-2.5 rounded-lg p-2 text-left hover:bg-[#E0F2FE]/60 dark:hover:bg-[#0284C7]/20 focus-visible:outline-2 focus-visible:outline-ring motion-safe:transition-colors"
 							>
-								<span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted">
+								<span
+									className={cn(
+										"flex size-7 shrink-0 items-center justify-center rounded-[6px]",
+										tileClass,
+									)}
+								>
 									<Icon className="size-3.5" />
 								</span>
 								<span className="flex min-w-0 flex-col gap-px">
-									<span className="text-[13px]">
+									<span className="text-[13px] font-semibold text-foreground">
 										{node.label}
 									</span>
 									<span className="truncate text-xs text-muted-foreground">

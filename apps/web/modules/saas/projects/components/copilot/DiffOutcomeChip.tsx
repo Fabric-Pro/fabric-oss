@@ -174,7 +174,7 @@ export function DiffOutcomeChip({
 						<button
 							type="button"
 							onClick={openVersionHistoryDialog}
-							className="inline-flex items-center gap-1 rounded text-[11px] text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40"
+							className="inline-flex items-center gap-1 rounded text-[11px] text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-primary/40"
 							aria-label="Open version history to view the applied change"
 						>
 							<History className="size-3" aria-hidden="true" />
@@ -205,7 +205,7 @@ export function DiffOutcomeChip({
 						<button
 							type="button"
 							onClick={openVersionHistoryDialog}
-							className="inline-flex items-center gap-1 rounded text-[11px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40"
+							className="inline-flex items-center gap-1 rounded text-[11px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-primary/40"
 							aria-label="Open version history to view the document state at the time of rejection"
 						>
 							<History className="size-3" aria-hidden="true" />

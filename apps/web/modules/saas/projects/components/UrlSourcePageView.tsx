@@ -8,23 +8,7 @@
  *
  * Layout (per commit 2 spec):
  *  - Sticky breadcrumb header with status pill + back-arrow.
- *  - Hero block: serif page h1, URL link, editorial "URL SOURCE" label,
- *    right-aligned action cluster (Re-sync, Edit settings, More, Open raw URL).
- *  - Two-column body (grid-cols-[1fr,320px] gap-8):
- *      LEFT  — wide prose column for SINGLE_PAGE markdown, OR paginated
- *              child-page list with inline expansion for PATH_PREFIX.
- *      RIGHT — Details + Activity sidebar cards.
- *  - FAILED state replaces the main column with an error card.
- *
- * Editorial aesthetic (CLAUDE.md):
- *  - Serif page h1 (`font-serif`).
- *  - Editorial section labels (uppercase, `tracking-[0.2em]`, `text-muted-foreground`).
- *  - Warm-neutral cards (`bg-card border border-border`).
- *  - No glassmorphism, no gradient pills, no hardcoded hex.
- *  - All transitions wrapped in `motion-safe:`.
- *
- * Server vs client:
- *  - This component is `"use client"` because of the interactive bits
+ *  - Hero block: serif page h1, URL link, editorial "URL SOURCE"label, * right-aligned action cluster (Re-sync, Edit settings, More, Open raw URL). * - Two-column body (grid-cols-[1fr,320px] gap-8): * LEFT — wide prose column for SINGLE_PAGE markdown, OR paginated * child-page list with inline expansion for PATH_PREFIX. * RIGHT — Details + Activity sidebar cards. * - FAILED state replaces the main column with an error card. * * Editorial aesthetic (CLAUDE.md): * - Serif page h1 (`font-semibold`). * - Editorial section labels (uppercase, `tracking-[0.2em]`, `text-muted-foreground`). * - Warm-neutral cards (`bg-card border border-border`). * - No glassmorphism, no gradient pills, no hardcoded hex. * - All transitions wrapped in `motion-safe:`. * * Server vs client: * - This component is `"use client"` because of the interactive bits
  *    (Re-sync mutation, paginated list, expandable rows, popover settings).
  *  - It receives the parent ProjectContext row pre-fetched by the server
  *    `page.tsx` via `getUrlSourceContext` so the first paint is the data
@@ -724,7 +708,7 @@ function ChildPagesList({
 	return (
 		<div className="space-y-3" data-testid="child-pages-list">
 			{toolbar}
-			<ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+			<ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
 				{pages.map((page) => {
 					const isExpanded = expandedPageId === page.id;
 					const fetched = page.lastFetchedAt
@@ -764,7 +748,7 @@ function ChildPagesList({
 									onClick={() => toggleRow(page.id)}
 									aria-expanded={isExpanded}
 									aria-controls={`url-page-expansion-${page.id}`}
-									className="flex min-w-0 flex-1 items-start gap-3 px-5 py-4 text-left motion-safe:transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+									className="flex min-w-0 flex-1 items-start gap-3 px-5 py-4 text-left motion-safe:transition-colors hover:bg-muted/40 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 								>
 									<div className="min-w-0 flex-1">
 										<p className="truncate font-medium text-foreground text-sm">
@@ -1077,7 +1061,7 @@ function UrlSourceSettingsCard({
 	return (
 		<div
 			className={cn(
-				"space-y-4 rounded-xl border border-border bg-card p-5",
+				"space-y-4 rounded-lg border border-border bg-card p-5",
 				disabled && "opacity-60",
 			)}
 			data-testid="url-source-settings-card"
@@ -1112,7 +1096,7 @@ function UrlSourceSettingsCard({
 								<button
 									type="button"
 									aria-label="About the Label field"
-									className="inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground motion-safe:transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+									className="inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 								>
 									<InfoIcon
 										className="size-3"
@@ -1225,7 +1209,7 @@ function UrlSourceSettingsCard({
 									<button
 										type="button"
 										aria-label="About the Max pages field"
-										className="inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground motion-safe:transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+										className="inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 									>
 										<InfoIcon
 											className="size-3"
@@ -1295,7 +1279,7 @@ function UrlSourceSettingsCard({
 								<button
 									type="button"
 									aria-label="About refresh cadence"
-									className="inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground motion-safe:transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+									className="inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 								>
 									<InfoIcon
 										className="size-3"
@@ -1630,7 +1614,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 					<Link
 						href={backHref}
 						aria-label="Back to project contexts"
-						className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground motion-safe:transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+						className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground motion-safe:transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 					>
 						<ArrowLeftIcon className="size-4" aria-hidden="true" />
 					</Link>
@@ -1697,7 +1681,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 						<TooltipTrigger asChild>
 							<button
 								type="button"
-								className="inline-flex rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+								className="inline-flex rounded-md focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 								data-testid="status-pill-trigger"
 							>
 								<StatusPill
@@ -1734,7 +1718,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 								URL Source
 							</EditorialLabel>
 							<h1
-								className="font-serif text-3xl font-normal leading-tight tracking-tight text-foreground sm:text-4xl"
+								className="text-xl font-semibold leading-tight tracking-tight text-foreground "
 								aria-describedby="url-source-eyebrow"
 							>
 								{displayTitle}
@@ -1756,7 +1740,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 									type="button"
 									onClick={copyUrl}
 									aria-label="Copy URL"
-									className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground motion-safe:transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+									className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground motion-safe:transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 								>
 									<CopyIcon
 										className="size-3.5"
@@ -1876,7 +1860,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 										href={context.sourceUrl}
 										target="_blank"
 										rel="noopener noreferrer"
-										className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground motion-safe:transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+										className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground motion-safe:transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 									>
 										<ExternalLinkIcon
 											className="size-3.5"
@@ -1962,7 +1946,10 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 						aria-labelledby="url-source-content-heading"
 						data-testid="url-source-main-column"
 					>
-						<h2 id="url-source-content-heading" className="sr-only">
+						<h2
+							id="url-source-content-heading"
+							className="font-semibold sr-only"
+						>
 							Content
 						</h2>
 						{isFailed ? (
@@ -1982,7 +1969,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 							/>
 						) : context.content && context.content.length > 0 ? (
 							<article
-								className="prose prose-stone dark:prose-invert max-w-none rounded-xl border border-border bg-card p-8 prose-pre:overflow-auto prose-pre:bg-muted prose-pre:border prose-pre:border-border prose-headings:font-serif prose-headings:font-normal"
+								className="prose prose-stone dark:prose-invert max-w-none rounded-lg border border-border bg-card p-8 prose-pre:overflow-auto prose-pre:bg-muted prose-pre:border prose-pre:border-border prose-headings:font-sans prose-headings:font-semibold"
 								data-testid="url-source-markdown"
 							>
 								<ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -1991,7 +1978,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 							</article>
 						) : (
 							<div
-								className="rounded-xl border border-border bg-muted/30 p-8 text-center text-muted-foreground text-sm"
+								className="rounded-lg border border-border bg-muted/30 p-8 text-center text-muted-foreground text-sm"
 								data-testid="url-source-empty"
 							>
 								<p className="font-medium text-foreground/80">
@@ -2009,7 +1996,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 						className="space-y-4"
 						aria-label="URL source details"
 					>
-						<div className="space-y-4 rounded-xl border border-border bg-card p-5">
+						<div className="space-y-4 rounded-lg border border-border bg-card p-5">
 							{/* Card title — kept larger than the inline "Settings"
 							    / "Activity" section labels below it so the
 							    visual hierarchy is clear: this is the card
@@ -2168,7 +2155,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 							disabled={isCrawling}
 						/>
 
-						<div className="space-y-3 rounded-xl border border-border bg-card p-5">
+						<div className="space-y-3 rounded-lg border border-border bg-card p-5">
 							<EditorialLabel>Activity</EditorialLabel>
 							<ul className="space-y-2 text-foreground/80 text-sm">
 								<li className="flex items-start gap-2">
@@ -2243,7 +2230,7 @@ function FailedStateCard({
 
 	return (
 		<div
-			className="space-y-4 rounded-xl border border-destructive/40 bg-destructive/5 p-6"
+			className="space-y-4 rounded-lg border border-destructive/40 bg-destructive/5 p-6"
 			role="alert"
 			data-testid="url-source-failed"
 		>

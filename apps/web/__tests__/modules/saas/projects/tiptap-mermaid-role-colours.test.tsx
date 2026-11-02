@@ -16,6 +16,7 @@ import {
 	visualRoleClassDefs,
 } from "@repo/utils/proposal-artifact/theme-tokens";
 import { getEditorMarkdownForSave } from "@saas/projects/lib/editor-markdown-save";
+import { resetLegibleDrawingsForTests } from "@saas/projects/lib/tiptap-mermaid-extension";
 import { render, waitFor } from "@testing-library/react";
 import type { Editor } from "@tiptap/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -99,6 +100,8 @@ function surfaceFill(container: HTMLElement): string | null {
 beforeEach(() => {
 	renderer.beautiful = [];
 	renderer.native = [];
+	// Each test watches the engine draw; none takes an earlier test's drawing.
+	resetLegibleDrawingsForTests();
 });
 
 describe("live role colours", () => {

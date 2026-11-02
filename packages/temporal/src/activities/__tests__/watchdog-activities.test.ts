@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 	codingUpdateManyMock: vi.fn(),
 	weavePlanUpdateManyMock: vi.fn(),
 	recordAuditMock: vi.fn(),
+	recoveryMock: vi.fn(),
 	getHandleMock: vi.fn(),
 	getTemporalClientMock: vi.fn(),
 }));
@@ -39,6 +40,7 @@ vi.mock("@repo/database", () => ({
 		},
 	},
 	recordAudit: (...args: unknown[]) => mocks.recordAuditMock(...args),
+	markCodingRunRecoveryRequired: mocks.recoveryMock,
 }));
 
 vi.mock("../../client", () => ({
@@ -50,6 +52,7 @@ vi.mock("../../client", () => ({
 import {
 	cancelWeaveExecutionViaSignal,
 	findStaleWeaveSessions,
+	markClosedCodingRunRecoveryRequired,
 	markWeaveExecutionStale,
 	terminateWeaveWorkflow,
 } from "../weave/watchdog-activities";
@@ -492,4 +495,78 @@ describe("markWeaveExecutionStale", () => {
 			resource: { type: "weave_execution", id: "we-plan-fail" },
 		});
 	});
+});
+
+it.each(["RUNNING", "COMPLETED", "TERMINATED", "absent", "outage"])(
+	"watchdog recovery checks workflow closure: %s",
+	async (status) => {
+		mocks.recoveryMock.mockReset();
+		const describe = vi
+			.fn()
+			.mockResolvedValue({ status: { name: status } });
+		if (status === "absent") {
+			describe.mockRejectedValue(
+				Object.assign(new Error("Absent"), {
+					name: "WorkflowNotFoundError",
+				}),
+			);
+		}
+		if (status === "outage") {
+			describe.mockRejectedValue(new Error("Temporal unavailable"));
+		}
+		mocks.getTemporalClientMock.mockResolvedValue({
+			workflow: { getHandle: () => ({ describe }) },
+		});
+		const input = {
+			codingRunId: "example-run",
+			workflowId: "example-workflow",
+			organizationId: "example-org",
+		};
+		if (status === "outage") {
+			await expect(
+				markClosedCodingRunRecoveryRequired(input),
+			).rejects.toThrow("Temporal unavailable");
+		} else {
+			await markClosedCodingRunRecoveryRequired(input);
+		}
+		if (["RUNNING", "outage"].includes(status)) {
+			expect(mocks.recoveryMock).not.toHaveBeenCalled();
+		} else {
+			expect(mocks.recoveryMock).toHaveBeenCalledWith(
+				expect.objectContaining(input),
+			);
+		}
+	},
+);
+
+it("orders each stale scan deterministically and keeps rows already awaiting manual recovery out of the batch", async () => {
+	mocks.weaveFindManyMock.mockResolvedValue([]);
+	mocks.codingFindManyMock.mockResolvedValue([]);
+	await findStaleWeaveSessions({ staleAfterMinutes: 1, batchSize: 50 });
+	for (const query of [mocks.weaveFindManyMock, mocks.codingFindManyMock]) {
+		expect(query).toHaveBeenCalledWith(
+			expect.objectContaining({
+				orderBy: [{ startedAt: "asc" }, { id: "asc" }],
+			}),
+		);
+	}
+	expect(mocks.codingFindManyMock).toHaveBeenCalledWith(
+		expect.objectContaining({
+			where: expect.objectContaining({
+				NOT: {
+					status: "AWAITING_REVIEW",
+					events: {
+						some: {
+							eventType: {
+								in: [
+									"cancellation_unknown",
+									"continuation_recovery_required",
+								],
+							},
+						},
+					},
+				},
+			}),
+		}),
+	);
 });

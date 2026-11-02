@@ -3,8 +3,8 @@ import {
 	buildGlossyExtractInstructions,
 	buildGlossyExtractPrompt,
 	GLOSSY_DETECTABLE_KINDS,
+	GLOSSY_EDIT_AUTO_KINDS,
 	GLOSSY_EDIT_INSTRUCTION_MAX_CHARS,
-	GLOSSY_EDITABLE_KINDS,
 	type GlossyDetectableKind,
 } from "@repo/agent-prompts/glossy";
 import { generateObject, NoObjectGeneratedError, zodSchema } from "@repo/ai";
@@ -19,6 +19,9 @@ import {
 	violationCode,
 } from "@repo/utils/glossy/fact-guard";
 import {
+	type ProposalOnlyVisualKind,
+	type ProposalVisualSpec,
+	proposalVisualSpecSchema,
 	type VisualKind,
 	type VisualSpec,
 	visualSpecFacts,
@@ -52,7 +55,13 @@ import {
  * request and the diagram's current source. The section the model reads and
  * the fact check reads then has every diagram fence removed, so a wrong
  * date in the old diagram cannot justify itself, and `auto` offers only the
- * kinds drawn as a diagram.
+ * timeline, flow and org chart kinds (`GLOSSY_EDIT_AUTO_KINDS`): a layers or
+ * team figure always carries its figure line, so its edit names its kind.
+ *
+ * A Proposal (`proposalArtifact`) may also ask for `layers` or `team`, which
+ * only its figure templates draw: their schemas, prompt rules and the strict
+ * `proposalVisualSpecSchema` are used for a Proposal only, so a Glossy call
+ * still validates with `visualSpecSchema` and never returns either kind.
  *
  * The model-facing schema below is deliberately lenient — no bounds, every
  * optional field nullable — and built with this package's zod: bounds are
@@ -69,6 +78,16 @@ export type GlossyExtractableKind = Exclude<VisualKind, "existing_mermaid">;
 export type GlossyExtractedVisualSpec = Extract<
 	VisualSpec,
 	{ kind: GlossyDetectableKind }
+>;
+
+/** The kinds a Proposal can ask for: Glossy's and its own. */
+export type ProposalExtractableKind =
+	| GlossyExtractableKind
+	| ProposalOnlyVisualKind;
+
+export type ProposalExtractedVisualSpec = Extract<
+	ProposalVisualSpec,
+	{ kind: GlossyDetectableKind | ProposalOnlyVisualKind }
 >;
 
 const nullableText = (description: string) =>
@@ -155,19 +174,92 @@ const OUTPUT_SPEC_SCHEMAS = {
 	}),
 } satisfies Record<GlossyDetectableKind, z.ZodType>;
 
+/** The Proposal-only kinds' model-facing schemas, in the same lenient style. */
+const PROPOSAL_OUTPUT_SPEC_SCHEMAS = {
+	layers: z.object({
+		kind: z.enum(["layers"]),
+		title: nullableText("Optional title from the section's wording."),
+		layers: z
+			.array(
+				z.object({
+					name: z
+						.string()
+						.describe(
+							"The layer's name, as the section writes it.",
+						),
+					description: nullableText(
+						"Optional: what the layer is for, in a few words.",
+					),
+					components: z
+						.array(z.string())
+						.describe("1–5 components in this layer."),
+				}),
+			)
+			.describe("2–8 layers, top to bottom."),
+		crosscutting: z
+			.object({
+				name: z.string().describe("What spans every layer."),
+				description: nullableText("Optional detail."),
+				items: z.array(z.string()).describe("1–6 names."),
+			})
+			.nullable()
+			.describe(
+				"Capabilities the section says span every layer. null when it names none.",
+			),
+	}),
+	team: (() => {
+		const side = (description: string) =>
+			z
+				.object({
+					name: z
+						.string()
+						.describe(
+							"The team or organization, as the section writes it.",
+						),
+					description: nullableText("Optional detail."),
+					members: z
+						.array(
+							z.object({
+								role: z.string().describe("The role."),
+								name: nullableText(
+									"The person's name, only when the section gives it.",
+								),
+								description: nullableText("Optional detail."),
+							}),
+						)
+						.describe("1–10 people or roles."),
+				})
+				.describe(description);
+		return z.object({
+			kind: z.enum(["team"]),
+			title: nullableText("Optional title from the section's wording."),
+			proposer: side("The team the proposal offers."),
+			client: side("The client's own people."),
+			shared: nullableText(
+				"One forum or rhythm both sides take part in, as the section names it.",
+			),
+		});
+	})(),
+} satisfies Record<ProposalOnlyVisualKind, z.ZodType>;
+
+const ALL_OUTPUT_SPEC_SCHEMAS = {
+	...OUTPUT_SPEC_SCHEMAS,
+	...PROPOSAL_OUTPUT_SPEC_SCHEMAS,
+};
+
 /** Structured-output providers want an object at the root, so the spec is a property. */
 function outputSchemaFor(
-	kind: GlossyExtractableKind,
+	kind: ProposalExtractableKind,
 	editing: boolean,
 ): z.ZodType<{ spec: unknown }> {
 	if (kind === "auto" && editing) {
 		return z.object({
 			spec: z
-				.union([
-					OUTPUT_SPEC_SCHEMAS.timeline,
-					OUTPUT_SPEC_SCHEMAS.flow,
-					OUTPUT_SPEC_SCHEMAS.org_chart,
-				])
+				.union(
+					GLOSSY_EDIT_AUTO_KINDS.map(
+						(editable) => ALL_OUTPUT_SPEC_SCHEMAS[editable],
+					),
+				)
 				.describe("The spec, of the kind the current diagram shows."),
 		});
 	}
@@ -184,7 +276,7 @@ function outputSchemaFor(
 				.describe("The spec, of the kind that fits the section best."),
 		});
 	}
-	return z.object({ spec: OUTPUT_SPEC_SCHEMAS[kind] });
+	return z.object({ spec: ALL_OUTPUT_SPEC_SCHEMAS[kind] });
 }
 
 export interface ExtractGlossyVisualInput extends GlossyModelContext {
@@ -221,6 +313,13 @@ export interface ExtractGlossyVisualInput extends GlossyModelContext {
 	currentSource?: string | null;
 }
 
+/** A Proposal's call, which may ask for and get back `layers` or `team` too. */
+export interface ExtractProposalVisualInput
+	extends Omit<ExtractGlossyVisualInput, "kind" | "proposalArtifact"> {
+	kind: ProposalExtractableKind;
+	proposalArtifact: true;
+}
+
 export type GlossyExtractionDropReason =
 	/** The response hit the output-token limit. */
 	| "truncated"
@@ -231,8 +330,10 @@ export type GlossyExtractionDropReason =
 	/** A label, figure, or date is not in the section (R18). */
 	| "factCheck";
 
-export type GlossyExtractionResult =
-	| { status: "extracted"; spec: GlossyExtractedVisualSpec }
+export type GlossyExtractionResult<
+	Spec extends ProposalExtractedVisualSpec = GlossyExtractedVisualSpec,
+> =
+	| { status: "extracted"; spec: Spec }
 	| {
 			status: "dropped";
 			reason: GlossyExtractionDropReason;
@@ -254,7 +355,7 @@ const DROP_MESSAGES: Readonly<Record<GlossyExtractionDropReason, string>> = {
 function dropped(
 	reason: GlossyExtractionDropReason,
 	violations: FactGuardViolation[] = [],
-): GlossyExtractionResult {
+): GlossyExtractionResult<never> {
 	return {
 		status: "dropped",
 		reason,
@@ -279,7 +380,9 @@ function factSource(
  * best-fit (`auto`) slot leaves the kind to the model, so its flow is
  * checked like a detected one.
  */
-function isAuthorRequestedFlow(input: ExtractGlossyVisualInput): boolean {
+function isAuthorRequestedFlow(
+	input: Pick<ExtractGlossyVisualInput, "source"> & { kind: string },
+): boolean {
 	return input.source === "slot" && input.kind === "flow";
 }
 
@@ -291,7 +394,7 @@ function isAuthorRequestedFlow(input: ExtractGlossyVisualInput): boolean {
  * line fails (Fizzy #2589 follow-up).
  */
 function visualFactsOf(
-	spec: GlossyExtractedVisualSpec,
+	spec: ProposalExtractedVisualSpec,
 	section: Pick<GlossySection, "heading">,
 	authorRequested: boolean,
 ): VisualFactsInput {
@@ -346,14 +449,14 @@ function toSpecCandidate(value: unknown): unknown {
 }
 
 function isExtractedKind(
-	spec: VisualSpec,
-	requested: GlossyExtractableKind,
+	spec: ProposalVisualSpec,
+	requested: ProposalExtractableKind,
 	editing: boolean,
-): spec is GlossyExtractedVisualSpec {
+): spec is ProposalExtractedVisualSpec {
 	if (requested === "auto") {
 		return (
 			(editing
-				? GLOSSY_EDITABLE_KINDS
+				? GLOSSY_EDIT_AUTO_KINDS
 				: GLOSSY_DETECTABLE_KINDS) as readonly string[]
 		).includes(spec.kind);
 	}
@@ -383,9 +486,15 @@ function withoutDiagramFences(markdown: string): string {
 	return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
-export async function extractGlossyVisual(
+export function extractGlossyVisual(
+	input: ExtractProposalVisualInput,
+): Promise<GlossyExtractionResult<ProposalExtractedVisualSpec>>;
+export function extractGlossyVisual(
 	input: ExtractGlossyVisualInput,
-): Promise<GlossyExtractionResult> {
+): Promise<GlossyExtractionResult>;
+export async function extractGlossyVisual(
+	input: ExtractGlossyVisualInput | ExtractProposalVisualInput,
+): Promise<GlossyExtractionResult<ProposalExtractedVisualSpec>> {
 	const resolved = await resolveGlossyModel(input);
 	if (resolved.status !== "resolved") {
 		return resolved;
@@ -464,7 +573,12 @@ export async function extractGlossyVisual(
 	}
 	trackUsage();
 
-	const parsed = visualSpecSchema.safeParse(toSpecCandidate(raw));
+	// Only a Proposal admits its own kinds; Glossy's validator refuses them.
+	const parsed = (
+		input.proposalArtifact === true
+			? proposalVisualSpecSchema
+			: visualSpecSchema
+	).safeParse(toSpecCandidate(raw));
 	if (!parsed.success) {
 		console.warn(`${EXTRACTION_LOG} Visual dropped`, {
 			reason: "invalidSpec",

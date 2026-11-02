@@ -11,8 +11,9 @@
  * Run with: pnpm --filter @repo/database test __tests__/ai-usage-activity.test.ts
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const rawMock = vi.fn();
 const findManyMock = vi.fn();
 const modelFind = vi.fn(
 	async (_args: unknown) =>
@@ -30,8 +31,9 @@ const organizationFind = vi.fn(async (_args: unknown) => ({
 	slug: "example-org",
 }));
 
-vi.mock("../prisma/client", () => ({
+vi.mock("../prisma/client", async () => ({
 	db: {
+		$queryRaw: (args: unknown) => rawMock(args),
 		aiModel: { findMany: (args: unknown) => modelFind(args) },
 		aiUsageLog: {
 			findMany: (args: unknown) => findManyMock(args),
@@ -41,7 +43,7 @@ vi.mock("../prisma/client", () => ({
 		},
 		organization: { findUnique: (args: unknown) => organizationFind(args) },
 	},
-	Prisma: {},
+	Prisma: (await import("../prisma/generated/client")).Prisma,
 }));
 
 import {
@@ -51,6 +53,17 @@ import {
 	getMedianAiUsageByTaskType,
 	listAiUsageActivity,
 } from "../prisma/queries/ai-usage-activity";
+
+beforeEach(() => {
+	rawMock.mockReset();
+	rawMock.mockImplementation(async () => {
+		const rows = await findManyMock({ where: {} });
+		return rows.map((row: Record<string, unknown>) => ({
+			...row,
+			requests: 1,
+		}));
+	});
+});
 
 const EMPTY_AGGREGATE = {
 	_count: { id: 0 },
@@ -207,7 +220,7 @@ describe("listAiUsageActivity", () => {
 			string,
 			unknown
 		>;
-		const aggregateArgs = aggregateMock.mock.calls[0]?.[0] as Record<
+		const aggregateArgs = groupByMock.mock.calls[0]?.[0] as Record<
 			string,
 			unknown
 		>;
@@ -326,6 +339,23 @@ describe("listAiUsageActivity", () => {
 			_avg: { latencyMs: 423.7 },
 		});
 
+		groupByMock.mockImplementation(
+			async (args: { by: string[]; _sum: object }) =>
+				args.by[0] === "provider" && Object.keys(args._sum).length > 1
+					? [
+							{
+								provider: "OPENAI_DIRECT",
+								_count: { id: 5 },
+								_sum: {
+									inputTokens: 1234,
+									outputTokens: null,
+									totalTokens: 2000,
+									costMicroUsd: null,
+								},
+							},
+						]
+					: [],
+		);
 		const result = await listAiUsageActivity({ userId: "user-1" });
 
 		expect(result.totals).toEqual({
@@ -347,10 +377,10 @@ describe("listAiUsageActivity", () => {
 					costMicroUsd: 0,
 				},
 				api: {
-					requests: 0,
-					inputTokens: 0,
+					requests: 5,
+					inputTokens: 1234,
 					outputTokens: 0,
-					totalTokens: 0,
+					totalTokens: 2000,
 					costMicroUsd: 0,
 				},
 			},
@@ -507,6 +537,23 @@ describe("failed attempts", () => {
 	});
 
 	it("counts the success only, and reports the failed attempt apart", async () => {
+		groupByMock.mockImplementation(
+			async (args: { by: string[]; _sum: object }) =>
+				args.by[0] === "provider" && Object.keys(args._sum).length > 1
+					? [
+							{
+								provider: "OPENAI_DIRECT",
+								_count: { id: 1 },
+								_sum: {
+									inputTokens: null,
+									outputTokens: null,
+									totalTokens: null,
+									costMicroUsd: null,
+								},
+							},
+						]
+					: [],
+		);
 		const result = await listAiUsageActivity({ organizationId: "org-1" });
 		expect(result.totals).toMatchObject({
 			requests: 1,
@@ -546,9 +593,7 @@ describe("failed attempts", () => {
 
 	it("totals the failed attempts themselves when filtered to errors", async () => {
 		await listAiUsageActivity({ organizationId: "org-1", status: "error" });
-		const aggregateArgs = aggregateMock.mock.calls.find(
-			(call) => "_count" in (call[0] as object),
-		)?.[0] as {
+		const aggregateArgs = groupByMock.mock.calls[0]?.[0] as {
 			where: Record<string, unknown>;
 		};
 		expect(aggregateArgs.where).toMatchObject({ success: false });
@@ -558,8 +603,7 @@ describe("failed attempts", () => {
 	});
 
 	it("charts successful calls, the billed cost of every row, or the failures when filtered to errors", async () => {
-		const at = new Date();
-		at.setHours(12, 0, 0, 0);
+		const at = new Date("2026-09-01T12:00:00Z");
 		findManyMock.mockResolvedValue([
 			{
 				createdAt: at,
@@ -578,7 +622,8 @@ describe("failed attempts", () => {
 		]);
 		const series = await getAiUsageActivityTimeSeries({
 			organizationId: "org-1",
-			periodDays: 1,
+			from: new Date("2026-09-01T00:00:00Z"),
+			to: new Date("2026-09-02T00:00:00Z"),
 		});
 		const totals = series.reduce(
 			(sum, point) => ({
@@ -594,21 +639,14 @@ describe("failed attempts", () => {
 			totalTokens: 100,
 			costMicroUsd: 70,
 		});
-		expect(
-			(findManyMock.mock.calls.at(-1)?.[0] as { where: object }).where,
-		).not.toHaveProperty("success");
 
 		await getAiUsageActivityTimeSeries({
 			organizationId: "org-1",
 			status: "error",
+			from: new Date("2026-09-01T00:00:00Z"),
+			to: new Date("2026-09-02T00:00:00Z"),
 		});
-		expect(
-			(
-				findManyMock.mock.calls.at(-1)?.[0] as {
-					where: { success: boolean };
-				}
-			).where.success,
-		).toBe(false);
+		expect(rawMock.mock.calls.at(-1)?.[0].values).toContain(false);
 	});
 });
 
@@ -645,12 +683,27 @@ describe("rows without a request latency", () => {
 				: { ...EMPTY_AGGREGATE, _count: { id: 3 } },
 		);
 
+		groupByMock.mockImplementation(
+			async (args: { by: string[]; _sum: object }) =>
+				args.by[0] === "provider" && Object.keys(args._sum).length > 1
+					? [
+							{
+								provider: "OPENAI_DIRECT",
+								_count: { id: 3 },
+								_sum: {
+									inputTokens: null,
+									outputTokens: null,
+									totalTokens: null,
+									costMicroUsd: null,
+								},
+							},
+						]
+					: [],
+		);
 		const result = await listAiUsageActivity({ organizationId: "org-1" });
 
 		expect(result.totals).toMatchObject({ requests: 3, avgLatencyMs: 812 });
-		const totalsArgs = aggregateMock.mock.calls.find(
-			(call) => "_count" in (call[0] as object),
-		)?.[0] as { where: unknown };
+		const totalsArgs = groupByMock.mock.calls[0]?.[0] as { where: unknown };
 		expect(totalsArgs).not.toHaveProperty("_avg");
 		const latencyArgs = aggregateMock.mock.calls.find(
 			(call) => "_avg" in (call[0] as object),
@@ -714,8 +767,7 @@ describe("rows without a request latency", () => {
 	});
 
 	it("charts latency only over rows that have one", async () => {
-		const at = new Date();
-		at.setHours(12, 0, 0, 0);
+		const at = new Date("2026-09-01T12:00:00Z");
 		findManyMock.mockResolvedValue([
 			{
 				createdAt: at,
@@ -745,7 +797,8 @@ describe("rows without a request latency", () => {
 
 		const series = await getAiUsageActivityTimeSeries({
 			organizationId: "org-1",
-			periodDays: 1,
+			from: new Date("2026-09-01T00:00:00Z"),
+			to: new Date("2026-09-02T00:00:00Z"),
 		});
 
 		const point = series.find((entry) => entry.requests > 0);
@@ -906,10 +959,9 @@ describe("billing source (ChatGPT plan vs API)", () => {
 			to: new Date("2026-09-02T00:00:00Z"),
 			billingSource: "chatgpt_plan",
 		});
-		expect(whereOfFirstFindMany()).toMatchObject({
-			organizationId: "org-1",
-			provider: "OPENAI_CHATGPT_PLAN",
-		});
+		expect(rawMock.mock.calls.at(-1)?.[0].values).toEqual(
+			expect.arrayContaining(["org-1", "OPENAI_CHATGPT_PLAN"]),
+		);
 	});
 
 	it("facets count both sources from an uncapped provider groupBy", async () => {
@@ -1090,4 +1142,308 @@ describe("getChatGptPlanUsageBySource", () => {
 			},
 		});
 	});
+});
+
+describe("SQL chart aggregation", () => {
+	const from = new Date("2026-09-01T00:00:00Z");
+	const to = new Date("2026-09-03T00:00:00Z");
+	it("retains the newest bucket after more than 50,000 requests", async () => {
+		findManyMock.mockImplementation(async (args: { take: number }) =>
+			Array.from({ length: Math.min(args.take, 50001) }, (_, index) => ({
+				createdAt: index < 50000 ? from : to,
+				success: true,
+				providerModelId: "example-model",
+				totalTokens: 2,
+				costMicroUsd: 1,
+				latencyMs: 10,
+			})),
+		);
+		rawMock.mockResolvedValue([
+			{
+				createdAt: from,
+				providerModelId: "example-model",
+				success: true,
+				requests: 50000n,
+				totalTokens: 100000n,
+				costMicroUsd: 50000n,
+				latencyMs: 500000n,
+			},
+			{
+				createdAt: to,
+				providerModelId: "example-model",
+				success: true,
+				requests: 1n,
+				totalTokens: 2n,
+				costMicroUsd: 3n,
+				latencyMs: 20n,
+			},
+		]);
+		const points = await getAiUsageActivityTimeSeries({
+			organizationId: "example-org",
+			from,
+			to,
+		});
+		expect(points.map((p) => p.requests)).toEqual([50000, 0, 1]);
+		expect(points[2]).toMatchObject({
+			totalTokens: 2,
+			costMicroUsd: 3,
+			avgLatencyMs: 20,
+		});
+		const sql = rawMock.mock.calls[0][0].sql;
+		expect(sql).toContain('GROUP BY 1, "providerModelId", success');
+		expect(sql).not.toMatch(/LIMIT/i);
+	});
+	it.each([
+		[{ taskTypes: ["SIMPLE"] }, '"taskType"::text IN (?)', "SIMPLE"],
+		[{ status: "error" }, "success = ?", false],
+		[
+			{ providerModelIds: ["example-model"] },
+			'"providerModelId" IN (?)',
+			"example-model",
+		],
+		[
+			{ projectIds: ["example-project", null] },
+			'(("projectId" IN (?))) OR ("projectId" IS NULL)',
+			"example-project",
+		],
+		[{ projectIds: [null] }, '"projectId" IS NULL', undefined],
+		[
+			{ billingSource: "api" },
+			"provider::text <> ?",
+			"OPENAI_CHATGPT_PLAN",
+		],
+		[
+			{ billingSource: "chatgpt_plan" },
+			"provider::text = ?",
+			"OPENAI_CHATGPT_PLAN",
+		],
+		[
+			{ filterUserIds: ["example-user"] },
+			'"userId" IN (?)',
+			"example-user",
+		],
+		[{ minCostMicroUsd: 12 }, '"costMicroUsd" >= ?', 12],
+		[{ maxCostMicroUsd: 34 }, '"costMicroUsd" <= ?', 34],
+		[{ minLatencyMs: 56 }, '"latencyMs" >= ?', 56],
+		[{ maxLatencyMs: 78 }, '"latencyMs" <= ?', 78],
+	] as const)("preserves filter %j", async (filter, fragment, value) => {
+		rawMock.mockResolvedValue([]);
+		await getAiUsageActivityTimeSeries({
+			organizationId: "example-org",
+			from,
+			to,
+			...filter,
+		} as Parameters<typeof getAiUsageActivityTimeSeries>[0]);
+		const query = rawMock.mock.calls[0][0];
+		expect(query.sql).toContain(fragment);
+		expect(query.sql).toContain('"organizationId" = ?');
+		expect(query.sql).toContain('"createdAt" >= ?');
+		expect(query.sql).toContain('"createdAt" <= ?');
+		expect(query.values).toEqual(
+			expect.arrayContaining(["example-org", from, to]),
+		);
+		if (value !== undefined) {
+			expect(query.values).toContain(value);
+		}
+		if ("minLatencyMs" in filter || "maxLatencyMs" in filter) {
+			expect(query.sql).toContain(
+				'NOT ((("providerModelId" IN (?,?,?))))',
+			);
+			expect(query.values).toEqual(
+				expect.arrayContaining([
+					"attendee/teams-bot",
+					"@cf/deepgram/flux",
+					"gpt-realtime-2.1",
+				]),
+			);
+		}
+	});
+	it("keeps the null organization tenant arm exclusive and ignores org user filters", async () => {
+		rawMock.mockResolvedValue([]);
+		await getAiUsageActivityTimeSeries({
+			userId: "example-user",
+			filterUserIds: ["other-user"],
+			from,
+			to,
+		});
+		const query = rawMock.mock.calls[0][0];
+		expect(query.sql).toContain('"organizationId" IS NULL');
+		expect(query.sql).toContain('"userId" = ?');
+		expect(query.sql).not.toContain(" OR ");
+		expect(query.values).not.toContain("other-user");
+	});
+});
+
+it("derives identical overall totals from mixed provider groups with one fewer query", async () => {
+	findManyMock.mockResolvedValue([]);
+	countMock.mockResolvedValue(0);
+	aggregateMock.mockResolvedValue({ _avg: { latencyMs: 150 } });
+	groupByMock.mockImplementation(
+		async (args: { by: string[]; _sum: object }) => {
+			if (args.by[0] !== "provider") {
+				return [];
+			}
+			if (Object.keys(args._sum).length === 1) {
+				return [
+					{ provider: "OPENAI_DIRECT", _sum: { costMicroUsd: 90 } },
+					{ provider: "ANTHROPIC", _sum: { costMicroUsd: 70 } },
+					{
+						provider: "OPENAI_CHATGPT_PLAN",
+						_sum: { costMicroUsd: 0 },
+					},
+				];
+			}
+			return [
+				{
+					provider: "OPENAI_DIRECT",
+					_count: { id: 2 },
+					_sum: {
+						inputTokens: 10,
+						outputTokens: 20,
+						totalTokens: 30,
+						costMicroUsd: 60,
+					},
+				},
+				{
+					provider: "ANTHROPIC",
+					_count: { id: 3 },
+					_sum: {
+						inputTokens: 40,
+						outputTokens: 50,
+						totalTokens: 90,
+						costMicroUsd: 50,
+					},
+				},
+				{
+					provider: "OPENAI_CHATGPT_PLAN",
+					_count: { id: 1 },
+					_sum: {
+						inputTokens: 100,
+						outputTokens: 200,
+						totalTokens: 300,
+						costMicroUsd: 0,
+					},
+				},
+			];
+		},
+	);
+	const result = await listAiUsageActivity({ organizationId: "example-org" });
+	expect(result.totals).toMatchObject({
+		requests: 6,
+		inputTokens: 150,
+		outputTokens: 270,
+		totalTokens: 420,
+		costMicroUsd: 160,
+		avgLatencyMs: 150,
+		bySource: {
+			api: { requests: 5, totalTokens: 120, costMicroUsd: 160 },
+			chatgpt_plan: { requests: 1, totalTokens: 300, costMicroUsd: 0 },
+		},
+	});
+	expect(aggregateMock).toHaveBeenCalledTimes(1);
+	expect(aggregateMock.mock.calls[0][0]).toHaveProperty("_avg");
+});
+
+describe("UTC chart boundaries", () => {
+	// CI runs in UTC, where local-time bucketing matches UTC by accident. A
+	// half-hour zone makes local-time day and hour boundaries visibly differ.
+	const originalTz = process.env.TZ;
+
+	beforeEach(() => {
+		process.env.TZ = "Asia/Kolkata";
+	});
+
+	afterEach(() => {
+		if (originalTz === undefined) {
+			delete process.env.TZ;
+		} else {
+			process.env.TZ = originalTz;
+		}
+	});
+
+	it.each([
+		[
+			"day",
+			"2026-09-01T10:00:00Z",
+			"2026-09-03T10:00:00Z",
+			[
+				"2026-09-01T00:00:00.000Z",
+				"2026-09-02T00:00:00.000Z",
+				"2026-09-03T00:00:00.000Z",
+			],
+		],
+		[
+			"hour",
+			"2026-09-01T10:45:00Z",
+			"2026-09-01T12:45:00Z",
+			[
+				"2026-09-01T10:00:00.000Z",
+				"2026-09-01T11:00:00.000Z",
+				"2026-09-01T12:00:00.000Z",
+			],
+		],
+		[
+			"minute",
+			"2026-09-01T10:07:00Z",
+			"2026-09-01T10:17:00Z",
+			[
+				"2026-09-01T10:05:00.000Z",
+				"2026-09-01T10:10:00.000Z",
+				"2026-09-01T10:15:00.000Z",
+			],
+		],
+	] as const)(
+		"uses UTC %s boundaries for SQL rows and empty buckets",
+		async (granularity, from, to, dates) => {
+			// SQL returns the UTC bucket start, which can precede the exact range start.
+			rawMock.mockResolvedValue(
+				[0, 2].map((index) => ({
+					createdAt: new Date(dates[index]),
+					providerModelId: "example-model",
+					success: true,
+					requests: 1n,
+					totalTokens: 2n,
+					costMicroUsd: 3n,
+					latencyMs: 4n,
+				})),
+			);
+			const points = await getAiUsageActivityTimeSeries({
+				organizationId: "example-org",
+				from: new Date(from),
+				to: new Date(to),
+				granularity,
+			});
+			expect(points.map((point) => point.date)).toEqual(dates);
+			expect(points.map((point) => point.requests)).toEqual([1, 0, 1]);
+			expect(points.map((point) => point.costMicroUsd)).toEqual([
+				3, 0, 3,
+			]);
+		},
+	);
+});
+
+describe("chart success SQL predicate", () => {
+	it.each([undefined, "error", "success"] as const)(
+		"filters success only for explicit status %s",
+		async (status) => {
+			rawMock.mockResolvedValue([]);
+			await getAiUsageActivityTimeSeries({
+				organizationId: "example-org",
+				from: new Date("2026-09-01T00:00:00Z"),
+				to: new Date("2026-09-02T00:00:00Z"),
+				status,
+			});
+			const query = rawMock.mock.calls[0][0];
+			const where = query.sql.split("WHERE")[1].split("GROUP BY")[0];
+			if (status === undefined) {
+				expect(where).not.toMatch(/\bsuccess\b/i);
+				expect(query.values).not.toContain(true);
+				expect(query.values).not.toContain(false);
+			} else {
+				expect(where).toContain("success = ?");
+				expect(query.values).toContain(status === "success");
+				expect(query.values).not.toContain(status !== "success");
+			}
+		},
+	);
 });

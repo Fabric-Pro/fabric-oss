@@ -1602,3 +1602,21 @@ export {
 export { purgeExpiredMeetingArchivesActivity } from "./meeting-archive-retention";
 
 export { preloadFrameToolsActivity } from "./orchestrator/tools/preload-frame-tools";
+
+export { deliverCodingRunFollowUp } from "./coding-run/follow-up";
+
+export {
+	createRemoteExecutionSession,
+	sendRemoteExecutionPrompt,
+	pollRemoteExecutionStatus,
+	syncRemoteCodingRunArtifacts,
+	cancelRemoteExecutionSession,
+} from "./coding-run";
+export { cleanupWeaveResourcesActivity as cleanupRemoteWeaveResourcesActivity } from "./weave/cleanup-resources";
+
+export {
+	updateCodingRunStatusGuardedActivity,
+	recordCodingRunRecoveryActivity,
+} from "./coding-run";
+
+export { findStaleWeaveSessions as findStaleWeaveSessionsWithRuntime } from "./weave/watchdog-activities";

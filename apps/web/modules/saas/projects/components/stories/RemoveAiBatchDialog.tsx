@@ -310,7 +310,7 @@ function BatchPreview({
 		},
 		onSettled: () => {
 			for (const queryKey of [
-				orpc.projects.stories.list.key(),
+				orpc.projects.stories.board.key(),
 				orpc.projects.stories.get.key(),
 				orpc.projects.aiRecommended.listBatches.key(),
 				orpc.projects.aiRecommended.previewBatch.key(),

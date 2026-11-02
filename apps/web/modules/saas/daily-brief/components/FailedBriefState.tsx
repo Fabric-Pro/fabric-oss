@@ -59,7 +59,7 @@ export function FailedBriefState({
 	return (
 		<div
 			role="alert"
-			className="rounded-2xl border border-destructive/40 bg-destructive/5 p-12 text-center"
+			className="rounded-lg border border-destructive/40 bg-destructive/5 p-12 text-center"
 		>
 			<div className="mx-auto flex size-12 items-center justify-center rounded-full border border-destructive/40 bg-destructive/10">
 				<AlertTriangleIcon
@@ -67,7 +67,7 @@ export function FailedBriefState({
 					aria-hidden="true"
 				/>
 			</div>
-			<h2 className="mt-5 font-serif text-2xl font-normal leading-tight text-foreground">
+			<h2 className="mt-5 text-2xl font-semibold leading-tight text-foreground">
 				Your brief couldn't be generated
 			</h2>
 			{errorMessage === AI_PROVIDER_NOT_CONFIGURED ? (

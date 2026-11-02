@@ -1,3 +1,4 @@
+import { useCoAgent } from "@copilotkit/react-core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	act,
@@ -40,7 +41,7 @@ const h = vi.hoisted(() => ({
 	sources: null as any,
 }));
 vi.mock("@copilotkit/react-core", () => ({
-	useCoAgent: () => ({ state: {}, setState: h.setState }),
+	useCoAgent: vi.fn(() => ({ state: {}, setState: h.setState })),
 	useCopilotAction: (action: any) => {
 		h.actions.set(action.name, action);
 	},
@@ -291,6 +292,11 @@ afterEach(() => {
 });
 
 describe("BacklogChat application sequencing", () => {
+	it("avoids the broad useCoAgent subscription", () => {
+		vi.mocked(useCoAgent).mockClear();
+		mountChat();
+		expect(useCoAgent).not.toHaveBeenCalled();
+	});
 	// CopilotKit runs the agent again after a tool unless followUp is false
 	// (@copilotkit/core executeSpecificTool); that run only narrated the card.
 	it("registers every flow tool without a follow-up agent run", () => {

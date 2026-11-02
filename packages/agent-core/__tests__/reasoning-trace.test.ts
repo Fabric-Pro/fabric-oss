@@ -902,3 +902,68 @@ describe("countHumanMessages — synthetic image turns", () => {
 		).toBe(2);
 	});
 });
+
+describe("trace seed run boundary", () => {
+	it.each(["ag-ui", "langchain", "serialized", "plain"])(
+		"resets regeneration but preserves a tool follow-up in %s messages",
+		async (shape) => {
+			const { ToolMessage } = await import("@langchain/core/messages");
+			const { pickTraceState } = await import(
+				"../src/reasoning-trace/seed"
+			);
+			const classes = [
+				new HumanMessage("First"),
+				new AIMessage("Answer"),
+				new HumanMessage("Again"),
+			];
+			const convert = (messages: typeof classes | unknown[]) =>
+				shape === "serialized"
+					? JSON.parse(JSON.stringify(messages))
+					: shape === "ag-ui"
+						? messages.map((m) => ({
+								role:
+									(m as HumanMessage)._getType() === "human"
+										? "user"
+										: (m as AIMessage)._getType() === "ai"
+											? "assistant"
+											: "tool",
+								content: "Example",
+							}))
+						: shape === "plain"
+							? messages.map((m) => ({
+									type: (m as HumanMessage)._getType(),
+									content: "Example",
+								}))
+							: messages;
+			const state = {
+				reasoningByTurn: {
+					"1": { text: "earlier" },
+					"2": { text: "old" },
+					"3": { text: "later" },
+				},
+				toolCallsByTurn: { "1": [], "2": [{ id: "old" }], "3": [] },
+			};
+			expect(pickTraceState(state, convert(classes))).toEqual({
+				reasoningByTurn: {
+					"1": { text: "earlier" },
+					"3": { text: "later" },
+				},
+				toolCallsByTurn: { "1": [], "3": [] },
+			});
+			const followUp = [
+				...classes,
+				new AIMessage({
+					content: "",
+					tool_calls: [
+						{ id: "confirm", name: "confirm_changes", args: {} },
+					],
+				}),
+				new ToolMessage({
+					content: '{"accepted":true}',
+					tool_call_id: "confirm",
+				}),
+			];
+			expect(pickTraceState(state, convert(followUp))).toEqual(state);
+		},
+	);
+});

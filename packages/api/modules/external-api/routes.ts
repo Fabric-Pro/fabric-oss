@@ -18,7 +18,7 @@ import { generateOpenApiSpec } from "./procedures/openapi-docs";
 import { createExecutionStreamHandler } from "./procedures/stream-execution";
 import {
 	handleFileUpload,
-	validateFileIdTenant,
+	validateFileIdAccess,
 } from "./procedures/upload-file";
 import type { ExternalApiVariables } from "./types";
 
@@ -157,6 +157,7 @@ export function createExternalApiRoutes() {
 						storagePath: string;
 						mimeType: string;
 						name: string;
+						accessUserId?: string;
 				  }>
 				| undefined;
 
@@ -186,7 +187,10 @@ export function createExternalApiRoutes() {
 						);
 					}
 
-					const validation = validateFileIdTenant(img.fileId, ctx);
+					const validation = await validateFileIdAccess(
+						img.fileId,
+						ctx,
+					);
 					if (!validation.valid) {
 						return c.json({ error: validation.error }, 403);
 					}
@@ -195,6 +199,7 @@ export function createExternalApiRoutes() {
 						storagePath: validation.storagePath,
 						mimeType: img.mimeType,
 						name: img.name || "image",
+						accessUserId: ctx.userId,
 					});
 				}
 			}

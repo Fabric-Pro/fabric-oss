@@ -204,6 +204,7 @@ describe("a read-only role creating a key", () => {
 	it("accepts the whole read-only set", async () => {
 		const readOnlyScopes = [
 			"mcp:read",
+			"browser:read",
 			"projects:read",
 			"agents:read",
 			"agents:stream",
@@ -213,6 +214,7 @@ describe("a read-only role creating a key", () => {
 			"workflows:read",
 			"frames:read",
 			"instructions:read",
+			"kanban:read",
 			"memory:write",
 			"chats:read",
 			"system_health:read",
@@ -249,6 +251,7 @@ describe("a read-only role creating a key", () => {
 	// covered `mcp:write` and missed `projects:write` would read as working.
 	it.each([
 		"mcp:write",
+		"browser:write",
 		"ai:models:read",
 		"ai:models:resolve",
 		"projects:write",
@@ -264,6 +267,7 @@ describe("a read-only role creating a key", () => {
 		// viewer permission set does not hold. The two must not drift back
 		// together.
 		"instructions:publish",
+		"kanban:write",
 		"audit_log:read",
 		"audit_log:export",
 		"*",
@@ -310,6 +314,18 @@ describe("a read-only role creating a key", () => {
  * requests that are not escalations — and would break every existing caller.
  */
 describe("the clamp leaves member-and-up alone", () => {
+	it("lets a member mint dedicated browser read and write scopes", async () => {
+		mockRequireOrgMembership.mockResolvedValue({ role: "member" });
+		const scopes = ["browser:read", "browser:write"];
+		await handlers.create({
+			context,
+			input: { organizationId: "org-1", name: "Browser key", scopes },
+		} as never);
+		expect(mockCreateKey).toHaveBeenCalledWith(
+			expect.objectContaining({ scopes }),
+		);
+	});
+
 	it.each(["member", "admin", "owner"])(
 		"lets a %s keep the write scopes they could always request",
 		async (role) => {

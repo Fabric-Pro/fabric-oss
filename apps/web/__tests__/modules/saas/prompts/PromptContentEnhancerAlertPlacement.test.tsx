@@ -70,3 +70,11 @@ reseedHarness.subscribe.mockImplementation((subscriber: any) => {
 	reseedHarness.subscriber = subscriber;
 	return { unsubscribe: reseedHarness.unsubscribe };
 });
+
+vi.mock("@saas/shared/components/copilot/use-page-agent", () => ({
+	usePageAgent: () => ({ state: {}, setState: vi.fn(), nodeName: undefined }),
+}));
+vi.mock("@saas/shared/components/copilot/CopilotChatSessionProvider", () => ({
+	useCopilotChatSessionSelector: (selector: any) =>
+		selector({ isLoading: false }),
+}));

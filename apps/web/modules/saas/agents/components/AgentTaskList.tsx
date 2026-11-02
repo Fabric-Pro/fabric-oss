@@ -5,23 +5,29 @@ import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
-import { Badge } from "@ui/components/badge";
-import { formatDistanceToNow } from "date-fns";
-import { AlertCircle, ClipboardListIcon } from "lucide-react";
-
-// AI Elements for consistent UI rendering
+import { SearchInput } from "@ui/components/search-input";
 import {
-	Queue,
-	QueueItem,
-	QueueItemContent,
-	QueueItemDescription,
-	QueueItemIndicator,
-	QueueList,
-	QueueSection,
-	QueueSectionContent,
-	QueueSectionLabel,
-	QueueSectionTrigger,
-} from "../../../../components/ai-elements/queue";
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@ui/components/table";
+import { cn } from "@ui/lib";
+import { formatDistanceToNow } from "date-fns";
+import {
+	AlertCircle,
+	ArrowDown,
+	Calendar,
+	CheckCircle2,
+	Clock,
+	Columns3,
+	Loader2,
+	Search,
+	XCircle,
+} from "lucide-react";
+import { useMemo, useState } from "react";
 
 interface AgentTaskListProps {
 	organizationId?: string;
@@ -215,6 +221,14 @@ export function AgentTaskList({
 	status,
 }: AgentTaskListProps) {
 	const formatAgentLabel = useAgentLabel();
+	const [sourceFilter, setSourceFilter] = useState<
+		"ALL" | HistoryItem["source"]
+	>("ALL");
+	const [statusFilter, setStatusFilter] = useState<
+		"ALL" | HistoryItem["status"]
+	>("ALL");
+	const [searchQuery, setSearchQuery] = useState("");
+
 	const { data, isLoading, error } = useQuery({
 		queryKey: ["agents", "history", { organizationId, agentId, status }],
 		queryFn: async () => {
@@ -269,6 +283,36 @@ export function AgentTaskList({
 		refetchInterval: 5000, // Refresh every 5 seconds for real-time updates
 	});
 
+	const filteredItems = useMemo(() => {
+		if (!data?.items) {
+			return [];
+		}
+		return data.items.filter((item) => {
+			if (sourceFilter !== "ALL" && item.source !== sourceFilter) {
+				return false;
+			}
+			if (statusFilter !== "ALL" && item.status !== statusFilter) {
+				return false;
+			}
+			if (searchQuery.trim()) {
+				const q = searchQuery.toLowerCase();
+				const matchesTitle = item.title?.toLowerCase().includes(q);
+				const matchesAgent = item.agentId.toLowerCase().includes(q);
+				const matchesStage = item.stage.toLowerCase().includes(q);
+				const matchesId = item.id.toLowerCase().includes(q);
+				if (
+					!matchesTitle &&
+					!matchesAgent &&
+					!matchesStage &&
+					!matchesId
+				) {
+					return false;
+				}
+			}
+			return true;
+		});
+	}, [data?.items, sourceFilter, statusFilter, searchQuery]);
+
 	if (error) {
 		return (
 			<Alert variant="error">
@@ -317,158 +361,317 @@ export function AgentTaskList({
 		);
 	}
 
-	const groupedTasks = data.items.reduce<Record<string, HistoryItem[]>>(
-		(acc, item) => {
-			if (!acc[item.status]) {
-				acc[item.status] = [];
-			}
-			acc[item.status].push(item);
-			return acc;
-		},
-		{},
-	);
-
-	const statusOrder = [
-		"RUNNING",
-		"PENDING",
-		"COMPLETED",
-		"FAILED",
-		"CANCELLED",
-	];
-	const sortedStatuses = statusOrder.filter(
-		(s) => groupedTasks[s]?.length > 0,
-	);
-
 	return (
-		<div className="space-y-3">
+		<div className="space-y-4">
 			{partialNotice}
 			{data.conversationsCapped ? (
 				<output className="block text-xs text-muted-foreground">
 					Showing the first {CONVERSATION_CAP} conversations.
 				</output>
 			) : null}
-			<Queue>
-				{sortedStatuses.map((taskStatus) => {
-					const tasks = groupedTasks[taskStatus];
-					return (
-						<QueueSection
-							key={taskStatus}
-							defaultOpen={
-								taskStatus === "RUNNING" ||
-								taskStatus === "PENDING"
-							}
-						>
-							<QueueSectionTrigger>
-								<QueueSectionLabel
-									label={taskStatus}
-									count={tasks.length}
-									icon={
-										<ClipboardListIcon className="h-4 w-4 text-muted-foreground" />
-									}
-								/>
-							</QueueSectionTrigger>
-							<QueueSectionContent>
-								<QueueList maxHeight="none">
-									{tasks.map((task) => {
-										const isCompleted =
-											task.status === "COMPLETED";
 
-										return (
-											<QueueItem
-												key={task.id}
-												isCompleted={isCompleted}
-											>
-												<QueueItemIndicator
-													isCompleted={isCompleted}
-												/>
-												<QueueItemContent>
-													<div className="flex items-center gap-2 mb-1">
-														<span className="font-medium text-sm">
-															{formatAgentLabel(
-																task.agentId,
-															)}
-														</span>
-														<StatusBadge
-															status={task.status}
-														/>
-														<Badge
-															variant="outline"
-															className="text-[10px]"
-														>
-															{task.sourceLabel}
-														</Badge>
-													</div>
-													{task.title && (
-														<div className="mb-1 text-xs text-muted-foreground line-clamp-2">
-															{task.title}
-														</div>
-													)}
-													<QueueItemDescription>
-														Stage: {task.stage}
-													</QueueItemDescription>
-													<div className="flex items-center gap-2 mt-1">
-														<span className="text-xs text-muted-foreground">
-															Started{" "}
-															{formatDistanceToNow(
-																new Date(
-																	task.createdAt,
-																),
-																{
-																	addSuffix: true,
-																},
-															)}
-														</span>
-														{task.completedAt && (
-															<span className="text-xs text-muted-foreground">
-																• Completed{" "}
-																{formatDistanceToNow(
-																	new Date(
-																		task.completedAt,
-																	),
-																	{
-																		addSuffix: true,
-																	},
-																)}
-															</span>
-														)}
-													</div>
-													{task.error && (
-														<Alert
-															variant="error"
-															className="mt-2 py-2"
-														>
-															<AlertCircle className="h-3 w-3" />
-															<AlertDescription className="text-xs">
-																{task.error}
-															</AlertDescription>
-														</Alert>
-													)}
-												</QueueItemContent>
-											</QueueItem>
-										);
-									})}
-								</QueueList>
-							</QueueSectionContent>
-						</QueueSection>
-					);
-				})}
-			</Queue>
+			{/* Databricks Runs filter bar */}
+			<div className="flex flex-wrap items-center gap-2">
+				{/* Segmented source selector: All | Tasks | Orchestrator | Conversations */}
+				<div className="inline-flex items-center overflow-hidden rounded-[6px] border border-border bg-background">
+					{(
+						[
+							{ value: "ALL", label: "All" },
+							{ value: "agent_task", label: "Tasks" },
+							{
+								value: "orchestrator_execution",
+								label: "Orchestrator",
+							},
+							{ value: "conversation", label: "Conversations" },
+						] as const
+					).map((option, idx) => {
+						const active = sourceFilter === option.value;
+						return (
+							<button
+								key={option.value}
+								type="button"
+								onClick={() => setSourceFilter(option.value)}
+								aria-pressed={active}
+								className={cn(
+									"h-8 px-3 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+									idx > 0 && "border-l border-border",
+									active
+										? "bg-primary/[0.10] text-primary dark:bg-primary/[0.18]"
+										: "text-foreground hover:bg-muted/60",
+								)}
+							>
+								{option.label}
+							</button>
+						);
+					})}
+				</div>
+
+				{/* Time window chip */}
+				<div className="inline-flex h-8 items-center gap-2 rounded-[6px] border border-border bg-background px-3 text-xs text-muted-foreground">
+					<Calendar className="h-3.5 w-3.5 shrink-0" />
+					<span>Last 48 hours</span>
+				</div>
+
+				{/* Status filter segmented pills */}
+				<div className="inline-flex items-center overflow-hidden rounded-[6px] border border-border bg-background">
+					{(
+						[
+							{ value: "ALL", label: "Run status: All" },
+							{ value: "RUNNING", label: "Running" },
+							{ value: "COMPLETED", label: "Succeeded" },
+							{ value: "FAILED", label: "Failed" },
+						] as const
+					).map((option, idx) => {
+						const active = statusFilter === option.value;
+						return (
+							<button
+								key={option.value}
+								type="button"
+								onClick={() => setStatusFilter(option.value)}
+								aria-pressed={active}
+								className={cn(
+									"h-8 px-2.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+									idx > 0 && "border-l border-border",
+									active
+										? "bg-primary/[0.10] text-primary dark:bg-primary/[0.18]"
+										: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+								)}
+							>
+								{option.label}
+							</button>
+						);
+					})}
+				</div>
+
+				{/* Run ID / Name search */}
+				<div className="relative w-full sm:w-56">
+					<Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+					<SearchInput
+						placeholder="Run ID or name"
+						value={searchQuery}
+						onChange={(e) => setSearchQuery(e.target.value)}
+						className="h-8 pl-8 text-xs"
+					/>
+				</div>
+			</div>
+
+			{/* Databricks Runs timeline chart panel */}
+			<div className="rounded-lg border border-border bg-card px-4 py-3">
+				<div className="relative h-24 w-full">
+					{/* Top dashed gridline (1) */}
+					<div className="flex items-center gap-2">
+						<span className="w-4 text-right font-mono text-[10px] text-muted-foreground">
+							1
+						</span>
+						<div className="flex-1 border-b border-dashed border-border" />
+					</div>
+
+					{/* Bar visualization area */}
+					<div className="my-2 ml-6 flex h-12 items-end gap-1 overflow-hidden">
+						{filteredItems.slice(0, 48).map((item) => {
+							const barColor =
+								item.status === "FAILED"
+									? "bg-destructive"
+									: item.status === "CANCELLED"
+										? "bg-muted-foreground/50"
+										: item.status === "RUNNING" ||
+												item.status === "PENDING"
+											? "bg-amber-500"
+											: "bg-emerald-600 dark:bg-emerald-500";
+							return (
+								<div
+									key={`bar-${item.id}`}
+									title={`${formatAgentLabel(item.agentId)} — ${item.status}`}
+									className={cn(
+										"h-9 w-2 shrink-0 rounded-t-[2px] transition-opacity hover:opacity-80",
+										barColor,
+									)}
+								/>
+							);
+						})}
+					</div>
+
+					{/* Bottom solid axis line (0) */}
+					<div className="flex items-center gap-2">
+						<span className="w-4 text-right font-mono text-[10px] text-muted-foreground">
+							0
+						</span>
+						<div className="flex-1 border-b border-border" />
+					</div>
+				</div>
+
+				{/* Legend: Failed | Skipped | Succeeded */}
+				<div className="mt-2 flex flex-wrap items-center gap-4 pl-6 text-xs text-muted-foreground">
+					<span className="inline-flex items-center gap-1.5">
+						<span className="h-2.5 w-2.5 rounded-[2px] bg-destructive" />
+						<span>Failed</span>
+					</span>
+					<span className="inline-flex items-center gap-1.5">
+						<span className="h-2.5 w-2.5 rounded-[2px] bg-muted-foreground/50" />
+						<span>Skipped</span>
+					</span>
+					<span className="inline-flex items-center gap-1.5">
+						<span className="h-2.5 w-2.5 rounded-[2px] bg-emerald-600 dark:bg-emerald-500" />
+						<span>Succeeded</span>
+					</span>
+				</div>
+			</div>
+
+			{/* Databricks DuBois Runs Table */}
+			<div className="overflow-hidden rounded-lg border border-border bg-card">
+				<Table>
+					<TableHeader>
+						<TableRow className="hover:bg-transparent">
+							<TableHead className="w-[14%]">
+								<span className="inline-flex items-center gap-1">
+									<span>Start time</span>
+									<ArrowDown className="h-3 w-3 text-muted-foreground" />
+								</span>
+							</TableHead>
+							<TableHead className="w-[26%]">Name</TableHead>
+							<TableHead className="w-[14%]">Type</TableHead>
+							<TableHead className="w-[18%]">
+								Launched / Stage
+							</TableHead>
+							<TableHead className="w-[10%]">Duration</TableHead>
+							<TableHead className="w-[10%]">Status</TableHead>
+							<TableHead className="w-[8%]">Error code</TableHead>
+							<TableHead className="w-9 text-right">
+								<Columns3
+									aria-hidden="true"
+									className="ml-auto h-3.5 w-3.5 text-muted-foreground"
+								/>
+								<span className="sr-only">Error details</span>
+							</TableHead>
+						</TableRow>
+					</TableHeader>
+					<TableBody>
+						{filteredItems.length === 0 ? (
+							<TableRow>
+								<TableCell
+									colSpan={8}
+									className="py-8 text-center text-xs text-muted-foreground"
+								>
+									No runs match your current filters.
+								</TableCell>
+							</TableRow>
+						) : null}
+						{filteredItems.map((task) => {
+							const durationLabel = formatDuration(
+								task.createdAt,
+								task.completedAt,
+								task.status,
+							);
+							return (
+								<TableRow key={task.id}>
+									<TableCell className="py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+										{formatDistanceToNow(
+											new Date(task.createdAt),
+											{ addSuffix: true },
+										)}
+									</TableCell>
+									<TableCell className="py-2.5">
+										<div className="min-w-0">
+											<div className="truncate text-[13px] font-medium text-foreground">
+												{formatAgentLabel(task.agentId)}
+											</div>
+											{task.title && (
+												<div className="truncate text-xs text-muted-foreground">
+													{task.title}
+												</div>
+											)}
+										</div>
+									</TableCell>
+									<TableCell className="py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+										{task.sourceLabel}
+									</TableCell>
+									<TableCell className="py-2.5 text-xs text-muted-foreground">
+										<span className="line-clamp-1">
+											Stage: {task.stage}
+										</span>
+									</TableCell>
+									<TableCell className="py-2.5 font-mono text-xs text-muted-foreground whitespace-nowrap">
+										{durationLabel}
+									</TableCell>
+									<TableCell className="py-2.5 whitespace-nowrap">
+										<RunStatusCell status={task.status} />
+									</TableCell>
+									<TableCell
+										colSpan={2}
+										className="py-2.5 text-xs text-destructive"
+									>
+										<span className="line-clamp-1">
+											{task.error || "-"}
+										</span>
+									</TableCell>
+								</TableRow>
+							);
+						})}
+					</TableBody>
+				</Table>
+			</div>
 		</div>
 	);
 }
 
-function StatusBadge({ status }: { status: string }) {
-	const variants: Record<string, "default" | "secondary" | "destructive"> = {
-		PENDING: "secondary",
-		RUNNING: "default",
-		COMPLETED: "default",
-		FAILED: "destructive",
-		CANCELLED: "secondary",
-	};
+function formatDuration(
+	createdAt: string,
+	completedAt: string | undefined,
+	status: HistoryItem["status"],
+): string {
+	if (status === "RUNNING" || status === "PENDING") {
+		return "Running...";
+	}
+	if (!completedAt) {
+		return "-";
+	}
+	const startMs = new Date(createdAt).getTime();
+	const endMs = new Date(completedAt).getTime();
+	const diffSec = Math.max(0, Math.round((endMs - startMs) / 1000));
+	if (diffSec < 60) {
+		return `${diffSec}s`;
+	}
+	const mins = Math.floor(diffSec / 60);
+	const secs = diffSec % 60;
+	return `${mins}m ${secs}s`;
+}
 
-	return (
-		<Badge variant={variants[status] || "secondary"} className="text-xs">
-			{status}
-		</Badge>
-	);
+function RunStatusCell({ status }: { status: HistoryItem["status"] }) {
+	switch (status) {
+		case "COMPLETED":
+			return (
+				<span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+					<CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+					<span>Succeeded</span>
+				</span>
+			);
+		case "RUNNING":
+			return (
+				<span className="inline-flex items-center gap-1.5 text-xs font-medium text-primary">
+					<Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+					<span>Running</span>
+				</span>
+			);
+		case "PENDING":
+			return (
+				<span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+					<Clock className="h-3.5 w-3.5 shrink-0" />
+					<span>Pending</span>
+				</span>
+			);
+		case "FAILED":
+			return (
+				<span className="inline-flex items-center gap-1.5 text-xs font-medium text-destructive">
+					<XCircle className="h-3.5 w-3.5 shrink-0" />
+					<span>Failed</span>
+				</span>
+			);
+		case "CANCELLED":
+			return (
+				<span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+					<XCircle className="h-3.5 w-3.5 shrink-0" />
+					<span>Skipped</span>
+				</span>
+			);
+	}
 }

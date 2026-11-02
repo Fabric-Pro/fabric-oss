@@ -86,13 +86,14 @@ describe("diagramDisplayWidth", () => {
 });
 
 describe("readSvgNaturalSize", () => {
-	it("reads beautiful-mermaid's width and its 13 px labels", () => {
+	it("reads beautiful-mermaid's width, height and its 13 px labels", () => {
 		const svg = renderMermaidSVG(
 			'flowchart LR\n  a["Discovery"] --> b["Launch"]',
 			{},
 		);
 		const size = readSvgNaturalSize(svg);
 		expect(size?.width).toBeGreaterThan(0);
+		expect(size?.height).toBeGreaterThan(0);
 		expect(size?.labelPx).toBe(13);
 	});
 
@@ -101,15 +102,23 @@ describe("readSvgNaturalSize", () => {
 			readSvgNaturalSize(
 				'<svg width="900" height="200"><text font-size="13">A</text><text font-size="11">b</text></svg>',
 			),
-		).toEqual({ width: 900, labelPx: 11 });
+		).toEqual({ width: 900, height: 200, labelPx: 11 });
 	});
 
-	it("falls back to the viewBox width", () => {
+	it("falls back to the viewBox width and height", () => {
 		expect(
 			readSvgNaturalSize(
 				'<svg viewBox="0 0 640 200"><text font-size="14">A</text></svg>',
 			),
-		).toEqual({ width: 640, labelPx: 14 });
+		).toEqual({ width: 640, height: 200, labelPx: 14 });
+	});
+
+	it("reads no height from an SVG that declares none", () => {
+		expect(
+			readSvgNaturalSize(
+				'<svg width="640"><text font-size="14">A</text></svg>',
+			),
+		).toEqual({ width: 640, height: null, labelPx: 14 });
 	});
 
 	it("declines an SVG sized to its container, as the mermaid.js fallback's", () => {

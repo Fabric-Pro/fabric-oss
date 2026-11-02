@@ -42,7 +42,7 @@ type MemberSend = {
 const PAGE_SIZES = [15, 50, 100] as const;
 
 const sectionTitleClass =
-	"text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground";
+	"text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 
 function formatDate(value: Date | string): string {
 	const date = typeof value === "string" ? new Date(value) : value;
@@ -141,7 +141,7 @@ export function ReleaseNotesList({ project }: Props) {
 					<div>
 						<p className={sectionTitleClass}>Newsletter</p>
 						<div className="mt-2 flex items-center gap-1.5">
-							<h2 className="font-serif text-2xl font-normal text-foreground">
+							<h2 className="text-2xl font-semibold text-foreground">
 								Release Notes
 							</h2>
 							<PageTourButton pageId="release-notes" />
@@ -189,7 +189,7 @@ export function ReleaseNotesList({ project }: Props) {
 									return (
 										<li
 											key={send.id}
-											className="rounded-xl border border-dashed border-border bg-muted/40 p-4"
+											className="rounded-lg border border-dashed border-border bg-muted/40 p-4"
 										>
 											<p className="text-sm text-muted-foreground">
 												A new update is being prepared…
@@ -207,12 +207,12 @@ export function ReleaseNotesList({ project }: Props) {
 										<button
 											type="button"
 											onClick={() => setSelected(send)}
-											className="w-full rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent"
+											className="w-full rounded-lg border border-border bg-card p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent"
 										>
-											<p className="font-serif text-lg font-normal text-foreground">
+											<p className="text-lg font-semibold text-foreground">
 												{content.headline}
 											</p>
-											<p className="mt-1 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+											<p className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">
 												{formatDate(send.createdAt)}
 											</p>
 											{content.intro ? (

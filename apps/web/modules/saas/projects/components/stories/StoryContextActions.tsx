@@ -80,7 +80,7 @@ export function StoryContextActions({
 	const queryClient = useQueryClient();
 	const analytics = useAnalytics();
 	const isClosed = story.draftingStage === "CLOSED";
-	const storiesListQueryKey = orpc.projects.stories.list.queryKey({
+	const storiesListQueryKey = orpc.projects.stories.board.queryKey({
 		input: { projectId, organizationId: organizationId ?? null },
 	});
 

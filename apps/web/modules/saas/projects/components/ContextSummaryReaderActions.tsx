@@ -122,7 +122,7 @@ export function ContextSummaryReaderActions({
 			<Dialog open={editOpen} onOpenChange={setEditOpen}>
 				<DialogContent className="sm:max-w-3xl">
 					<DialogHeader>
-						<DialogTitle className="font-serif font-normal text-2xl">
+						<DialogTitle className="font-semibold text-2xl">
 							{t("editor.title")}
 						</DialogTitle>
 						<DialogDescription className="sr-only">
@@ -150,7 +150,7 @@ export function ContextSummaryReaderActions({
 					className="flex w-full flex-col sm:max-w-lg"
 				>
 					<SheetHeader>
-						<SheetTitle className="font-serif font-normal text-2xl">
+						<SheetTitle className="font-semibold text-2xl">
 							{t("history.title")}
 						</SheetTitle>
 						<SheetDescription>
@@ -324,7 +324,7 @@ function HistoryVersionCard({
 			<Dialog open={viewOpen} onOpenChange={setViewOpen}>
 				<DialogContent className="sm:max-w-3xl">
 					<DialogHeader>
-						<DialogTitle className="font-serif font-normal text-2xl">
+						<DialogTitle className="font-semibold text-2xl">
 							{originLabel}
 						</DialogTitle>
 						<DialogDescription>{createdAt}</DialogDescription>
@@ -342,7 +342,7 @@ function HistoryVersionCard({
 						</p>
 					)}
 					{versionQuery.isSuccess && (
-						<div className="prose prose-stone dark:prose-invert max-h-[60vh] max-w-none overflow-y-auto prose-headings:font-serif prose-headings:font-normal">
+						<div className="prose prose-stone dark:prose-invert max-h-[60vh] max-w-none overflow-y-auto prose-headings:font-sans prose-headings:font-semibold">
 							<ContextSummaryMarkdown
 								content={versionQuery.data.version.content}
 								references={

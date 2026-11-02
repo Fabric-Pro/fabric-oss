@@ -47,7 +47,7 @@ export interface ClientOverrides {
 	project?: string;
 }
 
-export function getClient(overrides: ClientOverrides = {}): FabricClient {
+function resolveClientOrigin(overrides: ClientOverrides): string {
 	const origin = normalizeOrigin(
 		overrides.baseUrl ?? getBaseUrl() ?? DEFAULT_ORIGIN,
 	);
@@ -57,6 +57,11 @@ export function getClient(overrides: ClientOverrides = {}): FabricClient {
 		// deployment's is never a substitute.
 		printError(BAD_BASE_URL_LINE, 2);
 	}
+	return origin;
+}
+
+function resolveClientAuth(overrides: ClientOverrides) {
+	const origin = resolveClientOrigin(overrides);
 	// The order is `FABRIC_API_KEY`, the project's own sign-in, then what the
 	// deployment has stored (`getApiKey` in `config.ts`).
 	const projectOAuth =
@@ -76,6 +81,44 @@ export function getClient(overrides: ClientOverrides = {}): FabricClient {
 			3,
 		);
 	}
+	return { origin, apiKey, oauth, projectOAuth };
+}
+
+/**
+ * Authenticated fetch for the MCP gateway.
+ *
+ * Browser sign-ins currently store one access token selected for the REST API
+ * resource (or one project's REST resource). The gateway correctly refuses
+ * that token as the wrong audience, and retrying it would only rotate the
+ * refresh token before returning the same 401. Require the supported API-key
+ * credential before any MCP request instead.
+ */
+export function getMcpAuthenticatedFetch(overrides: ClientOverrides = {}): {
+	origin: string;
+	fetch: typeof globalThis.fetch;
+	authorizationHeader: string;
+} {
+	const origin = resolveClientOrigin(overrides);
+	// MCP supports API keys, not the REST token selected for a project's
+	// browser sign-in. Read the key independently so that adding a project
+	// sign-in does not hide an environment or deployment-profile key.
+	const apiKey = hasStoredApiKey(origin) ? getApiKey(origin) : undefined;
+	if (!apiKey) {
+		printError(
+			"Browser sign-in tokens are not valid for the MCP Gateway. Set FABRIC_API_KEY or run fabric auth login --key <api-key> before using fabric mcp tools or fabric mcp call.",
+			3,
+		);
+	}
+	return {
+		origin,
+		fetch: globalThis.fetch,
+		authorizationHeader: `Bearer ${apiKey}`,
+	};
+}
+
+export function getClient(overrides: ClientOverrides = {}): FabricClient {
+	const { origin, apiKey, oauth, projectOAuth } =
+		resolveClientAuth(overrides);
 
 	try {
 		return new FabricClient({

@@ -3,6 +3,7 @@
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { queryOptions, useQuery } from "@tanstack/react-query";
+import type { StreamModelInfo } from "../../../hooks/useDirectStream";
 import type { SelectedAgent } from "./agent-selection";
 
 export function chatModelQueryOptions(organizationId?: string | null) {
@@ -17,6 +18,22 @@ export function chatModelQueryOptions(organizationId?: string | null) {
 			}),
 		refetchOnWindowFocus: false,
 	});
+}
+
+/**
+ * Whether another model answered a provider-model pick (a ChatGPT plan or a
+ * fallback served it): the served model's canonical name, or its id when it
+ * has none, is not the pick's.
+ */
+export function isProviderPickNotApplied(
+	agentId: string,
+	served: StreamModelInfo | undefined,
+): boolean {
+	return (
+		served !== undefined &&
+		agentId.startsWith("model:") &&
+		(served.canonicalName ?? served.id) !== agentId.slice("model:".length)
+	);
 }
 
 function inactiveProviderPickNote(

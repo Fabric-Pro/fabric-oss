@@ -69,6 +69,21 @@ vi.mock("@repo/logs", () => ({
 	logWorkflowEvent: mockLogWorkflowEvent,
 }));
 
+vi.mock("../lib/remote-server-access", () => ({
+	requireRemoteServerAccess: async () => ({
+		id: "example-connection",
+		name: "Example server",
+		url: "https://example.com",
+		profileId: "example-profile",
+	}),
+}));
+vi.mock("@repo/temporal/coding-execution", () => ({
+	FabricBackgroundAdapter: class {
+		constructor(private target: unknown) {}
+		executionReadiness = async () => ({ executionTarget: this.target });
+	},
+}));
+
 vi.mock("@repo/temporal", () => ({
 	getTemporalClient: mockGetTemporalClient,
 }));
@@ -551,4 +566,41 @@ describe("startCodingRun — ambiguous start errors (describe the deterministic 
 		expect(mockDb.codingRun.create).not.toHaveBeenCalled();
 		expect(workflowStart).not.toHaveBeenCalled();
 	});
+});
+
+it("starts remote-target work under a workflow name absent from old workers", async () => {
+	vi.stubEnv("FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED", "true");
+	try {
+		mockDb.userStory.findFirst.mockResolvedValue({
+			...storyRow,
+			project: { ...storyRow.project, organizationId: "example-org" },
+		});
+		await handlers.start({
+			input: {
+				...baseInput,
+				organizationId: "example-org",
+				serverId: "example-connection",
+			},
+			context: {
+				...context,
+				session: { activeOrganizationId: "example-org" },
+			},
+		});
+		expect(workflowStart).toHaveBeenCalledWith(
+			"remoteCodingRunWorkflow",
+			expect.objectContaining({
+				args: [
+					expect.objectContaining({
+						providerMetadata: expect.objectContaining({
+							executionTarget: expect.objectContaining({
+								connectionId: "example-connection",
+							}),
+						}),
+					}),
+				],
+			}),
+		);
+	} finally {
+		vi.unstubAllEnvs();
+	}
 });

@@ -36,8 +36,9 @@ const TokenRequestSchema = z.object({
 
 export async function POST(req: Request) {
 	try {
-		// `disableCookieCache` — a stale cached session must not mint a fresh
-		// credential, so this reads through to the session store.
+		// `getSession` explicitly keeps `disableCookieCache` as defense in depth:
+		// this credential-minting path must remain authoritative if the global
+		// session-cache setting changes.
 		const session = await getSession();
 
 		if (!session?.user) {

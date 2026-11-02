@@ -17,6 +17,7 @@ export * from "./prisma/queries/lib/owner-scoped-schedule";
 export * from "./prisma/queries/lib/report-schedule";
 export * from "./prisma/queries/platform-admin";
 export * from "./prisma/queries/projects/knowledge-search";
+export * from "./prisma/queries/projects/remote-agent-servers";
 // Daily brief shared schemas
 export * from "./src/daily-brief-schema";
 // Delivery tracks: readiness policy + stage-transition enforcement

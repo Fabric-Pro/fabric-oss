@@ -151,7 +151,7 @@ function orpcJsonResponse(payload: unknown): string {
 	return JSON.stringify({ json: payload });
 }
 
-function unwrapOrpcInput<T>(body: unknown): T {
+function _unwrapOrpcInput<T>(body: unknown): T {
 	if (body && typeof body === "object" && "json" in body) {
 		return (body as { json: T }).json;
 	}
@@ -296,7 +296,7 @@ async function installStoryWorkspaceMocks(
 	await page.route("**/api/rpc/projects/stories/versions/list**", (route) =>
 		fulfillJson(route, { versions: [] }),
 	);
-	await page.route("**/api/rpc/projects/stories/list**", (route) =>
+	await page.route("**/api/rpc/projects/stories/board**", (route) =>
 		fulfillJson(route, { stories: [] }),
 	);
 	await page.route("**/api/rpc/projects/stories/statuses/list**", (route) =>

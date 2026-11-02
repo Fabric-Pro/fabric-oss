@@ -36,16 +36,49 @@
  */
 
 import { type BaseEvent, EventType, type RunAgentInput } from "@ag-ui/client";
+import { AI_TOKEN_HEADER } from "@repo/ai-token";
 import { logger } from "@repo/logs";
 import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
 import type { ChainableCommander, default as Redis } from "ioredis";
 import {
 	AGUI_RUN_EVENT_RETENTION_SECONDS,
 	AGUI_RUN_INPUT_TTL_SECONDS,
+	type AgUiModelHints,
 } from "./agui-run-contract";
 import { getRedisUrl, isPlaintextRedisRefused } from "./redis-url";
 
 export * from "./agui-run-contract";
+
+/**
+ * The headers `/api/copilotkit` sends its agents, in the same shape: service
+ * auth, tenant, AI token, then the model hints.
+ */
+export function buildAgUiAgentHeaders(params: {
+	userId: string;
+	organizationId: string;
+	aiToken: string;
+	agentApiKey: string | undefined;
+	modelHints: AgUiModelHints;
+}): Record<string, string> {
+	const { modelHints } = params;
+	return {
+		...(modelHints.isReasoning !== undefined && {
+			"X-AI-Is-Reasoning": String(modelHints.isReasoning),
+		}),
+		...(params.agentApiKey && {
+			Authorization: `Bearer ${params.agentApiKey}`,
+		}),
+		"X-Tenant-User-ID": params.userId,
+		"X-Tenant-Organization-ID": params.organizationId,
+		[AI_TOKEN_HEADER]: params.aiToken,
+		...(modelHints.model && { "X-AI-Model": modelHints.model }),
+		...(modelHints.baseUrl && { "X-AI-Base-URL": modelHints.baseUrl }),
+		...(modelHints.provider && { "X-AI-Provider": modelHints.provider }),
+		...(modelHints.deploymentName && {
+			"X-AI-Deployment-Name": modelHints.deploymentName,
+		}),
+	};
+}
 
 /**
  * Approximate cap on one run's stream (`XADD … MAXLEN ~`). A long document

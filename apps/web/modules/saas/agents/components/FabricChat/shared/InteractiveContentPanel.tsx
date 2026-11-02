@@ -160,7 +160,7 @@ export function InteractiveContentPanel({
 					Loading interactive preview…
 				</p>
 			) : (
-				<div className="flex h-full min-h-[240px] items-center justify-center rounded-2xl border bg-card px-6 text-center text-sm text-muted-foreground">
+				<div className="flex h-full min-h-[240px] items-center justify-center rounded-lg border bg-card px-6 text-center text-sm text-muted-foreground">
 					Interactive preview unavailable for this frame.
 				</div>
 			)}

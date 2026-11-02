@@ -25,6 +25,17 @@
 export interface AgUiRunError {
 	message?: string;
 	code?: string;
+	/**
+	 * The refusal's body, as a chat route would have answered it (the agent
+	 * runtime's `metadata.fabric`): a plan refusal's reset time and options,
+	 * a usage limit's limits.
+	 */
+	fabric?: Record<string, unknown>;
+}
+
+/** @ag-ui/client converts its transport AbortError into a RUN_ERROR with code `abort`. */
+export function isIntentionalAbortRunError(error: AgUiRunError): boolean {
+	return error.code === "abort";
 }
 
 /**
@@ -80,18 +91,25 @@ function parseRunErrorFrame(line: string): AgUiRunError | null {
 			type?: unknown;
 			message?: unknown;
 			code?: unknown;
+			metadata?: { fabric?: unknown };
 		};
 		if (frame.type !== RUN_ERROR_TYPE) {
 			return null;
 		}
+		const fabric = frame.metadata?.fabric;
 		return {
 			message:
 				typeof frame.message === "string" ? frame.message : undefined,
 			code: typeof frame.code === "string" ? frame.code : undefined,
+			...(isPlainObject(fabric) ? { fabric } : {}),
 		};
 	} catch {
 		return null;
 	}
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

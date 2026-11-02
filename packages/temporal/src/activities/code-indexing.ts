@@ -41,6 +41,10 @@ import {
 	jobStep,
 	seedJobSteps,
 } from "./lib/job-progress";
+import {
+	createPrivateCodeIndexDirectory,
+	writePrivateCodeIndexFile,
+} from "./lib/private-code-index-path";
 import { resolveRepositoryAuthContext } from "./lib/repository-auth-context";
 
 /**
@@ -686,7 +690,7 @@ export async function cloneRepositoryActivity(
  * Git may remove/recreate the child checkout without exposing its parent.
  */
 function createCodeIndexClonePath(): string {
-	const parent = fs.mkdtempSync(
+	const parent = createPrivateCodeIndexDirectory(
 		path.join(os.tmpdir(), "fabric-code-index-private-"),
 	);
 	return path.join(parent, "clone");
@@ -697,7 +701,9 @@ function codeIndexPrivateParent(clonePath: string): string | null {
 	const parent = path.dirname(clonePath);
 	return path.basename(clonePath) === "clone" &&
 		path.dirname(parent) === os.tmpdir() &&
-		/^fabric-code-index-private-[a-zA-Z0-9]{6}$/.test(path.basename(parent))
+		/^fabric-code-index-private-(?:[a-zA-Z0-9]{6}|[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})$/.test(
+			path.basename(parent),
+		)
 		? parent
 		: null;
 }
@@ -1053,12 +1059,12 @@ function writeCodeIndexManifest(
 	manifestPath: string,
 	entries: FileManifestDiskEntry[],
 ): void {
-	const staging = fs.mkdtempSync(
+	const staging = createPrivateCodeIndexDirectory(
 		path.join(path.dirname(manifestPath), ".fabric-code-index-manifest-"),
 	);
 	try {
 		const stagedPath = path.join(staging, "manifest.json");
-		fs.writeFileSync(stagedPath, JSON.stringify(entries), { mode: 0o600 });
+		writePrivateCodeIndexFile(stagedPath, JSON.stringify(entries));
 		fs.renameSync(stagedPath, manifestPath);
 	} finally {
 		fs.rmSync(staging, { recursive: true, force: true });

@@ -19,6 +19,7 @@ import {
 	type LangGraphStreamEvent,
 	PredictiveToolArgsAccumulator,
 } from "@repo/agent-core";
+import { pickTraceState } from "@repo/agent-core/reasoning-trace";
 import type { DocumentType, ProjectContext } from "@repo/agent-types";
 import { v4 as uuidv4 } from "uuid";
 import { predictiveStateUpdatesGraph } from "./agent.js";
@@ -197,6 +198,8 @@ const { app, start } = createUnifiedServer(
 		// Include project context and RAG contexts if available for improved document quality
 		const stream = await predictiveStateUpdatesGraph.stream(
 			{
+				reasoningByTurn: pickTraceState(input.state, input.messages)
+					.reasoningByTurn,
 				messages,
 				documentType,
 				document, // Pass the current document for content preservation

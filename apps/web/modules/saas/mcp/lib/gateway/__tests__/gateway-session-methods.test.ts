@@ -1,10 +1,18 @@
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
 	verifyOAuthAccessToken: vi.fn(),
 	findActiveAuthoritySessions: vi.fn(),
 	completeAuthoritySession: vi.fn(),
+	getAggregatedTools: vi.fn(),
+	authorizeConnectedServerTool: vi.fn(),
+	executeAuthorizedConnectedServerTool: vi.fn(),
+	enforceAuthority: vi.fn(),
+	generateRequestFingerprint: vi.fn(),
+	resolveProviderKeyFromToolPrefix: vi.fn(),
+	claimMcpDurableToolCall: vi.fn(),
+	completeMcpDurableToolCall: vi.fn(),
 }));
 
 vi.mock("@repo/auth", () => ({ auth: { api: { getSession: vi.fn() } } }));
@@ -25,23 +33,32 @@ vi.mock("@saas/mcp/lib/record-organization-refusal", () => ({
 	recordOrganizationRefusal: vi.fn(),
 }));
 vi.mock("@saas/mcp/lib/gateway/authority-service", () => ({
-	enforceAuthority: vi.fn(),
-	generateRequestFingerprint: vi.fn(),
-	resolveProviderKeyFromToolPrefix: vi.fn(),
+	classifyConnectedToolAccess: (
+		_toolName: string,
+		annotations?: { readOnlyHint?: boolean },
+	) => (annotations?.readOnlyHint === true ? "READ" : "WRITE"),
+	enforceAuthority: m.enforceAuthority,
+	generateRequestFingerprint: m.generateRequestFingerprint,
+	resolveProviderKeyFromToolPrefix: m.resolveProviderKeyFromToolPrefix,
 }));
 vi.mock("@saas/mcp/lib/gateway", async () => {
 	const store = await import("../session-store");
 	return {
 		...store,
+		authorizeConnectedServerTool: m.authorizeConnectedServerTool,
+		executeAuthorizedConnectedServerTool:
+			m.executeAuthorizedConnectedServerTool,
 		executePlatformTool: vi.fn(),
 		executeConnectedServerTool: vi.fn(),
-		getAggregatedTools: vi.fn(),
+		getAggregatedTools: m.getAggregatedTools,
 	};
 });
 vi.mock("@repo/database", () => ({
 	verifyOAuthAccessToken: m.verifyOAuthAccessToken,
 	isOrganizationLive: async () => true,
 	completeAuthoritySession: m.completeAuthoritySession,
+	claimMcpDurableToolCall: m.claimMcpDurableToolCall,
+	completeMcpDurableToolCall: m.completeMcpDurableToolCall,
 	db: {
 		authoritySession: { findMany: m.findActiveAuthoritySessions },
 	},
@@ -82,6 +99,29 @@ function gatewayRequest(
 	});
 }
 
+function durableToolRequest(toolName = "example__read") {
+	return new NextRequest("https://fabric.example/api/mcp-gateway", {
+		method: "POST",
+		headers: {
+			accept: "application/json",
+			authorization: "Bearer owner-token",
+			"content-type": "application/json",
+			"x-mcp-idempotency-key": "example-durable-key",
+			"x-mcp-stateless": "true",
+		},
+		body: JSON.stringify({
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: {
+				name: toolName,
+				arguments: { query: "example" },
+				_meta: { durable: true },
+			},
+		}),
+	});
+}
+
 async function sessionFor(userId: string) {
 	return createGatewaySession({
 		userId,
@@ -96,9 +136,11 @@ async function sessionFor(userId: string) {
 }
 
 beforeEach(() => {
-	m.verifyOAuthAccessToken.mockReset();
-	m.findActiveAuthoritySessions.mockReset().mockResolvedValue([]);
-	m.completeAuthoritySession.mockReset().mockResolvedValue(undefined);
+	for (const mock of Object.values(m)) {
+		mock.mockReset();
+	}
+	m.findActiveAuthoritySessions.mockResolvedValue([]);
+	m.completeAuthoritySession.mockResolvedValue(undefined);
 	m.verifyOAuthAccessToken.mockImplementation(async (value: string) =>
 		value === "owner-token"
 			? token("user-1")
@@ -106,6 +148,43 @@ beforeEach(() => {
 				? token("user-2")
 				: { valid: false },
 	);
+	m.getAggregatedTools.mockResolvedValue({
+		tools: [
+			{
+				name: "example__read",
+				annotations: { readOnlyHint: true },
+			},
+		],
+		servers: [{ toolPrefix: "example" }],
+	});
+	m.generateRequestFingerprint.mockResolvedValue("example-fingerprint");
+	m.resolveProviderKeyFromToolPrefix.mockReturnValue({
+		providerKey: "custom:example",
+	});
+	m.enforceAuthority.mockResolvedValue({ authorized: true });
+	m.authorizeConnectedServerTool.mockResolvedValue({
+		ok: true,
+		context: { configId: "config-example" },
+	});
+	m.executeAuthorizedConnectedServerTool.mockResolvedValue({
+		content: [{ type: "text", text: "ok" }],
+	});
+	m.claimMcpDurableToolCall.mockResolvedValue({
+		kind: "claimed",
+		call: {
+			id: "execution-example",
+			status: "RUNNING",
+			result: null,
+			createdAt: new Date("2026-01-01T00:00:00Z"),
+			updatedAt: new Date("2026-01-01T00:00:01Z"),
+			completedAt: null,
+		},
+	});
+	m.completeMcpDurableToolCall.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 describe("gateway DELETE", () => {
@@ -218,5 +297,80 @@ describe("gateway POST", () => {
 		);
 
 		expect(response.status).toBe(401);
+	});
+
+	it("converts a durable authorization throw to the standard tool error", async () => {
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+		m.getAggregatedTools.mockRejectedValueOnce(
+			new Error("example authorization read failed"),
+		);
+
+		const response = await handleGatewayPost(durableToolRequest(), null);
+		const body = await response.json();
+
+		expect(response.status).toBe(200);
+		expect(body.result).toEqual({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						error: "Tool execution failed because of an internal error.",
+					}),
+				},
+			],
+			isError: true,
+		});
+		expect(m.claimMcpDurableToolCall).not.toHaveBeenCalled();
+		expect(consoleError).toHaveBeenCalledWith(
+			"[MCP Gateway] tools/call error:",
+			expect.objectContaining({
+				toolName: "example__read",
+				error: "example authorization read failed",
+			}),
+		);
+	});
+
+	it("marks a throwing durable execution failed before returning the standard tool error", async () => {
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+		m.executeAuthorizedConnectedServerTool.mockRejectedValueOnce(
+			new Error("example execution failed"),
+		);
+
+		const response = await handleGatewayPost(durableToolRequest(), null);
+		const body = await response.json();
+
+		expect(response.status).toBe(200);
+		expect(body.result).toEqual({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						error: "Tool execution failed because of an internal error.",
+					}),
+				},
+			],
+			isError: true,
+		});
+		expect(m.completeMcpDurableToolCall).toHaveBeenCalledOnce();
+		expect(m.completeMcpDurableToolCall).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: "execution-example",
+				status: "FAILED",
+			}),
+		);
+		expect(consoleError).toHaveBeenCalledWith(
+			"[MCP Gateway] tools/call error:",
+			expect.objectContaining({
+				toolName: "example__read",
+				error: "example execution failed",
+			}),
+		);
+		expect(
+			m.completeMcpDurableToolCall.mock.invocationCallOrder[0],
+		).toBeLessThan(consoleError.mock.invocationCallOrder[0] ?? 0);
 	});
 });

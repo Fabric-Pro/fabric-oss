@@ -10,6 +10,7 @@
  */
 
 import { getEditorMarkdownForSave } from "@saas/projects/lib/editor-markdown-save";
+import { resetLegibleDrawingsForTests } from "@saas/projects/lib/tiptap-mermaid-extension";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Editor } from "@tiptap/core";
@@ -168,6 +169,8 @@ beforeEach(() => {
 	rpc.listVisualSpecs.mockReset();
 	rpc.editVisual.mockReset();
 	specsResolving([]);
+	// Each test watches the engine draw; none takes an earlier test's drawing.
+	resetLegibleDrawingsForTests();
 });
 
 afterEach(() => {

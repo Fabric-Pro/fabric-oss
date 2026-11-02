@@ -121,7 +121,7 @@ export function ChatHistorySidebar({
 						value={search}
 						onChange={(e) => setSearch(e.target.value)}
 						placeholder="Search..."
-						className="h-9 rounded-2xl border-border/70 bg-muted/30 pl-9 text-sm"
+						className="h-9 rounded-lg border-border/70 bg-muted/30 pl-9 text-sm"
 					/>
 				</div>
 			</div>
@@ -142,12 +142,12 @@ export function ChatHistorySidebar({
 			>
 				{isLoading ? (
 					<div className="space-y-1 px-3 py-3">
-						<Skeleton className="h-12 w-full rounded-xl" />
-						<Skeleton className="h-12 w-full rounded-xl" />
-						<Skeleton className="h-12 w-full rounded-xl" />
+						<Skeleton className="h-12 w-full rounded-lg" />
+						<Skeleton className="h-12 w-full rounded-lg" />
+						<Skeleton className="h-12 w-full rounded-lg" />
 					</div>
 				) : groupedChats.length === 0 ? (
-					<div className="mx-3 mt-4 flex flex-col items-center justify-center rounded-xl border border-dashed border-border/70 px-4 py-10 text-center">
+					<div className="mx-3 mt-4 flex flex-col items-center justify-center rounded-lg border border-dashed border-border/70 px-4 py-10 text-center">
 						<MessageSquareIcon className="size-5 text-muted-foreground/40" />
 						<p className="mt-3 text-sm font-medium text-foreground/85">
 							{search ? "No matches found" : "No threads yet"}

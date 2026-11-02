@@ -7,19 +7,63 @@
 import Table from "cli-table3";
 import { getOutputFormat } from "./config.js";
 
-type OutputFormat = "table" | "json" | "yaml" | "csv" | "quiet";
+export type OutputFormat =
+	| "table"
+	| "json"
+	| "yaml"
+	| "csv"
+	| "plain"
+	| "quiet";
+
+const OUTPUT_FORMATS = new Set<OutputFormat>([
+	"table",
+	"json",
+	"yaml",
+	"csv",
+	"plain",
+	"quiet",
+]);
+
+export function resolveOutputFormat(format?: string): OutputFormat {
+	return format && OUTPUT_FORMATS.has(format as OutputFormat)
+		? (format as OutputFormat)
+		: getOutputFormat();
+}
 
 export interface OutputOptions {
 	format?: OutputFormat;
-	/** Column names to include in table/csv output (in order) */
+	/** Column names to include in table/csv/plain output (in order) */
 	columns?: string[];
 	/** Key to use for --quiet / IDs-only output */
 	idKey?: string;
 }
 
+/**
+ * Honors https://no-color.org/ and https://clig.dev/ guidelines:
+ * Disable ANSI colors when NO_COLOR, FABRIC_NO_COLOR, TERM=dumb, or non-TTY stdout is detected.
+ */
+export function shouldDisableColor(
+	env: NodeJS.ProcessEnv = process.env,
+	isTTY: boolean = Boolean(process.stdout?.isTTY),
+): boolean {
+	if (env.NO_COLOR !== undefined && env.NO_COLOR !== "") {
+		return true;
+	}
+	if (env.FABRIC_NO_COLOR === "1" || env.FABRIC_NO_COLOR === "true") {
+		return true;
+	}
+	if (env.TERM === "dumb") {
+		return true;
+	}
+	if (!isTTY) {
+		return true;
+	}
+	return false;
+}
+
 /** Print data to stdout in the selected format. */
 export function printOutput(data: unknown, opts: OutputOptions = {}): void {
-	const format = opts.format ?? (getOutputFormat() as OutputFormat);
+	const format = resolveOutputFormat(opts.format);
 
 	if (format === "json") {
 		process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
@@ -39,6 +83,22 @@ export function printOutput(data: unknown, opts: OutputOptions = {}): void {
 			if (val !== undefined) {
 				process.stdout.write(`${String(val)}\n`);
 			}
+		}
+		return;
+	}
+
+	if (format === "plain") {
+		const rows = Array.isArray(data) ? data : [data];
+		if (rows.length === 0) {
+			return;
+		}
+		const cols = opts.columns ?? Object.keys(rows[0] as object);
+		for (const row of rows) {
+			process.stdout.write(
+				`${cols
+					.map((c) => formatCell((row as Record<string, unknown>)[c]))
+					.join("\t")}\n`,
+			);
 		}
 		return;
 	}
@@ -71,7 +131,14 @@ export function printOutput(data: unknown, opts: OutputOptions = {}): void {
 		return;
 	}
 	const cols = opts.columns ?? Object.keys(rows[0] as object);
-	const table = new Table({ head: cols, style: { head: ["cyan"] } });
+	const noColor = shouldDisableColor();
+	const table = new Table({
+		head: cols,
+		style: {
+			head: noColor ? [] : ["cyan"],
+			border: noColor ? [] : undefined,
+		},
+	});
 	for (const row of rows) {
 		table.push(
 			cols.map((c) => formatCell((row as Record<string, unknown>)[c])),
@@ -85,16 +152,18 @@ export function printRecord(
 	data: Record<string, unknown>,
 	opts: OutputOptions = {},
 ): void {
-	const format = opts.format ?? (getOutputFormat() as OutputFormat);
-	if (format === "json") {
+	const format = resolveOutputFormat(opts.format);
+	if (format === "json" || format === "yaml" || format === "plain") {
 		printOutput(data, opts);
 		return;
 	}
-	if (format === "yaml") {
-		printOutput(data, opts);
-		return;
-	}
-	const table = new Table({ style: { head: ["cyan"] } });
+	const noColor = shouldDisableColor();
+	const table = new Table({
+		style: {
+			head: noColor ? [] : ["cyan"],
+			border: noColor ? [] : undefined,
+		},
+	});
 	for (const [key, val] of Object.entries(data)) {
 		table.push({ [key]: formatCell(val) });
 	}

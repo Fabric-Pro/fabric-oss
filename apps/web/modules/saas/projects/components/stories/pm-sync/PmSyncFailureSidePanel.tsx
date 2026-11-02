@@ -148,10 +148,7 @@ export function PmSyncFailureSidePanel({
 			>
 				<SheetHeader className="space-y-2">
 					<span className="editorial-label">SYNC FAILED</span>
-					<SheetTitle
-						className="font-normal text-2xl"
-						style={{ fontFamily: "var(--font-serif)" }}
-					>
+					<SheetTitle className="font-semibold text-2xl">
 						Sync failed
 					</SheetTitle>
 					<SheetDescription>

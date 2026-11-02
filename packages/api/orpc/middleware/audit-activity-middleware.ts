@@ -299,16 +299,68 @@ function readResourceIdFromOutput(output: unknown): string | undefined {
 	return undefined;
 }
 
+/**
+ * The activity row this middleware writes for a successful call, for a door
+ * outside oRPC that serves a procedure this middleware captures (the agent
+ * runtime's Atlas chat). It resolves the tenant by the middleware's rule and
+ * honours the kill switch and the skip paths.
+ */
+export function recordProcedureActivity(
+	context: AuditRequestContext,
+	call: { path: readonly string[]; input: unknown; resourceId?: string },
+): void {
+	const rendered = renderProcedurePath(call.path);
+	if (isCaptureDisabled() || shouldSkipPath(rendered) || !context.user?.id) {
+		return;
+	}
+
+	// Tenant resolution, using the SAME rule as the error middleware:
+	// an explicit `organizationId` on the input wins (including an
+	// explicit null, which means personal context), otherwise the
+	// session's active organization, otherwise null.
+	//
+	// This is load-bearing, and omitting it was the whole point of this
+	// feature quietly failing. The org audit viewer filters strictly on
+	// `organizationId = <org>`, so a row written with null lands in the
+	// acting user's PERSONAL bucket and is invisible to org admins and
+	// auditors — meaning every automatically-captured mutation performed
+	// inside an organization was missing from that organization's trail,
+	// which is exactly the completeness gap this middleware exists to
+	// close. The error middleware learned the same lesson first; its
+	// comment records that orphaned rows were "invisible to any viewer".
+	//
+	// Unlike that middleware this one mounts INSIDE the auth chain, so
+	// `context.session` is already populated and no header re-resolution
+	// is needed; a door outside oRPC passes the session it resolved.
+	//
+	// An authorized project's organization outranks both — see
+	// `auditOrganizationId`.
+	const organizationId = auditOrganizationId(
+		readOrganizationIdFromInput(call.input),
+		context.session?.activeOrganizationId,
+	);
+	const projectId = readProjectIdFromInput(call.input);
+
+	recordAuditFromRequest(context, {
+		action: deriveActivityAction(call.path),
+		category: ACTIVITY_CATEGORY,
+		outcome: "success",
+		severity: "info",
+		organizationId,
+		...(projectId ? { projectId } : {}),
+		...(call.resourceId
+			? { resource: { type: "procedure_result", id: call.resourceId } }
+			: {}),
+		metadata: { procedure: rendered },
+	});
+}
+
 export const auditActivityMiddleware = os
 	.$context<{ headers: Headers }>()
 	.middleware(async ({ context, next, path, procedure }, input) => {
 		const result = await next({});
 
 		try {
-			if (isCaptureDisabled()) return result;
-
-			const rendered = renderProcedurePath(path);
-			if (shouldSkipPath(rendered)) return result;
 			if (
 				!shouldCapture({
 					method: readDeclaredMethod(procedure),
@@ -320,54 +372,14 @@ export const auditActivityMiddleware = os
 			// A curated row for this call already exists — stay silent.
 			if (hasCuratedAuditWritten()) return result;
 
-			// Unauthenticated calls (sign-in attempts, public endpoints) have no
-			// actor to attribute. Auth events that matter already have curated
-			// actions, so there is nothing to add here.
 			const auditContext = context as unknown as AuditRequestContext;
-			if (!auditContext?.user?.id) return result;
 
-			const resourceId = readResourceIdFromOutput(
-				(result as { output?: unknown })?.output,
-			);
-
-			// Tenant resolution, using the SAME rule as the error middleware:
-			// an explicit `organizationId` on the input wins (including an
-			// explicit null, which means personal context), otherwise the
-			// session's active organization, otherwise null.
-			//
-			// This is load-bearing, and omitting it was the whole point of this
-			// feature quietly failing. The org audit viewer filters strictly on
-			// `organizationId = <org>`, so a row written with null lands in the
-			// acting user's PERSONAL bucket and is invisible to org admins and
-			// auditors — meaning every automatically-captured mutation performed
-			// inside an organization was missing from that organization's trail,
-			// which is exactly the completeness gap this middleware exists to
-			// close. The error middleware learned the same lesson first; its
-			// comment records that orphaned rows were "invisible to any viewer".
-			//
-			// Unlike that middleware this one mounts INSIDE the auth chain, so
-			// `context.session` is already populated and no header re-resolution
-			// is needed.
-			//
-			// An authorized project's organization outranks both — see
-			// `auditOrganizationId`.
-			const organizationId = auditOrganizationId(
-				readOrganizationIdFromInput(input),
-				auditContext.session?.activeOrganizationId,
-			);
-			const projectId = readProjectIdFromInput(input);
-
-			recordAuditFromRequest(auditContext, {
-				action: deriveActivityAction(path),
-				category: ACTIVITY_CATEGORY,
-				outcome: "success",
-				severity: "info",
-				organizationId,
-				...(projectId ? { projectId } : {}),
-				...(resourceId
-					? { resource: { type: "procedure_result", id: resourceId } }
-					: {}),
-				metadata: { procedure: rendered },
+			recordProcedureActivity(auditContext, {
+				path,
+				input,
+				resourceId: readResourceIdFromOutput(
+					(result as { output?: unknown })?.output,
+				),
 			});
 		} catch (error) {
 			// The mutation already succeeded and committed. Losing its activity

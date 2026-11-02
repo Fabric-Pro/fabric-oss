@@ -31,6 +31,7 @@ import {
 	DEFAULT_MODELS,
 	MODEL_ALIASES,
 } from "@repo/database/prisma/ai-model-catalog";
+import { assertMcpServerUrlResolved, fetchMcpServer } from "./server-url-guard";
 
 // ============================================================================
 // Types
@@ -383,18 +384,21 @@ export async function createSamplingMcpClient(
 		sampling,
 	} = options;
 
+	await assertMcpServerUrlResolved(serverUrl);
 	const url = new URL(serverUrl);
 
 	// Create the appropriate transport
 	const mcpTransport =
 		transport === "SSE"
 			? new SSEClientTransport(url, {
+					fetch: fetchMcpServer,
 					requestInit:
 						Object.keys(headers).length > 0
 							? { headers }
 							: undefined,
 				})
 			: new StreamableHTTPClientTransport(url, {
+					fetch: fetchMcpServer,
 					requestInit:
 						Object.keys(headers).length > 0
 							? { headers }

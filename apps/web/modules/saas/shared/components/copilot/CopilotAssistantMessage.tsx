@@ -770,11 +770,7 @@ export const CopilotAssistantMessageForBacklogUpdater =
 export const CopilotAssistantMessageForPromptEnhancer =
 	makeCopilotAssistantMessage({ agentName: "prompt_enhancer" });
 
-/** Bound to `task_planner`. Use in `TaskPlannerWorkspace.tsx`. */
-export const CopilotAssistantMessageForTaskPlanner =
-	makeCopilotAssistantMessage({ agentName: "task_planner" });
-
-/** Bound to `document_generator`. Use on `agents/document-generator/page.tsx`. */
+/** Bound to `document_generator`. Used by `DocumentGeneratorEditor.tsx`. */
 export const CopilotAssistantMessageForDocumentGenerator =
 	makeCopilotAssistantMessage({ agentName: "document_generator" });
 

@@ -581,7 +581,7 @@ export function VisualSlotNodeView({
 							}
 							className={cn(
 								chipClassName,
-								"cursor-pointer transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+								"cursor-pointer transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-[3px] focus-visible:ring-ring",
 							)}
 						>
 							{body}

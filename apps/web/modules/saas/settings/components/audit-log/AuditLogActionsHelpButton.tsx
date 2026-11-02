@@ -96,7 +96,7 @@ export function AuditLogActionsHelpButton({
 				data-testid="audit-actions-help-dialog"
 			>
 				<DialogHeader className="shrink-0 space-y-2 border-b border-border/40 px-6 pb-4 pt-6">
-					<DialogTitle className="font-serif text-2xl font-normal text-foreground">
+					<DialogTitle className="text-2xl font-semibold text-foreground">
 						{t("settings.auditLog.actionsHelp.dialogTitle")}
 					</DialogTitle>
 					<DialogDescription className="text-sm text-muted-foreground">

@@ -62,6 +62,17 @@ export const AVAILABLE_SCOPES = [
 			"Grants every write tool, including workflows, pages and features, and modifies MCP configurations. To limit what a key can change, tick the narrower write scopes below instead.",
 	},
 	{
+		id: "browser:read",
+		label: "Browser Read",
+		description: "List automation templates",
+	},
+	{
+		id: "browser:write",
+		label: "Browser Write",
+		description:
+			"Run browser automation tasks, saved templates and web content extraction",
+	},
+	{
 		id: "ai:models:read",
 		label: "AI Models Read",
 		description: "Read available AI model configurations",
@@ -111,6 +122,16 @@ export const AVAILABLE_SCOPES = [
 		id: "features:write",
 		label: "Features Write",
 		description: "Create and update features, bugs and their tasks",
+	},
+	{
+		id: "kanban:read",
+		label: "Kanban Read",
+		description: "List your Fabric Kanban queue and read your identity",
+	},
+	{
+		id: "kanban:write",
+		label: "Kanban Write",
+		description: "Pull and complete your Fabric Kanban items",
 	},
 	{
 		id: "workspaces:read",
@@ -216,11 +237,13 @@ type ApiKeyScope = (typeof AVAILABLE_SCOPES)[number]["id"];
  */
 const READ_ONLY_SCOPES: ReadonlySet<ApiKeyScope> = new Set<ApiKeyScope>([
 	"mcp:read",
+	"browser:read",
 	"projects:read",
 	"agents:read",
 	"agents:stream",
 	"orgs:read",
 	"features:read",
+	"kanban:read",
 	"workspaces:read",
 	"workflows:read",
 	"frames:read",
@@ -250,9 +273,9 @@ const READ_ONLY_SCOPES: ReadonlySet<ApiKeyScope> = new Set<ApiKeyScope>([
  * The procedure's input schema still defaults `scopes` to
  * `["mcp:read", "mcp:write"]` for a caller that names none, and that default is
  * deliberately left alone: existing keys and external agents rely on it, and
- * changing it would move the floor for every member. A read-only role is also
- * held to `mcp:read` by the procedure (`READ_ONLY_ORG_API_KEY_SCOPES`), the same
- * single scope `ConnectCliDialog` mints with.
+ * changing it would move the floor for every member. The picker starts every
+ * role with `mcp:read`; for a read-only role it shows only scopes accepted by
+ * the procedure's `READ_ONLY_ORG_API_KEY_SCOPES` clamp.
  */
 function defaultScopesForRole(): ApiKeyScope[] {
 	return ["mcp:read"];

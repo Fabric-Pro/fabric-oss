@@ -20,8 +20,10 @@ export interface FigurePalette {
 	ink: string;
 	/** Text on an ink fill. */
 	onInk: string;
-	/** Highlights, the loop, team connectors. */
+	/** Highlights, the loop, team connectors, bars within a threshold. */
 	primary: string;
+	/** Small mono labels that read as text on the paper: a bar threshold. */
+	label: string;
 	/** Text on a primary fill. */
 	onPrimary: string;
 	/** A highlighted box's fill. */
@@ -53,6 +55,10 @@ export const LINE_HEIGHT = 16;
 export const INTER_EM = 0.62;
 export const MONO_EM = 0.66;
 export const MONO_TRACKING = 0.6;
+/** The budgeted width of one Inter character, in px. */
+export const INTER_ADVANCE = FONT_SIZE * INTER_EM;
+/** The budgeted width of one mono character with its tracking, in px. */
+const MONO_ADVANCE = FONT_SIZE * MONO_EM + MONO_TRACKING;
 /** Input lines wrap to at most this many drawn lines each. */
 const MAX_WRAPPED_LINES = 3;
 const ELLIPSIS = "…";
@@ -67,6 +73,8 @@ const KIND_TITLES: Readonly<Record<FigureKind, string>> = {
 	timeline: "Timeline",
 	layers: "Architecture layers",
 	team: "Team",
+	bars: "Bar chart",
+	gantt: "Gantt chart",
 };
 
 /** A coordinate with at most one decimal, so output is short and stable. */
@@ -79,6 +87,7 @@ export const FIGURE_PALETTE_ROLES = [
 	"ink",
 	"onInk",
 	"primary",
+	"label",
 	"onPrimary",
 	"tint",
 	"border",
@@ -109,6 +118,21 @@ export function checkedIdPrefix(options: FigureOptions): string {
 		throw new TypeError("Figure idPrefix: invalid id");
 	}
 	return prefix;
+}
+
+/** The budgeted width of mono `text`, in px. */
+export function monoWidth(text: string): number {
+	return Array.from(text).length * MONO_ADVANCE;
+}
+
+/** The x a middle-anchored text of `width` sits at, kept within [lo, hi]. */
+export function centredWithin(
+	x: number,
+	width: number,
+	lo: number,
+	hi: number,
+): number {
+	return Math.min(Math.max(x, lo + width / 2), hi - width / 2);
 }
 
 /** How many characters fit `width` at the budgeted advance. */
@@ -168,7 +192,7 @@ interface TextStyle {
 	weight: number;
 	fill: string;
 	fillOpacity?: number;
-	anchor?: "middle";
+	anchor?: "middle" | "end";
 	tracking?: number;
 }
 

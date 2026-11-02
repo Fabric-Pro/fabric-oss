@@ -1,6 +1,7 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Label } from "@ui/components/label";
 import {
@@ -72,7 +73,7 @@ export function DeliveryTrackSelector({
 		},
 		onSuccess: (_data, next) => {
 			void queryClient.invalidateQueries({
-				queryKey: ["projects", "stories"],
+				queryKey: orpc.projects.stories.board.key(),
 			});
 			toast.success(
 				t("saved", { track: DELIVERY_TRACK_META[next].label }),
@@ -106,7 +107,7 @@ export function DeliveryTrackSelector({
 				</span>
 				{setBy ? (
 					<span
-						className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground"
+						className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
 						data-testid="delivery-track-set-by"
 					>
 						{setBy === "AI" ? (

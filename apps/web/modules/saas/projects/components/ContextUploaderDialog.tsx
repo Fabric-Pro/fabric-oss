@@ -47,12 +47,12 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { isConfluenceMcpConfig } from "../lib/confluence-mcp-config";
 import { DOCUMENT_TAG_OPTIONS } from "../lib/document-tag-options";
 import { ConfluenceResourceBrowser } from "./ConfluenceResourceBrowser";
 import { GoogleDocsSelectorDialog } from "./GoogleDocsSelectorDialog";
-import { NotionIntegrationPageBrowser } from "./NotionIntegrationPageBrowser";
+import { IntegrationPageBrowser } from "./IntegrationPageBrowser";
 import { NotionResourceBrowser } from "./NotionResourceBrowser";
 import { SlackChannelSelectorDialog } from "./SlackChannelSelectorDialog";
 import { TeamsChatSelectorDialog } from "./TeamsChatSelectorDialog";
@@ -206,6 +206,10 @@ export function ContextUploaderDialog({
 	const [confluenceDialogOpen, setConfluenceDialogOpen] = useState(false);
 	const [selectedConfluenceMcpConfigId, setSelectedConfluenceMcpConfigId] =
 		useState<string | null>(null);
+	const [
+		confluenceIntegrationDialogOpen,
+		setConfluenceIntegrationDialogOpen,
+	] = useState(false);
 
 	// Get organization context
 	const { organizationId, organizationSlug, basePath, userRole } =
@@ -444,6 +448,27 @@ export function ContextUploaderDialog({
 			},
 		});
 
+	// Fetch Confluence workflow integrations (tenant-wide status)
+	const {
+		data: confluenceIntegrations,
+		isLoading: confluenceIntegrationsLoading,
+	} = useQuery({
+		queryKey: ["workflow-integrations-status-confluence", organizationId],
+		enabled:
+			!confluenceConfigsLoading &&
+			(confluenceMcpConfigs?.length ?? 0) === 0,
+		queryFn: async () => {
+			const res = await orpcClient.workflows.integrations.listStatus({
+				organizationId: organizationId ?? undefined,
+				provider: "CONFLUENCE",
+			});
+			return res?.integrations || [];
+		},
+	});
+
+	const hasActiveConfluenceIntegration =
+		(confluenceIntegrations?.length ?? 0) > 0;
+
 	// Fetch existing Confluence contexts for this project (to pass syncedPageIds)
 	const { data: confluenceContexts } = useQuery({
 		queryKey: ["project-confluence-contexts", projectId],
@@ -461,6 +486,35 @@ export function ContextUploaderDialog({
 			});
 		},
 	});
+
+	const confluenceSyncedPageIds = useMemo(() => {
+		return (
+			confluenceContexts
+				?.map(
+					(ctx) =>
+						(ctx.metadata as Record<string, unknown>)
+							?.confluencePageId as string,
+				)
+				.filter(Boolean) ?? []
+		);
+	}, [confluenceContexts]);
+
+	const handleConfluenceResourcesAdded = useCallback(() => {
+		trackEvent("project_context_added_during_wizard", {
+			surface,
+			contextType: "INTEGRATION",
+			integrationKind: "CONFLUENCE",
+		});
+		queryClient.invalidateQueries({
+			queryKey: ["project-confluence-contexts", projectId],
+		});
+		queryClient.invalidateQueries({
+			queryKey: orpc.projects.contexts.list.queryKey({
+				input: { projectId },
+			}),
+		});
+		onOpenChange(false);
+	}, [trackEvent, surface, queryClient, projectId, onOpenChange]);
 
 	const resetForm = () => {
 		fileForm.reset();
@@ -520,7 +574,7 @@ export function ContextUploaderDialog({
 					    horizontally instead of forcing the dialog wider than its
 					    container; `no-scrollbar` keeps the editorial look (matches
 					    the ProjectDetails tab row). */}
-					<div className="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto rounded-xl border border-border bg-card p-1.5">
+					<div className="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto rounded-lg border border-border bg-card p-1.5">
 						{tabs.map((tab) => {
 							const Icon = tab.icon;
 							const isActive = activeTab === tab.id;
@@ -588,7 +642,7 @@ export function ContextUploaderDialog({
 										setFileDocumentTag(e.target.value)
 									}
 									disabled={isLoading}
-									className="mt-2 flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+									className="mt-2 flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 								>
 									{DOCUMENT_TAG_OPTIONS.map((opt) => (
 										<option
@@ -634,7 +688,7 @@ export function ContextUploaderDialog({
 							id="context-tabpanel-teams"
 							aria-labelledby="context-tab-teams"
 						>
-							<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-primary">
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-primary">
 								<MicrosoftTeamsIcon className="size-8" />
 							</div>
 							<h3 className="mb-2 font-medium text-foreground">
@@ -669,7 +723,7 @@ export function ContextUploaderDialog({
 							id="context-tabpanel-slack"
 							aria-labelledby="context-tab-slack"
 						>
-							<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-primary">
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-primary">
 								<SlackIcon className="size-8" />
 							</div>
 							<h3 className="mb-2 font-medium text-foreground">
@@ -704,7 +758,7 @@ export function ContextUploaderDialog({
 							id="context-tabpanel-google-docs"
 							aria-labelledby="context-tab-google-docs"
 						>
-							<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-foreground">
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-foreground">
 								<GoogleDriveIcon className="size-8" />
 							</div>
 							<h3 className="mb-2 font-medium text-foreground">
@@ -732,7 +786,7 @@ export function ContextUploaderDialog({
 							id="context-tabpanel-notion"
 							aria-labelledby="context-tab-notion"
 						>
-							<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-foreground">
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-foreground">
 								<NotionIcon className="size-8" />
 							</div>
 							<h3 className="mb-2 font-medium text-foreground">
@@ -840,7 +894,7 @@ export function ContextUploaderDialog({
 							id="context-tabpanel-confluence"
 							aria-labelledby="context-tab-confluence"
 						>
-							<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-foreground">
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-foreground">
 								<ConfluenceIcon className="size-8" />
 							</div>
 							<h3 className="mb-2 font-medium text-foreground">
@@ -850,35 +904,14 @@ export function ContextUploaderDialog({
 								Sync Confluence pages to include as context for
 								document generation.
 							</p>
-							{confluenceConfigsLoading ? (
+							{confluenceConfigsLoading ||
+							((confluenceMcpConfigs?.length ?? 0) === 0 &&
+								confluenceIntegrationsLoading) ? (
 								<div className="flex items-center gap-2 text-muted-foreground">
 									<LoaderIcon className="size-4 motion-safe:animate-spin" />
 									<span>Loading...</span>
 								</div>
-							) : (confluenceMcpConfigs?.length ?? 0) === 0 ? (
-								<>
-									<p className="mb-4 text-sm text-muted-foreground">
-										No Confluence MCP server configured
-									</p>
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<Button variant="outline" asChild>
-												<Link
-													href={buildReturnUrl(
-														`${basePath}/mcp-servers`,
-													)}
-												>
-													<SettingsIcon className="size-4 mr-2" />
-													Configure MCP
-												</Link>
-											</Button>
-										</TooltipTrigger>
-										<TooltipContent>
-											{t("configureMcp")}
-										</TooltipContent>
-									</Tooltip>
-								</>
-							) : (
+							) : (confluenceMcpConfigs?.length ?? 0) > 0 ? (
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<Button
@@ -903,6 +936,64 @@ export function ContextUploaderDialog({
 										{t("browseConfluencePages")}
 									</TooltipContent>
 								</Tooltip>
+							) : hasActiveConfluenceIntegration ? (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Button
+											onClick={() => {
+												setConfluenceIntegrationDialogOpen(
+													true,
+												);
+											}}
+											className="gap-2"
+										>
+											<ConfluenceIcon className="size-4" />
+											Browse Confluence Pages
+										</Button>
+									</TooltipTrigger>
+									<TooltipContent>
+										{t("browseConfluencePages")}
+									</TooltipContent>
+								</Tooltip>
+							) : (
+								<>
+									<p className="mb-4 text-sm text-muted-foreground text-center max-w-sm">
+										Connect Confluence under Integrations to
+										add pages
+									</p>
+									<div className="flex items-center gap-2">
+										<Button asChild>
+											<Link
+												href={buildReturnUrl(
+													`${basePath}/settings/integrations/providers/CONFLUENCE`,
+												)}
+											>
+												<ConfluenceIcon className="size-4 mr-2" />
+												Connect Confluence
+											</Link>
+										</Button>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<Button
+													variant="outline"
+													asChild
+												>
+													<Link
+														href={buildReturnUrl(
+															`${basePath}/mcp-servers`,
+														)}
+													>
+														<SettingsIcon className="size-4 mr-2" />
+														Configure MCP
+													</Link>
+												</Button>
+											</TooltipTrigger>
+											<TooltipContent>
+												{t("configureMcp")}
+											</TooltipContent>
+										</Tooltip>
+									</div>
+								</>
 							)}
 						</div>
 					)}
@@ -1016,9 +1107,10 @@ export function ContextUploaderDialog({
 				}}
 			/>
 			{/* Notion integration page browser dialog */}
-			<NotionIntegrationPageBrowser
+			<IntegrationPageBrowser
 				open={notionIntegrationDialogOpen}
 				onOpenChange={setNotionIntegrationDialogOpen}
+				provider="notion"
 				connectionId={connectedNotionConnection?.id ?? null}
 				projectId={projectId}
 				organizationId={organizationId ?? null}
@@ -1058,31 +1150,21 @@ export function ContextUploaderDialog({
 				mcpConfigId={selectedConfluenceMcpConfigId}
 				projectId={projectId}
 				organizationId={organizationId ?? null}
-				syncedPageIds={
-					confluenceContexts
-						?.map(
-							(ctx) =>
-								(ctx.metadata as Record<string, unknown>)
-									?.confluencePageId as string,
-						)
-						.filter(Boolean) ?? []
-				}
-				onResourcesAdded={() => {
-					trackEvent("project_context_added_during_wizard", {
-						surface,
-						contextType: "INTEGRATION",
-						integrationKind: "CONFLUENCE",
-					});
-					queryClient.invalidateQueries({
-						queryKey: ["project-confluence-contexts", projectId],
-					});
-					queryClient.invalidateQueries({
-						queryKey: orpc.projects.contexts.list.queryKey({
-							input: { projectId },
-						}),
-					});
-					onOpenChange(false);
-				}}
+				syncedPageIds={confluenceSyncedPageIds}
+				onResourcesAdded={handleConfluenceResourcesAdded}
+			/>
+			{/* Confluence integration page browser dialog */}
+			<IntegrationPageBrowser
+				open={confluenceIntegrationDialogOpen}
+				onOpenChange={setConfluenceIntegrationDialogOpen}
+				provider="confluence"
+				projectId={projectId}
+				organizationId={organizationId ?? null}
+				syncedPageIds={confluenceSyncedPageIds}
+				reconnectUrl={buildReturnUrl(
+					`${basePath}/settings/integrations/providers/CONFLUENCE`,
+				)}
+				onResourcesAdded={handleConfluenceResourcesAdded}
 			/>
 		</Dialog>
 	);

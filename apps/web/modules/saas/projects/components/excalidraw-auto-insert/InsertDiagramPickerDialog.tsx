@@ -7,7 +7,7 @@
  * Flow:
  *   - Mount with `open={true}` from the button (D2, wired by E2).
  *   - Render a shadcn `<Dialog>` carrying two tabs (Documents / Features)
- *     fed by `projects.documents.list` and `projects.stories.list`.
+ *     fed by `projects.documents.list` and `projects.stories.board`.
  *   - A search input filters the in-memory list (server-side pagination
  *     is the safety net for the 100-entry cap; spec § 15).
  *   - User clicks a row -> the parent's `onPick` is called with the
@@ -97,7 +97,7 @@ export interface InsertDiagramPickerDialogProps {
 	projectId: string;
 	/**
 	 * Chat-scoped organization id -- passed through to
-	 * `projects.documents.list` / `projects.stories.list` so the org
+	 * `projects.documents.list` / `projects.stories.board` so the org
 	 * filter enforces XOR isolation server-side.
 	 */
 	organizationId: string;
@@ -152,7 +152,7 @@ export function InsertDiagramPickerDialog({
 
 	// Stories ("features") tab -- same enabled gating.
 	const storiesQuery = useQuery({
-		...orpc.projects.stories.list.queryOptions({
+		...orpc.projects.stories.board.queryOptions({
 			input: { projectId, organizationId },
 		}),
 		enabled: open,
@@ -516,7 +516,7 @@ function PickerRowList({
 						onClick={() => onPick(row)}
 						className={cn(
 							"flex w-full items-center gap-3 px-3 py-2 text-left text-sm",
-							"hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
+							"hover:bg-accent focus-visible:bg-accent focus-visible:outline-hidden",
 							idx === focusedIndex && "bg-accent",
 						)}
 						aria-label={`Insert into ${row.title}`}

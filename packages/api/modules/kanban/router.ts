@@ -4,7 +4,6 @@ import {
 } from "./procedures/create-token";
 import { getKanbanConnectionStatus, healthCheck } from "./procedures/status";
 import { getSyncStatus, pullFromKanban, pushToKanban } from "./procedures/sync";
-import { kanbanWebhook } from "./procedures/webhook";
 
 export const kanbanRouter = {
 	token: createKanbanTokenProcedure,
@@ -18,5 +17,4 @@ export const kanbanRouter = {
 		get: getKanbanConnectionStatus,
 		health: healthCheck,
 	},
-	webhook: kanbanWebhook,
 };

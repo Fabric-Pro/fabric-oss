@@ -1,3 +1,4 @@
+import { AIMessage, AIMessageChunk } from "@langchain/core/messages";
 /**
  * The unified server's two executors (the LangGraph Platform stream and the
  * synchronous invoke), driven with a mocked graph: which frontend actions
@@ -327,5 +328,300 @@ describe("the live preview of a whole-document write", () => {
 			expect(previews(events)).toEqual([]);
 			expect(JSON.stringify(events)).not.toContain("never applies");
 		},
+	);
+});
+
+describe("reply streaming allowlist", () => {
+	it.each(["direct", "absent", "durable", "member", "guest"])(
+		"gates reply tokens for %s",
+		async (mode) => {
+			const chunks = [
+				["custom", { replyAttempt: "attempt-1" }],
+				[
+					"messages",
+					[
+						new AIMessageChunk({ content: "First " }),
+						{
+							langgraph_node: "chat_node",
+							reply_attempt: "attempt-1",
+						},
+					],
+				],
+				[
+					"messages",
+					[
+						new AIMessageChunk({
+							content: [
+								{ type: "reasoning", reasoning: "private" },
+								{ type: "text", text: "reply" },
+							],
+						}),
+						{
+							langgraph_node: "chat_node",
+							reply_attempt: "attempt-1",
+						},
+					],
+				],
+				[
+					"messages",
+					[
+						new AIMessage({ content: "First reply" }),
+						{
+							langgraph_node: "chat_node",
+							reply_attempt: "attempt-1",
+						},
+					],
+				],
+				[
+					"messages",
+					[
+						new AIMessageChunk({ content: "summary" }),
+						{ langgraph_node: "chat_node" },
+					],
+				],
+				[
+					"messages",
+					[
+						new AIMessageChunk({ content: "tool text" }),
+						{
+							langgraph_node: "tool_node",
+							reply_attempt: "attempt-1",
+						},
+					],
+				],
+				[
+					"custom",
+					{ replyCompletion: { retry: false, text: "First reply" } },
+				],
+				["updates", { chat_node: { messages: [] } }],
+			];
+			graph.stream.mockImplementation(async () => streamOf(chunks));
+			const config =
+				mode === "member" || mode === "guest"
+					? artifactConfig(mode, { reply_streaming: true })
+					: { configurable: { reply_streaming: mode === "direct" } };
+			const events = await drain(platformStream()(runInput(), config));
+			const operations = events
+				.filter((event) => event.reply)
+				.map((event) => event.reply);
+			expect(operations).toEqual(
+				mode === "direct"
+					? [
+							{
+								type: "delta",
+								roundId: "0",
+								attemptId: "attempt-1",
+								text: "First ",
+							},
+							{
+								type: "delta",
+								roundId: "0",
+								attemptId: "attempt-1",
+								text: "reply",
+							},
+							{
+								type: "accept",
+								roundId: "0",
+								attemptId: "attempt-1",
+								text: "First reply",
+							},
+						]
+					: [],
+			);
+		},
+	);
+});
+
+describe("reply attempt boundaries", () => {
+	it("discards reinvocations and graph retries while retaining round identity", async () => {
+		graph.stream.mockImplementation(async () =>
+			streamOf([
+				["custom", { replyAttempt: "attempt-a" }],
+				["custom", { replyAttempt: "attempt-b" }],
+				[
+					"custom",
+					{ replyCompletion: { retry: true, text: "discarded" } },
+				],
+				["custom", { replyAttempt: "attempt-c" }],
+				[
+					"custom",
+					{ replyCompletion: { retry: false, text: "accepted" } },
+				],
+				["custom", { replyAttempt: "attempt-d" }],
+				[
+					"custom",
+					{ replyCompletion: { retry: false, text: "follow-up" } },
+				],
+			]),
+		);
+		const events = await drain(
+			platformStream()(runInput(), {
+				configurable: { reply_streaming: true },
+			}),
+		);
+		expect(events.map((event) => event.reply)).toEqual([
+			{ type: "discard", roundId: "0", attemptId: "attempt-a" },
+			{
+				type: "discard",
+				roundId: "0",
+				attemptId: "attempt-b",
+				text: "discarded",
+			},
+			{
+				type: "accept",
+				roundId: "0",
+				attemptId: "attempt-c",
+				text: "accepted",
+			},
+			{
+				type: "accept",
+				roundId: "1",
+				attemptId: "attempt-d",
+				text: "follow-up",
+			},
+		]);
+	});
+});
+
+it("seeds incoming trace maps into the platform graph input", async () => {
+	const reasoningByTurn = {
+		"1": { text: "Earlier", durationMs: 1, startedAt: 1, completedAt: 2 },
+	};
+	const toolCallsByTurn = {
+		"1": [
+			{
+				id: "first",
+				name: "create_view",
+				status: "success",
+				startedAt: 1,
+			},
+		],
+	};
+	await drain(
+		platformStream()(
+			runInput({
+				messages: [
+					{ role: "user", content: "Continue" },
+					{
+						role: "assistant",
+						content: "",
+						toolCalls: [
+							{
+								id: "first",
+								type: "function",
+								function: {
+									name: "create_view",
+									arguments: "{}",
+								},
+							},
+						],
+					},
+					{ role: "tool", toolCallId: "first", content: "Done" },
+				],
+				state: { reasoningByTurn, toolCallsByTurn },
+			}),
+		),
+	);
+	expect(graph.stream.mock.calls[0]?.[0]).toMatchObject({
+		reasoningByTurn,
+		toolCallsByTurn,
+	});
+});
+
+it("keeps the first run's tool while appending a follow-up tool on the same turn", async () => {
+	const { reconcileToolCalls } = await import("../nodes/chat-node-tools");
+	const first = {
+		id: "first",
+		name: "create_view",
+		status: "success" as const,
+		startedAt: 1,
+	};
+	graph.stream.mockImplementation(async (input) => {
+		const entries = reconcileToolCalls(
+			input.toolCallsByTurn?.[1],
+			input.messages,
+			[{ id: "second", name: "suggest_diagram", args: {} }],
+			2,
+		);
+		// A repeated write of the same call is reconciled by id, as in chatNode.
+		const repeated = reconcileToolCalls(
+			entries,
+			input.messages,
+			[{ id: "second", name: "suggest_diagram", args: {} }],
+			3,
+		);
+		return streamOf([
+			["updates", { chat_node: { toolCallsByTurn: { "1": repeated } } }],
+		]);
+	});
+	const events = await drain(
+		platformStream()(
+			runInput({
+				messages: [
+					{ role: "user", content: "Continue" },
+					{
+						role: "assistant",
+						content: "",
+						toolCalls: [
+							{
+								id: "first",
+								type: "function",
+								function: {
+									name: "create_view",
+									arguments: "{}",
+								},
+							},
+						],
+					},
+					{ role: "tool", toolCallId: "first", content: "Done" },
+				],
+				state: { toolCallsByTurn: { "1": [first] } },
+			}),
+		),
+	);
+	const trace = events.find(
+		(e) => (e.state as Record<string, unknown>)?.toolCallsByTurn,
+	)?.state as { toolCallsByTurn: Record<string, Array<{ id: string }>> };
+	expect(trace.toolCallsByTurn[1].map((e) => e.id)).toEqual([
+		"first",
+		"second",
+	]);
+	expect(trace.toolCallsByTurn[1][0]).toEqual(first);
+});
+
+it("drops the regenerated turn from both graph trace maps", async () => {
+	const reasoning = {
+		text: "old",
+		durationMs: 1,
+		startedAt: 1,
+		completedAt: 2,
+	};
+	const tools = [
+		{ id: "old", name: "create_view", status: "success", startedAt: 1 },
+	];
+	await drain(
+		platformStream()(
+			runInput({
+				messages: [
+					{ role: "user", content: "First" },
+					{ role: "assistant", content: "Answer" },
+					{ role: "user", content: "Regenerate this" },
+				],
+				state: {
+					reasoningByTurn: { "1": reasoning, "2": reasoning },
+					toolCallsByTurn: { "1": tools, "2": tools },
+				},
+			}),
+		),
+	);
+	expect(graph.stream.mock.calls[0]?.[0]).toMatchObject({
+		reasoningByTurn: { "1": reasoning },
+		toolCallsByTurn: { "1": tools },
+	});
+	expect(graph.stream.mock.calls[0]?.[0].reasoningByTurn).not.toHaveProperty(
+		"2",
+	);
+	expect(graph.stream.mock.calls[0]?.[0].toolCallsByTurn).not.toHaveProperty(
+		"2",
 	);
 });

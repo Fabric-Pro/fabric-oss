@@ -12,17 +12,30 @@
  *   not), or one headed "Sources" or "Source list" whose first entry is an
  *   `[S#]` label, together with its subsections.
  *
+ * Markers go from prose and from the fences a reader sees as prose: stat
+ * tiles, cards, columns, and the cover fence whose values the cover prints
+ * ({@link scrubProseFence}). Every other fence, code and diagrams alike,
+ * stays byte for byte.
+ *
  * Everything else stays exactly as the page shows it: the document's own
  * Appendix, its TBD lines, its cover fields. Glossy's `cleanupDocument` is
  * deliberately not used, because it moves, rewrites and drops client
  * content. This catches markers, not leaked prose.
  *
- * Pure and browser-safe (no Node built-ins, no Markdown parser): the
- * Markdown download in the editor bundle runs it too.
+ * Pure and browser-safe (no Node built-ins), and it reads lines, never a
+ * parsed tree: the Markdown download in the editor bundle runs it too.
  */
 
 import { CITATION_MARKER } from "../citation-markers";
-import { headingAnchor, parseOutline, scanFences } from "../glossy/outline";
+import {
+	FENCE_MARKER,
+	headingAnchor,
+	parseOutline,
+	scanFences,
+} from "../glossy/outline";
+import { COVER_LANGUAGE } from "./cover-fence";
+import { CARDS_LANGUAGE, COLUMNS_LANGUAGE } from "./proposal-blocks";
+import { STAT_TILES_LANGUAGE } from "./stat-tiles";
 
 export interface ExportScrubResult {
 	/** The scrubbed Markdown, with LF line endings. */
@@ -56,6 +69,23 @@ const INLINE_CODE = /`[^`\n]*`/g;
 const EMPTY_AFTER_REMOVAL = /^\s*(?:(?:[-*+]|\d{1,3}[.)])\s*)?$/;
 
 /**
+ * The fences a reader sees as prose rather than as code (stat tiles, cards,
+ * columns), and the cover fence, whose values the cover prints.
+ */
+const PROSE_FENCE_LANGUAGES: ReadonlySet<string> = new Set([
+	CARDS_LANGUAGE,
+	COLUMNS_LANGUAGE,
+	STAT_TILES_LANGUAGE,
+	COVER_LANGUAGE,
+]);
+
+/** A prose fence line left holding nothing, or only a bullet. */
+const EMPTIED_FENCE_LINE = /^\s*(?:[-*+]\s*)?$/;
+
+/** A cover line left as a key and its colon, its whole value a marker. */
+const BARE_COVER_KEY = /^[^:]*:\s*$/;
+
+/**
  * Remove citation markers and Source Index sections from a client-document
  * Proposal's Main before it is exported. Line endings come back as LF.
  */
@@ -80,7 +110,16 @@ export function scrubProposalExport(markdown: string): ExportScrubResult {
 	const out: string[] = [];
 	let removedMarkers = 0;
 	let afterRemoval = false;
+	// The language of the fence the line is in, when it is a prose fence.
+	let proseFence: string | null = null;
 	for (const [index, line] of lines.entries()) {
+		const role = roles[index];
+		if (role === "open") {
+			const language = fenceLanguage(line);
+			proseFence = isProseFenceLanguage(language) ? language : null;
+		} else if (role === null) {
+			proseFence = null;
+		}
 		if (removed[index]) {
 			afterRemoval = true;
 			continue;
@@ -91,7 +130,15 @@ export function scrubProposalExport(markdown: string): ExportScrubResult {
 			continue;
 		}
 		afterRemoval = false;
-		if (roles[index] !== null) {
+		if (role === "inside" && proseFence !== null) {
+			const scrubbed = scrubProseFenceLine(line, proseFence);
+			removedMarkers += scrubbed.count;
+			if (scrubbed.text !== null) {
+				out.push(scrubbed.text);
+			}
+			continue;
+		}
+		if (role !== null) {
 			out.push(line);
 			continue;
 		}
@@ -107,6 +154,68 @@ export function scrubProposalExport(markdown: string): ExportScrubResult {
 	}
 
 	return { markdown: out.join("\n"), removedMarkers, removedSections };
+}
+
+/**
+ * The language an opening fence line names: the first word of its info
+ * string, as a Markdown parser reads it, or "" for none.
+ */
+function fenceLanguage(line: string): string {
+	return line.replace(FENCE_MARKER, "").trim().split(/\s/, 1)[0] ?? "";
+}
+
+/**
+ * Whether a fence of this language prints as prose, or is the cover fence,
+ * so its lines lose their markers. Matched in any case, as the editor's code
+ * block guard reads a language, so a ```` ```Cards ```` fence loses its
+ * markers too, although only a lower-case one prints as cards.
+ */
+export function isProseFenceLanguage(
+	language: string | null | undefined,
+): boolean {
+	return PROSE_FENCE_LANGUAGES.has(language?.toLowerCase() ?? "");
+}
+
+/**
+ * A prose fence's body without its citation markers, line by line, so its
+ * lines keep their places: a stat tile keeps `label: value`, and blank lines
+ * still split cards where they did. Markers inside backticks stay, as in
+ * prose. A line that held only markers, or a bullet and markers, goes
+ * rather than stay blank, so it never splits a card that was whole or
+ * leaves an empty bullet; so does a cover line whose whole value was a
+ * marker (`version: [S2]`), which the cover would refuse as a bare key. The
+ * export's parsed tree and the Markdown download both scrub with this.
+ */
+export function scrubProseFence(
+	body: string,
+	language: string,
+): { text: string; count: number } {
+	const lines: string[] = [];
+	let count = 0;
+	for (const line of body.split("\n")) {
+		const scrubbed = scrubProseFenceLine(line, language);
+		count += scrubbed.count;
+		if (scrubbed.text !== null) {
+			lines.push(scrubbed.text);
+		}
+	}
+	return { text: lines.join("\n"), count };
+}
+
+/** One prose fence line without its markers, or null when it goes. */
+function scrubProseFenceLine(
+	line: string,
+	language: string,
+): { text: string | null; count: number } {
+	const scrubbed = removeMarkers(line);
+	if (scrubbed.count === 0) {
+		return { text: line, count: 0 };
+	}
+	const emptied =
+		EMPTIED_FENCE_LINE.test(scrubbed.text) ||
+		(language.toLowerCase() === COVER_LANGUAGE &&
+			BARE_COVER_KEY.test(scrubbed.text));
+	return { text: emptied ? null : scrubbed.text, count: scrubbed.count };
 }
 
 function isSourceIndex(

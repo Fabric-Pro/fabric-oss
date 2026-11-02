@@ -9,7 +9,12 @@ import type { FabricAgent } from "@fabricorg/sdk";
 import { Command } from "commander";
 import { getClient } from "../../lib/client.js";
 import { resolveContext } from "../../lib/context.js";
-import { printError, printOutput, printRecord } from "../../lib/output.js";
+import {
+	printError,
+	printOutput,
+	printRecord,
+	resolveOutputFormat,
+} from "../../lib/output.js";
 
 export function buildAgentsCommand(): Command {
 	const agents = new Command("agents").description("Manage agents");
@@ -22,11 +27,7 @@ export function buildAgentsCommand(): Command {
 		.option("--personal", "Retired — context is organization-only")
 		.option("--status <status>", "Filter: ACTIVE|INACTIVE|DEPRECATED")
 		.option("--limit <n>", "Max results", "50")
-		.option(
-			"--format <format>",
-			"Output format: table|json|yaml|csv",
-			"table",
-		)
+		.option("--format <format>", "Output format: table|json|yaml|csv")
 		.option("-q, --quiet", "Print IDs only")
 		.action(
 			async (opts: {
@@ -34,7 +35,7 @@ export function buildAgentsCommand(): Command {
 				personal?: boolean;
 				status?: string;
 				limit: string;
-				format: string;
+				format?: string;
 				quiet?: boolean;
 			}) => {
 				const ctx = resolveContext(opts.personal, opts.org, false);
@@ -79,11 +80,11 @@ export function buildAgentsCommand(): Command {
 		.description("Show agent details")
 		.option("--org <slug>", "Organization context")
 		.option("--personal", "Retired — context is organization-only")
-		.option("--format <format>", "Output format: table|json|yaml", "table")
+		.option("--format <format>", "Output format: table|json|yaml")
 		.action(
 			async (
 				id: string,
-				opts: { org?: string; personal?: boolean; format: string },
+				opts: { org?: string; personal?: boolean; format?: string },
 			) => {
 				const ctx = resolveContext(opts.personal, opts.org, false);
 				const client = getClient();
@@ -96,7 +97,7 @@ export function buildAgentsCommand(): Command {
 					printError((err as Error).message, 1);
 				}
 
-				const fmt = opts.format as "table" | "json" | "yaml";
+				const fmt = resolveOutputFormat(opts.format);
 				if (fmt === "json" || fmt === "yaml") {
 					printOutput(agent, { format: fmt });
 					return;
@@ -122,7 +123,7 @@ export function buildAgentsCommand(): Command {
 		.option("--org <slug>", "Organization context")
 		.option("--personal", "Retired — context is organization-only")
 		.option("--input <json>", 'Input JSON (e.g. \'{"key":"value"}\')')
-		.option("--format <format>", "Output format: table|json|yaml", "table")
+		.option("--format <format>", "Output format: table|json|yaml")
 		.action(
 			async (
 				id: string,
@@ -130,7 +131,7 @@ export function buildAgentsCommand(): Command {
 					org?: string;
 					personal?: boolean;
 					input?: string;
-					format: string;
+					format?: string;
 				},
 			) => {
 				const ctx = resolveContext(opts.personal, opts.org, false);
@@ -155,7 +156,7 @@ export function buildAgentsCommand(): Command {
 					printError((err as Error).message, 1);
 				}
 
-				const fmt = opts.format as "table" | "json" | "yaml";
+				const fmt = resolveOutputFormat(opts.format);
 				if (fmt === "json" || fmt === "yaml") {
 					printOutput(result, { format: fmt });
 					return;
@@ -167,6 +168,289 @@ export function buildAgentsCommand(): Command {
 					"Run ID": result.runId ?? "(pending)",
 					Status: result.status,
 					...(result.warning ? { Warning: result.warning } : {}),
+				});
+			},
+		);
+
+	// -- delegate ------------------------------------------------------------
+	agents
+		.command("delegate")
+		.description(
+			"Delegate a coding task to Fabric Desktop (fabricagents://) or Remote Fabric Agents Server using subscription harnesses",
+		)
+		.option("--org <slug>", "Organization context")
+		.option("--project <id>", "Project ID to bind the delegated session to")
+		.option("--project-slug <slug>", "Project slug for workspace routing")
+		.option(
+			"--target <target>",
+			"Execution target: desktop|remote",
+			"remote",
+		)
+		.option(
+			"--server-url <url>",
+			"Remote Fabric Agents Server URL",
+			process.env.FABRIC_AGENTS_SERVER_URL ??
+				"https://agents.example.com",
+		)
+		.option(
+			"--harness <harness>",
+			"Subscription harness: auto|claude-max|codex|droid-cli|grok-cli|kimi-cli|antigravity-cli|cursor",
+			"claude-max",
+		)
+		.option("--model <model>", "Optional model override")
+		.option(
+			"--fallback <policy>",
+			"Quota fallback policy: subscription_harnesses|org_paid_api|pause_on_limit",
+			"subscription_harnesses",
+		)
+		.option("--prompt <text>", "Task prompt to dispatch")
+		.option(
+			"--durable",
+			"Request durable handling when the generated link is opened",
+		)
+		.option("--format <format>", "Output format: table|json|yaml|plain")
+		.option("-q, --quiet", "Print delegation URL only")
+		.addHelpText(
+			"after",
+			`
+Examples:
+  $ fabric agents delegate --target remote --harness claude-max --prompt "Refactor auth middleware"
+  $ fabric agents delegate --target desktop --project-slug payments-v2 --prompt "Add unit tests" -q
+  $ fabric agents delegate --target remote --harness codex --fallback org_paid_api --format json
+`,
+		)
+		.action(
+			async (opts: {
+				org?: string;
+				project?: string;
+				projectSlug?: string;
+				target: string;
+				serverUrl: string;
+				harness: string;
+				model?: string;
+				fallback: string;
+				prompt?: string;
+				durable?: boolean;
+				format?: string;
+				quiet?: boolean;
+			}) => {
+				const target = opts.target === "desktop" ? "desktop" : "remote";
+				const query = new URLSearchParams();
+				if (opts.projectSlug) {
+					query.set("workspace", opts.projectSlug);
+					query.set("project", opts.projectSlug);
+				}
+				if (opts.project) {
+					query.set("projectId", opts.project);
+				}
+				query.set("harness", opts.harness);
+				if (opts.model) {
+					query.set("model", opts.model);
+				}
+				query.set("fallback", opts.fallback);
+				if (opts.prompt) {
+					query.set("input", opts.prompt);
+					query.set("prompt", opts.prompt);
+					query.set("send", "true");
+				}
+				if (opts.durable) {
+					query.set("durable", "true");
+				}
+
+				const desktopDeepLink = `fabricagents://action/new-chat?${query.toString()}`;
+				const cleanServer = opts.serverUrl.replace(/\/+$/, "");
+				const remoteDelegationUrl = `${cleanServer}/?${query.toString()}`;
+				const activeUrl =
+					target === "desktop"
+						? desktopDeepLink
+						: remoteDelegationUrl;
+
+				if (opts.quiet) {
+					process.stdout.write(`${activeUrl}\n`);
+					return;
+				}
+
+				const payload = {
+					status: "link_created",
+					message:
+						"A link was created locally. No task was dispatched by this command.",
+					target,
+					harness: opts.harness,
+					model: opts.model ?? "default",
+					fallbackPolicy: opts.fallback,
+					billingMode: "subscription_tokens",
+					durable: Boolean(opts.durable),
+					projectId: opts.project ?? null,
+					projectSlug: opts.projectSlug ?? null,
+					delegationUrl: activeUrl,
+					desktopDeepLink,
+					remoteDelegationUrl,
+				};
+
+				const fmt = resolveOutputFormat(opts.format);
+				if (fmt === "json" || fmt === "yaml" || fmt === "plain") {
+					printOutput(payload, { format: fmt });
+					return;
+				}
+
+				printRecord({
+					Status: payload.status,
+					Target:
+						target === "desktop"
+							? "Fabric Desktop (fabricagents://)"
+							: `Remote Fabric Agents Server (${cleanServer})`,
+					Harness: payload.harness,
+					Model: payload.model,
+					"Fallback Policy": payload.fallbackPolicy,
+					"Billing Mode": "Subscription Credits (0 API Key Spend)",
+					Durable: payload.durable ? "requested in link" : "no",
+					"Delegation URL": payload.delegationUrl,
+				});
+			},
+		);
+
+	// -- desktop -------------------------------------------------------------
+	agents
+		.command("desktop")
+		.description(
+			"Generate a 1-click Fabric Desktop (fabricagents://) deep link for a project or view",
+		)
+		.option("--project <id>", "Project ID")
+		.option("--project-slug <slug>", "Project slug")
+		.option(
+			"--view <view>",
+			"Target view: allSessions|settings|sources|agents|skills",
+			"allSessions",
+		)
+		.option("--prompt <text>", "Pre-filled prompt for a new chat")
+		.option("--format <format>", "Output format: table|json|yaml|plain")
+		.option("-q, --quiet", "Print deep link URL only")
+		.action(
+			async (opts: {
+				project?: string;
+				projectSlug?: string;
+				view: string;
+				prompt?: string;
+				format?: string;
+				quiet?: boolean;
+			}) => {
+				const query = new URLSearchParams();
+				if (opts.projectSlug) {
+					query.set("workspace", opts.projectSlug);
+				}
+				if (opts.project) {
+					query.set("projectId", opts.project);
+				}
+				if (opts.prompt) {
+					query.set("input", opts.prompt);
+					query.set("send", "true");
+				}
+				const path = opts.prompt
+					? "action/new-chat"
+					: opts.view || "allSessions";
+				const qs = query.toString();
+				const deepLink = `fabricagents://${path}${qs ? `?${qs}` : ""}`;
+
+				if (opts.quiet) {
+					process.stdout.write(`${deepLink}\n`);
+					return;
+				}
+
+				const payload = {
+					deepLink,
+					view: opts.view,
+					projectId: opts.project ?? null,
+					projectSlug: opts.projectSlug ?? null,
+				};
+
+				const fmt = resolveOutputFormat(opts.format);
+				if (fmt === "json" || fmt === "yaml" || fmt === "plain") {
+					printOutput(payload, { format: fmt });
+					return;
+				}
+
+				printRecord({
+					"Deep Link": deepLink,
+					View: opts.view,
+					Project: opts.projectSlug ?? opts.project ?? "(workspace)",
+				});
+			},
+		);
+
+	// -- subscriptions -------------------------------------------------------
+	agents
+		.command("subscriptions")
+		.description(
+			"List known Remote Fabric Agents Server harness choices without checking availability",
+		)
+		.option(
+			"--server-url <url>",
+			"Remote Fabric Agents Server URL",
+			process.env.FABRIC_AGENTS_SERVER_URL ??
+				"https://agents.example.com",
+		)
+		.option("--format <format>", "Output format: table|json|yaml|plain")
+		.option("-q, --quiet", "Print harness IDs only")
+		.action(
+			async (opts: {
+				serverUrl: string;
+				format?: string;
+				quiet?: boolean;
+			}) => {
+				const harnesses = [
+					{
+						id: "claude-max",
+						name: "Claude (Opus 4.6 / Sonnet 4.6)",
+						billing: "subscription_oauth",
+						credits: "not_checked",
+						fallbackOrder: 1,
+					},
+					{
+						id: "codex",
+						name: "Codex (GPT-5.4 / o3)",
+						billing: "subscription_oauth",
+						credits: "not_checked",
+						fallbackOrder: 2,
+					},
+					{
+						id: "droid-cli",
+						name: "Droid (Factory Multi-Model)",
+						billing: "subscription_oauth",
+						credits: "not_checked",
+						fallbackOrder: 3,
+					},
+					{
+						id: "grok-cli",
+						name: "Grok (Grok 4 Heavy / Fast)",
+						billing: "subscription_oauth",
+						credits: "not_checked",
+						fallbackOrder: 4,
+					},
+					{
+						id: "kimi-cli",
+						name: "Kimi (Kimi K2.5 Thinking)",
+						billing: "subscription_oauth",
+						credits: "not_checked",
+						fallbackOrder: 5,
+					},
+				];
+
+				if (opts.quiet) {
+					for (const h of harnesses) {
+						process.stdout.write(`${h.id}\n`);
+					}
+					return;
+				}
+
+				printOutput(harnesses, {
+					format: opts.format as "table" | "json" | "yaml" | "plain",
+					columns: [
+						"id",
+						"name",
+						"billing",
+						"credits",
+						"fallbackOrder",
+					],
 				});
 			},
 		);

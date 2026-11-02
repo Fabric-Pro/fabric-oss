@@ -98,14 +98,7 @@ export function PromptCreator({ organizationId }: Props) {
 			</Breadcrumb>
 
 			<div className="mb-6">
-				<h1
-					className="text-3xl tracking-tight mb-2"
-					style={{
-						fontFamily:
-							"var(--font-sans, 'EB Garamond', Georgia, serif)",
-						fontWeight: 400,
-					}}
-				>
+				<h1 className="font-semibold text-xl tracking-tight mb-2">
 					Create New Prompt
 				</h1>
 				<p className="text-muted-foreground">

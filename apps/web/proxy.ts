@@ -8,8 +8,6 @@ import { withQuery } from "ufo";
 
 const intlMiddleware = createMiddleware(routing);
 const DEFAULT_LOCALE = "en";
-const SESSION_DATA_COOKIE = `${appConfig.auth.cookiePrefix}.session_data`;
-const SESSION_DATA_COOKIE_SECURE = `__Secure-${appConfig.auth.cookiePrefix}.session_data`;
 
 /**
  * Paths served OUTSIDE `(marketing)/[locale]` that must bypass the intl
@@ -88,22 +86,6 @@ function forward(req: NextRequest, extra?: Record<string, string>) {
 	return NextResponse.next({
 		request: { headers: forwardedRequestHeaders(req, extra) },
 	});
-}
-
-function mustChangePassword(req: NextRequest): boolean {
-	const raw =
-		req.cookies.get(SESSION_DATA_COOKIE_SECURE)?.value ??
-		req.cookies.get(SESSION_DATA_COOKIE)?.value;
-	if (!raw) {
-		return false;
-	}
-	try {
-		const decoded = atob(raw.replace(/-/g, "+").replace(/_/g, "/"));
-		const parsed = JSON.parse(decoded);
-		return parsed?.session?.user?.mustChangePassword === true;
-	} catch {
-		return false;
-	}
 }
 
 export default async function proxy(req: NextRequest) {
@@ -192,10 +174,6 @@ export default async function proxy(req: NextRequest) {
 			);
 		}
 
-		if (mustChangePassword(req)) {
-			return NextResponse.redirect(new URL("/change-password", origin));
-		}
-
 		// Clickjacking protection for the authenticated app surface (SOC 2
 		// CC6.6). The ONLY framable /app routes are the frame-embed views
 		// (.../frames/:id/embed) which must stay embeddable cross-origin —
@@ -225,15 +203,6 @@ export default async function proxy(req: NextRequest) {
 		// The agent consent and organization screens grant access with one
 		// click, so no other page may frame them (RFC 9700 section 4.16).
 		if (pathname.startsWith("/auth/oauth/")) {
-			// Someone who has to change their password first may not authorize
-			// an agent either: the same gate as /app. The authorization server
-			// refuses on its own too (`consentReferenceId`), since an agent can
-			// reach it without passing through these pages.
-			if (mustChangePassword(req)) {
-				return NextResponse.redirect(
-					new URL("/change-password", origin),
-				);
-			}
 			const consentRes = forward(req);
 			consentRes.headers.set("X-Frame-Options", "DENY");
 			consentRes.headers.set(

@@ -512,7 +512,7 @@ export function DecisionsList({
 					<div className="flex items-center gap-1.5">
 						<h2
 							data-onboarding-target="decisions-header"
-							className="font-serif text-3xl font-normal"
+							className="text-xl font-semibold"
 						>
 							Decisions
 						</h2>
@@ -919,9 +919,7 @@ export function DecisionsList({
 			) : showEmpty ? (
 				<div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-16 text-center">
 					<LandmarkIcon className="size-8 text-muted-foreground/60" />
-					<h3 className="font-serif text-xl font-normal">
-						No decisions yet
-					</h3>
+					<h3 className="text-xl font-semibold">No decisions yet</h3>
 					<p className="max-w-sm text-muted-foreground text-sm">
 						Record your first architectural decision so the
 						reasoning is never lost.
@@ -1196,7 +1194,7 @@ function MeetingCandidatePreviewDialog({
 				{isUpdate ? (
 					<div className="grid gap-3 sm:grid-cols-2">
 						<div className="rounded-md border bg-muted/40 p-3">
-							<p className="mb-1.5 font-medium text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+							<p className="mb-1.5 font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 								Current · {matched?.identifier}
 							</p>
 							{existingQuery.isLoading ? (
@@ -1219,7 +1217,7 @@ function MeetingCandidatePreviewDialog({
 							)}
 						</div>
 						<div className="rounded-md border border-primary/30 bg-primary/[0.03] p-3">
-							<p className="mb-1.5 font-medium text-[11px] text-primary uppercase tracking-[0.14em]">
+							<p className="mb-1.5 font-medium text-[11px] text-primary uppercase tracking-wide">
 								Proposed · from this meeting
 							</p>
 							<p className="whitespace-pre-wrap text-sm">
@@ -1229,7 +1227,7 @@ function MeetingCandidatePreviewDialog({
 					</div>
 				) : (
 					<div className="rounded-md border bg-card p-3">
-						<p className="mb-1.5 font-medium text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+						<p className="mb-1.5 font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 							Proposed decision
 						</p>
 						<p className="whitespace-pre-wrap text-sm">

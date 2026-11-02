@@ -76,7 +76,7 @@ export function ProjectTabButton({
 			onFocus={onIntent}
 			className={cn(
 				// An underline tab: ink and weight carry the state, no fill.
-				"-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 pt-2 pb-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+				"-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 pt-2 pb-2.5 text-sm transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
 				showTitle ? "px-3" : "px-2.5",
 				isActive
 					? "border-foreground font-medium text-foreground"

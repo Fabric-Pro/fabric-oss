@@ -6,6 +6,7 @@
  * Includes SYSTEM scope agents available to all users.
  */
 
+import { RETIRED_SYSTEM_AGENT_IDS } from "@repo/agent-types";
 import {
 	countRegisteredAgents,
 	db,
@@ -83,6 +84,7 @@ export const listRegisteredAgents = protectedProcedure
 
 		// Get agents from database (includes SYSTEM agents)
 		const agents = await listRegisteredAgentsQuery({
+			excludeSystemAgentIds: RETIRED_SYSTEM_AGENT_IDS,
 			userId,
 			organizationId,
 			framework,
@@ -93,6 +95,7 @@ export const listRegisteredAgents = protectedProcedure
 
 		// Get total count
 		const total = await countRegisteredAgents({
+			excludeSystemAgentIds: RETIRED_SYSTEM_AGENT_IDS,
 			userId,
 			organizationId,
 			framework,
