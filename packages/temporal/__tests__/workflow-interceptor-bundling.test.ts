@@ -39,6 +39,12 @@ describe("workflow bundle options", () => {
 		);
 	});
 
+	it("keeps the activity failure interceptor closest to the SDK", () => {
+		expect(WORKFLOW_INTERCEPTOR_MODULES.at(-1)).toBe(
+			resolve(WORKFLOWS_PATH, "activity-failure-workflow-interceptor"),
+		);
+	});
+
 	it("produces a bundle that carries the interceptor", async () => {
 		const bundle = await bundleWorkflowCode(
 			buildWorkflowBundleOptions(WORKFLOWS_PATH),
@@ -49,6 +55,7 @@ describe("workflow bundle options", () => {
 		// would still build and this is what would differ.
 		expect(bundle.code).toContain("importInterceptors");
 		expect(bundle.code).toContain("CorrelationWorkflowOutboundInterceptor");
+		expect(bundle.code).toContain("ActivityFailureLogInterceptor");
 		expect(bundle.code).toContain("x-correlation-id");
 		// Positive control: webpack module paths are present in this output.
 		expect(bundle.code).toContain(

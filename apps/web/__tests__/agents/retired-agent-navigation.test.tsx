@@ -48,6 +48,7 @@ describe("retired agent navigation", () => {
 					<RegisteredAgentTryWorkspace
 						agentId="cexampleregistered00000001"
 						basePath="/app/example-org"
+						organizationId="example-org-id"
 					/>
 				),
 			);

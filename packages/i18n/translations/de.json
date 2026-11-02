@@ -399,6 +399,7 @@
 			"dontHaveAnAccount": "Du hast noch kein Konto?",
 			"forgotPassword": "Passwort vergessen?",
 			"hints": {
+				"passwordSet": "Passwort festgelegt. Melde dich mit deinem neuen Passwort an.",
 				"invalidCredentials": "Die von dir eingegebenen Anmeldeinformationen sind ungültig. \nBitte versuche es erneut.",
 				"linkSent": {
 					"message": "Wir haben dir einen Link zum Fortfahren gesendet. \nBitte überprüfe deinen Posteingang.",
@@ -868,6 +869,7 @@
 		"roles": {
 			"admin": "Administration",
 			"member": "Mitglied",
+			"none": "Keine Rolle",
 			"owner": "Eigentümer"
 		},
 		"settings": {

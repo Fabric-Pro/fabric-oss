@@ -160,6 +160,9 @@ export abstract class InProcessEngine<Props, Turn> implements RuntimeEngine {
 			}
 			return;
 		}
+		if (stream.isClosed()) {
+			return;
+		}
 		const key = runningKey(this.agentId, threadId);
 		if (running.has(key)) {
 			refuse(

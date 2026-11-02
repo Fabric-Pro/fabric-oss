@@ -2304,3 +2304,145 @@ describe("gantt figure", () => {
 		expect(drawn(PLAN)).toMatch(/^<svg [^>]*role="img"/);
 	});
 });
+
+describe("figure outlines", () => {
+	interface PaintedRect {
+		left: number;
+		top: number;
+		right: number;
+		bottom: number;
+	}
+
+	/**
+	 * Every `<rect>` as the area it paints: its box, widened on each side by
+	 * half its stroke (1 when `stroke` is set without a width).
+	 */
+	function paintedRects(svg: string): PaintedRect[] {
+		return Array.from(svg.matchAll(/<rect ([^>]*)\/>/g)).map(
+			([, attributes]) => {
+				const read = (name: string) =>
+					new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(
+						attributes,
+					)?.[1];
+				const half =
+					read("stroke") === undefined
+						? 0
+						: Number(read("stroke-width") ?? 1) / 2;
+				const x = Number(read("x") ?? 0);
+				const y = Number(read("y") ?? 0);
+				return {
+					left: x - half,
+					top: y - half,
+					right: x + Number(read("width")) + half,
+					bottom: y + Number(read("height")) + half,
+				};
+			},
+		);
+	}
+
+	const timeline = () =>
+		timelineToMermaid(
+			{
+				kind: "timeline",
+				items: [
+					{ date: "Week 1", label: "Kickoff" },
+					{ date: "Weeks 2-5", label: "First build" },
+					{ date: "Weeks 6-9", label: "Pilot region" },
+					{ date: "Weeks 10-12", label: "Review" },
+				],
+			},
+			PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+		);
+
+	it.each<[string, () => string | null]>([
+		[
+			"a process filling its row",
+			() => processFigureSvg(parsed(chainSource(4)), PALETTE, {}),
+		],
+		[
+			"a process with a loop",
+			() =>
+				processFigureSvg(
+					parsed(chainSource(5, ["n5 -.->|Next| n1"])),
+					PALETTE,
+					{},
+				),
+		],
+		[
+			"a timeline filling its row",
+			() =>
+				processFigureSvg(parsed(timeline()), PALETTE, { dated: true }),
+		],
+		["layers", () => layersFigureSvg(parsed(LAYERS), PALETTE, {})],
+		[
+			"layers without a cross-cutting column",
+			() =>
+				layersFigureSvg(
+					parsed(
+						lines(
+							"flowchart TB",
+							"subgraph a",
+							'x["Only"]',
+							'y["Second"]',
+							"end",
+						),
+					),
+					PALETTE,
+					{},
+				),
+		],
+		["a team", () => teamFigureSvg(parsed(TEAM), PALETTE, {})],
+		[
+			"a bar chart",
+			() =>
+				renderFigureSvg(
+					"bars",
+					lines(
+						"xychart-beta horizontal",
+						'  x-axis ["Baseline", "Pilot"]',
+						"  bar [4, 20]",
+						"  line [20, 20]",
+					),
+					PALETTE,
+					{},
+				),
+		],
+		[
+			"a gantt chart",
+			() =>
+				renderFigureSvg(
+					"gantt",
+					lines(
+						"gantt",
+						"  dateFormat YYYY-MM-DD",
+						"  section Build",
+						"  Routing :b1, 2026-11-02, 3w",
+						"  Done :milestone, m1, 2026-11-23, 0d",
+					),
+					PALETTE,
+					{},
+				),
+		],
+	])("paints every outline of %s inside the figure", (_name, draw) => {
+		const svg = svgOf(draw());
+		const height = Number(
+			/viewBox="0 0 662 ([\d.]+)"/.exec(svg)?.[1] ?? Number.NaN,
+		);
+		const rects = paintedRects(svg);
+		expect(rects.length).toBeGreaterThan(0);
+		const epsilon = 1e-6;
+		const outside = rects.flatMap((rect, index) =>
+			[
+				rect.left < -epsilon ? `rect ${index} left ${rect.left}` : "",
+				rect.top < -epsilon ? `rect ${index} top ${rect.top}` : "",
+				rect.right > FIGURE_WIDTH + epsilon
+					? `rect ${index} right ${rect.right}`
+					: "",
+				rect.bottom > height + epsilon
+					? `rect ${index} bottom ${rect.bottom} of ${height}`
+					: "",
+			].filter(Boolean),
+		);
+		expect(outside).toEqual([]);
+	});
+});

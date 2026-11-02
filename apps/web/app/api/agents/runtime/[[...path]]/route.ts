@@ -60,6 +60,7 @@ import {
 	RESEARCH_AGENT_ID,
 	ResearchEngine,
 } from "@saas/agents/runtime/research-engine";
+import { createAgentResponseLifetime } from "@saas/agents/runtime/response-lifetime";
 import {
 	SIDEKICK_AGENT_ID,
 	SidekickEngine,
@@ -215,10 +216,13 @@ async function handle(request: Request): Promise<Response> {
 		// tenant headers.
 		forwardHeaders: { denyPrefixes: ["x-ai-", "x-tenant-"] },
 	});
+	const responseLifetime = createAgentResponseLifetime(runtimeRequest);
 	const handleRequest = createCopilotRuntimeHandler({
 		runtime,
 		basePath: BASE_PATH,
 		hooks: {
+			// Close the source before the SDK tees it for its after-request hook.
+			onResponse: ({ response }) => responseLifetime.response(response),
 			onBeforeHandler: async ({ route, request: routed }) => {
 				const threadId = await threadOf(route, routed);
 				if (threadId === undefined) {
@@ -245,7 +249,9 @@ async function handle(request: Request): Promise<Response> {
 			},
 		},
 	});
-	return handleRequest(runtimeRequest);
+	return responseLifetime.response(
+		await handleRequest(responseLifetime.request),
+	);
 }
 
 export async function GET(request: Request): Promise<Response> {

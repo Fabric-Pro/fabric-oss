@@ -15,6 +15,7 @@
  */
 
 import {
+	ALWAYS_WRAPPED_LABEL_CHARS,
 	DIAGRAM_CANVAS_PADDING_PX,
 	PRINT_COLUMN_PX,
 	PRINT_FIGURE_MAX_HEIGHT_PX,
@@ -393,6 +394,83 @@ describe("the print floor on a Proposal's page", () => {
 		expect(multiLineLabels(onScreen)).toHaveLength(8);
 	});
 
+	it("breaks a 57-character label dense in narrow letters, on a Proposal's page and on any other", async () => {
+		const narrow =
+			"implementation — implementation of the agreed pilot scope";
+		expect(narrow.length).toBeGreaterThanOrEqual(
+			ALWAYS_WRAPPED_LABEL_CHARS,
+		);
+		const chain = [
+			"flowchart LR",
+			`  a["Discovery — agree the example goals"] --> b["${narrow}"]`,
+			'  b --> c["Review — assess the pilot and decide"]',
+			'  c --> d["Handover — train the example owners"]',
+		];
+		const proposal = render(
+			<DiagramHarness markdown={doc(chain)} visual={{ paint: NAVY }} />,
+		);
+		const printed = await drawnSvg(proposal.container);
+		// Turned top-down, as it prints, with that label broken: on one line
+		// the engine's estimate draws it a box too narrow for its text.
+		expect(headerOf(renderer.beautiful.at(-1))).toBe("flowchart TD");
+		expect(multiLineLabels(printed)).toEqual([narrow]);
+		proposal.unmount();
+
+		renderer.beautiful = [];
+		const other = render(
+			<DiagramHarness markdown={doc(chain)} themeRoot={false} />,
+		);
+		const onScreen = await drawnSvg(other.container);
+		expect(renderer.beautiful).toHaveLength(1);
+		expect(headerOf(renderer.beautiful[0])).toBe("flowchart LR");
+		expect(multiLineLabels(onScreen)).toEqual([narrow]);
+	});
+
+	it("draws a sideways chain of eight 40- to 55-character labels top-down as written, as it prints", async () => {
+		const labels = [
+			"Discovery — agree the example goals and the measures",
+			"Definition — confirm the pilot scope and the criteria",
+			"Delivery — configure the agreed scope with example data",
+			"Review — assess the pilot against the agreed measures",
+			"Handover — train the owners and agree the support rota",
+			"Support — answer the example questions for six weeks",
+			"Planning — agree the next phase and its example dates",
+			"Close — record the example lessons and the decisions",
+		];
+		for (const label of labels) {
+			expect(label.length).toBeGreaterThanOrEqual(
+				ALWAYS_WRAPPED_LABEL_CHARS,
+			);
+		}
+		const chain = [
+			"flowchart LR",
+			...labels.map((label, index) => `  s${index}["${label}"]`),
+			...labels
+				.slice(1)
+				.map((_, index) => `  s${index} --> s${index + 1}`),
+		];
+		const { container } = render(
+			<DiagramHarness markdown={doc(chain)} visual={{ paint: NAVY }} />,
+		);
+		const svg = await drawnSvg(container);
+
+		// Broken and as written sideways, then both top-down: broken and
+		// turned it is taller than a printed figure may be, so the source as
+		// written turned prints larger and is kept.
+		expect(renderer.beautiful.map(headerOf)).toEqual([
+			"flowchart LR",
+			"flowchart LR",
+			"flowchart TD",
+			"flowchart TD",
+		]);
+		expect(renderer.beautiful[3]).not.toContain("<br/>");
+		expect(multiLineLabels(svg)).toEqual([]);
+		const size = declaredSize(svg);
+		expect(size.width).toBeLessThanOrEqual(PRINT_COLUMN_PX);
+		expect(size.height).toBeLessThanOrEqual(PRINT_FIGURE_MAX_HEIGHT_PX);
+		expect(printedNodeLabelPt(size)).toBeCloseTo(9.75, 5);
+	});
+
 	it("keeps the broken copy of a chain when it prints as large as the source as written", async () => {
 		const { container } = render(
 			<DiagramHarness
@@ -424,11 +502,13 @@ describe("the print floor on a Proposal's page", () => {
 		);
 
 		const roles = visualRoleClassDefs(NAVY);
-		// The source as written competes with the broken copies; every copy
-		// but that one has its labels broken.
+		// The source as written competes with the broken copies, sideways and
+		// turned; every other copy has its labels broken.
 		expect(
-			renderer.beautiful.filter((input) => !input.includes("<br/>")),
-		).toHaveLength(1);
+			renderer.beautiful
+				.filter((input) => !input.includes("<br/>"))
+				.map(headerOf),
+		).toEqual(["flowchart LR", "flowchart TD"]);
 		for (const input of renderer.beautiful) {
 			const lines = input.split("\n");
 			expect(lines[0]).toBe(MARKER);

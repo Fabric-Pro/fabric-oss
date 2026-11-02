@@ -316,6 +316,13 @@ export function ProjectManagementSettings({ project }: Props) {
 	// predate `canEditSettings`.
 	const canEditProjectManagementSettings =
 		project.canEditSettings ?? isProjectOwner;
+	// Connecting and configuring the tool only needs PROJECT_UPDATE on the
+	// server, so admins get these controls as well as owners (Fizzy #3007).
+	// Additive on purpose: `userRole` also reads "owner" for whoever created an
+	// organization project, which PROJECT_SETTINGS_EDIT knows nothing about,
+	// and that creator keeps the controls the server already lets them use.
+	const canConfigurePmIntegration =
+		isProjectOwner || canEditProjectManagementSettings;
 
 	// Derive whether PM is configured from persisted project fields
 	// This avoids a flash of "No PM tools configured" while configs are still loading
@@ -1472,19 +1479,20 @@ export function ProjectManagementSettings({ project }: Props) {
 			</CardHeader>
 			<CardContent className="space-y-4">
 				<PmSyncStatusLine status={pmSyncStatus} />
-				{/* Permission notice for non-owners */}
-				{!isProjectOwner && (
+				{/* Permission notice for anyone who cannot configure the tool */}
+				{!canConfigurePmIntegration && (
 					<div className="p-4 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30">
 						<div className="flex items-start gap-3">
 							<ShieldAlertIcon className="h-5 w-5 text-destructive mt-0.5 shrink-0" />
 							<div>
 								<p className="text-sm font-medium text-destructive">
-									Owner access required
+									Admin access required
 								</p>
 								<p className="text-sm text-destructive/80 mt-1">
 									Configuring project management integrations
-									requires Owner access. Contact the project
-									owner to set up or change this integration.
+									requires project admin or owner access. Ask
+									a project admin or owner to set up or change
+									this integration.
 								</p>
 							</div>
 						</div>
@@ -1530,7 +1538,7 @@ export function ProjectManagementSettings({ project }: Props) {
 										</a>
 									</div>
 								</div>
-								{isProjectOwner && (
+								{canConfigurePmIntegration && (
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<Button
@@ -1596,7 +1604,7 @@ export function ProjectManagementSettings({ project }: Props) {
 										)}
 									</div>
 								</div>
-								{isProjectOwner && (
+								{canConfigurePmIntegration && (
 									<div className="flex items-center gap-1">
 										<Tooltip>
 											<TooltipTrigger asChild>
@@ -1666,7 +1674,7 @@ export function ProjectManagementSettings({ project }: Props) {
 				{/* No PM servers configured - only show if no saved config exists */}
 				{pmMcpConfigs.length === 0 &&
 					!isPMConfigured &&
-					isProjectOwner && (
+					canConfigurePmIntegration && (
 						<div className="p-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
 							<p className="text-sm text-highlight/80">
 								No project management tools configured.{" "}
@@ -1689,7 +1697,7 @@ export function ProjectManagementSettings({ project }: Props) {
 					project.projectManagementMcpConfigId &&
 					!savedContainerName &&
 					!isChangingBoard &&
-					isProjectOwner && (
+					canConfigurePmIntegration && (
 						<div className="p-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
 							<p className="text-sm text-highlight/80">
 								The configured project management tool is no
@@ -1710,7 +1718,7 @@ export function ProjectManagementSettings({ project }: Props) {
 				    set: platform defaults plus tenant MCPConfigs deduped by
 				    key. Gating no longer depends on `pmMcpConfigs.length > 0`
 				    because defaults always render. */}
-				{isProjectOwner &&
+				{canConfigurePmIntegration &&
 					(!isPMConfigured ||
 						!savedContainerName ||
 						isChangingBoard) && (
@@ -2103,7 +2111,7 @@ export function ProjectManagementSettings({ project }: Props) {
 				    these settings sit below it. */}
 				{/* Auto-push toggle — shown to the owner, disabled until a PM
 				    tool is connected (Fizzy #2204). */}
-				{isProjectOwner && (
+				{canConfigurePmIntegration && (
 					<div className="flex items-center justify-between py-2 border-t">
 						<div className="flex-1 pr-4">
 							<Label htmlFor="auto-push-pm-sync">
@@ -2237,7 +2245,7 @@ export function ProjectManagementSettings({ project }: Props) {
 				{/* The status-sync switch above needs a connected tool and a
 				    board. Before a tool is connected it still shows, disabled,
 				    so the owner can see what connecting unlocks (Fizzy #2204). */}
-				{!isPMConfigured && isProjectOwner && (
+				{!isPMConfigured && canConfigurePmIntegration && (
 					<div className="flex items-start justify-between gap-4 py-2 border-t">
 						<div className="flex-1 space-y-1.5">
 							<Label htmlFor="pm-status-sync">
@@ -2261,7 +2269,7 @@ export function ProjectManagementSettings({ project }: Props) {
 
 				{/* Auto-close toggle (card #1360 Phase A); disabled until a PM
 				    tool is connected (Fizzy #2204). */}
-				{isProjectOwner && (
+				{canConfigurePmIntegration && (
 					<div className="flex items-center justify-between py-2 border-t">
 						<div className="flex-1 pr-4">
 							<Label htmlFor="pm-auto-close">
@@ -2366,7 +2374,7 @@ export function ProjectManagementSettings({ project }: Props) {
 				{/* Terminal-status chip editor (card #1360 Phase A) — the
 				    statuses that count as done; disabled until a PM tool is
 				    connected (Fizzy #2204). */}
-				{isProjectOwner && (
+				{canConfigurePmIntegration && (
 					<div className="py-2 border-t">
 						<TerminalStatusEditor
 							value={terminalStatuses}

@@ -10,6 +10,7 @@
  *   - the caller's own thread reaches the engine, built for the caller in
  *     the resolved organization; routes outside the runtime are 404.
  */
+import { EventType } from "@ag-ui/client";
 import type { RunStream } from "@saas/agents/runtime/engine";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -397,6 +398,35 @@ describe("/api/agents/runtime", () => {
 		expect(m.engineRun).toHaveBeenCalled();
 	});
 
+	it("detaches a durable response without asking the engine to stop its workflow", async () => {
+		let stream: RunStream | undefined;
+		let release = () => {};
+		const running = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		m.engineRun.mockImplementation(
+			async (_request: unknown, tail: RunStream) => {
+				stream = tail;
+				await running;
+			},
+		);
+		const response = await run(THREAD);
+		await vi.waitFor(() => expect(stream).toBeDefined());
+		const reader = response.body?.getReader();
+		if (!reader) {
+			throw new Error("Expected an SSE response body");
+		}
+		const cancelled = reader.cancel();
+		try {
+			await vi.waitFor(() => expect(stream?.isClosed()).toBe(true));
+			expect(m.engineStop).not.toHaveBeenCalled();
+		} finally {
+			release();
+			await cancelled;
+			reader.releaseLock();
+		}
+	});
+
 	it("lists the Direct and Orchestrator agents on info and serves no routes beyond the runtime's", async () => {
 		const info = await GET(new Request(`${BASE}/info`));
 		expect(info.status).toBe(200);
@@ -685,5 +715,79 @@ describe("/api/agents/runtime — the Atlas chat", () => {
 		await vi.waitFor(() => expect(stream?.isClosed()).toBe(true));
 		atlas.release();
 		expect(response.status).toBe(200);
+	});
+
+	it("closes the engine's stream when the response reader cancels without aborting the request", async () => {
+		const client = new AbortController();
+		const response = await POST(
+			new Request(`${BASE}/agent/atlas-chat/run`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: body(THREAD),
+				signal: client.signal,
+			}),
+		);
+		await vi.waitFor(() => expect(atlas.runs).toHaveLength(1));
+		const stream = atlas.runs[0]?.stream;
+		expect(stream?.isClosed()).toBe(false);
+		const reader = response.body?.getReader();
+		if (!reader) {
+			throw new Error("Expected an SSE response body");
+		}
+		const cancelled = reader.cancel();
+		try {
+			expect(client.signal.aborted).toBe(false);
+			await vi.waitFor(() => expect(stream?.isClosed()).toBe(true));
+		} finally {
+			atlas.release();
+			await cancelled;
+			reader.releaseLock();
+		}
+	});
+
+	it("cancels a started response promptly and clears the SDK keep-alive timers", async () => {
+		const timeout = vi.spyOn(globalThis, "setTimeout");
+		const clear = vi.spyOn(globalThis, "clearTimeout");
+		try {
+			const response = await post("/agent/atlas-chat/run", THREAD);
+			await vi.waitFor(() => expect(atlas.runs).toHaveLength(1));
+			const stream = atlas.runs[0]?.stream;
+			const reader = response.body?.getReader();
+			if (!reader || !stream) {
+				throw new Error("Expected a running SSE response");
+			}
+			try {
+				stream.emit({
+					type: EventType.RUN_STARTED,
+					threadId: THREAD,
+					runId: "run-example-0001",
+				});
+				const first = await reader.read();
+				expect(new TextDecoder().decode(first.value)).toContain(
+					"RUN_STARTED",
+				);
+				await reader.cancel();
+				await vi.waitFor(() => expect(stream.isClosed()).toBe(true));
+				const keepAliveTimers = timeout.mock.calls.flatMap(
+					(args, index) =>
+						args[1] === 15_000
+							? [timeout.mock.results[index]?.value]
+							: [],
+				);
+				expect(keepAliveTimers.length).toBeGreaterThan(0);
+				await vi.waitFor(() => {
+					for (const timer of keepAliveTimers) {
+						expect(clear).toHaveBeenCalledWith(timer);
+					}
+				});
+			} finally {
+				atlas.release();
+				await reader.cancel();
+				reader.releaseLock();
+			}
+		} finally {
+			timeout.mockRestore();
+			clear.mockRestore();
+		}
 	});
 });

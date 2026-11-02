@@ -356,7 +356,8 @@ function drawOrNull(
  * source as written competes with that copy and the one whose labels print
  * larger is kept, the broken one on a tie; then, when a flowchart's or a
  * state diagram's labels would print below the floor, a sideways flowchart
- * is drawn top-down too, and, when that is still below it, with every long
+ * is drawn top-down too, the copy kept and, when that is the broken one,
+ * the source as written, and, when that is still below it, with every long
  * label broken (top-down when it was sideways); a drawing replaces the one
  * kept only when its labels print larger. Only the drawn copy changes,
  * never the fence. A copy the engine refuses keeps the drawing before it;
@@ -415,6 +416,16 @@ function drawLegible(
 		const turned = turnFlowchartTopDown(base);
 		if (turned) {
 			best = larger(best, turned);
+		}
+		// The source as written is turned too, as print turns it: broken
+		// labels make a turned diagram taller, and a tall one prints
+		// smaller, so it can print larger than the broken copy turned, which
+		// wins a tie.
+		if (base !== source) {
+			const turnedSource = turnFlowchartTopDown(source);
+			if (turnedSource) {
+				best = larger(best, turnedSource);
+			}
 		}
 		if (belowFloor(best)) {
 			const wrapped = wrapFlowchartNodeLabels(turned ?? base);

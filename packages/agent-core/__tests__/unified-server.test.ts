@@ -1495,7 +1495,8 @@ describe("createUnifiedServer terminal errors", () => {
 		// finalState, which still has `document: "preview N"` from whichever
 		// preview last set it — that's an unrelated artifact of the terminal
 		// snapshot always reflecting the last-known value, not evidence of
-		// gate ordering.
+		// gate ordering. (`/runs/stream` leaves previews out of its terminal
+		// state; see the tests for it below.)
 		const previewIndexes = events.flatMap((e, i) =>
 			e.type === "STATE_DELTA" &&
 			(e.delta as Array<{ path: string; value: unknown }>).some(
@@ -1653,6 +1654,162 @@ describe("stripEmptyResponseFallbacks", () => {
 		const messages = [null, "raw", 42];
 
 		expect(stripEmptyResponseFallbacks(messages)).toEqual(messages);
+	});
+});
+
+// A `/runs/stream` caller (the document generation activity) takes the
+// terminal `values` event as what the run produced. A droppable preview is a
+// write still being streamed, so it must reach the caller as an update and
+// never stand in for a document the run did not write (Fizzy #2946).
+describe("/runs/stream terminal state and droppable previews", () => {
+	beforeEach(() => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	const previews = (...documents: string[]): LangGraphStreamEvent[] =>
+		documents.map((document) => ({
+			nodeName: "chat_node",
+			state: { streamingContent: document, document },
+			droppable: true,
+		}));
+
+	/** The chat node ending its run without a tool call. */
+	const endsWithoutWrite: LangGraphStreamEvent = {
+		nodeName: "chat_node",
+		state: {
+			messages: [{ type: "ai", content: "Here is my plan." }],
+			streamingContent: "",
+		},
+	};
+
+	const writes = (document: string): LangGraphStreamEvent => ({
+		nodeName: "chat_node",
+		state: { document, streamingContent: document },
+	});
+
+	// The rate limiter's store is module-wide; a bucket of its own keeps
+	// these requests from spending the later describes' shared one.
+	const headers = {
+		"Content-Type": "application/json",
+		"X-Real-IP": "198.51.100.7",
+	};
+
+	async function runStream(
+		path: string,
+		events: LangGraphStreamEvent[],
+	): Promise<Array<{ event: string; data: unknown }>> {
+		const response = await createTestApp(events).request(path, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				input: { messages: [{ role: "user", content: "Write it." }] },
+			}),
+		});
+		expect(response.status).toBe(200);
+		const body = await response.text();
+		return body.split("\n\n").flatMap((chunk) => {
+			const event = /^event: (.+)$/m.exec(chunk)?.[1];
+			const data = /^data: (.+)$/m.exec(chunk)?.[1];
+			return event && data !== undefined
+				? [{ event, data: JSON.parse(data) as unknown }]
+				: [];
+		});
+	}
+
+	const valuesOf = (sse: Array<{ event: string; data: unknown }>) =>
+		sse.filter((e) => e.event === "values").map((e) => e.data) as Array<
+			Record<string, unknown>
+		>;
+
+	const endUpdateOf = (sse: Array<{ event: string; data: unknown }>) =>
+		(
+			sse.find(
+				(e) =>
+					e.event === "updates" &&
+					typeof e.data === "object" &&
+					e.data !== null &&
+					"end" in e.data,
+			)?.data as { end: Record<string, unknown> } | undefined
+		)?.end;
+
+	it("streams the previews but ends with no document when the run wrote none", async () => {
+		const sse = await runStream("/runs/stream", [
+			...previews("## Overview", "## Overview\n\nThe problem"),
+			endsWithoutWrite,
+		]);
+
+		const streamedPreviews = sse.filter(
+			(e) =>
+				e.event === "updates" &&
+				(e.data as { chat_node?: { document?: string } }).chat_node
+					?.document === "## Overview\n\nThe problem",
+		);
+		expect(streamedPreviews).toHaveLength(1);
+
+		const values = valuesOf(sse);
+		expect(values).toHaveLength(1);
+		expect(values[0]).not.toHaveProperty("document");
+		expect(values[0]?.streamingContent).toBe("");
+		expect(endUpdateOf(sse)).not.toHaveProperty("document");
+	});
+
+	it("keeps no preview in the thread's stored state", async () => {
+		const app = createTestApp([
+			...previews("## Overview\n\nThe problem"),
+			endsWithoutWrite,
+		]);
+		const response = await app.request(
+			"/threads/example-thread/runs/stream",
+			{
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					input: {
+						messages: [{ role: "user", content: "Write it." }],
+					},
+				}),
+			},
+		);
+		expect(response.status).toBe(200);
+		await response.text();
+
+		const state = (await (
+			await app.request("/threads/example-thread/state", { headers })
+		).json()) as { values: Record<string, unknown> };
+		expect(state.values).toHaveProperty("streamingContent", "");
+		expect(state.values).not.toHaveProperty("document");
+	});
+
+	it("ends with the written document when the write follows its previews", async () => {
+		const sse = await runStream("/runs/stream", [
+			...previews("## Overview", "## Overview\n\nThe problem"),
+			writes("## Overview\n\nThe problem, solved."),
+		]);
+
+		expect(valuesOf(sse)[0]?.document).toBe(
+			"## Overview\n\nThe problem, solved.",
+		);
+		expect(endUpdateOf(sse)?.document).toBe(
+			"## Overview\n\nThe problem, solved.",
+		);
+	});
+
+	it("keeps the written document over previews of a later write that never lands", async () => {
+		const sse = await runStream("/runs/stream", [
+			writes("## Overview\n\nThe problem, solved."),
+			...previews("## Overview\n\nA second draft"),
+			endsWithoutWrite,
+		]);
+
+		expect(valuesOf(sse)[0]?.document).toBe(
+			"## Overview\n\nThe problem, solved.",
+		);
 	});
 });
 

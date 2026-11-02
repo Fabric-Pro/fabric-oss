@@ -74,7 +74,8 @@
  * keeps its labels on one line. When a left-to-right flowchart's labels
  * would print below `PRINT_LABEL_FLOOR_PT`, it is laid out once more
  * top-down (the fence in Main is untouched; only the export's copy turns),
- * and the render whose labels print larger is kept. When that is still
+ * as written as well as broken when the broken copy was kept, and the
+ * render whose labels print larger is kept. When that is still
  * below the floor, a
  * flowchart's long single-line node labels are broken into lines in the
  * copy (title, sentence and trailing parenthesis apart, then at words) and
@@ -412,6 +413,7 @@ interface DrawnDiagram {
  * one as prepared when breaking makes the diagram taller than a printed
  * figure may be. A copy the engine refuses drops out. Then a sideways
  * flowchart whose labels would print below the floor is tried top-down too,
+ * both the copy kept and, when it is the broken one, the copy as prepared,
  * then a flowchart still below it with every long label broken into lines,
  * and a graph still below it is marked. Labels are measured at the size
  * they print, shrunk to the column's width or a figure's height.
@@ -489,6 +491,15 @@ async function renderOne(
 		const turned = turnFlowchartTopDown(base);
 		if (turned) {
 			await tryVariant(turned);
+		}
+		// The copy as written is turned too: broken labels make a turned
+		// diagram taller, and a tall one prints smaller, so it can print
+		// larger than the broken copy turned, which wins a tie.
+		if (base !== prepared.text) {
+			const turnedAsPrepared = turnFlowchartTopDown(prepared.text);
+			if (turnedAsPrepared) {
+				await tryVariant(turnedAsPrepared);
+			}
 		}
 		if (belowFloor()) {
 			const wrapped = wrapFlowchartNodeLabels(turned ?? base);

@@ -1721,11 +1721,20 @@ export function createUnifiedServer(
 								},
 							);
 
-							// Accumulate state for final values event — this must happen
-							// for EVERY event regardless of whether it gets coalesced
-							// below, since finalState is the authoritative snapshot sent
-							// in the terminal "values" event.
-							finalState = { ...finalState, ...sanitizedState };
+							// Accumulate state for the terminal "end"/"values" events and
+							// the thread's stored state — the authoritative record of
+							// what the run produced. Every node update counts, whether
+							// or not it is coalesced below. A droppable preview does
+							// not: it is a write still being streamed, and folding it in
+							// left the last one in "values" as the run's document when
+							// the run ended without writing (Fizzy #2946). Previews
+							// still reach the client as "updates".
+							if (event.droppable !== true) {
+								finalState = {
+									...finalState,
+									...sanitizedState,
+								};
+							}
 
 							// Send updates event for each node update
 							// Format: { nodeName: { ...stateUpdates } }

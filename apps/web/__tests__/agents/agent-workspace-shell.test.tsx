@@ -83,6 +83,7 @@ describe.each([
 			key="try"
 			agentId="example-agent"
 			basePath="/app/example-org"
+			organizationId="example-org-id"
 		/>,
 	],
 ])("%s workspace shell", (_route, workspace) => {

@@ -1,5 +1,9 @@
 import { createQueryClient } from "@shared/lib/query-client";
-import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	dehydrate,
+	type QueryClient,
+	QueryClientProvider,
+} from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +17,13 @@ const m = vi.hoisted(() => ({
 	config: vi.fn<
 		(input: { organizationId: string | null }) => Promise<unknown>
 	>(),
+	serverRegistry:
+		vi.fn<
+			(input: { id: string; organizationId: string }) => Promise<unknown>
+		>(),
+	serverConfig:
+		vi.fn<(input: { organizationId: string }) => Promise<unknown>>(),
+	serverHeaders: vi.fn(),
 	organization:
 		vi.fn<(slug: string) => Promise<{ id: string; slug: string } | null>>(),
 	send: vi.fn(),
@@ -21,6 +32,22 @@ let serverClient: QueryClient;
 let browserClient: QueryClient;
 vi.mock("@saas/auth/lib/server", () => ({
 	getActiveOrganization: m.organization,
+}));
+vi.mock("next/headers", () => ({
+	headers: async () =>
+		new Headers({
+			cookie: "session=example",
+			"x-correlation-id": "example-correlation",
+		}),
+}));
+vi.mock("@repo/api/modules/agents/lib/agent-chat-server-client", () => ({
+	createAgentChatServerClient: (headers: Headers) => {
+		m.serverHeaders(headers);
+		return {
+			getRegisteredAgent: m.serverRegistry,
+			getAiConfigStatus: m.serverConfig,
+		};
+	},
 }));
 vi.mock("next/navigation", () => ({
 	notFound: () => {
@@ -85,6 +112,8 @@ beforeEach(() => {
 	m.organization.mockResolvedValue({ id: "org-route", slug: "example-org" });
 	m.registry.mockResolvedValue(agent);
 	m.config.mockResolvedValue({ isConfigured: true });
+	m.serverRegistry.mockResolvedValue(agent);
+	m.serverConfig.mockResolvedValue({ isConfigured: true });
 });
 afterEach(() => {
 	serverClient.clear();
@@ -103,11 +132,11 @@ describe("organization chat server prefetch", () => {
 	it("renders the real Analyst welcome on the server and shares one registry result with both client readers", async () => {
 		const element = await route();
 		expect(m.organization).toHaveBeenCalledWith("example-org");
-		expect(m.registry.mock.calls[0]?.[0]).toEqual({
+		expect(m.serverRegistry.mock.calls[0]?.[0]).toEqual({
 			id: "registered-example",
 			organizationId: "org-route",
 		});
-		expect(m.config.mock.calls[0]?.[0]).toEqual({
+		expect(m.serverConfig.mock.calls[0]?.[0]).toEqual({
 			organizationId: "org-route",
 		});
 		const view = (
@@ -122,8 +151,16 @@ describe("organization chat server prefetch", () => {
 		expect(
 			await screen.findByRole("heading", { name: "Data analyst" }),
 		).toBeInTheDocument();
-		expect(m.registry).toHaveBeenCalledOnce();
-		expect(m.config).toHaveBeenCalledOnce();
+		expect(m.serverRegistry).toHaveBeenCalledOnce();
+		expect(m.serverConfig).toHaveBeenCalledOnce();
+		expect(m.registry).not.toHaveBeenCalled();
+		expect(m.config).not.toHaveBeenCalled();
+		expect(m.serverHeaders.mock.calls[0]?.[0].get("cookie")).toBe(
+			"session=example",
+		);
+		expect(m.serverHeaders.mock.calls[0]?.[0].get("x-correlation-id")).toBe(
+			"example-correlation",
+		);
 		expect(m.send).not.toHaveBeenCalled();
 	});
 	it("rejects an inaccessible route organization before fetching agent or provider data", async () => {
@@ -131,9 +168,16 @@ describe("organization chat server prefetch", () => {
 		await expect(route()).rejects.toThrow("NEXT_HTTP_ERROR_FALLBACK;404");
 		expect(m.registry).not.toHaveBeenCalled();
 		expect(m.config).not.toHaveBeenCalled();
+		expect(m.serverRegistry).not.toHaveBeenCalled();
+		expect(m.serverConfig).not.toHaveBeenCalled();
+		expect(m.serverHeaders).not.toHaveBeenCalled();
 	});
 	it("preserves the retired-system-agent notice", async () => {
 		m.registry.mockResolvedValue({ ...agent, agentId: "cuga_generalist" });
+		m.serverRegistry.mockResolvedValue({
+			...agent,
+			agentId: "cuga_generalist",
+		});
 		const element = await route();
 		render(
 			<QueryClientProvider client={browserClient}>
@@ -150,6 +194,7 @@ describe("organization chat server prefetch", () => {
 	});
 	it("preserves provider-not-configured behavior", async () => {
 		m.config.mockResolvedValue({ isConfigured: false });
+		m.serverConfig.mockResolvedValue({ isConfigured: false });
 		const element = await route();
 		render(
 			<QueryClientProvider client={browserClient}>
@@ -165,6 +210,9 @@ describe("organization chat server prefetch", () => {
 		m.registry.mockRejectedValue(
 			new Error("Synthetic agent access refused"),
 		);
+		m.serverRegistry.mockRejectedValue(
+			new Error("Synthetic agent access refused"),
+		);
 		const element = await route();
 		render(
 			<QueryClientProvider client={browserClient}>
@@ -178,5 +226,47 @@ describe("organization chat server prefetch", () => {
 			screen.queryByRole("heading", { name: "Data analyst" }),
 		).toBeNull();
 		expect(m.send).not.toHaveBeenCalled();
+	});
+
+	it("keeps rejected server reads out of the dehydrated cache", async () => {
+		m.serverConfig.mockRejectedValue(
+			new Error("Synthetic configuration refusal"),
+		);
+		await route();
+		expect(
+			serverClient.getQueryState(["aiConfigStatus", "org-route"])?.status,
+		).toBe("error");
+		expect(
+			dehydrate(serverClient).queries.map((query) => query.queryKey),
+		).not.toContainEqual(["aiConfigStatus", "org-route"]);
+		expect(m.config).not.toHaveBeenCalled();
+		expect(m.send).not.toHaveBeenCalled();
+	});
+
+	it("starts both server reads before either completes", async () => {
+		let finishRegistry = () => {};
+		let finishConfig = () => {};
+		m.serverRegistry.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finishRegistry = () => resolve(agent);
+				}),
+		);
+		m.serverConfig.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finishConfig = () => resolve({ isConfigured: true });
+				}),
+		);
+		const pending = route();
+		await vi.waitFor(() => {
+			expect(m.serverRegistry).toHaveBeenCalledOnce();
+			expect(m.serverConfig).toHaveBeenCalledOnce();
+		});
+		finishRegistry();
+		finishConfig();
+		await pending;
+		expect(m.registry).not.toHaveBeenCalled();
+		expect(m.config).not.toHaveBeenCalled();
 	});
 });

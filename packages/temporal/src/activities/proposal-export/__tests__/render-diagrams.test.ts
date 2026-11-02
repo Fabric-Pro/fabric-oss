@@ -1076,6 +1076,36 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 		].join("\n");
 	}
 
+	/**
+	 * Eight steps left to right, each label a title and a sentence of 40 to
+	 * 55 characters on one line.
+	 */
+	function eightStepChain(): string {
+		const labels = [
+			"Discovery — agree the example goals and the measures",
+			"Definition — confirm the pilot scope and the criteria",
+			"Delivery — configure the agreed scope with example data",
+			"Review — assess the pilot against the agreed measures",
+			"Handover — train the owners and agree the support rota",
+			"Support — answer the example questions for six weeks",
+			"Planning — agree the next phase and its example dates",
+			"Close — record the example lessons and the decisions",
+		];
+		for (const label of labels) {
+			expect(label.length).toBeGreaterThanOrEqual(
+				ALWAYS_WRAPPED_LABEL_CHARS,
+			);
+			expect(label.length).toBeLessThan(60);
+		}
+		return [
+			"flowchart LR",
+			...labels.map((label, index) => `  s${index}["${label}"]`),
+			...labels
+				.slice(1)
+				.map((_, index) => `  s${index} --> s${index + 1}`),
+		].join("\n");
+	}
+
 	it("measures the print column as the portrait page less its side margins", () => {
 		expect(PRINT_COLUMN_PX).toBeCloseTo((8.5 - 2 * 0.8) * 96, 5);
 		expect(
@@ -1092,15 +1122,19 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 		const { diagrams, warnings } = await renderExportDiagrams(
 			input(sources, { layout }),
 		);
-		// As written and with its two long labels broken, both sideways and
-		// below the floor; then the broken copy, which prints larger, top-down.
+		// As written and with its four labels of 40 characters or more
+		// broken, both sideways and below the floor; then both top-down. The
+		// broken copy turned prints as large as the one as written turned and
+		// is kept.
 		expect(headersOf(layout.sources)).toEqual([
 			"flowchart LR",
 			"flowchart LR",
 			"flowchart TD",
+			"flowchart TD",
 		]);
 		expect(layout.sources[0]).not.toContain("<br/>");
 		expect(layout.sources[1]).toContain("<br/>");
+		expect(layout.sources[3]).not.toContain("<br/>");
 		// Only the header turned; Main's fence is untouched.
 		expect(layout.sources[2]?.split("\n").slice(1)).toEqual(
 			layout.sources[1]?.split("\n").slice(1),
@@ -1110,6 +1144,10 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 		if (diagram?.kind !== "svg") {
 			throw new Error("expected a drawn diagram");
 		}
+		expect(diagram.width).toBeCloseTo(
+			viewBoxSize(String(layout.sources[2])).width,
+			0,
+		);
 		expect(diagram.width).toBeLessThan(sideways.width);
 		expect(printedNodeLabelPt(diagram)).toBeGreaterThanOrEqual(
 			PRINT_LABEL_FLOOR_PT,
@@ -1196,20 +1234,96 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 		expect(warnings).toEqual([]);
 	});
 
+	it("breaks a 57-character label dense in narrow letters, even in a diagram the floor rule turns", async () => {
+		const narrow =
+			"implementation — implementation of the agreed pilot scope";
+		expect(narrow.length).toBeGreaterThanOrEqual(
+			ALWAYS_WRAPPED_LABEL_CHARS,
+		);
+		const fence = [
+			"flowchart LR",
+			`  a["Discovery — agree the example goals"] --> b["${narrow}"]`,
+			'  b --> c["Review — assess the pilot and decide"]',
+			'  c --> d["Handover — train the example owners"]',
+		].join("\n");
+		const layout = recordingLayout();
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([fence], { layout }),
+		);
+		// As written and with that label broken, both sideways and below the
+		// floor; then both top-down. The broken copy turned prints as large
+		// as the one as written turned and is kept, so the label is never
+		// drawn on one line, which the engine's estimate draws a box too
+		// narrow for.
+		expect(headersOf(layout.sources)).toEqual([
+			"flowchart LR",
+			"flowchart LR",
+			"flowchart TD",
+			"flowchart TD",
+		]);
+		expect(layout.sources[0]).not.toContain("<br/>");
+		const kept = String(layout.sources[2]);
+		expect(kept).toContain(
+			"implementation —<br/>implementation of the agreed<br/>pilot scope",
+		);
+		const diagram = diagrams[0];
+		if (diagram?.kind !== "svg") {
+			throw new Error("expected a drawn diagram");
+		}
+		expect(diagram.width).toBeCloseTo(viewBoxSize(kept).width, 0);
+		expect(smallestPrintedLabelPt(diagram)).toBeCloseTo(9.75, 5);
+		expect(warnings).toEqual([]);
+	});
+
+	it("prints a sideways chain of eight 40- to 55-character labels top-down as written, which prints larger than its broken copy turned", async () => {
+		const chain = eightStepChain();
+		const layout = recordingLayout();
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([chain], { layout }),
+		);
+		// As written and broken, both sideways and below the floor; then both
+		// top-down. Broken and turned it is taller than a figure may be; as
+		// written and turned it fits the page, so that one is kept.
+		expect(headersOf(layout.sources)).toEqual([
+			"flowchart LR",
+			"flowchart LR",
+			"flowchart TD",
+			"flowchart TD",
+		]);
+		const brokenTurned = viewBoxSize(String(layout.sources[2]));
+		expect(brokenTurned.height).toBeGreaterThan(PRINT_FIGURE_MAX_HEIGHT_PX);
+		expect(printedNodeLabelPt(brokenTurned)).toBeLessThan(
+			PRINT_LABEL_FLOOR_PT,
+		);
+		const kept = String(layout.sources[3]);
+		expect(kept).not.toContain("<br/>");
+		const diagram = diagrams[0];
+		if (diagram?.kind !== "svg") {
+			throw new Error("expected a drawn diagram");
+		}
+		expect(diagram.width).toBeCloseTo(viewBoxSize(kept).width, 0);
+		expect(diagram.svg).not.toContain("<tspan");
+		expect(smallestPrintedLabelPt(diagram)).toBeCloseTo(9.75, 5);
+		expect(warnings).toEqual([]);
+	});
+
 	it("breaks labels shorter than that only once top-down is still below the floor", async () => {
 		const labels = [
-			"Discovery — agree the example goals and the measures",
-			"Definition — confirm the pilot scope and the criteria",
-			"Delivery — configure the agreed scope with example data",
-			"Review — assess the pilot against the agreed measures",
+			"Discovery — agree the example goals",
+			"Definition — confirm the pilot scope",
+			"Delivery — configure the agreed scope",
+			"Review — assess the pilot and decide",
+			"Handover — train the example owners",
 		];
 		for (const label of labels) {
 			expect(label.length).toBeLessThan(ALWAYS_WRAPPED_LABEL_CHARS);
 		}
-		const [lead, ...rest] = labels;
-		const fence = `flowchart LR\n  a["${lead}"] --> ${rest
-			.map((label, index) => `n${index}["${label}"]`)
-			.join(" & ")}`;
+		const [lead, first, second, third, after] = labels;
+		const fence = [
+			"flowchart LR",
+			`  a["${lead}"] --> b["${first}"] & c["${second}"] & d["${third}"]`,
+			`  b --> e["${after}"]`,
+		].join("\n");
 		const layout = recordingLayout();
 		const { diagrams, warnings } = await renderExportDiagrams(
 			input([fence], { layout }),
@@ -1260,10 +1374,9 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 	it("keeps the better render and warns when even broken labels are too wide", async () => {
 		// Every label is shorter than the always-broken length, so the first
 		// layout draws them as written and the floor rule runs in full.
-		const start =
-			"Start — agree the example scope, the owners and the plan";
+		const start = "Start — agree the scope and the owners";
 		const workstream = (index: number) =>
-			`Workstream ${index + 1} — prepare the example data and the notes`;
+			`Workstream ${index + 1} — prepare example data`;
 		expect(start.length).toBeLessThan(ALWAYS_WRAPPED_LABEL_CHARS);
 		expect(workstream(39).length).toBeLessThan(ALWAYS_WRAPPED_LABEL_CHARS);
 		const siblings = Array.from(
@@ -1491,11 +1604,12 @@ describe("long node labels broken for print (Fizzy #2946)", () => {
 		const { diagrams, warnings } = await renderExportDiagrams(
 			input(sources, { layout }),
 		);
-		// As written and broken, both sideways and below the floor; then the
-		// broken copy, which prints larger, turned top-down.
+		// As written and broken, both sideways and below the floor; then both
+		// top-down, where the broken copy prints larger and is kept.
 		expect(headersOf(layout.sources)).toEqual([
 			"flowchart LR",
 			"flowchart LR",
+			"flowchart TD",
 			"flowchart TD",
 		]);
 		expect(layout.sources[0]).not.toContain("<br/>");
@@ -1544,11 +1658,19 @@ describe("long node labels broken for print (Fizzy #2946)", () => {
 		].join("\n");
 		const layout = recordingLayout();
 		await renderExportDiagrams(input([fence], { layout }));
-		const last = String(layout.sources.at(-1));
-		expect(last).toContain(`a["${brokenAlready}"]`);
-		expect(last).toContain(`b["${formatted}"]`);
-		expect(last).not.toContain(`c["${STAGE_LABELS[2]}"]`);
-		expect(last).toContain("Pilot delivery —<br/>");
+		// Every copy keeps the first two as written; the broken one, sideways
+		// and turned, breaks only the third.
+		for (const source of layout.sources) {
+			expect(source).toContain(`a["${brokenAlready}"]`);
+			expect(source).toContain(`b["${formatted}"]`);
+		}
+		const broken = layout.sources.filter((source) =>
+			source.includes("Pilot delivery —<br/>"),
+		);
+		expect(headersOf(broken)).toEqual(["flowchart LR", "flowchart TD"]);
+		for (const source of broken) {
+			expect(source).not.toContain(`c["${STAGE_LABELS[2]}"]`);
+		}
 	});
 
 	it("breaks labels of every common shape, quoted or not", async () => {
@@ -1639,7 +1761,7 @@ describe("generated Proposal diagrams in print (Fizzy #2946)", () => {
 		}
 	});
 
-	it("prints the same six items in the Glossy layout far larger once broken and turned, but too tall for the floor, and warns", async () => {
+	it("prints the same six items in the Glossy layout far larger once turned top-down as written, still below the floor, and warns", async () => {
 		const glossy = timelineToMermaid({
 			kind: "timeline",
 			items: Array.from({ length: 6 }, (_, index) => ({
@@ -1649,18 +1771,36 @@ describe("generated Proposal diagrams in print (Fizzy #2946)", () => {
 			})),
 		});
 		expect(printedNodeLabelPt(viewBoxSize(glossy))).toBeLessThan(2);
+		const layout = recordingLayout();
 		const { diagrams, warnings } = await renderExportDiagrams(
-			input([glossy]),
+			input([glossy], { layout }),
 		);
 		const diagram = diagrams[0];
 		if (diagram?.kind !== "svg") {
 			throw new Error("expected a drawn diagram");
 		}
-		// Broken and top-down it fits the column, but it is taller than a
-		// figure may be, so it prints at about 7.8 pt.
-		expect(diagram.width).toBeLessThanOrEqual(PRINT_COLUMN_PX);
-		expect(diagram.height).toBeGreaterThan(PRINT_FIGURE_MAX_HEIGHT_PX);
-		expect(smallestPrintedLabelPt(diagram)).toBeGreaterThan(7.5);
+		// As written and broken sideways, then both top-down. Broken and
+		// turned it is taller than a figure may be (about 7.8 pt); as written
+		// and turned it is wider than the column but prints larger (about
+		// 8.3 pt), so that one is kept, still below the floor.
+		expect(headersOf(layout.sources)).toEqual([
+			"flowchart LR",
+			"flowchart LR",
+			"flowchart TD",
+			"flowchart TD",
+		]);
+		const brokenTurned = viewBoxSize(String(layout.sources[2]));
+		expect(brokenTurned.height).toBeGreaterThan(PRINT_FIGURE_MAX_HEIGHT_PX);
+		expect(layout.sources[3]).not.toContain("<br/>");
+		expect(diagram.width).toBeCloseTo(
+			viewBoxSize(String(layout.sources[3])).width,
+			0,
+		);
+		expect(diagram.width).toBeGreaterThan(PRINT_COLUMN_PX);
+		expect(printedNodeLabelPt(diagram)).toBeGreaterThan(
+			printedNodeLabelPt(brokenTurned),
+		);
+		expect(smallestPrintedLabelPt(diagram)).toBeGreaterThan(8);
 		expect(smallestPrintedLabelPt(diagram)).toBeLessThan(
 			PRINT_LABEL_FLOOR_PT,
 		);

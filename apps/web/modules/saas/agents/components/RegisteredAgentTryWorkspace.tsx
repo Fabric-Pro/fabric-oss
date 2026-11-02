@@ -61,13 +61,14 @@ export function RegisteredAgentTryWorkspace({
 				id: agentId,
 				organizationId: organizationId ?? null,
 			}),
+		enabled: Boolean(organizationId),
 		retry: false,
 	});
 
 	if (agent && isRetiredSystemAgent(agent)) {
 		return <RetiredAgentNotice basePath={basePath} />;
 	}
-	if (isLoading) {
+	if (!organizationId || isLoading) {
 		return (
 			<div className="flex min-h-[400px] items-center justify-center">
 				<Spinner className="mr-2 size-4 text-primary" />
