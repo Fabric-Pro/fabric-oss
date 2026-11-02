@@ -2165,8 +2165,7 @@ async function handleListFeatures(
 		offset,
 	});
 
-	const assignedToMe =
-		args.assignedToMe === true || args.assigneeId === "me";
+	const assignedToMe = args.assignedToMe === true || args.assigneeId === "me";
 	const targetAssigneeId = assignedToMe
 		? session.userId
 		: typeof args.assigneeId === "string" && args.assigneeId.trim()
@@ -2175,9 +2174,7 @@ async function handleListFeatures(
 	const filteredStories = targetAssigneeId
 		? stories.filter((s) => s.assigneeId === targetAssigneeId)
 		: stories;
-	const effectiveTotal = targetAssigneeId
-		? filteredStories.length
-		: total;
+	const effectiveTotal = targetAssigneeId ? filteredStories.length : total;
 
 	return jsonResult({
 		features: filteredStories.map((s) => ({

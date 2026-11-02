@@ -79,8 +79,9 @@ export async function POST(request: NextRequest) {
 					html: primary?.text,
 					assetBaseUrl: origin,
 					contents: builtIn.contents,
-					meta: (primary?._meta?.ui ??
-						primary?._meta) as McpAppResourceMeta | undefined,
+					meta: (primary?._meta?.ui ?? primary?._meta) as
+						| McpAppResourceMeta
+						| undefined,
 				});
 			}
 			return Response.json(

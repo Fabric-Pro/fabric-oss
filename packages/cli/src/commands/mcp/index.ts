@@ -254,9 +254,10 @@ export function buildMcpCommand(): Command {
 						3,
 					);
 				}
-				const base = (
-					getBaseUrl() ?? "https://app.fabric.pro"
-				).replace(/\/+$/, "");
+				const base = (getBaseUrl() ?? "https://app.fabric.pro").replace(
+					/\/+$/,
+					"",
+				);
 				const path = opts.project
 					? `/api/mcp-gateway/projects/${opts.project}`
 					: "/api/mcp-gateway";
@@ -328,11 +329,7 @@ export function buildMcpCommand(): Command {
 				}
 
 				printOutput(tools, {
-					format: opts.format as
-						| "table"
-						| "json"
-						| "yaml"
-						| "plain",
+					format: opts.format as "table" | "json" | "yaml" | "plain",
 					columns: ["name", "uiApp", "description"],
 				});
 			},
@@ -391,9 +388,10 @@ export function buildMcpCommand(): Command {
 					printError("--input must be valid JSON", 2);
 				}
 
-				const base = (
-					getBaseUrl() ?? "https://app.fabric.pro"
-				).replace(/\/+$/, "");
+				const base = (getBaseUrl() ?? "https://app.fabric.pro").replace(
+					/\/+$/,
+					"",
+				);
 				const path = opts.project
 					? `/api/mcp-gateway/projects/${opts.project}`
 					: "/api/mcp-gateway";
@@ -462,11 +460,7 @@ export function buildMcpCommand(): Command {
 				}
 
 				printOutput(payload.result ?? payload, {
-					format: opts.format as
-						| "table"
-						| "json"
-						| "yaml"
-						| "plain",
+					format: opts.format as "table" | "json" | "yaml" | "plain",
 				});
 			},
 		);
@@ -484,11 +478,7 @@ export function buildMcpCommand(): Command {
 		)
 		.option("-q, --quiet", "Print MCP App URIs only")
 		.action(
-			async (opts: {
-				uri?: string;
-				format: string;
-				quiet?: boolean;
-			}) => {
+			async (opts: { uri?: string; format: string; quiet?: boolean }) => {
 				const apps = [
 					{
 						uri: "ui://fabric/project-dashboard",
@@ -534,11 +524,7 @@ export function buildMcpCommand(): Command {
 				}
 
 				printOutput(filtered, {
-					format: opts.format as
-						| "table"
-						| "json"
-						| "yaml"
-						| "plain",
+					format: opts.format as "table" | "json" | "yaml" | "plain",
 					columns: ["uri", "name", "mimeType", "linkedTool"],
 				});
 			},

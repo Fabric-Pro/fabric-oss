@@ -58,7 +58,10 @@ program
 		process.env.FABRIC_FORMAT ?? "table",
 	)
 	.option("--json", "Shorthand for --format json")
-	.option("--plain", "Shorthand for --format plain (tab-separated, pipe-friendly)")
+	.option(
+		"--plain",
+		"Shorthand for --format plain (tab-separated, pipe-friendly)",
+	)
 	.option("--no-color", "Disable ANSI color output (also honors NO_COLOR)")
 	.addHelpText(
 		"after",

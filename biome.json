@@ -116,6 +116,8 @@
 			"!ag-ui-demo",
 			"!agents/langchain/data-analyst",
 			"!zod/index.ts",
+			"!**/a2ui-core.generated.js",
+			"!**/kit.generated.js",
 			"!tailwind-animate.css",
 			"!!**/globals.css",
 			"!**/package.json",

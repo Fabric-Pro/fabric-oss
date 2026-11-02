@@ -76,7 +76,9 @@ function createResourceMeta(description: string, prefersBorder = true) {
  * Helper to attach an MCP App resource URI (`_meta.ui.resourceUri` and flat `"ui/resourceUri"`)
  * to a tool's `_meta` definition or result.
  */
-export function withFabricApp<T extends Record<string, unknown> = Record<string, unknown>>(
+export function withFabricApp<
+	T extends Record<string, unknown> = Record<string, unknown>,
+>(
 	resourceUri: string,
 	meta: T = {} as T,
 ): T & { ui: { resourceUri: string }; "ui/resourceUri": string } {

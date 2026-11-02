@@ -3452,10 +3452,10 @@ function FabricChatContent({
 const DEEP_RESEARCH_SUGGESTIONS = [
 	{
 		label: "AI agents & autonomous systems",
-		description: "Multi-agent orchestration, tool use & memory architectures",
+		description:
+			"Multi-agent orchestration, tool use & memory architectures",
 		icon: RobotIcon,
-		iconTone:
-			"border-primary/20 bg-primary/10 text-primary",
+		iconTone: "border-primary/20 bg-primary/10 text-primary",
 		prompt: "What are the latest developments in AI agents and autonomous systems?",
 	},
 	{
@@ -3468,7 +3468,8 @@ const DEEP_RESEARCH_SUGGESTIONS = [
 	},
 	{
 		label: "Open source vs proprietary LLMs",
-		description: "Cost, latency, reasoning benchmarks & governance trade-offs",
+		description:
+			"Cost, latency, reasoning benchmarks & governance trade-offs",
 		icon: Scale,
 		iconTone:
 			"border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400",

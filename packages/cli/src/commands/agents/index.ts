@@ -237,8 +237,7 @@ Examples:
 				format: string;
 				quiet?: boolean;
 			}) => {
-				const target =
-					opts.target === "desktop" ? "desktop" : "remote";
+				const target = opts.target === "desktop" ? "desktop" : "remote";
 				const query = new URLSearchParams();
 				if (opts.projectSlug) {
 					query.set("workspace", opts.projectSlug);
@@ -289,11 +288,7 @@ Examples:
 					remoteDelegationUrl,
 				};
 
-				const fmt = opts.format as
-					| "table"
-					| "json"
-					| "yaml"
-					| "plain";
+				const fmt = opts.format as "table" | "json" | "yaml" | "plain";
 				if (fmt === "json" || fmt === "yaml" || fmt === "plain") {
 					printOutput(payload, { format: fmt });
 					return;
@@ -373,11 +368,7 @@ Examples:
 					projectSlug: opts.projectSlug ?? null,
 				};
 
-				const fmt = opts.format as
-					| "table"
-					| "json"
-					| "yaml"
-					| "plain";
+				const fmt = opts.format as "table" | "json" | "yaml" | "plain";
 				if (fmt === "json" || fmt === "yaml" || fmt === "plain") {
 					printOutput(payload, { format: fmt });
 					return;
@@ -461,11 +452,7 @@ Examples:
 				}
 
 				printOutput(harnesses, {
-					format: opts.format as
-						| "table"
-						| "json"
-						| "yaml"
-						| "plain",
+					format: opts.format as "table" | "json" | "yaml" | "plain",
 					columns: [
 						"id",
 						"name",

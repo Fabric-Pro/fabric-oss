@@ -3164,14 +3164,36 @@ export function FabricTemporalOrchestratorChat({
 		if (emoji === "🤖" || lower.includes("agent")) {
 			return <RobotIcon className="h-4 w-4 text-primary" />;
 		}
-		if (emoji === "🔍" || lower.includes("search") || lower.includes("rag") || lower.includes("query")) {
-			return <Search className="h-4 w-4 text-blue-600 dark:text-blue-400" />;
+		if (
+			emoji === "🔍" ||
+			lower.includes("search") ||
+			lower.includes("rag") ||
+			lower.includes("query")
+		) {
+			return (
+				<Search className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+			);
 		}
-		if (emoji === "✍️" || emoji === "📝" || lower.includes("prompt") || lower.includes("write") || lower.includes("doc")) {
-			return <NotebookPen className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />;
+		if (
+			emoji === "✍️" ||
+			emoji === "📝" ||
+			lower.includes("prompt") ||
+			lower.includes("write") ||
+			lower.includes("doc")
+		) {
+			return (
+				<NotebookPen className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+			);
 		}
-		if (emoji === "📋" || emoji === "🎯" || lower.includes("task") || lower.includes("plan")) {
-			return <SquareCheckBig className="h-4 w-4 text-amber-600 dark:text-amber-400" />;
+		if (
+			emoji === "📋" ||
+			emoji === "🎯" ||
+			lower.includes("task") ||
+			lower.includes("plan")
+		) {
+			return (
+				<SquareCheckBig className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+			);
 		}
 		return <ScrollText className="h-4 w-4 text-primary" />;
 	};

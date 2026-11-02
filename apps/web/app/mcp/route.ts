@@ -2489,11 +2489,10 @@ function createRequestSession(
 				)) as any;
 			}
 
-	if (PLATFORM_TOOL_DEFINITIONS.some((tool) => tool.name === name)) {
-				const rawMeta = (requestMessage.params as Record<
-					string,
-					unknown
-				>)._meta as Record<string, unknown> | undefined;
+			if (PLATFORM_TOOL_DEFINITIONS.some((tool) => tool.name === name)) {
+				const rawMeta = (
+					requestMessage.params as Record<string, unknown>
+				)._meta as Record<string, unknown> | undefined;
 				const durable = isDurableMcpToolRequest(
 					null,
 					requestMessage.params as Record<string, unknown>,

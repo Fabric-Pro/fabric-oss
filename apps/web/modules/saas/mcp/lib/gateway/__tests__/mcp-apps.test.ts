@@ -115,10 +115,13 @@ describe("MCP Apps, Stateless MCP & Durable Tool Execution", () => {
 	});
 
 	it("detects stateless MCP requests from X-Mcp-Stateless header or stateless query parameter", () => {
-		const reqHeader = new Request("https://app.example.com/api/mcp-gateway", {
-			method: "POST",
-			headers: { "X-Mcp-Stateless": "true" },
-		});
+		const reqHeader = new Request(
+			"https://app.example.com/api/mcp-gateway",
+			{
+				method: "POST",
+				headers: { "X-Mcp-Stateless": "true" },
+			},
+		);
 		expect(isStatelessMcpRequest(reqHeader)).toBe(true);
 
 		const reqQuery = new Request(
@@ -127,17 +130,23 @@ describe("MCP Apps, Stateless MCP & Durable Tool Execution", () => {
 		);
 		expect(isStatelessMcpRequest(reqQuery)).toBe(true);
 
-		const reqNormal = new Request("https://app.example.com/api/mcp-gateway", {
-			method: "POST",
-		});
+		const reqNormal = new Request(
+			"https://app.example.com/api/mcp-gateway",
+			{
+				method: "POST",
+			},
+		);
 		expect(isStatelessMcpRequest(reqNormal)).toBe(false);
 	});
 
 	it("detects durable tool requests and wraps tool results in a deterministic Temporal durable execution envelope", async () => {
-		const reqDurable = new Request("https://app.example.com/api/mcp-gateway", {
-			method: "POST",
-			headers: { "X-Mcp-Durable": "true" },
-		});
+		const reqDurable = new Request(
+			"https://app.example.com/api/mcp-gateway",
+			{
+				method: "POST",
+				headers: { "X-Mcp-Durable": "true" },
+			},
+		);
 		expect(isDurableMcpToolRequest(reqDurable)).toBe(true);
 		expect(
 			isDurableMcpToolRequest(null, { _meta: { durable: true } }),
