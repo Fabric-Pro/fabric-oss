@@ -141,7 +141,7 @@ export function createFabricMcpServer(
 	const fabric = options.fabric;
 	const server = new McpServer({
 		name: options.name ?? "fabric",
-		version: options.version ?? "0.1.16",
+		version: options.version ?? "0.1.17",
 	});
 
 	// Register all built-in Fabric MCP App resources (`ui://fabric/*`)

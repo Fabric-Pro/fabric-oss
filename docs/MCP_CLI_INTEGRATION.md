@@ -289,7 +289,7 @@ Check server configuration and ensure required environment variables are set.
 
 ## `@fabricorg/cli` and `@fabricorg/sdk-mcp` Commands
 
-The published `@fabricorg/cli` (`0.7.6`) and `@fabricorg/sdk-mcp` (`0.1.16`) packages expose first-class terminal commands and programmatic helpers for Fabric Agents, MCP Gateway tool calls, and interactive MCP Apps.
+The published `@fabricorg/cli` (`0.7.7`) and `@fabricorg/sdk-mcp` (`0.1.17`) packages expose first-class terminal commands and programmatic helpers for Fabric Agents, MCP Gateway tool calls, and interactive MCP Apps.
 
 ### Agent Delegation & Subscriptions (`fabric agents`)
 
