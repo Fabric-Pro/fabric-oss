@@ -136,6 +136,7 @@ export function StartImplementationSessionButton({
 	const effectiveProvider =
 		initialExecutionProvider ?? recommendation.provider;
 	const isKanbanLocal = effectiveProvider === "KANBAN_LOCAL";
+	const delegationPrefs = loadProjectDelegationPreferences(projectId);
 	const [serverId, setServerId] = useState("");
 	const servers = useQuery({
 		queryKey: ["remoteAgentServers", projectId, organizationId],
@@ -148,8 +149,10 @@ export function StartImplementationSessionButton({
 		enabled: isOpen && !isKanbanLocal && canExecuteAgents && !readOnlyMode,
 		retry: false,
 	});
+	const effectiveServerId =
+		serverId || delegationPrefs.preferredServerId || "";
 	const selectedServer = servers.data?.servers.find(
-		(server) => server.id === serverId,
+		(server) => server.id === effectiveServerId,
 	);
 	const selectedServerId = selectedServer?.id;
 	const bridgeEnabled = servers.data?.enabled !== false;
@@ -251,8 +254,6 @@ export function StartImplementationSessionButton({
 			});
 		},
 	});
-
-	const delegationPrefs = loadProjectDelegationPreferences(projectId);
 
 	const handleButtonClick = () => {
 		if (isKanbanLocal) {

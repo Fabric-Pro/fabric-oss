@@ -981,13 +981,13 @@ export function AiProvidersSettingsForm({
 							</div>
 						)}
 
-					{/* Remote & Subscription Agent Bridges Section */}
+					{/* Fabric Agents Remote Server & Desktop Section */}
 					<div>
 						<h4 className="app-editorial-label mb-3">
-							Remote & Subscription Agent Bridges
+							Fabric Agents Remote Server &amp; Desktop
 						</h4>
 						<div className="grid auto-rows-fr gap-4 md:grid-cols-2">
-							{/* Card 1: Fabric Remote Server / OpenAI-Compatible Endpoint (CUSTOM) */}
+							{/* Card 1: Fabric Agents Remote Server (CUSTOM) */}
 							{(() => {
 								const provider = customRemoteProvider;
 								const isConfigured = isProviderConfigured(
@@ -1011,13 +1011,20 @@ export function AiProvidersSettingsForm({
 												<div className="min-w-0 flex-1">
 													<div className="flex min-w-0 flex-wrap items-center gap-1.5">
 														<h4
-															className="truncate font-semibold text-sm"
+															className="font-semibold text-sm leading-snug"
 															title={
 																provider.name
 															}
 														>
 															{provider.name}
 														</h4>
+														<Badge
+															variant="secondary"
+															className="shrink-0 text-xs"
+														>
+															Personal or Org
+															Server
+														</Badge>
 														{isDefault && (
 															<Badge
 																variant="success"
@@ -1038,12 +1045,7 @@ export function AiProvidersSettingsForm({
 														)}
 														<Icon className="sr-only" />
 													</div>
-													<p
-														className="mt-1 line-clamp-2 min-h-[2.5rem] text-muted-foreground text-xs"
-														title={
-															provider.description
-														}
-													>
+													<p className="mt-1 text-muted-foreground text-xs leading-relaxed">
 														{provider.description}
 													</p>
 												</div>
@@ -1062,8 +1064,8 @@ export function AiProvidersSettingsForm({
 												>
 													<SettingsIcon className="mr-2 size-4" />
 													{isConfigured
-														? "Reconfigure"
-														: "Configure"}
+														? "Reconfigure Fabric Agents Remote Server"
+														: "Configure Fabric Agents Remote Server"}
 												</Button>
 												{isConfigured && (
 													<Tooltip>
@@ -1170,7 +1172,7 @@ export function AiProvidersSettingsForm({
 								);
 							})()}
 
-							{/* Card 2: Subscription & Desktop Agents (ChatGPT Plus/Pro & Fabric Desktop) */}
+							{/* Card 2: Fabric Agents Desktop & Subscription Bridges */}
 							<Card className="relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:border-primary/50 hover:shadow-xs">
 								<div className="flex flex-1 flex-col justify-between gap-3">
 									<div className="flex items-start gap-3">
@@ -1180,11 +1182,10 @@ export function AiProvidersSettingsForm({
 										<div className="min-w-0 flex-1">
 											<div className="flex min-w-0 flex-wrap items-center gap-1.5">
 												<h4
-													className="truncate font-semibold text-sm"
-													title="Subscription & Desktop Agents"
+													className="font-semibold text-sm leading-snug"
+													title="Fabric Agents Desktop"
 												>
-													Subscription & Desktop
-													Agents
+													Fabric Agents Desktop
 												</h4>
 												<Badge
 													variant="secondary"
@@ -1193,15 +1194,14 @@ export function AiProvidersSettingsForm({
 													Zero API Cost
 												</Badge>
 											</div>
-											<p
-												className="mt-1 line-clamp-2 min-h-[2.5rem] text-muted-foreground text-xs"
-												title="Route AI requests through your ChatGPT Plus/Pro subscription bridge or local Fabric Desktop proxy without paying per-token API fees."
-											>
-												Route AI requests through your
-												ChatGPT Plus/Pro subscription
-												bridge or local Fabric Desktop
-												proxy without paying per-token
-												API fees.
+											<p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+												Route AI requests and coding
+												tasks through Fabric Agents
+												Desktop or your ChatGPT
+												Plus/Pro, Claude, Codex, Droid,
+												Grok, Kimi, and Cursor
+												subscriptions without paying
+												per-token API fees.
 											</p>
 										</div>
 									</div>
@@ -1218,7 +1218,7 @@ export function AiProvidersSettingsForm({
 											}
 										>
 											<LaptopIcon className="mr-2 size-4" />
-											Connect Subscription / Desktop
+											Configure Fabric Agents Desktop
 										</Button>
 									</div>
 								</div>
@@ -1307,7 +1307,7 @@ export function AiProvidersSettingsForm({
 														)}
 													</div>
 													<p
-														className="mt-1 line-clamp-2 min-h-[2.5rem] text-muted-foreground text-xs"
+														className="mt-1 text-muted-foreground text-xs leading-relaxed"
 														title={
 															provider.description
 														}
@@ -1601,7 +1601,7 @@ export function AiProvidersSettingsForm({
 														)}
 													</div>
 													<p
-														className="mt-1 line-clamp-2 min-h-[2.5rem] text-muted-foreground text-xs"
+														className="mt-1 text-muted-foreground text-xs leading-relaxed"
 														title={
 															provider.description
 														}
@@ -1884,7 +1884,7 @@ export function AiProvidersSettingsForm({
 														)}
 													</div>
 													<p
-														className="mt-1 line-clamp-2 min-h-[2.5rem] text-muted-foreground text-xs"
+														className="mt-1 text-muted-foreground text-xs leading-relaxed"
 														title={
 															provider.description
 														}
@@ -2390,8 +2390,22 @@ export function AiProvidersSettingsForm({
 								{selectedProvider.id === "CUSTOM" && (
 									<div className="flex flex-wrap items-center gap-1.5 pt-0.5">
 										<span className="text-muted-foreground text-xs">
-											Quick preset:
+											Quick presets:
 										</span>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											className="h-6 px-2 text-xs"
+											onClick={() =>
+												handleBaseUrlChange(
+													"http://127.0.0.1:9100/v1",
+												)
+											}
+										>
+											Personal / Local Remote Server
+											(127.0.0.1:9100/v1)
+										</Button>
 										<Button
 											type="button"
 											variant="outline"
@@ -2403,8 +2417,21 @@ export function AiProvidersSettingsForm({
 												)
 											}
 										>
-											Local Desktop Proxy
+											Fabric Agents Desktop
 											(127.0.0.1:4100/v1)
+										</Button>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											className="h-6 px-2 text-xs"
+											onClick={() =>
+												handleBaseUrlChange(
+													"https://agents.example.com/v1",
+												)
+											}
+										>
+											Organization Remote Server
 										</Button>
 									</div>
 								)}
@@ -2759,7 +2786,7 @@ export function AiProvidersSettingsForm({
 				</DialogContent>
 			</Dialog>
 
-			{/* Subscription & Desktop Agents Bridge Dialog */}
+			{/* Fabric Agents Desktop & Subscription Bridges Dialog */}
 			<Dialog
 				open={subscriptionBridgeDialogOpen}
 				onOpenChange={setSubscriptionBridgeDialogOpen}
@@ -2767,12 +2794,14 @@ export function AiProvidersSettingsForm({
 				<DialogContent className="max-w-lg">
 					<DialogHeader>
 						<DialogTitle>
-							Connect Subscription & Desktop Agents
+							Configure Fabric Agents Desktop &amp; Subscription
+							Bridges
 						</DialogTitle>
 						<DialogDescription>
-							Use your existing ChatGPT Plus/Pro subscription or
-							Fabric Desktop local proxy to serve AI requests
-							without per-token API charges.
+							Use your existing ChatGPT Plus/Pro, Claude, Codex,
+							Droid, Grok, Kimi, or Cursor subscription with
+							Fabric Agents Desktop or a Fabric Agents Remote
+							Server without per-token API charges.
 						</DialogDescription>
 					</DialogHeader>
 
@@ -2780,35 +2809,18 @@ export function AiProvidersSettingsForm({
 						<div className="space-y-2 rounded-lg border border-border p-3.5">
 							<div className="flex items-center justify-between gap-2">
 								<p className="font-medium text-sm">
-									1. ChatGPT Plus / Pro Subscription Bridge
-								</p>
-								<Badge variant="secondary" className="text-xs">
-									CLI Bridge
-								</Badge>
-							</div>
-							<p className="text-muted-foreground text-xs">
-								Run this command in your terminal to link your
-								ChatGPT Plus or Pro account to Fabric:
-							</p>
-							<ChatgptConnectCommand />
-						</div>
-
-						<div className="space-y-2 rounded-lg border border-border p-3.5">
-							<div className="flex items-center justify-between gap-2">
-								<p className="font-medium text-sm">
-									2. Fabric Desktop Local OpenAI Proxy
+									1. Fabric Agents Desktop (Local App &amp;
+									OpenAI Proxy)
 								</p>
 								<Badge variant="outline" className="text-xs">
-									Desktop App
+									Fabric Agents Desktop
 								</Badge>
 							</div>
-							<p className="text-muted-foreground text-xs">
-								Open Fabric Desktop Settings to enable the local
-								OpenAI-compatible proxy (default{" "}
-								<code>http://127.0.0.1:4100/v1</code> for
-								self-hosted / local Fabric instances, or expose
-								an HTTPS tunnel / remote bridge URL for hosted
-								deployments).
+							<p className="text-muted-foreground text-xs leading-relaxed">
+								Open Fabric Agents Desktop Settings to enable
+								the local OpenAI-compatible proxy (default{" "}
+								<code>http://127.0.0.1:4100/v1</code>) or assign
+								coding tasks directly from any feature card.
 							</p>
 							<div className="flex flex-wrap items-center gap-2 pt-1">
 								<Button variant="outline" size="sm" asChild>
@@ -2818,7 +2830,7 @@ export function AiProvidersSettingsForm({
 										)}
 									>
 										<LaptopIcon className="mr-1.5 size-3.5" />
-										Open Fabric Desktop Settings
+										Open Fabric Agents Desktop Settings
 									</a>
 								</Button>
 								<Button
@@ -2836,9 +2848,80 @@ export function AiProvidersSettingsForm({
 									}}
 								>
 									<ServerIcon className="mr-1.5 size-3.5" />
-									Configure Local Proxy Endpoint
+									Configure Fabric Agents Desktop Endpoint
 								</Button>
 							</div>
+						</div>
+
+						<div className="space-y-2 rounded-lg border border-border p-3.5">
+							<div className="flex items-center justify-between gap-2">
+								<p className="font-medium text-sm">
+									2. Fabric Agents Remote Server (Personal or
+									Organization)
+								</p>
+								<Badge variant="secondary" className="text-xs">
+									Fabric Agents Remote Server
+								</Badge>
+							</div>
+							<p className="text-muted-foreground text-xs leading-relaxed">
+								Connect your Personal Fabric Agents Remote
+								Server (<code>http://127.0.0.1:9100/v1</code>)
+								or your Organization Fabric Agents Remote Server
+								(<code>https://agents.example.com/v1</code>)
+								backed by your subscription tokens.
+							</p>
+							<div className="flex flex-wrap items-center gap-2 pt-1">
+								<Button
+									variant="outline"
+									size="sm"
+									type="button"
+									onClick={() => {
+										setSubscriptionBridgeDialogOpen(false);
+										handleConfigureProvider(
+											customRemoteProvider,
+										);
+										handleBaseUrlChange(
+											"http://127.0.0.1:9100/v1",
+										);
+									}}
+								>
+									<ServerIcon className="mr-1.5 size-3.5" />
+									Personal Remote Server (:9100/v1)
+								</Button>
+								<Button
+									variant="outline"
+									size="sm"
+									type="button"
+									onClick={() => {
+										setSubscriptionBridgeDialogOpen(false);
+										handleConfigureProvider(
+											customRemoteProvider,
+										);
+										handleBaseUrlChange(
+											"https://agents.example.com/v1",
+										);
+									}}
+								>
+									<ServerIcon className="mr-1.5 size-3.5" />
+									Organization Remote Server
+								</Button>
+							</div>
+						</div>
+
+						<div className="space-y-2 rounded-lg border border-border p-3.5">
+							<div className="flex items-center justify-between gap-2">
+								<p className="font-medium text-sm">
+									3. ChatGPT Plus / Pro Subscription Bridge
+								</p>
+								<Badge variant="secondary" className="text-xs">
+									CLI Bridge
+								</Badge>
+							</div>
+							<p className="text-muted-foreground text-xs leading-relaxed">
+								Run this command in your terminal to link your
+								ChatGPT Plus or Pro account to Fabric:
+							</p>
+							<ChatgptConnectCommand />
 						</div>
 					</div>
 

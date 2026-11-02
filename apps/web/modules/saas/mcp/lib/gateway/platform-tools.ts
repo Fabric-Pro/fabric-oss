@@ -2138,6 +2138,13 @@ async function handleListFeatures(
 	const limit = Math.min((args.limit as number) ?? 50, 100);
 	const offset = (args.offset as number) ?? 0;
 
+	const assignedToMe = args.assignedToMe === true || args.assigneeId === "me";
+	const targetAssigneeId = assignedToMe
+		? session.userId
+		: typeof args.assigneeId === "string" && args.assigneeId.trim()
+			? args.assigneeId.trim()
+			: undefined;
+
 	const { stories, total } = await listStorySummaries({
 		projectId,
 		statusId: args.statusId as string | undefined,
@@ -2161,23 +2168,13 @@ async function handleListFeatures(
 		// returned; the filter only makes the split addressable.
 		kind: args.kind as StoryKindValue | undefined,
 		search: args.search as string | undefined,
+		assigneeId: targetAssigneeId,
 		limit,
 		offset,
 	});
 
-	const assignedToMe = args.assignedToMe === true || args.assigneeId === "me";
-	const targetAssigneeId = assignedToMe
-		? session.userId
-		: typeof args.assigneeId === "string" && args.assigneeId.trim()
-			? args.assigneeId.trim()
-			: undefined;
-	const filteredStories = targetAssigneeId
-		? stories.filter((s) => s.assigneeId === targetAssigneeId)
-		: stories;
-	const effectiveTotal = targetAssigneeId ? filteredStories.length : total;
-
 	return jsonResult({
-		features: filteredStories.map((s) => ({
+		features: stories.map((s) => ({
 			id: s.id,
 			identifier: s.identifier,
 			title: s.title,
@@ -2198,8 +2195,8 @@ async function handleListFeatures(
 			createdAt: s.createdAt,
 			updatedAt: s.updatedAt,
 		})),
-		total: effectiveTotal,
-		hasMore: offset + limit < effectiveTotal,
+		total,
+		hasMore: offset + limit < total,
 		...(assignedToMe ? { assignedToMe: true } : {}),
 	});
 }
@@ -2432,14 +2429,14 @@ async function handleGetFeature(
 		return errorResult("Feature not found");
 	}
 
-	// Find latest coding run with PR info
-	const latestRun = story.tasks
-		.flatMap((t) => t.codingRuns ?? [])
-		.sort(
-			(a, b) =>
-				new Date(b.createdAt).getTime() -
-				new Date(a.createdAt).getTime(),
-		)[0];
+	// Find latest coding run with PR info (across story-level and task-level runs)
+	const latestRun = [
+		...(story.codingRuns ?? []),
+		...story.tasks.flatMap((t) => t.codingRuns ?? []),
+	].sort(
+		(a, b) =>
+			new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+	)[0];
 
 	return jsonResult({
 		id: story.id,

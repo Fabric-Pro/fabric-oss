@@ -11,6 +11,66 @@ import { getClient } from "../../lib/client.js";
 import { resolveContext } from "../../lib/context.js";
 import { printError, printOutput, printRecord } from "../../lib/output.js";
 
+const ALLOWED_DELEGATE_TARGETS = new Set(["desktop", "remote"]);
+const ALLOWED_DELEGATE_HARNESSES = new Set([
+	"auto",
+	"default",
+	"claude-max",
+	"codex",
+	"chatgpt-plus",
+	"droid-cli",
+	"grok-cli",
+	"kimi-cli",
+	"antigravity-cli",
+	"cursor",
+	"cursor-cli",
+]);
+const ALLOWED_FALLBACK_POLICIES = new Set([
+	"subscription_harnesses",
+	"org_paid_api",
+	"pause_on_limit",
+]);
+const ALLOWED_DESKTOP_VIEWS = new Set([
+	"allSessions",
+	"settings",
+	"sources",
+	"agents",
+	"skills",
+]);
+
+function normalizeValidatedServerUrl(rawUrl: string): string {
+	let parsed: URL;
+	try {
+		parsed = new URL(rawUrl.trim());
+	} catch {
+		printError(
+			`--server-url must be a valid HTTP(S) URL (received "${rawUrl}")`,
+			2,
+		);
+	}
+	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+		printError(
+			"--server-url must use https:// (or http:// for localhost/127.0.0.1)",
+			2,
+		);
+	}
+	if (
+		parsed.protocol === "http:" &&
+		parsed.hostname !== "localhost" &&
+		parsed.hostname !== "127.0.0.1" &&
+		parsed.hostname !== "[::1]"
+	) {
+		printError(
+			"--server-url with http:// is only allowed for localhost or 127.0.0.1; use https:// for remote servers",
+			2,
+		);
+	}
+	if (parsed.username || parsed.password) {
+		printError("--server-url must not embed credentials", 2);
+	}
+	return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
+}
+
 export function buildAgentsCommand(): Command {
 	const agents = new Command("agents").description("Manage agents");
 
@@ -237,7 +297,26 @@ Examples:
 				format: string;
 				quiet?: boolean;
 			}) => {
-				const target = opts.target === "desktop" ? "desktop" : "remote";
+				if (!ALLOWED_DELEGATE_TARGETS.has(opts.target)) {
+					printError(
+						`--target must be one of: ${[...ALLOWED_DELEGATE_TARGETS].join(", ")}`,
+						2,
+					);
+				}
+				if (!ALLOWED_DELEGATE_HARNESSES.has(opts.harness)) {
+					printError(
+						`--harness must be one of: ${[...ALLOWED_DELEGATE_HARNESSES].join(", ")}`,
+						2,
+					);
+				}
+				if (!ALLOWED_FALLBACK_POLICIES.has(opts.fallback)) {
+					printError(
+						`--fallback must be one of: ${[...ALLOWED_FALLBACK_POLICIES].join(", ")}`,
+						2,
+					);
+				}
+				const target = opts.target as "desktop" | "remote";
+				const cleanServer = normalizeValidatedServerUrl(opts.serverUrl);
 				const query = new URLSearchParams();
 				if (opts.projectSlug) {
 					query.set("workspace", opts.projectSlug);
@@ -261,7 +340,6 @@ Examples:
 				}
 
 				const desktopDeepLink = `fabricagents://action/new-chat?${query.toString()}`;
-				const cleanServer = opts.serverUrl.replace(/\/+$/, "");
 				const remoteDelegationUrl = `${cleanServer}/?${query.toString()}`;
 				const activeUrl =
 					target === "desktop"
@@ -339,6 +417,12 @@ Examples:
 				format: string;
 				quiet?: boolean;
 			}) => {
+				if (!ALLOWED_DESKTOP_VIEWS.has(opts.view)) {
+					printError(
+						`--view must be one of: ${[...ALLOWED_DESKTOP_VIEWS].join(", ")}`,
+						2,
+					);
+				}
 				const query = new URLSearchParams();
 				if (opts.projectSlug) {
 					query.set("workspace", opts.projectSlug);
@@ -406,6 +490,7 @@ Examples:
 				format: string;
 				quiet?: boolean;
 			}) => {
+				normalizeValidatedServerUrl(opts.serverUrl);
 				const harnesses = [
 					{
 						id: "claude-max",

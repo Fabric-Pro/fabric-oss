@@ -109,8 +109,17 @@ export function StartCodingRunDialog({
 	useEffect(() => {
 		if (open) {
 			setSelectedTaskId(focusedTaskId ?? null);
+			setSelectedConnection(initialConnection);
+			setSelectedModel(initialModel);
+			setSelectedFallbackPolicy(initialFallbackPolicy);
 		}
-	}, [open, focusedTaskId]);
+	}, [
+		open,
+		focusedTaskId,
+		initialConnection,
+		initialModel,
+		initialFallbackPolicy,
+	]);
 
 	if (!story) {
 		return null;
@@ -317,12 +326,6 @@ export function StartCodingRunDialog({
 						</div>
 
 						{/* Quick-select harness pills */}
-						{bridgeEnabled === false && (
-							<p className="text-xs text-muted-foreground">
-								Harness, model, and quota fallback routing apply
-								when the Fabric Agents bridge is enabled.
-							</p>
-						)}
 						<div className="flex flex-wrap gap-1.5">
 							{FABRIC_AGENT_CONNECTIONS.map((option) => {
 								const isSelected =
@@ -331,9 +334,7 @@ export function StartCodingRunDialog({
 									<button
 										key={option.value}
 										type="button"
-										disabled={
-											isLoading || bridgeEnabled === false
-										}
+										disabled={isLoading}
 										onClick={() =>
 											handleConnectionChange(option.value)
 										}
@@ -363,9 +364,7 @@ export function StartCodingRunDialog({
 											event.target.value,
 										)
 									}
-									disabled={
-										isLoading || bridgeEnabled === false
-									}
+									disabled={isLoading}
 									className="mt-1 flex h-9 w-full rounded-lg border border-input bg-background px-3 py-1 text-sm text-foreground shadow-xs transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 								>
 									{FABRIC_AGENT_CONNECTIONS.map((option) => (
@@ -394,9 +393,7 @@ export function StartCodingRunDialog({
 									onChange={(event) =>
 										setSelectedModel(event.target.value)
 									}
-									disabled={
-										isLoading || bridgeEnabled === false
-									}
+									disabled={isLoading}
 									className="mt-1 flex h-9 w-full rounded-lg border border-input bg-background px-3 py-1 text-sm text-foreground shadow-xs transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 								>
 									<option value="default">
@@ -463,10 +460,7 @@ export function StartCodingRunDialog({
 											name="fabric-agent-fallback-policy"
 											value={policy.value}
 											checked={isSelected}
-											disabled={
-												isLoading ||
-												bridgeEnabled === false
-											}
+											disabled={isLoading}
 											onChange={() =>
 												setSelectedFallbackPolicy(
 													policy.value,
@@ -599,27 +593,30 @@ export function StartCodingRunDialog({
 						Follow its progress and conversation from this project.
 					</p>
 
-					{/* Run it yourself (Subscription CLI / IDE / Desktop — Not Tracked) */}
+					{/* Direct Assignment to Fabric Agents Desktop / CLI */}
 					<div className="space-y-2.5 rounded-lg border border-border bg-muted/20 p-3">
 						<div className="flex flex-wrap items-center justify-between gap-2">
 							<div className="flex items-center gap-2 text-xs">
 								<TerminalIcon className="size-3.5 text-primary" />
 								<span className="font-semibold text-foreground">
-									Run it yourself (Subscription CLI / IDE /
-									Desktop — Not Tracked)
+									Assign to Fabric Agents Desktop or
+									Subscription CLI
 								</span>
 							</div>
 							<Badge
 								variant="outline"
 								className="rounded-full px-2 py-0 text-[10px] text-muted-foreground"
 							>
-								Does not create a tracked coding run
+								Uses your selected subscription harness &amp;
+								model
 							</Badge>
 						</div>
 						<p className="text-xs leading-5 text-muted-foreground">
 							Prefer to run Claude Code, Codex, Cursor,
 							Antigravity, or Fabric Desktop directly? Copy the
-							MCP-ready prompt or launch your local desktop app.
+							MCP-ready prompt or launch your local Fabric Agents
+							Desktop app with your chosen subscription harness
+							pre-selected.
 						</p>
 						<div className="flex flex-wrap items-center gap-1.5">
 							<Button
@@ -657,12 +654,20 @@ export function StartCodingRunDialog({
 											repositoryName ||
 											story.title ||
 											"Fabric Project",
+										projectId,
+										origin:
+											typeof window !== "undefined"
+												? window.location.origin
+												: null,
+										connection: selectedConnection,
+										model: selectedModel,
+										fallbackPolicy: selectedFallbackPolicy,
 										prompt: `Implement feature ${story.identifier} ("${story.title}")${focusedTask ? ` — primary task ${focusedTask.identifier}: ${focusedTask.title}` : ""}${effectiveRepoOwner && effectiveRepoName ? ` in ${effectiveRepoOwner}/${effectiveRepoName}` : ""}${effectiveBranch ? ` (base branch: ${effectiveBranch})` : ""}.`,
 									})}
 									data-testid="dialog-launch-fabric-desktop"
 								>
 									<LaptopIcon className="mr-1.5 size-3" />
-									Open in Fabric Desktop
+									Open in Fabric Agents Desktop
 								</a>
 							</Button>
 							{selectedServerUrl && (
@@ -681,6 +686,12 @@ export function StartCodingRunDialog({
 													repositoryName ||
 													story.title ||
 													"Fabric Project",
+												projectId,
+												origin:
+													typeof window !==
+													"undefined"
+														? window.location.origin
+														: null,
 												prompt: `Implement feature "${story.title}"${effectiveRepoOwner && effectiveRepoName ? ` in ${effectiveRepoOwner}/${effectiveRepoName}` : ""}${effectiveBranch ? ` (base branch: ${effectiveBranch})` : ""}.`,
 												connection: selectedConnection,
 												model: selectedModel,
@@ -693,7 +704,8 @@ export function StartCodingRunDialog({
 										data-testid="dialog-delegate-remote-server"
 									>
 										<CpuIcon className="mr-1.5 size-3" />
-										Open Selected Remote Server UI
+										Open Selected Fabric Agents Remote
+										Server
 									</a>
 								</Button>
 							)}

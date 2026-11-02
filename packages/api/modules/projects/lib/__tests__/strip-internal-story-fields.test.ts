@@ -145,4 +145,26 @@ describe("shared coding run summaries", () => {
 		);
 		expect(run.externalUrl).toContain("private.example.com");
 	});
+
+	it("strips executionTarget from providerMetadata even when connectionId is absent", () => {
+		const run = {
+			status: "RUNNING",
+			externalUrl: "https://agents.example.com/?session=1",
+			providerMetadata: {
+				executionRuntime: "fabric-agent-server",
+				llmConnection: "codex",
+				executionTarget: {
+					url: "http://127.0.0.1:9100",
+					profileId: "fabric-user-1",
+				},
+			},
+		};
+		const summary = stripRemoteCodingRunSummary(run);
+		expect(summary.providerMetadata).toEqual({
+			executionRuntime: "fabric-agent-server",
+			llmConnection: "codex",
+		});
+		expect(JSON.stringify(summary)).not.toContain("127.0.0.1:9100");
+		expect(JSON.stringify(summary)).not.toContain("fabric-user-1");
+	});
 });

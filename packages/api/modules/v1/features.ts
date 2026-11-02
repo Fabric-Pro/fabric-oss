@@ -19,10 +19,7 @@ import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { enqueuePmSync } from "../projects/lib/enqueue-pm-sync";
-import {
-	stripInternalStoryFields,
-	stripInternalStoryFieldsFromMany,
-} from "../projects/lib/strip-internal-story-fields";
+import { stripInternalStoryFields } from "../projects/lib/strip-internal-story-fields";
 import {
 	badRequest,
 	forbidden,
@@ -41,6 +38,8 @@ function redactV1CodingRun<T extends Record<string, unknown>>(run: T): T {
 		providerSessionId: null,
 		externalUrl: null,
 		externalStatus: null,
+		...("workingDirectory" in run ? { workingDirectory: null } : {}),
+		...("events" in run ? { events: [] } : {}),
 		providerMetadata:
 			typeof metadata?.executionRuntime === "string"
 				? { executionRuntime: metadata.executionRuntime }
@@ -131,7 +130,7 @@ export function registerFeatureRoutes(
 			});
 
 			return c.json(
-				ok(stripInternalStoryFieldsFromMany(result.stories), {
+				ok(result.stories.map(redactV1StoryCodingRuns), {
 					total: result.total,
 				}),
 			);

@@ -175,6 +175,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			let valid = false;
 			try {
 				const link = new URL(data.externalUrl);
+				const controlPlane = new URL(this.controlPlaneUrl);
 				valid =
 					!link.username &&
 					!link.password &&
@@ -182,9 +183,9 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 						link.hostname === "workspace" &&
 						!link.search &&
 						!link.hash) ||
-						(link.protocol === "https:" &&
-							link.origin ===
-								new URL(this.controlPlaneUrl).origin));
+						((link.protocol === "https:" ||
+							link.protocol === controlPlane.protocol) &&
+							link.origin === controlPlane.origin));
 			} catch {
 				/* Invalid URI is rejected before it reaches product links. */
 			}
@@ -582,7 +583,9 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			const secret = await getRemoteAgentServerSecret(
 				this.expectedTarget,
 				options.method === "POST" &&
-					(url.endsWith("/sessions") || url.endsWith("/prompt")),
+					(url.endsWith("/sessions") ||
+						url.endsWith("/sessions/readiness") ||
+						url.endsWith("/prompt")),
 			);
 			requestOptions = { ...options, headers: getAuthHeaders(secret) };
 		}

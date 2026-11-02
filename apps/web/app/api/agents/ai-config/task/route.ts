@@ -9,6 +9,7 @@ import {
 	getAIModelWithMetadata,
 	getRAGProviderConfigForModel,
 	isReasoningModelName,
+	requiresBaseUrl,
 } from "@repo/ai";
 import {
 	chatGptPlanExhaustedRefusal,
@@ -112,6 +113,7 @@ export async function GET(req: NextRequest) {
 			const plan = await getChatGptPlanAgentConfig({
 				userId,
 				model: metadata.modelString,
+				source: metadata.planSource,
 			});
 			return plan.ok
 				? NextResponse.json(plan.config)
@@ -130,10 +132,11 @@ export async function GET(req: NextRequest) {
 			metadata,
 		);
 
-		const gatewayUrl = buildEffectiveBaseUrl(
-			metadata.provider,
-			providerConfig.baseUrl || undefined,
-		);
+		const gatewayUrl = providerConfig.baseUrl
+			? buildEffectiveBaseUrl(metadata.provider, providerConfig.baseUrl)
+			: requiresBaseUrl(metadata.provider)
+				? undefined
+				: buildEffectiveBaseUrl(metadata.provider, undefined);
 
 		return NextResponse.json({
 			provider: metadata.provider,

@@ -179,24 +179,37 @@ describe("StartCodingRunDialog", () => {
 		});
 	});
 
-	it("renders 1-click Fabric Desktop deep links for new session and AI connections", () => {
+	it("renders 1-click Fabric Desktop deep links for new session and AI connections and updates link with selected subscription harness", () => {
 		render(
 			<StartCodingRunDialog
 				open
 				onOpenChange={vi.fn()}
 				story={story}
+				projectId="proj_123"
 				repositoryOwner="acme"
 				repositoryName="fabric"
 				defaultBranch="main"
+				bridgeEnabled={false}
 				onConfirm={vi.fn()}
 			/>,
 		);
 
+		// Even when bridgeEnabled={false}, subscription harness & model remain selectable for Fabric Agents Desktop
+		const backendSelect = screen.getByLabelText("Agent backend");
+		expect(backendSelect).not.toBeDisabled();
+		fireEvent.change(backendSelect, { target: { value: "claude-max" } });
+
+		const modelSelect = screen.getByLabelText("Agent model");
+		expect(modelSelect).not.toBeDisabled();
+		fireEvent.change(modelSelect, { target: { value: "claude-opus-5-5" } });
+
 		const desktopLink = screen.getByTestId("dialog-launch-fabric-desktop");
-		expect(desktopLink).toHaveAttribute(
-			"href",
-			expect.stringContaining("fabricagents://action/new-chat?"),
-		);
+		const href = desktopLink.getAttribute("href") ?? "";
+		expect(href).toContain("fabricagents://action/new-chat?");
+		expect(href).toContain("projectId=proj_123");
+		expect(href).toContain("harness=claude-max");
+		expect(href).toContain("model=claude-opus-5-5");
+		expect(href).toContain("fallback=subscription_harnesses");
 
 		const aiSettingsLink = screen.getByTestId(
 			"dialog-fabric-desktop-ai-settings",
@@ -225,6 +238,11 @@ describe("StartCodingRunDialog", () => {
 			/>,
 		);
 
+		expect(
+			screen.getByText(
+				/Assign to Fabric Agents Desktop or Subscription CLI/i,
+			),
+		).toBeInTheDocument();
 		expect(
 			screen.getByText(
 				/Prefer to run Claude Code, Codex, Cursor, Antigravity, or Fabric Desktop directly\?/i,

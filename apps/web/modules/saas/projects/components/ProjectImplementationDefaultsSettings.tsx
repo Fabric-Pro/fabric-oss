@@ -55,7 +55,9 @@ export function ProjectImplementationDefaultsSettings({
 	const [selectedServerId, setSelectedServerId] = useState("");
 
 	useEffect(() => {
-		setPrefs(loadProjectDelegationPreferences(project.id));
+		const loaded = loadProjectDelegationPreferences(project.id);
+		setPrefs(loaded);
+		setSelectedServerId(loaded.preferredServerId ?? "");
 	}, [project.id]);
 
 	const serversQuery = useQuery({
@@ -118,8 +120,8 @@ export function ProjectImplementationDefaultsSettings({
 						<div className="space-y-1">
 							<div className="flex flex-wrap items-center gap-2">
 								<h3 className="text-lg font-semibold tracking-tight text-foreground">
-									Fabric Remote Server &amp; Subscription
-									Delegation
+									Fabric Agents Remote Server &amp; Fabric
+									Agents Desktop Delegation
 								</h3>
 								<Badge
 									variant="outline"
@@ -129,13 +131,19 @@ export function ProjectImplementationDefaultsSettings({
 								</Badge>
 							</div>
 							<p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
-								Delegate coding tasks to a local workstation or
-								shared company{" "}
-								{getExecutionProviderLabel("BACKGROUND_AGENTS")}{" "}
-								server using your CLI subscriptions (Claude,
-								Codex, Droid, Grok, Kimi, Antigravity, Cursor),
-								and choose how runs behave when subscription
-								quotas are reached.
+								Delegate coding tasks to{" "}
+								<strong>Fabric Agents Desktop</strong>, a{" "}
+								<strong>
+									Personal Fabric Agents Remote Server
+								</strong>
+								, or an{" "}
+								<strong>
+									Organization Fabric Agents Remote Server
+								</strong>{" "}
+								using your CLI subscriptions (Claude, Codex,
+								ChatGPT Plus/Pro, Droid, Grok, Kimi,
+								Antigravity, Cursor), and choose how runs behave
+								when subscription quotas are reached.
 							</p>
 						</div>
 					</div>
@@ -148,19 +156,19 @@ export function ProjectImplementationDefaultsSettings({
 					</Button>
 				</div>
 
-				{/* Step 1: Execution Target Mode (Local vs Company Remote Server) */}
+				{/* Step 1: Execution Target Mode (Personal vs Organization Fabric Agents Remote Server) */}
 				<div className="space-y-3 rounded-lg border border-border/70 bg-muted/15 p-4">
 					<div className="flex flex-wrap items-center justify-between gap-2">
 						<p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-							1. Default execution server target
+							1. Default Fabric Agents Remote Server target
 						</p>
 						<Badge
 							variant="secondary"
 							className="rounded-full text-[11px]"
 						>
 							{prefs.preferredServerScope === "PRIVATE"
-								? "Local Workstation (Private)"
-								: "Company Remote Server (Shared)"}
+								? "Personal Fabric Agents Remote Server"
+								: "Organization Fabric Agents Remote Server"}
 						</Badge>
 					</div>
 					<div className="grid gap-3 sm:grid-cols-2">
@@ -181,15 +189,16 @@ export function ProjectImplementationDefaultsSettings({
 							<div className="space-y-1">
 								<p className="flex items-center gap-2 text-sm font-semibold text-foreground">
 									<LaptopIcon className="size-4 text-primary" />
-									Local Fabric Agents Server
+									Personal Fabric Agents Remote Server
 								</p>
 								<p className="text-xs leading-5 text-muted-foreground">
 									Delegate tasks to{" "}
 									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
 										127.0.0.1:9100
 									</code>{" "}
-									or your personal workstation using your own
-									signed-in CLI subscriptions.
+									or your personal Fabric Agents Remote Server
+									using your own signed-in subscription
+									tokens.
 								</p>
 							</div>
 							{prefs.preferredServerScope === "PRIVATE" && (
@@ -212,7 +221,7 @@ export function ProjectImplementationDefaultsSettings({
 							<div className="space-y-1">
 								<p className="flex items-center gap-2 text-sm font-semibold text-foreground">
 									<Building2Icon className="size-4 text-primary" />
-									Company Remote Server
+									Organization Fabric Agents Remote Server
 								</p>
 								<p className="text-xs leading-5 text-muted-foreground">
 									Run coding sessions on your organization’s
@@ -220,8 +229,8 @@ export function ProjectImplementationDefaultsSettings({
 									{getExecutionProviderLabel(
 										"BACKGROUND_AGENTS",
 									)}{" "}
-									cluster with isolated git worktrees and
-									pooled subscription seats.
+									remote server with isolated git worktrees
+									and pooled subscription seats.
 								</p>
 							</div>
 							{prefs.preferredServerScope === "TEAM" && (
@@ -238,7 +247,10 @@ export function ProjectImplementationDefaultsSettings({
 								servers={serversQuery.data.servers}
 								canShare={serversQuery.data.canShare}
 								value={selectedServerId}
-								onChange={setSelectedServerId}
+								onChange={(id) => {
+									setSelectedServerId(id);
+									updatePrefs({ preferredServerId: id });
+								}}
 							/>
 						</div>
 					)}
