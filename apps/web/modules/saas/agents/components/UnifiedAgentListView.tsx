@@ -3,9 +3,7 @@
 import { getCategoryIcon } from "@saas/agents/lib/category-icons";
 import { buildAgentInstanceChatHref } from "@saas/agents/lib/fabric-agent-links";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
-import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
-import { Card } from "@ui/components/card";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -14,23 +12,30 @@ import {
 	DropdownMenuTrigger,
 } from "@ui/components/dropdown-menu";
 import {
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@ui/components/table";
+import {
 	Tooltip,
 	TooltipContent,
 	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import { cn } from "@ui/lib";
 import { formatDistanceToNow } from "date-fns";
 import {
-	Activity,
-	CheckCircle2,
+	BarChart2,
+	Columns3,
 	CopyIcon,
 	EditIcon,
 	MessageSquare,
 	MoreVerticalIcon,
 	PlayIcon,
 	TrashIcon,
-	XCircle,
+	User,
 } from "lucide-react";
 import Link from "next/link";
 import { FrameworkIcon } from "./FrameworkIcon";
@@ -48,78 +53,128 @@ export function UnifiedAgentListView({
 }: UnifiedAgentListViewProps) {
 	return (
 		<TooltipProvider>
-			<div className="space-y-3">
-				{items.map((item: any) =>
-					item._type === "instance" ? (
-						<InstanceListRow
-							key={item.id}
-							instance={item}
-							basePath={basePath}
-							onDelete={onDeleteInstance}
-						/>
-					) : (
-						<SystemAgentListRow key={item.id} agent={item} />
-					),
-				)}
+			<div className="overflow-hidden rounded-lg border border-border bg-card">
+				<Table>
+					<TableHeader>
+						<TableRow className="hover:bg-transparent">
+							<TableHead className="w-[32%]">Name</TableHead>
+							<TableHead className="w-[30%]">
+								Description
+							</TableHead>
+							<TableHead className="w-[14%]">Modified</TableHead>
+							<TableHead className="w-[14%]">Owner</TableHead>
+							<TableHead className="w-[10%]">Tags</TableHead>
+							<TableHead className="w-10 text-right">
+								<span className="inline-flex items-center justify-end text-muted-foreground">
+									<Columns3
+										aria-hidden="true"
+										className="h-3.5 w-3.5"
+									/>
+									<span className="sr-only">Actions</span>
+								</span>
+							</TableHead>
+						</TableRow>
+					</TableHeader>
+					<TableBody>
+						{items.map((item: any) =>
+							item._type === "instance" ? (
+								<InstanceTableRow
+									key={item.id}
+									instance={item}
+									basePath={basePath}
+									onDelete={onDeleteInstance}
+								/>
+							) : (
+								<SystemAgentTableRow
+									key={item.id}
+									agent={item}
+								/>
+							),
+						)}
+					</TableBody>
+				</Table>
 			</div>
 		</TooltipProvider>
 	);
 }
 
-function SystemAgentListRow({ agent }: { agent: any }) {
+function SystemAgentTableRow({ agent }: { agent: any }) {
 	const AgentIcon = agent.icon || MessageSquare;
 	const agentHref = agent.href || `/app/agents/${agent.id}/try`;
+	const modifiedLabel = agent.updatedAt
+		? formatDistanceToNow(new Date(agent.updatedAt), { addSuffix: true })
+		: "Recently";
 
 	return (
-		<Card className="hover:shadow-md transition-all group">
-			<div className="p-4">
-				<div className="flex items-center justify-between gap-4">
-					<div className="flex items-center gap-3 flex-1 min-w-0">
-						<div className="p-2 rounded-lg bg-primary/10 shrink-0">
-							<AgentIcon className="h-5 w-5 text-primary" />
-						</div>
-						<div className="flex-1 min-w-0">
-							<Tooltip delayDuration={500}>
-								<TooltipTrigger asChild>
-									<h3 className="font-semibold text-base line-clamp-1 mb-1">
-										{agent.displayName}
-									</h3>
-								</TooltipTrigger>
-								<TooltipContent>
-									<p>{agent.displayName}</p>
-								</TooltipContent>
-							</Tooltip>
-							<p className="text-sm text-muted-foreground line-clamp-1">
-								{agent.description ||
-									"No description available"}
-							</p>
-						</div>
+		<TableRow className="group">
+			<TableCell className="py-2.5">
+				<div className="flex items-center gap-2.5 min-w-0">
+					<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-muted/40 text-muted-foreground">
+						<AgentIcon className="h-3.5 w-3.5 text-primary" />
 					</div>
-
-					<div className="flex items-center gap-6 shrink-0">
-						<StatusBadge status={agent.status} />
-						<ScopeBadge scope={agent.scope} />
-						{agent.framework && (
-							<div className="min-w-[24px] flex justify-center">
-								<FrameworkIcon
-									framework={agent.framework}
-									size={20}
-								/>
-							</div>
-						)}
-						<Link href={agentHref}>
-							<Button variant="outline" size="sm">
-								Try Agent
-							</Button>
-						</Link>
-					</div>
+					<Tooltip delayDuration={400}>
+						<TooltipTrigger asChild>
+							<Link
+								href={agentHref}
+								className="truncate text-[13px] font-medium text-foreground hover:text-primary hover:underline"
+							>
+								{agent.displayName}
+							</Link>
+						</TooltipTrigger>
+						<TooltipContent>
+							<p>{agent.displayName}</p>
+						</TooltipContent>
+					</Tooltip>
+					<BarChart2
+						aria-hidden="true"
+						className="h-3.5 w-3.5 shrink-0 text-emerald-600/80 dark:text-emerald-400/80"
+					/>
 				</div>
-			</div>
-		</Card>
+			</TableCell>
+			<TableCell className="py-2.5 text-[13px] text-muted-foreground">
+				<span className="line-clamp-1">{agent.description || "-"}</span>
+			</TableCell>
+			<TableCell className="py-2.5 text-[13px] text-muted-foreground whitespace-nowrap">
+				{modifiedLabel}
+			</TableCell>
+			<TableCell className="py-2.5 text-[13px] text-muted-foreground whitespace-nowrap">
+				<span className="inline-flex items-center gap-1.5">
+					<User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+					<span>System</span>
+				</span>
+			</TableCell>
+			<TableCell className="py-2.5">
+				<div className="flex items-center gap-1.5">
+					{agent.framework ? (
+						<span className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+							<FrameworkIcon
+								framework={agent.framework}
+								size={12}
+							/>
+							{agent.framework}
+						</span>
+					) : (
+						<span className="text-[13px] text-muted-foreground">
+							-
+						</span>
+					)}
+				</div>
+			</TableCell>
+			<TableCell className="py-2.5 text-right">
+				<Button
+					asChild
+					variant="ghost"
+					size="sm"
+					className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+				>
+					<Link href={agentHref}>Try Agent</Link>
+				</Button>
+			</TableCell>
+		</TableRow>
 	);
 }
 
-function InstanceListRow({
+function InstanceTableRow({
 	instance,
 	basePath,
 	onDelete,
@@ -128,9 +183,7 @@ function InstanceListRow({
 	basePath: string;
 	onDelete: (id: string) => void;
 }) {
-	const { icon: CategoryIcon, gradient } = getCategoryIcon(
-		instance.template?.category,
-	);
+	const { icon: CategoryIcon } = getCategoryIcon(instance.template?.category);
 	const editHref = `${basePath}/agents/${instance.id}/edit`;
 	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
 	const chatbotHref = buildAgentInstanceChatHref({
@@ -138,165 +191,101 @@ function InstanceListRow({
 		instance,
 		unifiedAgentInterface,
 	});
+	const modifiedSource = instance.lastRunAt || instance.updatedAt;
+	const modifiedLabel = modifiedSource
+		? formatDistanceToNow(new Date(modifiedSource), { addSuffix: true })
+		: "Never";
+	const ownerLabel =
+		instance.createdBy?.name ||
+		(instance.organizationId ? "Organization" : "Personal");
+	const tagLabel = instance.template?.displayName;
 
 	return (
-		<Card className="hover:shadow-md transition-all group">
-			<div className="p-4">
-				<div className="flex items-center justify-between gap-4">
-					<div className="flex items-center gap-3 flex-1 min-w-0">
-						<div
-							className={cn(
-								"w-10 h-10 rounded-xl bg-gradient-to-br flex items-center justify-center shadow-sm shrink-0",
-								gradient,
-							)}
-						>
-							<CategoryIcon className="h-5 w-5 text-white" />
-						</div>
-						<div className="flex-1 min-w-0">
-							<Link
-								href={chatbotHref}
-								className="font-semibold text-base line-clamp-1 mb-1 hover:text-primary block"
-							>
-								{instance.name}
-							</Link>
-							<p className="text-sm text-muted-foreground line-clamp-1">
-								{instance.description ||
-									"No description available"}
-							</p>
-						</div>
+		<TableRow className="group">
+			<TableCell className="py-2.5">
+				<div className="flex items-center gap-2.5 min-w-0">
+					<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-muted/40 text-muted-foreground">
+						<CategoryIcon className="h-3.5 w-3.5 text-primary" />
 					</div>
-
-					<div className="flex items-center gap-6 shrink-0">
-						<Badge variant="secondary" className="text-xs">
-							{instance.template?.displayName || "Custom"}
-						</Badge>
-						<Badge
-							variant="default"
-							className={
-								instance.status === "ACTIVE"
-									? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 text-xs"
-									: "text-xs"
-							}
-						>
-							{instance.status === "ACTIVE"
-								? "Active"
-								: instance.status === "ARCHIVED"
-									? "Archived"
-									: instance.status === "DRAFT"
-										? "Draft"
-										: (instance.status ?? "Unknown")}
-						</Badge>
-						<span className="text-xs text-muted-foreground min-w-[60px] text-right">
-							{instance.runCount || 0} runs
-						</span>
-						<span className="text-xs text-muted-foreground min-w-[80px] text-right">
-							{instance.lastRunAt
-								? formatDistanceToNow(
-										new Date(instance.lastRunAt),
-										{ addSuffix: true },
-									)
-								: "Never"}
-						</span>
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<Button
-									variant="ghost"
-									size="icon-sm"
-									className="h-8 w-8"
-								>
-									<MoreVerticalIcon className="h-4 w-4" />
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end">
-								<DropdownMenuItem asChild>
-									<Link href={editHref}>
-										<EditIcon className="mr-2 h-4 w-4" />
-										Edit
-									</Link>
-								</DropdownMenuItem>
-								<DropdownMenuItem asChild>
-									<Link href={chatbotHref}>
-										<PlayIcon className="mr-2 h-4 w-4" />
-										Try Agent
-									</Link>
-								</DropdownMenuItem>
-								<DropdownMenuItem asChild>
-									<Link
-										href={editHref.replace(
-											"/edit",
-											"/duplicate",
-										)}
-									>
-										<CopyIcon className="mr-2 h-4 w-4" />
-										Duplicate
-									</Link>
-								</DropdownMenuItem>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									onClick={() => onDelete(instance.id)}
-									className="text-destructive"
-								>
-									<TrashIcon className="mr-2 h-4 w-4" />
-									Delete
-								</DropdownMenuItem>
-							</DropdownMenuContent>
-						</DropdownMenu>
-					</div>
+					<Link
+						href={chatbotHref}
+						className="truncate text-[13px] font-medium text-foreground hover:text-primary hover:underline"
+					>
+						{instance.name}
+					</Link>
+					<BarChart2
+						aria-hidden="true"
+						className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60"
+					/>
 				</div>
-			</div>
-		</Card>
-	);
-}
-
-function ScopeBadge({ scope }: { scope: string }) {
-	const variants: Record<
-		string,
-		{ variant: "default" | "secondary" | "outline"; label: string }
-	> = {
-		SYSTEM: { variant: "default", label: "System" },
-		ORGANIZATION: { variant: "secondary", label: "Organization" },
-		PERSONAL: { variant: "outline", label: "Personal" },
-	};
-
-	const config = variants[scope] || { variant: "outline", label: scope };
-
-	return (
-		<Badge
-			variant={config.variant}
-			className="text-xs min-w-[100px] justify-center"
-		>
-			{config.label}
-		</Badge>
-	);
-}
-
-function StatusBadge({ status }: { status: string }) {
-	const getStatusIcon = () => {
-		switch (status) {
-			case "ACTIVE":
-				return <CheckCircle2 className="h-3 w-3 mr-1" />;
-			case "ERROR":
-				return <XCircle className="h-3 w-3 mr-1" />;
-			default:
-				return <Activity className="h-3 w-3 mr-1" />;
-		}
-	};
-
-	const variants: Record<string, "default" | "secondary" | "destructive"> = {
-		ACTIVE: "default",
-		INACTIVE: "secondary",
-		DEPLOYING: "secondary",
-		ERROR: "destructive",
-		MAINTENANCE: "secondary",
-	};
-
-	return (
-		<Badge
-			variant={variants[status] || "secondary"}
-			className="text-xs flex items-center min-w-[100px] justify-center"
-		>
-			{getStatusIcon()}
-			{status}
-		</Badge>
+			</TableCell>
+			<TableCell className="py-2.5 text-[13px] text-muted-foreground">
+				<span className="line-clamp-1">
+					{instance.description || "-"}
+				</span>
+			</TableCell>
+			<TableCell className="py-2.5 text-[13px] text-muted-foreground whitespace-nowrap">
+				{modifiedLabel}
+			</TableCell>
+			<TableCell className="py-2.5 text-[13px] text-muted-foreground whitespace-nowrap">
+				<span className="inline-flex items-center gap-1.5">
+					<User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+					<span>{ownerLabel}</span>
+				</span>
+			</TableCell>
+			<TableCell className="py-2.5">
+				{tagLabel ? (
+					<span className="inline-flex items-center rounded bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+						{tagLabel}
+					</span>
+				) : (
+					<span className="text-[13px] text-muted-foreground">-</span>
+				)}
+			</TableCell>
+			<TableCell className="py-2.5 text-right">
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							aria-label={`Actions for ${instance.name}`}
+							className="h-7 w-7"
+						>
+							<MoreVerticalIcon className="h-3.5 w-3.5" />
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent align="end">
+						<DropdownMenuItem asChild>
+							<Link href={editHref}>
+								<EditIcon className="mr-2 h-4 w-4" />
+								Edit
+							</Link>
+						</DropdownMenuItem>
+						<DropdownMenuItem asChild>
+							<Link href={chatbotHref}>
+								<PlayIcon className="mr-2 h-4 w-4" />
+								Try Agent
+							</Link>
+						</DropdownMenuItem>
+						<DropdownMenuItem asChild>
+							<Link
+								href={editHref.replace("/edit", "/duplicate")}
+							>
+								<CopyIcon className="mr-2 h-4 w-4" />
+								Duplicate
+							</Link>
+						</DropdownMenuItem>
+						<DropdownMenuSeparator />
+						<DropdownMenuItem
+							onClick={() => onDelete(instance.id)}
+							className="text-destructive"
+						>
+							<TrashIcon className="mr-2 h-4 w-4" />
+							Delete
+						</DropdownMenuItem>
+					</DropdownMenuContent>
+				</DropdownMenu>
+			</TableCell>
+		</TableRow>
 	);
 }

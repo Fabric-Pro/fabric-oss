@@ -1,7 +1,7 @@
 /**
  * Figure templates for a Proposal's diagrams (Fizzy #2946): a numbered
- * process (or timeline), architecture layers and a team, drawn as fixed SVG
- * instead of a generic Mermaid layout.
+ * process (or timeline), architecture layers, a team, a bar chart and a
+ * gantt chart, drawn as fixed SVG instead of a generic Mermaid layout.
  *
  * A fence asks for a template with one comment line in its leading `%%`
  * block, after the generated-visual marker and the caption:
@@ -18,8 +18,10 @@
  *
  * The source stays Mermaid, so whatever cannot draw the template (Glossy,
  * the Markdown download, an older reader) still draws the fence as an
- * ordinary flowchart. The template reads a small subset of the flowchart
- * language: a `flowchart`/`graph` header, node declarations, `-->` and
+ * ordinary diagram. The bars kind reads a subset of the `xychart` language
+ * of its own (`bars.ts`), and the gantt kind one of the `gantt` language
+ * (`gantt.ts`). The other templates read a small subset of the
+ * flowchart language: a `flowchart`/`graph` header, node declarations, `-->` and
  * `-.->` edges (optionally `|labelled|` and chained), `class` lines, and
  * `subgraph … end` blocks without nesting. Labels are decoded the way the
  * Proposal templating writes them (`<br/>` splits lines, Mermaid and HTML
@@ -40,12 +42,29 @@
  * must not pull in anything the browser bundle cannot carry.
  */
 
+import { barsFigureSvg, parseBarsSource } from "./bars";
+import { ganttFigureSvg, parseGanttSource } from "./gantt";
 import { layersFigureSvg } from "./layers";
 import { type FigureKind, parseFigureSource, readFigureKind } from "./parse";
 import { processFigureSvg } from "./process";
 import type { FigureOptions, FigurePalette } from "./svg-text";
 import { teamFigureSvg } from "./team";
 
+export {
+	type BarsEntry,
+	type BarsModel,
+	type BarsNumber,
+	barsFigureSvg,
+	barsOverGrey,
+	parseBarsSource,
+} from "./bars";
+export {
+	type GanttMilestone,
+	type GanttModel,
+	type GanttTask,
+	ganttFigureSvg,
+	parseGanttSource,
+} from "./gantt";
 export { layersFigureSvg } from "./layers";
 export {
 	FIGURE_KINDS,
@@ -72,7 +91,8 @@ export { teamFigureSvg } from "./team";
 /**
  * The figure `kind` draws for a fence body or source, or null when the
  * parser or the kind's shape check refuses it and the fence should draw as
- * Mermaid.
+ * Mermaid. The kind picks the parser: bars read an xychart, gantt a gantt,
+ * every other kind a flowchart.
  */
 export function renderFigureSvg(
 	kind: FigureKind,
@@ -80,6 +100,14 @@ export function renderFigureSvg(
 	palette: FigurePalette,
 	options: FigureOptions = {},
 ): string | null {
+	if (kind === "bars") {
+		const bars = parseBarsSource(source);
+		return bars ? barsFigureSvg(bars, palette, options) : null;
+	}
+	if (kind === "gantt") {
+		const gantt = parseGanttSource(source);
+		return gantt ? ganttFigureSvg(gantt, palette, options) : null;
+	}
 	const model = parseFigureSource(source);
 	if (!model) {
 		return null;

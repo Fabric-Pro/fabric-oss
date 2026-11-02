@@ -1021,6 +1021,20 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"warning",
 		"weave",
 	),
+	"weave.session.continuation_requested": D(
+		"weave.session.continuation_requested",
+		"Coding session continuation requested",
+		CheckCircle,
+		"info",
+		"weave",
+	),
+	"weave.session.recovery_closed": D(
+		"weave.session.recovery_closed",
+		"Coding session recovery closed",
+		AlertTriangle,
+		"warning",
+		"weave",
+	),
 };
 
 const UNKNOWN_DESCRIPTOR: ActionDescriptor = {

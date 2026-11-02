@@ -1,3 +1,7 @@
+import {
+	remoteServerConnectionId,
+	requireRemoteServerAccess,
+} from "../lib/remote-server-access";
 /**
  * Poll Live Status Procedure
  *
@@ -67,13 +71,26 @@ export const pollLiveStatusProcedure = tenantProtectedProcedure
 			};
 		}
 
+		const connectionId = remoteServerConnectionId(run.providerMetadata);
+		if (connectionId) {
+			await requireRemoteServerAccess({
+				id: connectionId,
+				projectId: run.projectId,
+				userId: context.user.id,
+				allowDisabled: true,
+			});
+		}
+
 		try {
 			// Dynamically import to avoid bundling Temporal deps in API
 			const { getCodingExecutionProvider } = await import(
 				"@repo/temporal/coding-execution"
 			);
 
-			const provider = getCodingExecutionProvider(run.provider);
+			const provider = getCodingExecutionProvider(
+				run.provider,
+				run.providerMetadata,
+			);
 			const status = await provider.getSessionStatus(
 				run.providerSessionId,
 			);

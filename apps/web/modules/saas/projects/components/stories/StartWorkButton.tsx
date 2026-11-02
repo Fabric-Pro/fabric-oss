@@ -156,7 +156,7 @@ export function StartWorkButton({
 		onSuccess: async () => {
 			await Promise.all([
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.queryKey({
+					queryKey: orpc.projects.stories.board.queryKey({
 						input: { projectId, organizationId },
 					}),
 				}),

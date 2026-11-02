@@ -129,6 +129,7 @@ export async function updateCodingRunStatus(
 	id: string,
 	status: CodingRunStatus,
 	data?: {
+		lastError?: string;
 		providerSessionId?: string;
 		pullRequestUrl?: string;
 		pullRequestNumber?: number;
@@ -551,4 +552,56 @@ export async function discardSpikeRun(params: {
 		throw new SpikeRunStateError("COMPLETED", "SPIKE");
 	}
 	return { codingRunId: run.id, status: "CANCELLED", storyId: run.storyId };
+}
+
+const recoveryActiveStatuses: CodingRunStatus[] = [
+	"QUEUED",
+	"STARTING",
+	"RUNNING",
+	"AWAITING_REVIEW",
+	"PR_OPENED",
+];
+
+/** Mark uncertain remote work without reviving a recovered or superseded run. */
+export async function markCodingRunRecoveryRequired(input: {
+	codingRunId: string;
+	workflowId: string | null;
+	organizationId: string | null;
+	eventType?: "cancellation_unknown" | "continuation_recovery_required";
+	payload?: Record<string, unknown>;
+}) {
+	const eventType = input.eventType ?? "cancellation_unknown";
+	return db.$transaction(async (tx) => {
+		const updated = await tx.codingRun.updateMany({
+			where: {
+				id: input.codingRunId,
+				organizationId: input.organizationId,
+				OR: [{ workflowId: input.workflowId }, { workflowId: null }],
+				status: { in: recoveryActiveStatuses },
+			},
+			data: {
+				...(eventType === "cancellation_unknown"
+					? { status: "AWAITING_REVIEW" as const }
+					: {}),
+				lastError:
+					typeof input.payload?.message === "string"
+						? input.payload.message
+						: "Remote shutdown requires recovery on the original server",
+			},
+		});
+		if (updated.count === 0) {
+			return;
+		}
+		const id = `${eventType}:${input.codingRunId}:${input.workflowId ?? "unbound"}`;
+		await tx.codingRunEvent.upsert({
+			where: { id },
+			create: {
+				id,
+				codingRunId: input.codingRunId,
+				eventType,
+				payloadJson: (input.payload ?? {}) as Prisma.InputJsonValue,
+			},
+			update: {},
+		});
+	});
 }

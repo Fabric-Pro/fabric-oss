@@ -1,7 +1,7 @@
 /**
  * Get Coding Run Procedure
  *
- * AUTHORIZATION: Uses canEditProject() via coding run's projectId
+ * AUTHORIZATION: Project visibility plus private/team runtime projection
  */
 
 import { ORPCError } from "@orpc/client";
@@ -14,6 +14,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { publicCodingRuns } from "../lib/public-run";
 
 export const getCodingRunProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.AGENT_READ))
@@ -43,6 +44,11 @@ export const getCodingRunProcedure = tenantProtectedProcedure
 			});
 		}
 
+		const visibleRun = (await publicCodingRuns([run], user.id))[0];
+		if (!visibleRun) {
+			throw new ORPCError("NOT_FOUND");
+		}
+
 		// Only the disabled legacy profile may supply the old explicitly configured
 		// HTTP route. Native headless sessions never gain guessed executor links.
 		const metadata = run.providerMetadata;
@@ -64,7 +70,7 @@ export const getCodingRunProcedure = tenantProtectedProcedure
 				const base = new URL(legacyBase);
 				if (base.protocol === "https:" || base.protocol === "http:") {
 					return {
-						...run,
+						...visibleRun,
 						externalUrl: `${legacyBase.replace(/\/$/, "")}/session/${encodeURIComponent(run.providerSessionId)}`,
 					};
 				}
@@ -72,5 +78,5 @@ export const getCodingRunProcedure = tenantProtectedProcedure
 				/* Invalid configuration does not create a link. */
 			}
 		}
-		return run;
+		return visibleRun;
 	});

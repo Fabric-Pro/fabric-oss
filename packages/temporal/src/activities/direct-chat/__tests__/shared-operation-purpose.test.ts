@@ -33,6 +33,8 @@ vi.mock("@repo/database", () => ({
 	companyContextReadyWhere: () => ({}),
 	isFeatureEnabled: async () => true,
 	isOrganizationMember: async () => true,
+	recordChatMediaObject: async () => {},
+	resolveChatMediaAccess: async () => "allow",
 }));
 vi.mock("@repo/ai", async () => ({
 	getAIEmbeddingModelWithMetadata: async (
@@ -110,6 +112,8 @@ vi.mock("@repo/ai", async () => ({
 	}),
 }));
 vi.mock("@repo/storage", () => ({
+	deleteFile: async () => {},
+	getFileMetadata: vi.fn(),
 	uploadFile: async () => {},
 	getSignedUrl: async () => "https://example.com/image.png",
 }));

@@ -107,6 +107,7 @@ vi.mock("@analytics", () => ({
 const createConversationMock = vi.fn();
 const addMessageMock = vi.fn();
 const updateConversationMock = vi.fn();
+const updateSettingsMock = vi.fn();
 const attachProjectMock = vi.fn();
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -115,6 +116,8 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				create: (...args: unknown[]) => createConversationMock(...args),
 				addMessage: (...args: unknown[]) => addMessageMock(...args),
 				update: (...args: unknown[]) => updateConversationMock(...args),
+				updateSettings: (...args: unknown[]) =>
+					updateSettingsMock(...args),
 			},
 		},
 		projects: {
@@ -331,6 +334,7 @@ beforeEach(() => {
 		.mockResolvedValue({ id: "conv_client_created" });
 	addMessageMock.mockReset().mockResolvedValue({});
 	updateConversationMock.mockReset().mockResolvedValue({});
+	updateSettingsMock.mockReset().mockResolvedValue({});
 	attachProjectMock.mockReset().mockResolvedValue({});
 });
 
@@ -382,12 +386,21 @@ describe("FabricDirectChat transport", () => {
 			projectId: "proj_example",
 			organizationId: "org_example",
 		});
-		// The chat's tool selection is written onto the adopted conversation.
+		// The adopted conversation is this chat's own, so its settings are
+		// saved to it as settings only, never as a metadata replace (Fizzy #3472).
 		await waitFor(() =>
-			expect(updateConversationMock).toHaveBeenCalledWith(
-				expect.objectContaining({ id: "thread_example_1" }),
+			expect(updateSettingsMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					conversationId: "thread_example_1",
+					engine: "direct",
+				}),
 			),
 		);
+		for (const [input] of updateSettingsMock.mock.calls) {
+			expect(input.settings).not.toHaveProperty("mode");
+			expect(input).not.toHaveProperty("metadata");
+		}
+		expect(updateConversationMock).not.toHaveBeenCalled();
 		expect(createConversationMock).not.toHaveBeenCalled();
 	});
 

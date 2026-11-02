@@ -36,9 +36,9 @@ export function ColorModeToggle() {
 
 	if (!mounted) {
 		return (
-			<div className="relative inline-flex items-center gap-0 rounded-full bg-muted p-0.5">
+			<div className="relative inline-flex items-center gap-0 rounded-md border border-border bg-muted p-0.5">
 				<div
-					className="absolute left-0.5 top-0.5 h-7 w-7 rounded-full bg-background shadow-sm border border-border"
+					className="absolute left-0.5 top-0.5 h-6 w-6 rounded-sm bg-background shadow-xs border border-border"
 					aria-hidden="true"
 				/>
 				{COLOR_MODE_OPTIONS.map((option, index) => {
@@ -48,7 +48,7 @@ export function ColorModeToggle() {
 							key={option.value}
 							type="button"
 							className={cn(
-								"relative z-10 flex h-7 w-7 items-center justify-center rounded-full transition-colors",
+								"relative z-10 flex h-6 w-6 items-center justify-center rounded-sm transition-colors",
 								index === 0
 									? "text-foreground"
 									: "text-muted-foreground",
@@ -67,10 +67,10 @@ export function ColorModeToggle() {
 
 	return (
 		<TooltipProvider delayDuration={0}>
-			<div className="relative inline-flex items-center gap-0 rounded-full bg-muted p-0.5">
+			<div className="relative inline-flex items-center gap-0 rounded-md border border-border bg-muted p-0.5">
 				{/* Sliding active indicator */}
 				<div
-					className="absolute left-0.5 top-0.5 h-7 w-7 rounded-full bg-background shadow-sm border border-border transition-transform duration-200 ease-in-out"
+					className="absolute left-0.5 top-0.5 h-6 w-6 rounded-sm bg-background shadow-xs border border-border transition-transform duration-150 ease-out"
 					style={{ transform: `translateX(${activeIndex * 100}%)` }}
 					aria-hidden="true"
 				/>
@@ -87,8 +87,8 @@ export function ColorModeToggle() {
 										setTheme(option.value);
 									}}
 									className={cn(
-										"relative z-10 flex h-7 w-7 items-center justify-center rounded-full transition-colors",
-										"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+										"relative z-10 flex h-6 w-6 items-center justify-center rounded-sm transition-colors",
+										"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 										isActive
 											? "text-foreground"
 											: "text-muted-foreground hover:text-foreground",

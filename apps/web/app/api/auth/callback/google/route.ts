@@ -1,6 +1,5 @@
 import "../../../../start-web-telemetry";
 import { app } from "@repo/api";
-import { getOauthState } from "@repo/database";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { handle } from "hono/vercel";
 import type { NextRequest } from "next/server";
@@ -34,29 +33,24 @@ function escapeJsString(s: string): string {
  *
  * Google Drive MCP OAuth reuses the same redirect URI as Better Auth's Google
  * login (already registered in Google Cloud Console). This route disambiguates
- * between the two flows by checking the `state` parameter against the
- * MCPOAuthState table:
+ * between the two flows using the MCP state format:
  *
- * - If state is found in DB → MCP OAuth callback (handle token exchange + popup postMessage)
- * - Otherwise → Better Auth callback (forward to Hono handler)
+ * - UUID state → MCP OAuth callback (including unknown or replayed states)
+ * - Other state → Better Auth callback (forward to Hono handler)
  */
 
 const honoHandler = handle(app);
+const MCP_STATE_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function GET(req: NextRequest) {
 	const url = new URL(req.url);
 	const state = url.searchParams.get("state");
 
-	// Check if this is an MCP OAuth callback by looking up state in DB
-	if (state) {
-		try {
-			const mcpState = await getOauthState(state);
-			if (mcpState) {
-				return handleMcpCallback(url);
-			}
-		} catch {
-			// DB lookup failed — fall through to Better Auth
-		}
+	// The procedure checks the state and session. Dispatching on the UUID
+	// format also sends unknown or replayed MCP states to the same refusal path.
+	if (state && MCP_STATE_PATTERN.test(state)) {
+		return handleMcpCallback(url);
 	}
 
 	// Not an MCP callback — forward to Better Auth via Hono

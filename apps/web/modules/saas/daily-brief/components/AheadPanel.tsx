@@ -38,7 +38,7 @@ export function AheadPanel({ items }: AheadPanelProps) {
 	return (
 		<section
 			aria-label="Ahead"
-			className="rounded-2xl border border-border bg-muted/40 p-6"
+			className="rounded-lg border border-border bg-muted/40 p-6"
 		>
 			<span className="editorial-label">Ahead</span>
 			<ul className="mt-4 divide-y divide-border/60">

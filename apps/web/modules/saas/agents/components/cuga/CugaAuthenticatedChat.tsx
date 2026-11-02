@@ -4,13 +4,19 @@
  * CugaAuthenticatedChat
  *
  * An authenticated chat interface that sends a registered SYSTEM agent ID
- * to the A2A relay. The server resolves its endpoint and issues the AI token.
+ * to the A2A relay, or to the agent runtime's `cuga-generalist` agent while
+ * `COPILOTKIT_CUGA_CHAT` is on (chosen at mount). The server resolves its
+ * endpoint and issues the AI token.
  *
  * This component should be used in production where multi-tenant credential
  * isolation is required.
  */
 
+import { useRuntimeChatTransport } from "@saas/agents/hooks/useRuntimeChatTransport";
+import { isAbortError } from "@saas/agents/lib/direct-runtime-transport";
+import { RequestReplyRunError } from "@saas/agents/lib/request-reply-outcome";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useShowAiUsageLimitToast } from "@saas/payments/lib/ai-usage-limit-toast";
 import { useAutoResizeTextarea } from "@saas/shared/hooks/use-auto-resize-textarea";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
@@ -27,6 +33,7 @@ import {
 } from "../../../../../components/ai-elements/reasoning";
 import { Response } from "../../../../../components/ai-elements/response";
 import { Shimmer } from "../../../../../components/ai-elements/shimmer";
+import { askCugaRoute, askCugaRuntime } from "./cuga-chat-client";
 
 interface Message {
 	id: string;
@@ -48,14 +55,20 @@ export function CugaAuthenticatedChat({
 	className,
 }: CugaAuthenticatedChatProps) {
 	const { organizationId } = useOrganizationContext();
+	const transport = useRuntimeChatTransport("COPILOTKIT_CUGA_CHAT");
+	const showAiUsageLimitToast = useShowAiUsageLimitToast();
 	const [messages, setMessages] = useState<Message[]>([]);
 	const [input, setInput] = useState("");
 	const [isLoading, setIsLoading] = useState(false);
 	const [contextId, setContextId] = useState<string | null>(null);
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
+	// The message waiting for its reply; unmounting lets go of it silently.
+	const inFlight = useRef<AbortController | null>(null);
 	// Keep in step with the textarea's `max-h-[200px]` class.
 	useAutoResizeTextarea(inputRef, input, 200);
+
+	useEffect(() => () => inFlight.current?.abort(), []);
 
 	// Auto-scroll to bottom
 	useEffect(() => {
@@ -83,52 +96,51 @@ export function CugaAuthenticatedChat({
 		setInput("");
 		setIsLoading(true);
 
+		const controller = new AbortController();
+		inFlight.current = controller;
 		try {
-			// The relay verifies membership in this organization before selecting
-			// its AI model or issuing a token for the registered agent.
-			const response = await fetch("/api/agents/a2a/send", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					agentId,
-					message: {
-						role: "user",
-						content: userMessage.content,
-					},
-					contextId,
-					history: messages.map((m) => ({
-						role: m.role,
-						content: m.content,
-					})),
-					organizationId,
-				}),
-			});
-
-			if (!response.ok) {
-				const errorData = await response.json();
-				throw new Error(
-					errorData.error || "Failed to get response from CUGA",
-				);
-			}
-
-			const data = await response.json();
+			const question = {
+				agentId,
+				content: userMessage.content,
+				contextId,
+				history: messages.map((m) => ({
+					role: m.role,
+					content: m.content,
+				})),
+				signal: controller.signal,
+			};
+			const reply =
+				transport === "runtime"
+					? await askCugaRuntime({
+							...question,
+							organizationId: organizationId ?? undefined,
+						})
+					: await askCugaRoute({ ...question, organizationId });
 
 			// Update context ID for multi-turn
-			if (data.contextId) {
-				setContextId(data.contextId);
+			if (reply.contextId) {
+				setContextId(reply.contextId);
 			}
 
 			const assistantMessage: Message = {
 				id: `msg-${Date.now() + 1}`,
 				role: "assistant",
-				content: data.response || "",
+				content: reply.response,
 				timestamp: new Date(),
-				reasoning: data.reasoning,
-				artifacts: data.artifacts,
+				reasoning: reply.reasoning,
+				artifacts: reply.artifacts,
 			};
 
 			setMessages((prev) => [...prev, assistantMessage]);
 		} catch (error) {
+			// The chat let go of the message (it unmounted): nothing to show.
+			if (isAbortError(error)) {
+				return;
+			}
+			// As the route's 429 shows it through the fetch interceptor.
+			if (error instanceof RequestReplyRunError && error.usageLimit) {
+				showAiUsageLimitToast(error.usageLimit);
+			}
 			const errorMessage =
 				error instanceof Error ? error.message : "An error occurred";
 			toast.error("Error", { description: errorMessage });
@@ -144,9 +156,21 @@ export function CugaAuthenticatedChat({
 				},
 			]);
 		} finally {
+			if (inFlight.current === controller) {
+				inFlight.current = null;
+			}
 			setIsLoading(false);
 		}
-	}, [input, isLoading, agentId, contextId, messages, organizationId]);
+	}, [
+		input,
+		isLoading,
+		agentId,
+		contextId,
+		messages,
+		organizationId,
+		transport,
+		showAiUsageLimitToast,
+	]);
 
 	const handleKeyDown = (e: React.KeyboardEvent) => {
 		if (e.key === "Enter" && !e.shiftKey) {
@@ -183,7 +207,7 @@ export function CugaAuthenticatedChat({
 			{/* Messages Area */}
 			{messages.length === 0 ? (
 				<div className="flex-1 flex flex-col items-center justify-center text-center text-muted-foreground p-4">
-					<div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center mb-6">
+					<div className="h-16 w-16 rounded-lg bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center mb-6">
 						<Bot className="h-10 w-10 text-white" />
 					</div>
 					<h3 className="text-xl font-medium mb-3 text-foreground">

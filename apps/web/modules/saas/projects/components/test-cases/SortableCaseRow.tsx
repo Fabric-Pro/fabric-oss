@@ -49,7 +49,7 @@ export function SortableCaseRow({
 				<button
 					type="button"
 					aria-label={label}
-					className="-ml-1 shrink-0 cursor-grab rounded p-0.5 text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:cursor-grabbing"
+					className="-ml-1 shrink-0 cursor-grab rounded p-0.5 text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring active:cursor-grabbing"
 					{...attributes}
 					{...listeners}
 				>

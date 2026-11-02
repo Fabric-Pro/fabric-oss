@@ -6,7 +6,7 @@
  */
 
 import { canUseWorkflowIntegrations, db } from "@repo/database";
-import { decryptApiKey } from "@repo/utils";
+import { readSlackConnectionIdentity } from "./connection-identity";
 
 export interface SlackCredentials {
 	accessToken: string;
@@ -41,6 +41,7 @@ const SLACK_NOT_CONNECTED =
 export default async function getSlackCredentials(
 	userId: string,
 	organizationId?: string,
+	resolveMissingTeamId = false,
 ): Promise<SlackCredentials> {
 	if (!(await canUseWorkflowIntegrations(userId, organizationId))) {
 		throw new Error(SLACK_NOT_CONNECTED);
@@ -76,26 +77,11 @@ export default async function getSlackCredentials(
 		);
 	}
 
-	// Credentials are stored as an encrypted JSON string
-	let credentialsJson: string;
-	try {
-		credentialsJson = decryptApiKey(integration.credentials);
-	} catch {
-		// Might not be encrypted (legacy) — use raw value
-		credentialsJson = integration.credentials;
-	}
-
-	let parsed: Record<string, string>;
-	try {
-		parsed = JSON.parse(credentialsJson) as Record<string, string>;
-	} catch {
-		throw new Error(
-			"Slack credentials are corrupted. Please reconnect your Slack workspace in Settings > Integrations.",
-		);
-	}
-
-	// Support both OAuth format (access_token) and direct token format (apiKey)
-	const accessToken = parsed.access_token || parsed.apiKey;
+	const identity = await readSlackConnectionIdentity(
+		integration,
+		resolveMissingTeamId,
+	);
+	const accessToken = identity.accessToken;
 	if (!accessToken) {
 		throw new Error(
 			"Slack access token missing. Please reconnect your Slack workspace in Settings > Integrations.",
@@ -104,9 +90,9 @@ export default async function getSlackCredentials(
 
 	return {
 		accessToken,
-		userAccessToken: parsed.user_access_token || undefined,
+		userAccessToken: identity.userAccessToken,
 		integrationId: integration.id,
-		teamId: parsed.team_id,
-		teamName: parsed.team_name,
+		teamId: identity.teamId,
+		teamName: identity.teamName,
 	};
 }

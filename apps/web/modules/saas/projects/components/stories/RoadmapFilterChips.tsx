@@ -285,7 +285,7 @@ export function RoadmapFilterChips({
 						type="button"
 						aria-label={chip.ariaRemoveLabel}
 						onClick={chip.onRemove}
-						className="ml-0.5 inline-flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+						className="ml-0.5 inline-flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 					>
 						<XIcon aria-hidden className="size-3" />
 					</button>

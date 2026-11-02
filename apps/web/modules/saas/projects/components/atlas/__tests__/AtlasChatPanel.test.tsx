@@ -16,16 +16,25 @@
  *     never clobbers the just-sent turns
  */
 
+import type { AGUIEvent, RunAgentInput } from "@ag-ui/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	heldRuntimeAnswer,
+	runtimeAnswer,
+	runtimeRefusal,
+	streamOf,
+} from "./atlas-panel-streams";
 
 // ----------------------------------------------------------------------------
 // Mocks — defined BEFORE the component import per Vitest hoisting rules.
 // ----------------------------------------------------------------------------
 
 const chatFn = vi.fn();
+const systemChatFn = vi.fn();
 const createConversationFn = vi.fn();
 const listFn = vi.fn();
 const toastWarning = vi.fn();
@@ -35,10 +44,64 @@ const toastSuccess = vi.fn();
 let conversationsData: Array<Record<string, unknown>> = [];
 let conversationDetailById: Record<string, Record<string, unknown> | null> = {};
 
+/**
+ * Who is looking (the organization on screen, its role, a project guest),
+ * whether `COPILOTKIT_ATLAS_CHAT` is on for them, and the agent runtime
+ * requests the panel made, answered by `respond`.
+ */
+const access = vi.hoisted(() => ({
+	flagOn: false,
+	organizationId: null as string | null,
+	userRole: null as string | null,
+	isGuest: false,
+	runs: [] as Array<{
+		url: string;
+		input: RunAgentInput;
+		org?: string;
+		signal: AbortSignal;
+	}>,
+	respond: null as
+		| null
+		| ((
+				emit: (event: AGUIEvent) => void,
+				signal: AbortSignal,
+		  ) => Promise<void> | void),
+}));
+
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "COPILOTKIT_ATLAS_CHAT" && access.flagOn,
+}));
+
+vi.mock(
+	"@saas/agents/lib/direct-runtime-transport",
+	async (importOriginal) => ({
+		...(await importOriginal<
+			typeof import("@saas/agents/lib/direct-runtime-transport")
+		>()),
+		streamRuntime: async (args: {
+			url: string;
+			input: RunAgentInput;
+			organizationId?: string;
+			signal: AbortSignal;
+			onEvent: (event: AGUIEvent) => void;
+		}) => {
+			access.runs.push({
+				url: args.url,
+				input: args.input,
+				org: args.organizationId,
+				signal: args.signal,
+			});
+			await access.respond?.(args.onEvent, args.signal);
+		},
+	}),
+);
+
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		atlas: {
 			chat: (...args: unknown[]) => chatFn(...args),
+			systemChat: (...args: unknown[]) => systemChatFn(...args),
 			conversations: {
 				create: (...args: unknown[]) => createConversationFn(...args),
 				list: (...args: unknown[]) => listFn(...args),
@@ -88,10 +151,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
-		organizationId: null,
+		organizationId: access.organizationId,
 		organizationSlug: null,
 		basePath: "/app",
 		loaded: true,
+		userRole: access.userRole,
+		isGuest: access.isGuest,
 	}),
 }));
 
@@ -111,7 +176,11 @@ import { AtlasChatPanel } from "../AtlasChatPanel";
 // Render helpers
 // ----------------------------------------------------------------------------
 
-function buildProps(mode: GraphMode = "BUSINESS") {
+type PanelOverrides = Partial<
+	Pick<ComponentProps<typeof AtlasChatPanel>, "focusNodeKey" | "systemScope">
+>;
+
+function buildProps(mode: GraphMode = "BUSINESS", overrides?: PanelOverrides) {
 	return {
 		projectId: "proj-1",
 		mode,
@@ -121,17 +190,18 @@ function buildProps(mode: GraphMode = "BUSINESS") {
 		onSeededPromptConsumed: vi.fn(),
 		graphNodes: [],
 		onFocusNode: vi.fn(),
+		...overrides,
 	};
 }
 
-function renderPanel(mode: GraphMode = "BUSINESS") {
+function renderPanel(mode: GraphMode = "BUSINESS", overrides?: PanelOverrides) {
 	const queryClient = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
 			mutations: { retry: false },
 		},
 	});
-	const props = buildProps(mode);
+	const props = buildProps(mode, overrides);
 	const utils = render(
 		<QueryClientProvider client={queryClient}>
 			<AtlasChatPanel {...props} />
@@ -140,19 +210,15 @@ function renderPanel(mode: GraphMode = "BUSINESS") {
 	const rerenderWithMode = (nextMode: GraphMode) =>
 		utils.rerender(
 			<QueryClientProvider client={queryClient}>
-				<AtlasChatPanel {...buildProps(nextMode)} />
+				<AtlasChatPanel {...buildProps(nextMode, overrides)} />
 			</QueryClientProvider>,
 		);
 	return { ...utils, queryClient, props, rerenderWithMode };
 }
 
-/** An async-iterable chat stream the component can `for await` over. */
-function streamOf(events: unknown[]) {
-	return (async function* () {
-		for (const event of events) {
-			yield event;
-		}
-	})();
+async function ask(user: ReturnType<typeof userEvent.setup>, text: string) {
+	await user.type(screen.getByLabelText("inputLabel"), text);
+	await user.click(screen.getByRole("button", { name: "send" }));
 }
 
 /** Conversation summary fixture for the history list. */
@@ -179,6 +245,14 @@ async function selectConversation(
 }
 
 beforeEach(() => {
+	access.flagOn = false;
+	access.organizationId = null;
+	access.userRole = null;
+	access.isGuest = false;
+	access.runs.length = 0;
+	access.respond = runtimeAnswer(["Hello ", "world"]);
+	systemChatFn.mockReset();
+	systemChatFn.mockImplementation(() => streamOf(["System answer"]));
 	chatFn.mockReset();
 	chatFn.mockImplementation(() => streamOf(["Hello ", "world"]));
 	createConversationFn.mockReset();
@@ -221,6 +295,25 @@ describe("AtlasChatPanel — unified assistant title", () => {
 // ----------------------------------------------------------------------------
 
 describe("AtlasChatPanel — mode toggle continuity", () => {
+	it("restores an unchanged cached conversation when the current conversation is selected again", async () => {
+		const user = userEvent.setup();
+		conversationsData = [summaryOf("conv-1", "My conversation")];
+		conversationDetailById["conv-1"] = {
+			id: "conv-1",
+			updatedAt: "2026-06-06T10:00:00.000Z",
+			messages: [
+				{ role: "user", content: "Example question" },
+				{ role: "assistant", content: "Example cached answer" },
+			],
+		};
+		renderPanel("BUSINESS");
+		await selectConversation(user, "My conversation");
+		await screen.findByText("Example cached answer");
+		await selectConversation(user, "My conversation");
+		expect(
+			await screen.findByText("Example cached answer"),
+		).toBeInTheDocument();
+	});
 	it("keeps the active conversation and its messages when the graph mode flips", async () => {
 		const user = userEvent.setup();
 		conversationsData = [summaryOf("conv-1", "My conversation")];
@@ -628,5 +721,280 @@ describe("AtlasChatPanel — stale hydration after a send", () => {
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		// The rendered-but-unsaved answer must survive on screen.
 		expect(screen.getByText("unsaved answer")).toBeInTheDocument();
+	});
+});
+
+// ----------------------------------------------------------------------------
+// Runtime transport
+// ----------------------------------------------------------------------------
+
+describe("AtlasChatPanel — runtime transport (COPILOTKIT_ATLAS_CHAT)", () => {
+	beforeEach(() => {
+		access.organizationId = "org-example-1";
+		access.userRole = "member";
+		access.isGuest = false;
+	});
+
+	it("runs a single-repository turn on the agent runtime under the conversation's id", async () => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		renderPanel();
+
+		await ask(user, "hello assistant");
+
+		expect(await screen.findByText("Hello world")).toBeInTheDocument();
+		expect(access.runs).toHaveLength(1);
+		const [runtimeRun] = access.runs;
+		expect(runtimeRun?.url).toBe(
+			"/api/agents/runtime/agent/atlas-chat/run",
+		);
+		expect(runtimeRun?.input.threadId).toBe("conv-new");
+		expect(runtimeRun?.input.forwardedProps).toEqual({
+			projectId: "proj-1",
+			repositoryIntegrationId: "integration-1",
+			mode: "BUSINESS",
+		});
+		expect(
+			runtimeRun?.input.messages.map(({ role, content }) => ({
+				role,
+				content,
+			})),
+		).toEqual([{ role: "user", content: "hello assistant" }]);
+		expect(runtimeRun?.org).toBe("org-example-1");
+		expect(runtimeRun?.signal).toBeInstanceOf(AbortSignal);
+		expect(runtimeRun?.signal.aborted).toBe(false);
+		expect(chatFn).not.toHaveBeenCalled();
+		expect(toastError).not.toHaveBeenCalled();
+	});
+
+	it("carries the focused node in forwardedProps", async () => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		renderPanel("TECHNICAL", { focusNodeKey: "node-a" });
+
+		await ask(user, "what does this do?");
+
+		await screen.findByText("Hello world");
+		expect(access.runs[0]?.input.forwardedProps).toEqual({
+			projectId: "proj-1",
+			repositoryIntegrationId: "integration-1",
+			mode: "TECHNICAL",
+			focusNodeKey: "node-a",
+		});
+	});
+
+	it("a persist-failed note warns once and keeps the answer", async () => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		access.respond = runtimeAnswer(
+			["Hello ", "world"],
+			["persist-failed", "persist-failed"],
+		);
+		renderPanel();
+
+		await ask(user, "save this");
+
+		await waitFor(() => {
+			expect(toastWarning).toHaveBeenCalledTimes(1);
+		});
+		expect(toastWarning).toHaveBeenCalledWith("turnNotSaved");
+		expect(screen.getByText("Hello world")).toBeInTheDocument();
+		expect(toastError).not.toHaveBeenCalled();
+	});
+
+	it("an interrupted note keeps the partial with the marker; with nothing rendered it drops the bubble and shows one error toast", async () => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		access.respond = runtimeAnswer(["Partial ans"], ["interrupted"]);
+		const { unmount } = renderPanel();
+
+		await ask(user, "q");
+
+		expect(await screen.findByText("Partial ans")).toBeInTheDocument();
+		expect(await screen.findByText("— interrupted")).toBeInTheDocument();
+		expect(toastError).not.toHaveBeenCalled();
+		unmount();
+
+		access.respond = runtimeAnswer([], ["interrupted"]);
+		renderPanel();
+
+		await ask(user, "doomed question");
+
+		await waitFor(() => {
+			expect(toastError).toHaveBeenCalledWith("error", {
+				description: "interrupted",
+			});
+		});
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(toastError).toHaveBeenCalledTimes(1);
+		expect(screen.queryByText("— interrupted")).toBeNull();
+		expect(screen.getByRole("log").querySelectorAll("svg")).toHaveLength(0);
+	});
+
+	it.each([
+		[
+			"a RUN_ERROR shows its message in the error toast and drops the empty bubble",
+			"NOT_FOUND",
+			"This repository has not been analysed yet.",
+		],
+		[
+			"a turn the runtime refuses because the conversation is still answering shows that in the toast",
+			"THREAD_ALREADY_RUNNING",
+			"This chat is still answering.",
+		],
+	])("%s", async (_label, code, message) => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		access.respond = runtimeRefusal(code, message);
+		renderPanel();
+
+		await ask(user, "q");
+
+		await waitFor(() => {
+			expect(toastError).toHaveBeenCalledWith("error", {
+				description: message,
+			});
+		});
+		expect(toastError).toHaveBeenCalledTimes(1);
+		expect(screen.getByText("q")).toBeInTheDocument();
+		expect(screen.getByRole("log").querySelectorAll("svg")).toHaveLength(0);
+	});
+
+	it("the System map chat stays on atlas.systemChat even when eligible", async () => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		renderPanel("BUSINESS", {
+			systemScope: { repositoryIntegrationIds: ["integration-1"] },
+		});
+
+		await ask(user, "how do the services talk?");
+
+		expect(await screen.findByText("System answer")).toBeInTheDocument();
+		expect(systemChatFn).toHaveBeenCalledTimes(1);
+		expect(access.runs).toHaveLength(0);
+		expect(chatFn).not.toHaveBeenCalled();
+	});
+
+	it("keeps the transport chosen at mount", async () => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		const first = renderPanel();
+		access.flagOn = false;
+		first.rerenderWithMode("BUSINESS");
+
+		await ask(user, "first");
+
+		await screen.findByText("Hello world");
+		expect(access.runs).toHaveLength(1);
+		expect(chatFn).not.toHaveBeenCalled();
+		first.unmount();
+
+		renderPanel().rerenderWithMode("BUSINESS");
+		access.flagOn = true;
+
+		await ask(user, "second");
+
+		await screen.findByText("Hello world");
+		expect(chatFn).toHaveBeenCalledTimes(1);
+		expect(access.runs).toHaveLength(1);
+	});
+
+	it("a send whose conversation could not be created goes over the route, as today", async () => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		createConversationFn.mockRejectedValue(new Error("create failed"));
+		renderPanel();
+
+		await ask(user, "hello");
+
+		expect(await screen.findByText("Hello world")).toBeInTheDocument();
+		expect(chatFn).toHaveBeenCalledTimes(1);
+		expect(access.runs).toHaveLength(0);
+	});
+
+	it.each([
+		["a project guest", { isGuest: true, userRole: null }],
+		["a viewer", { isGuest: false, userRole: "viewer" }],
+		[
+			"a member whose role has not loaded",
+			{ isGuest: false, userRole: null },
+		],
+	])("keeps %s on atlas.chat with the flag on", async (_label, viewer) => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		access.isGuest = viewer.isGuest;
+		access.userRole = viewer.userRole;
+		renderPanel();
+
+		await ask(user, "hello");
+
+		await screen.findByText("Hello world");
+		expect(chatFn).toHaveBeenCalledTimes(1);
+		expect(access.runs).toHaveLength(0);
+	});
+
+	it("stays on atlas.chat while the flag is off", async () => {
+		const user = userEvent.setup();
+		renderPanel();
+
+		await ask(user, "hello");
+
+		await screen.findByText("Hello world");
+		expect(chatFn).toHaveBeenCalledTimes(1);
+		expect(access.runs).toHaveLength(0);
+	});
+
+	// Aborting the request is the only way a runtime turn ends early: the
+	// engine then saves the partial and frees the conversation at once.
+	it("lets go of a runtime answer silently when the panel unmounts mid-answer: its request is aborted", async () => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		access.respond = heldRuntimeAnswer("Partial ans").respond;
+		const { unmount } = renderPanel();
+
+		await ask(user, "a long question");
+		expect(await screen.findByText("Partial ans")).toBeInTheDocument();
+		expect(access.runs).toHaveLength(1);
+		expect(access.runs[0]?.signal.aborted).toBe(false);
+
+		unmount();
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		});
+
+		expect(access.runs[0]?.signal.aborted).toBe(true);
+		expect(toastError).not.toHaveBeenCalled();
+	});
+
+	// A new send never meets an open runtime turn: the panel refuses to send
+	// while an answer streams, so it neither aborts nor doubles the turn.
+	it("starts no second runtime run while an answer streams, and leaves the open one to finish", async () => {
+		const user = userEvent.setup();
+		access.flagOn = true;
+		const held = heldRuntimeAnswer("First answer");
+		access.respond = held.respond;
+		renderPanel();
+
+		await ask(user, "first question");
+		await screen.findByText("First answer");
+		await user.type(
+			screen.getByLabelText("inputLabel"),
+			"second question{Enter}",
+		);
+
+		expect(access.runs).toHaveLength(1);
+		expect(access.runs[0]?.signal.aborted).toBe(false);
+
+		await act(async () => {
+			held.finish();
+		});
+
+		await waitFor(() => {
+			expect(screen.getByRole("button", { name: "send" })).toBeEnabled();
+		});
+		expect(access.runs).toHaveLength(1);
+		expect(access.runs[0]?.signal.aborted).toBe(false);
+		expect(screen.getByText("First answer")).toBeInTheDocument();
+		expect(toastError).not.toHaveBeenCalled();
 	});
 });

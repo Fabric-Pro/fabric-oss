@@ -14,6 +14,11 @@ import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
  * dependency of `apps/web` (see `prompts/lib/delete-authority.ts`). A project
  * guest has no organization role and a viewer lacks both permissions, so both
  * stay on the stream routes.
+ *
+ * The Atlas chat uses the same set for a second reason: these are also the
+ * roles that hold `AI_CHAT`, which its runtime engine judges in the
+ * organization on screen. A change to either role set must be checked
+ * against both.
  */
 const ROLES_THAT_SAVE_CONVERSATIONS: readonly string[] = [
 	"owner",

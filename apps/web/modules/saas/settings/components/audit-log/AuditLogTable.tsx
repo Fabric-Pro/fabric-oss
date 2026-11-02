@@ -466,7 +466,7 @@ export function AuditLogTable({
 				<span className="app-editorial-label">
 					{t("settings.auditLog.label")}
 				</span>
-				<div className="font-serif text-2xl text-foreground">
+				<div className="font-semibold text-2xl text-foreground">
 					{t(titleKey)}
 				</div>
 				<div className="max-w-xl text-muted-foreground">
@@ -956,7 +956,7 @@ export function AuditLogTable({
 																	"actor",
 																);
 															}}
-															className="truncate rounded text-left text-sm text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+															className="truncate rounded text-left text-sm text-foreground transition-colors hover:text-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 															aria-label={`Copy actor: ${actorLabel}`}
 															data-testid="audit-actor-copy"
 														>
@@ -1022,7 +1022,7 @@ export function AuditLogTable({
 																		correlationId,
 																	);
 																}}
-																className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-foreground transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+																className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-foreground transition-colors hover:bg-accent/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 															>
 																{
 																	shortCorrelation
@@ -1259,7 +1259,7 @@ export function AuditLogTable({
 																	"IP",
 																);
 															}}
-															className="rounded font-mono text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+															className="rounded font-mono text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 															aria-label={`Copy IP ${row.ipAddress}`}
 															data-testid="audit-ip-copy"
 														>

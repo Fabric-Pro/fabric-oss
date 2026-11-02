@@ -788,7 +788,7 @@ export function CreateAgentDialog({
 										<PopoverTrigger asChild>
 											<button
 												type="button"
-												className="w-14 h-14 rounded-xl bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-900 flex items-center justify-center text-2xl hover:shadow-md transition-all border-2 border-transparent hover:border-primary/20"
+												className="w-14 h-14 rounded-lg bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-900 flex items-center justify-center text-2xl hover:shadow-md transition-all border-2 border-transparent hover:border-primary/20"
 											>
 												{formData.emoji}
 											</button>
@@ -836,7 +836,7 @@ export function CreateAgentDialog({
 												displayName: e.target.value,
 											})
 										}
-										className="flex-1 h-14 text-lg rounded-xl bg-slate-100 dark:bg-slate-900 border-0"
+										className="flex-1 h-14 text-lg rounded-lg bg-slate-100 dark:bg-slate-900 border-0"
 										required
 									/>
 								</div>
@@ -863,7 +863,7 @@ export function CreateAgentDialog({
 											})
 										}
 										className={cn(
-											"relative p-3 border-2 rounded-xl text-left transition-all hover:border-primary/50",
+											"relative p-3 border-2 rounded-lg text-left transition-all hover:border-primary/50",
 											formData.agentCategory ===
 												"System" &&
 												formData.framework ===
@@ -901,7 +901,7 @@ export function CreateAgentDialog({
 										})
 									}
 									className={cn(
-										"relative p-3 border-2 rounded-xl text-left transition-all hover:border-primary/50",
+										"relative p-3 border-2 rounded-lg text-left transition-all hover:border-primary/50",
 										formData.agentCategory === "Custom"
 											? "border-primary bg-primary/5"
 											: "border-border",
@@ -988,7 +988,7 @@ export function CreateAgentDialog({
 									})
 								}
 								rows={2}
-								className="rounded-xl bg-slate-100 dark:bg-slate-900 border-0 resize-none"
+								className="rounded-lg bg-slate-100 dark:bg-slate-900 border-0 resize-none"
 								required
 							/>
 						</div>
@@ -998,7 +998,7 @@ export function CreateAgentDialog({
 							<Label className="text-sm font-medium">
 								Instructions
 							</Label>
-							<div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700">
+							<div className="rounded-lg overflow-hidden border border-border">
 								<Textarea
 									placeholder="You are a helpful AI assistant that specializes in..."
 									value={formData.systemPrompt}
@@ -1009,7 +1009,7 @@ export function CreateAgentDialog({
 										})
 									}
 									rows={12}
-									className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border-0 rounded-none font-mono text-sm placeholder:text-slate-400"
+									className="bg-card text-foreground border-0 rounded-none font-mono text-sm placeholder:text-muted-foreground"
 									required
 								/>
 							</div>
@@ -1046,7 +1046,7 @@ export function CreateAgentDialog({
 											})
 										}
 										className={cn(
-											"flex-1 flex items-center gap-2 p-3 rounded-xl border-2 transition-all",
+											"flex-1 flex items-center gap-2 p-3 rounded-lg border-2 transition-all",
 											formData.scope === "USER"
 												? "border-primary bg-primary/5"
 												: "border-border hover:border-primary/30",
@@ -1071,7 +1071,7 @@ export function CreateAgentDialog({
 											})
 										}
 										className={cn(
-											"flex-1 flex items-center gap-2 p-3 rounded-xl border-2 transition-all",
+											"flex-1 flex items-center gap-2 p-3 rounded-lg border-2 transition-all",
 											formData.scope === "ORGANIZATION"
 												? "border-primary bg-primary/5"
 												: "border-border hover:border-primary/30",
@@ -1390,7 +1390,7 @@ export function CreateAgentDialog({
 													})
 												}
 												className={cn(
-													"flex-1 flex items-center justify-center gap-2 p-2 rounded-xl border-2 transition-all",
+													"flex-1 flex items-center justify-center gap-2 p-2 rounded-lg border-2 transition-all",
 													isSelected
 														? "border-primary bg-primary/5"
 														: "border-border hover:border-primary/50",
@@ -1494,7 +1494,7 @@ export function CreateAgentDialog({
 									)}
 
 									{/* Workspace List */}
-									<div className="border rounded-xl max-h-40 overflow-y-auto bg-white dark:bg-slate-800">
+									<div className="border rounded-lg max-h-40 overflow-y-auto bg-white dark:bg-slate-800">
 										{loadingWorkspaces ? (
 											<div className="p-3 text-center text-xs text-muted-foreground">
 												Loading...
@@ -1557,7 +1557,7 @@ export function CreateAgentDialog({
 
 									{formData.skillIds.length > 0 && (
 										<div className="space-y-2">
-											<div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+											<div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 												Skills
 											</div>
 											<div className="flex flex-wrap gap-1.5">
@@ -1586,7 +1586,7 @@ export function CreateAgentDialog({
 
 									{formData.capabilityIds.length > 0 && (
 										<div className="space-y-2">
-											<div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+											<div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 												Built-in tools
 											</div>
 											<div className="flex flex-wrap gap-1.5">
@@ -1615,7 +1615,7 @@ export function CreateAgentDialog({
 
 									{formData.mcpServers.length > 0 && (
 										<div className="space-y-2">
-											<div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+											<div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 												Connected tools
 											</div>
 											<div className="flex flex-wrap gap-1.5">
@@ -1655,7 +1655,7 @@ export function CreateAgentDialog({
 										</div>
 									)}
 
-									<div className="rounded-xl border bg-white p-4 dark:bg-slate-800">
+									<div className="rounded-lg border bg-white p-4 dark:bg-slate-800">
 										<div className="flex items-start justify-between gap-3">
 											<div>
 												<div className="font-medium text-sm">
@@ -1725,7 +1725,7 @@ export function CreateAgentDialog({
 									{triggers.map((trigger) => (
 										<div
 											key={trigger.id}
-											className="rounded-xl border bg-card p-4 space-y-3"
+											className="rounded-lg border bg-card p-4 space-y-3"
 										>
 											{/* Header row */}
 											<div className="flex items-center justify-between gap-2">
@@ -1893,7 +1893,7 @@ export function CreateAgentDialog({
 											setPreviewInput(e.target.value)
 										}
 										rows={3}
-										className="resize-none rounded-xl bg-muted border-0"
+										className="resize-none rounded-lg bg-muted border-0"
 									/>
 									<Button
 										type="button"
@@ -1918,7 +1918,7 @@ export function CreateAgentDialog({
 										)}
 									</Button>
 									{previewResponse !== null && (
-										<div className="rounded-xl bg-muted border p-4 text-sm text-muted-foreground whitespace-pre-wrap">
+										<div className="rounded-lg bg-muted border p-4 text-sm text-muted-foreground whitespace-pre-wrap">
 											{previewResponse}
 										</div>
 									)}
@@ -1959,7 +1959,7 @@ export function CreateAgentDialog({
 								</h3>
 							</div>
 
-							<div className="rounded-2xl border bg-white p-4 shadow-sm dark:bg-slate-800">
+							<div className="rounded-lg border bg-white p-4 shadow-sm dark:bg-slate-800">
 								<div className="flex items-center justify-between gap-2">
 									<div>
 										<p className="text-sm font-semibold text-foreground">
@@ -1988,7 +1988,7 @@ export function CreateAgentDialog({
 									{builderReadiness.map((item) => (
 										<div
 											key={item.label}
-											className="flex items-center justify-between rounded-xl border border-border/60 px-3 py-2"
+											className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2"
 										>
 											<span className="text-xs font-medium text-muted-foreground">
 												{item.label}
@@ -2001,7 +2001,7 @@ export function CreateAgentDialog({
 								</div>
 							</div>
 
-							<div className="rounded-2xl border bg-white p-4 shadow-sm dark:bg-slate-800">
+							<div className="rounded-lg border bg-white p-4 shadow-sm dark:bg-slate-800">
 								<p className="text-sm font-semibold text-foreground">
 									Builder suggestions
 								</p>
@@ -2014,7 +2014,7 @@ export function CreateAgentDialog({
 										builderSuggestions.map((suggestion) => (
 											<div
 												key={suggestion.id}
-												className="rounded-xl border border-border/60 px-3 py-3"
+												className="rounded-lg border border-border/60 px-3 py-3"
 											>
 												<p className="text-sm font-medium text-foreground">
 													{suggestion.title}
@@ -2038,7 +2038,7 @@ export function CreateAgentDialog({
 											</div>
 										))
 									) : (
-										<div className="rounded-xl border border-dashed px-3 py-3 text-xs text-muted-foreground">
+										<div className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">
 											The draft already covers the main
 											areas. A final test run is the last
 											useful check before saving.
@@ -2049,7 +2049,7 @@ export function CreateAgentDialog({
 
 							<div className="space-y-3">
 								{!formData.displayName && (
-									<div className="p-3 rounded-xl bg-white dark:bg-slate-800 border shadow-sm">
+									<div className="p-3 rounded-lg bg-white dark:bg-slate-800 border shadow-sm">
 										<p className="text-xs text-muted-foreground">
 											<span className="font-medium text-foreground">
 												Name your agent
@@ -2062,7 +2062,7 @@ export function CreateAgentDialog({
 								)}
 
 								{/* Static tips */}
-								<div className="p-3 rounded-xl bg-white dark:bg-slate-800 border shadow-sm">
+								<div className="p-3 rounded-lg bg-white dark:bg-slate-800 border shadow-sm">
 									<p className="text-xs text-muted-foreground">
 										<span className="font-medium text-foreground">
 											Reasoning modes
@@ -2073,7 +2073,7 @@ export function CreateAgentDialog({
 									</p>
 								</div>
 
-								<div className="p-3 rounded-xl bg-white dark:bg-slate-800 border shadow-sm">
+								<div className="p-3 rounded-lg bg-white dark:bg-slate-800 border shadow-sm">
 									<p className="text-xs text-muted-foreground">
 										<span className="font-medium text-foreground">
 											Temperature setting
@@ -2110,7 +2110,6 @@ export function CreateAgentDialog({
 						type="button"
 						variant="outline"
 						onClick={() => onOpenChange(false)}
-						className="rounded-xl"
 					>
 						Cancel
 					</Button>
@@ -2118,7 +2117,6 @@ export function CreateAgentDialog({
 						type="button"
 						disabled={saveMutation.isPending}
 						onClick={handleSubmit}
-						className="rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white"
 					>
 						{saveMutation.isPending
 							? editingAgent

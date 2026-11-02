@@ -12,7 +12,7 @@ export function StorylinesPanel({ storylines }: StorylinesPanelProps) {
 	return (
 		<section
 			aria-label="In flight"
-			className="rounded-2xl border border-border bg-card p-6"
+			className="rounded-lg border border-border bg-card p-6"
 		>
 			<span className="editorial-label">In flight</span>
 			<ul className="mt-4 space-y-5">
@@ -27,7 +27,7 @@ export function StorylinesPanel({ storylines }: StorylinesPanelProps) {
 									{s.storyIdentifier}
 								</span>
 							) : null}
-							<h3 className="font-serif text-lg leading-snug">
+							<h3 className="font-semibold text-lg leading-snug">
 								{s.headline}
 							</h3>
 						</div>

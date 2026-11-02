@@ -50,7 +50,7 @@ export function IntegrationBrandIcon({
 	return (
 		<div
 			className={cn(
-				"flex shrink-0 items-center justify-center rounded-xl border border-border/60 bg-card/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+				"flex shrink-0 items-center justify-center rounded-lg border border-border/60 bg-card/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
 				className,
 			)}
 			style={{

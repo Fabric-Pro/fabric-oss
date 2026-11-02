@@ -113,7 +113,7 @@ function GateWarningNote({
 						<button
 							type="button"
 							aria-label={tGates("dismiss.action")}
-							className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<XIcon aria-hidden className="size-3.5" />
 						</button>
@@ -172,14 +172,14 @@ function OptionCard({
 		.filter(Boolean)
 		.join(" ");
 	return (
-		<div className="flex flex-col gap-2 rounded-xl border border-border bg-card p-4">
+		<div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4">
 			<button
 				type="button"
 				data-entry-point={entryPoint}
 				onClick={onSelect}
 				disabled={disabled || busy}
 				aria-describedby={describedBy}
-				className="flex flex-1 flex-col items-start gap-2 rounded-lg text-left transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:text-inherit"
+				className="flex flex-1 flex-col items-start gap-2 rounded-lg text-left transition-colors hover:text-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:text-inherit"
 			>
 				<span className="flex items-center gap-2 font-medium text-foreground text-sm">
 					{busy ? (
@@ -279,7 +279,7 @@ function DoBothProgress({
 	];
 
 	return (
-		<div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4">
+		<div className="space-y-3 rounded-lg border border-border bg-muted/40 p-4">
 			<p className="font-medium text-foreground text-sm">{t("label")}</p>
 			{/* Only the steps are live: the buttons below must not be
 			    re-announced on every change. */}
@@ -400,7 +400,7 @@ export function RoadmapStartBuilding({
 			<div className="space-y-2">
 				<h2
 					id="roadmap-start-building-heading"
-					className="font-serif text-2xl font-normal leading-tight text-foreground"
+					className="text-2xl font-semibold leading-tight text-foreground"
 				>
 					{t("heading")}
 				</h2>
@@ -467,7 +467,7 @@ export function RoadmapStartBuilding({
 				<button
 					type="button"
 					onClick={onShowHidden}
-					className="rounded-sm text-primary text-sm underline underline-offset-2 hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+					className="rounded-sm text-primary text-sm underline underline-offset-2 hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 				>
 					{t("showHidden", { count: hiddenCount })}
 				</button>

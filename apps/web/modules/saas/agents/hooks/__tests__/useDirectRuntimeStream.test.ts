@@ -1291,3 +1291,55 @@ describe("useDirectRuntimeStream — workflow confirmation", () => {
 		expect(executeBodies).toHaveLength(1);
 	});
 });
+
+it("preserves runtime contextInfo identity for progress and replaces it for text", async () => {
+	const live = liveSse();
+	respond = ({ body }) => {
+		live.push(
+			started(body.threadId, body.runId),
+			...execution("example-run"),
+		);
+		return live.response;
+	};
+	const { result } = renderHook(() => useDirectRuntimeStream());
+	let sending: ReturnType<typeof result.current.sendMessage> | undefined;
+	act(() => {
+		sending = result.current.sendMessage("hi");
+	});
+	await waitFor(() => expect(result.current.messages).toHaveLength(2));
+	const before = result.current.contextInfo;
+	await act(async () =>
+		live.push({
+			type: "STATE_DELTA",
+			delta: [
+				{
+					op: "add",
+					path: "/progress",
+					value: {
+						phase: "executing_ai",
+						message: "Working",
+						progress: 0,
+					},
+				},
+			],
+		}),
+	);
+	await waitFor(() =>
+		expect(result.current.messages[1].statusLabel).toBe("Working"),
+	);
+	expect(result.current.contextInfo).toBe(before);
+	await act(async () =>
+		live.push(...text(requests[0].body.runId, "longer response")),
+	);
+	await waitFor(() =>
+		expect(result.current.contextInfo.estimatedTokens).toBeGreaterThan(
+			before.estimatedTokens,
+		),
+	);
+	expect(result.current.contextInfo).not.toBe(before);
+	await act(async () => {
+		live.push(finished(requests[0].body.threadId, requests[0].body.runId));
+		live.close();
+		await sending;
+	});
+});

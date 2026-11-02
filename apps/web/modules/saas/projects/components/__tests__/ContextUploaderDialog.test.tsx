@@ -101,6 +101,11 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				list: (input: unknown) => mcpConfigsListMock(input),
 			},
 		},
+		workflows: {
+			integrations: {
+				listStatus: vi.fn().mockResolvedValue({ integrations: [] }),
+			},
+		},
 	},
 }));
 
@@ -353,7 +358,9 @@ describe("ContextUploaderDialog — editorial cleanup", () => {
 		await user.click(getTabTrigger("confluence"));
 		await waitFor(() => {
 			expect(
-				screen.getByText(/No Confluence MCP server configured/i),
+				screen.getByText(
+					/Connect Confluence under Integrations to add pages/i,
+				),
 			).toBeInTheDocument();
 		});
 		expect(

@@ -183,7 +183,7 @@ export function ProjectAttachmentPanel({
 				<div>
 					<div className="flex items-center gap-1.5 mb-2">
 						<div className="w-0.5 h-3 bg-primary rounded-sm" />
-						<p className="text-[11px] font-medium text-muted-foreground uppercase tracking-[0.12em]">
+						<p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
 							Attached Project
 						</p>
 					</div>
@@ -248,7 +248,7 @@ export function ProjectAttachmentPanel({
 			<div>
 				<div className="flex items-center gap-1.5 mb-2">
 					<div className="w-0.5 h-3 bg-primary rounded-sm" />
-					<p className="text-[11px] font-medium text-muted-foreground uppercase tracking-[0.12em]">
+					<p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
 						Available Projects ({availableProjects.length})
 					</p>
 				</div>

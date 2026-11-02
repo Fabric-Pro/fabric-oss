@@ -28,6 +28,7 @@ import {
 	TURN_IN_PROGRESS_NOTICE,
 	type UseOrchestratorStreamOptions,
 } from "../lib/orchestrator-stream-types";
+import { OrchestratorTextBuffer } from "../lib/orchestrator-text-buffer";
 import { useOrchestratorPartyKit } from "./useOrchestratorPartyKit";
 
 /** A PartyKit tool call, which may carry MCP App fields the hook's type omits. */
@@ -260,9 +261,14 @@ export function useOrchestratorTurnState(
 	}, [messages]);
 
 	/** Handle one incoming stream event for the turn's assistant message. */
-	const handleStreamEvent = useCallback(
-		(data: OrchestratorStreamEvent, assistantMessageId: string) =>
+	const applyStreamEvent = useCallback(
+		(
+			data: OrchestratorStreamEvent,
+			assistantMessageId: string,
+			preserveContentOnResume = false,
+		) =>
 			applyOrchestratorStreamEvent(data, assistantMessageId, {
+				preserveContentOnResume,
 				setState,
 				setMessages,
 				setIsLoading,
@@ -287,6 +293,45 @@ export function useOrchestratorTurnState(
 			}),
 		[notifyPartykitStepStart],
 	);
+
+	const applyStreamEventRef = useRef(applyStreamEvent);
+	applyStreamEventRef.current = applyStreamEvent;
+	const textBufferRef = useRef<OrchestratorTextBuffer | null>(null);
+	textBufferRef.current ??= new OrchestratorTextBuffer(
+		(event, id, preserveContentOnResume) =>
+			applyStreamEventRef.current(event, id, preserveContentOnResume),
+	);
+	const flushStreamingText = useCallback(
+		() => textBufferRef.current?.flush(),
+		[],
+	);
+	/**
+	 * Replace the body on the next delta, as a resumed window's `started`
+	 * does (#2269), without touching approval or clarification state. A
+	 * stopped message is ignored, like `handleStreamEvent`, so a late notice
+	 * from its stream cannot arm the clear for the next turn.
+	 */
+	const deferClearOnNextDelta = useCallback((id: string) => {
+		if (cancelledMessageIdsRef.current.has(id)) {
+			return;
+		}
+		textBufferRef.current?.flush();
+		shouldClearOnNextDeltaRef.current = true;
+		needsTextSeparatorRef.current = false;
+	}, []);
+	const handleStreamEvent = useCallback(
+		(
+			event: OrchestratorStreamEvent,
+			id: string,
+			preserveContentOnResume = false,
+		) => {
+			if (!cancelledMessageIdsRef.current.has(id)) {
+				textBufferRef.current?.push(event, id, preserveContentOnResume);
+			}
+		},
+		[],
+	);
+	useEffect(() => () => textBufferRef.current?.drop(), []);
 
 	/**
 	 * Put a new turn on screen: the question and an empty streaming answer,
@@ -319,6 +364,7 @@ export function useOrchestratorTurnState(
 			startFreshRef.current = false; // Clear the flag
 
 			// Add user message — show only newly-attached images, not carried-forward ones
+			textBufferRef.current?.drop();
 			const userMessage: OrchestratorStreamMessage = {
 				id: `msg-${Date.now()}-user`,
 				role: "user",
@@ -414,6 +460,7 @@ export function useOrchestratorTurnState(
 			reason: string,
 			includeErrorInEmptyContent = false,
 		) => {
+			textBufferRef.current?.flush();
 			setStreamingToolCalls(
 				(prev) => settleUnfinishedToolCalls(prev) ?? prev,
 			);
@@ -651,6 +698,22 @@ export function useOrchestratorTurnState(
 	 */
 	const flipToStopped = useCallback((triggeredBy: "button" | "esc") => {
 		const targetId = activeAssistantIdRef.current;
+		const pendingText = textBufferRef.current?.pendingText ?? "";
+		const priorBody =
+			messagesRef.current.find((m) => m.id === targetId)?.content ?? "";
+		const separator =
+			needsTextSeparatorRef.current &&
+			priorBody &&
+			!/\s$/.test(priorBody) &&
+			!/^\s/.test(pendingText)
+				? "\n\n"
+				: "";
+		const flushedBody = pendingText
+			? shouldClearOnNextDeltaRef.current
+				? pendingText
+				: priorBody + separator + pendingText
+			: priorBody;
+		textBufferRef.current?.flush();
 		if (targetId) {
 			if (cancelledMessageIdsRef.current.has(targetId)) {
 				// Idempotent — clicking twice does nothing the second
@@ -692,10 +755,7 @@ export function useOrchestratorTurnState(
 		const startedAt = streamStartedAtRef.current;
 		const latencyMs =
 			startedAt !== null ? Math.max(0, Date.now() - startedAt) : 0;
-		const partialBody = targetId
-			? (messagesRef.current.find((m) => m.id === targetId)?.content ??
-				"")
-			: "";
+		const partialBody = flushedBody;
 		const partialTokenCount = Math.ceil(partialBody.length / 4);
 
 		emitCancelEvent({
@@ -726,6 +786,7 @@ export function useOrchestratorTurnState(
 	 * user-initiated stop to record.
 	 */
 	const reset = useCallback(() => {
+		textBufferRef.current?.drop();
 		abortControllerRef.current?.abort();
 		setMessages([]);
 		setStepResults([]);
@@ -774,6 +835,8 @@ export function useOrchestratorTurnState(
 		executionIdRef,
 		latestApprovalIdRef,
 		showAiUsageLimitToastRef,
+		flushStreamingText,
+		deferClearOnNextDelta,
 		handleStreamEvent,
 		beginTurn,
 		failWithoutDiscardingContent,

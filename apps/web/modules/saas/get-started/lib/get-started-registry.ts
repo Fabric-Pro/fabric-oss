@@ -203,7 +203,7 @@ const WORKSPACE_GROUP: GsGroup = {
 		},
 		{
 			id: "nexus",
-			label: "Advisor",
+			label: "Genie",
 			description:
 				"Your always-on AI assistant — plan work, draft specs, and answer questions about your projects. The same conversation the floating button opens, as a full page.",
 			icon: SparklesIcon,
@@ -224,7 +224,7 @@ const WORKSPACE_GROUP: GsGroup = {
 			id: "projects",
 			label: "Projects",
 			description:
-				"Each project is a workspace for one initiative — its docs, roadmap, agents, and code map live together.",
+				"Use New in the navigation to create a project. Each project is a workspace for one initiative — its docs, roadmap, agents, and code map live together.",
 			icon: FolderKanbanIcon,
 			anchor: "nav-projects",
 			href: ({ basePath }) => `${basePath}/projects`,
@@ -246,7 +246,7 @@ const WORKSPACE_GROUP: GsGroup = {
 			id: "agents",
 			label: "AI Agents",
 			description:
-				"Build and manage AI agents, plus the Skills and Templates that extend what they can do. Every agent runs in the Advisor — the full-page chat that is also the conversation the floating button opens.",
+				"Find Genie Agents and Runs & History under AI/ML, plus the Skills and Templates that extend what agents can do. Every agent runs in Genie — the full-page chat that is also the conversation the floating button opens.",
 			icon: BotIcon,
 			anchor: "nav-agents",
 			href: ({ basePath }) => `${basePath}/agents`,
@@ -255,7 +255,7 @@ const WORKSPACE_GROUP: GsGroup = {
 			id: "workflows",
 			label: "Workflows",
 			description:
-				"Design multi-step automations that chain agents, tools, and approvals together.",
+				"Explore the Visual Workflow Studio under Operations and create workflows that chain agents, tools, and approvals together.",
 			icon: WorkflowIcon,
 			anchor: "nav-workflows",
 			href: ({ basePath }) => `${basePath}/workflows`,
@@ -425,7 +425,7 @@ const PROJECT_GROUP: GsGroup = {
 			id: "roadmap",
 			label: "Roadmap",
 			description:
-				"Track features and tasks through delivery stages, spot bottlenecks, and sync to your PM tool. Switch to the Priority view for a shared, scored worklist with a full history of every priority change.",
+				"Track features and tasks through delivery stages, spot bottlenecks, and sync to your PM tool. When remote servers are enabled, assign work from a feature’s Start work menu to your own or a team server and inspect its session. Switch to Priority for the shared, scored worklist.",
 			icon: MapIcon,
 			projectTab: "stories",
 			anchor: anchorForProjectTab("stories"),
@@ -1558,7 +1558,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "agents-featured",
 				anchor: "agents-featured",
 				title: "Start with the orchestrator",
-				body: "The featured orchestrator doesn't answer itself — it reads your task and routes it to the best specialist agent, in the Advisor chat. Not sure which agent you need? Start here. (Clicking any agent drops you into an Advisor chat with it.)",
+				body: "The featured orchestrator doesn't answer itself — it reads your task and routes it to the best specialist agent, in the Genie chat. Not sure which agent you need? Start here. (Clicking any agent drops you into a Genie chat with it.)",
 			},
 		],
 	},

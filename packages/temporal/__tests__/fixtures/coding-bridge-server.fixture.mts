@@ -48,6 +48,7 @@ const manager = {
 		return session;
 	},
 	getSession: async (id: string) => state.sessions[id] ?? null,
+	getSessions: () => Object.values(state.sessions),
 	getPendingPermissionRequests: () => [],
 	getPendingElicitations: () => [],
 	onSessionComplete: (listener: (event: object) => void) => {
@@ -88,8 +89,19 @@ const manager = {
 		}
 	},
 	cancelProcessing: async () => {},
+	terminateCodingSession: async () => ({
+		confirmed: true,
+		runningSessionIds: [],
+		runningTaskCount: 0,
+	}),
+	listBackgroundTasks: () => [],
 };
 const router = createCodingSessionsRouter({
+	checkExecutionReadiness: async () => ({
+		storedCredentials: true,
+		cataloguedModel: true,
+		repositoryPushPermission: true,
+	}),
 	internalSecret: "synthetic-service-secret-for-contract-tests",
 	stateFilePath: join(root, "registry.json"),
 	getSessionManager: () => manager,

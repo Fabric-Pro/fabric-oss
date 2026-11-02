@@ -27,6 +27,8 @@ const {
 	getMcpConfigByIdInternalMock,
 	createOauthStateMock,
 	getOauthStateMock,
+	getOrganizationMembershipMock,
+	consumeOauthStateMock,
 	deleteOauthStateMock,
 	safeFetchOutboundMock,
 	replaceMcpOAuthRegistrationMock,
@@ -36,6 +38,8 @@ const {
 	getMcpConfigByIdInternalMock: vi.fn(),
 	createOauthStateMock: vi.fn(),
 	getOauthStateMock: vi.fn(),
+	getOrganizationMembershipMock: vi.fn(),
+	consumeOauthStateMock: vi.fn(),
 	deleteOauthStateMock: vi.fn(),
 	safeFetchOutboundMock: vi.fn(),
 	replaceMcpOAuthRegistrationMock: vi.fn(),
@@ -53,6 +57,7 @@ vi.mock("@repo/database", async () => ({
 		"@repo/database/prisma/queries/lib/mcp-oauth-binding",
 	)),
 	clearRefreshFailures: vi.fn(),
+	consumeOauthState: (...args: unknown[]) => consumeOauthStateMock(...args),
 	createOauthState: (...args: unknown[]) => createOauthStateMock(...args),
 	db: { mCPConfig: { update: vi.fn() } },
 	deleteOauthState: (...args: unknown[]) => deleteOauthStateMock(...args),
@@ -61,6 +66,8 @@ vi.mock("@repo/database", async () => ({
 		getMcpConfigByIdInternalMock(...args),
 	getMcpServerDefaultTokenExpiry: () => null,
 	getOauthState: (...args: unknown[]) => getOauthStateMock(...args),
+	getOrganizationMembership: (...args: unknown[]) =>
+		getOrganizationMembershipMock(...args),
 	getOrganizationById: vi.fn(),
 	refreshMcpOAuthAccessToken: vi.fn(),
 	replaceMcpOAuthRegistration: (...args: unknown[]) =>
@@ -103,6 +110,7 @@ vi.mock("../../../../orpc/procedures", () => {
 	});
 	return {
 		publicProcedure: chainable,
+		protectedProcedure: chainable,
 		tenantProtectedProcedure: chainable,
 		requirePermission: () => () => ({}),
 		authorizeInputOrganization: vi.fn(),
@@ -130,13 +138,16 @@ type StartHandler = (args: {
 }) => Promise<{ authorizationUrl: string; state: string }>;
 type CallbackHandler = (args: {
 	input: Record<string, unknown>;
+	context?: { user: { id: string } };
 }) => Promise<{ success: boolean; message: string }>;
 
 const start = (oauthProcedures.start as unknown as { _handler: StartHandler })
 	._handler;
-const callback = (
+const callbackHandler = (
 	oauthProcedures.callback as unknown as { _handler: CallbackHandler }
 )._handler;
+const callback: CallbackHandler = ({ input, context }) =>
+	callbackHandler({ input, context: context ?? { user: { id: "user_1" } } });
 
 const AS_A = "https://as-a.example.com";
 const AS_B = "https://as-b.example.com";
@@ -288,6 +299,7 @@ beforeEach(() => {
 	getMcpConfigByIdInternalMock.mockReset();
 	advertisedAs = AS_B;
 	safeFetchOutboundMock.mockImplementation(routeFetch);
+	consumeOauthStateMock.mockResolvedValue(true);
 	createOauthStateMock.mockResolvedValue("state-1");
 	rowForWrites = config();
 	// The registration write returns the row exactly as it wrote it.
@@ -1249,6 +1261,187 @@ describe("oauth.callback — uses what start resolved", () => {
 			...overrides,
 		};
 	}
+
+	it("refuses a different signed-in user with the same response as an unknown state", async () => {
+		getOauthStateMock
+			.mockResolvedValueOnce(flowState())
+			.mockResolvedValueOnce(null);
+		const other = callback({
+			input: { code: "code-1", state: "state-1" },
+			context: { user: { id: "other-user" } },
+		});
+		const unknown = callback({
+			input: { code: "code-1", state: "unknown-state" },
+		});
+		const [otherResult, unknownResult] = await Promise.allSettled([
+			other,
+			unknown,
+		]);
+		expect(otherResult).toMatchObject({ status: "rejected" });
+		expect(unknownResult).toMatchObject({ status: "rejected" });
+		expect((otherResult as PromiseRejectedResult).reason.message).toBe(
+			(unknownResult as PromiseRejectedResult).reason.message,
+		);
+		expect(consumeOauthStateMock).not.toHaveBeenCalled();
+		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
+		expect(saveMcpOAuthGrantMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses another organization admin who did not start the flow", async () => {
+		getOauthStateMock.mockResolvedValue(
+			flowState({ organizationId: "example-org" }),
+		);
+		getMcpConfigByIdInternalMock.mockResolvedValue(
+			config({ userId: null, organizationId: "example-org" }),
+		);
+		getOrganizationMembershipMock.mockResolvedValue({ role: "admin" });
+
+		await expect(
+			callback({
+				input: { code: "code-1", state: "state-1" },
+				context: { user: { id: "other-user" } },
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(consumeOauthStateMock).not.toHaveBeenCalled();
+		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
+		expect(saveMcpOAuthGrantMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses an anonymous handler invocation before grant storage", async () => {
+		getOauthStateMock.mockResolvedValue(flowState());
+		await expect(
+			callbackHandler({ input: { code: "code-1", state: "state-1" } }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
+		expect(saveMcpOAuthGrantMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses a demoted organization admin before exchange", async () => {
+		getOauthStateMock.mockResolvedValue(
+			flowState({ organizationId: "example-org" }),
+		);
+		getMcpConfigByIdInternalMock.mockResolvedValue(
+			config({ userId: null, organizationId: "example-org" }),
+		);
+		getOrganizationMembershipMock.mockResolvedValue({ role: "member" });
+		await expect(
+			callback({ input: { code: "code-1", state: "state-1" } }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(getOrganizationMembershipMock).toHaveBeenCalledWith(
+			"example-org",
+			"user_1",
+		);
+		expect(consumeOauthStateMock).not.toHaveBeenCalled();
+		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
+		expect(saveMcpOAuthGrantMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses an unreadable organization role", async () => {
+		getOauthStateMock.mockResolvedValue(
+			flowState({ organizationId: "example-org" }),
+		);
+		getMcpConfigByIdInternalMock.mockResolvedValue(
+			config({ userId: null, organizationId: "example-org" }),
+		);
+		getOrganizationMembershipMock.mockRejectedValue(
+			new Error("unavailable"),
+		);
+		await expect(
+			callback({ input: { code: "code-1", state: "state-1" } }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
+	});
+
+	it("spends a state once before the exchange", async () => {
+		getOauthStateMock.mockResolvedValue(flowState());
+		getMcpConfigByIdInternalMock.mockResolvedValue(config());
+		consumeOauthStateMock
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+		expect(
+			await callback({ input: { code: "code-1", state: "state-1" } }),
+		).toMatchObject({ success: true });
+		await expect(
+			callback({ input: { code: "code-1", state: "state-1" } }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(consumeOauthStateMock).toHaveBeenCalledTimes(2);
+		expect(safeFetchOutboundMock).toHaveBeenCalledTimes(1);
+		expect(saveMcpOAuthGrantMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("allows only one of two concurrent callbacks to exchange a code", async () => {
+		getOauthStateMock.mockResolvedValue(flowState());
+		getMcpConfigByIdInternalMock.mockResolvedValue(config());
+		let spent = false;
+		consumeOauthStateMock.mockImplementation(async () => {
+			if (spent) {
+				return false;
+			}
+			spent = true;
+			return true;
+		});
+		const outcomes = await Promise.allSettled([
+			callback({ input: { code: "code-1", state: "state-1" } }),
+			callback({ input: { code: "code-1", state: "state-1" } }),
+		]);
+		expect(outcomes.map((outcome) => outcome.status).sort()).toEqual([
+			"fulfilled",
+			"rejected",
+		]);
+		expect(safeFetchOutboundMock).toHaveBeenCalledTimes(1);
+		expect(saveMcpOAuthGrantMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("allows the starter while they remain an organization admin", async () => {
+		getOauthStateMock.mockResolvedValue(
+			flowState({ organizationId: "example-org" }),
+		);
+		getOrganizationMembershipMock.mockResolvedValue({ role: "admin" });
+		getMcpConfigByIdInternalMock.mockResolvedValue(
+			config({ userId: null, organizationId: "example-org" }),
+		);
+		expect(
+			await callback({ input: { code: "code-1", state: "state-1" } }),
+		).toMatchObject({ success: true });
+		expect(saveMcpOAuthGrantMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("allows the owner of a user config that also carries an organization", async () => {
+		getOauthStateMock.mockResolvedValue(
+			flowState({ organizationId: "example-org" }),
+		);
+		getMcpConfigByIdInternalMock.mockResolvedValue(
+			config({ organizationId: "example-org" }),
+		);
+		expect(
+			await callback({ input: { code: "code-1", state: "state-1" } }),
+		).toMatchObject({ success: true });
+		expect(getOrganizationMembershipMock).not.toHaveBeenCalled();
+		expect(saveMcpOAuthGrantMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("refuses a config whose owner changed after the flow started", async () => {
+		getOauthStateMock.mockResolvedValue(flowState());
+		getMcpConfigByIdInternalMock.mockResolvedValue(
+			config({ userId: "other-user" }),
+		);
+		await expect(
+			callback({ input: { code: "code-1", state: "state-1" } }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
+		expect(saveMcpOAuthGrantMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses a config with no owner or organization", async () => {
+		getOauthStateMock.mockResolvedValue(flowState());
+		getMcpConfigByIdInternalMock.mockResolvedValue(
+			config({ userId: null }),
+		);
+		await expect(
+			callback({ input: { code: "code-1", state: "state-1" } }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
+	});
 
 	it("exchanges at the snapshot's token endpoint even after the MCP server changed its advertisement", async () => {
 		advertisedAs = AS_B;

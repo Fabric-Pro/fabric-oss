@@ -6,7 +6,7 @@
  */
 
 import { config } from "@repo/config";
-import { db } from "@repo/database";
+import { db, resolveExecutionChatMediaAccess } from "@repo/database";
 import { getSignedUrl } from "@repo/storage";
 import type { ExternalApiContext } from "../types";
 
@@ -37,6 +37,8 @@ export async function getExecution(
 		},
 		select: {
 			id: true,
+			userId: true,
+			organizationId: true,
 			executionId: true,
 			deploymentId: true,
 			status: true,
@@ -93,24 +95,36 @@ export async function getExecution(
 
 	if (rawArtifacts && rawArtifacts.length > 0) {
 		const bucket = config.storage.bucketNames.chatDocuments;
-		artifacts = await Promise.all(
-			rawArtifacts
-				.filter((artifact) =>
-					isOwnedByTenant(artifact.storagePath, ctx),
-				)
-				.map(async (artifact) => {
-					const url = await getSignedUrl(artifact.storagePath, {
-						bucket,
-						expiresIn: 3600, // 1-hour expiry
-					});
-					return {
-						id: artifact.id,
-						name: artifact.name,
-						mimeType: artifact.mimeType,
-						url,
-					};
-				}),
-		);
+		artifacts = [];
+		for (const artifact of rawArtifacts) {
+			if (!isOwnedByTenant(artifact.storagePath, ctx)) {
+				continue;
+			}
+			const access = await resolveExecutionChatMediaAccess({
+				storageKey: artifact.storagePath,
+				userId: ctx.userId,
+				organizationId: ctx.organizationId ?? null,
+				execution: {
+					userId: execution.userId,
+					organizationId: execution.organizationId,
+					startedAt: execution.startedAt,
+					completedAt: execution.completedAt,
+				},
+			});
+			if (access === "deny") {
+				continue;
+			}
+			const url = await getSignedUrl(artifact.storagePath, {
+				bucket,
+				expiresIn: 3600,
+			});
+			artifacts.push({
+				id: artifact.id,
+				name: artifact.name,
+				mimeType: artifact.mimeType,
+				url,
+			});
+		}
 	}
 
 	return {

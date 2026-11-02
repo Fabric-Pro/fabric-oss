@@ -923,7 +923,7 @@ export function CaseStudyPanel({
 					</p>
 				</>
 			) : (
-				<div className="rounded-xl border border-border bg-muted/40 p-4">
+				<div className="rounded-lg border border-border bg-muted/40 p-4">
 					<p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
 						{working.body}
 					</p>
@@ -966,7 +966,7 @@ export function CaseStudyPanel({
 				// A banner in WORDS. The border tint is secondary — a reader who
 				// cannot see it must still learn that this is an outline, which
 				// is the single most consequential thing about the draft.
-				<section className="space-y-1 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
+				<section className="space-y-1 rounded-lg border border-highlight/40 bg-highlight/10 p-4">
 					<h3 className="publishing-label">Scaffold draft</h3>
 					<p className="text-sm leading-relaxed">
 						There wasn't enough confirmed material to write a full
@@ -996,7 +996,7 @@ export function CaseStudyPanel({
 							{OTHER_VERSION_NOTE}
 						</p>
 					) : null}
-					<dl className="space-y-3 rounded-xl border border-border bg-card p-4 text-sm">
+					<dl className="space-y-3 rounded-lg border border-border bg-card p-4 text-sm">
 						<div className="space-y-0.5">
 							<dt className="font-medium">Customer identity</dt>
 							<dd className="text-muted-foreground leading-relaxed">
@@ -1248,7 +1248,7 @@ export function CaseStudyAssets({
 			doc.clamped.assets.length > 0) ? (
 		<div className="grid gap-4 sm:grid-cols-2">
 			{doc.confirmedAssets.length > 0 ? (
-				<section className="space-y-2 rounded-xl border border-border bg-muted/40 p-4">
+				<section className="space-y-2 rounded-lg border border-border bg-muted/40 p-4">
 					<h3 className="publishing-label">Assets cleared for use</h3>
 					{/* NOT "approved, and safe to publish". Every other
 							    field in this panel is labelled as whose claim it
@@ -1273,7 +1273,7 @@ export function CaseStudyAssets({
 			) : null}
 			{doc.assetsNeedingConfirmation.length > 0 ||
 			doc.clamped.assets.length > 0 ? (
-				<section className="space-y-2 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
+				<section className="space-y-2 rounded-lg border border-highlight/40 bg-highlight/10 p-4">
 					<h3 className="publishing-label">
 						Assets awaiting confirmation
 					</h3>

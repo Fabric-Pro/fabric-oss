@@ -297,7 +297,7 @@ export function TestCaseRow({
 					// because there are up to 100 of these on screen and each Radix
 					// tooltip is its own portal and listener set.
 					title={item.title}
-					className="min-w-0 truncate rounded text-left font-medium text-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					className="min-w-0 truncate rounded text-left font-medium text-sm hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 				>
 					{item.title}
 				</button>
@@ -656,7 +656,7 @@ function CoverageLink({
 				// Same reason as the case title: 140px rarely holds a feature
 				// name, so the full one has to be reachable without opening it.
 				title={`${kind} ${story.identifier}: ${story.title}`}
-				className="inline-flex min-w-0 items-center gap-1.5 rounded transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				className="inline-flex min-w-0 items-center gap-1.5 rounded transition-colors hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 			>
 				<span className="shrink-0 font-mono text-primary tabular-nums">
 					{story.identifier}
@@ -713,7 +713,7 @@ function ResultMarkControl({
 					<button
 						type="button"
 						aria-label={t("row.resultMarkAria", { identifier })}
-						className="rounded-full transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+						className="rounded-full transition-opacity hover:opacity-80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
 					>
 						<TestCaseResultPill
 							result={result}

@@ -36,6 +36,8 @@ export interface CleanupWeaveResourcesInput {
 	 * the activity returns a no-op success in that case.
 	 */
 	sessionId: string | null;
+	providerMetadata?: unknown;
+	stopAlreadyConfirmed?: boolean;
 	/** Provider key — typically `"BACKGROUND_AGENTS"` or `"KANBAN_LOCAL"`. */
 	provider: string;
 	userId: string;
@@ -90,8 +92,19 @@ export async function cleanupWeaveResourcesActivity(
 	// The headline failure cases (init/sandbox failures) exit with no
 	// session, and they must still flip the execution row to a terminal
 	// status and un-wedge the parent plan.
-	await reconcileWeaveExecutionState(input);
+	const native =
+		input.provider === "BACKGROUND_AGENTS" &&
+		(input.providerMetadata as Record<string, unknown> | null | undefined)
+			?.executionRuntime === "fabric-agent-server";
+	if (!native || !input.sessionId) {
+		await reconcileWeaveExecutionState(input);
+	}
 
+	if (native && input.stopAlreadyConfirmed) {
+		await reconcileWeaveExecutionState(input);
+		writeTerminatedOnExitAudit(input, { outcome: "success" });
+		return { destroyed: true, alreadyTerminal: false };
+	}
 	if (!input.sessionId) {
 		// Workflow exited before a session was created — there is nothing
 		// to tear down. The audit row is still written so the lifecycle
@@ -100,13 +113,14 @@ export async function cleanupWeaveResourcesActivity(
 		// outcome: failure" for this case was misleading — no teardown
 		// actually failed, there was simply no session.
 		writeTerminatedOnExitAudit(input, { outcome: "success" });
-		return { destroyed: false, alreadyTerminal: true };
+		return { destroyed: true, alreadyTerminal: true };
 	}
 
 	let destroyed = false;
 	try {
 		const provider = getCodingExecutionProvider(
 			input.provider as CodingRunProvider,
+			input.providerMetadata,
 		);
 		await provider.cancelSession(input.sessionId);
 		destroyed = true;
@@ -119,7 +133,7 @@ export async function cleanupWeaveResourcesActivity(
 		});
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		if (/404|not.?found/i.test(message)) {
+		if (!native && /404|not.?found/i.test(message)) {
 			// Provider already destroyed the session — treat as success.
 			destroyed = true;
 			log.info("weave_session_terminated_on_exit_already_gone", {
@@ -138,6 +152,9 @@ export async function cleanupWeaveResourcesActivity(
 		}
 	}
 
+	if (native && destroyed) {
+		await reconcileWeaveExecutionState(input);
+	}
 	writeTerminatedOnExitAudit(input, {
 		outcome: destroyed ? "success" : "failure",
 	});

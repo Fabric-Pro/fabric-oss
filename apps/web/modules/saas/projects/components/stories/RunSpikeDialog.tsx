@@ -129,7 +129,7 @@ export function RunSpikeDialog({
 				}),
 				queryClient.invalidateQueries({ queryKey: ["codingRun"] }),
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.key(),
+					queryKey: orpc.projects.stories.board.key(),
 				}),
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.stories.get.queryKey({
@@ -181,13 +181,13 @@ export function RunSpikeDialog({
 			<DialogContent className="flex max-h-[90vh] flex-col sm:max-w-[600px]">
 				<DialogHeader className="flex-shrink-0 space-y-4 text-left">
 					<div className="flex items-start gap-3">
-						<div className="flex size-11 shrink-0 items-center justify-center rounded-2xl border border-primary/20 bg-primary/10">
+						<div className="flex size-11 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
 							<FlaskConicalIcon className="size-5 text-primary" />
 						</div>
 						<div className="min-w-0 flex-1 space-y-2 pr-8">
 							<Badge
 								variant="outline"
-								className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-[0.16em] text-primary"
+								className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
 							>
 								{t("kindBadge")}
 							</Badge>
@@ -233,8 +233,8 @@ export function RunSpikeDialog({
 					)}
 
 					{!hasRepositoryContext && (
-						<div className="rounded-2xl border border-highlight/30 bg-highlight/5 p-4">
-							<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+						<div className="rounded-lg border border-highlight/30 bg-highlight/5 p-4">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								{t("runSpike.repositoryRequiredTitle")}
 							</p>
 							<p className="mt-2 text-sm leading-6 text-foreground/85">
@@ -244,8 +244,8 @@ export function RunSpikeDialog({
 					)}
 
 					{usesLocalProvider && (
-						<div className="rounded-2xl border border-border/60 bg-muted/40 p-4">
-							<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+						<div className="rounded-lg border border-border/60 bg-muted/40 p-4">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								{t("runSpike.providerHintTitle")}
 							</p>
 							<p className="mt-2 text-sm leading-6 text-foreground/85">
@@ -310,7 +310,7 @@ export function RunSpikeDialog({
 							onChange={(event) =>
 								setLlmConnection(event.target.value)
 							}
-							className="flex h-10 w-full rounded-xl border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							{FABRIC_AGENT_CONNECTIONS.map((conn) => (
 								<option key={conn.value} value={conn.value}>
@@ -321,8 +321,8 @@ export function RunSpikeDialog({
 					</div>
 
 					<div className="grid gap-3 sm:grid-cols-2">
-						<div className="rounded-2xl border border-border/60 bg-background p-4">
-							<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+						<div className="rounded-lg border border-border/60 bg-background p-4">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								{t("runSpike.featureLabel")}
 							</p>
 							<p className="mt-2 truncate text-sm font-medium text-foreground">
@@ -332,8 +332,8 @@ export function RunSpikeDialog({
 								{story.title}
 							</p>
 						</div>
-						<div className="rounded-2xl border border-border/60 bg-background p-4">
-							<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+						<div className="rounded-lg border border-border/60 bg-background p-4">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								{t("runSpike.repositoryLabel")}
 							</p>
 							<p className="mt-2 flex items-center gap-2 text-sm font-medium text-foreground">

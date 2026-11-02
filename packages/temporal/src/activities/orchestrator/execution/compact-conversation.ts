@@ -236,7 +236,7 @@ export async function compactConversationHistoryActivity(
 	}
 
 	if (input.executionId && result.text.trim().length > 0) {
-		publishExecutionEvent(input.executionId, {
+		await publishExecutionEvent(input.executionId, {
 			event: "execution.context_compacted",
 			data: {
 				iteration: input.iteration ?? 0,

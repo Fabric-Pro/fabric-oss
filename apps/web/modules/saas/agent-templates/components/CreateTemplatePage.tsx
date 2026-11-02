@@ -18,10 +18,10 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 
-const sectionClassName = "rounded-2xl border border-border/60 bg-card/60 p-6";
+const sectionClassName = "rounded-lg border border-border/60 bg-card/60 p-6";
 
 const inputClassName =
-	"rounded-xl border border-border/60 bg-background/55 shadow-none";
+	"rounded-lg border border-border/60 bg-background/55 shadow-none";
 
 function sanitizeSlug(value: string) {
 	return value
@@ -145,7 +145,7 @@ export function CreateTemplatePage({
 									<p className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
 										Template Builder
 									</p>
-									<h1 className="font-sans text-base font-normal leading-tight">
+									<h1 className="font-sans text-base font-semibold leading-tight">
 										Create Template
 									</h1>
 								</div>

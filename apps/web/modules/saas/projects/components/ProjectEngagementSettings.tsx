@@ -289,7 +289,7 @@ export function ProjectEngagementSettings({ project }: Props) {
 	return (
 		<div className="space-y-6">
 			<div>
-				<p className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+				<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 					{t("sectionLabel")}
 				</p>
 				<h3 className="mt-2 text-xl font-semibold text-foreground">
@@ -449,7 +449,7 @@ export function ProjectEngagementSettings({ project }: Props) {
 
 			{/* Save bar for profile / flags / vision */}
 			{hasChanges && (
-				<div className="sticky bottom-4 flex items-center justify-end gap-3 rounded-xl border border-border bg-card p-4 shadow-lg">
+				<div className="sticky bottom-4 flex items-center justify-end gap-3 rounded-lg border border-border bg-card p-4 shadow-lg">
 					<p className="mr-auto text-sm text-muted-foreground">
 						Unsaved changes
 					</p>

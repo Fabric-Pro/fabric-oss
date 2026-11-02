@@ -774,7 +774,7 @@ export function WorkflowIntegrationSettingsPageContent({
 						color={activePlugin.color}
 						brandColor={activePlugin.brandColor}
 						size={56}
-						className="rounded-2xl"
+						className="rounded-lg"
 					/>
 					<div className="space-y-2">
 						<div className="flex flex-wrap items-center gap-2">
@@ -1121,7 +1121,7 @@ export function WorkflowIntegrationSettingsPageContent({
 									{activePlugin.actions.map((action) => (
 										<div
 											key={action.slug}
-											className="rounded-xl border p-4"
+											className="rounded-lg border p-4"
 										>
 											<div className="flex items-center gap-2">
 												<p className="font-medium">
@@ -1129,7 +1129,7 @@ export function WorkflowIntegrationSettingsPageContent({
 												</p>
 												<Badge
 													variant="outline"
-													className="text-[10px] uppercase tracking-[0.15em]"
+													className="text-[10px] uppercase tracking-wide"
 												>
 													{action.category}
 												</Badge>
@@ -1161,7 +1161,7 @@ export function WorkflowIntegrationSettingsPageContent({
 							</CardDescription>
 						</CardHeader>
 						<CardContent className="grid gap-3">
-							<div className="rounded-xl border bg-muted/20 p-4">
+							<div className="rounded-lg border bg-muted/20 p-4">
 								<div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
 									Actions
 								</div>
@@ -1191,7 +1191,7 @@ export function WorkflowIntegrationSettingsPageContent({
 									</Badge>
 								</div>
 							</div>
-							<div className="rounded-xl border p-4">
+							<div className="rounded-lg border p-4">
 								<div className="flex items-center gap-2 text-sm font-medium">
 									<ShieldCheckIcon className="h-4 w-4 text-primary" />
 									Configuration scope
@@ -1298,7 +1298,7 @@ export function WorkflowIntegrationSettingsPageContent({
 															)
 														}
 														className={cn(
-															"flex w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors",
+															"flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors",
 															isActive
 																? "border-primary bg-primary/5 shadow-sm"
 																: "hover:border-border hover:bg-muted/40",

@@ -69,6 +69,7 @@ export interface RuntimeTurnHost {
 	/** The turn's execution, once its run said. */
 	executionId(): string | null;
 	applyEvent(event: OrchestratorStreamEvent): void;
+	flushText?(): void;
 	setBilling(apiBilling: ChatGptPlanApiBilling): void;
 	setProgress(message: string): void;
 	/** A new thread's first run started: its conversation exists. */
@@ -423,6 +424,7 @@ export class OrchestratorRuntimeTurn {
 		} catch (caught) {
 			error = caught;
 		} finally {
+			this.host.flushText?.();
 			clearTimeout(timer);
 			unlink();
 		}

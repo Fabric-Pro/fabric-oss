@@ -24,7 +24,6 @@
 
 import { type BaseEvent, EventType, type RunAgentInput } from "@ag-ui/client";
 import { LangGraphHttpAgent } from "@ag-ui/langgraph";
-import { AI_TOKEN_HEADER } from "@repo/ai-token";
 import { logger } from "@repo/logs";
 import { Context } from "@temporalio/activity";
 import { resolveAgentUrl } from "../lib/agent-url-resolver";
@@ -32,10 +31,10 @@ import {
 	AGUI_RUN_SETUP_FAILED_CODE,
 	type AgUiAgentRunResult,
 	type AgUiAgentRunWorkflowInput,
-	type AgUiModelHints,
 	type AgUiRunInputRecord,
 	type AgUiRunOutcome,
 	type AgUiRunStore,
+	buildAgUiAgentHeaders,
 	openAgUiRunStore,
 } from "../lib/agui-run-stream";
 
@@ -49,37 +48,6 @@ const LOCAL_AGENT_URLS: Readonly<Record<string, string>> = {
 
 /** A heartbeat at least this often while the agent is quiet (thinking, tools). */
 const QUIET_HEARTBEAT_MS = 10_000;
-
-/**
- * The headers `/api/copilotkit` sends its agents, in the same shape: service
- * auth, tenant, AI token, then the model hints.
- */
-export function buildAgUiAgentHeaders(params: {
-	userId: string;
-	organizationId: string;
-	aiToken: string;
-	agentApiKey: string | undefined;
-	modelHints: AgUiModelHints;
-}): Record<string, string> {
-	const { modelHints } = params;
-	return {
-		...(modelHints.isReasoning !== undefined && {
-			"X-AI-Is-Reasoning": String(modelHints.isReasoning),
-		}),
-		...(params.agentApiKey && {
-			Authorization: `Bearer ${params.agentApiKey}`,
-		}),
-		"X-Tenant-User-ID": params.userId,
-		"X-Tenant-Organization-ID": params.organizationId,
-		[AI_TOKEN_HEADER]: params.aiToken,
-		...(modelHints.model && { "X-AI-Model": modelHints.model }),
-		...(modelHints.baseUrl && { "X-AI-Base-URL": modelHints.baseUrl }),
-		...(modelHints.provider && { "X-AI-Provider": modelHints.provider }),
-		...(modelHints.deploymentName && {
-			"X-AI-Deployment-Name": modelHints.deploymentName,
-		}),
-	};
-}
 
 function stringField(event: BaseEvent, field: string): string | undefined {
 	const value = event[field];

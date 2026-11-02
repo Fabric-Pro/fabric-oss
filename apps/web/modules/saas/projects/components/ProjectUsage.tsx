@@ -304,7 +304,7 @@ export function ProjectUsage({ projectId }: { projectId: string }) {
 					<div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
 						<div>
 							<div className="flex items-center gap-1.5">
-								<h2 className="font-serif text-[2.25rem] font-normal leading-tight tracking-tight text-foreground">
+								<h2 className="text-[2.25rem] font-semibold leading-tight tracking-tight text-foreground">
 									{outcomes ? "AI outcomes" : "Usage & cost"}
 								</h2>
 								{outcomes && (

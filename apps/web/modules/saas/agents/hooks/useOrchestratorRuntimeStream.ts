@@ -34,6 +34,7 @@ import {
 	isChatGptPlanSpentCode,
 } from "@saas/shared/lib/ai-error-message";
 import { useCallback, useRef } from "react";
+import { windowUntypedHistory } from "../../../../app/api/agents/fabric-ai/stream/history-window";
 import type { ApprovalSendResult } from "../lib/approval-response";
 import { runtimeHeaders } from "../lib/direct-runtime-transport";
 import { orchestratorRequestFields } from "../lib/orchestrator-request";
@@ -185,6 +186,7 @@ export function useOrchestratorRuntimeStream(
 						),
 					executionId: () =>
 						turnStateRef.current.executionIdRef.current,
+					flushText: () => turnStateRef.current.flushStreamingText(),
 					applyEvent: (event) =>
 						turnStateRef.current.handleStreamEvent(
 							event,
@@ -195,8 +197,10 @@ export function useOrchestratorRuntimeStream(
 							...prev,
 							apiBilling,
 						})),
-					setProgress: (message) =>
-						turnStateRef.current.setProgressMessage(message),
+					setProgress: (message) => {
+						turnStateRef.current.flushStreamingText();
+						turnStateRef.current.setProgressMessage(message);
+					},
 					conversationStarted: (threadId) =>
 						optionsRef.current.onConversationStarted?.(threadId),
 					fail: (reason) =>
@@ -244,6 +248,7 @@ export function useOrchestratorRuntimeStream(
 			if (!content.trim() || isLoading) {
 				return null;
 			}
+			const requestHistory = windowUntypedHistory(history);
 			const previous = activeTurnRef.current;
 			const currentOptions = optionsRef.current;
 			const attachExecutionId = overrides?.attachExecutionId ?? null;
@@ -285,7 +290,7 @@ export function useOrchestratorRuntimeStream(
 				await multiAgentSend({
 					threadId,
 					content: content.trim(),
-					history,
+					history: requestHistory,
 					forwardedProps,
 					displayImageUrls,
 					onRefused: () =>
@@ -318,7 +323,7 @@ export function useOrchestratorRuntimeStream(
 					threadId,
 					runId,
 					messages: [
-						...history.map((message, index) => ({
+						...requestHistory.map((message, index) => ({
 							id: `${runId}-history-${index}`,
 							role: message.role,
 							content: message.content,

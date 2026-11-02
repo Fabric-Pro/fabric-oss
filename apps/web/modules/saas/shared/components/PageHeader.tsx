@@ -52,7 +52,7 @@ export function PageHeader({
 		>
 			<div className="min-w-0">
 				<div className="flex items-center gap-1.5">
-					<h1 className="text-[22px] font-medium leading-7 tracking-[-0.02em] text-foreground">
+					<h1 className="text-[20px] font-semibold leading-7 tracking-[-0.015em] text-foreground">
 						{title}
 					</h1>
 					{titleAdornment}

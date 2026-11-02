@@ -47,7 +47,7 @@ vi.mock("../../../../../../shared/lib/orpc-client", () => ({
 }));
 
 // The chip's post-action cache refresh is the shared PM-sync invalidation
-// helper (stories.list / stories.get / reviewCenter.items / reviewCenter.count
+// helper (stories.board / stories.get / reviewCenter.items / reviewCenter.count
 // together); the spy pins that every success path calls it.
 vi.mock("../use-invalidate-pm-sync-state", () => ({
 	useInvalidatePmSyncState: () => invalidatePmSyncState,

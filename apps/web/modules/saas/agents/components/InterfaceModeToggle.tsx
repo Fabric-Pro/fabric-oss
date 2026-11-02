@@ -41,10 +41,7 @@ export function InterfaceModeToggle({
 		<TooltipProvider>
 			<fieldset
 				title={disabled ? INTERFACE_MODE_STREAMING_NOTE : undefined}
-				className={cn(
-					"m-0 flex min-w-0 items-center gap-1 rounded-md border border-border/60 bg-card/35",
-					compact ? "p-0.5" : "p-1",
-				)}
+				className="m-0 flex min-w-0 items-center gap-0.5 rounded-full border border-border bg-muted/60 p-0.5"
 			>
 				<legend className="sr-only">Interface mode</legend>
 				{MODES.map((mode) => {
@@ -62,13 +59,13 @@ export function InterfaceModeToggle({
 									}}
 									aria-pressed={active}
 									className={cn(
-										"flex items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+										"flex items-center justify-center rounded-full transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
 										compact
-											? "h-6 px-2 text-[11px]"
-											: "h-9 gap-1.5 px-2.5 text-xs",
+											? "h-6 px-2.5 text-xs"
+											: "h-7 gap-1.5 px-3 text-xs",
 										active
-											? "bg-background text-foreground shadow-sm"
-											: "text-muted-foreground hover:bg-background/50",
+											? "border border-border bg-card text-foreground shadow-2xs"
+											: "border border-transparent text-muted-foreground hover:text-foreground",
 									)}
 								>
 									<span className="font-medium capitalize">

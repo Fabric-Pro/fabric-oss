@@ -441,10 +441,7 @@ export function SimplifiedProjectForm({
 	return (
 		<div className="mx-auto w-full max-w-2xl">
 			<div className="mb-8">
-				<h1
-					className="font-normal text-3xl leading-tight"
-					style={{ fontFamily: "var(--font-serif)" }}
-				>
+				<h1 className="font-semibold text-xl leading-tight">
 					{isEditMode
 						? "Edit project"
 						: resumedDraftId

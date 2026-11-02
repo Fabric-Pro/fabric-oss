@@ -122,7 +122,7 @@ export function QaPipelineSourcesSettings({
 						<button
 							type="button"
 							aria-label="About pipeline source branches"
-							className="rounded text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+							className="rounded text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 						>
 							<InfoIcon className="size-3.5" aria-hidden="true" />
 						</button>

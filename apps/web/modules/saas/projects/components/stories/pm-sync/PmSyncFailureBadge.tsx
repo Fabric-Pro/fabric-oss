@@ -118,8 +118,8 @@ export const PmSyncFailureBadge = forwardRef<HTMLButtonElement, Props>(
 				title={compactLabel ? ariaLabel : undefined}
 				className={cn(
 					"inline-flex items-center gap-1.5 rounded-md border bg-muted px-2 py-0.5",
-					"text-[10px] font-medium uppercase tracking-[0.18em]",
-					"transition-colors focus-visible:outline-none focus-visible:ring-2",
+					"text-[10px] font-medium uppercase tracking-wide",
+					"transition-colors focus-visible:outline-hidden focus-visible:ring-2",
 					"border-destructive/30 text-destructive hover:border-destructive/50 hover:bg-destructive/5 focus-visible:ring-destructive/50",
 					className,
 				)}

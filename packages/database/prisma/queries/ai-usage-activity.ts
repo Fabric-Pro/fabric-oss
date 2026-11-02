@@ -1,11 +1,71 @@
 import { type AiModelFit, getAiModelFit } from "@repo/utils/ai-model-fit";
-import { db, type Prisma } from "../client";
+import { db, Prisma } from "../client";
 import type { AIProvider, AiTaskType } from "../generated/client";
 import {
 	buildLatencyClause,
 	hasRequestLatency,
 	requestLatencyRows,
 } from "./ai-usage-latency";
+
+// Only the predicates constructed by the activity helpers are accepted here.
+// Reject unknown fields/operators rather than silently dropping a filter.
+function activityWhereSql(where: Prisma.AiUsageLogWhereInput): Prisma.Sql {
+	const columns: Record<string, Prisma.Sql> = {
+		organizationId: Prisma.sql`"organizationId"`,
+		userId: Prisma.sql`"userId"`,
+		createdAt: Prisma.sql`"createdAt"`,
+		taskType: Prisma.sql`"taskType"::text`,
+		success: Prisma.sql`success`,
+		providerModelId: Prisma.sql`"providerModelId"`,
+		projectId: Prisma.sql`"projectId"`,
+		provider: Prisma.sql`provider::text`,
+		costMicroUsd: Prisma.sql`"costMicroUsd"`,
+		latencyMs: Prisma.sql`"latencyMs"`,
+	};
+	const clauses = Object.entries(where).map(([key, value]): Prisma.Sql => {
+		if (key === "AND" || key === "OR" || key === "NOT") {
+			const children = (Array.isArray(value) ? value : [value]).map(
+				(child) =>
+					activityWhereSql(child as Prisma.AiUsageLogWhereInput),
+			);
+			const joined = Prisma.join(
+				children,
+				key === "OR" ? " OR " : " AND ",
+			);
+			return key === "NOT"
+				? Prisma.sql`NOT (${joined})`
+				: Prisma.sql`(${joined})`;
+		}
+		const column = columns[key];
+		if (!column) {
+			throw new Error(`Unsupported activity field: ${key}`);
+		}
+		if (value === null) {
+			return Prisma.sql`${column} IS NULL`;
+		}
+		if (typeof value !== "object" || value instanceof Date) {
+			return Prisma.sql`${column} = ${value}`;
+		}
+		const predicates = Object.entries(value).map(([operator, operand]) => {
+			switch (operator) {
+				case "in":
+					return Prisma.sql`${column} IN (${Prisma.join(operand)})`;
+				case "not":
+					return Prisma.sql`${column} <> ${operand}`;
+				case "gte":
+					return Prisma.sql`${column} >= ${operand}`;
+				case "lte":
+					return Prisma.sql`${column} <= ${operand}`;
+				default:
+					throw new Error(
+						`Unsupported activity operator: ${operator}`,
+					);
+			}
+		});
+		return Prisma.sql`(${Prisma.join(predicates, " AND ")})`;
+	});
+	return Prisma.sql`(${Prisma.join(clauses, " AND ")})`;
+}
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 50;
@@ -268,7 +328,6 @@ export async function listAiUsageActivity(
 		params.status === "error" ? where : { AND: [where, { success: true }] };
 	const [
 		rawRows,
-		totalsAggregate,
 		sourceGroups,
 		planModelGroups,
 		rowCount,
@@ -312,16 +371,6 @@ export async function listAiUsageActivity(
 				},
 			},
 		}),
-		db.aiUsageLog.aggregate({
-			where: succeeded,
-			_sum: {
-				inputTokens: true,
-				outputTokens: true,
-				totalTokens: true,
-				costMicroUsd: true,
-			},
-			_count: { id: true },
-		}),
 		db.aiUsageLog.groupBy({
 			by: ["provider"],
 			where: succeeded,
@@ -362,6 +411,24 @@ export async function listAiUsageActivity(
 			_avg: { latencyMs: true },
 		}),
 	]);
+
+	const totalsAggregate = sourceGroups.reduce(
+		(total, group) => ({
+			_count: { id: total._count.id + group._count.id },
+			_sum: {
+				inputTokens:
+					total._sum.inputTokens + (group._sum.inputTokens ?? 0),
+				outputTokens:
+					total._sum.outputTokens + (group._sum.outputTokens ?? 0),
+				totalTokens:
+					total._sum.totalTokens + (group._sum.totalTokens ?? 0),
+			},
+		}),
+		{
+			_count: { id: 0 },
+			_sum: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+		},
+	);
 
 	const bySource: Record<AiUsageBillingSource, AiUsageBillingSourceTotals> = {
 		chatgpt_plan: {
@@ -737,7 +804,7 @@ export async function getAiUsageActivityTimeSeries(
 		);
 		to = new Date();
 		from = new Date();
-		from.setDate(from.getDate() - periodDays);
+		from.setUTCDate(from.getUTCDate() - periodDays);
 	}
 
 	const tenantWhere: Prisma.AiUsageLogWhereInput =
@@ -781,22 +848,28 @@ export async function getAiUsageActivityTimeSeries(
 
 	const granularity = params.granularity ?? "day";
 
-	// Pull rows we need to bucket, then group in JS. Hard-cap kept large
-	// enough for ~365 days of daily/hourly aggregation but bounded to
-	// avoid runaway memory on bad input.
-	const rows = await db.aiUsageLog.findMany({
-		where,
-		select: {
-			createdAt: true,
-			totalTokens: true,
-			costMicroUsd: true,
-			latencyMs: true,
-			providerModelId: true,
-			success: true,
-		},
-		orderBy: { createdAt: "asc" },
-		take: 50_000,
-	});
+	// Prisma's timestamp column stores UTC wall time without a time zone.
+	const bucketSql =
+		granularity === "minute"
+			? Prisma.sql`date_trunc('hour', "createdAt") + floor(extract(minute from "createdAt") / 5) * interval '5 minutes'`
+			: Prisma.sql`date_trunc(${granularity}, "createdAt")`;
+	const rows = await db.$queryRaw<
+		Array<{
+			createdAt: Date;
+			providerModelId: string;
+			success: boolean;
+			requests: bigint;
+			totalTokens: bigint;
+			costMicroUsd: bigint;
+			latencyMs: bigint;
+		}>
+	>(Prisma.sql`
+		SELECT ${bucketSql} AS "createdAt", "providerModelId", success,
+		count(*) AS requests, sum("totalTokens") AS "totalTokens",
+		sum("costMicroUsd") AS "costMicroUsd", sum("latencyMs") AS "latencyMs"
+		FROM ai_usage_log WHERE ${activityWhereSql(where)}
+		GROUP BY 1, "providerModelId", success
+	`);
 
 	// Round a Date to the bucket boundary. The result becomes the bucket
 	// key (ISO string) and is what the client renders on the x-axis.
@@ -806,14 +879,14 @@ export async function getAiUsageActivityTimeSeries(
 			case "minute":
 				// Round to the nearest 5-minute slot — keeps a sub-hour
 				// zoom navigable without blowing the bucket count up.
-				out.setSeconds(0, 0);
-				out.setMinutes(Math.floor(out.getMinutes() / 5) * 5);
+				out.setUTCSeconds(0, 0);
+				out.setUTCMinutes(Math.floor(out.getUTCMinutes() / 5) * 5);
 				return out;
 			case "hour":
-				out.setMinutes(0, 0, 0);
+				out.setUTCMinutes(0, 0, 0);
 				return out;
 			default:
-				out.setHours(0, 0, 0, 0);
+				out.setUTCHours(0, 0, 0, 0);
 				return out;
 		}
 	};
@@ -822,13 +895,13 @@ export async function getAiUsageActivityTimeSeries(
 		const out = new Date(d);
 		switch (granularity) {
 			case "minute":
-				out.setMinutes(out.getMinutes() + 5);
+				out.setUTCMinutes(out.getUTCMinutes() + 5);
 				return out;
 			case "hour":
-				out.setHours(out.getHours() + 1);
+				out.setUTCHours(out.getUTCHours() + 1);
 				return out;
 			default:
-				out.setDate(out.getDate() + 1);
+				out.setUTCDate(out.getUTCDate() + 1);
 				return out;
 		}
 	};
@@ -872,13 +945,13 @@ export async function getAiUsageActivityTimeSeries(
 		// requests, tokens and latency are successful calls only, like the
 		// totals — or the failed attempts when filtered to errors
 		// (Fizzy #2972 AC3).
-		bucket.costMicroUsd += row.costMicroUsd;
+		bucket.costMicroUsd += Number(row.costMicroUsd);
 		if (row.success || params.status === "error") {
-			bucket.requests += 1;
-			bucket.totalTokens += row.totalTokens;
+			bucket.requests += Number(row.requests);
+			bucket.totalTokens += Number(row.totalTokens);
 			if (hasRequestLatency(row.providerModelId)) {
-				bucket.latencySum += row.latencyMs;
-				bucket.latencyCount += 1;
+				bucket.latencySum += Number(row.latencyMs);
+				bucket.latencyCount += Number(row.requests);
 			}
 		}
 	}

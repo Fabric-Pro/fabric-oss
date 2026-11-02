@@ -10,8 +10,8 @@ symptoms:
   - "A page renders one organization while API calls made from it resolve against another"
   - "A session field written with Prisma has no effect on the next oRPC request, then works minutes later"
   - "A tenant-context change appears correct in a server component and stale in a procedure"
-root_cause: "Better Auth serves the session from a signed session_data cookie for up to five minutes; a direct database write to the session row does not invalidate it, and only the web getSession opts out of that cache"
-resolution_type: workaround
+root_cause: "Historically, Better Auth served sessions from a signed session_data cookie for up to five minutes, so a direct database write could not invalidate what the API read; Fabric now disables that cache so security revocation and session-row changes are visible on the next request"
+resolution_type: code_fix
 applies_when:
   - "Writing session.activeOrganizationId, or any session field, outside Better Auth's own API"
   - "Reasoning about what a procedure will see after a server component changes session state"
@@ -32,14 +32,21 @@ session still named.
 
 The write landed in the database. The API did not see it.
 
-## Symptoms
+That was the failure mode while Fabric enabled Better Auth's signed session
+cookie cache. The cache is now disabled globally: session resolution reads the
+session row on every request so revoked sessions and direct row changes take
+effect immediately. The client reconciliation below remains necessary to put
+the URL-selected organization into the authoritative row, not to refresh a
+server session cache.
 
-- The page renders organization B; oRPC calls made from that page resolve
-  against organization A for up to five minutes, then silently start working.
-- A unit test asserting `db.session.update` was called passes. The behaviour it
-  was written to guarantee does not happen.
-- The same `getSession` name behaves differently depending on which layer calls
-  it, with no type or lint signal that they differ.
+## Historical symptoms
+
+- The page rendered organization B while oRPC calls made from that page resolved
+  against organization A for up to five minutes, then silently started working.
+- A unit test asserting `db.session.update` was called passed while the behaviour
+  it was written to guarantee did not happen.
+- The same `getSession` name behaved differently depending on which layer called
+  it, with no type or lint signal that they differed.
 
 ## What Didn't Work
 
@@ -67,8 +74,8 @@ reaches the browser.
 ## Solution
 
 Reconcile from the client, using the same call the workspace switcher already
-makes. `authClient.organization.setActive` updates the row *and* refreshes the
-cookie cache, because it runs where a `Set-Cookie` can actually be emitted:
+makes. `authClient.organization.setActive` validates the choice and updates the
+authoritative session row:
 
 ```ts
 useEffect(() => {
@@ -92,42 +99,44 @@ useEffect(() => {
 
 Three guards, each load-bearing: skip when the two already agree, skip during an
 in-flight switch, and record the attempt so a refusal is not retried on every
-render. Updating the cached session on success is what lets the effect settle
+render. Updating the client query data on success is what lets the effect settle
 instead of re-firing.
 
 ## Why This Works
 
-`setCookieCache` stores `filterOutputFields(session.session, …)` — the whole
-session row, including `activeOrganizationId` — in a signed cookie with
-`maxAge: 5 * 60`. Nothing in Prisma's write path knows that cookie exists.
-
-The trap is that the two readers disagree and look identical at the call site:
+Fabric now sets `session.cookieCache.enabled` to `false`. Better Auth therefore
+resolves the signed session token through the session table instead of trusting
+a serialized session snapshot. The web helper keeps its explicit
+`disableCookieCache: true` as defense in depth; the oRPC path relies on the
+global setting.
 
 | Caller | Reads |
 |---|---|
-| `apps/web/modules/saas/auth/lib/server.ts` — `getSession` | `disableCookieCache: true` -> the **database** |
-| `packages/api/orpc/procedures.ts` — `protectedProcedure` | no flag -> the **signed cookie**, up to five minutes stale |
+| `apps/web/modules/saas/auth/lib/server.ts` — `getSession` | The **database**, through explicit `disableCookieCache: true` |
+| `packages/api/orpc/procedures.ts` — `protectedProcedure` | The **database**, because the global cookie cache is disabled |
 
-So a server component sees the write immediately and concludes the fix works.
-The API does not. Both call something named `getSession`.
+Both readers now observe a completed session-row write on their next request.
+The tradeoff is one indexed session lookup per authenticated request.
 
-Worth noting what the fix does *not* claim: most oRPC calls pass an explicit,
+At the time, most oRPC calls passed an explicit,
 URL-derived `organizationId`, and `resolveOrganizationId` prefers that over the
-session. The exposure is calls that pass nothing and fall back to the session.
-That is why the impact is real but not catastrophic, and why no test caught it.
+session. The exposure was calls that passed nothing and fell back to the
+session. That limited the historical blast radius without making the stale
+reader safe.
 
 ## Prevention
 
-**Any change to session state outside Better Auth's own API must say how the
-cookie cache learns about it.** In practice:
+**Do not re-enable the signed session cookie cache while session-row deletion is
+the revocation mechanism.** A cached session would let a deleted credential keep
+authorizing until the cache expired. In practice:
 
 - Prefer `auth.api.*` / `authClient.*` over a direct write to the `session`
-  table. They own the cookie.
-- A Server Component cannot set cookies. If the change must be visible to the
-  API on the *next* request, it belongs in a Route Handler, a Server Action, or
-  the client.
-- When you must write the row directly, treat it as eventually-consistent from
-  the API's point of view and say so in a comment at the write.
+  table because they preserve Better Auth's validation and hooks.
+- A completed direct row write is visible to the next session resolution, but
+  it does not update client query state. Reconcile client state separately when
+  the current screen depends on the changed field.
+- Keep the effective-options regression test that rejects either a re-enabled
+  cookie cache or disabled password-reset revocation.
 
 **Test the observable effect, not the call.** The test here asserted
 `db.session.update` was invoked, which is true and proves nothing:

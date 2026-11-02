@@ -371,7 +371,7 @@ export function ActiveIncidentsTable() {
 					<div className="flex flex-wrap items-center gap-2">
 						<h2
 							id="active-incidents-heading"
-							className="font-serif text-2xl font-normal tracking-tight text-foreground/95"
+							className="text-2xl font-semibold tracking-tight text-foreground/95"
 						>
 							Open incidents
 						</h2>

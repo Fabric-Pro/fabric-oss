@@ -51,6 +51,8 @@ export async function createGatewaySession(params: {
 	email: string;
 	role: "user" | "admin";
 	credential: GatewayCredential;
+	/** See `GatewaySession.credentialId`. */
+	credentialId?: string;
 	/** See `GatewaySession.oauthClientId`; only the oauth credential sets it. */
 	oauthClientId?: string;
 	/** See `GatewaySession.actingContext`; only the service credential sets it. */
@@ -82,6 +84,7 @@ export async function createGatewaySession(params: {
 		email: params.email,
 		role: params.role,
 		credential: params.credential,
+		credentialId: params.credentialId ?? params.userId,
 		...(params.oauthClientId
 			? { oauthClientId: params.oauthClientId }
 			: {}),

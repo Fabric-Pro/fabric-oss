@@ -11,7 +11,7 @@
  * sequencing so it stays replay-safe under the post-1.16 SDK rules.
  */
 
-import { db, recordAudit } from "@repo/database";
+import { db, markCodingRunRecoveryRequired, recordAudit } from "@repo/database";
 import type { Client } from "@temporalio/client";
 import { getTemporalClient } from "../../client";
 
@@ -24,6 +24,8 @@ export interface StaleWeaveRow {
 	organizationId: string | null;
 	workflowId: string;
 	startedAtMs: number;
+	providerMetadata?: unknown;
+	requiresConfirmedCleanup?: boolean;
 }
 
 export interface FindStaleWeaveSessionsInput {
@@ -83,6 +85,7 @@ export async function findStaleWeaveSessions(
 				startedAt: { lt: cutoff, not: null },
 			},
 			take: input.batchSize,
+			orderBy: [{ startedAt: "asc" }, { id: "asc" }],
 			select: {
 				id: true,
 				sandboxSessionId: true,
@@ -95,12 +98,27 @@ export async function findStaleWeaveSessions(
 		db.codingRun.findMany({
 			where: {
 				status: { in: CODING_NON_TERMINAL as unknown as never[] },
+				NOT: {
+					status: "AWAITING_REVIEW",
+					events: {
+						some: {
+							eventType: {
+								in: [
+									"cancellation_unknown",
+									"continuation_recovery_required",
+								],
+							},
+						},
+					},
+				},
 				startedAt: { lt: cutoff, not: null },
 			},
 			take: input.batchSize,
+			orderBy: [{ startedAt: "asc" }, { id: "asc" }],
 			select: {
 				id: true,
 				providerSessionId: true,
+				providerMetadata: true,
 				userId: true,
 				organizationId: true,
 				startedAt: true,
@@ -133,6 +151,15 @@ export async function findStaleWeaveSessions(
 				id: r.id,
 				sessionId: r.providerSessionId,
 				provider: r.provider,
+				...(r.providerMetadata
+					? { providerMetadata: r.providerMetadata }
+					: {}),
+				...(r.providerSessionId &&
+				r.provider === "BACKGROUND_AGENTS" &&
+				(r.providerMetadata as Record<string, unknown> | null)
+					?.executionRuntime === "fabric-agent-server"
+					? { requiresConfirmedCleanup: true }
+					: {}),
 				userId: r.userId,
 				organizationId: r.organizationId,
 				// biome-ignore lint/style/noNonNullAssertion: filtered above
@@ -328,6 +355,37 @@ export async function markWeaveExecutionStale(
 			sessionId: input.sessionId,
 			runDurationMs: input.runDurationMs,
 			reason: reasonMessage,
+		},
+	});
+}
+
+/** Confirm closure before exposing manual recovery; retries upsert one event per workflow. */
+export async function markClosedCodingRunRecoveryRequired(input: {
+	codingRunId: string;
+	workflowId: string;
+	organizationId: string | null;
+}): Promise<void> {
+	const client = await getTemporalClient();
+	try {
+		const description = await client.workflow
+			.getHandle(input.workflowId)
+			.describe();
+		if (description.status.name === "RUNNING") {
+			return;
+		}
+	} catch (error) {
+		if (
+			!(error instanceof Error) ||
+			error.name !== "WorkflowNotFoundError"
+		) {
+			throw error;
+		}
+	}
+	await markCodingRunRecoveryRequired({
+		...input,
+		payload: {
+			message:
+				"The workflow has closed and remote shutdown is unconfirmed. Check the original server for orphaned work, then use Close run.",
 		},
 	});
 }

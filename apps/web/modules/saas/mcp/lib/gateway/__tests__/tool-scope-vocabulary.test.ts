@@ -1,5 +1,5 @@
 /**
- * Every scope the platform tools demand can actually be granted (Fizzy #2380).
+ * Every scope the platform and browser tools demand can actually be granted.
  *
  * Three lists have to agree and none of them knows about the others: what the
  * MCP tools require, what the create procedure accepts, and what the settings
@@ -21,14 +21,26 @@
  */
 
 import { ORG_API_KEY_SCOPES } from "@repo/api/modules/organizations/procedures/api-keys/create";
+import { API_KEY_SCOPES } from "@repo/api/modules/users/procedures/api-keys/create";
 import { describe, expect, it } from "vitest";
 import { AVAILABLE_SCOPES } from "../../../../organizations/components/OrganizationApiKeysSettings";
+import { BROWSER_TOOL_SCOPES } from "../browser-tool-scope";
 import { TOOL_SCOPES } from "../platform-tools";
 
 const accepted = new Set<string>(ORG_API_KEY_SCOPES);
 const offered = new Set(AVAILABLE_SCOPES.map((scope) => scope.id));
 
 describe("the scope vocabularies agree", () => {
+	it("every browser tool scope can be minted on both key types and selected for organization keys", () => {
+		const required = [
+			...new Set(Object.values(BROWSER_TOOL_SCOPES).map((s) => s.scope)),
+		];
+		for (const scope of required) {
+			expect(API_KEY_SCOPES).toContain(scope);
+			expect(ORG_API_KEY_SCOPES).toContain(scope);
+			expect(offered).toContain(scope);
+		}
+	});
 	it("every scope a tool requires can be granted to an organization key", () => {
 		const ungrantable = [
 			...new Set(Object.values(TOOL_SCOPES).map((s) => s.scope)),
@@ -71,6 +83,14 @@ describe("the scope vocabularies agree", () => {
 		const rejected = [...offered].filter((s) => !accepted.has(s)).sort();
 
 		expect(rejected).toEqual([]);
+	});
+
+	it("offers both Kanban scopes on personal and organization keys", () => {
+		for (const scope of ["kanban:read", "kanban:write"]) {
+			expect(API_KEY_SCOPES).toContain(scope);
+			expect(accepted.has(scope)).toBe(true);
+			expect(offered.has(scope)).toBe(true);
+		}
 	});
 });
 

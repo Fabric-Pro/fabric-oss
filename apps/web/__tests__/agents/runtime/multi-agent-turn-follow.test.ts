@@ -266,6 +266,36 @@ describe("a multi-agent run", () => {
 		});
 	});
 
+	it("sends and saves the model that served each agent's answer", async () => {
+		const served = {
+			id: "gpt-plan-example",
+			canonicalName: "gpt-plan-example",
+			provider: "OPENAI_CHATGPT_PLAN",
+			viaPlan: true,
+		};
+		const withModel = (script: Script) =>
+			script.map((event) =>
+				event.type === "completed"
+					? { ...event, model: served }
+					: event,
+			);
+		m.scripts.set(`orch-${KEY}`, withModel(answer("Plan A", "call-1")));
+		m.scripts.set(`orch-${SECOND}`, answer("Plan B", "call-1"));
+
+		const events = await follow(group());
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: EventType.SUBAGENT_FINISHED,
+				subagentRunId: KEY,
+				result: expect.objectContaining({ model: served }),
+			}),
+		);
+		expect(m.saves.at(-1)?.agents[0]).toMatchObject({
+			record: { model: served },
+		});
+	});
+
 	it("suspends only the agent that asks, and ends as an interrupt once all left wait", async () => {
 		m.scripts.set(`orch-${KEY}`, answer("Plan A", "call-1"));
 		m.scripts.set(`orch-${SECOND}`, [

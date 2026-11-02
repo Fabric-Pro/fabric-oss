@@ -57,6 +57,11 @@ vi.mock("@shared/lib/orpc-client", () => ({
 		dataConnections: {
 			list: (input: unknown) => dataConnectionsListMock(input),
 		},
+		workflows: {
+			integrations: {
+				listStatus: vi.fn().mockResolvedValue({ integrations: [] }),
+			},
+		},
 	},
 }));
 
@@ -99,8 +104,8 @@ vi.mock("../NotionResourceBrowser", () => ({
 		props.open ? <div data-testid="mcp-resource-browser" /> : null,
 }));
 
-vi.mock("../NotionIntegrationPageBrowser", () => ({
-	NotionIntegrationPageBrowser: (props: { open: boolean }) =>
+vi.mock("../IntegrationPageBrowser", () => ({
+	IntegrationPageBrowser: (props: { open: boolean }) =>
 		props.open ? <div data-testid="integration-page-browser" /> : null,
 }));
 

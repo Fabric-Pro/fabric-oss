@@ -140,6 +140,7 @@ export class OrchestratorTranslator {
 			// The follower's own events: the observer never sends these.
 			case "started":
 			case "start_pending":
+			case "replay_unavailable":
 			case "stream_timeout":
 				return;
 			default: {

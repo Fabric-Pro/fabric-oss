@@ -106,30 +106,18 @@ describe("checkAndUpdateMcpHealth — GitLab personal server", () => {
 		);
 	});
 
-	it("probes a failover URL on the credential's origin through the GitLab fetch", async () => {
+	it("gives a same-origin failover path no token and opens no connection", async () => {
 		db.config = gitlabConfig({
 			failoverUrl: "https://gitlab.com/api/v4/mcp-failover",
 		});
 
 		await checkAndUpdateMcpHealth("cfg_gl");
 
-		expect(createMcpClient).toHaveBeenCalledTimes(1);
-		const [options] = createMcpClient.mock.calls[0] as [
-			{
-				serverUrl: string;
-				headers: Record<string, string>;
-				fetch?: (url: string, init?: RequestInit) => Promise<Response>;
-			},
-		];
-		expect(options.serverUrl).toBe(
-			"https://gitlab.com/api/v4/mcp-failover",
+		expect(getGitLabConnectionToken).not.toHaveBeenCalled();
+		expect(createMcpClient).not.toHaveBeenCalled();
+		expect(db.setMcpConfigHealth).toHaveBeenCalledWith(
+			expect.objectContaining({ status: "DEGRADED" }),
 		);
-		expect(options.headers.Authorization).toBe("Bearer connection-token");
-		expect(options.fetch).toBeTypeOf("function");
-		// The fetch refuses anything off the credential's origin.
-		await expect(
-			options.fetch?.("https://failover.example.com/mcp"),
-		).rejects.toMatchObject({ code: "origin-mismatch" });
 	});
 
 	it.each(["API_KEY", "NONE"])(

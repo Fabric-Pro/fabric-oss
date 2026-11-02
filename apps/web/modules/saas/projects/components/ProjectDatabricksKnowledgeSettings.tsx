@@ -162,7 +162,7 @@ export function ProjectDatabricksKnowledgeSettings({
 		>
 			<div className="flex items-start justify-between gap-3">
 				<div className="flex items-start gap-3">
-					<div className="rounded-xl border border-border bg-muted p-2">
+					<div className="rounded-lg border border-border bg-muted p-2">
 						<DatabaseZapIcon
 							className="h-5 w-5 text-muted-foreground"
 							aria-hidden

@@ -8,7 +8,10 @@
  * instead of failing the whole response on one odd message.
  */
 
-import type { AgentConversationForViewer } from "@repo/database";
+import type {
+	AgentConversationForViewer,
+	AgentConversationListForViewer,
+} from "@repo/database";
 import {
 	clarificationOf,
 	formatClarificationTurn,
@@ -161,7 +164,7 @@ function lastMessagePreview(messages: ReturnType<typeof messagesOf>) {
 	return last ? last.content.slice(0, 100) : null;
 }
 
-function fieldsOf(conversation: AgentConversationForViewer) {
+function fieldsOf(conversation: AgentConversationListForViewer) {
 	return {
 		id: conversation.id,
 		agentId: conversation.agentId,
@@ -182,7 +185,7 @@ function fieldsOf(conversation: AgentConversationForViewer) {
 
 /** A conversation as a history list shows it: no messages, a count and a preview of the last. */
 export function listItemOf(
-	conversation: AgentConversationForViewer,
+	conversation: AgentConversationListForViewer,
 ): z.infer<typeof ConversationListItemSchema> {
 	const messages = messagesOf(conversation.messages);
 	return {

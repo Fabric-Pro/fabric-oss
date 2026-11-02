@@ -10,6 +10,7 @@ import {
 	checkExecutionQuota,
 	db,
 	getAgentDeploymentById,
+	isDeploymentOwnerCurrentMember,
 	type Prisma,
 } from "@repo/database";
 import type { ExecutionRequest } from "@repo/temporal";
@@ -90,6 +91,10 @@ export const executeDeploymentProcedure = tenantProtectedProcedure
 		);
 		if (!quotaCheck.allowed) {
 			throw new Error(quotaCheck.reason || "Execution quota exceeded");
+		}
+
+		if (!(await isDeploymentOwnerCurrentMember(deployment))) {
+			throw new Error("Deployment not found");
 		}
 
 		// Create execution record

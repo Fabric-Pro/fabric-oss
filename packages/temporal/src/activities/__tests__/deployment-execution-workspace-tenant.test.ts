@@ -7,14 +7,15 @@
  * `organizationId` — not the caller-supplied `params` used only to fetch the
  * deployment — because instances saved before create/update bound workspaces
  * to the instance's organization can still name another organization's
- * workspace. These tests pin the call args to the row's fields and prove a
- * foreign workspace id never survives into the returned config.
+ * workspace. These tests pin the call args to the row's fields and prove an
+ * inaccessible workspace id never survives into the returned config.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	getAgentDeploymentById: vi.fn(),
-	filterWorkspaceIdsForTenant: vi.fn(),
+	filterAccessibleWorkspaceIds: vi.fn(),
+	isDeploymentOwnerCurrentMember: vi.fn(),
 	loadAgentMemoryContext: vi.fn(),
 	buildAgentExecutionContext: vi.fn(),
 	loggerInfo: vi.fn(),
@@ -27,8 +28,10 @@ const mocks = vi.hoisted(() => ({
 // pool for a test that needs neither.
 vi.mock("@repo/database", () => ({
 	appendTemplateMessage: vi.fn(),
-	filterWorkspaceIdsForTenant: (...args: unknown[]) =>
-		mocks.filterWorkspaceIdsForTenant(...args),
+	filterAccessibleWorkspaceIds: (...args: unknown[]) =>
+		mocks.filterAccessibleWorkspaceIds(...args),
+	isDeploymentOwnerCurrentMember: (...args: unknown[]) =>
+		mocks.isDeploymentOwnerCurrentMember(...args),
 	getAgentDeploymentById: (...args: unknown[]) =>
 		mocks.getAgentDeploymentById(...args),
 	getBuiltInToolConfig: vi.fn(),
@@ -105,16 +108,17 @@ function buildDeploymentFixture(workspaceIds: string[]) {
 	};
 }
 
-describe("loadDeploymentConfiguration workspace tenant filtering", () => {
+describe("loadDeploymentConfiguration workspace access filtering", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.isDeploymentOwnerCurrentMember.mockResolvedValue(true);
 	});
 
 	it("filters instance.workspaceIds using the deployment row's own userId/organizationId, not the params", async () => {
 		mocks.getAgentDeploymentById.mockResolvedValue(
 			buildDeploymentFixture(["ws-a", "ws-b"]),
 		);
-		mocks.filterWorkspaceIdsForTenant.mockResolvedValue({
+		mocks.filterAccessibleWorkspaceIds.mockResolvedValue({
 			allowed: ["ws-a"],
 			dropped: ["ws-b"],
 		});
@@ -131,22 +135,57 @@ describe("loadDeploymentConfiguration workspace tenant filtering", () => {
 			"deployment-1",
 			{ userId: "user-param-caller", organizationId: "org-param-caller" },
 		);
-		expect(mocks.filterWorkspaceIdsForTenant).toHaveBeenCalledWith({
+		expect(mocks.filterAccessibleWorkspaceIds).toHaveBeenCalledWith({
 			workspaceIds: ["ws-a", "ws-b"],
 			userId: ROW_USER_ID,
 			organizationId: ROW_ORGANIZATION_ID,
 		});
 
 		// Only the helper's `allowed` list survives into the config — the
-		// foreign "ws-b" id must be absent, not merely reordered.
+		// inaccessible "ws-b" id must be absent, not merely reordered.
 		expect(config?.workspaceIds).toEqual(["ws-a"]);
+	});
+
+	it("refuses a removed deployment owner before loading workspace access", async () => {
+		mocks.getAgentDeploymentById.mockResolvedValue(
+			buildDeploymentFixture(["ws-a"]),
+		);
+		mocks.isDeploymentOwnerCurrentMember.mockResolvedValue(false);
+		await expect(
+			loadDeploymentConfiguration({
+				deploymentId: "deployment-1",
+				userId: ROW_USER_ID,
+				organizationId: ROW_ORGANIZATION_ID,
+			}),
+		).rejects.toMatchObject({
+			type: "AGENT_DEPLOYMENT_OWNER_NOT_MEMBER",
+			nonRetryable: true,
+		});
+		expect(mocks.filterAccessibleWorkspaceIds).not.toHaveBeenCalled();
+	});
+
+	it("propagates an unreadable membership for activity retry", async () => {
+		mocks.getAgentDeploymentById.mockResolvedValue(
+			buildDeploymentFixture(["ws-a"]),
+		);
+		mocks.isDeploymentOwnerCurrentMember.mockRejectedValue(
+			new Error("lookup failed"),
+		);
+		await expect(
+			loadDeploymentConfiguration({
+				deploymentId: "deployment-1",
+				userId: ROW_USER_ID,
+				organizationId: ROW_ORGANIZATION_ID,
+			}),
+		).rejects.toThrow("lookup failed");
+		expect(mocks.filterAccessibleWorkspaceIds).not.toHaveBeenCalled();
 	});
 
 	it("logs a warning naming the dropped workspace ids when the helper drops any", async () => {
 		mocks.getAgentDeploymentById.mockResolvedValue(
 			buildDeploymentFixture(["ws-a", "ws-b"]),
 		);
-		mocks.filterWorkspaceIdsForTenant.mockResolvedValue({
+		mocks.filterAccessibleWorkspaceIds.mockResolvedValue({
 			allowed: ["ws-a"],
 			dropped: ["ws-b"],
 		});
@@ -167,7 +206,7 @@ describe("loadDeploymentConfiguration workspace tenant filtering", () => {
 		mocks.getAgentDeploymentById.mockResolvedValue(
 			buildDeploymentFixture(["ws-a"]),
 		);
-		mocks.filterWorkspaceIdsForTenant.mockResolvedValue({
+		mocks.filterAccessibleWorkspaceIds.mockResolvedValue({
 			allowed: ["ws-a"],
 			dropped: [],
 		});

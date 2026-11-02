@@ -127,7 +127,7 @@ export function ParlumePage({
 				<p className="app-editorial-label">
 					Voice agent · Microsoft Teams
 				</p>
-				<h1 className="font-serif text-3xl font-normal leading-tight tracking-tight">
+				<h1 className="text-xl font-semibold leading-tight tracking-tight">
 					Fabric Parlume
 				</h1>
 				<p className="max-w-xl text-sm text-muted-foreground">

@@ -494,10 +494,20 @@ const NO_HTTP_STATUS = 0;
  * as a bug in the error message itself. A frame carrying only a code now falls
  * through to the generic sentence; the code is still in the logs, where the
  * person who needs it is looking.
+ *
+ * A ChatGPT plan refusal the agent runtime ends a run with carries the body
+ * its chat route would have answered (`fabric`), and reads as that answer:
+ * the same title, reset time and options.
  */
 export function describeAiStreamError(runError: {
 	message?: string;
 	code?: string;
+	fabric?: Record<string, unknown>;
 }): AiErrorToastCopy {
-	return describeAiError(NO_HTTP_STATUS, { message: runError.message });
+	return (
+		describeChatGptPlanRefusal(
+			runError.fabric,
+			extractProviderMessage(runError.fabric),
+		) ?? describeAiError(NO_HTTP_STATUS, { message: runError.message })
+	);
 }

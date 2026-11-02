@@ -14,8 +14,7 @@
  *    statement, which is what makes a grant single-use under concurrency and
  *    stops an old cookie riding a newer grant;
  *  - every session-row predicate carries `expiresAt: { gt: now }`, so a revoked
- *    or expired session can neither receive nor spend a grant even while the
- *    cookie cache would still resolve it;
+ *    or expired session can neither receive nor spend a grant;
  *  - restore is guarded on the column still being null, so a grant minted by a
  *    concurrent verification is never clobbered by a late restore;
  *  - the "is 2FA active" predicate is the OR of a fresh user-flag read and an
@@ -61,9 +60,8 @@ describe("createPrismaStepUpGrantStore().isTwoFactorActive()", () => {
 
 		expect(findUnique).toHaveBeenCalledWith({
 			where: { id: "user-1" },
-			// A fresh read, not the session's user: session.cookieCache serves a
-			// snapshot up to five minutes old, and "not enrolled" is the UNGATED
-			// branch.
+			// A boundary-local read, not only the session projection: "not enrolled"
+			// is the UNGATED branch.
 			select: { twoFactorEnabled: true },
 		});
 		expect(findFirst).toHaveBeenCalledWith({

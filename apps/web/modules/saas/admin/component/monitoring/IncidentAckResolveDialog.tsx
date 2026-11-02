@@ -218,7 +218,7 @@ export function IncidentAckResolveDialog({
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="max-w-lg">
 				<DialogHeader>
-					<DialogTitle className="flex items-center gap-2 font-serif text-xl font-normal">
+					<DialogTitle className="flex items-center gap-2 text-xl font-semibold">
 						{target ? (
 							<span
 								className={`size-2.5 shrink-0 rounded-full ${

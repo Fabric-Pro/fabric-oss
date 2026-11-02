@@ -15,6 +15,7 @@ import {
 	getUserFacingError,
 	type LangGraphStreamEvent,
 } from "@repo/agent-core";
+import { pickTraceState } from "@repo/agent-core/reasoning-trace";
 import { backlogUpdaterGraph } from "./agent.js";
 import { createInvokeAgent, extractState } from "./invoke-agent.js";
 import { normalizeMessages } from "./normalize-messages";
@@ -108,7 +109,11 @@ const { app, start } = createUnifiedServer(
 		>,
 		config?: AgentRuntimeConfig,
 	): AsyncGenerator<LangGraphStreamEvent> {
-		const agentState = extractState(input);
+		const agentState = {
+			...extractState(input),
+			reasoningByTurn: pickTraceState(input.state, input.messages)
+				.reasoningByTurn,
+		};
 
 		// Extract CopilotKit frontend action tools from the request body
 		// These are registered via useCopilotAction in BacklogChat and need to be

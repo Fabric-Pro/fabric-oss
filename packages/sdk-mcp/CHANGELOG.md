@@ -1,5 +1,11 @@
 # @fabricorg/sdk-mcp
 
+## 0.2.0
+
+### Minor Changes
+
+- da69d10: Add Fabric UI Kit MCP App resources (`ui://fabric/*`), A2UI v0.9.1 interactive card rendering (`fabric_visualize`), stateless MCP mode, idempotent durable tool calls, and CLI commands for agent delegation (`fabric agents delegate`, `fabric agents desktop`, `fabric agents subscriptions`) and MCP discovery (`fabric mcp tools`, `fabric mcp call`, `fabric mcp apps`).
+
 ## 0.1.15
 
 ### Patch Changes

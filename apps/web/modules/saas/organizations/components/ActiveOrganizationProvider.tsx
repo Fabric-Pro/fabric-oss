@@ -448,17 +448,14 @@ export function ActiveOrganizationProvider({
 	// Landing on /app/{slug} does not by itself move `session.activeOrganizationId`:
 	// the post-login hop writes the session row directly, and a bare /app load
 	// redirects into the first membership without writing anything at all. Either
-	// way the row and the URL can agree while the API still disagrees with both,
-	// because `protectedProcedure` reads the session through Better Auth's signed
-	// `session_data` cookie — a five-minute snapshot that a Prisma write cannot
-	// touch. Until it expires, `tenantContextMiddleware` builds its tenant context
-	// from the organization the caller has left. Most calls are unaffected because
-	// they pass an explicit, URL-derived organization id, but the ones that fall
-	// back to the session resolve against the wrong tenant.
+	// way the URL can name an organization while the authoritative session row
+	// names another one. `tenantContextMiddleware` builds its tenant context from
+	// that row. Most calls are unaffected because they pass an explicit,
+	// URL-derived organization id, but the ones that fall back to the session
+	// resolve against the wrong tenant until the row is aligned.
 	//
-	// Only a caller that can set cookies can close that, which a Server Component
-	// cannot — so the client does it, through the same `setActive` the switcher
-	// uses. It refreshes the cookie cache and the row together.
+	// The client closes that through the same validated `setActive` operation the
+	// switcher uses, updating the session row before dependent queries resume.
 	//
 	// The page waits on it (see `isAligningSession`), and a success invalidates
 	// every query so nothing keeps an answer given for the previous organization.
@@ -487,8 +484,8 @@ export function ActiveOrganizationProvider({
 				if (error) {
 					throw error;
 				}
-				// Keep the cached session in step so this effect settles instead
-				// of firing again on the next render.
+				// Keep the client query's session snapshot in step so this effect
+				// settles instead of firing again on the next render.
 				queryClient.setQueryData(sessionQueryKey, (data: any) => ({
 					...data,
 					session: {
@@ -502,7 +499,7 @@ export function ActiveOrganizationProvider({
 			})
 			.catch((error) => {
 				console.error(
-					"[ActiveOrganizationProvider] Failed to align the session with the workspace on screen — API calls that fall back to the session may resolve against the previous organization until its cached session expires",
+					"[ActiveOrganizationProvider] Failed to align the session with the workspace on screen — API calls that fall back to the session may resolve against the previous organization until alignment succeeds",
 					error,
 				);
 			})

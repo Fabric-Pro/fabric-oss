@@ -21,7 +21,7 @@ import {
 	ToolMessage,
 } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
-import { Command, END } from "@langchain/langgraph";
+import { Command, END, getWriter } from "@langchain/langgraph";
 import { shapeHistoryForModel } from "@repo/agent-core/message-shape";
 import {
 	hoistRawStopReason,
@@ -584,12 +584,15 @@ async function applyInputBudgetGate(
 			taskType: "SIMPLE",
 			maxTokens: 1024,
 		});
-		const summaryResp = await summaryModel.invoke([
-			new SystemMessage(
-				"You are compressing the earlier turns of an AI coding agent's conversation so the next turn fits in context. Preserve concrete facts, decisions, messageIds, chatIds, feature ids, and any user requirements. Drop pleasantries and repeated framing. Output a single plain-text summary, no preamble, <= 2000 characters.",
-			),
-			new HumanMessage(transcript),
-		]);
+		const summaryResp = await summaryModel.invoke(
+			[
+				new SystemMessage(
+					"You are compressing the earlier turns of an AI coding agent's conversation so the next turn fits in context. Preserve concrete facts, decisions, messageIds, chatIds, feature ids, and any user requirements. Drop pleasantries and repeated framing. Output a single plain-text summary, no preamble, <= 2000 characters.",
+				),
+				new HumanMessage(transcript),
+			],
+			{ ...config, tags: [...(config?.tags ?? []), "nostream"] },
+		);
 		// Fire-and-forget: the usage row is observability, nothing below reads
 		// it back, and `logAgentUsageFromRunnableConfig` never rejects — so
 		// awaiting it only added a round trip to the critical path.
@@ -2544,13 +2547,9 @@ export async function chatNode(
 			//    runtime checkpoints `toolCallsByTurn` between runs.
 			//
 			// 2) RECONSTRUCT from state.messages — fallback for runtimes
-			//    where Annotation defaults wipe `toolCallsByTurn` on
-			//    re-entry (observed with the CopilotKit unified-server
-			//    where each agent run rehydrates state from `messages`
-			//    plus reducer defaults — `toolCallsByTurn` reducer's
-			//    `default: () => ({})` yields an empty record, even
-			//    though the frontend sent its local copy in the request
-			//    body). The inline AIMessage carrying the original
+			//    that have no incoming trace map (for example, older clients).
+			//    Platform tool-follow-up runs seed the browser's trace maps.
+			//    The inline AIMessage carrying the original
 			//    tool_call survives in `state.messages`, so we synthesize
 			//    a resolved entry from it. We lose the original
 			//    `startedAt`/`durationMs` in this branch and omit
@@ -4319,12 +4318,24 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 
 		lastRequestShape = summarizeMessagesForLogging(invokeMessages);
 
+		const replyConfig = () => {
+			const attemptId = uuidv4();
+			getWriter(runnableConfig)?.({ replyAttempt: attemptId });
+			return {
+				...runnableConfig,
+				metadata: {
+					...runnableConfig.metadata,
+					reply_attempt: attemptId,
+				},
+			};
+		};
+
 		// Invoke the model. Provider errors propagate as-is; the frontend
 		// interceptor (CopilotFetchErrorInterceptor) surfaces them as toasts.
 		const turnStart = Date.now();
 		let response = await modelWithTools.invoke(
 			invokeMessages,
-			runnableConfig,
+			replyConfig(),
 		);
 		// Fire-and-forget; the usage logger orders writes for this reply id.
 		void logAgentUsageFromRunnableConfig(runnableConfig, response, {
@@ -4534,7 +4545,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				lastRequestShape = summarizeMessagesForLogging(guardMessages);
 				response = await modelWithTools.invoke(
 					guardMessages,
-					runnableConfig,
+					replyConfig(),
 				);
 				// Fire-and-forget; the usage logger preserves reply provenance order.
 				void logAgentUsageFromRunnableConfig(runnableConfig, response, {
@@ -4595,7 +4606,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					summarizeMessagesForLogging(fallbackMessages);
 				response = await fallbackModelWithTools.invoke(
 					fallbackMessages,
-					runnableConfig,
+					replyConfig(),
 				);
 				// Fire-and-forget; the usage logger preserves reply provenance order.
 				void logAgentUsageFromRunnableConfig(runnableConfig, response, {
@@ -4723,7 +4734,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			lastRequestShape = summarizeMessagesForLogging(retryMessages);
 			response = await retryModelWithTools.invoke(
 				retryMessages,
-				runnableConfig,
+				replyConfig(),
 			);
 			// Fire-and-forget; the usage logger preserves reply provenance order.
 			void logAgentUsageFromRunnableConfig(runnableConfig, response, {

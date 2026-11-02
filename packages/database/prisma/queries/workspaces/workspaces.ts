@@ -384,7 +384,7 @@ export async function reactivateWorkspace(workspaceId: string, userId: string) {
 export async function deleteWorkspace(workspaceId: string, userId: string) {
 	const workspace = await db.workspace.findFirst({
 		where: { id: workspaceId },
-		select: { userId: true, type: true },
+		select: { userId: true, organizationId: true, type: true },
 	});
 
 	if (!workspace) {
@@ -395,13 +395,22 @@ export async function deleteWorkspace(workspaceId: string, userId: string) {
 		throw new Error("Personal workspaces cannot be deleted");
 	}
 
-	if (workspace.userId !== userId) {
+	if (
+		!workspace.organizationId ||
+		(await getWorkspaceRole(workspaceId, userId)) !== "owner"
+	) {
 		throw new Error("Only the workspace owner can delete it");
 	}
 
 	// Cascade delete handles documents, members, and settings
 	return await db.workspace.delete({
-		where: { id: workspaceId },
+		where: {
+			id: workspaceId,
+			userId,
+			organizationId: workspace.organizationId,
+			type: "CUSTOM",
+			organization: { members: { some: { userId } } },
+		},
 	});
 }
 

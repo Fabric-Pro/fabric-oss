@@ -83,7 +83,7 @@ export function SearchProviderTile({
 				: `$${provider.costPerSearch}/search`;
 
 	return (
-		<div className="app-surface flex items-start gap-3 rounded-xl p-4">
+		<div className="app-surface flex items-start gap-3 rounded-lg p-4">
 			<SiteFavicon
 				url={siteFor(provider)}
 				name={provider.displayName}

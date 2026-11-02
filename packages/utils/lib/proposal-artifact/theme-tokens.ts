@@ -14,7 +14,7 @@
  * must not pull in anything the browser bundle cannot carry.
  */
 
-import { contrastRatio, rgbToHex } from "../brand-colors";
+import { contrastRatio, mixHex, rgbToHex } from "../brand-colors";
 import {
 	GRAPHIC_CONTRAST,
 	normalizeHexColorList,
@@ -342,15 +342,6 @@ function textOn(fill: string): string {
 		: "#ffffff";
 }
 
-/** `weight` of `color` over `base`, as `#rrggbb`. */
-function mix(color: string, base: string, weight: number): string {
-	const channel = (hex: string, offset: number) =>
-		Number.parseInt(hex.slice(offset, offset + 2), 16);
-	const blend = (offset: number) =>
-		channel(color, offset) * weight + channel(base, offset) * (1 - weight);
-	return rgbToHex(blend(1), blend(3), blend(5));
-}
-
 /**
  * How far the cover's grey text sits from its white towards the ink: light
  * enough for a lead and labels to read as secondary, never below 4.5:1.
@@ -392,7 +383,11 @@ function heroVeilFor(
 	const holds = (opacity: number) =>
 		texts.every((color) => {
 			const lighter = lightness(color) > lightness(ink);
-			const veiled = mix(ink, lighter ? brightest : "#000000", opacity);
+			const veiled = mixHex(
+				ink,
+				lighter ? brightest : "#000000",
+				opacity,
+			);
 			// Past the colour, some tone of the hero between the two would
 			// match it, however well the far end contrasts.
 			const onInkSide = lighter
@@ -429,7 +424,7 @@ function onInkPaint(
 	// The surface always reads on the ink; white is preferred when it does.
 	const onInk =
 		contrastRatio("#ffffff", ink) >= TEXT_CONTRAST ? "#ffffff" : surface;
-	let onInkMuted = mix(onInk, ink, ON_INK_MUTED_WEIGHT);
+	let onInkMuted = mixHex(onInk, ink, ON_INK_MUTED_WEIGHT);
 	if (contrastRatio(onInkMuted, ink) < TEXT_CONTRAST) {
 		onInkMuted = onInk;
 	}
@@ -441,7 +436,7 @@ function onInkPaint(
 		(color) => contrastRatio(color, ink) >= GRAPHIC_CONTRAST,
 	);
 	for (let step = 1; onInkRule === undefined; step++) {
-		const lighter = mix(primary, onInk, Math.max(1 - step / 10, 0));
+		const lighter = mixHex(primary, onInk, Math.max(1 - step / 10, 0));
 		if (contrastRatio(lighter, ink) >= GRAPHIC_CONTRAST || step >= 10) {
 			onInkRule = lighter;
 		}
@@ -484,6 +479,12 @@ export interface ProposalThemePaint {
 	onPrimary: string;
 	accent: string;
 	onAccent: string;
+	/**
+	 * Small mono labels on the paper: eyebrows, contents numbers, list
+	 * markers, step numbers. A brand accent that reads as text there, else
+	 * the heading colour.
+	 */
+	label: string;
 	/** Secondary text, captions, eyebrows. */
 	muted: string;
 	border: string;
@@ -551,14 +552,24 @@ export function resolveThemePaint(
 		normalizeHexColorList(proposer.accents.value, MAX_COLORS).find(
 			(color) => contrastRatio(color, surface) >= GRAPHIC_CONTRAST,
 		) ?? primary;
+	// The neutral accents fill in for a proposer without any of its own;
+	// they must not outrank the brand's primary as the label colour.
+	const brandAccents =
+		proposer.accents.source === "DEFAULT"
+			? []
+			: normalizeHexColorList(proposer.accents.value, MAX_COLORS);
+	const label =
+		brandAccents.find(
+			(color) => contrastRatio(color, surface) >= TEXT_CONTRAST,
+		) ?? heading;
 
-	let muted = mix(ink, surface, 0.72);
+	let muted = mixHex(ink, surface, 0.72);
 	if (contrastRatio(muted, surface) < TEXT_CONTRAST) {
 		muted = ink;
 	}
-	let tint = mix(primary, surface, 0.08);
+	let tint = mixHex(primary, surface, 0.08);
 	if (contrastRatio(ink, tint) < TEXT_CONTRAST) {
-		tint = mix(ink, surface, 0.04);
+		tint = mixHex(ink, surface, 0.04);
 	}
 
 	return {
@@ -569,11 +580,12 @@ export function resolveThemePaint(
 		onPrimary: textOn(primary),
 		accent,
 		onAccent: textOn(accent),
+		label,
 		muted,
-		border: mix(ink, surface, 0.18),
+		border: mixHex(ink, surface, 0.18),
 		tint,
-		reviewInsert: mix(REVIEW_INSERT, surface, 0.35),
-		reviewDelete: mix(REVIEW_DELETE, surface, 0.31),
+		reviewInsert: mixHex(REVIEW_INSERT, surface, 0.35),
+		reviewDelete: mixHex(REVIEW_DELETE, surface, 0.31),
 		recipient: normalizeHexColorList(
 			tokens.recipient.colors.value,
 			MAX_COLORS,
@@ -626,6 +638,7 @@ export function themeCustomProperties(
 		"--pa-on-primary": color(paint.onPrimary, NEUTRAL_THEME.surface),
 		"--pa-accent": color(paint.accent, NEUTRAL_THEME.primary),
 		"--pa-on-accent": color(paint.onAccent, NEUTRAL_THEME.surface),
+		"--pa-label": color(paint.label, NEUTRAL_THEME.ink),
 		"--pa-muted": color(paint.muted, NEUTRAL_THEME.ink),
 		"--pa-border": color(paint.border, NEUTRAL_THEME.ink),
 		"--pa-tint": color(paint.tint, NEUTRAL_THEME.surface),

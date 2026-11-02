@@ -9,6 +9,11 @@
  * not yet been resolved to a concrete kind (U6); it never reaches the
  * templates in `visual-templates.ts`.
  *
+ * A Proposal's visuals step (Fizzy #2946) also extracts two kinds Glossy
+ * never does, architecture layers and a team, which the Proposal's figure
+ * templates draw. They live in `proposalVisualSpecSchema` only, so every
+ * Glossy validator (`visualSpecSchema`) still refuses them.
+ *
  * No Node built-ins: the editor and web bundles import this module (via a
  * visual slot's stored spec), so it must stay browser-safe, same rule as
  * `eligibility.ts` and `outline.ts` in this directory.
@@ -112,6 +117,65 @@ const autoSpecSchema = z.object({
 	kind: z.literal("auto"),
 	/** Free-text detection hint carried by a slot before it resolves to a concrete kind. */
 	hint: z.string().trim().min(1).max(300).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Proposal-only kinds (Fizzy #2946)
+// ---------------------------------------------------------------------------
+
+/** The most layers, and components per layer, the layers figure draws legibly. */
+const LAYERS_MAX_LAYERS = 8;
+const LAYERS_MAX_COMPONENTS = 5;
+/** The most people on one side of the team figure. */
+const TEAM_MAX_MEMBERS = 10;
+
+const layerSchema = z.object({
+	/** The layer's name, drawn as its row heading. */
+	name: shortLabel,
+	/** What the layer is for, drawn under its name. */
+	description: mediumLabel.optional(),
+	/** The layer's components, left to right. */
+	components: z.array(mediumLabel).min(1).max(LAYERS_MAX_COMPONENTS),
+});
+
+const crosscuttingSchema = z.object({
+	/** What runs across every layer, e.g. security; drawn as a side column. */
+	name: shortLabel,
+	description: mediumLabel.optional(),
+	items: z.array(mediumLabel).min(1).max(6),
+});
+
+const layersSpecSchema = z.object({
+	kind: z.literal("layers"),
+	title: shortLabel.optional(),
+	/** Top to bottom. */
+	layers: z.array(layerSchema).min(2).max(LAYERS_MAX_LAYERS),
+	crosscutting: crosscuttingSchema.optional(),
+});
+
+const teamMemberSchema = z.object({
+	role: mediumLabel,
+	/** The person's name, only when the section gives it. */
+	name: shortLabel.optional(),
+	description: longText.optional(),
+});
+
+const teamSideSchema = z.object({
+	/** The team or organization, as the section names it. */
+	name: shortLabel,
+	description: mediumLabel.optional(),
+	members: z.array(teamMemberSchema).min(1).max(TEAM_MAX_MEMBERS),
+});
+
+const teamSpecSchema = z.object({
+	kind: z.literal("team"),
+	title: shortLabel.optional(),
+	/** The team the proposal offers, drawn on the left. */
+	proposer: teamSideSchema,
+	/** The client's own people, drawn on the right. */
+	client: teamSideSchema,
+	/** One forum or rhythm both sides take part in, drawn between them. */
+	shared: mediumLabel.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -240,12 +304,48 @@ export const VISUAL_KINDS = [
 	"auto",
 ] as const satisfies readonly VisualKind[];
 
+/**
+ * Every Glossy kind plus the Proposal-only ones (Fizzy #2946). For a
+ * Proposal's visuals step and Edit with instructions only: Glossy validates
+ * with `visualSpecSchema`, which refuses `layers` and `team`.
+ */
+export const proposalVisualSpecSchema = z
+	.discriminatedUnion("kind", [
+		timelineSpecSchema,
+		comparisonSpecSchema,
+		statSpecSchema,
+		flowSpecSchema,
+		orgChartSpecSchema,
+		existingMermaidSpecSchema,
+		autoSpecSchema,
+		layersSpecSchema,
+		teamSpecSchema,
+	])
+	.superRefine((spec, ctx) => {
+		if (spec.kind === "org_chart") {
+			validateOrgChartTree(spec.nodes, ctx);
+		}
+	});
+
+export type ProposalVisualSpec = z.infer<typeof proposalVisualSpecSchema>;
+export type ProposalVisualKind = ProposalVisualSpec["kind"];
+export type LayersVisualSpec = z.infer<typeof layersSpecSchema>;
+export type TeamVisualSpec = z.infer<typeof teamSpecSchema>;
+
+/** The kinds only a Proposal extracts, drawn by its layers and team figure templates. */
+export const PROPOSAL_ONLY_VISUAL_KINDS = [
+	"layers",
+	"team",
+] as const satisfies readonly Exclude<ProposalVisualKind, VisualKind>[];
+export type ProposalOnlyVisualKind =
+	(typeof PROPOSAL_ONLY_VISUAL_KINDS)[number];
+
 // ---------------------------------------------------------------------------
 // Fact extraction (feeds U4's checkVisualFacts, KTD12)
 // ---------------------------------------------------------------------------
 
 export interface VisualSpecFacts {
-	kind: VisualKind;
+	kind: ProposalVisualKind;
 	/** Every distinct piece of visible text the visual displays, in spec order. */
 	labels: string[];
 	/** Distinct numeric/quantitative substrings found anywhere in that text
@@ -285,7 +385,7 @@ function dedupe(values: string[]): string[] {
  * document actually says — and a source of figures, since a date or a value
  * field is exactly where a fabricated number is most likely to hide.
  */
-export function visualSpecFacts(spec: VisualSpec): VisualSpecFacts {
+export function visualSpecFacts(spec: ProposalVisualSpec): VisualSpecFacts {
 	const labels: string[] = [];
 
 	const addLabel = (value: string | undefined | null) => {
@@ -347,6 +447,36 @@ export function visualSpecFacts(spec: VisualSpec): VisualSpecFacts {
 			break;
 		case "auto":
 			addLabel(spec.hint);
+			break;
+		case "layers":
+			addLabel(spec.title);
+			for (const layer of spec.layers) {
+				addLabel(layer.name);
+				addLabel(layer.description);
+				for (const component of layer.components) {
+					addLabel(component);
+				}
+			}
+			if (spec.crosscutting) {
+				addLabel(spec.crosscutting.name);
+				addLabel(spec.crosscutting.description);
+				for (const item of spec.crosscutting.items) {
+					addLabel(item);
+				}
+			}
+			break;
+		case "team":
+			addLabel(spec.title);
+			for (const side of [spec.proposer, spec.client]) {
+				addLabel(side.name);
+				addLabel(side.description);
+				for (const member of side.members) {
+					addLabel(member.role);
+					addLabel(member.name);
+					addLabel(member.description);
+				}
+			}
+			addLabel(spec.shared);
 			break;
 	}
 

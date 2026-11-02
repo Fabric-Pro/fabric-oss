@@ -67,7 +67,7 @@ export function ViewInPmToolLink({ externalUrl, pmTool, className }: Props) {
 			aria-label={`${label} (opens in a new tab)`}
 			onClick={(event) => event.stopPropagation()}
 			className={cn(
-				"inline-flex shrink-0 items-center gap-1 rounded text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:underline focus-visible:outline-none",
+				"inline-flex shrink-0 items-center gap-1 rounded text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:underline focus-visible:outline-hidden",
 				className,
 			)}
 		>

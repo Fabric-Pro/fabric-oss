@@ -1,4 +1,3 @@
-import type { BaseMessage } from "@langchain/core/messages";
 import { isSyntheticToolImageMessage } from "../recursion";
 
 /**
@@ -46,7 +45,7 @@ export function isHumanMessage(m: unknown): boolean {
  * current `turnIndex` for keying reasoningByTurn — independently
  * computable on both backend and frontend from the same source of truth.
  */
-export function countHumanMessages(messages: BaseMessage[]): number {
+export function countHumanMessages(messages: readonly unknown[]): number {
 	return messages.filter(isHumanMessage).length;
 }
 

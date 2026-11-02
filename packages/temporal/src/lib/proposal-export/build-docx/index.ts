@@ -2,15 +2,23 @@
  * The Word writer of the Proposal export (Fizzy #2946): Main, already
  * scrubbed and parsed into mdast, laid out as a branded DOCX.
  *
- * The file has three parts, each its own Word section:
+ * The file has up to four parts, each its own Word section:
  *
  * 1. a cover with no running header or footer: the proposer's and the
  *    recipient's logos, the hero, a "Proposal" eyebrow, the title in the
  *    Title style, "Prepared for" / "Prepared by" and the date. Every cover
  *    field comes from data; nothing is written in when a field is missing.
- * 2. a contents page: a TOC field over the Heading 2 sections, which Word
+ *    The title is Main's leading H1 when Main opens with one and has
+ *    sections, as on the print cover, and the body then leaves that H1 out.
+ *    A `cover` fence in Main's preamble sets the eyebrow, a line about the
+ *    client under the logos, the party lines and the version, and the body
+ *    leaves that fence out.
+ * 2. a cover letter, when Main's first section is one: the proposer's logo
+ *    and the letter, in a section of its own with the running furniture.
+ *    Its heading is no Heading 2, so the contents never list it.
+ * 3. a contents page: a TOC field over the Heading 2 sections, which Word
  *    fills in with page numbers when it opens the file (`updateFields`).
- * 3. the body, in portrait Letter, except that a table wider than six
+ * 4. the body, in portrait Letter, except that a table wider than six
  *    columns gets a landscape section of its own and the body continues in
  *    portrait after it.
  *
@@ -26,19 +34,35 @@
  * printed as its literal text.
  *
  * The brand comes from `resolveThemePaint`, the same paint the print page
- * uses, so colours that fail contrast are already replaced. Fonts are named,
- * never embedded: Word substitutes a family it lacks, and without a hint it
- * falls back to its default, often a serif. So the neutral style, which
- * prints in Poppins, Inter and JetBrains Mono, is written as Arial, which
- * every Word has; a font the brand chose keeps its name.
+ * uses, so colours that fail contrast are already replaced. A role in the
+ * neutral style is set in the face print uses, Poppins, Inter or JetBrains
+ * Mono, and the file embeds that face (with Inter's bold and JetBrains
+ * Mono's Medium), since Word substitutes a family it lacks; see
+ * `embedded-fonts.ts`. A font the brand chose keeps its name and is never
+ * embedded.
  */
 
 import { resolveThemePaint } from "@repo/utils/proposal-artifact/theme-tokens";
 import { Document, Packer } from "docx";
+import { coverFence, coverLetter, printedTitle } from "../document-content";
 import { diagramFigureNumbers, type ProposalExportWarning } from "../types";
 import { ExportWarningTally } from "../warnings";
-import { bodySections, contentsSection, coverSection } from "./sections";
-import { documentStyles, docxColors, docxFonts, listLevels } from "./styles";
+import { docxEmbeddedFonts, finishEmbeddedFonts } from "./embedded-fonts";
+import {
+	bodySections,
+	contentsSection,
+	coverSection,
+	letterSection,
+} from "./sections";
+import {
+	brandFontFamilies,
+	documentStyles,
+	docxColors,
+	docxFonts,
+	docxMonoMedium,
+	listLevels,
+	neutralFontRoles,
+} from "./styles";
 import {
 	type BuildDocxInput,
 	collectDefinitions,
@@ -72,10 +96,19 @@ export async function buildProposalDocx(
 	input: BuildDocxInput,
 ): Promise<BuildDocxResult> {
 	const paint = resolveThemePaint(input.tokens);
+	const neutralRoles = neutralFontRoles(input.tokens, paint);
+	// Main's leading H1, when it is the title, as print takes it; the
+	// download keeps the record's name, which is the caller's.
+	const title = printedTitle(input.prepared.root, input.title);
 	const writer: Writer = {
 		input,
+		title: title.text,
+		titleHeading: title.heading,
+		coverFence: coverFence(input.prepared.root),
+		letter: coverLetter(input.prepared.root),
 		colors: docxColors(paint),
 		fonts: docxFonts(input.tokens, paint),
+		monoMedium: docxMonoMedium(input.tokens, paint),
 		definitions: collectDefinitions(input.prepared.root),
 		lists: [],
 		contents: [],
@@ -87,13 +120,14 @@ export async function buildProposalDocx(
 	};
 
 	// The cover first, so its logos and hero are placed before any body
-	// image can spend the placement budget.
+	// image can spend the placement budget, then the letter, as they read.
 	const cover = coverSection(writer);
+	const letter = letterSection(writer);
 	const body = bodySections(writer);
 	const contents = contentsSection(writer);
 
 	const document = new Document({
-		title: xmlText(input.title),
+		title: xmlText(writer.title),
 		creator: xmlText(partyName(input.tokens.proposer.name.value) ?? ""),
 		lastModifiedBy: "",
 		// Word fills the TOC field, and the page numbers in it, when it opens
@@ -106,10 +140,18 @@ export async function buildProposalDocx(
 				levels: listLevels(writer, list),
 			})),
 		},
-		sections: [cover, contents, ...body],
+		sections: [cover, ...(letter ? [letter] : []), contents, ...body],
+		// The print faces of the neutral roles travel in the file; a brand's
+		// font is only named.
+		...(neutralRoles.length > 0
+			? { fonts: docxEmbeddedFonts(neutralRoles) }
+			: {}),
 	});
 
-	const buffer = await Packer.toBuffer(document);
+	const buffer = await finishEmbeddedFonts(
+		await Packer.toBuffer(document),
+		brandFontFamilies(input.tokens, paint),
+	);
 	const tally = new ExportWarningTally();
 	tally.add("EXTERNAL_IMAGE_DROPPED", writer.externalImages);
 	tally.add("IMAGE_LIMIT", writer.imagesOverLimit);

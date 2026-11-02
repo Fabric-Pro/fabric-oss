@@ -1,13 +1,15 @@
 /**
  * Chat turn admission shared by every chat engine that records its turns as
  * `ConversationTurn` rows (the Orchestrator's stream routes and the agent
- * runtime's Direct engine). Engine specifics — the execution id's prefix, the
- * token ledger, how a finished workflow's output settles the turn and how the
- * workflow is started — come from the caller; the durable rules are here:
+ * runtime's Direct and research engines). Engine specifics — the execution
+ * id's prefix, the token ledger, how a finished workflow's output settles the
+ * turn and how the workflow is started — come from the caller; the durable
+ * rules are here:
  *
  *   1. `admitTurn` — idempotent by client key, one live turn per
  *      conversation (a conflicting turn is first reconciled against
- *      Temporal), only in the caller's own conversation.
+ *      Temporal, unless it is another engine's), only in the caller's own
+ *      conversation.
  *   2. `startAdmittedTurn` — starts the workflow under the turn's executionId;
  *      a lost start response (the workflow already exists) attaches; a
  *      definite start failure ends the turn FAILED.
@@ -220,6 +222,13 @@ export async function admitTurn<Output>(args: {
 	budget?: ConversationTurnBudgetAdmission;
 	temporalClient: TemporalClientLike;
 	settleCompleted: SettleCompletedTurn<Output>;
+	/**
+	 * Whether a conflicting live turn is the caller's engine's own. Another
+	 * engine's turn is never reconciled with this engine's settler: the new
+	 * turn is refused `in_progress`, and that engine settles its own turn.
+	 * Omitted, every conflicting turn is reconciled.
+	 */
+	ownsTurn?: (turn: ConversationTurn) => boolean;
 }): Promise<TurnAdmission> {
 	if (args.conversationId) {
 		// A multi-agent turn is live until every agent has ended, though
@@ -271,6 +280,15 @@ export async function admitTurn<Output>(args: {
 			case "key_reused":
 				return { kind: "refused", refusal: { reason: "key_reused" } };
 			case "conflict": {
+				if (args.ownsTurn && !args.ownsTurn(admitted.turn)) {
+					return {
+						kind: "refused",
+						refusal: {
+							reason: "in_progress",
+							executionId: admitted.turn.executionId,
+						},
+					};
+				}
 				const settled = await reconcileTurnWithWorkflow({
 					turn: admitted.turn,
 					temporalClient: args.temporalClient,

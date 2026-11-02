@@ -59,7 +59,7 @@ function TocEntries({
 							type="button"
 							title={label}
 							onClick={() => onNavigate(item)}
-							className="block w-full truncate rounded-md py-1.5 pr-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="block w-full truncate rounded-md py-1.5 pr-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 							// Indent by heading level rather than by nesting
 							// depth, so a document that skips a level (H1 → H3)
 							// still reads at its true depth.

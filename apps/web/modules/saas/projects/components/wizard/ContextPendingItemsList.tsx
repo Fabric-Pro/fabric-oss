@@ -265,7 +265,7 @@ function OtherContextCard({
 
 	return (
 		<div
-			className="group relative overflow-hidden rounded-xl border border-border bg-card motion-safe:transition-colors hover:border-primary/30"
+			className="group relative overflow-hidden rounded-lg border border-border bg-card motion-safe:transition-colors hover:border-primary/30"
 			data-testid={`pending-row-${row.id}`}
 			data-context-type={row.type}
 		>

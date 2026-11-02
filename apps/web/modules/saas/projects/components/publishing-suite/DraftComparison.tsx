@@ -95,7 +95,7 @@ export function CandidateDraft({
 						: "Not saved. Adopting it makes this the topic's draft."}
 				</p>
 			</div>
-			<div className="rounded-xl border border-border bg-card">
+			<div className="rounded-lg border border-border bg-card">
 				{/*
 				 * The text scrolls, the adopt control does not. A generated
 				 * case study runs to thousands of words, and a button at the

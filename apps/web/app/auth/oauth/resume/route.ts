@@ -5,12 +5,20 @@
  */
 
 import { authorizationResumeLocation } from "@saas/auth/lib/oauth-continuation";
+import { getSession } from "@saas/auth/lib/server";
 import { type NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export function GET(request: NextRequest) {
+export async function GET(request: NextRequest) {
+	const session = await getSession();
+	if (session?.user.mustChangePassword) {
+		return NextResponse.redirect(
+			new URL("/change-password", request.nextUrl.origin),
+		);
+	}
+
 	const location = authorizationResumeLocation(
 		request.nextUrl.searchParams.get("q"),
 	);

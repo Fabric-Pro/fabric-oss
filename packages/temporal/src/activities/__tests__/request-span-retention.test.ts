@@ -8,11 +8,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	executeRawMock: vi.fn(),
+	purgeReplayMock: vi.fn(),
+	purgeMcpDurableMock: vi.fn(),
 	loggerInfoMock: vi.fn(),
 	loggerWarnMock: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
+	purgeExpiredConversationTurnEvents: mocks.purgeReplayMock,
+	purgeExpiredMcpDurableToolCalls: mocks.purgeMcpDurableMock,
 	db: {
 		$executeRaw: (...args: unknown[]) => mocks.executeRawMock(...args),
 	},
@@ -32,6 +36,8 @@ import { purgeExpiredRequestSpansActivity } from "../request-span-retention";
 const originalEnv = process.env.FABRIC_REQUEST_SPAN_RETENTION_DAYS;
 
 beforeEach(() => {
+	mocks.purgeReplayMock.mockReset().mockResolvedValue(0);
+	mocks.purgeMcpDurableMock.mockReset().mockResolvedValue(0);
 	mocks.executeRawMock.mockReset();
 	mocks.loggerInfoMock.mockReset();
 	mocks.loggerWarnMock.mockReset();
@@ -46,6 +52,48 @@ afterEach(() => {
 });
 
 describe("purgeExpiredRequestSpansActivity", () => {
+	it("purges expired MCP durable receipts on the existing daily activity", async () => {
+		process.env.FABRIC_REQUEST_SPAN_RETENTION_DAYS = "0";
+		mocks.purgeMcpDurableMock
+			.mockResolvedValueOnce(5000)
+			.mockResolvedValueOnce(0);
+		await purgeExpiredRequestSpansActivity();
+		expect(mocks.purgeMcpDurableMock).toHaveBeenCalledTimes(2);
+		expect(mocks.executeRawMock).not.toHaveBeenCalled();
+	});
+
+	it("continues other retention when MCP durable cleanup fails", async () => {
+		process.env.FABRIC_REQUEST_SPAN_RETENTION_DAYS = "0";
+		mocks.purgeMcpDurableMock.mockRejectedValueOnce(
+			new Error("Statement timeout"),
+		);
+		await purgeExpiredRequestSpansActivity();
+		expect(mocks.purgeReplayMock).toHaveBeenCalledOnce();
+		expect(mocks.loggerWarnMock).toHaveBeenCalledWith(
+			expect.stringContaining("continuing request-span"),
+		);
+	});
+
+	it("continues span retention when replay cleanup fails", async () => {
+		delete process.env.FABRIC_REQUEST_SPAN_RETENTION_DAYS;
+		mocks.purgeReplayMock.mockRejectedValueOnce(
+			new Error("Statement timeout"),
+		);
+		mocks.executeRawMock.mockResolvedValueOnce(7).mockResolvedValueOnce(0);
+		expect((await purgeExpiredRequestSpansActivity()).deletedCount).toBe(7);
+		expect(mocks.loggerWarnMock).toHaveBeenCalledWith(
+			expect.stringContaining("continuing request-span"),
+		);
+	});
+	it("purges expired replay output independently of request-span retention", async () => {
+		process.env.FABRIC_REQUEST_SPAN_RETENTION_DAYS = "0";
+		mocks.purgeReplayMock
+			.mockResolvedValueOnce(5000)
+			.mockResolvedValueOnce(0);
+		await purgeExpiredRequestSpansActivity();
+		expect(mocks.purgeReplayMock).toHaveBeenCalledTimes(2);
+		expect(mocks.executeRawMock).not.toHaveBeenCalled();
+	});
 	it("defaults to a 7-day window and deletes in batches", async () => {
 		delete process.env.FABRIC_REQUEST_SPAN_RETENTION_DAYS;
 		mocks.executeRawMock

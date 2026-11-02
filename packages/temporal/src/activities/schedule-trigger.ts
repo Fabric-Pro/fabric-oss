@@ -5,7 +5,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { checkExecutionQuota, db, type Prisma } from "@repo/database";
+import {
+	checkExecutionQuota,
+	db,
+	isDeploymentOwnerCurrentMember,
+	type Prisma,
+} from "@repo/database";
 import { getTemporalClient } from "../client";
 import type { ExecutionRequest } from "../workflows/agent-supervisor";
 
@@ -38,6 +43,7 @@ export async function signalSupervisorForScheduledExecution(
 ): Promise<SignalSupervisorOutput> {
 	const { supervisorWorkflowId, deploymentId, triggerId, triggerType } =
 		input;
+	let membershipLookupFailed = false;
 
 	try {
 		// Trigger is scoped to deploymentId — without this, a
@@ -81,6 +87,16 @@ export async function signalSupervisorForScheduledExecution(
 				success: false,
 				error: quotaCheck.reason || "Execution quota exceeded",
 			};
+		}
+		let ownerIsMember: boolean;
+		try {
+			ownerIsMember = await isDeploymentOwnerCurrentMember(deployment);
+		} catch (error) {
+			membershipLookupFailed = true;
+			throw error;
+		}
+		if (!ownerIsMember) {
+			return { success: false, error: "Deployment unavailable" };
 		}
 
 		// Create execution record
@@ -139,6 +155,9 @@ export async function signalSupervisorForScheduledExecution(
 
 		return { success: true, executionId: execution.id };
 	} catch (error) {
+		if (membershipLookupFailed) {
+			throw error;
+		}
 		console.error("[ScheduleTrigger] Failed to signal supervisor:", error);
 		return {
 			success: false,

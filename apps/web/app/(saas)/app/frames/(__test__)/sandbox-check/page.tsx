@@ -64,7 +64,9 @@ export default function ProjectFrameSandboxCheckPage() {
 	return (
 		<div className="mx-auto max-w-4xl p-6" data-testid="sandbox-check-page">
 			<p className="editorial-label">Internal fixture</p>
-			<h1 className="font-serif text-3xl">Project frame sandbox check</h1>
+			<h1 className="font-semibold text-3xl">
+				Project frame sandbox check
+			</h1>
 			<div className="mt-6">
 				<FrameRenderer frame={FIXTURE} />
 			</div>

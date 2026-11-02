@@ -700,3 +700,42 @@ describe("stop", () => {
 		expect(handle.cancel).toHaveBeenCalled();
 	});
 });
+
+describe("a Deep Research turn in the thread", () => {
+	const researchTurn = () => liveTurn({ executionMode: "research" });
+
+	it("isRunning is false and connect follows nothing for a research turn", async () => {
+		m.latestTurn.mockResolvedValue(researchTurn());
+		const s = stream();
+		const e = engine();
+
+		expect(await e.isRunning(THREAD)).toBe(false);
+		await e.connect(THREAD, s.stream);
+
+		expect(s.events.map((event) => event.type)).toEqual([
+			EventType.MESSAGES_SNAPSHOT,
+		]);
+		expect(m.follows).toEqual([]);
+		expect(m.reconcile).not.toHaveBeenCalled();
+	});
+
+	it("stop by a research turn's key cancels nothing and writes nothing", async () => {
+		m.turnByKey.mockResolvedValue(researchTurn());
+		const handle = controlRun();
+
+		expect(await engine().stop(THREAD, RUN)).toBe(false);
+		expect(m.cancel).not.toHaveBeenCalled();
+		expect(m.authorizedRun).not.toHaveBeenCalled();
+		expect(handle.cancel).not.toHaveBeenCalled();
+	});
+
+	it("stop with no run id leaves a research turn alone (no cancel, no Temporal handle)", async () => {
+		m.latestTurn.mockResolvedValue(researchTurn());
+		const handle = controlRun();
+
+		expect(await engine().stop(THREAD)).toBe(false);
+		expect(m.cancel).not.toHaveBeenCalled();
+		expect(m.authorizedRun).not.toHaveBeenCalled();
+		expect(handle.cancel).not.toHaveBeenCalled();
+	});
+});

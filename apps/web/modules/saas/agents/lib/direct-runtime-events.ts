@@ -26,6 +26,7 @@ import {
 	type DirectStreamInput,
 	directStreamEventSchema,
 	limitSchema,
+	sourceSchema,
 } from "./direct-stream-protocol";
 
 /**
@@ -128,7 +129,7 @@ const executionSchema = z.object({ executionId: z.string() });
 
 const reasoningDurationSchema = z.object({ durationMs: z.number() });
 
-const sourcesValueSchema = z.object({ sources: z.unknown() });
+const sourcesValueSchema = z.object({ sources: z.array(sourceSchema) });
 
 const partialErrorSchema = z.object({
 	message: z.string(),
@@ -193,7 +194,10 @@ function customSignals(name: string, value: unknown): RuntimeSignal[] {
 		case FABRIC_EVENT.sources: {
 			const parsed = sourcesValueSchema.safeParse(value);
 			return parsed.success
-				? directEvent({ type: "sources", sources: parsed.data.sources })
+				? directEvent({
+						type: "sources",
+						sources: parsed.data.sources,
+					} as Record<string, unknown>)
 				: [];
 		}
 		case FABRIC_EVENT.partialError: {

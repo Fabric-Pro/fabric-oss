@@ -92,50 +92,67 @@ export function rpcRateLimitKey(context: RpcRateLimitContext): {
 	return { key: `rpc:ip:${ip}`, ip };
 }
 
+/**
+ * Charge one request to the caller's budget: the refusal to answer when it
+ * is spent (or, in production, when the limiter cannot be reached), null
+ * when the request may go on. The middleware throws it; a request served
+ * outside oRPC (the agent runtime's in-process chats) shares the same
+ * bucket through this check. `path` names the request in the log.
+ */
+export async function rpcRateLimitRefusal(
+	context: RpcRateLimitContext,
+	path: string,
+): Promise<ORPCError<
+	"SERVICE_UNAVAILABLE" | "TOO_MANY_REQUESTS",
+	{ retryAfter: number } | undefined
+> | null> {
+	const limit = resolveRpcRateLimitPerMinute();
+	if (limit === 0) {
+		return null;
+	}
+
+	const { key, userId, ip } = rpcRateLimitKey(context);
+	const result = await checkRateLimit(key, limit, RPC_RATE_LIMIT_WINDOW_MS);
+
+	if (result.allowed) {
+		return null;
+	}
+
+	const retryAfter = Math.max(1, result.resetInSeconds);
+	// Set on 503 as well as 429 so a client knows when to come back either
+	// way — the same choice `authRateLimitMiddleware` makes.
+	context.resHeaders?.set("Retry-After", String(retryAfter));
+
+	if (result.statusCode === 503) {
+		return new ORPCError("SERVICE_UNAVAILABLE", {
+			message: "Rate limit service temporarily unavailable",
+		});
+	}
+
+	logger.warn(
+		{
+			event: "ratelimit.rpc.exceeded",
+			userId,
+			ip,
+			path,
+			limit,
+			retryAfter,
+		},
+		"Global RPC rate limit exceeded",
+	);
+
+	return new ORPCError("TOO_MANY_REQUESTS", {
+		message: `Rate limit exceeded. Please try again in ${retryAfter} seconds.`,
+		data: { retryAfter },
+	});
+}
+
 export const rpcRateLimitMiddleware = os
 	.$context<RpcRateLimitContext>()
 	.middleware(async ({ context, next, path }) => {
-		const limit = resolveRpcRateLimitPerMinute();
-		if (limit === 0) {
-			return await next();
+		const refusal = await rpcRateLimitRefusal(context, path.join("."));
+		if (refusal) {
+			throw refusal;
 		}
-
-		const { key, userId, ip } = rpcRateLimitKey(context);
-		const result = await checkRateLimit(
-			key,
-			limit,
-			RPC_RATE_LIMIT_WINDOW_MS,
-		);
-
-		if (result.allowed) {
-			return await next();
-		}
-
-		const retryAfter = Math.max(1, result.resetInSeconds);
-		// Set on 503 as well as 429 so a client knows when to come back either
-		// way — the same choice `authRateLimitMiddleware` makes.
-		context.resHeaders?.set("Retry-After", String(retryAfter));
-
-		if (result.statusCode === 503) {
-			throw new ORPCError("SERVICE_UNAVAILABLE", {
-				message: "Rate limit service temporarily unavailable",
-			});
-		}
-
-		logger.warn(
-			{
-				event: "ratelimit.rpc.exceeded",
-				userId,
-				ip,
-				path: path.join("."),
-				limit,
-				retryAfter,
-			},
-			"Global RPC rate limit exceeded",
-		);
-
-		throw new ORPCError("TOO_MANY_REQUESTS", {
-			message: `Rate limit exceeded. Please try again in ${retryAfter} seconds.`,
-			data: { retryAfter },
-		});
+		return await next();
 	});

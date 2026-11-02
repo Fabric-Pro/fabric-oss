@@ -307,7 +307,7 @@ async function installStageTransitionMocks(
 	await page.route("**/api/rpc/projects/stories/versions/list**", (route) =>
 		fulfillJson(route, { versions: [] }),
 	);
-	await page.route("**/api/rpc/projects/stories/list**", (route) =>
+	await page.route("**/api/rpc/projects/stories/board**", (route) =>
 		fulfillJson(route, { stories: [] }),
 	);
 	await page.route("**/api/rpc/projects/stories/statuses/list**", (route) =>

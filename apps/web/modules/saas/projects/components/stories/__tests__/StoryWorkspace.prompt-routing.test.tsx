@@ -687,7 +687,7 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 			(call) =>
 				JSON.stringify(
 					(call[0] as { queryKey?: unknown[] })?.queryKey,
-				) === JSON.stringify(["projects", "stories", "list"]),
+				) === JSON.stringify(["projects", "stories", "board"]),
 		);
 		expect(listInvalidation).toBeDefined();
 		// The chrome must stop contradicting the spec being generated, so the

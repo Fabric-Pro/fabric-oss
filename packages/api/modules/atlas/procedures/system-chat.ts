@@ -1,5 +1,3 @@
-import { ORPCError } from "@orpc/client";
-import { AIProviderNotConfiguredError } from "@repo/ai";
 import { AtlasService, systemChatInputSchema } from "@repo/atlas";
 import {
 	Permissions,
@@ -8,8 +6,9 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import { assertCapabilityAvailable } from "../../capabilities/assert";
-import { assertAtlasEnabled, mapAtlasError } from "../lib";
+import { admitAtlasChat } from "../chat-access";
+import { atlasChatTurnNote, rethrowAtlasChatError } from "../chat-turn";
+import { assertAtlasEnabled } from "../lib";
 
 /** Multi-repository (System map) AI chat, streamed — mirrors `chat`. */
 export const systemChatProcedure = tenantProtectedProcedure
@@ -34,8 +33,7 @@ export const systemChatProcedure = tenantProtectedProcedure
 		// Same capability as the single-repository chat (Fizzy #1930): this is
 		// AI over the codebase too, and an ungated sibling door would make the
 		// gate on the other one a suggestion.
-		await assertCapabilityAvailable({
-			capabilityKey: "atlas.codebase-qa",
+		await admitAtlasChat({
 			projectId: input.projectId,
 			userId: context.user.id,
 			organizationId,
@@ -59,23 +57,12 @@ export const systemChatProcedure = tenantProtectedProcedure
 				for await (const delta of textStream) {
 					yield delta;
 				}
-				const outcome = await persistOutcome;
-				if (!outcome.persisted) {
-					yield { type: "atlas-chat-persist-failed" };
-				} else if (outcome.interrupted) {
-					yield { type: "atlas-chat-interrupted" };
+				const note = atlasChatTurnNote(await persistOutcome);
+				if (note) {
+					yield { type: `atlas-chat-${note}` as const };
 				}
 			})();
 		} catch (error) {
-			if (error instanceof AIProviderNotConfiguredError) {
-				// Same mapping as the sibling chat procedure: this is a
-				// provider problem, so it carries the resolver's own message
-				// and points at provider settings. The former copy sent people
-				// to the model-preferences page, which cannot fix it.
-				throw new ORPCError("PRECONDITION_FAILED", {
-					message: error.message,
-				});
-			}
-			mapAtlasError(error);
+			rethrowAtlasChatError(error);
 		}
 	});

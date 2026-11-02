@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
 	chatModelQueryOptions,
+	isProviderPickNotApplied,
 	useProviderPickStatus,
 } from "../use-provider-pick-status";
 
@@ -139,6 +140,45 @@ it.each([
 		expect(result.current.inactiveProviderPicks).toEqual([provider]);
 		expect(result.current.getInactiveNote(provider)).toBeDefined();
 		focusManager.setFocused(undefined);
+	},
+);
+
+it.each([
+	[
+		"served as picked",
+		provider.agentId,
+		{ id: "claude-sonnet-5-20260101", canonicalName: "claude-sonnet-5" },
+		false,
+	],
+	[
+		"served by another model",
+		provider.agentId,
+		{ id: "gpt-plan-example", canonicalName: "gpt-plan-example" },
+		true,
+	],
+	[
+		"served with no canonical name, by its own id",
+		provider.agentId,
+		{ id: "claude-sonnet-5" },
+		false,
+	],
+	[
+		"served with no canonical name, by another id",
+		provider.agentId,
+		{ id: "gpt-plan-example" },
+		true,
+	],
+	[
+		"a ChatGPT plan pick served by the plan",
+		planPick.agentId,
+		{ id: "gpt-plan-example", canonicalName: "gpt-plan-example" },
+		false,
+	],
+	["not yet served", provider.agentId, undefined, false],
+] as const)(
+	"says whether a pick was not applied: %s",
+	(_case, agentId, served, notApplied) => {
+		expect(isProviderPickNotApplied(agentId, served)).toBe(notApplied);
 	},
 );
 

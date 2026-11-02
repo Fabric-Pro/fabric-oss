@@ -85,7 +85,6 @@ function createMockRequest(
 		cookie?: string;
 		accept?: string;
 		headers?: Record<string, string>;
-		sessionData?: Record<string, unknown>;
 	} = {},
 ) {
 	const origin = "https://www.fabric.pro";
@@ -98,13 +97,6 @@ function createMockRequest(
 	}
 	if (options.accept) {
 		headers.set("accept", options.accept);
-	}
-
-	const cookieStore = new Map<string, { value: string }>();
-	if (options.sessionData) {
-		const encoded = btoa(JSON.stringify(options.sessionData));
-		cookieStore.set("fabric.session_data", { value: encoded });
-		cookieStore.set("__Secure-fabric.session_data", { value: encoded });
 	}
 
 	return {
@@ -129,9 +121,6 @@ function createMockRequest(
 			},
 		},
 		headers,
-		cookies: {
-			get: (name: string) => cookieStore.get(name) ?? undefined,
-		},
 		url: url.toString(),
 	} as any;
 }
@@ -229,6 +218,19 @@ describe("Middleware (proxy.ts)", () => {
 				response.requestHeaders?.get("x-embed-route") ?? null,
 			).toBeNull();
 			expect(response.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
+		});
+
+		it("serves the agent consent page unframable for a signed-in user", async () => {
+			mockGetSessionCookie.mockReturnValue("token");
+			const req = createMockRequest("/auth/oauth/consent");
+
+			const response = await proxy(req);
+
+			expect(response.type).toBe("next");
+			expect(response.headers.get("X-Frame-Options")).toBe("DENY");
+			expect(response.headers.get("Content-Security-Policy")).toContain(
+				"frame-ancestors 'none'",
+			);
 		});
 
 		it("should allow /app/settings with valid session", async () => {
@@ -776,137 +778,6 @@ describe("Middleware (proxy.ts)", () => {
 			const response = await proxy(req);
 
 			expect(response.type).toBe("next");
-		});
-	});
-
-	// ─────────────────────────────────────────────────────────────────
-	// mustChangePassword redirect behavior
-	// ─────────────────────────────────────────────────────────────────
-	describe("Force password change redirect", () => {
-		it("should redirect /app to /change-password when mustChangePassword is true", async () => {
-			mockGetSessionCookie.mockReturnValue("valid-token");
-			const req = createMockRequest("/app", {
-				sessionData: {
-					session: { user: { mustChangePassword: true } },
-				},
-			});
-
-			const response = await proxy(req);
-
-			expect(response.type).toBe("redirect");
-			expect(response.url).toContain("/change-password");
-		});
-
-		it("should redirect /app/settings to /change-password when mustChangePassword is true", async () => {
-			mockGetSessionCookie.mockReturnValue("valid-token");
-			const req = createMockRequest("/app/settings/general", {
-				sessionData: {
-					session: { user: { mustChangePassword: true } },
-				},
-			});
-
-			const response = await proxy(req);
-
-			expect(response.type).toBe("redirect");
-			expect(response.url).toContain("/change-password");
-		});
-
-		it.each([
-			"/auth/oauth/consent",
-			"/auth/oauth/organization",
-			"/auth/oauth/resume",
-		])(
-			"should redirect the agent authorization page %s to /change-password when mustChangePassword is true",
-			async (path) => {
-				mockGetSessionCookie.mockReturnValue("valid-token");
-				const req = createMockRequest(path, {
-					sessionData: {
-						session: { user: { mustChangePassword: true } },
-					},
-				});
-
-				const response = await proxy(req);
-
-				expect(response.type).toBe("redirect");
-				expect(response.url).toBe(
-					"https://www.fabric.pro/change-password",
-				);
-			},
-		);
-
-		it("should serve the agent consent page, unframable, when mustChangePassword is false", async () => {
-			mockGetSessionCookie.mockReturnValue("valid-token");
-			const req = createMockRequest("/auth/oauth/consent", {
-				sessionData: {
-					session: { user: { mustChangePassword: false } },
-				},
-			});
-
-			const response = await proxy(req);
-
-			expect(response.type).toBe("next");
-			expect(response.headers.get("X-Frame-Options")).toBe("DENY");
-		});
-
-		it("should pass through /app when mustChangePassword is false", async () => {
-			mockGetSessionCookie.mockReturnValue("valid-token");
-			const req = createMockRequest("/app", {
-				sessionData: {
-					session: { user: { mustChangePassword: false } },
-				},
-			});
-
-			const response = await proxy(req);
-
-			expect(response.type).toBe("next");
-		});
-
-		it("should pass through /app when no session_data cookie exists", async () => {
-			mockGetSessionCookie.mockReturnValue("valid-token");
-			const req = createMockRequest("/app");
-
-			const response = await proxy(req);
-
-			expect(response.type).toBe("next");
-		});
-
-		it("should pass through /app when session_data cookie is malformed", async () => {
-			mockGetSessionCookie.mockReturnValue("valid-token");
-			const req = createMockRequest("/app");
-			// Manually set a malformed cookie value
-			(req.cookies as any) = {
-				get: (name: string) =>
-					name.includes("session_data")
-						? { value: "not-valid-base64!!!" }
-						: undefined,
-			};
-
-			const response = await proxy(req);
-
-			expect(response.type).toBe("next");
-		});
-
-		it("should not create a redirect loop on /change-password", async () => {
-			mockGetSessionCookie.mockReturnValue("valid-token");
-			const req = createMockRequest("/change-password", {
-				sessionData: {
-					session: { user: { mustChangePassword: true } },
-				},
-			});
-
-			const response = await proxy(req);
-
-			expect(response.type).toBe("next");
-		});
-
-		it("should still redirect unauthenticated users to /auth/login (no regression)", async () => {
-			mockGetSessionCookie.mockReturnValue(null);
-			const req = createMockRequest("/app");
-
-			const response = await proxy(req);
-
-			expect(response.type).toBe("redirect");
-			expect(response.url).toContain("/auth/login");
 		});
 	});
 });

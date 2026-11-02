@@ -973,7 +973,7 @@ export function PlanningAnalysisTab({
 				) : null}
 
 				{effective === null ? (
-					<p className="rounded-xl border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
+					<p className="rounded-lg border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
 						No analysis yet.
 						{canEdit
 							? " Generate one to see the angle, key details, recommended content types and the decisions that still need an answer."
@@ -1153,7 +1153,7 @@ function EmptyProseNotice({
 }) {
 	if (effective.overridden) {
 		return (
-			<p className="rounded-xl border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
+			<p className="rounded-lg border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
 				Someone cleared this analysis. The text was removed on purpose,
 				not lost —{" "}
 				{canEdit
@@ -1164,7 +1164,7 @@ function EmptyProseNotice({
 	}
 
 	return (
-		<p className="rounded-xl border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
+		<p className="rounded-lg border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
 			{isEmptyAnalysis(effective)
 				? "This analysis came back empty. The topic's sources may not carry enough to plan from yet."
 				: "This analysis produced no written summary — only the structured recommendations below."}

@@ -148,7 +148,7 @@ export function AtlasTourPanel({
 						</p>
 					) : currentStep ? (
 						<div className="space-y-2">
-							<h3 className="max-w-none font-serif text-lg font-normal leading-snug text-foreground">
+							<h3 className="max-w-none text-lg font-semibold leading-snug text-foreground">
 								{currentStep.title}
 							</h3>
 							<p className="max-w-none text-sm leading-relaxed text-muted-foreground">
@@ -157,7 +157,7 @@ export function AtlasTourPanel({
 							<button
 								type="button"
 								onClick={handleFocusCurrent}
-								className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 							>
 								<FocusIcon
 									aria-hidden="true"
@@ -204,7 +204,7 @@ export function AtlasTourPanel({
 										aria-current={
 											isActive ? "true" : undefined
 										}
-										className="group/dot flex cursor-pointer items-center px-1 py-2 focus-visible:outline-none"
+										className="group/dot flex cursor-pointer items-center px-1 py-2 focus-visible:outline-hidden"
 									>
 										<span
 											className={cn(
@@ -262,7 +262,7 @@ export function AtlasTourPanel({
 	return (
 		<div
 			className={cn(
-				"rounded-xl border border-primary/20 bg-card shadow-md",
+				"rounded-lg border border-primary/20 bg-card shadow-md",
 				"motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-top-2",
 			)}
 		>
@@ -274,7 +274,7 @@ export function AtlasTourPanel({
 						className="mt-0.5 size-4 shrink-0 text-primary"
 					/>
 					<div>
-						<p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+						<p className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							{t("intro")}
 						</p>
 						{!isIntro && (
@@ -308,7 +308,7 @@ export function AtlasTourPanel({
 					</p>
 				) : currentStep ? (
 					<div className="space-y-2">
-						<h4 className="font-serif text-base text-foreground">
+						<h4 className="font-semibold text-base text-foreground">
 							{currentStep.title}
 						</h4>
 						<p className="text-sm text-foreground leading-relaxed">
@@ -345,7 +345,7 @@ export function AtlasTourPanel({
 											})
 								}
 								className={cn(
-									"size-1.5 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+									"size-1.5 rounded-full transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 									i === activeStep
 										? "bg-primary"
 										: "bg-muted-foreground/30",

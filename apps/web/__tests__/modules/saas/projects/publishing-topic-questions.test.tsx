@@ -14,7 +14,7 @@
  * opaque spy call count.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -2518,3 +2518,48 @@ it("keeps collapsed group controls local to each mounted panel", async () => {
 		expect(button.closest("section")?.contains(region)).toBe(true);
 	}
 });
+
+it("same-page hash navigation opens a collapsed group", () => {
+	const threads = [OPEN_THREAD, RESOLVED_THREAD];
+	const view = render(<TopicQuestionsPanel {...BASE} threads={threads} />);
+	expect(screen.getByRole("button", { name: /^answered/i })).toHaveAttribute(
+		"aria-expanded",
+		"false",
+	);
+	window.history.pushState(null, "", "#q-decision-3");
+	act(() => window.dispatchEvent(new HashChangeEvent("hashchange")));
+	view.rerender(<TopicQuestionsPanel {...BASE} threads={threads} />);
+	expect(screen.getByRole("button", { name: /^answered/i })).toHaveAttribute(
+		"aria-expanded",
+		"true",
+	);
+});
+
+it.each([false, true])(
+	"repeat question arrival reopens its group after an inactive/loading gap (%s)",
+	async (isLoading) => {
+		const threads = [OPEN_THREAD, RESOLVED_THREAD];
+		window.history.pushState(null, "", "#q-decision-3");
+		const view = render(
+			<TopicQuestionsPanel {...BASE} threads={threads} />,
+		);
+		const toggle = () => screen.getByRole("button", { name: /^answered/i });
+		expect(toggle()).toHaveAttribute("aria-expanded", "true");
+		await userEvent.setup().click(toggle());
+		expect(toggle()).toHaveAttribute("aria-expanded", "false");
+		window.history.pushState(null, "", window.location.pathname);
+		view.rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={threads}
+				isActive={false}
+				isLoading={isLoading}
+			/>,
+		);
+		act(() => window.dispatchEvent(new HashChangeEvent("hashchange")));
+		window.history.pushState(null, "", "#q-decision-3");
+		act(() => window.dispatchEvent(new HashChangeEvent("hashchange")));
+		view.rerender(<TopicQuestionsPanel {...BASE} threads={threads} />);
+		expect(toggle()).toHaveAttribute("aria-expanded", "true");
+	},
+);

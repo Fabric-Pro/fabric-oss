@@ -23,21 +23,21 @@ export function ProjectSectionHero({
 	getStartedPageId,
 }: Props) {
 	return (
-		<div className="app-surface overflow-hidden rounded-2xl">
+		<div className="app-surface overflow-hidden rounded-lg">
 			<div className="grid gap-0 xl:grid-cols-[minmax(0,1.5fr)_360px]">
 				<div className="relative p-6 sm:p-8">
 					<div className="app-dot-grid pointer-events-none absolute inset-0 opacity-[0.04] dark:opacity-[0.03]" />
 					<div className="relative max-w-3xl">
 						<p className="app-editorial-label">{eyebrow}</p>
-						<div className="mt-3 flex items-center gap-1.5">
-							<h2 className="font-sans text-[1.85rem] font-normal tracking-tight text-foreground/90 sm:text-[2.2rem]">
+						<div className="mt-2.5 flex items-center gap-1.5">
+							<h2 className="font-sans text-xl font-semibold tracking-[-0.015em] text-foreground sm:text-2xl">
 								{title}
 							</h2>
 							{getStartedPageId ? (
 								<PageTourButton pageId={getStartedPageId} />
 							) : null}
 						</div>
-						<p className="mt-4 max-w-2xl text-sm leading-7 text-muted-foreground/90 sm:text-[0.98rem]">
+						<p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
 							{description}
 						</p>
 						{badges ? (

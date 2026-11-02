@@ -31,6 +31,10 @@
 
 import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
 import {
+	ALWAYS_WRAPPED_LABEL_CHARS,
+	wrapFlowchartNodeLabels,
+} from "@repo/utils/proposal-artifact/diagram-label-wrap";
+import {
 	isThematicBreak,
 	normalizeOrderedMarkerEscape,
 	readMarkdownTable,
@@ -225,7 +229,13 @@ export async function renderMermaidToPng(
 	// Try beautiful-mermaid first (cleaner output for supported types)
 	try {
 		const beautifulMermaid = await import("beautiful-mermaid");
-		const svg = beautifulMermaid.renderMermaidSVG(code.trim(), {
+		// Long node labels are broken as the page breaks them, so the text
+		// stays inside the boxes the engine's width estimate draws.
+		const drawn =
+			wrapFlowchartNodeLabels(code, {
+				minChars: ALWAYS_WRAPPED_LABEL_CHARS,
+			}) ?? code;
+		const options = {
 			bg: "#ffffff",
 			fg: "#1a1a1a",
 			line: "#888888",
@@ -233,8 +243,22 @@ export async function renderMermaidToPng(
 			muted: "#666666",
 			surface: "#f5f5f5",
 			border: "#cccccc",
-			font: "Helvetica, sans-serif",
-		});
+			// One family: the engine quotes the option, so a stack would name
+			// no font. A system one, since an SVG drawn as an image to make the
+			// PNG cannot use the page's web fonts.
+			font: "Helvetica",
+		};
+		let svg: string;
+		try {
+			svg = beautifulMermaid.renderMermaidSVG(drawn.trim(), options);
+		} catch (error) {
+			// A broken copy the engine refuses gives way to the source as
+			// written, as on the page, before mermaid.js is tried.
+			if (drawn === code) {
+				throw error;
+			}
+			svg = beautifulMermaid.renderMermaidSVG(code.trim(), options);
+		}
 		const result = await svgToPng(svg);
 		if (result) {
 			return result;

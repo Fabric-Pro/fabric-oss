@@ -1,8 +1,8 @@
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { Card } from "@ui/components/card";
 import { CircleHelpIcon } from "lucide-react";
-import type { ClarificationTurn } from "../../../lib/clarification-turns";
 import { Message } from "../../../../../../components/ai-elements/message";
+import type { ClarificationTurn } from "../../../lib/clarification-turns";
 
 /** One clarification exchange in the Advisor's column. */
 export function AnsweredClarification({
@@ -14,7 +14,7 @@ export function AnsweredClarification({
 }) {
 	return (
 		<Message from="assistant" className="py-2">
-			<div className="shrink-0" aria-hidden="true">
+			<div className="sr-only" aria-hidden="true">
 				<FabricLogo className="h-8 w-8" size={32} />
 			</div>
 			<Card

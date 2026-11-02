@@ -7,6 +7,13 @@
  * Uses vector search to find relevant document chunks and AI to answer questions.
  */
 
+import { useRuntimeChatTransport } from "@saas/agents/hooks/useRuntimeChatTransport";
+import {
+	askLibraryRoute,
+	askLibraryRuntime,
+} from "@saas/libraries/lib/library-chat-client";
+import type { LibrarySource } from "@saas/libraries/lib/library-chat-runtime-protocol";
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -41,18 +48,10 @@ interface LibraryDocumentChatDialogProps {
 	organizationId?: string | null;
 }
 
-interface SourceReference {
-	filename: string;
-	pageNumber?: number;
-	chunkIndex: number;
-	score: number;
-	content: string;
-}
-
 interface ChatMessage {
 	role: "user" | "assistant";
 	content: string;
-	sources?: SourceReference[];
+	sources?: LibrarySource[];
 	timestamp: Date;
 	isError?: boolean;
 }
@@ -73,21 +72,59 @@ export function LibraryDocumentChatDialog({
 	);
 	const [isFullscreen, setIsFullscreen] = useState(false);
 	const scrollRef = useRef<HTMLDivElement>(null);
+	// `COPILOTKIT_LIBRARY_CHAT`, fixed when the dialog mounts.
+	const transport = useRuntimeChatTransport("COPILOTKIT_LIBRARY_CHAT");
+	const { organizationId: organizationOnScreen } = useOrganizationContext();
+	// The runtime's thread: one per opening of the dialog, saved nowhere.
+	const threadIdRef = useRef<string>(crypto.randomUUID());
+	const requestRef = useRef<AbortController | null>(null);
+	// The runtime's reply while it streams.
+	const [pending, setPending] = useState<{
+		content: string;
+		sources?: LibrarySource[];
+	} | null>(null);
 
 	// Scroll to bottom on new messages
 	useEffect(() => {
 		if (scrollRef.current) {
 			scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
 		}
-	}, [messages]);
+	}, [messages, pending]);
 
 	// Reset when dialog closes
 	useEffect(() => {
 		if (!open) {
+			requestRef.current?.abort();
+			requestRef.current = null;
+			threadIdRef.current = crypto.randomUUID();
+			setPending(null);
+			setIsLoading(false);
 			setMessages([]);
 			setInput("");
 		}
 	}, [open]);
+
+	// Unmounting lets go of the question as closing does: the abort it
+	// causes is not an error to show.
+	useEffect(
+		() => () => {
+			requestRef.current?.abort();
+			requestRef.current = null;
+		},
+		[],
+	);
+
+	const shownMessages: ChatMessage[] = pending
+		? [
+				...messages,
+				{
+					role: "assistant",
+					content: pending.content,
+					sources: pending.sources,
+					timestamp: new Date(),
+				},
+			]
+		: messages;
 
 	const toggleSourceExpanded = (id: string) => {
 		setExpandedSources((prev) => {
@@ -116,41 +153,68 @@ export function LibraryDocumentChatDialog({
 		setInput("");
 		setIsLoading(true);
 
+		const question = {
+			workspaceId,
+			message: userMessage.content,
+			history: messages.map((m) => ({
+				role: m.role,
+				content: m.content,
+			})),
+		};
+		const controller = new AbortController();
+		requestRef.current = controller;
+		// Closing the dialog lets go of the question: nothing it answers
+		// afterwards lands in the next session.
+		const isCurrent = () => requestRef.current === controller;
 		try {
-			const response = await fetch("/api/workspaces/chat", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					workspaceId,
-					organizationId,
-					message: userMessage.content,
-					history: messages.map((m) => ({
-						role: m.role,
-						content: m.content,
-					})),
-				}),
-			});
-
-			if (!response.ok) {
-				const errorData = await response.json();
-				throw new Error(errorData.error || "Failed to get response");
+			// The answer streams into a pending reply on the runtime.
+			const data =
+				transport === "runtime"
+					? await askLibraryRuntime({
+							...question,
+							threadId: threadIdRef.current,
+							organizationId: organizationOnScreen ?? undefined,
+							signal: controller.signal,
+							onSources: (sources) => {
+								if (isCurrent()) {
+									setPending((prev) => ({
+										content: prev?.content ?? "",
+										sources,
+									}));
+								}
+							},
+							onText: (content) => {
+								if (isCurrent()) {
+									setPending((prev) => ({
+										...prev,
+										content,
+									}));
+								}
+							},
+						})
+					: await askLibraryRoute({
+							...question,
+							organizationId,
+							signal: controller.signal,
+						});
+			if (!isCurrent()) {
+				return;
 			}
-
-			const data = await response.json();
 
 			// Add assistant response with sources
 			setMessages((prev) => [
 				...prev,
 				{
 					role: "assistant",
-					content:
-						data.response ||
-						"I couldn't find relevant information in the documents.",
+					content: data.response,
 					sources: data.sources,
 					timestamp: new Date(),
 				},
 			]);
 		} catch (error) {
+			if (!isCurrent()) {
+				return;
+			}
 			const errorMessage =
 				error instanceof Error ? error.message : "An error occurred";
 			toast.error("Chat error", { description: errorMessage });
@@ -164,7 +228,11 @@ export function LibraryDocumentChatDialog({
 				},
 			]);
 		} finally {
-			setIsLoading(false);
+			if (isCurrent()) {
+				requestRef.current = null;
+				setPending(null);
+				setIsLoading(false);
+			}
 		}
 	};
 
@@ -225,7 +293,7 @@ export function LibraryDocumentChatDialog({
 
 				{/* Messages Area */}
 				<ScrollArea className="flex-1 px-6 py-4" ref={scrollRef}>
-					{messages.length === 0 ? (
+					{shownMessages.length === 0 ? (
 						<div className="flex flex-col items-center justify-center h-full text-center py-12">
 							<MessageCircleIcon className="size-12 text-muted-foreground mb-4" />
 							<h3 className="font-semibold mb-2">
@@ -256,7 +324,7 @@ export function LibraryDocumentChatDialog({
 						</div>
 					) : (
 						<div className="space-y-4">
-							{messages.map((message, idx) => (
+							{shownMessages.map((message, idx) => (
 								<div
 									key={idx}
 									className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
@@ -370,7 +438,7 @@ export function LibraryDocumentChatDialog({
 									</div>
 								</div>
 							))}
-							{isLoading && (
+							{isLoading && !pending?.content && (
 								<div className="flex justify-start">
 									<div className="bg-muted rounded-lg px-4 py-3 flex items-center gap-2">
 										<Loader2Icon className="size-4 animate-spin" />

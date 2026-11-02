@@ -1,6 +1,6 @@
 "use client";
 
-import { orpcClient } from "@shared/lib/orpc-client";
+import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import {
@@ -27,7 +27,7 @@ type PickableStory = {
  *
  * The backlog is fetched lazily on open (never on digest render) and filtered
  * client-side: a project's active backlog is a few hundred items at most, and
- * the existing `projects.stories.list` already serves exactly this shape for the
+ * the existing `projects.stories.board` already serves exactly this shape for the
  * roadmap, so this needs no new endpoint.
  *
  * Work items already linked to this action item are excluded rather than shown
@@ -56,9 +56,9 @@ export function LinkStoryPicker({
 	const [error, setError] = useState<string | null>(null);
 
 	const storiesQuery = useQuery({
-		queryKey: ["projects.stories.list", projectId, organizationId],
-		queryFn: () =>
-			orpcClient.projects.stories.list({ projectId, organizationId }),
+		...orpc.projects.stories.board.queryOptions({
+			input: { projectId, organizationId },
+		}),
 		// Only pay for the backlog when the user actually opens the picker.
 		enabled: open,
 	});
@@ -110,9 +110,9 @@ export function LinkStoryPicker({
 				/>
 
 				{error ? (
-					<p role="status" className="text-xs text-destructive">
+					<output className="text-xs text-destructive">
 						{error}
-					</p>
+					</output>
 				) : null}
 
 				<div className="max-h-72 min-h-0 overflow-y-auto">

@@ -114,7 +114,7 @@ export function AuditLogScopeToggle({
 						// sibling active-filter pills already use; a bare browser
 						// outline here would be the only unbranded focus state in
 						// the viewer.
-						"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+						"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary",
 						active === mode.value
 							? "bg-card text-foreground shadow-sm"
 							: "text-muted-foreground hover:text-foreground",

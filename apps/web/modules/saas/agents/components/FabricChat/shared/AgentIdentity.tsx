@@ -100,7 +100,7 @@ export function VendorLogo({
 				width={size}
 				height={size}
 				onError={() => setFailed(true)}
-				className="shrink-0 rounded-xl border border-border/60 bg-white object-contain p-1 shadow-sm"
+				className="shrink-0 rounded-lg border border-border/60 bg-white object-contain p-1 shadow-sm"
 				style={{ width: size, height: size }}
 				unoptimized
 			/>

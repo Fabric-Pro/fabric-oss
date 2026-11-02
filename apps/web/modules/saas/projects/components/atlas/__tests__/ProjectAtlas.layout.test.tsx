@@ -429,7 +429,7 @@ describe("ProjectAtlas — floating node panel", () => {
 			"z-20",
 			"lg:w-[22rem]",
 			"lg:max-w-[calc(100%-1.5rem)]",
-			"rounded-xl",
+			"rounded-lg",
 			"bg-background",
 			"overflow-hidden",
 		]) {

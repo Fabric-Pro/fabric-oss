@@ -102,6 +102,8 @@ import {
 	settleUnwatchedDirectTurn,
 } from "./direct-turn-record";
 import type { RunStream, RuntimeCaller, RuntimeEngine } from "./engine";
+import { settleLatestResearchRun } from "./research-run-follow";
+import { isResearchTurn } from "./research-run-record";
 import { refuse, refuseWithResponse } from "./run-errors";
 import {
 	ensureThread,
@@ -168,7 +170,7 @@ const refuseStateUnavailable = (stream: RunStream) =>
 	);
 
 /** The run's answer to an admission refusal. */
-function refuseAdmission(
+export function refuseAdmission(
 	stream: RunStream,
 	refusal: TurnAdmissionRefusal,
 ): void {
@@ -497,6 +499,16 @@ export class DirectEngine implements RuntimeEngine {
 			refuseStateUnavailable(stream);
 			return;
 		}
+		// A research run on this thread that ended unwatched is saved by the
+		// research settle first; admission never settles a research run
+		// (`ownsTurn` below), and reconciles any other conflicting turn.
+		if (
+			(await settleLatestResearchRun(this.caller, request.threadId)) ===
+			"unavailable"
+		) {
+			refuseStateUnavailable(stream);
+			return;
+		}
 		const temporal = await getTemporalClient();
 		const admission = await admitTurn({
 			userId: this.caller.userId,
@@ -508,12 +520,21 @@ export class DirectEngine implements RuntimeEngine {
 			question: request.question,
 			temporalClient: temporal,
 			settleCompleted: settleUnwatchedDirectTurn,
+			ownsTurn: (turn) => !isResearchTurn(turn),
 		});
 		switch (admission.kind) {
 			case "refused":
 				refuseAdmission(stream, admission.refusal);
 				return;
 			case "existing":
+				if (admission.turn.executionMode !== DIRECT_EXECUTION_MODE) {
+					refuse(
+						stream,
+						"RUN_ID_REUSED",
+						"This run id already belongs to another run.",
+					);
+					return;
+				}
 				if (request.existingMeansAnswered) {
 					refuseNotPending(stream);
 					return;

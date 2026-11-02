@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { withCodingLifecycleActivities } from "./fixtures/coding-lifecycle-activities";
 
 const activityDb = vi.hoisted(() => ({
 	adapter: undefined as any,
@@ -172,6 +173,19 @@ describe.skipIf(!sourceRoot)(
 					promptId: "example-prompt-1",
 				}),
 			).toEqual(first);
+			const conversation = await adapter.getSessionMessages(sessionId);
+			expect(conversation.messages).toEqual([
+				{ id: first.messageId, role: "user", content: "work" },
+			]);
+			const browserLink = new URL(
+				conversation.webUrl ?? "https://missing.example.com",
+			);
+			expect(browserLink.searchParams.get("ws")).toBe(
+				"example-workspace",
+			);
+			expect(browserLink.searchParams.get("route")).toBe(
+				`allSessions/session/${sessionId}`,
+			);
 			expect(
 				JSON.parse(await readFile(join(root, "native.json"), "utf8"))
 					.sends,
@@ -232,7 +246,7 @@ describe.skipIf(!sourceRoot)(
 					connection: env.nativeConnection,
 					taskQueue: "example-joint-acceptance",
 					workflowBundle,
-					activities: {
+					activities: withCodingLifecycleActivities({
 						createExecutionSession: activity.createExecutionSession,
 						sendExecutionPrompt: activity.sendExecutionPrompt,
 						pollExecutionStatus: activity.pollExecutionStatus,
@@ -254,7 +268,7 @@ describe.skipIf(!sourceRoot)(
 						buildImplementationPrompt: async () => "complete",
 						syncCodingRunArtifacts: async () => ({}),
 						cleanupWeaveResourcesActivity: async () => {},
-					},
+					}),
 				});
 				const workflowId = "example-joint-workflow";
 				const handle = await env.client.workflow.start(

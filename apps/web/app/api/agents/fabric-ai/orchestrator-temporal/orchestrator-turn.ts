@@ -22,7 +22,7 @@ import {
 	chatGptPlanChatPreflight,
 } from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
 import { mintActingGrantForTurn } from "@repo/api/lib/agent-service-auth";
-import { db } from "@repo/database";
+import { db, resolveChatMediaAccessBatch } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import type {
 	getTemporalClient,
@@ -243,6 +243,38 @@ export async function resolveOrchestratorTurnRequest({
 				JSON.stringify({
 					error: "Forbidden",
 					message: "This conversation is not accessible",
+				}),
+				{
+					status: 403,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+	}
+
+	if (
+		!Array.isArray(attachedImageUrls) ||
+		attachedImageUrls.some(
+			(path: unknown) => typeof path !== "string" || path.length === 0,
+		)
+	) {
+		return badRequest("attachedImageUrls must contain storage paths");
+	}
+	const attachedImageAccess =
+		attachedImageUrls.length > 0
+			? await resolveChatMediaAccessBatch({
+					storageKeys: attachedImageUrls as string[],
+					userId,
+					organizationId,
+				})
+			: new Map();
+	for (const storageKey of attachedImageUrls as string[]) {
+		const access = attachedImageAccess.get(storageKey);
+		if (access !== "allow" && access !== "legacy") {
+			return new Response(
+				JSON.stringify({
+					error: "Forbidden",
+					message: "An attached image is not accessible",
 				}),
 				{
 					status: 403,

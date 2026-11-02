@@ -61,7 +61,7 @@ export function ActionItemRoutingSettings({
 	});
 
 	return (
-		<Card className="rounded-2xl p-5">
+		<Card className="rounded-lg p-5">
 			<div className="flex items-start justify-between gap-3">
 				<div className="flex items-start gap-3">
 					<GitMergeIcon

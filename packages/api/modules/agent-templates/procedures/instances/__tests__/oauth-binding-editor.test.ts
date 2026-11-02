@@ -58,6 +58,7 @@ vi.mock("@repo/database/prisma/client", () => ({ db: {} }));
 
 vi.mock("../../../../agent-deployments/lib/sync-triggers", () => ({
 	syncDeploymentTriggers: vi.fn(),
+	validateSlackTriggerConfigs: vi.fn(),
 }));
 
 vi.mock("../../../../organizations/lib/membership", () => ({

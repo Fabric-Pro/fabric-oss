@@ -57,7 +57,7 @@ export function HelpTooltip({
 					<button
 						type="button"
 						aria-label={`What is ${label}?`}
-						className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground/80 hover:text-foreground focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+						className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground/80 hover:text-foreground focus-visible:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
 					>
 						<HelpCircleIcon
 							className={cn("size-3", iconClassName)}
@@ -104,7 +104,7 @@ export function InlineTooltip({
 					<button
 						type="button"
 						aria-label={label}
-						className="inline-flex cursor-help items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background rounded-sm"
+						className="inline-flex cursor-help items-center focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background rounded-sm"
 					>
 						{children}
 					</button>

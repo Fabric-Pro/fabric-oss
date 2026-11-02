@@ -196,9 +196,9 @@ export function FrameRenderer({
 						key={block.id}
 						className={cn(
 							"overflow-hidden",
-							!embedded && "rounded-2xl border bg-card shadow-sm",
+							!embedded && "rounded-lg border bg-card shadow-sm",
 							frame.kind === "slideshow" &&
-								"min-h-[70vh] rounded-3xl p-0",
+								"min-h-[70vh] rounded-lg p-0",
 							frame.kind !== "slideshow" &&
 								(embedded ? "" : "p-4 md:p-5"),
 						)}
@@ -216,7 +216,7 @@ export function FrameRenderer({
 								<h2
 									className={cn(
 										frame.kind === "slideshow"
-											? "font-serif text-2xl md:text-3xl"
+											? "font-semibold text-2xl md:text-3xl"
 											: "font-semibold text-lg",
 									)}
 								>
@@ -481,7 +481,7 @@ function FrameBlockRenderer({
 			return <Mermaid chart={block.content} />;
 		case "json":
 			return (
-				<pre className="overflow-x-auto rounded-xl border bg-muted p-4 text-sm">
+				<pre className="overflow-x-auto rounded-lg border bg-muted p-4 text-sm">
 					<code>{block.content}</code>
 				</pre>
 			);
@@ -493,7 +493,7 @@ function FrameBlockRenderer({
 			);
 		default:
 			return (
-				<pre className="overflow-x-auto rounded-xl border bg-muted p-4 text-sm">
+				<pre className="overflow-x-auto rounded-lg border bg-muted p-4 text-sm">
 					<code>{block.content}</code>
 				</pre>
 			);

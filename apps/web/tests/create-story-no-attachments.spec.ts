@@ -175,7 +175,7 @@ async function installMocks(page: Page, state: MockState): Promise<void> {
 	await page.route("**/api/rpc/projects/stories/statuses/list**", (route) =>
 		fulfillJson(route, buildStatusesPayload()),
 	);
-	await page.route("**/api/rpc/projects/stories/list**", (route) =>
+	await page.route("**/api/rpc/projects/stories/board**", (route) =>
 		fulfillJson(route, buildStoriesPayload()),
 	);
 

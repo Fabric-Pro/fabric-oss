@@ -22,8 +22,8 @@
  */
 import type {
 	ErrorGroupScope,
+	ErrorGroupSummary,
 	LogSourceAdapter,
-	RawErrorGroup,
 } from "@repo/ai/lib/log-context";
 import { getProjectLogSourceBinding } from "@repo/database";
 import { createOperatorErrorScanAdapter } from "../backlog-context/azure-monitor-log-source";
@@ -43,7 +43,7 @@ export interface ResolvedErrorScanSource {
 	reach: ErrorScanReach;
 	summarize(
 		scope: Omit<ErrorGroupScope, "organizationId">,
-	): Promise<RawErrorGroup[]>;
+	): Promise<ErrorGroupSummary>;
 }
 
 function withSummarize(

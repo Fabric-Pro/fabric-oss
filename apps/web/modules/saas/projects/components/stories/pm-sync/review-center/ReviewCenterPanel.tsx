@@ -198,10 +198,7 @@ export function ReviewCenterPanel({
 			>
 				<SheetHeader className="space-y-2">
 					<span className="editorial-label">REVIEW CENTER</span>
-					<SheetTitle
-						className="font-normal text-2xl"
-						style={{ fontFamily: "var(--font-serif)" }}
-					>
+					<SheetTitle className="font-semibold text-2xl">
 						Items to review
 					</SheetTitle>
 					<SheetDescription>
@@ -332,7 +329,7 @@ export function ReviewCenterPanel({
 							onOpenChange(false);
 							openSyncLog();
 						}}
-						className="inline-flex items-center gap-1 text-sm text-primary hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+						className="inline-flex items-center gap-1 text-sm text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
 					>
 						View all in Sync History
 						<ArrowRightIcon className="size-3.5" aria-hidden />
@@ -697,10 +694,7 @@ function EmptyState({ label, title, subtext }: EmptyStateProps) {
 	return (
 		<div className="flex flex-col items-center justify-center rounded-lg border border-border bg-muted/40 px-6 py-16 text-center">
 			<span className="editorial-label">{label}</span>
-			<p
-				className="mt-3 text-xl font-normal text-foreground"
-				style={{ fontFamily: "var(--font-serif)" }}
-			>
+			<p className="mt-3 text-xl font-semibold text-foreground">
 				{title}
 			</p>
 			<p className="mt-2 max-w-xs text-sm text-muted-foreground">

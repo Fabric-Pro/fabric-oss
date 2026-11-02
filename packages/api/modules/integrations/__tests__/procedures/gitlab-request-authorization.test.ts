@@ -112,8 +112,13 @@ vi.mock("@repo/database", async () => {
 		// The REST API key middleware's imports; the keys themselves are
 		// injected by the test app below.
 		OAUTH_ACCESS_TOKEN_PREFIX: "fat_",
+		canCreateOrganizationPrompts: async () => true,
+		canCreateProjectInOrganization: async () => true,
 		canExecuteOrganizationAgents: async () => true,
 		canRunOrganizationWorkflows: async () => true,
+		canUpdateOrganizationPrompts: async () => true,
+		canUseOrganizationAiChat: async () => true,
+		canUseOrganizationIntegrations: async () => true,
 		verifyOAuthAccessToken: vitest.fn(),
 		verifyOrganizationApiKey: vitest.fn(),
 	};

@@ -87,7 +87,7 @@ export function OAuthOrganizationPicker() {
 			<div className="flex flex-col gap-5">
 				<div className="space-y-2">
 					<p className="app-editorial-label">{t("label")}</p>
-					<h1 className="font-serif font-normal text-2xl leading-snug">
+					<h1 className="font-semibold text-2xl leading-snug">
 						{t("noProjectAccessTitle")}
 					</h1>
 				</div>
@@ -102,7 +102,7 @@ export function OAuthOrganizationPicker() {
 		<div className="flex flex-col gap-5">
 			<div className="space-y-2">
 				<p className="app-editorial-label">{t("label")}</p>
-				<h1 className="font-serif font-normal text-2xl leading-snug">
+				<h1 className="font-semibold text-2xl leading-snug">
 					{t("title")}
 				</h1>
 				<p className="text-muted-foreground text-sm">

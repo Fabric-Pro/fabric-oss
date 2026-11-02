@@ -11,13 +11,20 @@ import {
 	resolveProposalThemeTokens,
 } from "@repo/database";
 import { violationCode } from "@repo/utils/glossy/fact-guard";
-import { parseOutline, scanFences } from "@repo/utils/glossy/outline";
-import type { VisualSpec } from "@repo/utils/glossy/visual-spec";
+import {
+	type OutlineHeading,
+	parseOutline,
+	scanFences,
+} from "@repo/utils/glossy/outline";
+import type { ProposalVisualSpec } from "@repo/utils/glossy/visual-spec";
 import {
 	proposalFigureKind,
 	proposalVisualTemplateOptions,
 	visualSpecToMermaid,
 } from "@repo/utils/glossy/visual-templates";
+import { coverLetterLabel } from "@repo/utils/proposal-artifact/cover-letter-heading";
+import { scrubCitationText } from "@repo/utils/proposal-artifact/export-scrub";
+import { parseMarkdownAst } from "@repo/utils/proposal-artifact/markdown-ast";
 import { withFigureKind } from "@repo/utils/proposal-artifact/proposal-figures";
 import { mintVisualId } from "@repo/utils/proposal-artifact/visual-id-server";
 import {
@@ -39,6 +46,7 @@ import type {
 	GenerateProposalVisualsInput,
 	GenerateProposalVisualsResult,
 } from "../../lib/proposal-artifact/types";
+import { plainText } from "../../lib/proposal-export/print-markup";
 import {
 	currentCancellationSignal,
 	hasGlossyBodyText,
@@ -57,9 +65,10 @@ import { activityLogger } from "../lib/activity-logger";
  * build activities (those are bound to `GlossyBuild` rows): one detection
  * over the Main sections, then one extraction per detected opportunity, each
  * fact-checked against its section by `extractGlossyVisual`. Timeline, flow
- * and org chart become ```` ```mermaid ```` fences; comparison becomes a
- * markdown table; stat is not produced in this release, so detection is
- * told every section already shows one.
+ * and org chart, and the Proposal's own architecture layers and team, become
+ * ```` ```mermaid ```` fences; comparison becomes a markdown table; stat is
+ * not produced in this release, so detection is told every section already
+ * shows one.
  *
  * A fence holds no colour (Fizzy #2946): every node carries the `surface`
  * role class, and the live page and the export paint the roles from the
@@ -69,7 +78,10 @@ import { activityLogger } from "../lib/activity-logger";
  *
  * Detection and extraction are told the audience: inline visuals are for
  * executive readers, and a section whose heading starts with "Appendix" or
- * "Anhang" is marked as one, where a more technical diagram fits.
+ * "Anhang" is marked as one, where a more technical diagram fits. The cover
+ * letter is a letter, so it never gets one: Main's first `##` section when
+ * its heading reads "Cover letter" or "Anschreiben", by the rule the export
+ * prints it with, and nothing else.
  *
  * A member can turn the step off for one document in its Style; it then
  * returns the content unchanged without a model call. No Style row means on.
@@ -162,9 +174,10 @@ export async function generateProposalVisuals(
 		const bySectionKey = new Map(
 			sections.map((section) => [section.key, section]),
 		);
+		const notProduced: readonly string[] = NOT_PRODUCED_KINDS;
 		const wanted = detection.opportunities.filter(
 			(opportunity) =>
-				!NOT_PRODUCED_KINDS.includes(opportunity.kind) &&
+				!notProduced.includes(opportunity.kind) &&
 				bySectionKey.has(opportunity.sectionKey),
 		);
 		await reportVisualProgress(input, VISUALS_PROGRESS_DETECTED);
@@ -419,22 +432,64 @@ function isAppendixHeading(heading: string): boolean {
 }
 
 /**
+ * A heading line's text as the export reads it: without its citation
+ * markers, which the export removes first, and with its escapes and inline
+ * marks read as a Markdown parser reads them (`1\. **Cover letter**` is
+ * "1. Cover letter").
+ */
+function exportedHeadingText(line: string): string {
+	const [heading] = parseMarkdownAst(scrubCitationText(line).text).children;
+	return heading ? plainText(heading) : "";
+}
+
+/**
+ * The index in `outline` of the cover letter's heading, or -1: Main's first
+ * `##` heading when `coverLetterLabel` names it a letter, as the export
+ * decides. A later heading of that name, or one at another level, is a
+ * section like any other.
+ */
+function coverLetterIndex(
+	outline: readonly OutlineHeading[],
+	lines: readonly string[],
+): number {
+	const index = outline.findIndex((heading) => heading.level === 2);
+	const heading = outline[index];
+	if (heading === undefined) {
+		return -1;
+	}
+	const text = exportedHeadingText(lines[heading.startLine - 1] ?? "");
+	return coverLetterLabel(text) === null ? -1 : index;
+}
+
+/**
  * The sections a visual may go into: every heading below a leading `#`
  * title, with its own body (subsections excluded, as `insertVisuals` places
  * a visual within a section's own content). A section without body text of
  * its own, or whose own body already holds a mermaid diagram, is left out,
- * since it would get no visual.
+ * since it would get no visual, and so is the cover letter with every
+ * heading up to the next `##`: the export prints all of it as the letter.
  */
 function proposalVisualSections(content: string): ProposalVisualSection[] {
 	const lines = content.split("\n");
 	const fences = scanFences(lines);
 	const outline = parseOutline(content);
 	const sections: ProposalVisualSection[] = [];
+	const letterIndex = coverLetterIndex(outline, lines);
+	// Whether the walk is inside the cover letter.
+	let inLetter = false;
 
 	outline.forEach((heading, index) => {
 		if (index === 0 && heading.level === 1) {
 			return;
 		}
+		if (index === letterIndex) {
+			inLetter = true;
+			return;
+		}
+		if (inLetter && heading.level !== 2) {
+			return;
+		}
+		inLetter = false;
 		// `startLine` is 1-based, so it is also the 0-based index of the line
 		// after the heading.
 		const bodyStart = heading.startLine;
@@ -467,7 +522,7 @@ interface VisualIdentity {
 	visualId: string;
 	sourceHash: string;
 	kind: string;
-	spec: VisualSpec;
+	spec: ProposalVisualSpec;
 }
 
 interface RenderedVisual {
@@ -483,11 +538,13 @@ interface RenderedVisual {
  * freshly minted marker id, asks for its figure template when it has one,
  * and assigns roles, never colours.
  */
-function renderProposalVisual(spec: VisualSpec): RenderedVisual | null {
+function renderProposalVisual(spec: ProposalVisualSpec): RenderedVisual | null {
 	switch (spec.kind) {
 		case "timeline":
 		case "flow":
-		case "org_chart": {
+		case "org_chart":
+		case "layers":
+		case "team": {
 			const visualId = mintVisualId();
 			const source = withFigureKind(
 				visualSpecToMermaid(spec, proposalVisualTemplateOptions(spec)),

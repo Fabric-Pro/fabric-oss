@@ -4,6 +4,7 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
+import { Checkbox } from "@ui/components/checkbox";
 import { Textarea } from "@ui/components/textarea";
 import {
 	AlertTriangleIcon,
@@ -24,7 +25,8 @@ import {
 	SquareIcon,
 	WorkflowIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useTranslations } from "next-intl";
+import { useId, useState } from "react";
 import { toast } from "sonner";
 import {
 	getExecutionChannelLabel,
@@ -40,6 +42,7 @@ import {
 	getPendingCodingPrompt,
 } from "../../lib/pending-coding-prompt";
 import { asSpikeRunView } from "../../lib/spike-runs";
+import { RemoteSessionConversation } from "./RemoteSessionConversation";
 import { SpikeRunCard } from "./SpikeRunCard";
 
 type Props = {
@@ -58,6 +61,9 @@ export function CodingRunTimeline({
 	onFollowUpSent,
 	projectId,
 }: Props) {
+	const t = useTranslations("projects.remoteAgents");
+	const orphanCheckId = useId();
+	const [orphanChecked, setOrphanChecked] = useState(false);
 	const [followUpMessage, setFollowUpMessage] = useState("");
 	const queryClient = useQueryClient();
 
@@ -94,6 +100,9 @@ export function CodingRunTimeline({
 			"PR_OPENED",
 		].includes(run.status);
 
+	const privateSession =
+		asProviderMetadata(run?.providerMetadata)?.privateSession === true;
+
 	const { data: liveStatus } = useQuery({
 		queryKey: ["codingRunLiveStatus", codingRunId],
 		queryFn: async () =>
@@ -103,7 +112,7 @@ export function CodingRunTimeline({
 						organizationId: organizationId ?? null,
 					})
 				: null,
-		enabled: !!run && !!isRunActive,
+		enabled: !!run && !!isRunActive && !privateSession,
 		refetchInterval: (query) => {
 			const providerStatus = query.state.data?.liveStatus?.providerStatus;
 			if (
@@ -142,6 +151,26 @@ export function CodingRunTimeline({
 				err instanceof Error ? err.message : "Failed to send message",
 			);
 		},
+	});
+
+	const recoverRun = useMutation({
+		mutationFn: () =>
+			orpcClient.codingRuns.recover({
+				id: codingRunId,
+				organizationId: organizationId ?? null,
+				confirmOrphanCheck: true,
+			}),
+		onSuccess: () => {
+			setOrphanChecked(false);
+			queryClient.invalidateQueries({
+				queryKey: ["codingRun", codingRunId],
+			});
+			toast.success(t("recoveryClosed"));
+		},
+		onError: (error) =>
+			toast.error(
+				error instanceof Error ? error.message : t("recoveryFailed"),
+			),
 	});
 
 	if (isLoading) {
@@ -200,6 +229,7 @@ export function CodingRunTimeline({
 			: null);
 	const eventCount = run.events?.length ?? 0;
 	const _metadata = asProviderMetadata(run.providerMetadata);
+	const remoteTarget = asProviderMetadata(_metadata?.executionTarget);
 	const connectionLabel = getFabricAgentConnectionLabel(
 		typeof _metadata?.llmConnection === "string"
 			? _metadata.llmConnection
@@ -215,6 +245,8 @@ export function CodingRunTimeline({
 		run.pullRequestBranch ||
 		run.targetBranch ||
 		null;
+	const isNativeSession =
+		_metadata?.executionRuntime === "fabric-agent-server";
 	const isFabricAgentsSession =
 		run.provider === "BACKGROUND_AGENTS" ||
 		Boolean(sessionUrl?.startsWith("fabric-agent://"));
@@ -236,10 +268,10 @@ export function CodingRunTimeline({
 
 	return (
 		<div className="space-y-4">
-			<div className="rounded-2xl border border-border/60 bg-muted/[0.28] p-4">
+			<div className="rounded-lg border border-border/60 bg-muted/[0.28] p-4">
 				<div className="flex flex-wrap items-start justify-between gap-3">
 					<div className="space-y-2">
-						<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+						<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 							Current status
 						</p>
 						<div className="flex items-center gap-2.5">
@@ -270,6 +302,11 @@ export function CodingRunTimeline({
 							>
 								{getExecutionProviderLabel(run.provider)}
 							</Badge>
+							{typeof remoteTarget?.name === "string" && (
+								<Badge variant="outline">
+									{remoteTarget.name}
+								</Badge>
+							)}
 							{connectionLabel && (
 								<Badge
 									variant="outline"
@@ -317,6 +354,48 @@ export function CodingRunTimeline({
 				</div>
 			</div>
 
+			{privateSession && (
+				<p className="text-sm text-muted-foreground">
+					{t("privateSession")}
+				</p>
+			)}
+
+			{!privateSession &&
+				run.status === "AWAITING_REVIEW" &&
+				run.events?.some((event) =>
+					[
+						"cancellation_unknown",
+						"continuation_recovery_required",
+					].includes(event.eventType),
+				) && (
+					<div
+						role="alert"
+						className="space-y-3 rounded-lg border border-border bg-muted/30 p-4"
+					>
+						<p className="text-sm">{t("recoveryWarning")}</p>
+						<label
+							htmlFor={orphanCheckId}
+							className="flex items-start gap-2 text-sm"
+						>
+							<Checkbox
+								id={orphanCheckId}
+								checked={orphanChecked}
+								onCheckedChange={(checked) =>
+									setOrphanChecked(checked === true)
+								}
+							/>
+							{t("orphanCheck")}
+						</label>
+						<Button
+							variant="outline"
+							disabled={!orphanChecked || recoverRun.isPending}
+							onClick={() => recoverRun.mutate()}
+						>
+							{t("closeRun")}
+						</Button>
+					</div>
+				)}
+
 			{isSpike && spikeRun && spikeStoryId && spikeProjectId && (
 				<SpikeRunCard
 					run={spikeRun}
@@ -330,14 +409,14 @@ export function CodingRunTimeline({
 				liveStatus?.liveStatus?.providerStatus === "failed") && (
 				<div
 					role="alert"
-					className="rounded-2xl border border-destructive/30 bg-destructive/5 p-4"
+					className="rounded-lg border border-destructive/30 bg-destructive/5 p-4"
 				>
 					<div className="flex items-start gap-3">
-						<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-destructive/10 text-destructive">
+						<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
 							<AlertTriangleIcon className="size-4" />
 						</div>
 						<div className="min-w-0 flex-1">
-							<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-destructive">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-destructive">
 								Execution failure details
 							</p>
 							<p className="mt-1 break-words text-sm text-foreground/90">
@@ -352,11 +431,11 @@ export function CodingRunTimeline({
 			)}
 
 			<section
-				className="rounded-2xl border border-border/60 bg-background p-4"
+				className="rounded-lg border border-border/60 bg-background p-4"
 				aria-label="Execution progress"
 			>
 				<div className="flex items-center justify-between gap-2">
-					<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						Task &amp; execution progress
 					</p>
 					{activeBranch && (
@@ -370,7 +449,7 @@ export function CodingRunTimeline({
 					{progressSteps.map((step) => (
 						<li
 							key={step.key}
-							className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs ${
+							className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${
 								step.state === "completed"
 									? "border-primary/25 bg-primary/[0.04] text-foreground"
 									: step.state === "active"
@@ -396,13 +475,13 @@ export function CodingRunTimeline({
 			</section>
 
 			{primaryTaskLabel && (
-				<div className="rounded-2xl border border-highlight/20 bg-highlight/5 p-4">
+				<div className="rounded-lg border border-highlight/20 bg-highlight/5 p-4">
 					<div className="flex items-start gap-3">
-						<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-highlight/10 text-highlight">
+						<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-highlight/10 text-highlight">
 							<WorkflowIcon className="size-4" />
 						</div>
 						<div className="min-w-0 flex-1">
-							<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								Primary task focus
 							</p>
 							<p className="mt-1 text-sm font-semibold text-foreground">
@@ -418,70 +497,90 @@ export function CodingRunTimeline({
 				</div>
 			)}
 
+			{typeof remoteTarget?.connectionId === "string" && (
+				<RemoteSessionConversation
+					active={isActive}
+					codingRunId={codingRunId}
+					organizationId={organizationId}
+				/>
+			)}
+
 			{(run.status === "AWAITING_REVIEW" ||
-				liveStatus?.liveStatus?.providerStatus === "paused") &&
-				run.provider === "BACKGROUND_AGENTS" && (
-					<div className="rounded-2xl border border-highlight/30 bg-highlight/5 p-4">
+				liveStatus?.liveStatus?.providerStatus === "paused" ||
+				(isNativeSession && run.status === "COMPLETED")) &&
+				run.provider === "BACKGROUND_AGENTS" &&
+				!privateSession && (
+					<div className="rounded-lg border border-highlight/30 bg-highlight/5 p-4">
 						<div className="flex items-start gap-3">
-							<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-highlight/10 text-highlight">
+							<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-highlight/10 text-highlight">
 								<MessagesSquareIcon className="size-4" />
 							</div>
 							<div className="min-w-0 flex-1 space-y-3">
 								<div>
-									<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
-										Agent awaiting input
+									<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+										{run.status === "COMPLETED"
+											? "Continue this session"
+											: "Agent awaiting input"}
 									</p>
 									<p className="mt-1 text-sm text-foreground/80">
-										The agent has paused and is waiting for
-										your review or instructions before
-										continuing.
+										Continue this session with another
+										instruction. Native permission, sign-in,
+										and tool-input requests must be resolved
+										in the authenticated Fabric Agents
+										client. Sending a reply here does not
+										approve them.
 									</p>
 								</div>
-								<div className="flex gap-2">
-									<Textarea
-										placeholder="Reply to the agent…"
-										value={followUpMessage}
-										onChange={(e) =>
-											setFollowUpMessage(e.target.value)
-										}
-										rows={2}
-										className="resize-none text-sm"
-										onKeyDown={(e) => {
-											if (
-												e.key === "Enter" &&
-												(e.metaKey || e.ctrlKey) &&
-												followUpMessage.trim()
-											) {
-												e.preventDefault();
+								{(!isNativeSession ||
+									run.status === "COMPLETED") && (
+									<div className="flex gap-2">
+										<Textarea
+											placeholder="Reply to the agent…"
+											value={followUpMessage}
+											onChange={(e) =>
+												setFollowUpMessage(
+													e.target.value,
+												)
+											}
+											rows={2}
+											className="resize-none text-sm"
+											onKeyDown={(e) => {
+												if (
+													e.key === "Enter" &&
+													(e.metaKey || e.ctrlKey) &&
+													followUpMessage.trim()
+												) {
+													e.preventDefault();
+													sendFollowUp.mutate(
+														followUpMessage.trim(),
+													);
+												}
+											}}
+										/>
+										<Button
+											type="button"
+											size="icon"
+											variant="outline"
+											className="mt-auto shrink-0"
+											disabled={
+												!followUpMessage.trim() ||
+												sendFollowUp.isPending
+											}
+											onClick={() =>
 												sendFollowUp.mutate(
 													followUpMessage.trim(),
-												);
+												)
 											}
-										}}
-									/>
-									<Button
-										type="button"
-										size="icon"
-										variant="outline"
-										className="mt-auto shrink-0"
-										disabled={
-											!followUpMessage.trim() ||
-											sendFollowUp.isPending
-										}
-										onClick={() =>
-											sendFollowUp.mutate(
-												followUpMessage.trim(),
-											)
-										}
-										aria-label="Send reply"
-									>
-										{sendFollowUp.isPending ? (
-											<Loader2Icon className="size-4 animate-spin" />
-										) : (
-											<MessageSquareIcon className="size-4" />
-										)}
-									</Button>
-								</div>
+											aria-label="Send reply"
+										>
+											{sendFollowUp.isPending ? (
+												<Loader2Icon className="size-4 animate-spin" />
+											) : (
+												<MessageSquareIcon className="size-4" />
+											)}
+										</Button>
+									</div>
+								)}
 								<p className="text-[11px] text-muted-foreground">
 									⌘↵ to send
 								</p>
@@ -496,9 +595,9 @@ export function CodingRunTimeline({
 						href={sessionUrl}
 						target={isDeepLink ? undefined : "_blank"}
 						rel={isDeepLink ? undefined : "noopener noreferrer"}
-						className="flex min-h-14 items-center gap-3 rounded-xl border border-primary/30 bg-primary/[0.04] px-4 py-3 text-sm transition-colors hover:bg-primary/[0.08]"
+						className="flex min-h-14 items-center gap-3 rounded-lg border border-primary/30 bg-primary/[0.04] px-4 py-3 text-sm transition-colors hover:bg-primary/[0.08]"
 					>
-						<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+						<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
 							<MonitorIcon className="size-4 text-primary" />
 						</div>
 						<div className="min-w-0 flex-1">
@@ -522,9 +621,9 @@ export function CodingRunTimeline({
 						href={pullRequestUrl}
 						target="_blank"
 						rel="noopener noreferrer"
-						className="flex min-h-14 items-center gap-3 rounded-xl border border-border/60 bg-background px-4 py-3 text-sm transition-colors hover:bg-muted/40"
+						className="flex min-h-14 items-center gap-3 rounded-lg border border-border/60 bg-background px-4 py-3 text-sm transition-colors hover:bg-muted/40"
 					>
-						<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+						<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
 							<GitPullRequestIcon className="size-4 text-primary" />
 						</div>
 						<div className="min-w-0 flex-1">
@@ -558,7 +657,11 @@ export function CodingRunTimeline({
 				<MetadataTile
 					icon={CodeIcon}
 					label="Provider session"
-					value={run.providerSessionId || "Pending"}
+					value={
+						privateSession
+							? t("privateLabel")
+							: run.providerSessionId || "Pending"
+					}
 					hint={
 						connectionLabel
 							? `${getExecutionProviderLabel(run.provider)} · ${connectionLabel}`
@@ -569,10 +672,10 @@ export function CodingRunTimeline({
 
 			{run.events && run.events.length > 0 && (
 				<div className="space-y-2">
-					<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						Activity
 					</p>
-					<div className="max-h-[260px] divide-y divide-border/40 overflow-y-auto rounded-2xl border border-border/60 bg-background">
+					<div className="max-h-[260px] divide-y divide-border/40 overflow-y-auto rounded-lg border border-border/60 bg-background">
 						{collapseEvents(run.events).map(
 							(event, index, events) => {
 								const detail = formatEventPayloadDetail(
@@ -627,13 +730,13 @@ export function CodingRunTimeline({
 				</div>
 			)}
 
-			{isActive && onCancel && (
+			{isActive && onCancel && !privateSession && (
 				<Button
 					variant="outline"
 					size="sm"
 					type="button"
 					autoLoading={false}
-					className="w-full rounded-xl"
+					className="w-full rounded-lg"
 					onClick={onCancel}
 				>
 					<SquareIcon className="mr-2 size-3.5" />
@@ -645,7 +748,7 @@ export function CodingRunTimeline({
 				<Button
 					variant="outline"
 					size="sm"
-					className="w-full rounded-xl"
+					className="w-full rounded-lg"
 					asChild
 				>
 					<a
@@ -674,13 +777,13 @@ function MetadataTile({
 	hint?: string;
 }) {
 	return (
-		<div className="rounded-xl border border-border/60 bg-background px-4 py-3">
+		<div className="rounded-lg border border-border/60 bg-background px-4 py-3">
 			<div className="flex items-start gap-3">
-				<div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+				<div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
 					<Icon className="size-4" />
 				</div>
 				<div className="min-w-0 flex-1">
-					<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						{label}
 					</p>
 					<p className="mt-1 break-words text-sm font-medium text-foreground">

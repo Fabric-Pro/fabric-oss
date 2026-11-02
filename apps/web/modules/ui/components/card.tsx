@@ -30,7 +30,7 @@ const CardTitle = ({
 }: React.HTMLAttributes<HTMLHeadingElement>) => (
 	<h3
 		className={cn(
-			"font-medium text-base leading-none tracking-tight",
+			"font-semibold text-[15px] leading-snug tracking-tight",
 			className,
 		)}
 		{...props}

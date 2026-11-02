@@ -75,7 +75,7 @@ export function IncidentChip() {
 			aria-label={ariaLabel}
 			className={cn(
 				"inline-flex h-8 items-center gap-2 rounded-full border px-3 text-xs font-medium transition-colors",
-				"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+				"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
 				"motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200",
 				paint.chipClass,
 			)}

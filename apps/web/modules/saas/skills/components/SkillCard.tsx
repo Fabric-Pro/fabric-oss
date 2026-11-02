@@ -88,7 +88,7 @@ export function SkillCard({ skill, onUpdate }: SkillCardProps) {
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: card contains nested interactive elements (Button, DropdownMenu); cannot use <button>
 		<div
-			className="group relative flex flex-col rounded-xl border bg-card transition-colors hover:border-primary/30 hover:bg-muted/20 cursor-pointer"
+			className="group relative flex flex-col rounded-lg border bg-card transition-colors hover:border-primary/30 hover:bg-muted/20 cursor-pointer"
 			role="button"
 			tabIndex={0}
 			onClick={handleCardClick}

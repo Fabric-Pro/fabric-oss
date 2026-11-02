@@ -116,7 +116,7 @@ function PlanModelSelect({
 						{defaultLabel}
 					</SelectItem>
 					<SelectGroup>
-						<SelectLabel className="text-muted-foreground text-xs uppercase tracking-[0.14em]">
+						<SelectLabel className="text-muted-foreground text-xs uppercase tracking-wide">
 							{t("servedGroup")}
 						</SelectLabel>
 						{plan.models.map((model) => (

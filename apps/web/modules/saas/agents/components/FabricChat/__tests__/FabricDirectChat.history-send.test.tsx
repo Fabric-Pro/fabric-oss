@@ -170,7 +170,7 @@ vi.mock("@analytics", () => ({
 
 const createConversationMock = vi.fn();
 const addMessageMock = vi.fn();
-const updateConversationMock = vi.fn();
+const updateSettingsMock = vi.fn();
 const selectionMock = vi.fn();
 const instanceGetMock = vi.fn();
 const detachProjectMock = vi.fn();
@@ -193,7 +193,9 @@ vi.mock("@shared/lib/orpc-client", () => ({
 			conversations: {
 				create: (...args: unknown[]) => createConversationMock(...args),
 				addMessage: (...args: unknown[]) => addMessageMock(...args),
-				update: (...args: unknown[]) => updateConversationMock(...args),
+				update: vi.fn(),
+				updateSettings: (...args: unknown[]) =>
+					updateSettingsMock(...args),
 			},
 		},
 		users: {
@@ -271,7 +273,20 @@ vi.mock("@saas/agents/lib/code-references", () => ({
 }));
 
 vi.mock("@saas/agents/components/FabricChat/ConversationToolPicker", () => ({
-	ConversationToolPicker: () => null,
+	ConversationToolPicker: ({
+		onChange,
+	}: {
+		onChange: (ids: string[]) => void;
+	}) => (
+		<>
+			<button type="button" onClick={() => onChange(["A", "B"])}>
+				add tool B
+			</button>
+			<button type="button" onClick={() => onChange(["A"])}>
+				remove tool B
+			</button>
+		</>
+	),
 }));
 
 vi.mock("@saas/agents/components/FabricChat/shared", () => ({
@@ -502,7 +517,7 @@ beforeEach(() => {
 	detachProjectMock.mockReset().mockResolvedValue({});
 	createConversationMock.mockReset();
 	addMessageMock.mockReset();
-	updateConversationMock.mockReset().mockResolvedValue({});
+	updateSettingsMock.mockReset().mockResolvedValue({});
 	addMessageMock.mockResolvedValue({});
 	vi.spyOn(global, "fetch").mockImplementation((async (
 		input: RequestInfo | URL,
@@ -531,7 +546,7 @@ function harness(
 	});
 	const ui = (
 		activeConversationId: string | null,
-		activeConversation: ReturnType<typeof conversation> | null,
+		activeConversation: ReturnType<typeof conversation> | null | undefined,
 	) => (
 		<QueryClientProvider client={queryClient}>
 			<FabricDirectChat
@@ -849,10 +864,10 @@ describe("FabricDirectChat dedicated instance scope", () => {
 		await sendAndSettle(view);
 		expect(streamBodies[0].instanceId).toBe(projectAgent.id);
 		await waitFor(() =>
-			expect(updateConversationMock).toHaveBeenCalledWith(
+			expect(updateSettingsMock).toHaveBeenCalledWith(
 				expect.objectContaining({
-					id: "conv_old",
-					metadata: expect.objectContaining({
+					conversationId: "conv_old",
+					settings: expect.objectContaining({
 						instanceId: streamBodies[0].instanceId,
 					}),
 				}),
@@ -1076,11 +1091,11 @@ describe("FabricDirectChat clears an obsolete conversation instance pin", () => 
 			if (choice === "model") {
 				expect(streamBodies[0].modelOverride).toBe("example-model");
 			}
-			const lastUpdate = updateConversationMock.mock.calls.at(-1);
+			const lastUpdate = updateSettingsMock.mock.calls.at(-1);
 			expect(lastUpdate).toBeDefined();
-			const metadata = lastUpdate?.[0].metadata;
-			expect.soft(metadata).not.toHaveProperty("instanceId");
-			expect(metadata.custom).toBe(true);
+			const metadata = lastUpdate?.[0].settings;
+			expect.soft(metadata).toHaveProperty("instanceId", null);
+			expect(metadata).not.toHaveProperty("custom");
 			view.unmount();
 			selectionMock.mockResolvedValue({
 				selectedAgents:
@@ -1095,7 +1110,7 @@ describe("FabricDirectChat clears an obsolete conversation instance pin", () => 
 						: [],
 				defaultAgent: null,
 			});
-			const reopened = harness({ instanceId: metadata.instanceId });
+			const reopened = harness();
 			const reopenedView = render(
 				reopened.ui("conv_old", { ...convOld, metadata }),
 			);
@@ -1112,27 +1127,30 @@ describe("FabricDirectChat orders conversation metadata writes", () => {
 			mockVersionedInstances();
 			let persisted: Record<string, unknown> = {};
 			let finishEarlier!: () => void;
-			updateConversationMock.mockImplementation(
-				async (input: { metadata: Record<string, unknown> }) => {
-					persisted = input.metadata;
+			updateSettingsMock.mockImplementation(
+				async (input: { settings: Record<string, unknown> }) => {
+					persisted = input.settings;
 				},
 			);
 			const { ui } = harness();
-			const view = render(ui("conv_old", convOld));
-			await waitFor(() =>
-				expect(updateConversationMock).toHaveBeenCalled(),
+			const view = render(
+				ui("conv_old", {
+					...convOld,
+					metadata: { selectedMcpConfigIds: ["old"] },
+				}),
 			);
-			updateConversationMock.mockImplementation(
-				(input: { metadata: Record<string, unknown> }) =>
-					input.metadata.instanceId === projectAgent.id
+			await act(async () => {});
+			updateSettingsMock.mockImplementation(
+				(input: { settings: Record<string, unknown> }) =>
+					input.settings.instanceId === projectAgent.id
 						? new Promise<void>((resolve) => {
 								finishEarlier = () => {
-									persisted = input.metadata;
+									persisted = input.settings;
 									resolve();
 								};
 							})
 						: Promise.resolve().then(() => {
-								persisted = input.metadata;
+								persisted = input.settings;
 							}),
 			);
 			fireEvent.click(
@@ -1156,7 +1174,7 @@ describe("FabricDirectChat orders conversation metadata writes", () => {
 			await waitFor(() =>
 				choice === "saved"
 					? expect(persisted.instanceId).toBe(savedAgent.id)
-					: expect(persisted).not.toHaveProperty("instanceId"),
+					: expect(persisted).toHaveProperty("instanceId", null),
 			);
 			await sendAndSettle(view);
 			expect(streamBodies[0].instanceId).toBe(
@@ -1169,23 +1187,28 @@ describe("FabricDirectChat orders conversation metadata writes", () => {
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		let persisted: Record<string, unknown> = {};
 		let rejectEarlier!: () => void;
-		updateConversationMock.mockImplementation(
-			async (input: { metadata: Record<string, unknown> }) => {
-				persisted = input.metadata;
+		updateSettingsMock.mockImplementation(
+			async (input: { settings: Record<string, unknown> }) => {
+				persisted = input.settings;
 			},
 		);
 		const { ui } = harness();
-		const view = render(ui("conv_old", convOld));
-		await waitFor(() => expect(updateConversationMock).toHaveBeenCalled());
-		updateConversationMock.mockImplementation(
-			(input: { metadata: Record<string, unknown> }) =>
-				input.metadata.instanceId === projectAgent.id
+		const view = render(
+			ui("conv_old", {
+				...convOld,
+				metadata: { selectedMcpConfigIds: ["old"] },
+			}),
+		);
+		await act(async () => {});
+		updateSettingsMock.mockImplementation(
+			(input: { settings: Record<string, unknown> }) =>
+				input.settings.instanceId === projectAgent.id
 					? new Promise<void>((_, reject) => {
 							rejectEarlier = () =>
 								reject(new Error("Example update failure"));
 						})
 					: Promise.resolve().then(() => {
-							persisted = input.metadata;
+							persisted = input.settings;
 						}),
 		);
 		fireEvent.click(
@@ -1205,28 +1228,40 @@ describe("FabricDirectChat orders conversation metadata writes", () => {
 		mockVersionedInstances();
 		const persisted = new Map<string, Record<string, unknown>>();
 		let finishEarlier!: () => void;
-		updateConversationMock.mockImplementation(
+		updateSettingsMock.mockImplementation(
 			async (input: {
-				id: string;
-				metadata: Record<string, unknown>;
+				conversationId: string;
+				settings: Record<string, unknown>;
 			}) => {
-				persisted.set(input.id, input.metadata);
+				persisted.set(input.conversationId, input.settings);
 			},
 		);
 		const { ui } = harness();
-		const view = render(ui("conv_old", convOld));
-		await waitFor(() => expect(persisted.has("conv_old")).toBe(true));
-		updateConversationMock.mockImplementation(
-			(input: { id: string; metadata: Record<string, unknown> }) =>
-				input.id === "conv_old"
+		const view = render(
+			ui("conv_old", {
+				...convOld,
+				metadata: { selectedMcpConfigIds: ["old"] },
+			}),
+		);
+		persisted.set("conv_old", {});
+		await act(async () => {});
+		updateSettingsMock.mockImplementation(
+			(input: {
+				conversationId: string;
+				settings: Record<string, unknown>;
+			}) =>
+				input.conversationId === "conv_old"
 					? new Promise<void>((resolve) => {
 							finishEarlier = () => {
-								persisted.set(input.id, input.metadata);
+								persisted.set(
+									input.conversationId,
+									input.settings,
+								);
 								resolve();
 							};
 						})
 					: Promise.resolve().then(() => {
-							persisted.set(input.id, input.metadata);
+							persisted.set(input.conversationId, input.settings);
 						}),
 		);
 		fireEvent.click(
@@ -1252,32 +1287,42 @@ it("orders writes across remounts of the same conversation", async () => {
 	mockVersionedInstances();
 	let persisted: Record<string, unknown> = {};
 	let finishEarlier!: () => void;
-	updateConversationMock.mockImplementation(
-		async (input: { metadata: Record<string, unknown> }) => {
-			persisted = input.metadata;
+	updateSettingsMock.mockImplementation(
+		async (input: { settings: Record<string, unknown> }) => {
+			persisted = input.settings;
 		},
 	);
 	const first = harness();
-	const view = render(first.ui("conv_old", convOld));
-	await waitFor(() => expect(updateConversationMock).toHaveBeenCalled());
-	updateConversationMock.mockImplementation(
-		(input: { metadata: Record<string, unknown> }) =>
-			input.metadata.instanceId === projectAgent.id
+	const view = render(
+		first.ui("conv_old", {
+			...convOld,
+			metadata: { selectedMcpConfigIds: ["old"] },
+		}),
+	);
+	await act(async () => {});
+	updateSettingsMock.mockImplementation(
+		(input: { settings: Record<string, unknown> }) =>
+			input.settings.instanceId === projectAgent.id
 				? new Promise<void>((resolve) => {
 						finishEarlier = () => {
-							persisted = input.metadata;
+							persisted = input.settings;
 							resolve();
 						};
 					})
 				: Promise.resolve().then(() => {
-						persisted = input.metadata;
+						persisted = input.settings;
 					}),
 	);
 	fireEvent.click(view.getByRole("button", { name: "choose other agent" }));
 	await waitFor(() => expect(finishEarlier).toBeDefined());
 	view.unmount();
 	const second = harness({ instanceId: savedAgent.id });
-	render(second.ui("conv_old", convOld));
+	render(
+		second.ui("conv_old", {
+			...convOld,
+			metadata: { selectedMcpConfigIds: ["old"] },
+		}),
+	);
 	await act(async () => {
 		await Promise.resolve();
 	});
@@ -1295,7 +1340,7 @@ it.each(["clear", "model"] as const)(
 		const view = render(
 			ui("conv_old", {
 				...convOld,
-				metadata: { instanceId: savedAgent.id },
+				metadata: {},
 			}),
 		);
 		if (choice === "clear") {
@@ -1310,8 +1355,9 @@ it.each(["clear", "model"] as const)(
 		}
 		await sendAndSettle(view);
 		expect(streamBodies[0].instanceId).toBe(savedAgent.id);
+		await waitFor(() => expect(updateSettingsMock).toHaveBeenCalled());
 		expect(
-			updateConversationMock.mock.calls.at(-1)?.[0].metadata.instanceId,
+			updateSettingsMock.mock.calls.at(-1)?.[0].settings.instanceId,
 		).toBe(savedAgent.id);
 	},
 );
@@ -1430,4 +1476,172 @@ describe("FabricDirectChat workflow confirmation", () => {
 			view.queryByRole("button", { name: "Execute" }),
 		).not.toBeInTheDocument();
 	});
+});
+
+describe("Direct settings session baseline (Fizzy #3472)", () => {
+	it("saves drawer tool and pin changes to the conversation created here", async () => {
+		mockVersionedInstances();
+		createConversationMock.mockResolvedValue({ id: "drawer-chat" });
+		const { ui } = harness();
+		const view = render(ui(null, undefined));
+		await sendAndSettle(view);
+		await act(async () => {});
+		updateSettingsMock.mockClear();
+		fireEvent.click(view.getByRole("button", { name: "add tool B" }));
+		await waitFor(() =>
+			expect(updateSettingsMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					conversationId: "drawer-chat",
+					settings: {
+						instanceId: null,
+						selectedMcpConfigIds: ["A", "B"],
+					},
+				}),
+			),
+		);
+		updateSettingsMock.mockClear();
+		fireEvent.click(
+			view.getByRole("button", { name: "choose other agent" }),
+		);
+		await waitFor(() =>
+			expect(updateSettingsMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					conversationId: "drawer-chat",
+					settings: {
+						instanceId: projectAgent.id,
+						selectedMcpConfigIds: ["A", "B"],
+					},
+				}),
+			),
+		);
+	});
+	it("saves tool undo after the earlier write finishes against a stale detail", async () => {
+		const detail = {
+			...convOld,
+			metadata: { selectedMcpConfigIds: ["A"] },
+		};
+		const { ui } = harness();
+		const view = render(ui("conv_old", detail));
+		fireEvent.click(view.getByRole("button", { name: "add tool B" }));
+		await waitFor(() =>
+			expect(updateSettingsMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					conversationId: "conv_old",
+					settings: {
+						instanceId: null,
+						selectedMcpConfigIds: ["A", "B"],
+					},
+				}),
+			),
+		);
+		await act(async () => {});
+		updateSettingsMock.mockClear();
+		fireEvent.click(view.getByRole("button", { name: "remove tool B" }));
+		await waitFor(() =>
+			expect(updateSettingsMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					conversationId: "conv_old",
+					settings: { instanceId: null, selectedMcpConfigIds: ["A"] },
+				}),
+			),
+		);
+	});
+	it("saves pin undo as an explicit null after the earlier write finishes", async () => {
+		mockVersionedInstances();
+		const { ui } = harness();
+		const view = render(ui("conv_old", { ...convOld, metadata: {} }));
+		fireEvent.click(
+			view.getByRole("button", { name: "choose other agent" }),
+		);
+		await waitFor(() =>
+			expect(updateSettingsMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					conversationId: "conv_old",
+					settings: {
+						instanceId: projectAgent.id,
+						selectedMcpConfigIds: null,
+					},
+				}),
+			),
+		);
+		await act(async () => {});
+		updateSettingsMock.mockClear();
+		fireEvent.click(
+			view.getByRole("button", { name: "Clear Example Agent" }),
+		);
+		await waitFor(() =>
+			expect(updateSettingsMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					conversationId: "conv_old",
+					settings: { instanceId: null, selectedMcpConfigIds: null },
+				}),
+			),
+		);
+	});
+	it("does not use a different conversation detail for a thread not created here", async () => {
+		const { ui } = harness();
+		const view = render(ui("conv_old", convOld));
+		await act(async () => {});
+		updateSettingsMock.mockClear();
+		view.rerender(
+			ui("conv_other", {
+				...convOld,
+				metadata: {
+					instanceId: "foreign",
+					selectedMcpConfigIds: ["foreign"],
+				},
+			}),
+		);
+		fireEvent.click(view.getByRole("button", { name: "add tool B" }));
+		await act(async () => {});
+		// The mismatched detail is ignored: nothing it holds reaches a write,
+		// and nothing is written to the id it was rendered under.
+		for (const [input] of updateSettingsMock.mock.calls) {
+			expect(input.conversationId).not.toBe("conv_other");
+			expect(input.settings.instanceId).not.toBe("foreign");
+			expect(input.settings.selectedMcpConfigIds ?? []).not.toContain(
+				"foreign",
+			);
+		}
+	});
+});
+
+it("saves document chat undo after a completed settings write", async () => {
+	const props: Partial<React.ComponentProps<typeof FabricDirectChat>> = {
+		documentChatId: "doc-A",
+	};
+	const detail = { ...convOld, metadata: { documentChatId: "doc-A" } };
+	const { ui } = harness(props);
+	const view = render(ui("conv_old", detail));
+	await act(async () => {});
+	props.documentChatId = "doc-B";
+	view.rerender(ui("conv_old", detail));
+	await waitFor(() =>
+		expect(updateSettingsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				conversationId: "conv_old",
+				settings: {
+					documentChatId: "doc-B",
+					instanceId: null,
+					selectedMcpConfigIds: null,
+				},
+			}),
+		),
+	);
+	await act(async () => {});
+	updateSettingsMock.mockClear();
+	props.documentChatId = "doc-A";
+	view.rerender(ui("conv_old", detail));
+	await waitFor(() =>
+		expect(updateSettingsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				conversationId: "conv_old",
+				settings: {
+					documentChatId: "doc-A",
+					instanceId: null,
+					selectedMcpConfigIds: null,
+				},
+			}),
+		),
+	);
 });

@@ -163,7 +163,7 @@ export function NotificationPreferencesForm() {
 				    preference is a distinct type server-side rather than a member
 				    of NotificationPreferenceFlags. */}
 				<div className="px-3 pt-3 pb-1 md:px-4">
-					<p className="text-muted-foreground text-xs font-medium uppercase tracking-[0.18em]">
+					<p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">
 						Display
 					</p>
 				</div>
@@ -201,7 +201,7 @@ export function NotificationPreferencesForm() {
 				</ul>
 
 				<div className="border-t px-3 pt-4 pb-1 md:px-4">
-					<p className="text-muted-foreground text-xs font-medium uppercase tracking-[0.18em]">
+					<p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">
 						In-app notifications
 					</p>
 				</div>
@@ -293,7 +293,7 @@ export function NotificationPreferencesForm() {
 				</ul>
 				{/* Email channel — distinct from the always-on in-app bell above. */}
 				<div className="border-t px-3 pt-4 pb-1 md:px-4">
-					<p className="text-muted-foreground text-xs font-medium uppercase tracking-[0.18em]">
+					<p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">
 						Email notifications
 					</p>
 				</div>

@@ -207,10 +207,12 @@ export function validateSession(sessionId: string): {
 /**
  * True when a session minted by `scopes` may execute a tool.
  *
- * `null` is a browser session, which carries no key scopes and is limited by
- * the user's own role instead. A wildcard key predates the organization
- * vocabulary dropping `"*"`; personal keys still carry it, so it is honoured
- * here exactly as `hasScope` honours it elsewhere.
+ * `null` is a browser session, which carries no key scopes. When a session
+ * carries an organization, the MCP route checks the user's current role there
+ * immediately before each tool list or call; a session without one reaches
+ * only the user's own connections. A wildcard key predates the organization vocabulary dropping
+ * `"*"`; personal keys still carry it, so it is honoured here exactly as
+ * `hasScope` honours it elsewhere.
  */
 export function sessionMayCallTools(scopes: string[] | null): boolean {
 	if (scopes === null) {

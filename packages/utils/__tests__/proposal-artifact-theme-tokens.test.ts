@@ -478,6 +478,59 @@ describe("resolveThemePaint", () => {
 		expect(["#000000", "#ffffff"]).toContain(paint.onPrimary);
 	});
 
+	it("labels in a brand accent that reads as text on the paper", () => {
+		const paint = resolveThemePaint(
+			buildProposalThemeTokens(
+				sources({
+					style: {
+						primaryColor: "#0f766e",
+						accentColors: ["#b8141c"],
+					},
+				}),
+			),
+		);
+
+		expect(paint.label).toBe("#b8141c");
+		expect(
+			contrastRatio(paint.label, paint.surface),
+		).toBeGreaterThanOrEqual(TEXT_CONTRAST);
+	});
+
+	it("labels in the heading colour when the accent only holds up as a graphic", () => {
+		// About 3.6:1 on white: a rule, not a label.
+		const paint = resolveThemePaint(
+			buildProposalThemeTokens(
+				sources({
+					style: {
+						primaryColor: "#0f766e",
+						accentColors: ["#ea580c"],
+					},
+				}),
+			),
+		);
+
+		expect(paint.accent).toBe("#ea580c");
+		expect(paint.label).toBe(paint.heading);
+		expect(paint.label).toBe("#0f766e");
+	});
+
+	it("labels in the brand primary, not a neutral accent, when the brand has no accents", () => {
+		const tokens = buildProposalThemeTokens(
+			sources({ style: { primaryColor: "#b8141c", accentColors: [] } }),
+		);
+		const paint = resolveThemePaint(tokens);
+
+		// The neutral accents fill the token, but never the label.
+		expect(tokens.proposer.accents.source).toBe("DEFAULT");
+		expect(paint.label).toBe("#b8141c");
+	});
+
+	it("labels in the heading colour for the neutral theme", () => {
+		const paint = resolveThemePaint(buildProposalThemeTokens(NO_SOURCES));
+
+		expect(paint.label).toBe(paint.heading);
+	});
+
 	it("keeps the ink readable on the opaque review washes", () => {
 		const paint = resolveThemePaint(buildProposalThemeTokens(sources({})));
 		for (const wash of [paint.reviewInsert, paint.reviewDelete]) {

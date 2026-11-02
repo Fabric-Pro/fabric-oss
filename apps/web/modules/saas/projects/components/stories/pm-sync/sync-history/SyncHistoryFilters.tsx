@@ -83,7 +83,7 @@ function fromInputDate(
 }
 
 function fieldLabelClass() {
-	return "text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground";
+	return "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 }
 
 export function SyncHistoryFilters({ filters, onChange }: Props) {

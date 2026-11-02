@@ -92,9 +92,9 @@ export function ProjectTabVisibilitySettings({
 	});
 
 	return (
-		<Card className="rounded-2xl">
+		<Card className="rounded-lg">
 			<div className="p-6">
-				<p className="font-medium text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
+				<p className="font-medium text-[11px] uppercase tracking-wide text-muted-foreground">
 					Navigation
 				</p>
 				<h3 className="mt-2 font-semibold text-lg">Tab visibility</h3>
@@ -104,7 +104,7 @@ export function ProjectTabVisibilitySettings({
 					available tabs for themselves and reorder their own tab bar.
 				</p>
 
-				<ul className="mt-4 divide-y rounded-xl border border-border/70">
+				<ul className="mt-4 divide-y rounded-lg border border-border/70">
 					{offered.map((tab) => {
 						const Icon = tab.icon;
 						const locked = (

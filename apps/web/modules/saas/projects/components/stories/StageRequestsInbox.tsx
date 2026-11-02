@@ -114,7 +114,7 @@ export function StageRequestsInbox({
 				queryKey: stageRequestsQueryKey(projectId, organizationId),
 			}),
 			queryClient.invalidateQueries({
-				queryKey: orpc.projects.stories.list.queryKey({
+				queryKey: orpc.projects.stories.board.queryKey({
 					input: { projectId, organizationId },
 				}),
 			}),
@@ -177,7 +177,7 @@ export function StageRequestsInbox({
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full flex-col sm:max-w-xl">
 				<SheetHeader>
-					<SheetTitle className="font-serif text-2xl font-normal">
+					<SheetTitle className="text-2xl font-semibold">
 						{t("title")}
 					</SheetTitle>
 					<SheetDescription>{t("description")}</SheetDescription>

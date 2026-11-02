@@ -9,10 +9,13 @@
  */
 
 import { getEmbeddingRAGProviderConfig } from "@repo/ai";
-import { db } from "@repo/database";
+import { db, hasProjectAccess } from "@repo/database";
 import { retrieveContext, retrieveRelevantContextsForSpec } from "@repo/rag";
 import type { Hono } from "hono";
-import { requireScope } from "../external-api/middleware/api-key-auth";
+import {
+	requireScope,
+	requireV1OwnerPermission,
+} from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { badRequest, notFound, ok, resolveV1Context } from "./helpers";
 
@@ -39,6 +42,13 @@ export function registerKnowledgeRoutes(
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
 		}
+		if (!ctx.organizationId) {
+			return c.json(
+				{ error: { message: "An organization context is required" } },
+				403,
+			);
+		}
+		const organizationId = ctx.organizationId;
 
 		let body: {
 			query?: string;
@@ -83,11 +93,18 @@ export function registerKnowledgeRoutes(
 		// Project scope — verify the caller can read the project, then run a
 		// project-context retrieval keyed off the tenant's RAG provider.
 		if (body.scope.kind === "project") {
+			const canAccess = await hasProjectAccess(
+				body.scope.id,
+				ctx.userId,
+				organizationId,
+			);
+			if (!canAccess) {
+				return c.json(notFound("Project"), 404);
+			}
 			const project = await db.project.findFirst({
 				where: {
 					id: body.scope.id,
-					userId: ctx.userId,
-					organizationId: ctx.organizationId,
+					organizationId,
 				},
 				select: { id: true },
 			});
@@ -97,7 +114,7 @@ export function registerKnowledgeRoutes(
 			const contexts = await retrieveRelevantContextsForSpec({
 				projectId: project.id,
 				userId: ctx.userId,
-				organizationId: ctx.organizationId ?? undefined,
+				organizationId,
 				specMarkdown: body.query,
 				baselineDate: new Date(),
 				topK: requestedTopK ?? 10,
@@ -119,16 +136,27 @@ export function registerKnowledgeRoutes(
 			where: {
 				id: body.scope.id,
 				userId: ctx.userId,
-				organizationId: ctx.organizationId,
+				organizationId,
 			},
 			select: { id: true, organizationId: true },
 		});
 		if (!chat) {
 			return c.json(notFound("Chat"), 404);
 		}
+		const permissionRefusal = await requireV1OwnerPermission(
+			c,
+			{
+				userId: ctx.userId,
+				organizationId: chat.organizationId,
+			},
+			"knowledge:chat-search",
+		);
+		if (permissionRefusal) {
+			return permissionRefusal;
+		}
 		const ragConfig = await getEmbeddingRAGProviderConfig({
 			userId: ctx.userId,
-			organizationId: ctx.organizationId ?? undefined,
+			organizationId,
 		});
 		const results = await retrieveContext({
 			chatId: chat.id,

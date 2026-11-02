@@ -264,22 +264,37 @@ describe("coding execution schemas", () => {
 			process.env.BACKGROUND_AGENTS_INTERNAL_SECRET =
 				"test-internal-secret-at-least-32-chars!!";
 
-			const fetchMock = vi.fn().mockResolvedValue({
-				ok: true,
-				status: 200,
-				json: async () => ({
-					sessionId: "sess_42",
-					externalUrl:
-						"fabric-agent://ws/my-workspace/allSessions/session/sess_42",
-					providerMetadata: {
-						workspaceId: "ws_1",
-						worktreePath: "/tmp/worktree/sess_42",
-						branch: "feat/story-1",
-						llmConnection: "codex",
-						model: "gpt-5.3-codex",
-					},
-				}),
-			});
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					json: async () => ({
+						protocolVersion: 2,
+						profileId: "prof_1",
+						ready: true,
+						capabilities: {
+							durableReceipts: true,
+							wholeRunCancellation: true,
+						},
+					}),
+				})
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					json: async () => ({
+						sessionId: "sess_42",
+						externalUrl:
+							"fabricagents://workspace/my-workspace/allSessions/session/sess_42",
+						providerMetadata: {
+							workspaceId: "ws_1",
+							worktreePath: "/tmp/worktree/sess_42",
+							branch: "feat/story-1",
+							llmConnection: "codex",
+							model: "gpt-5.3-codex",
+						},
+					}),
+				});
 			global.fetch = fetchMock as unknown as typeof fetch;
 
 			const adapter = new FabricBackgroundAdapter();
@@ -296,8 +311,8 @@ describe("coding execution schemas", () => {
 				model: "gpt-5.3-codex",
 			});
 
-			expect(fetchMock).toHaveBeenCalledTimes(1);
-			const [calledUrl, init] = fetchMock.mock.calls[0] as [
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			const [calledUrl, init] = fetchMock.mock.calls[1] as [
 				string,
 				RequestInit,
 			];
@@ -318,9 +333,13 @@ describe("coding execution schemas", () => {
 			expect(result).toEqual({
 				sessionId: "sess_42",
 				externalUrl:
-					"fabric-agent://ws/my-workspace/allSessions/session/sess_42",
+					"fabricagents://workspace/my-workspace/allSessions/session/sess_42",
 				providerMetadata: {
 					executionRuntime: "fabric-agent-server",
+					executionTarget: {
+						url: "http://127.0.0.1:9100",
+						profileId: "prof_1",
+					},
 					workspaceId: "ws_1",
 					worktreePath: "/tmp/worktree/sess_42",
 					branch: "feat/story-1",
@@ -330,7 +349,7 @@ describe("coding execution schemas", () => {
 			});
 		});
 
-		it("accepts { status: 'ok' } from fabric-agent-server GET /health", async () => {
+		it("accepts protocolVersion 2 readiness from fabric-agent-server GET /sessions/readiness", async () => {
 			process.env.BACKGROUND_AGENTS_URL = "http://127.0.0.1:9100";
 			process.env.BACKGROUND_AGENTS_INTERNAL_SECRET =
 				"test-internal-secret-at-least-32-chars!!";
@@ -338,13 +357,25 @@ describe("coding execution schemas", () => {
 			global.fetch = vi.fn().mockResolvedValue({
 				ok: true,
 				status: 200,
-				json: async () => ({ status: "ok" }),
+				json: async () => ({
+					protocolVersion: 2,
+					profileId: "prof_1",
+					ready: true,
+					capabilities: {
+						durableReceipts: true,
+						wholeRunCancellation: true,
+					},
+				}),
 			}) as unknown as typeof fetch;
 
 			const adapter = new FabricBackgroundAdapter();
 			const health = await adapter.healthCheck();
 			expect(health.healthy).toBe(true);
-			expect(health.details).toEqual({ status: "ok" });
+			expect(health.details).toMatchObject({
+				protocolVersion: 2,
+				profileId: "prof_1",
+				ready: true,
+			});
 		});
 	});
 });

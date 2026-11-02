@@ -325,7 +325,7 @@ export function ProjectQaSettingsForm({
 									aria-pressed={selected}
 									onClick={() => set("strategyDepth", depth)}
 									className={cn(
-										"rounded-lg border p-3 text-left motion-safe:transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+										"rounded-lg border p-3 text-left motion-safe:transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
 										selected
 											? "border-primary bg-primary/5"
 											: "hover:bg-accent/50",
@@ -397,7 +397,7 @@ export function ProjectQaSettingsForm({
 											)
 										}
 										className={cn(
-											"rounded-full border px-3 py-1 text-xs motion-safe:transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+											"rounded-full border px-3 py-1 text-xs motion-safe:transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
 											checked
 												? "border-primary bg-primary/5 font-medium"
 												: "text-muted-foreground hover:bg-accent/50",

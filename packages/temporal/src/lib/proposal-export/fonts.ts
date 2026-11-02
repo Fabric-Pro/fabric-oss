@@ -3,9 +3,9 @@
  * the SIL Open Font License with its own license file in `fonts/` and an
  * entry in THIRD_PARTY_NOTICES.md:
  *
- * - display: Poppins 4.003 from google/fonts (`OFL-Poppins.txt`);
+ * - display: Poppins 4.004 from google/fonts (`OFL-Poppins.txt`);
  * - body: Inter 4.1 from the rsms/inter release (`LICENSE.txt`);
- * - mono: JetBrains Mono 2.200 from JetBrains/JetBrainsMono
+ * - mono: JetBrains Mono 2.305 from JetBrains/JetBrainsMono
  *   (`OFL-JetBrainsMono.txt`).
  *
  * Embedded as base64 `@font-face` rules, so the print page loads nothing and

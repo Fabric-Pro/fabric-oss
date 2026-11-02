@@ -33,8 +33,8 @@ export default function OrganizationAgentsPage() {
 
 			<Tabs defaultValue={defaultTab} className="w-full">
 				<TabsList>
-					<TabsTrigger value="agents">All Agents</TabsTrigger>
-					<TabsTrigger value="tasks">Execution History</TabsTrigger>
+					<TabsTrigger value="agents">Genie Agents</TabsTrigger>
+					<TabsTrigger value="tasks">Runs & History</TabsTrigger>
 					<TabsTrigger value="inbox" asChild>
 						<a href={`${basePath}/agents/inbox`}>Inbox</a>
 					</TabsTrigger>

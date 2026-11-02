@@ -907,7 +907,7 @@ export function PublishingSuiteList({
 		>
 			<div className="flex items-center justify-between gap-4">
 				<div className="flex items-center gap-2.5">
-					<h2 className="font-serif text-2xl font-normal text-foreground">
+					<h2 className="text-2xl font-semibold text-foreground">
 						Publishing Suite
 					</h2>
 					<PublishingBetaBadge />
@@ -1251,7 +1251,7 @@ function StateShell({
 	children: ReactNode;
 }) {
 	return (
-		<div className="relative overflow-hidden rounded-2xl border border-border bg-card p-12 text-center">
+		<div className="relative overflow-hidden rounded-lg border border-border bg-card p-12 text-center">
 			<div
 				className="pointer-events-none absolute inset-0 opacity-40"
 				style={{
@@ -1263,7 +1263,7 @@ function StateShell({
 			/>
 			<div className="relative">
 				<span className="publishing-label">{label}</span>
-				<h3 className="mt-4 font-serif text-2xl font-normal leading-tight text-foreground">
+				<h3 className="mt-4 text-2xl font-semibold leading-tight text-foreground">
 					{title}
 				</h3>
 				{children}
@@ -1280,7 +1280,7 @@ function ReadLoadingState() {
 		<output
 			aria-live="polite"
 			aria-atomic="true"
-			className="flex min-h-[30vh] flex-col items-center justify-center rounded-2xl border border-border bg-card p-12 text-center"
+			className="flex min-h-[30vh] flex-col items-center justify-center rounded-lg border border-border bg-card p-12 text-center"
 		>
 			<RefreshCwIcon
 				className="size-5 text-muted-foreground motion-safe:animate-spin"
@@ -1297,7 +1297,7 @@ function ReadErrorState({ onRetry }: { onRetry: () => void }) {
 	return (
 		<div
 			role="alert"
-			className="rounded-2xl border border-destructive/40 bg-destructive/5 p-12 text-center"
+			className="rounded-lg border border-destructive/40 bg-destructive/5 p-12 text-center"
 		>
 			<div className="mx-auto flex size-12 items-center justify-center rounded-full border border-destructive/40 bg-destructive/10">
 				<AlertTriangleIcon
@@ -1305,7 +1305,7 @@ function ReadErrorState({ onRetry }: { onRetry: () => void }) {
 					aria-hidden="true"
 				/>
 			</div>
-			<h3 className="mt-5 font-serif text-2xl font-normal leading-tight text-foreground">
+			<h3 className="mt-5 text-2xl font-semibold leading-tight text-foreground">
 				We couldn't load your topics
 			</h3>
 			<p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">
@@ -1369,14 +1369,14 @@ function GeneratingState() {
 		<output
 			aria-live="polite"
 			aria-atomic="true"
-			className="flex flex-col items-center justify-center rounded-2xl border border-border bg-card p-12 text-center"
+			className="flex flex-col items-center justify-center rounded-lg border border-border bg-card p-12 text-center"
 		>
 			<div className="flex items-center gap-1.5" aria-hidden="true">
 				<span className="size-2 rounded-full bg-muted-foreground/40 motion-safe:animate-bounce [animation-delay:0ms]" />
 				<span className="size-2 rounded-full bg-muted-foreground/40 motion-safe:animate-bounce [animation-delay:150ms]" />
 				<span className="size-2 rounded-full bg-muted-foreground/40 motion-safe:animate-bounce [animation-delay:300ms]" />
 			</div>
-			<p className="mt-5 font-serif text-xl font-normal leading-tight text-foreground">
+			<p className="mt-5 text-xl font-semibold leading-tight text-foreground">
 				Finding topics worth writing about…
 			</p>
 		</output>
@@ -1387,7 +1387,7 @@ function FailedState() {
 	return (
 		<div
 			role="alert"
-			className="rounded-2xl border border-destructive/40 bg-destructive/5 p-12 text-center"
+			className="rounded-lg border border-destructive/40 bg-destructive/5 p-12 text-center"
 		>
 			<div className="mx-auto flex size-12 items-center justify-center rounded-full border border-destructive/40 bg-destructive/10">
 				<AlertTriangleIcon
@@ -1395,7 +1395,7 @@ function FailedState() {
 					aria-hidden="true"
 				/>
 			</div>
-			<h3 className="mt-5 font-serif text-2xl font-normal leading-tight text-foreground">
+			<h3 className="mt-5 text-2xl font-semibold leading-tight text-foreground">
 				We couldn't refresh suggestions
 			</h3>
 			<p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">

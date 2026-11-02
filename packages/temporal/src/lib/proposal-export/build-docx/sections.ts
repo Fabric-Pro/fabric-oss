@@ -1,7 +1,7 @@
 /**
- * The Word file's sections (Fizzy #2946): the cover, the contents page and
- * the body, split at its wide tables, each with its own page setup and
- * running furniture.
+ * The Word file's sections (Fizzy #2946): the cover, the cover letter, the
+ * contents page and the body, split at its wide tables, each with its own
+ * page setup and running furniture.
  */
 
 import {
@@ -28,9 +28,13 @@ import {
 	WidthType,
 } from "docx";
 import type { RootContent } from "mdast";
-import { isWideTable } from "../document-content";
+import {
+	coverVersionLabel,
+	isWideTable,
+	writtenRows,
+} from "../document-content";
 import type { ExportRaster } from "../types";
-import { renderBlock } from "./blocks";
+import { renderBlock, renderLetter } from "./blocks";
 import { fitImage, imageRun } from "./inline";
 import {
 	CONTENTS_HEADING_SIZE,
@@ -44,11 +48,14 @@ import {
 	HERO_MAX_HEIGHT,
 	LABEL_TRACKING,
 	LANDSCAPE_TEXT_WIDTH,
+	LETTER_LOGO_MAX_HEIGHT,
 	LOGO_MAX_HEIGHT,
 	LOGO_MAX_WIDTH,
+	ORGANIZATION_SIZE,
 	PAGE,
 	PAGE_MARGIN,
 	PARTY_LABEL_SIZE,
+	PARTY_LINE_SIZE,
 	PARTY_NAME_SIZE,
 	PORTRAIT_TEXT_WIDTH,
 	SINGLE_LINE,
@@ -107,7 +114,7 @@ function furniture(
 	const style = furnitureStyle(writer);
 	const footerText = [
 		partyName(input.tokens.proposer.name.value),
-		partyName(input.title),
+		partyName(writer.title),
 		partyName(input.dateLabel),
 		FOOTER_CONFIDENTIAL,
 	]
@@ -120,7 +127,7 @@ function furniture(
 				children: [
 					new Paragraph({
 						spacing: { before: 0, after: 0, line: SINGLE_LINE },
-						children: [textRun(proseText(input.title), style)],
+						children: [textRun(proseText(writer.title), style)],
 					}),
 				],
 			}),
@@ -153,20 +160,38 @@ function furniture(
 	};
 }
 
+/** Paragraphs and tables from what a block walk emitted. */
+function fileChildren(out: readonly Out[]): FileChild[] {
+	return out.map((entry) =>
+		"table" in entry ? entry.table : new Paragraph(entry.paragraph),
+	);
+}
+
 /**
  * The body, split into sections at its wide tables: each run of root blocks
  * keeps portrait, a root table wider than six columns starts a landscape
  * section (a following wide table shares it), and the next block returns to
  * portrait. A section heading right before such a table goes onto its
  * landscape page with it, so it is not left alone at the foot of the page
- * before. A wide table nested in a list or quote stays where it is.
+ * before. A wide table nested in a list or quote stays where it is. The
+ * cover letter has a section of its own, so the body leaves it out.
  */
 export function bodySections(writer: Writer): ISectionOptions[] {
 	const groups: { landscape: boolean; children: FileChild[] }[] = [];
 	const children = writer.input.prepared.root.children;
+	const letter = new Set<RootContent>(
+		writer.letter ? [writer.letter.heading, ...writer.letter.nodes] : [],
+	);
+	// A wide table that writes no rows takes no landscape page, nor its
+	// heading with it.
 	const isWide = (node: RootContent | undefined) =>
-		node?.type === "table" && isWideTable(node);
+		node?.type === "table" &&
+		isWideTable(node) &&
+		writtenRows(node).length > 0;
 	for (const [index, node] of children.entries()) {
+		if (letter.has(node)) {
+			continue;
+		}
 		const landscape =
 			isWide(node) ||
 			(node.type === "heading" &&
@@ -187,11 +212,7 @@ export function bodySections(writer: Writer): ISectionOptions[] {
 			group = { landscape, children: [] };
 			groups.push(group);
 		}
-		for (const entry of out) {
-			group.children.push(
-				"table" in entry ? entry.table : new Paragraph(entry.paragraph),
-			);
-		}
+		group.children.push(...fileChildren(out));
 	}
 	if (groups.length === 0) {
 		groups.push({ landscape: false, children: [new Paragraph({})] });
@@ -226,7 +247,7 @@ export function contentsSection(writer: Writer): ISectionOptions {
 				children: [
 					textRun("Contents", {
 						font: writer.fonts.display,
-						color: writer.colors.heading,
+						color: writer.colors.ink,
 						size: CONTENTS_HEADING_SIZE,
 						bold: true,
 					}),
@@ -281,12 +302,19 @@ function coverImage(
  * the paper rather than print's full-bleed ink: Word cannot bleed a fill to
  * the page edge for one section, and a page-sized shaded box is awkward to
  * edit and heavy on an office printer.
+ *
+ * A cover fence in the preamble sets what print's cover takes from it: the
+ * eyebrow in place of "Proposal", a line about the client under the logos
+ * at the right, the party lines in place of the names (the first line in
+ * the name's style, the others under it), and the version beside the date.
+ * Without a fence the cover is as it was.
  */
 export function coverSection(writer: Writer): ISectionOptions {
 	const { input, colors, fonts } = writer;
 	const { tokens } = input;
 	const proposerName = partyName(tokens.proposer.name.value);
 	const recipientName = partyName(tokens.recipient.name.value);
+	const details = writer.coverFence?.details ?? null;
 	const children: FileChild[] = [];
 
 	const proposerLogo = coverImage(
@@ -341,6 +369,27 @@ export function coverSection(writer: Writer): ISectionOptions {
 		);
 	}
 
+	const organization = details?.organization
+		? partyName(proseText(details.organization))
+		: null;
+	if (organization) {
+		children.push(
+			new Paragraph({
+				alignment: AlignmentType.RIGHT,
+				spacing: { before: 80, after: 0, line: SINGLE_LINE },
+				children: [
+					textRun(organization, {
+						font: fonts.mono,
+						color: colors.muted,
+						size: ORGANIZATION_SIZE,
+						allCaps: true,
+						characterSpacing: LABEL_TRACKING,
+					}),
+				],
+			}),
+		);
+	}
+
 	const hero = coverImage(
 		writer,
 		tokens.proposer.hero.value,
@@ -360,10 +409,9 @@ export function coverSection(writer: Writer): ISectionOptions {
 			keepNext: true,
 			children: [
 				textRun(text, {
-					font: fonts.mono,
+					...writer.monoMedium,
 					color: colors.muted,
 					size: PARTY_LABEL_SIZE,
-					bold: true,
 					allCaps: true,
 					characterSpacing: LABEL_TRACKING,
 				}),
@@ -393,11 +441,10 @@ export function coverSection(writer: Writer): ISectionOptions {
 			},
 			keepNext: true,
 			children: [
-				textRun(COVER_EYEBROW, {
-					font: fonts.mono,
+				textRun(proseText(details?.eyebrow ?? COVER_EYEBROW), {
+					...writer.monoMedium,
 					color: colors.muted,
 					size: EYEBROW_SIZE,
-					bold: true,
 					allCaps: true,
 					characterSpacing: EYEBROW_TRACKING,
 				}),
@@ -406,22 +453,50 @@ export function coverSection(writer: Writer): ISectionOptions {
 		new Paragraph({
 			heading: HeadingLevel.TITLE,
 			children: [
-				textRun(proseText(input.title), {
+				textRun(proseText(writer.title), {
 					font: fonts.display,
-					color: colors.heading,
+					color: colors.ink,
 					size: TITLE_SIZE,
 					bold: true,
 				}),
 			],
 		}),
 	);
-	if (recipientName) {
-		children.push(label("Prepared for", 240), name(recipientName));
-	}
-	if (proposerName) {
-		children.push(label("Prepared by", 240), name(proposerName));
-	}
-	const date = partyName(input.dateLabel);
+	const line = (text: string) =>
+		new Paragraph({
+			spacing: { before: 0, after: 0, line: SINGLE_LINE },
+			children: [
+				textRun(proseText(text), {
+					font: fonts.body,
+					color: colors.muted,
+					size: PARTY_LINE_SIZE,
+				}),
+			],
+		});
+	// The fence's lines for a party, else the name the tokens hold.
+	const party = (
+		heading: string,
+		lines: readonly string[] | undefined,
+		fallback: string | null,
+	) => {
+		const [first, ...rest] =
+			lines !== undefined && lines.length > 0
+				? lines
+				: fallback === null
+					? []
+					: [fallback];
+		if (first !== undefined) {
+			children.push(label(heading, 240), name(first), ...rest.map(line));
+		}
+	};
+	party("Prepared for", details?.forLines, recipientName);
+	party("Prepared by", details?.byLines, proposerName);
+	const date = [
+		partyName(input.dateLabel),
+		details?.version ? coverVersionLabel(details.version) : null,
+	]
+		.filter((part): part is string => part !== null)
+		.join(FOOTER_SEPARATOR);
 	if (date) {
 		children.push(
 			new Paragraph({
@@ -438,4 +513,62 @@ export function coverSection(writer: Writer): ISectionOptions {
 	}
 
 	return { properties: pageProperties(false), children };
+}
+
+/**
+ * The cover letter, after the cover and before the contents, or null
+ * without one: the proposer's logo at the left with the letter's heading at
+ * the right edge, then the letter. The heading is a plain paragraph, set
+ * as a label, never a Heading 2 and with no outline level, so the contents'
+ * TOC field never lists it. The running header and footer print on it as on
+ * every page after the cover.
+ */
+export function letterSection(writer: Writer): ISectionOptions | null {
+	const { letter } = writer;
+	if (!letter) {
+		return null;
+	}
+	const { colors } = writer;
+	const raster = writer.input.tokens.proposer.logo.value;
+	const proposerName = partyName(writer.input.tokens.proposer.name.value);
+	const logo = raster
+		? imageRun(
+				writer,
+				raster,
+				fitImage(
+					raster,
+					raster.width,
+					LOGO_MAX_WIDTH,
+					LETTER_LOGO_MAX_HEIGHT,
+				),
+				proposerName ? `${proposerName} logo` : "Logo",
+			)
+		: null;
+	const head = new Paragraph({
+		spacing: { before: 0, after: 480, line: SINGLE_LINE },
+		tabStops: [{ type: TabStopType.RIGHT, position: PORTRAIT_TEXT_WIDTH }],
+		children: [
+			...(logo ? [logo] : []),
+			new TextRun({ children: [new Tab()] }),
+			textRun(proseText(letter.label), {
+				...writer.monoMedium,
+				color: colors.muted,
+				size: EYEBROW_SIZE,
+				allCaps: true,
+				characterSpacing: LABEL_TRACKING,
+			}),
+		],
+	});
+	const out: Out[] = [];
+	renderLetter(writer, letter.nodes, out, {
+		textWidth: PORTRAIT_TEXT_WIDTH,
+		indent: 0,
+		callout: false,
+		listDepth: 0,
+	});
+	return {
+		properties: pageProperties(false),
+		...furniture(writer, PORTRAIT_TEXT_WIDTH),
+		children: [head, ...fileChildren(out)],
+	};
 }

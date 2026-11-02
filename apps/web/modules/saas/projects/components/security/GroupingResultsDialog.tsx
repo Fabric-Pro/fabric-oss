@@ -204,7 +204,7 @@ export function GroupingResultsDialog({
 				});
 				if (res.createdCount + res.updatedCount > 0) {
 					queryClient.invalidateQueries({
-						queryKey: orpc.projects.stories.list.key(),
+						queryKey: orpc.projects.stories.board.key(),
 					});
 				}
 				onClose();
@@ -223,7 +223,7 @@ export function GroupingResultsDialog({
 					queryKey: orpc.projects.scan.grouping.latest.key(),
 				});
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.key(),
+					queryKey: orpc.projects.stories.board.key(),
 				});
 			},
 			onError: (error) => {
@@ -827,7 +827,7 @@ function ResultsView({
 	const canReattach = !!projectId;
 
 	const storiesQuery = useQuery(
-		orpc.projects.stories.list.queryOptions({
+		orpc.projects.stories.board.queryOptions({
 			input: {
 				projectId: projectId ?? "",
 				organizationId: organizationId ?? null,
@@ -853,7 +853,7 @@ function ResultsView({
 				toast.success(`Theme reattached to ${res.targetIdentifier}`);
 				setReattachingKey(null);
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.key(),
+					queryKey: orpc.projects.stories.board.key(),
 				});
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.scan.grouping.latest.key(),

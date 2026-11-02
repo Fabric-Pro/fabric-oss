@@ -28,11 +28,11 @@ export function ThemeToggle({
 	}, []);
 
 	const buttonClasses = useMemo(() => {
-		const baseClasses = "rounded-lg border bg-card";
+		const baseClasses = "rounded-md border border-border bg-card";
 		const variantClasses =
 			variant === "floating"
-				? "fixed right-20 top-8 z-50 shadow-lg hover:bg-accent transition-colors"
-				: "shadow-sm hover:bg-muted";
+				? "fixed right-20 top-8 z-50 shadow-lg hover:bg-accent transition-colors duration-150"
+				: "shadow-xs hover:bg-muted";
 
 		return cn(baseClasses, variantClasses, className);
 	}, [className, variant]);

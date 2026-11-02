@@ -69,6 +69,12 @@ import {
 } from "./connect-dialog-harness";
 import { createKeyMock } from "./connect-dialog-mocks";
 
+let organizationRole = "member";
+
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationContext: () => ({ userRole: organizationRole }),
+}));
+
 vi.mock("@shared/lib/orpc-client", async () => {
 	const { createKeyMock } = await import("./connect-dialog-mocks");
 	return {
@@ -83,6 +89,10 @@ vi.mock("@shared/lib/orpc-client", async () => {
 });
 
 beforeEach(installBrowserStubs);
+
+beforeEach(() => {
+	organizationRole = "member";
+});
 
 describe("ConnectCliDialog — minting", () => {
 	it("mints nothing when the dialog is merely opened, and shows no configuration or stand-in key", async () => {
@@ -118,7 +128,7 @@ describe("ConnectCliDialog — minting", () => {
 		expect(rendered).toContain('"type": "http"');
 	});
 
-	it("sends exactly the read-only scope, the identifying name and the bounded expiry, and offers no scope picker", async () => {
+	it("sends the project and Kanban scopes, the identifying name and the bounded expiry, and offers no scope picker", async () => {
 		const user = setupUser();
 		renderHost({ startOpen: true });
 
@@ -141,9 +151,26 @@ describe("ConnectCliDialog — minting", () => {
 			name: string;
 			expiresInDays: number;
 		};
-		expect(input.scopes).toEqual(["mcp:read"]);
+		expect(input.scopes).toEqual([
+			"mcp:read",
+			"kanban:read",
+			"kanban:write",
+		]);
 		expect(input.name).toBe("Coding CLI (created from the connect prompt)");
 		expect(input.expiresInDays).toBe(90);
+	});
+
+	it("omits kanban:write when the organization role is viewer", async () => {
+		organizationRole = "viewer";
+		const user = setupUser();
+		renderHost({ startOpen: true });
+
+		await mintKey(user);
+
+		expect(createKeyMock.mock.calls[0][0].scopes).toEqual([
+			"mcp:read",
+			"kanban:read",
+		]);
 	});
 
 	it("mints against the project's host organization", async () => {
@@ -295,13 +322,27 @@ describe("ConnectCliDialog — what the key grants", () => {
 		).toBeInTheDocument();
 	});
 
-	it("keeps the read-only promise for the project purpose", async () => {
+	it("discloses the Kanban write capability for the project purpose", async () => {
 		renderHost({ startOpen: true });
 
 		expect(
-			await screen.findByText(/read only\. it cannot change anything/i),
+			await screen.findByText(
+				/pull or complete your Fabric Kanban items/i,
+			),
 		).toBeInTheDocument();
 		expect(screen.queryByText(/suggest instruction changes/i)).toBeNull();
+	});
+
+	it("keeps the read-only promise for a viewer's project-purpose key", async () => {
+		organizationRole = "viewer";
+		renderHost({ startOpen: true });
+
+		expect(
+			await screen.findByText(/list your Fabric Kanban items/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/it cannot change anything/i),
+		).toBeInTheDocument();
 	});
 
 	// The card is read BEFORE the key exists and it is the only thing that says

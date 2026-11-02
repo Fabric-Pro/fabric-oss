@@ -219,16 +219,17 @@ export function ProjectsList() {
 			{/* Status Filter Pills */}
 			<div
 				data-onboarding-target="projects-status-filter"
-				className="flex flex-wrap justify-center gap-2"
+				className="flex flex-wrap items-center gap-2"
 			>
 				<button
 					type="button"
 					onClick={() => setStatusFilter("all")}
+					aria-pressed={statusFilter === "all"}
 					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						statusFilter === "all"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
+							: "border-border bg-card text-foreground hover:bg-muted/60",
 					)}
 				>
 					All ({allCount})
@@ -236,11 +237,12 @@ export function ProjectsList() {
 				<button
 					type="button"
 					onClick={() => setStatusFilter("DRAFT")}
+					aria-pressed={statusFilter === "DRAFT"}
 					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						statusFilter === "DRAFT"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
+							: "border-border bg-card text-foreground hover:bg-muted/60",
 					)}
 				>
 					Draft ({draftCount})
@@ -248,11 +250,12 @@ export function ProjectsList() {
 				<button
 					type="button"
 					onClick={() => setStatusFilter("ACTIVE")}
+					aria-pressed={statusFilter === "ACTIVE"}
 					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						statusFilter === "ACTIVE"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
+							: "border-border bg-card text-foreground hover:bg-muted/60",
 					)}
 				>
 					Active ({activeCount})
@@ -260,11 +263,12 @@ export function ProjectsList() {
 				<button
 					type="button"
 					onClick={() => setStatusFilter("COMPLETED")}
+					aria-pressed={statusFilter === "COMPLETED"}
 					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						statusFilter === "COMPLETED"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
+							: "border-border bg-card text-foreground hover:bg-muted/60",
 					)}
 				>
 					Completed ({completedCount})
@@ -272,11 +276,12 @@ export function ProjectsList() {
 				<button
 					type="button"
 					onClick={() => setStatusFilter("ARCHIVED")}
+					aria-pressed={statusFilter === "ARCHIVED"}
 					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						statusFilter === "ARCHIVED"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
+							: "border-border bg-card text-foreground hover:bg-muted/60",
 					)}
 				>
 					Archived ({archivedCount})
@@ -286,11 +291,12 @@ export function ProjectsList() {
 					<button
 						type="button"
 						onClick={() => setStatusFilter("deleted")}
+						aria-pressed={statusFilter === "deleted"}
 						className={cn(
-							"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors flex items-center gap-1.5",
+							"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 							statusFilter === "deleted"
-								? "bg-destructive text-destructive-foreground"
-								: "bg-destructive/10 hover:bg-destructive/20 text-destructive border border-destructive/30",
+								? "bg-destructive text-destructive-foreground border-destructive"
+								: "bg-destructive/10 hover:bg-destructive/20 text-destructive border-destructive/30",
 						)}
 					>
 						<Trash2Icon className="h-3.5 w-3.5" />

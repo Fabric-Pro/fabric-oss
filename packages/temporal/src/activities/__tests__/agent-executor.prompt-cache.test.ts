@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 	analysis: vi.fn(),
 	image: vi.fn(),
 	speech: vi.fn(),
+	resolveChatMediaAccess: vi.fn(),
 }));
 
 vi.mock("@repo/ai", async (original) => ({
@@ -38,6 +39,8 @@ vi.mock("@repo/database", async (original) => ({
 	...(await original<typeof import("@repo/database")>()),
 	canCreateProjectStory: vi.fn(async () => false),
 	loadProjectDatabricksKnowledgeBinding: async () => null,
+	resolveChatMediaAccess: (...a: unknown[]) =>
+		mocks.resolveChatMediaAccess(...a),
 }));
 vi.mock("../orchestrator/utils/model-selector", () => ({
 	getAiModel: vi.fn(),
@@ -147,6 +150,30 @@ describe("executeAgentTurn nested tool attribution", () => {
 		mocks.speech
 			.mockReset()
 			.mockResolvedValue({ ok: false, error: "fixture" });
+		mocks.resolveChatMediaAccess.mockReset().mockResolvedValue("allow");
+	});
+
+	it("refuses a private peer imageRef before the activity downloads or calls the model", async () => {
+		mocks.resolveChatMediaAccess.mockResolvedValueOnce("deny");
+
+		const result = await runners.executeAgentTurn({
+			imageRefs: [
+				{
+					storagePath: "org-1/chat-images/1794200000000-abc123xy.png",
+					mimeType: "image/png",
+					name: "private.png",
+					accessUserId: "user-1",
+				},
+			],
+		});
+
+		expect(result).toMatchObject({ success: false });
+		expect(mocks.resolveChatMediaAccess).toHaveBeenCalledWith({
+			storageKey: "org-1/chat-images/1794200000000-abc123xy.png",
+			userId: "user-1",
+			organizationId: "org-1",
+		});
+		expect(mocks.streamText).not.toHaveBeenCalled();
 	});
 
 	it.each([

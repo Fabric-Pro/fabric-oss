@@ -252,9 +252,7 @@ export async function POST(req: NextRequest) {
 			stack: err instanceof Error ? err.stack : undefined,
 		});
 		return new Response(
-			JSON.stringify({
-				error: err instanceof Error ? err.message : String(err),
-			}),
+			JSON.stringify({ error: "Failed to invoke MCP tool" }),
 			{ status: 500, headers: { "Content-Type": "application/json" } },
 		);
 	}

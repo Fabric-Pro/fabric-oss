@@ -204,7 +204,7 @@ export function SettingsReturnBanner() {
 				>
 					<div
 						ref={dialogRef}
-						className="w-[420px] overflow-hidden rounded-2xl bg-background shadow-2xl"
+						className="w-[420px] overflow-hidden rounded-lg bg-background shadow-2xl"
 						onClick={(e) => e.stopPropagation()}
 						onKeyDown={(e) => e.stopPropagation()}
 						role="dialog"

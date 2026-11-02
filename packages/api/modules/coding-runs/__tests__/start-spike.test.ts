@@ -81,6 +81,9 @@ vi.mock("@repo/temporal", () => ({
 }));
 
 vi.mock("@repo/temporal/coding-execution", () => ({
+	FabricBackgroundAdapter: class {
+		executionReadiness = async () => ({ ready: true });
+	},
 	getCodingExecutionAdapterDefinition: (provider: string) => ({
 		provider,
 		capabilities: mockCapabilities,

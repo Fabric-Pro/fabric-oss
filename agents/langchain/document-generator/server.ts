@@ -1,6 +1,6 @@
 /**
  * LangGraph Server Entry Point for Document Generator Agent
- * This file is required by @langchain/langgraph-cli to run the agent as a server
+ * Graph exports for external LangGraph tooling.
  */
 
 import { predictiveStateUpdatesGraph } from "./agent.js";

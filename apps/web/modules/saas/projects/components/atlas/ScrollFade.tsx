@@ -106,7 +106,7 @@ export function ScrollFade({
 				// when the content already fits.
 				tabIndex={canScroll ? 0 : undefined}
 				className={cn(
-					"scroll-affordance overflow-y-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+					"scroll-affordance overflow-y-auto focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
 					className,
 				)}
 			>

@@ -151,18 +151,18 @@ export function MfaSetupBanner({ className }: MfaSetupBannerProps) {
 	return (
 		<div
 			className={cn(
-				"mx-auto flex w-full max-w-5xl flex-col gap-3 rounded-2xl border border-border/70 bg-card/90 px-4 py-3 shadow-xl shadow-foreground/10 backdrop-blur-sm",
+				"mx-auto flex w-full max-w-5xl flex-col gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-sm",
 				"md:flex-row md:items-center md:justify-between",
-				"motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300",
+				"motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200",
 				className,
 			)}
 		>
 			<div className="flex min-w-0 items-start gap-3">
-				<div className="mt-0.5 rounded-full border border-primary/20 bg-primary/10 p-2 text-primary">
+				<div className="mt-0.5 rounded-md border border-primary/25 bg-primary/10 p-2 text-primary">
 					<ShieldCheckIcon className="size-4" />
 				</div>
 				<div className="min-w-0">
-					<p className="text-sm font-medium text-foreground">
+					<p className="text-sm font-semibold text-foreground">
 						{t("settings.account.security.mfaPrompt.title")}
 					</p>
 					<p className="text-sm leading-5 text-muted-foreground">

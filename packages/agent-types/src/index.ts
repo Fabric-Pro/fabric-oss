@@ -7,6 +7,11 @@
  */
 
 export {
+	isRetiredSystemAgent,
+	RETIRED_SYSTEM_AGENT_IDS,
+} from "./agent-availability";
+
+export {
 	anthropicModelRejectsForcedToolChoice,
 	isAnthropicAdaptiveOnlyModel,
 } from "./anthropic-model-constraints";

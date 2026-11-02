@@ -11,11 +11,19 @@
  */
 
 import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
+import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { useAutoResizeTextarea } from "@saas/shared/hooks/use-auto-resize-textarea";
 import { Button } from "@ui/components/button";
 import { Card, CardContent } from "@ui/components/card";
 import { Textarea } from "@ui/components/textarea";
-import { ArrowLeft, Send, Sparkles, Square } from "lucide-react";
+import {
+	ArrowLeft,
+	Scale,
+	ScanSearch,
+	Send,
+	Sparkles,
+	Square,
+} from "lucide-react";
 import Link from "next/link";
 import { useCallback, useRef, useState } from "react";
 import { useWorkflowTemplateStream } from "../../hooks/useWorkflowTemplateStream";
@@ -186,23 +194,38 @@ export function WorkflowTemplateChat({
 								<h3 className="text-sm font-medium text-muted-foreground text-center">
 									Try one of these queries
 								</h3>
-								<div className="grid gap-2 sm:grid-cols-2">
+								<div className="grid gap-2.5 sm:grid-cols-2">
 									{effectiveSuggestions.map(
-										(suggestion, index) => (
-											<Card
-												key={index}
-												className="cursor-pointer hover:bg-muted/50 transition-colors"
-												onClick={() =>
-													handleSuggestionClick(
-														suggestion,
-													)
-												}
-											>
-												<CardContent className="p-3 text-sm">
-													{suggestion}
-												</CardContent>
-											</Card>
-										),
+										(suggestion, index) => {
+											const SuggestionIcon =
+												index % 4 === 0
+													? RobotIcon
+													: index % 4 === 1
+														? ScanSearch
+														: index % 4 === 2
+															? Scale
+															: Sparkles;
+											return (
+												<Card
+													key={index}
+													className="cursor-pointer border-border/70 hover:border-primary/30 hover:bg-muted/50 transition-colors"
+													onClick={() =>
+														handleSuggestionClick(
+															suggestion,
+														)
+													}
+												>
+													<CardContent className="flex items-start gap-3 p-3.5 text-sm">
+														<span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/10 text-primary">
+															<SuggestionIcon className="size-3.5" />
+														</span>
+														<span className="leading-snug text-foreground">
+															{suggestion}
+														</span>
+													</CardContent>
+												</Card>
+											);
+										},
 									)}
 								</div>
 							</div>

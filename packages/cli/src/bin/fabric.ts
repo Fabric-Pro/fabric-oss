@@ -50,13 +50,51 @@ const program = new Command();
 
 program
 	.name("fabric")
-	.description("Fabric AI platform CLI")
+	.description("Fabric AI platform CLI — portal, MCP, and agent delegation")
 	.version(packageJson.version)
 	.option(
 		"--format <format>",
-		"Output format: table|json|yaml|csv",
+		"Output format: table|json|yaml|csv|plain|quiet",
 		process.env.FABRIC_FORMAT ?? "table",
-	);
+	)
+	.option("--json", "Shorthand for --format json")
+	.option(
+		"--plain",
+		"Shorthand for --format plain (tab-separated, pipe-friendly)",
+	)
+	.option("--no-color", "Disable ANSI color output (also honors NO_COLOR)")
+	.addHelpText(
+		"after",
+		`
+Examples:
+  $ fabric auth login
+  $ fabric connect
+  $ fabric agents delegate --target remote --harness claude-max --prompt "Implement OAuth callback"
+  $ fabric agents desktop --project proj_123 --view allSessions
+  $ fabric mcp tools --stateless
+  $ fabric mcp call fabric_get_identity --stateless --durable
+
+Environment Variables:
+  FABRIC_API_KEY     API key (fab_... or org_...) for non-interactive authentication
+  FABRIC_BASE_URL    Fabric instance URL (default: https://app.fabric.pro)
+  FABRIC_FORMAT      Default output format (table|json|yaml|csv|plain|quiet)
+  NO_COLOR           Set to any non-empty value to disable ANSI color output
+`,
+	)
+	.hook("preAction", (thisCommand) => {
+		const opts = thisCommand.optsWithGlobals();
+		if (typeof opts.format === "string") {
+			process.env.FABRIC_FORMAT = opts.format;
+		}
+		if (opts.color === false) {
+			process.env.FABRIC_NO_COLOR = "1";
+		}
+		if (opts.json) {
+			process.env.FABRIC_FORMAT = "json";
+		} else if (opts.plain) {
+			process.env.FABRIC_FORMAT = "plain";
+		}
+	});
 
 // ---------------------------------------------------------------------------
 // fabric auth

@@ -26,7 +26,11 @@
  * stray box named "click"), and, for a flowchart, the role `classDef`
  * lines appended through the helper the page uses too, so a
  * `class <id> primary` node takes the theme's colour. A node's own `style`
- * line still wins over its role, as it does on the page.
+ * line still wins over its role, as it does on the page. An xychart is
+ * recognised past its leading `%%` lines, which the engine alone would not
+ * do: the strip here hands it the chart header first, and the page strips
+ * the same lines before drawing it, so a `%% figure: bars` fence its
+ * template refuses prints as a plain chart under the page's number.
  *
  * Layout runs in a worker thread of its own (`diagram-layout.ts`), each
  * diagram under a wall-clock limit and all of them inside the export's
@@ -59,19 +63,43 @@
  *   and counted toward one `DIAGRAM_PLACEHOLDER` warning.
  *
  * Print legibility. A diagram wider than the print column is shrunk to it,
- * and its labels with it. When a left-to-right flowchart's labels would
- * print below `PRINT_LABEL_FLOOR_PT`, it is laid out once more top-down
- * (the fence in Main is untouched; only the export's copy turns), and the
- * render whose labels print larger is kept. When that is still below the
- * floor, a flowchart's long single-line node labels are broken into lines
- * in the copy (title, sentence and trailing parenthesis apart, then at
- * words) and it is laid out once more, top-down when it was sideways; again
- * the larger labels win. One still below the floor prints as it is and
- * counts toward one `DIAGRAM_BELOW_PRINT_FLOOR` warning. Only flowcharts
- * and state diagrams are measured: other kinds size their text by rules of
- * their own. The live page keeps drawing the fence as written.
+ * and one taller than a printed figure may be (`PRINT_FIGURE_MAX_HEIGHT_PX`,
+ * the height the Word writer shrinks a picture to) is shrunk to that, and
+ * its labels with it; `printedNodeLabelPt` measures both. A flowchart with
+ * node labels of `ALWAYS_WRAPPED_LABEL_CHARS` or more is laid out as
+ * prepared and with those labels broken into lines, since the engine's
+ * estimate of a long line's width runs short of the text, and the copy
+ * whose labels print larger is kept, the broken one on a tie: a tall
+ * diagram broken this way can grow taller than a figure may be, and then
+ * keeps its labels on one line. When a left-to-right flowchart's labels
+ * would print below `PRINT_LABEL_FLOOR_PT`, it is laid out once more
+ * top-down (the fence in Main is untouched; only the export's copy turns),
+ * and the render whose labels print larger is kept. When that is still
+ * below the floor, a
+ * flowchart's long single-line node labels are broken into lines in the
+ * copy (title, sentence and trailing parenthesis apart, then at words) and
+ * it is laid out once more, top-down when it was sideways; again the larger
+ * labels win. One still below the floor prints as it is and counts toward
+ * one `DIAGRAM_BELOW_PRINT_FLOOR` warning. Only flowcharts and state
+ * diagrams are measured: other kinds size their text by rules of their own.
+ * A flowchart or state diagram keeps a narrow blank margin around its
+ * drawing rather than the engine's wide one, so its figure is only as tall
+ * as what it draws.
+ *
+ * The live page draws with the same helpers, label length, measure, floor
+ * and canvas margin (`@repo/utils/proposal-artifact/diagram-label-wrap`),
+ * so a client Proposal's page lays each fence out as it prints; any other
+ * page always breaks the long labels and keeps the author's direction.
  */
 
+import {
+	ALWAYS_WRAPPED_LABEL_CHARS,
+	DIAGRAM_CANVAS_PADDING_PX,
+	PRINT_LABEL_FLOOR_PT,
+	printedNodeLabelPt,
+	turnFlowchartTopDown,
+	wrapFlowchartNodeLabels,
+} from "@repo/utils/proposal-artifact/diagram-label-wrap";
 import {
 	diagramPrintability,
 	figurePaletteOf,
@@ -91,10 +119,6 @@ import type { RenderOptions } from "beautiful-mermaid";
 import type { Page } from "playwright";
 import type { ExportBrowser } from "../../lib/proposal-export/browser";
 import {
-	PORTRAIT_TEXT_WIDTH,
-	TWIPS_PER_PIXEL,
-} from "../../lib/proposal-export/build-docx/styles";
-import {
 	type CleanedDiagramSvg,
 	cleanDiagramSvg,
 } from "../../lib/proposal-export/clean-svg";
@@ -110,6 +134,17 @@ import {
 	type ProposalExportWarning,
 } from "../../lib/proposal-export/types";
 import { activityLogger } from "../lib/activity-logger";
+
+/**
+ * The print column, its label floor and the canvas margin, as the live page
+ * reads them too.
+ */
+export {
+	DIAGRAM_CANVAS_PADDING_PX,
+	PRINT_COLUMN_PX,
+	PRINT_LABEL_FLOOR_PT,
+	printedNodeLabelPt,
+} from "@repo/utils/proposal-artifact/diagram-label-wrap";
 
 export interface RenderDiagramsInput {
 	/** Diagram fence bodies in document order, from `prepareExportMarkdown`. */
@@ -166,29 +201,6 @@ const PNG_SIGNATURE = Buffer.from([
  * milliseconds; only a hostile or runaway fence comes near this.
  */
 const DIAGRAM_LAYOUT_TIMEOUT_MS = 10_000;
-
-/**
- * The print column in CSS pixels: the portrait page less its side margins,
- * the width the print layer's `max-width: 100%` shrinks a diagram to.
- */
-export const PRINT_COLUMN_PX = PORTRAIT_TEXT_WIDTH / TWIPS_PER_PIXEL;
-
-/** The smallest a printed diagram's node labels may be, in points. */
-export const PRINT_LABEL_FLOOR_PT = 9;
-
-/** beautiful-mermaid's node label size, in CSS pixels (its `FONT_SIZES`). */
-const NODE_LABEL_PX = 13;
-
-/** Points per CSS pixel: 72 per inch over 96. */
-const PT_PER_PX = 0.75;
-
-/** A drawn diagram's node labels as printed at the column, in points. */
-export function printedNodeLabelPt(svgWidth: number): number {
-	return NODE_LABEL_PX * Math.min(1, PRINT_COLUMN_PX / svgWidth) * PT_PER_PX;
-}
-
-/** A left-to-right or right-to-left flowchart header line. */
-const SIDEWAYS_HEADER = /^(\s*(?:graph|flowchart)\s+)(?:LR|RL)(\s*)$/i;
 
 const COMMENT_LINE = /^\s*%%/;
 const CLICK_LINE = /^\s*click\s+\S/;
@@ -247,6 +259,7 @@ export async function renderExportDiagrams(
 		...diagramColors(paint),
 		font: PRINT_FONTS.body,
 		transparent: true,
+		padding: DIAGRAM_CANVAS_PADDING_PX,
 	};
 
 	let layout: DiagramLayout | null = input.layout ?? null;
@@ -391,12 +404,20 @@ interface DrawnDiagram {
 }
 
 /**
- * One fence drawn and cleaned, or why it is not; a sideways flowchart whose
- * labels would print below the floor is tried top-down too, then a
- * flowchart still below it with its long labels broken into lines, and a
- * graph still below it is marked.
+ * One fence drawn and cleaned, or why it is not. A flowchart with node
+ * labels of `ALWAYS_WRAPPED_LABEL_CHARS` or more is laid out both as
+ * prepared and with those labels broken into lines, as the live page draws
+ * a Proposal's diagrams, and the copy whose labels print larger is kept:
+ * the broken one on a tie, as its labels stay inside their boxes, and the
+ * one as prepared when breaking makes the diagram taller than a printed
+ * figure may be. A copy the engine refuses drops out. Then a sideways
+ * flowchart whose labels would print below the floor is tried top-down too,
+ * then a flowchart still below it with every long label broken into lines,
+ * and a graph still below it is marked. Labels are measured at the size
+ * they print, shrunk to the column's width or a figure's height.
  * Each layout gets at most the per-diagram limit, and never more than the
- * export has left.
+ * export has left; a fence whose first layout was abandoned is not laid out
+ * again as another copy.
  */
 async function renderOne(
 	layout: DiagramLayout,
@@ -408,12 +429,42 @@ async function renderOne(
 	if (source.length > PROPOSAL_EXPORT_LIMITS.maxDiagramSourceLength) {
 		return "notPrintable";
 	}
-	// Only the layout that decides whether the fence prints at all is tried
-	// again; the turned and re-wrapped copies only compete with it.
-	const drawn = await drawPrepared(layout, prepared.text, options, {
-		...at,
-		attempts: 2,
+	// Only the layouts that decide whether the fence prints at all are tried
+	// again; the turned and re-wrapped copies only compete with them.
+	const deciding = { ...at, attempts: 2 };
+	const asPrepared = await drawPrepared(
+		layout,
+		prepared.text,
+		options,
+		deciding,
+	);
+	// A fence whose layout was abandoned, or found no time left, is not laid
+	// out again as another copy.
+	if (asPrepared === "notPrintable") {
+		return asPrepared;
+	}
+	// What the variants below start from: the copy kept of the two.
+	let base = prepared.text;
+	let drawn: CleanedDiagramSvg | NotDrawn = asPrepared;
+	const longBroken = wrapFlowchartNodeLabels(prepared.text, {
+		minChars: ALWAYS_WRAPPED_LABEL_CHARS,
 	});
+	if (longBroken !== null) {
+		const broken = await drawPrepared(
+			layout,
+			longBroken,
+			options,
+			deciding,
+		);
+		if (
+			typeof broken !== "string" &&
+			(typeof drawn === "string" ||
+				printedNodeLabelPt(broken) >= printedNodeLabelPt(drawn))
+		) {
+			base = longBroken;
+			drawn = broken;
+		}
+	}
 	if (typeof drawn === "string") {
 		return drawn;
 	}
@@ -423,25 +474,24 @@ async function renderOne(
 		return { svg: drawn, belowFloor: false };
 	}
 	let best = drawn;
-	const belowFloor = () =>
-		printedNodeLabelPt(best.width) < PRINT_LABEL_FLOOR_PT;
+	const belowFloor = () => printedNodeLabelPt(best) < PRINT_LABEL_FLOOR_PT;
 	// A variant replaces the best layout only when its labels print larger.
 	const tryVariant = async (variant: string): Promise<void> => {
 		const redrawn = await drawPrepared(layout, variant, options, at);
 		if (
 			typeof redrawn !== "string" &&
-			printedNodeLabelPt(redrawn.width) > printedNodeLabelPt(best.width)
+			printedNodeLabelPt(redrawn) > printedNodeLabelPt(best)
 		) {
 			best = redrawn;
 		}
 	};
 	if (belowFloor()) {
-		const turned = turnTopDown(prepared.text);
+		const turned = turnFlowchartTopDown(base);
 		if (turned) {
 			await tryVariant(turned);
 		}
 		if (belowFloor()) {
-			const wrapped = wrapNodeLabels(turned ?? prepared.text);
+			const wrapped = wrapFlowchartNodeLabels(turned ?? base);
 			if (wrapped) {
 				await tryVariant(wrapped);
 			}
@@ -488,286 +538,6 @@ async function drawPrepared(
 			return "notPrintable";
 		}
 	}
-}
-
-/**
- * A prepared flowchart's copy with its `LR`/`RL` header turned `TD`, or null
- * when its header is not sideways. Only the header line changes.
- */
-function turnTopDown(prepared: string): string | null {
-	const lines = prepared.split("\n");
-	const headerIndex = lines.findIndex((line) => line.trim().length > 0);
-	const header = lines[headerIndex];
-	if (header === undefined || !SIDEWAYS_HEADER.test(header)) {
-		return null;
-	}
-	lines[headerIndex] = header.replace(SIDEWAYS_HEADER, "$1TD$2");
-	return lines.join("\n");
-}
-
-/** The longest line a broken node label gets, in characters. */
-const WRAPPED_LABEL_LINE_CHARS = 30;
-
-/**
- * beautiful-mermaid 1.1.3's flowchart node shapes, in the order its parser
- * tries them (`NODE_PATTERNS`); the second group is the label as written,
- * `open` characters after the id.
- * Mirrored so a label is found exactly where the engine finds it: re-check
- * on an engine upgrade.
- */
-const NODE_PATTERNS: readonly { regex: RegExp; shape: string; open: number }[] =
-	[
-		{ regex: /^([\w-]+)\(\(\((.+?)\)\)\)/, shape: "doublecircle", open: 3 },
-		{ regex: /^([\w-]+)\(\[(.+?)\]\)/, shape: "stadium", open: 2 },
-		{ regex: /^([\w-]+)\(\((.+?)\)\)/, shape: "circle", open: 2 },
-		{ regex: /^([\w-]+)\[\[(.+?)\]\]/, shape: "subroutine", open: 2 },
-		{ regex: /^([\w-]+)\[\((.+?)\)\]/, shape: "cylinder", open: 2 },
-		{ regex: /^([\w-]+)\[\/(.+?)\\\]/, shape: "trapezoid", open: 2 },
-		{ regex: /^([\w-]+)\[\\(.+?)\/\]/, shape: "trapezoid-alt", open: 2 },
-		{ regex: /^([\w-]+)>(.+?)\]/, shape: "asymmetric", open: 1 },
-		{ regex: /^([\w-]+)\{\{(.+?)\}\}/, shape: "hexagon", open: 2 },
-		{ regex: /^([\w-]+)\[(.+?)\]/, shape: "rectangle", open: 1 },
-		{ regex: /^([\w-]+)\((.+?)\)/, shape: "rounded", open: 1 },
-		{ regex: /^([\w-]+)\{(.+?)\}/, shape: "diamond", open: 1 },
-	];
-const BARE_NODE = /^[\w-]+/;
-const CLASS_SHORTHAND = /^:::[\w][\w-]*/;
-const ARROW = /^(<)?(-->|-.->|==>|---|-\.-|===)(?:\|([^|]*)\|)?/;
-const TEXT_ARROW = /^(<)?(--|-\.|==)\s+(.+?)\s+(-->|---|\.->|-\.-|==>|===)/;
-
-/** Lines the engine's flowchart parser reads as something other than edges. */
-const NON_EDGE_LINES: readonly RegExp[] = [
-	/^classDef\s+(\w+)\s+(.+)$/,
-	/^class\s+([\w,-]+)\s+(\w+)$/,
-	/^style\s+([\w,-]+)\s+(.+)$/,
-	/^linkStyle\s+(default|[\d,\s]+)\s+(.+)$/,
-	/^direction\s+(TD|TB|LR|BT|RL)\s*$/i,
-	/^subgraph\s+(.+)$/,
-	/^end$/,
-];
-
-/** A line break inside a label, as both Mermaid engines read it. */
-const LABEL_BREAK = "<br/>";
-
-/** A label already broken into lines, or formatted across words. */
-const UNWRAPPABLE_LABEL = /<br\s*\/?>|\\n|[*`<]|~~/i;
-
-/** The first " — ", " – " or " - " between a label's title and its sentence. */
-const TITLE_DASH = /\s+([—–-])\s+/;
-
-/** A label's last parenthesis, balanced and at its very end. */
-const TRAILING_PARENTHESIS = /\s+(\([^()]*\))$/;
-
-interface LabelSpan {
-	shape: string;
-	start: number;
-	end: number;
-}
-
-/**
- * Where each node label of one trimmed flowchart line sits, walked as the
- * engine walks it (`parseEdgeLine`): a node group joined by `&`, then an
- * arrow, a group, and so on until something is not one.
- */
-function nodeLabelSpans(line: string): LabelSpan[] {
-	const spans: LabelSpan[] = [];
-	let at = 0;
-	const skipSpace = () => {
-		while (at < line.length && /\s/.test(line.charAt(at))) {
-			at++;
-		}
-	};
-	const consumeNode = (): boolean => {
-		const rest = line.slice(at);
-		let length = 0;
-		for (const { regex, shape, open } of NODE_PATTERNS) {
-			const match = regex.exec(rest);
-			if (match) {
-				const start = at + String(match[1]).length + open;
-				spans.push({
-					shape,
-					start,
-					end: start + String(match[2]).length,
-				});
-				length = match[0].length;
-				break;
-			}
-		}
-		if (length === 0) {
-			length = BARE_NODE.exec(rest)?.[0].length ?? 0;
-		}
-		if (length === 0) {
-			return false;
-		}
-		at += length;
-		at += CLASS_SHORTHAND.exec(line.slice(at))?.[0].length ?? 0;
-		return true;
-	};
-	const consumeGroup = (): boolean => {
-		if (!consumeNode()) {
-			return false;
-		}
-		skipSpace();
-		while (line.charAt(at) === "&") {
-			at++;
-			skipSpace();
-			if (!consumeNode()) {
-				break;
-			}
-			skipSpace();
-		}
-		return true;
-	};
-	if (!consumeGroup()) {
-		return spans;
-	}
-	while (at < line.length) {
-		const rest = line.slice(at);
-		const arrow = ARROW.exec(rest) ?? TEXT_ARROW.exec(rest);
-		if (!arrow) {
-			break;
-		}
-		at += arrow[0].length;
-		skipSpace();
-		if (!consumeGroup()) {
-			break;
-		}
-	}
-	return spans;
-}
-
-/** `text` greedily wrapped at spaces; a word longer than a line stays whole. */
-function wrapAtWords(text: string): string[] {
-	const lines: string[] = [];
-	let line = "";
-	for (const word of text.split(" ")) {
-		if (
-			line &&
-			Array.from(`${line} ${word}`).length > WRAPPED_LABEL_LINE_CHARS
-		) {
-			lines.push(line);
-			line = word;
-		} else {
-			line = line ? `${line} ${word}` : word;
-		}
-	}
-	if (line) {
-		lines.push(line);
-	}
-	return lines;
-}
-
-/**
- * A long single-line label's text broken into lines with `<br/>`, or null
- * to leave it as written: the title before a spaced dash (the dash kept at
- * its end), the sentence, and a trailing parenthesis each start a line of
- * their own, and each wraps at words. Every word stays, in order; only
- * spacing changes.
- */
-function wrapLabelText(text: string): string | null {
-	const collapsed = text.replace(/\s+/g, " ").trim();
-	if (
-		UNWRAPPABLE_LABEL.test(collapsed) ||
-		Array.from(collapsed).length <= WRAPPED_LABEL_LINE_CHARS
-	) {
-		return null;
-	}
-	const parts: string[] = [];
-	let rest = collapsed;
-	const dash = TITLE_DASH.exec(rest);
-	if (dash && dash.index > 0 && dash.index + dash[0].length < rest.length) {
-		parts.push(`${rest.slice(0, dash.index)} ${dash[1]}`);
-		rest = rest.slice(dash.index + dash[0].length);
-	}
-	const parenthesis = TRAILING_PARENTHESIS.exec(rest);
-	const tail = parenthesis && parenthesis.index > 0 ? parenthesis[1] : null;
-	if (parenthesis && tail) {
-		rest = rest.slice(0, parenthesis.index);
-	}
-	parts.push(rest);
-	if (tail) {
-		parts.push(tail);
-	}
-	const lines = parts.flatMap(wrapAtWords);
-	return lines.length > 1 ? lines.join(LABEL_BREAK) : null;
-}
-
-/** A label's text as the engine draws it, ignoring line breaks and spacing. */
-function labelWords(label: string): string {
-	const unquoted =
-		label.length >= 2 && label.startsWith('"') && label.endsWith('"')
-			? label.slice(1, -1)
-			: label;
-	return unquoted
-		.replace(/<br\s*\/?>/gi, " ")
-		.replace(/\s+/g, " ")
-		.trim();
-}
-
-/** One trimmed flowchart line with its long node labels broken, or as is. */
-function wrapLineLabels(line: string): string {
-	const spans = nodeLabelSpans(line);
-	let rewritten = line;
-	for (const span of [...spans].reverse()) {
-		const label = line.slice(span.start, span.end);
-		const quoted =
-			label.length >= 2 && label.startsWith('"') && label.endsWith('"');
-		const wrapped = wrapLabelText(quoted ? label.slice(1, -1) : label);
-		if (wrapped !== null) {
-			rewritten = `${rewritten.slice(0, span.start)}${
-				quoted ? `"${wrapped}"` : wrapped
-			}${rewritten.slice(span.end)}`;
-		}
-	}
-	if (rewritten === line) {
-		return line;
-	}
-	// The engine must find the same nodes, shapes and words in the rewritten
-	// line; anything else keeps the line as written.
-	const after = nodeLabelSpans(rewritten);
-	const same =
-		after.length === spans.length &&
-		after.every((span, index) => {
-			const before = spans[index];
-			return (
-				before !== undefined &&
-				span.shape === before.shape &&
-				labelWords(rewritten.slice(span.start, span.end)) ===
-					labelWords(line.slice(before.start, before.end))
-			);
-		});
-	return same ? rewritten : line;
-}
-
-/**
- * A prepared flowchart's copy with its long single-line node labels broken
- * into lines, or null when it is not a flowchart or no label changed.
- */
-function wrapNodeLabels(prepared: string): string | null {
-	const lines = prepared.split("\n");
-	const headerIndex = lines.findIndex((line) => line.trim().length > 0);
-	if (!/^\s*(?:graph|flowchart)\s/i.test(lines[headerIndex] ?? "")) {
-		return null;
-	}
-	let changed = false;
-	const rewritten = lines.map((line, index) => {
-		const trimmed = line.trim();
-		if (
-			index <= headerIndex ||
-			trimmed.length === 0 ||
-			trimmed.startsWith("%%") ||
-			NON_EDGE_LINES.some((pattern) => pattern.test(trimmed))
-		) {
-			return line;
-		}
-		const wrapped = wrapLineLabels(trimmed);
-		if (wrapped === trimmed) {
-			return line;
-		}
-		changed = true;
-		return `${line.slice(0, line.length - line.trimStart().length)}${wrapped}`;
-	});
-	return changed ? rewritten.join("\n") : null;
 }
 
 /**

@@ -17,6 +17,8 @@ import {
 	buildProjectMemberOrTenantConsistentPolicySQL,
 	buildProjectMemberOrTenantPolicySQL,
 	buildProjectSelfMemberOrTenantPolicySQL,
+	buildRemoteAgentServerPolicySQL,
+	buildRemoteAgentServerWritePolicies,
 	ORGANIZATION_SHARED_READ_POLICY,
 	PROJECT_GUEST_READ_POLICY,
 } from "./rls-policy-sql";
@@ -185,6 +187,10 @@ async function applyRLS() {
 			},
 			// Strict isolation: EITHER userId OR orgId, never both
 			{ name: "mcp_config", policy: "per_user_within_org" },
+			{
+				name: "mcp_durable_tool_call",
+				policy: "per_user_within_org",
+			},
 			{ name: "mcp_server", policy: "per_user_within_org_with_system" },
 			// Physical table names (snake_case @@map), NOT the PascalCase model
 			// names — otherwise `ALTER TABLE "OpenAPIService"` targets a
@@ -230,6 +236,10 @@ async function applyRLS() {
 			// One Advisor chat turn of a member's conversation — the same
 			// per-member scope as the conversation it belongs to.
 			{ name: "conversation_turn", policy: "per_user_within_org" },
+			{ name: "conversation_turn_event", policy: "per_user_within_org" },
+			// Media stays owner-only at the RLS layer. The query helper separately
+			// grants live read access through a shared AgentConversation.
+			{ name: "chat_media_object", policy: "per_user_within_org" },
 			// Advisor summaries and preferences belong to a user within a tenant.
 			{ name: "episodic_memory", policy: "per_user_within_org" },
 			{
@@ -807,6 +817,10 @@ async function applyRLS() {
 
 			// Coding runs - Background agent execution
 			{ name: "coding_run", policy: "user_owned" },
+			{
+				name: "project_remote_agent_server",
+				policy: "remote_agent_server",
+			},
 
 			// Runtime authority (Pipes-style session-scoped authorization)
 			{ name: "authority_session", policy: "strict" }, // EITHER userId OR orgId
@@ -1176,6 +1190,10 @@ async function applyRLS() {
 							`;
 						break;
 
+					case "remote_agent_server":
+						policySQL = buildRemoteAgentServerPolicySQL();
+						extraPolicies = buildRemoteAgentServerWritePolicies();
+						break;
 					case "project_scoped":
 						// No direct tenant columns — inherit access from the
 						// parent project row via projectId. Same EXISTS pattern

@@ -3,6 +3,7 @@ import {
 	ListObjectsV2Command,
 	S3Client,
 } from "@aws-sdk/client-s3";
+import { convertConfluenceXhtmlToMarkdown } from "@repo/utils/confluence-storage-markdown";
 import type { SyncCursor } from "../../../workflows/connector-sync/types";
 import {
 	buildBasicAuthHeaders,
@@ -110,34 +111,6 @@ async function fetchConfluenceJson<T>(input: {
 	}
 
 	return (await response.json()) as T;
-}
-
-function convertConfluenceXhtmlToMarkdown(xhtml: string): string {
-	let md = xhtml;
-
-	md = md.replace(/<\?xml[^>]*\?>/g, "");
-	md = md.replace(/xmlns[^=]*="[^"]*"/g, "");
-	md = md.replace(/<h1[^>]*>(.*?)<\/h1>/gi, "# $1\n");
-	md = md.replace(/<h2[^>]*>(.*?)<\/h2>/gi, "## $1\n");
-	md = md.replace(/<h3[^>]*>(.*?)<\/h3>/gi, "### $1\n");
-	md = md.replace(/<h4[^>]*>(.*?)<\/h4>/gi, "#### $1\n");
-	md = md.replace(/<p[^>]*>(.*?)<\/p>/gi, "$1\n\n");
-	md = md.replace(/<br\s*\/?>/gi, "\n");
-	md = md.replace(/<li[^>]*>(.*?)<\/li>/gi, "- $1\n");
-	md = md.replace(/<strong[^>]*>(.*?)<\/strong>/gi, "**$1**");
-	md = md.replace(/<b[^>]*>(.*?)<\/b>/gi, "**$1**");
-	md = md.replace(/<em[^>]*>(.*?)<\/em>/gi, "*$1*");
-	md = md.replace(/<i[^>]*>(.*?)<\/i>/gi, "*$1*");
-	md = md.replace(/<code[^>]*>(.*?)<\/code>/gi, "`$1`");
-	md = md.replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, "[$2]($1)");
-	md = md.replace(/<[^>]+>/g, "");
-	md = md.replace(/&nbsp;/g, " ");
-	md = md.replace(/&amp;/g, "&");
-	md = md.replace(/&lt;/g, "<");
-	md = md.replace(/&gt;/g, ">");
-	md = md.replace(/&quot;/g, '"');
-	md = md.replace(/\n{3,}/g, "\n\n");
-	return md.trim();
 }
 
 function buildConfluencePageDocument(params: {

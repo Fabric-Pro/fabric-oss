@@ -330,8 +330,8 @@ export function FrameVizShell({
 						className={cn(
 							"flex items-center justify-between border bg-card",
 							isPanelPresentation
-								? "rounded-2xl px-3 py-2 shadow-none"
-								: "rounded-2xl px-4 py-3 shadow-sm",
+								? "rounded-lg px-3 py-2 shadow-none"
+								: "rounded-lg px-4 py-3 shadow-sm",
 						)}
 					>
 						<div>
@@ -380,13 +380,13 @@ export function FrameVizShell({
 					className={cn(
 						"overflow-hidden",
 						!isPanelPresentation &&
-							"rounded-3xl border bg-card shadow-sm",
+							"rounded-lg border bg-card shadow-sm",
 					)}
 				>
 					{showCode ? (
 						<div className="max-h-[80vh] overflow-auto p-4">
 							{codeView ? (
-								<pre className="overflow-x-auto rounded-2xl border bg-muted p-4 text-sm">
+								<pre className="overflow-x-auto rounded-lg border bg-muted p-4 text-sm">
 									<code>{codeView}</code>
 								</pre>
 							) : (
@@ -447,7 +447,7 @@ export function FrameVizShell({
 				createPortal(
 					<div className="fixed inset-0 z-[9999] flex flex-col bg-background">
 						<div className="flex shrink-0 items-center justify-between border-b px-4 py-2">
-							<span className="font-serif text-lg leading-tight">
+							<span className="font-semibold text-lg leading-tight">
 								{title}
 							</span>
 							<Button

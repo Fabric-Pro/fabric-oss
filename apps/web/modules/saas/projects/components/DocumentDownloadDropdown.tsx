@@ -8,6 +8,10 @@ import type {
 import { isGlossyEligible } from "@repo/utils/glossy/eligibility";
 import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { scrubProposalExport } from "@repo/utils/proposal-artifact/export-scrub";
+import {
+	withoutStorageReferences,
+	withoutStoredObjects,
+} from "@repo/utils/proposal-artifact/storage-references";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Button } from "@ui/components/button";
 import {
@@ -316,7 +320,12 @@ export function DocumentDownloadDropdown({
 			const mermaidBlockRe = /```mermaid\n([\s\S]*?)```/g;
 			const mermaidMatches = [...content.matchAll(mermaidBlockRe)];
 			for (const match of mermaidMatches) {
-				const code = match[1];
+				// A diagram is drawn into a PNG, where the scrub of the
+				// finished text below cannot reach, so the client document's
+				// diagram loses its storage references before it is drawn.
+				const code = serverExport
+					? withoutStorageReferences(match[1])
+					: match[1];
 				const rendered = await renderMermaidToPng(code);
 				if (rendered) {
 					content = content.replace(
@@ -375,6 +384,12 @@ export function DocumentDownloadDropdown({
 				newLines.push(line);
 			}
 			content = newLines.join("\n");
+			// Nor with a storage key or a signed URL: an image whose fetch
+			// failed, a link to a stored file or an address in the text
+			// would hand the reader the object, as the PDF and Word never do.
+			if (serverExport) {
+				content = withoutStoredObjects(content);
+			}
 
 			const blob = new Blob([content], {
 				type: "text/markdown;charset=utf-8",

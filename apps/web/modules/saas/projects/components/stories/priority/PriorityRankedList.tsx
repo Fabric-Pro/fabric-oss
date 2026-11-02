@@ -239,7 +239,7 @@ export function PriorityRankedList({
 	// into every callback that lists it, defeating the rows' memo.
 	const storiesQueryKey = useMemo(
 		() =>
-			orpc.projects.stories.list.queryKey({
+			orpc.projects.stories.board.queryKey({
 				input: { projectId, organizationId },
 			}),
 		[projectId, organizationId],

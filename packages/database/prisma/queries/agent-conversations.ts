@@ -341,14 +341,39 @@ export async function updateAgentConversation({
 	if (trajectory !== undefined) {
 		data.trajectory = trajectory as unknown as Prisma.InputJsonValue;
 	}
-	if (metadata !== undefined) {
-		data.metadata = metadata as unknown as Prisma.InputJsonValue;
-	}
 	if (pinned !== undefined) {
 		data.pinned = pinned;
 	}
 	if (status !== undefined) {
 		data.status = status;
+	}
+
+	// Metadata replacement shares the turn-save lock (Fizzy #3472).
+	if (metadata !== undefined) {
+		if (!organizationId) {
+			throw new Error("Conversation not found or access denied");
+		}
+		return await inRowLockTransaction(async (tx) => {
+			const rows = await selectConversationStateForUpdate(tx, {
+				id,
+				userId,
+				organizationId,
+			});
+			if (!rows[0]) {
+				throw new Error("Conversation not found or access denied");
+			}
+			const stored = asMetadataObject(rows[0].metadata);
+			const next = { ...metadata };
+			delete next.latestTurn;
+			delete next.executions;
+			if (Object.hasOwn(stored, "executions")) {
+				next.executions = stored.executions;
+			}
+			return await tx.agentConversation.update({
+				where: { id },
+				data: { ...data, metadata: next as Prisma.InputJsonValue },
+			});
+		});
 	}
 
 	// First verify the conversation exists and user has access
@@ -705,13 +730,14 @@ export async function removeConversationMessage({
  * may write, merged onto the row's current metadata under the row lock.
  *
  * `selectedMcpConfigIds`: absent keeps the stored selection, `null` removes
- * it ("no selection"), an array replaces it. The other keys are written only
- * when given and non-empty. `mode` is never taken from the caller: a missing
- * one is filled with `orchestrator`, an existing one is kept (Fizzy #2040).
+ * it ("no selection"), an array replaces it. Null instanceId removes its pin;
+ * absent instanceId keeps it. Other keys are written when non-empty. A missing
+ * mode uses the settings update engine, defaulting to orchestrator; stored modes
+ * are kept (Fizzy #2040, Fizzy #3472).
  */
 export interface AdvisorConversationSettings {
 	executionMode?: string;
-	instanceId?: string;
+	instanceId?: string | null;
 	selectedMcpConfigIds?: string[] | null;
 	documentChatId?: string;
 }
@@ -795,11 +821,14 @@ function asMetadataObject(value: unknown): Record<string, unknown> {
 function mergeAdvisorSettings(
 	current: Record<string, unknown>,
 	settings: AdvisorConversationSettings,
-	options: { executionModeOnlyIfUnset: boolean },
+	options: {
+		executionModeOnlyIfUnset: boolean;
+		engine?: "direct" | "orchestrator";
+	},
 ): Record<string, unknown> {
 	const next: Record<string, unknown> = { ...current };
 	if (typeof next.mode !== "string" || next.mode.length === 0) {
-		next.mode = "orchestrator";
+		next.mode = options.engine ?? "orchestrator";
 	}
 	if (settings.executionMode) {
 		const stored = next.executionMode;
@@ -811,7 +840,9 @@ function mergeAdvisorSettings(
 			next.executionMode = settings.executionMode;
 		}
 	}
-	if (settings.instanceId) {
+	if (settings.instanceId === null) {
+		delete next.instanceId;
+	} else if (settings.instanceId) {
 		next.instanceId = settings.instanceId;
 	}
 	if (settings.documentChatId) {
@@ -1189,26 +1220,28 @@ export async function saveConversationTurn({
 }
 
 /**
- * Changes an Advisor conversation's settings (chat tools, reasoning mode,
- * agent instance) without touching its messages or `metadata.executions`
- * (Fizzy #2949). The keys are merged onto the metadata read under the row
- * lock, never onto a snapshot the client loaded earlier, so an execution
- * another tab saved in the meantime is kept. `executionMode`, when given,
- * replaces the stored one.
+ * Merges chat tools, reasoning mode, agent pin and document settings onto the
+ * conversation metadata under a row lock, preserving messages and executions
+ * saved by another tab (Fizzy #2949, Fizzy #3472).
+ * The engine hint fills only a missing mode and defaults to orchestrator.
+ * Null instanceId removes the pin; absent keeps it. A supplied executionMode
+ * replaces the stored value.
  *
- * Throws `ConversationNotFoundError` when the conversation is not this
- * user's in this organization. `organizationId` is required.
+ * Throws ConversationNotFoundError when the conversation is not this user's
+ * in the required organization.
  */
 export async function updateConversationSettings({
 	id,
 	userId,
 	organizationId,
 	settings,
+	engine,
 }: {
 	id: string;
 	userId: string;
 	organizationId: string;
 	settings: AdvisorConversationSettings;
+	engine?: "direct" | "orchestrator";
 }): Promise<{ updated: true }> {
 	assertOrganization(organizationId);
 
@@ -1226,7 +1259,7 @@ export async function updateConversationSettings({
 		const metadata = mergeAdvisorSettings(
 			asMetadataObject(row.metadata),
 			settings,
-			{ executionModeOnlyIfUnset: false },
+			{ executionModeOnlyIfUnset: false, engine },
 		);
 		await tx.agentConversation.update({
 			where: { id },

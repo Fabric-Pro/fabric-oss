@@ -92,17 +92,46 @@ export const OrganizationLogo = ({
 			<AvatarFallback
 				delayMs={logoSrc ? 300 : 0}
 				aria-label={name}
-				className="rounded-md bg-primary font-mono font-medium text-primary-foreground [font-size:calc(var(--monogram-size,2rem)*0.4)] leading-none tracking-tight"
+				className="rounded-md border border-[#EA580C]/30 bg-[#FFF3ED] text-[#EA580C] dark:border-[#FF8547]/30 dark:bg-[#EA580C]/20 dark:text-[#FF8547]"
 				style={
 					brandColor
 						? {
-								backgroundColor: brandColor,
-								color: inkForFill(brandColor),
+								backgroundColor: `${brandColor}1A`,
+								borderColor: `${brandColor}40`,
+								color: brandColor,
 							}
 						: undefined
 				}
 			>
-				{monogram}
+				<svg
+					viewBox="0 0 24 24"
+					fill="none"
+					aria-hidden="true"
+					className="size-[72%] shrink-0"
+				>
+					<path
+						d="M12 2.75 3.75 7.35 12 11.95 20.25 7.35 16.5 5.25"
+						stroke="currentColor"
+						strokeWidth="2.1"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+					/>
+					<path
+						d="M3.75 10.65v2.7L12 17.95l8.25-4.6v-2.7L12 15.25 3.75 10.65Z"
+						stroke="currentColor"
+						strokeWidth="1.9"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+					/>
+					<path
+						d="M3.75 16.55 12 21.25l8.25-4.7v-2.4"
+						stroke="currentColor"
+						strokeWidth="2.1"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+					/>
+				</svg>
+				<span className="sr-only">{monogram}</span>
 			</AvatarFallback>
 		</Avatar>
 	);

@@ -217,12 +217,26 @@ vi.mock("@copilotkit/react-core", () => ({
 		appendMessage: vi.fn(),
 	}),
 	useCopilotChatInternal: () => ({
-		messages: [],
+		messages: [
+			{
+				id: "proposal",
+				role: "assistant",
+				content: "Proposed changes",
+				toolCalls: [
+					{ id: "call", function: { name: "confirm_changes" } },
+				],
+			},
+		],
 		isLoading: copilotStore.isLoading,
 		setMessages: vi.fn(),
 		appendMessage: stageEnhance.appendMessage,
 	}),
 	useCopilotReadable: vi.fn(),
+}));
+
+const stampDiffOutcome = vi.hoisted(() => vi.fn());
+vi.mock("@saas/projects/hooks/use-diff-outcome-stamp", () => ({
+	useDiffOutcomeStamp: () => stampDiffOutcome,
 }));
 
 vi.mock("@copilotkit/react-ui", () => ({
@@ -954,6 +968,7 @@ async function answerSave(
 
 describe("StoryWorkspace — reaching a pending review from any maturation tab", () => {
 	beforeEach(() => {
+		stampDiffOutcome.mockClear();
 		mockUseHistoryEnabled.mockReturnValue(false);
 		copilotStore.isLoading = false;
 		copilotStore.agentDocument = "";
@@ -1103,6 +1118,7 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 	});
 
 	it("resolves the same draft from the questions tab as from the spec tab", async () => {
+		stampDiffOutcome.mockClear();
 		// Path A — approve from the banner, questions tab active.
 		const { unmount } = await pendingReviewOnQuestionsTab();
 		await click(bannerButton("pendingReview.approveAria"));
@@ -1127,6 +1143,7 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 		await runAgent(rerender, () => workspace());
 		await arriveAtConfirmation();
 		await click(screen.getByRole("button", { name: "approveAll" }));
+		expect(stampDiffOutcome).toHaveBeenCalledTimes(2);
 
 		expect(respondSpy).toHaveBeenCalledWith({ accepted: true });
 		expect(editorHtml()).toBe(fromBanner);
@@ -1165,6 +1182,7 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 	});
 
 	it("keeps the banner mounted with an inline error when the accept path throws", async () => {
+		stampDiffOutcome.mockClear();
 		await pendingReviewOnQuestionsTab();
 
 		spliceFailure.message = "pending-decision splice failed";
@@ -1177,6 +1195,7 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 			within(banner).getByTestId("cross-tab-review-error"),
 		).toHaveTextContent("pendingReview.resolveFailed");
 		expect(respondSpy).not.toHaveBeenCalled();
+		expect(stampDiffOutcome).not.toHaveBeenCalled();
 		expect(hasDiffMarks()).toBe(true);
 		expect(bannerButton("pendingReview.approveAria")).toBeEnabled();
 	});
@@ -1279,6 +1298,7 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 		expect(serverStore.fetchCount).toBe(1);
 		expect(savedDescriptions()).toHaveLength(0);
 		expect(respondSpy).not.toHaveBeenCalled();
+		expect(stampDiffOutcome).not.toHaveBeenCalled();
 		expect(hasDiffMarks()).toBe(true);
 
 		await act(async () => {
@@ -1308,6 +1328,7 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 		).toHaveTextContent("pendingReview.resolveFailed");
 		expect(savedDescriptions()).toHaveLength(0);
 		expect(respondSpy).not.toHaveBeenCalled();
+		expect(stampDiffOutcome).not.toHaveBeenCalled();
 		expect(hasDiffMarks()).toBe(true);
 	});
 
@@ -1326,6 +1347,7 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 			within(banner).getByTestId("cross-tab-review-error"),
 		).toHaveTextContent("pendingReview.resolveFailed");
 		expect(respondSpy).not.toHaveBeenCalled();
+		expect(stampDiffOutcome).not.toHaveBeenCalled();
 		expect(hasDiffMarks()).toBe(true);
 		expect(specTabReviewControls().length).toBeGreaterThan(0);
 	});
@@ -1458,6 +1480,31 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 	 * up on its own. Only the persisted body can tell the two paths apart —
 	 * everything else about the accept looks identical either way.
 	 */
+
+	it.each(["accept", "reject"] as const)(
+		"stamps a chat %s once",
+		async (action) => {
+			stampDiffOutcome.mockClear();
+			await pendingReviewOnQuestionsTab();
+			const card = await renderChatConfirmCard();
+			await click(
+				within(card).getByTestId(
+					action === "accept" ? "confirm-button" : "reject-button",
+				),
+			);
+			await waitFor(() =>
+				expect(stampDiffOutcome).toHaveBeenCalledTimes(1),
+			);
+			expect(stampDiffOutcome).toHaveBeenCalledWith(
+				expect.objectContaining({
+					messageId: "proposal",
+					toolCallId: "call",
+				}),
+				action === "accept" ? "accepted" : "rejected",
+			);
+		},
+	);
+
 	it("saves the mid-run answer when the draft is resolved from the chat sidebar card", async () => {
 		await pendingReviewOnQuestionsTab();
 
@@ -1615,6 +1662,7 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 		};
 
 		beforeEach(() => {
+			stampDiffOutcome.mockClear();
 			recordOutcome.mockClear();
 			stageEnhance.resolvePrompt.mockReset();
 			stageEnhance.resolvePrompt.mockResolvedValue({
@@ -1772,6 +1820,7 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
  */
 describe("StoryWorkspace — Auto-propose answers switch follows the recommendation gate", () => {
 	beforeEach(() => {
+		stampDiffOutcome.mockClear();
 		mockUseHistoryEnabled.mockReturnValue(false);
 		copilotStore.isLoading = false;
 		copilotStore.agentDocument = "";

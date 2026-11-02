@@ -925,7 +925,7 @@ function DecisionPreview({
 					</span>
 				)}
 			</div>
-			<h3 className="font-serif text-xl font-normal leading-tight">
+			<h3 className="text-xl font-semibold leading-tight">
 				{title.trim() || "Untitled decision"}
 			</h3>
 			<div className="space-y-4">

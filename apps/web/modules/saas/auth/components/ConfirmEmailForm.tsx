@@ -1,8 +1,8 @@
 "use client";
 
 import { authClient } from "@repo/auth/client";
-import { safeRelativePath } from "@shared/lib/safe-redirect";
 import { useRouter } from "@shared/hooks/router";
+import { safeRelativePath } from "@shared/lib/safe-redirect";
 import { Button } from "@ui/components/button";
 import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
@@ -79,7 +79,7 @@ export function ConfirmEmailForm({ token }: Props) {
 	return (
 		<div className="flex min-h-[40vh] flex-col items-center justify-center gap-6 text-center">
 			<div className="space-y-2">
-				<h1 className="font-serif text-2xl">
+				<h1 className="font-semibold text-2xl">
 					{t("auth.confirmEmail.heading")}
 				</h1>
 				<p className="max-w-md text-sm text-muted-foreground">

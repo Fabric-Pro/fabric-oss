@@ -1,27 +1,24 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { installedConsumers } from "./installed-consumers.mjs";
+import "./chat-dependency-security.node-test.mjs";
+import "./pg-instrumentation-security.node-test.mjs";
+import "./graphql-security.node-test.mjs";
+import "./dependency-upgrades.node-test.mjs";
+import "./agent-cli-security.node-test.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
-const patchPath = "patches/@graphql-tools__utils@10.10.1.patch";
-// Reviewed backport of upstream commit 0b9529f1988fd36186a7c106a6efe0356f1b7f2e
-// (mergeDeep) and of the setObjectKeyPath changes in upstream commits
-// 20d36a5c6eb8fd5524420988e01a48618c450d70 and
-// 19f5b3373fd7ace0688d19950fc529ce8347952a (mergeIncrementalResult).
-const patchHash =
-	"b529f122ce959d0691cbe9ff7c411d816b4e12858753cc52ad289f083878539a";
-const utilsConsumers = [
-	["@graphql-tools/executor", "1.4.11"],
-	["@graphql-tools/merge", "9.1.3"],
-	["@graphql-tools/schema", "10.0.27"],
-	["@graphql-yoga/plugin-defer-stream", "3.16.2"],
-	["graphql-yoga", "5.16.2"],
-];
 const proxyConsumers = [
 	["express", "4.21.2"],
 	["express", "5.2.1"],
@@ -35,108 +32,7 @@ const sourceMapConsumers = [
 	["source-map-loader", "5.0.0"],
 ];
 
-function patchBlock(text) {
-	const block = /^patchedDependencies:\n((?:[ \t]+[^\n]*(?:\n|$))*)/m.exec(
-		text,
-	);
-	assert.ok(block, "Missing patchedDependencies block");
-	return block[1];
-}
-
-function verifyMetadata(workspace, lockfile, patch) {
-	assert.ok(
-		patchBlock(workspace).includes(
-			`  '@graphql-tools/utils@10.10.1': ${patchPath}\n`,
-		),
-		"Register the exact-version GraphQL utils patch",
-	);
-	assert.equal(createHash("sha256").update(patch).digest("hex"), patchHash);
-	assert.ok(
-		patchBlock(lockfile).includes(
-			`  '@graphql-tools/utils@10.10.1': ${patchHash}\n`,
-		),
-		"The lockfile must record the reviewed patch hash",
-	);
-	const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
-		"yaml",
-	);
-	const parsedLockfile = yaml.parse(lockfile);
-	const utilsName = "@graphql-tools/utils";
-	const reviewedReference = `10.10.1(patch_hash=${patchHash})(graphql@16.14.2)`;
-	assert.deepEqual(
-		Object.keys(parsedLockfile.packages).filter((key) =>
-			key.startsWith(`${utilsName}@`),
-		),
-		[`${utilsName}@10.10.1`],
-		"Only the reviewed utils package version may use the advisory exception",
-	);
-	assert.deepEqual(
-		Object.keys(parsedLockfile.snapshots).filter((key) =>
-			key.startsWith(`${utilsName}@`),
-		),
-		[`${utilsName}@${reviewedReference}`],
-		"Every utils snapshot must resolve the reviewed patch",
-	);
-	for (const [section, owners] of [
-		["importer", parsedLockfile.importers],
-		["snapshot", parsedLockfile.snapshots],
-	]) {
-		for (const [owner, metadata] of Object.entries(owners)) {
-			for (const group of [
-				"dependencies",
-				"devDependencies",
-				"optionalDependencies",
-			]) {
-				for (const [name, dependency] of Object.entries(
-					metadata[group] ?? {},
-				)) {
-					const reference =
-						section === "importer"
-							? dependency.version
-							: dependency;
-					if (
-						name === utilsName ||
-						reference?.startsWith(`${utilsName}@`) ||
-						dependency.specifier?.startsWith(`npm:${utilsName}@`)
-					) {
-						assert.equal(
-							reference?.replace(`${utilsName}@`, ""),
-							reviewedReference,
-							`Every utils ${section} reference must resolve the reviewed patch: ${owner}`,
-						);
-					}
-				}
-			}
-		}
-	}
-	const references = [
-		...lockfile.matchAll(/^ {6}'@graphql-tools\/utils': (.+)$/gm),
-	];
-	assert.equal(references.length, utilsConsumers.length);
-	for (const [, reference] of references) {
-		assert.equal(
-			reference,
-			`10.10.1(patch_hash=${patchHash})(graphql@16.14.2)`,
-		);
-	}
-	for (const [name, version] of utilsConsumers) {
-		const escaped = `${name}@${version}`.replace(
-			/[.*+?^${}()|[\]\\]/g,
-			"\\$&",
-		);
-		assert.ok(
-			new RegExp(
-				`^  '?${escaped}\\([^\\n]+\\)'?:\\n(?: {4,}[^\\n]*\\n)*? {6}'@graphql-tools/utils': 10\\.10\\.1\\(patch_hash=${patchHash}\\)\\(graphql@16\\.14\\.2\\)$`,
-				"m",
-			).test(lockfile),
-			`${name}@${version} must resolve the reviewed patch`,
-		);
-	}
-	assert.ok(
-		lockfile.includes(
-			`  '@graphql-tools/utils@10.10.1(patch_hash=${patchHash})(graphql@16.14.2)':`,
-		),
-	);
+function verifyMetadata(lockfile) {
 	for (const [name, version, consumers] of [
 		["proxy-addr", "2.0.8", proxyConsumers],
 		["source-map-js", "1.2.2", sourceMapConsumers],
@@ -160,31 +56,21 @@ function verifyMetadata(workspace, lockfile, patch) {
 	}
 }
 
-function installedConsumers(name, version) {
-	const store = join(root, "node_modules/.pnpm");
-	const prefix = `${name.replaceAll("/", "+")}@${version}`;
-	const entries = readdirSync(store).filter(
-		(value) => value === prefix || value.startsWith(`${prefix}_`),
+function runChild(script, args = []) {
+	const result = spawnSync(
+		process.execPath,
+		["--input-type=module", "-e", script, ...args],
+		{
+			encoding: "utf8",
+			timeout: 3000,
+			maxBuffer: 65536,
+			windowsHide: true,
+		},
 	);
-	assert.ok(
-		entries.length > 0,
-		`Missing installed ${name}@${version}; run pnpm install --frozen-lockfile`,
-	);
-	return entries.map((entry) => {
-		const manifestPath = join(
-			store,
-			entry,
-			"node_modules",
-			name,
-			"package.json",
-		);
-		return {
-			require: createRequire(manifestPath),
-			manifest: JSON.parse(readFileSync(manifestPath, "utf8")),
-		};
-	});
+	assert.ifError(result.error);
+	assert.equal(result.signal, null, result.stderr);
+	assert.equal(result.status, 0, result.stderr || result.stdout);
 }
-
 function verifyParentRange(semver, manifest, dependency, version) {
 	const range =
 		manifest.dependencies?.[dependency] ??
@@ -442,17 +328,14 @@ test("zod advisory exception is limited to reviewed versions in the real lockfil
 	}
 });
 
-// GHSA-xcx6-jx8p-x3h5 is fixed only in @azure/msal-node 7.1.0, which neither
-// @azure/identity 4.x (^6 at most) nor @microsoft/agents-hosting (exact 5.x
-// pin) accepts. The OSV exception rests on two facts this file enforces: only
-// the two reviewed 5.x copies (or a fixed release) are locked, and no
+// Identity 4.14.1 accepts fixed MSAL >=7.1.0. The separate agents-hosting
+// parent still pins 5.1.5. The OSV exception rests on two enforced facts: only
+// that reviewed 5.x copy (or a fixed release) is locked, and no
 // first-party code reaches the authorization-code flow the advisory affects.
 function isReviewedMsalNodeVersion(version, semver) {
 	return (
 		semver.valid(version) !== null &&
-		(version === "5.1.5" ||
-			version === "5.2.1" ||
-			semver.gte(version, "7.1.0"))
+		(version === "5.1.5" || semver.gte(version, "7.1.0"))
 	);
 }
 
@@ -475,7 +358,7 @@ function verifyMsalNodeLockfile(text, yaml, semver) {
 			const version = key.slice("@azure/msal-node@".length).split("(")[0];
 			assert.ok(
 				isReviewedMsalNodeVersion(version, semver),
-				`Unreviewed or vulnerable @azure/msal-node resolution: ${key} (${section}); GHSA-xcx6-jx8p-x3h5 permits only reviewed 5.1.5/5.2.1 or >=7.1.0`,
+				`Unreviewed or vulnerable @azure/msal-node resolution: ${key} (${section}); GHSA-xcx6-jx8p-x3h5 permits only reviewed 5.1.5 or >=7.1.0`,
 			);
 		}
 	}
@@ -501,12 +384,17 @@ function callSiteSearchHits(result) {
 	return result.stdout.split("\n").filter(Boolean);
 }
 
-function firstPartyMsalAuthCodeHits(pattern = msalAuthCodeEntryPoints) {
+function firstPartyMsalAuthCodeHits(
+	pattern = msalAuthCodeEntryPoints,
+	cwd = root,
+	noIndex = false,
+) {
 	return callSiteSearchHits(
 		spawnSync(
 			"git",
 			[
 				"grep",
+				...(noIndex ? ["--no-index"] : []),
 				"-nE",
 				pattern,
 				"--",
@@ -519,11 +407,50 @@ function firstPartyMsalAuthCodeHits(pattern = msalAuthCodeEntryPoints) {
 				"*.mjs",
 				"*.cjs",
 				":!tooling/scripts/src/dependency-security.node-test.mjs",
+				":!tooling/scripts/src/dependency-upgrades.node-test.mjs",
 			],
-			{ cwd: root, encoding: "utf8", maxBuffer: 1 << 20 },
+			{ cwd, encoding: "utf8", maxBuffer: 1 << 20 },
 		),
 	);
 }
+
+test("msal-node source search excludes only its reviewed security guards", () => {
+	const artifacts = join(root, "artifacts");
+	mkdirSync(artifacts, { recursive: true });
+	const directory = mkdtempSync(join(artifacts, "msal-call-sites-"));
+	const fixtures = {
+		"tooling/scripts/src/dependency-security.node-test.mjs":
+			'const fixture = "acquireTokenByCode";',
+		"tooling/scripts/src/dependency-upgrades.node-test.mjs":
+			'installedDependency(parent.require, "@azure/msal-node");',
+		"apps/web/session.ts":
+			'import { ConfidentialClientApplication } from "@azure/msal-node";',
+		"packages/api/auth.ts":
+			'client.acquireTokenByCode({ code: "synthetic" });',
+		"apps/web/session.test.ts": "useIdentityPlugin(syntheticPlugin);",
+	};
+	try {
+		for (const [path, source] of Object.entries(fixtures)) {
+			const target = join(directory, path);
+			mkdirSync(dirname(target), { recursive: true });
+			writeFileSync(target, source);
+		}
+		const hits = firstPartyMsalAuthCodeHits(undefined, directory, true);
+		assert.equal(hits.length, 3);
+		assert.ok(hits.some((hit) => hit.startsWith("apps/web/session.ts:")));
+		assert.ok(hits.some((hit) => hit.startsWith("packages/api/auth.ts:")));
+		assert.ok(
+			hits.some((hit) => hit.startsWith("apps/web/session.test.ts:")),
+		);
+		assert.equal(
+			hits.some((hit) => hit.startsWith("tooling/")),
+			false,
+		);
+	} finally {
+		assert.ok(directory.startsWith(join(artifacts, "msal-call-sites-")));
+		rmSync(directory, { recursive: true });
+	}
+});
 
 test("msal-node call-site search treats failed or partial searches as failures", () => {
 	const ok = { error: undefined, signal: null, stderr: "" };
@@ -552,11 +479,12 @@ test("msal-node advisory exception accepts only reviewed 5.x or versions at leas
 	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
 		"semver",
 	);
-	for (const version of ["5.1.5", "5.2.1", "7.1.0", "7.1.1", "8.0.0"]) {
+	for (const version of ["5.1.5", "7.1.0", "7.1.1", "8.0.0"]) {
 		assert.equal(isReviewedMsalNodeVersion(version, semver), true, version);
 	}
 	for (const version of [
 		"5.1.4",
+		"5.2.1",
 		"5.6.0",
 		"6.0.0",
 		"7.0.2",
@@ -788,277 +716,21 @@ test("each immediate parent's original range accepts the locked security version
 	}
 });
 
-function runChild(script, args = []) {
-	const result = spawnSync(
-		process.execPath,
-		["--input-type=module", "-e", script, ...args],
-		{
-			encoding: "utf8",
-			timeout: 3000,
-			maxBuffer: 65536,
-		},
-	);
-	assert.ifError(result.error);
-	assert.equal(result.signal, null, result.stderr);
-	assert.equal(result.status, 0, result.stderr || result.stdout);
-}
-
-test("reviewed utils patch and fixed dependency versions cover every lockfile consumer", () => {
-	const workspace = readFileSync(join(root, "pnpm-workspace.yaml"), "utf8");
+test("fixed proxy and source-map versions cover every lockfile consumer", () => {
 	const lockfile = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
-	const patch = readFileSync(join(root, patchPath));
-	verifyMetadata(workspace, lockfile, patch);
-	for (const [badWorkspace, badLockfile, badPatch] of [
-		[
-			workspace.replace("patchedDependencies:", "removed:"),
-			lockfile,
-			patch,
-		],
-		[
-			workspace,
-			lockfile.replace("patchedDependencies:", "removed:"),
-			patch,
-		],
-		[
-			workspace,
-			lockfile.replace(
-				`10.10.1(patch_hash=${patchHash})(graphql@16.14.2)`,
-				"10.10.1(graphql@16.14.2)",
-			),
-			patch,
-		],
-		[workspace, lockfile.replaceAll(patchHash, "removed"), patch],
-		[workspace, lockfile, Buffer.concat([patch, Buffer.from("changed")])],
-		[
-			workspace,
-			lockfile.replace("proxy-addr: 2.0.8", "proxy-addr: 2.0.7"),
-			patch,
-		],
-		[
-			workspace,
-			lockfile.replace("source-map-js: 1.2.2", "source-map-js: 1.2.1"),
-			patch,
-		],
+	verifyMetadata(lockfile);
+	for (const [name, version] of [
+		["proxy-addr", "2.0.7"],
+		["source-map-js", "1.2.1"],
 	]) {
 		assert.throws(() =>
-			verifyMetadata(badWorkspace, badLockfile, badPatch),
-		);
-	}
-});
-
-test("the advisory exception cannot hide an additional unpatched direct utils dependency", async (t) => {
-	const workspace = readFileSync(join(root, "pnpm-workspace.yaml"), "utf8");
-	const lockfile = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
-	const patch = readFileSync(join(root, patchPath));
-	for (const version of ["10.10.1", "12.0.0"]) {
-		const reference = `${version}(graphql@16.14.2)`;
-		let additionalDependency = lockfile.replace(
-			/^importers:\n/m,
-			`importers:\n\n  packages/example-utils-consumer:\n    dependencies:\n      '@graphql-tools/utils':\n        specifier: ${version}\n        version: ${reference}\n`,
-		);
-		if (version !== "10.10.1") {
-			additionalDependency = additionalDependency.replace(
-				/^packages:\n/m,
-				`packages:\n\n  '@graphql-tools/utils@${version}':\n    resolution: {integrity: sha512-ZXhhbXBsZQ==}\n    peerDependencies:\n      graphql: ^16.0.0\n`,
-			);
-		}
-		additionalDependency = additionalDependency.replace(
-			/^snapshots:\n/m,
-			`snapshots:\n\n  '@graphql-tools/utils@${reference}':\n    dependencies:\n      graphql: 16.14.2\n`,
-		);
-		await t.test(`unpatched direct utils@${version}`, () => {
-			assert.throws(
-				() => verifyMetadata(workspace, additionalDependency, patch),
-				`An additional unpatched direct utils@${version} must fail the exception check`,
-			);
-		});
-	}
-});
-
-test("all direct importer dependency groups require the reviewed utils reference", () => {
-	const workspace = readFileSync(join(root, "pnpm-workspace.yaml"), "utf8");
-	const lockfile = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
-	const patch = readFileSync(join(root, patchPath));
-	const reviewedReference = `10.10.1(patch_hash=${patchHash})(graphql@16.14.2)`;
-	for (const group of [
-		"dependencies",
-		"devDependencies",
-		"optionalDependencies",
-	]) {
-		const directImporter = lockfile.replace(
-			/^importers:\n/m,
-			`importers:\n\n  packages/example-utils-consumer:\n    ${group}:\n      '@graphql-tools/utils':\n        specifier: 10.10.1\n        version: ${reviewedReference}\n`,
-		);
-		assert.doesNotThrow(() =>
-			verifyMetadata(workspace, directImporter, patch),
-		);
-		assert.throws(
-			() =>
-				verifyMetadata(
-					workspace,
-					directImporter.replace(
-						`version: ${reviewedReference}`,
-						"version: 10.10.1(graphql@16.14.2)",
-					),
-					patch,
+			verifyMetadata(
+				lockfile.replace(
+					`${name}: ${name === "proxy-addr" ? "2.0.8" : "1.2.2"}`,
+					`${name}: ${version}`,
 				),
-			/Every utils importer reference must resolve the reviewed patch/,
+			),
 		);
-	}
-});
-
-for (const [name, version] of utilsConsumers) {
-	test(`${name}: effective CJS and ESM mergeDeep reject prototype-chain merge keys`, async () => {
-		for (const { require } of installedConsumers(name, version)) {
-			assert.equal(
-				require("@graphql-tools/utils/package.json").version,
-				"10.10.1",
-			);
-			const cjs = require.resolve("@graphql-tools/utils");
-			const esm = join(dirname(dirname(cjs)), "esm/index.js");
-			// Each actual parent resolution is exercised in a process of its own,
-			// including the advisory's Function.prototype path. An old package
-			// cannot damage the test runner if the assertion detects pollution.
-			for (const entry of [cjs, esm]) {
-				runChild(
-					`
-					import assert from "node:assert/strict";
-					const { mergeDeep } = await import(process.argv[1]);
-					const marker = "fabricSecurityMergeProbe";
-					for (const respectPrototype of [false, true]) {
-						for (const key of ["__proto__", "constructor", "prototype"]) {
-							const merged = mergeDeep([{ nested: { safe: 1 } }, JSON.parse('{"nested":{"' + key + '":{"' + marker + '":true},"ordinary":2}}')], respectPrototype);
-							assert.equal(merged.nested.safe, 1);
-							assert.equal(merged.nested.ordinary, 2);
-							assert.equal(Object.hasOwn(merged.nested, key), false);
-							assert.equal(merged.nested[marker], undefined);
-						}
-						mergeDeep([{}, JSON.parse('{"constructor":{"__proto__":{"' + marker + '":true}}}')], respectPrototype);
-						assert.equal(Object.prototype[marker], undefined);
-						assert.equal(Function.prototype[marker], undefined);
-						// The own-property check must also avoid benign inherited
-						// properties, beyond the three explicitly blocked keys.
-						Object.defineProperty(Object.prototype, "inherited", { value: { previous: 1 }, writable: true, configurable: true });
-						const ordinary = mergeDeep([{}, { inherited: { next: 2 } }], respectPrototype);
-						assert.deepEqual(ordinary.inherited, { next: 2 });
-						assert.deepEqual(Object.prototype.inherited, { previous: 1 });
-						delete Object.prototype.inherited;
-					}
-				`,
-					[pathToFileURL(entry).href],
-				);
-			}
-		}
-	});
-	test(`${name}: ordinary merge options remain compatible in CJS and ESM`, async () => {
-		for (const { require } of installedConsumers(name, version)) {
-			const cjs = require.resolve("@graphql-tools/utils");
-			for (const { mergeDeep } of [
-				require("@graphql-tools/utils"),
-				await import(
-					pathToFileURL(join(dirname(dirname(cjs)), "esm/index.js"))
-						.href
-				),
-			]) {
-				assert.deepEqual(
-					mergeDeep([
-						{ nested: { a: 1 }, list: [1] },
-						{ nested: { b: 2 }, list: [2] },
-					]),
-					{ nested: { a: 1, b: 2 }, list: [1, 2] },
-				);
-				assert.deepEqual(
-					mergeDeep([{ list: [1] }, { list: [2] }], false, true),
-					{ list: [1, 2] },
-				);
-				assert.deepEqual(
-					mergeDeep([[{ a: 1 }], [{ b: 2 }]], false, true, true),
-					[{ a: 1, b: 2 }],
-				);
-				assert.deepEqual(
-					mergeDeep([[1], [2, 3]], false, true, true),
-					[1, 2, 3],
-				);
-				class Resolver {
-					method() {
-						return "ordinary";
-					}
-				}
-				const merged = mergeDeep([new Resolver(), { value: 2 }], true);
-				assert.ok(merged instanceof Resolver);
-				assert.equal(merged.method(), "ordinary");
-				assert.equal(merged.value, 2);
-			}
-		}
-	});
-	test(`${name}: effective CJS and ESM mergeIncrementalResult reject unsafe path segments`, async () => {
-		for (const { require } of installedConsumers(name, version)) {
-			const cjs = require.resolve("@graphql-tools/utils");
-			const esm = join(dirname(dirname(cjs)), "esm/index.js");
-			// GHSA-c4qx-w738-7hr3: a non-primitive segment such as ["__proto__"]
-			// passed the string-equality guard and coerced to "__proto__" on
-			// access. Each resolution runs in a process of its own, as above.
-			for (const entry of [cjs, esm]) {
-				runChild(
-					`
-					import assert from "node:assert/strict";
-					const { mergeIncrementalResult } = await import(process.argv[1]);
-					const marker = "fabricSecurityIncrementalProbe";
-					const unsafePaths = [
-						[["__proto__"], marker],
-						[{ toString: () => "__proto__" }, marker],
-						["__proto__", marker],
-						["constructor", "prototype", marker],
-					];
-					for (const path of unsafePaths) {
-						const executionResult = { data: {} };
-						mergeIncrementalResult({ executionResult, incrementalResult: { path, data: { polluted: true } } });
-						mergeIncrementalResult({ executionResult, incrementalResult: { path: [...path, 0], items: [true] } });
-						assert.equal(Object.prototype[marker], undefined);
-						assert.equal(Object.prototype.polluted, undefined);
-						assert.deepEqual(executionResult, { data: {} });
-					}
-					const executionResult = { data: { node: { a: 1 }, list: [{ id: 1 }] } };
-					mergeIncrementalResult({ executionResult, incrementalResult: { path: ["node"], data: { b: 2 } } });
-					mergeIncrementalResult({ executionResult, incrementalResult: { path: ["list", 1], items: [{ id: 2 }, { id: 3 }] } });
-					mergeIncrementalResult({ executionResult, incrementalResult: { incremental: [{ path: ["node", "c"], data: { d: 4 } }] } });
-					assert.deepEqual(executionResult, { data: { node: { a: 1, b: 2, c: { d: 4 } }, list: [{ id: 1 }, { id: 2 }, { id: 3 }] } });
-				`,
-					[pathToFileURL(entry).href],
-				);
-			}
-		}
-	});
-}
-
-test("GraphQL executor preserves variable-driven include and skip directives", async () => {
-	for (const { require } of installedConsumers(
-		"@graphql-tools/executor",
-		"1.4.11",
-	)) {
-		const { execute } = require("@graphql-tools/executor");
-		const { buildSchema, parse } = require("graphql");
-		const schema = buildSchema(
-			"type Query { item: Item } type Item { visible: String hidden: String }",
-		);
-		const document = parse(
-			"query($show: Boolean!, $hide: Boolean!) { item @include(if: $show) { visible hidden @skip(if: $hide) } }",
-		);
-		const rootValue = { item: { visible: "yes", hidden: "no" } };
-		for (const [show, hide, expected] of [
-			[true, true, { item: { visible: "yes" } }],
-			[true, false, rootValue],
-			[false, true, {}],
-		]) {
-			const result = await execute({
-				schema,
-				document,
-				rootValue,
-				variableValues: { show, hide },
-			});
-			assert.equal(result.errors, undefined);
-			assert.deepEqual(JSON.parse(JSON.stringify(result.data)), expected);
-		}
 	}
 });
 

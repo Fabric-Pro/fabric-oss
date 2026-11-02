@@ -33,10 +33,19 @@ vi.mock("sonner", () => ({
 	toast: { error: vi.fn(), dismiss: vi.fn(), success: vi.fn() },
 }));
 
-vi.mock("@saas/payments/lib/ai-usage-limit-toast", () => ({
-	isAiUsageLimitExceededPayload: () => false,
-	useShowAiUsageLimitToast: () => vi.fn(),
-}));
+// The usage-limit payload is recognized only where a case turns it on.
+const usageLimit = vi.hoisted(() => ({ recognized: false, show: vi.fn() }));
+vi.mock("@saas/payments/lib/ai-usage-limit-toast", async (importOriginal) => {
+	const real =
+		await importOriginal<
+			typeof import("@saas/payments/lib/ai-usage-limit-toast")
+		>();
+	return {
+		isAiUsageLimitExceededPayload: (value: unknown) =>
+			usageLimit.recognized && real.isAiUsageLimitExceededPayload(value),
+		useShowAiUsageLimitToast: () => usageLimit.show,
+	};
+});
 
 const setOrganizationUse = vi.hoisted(() => vi.fn());
 vi.mock("@shared/lib/orpc-client", () => ({
@@ -56,6 +65,30 @@ async function fireAt(url: string, makeResponse: () => Response) {
 	window.fetch = vi.fn(makeResponse) as unknown as typeof window.fetch;
 	render(<CopilotFetchErrorInterceptor />);
 	await window.fetch(url, { method: "POST" });
+}
+
+const SIDEKICK_RUN_URL = "/api/agents/runtime/agent/agent-builder-sidekick/run";
+
+/** An agent runtime run that ends with the refusal `fabric` describes. */
+function runtimeRunError(fabric: Record<string, unknown>): Response {
+	const frame = {
+		type: "RUN_ERROR",
+		message: fabric.error,
+		code: fabric.code,
+		metadata: { fabric },
+	};
+	const encoder = new TextEncoder();
+	return new Response(
+		new ReadableStream({
+			start(controller) {
+				controller.enqueue(
+					encoder.encode(`data: ${JSON.stringify(frame)}\n\n`),
+				);
+				controller.close();
+			},
+		}),
+		{ status: 200, headers: { "Content-Type": "text/event-stream" } },
+	);
 }
 
 describe("no AI failure is silent", () => {
@@ -267,6 +300,25 @@ describe("a run that fails after the response already succeeded", () => {
 			},
 		);
 	}
+
+	it("does not toast an abort-coded run error", async () => {
+		await fireAt("/api/copilotkit", () =>
+			runErrorStream(
+				'data: {"type":"RUN_ERROR","message":"This operation was aborted","code":"abort"}\n',
+			),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(toast.error).not.toHaveBeenCalled();
+	});
+
+	it("toasts an incomplete stream with an abort message", async () => {
+		await fireAt("/api/copilotkit", () =>
+			runErrorStream(
+				'data: {"type":"RUN_ERROR","message":"This operation was aborted","code":"INCOMPLETE_STREAM"}\n',
+			),
+		);
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+	});
 
 	it("surfaces a RUN_ERROR delivered inside a 200, which produced no toast at all", async () => {
 		await fireAt("/api/copilotkit", () =>
@@ -683,5 +735,111 @@ describe("every ChatGPT plan for the member's work is spent", () => {
 		});
 		await waitFor(() => expect(toast.error).toHaveBeenCalled());
 		expect(toastCalls()[0][1].action).toBeUndefined();
+	});
+
+	// The agent runtime answers a chat route's refusal as the run's RUN_ERROR
+	// on a 200, with the route's body in `metadata.fabric`.
+	describe("inside an agent runtime stream", () => {
+		async function runEndsWith(
+			fabric: Record<string, unknown>,
+			organizationId = "org-1",
+		) {
+			window.fetch = vi.fn(() =>
+				runtimeRunError(fabric),
+			) as unknown as typeof window.fetch;
+			renderInOrganization(new QueryClient());
+			await window.fetch(SIDEKICK_RUN_URL, {
+				method: "POST",
+				headers: { "x-fabric-organization-id": organizationId },
+			});
+			await waitFor(() => expect(toast.error).toHaveBeenCalled());
+			return toastCalls()[0];
+		}
+
+		it("shows the spent-plan copy and the personal-key action for a plan refusal inside a runtime stream", async () => {
+			const [title, opts] = await runEndsWith({
+				status: 429,
+				error: "Every ChatGPT plan this work may use has no usage left in this window.",
+				code: "subscription_sharing_usage_limit_exceeded",
+				resetAt: "2026-10-08T16:37:00.000Z",
+				personalKeyOption: true,
+			});
+
+			expect(title).toBe("The ChatGPT plan has no usage left");
+			expect(opts.description).toMatch(
+				/All ChatGPT plans for your work are spent until /,
+			);
+			expect(opts.description).toMatch(/Use your own key meanwhile/);
+			expect(opts.action?.label).toBe("configurePersonalFallback");
+		});
+
+		it("shows the reconnect copy for CHATGPT_PLAN_UNAVAILABLE inside a stream", async () => {
+			const [title] = await runEndsWith({
+				status: 409,
+				error: "Reconnect the ChatGPT plan.",
+				code: "CHATGPT_PLAN_UNAVAILABLE",
+			});
+
+			expect(title).toBe("Reconnect your ChatGPT plan");
+		});
+
+		it("shows the model-not-served copy for CHATGPT_PLAN_MODEL_NOT_SERVED inside a stream", async () => {
+			const [title] = await runEndsWith({
+				status: 409,
+				error: "The ChatGPT plan does not serve example-model.",
+				code: "CHATGPT_PLAN_MODEL_NOT_SERVED",
+			});
+
+			expect(title).toBe("Model not available on the ChatGPT plan");
+		});
+
+		it("offers no plan switch for a stream refusal in another organization than the one on screen", async () => {
+			const [title, opts] = await runEndsWith(
+				{
+					status: 429,
+					error: "Every ChatGPT plan this work may use has no usage left in this window.",
+					code: "subscription_sharing_usage_limit_exceeded",
+					resetAt: "2026-10-08T16:37:00.000Z",
+					apiBillingOption: true,
+				},
+				"org-2",
+			);
+
+			expect(title).toBe("The ChatGPT plan has no usage left");
+			expect(opts.action).toBeUndefined();
+		});
+	});
+});
+
+describe("a usage limit inside an agent runtime stream", () => {
+	afterEach(() => {
+		usageLimit.recognized = false;
+	});
+
+	it("shows the usage-limit toast for an AI_USAGE_LIMIT_EXCEEDED RUN_ERROR carrying its payload", async () => {
+		usageLimit.recognized = true;
+		const payload = {
+			limitId: "limit-1",
+			dimension: "TOKENS",
+			window: "MONTHLY",
+			used: "100",
+			max: "100",
+			manageLimitsUrl: "https://example.com/limits",
+		};
+
+		await fireAt(SIDEKICK_RUN_URL, () =>
+			runtimeRunError({
+				status: 429,
+				error: "AI usage limit exceeded",
+				code: "AI_USAGE_LIMIT_EXCEEDED",
+				data: payload,
+			}),
+		);
+
+		await waitFor(() =>
+			expect(usageLimit.show).toHaveBeenCalledWith(payload),
+		);
+		expect(usageLimit.show).toHaveBeenCalledTimes(1);
+		expect(toast.error).not.toHaveBeenCalled();
 	});
 });

@@ -316,7 +316,7 @@ export function ScanFindingsList({
 				// Also refresh the roadmap/board AND any open work-item detail so
 				// every view reflects the new blocked state (chip, filter, badge).
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.key(),
+					queryKey: orpc.projects.stories.board.key(),
 				});
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.stories.get.key(),
@@ -1137,7 +1137,7 @@ function SeveritySectionBlock({
 		<section aria-labelledby={headingId} className="space-y-2.5">
 			<h3
 				id={headingId}
-				className="flex items-center gap-2 font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.12em]"
+				className="flex items-center gap-2 font-semibold text-[11px] text-muted-foreground uppercase tracking-wide"
 			>
 				<span
 					aria-hidden="true"

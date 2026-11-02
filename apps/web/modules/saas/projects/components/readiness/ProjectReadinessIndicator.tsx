@@ -66,7 +66,7 @@ export function ProjectReadinessIndicator() {
 			} Select to ${isExpanded ? "collapse" : "expand"} the checklist.`}
 			className={cn(
 				"inline-flex items-center gap-2 rounded-full border border-border/60 px-2.5 py-1",
-				"text-xs transition-colors hover:bg-accent focus-visible:outline-none",
+				"text-xs transition-colors hover:bg-accent focus-visible:outline-hidden",
 				"focus-visible:ring-2 focus-visible:ring-ring",
 				tone.text,
 			)}

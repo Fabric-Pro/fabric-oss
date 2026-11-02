@@ -66,7 +66,7 @@ export function errorMessageOf(error: unknown): string {
 
 export function runtimeHeaders(
 	organizationId: string | undefined,
-): HeadersInit {
+): Record<string, string> {
 	return {
 		"Content-Type": "application/json",
 		Accept: "text/event-stream",

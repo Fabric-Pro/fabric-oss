@@ -485,7 +485,7 @@ export function LinkedInPostPanel({
 			{working?.hasBody ? (
 				<section className="space-y-2">
 					<h3 className="publishing-label">Working LinkedIn post</h3>
-					<div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4">
+					<div className="space-y-3 rounded-lg border border-border bg-muted/40 p-4">
 						{/* EDITABLE. The five long-form panels have had a
 						    textarea over the adopted body since 2B-3; TWEET and
 						    LINKEDIN_POST were deferred there and never picked
@@ -723,7 +723,7 @@ export function LinkedInPostPanel({
 									key={option.label}
 									className="rounded-lg border border-border p-3"
 								>
-									<p className="font-medium text-foreground text-xs uppercase tracking-[0.14em]">
+									<p className="font-medium text-foreground text-xs uppercase tracking-wide">
 										{option.label}
 									</p>
 									<p className="mt-1 whitespace-pre-wrap text-muted-foreground text-sm leading-relaxed">
@@ -914,7 +914,7 @@ export function LinkedInPostPanel({
 										// text, so a short candidate floated its
 										// button level with its neighbours' prose
 										// and the three read as ragged.
-										className={`flex h-full flex-col overflow-hidden rounded-xl border bg-card ${
+										className={`flex h-full flex-col overflow-hidden rounded-lg border bg-card ${
 											isSaved
 												? "border-primary/60"
 												: "border-border"
@@ -925,7 +925,7 @@ export function LinkedInPostPanel({
 											    `h4`, so the outline a screen
 											    reader walks keeps naming which
 											    candidate is which. */}
-											<h4 className="font-normal text-[11px] text-muted-foreground uppercase tracking-[0.2em]">
+											<h4 className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.2em]">
 												{option.label}
 											</h4>
 											<span className="text-muted-foreground text-xs tabular-nums">

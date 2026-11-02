@@ -100,7 +100,7 @@ export function InstructionsEmptyState({
 				</p>
 			</div>
 			<Card className="flex flex-col items-center gap-5 px-12 py-16 text-center">
-				<div className="flex size-14 items-center justify-center rounded-xl bg-muted">
+				<div className="flex size-14 items-center justify-center rounded-lg bg-muted">
 					<TerminalSquareIcon
 						className="size-6 text-muted-foreground"
 						aria-hidden="true"

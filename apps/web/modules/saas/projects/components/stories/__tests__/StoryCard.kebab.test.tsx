@@ -66,13 +66,22 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						queryFn: async () => ({ status: "idle" }),
 					}),
 				},
-				list: {
+				board: {
 					queryKey: (...args: unknown[]) => listQueryKey(...args),
 				},
 				// PmSyncCloudToggle invalidates `stories.get` after a
 				// successful toggle PATCH; stub the query-key shape so the
 				// component can mount.
 				get: {
+					queryOptions: (o: { input: unknown }) => ({
+						queryKey: ["stories-get", o.input],
+						queryFn: async () => ({
+							story: {
+								description:
+									"Fabric-side description with extra local detail.",
+							},
+						}),
+					}),
 					queryKey: () => ["stories-get"],
 				},
 				// useAiReprioritizeStory refreshes the priority-history caches

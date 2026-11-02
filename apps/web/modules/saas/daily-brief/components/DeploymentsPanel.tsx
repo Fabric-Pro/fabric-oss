@@ -45,7 +45,7 @@ export function DeploymentsPanel({
 	return (
 		<section
 			aria-label="Deployments"
-			className="rounded-2xl border border-border bg-card p-6"
+			className="rounded-lg border border-border bg-card p-6"
 		>
 			<header className="flex items-center gap-2">
 				<RocketIcon

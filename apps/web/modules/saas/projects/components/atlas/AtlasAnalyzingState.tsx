@@ -80,7 +80,7 @@ export function AtlasAnalyzingState({
 	const isLongRunning = elapsedMs !== null && elapsedMs > LONG_RUN_MS;
 
 	return (
-		<div className="rounded-2xl border border-border/60 bg-card/70 py-16">
+		<div className="rounded-lg border border-border/60 bg-card/70 py-16">
 			<EmptyState>
 				<EmptyStateIcon>
 					<Loader2Icon
@@ -88,7 +88,7 @@ export function AtlasAnalyzingState({
 						className="size-10 text-primary motion-safe:animate-spin"
 					/>
 				</EmptyStateIcon>
-				<EmptyStateTitle className="font-serif text-2xl font-normal">
+				<EmptyStateTitle className="text-2xl font-semibold">
 					{t("analyzing.title")}
 				</EmptyStateTitle>
 				<EmptyStateDescription className="max-w-md">

@@ -968,13 +968,23 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 	useEffect(() => {
 		// Estimates follow the messages; the reported usage, window and
 		// model come from the stream and must survive this recalculation.
-		setContextInfo((prev) => ({
-			...calculateContextInfo(messages),
-			usage: prev.usage,
-			maxTokens: prev.usage ? prev.maxTokens : MAX_CONTEXT_TOKENS,
-			modelId: prev.modelId,
-			modelLabel: prev.modelLabel,
-		}));
+		setContextInfo((prev) => {
+			const next = {
+				...calculateContextInfo(messages),
+				usage: prev.usage,
+				maxTokens: prev.usage ? prev.maxTokens : MAX_CONTEXT_TOKENS,
+				modelId: prev.modelId,
+				modelLabel: prev.modelLabel,
+			};
+			return Object.keys(next).every((key) =>
+				Object.is(
+					prev[key as keyof ContextInfo],
+					next[key as keyof ContextInfo],
+				),
+			)
+				? prev
+				: next;
+		});
 		messagesRef.current = messages;
 	}, [messages, calculateContextInfo]);
 

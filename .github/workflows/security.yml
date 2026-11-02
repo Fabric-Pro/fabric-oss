@@ -131,7 +131,7 @@ jobs:
 
       - name: Setup Node.js
         id: node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           check-latest: true
@@ -316,7 +316,7 @@ jobs:
       # reviewed change, not as a side effect of a wrapper bump.
       - name: TruffleHog — verified secrets
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        uses: trufflesecurity/trufflehog@4dd8831c5f12599465d4d45c3c447b4018a34c85 # v3.97.9
+        uses: trufflesecurity/trufflehog@31ce31ee1abbcc7dc8eee5764c17121c3044c8b2 # v3.99.7
         with:
           # GHCR Docker tag for the scanner binary — note the missing `v`
           # prefix. TruffleHog's git tags carry one (v3.95.8) but the published

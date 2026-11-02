@@ -7,7 +7,10 @@ import { createAgentTask, db, getAgentById, listAgents } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import type { Hono } from "hono";
 import { withCorrelationMemo } from "../../lib/temporal-correlation";
-import { requireScope } from "../external-api/middleware/api-key-auth";
+import {
+	requireScope,
+	requireV1OwnerPermission,
+} from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { notFound, ok, resolveV1Context } from "./helpers";
 
@@ -85,6 +88,14 @@ export function registerAgentRoutes(
 			);
 			if ("error" in ctx) {
 				return c.json({ error: { message: ctx.error } }, ctx.status);
+			}
+			const permissionRefusal = await requireV1OwnerPermission(
+				c,
+				ctx,
+				"agents:execute",
+			);
+			if (permissionRefusal) {
+				return permissionRefusal;
 			}
 
 			// Verify agent exists and is accessible

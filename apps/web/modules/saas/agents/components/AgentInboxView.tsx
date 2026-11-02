@@ -140,7 +140,7 @@ export function AgentInboxView({
 
 	return (
 		<div className="space-y-6">
-			<div className="rounded-2xl border border-border/70 bg-card/70 p-6 shadow-sm">
+			<div className="rounded-lg border border-border/70 bg-card/70 p-6 shadow-sm">
 				<div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
 					<div>
 						<div className="mb-3 inline-flex items-center gap-2 rounded-full border border-primary/15 bg-primary/8 px-2.5 py-1 text-primary text-xs font-medium">
@@ -177,7 +177,7 @@ export function AgentInboxView({
 				))}
 			</div>
 
-			<div className="rounded-2xl border border-border/70 bg-background/70 shadow-sm">
+			<div className="rounded-lg border border-border/70 bg-background/70 shadow-sm">
 				{isLoading ? (
 					<div className="space-y-4 p-5">
 						{Array.from({ length: 6 }).map((_, index) => (

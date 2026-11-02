@@ -5,14 +5,18 @@
  *
  * The export draws a diagram fence with beautiful-mermaid (or a figure
  * template, decided before this), by that engine's own header rules:
- * xychart, sequence, class and ER diagrams are recognised on the fence's
- * very first line; anything else goes to its flowchart parser, which skips
- * `%%` lines and accepts only a `stateDiagram` or a `graph`/`flowchart` with
- * a direction. Anything else (a frontmatter block, gantt, pie, mindmap, a
- * mermaid `timeline`, a header it rejects) the live page draws with
- * mermaid.js, and print keeps only a captioned placeholder for it, as long
- * as mermaid.js knows the kind. A fence neither engine knows draws nowhere
- * and prints nothing.
+ * sequence, class and ER diagrams are recognised on the fence's very first
+ * line; anything else goes to its flowchart parser, which skips `%%` lines
+ * and accepts only a `stateDiagram` or a `graph`/`flowchart` with a
+ * direction. An xychart is recognised on its first line that is not a `%%`
+ * comment: the engine itself finds it only on the very first line, so the
+ * export and the live page hand it the chart without its leading `%%` lines
+ * (`withoutLeadingChartComments`), and a `%% figure: bars` fence its
+ * template refuses prints as a plain chart. Anything else (a frontmatter
+ * block, gantt, pie, mindmap, a mermaid `timeline`, a header it rejects) the
+ * live page draws with mermaid.js, and print keeps only a captioned
+ * placeholder for it, as long as mermaid.js knows the kind. A fence neither
+ * engine knows draws nowhere and prints nothing.
  *
  * Both sides read the fence's `diagramPrintability`, and the live page
  * numbers a figure (`isLiveFigureCounted`) exactly when the export does, so
@@ -40,6 +44,35 @@ function headerLine(trimmed: string): string | undefined {
 }
 
 /**
+ * An xychart header as beautiful-mermaid detects one: it lower-cases the
+ * line first, and its chart parser drops `%%` lines.
+ */
+const XYCHART_HEADER = /^xychart(-beta)?\b/i;
+
+/** A `%%` comment line, a directive among them, as the export strips it. */
+const COMMENT_LINE = /^\s*%%/;
+
+/**
+ * The fence as beautiful-mermaid should be handed it: an xychart whose
+ * header follows `%%` lines (a marker, caption or figure line) without the
+ * leading blank and `%%` lines, since that engine finds the kind on the
+ * very first line only; anything else as it is. The live page draws a
+ * chart through this, and the export strips every `%%` line of a kind it
+ * prints, which draws a chart the same, so a `%% figure: bars` fence its
+ * template refuses looks and numbers alike on the page and in print.
+ */
+export function withoutLeadingChartComments(source: string): string {
+	const lines = source.split("\n");
+	const header = lines.findIndex(
+		(line) => line.trim() !== "" && !COMMENT_LINE.test(line),
+	);
+	if (header <= 0 || !XYCHART_HEADER.test(lines[header].trim())) {
+		return source;
+	}
+	return lines.slice(header).join("\n");
+}
+
+/**
  * Which kind the export would draw the trimmed fence as, or null when only
  * the live page can draw it. Fed the fence as written, without its caption
  * line and before anything else is stripped from it.
@@ -49,7 +82,6 @@ export function printableDiagramKind(
 ): PrintableDiagramKind | null {
 	const firstLine = trimmed.split(/[\n;]/)[0]?.trim().toLowerCase() ?? "";
 	if (
-		/^xychart(-beta)?\b/.test(firstLine) ||
 		/^sequencediagram\s*$/.test(firstLine) ||
 		/^classdiagram\s*$/.test(firstLine) ||
 		/^erdiagram\s*$/.test(firstLine)
@@ -57,6 +89,9 @@ export function printableDiagramKind(
 		return "other";
 	}
 	const header = headerLine(trimmed);
+	if (header !== undefined && XYCHART_HEADER.test(header)) {
+		return "other";
+	}
 	if (
 		header !== undefined &&
 		(/^stateDiagram(-v2)?\s*$/i.test(header) ||
@@ -174,6 +209,7 @@ export function figurePaletteOf(paint: ProposalThemePaint): FigurePalette {
 		ink: paint.ink,
 		onInk: paint.onInk,
 		primary: paint.primary,
+		label: paint.label,
 		onPrimary: paint.onPrimary,
 		tint: paint.tint,
 		border: paint.border,

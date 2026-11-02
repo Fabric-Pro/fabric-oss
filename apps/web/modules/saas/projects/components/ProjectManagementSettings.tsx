@@ -1656,7 +1656,7 @@ export function ProjectManagementSettings({ project }: Props) {
 				{isPMConfigured && savedContainerName && (
 					<Link
 						href={syncLogUrl}
-						className="inline-flex items-center gap-1 rounded-sm text-sm text-primary hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+						className="inline-flex items-center gap-1 rounded-sm text-sm text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 					>
 						View sync log on the Roadmap
 						<ArrowRightIcon className="size-3.5" aria-hidden />

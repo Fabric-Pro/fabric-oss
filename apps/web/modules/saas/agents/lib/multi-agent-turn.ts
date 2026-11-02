@@ -4,6 +4,7 @@ import {
 	PLAN_MODEL_AGENT_PREFIX,
 	type SelectedAgent,
 } from "../components/FabricChat/shared/agent-selection";
+import { readPersistedModel } from "./direct-chat-history";
 import { settleUnfinishedToolCalls } from "./direct-chat-turns";
 import {
 	type AgentResponse,
@@ -275,6 +276,7 @@ function endAgent(
 		pendingApproval: null,
 		interrupts: [],
 		textBreak: false,
+		model: end.model ?? agent.model,
 	};
 	if (end.code === AI_USAGE_LIMIT_CODE) {
 		return { ...settled, status: "idle", isError: false };
@@ -416,6 +418,7 @@ function recordedEnd(
 		answer: agent.answer,
 		error: agent.error,
 		toolCalls: recordedToolCalls(agent),
+		model: readPersistedModel(agent.record),
 	};
 }
 

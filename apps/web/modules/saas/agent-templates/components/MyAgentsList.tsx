@@ -110,10 +110,10 @@ export function MyAgentsList({
 						placeholder="Search agents..."
 						value={searchQuery}
 						onChange={(e) => setSearchQuery(e.target.value)}
-						className="pl-10 h-11 rounded-xl bg-slate-100 dark:bg-slate-900 border-0"
+						className="pl-10 h-11 rounded-lg bg-slate-100 dark:bg-slate-900 border-0"
 					/>
 				</div>
-				<Button asChild className="rounded-xl h-11 gap-2">
+				<Button asChild className="rounded-lg h-11 gap-2">
 					<Link href={createAgentPath}>
 						<PlusIcon className="h-4 w-4" />
 						Create Custom Agent
@@ -122,8 +122,8 @@ export function MyAgentsList({
 			</div>
 
 			{instances.length === 0 ? (
-				<div className="text-center py-16 border rounded-2xl bg-slate-50 dark:bg-slate-900/50">
-					<div className="w-16 h-16 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto">
+				<div className="text-center py-16 border rounded-lg bg-slate-50 dark:bg-slate-900/50">
+					<div className="w-16 h-16 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto">
 						<RobotIcon className="h-8 w-8 text-muted-foreground" />
 					</div>
 					<h3 className="text-lg font-semibold mt-4">
@@ -137,7 +137,7 @@ export function MyAgentsList({
 							: "Create your first agent from scratch or start from a template"}
 					</p>
 					<div className="flex items-center justify-center gap-3">
-						<Button asChild className="rounded-xl gap-2">
+						<Button asChild className="rounded-lg gap-2">
 							<Link href={createAgentPath}>
 								<PlusIcon className="h-4 w-4" />
 								Create Custom Agent
@@ -146,7 +146,7 @@ export function MyAgentsList({
 						<Button
 							asChild
 							variant="outline"
-							className="rounded-xl gap-2"
+							className="rounded-lg gap-2"
 						>
 							<Link href={basePath}>
 								<SparklesIcon className="h-4 w-4" />
@@ -183,7 +183,7 @@ export function MyAgentsList({
 												return (
 													<div
 														className={cn(
-															"w-10 h-10 rounded-xl bg-gradient-to-br flex items-center justify-center shadow-sm flex-shrink-0",
+															"w-10 h-10 rounded-lg bg-gradient-to-br flex items-center justify-center shadow-sm flex-shrink-0",
 															gradient,
 														)}
 													>

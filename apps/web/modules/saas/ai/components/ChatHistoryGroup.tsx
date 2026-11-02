@@ -159,7 +159,7 @@ function EditorialRow({
 			data-history-row-id={item.id}
 			className={cn(
 				"w-full rounded-md border border-transparent px-3 py-2.5 text-left",
-				"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card",
+				"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card",
 				"motion-safe:transition-colors motion-safe:duration-150",
 				isSelected
 					? "border-border bg-accent text-foreground"

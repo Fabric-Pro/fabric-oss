@@ -199,7 +199,7 @@ export function ProjectGeneralSettings({ project }: Props) {
 									e.target.value as typeof projectPhase,
 								)
 							}
-							className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+							className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 						>
 							<option value="">Not set</option>
 							<option value="DISCOVERY_PLANNING">
@@ -282,7 +282,7 @@ export function ProjectGeneralSettings({ project }: Props) {
 
 			{/* Save bar */}
 			{hasChanges && (
-				<div className="sticky bottom-4 flex items-center justify-end gap-3 rounded-xl border border-border bg-card p-4 shadow-lg">
+				<div className="sticky bottom-4 flex items-center justify-end gap-3 rounded-lg border border-border bg-card p-4 shadow-lg">
 					<p className="mr-auto text-sm text-muted-foreground">
 						Unsaved changes
 					</p>

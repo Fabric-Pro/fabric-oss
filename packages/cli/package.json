@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/cli",
-	"version": "0.7.5",
+	"version": "0.8.0",
 	"description": "CLI for the Fabric AI platform",
 	"keywords": [
 		"fabric",
@@ -51,6 +51,6 @@
 		"tsup": "^8.0.0",
 		"tsx": "^4.21.0",
 		"typescript": "5.9.3",
-		"vitest": "^4.1.11"
+		"vitest": "^4.1.12"
 	}
 }

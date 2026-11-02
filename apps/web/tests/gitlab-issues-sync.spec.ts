@@ -243,7 +243,7 @@ async function installGitLabMocks(
 	);
 
 	await page.route(
-		"**/api/rpc/projects/stories/listPMTickets**",
+		"**/api/rpc/projects/stories/boardPMTickets**",
 		async (route: Route) => {
 			const req = route.request();
 			let input: ListPMTicketsInput = { projectId: TEST_DATA.projectId };
@@ -524,7 +524,7 @@ test.describe("GitLab Issues sync (REST adapter) @rest", () => {
 
 		// Inject a CONFLICT story into the stories list.
 		await page.route(
-			"**/api/rpc/projects/stories/list**",
+			"**/api/rpc/projects/stories/board**",
 			async (route: Route) => {
 				await route.fulfill({
 					status: 200,

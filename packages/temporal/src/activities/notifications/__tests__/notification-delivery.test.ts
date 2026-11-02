@@ -4,7 +4,7 @@
  * Email: sends to the recipient's account address (no verification gate) and
  * never throws (AC-2). Webhook: signs the raw body with HMAC-SHA256 in the
  * `X-Fabric-Signature` header, POSTs, and throws on non-2xx so Temporal retries
- * (AC-3/AC-6/AC-10). Mocks the DB, mail, encryption, and global fetch.
+ * (AC-3/AC-6/AC-10). Mocks the DB, mail, encryption, and outbound guard.
  */
 
 import { createHmac } from "node:crypto";
@@ -16,6 +16,7 @@ const {
 	findMember,
 	getDeliveryPrefs,
 	sendEmail,
+	safeFetchOutbound,
 	unsafeReason,
 } = vi.hoisted(() => ({
 	findNotification: vi.fn(),
@@ -23,6 +24,7 @@ const {
 	findMember: vi.fn(),
 	getDeliveryPrefs: vi.fn(),
 	sendEmail: vi.fn(),
+	safeFetchOutbound: vi.fn(),
 	unsafeReason: vi.fn(),
 }));
 
@@ -48,8 +50,10 @@ vi.mock("@repo/utils", () => ({
 			? path
 			: `${TEST_BASE_URL}${path.startsWith("/") ? "" : "/"}${path}`,
 }));
-vi.mock("@repo/utils/url-security", () => ({
+vi.mock("@repo/utils/url-security", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/utils/url-security")>()),
 	getUnsafeUrlReason: (url: string) => unsafeReason(url),
+	safeFetchOutbound: (...args: unknown[]) => safeFetchOutbound(...args),
 }));
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -93,7 +97,10 @@ beforeEach(() => {
 	});
 	sendEmail.mockResolvedValue(true);
 	unsafeReason.mockReturnValue(null); // URL is safe by default
-	global.fetch = vi.fn();
+	safeFetchOutbound.mockResolvedValue({ ok: true, status: 200 });
+	global.fetch = vi.fn(() => {
+		throw new Error("notification webhook bypassed outbound guard");
+	});
 });
 
 describe("sendNotificationEmailActivity", () => {
@@ -153,16 +160,16 @@ describe("buildWebhookPayload", () => {
 
 describe("sendNotificationWebhookActivity", () => {
 	it("POSTs a body signed with HMAC-SHA256 in X-Fabric-Signature (AC-3)", async () => {
-		(global.fetch as any).mockResolvedValue({ ok: true, status: 200 });
-
 		const result = await sendNotificationWebhookActivity({
 			notificationId: "n1",
 		});
 		expect(result).toEqual({ delivered: true });
 
-		const [url, init] = (global.fetch as any).mock.calls[0];
+		const [url, init] = safeFetchOutbound.mock.calls[0];
 		expect(url).toBe("https://hooks.example.com/fabric");
 		expect(init.method).toBe("POST");
+		expect(init.redirect).toBe("error");
+		expect(init.signal).toBeInstanceOf(AbortSignal);
 		expect(init.headers["Content-Type"]).toBe("application/json");
 		expect(init.headers["X-Fabric-Delivery-Id"]).toBe("n1");
 		expect(init.headers["X-Fabric-Event"]).toBe("STORY_MENTION");
@@ -179,10 +186,34 @@ describe("sendNotificationWebhookActivity", () => {
 	});
 
 	it("throws on a non-2xx response so Temporal retries (AC-6/AC-10)", async () => {
-		(global.fetch as any).mockResolvedValue({ ok: false, status: 500 });
+		safeFetchOutbound.mockResolvedValue({ ok: false, status: 500 });
 		await expect(
 			sendNotificationWebhookActivity({ notificationId: "n1" }),
 		).rejects.toThrow(/500/);
+	});
+
+	it("settles a DNS-time outbound refusal as an unsafe URL", async () => {
+		const blockedLookup: NodeJS.ErrnoException = new Error(
+			"Blocked outbound connection to hooks.example.com: Private network access (10.x.x.x) is not allowed",
+		);
+		blockedLookup.code = "EACCES";
+		safeFetchOutbound.mockRejectedValue(
+			new TypeError("fetch failed", { cause: blockedLookup }),
+		);
+
+		const result = await sendNotificationWebhookActivity({
+			notificationId: "n1",
+		});
+
+		expect(result).toEqual({ delivered: false, reason: "unsafe-url" });
+	});
+
+	it("throws a generic network error so Temporal retries", async () => {
+		safeFetchOutbound.mockRejectedValue(new Error("connection reset"));
+
+		await expect(
+			sendNotificationWebhookActivity({ notificationId: "n1" }),
+		).rejects.toThrow("connection reset");
 	});
 
 	it("blocks an unsafe (SSRF) target URL without fetching or throwing", async () => {
@@ -191,7 +222,7 @@ describe("sendNotificationWebhookActivity", () => {
 			notificationId: "n1",
 		});
 		expect(result).toEqual({ delivered: false, reason: "unsafe-url" });
-		expect(global.fetch).not.toHaveBeenCalled();
+		expect(safeFetchOutbound).not.toHaveBeenCalled();
 	});
 
 	it("skips (no throw) when webhook is no longer configured", async () => {
@@ -208,7 +239,7 @@ describe("sendNotificationWebhookActivity", () => {
 			delivered: false,
 			reason: "webhook-not-configured",
 		});
-		expect(global.fetch).not.toHaveBeenCalled();
+		expect(safeFetchOutbound).not.toHaveBeenCalled();
 	});
 });
 
@@ -242,7 +273,7 @@ describe("a recipient who has left the organization (Fizzy #2340)", () => {
 			delivered: false,
 			reason: "recipient-not-a-member",
 		});
-		expect(global.fetch).not.toHaveBeenCalled();
+		expect(safeFetchOutbound).not.toHaveBeenCalled();
 	});
 
 	it("still delivers an account-level notification, which has no organization to leave", async () => {

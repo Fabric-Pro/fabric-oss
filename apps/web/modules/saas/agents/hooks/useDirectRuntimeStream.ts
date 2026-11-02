@@ -967,13 +967,23 @@ export function useDirectRuntimeStream(
 	);
 
 	useEffect(() => {
-		setContextInfo((prev) => ({
-			...calculateContextInfo(messages),
-			usage: prev.usage,
-			maxTokens: prev.usage ? prev.maxTokens : MAX_CONTEXT_TOKENS,
-			modelId: prev.modelId,
-			modelLabel: prev.modelLabel,
-		}));
+		setContextInfo((prev) => {
+			const next = {
+				...calculateContextInfo(messages),
+				usage: prev.usage,
+				maxTokens: prev.usage ? prev.maxTokens : MAX_CONTEXT_TOKENS,
+				modelId: prev.modelId,
+				modelLabel: prev.modelLabel,
+			};
+			return Object.keys(next).every((key) =>
+				Object.is(
+					prev[key as keyof ContextInfo],
+					next[key as keyof ContextInfo],
+				),
+			)
+				? prev
+				: next;
+		});
 		messagesRef.current = messages;
 	}, [messages, calculateContextInfo]);
 

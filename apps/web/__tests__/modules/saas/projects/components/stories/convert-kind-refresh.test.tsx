@@ -816,7 +816,7 @@ describe("StoryActionsMenu — the conversion reports a rewrite that is only sta
 		// shape is the thing worth pinning.
 		await waitFor(() => {
 			expect(mockInvalidateQueries).toHaveBeenCalledWith({
-				queryKey: orpc.projects.stories.list.key({
+				queryKey: orpc.projects.stories.board.key({
 					input: { projectId: "proj-1" },
 				}),
 			});

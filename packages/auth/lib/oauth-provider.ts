@@ -147,8 +147,8 @@ export const OAUTH_DISABLED_PATHS = [
 
 /**
  * Someone who has to change their password first may not authorize an agent.
- * Read live rather than from the session: the session's cookie cache can be
- * minutes behind the flag in either direction.
+ * Read the account flag independently at the authorization boundary instead of
+ * relying on a session projection for this credential-granting decision.
  */
 async function mustChangePasswordFirst(userId: string): Promise<boolean> {
 	const user = await db.user.findUnique({

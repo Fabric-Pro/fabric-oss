@@ -35,12 +35,18 @@ import { requireOrgMembership } from "../../lib/membership";
  * scope a tool demands but the API rejects is a key that cannot be made. Both
  * had happened.
  *
- * Every entry names something the minting role already holds. Keep it that way
- * — that premise is what lets `maxScopesForRole` clamp only the viewer role.
+ * Nearly every entry names something a member already holds, which is what
+ * lets `maxScopesForRole` clamp only the viewer role. `audit_log:read` and
+ * `audit_log:export` are the exception: a member can mint them, but the audit
+ * routes check the admin-level permission on each call and refuse that member.
+ * A scope is a ceiling, not a grant. Whether a call re-checks the creator's
+ * live permission depends on the route; see the note under the viewer table.
  */
 export const ORG_API_KEY_SCOPES = [
 	"mcp:read", // Read MCP tools/resources
 	"mcp:write", // Execute MCP tools
+	"browser:read", // List automation templates
+	"browser:write", // Run browser automation tasks, templates and web content extraction
 	"ai:models:read", // Read available AI models
 	"ai:models:resolve", // Resolve AI model configuration
 	"projects:read", // Read project data
@@ -56,6 +62,8 @@ export const ORG_API_KEY_SCOPES = [
 	"orgs:read", // List and read organizations
 	"features:read", // Read features, bugs and their decision history
 	"features:write", // Create and update features, bugs and their tasks
+	"kanban:read", // List the caller's Fabric Kanban queue and read their identity
+	"kanban:write", // Pull and complete the caller's Fabric Kanban items
 	"workspaces:read", // Read workspaces and run RAG queries
 	"workflows:read", // Read workflows and their executions
 	"workflows:write", // Create, edit, publish, pause and resume workflows
@@ -117,6 +125,8 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  * |------------------------|-----------------------------|---------|
  * | `mcp:read`             | `MCP_READ`                  | yes     |
  * | `mcp:write`            | `MCP_UPDATE`/`MCP_CONNECT`  | no      |
+ * | `browser:read`         | `REPORT_TEMPLATE_READ`      | yes     |
+ * | `browser:write`        | `AGENT_EXECUTE`/`CONTEXT_CREATE`/`REPORT_TEMPLATE_MANAGE` | no |
  * | `ai:models:read`       | `AI_MODEL_RESOLVE` (below)  | no      |
  * | `ai:models:resolve`    | `AI_MODEL_RESOLVE`          | no      |
  * | `projects:read`        | `PROJECT_READ`              | yes     |
@@ -127,6 +137,8 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  * | `orgs:read`            | `ORG_READ`                  | yes     |
  * | `features:read`        | `STORY_READ`                | yes     |
  * | `features:write`       | `STORY_CREATE`/`STORY_UPDATE` | no    |
+ * | `kanban:read`          | `STORY_READ` (live)         | yes     |
+ * | `kanban:write`         | `STORY_UPDATE` (live)       | no      |
  * | `workspaces:read`      | `WORKSPACE_READ`            | yes     |
  * | `workflows:read`       | `WORKSPACE_READ`            | yes     |
  * | `workflows:write`      | `WORKSPACE_CREATE`/`_UPDATE`| no      |
@@ -143,8 +155,15 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  * | `system_health:read`   | none — any authenticated    | yes     |
  * | `status_updates:read`  | none — any authenticated     | yes    |
  *
- * Seven rows are worth their own sentence, because reading the scope name is
+ * Some rows are worth their own sentence, because reading the scope name is
  * not enough to get them right:
+ *
+ *   - `browser:read` reaches the template list on `REPORT_TEMPLATE_READ`,
+ *     which a viewer holds. It belongs in the viewer's key vocabulary.
+ *   - `browser:write` reaches task execution and content ingestion on
+ *     `AGENT_EXECUTE` or `CONTEXT_CREATE`, and template execution on
+ *     `REPORT_TEMPLATE_MANAGE`. A viewer does not hold these permissions,
+ *     so the viewer clamp excludes it even though the tool checks roles live.
  *
  *   - `memory:write` writes files into the Living Memory folders an
  *     administrator named, and on a direct-push folder the commit lands on the
@@ -202,21 +221,23 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  *     either the caller's own rows (chats are filtered by `userId`) or
  *     tenant-scoped/global status. Nothing there sits above the viewer role.
  *
- * This is a CREATION-TIME check against the role the caller holds right now.
- * It is not a live guarantee: like every other scope on a key, these survive
- * their owner's later demotion, and only `OWNER_PERMISSION_GATES` in
- * `external-api/middleware/api-key-auth.ts` re-checks anything at request time.
- * A member who mints `projects:write` and is then demoted to viewer keeps a
- * working write key — a known, pre-existing hole that this clamp neither closes
- * nor widens.
+ * This is a CREATION-TIME check against the role the caller holds right now;
+ * scopes still survive a later demotion. Privileged consumers therefore make
+ * their own live check: the browser tools on `/mcp`, `/api/v1` action gates and
+ * object-level project gates, and the organization-bound external routes
+ * covered by `OWNER_PERMISSION_GATES` in
+ * `external-api/middleware/api-key-auth.ts`. New consumers need the same
+ * request-time check for the permission behind their action.
  */
 const READ_ONLY_ORG_API_KEY_SCOPES: ReadonlySet<OrgApiKeyScope> = new Set([
 	"mcp:read",
+	"browser:read",
 	"projects:read",
 	"agents:read",
 	"agents:stream",
 	"orgs:read",
 	"features:read",
+	"kanban:read",
 	"workspaces:read",
 	"workflows:read",
 	"frames:read",
@@ -237,10 +258,11 @@ const READ_ONLY_ORG_API_KEY_SCOPES: ReadonlySet<OrgApiKeyScope> = new Set([
 /**
  * The ceiling on what `role` may request, or `null` for "no ceiling".
  *
- * Only the read-only role is clamped. A member's key is already bounded by the
- * premise quoted above — every scope it can name maps to something the member
- * holds — so clamping member-and-up would refuse requests that are not
- * escalations, and would be a behaviour change for existing callers.
+ * Only the read-only role is clamped. Apart from `audit_log:*` (see
+ * `ORG_API_KEY_SCOPES`), a member holds a permission behind every scope it can
+ * name. Some tools behind a scope need more, such as template execution under
+ * `browser:write`, and their live checks refuse that member. Clamping
+ * member-and-up would refuse requests that are not escalations.
  */
 function maxScopesForRole(role: string): ReadonlySet<OrgApiKeyScope> | null {
 	return role === "viewer" ? READ_ONLY_ORG_API_KEY_SCOPES : null;

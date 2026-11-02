@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { store, member, send } = await vi.hoisted(async () => {
+const { store, member, send, ownerPermission } = await vi.hoisted(async () => {
 	const { createWorkflowIntegrationStore } = await import(
 		"../../integrations/__tests__/procedures/workflow-integration-store"
 	);
@@ -9,6 +9,7 @@ const { store, member, send } = await vi.hoisted(async () => {
 		store: createWorkflowIntegrationStore(),
 		member: vi.fn(),
 		send: vi.fn(),
+		ownerPermission: { allowed: true },
 	};
 });
 vi.mock("@repo/database/prisma/client", () => ({
@@ -31,6 +32,19 @@ vi.mock("@repo/integrations", () => ({
 vi.mock("../../external-api/middleware/api-key-auth", () => ({
 	requireScope: () => async (_c: unknown, next: () => Promise<void>) =>
 		next(),
+	requireV1OwnerPermission: async (
+		c: { json: (body: unknown, status: number) => unknown },
+		_context: unknown,
+		scope: string,
+	) =>
+		ownerPermission.allowed
+			? null
+			: c.json(
+					{
+						error: `The key's owner no longer holds the access required for ${scope} in this organization`,
+					},
+					403,
+				),
 }));
 vi.mock("../helpers", () => ({
 	resolveV1Context: async () => ({
@@ -74,8 +88,22 @@ beforeEach(() => {
 	store.reset();
 	member.mockReset().mockResolvedValue({ id: "example-member" });
 	send.mockReset().mockResolvedValue({ ok: true });
+	ownerPermission.allowed = true;
 });
 describe("channel credential access", () => {
+	it("refuses a viewer's personal key before sending a message", async () => {
+		seed("actor", "OWNER_ONLY");
+		ownerPermission.allowed = false;
+
+		const response = await request();
+
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({
+			error: "The key's owner no longer holds the access required for channels:write in this organization",
+		});
+		expect(send).not.toHaveBeenCalled();
+	});
+
 	it("does not execute with a teammate's private bot token", async () => {
 		seed("teammate", "OWNER_ONLY");
 		expect((await request()).status).toBe(400);

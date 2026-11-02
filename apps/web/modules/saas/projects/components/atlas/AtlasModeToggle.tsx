@@ -95,7 +95,7 @@ export function AtlasModeToggle({
 				aria-label={t("label")}
 				onKeyDown={handleKeyDown}
 				className={cn(
-					"inline-flex items-center gap-1 rounded-xl border border-border/60 bg-muted/60 p-1",
+					"inline-flex items-center gap-1 rounded-lg border border-border/60 bg-muted/60 p-1",
 					disabled && "opacity-60",
 				)}
 			>
@@ -120,7 +120,7 @@ export function AtlasModeToggle({
 							disabled={disabled}
 							onClick={() => onChange(option.value)}
 							className={cn(
-								"flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+								"flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 								isActive
 									? "bg-card text-foreground shadow-sm"
 									: "text-muted-foreground hover:text-foreground",
@@ -146,7 +146,7 @@ export function AtlasModeToggle({
 					<button
 						type="button"
 						aria-label={t("infoLabel")}
-						className="cursor-help rounded-full p-1 text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						className="cursor-help rounded-full p-1 text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						<InfoIcon aria-hidden="true" className="size-4" />
 					</button>

@@ -132,7 +132,7 @@ export function StoryEvidence({
 
 			{spikeRuns.length > 0 && (
 				<div className="space-y-3">
-					<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						{t("spikeRuns", { count: spikeRuns.length })}
 					</p>
 					<ul className="space-y-3">
@@ -152,17 +152,17 @@ export function StoryEvidence({
 
 			{frames.length > 0 && (
 				<div className="space-y-3">
-					<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						{t("frames", { count: frames.length })}
 					</p>
-					<ul className="divide-y divide-border/50 rounded-2xl border border-border/60 bg-card">
+					<ul className="divide-y divide-border/50 rounded-lg border border-border/60 bg-card">
 						{frames.map((frame) => (
 							<li key={frame.id}>
 								<Link
 									href={`${basePath}/frames/${frame.id}`}
-									className="flex items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
+									className="flex items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden"
 								>
-									<span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+									<span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
 										<FrameIcon className="size-4" />
 									</span>
 									<span className="min-w-0 flex-1">

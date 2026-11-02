@@ -30,7 +30,7 @@ export function InstructionsPluginReport({ projectId }: { projectId: string }) {
 	return (
 		<section
 			data-testid="instructions-plugin-report"
-			className="rounded-[10px] border border-border bg-card px-5 py-3 text-sm"
+			className="rounded-lg border border-border bg-card px-5 py-3 text-sm"
 		>
 			<button
 				type="button"

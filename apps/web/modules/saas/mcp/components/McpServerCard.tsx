@@ -155,7 +155,7 @@ export function McpServerCard({
 		<div
 			data-managed-default={isManagedDefault ? "true" : undefined}
 			className={cn(
-				"group relative flex flex-col rounded-xl border bg-card transition-all",
+				"group relative flex flex-col rounded-lg border bg-card transition-all",
 				// Managed-default rows are informational, not actionable — drop
 				// the hover-lift so the card doesn't invite clicks.
 				isManagedDefault

@@ -8,15 +8,16 @@ export function CloudArrowLeftRightIcon(props: SVGProps<SVGSVGElement>) {
 			height="1em"
 			fill="none"
 			viewBox="0 0 24 24"
+			stroke="currentColor"
+			strokeWidth={1.5}
+			strokeLinecap="round"
+			strokeLinejoin="round"
 			aria-hidden="true"
 			{...props}
 		>
-			<path
-				fill="currentColor"
-				fillRule="evenodd"
-				d="M9 20.985a8.5 8.5 0 1 1 7.715-12.982A6.5 6.5 0 0 1 17 20.981V21H9v-.015ZM9 14l-3-3 3-3v2h4v2H9v2Zm6-2 3 3-3 3v-2h-4v-2h4v-2Z"
-				clipRule="evenodd"
-			/>
+			<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
+			<path d="m10 12-2 2 2 2" />
+			<path d="m14 12 2 2-2 2" />
 		</svg>
 	);
 }

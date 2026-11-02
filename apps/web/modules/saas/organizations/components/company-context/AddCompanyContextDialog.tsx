@@ -147,7 +147,7 @@ export function AddCompanyContextDialog({
 				{/* The shared tab bodies label their panels by these tab ids
 				    (`context-tab-{file|link|text}`). */}
 				<div
-					className="flex items-center gap-1 rounded-xl border border-border bg-card p-1.5"
+					className="flex items-center gap-1 rounded-lg border border-border bg-card p-1.5"
 					role="tablist"
 					aria-label={t("tabsLabel")}
 				>
@@ -170,7 +170,7 @@ export function AddCompanyContextDialog({
 								onKeyDown={handleTabKeyDown}
 								disabled={isLoading}
 								className={cn(
-									"flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 font-medium text-sm transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+									"flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 font-medium text-sm transition-colors focus-visible:outline-hidden focus-visible:ring-[3px] focus-visible:ring-ring",
 									isActive
 										? "bg-accent text-foreground"
 										: "text-muted-foreground hover:text-foreground",

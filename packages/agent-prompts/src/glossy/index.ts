@@ -32,6 +32,7 @@ export {
 export {
 	buildGlossyExtractInstructions,
 	buildGlossyExtractPrompt,
+	GLOSSY_EDIT_AUTO_KINDS,
 	GLOSSY_EDIT_INSTRUCTION_MAX_CHARS,
 	GLOSSY_EDIT_SOURCE_MAX_CHARS,
 	GLOSSY_EDITABLE_KINDS,

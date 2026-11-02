@@ -37,6 +37,7 @@ import type {
 	KeyFinding,
 	StructuredResearchReport,
 } from "../../hooks/useWorkflowTemplateStream";
+import { researchReportMarkdown } from "../../lib/research-report-markdown";
 import { ResearchReportCard } from "../FabricChat/cards/ResearchReportCard";
 
 interface WorkflowResultViewerProps {
@@ -53,6 +54,12 @@ interface WorkflowResultViewerProps {
 	instanceId?: string;
 	organizationId?: string | null;
 	projectId?: string;
+	/**
+	 * Save a structured report as a research artifact once it shows. False
+	 * for a result reopened from a saved conversation, whose artifact was
+	 * saved when it first showed (or never, when nobody watched it end).
+	 */
+	persistArtifact?: boolean;
 }
 
 function KeyFindingCard({
@@ -127,11 +134,27 @@ function SourcesList({ sources }: { sources: string[] }) {
 		<div className="space-y-2">
 			<div className="flex flex-wrap gap-2">
 				{displaySources.map((source, i) => {
-					let hostname = source;
+					let hostname: string | null = null;
 					try {
-						hostname = new URL(source).hostname;
+						const url = new URL(source);
+						if (
+							url.protocol === "http:" ||
+							url.protocol === "https:"
+						) {
+							hostname = url.hostname;
+						}
 					} catch {
-						// Keep original if not a valid URL
+						// A source description can be text instead of a URL.
+					}
+					if (!hostname) {
+						return (
+							<span
+								key={i}
+								className="px-2 py-1 text-xs text-muted-foreground"
+							>
+								{source}
+							</span>
+						);
 					}
 					return (
 						<a
@@ -163,60 +186,22 @@ function SourcesList({ sources }: { sources: string[] }) {
 	);
 }
 
-function toMarkdown(result: WorkflowResultViewerProps["result"]) {
-	if (result.structuredReport) {
-		return [
-			`# ${result.structuredReport.title}`,
-			"",
-			"## Executive Summary",
-			result.structuredReport.executiveSummary,
-			"",
-			...result.structuredReport.sections.flatMap((section) => [
-				`## ${section.heading}`,
-				section.content,
-				"",
-			]),
-			"## Methodology",
-			result.structuredReport.methodology,
-			"",
-			"## Sources",
-			...result.structuredReport.citedSources.map(
-				(source) => `- [${source.sourceType}] ${source.source}`,
-			),
-		].join("\n");
-	}
-
-	return [
-		"# Research Results",
-		"",
-		result.summary ? `## Summary\n${result.summary}\n` : "",
-		result.text ? `## Full Report\n${result.text}\n` : "",
-		result.keyFindings.length > 0
-			? `## Key Findings\n${result.keyFindings
-					.map(
-						(finding) =>
-							`### ${finding.theme} (${finding.confidence}% confidence)\n${finding.findings.map((item) => `- ${item}`).join("\n")}`,
-					)
-					.join("\n\n")}\n`
-			: "",
-		result.sources.length > 0
-			? `## Sources\n${result.sources.map((source) => `- ${source}`).join("\n")}`
-			: "",
-	].join("\n");
-}
-
 export function WorkflowResultViewer({
 	result,
 	instanceId,
 	organizationId,
 	projectId,
+	persistArtifact = true,
 }: WorkflowResultViewerProps) {
 	const [copied, setCopied] = useState(false);
 	const [artifactId, setArtifactId] = useState<string | null>(null);
 	const persistedSignatureRef = useRef<string | null>(null);
 	const queryClient = useQueryClient();
 
-	const reportMarkdown = useMemo(() => toMarkdown(result), [result]);
+	const reportMarkdown = useMemo(
+		() => researchReportMarkdown(result),
+		[result],
+	);
 	const reportTitle =
 		result.structuredReport?.title?.trim() || "Research Report";
 	const reportSignature = useMemo(
@@ -298,6 +283,7 @@ export function WorkflowResultViewer({
 
 	useEffect(() => {
 		if (
+			!persistArtifact ||
 			!result.structuredReport ||
 			createArtifactMutation.isPending ||
 			(artifactId && persistedSignatureRef.current === reportSignature) ||
@@ -320,6 +306,7 @@ export function WorkflowResultViewer({
 	}, [
 		artifactId,
 		createArtifactMutation,
+		persistArtifact,
 		projectId,
 		queryClient,
 		reportSignature,

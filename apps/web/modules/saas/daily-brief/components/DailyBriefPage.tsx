@@ -475,7 +475,7 @@ export function DailyBriefPage({
 			{summaryLine ? (
 				<section
 					aria-label="Brief summary"
-					className="rounded-2xl border border-border bg-muted/40 p-6"
+					className="rounded-lg border border-border bg-muted/40 p-6"
 				>
 					<span className="editorial-label">
 						{sinceLastReviewMode && cursor !== null

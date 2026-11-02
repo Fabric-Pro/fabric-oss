@@ -168,7 +168,7 @@
 		"menu": {
 			"accountSettings": "Kontoeinstellungen",
 			"admin": "Administration",
-			"aiChatbot": "Advisor",
+			"aiChatbot": "Genie",
 			"documentGenerator": "Dokument-Generator",
 			"organizationSettings": "Organisationseinstellungen",
 			"start": "Start",
@@ -512,6 +512,7 @@
 		"fallbackHeadline": "Release Note"
 	},
 	"common": {
+		"loading": "Wird geladen…",
 		"confirmation": {
 			"cancel": "Abbrechen",
 			"confirm": "Bestätigen"
@@ -1558,6 +1559,8 @@
 				"weave": {
 					"session": {
 						"terminated_on_exit": "Weave-Sitzung beendet",
+						"continuation_requested": "Fortsetzung der Coding-Sitzung angefordert",
+						"recovery_closed": "Wiederherstellung der Coding-Sitzung abgeschlossen",
 						"terminated_stale": "Weave-Sitzung abgebrochen (überfällig)"
 					}
 				},
@@ -2921,6 +2924,46 @@
 		"description": "Um weiterzumachen, wähle bitte einen Plan aus."
 	},
 	"projects": {
+		"remoteAgents": {
+			"recoveryWarning": "Das Ergebnis auf dem Server ist unbekannt. Prüfe den ursprünglichen Server auf eine verwaiste Sitzung und stoppe sie, bevor du einen neuen Lauf startest. Das Schließen dieses Eintrags stoppt keine entfernten Prozesse.",
+			"orphanCheck": "Ich habe den ursprünglichen Server auf verwaiste Prozesse geprüft.",
+			"closeRun": "Lauf schließen",
+			"recoveryClosed": "Lauf geschlossen. Du kannst einen neuen Lauf starten.",
+			"recoveryFailed": "Der Lauf konnte nicht geschlossen werden.",
+			"portalAiErrorTitle": "KI-Assistent nicht verfügbar",
+			"portalAiErrorHelp": "Der KI-Assistent konnte nicht gestartet werden. Versuchen Sie es erneut oder prüfen Sie die Portal-KI-Konfiguration. Remote-Zuweisungen sind weiterhin über „Arbeit starten“ verfügbar.",
+			"openServer": "Server öffnen",
+			"portalAiTitle": "KI-Unterstützung im Portal ist nicht eingerichtet",
+			"portalAiHelp": "Richten Sie einen KI-Anbieter im Portal ein, um KI-gestützte Bearbeitung zu nutzen. Über „Arbeit starten“ können Sie dieses Feature weiterhin einem Remote-Agenten zuweisen. Dabei werden die Zugangsdaten des ausgewählten Servers verwendet.",
+			"configurePortalAi": "Portal-KI einrichten",
+			"privateLabel": "Private Sitzung",
+			"privateSession": "Diese Sitzung läuft auf dem privaten Server eines anderen Entwicklers. Projektfortschritt und Pull Requests sind sichtbar; Unterhaltung und Steuerung bleiben privat.",
+			"loadingServers": "Remote-Server werden geladen…",
+			"loadServersFailed": "Remote-Server konnten nicht geladen werden. Versuche es vor der Zuweisung erneut.",
+			"title": "Remote-Server",
+			"choose": "Remote-Server auswählen",
+			"mine": "Meine Server",
+			"team": "Team-Server",
+			"privateHelp": "Nur du kannst dieser Verbindung Aufgaben zuweisen. Sie nutzt die auf deinem Server angemeldeten Konten.",
+			"teamHelp": "Projektmitglieder können Aufgaben über die Konten dieses gemeinsamen Servers zuweisen.",
+			"emptyHelp": "Wähle einen Team-Server oder verbinde deinen eigenen. Anbieter- und Git-Zugangsdaten bleiben auf dem Remote-Host.",
+			"connect": "Remote-Server verbinden",
+			"connectionHelp": "Verbinde einen vorhandenen Fabric-Agents-Server, den Portal-API und Worker erreichen können. Verwende dessen dediziertes Ausführungsgeheimnis, keinen Anbieter-API-Schlüssel oder Desktop-Anmeldetoken.",
+			"name": "Verbindungsname",
+			"url": "Server-URL",
+			"secret": "Ausführungsgeheimnis",
+			"visibility": "Wer diese Verbindung nutzen kann",
+			"verify": "Prüfen und verbinden",
+			"disconnect": "Für neue Aufgaben trennen",
+			"conversation": "Remote-Sitzung",
+			"conversationHelp": "Aktuelle Unterhaltung der tatsächlichen Remote-Sitzung. Öffne Fabric Agents für Werkzeugfreigaben oder Anmeldeanfragen.",
+			"openBrowser": "Im Browser öffnen",
+			"loading": "Remote-Unterhaltung wird geladen…",
+			"retry": "Erneut versuchen",
+			"noMessages": "Noch keine Nachrichten verfügbar.",
+			"you": "Entwickler",
+			"agent": "Agent"
+		},
 		"codingInstructions": {
 			"fileHistory": {
 				"button": "Verlauf",
@@ -4048,6 +4091,14 @@
 				}
 			},
 			"roadmapUi": {
+				"detailLoading": "Feature wird geladen…",
+				"detailLoadFailed": "Feature konnte nicht geladen werden. Bitte erneut versuchen.",
+				"descriptionSearch": {
+					"pending": "Beschreibungen werden durchsucht…",
+					"failed": "Beschreibungen konnten nicht durchsucht werden.",
+					"skipped": "Suchanfrage zu lang: Beschreibungen wurden nicht durchsucht.",
+					"retry": "Erneut versuchen"
+				},
 				"title": "Roadmap",
 				"aboutLabel": "Über diese Roadmap",
 				"aboutTitle": "Arbeitselemente, Lieferphasen und Prioritäten",
@@ -6556,7 +6607,8 @@
 			"showDiagram": "Zurück zum gerenderten Diagramm. Nicht gespeicherte Änderungen am Quelltext werden verworfen.",
 			"editDiagramSource": "Öffnet den Mermaid-Quelltext in einem bearbeitbaren Feld. Strg+Enter speichert.",
 			"addCaption": "Fügt unter dem Diagramm eine kurze Bildunterschrift hinzu. Sie bleibt beim Speichern des Dokuments mit dem Diagramm verbunden.",
-			"editStatTilesSource": "Quelltext bearbeiten"
+			"editStatTilesSource": "Quelltext bearbeiten",
+			"editBlockSource": "Quelltext bearbeiten"
 		},
 		"stories": {
 			"groupBy": "Wähle die Spuren, in die die Roadmap gruppiert wird.",

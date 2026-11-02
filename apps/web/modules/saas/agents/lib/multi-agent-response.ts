@@ -1,3 +1,6 @@
+import type { ChatEventCursor } from "@repo/utils/chat-event-cursor";
+import type { StreamModelInfo } from "../hooks/useDirectStream";
+
 /**
  * One agent's answer in a multi-agent turn, as Nexus (`useMultiAgentStream`)
  * and the Orchestrator chat's multi-agent mode both build it: its text, its
@@ -24,6 +27,7 @@ export interface AgentResponse {
 	/** vendor name for model agents — used to show provider logo */
 	vendor?: string;
 	executionId?: string;
+	eventCursor?: ChatEventCursor;
 	content: string;
 	toolCalls: MultiAgentToolCall[];
 	isLoading: boolean;
@@ -42,6 +46,8 @@ export interface AgentResponse {
 	status: "idle" | "streaming" | "completed" | "error" | "cancelled";
 	/** ISO timestamp stamped when this agent was cancelled. */
 	cancelledAt?: string;
+	/** The model that served the answer, once it ended (may differ from the pick). */
+	model?: StreamModelInfo;
 	/** Set when the orchestrator is waiting for user approval before proceeding */
 	pendingApproval?: {
 		approvalId: string;

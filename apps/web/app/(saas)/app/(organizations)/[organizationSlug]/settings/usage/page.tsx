@@ -1,7 +1,7 @@
-import { Card, CardContent } from "@ui/components/card";
+import { getOrganizationMembership } from "@repo/database";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { AiUsageActivityView } from "@saas/payments/components/AiUsageActivityView";
-import { getOrganizationMembership } from "@repo/database";
+import { Card, CardContent } from "@ui/components/card";
 import { XIcon } from "lucide-react";
 import { notFound } from "next/navigation";
 
@@ -46,7 +46,7 @@ export default async function OrgAiUsageSettingsPage({
 							className="block h-3.5 w-0.5 shrink-0 bg-primary"
 							aria-hidden="true"
 						/>
-						<p className="font-sans text-[11px] font-normal uppercase tracking-[0.25em] text-primary">
+						<p className="font-sans text-[11px] font-normal uppercase tracking-wide text-primary">
 							AI Usage
 						</p>
 					</div>

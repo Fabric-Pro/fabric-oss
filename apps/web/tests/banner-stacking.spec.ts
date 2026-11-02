@@ -1005,9 +1005,9 @@ test.describe("Shell notice region — stacking", () => {
 			timeout: 15_000,
 		});
 
-		// `isFullBleedRoute` covers the task planner, which paints its own
+		// `isFullBleedRoute` covers Fabric AI, which paints its own
 		// `fixed inset-y-0` chrome over the whole viewport.
-		await openShellRoute(page, `/app/${slug}/agents/task-planner`);
+		await openShellRoute(page, `/app/${slug}/agents/fabric-ai`);
 		await expect(page.locator("#main-content")).toBeAttached();
 		await expect(page.locator(NOTICE_REGION)).toHaveCount(0);
 		await expect(page.getByText(MFA_NOTICE_TITLE)).toHaveCount(0);

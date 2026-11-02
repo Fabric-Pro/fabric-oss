@@ -1,3 +1,7 @@
+import {
+	remoteServerConnectionId,
+	requireRemoteServerAccess,
+} from "../lib/remote-server-access";
 /**
  * Cancel Coding Run Procedure
  *
@@ -9,27 +13,23 @@
 
 import { ORPCError } from "@orpc/client";
 import {
+	canEditProject,
 	getCodingRun,
-	getProjectMemberRole,
+	markCodingRunRecoveryRequired,
 	updateCodingRunStatus,
 } from "@repo/database";
-import {
-	hasPermission,
-	Permissions as ProjectPerms,
-	resolveProjectPermissions,
-} from "@repo/permissions";
 import { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { codingRunWorkflowId } from "../lib/workflow-id";
 
 export const cancelCodingRunProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_DELETE))
+	.use(requireInputOrgPermission(Permissions.AGENT_DELETE))
 	.route({
 		method: "POST",
 		path: "/coding-runs/{id}/cancel",
@@ -61,14 +61,23 @@ export const cancelCodingRunProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Project-level authorization: only project members with STORY_UPDATE
+		// Project-level authorization uses the same effective write permission as start.
+		// Only callers with STORY_UPDATE
 		// on this specific project can cancel runs on it. Middleware above
 		// already confirmed AGENT_DELETE at the org level.
-		const projectRole = await getProjectMemberRole(run.projectId, user.id);
-		const projectGranted = resolveProjectPermissions(projectRole);
-		if (!hasPermission(projectGranted, ProjectPerms.STORY_UPDATE)) {
+		if (!(await canEditProject(run.projectId, user.id))) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "You don't have permission to manage this coding run",
+			});
+		}
+
+		const connectionId = remoteServerConnectionId(run.providerMetadata);
+		if (connectionId) {
+			await requireRemoteServerAccess({
+				id: connectionId,
+				projectId: run.projectId,
+				userId: context.user.id,
+				allowDisabled: true,
 			});
 		}
 
@@ -87,11 +96,104 @@ export const cancelCodingRunProcedure = tenantProtectedProcedure
 			});
 		}
 
+		const native =
+			run.provider === "BACKGROUND_AGENTS" &&
+			(run.providerMetadata as { executionRuntime?: string } | null)
+				?.executionRuntime === "fabric-agent-server";
+		const workflowId = run.workflowId ?? codingRunWorkflowId(run.id);
+		if (native) {
+			const temporal = await getTemporalClient();
+			const handle = temporal.workflow.getHandle(workflowId);
+			let running = false;
+			let absent = false;
+			try {
+				running = (await handle.describe()).status.name === "RUNNING";
+			} catch (error) {
+				if (
+					error instanceof Error &&
+					error.name === "WorkflowNotFoundError"
+				) {
+					absent = true;
+				} else {
+					throw error;
+				}
+			}
+			if (!run.providerSessionId && absent) {
+				await updateCodingRunStatus(run.id, "CANCELLED");
+				return { status: "cancelled" };
+			}
+			let stopFailed = false;
+			if (run.providerSessionId) {
+				try {
+					const { getCodingExecutionProvider } = await import(
+						"@repo/temporal/coding-execution"
+					);
+					await getCodingExecutionProvider(
+						run.provider,
+						run.providerMetadata,
+					).cancelSession(run.providerSessionId);
+				} catch {
+					stopFailed = true;
+				}
+			}
+			if (running) {
+				try {
+					await handle.signal("cancelCodingRun");
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						error.name === "WorkflowNotFoundError"
+					) {
+						try {
+							running =
+								(await handle.describe()).status.name ===
+								"RUNNING";
+						} catch (descriptionError) {
+							if (
+								!(descriptionError instanceof Error) ||
+								descriptionError.name !==
+									"WorkflowNotFoundError"
+							) {
+								throw descriptionError;
+							}
+							running = false;
+							absent = true;
+						}
+						if (!run.providerSessionId && absent) {
+							await updateCodingRunStatus(run.id, "CANCELLED");
+							return { status: "cancelled" };
+						}
+					} else if (!stopFailed) {
+						throw error;
+					}
+				}
+				if (running && !stopFailed) {
+					return { status: "cancelling" };
+				}
+			}
+			if (stopFailed || !run.providerSessionId) {
+				await markCodingRunRecoveryRequired({
+					codingRunId: run.id,
+					workflowId: run.workflowId,
+					organizationId: organizationId ?? null,
+					payload: {
+						message:
+							"Remote shutdown is unconfirmed. Check the original server for orphaned work, then use Close run after the workflow closes.",
+					},
+				});
+				throw new ORPCError("CONFLICT", {
+					message:
+						"Remote shutdown is unconfirmed. Check the original server for orphaned work, then use Close run in the run dialog after the workflow closes.",
+				});
+			}
+			await updateCodingRunStatus(run.id, "CANCELLED");
+			return { status: "cancelled" };
+		}
+
 		// Signal the Temporal workflow to cancel. The workflow id is
 		// deterministic, so an empty column only means post-start bookkeeping
 		// failed, not that no execution exists: always address the derived id
 		// and let Temporal say whether anything is there.
-		const workflowId = run.workflowId ?? codingRunWorkflowId(run.id);
 		try {
 			const temporal = await getTemporalClient();
 			const handle = temporal.workflow.getHandle(workflowId);

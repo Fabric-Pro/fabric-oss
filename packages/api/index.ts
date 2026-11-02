@@ -82,7 +82,6 @@ export const app = new Hono()
 				c.req.method === "POST";
 
 			let requestForAuth = c.req.raw;
-			let resetPasswordUserId: string | undefined;
 			if (isSignIn || isResetPassword) {
 				try {
 					const [forParsing, forAuth] = [
@@ -112,7 +111,6 @@ export const app = new Hono()
 										select: { value: true },
 									});
 								if (verification?.value) {
-									resetPasswordUserId = verification.value;
 									const user = await db.user.findFirst({
 										where: { id: verification.value },
 										select: { email: true },
@@ -150,31 +148,6 @@ export const app = new Hono()
 					);
 				}
 			}
-
-			// Revoke all existing sessions for the user after a successful
-			// password reset. Without this, a stolen session cookie remains
-			// valid for its full lifetime (up to 30 days) even after the
-			// victim resets their password.
-			if (isResetPassword && response.ok && resetPasswordUserId) {
-				try {
-					await db.session.deleteMany({
-						where: { userId: resetPasswordUserId },
-					});
-				} catch (error) {
-					logger.error(
-						{
-							event: "auth.session.revokeOnReset.error",
-							security: true,
-							error:
-								error instanceof Error
-									? error.message
-									: String(error),
-						},
-						"Failed to revoke sessions after password reset",
-					);
-				}
-			}
-
 			// Brute force: track login outcomes at the Hono level
 			// (Better Auth after hooks don't fire on error responses)
 			if (loginEmail) {

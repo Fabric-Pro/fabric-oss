@@ -505,7 +505,7 @@ function AuditHistoryPanel({
 				tabIndex={0}
 				role="group"
 				aria-label="Change history entries"
-				className="min-h-0 flex-1 overflow-y-auto px-6 py-4 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+				className="min-h-0 flex-1 overflow-y-auto px-6 py-4 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
 			>
 				{query.isLoading ? (
 					<HistoryLoading rows={5} />
@@ -636,7 +636,7 @@ export function BacklogAuditDialog({
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
 				<DialogHeader className="px-6 pt-6 pb-4">
-					<DialogTitle className="font-serif font-normal text-2xl">
+					<DialogTitle className="font-semibold text-2xl">
 						{copy.title}
 					</DialogTitle>
 					<DialogDescription>{copy.description}</DialogDescription>

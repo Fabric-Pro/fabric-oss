@@ -167,7 +167,7 @@ export function ConversationHistoryPanel({
 							onClick={() => setView(option.id)}
 							className={cn(
 								"cursor-pointer rounded-[4px] border px-2 py-1 text-[12px] motion-safe:transition-colors",
-								"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+								"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 								view === option.id
 									? "border-border bg-accent text-foreground"
 									: "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
@@ -193,7 +193,7 @@ export function ConversationHistoryPanel({
 						aria-label="Loading history"
 					>
 						{[0, 1, 2].map((key) => (
-							<Skeleton key={key} className="h-16 rounded-xl" />
+							<Skeleton key={key} className="h-16 rounded-lg" />
 						))}
 					</output>
 				) : list.isError && list.items.length === 0 ? (

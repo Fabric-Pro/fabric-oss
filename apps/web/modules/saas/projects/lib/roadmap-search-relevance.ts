@@ -42,6 +42,7 @@ function tokenize(query: string): string[] {
  */
 export function scoreStoryAgainstQuery(
 	query: string,
+	descriptionMatches?: ReadonlyMap<string, string[]>,
 ): (story: StoryRelevanceFields) => number {
 	const tokens = tokenize(query);
 	const phrase = query.trim().toLowerCase();
@@ -51,14 +52,22 @@ export function scoreStoryAgainstQuery(
 		}
 		const title = story.title.toLowerCase();
 		const identifier = story.identifier.toLowerCase();
-		const description = (story.description ?? "").toLowerCase();
+		const description = descriptionMatches
+			? ""
+			: (story.description ?? "").toLowerCase();
 		let score = 0;
 		for (const token of tokens) {
 			if (title.includes(token)) {
 				score += WEIGHTS.title;
 			} else if (identifier.includes(token)) {
 				score += WEIGHTS.identifier;
-			} else if (description.includes(token)) {
+			} else if (
+				description.includes(token) ||
+				("id" in story &&
+					(descriptionMatches?.get(String(story.id)) ?? []).includes(
+						token,
+					))
+			) {
 				score += WEIGHTS.description;
 			}
 		}
@@ -77,8 +86,9 @@ export function scoreStoryAgainstQuery(
 export function compareStoriesByRelevance(
 	query: string,
 	fallbackCompare?: (a: UserStory, b: UserStory) => number,
+	descriptionMatches?: ReadonlyMap<string, string[]>,
 ): (a: UserStory, b: UserStory) => number {
-	const score = scoreStoryAgainstQuery(query);
+	const score = scoreStoryAgainstQuery(query, descriptionMatches);
 	return (a, b) => {
 		const delta = score(b) - score(a);
 		if (delta !== 0) {

@@ -272,7 +272,7 @@ export function AgentCapabilitiesPickerDialog({
 														leadingIcon={
 															<div
 																className={cn(
-																	"flex h-10 w-10 items-center justify-center rounded-xl",
+																	"flex h-10 w-10 items-center justify-center rounded-lg",
 																	tool.iconBgClassName,
 																)}
 															>
@@ -311,7 +311,7 @@ export function AgentCapabilitiesPickerDialog({
 																)
 															}
 															leadingIcon={
-																<div className="flex h-10 w-10 items-center justify-center rounded-xl border bg-background">
+																<div className="flex h-10 w-10 items-center justify-center rounded-lg border bg-background">
 																	{config
 																		.mcpServer
 																		?.key ? (
@@ -409,7 +409,7 @@ function SelectionCard({
 	const stakeBadge = stake && stake !== "never" ? STAKE_BADGE[stake] : null;
 
 	return (
-		<div className="rounded-2xl border bg-card p-4">
+		<div className="rounded-lg border bg-card p-4">
 			<div className="flex items-start justify-between gap-3">
 				<div className="flex min-w-0 gap-3">
 					{leadingIcon}
@@ -464,7 +464,7 @@ function SelectionCard({
 
 function EmptyState({ label }: { label: string }) {
 	return (
-		<div className="rounded-2xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+		<div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
 			{label}
 		</div>
 	);

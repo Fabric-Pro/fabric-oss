@@ -1252,7 +1252,7 @@ describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 });
 
 describe("generateNewsletterBlurbActivity — what it persists", () => {
-	it("imports ONLY the reads and the two writes the guarantee allows", () => {
+	it("imports ONLY the reads and the one write the guarantee allows", () => {
 		// The card's guarantee: generating a blurb publishes nothing, sends
 		// nothing, creates no asset and mutates no tag.
 		expect(
@@ -1267,7 +1267,6 @@ describe("generateNewsletterBlurbActivity — what it persists", () => {
 			"getEffectivePlanningAnalysis",
 			"listTopicDecisions",
 			"logDraftRefusal",
-			"seedWorkingDraftIfAbsent",
 		]);
 	});
 
@@ -1943,4 +1942,17 @@ describe("generateNewsletterBlurbActivity — the asset confirmation loop", () =
 			call.questions.map((q: { subject: string }) => q.subject),
 		).toEqual(["customer logo"]);
 	});
+});
+
+it("keeps READY when seeding throws", async () => {
+	seedWorkingDraftIfAbsent.mockRejectedValue(new Error("seed failed"));
+	await expect(run()).resolves.toEqual({
+		status: "READY",
+		seededWorkingDraft: false,
+	});
+	expect(generateObject).toHaveBeenCalledTimes(1);
+	expect(logger.warn).toHaveBeenCalledWith(
+		"[publishing-newsletter-blurb] failed to seed a working draft",
+		expect.objectContaining({ error: "seed failed" }),
+	);
 });

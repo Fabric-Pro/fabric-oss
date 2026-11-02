@@ -29,7 +29,7 @@ function Chip({
 			aria-pressed={selected}
 			onClick={onClick}
 			className={cn(
-				"rounded-full border px-3 py-1 text-xs motion-safe:transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+				"rounded-full border px-3 py-1 text-xs motion-safe:transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
 				selected
 					? "border-primary bg-primary/10 text-foreground"
 					: "text-muted-foreground hover:bg-accent/50",

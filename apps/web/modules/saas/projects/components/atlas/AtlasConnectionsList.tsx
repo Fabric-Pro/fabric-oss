@@ -131,7 +131,7 @@ function NodePicker({
 					type="button"
 					aria-label={ariaLabel}
 					aria-expanded={open}
-					className="flex h-9 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+					className="flex h-9 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 				>
 					<span
 						className={cn(
@@ -278,7 +278,7 @@ export function AtlasConnectionsList({
 							<button
 								type="button"
 								aria-label={t("info")}
-								className="grid size-6 place-items-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								className="grid size-6 place-items-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 							>
 								<InfoIcon
 									aria-hidden="true"
@@ -290,7 +290,7 @@ export function AtlasConnectionsList({
 							align="start"
 							className="w-72 space-y-1.5"
 						>
-							<p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+							<p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
 								{t("infoTitle")}
 							</p>
 							<p className="text-xs leading-relaxed text-foreground">
@@ -321,7 +321,7 @@ export function AtlasConnectionsList({
 					className="space-y-2.5 border-b border-border/60 bg-muted/30 p-3"
 				>
 					<div className="space-y-1">
-						<Label className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+						<Label className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							{t("createSource")}
 						</Label>
 						<NodePicker
@@ -336,7 +336,7 @@ export function AtlasConnectionsList({
 						/>
 					</div>
 					<div className="space-y-1">
-						<Label className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+						<Label className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							{t("createTarget")}
 						</Label>
 						<NodePicker
@@ -351,7 +351,7 @@ export function AtlasConnectionsList({
 						/>
 					</div>
 					<div className="space-y-1">
-						<Label className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+						<Label className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							{t("createKind")}
 						</Label>
 						<Select value={kind} onValueChange={setKind}>
@@ -380,7 +380,7 @@ export function AtlasConnectionsList({
 						</Select>
 					</div>
 					<div className="space-y-1">
-						<Label className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+						<Label className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							{t("createDescription")}
 						</Label>
 						<Textarea
@@ -443,7 +443,7 @@ export function AtlasConnectionsList({
 									type="button"
 									onClick={() => onSelectConnection(row)}
 									className={cn(
-										"flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+										"flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 										row.deleted && "opacity-70",
 									)}
 								>
@@ -499,7 +499,7 @@ export function AtlasConnectionsList({
 												}
 												disabled={isMutating}
 												aria-label={t("restore")}
-												className="flex shrink-0 items-center rounded-lg px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+												className="flex shrink-0 items-center rounded-lg px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
 											>
 												<Undo2Icon
 													aria-hidden="true"

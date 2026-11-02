@@ -22,20 +22,20 @@ function Calendar({
 				months: "flex flex-col sm:flex-row gap-4",
 				month: "flex flex-col gap-4",
 				month_caption: "flex justify-center pt-1 items-center h-7",
-				caption_label: "text-sm font-medium",
+				caption_label: "text-sm font-semibold",
 				nav: "pointer-events-none absolute inset-x-3 top-3 flex items-center justify-between",
 				button_previous: cn(
 					buttonVariants({ variant: "outline", size: "icon-sm" }),
-					"pointer-events-auto size-7 bg-transparent p-0 opacity-50 hover:opacity-100",
+					"pointer-events-auto size-7 bg-transparent p-0 opacity-70 hover:opacity-100",
 				),
 				button_next: cn(
 					buttonVariants({ variant: "outline", size: "icon-sm" }),
-					"pointer-events-auto size-7 bg-transparent p-0 opacity-50 hover:opacity-100",
+					"pointer-events-auto size-7 bg-transparent p-0 opacity-70 hover:opacity-100",
 				),
 				month_grid: "w-full border-collapse",
 				weekdays: "flex",
 				weekday:
-					"text-muted-foreground rounded-md w-9 font-normal text-[0.8rem] flex items-center justify-center",
+					"text-muted-foreground rounded-md w-9 font-medium text-xs flex items-center justify-center",
 				week: "flex w-full mt-2",
 				day: "h-9 w-9 text-center text-sm p-0 relative",
 				day_button: cn(
@@ -43,7 +43,7 @@ function Calendar({
 					"h-9 w-9 p-0 font-normal aria-selected:opacity-100 hover:bg-accent hover:text-accent-foreground",
 				),
 				selected:
-					"bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground rounded-md",
+					"bg-primary text-primary-foreground hover:bg-[var(--primary-hover)] hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground rounded-md",
 				today: "bg-accent text-accent-foreground rounded-md",
 				outside: "text-muted-foreground opacity-50",
 				disabled: "text-muted-foreground opacity-50",

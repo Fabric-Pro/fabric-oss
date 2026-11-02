@@ -1,5 +1,6 @@
 import { getSession } from "@saas/auth/lib/server";
 import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
+import { readFabricMcpAppResource } from "@saas/mcp/lib/gateway/mcp-apps";
 import type { NextRequest } from "next/server";
 
 interface McpAppResourceMeta {
@@ -67,6 +68,28 @@ export async function POST(request: NextRequest) {
 			return authorization.response;
 		}
 
+		// Built-in Fabric MCP Apps (`ui://fabric/*`) are served directly by the platform
+		// without requiring a separate external MCPConfig row.
+		if (configId === "platform" || resourceUri.startsWith("ui://fabric/")) {
+			const builtIn = readFabricMcpAppResource(resourceUri);
+			if (builtIn) {
+				const primary = builtIn.contents[0];
+				const origin = new URL(request.url).origin;
+				return Response.json({
+					html: primary?.text,
+					assetBaseUrl: origin,
+					contents: builtIn.contents,
+					meta: (primary?._meta?.ui ?? primary?._meta) as
+						| McpAppResourceMeta
+						| undefined,
+				});
+			}
+			return Response.json(
+				{ error: `MCP App resource not found: ${resourceUri}` },
+				{ status: 404 },
+			);
+		}
+
 		// Dynamically import to avoid edge runtime issues
 		const { Client } = await import(
 			"@modelcontextprotocol/sdk/client/index.js"
@@ -78,6 +101,9 @@ export async function POST(request: NextRequest) {
 			"@modelcontextprotocol/sdk/client/streamableHttp.js"
 		);
 		const { getMcpConfigById } = await import("@repo/database");
+		const { assertMcpServerUrlResolved, fetchMcpServer } = await import(
+			"@repo/mcp/lib/server-url-guard"
+		);
 		// Resolves GitLab personal servers through the person's GitLab
 		// connection; every other config through its own MCPConfig token.
 		const { getValidMcpTransportAuth } = await import("@repo/mcp");
@@ -117,6 +143,7 @@ export async function POST(request: NextRequest) {
 				{ status: 400 },
 			);
 		}
+		await assertMcpServerUrlResolved(serverUrl);
 
 		// Build auth headers
 		const headers: Record<string, string> = {};
@@ -143,6 +170,7 @@ export async function POST(request: NextRequest) {
 				userId,
 				organizationId,
 				endpoint: serverUrl,
+				expectedGrantGeneration: mcpConfig.oauthGrantGeneration,
 			});
 			if (auth.accessToken) {
 				headers.Authorization = `Bearer ${auth.accessToken}`;
@@ -173,14 +201,14 @@ export async function POST(request: NextRequest) {
 		const transport =
 			configTransport === "SSE"
 				? new SSEClientTransport(url, {
-						...(transportFetch ? { fetch: transportFetch } : {}),
+						fetch: transportFetch ?? fetchMcpServer,
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }
 								: undefined,
 					})
 				: new StreamableHTTPClientTransport(url, {
-						...(transportFetch ? { fetch: transportFetch } : {}),
+						fetch: transportFetch ?? fetchMcpServer,
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }
@@ -227,12 +255,7 @@ export async function POST(request: NextRequest) {
 			stack: error instanceof Error ? error.stack : undefined,
 		});
 		return Response.json(
-			{
-				error:
-					error instanceof Error
-						? error.message
-						: "Failed to fetch MCP App resource",
-			},
+			{ error: "Failed to fetch MCP App resource" },
 			{ status: 500 },
 		);
 	}

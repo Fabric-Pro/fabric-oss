@@ -383,7 +383,7 @@ describe("ProjectContextsList — stuck sources (Fizzy #2886)", () => {
 		expect(
 			screen.queryByTestId("context-stalled-ctx_tx"),
 		).not.toBeInTheDocument();
-		const group = header.closest("div.rounded-xl");
+		const group = header.closest("div.rounded-lg");
 		expect(group?.className).toContain("border-destructive");
 		expect(
 			within(group as HTMLElement).getAllByText("groupStuck").length,

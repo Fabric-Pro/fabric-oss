@@ -200,3 +200,16 @@ describe("projectless draft buttons", () => {
 		},
 	);
 });
+
+vi.mock("@saas/shared/components/copilot/use-page-agent", () => ({
+	usePageAgent: () => ({
+		state: {},
+		setState: mocks.setState,
+		nodeName: undefined,
+	}),
+}));
+vi.mock("@saas/shared/components/copilot/CopilotChatSessionProvider", () => ({
+	useCopilotChatSessionActions: () => ({ setMessages: vi.fn() }),
+	useCopilotChatSessionSelector: (select: any) =>
+		select({ isLoading: mocks.loading, messages: [] }),
+}));

@@ -1284,7 +1284,7 @@ function ReadinessGapRow({
 						type="button"
 						className={cn(
 							"cursor-help text-left text-sm underline decoration-dotted decoration-muted-foreground/40 underline-offset-4",
-							"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+							"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
 							resolved && "text-muted-foreground",
 						)}
 					>
@@ -1608,7 +1608,7 @@ function ReadinessSummaryStrip({
 				className={cn(
 					"flex w-full flex-wrap items-center gap-x-3 gap-y-1 border-l-4 px-4 py-2 text-left sm:px-6",
 					"transition-colors hover:bg-muted/50",
-					"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+					"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
 					LEVEL_SURFACE[level],
 				)}
 			>

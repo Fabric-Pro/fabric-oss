@@ -305,7 +305,7 @@ function DuplicateOfBadge({
 			<TooltipTrigger asChild>
 				<button
 					type="button"
-					className="flex min-w-0 max-w-[240px] items-center gap-1 rounded-sm text-highlight focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+					className="flex min-w-0 max-w-[240px] items-center gap-1 rounded-sm text-highlight focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 					data-testid={`context-duplicate-badge-${contextId}`}
 				>
 					<CopyIcon className="size-3 shrink-0" aria-hidden="true" />
@@ -805,7 +805,7 @@ export function UrlContextCard({
 	return (
 		<div
 			className={cn(
-				"group relative overflow-hidden rounded-xl border border-border bg-card motion-safe:transition-colors hover:border-primary/30",
+				"group relative overflow-hidden rounded-lg border border-border bg-card motion-safe:transition-colors hover:border-primary/30",
 				stalledMarker && STALLED_ROW_OUTLINE,
 			)}
 			data-context-type="LINK"
@@ -2054,7 +2054,7 @@ export function ProjectContextsList({ projectId }: Props) {
 				data-context-id={context.id}
 				tabIndex={-1}
 				className={cn(
-					"group relative overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm transition-all",
+					"group relative overflow-hidden rounded-lg border bg-card/50 backdrop-blur-sm transition-all",
 					"hover:border-primary/30 hover:shadow-lg",
 					`animate-stagger-${Math.min(index + 1, 5)}`,
 					stalledIds.has(context.id) && STALLED_ROW_OUTLINE,
@@ -2074,7 +2074,7 @@ export function ProjectContextsList({ projectId }: Props) {
 							{/* Icon with gradient */}
 							<div
 								className={cn(
-									"shrink-0 rounded-xl bg-gradient-to-br p-2.5 transition-transform group-hover:scale-110",
+									"shrink-0 rounded-lg bg-gradient-to-br p-2.5 transition-transform group-hover:scale-110",
 									cardGradient,
 								)}
 							>
@@ -2340,7 +2340,7 @@ export function ProjectContextsList({ projectId }: Props) {
 		return (
 			<div className="grid gap-4 sm:grid-cols-2">
 				{[1, 2, 3, 4].map((i) => (
-					<Skeleton key={i} className="h-32 w-full rounded-xl" />
+					<Skeleton key={i} className="h-32 w-full rounded-lg" />
 				))}
 			</div>
 		);
@@ -2355,7 +2355,7 @@ export function ProjectContextsList({ projectId }: Props) {
 		// Application Insights captures them via existing channels.
 		return (
 			<div
-				className="rounded-xl border border-destructive/40 bg-destructive/5 p-6"
+				className="rounded-lg border border-destructive/40 bg-destructive/5 p-6"
 				role="alert"
 				data-testid="contexts-list-error"
 			>
@@ -2418,11 +2418,11 @@ export function ProjectContextsList({ projectId }: Props) {
 				getStartedPageId="context"
 				badges={
 					<>
-						<div className="rounded-full border border-border/60 bg-background/50 px-3 py-1.5 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+						<div className="rounded-full border border-border/60 bg-background/50 px-3 py-1.5 text-xs uppercase tracking-wide text-muted-foreground">
 							{contexts.length} context item
 							{contexts.length !== 1 ? "s" : ""}
 						</div>
-						<div className="rounded-full border border-border/60 bg-background/50 px-3 py-1.5 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+						<div className="rounded-full border border-border/60 bg-background/50 px-3 py-1.5 text-xs uppercase tracking-wide text-muted-foreground">
 							Files, links, notes, and imports
 						</div>
 					</>
@@ -2430,50 +2430,50 @@ export function ProjectContextsList({ projectId }: Props) {
 				aside={
 					<div className="flex h-full flex-col justify-between">
 						<div>
-							<p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								Context Readiness
 							</p>
 							<div
 								data-onboarding-target="context-readiness"
 								className="mt-4 grid grid-cols-3 gap-3"
 							>
-								<div className="rounded-2xl border border-border/60 bg-background/50 p-3 text-center">
+								<div className="rounded-lg border border-border/60 bg-background/50 p-3 text-center">
 									<p
 										className="text-2xl font-semibold tabular-nums text-foreground"
 										data-testid="context-readiness-ready"
 									>
 										{readyCount}
 									</p>
-									<p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+									<p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
 										Ready
 									</p>
 								</div>
-								<div className="rounded-2xl border border-border/60 bg-background/50 p-3 text-center">
+								<div className="rounded-lg border border-border/60 bg-background/50 p-3 text-center">
 									<p
 										className="text-2xl font-semibold tabular-nums text-primary"
 										data-testid="context-readiness-active"
 									>
 										{activeCount}
 									</p>
-									<p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+									<p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
 										Active
 									</p>
 								</div>
-								<div className="rounded-2xl border border-border/60 bg-background/50 p-3 text-center">
+								<div className="rounded-lg border border-border/60 bg-background/50 p-3 text-center">
 									<p
 										className="text-2xl font-semibold tabular-nums text-foreground/75"
 										data-testid="context-readiness-failed"
 									>
 										{failedCount}
 									</p>
-									<p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+									<p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
 										Needs Care
 									</p>
 								</div>
 							</div>
 						</div>
-						<div className="mt-6 rounded-2xl border border-border/60 bg-card/40 p-4">
-							<p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+						<div className="mt-6 rounded-lg border border-border/60 bg-card/40 p-4">
+							<p className="text-xs uppercase tracking-wide text-muted-foreground">
 								Next Move
 							</p>
 							<p className="mt-2 text-sm text-foreground/85">
@@ -2663,8 +2663,8 @@ export function ProjectContextsList({ projectId }: Props) {
 					{showLivingMemorySection && (
 						<LivingMemorySection {...livingMemoryProps} />
 					)}
-					<div className="flex flex-col items-center justify-center rounded-[28px] border border-border/60 bg-card/40 py-16 backdrop-blur-sm">
-						<div className="mb-4 rounded-2xl border border-primary/15 bg-primary/10 p-4 text-primary">
+					<div className="flex flex-col items-center justify-center rounded-lg border border-border/60 bg-card/40 py-16 backdrop-blur-sm">
+						<div className="mb-4 rounded-lg border border-primary/15 bg-primary/10 p-4 text-primary">
 							<FolderIcon className="size-8 text-primary" />
 						</div>
 						<p className="mb-2 font-medium text-foreground/70">
@@ -2742,7 +2742,7 @@ export function ProjectContextsList({ projectId }: Props) {
 								return (
 									<div
 										className={cn(
-											"overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm",
+											"overflow-hidden rounded-lg border bg-card/50 backdrop-blur-sm",
 											meetingsStuck > 0 &&
 												STALLED_GROUP_BORDER,
 										)}
@@ -2756,7 +2756,7 @@ export function ProjectContextsList({ projectId }: Props) {
 										>
 											<div
 												className={cn(
-													"shrink-0 rounded-xl bg-gradient-to-br p-2.5",
+													"shrink-0 rounded-lg bg-gradient-to-br p-2.5",
 													contextTypeConfig
 														.MEETING_TRANSCRIPT
 														.gradient,
@@ -3136,7 +3136,7 @@ export function ProjectContextsList({ projectId }: Props) {
 							    meeting-sync settings. */}
 						{transcriptGroups.length === 0 && (
 							<div
-								className="flex flex-col items-start gap-3 rounded-xl border border-border bg-card p-6"
+								className="flex flex-col items-start gap-3 rounded-lg border border-border bg-card p-6"
 								data-testid="meeting-transcripts-empty"
 							>
 								<div className="flex items-center gap-3">
@@ -3174,7 +3174,7 @@ export function ProjectContextsList({ projectId }: Props) {
 						{teamsGroup && (
 							<div
 								className={cn(
-									"overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm",
+									"overflow-hidden rounded-lg border bg-card/50 backdrop-blur-sm",
 									stalledCountIn(teamsGroup) > 0 &&
 										STALLED_GROUP_BORDER,
 								)}
@@ -3184,7 +3184,7 @@ export function ProjectContextsList({ projectId }: Props) {
 									onClick={() => toggleGroup("teams-chats")}
 									className="flex w-full items-center gap-3 p-4 text-left transition-colors hover:bg-muted/40"
 								>
-									<div className="shrink-0 rounded-xl bg-gradient-to-br from-[#464EB8] to-[#6264A7] p-2.5">
+									<div className="shrink-0 rounded-lg bg-gradient-to-br from-[#464EB8] to-[#6264A7] p-2.5">
 										<MicrosoftTeamsIcon className="size-5 text-white" />
 									</div>
 									<div className="min-w-0 flex-1">
@@ -3306,7 +3306,7 @@ export function ProjectContextsList({ projectId }: Props) {
 																	>
 																		<button
 																			type="button"
-																			className="flex items-center gap-1 text-highlight focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+																			className="flex items-center gap-1 text-highlight focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
 																			data-testid="teams-context-not-readable"
 																			aria-label="Not readable by you"
 																		>
@@ -3423,7 +3423,7 @@ export function ProjectContextsList({ projectId }: Props) {
 						{notionGroup && (
 							<div
 								className={cn(
-									"overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm",
+									"overflow-hidden rounded-lg border bg-card/50 backdrop-blur-sm",
 									stalledCountIn(notionGroup) > 0 &&
 										STALLED_GROUP_BORDER,
 								)}
@@ -3435,7 +3435,7 @@ export function ProjectContextsList({ projectId }: Props) {
 									}
 									className="flex w-full items-center gap-3 p-4 text-left transition-colors hover:bg-muted/40"
 								>
-									<div className="shrink-0 rounded-xl bg-gradient-to-br from-stone-500 to-stone-700 p-2.5">
+									<div className="shrink-0 rounded-lg bg-gradient-to-br from-stone-500 to-stone-700 p-2.5">
 										<NotionIcon className="size-5 text-white" />
 									</div>
 									<div className="min-w-0 flex-1">
@@ -3660,7 +3660,7 @@ export function ProjectContextsList({ projectId }: Props) {
 									<div
 										key={folder.path}
 										className={cn(
-											"overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm",
+											"overflow-hidden rounded-lg border bg-card/50 backdrop-blur-sm",
 											folderStuck > 0 &&
 												STALLED_GROUP_BORDER,
 										)}

@@ -19,6 +19,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { AIProviderNotConfiguredError } from "@repo/ai";
 import {
 	type FeatureMaturationState,
 	type MaturationTenantFilter,
@@ -85,11 +86,21 @@ export async function seedMaturationSurfaces({
 		summaryHash !== feature.lastSummaryHash ||
 		!feature.summaryDigest?.trim();
 	if (needsSummary) {
-		const summary = await generateMaturationSummary({
-			feature,
-			tenantFilter,
-			instructions: summaryInstructions,
-		});
+		let summary: string | null = null;
+		try {
+			summary = await generateMaturationSummary({
+				feature,
+				tenantFilter,
+				instructions: summaryInstructions,
+			});
+		} catch (error) {
+			// Opening a feature must not require a Portal model provider. Keep
+			// the summary hash untouched so setup followed by reopen retries it.
+			// Question parsing below is deterministic and can still run.
+			if (!(error instanceof AIProviderNotConfiguredError)) {
+				throw error;
+			}
+		}
 		if (summary) {
 			await setSummaryDigest({
 				userStoryId: feature.id,

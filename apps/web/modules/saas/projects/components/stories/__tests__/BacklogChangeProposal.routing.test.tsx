@@ -44,9 +44,9 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			stories: {
-				list: {
+				board: {
 					queryOptions: (opts: Record<string, unknown>) => ({
-						queryKey: ["stories.list", opts],
+						queryKey: ["stories.board", opts],
 						queryFn: async () => ({
 							statuses: [],
 							stories: [

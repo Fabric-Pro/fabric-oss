@@ -5,11 +5,13 @@
  * error from inside a 200 stream. Mount-time calls still go through.
  */
 import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
+import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const RESET = new Date("2026-10-08T16:37:00.000Z");
 
 const mocks = vi.hoisted(() => ({
+	registeredAgentNames: [] as string[],
 	pickChatGptPlanSource: vi.fn(),
 	interactiveApiFallback: vi.fn(),
 	personalKeyFallback: vi.fn(),
@@ -21,6 +23,8 @@ const mocks = vi.hoisted(() => ({
 	runtime: vi.fn(),
 	handler: vi.fn(),
 	agent: vi.fn(),
+	issueAIToken: vi.fn(),
+	trackUsage: vi.fn(),
 	session: { user: { id: "user-1" }, session: {} as Record<string, unknown> },
 	copilotDurableRuntime: vi.fn(),
 	/** What `copilotDurableRuntime` answers: null while the org flag is off. */
@@ -62,10 +66,19 @@ vi.mock("@repo/agent-core", () => ({
 					getDeploymentUrl: () => "http://localhost:8126",
 					name: "task_planner",
 				},
+				{
+					id: "project_document_generator",
+					getDeploymentUrl: () => "http://localhost:8125",
+					name: "project_document_generator",
+				},
 			];
 		}
 	},
-	LangGraphAgentAdapter: class {},
+	LangGraphAgentAdapter: class {
+		constructor(config: { name: string }) {
+			mocks.registeredAgentNames.push(config.name);
+		}
+	},
 }));
 
 vi.mock("@repo/agent-tools", () => ({
@@ -117,7 +130,7 @@ vi.mock("@repo/ai/lib/chatgpt-plan/pool", () => ({
 
 vi.mock("@repo/ai-token", () => ({
 	AI_TOKEN_HEADER: "X-AI-Token",
-	issueAIToken: async () => "ai-token",
+	issueAIToken: mocks.issueAIToken,
 }));
 
 vi.mock("@repo/api/lib/rate-limit", () => ({
@@ -162,7 +175,15 @@ vi.mock("../durable-runs", () => ({
 }));
 
 const { POST } = await import("../route");
+
+it("does not register retired CUGA in the legacy catalog while preserving active agents", () => {
+	expect(mocks.registeredAgentNames).not.toContain("cuga_generalist");
+	expect(mocks.registeredAgentNames).toContain("data_analyst");
+	expect(mocks.registeredAgentNames).toContain("task_planner");
+});
 const { ProposalPropsRedactingRunner } = await import("../proposal-run-runner");
+
+const { AI_TOKEN_TTL_SECONDS } = await import("../config");
 
 const PROVIDER_MODEL = {
 	metadata: {
@@ -170,8 +191,18 @@ const PROVIDER_MODEL = {
 		provider: "OPENAI",
 		canonicalName: "gpt-5",
 	},
-	trackUsage: () => {},
+	trackUsage: mocks.trackUsage,
 };
+
+const AGENT_API_KEY = "agent-key-example";
+
+/** The headers the route built for the task planner's agent, in order. */
+function taskPlannerHeaders(): [string, string][] {
+	const options = mocks.agent.mock.calls
+		.map(([options]) => options)
+		.find((options) => options.url === "http://localhost:8126");
+	return Object.entries(options?.headers ?? {});
+}
 
 const ownPlanSpent = new SubscriptionPlanExhaustedError(
 	"Your own ChatGPT plan has no usage left.",
@@ -181,22 +212,33 @@ const ownPlanSpent = new SubscriptionPlanExhaustedError(
 // Each case uses its own organization: the route caches the tenant config per
 // user and organization.
 let orgCounter = 0;
-function call(method: string): Promise<Response> {
+function call(
+	method: string,
+	body?: string,
+	contentLength?: string,
+): Promise<Response> {
 	orgCounter += 1;
 	return POST(
-		new Request(
+		new NextRequest(
 			`http://localhost/api/copilotkit?organizationId=org-${orgCounter}`,
 			{
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ method, params: {}, body: {} }),
+				headers: {
+					"Content-Type": "application/json",
+					...(contentLength
+						? { "Content-Length": contentLength }
+						: {}),
+				},
+				body: body ?? JSON.stringify({ method, params: {}, body: {} }),
 			},
-		) as never,
+		),
 	);
 }
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.stubEnv("AGENT_API_KEY", AGENT_API_KEY);
+	mocks.issueAIToken.mockResolvedValue("ai-token");
 	mocks.durable.current = null;
 	mocks.handler.mockReturnValue(mocks.handleRequest);
 	mocks.providerConfig.mockResolvedValue({
@@ -211,6 +253,34 @@ beforeEach(() => {
 	mocks.handleRequest.mockImplementation(async (req: Request) => {
 		await req.text();
 		return new Response("ok", { status: 200 });
+	});
+});
+
+describe("/api/copilotkit — bounded transport", () => {
+	it.each([undefined, "1", String(8 * 1024 * 1024 + 1)])(
+		"refuses excess input before model or SDK resolution with content-length=%s",
+		async (length) => {
+			const response = await call(
+				"agent/run",
+				"x".repeat(8 * 1024 * 1024 + 1),
+				length,
+			);
+			expect(response.status).toBe(413);
+			expect(mocks.pickChatGptPlanSource).not.toHaveBeenCalled();
+			expect(mocks.resolveCopilotOrgModel).not.toHaveBeenCalled();
+			expect(mocks.issueAIToken).not.toHaveBeenCalled();
+			expect(mocks.handleRequest).not.toHaveBeenCalled();
+		},
+	);
+
+	it("leaves malformed JSON for the existing SDK handler", async () => {
+		mocks.pickChatGptPlanSource.mockResolvedValue(null);
+		mocks.handleRequest.mockImplementationOnce(async (request: Request) => {
+			expect(await request.text()).toBe("{broken");
+			return new Response("SDK refusal", { status: 400 });
+		});
+		expect((await call("info", "{broken")).status).toBe(400);
+		expect(mocks.handleRequest).toHaveBeenCalledOnce();
 	});
 });
 
@@ -235,6 +305,8 @@ describe("/api/copilotkit — every ChatGPT plan for the member's work is spent"
 			personalKeyOption: false,
 		});
 		expect(mocks.handleRequest).not.toHaveBeenCalled();
+		expect(mocks.trackUsage).not.toHaveBeenCalled();
+		expect(mocks.issueAIToken).not.toHaveBeenCalled();
 	});
 
 	// Fizzy #3085: where the organization would stop the turn, the member's
@@ -466,12 +538,14 @@ describe("/api/copilotkit — the runtime handler", () => {
 		);
 	});
 
-	it("never forwards browser-sent tenant or model headers to the agents", async () => {
+	it("blocks browser tenant, model and Fabric headers through forwardHeaders.denyPrefixes", async () => {
 		mocks.pickChatGptPlanSource.mockResolvedValue(null);
 		await call("info");
 		expect(mocks.runtime).toHaveBeenCalledWith(
 			expect.objectContaining({
-				forwardHeaders: { denyPrefixes: ["x-ai-", "x-tenant-"] },
+				forwardHeaders: {
+					denyPrefixes: ["x-ai-", "x-tenant-", "x-fabric-"],
+				},
 			}),
 		);
 	});
@@ -532,7 +606,7 @@ it.each(["org", "plan", "personal", "org-nonreasoning"])(
 						? "llama-3-3-70b"
 						: "deepseek-r1",
 			},
-			trackUsage: () => {},
+			trackUsage: mocks.trackUsage,
 		});
 		if (source === "plan") {
 			mocks.pickChatGptPlanSource.mockResolvedValue({
@@ -560,6 +634,58 @@ it.each(["org", "plan", "personal", "org-nonreasoning"])(
 			});
 		}
 		expect((await call("agent/run")).status).toBe(200);
+		const modelHints = {
+			model: source.startsWith("org")
+				? "prod-chat"
+				: source === "plan"
+					? "gpt-5"
+					: "personal-model",
+			provider: source.startsWith("org")
+				? "DATABRICKS"
+				: source === "plan"
+					? "OPENAI_CHATGPT_PLAN"
+					: "ANTHROPIC_DIRECT",
+			...(source.startsWith("org") && {
+				baseUrl: "https://gateway.example.com/v1",
+				isReasoning: source === "org",
+			}),
+		};
+		const expectedHeaders = {
+			...(source.startsWith("org") && {
+				"X-AI-Is-Reasoning": String(source === "org"),
+			}),
+			Authorization: `Bearer ${AGENT_API_KEY}`,
+			"X-Tenant-User-ID": "user-1",
+			"X-Tenant-Organization-ID": `org-${orgCounter}`,
+			"X-AI-Token": "ai-token",
+			"X-AI-Model": modelHints.model,
+			...(source.startsWith("org") && {
+				"X-AI-Base-URL": "https://gateway.example.com/v1",
+			}),
+			"X-AI-Provider": modelHints.provider,
+		};
+		expect(Object.fromEntries(taskPlannerHeaders())).toEqual(
+			expectedHeaders,
+		);
+		const documentAgent = mocks.agent.mock.calls
+			.map(([options]) => options)
+			.find((options) => options.url === "http://localhost:8125");
+		expect(documentAgent.headers).toEqual({
+			...expectedHeaders,
+			"X-Fabric-Reply-Transport": "in-request-v1",
+		});
+		expect(mocks.copilotDurableRuntime.mock.calls[0][1]).toEqual({
+			modelHints,
+			aiToken: "ai-token",
+		});
+		expect(mocks.issueAIToken).toHaveBeenCalledWith({
+			userId: "user-1",
+			organizationId: `org-${orgCounter}`,
+			impersonated: false,
+			source: "copilotkit",
+			expirySeconds: AI_TOKEN_TTL_SECONDS,
+			planEligible: source === "plan" || source === "personal",
+		});
 		const headers = mocks.agent.mock.calls.at(-1)?.[0].headers;
 		expect(headers).toBeDefined();
 		if (source.startsWith("org")) {

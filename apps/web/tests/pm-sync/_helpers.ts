@@ -3,7 +3,7 @@
  *
  * The three spec files (happy-path, conflict-path, failure-path) all need:
  *   - A `pmCapabilities` interceptor that reports a configured PM tool.
- *   - A `stories.list` interceptor that returns a single synced fixture story
+ *   - A `stories.board` interceptor that returns a single synced fixture story
  *     whose `lastPmSyncStatus` is driven by a mutable state object — the test
  *     mutates the state, then refetches via `queryClient.invalidateQueries`
  *     triggered by the badge click / mutation, and the next list response
@@ -64,7 +64,7 @@ export function unwrapOrpcInput<T>(body: unknown): T {
 }
 
 /**
- * Snapshot the mutable story state into the shape the stories.list oRPC
+ * Snapshot the mutable story state into the shape the stories.board oRPC
  * procedure returns.
  */
 function buildStoryRow(story: SyncedStoryFixture) {
@@ -161,8 +161,22 @@ export async function installCapabilitiesAndStatuses(
 	);
 }
 
+function buildBoardRow(story: SyncedStoryFixture) {
+	const {
+		description,
+		acceptanceCriteria,
+		labels: _labels,
+		...row
+	} = buildStoryRow(story);
+	return {
+		...row,
+		hasDescription: !!description?.trim(),
+		hasAcceptanceCriteria: !!acceptanceCriteria,
+	};
+}
+
 /**
- * Install a stories.list interceptor that snapshots the current `state.story`
+ * Install a stories.board interceptor that snapshots the current `state.story`
  * each time the route is hit. Tests mutate `state.story` directly; the next
  * query invalidation will pick up the mutation.
  */
@@ -171,12 +185,23 @@ export async function installStoriesListMock(
 	state: { story: SyncedStoryFixture },
 ): Promise<void> {
 	await page.route(
-		"**/api/rpc/projects/stories/list**",
+		"**/api/rpc/projects/stories/get**",
 		async (route: Route) => {
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
-				// stories.list returns a { statuses, stories } envelope —
+				body: orpcJsonResponse({ story: buildStoryRow(state.story) }),
+			});
+		},
+	);
+
+	await page.route(
+		"**/api/rpc/projects/stories/board**",
+		async (route: Route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				// stories.board returns a { statuses, stories } envelope —
 				// StoriesRoadmap reads `storiesData?.stories`, so a bare
 				// array renders zero cards.
 				body: orpcJsonResponse({
@@ -190,7 +215,7 @@ export async function installStoriesListMock(
 							isFinal: false,
 						},
 					],
-					stories: [buildStoryRow(state.story)],
+					stories: [buildBoardRow(state.story)],
 				}),
 			});
 		},
@@ -202,11 +227,11 @@ export async function gotoRoadmap(
 	projectId: string,
 ): Promise<void> {
 	await page.goto(`/app/projects/${projectId}`);
-	// Wait for the stories.list fetch the roadmap mount triggers instead of
+	// Wait for the stories.board fetch the roadmap mount triggers instead of
 	// networkidle — the Fabric Agent panel polls continuously, so the network
 	// never goes idle.
 	const storiesListLoaded = page.waitForResponse((response) =>
-		response.url().includes("/api/rpc/projects/stories/list"),
+		response.url().includes("/api/rpc/projects/stories/board"),
 	);
 	// The project view switcher renders as plain buttons; accept a tablist
 	// implementation too so the helper survives either markup.

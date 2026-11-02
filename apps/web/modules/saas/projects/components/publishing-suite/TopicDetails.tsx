@@ -340,7 +340,7 @@ export function TopicDetails({
 					aria-label="Contributors"
 				>
 					{showContributorLabel ? (
-						<li className="text-[11px] text-muted-foreground uppercase tracking-[0.15em]">
+						<li className="text-[11px] text-muted-foreground uppercase tracking-wide">
 							Contributors
 						</li>
 					) : null}
@@ -386,7 +386,7 @@ export function TopicDetails({
 					className="flex flex-wrap items-center gap-1.5 pt-1"
 					aria-label="Assignees"
 				>
-					<li className="text-[11px] text-muted-foreground uppercase tracking-[0.15em]">
+					<li className="text-[11px] text-muted-foreground uppercase tracking-wide">
 						Assigned
 					</li>
 					{topic.assignees.map((a) => (

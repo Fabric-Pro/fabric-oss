@@ -2228,10 +2228,6 @@ async function seedSystemAgents() {
 	logger.info(
 		`  PROMPT_ENHANCER_URL: ${getDeploymentUrl("PROMPT_ENHANCER_URL", 8134)}`,
 	);
-	logger.info(
-		`  CUGA_AGENT_URL: ${getDeploymentUrl("CUGA_AGENT_URL", 9999)}`,
-	);
-	logger.info(`  CUGA_UI_URL: ${getDeploymentUrl("CUGA_UI_URL", 7860)}`);
 
 	// Get or create a system user for system agents
 	let systemUser = await db.user.findFirst({
@@ -2403,31 +2399,6 @@ async function seedSystemAgents() {
 				category: "API Integration",
 				version: "1.0.0",
 				tags: ["api", "openapi", "integration", "rest"],
-			},
-		},
-		{
-			agentId: "cuga_generalist",
-			name: "cuga_generalist",
-			displayName: "CUGA Generalist Agent",
-			description:
-				"Configurable Universal Generalist Agent (CUGA) - A powerful multi-agent system with specialized sub-agents for browser automation, API orchestration, code execution, and task decomposition.",
-			framework: "LANGGRAPH" as const,
-			runtimeVersion: "v1",
-			deploymentUrl: getDeploymentUrl("CUGA_AGENT_URL", 9999),
-			scope: "SYSTEM" as const,
-			status: "ACTIVE" as const,
-			heroEmojis: ["🤖", "🧠", "⚡"],
-			config: {
-				graphId: "cuga_generalist",
-				supportsPredictiveState: true,
-				hasNativeUI: true,
-				uiUrl: getDeploymentUrl("CUGA_UI_URL", 7860),
-			},
-			metadata: {
-				icon: "bot",
-				category: "Multi-Agent System",
-				version: "1.0.0",
-				tags: ["cuga", "browser", "automation", "generalist"],
 			},
 		},
 	];

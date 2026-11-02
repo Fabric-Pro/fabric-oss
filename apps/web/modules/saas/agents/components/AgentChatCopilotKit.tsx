@@ -2,18 +2,46 @@
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { Spinner } from "@shared/components/Spinner";
-import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
 import { AlertCircle, AlertTriangleIcon, SettingsIcon } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { AgentChatAPI } from "./AgentChatAPI";
-import { AgentChatCode } from "./AgentChatCode";
-import { AgentChatDocument } from "./AgentChatDocument";
-import { AgentChatGeneral } from "./AgentChatGeneral";
+import { useRuntimeChatTransport } from "../hooks/useRuntimeChatTransport";
+import {
+	agentChatAiConfigQueryOptions,
+	registeredAgentChatQueryOptions,
+} from "../lib/agent-chat-queries";
+import { DATA_ANALYST_REGISTRY_AGENT_ID } from "../lib/data-analyst-runtime-protocol";
+import { DataAnalystChat } from "./data-analyst/DataAnalystChat";
 import type { ReasoningMode } from "./ReasoningModeSelector";
+
+const AgentChatAPI = dynamic(
+	() => import("./AgentChatAPI").then((module) => module.AgentChatAPI),
+	{ loading: AgentChatLoading },
+);
+const AgentChatDocument = dynamic(
+	() =>
+		import("./AgentChatDocument").then(
+			(module) => module.AgentChatDocument,
+		),
+	{ loading: AgentChatLoading },
+);
+const AgentChatGeneral = dynamic(
+	() =>
+		import("./AgentChatGeneral").then((module) => module.AgentChatGeneral),
+	{ loading: AgentChatLoading },
+);
+
+function AgentChatLoading() {
+	return (
+		<div className="flex items-center justify-center h-96">
+			<Spinner />
+		</div>
+	);
+}
 
 interface AgentChatCopilotKitProps {
 	agentId: string;
@@ -44,6 +72,9 @@ export function AgentChatCopilotKit({
 	agentId,
 	useOrchestrator = false,
 }: AgentChatCopilotKitProps) {
+	const dataAnalystTransport = useRuntimeChatTransport(
+		"COPILOTKIT_DATA_ANALYST_CHAT",
+	);
 	const { organizationId, organizationName, basePath, isOrgContext } =
 		useOrganizationContext();
 	const [reasoningMode, setReasoningMode] =
@@ -53,12 +84,7 @@ export function AgentChatCopilotKit({
 	// IMPORTANT: Pass null explicitly for personal context to prevent
 	// session fallback which could leak org data to personal pages
 	const { data: aiConfigStatus, isLoading: isLoadingAiConfig } = useQuery({
-		queryKey: ["aiConfigStatus", organizationId],
-		queryFn: async () => {
-			return await orpcClient.aiConfig.resolution.getStatus({
-				organizationId,
-			});
-		},
+		...agentChatAiConfigQueryOptions(organizationId),
 	});
 
 	// Fetch agent details
@@ -67,13 +93,7 @@ export function AgentChatCopilotKit({
 		isLoading,
 		error,
 	} = useQuery({
-		queryKey: ["agents", "registry", "get", agentId],
-		queryFn: async () => {
-			const result = await orpcClient.agents.registry.get({
-				id: agentId,
-			});
-			return result;
-		},
+		...registeredAgentChatQueryOptions(agentId, organizationId),
 		enabled: !useOrchestrator,
 	});
 
@@ -128,11 +148,7 @@ export function AgentChatCopilotKit({
 	}, [agent, useOrchestrator]);
 
 	if (!useOrchestrator && isLoading) {
-		return (
-			<div className="flex items-center justify-center h-96">
-				<Spinner />
-			</div>
-		);
+		return <AgentChatLoading />;
 	}
 
 	if (!useOrchestrator && (error || !agent)) {
@@ -160,6 +176,18 @@ export function AgentChatCopilotKit({
 
 	// Determine which UI to render based on agent capabilities
 	const renderAgentUI = () => {
+		if (
+			activeAgent?.agentId === DATA_ANALYST_REGISTRY_AGENT_ID &&
+			dataAnalystTransport === "runtime" &&
+			organizationId !== null
+		) {
+			return (
+				<DataAnalystChat
+					key={organizationId}
+					organizationId={organizationId}
+				/>
+			);
+		}
 		// Document generators: split-pane with TipTap editor
 		if (
 			capabilities?.requiresEditor &&
@@ -179,21 +207,6 @@ export function AgentChatCopilotKit({
 		if (capabilities?.usesOpenAPI) {
 			return (
 				<AgentChatAPI
-					agent={activeAgent}
-					runtimeUrl={runtimeUrl}
-					reasoningMode={reasoningMode}
-					onReasoningModeChange={setReasoningMode}
-				/>
-			);
-		}
-
-		// Code Executor: code editor interface
-		if (
-			capabilities?.requiresEditor &&
-			capabilities?.editorType === "code"
-		) {
-			return (
-				<AgentChatCode
 					agent={activeAgent}
 					runtimeUrl={runtimeUrl}
 					reasoningMode={reasoningMode}

@@ -56,7 +56,7 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { type CSSProperties, useEffect, useRef, useState } from "react";
-import { edgeKindColorVar, type EdgeEndpoints } from "./atlas-edges";
+import { type EdgeEndpoints, edgeKindColorVar } from "./atlas-edges";
 import { formatRelativeTime } from "./atlas-utils";
 
 interface AtlasEdgePanelProps {
@@ -276,7 +276,7 @@ export function AtlasEdgePanel({
 			className="rounded-md px-1.5 py-1.5 transition-colors hover:bg-muted/50"
 		>
 			<div className="flex items-center justify-between gap-2">
-				<span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+				<span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 					{t(`historyAction.${entry.action}`)}
 				</span>
 				<span className="shrink-0 text-[11px] text-muted-foreground">
@@ -312,7 +312,7 @@ export function AtlasEdgePanel({
 	return (
 		<section
 			aria-label={t("regionLabel")}
-			className="flex h-full flex-col rounded-xl border bg-card"
+			className="flex h-full flex-col rounded-lg border bg-card"
 			style={
 				{
 					"--cc": accent,
@@ -328,7 +328,7 @@ export function AtlasEdgePanel({
 						style={{ background: accent }}
 					/>
 					<span
-						className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-[0.16em]"
+						className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide"
 						style={{ color: accent }}
 					>
 						{kindLabel}
@@ -361,7 +361,7 @@ export function AtlasEdgePanel({
 						<h3
 							ref={headingRef}
 							tabIndex={-1}
-							className="flex flex-wrap items-center gap-1.5 font-serif text-lg leading-tight text-foreground focus-visible:outline-none"
+							className="flex flex-wrap items-center gap-1.5 font-semibold text-lg leading-tight text-foreground focus-visible:outline-hidden"
 						>
 							<span className="break-words">{sourceLabel}</span>
 							<ArrowRightIcon
@@ -402,7 +402,7 @@ export function AtlasEdgePanel({
 						kindOptions.length > 0 &&
 						!deleted && (
 							<div>
-								<p className="mb-1.5 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+								<p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
 									{t("type")}
 								</p>
 								<Select
@@ -445,7 +445,7 @@ export function AtlasEdgePanel({
 					{/* Description — editable (when not read-only), with history. */}
 					<div>
 						<div className="mb-1.5 flex items-center justify-between gap-2">
-							<p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+							<p className="text-[11px] uppercase tracking-wide text-muted-foreground">
 								{t("description")}
 							</p>
 							{!editing && (
@@ -463,7 +463,7 @@ export function AtlasEdgePanel({
 															aria-label={t(
 																"history",
 															)}
-															className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+															className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 														>
 															<ClockIcon
 																aria-hidden="true"
@@ -481,7 +481,7 @@ export function AtlasEdgePanel({
 												className="w-80 p-0"
 											>
 												<div className="border-b border-border/60 px-3 py-2">
-													<p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+													<p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
 														{t("historyTitle")}
 													</p>
 												</div>
@@ -524,7 +524,7 @@ export function AtlasEdgePanel({
 													aria-label={t(
 														"editDescription",
 													)}
-													className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+													className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 												>
 													<PencilIcon
 														aria-hidden="true"
@@ -622,7 +622,7 @@ export function AtlasEdgePanel({
 										onClick={() =>
 											setDescExpanded((v) => !v)
 										}
-										className="mt-1 text-xs font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										className="mt-1 text-xs font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 									>
 										{descExpanded
 											? t("showLess")

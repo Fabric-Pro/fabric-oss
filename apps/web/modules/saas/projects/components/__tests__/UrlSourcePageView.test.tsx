@@ -296,8 +296,8 @@ describe("UrlSourcePageView", () => {
 				level: 1,
 				name: "Example Docs",
 			});
-			// CLAUDE.md mandates `font-serif` for page-level h1.
-			expect(heading.className).toMatch(/font-serif/);
+			// design.md mandates `font-semibold` for page-level h1.
+			expect(heading.className).toMatch(/font-semibold/);
 		});
 	});
 

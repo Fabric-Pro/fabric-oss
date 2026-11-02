@@ -2128,7 +2128,7 @@ export function TemplateInstanceDetail({
 							<Accordion
 								type="single"
 								collapsible
-								className="rounded-xl border bg-card"
+								className="rounded-lg border bg-card"
 							>
 								<AccordionItem
 									value="ai-config"
@@ -3320,7 +3320,7 @@ export function TemplateInstanceDetail({
 							<Accordion
 								type="single"
 								collapsible
-								className="rounded-xl border bg-card"
+								className="rounded-lg border bg-card"
 							>
 								<AccordionItem
 									value="template-details"

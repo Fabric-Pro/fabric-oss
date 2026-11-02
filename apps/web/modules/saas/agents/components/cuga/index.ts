@@ -9,7 +9,6 @@
  * - Browser view with screenshot and DOM overlays
  */
 
-export { CugaAuthenticatedChat } from "./CugaAuthenticatedChat";
 export { CugaExecutionView } from "./CugaExecutionView";
 
 // Types

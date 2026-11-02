@@ -2,14 +2,10 @@
  * The public v1 prompts routes cannot exceed what the caller could do in the
  * app (AGENTS.md, "API keys never grant more than the UI").
  *
- * In the app only an organization's admins and owners may create or change its
- * prompts. `POST /prompts` always resolves an organization and created an
- * organization-scoped prompt for any member whose key carried
- * `prompts:write`; `PATCH /prompts/:id` updated any organization prompt the
- * same way. Both now re-read the key owner's live role on every call — for a
- * wildcard `*` key too — and refuse with the nested `{ error: { message } }`
- * shape, which keeps a role refusal distinguishable from the scope
- * middleware's flat `{ error: "Missing required scope: …" }`.
+ * The in-app create and update procedures require two live checks for an
+ * organization prompt: PROMPT_CREATE/PROMPT_UPDATE and an admin-or-owner
+ * membership. The v1 routes ask both on every call, including for a wildcard
+ * key, so a member-level permission cannot bypass the narrower action rule.
  *
  * Each refusal asserts on the write, not only the status code.
  */
@@ -23,6 +19,7 @@ const { mocks } = vi.hoisted(() => ({
 		findPrompt: vi.fn(),
 		verifyOrganizationMembership: vi.fn(),
 		scopes: ["prompts:write"] as string[],
+		role: "member" as string | null,
 	},
 }));
 
@@ -54,6 +51,23 @@ vi.mock("../../external-api/middleware/api-key-auth", () => ({
 			}
 			return next();
 		},
+	requireV1OwnerPermission: async (
+		c: { json: (body: unknown, status: number) => unknown },
+		_context: unknown,
+		action: string,
+	) => {
+		if (action !== "prompts:create" && action !== "prompts:update") {
+			throw new Error(`Unexpected prompt permission action: ${action}`);
+		}
+		return mocks.role && ["member", "admin", "owner"].includes(mocks.role)
+			? null
+			: c.json(
+					{
+						error: "The key's owner no longer holds the access required for prompts:write in this organization",
+					},
+					403,
+				);
+	},
 }));
 
 vi.mock("../helpers", async (importOriginal) => ({
@@ -111,10 +125,12 @@ const create = () =>
 	});
 const rename = () => request("PATCH", "/prompts/p-1", { name: "Renamed" });
 
-const asRole = (role: string | null) =>
+const asRole = (role: string | null) => {
+	mocks.role = role;
 	mocks.verifyOrganizationMembership.mockResolvedValue(
 		role ? { organization: { id: "org-1" }, role } : null,
 	);
+};
 
 beforeEach(() => {
 	mocks.createPrompt.mockReset().mockResolvedValue(ROW);
@@ -124,6 +140,7 @@ beforeEach(() => {
 	mocks.findPrompt.mockReset().mockResolvedValue(ROW);
 	mocks.verifyOrganizationMembership.mockReset();
 	mocks.scopes = ["prompts:write"];
+	mocks.role = "member";
 });
 
 describe("v1 POST /prompts — the key owner's live role", () => {
@@ -150,6 +167,19 @@ describe("v1 POST /prompts — the key owner's live role", () => {
 		asRole("member");
 
 		expect((await create()).status).toBe(403);
+		expect(mocks.createPrompt).not.toHaveBeenCalled();
+	});
+
+	it("refuses a viewer at the prompt permission gate", async () => {
+		asRole("viewer");
+
+		const res = await create();
+
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({
+			error: "The key's owner no longer holds the access required for prompts:write in this organization",
+		});
+		expect(mocks.verifyOrganizationMembership).not.toHaveBeenCalled();
 		expect(mocks.createPrompt).not.toHaveBeenCalled();
 	});
 
@@ -208,6 +238,19 @@ describe("v1 PATCH /prompts/:id — the key owner's live role", () => {
 		asRole("member");
 
 		expect((await rename()).status).toBe(403);
+		expect(mocks.updatePrompt).not.toHaveBeenCalled();
+	});
+
+	it("refuses a viewer at the prompt permission gate", async () => {
+		asRole("viewer");
+
+		const res = await rename();
+
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({
+			error: "The key's owner no longer holds the access required for prompts:write in this organization",
+		});
+		expect(mocks.verifyOrganizationMembership).not.toHaveBeenCalled();
 		expect(mocks.updatePrompt).not.toHaveBeenCalled();
 	});
 

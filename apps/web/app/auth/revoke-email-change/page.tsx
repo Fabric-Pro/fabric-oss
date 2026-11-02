@@ -26,10 +26,9 @@ export default function RevokeEmailChangePage() {
 		setState("loading");
 		try {
 			await orpcClient.auth.revokeEmailChange({ token });
-			// Server has deleted the user's DB sessions. The browser may still
-			// be holding a Better Auth `session_data` cookie cache (5 min TTL),
-			// which would let it bounce between /app and /auth/login until the
-			// cache expires. signOut() clears the cookie immediately.
+			// Server has deleted the user's DB sessions. Clear the browser's now
+			// invalid session token and any legacy session-data cookie immediately
+			// instead of waiting for the next server-side session check to reject it.
 			try {
 				await authClient.signOut();
 			} catch {

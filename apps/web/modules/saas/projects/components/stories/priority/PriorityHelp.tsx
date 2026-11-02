@@ -80,7 +80,7 @@ export function PriorityHelp() {
 						aria-label={t("trigger")}
 						aria-describedby={descriptionId}
 						onClick={handleClick}
-						className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						<InfoIcon aria-hidden className="size-4" />
 					</button>

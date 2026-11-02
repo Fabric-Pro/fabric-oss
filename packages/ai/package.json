@@ -28,7 +28,7 @@
 		"@opentelemetry/sdk-trace-base": "2.7.1",
 		"@repo/tsconfig": "workspace:*",
 		"typescript": "5.9.3",
-		"vitest": "^4.1.11"
+		"vitest": "^4.1.12"
 	},
 	"main": "./index.ts",
 	"name": "@repo/ai",

@@ -126,9 +126,11 @@ export const saveTurn = tenantProtectedProcedure
 	});
 
 /**
- * Change an Advisor conversation's settings (chat tools, reasoning mode,
+ * Merge conversation settings (chat tools, reasoning mode,
  * agent instance) without rewriting its messages or saved executions
- * (Fizzy #2949). Authorized exactly like `saveTurn`.
+ * (Fizzy #2949). Null instanceId removes a pin. The engine hint fills only
+ * a missing mode and defaults to orchestrator; saveTurn keeps its own schema
+ * and default. Authorized exactly like `saveTurn`.
  */
 export const updateSettings = tenantProtectedProcedure
 	.use(
@@ -142,13 +144,21 @@ export const updateSettings = tenantProtectedProcedure
 		tags: ["Agent Conversations"],
 		summary: "Update a conversation's settings",
 		description:
-			"Change a conversation's chat tools, reasoning mode or agent instance, keeping its messages and executions",
+			"Merge chat settings, allowing null to remove an instance pin; engine fills only a missing mode, preserving messages and executions",
 	})
 	.input(
 		z.object({
 			conversationId: z.string(),
 			organizationId: z.string().nullable().optional(),
-			settings: SettingsSchema,
+			engine: z.enum(["direct", "orchestrator"]).optional(),
+			settings: SettingsSchema.extend({
+				instanceId: z
+					.string()
+					.min(1)
+					.max(INPUT_BOUNDS.name)
+					.nullable()
+					.optional(),
+			}),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -160,6 +170,7 @@ export const updateSettings = tenantProtectedProcedure
 				userId: context.user.id,
 				organizationId,
 				settings: input.settings,
+				engine: input.engine,
 			});
 			return { id: input.conversationId };
 		} catch (error) {

@@ -271,14 +271,14 @@ export function RegisterExternalAgent() {
 		<div className="container max-w-6xl py-8 space-y-8">
 			<PageBreadcrumbs items={breadcrumbItems} />
 
-			<div className="rounded-3xl border border-border/70 bg-[radial-gradient(circle_at_top_left,rgba(244,114,182,0.12),transparent_32%),radial-gradient(circle_at_top_right,rgba(59,130,246,0.14),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent)] p-8">
+			<div className="rounded-lg border border-border/70 bg-[radial-gradient(circle_at_top_left,rgba(244,114,182,0.12),transparent_32%),radial-gradient(circle_at_top_right,rgba(59,130,246,0.14),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent)] p-8">
 				<div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
 					<div className="space-y-3">
 						<Badge variant="outline" className="w-fit">
 							Agent Registry
 						</Badge>
 						<div className="space-y-2">
-							<h1 className="text-3xl font-bold tracking-tight">
+							<h1 className="text-xl font-bold tracking-tight">
 								Register External Agent
 							</h1>
 							<p className="max-w-2xl text-base text-muted-foreground">
@@ -290,24 +290,24 @@ export function RegisterExternalAgent() {
 						</div>
 					</div>
 					<div className="grid gap-3 sm:grid-cols-3">
-						<div className="rounded-2xl border bg-background/60 px-4 py-3">
-							<p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+						<div className="rounded-lg border bg-background/60 px-4 py-3">
+							<p className="text-xs uppercase tracking-wide text-muted-foreground">
 								Primary use
 							</p>
 							<p className="mt-1 text-sm font-medium">
 								Registry-backed details
 							</p>
 						</div>
-						<div className="rounded-2xl border bg-background/60 px-4 py-3">
-							<p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+						<div className="rounded-lg border bg-background/60 px-4 py-3">
+							<p className="text-xs uppercase tracking-wide text-muted-foreground">
 								Protocols
 							</p>
 							<p className="mt-1 text-sm font-medium">
 								A2A and MCP
 							</p>
 						</div>
-						<div className="rounded-2xl border bg-background/60 px-4 py-3">
-							<p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+						<div className="rounded-lg border bg-background/60 px-4 py-3">
+							<p className="text-xs uppercase tracking-wide text-muted-foreground">
 								Outcome
 							</p>
 							<p className="mt-1 text-sm font-medium">
@@ -321,7 +321,7 @@ export function RegisterExternalAgent() {
 			<div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
 				<div className="space-y-8">
 					{/* Agent Type Selection */}
-					<Card className="rounded-2xl border-border/70">
+					<Card className="rounded-lg border-border/70">
 						<CardHeader>
 							<CardTitle>Agent Type</CardTitle>
 							<CardDescription>
@@ -395,7 +395,7 @@ export function RegisterExternalAgent() {
 
 					{/* Step 1: Enter URL (A2A) */}
 					{agentType === "A2A" && (
-						<Card className="rounded-2xl border-border/70">
+						<Card className="rounded-lg border-border/70">
 							<CardHeader>
 								<CardTitle className="flex items-center gap-2">
 									<span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm">
@@ -504,7 +504,7 @@ export function RegisterExternalAgent() {
 					{agentType === "A2A" &&
 						discoveryStatus === "success" &&
 						discoveryResult?.valid && (
-							<Card className="rounded-2xl border-border/70">
+							<Card className="rounded-lg border-border/70">
 								<CardHeader>
 									<CardTitle className="flex items-center gap-2">
 										<span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm">
@@ -710,7 +710,7 @@ export function RegisterExternalAgent() {
 					{agentType === "A2A" &&
 						discoveryStatus === "success" &&
 						discoveryResult?.valid && (
-							<Card className="rounded-2xl border-border/70">
+							<Card className="rounded-lg border-border/70">
 								<CardHeader>
 									<CardTitle className="flex items-center gap-2">
 										<span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm">
@@ -757,7 +757,7 @@ export function RegisterExternalAgent() {
 					{/* MCP Agent Registration Form */}
 					{agentType === "MCP" && (
 						<>
-							<Card className="rounded-2xl border-border/70">
+							<Card className="rounded-lg border-border/70">
 								<CardHeader>
 									<CardTitle className="flex items-center gap-2">
 										<span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm">
@@ -874,7 +874,7 @@ export function RegisterExternalAgent() {
 								</CardContent>
 							</Card>
 
-							<Card className="rounded-2xl border-border/70">
+							<Card className="rounded-lg border-border/70">
 								<CardHeader>
 									<CardTitle className="flex items-center gap-2">
 										<span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm">
@@ -922,7 +922,7 @@ export function RegisterExternalAgent() {
 
 					{/* Protocol Info (A2A) */}
 					{agentType === "A2A" && (
-						<Card className="rounded-2xl border-border/70 bg-muted/30">
+						<Card className="rounded-lg border-border/70 bg-muted/30">
 							<CardHeader>
 								<CardTitle className="text-base flex items-center gap-2">
 									<AlertTriangle className="h-4 w-4" />
@@ -972,7 +972,7 @@ export function RegisterExternalAgent() {
 
 					{/* Protocol Info (MCP) */}
 					{agentType === "MCP" && (
-						<Card className="rounded-2xl border-border/70 bg-muted/30">
+						<Card className="rounded-lg border-border/70 bg-muted/30">
 							<CardHeader>
 								<CardTitle className="text-base flex items-center gap-2">
 									<AlertTriangle className="h-4 w-4" />
@@ -1013,7 +1013,7 @@ export function RegisterExternalAgent() {
 				</div>
 
 				<div className="space-y-4">
-					<Card className="rounded-2xl border-border/70">
+					<Card className="rounded-lg border-border/70">
 						<CardHeader>
 							<CardTitle className="text-base">
 								What Happens After Registration
@@ -1038,15 +1038,15 @@ export function RegisterExternalAgent() {
 						</CardContent>
 					</Card>
 
-					<Card className="rounded-2xl border-border/70">
+					<Card className="rounded-lg border-border/70">
 						<CardHeader>
 							<CardTitle className="text-base">
 								Choose The Right Registry Entry
 							</CardTitle>
 						</CardHeader>
 						<CardContent className="space-y-3 text-sm">
-							<div className="rounded-xl border bg-muted/30 p-3">
-								<p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+							<div className="rounded-lg border bg-muted/30 p-3">
+								<p className="text-xs uppercase tracking-wide text-muted-foreground">
 									A2A Agent
 								</p>
 								<p className="mt-1">
@@ -1055,8 +1055,8 @@ export function RegisterExternalAgent() {
 									Card.
 								</p>
 							</div>
-							<div className="rounded-xl border bg-muted/30 p-3">
-								<p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+							<div className="rounded-lg border bg-muted/30 p-3">
+								<p className="text-xs uppercase tracking-wide text-muted-foreground">
 									MCP Agent
 								</p>
 								<p className="mt-1">
@@ -1065,8 +1065,8 @@ export function RegisterExternalAgent() {
 									a run.
 								</p>
 							</div>
-							<div className="rounded-xl border bg-muted/30 p-3">
-								<p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+							<div className="rounded-lg border bg-muted/30 p-3">
+								<p className="text-xs uppercase tracking-wide text-muted-foreground">
 									Registry UX
 								</p>
 								<p className="mt-1">

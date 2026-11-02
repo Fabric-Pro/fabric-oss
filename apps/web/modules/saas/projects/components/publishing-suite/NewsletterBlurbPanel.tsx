@@ -1071,7 +1071,7 @@ export function NewsletterBlurbPanel({
 					</p>
 				</>
 			) : (
-				<div className="rounded-xl border border-border bg-muted/40 p-4">
+				<div className="rounded-lg border border-border bg-muted/40 p-4">
 					<p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
 						{working.body}
 					</p>
@@ -1130,7 +1130,7 @@ export function NewsletterBlurbPanel({
 					{/* WORDS, never tints. Each value is a full sentence rather
 					    than a coloured chip, so nothing here is carried by
 					    colour alone and nothing needs an icon to decode. */}
-					<dl className="space-y-3 rounded-xl border border-border bg-card p-4 text-sm">
+					<dl className="space-y-3 rounded-lg border border-border bg-card p-4 text-sm">
 						<div className="space-y-0.5">
 							<dt className="font-medium">Release status</dt>
 							<dd className="text-muted-foreground leading-relaxed">
@@ -1167,7 +1167,7 @@ export function NewsletterBlurbPanel({
 				doc.suggestedAssets.needsConfirmation.length > 0) ? (
 				<div className="grid gap-4 sm:grid-cols-2">
 					{doc.suggestedAssets.confirmed.length > 0 ? (
-						<section className="space-y-2 rounded-xl border border-border bg-muted/40 p-4">
+						<section className="space-y-2 rounded-lg border border-border bg-muted/40 p-4">
 							<h3 className="publishing-label">
 								Assets confirmed
 							</h3>
@@ -1185,7 +1185,7 @@ export function NewsletterBlurbPanel({
 						</section>
 					) : null}
 					{doc.suggestedAssets.needsConfirmation.length > 0 ? (
-						<section className="space-y-2 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
+						<section className="space-y-2 rounded-lg border border-highlight/40 bg-highlight/10 p-4">
 							<h3 className="publishing-label">
 								Assets needing confirmation
 							</h3>

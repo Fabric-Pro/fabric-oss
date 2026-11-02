@@ -76,6 +76,41 @@ export function assertMcpServerUrlAllowed(urlString: string): void {
 	}
 }
 
+function normalizedMcpPath(pathname: string): string {
+	const withoutTrailingSlashes = pathname.replace(/\/+$/, "");
+	return withoutTrailingSlashes || "/";
+}
+
+/**
+ * Whether two URL strings name the same MCP credential destination.
+ *
+ * `URL` canonicalizes protocol/host case and default ports. Endpoint paths
+ * additionally ignore trailing slashes so saved and form-normalized versions
+ * of the configured endpoint compare equal. Query strings and URL credentials
+ * remain exact: either can select a different upstream identity or resource
+ * even when origin and path match.
+ * Fragments are ignored because they are not sent in an HTTP request.
+ */
+export function mcpServerUrlsMatch(
+	configuredUrl: string,
+	destinationUrl: string,
+): boolean {
+	try {
+		const configured = new URL(configuredUrl);
+		const destination = new URL(destinationUrl);
+		return (
+			configured.origin === destination.origin &&
+			normalizedMcpPath(configured.pathname) ===
+				normalizedMcpPath(destination.pathname) &&
+			configured.search === destination.search &&
+			configured.username === destination.username &&
+			configured.password === destination.password
+		);
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Throw unless the MCP server URL may be connected to, resolving the hostname
  * and refusing any DNS answer that contains a private address.

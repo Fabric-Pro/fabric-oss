@@ -39,7 +39,7 @@ function ConnectHeader({
 	return (
 		<div className="space-y-3 text-center">
 			<ChatgptFabricMarks />
-			<h1 className="font-serif text-2xl">{title}</h1>
+			<h1 className="font-semibold text-2xl">{title}</h1>
 			<p className="text-muted-foreground text-sm">{description}</p>
 		</div>
 	);

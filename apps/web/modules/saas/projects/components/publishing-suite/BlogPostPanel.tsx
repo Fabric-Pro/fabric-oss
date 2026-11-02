@@ -688,7 +688,7 @@ export function BlogPostPanel({
 					</p>
 				</>
 			) : (
-				<div className="rounded-xl border border-border bg-muted/40 p-4">
+				<div className="rounded-lg border border-border bg-muted/40 p-4">
 					<p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
 						{working.body}
 					</p>

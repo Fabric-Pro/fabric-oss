@@ -155,17 +155,17 @@ function IncidentTimelineRow({ incident }: { incident: IncidentRow }) {
 						<div className="flex items-center gap-2">
 							<span
 								className={cn(
-									"text-[10px] font-semibold uppercase tracking-[0.18em]",
+									"text-[10px] font-semibold uppercase tracking-wide",
 									SEVERITY_TEXT[incident.severity],
 								)}
 							>
 								{SEVERITY_LABEL[incident.severity]}
 							</span>
-							<span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+							<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
 								{HEALTH_LABEL[incident.health]}
 							</span>
 							{isOngoing ? (
-								<span className="rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-destructive">
+								<span className="rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-destructive">
 									Ongoing
 								</span>
 							) : null}
@@ -340,7 +340,7 @@ export function IntegrationIncidentDrawer({
 							Incident history
 						</span>
 					</div>
-					<SheetTitle className="font-serif text-2xl leading-tight">
+					<SheetTitle className="font-semibold text-2xl leading-tight">
 						{providerName}
 					</SheetTitle>
 					<SheetDescription className="text-xs">

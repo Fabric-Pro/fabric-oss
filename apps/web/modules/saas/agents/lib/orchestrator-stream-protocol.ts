@@ -1,4 +1,5 @@
 import type { TaskPlan } from "@repo/temporal";
+import type { ChatEventCursor } from "@repo/utils/chat-event-cursor";
 import { z } from "zod";
 import {
 	encodeChatStreamEvent,
@@ -193,6 +194,10 @@ export const orchestratorStreamEventSchema = z.discriminatedUnion("type", [
 		clarificationId: z.string(),
 	}),
 	z.object({
+		type: z.literal("replay_unavailable"),
+		reason: z.literal("query_not_registered").optional(),
+	}),
+	z.object({
 		type: z.literal("stream_timeout"),
 		executionId: z.string().optional(),
 		message: z.string().optional(),
@@ -293,14 +298,14 @@ export const orchestratorStreamEventSchema = z.discriminatedUnion("type", [
 ]);
 export type OrchestratorStreamEvent = z.infer<
 	typeof orchestratorStreamEventSchema
->;
+> & { eventCursor?: ChatEventCursor };
 export function parseOrchestratorStreamEvent(
 	value: unknown,
 ): OrchestratorStreamEvent | null {
 	return parseVersionedChatEvent(value, orchestratorStreamEventSchema);
 }
 export function encodeOrchestratorStreamEvent(
-	event: z.input<typeof orchestratorStreamEventSchema>,
+	event: OrchestratorStreamInput,
 ): string {
 	return encodeChatStreamEvent(event);
 }
@@ -330,4 +335,4 @@ export function parseResearchStreamEvent(value: unknown) {
 
 export type OrchestratorStreamInput = z.input<
 	typeof orchestratorStreamEventSchema
->;
+> & { eventCursor?: ChatEventCursor };

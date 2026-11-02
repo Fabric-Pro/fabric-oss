@@ -133,14 +133,17 @@ interface MockState {
 }
 
 async function installStoriesMock(page: Page, state: MockState): Promise<void> {
-	// stories.list — read by the roadmap.
+	// stories.board — read by the roadmap.
 	await page.route(
-		"**/api/rpc/projects/stories/list**",
+		"**/api/rpc/projects/stories/board**",
 		async (route: Route) => {
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
-				body: orpcJsonResponse([buildStoryObject(state.story)]),
+				body: orpcJsonResponse({
+					statuses: [],
+					stories: [buildStoryObject(state.story)],
+				}),
 			});
 		},
 	);

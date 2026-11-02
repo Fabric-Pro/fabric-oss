@@ -381,7 +381,7 @@ export function CustomizeProjectTabsDialog({
 
 				<div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
 					<section>
-						<p className="mb-1 px-2 font-medium text-[10.5px] text-muted-foreground uppercase tracking-[0.12em]">
+						<p className="mb-1 px-2 font-medium text-[10.5px] text-muted-foreground uppercase tracking-wide">
 							Shown ({visibleRows.length})
 						</p>
 						<ul>{visibleRows.map((id) => renderRow(id, {}))}</ul>
@@ -389,7 +389,7 @@ export function CustomizeProjectTabsDialog({
 
 					{hiddenRows.length > 0 && (
 						<section>
-							<p className="mb-1 px-2 font-medium text-[10.5px] text-muted-foreground uppercase tracking-[0.12em]">
+							<p className="mb-1 px-2 font-medium text-[10.5px] text-muted-foreground uppercase tracking-wide">
 								Hidden by you
 							</p>
 							<p className="mb-1 px-2 text-[11px] text-muted-foreground">
@@ -405,7 +405,7 @@ export function CustomizeProjectTabsDialog({
 
 					{unavailableRows.length > 0 && (
 						<section>
-							<p className="mb-1 px-2 font-medium text-[10.5px] text-muted-foreground uppercase tracking-[0.12em]">
+							<p className="mb-1 px-2 font-medium text-[10.5px] text-muted-foreground uppercase tracking-wide">
 								Unavailable in this project
 							</p>
 							<p className="mb-1 px-2 text-[11px] text-muted-foreground">

@@ -71,6 +71,24 @@ export interface GlossyPromptOptions {
 }
 
 /**
+ * The kinds only a Proposal's visuals step proposes (Fizzy #2946): the
+ * Proposal draws them with its layers and team figure templates, which
+ * Glossy does not have. Listed under their own heading, after Glossy's
+ * kinds, and only with `proposalArtifact`.
+ */
+const PROPOSAL_KIND_DEFINITIONS: Readonly<Record<"layers" | "team", string>> = {
+	layers: "a solution, platform, or system the section describes in layers or tiers (for example channels, services, data), naming at least two layers and the components in each; optionally capabilities the section says span every layer, such as security or monitoring. A plain list of features or modules without layers is not layers.",
+	team: "the people or roles on both sides of the engagement as the section names them: the team the proposal offers and the client's own people, at least one on each side; optionally one forum both sides take part in, such as a weekly steering meeting. A list of the proposer's roles alone is not a team.",
+};
+
+const PROPOSAL_KINDS = [
+	"## More visual kinds for this Proposal",
+	...Object.entries(PROPOSAL_KIND_DEFINITIONS).map(
+		([kind, definition]) => `- ${kind}: ${definition}`,
+	),
+];
+
+/**
  * Who a Proposal's diagrams are for. Guidance, not a filter: detection may
  * still propose a technical diagram for a body section where nothing else
  * fits.
@@ -95,6 +113,7 @@ export function buildGlossyDetectInstructions(
 			(kind) => `- ${kind}: ${GLOSSY_KIND_DEFINITIONS[kind]}`,
 		),
 		"",
+		...(options.proposalArtifact ? [...PROPOSAL_KINDS, ""] : []),
 		"## Rules",
 		"- Propose a visual only where the section's own text already contains everything the visual would show. Never propose one that needs information the section does not state.",
 		"- At most one visual per section, and never more in total than the request allows. When more sections qualify, keep the strongest candidates.",

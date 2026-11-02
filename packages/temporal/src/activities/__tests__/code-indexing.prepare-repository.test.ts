@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { MockActivityEnvironment } from "@temporalio/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expectPrivateCodeIndexPath } from "./helpers/code-index-privacy";
 
 // The clone is host-local temp (`os.tmpdir()/fabric-code-index-<runId>`). When
 // clone, secret scan and walk were separate activities, Temporal could run the
@@ -398,7 +399,7 @@ describe("private code-index artifacts", () => {
 		);
 		const parent = path.dirname(out.clone.clonePath);
 		expect(parent).not.toBe(os.tmpdir());
-		expect(fs.statSync(parent).mode & 0o777).toBe(0o700);
+		expectPrivateCodeIndexPath(parent, 0o700);
 		expect(path.dirname(out.tree.manifestPath)).toBe(parent);
 		expect(path.dirname(out.changed?.manifestPath as string)).toBe(parent);
 	});

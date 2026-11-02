@@ -121,7 +121,7 @@ export const executeTemplateProcedure = tenantProtectedProcedure
 				extractors: [] as unknown as Prisma.InputJsonValue,
 				status: "PENDING",
 				userId: user.id,
-				organizationId: input.organizationId,
+				organizationId,
 			},
 		});
 
@@ -143,7 +143,7 @@ export const executeTemplateProcedure = tenantProtectedProcedure
 								templateId: template.id,
 								taskId: browserTask.id,
 								userId: user.id,
-								organizationId: input.organizationId,
+								organizationId,
 								parameterValues: input.parameterValues,
 								takeScreenshots: input.takeScreenshots,
 							},

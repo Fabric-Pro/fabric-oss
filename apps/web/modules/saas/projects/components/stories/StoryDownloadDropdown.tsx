@@ -19,6 +19,7 @@
  *     `fabric/standards/frontend/tooltips.md`.
  */
 
+import { orpcClient } from "@shared/lib/orpc-client";
 import { Button } from "@ui/components/button";
 import {
 	DropdownMenu,
@@ -45,6 +46,7 @@ import {
 	serializeStoryToMarkdown,
 } from "../../lib/stories/story-to-markdown";
 import type { UserStory } from "../../lib/stories/types";
+import { transformStory } from "../../lib/stories/types";
 
 export interface StoryDownloadProjectRef {
 	id: string;
@@ -74,12 +76,25 @@ export function useStoryDownloadActions(
 	const t = useTranslations("projects.stories.download");
 	const [isPending, setIsPending] = useState(false);
 
-	const buildMarkdown = (): string =>
-		serializeStoryToMarkdown(
-			story,
+	const buildMarkdown = async (): Promise<string> => {
+		const full =
+			story.description === undefined ||
+			story.acceptanceCriteria === undefined
+				? transformStory(
+						(
+							await orpcClient.projects.stories.get({
+								projectId: project.id,
+								storyId: story.id,
+							})
+						).story,
+					)
+				: story;
+		return serializeStoryToMarkdown(
+			full,
 			{ name: project.name },
 			{ generatedAt: new Date().toISOString() },
 		);
+	};
 
 	const safeFilename = (ext: string): string => {
 		// Avoid a hard runtime dep on `markdown-to-document.ts` from this hook
@@ -96,7 +111,11 @@ export function useStoryDownloadActions(
 	};
 
 	const guardStub = (): boolean => {
-		if (isStoryStub(story)) {
+		if (
+			isStoryStub(story) &&
+			!story.hasDescription &&
+			!story.hasAcceptanceCriteria
+		) {
 			toast.warning(t("stubBlocked"));
 			return true;
 		}
@@ -107,8 +126,9 @@ export function useStoryDownloadActions(
 		if (guardStub()) {
 			return;
 		}
+		setIsPending(true);
 		try {
-			const markdown = buildMarkdown();
+			const markdown = await buildMarkdown();
 			const blob = new Blob([markdown], {
 				type: "text/markdown;charset=utf-8",
 			});
@@ -119,6 +139,8 @@ export function useStoryDownloadActions(
 		} catch (err) {
 			console.error("[StoryDownload] markdown failed", err);
 			toast.error(t("failed"));
+		} finally {
+			setIsPending(false);
 		}
 	};
 
@@ -128,7 +150,7 @@ export function useStoryDownloadActions(
 		}
 		setIsPending(true);
 		try {
-			const markdown = buildMarkdown();
+			const markdown = await buildMarkdown();
 			const { renderMarkdownToPdf, triggerBlobDownload } = await import(
 				"../../lib/markdown-to-document"
 			);
@@ -148,7 +170,7 @@ export function useStoryDownloadActions(
 		}
 		setIsPending(true);
 		try {
-			const markdown = buildMarkdown();
+			const markdown = await buildMarkdown();
 			const { renderMarkdownToDocx, triggerBlobDownload } = await import(
 				"../../lib/markdown-to-document"
 			);

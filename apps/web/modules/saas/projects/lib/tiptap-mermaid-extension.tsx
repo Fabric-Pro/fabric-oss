@@ -1,9 +1,19 @@
 "use client";
 
 import {
+	ALWAYS_WRAPPED_LABEL_CHARS,
+	DIAGRAM_CANVAS_PADDING_PX,
+	PRINT_LABEL_FLOOR_PT,
+	printedNodeLabelPt,
+	turnFlowchartTopDown,
+	wrapFlowchartNodeLabels,
+} from "@repo/utils/proposal-artifact/diagram-label-wrap";
+import {
 	isLiveFigureCounted,
 	type LiveDiagramEngine,
+	printableDiagramKind,
 	printsAsDrawn,
+	withoutLeadingChartComments,
 } from "@repo/utils/proposal-artifact/diagram-printability";
 import {
 	type ProposalThemePaint,
@@ -77,6 +87,7 @@ import {
 	MERMAID_NODE_NAME,
 	useDiagramOrigin,
 } from "./mermaid-diagram-index";
+import { readSvgNaturalSize } from "./mermaid-diagram-sizing";
 import { MermaidEditVisualPanel } from "./mermaid-edit-visual-panel";
 import { MermaidFailureView } from "./mermaid-failure-view";
 import { withMermaidLock } from "./mermaid-lock";
@@ -257,7 +268,10 @@ export async function renderNativeMermaidSvg(
 	});
 }
 
-/** The colour slots beautiful-mermaid reads, bridged to the page's tokens. */
+/**
+ * The colour slots beautiful-mermaid reads, bridged to the page's tokens,
+ * with the page's font and the print canvas margin.
+ */
 const BEAUTIFUL_MERMAID_COLORS = {
 	bg: "var(--mermaid-bg)",
 	fg: "var(--mermaid-fg)",
@@ -266,9 +280,196 @@ const BEAUTIFUL_MERMAID_COLORS = {
 	muted: "var(--mermaid-muted)",
 	surface: "var(--mermaid-surface)",
 	border: "var(--mermaid-border)",
-	font: "ui-sans-serif, system-ui, -apple-system, sans-serif",
+	// One family, not a stack: the engine writes it quoted, as
+	// `font-family: '<font>', system-ui, sans-serif`, so a stack names no
+	// family that exists and the text falls back to the system face. Its
+	// text width estimate is tuned for Inter, which the page loads.
+	// The page registers Inter under this literal family name (checked on
+	// the staging build). Were next/font to register a hashed name instead,
+	// the text would fall back to system-ui, which only changes its look:
+	// the engine's width estimate does not depend on the font.
+	font: "Inter",
 	transparent: true,
+	// The export's narrow canvas margin rather than the engine's 40 px, so a
+	// flowchart or state diagram is drawn as wide as it prints and the floor
+	// rule below measures the width print measures. The figure container
+	// keeps its own padding around the drawing.
+	padding: DIAGRAM_CANVAS_PADDING_PX,
 } as const;
+
+interface MeasuredDrawing {
+	svg: string;
+	/** Its node labels as printed, or null when its size is unknown. */
+	labelPt: number | null;
+}
+
+/**
+ * An engine drawing with its node labels' printed size, from its width and
+ * height: shrunk to the print column, or to the tallest a figure may be.
+ */
+function measuredDrawing(svg: string): MeasuredDrawing {
+	const size = readSvgNaturalSize(svg);
+	return {
+		svg,
+		labelPt:
+			size === null || size.height === null
+				? null
+				: printedNodeLabelPt({
+						width: size.width,
+						height: size.height,
+					}),
+	};
+}
+
+/** Whether a drawing's labels print larger than another's, both known. */
+function printsLarger(
+	drawing: MeasuredDrawing,
+	than: MeasuredDrawing,
+): boolean {
+	return (
+		drawing.labelPt !== null &&
+		than.labelPt !== null &&
+		drawing.labelPt > than.labelPt
+	);
+}
+
+/** The engine's drawing of `text`, or null when it refuses it. */
+function drawOrNull(
+	render: (text: string) => string,
+	text: string,
+): string | null {
+	try {
+		return render(text);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The source drawn by beautiful-mermaid so that its node labels stay
+ * legible. On every page but a Proposal's, a flowchart's labels of
+ * {@link ALWAYS_WRAPPED_LABEL_CHARS} or more are broken into lines and that
+ * copy is drawn, in the author's direction: on screen its height does not
+ * matter. With `floorRule` (a client-document Proposal's page, which
+ * prints) the export's rule follows, measured at the size labels print,
+ * shrunk to the print column's width or a printed figure's height: the
+ * source as written competes with that copy and the one whose labels print
+ * larger is kept, the broken one on a tie; then, when a flowchart's or a
+ * state diagram's labels would print below the floor, a sideways flowchart
+ * is drawn top-down too, and, when that is still below it, with every long
+ * label broken (top-down when it was sideways); a drawing replaces the one
+ * kept only when its labels print larger. Only the drawn copy changes,
+ * never the fence. A copy the engine refuses keeps the drawing before it;
+ * the source as written throws as before when there is no broken copy.
+ */
+function drawLegible(
+	source: string,
+	render: (text: string) => string,
+	floorRule: boolean,
+): string {
+	const longBroken = wrapFlowchartNodeLabels(source, {
+		minChars: ALWAYS_WRAPPED_LABEL_CHARS,
+	});
+	const brokenSvg =
+		longBroken === null ? null : drawOrNull(render, longBroken);
+	if (!floorRule) {
+		return brokenSvg ?? render(source);
+	}
+	// What the variants below start from: the copy kept of the two.
+	let base = source;
+	let best: MeasuredDrawing;
+	if (brokenSvg === null || longBroken === null) {
+		best = measuredDrawing(render(source));
+	} else {
+		base = longBroken;
+		best = measuredDrawing(brokenSvg);
+		// Broken labels make a diagram taller, and a tall one prints
+		// smaller: the copy as written is kept when its labels print larger.
+		const writtenSvg = drawOrNull(render, source);
+		const written =
+			writtenSvg === null ? null : measuredDrawing(writtenSvg);
+		if (written !== null && printsLarger(written, best)) {
+			base = source;
+			best = written;
+		}
+	}
+	// Only a graph's labels are drawn at the node label size; a chart's or
+	// a sequence's text is sized and placed by rules of its own.
+	if (printableDiagramKind(base.trim()) !== "graph") {
+		return best.svg;
+	}
+	const belowFloor = (drawing: MeasuredDrawing) =>
+		drawing.labelPt !== null && drawing.labelPt < PRINT_LABEL_FLOOR_PT;
+	const larger = (
+		kept: MeasuredDrawing,
+		variant: string,
+	): MeasuredDrawing => {
+		const svg = drawOrNull(render, variant);
+		if (svg === null) {
+			return kept;
+		}
+		const redrawn = measuredDrawing(svg);
+		return printsLarger(redrawn, kept) ? redrawn : kept;
+	};
+	if (belowFloor(best)) {
+		const turned = turnFlowchartTopDown(base);
+		if (turned) {
+			best = larger(best, turned);
+		}
+		if (belowFloor(best)) {
+			const wrapped = wrapFlowchartNodeLabels(turned ?? base);
+			if (wrapped) {
+				best = larger(best, wrapped);
+			}
+		}
+	}
+	return best.svg;
+}
+
+/** The most drawings {@link legibleDrawings} keeps. */
+const LEGIBLE_DRAWINGS_KEPT = 64;
+
+/**
+ * Recent drawings, by the source drawn and whether the floor rule applied,
+ * least recently used first, so drawing a source again (a remount, a light
+ * or dark switch, the same diagram twice) costs no layout. Nothing else
+ * changes the engine's output: its colours are the page's CSS variables,
+ * the same in light and dark, and it reads no clock or random number. A
+ * paint change appends other role classes, so it is another source.
+ */
+const legibleDrawings = new Map<string, string>();
+
+/** Forgets every kept drawing, so a test sees the engine called afresh. */
+export function resetLegibleDrawingsForTests(): void {
+	legibleDrawings.clear();
+}
+
+/**
+ * {@link drawLegible}, from the kept drawings when the same source was drawn
+ * under the same rule before. A source the engine refuses is never kept.
+ */
+function drawLegibleDiagram(
+	source: string,
+	render: (text: string) => string,
+	{ floorRule }: { floorRule: boolean },
+): string {
+	const key = `${floorRule ? "floor" : "no-floor"}\n${source}`;
+	const kept = legibleDrawings.get(key);
+	if (kept !== undefined) {
+		legibleDrawings.delete(key);
+		legibleDrawings.set(key, kept);
+		return kept;
+	}
+	const svg = drawLegible(source, render, floorRule);
+	legibleDrawings.set(key, svg);
+	if (legibleDrawings.size > LEGIBLE_DRAWINGS_KEPT) {
+		const oldest = legibleDrawings.keys().next();
+		if (!oldest.done) {
+			legibleDrawings.delete(oldest.value);
+		}
+	}
+	return svg;
+}
 
 interface DiagramRenderOptions {
 	isDark: boolean;
@@ -286,7 +487,17 @@ interface DiagramRenderOptions {
  * flowchart gets the theme's role class definitions appended first, so a
  * generated diagram's `class <id> surface` lines take the brand's colours
  * and follow a Style change without its text changing. Without one the
- * source is drawn as written, without its caption line.
+ * source is drawn as written, without its caption line. Without a paint,
+ * beautiful-mermaid draws a copy with its long node labels broken into
+ * lines; with one, as the export prints it, that copy competes with the
+ * source as written, and one whose labels would print too small is also
+ * turned top-down or broken further (`drawLegibleDiagram`). The fence
+ * itself never changes.
+ *
+ * beautiful-mermaid finds an xychart on the very first line only, so a
+ * chart is handed to it without its leading `%%` lines (marker, caption,
+ * figure line), as the export hands it: a `%% figure: bars` fence its
+ * template refuses draws, and is numbered, as it prints.
  */
 async function drawDiagram(
 	code: string,
@@ -311,9 +522,15 @@ async function drawDiagram(
 		// Use CSS variables so the SVG adapts to light/dark theme automatically.
 		// The SVG references CSS custom properties defined on .mermaid-diagram-area,
 		// which inherit from the app's design tokens. No re-render needed on theme switch.
-		svg = beautifulMermaid.renderMermaidSVG(
-			source.trim(),
-			BEAUTIFUL_MERMAID_COLORS,
+		svg = drawLegibleDiagram(
+			source,
+			(text) =>
+				beautifulMermaid.renderMermaidSVG(
+					withoutLeadingChartComments(text.trim()),
+					BEAUTIFUL_MERMAID_COLORS,
+				),
+			// Only a Proposal's page prints, so only it follows the print rule.
+			{ floorRule: Boolean(paint) },
 		);
 	} catch {
 		// Fallback to native mermaid.js for unsupported diagram types
@@ -1419,7 +1636,7 @@ Rules:
 		return (
 			<NodeViewWrapper className="mermaid-wrapper">
 				<HiddenSource />
-				<div className="my-4 flex min-h-[200px] items-center justify-center rounded-xl border bg-muted/30">
+				<div className="my-4 flex min-h-[200px] items-center justify-center rounded-lg border bg-muted/30">
 					<div className="text-sm text-muted-foreground">
 						Loading diagram...
 					</div>
@@ -1863,7 +2080,7 @@ Rules:
 											ref={triggerRef}
 											type="button"
 											aria-label={tMenu("trigger")}
-											className="mermaid-visual-trigger ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											className="mermaid-visual-trigger ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 										>
 											<EllipsisVertical
 												className="h-4 w-4"

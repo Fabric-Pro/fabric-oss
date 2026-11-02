@@ -8,8 +8,8 @@ The streaming pattern enables real-time document updates from AI agents with vis
 
 ## Components Using This Pattern
 
-1. **Document Generator** - `/app/agents/document-generator`
-   - File: `apps/web/app/(saas)/app/agents/document-generator/page.tsx`
+1. **Document Generator** - `/app/{organizationSlug}/agents/{agentId}/chat`
+   - File: `apps/web/modules/saas/agents/components/DocumentGeneratorEditor.tsx`
    - Agent: `document_generator`
 
 2. **Project Document Editor** - `/app/projects/[projectId]/documents/[documentId]`
@@ -406,7 +406,7 @@ When modifying any document editor, verify:
 
 The canonical reference is the standalone document generator:
 
-**File:** `apps/web/app/(saas)/app/agents/document-generator/page.tsx`
+**File:** `apps/web/modules/saas/agents/components/DocumentGeneratorEditor.tsx`
 
 This file contains the simplest, most reliable implementation of the pattern. When in doubt, compare against this file.
 

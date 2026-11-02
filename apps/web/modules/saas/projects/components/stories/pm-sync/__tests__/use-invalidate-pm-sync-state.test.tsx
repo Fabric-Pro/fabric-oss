@@ -59,16 +59,16 @@ function createWrapper(queryClient: QueryClient) {
 
 /**
  * Seed the cache under the exact key shapes the live subscriptions register:
- * - stories.list — StoriesRoadmap, personal (`organizationId: null`) and org
+ * - stories.board — StoriesRoadmap, personal (`organizationId: null`) and org
  * - stories.get  — StoryWorkspacePage (`{ projectId, storyId, organizationId }`)
  * - reviewCenter.items / count — use-review-center query hooks
  */
 function seedLiveSubscriptionKeys(queryClient: QueryClient) {
 	const keys = {
-		listPersonal: orpc.projects.stories.list.queryKey({
+		listPersonal: orpc.projects.stories.board.queryKey({
 			input: { projectId: PROJECT_ID, organizationId: null },
 		}),
-		listOrg: orpc.projects.stories.list.queryKey({
+		listOrg: orpc.projects.stories.board.queryKey({
 			input: { projectId: PROJECT_ID, organizationId: "org-1" },
 		}),
 		get: orpc.projects.stories.get.queryKey({
@@ -105,11 +105,11 @@ function seedLiveSubscriptionKeys(queryClient: QueryClient) {
 describe("oRPC query-key shape (bug-class tripwire)", () => {
 	it("generates NESTED keys — [pathArray, { input, type }] — never flat string arrays", () => {
 		expect(
-			orpc.projects.stories.list.queryKey({
+			orpc.projects.stories.board.queryKey({
 				input: { projectId: "p1", organizationId: null },
 			}),
 		).toEqual([
-			["projects", "stories", "list"],
+			["projects", "stories", "board"],
 			{
 				input: { projectId: "p1", organizationId: null },
 				type: "query",
@@ -139,7 +139,7 @@ describe("useInvalidatePmSyncState", () => {
 		// StoryCard props allow `undefined` — exact-input invalidation keys
 		// diverge on that serialization. Partial matching must cover both.
 		const queryClient = new QueryClient();
-		const undefinedOrgKey = orpc.projects.stories.list.queryKey({
+		const undefinedOrgKey = orpc.projects.stories.board.queryKey({
 			input: { projectId: PROJECT_ID, organizationId: undefined },
 		});
 		queryClient.setQueryData(undefinedOrgKey, []);
@@ -157,7 +157,7 @@ describe("useInvalidatePmSyncState", () => {
 
 	it("does NOT invalidate another project's queries (project-scoped filter)", () => {
 		const queryClient = new QueryClient();
-		const otherProjectKey = orpc.projects.stories.list.queryKey({
+		const otherProjectKey = orpc.projects.stories.board.queryKey({
 			input: { projectId: "OTHER", organizationId: null },
 		});
 		queryClient.setQueryData(otherProjectKey, []);

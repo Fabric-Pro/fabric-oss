@@ -7,11 +7,7 @@
  * @see https://ai-sdk.dev/docs/ai-sdk-core/mcp-tools
  */
 
-import {
-	getMcpConfigByIdInternal,
-	getValidAccessToken,
-	setMcpConfigHealth,
-} from "@repo/database";
+import { getMcpConfigByIdInternal, setMcpConfigHealth } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
 	checkMcpConfigOrganizationAccess,
@@ -23,6 +19,7 @@ import {
 	isGitLabPersonalMcpConfig,
 	type McpClientType,
 } from "@repo/mcp";
+import { mcpServerUrlsMatch } from "@repo/mcp/lib/server-url-guard";
 
 /**
  * Health-check an MCP config using proper MCP protocol.
@@ -39,15 +36,23 @@ async function checkMcpServerHealth(configId: string): Promise<boolean> {
 			return false;
 		}
 
-		const baseUrl =
-			config.failoverUrl ||
-			config.baseUrl ||
-			config.mcpServer?.defaultUrl;
+		const configuredUrl = config.baseUrl || config.mcpServer?.defaultUrl;
+		const baseUrl = config.failoverUrl || configuredUrl;
 		if (!baseUrl) {
 			return false;
 		}
+		const usesStoredCredential =
+			isGitLabPersonalMcpConfig(config) ||
+			config.authType === "API_KEY" ||
+			config.authType === "OAUTH2";
+		if (
+			usesStoredCredential &&
+			(!configuredUrl || !mcpServerUrlsMatch(configuredUrl, baseUrl))
+		) {
+			return false;
+		}
 
-		// Get auth headers - use getValidAccessToken for OAuth2 to trigger refresh if expired
+		// Resolve stored credentials only after binding the probe to the configured endpoint.
 		const headers: Record<string, string> = {};
 		let transportFetch: GitLabMcpFetch | undefined;
 		if (isGitLabPersonalMcpConfig(config)) {
@@ -57,10 +62,10 @@ async function checkMcpServerHealth(configId: string): Promise<boolean> {
 			// direct-decrypt fallback below: a config with no owner (an
 			// organization-level config has no personal connection behind it)
 			// is refused as unhealthy.
-			// The URL checked is the one this probe connects to — the
-			// failover URL when one is set — so a failover on another origin
-			// than the credential's gets no token; the token then travels
-			// only through the GitLab fetch.
+			// The URL checked is the one this probe connects to — the failover
+			// URL when one is set — so any destination other than the config's
+			// normalized URL gets no token; the token then travels only through
+			// the GitLab fetch.
 			if (!config.userId) {
 				return false;
 			}
@@ -81,28 +86,28 @@ async function checkMcpServerHealth(configId: string): Promise<boolean> {
 			headers.Authorization = `Bearer ${auth.accessToken}`;
 			transportFetch = auth.fetch;
 		} else if (config.authType === "OAUTH2" && config.userId) {
-			// Use getValidAccessToken which handles token refresh automatically
-			const token = await getValidAccessToken({
+			const auth = await getValidMcpTransportAuth({
 				configId,
 				userId: config.userId,
 				organizationId: config.organizationId,
+				endpoint: baseUrl,
+				expectedGrantGeneration: config.oauthGrantGeneration,
 			});
-			if (token) {
-				headers.Authorization = `Bearer ${token}`;
+			if (!auth.accessToken) {
+				return false;
 			}
-		} else if (
-			config.authType === "API_KEY" ||
-			config.authType === "OAUTH2"
-		) {
-			// Fallback: decrypt directly (for configs without userId or API key auth)
+			headers.Authorization = `Bearer ${auth.accessToken}`;
+		} else if (config.authType === "API_KEY") {
+			if (!config.encryptedApiKey) {
+				return false;
+			}
 			const { decryptApiKey } = await import("@repo/utils");
-			if (config.encryptedAccessToken) {
-				const token = decryptApiKey(config.encryptedAccessToken);
-				headers.Authorization = `Bearer ${token}`;
-			} else if (config.encryptedApiKey) {
-				const apiKey = decryptApiKey(config.encryptedApiKey);
-				headers.Authorization = `Bearer ${apiKey}`;
-			}
+			const apiKey = decryptApiKey(config.encryptedApiKey);
+			headers.Authorization = `Bearer ${apiKey}`;
+		} else if (config.authType === "OAUTH2") {
+			// OAuth credentials require an owner so authorization and grant
+			// generation can be re-checked immediately before the token is used.
+			return false;
 		}
 
 		// Determine transport from config

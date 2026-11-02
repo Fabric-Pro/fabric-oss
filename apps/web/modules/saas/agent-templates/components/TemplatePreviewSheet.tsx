@@ -132,7 +132,7 @@ export function TemplatePreviewSheet({
 				<div className="space-y-6 px-5 py-5">
 					<SheetHeader className="space-y-4 text-left">
 						<div className="flex items-start gap-4">
-							<div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border bg-muted/40">
+							<div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg border bg-muted/40">
 								<CategoryIcon className="h-8 w-8 text-muted-foreground" />
 							</div>
 							<div className="min-w-0 flex-1">
@@ -152,7 +152,7 @@ export function TemplatePreviewSheet({
 								<div className="mt-3">
 									<Button
 										asChild
-										className="h-10 rounded-xl px-4"
+										className="h-10 rounded-lg px-4"
 									>
 										<Link
 											href={`${basePath}/${template.slug}`}
@@ -174,7 +174,7 @@ export function TemplatePreviewSheet({
 							<h4 className="mb-2 text-sm font-semibold text-foreground">
 								Instructions
 							</h4>
-							<div className="max-h-[360px] overflow-y-auto rounded-2xl border bg-muted/25 p-4">
+							<div className="max-h-[360px] overflow-y-auto rounded-lg border bg-muted/25 p-4">
 								<p className="whitespace-pre-wrap text-sm leading-7 text-muted-foreground">
 									{template.instructions ||
 										template.description}
@@ -197,7 +197,7 @@ export function TemplatePreviewSheet({
 							</div>
 						)}
 
-						<div className="rounded-2xl border bg-muted/20 p-4">
+						<div className="rounded-lg border bg-muted/20 p-4">
 							<h4 className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground">
 								<SearchIcon className="h-4 w-4 text-muted-foreground" />
 								What happens next

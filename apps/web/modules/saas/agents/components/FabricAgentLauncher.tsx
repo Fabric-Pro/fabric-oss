@@ -24,6 +24,7 @@ import {
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import type { AttachedFile } from "@saas/shared/components/copilot/use-copilot-document-upload";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
+import { SparklesIcon as GenieSparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { isWorkflowCanvasPath } from "@saas/shared/lib/full-height-routes";
 import { useIsMobile } from "@shared/hooks/use-is-mobile";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -35,7 +36,6 @@ import { cn } from "@ui/lib";
 import {
 	AlertTriangleIcon,
 	CalendarCheckIcon,
-	CommandIcon,
 	FileCodeIcon,
 	GithubIcon,
 	HistoryIcon,
@@ -991,7 +991,7 @@ function FabricAgentLauncherSheet({
 				className={cn(
 					"fixed z-50 border-l bg-background shadow-lg transition-transform duration-300 ease-in-out",
 					isMobile
-						? "inset-x-0 bottom-0 h-[85dvh] w-full rounded-t-2xl border-t border-l-0"
+						? "inset-x-0 bottom-0 h-[85dvh] w-full rounded-t-lg border-t border-l-0"
 						: "inset-y-0 right-0 w-full max-w-full sm:max-w-[920px] xl:max-w-[1040px]",
 					isOpen
 						? "translate-x-0 translate-y-0"
@@ -1008,87 +1008,25 @@ function FabricAgentLauncherSheet({
 						</div>
 					)}
 					{/* Header */}
-					<div className="border-b border-border/60">
+					<div className="border-b border-border bg-sidebar/40">
 						{/* Row 1: identity + actions */}
-						<div className="flex items-center gap-3 px-4 py-3">
-							<FabricLogo size={18} className="shrink-0" />
-							<div className="min-w-0 flex-1">
-								<div className="flex items-baseline gap-2">
-									<h2
-										id="fabric-agent-desc"
-										className="text-sm font-medium tracking-tight text-foreground"
-									>
-										Fabric Agent
-									</h2>
-									<span className="hidden items-center gap-0.5 text-[11px] text-muted-foreground/50 sm:flex">
-										<CommandIcon className="size-2.5" />
-										{shortcutLabel}
-									</span>
-								</div>
-								<div className="flex min-w-0 flex-wrap items-center gap-x-1 text-[11px] text-muted-foreground/60">
-									{/*
-									 * Expand to the full page carrying the
-									 * conversation (#2040). Both surfaces key
-									 * off the same `AgentConversation` id, so
-									 * `?c=` is safe here — unlike the legacy
-									 * `/nexus?c=`, which names a row in a
-									 * different table entirely.
-									 *
-									 * The id exists from the moment the turn
-									 * starts, because the chat now creates the
-									 * conversation on send rather than on
-									 * completion — which is what makes
-									 * expanding mid-reply land somewhere real.
-									 *
-									 * Mid-reply the drawer stays up over the page
-									 * it navigated to and closes itself once
-									 * the turn lands — see `closeAfterStream`.
-									 */}
-									{expandBlocked ? (
-										<button
-											type="button"
-											disabled
-											aria-disabled="true"
-											className="text-muted-foreground/40 sm:inline"
-											title="Expanding would end the reply being written. Available as soon as it finishes."
+						<div className="flex min-h-12 items-center justify-between gap-3 px-4 py-2">
+							<div className="flex min-w-0 flex-1 items-center gap-2.5">
+								<GenieSparklesIcon className="size-5 shrink-0" />
+								<div className="min-w-0 flex-1">
+									<div className="flex items-center gap-2">
+										<h2
+											id="fabric-agent-desc"
+											className="text-[13px] font-semibold tracking-tight text-foreground"
 										>
-											Expand
-										</button>
-									) : (
-										<Link
-											href={
-												drawerConversationId
-													? `${basePath}/agents/fabric-ai?c=${drawerConversationId}`
-													: `${basePath}/agents/fabric-ai`
-											}
-											onClick={() => {
-												handOffToFullPage();
-												// Navigation still happens on
-												// the click; only the closing
-												// waits for the reply.
-												if (isDrawerStreaming) {
-													setCloseAfterStream(true);
-													return;
-												}
-												onOpenChange(false);
-											}}
-											className="underline-offset-2 hover:text-foreground hover:underline"
-											title={
-												closeAfterStream
-													? "Opening the full page as soon as this reply finishes"
-													: drawerConversationId
-														? "Open this conversation as a full page"
-														: "Open the full page"
-											}
-										>
-											{closeAfterStream
-												? "Expanding…"
-												: "Expand"}
-										</Link>
-									)}
+											Fabric Agent
+										</h2>
+										<kbd className="hidden items-center rounded border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground sm:inline-flex">
+											{shortcutLabel}
+										</kbd>
+									</div>
 									{hasAttachedContextData && (
-										<>
-											<span aria-hidden>·</span>
+										<div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
 											{[
 												...contextSummary,
 												...codeContextChips,
@@ -1096,7 +1034,7 @@ function FabricAgentLauncherSheet({
 											].map((item, i) => (
 												<span
 													key={`${item.label}-${i}`}
-													className="max-w-[180px] truncate text-muted-foreground/80"
+													className="max-w-[180px] truncate rounded bg-muted/70 px-1.5 py-0.2 text-muted-foreground"
 												>
 													{item.value}
 												</span>
@@ -1105,19 +1043,19 @@ function FabricAgentLauncherSheet({
 												<button
 													type="button"
 													onClick={onClearContext}
-													className="rounded text-muted-foreground/40 transition-colors hover:text-foreground"
+													className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
 													aria-label="Clear context"
 												>
 													<XIcon className="size-2.5" />
 												</button>
 											)}
-										</>
+										</div>
 									)}
 								</div>
 							</div>
-							<div className="flex shrink-0 items-center gap-0.5">
+							<div className="flex shrink-0 items-center gap-1">
 								{interfaceModeQuery.data ? (
-									<div className="mr-1">
+									<div className="mr-0.5">
 										<InterfaceModeToggle
 											value={
 												isAdvancedMode
@@ -1130,6 +1068,66 @@ function FabricAgentLauncherSheet({
 										/>
 									</div>
 								) : null}
+								{/*
+								 * Expand to the full page carrying the
+								 * conversation (#2040). Both surfaces key
+								 * off the same `AgentConversation` id, so
+								 * `?c=` is safe here — unlike the legacy
+								 * `/nexus?c=`, which names a row in a
+								 * different table entirely.
+								 *
+								 * The id exists from the moment the turn
+								 * starts, because the chat now creates the
+								 * conversation on send rather than on
+								 * completion — which is what makes
+								 * expanding mid-reply land somewhere real.
+								 *
+								 * Mid-reply the drawer stays up over the page
+								 * it navigated to and closes itself once
+								 * the turn lands — see `closeAfterStream`.
+								 */}
+								{expandBlocked ? (
+									<button
+										type="button"
+										disabled
+										aria-disabled="true"
+										className="inline-flex h-7 items-center rounded-md border border-border/60 bg-card/50 px-2.5 text-xs font-medium text-muted-foreground/40"
+										title="Expanding would end the reply being written. Available as soon as it finishes."
+									>
+										Expand
+									</button>
+								) : (
+									<Link
+										href={
+											drawerConversationId
+												? `${basePath}/agents/fabric-ai?c=${drawerConversationId}`
+												: `${basePath}/agents/fabric-ai`
+										}
+										onClick={() => {
+											handOffToFullPage();
+											// Navigation still happens on
+											// the click; only the closing
+											// waits for the reply.
+											if (isDrawerStreaming) {
+												setCloseAfterStream(true);
+												return;
+											}
+											onOpenChange(false);
+										}}
+										className="inline-flex h-7 items-center rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+										title={
+											closeAfterStream
+												? "Opening the full page as soon as this reply finishes"
+												: drawerConversationId
+													? "Open this conversation as a full page"
+													: "Open the full page"
+										}
+									>
+										{closeAfterStream
+											? "Expanding…"
+											: "Expand"}
+									</Link>
+								)}
 								<button
 									type="button"
 									onClick={() =>
@@ -1140,7 +1138,7 @@ function FabricAgentLauncherSheet({
 									aria-label="Conversation history"
 									title="Conversation history"
 									className={cn(
-										"rounded p-1.5 transition-colors hover:bg-muted hover:text-foreground",
+										"inline-flex size-7 items-center justify-center rounded-md transition-colors hover:bg-muted hover:text-foreground",
 										historyOpen
 											? "bg-muted text-foreground"
 											: "text-muted-foreground",
@@ -1159,7 +1157,7 @@ function FabricAgentLauncherSheet({
 									<button
 										type="button"
 										onClick={onResetConversation}
-										className="rounded p-1.5 text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground"
+										className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 										aria-label="Reset conversation"
 									>
 										<RotateCcwIcon className="size-3.5" />
@@ -1168,7 +1166,7 @@ function FabricAgentLauncherSheet({
 								<button
 									type="button"
 									onClick={() => onOpenChange(false)}
-									className="rounded p-1.5 text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground"
+									className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 									aria-label="Close"
 								>
 									<XIcon className="size-3.5" />
@@ -1220,7 +1218,7 @@ function FabricAgentLauncherSheet({
 													),
 												)
 											}
-											className="rounded border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+											className="rounded border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 										>
 											{action.label}
 										</button>

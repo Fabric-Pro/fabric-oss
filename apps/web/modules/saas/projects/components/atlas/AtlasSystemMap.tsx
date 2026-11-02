@@ -41,12 +41,12 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type {
+	AtlasNodeKind,
 	GraphMode,
 	SystemGraphEdge as SGEdge,
 	SystemGraphNode as SGNode,
 	SystemCrossEdgeKind,
 	SystemGraph,
-	AtlasNodeKind,
 } from "@repo/atlas/types";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -90,26 +90,26 @@ import {
 } from "react";
 import { toast } from "sonner";
 import {
+	AtlasConnectionEditDialog,
+	type ConnectionEditTarget,
+} from "./AtlasConnectionEditDialog";
+import {
+	AtlasConnectionsList,
+	type ConnectionsCreateInput,
+} from "./AtlasConnectionsList";
+import { AtlasGraphNode, type AtlasNodeData } from "./AtlasGraphNode";
+import { AtlasStagedEditsBar } from "./AtlasStagedEditsBar";
+import { resolveNodeCategory } from "./atlas-categories";
+import {
 	type ConnectionNodeOption,
 	type ConnectionRow,
 	type EdgeEndpoints,
 	SYSTEM_EDGE_KINDS,
 } from "./atlas-edges";
 import {
-	type ConnectionEditTarget,
-	AtlasConnectionEditDialog,
-} from "./AtlasConnectionEditDialog";
-import {
-	type ConnectionsCreateInput,
-	AtlasConnectionsList,
-} from "./AtlasConnectionsList";
-import { AtlasGraphNode, type AtlasNodeData } from "./AtlasGraphNode";
-import { AtlasStagedEditsBar } from "./AtlasStagedEditsBar";
-import {
 	endpointSignature,
 	type StagedGraphEdits,
 } from "./use-staged-graph-edits";
-import { resolveNodeCategory } from "./atlas-categories";
 
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 72;
@@ -147,7 +147,7 @@ const SystemRepoGroupNode = memo(function SystemRepoGroupNode({
 	data: { label: string };
 }) {
 	return (
-		<div className="relative size-full rounded-2xl border border-border/70 bg-muted/40">
+		<div className="relative size-full rounded-lg border border-border/70 bg-muted/40">
 			{/* Hidden handles so repo-level cross-repo edges can attach to the group. */}
 			<Handle
 				type="target"
@@ -161,7 +161,7 @@ const SystemRepoGroupNode = memo(function SystemRepoGroupNode({
 				className="!opacity-0"
 				isConnectable={false}
 			/>
-			<div className="absolute inset-x-0 top-0 flex items-center gap-2 rounded-t-2xl border-border/60 border-b bg-card/70 px-3 py-2">
+			<div className="absolute inset-x-0 top-0 flex items-center gap-2 rounded-t-lg border-border/60 border-b bg-card/70 px-3 py-2">
 				<span
 					aria-hidden="true"
 					className="size-2 rounded-full bg-primary"
@@ -1218,7 +1218,7 @@ function SystemMapCanvas({
 							type="button"
 							onClick={() => setQuery("")}
 							aria-label={tGraph("searchClear")}
-							className="absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<XIcon aria-hidden="true" className="size-3.5" />
 						</button>
@@ -1245,7 +1245,7 @@ function SystemMapCanvas({
 									? tGraph("nodeListLabel")
 									: tConn("regionLabel")
 							}
-							className="absolute right-0 top-full z-30 mt-2 max-h-[60vh] w-[20rem] max-w-[85vw] overflow-y-auto rounded-xl border border-border/60 bg-background shadow-md"
+							className="absolute right-0 top-full z-30 mt-2 max-h-[60vh] w-[20rem] max-w-[85vw] overflow-y-auto rounded-lg border border-border/60 bg-background shadow-md"
 						>
 							{/* Nodes ⇄ Connections segmented toggle. */}
 							<div className="sticky top-0 z-20 flex items-center gap-1 border-b border-border/60 bg-background/95 p-1.5 backdrop-blur-sm">
@@ -1258,7 +1258,7 @@ function SystemMapCanvas({
 												aria-pressed={listTab === tab}
 												onClick={() => setListTab(tab)}
 												className={cn(
-													"flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+													"flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 													listTab === tab
 														? "bg-card text-foreground shadow-sm"
 														: "text-muted-foreground hover:text-foreground",
@@ -1322,7 +1322,7 @@ function SystemMapCanvas({
 													onClick={() =>
 														onSelectNode(n)
 													}
-													className="flex w-full flex-col items-start gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+													className="flex w-full flex-col items-start gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 												>
 													<span className="w-full truncate font-medium text-foreground">
 														{n.label}
@@ -1489,15 +1489,15 @@ function SystemMapCanvas({
 						nodeStrokeWidth={2}
 						maskColor="color-mix(in srgb, var(--background) 60%, transparent)"
 						style={{ backgroundColor: "var(--card)" }}
-						className="rounded-xl border border-border/40"
+						className="rounded-lg border border-border/40"
 					/>
 				</ReactFlow>
 
 				{/* Cross-repo edge legend (the new relationship vocabulary). Each swatch
 			    shows its kind's actual colour as a short dashed line. */}
 				{crossEdgeKinds.length > 0 && (
-					<div className="absolute top-3 left-3 z-10 rounded-xl border border-border/60 bg-background/90 px-3 py-2 shadow-sm backdrop-blur-sm">
-						<p className="mb-1.5 font-medium text-[11px] text-muted-foreground uppercase tracking-[0.12em]">
+					<div className="absolute top-3 left-3 z-10 rounded-lg border border-border/60 bg-background/90 px-3 py-2 shadow-sm backdrop-blur-sm">
+						<p className="mb-1.5 font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 							{t("legendTitle")}
 						</p>
 						<ul className="flex flex-col gap-1">

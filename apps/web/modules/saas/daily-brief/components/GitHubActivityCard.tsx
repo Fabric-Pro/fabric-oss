@@ -145,7 +145,7 @@ function EnvFilterPills({
 						onClick={() => onChange(opt.value)}
 						className={cn(
 							"inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-sans text-xs font-medium transition-colors",
-							"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+							"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/50",
 							isActive
 								? "bg-card text-foreground shadow-sm"
 								: "text-muted-foreground hover:text-foreground",
@@ -190,7 +190,7 @@ function EnvSection({
 						aria-hidden="true"
 						className={cn("size-1.5 rounded-full", dotClass)}
 					/>
-					<span className="font-sans text-xs font-semibold uppercase tracking-[0.18em] text-foreground/80">
+					<span className="font-sans text-xs font-semibold uppercase tracking-wide text-foreground/80">
 						{label}
 					</span>
 					<span className="text-[11px] text-muted-foreground">

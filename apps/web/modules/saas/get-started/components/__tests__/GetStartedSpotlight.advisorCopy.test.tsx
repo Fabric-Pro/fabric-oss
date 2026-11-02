@@ -118,7 +118,7 @@ describe("GetStartedSpotlight — the assistant slide names Advisor", () => {
 		);
 
 		expect(
-			await screen.findByText("Meet Advisor, your AI assistant"),
+			await screen.findByText("Meet Genie, your AI assistant"),
 		).toBeInTheDocument();
 	});
 
@@ -140,7 +140,7 @@ describe("GetStartedSpotlight — the assistant slide names Advisor", () => {
 		// Wait for the card before asserting absence, so "no Nexus" cannot pass
 		// simply because nothing has rendered yet.
 		expect(
-			await screen.findByText(/Advisor is your always-on AI teammate/),
+			await screen.findByText(/Genie is your always-on AI teammate/),
 		).toBeInTheDocument();
 		expect(document.body.textContent).not.toContain("Nexus");
 	});

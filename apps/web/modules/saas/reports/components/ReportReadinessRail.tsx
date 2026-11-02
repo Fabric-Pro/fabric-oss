@@ -76,7 +76,7 @@ const CHECK_HINT: Partial<Record<string, string>> = {
 
 function RailLabel({ children }: { children: React.ReactNode }) {
 	return (
-		<p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+		<p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
 			{children}
 		</p>
 	);
@@ -156,7 +156,7 @@ export function ReportReadinessRail({
 			{/* Verdict */}
 			<div
 				className={cn(
-					"flex items-center gap-3 rounded-xl border p-4",
+					"flex items-center gap-3 rounded-lg border p-4",
 					verdict.container,
 				)}
 			>
@@ -179,7 +179,7 @@ export function ReportReadinessRail({
 			</div>
 
 			{/* Primary actions */}
-			<div className="space-y-2 rounded-xl border bg-card p-4">
+			<div className="space-y-2 rounded-lg border bg-card p-4">
 				<Button
 					className="w-full"
 					size="lg"
@@ -217,13 +217,13 @@ export function ReportReadinessRail({
 
 			{/* Latest run glance (Overview only) */}
 			{latestExecution && (
-				<div className="rounded-xl border bg-card p-4">
+				<div className="rounded-lg border bg-card p-4">
 					<div className="mb-3 flex items-center justify-between gap-2">
 						<RailLabel>Latest run</RailLabel>
 						<button
 							type="button"
 							onClick={onViewHistory}
-							className="-mt-3 inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="-mt-3 inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							View all ({executionCount})
 							<ChevronRightIcon
@@ -271,7 +271,7 @@ export function ReportReadinessRail({
 									firstArtifact.name,
 								)
 							}
-							className="mt-3 inline-flex items-center gap-1.5 text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+							className="mt-3 inline-flex items-center gap-1.5 text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
 						>
 							<FileTextIcon className="size-3.5" aria-hidden />
 							{firstArtifact.name}
@@ -285,7 +285,7 @@ export function ReportReadinessRail({
 			)}
 
 			{/* Readiness checklist */}
-			<div className="rounded-xl border bg-card p-4">
+			<div className="rounded-lg border bg-card p-4">
 				<RailLabel>Readiness</RailLabel>
 				<ul className="space-y-3">
 					{readiness.checks.map((c) => {
@@ -324,7 +324,7 @@ export function ReportReadinessRail({
 			</div>
 
 			{/* At a glance */}
-			<div className="rounded-xl border bg-card p-4">
+			<div className="rounded-lg border bg-card p-4">
 				<RailLabel>At a glance</RailLabel>
 				<dl className="text-sm">
 					<GlanceRow label="Template" value={meta.template} />

@@ -923,7 +923,7 @@ export function AtlasStatusBar({
 																	branch,
 																);
 															}}
-															className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+															className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
 														>
 															<PinIcon
 																aria-hidden="true"
@@ -1189,7 +1189,7 @@ export function AtlasStatusBar({
 	return (
 		<div
 			className={cn(
-				"flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3",
+				"flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3",
 				credentialState !== "ok"
 					? "border-highlight/40 bg-highlight/5"
 					: "border-border/60 bg-card/70",

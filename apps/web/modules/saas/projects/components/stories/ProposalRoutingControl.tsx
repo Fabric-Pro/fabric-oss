@@ -240,7 +240,7 @@ export function ProposalRoutingControl({
 	// proposal, so several routed rows share a single request.
 	const isEnrich = effective?.decision === "enrich";
 	const { data, isLoading } = useQuery({
-		...orpc.projects.stories.list.queryOptions({
+		...orpc.projects.stories.board.queryOptions({
 			input: {
 				projectId: projectId ?? "",
 				organizationId: organizationId ?? null,

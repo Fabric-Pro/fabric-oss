@@ -149,7 +149,7 @@ export function DashboardLineChart({
 				<div className="flex items-center justify-between gap-4 flex-wrap">
 					<div className="flex items-center gap-2.5">
 						<div className="h-4 w-1 rounded-full bg-primary" />
-						<p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+						<p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
 							{title}
 						</p>
 					</div>

@@ -30,10 +30,13 @@ vi.mock("@repo/logs", () => ({
 }));
 
 const createMcpClient = vi.hoisted(() => vi.fn());
+const getValidMcpTransportAuth = vi.hoisted(() => vi.fn());
 vi.mock("@repo/mcp", async (importOriginal) => ({
 	...(await importOriginal<object>()),
 	createMcpClient: (...args: unknown[]) => createMcpClient(...args),
 	closeMcpClient: async () => undefined,
+	getValidMcpTransportAuth: (...args: unknown[]) =>
+		getValidMcpTransportAuth(...args),
 }));
 
 const decryptApiKey = vi.hoisted(() => vi.fn());
@@ -70,6 +73,7 @@ beforeEach(() => {
 		value.replace(/^enc:/, ""),
 	);
 	createMcpClient.mockResolvedValue({ tools: async () => ({}) });
+	getValidMcpTransportAuth.mockResolvedValue({ accessToken: "oauth-token" });
 	db.canRead.mockResolvedValue(true);
 	db.isMember.mockResolvedValue(true);
 });
@@ -129,5 +133,59 @@ describe("checkAndUpdateMcpHealth — the config owner's organization access", (
 
 		expect(db.canRead).not.toHaveBeenCalled();
 		expect(createMcpClient).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not decrypt or connect an API key config to a different failover path", async () => {
+		db.config = apiKeyConfig({
+			failoverUrl: "https://mcp.example.com/failover",
+		});
+
+		await checkAndUpdateMcpHealth("cfg_1");
+
+		expect(decryptApiKey).not.toHaveBeenCalled();
+		expect(createMcpClient).not.toHaveBeenCalled();
+		expect(db.setMcpConfigHealth).toHaveBeenCalledWith(
+			expect.objectContaining({ status: "DEGRADED" }),
+		);
+	});
+
+	it("uses a stored API key when the destination differs only by a trailing slash", async () => {
+		db.config = apiKeyConfig({
+			baseUrl: "https://mcp.example.com/mcp/",
+			failoverUrl: "https://mcp.example.com/mcp",
+		});
+
+		await checkAndUpdateMcpHealth("cfg_1");
+
+		expect(decryptApiKey).toHaveBeenCalledWith("enc:stored-key");
+		expect(createMcpClient).toHaveBeenCalledWith(
+			expect.objectContaining({
+				serverUrl: "https://mcp.example.com/mcp",
+				headers: { Authorization: "Bearer stored-key" },
+			}),
+		);
+	});
+
+	it("passes the config read's OAuth grant generation to the credential resolver", async () => {
+		db.config = apiKeyConfig({
+			authType: "OAUTH2",
+			encryptedApiKey: null,
+			oauthGrantGeneration: 7,
+		});
+
+		await checkAndUpdateMcpHealth("cfg_1");
+
+		expect(getValidMcpTransportAuth).toHaveBeenCalledWith({
+			configId: "cfg_1",
+			userId: "user_a",
+			organizationId: "org_a",
+			endpoint: "https://mcp.example.com/mcp",
+			expectedGrantGeneration: 7,
+		});
+		expect(createMcpClient).toHaveBeenCalledWith(
+			expect.objectContaining({
+				headers: { Authorization: "Bearer oauth-token" },
+			}),
+		);
 	});
 });

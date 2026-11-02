@@ -12,7 +12,14 @@
  * each test gives, so the precedence under test is the shipped one.
  */
 
+import { GLOSSY_EDIT_SOURCE_MAX_CHARS } from "@repo/agent-prompts/glossy";
 import {
+	type LayersVisualSpec,
+	proposalVisualSpecSchema,
+	type TeamVisualSpec,
+} from "@repo/utils/glossy/visual-spec";
+import {
+	proposalFigureKind,
 	proposalVisualTemplateOptions,
 	visualSpecToMermaid,
 } from "@repo/utils/glossy/visual-templates";
@@ -28,7 +35,10 @@ import {
 	type ProposalThemeSources,
 } from "@repo/utils/proposal-artifact/theme-tokens";
 import { visualSourceHash } from "@repo/utils/proposal-artifact/visual-identity";
-import { toMermaidFence } from "@repo/utils/proposal-artifact/visual-insert";
+import {
+	toMermaidFence,
+	toMermaidFenceBody,
+} from "@repo/utils/proposal-artifact/visual-insert";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const database = vi.hoisted(() => ({
@@ -65,6 +75,8 @@ vi.mock("../../lib/activity-logger", () => ({
 }));
 
 import { CancelledFailure } from "@temporalio/common";
+import { coverLetter } from "../../../lib/proposal-export/document-content";
+import { prepareExportMarkdown } from "../../../lib/proposal-export/markdown";
 import { generateProposalVisuals } from "../visuals";
 
 const MAIN = [
@@ -826,10 +838,31 @@ describe("generateProposalVisuals — figure templates (Fizzy #2946)", () => {
 			{ id: "dev", label: "Developer", parentId: "lead" },
 		],
 	};
+	const LAYERS = {
+		kind: "layers" as const,
+		layers: [
+			{ name: "Channels", components: ["Web shop", "Mobile app"] },
+			{ name: "Services", components: ["Orders"] },
+		],
+		crosscutting: { name: "Operations", items: ["Monitoring"] },
+	};
+	const TEAM = {
+		kind: "team" as const,
+		proposer: {
+			name: "Example Studio",
+			members: [{ role: "Delivery lead", name: "Alex Example" }],
+		},
+		client: {
+			name: "Example Retail",
+			members: [{ role: "Product owner" }],
+		},
+		shared: "Weekly steering meeting",
+	};
 	const PALETTE: FigurePalette = {
 		ink: "#16171a",
 		onInk: "#ffffff",
 		primary: "#c2410c",
+		label: "#9a3412",
 		onPrimary: "#ffffff",
 		tint: "#fbefe9",
 		border: "#d9dade",
@@ -857,12 +890,15 @@ describe("generateProposalVisuals — figure templates (Fizzy #2946)", () => {
 	it.each([
 		["a flow without lanes", FLOW, "process"],
 		["a timeline", TIMELINE, "timeline"],
+		["architecture layers", LAYERS, "layers"],
+		["a team", TEAM, "team"],
 	] as const)(
 		"asks for the template on %s, after the marker, and the template draws it",
 		async (_, spec, kind) => {
 			const body = await generatedBody(spec);
 
-			const [{ visualId }] = storedSpecs();
+			const [{ visualId, kind: storedKind }] = storedSpecs();
+			expect(storedKind).toBe(spec.kind);
 			expect(body.split("\n").slice(0, 3)).toEqual([
 				`%% fabric-visual: ${visualId}`,
 				`%% figure: ${kind}`,
@@ -886,6 +922,62 @@ describe("generateProposalVisuals — figure templates (Fizzy #2946)", () => {
 			expect(body).not.toContain("%% figure:");
 		},
 	);
+
+	it("keeps the largest layers and team the schema allows within what an edit reads", () => {
+		const text = (prefix: string, max: number) =>
+			`${prefix} ${"abcdefghij ".repeat(30)}`.slice(0, max).trim();
+		const layers: LayersVisualSpec = {
+			kind: "layers",
+			title: text("Title", 60),
+			layers: Array.from({ length: 8 }, (_, layer) => ({
+				name: text(`Layer ${layer}`, 60),
+				description: text("Purpose", 120),
+				components: Array.from({ length: 5 }, (_, index) =>
+					text(`Part ${index}`, 120),
+				),
+			})),
+			crosscutting: {
+				name: text("Across", 60),
+				description: text("Detail", 120),
+				items: Array.from({ length: 6 }, (_, index) =>
+					text(`Item ${index}`, 120),
+				),
+			},
+		};
+		const side = (name: string) => ({
+			name: text(name, 60),
+			description: text("About", 120),
+			members: Array.from({ length: 10 }, (_, index) => ({
+				role: text(`Role ${index}`, 120),
+				name: text("Person", 60),
+				description: text("Owns", 240),
+			})),
+		});
+		const team: TeamVisualSpec = {
+			kind: "team",
+			title: text("Title", 60),
+			proposer: side("Ours"),
+			client: side("Theirs"),
+			shared: text("Forum", 120),
+		};
+		for (const spec of [layers, team]) {
+			expect(proposalVisualSpecSchema.safeParse(spec).success).toBe(true);
+			const body = toMermaidFenceBody(
+				withFigureKind(
+					visualSpecToMermaid(
+						spec,
+						proposalVisualTemplateOptions(spec),
+					),
+					proposalFigureKind(spec),
+				),
+				"k3v9q2m7x1a8c4d6",
+			);
+			expect(body.length).toBeLessThan(GLOSSY_EDIT_SOURCE_MAX_CHARS);
+			expect(renderFigureSvg(spec.kind, body, PALETTE)).toMatch(
+				/^<svg[\s>]/,
+			);
+		}
+	});
 
 	it("stores the source hash the fence has with or without its figure line", async () => {
 		const body = await generatedBody(FLOW);
@@ -941,6 +1033,108 @@ describe("generateProposalVisuals — audience (Fizzy #2946)", () => {
 			["The appendix", false],
 		]);
 	});
+
+	it("leaves the cover letter, and anything under it, without a visual, and a later section of that name with one", async () => {
+		detects([]);
+		const content = [
+			"# Example Proposal",
+			"",
+			"## Cover letter",
+			"",
+			"30 October 2026",
+			"",
+			"Dear Example Retail, here is our plan for March, April and May.",
+			"",
+			"### Postscript",
+			"",
+			"First we plan, then we build.",
+			"",
+			"## 1. Anschreiben",
+			"",
+			"Sehr geehrte Damen und Herren, zuerst planen wir, dann bauen wir.",
+			"",
+			"## 2. Timeline",
+			"",
+			"Discovery runs in March, build in April and launch in May.",
+			"",
+			"## Cover letters we wrote before",
+			"",
+			"Two letters, one in March and one in May.",
+		].join("\n");
+
+		await generateProposalVisuals({ ...INPUT, content });
+
+		// Only the first H2 opens a letter, so the export prints the second
+		// as a section, and it may have a visual like any other.
+		expect(
+			detectionCall().sections.map((section) => section.heading),
+		).toEqual([
+			"1. Anschreiben",
+			"2. Timeline",
+			"Cover letters we wrote before",
+		]);
+	});
+
+	/** Main with `heading` as its first H2, or `heading` as written later. */
+	const firstSection = (heading: string) =>
+		[
+			"# Example Proposal",
+			"",
+			`## ${heading}`,
+			"",
+			"Discovery runs in March, build in April and launch in May.",
+			"",
+			"## Overview",
+			"",
+			"The pilot covers three depots over twelve weeks.",
+		].join("\n");
+	const afterOverview = (headingLine: string) =>
+		[
+			"# Example Proposal",
+			"",
+			"## Overview",
+			"",
+			"The pilot covers three depots over twelve weeks.",
+			"",
+			headingLine,
+			"",
+			"Discovery runs in March, build in April and launch in May.",
+		].join("\n");
+
+	it.each([
+		["Cover letter", true, firstSection("Cover letter")],
+		["1. Cover letter:", true, firstSection("1. Cover letter:")],
+		["1: Cover letter", true, firstSection("1: Cover letter")],
+		["1\\. Cover letter", true, firstSection("1\\. Cover letter")],
+		["**Cover letter**", true, firstSection("**Cover letter**")],
+		["Cover letter [S1]", true, firstSection("Cover letter [S1]")],
+		["Anschreiben", true, firstSection("Anschreiben")],
+		["cover letter.", true, firstSection("cover letter.")],
+		["A. Cover letter", false, firstSection("A. Cover letter")],
+		[
+			"Cover letter and terms",
+			false,
+			firstSection("Cover letter and terms"),
+		],
+		["Cover letter", false, afterOverview("## Cover letter")],
+		["Cover letter", false, afterOverview("### Cover letter")],
+	] as const)(
+		"treats %j as the export does: a letter %s",
+		async (heading, letter, content) => {
+			detects([]);
+
+			await generateProposalVisuals({ ...INPUT, content });
+
+			expect(
+				coverLetter(prepareExportMarkdown(content).root) !== null,
+			).toBe(letter);
+			expect(
+				detectionCall().sections.some(
+					(section) => section.heading === heading,
+				),
+			).toBe(!letter);
+		},
+	);
 
 	it("asks extraction for Proposal labels", async () => {
 		detects([["Timeline and Milestones", "timeline"]]);

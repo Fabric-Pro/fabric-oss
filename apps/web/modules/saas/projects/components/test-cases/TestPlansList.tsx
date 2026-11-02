@@ -200,7 +200,7 @@ function PlanCard({
 	const validDate = !Number.isNaN(updatedAt.getTime());
 
 	return (
-		<div className="relative flex h-full flex-col gap-3 rounded-xl border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent/50">
+		<div className="relative flex h-full flex-col gap-3 rounded-lg border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent/50">
 			<div className="flex items-center justify-between gap-2">
 				<span className="font-mono text-muted-foreground text-xs tabular-nums">
 					{plan.identifier}
@@ -221,7 +221,7 @@ function PlanCard({
 					<button
 						type="button"
 						onClick={onSelect}
-						className="line-clamp-1 break-words text-left after:absolute after:inset-0 after:rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						className="line-clamp-1 break-words text-left after:absolute after:inset-0 after:rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						{plan.name}
 					</button>
@@ -240,7 +240,7 @@ function PlanCard({
 
 			<div className="mt-auto space-y-1.5">
 				<div className="flex items-center justify-between">
-					<span className="font-medium text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+					<span className="font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 						{t("plans.card.passing")}
 					</span>
 					<PassRateValue view={view} />
@@ -282,7 +282,7 @@ function EmptyPlans({
 }) {
 	return (
 		<div
-			className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed py-16 text-center"
+			className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-16 text-center"
 			style={{
 				backgroundImage:
 					"radial-gradient(circle, color-mix(in srgb, var(--muted-foreground) 13%, transparent) 1px, transparent 1px)",
@@ -290,7 +290,7 @@ function EmptyPlans({
 			}}
 		>
 			<ClipboardListIcon className="size-8 text-muted-foreground/60" />
-			<h3 className="font-serif text-xl font-normal">{label}</h3>
+			<h3 className="text-xl font-semibold">{label}</h3>
 			{canEdit && (
 				<Button onClick={onCreate}>
 					<PlusIcon className="mr-2 size-4" aria-hidden="true" />

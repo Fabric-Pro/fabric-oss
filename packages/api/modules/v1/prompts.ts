@@ -9,7 +9,10 @@ import {
 	promptContentTooLongMessage,
 } from "@repo/utils/prompt-content";
 import type { Hono } from "hono";
-import { requireScope } from "../external-api/middleware/api-key-auth";
+import {
+	requireScope,
+	requireV1OwnerPermission,
+} from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { verifyOrganizationMembership } from "../organizations/lib/membership";
 import {
@@ -20,14 +23,7 @@ import {
 	resolveV1Context,
 } from "./helpers";
 
-/**
- * In the app only an organization's admins and owners may create or change its
- * prompts (`prompts.create`, `prompts.update`). A key's `prompts:write` scope is
- * a ceiling, not that permission, so the key owner's live role is re-read on
- * every write — a wildcard key included. Without it any member holding a
- * `prompts:write` key could publish or rewrite organization prompts the app
- * would refuse them; the same class as the v1 write-permission fix (#2380).
- */
+/** The second half of the in-app ORG prompt contract, after PROMPT_* holds. */
 async function isOrganizationPromptAdmin(
 	organizationId: string,
 	userId: string,
@@ -52,7 +48,6 @@ export function registerPromptRoutes(
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
 		}
-
 		const limit = Math.min(Number(c.req.query("limit") ?? 50), 100);
 		const offset = Number(c.req.query("offset") ?? 0);
 
@@ -129,6 +124,14 @@ export function registerPromptRoutes(
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
 		}
+		const permissionRefusal = await requireV1OwnerPermission(
+			c,
+			ctx,
+			"prompts:create",
+		);
+		if (permissionRefusal) {
+			return permissionRefusal;
+		}
 
 		let body: {
 			key?: string;
@@ -165,7 +168,6 @@ export function registerPromptRoutes(
 		}
 
 		const scope = ctx.organizationId ? "ORG" : "USER";
-
 		if (
 			ctx.organizationId &&
 			!(await isOrganizationPromptAdmin(ctx.organizationId, ctx.userId))
@@ -249,6 +251,17 @@ export function registerPromptRoutes(
 			return c.json(notFound("Prompt"), 404);
 		}
 
+		const permissionRefusal = await requireV1OwnerPermission(
+			c,
+			{
+				userId: ctx.userId,
+				organizationId: existing.organizationId,
+			},
+			"prompts:update",
+		);
+		if (permissionRefusal) {
+			return permissionRefusal;
+		}
 		if (
 			existing.scope === "ORG" &&
 			existing.organizationId &&

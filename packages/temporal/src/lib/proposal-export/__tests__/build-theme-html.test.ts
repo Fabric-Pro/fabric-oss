@@ -1,6 +1,7 @@
 import { buildProposalThemeTokens } from "@repo/utils/proposal-artifact/theme-tokens";
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
+import { type AppendixLabels, appendixLabels } from "../build-cover-html";
 import {
 	type BuildThemeHtmlInput,
 	buildThemeHtml,
@@ -984,6 +985,123 @@ describe("buildThemeHtml: cover", () => {
 		expect(cover).toContain("<dd>&lt;b&gt;Example&lt;/b&gt; Org</dd>");
 		expect(cover).not.toMatch(/<(b|i|script)>/);
 	});
+
+	const footerOf = (html: string) =>
+		/@bottom-left \{[^}]*content: "([^"]*)"/.exec(html)?.[1];
+	const GENERATED = [
+		"# Generated Title",
+		"",
+		"## 1. Intro",
+		"",
+		"Text.",
+	].join("\n");
+
+	it("prints Main's leading H1 as the title on the cover, the contents page, the footer and the page title, and leaves it out of the body", () => {
+		const { html } = build(GENERATED);
+
+		expect(coverOf(html)).toContain(
+			'<h1 class="pa-cover-title">Generated Title</h1>',
+		);
+		expect(afterCover(html)).toContain(
+			'<p class="pa-eyebrow">Generated Title</p><p class="pa-contents-title">Contents</p>',
+		);
+		expect(footerOf(html)).toBe(
+			"Example Org · Generated Title · October 15, 2026 · Confidential",
+		);
+		expect(html).toContain("<title>Generated Title</title>");
+		// No page holds the H1 alone: the body has none.
+		expect(afterCover(html)).not.toContain("<h1");
+		expect(afterCover(html)).toContain(
+			'<header class="pa-section-opener" id="pa-section-1"><h2>1. Intro</h2></header><p>Text.</p>',
+		);
+	});
+
+	it("keeps the H1 as the title when the record was renamed after it was written", () => {
+		const { html } = build(GENERATED, { title: "Renamed Record" });
+
+		expect(coverOf(html)).toContain(
+			'<h1 class="pa-cover-title">Generated Title</h1>',
+		);
+		expect(footerOf(html)).toBe(
+			"Example Org · Generated Title · October 15, 2026 · Confidential",
+		);
+		expect(html).toContain("<title>Generated Title</title>");
+		// The record's name is the download's (the export names the file),
+		// never the page's.
+		expect(html).not.toContain("Renamed Record");
+	});
+
+	it("leaves an H1 in the body, under the record's title, when Main has no sections, the H1 is not first, or it has no text", () => {
+		const recordTitled = (markdown: string, images = new Map()) => {
+			const { html } = build(markdown, { images });
+			expect({ markdown, cover: coverOf(html) }).toEqual({
+				markdown,
+				cover: expect.stringContaining(
+					'<h1 class="pa-cover-title">Example Proposal</h1>',
+				),
+			});
+			expect(html).toContain("<title>Example Proposal</title>");
+			return afterCover(html);
+		};
+
+		// Main without sections prints whole, as written.
+		expect(
+			recordTitled("# Generated Title\n\nText.\n\n### Small"),
+		).toContain("<h1>Generated Title</h1>");
+		// Only an H1 that opens Main is its title.
+		expect(
+			recordTitled("Intro.\n\n# Generated Title\n\n## Overview"),
+		).toContain("<h1>Generated Title</h1>");
+		// An H1 of an image alone has no text to be a title.
+		expect(
+			recordTitled(
+				`# ${imageTag(mediaKey("logo.png"))}\n\n## Overview`,
+				new Map([[mediaKey("logo.png"), png]]),
+			),
+		).toMatch(
+			/<h1><img src="data:image\/png;base64,[^"]+" alt="Example chart"[^>]*><\/h1>/,
+		);
+	});
+
+	it("escapes the H1 as a title", () => {
+		const { html } = build('# Fees < costs & "value"\n\n## Overview');
+
+		expect(coverOf(html)).toContain(
+			'<h1 class="pa-cover-title">Fees &lt; costs &amp; &quot;value&quot;</h1>',
+		);
+		expect(html).toContain(
+			"<title>Fees &lt; costs &amp; &quot;value&quot;</title>",
+		);
+		expect(afterCover(html)).toContain(
+			'<p class="pa-eyebrow">Fees &lt; costs &amp; &quot;value&quot;</p>',
+		);
+		expect(bodyOf(html)).not.toContain("Fees < costs");
+	});
+
+	it("still lifts the lead and the key figures after the H1", () => {
+		const { html } = build(
+			[
+				"# Generated Title",
+				"",
+				"A short lead for the cover.",
+				"",
+				"```stat-tiles",
+				"Weeks: 12",
+				"```",
+				"",
+				"## Overview",
+				"",
+				"Text.",
+			].join("\n"),
+		);
+
+		expect(coverOf(html)).toContain(
+			'<h1 class="pa-cover-title">Generated Title</h1><p class="pa-cover-lead">A short lead for the cover.</p><dl class="pa-cover-figures"><div><dt>Weeks</dt><dd>12</dd></div></dl>',
+		);
+		expect(afterCover(html)).not.toContain("A short lead");
+		expect(afterCover(html)).not.toContain("pa-stat-tiles");
+		expect(afterCover(html)).not.toContain("<h1");
+	});
 });
 
 describe("buildThemeHtml: sections and contents", () => {
@@ -1060,8 +1178,13 @@ describe("buildThemeHtml: sections and contents", () => {
 		);
 		expect(markers).toEqual([1, 2, 3]);
 		for (const section of sections) {
+			// The bare "Appendix" heading opens an appendix.
+			const opener =
+				section.title === "Appendix"
+					? `<header class="pa-section-opener pa-appendix" id="${section.id}" data-label="Appendix">`
+					: `<header class="pa-section-opener" id="${section.id}">`;
 			expect(html).toContain(
-				`<header class="pa-section-opener" id="${section.id}"><span class="pa-page-marker" aria-hidden="true">${pageMarkerText(section.index)}</span><h2>`,
+				`${opener}<span class="pa-page-marker" aria-hidden="true">${pageMarkerText(section.index)}</span><h2>`,
 			);
 		}
 		expect(warnings).toEqual([]);
@@ -1123,7 +1246,7 @@ describe("buildThemeHtml: sections and contents", () => {
 
 		expect(contentsOf(html)).not.toContain("pa-contents-page");
 		expect(contentsOf(html)).not.toContain("pa-contents-leader");
-		expect(contentsOf(html).match(/<li>/g)).toHaveLength(3);
+		expect(contentsOf(html).match(/<li[ >]/g)).toHaveLength(3);
 		expect(warnings).toEqual([]);
 	});
 
@@ -1212,7 +1335,7 @@ describe("buildThemeHtml: sections and contents", () => {
 		);
 
 		expect(body).toMatch(
-			/<section class="pa-landscape"><header class="pa-section-opener" id="pa-section-1"><h2>Appendix<\/h2><p>Every requirement and where it is met\.<\/p><\/header><table /,
+			/<section class="pa-landscape"><header class="pa-section-opener pa-appendix" id="pa-section-1" data-label="Appendix"><h2>Appendix<\/h2><p>Every requirement and where it is met\.<\/p><\/header><table /,
 		);
 	});
 
@@ -1236,6 +1359,124 @@ describe("buildThemeHtml: sections and contents", () => {
 
 		expect(sections).toEqual([]);
 		expect(bodyOf(html)).not.toContain("pa-contents");
+	});
+
+	it("reads an appendix's label from its heading, and nothing from any other heading", () => {
+		const labelled = (contents: string): AppendixLabels => ({
+			opener: `Appendix ${contents}`,
+			contents,
+		});
+		const unlabelled: AppendixLabels = { opener: "Appendix", contents: "" };
+
+		expect(appendixLabels("Appendix A · Sources")).toEqual(labelled("A"));
+		expect(appendixLabels("12. Appendix B: Data")).toEqual(labelled("B"));
+		expect(appendixLabels("Anhang C")).toEqual(labelled("C"));
+		expect(appendixLabels("Appendix 1")).toEqual(labelled("1"));
+		expect(appendixLabels("Appendix II")).toEqual(labelled("II"));
+		expect(appendixLabels("Appendix IV: Rates")).toEqual(labelled("IV"));
+		expect(appendixLabels("Appendix I")).toEqual(labelled("I"));
+		for (const heading of [
+			"5 Appendix",
+			"Appendix: A note",
+			"Appendix",
+			"APPENDIX",
+			"Appendix Overview",
+			"Appendix 123",
+			"Appendix a",
+		]) {
+			expect({ heading, labels: appendixLabels(heading) }).toEqual({
+				heading,
+				labels: unlabelled,
+			});
+		}
+		for (const heading of [
+			"Appendices overview",
+			"Appendixes",
+			"Appendix-based pricing",
+			"Our appendix",
+			"Pricing",
+			"123. Appendix A",
+		]) {
+			expect({ heading, labels: appendixLabels(heading) }).toEqual({
+				heading,
+				labels: null,
+			});
+		}
+	});
+
+	it("labels an appendix's opener and contents entry in place of a number, and lists the sections after it as before", () => {
+		const doc = [
+			"## Overview",
+			"",
+			"## Appendix A · Sources",
+			"",
+			"## Pricing",
+			"",
+			"## 12. Appendix B: Data",
+			"",
+			"## Appendix",
+		].join("\n");
+		const { html, sections } = build(doc, { pass: LOCATE });
+		const body = bodyOf(html);
+
+		// Every section keeps its place, its id and its page marker.
+		expect(
+			sections.map((section) => [section.index, section.title]),
+		).toEqual([
+			[1, "Overview"],
+			[2, "Appendix A · Sources"],
+			[3, "Pricing"],
+			[4, "12. Appendix B: Data"],
+			[5, "Appendix"],
+		]);
+		expect(body).toContain(
+			`<header class="pa-section-opener pa-appendix" id="pa-section-2" data-label="Appendix A"><span class="pa-page-marker" aria-hidden="true">${pageMarkerText(2)}</span><h2>Appendix A · Sources</h2></header>`,
+		);
+		// The section after an appendix is an ordinary one: the theme's
+		// counter, which an appendix does not advance, numbers it 2.
+		expect(body).toContain(
+			'<header class="pa-section-opener" id="pa-section-3"><span',
+		);
+		expect(body).toContain(
+			'<header class="pa-section-opener pa-appendix" id="pa-section-4" data-label="Appendix B">',
+		);
+		expect(body).toContain(
+			'<header class="pa-section-opener pa-appendix" id="pa-section-5" data-label="Appendix">',
+		);
+
+		// The entry keeps the heading as typed, less a typed number.
+		const entries = Array.from(
+			contentsOf(html).matchAll(/<li[^>]*><a[^>]*>[^<]*<\/a>/g),
+			(match) => match[0],
+		);
+		expect(entries).toEqual([
+			'<li><a href="#pa-section-1">Overview</a>',
+			'<li class="pa-appendix" data-label="A"><a href="#pa-section-2">Appendix A · Sources</a>',
+			'<li><a href="#pa-section-3">Pricing</a>',
+			'<li class="pa-appendix" data-label="B"><a href="#pa-section-4">Appendix B: Data</a>',
+			'<li class="pa-appendix" data-label=""><a href="#pa-section-5">Appendix</a>',
+		]);
+
+		// Both passes write the same contents markup; only the slots differ.
+		const final = build(doc, {
+			pass: {
+				kind: "final",
+				pageNumbers: new Map([
+					[1, 3],
+					[2, 4],
+					[3, 5],
+					[4, 6],
+					[5, 7],
+				]),
+			},
+		}).html;
+		const emptySlots = (text: string) =>
+			text.replace(
+				/<span class="pa-contents-page">[^<]*<\/span>/g,
+				'<span class="pa-contents-page"></span>',
+			);
+		expect(contentsOf(final)).not.toBe(contentsOf(html));
+		expect(emptySlots(contentsOf(final))).toBe(contentsOf(html));
 	});
 });
 
@@ -1269,6 +1510,200 @@ describe("buildThemeHtml: fences", () => {
 		);
 		expect(bodyOf(html)).not.toContain("pa-stat-tiles");
 	});
+
+	it("draws a valid cards block as a grid of cards, label as written, title and text with their marks", () => {
+		const { html } = build(
+			[
+				// Inside a section, so the cover does not take what precedes it.
+				"## Approach",
+				"",
+				"```cards",
+				"%% fabric-visual: a1b2c3d4e5f6",
+				"01",
+				"**Route planning**",
+				"Plans each day's *stops* before `08:00`.",
+				"",
+				"Pilot **site**",
+				"**Example Harbor Co**",
+				"",
+				"Scope",
+				"Three depots, ***twelve*** weeks.",
+				"",
+				"Fee",
+				"**Fixed**",
+				"Paid in two parts.",
+				"```",
+			].join("\n"),
+		);
+
+		expect(bodyOf(html)).toContain(
+			[
+				'<div class="pa-cards">',
+				'<div class="pa-card"><p class="pa-card-label">01</p><p class="pa-card-title">Route planning</p><p class="pa-card-text">Plans each day&#39;s <em>stops</em> before <code>08:00</code>.</p></div>',
+				// A label is printed as typed, never read as Markdown.
+				'<div class="pa-card"><p class="pa-card-label">Pilot **site**</p><p class="pa-card-title">Example Harbor Co</p></div>',
+				'<div class="pa-card"><p class="pa-card-label">Scope</p><p class="pa-card-text">Three depots, <strong><em>twelve</em></strong> weeks.</p></div>',
+				'<div class="pa-card"><p class="pa-card-label">Fee</p><p class="pa-card-title">Fixed</p><p class="pa-card-text">Paid in two parts.</p></div>',
+				"</div>",
+			].join(""),
+		);
+		expect(bodyOf(html)).not.toContain("pa-cards-3");
+		expect(bodyOf(html)).not.toContain("fabric-visual");
+		expect(bodyOf(html)).not.toContain("language-cards");
+	});
+
+	it("sets exactly three cards in one row, and any other count two across", () => {
+		const cards = (count: number) =>
+			bodyOf(
+				build(
+					[
+						"## Approach",
+						"",
+						"```cards",
+						Array.from(
+							{ length: count },
+							(_, index) =>
+								`Label ${index + 1}\nText ${index + 1}.`,
+						).join("\n\n"),
+						"```",
+					].join("\n"),
+				).html,
+			);
+
+		expect(cards(3)).toContain('<div class="pa-cards pa-cards-3">');
+		for (const count of [1, 2, 4]) {
+			expect({
+				count,
+				grid: cards(count).match(/class="pa-cards[^"]*"/g),
+			}).toEqual({
+				count,
+				grid: ['class="pa-cards"'],
+			});
+		}
+	});
+
+	it("prints a card's label, title and text escaped, never as markup", () => {
+		const { html } = build(
+			[
+				"## Approach",
+				"",
+				"```cards",
+				'<img src=x onerror="alert(1)">',
+				"**<b>Title</b>**",
+				"Risk: <script>alert(1)</script> & more",
+				"```",
+			].join("\n"),
+		);
+		const body = bodyOf(html);
+
+		expect(body).toContain(
+			'<p class="pa-card-label">&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</p><p class="pa-card-title">&lt;b&gt;Title&lt;/b&gt;</p><p class="pa-card-text">Risk: &lt;script&gt;alert(1)&lt;/script&gt; &amp; more</p>',
+		);
+		expect(body).not.toContain("<script>");
+		expect(startTags(body).map((tag) => tag.name)).not.toContain("img");
+	});
+
+	it("draws a valid columns block as two columns of headings, bullets and paragraphs", () => {
+		const { html } = build(
+			[
+				"## Approach",
+				"",
+				"```columns",
+				"### Today",
+				"- Paper route sheets",
+				"- Calls to *every* depot",
+				"---",
+				"#### With the platform",
+				"One schedule **every** depot reads.",
+				"",
+				"Escaped: <script>alert(1)</script>",
+				"```",
+			].join("\n"),
+		);
+		const body = bodyOf(html);
+
+		expect(body).toContain(
+			[
+				'<div class="pa-columns">',
+				'<div class="pa-column"><p class="pa-column-heading">Today</p><ul><li>Paper route sheets</li><li>Calls to <em>every</em> depot</li></ul></div>',
+				'<div class="pa-column"><p class="pa-column-heading">With the platform</p><p>One schedule <strong>every</strong> depot reads.</p><p>Escaped: &lt;script&gt;alert(1)&lt;/script&gt;</p></div>',
+				"</div>",
+			].join(""),
+		);
+		expect(body).not.toContain("<script>");
+		// A column heading is a paragraph, never a heading the outline counts.
+		expect(startTags(body).map((tag) => tag.name)).not.toContain("h3");
+		expect(startTags(body).map((tag) => tag.name)).not.toContain("h4");
+	});
+
+	it("prints cards, columns and stat tiles without the citation markers written into them", () => {
+		const body = bodyOf(
+			build(
+				[
+					"## Results",
+					"",
+					"```cards",
+					"01",
+					"**Route planning**",
+					"Saves 12 hours a week [S2]",
+					"",
+					"Pilot",
+					"[S4]",
+					"Twelve weeks.",
+					"```",
+					"",
+					"```columns",
+					"### Today",
+					"- Paper route sheets [cite]",
+					"---",
+					"One schedule.",
+					"```",
+					"",
+					"```stat-tiles",
+					"Hours saved [S1]: 12",
+					"Pilot sites: 3 [S3]",
+					"```",
+				].join("\n"),
+			).html,
+		);
+
+		expect(body).toContain(
+			[
+				'<div class="pa-cards">',
+				'<div class="pa-card"><p class="pa-card-label">01</p><p class="pa-card-title">Route planning</p><p class="pa-card-text">Saves 12 hours a week</p></div>',
+				'<div class="pa-card"><p class="pa-card-label">Pilot</p><p class="pa-card-text">Twelve weeks.</p></div>',
+				"</div>",
+			].join(""),
+		);
+		expect(body).toContain(
+			'<div class="pa-column"><p class="pa-column-heading">Today</p><ul><li>Paper route sheets</li></ul></div>',
+		);
+		expect(body).toContain(
+			'<dl class="pa-stat-tiles"><div class="pa-stat-tile"><dt class="pa-stat-label">Hours saved</dt><dd class="pa-stat-value">12</dd></div><div class="pa-stat-tile"><dt class="pa-stat-label">Pilot sites</dt><dd class="pa-stat-value">3</dd></div></dl>',
+		);
+		expect(body).not.toMatch(/\[(?:S\d|cite)/);
+	});
+
+	it.each([
+		// The first line is the label, so a bold first line is refused.
+		["cards", "**A bold first line**\nText."],
+		// Two sides need one --- line between them.
+		["columns", "### Only one side\n- No separator"],
+	])(
+		"prints a refused %s block as code, as the page does",
+		(language, source) => {
+			const { html } = build(
+				["## Approach", "", `\`\`\`${language}`, source, "```"].join(
+					"\n",
+				),
+			);
+
+			expect(bodyOf(html)).toContain(
+				`<pre><code class="language-${language}">${source}</code></pre>`,
+			);
+			expect(bodyOf(html)).not.toContain(`class="pa-${language}`);
+		},
+	);
 
 	it("prints a diagram's caption line under its figure, escaped, and never in the drawing's source", () => {
 		const svg: ExportDiagram = {
@@ -1604,7 +2039,7 @@ describe("buildThemeHtml: Markdown forms", () => {
 		]);
 		expect(body.match(/<section class="pa-landscape">/g)).toHaveLength(1);
 		expect(body).toMatch(
-			/<section class="pa-landscape"><header class="pa-section-opener" id="pa-section-2"><h2>Appendix A: Assumptions<\/h2><\/header><table class="pa-data-table[^"]*">.*?<\/table><\/section><p>Start date: TBD<\/p>/,
+			/<section class="pa-landscape"><header class="pa-section-opener pa-appendix" id="pa-section-2" data-label="Appendix A"><h2>Appendix A: Assumptions<\/h2><\/header><table class="pa-data-table[^"]*">.*?<\/table><\/section><p>Start date: TBD<\/p>/,
 		);
 		// The first section's opener stays in the portrait flow.
 		expect(body).toMatch(
@@ -1639,7 +2074,86 @@ describe("buildThemeHtml: Markdown forms", () => {
 		expect(marked("| ID | Capability |\n| --- | --- |")).toBe(false);
 	});
 
-	it("numbers an ordered list in squares only when every item opens with bold text", () => {
+	it("prints a table whose header cells are all empty without a header row, its first row plain", () => {
+		const table = (header: string, ...rows: string[]) =>
+			[header, "| --- | --- |", ...rows].join("\n");
+		const bodyRows =
+			"<tbody><tr><td>Scope</td><td>Pilot</td></tr><tr><td>Fee</td><td>$9</td></tr></tbody>";
+
+		for (const header of ["|  |  |", "| <!-- note --> | <br> |"]) {
+			const body = bodyOf(
+				build(table(header, "| Scope | Pilot |", "| Fee | $9 |")).html,
+			);
+			expect({ header, body }).toEqual({
+				header,
+				body: expect.stringContaining(
+					`<table class="pa-data-table pa-headerless">${bodyRows}</table>`,
+				),
+			});
+			expect(body).not.toContain("<thead>");
+		}
+		// An id column still reads from the body rows.
+		expect(
+			bodyOf(build(table("|  |  |", "| FS-01 | Pilot |")).html),
+		).toContain('<table class="pa-data-table pa-id-column pa-headerless">');
+		// A blank header over nothing prints nothing, and a wide one takes
+		// no landscape page with its section.
+		expect(bodyOf(build(table("|  |  |")).html)).not.toContain("<table");
+		const wide = bodyOf(
+			build(
+				`## Rates\n\n|${"  |".repeat(7)}\n|${" --- |".repeat(7)}\n\nAfter.`,
+			).html,
+		);
+		expect(wide).not.toContain("<table");
+		expect(wide).not.toContain("pa-landscape");
+		expect(wide).toContain(
+			'<header class="pa-section-opener" id="pa-section-1"><h2>Rates</h2></header><p>After.</p>',
+		);
+	});
+
+	it("keeps the header row when any header cell holds text or an image", () => {
+		const withText = bodyOf(
+			build("|  | Pilot |\n| --- | --- |\n| Fee | $9 |").html,
+		);
+		expect(withText).toContain(
+			'<table class="pa-data-table"><thead><tr><th></th><th>Pilot</th></tr></thead>',
+		);
+
+		const withImage = bodyOf(
+			build(
+				`| ${imageTag(mediaKey("logo.png"))} |  |\n| --- | --- |\n| Fee | $9 |`,
+				{ images: new Map([[mediaKey("logo.png"), png]]) },
+			).html,
+		);
+		expect(withImage).toMatch(
+			/<table class="pa-data-table"><thead><tr><th><img src="data:image\/png;base64,/,
+		);
+		expect(withImage).not.toContain("pa-headerless");
+	});
+
+	it("keeps the header row over a Markdown image, which prints nothing, and over a footnote call", () => {
+		const image = build(
+			"| ![Logo](https://example.com/logo.png) |  |\n| --- | --- |\n| Fee | $9 |",
+		);
+		expect(bodyOf(image.html)).toContain(
+			'<table class="pa-data-table"><thead><tr><th></th><th></th></tr></thead>',
+		);
+		expect(image.warnings).toEqual([
+			{ code: "EXTERNAL_IMAGE_DROPPED", count: 1 },
+		]);
+
+		const note = bodyOf(
+			build(
+				"| [^1] |  |\n| --- | --- |\n| Fee | $9 |\n\n[^1]: Example note.",
+			).html,
+		);
+		expect(note).toContain(
+			'<table class="pa-data-table"><thead><tr><th><sup><a href="#pa-fn-1">1</a></sup></th><th></th></tr></thead>',
+		);
+		expect(note).not.toContain("pa-headerless");
+	});
+
+	it("numbers an ordered list as steps only when every item opens with bold text", () => {
 		const steps = [
 			"Intro.",
 			"",
@@ -1649,7 +2163,7 @@ describe("buildThemeHtml: Markdown forms", () => {
 		expect(bodyOf(build(steps).html)).toContain(
 			'<ol class="pa-steps"><li><strong>Approve the pilot.</strong> Signature starts week one.</li>',
 		);
-		// The start number survives: the squares count from it.
+		// The start number survives: the steps count from it.
 		expect(
 			bodyOf(
 				build(steps.replace("1. **", "4. **").replace("2. **", "5. **"))
@@ -1744,5 +2258,676 @@ describe("buildThemeHtml: Markdown forms", () => {
 			'<section class="pa-footnotes" aria-label="Footnotes"><hr><ol><li id="pa-fn-1"><p>Note b, see<sup><a href="#pa-fn-2">2</a></sup>.</p></li><li id="pa-fn-2"><p>Note &lt;a&gt;.</p></li></ol></section>',
 		);
 		expect(body).not.toContain("Never referenced");
+	});
+});
+
+/** The cover section of a printed page. */
+function coverSectionOf(html: string): string {
+	const body = bodyOf(html);
+	const start = body.indexOf('<section class="pa-cover">');
+	expect(start).toBeGreaterThan(-1);
+	return body.slice(start, body.indexOf("</section>", start) + 10);
+}
+
+/** What follows the cover: the letter, the contents page and the body. */
+function afterCoverOf(html: string): string {
+	const body = bodyOf(html);
+	return body.slice(body.indexOf("</section>") + 10);
+}
+
+const COVER_FENCE = [
+	"```cover",
+	"eyebrow: Proposal · Operations board",
+	"organization: Example Harbor Co · Harbour operations",
+	"for: Example Harbor Co",
+	"for: 1 Example Quay, Example City",
+	"by: Example Studio",
+	"by: example.com",
+	"version: 12",
+	"```",
+].join("\n");
+
+describe("buildThemeHtml: cover details", () => {
+	it("sets the eyebrow, the organization line, the party lines and the version from a cover fence, and prints the fence nowhere else", () => {
+		const { html } = build(`${COVER_FENCE}\n\n## Overview\n\nText.`);
+
+		expect(coverSectionOf(html)).toBe(
+			[
+				'<section class="pa-cover">',
+				'<p class="pa-cover-organization">Example Harbor Co · Harbour operations</p>',
+				'<div class="pa-cover-body">',
+				'<p class="pa-eyebrow">Proposal · Operations board</p>',
+				'<h1 class="pa-cover-title">Example Proposal</h1>',
+				"</div>",
+				'<div class="pa-cover-parties">',
+				'<dl class="pa-cover-party-for"><dt>Prepared for</dt><dd>Example Harbor Co</dd><dd>1 Example Quay, Example City</dd></dl>',
+				'<div class="pa-cover-party-by"><dl><dt>Prepared by</dt><dd>Example Studio</dd><dd>example.com</dd></dl><p class="pa-cover-date">October 15, 2026 · Version 12 · Confidential</p></div>',
+				"</div>",
+				"</section>",
+			].join(""),
+		);
+		// The token names are only the fallback.
+		expect(coverSectionOf(html)).not.toContain("Example Client");
+		expect(coverSectionOf(html)).not.toContain("Example Org");
+		const rest = afterCoverOf(html);
+		expect(rest).not.toContain("language-cover");
+		expect(rest).not.toContain("eyebrow:");
+		expect(rest).not.toContain("Harbour operations");
+	});
+
+	it("sets the organization line after the brands row, so the body keeps its place under it", () => {
+		const { html } = build(`${COVER_FENCE}\n\n## Overview`, {
+			tokens: exportTokens({ recipientLogo: png }),
+		});
+
+		expect(coverSectionOf(html)).toMatch(
+			/<div class="pa-cover-brands"><img class="pa-cover-logo pa-cover-logo-recipient" [^>]*><\/div><p class="pa-cover-organization">Example Harbor Co · Harbour operations<\/p><div class="pa-cover-body">/,
+		);
+	});
+
+	it("keeps the default of each field the fence leaves out", () => {
+		const cover = (lines: string[]) =>
+			coverSectionOf(
+				build(
+					["```cover", ...lines, "```", "", "## Overview"].join("\n"),
+				).html,
+			);
+
+		const onlyVersion = cover(["version: 3"]);
+		expect(onlyVersion).toContain('<p class="pa-eyebrow">Proposal</p>');
+		expect(onlyVersion).not.toContain("pa-cover-organization");
+		expect(onlyVersion).toContain(
+			'<dl class="pa-cover-party-for"><dt>Prepared for</dt><dd>Example Client</dd></dl>',
+		);
+		expect(onlyVersion).toContain(
+			"<dl><dt>Prepared by</dt><dd>Example Org</dd></dl>",
+		);
+		expect(onlyVersion).toContain(
+			'<p class="pa-cover-date">October 15, 2026 · Version 3 · Confidential</p>',
+		);
+
+		const onlyEyebrow = cover(["eyebrow: Proposal · Board"]);
+		expect(onlyEyebrow).toContain(
+			'<p class="pa-eyebrow">Proposal · Board</p>',
+		);
+		expect(onlyEyebrow).toContain(
+			'<p class="pa-cover-date">October 15, 2026 · Confidential</p>',
+		);
+
+		const onlyFor = cover(["for: Example Harbor Co"]);
+		expect(onlyFor).toContain(
+			'<dl class="pa-cover-party-for"><dt>Prepared for</dt><dd>Example Harbor Co</dd></dl>',
+		);
+		expect(onlyFor).toContain(
+			"<dl><dt>Prepared by</dt><dd>Example Org</dd></dl>",
+		);
+
+		const onlyBy = cover(["by: Example Studio"]);
+		expect(onlyBy).toContain(
+			'<dl class="pa-cover-party-for"><dt>Prepared for</dt><dd>Example Client</dd></dl>',
+		);
+		expect(onlyBy).toContain(
+			"<dl><dt>Prepared by</dt><dd>Example Studio</dd></dl>",
+		);
+
+		const onlyOrganization = cover(["organization: Example Harbor Co"]);
+		expect(onlyOrganization).toContain(
+			'<p class="pa-cover-organization">Example Harbor Co</p>',
+		);
+		expect(onlyOrganization).toContain(
+			'<p class="pa-eyebrow">Proposal</p>',
+		);
+	});
+
+	it("prints the party lines even when the tokens hold no name", () => {
+		const cover = coverSectionOf(
+			build(
+				"```cover\nfor: Example Harbor Co\nby: Example Studio\n```\n\n## Overview",
+				{
+					tokens: exportTokens({
+						recipientName: null,
+						proposerName: null,
+					}),
+				},
+			).html,
+		);
+
+		expect(cover).toContain(
+			'<div class="pa-cover-parties"><dl class="pa-cover-party-for"><dt>Prepared for</dt><dd>Example Harbor Co</dd></dl><div class="pa-cover-party-by"><dl><dt>Prepared by</dt><dd>Example Studio</dd></dl>',
+		);
+	});
+
+	it("prints a bare version as Version n, and one that names itself as written", () => {
+		const dateLine = (version: string, dateLabel = DATE) =>
+			/<p class="pa-cover-date">([^<]*)<\/p>/.exec(
+				build(
+					`\`\`\`cover\nversion: ${version}\n\`\`\`\n\n## Overview`,
+					{
+						dateLabel,
+					},
+				).html,
+			)?.[1];
+
+		expect(dateLine("12")).toBe(
+			"October 15, 2026 · Version 12 · Confidential",
+		);
+		expect(dateLine("1.0")).toBe(
+			"October 15, 2026 · Version 1.0 · Confidential",
+		);
+		expect(dateLine("v3")).toBe("October 15, 2026 · v3 · Confidential");
+		expect(dateLine("V3.1")).toBe("October 15, 2026 · V3.1 · Confidential");
+		expect(dateLine("Version 2.1")).toBe(
+			"October 15, 2026 · Version 2.1 · Confidential",
+		);
+		expect(dateLine("VERSION 4")).toBe(
+			"October 15, 2026 · VERSION 4 · Confidential",
+		);
+		// Without a date, the version opens the line.
+		expect(dateLine("12", " ")).toBe("Version 12 · Confidential");
+	});
+
+	it("escapes every value of the fence", () => {
+		const { html } = build(
+			[
+				"```cover",
+				'eyebrow: <b>Plan</b> & "more"',
+				"organization: <script>x</script>",
+				"for: <i>Example</i> Harbor",
+				"by: Example & 'Studio'",
+				"version: <1>",
+				"```",
+				"",
+				"## Overview",
+			].join("\n"),
+		);
+		const cover = coverSectionOf(html);
+
+		expect(cover).toContain(
+			'<p class="pa-eyebrow">&lt;b&gt;Plan&lt;/b&gt; &amp; &quot;more&quot;</p>',
+		);
+		expect(cover).toContain(
+			'<p class="pa-cover-organization">&lt;script&gt;x&lt;/script&gt;</p>',
+		);
+		expect(cover).toContain("<dd>&lt;i&gt;Example&lt;/i&gt; Harbor</dd>");
+		expect(cover).toContain("<dd>Example &amp; &#39;Studio&#39;</dd>");
+		expect(cover).toContain("Version &lt;1&gt; · Confidential");
+		expect(cover).not.toMatch(/<(b|i|script)>/);
+	});
+
+	it("prints a refused cover fence as code, and the cover keeps its defaults", () => {
+		const { html } = build(
+			"```cover\neyebrow: Board\ncolour: red\n```\n\n## Overview",
+		);
+
+		expect(coverSectionOf(html)).toContain(
+			'<p class="pa-eyebrow">Proposal</p>',
+		);
+		expect(afterCoverOf(html)).toContain(
+			'<pre><code class="language-cover">eyebrow: Board\ncolour: red</code></pre>',
+		);
+	});
+
+	it("reads only the first cover fence of the preamble, and prints no other the parser takes: not a later one, one after a heading, or one in a Main without sections", () => {
+		const twice = build(
+			[
+				"```cover",
+				"eyebrow: First",
+				"```",
+				"",
+				"```cover",
+				"eyebrow: Second",
+				"```",
+				"",
+				"## Overview",
+				"",
+				"```cover",
+				"eyebrow: Third",
+				"```",
+				"",
+				"- In a list:",
+				"",
+				"  ```cover",
+				"  eyebrow: Fourth",
+				"  ```",
+			].join("\n"),
+		).html;
+		expect(coverSectionOf(twice)).toContain(
+			'<p class="pa-eyebrow">First</p>',
+		);
+		expect(afterCoverOf(twice)).not.toContain("eyebrow:");
+		expect(afterCoverOf(twice)).not.toContain("language-cover");
+		expect(afterCoverOf(twice)).toContain("In a list:");
+
+		const refusedFirst = build(
+			[
+				"```cover",
+				"colour: red",
+				"```",
+				"",
+				"```cover",
+				"eyebrow: Second",
+				"```",
+				"",
+				"## Overview",
+			].join("\n"),
+		).html;
+		expect(coverSectionOf(refusedFirst)).toContain(
+			'<p class="pa-eyebrow">Proposal</p>',
+		);
+		// The refused one prints as code; the one the parser takes does not.
+		expect(afterCoverOf(refusedFirst)).toContain(
+			'<pre><code class="language-cover">colour: red</code></pre>',
+		);
+		expect(afterCoverOf(refusedFirst)).not.toContain("eyebrow: Second");
+
+		const underSubheading = build(
+			"### Background\n\n```cover\neyebrow: Board\n```\n\n## Overview",
+		).html;
+		expect(coverSectionOf(underSubheading)).toContain(
+			'<p class="pa-eyebrow">Proposal</p>',
+		);
+		expect(afterCoverOf(underSubheading)).not.toContain("eyebrow: Board");
+
+		const noSections = build("```cover\neyebrow: Board\n```\n\nText.").html;
+		expect(coverSectionOf(noSections)).toContain(
+			'<p class="pa-eyebrow">Proposal</p>',
+		);
+		expect(afterCoverOf(noSections)).not.toContain("eyebrow: Board");
+		expect(afterCoverOf(noSections)).toContain("<p>Text.</p>");
+	});
+
+	it("prints a cover fence the parser refuses as code wherever it stands, and one in another case as code of its own language", () => {
+		const { html } = build(
+			[
+				"## Overview",
+				"",
+				"```cover",
+				"eyebrow: Board",
+				"eyebrow: Again",
+				"```",
+				"",
+				"```Cover",
+				"eyebrow: Board",
+				"```",
+			].join("\n"),
+		);
+
+		expect(afterCoverOf(html)).toContain(
+			'<pre><code class="language-cover">eyebrow: Board\neyebrow: Again</code></pre>',
+		);
+		expect(afterCoverOf(html)).toContain(
+			'<pre><code class="language-Cover">eyebrow: Board</code></pre>',
+		);
+	});
+
+	it("reads the fence past an opening H1 and beside the lead and key figures, and never prints its marker", () => {
+		const { html } = build(
+			[
+				"# Generated Title",
+				"",
+				"The short lead.",
+				"",
+				"```cover",
+				"%% fabric-visual: a1b2c3d4e5f6",
+				"eyebrow: Proposal · Board",
+				"```",
+				"",
+				"```stat-tiles",
+				"Weeks: 12",
+				"```",
+				"",
+				"## Overview",
+			].join("\n"),
+		);
+		const cover = coverSectionOf(html);
+
+		expect(cover).toContain('<p class="pa-eyebrow">Proposal · Board</p>');
+		expect(cover).toContain(
+			'<h1 class="pa-cover-title">Generated Title</h1>',
+		);
+		// The lifted fence strands nothing, so the paragraph before it is
+		// still the lead.
+		expect(cover).toContain('<p class="pa-cover-lead">The short lead.</p>');
+		expect(cover).toContain('<dl class="pa-cover-figures">');
+		expect(html).not.toContain("fabric-visual");
+		expect(afterCoverOf(html)).not.toContain("The short lead.");
+	});
+});
+
+const LETTER_MAIN = [
+	"# Route planning for Example Harbor Co",
+	"",
+	"A short lead.",
+	"",
+	"## Cover letter",
+	"",
+	"12 March 2027",
+	"",
+	"Jordan Example, Head of Operations, Example Harbor Co",
+	"",
+	"Re: Route planning for Example Harbor Co",
+	"",
+	"Thank you for the conversation.",
+	"",
+	"Kind regards,",
+	"",
+	"**Alex Example**",
+	"",
+	"Head of Delivery · Example Studio",
+	"",
+	"## 1. Overview",
+	"",
+	"Text.",
+	"",
+	"## 2. Pricing",
+	"",
+	"More text.",
+].join("\n");
+
+describe("buildThemeHtml: cover letter", () => {
+	const letterOf = (html: string) => {
+		const start = html.indexOf('<section class="pa-letter"');
+		return start === -1
+			? ""
+			: html.slice(start, html.indexOf("</section>", start) + 10);
+	};
+	const contentsOf = (html: string) => {
+		const start = html.indexOf('<nav class="pa-contents"');
+		return start === -1
+			? ""
+			: html.slice(start, html.indexOf("</nav>", start));
+	};
+	/** Whether a heading as Main's first H2 opens a letter. */
+	const opensLetter = (heading: string) =>
+		letterOf(
+			build(`## ${heading}\n\nText.\n\n## Overview\n\nMore.`).html,
+		) !== "";
+
+	it("prints the first section named Cover letter on its own page between the cover and the contents, with each paragraph in its role", () => {
+		const { html, sections } = build(LETTER_MAIN);
+
+		expect(letterOf(html)).toBe(
+			[
+				'<section class="pa-letter" aria-label="Cover letter">',
+				'<div class="pa-letter-head"><p class="pa-letter-label">Cover letter</p></div>',
+				'<p class="pa-letter-date">12 March 2027</p>',
+				"<p>Jordan Example, Head of Operations, Example Harbor Co</p>",
+				'<p class="pa-letter-subject">Re: Route planning for Example Harbor Co</p>',
+				"<p>Thank you for the conversation.</p>",
+				"<p>Kind regards,</p>",
+				'<p class="pa-letter-signer"><strong>Alex Example</strong></p>',
+				'<p class="pa-letter-signer-role">Head of Delivery · Example Studio</p>',
+				"</section>",
+			].join(""),
+		);
+		// The page order: cover, letter, contents, body.
+		expect(html).toMatch(
+			/<\/section>\n<section class="pa-letter"[^>]*>[\s\S]*?<\/section>\n<nav class="pa-contents"/,
+		);
+		// No section of its own: no opener, number or contents entry.
+		expect(sections).toEqual([
+			{ index: 1, id: "pa-section-1", title: "1. Overview" },
+			{ index: 2, id: "pa-section-2", title: "2. Pricing" },
+		]);
+		expect(contentsOf(html)).not.toContain("Cover letter");
+		expect(contentsOf(html).match(/<li[ >]/g)).toHaveLength(2);
+		expect(html.match(/class="pa-section-opener/g)).toHaveLength(2);
+		expect(html).not.toMatch(/<h2>Cover letter<\/h2>/);
+		// Printed once, on its own page.
+		expect(html.match(/Kind regards,/g)).toHaveLength(1);
+	});
+
+	it("recognises the heading in any case, with a typed number, in German, and only as the first H2", () => {
+		for (const heading of [
+			"Cover letter",
+			"COVER LETTER",
+			"cover letter",
+			"1. Cover letter",
+			"2) Cover Letter",
+			"Cover letter:",
+			"Anschreiben",
+			"1. Anschreiben.",
+		]) {
+			expect({ heading, letter: opensLetter(heading) }).toEqual({
+				heading,
+				letter: true,
+			});
+		}
+		for (const heading of [
+			"Cover letters",
+			"Cover letter and terms",
+			"Our cover letter",
+			"Letter",
+			"Appendix A · Cover letter",
+		]) {
+			expect({ heading, letter: opensLetter(heading) }).toEqual({
+				heading,
+				letter: false,
+			});
+		}
+
+		const second = build(
+			"## Overview\n\nText.\n\n## Cover letter\n\nDear reader.",
+		);
+		expect(letterOf(second.html)).toBe("");
+		expect(second.sections.map((section) => section.title)).toEqual([
+			"Overview",
+			"Cover letter",
+		]);
+
+		// An H3 of that name is no section at all.
+		expect(
+			letterOf(build("### Cover letter\n\nText.\n\n## Overview").html),
+		).toBe("");
+	});
+
+	it("labels the letter with its heading less the typed number", () => {
+		expect(
+			letterOf(build("## 1. Anschreiben:\n\nText.\n\n## Overview").html),
+		).toContain(
+			'<section class="pa-letter" aria-label="Anschreiben"><div class="pa-letter-head"><p class="pa-letter-label">Anschreiben</p></div>',
+		);
+	});
+
+	it("takes the date only from a first paragraph of one line, at most 40 characters and with a digit", () => {
+		const first = (paragraph: string) =>
+			letterOf(
+				build(`## Cover letter\n\n${paragraph}\n\nText.\n\n## Overview`)
+					.html,
+			);
+
+		const forty = `1 ${"x".repeat(38)}`;
+		expect(first(forty)).toContain(
+			`<p class="pa-letter-date">${forty}</p>`,
+		);
+		expect(first(`${forty}x`)).not.toContain("pa-letter-date");
+		expect(first("23 October 2026")).toContain(
+			'<p class="pa-letter-date">23 October 2026</p>',
+		);
+		// A salutation has no digit: it prints as the letter's prose.
+		expect(first("Dear Jordan Example,")).toContain(
+			"<p>Dear Jordan Example,</p>",
+		);
+		expect(first("Dear Jordan Example,")).not.toContain("pa-letter-date");
+		expect(first("12 March\n2027")).not.toContain("pa-letter-date");
+		expect(first("12 March  \n2027")).not.toContain("pa-letter-date");
+		// A subject line is never the date.
+		expect(first("Re: Example")).toContain(
+			'<p class="pa-letter-subject">Re: Example</p>',
+		);
+		expect(first("Re: Example")).not.toContain("pa-letter-date");
+		// Only the first block: a date after a list is prose.
+		const afterList = letterOf(
+			build("## Cover letter\n\n- One\n\n12 March 2027\n\n## Overview")
+				.html,
+		);
+		expect(afterList).not.toContain("pa-letter-date");
+	});
+
+	it("takes the last paragraph that is bold and nothing else as the signer, never the subject line, and mutes the paragraph after it", () => {
+		const { html } = build(
+			[
+				"## Cover letter",
+				"",
+				"12 March 2027",
+				"",
+				"**Example Harbor Co**",
+				"",
+				"Dear reader, **thank you** for your time.",
+				"",
+				"**Alex Example**",
+				"",
+				"**Re: The proposal**",
+				"",
+				"Head of Delivery",
+				"",
+				"## Overview",
+			].join("\n"),
+		);
+		const letter = letterOf(html);
+
+		expect(letter).toContain(
+			'<p class="pa-letter-signer"><strong>Alex Example</strong></p>',
+		);
+		expect(letter).toContain(
+			'<p class="pa-letter-subject"><strong>Re: The proposal</strong></p>',
+		);
+		// The subject line follows the signer, so nothing is muted.
+		expect(letter).not.toContain("pa-letter-signer-role");
+		expect(letter).toContain("<p>Head of Delivery</p>");
+		// An earlier bold paragraph, and a partly bold one, stay prose.
+		expect(letter).toContain("<p><strong>Example Harbor Co</strong></p>");
+		expect(letter).toContain(
+			"<p>Dear reader, <strong>thank you</strong> for your time.</p>",
+		);
+
+		const lastSigner = letterOf(
+			build("## Cover letter\n\nText.\n\n**Alex Example**\n\n## Overview")
+				.html,
+		);
+		expect(lastSigner).toContain(
+			'<p class="pa-letter-signer"><strong>Alex Example</strong></p></section>',
+		);
+	});
+
+	it("sets the proposer logo at the top left, on a plate of the ink only when it was drawn for a dark background", () => {
+		const head = (logo: ExportRaster) =>
+			/<div class="pa-letter-head">.*?<\/div>/.exec(
+				letterOf(
+					build(LETTER_MAIN, {
+						tokens: exportTokens({ proposerLogo: logo }),
+					}).html,
+				),
+			)?.[0];
+		const data = `data:${png.mimeType};base64,${png.bytes.toString("base64")}`;
+
+		expect(head({ ...png, luminance: 0.04, opaque: false })).toBe(
+			`<div class="pa-letter-head"><img class="pa-letter-logo" src="${data}" alt="Example Org logo"><p class="pa-letter-label">Cover letter</p></div>`,
+		);
+		expect(head({ ...png, luminance: 0.93, opaque: false })).toContain(
+			'<img class="pa-letter-logo pa-letter-logo-plate"',
+		);
+		expect(head({ ...png, luminance: 0.93, opaque: true })).not.toContain(
+			"pa-letter-logo-plate",
+		);
+		expect(head(png)).not.toContain("pa-letter-logo-plate");
+		// The recipient's logo never heads the letter.
+		expect(
+			letterOf(
+				build(LETTER_MAIN, {
+					tokens: exportTokens({ recipientLogo: png }),
+				}).html,
+			),
+		).not.toContain("<img");
+	});
+
+	it("escapes the letter's text and numbers its footnotes before the body's", () => {
+		const { html } = build(
+			[
+				"## Cover letter",
+				"",
+				'Re: <Plan> & "more"[^a]',
+				"",
+				"**<b>Alex</b>**",
+				"",
+				"## Overview",
+				"",
+				"Claim[^b].",
+				"",
+				"[^a]: Note a.",
+				"[^b]: Note b.",
+			].join("\n"),
+		);
+		const letter = letterOf(html);
+
+		expect(letter).toContain(
+			'<p class="pa-letter-subject">Re: &lt;Plan&gt; &amp; &quot;more&quot;<sup><a href="#pa-fn-1">1</a></sup></p>',
+		);
+		expect(letter).toContain(
+			'<p class="pa-letter-signer"><strong>&lt;b&gt;Alex&lt;/b&gt;</strong></p>',
+		);
+		expect(letter).not.toMatch(/<b>/);
+		expect(bodyOf(html)).toContain(
+			'<p>Claim<sup><a href="#pa-fn-2">2</a></sup>.</p>',
+		);
+	});
+
+	it("puts no page marker in the letter, so the locate pass marks only the sections, numbered from one", () => {
+		const { html, sections } = build(LETTER_MAIN, { pass: LOCATE });
+
+		expect(
+			Array.from(html.matchAll(PAGE_MARKER_PATTERN), (match) =>
+				Number(match[1]),
+			),
+		).toEqual([1, 2]);
+		expect(letterOf(html)).not.toContain("pa-page-marker");
+		expect(sections.map((section) => section.index)).toEqual([1, 2]);
+	});
+
+	it("lays both passes out alike with a cover fence and a letter: only the markers and the slot text differ", () => {
+		const main = LETTER_MAIN.replace(
+			"A short lead.",
+			`A short lead.\n\n${COVER_FENCE}`,
+		);
+		const locate = build(main, { pass: LOCATE }).html;
+		const final = build(main, {
+			pass: {
+				kind: "final",
+				pageNumbers: new Map([
+					[1, 4],
+					[2, 6],
+				]),
+			},
+		}).html;
+		const normalized = (html: string) =>
+			html
+				.replace(/<span class="pa-page-marker"[^>]*>[^<]*<\/span>/g, "")
+				.replace(
+					/<span class="pa-contents-page">[^<]*<\/span>/g,
+					'<span class="pa-contents-page"></span>',
+				);
+
+		expect(final).toContain('<p class="pa-cover-organization">');
+		expect(final).toContain('<section class="pa-letter"');
+		expect(normalized(final)).toBe(normalized(locate));
+	});
+
+	it("prints a letter that is Main's only section without a contents page", () => {
+		const { html, sections } = build(
+			"## Cover letter\n\n12 March 2027\n\nDear reader.",
+		);
+
+		expect(sections).toEqual([]);
+		expect(html).not.toContain('<nav class="pa-contents"');
+		expect(letterOf(html)).toContain(
+			'<p class="pa-letter-date">12 March 2027</p><p>Dear reader.</p>',
+		);
+	});
+
+	it("leaves the page exactly as before when Main has no letter", () => {
+		const { html } = build("Intro.\n\n## Overview\n\nText.");
+
+		expect(bodyOf(html)).not.toContain("pa-letter");
+		expect(html).toMatch(/<\/section>\n<nav class="pa-contents"/);
 	});
 });

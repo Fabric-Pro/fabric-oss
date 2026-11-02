@@ -508,7 +508,7 @@ export function CopilotPersistenceHook({
 					return;
 				}
 				const incoming = (state ?? {}) as TraceState;
-				// Node snapshots replace state; retain trace turns omitted by later nodes.
+				// Retain trace turns for older servers and partial saved-state hydration.
 				if (
 					incoming.toolCallsByTurn &&
 					incoming.toolCallsByTurn !==

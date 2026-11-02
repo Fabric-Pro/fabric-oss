@@ -18,10 +18,13 @@ import { join, relative } from "node:path";
  * path relative to that directory and its bytes, in a fixed order, so adding,
  * editing, renaming or removing a file re-runs the seed. A file dependency is
  * hashed exactly as before, so no other seed's stored hash changes.
+ * Runtime configuration can also participate, in a fixed key order. Omitting
+ * it preserves the existing content-only hash for other seeds.
  */
 export function seedContentHash(
 	seedFilePath: string,
 	dependencyPaths: readonly string[] = [],
+	configuration?: Readonly<Record<string, string>>,
 ): string {
 	const hash = createHash("sha256");
 	hash.update(readSeedFile(seedFilePath).toString("utf8"));
@@ -48,6 +51,15 @@ export function seedContentHash(
 		} finally {
 			closeSync(descriptor);
 		}
+	}
+	if (configuration && Object.keys(configuration).length > 0) {
+		hash.update(
+			JSON.stringify(
+				Object.keys(configuration)
+					.sort()
+					.map((name) => [name, configuration[name]]),
+			),
+		);
 	}
 	return hash.digest("hex").slice(0, 16);
 }

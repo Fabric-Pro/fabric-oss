@@ -235,7 +235,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 				{[1, 2, 3].map((i) => (
 					<div
 						key={i}
-						className="h-32 animate-pulse rounded-xl bg-foreground/5"
+						className="h-32 animate-pulse rounded-lg bg-foreground/5"
 					/>
 				))}
 			</div>
@@ -248,7 +248,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 			{!compact && (
 				<div className="flex items-center justify-between">
 					<div className="flex items-center gap-3">
-						<div className="rounded-xl bg-primary/10 p-2.5">
+						<div className="rounded-lg bg-primary/10 p-2.5">
 							<SettingsIcon className="size-5 text-primary" />
 						</div>
 						<div>
@@ -513,7 +513,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 									)
 								}
 								className={cn(
-									"w-full rounded-xl border p-4 text-left transition-all",
+									"w-full rounded-lg border p-4 text-left transition-all",
 									settings.embeddingModel === option.value
 										? "border-primary bg-primary/5"
 										: "border-foreground/10 hover:border-foreground/20",
@@ -655,7 +655,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 
 					<div className="space-y-4">
 						{/* Reranking */}
-						<div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-foreground/10 p-4">
+						<div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-foreground/10 p-4">
 							<div className="flex min-w-0 items-center gap-3">
 								<div className="rounded-lg bg-muted/60 p-2">
 									<LayersIcon className="size-4 text-foreground/60" />

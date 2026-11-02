@@ -43,11 +43,11 @@ const {
 	addCodingRunEventActivity,
 	buildImplementationPrompt,
 	buildSpikePrompt,
-	sendExecutionPrompt,
-	pollExecutionStatus,
-	syncCodingRunArtifacts,
+	sendExecutionPrompt: sendExecutionPromptDefault,
+	pollExecutionStatus: pollExecutionStatusDefault,
+	syncCodingRunArtifacts: syncCodingRunArtifactsDefault,
 	syncSpikeArtifacts,
-	cancelExecutionSession,
+	cancelExecutionSession: cancelExecutionSessionDefault,
 } = proxyActivities<typeof codingRunActivities>({
 	startToCloseTimeout: "2 minutes",
 	retry: {
@@ -60,21 +60,29 @@ const {
 
 // Session creation may perform a first-time git clone + worktree setup on the
 // Fabric Agents server, so give it a longer startToCloseTimeout.
-const { createExecutionSession } = proxyActivities<typeof codingRunActivities>({
+const { createExecutionSession: createLegacyExecutionSession } =
+	proxyActivities<typeof codingRunActivities>({
+		startToCloseTimeout: "5 minutes",
+		retry: {
+			initialInterval: "2s",
+			backoffCoefficient: 2,
+			maximumInterval: "30s",
+			maximumAttempts: 3,
+		},
+	});
+
+// One attempt preserves the distinction between an unsent request and an ambiguous
+// earlier attempt. Only the undeployed lifecycle-v2 branch uses these options.
+const nativeCreation = proxyActivities<typeof codingRunActivities>({
 	startToCloseTimeout: "5 minutes",
-	retry: {
-		initialInterval: "2s",
-		backoffCoefficient: 2,
-		maximumInterval: "30s",
-		maximumAttempts: 3,
-	},
+	retry: { maximumAttempts: 1 },
 });
 
 // Session lifecycle cleanup — runs from the workflow's finally block
 // inside `CancellationScope.nonCancellable` so it fires on every exit
 // path (success, error, poll-exhausted, cancel, exception, timeout).
-const { cleanupWeaveResourcesActivity } = proxyActivities<typeof allActivities>(
-	{
+const { cleanupWeaveResourcesActivity: cleanupWeaveResourcesDefault } =
+	proxyActivities<typeof allActivities>({
 		startToCloseTimeout: "2 minutes",
 		retry: {
 			initialInterval: "1s",
@@ -82,10 +90,9 @@ const { cleanupWeaveResourcesActivity } = proxyActivities<typeof allActivities>(
 			maximumInterval: "10s",
 			maximumAttempts: 3,
 		},
-	},
-);
+	});
 
-const { pollExecutionStatus: pollStatus } = proxyActivities<
+const { pollExecutionStatus: pollStatusDefault } = proxyActivities<
 	typeof codingRunActivities
 >({
 	startToCloseTimeout: "30 seconds",
@@ -97,6 +104,71 @@ const { pollExecutionStatus: pollStatus } = proxyActivities<
 	},
 });
 
+const lifecycleActivities = proxyActivities<typeof codingRunActivities>({
+	startToCloseTimeout: "2 minutes",
+	retry: { maximumAttempts: 3 },
+});
+const remoteActivities = proxyActivities<typeof codingRunActivities>({
+	startToCloseTimeout: "2 minutes",
+	retry: { maximumAttempts: 3 },
+});
+const remoteCreation = proxyActivities<typeof codingRunActivities>({
+	startToCloseTimeout: "5 minutes",
+	retry: { maximumAttempts: 1 },
+});
+const remotePoll = proxyActivities<typeof codingRunActivities>({
+	startToCloseTimeout: "30 seconds",
+	retry: { maximumAttempts: 2 },
+});
+const remoteCleanup = proxyActivities<typeof allActivities>({
+	startToCloseTimeout: "2 minutes",
+	retry: { maximumAttempts: 3 },
+});
+const sendExecutionPrompt: typeof codingRunActivities.sendExecutionPrompt = (
+	...args
+) =>
+	workflowInfo().workflowType === "remoteCodingRunWorkflow"
+		? remoteActivities.sendRemoteExecutionPrompt(...args)
+		: sendExecutionPromptDefault(...args);
+const pollExecutionStatus: typeof codingRunActivities.pollExecutionStatus = (
+	...args
+) =>
+	workflowInfo().workflowType === "remoteCodingRunWorkflow"
+		? remoteActivities.pollRemoteExecutionStatus(...args)
+		: pollExecutionStatusDefault(...args);
+const syncCodingRunArtifacts: typeof codingRunActivities.syncCodingRunArtifacts =
+	(...args) =>
+		workflowInfo().workflowType === "remoteCodingRunWorkflow"
+			? remoteActivities.syncRemoteCodingRunArtifacts(...args)
+			: syncCodingRunArtifactsDefault(...args);
+const cancelExecutionSession: typeof codingRunActivities.cancelExecutionSession =
+	(...args) =>
+		workflowInfo().workflowType === "remoteCodingRunWorkflow"
+			? remoteActivities.cancelRemoteExecutionSession(...args)
+			: cancelExecutionSessionDefault(...args);
+const pollStatus: typeof codingRunActivities.pollExecutionStatus = (...args) =>
+	workflowInfo().workflowType === "remoteCodingRunWorkflow"
+		? remotePoll.pollRemoteExecutionStatus(...args)
+		: pollStatusDefault(...args);
+const cleanupWeaveResourcesActivity: typeof allActivities.cleanupWeaveResourcesActivity =
+	(...args) =>
+		workflowInfo().workflowType === "remoteCodingRunWorkflow"
+			? remoteCleanup.cleanupRemoteWeaveResourcesActivity(...args)
+			: cleanupWeaveResourcesDefault(...args);
+
+const createExecutionSession: typeof codingRunActivities.createExecutionSession =
+	(input) =>
+		workflowInfo().workflowType === "remoteCodingRunWorkflow"
+			? remoteCreation.createRemoteExecutionSession(input)
+			: nativeCreation.createExecutionSession(input);
+
+/** A distinct export prevents workers predating remote targeting from executing this run. */
+export async function remoteCodingRunWorkflow(
+	input: CodingRunWorkflowInput,
+): Promise<CodingRunWorkflowOutput> {
+	return codingRunWorkflow(input);
+}
+
 export const cancelCodingRunSignal = defineSignal("cancelCodingRun");
 export const codingRunStatusQuery =
 	defineQuery<CodingRunWorkflowStatus>("codingRunStatus");
@@ -104,6 +176,7 @@ export const providerCompleteSignal =
 	defineSignal<[ProviderCompletePayload]>("providerComplete");
 
 export interface CodingRunWorkflowInput {
+	providerMetadata?: unknown;
 	codingRunId: string;
 	projectId: string;
 	storyId: string;
@@ -198,9 +271,39 @@ export async function codingRunWorkflow(
 		bridgePatch &&
 		(!gatedCutover || input.fabricAgentsBridgeEnabled === true);
 
+	const durableLifecycle =
+		useFabricAgentsBridge && patched("fabric-agents-lifecycle-v2");
+
+	const updateStatus: typeof codingRunActivities.updateCodingRunStatusActivity =
+		durableLifecycle
+			? (input) =>
+					lifecycleActivities.updateCodingRunStatusGuardedActivity({
+						...input,
+						workflowId,
+						expectedStatuses: [
+							"QUEUED",
+							"STARTING",
+							"RUNNING",
+							"AWAITING_REVIEW",
+							"PR_OPENED",
+						],
+					})
+			: updateCodingRunStatusActivity;
+
+	const syncArtifacts = durableLifecycle
+		? remoteActivities.syncRemoteCodingRunArtifacts
+		: syncCodingRunArtifacts;
+
 	const state = {
 		plan,
 		useFabricAgentsBridge,
+		updateStatus,
+		syncArtifacts,
+		providerMetadata: durableLifecycle
+			? input.providerMetadata
+			: (undefined as unknown),
+		stopConfirmed: false,
+		sessionCreationAttempted: false,
 		cancelled: false,
 		currentStatus: "STARTING",
 		sessionId: null as string | null,
@@ -210,6 +313,51 @@ export async function codingRunWorkflow(
 		signalReceived: false,
 		signalPayload: null as ProviderCompletePayload | null,
 	};
+
+	async function confirmNativeStop(): Promise<boolean> {
+		if (!durableLifecycle) {
+			return true;
+		}
+		if (state.stopConfirmed) {
+			return true;
+		}
+		if (!state.sessionId && !state.sessionCreationAttempted) {
+			return true;
+		}
+		try {
+			if (!state.sessionId) {
+				throw new Error("Session creation outcome is unknown");
+			}
+			const sessionId = state.sessionId;
+			await CancellationScope.nonCancellable(() =>
+				cancelExecutionSession({
+					provider,
+					sessionId,
+					providerMetadata: state.providerMetadata,
+				}),
+			);
+			state.stopConfirmed = true;
+			return true;
+		} catch (error) {
+			await CancellationScope.nonCancellable(async () => {
+				await lifecycleActivities.recordCodingRunRecoveryActivity({
+					codingRunId,
+					workflowId: workflowInfo().workflowId,
+					organizationId: organizationId ?? null,
+					eventType: "cancellation_unknown",
+					payload: {
+						message:
+							error instanceof ActivityFailure &&
+							error.cause instanceof ApplicationFailure &&
+							error.cause.type === "NotFoundError"
+								? "Cancellation activity is not registered; no stop request was sent. Check the original server before recovering the run."
+								: "Remote shutdown requires reconciliation before another run can start",
+					},
+				});
+			});
+			return false;
+		}
+	}
 
 	log.info("Starting coding run workflow", {
 		codingRunId,
@@ -241,6 +389,9 @@ export async function codingRunWorkflow(
 		codingRunId,
 		status: state.currentStatus,
 		sessionId: state.sessionId,
+		...(state.providerMetadata
+			? { providerMetadata: state.providerMetadata }
+			: {}),
 		pullRequestUrl: state.pullRequestUrl,
 		pollCount: state.pollCount,
 	}));
@@ -258,7 +409,7 @@ export async function codingRunWorkflow(
 		| "oauth_blocked" = "exception";
 
 	try {
-		await updateCodingRunStatusActivity({
+		await updateStatus({
 			codingRunId,
 			status: "STARTING",
 		});
@@ -270,10 +421,21 @@ export async function codingRunWorkflow(
 
 		if (state.cancelled) {
 			exitReason = "cancelled";
+			if (durableLifecycle && !(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			return await handleCancellation(
 				codingRunId,
 				provider,
 				state.sessionId,
+				state.providerMetadata,
+				durableLifecycle,
+				state.stopConfirmed,
+				organizationId,
 			);
 		}
 
@@ -313,48 +475,111 @@ export async function codingRunWorkflow(
 
 		if (state.cancelled) {
 			exitReason = "cancelled";
+			if (durableLifecycle && !(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			return await handleCancellation(
 				codingRunId,
 				provider,
 				state.sessionId,
+				state.providerMetadata,
+				durableLifecycle,
+				state.stopConfirmed,
+				organizationId,
 			);
 		}
 
-		const sessionResult = await createExecutionSession({
-			...(gatedCutover
-				? { fabricAgentsBridgeEnabled: useFabricAgentsBridge }
-				: {}),
-			provider,
-			repoOwner: repositoryOwner,
-			repoName: repositoryName,
-			projectName,
-			organizationName,
-			title: `Fabric: ${storyTitle}`,
-			// The legacy protocol starts every session from the target branch;
-			// spike prompts tell the agent to push `fabric-spike/<runId>`.
-			branch: targetBranch,
-			...(useFabricAgentsBridge && plan.prompt === "spike"
-				? { headBranch: `fabric-spike/${codingRunId}` }
-				: {}),
-			userId,
-			workingDirectory,
-			promptText: prompt,
-			codingRunId,
-			workflowId,
-			organizationId,
-			projectId,
-			...(useFabricAgentsBridge
-				? {
-						llmConnection: input.llmConnection,
-						model: input.model,
-						targetMachine: input.targetMachine,
-					}
-				: {}),
-		});
-		state.sessionId = sessionResult.sessionId;
+		state.sessionCreationAttempted = true;
+		let sessionResult: Awaited<ReturnType<typeof createExecutionSession>>;
+		for (let attempt = 0; ; attempt++) {
+			try {
+				sessionResult = await (durableLifecycle
+					? createExecutionSession
+					: createLegacyExecutionSession)({
+					...(durableLifecycle && input.providerMetadata
+						? { providerMetadata: input.providerMetadata }
+						: {}),
+					...(gatedCutover
+						? { fabricAgentsBridgeEnabled: useFabricAgentsBridge }
+						: {}),
+					provider,
+					repoOwner: repositoryOwner,
+					repoName: repositoryName,
+					projectName,
+					organizationName,
+					title: `Fabric: ${storyTitle}`,
+					// The legacy protocol starts every session from the target branch;
+					// spike prompts tell the agent to push `fabric-spike/<runId>`.
+					branch: targetBranch,
+					...(useFabricAgentsBridge && plan.prompt === "spike"
+						? { headBranch: `fabric-spike/${codingRunId}` }
+						: {}),
+					userId,
+					workingDirectory,
+					promptText: prompt,
+					codingRunId,
+					workflowId,
+					organizationId,
+					projectId,
+					...(useFabricAgentsBridge
+						? {
+								llmConnection: input.llmConnection,
+								model: input.model,
+								targetMachine: input.targetMachine,
+							}
+						: {}),
+				});
+				break;
+			} catch (error) {
+				// One activity attempt per call; only proof that no POST was sent permits retry.
+				if (
+					!durableLifecycle ||
+					!isSessionNotCreated(error) ||
+					state.cancelled ||
+					attempt >= 2
+				) {
+					throw error;
+				}
+				await sleep(2 ** (attempt + 1) * 1000);
+				if (state.cancelled) {
+					throw error;
+				}
+			}
+		}
 
+		state.sessionId = sessionResult.sessionId;
+		if (durableLifecycle) {
+			state.providerMetadata = sessionResult.providerMetadata;
+		}
+
+		if (durableLifecycle && state.cancelled) {
+			await updateStatus({
+				codingRunId,
+				status: "STARTING",
+				data: {
+					providerSessionId: state.sessionId,
+					providerMetadata: sessionResult.providerMetadata,
+				},
+			});
+			if (!(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
+			await updateStatus({
+				codingRunId,
+				status: "CANCELLED",
+			});
+			return { codingRunId, status: "cancelled" };
+		}
 		state.currentStatus = "RUNNING";
-		await updateCodingRunStatusActivity({
+		await updateStatus({
 			codingRunId,
 			status: "RUNNING",
 			data: {
@@ -373,16 +598,30 @@ export async function codingRunWorkflow(
 
 		if (state.cancelled) {
 			exitReason = "cancelled";
+			if (durableLifecycle && !(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			return await handleCancellation(
 				codingRunId,
 				provider,
 				state.sessionId,
+				state.providerMetadata,
+				durableLifecycle,
+				state.stopConfirmed,
+				organizationId,
 			);
 		}
 
 		await sendExecutionPrompt({
 			provider,
 			sessionId: state.sessionId,
+			...(state.providerMetadata
+				? { providerMetadata: state.providerMetadata }
+				: {}),
 			content: prompt,
 			authorId: userId,
 			projectId,
@@ -411,10 +650,21 @@ export async function codingRunWorkflow(
 
 		if (state.cancelled) {
 			exitReason = "cancelled";
+			if (durableLifecycle && !(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			return await handleCancellation(
 				codingRunId,
 				provider,
 				state.sessionId,
+				state.providerMetadata,
+				durableLifecycle,
+				state.stopConfirmed,
+				organizationId,
 			);
 		}
 
@@ -437,10 +687,13 @@ export async function codingRunWorkflow(
 
 		if (state.sessionId) {
 			try {
-				const synced = await syncCodingRunArtifacts({
+				const synced = await syncArtifacts({
 					codingRunId,
 					provider,
 					sessionId: state.sessionId,
+					...(state.providerMetadata
+						? { providerMetadata: state.providerMetadata }
+						: {}),
 				});
 				if (useFabricAgentsBridge && synced?.pullRequestUrl) {
 					const hadPrBefore = Boolean(state.pullRequestUrl);
@@ -456,8 +709,10 @@ export async function codingRunWorkflow(
 						});
 					}
 				}
-			} catch {
-				/* non-critical */
+			} catch (error) {
+				if (durableLifecycle) {
+					throw error;
+				}
 			}
 		}
 
@@ -470,6 +725,13 @@ export async function codingRunWorkflow(
 					Boolean(state.pullRequestUrl));
 
 		if (hasSucceeded) {
+			if (!(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Remote cleanup requires recovery",
+				};
+			}
 			const finalFabricStatus = isBridgeRun
 				? "COMPLETED"
 				: state.currentStatus === "PR_OPENED"
@@ -478,7 +740,7 @@ export async function codingRunWorkflow(
 						? "AWAITING_REVIEW"
 						: "COMPLETED";
 			state.currentStatus = finalFabricStatus;
-			await updateCodingRunStatusActivity({
+			await updateStatus({
 				codingRunId,
 				status: finalFabricStatus,
 				...(isBridgeRun && state.pullRequestUrl
@@ -509,8 +771,15 @@ export async function codingRunWorkflow(
 			finalProviderStatus === "stopped" ||
 			(useFabricAgentsBridge && finalProviderStatus === "archived")
 		) {
+			if (!(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			state.currentStatus = "CANCELLED";
-			await updateCodingRunStatusActivity({
+			await updateStatus({
 				codingRunId,
 				status: "CANCELLED",
 			});
@@ -527,8 +796,15 @@ export async function codingRunWorkflow(
 			? `Coding run timed out after ${(MAX_POLL_ITERATIONS * POLL_INTERVAL_SECONDS) / 60} minutes`
 			: state.lastError || "Coding agent session failed";
 
+		if (!(await confirmNativeStop())) {
+			return {
+				codingRunId,
+				status: "failed",
+				error: "Remote cleanup requires recovery",
+			};
+		}
 		state.currentStatus = "FAILED";
-		await updateCodingRunStatusActivity({ codingRunId, status: "FAILED" });
+		await updateStatus({ codingRunId, status: "FAILED" });
 		await addCodingRunEventActivity({
 			codingRunId,
 			eventType: "workflow_failed",
@@ -546,17 +822,56 @@ export async function codingRunWorkflow(
 			error: errorMessage,
 		};
 	} catch (error) {
-		const errorMsg = extractErrorMessage(error);
+		if (
+			durableLifecycle &&
+			!state.sessionId &&
+			isSessionNotCreated(error)
+		) {
+			state.sessionCreationAttempted = false;
+			const lastError = `Coding session was not created: ${error.cause.message}`;
+			const status = state.cancelled ? "CANCELLED" : "FAILED";
+			state.currentStatus = status;
+			exitReason = state.cancelled ? "cancelled" : "failure";
+			await updateStatus({
+				codingRunId,
+				status,
+				data: { lastError },
+			});
+			await addCodingRunEventActivity({
+				codingRunId,
+				eventType: "session_not_created",
+				payload: { error: lastError },
+			});
+			return {
+				codingRunId,
+				status: state.cancelled ? "cancelled" : "failed",
+				error: lastError,
+			};
+		}
+		const errorMsg =
+			error instanceof ActivityFailure &&
+			error.cause instanceof ApplicationFailure &&
+			error.cause.type === "NotFoundError" &&
+			state.sessionId
+				? "A lifecycle activity is not registered; its request was not sent. The created session still requires confirmed cleanup."
+				: extractErrorMessage(error);
 		log.error("Coding run workflow error", {
 			codingRunId,
 			error: errorMsg,
 		});
+		if (!(await confirmNativeStop())) {
+			return {
+				codingRunId,
+				status: "failed",
+				error: "Remote cleanup requires recovery",
+			};
+		}
 		state.currentStatus = "FAILED";
 		// Leave `exitReason` as its default `"exception"` so the audit
 		// log distinguishes unhandled throws from the deliberate
 		// `"failure"` return above.
 		try {
-			await updateCodingRunStatusActivity({
+			await updateStatus({
 				codingRunId,
 				status: "FAILED",
 			});
@@ -590,9 +905,15 @@ export async function codingRunWorkflow(
 		// never reuse or rename.
 		if (patched("coding-run-cleanup-on-exit-v1")) {
 			await CancellationScope.nonCancellable(async () => {
-				await cleanupWeaveResourcesActivity({
+				const cleanup = await cleanupWeaveResourcesActivity({
 					sessionId: state.sessionId,
+					...(state.providerMetadata
+						? { providerMetadata: state.providerMetadata }
+						: {}),
 					provider,
+					...(state.stopConfirmed
+						? { stopAlreadyConfirmed: true }
+						: {}),
 					userId,
 					organizationId: organizationId ?? null,
 					codingRunId,
@@ -600,6 +921,24 @@ export async function codingRunWorkflow(
 					workflowId,
 					runDurationMs: Date.now() - workflowStartedAtMs,
 				});
+				if (
+					durableLifecycle &&
+					!state.stopConfirmed &&
+					state.sessionId &&
+					cleanup &&
+					!cleanup.destroyed
+				) {
+					await lifecycleActivities.recordCodingRunRecoveryActivity({
+						codingRunId,
+						workflowId: workflowInfo().workflowId,
+						organizationId: organizationId ?? null,
+						eventType: "cancellation_unknown",
+						payload: {
+							message:
+								"Remote cleanup is unconfirmed; recover the existing session before starting another run",
+						},
+					});
+				}
 			});
 		}
 	}
@@ -610,8 +949,11 @@ async function processReceivedSignal(
 	sessionId: string,
 	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
 	state: {
+		syncArtifacts?: typeof codingRunActivities.syncCodingRunArtifacts;
+		updateStatus?: typeof codingRunActivities.updateCodingRunStatusActivity;
 		plan: CodingRunPlan;
 		currentStatus: string;
+		providerMetadata?: unknown;
 		pullRequestUrl: string | null;
 		lastError: string | null;
 		signalPayload: ProviderCompletePayload | null;
@@ -643,11 +985,18 @@ async function processReceivedSignal(
 	) {
 		state.pullRequestUrl = state.signalPayload.pullRequestUrl;
 		state.currentStatus = "PR_OPENED";
-		await updateCodingRunStatusActivity({
+		await (state.updateStatus ?? updateCodingRunStatusActivity)({
 			codingRunId,
 			status: "PR_OPENED",
 		});
-		await syncCodingRunArtifacts({ codingRunId, provider, sessionId });
+		await (state.syncArtifacts ?? syncCodingRunArtifacts)({
+			codingRunId,
+			provider,
+			sessionId,
+			...(state.providerMetadata
+				? { providerMetadata: state.providerMetadata }
+				: {}),
+		});
 	}
 
 	return state.signalPayload.providerStatus;
@@ -658,10 +1007,13 @@ async function runHybridLoop(
 	sessionId: string,
 	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
 	state: {
+		syncArtifacts?: typeof codingRunActivities.syncCodingRunArtifacts;
+		updateStatus?: typeof codingRunActivities.updateCodingRunStatusActivity;
 		plan: CodingRunPlan;
 		useFabricAgentsBridge: boolean;
 		cancelled: boolean;
 		currentStatus: string;
+		providerMetadata?: unknown;
 		pullRequestUrl: string | null;
 		lastError: string | null;
 		pollCount: number;
@@ -708,10 +1060,13 @@ async function runPollLoop(
 	sessionId: string,
 	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
 	state: {
+		syncArtifacts?: typeof codingRunActivities.syncCodingRunArtifacts;
+		updateStatus?: typeof codingRunActivities.updateCodingRunStatusActivity;
 		plan: CodingRunPlan;
 		useFabricAgentsBridge: boolean;
 		cancelled: boolean;
 		currentStatus: string;
+		providerMetadata?: unknown;
 		pullRequestUrl: string | null;
 		lastError: string | null;
 		pollCount: number;
@@ -758,7 +1113,13 @@ async function runPollLoop(
 
 		let statusResult: Awaited<ReturnType<typeof pollExecutionStatus>>;
 		try {
-			statusResult = await pollStatus({ provider, sessionId });
+			statusResult = await pollStatus({
+				provider,
+				sessionId,
+				...(state.providerMetadata
+					? { providerMetadata: state.providerMetadata }
+					: {}),
+			});
 		} catch (pollError) {
 			const errMsg = extractErrorMessage(pollError);
 			log.warn("Poll failed, will retry", {
@@ -817,7 +1178,7 @@ async function runPollLoop(
 			)
 		) {
 			state.currentStatus = statusResult.fabricStatus;
-			await updateCodingRunStatusActivity({
+			await (state.updateStatus ?? updateCodingRunStatusActivity)({
 				codingRunId,
 				status: statusResult.fabricStatus,
 			});
@@ -839,7 +1200,14 @@ async function runPollLoop(
 			) {
 				state.currentStatus = "PR_OPENED";
 			}
-			await syncCodingRunArtifacts({ codingRunId, provider, sessionId });
+			await (state.syncArtifacts ?? syncCodingRunArtifacts)({
+				codingRunId,
+				provider,
+				sessionId,
+				...(state.providerMetadata
+					? { providerMetadata: state.providerMetadata }
+					: {}),
+			});
 			await addCodingRunEventActivity({
 				codingRunId,
 				eventType: "pr_opened",
@@ -870,7 +1238,12 @@ async function runPollLoop(
 async function finishSpikeRun(
 	codingRunId: string,
 	finalProviderStatus: string,
-	state: { currentStatus: string; pollCount: number },
+	state: {
+		syncArtifacts?: typeof codingRunActivities.syncCodingRunArtifacts;
+		updateStatus?: typeof codingRunActivities.updateCodingRunStatusActivity;
+		currentStatus: string;
+		pollCount: number;
+	},
 	ctx: {
 		userId: string;
 		organizationId?: string;
@@ -880,7 +1253,7 @@ async function finishSpikeRun(
 ): Promise<CodingRunWorkflowOutput> {
 	if (finalProviderStatus === "stopped") {
 		state.currentStatus = "CANCELLED";
-		await updateCodingRunStatusActivity({
+		await (state.updateStatus ?? updateCodingRunStatusActivity)({
 			codingRunId,
 			status: "CANCELLED",
 		});
@@ -897,7 +1270,10 @@ async function finishSpikeRun(
 			? `Spike run timed out after ${(MAX_POLL_ITERATIONS * POLL_INTERVAL_SECONDS) / 60} minutes`
 			: "Spike agent session failed";
 		state.currentStatus = "FAILED";
-		await updateCodingRunStatusActivity({ codingRunId, status: "FAILED" });
+		await (state.updateStatus ?? updateCodingRunStatusActivity)({
+			codingRunId,
+			status: "FAILED",
+		});
 		await addCodingRunEventActivity({
 			codingRunId,
 			eventType: "workflow_failed",
@@ -925,7 +1301,10 @@ async function finishSpikeRun(
 	} catch (error) {
 		const errorMessage = extractErrorMessage(error);
 		state.currentStatus = "FAILED";
-		await updateCodingRunStatusActivity({ codingRunId, status: "FAILED" });
+		await (state.updateStatus ?? updateCodingRunStatusActivity)({
+			codingRunId,
+			status: "FAILED",
+		});
 		await addCodingRunEventActivity({
 			codingRunId,
 			eventType: "workflow_failed",
@@ -956,12 +1335,55 @@ async function handleCancellation(
 	codingRunId: string,
 	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
 	sessionId: string | null,
+	providerMetadata?: unknown,
+	strictCancellation = false,
+	stopAlreadyConfirmed = false,
+	organizationId?: string,
 ): Promise<CodingRunWorkflowOutput> {
+	const updateStatus: typeof codingRunActivities.updateCodingRunStatusActivity =
+		strictCancellation
+			? (input) =>
+					lifecycleActivities.updateCodingRunStatusGuardedActivity({
+						...input,
+						workflowId: workflowInfo().workflowId,
+						expectedStatuses: [
+							"QUEUED",
+							"STARTING",
+							"RUNNING",
+							"AWAITING_REVIEW",
+							"PR_OPENED",
+						],
+					})
+			: updateCodingRunStatusActivity;
+
 	log.info("Cancelling coding run", { codingRunId, sessionId });
-	if (sessionId) {
+	if (sessionId && !stopAlreadyConfirmed) {
 		try {
-			await cancelExecutionSession({ provider, sessionId });
+			await cancelExecutionSession({
+				provider,
+				sessionId,
+				...(providerMetadata
+					? { providerMetadata: providerMetadata }
+					: {}),
+			});
 		} catch (e) {
+			if (strictCancellation) {
+				await lifecycleActivities.recordCodingRunRecoveryActivity({
+					codingRunId,
+					workflowId: workflowInfo().workflowId,
+					organizationId: organizationId ?? null,
+					eventType: "cancellation_unknown",
+					payload: {
+						message:
+							"Cancellation has not been confirmed; inspect the existing session",
+					},
+				});
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			log.warn("Failed to cancel execution session", {
 				codingRunId,
 				error: extractErrorMessage(e),
@@ -969,7 +1391,7 @@ async function handleCancellation(
 		}
 	}
 	try {
-		await updateCodingRunStatusActivity({
+		await updateStatus({
 			codingRunId,
 			status: "CANCELLED",
 		});
@@ -981,6 +1403,19 @@ async function handleCancellation(
 		/* best effort */
 	}
 	return { codingRunId, status: "cancelled" };
+}
+
+/** The installed SDK emits NotFoundError before invoking an unregistered activity body. */
+function isSessionNotCreated(
+	error: unknown,
+): error is ActivityFailure & { cause: ApplicationFailure } {
+	return (
+		error instanceof ActivityFailure &&
+		error.cause instanceof ApplicationFailure &&
+		["CODING_SESSION_NOT_CREATED", "NotFoundError"].includes(
+			error.cause.type ?? "",
+		)
+	);
 }
 
 function extractErrorMessage(error: unknown): string {

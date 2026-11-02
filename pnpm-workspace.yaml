@@ -140,12 +140,21 @@ overrides:
   "fast-xml-parser@^4.0.0": "^4.5.5"
   "fast-xml-parser@^5.0.0": "^5.11.1"
   "@grpc/grpc-js@^1.14.0": "^1.14.5"
-  "@fastify/busboy@>=3.0.0 <3.2.1": "3.2.1"
+  "@fastify/busboy@^3.0.0": "3.2.2"
+  "fast-copy@^3.0.0": "^3.1.0"
+  # GHSA-238p-pmpm-9mq7: 0.16.x has no fixed release. The 0.18.2 cross-range
+  # override is covered by actual chat rendering and consumer/CSS guards.
+  "katex@^0.16.0": "0.18.2"
   "shell-quote@^1.8.0": "^1.11.0"
   "handlebars@^4.0.0": "^4.7.10"
   "protobufjs@^7.0.0": "^7.6.5"
   "protobufjs@^8.0.0": "^8.6.6"
-  "@hono/node-server@^1.0.0": "^1.19.15"
+  # GHSA-rmxm-3fg6-px4f: the 1.x line has no fixed release (affected
+  # >=1.19.10 <2.1.3). Its consumers here are @modelcontextprotocol/sdk, which
+  # declares `^1.19.9 || ^2.0.5`, and @copilotkit/runtime, which declares
+  # `^1.13.5` but never imports it. v2 keeps the `serve`/`getRequestListener`
+  # API and only drops Node 18 and the `/vercel` entry point.
+  "@hono/node-server@^1.0.0": "^2.1.3"
   "sharp@<0.35.0": "^0.35.5"
   # `next` carries its own `sharp` optional peer and resolved it to 0.35.3,
   # which the `<0.35.0` key above cannot reach — so GHSA-rgj7-g3m4-5g8c (libheif)
@@ -159,16 +168,27 @@ overrides:
   "effect@^3.0.0": "^3.20.0"
   "express-rate-limit@^8.0.0": "^8.2.2"
   "flatted@^3.0.0": "^3.4.2"
-  "glob@^10.0.0": "^10.5.0"
-  "glob@^11.0.0": "^11.1.0"
+  "follow-redirects@^1.0.0": "^1.16.2"
+  # Modern object APIs only; callable glob 7 and minimatch 3/5 stay separate.
+  # Actual archiver-utils, rimraf and react-email consumers have Node guards.
+  "glob@^10.0.0": "14.0.2"
+  "glob@^11.0.0": "14.0.2"
   "hono@^4.0.0": "^4.13.7"
   "immutable@^4.0.0": "^4.3.9"
   "kysely@^0.28.0": "^0.28.17"
   "lodash@^4.0.0": "^4.18.0"
   "lodash-es@^4.0.0": "^4.18.0"
   "minimatch@^3.0.0": "^3.1.4"
-  "minimatch@^9.0.0": "^9.0.7"
-  "minimatch@^10.0.0": "^10.2.3"
+  "minimatch@^9.0.0": "11.0.1"
+  "minimatch@^10.0.0": "11.0.1"
+  "@mastra/core@1.0.4>@ai-sdk/provider-utils-v5": "npm:@ai-sdk/provider-utils@3.0.36"
+  "@mastra/core@1.0.4>@ai-sdk/provider-utils-v6": "npm:@ai-sdk/provider-utils@4.0.51"
+  "@azure/monitor-opentelemetry@1.20.1>@azure/identity": "^4.14.1"
+  "applicationinsights@3.17.0>@azure/identity": "^4.14.1"
+  "graphql-yoga@^5.0.0": "5.24.4"
+  "@graphql-yoga/plugin-defer-stream@^3.0.0": "3.24.4"
+  "@graphql-tools/schema@^10.0.0": "10.1.3"
+  "@graphql-tools/merge@^9.0.0": "9.2.6"
   "path-to-regexp@^0.1.0": "^0.1.13"
   "path-to-regexp@^8.0.0": "^8.4.0"
   "picomatch@^4.0.0": "^4.0.4"
@@ -253,7 +273,7 @@ overrides:
   "source-map-js@^1.0.0": "^1.2.2"
   "yaml@^2.0.0": "^2.8.3"
   "dompurify@^3.0.0": "^3.4.17"
-  "qs@^6.0.0": "^6.16.0"
+  "qs@^6.0.0": "6.16.1"
   "ajv@^6.0.0": "^6.14.0"
   "ajv@^8.0.0": "^8.18.0"
   "body-parser@^1.0.0": "^1.20.9"
@@ -305,7 +325,14 @@ allowBuilds:
   "utf-8-validate": false
   "workerd": false
 
+packageExtensions:
+  # pnpm elides a direct dependency that is also a peer. A distinct alias plus
+  # the reviewed schema-import patch isolates AG-UI from CopilotKit's Zod 3.
+  "@ag-ui/core@1.0.2":
+    dependencies:
+      zod-agui-runtime: "npm:zod@4.6.7"
+
 patchedDependencies:
+  '@ag-ui/core@1.0.2': patches/@ag-ui__core@1.0.2.patch
   '@better-auth/oauth-provider@1.7.7': patches/@better-auth__oauth-provider@1.7.7.patch
-  '@graphql-tools/utils@10.10.1': patches/@graphql-tools__utils@10.10.1.patch
   prisma@7.10.1: patches/prisma@7.10.1.patch

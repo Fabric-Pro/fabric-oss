@@ -106,7 +106,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				}),
 			},
 			stories: {
-				list: {
+				board: {
 					queryKey: (o: { input: unknown }) => ["stories", o.input],
 				},
 				statuses: {

@@ -280,11 +280,29 @@ export const AgentConversationScalarFieldEnumSchema = z.enum(['id', 'userId', 'o
 
 export type AgentConversationScalarFieldEnum = z.infer<typeof AgentConversationScalarFieldEnumSchema>;
 
+// File: ChatMediaObjectScalarFieldEnum.schema.ts
+
+export const ChatMediaObjectScalarFieldEnumSchema = z.enum(['id', 'storageKey', 'kind', 'userId', 'organizationId', 'conversationId', 'createdAt'])
+
+export type ChatMediaObjectScalarFieldEnum = z.infer<typeof ChatMediaObjectScalarFieldEnumSchema>;
+
+// File: ChatMediaSettingsScalarFieldEnum.schema.ts
+
+export const ChatMediaSettingsScalarFieldEnumSchema = z.enum(['id', 'legacyCutoffAt'])
+
+export type ChatMediaSettingsScalarFieldEnum = z.infer<typeof ChatMediaSettingsScalarFieldEnumSchema>;
+
 // File: ConversationTurnScalarFieldEnum.schema.ts
 
 export const ConversationTurnScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'conversationId', 'scopeConversationId', 'clientRequestKey', 'executionId', 'generation', 'executionMode', 'status', 'startToken', 'cancelRequestedAt', 'cancelRequestedByUserId', 'cancelSource', 'terminalAt', 'terminalReason', 'questionText', 'responseText', 'limitSignalSummary', 'budgetStop', 'budgetContractVersion', 'tokenAllowance', 'finalizationReserveTokens', 'measuredTokens', 'outstandingTokens', 'budgetEnforcement', 'createdAt', 'updatedAt'])
 
 export type ConversationTurnScalarFieldEnum = z.infer<typeof ConversationTurnScalarFieldEnumSchema>;
+
+// File: ConversationTurnEventScalarFieldEnum.schema.ts
+
+export const ConversationTurnEventScalarFieldEnumSchema = z.enum(['id', 'turnId', 'organizationId', 'userId', 'runId', 'sourceKey', 'event', 'data', 'createdAt', 'expiresAt'])
+
+export type ConversationTurnEventScalarFieldEnum = z.infer<typeof ConversationTurnEventScalarFieldEnumSchema>;
 
 // File: ConversationTurnAttemptScalarFieldEnum.schema.ts
 
@@ -1384,6 +1402,12 @@ export const MCPConfigScalarFieldEnumSchema = z.enum(['id', 'mcpServerId', 'user
 
 export type MCPConfigScalarFieldEnum = z.infer<typeof MCPConfigScalarFieldEnumSchema>;
 
+// File: McpDurableToolCallScalarFieldEnum.schema.ts
+
+export const McpDurableToolCallScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'credentialKind', 'credentialId', 'projectBinding', 'serverBinding', 'toolName', 'idempotencyKey', 'argsHash', 'status', 'result', 'createdAt', 'updatedAt', 'completedAt', 'expiresAt'])
+
+export type McpDurableToolCallScalarFieldEnum = z.infer<typeof McpDurableToolCallScalarFieldEnumSchema>;
+
 // File: MCPOAuthStateScalarFieldEnum.schema.ts
 
 export const MCPOAuthStateScalarFieldEnumSchema = z.enum(['id', 'state', 'mcpServerId', 'configId', 'userId', 'organizationId', 'codeVerifier', 'redirectUri', 'authorizationServerSnapshot', 'expectedGrantGeneration', 'createdAt', 'expiresAt'])
@@ -1599,6 +1623,12 @@ export type WorkflowExecutionScalarFieldEnum = z.infer<typeof WorkflowExecutionS
 export const WorkflowExecutionLogScalarFieldEnumSchema = z.enum(['id', 'executionId', 'nodeId', 'nodeName', 'nodeType', 'status', 'input', 'output', 'error', 'startedAt', 'completedAt', 'duration', 'userId', 'organizationId'])
 
 export type WorkflowExecutionLogScalarFieldEnum = z.infer<typeof WorkflowExecutionLogScalarFieldEnumSchema>;
+
+// File: ProjectRemoteAgentServerScalarFieldEnum.schema.ts
+
+export const ProjectRemoteAgentServerScalarFieldEnumSchema = z.enum(['id', 'projectId', 'userId', 'name', 'scope', 'url', 'profileId', 'encryptedSecret', 'isActive', 'createdAt', 'updatedAt'])
+
+export type ProjectRemoteAgentServerScalarFieldEnum = z.infer<typeof ProjectRemoteAgentServerScalarFieldEnumSchema>;
 
 // File: WorkflowIntegrationScalarFieldEnum.schema.ts
 
@@ -2463,6 +2493,12 @@ export type AgentConversationStatus = z.infer<typeof AgentConversationStatusSche
 export const AgentConversationVisibilitySchema = z.enum(['PRIVATE', 'ORGANIZATION'])
 
 export type AgentConversationVisibility = z.infer<typeof AgentConversationVisibilitySchema>;
+
+// File: ChatMediaKind.schema.ts
+
+export const ChatMediaKindSchema = z.enum(['UPLOADED_IMAGE', 'GENERATED_IMAGE', 'TTS_AUDIO'])
+
+export type ChatMediaKind = z.infer<typeof ChatMediaKindSchema>;
 
 // File: ConversationTurnStatus.schema.ts
 
@@ -3345,6 +3381,12 @@ export type MCPAuthType = z.infer<typeof MCPAuthTypeSchema>;
 export const MCPStatusSchema = z.enum(['HEALTHY', 'DEGRADED', 'UNAVAILABLE'])
 
 export type MCPStatus = z.infer<typeof MCPStatusSchema>;
+
+// File: McpDurableToolCallStatus.schema.ts
+
+export const McpDurableToolCallStatusSchema = z.enum(['RUNNING', 'COMPLETED', 'FAILED'])
+
+export type McpDurableToolCallStatus = z.infer<typeof McpDurableToolCallStatusSchema>;
 
 // File: StakeLevel.schema.ts
 
@@ -5036,6 +5078,31 @@ export const AgentConversationSchema = z.object({
 export type AgentConversationType = z.infer<typeof AgentConversationSchema>;
 
 
+// File: ChatMediaObject.schema.ts
+
+export const ChatMediaObjectSchema = z.object({
+  id: z.string(),
+  storageKey: z.string(),
+  kind: ChatMediaKindSchema,
+  userId: z.string(),
+  organizationId: z.string().nullish(),
+  conversationId: z.string().nullish(),
+  createdAt: z.date(),
+});
+
+export type ChatMediaObjectType = z.infer<typeof ChatMediaObjectSchema>;
+
+
+// File: ChatMediaSettings.schema.ts
+
+export const ChatMediaSettingsSchema = z.object({
+  id: z.string(),
+  legacyCutoffAt: z.date(),
+});
+
+export type ChatMediaSettingsType = z.infer<typeof ChatMediaSettingsSchema>;
+
+
 // File: ConversationTurn.schema.ts
 
 export const ConversationTurnSchema = z.object({
@@ -5070,6 +5137,24 @@ export const ConversationTurnSchema = z.object({
 });
 
 export type ConversationTurnType = z.infer<typeof ConversationTurnSchema>;
+
+
+// File: ConversationTurnEvent.schema.ts
+
+export const ConversationTurnEventSchema = z.object({
+  id: z.bigint(),
+  turnId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  runId: z.string(),
+  sourceKey: z.string(),
+  event: z.string(),
+  data: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  createdAt: z.date(),
+  expiresAt: z.date(),
+});
+
+export type ConversationTurnEventType = z.infer<typeof ConversationTurnEventSchema>;
 
 
 // File: ConversationTurnAttempt.schema.ts
@@ -9628,6 +9713,30 @@ export const MCPConfigSchema = z.object({
 export type MCPConfigType = z.infer<typeof MCPConfigSchema>;
 
 
+// File: McpDurableToolCall.schema.ts
+
+export const McpDurableToolCallSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  credentialKind: z.string(),
+  credentialId: z.string(),
+  projectBinding: z.string(),
+  serverBinding: z.string(),
+  toolName: z.string(),
+  idempotencyKey: z.string(),
+  argsHash: z.string(),
+  status: McpDurableToolCallStatusSchema.default("RUNNING"),
+  result: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+  completedAt: z.date().nullish(),
+  expiresAt: z.date(),
+});
+
+export type McpDurableToolCallType = z.infer<typeof McpDurableToolCallSchema>;
+
+
 // File: MCPOAuthState.schema.ts
 
 export const MCPOAuthStateSchema = z.object({
@@ -10376,6 +10485,25 @@ export const WorkflowExecutionLogSchema = z.object({
 });
 
 export type WorkflowExecutionLogType = z.infer<typeof WorkflowExecutionLogSchema>;
+
+
+// File: ProjectRemoteAgentServer.schema.ts
+
+export const ProjectRemoteAgentServerSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  name: z.string(),
+  scope: z.string().default("PRIVATE"),
+  url: z.string(),
+  profileId: z.string(),
+  encryptedSecret: z.string(),
+  isActive: z.boolean().default(true),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectRemoteAgentServerType = z.infer<typeof ProjectRemoteAgentServerSchema>;
 
 
 // File: WorkflowIntegration.schema.ts

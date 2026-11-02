@@ -27,7 +27,10 @@ import {
 } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import type { Hono } from "hono";
-import { requireScope } from "../external-api/middleware/api-key-auth";
+import {
+	requireScope,
+	requireV1OwnerPermission,
+} from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import {
 	badRequest,
@@ -141,6 +144,14 @@ export function registerChatRoutes(
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
 		}
+		const permissionRefusal = await requireV1OwnerPermission(
+			c,
+			ctx,
+			"chats:write",
+		);
+		if (permissionRefusal) {
+			return permissionRefusal;
+		}
 
 		let body: { title?: string; projectId?: string };
 		try {
@@ -191,6 +202,14 @@ export function registerChatRoutes(
 		);
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
+		}
+		const permissionRefusal = await requireV1OwnerPermission(
+			c,
+			ctx,
+			"chats:write",
+		);
+		if (permissionRefusal) {
+			return permissionRefusal;
 		}
 
 		let body: { title?: string | null };
@@ -250,6 +269,14 @@ export function registerChatRoutes(
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
 		}
+		const permissionRefusal = await requireV1OwnerPermission(
+			c,
+			ctx,
+			"chats:write",
+		);
+		if (permissionRefusal) {
+			return permissionRefusal;
+		}
 
 		const deleted = await deleteAiChatForTenant({
 			id: c.req.param("id")!,
@@ -279,6 +306,14 @@ export function registerChatRoutes(
 		);
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
+		}
+		const permissionRefusal = await requireV1OwnerPermission(
+			c,
+			ctx,
+			"chats:write",
+		);
+		if (permissionRefusal) {
+			return permissionRefusal;
 		}
 
 		let body: { content?: string };

@@ -14,6 +14,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const activityStubs = vi.hoisted(() => ({
 	findStaleWeaveSessions: vi.fn(),
+	cleanupRemoteWeaveResourcesActivity: vi.fn(),
+	markClosedCodingRunRecoveryRequired: vi.fn(),
 	cancelWeaveExecutionViaSignal: vi.fn(),
 	terminateWeaveWorkflow: vi.fn(),
 	cleanupWeaveResourcesActivity: vi.fn(),
@@ -21,13 +23,17 @@ const activityStubs = vi.hoisted(() => ({
 }));
 
 vi.mock("@temporalio/workflow", () => ({
+	patched: () => true,
 	log: {
 		info: vi.fn(),
 		warn: vi.fn(),
 		error: vi.fn(),
 		debug: vi.fn(),
 	},
-	proxyActivities: vi.fn(() => activityStubs),
+	proxyActivities: vi.fn(() => ({
+		...activityStubs,
+		findStaleWeaveSessionsWithRuntime: activityStubs.findStaleWeaveSessions,
+	})),
 }));
 
 import { weaveExecutionWatchdogWorkflow } from "../src/workflows/weave-execution-watchdog";
@@ -252,4 +258,100 @@ describe("weaveExecutionWatchdogWorkflow", () => {
 			}
 		}
 	});
+	it("keeps the active slot when native shutdown is not confirmed", async () => {
+		activityStubs.findStaleWeaveSessions.mockResolvedValue({
+			rows: [{ ...baseRow, requiresConfirmedCleanup: true }],
+		});
+		activityStubs.cleanupWeaveResourcesActivity.mockResolvedValue({
+			destroyed: false,
+			alreadyTerminal: false,
+		});
+		const result = await weaveExecutionWatchdogWorkflow();
+		expect(activityStubs.markWeaveExecutionStale).not.toHaveBeenCalled();
+		expect(result.killedWeave).toBe(0);
+	});
+});
+
+it("closes a no-session row even when an old activity requires confirmation and returns destroyed=false", async () => {
+	activityStubs.findStaleWeaveSessions.mockResolvedValue({
+		rows: [{ ...baseRow, sessionId: null, requiresConfirmedCleanup: true }],
+	});
+	activityStubs.cancelWeaveExecutionViaSignal.mockResolvedValue(true);
+	activityStubs.cleanupWeaveResourcesActivity.mockResolvedValue({
+		destroyed: false,
+		alreadyTerminal: false,
+	});
+	expect(await weaveExecutionWatchdogWorkflow()).toMatchObject({
+		killedWeave: 1,
+	});
+	expect(activityStubs.markWeaveExecutionStale).toHaveBeenCalledWith(
+		expect.objectContaining({ sessionId: null }),
+	);
+});
+
+it("uses the remote cleanup registration and exposes closed uncertain runs to recovery", async () => {
+	activityStubs.findStaleWeaveSessions.mockResolvedValue({
+		rows: [
+			{
+				...codingRow,
+				provider: "BACKGROUND_AGENTS",
+				providerMetadata: {
+					executionRuntime: "fabric-agent-server",
+					executionTarget: { connectionId: "example-connection" },
+				},
+				requiresConfirmedCleanup: true,
+			},
+		],
+	});
+	activityStubs.cancelWeaveExecutionViaSignal.mockResolvedValue(true);
+	activityStubs.cleanupRemoteWeaveResourcesActivity.mockResolvedValue({
+		destroyed: false,
+	});
+	activityStubs.cleanupWeaveResourcesActivity.mockClear();
+	activityStubs.markWeaveExecutionStale.mockClear();
+	await weaveExecutionWatchdogWorkflow();
+	expect(
+		activityStubs.cleanupRemoteWeaveResourcesActivity,
+	).toHaveBeenCalledWith(
+		expect.objectContaining({
+			providerMetadata: expect.objectContaining({
+				executionTarget: { connectionId: "example-connection" },
+			}),
+		}),
+	);
+	expect(activityStubs.cleanupWeaveResourcesActivity).not.toHaveBeenCalled();
+	expect(
+		activityStubs.markClosedCodingRunRecoveryRequired,
+	).toHaveBeenCalledWith({
+		codingRunId: codingRow.id,
+		workflowId: codingRow.workflowId,
+		organizationId: codingRow.organizationId,
+	});
+	expect(activityStubs.markWeaveExecutionStale).not.toHaveBeenCalled();
+});
+
+it("exposes remote cleanup activity failures to recovery without reporting a successful stop", async () => {
+	activityStubs.findStaleWeaveSessions.mockResolvedValue({
+		rows: [
+			{
+				...codingRow,
+				provider: "BACKGROUND_AGENTS",
+				providerMetadata: {
+					executionTarget: { connectionId: "example-connection" },
+				},
+				requiresConfirmedCleanup: true,
+			},
+		],
+	});
+	activityStubs.cancelWeaveExecutionViaSignal.mockResolvedValue(true);
+	activityStubs.cleanupRemoteWeaveResourcesActivity.mockRejectedValueOnce(
+		new Error("Activity not registered"),
+	);
+	activityStubs.markClosedCodingRunRecoveryRequired.mockClear();
+	activityStubs.markWeaveExecutionStale.mockClear();
+	await weaveExecutionWatchdogWorkflow();
+	expect(
+		activityStubs.markClosedCodingRunRecoveryRequired,
+	).toHaveBeenCalled();
+	expect(activityStubs.markWeaveExecutionStale).not.toHaveBeenCalled();
 });

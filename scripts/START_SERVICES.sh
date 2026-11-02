@@ -69,7 +69,7 @@ check_port 5432 "PostgreSQL" || {
 # Check LangGraph Generic Document Generator (port 8124)
 check_service "http://localhost:8124/ok" "LangGraph Generic Document Generator" || {
     echo -e "${YELLOW}⚠${NC}  LangGraph Generic Document Generator is not running"
-    echo "   Note: This is optional, only needed for /app/agents/document-generator demo"
+    echo "   Note: This is optional, only needed for /app/{organizationSlug}/agents/{agentId}/chat demo"
     echo "   Start it with: cd agents/langchain/document-generator && ./start-langgraph.sh"
     echo ""
 }

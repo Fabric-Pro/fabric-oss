@@ -24,6 +24,11 @@ vi.mock("@repo/ai", async () => {
 });
 
 const { extractGlossyVisual } = await import("../extract-visual");
+// The subpath, which the root mock above leaves real.
+const { countAnthropicSchemaParameters } = await import(
+	"@repo/ai/lib/prompt-steered-structured-output-middleware"
+);
+const { z } = await import("zod");
 const { AIProviderNotConfiguredError } = await import("@repo/ai");
 const actualAi = await vi.importActual<typeof import("ai")>("ai");
 
@@ -830,7 +835,15 @@ describe("Edit with instructions on a Proposal diagram (Fizzy #2946)", () => {
 			(option: { shape: { kind: { options: string[] } } }) =>
 				option.shape.kind.options[0],
 		);
+		// The kinds drawn as a diagram, without the Proposal's layers and
+		// team: a figure of either carries its figure line, so its edit
+		// names its kind rather than asking for auto.
 		expect(kinds).toEqual(["timeline", "flow", "org_chart"]);
+		// Within Anthropic's native structured-output limits, so the call is
+		// not turned into a prompt-steered one.
+		const counts = countAnthropicSchemaParameters(z.toJSONSchema(schema));
+		expect(counts.unionParameters).toBeLessThanOrEqual(16);
+		expect(counts.optionalParameters).toBeLessThanOrEqual(24);
 	});
 
 	it("asks exactly what it asked before when no instruction is given", async () => {
@@ -969,5 +982,247 @@ describe("Edit with instructions on a Proposal diagram (Fizzy #2946)", () => {
 		);
 		expect(after.instructions).toBe(before.instructions);
 		expect(after.prompt).toBe(before.prompt);
+	});
+});
+
+describe("a Proposal's layers and team (Fizzy #2946)", () => {
+	const proposal = {
+		...context,
+		documentType: "PROPOSAL",
+		proposalArtifact: true as const,
+	};
+	const architecture = {
+		heading: "5. Solution architecture",
+		markdown: [
+			"The platform has three layers. The channels layer holds the web shop and the mobile app.",
+			"The services layer holds orders and billing. The data layer holds the order store.",
+			"Monitoring and identity span every layer.",
+		].join("\n"),
+	};
+	const LAYERS = {
+		kind: "layers",
+		title: null,
+		layers: [
+			{
+				name: "Channels",
+				description: null,
+				components: ["Web shop", "Mobile app"],
+			},
+			{
+				name: "Services",
+				description: null,
+				components: ["Orders", "Billing"],
+			},
+			{ name: "Data", description: null, components: ["Order store"] },
+		],
+		crosscutting: {
+			name: "Span every layer",
+			description: null,
+			items: ["Monitoring", "Identity"],
+		},
+	};
+	const teamSection = {
+		heading: "6. Team",
+		markdown: [
+			"Example Studio provides a delivery lead, Alex Example, and two engineers.",
+			"Example Retail provides a product owner.",
+			"Both teams meet in a weekly steering meeting.",
+		].join("\n"),
+	};
+	const TEAM = {
+		kind: "team",
+		title: null,
+		proposer: {
+			name: "Example Studio",
+			description: null,
+			members: [
+				{
+					role: "Delivery lead",
+					name: "Alex Example",
+					description: null,
+				},
+				{ role: "Engineers", name: null, description: null },
+			],
+		},
+		client: {
+			name: "Example Retail",
+			description: null,
+			members: [{ role: "Product owner", name: null, description: null }],
+		},
+		shared: "Weekly steering meeting",
+	};
+
+	it("extracts layers with their own schema and fact-checks every label", async () => {
+		modelReturns(LAYERS);
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section: architecture,
+			kind: "layers",
+		});
+
+		expect(result).toEqual({
+			status: "extracted",
+			spec: {
+				kind: "layers",
+				layers: [
+					{
+						name: "Channels",
+						components: ["Web shop", "Mobile app"],
+					},
+					{ name: "Services", components: ["Orders", "Billing"] },
+					{ name: "Data", components: ["Order store"] },
+				],
+				crosscutting: {
+					name: "Span every layer",
+					items: ["Monitoring", "Identity"],
+				},
+			},
+		});
+		const { schema, instructions, prompt } =
+			mocks.generateObject.mock.calls[0][0];
+		expect(schema.safeParse({ spec: LAYERS }).success).toBe(true);
+		expect(schema.safeParse({ spec: TEAM }).success).toBe(false);
+		expect(instructions).toContain("## More kinds for this Proposal");
+		expect(prompt).toContain("Requested kind: layers.");
+	});
+
+	it("extracts a team, the shared forum included", async () => {
+		modelReturns(TEAM);
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section: teamSection,
+			kind: "team",
+		});
+
+		expect(result).toMatchObject({
+			status: "extracted",
+			spec: {
+				kind: "team",
+				proposer: {
+					members: [
+						{ role: "Delivery lead", name: "Alex Example" },
+						{ role: "Engineers" },
+					],
+				},
+				shared: "Weekly steering meeting",
+			},
+		});
+	});
+
+	it("drops a team member the section does not name", async () => {
+		modelReturns({
+			...TEAM,
+			client: {
+				...TEAM.client,
+				members: [
+					{ role: "Product owner", name: null, description: null },
+					{
+						role: "Finance controller",
+						name: null,
+						description: null,
+					},
+				],
+			},
+		});
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section: teamSection,
+			kind: "team",
+		});
+
+		expect(result).toMatchObject({
+			status: "dropped",
+			reason: "factCheck",
+			violations: [
+				expect.objectContaining({
+					kind: "label",
+					text: "Finance controller",
+				}),
+			],
+		});
+	});
+
+	it("drops layers past the figure's bounds as an invalid spec", async () => {
+		modelReturns({
+			...LAYERS,
+			layers: [
+				{
+					name: "Channels",
+					description: null,
+					components: [
+						"Web shop",
+						"Mobile app",
+						"Orders",
+						"Billing",
+						"Order store",
+						"Monitoring",
+					],
+				},
+				LAYERS.layers[1],
+			],
+		});
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section: architecture,
+			kind: "layers",
+		});
+
+		expect(result).toMatchObject({
+			status: "dropped",
+			reason: "invalidSpec",
+		});
+	});
+
+	it("never returns layers or team to Glossy", async () => {
+		modelReturns(LAYERS);
+
+		const result = await extractGlossyVisual({
+			...context,
+			section: architecture,
+			kind: "auto",
+		});
+
+		expect(result).toMatchObject({
+			status: "dropped",
+			reason: "invalidSpec",
+		});
+		const { schema, instructions } = mocks.generateObject.mock.calls[0][0];
+		const kinds = schema.shape.spec.options.map(
+			(option: { shape: { kind: { options: string[] } } }) =>
+				option.shape.kind.options[0],
+		);
+		expect(kinds).toEqual([
+			"timeline",
+			"comparison",
+			"stat",
+			"flow",
+			"org_chart",
+		]);
+		expect(instructions).not.toContain("layers");
+	});
+
+	it("redraws a layers diagram as layers on an edit", async () => {
+		modelReturns(LAYERS);
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section: architecture,
+			kind: "layers",
+			instruction: "Shorter names",
+			currentSource:
+				'flowchart TD\nsubgraph l0["Channels"]\nl0c0["Web shop"]\nend',
+		});
+
+		expect(result).toMatchObject({
+			status: "extracted",
+			spec: { kind: "layers" },
+		});
+		const { instructions } = mocks.generateObject.mock.calls[0][0];
+		expect(instructions).toContain("## Editing an existing diagram");
+		expect(instructions).toContain("## More kinds for this Proposal");
 	});
 });

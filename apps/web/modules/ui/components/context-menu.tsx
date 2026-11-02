@@ -21,7 +21,7 @@ const ContextMenuSubTrigger = ({
 }) => (
 	<ContextMenuPrimitive.SubTrigger
 		className={cn(
-			"flex cursor-default select-none items-center rounded-md px-3 py-1.5 text-sm outline-hidden focus:bg-accent data-[state=open]:bg-accent",
+			"flex cursor-default select-none items-center rounded-sm px-2.5 py-1.5 text-sm transition-colors duration-150 focus:outline-hidden focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent",
 			inset ? "pl-8" : "",
 			className,
 		)}
@@ -38,7 +38,7 @@ const ContextMenuSubContent = ({
 }: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) => (
 	<ContextMenuPrimitive.SubContent
 		className={cn(
-			"data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in",
+			"data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md data-[state=closed]:animate-out data-[state=open]:animate-in",
 			className,
 		)}
 		{...props}
@@ -52,7 +52,7 @@ const ContextMenuContent = ({
 	<ContextMenuPrimitive.Portal>
 		<ContextMenuPrimitive.Content
 			className={cn(
-				"z-50 min-w-[8rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg",
+				"z-50 min-w-[8rem] overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md",
 				"data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=open]:animate-in",
 				className,
 			)}
@@ -70,7 +70,7 @@ const ContextMenuItem = ({
 }) => (
 	<ContextMenuPrimitive.Item
 		className={cn(
-			"relative flex cursor-default select-none items-center rounded-md px-3 py-2 text-sm outline-hidden transition-colors focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50",
+			"relative flex cursor-default select-none items-center gap-2 rounded-sm px-2.5 py-1.5 text-sm transition-colors duration-150 focus:outline-hidden focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50",
 			inset ? "pl-8" : "",
 			className,
 		)}
@@ -87,7 +87,7 @@ const ContextMenuLabel = ({
 }) => (
 	<ContextMenuPrimitive.Label
 		className={cn(
-			"px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground",
+			"px-2.5 py-1.5 text-xs font-semibold text-muted-foreground",
 			inset ? "pl-8" : "",
 			className,
 		)}

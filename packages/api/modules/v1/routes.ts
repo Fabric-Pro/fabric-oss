@@ -62,6 +62,8 @@ const CLI_SCOPES = [
 	"projects:write",
 	"features:read",
 	"features:write",
+	"kanban:read",
+	"kanban:write",
 	"documents:read",
 	"documents:write",
 	"workflows:read",

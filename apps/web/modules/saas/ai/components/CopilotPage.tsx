@@ -135,6 +135,7 @@ import {
 } from "../../../../components/ai-elements/conversation";
 import { AgentInsightsSheet } from "../../agents/components/AgentInsightsSheet";
 import { ConversationToolPicker } from "../../agents/components/FabricChat/ConversationToolPicker";
+import { ORCHESTRATOR_SYSTEM_AGENT_IDS } from "../lib/capability-system-agents";
 import {
 	buildChatToolSelectionPayload,
 	resolveSelectedChatToolIds,
@@ -349,19 +350,6 @@ interface WorkflowIntegrationRecord {
 	isActive: boolean;
 	hasCredentials: boolean;
 }
-
-const ORCHESTRATOR_SYSTEM_AGENT_IDS = [
-	"project_document_generator",
-	"document_generator",
-	"task_planner",
-	"story_breakdown",
-	"code_executor",
-	"prompt_enhancer",
-	"api_agent",
-	"data_analyst",
-	"cuga_generalist",
-	"mcp_tool_executor",
-];
 
 function buildCapabilityExecutionOptions(params: {
 	selectedCapabilities: CapabilityItem[];
@@ -788,7 +776,7 @@ function AgentDetailSheet({
 						{isModelAgent && agent.vendor ? (
 							<VendorLogo vendor={agent.vendor} size={52} />
 						) : heroEmoji ? (
-							<div className="size-[52px] flex items-center justify-center text-3xl shrink-0 rounded-xl bg-muted border border-border/60">
+							<div className="size-[52px] flex items-center justify-center text-3xl shrink-0 rounded-lg bg-muted border border-border/60">
 								{heroEmoji}
 							</div>
 						) : (
@@ -863,7 +851,7 @@ function AgentDetailSheet({
 					{/* System prompt / instructions */}
 					{!isModelAgent && systemPrompt && (
 						<div>
-							<p className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+							<p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
 								Instructions
 							</p>
 							<div className="rounded-lg border border-border/60 bg-muted/30 p-3 max-h-48 overflow-y-auto">
@@ -883,7 +871,7 @@ function AgentDetailSheet({
 					{/* Framework / scope for registered agents */}
 					{!isModelAgent && agent.framework && (
 						<div>
-							<p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+							<p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
 								Framework
 							</p>
 							<p className="text-sm text-foreground">
@@ -1142,7 +1130,7 @@ export function AgentBrowserSection({
 					<button
 						type="button"
 						onClick={onOpenConversationToolPicker}
-						className="inline-flex items-center gap-2 rounded-xl border border-border/70 bg-background px-3.5 py-2 text-sm font-medium text-foreground/85 transition-colors hover:bg-accent hover:text-foreground"
+						className="inline-flex items-center gap-2 rounded-lg border border-border/70 bg-background px-3.5 py-2 text-sm font-medium text-foreground/85 transition-colors hover:bg-accent hover:text-foreground"
 					>
 						<McpLogo size={16} />
 						Chat tools
@@ -1158,7 +1146,7 @@ export function AgentBrowserSection({
 						<PopoverTrigger asChild>
 							<button
 								type="button"
-								className="inline-flex items-center gap-2 rounded-xl bg-primary text-primary-foreground px-3.5 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
+								className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-3.5 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
 							>
 								<PlusIcon className="size-4" />
 								Create
@@ -1170,14 +1158,14 @@ export function AgentBrowserSection({
 							sideOffset={6}
 							className="w-56 p-2 shadow-lg"
 						>
-							<p className="px-3 pt-1 pb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/50">
+							<p className="px-3 pt-1 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/50">
 								Agents
 							</p>
 							<a
 								href={`${basePath}/agent-templates/new`}
 								className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium hover:bg-muted transition-colors group"
 							>
-								<div className="flex size-8 items-center justify-center rounded-xl border border-border/60 bg-muted text-muted-foreground shrink-0">
+								<div className="flex size-8 items-center justify-center rounded-lg border border-border/60 bg-muted text-muted-foreground shrink-0">
 									<RobotIcon className="size-4.5" />
 								</div>
 								agent from scratch
@@ -1186,20 +1174,20 @@ export function AgentBrowserSection({
 								href={`${basePath}/agent-templates`}
 								className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium hover:bg-muted transition-colors group"
 							>
-								<div className="flex size-8 items-center justify-center rounded-xl border border-border/60 bg-muted text-muted-foreground shrink-0">
+								<div className="flex size-8 items-center justify-center rounded-lg border border-border/60 bg-muted text-muted-foreground shrink-0">
 									<LayoutTemplateIcon className="size-4.5" />
 								</div>
 								agent from template
 							</a>
 							<div className="my-1.5 h-px bg-border/60" />
-							<p className="px-3 pt-0.5 pb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/50">
+							<p className="px-3 pt-0.5 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/50">
 								Skills
 							</p>
 							<a
 								href={`${basePath}/mcp-servers`}
 								className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium hover:bg-muted transition-colors"
 							>
-								<div className="flex size-8 items-center justify-center rounded-xl border border-border/60 bg-muted text-muted-foreground shrink-0">
+								<div className="flex size-8 items-center justify-center rounded-lg border border-border/60 bg-muted text-muted-foreground shrink-0">
 									<McpLogo size={18} />
 								</div>
 								skill
@@ -1212,7 +1200,7 @@ export function AgentBrowserSection({
 						<PopoverTrigger asChild>
 							<button
 								type="button"
-								className="inline-flex items-center gap-2 rounded-xl border border-border/70 bg-muted text-foreground/85 px-3.5 py-2 text-sm font-medium hover:bg-accent hover:text-foreground transition-colors"
+								className="inline-flex items-center gap-2 rounded-lg border border-border/70 bg-muted text-foreground/85 px-3.5 py-2 text-sm font-medium hover:bg-accent hover:text-foreground transition-colors"
 							>
 								<RobotIcon className="size-4" />
 								Manage
@@ -1296,7 +1284,7 @@ export function AgentBrowserSection({
 									type="button"
 									onClick={() => onToggleAgent(modelAgent)}
 									className={cn(
-										"flex items-start gap-3 rounded-xl border p-3 text-left transition-colors w-full pr-8",
+										"flex items-start gap-3 rounded-lg border p-3 text-left transition-colors w-full pr-8",
 										isSelected
 											? "border-primary/40 bg-primary/5"
 											: "border-border bg-card hover:bg-muted/40 hover:border-border/80",
@@ -1385,14 +1373,14 @@ export function AgentBrowserSection({
 										})
 									}
 									className={cn(
-										"flex items-start gap-3 rounded-xl border p-3 text-left transition-colors w-full pr-8",
+										"flex items-start gap-3 rounded-lg border p-3 text-left transition-colors w-full pr-8",
 										isSelected
 											? "border-primary/40 bg-primary/5"
 											: "border-border bg-card hover:bg-muted/40 hover:border-border/80",
 									)}
 								>
 									{heroEmoji ? (
-										<div className="size-8 flex items-center justify-center text-lg shrink-0 rounded-xl bg-muted border border-border/60">
+										<div className="size-8 flex items-center justify-center text-lg shrink-0 rounded-lg bg-muted border border-border/60">
 											{heroEmoji}
 										</div>
 									) : (
@@ -2012,7 +2000,7 @@ export function ComposeInput({
 
 	return (
 		<div
-			className="rounded-2xl border-2 border-border/70 bg-card shadow-md overflow-hidden focus-within:ring-0 focus-within:border-primary/60 transition-colors"
+			className="rounded-lg border-2 border-border/70 bg-card shadow-md overflow-hidden focus-within:ring-0 focus-within:border-primary/60 transition-colors"
 			onDrop={handleDrop}
 			onDragOver={handleDragOver}
 		>
@@ -2081,7 +2069,7 @@ export function ComposeInput({
 					}
 					rows={2}
 					disabled={isLoading}
-					className="w-full resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground/50 outline-none leading-relaxed disabled:opacity-50"
+					className="w-full resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none leading-relaxed disabled:opacity-50"
 					style={{ scrollbarWidth: "none" }}
 					// biome-ignore lint/a11y/noAutofocus: intentional focus for companion UX
 					autoFocus={autoFocus}
@@ -2205,8 +2193,8 @@ export function ComposeInput({
 							sideOffset={8}
 							className="w-80 p-0"
 						>
-							<div className="px-3 py-2 border-b border-border/60">
-								<p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/70 mb-2">
+							<div className="px-3 py-2 border-b border-border">
+								<p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
 									Capabilities
 								</p>
 								<div className="relative">
@@ -2220,7 +2208,7 @@ export function ComposeInput({
 											setCapsSearch(e.target.value)
 										}
 										placeholder="Search capabilities..."
-										className="w-full pl-6 pr-2 py-1 text-xs bg-muted/50 border border-border/60 rounded-md outline-none focus:ring-1 focus:ring-primary/40 placeholder:text-muted-foreground/50"
+										className="w-full pl-6 pr-2 py-1 text-xs bg-card border border-input rounded-sm outline-hidden focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring placeholder:text-muted-foreground"
 									/>
 								</div>
 							</div>
@@ -2640,7 +2628,7 @@ function CapabilitiesList({
 			{builtInFiltered.length > 0 && (
 				<>
 					{!search && (
-						<p className="px-3 pt-2 pb-1 text-[9px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60">
+						<p className="px-3 pt-2 pb-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground/60">
 							Built-in
 						</p>
 					)}
@@ -2650,7 +2638,7 @@ function CapabilitiesList({
 			{integrationFiltered.length > 0 && (
 				<>
 					{!search && (
-						<p className="px-3 pt-3 pb-1 text-[9px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60 border-t border-border/40 mt-1">
+						<p className="px-3 pt-3 pb-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground/60 border-t border-border/40 mt-1">
 							Integrations
 						</p>
 					)}
@@ -2732,7 +2720,7 @@ function LandingView({
 		<div className="flex flex-col h-full overflow-auto">
 			{/* Vertically centered greeting + input */}
 			<div className="flex flex-col items-center px-4 max-w-[55rem] mx-auto w-full pt-[12vh] pb-8 gap-6">
-				<h1 className="text-center text-[clamp(1.6rem,3.4vw,2.4rem)] font-normal leading-[1.1] tracking-[-0.025em] text-foreground">
+				<h1 className="text-center text-[clamp(1.6rem,3.4vw,2.4rem)] font-semibold leading-[1.1] tracking-[-0.025em] text-foreground">
 					What's on the agenda today?
 				</h1>
 				<div className="w-full">
@@ -2793,7 +2781,7 @@ function TurnBlock({
 		<div className="space-y-4">
 			{/* User message */}
 			<div className="flex flex-col items-end gap-1">
-				<div className="max-w-[75%] rounded-2xl rounded-tr-sm bg-primary text-primary-foreground px-4 py-2.5 text-sm leading-relaxed">
+				<div className="max-w-[75%] rounded-lg rounded-tr-sm bg-primary text-primary-foreground px-4 py-2.5 text-sm leading-relaxed">
 					{turn.userMessage}
 				</div>
 				{captionNames.length > 0 && (
@@ -3691,6 +3679,7 @@ export function CopilotPage({
 						const persistedToolCalls = resp.toolCalls
 							.filter(
 								(tc) =>
+									resp.eventCursor ||
 									tc.mcpAppResourceUri ||
 									tc.status === "complete" ||
 									tc.status === "error",
@@ -3713,10 +3702,11 @@ export function CopilotPage({
 							agentName: resp.agentName,
 							vendor: resp.vendor,
 							executionId: resp.executionId,
+							eventCursor: resp.eventCursor,
 							streamStatus: resp.status,
 							errorMessage: resp.errorMessage,
 							content:
-								selectedAgents.length > 1
+								selectedAgents.length > 1 && !resp.eventCursor
 									? `[${resp.agentName}]: ${resp.content}`
 									: resp.content,
 							timestamp: new Date().toISOString(),
@@ -3740,6 +3730,7 @@ export function CopilotPage({
 				agentName: m.agentName,
 				vendor: m.vendor,
 				executionId: m.executionId,
+				eventCursor: m.eventCursor,
 				streamStatus: m.streamStatus,
 				errorMessage: m.errorMessage,
 				toolCalls: m.toolCalls,

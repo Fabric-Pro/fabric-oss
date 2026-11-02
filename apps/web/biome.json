@@ -31,7 +31,7 @@
 		{
 			"includes": [
 				"app/api/ai/**",
-				"app/api/workspaces/chat/route.ts",
+				"app/api/workspaces/chat/workspace-chat-turn.ts",
 				"modules/saas/mcp/lib/gateway/platform-tools.ts"
 			],
 			"linter": {

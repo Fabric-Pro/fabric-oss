@@ -36,10 +36,18 @@ vi.mock("@repo/auth", () => ({
 }));
 
 const isOrganizationMember = vi.fn();
+const canReadOrganizationMcpConfigs = vi.fn();
+const canConnectOrganizationMcpConfigs = vi.fn();
 const fetchCredentialsByProvider = vi.fn();
 vi.mock("@repo/database", () => ({
 	isOrganizationMember: (userId: string, organizationId: string) =>
 		isOrganizationMember(userId, organizationId),
+	canReadOrganizationMcpConfigs: (userId: string, organizationId: string) =>
+		canReadOrganizationMcpConfigs(userId, organizationId),
+	canConnectOrganizationMcpConfigs: (
+		userId: string,
+		organizationId: string,
+	) => canConnectOrganizationMcpConfigs(userId, organizationId),
 	fetchCredentialsByProvider: (...args: unknown[]) =>
 		fetchCredentialsByProvider(...args),
 }));
@@ -86,6 +94,23 @@ async function mintedSessionId(scopes: string[], organizationId?: string) {
 	return (await res.json()).sessionId as string;
 }
 
+async function mintedBrowserSessionId(organizationId = "org-1") {
+	getSession.mockResolvedValue({
+		user: { id: "user-1" },
+		session: { activeOrganizationId: organizationId },
+	});
+	isOrganizationMember.mockResolvedValue(true);
+	const res = await mintSession(
+		new Request("http://localhost/api/fabric/tool-router/session", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({}),
+		}),
+	);
+	expect(res.status).toBe(200);
+	return (await res.json()).sessionId as string;
+}
+
 function callTool(sessionId: string) {
 	return mcp(
 		new Request("http://localhost/api/fabric/tool-router/mcp", {
@@ -107,9 +132,28 @@ function callTool(sessionId: string) {
 	);
 }
 
+function listTools(sessionId: string) {
+	return mcp(
+		new Request("http://localhost/api/fabric/tool-router/mcp", {
+			method: "POST",
+			headers: {
+				"x-fabric-session": sessionId,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				jsonrpc: "2.0",
+				id: 2,
+				method: "tools/list",
+			}),
+		}),
+	);
+}
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	fetchCredentialsByProvider.mockResolvedValue(null);
+	canReadOrganizationMcpConfigs.mockResolvedValue(true);
+	canConnectOrganizationMcpConfigs.mockResolvedValue(true);
 });
 
 describe("minting a tool-router session", () => {
@@ -220,5 +264,99 @@ describe("what a minted session may then do", () => {
 
 		const orgArg = fetchCredentialsByProvider.mock.calls[0]?.[2];
 		expect(orgArg).toBe("org-1");
+	});
+
+	it("refuses a viewer's browser session on tools/call", async () => {
+		const sessionId = await mintedBrowserSessionId();
+		canConnectOrganizationMcpConfigs.mockResolvedValue(false);
+
+		const res = await callTool(sessionId);
+		const payload = await res.json();
+
+		expect(payload.error).toMatchObject({
+			code: -32003,
+			message: expect.stringMatching(/organization role/i),
+		});
+		expect(fetchCredentialsByProvider).not.toHaveBeenCalled();
+	});
+
+	it("allows a viewer's browser session to list tools with MCP_READ", async () => {
+		const sessionId = await mintedBrowserSessionId();
+		canConnectOrganizationMcpConfigs.mockResolvedValue(false);
+		canReadOrganizationMcpConfigs.mockResolvedValue(true);
+
+		const res = await listTools(sessionId);
+		const payload = await res.json();
+
+		expect(payload.error).toBeUndefined();
+		expect(payload.result.tools).toHaveLength(5);
+		expect(canReadOrganizationMcpConfigs).toHaveBeenCalledWith(
+			"user-1",
+			"org-1",
+		);
+	});
+
+	it("refuses tools/list when the browser user no longer holds MCP_READ", async () => {
+		const sessionId = await mintedBrowserSessionId();
+		canReadOrganizationMcpConfigs.mockResolvedValue(false);
+
+		const res = await listTools(sessionId);
+		const payload = await res.json();
+
+		expect(payload.error).toMatchObject({
+			code: -32003,
+			message: expect.stringMatching(/organization role/i),
+		});
+		expect(fetchCredentialsByProvider).not.toHaveBeenCalled();
+	});
+
+	it("allows a member's browser session through both live permission checks", async () => {
+		const sessionId = await mintedBrowserSessionId();
+
+		const callPayload = await (await callTool(sessionId)).json();
+		const listPayload = await (await listTools(sessionId)).json();
+
+		expect(callPayload.error).toBeUndefined();
+		expect(listPayload.error).toBeUndefined();
+		expect(canConnectOrganizationMcpConfigs).toHaveBeenCalledWith(
+			"user-1",
+			"org-1",
+		);
+		expect(canReadOrganizationMcpConfigs).toHaveBeenCalledWith(
+			"user-1",
+			"org-1",
+		);
+	});
+
+	it("refuses an API-key session whose owner is a viewer despite mcp:write", async () => {
+		const sessionId = await mintedSessionId(
+			["mcp:read", "mcp:write"],
+			"org-1",
+		);
+		canConnectOrganizationMcpConfigs.mockResolvedValue(false);
+
+		const res = await callTool(sessionId);
+		const payload = await res.json();
+
+		expect(payload.error).toMatchObject({
+			code: -32003,
+			message: expect.stringMatching(/organization role/i),
+		});
+		expect(payload.error.message).not.toContain("mcp:write");
+		expect(fetchCredentialsByProvider).not.toHaveBeenCalled();
+	});
+
+	it("refuses the next call after the session user is demoted", async () => {
+		const sessionId = await mintedBrowserSessionId();
+		canConnectOrganizationMcpConfigs
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+
+		const firstPayload = await (await callTool(sessionId)).json();
+		const secondPayload = await (await callTool(sessionId)).json();
+
+		expect(firstPayload.error).toBeUndefined();
+		expect(secondPayload.error).toMatchObject({ code: -32003 });
+		expect(canConnectOrganizationMcpConfigs).toHaveBeenCalledTimes(2);
 	});
 });

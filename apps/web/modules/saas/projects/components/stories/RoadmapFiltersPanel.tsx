@@ -124,10 +124,10 @@ function FacetTrigger({
 			variant="outline"
 			type="button"
 			className={cn(
-				"inline-flex h-9 w-40 shrink-0 items-center justify-between gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+				"inline-flex h-9 w-40 shrink-0 items-center justify-between gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 				active
 					? "border-primary/50 bg-primary/10 text-primary"
-					: "border-border bg-transparent text-muted-foreground hover:border-foreground/40 hover:text-foreground",
+					: "border-input bg-card text-muted-foreground hover:border-muted-foreground hover:text-foreground disabled:border-input",
 				className,
 			)}
 		>
@@ -241,10 +241,10 @@ function FacetMultiSelect<T extends string>({
 										>
 											<span
 												className={cn(
-													"flex size-4 items-center justify-center rounded-[4px] border transition-colors",
+													"flex size-4 items-center justify-center rounded-sm border transition-colors",
 													isSel
 														? "border-primary bg-primary text-primary-foreground"
-														: "border-muted-foreground/40",
+														: "border-input",
 												)}
 											>
 												{isSel && (
@@ -277,10 +277,10 @@ function FacetMultiSelect<T extends string>({
 										>
 											<span
 												className={cn(
-													"flex size-4 items-center justify-center rounded-[4px] border transition-colors",
+													"flex size-4 items-center justify-center rounded-sm border transition-colors",
 													extraOption.checked
 														? "border-primary bg-primary text-primary-foreground"
-														: "border-muted-foreground/40",
+														: "border-input",
 												)}
 											>
 												{extraOption.checked && (

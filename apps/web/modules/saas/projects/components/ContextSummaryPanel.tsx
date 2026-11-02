@@ -142,7 +142,7 @@ function ContextSummaryPanelInner({ projectId }: { projectId: string }) {
 	}
 
 	if (statusQuery.isLoading) {
-		return <Skeleton className="h-24 w-full rounded-xl" />;
+		return <Skeleton className="h-24 w-full rounded-lg" />;
 	}
 
 	const status = statusQuery.data?.status ?? null;
@@ -196,7 +196,7 @@ function ContextSummaryPanelInner({ projectId }: { projectId: string }) {
 
 	return (
 		<section
-			className="rounded-xl border border-border bg-card p-4"
+			className="rounded-lg border border-border bg-card p-4"
 			aria-labelledby="context-summary-heading"
 			data-testid="context-summary-panel"
 			data-onboarding-target="context-summary"
@@ -223,7 +223,7 @@ function ContextSummaryPanelInner({ projectId }: { projectId: string }) {
 									<button
 										type="button"
 										aria-label={t("info.aria")}
-										className="inline-flex text-muted-foreground/70 motion-safe:transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+										className="inline-flex text-muted-foreground/70 motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 									>
 										<InfoIcon
 											className="size-3.5"

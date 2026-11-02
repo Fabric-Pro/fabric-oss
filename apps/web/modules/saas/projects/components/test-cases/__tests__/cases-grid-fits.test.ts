@@ -14,7 +14,7 @@ const GAP = 8;
 type Tier = { breakpoint: number; tracks: string[] };
 
 /**
- * Pull the three `@[Npx]:grid-cols-[...]` templates back out of the class
+ * Pull the three container-width grid-column templates back out of the class
  * string, so the test reads the SAME source the browser does rather than a
  * hand-copied duplicate that could quietly drift from it.
  */

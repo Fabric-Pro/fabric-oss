@@ -1,0 +1,28 @@
+diff --git a/dist/schemas.js b/dist/schemas.js
+--- a/dist/schemas.js
++++ b/dist/schemas.js
+@@ -2,1 +2,1 @@
+-let zod_v4 = require("zod/v4");
++let zod_v4 = require("zod-agui-runtime/v4");
+diff --git a/dist/schemas.mjs b/dist/schemas.mjs
+--- a/dist/schemas.mjs
++++ b/dist/schemas.mjs
+@@ -2,1 +2,1 @@
+-import { z } from "zod/v4";
++import { z } from "zod-agui-runtime/v4";
+diff --git a/dist/schemas.d.ts b/dist/schemas.d.ts
+--- a/dist/schemas.d.ts
++++ b/dist/schemas.d.ts
+@@ -2,2 +2,2 @@
+-import * as zod_v40 from "zod/v4";
+-import { z } from "zod/v4";
++import * as zod_v40 from "zod-agui-runtime/v4";
++import { z } from "zod-agui-runtime/v4";
+diff --git a/dist/schemas.d.mts b/dist/schemas.d.mts
+--- a/dist/schemas.d.mts
++++ b/dist/schemas.d.mts
+@@ -2,2 +2,2 @@
+-import * as zod_v40 from "zod/v4";
+-import { z } from "zod/v4";
++import * as zod_v40 from "zod-agui-runtime/v4";
++import { z } from "zod-agui-runtime/v4";

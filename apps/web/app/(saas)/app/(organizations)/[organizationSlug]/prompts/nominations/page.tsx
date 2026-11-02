@@ -31,7 +31,7 @@ export default async function PromptNominationsPage({
 			/>
 
 			<div className="space-y-2">
-				<h1 className="font-serif text-3xl">Proposed defaults</h1>
+				<h1 className="font-semibold text-3xl">Proposed defaults</h1>
 				<p className="text-muted-foreground">
 					Prompts members have proposed as a default, grouped by the
 					action they would run.

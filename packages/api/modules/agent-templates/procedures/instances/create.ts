@@ -14,7 +14,10 @@ import {
 	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { syncDeploymentTriggers } from "../../../agent-deployments/lib/sync-triggers";
+import {
+	syncDeploymentTriggers,
+	validateSlackTriggerConfigs,
+} from "../../../agent-deployments/lib/sync-triggers";
 import { resolvedOrganizationId } from "../../../agents/procedures/conversations/resolved-organization";
 import {
 	knowledgeConnectionsSchema,
@@ -183,6 +186,22 @@ export const createInstanceProcedure = tenantProtectedProcedure
 			});
 		}
 
+		if (input.triggers !== undefined) {
+			try {
+				await validateSlackTriggerConfigs(input.triggers, {
+					userId: context.user.id,
+					organizationId,
+				});
+			} catch (error) {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						error instanceof Error
+							? error.message
+							: "Invalid Slack trigger",
+				});
+			}
+		}
+
 		const instance = await createAgentTemplateInstance({
 			templateId: input.templateId,
 			userId: context.user.id,
@@ -300,6 +319,11 @@ export const createInstanceProcedure = tenantProtectedProcedure
 					"[createInstance] Failed to sync deployment triggers",
 					{ instanceId: instance.id, error },
 				);
+				return {
+					instance,
+					triggerActivationError:
+						"Agent created, but its triggers were not activated. Open the agent to enable them by editing it.",
+				};
 			}
 		}
 

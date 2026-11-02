@@ -1875,6 +1875,7 @@ export class AtlasService {
 		focusNodeKey?: string;
 		conversationId?: string;
 		messages: { role: "user" | "assistant" | "system"; content: string }[];
+		abortSignal?: AbortSignal;
 	}) {
 		const repo = await this.resolveRepoOption(
 			input.projectId,
@@ -2067,6 +2068,7 @@ export class AtlasService {
 		const result = streamText({
 			model,
 			instructions: system,
+			abortSignal: input.abortSignal,
 			messages: conversationForModel.map((m) => ({
 				role: m.role as "user" | "assistant",
 				content: m.content,

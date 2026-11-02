@@ -373,12 +373,13 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			input?.organizationId,
 			session,
 		);
-		let organizationEmbedding: Awaited<
-			ReturnType<typeof resolveOrganizationEmbedding>
-		> | null = null;
-		if (organizationId) {
+		// Chat SSR also awaits this status, so independent reads share its critical path.
+		const organizationEmbeddingPromise = (async () => {
+			if (!organizationId) {
+				return null;
+			}
 			try {
-				organizationEmbedding = await resolveOrganizationEmbedding({
+				return await resolveOrganizationEmbedding({
 					organizationId,
 					userId: user.id,
 				});
@@ -387,8 +388,56 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 					"[AI Config] Failed to resolve organization embeddings:",
 					error,
 				);
+				return null;
 			}
-		}
+		})();
+		const tenantResolutionPromise = (async () => {
+			try {
+				return await resolveTenantProviderForCaller({
+					userId: user.id,
+					organizationId,
+				});
+			} catch (error) {
+				console.error(
+					"[AI Config] Failed to resolve the tenant provider:",
+					error,
+				);
+				return null;
+			}
+		})();
+		const resolvedEmbeddingPromise = tenantResolutionPromise.then(
+			async (tenantResolution) => {
+				try {
+					return await resolveEmbeddingProviderForCaller(
+						{ userId: user.id, organizationId },
+						tenantResolution,
+					);
+				} catch (error) {
+					console.error(
+						"[AI Config] Failed to resolve the embedding provider:",
+						error,
+					);
+					return null;
+				}
+			},
+		);
+		const planSpentPersonalProviderPromise = (async () => {
+			try {
+				return (
+					(
+						await getPlanSpentPersonalProviderConfig({
+							userId: user.id,
+						})
+					)?.provider ?? null
+				);
+			} catch (error) {
+				console.error(
+					"[AI Config] Failed to read the plan-spent personal key:",
+					error,
+				);
+				return null;
+			}
+		})();
 		const configuredProviders: ConfiguredProvider[] = [];
 		let hasUserConfig = false;
 		let hasOrgConfig = false;
@@ -400,13 +449,14 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 		// Never mix personal and organization configurations
 		if (organizationId) {
 			// Organization context: ONLY query cloud_provider_config
-			const orgProviders = await db.cloudProviderConfig.findMany({
-				where: { organizationId, enabled: true },
-				orderBy: [{ isDefault: "desc" }, { priority: "desc" }],
-			});
-
-			defaultProvider =
-				await getOrganizationDefaultProvider(organizationId);
+			const [orgProviders, organizationDefault] = await Promise.all([
+				db.cloudProviderConfig.findMany({
+					where: { organizationId, enabled: true },
+					orderBy: [{ isDefault: "desc" }, { priority: "desc" }],
+				}),
+				getOrganizationDefaultProvider(organizationId),
+			]);
+			defaultProvider = organizationDefault;
 
 			if (orgProviders.length > 0) {
 				hasOrgConfig = true;
@@ -482,57 +532,17 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			canResolveProvider = ownProviders.some(rowCarriesCredentials);
 		}
 
-		// Ask the runtime resolver for the caller's outcome separately from
-		// the organization's explicit default. The personal-context display
-		// fallback below must not feed either resolved field.
-		//
-		// Sequential on purpose. It needs nothing this block produces, so it
-		// could start alongside it behind the usual `.catch(() => {})` marker —
-		// that is one line, not a barrier. The reason to stay sequential is that
-		// the latency it would buy does not matter on a query cached for a
-		// minute and shared between two banners, and the straight line is easier
-		// to read than the idiom.
-		//
-		// Caught, like the model lookup below, because this endpoint is not only
-		// the banners': anything reading the status treats a failed call as "not
-		// configured", so letting two new reads fail the whole payload would
-		// take unrelated surfaces down with them. A resolver that cannot answer
-		// leaves the field null, which every reader already handles as "we do
-		// not know" and nobody reads as Anthropic.
-		//
-		// The chat path's answer is asked first, because the embedding path's
-		// second rung is the same question: one call answers both.
-		let tenantResolution: ResolvedProvider | null = null;
-		try {
-			tenantResolution = await resolveTenantProviderForCaller({
-				userId: user.id,
-				organizationId,
-			});
-		} catch (error) {
-			console.error(
-				"[AI Config] Failed to resolve the tenant provider:",
-				error,
-			);
-		}
-
-		let resolvedEmbeddingProvider: string | null = null;
-		let resolvedEmbeddingSource: "organization" | "user" | null = null;
-		try {
-			const resolved = await resolveEmbeddingProviderForCaller(
-				{
-					userId: user.id,
-					organizationId,
-				},
-				tenantResolution,
-			);
-			resolvedEmbeddingProvider = resolved.provider;
-			resolvedEmbeddingSource = resolved.source;
-		} catch (error) {
-			console.error(
-				"[AI Config] Failed to resolve the embedding provider:",
-				error,
-			);
-		}
+		const [
+			organizationEmbedding,
+			tenantResolution,
+			resolvedEmbedding,
+			planSpentPersonalProvider,
+		] = await Promise.all([
+			organizationEmbeddingPromise,
+			tenantResolutionPromise,
+			resolvedEmbeddingPromise,
+			planSpentPersonalProviderPromise,
+		]);
 
 		// Keep the legacy display fallback in personal context only.
 		const fallbackDefault = configuredProviders.find(
@@ -612,25 +622,12 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			}
 		}
 
-		// Caught like the reads above: a status payload must not fail on it.
-		let planSpentPersonalProvider: string | null = null;
-		try {
-			planSpentPersonalProvider =
-				(await getPlanSpentPersonalProviderConfig({ userId: user.id }))
-					?.provider ?? null;
-		} catch (error) {
-			console.error(
-				"[AI Config] Failed to read the plan-spent personal key:",
-				error,
-			);
-		}
-
 		return {
 			isConfigured,
 			canResolveProvider,
 			planSpentPersonalProvider,
-			resolvedEmbeddingProvider,
-			resolvedEmbeddingSource,
+			resolvedEmbeddingProvider: resolvedEmbedding?.provider ?? null,
+			resolvedEmbeddingSource: resolvedEmbedding?.source ?? null,
 			resolvedProvider: tenantResolution?.provider ?? null,
 			resolvedProviderSource: tenantResolution?.source ?? null,
 			hasUserConfig,

@@ -11,6 +11,7 @@ import {
 	checkExecutionQuota,
 	createAgentDeployment,
 	db,
+	isDeploymentOwnerCurrentMember,
 	Prisma,
 	updateDeploymentStatus,
 } from "@repo/database";
@@ -29,6 +30,7 @@ interface ImageRef {
 	storagePath: string;
 	mimeType: string;
 	name: string;
+	accessUserId?: string;
 }
 
 interface ExecuteAgentInput {
@@ -177,6 +179,10 @@ export async function executeAgent(
 			error: quotaCheck.reason || "Execution quota exceeded",
 			status: 429 as const,
 		};
+	}
+
+	if (!(await isDeploymentOwnerCurrentMember(deployment))) {
+		return { error: "Agent not found", status: 404 as const };
 	}
 
 	// Idempotency check + execution creation in a single serializable transaction

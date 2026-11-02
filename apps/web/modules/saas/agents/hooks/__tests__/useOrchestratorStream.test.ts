@@ -699,6 +699,234 @@ describe("useOrchestratorStream.stop()", () => {
 });
 
 describe("useOrchestratorStream — resumable streaming windows (#2269)", () => {
+	it("discards stale approval cards until the resumed run sends its current snapshot", async () => {
+		const { windows } = mockStreamWindows(2);
+		const { result } = renderHook(() => useOrchestratorStream());
+		let sending: ReturnType<typeof result.current.sendMessage> | undefined;
+		act(() => {
+			sending = result.current.sendMessage("Example");
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+			windows[0].enqueueLine(
+				'data: {"type":"approval_required","approvalId":"example-approval","stepId":"example-step","reason":"Review"}',
+			);
+			windows[0].enqueueLine('data: {"type":"stream_timeout"}');
+		});
+		expect(result.current.state.pendingApproval?.approvalId).toBe(
+			"example-approval",
+		);
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example","resumed":true}',
+			);
+		});
+		expect(result.current.state.pendingApproval).toBeNull();
+		expect(result.current.state.status).toBe("running");
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"completed","status":"completed"}',
+			);
+			await sending;
+		});
+	});
+	it("replays missing text once while preserving the prefix acknowledged in an earlier window", async () => {
+		const { windows, streamBodies } = mockStreamWindows(2);
+		const { result } = renderHook(() =>
+			useOrchestratorStream({ organizationId: "example-org" }),
+		);
+		let sending: ReturnType<typeof result.current.sendMessage> | undefined;
+		act(() => {
+			sending = result.current.sendMessage("Example");
+		});
+		const cursor = (sequence: string) => ({
+			turnId: "example-turn",
+			runId: "example-run",
+			sequence,
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+			windows[0].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: "First", eventCursor: cursor("1") })}`,
+			);
+			windows[0].enqueueLine('data: {"type":"stream_timeout"}');
+		});
+		expect(JSON.parse(streamBodies[1])).toMatchObject({
+			executionId: "orch-example",
+			organizationId: "example-org",
+			afterEvent: cursor("1"),
+			eventReplay: true,
+		});
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example","resumed":true}',
+			);
+			windows[1].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: "First", eventCursor: cursor("1") })}`,
+			);
+			windows[1].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: " Second", eventCursor: cursor("2") })}`,
+			);
+		});
+		await waitFor(() =>
+			expect(result.current.messages.at(-1)?.content).toBe(
+				"First Second",
+			),
+		);
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"completed","status":"completed"}',
+			);
+			await sending;
+		});
+	});
+	it("reconnects without replay after fallback and clears on the next delta and restores the completed response", async () => {
+		const { windows, streamBodies } = mockStreamWindows(2);
+		const { result } = renderHook(() =>
+			useOrchestratorStream({ organizationId: "example-org" }),
+		);
+		let sending: ReturnType<typeof result.current.sendMessage> | undefined;
+		act(() => {
+			sending = result.current.sendMessage("Example");
+		});
+		const cursor = (sequence: string) => ({
+			turnId: "example-turn",
+			runId: "example-run",
+			sequence,
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+			windows[0].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: "First", eventCursor: cursor("1") })}`,
+			);
+			windows[0].enqueueLine('data: {"type":"replay_unavailable"}');
+			windows[0].enqueueLine('data: {"type":"stream_timeout"}');
+		});
+		expect(JSON.parse(streamBodies[1])).toMatchObject({
+			executionId: "orch-example",
+			organizationId: "example-org",
+			eventReplay: false,
+		});
+		expect(JSON.parse(streamBodies[1]).afterEvent).toBeUndefined();
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example","resumed":true}',
+			);
+			windows[1].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: " Second" })}`,
+			);
+		});
+		await waitFor(() =>
+			expect(result.current.messages.at(-1)?.content).toBe(" Second"),
+		);
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"completed","status":"completed","response":"First Missing Second"}',
+			);
+			await sending;
+		});
+		expect(result.current.messages.at(-1)?.content).toBe(
+			"First Missing Second",
+		);
+	});
+	it("clears on the next delta when replay falls back before its first page", async () => {
+		const { windows, streamBodies } = mockStreamWindows(2);
+		const { result } = renderHook(() =>
+			useOrchestratorStream({ organizationId: "example-org" }),
+		);
+		let sending: ReturnType<typeof result.current.sendMessage> | undefined;
+		act(() => {
+			sending = result.current.sendMessage("Example");
+		});
+		const cursor = (sequence: string) => ({
+			turnId: "example-turn",
+			runId: "example-run",
+			sequence,
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+			windows[0].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: "First", eventCursor: cursor("1") })}`,
+			);
+			windows[0].enqueueLine('data: {"type":"stream_timeout"}');
+		});
+		expect(JSON.parse(streamBodies[1])).toMatchObject({
+			executionId: "orch-example",
+			organizationId: "example-org",
+			eventReplay: true,
+		});
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example","resumed":true}',
+			);
+			windows[1].enqueueLine('data: {"type":"replay_unavailable"}');
+			windows[1].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: " Second" })}`,
+			);
+		});
+		await waitFor(() =>
+			expect(result.current.messages.at(-1)?.content).toBe(" Second"),
+		);
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"completed","status":"completed","response":"First Missing Second"}',
+			);
+			await sending;
+		});
+		expect(result.current.messages.at(-1)?.content).toBe(
+			"First Missing Second",
+		);
+	});
+	it("keeps a pending approval when replay falls back in a resumed window", async () => {
+		const { windows } = mockStreamWindows(2);
+		const { result } = renderHook(() =>
+			useOrchestratorStream({ organizationId: "example-org" }),
+		);
+		let sending: ReturnType<typeof result.current.sendMessage> | undefined;
+		act(() => {
+			sending = result.current.sendMessage("Example");
+		});
+		const cursor = (sequence: string) => ({
+			turnId: "example-turn",
+			runId: "example-run",
+			sequence,
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+			windows[0].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: "First", eventCursor: cursor("1") })}`,
+			);
+			windows[0].enqueueLine('data: {"type":"stream_timeout"}');
+		});
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example","resumed":true}',
+			);
+			windows[1].enqueueLine(
+				'data: {"type":"approval_required","approvalId":"example-approval","stepId":"example-step","reason":"Review"}',
+			);
+			windows[1].enqueueLine('data: {"type":"replay_unavailable"}');
+		});
+		expect(result.current.state.pendingApproval?.approvalId).toBe(
+			"example-approval",
+		);
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"completed","status":"completed","response":"Done"}',
+			);
+			await sending;
+		});
+	});
 	const originalFetch = global.fetch;
 
 	afterEach(() => {
@@ -872,7 +1100,9 @@ describe("useOrchestratorStream — resumable streaming windows (#2269)", () => 
 			);
 		});
 
-		expect(result.current.messages[1]?.content).toBe("half a senten");
+		await waitFor(() =>
+			expect(result.current.messages[1]?.content).toBe("half a senten"),
+		);
 
 		await act(async () => {
 			windows[0].enqueueLine('data: {"type":"stream_timeout"}');
@@ -888,7 +1118,9 @@ describe("useOrchestratorStream — resumable streaming windows (#2269)", () => 
 			);
 		});
 
-		expect(result.current.messages[1]?.content).toBe("half a senten");
+		await waitFor(() =>
+			expect(result.current.messages[1]?.content).toBe("half a senten"),
+		);
 
 		// The first post-resume delta REPLACES the body rather than appending
 		// to it — Redis pub/sub never replays the dropped deltas, so an append
@@ -899,8 +1131,10 @@ describe("useOrchestratorStream — resumable streaming windows (#2269)", () => 
 			);
 		});
 
-		expect(result.current.messages[1]?.content).toBe(
-			"half a sentence, whole again",
+		await waitFor(() =>
+			expect(result.current.messages[1]?.content).toBe(
+				"half a sentence, whole again",
+			),
 		);
 
 		// And the final response still replaces wholesale.
@@ -1226,7 +1460,9 @@ describe("useOrchestratorStream — resumable streaming windows (#2269)", () => 
 			);
 		});
 
-		expect(result.current.messages[1]?.content).toBe("hello");
+		await waitFor(() =>
+			expect(result.current.messages[1]?.content).toBe("hello"),
+		);
 		expect(result.current.messages[1]?.content).not.toContain("\n\n");
 
 		await act(async () => {
@@ -1283,7 +1519,9 @@ describe("useOrchestratorStream — resumable streaming windows (#2269)", () => 
 			);
 		});
 
-		expect(result.current.messages[1]?.content).toBe("hello");
+		await waitFor(() =>
+			expect(result.current.messages[1]?.content).toBe("hello"),
+		);
 		expect(result.current.messages[1]?.content).not.toContain("\n\n");
 
 		await act(async () => {

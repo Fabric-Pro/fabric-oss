@@ -85,7 +85,7 @@ export function SuggestedAnswerOptions({
 
 	return (
 		<div className={cn("space-y-2", className)}>
-			<p className="flex items-center gap-1.5 font-medium text-[11px] text-muted-foreground uppercase tracking-[0.12em]">
+			<p className="flex items-center gap-1.5 font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 				<SparklesIcon
 					className="size-3 text-primary"
 					aria-hidden="true"

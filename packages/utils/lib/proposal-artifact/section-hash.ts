@@ -85,7 +85,10 @@ import type {
 } from "mdast";
 import { fnv1aHex64 } from "../fnv1a";
 import { headingAnchor } from "../glossy/outline";
+import { COVER_LANGUAGE } from "./cover-fence";
 import { parseMarkdownAst } from "./markdown-ast";
+import { CARDS_LANGUAGE, COLUMNS_LANGUAGE } from "./proposal-blocks";
+import { STAT_TILES_LANGUAGE } from "./stat-tiles";
 
 /** The projection version every key and hash is prefixed with. */
 export const SECTION_HASH_VERSION = "p1";
@@ -381,8 +384,13 @@ export const DIAGRAM_KEYWORDS: readonly string[] = [
 	"block",
 ];
 
-/** The fence language whose body is always content. */
-const STAT_TILES_LANGUAGE = "stat-tiles";
+/** Fence languages whose body is always content, never a diagram. */
+const CONTENT_LANGUAGES: ReadonlySet<string> = new Set([
+	STAT_TILES_LANGUAGE,
+	CARDS_LANGUAGE,
+	COLUMNS_LANGUAGE,
+	COVER_LANGUAGE,
+]);
 
 /** A generated visual's id line inside its fence. */
 const VISUAL_MARKER_LINE = /^\s*%%\s*fabric-visual\b/;
@@ -546,15 +554,15 @@ function codeText(node: Code): string {
 
 /**
  * The editor's own test for a diagram fence, so a save cannot flip it and
- * an export draws exactly the fences the page draws. A stat tiles fence is
- * never a diagram, whatever its first line holds.
+ * an export draws exactly the fences the page draws. A stat tiles, cards,
+ * columns or cover fence is never a diagram, whatever its first line holds.
  */
 export function isDiagramFence(
 	lang: string | null | undefined,
 	body: string,
 ): boolean {
 	const language = (lang ?? "").toLowerCase();
-	if (language === STAT_TILES_LANGUAGE) {
+	if (CONTENT_LANGUAGES.has(language)) {
 		return false;
 	}
 	if (DIAGRAM_LANGUAGES.has(language)) {

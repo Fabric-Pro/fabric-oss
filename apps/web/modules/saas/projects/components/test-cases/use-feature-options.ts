@@ -9,7 +9,7 @@ import type { FeatureOption } from "./feature-options";
  * Resolves a work-item id a caller already holds — a filter chip's stored value
  * — back to its identifier and title for display.
  *
- * Reads `stories.list`, which the roadmap views already load, so the lookup
+ * Reads `stories.board`, which the roadmap views already load, so the lookup
  * shares their react-query cache entry instead of fetching its own copy.
  * `enabled` keeps that fetch off until there is actually an id to resolve.
  *
@@ -23,7 +23,7 @@ export function useFeatureOptions(args: {
 	enabled: boolean;
 }) {
 	const { data, isLoading } = useQuery({
-		...orpc.projects.stories.list.queryOptions({
+		...orpc.projects.stories.board.queryOptions({
 			input: {
 				projectId: args.projectId,
 				organizationId: args.organizationId,

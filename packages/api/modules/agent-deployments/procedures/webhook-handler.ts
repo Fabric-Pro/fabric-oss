@@ -10,6 +10,7 @@ import {
 	checkExecutionQuota,
 	db,
 	incrementInstanceRunCount,
+	isDeploymentOwnerCurrentMember,
 	type Prisma,
 } from "@repo/database";
 import type { ExecutionRequest } from "@repo/temporal";
@@ -73,6 +74,9 @@ export const handleWebhookProcedure = publicProcedure
 		});
 
 		if (!trigger) {
+			throw new Error("Webhook not found");
+		}
+		if (!(await isDeploymentOwnerCurrentMember(trigger.deployment))) {
 			throw new Error("Webhook not found");
 		}
 
@@ -143,6 +147,9 @@ export const handleWebhookProcedure = publicProcedure
 
 		if (!quotaCheck.allowed) {
 			throw new Error(quotaCheck.reason || "Execution quota exceeded");
+		}
+		if (!(await isDeploymentOwnerCurrentMember(trigger.deployment))) {
+			throw new Error("Webhook not found");
 		}
 
 		// Merge input template with webhook payload

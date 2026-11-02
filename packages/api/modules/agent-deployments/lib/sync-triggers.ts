@@ -20,6 +20,7 @@
 
 import { randomBytes } from "node:crypto";
 import { type DeploymentTriggerType, db, type Prisma } from "@repo/database";
+import { getSlackCredentials } from "@repo/integrations/slack";
 import { encryptApiKey } from "@repo/utils";
 
 interface InstanceTriggerConfig {
@@ -73,19 +74,117 @@ export function mapTriggerType(
 	}
 }
 
-export function resolveSlackIds(config: Record<string, unknown> | undefined): {
-	slackChannelId: string | null;
-	slackTeamId: string | null;
-} {
-	const c = (config ?? {}) as Record<string, unknown>;
+const SLACK_ID = /^[A-Z0-9]+$/;
+
+export async function resolveBoundSlackIds(
+	config: Record<string, unknown> | undefined,
+	owner: { userId: string; organizationId: string | null | undefined },
+): Promise<{ slackChannelId: string | null; slackTeamId: string }> {
+	if (!owner.organizationId) {
+		throw new Error("Slack triggers require an organization");
+	}
+	const c = config ?? {};
+	const hasId = (value: unknown) =>
+		value !== undefined &&
+		value !== null &&
+		!(typeof value === "string" && value.trim() === "");
+	const channelIds = [c.channelId, c.slackChannelId].filter(hasId);
+	const teamIds = [c.teamId, c.workspaceId, c.slackTeamId].filter(hasId);
+	for (const id of [...channelIds, ...teamIds]) {
+		if (typeof id !== "string" || !SLACK_ID.test(id)) {
+			throw new Error(
+				"Slack team ID and channel ID must contain only uppercase letters and digits",
+			);
+		}
+	}
+	if (new Set(channelIds).size > 1 || new Set(teamIds).size > 1) {
+		throw new Error("Slack trigger identifiers disagree");
+	}
+	let connectedTeamId: string | undefined;
+	try {
+		connectedTeamId = (
+			await getSlackCredentials(owner.userId, owner.organizationId, true)
+		).teamId;
+	} catch {
+		throw new Error(
+			"The agent owner's Slack connection is missing or could not be verified; check the owner's connection and try again",
+		);
+	}
+	if (!connectedTeamId || !SLACK_ID.test(connectedTeamId)) {
+		throw new Error(
+			"The agent owner's Slack connection has no readable team ID; ask the owner to reconnect Slack",
+		);
+	}
+	if (teamIds.length > 0 && teamIds[0] !== connectedTeamId) {
+		throw new Error(
+			"The agent owner's Slack connection points to a different workspace than this trigger",
+		);
+	}
 	return {
-		slackChannelId: (c.channelId ?? c.slackChannelId ?? null) as
-			| string
-			| null,
-		slackTeamId: (c.teamId ?? c.workspaceId ?? c.slackTeamId ?? null) as
-			| string
-			| null,
+		slackTeamId: connectedTeamId,
+		slackChannelId: (channelIds[0] as string | undefined) ?? null,
 	};
+}
+
+export async function assertPersistedSlackTriggerBinding(row: {
+	userId: string | null;
+	organizationId: string | null;
+	slackTeamId: string | null;
+	slackChannelId: string | null;
+	config: unknown;
+}): Promise<void> {
+	if (
+		!row.userId ||
+		!row.organizationId ||
+		!row.slackTeamId ||
+		!row.config ||
+		typeof row.config !== "object" ||
+		Array.isArray(row.config)
+	) {
+		throw new Error("Slack trigger owner or configuration is unavailable");
+	}
+	const config = row.config as Record<string, unknown>;
+	const channelId =
+		config.channelId ?? config.slackChannelId ?? row.slackChannelId;
+	const bound = await resolveBoundSlackIds(
+		{ ...config, channelId },
+		{
+			userId: row.userId,
+			organizationId: row.organizationId,
+		},
+	);
+	const expectedPattern = bound.slackChannelId
+		? `^${bound.slackTeamId}/${bound.slackChannelId}$`
+		: `^${bound.slackTeamId}/`;
+	if (
+		row.slackTeamId !== bound.slackTeamId ||
+		row.slackChannelId !== bound.slackChannelId ||
+		config.chatIdPattern !== expectedPattern
+	) {
+		throw new Error("Slack trigger does not match the connected workspace");
+	}
+}
+
+export async function validateSlackTriggerConfigs(
+	triggers: unknown,
+	owner: { userId: string; organizationId: string | null | undefined },
+): Promise<void> {
+	if (!Array.isArray(triggers)) {
+		return;
+	}
+	for (const trigger of triggers) {
+		if (trigger?.type !== "slack" || trigger.enabled === false) {
+			continue;
+		}
+		if (
+			trigger.config != null &&
+			(typeof trigger.config !== "object" ||
+				Array.isArray(trigger.config))
+		) {
+			throw new Error("Invalid Slack trigger configuration");
+		}
+		await resolveBoundSlackIds(trigger.config, owner);
+	}
 }
 
 /**
@@ -100,17 +199,22 @@ export function buildSlackChannelConfig(
 	slackChannelId: string | null,
 	slackTeamId: string | null,
 ): Prisma.InputJsonValue {
+	if (
+		!slackTeamId ||
+		!SLACK_ID.test(slackTeamId) ||
+		(slackChannelId !== null && !SLACK_ID.test(slackChannelId))
+	) {
+		throw new Error("Invalid Slack team or channel ID");
+	}
 	const config: Record<string, unknown> = {
 		...(original ?? {}),
 		channel: "slack",
+		teamId: slackTeamId,
 	};
-	if (slackTeamId) {
-		config.chatIdPattern = slackChannelId
-			? `^${slackTeamId}/${slackChannelId}$`
-			: `^${slackTeamId}/`;
-	}
-	// teamId is the tenant boundary; without it we deliberately omit
-	// chatIdPattern and the caller marks the trigger inactive.
+	config.chatIdPattern = slackChannelId
+		? `^${slackTeamId}/${slackChannelId}$`
+		: `^${slackTeamId}/`;
+	// The caller must bind teamId to the owner's connection before activation.
 	return config as Prisma.InputJsonValue;
 }
 
@@ -188,7 +292,13 @@ export async function syncDeploymentTriggers(
 ): Promise<void> {
 	const instance = await db.agentTemplateInstance.findUnique({
 		where: { id: input.instanceId },
-		select: { id: true, name: true, triggers: true },
+		select: {
+			id: true,
+			name: true,
+			triggers: true,
+			userId: true,
+			organizationId: true,
+		},
 	});
 	if (!instance) {
 		return;
@@ -202,6 +312,10 @@ export async function syncDeploymentTriggers(
 	const enabled = triggers.filter(
 		(t) => t.enabled !== false && t.type !== "manual",
 	);
+	await validateSlackTriggerConfigs(enabled, {
+		userId: instance.userId,
+		organizationId: instance.organizationId,
+	});
 
 	const existingDeployment = await db.agentDeployment.findUnique({
 		where: { instanceId: input.instanceId },
@@ -218,8 +332,8 @@ export async function syncDeploymentTriggers(
 		: await ensureDeployment({
 				instanceId: instance.id,
 				instanceName: instance.name,
-				userId: input.userId,
-				organizationId: input.organizationId,
+				userId: instance.userId,
+				organizationId: instance.organizationId,
 			});
 
 	const existingRows = await db.agentDeploymentTrigger.findMany({
@@ -241,7 +355,10 @@ export async function syncDeploymentTriggers(
 		const config = trigger.config ?? {};
 		const isSlackInstance = trigger.type.toLowerCase() === "slack";
 		const { slackChannelId, slackTeamId } = isSlackInstance
-			? resolveSlackIds(config)
+			? await resolveBoundSlackIds(config, {
+					userId: instance.userId,
+					organizationId: instance.organizationId,
+				})
 			: { slackChannelId: null, slackTeamId: null };
 		const cronExpression =
 			deploymentType === "SCHEDULE" ? (config.cron ?? null) : null;
@@ -251,12 +368,8 @@ export async function syncDeploymentTriggers(
 			? buildSlackChannelConfig(config, slackChannelId, slackTeamId)
 			: ((config ?? {}) as Prisma.InputJsonValue);
 
-		// teamId is the tenant boundary for Slack — without it any
-		// chatIdPattern we synthesize would risk matching events from
-		// unrelated workspaces. Without a pattern the matcher treats the row
-		// as a wildcard and dispatches every Slack event to this trigger.
-		// Either way the safe move is to mark the row inactive until the
-		// user reconfigures it.
+		// A Slack row reaches this point only after its team is bound to the
+		// owner's active connection and its identifiers pass validation.
 		const writeIsActive = isSlackInstance ? Boolean(slackTeamId) : true;
 
 		const key = triggerKey(deploymentType, slackChannelId ?? null);
@@ -274,6 +387,12 @@ export async function syncDeploymentTriggers(
 						slackChannelId: slackChannelId ?? null,
 						slackTeamId: slackTeamId ?? null,
 						isActive: writeIsActive,
+						...(isSlackInstance
+							? {
+									userId: instance.userId,
+									organizationId: instance.organizationId,
+								}
+							: {}),
 					},
 				});
 			} else {
@@ -292,8 +411,10 @@ export async function syncDeploymentTriggers(
 						timezone,
 						slackChannelId: slackChannelId ?? null,
 						slackTeamId: slackTeamId ?? null,
-						userId: input.userId,
-						organizationId: input.organizationId ?? null,
+						userId: isSlackInstance
+							? instance.userId
+							: input.userId,
+						organizationId: instance.organizationId,
 					},
 				});
 			}

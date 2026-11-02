@@ -1951,7 +1951,7 @@ export function BacklogChangeProposal({
 										) && (
 											<Badge
 												variant="outline"
-												className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground border-muted-foreground/30"
+												className="text-[10px] uppercase tracking-wide text-muted-foreground border-muted-foreground/30"
 											>
 												Phase{" "}
 												{phaseLabelFromLabels(
@@ -1980,19 +1980,19 @@ export function BacklogChangeProposal({
 												/>
 											)}
 										{pushAnywayByIndex[index] && (
-											<span className="text-[10px] uppercase tracking-[0.18em] text-destructive">
+											<span className="text-[10px] uppercase tracking-wide text-destructive">
 												will push anyway
 											</span>
 										)}
 										{skipByIndex[index] && (
-											<span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+											<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
 												PM sync skipped
 											</span>
 										)}
 										{reviewedIndexes.has(index) && (
 											<Badge
 												variant="outline"
-												className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground border-muted-foreground/30"
+												className="text-[10px] uppercase tracking-wide text-muted-foreground border-muted-foreground/30"
 											>
 												<EyeIcon className="mr-1 size-3" />
 												Reviewed
@@ -2613,17 +2613,17 @@ function KindSelector({
 				break;
 			case "Home":
 				e.preventDefault();
-				if (selected !== options[0]!.value) {
-					onChange(options[0]!.value);
+				if (selected !== options[0]?.value) {
+					onChange(options[0]?.value);
 				}
-				focusOption(options[0]!.value);
+				focusOption(options[0]?.value);
 				break;
 			case "End":
 				e.preventDefault();
-				if (selected !== options[options.length - 1]!.value) {
-					onChange(options[options.length - 1]!.value);
+				if (selected !== options[options.length - 1]?.value) {
+					onChange(options[options.length - 1]?.value);
 				}
-				focusOption(options[options.length - 1]!.value);
+				focusOption(options[options.length - 1]?.value);
 				break;
 		}
 	};
@@ -2659,7 +2659,7 @@ function KindSelector({
 								}
 							}}
 							className={cn(
-								"px-2 py-0.5 text-xs rounded font-medium leading-tight transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+								"px-2 py-0.5 text-xs rounded font-medium leading-tight transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 								"cursor-pointer disabled:cursor-not-allowed",
 								isActive
 									? opt.value === "BUG"

@@ -6,6 +6,14 @@
  */
 
 /**
+ * The fenced content blocks a document's own instructions may ask for besides
+ * code: a client Proposal's Main prompt defines them and its theme draws
+ * them. Without such instructions the code-fence rule is unchanged.
+ */
+const DOCUMENT_CONTENT_BLOCKS =
+	"the content blocks a document's own instructions define (stat-tiles, cards, columns, cover)";
+
+/**
  * Core markdown formatting rules
  */
 export const MARKDOWN_FORMATTING_RULES = {
@@ -145,7 +153,7 @@ function example() {
 			"Specify language tag when applicable",
 			"Close with matching triple backticks",
 			"Indent code within blocks appropriately",
-			"Use code fences ONLY for actual code, JSON payloads, shell commands, or Mermaid diagrams",
+			`Use code fences ONLY for actual code, JSON payloads, shell commands, Mermaid diagrams, or ${DOCUMENT_CONTENT_BLOCKS}`,
 			"NEVER leave a fenced block open when returning to headings, lists, or paragraphs",
 			"NEVER wrap an entire section or document in a code fence",
 		],
@@ -196,7 +204,7 @@ These rules apply to every document you generate:
 
 1. Write the document itself as plain markdown, not inside \`\`\`markdown fences
 2. Use headings, paragraphs, bullet lists, and tables directly
-3. Use fenced blocks only for actual examples such as JSON, code, shell commands, or Mermaid
+3. Use fenced blocks only for actual examples such as JSON, code, shell commands, or Mermaid, and for ${DOCUMENT_CONTENT_BLOCKS}
 4. Every fenced block MUST be closed before the next heading, paragraph, or list starts
 5. For API docs, endpoint summaries MUST be plain bullets like:
    - GET /api/users

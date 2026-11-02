@@ -21,6 +21,7 @@ export {
 	PERMANENT_SLACK_ERRORS,
 	SlackConfigurationError,
 } from "./api.errors";
+export { readSlackConnectionIdentity } from "./connection-identity";
 // Export credentials helper
 export { default as getSlackCredentials } from "./credentials";
 // Export authenticated file download (chat-thread image attachments feature)

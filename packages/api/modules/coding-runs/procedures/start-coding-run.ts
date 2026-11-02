@@ -23,6 +23,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { assertStoryReadyForRun } from "../../projects/lib/run-readiness";
+import { requireRemoteServerAccess } from "../lib/remote-server-access";
 import { defaultSpikeQuestion } from "../lib/spike-question";
 import { codingRunWorkflowId } from "../lib/workflow-id";
 
@@ -151,6 +152,7 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 			model: z.string().min(1).max(200).optional(),
 			/** Optional target machine / host identifier. */
 			targetMachine: z.string().min(1).max(200).optional(),
+			serverId: z.string().min(1).max(200).optional(),
 		}),
 	)
 	.output(
@@ -263,7 +265,10 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 
 		if (
 			!fabricAgentsBridgeEnabled &&
-			(input.llmConnection || input.model || input.targetMachine)
+			(input.llmConnection ||
+				input.model ||
+				input.targetMachine ||
+				input.serverId)
 		) {
 			throw new ORPCError("PRECONDITION_FAILED", {
 				message:
@@ -366,6 +371,69 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 			});
 		}
 
+		let nativeExecutionMetadata:
+			| {
+					executionRuntime: string;
+					executionTarget: {
+						url: string;
+						profileId: string;
+						connectionId?: string;
+						projectId?: string;
+						organizationId?: string;
+						userId?: string;
+					};
+					serverName?: string;
+			  }
+			| undefined;
+		if (provider === "BACKGROUND_AGENTS" && fabricAgentsBridgeEnabled) {
+			const server = input.serverId
+				? await requireRemoteServerAccess({
+						id: input.serverId,
+						projectId,
+						userId: user.id,
+					})
+				: undefined;
+			const target = server
+				? {
+						name: server.name,
+						url: server.url,
+						profileId: server.profileId,
+						connectionId: server.id,
+						projectId,
+						organizationId: workflowOrgId,
+						userId: user.id,
+					}
+				: undefined;
+			const { FabricBackgroundAdapter } = await import(
+				"@repo/temporal/coding-execution"
+			);
+			try {
+				const readiness = await new FabricBackgroundAdapter(
+					target,
+				).executionReadiness({
+					repoOwner,
+					repoName,
+					organizationId: workflowOrgId,
+					llmConnection: input.llmConnection,
+					model: input.model,
+					targetMachine: input.targetMachine,
+				});
+				nativeExecutionMetadata = {
+					executionRuntime: "fabric-agent-server",
+					executionTarget: {
+						...target,
+						...readiness.executionTarget,
+					},
+					...(server ? { serverName: server.name } : {}),
+				};
+			} catch {
+				throw new ORPCError("SERVICE_UNAVAILABLE", {
+					message:
+						"Fabric Agents execution is not ready. Check host authentication, the selected provider/model, repository push access, and API/worker configuration.",
+				});
+			}
+		}
+
 		// Create CodingRun record. The pre-check above is racy on its own;
 		// the partial unique index (plan §F2) is the real guard — a P2002
 		// here means a concurrent start won.
@@ -380,6 +448,7 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 					organizationId: workflowOrgId,
 					executionChannel,
 					provider,
+					providerMetadata: nativeExecutionMetadata,
 					repositoryUrl: repoUrl,
 					repositoryOwner: repoOwner,
 					repositoryName: repoName,
@@ -444,7 +513,9 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 
 		try {
 			await temporal.workflow.start(
-				"codingRunWorkflow",
+				nativeExecutionMetadata?.executionTarget?.connectionId
+					? "remoteCodingRunWorkflow"
+					: "codingRunWorkflow",
 				withCorrelationMemo({
 					taskQueue: "agents",
 					workflowId,
@@ -452,6 +523,7 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 					args: [
 						{
 							codingRunId: codingRun.id,
+							providerMetadata: nativeExecutionMetadata,
 							projectId,
 							storyId,
 							storyTaskId: taskId,

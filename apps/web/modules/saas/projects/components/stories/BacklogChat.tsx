@@ -1,6 +1,6 @@
 "use client";
 
-import { useCoAgent, useCopilotAction } from "@copilotkit/react-core";
+import { useCopilotAction } from "@copilotkit/react-core";
 import { useAgent } from "@copilotkit/react-core/v2";
 import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
 import { CopilotAssistantMessageForBacklogUpdater } from "@saas/shared/components/copilot/CopilotAssistantMessage";
@@ -37,24 +37,6 @@ import {
 	REVIEW_UNAVAILABLE_RESULT,
 } from "./backlog-flow-controller";
 import { MEETINGS_STALE_TIME } from "./use-project-meetings";
-
-type BacklogUpdaterState = {
-	projectId: string;
-	projectName: string;
-	/** Engagement profile of the project (drives the Explore intake). */
-	engagementProfile?: EngagementProfile | null;
-	organizationId?: string;
-	hasTeamsIntegration: boolean;
-	hasSlackIntegration: boolean;
-	hasNotionIntegration: boolean;
-	hasPMTool: boolean;
-	pmToolName?: string;
-	backlogSummary: string;
-	analysisStatus?: string;
-	lastProposalSummary?: string;
-	error?: string;
-	retryCount: number;
-};
 
 type Props = {
 	projectId: string;
@@ -325,29 +307,8 @@ export function BacklogChat({
 		],
 	);
 
-	// Sync agent state with CopilotKit
-	useCoAgent<BacklogUpdaterState>({
-		name: "backlog_updater",
-		initialState: {
-			...agentContext,
-			analysisStatus: undefined,
-			lastProposalSummary: undefined,
-			error: undefined,
-			retryCount: 0,
-			// Declare reasoningByTurn in initialState so CopilotKit's
-			// useCoAgent doesn't filter it out of STATE_SNAPSHOT updates.
-			// Without this key, reasoning events emitted by chat-node.ts
-			// arrive on the SSE wire but are dropped before reaching
-			// CopilotAssistantMessageForBacklogUpdater's subscription.
-			// Same rationale as DocumentEditor.tsx:1286.
-			reasoningByTurn: {},
-		},
-	});
-
-	// useCoAgent applies initialState after AG-UI copies state into the run
-	// input. Seed eagerly below, but CopilotKit 1.80's async thread connect
-	// can clear that state later. The core run-start hook re-seeds after the
-	// wipe and before connect/run builds its input.
+	// Seed eagerly below; the run-start hook restores context after
+	// CopilotKit 1.80 async thread connect clears state.
 	const { agent: backlogAgent } = useAgent({
 		agentId: "backlog_updater",
 		updates: [],

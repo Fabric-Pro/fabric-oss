@@ -677,7 +677,7 @@ export function AuditLogExplorer() {
 				<div className="space-y-3">
 					<p className="app-editorial-label">{t("label")}</p>
 					<div className="flex flex-wrap items-center justify-between gap-3">
-						<h2 className="text-2xl font-normal tracking-tight text-foreground">
+						<h2 className="text-2xl font-semibold tracking-tight text-foreground">
 							{t("title")}
 						</h2>
 						{docsHref ? (
@@ -718,7 +718,7 @@ export function AuditLogExplorer() {
 							</p>
 							<h2
 								id="connect-heading"
-								className="font-serif text-xl font-normal text-foreground"
+								className="text-xl font-semibold text-foreground"
 							>
 								{t("connect.title")}
 							</h2>
@@ -798,7 +798,7 @@ export function AuditLogExplorer() {
 											? t("connect.hideKey")
 											: t("connect.showKey")
 									}
-									className="absolute inset-y-0 right-0 flex items-center px-2 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+									className="absolute inset-y-0 right-0 flex items-center px-2 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 								>
 									{showApiKey ? (
 										<EyeOffIcon

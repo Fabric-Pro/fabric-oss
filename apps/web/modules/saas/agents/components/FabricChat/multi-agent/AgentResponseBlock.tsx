@@ -4,8 +4,13 @@ import {
 	AgentAvatar,
 	VendorLogo,
 } from "@saas/agents/components/FabricChat/shared/AgentIdentity";
+import { AnsweredByModel } from "@saas/agents/components/FabricChat/shared/AnsweredByModel";
 import { isModelSelectionId } from "@saas/agents/components/FabricChat/shared/agent-selection";
 import { ChatFailureNotice } from "@saas/agents/components/FabricChat/shared/ChatFailureNotice";
+import {
+	isProviderPickNotApplied,
+	useProviderPickStatus,
+} from "@saas/agents/components/FabricChat/shared/use-provider-pick-status";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
 import type { ApprovalSendResult } from "@saas/agents/lib/approval-response";
 import type { AgentResponse } from "@saas/agents/lib/multi-agent-response";
@@ -38,6 +43,7 @@ import {
 	Loader2Icon,
 	XCircleIcon,
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -45,12 +51,17 @@ import {
 	type DefaultMcpStatusCtaPayload,
 	isDefaultMcpStatusCta,
 } from "../../../../../../components/ai-elements/DefaultMcpStatusCard";
+import { DeferredResponse as Response } from "../../../../../../components/ai-elements/deferred-response";
 import {
 	McpAppFrame,
 	prefetchMcpAppHtml,
 } from "../../../../../../components/ai-elements/McpAppFrame";
-import { Response } from "../../../../../../components/ai-elements/response";
-import { TypingResponse } from "../../../../../../components/ai-elements/typing-response";
+
+const TypingResponse = dynamic(() =>
+	import("../../../../../../components/ai-elements/typing-response").then(
+		(module) => module.TypingResponse,
+	),
+);
 
 /**
  * One agent's answer in a multi-agent turn: its avatar or vendor logo, the
@@ -362,6 +373,12 @@ export function AgentResponseBlock({
 
 	const isModelAgent = isModelSelectionId(response.agentId);
 	const pendingApproval = response.pendingApproval;
+	const pick = { agentId: response.agentId, name: response.agentName };
+	const { getInactiveNote } = useProviderPickStatus(organizationId, [pick]);
+	const pickNotApplied = isProviderPickNotApplied(
+		response.agentId,
+		response.model,
+	);
 
 	return (
 		<div className="group flex gap-4">
@@ -377,6 +394,16 @@ export function AgentResponseBlock({
 				{/* Agent name label */}
 				<p className="mb-2 text-sm font-semibold text-foreground">
 					{response.agentName}
+					{/* Another model answered this model pick: the label
+					    below names it. */}
+					{pickNotApplied ? (
+						<span
+							className="ml-2 font-normal text-highlight-ink text-xs"
+							title={getInactiveNote(pick)}
+						>
+							not applied
+						</span>
+					) : null}
 				</p>
 
 				{/* Tool calls (if any) */}
@@ -551,6 +578,9 @@ export function AgentResponseBlock({
 						 * `status === "cancelled"` show this chip. */}
 						{response.status === "cancelled" && (
 							<StoppedIndicator className="mt-1" />
+						)}
+						{!response.isLoading && (
+							<AnsweredByModel model={response.model} />
 						)}
 						{response.isLoading && !response.pendingApproval && (
 							<ThinkingIndicator

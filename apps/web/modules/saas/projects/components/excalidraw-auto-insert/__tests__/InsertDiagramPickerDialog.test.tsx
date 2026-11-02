@@ -4,7 +4,7 @@
  *
  * Coverage:
  *   - Renders the empty state when both `projects.documents.list` and
- *     `projects.stories.list` return empty arrays (spec § 8.3 "empty
+ *     `projects.stories.board` return empty arrays (spec § 8.3 "empty
  *     state").
  *   - Switches between the Documents and Features tabs.
  *   - Row click invokes `onPick` with the row's kind/id/label AND fires
@@ -21,7 +21,7 @@
  *
  * Mocks:
  *   - `@shared/lib/orpc-query-utils` (the dialog reads `orpc.projects.
- *     documents.list.queryOptions` and `orpc.projects.stories.list.
+ *     documents.list.queryOptions` and `orpc.projects.stories.board.
  *     queryOptions`).
  *   - `@analytics` (telemetry assertions).
  *   - `next-intl` (returns a synthetic `t` that echoes the key with
@@ -54,9 +54,9 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				},
 			},
 			stories: {
-				list: {
+				board: {
 					queryOptions: ({ input }: { input: unknown }) => ({
-						queryKey: ["projects.stories.list", input],
+						queryKey: ["projects.stories.board", input],
 						queryFn: () => listStoriesMock(input),
 					}),
 				},

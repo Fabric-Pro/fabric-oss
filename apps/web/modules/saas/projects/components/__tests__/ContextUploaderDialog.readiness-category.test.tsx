@@ -87,6 +87,11 @@ vi.mock("@shared/lib/orpc-client", () => ({
 		mcp: {
 			configs: { list: (input: unknown) => mcpConfigsListMock(input) },
 		},
+		workflows: {
+			integrations: {
+				listStatus: vi.fn().mockResolvedValue({ integrations: [] }),
+			},
+		},
 	},
 }));
 

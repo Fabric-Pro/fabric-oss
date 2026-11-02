@@ -362,13 +362,21 @@ export function getDefaultContext(): ContextConfig | undefined {
 	return profileFor().defaultContext;
 }
 
-export function getOutputFormat(): "table" | "json" | "yaml" | "csv" {
+export function getOutputFormat():
+	| "table"
+	| "json"
+	| "yaml"
+	| "csv"
+	| "plain"
+	| "quiet" {
 	if (
 		process.env.FABRIC_FORMAT === "json" ||
 		process.env.FABRIC_FORMAT === "yaml" ||
-		process.env.FABRIC_FORMAT === "csv"
+		process.env.FABRIC_FORMAT === "csv" ||
+		process.env.FABRIC_FORMAT === "plain" ||
+		process.env.FABRIC_FORMAT === "quiet"
 	) {
-		return process.env.FABRIC_FORMAT as "json" | "yaml" | "csv";
+		return process.env.FABRIC_FORMAT;
 	}
 	return getConfig().defaultFormat;
 }

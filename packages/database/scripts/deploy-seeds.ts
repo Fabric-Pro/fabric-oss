@@ -39,6 +39,7 @@ interface SeedConfig {
 	 * data catalogs, a folder of seed data); see `seedContentHash`.
 	 */
 	dependencies?: string[];
+	environment?: readonly string[];
 	description: string;
 }
 
@@ -118,6 +119,20 @@ async function main() {
 		{
 			name: "system-agents",
 			file: "seed-system-agents.ts",
+			environment: [
+				"DOCKER_CONTAINER",
+				"FABRIC_WORKSPACE_ASSISTANT_URL",
+				"PROJECT_DOCUMENT_GENERATOR_URL",
+				"DOCUMENT_GENERATOR_URL",
+				"TASK_PLANNER_URL",
+				"STORY_BREAKDOWN_URL",
+				"DATA_ANALYST_URL",
+				"API_AGENT_URL",
+				"PROMPT_ENHANCER_URL",
+				"BACKLOG_UPDATER_URL",
+				"WEAVE_READERS_URL",
+				"WEAVE_SHUTTLE_URL",
+			],
 			description: "System agents",
 		},
 		{
@@ -199,7 +214,15 @@ async function main() {
 	for (const seed of seeds) {
 		const filePath = join(PRISMA_DIR, seed.file);
 		const depPaths = seed.dependencies?.map((d) => join(PRISMA_DIR, d));
-		const currentHash = seedContentHash(filePath, depPaths);
+		const configuration = seed.environment
+			? Object.fromEntries(
+					seed.environment.map((name) => [
+						name,
+						process.env[name] || "",
+					]),
+				)
+			: undefined;
+		const currentHash = seedContentHash(filePath, depPaths, configuration);
 		const storedHash = await getStoredHash(seed.name);
 
 		if (!forceRun && currentHash === storedHash) {

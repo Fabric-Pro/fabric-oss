@@ -6,7 +6,6 @@ import {
 	APPROVAL_STALE_MESSAGE,
 	type ApprovalSendResult,
 } from "@saas/agents/lib/approval-response";
-import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { useState } from "react";
 import { toast } from "sonner";
 import { ApprovalDialog } from "./ApprovalDialog";
@@ -97,8 +96,7 @@ export function ApprovalPanel({
 		}
 	};
 	return (
-		<div className="flex gap-3">
-			<FabricLogo className="h-8 w-8 shrink-0" size={32} />
+		<div className="w-full">
 			<div className="flex-1">
 				<ApprovalDialog
 					stepId={pending.stepId}

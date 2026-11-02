@@ -45,8 +45,10 @@ sequenceDiagram
     | `agents:read` | List and view exposed agents |
     | `agents:execute` | Trigger agent executions |
     | `agents:stream` | Stream execution results in real time |
+    | `kanban:read` | List your Fabric Kanban queue and read your CLI identity |
+    | `kanban:write` | Pull and complete your Fabric Kanban items |
 
-    For most use cases, select all three. A new key starts with **MCP Read** only; leave **MCP Write** unticked, because it grants every write tool, and add narrower scopes such as `workflows:write` only for an agent that needs them.
+    For an external agent, select the three agent scopes. For the Fabric Kanban CLI, select both Kanban scopes; `kanban:write` does not imply `kanban:read`. A new key starts with **MCP Read** only; leave **MCP Write** unticked, because it grants every write tool, and add narrower scopes such as `workflows:write` only for an agent that needs them.
   </Step>
 
   <Step>

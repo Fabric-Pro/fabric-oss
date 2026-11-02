@@ -96,7 +96,7 @@ export function useDuplicateScan(
 					}),
 				}),
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.queryKey({
+					queryKey: orpc.projects.stories.board.queryKey({
 						input: { projectId, organizationId },
 					}),
 				}),

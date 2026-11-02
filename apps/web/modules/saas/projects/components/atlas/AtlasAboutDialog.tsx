@@ -93,7 +93,7 @@ export function AtlasAboutDialog() {
 				<button
 					type="button"
 					aria-label={t("triggerLabel")}
-					className="rounded-full p-1 text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					className="rounded-full p-1 text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 				>
 					<InfoIcon aria-hidden="true" className="size-4" />
 				</button>
@@ -113,10 +113,7 @@ export function AtlasAboutDialog() {
 							{t("label")}
 						</span>
 					</div>
-					<DialogTitle
-						className="font-normal text-2xl leading-tight"
-						style={{ fontFamily: "var(--font-serif)" }}
-					>
+					<DialogTitle className="font-semibold text-2xl leading-tight">
 						{t("title")}
 					</DialogTitle>
 					<DialogDescription className="text-sm leading-relaxed">
@@ -177,14 +174,14 @@ export function AtlasAboutDialog() {
 					<div className="flex h-full flex-col gap-3">
 						{/* You build the map — connections feed the AI's atlas.
 						    Icon + title on top; body full-width below. */}
-						<div className="flex flex-1 flex-col justify-center gap-2 rounded-xl border border-border/70 bg-muted/30 p-4">
+						<div className="flex flex-1 flex-col justify-center gap-2 rounded-lg border border-border/70 bg-muted/30 p-4">
 							<div className="flex items-center gap-2.5">
 								<IconChip Icon={WaypointsIcon} />
 								<div className="flex min-w-0 flex-wrap items-center gap-2">
 									<h3 className="text-sm font-semibold text-foreground">
 										{t("editTitle")}
 									</h3>
-									<span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+									<span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
 										{t("editTag")}
 									</span>
 								</div>
@@ -194,14 +191,14 @@ export function AtlasAboutDialog() {
 							</p>
 						</div>
 						{/* The multi-repo System map — a DISTINCT capability. */}
-						<div className="flex flex-1 flex-col justify-center gap-2 rounded-xl border border-primary/25 bg-primary/[0.05] p-4">
+						<div className="flex flex-1 flex-col justify-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.05] p-4">
 							<div className="flex items-center gap-2.5">
 								<IconChip Icon={Share2Icon} />
 								<div className="flex min-w-0 flex-wrap items-center gap-2">
 									<h3 className="text-sm font-semibold text-foreground">
 										{t("systemTitle")}
 									</h3>
-									<span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-primary">
+									<span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-primary">
 										{t("systemTag")}
 									</span>
 								</div>

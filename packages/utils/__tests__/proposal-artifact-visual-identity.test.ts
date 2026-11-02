@@ -161,6 +161,30 @@ describe("source hash", () => {
 		);
 	});
 
+	it("leaves a bars figure line out", () => {
+		const bars = lines(
+			"xychart-beta horizontal",
+			'  x-axis ["Expected · 5% uplift", Baseline]',
+			"  bar [12, 4]",
+		);
+		const marked = toMermaidFenceBody(bars, ID);
+		const figured = withFigureKind(
+			withDiagramCaption(marked, "Hours saved"),
+			"bars",
+		);
+
+		expect(figured.split("\n").slice(0, 3)).toEqual([
+			`%% fabric-visual: ${ID}`,
+			"%% caption: Hours saved",
+			"%% figure: bars",
+		]);
+		expect(readFigureKind(figured)).toBe("bars");
+		expect(visualSourceHash(figured)).toBe(visualSourceHash(bars));
+		expect(visualSourceHash(withFigureKind(bars, "bars"))).toBe(
+			visualSourceHash(bars),
+		);
+	});
+
 	it("keeps a malformed marker in the hashed source", () => {
 		expect(visualSourceHash(`%% fabric-visual: BAD\n${SOURCE}`)).not.toBe(
 			HASH,
@@ -570,6 +594,7 @@ describe("preserveVisualMarkers", () => {
 				ink: "#16171a",
 				onInk: "#ffffff",
 				primary: "#c2410c",
+				label: "#9a3412",
 				onPrimary: "#ffffff",
 				tint: "#fbefe9",
 				border: "#d9dade",
@@ -593,6 +618,38 @@ describe("preserveVisualMarkers", () => {
 			expect(readFigureKind(body)).toBeNull();
 			expect(tryRenderFigure(body, palette)).toBeNull();
 			expect(tryRenderFigure(bodyOf(FIGURED), palette)).not.toBeNull();
+		});
+
+		it("comes back as a bars line on a bar chart", () => {
+			const bars = lines(
+				"xychart-beta horizontal",
+				'  x-axis ["Expected · 5% uplift", Baseline]',
+				"  bar [12, 4]",
+				"  line [10, 10]",
+			);
+			const markedBars = toMermaidFenceBody(bars, ID);
+			const barsFigured = fenced(
+				withFigureKind(
+					withDiagramCaption(markedBars, "Hours saved"),
+					"bars",
+				),
+			);
+			const writerCopy = fenced(withDiagramCaption(bars, "Hours saved"));
+
+			const result = preserveVisualMarkers(
+				document(barsFigured),
+				document(writerCopy),
+			);
+			expect(result).toBe(document(barsFigured));
+			expect(readFigureKind(diagramFences(result)[0].value)).toBe("bars");
+			// A writer who kept the marker but dropped the caption and the
+			// figure line gets the figure line back, not the caption.
+			expect(
+				preserveVisualMarkers(
+					document(barsFigured),
+					document(fenced(markedBars)),
+				),
+			).toBe(document(fenced(withFigureKind(markedBars, "bars"))));
 		});
 
 		it("restores each figure line to its own diagram", () => {

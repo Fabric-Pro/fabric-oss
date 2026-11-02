@@ -73,7 +73,7 @@ export function EditablePriorityChip({
 					// The value in words, for a sighted reader who only sees bars.
 					title={compact ? labelFor(value) : undefined}
 					className={cn(
-						"inline-flex items-center gap-1.5 rounded-full border border-border/70 py-0.5 font-medium text-foreground text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
+						"inline-flex items-center gap-1.5 rounded-full border border-border/70 py-0.5 font-medium text-foreground text-xs transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
 						compact ? "gap-1 px-1.5" : "px-2",
 						className,
 					)}

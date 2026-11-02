@@ -408,7 +408,7 @@ export function PmSyncChip({
 								className={cn(
 									"inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1",
 									"text-[11px] font-medium uppercase tracking-[0.06em] whitespace-nowrap",
-									"transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+									"transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 									"disabled:opacity-70 disabled:cursor-default cursor-pointer",
 									meta.cls,
 								)}

@@ -222,8 +222,8 @@ function OutcomesSummary({
 		{
 			label: "Already on roadmap",
 			count: current.changeOutcomes.alreadyOnRoadmap,
-			color: "fill-primary stroke-background",
-			swatch: "bg-primary",
+			color: "fill-foreground stroke-background",
+			swatch: "bg-foreground",
 		},
 		{
 			label: "Rejected",
@@ -255,7 +255,7 @@ function OutcomesSummary({
 			<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
 				<a
 					href={`#${needsReviewId}`}
-					className="rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					className="rounded-lg text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					onClick={(event) => {
 						event.preventDefault();
 						reviewHeading.current?.scrollIntoView({
@@ -330,7 +330,7 @@ function OutcomesSummary({
 								id={needsReviewId}
 								ref={reviewHeading}
 								tabIndex={-1}
-								className="scroll-mt-6 text-base font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								className="scroll-mt-6 text-base font-medium focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 							>
 								Needs review
 							</h3>
@@ -376,7 +376,7 @@ function OutcomesSummary({
 												projectId,
 												item.id,
 											)}
-											className="flex min-h-11 items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											className="flex min-h-11 items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 										>
 											<span className="min-w-0">
 												<span className="block break-words">

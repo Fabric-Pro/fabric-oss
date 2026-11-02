@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-	type VisualSpec,
+	type LayersVisualSpec,
+	PROPOSAL_ONLY_VISUAL_KINDS,
+	proposalVisualSpecSchema,
 	specHash,
+	type TeamVisualSpec,
+	type VisualSpec,
 	visualSpecFacts,
 	visualSpecSchema,
 } from "../lib/glossy/visual-spec";
@@ -340,5 +344,154 @@ describe("specHash", () => {
 
 	it("returns a 16-character lowercase hex string", () => {
 		expect(specHash(validOrgChart)).toMatch(/^[0-9a-f]{16}$/);
+	});
+});
+
+describe("proposalVisualSpecSchema (Fizzy #2946)", () => {
+	const layers: LayersVisualSpec = {
+		kind: "layers",
+		title: "Platform layers",
+		layers: [
+			{
+				name: "Channels",
+				description: "Where customers order",
+				components: ["Web shop", "Mobile app"],
+			},
+			{ name: "Services", components: ["Orders", "Billing"] },
+		],
+		crosscutting: { name: "Operations", items: ["Monitoring"] },
+	};
+
+	const team: TeamVisualSpec = {
+		kind: "team",
+		proposer: {
+			name: "Example Studio",
+			members: [
+				{ role: "Delivery lead", name: "Alex Example" },
+				{ role: "Engineer", description: "Builds the services" },
+			],
+		},
+		client: {
+			name: "Example Retail",
+			description: "Product side",
+			members: [{ role: "Product owner" }],
+		},
+		shared: "Weekly steering meeting",
+	};
+
+	it("accepts layers and team, which Glossy's validator refuses", () => {
+		for (const spec of [layers, team]) {
+			expect(proposalVisualSpecSchema.safeParse(spec).success).toBe(true);
+			expect(visualSpecSchema.safeParse(spec).success).toBe(false);
+		}
+		expect(PROPOSAL_ONLY_VISUAL_KINDS).toEqual(["layers", "team"]);
+	});
+
+	it("accepts every Glossy kind exactly as Glossy's validator does", () => {
+		for (const spec of [
+			validTimeline,
+			validComparison,
+			validStat,
+			validFlow,
+			validOrgChart,
+			validExistingMermaid,
+			validAuto,
+		]) {
+			expect(proposalVisualSpecSchema.parse(spec)).toEqual(
+				visualSpecSchema.parse(spec),
+			);
+		}
+		const cycle = {
+			kind: "org_chart",
+			nodes: [
+				{ id: "a", label: "A", parentId: null },
+				{ id: "b", label: "B", parentId: "c" },
+				{ id: "c", label: "C", parentId: "b" },
+			],
+		};
+		expect(proposalVisualSpecSchema.safeParse(cycle).success).toBe(false);
+	});
+
+	it("bounds layers to what the layers figure draws", () => {
+		const layer = (components: number) => ({
+			name: "Layer",
+			components: Array.from(
+				{ length: components },
+				(_, index) => `Part ${index}`,
+			),
+		});
+		const parses = (spec: Record<string, unknown>) =>
+			proposalVisualSpecSchema.safeParse({ kind: "layers", ...spec })
+				.success;
+
+		expect(
+			parses({ layers: Array.from({ length: 8 }, () => layer(5)) }),
+		).toBe(true);
+		expect(parses({ layers: [layer(1)] })).toBe(false);
+		expect(
+			parses({ layers: Array.from({ length: 9 }, () => layer(1)) }),
+		).toBe(false);
+		expect(parses({ layers: [layer(1), layer(6)] })).toBe(false);
+		expect(parses({ layers: [layer(1), layer(0)] })).toBe(false);
+		expect(
+			parses({
+				layers: [layer(1), layer(1)],
+				crosscutting: { name: "Security", items: [] },
+			}),
+		).toBe(false);
+	});
+
+	it("bounds a team to two sides of 1–10 people", () => {
+		const side = (members: number) => ({
+			name: "Side",
+			members: Array.from({ length: members }, (_, index) => ({
+				role: `Role ${index}`,
+			})),
+		});
+		const parses = (proposer: unknown, client: unknown) =>
+			proposalVisualSpecSchema.safeParse({
+				kind: "team",
+				proposer,
+				client,
+			}).success;
+
+		expect(parses(side(10), side(1))).toBe(true);
+		expect(parses(side(11), side(1))).toBe(false);
+		expect(parses(side(1), side(0))).toBe(false);
+		expect(parses(side(1), undefined)).toBe(false);
+	});
+
+	it("lists every string a layers or team figure shows as a fact", () => {
+		expect(visualSpecFacts(layers)).toEqual({
+			kind: "layers",
+			labels: [
+				"Platform layers",
+				"Channels",
+				"Where customers order",
+				"Web shop",
+				"Mobile app",
+				"Services",
+				"Orders",
+				"Billing",
+				"Operations",
+				"Monitoring",
+			],
+			figures: [],
+		});
+		expect(visualSpecFacts(team)).toEqual({
+			kind: "team",
+			labels: [
+				"Example Studio",
+				"Delivery lead",
+				"Alex Example",
+				"Engineer",
+				"Builds the services",
+				"Example Retail",
+				"Product side",
+				"Product owner",
+				"Weekly steering meeting",
+			],
+			figures: [],
+		});
 	});
 });
