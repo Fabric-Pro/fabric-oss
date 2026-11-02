@@ -3,18 +3,23 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
+import { ExternalLinkIcon, MonitorIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useState } from "react";
 
 export function RemoteSessionConversation({
 	codingRunId,
 	organizationId,
 	active = false,
+	fallbackWebUrl = null,
 }: {
 	codingRunId: string;
 	organizationId?: string | null;
 	active?: boolean;
+	fallbackWebUrl?: string | null;
 }) {
 	const t = useTranslations("projects.remoteAgents");
+	const [embedWebUi, setEmbedWebUi] = useState(false);
 	const query = useQuery({
 		queryKey: ["remoteSessionMessages", codingRunId, organizationId],
 		gcTime: 0,
@@ -23,6 +28,7 @@ export function RemoteSessionConversation({
 		refetchInterval: active ? 5000 : false,
 		retry: false,
 	});
+	const liveWebUrl = query.data?.webUrl || fallbackWebUrl || null;
 	return (
 		<section
 			className="space-y-3 border-t border-border pt-4"
@@ -30,21 +36,55 @@ export function RemoteSessionConversation({
 		>
 			<div className="flex flex-wrap items-center justify-between gap-2">
 				<h3 className="text-sm font-medium">{t("conversation")}</h3>
-				{query.data?.webUrl && (
-					<Button asChild variant="outline" size="sm">
-						<a
-							href={query.data.webUrl}
-							target="_blank"
-							rel="noopener noreferrer"
+				{liveWebUrl && (
+					<div className="flex flex-wrap items-center gap-1.5">
+						<Button
+							type="button"
+							variant={embedWebUi ? "default" : "outline"}
+							size="sm"
+							onClick={() => setEmbedWebUi((current) => !current)}
+							data-testid="toggle-embedded-session-webui"
 						>
-							{t("openBrowser")}
-						</a>
-					</Button>
+							<MonitorIcon className="mr-1.5 size-3.5" />
+							{embedWebUi
+								? "Hide Embedded Server Web UI"
+								: "View Live Server Web UI in Portal"}
+						</Button>
+						<Button asChild variant="outline" size="sm">
+							<a
+								href={liveWebUrl}
+								target="_blank"
+								rel="noopener noreferrer"
+							>
+								<ExternalLinkIcon className="mr-1.5 size-3.5" />
+								{t("openBrowser")}
+							</a>
+						</Button>
+					</div>
 				)}
 			</div>
 			<p className="text-xs text-muted-foreground">
 				{t("conversationHelp")}
 			</p>
+			{embedWebUi && liveWebUrl && (
+				<div className="overflow-hidden rounded-lg border border-primary/30 bg-background shadow-xs">
+					<div className="flex items-center justify-between border-b border-border/60 bg-muted/30 px-3 py-1.5 text-xs">
+						<span className="font-medium text-foreground">
+							Fabric Agents Remote Server Web UI (Live Session)
+						</span>
+						<span className="truncate font-mono text-[11px] text-muted-foreground">
+							{liveWebUrl}
+						</span>
+					</div>
+					<iframe
+						src={liveWebUrl}
+						title="Fabric Agents Remote Server Web UI"
+						className="h-[520px] w-full border-0"
+						allow="clipboard-read; clipboard-write"
+						sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+					/>
+				</div>
+			)}
 			{query.isPending ? (
 				<output>{t("loading")}</output>
 			) : query.isError ? (

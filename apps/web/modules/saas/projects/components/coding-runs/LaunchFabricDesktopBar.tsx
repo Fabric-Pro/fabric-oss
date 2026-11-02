@@ -74,6 +74,7 @@ export function LaunchFabricDesktopBar({
 	);
 	const [taskPrompt, setTaskPrompt] = useState(prompt ?? "");
 	const [subscriptionVerified, setSubscriptionVerified] = useState(true);
+	const [embedRemoteWebUi, setEmbedRemoteWebUi] = useState(false);
 
 	useEffect(() => {
 		if (typeof window !== "undefined") {
@@ -317,6 +318,14 @@ export function LaunchFabricDesktopBar({
 
 			<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
 				<input
+					type="url"
+					value={remoteUrl}
+					onChange={(event) => setRemoteUrl(event.target.value)}
+					placeholder="http://127.0.0.1:9100 or https://agents.example.com"
+					aria-label="Fabric Agents Remote Server URL"
+					className="h-8 w-full rounded-md border border-input bg-background px-2.5 font-mono text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring sm:w-64"
+				/>
+				<input
 					type="text"
 					value={taskPrompt}
 					onChange={(event) => setTaskPrompt(event.target.value)}
@@ -324,7 +333,7 @@ export function LaunchFabricDesktopBar({
 					aria-label="Remote delegation task prompt"
 					className="h-8 flex-1 rounded-md border border-input bg-background px-2.5 text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 				/>
-				<div className="flex items-center gap-1.5">
+				<div className="flex flex-wrap items-center gap-1.5">
 					<Button
 						type="button"
 						size="sm"
@@ -334,6 +343,21 @@ export function LaunchFabricDesktopBar({
 					>
 						<SendIcon className="size-3.5" />
 						Dispatch to Remote Server
+					</Button>
+					<Button
+						type="button"
+						variant={embedRemoteWebUi ? "default" : "outline"}
+						size="sm"
+						className="h-8 gap-1 px-2.5 text-xs"
+						onClick={() =>
+							setEmbedRemoteWebUi((current) => !current)
+						}
+						data-testid="toggle-embedded-remote-webui-button"
+					>
+						<ServerIcon className="size-3" />
+						{embedRemoteWebUi
+							? "Hide Portal Web UI"
+							: "View Web UI in Portal"}
 					</Button>
 					<Button
 						asChild
@@ -353,6 +377,33 @@ export function LaunchFabricDesktopBar({
 					</Button>
 				</div>
 			</div>
+
+			{embedRemoteWebUi && (
+				<div
+					className="overflow-hidden rounded-lg border border-primary/30 bg-background shadow-xs"
+					data-testid="embedded-remote-server-webui"
+				>
+					<div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-muted/30 px-3 py-1.5 text-xs">
+						<span className="font-medium text-foreground">
+							Fabric Agents Remote Server Web UI (
+							{prefs.preferredServerScope === "TEAM"
+								? "Organization Remote Server"
+								: "Personal Remote Server"}
+							)
+						</span>
+						<span className="truncate font-mono text-[11px] text-muted-foreground">
+							{remoteDelegationUrl}
+						</span>
+					</div>
+					<iframe
+						src={remoteDelegationUrl}
+						title="Fabric Agents Remote Server Web UI"
+						className="h-[560px] w-full border-0"
+						allow="clipboard-read; clipboard-write"
+						sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+					/>
+				</div>
+			)}
 		</div>
 	) : null;
 

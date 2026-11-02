@@ -52,6 +52,21 @@ describe("LaunchFabricDesktopBar", () => {
 		expect(webUiLink.getAttribute("href")).toContain(
 			"fallback=subscription_harnesses",
 		);
+
+		// Toggle the embedded Remote Server Web UI directly inside the Fabric Portal
+		const embedToggleBtn = screen.getByTestId(
+			"toggle-embedded-remote-webui-button",
+		);
+		fireEvent.click(embedToggleBtn);
+
+		const embeddedContainer = screen.getByTestId(
+			"embedded-remote-server-webui",
+		);
+		expect(embeddedContainer).toBeInTheDocument();
+		const iframe = screen.getByTitle("Fabric Agents Remote Server Web UI");
+		expect(iframe.getAttribute("src")).toContain(
+			"https://agents.example.com/?",
+		);
 	});
 
 	it("renders compact mode with both Desktop and Remote Server delegation controls", () => {
