@@ -327,14 +327,14 @@ fabric mcp serve --project <project-id>
 
 ### Built-in Interactive MCP Apps (`ui://fabric/*`)
 
-Both the HTTP MCP Gateway (`/mcp` and `/api/mcp-gateway`) and `@fabricorg/sdk-mcp` serve self-contained `text/html;profile=mcp-app` resources built with the Fabric UI Kit (`#bc3e0b` warm vermilion palette, 3-arc Fabric mark, SHA-256 script CSP, and A2UI v0.9.1 runtime):
+Both the HTTP MCP Gateway (`/mcp` and `/api/mcp-gateway`) and `@fabricorg/sdk-mcp` serve self-contained `text/html;profile=mcp-app` resources built with the Fabric UI Kit (`#bc3e0b` warm vermilion palette, 3-arc Fabric mark, SHA-256 script CSP, and A2UI v0.9.1 runtime). Users can sign in using OAuth 2.1 with PKCE (`Bearer fat_xxx`), Personal API Keys (`Bearer fab_xxx`), Organization API Keys (`Bearer org_xxx`), or `fabric login` and ask the MCP server for their projects, artifacts, and assigned tickets:
 
-| Resource URI | Companion Tool | Description |
+| Resource URI | Companion Tools | Description |
 |---|---|---|
-| `ui://fabric/project-dashboard` | `fabric_project_dashboard` | Interactive project overview with instructions, living memory, and quick actions |
-| `ui://fabric/agent-delegation` | `fabric_delegate_task` | Live delegation status card for remote Fabric Agents Server and Desktop handoffs |
-| `ui://fabric/workflow-visualizer` | `fabric_workflow_graph` | Visual DAG pipeline inspector for Temporal workflows and node execution telemetry |
-| `ui://fabric/genie-insights` | `fabric_genie_query` | Databricks Genie Agents & Lakebase workspace card with SQL and metric summaries |
+| `ui://fabric/project-dashboard` | `fabric_list_projects`, `fabric_get_project`, `fabric_list_frames`, `fabric_get_frame`, `fabric_list_workspaces`, `fabric_get_workspace`, `fabric_list_artifacts`, `fabric_get_artifact`, `fabric_get_identity` | Interactive **Fabric Projects** and **Fabric Artifacts & Workspaces** cards with KPI metrics, artifact surface/kind badges, and 1-click **Open Artifact in Portal**, **Open in Fabric Desktop**, and **My Assigned Tickets** actions |
+| `ui://fabric/agent-delegation` | `fabric_list_features` (`assignedToMe: true`), `fabric_get_feature`, `fabric_list_project_pm_assigned_items`, `fabric_list_tickets`, `fabric_delegate_agent`, `fabric_subscription_status` | Interactive **Fabric Tickets & Backlog** (`Tickets Assigned to You`) and **Agent Delegation** cards with ticket priority/status/task progress and 1-click **Start Ticket in Fabric Desktop** or **Delegate Ticket to Remote Server** actions |
+| `ui://fabric/workflow-visualizer` | `fabric_list_workflows`, `fabric_get_workflow`, `fabric_execute_workflow` | Visual DAG pipeline inspector for Temporal workflows and node execution telemetry |
+| `ui://fabric/genie-insights` | `fabric_query_workspace`, `fabric_search_knowledge`, `fabric_list_documents`, `fabric_get_document` | Databricks Genie Agents & Lakebase workspace card with hybrid RAG citations, SQL, and metric summaries |
 | `ui://fabric/visualize` | `fabric_visualize` | Declarative A2UI v0.9.1 canvas rendering KpiGrid, BarChart, LineChart, DataTable, BadgeList, and Timeline |
 
 ## Related Files

@@ -2165,8 +2165,22 @@ async function handleListFeatures(
 		offset,
 	});
 
+	const assignedToMe =
+		args.assignedToMe === true || args.assigneeId === "me";
+	const targetAssigneeId = assignedToMe
+		? session.userId
+		: typeof args.assigneeId === "string" && args.assigneeId.trim()
+			? args.assigneeId.trim()
+			: undefined;
+	const filteredStories = targetAssigneeId
+		? stories.filter((s) => s.assigneeId === targetAssigneeId)
+		: stories;
+	const effectiveTotal = targetAssigneeId
+		? filteredStories.length
+		: total;
+
 	return jsonResult({
-		features: stories.map((s) => ({
+		features: filteredStories.map((s) => ({
 			id: s.id,
 			identifier: s.identifier,
 			title: s.title,
@@ -2187,8 +2201,9 @@ async function handleListFeatures(
 			createdAt: s.createdAt,
 			updatedAt: s.updatedAt,
 		})),
-		total,
-		hasMore: offset + limit < total,
+		total: effectiveTotal,
+		hasMore: offset + limit < effectiveTotal,
+		...(assignedToMe ? { assignedToMe: true } : {}),
 	});
 }
 

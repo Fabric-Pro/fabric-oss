@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	attachFabricMcpAppMeta,
 	buildFabricVisualizePayload,
 	executeWithDurableEnvelope,
 	FABRIC_BRAND,
@@ -173,5 +174,72 @@ describe("MCP Apps, Stateless MCP & Durable Tool Execution", () => {
 		expect(result._meta?.["ui/resourceUri"]).toBe(
 			"ui://fabric/project-dashboard",
 		);
+	});
+
+	it("maps projects, artifacts/frames/workspaces, and assigned tickets/features to rich MCP App views and attaches UI metadata on non-durable calls", () => {
+		// Projects & Artifacts
+		expect(FABRIC_TOOL_UI_RESOURCE_MAP.fabric_list_projects).toBe(
+			"ui://fabric/project-dashboard",
+		);
+		expect(FABRIC_TOOL_UI_RESOURCE_MAP.fabric_list_frames).toBe(
+			"ui://fabric/project-dashboard",
+		);
+		expect(FABRIC_TOOL_UI_RESOURCE_MAP.fabric_get_frame).toBe(
+			"ui://fabric/project-dashboard",
+		);
+		expect(FABRIC_TOOL_UI_RESOURCE_MAP.fabric_list_workspaces).toBe(
+			"ui://fabric/project-dashboard",
+		);
+		expect(FABRIC_TOOL_UI_RESOURCE_MAP.fabric_get_workspace).toBe(
+			"ui://fabric/project-dashboard",
+		);
+		expect(FABRIC_TOOL_UI_RESOURCE_MAP.fabric_list_artifacts).toBe(
+			"ui://fabric/project-dashboard",
+		);
+		expect(FABRIC_TOOL_UI_RESOURCE_MAP.fabric_get_artifact).toBe(
+			"ui://fabric/project-dashboard",
+		);
+
+		// Tickets / Features / Assigned Backlog
+		expect(FABRIC_TOOL_UI_RESOURCE_MAP.fabric_list_features).toBe(
+			"ui://fabric/agent-delegation",
+		);
+		expect(FABRIC_TOOL_UI_RESOURCE_MAP.fabric_get_feature).toBe(
+			"ui://fabric/agent-delegation",
+		);
+		expect(
+			FABRIC_TOOL_UI_RESOURCE_MAP.fabric_list_project_pm_assigned_items,
+		).toBe("ui://fabric/agent-delegation");
+		expect(FABRIC_TOOL_UI_RESOURCE_MAP.fabric_list_tickets).toBe(
+			"ui://fabric/agent-delegation",
+		);
+
+		// Standard (non-durable) tool calls receive _meta.ui.resourceUri
+		const attached = attachFabricMcpAppMeta("fabric_list_frames", {
+			content: [{ type: "text", text: '{"frames":[]}' }],
+		});
+		expect(attached._meta?.ui).toEqual({
+			resourceUri: "ui://fabric/project-dashboard",
+		});
+		expect(attached._meta?.["ui/resourceUri"]).toBe(
+			"ui://fabric/project-dashboard",
+		);
+
+		// Verify project-dashboard view renders both Projects and Artifacts & Workspaces cards
+		const projectDashboardHtml =
+			readFabricMcpAppResource("ui://fabric/project-dashboard")
+				?.contents[0]?.text ?? "";
+		expect(projectDashboardHtml).toContain("FABRIC ARTIFACTS & WORKSPACES");
+		expect(projectDashboardHtml).toContain("Open Artifact in Portal");
+		expect(projectDashboardHtml).toContain("My Assigned Tickets");
+
+		// Verify agent-delegation view renders Tickets & Backlog card with Desktop/Remote delegation actions
+		const delegationHtml =
+			readFabricMcpAppResource("ui://fabric/agent-delegation")
+				?.contents[0]?.text ?? "";
+		expect(delegationHtml).toContain("FABRIC TICKETS & BACKLOG");
+		expect(delegationHtml).toContain("Tickets Assigned to You");
+		expect(delegationHtml).toContain("Start Ticket in Fabric Desktop");
+		expect(delegationHtml).toContain("Delegate Ticket to Remote Server");
 	});
 });

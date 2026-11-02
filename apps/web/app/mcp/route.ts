@@ -40,6 +40,7 @@ import {
 import {
 	type McpKeyIdentity,
 	recordCliReach,
+	toOAuthClientIdentity,
 	toOrganizationKeyIdentity,
 	toUserKeyIdentity,
 } from "@saas/mcp/lib/record-cli-reach";
@@ -50,6 +51,7 @@ import {
 	PLATFORM_TOOL_DEFINITIONS,
 } from "../../modules/saas/mcp/lib/gateway/platform-tools";
 import {
+	attachFabricMcpAppMeta,
 	executeWithDurableEnvelope,
 	FABRIC_MCP_APP_RESOURCES,
 	FABRIC_TOOL_UI_RESOURCE_MAP,
@@ -687,6 +689,32 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 				scopes: orgKey.scopes,
 				keyIdentity: toOrganizationKeyIdentity(orgKey.id),
 			});
+		}
+
+		if (rawKey.startsWith("fat_")) {
+			const { verifyOAuthAccessToken } = await import("@repo/database");
+			const { getBaseUrl } = await import("@repo/utils");
+			const token = await verifyOAuthAccessToken?.(rawKey, {
+				appUrl: getBaseUrl(),
+				audience: "mcp",
+			});
+			if (
+				token?.valid &&
+				token.audience !== "api" &&
+				token.organizationId
+			) {
+				return authenticatedAs({
+					userId: token.userId,
+					organizationId: token.organizationId,
+					userName: token.userName || "Unknown",
+					email: token.email,
+					role: (token.role as "user" | "admin") || "user",
+					credential: "oauth",
+					scopes: token.scopes,
+					keyIdentity: toOAuthClientIdentity(token.clientRowId),
+				});
+			}
+			return ANONYMOUS_AUTH;
 		}
 
 		const result = await verifyUserApiKey(rawKey);
@@ -2471,11 +2499,14 @@ function createRequestSession(
 					requestMessage.params as Record<string, unknown>,
 					args,
 				);
-				const runPlatform = () =>
-					executePlatformTool(
+				const runPlatform = async () =>
+					attachFabricMcpAppMeta(
 						name,
-						args,
-						session.gatewaySession!,
+						await executePlatformTool(
+							name,
+							args,
+							session.gatewaySession!,
+						),
 					);
 				const result = (
 					durable

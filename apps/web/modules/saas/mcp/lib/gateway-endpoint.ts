@@ -104,6 +104,7 @@ import {
 	searchTools,
 } from "@saas/mcp/lib/gateway/discovery-tools";
 import {
+	attachFabricMcpAppMeta,
 	executeWithDurableEnvelope,
 	FABRIC_MCP_APP_RESOURCES,
 	FABRIC_TOOL_UI_RESOURCE_MAP,
@@ -2093,7 +2094,10 @@ export async function dispatchToolCall(
 			};
 		} else if (isPlatformToolName(toolName)) {
 			// Platform tool
-			result = await executePlatformTool(toolName, toolArgs, session);
+			result = attachFabricMcpAppMeta(
+				toolName,
+				await executePlatformTool(toolName, toolArgs, session),
+			);
 
 			// Handle org switch — persist to session store
 			if (toolName === "fabric_switch_organization" && !result.isError) {

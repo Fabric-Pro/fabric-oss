@@ -52,6 +52,72 @@ export type FabricLike = {
 		>;
 		[slug: string]: unknown;
 	};
+	auth?: {
+		whoami(): Promise<{
+			user?: { id: string; name?: string | null; email?: string | null };
+			id?: string;
+			name?: string | null;
+			email?: string | null;
+			organizations?: Array<{
+				id: string;
+				name: string;
+				slug?: string;
+				role?: string;
+			}>;
+			[key: string]: unknown;
+		}>;
+	};
+	projects?: {
+		list(options?: Record<string, unknown>): Promise<
+			Array<{
+				id: string;
+				name: string;
+				slug?: string;
+				status?: string;
+				description?: string | null;
+				[key: string]: unknown;
+			}>
+		>;
+		get(
+			id: string,
+			options?: Record<string, unknown>,
+		): Promise<Record<string, unknown>>;
+		listFeatures(
+			projectId: string,
+			options?: Record<string, unknown>,
+		): Promise<Array<Record<string, unknown>>>;
+		getFeature?(
+			projectId: string,
+			featureId: string,
+			options?: Record<string, unknown>,
+		): Promise<Record<string, unknown>>;
+		listDocuments?(
+			projectId: string,
+			options?: Record<string, unknown>,
+		): Promise<Array<Record<string, unknown>>>;
+		getDocument?(
+			documentId: string,
+			options?: Record<string, unknown>,
+		): Promise<Record<string, unknown>>;
+	};
+	frames?: {
+		list(
+			options?: Record<string, unknown>,
+		): Promise<Array<Record<string, unknown>>>;
+		get(
+			id: string,
+			options?: Record<string, unknown>,
+		): Promise<Record<string, unknown>>;
+	};
+	workspaces?: {
+		list(
+			options?: Record<string, unknown>,
+		): Promise<Array<Record<string, unknown>>>;
+		get(
+			id: string,
+			options?: Record<string, unknown>,
+		): Promise<Record<string, unknown>>;
+	};
 };
 
 export interface CreateFabricMcpServerOptions {
@@ -502,6 +568,463 @@ export function createFabricMcpServer(
 					isError: true,
 				};
 			}
+		},
+	);
+
+	server.registerTool(
+		"fabric_get_identity",
+		{
+			title: "Get Authenticated Fabric Identity & Organizations",
+			description:
+				"Return the currently signed-in Fabric user identity, active credential scopes, and organization memberships.",
+			inputSchema: {},
+			_meta: withFabricApp("ui://fabric/project-dashboard"),
+		},
+		async () => {
+			if (!fabric.auth?.whoami) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Identity lookup requires an authenticated FabricClient (`fabric login`).",
+						},
+					],
+					isError: true,
+				};
+			}
+			const whoami = await fabric.auth.whoami();
+			const payload = {
+				title: "Authenticated Fabric Identity",
+				...whoami,
+			};
+			return {
+				structuredContent: payload,
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify(whoami, null, 2),
+					},
+				],
+				_meta: withFabricApp("ui://fabric/project-dashboard"),
+			};
+		},
+	);
+
+	server.registerTool(
+		"fabric_list_projects",
+		{
+			title: "List Fabric Projects",
+			description:
+				"List all Fabric projects accessible to the signed-in user in the active organization. Renders an interactive Fabric Projects MCP App card with 1-click Open in Fabric Desktop and ticket/artifact actions.",
+			inputSchema: {
+				status: z
+					.enum(["DRAFT", "ACTIVE", "COMPLETED", "ARCHIVED"])
+					.optional()
+					.describe("Optional project status filter."),
+				search: z
+					.string()
+					.optional()
+					.describe("Optional search query by project name or description."),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(100)
+					.optional()
+					.describe("Maximum projects to return (default 50)."),
+			},
+			_meta: withFabricApp("ui://fabric/project-dashboard"),
+		},
+		async ({ status, search, limit }) => {
+			if (!fabric.projects?.list) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Listing projects requires an authenticated FabricClient (`fabric login`).",
+						},
+					],
+					isError: true,
+				};
+			}
+			const projects = await fabric.projects.list({
+				status,
+				search,
+				limit: limit ?? 50,
+			});
+			const payload = {
+				title: "Your Fabric Projects",
+				projects,
+				total: projects.length,
+			};
+			return {
+				structuredContent: payload,
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify(payload, null, 2),
+					},
+				],
+				_meta: withFabricApp("ui://fabric/project-dashboard"),
+			};
+		},
+	);
+
+	server.registerTool(
+		"fabric_get_project",
+		{
+			title: "Get Fabric Project Details",
+			description:
+				"Get detailed metadata, feature/bug counts, and document summary for a specific Fabric project.",
+			inputSchema: {
+				projectId: z
+					.string()
+					.describe("Project ID from `fabric_list_projects`."),
+			},
+			_meta: withFabricApp("ui://fabric/project-dashboard"),
+		},
+		async ({ projectId }) => {
+			if (!fabric.projects?.get) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Project lookup requires an authenticated FabricClient (`fabric login`).",
+						},
+					],
+					isError: true,
+				};
+			}
+			const project = await fabric.projects.get(projectId);
+			return {
+				structuredContent: project,
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify(project, null, 2),
+					},
+				],
+				_meta: withFabricApp("ui://fabric/project-dashboard"),
+			};
+		},
+	);
+
+	server.registerTool(
+		"fabric_list_artifacts",
+		{
+			title: "List Fabric Artifacts, Frames, Workspaces & Documents",
+			description:
+				"List all Fabric artifacts (interactive HTML frames, workspaces, and project documents/specs) accessible to the signed-in user. Renders an interactive Fabric Artifacts & Workspaces MCP App card.",
+			inputSchema: {
+				projectId: z
+					.string()
+					.optional()
+					.describe(
+						"Optional project ID to filter artifacts and include project documents (PRDs, specs, architecture docs).",
+					),
+				surface: z
+					.enum(["all", "artifact", "workspace", "document"])
+					.optional()
+					.describe(
+						"Filter by artifact surface: 'artifact' (frames), 'workspace', 'document', or 'all' (default).",
+					),
+				search: z
+					.string()
+					.optional()
+					.describe("Optional search query by title."),
+			},
+			_meta: withFabricApp("ui://fabric/project-dashboard"),
+		},
+		async ({ projectId, surface, search }) => {
+			const effectiveSurface = surface ?? "all";
+			const artifacts: Array<Record<string, unknown>> = [];
+
+			if (
+				(effectiveSurface === "all" ||
+					effectiveSurface === "artifact" ||
+					effectiveSurface === "workspace") &&
+				fabric.frames?.list
+			) {
+				try {
+					const frames = await fabric.frames.list(
+						search ? { search } : {},
+					);
+					for (const f of frames) {
+						if (projectId && f.projectId && f.projectId !== projectId) {
+							continue;
+						}
+						const frameSurface =
+							typeof f.surface === "string"
+								? f.surface
+								: f.projectId
+									? "artifact"
+									: "workspace";
+						if (
+							effectiveSurface !== "all" &&
+							frameSurface !== effectiveSurface
+						) {
+							continue;
+						}
+						artifacts.push({
+							...f,
+							surface: frameSurface,
+						});
+					}
+				} catch {
+					// Continue if frames endpoint is unavailable
+				}
+			}
+
+			if (
+				(effectiveSurface === "all" ||
+					effectiveSurface === "workspace") &&
+				fabric.workspaces?.list
+			) {
+				try {
+					const workspaces = await fabric.workspaces.list();
+					for (const w of workspaces) {
+						artifacts.push({
+							...w,
+							surface: "workspace",
+							kind: w.kind ?? "WORKSPACE",
+						});
+					}
+				} catch {
+					// Continue if workspaces endpoint is unavailable
+				}
+			}
+
+			if (
+				projectId &&
+				(effectiveSurface === "all" ||
+					effectiveSurface === "document") &&
+				fabric.projects?.listDocuments
+			) {
+				try {
+					const docs = await fabric.projects.listDocuments(projectId);
+					for (const d of docs) {
+						artifacts.push({
+							...d,
+							projectId,
+							surface: "artifact",
+							kind: d.type ?? "DOCUMENT",
+						});
+					}
+				} catch {
+					// Continue if documents endpoint is unavailable
+				}
+			}
+
+			const filtered = search
+				? artifacts.filter((a) =>
+						String(a.title ?? a.name ?? "")
+							.toLowerCase()
+							.includes(search.toLowerCase()),
+					)
+				: artifacts;
+
+			const payload = {
+				title: "Fabric Artifacts & Workspaces",
+				frames: filtered,
+				total: filtered.length,
+			};
+			return {
+				structuredContent: payload,
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify(payload, null, 2),
+					},
+				],
+				_meta: withFabricApp("ui://fabric/project-dashboard"),
+			};
+		},
+	);
+
+	server.registerTool(
+		"fabric_get_artifact",
+		{
+			title: "Get Fabric Artifact, Frame, or Document Content",
+			description:
+				"Fetch the full content and metadata of a Fabric artifact (interactive HTML frame, workspace, or project document) by ID.",
+			inputSchema: {
+				artifactId: z
+					.string()
+					.describe("ID of the frame, workspace, or document."),
+				kind: z
+					.enum(["frame", "workspace", "document"])
+					.optional()
+					.describe(
+						"Artifact kind hint ('frame' default, 'workspace', or 'document').",
+					),
+			},
+			_meta: withFabricApp("ui://fabric/project-dashboard"),
+		},
+		async ({ artifactId, kind }) => {
+			const effectiveKind = kind ?? "frame";
+			let record: Record<string, unknown> | null = null;
+			if (effectiveKind === "document" && fabric.projects?.getDocument) {
+				record = await fabric.projects.getDocument(artifactId);
+			} else if (
+				effectiveKind === "workspace" &&
+				fabric.workspaces?.get
+			) {
+				record = await fabric.workspaces.get(artifactId);
+			} else if (fabric.frames?.get) {
+				record = await fabric.frames.get(artifactId);
+			}
+			if (!record) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Artifact "${artifactId}" could not be loaded.`,
+						},
+					],
+					isError: true,
+				};
+			}
+			const payload = {
+				title: String(record.title ?? record.name ?? artifactId),
+				frames: [
+					{
+						...record,
+						surface:
+							record.surface ??
+							(effectiveKind === "workspace"
+								? "workspace"
+								: "artifact"),
+					},
+				],
+				artifact: record,
+			};
+			return {
+				structuredContent: payload,
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify(record, null, 2),
+					},
+				],
+				_meta: withFabricApp("ui://fabric/project-dashboard"),
+			};
+		},
+	);
+
+	server.registerTool(
+		"fabric_list_tickets",
+		{
+			title: "List Fabric Tickets, Features & Bugs (Including Assigned to Me)",
+			description:
+				"List tickets (features and bugs) for a project or across all accessible projects, with optional `assignedToMe: true` filtering for tickets assigned to the signed-in user. Renders an interactive Fabric Tickets & Backlog MCP App card with 1-click Start in Fabric Desktop and Remote Agent Delegation.",
+			inputSchema: {
+				projectId: z
+					.string()
+					.optional()
+					.describe(
+						"Optional project ID. When omitted, aggregates tickets across your active projects.",
+					),
+				assignedToMe: z
+					.boolean()
+					.optional()
+					.describe(
+						"When true, filters to tickets assigned to the currently authenticated Fabric user.",
+					),
+				assigneeId: z
+					.string()
+					.optional()
+					.describe("Optional explicit assignee user ID filter."),
+				priority: z
+					.enum(["P0_CRITICAL", "P1_HIGH", "P2_MEDIUM", "P3_LOW"])
+					.optional()
+					.describe("Optional priority filter."),
+				kind: z
+					.enum(["FEATURE", "BUG"])
+					.optional()
+					.describe("Optional ticket kind filter ('FEATURE' or 'BUG')."),
+			},
+			_meta: withFabricApp("ui://fabric/agent-delegation"),
+		},
+		async ({ projectId, assignedToMe, assigneeId, priority, kind }) => {
+			if (!fabric.projects?.listFeatures || !fabric.projects?.list) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Listing tickets requires an authenticated FabricClient (`fabric login`).",
+						},
+					],
+					isError: true,
+				};
+			}
+			let effectiveAssigneeId = assigneeId;
+			if (assignedToMe && !effectiveAssigneeId && fabric.auth?.whoami) {
+				try {
+					const me = await fabric.auth.whoami();
+					effectiveAssigneeId = me.user?.id ?? me.id;
+				} catch {
+					// Continue if whoami lookup fails
+				}
+			}
+
+			const targetProjectIds: string[] = [];
+			if (projectId) {
+				targetProjectIds.push(projectId);
+			} else {
+				const projects = await fabric.projects.list({ limit: 10 });
+				for (const p of projects) {
+					if (p.id) targetProjectIds.push(p.id);
+				}
+			}
+
+			const allTickets: Array<Record<string, unknown>> = [];
+			for (const pid of targetProjectIds) {
+				try {
+					const items = await fabric.projects.listFeatures(pid, {
+						...(priority ? { priority } : {}),
+						...(effectiveAssigneeId
+							? { assigneeId: effectiveAssigneeId }
+							: {}),
+					});
+					for (const item of items) {
+						if (kind && item.kind && item.kind !== kind) {
+							continue;
+						}
+						if (
+							effectiveAssigneeId &&
+							item.assigneeId &&
+							item.assigneeId !== effectiveAssigneeId
+						) {
+							continue;
+						}
+						allTickets.push({
+							...item,
+							projectId: item.projectId ?? pid,
+						});
+					}
+				} catch {
+					// Skip inaccessible project
+				}
+			}
+
+			const payload = {
+				title: assignedToMe
+					? "Tickets Assigned to You"
+					: "Fabric Tickets & Backlog",
+				features: allTickets,
+				total: allTickets.length,
+				assignedToMe: Boolean(assignedToMe),
+			};
+			return {
+				structuredContent: payload,
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify(payload, null, 2),
+					},
+				],
+				_meta: withFabricApp("ui://fabric/agent-delegation"),
+			};
 		},
 	);
 
