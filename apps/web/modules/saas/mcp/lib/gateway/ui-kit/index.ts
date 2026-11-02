@@ -8,8 +8,6 @@ import { createHash } from "node:crypto";
 import A2UI from "./a2ui-core.generated.js";
 import { KIT_CSS, KIT_SCRIPT, KIT_VERSION } from "./kit.generated.js";
 
-export { A2UI, KIT_CSS, KIT_SCRIPT, KIT_VERSION };
-
 /**
  * Official Fabric 3-arc brand mark encoded as an inline SVG data URI
  * in Fabric's warm bright-orange primary accent (`#bc3e0b`).
@@ -62,18 +60,13 @@ const cssValue = (s: unknown): string =>
 	String(s ?? "").replace(/[;{}<>\\]/g, "");
 
 /** Synchronous SHA-256 base64 CSP source expression (`'sha256-...'`). */
-export function cspHashSync(text: string): string {
+function cspHashSync(text: string): string {
 	const digest = createHash("sha256").update(text).digest("base64");
 	return `'sha256-${digest}'`;
 }
 
-/** Async SHA-256 base64 CSP source expression (`'sha256-...'`). */
-export async function cspHash(text: string): Promise<string> {
-	return cspHashSync(text);
-}
-
 /** The page's own CSP (on top of the host's): its one script by hash; styles, fonts and images from the site only. */
-export function kitCsp(scriptHash: string, domains: string[] = []): string {
+function kitCsp(scriptHash: string, domains: string[] = []): string {
 	const ds = domains.join(" ");
 	return [
 		"default-src 'none'",
@@ -90,7 +83,7 @@ export function kitCsp(scriptHash: string, domains: string[] = []): string {
 }
 
 /** The site's accent and display face as CSS: the kit's only brand inputs. */
-export function siteCss(
+function siteCss(
 	options: { accent?: KitAccent; display?: string } = {},
 ): string {
 	const a = options.accent ?? FABRIC_BRAND.accent;
@@ -134,14 +127,14 @@ export interface KitPageOptions {
 }
 
 /** The one inline script: the kit, then the view. */
-export const pageScript = (viewScript: string): string =>
+const pageScript = (viewScript: string): string =>
 	`${KIT_SCRIPT}\n${viewScript ?? ""}`;
 
 /**
  * The page around a view: the kit's CSS and the site's, the kit's script then the view's,
  * as one inline script under the CSP hash.
  */
-export function kitDocument(
+function kitDocument(
 	o: KitPageOptions & { csp: string; build: string },
 ): string {
 	return [
@@ -195,20 +188,15 @@ export function kitPageSync(o: KitPageOptions): {
 	};
 }
 
-/** Async builder for an MCP App view HTML page with SHA-256 CSP hash. */
-export async function kitPage(o: KitPageOptions): Promise<{
-	html: string;
-	hash: string;
-	build: string;
-}> {
-	return kitPageSync(o);
-}
-
 export interface FabricVisualizeResult {
 	title: string;
 	provenance: string;
 	document: unknown[];
-	surfaces: Array<{ surfaceId: string; catalogId: string; components: number }>;
+	surfaces: Array<{
+		surfaceId: string;
+		catalogId: string;
+		components: number;
+	}>;
 	errors: Array<{
 		code: string;
 		surfaceId: string;
@@ -246,7 +234,7 @@ export function buildFabricVisualizePayload(args: {
 	const built = A2UI.buildSurfaces(messages);
 	const drawable = built.surfaces.filter(
 		(s: { components: object; loop?: unknown }) =>
-			Object.prototype.hasOwnProperty.call(s.components, "root") && !s.loop,
+			Object.hasOwn(s.components, "root") && !s.loop,
 	);
 	if (!drawable.length) {
 		const why = built.errors.length

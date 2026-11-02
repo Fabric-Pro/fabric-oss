@@ -1259,13 +1259,31 @@ The AI will:
 
 ## Protocol Details
 
-The gateway implements the **MCP 2025-03-26 Streamable HTTP** transport:
+Fabric provides three MCP entry points backed by the same authentication model and `ui://fabric/*` MCP Apps:
+
+| Entry Point | URL / Command | Transport | Purpose |
+|---|---|---|---|
+| **Primary MCP Gateway** | `POST /api/mcp-gateway` (or `/api/mcp-gateway/projects/<id>`) | Streamable HTTP (`2025-11-25`) | Full 169-tool platform catalog + connected 3rd-party MCP servers + OAuth 2.1 PKCE + project scoping + durable Temporal execution |
+| **Canonical `/mcp` Endpoint** | `POST /mcp` (`?stateless=1` supported) | Streamable HTTP (`2025-11-25`) | Short-path MCP endpoint for clients that auto-discover `/mcp` and `.well-known/oauth-protected-resource` |
+| **Stdio Bridge (`@fabricorg/sdk-mcp`)** | `fabric mcp serve` / `npx -y @fabricorg/sdk-mcp` | `stdio` JSON-RPC | Local stdio process for stdio-only desktop clients using `fabric login` credentials |
+
+The HTTP gateway implements the **MCP Streamable HTTP** transport:
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `POST` | `/api/mcp-gateway` | JSON-RPC requests (`initialize`, `tools/list`, `tools/call`) |
-| `GET` | `/api/mcp-gateway` | Server info (health check) |
+| `POST` | `/api/mcp-gateway` or `/mcp` | JSON-RPC requests (`initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`) |
+| `GET` | `/api/mcp-gateway` or `/mcp` | Server info & capability discovery (health check) |
 | `DELETE` | `/api/mcp-gateway` | Terminate session |
+
+### Interactive MCP Apps (`ui://fabric/*`)
+
+When connected from an MCP App-capable host (Fabric Desktop, Claude Desktop, claude.ai, ChatGPT, or VS Code), tool calls return `_meta.ui.resourceUri` pointing to self-contained `text/html;profile=mcp-app` cards built with the Fabric UI Kit and A2UI v0.9.1 runtime:
+
+- **`ui://fabric/project-dashboard`** — Renders **Fabric Projects** and **Fabric Artifacts & Workspaces** cards for `fabric_list_projects`, `fabric_get_project`, `fabric_list_frames`, `fabric_get_frame`, `fabric_list_workspaces`, and `fabric_list_artifacts`.
+- **`ui://fabric/agent-delegation`** — Renders **Tickets Assigned to You** (`fabric_list_features` with `assignedToMe: true`, `fabric_list_project_pm_assigned_items`, `fabric_list_tickets`) and **Agent Delegation & Subscription Credits** cards with 1-click handoff to Fabric Desktop (`fabricagents://`) or a Remote Fabric Agents Server.
+- **`ui://fabric/workflow-visualizer`** — Renders DAG pipeline steps and durable Temporal workflow execution status (`fabric_list_workflows`, `fabric_execute_workflow`).
+- **`ui://fabric/genie-insights`** — Renders workspace RAG citations, documents, and Lakebase query results (`fabric_query_workspace`, `fabric_search_knowledge`).
+- **`ui://fabric/visualize`** — Renders custom multi-surface A2UI v0.9.1 interactive charts, tables, comparisons, and plans (`fabric_visualize`).
 
 ### Session Management
 

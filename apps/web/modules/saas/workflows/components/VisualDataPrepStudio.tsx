@@ -56,7 +56,7 @@ export interface VisualOperatorDefinition {
 	defaultStepName: string;
 }
 
-export const VISUAL_OPERATORS: VisualOperatorDefinition[] = [
+const VISUAL_OPERATORS: VisualOperatorDefinition[] = [
 	{
 		id: "source",
 		name: "Source",

@@ -391,17 +391,16 @@ export function LaunchFabricDesktopBar({
 					</div>
 					<div className="flex flex-wrap items-center gap-1.5">
 						<Button
-							asChild
+							type="button"
 							size="sm"
 							className="h-7 px-2.5 text-xs"
+							onClick={() => {
+								window.location.assign(newSessionDeepLink);
+							}}
+							data-testid="launch-fabric-desktop-button"
 						>
-							<a
-								href={newSessionDeepLink}
-								data-testid="launch-fabric-desktop-button"
-							>
-								<LaptopIcon className="mr-1.5 size-3.5" />
-								Launch Fabric Desktop
-							</a>
+							<LaptopIcon className="mr-1.5 size-3.5" />
+							Launch Fabric Desktop
 						</Button>
 						<Button
 							type="button"

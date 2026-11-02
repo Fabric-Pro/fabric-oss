@@ -1849,7 +1849,10 @@ async function handleToolsList(
 
 		// Return in MCP format with authority metadata for connected tools
 		const mcpTools = tools.map((t) => {
-			const uiResourceUri = FABRIC_TOOL_UI_RESOURCE_MAP[t.name];
+			const uiResourceUri =
+				session.credential === "service"
+					? undefined
+					: FABRIC_TOOL_UI_RESOURCE_MAP[t.name];
 			const mergedMeta =
 				t._meta || uiResourceUri
 					? {
@@ -1971,12 +1974,7 @@ async function handleToolsCall(
 					callSession,
 					sessionId,
 				)
-			: dispatchToolCall(
-					toolName,
-					toolArgs,
-					callSession,
-					sessionId,
-				);
+			: dispatchToolCall(toolName, toolArgs, callSession, sessionId);
 
 	const result = durable
 		? await executeWithDurableEnvelope({
@@ -1985,8 +1983,9 @@ async function handleToolsCall(
 				organizationId: callSession.organizationId,
 				userId: callSession.userId,
 				idempotencyKey:
-					typeof (params?._meta as Record<string, unknown> | undefined)
-						?.idempotencyKey === "string"
+					typeof (
+						params?._meta as Record<string, unknown> | undefined
+					)?.idempotencyKey === "string"
 						? ((params?._meta as Record<string, unknown>)
 								.idempotencyKey as string)
 						: undefined,

@@ -64,7 +64,6 @@ export type FabricLike = {
 				slug?: string;
 				role?: string;
 			}>;
-			[key: string]: unknown;
 		}>;
 	};
 	projects?: {
@@ -75,48 +74,34 @@ export type FabricLike = {
 				slug?: string;
 				status?: string;
 				description?: string | null;
-				[key: string]: unknown;
 			}>
 		>;
-		get(
-			id: string,
-			options?: Record<string, unknown>,
-		): Promise<Record<string, unknown>>;
+		get(id: string, options?: Record<string, unknown>): Promise<object>;
 		listFeatures(
 			projectId: string,
 			options?: Record<string, unknown>,
-		): Promise<Array<Record<string, unknown>>>;
+		): Promise<Array<object>>;
 		getFeature?(
 			projectId: string,
 			featureId: string,
 			options?: Record<string, unknown>,
-		): Promise<Record<string, unknown>>;
+		): Promise<object>;
 		listDocuments?(
 			projectId: string,
 			options?: Record<string, unknown>,
-		): Promise<Array<Record<string, unknown>>>;
+		): Promise<Array<object>>;
 		getDocument?(
 			documentId: string,
 			options?: Record<string, unknown>,
-		): Promise<Record<string, unknown>>;
+		): Promise<object>;
 	};
 	frames?: {
-		list(
-			options?: Record<string, unknown>,
-		): Promise<Array<Record<string, unknown>>>;
-		get(
-			id: string,
-			options?: Record<string, unknown>,
-		): Promise<Record<string, unknown>>;
+		list(options?: Record<string, unknown>): Promise<Array<object>>;
+		get(id: string, options?: Record<string, unknown>): Promise<object>;
 	};
 	workspaces?: {
-		list(
-			options?: Record<string, unknown>,
-		): Promise<Array<Record<string, unknown>>>;
-		get(
-			id: string,
-			options?: Record<string, unknown>,
-		): Promise<Record<string, unknown>>;
+		list(options?: Record<string, unknown>): Promise<Array<object>>;
+		get(id: string, options?: Record<string, unknown>): Promise<object>;
 	};
 };
 
@@ -409,8 +394,12 @@ export function createFabricMcpServer(
 			const selectedHarness = harness ?? "claude-max";
 			const selectedFallback = fallback ?? "subscription_harnesses";
 			const query = new URLSearchParams();
-			if (projectSlug) query.set("workspace", projectSlug);
-			if (projectId) query.set("projectId", projectId);
+			if (projectSlug) {
+				query.set("workspace", projectSlug);
+			}
+			if (projectId) {
+				query.set("projectId", projectId);
+			}
 			query.set("harness", selectedHarness);
 			query.set("fallback", selectedFallback);
 			query.set("input", prompt);
@@ -527,9 +516,14 @@ export function createFabricMcpServer(
 				title: z
 					.string()
 					.optional()
-					.describe("Card heading shown at the top of the Fabric view."),
+					.describe(
+						"Card heading shown at the top of the Fabric view.",
+					),
 				document: z
-					.union([z.string(), z.array(z.record(z.string(), z.unknown()))])
+					.union([
+						z.string(),
+						z.array(z.record(z.string(), z.unknown())),
+					])
 					.describe(
 						"A2UI v0.9.1 messages as JSONL (one JSON object per line) or a JSON array of messages.",
 					),
@@ -624,7 +618,9 @@ export function createFabricMcpServer(
 				search: z
 					.string()
 					.optional()
-					.describe("Optional search query by project name or description."),
+					.describe(
+						"Optional search query by project name or description.",
+					),
 				limit: z
 					.number()
 					.int()
@@ -695,7 +691,10 @@ export function createFabricMcpServer(
 					isError: true,
 				};
 			}
-			const project = await fabric.projects.get(projectId);
+			const project = (await fabric.projects.get(projectId)) as Record<
+				string,
+				unknown
+			>;
 			return {
 				structuredContent: project,
 				content: [
@@ -749,8 +748,13 @@ export function createFabricMcpServer(
 					const frames = await fabric.frames.list(
 						search ? { search } : {},
 					);
-					for (const f of frames) {
-						if (projectId && f.projectId && f.projectId !== projectId) {
+					for (const rawFrame of frames) {
+						const f = rawFrame as Record<string, unknown>;
+						if (
+							projectId &&
+							f.projectId &&
+							f.projectId !== projectId
+						) {
 							continue;
 						}
 						const frameSurface =
@@ -782,7 +786,8 @@ export function createFabricMcpServer(
 			) {
 				try {
 					const workspaces = await fabric.workspaces.list();
-					for (const w of workspaces) {
+					for (const rawWorkspace of workspaces) {
+						const w = rawWorkspace as Record<string, unknown>;
 						artifacts.push({
 							...w,
 							surface: "workspace",
@@ -802,7 +807,8 @@ export function createFabricMcpServer(
 			) {
 				try {
 					const docs = await fabric.projects.listDocuments(projectId);
-					for (const d of docs) {
+					for (const rawDoc of docs) {
+						const d = rawDoc as Record<string, unknown>;
 						artifacts.push({
 							...d,
 							projectId,
@@ -864,14 +870,22 @@ export function createFabricMcpServer(
 			const effectiveKind = kind ?? "frame";
 			let record: Record<string, unknown> | null = null;
 			if (effectiveKind === "document" && fabric.projects?.getDocument) {
-				record = await fabric.projects.getDocument(artifactId);
+				record = (await fabric.projects.getDocument(
+					artifactId,
+				)) as Record<string, unknown>;
 			} else if (
 				effectiveKind === "workspace" &&
 				fabric.workspaces?.get
 			) {
-				record = await fabric.workspaces.get(artifactId);
+				record = (await fabric.workspaces.get(artifactId)) as Record<
+					string,
+					unknown
+				>;
 			} else if (fabric.frames?.get) {
-				record = await fabric.frames.get(artifactId);
+				record = (await fabric.frames.get(artifactId)) as Record<
+					string,
+					unknown
+				>;
 			}
 			if (!record) {
 				return {
@@ -941,7 +955,9 @@ export function createFabricMcpServer(
 				kind: z
 					.enum(["FEATURE", "BUG"])
 					.optional()
-					.describe("Optional ticket kind filter ('FEATURE' or 'BUG')."),
+					.describe(
+						"Optional ticket kind filter ('FEATURE' or 'BUG').",
+					),
 			},
 			_meta: withFabricApp("ui://fabric/agent-delegation"),
 		},
@@ -973,7 +989,9 @@ export function createFabricMcpServer(
 			} else {
 				const projects = await fabric.projects.list({ limit: 10 });
 				for (const p of projects) {
-					if (p.id) targetProjectIds.push(p.id);
+					if (p.id) {
+						targetProjectIds.push(p.id);
+					}
 				}
 			}
 
@@ -986,7 +1004,8 @@ export function createFabricMcpServer(
 							? { assigneeId: effectiveAssigneeId }
 							: {}),
 					});
-					for (const item of items) {
+					for (const rawItem of items) {
+						const item = rawItem as Record<string, unknown>;
 						if (kind && item.kind && item.kind !== kind) {
 							continue;
 						}

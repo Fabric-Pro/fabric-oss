@@ -277,7 +277,7 @@ export const sendFollowUpProcedure = tenantProtectedProcedure
 								status: "STARTING",
 								workflowId,
 								startedAt: new Date(),
-								completedAt: null,
+								lastError: null,
 							},
 						});
 						if (!claimed.count) {

@@ -337,6 +337,34 @@ Both the HTTP MCP Gateway (`/mcp` and `/api/mcp-gateway`) and `@fabricorg/sdk-mc
 | `ui://fabric/genie-insights` | `fabric_query_workspace`, `fabric_search_knowledge`, `fabric_list_documents`, `fabric_get_document` | Databricks Genie Agents & Lakebase workspace card with hybrid RAG citations, SQL, and metric summaries |
 | `ui://fabric/visualize` | `fabric_visualize` | Declarative A2UI v0.9.1 canvas rendering KpiGrid, BarChart, LineChart, DataTable, BadgeList, and Timeline |
 
+### The 3 MCP Entry Points & When to Use Each
+
+Fabric exposes the same workspace catalog, authentication model, and `ui://fabric/*` MCP Apps across three transport entry points so every MCP client can connect using its preferred standard:
+
+| Entry Point | Production URL / Command | Transport | Best For |
+|---|---|---|---|
+| **1. Primary MCP Gateway** *(Recommended)* | `https://fabric.pro/api/mcp-gateway` or `https://fabric.pro/api/mcp-gateway/projects/<project-id>` | Streamable HTTP (`2025-11-25`) | **Claude Code, Codex CLI, Cursor, VS Code, Fabric Desktop, Remote Fabric Agents Server** — exposes all 169 platform tools + connected 3rd-party MCP servers + OAuth 2.1 PKCE browser sign-in + project scoping + Temporal durable execution |
+| **2. Canonical `/mcp` Short-Path** | `https://fabric.pro/mcp` (`?stateless=1` supported) | Streamable HTTP (`2025-11-25`) | **claude.ai, ChatGPT Connectors, OpenCode, and MCP App hosts** that expect the canonical `/mcp` root path with `.well-known/oauth-protected-resource` discovery |
+| **3. Local Stdio Bridge (`@fabricorg/sdk-mcp`)** | `fabric mcp serve` (or `npx -y @fabricorg/sdk-mcp`) | `stdio` JSON-RPC | **Stdio-only desktop clients or local scripts** that prefer spawning a local process authenticated via `fabric login` (`~/.config/fabric/config.json`) or `FABRIC_API_KEY` |
+
+#### Production Setup Commands
+
+```bash
+# Claude Code (Zero-Key Browser OAuth 2.1 PKCE)
+claude mcp add --transport http fabric https://fabric.pro/api/mcp-gateway
+
+# Codex CLI
+codex mcp add fabric --url https://fabric.pro/api/mcp-gateway
+
+# OpenCode (~/.config/opencode/opencode.json)
+# { "mcp": { "fabric": { "type": "remote", "url": "https://fabric.pro/mcp", "enabled": true } } }
+
+# Local Stdio Bridge (Claude Desktop / Cursor stdio mode)
+npm install -g @fabricorg/cli@latest @fabricorg/sdk-mcp@latest
+fabric login --url https://fabric.pro
+fabric mcp serve
+```
+
 ## Related Files
 
 - `services/fabric-ai-server/internal/tools/mcpcli/mcpcli.go` - Go wrapper

@@ -1220,10 +1220,19 @@ function ViewerBody({
 			<div className="space-y-2">
 				<Skeleton className="h-16 w-full rounded-md" />
 				<Skeleton className="h-12 w-2/3 rounded-md" />
-				<Skeleton className="h-16 w-full rounded-md" />{" "}
+				<Skeleton className="h-16 w-full rounded-md" />
 			</div>
 		);
-	} // byId resolved with a conversation, or list-derived fallback messages. return ( <ConversationViewer messages={selected.messages} onForkFromMessage={onForkFromMessage} isForkPending={isForkPending} /> );
+	}
+
+	// byId resolved with a conversation, or list-derived fallback messages.
+	return (
+		<ConversationViewer
+			messages={selected.messages}
+			onForkFromMessage={onForkFromMessage}
+			isForkPending={isForkPending}
+		/>
+	);
 } /** * Empty-state for the no-conversations case. Uses the editorial label * pattern (thin red bar prefix + uppercase tracked) and a serif heading * via the global `--font-semibold` token. */
 function EmptyState() {
 	return (

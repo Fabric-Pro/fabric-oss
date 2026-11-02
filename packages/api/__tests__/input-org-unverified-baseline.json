@@ -53,8 +53,6 @@
 	"packages/api/modules/atlas/procedures/system-remap-history.ts",
 	"packages/api/modules/atlas/procedures/update-edge.ts",
 	"packages/api/modules/atlas/procedures/update-node.ts",
-	"packages/api/modules/coding-runs/procedures/cancel-coding-run.ts",
-	"packages/api/modules/coding-runs/procedures/send-follow-up.ts",
 	"packages/api/modules/frames/procedures/create.ts",
 	"packages/api/modules/frames/procedures/delete.ts",
 	"packages/api/modules/frames/procedures/duplicate.ts",

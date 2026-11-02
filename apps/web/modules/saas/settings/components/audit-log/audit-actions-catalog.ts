@@ -1905,6 +1905,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			"An admin changed the type label or AI instructions of a company context source — guidance every Proposal and Business Case the organization generates follows. Both values are recorded before and after.",
 	},
+	{
+		key: "weave.session.continuation_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.weave.session.continuation_requested",
+		description:
+			"A project member requested a follow-up continuation on an existing coding run session, recording the prompt identifier and target execution runtime without storing the raw prompt text.",
+	},
 ];
 
 /**

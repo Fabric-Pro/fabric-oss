@@ -7,13 +7,7 @@
 import Table from "cli-table3";
 import { getOutputFormat } from "./config.js";
 
-export type OutputFormat =
-	| "table"
-	| "json"
-	| "yaml"
-	| "csv"
-	| "plain"
-	| "quiet";
+type OutputFormat = "table" | "json" | "yaml" | "csv" | "plain" | "quiet";
 
 export interface OutputOptions {
 	format?: OutputFormat;

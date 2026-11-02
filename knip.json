@@ -110,6 +110,8 @@
 		},
 		"apps/web": {
 			"entry": [
+				"components/ai-elements/message.tsx",
+				"components/ai-elements/queue.tsx",
 				"content-collections.ts",
 				"modules/i18n/request.ts",
 				"playwright.qa-2104.config.ts",

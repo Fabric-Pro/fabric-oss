@@ -2,7 +2,7 @@ export type ExecutionChannel = "BACKGROUND_AGENTS" | "LOCAL_AGENTS";
 
 export type ExecutionProvider = "BACKGROUND_AGENTS" | "KANBAN_LOCAL";
 
-export type FabricAgentModelTier = "COMPLEX" | "STANDARD" | "SIMPLE";
+type FabricAgentModelTier = "COMPLEX" | "STANDARD" | "SIMPLE";
 
 export interface FabricAgentModelOption {
 	id: string;
@@ -60,7 +60,7 @@ export const FABRIC_AGENT_FALLBACK_POLICIES: readonly FabricAgentFallbackPolicyO
 		},
 	] as const;
 
-export const DEFAULT_FALLBACK_HARNESS_CHAIN: readonly string[] = [
+const DEFAULT_FALLBACK_HARNESS_CHAIN: readonly string[] = [
 	"claude-max",
 	"codex",
 	"droid-cli",
@@ -421,15 +421,6 @@ export function getFabricAgentConnectionModels(
 		(c) => c.value === connectionValue,
 	);
 	return found?.models ?? FABRIC_AGENT_CONNECTIONS[0].models;
-}
-
-export function getFabricAgentFallbackPolicyLabel(
-	policy?: FabricAgentFallbackPolicy | null,
-): string {
-	const found = FABRIC_AGENT_FALLBACK_POLICIES.find(
-		(option) => option.value === policy,
-	);
-	return found?.label ?? FABRIC_AGENT_FALLBACK_POLICIES[0].label;
 }
 
 const CONNECTION_ALIAS_LABELS: Record<string, string> = {

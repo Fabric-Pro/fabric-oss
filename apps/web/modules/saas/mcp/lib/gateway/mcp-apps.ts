@@ -4,16 +4,10 @@ import {
 	buildFabricVisualizePayload,
 	FABRIC_BRAND,
 	FABRIC_MARK_DATA_URI,
-	type FabricVisualizeResult,
 	kitPageSync,
 } from "./ui-kit";
 
-export {
-	buildFabricVisualizePayload,
-	FABRIC_BRAND,
-	FABRIC_MARK_DATA_URI,
-	type FabricVisualizeResult,
-};
+export { buildFabricVisualizePayload, FABRIC_BRAND, FABRIC_MARK_DATA_URI };
 
 export interface FabricMcpAppResourceDescriptor {
 	uri: string;
@@ -212,7 +206,7 @@ export const FABRIC_TOOL_UI_RESOURCE_MAP: Readonly<Record<string, string>> = {
 /**
  * Tools whose underlying execution is backed by Temporal workflows by default.
  */
-export const TEMPORAL_BACKED_MCP_TOOLS: ReadonlySet<string> = new Set([
+const TEMPORAL_BACKED_MCP_TOOLS: ReadonlySet<string> = new Set([
 	"fabric_execute_workflow",
 	"fabric_get_workflow_execution",
 	"run_browser_task",
@@ -934,7 +928,7 @@ export interface DurableExecutionMetadata {
 	runId: string;
 	taskQueue: string;
 	idempotencyKey: string;
-	organizationId: string;
+	organizationId: string | null;
 	toolName: string;
 	startedAt: string;
 	completedAt: string;
@@ -980,20 +974,21 @@ export function isDurableMcpToolRequest(
  * Computes a deterministic idempotency key and Temporal-compatible workflow ID
  * for a durable MCP tool call.
  */
-export function computeDurableWorkflowIdentity(options: {
-	organizationId: string;
+function computeDurableWorkflowIdentity(options: {
+	organizationId: string | null;
 	userId: string;
 	toolName: string;
 	toolArgs: Record<string, unknown>;
 	explicitIdempotencyKey?: string;
 }): { workflowId: string; idempotencyKey: string; runId: string } {
 	const {
-		organizationId,
+		organizationId: rawOrganizationId,
 		userId,
 		toolName,
 		toolArgs,
 		explicitIdempotencyKey,
 	} = options;
+	const organizationId = rawOrganizationId ?? "org_default";
 	const cleanArgs = { ...toolArgs };
 	delete cleanArgs._durable;
 	delete cleanArgs._idempotencyKey;
@@ -1031,7 +1026,7 @@ export function computeDurableWorkflowIdentity(options: {
 export async function executeWithDurableEnvelope(options: {
 	toolName: string;
 	toolArgs: Record<string, unknown>;
-	organizationId: string;
+	organizationId: string | null;
 	userId: string;
 	explicitIdempotencyKey?: string;
 	idempotencyKey?: string;

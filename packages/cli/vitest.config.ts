@@ -6,6 +6,14 @@ export default defineConfig({
 		alias: {
 			// Match tsconfig's workspace mapping so a clean checkout does not need
 			// a prebuilt SDK dist directory before the CLI unit tests can load.
+			"@fabricorg/sdk-mcp/stdio": path.resolve(
+				__dirname,
+				"../sdk-mcp/src/stdio.ts",
+			),
+			"@fabricorg/sdk-mcp": path.resolve(
+				__dirname,
+				"../sdk-mcp/src/index.ts",
+			),
 			"@fabricorg/sdk": path.resolve(__dirname, "../sdk/src/index.ts"),
 		},
 	},

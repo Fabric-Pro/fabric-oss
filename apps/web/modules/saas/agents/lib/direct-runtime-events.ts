@@ -193,7 +193,10 @@ function customSignals(name: string, value: unknown): RuntimeSignal[] {
 		case FABRIC_EVENT.sources: {
 			const parsed = sourcesValueSchema.safeParse(value);
 			return parsed.success
-				? directEvent({ type: "sources", sources: parsed.data.sources })
+				? directEvent({
+						type: "sources",
+						sources: parsed.data.sources,
+					} as Record<string, unknown>)
 				: [];
 		}
 		case FABRIC_EVENT.partialError: {
