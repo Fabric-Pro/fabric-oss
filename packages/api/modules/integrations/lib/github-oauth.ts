@@ -10,8 +10,10 @@ const GITHUB_AUTH_URL = "https://github.com/login/oauth/authorize";
 const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
 const GITHUB_API_URL = "https://api.github.com";
 
-// Scopes needed for repo access and PR creation
-const GITHUB_SCOPES = ["repo", "read:user"];
+// Scopes needed for repo access and PR creation, and `project` for GitHub
+// Projects (v2) boards used as the PM tool. Ignored by a GitHub App, whose
+// "Projects" permission governs board access instead.
+const GITHUB_SCOPES = ["repo", "read:user", "project"];
 
 export interface GitHubTokenResponse {
 	access_token: string;

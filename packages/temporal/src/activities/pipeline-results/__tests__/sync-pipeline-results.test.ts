@@ -101,6 +101,7 @@ function adoRepo(
 		encryptedPat: "enc",
 		azureOrganization: "example-org",
 		authMethod: "PAT",
+		includedInCodeSearch: true,
 		...overrides,
 	};
 }

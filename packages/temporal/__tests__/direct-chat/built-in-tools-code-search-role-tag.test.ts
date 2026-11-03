@@ -13,14 +13,21 @@ vi.mock("@repo/openapi-tools", () => ({
 const mockFindManyIntegrations = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	getProjectRagSettings: vi.fn(async () => ({ codeSearchMode: "RAG" })),
 	db: {
+		// No legacy (project-level) repository.
+		project: { findUnique: vi.fn(async () => null) },
 		projectRepositoryIntegration: {
 			findMany: (...args: unknown[]) => mockFindManyIntegrations(...args),
 		},
 	},
 	getMergedSearchProviderConfigs: vi.fn().mockResolvedValue([]),
 	getSearchProviderConfig: vi.fn(),
-	getProjectCodeIndexes: vi.fn().mockResolvedValue([{ status: "READY" }]),
+	// One searchable index per included repository below.
+	getProjectCodeIndexes: vi.fn().mockResolvedValue([
+		{ repositoryIntegrationId: "integ-legacy", status: "READY" },
+		{ repositoryIntegrationId: "integ-new", status: "READY" },
+	]),
 	getProjectAccessContext: vi
 		.fn()
 		.mockResolvedValue({ organizationId: "org-1" }),

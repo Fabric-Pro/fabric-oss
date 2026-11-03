@@ -116,9 +116,11 @@ export async function enrichWeaveDelegationMessage(input: {
 	// 2. Retrieve RAG context for eligible agents
 	if (RAG_ELIGIBLE_AGENTS.has(input.agentId) && input.projectId) {
 		try {
-			const { retrieveProjectContexts, contextMetaHeader } = await import(
-				"@repo/rag"
-			);
+			const {
+				retrieveProjectContexts,
+				contextMetaHeader,
+				projectContextSourceName,
+			} = await import("@repo/rag");
 
 			// Use the delegation message as the RAG query for relevance
 			const results = await retrieveProjectContexts({
@@ -135,16 +137,17 @@ export async function enrichWeaveDelegationMessage(input: {
 						(
 							r: {
 								content: string;
+								sourcePath?: string;
+								filename?: string;
+								sourceTitle?: string;
+								sourceUrl?: string;
 								metadata?: { filename?: string; type?: string };
 								sourceType?: string;
 								aiInstructions?: string;
 							},
 							i: number,
 						) => {
-							const source =
-								r.metadata?.filename ??
-								r.metadata?.type ??
-								`Context ${i + 1}`;
+							const source = projectContextSourceName(r, i);
 							// Type label + AI guidance (#1888): metadata
 							// arrives flag-gated; header is "" when unset.
 							return `### ${source}\n${contextMetaHeader(r)}${r.content}`;

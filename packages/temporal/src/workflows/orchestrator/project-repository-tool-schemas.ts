@@ -5,10 +5,20 @@
  * cannot describe different arguments. Workflow-sandbox safe.
  */
 
+/**
+ * When search results are enough and when to read whole files: general
+ * questions are answered from the search snippets; exact code and proof come
+ * from code_file_get. Shared by the search and file-read descriptions so both
+ * tools tell the model the same thing.
+ */
+export const CODE_ANSWER_DEPTH_RULE =
+	"Answer general questions (where something lives, how a feature is organised, which parts are involved) from code_search results alone, citing the file paths and snippets they return. " +
+	"Read whole files with code_file_get only when the user asks for exact code, evidence, a bug's cause or a precise behaviour, or when the snippets do not settle the answer.";
+
 export const CODE_SEARCH_DESCRIPTION =
 	"Search the project's connected repositories for code matching a query. Returns file paths and matched snippets. " +
 	"If the project has multiple repositories connected, searches across all of them. " +
-	"Use this to find specific functions, classes, patterns, or implementations in the codebase.";
+	`Use this to find specific functions, classes, patterns, or implementations in the codebase. ${CODE_ANSWER_DEPTH_RULE}`;
 
 export const CODE_SEARCH_INPUT_SCHEMA = {
 	type: "object",
@@ -31,7 +41,7 @@ export const CODE_SEARCH_INPUT_SCHEMA = {
 		repo: {
 			type: "string",
 			description:
-				"Filter to one of the project's indexed repositories by name, owner/name (e.g., 'acme/backend') or URL. When the conversation names the repository the user is viewing (a 'Repository URL' line), pass it here unless the user asks about another repository. Omit to search all connected repos.",
+				"Only when the user names a repository to search in: its name, owner/name (e.g., 'acme/backend') or URL. Omit otherwise, including for the repository the user is viewing: the search covers every connected repo and each result names its repository.",
 		},
 	},
 	required: ["query"],
@@ -39,7 +49,7 @@ export const CODE_SEARCH_INPUT_SCHEMA = {
 
 export const CODE_FILE_GET_DESCRIPTION =
 	"Fetch the full content of a specific file from the project's connected repositories by its path. " +
-	"Use after code_search to read the full source of a relevant file. " +
+	"Use after code_search to read the full source of a relevant file when the user needs exact code or evidence, not for a general overview the search results already answer. " +
 	"If multiple repos are connected and no repo is specified, tries each repo until the file is found.";
 
 export const CODE_FILE_GET_INPUT_SCHEMA = {
@@ -54,6 +64,15 @@ export const CODE_FILE_GET_INPUT_SCHEMA = {
 			type: "string",
 			description:
 				"Target repository in owner/name format (e.g., 'acme/backend'). Omit to search all connected repos.",
+		},
+		startLine: {
+			type: "number",
+			description:
+				"First line to read (1-based). A long file read without a range returns its outline and first lines; pass startLine/endLine to read a part, e.g. the lines a search result cites.",
+		},
+		endLine: {
+			type: "number",
+			description: "Last line to read (1-based, inclusive).",
 		},
 	},
 	required: ["path"],

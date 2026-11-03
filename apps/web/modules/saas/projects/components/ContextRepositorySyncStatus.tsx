@@ -341,7 +341,8 @@ export function ContextRepositorySyncStatus({
 					</p>
 				) : null}
 				{state.awaitingIndexCount > 0 ? (
-					<p
+					// A div, not a p: the progress line holds a progress bar (a div).
+					<div
 						className="text-muted-foreground"
 						data-testid="context-sync-awaiting-index"
 					>
@@ -356,7 +357,7 @@ export function ContextRepositorySyncStatus({
 								count: state.awaitingIndexCount,
 							})
 						)}
-					</p>
+					</div>
 				) : null}
 				{state.cleanupPending > 0 ? (
 					<p

@@ -48,7 +48,10 @@ vi.mock("../../embedding", () => ({
 }));
 
 vi.mock("../../chunking", () => ({
+	parseChunkProfilesConfig: vi.fn(() => ({})),
 	chunkDescribedOpenApiSpec: vi.fn(),
+	// Content-type chunking is off here: these tests pin today's path.
+	isContentAwareChunkingActive: vi.fn(async () => false),
 	chunkText: mocks.chunkText,
 	detectContentType: vi.fn(() => ({ type: "text" })),
 	enrichChunksWithTenantContext: mocks.enrichChunksWithTenantContext,

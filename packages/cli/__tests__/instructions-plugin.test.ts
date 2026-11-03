@@ -76,6 +76,9 @@ vi.mock("../src/lib/client.js", () => {
 			readRepositoryFiles: mocks.readRepositoryFiles,
 		},
 		memory: { getTargets: mocks.getTargets },
+		knowledge: {
+			getProjectTypes: vi.fn(async () => ({ types: [] })),
+		},
 		withoutContext: () => {
 			mocks.withoutContext();
 			return client;

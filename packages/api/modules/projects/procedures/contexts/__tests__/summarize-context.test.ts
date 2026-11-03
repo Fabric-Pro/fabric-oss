@@ -27,9 +27,17 @@ const { mockGetInProgress, mockHasProjectAccess, mockStartWorkflow } =
 		mockStartWorkflow: vi.fn(),
 	}));
 
+// The code-repo source follows the project's code search mode (RAG) and an
+// included repository; this project searches code live, so it is off.
 vi.mock("@repo/database", () => ({
 	getInProgressContextSummary: mockGetInProgress,
 	hasProjectAccess: mockHasProjectAccess,
+	db: {
+		projectRagSettings: {
+			findUnique: async () => ({ codeSearchMode: "CODE_SEARCH" }),
+		},
+		projectRepositoryIntegration: { count: async () => 1 },
+	},
 }));
 
 // Lazy-imported inside the handler (`await import("@repo/temporal")`).
@@ -182,7 +190,7 @@ describe("summarizeContextProcedure — access + dispatch (flag on)", () => {
 		});
 	});
 
-	it("passes a chosen subset through and never enables code-repo without its flag", async () => {
+	it("passes a chosen subset through and never enables code-repo outside RAG", async () => {
 		await handler({
 			input: {
 				projectId: "p1",
@@ -191,7 +199,7 @@ describe("summarizeContextProcedure — access + dispatch (flag on)", () => {
 					context: false,
 					decisions: true,
 					roadmap: false,
-					// Requested on, but the FEATURE_CODE_INDEXING flag is off → forced off.
+					// Requested on, but the project does not use RAG → forced off.
 					codeRepo: true,
 				},
 			},

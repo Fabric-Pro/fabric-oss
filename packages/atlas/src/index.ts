@@ -14,6 +14,11 @@ export {
 	ensureFreshRepoCredentials,
 } from "./credentials";
 export * from "./errors";
+export {
+	isManifestPath,
+	type ManifestFile,
+	parseTechStack,
+} from "./graph/manifest";
 export * from "./schemas";
 export { AtlasService } from "./service";
 export * from "./types";

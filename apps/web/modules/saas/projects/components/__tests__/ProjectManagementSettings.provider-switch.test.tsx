@@ -13,6 +13,10 @@ import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useContextPath: () => "/mcp-servers",
 	useOrganizationContext: () => ({ organizationName: "Acme" }),

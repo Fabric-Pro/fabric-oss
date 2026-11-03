@@ -175,6 +175,7 @@ export async function listProjectRepoIntegrations(projectId: string) {
 			repositoryName: true,
 			defaultBranch: true,
 			roleTag: true,
+			includedInCodeSearch: true,
 			tokenScopes: true,
 			status: true,
 			lastHealthCheck: true,
@@ -609,6 +610,8 @@ export interface ProjectRepoForCodeSearch {
 	repo: string;
 	branch: string;
 	roleTag?: string | null;
+	/** Whether AI code search reads and indexes this repository. */
+	includedInCodeSearch: boolean;
 	repositoryUrl: string;
 	encryptedAccessToken: string | null;
 	encryptedRefreshToken: string | null;
@@ -642,6 +645,7 @@ export async function getProjectReposForCodeSearch(
 			defaultBranch: true,
 			qaBranch: true,
 			roleTag: true,
+			includedInCodeSearch: true,
 			encryptedAccessToken: true,
 			encryptedRefreshToken: true,
 			tokenExpiresAt: true,
@@ -661,6 +665,7 @@ export async function getProjectReposForCodeSearch(
 		// which is what every existing row does and keeps doing.
 		branch: i.qaBranch || i.defaultBranch,
 		roleTag: i.roleTag,
+		includedInCodeSearch: i.includedInCodeSearch,
 		repositoryUrl: i.repositoryUrl,
 		encryptedAccessToken: i.encryptedAccessToken,
 		encryptedRefreshToken: i.encryptedRefreshToken,
@@ -702,6 +707,7 @@ export async function getProjectReposForPipelineSync(
 			repositoryName: true,
 			defaultBranch: true,
 			qaBranch: true,
+			includedInCodeSearch: true,
 			encryptedAccessToken: true,
 			encryptedRefreshToken: true,
 			tokenExpiresAt: true,
@@ -720,6 +726,7 @@ export async function getProjectReposForPipelineSync(
 		// QA watches its own branch when one is set; otherwise the repo default,
 		// which is what every existing row does and keeps doing.
 		branch: i.qaBranch || i.defaultBranch,
+		includedInCodeSearch: i.includedInCodeSearch,
 		repositoryUrl: i.repositoryUrl,
 		encryptedAccessToken: i.encryptedAccessToken,
 		encryptedRefreshToken: i.encryptedRefreshToken,
@@ -736,15 +743,15 @@ export async function getProjectReposForPipelineSync(
  *
  * 1. Deletes all `ProjectContext` records where `metadata.provider = "CODE_ANALYSIS"`
  *    and `metadata.repo` matches the `owner/name` parsed from the repository URL.
- * 2. If no active repository integrations remain for the project, disables
- *    `codeSearchEnabled` in `ProjectRagSettings`.
+ * 2. If no active repository integrations remain for the project, turns AI
+ *    code search off in `ProjectRagSettings`.
  */
 /**
  * Clean up code search artifacts when a repository integration is unlinked.
  *
  * 1. Finds all CODE_ANALYSIS ProjectContext records matching the repo.
  * 2. Deletes them from the database.
- * 3. Disables codeSearchEnabled if no active repo integrations remain.
+ * 3. Turns AI code search off if no active repo integrations remain.
  *
  * Returns the deleted context IDs so the caller can also remove
  * the corresponding Qdrant vectors.
@@ -753,7 +760,7 @@ export async function cleanupCodeSearchOnRepoUnlink(
 	projectId: string,
 	repositoryUrl: string,
 	options?: {
-		/** When true, skip disabling codeSearchEnabled (used during repo replacement) */
+		/** When true, keep the code search mode (used during repo replacement) */
 		preserveCodeSearchSetting?: boolean;
 	},
 ): Promise<{
@@ -820,7 +827,7 @@ export async function cleanupCodeSearchOnRepoUnlink(
 	if (remainingCount === 0 && !options?.preserveCodeSearchSetting) {
 		await db.projectRagSettings.updateMany({
 			where: { projectId },
-			data: { codeSearchEnabled: false },
+			data: { codeSearchMode: "OFF", codeSearchEnabled: false },
 		});
 	}
 
@@ -910,6 +917,7 @@ export async function findByRepoUrl(repositoryUrl: string) {
 					id: true,
 					userId: true,
 					organizationId: true,
+					ragSettings: { select: { codeSearchMode: true } },
 				},
 			},
 		},

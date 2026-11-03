@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+	buildUnindexedRepositories,
 	type CodeSearchRepository,
 	resolveCodeSearchRepository,
 } from "../src/activities/direct-chat/code-search-repositories";
@@ -62,5 +63,44 @@ describe("resolveCodeSearchRepository", () => {
 		const started = performance.now();
 		expect(resolveCodeSearchRepository([long, billing], ref)).toBe(long);
 		expect(performance.now() - started).toBeLessThan(500);
+	});
+});
+
+describe("buildUnindexedRepositories", () => {
+	const integration = {
+		id: "int-1",
+		repositoryUrl: "https://github.com/acme/portal",
+		repositoryOwner: "acme",
+		repositoryName: "portal",
+		roleTag: null,
+	};
+	const legacy = {
+		repositoryUrl: "https://github.com/acme/portal.git",
+		repositoryOwner: "acme",
+		repositoryName: "portal",
+	};
+
+	it("does not report the legacy copy of a connected, indexed repository as unindexed", () => {
+		expect(
+			buildUnindexedRepositories(
+				[{ repositoryIntegrationId: "int-1", status: "READY" }],
+				[integration],
+				legacy,
+			),
+		).toEqual([]);
+	});
+
+	it("still reports a legacy repository that is not connected as an integration", () => {
+		expect(
+			buildUnindexedRepositories(
+				[{ repositoryIntegrationId: "int-1", status: "READY" }],
+				[integration],
+				{
+					repositoryUrl: "https://github.com/acme/billing",
+					repositoryOwner: "acme",
+					repositoryName: "billing",
+				},
+			).map((r) => [r.label, r.status]),
+		).toEqual([["acme/billing", "missing"]]);
 	});
 });

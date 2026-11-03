@@ -195,4 +195,11 @@ describe("microfrontends routing (fabric.pro)", () => {
 		});
 		expect(seen.zone).toBeNull();
 	});
+
+	it("leaves /docs-sitemap.xml to the route, outside the locale middleware", async () => {
+		const { config } = await import("../../proxy");
+		const main = new RegExp(`^${config.matcher[0]}$`);
+		expect(main.test("/docs-sitemap.xml")).toBe(false);
+		expect(main.test("/en/docs/features/libraries")).toBe(true);
+	});
 });

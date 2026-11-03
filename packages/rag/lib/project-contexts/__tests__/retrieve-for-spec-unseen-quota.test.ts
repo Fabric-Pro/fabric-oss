@@ -58,7 +58,10 @@ vi.mock("@repo/integrations/databricks-vector-search", () => ({
 	MAX_QUERY_INDEXES: 16,
 	queryDatabricksVectorIndexes: queryDbxMock,
 }));
-vi.mock("../../chunking", () => ({ chunkText: chunkTextMock }));
+vi.mock("../../chunking", () => ({
+	parseChunkProfilesConfig: vi.fn(() => ({})),
+	chunkText: chunkTextMock,
+}));
 vi.mock("../../embedding", () => ({
 	generateEmbeddings: generateEmbeddingsMock,
 }));

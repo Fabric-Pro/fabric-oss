@@ -5,6 +5,11 @@ import {
 	type resolvePMConfigForUser,
 } from "@repo/database";
 import {
+	readPmCredentialId,
+	resolveGitHubProjectsCredential,
+} from "@repo/integrations/github/projects-credential";
+import { isGitHubProjectsKey } from "@repo/integrations/github/projects-pm-adapter";
+import {
 	findUsableGitLabConnection,
 	GitLabPmOriginMismatchError,
 	gitlabPmOriginMatches,
@@ -22,6 +27,9 @@ import {
  *   caller has a usable personal GitLab connection, but no MCPConfig is
  *   pinned (GitLab tier doesn't support the official MCP endpoint).
  *   The workflow dispatches through the GitLab REST adapter.
+ * - `rest-github`: the project's PM tool is GitHub Projects (the
+ *   `github-remote` catalog row) and the caller has a GitHub connection. The
+ *   workflow dispatches through the GitHub Projects adapter, never MCP.
  * - `null`: neither path resolves — the project has no usable PM target.
  *   That includes a GitLab target whose container was chosen on another
  *   GitLab instance than the caller's connection (or GitLab MCP config) is
@@ -36,7 +44,8 @@ export type PMTarget =
 				Awaited<ReturnType<typeof resolvePMConfigForUser>>
 			>;
 	  }
-	| { kind: "rest-gitlab"; mcpConfigId: null };
+	| { kind: "rest-gitlab"; mcpConfigId: null }
+	| { kind: "rest-github"; mcpConfigId: null };
 
 export async function resolvePmTarget(args: {
 	project: {
@@ -105,6 +114,18 @@ export async function resolvePmTarget(args: {
 			select: { key: true },
 		});
 		serverKey = server?.key ?? null;
+	}
+	// GitHub Projects: the caller's OWN GitHub connection (exclusive tenant),
+	// as the worker's `resolvePmSource` reads it.
+	if (isGitHubProjectsKey(serverKey)) {
+		const credential = await resolveGitHubProjectsCredential(
+			userId,
+			organizationId,
+			readPmCredentialId(project.projectManagementAdditionalContext),
+		);
+		return credential.ok
+			? { kind: "rest-github", mcpConfigId: null }
+			: null;
 	}
 	if (serverKey !== "gitlab-official") {
 		return null;

@@ -40,8 +40,33 @@ export interface KnowledgeChunk {
 	metadata?: Record<string, unknown>;
 }
 
+/** One entry of a project's knowledge artifact type catalog. */
+export interface KnowledgeArtifactTypeInfo {
+	key: string;
+	name: string;
+	description: string;
+	template: string | null;
+	fieldSchema: Record<string, unknown> | null;
+	summaryBehavior: "MERGE" | "LATEST_WINS" | "EXCLUDED";
+}
+
+export interface KnowledgeArtifactTypes {
+	types: KnowledgeArtifactTypeInfo[];
+}
+
 export class KnowledgeResource {
 	constructor(private readonly http: FabricHttpClient) {}
+
+	/**
+	 * The project's knowledge artifact types (the knowledge hub catalog the
+	 * Coding Instructions plugin renders into its `fabric-knowledge` skill).
+	 * Needs `instructions:read` and the project's CONTEXT_READ permission.
+	 */
+	getProjectTypes(projectId: string): Promise<KnowledgeArtifactTypes> {
+		return this.http.get<KnowledgeArtifactTypes>(
+			`/projects/${encodeURIComponent(projectId)}/knowledge/types`,
+		);
+	}
 
 	/** Retrieve the top-K most relevant chunks for `query` within `scope`. */
 	search(options: KnowledgeSearchOptions): Promise<KnowledgeChunk[]> {

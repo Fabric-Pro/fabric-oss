@@ -41,6 +41,7 @@ export type EffectiveProjectAccess = {
  *
  *   - `packages/database/prisma/queries/newsletter-review-recipients.ts`
  *     (`selectReviewRecipientIds`, predicate `PROJECT_SETTINGS_EDIT`)
+ *     (path B narrowed to the project's creator — Fizzy #2266)
  *   - `packages/database/prisma/queries/projects/publishing-recipients.ts`
  *     (`selectPublishingRecipientIds`, predicate `PUBLISHING_TOPIC_CREATE`)
  *

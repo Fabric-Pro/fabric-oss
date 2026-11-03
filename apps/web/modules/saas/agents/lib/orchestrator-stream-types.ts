@@ -13,6 +13,7 @@ import type {
 import type { StreamModelInfo, StreamStatus } from "../hooks/useDirectStream";
 import type { ChatTurnTruncation } from "./chat-turn-truncation";
 import type { ChatGptPlanApiBilling } from "./chatgpt-plan-api-billing";
+import type { ClarificationTurn } from "./clarification-turns";
 import type { TurnBudgetStop } from "./turn-budget-stop";
 
 /** A multi-agent message, as the runtime stream hands it over (see `multiAgentSend`). */
@@ -199,6 +200,12 @@ export interface OrchestratorStreamMessage {
 	streamStatus?: StreamStatus;
 	/** ISO timestamp stamped when the user halted this assistant turn. */
 	cancelledAt?: string;
+	/**
+	 * Set on the user turn that answers a clarifying question. `content` keeps
+	 * the full transcript line the next turn's history needs; the bubble shows
+	 * the answer under the question instead of that line.
+	 */
+	clarification?: ClarificationTurn;
 }
 
 interface PlanningAuditSummary {

@@ -182,3 +182,61 @@ export function buildOperationResultMessage(
 
 	return { content, metadata };
 }
+
+interface PersistedTurnMessage {
+	role: string;
+	metadata?: unknown;
+}
+
+/** Whether a stored conversation message is an operation-result row. */
+export function isOperationResultMessage(
+	message: PersistedTurnMessage,
+): boolean {
+	const metadata = message.metadata as { kind?: unknown } | null | undefined;
+	return message.role === "system" && metadata?.kind === "operation_result";
+}
+
+/**
+ * The Direct workflow records every turn it finishes as a `system`
+ * operation-result row, and the real assistant message is saved separately.
+ * Read back together, each answer would be followed by a "SYSTEM" row
+ * repeating it, which would also go back to the model as history (F33).
+ *
+ * The row is dropped only when the same exchange (user message to next user
+ * message) already has a real assistant reply. When it has none — the tab
+ * closed or the route timed out before the reply was saved — the row is the
+ * only record of the answer, so it stays.
+ */
+export function dropDuplicatedOperationResults<T extends PersistedTurnMessage>(
+	messages: T[],
+): T[] {
+	const keep = messages.map(() => true);
+	let segmentStart = 0;
+	const closeSegment = (end: number) => {
+		const segment = messages.slice(segmentStart, end);
+		const hasReply = segment.some(
+			(m) => m.role === "assistant" && !isOperationResultMessage(m),
+		);
+		if (hasReply) {
+			for (let i = segmentStart; i < end; i++) {
+				if (isOperationResultMessage(messages[i])) {
+					keep[i] = false;
+				}
+			}
+		}
+	};
+	messages.forEach((message, index) => {
+		if (message.role === "user" && index > segmentStart) {
+			closeSegment(index);
+			segmentStart = index;
+		}
+	});
+	closeSegment(messages.length);
+	return messages.filter((_, index) => keep[index]);
+}
+
+/** An operation-result row's text without the header the formatter adds. */
+export function operationResultText(content: string): string {
+	const prefix = `${HEADER}${PARA_SEP}`;
+	return content.startsWith(prefix) ? content.slice(prefix.length) : content;
+}

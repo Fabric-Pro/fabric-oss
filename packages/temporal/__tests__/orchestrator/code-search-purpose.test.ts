@@ -6,6 +6,7 @@ const seen = vi.hoisted(
 );
 vi.mock("@repo/ai", () => ({ tool: (definition: unknown) => definition }));
 vi.mock("@repo/database", () => ({
+	getProjectRagSettings: vi.fn(async () => ({ codeSearchMode: "RAG" })),
 	getProjectAccessContext: vi.fn(async () => ({
 		organizationId: "org-example",
 	})),
@@ -13,7 +14,10 @@ vi.mock("@repo/database", () => ({
 		project: { findUnique: vi.fn(async () => null) },
 		projectRepositoryIntegration: { findMany: vi.fn(async () => []) },
 	},
-	getProjectCodeIndexes: vi.fn(async () => [{ status: "READY" }]),
+	// The project's own (legacy) repository, indexed and searchable.
+	getProjectCodeIndexes: vi.fn(async () => [
+		{ repositoryIntegrationId: null, status: "READY" },
+	]),
 	getProjectReposForCodeSearch: vi.fn(async () => [
 		{
 			provider: "GITHUB",

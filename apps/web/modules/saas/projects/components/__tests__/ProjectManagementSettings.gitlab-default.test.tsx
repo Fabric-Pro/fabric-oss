@@ -14,6 +14,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // next-intl is mocked globally in vitest.setup.ts
 
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useContextPath: () => "/mcp-servers",
 	useOrganizationContext: () => ({ organizationName: "Acme" }),

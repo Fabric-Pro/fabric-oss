@@ -8,6 +8,7 @@
  * carry an aria-label.
  */
 
+import type { JobListItem } from "@saas/jobs/hooks/use-jobs";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
@@ -49,6 +50,8 @@ interface CodeIndexDetailsPanelProps {
 	/** Start a re-index — "incremental" (fast, diff-only) or "full" (rebuild). */
 	onReindex?: (mode: "incremental" | "full") => void;
 	isReindexing?: boolean;
+	/** The running index job, so the bar follows the step past embedding. */
+	job?: JobListItem;
 }
 
 /** Header meta per code-index status. Fails safe to a neutral "Not indexed". */
@@ -100,10 +103,46 @@ function statusHeader(status?: string | null): {
 	}
 }
 
-/** Determinate/indeterminate embed progress while INDEXING or PENDING. */
-function IndexingProgress({ codeIndex }: { codeIndex: CodeIndexDetails }) {
+/** Labels for the index job's steps once embedding is done. */
+const LATE_STEP_LABELS: Record<string, string> = {
+	summaries: "Summarizing files",
+	finalize: "Finalizing index",
+};
+
+/**
+ * Determinate/indeterminate progress while INDEXING or PENDING. Embedding
+ * reaches 100% well before the job ends; after that the bar follows the
+ * running step, so a long summaries pass does not read as a hang.
+ */
+function IndexingProgress({
+	codeIndex,
+	job,
+}: {
+	codeIndex: CodeIndexDetails;
+	job?: JobListItem;
+}) {
 	const total = codeIndex.totalFileCount ?? null;
-	const done = codeIndex.indexedFileCount ?? 0;
+	const runningStep = job?.steps.find((step) => step.status === "running");
+	const lateLabel = runningStep ? LATE_STEP_LABELS[runningStep.key] : null;
+	const done =
+		runningStep?.key === "summaries"
+			? (job?.counts.summariesCreated ?? 0)
+			: (codeIndex.indexedFileCount ?? 0);
+
+	if (lateLabel && (runningStep?.key !== "summaries" || !total)) {
+		return (
+			<div className="space-y-1">
+				<div
+					className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+					role="progressbar"
+					aria-label={lateLabel}
+				>
+					<div className="h-full w-1/3 rounded-full bg-primary/70 motion-safe:animate-pulse" />
+				</div>
+				<span className="text-muted-foreground">{lateLabel}…</span>
+			</div>
+		);
+	}
 
 	// Total not known yet (walk/clone still running) — indeterminate bar.
 	if (total === null || total <= 0) {
@@ -130,6 +169,7 @@ function IndexingProgress({ codeIndex }: { codeIndex: CodeIndexDetails }) {
 				aria-label={`Indexing progress: ${pct}%`}
 			/>
 			<span className="text-muted-foreground tabular-nums">
+				{lateLabel ? `${lateLabel} · ` : ""}
 				{pct}% · {done.toLocaleString()} / {total.toLocaleString()}{" "}
 				files
 			</span>
@@ -239,6 +279,7 @@ export function CodeIndexDetailsPanel({
 	canManageIntegrations,
 	onReindex,
 	isReindexing,
+	job,
 }: CodeIndexDetailsPanelProps) {
 	const header = statusHeader(codeIndex?.status);
 	const HeaderIcon = header.icon;
@@ -282,7 +323,7 @@ export function CodeIndexDetailsPanel({
 			</div>
 
 			{isIndexing && codeIndex && (
-				<IndexingProgress codeIndex={codeIndex} />
+				<IndexingProgress codeIndex={codeIndex} job={job} />
 			)}
 
 			{!isIndexing && codeIndex?.indexedAt && (

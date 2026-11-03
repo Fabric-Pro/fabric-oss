@@ -67,6 +67,8 @@ export interface SimplifiedProjectFormProps {
 	 * `edit` changes one that is already live and never touches its status.
 	 */
 	mode?: SimplifiedProjectFormMode;
+	/** The page already titles the form (New Project's start choice). */
+	hideHeading?: boolean;
 }
 
 /**
@@ -95,6 +97,7 @@ export function SimplifiedProjectForm({
 	organizationId: propsOrganizationId,
 	projectId,
 	mode = "create",
+	hideHeading = false,
 }: SimplifiedProjectFormProps = {}) {
 	const isEditMode = mode === "edit";
 	const router = useRouter();
@@ -440,20 +443,22 @@ export function SimplifiedProjectForm({
 
 	return (
 		<div className="mx-auto w-full max-w-2xl">
-			<div className="mb-8">
-				<h1 className="font-semibold text-xl leading-tight">
-					{isEditMode
-						? "Edit project"
-						: resumedDraftId
-							? "Continue your project"
-							: "New project"}
-				</h1>
-				<p className="mt-2 text-muted-foreground text-sm">
-					{isEditMode
-						? "The basics Fabric works from. Everything else lives in the project's own tabs and settings."
-						: "Start a project with the basics. Fabric will guide setup after creation."}
-				</p>
-			</div>
+			{!hideHeading && (
+				<div className="mb-8">
+					<h1 className="font-semibold text-xl leading-tight">
+						{isEditMode
+							? "Edit project"
+							: resumedDraftId
+								? "Continue your project"
+								: "New project"}
+					</h1>
+					<p className="mt-2 text-muted-foreground text-sm">
+						{isEditMode
+							? "The basics Fabric works from. Everything else lives in the project's own tabs and settings."
+							: "Start a project with the basics. Fabric will guide setup after creation."}
+					</p>
+				</div>
+			)}
 
 			<form
 				onSubmit={handleSubmit}

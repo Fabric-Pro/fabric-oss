@@ -84,6 +84,7 @@ function makeIntegration(overrides: Record<string, unknown> = {}) {
 		repositoryName: "widgets",
 		repositoryUrl: "https://github.com/acme/widgets",
 		azureOrganization: null,
+		includedInCodeSearch: true,
 		...overrides,
 	};
 }
@@ -328,11 +329,11 @@ describe("reindexRepoIntegrationProcedure — errors", () => {
 		expect(mockStartCodeIndexing).not.toHaveBeenCalled();
 	});
 
-	it("throws when code indexing is disabled for the environment", async () => {
+	it("throws when the project's code search is not RAG", async () => {
 		mockStartCodeIndexing.mockResolvedValue({
 			started: 0,
 			skipped: [],
-			disabledReason: "feature-flag",
+			disabledReason: "code-search-disabled",
 		});
 
 		const handler = await loadHandler();
@@ -346,7 +347,7 @@ describe("reindexRepoIntegrationProcedure — errors", () => {
 				context: baseContext,
 			}),
 		).rejects.toMatchObject({
-			message: "Code indexing is not enabled for this environment",
+			message: "Set this project's code search to RAG before indexing",
 		});
 	});
 

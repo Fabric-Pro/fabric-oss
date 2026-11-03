@@ -1397,6 +1397,13 @@
 					},
 					"company_context": {
 						"metadata_updated": "Details einer Unternehmenskontext-Quelle aktualisiert"
+					},
+					"credential": {
+						"created": "Zugangsdaten der Organisation hinzugefügt",
+						"updated": "Zugangsdaten der Organisation geändert",
+						"shared": "Zugangsdaten mit der Organisation geteilt",
+						"unshared": "Freigabe von Zugangsdaten zurückgezogen",
+						"deleted": "Zugangsdaten der Organisation gelöscht"
 					}
 				},
 				"account": {
@@ -1426,6 +1433,11 @@
 						"connected": "ChatGPT-Plan verbunden",
 						"disconnected": "ChatGPT-Plan getrennt",
 						"organization_use_changed": "Nutzung des ChatGPT-Plans geändert"
+					},
+					"credential": {
+						"created": "Persönliche Zugangsdaten hinzugefügt",
+						"updated": "Persönliche Zugangsdaten geändert",
+						"deleted": "Persönliche Zugangsdaten gelöscht"
 					}
 				},
 				"project": {
@@ -2606,10 +2618,10 @@
 			},
 			"embeddingsOnly": {
 				"badge": "Nur Embeddings",
-				"badgeTooltip": "Dieser Schlüssel dient nur der Dokumentensuche (Embeddings). Fabric nutzt ihn nie für Chat, Agenten oder Generierung.",
+				"badgeTooltip": "Dieser Schlüssel dient nur der Dokumentensuche (Embeddings und Reranking). Fabric nutzt ihn nie für Chat, Agenten oder Generierung.",
 				"toggleLabel": "Nur Embeddings",
 				"toggleHint": "Diesen Schlüssel nie für Chat, Agenten oder Generierung verwenden. Er kann nicht der Standardanbieter sein.",
-				"enabledToast": "Schlüssel auf Embeddings beschränkt",
+				"enabledToast": "Schlüssel auf Dokumentensuche beschränkt",
 				"disabledToast": "Schlüssel darf nun alle KI-Aufgaben übernehmen",
 				"failedToast": "Zweck des Schlüssels konnte nicht geändert werden",
 				"takenHint": "{provider} ist bereits der Schlüssel nur für Embeddings. Ändere zuerst seinen Zweck oder entferne ihn."
@@ -3283,6 +3295,22 @@
 					"running": "Wird synchronisiert…",
 					"repositoryLine": "{repository} @ {ref}",
 					"repositoryBadge": "Repository",
+					"exclusions": {
+						"leftOutBadge": "Ausgeschlossen",
+						"leaveOut": "Aus Living Memory entfernen",
+						"leaveOutLabel": "Aus Living Memory entfernen",
+						"leaveOutWarning": "Die Datei bleibt im Repository. Sie wird von dieser Synchronisierung ausgeschlossen und aus dem Kontext entfernt; über die Liste der ausgeschlossenen Pfade lässt sie sich wiederherstellen.",
+						"leftOut": "Aus Living Memory ausgeschlossen. Synchronisierung läuft…",
+						"restored": "In Living Memory wiederhergestellt. Synchronisierung läuft…",
+						"listTitle": "{count, plural, one {# Pfad ausgeschlossen} other {# Pfade ausgeschlossen}}",
+						"restore": "Wiederherstellen",
+						"restoreAria": "{path} in Living Memory wiederherstellen",
+						"errors": {
+							"LAST_PATH": "Dies ist der einzige ausgewählte Pfad. Trenne die Synchronisierung, um ihn nicht mehr zu synchronisieren.",
+							"TOO_MANY_PATHS": "Zu viele ausgewählte Pfade.",
+							"TOO_MANY_EXCLUDED_PATHS": "Höchstens 200 Pfade können ausgeschlossen werden. Stelle zuerst einige wieder her."
+						}
+					},
 					"syncNow": "Jetzt synchronisieren",
 					"status": {
 						"notSynced": "Noch nicht synchronisiert",

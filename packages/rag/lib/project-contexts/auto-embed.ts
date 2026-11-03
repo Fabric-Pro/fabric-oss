@@ -28,17 +28,24 @@ import {
 	getOrganizationRagSettings,
 	getProjectRagSettings,
 	markContextAsEmbedded,
+	markProjectContextChunkingVersion,
 	setContextEnrichmentRetryAt,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
 	type ChunkingStrategy,
+	type ContentKind,
 	type ContentRoute,
 	chunkDescribedOpenApiSpec,
+	chunkProjectContent,
 	chunkText,
+	contentKindForContext,
 	detectContentType,
 	type EnrichmentDeferral,
 	enrichChunksWithTenantContext,
+	isChunkProfile,
+	isContentAwareChunkingActive,
+	parseChunkProfilesConfig,
 	routeContentForChunking,
 	type TextChunk,
 } from "../chunking";
@@ -93,6 +100,13 @@ export interface EmbedContextOptions {
 	 * throws because the row is in the wrong table.
 	 */
 	skipDbUpdate?: boolean;
+	/**
+	 * What the content is, when the caller knows (content-type chunking,
+	 * spec 2026-10-28). Unset: derived from `type` and `metadata`.
+	 */
+	contentKind?: ContentKind;
+	/** The source's chunking profile override (`ProjectContext.chunkProfile`). */
+	chunkProfile?: string | null;
 }
 
 /**
@@ -249,6 +263,12 @@ export interface ContextChunkSettings {
 	splitMethod: string | null;
 	/** `splitMethod` as a chunking strategy; undefined when it is null. */
 	strategy: ChunkingStrategy | undefined;
+	/** Content-type chunking toggle; off when unset. */
+	chunkByContentType?: boolean | null;
+	/** Per-type tuning (`chunkProfiles` JSON). */
+	chunkProfiles?: unknown;
+	/** The settings' chunking version, stamped on what is written. */
+	chunkingVersion?: number;
 }
 
 /**
@@ -282,6 +302,9 @@ export async function getCompanyChunkSettings(
 		strategy: splitMethod
 			? mapSplitMethodToStrategy(splitMethod)
 			: undefined,
+		chunkByContentType: settings?.chunkByContentType ?? false,
+		chunkProfiles: settings?.chunkProfiles ?? null,
+		chunkingVersion: settings?.chunkingVersion ?? 0,
 	};
 }
 
@@ -458,10 +481,32 @@ async function embedContext(
 
 		// Chunking configuration: the project's RAG settings, or for a company
 		// source its organization's.
-		const ragSettings =
+		const ragSettings: {
+			chunkSize: number;
+			chunkOverlap: number;
+			splitMethod: string | null;
+			chunkByContentType?: boolean | null;
+			chunkProfiles?: unknown;
+			chunkingVersion?: number;
+		} =
 			owner.kind === "company"
 				? await getCompanyChunkSettings(owner.organizationId)
 				: await getProjectRagSettings(owner.projectId);
+
+		// Content-type chunking (spec 2026-10-28): only when the project's (or
+		// organization's) toggle AND the flag are on. Otherwise everything
+		// below runs exactly as before.
+		if (
+			await isContentAwareChunkingActive({
+				chunkByContentType: ragSettings.chunkByContentType ?? false,
+				organizationId,
+				chunkProfiles: parseChunkProfilesConfig(
+					ragSettings.chunkProfiles,
+				),
+			})
+		) {
+			return await embedContentAware(options, owner, ragSettings);
+		}
 
 		// Determine if we need to chunk.
 		//
@@ -585,6 +630,95 @@ async function embedContext(
 }
 
 /**
+ * Content-type chunking (spec 2026-10-28): cut the content with the profile
+ * the router chooses, then embed and store the chunks through the same path
+ * as every other chunked context, each point carrying its profile.
+ */
+async function embedContentAware(
+	options: EmbedContextBody,
+	owner: EmbedOwner,
+	ragSettings: {
+		chunkSize: number;
+		chunkOverlap: number;
+		splitMethod: string | null;
+		chunkByContentType?: boolean | null;
+		chunkProfiles?: unknown;
+		chunkingVersion?: number;
+	},
+): Promise<CompanyEmbedResult> {
+	const { contextId, content, type, metadata, organizationId } = options;
+	const filename = metadata?.filename || contextId;
+
+	// The fallback (`prose`) keeps the project setting the way the chunked
+	// path below applies it: markdown and code always split by structure.
+	const contentInfo = detectContentType(content);
+	const textStrategy =
+		contentInfo.type === "markdown" || contentInfo.type === "code"
+			? "DOCUMENT"
+			: mapSplitMethodToStrategy(ragSettings.splitMethod ?? "");
+
+	const result = await chunkProjectContent({
+		content,
+		mimeType: metadata?.mimeType || "",
+		filename,
+		chunkingThreshold: CHUNKING_THRESHOLD,
+		chunkSize: ragSettings.chunkSize,
+		chunkOverlap: ragSettings.chunkOverlap,
+		textStrategy,
+		chunkByContentType: ragSettings.chunkByContentType ?? false,
+		organizationId,
+		kind:
+			options.contentKind ??
+			contentKindForContext({ type, metadata: metadata ?? null }),
+		profileOverride: isChunkProfile(options.chunkProfile)
+			? options.chunkProfile
+			: null,
+		chunkProfiles: parseChunkProfilesConfig(ragSettings.chunkProfiles),
+	});
+
+	if (result.route.kind === "malformed-openapi") {
+		const reason = `This file looks like an OpenAPI/Swagger document but could not be read: ${result.route.reason}`;
+		logger.warn(`[AutoEmbed] ${reason}`);
+		return { success: false, error: reason };
+	}
+	if (result.chunks.length === 0) {
+		return { success: true, chunksCreated: 0 };
+	}
+
+	const chunkingVersion = ragSettings.chunkingVersion ?? 0;
+	const embedded = await embedWithChunking(
+		options,
+		owner,
+		ragSettings,
+		result.route,
+		{
+			chunks: result.chunks,
+			payloads: result.chunkPayloads,
+			chunkingVersion,
+		},
+	);
+	if (embedded.success && owner.kind === "project" && !options.skipDbUpdate) {
+		await recordChunkingVersion(contextId, chunkingVersion);
+	}
+	return embedded;
+}
+
+/** Best-effort: a missed stamp only makes a later re-chunk redo this row. */
+async function recordChunkingVersion(
+	contextId: string,
+	chunkingVersion: number,
+): Promise<void> {
+	try {
+		await markProjectContextChunkingVersion(contextId, chunkingVersion);
+	} catch (error) {
+		logger.warn("[AutoEmbed] Could not record the chunking version", {
+			contextId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
+/**
  * Embed content with chunking
  * Used for large content that needs to be split into multiple chunks
  */
@@ -599,6 +733,15 @@ async function embedWithChunking(
 		splitMethod: string | null;
 	},
 	specRoute: ContentRoute,
+	/**
+	 * Chunks already cut by content-type chunking, with their payloads and the
+	 * chunking version to stamp. Unset: chunked here, as before.
+	 */
+	precomputed?: {
+		chunks: TextChunk[];
+		payloads: Array<Record<string, unknown>>;
+		chunkingVersion: number;
+	},
 ): Promise<CompanyEmbedResult> {
 	const {
 		contextId,
@@ -613,7 +756,9 @@ async function embedWithChunking(
 	const projectId = owner.kind === "project" ? owner.projectId : undefined;
 
 	logger.info(
-		`[AutoEmbed] Chunking content (${content.length} chars) with strategy=${ragSettings.splitMethod}, size=${ragSettings.chunkSize}`,
+		precomputed
+			? `[AutoEmbed] Embedding ${precomputed.chunks.length} content-type chunks (${content.length} chars)`
+			: `[AutoEmbed] Chunking content (${content.length} chars) with strategy=${ragSettings.splitMethod}, size=${ragSettings.chunkSize}`,
 	);
 
 	// An OpenAPI spec is chunked by endpoint here too. This is the third of the
@@ -635,7 +780,13 @@ async function embedWithChunking(
 	let chunks: TextChunk[];
 	let specPayloads: Array<Record<string, unknown>> = [];
 
-	if (specRoute.kind === "openapi") {
+	if (precomputed) {
+		chunks = precomputed.chunks;
+		specPayloads = precomputed.payloads.map((payload) => ({
+			...payload,
+			chunkingVersion: precomputed.chunkingVersion,
+		}));
+	} else if (specRoute.kind === "openapi") {
 		const specChunks = chunkDescribedOpenApiSpec(
 			specRoute.description,
 			metadata?.filename || contextId,

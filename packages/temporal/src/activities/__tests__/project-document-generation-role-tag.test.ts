@@ -27,7 +27,16 @@ vi.mock("@repo/database", () => ({
 	listEmbeddedDocumentsForSweep: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("@repo/rag", () => ({
+vi.mock("@repo/rag/lib/reranking/index", () => ({
+	rerankContexts: (...args: unknown[]) => mocks.rerankContexts(...args),
+}));
+
+vi.mock("@repo/rag/lib/project-contexts/store", () => ({
+	searchSimilarProjectContexts: (...args: unknown[]) =>
+		mocks.searchSimilarProjectContexts(...args),
+}));
+
+vi.mock("@repo/rag", async () => ({
 	buildDocumentRetrievalQuery: () => "build document retrieval query",
 	searchSimilarProjectContexts: (...args: unknown[]) =>
 		mocks.searchSimilarProjectContexts(...args),
@@ -36,6 +45,11 @@ vi.mock("@repo/rag", () => ({
 		mocks.enrichContextsWithRoleTags(...args),
 	applyContextSummary: (...args: unknown[]) =>
 		mocks.applyContextSummary(...args),
+	selectProjectContexts: (
+		await vi.importActual<
+			typeof import("@repo/rag/lib/reranking/select-project-contexts")
+		>("@repo/rag/lib/reranking/select-project-contexts")
+	).selectProjectContexts,
 	rerankContexts: (...args: unknown[]) => mocks.rerankContexts(...args),
 	embedProjectDocument: vi.fn(),
 	reembedProjectDocument: vi.fn(),
@@ -139,6 +153,53 @@ describe("retrieveProjectContexts activity roleTag string formatting", () => {
 		expect(resultStrings[0]).toContain("function processPayments() {}");
 	});
 
+	it("passes tenant attribution to reranking during document retrieval", async () => {
+		mocks.getProjectRagSettings.mockResolvedValue({
+			topK: 10,
+			similarityThreshold: 0.5,
+			enableReranking: true,
+			rerankerProvider: "cross-encoder",
+		});
+		mocks.searchSimilarProjectContexts.mockResolvedValue([
+			{ contextId: "example-a", score: 0.9 },
+			{ contextId: "example-b", score: 0.8 },
+		]);
+		mocks.dbContextFindMany.mockResolvedValue([
+			{ id: "example-a", type: "TEXT", content: "example content" },
+			{ id: "example-b", type: "TEXT", content: "other content" },
+		]);
+		mocks.enrichContextsWithRoleTags.mockImplementation(
+			async (contexts: any[]) => contexts,
+		);
+		mocks.applyContextSummary.mockImplementation(
+			async (contexts: any[]) => contexts,
+		);
+		mocks.rerankContexts.mockResolvedValue({
+			contexts: [],
+			stats: {
+				inputCount: 2,
+				outputCount: 0,
+				latencyMs: 1,
+				provider: "gateway",
+			},
+		});
+		await retrieveProjectContexts({
+			projectId: "example-project",
+			userId: "example-user",
+			organizationId: "example-org",
+			documentType: "PRD",
+		});
+		expect(mocks.rerankContexts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				tenant: {
+					projectId: "example-project",
+					userId: "example-user",
+					organizationId: "example-org",
+				},
+			}),
+		);
+	});
+
 	it("returns raw content without tag header when roleTag is absent", async () => {
 		mocks.searchSimilarProjectContexts.mockResolvedValue([
 			{ contextId: "ctx-doc", score: 0.9 },
@@ -188,3 +249,98 @@ it("keeps the legacy episodic activity empty without searching or resolving sett
 	expect(mocks.getProjectRagSettings).not.toHaveBeenCalled();
 	expect(mocks.searchSimilarEpisodes).not.toHaveBeenCalled();
 });
+
+it("reranks matched chunks and caps skipped results without changing the activity shape", async () => {
+	mocks.getProjectRagSettings.mockResolvedValue({
+		topK: 50,
+		rerankTopK: 1,
+		enableReranking: true,
+	});
+	mocks.searchSimilarProjectContexts.mockResolvedValue([
+		{ contextId: "example-a", content: "matched a", score: 0.9 },
+		{ contextId: "example-b", content: "matched b", score: 0.8 },
+	]);
+	mocks.dbContextFindMany.mockResolvedValue([
+		{ id: "example-a", type: "TEXT", content: "full a" },
+		{ id: "example-b", type: "TEXT", content: "full b" },
+	]);
+	mocks.enrichContextsWithRoleTags.mockImplementation(
+		async (contexts) => contexts,
+	);
+	mocks.applyContextSummary.mockImplementation(async (contexts) => contexts);
+	mocks.rerankContexts.mockImplementation(async (input) => {
+		expect(input.topK).toBe(2);
+		expect(
+			input.contexts.map((c: { content: string }) => c.content),
+		).toEqual(["matched a", "matched b"]);
+		return { contexts: input.contexts, stats: { model: "skipped" } };
+	});
+	const result = await retrieveProjectContexts({
+		projectId: "example-project",
+		userId: "example-user",
+		organizationId: "example-org",
+		documentType: "PRD",
+	});
+	expect(result).toEqual(["full a"]);
+	expect(mocks.searchSimilarProjectContexts).toHaveBeenCalledWith(
+		expect.objectContaining({ excludeDocumentChunks: true }),
+	);
+});
+
+it.each([1, 2])(
+	"returns the summary plus %i document-generation sources",
+	async (limit) => {
+		mocks.hasProjectAccess.mockResolvedValue(true);
+		mocks.getProjectRagSettings.mockResolvedValue({
+			topK: 50,
+			rerankTopK: limit,
+			enableReranking: false,
+		});
+		mocks.searchSimilarProjectContexts.mockResolvedValue(
+			["a", "b", "c"].map((id, i) => ({
+				contextId: id,
+				score: 1 - i / 10,
+			})),
+		);
+		mocks.dbContextFindMany.mockResolvedValue(
+			["a", "b", "c"].map((id) => ({
+				id,
+				type: "TEXT",
+				content: `full ${id}`,
+			})),
+		);
+		mocks.enrichContextsWithRoleTags.mockImplementation(
+			async (contexts) => contexts,
+		);
+		const summary = {
+			id: "example-summary",
+			type: "PROJECT_SUMMARY",
+			content: "summary content",
+			score: 1,
+			sourceTitle: "Compressed project history (summary)",
+			metadata: {
+				isSummary: true,
+				summaryId: "example-summary",
+				engineVersion: 1,
+				coveredThrough: "2026-01-01T00:00:00.000Z",
+				coveredContextCount: 0,
+				references: [],
+			},
+		};
+		mocks.applyContextSummary.mockImplementation(async (contexts) => [
+			summary,
+			...contexts,
+		]);
+		const result = await retrieveProjectContexts({
+			projectId: "example-project",
+			userId: "example-user",
+			organizationId: "example-org",
+			documentType: "PRD",
+		});
+		expect(result).toEqual([
+			"summary content",
+			...["full a", "full b"].slice(0, limit),
+		]);
+		expect(result).toHaveLength(limit + 1);
+	},
+);

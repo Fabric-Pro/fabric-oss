@@ -161,8 +161,16 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectContextPendingVectorCleanup",
 	"ProjectContextRepositorySync", // Living Memory repository sync configuration
 	"ProjectContextRepositorySyncRun", // Living Memory repository sync run receipts
+	"ProjectChunkingRun", // Content-type chunking runs (re-chunk, measure, tune)
 	"ProjectContextWriteTarget", // Living Memory write folders (ADR-022)
 	"ProjectMemoryWrite", // Living Memory write receipts (ADR-022)
+	// Project knowledge hub (specs/2026-10-21-ai-artifacts-hub)
+	"KnowledgeArtifactType",
+	"KnowledgeTopic",
+	"KnowledgeEntry",
+	"KnowledgeTopicSummary",
+	"InstructionConsolidation",
+	"ProjectImportRun",
 	"ProjectReadinessItemState", // Manual readiness item states — snooze / not applicable / help requested
 	"ProjectReadinessVerdict", // Last computed readiness verdict per item, for "recently completed"
 	"BackgroundJob", // Job Hub — background job progress rows (tenant XOR + projectId)
@@ -275,6 +283,8 @@ const USER_OWNED_TABLES = new Set([
 const ORG_ONLY_TABLES = new Set([
 	"NonMemberContact", // #2340 a contact has no owning user
 	"CloudProviderConfig",
+	// Outbound credentials: owner/sharing narrowing is in queries/credentials.ts.
+	"Credential",
 	"OrganizationRagProvider",
 	"OrganizationSearchProvider",
 	"OrganizationParlumeSettings",
@@ -365,8 +375,15 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectContextPendingVectorCleanup: "projectId",
 	ProjectContextRepositorySync: "projectId",
 	ProjectContextRepositorySyncRun: "projectId",
+	ProjectChunkingRun: "projectId",
 	ProjectContextWriteTarget: "projectId",
 	ProjectMemoryWrite: "projectId",
+	KnowledgeArtifactType: "projectId",
+	KnowledgeTopic: "projectId",
+	KnowledgeEntry: "projectId",
+	KnowledgeTopicSummary: "projectId",
+	InstructionConsolidation: "projectId",
+	ProjectImportRun: "projectId",
 	ProjectReadinessItemState: "projectId",
 	ProjectReadinessVerdict: "projectId",
 	BackgroundJob: "projectId",
@@ -390,6 +407,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectInvitation: "projectId",
 	ProjectWeaveConfig: "projectId",
 	ProjectCodeIndex: "projectId",
+	ProjectCodeFile: "projectId",
 	ProjectConversation: "projectId",
 	ProjectStoryStatus: "projectId",
 	Diagram: "projectId",

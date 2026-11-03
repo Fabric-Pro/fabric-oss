@@ -265,6 +265,58 @@ describe("agents.conversations.list: what a list item is", () => {
 	);
 });
 
+describe("agents.conversations.list: the last-message preview", () => {
+	const question = {
+		id: "m1",
+		role: "user",
+		content: "Draw the architecture",
+		timestamp: "2026-10-01T10:00:00.000Z",
+	};
+	const operationResult = (content: string) => ({
+		id: "m3",
+		role: "system",
+		content,
+		timestamp: "2026-10-01T10:00:06.000Z",
+		metadata: { kind: "operation_result", outcome: "success" },
+	});
+
+	async function previewOf(messages: unknown[]) {
+		mocks.listAgentConversationsForViewer.mockResolvedValue({
+			items: [{ ...row({ messages }), isOwn: true, owner: OWNER }],
+		});
+		const result = (await invoke(LIST, {
+			agentId: AGENT,
+			scope: "mine",
+			limit: 50,
+		})) as { conversations: Array<{ lastMessage: string | null }> };
+		return result.conversations[0]?.lastMessage;
+	}
+
+	it("shows the saved answer, not the operation-result row the runtime saves after it", async () => {
+		expect(
+			await previewOf([
+				question,
+				{
+					id: "m2",
+					role: "assistant",
+					content: "Created the diagram.",
+					timestamp: "2026-10-01T10:00:05.000Z",
+				},
+				operationResult("SYSTEM\n\nCreated the diagram."),
+			]),
+		).toBe("Created the diagram.");
+	});
+
+	it("shows an operation-result row that is the only answer without its header", async () => {
+		expect(
+			await previewOf([
+				question,
+				operationResult("SYSTEM\n\nThe only record of the answer."),
+			]),
+		).toBe("The only record of the answer.");
+	});
+});
+
 describe("agents.conversations.list: scope, search and cursor paging", () => {
 	beforeEach(() => {
 		mocks.listAgentConversationsForViewer.mockResolvedValue({

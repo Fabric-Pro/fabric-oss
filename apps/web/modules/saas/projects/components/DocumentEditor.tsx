@@ -2230,7 +2230,7 @@ function DocumentEditorInner({
 		staleTime: 60000,
 	});
 	const codeSearchEnabled =
-		ragSettingsData?.settings?.codeSearchEnabled ?? false;
+		(ragSettingsData?.settings?.codeSearchMode ?? "OFF") !== "OFF";
 
 	// Fetch recent Teams messages for chat editing
 	// This provides the last 10 messages from linked Teams chats
@@ -4284,7 +4284,7 @@ function DocumentEditorInner({
 
 	// Sync integration flags into agent state whenever their source queries change.
 	// The main initialization effect above is guarded by a one-shot ref, so toggling
-	// "Enable code search for AI agents" (or connecting Teams/Slack) while the editor
+	// the code search mode (or connecting Teams/Slack) while the editor
 	// is open wouldn't otherwise propagate to the agent state — leaving code-search
 	// tools unbound until a hard reload.
 	// Partial update form — matches the pattern already used elsewhere (e.g. the

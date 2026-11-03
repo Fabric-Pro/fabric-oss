@@ -157,7 +157,7 @@
 			// fabric-prod project, so the project name changes the output and has
 			// to be in the hash: otherwise a remote-cache hit could hand one
 			// project another's build.
-			"env": ["VERCEL_PROJECT_NAME"]
+			"env": ["VERCEL_PROJECT_NAME", "FABRIC_MICROFRONTENDS"]
 		},
 		"type-check": {
 			"dependsOn": ["generate", "^generate", "^build"],

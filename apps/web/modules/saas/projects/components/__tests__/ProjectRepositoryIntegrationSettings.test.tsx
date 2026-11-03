@@ -1,23 +1,21 @@
 /**
- * Tests for the code-search status surface in <CodeSearchToggle />.
+ * Tests for the "How AI agents search code" setting (<CodeSearchModeSetting />)
+ * and the per-repository "Include in AI code search" switch.
  *
- * History: the toggle once rendered a warning block that leaked internal
- * deployment details — `FEATURE_CODE_INDEXING=true` and "restart the temporal
- * worker" — whenever code search was on but the indexing flag was off. That
- * leaky banner was removed. This file locks in the invariant that survives, and
- * covers the honest, user-facing status line that replaced it:
+ * History: an earlier toggle rendered a warning block that leaked internal
+ * deployment details — a feature-flag env var and "restart the temporal
+ * worker". That banner was removed, and the deployment flag is gone. This file
+ * locks in the invariants that survive:
  *
- *   - No internal-config copy EVER leaks (no FEATURE_CODE_INDEXING, no temporal
+ *   - No internal-config copy EVER leaks (no env-var names, no temporal
  *     worker, no "code search not configured", no "indexer isn't running").
- *   - When code search is on but the deployment isn't indexing, the user is told
- *     plainly that search runs live on-demand (not silently degraded).
- *   - When indexing is on, the row reflects the real ProjectCodeIndex status
- *     (READY / FAILED / …) so the user knows whether a pre-built index is used.
- *   - The toggle itself still fires the update mutation.
- *
- * The status line is a deliberate, non-leaky element and uses role="status" as a
- * polite live region — distinct from the removed banner, whose problem was the
- * copy, not the role.
+ *   - The project mode is one of Off / Code search / RAG, chosen from a
+ *     labelled radio group that writes `codeSearchMode`.
+ *   - Only RAG shows the refresh interval and the code index status line;
+ *     the index status is fetched only in RAG mode.
+ *   - RAG has no live-search fallback, so no status promises one.
+ *   - Each repository row has an accessible include switch whenever the mode
+ *     is not Off.
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -28,18 +26,19 @@ import { CodeIndexDetailsPanel } from "../CodeIndexDetailsPanel";
 
 // ---------------------------------------------------------------------------
 // Mocks — declared BEFORE the component import per Vitest hoisting rules.
-// CodeSearchToggle reads rag settings from `orpc.projects.ragSettings.get` and
-// the index status from `orpc.agents.codeIndex.status` (TanStack queries), and
-// writes via `orpcClient.projects.ragSettings.update`. We stub those boundaries
-// and let the real useQuery drive rendering.
+// CodeSearchModeSetting reads rag settings from `orpc.projects.ragSettings.get`
+// and the index status from `orpc.agents.codeIndex.status` (TanStack queries),
+// and writes via `orpcClient.projects.ragSettings.update`. We stub those
+// boundaries and let the real useQuery drive rendering.
 // ---------------------------------------------------------------------------
+
+type CodeSearchModeFixture = "OFF" | "CODE_SEARCH" | "RAG";
 
 type RagSettingsFixture = {
 	settings: {
-		codeSearchEnabled: boolean;
-		codeSearchProvider: string | null;
+		codeSearchMode: CodeSearchModeFixture;
+		codeIndexRefreshInterval?: string;
 	} | null;
-	featureCodeIndexingEnabled: boolean;
 };
 
 type CodeIndexFixture = {
@@ -59,8 +58,9 @@ let codeIndexPending = false;
 let codeIndexShouldError = false;
 
 const updateMutationFn = vi.fn();
-// Spy on the code-index status queryFn so tests can assert it fires only when
-// the toggle AND the deployment flag are both on (the `enabled` gate).
+const updateInclusionFn = vi.fn();
+// Spy on the code-index status queryFn so tests can assert it fires only in
+// RAG mode (the `enabled` gate).
 const codeIndexQueryFn = vi.fn(async (): Promise<CodeIndexFixture> => {
 	if (codeIndexShouldError) {
 		throw new Error("status fetch failed");
@@ -102,35 +102,59 @@ vi.mock("@shared/lib/orpc-client", () => ({
 			ragSettings: {
 				update: (...args: unknown[]) => updateMutationFn(...args),
 			},
+			repositoryIntegrations: {
+				updateCodeSearchInclusion: (...args: unknown[]) =>
+					updateInclusionFn(...args),
+			},
 		},
 	},
 }));
 
 // Import AFTER the mocks so the component picks up the stubs.
-import { CodeSearchToggle } from "../ProjectRepositoryIntegrationSettings";
+import {
+	CodeSearchModeSetting,
+	IntegrationStatusRow,
+} from "../ProjectRepositoryIntegrationSettings";
 
 // ---------------------------------------------------------------------------
-// Render helper
+// Render helpers
 // ---------------------------------------------------------------------------
 
-function renderToggle() {
-	const queryClient = new QueryClient({
+function newQueryClient() {
+	return new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
 			mutations: { retry: false },
 		},
 	});
+}
+
+function renderSetting() {
+	const queryClient = newQueryClient();
 	const utils = render(
 		<QueryClientProvider client={queryClient}>
-			<CodeSearchToggle projectId="proj-1" organizationId={null} />
+			<CodeSearchModeSetting projectId="proj-1" organizationId={null} />
 		</QueryClientProvider>,
 	);
 	return { ...utils, queryClient };
 }
 
-async function findToggle() {
-	return screen.findByRole("switch", {
-		name: /enable code search for ai agents/i,
+function setMode(mode: CodeSearchModeFixture) {
+	ragGetFixture = { settings: { codeSearchMode: mode } };
+}
+
+async function findModeGroup() {
+	return screen.findByRole("radiogroup", {
+		name: /how ai agents search code/i,
+	});
+}
+
+async function expectChecked(name: RegExp) {
+	await waitFor(() => {
+		expect(screen.getByRole("radio", { name })).toHaveAttribute(
+			"aria-checked",
+			"true",
+		);
 	});
 }
 
@@ -139,27 +163,17 @@ function expectNoLeakedInternals() {
 	expect(screen.queryByText(/FEATURE_CODE_INDEXING/)).toBeNull();
 	expect(screen.queryByText(/temporal worker/i)).toBeNull();
 	expect(screen.queryByText(/indexer isn't running/i)).toBeNull();
-}
-
-/** Deployment has indexing turned on and code search enabled. */
-function enableIndexing() {
-	ragGetFixture = {
-		settings: { codeSearchEnabled: true, codeSearchProvider: "api" },
-		featureCodeIndexingEnabled: true,
-	};
+	expect(screen.queryByText(/on this deployment/i)).toBeNull();
 }
 
 beforeEach(() => {
 	updateMutationFn.mockReset();
-	updateMutationFn.mockResolvedValue({
-		settings: { codeSearchEnabled: true, codeSearchProvider: "api" },
+	updateMutationFn.mockResolvedValue({});
+	updateInclusionFn.mockReset();
+	updateInclusionFn.mockResolvedValue({
+		integration: { id: "int-1", includedInCodeSearch: false },
 	});
-	// Default: the exact state that used to trigger the leaky banner —
-	// code search ON, indexing feature flag OFF.
-	ragGetFixture = {
-		settings: { codeSearchEnabled: true, codeSearchProvider: "api" },
-		featureCodeIndexingEnabled: false,
-	};
+	setMode("CODE_SEARCH");
 	codeIndexFixture = {
 		status: "MISSING",
 		indexedAt: null,
@@ -172,51 +186,109 @@ beforeEach(() => {
 	codeIndexQueryFn.mockClear();
 });
 
-describe("CodeSearchToggle — no leaked internals", () => {
-	it("never leaks internal config, even when code search is on and indexing is off", async () => {
-		renderToggle();
+describe("CodeSearchModeSetting — options", () => {
+	it("offers Off, Code search and RAG in a labelled radio group", async () => {
+		renderSetting();
+		await findModeGroup();
 
-		const toggle = await findToggle();
-		await waitFor(() => {
-			expect(toggle).toHaveAttribute("aria-checked", "true");
-		});
-
+		expect(
+			screen.getByRole("radio", { name: /^off$/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("radio", { name: /^code search$/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("radio", { name: /^rag$/i }),
+		).toBeInTheDocument();
+		await expectChecked(/^code search$/i);
 		expectNoLeakedInternals();
 	});
 
-	it("shows no status line and no leaked copy when code search is disabled", async () => {
-		ragGetFixture = {
-			settings: { codeSearchEnabled: false, codeSearchProvider: null },
-			featureCodeIndexingEnabled: false,
-		};
-		renderToggle();
+	it("shows no refresh interval and no status line in Code search mode", async () => {
+		renderSetting();
+		await findModeGroup();
+		await expectChecked(/^code search$/i);
 
-		const toggle = await findToggle();
-		await waitFor(() => {
-			expect(toggle).toHaveAttribute("aria-checked", "false");
-		});
-
+		expect(
+			screen.queryByLabelText(/keep the code index up to date/i),
+		).toBeNull();
 		expect(screen.queryByRole("status")).toBeNull();
+		expect(codeIndexQueryFn).not.toHaveBeenCalled();
 		expectNoLeakedInternals();
+	});
+
+	it("shows no refresh interval and no status line when Off", async () => {
+		setMode("OFF");
+		renderSetting();
+		await findModeGroup();
+		await expectChecked(/^off$/i);
+
+		expect(
+			screen.queryByLabelText(/keep the code index up to date/i),
+		).toBeNull();
+		expect(screen.queryByRole("status")).toBeNull();
+		expect(codeIndexQueryFn).not.toHaveBeenCalled();
+		expectNoLeakedInternals();
+	});
+
+	it("shows the refresh interval and fetches the index status in RAG mode", async () => {
+		setMode("RAG");
+		renderSetting();
+		await findModeGroup();
+		await expectChecked(/^rag$/i);
+
+		expect(
+			await screen.findByLabelText(/keep the code index up to date/i),
+		).toBeInTheDocument();
+		await waitFor(() => {
+			expect(codeIndexQueryFn).toHaveBeenCalled();
+		});
 	});
 });
 
-describe("CodeSearchToggle — honest code-search status", () => {
-	it("tells the user search is live on-demand when the deployment isn't indexing", async () => {
-		// codeSearchEnabled=true, featureCodeIndexingEnabled=false (default fixture).
-		renderToggle();
-		await findToggle();
+describe("CodeSearchModeSetting — changing the mode", () => {
+	it("writes codeSearchMode when another option is chosen", async () => {
+		const user = userEvent.setup();
+		renderSetting();
+		await findModeGroup();
+		await expectChecked(/^code search$/i);
 
-		const status = await screen.findByRole("status");
-		expect(status).toHaveTextContent(/live on-demand search/i);
-		expectNoLeakedInternals();
+		await user.click(screen.getByRole("radio", { name: /^rag$/i }));
+
+		await waitFor(() => {
+			expect(updateMutationFn).toHaveBeenCalledTimes(1);
+		});
+		expect(updateMutationFn).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			organizationId: null,
+			codeSearchMode: "RAG",
+		});
 	});
 
-	it("reports a ready pre-built index with the file count", async () => {
-		ragGetFixture = {
-			settings: { codeSearchEnabled: true, codeSearchProvider: "api" },
-			featureCodeIndexingEnabled: true,
-		};
+	it("refreshes the capability gates once the mode changes (Fizzy #1930)", async () => {
+		// The mode decides whether a gate says "turn code search on" or "start
+		// indexing"; the gates must re-read when it moves.
+		setMode("OFF");
+		const user = userEvent.setup();
+		const { queryClient } = renderSetting();
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+		await findModeGroup();
+		await expectChecked(/^off$/i);
+
+		await user.click(screen.getByRole("radio", { name: /^code search$/i }));
+
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith({
+				queryKey: ["capability-gates"],
+			}),
+		);
+	});
+});
+
+describe("CodeSearchModeSetting — RAG index status", () => {
+	beforeEach(() => setMode("RAG"));
+
+	it("reports a ready index with the file count", async () => {
 		codeIndexFixture = {
 			status: "READY",
 			indexedAt: new Date().toISOString(),
@@ -224,8 +296,7 @@ describe("CodeSearchToggle — honest code-search status", () => {
 			chunksCreated: 5678,
 			error: null,
 		};
-		renderToggle();
-		await findToggle();
+		renderSetting();
 
 		const status = await screen.findByRole("status");
 		await waitFor(() => {
@@ -237,13 +308,8 @@ describe("CodeSearchToggle — honest code-search status", () => {
 	});
 
 	it("shows a neutral checking state while the index status loads", async () => {
-		ragGetFixture = {
-			settings: { codeSearchEnabled: true, codeSearchProvider: "api" },
-			featureCodeIndexingEnabled: true,
-		};
 		codeIndexPending = true; // query never resolves → stays loading
-		renderToggle();
-		await findToggle();
+		renderSetting();
 
 		const status = await screen.findByRole("status");
 		expect(status).toHaveTextContent(/checking the code index status/i);
@@ -252,11 +318,7 @@ describe("CodeSearchToggle — honest code-search status", () => {
 		expectNoLeakedInternals();
 	});
 
-	it("reports index failure as a fall back to live search", async () => {
-		ragGetFixture = {
-			settings: { codeSearchEnabled: true, codeSearchProvider: "api" },
-			featureCodeIndexingEnabled: true,
-		};
+	it("reports index failure without promising a live-search fallback", async () => {
 		codeIndexFixture = {
 			status: "FAILED",
 			indexedAt: null,
@@ -264,79 +326,63 @@ describe("CodeSearchToggle — honest code-search status", () => {
 			chunksCreated: 0,
 			error: "boom",
 		};
-		renderToggle();
-		await findToggle();
+		renderSetting();
 
 		const status = await screen.findByRole("status");
 		await waitFor(() => {
 			expect(status).toHaveTextContent(/indexing failed/i);
 		});
-		expect(status).toHaveTextContent(/fall back to live search/i);
+		expect(status).not.toHaveTextContent(/live search/i);
 		// A raw backend error string must not surface to the user.
 		expect(screen.queryByText(/boom/)).toBeNull();
 		expectNoLeakedInternals();
 	});
-});
 
-describe("CodeSearchToggle — index states (indexing on)", () => {
 	it("says the code is not indexed yet for a missing index", async () => {
-		enableIndexing();
-		codeIndexFixture = { ...codeIndexFixture, status: "MISSING" };
-		renderToggle();
-		await findToggle();
+		renderSetting();
 
 		const status = await screen.findByRole("status");
 		await waitFor(() => {
 			expect(status).toHaveTextContent(/not indexed yet/i);
 		});
+		expect(status).not.toHaveTextContent(/live search/i);
 		expectNoLeakedInternals();
 	});
 
 	it("reports a queued index", async () => {
-		enableIndexing();
 		codeIndexFixture = { ...codeIndexFixture, status: "PENDING" };
-		renderToggle();
-		await findToggle();
+		renderSetting();
 
 		const status = await screen.findByRole("status");
 		await waitFor(() => {
 			expect(status).toHaveTextContent(/code index queued/i);
 		});
-		expectNoLeakedInternals();
 	});
 
 	it("reports an index being built", async () => {
-		enableIndexing();
 		codeIndexFixture = { ...codeIndexFixture, status: "INDEXING" };
-		renderToggle();
-		await findToggle();
+		renderSetting();
 
 		const status = await screen.findByRole("status");
 		await waitFor(() => {
 			expect(status).toHaveTextContent(/building the code index/i);
 		});
-		expectNoLeakedInternals();
 	});
 
 	it("reports a stale index that refreshes on the next change", async () => {
-		enableIndexing();
 		codeIndexFixture = { ...codeIndexFixture, status: "STALE" };
-		renderToggle();
-		await findToggle();
+		renderSetting();
 
 		const status = await screen.findByRole("status");
 		await waitFor(() => {
 			expect(status).toHaveTextContent(/out of date/i);
 		});
 		expect(status).toHaveTextContent(/refreshes on the next change/i);
-		expectNoLeakedInternals();
 	});
 
 	it("stays honest when the status lookup fails — never a false 'not indexed'", async () => {
-		enableIndexing();
 		codeIndexShouldError = true;
-		renderToggle();
-		await findToggle();
+		renderSetting();
 
 		const status = await screen.findByRole("status");
 		await waitFor(() => {
@@ -352,66 +398,115 @@ describe("CodeSearchToggle — index states (indexing on)", () => {
 	});
 });
 
-describe("CodeSearchToggle — status query gating", () => {
-	it("does not fetch index status when code search is disabled", async () => {
-		ragGetFixture = {
-			settings: { codeSearchEnabled: false, codeSearchProvider: null },
-			featureCodeIndexingEnabled: true,
-		};
-		renderToggle();
+describe("IntegrationStatusRow — Include in AI code search", () => {
+	const baseIntegration = {
+		id: "int-1",
+		status: "ACTIVE",
+		provider: "GITHUB",
+		repositoryOwner: "example-org",
+		repositoryName: "example-repo",
+		roleTag: null,
+	};
 
-		const toggle = await findToggle();
-		await waitFor(() => {
-			expect(toggle).toHaveAttribute("aria-checked", "false");
-		});
-		expect(codeIndexQueryFn).not.toHaveBeenCalled();
+	function renderRow(
+		overrides: Partial<
+			React.ComponentProps<typeof IntegrationStatusRow>
+		> = {},
+	) {
+		const queryClient = newQueryClient();
+		render(
+			<QueryClientProvider client={queryClient}>
+				<IntegrationStatusRow
+					integration={baseIntegration}
+					projectId="proj-1"
+					organizationId={null}
+					canManageIntegrations
+					onReconnect={vi.fn()}
+					onEdit={vi.fn()}
+					onDisconnect={vi.fn()}
+					isDisconnecting={false}
+					codeSearchMode="CODE_SEARCH"
+					{...overrides}
+				/>
+			</QueryClientProvider>,
+		);
+		return { queryClient };
+	}
+
+	const switchName = /include example-org\/example-repo in ai code search/i;
+
+	it("names the repository in the switch and defaults to included", () => {
+		renderRow();
+		expect(
+			screen.getByRole("switch", { name: switchName }),
+		).toHaveAttribute("aria-checked", "true");
 	});
 
-	it("does not fetch index status when the deployment isn't indexing", async () => {
-		// codeSearchEnabled=true, featureCodeIndexingEnabled=false (default fixture).
-		renderToggle();
-
-		const toggle = await findToggle();
-		await waitFor(() => {
-			expect(toggle).toHaveAttribute("aria-checked", "true");
-		});
-		expect(codeIndexQueryFn).not.toHaveBeenCalled();
+	it("is hidden when the project mode is Off", () => {
+		renderRow({ codeSearchMode: "OFF" });
+		expect(screen.queryByRole("switch", { name: switchName })).toBeNull();
 	});
 
-	it("fetches index status only when the toggle and the flag are both on", async () => {
-		enableIndexing();
-		renderToggle();
-		await findToggle();
-
-		await waitFor(() => {
-			expect(codeIndexQueryFn).toHaveBeenCalled();
-		});
+	it("is hidden on the legacy fallback row", () => {
+		renderRow({ isLegacy: true });
+		expect(screen.queryByRole("switch", { name: switchName })).toBeNull();
 	});
-});
 
-describe("CodeSearchToggle — toggle behaviour", () => {
-	it("keeps the toggle functional — flipping it off calls the update mutation", async () => {
+	it("writes the inclusion through updateCodeSearchInclusion", async () => {
 		const user = userEvent.setup();
-		renderToggle();
+		renderRow();
 
-		const toggle = await findToggle();
-		await waitFor(() => {
-			expect(toggle).toHaveAttribute("aria-checked", "true");
-		});
-
-		await user.click(toggle);
+		await user.click(screen.getByRole("switch", { name: switchName }));
 
 		await waitFor(() => {
-			expect(updateMutationFn).toHaveBeenCalledTimes(1);
-		});
-		expect(updateMutationFn).toHaveBeenCalledWith(
-			expect.objectContaining({
+			expect(updateInclusionFn).toHaveBeenCalledWith({
 				projectId: "proj-1",
+				integrationId: "int-1",
 				organizationId: null,
-				codeSearchEnabled: false,
-				codeSearchProvider: null,
+				included: false,
+			});
+		});
+	});
+
+	it("explains an excluded repository in plain words", () => {
+		renderRow({
+			integration: { ...baseIntegration, includedInCodeSearch: false },
+		});
+		expect(
+			screen.getByRole("switch", { name: switchName }),
+		).toHaveAttribute("aria-checked", "false");
+		expect(
+			screen.getByText(/ai agents don't search or read this repository/i),
+		).toBeInTheDocument();
+		expectNoLeakedInternals();
+	});
+
+	it("is read-only for people who can't manage repositories", () => {
+		renderRow({ canManageIntegrations: false });
+		expect(screen.getByRole("switch", { name: switchName })).toBeDisabled();
+	});
+
+	it("offers no indexing controls for an excluded repository in RAG mode", async () => {
+		const user = userEvent.setup();
+		renderRow({
+			codeSearchMode: "RAG",
+			integration: {
+				...baseIntegration,
+				includedInCodeSearch: false,
+				codeIndex: null,
+			},
+		});
+
+		await user.click(
+			screen.getByRole("button", {
+				name: /manage example-org\/example-repo/i,
 			}),
 		);
+		expect(
+			screen.queryByRole("menuitem", {
+				name: /index codebase|re-index/i,
+			}),
+		).toBeNull();
 	});
 });
 
@@ -490,28 +585,5 @@ describe("First-Time Codebase Indexing Warning Suppression", () => {
 		expect(
 			screen.queryByText("Index your codebase"),
 		).not.toBeInTheDocument();
-	});
-});
-
-describe("CodeSearchToggle — capability gates follow the setting (Fizzy #1930)", () => {
-	it("refreshes the gates once code search is switched", async () => {
-		// Code search decides whether a gate says "turn code search on" or
-		// "start indexing"; the gates must re-read when it moves.
-		ragGetFixture = {
-			settings: { codeSearchEnabled: false, codeSearchProvider: null },
-			featureCodeIndexingEnabled: true,
-		};
-		updateMutationFn.mockResolvedValue({});
-		const user = userEvent.setup();
-		const { queryClient } = renderToggle();
-		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
-
-		await user.click(await findToggle());
-
-		await waitFor(() =>
-			expect(invalidate).toHaveBeenCalledWith({
-				queryKey: ["capability-gates"],
-			}),
-		);
 	});
 });

@@ -66,6 +66,10 @@ export interface CodeChunk extends TextChunk {
 		scopeChain: string[];
 		/** Import dependencies */
 		imports: Array<{ name: string; source: string }>;
+		/** First line of the chunk, 1-based. */
+		startLine?: number;
+		/** Last line of the chunk, 1-based, inclusive. */
+		endLine?: number;
 	};
 }
 
@@ -130,6 +134,13 @@ function mapToCodeChunk(c: any, filepath: string, index: number): CodeChunk {
 				name: i.name,
 				source: i.source,
 			})),
+			// code-chunk counts lines from 0.
+			...(c.lineRange
+				? {
+						startLine: c.lineRange.start + 1,
+						endLine: c.lineRange.end + 1,
+					}
+				: {}),
 		},
 	};
 }

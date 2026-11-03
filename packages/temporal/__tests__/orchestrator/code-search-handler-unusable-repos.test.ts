@@ -8,6 +8,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
+	/** The project's code search mode (CODE_SEARCH: live provider reads). */
+	codeSearchMode: "CODE_SEARCH" as string,
 	repos: [] as Array<Record<string, unknown>>,
 	searchRepositoryCode: vi.fn(),
 	getRepositoryFile: vi.fn(),
@@ -16,6 +18,9 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", async () => ({
+	getProjectRagSettings: vi.fn(async () => ({
+		codeSearchMode: h.codeSearchMode,
+	})),
 	getProjectAccessContext: vi.fn(async () => ({ organizationId: "org-1" })),
 	db: {
 		project: { findUnique: vi.fn(async () => null) },
@@ -97,6 +102,7 @@ async function run(tool: string, args: Record<string, unknown>) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	h.repos = [GOOD, BAD];
+	h.codeSearchMode = "CODE_SEARCH";
 	h.resolveToken.mockImplementation(async (repo: { repo: string }) => ({
 		token: repo.repo === "broken" ? null : "token-example",
 		method: "pat",
@@ -188,6 +194,8 @@ describe("code_search: an unusable connected repository is not 'no matches'", ()
 	});
 
 	it("indexed mode never ran the API search, so it reports no unusable repository", async () => {
+		// The project searches its code index (RAG), not the provider.
+		h.codeSearchMode = "RAG";
 		const { toolCall } = await run("code_search", {
 			mode: "indexed",
 			query: "login",

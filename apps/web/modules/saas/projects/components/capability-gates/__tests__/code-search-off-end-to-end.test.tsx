@@ -54,7 +54,6 @@ const BRAND_NEW_PROJECT: CapabilityEvidence = {
 	codebase: {
 		connected: true,
 		indexingEnabled: false,
-		indexingAvailable: true,
 		usable: false,
 		healthy: true,
 		integrationStatus: "ACTIVE",

@@ -219,12 +219,17 @@ import {
 	REPOSITORY_TRANSPORT_SCOPE,
 	REQUESTED_SCOPES,
 } from "../../lib/oauth/flow.js";
+import { hasMcpSignIn, signInForMcp } from "../../lib/oauth/mcp-token.js";
 import { projectAccessToken } from "../../lib/oauth/session.js";
 import { signInWithBrowser } from "../../lib/oauth/sign-in.js";
 import { DEFAULT_ORIGIN, normalizeOrigin } from "../../lib/origin.js";
 import { printOutput } from "../../lib/output.js";
 import { isPlainOrigin } from "../../lib/shell-words.js";
 import { takeUpgradeNotice } from "../../lib/user-agent.js";
+import {
+	describeOutcomes,
+	syncCodeRepositories,
+} from "../../lib/workspace/code-repos.js";
 import { runPluginInit } from "./init-plugin.js";
 import { registerRenderCommand } from "./render.js";
 import { registerRulesCommand } from "./rules.js";
@@ -548,11 +553,27 @@ export function buildInstructionsCommand(): Command {
 			"--no-mcp",
 			"Do not register the project's MCP server with the coding tools found",
 		)
+		.option(
+			"--repos",
+			"Also clone the project's code repositories into repos/<name> in this folder (later: `fabric repos sync`)",
+		)
+		.option("--no-repos", "Do not clone the code repositories")
+		.option(
+			"--mcp-sign-in",
+			"Also approve Fabric's MCP tools for Claude Code in the browser, so its MCP server needs no /mcp sign-in",
+		)
+		.option(
+			"--rename",
+			"Give an already-installed plugin the project's readable name (e.g. /slotik:<skill>)",
+		)
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
 			this: Command,
 			opts: RawOptions & {
 				tool: string;
+				repos?: boolean;
+				rename?: boolean;
+				mcpSignIn?: boolean;
 				apply?: boolean;
 				reportOnly?: boolean;
 				lessons?: boolean;
@@ -587,17 +608,28 @@ export function buildInstructionsCommand(): Command {
 						opts.plugin ||
 						!(await insideInstructionsCheckout(bound))
 					) {
-						return runPluginInit({
+						await runPluginInit({
 							project: bound.project,
 							origin: deploymentOrigin(bound),
 							org: bound.org,
 							tool: opts.tool,
 							dest: opts.dest,
 							mcp: opts.mcp,
+							rename: opts.rename,
 							format: outputFormatFor(this),
 						});
+					} else {
+						await runInit(bound, outputFormatFor(this));
 					}
-					return runInit(bound, outputFormatFor(this));
+					if (opts.mcpSignIn) {
+						await setUpMcpSignIn(bound, opts.tool, opts.mcp);
+					}
+					return setUpCodeRepositories(
+						opts.repos,
+						bound.project,
+						bound.org,
+						path.resolve(opts.dest ?? process.cwd()),
+					);
 				}
 				// A new folder has no checkout to find the project from.
 				if (
@@ -606,9 +638,20 @@ export function buildInstructionsCommand(): Command {
 				) {
 					throw outcomeFailure("clone-needs-project", {});
 				}
-				return runInit(
-					await withProject({ ...opts, hook: false }, "init"),
-					outputFormatFor(this),
+				const bound = await withProject(
+					{ ...opts, hook: false },
+					"init",
+				);
+				await runInit(bound, outputFormatFor(this));
+				return setUpCodeRepositories(
+					opts.repos,
+					bound.project,
+					bound.org,
+					path.resolve(
+						typeof opts.clone === "string"
+							? opts.clone
+							: (opts.dest ?? process.cwd()),
+					),
 				);
 			});
 		});
@@ -3370,6 +3413,85 @@ async function isEmptyFolder(folder: string): Promise<boolean> {
  * wants that: `--clone`, or a yes at the prompt. Returns what the folder is
  * now, for the same classification as for any checkout.
  */
+/**
+ * The Coding Instructions plugin's MCP server without a `/mcp` sign-in
+ * (`mcp-token.ts`): one more browser approval, for the project's MCP gateway,
+ * kept on this machine. Skipped for Codex, under `--no-mcp`, when there is
+ * already one, and where no browser can be used (a hook, CI, no terminal).
+ * A failure is not the set-up's: Claude Code then signs in through `/mcp`.
+ */
+async function setUpMcpSignIn(
+	opts: CommonOptions,
+	tool: string | undefined,
+	mcp: boolean | undefined,
+): Promise<void> {
+	if (
+		mcp === false ||
+		(tool !== undefined && tool !== "claude-code") ||
+		opts.project === undefined ||
+		!canPrompt() ||
+		runningInCi()
+	) {
+		return;
+	}
+	const origin = deploymentOrigin(opts);
+	if (hasMcpSignIn(origin, opts.project)) {
+		return;
+	}
+	try {
+		await signInForMcp({
+			baseUrl: opts.baseUrl ?? getBaseUrl() ?? origin,
+			origin,
+			projectId: opts.project,
+			signal: AbortSignal.timeout(SIGN_IN_TIMEOUT_MS),
+			announce: (url) => {
+				process.stderr.write(
+					`One more approval: Fabric's MCP tools for Claude Code, so you never sign in through /mcp.
+If the browser does not open, visit:
+
+  ${url}
+
+`,
+				);
+			},
+		});
+		process.stderr.write(
+			"Claude Code's Fabric MCP server is signed in; it connects at the next session.\n",
+		);
+	} catch {
+		process.stderr.write(
+			"The MCP sign-in did not finish; in Claude Code, run /mcp and choose Authenticate for the Fabric server instead.\n",
+		);
+	}
+}
+
+/**
+ * The workspace layout's code half (specs/2026-10-21-ai-artifacts-hub §5.7):
+ * `--repos` clones the project's code repositories into `repos/<name>`
+ * (the Connect dialog's line carries it); without it nothing is cloned.
+ */
+async function setUpCodeRepositories(
+	wanted: boolean | undefined,
+	project: string,
+	org: string | undefined,
+	workspace: string,
+): Promise<void> {
+	if (wanted !== true) {
+		return;
+	}
+	const outcomes = await syncCodeRepositories({
+		client: getClient(),
+		projectId: project,
+		org,
+		workspace,
+		onProgress: (message) =>
+			process.stderr.write(`${message}
+`),
+	});
+	process.stdout.write(`${describeOutcomes(outcomes)}
+`);
+}
+
 async function cloneProjectRepository(
 	opts: CommonOptions & { clone?: boolean | string },
 	destination: string,

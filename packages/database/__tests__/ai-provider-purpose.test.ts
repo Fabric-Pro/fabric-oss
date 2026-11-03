@@ -1,8 +1,8 @@
 /**
  * An "embeddings only" provider key (purpose EMBEDDINGS_ONLY, Fizzy #2770 F11).
  *
- * Every lookup that can feed LLM work must skip such a row; only the embedding
- * lookup may resolve it. The two tables are faked with an in-memory store that
+ * The LLM lookups covered here skip such a row; embedding and gateway-search
+ * lookups may resolve it. The two tables are faked with an in-memory store that
  * evaluates the real `where` clauses, so these pin behaviour rather than the
  * exact shape of a query.
  */

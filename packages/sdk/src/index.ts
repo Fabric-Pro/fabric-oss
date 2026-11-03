@@ -247,6 +247,8 @@ export type {
 	IntegrationsResource,
 } from "./resources/integrations.js";
 export type {
+	KnowledgeArtifactTypeInfo,
+	KnowledgeArtifactTypes,
 	KnowledgeChunk,
 	KnowledgeScope,
 	KnowledgeSearchOptions,
@@ -283,6 +285,7 @@ export {
 	type ListDocumentsOptions,
 	type ListFeaturesOptions,
 	type ListProjectsOptions,
+	type ProjectCodeRepository,
 	type UpdateDocumentOptions,
 	type UpdateFeatureOptions,
 	type UpdateProjectOptions,

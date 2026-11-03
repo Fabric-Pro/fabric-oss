@@ -43,10 +43,7 @@ import {
 	GitLabPmOriginMismatchError,
 	resolveProjectPMConfigForUser,
 } from "@repo/integrations/gitlab";
-import {
-	isCodeIndexingDeploymentEnabled,
-	isCodeIndexingEnabled,
-} from "../projects/lib/code-indexing-enabled";
+import { isCodeIndexingEnabled } from "../projects/lib/code-indexing-enabled";
 import { withExtractionLifecycleOrSettled } from "../projects/lib/extraction-lifecycle";
 import {
 	type PMTarget,
@@ -664,7 +661,7 @@ export async function gatherCapabilityEvidence({
 			// The project half of "will anything ever index this repository".
 			// Nested for the same reason as the scan config: a one-row join the
 			// gather pays nothing extra for. An absent row is the default, off.
-			ragSettings: { select: { codeSearchEnabled: true } },
+			ragSettings: { select: { codeSearchMode: true } },
 			// The project-management connection the Roadmap doors dispatch
 			// through, and the read-only switch that refuses writes to it.
 			readOnlyMode: true,
@@ -1116,9 +1113,8 @@ export async function gatherCapabilityEvidence({
 		codebase: {
 			connected: codebaseConnected,
 			indexingEnabled: isCodeIndexingEnabled(
-				project.ragSettings?.codeSearchEnabled,
+				project.ragSettings?.codeSearchMode,
 			),
-			indexingAvailable: isCodeIndexingDeploymentEnabled(),
 			usable: codebaseUsable,
 			healthy: codebaseHealthy,
 			// Null means "no repository at all", which is a different state

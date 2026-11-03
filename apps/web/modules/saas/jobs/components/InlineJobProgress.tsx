@@ -22,6 +22,13 @@ export function InlineJobProgress({ job }: { job?: JobListItem }) {
 	const counts = formatJobCounts(job.counts, (key, values) =>
 		t(`counts.${key}`, values),
 	);
+	// Name the step that is running, and show the latest counters: the early
+	// ones stop moving once their step is done.
+	const runningStep = job.steps.find((step) => step.status === "running");
+	const parts = [
+		...(runningStep ? [t(`steps.${runningStep.key}`)] : []),
+		...counts.slice(-2),
+	];
 
 	return (
 		<span
@@ -34,9 +41,7 @@ export function InlineJobProgress({ job }: { job?: JobListItem }) {
 				aria-hidden="true"
 			/>
 			<span className="tabular-nums">
-				{counts.length > 0
-					? counts.slice(0, 2).join(" · ")
-					: t("status.running")}
+				{parts.length > 0 ? parts.join(" · ") : t("status.running")}
 			</span>
 		</span>
 	);

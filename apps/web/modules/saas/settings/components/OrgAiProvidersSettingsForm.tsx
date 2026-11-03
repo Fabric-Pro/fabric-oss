@@ -3,6 +3,7 @@
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { buildFabricDesktopViewUrl } from "@saas/projects/lib/implementation-session-labels";
 import { AnthropicCapabilityNotice } from "@saas/settings/components/AnthropicCapabilityNotice";
+import { LocalModelsNotice } from "@saas/settings/components/LocalModelsNotice";
 import { aiProviderSiteUrl } from "@saas/settings/lib/provider-sites";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
 import { SiteFavicon } from "@saas/shared/components/SiteFavicon";
@@ -974,6 +975,10 @@ export function OrgAiProvidersSettingsForm({
 						</div>
 					)}
 
+					{configStatus?.localModels && (
+						<LocalModelsNotice models={configStatus.localModels} />
+					)}
+
 					{!configStatus?.isConfigured &&
 						configStatus?.organizationEmbedding?.source ===
 							"platform" && (
@@ -985,6 +990,7 @@ export function OrgAiProvidersSettingsForm({
 					{/* Embedding Provider Info Banner */}
 					{configStatus?.isConfigured &&
 						configStatus?.organizationEmbedding?.source === null &&
+						!configStatus?.localModels?.embedding &&
 						!readOnly && (
 							<div className="rounded-md border border-border bg-muted/40 p-4">
 								<div className="flex gap-3">

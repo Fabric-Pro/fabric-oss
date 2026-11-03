@@ -328,6 +328,15 @@ async function loadStepHandler(toolName: string): Promise<StepHandler> {
 		);
 		return new FeatureDecisionsHandler();
 	}
+	if (
+		toolName === "fabric_tune_chunking" ||
+		toolName === "fabric_update_chunking_settings"
+	) {
+		const { ChunkingTuningHandler } = await import(
+			"./handlers/chunking-tuning-handler"
+		);
+		return new ChunkingTuningHandler();
+	}
 	if (toolName === "fabric_list_security_findings") {
 		const { SecurityFindingsHandler } = await import(
 			"./handlers/security-findings-handler"

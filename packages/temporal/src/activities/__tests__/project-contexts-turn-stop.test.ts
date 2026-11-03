@@ -218,22 +218,29 @@ describe("compact project knowledge results", () => {
 		expect(JSON.stringify(result).length).toBeGreaterThanOrEqual(9995);
 		expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
 	});
-	it("preserves Parlume body heads even when matched passages are available", async () => {
+	it("preserves and caps Parlume matched passages instead of body heads", async () => {
 		mocks.retrieveProjectContexts.mockResolvedValue([
 			{
 				id: "source-1",
 				content: `Original body\n${"x".repeat(300)}`,
 				filename: "plan.md",
-				matchedPassages: [{ content: "MATCH ONLY", score: 1 }],
+				matchedPassages: [
+					{ content: "MATCH ONLY".repeat(30), score: 1 },
+				],
 			},
 		]);
 		const result = await retrieve({ maxPassageChars: 100 });
-		expect(result.context).toContain(`Original body\n${"x".repeat(86)}`);
-		expect(result.context).not.toContain("MATCH ONLY");
+		expect(result.context).not.toContain("Original body");
+		expect(result.context).toContain("MATCH ONLY".repeat(10));
+		expect(result.context).not.toContain("MATCH ONLY".repeat(11));
+
 		expect(
 			mocks.retrieveProjectContexts.mock.calls[0][0]
 				.includeMatchedPassages,
-		).not.toBe(true);
+		).toBe(true);
+		expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({ maxContexts: 5 }),
+		);
 	});
 	it("budgets injected summaries and does not advertise synthetic ids as readable sources", async () => {
 		mocks.retrieveProjectContexts.mockResolvedValue([
@@ -342,4 +349,16 @@ it("logs a successful compact project retrieval", async () => {
 	} finally {
 		info.mockRestore();
 	}
+});
+
+it("falls back to the body when matched passage text is empty", async () => {
+	mocks.retrieveProjectContexts.mockResolvedValue([
+		{
+			content: "Opening".repeat(100),
+			matchedPassages: [{ content: "   ", score: 1 }],
+		},
+	]);
+	const result = await retrieve({ maxPassageChars: 70 });
+	expect(result.context).toContain("Opening".repeat(10));
+	expect(result.context).not.toContain("Opening".repeat(11));
 });

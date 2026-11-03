@@ -7,6 +7,7 @@ import { LoaderIcon, LockIcon } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useEmbeddingsChangeConfirmation } from "./EmbeddingsChangeConfirmDialog";
+import { type LocalModel, useLocalModels } from "./LocalModelsNotice";
 
 import {
 	API_DEFAULT_VALUE,
@@ -28,6 +29,7 @@ export function OrgAiModelPreferencesForm({
 	const api = useOrgApiModelPreferences({ readOnly });
 	const t = useTranslations("settings.aiModelsRouting.models");
 	const embeddingChange = useEmbeddingsChangeConfirmation(api.organizationId);
+	const localModels = useLocalModels();
 	const applyChoice = (taskType: string, value: string) =>
 		value === API_DEFAULT_VALUE
 			? api.handlePendingResetToDefault(taskType)
@@ -55,6 +57,16 @@ export function OrgAiModelPreferencesForm({
 			return null;
 		}
 		const view = api.getTaskView(taskType.id);
+		// Local development: a local server serves this task, whatever is
+		// selected here.
+		const localModel: LocalModel | null =
+			(taskType.id === "EMBEDDING"
+				? localModels?.embedding
+				: taskType.id === "DECISION"
+					? localModels?.decision
+					: taskType.id === "IMAGE"
+						? localModels?.image
+						: null) ?? null;
 		return (
 			<tr
 				key={taskType.id}
@@ -80,93 +92,124 @@ export function OrgAiModelPreferencesForm({
 					</span>
 				</th>
 				<td className="block py-2 md:table-cell md:py-3">
-					{taskType.id === "EMBEDDING" &&
-					api.organizationEmbedding?.source === "platform" ? (
-						<p>{t("embeddingsPlatform")}</p>
-					) : (
-						<ApiTaskModelSelect
-							view={view}
-							triggerClassName="w-full"
-							modelUnavailableReason={
-								taskType.id === "EMBEDDING"
-									? (name) =>
-											embeddingModelFitsVectorStore(name)
-												? undefined
-												: t("embeddingsNeedsVectorSize")
-									: undefined
-							}
-							hasNoProviders={api.hasNoProviders}
-							disabled={readOnly || embeddingChange.isChecking}
-							ariaLabel={t("apiSelectLabel", {
-								task:
-									taskType.id === "EMBEDDING"
-										? t("embeddingsTitle")
-										: t(`tasks.${taskType.id}.name`),
-							})}
-							defaultLabel={
-								view.hasCustomPref
-									? t("defaultPlain")
-									: undefined
-							}
-							onValueChange={(value, invoker) =>
-								changeChoice(taskType.id, value, invoker)
-							}
-						/>
-					)}
-					{!view.isDefaultChoice &&
-						(view.hasCustomPref || view.hasPendingChange) && (
-							<ModelFitNote
-								taskType={view.taskType}
-								model={view.currentModel}
-							/>
-						)}
-					{view.hasCustomPref && (
-						<p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-							<LockIcon aria-hidden="true" className="size-3" />
-							{t("enforced")}
-						</p>
-					)}
-					{view.hasCustomPref && !readOnly && (
-						<Button
-							variant="ghost"
-							disabled={embeddingChange.isChecking}
-							size="sm"
-							onClick={() =>
-								changeChoice(taskType.id, API_DEFAULT_VALUE)
-							}
+					{localModel ? (
+						<div
+							className="space-y-1"
+							data-testid={`local-model-${taskType.id}`}
 						>
-							Reset
-						</Button>
-					)}
-					{!view.hasModels &&
-						(taskType.id !== "EMBEDDING" ||
-							api.organizationEmbedding?.source !== "platform") &&
-						!view.noDefaultProvider &&
-						taskType.id !== "DECISION" && (
-							<p className="text-xs text-muted-foreground">
-								{t("noModelsAvailable")}{" "}
-								{api.organizationSlug && (
-									<Link
-										href={`/app/${api.organizationSlug}/settings/ai-providers`}
-									>
-										{t("configureProvidersFirst")}
-									</Link>
-								)}
+							<p>
+								{localModel.model}{" "}
+								<span className="text-xs text-muted-foreground">
+									via local {localModel.provider} (dev)
+								</span>
 							</p>
-						)}
-					{!view.hasModels && taskType.id === "DECISION" && (
-						<p className="text-xs text-muted-foreground">
-							{t("decisionUnavailable")}
-						</p>
-					)}
-					{view.isDisabledChoice && (
-						<p className="text-xs text-muted-foreground">
-							Decisions are switched off. Work items and
-							action-item routing use your regular AI model.
-						</p>
+							<p className="text-xs text-muted-foreground">
+								Served by the local {localModel.provider} set in
+								.env.local. The model chosen here applies again
+								when it is switched off.
+							</p>
+						</div>
+					) : (
+						renderChoice(taskType.id, view)
 					)}
 				</td>
 			</tr>
+		);
+	};
+	const renderChoice = (
+		taskTypeId: string,
+		view: ReturnType<typeof api.getTaskView>,
+	) => {
+		const taskType = TASK_TYPES.find((task) => task.id === taskTypeId);
+		if (!taskType) {
+			return null;
+		}
+		return (
+			<>
+				{taskType.id === "EMBEDDING" &&
+				api.organizationEmbedding?.source === "platform" ? (
+					<p>{t("embeddingsPlatform")}</p>
+				) : (
+					<ApiTaskModelSelect
+						view={view}
+						triggerClassName="w-full"
+						modelUnavailableReason={
+							taskType.id === "EMBEDDING"
+								? (name) =>
+										embeddingModelFitsVectorStore(name)
+											? undefined
+											: t("embeddingsNeedsVectorSize")
+								: undefined
+						}
+						hasNoProviders={api.hasNoProviders}
+						disabled={readOnly || embeddingChange.isChecking}
+						ariaLabel={t("apiSelectLabel", {
+							task:
+								taskType.id === "EMBEDDING"
+									? t("embeddingsTitle")
+									: t(`tasks.${taskType.id}.name`),
+						})}
+						defaultLabel={
+							view.hasCustomPref ? t("defaultPlain") : undefined
+						}
+						onValueChange={(value, invoker) =>
+							changeChoice(taskType.id, value, invoker)
+						}
+					/>
+				)}
+				{!view.isDefaultChoice &&
+					(view.hasCustomPref || view.hasPendingChange) && (
+						<ModelFitNote
+							taskType={view.taskType}
+							model={view.currentModel}
+						/>
+					)}
+				{view.hasCustomPref && (
+					<p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+						<LockIcon aria-hidden="true" className="size-3" />
+						{t("enforced")}
+					</p>
+				)}
+				{view.hasCustomPref && !readOnly && (
+					<Button
+						variant="ghost"
+						disabled={embeddingChange.isChecking}
+						size="sm"
+						onClick={() =>
+							changeChoice(taskType.id, API_DEFAULT_VALUE)
+						}
+					>
+						Reset
+					</Button>
+				)}
+				{!view.hasModels &&
+					(taskType.id !== "EMBEDDING" ||
+						api.organizationEmbedding?.source !== "platform") &&
+					!view.noDefaultProvider &&
+					taskType.id !== "DECISION" && (
+						<p className="text-xs text-muted-foreground">
+							{t("noModelsAvailable")}{" "}
+							{api.organizationSlug && (
+								<Link
+									href={`/app/${api.organizationSlug}/settings/ai-providers`}
+								>
+									{t("configureProvidersFirst")}
+								</Link>
+							)}
+						</p>
+					)}
+				{!view.hasModels && taskType.id === "DECISION" && (
+					<p className="text-xs text-muted-foreground">
+						{t("decisionUnavailable")}
+					</p>
+				)}
+				{view.isDisabledChoice && (
+					<p className="text-xs text-muted-foreground">
+						Decisions are switched off. Work items and action-item
+						routing use your regular AI model.
+					</p>
+				)}
+			</>
 		);
 	};
 	return (

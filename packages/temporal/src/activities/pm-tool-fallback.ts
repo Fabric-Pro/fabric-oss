@@ -1,5 +1,11 @@
 import { isProjectReadOnly } from "@repo/database";
 import {
+	createGitHubProjectItemFromStory,
+	getGitHubProjectItemForPM,
+	listGitHubProjectItemsForPM,
+	updateGitHubProjectItemFromStory,
+} from "@repo/integrations/github/projects-pm-adapter";
+import {
 	GITLAB_REST_CAPABILITIES,
 	GitLabPmOriginMismatchError,
 } from "@repo/integrations/gitlab";
@@ -12,7 +18,7 @@ import {
 import { READ_ONLY_MODE_MESSAGE } from "@repo/utils";
 import { runWithDispatchDeadline } from "@repo/utils/dispatch-deadline";
 import { ApplicationFailure } from "@temporalio/common";
-import type { PMSource } from "./pm-source";
+import type { RestPMSource } from "./pm-source";
 
 /**
  * Logical PM tool calls — provider-agnostic operations the workflow
@@ -48,7 +54,7 @@ export { GITLAB_REST_CAPABILITIES };
  *   // else: existing MCP code path unchanged, with source.mcpConfig in scope.
  */
 export async function callPmToolWithFallback(args: {
-	source: Extract<PMSource, { kind: "rest-gitlab" }>;
+	source: RestPMSource;
 	call: PMToolCall;
 	userId: string;
 	organizationId: string | null;
@@ -93,17 +99,20 @@ export async function callPmToolWithFallback(args: {
 
 	// Adapt the temporal-side rest-gitlab source to the GitLab REST adapter's
 	// GitLabSource shape, keeping the instance the token was issued by.
-	const gitlabSource = {
-		kind: "rest-adapter" as const,
-		credential: { token: source.token, apiBase: source.baseUrl },
-	};
-
-	const send = () =>
-		dispatchRest(gitlabSource, source.projectId, call, {
+	const send = () => {
+		if (source.kind === "rest-github") {
+			return dispatchGitHub(source, call, signal);
+		}
+		const gitlabSource = {
+			kind: "rest-adapter" as const,
+			credential: { token: source.token, apiBase: source.baseUrl },
+		};
+		return dispatchRest(gitlabSource, source.projectId, call, {
 			userId,
 			organizationId,
 			signal,
 		});
+	};
 	try {
 		return await (dispatchDeadline === undefined
 			? send()
@@ -171,6 +180,54 @@ async function dispatchRest(
 				userId,
 				organizationId,
 			});
+		case "discoverCapabilities":
+			return { ...GITLAB_REST_CAPABILITIES };
+		default: {
+			const exhaustive: never = call;
+			throw new Error(
+				`Unknown tool: ${(exhaustive as { tool: string }).tool}`,
+			);
+		}
+	}
+}
+
+async function dispatchGitHub(
+	source: Extract<RestPMSource, { kind: "rest-github" }>,
+	call: PMToolCall,
+	signal?: AbortSignal,
+): Promise<unknown> {
+	switch (call.tool) {
+		case "listWorkItems": {
+			const { page, pageSize } = call.filters as {
+				page?: number;
+				pageSize?: number;
+			};
+			return listGitHubProjectItemsForPM({
+				source,
+				page,
+				pageSize,
+				signal,
+			});
+		}
+		case "fetchItem":
+			return getGitHubProjectItemForPM({
+				source,
+				externalId: call.externalId,
+			});
+		case "createItem":
+			return createGitHubProjectItemFromStory({
+				source,
+				payload: call.payload as never,
+				signal,
+			});
+		case "updateItem":
+			return updateGitHubProjectItemFromStory({
+				source,
+				externalId: call.externalId,
+				payload: call.payload as never,
+			});
+		// The same logical surface as GitLab REST, so the workflow's
+		// capability guard passes for both.
 		case "discoverCapabilities":
 			return { ...GITLAB_REST_CAPABILITIES };
 		default: {

@@ -13,16 +13,19 @@ import type { UsageOrigin } from "../../../workflows/orchestrator/usage-attribut
 
 const h = vi.hoisted(() => ({
 	getProjectCodeIndexes: vi.fn(),
+	ragSettings: vi.fn(),
 	integrations: vi.fn(),
 	project: vi.fn(),
 	count: vi.fn(),
 	query: vi.fn(),
 	access: vi.fn(),
+	liveSearch: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => ({
 	...(await importOriginal<Record<string, unknown>>()),
 	getProjectCodeIndexes: h.getProjectCodeIndexes,
+	getProjectRagSettings: h.ragSettings,
 	getProjectAccessContext: h.access,
 	db: {
 		projectRepositoryIntegration: { findMany: h.integrations },
@@ -48,6 +51,13 @@ vi.mock("@repo/rag", () => ({
 		byRepoKey: new Map(),
 	})),
 	resolveRoleTag: vi.fn(() => undefined),
+}));
+
+// CODE_SEARCH mode runs the orchestrator handler's live provider search.
+vi.mock("../../orchestrator/execution/handlers/code-search-handler", () => ({
+	CodeSearchHandler: class {
+		execute = h.liveSearch;
+	},
 }));
 
 const { createCodeSearchTool } = await import("../built-in-tools");
@@ -88,6 +98,7 @@ function lastQueryMust(): unknown[] {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	h.ragSettings.mockResolvedValue({ codeSearchMode: "RAG" });
 	h.getProjectCodeIndexes.mockResolvedValue([
 		{ repositoryIntegrationId: "ri-web", status: "READY" },
 		{ repositoryIntegrationId: "ri-legacy", status: "READY" },
@@ -144,9 +155,16 @@ describe("code_search repository scope", () => {
 		const tool = await buildTool();
 		const result = await tool.execute({ query: "auth", maxResults: 5 });
 		expect(result.searchedRepository).toBe("all");
-		expect(JSON.stringify(lastQueryMust())).not.toContain(
-			"repositoryIntegrationId",
-		);
+		// Every searchable, included repository, and nothing else.
+		expect(lastQueryMust()).toContainEqual({
+			should: [
+				{ key: "repositoryIntegrationId", match: { value: "ri-web" } },
+				{
+					key: "repositoryIntegrationId",
+					match: { value: "ri-legacy" },
+				},
+			],
+		});
 		expect(lastQueryMust()).toContainEqual({
 			key: "projectId",
 			match: { value: "p1" },
@@ -426,5 +444,76 @@ describe("code_search project access", () => {
 		expect(result).toMatchObject({ success: false, results: [] });
 		expect(h.getProjectCodeIndexes).not.toHaveBeenCalled();
 		expect(h.query).not.toHaveBeenCalled();
+	});
+});
+
+describe("code_search follows the project's code search mode", () => {
+	it("is not offered when code search is off", async () => {
+		h.ragSettings.mockResolvedValue({ codeSearchMode: "OFF" });
+		expect(await buildTool()).toBeUndefined();
+		expect(h.getProjectCodeIndexes).not.toHaveBeenCalled();
+	});
+
+	it("tells the orchestrator catalog that code search is off, touching nothing", async () => {
+		h.ragSettings.mockResolvedValue({ codeSearchMode: "OFF" });
+		const tool = await buildTool(undefined, true);
+		const result = await tool.execute({ query: "auth" });
+		expect(result.success).toBe(true);
+		expect(result.message).toContain("Code search is off for this project");
+		expect(h.query).not.toHaveBeenCalled();
+		expect(h.liveSearch).not.toHaveBeenCalled();
+	});
+
+	it("runs the live provider search in CODE_SEARCH mode and never the index", async () => {
+		h.ragSettings.mockResolvedValue({ codeSearchMode: "CODE_SEARCH" });
+		h.liveSearch.mockResolvedValue({
+			handled: true,
+			output: {
+				response: "Found 1 code matches across 1 repo(s)",
+				toolCalls: [{ status: "success" }],
+			},
+		});
+		const tool = await buildTool();
+		const result = await tool.execute({
+			query: "auth",
+			repository: "web-app",
+		});
+		expect(result).toMatchObject({
+			success: true,
+			message: "Found 1 code matches across 1 repo(s)",
+		});
+		const [{ input }] = h.liveSearch.mock.calls[0] as [
+			{ input: { step: { inputs: Record<string, unknown> } } },
+		];
+		expect(input.step.inputs).toEqual({ query: "auth", repo: "web-app" });
+		expect(h.query).not.toHaveBeenCalled();
+		expect(h.count).not.toHaveBeenCalled();
+	});
+
+	it("searches only included repositories with a ready index in RAG mode and names the rest", async () => {
+		h.getProjectCodeIndexes.mockResolvedValue([
+			{ repositoryIntegrationId: "ri-web", status: "READY" },
+			{ repositoryIntegrationId: "ri-legacy", status: "INDEXING" },
+			// An excluded repository: its integration row is not returned.
+			{ repositoryIntegrationId: "ri-excluded", status: "READY" },
+		]);
+		const tool = await buildTool();
+		const result = (await tool.execute({ query: "auth" })) as {
+			notSearched?: string[];
+		};
+		expect(h.integrations).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { projectId: "p1", includedInCodeSearch: true },
+			}),
+		);
+		expect(lastQueryMust()).toContainEqual({
+			key: "repositoryIntegrationId",
+			match: { value: "ri-web" },
+		});
+		expect(JSON.stringify(lastQueryMust())).not.toContain("ri-excluded");
+		expect(result.notSearched).toEqual([
+			"example-org/legacy-app: still indexing",
+		]);
+		expect(h.liveSearch).not.toHaveBeenCalled();
 	});
 });

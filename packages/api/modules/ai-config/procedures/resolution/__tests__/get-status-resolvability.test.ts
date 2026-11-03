@@ -154,6 +154,10 @@ type StatusResult = {
 	defaultProvider: string | null;
 	embeddingProvider: string | null;
 	configuredProviders: { provider: string; isDefault: boolean }[];
+	localModels: Record<
+		"embedding" | "decision" | "image",
+		{ model: string; provider: string } | null
+	>;
 };
 const getStatus = getAiConfigStatusProcedure as unknown as {
 	_handler: (args: {
@@ -1116,4 +1120,54 @@ it("keeps the provider in the company identity when the canonical model is share
 		"VERCEL_GATEWAY:openai/text-embedding-3-small",
 		"OPENAI_DIRECT:text-embedding-3-small",
 	]);
+});
+
+describe("localEmbeddings — the local-development Ollama override", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	function stubOverride(nodeEnv: string) {
+		vi.stubEnv("NODE_ENV", nodeEnv);
+		vi.stubEnv(
+			"FABRIC_LOCAL_EMBEDDINGS_BASE_URL",
+			"http://localhost:11434/v1",
+		);
+		vi.stubEnv("FABRIC_LOCAL_EMBEDDINGS_MODEL", "qwen3-embedding:4b");
+		vi.stubEnv("FABRIC_LOCAL_EMBEDDINGS_PROVIDER", "Ollama");
+	}
+
+	it("in development, reports the local model as what embeddings resolve to", async () => {
+		stubOverride("development");
+		mockGetAiProviderApiKey.mockResolvedValue(
+			resolvedConfig("ANTHROPIC", "organization"),
+		);
+
+		const result = await callInOrg();
+
+		expect(result.localModels).toEqual({
+			embedding: { model: "qwen3-embedding:4b", provider: "Ollama" },
+			decision: null,
+			image: null,
+		});
+		expect(result.resolvedEmbeddingProvider).toBe("CUSTOM");
+		// The chat path is untouched.
+		expect(result.resolvedProvider).toBe("ANTHROPIC");
+	});
+
+	it("in production, ignores the variables", async () => {
+		stubOverride("production");
+		mockGetAiProviderApiKey.mockResolvedValue(
+			resolvedConfig("ANTHROPIC", "organization"),
+		);
+
+		const result = await callInOrg();
+
+		expect(result.localModels).toEqual({
+			embedding: null,
+			decision: null,
+			image: null,
+		});
+		expect(result.resolvedEmbeddingProvider).toBe("ANTHROPIC");
+	});
 });

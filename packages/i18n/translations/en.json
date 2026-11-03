@@ -1706,6 +1706,13 @@
 					},
 					"company_context": {
 						"metadata_updated": "Company context source details updated"
+					},
+					"credential": {
+						"created": "Organization credential added",
+						"updated": "Organization credential updated",
+						"shared": "Credential shared with organization",
+						"unshared": "Credential sharing withdrawn",
+						"deleted": "Organization credential deleted"
 					}
 				},
 				"account": {
@@ -1735,6 +1742,11 @@
 						"connected": "ChatGPT plan connected",
 						"disconnected": "ChatGPT plan disconnected",
 						"organization_use_changed": "ChatGPT plan use changed"
+					},
+					"credential": {
+						"created": "Personal credential added",
+						"updated": "Personal credential updated",
+						"deleted": "Personal credential deleted"
 					}
 				},
 				"project": {
@@ -1846,6 +1858,10 @@
 						"memory_write_submitted": "Living Memory write admitted",
 						"memory_write_settled": "Living Memory write finished"
 					},
+					"import": {
+						"started": "Repository import analysis started",
+						"applied": "Repository import applied"
+					},
 					"instructions": {
 						"upload_started": "Coding-instructions upload started",
 						"published": "Coding-instructions version published",
@@ -1869,6 +1885,7 @@
 						"committed": "Coding-instructions commit pushed to the synced branch",
 						"commit_fell_back_to_pull_request": "Coding-instructions commit opened as a pull request instead",
 						"repository_migration_started": "Coding-instructions move into a repository started",
+						"consolidation_started": "AI files moved into a new instructions repository",
 						"repository_migration_canceled": "Coding-instructions move into a repository ended without merging",
 						"repository_migration_completed": "Coding-instructions move into a repository finished"
 					}
@@ -2814,10 +2831,10 @@
 			},
 			"embeddingsOnly": {
 				"badge": "Embeddings only",
-				"badgeTooltip": "This key serves document search (embeddings) and nothing else. Fabric never uses it for chat, agents or generation.",
+				"badgeTooltip": "This key serves document search (embeddings and reranking) and nothing else. Fabric never uses it for chat, agents or generation.",
 				"toggleLabel": "Embeddings only",
 				"toggleHint": "Never use this key for chat, agents or generation. It cannot be the default provider.",
-				"enabledToast": "Key restricted to embeddings",
+				"enabledToast": "Key restricted to document search",
 				"disabledToast": "Key may now serve all AI work",
 				"failedToast": "Failed to update the key's purpose",
 				"takenHint": "{provider} is already the embeddings-only key. Change its purpose or remove it first."
@@ -3433,6 +3450,93 @@
 		"subtitle": "Manage and organize all your Supadev projects",
 		"createProject": "Create Project",
 		"newProject": "New Project",
+		"newProjectStart": {
+			"heading": "New project",
+			"subtitle": "Describe it yourself, or let Fabric read an existing repository and propose the setup.",
+			"choiceLabel": "How do you want to start?",
+			"scratch": {
+				"title": "Start from scratch",
+				"description": "Describe the project yourself; Fabric guides the setup after creation."
+			},
+			"import": {
+				"title": "Import from a repository",
+				"description": "Fabric connects the repository, reads all of it and proposes what the project should hold.",
+				"repositoryLabel": "GitHub repository",
+				"repositoryPlaceholder": "owner/name or https://github.com/owner/name",
+				"read": "Read",
+				"browse": "Or browse an organization's repositories",
+				"reading": "Reading the repository…",
+				"access": {
+					"title": "Give Fabric access to the repository",
+					"signIn": "Sign in with GitHub",
+					"tokenLabel": "Or paste a personal access token",
+					"save": "Save and read",
+					"tokenHint": "Saved encrypted as your GitHub connection and reused for other repositories. Classic: repo. Fine-grained: this repository with Contents and Metadata read; to move AI files out later also Administration, Contents and Pull requests write."
+				},
+				"detailsLabel": "Project details",
+				"nameLabel": "Project title",
+				"descriptionLabel": "Description",
+				"techStackLabel": "Tech stack",
+				"techStackHint": "Separate technologies with commas.",
+				"phaseLabel": "Where is this project now?",
+				"phasePlaceholder": "Choose a phase",
+				"phases": {
+					"DISCOVERY_PLANNING": "Discovery / Planning",
+					"DEVELOPMENT_EXECUTION": "Development / Execution"
+				},
+				"phaseHint": "Proposed from the repository: code means development, documents alone mean planning. Fabric asks for different things in each phase. You can change this later.",
+				"expectedStartLabel": "When is development expected to start?",
+				"expectedStartHint": "Until then, Fabric will not ask you to connect a codebase.",
+				"instructions": {
+					"separate": "My coding instructions live in a separate repository",
+					"legend": "Coding instructions repository",
+					"branchLabel": "Branch",
+					"branchPlaceholder": "The repository's default branch",
+					"folderLabel": "Folder",
+					"folderPlaceholder": "The whole repository",
+					"folderHint": "The folder that holds this project's instructions. Change it later in Coding Instructions, where you can browse the repository."
+				},
+				"code": {
+					"legend": "Other code repositories",
+					"hint": "More of this product's code, such as a backend, a frontend or a service. Fabric connects and reads them with the product repository, as one product.",
+					"add": "Add",
+					"removeShort": "Remove",
+					"remove": "Remove {repository}"
+				},
+				"memory": {
+					"toggle": "Keep documentation from a repository in Living Memory",
+					"legend": "Living Memory repository",
+					"repositoryPlaceholder": "owner/name: a docs repository, or one of the repositories above",
+					"foldersLabel": "Folders",
+					"foldersHint": "Separate folders with commas, for example docs, adr. Fabric keeps their files in the project's Context, in step with the branch, and reads them as documentation, not code. Change it later in Living Memory, where you can browse the repository."
+				},
+				"aiFilesMove": "Found {count, plural, one {# AI tool file} other {# AI tool files}} (instructions, skills, agents, settings). The import offers to move them into a separate instructions repository.",
+				"aiFilesStay": "Found {count, plural, one {# AI tool file} other {# AI tool files}} in this repository. Your instructions come from the separate repository, so the import does not offer to move them.",
+				"next": "Next, Fabric reads the whole repository: its structure, stack and dependencies, every document and the code. You follow it as a checklist on the project's overview and choose what to create before anything is written.",
+				"create": "Create project",
+				"created": "Project created. Reading the repository.",
+				"errors": {
+					"generic": "Something went wrong. Try again.",
+					"repositoryFormat": "Enter a GitHub repository as owner/name or its https://github.com/… address.",
+					"signInIncomplete": "GitHub sign-in did not complete. Try again.",
+					"instructionsSameRepository": "Choose a repository other than the product repository, or clear the checkbox.",
+					"instructionsNotConnected": "The instructions repository could not be connected. Set it up in Coding Instructions.",
+					"instructionsNotConfigured": "The instructions repository was connected, but its sync was not saved: {reason} Set it up in Coding Instructions.",
+					"createdNotRead": "The project was created, but the repository could not be read: {reason}",
+					"notConnected": "Your GitHub connection could not read {repositories}, so it was not connected. Give the connection access, then add it under Settings → Repositories.",
+					"phaseRequired": "Choose which phase this project is in.",
+					"expectedStartRequired": "Choose when development is expected to start.",
+					"expectedStartPast": "Expected development start can't be in the past — pick today or later.",
+					"codeRepositoryListed": "This repository is already listed.",
+					"codeRepositoryIsInstructions": "This is the coding instructions repository; it cannot also be a code repository.",
+					"instructionsIsCode": "This repository is listed as a code repository; remove it there or choose another.",
+					"memoryIsInstructions": "Choose a repository other than the coding instructions repository.",
+					"memoryNotConnected": "The Living Memory repository could not be connected. Set it up in Living Memory.",
+					"memoryNotConfigured": "The Living Memory repository was connected, but its sync was not saved: {reason} Set it up in Living Memory.",
+					"memoryNotSynced": "Living Memory was set up, but its first sync did not start. Start it in Living Memory."
+				}
+			}
+		},
 		"noProjects": "No projects yet",
 		"searchPlaceholder": "Search projects...",
 		"allProjects": "All Projects",
@@ -3571,6 +3675,22 @@
 					"indexingPhase": "Indexing files",
 					"repositoryLine": "{repository} @ {ref}",
 					"repositoryBadge": "Repository",
+					"exclusions": {
+						"leftOutBadge": "Left out",
+						"leaveOut": "Remove from Living Memory",
+						"leaveOutLabel": "Remove from Living Memory",
+						"leaveOutWarning": "The file stays in the repository. It is left out of this sync and removed from Context; restore it from the list of left-out paths.",
+						"leftOut": "Left out of Living Memory. Syncing…",
+						"restored": "Restored to Living Memory. Syncing…",
+						"listTitle": "{count, plural, one {# path left out} other {# paths left out}}",
+						"restore": "Restore",
+						"restoreAria": "Restore {path} to Living Memory",
+						"errors": {
+							"LAST_PATH": "This is the only selected path. Disconnect the sync to stop syncing it.",
+							"TOO_MANY_PATHS": "Too many selected paths.",
+							"TOO_MANY_EXCLUDED_PATHS": "At most 200 paths can be left out. Restore some first."
+						}
+					},
 					"syncNow": "Sync now",
 					"status": {
 						"notSynced": "Not synced yet",
@@ -8252,12 +8372,8 @@
 						"body": "Fabric has not read this repository yet, and nothing will start that on its own. Start indexing and this becomes available once it finishes."
 					},
 					"code-search-off": {
-						"title": "Code search is off",
-						"body": "This project has a repository, but code search is switched off, so Fabric never reads it. Turn code search on in the project's repository settings, then start indexing."
-					},
-					"indexing-unavailable": {
-						"title": "Code indexing is not available",
-						"body": "This deployment does not index repository code, so Fabric cannot read this repository. Nothing in the project settings changes that."
+						"title": "The code index is off",
+						"body": "This project has a repository, but its code isn't indexed, so Fabric can't read it here. In the project's repository settings, set How AI agents search code to RAG, then start indexing."
 					}
 				},
 				"context": {
@@ -8401,7 +8517,7 @@
 				"generatePrerequisiteDocument": "Create the document it needs",
 				"configureIntegration": "Configure the connection",
 				"retryJob": "Try again",
-				"enableCodeSearch": "Turn on code search",
+				"enableCodeSearch": "Choose how AI agents search code",
 				"startIndexing": "Start indexing",
 				"configurePmBoard": "Choose a board"
 			},

@@ -13,6 +13,10 @@ channel roadmap, see [Agent productization](features/agent-productization.md).
 For the proposed boundary between durable workflows and fixed request-scoped
 chat adapters, see [Chat runtime execution boundaries](adr/026-chat-runtime-execution-boundaries.md).
 
+For the current chat inventory, Editing Assistant capability audit, and the
+recommendation on broader CopilotKit adoption, see the
+[CopilotKit adoption review](architecture/copilotkit-adoption-review.md).
+
 ## Agent Type Taxonomy
 
 | Type | Framework Enum | Execution Pattern | Autonomy |

@@ -28,6 +28,13 @@ vi.mock("@repo/database", () => ({
 	},
 	updateContextExtractionStatus: updateContextExtractionStatusMock,
 	markContextAsEmbedded: markContextAsEmbeddedMock,
+	// Content-type chunking off: the project default.
+	getProjectChunkingSettings: vi.fn(async () => ({
+		chunkByContentType: false,
+		chunkProfiles: null,
+		chunkingVersion: 0,
+	})),
+	markProjectContextChunkingVersion: vi.fn(),
 }));
 
 vi.mock("@repo/database/prisma/client", () => ({
@@ -54,6 +61,7 @@ vi.mock("@repo/rag", () => ({
 	chunkProjectContent: chunkProjectContentMock,
 	generateEmbeddings: generateEmbeddingsMock,
 	storeProjectContext: storeProjectContextMock,
+	usesPerTypeChunking: vi.fn(() => false),
 }));
 
 const downloadFileMock = vi.fn();

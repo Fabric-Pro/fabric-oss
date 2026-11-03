@@ -1,3 +1,7 @@
+import {
+	getLocalModelConfig,
+	type LocalModelTask,
+} from "@repo/ai/local-models";
 import type { AIProvider, AiTaskType } from "@repo/database";
 import {
 	db,
@@ -50,6 +54,28 @@ import {
  * `hasUserConfig` / `defaultProvider` / `embeddingProvider`, which keep
  * describing the tenant alone.
  */
+
+const LOCAL_MODEL_SCHEMA = z.object({
+	model: z.string(),
+	provider: z.string(),
+});
+
+/**
+ * The local-development model serving `task`, for display; null when none
+ * applies or its configuration is invalid (the call that uses it reports that).
+ */
+function localModelSummary(
+	task: LocalModelTask,
+): { model: string; provider: string } | null {
+	try {
+		const config = getLocalModelConfig(task);
+		return config
+			? { model: config.model, provider: config.provider }
+			: null;
+	} catch {
+		return null;
+	}
+}
 
 interface ConfiguredProvider {
 	provider: AIProvider;
@@ -365,6 +391,17 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 					subProvider: z.string().nullable(), // e.g., "openai" for gateways, null for direct
 				})
 				.nullable(),
+			/**
+			 * Local development only: per task, the model a local server (Ollama,
+			 * LocalAI) serves it with, whatever the tenant configured
+			 * (packages/ai/lib/local-models.ts). Every task is null outside
+			 * NODE_ENV=development.
+			 */
+			localModels: z.object({
+				embedding: LOCAL_MODEL_SCHEMA.nullable(),
+				decision: LOCAL_MODEL_SCHEMA.nullable(),
+				image: LOCAL_MODEL_SCHEMA.nullable(),
+			}),
 			message: z.string(),
 		}),
 	)
@@ -626,8 +663,14 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			isConfigured,
 			canResolveProvider,
 			planSpentPersonalProvider,
-			resolvedEmbeddingProvider: resolvedEmbedding?.provider ?? null,
-			resolvedEmbeddingSource: resolvedEmbedding?.source ?? null,
+			// Local development only: embeddings resolve to the local Ollama,
+			// the same answer resolveModelWithProvider gives for EMBEDDING.
+			resolvedEmbeddingProvider: localModelSummary("EMBEDDING")
+				? "CUSTOM"
+				: (resolvedEmbedding?.provider ?? null),
+			resolvedEmbeddingSource: localModelSummary("EMBEDDING")
+				? null
+				: (resolvedEmbedding?.source ?? null),
 			resolvedProvider: tenantResolution?.provider ?? null,
 			resolvedProviderSource: tenantResolution?.source ?? null,
 			hasUserConfig,
@@ -637,6 +680,11 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			embeddingProvider,
 			embeddingModel,
 			organizationEmbedding,
+			localModels: {
+				embedding: localModelSummary("EMBEDDING"),
+				decision: localModelSummary("DECISION"),
+				image: localModelSummary("IMAGE"),
+			},
 			message,
 		};
 	});

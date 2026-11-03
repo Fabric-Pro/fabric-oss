@@ -10,12 +10,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
+	/** The project's code search mode (CODE_SEARCH: live provider reads). */
+	codeSearchMode: "CODE_SEARCH" as string,
 	repos: [] as Array<Record<string, unknown>>,
 	searchRepositoryCode: vi.fn(),
 	resolveToken: vi.fn(),
 }));
 
 vi.mock("@repo/database", async () => ({
+	getProjectRagSettings: vi.fn(async () => ({
+		codeSearchMode: h.codeSearchMode,
+	})),
 	getProjectAccessContext: vi.fn(async () => ({ organizationId: "org-1" })),
 	db: {
 		project: { findUnique: vi.fn(async () => null) },
@@ -114,6 +119,7 @@ async function search(args: Record<string, unknown> = {}) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	h.repos = [APP, API];
+	h.codeSearchMode = "CODE_SEARCH";
 	h.resolveToken.mockResolvedValue({ token: "token-example", method: "pat" });
 	vi.spyOn(console, "error").mockImplementation(() => {});
 	vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -219,6 +225,8 @@ describe("code_search: a failed search is not 'no matches'", () => {
 	});
 
 	it("the API search never runs in indexed mode, so no failure is reported", async () => {
+		// The project searches its code index (RAG), not the provider.
+		h.codeSearchMode = "RAG";
 		const { toolCall } = await search({ mode: "indexed" });
 
 		expect(h.searchRepositoryCode).not.toHaveBeenCalled();

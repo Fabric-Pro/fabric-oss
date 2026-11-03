@@ -632,7 +632,7 @@ export async function syncWorkItemToPM(
 	// resolved via `mcpServerId` (the `key:gitlab-official` sentinel).
 	//
 	// We delegate to `syncStoryToPM(direction:"push")`, which itself
-	// short-circuits to `syncGitLabStoryViaRest` for null mcpConfigId. The
+	// short-circuits to `syncStoryViaRest` for null mcpConfigId. The
 	// REST routine handles its own push-time conflict guard (PR #1249) and
 	// stamps `lastSyncedPmHash` / `lastPmSyncStatus = SUCCESS` directly. We
 	// translate its `StorySyncResult` to the `SyncWorkItemResult` shape the
@@ -700,7 +700,7 @@ export async function syncWorkItemToPM(
 			};
 		}
 		if (result.errorCode === "PM_SYNC_CONFLICT") {
-			// `syncGitLabStoryViaRest` has already stamped
+			// `syncStoryViaRest` has already stamped
 			// `lastPmSyncStatus = CONFLICT` and recorded a `push`/`CONFLICT`
 			// audit row. We don't have the live PM `pmCurrent` here (the
 			// guard fetched it but didn't bubble it through StorySyncResult)
@@ -857,7 +857,7 @@ export async function syncWorkItemToPM(
 	// becomes inert text). Stripping keeps the source intact so a transient
 	// failure self-heals on the next pull. Done here, above the ADO/flat split,
 	// so both branches are covered; `syncStoryToPM` and
-	// `syncGitLabStoryViaRest` do the same on their own push paths.
+	// `syncStoryViaRest` do the same on their own push paths.
 	const sourceDescription = stripFailedMediaPlaceholders(
 		item.description ?? "",
 	);

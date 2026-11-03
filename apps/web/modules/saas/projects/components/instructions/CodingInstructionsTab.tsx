@@ -31,7 +31,9 @@ import {
 	syncNowResultMessage,
 	syncRunEnded,
 } from "../../lib/instructions-repository-sync";
+import { ProjectKnowledgePanel } from "../knowledge/ProjectKnowledgePanel";
 import { ConfigureRepositorySyncDialog } from "./ConfigureRepositorySyncDialog";
+import { ConsolidationPanel } from "./ConsolidationPanel";
 import { DirectRepositoryInstructions } from "./DirectRepositoryInstructions";
 import { InstructionsEmptyState } from "./InstructionsEmptyState";
 import {
@@ -44,6 +46,8 @@ import {
 	InstructionsTabSkeleton,
 } from "./InstructionsTabState";
 import { MoveInstructionsDialog } from "./MoveInstructionsDialog";
+import { PluginNameSetting } from "./PluginNameSetting";
+import { RulesHealthPanel } from "./RulesHealthPanel";
 import { UploadFolderDialog } from "./UploadFolderDialog";
 
 /** Whether a cached read was made for exactly this commit pin. */
@@ -106,7 +110,67 @@ type CodingInstructionsTabProps = {
 	readOnlyMode?: boolean;
 };
 
+/**
+ * The Coding Instructions tab: the instructions themselves, and the project
+ * knowledge the plugin's AI tools save (specs/2026-10-21-ai-artifacts-hub).
+ */
 export function CodingInstructionsTab(props: CodingInstructionsTabProps) {
+	const [view, setView] = useState<"instructions" | "knowledge">(
+		"instructions",
+	);
+	return (
+		<div className="space-y-4">
+			<div
+				className="inline-flex rounded-md border p-0.5"
+				role="tablist"
+				aria-label="Coding Instructions views"
+			>
+				{(
+					[
+						["instructions", "Instructions"],
+						["knowledge", "Knowledge"],
+					] as const
+				).map(([value, label]) => (
+					<button
+						key={value}
+						type="button"
+						role="tab"
+						aria-selected={view === value}
+						onClick={() => setView(value)}
+						className={`rounded px-3 py-1 text-sm ${
+							view === value
+								? "bg-primary text-primary-foreground"
+								: "text-muted-foreground hover:text-foreground"
+						}`}
+					>
+						{label}
+					</button>
+				))}
+			</div>
+			{view === "knowledge" ? (
+				<ProjectKnowledgePanel
+					projectId={props.projectId}
+					canEdit={props.canEdit}
+				/>
+			) : (
+				<>
+					<PluginNameSetting
+						projectId={props.projectId}
+						canEdit={props.canEdit && !props.readOnlyMode}
+					/>
+					<RulesHealthPanel projectId={props.projectId} />
+					<ConsolidationPanel
+						projectId={props.projectId}
+						canEdit={props.canEdit && !props.readOnlyMode}
+					/>
+					<CodingInstructionsBody {...props} />
+				</>
+			)}
+		</div>
+	);
+}
+
+function CodingInstructionsBody(props: CodingInstructionsTabProps) {
 	const t = useTranslations("projects.codingInstructions.direct");
 	const queryClient = useQueryClient();
 	const repository = useQuery({

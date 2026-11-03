@@ -178,7 +178,7 @@ function healthyRows(): Rows {
 			repositoryUrl: null,
 			codeAnalysisStatus: null,
 			scanConfig: null,
-			ragSettings: { codeSearchEnabled: true },
+			ragSettings: { codeSearchMode: "RAG" },
 			readOnlyMode: false,
 			projectManagementMcpServerId: "mcp_server_example",
 			projectManagementMcpConfigId: "mcp_config_example",
@@ -266,7 +266,6 @@ function gather(overrides: Partial<Rows> = {}, includeAtlasStatus?: boolean) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	vi.stubEnv("FEATURE_CODE_INDEXING", "true");
 });
 
 // ── The predicate this whole file exists for ─────────────────────────────────
@@ -896,16 +895,17 @@ describe("whether anything will ever index the repository", () => {
 		expect(evidence.codebase.indexingEnabled).toBe(false);
 	});
 
-	it("is off when the deployment has code indexing switched off", async () => {
-		vi.stubEnv("FEATURE_CODE_INDEXING", "false");
-		const evidence = await gather();
+	it("is off when the project searches code live", async () => {
+		const evidence = await gather({
+			project: {
+				...healthyRows().project,
+				ragSettings: { codeSearchMode: "CODE_SEARCH" },
+			},
+		});
 		expect(evidence.codebase.indexingEnabled).toBe(false);
-		// And says which half is off, so the gate does not point at the
-		// project's own setting when the deployment is the reason.
-		expect(evidence.codebase.indexingAvailable).toBe(false);
 	});
 
-	it("is on only when both switches are", async () => {
+	it("is on when the project's code search mode is RAG", async () => {
 		const evidence = await gather();
 		expect(evidence.codebase.indexingEnabled).toBe(true);
 	});

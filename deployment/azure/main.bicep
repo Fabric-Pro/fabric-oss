@@ -74,7 +74,8 @@ param enableSandboxWorker bool = false
 // can go stale, not a guarantee: verify against the running Container App
 // before relying on a value.
 
-@description('Enable AST-aware code indexing (FEATURE_CODE_INDEXING) on the temporal worker. Enabled in every environment via the deployment pipeline; a full re-embed consumes embedding credits (per-project opt-in still gates actual indexing via codeSearchEnabled).')
+@description('Unused. Code indexing now follows the code search mode of each project (RAG); kept so a pipeline that still passes it keeps deploying. Remove once no pipeline sets it.')
+#disable-next-line no-unused-params
 param enableCodeIndexing bool = false
 
 @description('Living Documents auto-refresh SWEEP kill switch (FABRIC_FEATURE_LIVING_DOCS_REFRESH) on the temporal worker. TRUE in every environment, prod included — this is deliberately NOT the rollout switch, and since Fizzy #2210 it is registered as LIVING_DOCS_REFRESH_SWEEP rather than being read directly. What it buys is the brakes: the worker re-reads it immediately before it writes, so setting it false stops an AI mid-rollout. Rollout is a SEPARATE registry flag, LIVING_DOCS_REFRESH, whose env var is FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT — it governs the masthead control and the enrolment procedures together, and is off unless explicitly set. Both are now flippable from the admin console without a redeploy; this param is only the deployment default the override sits on top of. Set false only to hit the brakes.')
@@ -512,14 +513,6 @@ var fabricGitHubEnv = enableFabricGitHubOAuth ? [
   { name: 'FABRIC_GITHUB_CLIENT_SECRET', secretRef: 'fabric-github-client-secret' }
 ] : []
 
-// Code indexing (Phase 2 AST-aware). The worker workflow gate reads
-// FEATURE_CODE_INDEXING; the deployment pipeline sets enableCodeIndexing=true in
-// every environment (prod included). Actual indexing per project is still gated
-// by the project's codeSearchEnabled RAG setting (opt-in).
-var codeIndexingEnv = enableCodeIndexing ? [
-  { name: 'FEATURE_CODE_INDEXING', value: 'true' }
-] : []
-
 // Living Documents auto-refresh. The hourly schedule is registered by
 // registerSystemSchedules() no matter what; the gate lives in the find-due
 // activity, so flipping this on takes effect on the next tick. Opt-in
@@ -800,7 +793,7 @@ var mailEnv = [
 // Note: mcpWrapperSecrets is included so temporal-worker can authenticate with the standalone MCP STDIO wrapper
 var allTemporalSecrets = concat(temporalWorkerBaseSecrets, sandboxWorkerSecrets, agentUrlSecrets, enableRag ? ragSecrets : [], lettaSecrets, databricksSecrets, partykitSecrets, backgroundAgentsSecrets, microsoftGraphSecrets, fabricGitHubSecrets, gitLabSecrets, atlassianCloudSecrets, mcpWrapperSecrets, enableRedis ? redisSecrets : [], seedUserSecrets, mailSecrets)
 
-var allTemporalEnv = concat(temporalWorkerBaseEnv, sandboxWorkerEnv, agentUrlEnv, enableRag ? ragEnv : [], lettaEnv, databricksEnv, partykitEnv, backgroundAgentsEnv, microsoftGraphEnv, fabricGitHubEnv, codeIndexingEnv, livingDocsRefreshEnv, livingDocsRefreshRolloutEnv, publishingSuiteEnv, testCasesEnv, openApiSpecContextEnv, bugAnalysisLogContextEnv, bugAnalysisLogSharedWorkspaceEnv, statusAnnouncementNotificationsEnv, gitLabEnv, atlassianCloudEnv, enableRedis ? redisEnv : [], seedUserEnv, mailEnv)
+var allTemporalEnv = concat(temporalWorkerBaseEnv, sandboxWorkerEnv, agentUrlEnv, enableRag ? ragEnv : [], lettaEnv, databricksEnv, partykitEnv, backgroundAgentsEnv, microsoftGraphEnv, fabricGitHubEnv, livingDocsRefreshEnv, livingDocsRefreshRolloutEnv, publishingSuiteEnv, testCasesEnv, openApiSpecContextEnv, bugAnalysisLogContextEnv, bugAnalysisLogSharedWorkspaceEnv, statusAnnouncementNotificationsEnv, gitLabEnv, atlassianCloudEnv, enableRedis ? redisEnv : [], seedUserEnv, mailEnv)
 
 module temporalWorker 'modules/container-app-sidecar.bicep' = {
   name: 'temporal-worker'

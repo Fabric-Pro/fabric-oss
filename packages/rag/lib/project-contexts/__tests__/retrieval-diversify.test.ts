@@ -25,6 +25,10 @@ vi.mock("../../embedding/sparse", () => ({
 
 vi.mock("../../reranking", () => ({ rerankContexts: vi.fn() }));
 
+vi.mock("../summary-injection", () => ({
+	applyContextSummary: vi.fn(async (contexts) => contexts),
+}));
+
 vi.mock("../store", () => ({ searchSimilarProjectContexts: vi.fn() }));
 
 import {
@@ -35,6 +39,7 @@ import { generateEmbedding } from "../../embedding";
 import { rerankContexts } from "../../reranking";
 import { retrieveProjectContexts } from "../retrieval";
 import { searchSimilarProjectContexts } from "../store";
+import { applyContextSummary } from "../summary-injection";
 
 // A realistic candidate ranking: a long transcript's chunks dominate the top of
 // the hybrid-RRF ranking; a PRD and a notes doc rank below all of them.
@@ -58,6 +63,9 @@ const baseOptions = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.mocked(applyContextSummary).mockImplementation(
+		async (contexts) => contexts,
+	);
 	vi.mocked(getProjectRagSettings).mockResolvedValue({
 		topK: 50,
 		similarityThreshold: 0.3,
@@ -176,6 +184,15 @@ describe("retrieveProjectContexts — diversify", () => {
 		// Diversification still ran first: the reranker was handed the deduped
 		// distinct documents, not the raw chunk-monopolised candidate pool.
 		expect(rerankContexts).toHaveBeenCalledTimes(1);
+		expect(rerankContexts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				tenant: {
+					userId: baseOptions.userId,
+					organizationId: baseOptions.organizationId,
+					projectId: baseOptions.projectId,
+				},
+			}),
+		);
 		const handed = vi.mocked(rerankContexts).mock.calls[0][0] as {
 			contexts: Array<{ id: string }>;
 		};
@@ -185,6 +202,37 @@ describe("retrieveProjectContexts — diversify", () => {
 			"ctx-notes",
 		]);
 		expect(res.map((c) => c.id)).toEqual(["ctx-prd"]);
+	});
+
+	it("passes the project's resolved organization when the caller omits it", async () => {
+		vi.mocked(getProjectRagSettings).mockResolvedValue({
+			topK: 50,
+			similarityThreshold: 0.3,
+			enableReranking: true,
+		} as never);
+		vi.mocked(rerankContexts).mockResolvedValue({
+			contexts: [],
+			stats: {
+				inputCount: 3,
+				outputCount: 0,
+				latencyMs: 1,
+				provider: "gateway",
+			},
+		});
+		await retrieveProjectContexts({
+			...baseOptions,
+			organizationId: undefined,
+			diversify: true,
+		});
+		expect(rerankContexts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				tenant: {
+					userId: "u1",
+					organizationId: "org1",
+					projectId: "p1",
+				},
+			}),
+		);
 	});
 
 	it("keeps the diversified results when reranking fails", async () => {
@@ -246,7 +294,9 @@ describe("retrieveProjectContexts — diversify", () => {
 		);
 		// … and reranking still runs (3 distinct contexts > 1).
 		expect(rerankContexts).toHaveBeenCalledTimes(1);
-		expect(res).toEqual(reranked);
+		expect(res).toEqual([
+			expect.objectContaining({ ...reranked[0], filename: "prd.md" }),
+		]);
 	});
 });
 
@@ -284,4 +334,94 @@ it("retains matched passages in relevance order only when requested", async () =
 	expect(result[1]).toHaveProperty("matchedPassages", []);
 	const legacy = await retrieveProjectContexts(baseOptions);
 	expect(legacy[0]).not.toHaveProperty("matchedPassages");
+});
+
+it.each(["skipped", "fallback-passthrough", "disabled"])(
+	"caps default retrieval for %s and excludes document chunks",
+	async (model) => {
+		vi.mocked(getProjectRagSettings).mockResolvedValue({
+			topK: 50,
+			rerankTopK: 1,
+			enableReranking: model !== "disabled",
+		} as never);
+		vi.mocked(rerankContexts).mockImplementation(
+			async (input) =>
+				({ contexts: input.contexts, stats: { model } }) as never,
+		);
+		const result = await retrieveProjectContexts(baseOptions);
+		expect(result.map((c) => c.id)).toEqual(["ctx-transcript"]);
+		expect(searchSimilarProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({ excludeDocumentChunks: true }),
+		);
+	},
+);
+it("ranks a diversified candidate beyond the source cap", async () => {
+	vi.mocked(getProjectRagSettings).mockResolvedValue({
+		topK: 50,
+		rerankTopK: 10,
+		enableReranking: true,
+	} as never);
+	vi.mocked(rerankContexts).mockImplementation(
+		async (input) =>
+			({
+				contexts: input.contexts.map((c) => ({
+					...c,
+					score: c.id === "ctx-notes" ? 1 : 0,
+				})),
+				stats: { model: "test" },
+			}) as never,
+	);
+	expect(
+		(
+			await retrieveProjectContexts({
+				...baseOptions,
+				diversify: true,
+				maxContexts: 1,
+			})
+		).map((c) => c.id),
+	).toEqual(["ctx-notes"]);
+	expect(
+		(
+			await retrieveProjectContexts({
+				...baseOptions,
+				diversify: true,
+				maxContexts: 2,
+				skipRerank: true,
+			})
+		).map((c) => c.id),
+	).toEqual(["ctx-transcript", "ctx-prd"]);
+});
+
+it.each([1, 2])("keeps the summary plus %i selected sources", async (limit) => {
+	vi.mocked(getProjectRagSettings).mockResolvedValue({
+		topK: 50,
+		rerankTopK: limit,
+		enableReranking: false,
+	} as never);
+	const summary = {
+		id: "example-summary",
+		type: "PROJECT_SUMMARY",
+		content: "summary content",
+		score: 1,
+		sourceTitle: "Compressed project history (summary)",
+		metadata: {
+			isSummary: true,
+			summaryId: "example-summary",
+			engineVersion: 1,
+			coveredThrough: "2026-01-01T00:00:00.000Z",
+			coveredContextCount: 0,
+			references: [],
+		},
+	};
+	vi.mocked(applyContextSummary).mockImplementation(async (contexts) => [
+		summary,
+		...contexts,
+	]);
+	const result = await retrieveProjectContexts(baseOptions);
+	expect(result[0]).toEqual(summary);
+	expect(result.map((c) => c.id)).toEqual([
+		"example-summary",
+		...["ctx-transcript", "ctx-prd"].slice(0, limit),
+	]);
+	expect(result).toHaveLength(limit + 1);
 });

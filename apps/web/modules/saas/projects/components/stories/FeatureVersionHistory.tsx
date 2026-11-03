@@ -323,12 +323,37 @@ export function FeatureVersionHistory({
 										variant="outline"
 										className="text-xs"
 									>
-										{versions.length} version
+										{versions.length} earlier version
 										{versions.length !== 1 ? "s" : ""}
 									</Badge>
 								</div>
 								<ScrollArea className="h-[calc(100vh-240px)] [&>[data-radix-scroll-area-viewport]>div]:w-full">
 									<div className="space-y-2 pr-4">
+										{/* The version the feature shows now; the list below holds
+										    the earlier ones it can be compared with or restored to. */}
+										<div className="w-full rounded-lg border border-primary/40 bg-primary/5 p-4">
+											<div className="flex items-center gap-2">
+												<FileTextIcon className="h-3.5 w-3.5 text-muted-foreground" />
+												<span className="font-semibold text-sm">
+													v{currentVersion}
+												</span>
+												<Badge
+													variant="outline"
+													className="text-[10px] px-1.5 py-0"
+												>
+													Current
+												</Badge>
+											</div>
+											<p className="mt-2 text-xs text-muted-foreground">
+												{
+													currentContent
+														.split(/\s+/)
+														.filter(Boolean).length
+												}{" "}
+												words · what the feature shows
+												now
+											</p>
+										</div>
 										{versions.map((version) => {
 											const isLatest =
 												version.version ===

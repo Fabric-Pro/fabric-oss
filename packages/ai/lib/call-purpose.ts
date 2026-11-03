@@ -4,6 +4,7 @@ export const AI_CALL_PURPOSES = {
 	dataAnalysis: "data-analysis",
 	directMain: "direct-main",
 	chatDocumentRetrievalEmbedding: "chat-document-retrieval-embedding",
+	projectRetrievalRerank: "project-retrieval-rerank",
 	projectRetrievalEmbedding: "project-retrieval-embedding",
 	companyContextEmbedding: "company-context-embedding",
 	searchAnalysis: "search-analysis",

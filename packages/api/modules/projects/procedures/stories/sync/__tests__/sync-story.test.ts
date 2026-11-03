@@ -43,6 +43,14 @@ vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
 const mockSyncStoryToPM = vi.fn();
 const mockSyncTaskToPM = vi.fn();
 
+const mockResolveGitHubProjectsCredential = vi.hoisted(() => vi.fn());
+vi.mock("@repo/integrations/github/projects-credential", () => ({
+	resolveGitHubProjectsCredential: mockResolveGitHubProjectsCredential,
+	readPmCredentialId: (ctx: { credentialId?: string } | null) =>
+		ctx?.credentialId ?? null,
+	gitHubProjectsCredentialMessage: () => "Choose another GitHub credential.",
+}));
+
 vi.mock("@repo/temporal", () => ({
 	syncStoryToPM: (...args: unknown[]) => mockSyncStoryToPM(...args),
 	syncTaskToPM: (...args: unknown[]) => mockSyncTaskToPM(...args),
@@ -727,5 +735,73 @@ describe("stable PM container identity", () => {
 				stableContainerId: containerId,
 			}),
 		);
+	});
+});
+
+describe("syncStoryProcedure GitHub Projects", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.resetModules();
+		vi.mocked(hasProjectAccess).mockResolvedValue(true as never);
+		vi.mocked(db.project.findUnique).mockResolvedValue({
+			id: "proj-1",
+			organizationId: "org-example",
+			projectManagementMcpServerId: "key:github-remote",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "PVT_board",
+			projectManagementContainerName: "example-user / Booking app (#5)",
+			projectManagementAdditionalContext: { credentialId: "cred-1" },
+		} as never);
+		vi.mocked(resolvePMConfigForUser).mockResolvedValue(null as never);
+		vi.mocked(getStoryById).mockResolvedValue({
+			id: "story-1",
+			title: "A story",
+			externalId: null,
+			tasks: [],
+		} as never);
+		mockSyncStoryToPM.mockResolvedValue({ success: true, externalId: "1" });
+	});
+
+	it("syncs through the project's chosen credential without an MCP connection", async () => {
+		mockResolveGitHubProjectsCredential.mockResolvedValue({
+			ok: true,
+			token: "saved-pat",
+			source: "credential",
+		});
+		const handler = await loadProcedureHandler();
+		const result = await handler({
+			input: {
+				projectId: "proj-1",
+				storyId: "story-1",
+				direction: "push",
+			},
+			context: baseCtx,
+		});
+		expect(result.success).toBe(true);
+		expect(mockResolveGitHubProjectsCredential).toHaveBeenCalledWith(
+			"user-1",
+			"org-example",
+			"cred-1",
+		);
+		expect(mockSyncStoryToPM).toHaveBeenCalledTimes(1);
+	});
+
+	it("says why when the chosen credential cannot be used", async () => {
+		mockResolveGitHubProjectsCredential.mockResolvedValue({
+			ok: false,
+			reason: "credential-unusable",
+		});
+		const handler = await loadProcedureHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "proj-1",
+					storyId: "story-1",
+					direction: "push",
+				},
+				context: baseCtx,
+			}),
+		).rejects.toThrow("Choose another GitHub credential.");
+		expect(mockSyncStoryToPM).not.toHaveBeenCalled();
 	});
 });

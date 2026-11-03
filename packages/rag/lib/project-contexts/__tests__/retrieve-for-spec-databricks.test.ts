@@ -48,7 +48,10 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("../../chunking", () => ({ chunkText: chunkTextMock }));
+vi.mock("../../chunking", () => ({
+	parseChunkProfilesConfig: vi.fn(() => ({})),
+	chunkText: chunkTextMock,
+}));
 vi.mock("../../embedding", () => ({
 	generateEmbeddings: generateEmbeddingsMock,
 }));

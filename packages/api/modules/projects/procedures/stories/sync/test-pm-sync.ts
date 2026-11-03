@@ -4,6 +4,10 @@ import {
 	isPmServerIdKeySentinel,
 	readPmServerIdKeySentinel,
 } from "@repo/database";
+import {
+	createGitHubProjectItemFromStory,
+	isGitHubProjectsKey,
+} from "@repo/integrations/github/projects-pm-adapter";
 import { findUsableGitLabConnection } from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
 import { PM_ITEM_FIELDS, unwrapDataEnvelope } from "@repo/utils";
@@ -14,6 +18,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { requireGitHubProjectsSource } from "../../../lib/github-projects-pm-source";
 import {
 	resolveProjectPmConfig,
 	rethrowGitLabPmOriginMismatch,
@@ -103,6 +108,60 @@ export const testPMSyncProcedure = tenantProtectedProcedure
 					select: { key: true },
 				});
 				serverKey = server?.key ?? null;
+			}
+			if (isGitHubProjectsKey(serverKey)) {
+				const source = await requireGitHubProjectsSource({
+					userId: user.id,
+					organizationId: project.organizationId ?? null,
+					project,
+				});
+				try {
+					const created = await createGitHubProjectItemFromStory({
+						source,
+						payload: {
+							title: "Test work item from Fabric",
+							description:
+								"This work item was created to verify the Fabric ↔ GitHub Projects connection.",
+						},
+					});
+					return {
+						success: true,
+						externalId: created.externalId,
+						externalUrl: created.externalUrl ?? undefined,
+						message: `Test work item created (ID: ${created.externalId})`,
+						pmToolType: "github-projects",
+					};
+				} catch (err) {
+					const reason =
+						err instanceof Error ? err.message : String(err);
+					logger.warn("pm.test_sync.failed", {
+						projectId: project.id,
+						pmTool: "github-projects",
+						reason,
+					});
+					recordAuditFromRequest(context, {
+						action: "story.pm_pushed",
+						category: "story",
+						outcome: "failure",
+						severity: "warning",
+						organizationId: project.organizationId ?? null,
+						projectId: project.id,
+						resource: {
+							type: "project",
+							id: project.id,
+							name: null,
+						},
+						metadata: {
+							op: "test-pm-sync",
+							pmTool: "github-projects",
+							reason,
+						},
+					});
+					return {
+						success: false,
+						message: `Failed to create test work item: ${reason}`,
+					};
+				}
 			}
 			if (serverKey === "gitlab-official") {
 				// The caller's own usable GitLab connection (exclusive tenant); a

@@ -24,6 +24,13 @@ import {
 	updateStoryAttachmentSyncState,
 } from "@repo/database";
 import {
+	GITHUB_PROJECTS_SCOPE_MESSAGE,
+	GITHUB_STATUS_LABEL_PREFIX,
+	GitHubProjectsError,
+	isGitHubProjectsKey,
+	parseGitHubExternalId,
+} from "@repo/integrations/github/projects-pm-adapter";
+import {
 	applyLabelStatusMapOnPull,
 	computeLabelDeltaOnPush,
 	type LabelStatusMap,
@@ -51,7 +58,12 @@ import {
 import { isPmAttachmentSyncEnabled } from "@repo/utils/feature-flag";
 import { pmTargetsConflict } from "@repo/utils/pm-target";
 import { ApplicationFailure } from "@temporalio/activity";
-import { type PMSource, PMSourceNotFound, resolvePmSource } from "../pm-source";
+import {
+	PMSourceNotFound,
+	type RestPMSource,
+	resolvePmServerKey,
+	resolvePmSource,
+} from "../pm-source";
 import { callPmToolWithFallback } from "../pm-tool-fallback";
 import { resolveExternalPmTarget } from "./external-pm-target";
 import { createGitLabAttachmentAdapter } from "./gitlab-attachment-adapter";
@@ -151,6 +163,8 @@ type FetchResult = {
 	/** ISO `updated_at` (`GitLabPMFullItem.updatedAt`) — the §4.5 stamp's
 	 *  fallback clock when a write response carries none (Fizzy #2304). */
 	updatedAt?: string;
+	/** GitHub Projects: the board's Status option name (also in `labels`). */
+	status?: string | null;
 };
 
 const LINK_REMOVED_MESSAGE =
@@ -168,6 +182,70 @@ function isNotFoundError(message: string): boolean {
 	return /not found|does not exist|404|no such|cannot read prop/i.test(
 		message,
 	);
+}
+
+/**
+ * What differs between the two connection-backed PM tools this routine
+ * drives. Everything else — the link, conflict, create-claim and status-sync
+ * contract — is shared.
+ *
+ * GitHub Projects carries the board's Status field as a `Status::<option>`
+ * pseudo-label (see `@repo/integrations/github/projects-pm-adapter`), so the
+ * label↔status machinery below serves it unchanged. GitLab-only steps —
+ * `/uploads` media, the attachment block, the instance-origin check — are
+ * skipped for GitHub, which gets 7-day signed media URLs like the MCP path.
+ */
+type RestProvider = {
+	/** `pmTool` on sync-log / audit rows. */
+	pmTool: "gitlab" | "github";
+	/** Product name in user-facing messages. */
+	label: "GitLab" | "GitHub";
+	/** What one remote item is called in user-facing messages. */
+	item: "issue" | "item";
+	/** Origin used for link identity and legacy-link placement. */
+	origin: string | null;
+	/** Whether the created item's id is a readable link id. */
+	isValidCreatedId: (externalId: string) => boolean;
+};
+
+function restProviderFor(source: RestPMSource): RestProvider {
+	if (source.kind === "rest-github") {
+		return {
+			pmTool: "github",
+			label: "GitHub",
+			item: "item",
+			origin: "https://github.com",
+			isValidCreatedId: (id) => {
+				try {
+					parseGitHubExternalId(id);
+					return true;
+				} catch {
+					return false;
+				}
+			},
+		};
+	}
+	return {
+		pmTool: "gitlab",
+		label: "GitLab",
+		item: "issue",
+		origin: safeOrigin(source.baseUrl),
+		isValidCreatedId: (id) => /^[1-9]\d*$/.test(id),
+	};
+}
+
+/** Whether a PM server id is GitHub Projects; a failed lookup reads as not. */
+async function isGitHubProjectsServer(mcpServerId: string): Promise<boolean> {
+	try {
+		return isGitHubProjectsKey(await resolvePmServerKey(mcpServerId));
+	} catch {
+		return false;
+	}
+}
+
+/** GitHub Issue Type a story kind travels as. */
+function githubIssueTypeForStory(kind: string | null | undefined): string {
+	return kind === "BUG" ? "Bug" : "Feature";
 }
 
 /**
@@ -275,7 +353,7 @@ async function planStatusLabelPush(args: {
 	const linkKey = statusSyncLinkKey(story, true);
 	if (!livePm || !linkKey) {
 		logger.info(
-			"[GitLab REST Sync] status labels unchanged — no live ticket or link key",
+			"[REST PM Sync] status labels unchanged — no live ticket or link key",
 			{ storyId, liveTicket: livePm !== null, linkKey: linkKey !== null },
 		);
 		return noStatusLabelChange();
@@ -305,7 +383,7 @@ async function planStatusLabelPush(args: {
 		liveResolved,
 	});
 	if (!replace) {
-		logger.info("[GitLab REST Sync] status labels left for the poll", {
+		logger.info("[REST PM Sync] status labels left for the poll", {
 			storyId,
 			fabricStatusId: story.statusId,
 			liveResolved: liveResolved.kind,
@@ -390,7 +468,7 @@ async function planStatusLabelCreate(args: {
  * dispatcher's `fetchItem`) when the write response carried no `updated_at`.
  */
 async function rereadIssueUpdatedAt(args: {
-	source: Extract<PMSource, { kind: "rest-gitlab" }>;
+	source: RestPMSource;
 	userId: string;
 	organizationId: string | null;
 	externalId: string;
@@ -405,7 +483,7 @@ async function rereadIssueUpdatedAt(args: {
 		})) as FetchResult;
 		return issue.updatedAt ?? null;
 	} catch (error) {
-		logger.warn("[GitLab REST Sync] updated_at re-read failed", {
+		logger.warn("[REST PM Sync] updated_at re-read failed", {
 			storyId: args.storyId,
 			externalId: args.externalId,
 			error: error instanceof Error ? error.message : String(error),
@@ -448,7 +526,7 @@ async function stampStatusSyncBase(args: {
 	const baseAt = new Date(args.updatedAt);
 	if (Number.isNaN(baseAt.getTime())) {
 		logger.warn(
-			"[GitLab REST Sync] unparseable updated_at; status-sync base not stamped",
+			"[REST PM Sync] unparseable updated_at; status-sync base not stamped",
 			{ storyId: args.storyId, updatedAt: args.updatedAt },
 		);
 		return;
@@ -473,13 +551,13 @@ async function stampStatusSyncBase(args: {
 		});
 		if (count === 0) {
 			logger.info(
-				"[GitLab REST Sync] status-sync base changed since this push read it; newer base kept",
+				"[REST PM Sync] status-sync base changed since this push read it; newer base kept",
 				{ storyId: args.storyId },
 			);
 		}
 	} catch (error) {
 		logger.warn(
-			"[GitLab REST Sync] status-sync base stamp failed (non-fatal)",
+			"[REST PM Sync] status-sync base stamp failed (non-fatal)",
 			{
 				storyId: args.storyId,
 				error: error instanceof Error ? error.message : String(error),
@@ -488,33 +566,27 @@ async function stampStatusSyncBase(args: {
 	}
 }
 
-export async function syncGitLabStoryViaRest(
+export async function syncStoryViaRest(
 	input: StorySyncInput,
 ): Promise<StorySyncResult> {
 	const {
 		storyId,
-		projectId,
 		mcpServerId,
 		containerId,
 		additionalContext,
 		direction,
 		userId,
 		organizationId,
-		overrideMismatch = false,
-		forceHashOverride = false,
-		pmSyncAttemptId,
 	} = input;
-
-	const startedAt = Date.now();
 
 	if (!mcpServerId) {
 		throw ApplicationFailure.nonRetryable(
-			"syncGitLabStoryViaRest: mcpServerId is required for the REST-GitLab path",
+			"syncStoryViaRest: mcpServerId is required for the REST PM path",
 		);
 	}
 
 	// 1. Resolve the REST source. PMSourceNotFound is a user-actionable
-	//    state (GitLab not connected / token expired), not a crash.
+	//    state (GitLab/GitHub not connected / token expired), not a crash.
 	let source: Awaited<ReturnType<typeof resolvePmSource>>;
 	try {
 		source = await resolvePmSource({
@@ -527,13 +599,15 @@ export async function syncGitLabStoryViaRest(
 		});
 	} catch (error) {
 		if (error instanceof PMSourceNotFound) {
-			logger.warn("[GitLab REST Sync] PM source not resolvable", {
+			logger.warn("[REST PM Sync] PM source not resolvable", {
 				storyId,
 				reason: error.reason,
 			});
 			return {
 				success: false,
-				error: "GitLab is not connected for this project. Connect GitLab and try again.",
+				error: (await isGitHubProjectsServer(mcpServerId))
+					? "GitHub is not connected for this project, or no project board is selected. Connect GitHub and choose a board, then try again."
+					: "GitLab is not connected for this project. Connect GitLab and try again.",
 				syncedAt: new Date(),
 				direction,
 			};
@@ -541,11 +615,50 @@ export async function syncGitLabStoryViaRest(
 		throw error;
 	}
 
-	if (source.kind !== "rest-gitlab") {
+	if (source.kind === "mcp") {
 		throw ApplicationFailure.nonRetryable(
-			`syncGitLabStoryViaRest: expected rest-gitlab source, got ${source.kind}`,
+			"syncStoryViaRest: expected a connection-backed source, got mcp",
 		);
 	}
+	const provider = restProviderFor(source);
+	try {
+		return await syncWithRestSource(input, source, provider);
+	} catch (error) {
+		// A GitHub connection without project access is a reconnect, not a
+		// retryable fault.
+		if (
+			error instanceof GitHubProjectsError &&
+			error.kind === "insufficient-scope"
+		) {
+			throw ApplicationFailure.nonRetryable(
+				GITHUB_PROJECTS_SCOPE_MESSAGE,
+				"GitHubProjectsScope",
+			);
+		}
+		throw error;
+	}
+}
+
+async function syncWithRestSource(
+	input: StorySyncInput,
+	source: RestPMSource,
+	provider: RestProvider,
+): Promise<StorySyncResult> {
+	const {
+		storyId,
+		projectId,
+		containerId,
+		additionalContext,
+		direction,
+		userId,
+		organizationId,
+		overrideMismatch = false,
+		forceHashOverride = false,
+		pmSyncAttemptId,
+	} = input;
+	const mcpServerId = input.mcpServerId as string;
+	const startedAt = Date.now();
+	const { pmTool, label: toolLabel } = provider;
 
 	// 2. Fetch the story.
 	const story = await getStoryById(storyId, projectId);
@@ -560,8 +673,8 @@ export async function syncGitLabStoryViaRest(
 	const activePmTarget = await resolveExternalPmTarget({
 		...input,
 		mcpServerId,
-		pmTool: "gitlab",
-		instanceOrigin: safeOrigin(source.baseUrl),
+		pmTool,
+		instanceOrigin: provider.origin,
 		containerId,
 		additionalContext,
 	});
@@ -589,7 +702,7 @@ export async function syncGitLabStoryViaRest(
 			entityType: "STORY",
 			entityId: storyId,
 			title: story.title,
-			pmTool: "gitlab",
+			pmTool,
 			status,
 			errorPayload: errorPayload ?? null,
 			actorUserId: userId,
@@ -610,7 +723,7 @@ export async function syncGitLabStoryViaRest(
 			(direction === "push" || direction === "bidirectional") &&
 			overrideMismatch;
 		if (canMigrate) {
-			logger.info("[GitLab REST Sync] Migrating link to active server", {
+			logger.info("[REST PM Sync] Migrating link to active server", {
 				storyId,
 				from: story.externalMcpServerId,
 				to: activeServerId,
@@ -645,7 +758,7 @@ export async function syncGitLabStoryViaRest(
 					clearError.name === "StoryLinkChangedError"
 				) {
 					logger.warn(
-						"[GitLab REST Sync] PM link changed before the migration; not creating",
+						"[REST PM Sync] PM link changed before the migration; not creating",
 						{ storyId, from: story.externalMcpServerId },
 					);
 					await logOutcome("FAILURE", {
@@ -666,12 +779,11 @@ export async function syncGitLabStoryViaRest(
 		} else {
 			await logOutcome("FAILURE", {
 				errorCode: "PM_TOOL_MISMATCH",
-				errorMessage:
-					"Feature is linked to a different PM tool — re-link it to sync with GitLab.",
+				errorMessage: `Feature is linked to a different PM tool — re-link it to sync with ${toolLabel}.`,
 			});
 			return {
 				success: false,
-				error: "This feature is linked to a different PM tool. Re-link it to push to GitLab.",
+				error: `This feature is linked to a different PM tool. Re-link it to push to ${toolLabel}.`,
 				errorCode: "PM_TOOL_MISMATCH",
 				syncedAt: new Date(),
 				direction,
@@ -702,17 +814,20 @@ export async function syncGitLabStoryViaRest(
 			externalPmTarget: story.externalPmTarget,
 			activePmTarget,
 			activeServerId,
-			currentDetectedType: "gitlab",
-			currentBaseUrl: source.baseUrl,
-			currentInstanceOrigin: safeOrigin(source.baseUrl),
+			currentDetectedType: pmTool,
+			currentBaseUrl:
+				source.kind === "rest-gitlab"
+					? source.baseUrl
+					: provider.origin,
+			currentInstanceOrigin: provider.origin,
 		});
 		if (legacyMismatch.resolution === "legacy-other-tool") {
 			logger.warn(
-				"[GitLab REST Sync] Legacy external link is not on this GitLab instance; not syncing",
+				"[REST PM Sync] Legacy external link is not on this GitLab instance; not syncing",
 				{ storyId, reason: legacyMismatch.reason },
 			);
 			const legacyMessage = legacyLinkOtherToolMessage(
-				"GitLab",
+				toolLabel,
 				direction === "pull" ? "pull" : "push",
 			);
 			if (!input.failureRecordedByCaller) {
@@ -726,7 +841,7 @@ export async function syncGitLabStoryViaRest(
 					errorMessage: legacyMessage,
 					errorClass: "PM_TOOL_MISMATCH_LEGACY",
 					triggerSource: "manual-edit",
-					pmTool: "gitlab",
+					pmTool,
 					actorUserId: userId,
 					onlyIfAttempt: pmSyncAttemptId,
 					onlyIfRowUnchanged: {
@@ -775,7 +890,7 @@ export async function syncGitLabStoryViaRest(
 		// non-greedy, so this also cleans up an already-accumulated duplicate
 		// rather than letting it grow on every push.
 		const baseDescription = stripAttachmentBlock(
-			formatBackLinkForProvider(buildStoryDescription(story), "gitlab"),
+			formatBackLinkForProvider(buildStoryDescription(story), pmTool),
 		);
 		// Resolve story-media S3 keys → 7-day signed URLs, then convert any
 		// embedded Tiptap `<table>` HTML to GFM markdown when the description
@@ -788,7 +903,7 @@ export async function syncGitLabStoryViaRest(
 			rewriteStoryMediaSourcesToSignedUrls(baseDescription, signedUrlMap);
 		if (unresolvedKeys.length > 0) {
 			logger.warn(
-				"[GitLab REST Sync] Some story-media keys did not resolve",
+				"[REST PM Sync] Some story-media keys did not resolve",
 				{
 					storyId,
 					unresolvedCount: unresolvedKeys.length,
@@ -821,22 +936,26 @@ export async function syncGitLabStoryViaRest(
 		// Upload images AND non-image file attachments to GitLab's /uploads so
 		// neither ships as a `data:` URL (GitLab blocks them) nor a
 		// localhost/expiring story-media signed URL (GitLab can't resolve them).
-		const withGitLabImages = await uploadGitLabImagesAndRewriteDescription(
-			cleanedDescription,
-			{
-				token: source.token,
-				projectId: source.projectId,
-				baseUrl: source.baseUrl,
-			},
-		);
-		const description = await uploadGitLabFileAttachmentsAndRewrite(
-			withGitLabImages,
-			{
-				token: source.token,
-				projectId: source.projectId,
-				baseUrl: source.baseUrl,
-			},
-		);
+		// GitHub has no upload API: its body keeps the 7-day signed URLs, as
+		// the MCP markdown path sends them.
+		const description =
+			source.kind === "rest-gitlab"
+				? await uploadGitLabFileAttachmentsAndRewrite(
+						await uploadGitLabImagesAndRewriteDescription(
+							cleanedDescription,
+							{
+								token: source.token,
+								projectId: source.projectId,
+								baseUrl: source.baseUrl,
+							},
+						),
+						{
+							token: source.token,
+							projectId: source.projectId,
+							baseUrl: source.baseUrl,
+						},
+					)
+				: cleanedDescription;
 
 		// Attachment push (Fizzy #1745, AC-1/2/3). Runs AFTER the media
 		// uploaders above so their rewriting never sees our block, and the
@@ -853,7 +972,7 @@ export async function syncGitLabStoryViaRest(
 			summary: string;
 			failures: ReconcileResult["failures"];
 		} | null = null;
-		if (isPmAttachmentSyncEnabled()) {
+		if (source.kind === "rest-gitlab" && isPmAttachmentSyncEnabled()) {
 			const attachmentProject = await db.project.findUnique({
 				where: { id: projectId },
 				select: { syncAttachments: true },
@@ -876,13 +995,10 @@ export async function syncGitLabStoryViaRest(
 						updateStoryAttachmentSyncState(id, data),
 				});
 				if (reconciled.failures.length > 0) {
-					logger.warn(
-						"[GitLab REST Sync] attachment upload failures",
-						{
-							storyId,
-							failures: reconciled.failures,
-						},
-					);
+					logger.warn("[REST PM Sync] attachment upload failures", {
+						storyId,
+						failures: reconciled.failures,
+					});
 					// Capture only. The emit happens after the work item is
 					// written, so a conflict return or a throw below leaves
 					// no row claiming a push that never happened.
@@ -973,7 +1089,7 @@ export async function syncGitLabStoryViaRest(
 						})) as FetchResult;
 					} catch (error) {
 						logger.warn(
-							"[GitLab REST Sync] Conflict-guard fetch failed; proceeding with push",
+							"[REST PM Sync] Conflict-guard fetch failed; proceeding with push",
 							{
 								storyId,
 								externalId,
@@ -1008,15 +1124,15 @@ export async function syncGitLabStoryViaRest(
 							logger.info("pm.sync.conflict", {
 								itemType: "story",
 								itemId: storyId,
-								pmTool: "gitlab",
-								triggerSource: "gitlab-rest-push",
+								pmTool,
+								triggerSource: `${pmTool}-rest-push`,
 							});
 							await recordPmSyncLog({
 								direction: "push",
 								entityType: "STORY",
 								entityId: storyId,
 								title: story.title,
-								pmTool: "gitlab",
+								pmTool,
 								status: "CONFLICT",
 								errorPayload: {
 									reason: "push-time-hash-drift",
@@ -1033,7 +1149,7 @@ export async function syncGitLabStoryViaRest(
 							});
 							return {
 								success: false,
-								error: "Remote GitLab issue was modified since the last sync. Resolve the conflict to continue.",
+								error: `Remote ${toolLabel} ${provider.item} was modified since the last sync. Resolve the conflict to continue.`,
 								errorCode: "PM_SYNC_CONFLICT",
 								syncedAt: new Date(),
 								direction,
@@ -1056,7 +1172,7 @@ export async function syncGitLabStoryViaRest(
 					})) as FetchResult;
 				} catch (error) {
 					logger.warn(
-						"[GitLab REST Sync] Live read for status labels failed; pushing content only",
+						"[REST PM Sync] Live read for status labels failed; pushing content only",
 						{
 							storyId,
 							externalId,
@@ -1091,6 +1207,9 @@ export async function syncGitLabStoryViaRest(
 					payload: {
 						title: story.title,
 						description: descriptionWithAttachments,
+						...(source.kind === "rest-github"
+							? { issueType: githubIssueTypeForStory(story.kind) }
+							: {}),
 						addLabels: statusLabels?.addLabels ?? delta.addLabels,
 						removeLabels:
 							statusLabels?.removeLabels ?? delta.removeLabels,
@@ -1137,7 +1256,7 @@ export async function syncGitLabStoryViaRest(
 					});
 				} else {
 					logger.warn(
-						"[GitLab REST Sync] GitLab returned no updated_at; status-sync base not stamped",
+						"[REST PM Sync] GitLab returned no updated_at; status-sync base not stamped",
 						{ storyId, externalId },
 					);
 				}
@@ -1197,7 +1316,7 @@ export async function syncGitLabStoryViaRest(
 					itemType: "story",
 					errorMessage,
 					triggerSource: "manual-edit",
-					pmTool: "gitlab",
+					pmTool,
 					actorUserId: userId,
 				});
 				if (recording.outcome === "linked") {
@@ -1233,7 +1352,7 @@ export async function syncGitLabStoryViaRest(
 					);
 				}
 				return createUnconfirmed(
-					claimHeldMessage("GitLab"),
+					claimHeldMessage(toolLabel),
 					"claim-held",
 				);
 			}
@@ -1251,7 +1370,7 @@ export async function syncGitLabStoryViaRest(
 					storyId,
 					claimId: pmCreateClaimId,
 				});
-				throw new Error(createDeadlinePassedMessage("GitLab"));
+				throw new Error(createDeadlinePassedMessage(toolLabel));
 			};
 			if (dispatchDeadlinePassed(sendDeadline)) {
 				// Taking the claim took the whole send ceiling.
@@ -1270,6 +1389,13 @@ export async function syncGitLabStoryViaRest(
 							title: story.title,
 							description: descriptionWithAttachments,
 							labels,
+							...(source.kind === "rest-github"
+								? {
+										issueType: githubIssueTypeForStory(
+											story.kind,
+										),
+									}
+								: {}),
 						},
 					},
 					// Not sent past the claim's send deadline: the GitLab
@@ -1315,7 +1441,7 @@ export async function syncGitLabStoryViaRest(
 				// A 5xx, a timeout or a network error: the issue may exist.
 				return createUnconfirmed(
 					createIndeterminateMessage(
-						"GitLab",
+						toolLabel,
 						describeSyncErrorForUser(createError),
 					),
 					"create-indeterminate",
@@ -1324,11 +1450,10 @@ export async function syncGitLabStoryViaRest(
 			// GitLab answered success; `toWriteResult` stringifies `iid`, so
 			// an answer without one reads "undefined" here. The issue may
 			// exist but cannot be linked: an orphan, and the claim stays.
-			if (!/^[1-9]\d*$/.test(String(created.externalId ?? ""))) {
-				const errorMessage =
-					"GitLab reported the issue created, but Fabric could not read its number from the response, so this story is not linked to it. A GitLab issue may already exist for it. Check GitLab; if there is none, use Unlink & re-create.";
+			if (!provider.isValidCreatedId(String(created.externalId ?? ""))) {
+				const errorMessage = `${toolLabel} reported the ${provider.item} created, but Fabric could not read its id from the response, so this story is not linked to it. A ${toolLabel} ${provider.item} may already exist for it. Check ${toolLabel}; if there is none, use Unlink & re-create.`;
 				logger.warn(
-					"[GitLab REST Sync] created issue has no readable iid",
+					"[REST PM Sync] created issue has no readable iid",
 					{
 						storyId,
 					},
@@ -1338,7 +1463,7 @@ export async function syncGitLabStoryViaRest(
 					itemType: "story",
 					errorMessage,
 					triggerSource: "manual-edit",
-					pmTool: "gitlab",
+					pmTool,
 					actorUserId: userId,
 				});
 				return {
@@ -1372,11 +1497,11 @@ export async function syncGitLabStoryViaRest(
 				// creating a second issue. Best effort (`recordCreateOrphan`
 				// never throws), so this result is returned whatever the
 				// recording does.
-				const errorMessage = `Issue ${created.externalId} was created in GitLab but Fabric could not save its link (${describeLinkWriteCause(
+				const errorMessage = `Issue ${created.externalId} was created in ${toolLabel} but Fabric could not save its link (${describeLinkWriteCause(
 					linkError,
 					"story",
-				)}), so this story is not linked to it. Check GitLab: use Unlink & re-create only if issue ${created.externalId} was deleted or a second issue is wanted.`;
-				logger.warn("[GitLab REST Sync] created issue not linked", {
+				)}), so this story is not linked to it. Check ${toolLabel}: use Unlink & re-create only if issue ${created.externalId} was deleted or a second issue is wanted.`;
+				logger.warn("[REST PM Sync] created issue not linked", {
 					storyId,
 					externalId: created.externalId,
 					error: describeOrphanCause(linkError),
@@ -1386,7 +1511,7 @@ export async function syncGitLabStoryViaRest(
 					itemType: "story",
 					errorMessage,
 					triggerSource: "manual-edit",
-					pmTool: "gitlab",
+					pmTool,
 					actorUserId: userId,
 				});
 				return {
@@ -1426,7 +1551,7 @@ export async function syncGitLabStoryViaRest(
 				);
 				if (!createdLinkKey) {
 					logger.warn(
-						"[GitLab REST Sync] created issue has no web_url; status-sync base not stamped",
+						"[REST PM Sync] created issue has no web_url; status-sync base not stamped",
 						{ storyId, externalId: created.externalId },
 					);
 				} else {
@@ -1451,7 +1576,7 @@ export async function syncGitLabStoryViaRest(
 						});
 					} else {
 						logger.warn(
-							"[GitLab REST Sync] GitLab returned no updated_at; status-sync base not stamped",
+							"[REST PM Sync] GitLab returned no updated_at; status-sync base not stamped",
 							{ storyId, externalId: created.externalId },
 						);
 					}
@@ -1486,7 +1611,7 @@ export async function syncGitLabStoryViaRest(
 				entityType: "STORY",
 				entityId: storyId,
 				title: story.title,
-				pmTool: "gitlab",
+				pmTool,
 				status: "FAILURE",
 				errorPayload: {
 					reason: "attachment-push-failed",
@@ -1513,13 +1638,13 @@ export async function syncGitLabStoryViaRest(
 					projectId,
 					storyId,
 					storyTitle: story.title,
-					pmToolLabel: "GitLab",
+					pmToolLabel: toolLabel,
 					failureSummary: attachmentFailureReport.summary,
 					link: `projects/${projectId}/stories/${storyId}`,
 				});
 			} catch (notifyError) {
 				logger.warn(
-					"[GitLab REST Sync] attachment failure notification dispatch failed",
+					"[REST PM Sync] attachment failure notification dispatch failed",
 					{ storyId, error: notifyError },
 				);
 			}
@@ -1565,7 +1690,7 @@ export async function syncGitLabStoryViaRest(
 			if (!isDatabaseError(error) && isNotFoundError(errorMessage)) {
 				if (story.externalMcpServerId) {
 					logger.warn(
-						"[GitLab REST Sync] Pull not-found on stamped link — preserving (deletion owned by poll)",
+						"[REST PM Sync] Pull not-found on stamped link — preserving (deletion owned by poll)",
 						{
 							storyId,
 							identifier: story.identifier,
@@ -1579,7 +1704,7 @@ export async function syncGitLabStoryViaRest(
 					});
 					return {
 						success: false,
-						error: "The linked ticket was not found in GitLab. The link is kept; if it was deleted, the scheduled sync will flag it for review.",
+						error: `The linked ticket was not found in ${toolLabel}. The link is kept; if it was deleted, the scheduled sync will flag it for review.`,
 						errorCode: "EXTERNAL_ID_NOT_FOUND",
 						linkPreserved: true,
 						syncedAt: new Date(),
@@ -1589,7 +1714,7 @@ export async function syncGitLabStoryViaRest(
 				// Null-provenance legacy link — keep the existing self-heal unlink
 				// (the poll's source-scoped streak can't flag a null-provenance row).
 				logger.warn(
-					"[GitLab REST Sync] Pull not-found on legacy link — clearing stale link",
+					"[REST PM Sync] Pull not-found on legacy link — clearing stale link",
 					{
 						storyId,
 						identifier: story.identifier,
@@ -1617,7 +1742,7 @@ export async function syncGitLabStoryViaRest(
 			}
 			// Transient/unknown error — preserve the link and surface a
 			// retryable failure with no errorCode.
-			logger.warn("[GitLab REST Sync] Pull failed — preserving link", {
+			logger.warn("[REST PM Sync] Pull failed — preserving link", {
 				storyId,
 				identifier: story.identifier,
 				externalId,
@@ -1667,6 +1792,7 @@ export async function syncGitLabStoryViaRest(
 			pulledDescription = stripAttachmentBlock(pulledDescription);
 		}
 		if (
+			source.kind === "rest-gitlab" &&
 			typeof pulledDescription === "string" &&
 			pulledDescription.length > 0
 		) {
@@ -1689,7 +1815,7 @@ export async function syncGitLabStoryViaRest(
 				});
 				pulledDescription = ingest.description ?? pulledDescription;
 				if (ingest.ingested || ingest.reused || ingest.failed) {
-					logger.info("[GitLab REST Sync] pull image ingest", {
+					logger.info("[REST PM Sync] pull image ingest", {
 						storyId,
 						ingested: ingest.ingested,
 						reused: ingest.reused,
@@ -1698,7 +1824,7 @@ export async function syncGitLabStoryViaRest(
 					});
 				}
 			} catch (err) {
-				logger.warn("[GitLab REST Sync] pull image ingest failed", {
+				logger.warn("[REST PM Sync] pull image ingest failed", {
 					storyId,
 					error: err instanceof Error ? err.message : String(err),
 				});
@@ -1712,7 +1838,10 @@ export async function syncGitLabStoryViaRest(
 				title: fetched.title,
 				description: pulledDescription,
 				externalUrl: fetched.externalUrl ?? undefined,
-				labels: pull.remainingLabels,
+				// GitHub's Status pseudo-label is never a Fabric label.
+				labels: pull.remainingLabels.filter(
+					(l) => !l.startsWith(GITHUB_STATUS_LABEL_PREFIX),
+				),
 				...(pull.kind === "matched" ? { statusId: pull.statusId } : {}),
 			},
 			{
@@ -1764,7 +1893,7 @@ export async function syncGitLabStoryViaRest(
 		// block stripped and its images rewritten to Fabric-hosted URLs. The
 		// raw body is the only authoritative record of what is attached to the
 		// issue.
-		if (isPmAttachmentSyncEnabled()) {
+		if (source.kind === "rest-gitlab" && isPmAttachmentSyncEnabled()) {
 			const attachmentProject = await db.project.findUnique({
 				where: { id: projectId },
 				select: { syncAttachments: true },
@@ -1812,7 +1941,7 @@ export async function syncGitLabStoryViaRest(
 						issues.push(issue);
 						await recordStoryAttachmentSyncIssue({
 							storyId,
-							sourceTool: "gitlab",
+							sourceTool: pmTool,
 							filename: issue.filename,
 							reason: issue.kind,
 						});
@@ -1820,7 +1949,7 @@ export async function syncGitLabStoryViaRest(
 				});
 
 				if (issues.length > 0 || pulled.failures.length > 0) {
-					logger.warn("[GitLab REST Sync] attachment pull issues", {
+					logger.warn("[REST PM Sync] attachment pull issues", {
 						storyId,
 						issues,
 						failures: pulled.failures,
@@ -1853,7 +1982,7 @@ export async function syncGitLabStoryViaRest(
 						entityType: "STORY",
 						entityId: storyId,
 						title: fetched.title ?? story.title,
-						pmTool: "gitlab",
+						pmTool,
 						status,
 						errorPayload: {
 							reason,
@@ -1890,13 +2019,13 @@ export async function syncGitLabStoryViaRest(
 							projectId,
 							storyId,
 							storyTitle: fetched.title ?? story.title,
-							pmToolLabel: "GitLab",
+							pmToolLabel: toolLabel,
 							failureSummary: summarize(problems),
 							link: `projects/${projectId}/stories/${storyId}`,
 						});
 					} catch (notifyError) {
 						logger.warn(
-							"[GitLab REST Sync] attachment pull notification dispatch failed",
+							"[REST PM Sync] attachment pull notification dispatch failed",
 							{ storyId, error: notifyError },
 						);
 					}
@@ -1922,9 +2051,13 @@ export async function syncGitLabStoryViaRest(
 				id: externalId,
 				title: fetched.title,
 				description: fetched.description,
-				raw: { state: fetched.state, labels: fetched.labels },
+				raw: {
+					state: fetched.state,
+					labels: fetched.labels,
+					status: fetched.status ?? null,
+				},
 			};
-			const n = normalizePolledState(summary, { kind: "rest-gitlab" });
+			const n = normalizePolledState(summary, { kind: source.kind });
 
 			const reconcileStory = await getStoryById(storyId, projectId);
 			const project = await db.project.findUnique({
@@ -1980,7 +2113,7 @@ export async function syncGitLabStoryViaRest(
 		} catch (lifecycleError) {
 			lifecycleReconciled = false;
 			logger.warn(
-				"[GitLab REST Sync] terminal-status reconcile failed (non-fatal)",
+				"[REST PM Sync] terminal-status reconcile failed (non-fatal)",
 				{
 					storyId,
 					error:

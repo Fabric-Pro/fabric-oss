@@ -2251,7 +2251,7 @@ Five scopes, one per authority:
 | Scope | Reaches | Live permission re-checked per call |
 |---|---|---|
 | `instructions:read` | `GET .../instructions/published`, `POST .../published/download`, `POST .../published/files`: `check`, `sync`, `init`, `doctor`, and the MCP tool `fabric_instruction_checks`; `GET .../instructions/proposals/open`: the open-proposal check `push` makes before sending; `POST /instructions/checkouts/resolve`: which projects a checkout's repository belongs to | `INSTRUCTION_READ` |
-| `instructions:write` | `POST .../instructions/changes`: `push`, and the MCP tools `fabric_propose_project_instruction_change` and `fabric_add_instruction_lesson` | `INSTRUCTION_READ` |
+| `instructions:write` | `POST .../instructions/changes`: `push`, and the MCP tools `fabric_propose_project_instruction_change`, `fabric_add_instruction_lesson` and `fabric_change_instructions` (which proposes under this scope) | `INSTRUCTION_READ` |
 | `instructions:publish` | `POST .../instructions/versions`: `push --publish` | `INSTRUCTION_CREATE` |
 | `kanban:read` | `GET /api/fabric-kanban/queue` and `GET /api/fabric-kanban/me`: list the caller's queue and identity | `STORY_READ` for queue listing |
 | `kanban:write` | `POST /api/fabric-kanban/queue` and `POST /api/fabric-kanban/complete`: pull and complete the caller's items | `STORY_UPDATE` |

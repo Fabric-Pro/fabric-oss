@@ -66,6 +66,17 @@ const META: Record<string, RepoStatusMeta> = {
 		iconColor: "text-red-600 dark:text-red-400",
 		hint: "Disconnected — re-configure to restore access",
 	},
+	// The project only records the repository's link (a creation that could
+	// not connect it): no credential, so nothing reads, indexes or syncs it.
+	NOT_CONNECTED: {
+		label: "Not connected",
+		tone: "expired",
+		icon: AlertTriangleIcon,
+		bgColor:
+			"bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800",
+		iconColor: "text-amber-600 dark:text-amber-400",
+		hint: "Only the link is saved, so Fabric can't read or index this repository — connect it with Add Repository",
+	},
 };
 
 const UNKNOWN: RepoStatusMeta = {

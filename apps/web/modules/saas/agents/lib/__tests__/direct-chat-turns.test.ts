@@ -1,57 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-	dropDuplicatedOperationResults,
 	findToolCallIndex,
 	isConversationSwitch,
 	settleUnfinishedToolCalls,
 	trimHistoryForRequest,
 } from "../direct-chat-turns";
 
-/** Direct chat turn helpers — Fizzy #2040 review F11, F12, F27, F32, F33. */
-
-const op = (content = "SYSTEM\n\nanswer") => ({
-	role: "system",
-	content,
-	metadata: { kind: "operation_result", outcome: "success" },
-});
-
-describe("dropDuplicatedOperationResults (F33)", () => {
-	it("drops the row when the exchange already has the saved answer, in either order", () => {
-		const messages = [
-			{ role: "user", content: "q1" },
-			{ role: "assistant", content: "a1" },
-			op(),
-			{ role: "user", content: "q2" },
-			op(),
-			{ role: "assistant", content: "a2" },
-		];
-
-		expect(
-			dropDuplicatedOperationResults(messages).map((m) => m.content),
-		).toEqual(["q1", "a1", "q2", "a2"]);
-	});
-
-	it("keeps the row when it is the only record of the answer", () => {
-		// The tab closed before the browser could save the reply.
-		const messages = [
-			{ role: "user", content: "q1" },
-			op("SYSTEM\n\nthe only answer"),
-			{ role: "user", content: "q2" },
-		];
-
-		expect(dropDuplicatedOperationResults(messages)).toHaveLength(3);
-	});
-
-	it("leaves other system rows alone", () => {
-		const messages = [
-			{ role: "user", content: "q1" },
-			{ role: "assistant", content: "a1" },
-			{ role: "system", content: "note", metadata: { kind: "other" } },
-		];
-
-		expect(dropDuplicatedOperationResults(messages)).toHaveLength(3);
-	});
-});
+/** Direct chat turn helpers — Fizzy #2040 review F11, F12, F27, F32. */
 
 describe("trimHistoryForRequest (F32)", () => {
 	const exchanges = (count: number) =>

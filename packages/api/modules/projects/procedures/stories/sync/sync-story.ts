@@ -7,6 +7,12 @@ import {
 	readPmServerIdKeySentinel,
 } from "@repo/database";
 import {
+	gitHubProjectsCredentialMessage,
+	readPmCredentialId,
+	resolveGitHubProjectsCredential,
+} from "@repo/integrations/github/projects-credential";
+import { isGitHubProjectsKey } from "@repo/integrations/github/projects-pm-adapter";
+import {
 	findUsableGitLabConnection,
 	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
 	gitlabPmOriginMatches,
@@ -129,6 +135,7 @@ export const syncStoryProcedure = tenantProtectedProcedure
 		// GitLab went through MCP. In that case syncStoryToPM dispatches through
 		// the REST fallback transparently, so the MCP-only "not connected"/
 		// "disabled" guards below must be skipped. Gated on `!userMcpConfig` alone.
+		// A REST provider (GitLab or GitHub Projects) runs without an MCPConfig.
 		let restGitLab = false;
 		if (!userMcpConfig && project.projectManagementMcpServerId) {
 			// Resolve the project's PM server key. For a real catalog row we
@@ -169,6 +176,25 @@ export const syncStoryProcedure = tenantProtectedProcedure
 					});
 				}
 				restGitLab = Boolean(integration);
+			}
+			// GitHub Projects (REST): the credential the project chose, else the
+			// caller's own GitHub connection — as the worker resolves it.
+			if (isGitHubProjectsKey(serverKey)) {
+				const credential = await resolveGitHubProjectsCredential(
+					user.id,
+					project.organizationId ?? null,
+					readPmCredentialId(
+						project.projectManagementAdditionalContext,
+					),
+				);
+				if (!credential.ok) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: gitHubProjectsCredentialMessage(
+							credential.reason,
+						),
+					});
+				}
+				restGitLab = true;
 			}
 		}
 

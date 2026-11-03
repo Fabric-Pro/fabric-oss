@@ -18,13 +18,21 @@ import {
 	getProjectRagSettings,
 	markDocumentAsEmbedded,
 	markDocumentAsEmbeddedIfVersionUnchanged,
+	markProjectDocumentChunkingVersion,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
 import {
 	type ChunkingStrategy,
+	chunkProjectContent,
 	chunkText,
+	contentKindForDocumentType,
 	detectContentType,
+	isChunkProfile,
+	isContentAwareChunkingActive,
+	parseChunkProfilesConfig,
+	CHUNKING_THRESHOLD as ROUTER_CHUNKING_THRESHOLD,
+	type TextChunk,
 } from "../chunking";
 import { generateEmbedding, generateEmbeddings } from "../embedding";
 import {
@@ -89,6 +97,8 @@ export interface EmbedDocumentOptions {
 	 * the newer run's upserts on the same deterministic Qdrant point IDs.
 	 */
 	abortSignal?: AbortSignal;
+	/** The document's chunking profile override (`ProjectDocument.chunkProfile`). */
+	chunkProfile?: string | null;
 }
 
 export interface DocumentEmbedResult {
@@ -220,6 +230,59 @@ export async function embedProjectDocument(
 			options.expectedVersion != null
 				? `-v${options.expectedVersion}`
 				: "";
+
+		// Content-type chunking (spec 2026-10-28): only with the project's
+		// toggle and the flag on. The router cuts the document; storage is the
+		// chunked path below. Off, nothing here changes.
+		if (
+			await isContentAwareChunkingActive({
+				chunkByContentType: ragSettings.chunkByContentType,
+				organizationId,
+				chunkProfiles: parseChunkProfilesConfig(
+					ragSettings.chunkProfiles,
+				),
+			})
+		) {
+			const routed = await chunkProjectContent({
+				content,
+				mimeType: "text/markdown",
+				filename: options.title || documentId,
+				chunkingThreshold: ROUTER_CHUNKING_THRESHOLD,
+				chunkSize: ragSettings.chunkSize,
+				chunkOverlap: ragSettings.chunkOverlap,
+				textStrategy: documentTextStrategy(
+					content,
+					ragSettings.splitMethod,
+				),
+				chunkByContentType: ragSettings.chunkByContentType,
+				organizationId,
+				kind: contentKindForDocumentType(documentType),
+				profileOverride: isChunkProfile(options.chunkProfile)
+					? options.chunkProfile
+					: null,
+				chunkProfiles: parseChunkProfilesConfig(
+					ragSettings.chunkProfiles,
+				),
+			});
+			const result = await embedDocumentWithChunking(
+				{ ...options, content },
+				ragSettings,
+				embeddingContextId,
+				contentHash,
+				{
+					chunks: routed.chunks,
+					payloads: routed.chunkPayloads,
+					chunkingVersion: ragSettings.chunkingVersion,
+				},
+			);
+			if (result.success) {
+				await recordDocumentChunkingVersion(
+					documentId,
+					ragSettings.chunkingVersion,
+				);
+			}
+			return result;
+		}
 
 		// Determine if we need to chunk
 		const needsChunking = content.length > CHUNKING_THRESHOLD;
@@ -374,6 +437,12 @@ async function embedDocumentWithChunking(
 	},
 	embeddingContextId: string,
 	contentHash: string,
+	/** Chunks already cut by content-type chunking; unset: chunked here. */
+	precomputed?: {
+		chunks: TextChunk[];
+		payloads: Array<Record<string, unknown>>;
+		chunkingVersion: number;
+	},
 ): Promise<DocumentEmbedResult> {
 	const {
 		documentId,
@@ -395,22 +464,27 @@ async function embedDocumentWithChunking(
 		`[DocumentEmbed] Chunking document (${content.length} chars) with strategy=${ragSettings.splitMethod}`,
 	);
 
-	// Detect content type
-	const contentInfo = detectContentType(content);
+	let chunks: TextChunk[];
+	if (precomputed) {
+		chunks = precomputed.chunks;
+	} else {
+		// Detect content type
+		const contentInfo = detectContentType(content);
 
-	// Use DOCUMENT strategy for markdown content (PRD/Proposal are typically markdown)
-	let strategy = mapSplitMethodToStrategy(ragSettings.splitMethod);
-	if (contentInfo.type === "markdown" || contentInfo.type === "code") {
-		strategy = "DOCUMENT";
+		// Use DOCUMENT strategy for markdown content (PRD/Proposal are typically markdown)
+		let strategy = mapSplitMethodToStrategy(ragSettings.splitMethod);
+		if (contentInfo.type === "markdown" || contentInfo.type === "code") {
+			strategy = "DOCUMENT";
+		}
+
+		// Chunk the content
+		chunks = chunkText(content, title || documentId, {
+			strategy,
+			chunkSize: ragSettings.chunkSize,
+			chunkOverlap: ragSettings.chunkOverlap,
+			contentType: contentInfo.type,
+		});
 	}
-
-	// Chunk the content
-	const chunks = chunkText(content, title || documentId, {
-		strategy,
-		chunkSize: ragSettings.chunkSize,
-		chunkOverlap: ragSettings.chunkOverlap,
-		contentType: contentInfo.type,
-	});
 
 	logger.info(
 		`[DocumentEmbed] Created ${chunks.length} chunks for document ${documentId}`,
@@ -544,6 +618,16 @@ async function embedDocumentWithChunking(
 								section: chunk.metadata.section,
 								originalContextId: embeddingContextId,
 								documentVersion: options.expectedVersion,
+								// The profile on content-type chunks; absent otherwise.
+								...(precomputed
+									? {
+											...precomputed.payloads[
+												chunk.index
+											],
+											chunkingVersion:
+												precomputed.chunkingVersion,
+										}
+									: {}),
 							},
 						});
 						return { chunk, error: undefined, qdrantId };
@@ -724,5 +808,34 @@ export async function removeDocumentEmbedding(
 		logger.warn(
 			`[DocumentEmbed] Failed to remove embedding for ${documentId}: ${error}`,
 		);
+	}
+}
+
+/** The fallback strategy the chunked path applies to a document. */
+function documentTextStrategy(
+	content: string,
+	splitMethod: string,
+): ChunkingStrategy {
+	const contentInfo = detectContentType(content);
+	return contentInfo.type === "markdown" || contentInfo.type === "code"
+		? "DOCUMENT"
+		: mapSplitMethodToStrategy(splitMethod);
+}
+
+/** Best-effort: a missed stamp only makes a later re-chunk redo this document. */
+async function recordDocumentChunkingVersion(
+	documentId: string,
+	chunkingVersion: number,
+): Promise<void> {
+	if (chunkingVersion <= 0) {
+		return;
+	}
+	try {
+		await markProjectDocumentChunkingVersion(documentId, chunkingVersion);
+	} catch (error) {
+		logger.warn("[DocumentEmbed] Could not record the chunking version", {
+			documentId,
+			error: error instanceof Error ? error.message : String(error),
+		});
 	}
 }

@@ -1798,6 +1798,29 @@ async function getAuthenticatedUserInfo(
 // ============================================================================
 
 /**
+ * Whether the caller has an active GitHub connection in this tenant (exclusive:
+ * `organizationId` null reads only the personal one). A read only — no token
+ * refresh — for pickers that just need to know.
+ */
+export async function hasGitHubWorkflowConnection(
+	userId: string,
+	organizationId?: string | null,
+): Promise<boolean> {
+	const integration = await db.workflowIntegration.findFirst({
+		where: {
+			userId,
+			organizationId: organizationId ?? null,
+			provider: "GITHUB",
+			NOT: { name: "GITHUB_OAUTH_APP" },
+			isActive: true,
+			credentials: { not: "" },
+		},
+		select: { id: true },
+	});
+	return integration !== null;
+}
+
+/**
  * Get the GitHub access token for a user's workflow integration.
  * Automatically refreshes the token if expired (GitHub App with expiring tokens).
  * Returns null if not configured.

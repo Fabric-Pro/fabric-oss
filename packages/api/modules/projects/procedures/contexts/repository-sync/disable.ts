@@ -11,7 +11,12 @@
  * run receipts stay. Allowed during a run: that run's next fenced
  * transaction finds no configuration and stops without writing.
  */
-import { deleteContextRepositorySync } from "@repo/database";
+import {
+	db,
+	deleteContextRepositorySync,
+	listContextCoveredCodePaths,
+} from "@repo/database";
+import { logger } from "@repo/logs";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
 import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
@@ -21,6 +26,61 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { resolveContextSyncAccess } from "./access";
+
+/**
+ * The files the code index leaves to the sync, read before it is deleted;
+ * `null` when there are none or they cannot be read (disabling goes on).
+ */
+async function coveredCodePathsBefore(
+	projectId: string,
+	organizationId: string,
+): Promise<{ repositoryIntegrationId: string; paths: string[] } | null> {
+	try {
+		const sync = await db.projectContextRepositorySync.findFirst({
+			where: { projectId, organizationId },
+			select: { repositoryIntegrationId: true },
+		});
+		if (!sync) {
+			return null;
+		}
+		const paths = await listContextCoveredCodePaths({
+			projectId,
+			repositoryIntegrationId: sync.repositoryIntegrationId,
+		});
+		return paths.size === 0
+			? null
+			: {
+					repositoryIntegrationId: sync.repositoryIntegrationId,
+					paths: [...paths],
+				};
+	} catch (error) {
+		logger.warn(
+			`[ContextSync] Could not read the Living Memory files the code index leaves out: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+		return null;
+	}
+}
+
+/** The released files are no longer the sync's: the code index takes them back. */
+async function returnFilesToCodeIndex(
+	projectId: string,
+	covered: { repositoryIntegrationId: string; paths: string[] },
+): Promise<void> {
+	try {
+		const { reindexContextCoveredPaths } = await import(
+			"../../../lib/code-index-refresh"
+		);
+		await reindexContextCoveredPaths({ projectId, ...covered });
+	} catch (error) {
+		logger.warn(
+			`[ContextSync] Could not return Living Memory files to the code index: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+}
 
 export const disableContextRepositorySyncProcedure = tenantProtectedProcedure
 	// Visibility before permission: see the file comment.
@@ -44,12 +104,19 @@ export const disableContextRepositorySyncProcedure = tenantProtectedProcedure
 			context.user.id,
 			Permissions.CONTEXT_CREATE,
 		);
+		const covered = await coveredCodePathsBefore(
+			input.projectId,
+			organizationId,
+		);
 		const result = await deleteContextRepositorySync({
 			projectId: input.projectId,
 			organizationId,
 		});
 		if (!result.deleted || !result.syncId) {
 			return { disabled: false as const };
+		}
+		if (covered) {
+			await returnFilesToCodeIndex(input.projectId, covered);
 		}
 		recordAuditFromRequest(context, {
 			action: "project.context.repository_sync_disabled",

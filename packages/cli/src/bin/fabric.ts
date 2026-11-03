@@ -14,6 +14,7 @@
  *   7  validation error
  */
 
+import path from "node:path";
 import { Command } from "commander";
 import packageJson from "../../package.json";
 import { buildAgentsCommand } from "../commands/agents/index.js";
@@ -35,16 +36,21 @@ import { buildOrgsCommand } from "../commands/orgs/index.js";
 import { buildProjectsCommand } from "../commands/projects/index.js";
 import { buildPromptsCommand } from "../commands/prompts/index.js";
 import { buildReportsCommand } from "../commands/reports/index.js";
+import { buildReposCommand } from "../commands/repos/index.js";
 import { buildSkillsCommand } from "../commands/skills/index.js";
 import { buildWorkflowsCommand } from "../commands/workflows/index.js";
 import { buildWorkspacesCommand } from "../commands/workspaces/index.js";
 import { getConfigPath } from "../lib/config.js";
 import { hookTiming } from "../lib/instructions/hook-timing.js";
+import { setPluginNamesDirectory } from "../lib/plugin/plugin-names.js";
 
 // The session hook's deadline counts from when this process began, and the
 // hook ends the process itself once its output is written (hook-timing.ts).
 hookTiming.processStartedAt = Math.round(Date.now() - process.uptime() * 1000);
 hookTiming.exitWhenDone = true;
+
+// Readable plugin names live beside the CLI's config (plugin-names.ts).
+setPluginNamesDirectory(() => path.dirname(getConfigPath()));
 
 const program = new Command();
 
@@ -127,6 +133,11 @@ program.addCommand(buildOrgsCommand());
 // fabric projects
 // ---------------------------------------------------------------------------
 program.addCommand(buildProjectsCommand());
+
+// ---------------------------------------------------------------------------
+// fabric repos
+// ---------------------------------------------------------------------------
+program.addCommand(buildReposCommand());
 
 // ---------------------------------------------------------------------------
 // fabric features

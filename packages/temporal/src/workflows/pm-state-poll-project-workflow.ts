@@ -30,7 +30,7 @@ export interface AdoStatePollProjectInput {
 	projectId: string;
 	mcpConfigId: string | null;
 	mcpServerId?: string;
-	sourceKind?: "mcp" | "rest-gitlab";
+	sourceKind?: "mcp" | "rest-gitlab" | "rest-github";
 	pmTool?: string | null;
 	containerId: string;
 	containerName: string | null;

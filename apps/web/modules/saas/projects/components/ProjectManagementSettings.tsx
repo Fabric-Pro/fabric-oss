@@ -2,10 +2,12 @@
 
 import type { Prisma } from "@repo/database";
 import { pmDetectedTypeDisplayName } from "@repo/utils";
+import { CredentialPicker } from "@saas/credential-manager/components/CredentialPicker";
 import {
 	useContextPath,
 	useOrganizationContext,
 } from "@saas/organizations/hooks/use-organization-context";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -61,12 +63,24 @@ import {
 	type McpTool,
 } from "../lib/pm-tool-analyzer";
 import { buildProjectSyncLogRoute } from "../lib/stories/routes";
+import {
+	GitHubStatusMapEditor,
+	seedGitHubStatusMap,
+} from "./pm-integration/GitHubStatusMapEditor";
 import { GitLabLabelStatusMapEditor } from "./pm-integration/GitLabLabelStatusMapEditor";
 import { PmStatusSyncLastRunLine } from "./pm-integration/PmStatusSyncLastRunLine";
 import { PmToolConnectedBanner } from "./pm-integration/PmToolConnectedBanner";
 import { TerminalStatusEditor } from "./pm-integration/TerminalStatusEditor";
+import { GITHUB_PROJECTS_KEY } from "./pm-tool-keys";
 import { PMToolSelect } from "./pm-tool-select";
 import { PM_SETTINGS_ANCHOR_ID } from "./settings-tab-navigation";
+
+/**
+ * The GitHub Projects adapter's messages that reconnecting fixes: a token
+ * GitHub refused (401), or one without access to Projects.
+ */
+const GITHUB_TOKEN_REJECTED =
+	/GitHub rejected the connection token|GitHub connection cannot access GitHub Projects/;
 
 type Project = {
 	id: string;
@@ -210,6 +224,10 @@ export function ProjectManagementSettings({ project }: Props) {
 	// `selectedMcpConfigId` is always null. This flag drives the container
 	// picker / save path for that REST case independently of mcpConfigId.
 	const [isRestGitLab, setIsRestGitLab] = useState(false);
+	// GitHub Projects: the board is the container; there is never an
+	// MCPConfig — boards and items are read through the caller's GitHub
+	// connection.
+	const [isRestGitHub, setIsRestGitHub] = useState(false);
 	// Track saved configuration locally for immediate UI updates
 	const [savedContainerName, setSavedContainerName] = useState<string | null>(
 		project.projectManagementContainerName as string | null,
@@ -814,6 +832,17 @@ export function ProjectManagementSettings({ project }: Props) {
 	})();
 	const [labelStatusMap, setLabelStatusMap] =
 		useState<Record<string, string>>(savedLabelStatusMap);
+	// GitHub Projects: the repository new issues are created in (`owner/name`);
+	// none → stories travel as draft items on the board.
+	const [githubRepository, setGithubRepository] = useState<string | null>(
+		asString(savedContext?.githubRepository) || null,
+	);
+	// GitHub Projects: the saved credential (credential manager) the project
+	// runs with; null runs it with the person's own GitHub connection.
+	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
+	const [githubCredentialId, setGithubCredentialId] = useState<string | null>(
+		asString(savedContext?.credentialId) || null,
+	);
 
 	const isGitLab = detectedPMType === "gitlab";
 
@@ -1005,7 +1034,7 @@ export function ProjectManagementSettings({ project }: Props) {
 				projectId: project.id,
 				organizationId: project.organizationId ?? null,
 			}),
-		enabled: !!project.id && isGitLab,
+		enabled: !!project.id && (isGitLab || isRestGitHub),
 	});
 	const statuses = useMemo(
 		() =>
@@ -1040,6 +1069,168 @@ export function ProjectManagementSettings({ project }: Props) {
 			setWorkItemType(workItemTypes[0].name);
 		}
 	}, [workItemTypes, workItemType]);
+
+	// GitHub Projects: the chosen board's Status options and linked
+	// repositories.
+	const { data: githubBoard, isLoading: isLoadingGitHubBoard } = useQuery({
+		queryKey: [
+			"githubProjectBoard",
+			project.organizationId ?? null,
+			selectedContainerId,
+			githubCredentialId,
+		],
+		queryFn: () =>
+			orpcClient.projects.github.getProjectBoard({
+				organizationId: project.organizationId ?? null,
+				credentialId: githubCredentialId,
+				boardId: selectedContainerId as string,
+			}),
+		enabled: isRestGitHub && !!selectedContainerId,
+	});
+	// A board with no saved map gets one seeded by name (Status option ↔
+	// Fabric status); a repository is pre-chosen when the board links one.
+	useEffect(() => {
+		if (!isRestGitHub || !githubBoard) {
+			return;
+		}
+		const hasStatusKeys = Object.keys(labelStatusMap).some((k) =>
+			githubBoard.statusOptions.some((o) => o.label === k),
+		);
+		if (!hasStatusKeys && statuses.length > 0) {
+			setLabelStatusMap(
+				seedGitHubStatusMap(githubBoard.statusOptions, statuses),
+			);
+		}
+		if (!githubRepository && githubBoard.repositories.length > 0) {
+			setGithubRepository(githubBoard.repositories[0] ?? null);
+		}
+	}, [isRestGitHub, githubBoard, statuses, labelStatusMap, githubRepository]);
+
+	// GitHub Projects: list the boards the caller's GitHub connection reaches.
+	const fetchGitHubBoards = useCallback(
+		async (preserveSelection = false) => {
+			setIsLoadingContainers(true);
+			setError(null);
+			setNotice(null);
+			setContainers([]);
+			if (!preserveSelection) {
+				setSelectedContainerId(null);
+				setGithubRepository(null);
+				setLabelStatusMap({});
+			}
+			try {
+				const { boards, readsPersonalBoards } =
+					await orpcClient.projects.github.listProjectBoards({
+						organizationId: project.organizationId ?? null,
+						credentialId: githubCredentialId,
+					});
+				setDetectedPMType("github");
+				if (boards.length === 0) {
+					setError(
+						readsPersonalBoards
+							? "No open GitHub project boards on your account or its organizations. Create a board in GitHub Projects."
+							: "No GitHub project boards found. Your GitHub connection is a fine-grained token or a GitHub sign-in, and GitHub does not let those read boards on a personal account. Connect a classic token with the repo and project scopes, or use a board owned by an organization.",
+					);
+					return;
+				}
+				setContainers(
+					boards.map((b) => ({
+						id: b.id,
+						name: `${b.ownerLogin} / ${b.title} (#${b.number})`,
+					})),
+				);
+				if (preserveSelection) {
+					setSelectedContainerId(
+						project.projectManagementContainerId ?? null,
+					);
+				}
+			} catch (err) {
+				setError(
+					err instanceof Error
+						? err.message
+						: "Failed to load GitHub project boards",
+				);
+			} finally {
+				setIsLoadingContainers(false);
+			}
+		},
+		[
+			project.organizationId,
+			project.projectManagementContainerId,
+			githubCredentialId,
+		],
+	);
+
+	// Choosing another credential lists the boards it can reach.
+	const chooseGitHubCredential = useCallback(
+		(credentialId: string | null) => setGithubCredentialId(credentialId),
+		[],
+	);
+	const [listedWithCredential, setListedWithCredential] =
+		useState(githubCredentialId);
+	useEffect(() => {
+		if (isRestGitHub && githubCredentialId !== listedWithCredential) {
+			setListedWithCredential(githubCredentialId);
+			fetchGitHubBoards(true);
+		}
+	}, [
+		isRestGitHub,
+		githubCredentialId,
+		listedWithCredential,
+		fetchGitHubBoards,
+	]);
+
+	// A rejected GitHub token is fixed by connecting GitHub again, right here
+	// where the board list failed; the boards reload once the popup reports
+	// success.
+	const [isReconnectingGitHub, setIsReconnectingGitHub] = useState(false);
+	const handleReconnectGitHub = useCallback(async () => {
+		setIsReconnectingGitHub(true);
+		try {
+			const result = await orpcClient.integrations.github.start({
+				redirectUri: `${window.location.origin}/api/integrations/github/oauth/callback`,
+				returnUrl:
+					window.location.pathname +
+					window.location.search +
+					window.location.hash,
+				organizationId: project.organizationId ?? null,
+			});
+			const w = 600;
+			const h = 700;
+			window.open(
+				result.authorizationUrl,
+				"github-oauth",
+				`width=${w},height=${h},left=${window.screenX + (window.outerWidth - w) / 2},top=${window.screenY + (window.outerHeight - h) / 2}`,
+			);
+		} catch (err) {
+			toast.error(
+				err instanceof Error
+					? err.message
+					: "Failed to start GitHub connection",
+			);
+			setIsReconnectingGitHub(false);
+		}
+	}, [project.organizationId]);
+	useEffect(() => {
+		if (!isReconnectingGitHub) {
+			return;
+		}
+		const handleMessage = (event: MessageEvent) => {
+			if (event.origin !== window.location.origin) {
+				return;
+			}
+			if (event.data?.type === "github_oauth_success") {
+				setIsReconnectingGitHub(false);
+				toast.success("GitHub reconnected");
+				fetchGitHubBoards(true);
+			} else if (event.data?.type === "github_oauth_error") {
+				setIsReconnectingGitHub(false);
+				toast.error(event.data.message || "Failed to reconnect GitHub");
+			}
+		};
+		window.addEventListener("message", handleMessage);
+		return () => window.removeEventListener("message", handleMessage);
+	}, [isReconnectingGitHub, fetchGitHubBoards]);
 
 	// Fetch containers when MCP config is selected
 	// Uses dynamic PM tool analysis instead of hardcoded provider logic
@@ -1289,6 +1480,7 @@ export function ProjectManagementSettings({ project }: Props) {
 	// the configured / default flags from the picker. Mirrors the wizard's
 	// `setProjectManagementTool` behaviour so settings round-trips cleanly.
 	const handlePMToolChange = (next: {
+		key: string | null;
 		mcpConfigId: string | null;
 		mcpServerId: string | null;
 		isDefault: boolean;
@@ -1300,12 +1492,25 @@ export function ProjectManagementSettings({ project }: Props) {
 		setNotice(null);
 		setUserTouchedContainer(false);
 		setSelectedMcpServerId(next.mcpServerId);
-		if (next.transport === "rest" && next.mcpServerId) {
+		if (
+			next.transport === "rest" &&
+			next.mcpServerId &&
+			next.key === GITHUB_PROJECTS_KEY
+		) {
+			// GitHub Projects: no MCPConfig — load boards via the GitHub
+			// connection.
+			setIsRestGitLab(false);
+			setIsRestGitHub(true);
+			setSelectedMcpConfigId(null);
+			fetchGitHubBoards();
+		} else if (next.transport === "rest" && next.mcpServerId) {
 			// GitLab REST: no MCPConfig — load projects via the REST token.
+			setIsRestGitHub(false);
 			setIsRestGitLab(true);
 			setSelectedMcpConfigId(null);
 			fetchGitLabRestContainers();
 		} else if (next.mcpConfigId) {
+			setIsRestGitHub(false);
 			setIsRestGitLab(false);
 			setSelectedMcpConfigId(next.mcpConfigId);
 			fetchContainers(next.mcpConfigId);
@@ -1313,6 +1518,7 @@ export function ProjectManagementSettings({ project }: Props) {
 			// "None" or default-only stub — clear the container picker
 			// and any tool-specific local state; the user must finish
 			// configuring the MCP server before sync can run.
+			setIsRestGitHub(false);
 			setIsRestGitLab(false);
 			setSelectedMcpConfigId(null);
 			setContainers([]);
@@ -1343,6 +1549,54 @@ export function ProjectManagementSettings({ project }: Props) {
 	// SECURITY FIX: Save the MCP SERVER ID, not the config ID
 	// This ensures each user uses their own credentials when syncing
 	const handleSave = () => {
+		// GitHub Projects: the board (container), the repository new issues
+		// go to, and the Status ↔ Fabric status map. Built fresh so keys
+		// another tool left in the bag (an ADO area path, a GitLab origin)
+		// never travel with the board.
+		if (isRestGitHub) {
+			if (!selectedContainerId || !selectedMcpServerId) {
+				toast.error("Please select a GitHub project board");
+				return;
+			}
+			const container = containers.find(
+				(c) => c.id === selectedContainerId,
+			);
+			const statusLabels = new Set(
+				(githubBoard?.statusOptions ?? []).map((o) => o.label),
+			);
+			const githubMap = Object.fromEntries(
+				Object.entries(labelStatusMap).filter(([label]) =>
+					statusLabels.has(label),
+				),
+			);
+			const mergedContext: Record<string, unknown> = {};
+			if (githubRepository) {
+				mergedContext.githubRepository = githubRepository;
+			}
+			if (githubCredentialId) {
+				mergedContext.credentialId = githubCredentialId;
+			}
+			if (Object.keys(githubMap).length > 0) {
+				mergedContext.labelStatusMap = githubMap;
+			}
+			preserveFieldMapping(mergedContext);
+			updateMutation.mutate({
+				mcpServerId: selectedMcpServerId,
+				mcpConfigId: null,
+				containerId: selectedContainerId,
+				containerName:
+					container?.name ||
+					(selectedContainerId ===
+					project.projectManagementContainerId
+						? (project.projectManagementContainerName ?? null)
+						: null),
+				additionalContext:
+					Object.keys(mergedContext).length > 0
+						? mergedContext
+						: null,
+			});
+			return;
+		}
 		// GitLab REST: persist the server id + selected project (container).
 		// No mcpConfigId exists for the REST WorkflowIntegration path.
 		if (isRestGitLab) {
@@ -1753,6 +2007,7 @@ export function ProjectManagementSettings({ project }: Props) {
 											// REST/MCP container fetch fires just
 											// like a manual selection.
 											handlePMToolChange({
+												key: gitlabOption.key,
 												mcpConfigId:
 													gitlabOption.mcpConfigId,
 												mcpServerId:
@@ -1782,7 +2037,20 @@ export function ProjectManagementSettings({ project }: Props) {
 								// an already-REST project shows the picker without a
 								// manual re-select.
 								onResolvedSelection={(info) => {
-									if (info.transport === "rest") {
+									if (
+										info.transport === "rest" &&
+										info.key === GITHUB_PROJECTS_KEY
+									) {
+										setIsRestGitLab(false);
+										setIsRestGitHub(true);
+										if (
+											containers.length === 0 &&
+											!isLoadingContainers
+										) {
+											fetchGitHubBoards(true);
+										}
+									} else if (info.transport === "rest") {
+										setIsRestGitHub(false);
 										setIsRestGitLab(true);
 										// Only auto-load on initial resolve; skip if a
 										// manual selection is already fetching, to avoid
@@ -1794,10 +2062,29 @@ export function ProjectManagementSettings({ project }: Props) {
 											fetchGitLabRestContainers(true);
 										}
 									} else if (info.transport === "mcp") {
+										setIsRestGitHub(false);
 										setIsRestGitLab(false);
 									}
 								}}
 							/>
+
+							{isRestGitHub &&
+								credentialManagerEnabled &&
+								project.organizationId && (
+									<CredentialPicker
+										organizationId={project.organizationId}
+										provider="GITHUB"
+										kinds={[
+											"PAT",
+											"GITHUB_APP_USER",
+											"OAUTH",
+										]}
+										label="GitHub credential"
+										connectionLabel="My GitHub connection"
+										value={githubCredentialId}
+										onChange={chooseGitHubCredential}
+									/>
+								)}
 
 							{/* Error */}
 							{error && (
@@ -1808,6 +2095,19 @@ export function ProjectManagementSettings({ project }: Props) {
 									<p className="text-sm text-destructive/80">
 										{error}
 									</p>
+									{isRestGitHub &&
+									GITHUB_TOKEN_REJECTED.test(error) ? (
+										<Button
+											type="button"
+											variant="secondary"
+											size="sm"
+											className="mt-2"
+											loading={isReconnectingGitHub}
+											onClick={handleReconnectGitHub}
+										>
+											Reconnect GitHub
+										</Button>
+									) : null}
 								</div>
 							)}
 
@@ -1820,7 +2120,9 @@ export function ProjectManagementSettings({ project }: Props) {
 							)}
 
 							{/* Container Selector */}
-							{(selectedMcpConfigId || isRestGitLab) &&
+							{(selectedMcpConfigId ||
+								isRestGitLab ||
+								isRestGitHub) &&
 								!isLoadingContainers &&
 								containers.length > 0 && (
 									<div className="space-y-2">
@@ -2081,8 +2383,91 @@ export function ProjectManagementSettings({ project }: Props) {
 								</div>
 							)}
 
+							{/* GitHub Projects: target repository + Status map */}
+							{isRestGitHub && selectedContainerId && (
+								<div className="space-y-3 rounded-lg border p-3">
+									{isLoadingGitHubBoard ? (
+										<div className="flex items-center gap-2 text-sm text-muted-foreground">
+											<Loader2Icon className="w-4 h-4 animate-spin" />
+											Loading board…
+										</div>
+									) : githubBoard ? (
+										<>
+											<div className="space-y-2">
+												<Label htmlFor="github-target-repository">
+													Repository for new issues
+												</Label>
+												<Select
+													value={
+														githubRepository ??
+														"__drafts__"
+													}
+													onValueChange={(v) =>
+														setGithubRepository(
+															v === "__drafts__"
+																? null
+																: v,
+														)
+													}
+												>
+													<SelectTrigger id="github-target-repository">
+														<SelectValue />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="__drafts__">
+															None — create draft
+															items
+														</SelectItem>
+														{Array.from(
+															new Set([
+																...githubBoard.repositories,
+																...(githubRepository
+																	? [
+																			githubRepository,
+																		]
+																	: []),
+															]),
+														).map((repo) => (
+															<SelectItem
+																key={repo}
+																value={repo}
+															>
+																{repo}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+												<p className="text-muted-foreground text-xs">
+													Stories become issues in
+													this repository, typed
+													Feature or Bug, and are
+													added to the board. Link a
+													repository to the board in
+													GitHub to list it here.
+												</p>
+											</div>
+											<div className="space-y-2">
+												<p className="text-muted-foreground text-sm">
+													Board Status ↔ Fabric status
+												</p>
+												<GitHubStatusMapEditor
+													value={labelStatusMap}
+													onChange={setLabelStatusMap}
+													options={
+														githubBoard.statusOptions
+													}
+													statuses={statuses}
+												/>
+											</div>
+										</>
+									) : null}
+								</div>
+							)}
+
 							{/* Save Button */}
-							{(selectedMcpConfigId || isRestGitLab) && (
+							{(selectedMcpConfigId ||
+								isRestGitLab ||
+								isRestGitHub) && (
 								<div className="pt-2">
 									<Button
 										onClick={handleSave}

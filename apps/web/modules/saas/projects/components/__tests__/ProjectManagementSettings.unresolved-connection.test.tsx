@@ -32,6 +32,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // away leaves the card rendering hrefs like "undefined/projects/…", which is
 // exactly the shape a broken link would have — an unrepresentative fixture
 // cannot catch a regression in the very links this card exists to offer.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useContextPath: (path: string) =>
 		`/app/${path.startsWith("/") ? path.slice(1) : path}`,

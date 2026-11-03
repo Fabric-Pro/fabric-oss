@@ -59,7 +59,9 @@ export const listContextSummarySourcesProcedure = tenantProtectedProcedure
 				userId: organizationId ? null : user.id,
 				organizationId: organizationId ?? null,
 			},
-			includeCodeRepo: isCodeRepoSummarySourceEnabled(),
+			includeCodeRepo: await isCodeRepoSummarySourceEnabled(
+				input.projectId,
+			),
 		});
 
 		return { candidates };

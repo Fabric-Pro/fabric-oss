@@ -766,6 +766,12 @@ const nextConfig: NextConfig = {
 				destination: "/docs/features/libraries",
 				permanent: false,
 			},
+			// The same page at its localised address, which is the one indexed.
+			{
+				source: "/:locale([a-z]{2})/docs/features/workspaces",
+				destination: "/:locale/docs/features/libraries",
+				permanent: false,
+			},
 			{
 				source: "/app/:organizationSlug/settings",
 				destination: "/app/:organizationSlug/settings/general",
@@ -883,7 +889,13 @@ export default withContentCollections(
 		// Only the production project is in the group. Any other build (local,
 		// Docker, CI, the staging project, a fork's Vercel project) has no
 		// Microfrontends application to find, so it stays exactly as before.
-		process.env.VERCEL_PROJECT_NAME === "fabric-prod"
+		// A prebuilt production deploy (`vercel pull` + `vercel build` on a
+		// machine) does not set VERCEL_PROJECT_NAME, so fabric-prod's Production
+		// environment also carries FABRIC_MICROFRONTENDS=1, which `vercel pull`
+		// brings down; microfrontends.json's packageName names the app. On 3 Nov
+		// 2026 a prebuilt deploy without it shipped with no marketing routing.
+		process.env.VERCEL_PROJECT_NAME === "fabric-prod" ||
+			process.env.FABRIC_MICROFRONTENDS === "1"
 			? withMicrofrontends(nextConfig)
 			: nextConfig,
 	),

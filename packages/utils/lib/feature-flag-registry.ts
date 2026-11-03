@@ -42,6 +42,7 @@ export const FEATURE_FLAG_REGISTRY = {
 		default: false,
 		note: "Fizzy #2236. Off = a .json/.yaml spec is chunked by character window exactly as before, so rollback is a flag flip with no redeploy and no migration. Already-ingested specs keep the chunks they have until re-embedded, so flipping this on for an existing project needs a re-embed to take effect.",
 	},
+
 	PROJECT_READINESS: {
 		label: "Project readiness checklist",
 		description:
@@ -420,6 +421,24 @@ export const FEATURE_FLAG_REGISTRY = {
 		default: false,
 		orgScopable: true,
 		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read in the browser for the organization on screen and fixed when the chat mounts; the runtime's data-analyst engine also refuses a run for an organization it is off for. Off, the Data Analyst chat page keeps its CopilotKit chat on /api/copilotkit, unchanged. On, the page runs the agent through the agent runtime with the same service key, tenant headers and AI token: only organization members are served (project guests, whom the old chat served, are refused), a member may start 20 runs a minute, a run ends after 240 seconds (the old chat allowed 800), the browser's options, state and tools never reach the agent, remote images in replies are not loaded, and nothing is saved. The env var is a new name that no deployment sets, so the registry default governs.",
+	},
+	CREDENTIAL_MANAGER: {
+		label: "Credential manager",
+		description:
+			"Shows the Credentials tab under Connections, where members save personal access tokens and API keys once and reuse them wherever something connects.",
+		envVar: "FABRIC_FEATURE_CREDENTIAL_MANAGER",
+		default: false,
+		orgScopable: true,
+		note: "Rollout gate for docs/adr/026-outbound-credentials-are-one-entity.md (phase 1). Off hides the tab and makes the credentials procedures refuse; no existing connection reads the new credential table yet, so turning it off strands nothing. Credentials saved while it was on stay stored, encrypted, and reappear when it is turned back on.",
+	},
+	CONTENT_AWARE_CHUNKING: {
+		label: "Chunk content by content type",
+		description:
+			"Lets a project chunk each source by what it is (sections, list items, dated entries, speaker turns, table rows) instead of one project-wide window, once someone turns on Chunk by content type in its RAG settings.",
+		envVar: "FABRIC_FEATURE_CONTENT_AWARE_CHUNKING",
+		default: false,
+		orgScopable: true,
+		note: "Both this flag and the project's own Chunk by content type toggle must be on. Off, every source is chunked exactly as before, knowledge entries included (one vector, 24,000-character cut). Flipping it does not re-chunk anything: only saving a project's chunking settings does. Turning it off after projects were re-chunked keeps their existing points; new ingestion falls back to the project setting.",
 	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 

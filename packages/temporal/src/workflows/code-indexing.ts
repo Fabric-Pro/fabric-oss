@@ -285,9 +285,10 @@ async function runCodeIndexing(
 	const branch = input.branch;
 
 	// =========================================================================
-	// Feature gate: check FEATURE_CODE_INDEXING env var.
-	// Always check — including on continuation — so toggling the flag off
-	// stops in-flight jobs rather than letting them resume indefinitely.
+	// Former deployment gate. The activity now always answers true (indexing
+	// is gated where the run starts: project mode RAG and an included
+	// repository). The call and the `false` branch stay so histories recorded
+	// under the old flag, including a `false` answer, replay unchanged.
 	// =========================================================================
 	const enabled = await shortRunning.checkCodeIndexingEnabledActivity();
 	if (!enabled) {
@@ -296,7 +297,7 @@ async function runCodeIndexing(
 			projectId: input.projectId,
 			repositoryIntegrationId,
 			branch,
-			error: "Code indexing disabled (FEATURE_CODE_INDEXING != true)",
+			error: "Code indexing disabled",
 			owner,
 		});
 		return {
@@ -306,7 +307,7 @@ async function runCodeIndexing(
 			summariesCreated: 0,
 			totalSymbols: 0,
 			indexDurationMs: 0,
-			error: "Code indexing is disabled (FEATURE_CODE_INDEXING != true)",
+			error: "Code indexing is disabled",
 		};
 	}
 

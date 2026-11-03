@@ -6,7 +6,7 @@
  * dispatcher `callPmToolWithFallback`, `fetchPMItemsByIds`,
  * `fetchAdoWorkItemStates` (and `buildPollVerdict` inside it), the verdict's
  * JSON crossing of the workflow boundary, `reconcileAdoStates`, the status-
- * sync leaf, and the push `syncGitLabStoryViaRest`.
+ * sync leaf, and the push `syncStoryViaRest`.
  *
  * Mocked on the seam, and nothing else:
  *  - `executeGitLabTool` — the wire. A small in-memory GitLab answers
@@ -142,7 +142,7 @@ vi.mock("@repo/logs", () => ({
 	},
 }));
 
-import { syncGitLabStoryViaRest } from "../gitlab-rest-story-sync";
+import { syncStoryViaRest } from "../gitlab-rest-story-sync";
 import {
 	type FetchAdoWorkItemStatesResult,
 	fetchAdoWorkItemStates,
@@ -565,7 +565,7 @@ const STALE_CALLER_CONTEXT = {
  * `readLabelStatusMap` expects.
  */
 async function push(callerContext: object = PROJECT_CONTEXT) {
-	return syncGitLabStoryViaRest({
+	return syncStoryViaRest({
 		storyId: "story-7",
 		projectId: PROJECT_ID,
 		mcpConfigId: null,

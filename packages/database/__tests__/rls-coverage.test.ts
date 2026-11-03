@@ -161,6 +161,12 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
 	["channel_thread_mapping", "latent-RLS backfill (H8); org+user"],
 	["sdlc_artifact", "latent-RLS backfill (H8); org-only"],
 	["project_code_index", "latent-RLS backfill (H8); org+user"],
+	// A code index's file text: no userId, read only through its index, so it
+	// takes the policy its parent gets when that one is backfilled.
+	[
+		"project_code_file",
+		"latent-RLS backfill (H8); follows project_code_index",
+	],
 	["project_linked_teams_chat", "latent-RLS backfill (H8); org+user"],
 	["request_span", "latent-RLS backfill (H8); org+user"],
 	["task_workflow_plan", "latent-RLS backfill (H8); org+user"],

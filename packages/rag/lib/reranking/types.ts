@@ -6,8 +6,9 @@
  * to score query-document relevance more accurately than vector similarity.
  *
  * Supported providers:
- * - cross-encoder: Self-hosted, free, uses transformers.js (default)
+ * - cross-encoder: Self-hosted, free, uses transformers.js
  * - cohere: Cloud API, high quality, requires API key
+ * - gateway: Vercel AI Gateway, organization credential
  */
 
 import type { RetrievedContext } from "../project-contexts/retrieval";
@@ -15,7 +16,7 @@ import type { RetrievedContext } from "../project-contexts/retrieval";
 /**
  * Available reranker provider types
  */
-export type RerankerProviderType = "cross-encoder" | "cohere";
+export type RerankerProviderType = "cross-encoder" | "cohere" | "gateway";
 
 /**
  * Result from reranking a document
@@ -43,14 +44,24 @@ export interface RerankOptions {
 	minRelevanceScore?: number;
 }
 
+/** Tenant attribution supplied by the authorized retrieval caller. */
+export interface RerankerTenant {
+	userId?: string;
+	organizationId?: string | null;
+	projectId?: string;
+}
+
 /**
  * Configuration for initializing a reranker provider
  */
 export interface RerankerConfig {
 	/** Provider type */
 	provider: RerankerProviderType;
-	/** API key (required for cohere, optional for cross-encoder) */
+	/** API key (required for cloud providers) */
 	apiKey?: string;
+	tenant?: RerankerTenant;
+	/** Organization credential configuration used for usage attribution. */
+	providerConfigId?: string;
 	/** Custom model name (provider-specific) */
 	model?: string;
 	/** Timeout in milliseconds (default: 30000) */
@@ -114,7 +125,7 @@ export const DEFAULT_RERANK_CONFIG = {
 	minRelevanceScore: 0.0,
 	/** Default timeout in ms */
 	timeout: 30000,
-	/** Default provider */
+	/** Fallback provider when no cloud configuration resolves */
 	provider: "cross-encoder" as RerankerProviderType,
 } as const;
 
@@ -122,6 +133,7 @@ export const DEFAULT_RERANK_CONFIG = {
  * Model identifiers for each provider
  */
 export const RERANKER_MODELS = {
+	gateway: { default: "cohere/rerank-v5-pro" },
 	cohere: {
 		default: "rerank-v3.5",
 		v3: "rerank-v3.5",

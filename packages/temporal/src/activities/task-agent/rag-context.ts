@@ -19,17 +19,12 @@ import {
 } from "@repo/ai";
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
+import { db, getSearchProviderConfig, type Prisma } from "@repo/database";
+import { contextMetaHeader, extractBaseContextId } from "@repo/rag";
 import {
-	db,
-	getRetrievableConversationBundleById,
-	getSearchProviderConfig,
-	type Prisma,
-} from "@repo/database";
-import {
-	contextMetaHeader,
-	extractBaseContextId,
-	searchSimilarProjectContexts,
-} from "@repo/rag";
+	hydrateProjectContextHits,
+	searchProjectContextHits,
+} from "@repo/rag/lib/project-contexts/search-hits";
 import { decryptApiKey } from "@repo/utils";
 import { scrapeUrl } from "../lib/firecrawl-client";
 import type { RetrieveProjectContextsInput } from "./types";
@@ -84,7 +79,8 @@ export async function retrieveProjectContexts(
 		});
 
 		// Search for relevant contexts using RAG
-		const results = await searchSimilarProjectContexts({
+		const results = await searchProjectContextHits({
+			query: queryText,
 			projectId,
 			userId,
 			organizationId,
@@ -93,62 +89,19 @@ export async function retrieveProjectContexts(
 			minSimilarity: 0.5,
 		});
 
-		// Fetch actual content from database using contextIds
-		// Note: Qdrant stores chunk IDs like "contextId-chunk-0" but DB has original "contextId"
-		// Uses extractBaseContextId from @repo/rag to strip chunk suffix
-		// Captured conversation bundle hits live in their own table, not in
-		// `ProjectContext`; only the point payload says which hits they are.
-		const bundleIds = [
-			...new Set(
-				results.flatMap((r) =>
-					r.conversationBundleId ? [r.conversationBundleId] : [],
-				),
-			),
-		];
-		const rawContextIds = results
-			.filter((r) => !r.conversationBundleId)
-			.map((r) => r.contextId);
-		const contextIds = [
-			...new Set(rawContextIds.map(extractBaseContextId)),
-		];
-		if (contextIds.length === 0 && bundleIds.length === 0) {
-			return [];
-		}
-
-		// SECURITY: Validate project ownership when fetching contexts
-		// Defense-in-depth: Qdrant already filtered by projectId, but we validate at DB level too
-		const [rows, bundles] = await Promise.all([
-			db.projectContext.findMany({
-				where: {
-					id: { in: contextIds },
-					project: {
-						id: projectId,
-						// Enforce tenant isolation - project must belong to this user/org
-						...(organizationId
-							? { organizationId }
-							: { userId, organizationId: null }),
-					},
-				},
-				select: {
-					content: true,
-					sourceType: true,
-					aiInstructions: true,
-				},
-			}),
-			Promise.all(
-				bundleIds.map((bundleId) =>
-					getRetrievableConversationBundleById({
-						bundleId,
-						projectId,
-						tenant: { userId, organizationId },
-					}),
-				),
-			),
-		]);
-		const contexts = [
-			...rows,
-			...bundles.filter((bundle) => bundle !== null),
-		];
+		const hydrated = await hydrateProjectContextHits({
+			hits: results.map((hit) => ({
+				...hit,
+				contextId: extractBaseContextId(hit.contextId),
+			})),
+			projectId,
+			userId,
+			organizationId,
+			lookup: "project-scoped-batch",
+		});
+		const contexts = hydrated.flatMap(({ context }) =>
+			context ? [context] : [],
+		);
 
 		return contexts.map((c) => {
 			if (!c.sourceType && !c.aiInstructions) {
@@ -156,7 +109,7 @@ export async function retrieveProjectContexts(
 			}
 			// Shared header helper from @repo/rag — same bracket-line format
 			// every other custom renderer uses, so the shapes cannot drift.
-			return `${contextMetaHeader(c)}${c.content}`;
+			return `${contextMetaHeader({ sourceType: c.sourceType, aiInstructions: c.aiInstructions })}${c.content}`;
 		});
 	} catch (error) {
 		// RAG retrieval is optional - don't fail the workflow if it fails

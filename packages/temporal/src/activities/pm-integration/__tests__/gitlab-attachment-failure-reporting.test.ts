@@ -132,7 +132,7 @@ vi.mock("../hierarchy-sync", () => ({
 	stampPmSyncSuccess: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { syncGitLabStoryViaRest } from "../gitlab-rest-story-sync";
+import { syncStoryViaRest } from "../gitlab-rest-story-sync";
 import { getPmSyncBaseline, stampPmSyncConflict } from "../hierarchy-sync";
 
 const STORY_TITLE = "Add login";
@@ -240,7 +240,7 @@ describe("GitLab attachment push failure reporting (Fizzy #1745, AC-4)", () => {
 			vi.fn(async () => new Response("forbidden", { status: 403 })),
 		);
 
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never);
@@ -285,7 +285,7 @@ describe("GitLab attachment push failure reporting (Fizzy #1745, AC-4)", () => {
 			}),
 		);
 
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never);
@@ -311,7 +311,7 @@ describe("GitLab attachment push failure reporting (Fizzy #1745, AC-4)", () => {
 			vi.fn(async () => new Response("forbidden", { status: 403 })),
 		);
 
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never);
@@ -352,7 +352,7 @@ describe("GitLab attachment push failure reporting (Fizzy #1745, AC-4)", () => {
 			vi.fn(async () => new Response("forbidden", { status: 403 })),
 		);
 
-		const result = await syncGitLabStoryViaRest({
+		const result = await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never);
@@ -395,7 +395,7 @@ describe("GitLab attachment push failure reporting (Fizzy #1745, AC-4)", () => {
 			vi.fn(async () => new Response("forbidden", { status: 403 })),
 		);
 
-		const result = await syncGitLabStoryViaRest({
+		const result = await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never);
@@ -422,7 +422,7 @@ describe("GitLab attachment push failure reporting (Fizzy #1745, AC-4)", () => {
 			vi.fn(async () => new Response("forbidden", { status: 403 })),
 		);
 
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never).catch(() => undefined);
@@ -455,7 +455,7 @@ describe("GitLab attachment push failure reporting (Fizzy #1745, AC-4)", () => {
 			),
 		);
 
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never);

@@ -198,6 +198,9 @@ async function applyRLS() {
 			// tables hold OAuth/service credentials, so a missed policy matters).
 			{ name: "openapi_service", policy: "strict" },
 			{ name: "openapi_service_config", policy: "strict" },
+			// Outbound credentials (credential manager). Organization is the
+			// boundary; owner and sharing are enforced in queries/credentials.ts.
+			{ name: "credential", policy: "org_only_owned" },
 			// ai_chat removed - migrated to user_owned for per-user isolation within orgs
 			// { name: "ai_chat", policy: "strict" },
 			{ name: "purchase", policy: "strict" }, // Purchases belong to user OR org
@@ -367,7 +370,15 @@ async function applyRLS() {
 			{ name: "project_readiness_item_state", policy: "user_owned" }, // Manual readiness states (snooze / not applicable / help requested)
 			{ name: "project_readiness_verdict", policy: "user_owned" }, // Last computed readiness verdict per item
 			{ name: "project_context_summary", policy: "user_owned" }, // Compressed project-history summaries
+			// Project knowledge hub (specs/2026-10-21-ai-artifacts-hub)
+			{ name: "knowledge_artifact_type", policy: "user_owned" },
+			{ name: "knowledge_topic", policy: "user_owned" },
+			{ name: "knowledge_entry", policy: "user_owned" },
+			{ name: "knowledge_topic_summary", policy: "user_owned" },
+			{ name: "instruction_consolidation", policy: "user_owned" },
+			{ name: "project_import_run", policy: "user_owned" },
 			{ name: "project_rag_settings", policy: "user_owned" }, // RAG settings
+			{ name: "project_chunking_run", policy: "user_owned" }, // Content-type chunking runs
 			{ name: "background_job", policy: "user_owned" }, // Job Hub — background job progress rows
 			// Security & accessibility scanning (project-scoped, user/org owned)
 			{ name: "project_scan_config", policy: "user_owned" },

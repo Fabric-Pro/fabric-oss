@@ -19,6 +19,7 @@ import {
 	hasProviderCredentials,
 	resolveModelWithProvider,
 } from "@repo/ai";
+import { LOCAL_MODEL_SELECTION_SOURCE } from "@repo/ai/local-models";
 import {
 	embeddingModelFitsVectorStore,
 	getKnownEmbeddingDimensions,
@@ -91,11 +92,15 @@ export async function resolveCompanyEmbeddingModel(params: {
 		);
 	}
 
-	const dimensions = getKnownEmbeddingDimensions(config.canonicalName);
+	// A local model is always asked for the store's width (local-models.ts).
+	const local = config.selectionSource === LOCAL_MODEL_SELECTION_SOURCE;
+	const dimensions = local
+		? VECTOR_SIZE
+		: getKnownEmbeddingDimensions(config.canonicalName);
 	return {
 		identity: companyEmbeddingIdentity(config),
 		dimensions,
-		supported: embeddingModelFitsVectorStore(config.canonicalName),
+		supported: local || embeddingModelFitsVectorStore(config.canonicalName),
 	};
 }
 

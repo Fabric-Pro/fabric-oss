@@ -145,6 +145,12 @@ export interface ExistingProjectSetupInput extends BulkRunInputExtras {
 	organizationId?: string;
 	aiToken: string;
 	repoUrls: string[];
+	/**
+	 * Repositories that are not the product's code, by URL: the coding
+	 * instructions or documentation kept in Living Memory. Absent on runs
+	 * started before the field existed, where every repository is code.
+	 */
+	repoRoles?: Record<string, "instructions" | "knowledge">;
 	selectedDocumentTypes: string[];
 	projectTypes: string[];
 	projectName: string;
@@ -208,14 +214,31 @@ const RESUME_TOKEN_EXPIRY_SECONDS = 7200;
 // Prompt Builder (multi-repo)
 // ============================================================================
 
-function buildMultiRepoAnalysisPrompt(params: {
+const REPO_ROLE_NOTES: Record<"instructions" | "knowledge", string> = {
+	instructions:
+		"the project's coding instructions (rules, skills, agents, AGENTS.md/CLAUDE.md): read it for the team's conventions, not as product code",
+	knowledge:
+		"the project's documentation, kept in Living Memory: read it for the domain, decisions and requirements, not as product code",
+};
+
+export function buildMultiRepoAnalysisPrompt(params: {
 	repoUrls: string[];
+	repoRoles?: Record<string, "instructions" | "knowledge">;
 	projectTypes: string[];
 	projectName: string;
 }): string {
+	const roleOf = (url: string) => params.repoRoles?.[url];
 	const repoList = params.repoUrls
-		.map((url, i) => `${i + 1}. ${url}`)
+		.map((url, i) => {
+			const role = roleOf(url);
+			return role
+				? `${i + 1}. ${url} — ${REPO_ROLE_NOTES[role]}`
+				: `${i + 1}. ${url}`;
+		})
 		.join("\n");
+	const roleGuidance = params.repoUrls.some((url) => roleOf(url))
+		? "\n- The repositories marked above are not the product's code: describe the product from the others, and use the marked ones only for what their note says."
+		: "";
 
 	const typeContext =
 		params.projectTypes.length > 0
@@ -235,7 +258,7 @@ CRITICAL INSTRUCTIONS — READ CAREFULLY:
 - Work at the SUMMARY level: read the README, scan config/build files (package.json, *.csproj, pom.xml, etc.), and get the directory structure. That is enough.
 - Do NOT dump raw source code. Summarize what you find in your own words.
 - Do NOT exhaustively search every file. Get the big picture from a few strategic reads.
-- If a tool returns a large result, extract the key facts and move on.
+- If a tool returns a large result, extract the key facts and move on.${roleGuidance}
 
 Provide your analysis in these sections:
 
@@ -488,7 +511,7 @@ export async function existingProjectSetupWorkflow(
 			await updateProjectRagSettings({
 				projectId,
 				topK: 50,
-				rerankTopK: 20,
+				rerankTopK: 10,
 				enableReranking: true,
 			});
 		}
@@ -587,6 +610,7 @@ export async function existingProjectSetupWorkflow(
 					// Build analysis prompt
 					const analysisPrompt = buildMultiRepoAnalysisPrompt({
 						repoUrls: mappings.map((m) => m.repoUrl),
+						repoRoles: input.repoRoles,
 						projectTypes,
 						projectName,
 					});

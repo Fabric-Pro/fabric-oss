@@ -643,6 +643,10 @@ export function useOrchestratorTurnState(
 							question,
 							answer: answer.trim(),
 						}),
+						clarification: {
+							question,
+							answer: answer.trim(),
+						},
 						timestamp: new Date(),
 					},
 				]);

@@ -151,7 +151,7 @@ import {
 	appendAttachmentBlock,
 	renderAttachmentBlock,
 } from "../gitlab-attachment-block";
-import { syncGitLabStoryViaRest } from "../gitlab-rest-story-sync";
+import { syncStoryViaRest } from "../gitlab-rest-story-sync";
 import {
 	getPmSyncBaseline,
 	stampPmSyncConflict,
@@ -261,7 +261,7 @@ describe("GitLab attachment block self-heal (Fizzy #1745, review round 1)", () =
 			}),
 		);
 
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "pull",
 		} as never);
@@ -328,7 +328,7 @@ describe("GitLab attachment block self-heal (Fizzy #1745, review round 1)", () =
 			title: STORY_TITLE,
 		});
 
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never);
@@ -383,7 +383,7 @@ describe("GitLab attachment block self-heal (Fizzy #1745, review round 1)", () =
 			title: STORY_TITLE,
 		});
 
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never);
@@ -436,7 +436,7 @@ describe("GitLab attachment block self-heal (Fizzy #1745, review round 1)", () =
 			title: STORY_TITLE,
 		});
 
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never);
@@ -513,7 +513,7 @@ describe("GitLab attachment block self-heal (Fizzy #1745, review round 1)", () =
 			};
 		});
 
-		const result = await syncGitLabStoryViaRest({
+		const result = await syncStoryViaRest({
 			...baseInput,
 			direction: "push",
 		} as never);

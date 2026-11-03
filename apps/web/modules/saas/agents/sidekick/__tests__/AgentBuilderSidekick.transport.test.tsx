@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
 	flagOn: false,
 	organizationOnScreen: "org-example-1" as string | null,
+	resolvingOrganization: false,
 	getSnapshot: (): Record<string, unknown> => ({ name: "First" }),
 	setFormField: vi.fn(),
 	showLimitToast: vi.fn(),
@@ -48,7 +49,10 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useEffectiveOrganizationId: (id?: string | null) =>
 		id === undefined ? m.organizationOnScreen : id,
-	useOrganizationContext: () => ({ organizationId: m.organizationOnScreen }),
+	useOrganizationContext: () => ({
+		organizationId: m.organizationOnScreen,
+		isResolvingOrganization: m.resolvingOrganization,
+	}),
 }));
 vi.mock("../SidekickFormContext", () => ({
 	useSidekickForm: () => ({
@@ -187,6 +191,7 @@ beforeEach(() => {
 	vi.useFakeTimers({ shouldAdvanceTime: true });
 	m.flagOn = false;
 	m.organizationOnScreen = "org-example-1";
+	m.resolvingOrganization = false;
 	m.getSnapshot = () => ({ name: "First" });
 	m.setFormField.mockReset();
 	m.showLimitToast.mockReset();
@@ -252,6 +257,27 @@ async function settled() {
 }
 
 describe("AgentBuilderSidekick transport", () => {
+	it("waits for the organization a full page load is still fetching, then runs on the runtime", async () => {
+		m.flagOn = true;
+		m.organizationOnScreen = null;
+		m.resolvingOrganization = true;
+		const view = render(sidekick());
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1000);
+		});
+		expect(requests).toHaveLength(0);
+		expect(screen.getByRole("status")).toBeInTheDocument();
+
+		m.organizationOnScreen = "org-example-1";
+		m.resolvingOrganization = false;
+		view.rerender(sidekick());
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500);
+		});
+		await waitFor(() => expect(requests).toHaveLength(1));
+		expect(requests[0]?.url).toBe(RUNTIME_URL);
+	});
+
 	it.each([false, true])(
 		"renders explicit served identity on either transport (runtime: %s)",
 		async (flagOn) => {

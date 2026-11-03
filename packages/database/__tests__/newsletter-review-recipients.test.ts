@@ -81,16 +81,16 @@ describe("selectReviewRecipientIds — project-member path (C)", () => {
 });
 
 describe("selectReviewRecipientIds — org-role fallback (B)", () => {
-	it("includes an org owner with no project row", () => {
+	it("excludes an org owner who is not on the project", () => {
 		expect(
 			select({ orgMembers: [{ userId: "u1", role: "owner" }] }),
-		).toEqual(["u1"]);
+		).toEqual([]);
 	});
 
-	it("includes an org admin with no project row", () => {
+	it("excludes an org admin who is not on the project", () => {
 		expect(
 			select({ orgMembers: [{ userId: "u1", role: "admin" }] }),
-		).toEqual(["u1"]);
+		).toEqual([]);
 	});
 
 	it("excludes a plain org member", () => {
@@ -99,9 +99,13 @@ describe("selectReviewRecipientIds — org-role fallback (B)", () => {
 		).toEqual([]);
 	});
 
-	it("includes an org admin whose project row is EXPIRED", () => {
-		// An expired row is not active, so it is not authoritative — the live
-		// resolver falls through to the org role and this user can approve.
+	it("includes an org admin who created the project, with no project row", () => {
+		expect(
+			select({ orgMembers: [{ userId: "creator-1", role: "admin" }] }),
+		).toEqual(["creator-1"]);
+	});
+
+	it("excludes an org admin whose project row is EXPIRED", () => {
 		expect(
 			select({
 				members: [
@@ -114,10 +118,10 @@ describe("selectReviewRecipientIds — org-role fallback (B)", () => {
 				],
 				orgMembers: [{ userId: "u1", role: "admin" }],
 			}),
-		).toEqual(["u1"]);
+		).toEqual([]);
 	});
 
-	it("includes an org admin whose project row is UNACCEPTED", () => {
+	it("excludes an org admin whose project row is UNACCEPTED", () => {
 		expect(
 			select({
 				members: [
@@ -130,7 +134,7 @@ describe("selectReviewRecipientIds — org-role fallback (B)", () => {
 				],
 				orgMembers: [{ userId: "u1", role: "admin" }],
 			}),
-		).toEqual(["u1"]);
+		).toEqual([]);
 	});
 
 	it("treats a future expiry as still active, so path C keeps deciding", () => {
@@ -183,11 +187,11 @@ describe("selectReviewRecipientIds — shape", () => {
 		const ids = select({
 			members: [accepted("u2", "PROJECT_ADMIN")],
 			orgMembers: [
-				{ userId: "u1", role: "owner" },
+				{ userId: "creator-1", role: "owner" },
 				{ userId: "u2", role: "owner" },
 			],
 		});
-		expect(ids).toEqual(["u2", "u1"]);
+		expect(ids).toEqual(["u2", "creator-1"]);
 	});
 
 	it("returns an empty list when nobody qualifies", () => {
@@ -200,7 +204,7 @@ describe("selectReviewRecipientIds — shape", () => {
 		// organization too, and that channel is unaffected: its link is
 		// context-relative and interpolates no slug.
 		expect(
-			select({ orgMembers: [{ userId: "u1", role: "owner" }] }),
-		).toEqual(["u1"]);
+			select({ orgMembers: [{ userId: "creator-1", role: "owner" }] }),
+		).toEqual(["creator-1"]);
 	});
 });

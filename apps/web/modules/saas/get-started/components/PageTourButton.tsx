@@ -39,6 +39,7 @@ export function PageTourButton({
 	const glossyEditionEnabled = useFeatureFlag("GLOSSY_EDITION");
 	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
 	const parlumeMeetingsEnabled = useFeatureFlag("PARLUME_MEETINGS");
+	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
 	if (
 		!GET_STARTED_ENABLED ||
 		!pageForTab(pageId, {
@@ -47,6 +48,7 @@ export function PageTourButton({
 			glossyEdition: glossyEditionEnabled,
 			proposalArtifact: proposalArtifactEnabled,
 			parlumeMeetings: parlumeMeetingsEnabled,
+			credentialManager: credentialManagerEnabled,
 		})
 	) {
 		return null;

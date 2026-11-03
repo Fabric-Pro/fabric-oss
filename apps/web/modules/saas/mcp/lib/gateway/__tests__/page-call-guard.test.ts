@@ -25,9 +25,9 @@ import {
 	pageCallSession,
 } from "../page-call-guard";
 import { sessionMayReachProject } from "../project-binding";
-import type { GatewaySession } from "../types";
-import { accessibleFrame } from "../tools/frame-context";
 import { isPlatformToolName } from "../server-selection";
+import { accessibleFrame } from "../tools/frame-context";
+import type { GatewaySession } from "../types";
 
 const checkPageCall = (
 	pageFrameId: string,

@@ -5,6 +5,15 @@ import {
 	type resolvePMConfigForUser,
 } from "@repo/database";
 import {
+	readPmCredentialId,
+	resolveGitHubProjectsCredential,
+} from "@repo/integrations/github/projects-credential";
+import {
+	type GitHubProjectsSource,
+	isGitHubProjectsKey,
+	readGitHubProjectsRepository,
+} from "@repo/integrations/github/projects-pm-adapter";
+import {
 	assertGitLabPmMcpConfigOrigin,
 	describeGitLabConnectionFailure,
 	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
@@ -38,7 +47,14 @@ export type PMSource =
 			/** REST base of the instance that issued `token` (`…/api/v4`). */
 			baseUrl: string;
 			projectId: string;
-	  };
+	  }
+	| ({ kind: "rest-github" } & GitHubProjectsSource);
+
+/** The two connection-backed (non-MCP) sources. */
+export type RestPMSource = Extract<
+	PMSource,
+	{ kind: "rest-gitlab" | "rest-github" }
+>;
 
 export class PMSourceNotFound extends Error {
 	constructor(
@@ -142,10 +158,47 @@ export async function resolvePmSource(args: {
 		return { kind: "mcp", mcpConfig };
 	}
 
-	// Path 2: GitLab REST fallback. Server must be gitlab-official (or the
+	const serverKey = await resolvePmServerKey(mcpServerId);
+
+	// Path 2: GitHub Projects. Always the CALLER's own GitHub connection
+	// (XOR tenant: the (userId, organizationId) workflow integration), never
+	// a teammate's or a project repository grant — as for GitLab below.
+	if (isGitHubProjectsKey(serverKey)) {
+		if (!containerId) {
+			throw new PMSourceNotFound("no-config");
+		}
+		// The saved credential the project chose (credential manager), else
+		// the caller's GitHub connection.
+		let credential: Awaited<
+			ReturnType<typeof resolveGitHubProjectsCredential>
+		>;
+		try {
+			credential = await resolveGitHubProjectsCredential(
+				userId,
+				organizationId,
+				readPmCredentialId(args.additionalContext),
+			);
+		} catch {
+			throw new PMSourceNotFound("token-failed");
+		}
+		if (!credential.ok) {
+			throw new PMSourceNotFound(
+				credential.reason === "no-connection"
+					? "no-integration"
+					: "token-failed",
+			);
+		}
+		return {
+			kind: "rest-github",
+			token: credential.token,
+			projectId: containerId,
+			repository: readGitHubProjectsRepository(args.additionalContext),
+		};
+	}
+
+	// Path 3: GitLab REST fallback. Server must be gitlab-official (or the
 	// `key:gitlab-official` sentinel) AND the caller must have a usable
 	// personal GitLab connection.
-	const serverKey = await resolvePmServerKey(mcpServerId);
 	if (serverKey !== "gitlab-official") {
 		throw new PMSourceNotFound("no-config");
 	}

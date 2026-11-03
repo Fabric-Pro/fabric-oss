@@ -30,7 +30,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { buildOperationResultMessage } from "../lib/operation-result-message";
+import {
+	buildOperationResultMessage,
+	dropDuplicatedOperationResults,
+	operationResultText,
+} from "../lib/operation-result-message";
 
 const HEADER = "SYSTEM";
 const TRUNCATION_SUFFIX = "…";
@@ -362,5 +366,65 @@ describe("buildOperationResultMessage — edges", () => {
 			summary: "Done.",
 		});
 		expect(out.metadata.artifact).toBeUndefined();
+	});
+});
+
+const op = (content = "SYSTEM\n\nanswer") => ({
+	role: "system",
+	content,
+	metadata: { kind: "operation_result", outcome: "success" },
+});
+
+describe("dropDuplicatedOperationResults (F33)", () => {
+	it("drops the row when the exchange already has the saved answer, in either order", () => {
+		const messages = [
+			{ role: "user", content: "q1" },
+			{ role: "assistant", content: "a1" },
+			op(),
+			{ role: "user", content: "q2" },
+			op(),
+			{ role: "assistant", content: "a2" },
+		];
+
+		expect(
+			dropDuplicatedOperationResults(messages).map((m) => m.content),
+		).toEqual(["q1", "a1", "q2", "a2"]);
+	});
+
+	it("keeps the row when it is the only record of the answer", () => {
+		// The tab closed before the reply could be saved.
+		const messages = [
+			{ role: "user", content: "q1" },
+			op("SYSTEM\n\nthe only answer"),
+			{ role: "user", content: "q2" },
+		];
+
+		expect(dropDuplicatedOperationResults(messages)).toHaveLength(3);
+	});
+
+	it("leaves other system rows alone", () => {
+		const messages = [
+			{ role: "user", content: "q1" },
+			{ role: "assistant", content: "a1" },
+			{ role: "system", content: "note", metadata: { kind: "other" } },
+		];
+
+		expect(dropDuplicatedOperationResults(messages)).toHaveLength(3);
+	});
+});
+
+describe("operationResultText", () => {
+	it("returns a row's text without the formatter's header", () => {
+		const { content } = buildOperationResultMessage({
+			outcome: "success",
+			operationLabel: "Op",
+			summary: "Created the diagram.",
+		});
+
+		expect(operationResultText(content)).toBe("Created the diagram.");
+	});
+
+	it("leaves text without the header unchanged", () => {
+		expect(operationResultText("Plain answer")).toBe("Plain answer");
 	});
 });

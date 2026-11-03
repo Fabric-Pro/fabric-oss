@@ -172,7 +172,7 @@ describe("formatContextAvailabilityText", () => {
 describe("deriveCodebaseState", () => {
 	const base = {
 		integrationStatuses: ["ACTIVE"],
-		codeSearchEnabled: true,
+		codeSearchMode: "RAG" as "OFF" | "CODE_SEARCH" | "RAG",
 		codeIndexStatus: "READY" as string | null,
 	};
 
@@ -182,17 +182,27 @@ describe("deriveCodebaseState", () => {
 		);
 	});
 
-	it("returns code-search-disabled when the toggle is off", () => {
-		expect(deriveCodebaseState({ ...base, codeSearchEnabled: false })).toBe(
+	it("returns code-search-disabled when the code search mode is OFF", () => {
+		expect(deriveCodebaseState({ ...base, codeSearchMode: "OFF" })).toBe(
 			"code-search-disabled",
 		);
+	});
+
+	it("returns available for live code search without any index", () => {
+		expect(
+			deriveCodebaseState({
+				...base,
+				codeSearchMode: "CODE_SEARCH",
+				codeIndexStatus: null,
+			}),
+		).toBe("available");
 	});
 
 	it("returns credentials-expired for TOKEN_EXPIRED even when index is missing (AE1)", () => {
 		expect(
 			deriveCodebaseState({
 				integrationStatuses: ["TOKEN_EXPIRED"],
-				codeSearchEnabled: true,
+				codeSearchMode: "RAG",
 				codeIndexStatus: null,
 			}),
 		).toBe("credentials-expired");
@@ -280,7 +290,7 @@ describe("deriveCodebaseState", () => {
 		expect(
 			deriveCodebaseState({
 				integrationStatuses: ["TOKEN_EXPIRED", "ACTIVE"],
-				codeSearchEnabled: true,
+				codeSearchMode: "RAG",
 				codeIndexStatus: "READY",
 			}),
 		).toBe("available");

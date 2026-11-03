@@ -41,7 +41,15 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // contract: an agent must know before the call that oldText matches once and
 // which updatedAt to send. With fabric_get_frame's outline flag that is 894 net,
 // after shortening the frame read and update descriptions to make room.
-const TOTAL_BUDGET = 53_244 + 2_118 + 31 + 163 + 188 + 115 + 894;
+// The Coding Instructions plugin's 7 tools (specs/2026-10-21-ai-artifacts-hub:
+// change instructions, rules on demand, the knowledge hub) are called directly
+// by a person's coding tool, with descriptions cut to one line each; their
+// schemas add 4,024. fabric_list_code_repositories (the workspace layout, §5.7)
+// adds 239: the plugin's agent clones the project's repositories from its list.
+// fabric_semantic_search adds 333: the plugin's agent asks the project's RAG
+// before it walks the code.
+const TOTAL_BUDGET =
+	53_244 + 2_118 + 31 + 163 + 188 + 115 + 894 + 4_024 + 239 + 333;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;

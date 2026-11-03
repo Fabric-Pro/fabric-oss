@@ -27,6 +27,7 @@ import { aiConfigurationRefusalMessage } from "../../lib/ai-configuration-refusa
 import { dispatchLifecycleEvent } from "../../lib/lifecycle-dispatcher";
 import { synthesizeToolSpeech } from "../../lib/text-to-speech";
 import { COMPANY_CONTEXT_SEARCH_TOOL_NAME } from "../../workflows/orchestrator/company-context-tool-schemas";
+import { CODE_ANSWER_DEPTH_RULE } from "../../workflows/orchestrator/project-repository-tool-schemas";
 import {
 	type SecondaryUsageInput,
 	secondaryUsageFields,
@@ -51,9 +52,13 @@ import { PROJECT_FEATURE_TOOL_IDS } from "../shared/project-feature-reads";
 import {
 	buildCodeSearchRepositories,
 	buildUnindexedRepositories,
+	CODE_SEARCH_OFF_MESSAGE,
 	type CodeSearchRepository,
+	codeIndexStatusNote,
 	codeIndexUnavailableResult,
 	describeCodeSearchRepositories,
+	isSearchableIndexStatus,
+	loadCodeSearchMode,
 	repositoryFilterTerm,
 	resolveCodeSearchRepository,
 } from "./code-search-repositories";
@@ -224,6 +229,9 @@ const NO_PROJECT_ACCESS_RESULT = {
 
 /**
  * The project's code-indexed repositories, with each one's index status.
+ * Only repositories included in AI code search: an excluded one, its index
+ * rows with it, is invisible here (spec 2026-10-29 code-index-sync §6a.2).
+ * The legacy repository has no switch and counts as included.
  * Scoped by `projectId` only — callers check `canReadChatProject` first.
  */
 async function loadCodeSearchRepositories(projectId: string): Promise<{
@@ -233,10 +241,10 @@ async function loadCodeSearchRepositories(projectId: string): Promise<{
 	loadUnindexed: () => Promise<CodeSearchRepository[]>;
 }> {
 	const { getProjectCodeIndexes } = await import("@repo/database");
-	const [indexes, integrations] = await Promise.all([
+	const [allIndexes, integrations] = await Promise.all([
 		getProjectCodeIndexes(projectId),
 		db.projectRepositoryIntegration.findMany({
-			where: { projectId },
+			where: { projectId, includedInCodeSearch: true },
 			select: {
 				id: true,
 				repositoryUrl: true,
@@ -246,6 +254,12 @@ async function loadCodeSearchRepositories(projectId: string): Promise<{
 			},
 		}),
 	]);
+	const includedIds = new Set(integrations.map((i) => i.id));
+	const indexes = allIndexes.filter(
+		(index) =>
+			index.repositoryIntegrationId === null ||
+			includedIds.has(index.repositoryIntegrationId),
+	);
 	// The project's own legacy repository backs only an index row with no
 	// integration, so it is looked up only when there is one.
 	const loadLegacy = () =>
@@ -277,6 +291,77 @@ async function loadCodeSearchRepositories(projectId: string): Promise<{
 				integrations,
 				legacy ?? (await loadLegacy()),
 			),
+	};
+}
+
+/**
+ * `code_search` on a project in CODE_SEARCH mode: the provider's live search
+ * over the included repositories, through the same handler that runs the
+ * orchestrator's `code_search` step, so both chats search alike. Direct chat
+ * had only the index path; reusing the handler keeps one live search.
+ */
+async function runLiveCodeSearch(input: {
+	projectId: string;
+	userId: string;
+	organizationId?: string;
+	conversationId?: string;
+	query: string;
+	language?: string;
+	repository?: string;
+}): Promise<Record<string, unknown>> {
+	const { CodeSearchHandler } = await import(
+		"../orchestrator/execution/handlers/code-search-handler"
+	);
+	const repo =
+		input.repository && input.repository.toLowerCase() !== "all"
+			? input.repository
+			: undefined;
+	const result = await new CodeSearchHandler().execute({
+		input: {
+			step: {
+				id: "chat-code_search",
+				description: "Run code_search",
+				type: "api",
+				status: "in_progress",
+				order: 1,
+				app: "code_search",
+				executor: "code_search",
+				inputs: {
+					query: input.query,
+					...(input.language ? { language: input.language } : {}),
+					...(repo ? { repo } : {}),
+				},
+			},
+			message: "",
+			systemPrompt: "",
+			variables: {},
+			userId: input.userId,
+			organizationId: input.organizationId,
+			projectId: input.projectId,
+			...(input.conversationId
+				? { conversationId: input.conversationId }
+				: {}),
+			executionMode: "iterative",
+			totalSteps: 1,
+			stepIndex: 1,
+			previousStepResults: [],
+		},
+		variables: {},
+		toolCalls: [],
+		startTime: Date.now(),
+	});
+	if (!result.handled || !result.output) {
+		return {
+			success: false,
+			message: result.error ?? "Code search failed; try again shortly.",
+		};
+	}
+	const failed = result.output.toolCalls?.at(-1)?.status === "error";
+	return {
+		success: !failed,
+		searchMode: "CODE_SEARCH",
+		...(repo ? { searchedRepository: repo } : {}),
+		message: result.output.response ?? "",
 	};
 }
 
@@ -312,6 +397,25 @@ export async function createCodeSearchTool(
 		return {};
 	}
 
+	// The project's code search mode (spec 2026-10-29 code-index-sync §6a).
+	// OFF offers no code_search; only the orchestrator's catalog, which has
+	// already named the tool to the model, gets one that says why.
+	let buildMode: Awaited<ReturnType<typeof loadCodeSearchMode>> = "OFF";
+	try {
+		buildMode = await loadCodeSearchMode(projectId);
+	} catch (error) {
+		logger.warn(
+			"[code_search] Could not read the project's code search mode",
+			{
+				projectId,
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
+	}
+	if (buildMode === "OFF" && !liveRepositoryReads) {
+		return {};
+	}
+
 	let knownRepositories: CodeSearchRepository[] = [];
 	try {
 		knownRepositories = (await loadCodeSearchRepositories(projectId))
@@ -328,7 +432,10 @@ export async function createCodeSearchTool(
 
 	return {
 		code_search: tool({
-			description: `Search the project's indexed repository code. Returns file paths, symbols, snippets, citation metadata, and codebase role tags (e.g. Legacy, Primary) when a code index is available. When multiple codebases are attached, attribute findings to their respective codebase and highlight any differences.${describeCodeSearchRepositories(knownRepositories, preferredRepository)}`,
+			description:
+				buildMode === "CODE_SEARCH"
+					? `Search the project's connected repositories live for code matching a query. Returns file paths and matched snippets, each naming its repository. When multiple codebases are attached, attribute findings to their respective codebase and highlight any differences. ${CODE_ANSWER_DEPTH_RULE}`
+					: `Search the project's indexed repository code. Returns file paths, symbols, snippets, citation metadata, and codebase role tags (e.g. Legacy, Primary) when a code index is available. When multiple codebases are attached, attribute findings to their respective codebase and highlight any differences. ${CODE_ANSWER_DEPTH_RULE}${describeCodeSearchRepositories(knownRepositories, preferredRepository)}`,
 			inputSchema: z.object({
 				query: z.string().describe("The code search query"),
 				language: z
@@ -359,6 +466,29 @@ export async function createCodeSearchTool(
 					))
 				) {
 					return NO_PROJECT_ACCESS_RESULT;
+				}
+				// Read again per call: the setting can change mid-chat.
+				const mode = await loadCodeSearchMode(projectId);
+				if (mode === "OFF") {
+					// A plain result: retrying cannot change a project setting.
+					return {
+						success: true,
+						available: false,
+						status: "code_search_off",
+						results: [],
+						message: CODE_SEARCH_OFF_MESSAGE,
+					};
+				}
+				if (mode === "CODE_SEARCH") {
+					return runLiveCodeSearch({
+						projectId,
+						userId,
+						organizationId,
+						conversationId: context.usageConversationId,
+						query: args.query,
+						language: args.language,
+						repository: (args.repository ?? args.repo)?.trim(),
+					});
 				}
 				const {
 					indexes: codeIndexes,
@@ -426,15 +556,34 @@ export async function createCodeSearchTool(
 						) ?? null;
 				}
 
+				// Without a target, the repositories whose index can be
+				// searched; every other included one is named with its state
+				// instead of results (no live fallback in RAG mode).
+				let searchable: CodeSearchRepository[] = [];
+				let notSearched: string[] = [];
 				if (target) {
-					if (target.status !== "READY") {
+					if (!isSearchableIndexStatus(target.status)) {
 						return unavailable(target.status, target.label);
 					}
-				} else if (
-					!codeIndexes.some((index) => index.status === "READY")
-				) {
-					return unavailable(codeIndexes[0]?.status ?? "missing");
+				} else {
+					searchable = repositories.filter((r) =>
+						isSearchableIndexStatus(r.status),
+					);
+					if (searchable.length === 0) {
+						return unavailable(codeIndexes[0]?.status ?? "missing");
+					}
+					notSearched = [
+						...repositories.filter(
+							(r) => !isSearchableIndexStatus(r.status),
+						),
+						...(await loadUnindexed()),
+					].map((r) => codeIndexStatusNote(r.label, r.status));
 				}
+				const repositoryScope = target
+					? repositoryFilterTerm(target)
+					: searchable.length === 1
+						? repositoryFilterTerm(searchable[0])
+						: { should: searchable.map(repositoryFilterTerm) };
 
 				const { generateEmbedding } = await import(
 					"@repo/rag/lib/embedding"
@@ -480,7 +629,7 @@ export async function createCodeSearchTool(
 						key: "contextType",
 						match: { any: ["CODE_FILE", "CODE_FILE_SUMMARY"] },
 					},
-					...(target ? [repositoryFilterTerm(target)] : []),
+					repositoryScope,
 				];
 				const must = [...baseMust];
 				if (args.language) {
@@ -557,8 +706,21 @@ export async function createCodeSearchTool(
 				}
 
 				const searchedRepository = target?.label ?? "all";
+				// Included repositories this search could not cover, by state.
+				const notSearchedFields =
+					notSearched.length > 0
+						? {
+								notSearched,
+								message: `Not searched, because their code index is not ready: ${notSearched.join("; ")}.`,
+							}
+						: {};
 				if (points.length === 0) {
-					return { success: true, searchedRepository, results: [] };
+					return {
+						success: true,
+						searchedRepository,
+						results: [],
+						...notSearchedFields,
+					};
 				}
 
 				const { getProjectRoleTagMaps, resolveRoleTag } = await import(
@@ -569,6 +731,7 @@ export async function createCodeSearchTool(
 				return {
 					success: true,
 					searchedRepository,
+					...notSearchedFields,
 					results: points.map((point) => {
 						const payload = point.payload ?? {};
 						const repoStr = (payload.repo ||

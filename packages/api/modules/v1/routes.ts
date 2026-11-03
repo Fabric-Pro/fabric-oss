@@ -42,8 +42,10 @@ import { registerInstructionCheckoutRoutes } from "./instruction-checkouts";
 import { registerInstructionRoutes } from "./instructions";
 import { registerIntegrationRoutes } from "./integrations";
 import { registerKnowledgeRoutes } from "./knowledge";
+import { registerKnowledgeHubRoutes } from "./knowledge-hub";
 import { registerMcpRoutes } from "./mcp";
 import { registerMemoryWriteRoutes } from "./memory-writes";
+import { registerProjectCodeRepositoryRoutes } from "./project-code-repositories";
 import { registerProjectRoutes } from "./projects";
 import { registerPromptRoutes } from "./prompts";
 import { registerReportRoutes } from "./reports";
@@ -449,6 +451,8 @@ export function createPublicV1Routes() {
 	registerInstructionCheckoutRoutes(app);
 	registerContextRoutes(app);
 	registerMemoryWriteRoutes(app);
+	registerKnowledgeHubRoutes(app);
+	registerProjectCodeRepositoryRoutes(app);
 
 	return app;
 }

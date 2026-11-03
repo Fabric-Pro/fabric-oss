@@ -1857,7 +1857,7 @@ describe("failed-media placeholders are stripped before the AI-update push", () 
 	// PM-tool attachment can't be downloaded (Fizzy card 2027). Pushing that
 	// token back overwrites the live attachment reference in the PM tool — the
 	// real `_apis/wit/attachments/…` markup becomes inert text and the image is
-	// gone from the work item. `syncStoryToPM` and `syncGitLabStoryViaRest`
+	// gone from the work item. `syncStoryToPM` and `syncStoryViaRest`
 	// both strip it; this path (AI-update / hierarchy) must too.
 	const PLACEHOLDER =
 		"[Image could not be imported from Azure DevOps: shot.png]";

@@ -42,9 +42,20 @@ const DELIVERY_ID_HEADER = "X-Fabric-Delivery-Id";
 /** Header naming the notification type for cheap receiver-side routing. */
 const EVENT_HEADER = "X-Fabric-Event";
 
-/** Resolve a notification link to an absolute URL for off-app consumers. */
-function toAbsoluteLink(link: string | null): string | null {
-	return link ? toAbsoluteUrl(link) : null;
+/** Resolve a notification link to an absolute URL, matching the in-app bell. */
+function toAbsoluteLink(
+	notification: Pick<DeliveryNotification, "link" | "organization">,
+): string | null {
+	const { link } = notification;
+	if (!link) {
+		return null;
+	}
+	if (/^https?:\/\//i.test(link) || link.startsWith("/")) {
+		return toAbsoluteUrl(link);
+	}
+	// Context-relative (`projects/…`): prepend the notification's own workspace base.
+	const slug = notification.organization?.slug;
+	return toAbsoluteUrl(slug ? `/app/${slug}/${link}` : `/app/${link}`);
 }
 
 type DeliveryNotification = {
@@ -64,6 +75,7 @@ type DeliveryNotification = {
 	actorUserId: string | null;
 	createdAt: Date;
 	actor: { id: string; name: string | null } | null;
+	organization?: { slug: string | null } | null;
 };
 
 async function loadNotification(
@@ -88,6 +100,7 @@ async function loadNotification(
 			actorUserId: true,
 			createdAt: true,
 			actor: { select: { id: true, name: true } },
+			organization: { select: { slug: true } },
 		},
 	});
 }
@@ -154,7 +167,7 @@ export function buildWebhookPayload(notification: DeliveryNotification) {
 		category: notification.category,
 		title: notification.title,
 		snippet: notification.snippet,
-		link: toAbsoluteLink(notification.link),
+		link: toAbsoluteLink(notification),
 		actor: notification.actor
 			? { id: notification.actor.id, name: notification.actor.name }
 			: null,
@@ -171,7 +184,7 @@ export function buildWebhookPayload(notification: DeliveryNotification) {
 
 /** Minimal, brand-neutral HTML body for the email channel (raw send mode). */
 function buildEmailHtml(notification: DeliveryNotification): string {
-	const link = toAbsoluteLink(notification.link);
+	const link = toAbsoluteLink(notification);
 	const snippet = notification.snippet
 		? `<p style="margin:0 0 16px;color:#3f3f46;font-size:14px;line-height:1.6;">${escapeHtml(
 				notification.snippet,

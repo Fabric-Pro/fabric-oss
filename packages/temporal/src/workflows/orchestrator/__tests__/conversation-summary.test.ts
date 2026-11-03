@@ -127,3 +127,28 @@ describe("buildConversationSummary", () => {
 		expect(summary?.length).toBeLessThanOrEqual(2000);
 	});
 });
+
+describe("buildConversationSummary: a long assistant answer", () => {
+	it("keeps its end, where it offers what to do next", () => {
+		const offer =
+			"If you want, I can open NotificationGrain.cs and check the docs against the code.";
+		const summary = buildConversationSummary([
+			{ role: "user", content: "How does the notification grain work?" },
+			{
+				role: "assistant",
+				content: `${"Details of the grain. ".repeat(60)}${offer}`,
+			},
+			{ role: "user", content: "go ahead" },
+		]);
+		expect(summary).toContain(offer);
+		expect(summary).toContain("User: go ahead");
+	});
+
+	it("still cuts a long user message at its start", () => {
+		const summary = buildConversationSummary([
+			{ role: "user", content: `START ${"x".repeat(600)} END` },
+		]);
+		expect(summary).toContain("START");
+		expect(summary).not.toContain("END");
+	});
+});

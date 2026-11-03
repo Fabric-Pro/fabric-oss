@@ -8,7 +8,8 @@
  * - Verifies X-Hub-Signature-256 header using GITHUB_WEBHOOK_SECRET
  * - Extracts tenant context from ProjectRepositoryIntegration record
  * - Marks ProjectCodeIndex as STALE
- * - Starts codeIndexingWorkflow with incremental: true when FEATURE_CODE_INDEXING=true
+ * - Starts codeIndexingWorkflow with incremental: true when the project's code
+ *   search mode is RAG and the repository is included in code search
  *
  * Tenant Isolation (CRITICAL — no user session in webhooks):
  * - Extract repository URL from push payload
@@ -251,8 +252,12 @@ export async function handleGitHubPushWebhook(params: {
 		integrationId: integration.id,
 	});
 
-	// Start incremental reindex if feature is enabled
-	if (process.env.FEATURE_CODE_INDEXING === "true") {
+	// Start an incremental reindex only where an index is kept current: a RAG
+	// project and a repository included in code search.
+	if (
+		integration.project.ragSettings?.codeSearchMode === "RAG" &&
+		integration.includedInCodeSearch
+	) {
 		const parsed = parseRepoUrl(rawRepoUrl);
 		const repoName = parsed
 			? `${parsed.owner}/${parsed.name}`
@@ -338,7 +343,8 @@ export async function handleGitHubPushWebhook(params: {
 
 	return {
 		status: 200,
-		message: "Marked as STALE (FEATURE_CODE_INDEXING is disabled)",
+		message:
+			"Marked as STALE (code search is not RAG, or the repository is left out of it)",
 		projectId,
 		action: "stale_only",
 	};

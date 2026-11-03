@@ -44,6 +44,8 @@ export interface ContextIndexReconcileResult {
 	included: number;
 	/** Vector cleanups queued for the rows that became store-only. */
 	cleanups: PendingVectorCleanupRecord[];
+	/** Paths of every row whose mark changed: the code index takes them back or lets them go. */
+	changedPaths: string[];
 }
 
 export async function reconcileContextIndexing(
@@ -69,7 +71,12 @@ export async function reconcileContextIndexing(
 			? Prisma.empty
 			: Prisma.sql`AND c."sourcePath" = ANY(${[...input.sourcePaths]})`;
 	const changed = await tx.$queryRaw<
-		Array<{ id: string; indexingExcluded: boolean; hadVectors: boolean }>
+		Array<{
+			id: string;
+			sourcePath: string | null;
+			indexingExcluded: boolean;
+			hadVectors: boolean;
+		}>
 	>`
 		UPDATE "project_context" c
 		SET "indexingExcluded" = ${underStoreOnlyFolder}
@@ -78,7 +85,7 @@ export async function reconcileContextIndexing(
 			AND c."repositorySyncId" = ${input.syncId}
 			${onlyPaths}
 			AND c."indexingExcluded" IS DISTINCT FROM ${underStoreOnlyFolder}
-		RETURNING c."id", c."indexingExcluded",
+		RETURNING c."id", c."sourcePath", c."indexingExcluded",
 			(c."embeddedAt" IS NOT NULL OR c."qdrantId" IS NOT NULL) AS "hadVectors"
 	`;
 
@@ -128,6 +135,9 @@ export async function reconcileContextIndexing(
 		excluded: becameExcluded.length,
 		included: changed.length - becameExcluded.length,
 		cleanups,
+		changedPaths: changed.flatMap((row) =>
+			row.sourcePath ? [row.sourcePath] : [],
+		),
 	};
 }
 

@@ -4,6 +4,7 @@ import { classifyLimitError } from "@repo/ai/limits";
 import { AnsweredByModel } from "@saas/agents/components/FabricChat/shared/AnsweredByModel";
 import { sidekickAnswerModels } from "@saas/agents/lib/sidekick-runtime-protocol";
 import { useLimitToast } from "@saas/ai/hooks/useLimitToast";
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import {
 	type AiUsageLimitExceededPayload,
 	isAiUsageLimitExceededPayload,
@@ -90,7 +91,29 @@ function findAiUsageLimitPayloadFromUseChat(
 
 // ---- Component ----
 
-export function AgentBuilderSidekick({
+/**
+ * The conversation fixes its transport when it mounts, from the organization
+ * on screen. A full page load is still fetching that organization, so the
+ * conversation mounts only once it is known; mounted earlier, it would stay
+ * on the stream route for the panel's lifetime.
+ */
+export function AgentBuilderSidekick(props: AgentBuilderSidekickProps) {
+	const { isResolvingOrganization } = useOrganizationContext();
+	if (isResolvingOrganization) {
+		return (
+			<output className="flex h-full items-center justify-center text-muted-foreground">
+				<Loader2Icon
+					aria-hidden="true"
+					className="size-4 motion-safe:animate-spin"
+				/>
+				<span className="sr-only">Loading Sidekick</span>
+			</output>
+		);
+	}
+	return <SidekickConversation {...props} />;
+}
+
+function SidekickConversation({
 	agentId,
 	entityType = "registered",
 }: AgentBuilderSidekickProps) {

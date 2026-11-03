@@ -1,8 +1,9 @@
 /**
  * Pure helpers for the Direct chat turn lifecycle: settling tool cards when a
- * turn ends, trimming the history a turn sends, dropping the duplicate
- * operation-result rows a reload would otherwise show, and telling a
- * conversation switch apart from the chat's own URL write.
+ * turn ends, trimming the history a turn sends, and telling a conversation
+ * switch apart from the chat's own URL write. Dropping duplicate
+ * operation-result rows lives in `@repo/utils/operation-result-message`,
+ * shared with the history list.
  *
  * Each one fixes a defect found reviewing the Direct engine (Fizzy #2040).
  */
@@ -123,55 +124,6 @@ export function trimHistoryForRequest<
 		dropFrom++;
 	}
 	return [...clipped.slice(0, pinned.length), ...clipped.slice(dropFrom)];
-}
-
-interface PersistedTurnMessage {
-	role: string;
-	metadata?: unknown;
-}
-
-function isOperationResult(message: PersistedTurnMessage): boolean {
-	const metadata = message.metadata as { kind?: unknown } | null | undefined;
-	return message.role === "system" && metadata?.kind === "operation_result";
-}
-
-/**
- * The Direct workflow records every turn it finishes as a `system`
- * operation-result row, and the browser separately saves the real assistant
- * message. Rehydrated together, each answer was followed by a "SYSTEM" bubble
- * repeating it, which also went back to the model as history (F33).
- *
- * The row is dropped only when the same exchange (user message to next user
- * message) already has a real assistant reply. When it has none — the tab
- * closed or the route timed out before the browser could save — the row is
- * the only record of the answer, so it stays.
- */
-export function dropDuplicatedOperationResults<T extends PersistedTurnMessage>(
-	messages: T[],
-): T[] {
-	const keep = messages.map(() => true);
-	let segmentStart = 0;
-	const closeSegment = (end: number) => {
-		const segment = messages.slice(segmentStart, end);
-		const hasReply = segment.some(
-			(m) => m.role === "assistant" && !isOperationResult(m),
-		);
-		if (hasReply) {
-			for (let i = segmentStart; i < end; i++) {
-				if (isOperationResult(messages[i])) {
-					keep[i] = false;
-				}
-			}
-		}
-	};
-	messages.forEach((message, index) => {
-		if (message.role === "user" && index > segmentStart) {
-			closeSegment(index);
-			segmentStart = index;
-		}
-	});
-	closeSegment(messages.length);
-	return messages.filter((_, index) => keep[index]);
 }
 
 /**

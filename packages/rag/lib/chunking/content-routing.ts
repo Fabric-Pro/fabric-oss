@@ -14,6 +14,7 @@
  */
 
 import { isFeatureEnabled } from "@repo/database";
+import { logger } from "@repo/logs";
 import {
 	describeOpenApiSpec,
 	looksLikeOpenApiSpec,
@@ -24,6 +25,18 @@ import {
 	chunkDescribedOpenApiSpec,
 	type OpenApiChunk,
 } from "./openapi-chunker";
+import {
+	type ChunkProfile,
+	type ChunkProfileReason,
+	type ChunkProfilesConfig,
+	type ContentKind,
+	chunkProseByBoundaries,
+	chunkWithProfile,
+	customChunkSettings,
+	detectProfile,
+	isCustomChunking,
+	profileForKind,
+} from "./profiles";
 import type { ChunkingStrategy, TextChunk } from "./types";
 
 /** Below this, content is embedded whole rather than chunked. */
@@ -167,6 +180,12 @@ export async function routeContentForChunking(params: {
  */
 export interface ProjectContentChunkResult {
 	route: ContentRoute;
+	/**
+	 * The profile the content was chunked with. With content-type chunking off
+	 * this is always `prose` (or `openapi` for a spec): today's behaviour.
+	 */
+	profile: ChunkProfile;
+	reason: ChunkProfileReason;
 	chunks: TextChunk[];
 	/** Set when the content is a spec, so the caller can stamp `API_SPEC`. */
 	contextTypeOverride?: "API_SPEC";
@@ -194,6 +213,59 @@ function payloadForChunk(chunk: TextChunk): Record<string, unknown> {
 	};
 }
 
+/**
+ * Whether content-type profiles apply: the project (or company) has per-type
+ * rows or the earlier toggle, AND the
+ * `CONTENT_AWARE_CHUNKING` flag. The project is checked first so one that
+ * never changed chunking does not even read the flag — its chunking cannot
+ * change.
+ */
+export async function isContentAwareChunkingActive(params: {
+	chunkByContentType?: boolean;
+	organizationId?: string | null;
+	/** Per-type rows; any row (even Custom) means the project moved. */
+	chunkProfiles?: ChunkProfilesConfig;
+}): Promise<boolean> {
+	if (
+		params.chunkByContentType !== true &&
+		Object.keys(params.chunkProfiles ?? {}).length === 0
+	) {
+		return false;
+	}
+	return isFeatureEnabled(
+		"CONTENT_AWARE_CHUNKING",
+		params.organizationId ?? undefined,
+	);
+}
+
+/**
+ * Choose the profile for content on the text route (§5): override, then the
+ * caller's known kind, then detection, then the project fallback (`prose`).
+ */
+export function chooseChunkProfile(params: {
+	content: string;
+	mimeType: string;
+	filename: string;
+	kind?: ContentKind;
+	profileOverride?: ChunkProfile | null;
+}): { profile: ChunkProfile; reason: ChunkProfileReason } {
+	const { content, mimeType, filename, kind, profileOverride } = params;
+	if (profileOverride && profileOverride !== "openapi") {
+		return { profile: profileOverride, reason: "override" };
+	}
+	if (kind) {
+		const fromKind = profileForKind(kind, content.length);
+		if (fromKind && fromKind !== "openapi") {
+			return { profile: fromKind, reason: "kind" };
+		}
+	}
+	const detected = detectProfile({ content, mimeType, filename });
+	if (detected) {
+		return { profile: detected, reason: "detected" };
+	}
+	return { profile: "prose", reason: "fallback" };
+}
+
 export async function chunkProjectContent(params: {
 	content: string;
 	mimeType: string;
@@ -204,6 +276,19 @@ export async function chunkProjectContent(params: {
 	chunkOverlap?: number;
 	/** Overrides the MIME-derived strategy on the text route (RAG settings). */
 	textStrategy?: ChunkingStrategy;
+	/**
+	 * The project's "Chunk by content type" toggle. Off (the default, and the
+	 * state of every existing project) means today's chunking, byte for byte.
+	 */
+	chunkByContentType?: boolean;
+	/** Resolves the per-organization `CONTENT_AWARE_CHUNKING` override. */
+	organizationId?: string | null;
+	/** What the caller knows the content is (§5 step 2). */
+	kind?: ContentKind;
+	/** A source-level override (§6); wins over everything else. */
+	profileOverride?: ChunkProfile | null;
+	/** Per-type tuning from `ProjectRagSettings.chunkProfiles`. */
+	chunkProfiles?: ChunkProfilesConfig;
 }): Promise<ProjectContentChunkResult> {
 	const {
 		content,
@@ -213,7 +298,12 @@ export async function chunkProjectContent(params: {
 		chunkSize = DEFAULT_CHUNK_SIZE,
 		chunkOverlap = DEFAULT_CHUNK_OVERLAP,
 		textStrategy,
+		kind,
+		profileOverride,
+		chunkProfiles,
 	} = params;
+
+	const contentAware = await isContentAwareChunkingActive(params);
 
 	const route = await routeContentForChunking({
 		content,
@@ -225,41 +315,188 @@ export async function chunkProjectContent(params: {
 		const chunks = chunkDescribedOpenApiSpec(route.description, filename);
 		return {
 			route,
+			profile: "openapi",
+			reason: "detected",
 			chunks,
 			contextTypeOverride: "API_SPEC",
-			chunkPayloads: chunks.map(payloadForChunk),
+			chunkPayloads: chunks.map((chunk) =>
+				contentAware
+					? {
+							...payloadForChunk(chunk),
+							profile: "openapi",
+							profileReason: "detected",
+						}
+					: payloadForChunk(chunk),
+			),
 		};
 	}
 
 	// A malformed spec is NOT silently chunked as text — that is precisely the
 	// silent detail loss this feature exists to prevent. The caller surfaces it.
 	if (route.kind === "malformed-openapi") {
-		return { route, chunks: [], chunkPayloads: [] };
-	}
-
-	// Unchanged pre-existing behaviour for everything else.
-	if (content.length <= chunkingThreshold) {
 		return {
 			route,
-			chunks: [
-				{
-					content,
-					index: 0,
-					metadata: {
-						filename,
-						startOffset: 0,
-						endOffset: content.length,
-					},
-				},
-			],
-			chunkPayloads: [{}],
+			profile: "openapi",
+			reason: "detected",
+			chunks: [],
+			chunkPayloads: [],
 		};
 	}
 
-	const chunks = chunkText(content, filename, {
-		strategy: textStrategy ?? route.strategy,
+	const proseParams = {
+		content,
+		filename,
+		route,
+		chunkingThreshold,
+		chunkSize,
+		chunkOverlap,
+		textStrategy,
+	};
+
+	if (!contentAware) {
+		// Unchanged pre-existing behaviour.
+		const chunks = chunkProse(proseParams);
+		return {
+			route,
+			profile: "prose",
+			reason: "fallback",
+			chunks,
+			chunkPayloads: chunks.map(() => ({})),
+		};
+	}
+
+	const choice = chooseChunkProfile({
+		content,
+		mimeType,
+		filename,
+		kind,
+		profileOverride,
+	});
+	// Per-type tuning: by the known kind first, then by the chosen profile. A
+	// tuned profile replaces the default one, but never a source's override.
+	const tuning =
+		(kind ? chunkProfiles?.[kind] : undefined) ??
+		chunkProfiles?.[choice.profile];
+	// A type on Custom chunks as before per-type rows existed, with its own
+	// split method, size and overlap where it set them; a source's own
+	// override still wins.
+	if (
+		choice.reason !== "override" &&
+		isCustomChunking(tuning, params.chunkByContentType)
+	) {
+		const custom = customChunkSettings(tuning, {
+			splitMethod: textStrategy,
+			chunkSize,
+			chunkOverlap,
+		});
+		const chunks = chunkProse({
+			...proseParams,
+			textStrategy: custom.splitMethod,
+			chunkSize: custom.chunkSize,
+			chunkOverlap: custom.chunkOverlap,
+		});
+		return {
+			route,
+			profile: "prose",
+			reason: "fallback",
+			chunks,
+			chunkPayloads: chunks.map(() => ({})),
+		};
+	}
+	const profile =
+		tuning?.profile && choice.reason !== "override"
+			? tuning.profile
+			: choice.profile;
+
+	if (profile === "prose" || profile === "openapi") {
+		const chunks = chunkProse({ ...proseParams, boundaryAware: true });
+		return {
+			route,
+			profile: "prose",
+			reason: choice.reason,
+			chunks,
+			chunkPayloads: chunks.map(() => ({
+				profile: "prose",
+				profileReason: choice.reason,
+			})),
+		};
+	}
+
+	const profiled = chunkWithProfile(content, filename, profile, tuning);
+	logger.info("[ContentRouting] Chunked by profile", {
+		filename,
+		profile,
+		reason: choice.reason,
+		chunks: profiled.length,
+	});
+	return {
+		route,
+		profile,
+		reason: choice.reason,
+		chunks: profiled.map((p) => p.chunk),
+		chunkPayloads: profiled.map((p) => ({
+			profile,
+			profileReason: choice.reason,
+			...p.payload,
+		})),
+	};
+}
+
+const BOUNDARY_AWARE_STRATEGIES: ReadonlySet<ChunkingStrategy> = new Set([
+	"DOCUMENT",
+	"PARAGRAPH",
+	"RECURSIVE",
+]);
+
+/** Today's text-route chunking: whole below the threshold, else windows. */
+function chunkProse(params: {
+	content: string;
+	filename: string;
+	route: Extract<ContentRoute, { kind: "text" }>;
+	chunkingThreshold: number;
+	chunkSize: number;
+	chunkOverlap: number;
+	textStrategy?: ChunkingStrategy;
+	/** Content-aware chunking: size-driven strategies cut at boundaries. */
+	boundaryAware?: boolean;
+}): TextChunk[] {
+	const {
+		content,
+		filename,
+		route,
+		chunkingThreshold,
+		chunkSize,
+		chunkOverlap,
+		textStrategy,
+		boundaryAware,
+	} = params;
+	if (content.length <= chunkingThreshold) {
+		return [
+			{
+				content,
+				index: 0,
+				metadata: {
+					filename,
+					startOffset: 0,
+					endOffset: content.length,
+				},
+			},
+		];
+	}
+
+	const strategy = textStrategy ?? route.strategy;
+	// SEMANTIC, SENTENCE, FIXED and CODE_AST are explicit choices and keep
+	// their own cuts; the size-driven ones cut mid-word at their overlap.
+	if (boundaryAware && BOUNDARY_AWARE_STRATEGIES.has(strategy)) {
+		return chunkProseByBoundaries(content, filename, {
+			chunkSize,
+			chunkOverlap,
+		});
+	}
+
+	return chunkText(content, filename, {
+		strategy,
 		chunkSize,
 		chunkOverlap,
 	});
-	return { route, chunks, chunkPayloads: chunks.map(() => ({})) };
 }

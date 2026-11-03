@@ -130,6 +130,11 @@ export type GsRuntimeGates = {
 	 * meeting assistant's settings page, which 404s where Parlume is off.
 	 */
 	parlumeMeetings: boolean;
+	/**
+	 * `CREDENTIAL_MANAGER`, resolved for the viewer's organization. Gates the
+	 * Credentials tab under Connections, which is hidden where it is off.
+	 */
+	credentialManager: boolean;
 };
 
 /**
@@ -309,6 +314,19 @@ const WORKSPACE_GROUP: GsGroup = {
 			// anything. A nav anchor is the only one present everywhere.
 			anchor: "nav-integrations",
 			href: ({ basePath }) => `${basePath}/connections?tab=mcp`,
+		},
+		{
+			id: "credentials",
+			label: "Credentials",
+			description:
+				"Save a token or key once and reuse it wherever Fabric connects, privately or shared with your organization.",
+			icon: KeyRoundIcon,
+			// Same row as MCP servers above, for the same reason: the tab is
+			// reached through Connections, and a nav anchor is the only one
+			// present on every page.
+			anchor: "nav-integrations",
+			runtimeGate: "credentialManager",
+			href: ({ basePath }) => `${basePath}/connections?tab=credentials`,
 		},
 		{
 			id: "reports",

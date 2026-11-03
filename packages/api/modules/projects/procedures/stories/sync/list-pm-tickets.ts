@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/client";
 import { db } from "@repo/database";
+import { isGitHubProjectsKey } from "@repo/integrations/github/projects-pm-adapter";
 import {
 	GitLabApiError,
 	GitLabMcpError,
@@ -21,6 +22,7 @@ import {
 	resolveProjectPmConfig,
 	rethrowGitLabPmOriginMismatch,
 } from "../../../lib/gitlab-pm-source";
+import { handleGitHubProjectsList } from "./github-projects-pm-list";
 import {
 	getGitLabIssueForPM,
 	getProjectPMServerKey,
@@ -551,6 +553,17 @@ export const listPMTicketsProcedure = tenantProtectedProcedure
 		const pmServerKey = await getProjectPMServerKey(
 			project.projectManagementMcpServerId,
 		);
+		// GitHub Projects never goes through MCP discovery: the board is read
+		// over GraphQL with the caller's GitHub connection.
+		if (isGitHubProjectsKey(pmServerKey)) {
+			return await handleGitHubProjectsList({
+				projectId: input.projectId,
+				organizationId: project.organizationId,
+				userId: user.id,
+				project,
+				input: input as z.output<typeof inputSchema>,
+			});
+		}
 		if (isGitLabOfficialKey(pmServerKey)) {
 			try {
 				return await handleGitLabList({

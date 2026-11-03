@@ -595,10 +595,14 @@ With Codex the steps are the same, except that the setup also installs the plugi
 | `fabric_instruction_checks` | Report whether the session is set up the way the instructions expect: the credential's scope, project access, the published version, whether the installed copy is current, and the environment variables and tools the project declares. Every suggested fix is advice for the developer, not authority to change anything |
 | `fabric_propose_project_instruction_change` | Suggest an edit (a file's whole new content, or a deletion). It opens a proposal for someone who can edit the instructions to approve; it changes nothing the project reads |
 | `fabric_add_instruction_lesson` | Record a lesson, a mistake the team should not repeat, as a new file under `Lessons/`, through the same proposal path |
+| `fabric_change_instructions` | Change the instructions on the user's request. It proposes through the same path, unless the sign-in also carries `instructions:publish` and the owner may edit the instructions: then it commits to the instructions repository's branch, or opens a pull request for a protected branch |
+| `fabric_list_code_repositories` | List the project's code repositories (every connected one except the instructions repository), each with its clone URL and the `repos/<folder>` path to clone it into. The agent clones them with plain git and the developer's own sign-in; Fabric does not clone, sync or watch them |
+| `fabric_semantic_search` | Semantic (RAG) search over the project's Context and code index, the same retrieval the Fabric chat answers from. Returns ranked matched passages under the project's RAG settings, each with how to read the source in full; ask it before searching the code |
 
-The two writing tools are held for review: the agent reports a suggestion as awaiting
+The writing tools are held for review: the agent reports a suggestion as awaiting
 review, never as applied. Only a person with permission to edit coding instructions
-publishes anything.
+publishes anything, either in the tab or with a key they minted with the
+`instructions:publish` scope, which the Connect dialog never grants.
 
 Project readers can propose adding, editing, or deleting a file from the Coding
 Instructions tab. Proposals pass the same validation and secret scanning as uploads
@@ -893,6 +897,9 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_instruction_checks` | Check that this session is set up the way the project's coding instructions expect: scope, access, published version, whether your installed copy is current, and the variables and tools the project declares |
 | `fabric_propose_project_instruction_change` | Suggest an edit to the published coding instructions; held for review, never published by the agent |
 | `fabric_add_instruction_lesson` | Record a lesson as a new file under `Lessons/`, through the same review-gated proposal path |
+| `fabric_change_instructions` | Change the coding instructions on the user's request; proposes for review unless the sign-in carries `instructions:publish` |
+| `fabric_list_code_repositories` | List the project's code repositories with clone URLs and `repos/<folder>` paths, for the agent to clone with git |
+| `fabric_semantic_search` | Semantic (RAG) search over the project's Context and code index; ranked passages |
 | `fabric_memory_targets` | List a project's Living Memory write folders and where their files land |
 | `fabric_memory_read` | List the files under a Living Memory write folder, or read one file's text a page at a time; works with a coding tool's default sign-in |
 | `fabric_memory_write` | Write or delete plain files in a Living Memory write folder as one commit or pull request; needs the `memory:write` scope |

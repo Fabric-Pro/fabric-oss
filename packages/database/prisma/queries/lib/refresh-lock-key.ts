@@ -126,6 +126,11 @@ export function gitlabConnectionLockKey(
  * that uses this budget carries its own comment doing the specific
  * arithmetic (bounded HTTP calls + DB round-trips) against these numbers.
  */
+/** Credential manager: one refresher per `Credential` row. */
+export function credentialLockKey(credentialId: string): string {
+	return `cred:${credentialId}`;
+}
+
 export const REFRESH_LOCK_TRANSACTION_TIMEOUT_MS = 20_000;
 
 /**

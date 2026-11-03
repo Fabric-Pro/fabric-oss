@@ -149,6 +149,8 @@ describe("project-context ingestion chunking", () => {
 			"rag/lib/project-contexts/retrieve-for-spec.ts":
 				"splits the QUERY at retrieval time; ingests nothing",
 			"rag/test-rag.ts": "developer script, not a runtime path",
+			"temporal/src/activities/chunking-analysis.ts":
+				"chunks a sample in memory to score candidate settings; stores nothing",
 		};
 
 		const callers = findChunkCallers(packagesDir, [

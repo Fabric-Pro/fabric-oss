@@ -1,11 +1,16 @@
 import { ORPCError } from "@orpc/server";
-import { getProjectRagSettings, hasProjectAccess } from "@repo/database";
+import {
+	getProjectRagSettings,
+	hasProjectAccess,
+	isFeatureEnabled,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 
 export const getRagSettingsProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_SETTINGS_READ))
@@ -36,12 +41,15 @@ export const getRagSettingsProcedure = tenantProtectedProcedure
 
 		const settings = await getProjectRagSettings(projectId);
 
-		// Code indexing only runs when the deployment opts in. The toggle is
-		// independent of the flag, so the UI needs to know when a user has
-		// enabled code search but the server-side workflow won't actually
-		// index anything (FEATURE_CODE_INDEXING off).
-		const featureCodeIndexingEnabled =
-			process.env.FEATURE_CODE_INDEXING === "true";
+		// Content-type chunking is offered only while its flag is on for the
+		// project's organization (spec 2026-10-28 §8 step 1).
+		const contentAwareChunkingEnabled = await isFeatureEnabled(
+			"CONTENT_AWARE_CHUNKING",
+			await resolveProjectOrganizationId(input.organizationId, projectId),
+		);
 
-		return { settings, featureCodeIndexingEnabled };
+		return {
+			settings,
+			contentAwareChunkingEnabled,
+		};
 	});

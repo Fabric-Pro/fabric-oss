@@ -114,6 +114,13 @@ vi.mock("@repo/database", () => ({
 	getContextById: mocks.getContextById,
 	deleteUnmanagedContextRow: mocks.deleteUnmanagedContextRow,
 	getProjectRagSettings: mocks.getProjectRagSettings,
+	// The project path: content-type chunking off, the project default.
+	getProjectChunkingSettings: vi.fn(async () => ({
+		chunkByContentType: false,
+		chunkProfiles: null,
+		chunkingVersion: 0,
+	})),
+	markProjectContextChunkingVersion: vi.fn(),
 	getCompanyContextSource: mocks.getCompanyContextSource,
 	updateCompanyContextSourceStatus: mocks.updateCompanyContextSourceStatus,
 	markCompanyContextSourceEmbedded: mocks.markCompanyContextSourceEmbedded,
@@ -148,6 +155,8 @@ vi.mock("@repo/rag", () => ({
 	embedProjectContext: mocks.embedProjectContext,
 	embedCompanyContext: mocks.embedCompanyContext,
 	getCompanyChunkSettings: mocks.getCompanyChunkSettings,
+	// Content-type chunking off: the chunk call is what it always was.
+	usesPerTypeChunking: () => false,
 	resolveCompanyEmbeddingModel: mocks.resolveCompanyEmbeddingModel,
 	unsupportedEmbeddingModelMessage: (model: { identity: string }) =>
 		`Unsupported embedding model: ${model.identity}`,

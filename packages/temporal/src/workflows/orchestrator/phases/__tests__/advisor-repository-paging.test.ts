@@ -56,6 +56,10 @@ vi.mock("@repo/database", () => ({
 		.fn()
 		.mockResolvedValue({ organizationId: "org-1" }),
 	getProjectCodeIndexes: vi.fn().mockResolvedValue([]),
+	// Live code search: code_tree reads the provider in every mode but OFF.
+	getProjectRagSettings: vi
+		.fn()
+		.mockResolvedValue({ codeSearchMode: "CODE_SEARCH" }),
 	getProjectReposForCodeSearch: vi.fn().mockResolvedValue([
 		{
 			provider: "GITHUB",

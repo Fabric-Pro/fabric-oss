@@ -26,7 +26,11 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsTabs } from "../ConnectionsTabs";
 
-const state = vi.hoisted(() => ({ childFails: false, search: "" }));
+const state = vi.hoisted(() => ({
+	childFails: false,
+	search: "",
+	credentialManager: false,
+}));
 
 const mockReplace = vi.fn();
 
@@ -63,6 +67,18 @@ vi.mock("@saas/mcp/components/McpServersView", () => ({
 vi.mock("@saas/get-started/components/PageTourButton", () => ({
 	PageTourButton: ({ pageId }: { pageId: string }) => (
 		<span data-testid="page-tour" data-page-id={pageId} />
+	),
+}));
+
+// The tabs component reads CREDENTIAL_MANAGER itself; every other flag is off.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "CREDENTIAL_MANAGER" ? state.credentialManager : false,
+}));
+
+vi.mock("@saas/credential-manager/components/SavedCredentialsView", () => ({
+	SavedCredentialsView: ({ organizationId }: { organizationId: string }) => (
+		<div data-testid="credentials-view" data-org={organizationId} />
 	),
 }));
 
@@ -108,6 +124,7 @@ describe("ConnectionsTabs", () => {
 		mockReplace.mockReset();
 		state.childFails = false;
 		state.search = "";
+		state.credentialManager = false;
 	});
 
 	// Covers AC6. This pins behavior that already ships — the heading was
@@ -197,6 +214,34 @@ describe("ConnectionsTabs", () => {
 		expect(control).toHaveTextContent("All");
 		expect(control).toHaveTextContent("Integrations");
 		expect(control).toHaveTextContent("MCP servers");
+	});
+
+	it("hides the Credentials tab while the credential manager is off, even when linked", () => {
+		state.search = "tab=credentials";
+		renderTabs();
+
+		const control = screen.getByRole("group", { name: "Connection type" });
+		expect(control).not.toHaveTextContent("Credentials");
+		expect(
+			screen.queryByTestId("credentials-view"),
+		).not.toBeInTheDocument();
+		expect(screen.getByTestId("child")).toBeInTheDocument();
+	});
+
+	it("shows the Credentials tab and its view for the organization when the credential manager is on", () => {
+		state.credentialManager = true;
+		state.search = "tab=credentials";
+		renderTabs();
+
+		const control = screen.getByRole("group", { name: "Connection type" });
+		expect(
+			within(control).getByRole("button", { name: "Credentials" }),
+		).toHaveAttribute("aria-pressed", "true");
+		expect(screen.getByTestId("credentials-view")).toHaveAttribute(
+			"data-org",
+			"org_example",
+		);
+		expect(screen.queryByTestId("child")).not.toBeInTheDocument();
 	});
 
 	// The child returns early on error and never renders the toolbar, so the

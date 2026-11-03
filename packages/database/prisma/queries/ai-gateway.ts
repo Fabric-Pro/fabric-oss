@@ -107,8 +107,8 @@ export interface AiProviderConfig {
 }
 
 /**
- * Excludes "embeddings only" keys. Every lookup that can feed LLM work carries
- * this; only {@link getEmbeddingProviderConfig} may resolve such a key.
+ * LLM credential lookups use this to exclude "embeddings only" keys.
+ * Embedding and gateway-search lookups may resolve such keys.
  */
 export const LLM_PROVIDER_PURPOSE_FILTER = {
 	purpose: { not: "EMBEDDINGS_ONLY" },
@@ -170,6 +170,25 @@ async function toAiProviderConfig(
 		clientId: row.clientId,
 		encryptedClientSecret: row.encryptedClientSecret,
 	};
+}
+
+/** Organization-owned document-search key, including embeddings-only keys. */
+export async function getOrganizationGatewaySearchConfig(
+	organizationId: string,
+): Promise<AiProviderConfig | null> {
+	if (!organizationId) {
+		return null;
+	}
+	const row = await db.cloudProviderConfig.findFirst({
+		where: { organizationId, provider: "VERCEL_GATEWAY", enabled: true },
+		select: {
+			id: true,
+			provider: true,
+			...PROVIDER_CONFIG_SELECT,
+			config: true,
+		},
+	});
+	return row ? toAiProviderConfig(row, "organization") : null;
 }
 
 function getPlatformGatewayProviderConfig(): AiProviderConfig | null {

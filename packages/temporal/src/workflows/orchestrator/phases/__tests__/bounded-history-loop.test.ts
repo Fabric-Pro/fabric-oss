@@ -40,8 +40,8 @@ vi.mock("@temporalio/workflow", () => ({
 import { log } from "@temporalio/workflow";
 import {
 	installDefaultStubs,
-	runTurn,
 	preloaded,
+	runTurn,
 } from "./advisor-scenario-harness";
 
 const PATCH = "orch-bounded-history-v1";

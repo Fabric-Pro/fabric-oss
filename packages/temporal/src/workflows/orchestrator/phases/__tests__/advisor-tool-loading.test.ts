@@ -787,9 +787,9 @@ it("retains baseline discovery and catalog bytes with both patches off", async (
 				.digest("hex"),
 		),
 	).toEqual([
-		"275e44abdf4dd417f41aaebf555d8349f6af76ed80a0df2235301f0a9a29f2ba",
-		"ff9453a7402113e81132f1e167372cde5c6734c19cb29ace24c34746c74adbf9",
-		"fa922fff261dbf153ff0a0409b83aa6fba06324f471ca14524200ea13060fb1a",
+		"79c02e30510fd92bafef3c494c1f76403f1b31b5dac145350e664d3187ffa18b",
+		"8623b5fcfd388c798058e7ca80202f302757d8feda13f84a603af9a2af054db6",
+		"bec9f19ad884090df3bcdd1da17d27244b7902bc1cce489f7f23c2e72261c053",
 	]);
 });
 

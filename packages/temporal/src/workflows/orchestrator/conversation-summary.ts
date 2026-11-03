@@ -26,19 +26,31 @@ const CHAR_BUDGET = 2000;
 /** Per-message cap, so one long paste cannot crowd out every other turn. */
 const MESSAGE_CHAR_CAP = 400;
 
+/**
+ * Of a long assistant message, how much of its end is kept. An answer ends
+ * with what it offers or asks ("I can open the file and check it"), and a
+ * bare "go ahead" that follows means exactly that: cutting the end left the
+ * gate asking what "go ahead" meant.
+ */
+const ASSISTANT_TAIL_CHARS = 280;
+
 export interface ConversationTurn {
 	role: string;
 	content: string;
 }
 
 function renderTurn(turn: ConversationTurn): string {
-	const label = turn.role === "assistant" ? "Assistant" : "User";
+	const assistant = turn.role === "assistant";
+	const label = assistant ? "Assistant" : "User";
 	const content = turn.content.trim();
-	const body =
-		content.length > MESSAGE_CHAR_CAP
-			? `${content.slice(0, MESSAGE_CHAR_CAP)}…`
-			: content;
-	return `${label}: ${body}`;
+	if (content.length <= MESSAGE_CHAR_CAP) {
+		return `${label}: ${content}`;
+	}
+	if (!assistant) {
+		return `${label}: ${content.slice(0, MESSAGE_CHAR_CAP)}…`;
+	}
+	const head = MESSAGE_CHAR_CAP - ASSISTANT_TAIL_CHARS;
+	return `${label}: ${content.slice(0, head)} … ${content.slice(-ASSISTANT_TAIL_CHARS)}`;
 }
 
 /**

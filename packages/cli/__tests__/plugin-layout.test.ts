@@ -48,6 +48,7 @@ function build(
 		projectId: PROJECT,
 		files,
 		memory: options.memory ?? FOLDERS,
+		knowledge: { state: "known", types: [] },
 		gatewayUrl: GATEWAY,
 		pin: "abc123def456",
 		instructionAccess: {
@@ -140,9 +141,12 @@ describe("the Claude Code plugin", () => {
 			"instructions/source/.claude/rules/ignored.md",
 			"skills/deploy/SKILL.md",
 			"skills/deploy/run.sh",
+			"skills/fabric-change-instructions/SKILL.md",
 			`skills/${INSTRUCTION_ACCESS_SKILL}/SKILL.md`,
 			INSTRUCTION_CATALOG,
+			"skills/fabric-knowledge/SKILL.md",
 			`skills/${LIVING_MEMORY_SKILL}/SKILL.md`,
+			"skills/fabric-rules/SKILL.md",
 		]);
 	});
 
@@ -413,6 +417,7 @@ describe("the plugin description", () => {
 			projectId: PROJECT,
 			files: [],
 			memory: FOLDERS,
+			knowledge: { state: "known", types: [] },
 			gatewayUrl: `https://example.com:8443/api/mcp-gateway/projects/${PROJECT}`,
 			pin: "abc123def456",
 			instructionAccess: {
@@ -444,9 +449,12 @@ describe("the Codex plugin", () => {
 			"agents/reviewer.md",
 			"instructions/AGENTS.md",
 			"skills/deploy/SKILL.md",
+			"skills/fabric-change-instructions/SKILL.md",
 			`skills/${INSTRUCTION_ACCESS_SKILL}/SKILL.md`,
 			INSTRUCTION_CATALOG,
+			"skills/fabric-knowledge/SKILL.md",
 			`skills/${LIVING_MEMORY_SKILL}/SKILL.md`,
+			"skills/fabric-rules/SKILL.md",
 		]);
 		// Codex reads the manifest only from .codex-plugin/, and loads the MCP
 		// file only when the manifest points at it.

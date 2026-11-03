@@ -356,6 +356,62 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Integration configuration changed (channel mappings, scopes, webhook URLs, etc.). Captured even when the connection itself is unchanged.",
 	},
 	{
+		key: "org.credential.created",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.credential.created",
+		description:
+			"An organization-owned outbound credential (token, key or app installation) was saved. The row records provider, kind, label and scopes; never the secret.",
+	},
+	{
+		key: "org.credential.updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.credential.updated",
+		description:
+			"An organization-owned credential's label, secret or scopes changed. The row records which fields changed and whether a new secret was supplied; never the secret.",
+	},
+	{
+		key: "org.credential.shared",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.credential.shared",
+		description:
+			"A member made their own credential usable by other members of the organization.",
+	},
+	{
+		key: "org.credential.unshared",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.credential.unshared",
+		description:
+			"A member stopped sharing their own credential with the organization.",
+	},
+	{
+		key: "org.credential.deleted",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.credential.deleted",
+		description:
+			"An organization-owned credential was deleted. The row records provider, kind and label.",
+	},
+	{
+		key: "account.credential.created",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.credential.created",
+		description:
+			"A member saved their own outbound credential. The row records provider, kind, label and scopes; never the secret.",
+	},
+	{
+		key: "account.credential.updated",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.credential.updated",
+		description:
+			"A member changed their own credential's label, secret or scopes. Never the secret.",
+	},
+	{
+		key: "account.credential.deleted",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.credential.deleted",
+		description:
+			"A member deleted their own credential. The row records provider, kind and label.",
+	},
+	{
 		key: "org.ai_provider.configured",
 		categoryId: "org",
 		labelKey: "settings.auditLog.actions.org.ai_provider.configured",
@@ -1068,6 +1124,20 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Changed the project's coding-instructions ignore-glob override, which governs what the next upload silently excludes. `metadata.ignoreGlobCount` carries the new override's size — zero clears it back to the defaults.",
 	},
 	{
+		key: "project.import.started",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.import.started",
+		description:
+			"Started reading one of the project's connected repositories to propose what Fabric should hold: the stack, the documents, context, decisions and open work it found. Nothing is created until the person reviews the proposal. The resource names the project; `metadata.provider` names the repository's host.",
+	},
+	{
+		key: "project.import.applied",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.import.applied",
+		description:
+			"Created in Fabric what the person kept from a repository import's proposal. `metadata` counts what was created by kind (documents, contexts, decisions, backlog proposals, knowledge entries) and whether project fields were updated; titles and paths are not recorded.",
+	},
+	{
 		key: "project.instructions.repository_sync_configured",
 		categoryId: "project",
 		labelKey:
@@ -1201,6 +1271,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.project.instructions.repository_migration_started",
 		description:
 			"Started moving a project's uploaded coding instructions into a repository: one pull request carries the published files, and the project switches to syncing from that folder once it merges. The resource names the repository; `metadata.provider`, `metadata.ref` and `metadata.folder` say where, `metadata.fileCount` how many files, and `metadata.snapshotId` and `metadata.branchId` name the proposal and its branch. Never a file path or file content. The instructions stay uploaded, and every change to them is paused, until the move ends.",
+	},
+	{
+		key: "project.instructions.consolidation_started",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.consolidation_started",
+		description:
+			"Created a separate instructions repository for a project and started moving the AI tool files of its code repository there: one commit on the new repository, Coding Instructions read from it, and a pull request removing the files from the code repository. The resource names the new repository; `metadata.sourceRepository` names the code repository and `metadata.fileCount` how many files. Never a file path or file content.",
 	},
 	{
 		key: "project.instructions.repository_migration_canceled",

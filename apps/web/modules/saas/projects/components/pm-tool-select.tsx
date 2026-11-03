@@ -15,6 +15,7 @@ import { CheckCircle2Icon, Link2Icon, Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
+import { GITHUB_PROJECTS_KEY } from "./pm-tool-keys";
 import {
 	getPmToolBrandIcon,
 	PmToolBrandIcon,
@@ -41,6 +42,8 @@ export interface PmToolOption {
 }
 
 interface PMToolSelectChange {
+	/** Catalog key of the chosen tool (e.g. "github-remote"); null for None. */
+	key: string | null;
 	mcpConfigId: string | null;
 	mcpServerId: string | null;
 	isDefault: boolean;
@@ -69,6 +72,7 @@ interface PMToolSelectProps {
 	 * has no server-key signal of its own.
 	 */
 	onResolvedSelection?: (info: {
+		key: string | null;
 		transport: "mcp" | "rest" | null;
 		mcpServerId: string | null;
 		mcpConfigId: string | null;
@@ -102,7 +106,10 @@ export function PMToolSelect({
 			if (event.origin !== window.location.origin) {
 				return;
 			}
-			if (event.data?.type === "gitlab_oauth_success") {
+			if (
+				event.data?.type === "gitlab_oauth_success" ||
+				event.data?.type === "github_oauth_success"
+			) {
 				queryClient.invalidateQueries({
 					queryKey: ["mcp.availablePmTools"],
 				});
@@ -195,6 +202,7 @@ export function PMToolSelect({
 		}
 		lastNotifiedRef.current = signature;
 		onResolvedSelection({
+			key: selectedOption?.key ?? null,
 			transport: selectedOption?.transport ?? null,
 			mcpServerId: selectedOption?.mcpServerId ?? null,
 			mcpConfigId: selectedOption?.mcpConfigId ?? null,
@@ -204,7 +212,8 @@ export function PMToolSelect({
 	const helperText =
 		selectedOption &&
 		!selectedOption.isConfigured &&
-		selectedOption.key !== "gitlab-official"
+		selectedOption.key !== "gitlab-official" &&
+		selectedOption.key !== GITHUB_PROJECTS_KEY
 			? `You'll configure ${selectedOption.displayName} after setup.`
 			: null;
 
@@ -221,6 +230,7 @@ export function PMToolSelect({
 				onValueChange={(value) => {
 					if (value === NONE_VALUE) {
 						onChange({
+							key: null,
 							mcpConfigId: null,
 							mcpServerId: null,
 							isDefault: false,
@@ -234,6 +244,7 @@ export function PMToolSelect({
 						return;
 					}
 					onChange({
+						key: next.key,
 						mcpConfigId: next.mcpConfigId,
 						mcpServerId: next.mcpServerId,
 						isDefault: next.isDefault,
@@ -320,6 +331,20 @@ export function PMToolSelect({
 						Connect for {organizationName ?? "this organization"}
 					</Button>
 				</div>
+			) : selectedOption?.key === GITHUB_PROJECTS_KEY &&
+				!selectedOption.isConfigured ? (
+				<p className="text-sm text-muted-foreground">
+					GitHub isn't connected yet.{" "}
+					<Link
+						href={mcpSettingsUrl}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="text-primary hover:underline"
+					>
+						Connect in Settings → Integrations
+					</Link>{" "}
+					to choose a project board.
+				</p>
 			) : selectedOption?.key === "gitlab-official" &&
 				!selectedOption.isConfigured ? (
 				<p className="text-sm text-muted-foreground">

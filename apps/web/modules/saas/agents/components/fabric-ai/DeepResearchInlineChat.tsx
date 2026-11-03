@@ -2,6 +2,7 @@
 
 import { ChatInput } from "@saas/agents/components/FabricChat/shared/ChatInput";
 import type { ReasoningMode } from "@saas/agents/components/ReasoningModeSelector";
+import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
 import type { useResearchRunStream } from "@saas/agents/hooks/useResearchRunStream";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { Button } from "@ui/components/button";
@@ -198,6 +199,15 @@ export function DeepResearchInlineChat({
 											</p>
 										</div>
 									)}
+
+									{/* A run cancelled elsewhere carries an error,
+									 * shown above; Stopped means stopped here. */}
+									{stream.state.status === "cancelled" &&
+										!stream.state.error && (
+											<div>
+												<StoppedIndicator className="mt-0" />
+											</div>
+										)}
 
 									{/* Results */}
 									{stream.hasResults &&

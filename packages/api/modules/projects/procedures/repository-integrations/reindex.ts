@@ -9,17 +9,13 @@
  *     the compare fails / is capped.
  *   - "full" — the dangerous, expensive rebuild: re-embed the entire repository.
  *
- * PROJECT_ADMIN+ (via PROJECT_SETTINGS_EDIT). No-op unless FEATURE_CODE_INDEXING
- * and the project's `codeSearchEnabled` RAG setting are on (enforced inside the
- * shared trigger).
+ * PROJECT_ADMIN+ (via PROJECT_SETTINGS_EDIT). Refused unless the project's code
+ * search mode is RAG (enforced inside the shared trigger) and the repository is
+ * included in code search.
  */
 
 import { ORPCError } from "@orpc/client";
-import {
-	getProjectCodeIndexes,
-	getProjectRepoIntegration,
-} from "@repo/database";
-import { resolveFreshRepoToken } from "@repo/integrations";
+import { getProjectRepoIntegration } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -27,79 +23,8 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { planIncrementalReindex } from "../../lib/code-index-refresh";
 import { startCodeIndexingForProject } from "../../lib/code-indexing-trigger";
-import {
-	compareIndexedCommitToHead,
-	type RepoCompareRef,
-} from "../../lib/repo-compare";
-
-/** How a requested incremental re-index should actually run. */
-type IncrementalPlan =
-	| { kind: "up-to-date" }
-	| { kind: "incremental"; changedFiles: string[] }
-	| { kind: "full-fallback" };
-
-/**
- * Decide how an incremental re-index should run for one repo: compute the changed
- * files from the indexed commit → branch HEAD, or fall back to a full index when
- * there is no baseline / the compare is unusable, or report already up to date.
- */
-async function planIncrementalReindex(params: {
-	projectId: string;
-	integrationId: string;
-	repo: RepoCompareRef;
-	userId: string;
-	organizationId: string | null | undefined;
-}): Promise<IncrementalPlan> {
-	const indexes = await getProjectCodeIndexes(params.projectId);
-	const index = indexes
-		.filter((i) => i.repositoryIntegrationId === params.integrationId)
-		.sort(
-			(a, b) =>
-				(b.indexedAt?.getTime() ?? 0) - (a.indexedAt?.getTime() ?? 0),
-		)[0];
-
-	// Never fully indexed (no row, a placeholder commit, or no branch) — an
-	// incremental run needs a real baseline, so rebuild fully instead.
-	if (
-		!index ||
-		!index.commitSha ||
-		index.commitSha === "pending" ||
-		!index.branch
-	) {
-		return { kind: "full-fallback" };
-	}
-
-	const { token } = await resolveFreshRepoToken({
-		integrationId: params.integrationId,
-		projectId: params.projectId,
-		userId: params.userId,
-		organizationId: params.organizationId,
-	});
-	// No usable token → can't diff. Fall back to full, which surfaces the
-	// no-credentials error via the shared trigger if the token is genuinely gone.
-	if (!token) {
-		return { kind: "full-fallback" };
-	}
-
-	const compare = await compareIndexedCommitToHead({
-		repo: params.repo,
-		token,
-		base: index.commitSha,
-		head: index.branch,
-	});
-
-	// Compare failed, or the provider capped the changed-file list — a diff-only
-	// run off a partial list would miss files, so rebuild fully.
-	if (compare.status === "unknown" || compare.truncated) {
-		return { kind: "full-fallback" };
-	}
-	// No new commits / nothing changed — don't start a no-op run.
-	if (compare.aheadBy === 0 || compare.changedFiles.length === 0) {
-		return { kind: "up-to-date" };
-	}
-	return { kind: "incremental", changedFiles: compare.changedFiles };
-}
 
 export const reindexRepoIntegrationProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_SETTINGS_EDIT))
@@ -135,6 +60,12 @@ export const reindexRepoIntegrationProcedure = tenantProtectedProcedure
 		if (!integration) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Repository integration not found",
+			});
+		}
+		if (!integration.includedInCodeSearch) {
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message:
+					"Include this repository in AI code search before indexing it",
 			});
 		}
 
@@ -179,9 +110,7 @@ export const reindexRepoIntegrationProcedure = tenantProtectedProcedure
 		if (result.disabledReason) {
 			throw new ORPCError("PRECONDITION_FAILED", {
 				message:
-					result.disabledReason === "feature-flag"
-						? "Code indexing is not enabled for this environment"
-						: "Enable code search for this project before indexing",
+					"Set this project's code search to RAG before indexing",
 			});
 		}
 

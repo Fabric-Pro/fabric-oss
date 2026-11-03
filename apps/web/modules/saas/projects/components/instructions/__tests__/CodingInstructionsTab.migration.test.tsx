@@ -115,6 +115,10 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	},
 }));
 
+// Reads its own queries; covered by its own tests.
+vi.mock("../ConsolidationPanel", () => ({ ConsolidationPanel: () => null }));
+vi.mock("../PluginNameSetting", () => ({ PluginNameSetting: () => null }));
+vi.mock("../RulesHealthPanel", () => ({ RulesHealthPanel: () => null }));
 vi.mock("../ConfigureRepositorySyncDialog", () => ({
 	ConfigureRepositorySyncDialog: () => null,
 }));

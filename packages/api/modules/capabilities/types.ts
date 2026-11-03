@@ -232,18 +232,11 @@ interface CodebaseEvidence {
 	/** A repository is attached to this project at all. */
 	connected: boolean;
 	/**
-	 * Whether anything would ever index this repository: the deployment's
-	 * code-indexing switch AND the project's own code-search setting. The
-	 * setting defaults off, so on most projects nothing runs, and a gate that
-	 * waited for an index there would wait forever.
+	 * Whether anything would ever index this repository: the project's code
+	 * search mode is RAG. It defaults off, so on most projects nothing runs,
+	 * and a gate that waited for an index there would wait forever.
 	 */
 	indexingEnabled: boolean;
-	/**
-	 * The deployment half of `indexingEnabled` on its own: whether code
-	 * indexing exists here at all. When it does not, the project's own
-	 * setting is not the remedy, and the gate must not say it is.
-	 */
-	indexingAvailable: boolean;
 	/** Durable: a full index completed and its output is still there. */
 	usable: boolean;
 	/** Transient: the latest run succeeded and the credential still works. */

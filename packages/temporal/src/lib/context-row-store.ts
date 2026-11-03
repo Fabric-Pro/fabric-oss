@@ -79,6 +79,8 @@ export interface ContextSourceRow {
 	sourceTitle: string | null;
 	extractionStatus: ExtractionStatus;
 	qdrantId: string | null;
+	/** Content-type chunking profile override; null = automatic. */
+	chunkProfile?: string | null;
 }
 
 /** What a status write may carry besides the status. */

@@ -48,7 +48,10 @@ vi.mock("../../embedding", () => ({
 }));
 
 vi.mock("../../chunking", () => ({
+	parseChunkProfilesConfig: vi.fn(() => ({})),
 	chunkDescribedOpenApiSpec: vi.fn(),
+	// Content-type chunking is off here: these tests pin today's path.
+	isContentAwareChunkingActive: vi.fn(async () => false),
 	chunkText: mocks.chunkText,
 	detectContentType: vi.fn(() => ({ type: "text" })),
 	enrichChunksWithTenantContext: mocks.enrichChunksWithTenantContext,
@@ -525,6 +528,10 @@ describe("getCompanyChunkSettings", () => {
 			chunkOverlap: 200,
 			splitMethod: null,
 			strategy: undefined,
+			// Content-type chunking stays off until the organization sets it.
+			chunkByContentType: false,
+			chunkProfiles: null,
+			chunkingVersion: 0,
 		});
 	});
 

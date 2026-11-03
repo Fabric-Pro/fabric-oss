@@ -209,6 +209,8 @@ import { getReviewCenterItemsProcedure } from "./procedures/get-review-center-it
 // GitHub code-based setup procedures
 import {
 	codeBasedSetupStatusProcedure,
+	getGitHubProjectBoardProcedure,
+	listGitHubProjectBoardsProcedure,
 	listGitHubReposProcedure,
 } from "./procedures/github";
 // GitLab procedures
@@ -239,6 +241,10 @@ import { getSettingsProcedure as getInstructionSettingsProcedure } from "./proce
 import { getSnapshotProcedure } from "./procedures/instructions/get-snapshot";
 import { listFilesProcedure } from "./procedures/instructions/list-files";
 import { listSnapshotsProcedure } from "./procedures/instructions/list-snapshots";
+import {
+	getPluginNameProcedure as getInstructionPluginNameProcedure,
+	setPluginNameProcedure as setInstructionPluginNameProcedure,
+} from "./procedures/instructions/plugin-name";
 import {
 	closeProposalBranchProcedure,
 	getMyProposalBranchFileProcedure,
@@ -275,6 +281,12 @@ import { listDirectInstructionRepositoryPullRequestsProcedure } from "./procedur
 import { readDirectInstructionRepositoryFilesProcedure } from "./procedures/instructions/repository/read-files";
 import { compareInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository-sync/compare-commits";
 import { configureRepositorySyncProcedure } from "./procedures/instructions/repository-sync/configure";
+import {
+	getConsolidationProcedure,
+	previewConsolidationProcedure,
+	retryConsolidationProcedure,
+	startConsolidationProcedure,
+} from "./procedures/instructions/repository-sync/consolidate";
 import { disableRepositorySyncProcedure } from "./procedures/instructions/repository-sync/disable";
 import { getRepositorySyncProcedure } from "./procedures/instructions/repository-sync/get";
 import { listInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository-sync/list-commits";
@@ -291,12 +303,26 @@ import { readInstructionRepositoryIgnoreFileProcedure } from "./procedures/instr
 import { syncRepositoryNowProcedure } from "./procedures/instructions/repository-sync/sync-now";
 import { updateRepositorySyncProposalSettingsProcedure } from "./procedures/instructions/repository-sync/update-proposal-settings";
 import { revertCommitProcedure } from "./procedures/instructions/revert-commit";
+import {
+	rulesHealthProcedure as instructionRulesHealthProcedure,
+	reviewRulesProcedure as reviewInstructionRulesProcedure,
+} from "./procedures/instructions/rules-health";
 import { submitGitInstructionChangeProcedure } from "./procedures/instructions/submit-git-change";
 import { updateSettingsProcedure as updateInstructionSettingsProcedure } from "./procedures/instructions/update-settings";
 import {
 	getKanbanUserPreferenceProcedure,
 	updateKanbanUserPreferenceProcedure,
 } from "./procedures/kanban-user-preference";
+import {
+	addKnowledgeEntryProcedure,
+	archiveKnowledgeTypeProcedure,
+	getKnowledgeTopicProcedure,
+	listKnowledgeTopicsProcedure,
+	listKnowledgeTypesProcedure,
+	refreshKnowledgeTopicSummaryProcedure,
+	searchKnowledgeProcedure,
+	upsertKnowledgeTypeProcedure,
+} from "./procedures/knowledge";
 import { listDocumentsProcedure } from "./procedures/list-documents";
 import { listDraftProjectsProcedure } from "./procedures/list-draft-projects";
 import { listGuestProjectsProcedure } from "./procedures/list-guest-projects";
@@ -419,7 +445,13 @@ import {
 	readPullRequestProcedure,
 	setPullRequestFindingStatusProcedure,
 } from "./procedures/pr-review";
+import { previewRepositoryImportProcedure } from "./procedures/preview-repository-import";
 import { setProjectFavoriteProcedure } from "./procedures/project-favorite";
+import {
+	applyProjectImportProcedure,
+	getProjectImportProcedure,
+	startProjectImportProcedure,
+} from "./procedures/project-import";
 import { checkProjectNameProcedure } from "./procedures/project-name-availability";
 import { listProjectShortcutsProcedure } from "./procedures/project-shortcuts";
 import {
@@ -525,6 +557,16 @@ import {
 	updateProjectQaSettingsProcedure,
 	updateProjectQaWebhookExpiryProcedure,
 } from "./procedures/qa-settings";
+import {
+	applyChunkingProposalProcedure,
+	confirmChunkingAnalysisProcedure,
+	getChunkingCheckProcedure,
+	getChunkingQualityProcedure,
+	getChunkingRunsProcedure,
+	getRechunkPreviewProcedure,
+	listChunkingSourcesProcedure,
+	startChunkingAnalysisProcedure,
+} from "./procedures/rag-settings/chunking";
 import { getRagSettingsProcedure } from "./procedures/rag-settings/get-rag-settings";
 import { reprocessContextsProcedure } from "./procedures/rag-settings/reprocess-contexts";
 import { updateRagSettingsProcedure } from "./procedures/rag-settings/update-rag-settings";
@@ -557,6 +599,7 @@ import { repoIntegrationHealthProcedure } from "./procedures/repository-integrat
 import { listRepoIntegrationsProcedure } from "./procedures/repository-integrations/list";
 import { reindexRepoIntegrationProcedure } from "./procedures/repository-integrations/reindex";
 import { updateRepoIntegrationBranchProcedure } from "./procedures/repository-integrations/update-branch";
+import { updateRepoCodeSearchInclusionProcedure } from "./procedures/repository-integrations/update-code-search-inclusion";
 import { updateRepoIntegrationTagProcedure } from "./procedures/repository-integrations/update-tag";
 import { resolveActiveMentionsProcedure } from "./procedures/resolve-active-mentions";
 import { resolveContentDriftProcedure } from "./procedures/resolve-content-drift";
@@ -872,6 +915,13 @@ export const projectsRouter = {
 	list: listProjectsProcedure,
 	get: getProjectProcedure,
 	create: createProjectProcedure,
+	// "Import project from repository": propose name, brief and stack.
+	previewRepositoryImport: previewRepositoryImportProcedure,
+	repositoryImport: {
+		start: startProjectImportProcedure,
+		get: getProjectImportProcedure,
+		apply: applyProjectImportProcedure,
+	},
 	update: updateProjectProcedure,
 	delete: deleteProjectProcedure,
 	bulkDelete: bulkDeleteProjectsProcedure,
@@ -998,6 +1048,18 @@ export const projectsRouter = {
 	},
 
 	// Context operations
+	// Project knowledge hub (specs/2026-10-21-ai-artifacts-hub): append-only
+	// entries by topic, an artifact type catalog and per-topic summaries
+	knowledge: {
+		listTypes: listKnowledgeTypesProcedure,
+		upsertType: upsertKnowledgeTypeProcedure,
+		archiveType: archiveKnowledgeTypeProcedure,
+		listTopics: listKnowledgeTopicsProcedure,
+		getTopic: getKnowledgeTopicProcedure,
+		addEntry: addKnowledgeEntryProcedure,
+		search: searchKnowledgeProcedure,
+		refreshSummary: refreshKnowledgeTopicSummaryProcedure,
+	},
 	contexts: {
 		list: listContextsProcedure,
 		create: createContextProcedure,
@@ -1078,6 +1140,14 @@ export const projectsRouter = {
 	ragSettings: {
 		get: getRagSettingsProcedure,
 		update: updateRagSettingsProcedure,
+		rechunkPreview: getRechunkPreviewProcedure,
+		chunkingRuns: getChunkingRunsProcedure,
+		chunkingCheck: getChunkingCheckProcedure,
+		chunkingQuality: getChunkingQualityProcedure,
+		chunkingSources: listChunkingSourcesProcedure,
+		startChunkingAnalysis: startChunkingAnalysisProcedure,
+		confirmChunkingAnalysis: confirmChunkingAnalysisProcedure,
+		applyChunkingProposal: applyChunkingProposalProcedure,
 		reprocess: reprocessContextsProcedure,
 	},
 
@@ -1353,6 +1423,7 @@ export const projectsRouter = {
 		updateBranch: updateRepoIntegrationBranchProcedure,
 		attachPat: attachPatToRepoIntegrationProcedure,
 		updateTag: updateRepoIntegrationTagProcedure,
+		updateCodeSearchInclusion: updateRepoCodeSearchInclusionProcedure,
 		reindex: reindexRepoIntegrationProcedure,
 		cancelReindex: cancelReindexRepoIntegrationProcedure,
 	},
@@ -1376,6 +1447,8 @@ export const projectsRouter = {
 	github: {
 		listRepos: listGitHubReposProcedure,
 		setupStatus: codeBasedSetupStatusProcedure,
+		listProjectBoards: listGitHubProjectBoardsProcedure,
+		getProjectBoard: getGitHubProjectBoardProcedure,
 	},
 
 	// GitLab operations. `startCodeSetup` retired with the GitHub one (O1).
@@ -2142,6 +2215,12 @@ export const projectsRouter = {
 		delete: deleteSnapshotProcedure,
 		createDownloadUrl: createDownloadUrlProcedure,
 		getSettings: getInstructionSettingsProcedure,
+		// The plugin's name in coding tools (specs/2026-10-21).
+		getPluginName: getInstructionPluginNameProcedure,
+		// Rules health and AI review (specs/2026-10-21 §5.8).
+		rulesHealth: instructionRulesHealthProcedure,
+		reviewRules: reviewInstructionRulesProcedure,
+		setPluginName: setInstructionPluginNameProcedure,
 		updateSettings: updateInstructionSettingsProcedure,
 		proposals: {
 			list: listInstructionProposalsProcedure,
@@ -2207,6 +2286,13 @@ export const projectsRouter = {
 			getMigration: getRepositoryMigrationProcedure,
 			cancelMigration: cancelRepositoryMigrationProcedure,
 			retryMigration: retryRepositoryMigrationProcedure,
+			// "Move AI files out of the code repository" (specs/2026-10-21
+			// §5.2): Fabric creates an instructions repository, moves the
+			// files there and opens a cleanup pull request.
+			previewConsolidation: previewConsolidationProcedure,
+			startConsolidation: startConsolidationProcedure,
+			getConsolidation: getConsolidationProcedure,
+			retryConsolidation: retryConsolidationProcedure,
 			// "Let read-only members propose changes as pull requests"
 			// (Fizzy #2563 Decision 4): never bumps the generation.
 			updateProposalSettings:

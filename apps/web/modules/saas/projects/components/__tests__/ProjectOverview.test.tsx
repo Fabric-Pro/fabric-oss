@@ -26,6 +26,15 @@ vi.mock("@saas/get-started/components/PageTourButton", () => ({
 vi.mock("../ProjectSectionEditDialog", () => ({
 	ProjectSectionEditDialog: () => null,
 }));
+// The repository import panel reads its run through React Query; it has its
+// own tests and shows nothing for a project that was never imported.
+vi.mock("../rag-settings/ChunkingCheckPrompt", () => ({
+	ChunkingCheckPrompt: () => null,
+}));
+
+vi.mock("../repository-import/RepositoryImportPanel", () => ({
+	RepositoryImportPanel: () => null,
+}));
 // The pipeline rows link to their documents, and the link is built from the
 // organization's route base.
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({

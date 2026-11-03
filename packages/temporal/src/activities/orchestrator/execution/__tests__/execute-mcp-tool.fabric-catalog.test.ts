@@ -184,6 +184,7 @@ describe("Fabric AI catalog executability", () => {
 			"architecture-decisions-handler",
 			"feature-decisions-handler",
 			"security-findings-handler",
+			"chunking-tuning-handler",
 			"fabric-ai-handler",
 		].map((f) => src(`../handlers/${f}.ts`));
 

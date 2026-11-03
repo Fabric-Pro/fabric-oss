@@ -7,6 +7,12 @@ import {
 	type StorySource,
 	updateStory,
 } from "@repo/database";
+import {
+	GITHUB_STATUS_LABEL_PREFIX,
+	getGitHubProjectItemForPM,
+	isGitHubProjectsKey,
+	normalizeGitHubItemReference,
+} from "@repo/integrations/github/projects-pm-adapter";
 import { mcpRowOrigin } from "@repo/integrations/gitlab";
 import {
 	applyLabelStatusMapOnPull,
@@ -38,6 +44,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { assertCapabilityAvailable } from "../../../../capabilities/assert";
+import {
+	requireGitHubProjectsSource,
+	rethrowGitHubProjectsError,
+} from "../../../lib/github-projects-pm-source";
 import {
 	projectGitLabPmOrigin,
 	resolveProjectPmConfig,
@@ -553,6 +563,12 @@ async function handleGitLabImport(args: {
 	labelStatusMapSource: unknown;
 	/** The project's PM context: records the container's GitLab instance. */
 	pmAdditionalContext: unknown;
+	/**
+	 * GitHub Projects shares this routine: `gitlabProjectId` is then the
+	 * board's node id, and items are read through the caller's GitHub
+	 * connection instead of GitLab.
+	 */
+	provider?: "gitlab" | "github";
 }) {
 	const {
 		projectId,
@@ -560,22 +576,60 @@ async function handleGitLabImport(args: {
 		organizationId,
 		userId,
 		userName,
-		externalId,
 		overwrite,
 		labelStatusMapSource,
 	} = args;
+	const isGitHub = args.provider === "github";
+	const pmTool = isGitHub ? "github" : "gitlab";
+	const toolLabel = isGitHub ? "GitHub" : "GitLab";
 
-	const source = await resolveGitLabPMSource({
-		userId,
-		organizationId,
-		projectId,
-		pmAdditionalContext: args.pmAdditionalContext,
-	}).catch(rethrowGitLabPmOriginMismatch);
-	if (!source) {
-		throw new ORPCError("BAD_REQUEST", {
-			message:
-				"GitLab not connected. Connect your GitLab account in Settings → Integrations.",
+	let externalId = args.externalId;
+	let readItem: () => Promise<{
+		title: string;
+		description: string | null;
+		externalUrl: string | null;
+		labels: string[];
+		workItemType?: string;
+	}>;
+	if (isGitHub) {
+		const githubSource = await requireGitHubProjectsSource({
+			userId,
+			organizationId,
+			project: {
+				projectManagementContainerId: gitlabProjectId,
+				projectManagementAdditionalContext: args.pmAdditionalContext,
+			},
 		});
+		const normalized = normalizeGitHubItemReference(
+			externalId,
+			githubSource.repository,
+		);
+		if (normalized) {
+			externalId = normalized;
+		}
+		readItem = () =>
+			getGitHubProjectItemForPM({ source: githubSource, externalId });
+	} else {
+		const source = await resolveGitLabPMSource({
+			userId,
+			organizationId,
+			projectId,
+			pmAdditionalContext: args.pmAdditionalContext,
+		}).catch(rethrowGitLabPmOriginMismatch);
+		if (!source) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"GitLab not connected. Connect your GitLab account in Settings → Integrations.",
+			});
+		}
+		readItem = () =>
+			getGitLabIssueForPM({
+				source,
+				gitlabProjectId,
+				externalId,
+				userId,
+				organizationId,
+			});
 	}
 
 	const existingStory = await db.userStory.findFirst({
@@ -588,22 +642,19 @@ async function handleGitLabImport(args: {
 		});
 	}
 
-	let fetched: Awaited<ReturnType<typeof getGitLabIssueForPM>>;
+	let fetched: Awaited<ReturnType<typeof readItem>>;
 	try {
-		fetched = await getGitLabIssueForPM({
-			source,
-			gitlabProjectId,
-			externalId,
-			userId,
-			organizationId,
-		});
+		fetched = await readItem();
 	} catch (error) {
-		logger.warn("[Import-from-PM] GitLab fetch failed", { error });
+		logger.warn(`[Import-from-PM] ${toolLabel} fetch failed`, { error });
+		if (isGitHub) {
+			rethrowGitHubProjectsError(error);
+		}
 		throw new ORPCError("INTERNAL_SERVER_ERROR", {
 			message:
 				error instanceof Error
 					? describeSyncErrorForUser(error)
-					: "Failed to fetch GitLab issue",
+					: `Failed to fetch ${toolLabel} issue`,
 		});
 	}
 
@@ -638,7 +689,12 @@ async function handleGitLabImport(args: {
 
 	const derivedStatusId =
 		pullResult.kind === "matched" ? pullResult.statusId : null;
-	const remainingLabels = pullResult.remainingLabels;
+	// The board's Status pseudo-label is never a Fabric label.
+	const remainingLabels = isGitHub
+		? pullResult.remainingLabels.filter(
+				(l) => !l.startsWith(GITHUB_STATUS_LABEL_PREFIX),
+			)
+		: pullResult.remainingLabels;
 	const conflictingLabels =
 		pullResult.kind === "conflict"
 			? pullResult.conflictingLabels
@@ -646,7 +702,7 @@ async function handleGitLabImport(args: {
 
 	const externalPmTarget = buildExternalPmTarget({
 		mcpServerId: args.mcpServerId,
-		pmTool: "gitlab",
+		pmTool,
 		containerId: gitlabProjectId,
 		additionalContext: args.pmAdditionalContext,
 	});
@@ -665,8 +721,8 @@ async function handleGitLabImport(args: {
 				additionalContext: args.pmAdditionalContext,
 				containerId: gitlabProjectId,
 			},
-			pmTool: "gitlab",
-			toolLabel: "GitLab",
+			pmTool,
+			toolLabel,
 			externalId,
 			externalUrl: story.externalUrl,
 			externalMcpServerId: story.externalMcpServerId,
@@ -727,7 +783,10 @@ async function handleGitLabImport(args: {
 			title,
 			description: description ?? undefined,
 			createdById: userId,
-			source: "GITLAB",
+			source: isGitHub ? "GITHUB" : "GITLAB",
+			...(isGitHub && fetched.workItemType?.toLowerCase() === "bug"
+				? { kind: "BUG" as const }
+				: {}),
 			externalMcpServerId: args.mcpServerId,
 			externalPmTarget,
 			externalId,
@@ -898,11 +957,13 @@ export const importFromPMProcedure = tenantProtectedProcedure
 		const pmServerKey = await getProjectPMServerKey(
 			project.projectManagementMcpServerId,
 		);
-		if (isGitLabOfficialKey(pmServerKey)) {
+		const isGitHubProjects = isGitHubProjectsKey(pmServerKey);
+		if (isGitLabOfficialKey(pmServerKey) || isGitHubProjects) {
 			if (!project.projectManagementContainerId) {
 				throw new ORPCError("BAD_REQUEST", {
-					message:
-						"Select a GitLab project in Project Settings before importing.",
+					message: isGitHubProjects
+						? "Select a GitHub project board in Project Settings before importing."
+						: "Select a GitLab project in Project Settings before importing.",
 				});
 			}
 			await assertPmImportAvailable(project, user.id);
@@ -918,12 +979,13 @@ export const importFromPMProcedure = tenantProtectedProcedure
 				labelStatusMapSource:
 					project.projectManagementAdditionalContext,
 				pmAdditionalContext: project.projectManagementAdditionalContext,
+				provider: isGitHubProjects ? "github" : "gitlab",
 			});
 			if (gitlabResult.success && gitlabResult.story) {
 				await logImportPull({
 					storyId: gitlabResult.story.id,
 					storyTitle: gitlabResult.story.title,
-					pmTool: "gitlab",
+					pmTool: isGitHubProjects ? "github" : "gitlab",
 					externalId: gitlabResult.imported.externalId,
 					externalUrl: gitlabResult.imported.externalUrl ?? null,
 					projectId: input.projectId,

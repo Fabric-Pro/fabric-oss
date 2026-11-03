@@ -83,12 +83,21 @@ const integration = {
 	provider: "GITHUB",
 	repositoryName: "acme/repo",
 	defaultBranch: "main",
-	project: { userId: "user-1", organizationId: null },
+	includedInCodeSearch: true,
+	project: {
+		userId: "user-1",
+		organizationId: null,
+		ragSettings: { codeSearchMode: "CODE_SEARCH" },
+	},
+};
+
+const ragIntegration = {
+	...integration,
+	project: { ...integration.project, ragSettings: { codeSearchMode: "RAG" } },
 };
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	process.env.FEATURE_CODE_INDEXING = undefined;
 	mockFindByRepoUrl.mockResolvedValue(integration);
 	mockStartSyncs.mockResolvedValue({ started: 0, failed: 0 });
 	mockParseRepoUrl.mockReturnValue({
@@ -136,13 +145,28 @@ describe("handleGitHubPushWebhook — per-repo", () => {
 			"proj-1",
 			"integ-1",
 		);
-		// FEATURE_CODE_INDEXING is off → stale only, no workflow.
+		// Not a RAG project → stale only, no workflow.
+		expect(result.action).toBe("stale_only");
+		expect(mockStart).not.toHaveBeenCalled();
+	});
+
+	it("starts nothing for a repository left out of code search", async () => {
+		mockFindByRepoUrl.mockResolvedValue({
+			...ragIntegration,
+			includedInCodeSearch: false,
+		});
+		mockGetProjectCodeIndex.mockResolvedValue({ status: "READY" });
+		const result = await call({
+			repository: { html_url: "https://github.com/acme/repo" },
+			ref: "refs/heads/main",
+			commits: [],
+		});
 		expect(result.action).toBe("stale_only");
 		expect(mockStart).not.toHaveBeenCalled();
 	});
 
 	it("keys the incremental reindex workflow on the integration id", async () => {
-		process.env.FEATURE_CODE_INDEXING = "true";
+		mockFindByRepoUrl.mockResolvedValue(ragIntegration);
 		mockGetProjectCodeIndex.mockResolvedValue({ status: "READY" });
 		const result = await call({
 			repository: { html_url: "https://github.com/acme/repo" },

@@ -94,6 +94,74 @@ else if (useExternalDb)
     Console.WriteLine("[DEBUG] FABRIC_LOCAL_EXTERNAL_DB=true — app services will use DATABASE_URL/DIRECT_URL from .env.local, not the local Postgres container.");
 }
 
+// Local models (default OFF, local-dev only). Each local provider is opted into
+// separately in .env.local, so a developer without the hardware leaves it off and
+// nothing changes for them:
+//   FABRIC_LOCAL_OLLAMA=true   — Ollama container: embeddings and decisions
+//   FABRIC_LOCAL_LOCALAI=true  — LocalAI container: image generation
+// <provider>_GPU=true passes an NVIDIA GPU through. Each task's model can be
+// changed, or set to "off" to keep that task on the configured provider:
+//   FABRIC_LOCAL_OLLAMA_EMBEDDING_MODEL (must return 1536-dimension vectors when
+//   asked — the Qdrant collection width), FABRIC_LOCAL_OLLAMA_DECISION_MODEL,
+//   FABRIC_LOCAL_LOCALAI_IMAGE_MODEL (a LocalAI gallery name).
+// FABRIC_LOCAL_OLLAMA_DECISION_CPU=true runs the decision model on the CPU,
+// leaving GPU memory to embeddings and images. The tasks reach web,
+// temporal-worker and weave-planners as FABRIC_LOCAL_<TASK>_BASE_URL/_MODEL,
+// which the app honours only under NODE_ENV=development
+// (packages/ai/lib/local-models.ts).
+bool IsLocalFlagOn(string key) =>
+    envVars.TryGetValue(key, out var value)
+    && value.Trim().ToLowerInvariant() is "true" or "1" or "yes";
+
+string? LocalModelFor(bool providerOn, string key, string defaultModel)
+{
+    if (!providerOn)
+    {
+        return null;
+    }
+    var model = envVars.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+        ? value.Trim()
+        : defaultModel;
+    if (model.ToLowerInvariant() is "off" or "false" or "none")
+    {
+        return null;
+    }
+    if (!Regex.IsMatch(model, "^[A-Za-z0-9._:/-]+$"))
+    {
+        throw new InvalidOperationException($"{key} is not a valid model name: \"{model}\"");
+    }
+    return model;
+}
+
+var localOllamaGpu = IsLocalFlagOn("FABRIC_LOCAL_OLLAMA_GPU");
+var localEmbeddingModel = LocalModelFor(IsLocalFlagOn("FABRIC_LOCAL_OLLAMA"), "FABRIC_LOCAL_OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:4b");
+var localDecisionModel = LocalModelFor(IsLocalFlagOn("FABRIC_LOCAL_OLLAMA"), "FABRIC_LOCAL_OLLAMA_DECISION_MODEL", "qwen3:4b-instruct");
+var localDecisionOnCpu = IsLocalFlagOn("FABRIC_LOCAL_OLLAMA_DECISION_CPU");
+// The CPU-only copy of the decision model the ollama-pull step creates.
+const string localDecisionCpuModel = "fabric-decisions-cpu";
+var localOllamaOn = localEmbeddingModel is not null || localDecisionModel is not null;
+var localAiGpu = IsLocalFlagOn("FABRIC_LOCAL_LOCALAI_GPU");
+var localImageModel = LocalModelFor(IsLocalFlagOn("FABRIC_LOCAL_LOCALAI"), "FABRIC_LOCAL_LOCALAI_IMAGE_MODEL", "flux.2-klein-4b");
+
+// Points a resource at the opted-in local models. Call it after the resource's
+// .env.local loop so these values win.
+IResourceBuilder<T> WithLocalModels<T>(IResourceBuilder<T> resource, string ollamaOrigin, string localAiOrigin)
+    where T : IResourceWithEnvironment
+{
+    IResourceBuilder<T> WithTask(IResourceBuilder<T> r, string prefix, string? model, string origin, string provider) =>
+        model is null
+            ? r
+            : r.WithEnvironment($"{prefix}_BASE_URL", $"{origin}/v1")
+                .WithEnvironment($"{prefix}_MODEL", model)
+                .WithEnvironment($"{prefix}_PROVIDER", provider);
+
+    resource = WithTask(resource, "FABRIC_LOCAL_EMBEDDINGS", localEmbeddingModel, ollamaOrigin, "Ollama");
+    resource = WithTask(resource, "FABRIC_LOCAL_DECISIONS",
+        localDecisionModel is not null && localDecisionOnCpu ? localDecisionCpuModel : localDecisionModel,
+        ollamaOrigin, "Ollama");
+    return WithTask(resource, "FABRIC_LOCAL_IMAGES", localImageModel, localAiOrigin, "LocalAI");
+}
+
 // Opt-in (default OFF) public tunnel for OAuth callbacks and inbound webhooks.
 // Set Parameters:ngrok-domain (a reserved ngrok domain, e.g. example-org.ngrok-free.app)
 // and Parameters:ngrok-auth-token in appsettings.Development.json or user-secrets.
@@ -196,6 +264,98 @@ if (!isPublishMode)
         .WithContainerRuntimeArgs("--label", "com.docker.compose.service=qdrant")
         .WithLifetime(ContainerLifetime.Persistent);
 
+    // Ollama (local only, opt-in via FABRIC_LOCAL_OLLAMA) — serves embeddings and
+    // decisions in local development. Models live in the volume, so each
+    // downloads once.
+    if (localOllamaOn)
+    {
+        var ollama = builder.AddContainer("ollama", "ollama/ollama", "0.40.6")
+            .WithHttpEndpoint(port: 11434, targetPort: 11434, name: "http")
+            .WithVolume("fabric-ollama-data", "/root/.ollama")
+            // Keep the model loaded between bursts; the default 5 minutes means
+            // a multi-second reload on most requests during development.
+            .WithEnvironment("OLLAMA_KEEP_ALIVE", "1h")
+            .WithHttpHealthCheck("/")
+            .WithContainerRuntimeArgs("--label", $"com.docker.compose.project={dockerProjectName}")
+            .WithContainerRuntimeArgs("--label", "com.docker.compose.service=ollama")
+            .WithLifetime(ContainerLifetime.Persistent);
+        if (localOllamaGpu)
+        {
+            ollama = ollama.WithContainerRuntimeArgs("--gpus", "all");
+        }
+
+        // Pulls the opted-in models (a quick no-op once they are in the volume)
+        // and, for FABRIC_LOCAL_OLLAMA_DECISION_CPU, creates the CPU-only copy.
+        var pullSteps = new List<string> { "set -e" };
+        if (localEmbeddingModel is not null)
+        {
+            pullSteps.Add($"ollama pull {localEmbeddingModel}");
+        }
+        if (localDecisionModel is not null)
+        {
+            pullSteps.Add($"ollama pull {localDecisionModel}");
+            if (localDecisionOnCpu)
+            {
+                pullSteps.Add($"printf 'FROM {localDecisionModel}\\nPARAMETER num_gpu 0\\n' > /tmp/Modelfile");
+                pullSteps.Add($"ollama create {localDecisionCpuModel} -f /tmp/Modelfile");
+            }
+        }
+        builder.AddContainer("ollama-pull", "ollama/ollama", "0.40.6")
+            .WithEnvironment("OLLAMA_HOST", "http://ollama:11434")
+            .WithEntrypoint("/bin/sh")
+            .WithArgs("-c", string.Join(" && ", pullSteps))
+            .WaitFor(ollama)
+            .WithContainerRuntimeArgs("--label", $"com.docker.compose.project={dockerProjectName}")
+            .WithContainerRuntimeArgs("--label", "com.docker.compose.service=ollama-pull");
+    }
+
+    // LocalAI (local only, opt-in via FABRIC_LOCAL_LOCALAI) — serves image
+    // generation in local development. Models and backends live in volumes, so
+    // each downloads once; the model unloads after 15 idle minutes to give GPU
+    // memory back. Host port 8090, since 8080 is commonly taken.
+    if (localImageModel is not null)
+    {
+        var localAiTag = localAiGpu ? "v4.11.0-gpu-nvidia-cuda-12" : "v4.11.0";
+        var localAi = builder.AddContainer("localai", "localai/localai", localAiTag)
+            .WithHttpEndpoint(port: 8090, targetPort: 8080, name: "http")
+            .WithVolume("fabric-localai-models", "/models")
+            .WithVolume("fabric-localai-backends", "/backends")
+            .WithEnvironment("LOCALAI_WATCHDOG_IDLE", "true")
+            .WithEnvironment("LOCALAI_WATCHDOG_IDLE_TIMEOUT", "15m")
+            .WithHttpHealthCheck("/readyz")
+            .WithContainerRuntimeArgs("--label", $"com.docker.compose.project={dockerProjectName}")
+            .WithContainerRuntimeArgs("--label", "com.docker.compose.service=localai")
+            .WithLifetime(ContainerLifetime.Persistent);
+        if (localAiGpu)
+        {
+            localAi = localAi.WithContainerRuntimeArgs("--gpus", "all");
+        }
+
+        // Installs the image model from the LocalAI gallery, once: skipped when
+        // its config is already in the volume. The default model gets VAE tiling
+        // and flash attention, so it draws next to Ollama's embedding model on
+        // an 8 GB GPU.
+        var imageModelOverrides = localImageModel == "flux.2-klein-4b"
+            ? ""","overrides":{"options":["diffusion_model","vae_path:stablediffusion-cpp/models/flux2-vae.safetensors","sampler:euler","llm_path:stablediffusion-cpp/models/Qwen3-4B-Q4_K_M.gguf","offload_params_to_cpu:true","vae_decode_only:false","vae_tiling:true","diffusion_flash_attn:true"]}"""
+            : "";
+        var installImageModel = $$"""
+            set -e
+            if [ -f /models/{{localImageModel}}.yaml ]; then echo 'Image model {{localImageModel}} already installed'; exit 0; fi
+            job=$(curl -sf -X POST http://localai:8080/models/apply -H 'content-type: application/json' -d '{"id":"localai@{{localImageModel}}"{{imageModelOverrides}}}' | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+            echo "Installing image model {{localImageModel}} (job $job)..."
+            while :; do status=$(curl -sf http://localai:8080/models/jobs/$job); echo "$status" | grep -q '"processed":true' && break; sleep 10; done
+            echo "$status" | grep -q '"message":"completed"' || { echo "$status"; exit 1; }
+            echo 'Image model installed'
+            """;
+        builder.AddContainer("localai-setup", "localai/localai", localAiTag)
+            .WithVolume("fabric-localai-models", "/models", isReadOnly: true)
+            .WithEntrypoint("/bin/sh")
+            .WithArgs("-c", installImageModel)
+            .WaitFor(localAi)
+            .WithContainerRuntimeArgs("--label", $"com.docker.compose.project={dockerProjectName}")
+            .WithContainerRuntimeArgs("--label", "com.docker.compose.service=localai-setup");
+    }
+
     // Temporal Server (local only - use Temporal Cloud in production)
     temporal = builder.AddContainer("temporal", "temporalio/auto-setup", "1.28.0")
         .WithEnvironment("DB", "postgres12")
@@ -222,9 +382,15 @@ if (!isPublishMode)
         .WithLifetime(ContainerLifetime.Persistent);
 
     // MinIO (local only - use Vercel Blob/Azure Blob in production)
+    // MinIO stopped publishing minio/minio and minio/mc to public registries, so
+    // a fresh machine cannot pull them. Chainguard's builds of the same server
+    // and client are public; the server runs as root so it can write the volume
+    // Docker creates root-owned, and the client's -dev tag carries the shell the
+    // bucket script needs.
     var minioRootUser = builder.AddParameter("minio-root-user");
     var minioRootPassword = builder.AddParameter("minio-root-password", secret: true);
-    var minio = builder.AddContainer("minio", "minio/minio", "latest")
+    var minio = builder.AddContainer("minio", "cgr.dev/chainguard/minio", "latest")
+        .WithContainerRuntimeArgs("--user", "0")
         .WithEnvironment("MINIO_ROOT_USER", minioRootUser)
         .WithEnvironment("MINIO_ROOT_PASSWORD", minioRootPassword)
         // Allow browser PUT uploads from the local web app origins (workspace document
@@ -241,7 +407,7 @@ if (!isPublishMode)
         .WithLifetime(ContainerLifetime.Persistent);
 
     // MinIO bucket initialization (creates required buckets on startup)
-    var minioInit = builder.AddContainer("minio-init", "minio/mc", "latest")
+    var minioInit = builder.AddContainer("minio-init", "cgr.dev/chainguard/minio-client", "latest-dev")
         .WithEnvironment("MINIO_ROOT_USER", minioRootUser)
         .WithEnvironment("MINIO_ROOT_PASSWORD", minioRootPassword)
         .WithEntrypoint("/bin/sh")
@@ -514,10 +680,11 @@ var isMacOS = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(Sys
 
 Console.WriteLine($"[DEBUG] Platform: {(isLinux ? "Linux" : isMacOS ? "macOS" : "Other")}");
 
-// On Linux in local development, the web app runs as an NpmApp on the host (not in a container),
-// so Docker containers can't resolve the hostname "web". Use host.docker.internal instead.
+// In local development the web app runs as an NpmApp on the host (not in a container) on every
+// OS, so agent containers can't resolve the hostname "web". Use host.docker.internal instead:
+// Docker Desktop provides it on Windows and macOS, and AddHostGateway maps it on Linux.
 // In production (publish mode), agents use Azure Container Apps networking, so this isn't needed.
-var runtimeApiUrl = (!isPublishMode && isLinux) ? "http://host.docker.internal:3001" : "http://web:3001";
+var runtimeApiUrl = !isPublishMode ? "http://host.docker.internal:3001" : "http://web:3001";
 
 // Retry script for installing dependencies (macOS only - needs Linux binaries in container)
 // NOTE: On macOS, the host node_modules contains darwin binaries but containers need linux binaries.
@@ -610,19 +777,95 @@ var agentShellHelpers = (isLinux ? agentShellHelpersLinux : agentShellHelpersOth
 // Select the appropriate script based on platform, with the helpers in front.
 var agentRetryScript = agentShellHelpers + "\n" + (isLinux ? agentRetryScriptLinux : agentRetryScriptMacOS);
 
-// Helper extension to conditionally add node_modules volume (macOS only)
+// Workspace package directories (relative to the repo root), read from the
+// `packages:` globs in pnpm-workspace.yaml: exact paths and `*` segments, with
+// `!prefix/**` exclusions.
+List<string> ReadWorkspacePackageDirs()
+{
+    var include = new List<string>();
+    var exclude = new List<string>();
+    var inPackages = false;
+    foreach (var raw in File.ReadAllLines(Path.Combine(repoRoot, "pnpm-workspace.yaml")))
+    {
+        if (!inPackages)
+        {
+            inPackages = raw.TrimEnd() == "packages:";
+            continue;
+        }
+        if (raw.Length > 0 && !char.IsWhiteSpace(raw[0]))
+        {
+            break;
+        }
+        var entry = raw.Trim();
+        if (!entry.StartsWith("- "))
+        {
+            continue;
+        }
+        var glob = entry[2..].Trim().Trim('"', '\'');
+        if (glob.StartsWith('!'))
+        {
+            exclude.Add(glob[1..].Replace("/**", ""));
+        }
+        else
+        {
+            include.Add(glob);
+        }
+    }
+
+    var dirs = new SortedSet<string>(StringComparer.Ordinal);
+    foreach (var glob in include)
+    {
+        IEnumerable<string> matches = new[] { repoRoot };
+        foreach (var segment in glob.Split('/'))
+        {
+            matches = segment == "*"
+                ? matches.SelectMany(dir => Directory.Exists(dir) ? Directory.GetDirectories(dir) : Array.Empty<string>())
+                : matches.Select(dir => Path.Combine(dir, segment));
+        }
+        foreach (var dir in matches)
+        {
+            if (!File.Exists(Path.Combine(dir, "package.json")))
+            {
+                continue;
+            }
+            var relative = Path.GetRelativePath(repoRoot, dir).Replace('\\', '/');
+            if (relative.Split('/').Contains("node_modules")
+                || exclude.Any(prefix => relative == prefix || relative.StartsWith(prefix + "/")))
+            {
+                continue;
+            }
+            dirs.Add(relative);
+        }
+    }
+    return dirs.ToList();
+}
+
+// macOS/Windows: the agent containers bind-mount the checkout and install Linux
+// dependencies into it. Every node_modules they write — the root one and each
+// workspace package's — lives in a Docker volume instead of the checkout, so the
+// host keeps its own install (on Windows the container's Linux symlinks in a
+// package's node_modules are unreadable to Node, and the host's junctions to the
+// container) and the containers keep theirs. Computed once; Linux needs none of it.
+var workspacePackageDirs = isLinux ? new List<string>() : ReadWorkspacePackageDirs();
+
+// Helper extension to conditionally shadow node_modules with volumes (macOS/Windows)
 // On Linux, the host node_modules already has glibc Linux binaries that match the
 // node:22-slim image, so no volume shadowing needed
 IResourceBuilder<ContainerResource> AddNodeModulesVolume(IResourceBuilder<ContainerResource> container)
 {
     if (!isLinux)
     {
-        // macOS/Windows: Shadow host node_modules with a Docker volume containing Linux binaries.
-        // The name carries the libc: the volume this replaced ("fabric-linux-node-modules")
-        // was populated by node:22-alpine containers with musl binaries, and its
-        // .linux-installed marker would have made the node:22-slim containers skip the
-        // reinstall and run glibc Node against musl native modules.
-        return container.WithVolume("fabric-glibc-node-modules", "/app/node_modules");
+        // The name carries the libc and the layout. "fabric-linux-node-modules" was
+        // populated by node:22-alpine containers with musl binaries;
+        // "fabric-glibc-node-modules" shadowed only the root node_modules, so its
+        // .linux-installed marker would skip the install the package volumes need.
+        container = container.WithVolume("fabric-glibc-workspace-node-modules", "/app/node_modules");
+        foreach (var dir in workspacePackageDirs)
+        {
+            var volume = "fabric-glibc-nm-" + Regex.Replace(dir.ToLowerInvariant(), "[^a-z0-9]+", "-");
+            container = container.WithVolume(volume, $"/app/{dir}/node_modules");
+        }
+        return container;
     }
     // Linux: Use host node_modules directly (glibc binaries, valid in node:22-slim)
     return container;
@@ -1053,6 +1296,8 @@ else
         if (key.StartsWith("OTEL_")) continue;
         weavePlanners = weavePlanners.WithEnvironment(key, value);
     }
+    // Embeds project contexts through @repo/rag; reaches the local models on the container network.
+    weavePlanners = WithLocalModels(weavePlanners, "http://ollama:11434", "http://localai:8080");
 }
 
 // ============================================================================
@@ -1661,15 +1906,21 @@ else
         .WaitFor(qdrant!)
         // The worker reaches the web app's MCP gateway at this origin, so it must
         // be the origin the web app is served on, not whatever .env.local holds.
-        .WithEnvironment("NEXT_PUBLIC_SITE_URL", devTunnelUrl ?? "http://localhost:3001");
+        .WithEnvironment("NEXT_PUBLIC_SITE_URL", devTunnelUrl ?? "http://localhost:3001")
+        // Worker -> web bridge calls (scheduled code index refresh, Living
+        // Memory -> code index, ...) go straight to the local web app. Unset,
+        // they fall back to http://localhost:3000, where nothing listens.
+        .WithEnvironment("FABRIC_INTERNAL_URL", "http://localhost:3001");
 
     foreach (var (key, value) in envVars)
     {
         if (!useExternalDb && (key == "DATABASE_URL" || key == "DIRECT_URL")) continue;
         if (key.StartsWith("OTEL_")) continue;
         if (key == "NEXT_PUBLIC_SITE_URL") continue; // pinned to the web origin above
+        if (key == "FABRIC_INTERNAL_URL") continue; // pinned to the web app above
         temporalWorker = temporalWorker.WithEnvironment(key, value);
     }
+    temporalWorker = WithLocalModels(temporalWorker, "http://localhost:11434", "http://localhost:8090");
 }
 
 // ============================================================================
@@ -1745,6 +1996,7 @@ if (!isPublishMode)
         if (key == "NEXT_PUBLIC_SITE_URL") continue; // pinned to webSiteUrl above
         web = web.WithEnvironment(key, value);
     }
+    web = WithLocalModels(web, "http://localhost:11434", "http://localhost:8090");
 
     if (devTunnelUrl is not null)
     {

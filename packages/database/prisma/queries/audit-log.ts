@@ -87,6 +87,15 @@ export const AUDIT_ACTIONS = [
 	"org.integration.connected",
 	"org.integration.disconnected",
 	"org.integration.config_updated",
+	// Credential manager: an outbound credential (token, key, grant, app
+	// installation) owned by the organization, or a member's credential shared
+	// with or withdrawn from it. Metadata names provider, kind, label and
+	// scopes; never the secret.
+	"org.credential.created",
+	"org.credential.updated",
+	"org.credential.shared",
+	"org.credential.unshared",
+	"org.credential.deleted",
 	// AI provider credential configuration: which endpoint receives tenant
 	// prompts and which key authenticates them. Metadata never carries the
 	// key or client secret, only whether a new one was supplied.
@@ -189,6 +198,10 @@ export const AUDIT_ACTIONS = [
 	"account.integration.config_updated",
 	// ... and removed one (Fizzy #3074).
 	"account.integration.disconnected",
+	// A member saved, changed or removed their own outbound credential.
+	"account.credential.created",
+	"account.credential.updated",
+	"account.credential.deleted",
 	// A person connected or disconnected their own ChatGPT plan, or changed
 	// whether it serves their work (and their background jobs and agents) in
 	// one organization (Fizzy #2939). Never a token in the metadata.
@@ -370,6 +383,11 @@ export const AUDIT_ACTIONS = [
 	"project.instructions.repository_sync_started",
 	"project.instructions.repository_sync_completed",
 	"project.instructions.repository_sync_disabled",
+	// Importing a project from its repository (specs/2026-10-23-repository-import):
+	// the analysis requested (started), and the person's reviewed selection
+	// created in Fabric (applied). What each created writes its own rows.
+	"project.import.started",
+	"project.import.applied",
 	// Proposal pull requests (Fizzy #2563 spec §13.4): a suggestion on a
 	// repository-backed project opens a pull request in the connected
 	// repository, and review and merge happen there. Each row is written by
@@ -415,6 +433,10 @@ export const AUDIT_ACTIONS = [
 	"project.instructions.repository_migration_started",
 	"project.instructions.repository_migration_canceled",
 	"project.instructions.repository_migration_completed",
+	// Moving a code repository's AI files into a separate instructions
+	// repository Fabric created (specs/2026-10-21-ai-artifacts-hub §5.2).
+	// Repositories and counts only, never a path or content.
+	"project.instructions.consolidation_started",
 	// story (11)
 	"story.created",
 	"story.updated",
@@ -1022,9 +1044,13 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 		case "org.member.left":
 			return "AUTHZ_ROLE_CHANGED";
 		case "org.integration.connected":
+		case "org.credential.created":
+		case "account.credential.created":
 			return "ADMIN_INTEGRATION_ADDED";
 		case "org.integration.disconnected":
 		case "account.integration.disconnected":
+		case "org.credential.deleted":
+		case "account.credential.deleted":
 			return "ADMIN_INTEGRATION_REMOVED";
 		case "org.ai_provider.deleted":
 		case "account.ai_provider.deleted":
@@ -1042,6 +1068,10 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 		case "account.ai_provider.embedding_changed":
 		case "account.ai_provider.enabled_providers_changed":
 		case "account.integration.config_updated":
+		case "org.credential.updated":
+		case "org.credential.shared":
+		case "org.credential.unshared":
+		case "account.credential.updated":
 			return "DATA_UPDATE";
 		case "audit.viewed":
 		case "userActivity.viewed":

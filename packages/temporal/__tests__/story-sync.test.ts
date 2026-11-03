@@ -7170,14 +7170,12 @@ describe("story pull link ownership", () => {
 		const rest = await import(
 			"../src/activities/pm-integration/gitlab-rest-story-sync"
 		);
-		const pull = vi
-			.spyOn(rest, "syncGitLabStoryViaRest")
-			.mockResolvedValue({
-				success: false,
-				error: "example fetch denied",
-				direction: "pull",
-				syncedAt: new Date(),
-			});
+		const pull = vi.spyOn(rest, "syncStoryViaRest").mockResolvedValue({
+			success: false,
+			error: "example fetch denied",
+			direction: "pull",
+			syncedAt: new Date(),
+		});
 		try {
 			vi.mocked(db.userStory.findFirst).mockResolvedValue(null);
 			vi.mocked(createStory).mockResolvedValue({

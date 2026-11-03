@@ -25,9 +25,23 @@ import {
 // chat loop's result cap.
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { TOOL_RESULTS } from "../../../../workflows/orchestrator/orchestrator-config";
-import { codeIndexUnavailableResult } from "../../../direct-chat/code-search-repositories";
+import {
+	CODE_SEARCH_LIVE_ONLY_MESSAGE,
+	CODE_SEARCH_OFF_MESSAGE,
+	type CodeSearchModeValue,
+	codeIndexStatusNote,
+	isSearchableIndexStatus,
+	loadCodeSearchMode,
+} from "../../../direct-chat/code-search-repositories";
 import { canReadChatProject } from "../../../shared/chat-project-access";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
+import {
+	fileWindow,
+	indexedFileResult,
+	indexedStructure,
+	manifestPaths,
+	readLineArgument,
+} from "./code-index-reads";
 import type {
 	HandlerContext,
 	HandlerResult,
@@ -156,26 +170,28 @@ export class CodeSearchHandler implements StepHandler {
 	}
 
 	/**
-	 * Search the AST-aware code index in Qdrant.
-	 * Returns formatted code chunks from the indexed repository, or the index
-	 * status when no repository's index is searchable yet.
+	 * Search the AST-aware code index in Qdrant, over exactly the given
+	 * repositories (whose indexes the caller found searchable). Returns
+	 * formatted code chunks, each naming its repository.
 	 */
 	private async searchCodeIndex(
 		projectId: string,
 		query: string,
 		userId: string,
 		organizationId: string | undefined,
-		language?: string,
-		usageConversationId?: string,
-	): Promise<string[] | { unavailableStatus: string }> {
-		const { getProjectCodeIndexes } = await import("@repo/database");
-		const codeIndexes = await getProjectCodeIndexes(projectId);
-		// Search spans every connected repo, so any READY repo makes the index
-		// usable. Search results are project-scoped below (all repos).
-		if (!codeIndexes.some((index) => index.status === "READY")) {
-			return { unavailableStatus: codeIndexes[0]?.status ?? "missing" };
-		}
-
+		language: string | undefined,
+		usageConversationId: string | undefined,
+		repositories: {
+			/** Integration ids of the repositories to search. */
+			integrationIds: string[];
+			/** Also search the legacy repository (points with no integration). */
+			includeLegacy: boolean;
+			/** owner/name per integration, so every result names its repo. */
+			names: Map<string, string>;
+			/** owner/name of the legacy repository, when it is searched. */
+			legacyName?: string;
+		},
+	): Promise<string[]> {
 		const { generateEmbedding } = await import("@repo/rag/lib/embedding");
 		const { generateSparseVector } = await import(
 			"@repo/rag/lib/embedding/sparse"
@@ -218,6 +234,27 @@ export class CodeSearchHandler implements StepHandler {
 		if (language) {
 			must.push({ key: "language", match: { value: language } });
 		}
+		// Every code point carries its repository integration (null for the
+		// legacy repository), so the filter holds exactly the repositories in
+		// scope: an excluded one is never searched.
+		const repositoryTerms: any[] = [
+			...(repositories.integrationIds.length > 0
+				? [
+						{
+							key: "repositoryIntegrationId",
+							match: { any: repositories.integrationIds },
+						},
+					]
+				: []),
+			...(repositories.includeLegacy
+				? [{ is_empty: { key: "repositoryIntegrationId" } }]
+				: []),
+		];
+		must.push(
+			repositoryTerms.length === 1
+				? repositoryTerms[0]
+				: { should: repositoryTerms },
+		);
 
 		// Search with hybrid (dense + sparse)
 		const sparse = generateSparseVector(query);
@@ -264,7 +301,12 @@ export class CodeSearchHandler implements StepHandler {
 			const symbolName = payload.symbolName ?? "";
 			const symbolType = payload.symbolType ?? "";
 			const symbol = symbolName ? ` (${symbolType}: ${symbolName})` : "";
-			return `### ${filePath}${symbol}\n\`\`\`\n${content}\n\`\`\``;
+			const repoName =
+				typeof payload.repositoryIntegrationId === "string"
+					? repositories.names.get(payload.repositoryIntegrationId)
+					: repositories.legacyName;
+			const where = repoName ? `${repoName}: ${filePath}` : filePath;
+			return `### ${where}${symbol}\n\`\`\`\n${content}\n\`\`\``;
 		});
 	}
 
@@ -329,6 +371,43 @@ export class CodeSearchHandler implements StepHandler {
 			return failStep("You do not have access to this project's code.");
 		}
 
+		// A plain answer that ends the call before any repository is touched.
+		const answerStep = (message: string): ExecuteStepOutput => {
+			toolCalls.push({
+				id: `code-search-${Date.now()}`,
+				name: toolName,
+				args: stepInputs ?? {},
+				result: { message },
+				status: "success",
+				durationMs: Date.now() - startTime,
+			});
+			return {
+				outputs: { response: message, toolResults: toolCalls },
+				variables: {},
+				toolCalls,
+				response: message,
+			};
+		};
+
+		// The project's one code search mode (spec 2026-10-29 code-index-sync
+		// §6a), read once per call. OFF reaches no provider and no index.
+		const searchMode: CodeSearchModeValue =
+			await loadCodeSearchMode(projectId);
+		if (searchMode === "OFF") {
+			return answerStep(CODE_SEARCH_OFF_MESSAGE);
+		}
+		if (
+			searchMode === "CODE_SEARCH" &&
+			toolName === "code_search_semantic"
+		) {
+			return answerStep(CODE_SEARCH_LIVE_ONLY_MESSAGE);
+		}
+		// code_search and code_search_semantic in RAG mode read the index
+		// only: they need a repository's membership, not its credentials.
+		const searchesIndex =
+			searchMode === "RAG" &&
+			(toolName === "code_search" || toolName === "code_search_semantic");
+
 		// Dynamic imports to avoid circular dependencies. The
 		// @repo/integrations readers are imported statically above: see there.
 		const { db, getProjectReposForCodeSearch, parseRepoUrl } = await import(
@@ -346,6 +425,7 @@ export class CodeSearchHandler implements StepHandler {
 			readable: allRepoParams,
 			connected,
 			legacyLookupFailed,
+			anyExcluded,
 		} = await resolveAllCredentials(
 			projectId,
 			input.userId,
@@ -368,6 +448,12 @@ export class CodeSearchHandler implements StepHandler {
 		if (connected.length === 0) {
 			if (legacyLookupFailed) {
 				return failStep(LOOKUP_FAILED);
+			}
+			if (anyExcluded) {
+				// Not a failure: the project chose to keep its code out.
+				return answerStep(
+					'No repository of this project is included in AI code search. A project admin can include one in the project\'s repository settings ("Include in AI code search").',
+				);
 			}
 			return failStep(
 				"No repository credentials found. Connect a repository in project settings or set up a GitHub integration.",
@@ -421,7 +507,7 @@ export class CodeSearchHandler implements StepHandler {
 					)}.`,
 				);
 			}
-			if (!named.some((c) => c.status === "readable")) {
+			if (!searchesIndex && !named.some((c) => c.status === "readable")) {
 				return failStep(
 					named.length === 1
 						? describeUnusable(named[0])
@@ -430,10 +516,14 @@ export class CodeSearchHandler implements StepHandler {
 			}
 		}
 
-		if (allRepoParams.length === 0 && legacyLookupFailed) {
+		if (
+			!searchesIndex &&
+			allRepoParams.length === 0 &&
+			legacyLookupFailed
+		) {
 			return failStep(LOOKUP_FAILED);
 		}
-		if (allRepoParams.length === 0) {
+		if (!searchesIndex && allRepoParams.length === 0) {
 			// Each connected repository with its own reason (credentials or
 			// provider), bounded like every other list here.
 			return failStep(
@@ -449,6 +539,14 @@ export class CodeSearchHandler implements StepHandler {
 
 		// Helper: find repos matching an optional repository filter —
 		// `owner/name`, a bare name or a URL, compared case-insensitively.
+		/** The integration a readable repository came from (null: legacy). */
+		const integrationIdOf = (repoParams: ResolvedParams): string | null =>
+			connected.find(
+				(c) =>
+					c.owner.toLowerCase() === repoParams.owner.toLowerCase() &&
+					c.repo.toLowerCase() === repoParams.repo.toLowerCase(),
+			)?.integrationId ?? null;
+
 		const filterRepos = (repoFilter?: string): ResolvedParams[] => {
 			if (!repoFilter?.trim()) {
 				return allRepoParams;
@@ -488,6 +586,130 @@ export class CodeSearchHandler implements StepHandler {
 		let result = "";
 		const apiStartTime = Date.now();
 
+		/**
+		 * RAG mode's search: the code index over the repositories in scope —
+		 * every one connected here, or those a named repository matches. A
+		 * repository whose index cannot be searched is reported by its state
+		 * instead of results; nothing falls back to the provider search (spec
+		 * 2026-10-29 code-index-sync §6a.5).
+		 */
+		const runIndexSearch = async (
+			query: string,
+			repoFilter: string | undefined,
+			kind: string,
+		): Promise<{
+			result: string;
+			failed: boolean;
+			summary: Record<string, unknown>;
+		}> => {
+			const { getProjectCodeIndexes } = await import("@repo/database");
+			const indexes = await getProjectCodeIndexes(projectId);
+			const inScope = connected.filter(
+				(c) => !repoFilter?.trim() || matchesRef(repoFilter, c),
+			);
+			const notReady: string[] = [];
+			const integrationIds: string[] = [];
+			let legacyName: string | undefined;
+			for (const repo of inScope) {
+				const name = `${repo.owner}/${repo.repo}`;
+				// A repository's rows (one per indexed branch): searchable when
+				// any one is.
+				const rows = indexes.filter(
+					(row) =>
+						(row.repositoryIntegrationId ?? undefined) ===
+						repo.integrationId,
+				);
+				const status =
+					rows.find((row) => isSearchableIndexStatus(row.status))
+						?.status ??
+					rows[0]?.status ??
+					"missing";
+				if (!isSearchableIndexStatus(status)) {
+					notReady.push(codeIndexStatusNote(name, status));
+				} else if (repo.integrationId) {
+					integrationIds.push(repo.integrationId);
+				} else {
+					legacyName = name;
+				}
+			}
+			const searchedCount =
+				integrationIds.length + (legacyName === undefined ? 0 : 1);
+			if (searchedCount === 0) {
+				// A plain result, not a failure: no retry makes an index ready.
+				return {
+					result: `This project searches code through its code index, which cannot be searched yet. ${boundedList(
+						notReady,
+						" ",
+						CODE_TREE_OUTPUT_BUDGET - 600,
+					)} Do not call ${toolName} again in this turn. List the repository with code_tree and read files with code_file_get: they read it directly and need no index. Tell the user that code search will work once indexing finishes.`,
+					failed: false,
+					summary: { totalCount: 0, notReadyRepos: notReady.length },
+				};
+			}
+
+			const names = new Map(
+				connected.flatMap((c) =>
+					c.integrationId
+						? [[c.integrationId, `${c.owner}/${c.repo}`] as const]
+						: [],
+				),
+			);
+			let matches: string[];
+			try {
+				matches = await this.searchCodeIndex(
+					projectId,
+					query,
+					input.userId,
+					input.organizationId,
+					stepInputs?.language as string | undefined,
+					input.conversationId,
+					{
+						integrationIds,
+						includeLegacy: legacyName !== undefined,
+						names,
+						legacyName,
+					},
+				);
+			} catch (error) {
+				// A stop or an allowance refusal leaves the call as itself.
+				rethrowIfDispatchStopped(error);
+				const usageLimitError = findAiUsageLimitError(error);
+				if (usageLimitError) {
+					throw usageLimitError;
+				}
+				console.warn("[CodeSearchHandler] Index search threw", {
+					errorClass: errorClassName(error),
+				});
+				return {
+					result: `Could not search the code index for "${query}" right now; try again shortly. This is a search failure, not proof that the code does not exist.`,
+					failed: true,
+					summary: {},
+				};
+			}
+			const notReadyNote =
+				notReady.length > 0
+					? `\n\nNot searched, because their code index is not ready: ${boundedList(
+							notReady,
+							" ",
+							CODE_SEARCH_FAILURE_NOTE_BUDGET,
+						)}`
+					: "";
+			return {
+				result:
+					matches.length === 0
+						? `No ${kind} matches found for "${query}" in the indexed repositories.${notReadyNote}`
+						: `Found ${matches.length} ${kind} matches across ${searchedCount} repo(s):\n\n${matches.join("\n\n")}${notReadyNote}`,
+				failed: false,
+				summary: {
+					totalCount: matches.length,
+					reposSearched: searchedCount,
+					...(notReady.length > 0
+						? { notReadyRepos: notReady.length }
+						: {}),
+				},
+			};
+		};
+
 		switch (toolName) {
 			case "code_search": {
 				const query =
@@ -499,127 +721,113 @@ export class CodeSearchHandler implements StepHandler {
 					break;
 				}
 
-				const mode = (stepInputs?.mode as string) || "hybrid";
 				const repoFilter = stepInputs?.repo as string | undefined;
+
+				if (searchesIndex) {
+					const indexed = await runIndexSearch(
+						query,
+						repoFilter,
+						"code",
+					);
+					result = indexed.result;
+					toolCalls.push({
+						id: `code-search-${Date.now()}`,
+						name: toolName,
+						args: { query, repo: repoFilter, searchMode },
+						// A failed step is reported by this message, so it
+						// holds the full sentence.
+						result: indexed.failed
+							? { message: result }
+							: indexed.summary,
+						status: indexed.failed ? "error" : "success",
+						durationMs: Date.now() - apiStartTime,
+					});
+					break;
+				}
+
+				// CODE_SEARCH mode: the provider's live search only.
 				const targetRepos = filterRepos(repoFilter);
 				const apiResults: string[] = [];
 				// A repository whose search failed, with the reason. Reporting
 				// it as "no matches" would tell the model the code does not
 				// exist when it was never searched.
 				const searchFailures: string[] = [];
-				let indexedResults: string[] = [];
-				const apiSearchRan =
-					mode !== "indexed" && targetRepos.length > 0;
 				// Repositories the API search actually completed on.
 				let reposSearchedOk = 0;
 
 				// API search across all repos in parallel
-				if (apiSearchRan) {
-					const maxPerRepo = Math.max(
-						3,
-						Math.floor(10 / targetRepos.length),
-					);
-					const searchPromises = targetRepos.map(
-						async (
-							repoParams,
-						): Promise<{ lines: string[]; failure?: string }> => {
-							const repoName = `${repoParams.owner}/${repoParams.repo}`;
-							try {
-								const { results: searchResults, error } =
-									await searchRepositoryCode({
-										...repoParams,
-										query,
-										path: stepInputs?.path as
-											| string
-											| undefined,
-										language: stepInputs?.language as
-											| string
-											| undefined,
-										maxResults: maxPerRepo,
-									});
-								if (error) {
-									return {
-										lines: [],
-										failure: `${repoName}: ${error.message}`,
-									};
-								}
-								return {
-									lines: searchResults.map((r) => {
-										const snippets =
-											r.matchedSnippets.length > 0
-												? r.matchedSnippets.join(
-														"\n---\n",
-													)
-												: "(no preview)";
-										const tagPrefix = repoParams.roleTag
-											? `${repoParams.roleTag}: `
-											: "";
-										return `### ${tagPrefix}${prefixPath(repoParams, r.filePath)}\n${snippets}`;
-									}),
-								};
-							} catch (error) {
-								console.warn(
-									"[CodeSearchHandler] Search threw",
-									{
-										repo: repoName,
-										errorClass: errorClassName(error),
-									},
-								);
+				const maxPerRepo = Math.max(
+					3,
+					Math.floor(10 / Math.max(1, targetRepos.length)),
+				);
+				const searchPromises = targetRepos.map(
+					async (
+						repoParams,
+					): Promise<{ lines: string[]; failure?: string }> => {
+						const repoName = `${repoParams.owner}/${repoParams.repo}`;
+						try {
+							const { results: searchResults, error } =
+								await searchRepositoryCode({
+									...repoParams,
+									query,
+									path: stepInputs?.path as
+										| string
+										| undefined,
+									language: stepInputs?.language as
+										| string
+										| undefined,
+									maxResults: maxPerRepo,
+								});
+							if (error) {
 								return {
 									lines: [],
-									failure: `${repoName}: the search failed unexpectedly; try again shortly.`,
+									failure: `${repoName}: ${error.message}`,
 								};
 							}
-						},
-					);
-					const resultsPerRepo =
-						await Promise.allSettled(searchPromises);
-					for (const r of resultsPerRepo) {
-						if (r.status === "fulfilled") {
-							apiResults.push(...r.value.lines);
-							if (r.value.failure) {
-								searchFailures.push(r.value.failure);
-							} else {
-								reposSearchedOk += 1;
-							}
+							return {
+								lines: searchResults.map((r) => {
+									const snippets =
+										r.matchedSnippets.length > 0
+											? r.matchedSnippets.join("\n---\n")
+											: "(no preview)";
+									const tagPrefix = repoParams.roleTag
+										? `${repoParams.roleTag}: `
+										: "";
+									return `### ${tagPrefix}${prefixPath(repoParams, r.filePath)}\n${snippets}`;
+								}),
+							};
+						} catch (error) {
+							console.warn("[CodeSearchHandler] Search threw", {
+								repo: repoName,
+								errorClass: errorClassName(error),
+							});
+							return {
+								lines: [],
+								failure: `${repoName}: the search failed unexpectedly; try again shortly.`,
+							};
+						}
+					},
+				);
+				const resultsPerRepo = await Promise.allSettled(searchPromises);
+				for (const r of resultsPerRepo) {
+					if (r.status === "fulfilled") {
+						apiResults.push(...r.value.lines);
+						if (r.value.failure) {
+							searchFailures.push(r.value.failure);
+						} else {
+							reposSearchedOk += 1;
 						}
 					}
-					// Connected but unusable repositories were not searched
-					// either.
-					searchFailures.push(...unusableInScope(repoFilter));
 				}
-
-				// Indexed search — skip when a specific repo filter is set
-				// because the Qdrant index doesn't support per-repo filtering
-				if (mode !== "api" && !repoFilter) {
-					try {
-						const semanticResults = await this.searchCodeIndex(
-							projectId,
-							query,
-							input.userId,
-							input.organizationId,
-							stepInputs?.language as string | undefined,
-							input.conversationId,
-						);
-						if (Array.isArray(semanticResults)) {
-							indexedResults = semanticResults;
-						}
-					} catch (error) {
-						// A stop is not an unavailable index (a no-op outside a
-						// chat turn's dispatch guard).
-						rethrowIfDispatchStopped(error);
-						// Index not available, continue with API results only
-					}
-				}
-
-				const allResults = [...apiResults, ...indexedResults];
+				// Connected but unusable repositories were not searched
+				// either.
+				searchFailures.push(...unusableInScope(repoFilter));
 
 				// Failed only when nothing was found anywhere and no
 				// repository could be searched. Some repositories failing is a
 				// partial answer, said so below.
 				const failed =
-					apiSearchRan &&
-					allResults.length === 0 &&
+					apiResults.length === 0 &&
 					searchFailures.length > 0 &&
 					reposSearchedOk === 0;
 
@@ -629,7 +837,7 @@ export class CodeSearchHandler implements StepHandler {
 						" ",
 						CODE_TREE_OUTPUT_BUDGET - 200,
 					)} This is a search failure, not proof that the code does not exist.`;
-				} else if (allResults.length === 0) {
+				} else if (apiResults.length === 0) {
 					result =
 						searchFailures.length > 0
 							? `No code matches found for "${query}" in the repositories that could be searched. Could not search ${boundedList(
@@ -647,7 +855,7 @@ export class CodeSearchHandler implements StepHandler {
 									CODE_SEARCH_FAILURE_NOTE_BUDGET,
 								)}`
 							: "";
-					result = `Found ${allResults.length} code matches across ${targetRepos.length} repo(s):\n\n${allResults.join("\n\n")}${failureNote}`;
+					result = `Found ${apiResults.length} code matches across ${targetRepos.length} repo(s):\n\n${apiResults.join("\n\n")}${failureNote}`;
 				}
 
 				toolCalls.push({
@@ -656,20 +864,16 @@ export class CodeSearchHandler implements StepHandler {
 					args: {
 						query,
 						path: stepInputs?.path,
-						mode,
 						repo: repoFilter,
+						searchMode,
 					},
 					// A failed step is reported by this message, so it holds
 					// the full sentence.
 					result: failed
 						? { message: result }
 						: {
-								totalCount: allResults.length,
-								apiCount: apiResults.length,
-								indexedCount: indexedResults.length,
-								reposSearched: apiSearchRan
-									? reposSearchedOk
-									: targetRepos.length,
+								totalCount: apiResults.length,
+								reposSearched: reposSearchedOk,
 								...(searchFailures.length > 0
 									? { failedRepos: searchFailures.length }
 									: {}),
@@ -681,6 +885,7 @@ export class CodeSearchHandler implements StepHandler {
 			}
 
 			case "code_search_semantic": {
+				// Only RAG mode reaches here: OFF and CODE_SEARCH answered above.
 				const query =
 					(stepInputs?.query as string) ||
 					input.step.description ||
@@ -690,43 +895,20 @@ export class CodeSearchHandler implements StepHandler {
 					break;
 				}
 
-				try {
-					const semanticResults = await this.searchCodeIndex(
-						projectId,
-						query,
-						input.userId,
-						input.organizationId,
-						stepInputs?.language as string | undefined,
-						input.conversationId,
-					);
-
-					if (!Array.isArray(semanticResults)) {
-						// Not "no matches": the index cannot be searched yet,
-						// and saying nothing matched would be a confident
-						// wrong answer (Fizzy #2578).
-						result = codeIndexUnavailableResult(
-							semanticResults.unavailableStatus,
-						).message;
-					} else if (semanticResults.length === 0) {
-						result = `No semantic code matches found for "${query}".`;
-					} else {
-						result = `Found ${semanticResults.length} semantic code matches:\n\n${semanticResults.join("\n\n")}`;
-					}
-				} catch (error) {
-					rethrowIfDispatchStopped(error);
-					console.warn("[CodeSearchHandler] Semantic search threw", {
-						errorClass: errorClassName(error),
-					});
-					result =
-						"Semantic code search is unavailable right now. Use code_search for API-based search.";
-				}
-
+				const indexed = await runIndexSearch(
+					query,
+					undefined,
+					"semantic code",
+				);
+				result = indexed.result;
 				toolCalls.push({
 					id: `code-search-semantic-${Date.now()}`,
 					name: toolName,
 					args: { query },
-					result: { message: result.slice(0, 200) },
-					status: "success",
+					result: indexed.failed
+						? { message: result }
+						: { message: result.slice(0, 200) },
+					status: indexed.failed ? "error" : "success",
 					durationMs: Date.now() - apiStartTime,
 				});
 				break;
@@ -740,11 +922,33 @@ export class CodeSearchHandler implements StepHandler {
 				}
 				const repoFilter = stepInputs?.repo as string | undefined;
 				const targetRepos = filterRepos(repoFilter);
+				const range = {
+					startLine: readLineArgument(stepInputs?.startLine),
+					endLine: readLineArgument(stepInputs?.endLine),
+				};
 
-				// Try each repo until file is found. A repo that refused or
-				// failed the read is remembered with its reason: reporting it as
-				// "not found" would send the model looking for a file that may
-				// well exist. A folder at the path is remembered too.
+				// RAG mode reads the text stored with the code index; only a
+				// file the index does not hold yet is read from the provider.
+				const stored =
+					searchMode === "RAG"
+						? await loadIndexedFiles(projectId, filePath)
+						: [];
+				const readFile = (repoParams: ResolvedParams) => {
+					const integrationId = integrationIdOf(repoParams);
+					const hit = stored.find(
+						(row) => row.repositoryIntegrationId === integrationId,
+					);
+					return hit
+						? Promise.resolve(indexedFileResult(hit))
+						: getRepositoryFile({ ...repoParams, path: filePath });
+				};
+
+				// Every repo is read in parallel; the outcomes are then taken in
+				// the repositories' order, so the first repo that has the file
+				// wins as before. A repo that refused or failed the read is
+				// remembered with its reason: reporting it as "not found" would
+				// send the model looking for a file that may well exist. A
+				// folder at the path is remembered too.
 				let found = false;
 				const readFailures: string[] = [];
 				let nonFile:
@@ -753,13 +957,17 @@ export class CodeSearchHandler implements StepHandler {
 							objectType: "dir" | "symlink" | "submodule";
 					  }
 					| undefined;
-				for (const repoParams of targetRepos) {
+				const reads = await Promise.allSettled(
+					targetRepos.map((repoParams) => readFile(repoParams)),
+				);
+				for (const [i, repoParams] of targetRepos.entries()) {
 					const repoName = `${repoParams.owner}/${repoParams.repo}`;
 					try {
-						const file = await getRepositoryFile({
-							...repoParams,
-							path: filePath,
-						});
+						const read = reads[i];
+						if (read.status === "rejected") {
+							throw read.reason;
+						}
+						const file = read.value;
 
 						if (file.error) {
 							if (file.error.kind === "not_a_file") {
@@ -784,7 +992,8 @@ export class CodeSearchHandler implements StepHandler {
 								const truncNote = file.isTruncated
 									? "\n\n(Truncated at 100KB)"
 									: "";
-								result = `### ${prefixPath(repoParams, file.path)} (${file.size} bytes)\n\`\`\`\n${file.content}\n\`\`\`${truncNote}`;
+								const window = fileWindow(file.content, range);
+								result = `### ${prefixPath(repoParams, file.path)} (${file.size} bytes)\n\`\`\`\n${window.text}\n\`\`\`${window.note ? `\n\n${window.note}` : ""}${truncNote}`;
 							}
 							toolCalls.push({
 								id: `code-file-${Date.now()}`,
@@ -911,13 +1120,32 @@ export class CodeSearchHandler implements StepHandler {
 					Math.floor(500 / Math.max(1, targetRepos.length)),
 				);
 
-				for (const repoParams of targetRepos) {
+				// RAG mode lists the indexed file manifest; a repository with
+				// no usable index yet is listed by its provider.
+				const indexedPaths =
+					searchMode === "RAG"
+						? await loadIndexedPaths(projectId)
+						: new Map<string | null, string[]>();
+				const listRepo = (repoParams: ResolvedParams) => {
+					const paths = indexedPaths.get(integrationIdOf(repoParams));
+					return paths
+						? Promise.resolve(indexedStructure(paths, directory))
+						: listRepositoryStructure({ ...repoParams, directory });
+				};
+
+				// Listed in parallel, then taken in the repositories' order so
+				// the result reads the same as a sequential listing.
+				const fetches = await Promise.allSettled(
+					targetRepos.map((repoParams) => listRepo(repoParams)),
+				);
+				for (const [i, repoParams] of targetRepos.entries()) {
 					const repoName = `${repoParams.owner}/${repoParams.repo}`;
 					try {
-						const fetched = await listRepositoryStructure({
-							...repoParams,
-							directory,
-						});
+						const outcome = fetches[i];
+						if (outcome.status === "rejected") {
+							throw outcome.reason;
+						}
+						const fetched = outcome.value;
 						const structure =
 							depth === undefined || fetched.error
 								? fetched
@@ -1493,6 +1721,8 @@ interface ConnectedRepo {
 	owner: string;
 	repo: string;
 	status: "readable" | "unreadable" | "unsupported";
+	/** The repository integration row; absent for the legacy columns. */
+	integrationId?: string;
 }
 
 interface ResolvedParams {
@@ -1545,13 +1775,23 @@ async function resolveAllCredentials(
 	connected: ConnectedRepo[];
 	/** The legacy repository columns could not be read: `connected` may be missing one. */
 	legacyLookupFailed: boolean;
+	/** Some repository is excluded from AI code search (and so not in `connected`). */
+	anyExcluded: boolean;
 }> {
 	const results: ResolvedParams[] = [];
 	const connected: ConnectedRepo[] = [];
 
 	// Strategy 1: All project-level integrations
 	const repos = await deps.getProjectReposForCodeSearch(projectId);
+	// A repository excluded from AI code search is invisible to every code
+	// tool: not searched, not read, not listed as connected. Its name is kept
+	// only so the legacy columns below cannot bring it back.
+	const excludedNames = new Set<string>();
 	for (const repo of repos) {
+		if (repo.includedInCodeSearch === false) {
+			excludedNames.add(`${repo.owner}/${repo.repo}`.toLowerCase());
+			continue;
+		}
 		const provider: unknown = repo.provider;
 		// Providers code search cannot read stay connected, as unsupported.
 		if (!isCodeSearchProvider(provider)) {
@@ -1562,6 +1802,7 @@ async function resolveAllCredentials(
 				owner: repo.owner,
 				repo: repo.repo,
 				status: "unsupported",
+				integrationId: repo.integrationId,
 			});
 			continue;
 		}
@@ -1585,6 +1826,7 @@ async function resolveAllCredentials(
 			owner: repo.owner,
 			repo: repo.repo,
 			status: token ? "readable" : "unreadable",
+			integrationId: repo.integrationId,
 		});
 		if (token) {
 			results.push({
@@ -1632,18 +1874,38 @@ async function resolveAllCredentials(
 		console.warn("[CodeSearchHandler] Legacy repository lookup threw", {
 			errorClass: errorClassName(error),
 		});
-		return { readable: results, connected, legacyLookupFailed: true };
+		return {
+			readable: results,
+			connected,
+			legacyLookupFailed: true,
+			anyExcluded: excludedNames.size > 0,
+		};
 	}
 	if (
 		!project?.repositoryUrl ||
 		!project.repositoryOwner ||
 		!project.repositoryName
 	) {
-		return { readable: results, connected, legacyLookupFailed: false };
+		return {
+			readable: results,
+			connected,
+			legacyLookupFailed: false,
+			anyExcluded: excludedNames.size > 0,
+		};
 	}
 
 	const legacyName =
 		`${project.repositoryOwner}/${project.repositoryName}`.toLowerCase();
+	// The legacy repository counts as included unless an integration row for
+	// it was excluded.
+	if (excludedNames.has(legacyName)) {
+		return {
+			readable: results,
+			connected,
+			legacyLookupFailed: false,
+			anyExcluded: excludedNames.size > 0,
+		};
+	}
 	let legacy = connected.find(
 		(c) => `${c.owner}/${c.repo}`.toLowerCase() === legacyName,
 	);
@@ -1667,11 +1929,21 @@ async function resolveAllCredentials(
 	// already has its integration's credentials, and an unsupported one
 	// (integration row or legacy) never becomes readable.
 	if (legacy.status !== "unreadable" || !parsed) {
-		return { readable: results, connected, legacyLookupFailed: false };
+		return {
+			readable: results,
+			connected,
+			legacyLookupFailed: false,
+			anyExcluded: excludedNames.size > 0,
+		};
 	}
 	const legacyProvider: unknown = parsed.provider;
 	if (!isCodeSearchProvider(legacyProvider)) {
-		return { readable: results, connected, legacyLookupFailed: false };
+		return {
+			readable: results,
+			connected,
+			legacyLookupFailed: false,
+			anyExcluded: excludedNames.size > 0,
+		};
 	}
 
 	// As for an integration row: a credential failure leaves this one
@@ -1692,7 +1964,12 @@ async function resolveAllCredentials(
 		token = undefined;
 	}
 	if (!token) {
-		return { readable: results, connected, legacyLookupFailed: false };
+		return {
+			readable: results,
+			connected,
+			legacyLookupFailed: false,
+			anyExcluded: excludedNames.size > 0,
+		};
 	}
 	legacy.status = "readable";
 	results.push({
@@ -1706,7 +1983,12 @@ async function resolveAllCredentials(
 				? adoProjectFromUrl(project.repositoryUrl)
 				: undefined,
 	});
-	return { readable: results, connected, legacyLookupFailed: false };
+	return {
+		readable: results,
+		connected,
+		legacyLookupFailed: false,
+		anyExcluded: excludedNames.size > 0,
+	};
 }
 
 /** The providers the code-search connectors can read. */
@@ -1795,4 +2077,41 @@ async function resolveLegacyToken(
 		(creds.apiKey as string) ||
 		undefined
 	);
+}
+
+/** The text stored with the code index for one path, per repository. */
+async function loadIndexedFiles(projectId: string, path: string) {
+	try {
+		const { getProjectCodeFile } = await import("@repo/database");
+		return await getProjectCodeFile({ projectId, path });
+	} catch (error) {
+		console.warn("[CodeSearchHandler] Indexed file read threw", {
+			errorClass: errorClassName(error),
+		});
+		return [];
+	}
+}
+
+/** Each searchable code index's file paths, by repository integration. */
+async function loadIndexedPaths(
+	projectId: string,
+): Promise<Map<string | null, string[]>> {
+	try {
+		const { getProjectCodeIndexes } = await import("@repo/database");
+		const map = new Map<string | null, string[]>();
+		for (const row of await getProjectCodeIndexes(projectId)) {
+			const paths = isSearchableIndexStatus(row.status)
+				? manifestPaths(row.fileManifest)
+				: null;
+			if (paths && !map.has(row.repositoryIntegrationId)) {
+				map.set(row.repositoryIntegrationId, paths);
+			}
+		}
+		return map;
+	} catch (error) {
+		console.warn("[CodeSearchHandler] Indexed tree read threw", {
+			errorClass: errorClassName(error),
+		});
+		return new Map();
+	}
 }

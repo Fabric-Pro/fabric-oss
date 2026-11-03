@@ -165,7 +165,12 @@ const STORAGE_KEY_PREFIX = "fabric-project-settings-tab-";
 
 // Only ungated sub-tabs are deep-linkable from a notification/CTA (never route a
 // deep link into a role-gated tab like danger). Newsletter is ungated.
-const DEEP_LINKABLE_SETTINGS_TABS: SettingsTab[] = ["newsletter", "engagement"];
+const DEEP_LINKABLE_SETTINGS_TABS: SettingsTab[] = [
+	"newsletter",
+	"engagement",
+	// The overview's "Check search" prompt leads here (read-only for viewers).
+	"retrieval",
+];
 
 // The QA project tab is gated on this flag (`ProjectDetails.tsx`), and both QA
 // settings pages configure that tab and nothing else — `ProjectEnvironment` has

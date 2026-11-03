@@ -98,8 +98,28 @@ export function buildUnindexedRepositories(
 			roleTag: integration.roleTag,
 			status: "missing",
 		}));
+	// The legacy columns usually repeat a repository that is also connected
+	// as an integration (connecting one keeps the legacy copy); that
+	// repository is covered by its integration's own index row.
+	const legacyLabel =
+		legacy?.repositoryOwner && legacy.repositoryName
+			? `${legacy.repositoryOwner}/${legacy.repositoryName}`.toLowerCase()
+			: null;
+	const legacyUrl = legacy?.repositoryUrl
+		? normalizeRepositoryRef(legacy.repositoryUrl)
+		: null;
+	const legacyIsIntegration = integrations.some(
+		(integration) =>
+			(legacyLabel !== null &&
+				`${integration.repositoryOwner}/${integration.repositoryName}`.toLowerCase() ===
+					legacyLabel) ||
+			(legacyUrl !== null &&
+				normalizeRepositoryRef(integration.repositoryUrl) ===
+					legacyUrl),
+	);
 	if (
 		!indexed.has(null) &&
+		!legacyIsIntegration &&
 		(legacy?.repositoryUrl || legacy?.repositoryName)
 	) {
 		const name = legacy.repositoryName ?? null;
@@ -206,6 +226,57 @@ export function describeCodeSearchRepositories(
 		? `Without \`repository\` it searches ${preferred.label}, the repository the user is viewing; pass another repository, or "all" to search every one.`
 		: "Without `repository` it searches all of them; pass one to scope the search.";
 	return ` This project's indexed repositories: ${list}. ${scope}`;
+}
+
+/**
+ * How a project's AI agents search its code (spec 2026-10-29 code-index-sync
+ * §6a): not at all, live through the provider API, or through the code index.
+ */
+export type CodeSearchModeValue = "OFF" | "CODE_SEARCH" | "RAG";
+
+/**
+ * The project's code search mode. A value this build does not know reads as
+ * OFF: a mode it cannot honour must not search anything.
+ */
+export async function loadCodeSearchMode(
+	projectId: string,
+): Promise<CodeSearchModeValue> {
+	const { getProjectRagSettings } = await import("@repo/database");
+	const mode: unknown = (await getProjectRagSettings(projectId))
+		?.codeSearchMode;
+	return mode === "CODE_SEARCH" || mode === "RAG" ? mode : "OFF";
+}
+
+/**
+ * What every code tool answers when the project's code search is off. A
+ * plain result, not a failure: retrying cannot change a project setting.
+ */
+export const CODE_SEARCH_OFF_MESSAGE =
+	'Code search is off for this project, so its repository code cannot be searched or read here. A project admin can turn it on in the project settings under "How AI agents search code". Do not call the code tools again in this turn; answer from the project\'s other sources.';
+
+/** `code_search_semantic` on a project that searches code live. */
+export const CODE_SEARCH_LIVE_ONLY_MESSAGE =
+	"This project uses live code search, which has no code index to search semantically. Use code_search instead.";
+
+/** Index states `code_search` can query: READY, and STALE (a newer commit is pending). */
+export function isSearchableIndexStatus(status: string): boolean {
+	return status === "READY" || status === "STALE";
+}
+
+/**
+ * One repository whose code index cannot be searched, as `owner/name: state`.
+ * `status` is the index row's status, or "missing" when it has none.
+ */
+export function codeIndexStatusNote(label: string, status: string): string {
+	const state =
+		status === "PENDING" || status === "INDEXING"
+			? "still indexing"
+			: status === "FAILED"
+				? "indexing failed — reconnect it or re-index it in the project's repository settings"
+				: status === "missing"
+					? "not indexed yet"
+					: `not searchable right now (index ${status})`;
+	return `${label}: ${state}`;
 }
 
 /**
