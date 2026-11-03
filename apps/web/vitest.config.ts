@@ -67,7 +67,15 @@ export default defineConfig({
 				// routes jest-dom through Vite's resolver, which respects the
 				// single project-root `vitest` instance like everything else
 				// here.
-				inline: ["katex", "streamdown", "@testing-library/jest-dom"],
+				// `next-intl` ships `"type": "module"` ESM that imports extensionless
+				// `next/server` and `next/navigation`; inlining routes those specifiers
+				// through Vite's resolver instead of failing in Node's native ESM loader.
+				inline: [
+					"katex",
+					"streamdown",
+					"@testing-library/jest-dom",
+					"next-intl",
+				],
 			},
 		},
 		exclude: [
