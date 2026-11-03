@@ -149,8 +149,27 @@ export interface OrchestratorWorkflowInput {
 	 * under the `orch-turn-budget-v1` marker.
 	 */
 	turnGeneration?: number | null;
-	/** User's message/task */
+	/** User's message/task (includes grounded attachment evidence when present) */
 	message: string;
+	/**
+	 * Raw user prompt text before inline `<fabric_attachment>` or retrieved
+	 * document evidence is appended. Used by routing, pattern auto-detection,
+	 * memory embedding, and clarity checks so large attached documents do not
+	 * pollute intent classification or blow up auxiliary token/latency budgets.
+	 */
+	rawUserMessage?: string;
+	/**
+	 * Compact server-verified summary of files attached on this turn.
+	 */
+	attachmentManifest?: Array<{
+		name: string;
+		status: "extracted" | "truncated" | "image" | "empty";
+	}>;
+	/**
+	 * True when every non-image attachment on this turn is present inline
+	 * without truncation within the fast-path budget.
+	 */
+	hasCompleteInlineAttachments?: boolean;
 	/** Conversation history */
 	history: Array<{ role: "user" | "assistant"; content: string }>;
 	/** User ID */

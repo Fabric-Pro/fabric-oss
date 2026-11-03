@@ -5,6 +5,11 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import { countTokens, truncateToTokens } from "../chunking/tokenizer";
+import {
+	MAX_RETRIEVAL_QUERY_TOKENS,
+	MAX_TOKENS_PER_INPUT,
+} from "../embedding/limits";
 import { generateSparseVector } from "../embedding/sparse";
 import { searchSimilarProjectContexts } from "./store";
 import type {
@@ -18,16 +23,33 @@ type ContextRow = NonNullable<
 
 /** Search with shared keyword encoding and a caller-controlled dense fallback. */
 export async function searchProjectContextHits(
-	options: Omit<ProjectContextSearchOptions, "querySparseVector"> & {
+	options: Omit<
+		ProjectContextSearchOptions,
+		"querySparseVector" | "queryEmbedding"
+	> & {
 		query: string;
+		embedQuery: (query: string) => Promise<number[]>;
 		/** Keep the main retrieval caller's existing encoder-error contract. */
 		fallbackOnSparseFailure?: boolean;
 	},
 ): Promise<ProjectRetrievalResult[]> {
-	const { query, fallbackOnSparseFailure = true, ...searchOptions } = options;
+	const {
+		query,
+		embedQuery,
+		fallbackOnSparseFailure = true,
+		...searchOptions
+	} = options;
+	const boundedQuery =
+		countTokens(query) > MAX_TOKENS_PER_INPUT
+			? truncateToTokens(query, MAX_RETRIEVAL_QUERY_TOKENS)
+			: query;
+	const queryEmbedding = await embedQuery(boundedQuery);
+	if (queryEmbedding.length === 0) {
+		return [];
+	}
 	let querySparseVector: ProjectContextSearchOptions["querySparseVector"];
 	try {
-		querySparseVector = generateSparseVector(query);
+		querySparseVector = generateSparseVector(boundedQuery);
 	} catch (error) {
 		rethrowIfDispatchStopped(error);
 		if (!fallbackOnSparseFailure) {
@@ -37,6 +59,7 @@ export async function searchProjectContextHits(
 	}
 	return searchSimilarProjectContexts({
 		...searchOptions,
+		queryEmbedding,
 		querySparseVector,
 	});
 }

@@ -46,6 +46,7 @@ import { DEFAULT_MCP_TOOL_TIMEOUT_MS } from "../../../activities/orchestrator/ex
 import type { DirectChatUsageLimitRefusal } from "../../../types";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
 import { ADVISOR_ANSWER_SNAPSHOT_PATCH } from "../advisor-answer-snapshot";
+import { resolveIntentUserMessage } from "../attachment-fast-path";
 import {
 	admitCallable,
 	CALL_TOOL_DEFINITIONS,
@@ -2695,7 +2696,10 @@ async function runIterativeLoop(
 
 	const routingResult = await applyDefaultMcpEagerRouting({
 		surface: input.surface,
-		userMessage: state.enrichedMessage,
+		userMessage:
+			input.rawUserMessage !== undefined
+				? resolveIntentUserMessage(input)
+				: state.enrichedMessage,
 		enabledMcpConfigIds: input.enabledMcpConfigIds,
 		userId: input.userId,
 		organizationId: input.organizationId,
@@ -4172,7 +4176,7 @@ Never guess or use example values — always use real data from API responses.`;
 							? { usageConversationId: input.conversationId }
 							: {}),
 						query: (toolCall.args.query as string) || "",
-						originalQuery: input.message,
+						originalQuery: resolveIntentUserMessage(input),
 						category: toolCall.args.category as
 							| ToolCategory
 							| undefined,

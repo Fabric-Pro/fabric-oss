@@ -10410,23 +10410,23 @@
 			},
 			"featureSnapshot": {
 				"name": "Feature Snapshot",
-				"description": "Define the major capabilities or feature areas Fabric should understand.",
-				"tooltip": "Feature context helps Fabric generate better documents, roadmap items, and recommendations. For early projects, this can be lightweight and refined over time."
+				"description": "List core capabilities on Overview to scope specs.",
+				"tooltip": "Feature context grounds generated documents, roadmap items, and recommendations. For early projects, a lightweight list you refine later works well."
 			},
 			"techStack": {
 				"name": "Tech Stack",
-				"description": "Tech stack context helps Fabric tailor architecture, API, QA, and engineering handoff outputs. For Discovery / Planning projects, this can be preliminary.",
-				"tooltip": "Visit the overview page to define your project's tech stack."
+				"description": "Name your languages, frameworks, and runtime stack.",
+				"tooltip": "Visit the Overview tab to record your project's tech stack. One entry satisfies this step; more makes generated architecture and API docs sharper."
 			},
 			"contextSource": {
 				"name": "At least one context source added",
-				"description": "Add at least one meaningful context source.",
-				"tooltip": "Fabric needs project context to produce useful documents, recommendations, and AI answers. Context can include uploaded files, pasted notes, transcripts, links, connected tools, or repositories."
+				"description": "Upload docs, notes, or links to ground outputs.",
+				"tooltip": "Fabric needs project context to produce grounded documents, recommendations, and answers. Context can include uploaded files, pasted notes, transcripts, links, connected tools, or repositories."
 			},
 			"additionalContextSources": {
 				"name": "Additional context sources added",
-				"description": "Add multiple meaningful context sources.",
-				"tooltip": "Additional sources improve Fabric’s ability to cross-check assumptions, identify gaps, and generate higher-quality outputs.",
+				"description": "Add a second source to cross-check project context.",
+				"tooltip": "Multiple sources let Fabric cross-check assumptions, spot contradictions, and ground generated documents in more than a single file.",
 				"unmet": {
 					"first": "Still needed: add a context source.",
 					"second": "Still needed: add a second context source — this item wants two."
@@ -10434,26 +10434,26 @@
 			},
 			"chatAppConnected": {
 				"name": "Chat app connected",
-				"description": "Connect a relevant Slack or Teams workspace/channel.",
-				"tooltip": "Chat context helps Fabric capture decisions, urgency, requirements, and follow-up work discussed outside formal documents.",
+				"description": "Link a Slack or Teams channel to capture decisions.",
+				"tooltip": "Linked channels let Fabric surface decisions, scope changes, and follow-up work discussed in Slack or Teams.",
 				"unmet": {
 					"link": "Still needed: link a Slack or Teams channel in Settings → Knowledge. Connecting the workspace alone is not enough; a channel has to be linked to this project."
 				}
 			},
 			"meetingTranscripts": {
 				"name": "Meeting transcripts available",
-				"description": "Add or connect relevant meeting transcripts.",
-				"tooltip": "Meeting transcripts help Fabric recover decisions, rationale, open questions, and requirements that may not exist in formal documents."
+				"description": "Sync or upload call transcripts to capture rationale.",
+				"tooltip": "Meeting transcripts preserve rationale, edge cases, and requirements that rarely make it into written specs."
 			},
 			"pmSystemConnected": {
 				"name": "PM system connected",
-				"description": "Connect the project’s work management system.",
-				"tooltip": "PM-system context helps Fabric import existing work, reduce duplicate planning, and align Roadmap with execution."
+				"description": "Link your issue tracker to import existing backlog.",
+				"tooltip": "Connecting your PM tool lets Fabric read existing issues, avoid duplicate work items, and keep Roadmap aligned with execution."
 			},
 			"codebaseConnected": {
 				"name": "Codebase connected",
-				"description": "Connect a readable codebase when development has started.",
-				"tooltip": "Codebase access helps Fabric ground technical documents, validate requirements against implementation, and support engineering handoff.",
+				"description": "Attach and index a repository for specs and scans.",
+				"tooltip": "Codebase access grounds technical documents against the real implementation and unlocks Atlas and security scans.",
 				"unmet": {
 					"analysis": "Still needed: the repository is connected, but its first analysis has not finished successfully yet.",
 					"connect": "Still needed: connect a repository in Settings → Development."
@@ -10461,16 +10461,16 @@
 			},
 			"wikiConnected": {
 				"name": "Wiki Connected",
-				"description": "Connect a relevant project wiki.",
-				"tooltip": "Wiki context can improve long-lived documents and reduce missing background information.",
+				"description": "Connect Notion so team pages stay indexed.",
+				"tooltip": "Indexed wiki pages keep background context current without manual uploads.",
 				"unmet": {
 					"notion": "Still needed: connect a Notion source and let it index. Confluence records a source but cannot yet be ingested, so it will not satisfy this."
 				}
 			},
 			"knowledgeBase": {
 				"name": "Knowledge Base",
-				"description": "Connect a relevant project knowledge base.",
-				"tooltip": "Knowledge base context can improve long-lived documents and reduce missing background information.",
+				"description": "Add a link source classified as Knowledge Base / Wiki.",
+				"tooltip": "Indexing your team knowledge base fills in domain rules and architecture history automatically.",
 				"unmet": {
 					"classify": "Still needed: add a link source classified as Knowledge Base / Wiki, and let it finish indexing. The other seven categories do not count."
 				}
@@ -10482,56 +10482,56 @@
 			},
 			"businessCase": {
 				"name": "Business Case Document",
-				"description": "Create a Business Case when the project needs value or investment framing.",
-				"tooltip": "A Business Case helps Fabric understand why the project matters, what value it should deliver, and how success may be evaluated."
+				"description": "Frame the problem, investment case, and outcomes.",
+				"tooltip": "A Business Case captures why the project matters, what value it delivers, and how outcomes will be measured."
 			},
 			"proposal": {
 				"name": "Proposal Document",
-				"description": "Create a Proposal when scope or commitments need to be captured.",
-				"tooltip": "A Proposal helps Fabric understand agreed scope, delivery expectations, assumptions, and commitments that should shape downstream work."
+				"description": "Record agreed scope, deliverables, and commitments.",
+				"tooltip": "A Proposal captures agreed scope, delivery expectations, assumptions, and commitments that shape downstream specs."
 			},
 			"prd": {
 				"name": "Product Requirement Document (PRD)",
-				"description": "Create a PRD to anchor product scope, goals, and requirements.",
-				"tooltip": "A PRD gives Fabric a strong source of truth for users, scope, requirements, expected behavior, and acceptance criteria."
+				"description": "Define users, scope, and acceptance criteria. Unlocks Architecture and QA Strategy.",
+				"tooltip": "A PRD is the primary source of truth for target users, scope, requirements, expected behavior, and acceptance criteria."
 			},
 			"architecture": {
 				"name": "Architecture document",
-				"description": "Create or add an Architecture document for the product’s technical structure.",
-				"tooltip": "Architecture context helps Fabric understand system components, dependencies, integrations, and technical constraints."
+				"description": "Map system components, boundaries, and data flow.",
+				"tooltip": "An Architecture document defines system components, dependencies, integrations, and technical constraints."
 			},
 			"designDocument": {
 				"name": "Design document",
-				"description": "Create or add a Design System document for the product’s visual language.",
+				"description": "Capture UI tokens, components, and layout patterns.",
 				"tooltip": "A design system gives Fabric the colors, spacing, components and patterns your UI already uses, so generated work matches the product instead of inventing a new look."
 			},
 			"apiSpec": {
 				"name": "API specification exists",
-				"description": "API spec exists when API behavior is in scope.",
-				"tooltip": "API specs help engineering and QA understand contracts, integrations, and edge cases."
+				"description": "Document endpoints, payload schemas, and errors.",
+				"tooltip": "API specs give engineering and QA explicit contracts, payloads, and edge cases before implementation."
 			},
 			"technicalSpec": {
 				"name": "Technical Specification",
-				"description": "Create a Technical Specification when implementation details need to be defined.",
-				"tooltip": "A Technical Specification helps engineers understand the implementation approach, technical constraints, and system behavior needed to build the product."
+				"description": "Specify data models, control flow, and edge cases.",
+				"tooltip": "A Technical Specification details the concrete implementation approach, data structures, and runtime behavior needed to build the feature."
 			},
 			"qaStrategy": {
 				"name": "QA Strategy exists",
-				"description": "QA strategy or testing plan exists.",
-				"tooltip": "QA planning improves release confidence and clarifies quality gates before delivery.",
+				"description": "Define test coverage and release gates in Documents.",
+				"tooltip": "A QA Strategy sets test plans, environments, and release gates before delivery.",
 				"unmet": {
 					"document": "Still needed: create a QA Strategy document under Documents. The Testing tab and Settings → Testing do not satisfy this."
 				}
 			},
 			"roadmapPopulated": {
 				"name": "Roadmap Populated",
-				"description": "Add or import Roadmap work items.",
-				"tooltip": "Roadmap items help Fabric understand planned work and connect requirements, recommendations, and execution."
+				"description": "Import or create epics and work items on Roadmap.",
+				"tooltip": "Roadmap work items connect requirements to concrete deliverables and execution progress."
 			},
 			"pmSyncEnabled": {
 				"name": "PM-system sync enabled",
-				"description": "Sync work items to your project management system.",
-				"tooltip": "Sync keeps Fabric and your connected project management system aligned so work can be managed in both places when configured.",
+				"description": "Push Roadmap status updates back to your PM tool.",
+				"tooltip": "Two-way sync keeps Roadmap and your issue tracker aligned without manual status updates.",
 				"unmet": {
 					"autoPush": "Still needed: turn on “Auto-push status changes to PM tool” in Settings → Development. Connecting the system does not start syncing on its own.",
 					"connect": "Still needed: connect a project management system first.",
@@ -10540,24 +10540,24 @@
 			},
 			"terminalStatuses": {
 				"name": "Terminal statuses defined",
-				"description": "Map completed or closed PM-system statuses.",
-				"tooltip": "Terminal statuses help Fabric recognize completed, canceled, or removed work and keep Roadmap clean.",
+				"description": "Define which PM statuses mark work as closed.",
+				"tooltip": "Terminal statuses tell Fabric which PM statuses represent completed or canceled work.",
 				"unmet": {
 					"define": "Still needed: name at least one terminal status in Settings → Development — the statuses your PM tool uses for closed work."
 				}
 			},
 			"teamMembers": {
 				"name": "Add Team Members",
-				"description": "Add project team members to Fabric.",
-				"tooltip": "Fabric’s value increases when the team can share context, review outputs, and collaborate in the same project workspace.",
+				"description": "Invite a teammate to share context and review docs.",
+				"tooltip": "Shared project access lets teammates contribute context, review specs, and work from the same source of truth.",
 				"unmet": {
 					"accept": "Still needed: a second member who has accepted their invitation. Pending invitations do not count yet."
 				}
 			},
 			"workCaptureTranscripts": {
 				"name": "Work capture from transcripts enabled",
-				"description": "Fabric can capture work items discussed on discovery and team meetings.",
-				"tooltip": "Fabric can propose new or updated work items from meeting transcripts when transcript capture is configured.",
+				"description": "Propose candidate work items from call transcripts.",
+				"tooltip": "Transcript capture extracts candidate stories and action items after each synced call.",
 				"unmet": {
 					"autoAnalyze": "Still needed: turn on automatic transcript analysis in Settings → Knowledge.",
 					"transcript": "Still needed: a meeting transcript on this project."
@@ -10565,8 +10565,8 @@
 			},
 			"workCaptureChat": {
 				"name": "Work capture from Chat",
-				"description": "Work capture from chat enabled.",
-				"tooltip": "Fabric can propose new or updated work items from monitored chat channels when chat capture is configured.",
+				"description": "Monitor linked channels for action items and bugs.",
+				"tooltip": "Continuous channel monitoring proposes new or updated work items directly from team discussions.",
 				"unmet": {
 					"link": "Still needed: link a chat channel first.",
 					"monitor": "Still needed: switch the channel monitor on. Linked channels can be scanned on demand, but work capture needs continuous watching."
@@ -10574,13 +10574,13 @@
 			},
 			"releaseNotes": {
 				"name": "Release notes configured",
-				"description": "Fabric can generate and distribute release notes.",
-				"tooltip": "Fabric can help generate release notes so stakeholders stay informed about delivered work."
+				"description": "Draft release summaries from shipped work and commits.",
+				"tooltip": "Automated release notes draft stakeholder updates directly from completed work items and commits."
 			},
 			"atlasExplored": {
 				"name": "Codebase explored in Atlas",
-				"description": "Fabric can help you understand your codebase.",
-				"tooltip": "Atlas helps users understand code structure, dependencies, and implementation details after a codebase is connected.",
+				"description": "Run an Atlas scan to map module dependencies.",
+				"tooltip": "Atlas maps your repository's architecture, call graphs, and module boundaries once code is indexed.",
 				"unmet": {
 					"analysis": "Still needed: the codebase analysis has not completed yet.",
 					"run": "Still needed: open Atlas and run an analysis for this project."
@@ -10588,8 +10588,8 @@
 			},
 			"securityScan": {
 				"name": "Security scan completed",
-				"description": "Fabric can help you understand vulnerabilities in your codebase.",
-				"tooltip": "Security scanning helps identify vulnerabilities or risks in the connected codebase.",
+				"description": "Run a baseline vulnerability scan on the repository.",
+				"tooltip": "Security scans surface dependency and code vulnerabilities in the connected repository.",
 				"unmet": {
 					"run": "Still needed: run a security scan that completes successfully. A scan that started and failed does not count."
 				}
@@ -10627,9 +10627,9 @@
 			"securityScan": "Scan codebase"
 		},
 		"needLevel": {
-			"MUST": "Must",
-			"SHOULD": "Should",
-			"COULD": "Could",
+			"MUST": "Required",
+			"SHOULD": "Recommended",
+			"COULD": "Optional",
 			"NOT_APPLICABLE": "Not needed in this phase"
 		}
 	},

@@ -233,7 +233,8 @@ export const reevaluateBugProcedure = tenantProtectedProcedure
 		// so the re-analysis sees the same signals it had at creation time.
 		const [ragSettled, liveSettled] = await Promise.allSettled([
 			(async () => {
-				const query = `${story.title} ${existingMarkdown}`.trim();
+				const query =
+					`${input.newInfo ? `${input.newInfo} ` : ""}${story.title} ${existingMarkdown}`.trim();
 				const contexts = await retrieveProjectContexts({
 					projectId: input.projectId,
 					query,

@@ -72,9 +72,9 @@ export function ProjectReadinessIndicator() {
 			aria-expanded={isExpanded}
 			aria-label={ariaLabel}
 			className={cn(
-				"inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/80 px-2.5 py-1",
-				"text-xs font-medium transition-colors duration-150 hover:bg-accent focus-visible:outline-hidden",
-				"focus-visible:ring-2 focus-visible:ring-ring",
+				"inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1",
+				"text-xs font-medium transition-colors duration-150 hover:bg-muted focus-visible:outline-hidden",
+				"focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background",
 				tone.text,
 			)}
 		>
@@ -89,11 +89,11 @@ export function ProjectReadinessIndicator() {
 				</span>
 			)}
 			{!isExpanded && data.level !== "READY" && gapCount > 0 && (
-				<span className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs tabular-nums leading-none">
+				<span className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground tabular-nums leading-none">
 					{gapCount}
 				</span>
 			)}
-			{/* The panel collapses into this pill, and on the 20 Aug review a
+			{/* The panel collapses into this chip, and on the 20 Aug review a
 			    collapsed panel had no visible way back — nothing said this was
 			    the control that reopens it. A chevron that points the way it
 			    will move says so without copy. */}

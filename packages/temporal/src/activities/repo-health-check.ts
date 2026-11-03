@@ -22,7 +22,10 @@ import {
 	restoreIntegrationActive,
 	setIntegrationStatus,
 } from "@repo/database";
-import { refreshProjectRepoGitHubTokenWithOutcome } from "@repo/integrations";
+import {
+	refreshProjectRepoGitHubTokenWithOutcome,
+	resolveFreshRepoToken,
+} from "@repo/integrations";
 import {
 	GitLabApiError,
 	getValidGitLabAccessToken,
@@ -142,7 +145,7 @@ export async function checkRepoIntegrationHealth(
 	// transitions. Captured BEFORE any refresh, which may write ACTIVE itself.
 	const current = await db.projectRepositoryIntegration.findUnique({
 		where: { id: integrationId },
-		select: { status: true },
+		select: { status: true, credentialId: true },
 	});
 
 	// Disconnect-during-cycle guard: fetchActiveRepoIntegrations handed us a
@@ -163,6 +166,15 @@ export async function checkRepoIntegrationHealth(
 	const wasActive = originalStatus === "ACTIVE";
 
 	try {
+		// A credential from the credential manager is the only one the
+		// repository is read with; probe the repository with it.
+		if (current.credentialId && provider === "GITHUB") {
+			return await checkGitHubPatHealth(input, originalStatus, true);
+		}
+		if (current.credentialId && provider === "GITLAB") {
+			return await checkGitLabPatHealth(input, originalStatus, true);
+		}
+
 		if (provider === "GITHUB" && authMethod === "OAUTH") {
 			return await checkGitHubHealth(input, originalStatus);
 		}
@@ -937,15 +949,26 @@ async function checkPatHealth(
 		input: CheckIntegrationHealthInput,
 		pat: string,
 	) => Promise<Response>,
+	bound = false,
 ): Promise<CheckIntegrationHealthOutput> {
 	const { integrationId, encryptedPat } = input;
 	const wasActive = originalStatus === "ACTIVE";
 
-	if (!encryptedPat) {
+	const boundToken = bound
+		? (
+				await resolveFreshRepoToken({
+					integrationId,
+					projectId: input.projectId,
+				})
+			).token
+		: null;
+	if (bound ? !boundToken : !encryptedPat) {
 		const statusResult = await setIntegrationStatus(
 			integrationId,
 			"TOKEN_EXPIRED",
-			"No PAT configured",
+			bound
+				? "The credential chosen for this repository cannot be used. Choose another one."
+				: "No PAT configured",
 		);
 		if (wasActive && statusResult.statusChanged) {
 			await logHealthActivity(input, "repo_integration_token_expired");
@@ -961,7 +984,7 @@ async function checkPatHealth(
 
 	let pat: string;
 	try {
-		pat = decryptApiKey(encryptedPat);
+		pat = boundToken ?? decryptApiKey(encryptedPat as string);
 	} catch {
 		const statusResult = await setIntegrationStatus(
 			integrationId,
@@ -1073,37 +1096,54 @@ async function checkPatHealth(
 function checkGitHubPatHealth(
 	input: CheckIntegrationHealthInput,
 	originalStatus: RepositoryIntegrationStatus,
+	bound = false,
 ): Promise<CheckIntegrationHealthOutput> {
-	return checkPatHealth(input, originalStatus, "GITHUB", "GitHub", (i, pat) =>
-		fetch(
-			`https://api.github.com/repos/${encodeURIComponent(i.repositoryOwner)}/${encodeURIComponent(i.repositoryName)}`,
-			{
-				headers: {
-					Authorization: `Bearer ${pat}`,
-					Accept: "application/vnd.github+json",
-					"X-GitHub-Api-Version": "2022-11-28",
-					"User-Agent": "Fabric-Platform",
+	return checkPatHealth(
+		input,
+		originalStatus,
+		"GITHUB",
+		"GitHub",
+		(i, pat) =>
+			fetch(
+				`https://api.github.com/repos/${encodeURIComponent(i.repositoryOwner)}/${encodeURIComponent(i.repositoryName)}`,
+				{
+					headers: {
+						Authorization: `Bearer ${pat}`,
+						Accept: "application/vnd.github+json",
+						"X-GitHub-Api-Version": "2022-11-28",
+						"User-Agent": "Fabric-Platform",
+					},
+					signal: AbortSignal.timeout(5000),
 				},
-				signal: AbortSignal.timeout(5000),
-			},
-		),
+			),
+		bound,
 	);
 }
 
 function checkGitLabPatHealth(
 	input: CheckIntegrationHealthInput,
 	originalStatus: RepositoryIntegrationStatus,
+	bound = false,
 ): Promise<CheckIntegrationHealthOutput> {
 	// GitLab PATs authenticate with PRIVATE-TOKEN, not a Bearer header; the
-	// project endpoint is the repo-scoped read the badge should reflect.
-	return checkPatHealth(input, originalStatus, "GITLAB", "GitLab", (i, pat) =>
-		fetch(
-			`https://gitlab.com/api/v4/projects/${encodeURIComponent(`${i.repositoryOwner}/${i.repositoryName}`)}`,
-			{
-				headers: { "PRIVATE-TOKEN": pat },
-				signal: AbortSignal.timeout(5000),
-			},
-		),
+	// project endpoint is the repo-scoped read the badge should reflect. An
+	// OAuth token from the credential manager is a Bearer token.
+	return checkPatHealth(
+		input,
+		originalStatus,
+		"GITLAB",
+		"GitLab",
+		(i, pat) =>
+			fetch(
+				`https://gitlab.com/api/v4/projects/${encodeURIComponent(`${i.repositoryOwner}/${i.repositoryName}`)}`,
+				{
+					headers: bound
+						? { Authorization: `Bearer ${pat}` }
+						: { "PRIVATE-TOKEN": pat },
+					signal: AbortSignal.timeout(5000),
+				},
+			),
+		bound,
 	);
 }
 

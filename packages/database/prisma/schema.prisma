@@ -21307,6 +21307,13 @@ model ProjectRepositoryIntegration {
   encryptedPat      String?
   azureOrganization String?
 
+  // A credential from the credential manager (ADR-026). When set, it is the
+  // only credential this repository is read with; the stored token columns
+  // above are not consulted. No foreign key, like the PM binding: a deleted
+  // or revoked credential is refused until another one is chosen, never
+  // replaced by the stored tokens.
+  credentialId String?
+
   // Status & health
   status          RepositoryIntegrationStatus @default(ACTIVE)
   lastHealthCheck DateTime?
@@ -21344,6 +21351,7 @@ model ProjectRepositoryIntegration {
   @@index([projectId])
   @@index([status])
   @@index([repositoryUrl])
+  @@index([credentialId])
   @@map("project_repository_integration")
 }
 

@@ -21,6 +21,10 @@ const githubStatusFn = vi.fn();
 const gitlabStatusFn = vi.fn();
 const gitlabStartFn = vi.fn();
 
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {

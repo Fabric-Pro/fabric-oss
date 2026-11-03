@@ -16,6 +16,12 @@ import {
 	useCapabilityGates,
 } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { useProjectContextCountSync } from "@saas/projects/hooks/use-project-context-count-sync";
+import {
+	consumeLocationSearchParam,
+	consumePendingReadinessAction,
+	PROJECT_READINESS_ACTION_EVENT,
+	type ProjectReadinessActionEventDetail,
+} from "@saas/projects/lib/readiness-actions";
 import { transcriptProvenanceLabel } from "@saas/projects/lib/transcript-provenance";
 import { ConfluenceIcon } from "@saas/workflows/lib/plugins/confluence/icon";
 import { MicrosoftTeamsIcon } from "@saas/workflows/lib/plugins/microsoft-teams/icon";
@@ -962,6 +968,43 @@ export function ProjectContextsList({ projectId }: Props) {
 	const { trackEvent } = useAnalytics();
 	const router = useRouter();
 	const pathname = usePathname();
+
+	useEffect(() => {
+		const pending = consumePendingReadinessAction(
+			projectId,
+			"open-context-uploader",
+		);
+		const urlAddContext = consumeLocationSearchParam("addContext");
+		if (pending || urlAddContext === "1") {
+			setUploaderOpen(true);
+		}
+		const handleReadinessAction = (event: Event) => {
+			const detail = (
+				event as CustomEvent<ProjectReadinessActionEventDetail>
+			).detail;
+			if (
+				detail?.projectId === projectId &&
+				detail.action.kind === "open-context-uploader"
+			) {
+				consumePendingReadinessAction(
+					projectId,
+					"open-context-uploader",
+				);
+				consumeLocationSearchParam("addContext");
+				setUploaderOpen(true);
+			}
+		};
+		window.addEventListener(
+			PROJECT_READINESS_ACTION_EVENT,
+			handleReadinessAction,
+		);
+		return () => {
+			window.removeEventListener(
+				PROJECT_READINESS_ACTION_EVENT,
+				handleReadinessAction,
+			);
+		};
+	}, [projectId]);
 
 	// Scope intake: one active extraction is tracked at a time; progress is
 	// polled from the deterministic workflow (keyed by contextId).

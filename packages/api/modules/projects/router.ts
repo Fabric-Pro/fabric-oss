@@ -598,6 +598,7 @@ import { disconnectRepoIntegrationProcedure } from "./procedures/repository-inte
 import { repoIntegrationHealthProcedure } from "./procedures/repository-integrations/health";
 import { listRepoIntegrationsProcedure } from "./procedures/repository-integrations/list";
 import { reindexRepoIntegrationProcedure } from "./procedures/repository-integrations/reindex";
+import { setRepoIntegrationCredentialProcedure } from "./procedures/repository-integrations/set-credential";
 import { updateRepoIntegrationBranchProcedure } from "./procedures/repository-integrations/update-branch";
 import { updateRepoCodeSearchInclusionProcedure } from "./procedures/repository-integrations/update-code-search-inclusion";
 import { updateRepoIntegrationTagProcedure } from "./procedures/repository-integrations/update-tag";
@@ -1422,6 +1423,7 @@ export const projectsRouter = {
 		health: repoIntegrationHealthProcedure,
 		updateBranch: updateRepoIntegrationBranchProcedure,
 		attachPat: attachPatToRepoIntegrationProcedure,
+		setCredential: setRepoIntegrationCredentialProcedure,
 		updateTag: updateRepoIntegrationTagProcedure,
 		updateCodeSearchInclusion: updateRepoCodeSearchInclusionProcedure,
 		reindex: reindexRepoIntegrationProcedure,

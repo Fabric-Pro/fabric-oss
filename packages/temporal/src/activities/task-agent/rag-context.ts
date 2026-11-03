@@ -60,31 +60,26 @@ export async function retrieveProjectContexts(
 		// Track usage (fire-and-forget)
 		trackUsage();
 
-		// Generate embedding for the task query
 		const queryText = `Task: ${taskTitle}\n${taskDescription}`;
-		const embeddingStart = Date.now();
-		const { embedding: queryEmbedding, usage } = await runWithAiCallPurpose(
-			AI_CALL_PURPOSES.projectRetrievalEmbedding,
-			() =>
-				embed({
-					model: embeddingModel,
-					value: queryText,
-				}),
-		);
-		logEmbeddingUsageAsync({
-			context: { userId, organizationId },
-			metadata,
-			usageTokens: usage.tokens,
-			latencyMs: Date.now() - embeddingStart,
-		});
-
-		// Search for relevant contexts using RAG
 		const results = await searchProjectContextHits({
 			query: queryText,
+			embedQuery: async (boundedQuery) => {
+				const embeddingStart = Date.now();
+				const { embedding, usage } = await runWithAiCallPurpose(
+					AI_CALL_PURPOSES.projectRetrievalEmbedding,
+					() => embed({ model: embeddingModel, value: boundedQuery }),
+				);
+				logEmbeddingUsageAsync({
+					context: { userId, organizationId },
+					metadata,
+					usageTokens: usage.tokens,
+					latencyMs: Date.now() - embeddingStart,
+				});
+				return embedding;
+			},
 			projectId,
 			userId,
 			organizationId,
-			queryEmbedding,
 			topK: limit,
 			minSimilarity: 0.5,
 		});

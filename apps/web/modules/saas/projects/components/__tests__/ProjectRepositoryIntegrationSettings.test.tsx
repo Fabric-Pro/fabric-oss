@@ -96,6 +96,10 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	},
 }));
 
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {

@@ -29,7 +29,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/logs", () => ({
-	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 vi.mock("../../embedding", () => ({ generateEmbedding: vi.fn() }));

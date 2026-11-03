@@ -2334,7 +2334,7 @@ export type ProjectInstructionRepositorySyncRunScalarFieldEnum = z.infer<typeof 
 
 // File: ProjectRepositoryIntegrationScalarFieldEnum.schema.ts
 
-export const ProjectRepositoryIntegrationScalarFieldEnumSchema = z.enum(['id', 'projectId', 'provider', 'authMethod', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'roleTag', 'includedInCodeSearch', 'qaBranch', 'pinnedBranches', 'encryptedAccessToken', 'encryptedRefreshToken', 'tokenExpiresAt', 'tokenScopes', 'encryptedPat', 'azureOrganization', 'status', 'lastHealthCheck', 'lastError', 'probeFailCount', 'refreshTokenRejectedAt', 'configuredByUserId', 'createdAt', 'updatedAt'])
+export const ProjectRepositoryIntegrationScalarFieldEnumSchema = z.enum(['id', 'projectId', 'provider', 'authMethod', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'roleTag', 'includedInCodeSearch', 'qaBranch', 'pinnedBranches', 'encryptedAccessToken', 'encryptedRefreshToken', 'tokenExpiresAt', 'tokenScopes', 'encryptedPat', 'azureOrganization', 'credentialId', 'status', 'lastHealthCheck', 'lastError', 'probeFailCount', 'refreshTokenRejectedAt', 'configuredByUserId', 'createdAt', 'updatedAt'])
 
 export type ProjectRepositoryIntegrationScalarFieldEnum = z.infer<typeof ProjectRepositoryIntegrationScalarFieldEnumSchema>;
 
@@ -13469,6 +13469,7 @@ export const ProjectRepositoryIntegrationSchema = z.object({
   tokenScopes: z.array(z.string()),
   encryptedPat: z.string().nullish(),
   azureOrganization: z.string().nullish(),
+  credentialId: z.string().nullish(),
   status: RepositoryIntegrationStatusSchema.default("ACTIVE"),
   lastHealthCheck: z.date().nullish(),
   lastError: z.string().nullish(),

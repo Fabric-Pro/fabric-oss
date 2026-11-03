@@ -35,6 +35,7 @@ import {
 	embeddingBaseModelName,
 	getEmbeddingDimensions,
 } from "./dimensions";
+import { MAX_TOKENS_PER_INPUT } from "./limits";
 import type {
 	BatchEmbeddingResult,
 	EmbeddingResult,
@@ -54,14 +55,14 @@ export { getEmbeddingDimensions } from "./dimensions";
 
 export const MAX_TOKENS_PER_REQUEST = 250_000;
 export const MAX_INPUTS_PER_REQUEST = 2048;
+
 // The per-input ceiling, matching what `ai-model-catalog.ts` records as the
-// context window for the three OpenAI embedding models. An input above it is
-// SPLIT and its pieces recombined (see `combineChunkEmbeddings`), never
-// truncated: truncation silently discards text the caller believed was
+// context window for the three OpenAI embedding models. The batch path splits
+// an input above it and recombines the pieces (see `combineChunkEmbeddings`): truncation silently discards text the caller believed was
 // embedded, and for duplicate detection that is actively harmful — two long
 // stories sharing an opening would truncate to near-identical vectors and read
 // as duplicates of each other.
-export const MAX_TOKENS_PER_INPUT = 8191;
+export { MAX_TOKENS_PER_INPUT } from "./limits";
 
 /**
  * Combine the embeddings of one input's chunks into a single vector.

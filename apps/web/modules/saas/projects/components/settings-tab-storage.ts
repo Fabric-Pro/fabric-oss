@@ -4,11 +4,13 @@ import type { SettingsTab } from "./ProjectSettingsNav";
 // stale/unknown persisted values (e.g. the pre-rename `"execution"` string).
 export const KNOWN_SETTINGS_TABS: readonly SettingsTab[] = [
 	"general",
+	"engagement",
 	"ai-assistant",
 	"navigation",
 	"knowledge",
 	"development",
 	"project-management",
+	"agent-runtime",
 	"members",
 	"retrieval",
 	"environments",

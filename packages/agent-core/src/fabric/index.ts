@@ -44,6 +44,8 @@ import https from "node:https";
 const FABRIC_AI_URL = process.env.FABRIC_AI_URL || "http://localhost:8080";
 const FABRIC_AI_API_KEY = process.env.FABRIC_AI_API_KEY;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const HEALTH_CACHE_TTL_MS = 30 * 1000; // 30 seconds
+const HEALTH_TIMEOUT_MS = 1500;
 
 // ============================================================================
 // Types
@@ -127,12 +129,35 @@ class FabricCache {
 	private patternList: CacheEntry<string[]> | null = null;
 	private contextList: CacheEntry<string[]> | null = null;
 	private strategyList: CacheEntry<FabricStrategy[]> | null = null;
+	private availability: CacheEntry<boolean> | null = null;
+	private inflightAvailability: Promise<boolean> | null = null;
 
-	private isValid<T>(entry: CacheEntry<T> | null): entry is CacheEntry<T> {
+	private isValid<T>(
+		entry: CacheEntry<T> | null,
+		ttlMs: number = CACHE_TTL_MS,
+	): entry is CacheEntry<T> {
 		if (!entry) {
 			return false;
 		}
-		return Date.now() - entry.timestamp < CACHE_TTL_MS;
+		return Date.now() - entry.timestamp < ttlMs;
+	}
+
+	getAvailability(): boolean | null {
+		return this.isValid(this.availability, HEALTH_CACHE_TTL_MS)
+			? this.availability.data
+			: null;
+	}
+
+	setAvailability(available: boolean): void {
+		this.availability = { data: available, timestamp: Date.now() };
+	}
+
+	getInflightAvailability(): Promise<boolean> | null {
+		return this.inflightAvailability;
+	}
+
+	setInflightAvailability(promise: Promise<boolean> | null): void {
+		this.inflightAvailability = promise;
 	}
 
 	getStrategy(name: string): FabricStrategy | null {
@@ -193,6 +218,8 @@ class FabricCache {
 		this.patternList = null;
 		this.contextList = null;
 		this.strategyList = null;
+		this.availability = null;
+		this.inflightAvailability = null;
 	}
 }
 
@@ -203,7 +230,10 @@ const globalCache = new FabricCache();
 // HTTP Client
 // ============================================================================
 
-async function fetchFabricJson<T>(path: string): Promise<T | null> {
+async function fetchFabricJson<T>(
+	path: string,
+	timeoutMs = 5000,
+): Promise<T | null> {
 	return new Promise((resolve) => {
 		const url = `${FABRIC_AI_URL}${path}`;
 		const parsedUrl = new URL(url);
@@ -223,7 +253,7 @@ async function fetchFabricJson<T>(path: string): Promise<T | null> {
 			path: parsedUrl.pathname + parsedUrl.search,
 			method: "GET",
 			headers,
-			timeout: 5000,
+			timeout: timeoutMs,
 		};
 
 		const req = client.request(options, (res) => {
@@ -258,10 +288,34 @@ async function fetchFabricJson<T>(path: string): Promise<T | null> {
 // Fabric AI API Functions
 // ============================================================================
 
-/** Check if Fabric AI server is available */
+/** Check if Fabric AI server is available (cached for 30s with in-flight deduplication) */
 export async function isFabricAvailable(): Promise<boolean> {
-	const health = await fetchFabricJson<{ status: string }>("/health");
-	return health?.status === "healthy";
+	const cached = globalCache.getAvailability();
+	if (cached !== null) {
+		return cached;
+	}
+
+	const inflight = globalCache.getInflightAvailability();
+	if (inflight) {
+		return inflight;
+	}
+
+	const probe = (async () => {
+		try {
+			const health = await fetchFabricJson<{ status: string }>(
+				"/health",
+				HEALTH_TIMEOUT_MS,
+			);
+			const available = health?.status === "healthy";
+			globalCache.setAvailability(available);
+			return available;
+		} finally {
+			globalCache.setInflightAvailability(null);
+		}
+	})();
+
+	globalCache.setInflightAvailability(probe);
+	return probe;
 }
 
 /** List all available patterns */
@@ -398,6 +452,16 @@ export async function composeFabricPrompt(
 	};
 
 	const parts: string[] = [];
+
+	// Skip probing the Fabric AI server altogether when no component was requested.
+	if (!options.strategy && !options.context && !options.pattern) {
+		return {
+			prompt: options.basePrompt || "",
+			components,
+			fabricAvailable: false,
+			cacheHits,
+		};
+	}
 
 	// Check availability first
 	const available = await isFabricAvailable();

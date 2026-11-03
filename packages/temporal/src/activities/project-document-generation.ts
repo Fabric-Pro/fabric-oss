@@ -507,37 +507,40 @@ async function retrieveProjectContextEntries(
 			finalQueryLength: finalSearchQuery.length,
 		});
 
-		// Generate embedding for the query using configured model
-		const embeddingStart = Date.now();
-		const { embedding: queryEmbedding, usage } = await runWithAiCallPurpose(
-			AI_CALL_PURPOSES.projectRetrievalEmbedding,
-			() =>
-				embed({
-					model: embeddingModel,
-					value: finalSearchQuery,
-				}),
-		);
-		logEmbeddingUsageAsync({
-			context: { userId, organizationId },
-			metadata,
-			usageTokens: usage.tokens,
-			latencyMs: Date.now() - embeddingStart,
-		});
-
-		// Send heartbeat after embedding generation
-		safeHeartbeat({
-			phase: "embedding_query",
-			message: "Generated embedding for RAG query",
-			progress: 15,
-		});
-
-		// Search for relevant contexts using RAG with project settings
+		let queryEmbedding: number[] = [];
 		const results = await searchProjectContextHits({
 			query: finalSearchQuery,
+			embedQuery: async (boundedQuery) => {
+				// Generate embedding for the query using configured model
+				const embeddingStart = Date.now();
+				const { embedding, usage } = await runWithAiCallPurpose(
+					AI_CALL_PURPOSES.projectRetrievalEmbedding,
+					() =>
+						embed({
+							model: embeddingModel,
+							value: boundedQuery,
+						}),
+				);
+				logEmbeddingUsageAsync({
+					context: { userId, organizationId },
+					metadata,
+					usageTokens: usage.tokens,
+					latencyMs: Date.now() - embeddingStart,
+				});
+
+				// Send heartbeat after embedding generation
+				safeHeartbeat({
+					phase: "embedding_query",
+					message: "Generated embedding for RAG query",
+					progress: 15,
+				});
+
+				queryEmbedding = embedding;
+				return embedding;
+			},
 			projectId,
 			userId,
 			organizationId,
-			queryEmbedding,
 			topK: retrieveCount,
 			excludeDocumentChunks: true,
 			minSimilarity: similarityThreshold,

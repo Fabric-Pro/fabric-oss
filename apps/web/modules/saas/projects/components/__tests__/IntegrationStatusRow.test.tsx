@@ -65,6 +65,35 @@ describe("IntegrationStatusRow actions menu", () => {
 		).toBeInTheDocument();
 	});
 
+	it("offers Choose credential instead of Reconnect and the PAT dialog when the credential manager is on", async () => {
+		renderRow({ credentialManagerEnabled: true, organizationId: "org-1" });
+		await openMenu();
+		expect(
+			screen.getByRole("menuitem", { name: /choose credential/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("menuitem", { name: /reconnect/i }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("menuitem", { name: /connect with a token/i }),
+		).toBeNull();
+	});
+
+	it("keeps Reconnect and the PAT dialog for Azure DevOps when the credential manager is on", async () => {
+		renderRow({
+			credentialManagerEnabled: true,
+			organizationId: "org-1",
+			integration: { ...baseIntegration, provider: "AZURE_DEVOPS" },
+		});
+		await openMenu();
+		expect(
+			screen.queryByRole("menuitem", { name: /choose credential/i }),
+		).toBeNull();
+		expect(
+			screen.getByRole("menuitem", { name: /connect with a token/i }),
+		).toBeInTheDocument();
+	});
+
 	it("hides Reconnect for an Azure DevOps row (Edit + Disconnect remain)", async () => {
 		renderRow({
 			integration: { ...baseIntegration, provider: "AZURE_DEVOPS" },

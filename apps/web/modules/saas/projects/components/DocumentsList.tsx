@@ -1,7 +1,10 @@
 "use client";
 
 import { GENERATION_DEPENDENCY_CATEGORIES } from "@repo/database/src/generation-dependency-categories";
-import { isDeprecatedDocumentType } from "@repo/utils/document-type-catalog";
+import {
+	isDeprecatedDocumentType,
+	type ProjectDocumentTypeName,
+} from "@repo/utils/document-type-catalog";
 import { isGlossyEligible } from "@repo/utils/glossy/eligibility";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
@@ -49,7 +52,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	needsLegacyGlossyEdition,
@@ -63,6 +66,13 @@ import {
 	type VersionStepWatch,
 } from "../lib/document-pipeline";
 import { describeDocumentWriteRefusal } from "../lib/document-write-refusal";
+import {
+	consumeLocationSearchParam,
+	consumePendingReadinessAction,
+	isCreatableDocumentType,
+	PROJECT_READINESS_ACTION_EVENT,
+	type ProjectReadinessActionEventDetail,
+} from "../lib/readiness-actions";
 import { buildGlossyEditionRoute } from "../lib/stories/routes";
 import { CreateDocumentDialog } from "./CreateDocumentDialog";
 import { DocumentDownloadDropdown } from "./DocumentDownloadDropdown";
@@ -456,6 +466,56 @@ export function DocumentsList({
 	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
 	const queryClient = useQueryClient();
 	const [createDialogOpen, setCreateDialogOpen] = useState(false);
+	const [initialCreateType, setInitialCreateType] = useState<
+		ProjectDocumentTypeName | undefined
+	>(undefined);
+
+	const openCreateDialogWithType = useCallback(
+		(docType?: ProjectDocumentTypeName) => {
+			if (!canEdit) {
+				return;
+			}
+			setInitialCreateType(docType);
+			setCreateDialogOpen(true);
+		},
+		[canEdit],
+	);
+
+	useEffect(() => {
+		const pending = consumePendingReadinessAction(
+			projectId,
+			"create-document",
+		);
+		const urlCreateDoc = consumeLocationSearchParam("createDoc");
+		if (pending) {
+			openCreateDialogWithType(pending.documentType);
+		} else if (isCreatableDocumentType(urlCreateDoc)) {
+			openCreateDialogWithType(urlCreateDoc);
+		}
+		const handleReadinessAction = (event: Event) => {
+			const detail = (
+				event as CustomEvent<ProjectReadinessActionEventDetail>
+			).detail;
+			if (
+				detail?.projectId === projectId &&
+				detail.action.kind === "create-document"
+			) {
+				consumePendingReadinessAction(projectId, "create-document");
+				consumeLocationSearchParam("createDoc");
+				openCreateDialogWithType(detail.action.documentType);
+			}
+		};
+		window.addEventListener(
+			PROJECT_READINESS_ACTION_EVENT,
+			handleReadinessAction,
+		);
+		return () => {
+			window.removeEventListener(
+				PROJECT_READINESS_ACTION_EVENT,
+				handleReadinessAction,
+			);
+		};
+	}, [projectId, openCreateDialogWithType]);
 	const [regeneratingDocId, setRegeneratingDocId] = useState<string | null>(
 		null,
 	);
@@ -1552,7 +1612,13 @@ export function DocumentsList({
 			<CreateDocumentDialog
 				projectId={projectId}
 				open={createDialogOpen}
-				onOpenChange={setCreateDialogOpen}
+				onOpenChange={(nextOpen) => {
+					setCreateDialogOpen(nextOpen);
+					if (!nextOpen) {
+						setInitialCreateType(undefined);
+					}
+				}}
+				initialType={initialCreateType}
 			/>
 		</div>
 	);
