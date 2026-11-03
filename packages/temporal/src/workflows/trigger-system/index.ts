@@ -81,6 +81,39 @@ const agentActivities = proxyActivities<typeof triggerActivities>({
 	},
 });
 
+type SlackPostResult = Awaited<
+	ReturnType<typeof triggerActivities.postToSlack>
+>;
+
+/**
+ * Whether this execution acts on a reply post's outcome: passing it to
+ * updateTriggerStats, failing a trigger run whose Slack reply was not
+ * delivered, and keeping an undelivered mention reply out of the
+ * conversation history and the processed count. Executions recorded before
+ * this patch keep doing none of that. Keep this the only patched() check for
+ * this id in this file: the replay test rewrites it.
+ */
+function deliveryOutcomeAware(): boolean {
+	return patched("trigger-stats-delivery-outcome-2026-11");
+}
+
+/**
+ * The reply post's result for updateTriggerStats, which records a failed
+ * post as a failed execution. Replay does not compare activity arguments;
+ * the patch keeps executions recorded before this argument existed calling
+ * the activity exactly as they did.
+ *
+ * Only Slack replies pass this. The Teams mention handler does not pass its
+ * delivery outcome: it passes its deployment id as the trigger id, so
+ * updateTriggerStats finds no trigger to update and writes no execution row
+ * for a Teams reply's outcome to correct.
+ */
+function replyDelivery(post: SlackPostResult | undefined): {
+	delivery?: SlackPostResult;
+} {
+	return deliveryOutcomeAware() ? { delivery: post } : {};
+}
+
 // =============================================================================
 // Trigger Event Workflow
 // =============================================================================
@@ -173,8 +206,9 @@ export async function triggerEventWorkflow(
 		}
 
 		// Handle output
+		let slackPost: SlackPostResult | undefined;
 		if (triggerConfig.outputConfig) {
-			await handleOutput(
+			slackPost = await handleOutput(
 				triggerConfig as TriggerConfig,
 				input.event,
 				agentResult.response,
@@ -189,9 +223,31 @@ export async function triggerEventWorkflow(
 			triggerId: input.triggerId,
 			lastTriggeredAt: new Date().toISOString(),
 			success: true,
+			...replyDelivery(slackPost),
 			userId: input.userId,
 			organizationId: input.organizationId,
 		});
+
+		// A reply that never reached Slack fails the run. A reply the
+		// Read-only gate skipped reports success.
+		if (slackPost && !slackPost.success && deliveryOutcomeAware()) {
+			log.error("Trigger event reply was not delivered", {
+				eventId: input.event.id,
+				agentExecutionId: agentResult.executionId,
+				error: slackPost.error,
+				durationMs: Date.now() - startTime,
+			});
+
+			return {
+				eventId: input.event.id,
+				triggerId: input.triggerId,
+				success: false,
+				error: slackPost.error,
+				agentExecutionId: agentResult.executionId,
+				response: agentResult.response,
+				durationMs: Date.now() - startTime,
+			};
+		}
 
 		log.info("Trigger event processed successfully", {
 			eventId: input.event.id,
@@ -763,15 +819,27 @@ export async function slackMentionHandlerWorkflow(input: {
 					});
 				}
 
-				// Update conversation history
-				state.conversationHistory.push(
-					{ role: "user", content: event.text, ts: event.ts },
-					{
+				// A reply that never reached the thread stays out of the
+				// history and the processed count, so the next mention does
+				// not build on an answer the person never saw. A reply the
+				// Read-only gate skipped reports success.
+				const undelivered =
+					!postResult.success && deliveryOutcomeAware();
+
+				// Update conversation history. The person's turn is kept
+				// either way, so the next mention still sees what was asked.
+				state.conversationHistory.push({
+					role: "user",
+					content: event.text,
+					ts: event.ts,
+				});
+				if (!undelivered) {
+					state.conversationHistory.push({
 						role: "assistant",
 						content: agentResult.response,
 						ts: postResult.messageTs || Date.now().toString(),
-					},
-				);
+					});
+				}
 
 				// Save conversation history to thread mapping for persistence
 				if (threadResult.mapping) {
@@ -786,9 +854,20 @@ export async function slackMentionHandlerWorkflow(input: {
 					triggerId: input.triggerId,
 					lastTriggeredAt: new Date().toISOString(),
 					success: true,
+					...replyDelivery(postResult),
 					userId: input.userId,
 					organizationId: input.organizationId,
 				});
+
+				if (undelivered) {
+					log.warn("Slack mention reply was not delivered", {
+						eventId: event.eventId,
+						channel: event.channel,
+						processedCount: state.processedCount,
+						agentExecutionId: agentResult.executionId,
+					});
+					continue;
+				}
 
 				state.processedCount++;
 
@@ -898,7 +977,7 @@ async function handleOutput(
 	// The agent's bound project, resolved by invokeAgent — threaded into the
 	// Slack post so the activity-side read-only reply gate can apply.
 	projectId?: string,
-): Promise<void> {
+): Promise<SlackPostResult | undefined> {
 	const outputConfig = config.outputConfig;
 
 	// Transform output if template provided
@@ -934,9 +1013,10 @@ async function handleOutput(
 		outputConfig?.slackChannel ||
 		(event.triggerType === "SLACK_MENTION" && event.context.sourceId);
 
+	let slackPost: SlackPostResult | undefined;
 	if (shouldPostToSlack) {
 		const channel = outputConfig?.slackChannel || event.context.sourceId;
-		await activities.postToSlack({
+		slackPost = await activities.postToSlack({
 			channel,
 			message: output,
 			threadTs:
@@ -963,6 +1043,8 @@ async function handleOutput(
 			organizationId,
 		});
 	}
+
+	return slackPost;
 }
 
 // =============================================================================

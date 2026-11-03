@@ -42,6 +42,18 @@ function showCard(
 }
 
 describe("ParlumeLiveCard elapsed time", () => {
+	it("shows an explicit channel limitation while unresolved ordinary bot chat remains possible", () => {
+		showCard({
+			session: liveSession({
+				channelChatStatus: "UNRESOLVED",
+				channelChatError:
+					"Channel chat unresolved: use the full calendar link. Meeting-bot chat remains available where Teams permits it.",
+			}),
+		});
+		expect(screen.getByRole("status")).toHaveTextContent(
+			"Channel chat unresolved",
+		);
+	});
 	it("counts up from when the bot joined, every second", () => {
 		showCard();
 		expect(screen.getByRole("timer")).toHaveTextContent("28:14");

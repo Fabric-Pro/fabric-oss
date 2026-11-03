@@ -29,6 +29,10 @@ vi.mock("sonner", () => ({
 }));
 
 const confirmMock = vi.fn();
+vi.mock("@saas/projects/components/TranscriptFileUpload", () => ({
+	TranscriptFileUpload: () => null,
+}));
+
 vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
 	useConfirmationAlert: () => ({ confirm: confirmMock }),
 }));

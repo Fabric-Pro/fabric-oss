@@ -28,6 +28,7 @@ import type {
 } from "@repo/utils/glossy/edition-content";
 import {
 	getImageDimensions,
+	layOutPdfTable,
 	splitTableRow,
 	stripInlineMarkdown,
 	TABLE_ROW,
@@ -821,8 +822,9 @@ async function writePdf(
 
 	// Every string reaches the page through `drawText`, which takes only
 	// text mapped by `toWinAnsiText`: `winAnsi` maps a single line and
-	// `splitText` maps before it measures, so each string is mapped once and
-	// none is drawn outside Windows-1252.
+	// `splitText` maps before it measures, so none is drawn outside
+	// Windows-1252. Mapping is idempotent: table cells, mapped before their
+	// layout is measured, pass through `splitText` unchanged.
 	const winAnsi = (text: string) => toWinAnsiText(text) as WinAnsiText;
 	const splitText = (text: string, width: number): WinAnsiText[] =>
 		doc.splitTextToSize(winAnsi(text), width);
@@ -1021,49 +1023,98 @@ async function writePdf(
 				break;
 			case "table": {
 				const columns = Math.max(...node.rows.map((row) => row.length));
-				const cellWidth = PDF_CONTENT_WIDTH / columns;
-				const padding = 5;
-				const lineHeight = 12;
+				const fontSize = 9.5;
+				const setRowFont = (header: boolean, size: number) => {
+					doc.setFont("helvetica", header ? "bold" : "normal");
+					doc.setFontSize(size);
+				};
+				// Mapped up front so the layout measures the text as drawn;
+				// `splitText` mapping it again changes nothing.
+				const rows = node.rows.map((row) =>
+					Array.from({ length: columns }, (_, c) =>
+						winAnsi(pdfText(row[c] ?? "")),
+					),
+				);
+				// Columns sized to their words, as in the regular download.
+				const layout = layOutPdfTable(rows, {
+					columns,
+					width: PDF_CONTENT_WIDTH,
+					padding: 5,
+					fontSize,
+					minFontSize: 8,
+					measure: (text, header) => {
+						setRowFont(header, fontSize);
+						return doc.getTextWidth(text);
+					},
+				});
+				const { padding } = layout;
+				// 12pt lines at 9.5pt, kept in proportion when the font steps down.
+				const lineHeight = (12 * layout.fontSize) / fontSize;
 				doc.setDrawColor(palette.border);
 				doc.setLineWidth(0.5);
-				node.rows.forEach((row, rowIndex) => {
+				const pageBottom = PDF_PAGE_HEIGHT - PDF_MARGIN;
+				const heightOf = (cells: WinAnsiText[][]) =>
+					Math.max(1, ...cells.map((cell) => cell.length)) *
+						lineHeight +
+					padding * 2;
+				rows.forEach((row, rowIndex) => {
 					const header = rowIndex === 0;
-					doc.setFont("helvetica", header ? "bold" : "normal");
-					doc.setFontSize(9.5);
-					const cells: WinAnsiText[][] = Array.from(
-						{ length: columns },
-						(_, c) =>
-							splitText(
-								pdfText(row[c] ?? ""),
-								cellWidth - padding * 2,
-							),
+					setRowFont(header, layout.fontSize);
+					let cells: WinAnsiText[][] = row.map((text, c) =>
+						splitText(text, layout.columns[c].width - padding * 2),
 					);
-					const rowHeight =
-						Math.max(1, ...cells.map((cell) => cell.length)) *
-							lineHeight +
-						padding * 2;
-					ensureSpace(rowHeight);
-					if (header) {
-						doc.setFillColor(palette.surface);
-						doc.rect(
-							PDF_MARGIN,
-							y,
-							PDF_CONTENT_WIDTH,
-							rowHeight,
-							"F",
-						);
-					}
-					doc.setTextColor(palette.ink);
-					cells.forEach((cell, c) => {
-						const x = PDF_MARGIN + c * cellWidth;
-						if (cell.length > 0 && cell.join("").trim()) {
-							drawText(cell, x + padding, y + padding + 9, {
-								lineHeightFactor: lineHeight / 9.5,
-							});
+					const drawRow = (part: WinAnsiText[][]) => {
+						const rowHeight = heightOf(part);
+						setRowFont(header, layout.fontSize);
+						if (header) {
+							doc.setFillColor(palette.surface);
+							doc.rect(
+								PDF_MARGIN,
+								y,
+								PDF_CONTENT_WIDTH,
+								rowHeight,
+								"F",
+							);
 						}
-						doc.rect(x, y, cellWidth, rowHeight, "S");
-					});
-					y += rowHeight;
+						doc.setTextColor(palette.ink);
+						part.forEach((cell, c) => {
+							const { left, width } = layout.columns[c];
+							const x = PDF_MARGIN + left;
+							if (cell.length > 0 && cell.join("").trim()) {
+								// The first baseline sits three quarters down its line.
+								drawText(
+									cell,
+									x + padding,
+									y + padding + lineHeight * 0.75,
+									{
+										lineHeightFactor:
+											lineHeight / layout.fontSize,
+									},
+								);
+							}
+							doc.rect(x, y, width, rowHeight, "S");
+						});
+						y += rowHeight;
+					};
+					if (heightOf(cells) <= pageBottom - PDF_MARGIN) {
+						ensureSpace(heightOf(cells));
+					}
+					// A row taller than a page goes on a page at a time.
+					while (y + heightOf(cells) > pageBottom) {
+						const fit = Math.floor(
+							(pageBottom - y - padding * 2) / lineHeight,
+						);
+						if (fit < 1 && y === PDF_MARGIN) {
+							break;
+						}
+						if (fit >= 1) {
+							drawRow(cells.map((cell) => cell.slice(0, fit)));
+							cells = cells.map((cell) => cell.slice(fit));
+						}
+						doc.addPage();
+						y = PDF_MARGIN;
+					}
+					drawRow(cells);
 				});
 				y += 10;
 				break;

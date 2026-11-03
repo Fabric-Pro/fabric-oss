@@ -153,6 +153,14 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 			/** Optional target machine / host identifier. */
 			targetMachine: z.string().min(1).max(200).optional(),
 			serverId: z.string().min(1).max(200).optional(),
+			/** Optional quota-limit fallback preference stored with this run. */
+			fallbackPolicy: z
+				.enum([
+					"subscription_harnesses",
+					"org_paid_api",
+					"pause_on_limit",
+				])
+				.optional(),
 		}),
 	)
 	.output(
@@ -268,7 +276,8 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 			(input.llmConnection ||
 				input.model ||
 				input.targetMachine ||
-				input.serverId)
+				input.serverId ||
+				input.fallbackPolicy)
 		) {
 			throw new ORPCError("PRECONDITION_FAILED", {
 				message:
@@ -383,6 +392,10 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 						userId?: string;
 					};
 					serverName?: string;
+					fallbackPolicy?:
+						| "subscription_harnesses"
+						| "org_paid_api"
+						| "pause_on_limit";
 			  }
 			| undefined;
 		if (provider === "BACKGROUND_AGENTS" && fabricAgentsBridgeEnabled) {
@@ -425,6 +438,9 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 						...readiness.executionTarget,
 					},
 					...(server ? { serverName: server.name } : {}),
+					...(input.fallbackPolicy
+						? { fallbackPolicy: input.fallbackPolicy }
+						: {}),
 				};
 			} catch {
 				throw new ORPCError("SERVICE_UNAVAILABLE", {

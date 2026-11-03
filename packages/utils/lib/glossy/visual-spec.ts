@@ -341,6 +341,132 @@ export type ProposalOnlyVisualKind =
 	(typeof PROPOSAL_ONLY_VISUAL_KINDS)[number];
 
 // ---------------------------------------------------------------------------
+// Proposal-only spec rules (Fizzy #2946)
+// ---------------------------------------------------------------------------
+
+/**
+ * The longest date a Proposal timeline entry may show: two lines of its
+ * figure's date line at most. The extraction prompt quotes the same bound.
+ */
+export const PROPOSAL_TIMELINE_DATE_MAX_CHARS = 20;
+
+/**
+ * Units of time, English and German, that make a number a period: "Week 1",
+ * "First 30 days", "2. Halbjahr", "Nach 3 Monaten".
+ */
+const PERIOD_UNITS = new Set(
+	"day days week weeks wk wks month months mo mos quarter quarters qtr half halves year years yr yrs sprint sprints cw tag tage tagen woche wochen monat monate monaten quartal quartale quartalen halbjahr halbjahre jahr jahre jahren kw".split(
+		" ",
+	),
+);
+
+/**
+ * Month and season names, and the months' abbreviations, English and
+ * German: each says when by itself ("March", "Summer 2026", "Herbst").
+ */
+const PERIOD_MONTHS = new Set(
+	"january february march april may june july august september october november december jan feb mar apr jun jul aug sep sept oct nov dec januar jänner februar märz mai juni juli oktober dezember mär okt dez spring summer fall autumn winter frühjahr frühling sommer herbst".split(
+		" ",
+	),
+);
+
+/**
+ * Words that place or join periods: "Mid-2026", "End of Q2", "First 30
+ * days", "Within 2 weeks", "Ende 2026", "vom 1. bis 5. März".
+ */
+const PERIOD_QUALIFIERS = new Set(
+	"early mid late end start beginning by from to until through and of before after first next last within anfang mitte ende von vom bis ab und erste ersten nach innerhalb".split(
+		" ",
+	),
+);
+
+/**
+ * A token that is a date or period by itself: a year, a quarter or half, a
+ * fiscal year, a calendar week, a week or month in short ("W1", "M3"), or
+ * a numeric date.
+ */
+const PERIOD_TOKEN =
+	/^(?:(?:19|20)\d{2}|q[1-4]|h[12]|fy\d{2}(?:\d{2})?|[ck]w\d{1,2}|[wm]\d{1,2}|\d{1,4}[./]\d{1,2}(?:[./]\d{1,4})?\.?)$/u;
+
+/** A count or position: "2", "2nd", "1." (a German ordinal). */
+const PERIOD_NUMBER = /^\d{1,3}(?:st|nd|rd|th|\.)?$/u;
+
+/**
+ * Whether `date` is what a Proposal timeline entry's date line may show: a
+ * short date or period ("Week 1", "Weeks 2–5", "Q3 2026", "Month 2",
+ * "March", "Summer 2026", "W1–W4") of at most
+ * `PROPOSAL_TIMELINE_DATE_MAX_CHARS`. Every word must be a unit of time, a
+ * month or season, a placing word, a number or a date token, and one of
+ * them must say when: a date token, a month or season, or a unit with a
+ * number. A phase name ("Phase 1"), a step or a sentence is not a period,
+ * so a timeline built from undated stages fails here and is not drawn.
+ */
+export function isProposalTimelinePeriod(date: string): boolean {
+	const trimmed = date.trim();
+	if (
+		trimmed === "" ||
+		Array.from(trimmed).length > PROPOSAL_TIMELINE_DATE_MAX_CHARS
+	) {
+		return false;
+	}
+	// ISO dates split at their hyphens into a year and two numbers; "FY"
+	// joins the year after it, as "FY2027" is written.
+	const tokens = trimmed
+		.toLowerCase()
+		.replace(/\bfy\s+(?=\d)/gu, "fy")
+		.split(/[\s,()–—\-/+&]+/u)
+		.filter((token) => token !== "");
+	let anchored = false;
+	let unit = false;
+	let number = false;
+	for (const token of tokens) {
+		if (
+			PERIOD_TOKEN.test(token) ||
+			PERIOD_MONTHS.has(token.replace(/\.$/u, ""))
+		) {
+			anchored = true;
+		} else if (PERIOD_UNITS.has(token)) {
+			unit = true;
+		} else if (PERIOD_NUMBER.test(token)) {
+			number = true;
+		} else if (!PERIOD_QUALIFIERS.has(token)) {
+			return false;
+		}
+	}
+	return anchored || (unit && number);
+}
+
+/**
+ * A comparison as a Proposal's table shows it (Fizzy #2946), or null when
+ * its columns are too uneven to read as one: any option with fewer than two
+ * points, or the shortest with fewer than half the points of the longest.
+ * A kept comparison keeps each option's first points down to the
+ * second-longest column's count, so no row of the table is filled in one
+ * column only; with two options every row is filled in both.
+ */
+export function balancedProposalComparison(
+	spec: ComparisonVisualSpec,
+): ComparisonVisualSpec | null {
+	const counts = spec.items.map((item) => item.points.length);
+	const shortest = Math.min(...counts);
+	const longest = Math.max(...counts);
+	if (shortest < 2 || shortest * 2 < longest) {
+		return null;
+	}
+	const rows = [...counts].sort((a, b) => b - a)[1] ?? longest;
+	if (rows === longest) {
+		return spec;
+	}
+	return {
+		...spec,
+		items: spec.items.map((item) => ({
+			...item,
+			points: item.points.slice(0, rows),
+		})),
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Fact extraction (feeds U4's checkVisualFacts, KTD12)
 // ---------------------------------------------------------------------------
 

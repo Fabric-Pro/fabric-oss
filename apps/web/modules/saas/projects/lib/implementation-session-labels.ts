@@ -331,6 +331,7 @@ export const FABRIC_AGENT_CONNECTIONS: readonly FabricAgentConnectionOption[] =
 
 export interface ProjectDelegationPreferences {
 	preferredServerScope: "PRIVATE" | "TEAM";
+	preferredServerId?: string;
 	defaultConnection: string;
 	defaultModel: string;
 	fallbackPolicy: FabricAgentFallbackPolicy;
@@ -340,6 +341,7 @@ export interface ProjectDelegationPreferences {
 export const DEFAULT_PROJECT_DELEGATION_PREFERENCES: ProjectDelegationPreferences =
 	{
 		preferredServerScope: "TEAM",
+		preferredServerId: "",
 		defaultConnection: "default",
 		defaultModel: "default",
 		fallbackPolicy: "subscription_harnesses",
@@ -367,6 +369,10 @@ export function loadProjectDelegationPreferences(
 		return {
 			preferredServerScope:
 				parsed.preferredServerScope === "PRIVATE" ? "PRIVATE" : "TEAM",
+			preferredServerId:
+				typeof parsed.preferredServerId === "string"
+					? parsed.preferredServerId
+					: "",
 			defaultConnection:
 				typeof parsed.defaultConnection === "string"
 					? parsed.defaultConnection
@@ -462,7 +468,7 @@ export function getExecutionChannelLabel(channel?: string | null): string {
 export function getExecutionProviderLabel(provider?: string | null): string {
 	switch (provider) {
 		case "KANBAN_LOCAL":
-			return "Local development";
+			return "Fabric Agents Desktop";
 		default:
 			return "Fabric Agents";
 	}
@@ -473,7 +479,7 @@ export function getExecutionProviderPlatformLabel(
 ): string {
 	switch (provider) {
 		case "KANBAN_LOCAL":
-			return "Fabric Kanban";
+			return "Fabric Agents Desktop";
 		default:
 			return "Fabric Agents";
 	}
@@ -484,7 +490,7 @@ export function getExecutionProviderDescription(
 ): string {
 	switch (provider) {
 		case "KANBAN_LOCAL":
-			return "Runs in your checked-out repository through Fabric Kanban. Run fabric-kanban locally to pull queued work.";
+			return "Runs in your local repository through Fabric Agents Desktop or your Personal Fabric Agents Remote Server using your subscription tokens.";
 		default:
 			return "Runs in an isolated git worktree on Fabric Agents with live desktop & Web UI session tracking.";
 	}
@@ -518,7 +524,7 @@ export function getImplementationRecommendation(
 	return {
 		channel: "BACKGROUND_AGENTS",
 		provider: "BACKGROUND_AGENTS",
-		reason: "Fabric Agents is the recommended path for direct implementation in an isolated git worktree. Choose local development only when Fabric Kanban should pull queued work into a manual checkout.",
+		reason: "Fabric Agents is the recommended path for direct implementation in an isolated git worktree on your Personal or Organization Fabric Agents Remote Server, or locally in Fabric Agents Desktop.",
 	};
 }
 
@@ -535,12 +541,15 @@ export interface FabricDesktopNewSessionUrlInput {
 	origin?: string | null;
 	prompt?: string | null;
 	send?: boolean;
+	connection?: string | null;
+	model?: string | null;
+	fallbackPolicy?: FabricAgentFallbackPolicy | null;
 }
 
 /**
- * Builds a `fabricagents://action/new-chat` deep link that opens Fabric Desktop
- * directly into a new coding session pre-populated with this project's context
- * and zero-key OAuth MCP gateway URL.
+ * Builds a `fabricagents://action/new-chat` deep link that opens Fabric Agents Desktop
+ * directly into a new coding session pre-populated with this project's context,
+ * subscription harness, model, fallback policy, and zero-key OAuth MCP gateway URL.
  */
 export function buildFabricDesktopNewSessionUrl(
 	input: FabricDesktopNewSessionUrlInput,
@@ -550,6 +559,18 @@ export function buildFabricDesktopNewSessionUrl(
 		(input.projectName ?? "").trim() || "Fabric Project"
 	).slice(0, 120);
 	params.set("name", trimmedName);
+	if (input.projectId) {
+		params.set("projectId", input.projectId);
+	}
+	if (input.connection && input.connection !== "default") {
+		params.set("harness", input.connection);
+	}
+	if (input.model && input.model !== "default") {
+		params.set("model", input.model);
+	}
+	if (input.fallbackPolicy) {
+		params.set("fallback", input.fallbackPolicy);
+	}
 
 	let sanitizedOrigin: string | null = null;
 	if (input.origin) {
@@ -561,6 +582,13 @@ export function buildFabricDesktopNewSessionUrl(
 		} catch {
 			sanitizedOrigin = null;
 		}
+	}
+
+	if (sanitizedOrigin && input.projectId) {
+		params.set(
+			"mcpGateway",
+			`${sanitizedOrigin}/api/mcp-gateway/projects/${encodeURIComponent(input.projectId)}`,
+		);
 	}
 
 	const trimmedPrompt = input.prompt?.trim();
@@ -629,7 +657,8 @@ export function buildRemoteAgentServerDelegationUrl(
 		if (parsed.protocol === "http:" || parsed.protocol === "https:") {
 			parsed.username = "";
 			parsed.password = "";
-			base = parsed.origin;
+			const cleanPath = parsed.pathname.replace(/\/+$/, "");
+			base = `${parsed.origin}${cleanPath}`;
 		}
 	} catch {
 		base = "http://127.0.0.1:9100";

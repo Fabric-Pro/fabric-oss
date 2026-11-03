@@ -18,7 +18,14 @@
  *      scoping (`organizationId === null` for personal context,
  *      explicit string for org context), so calling it with the
  *      session's active org closes the obvious bypass.
- *   3. If Redis isn't configured, return 503 — same as
+ *   3. A document-assistant thread may also be opened by a non-owner
+ *      when it is SHARED in their organization
+ *      (`canSubscribeToDocumentAssistantConversation`). On every such
+ *      thread, owner included, the caller MUST also see the project of
+ *      the thread's document (`canAccessDocumentProject`, the check the
+ *      thread procedures make), and the document must still be in the
+ *      project the thread names. A refusal is the same 404.
+ *   4. If Redis isn't configured, return 503 — same as
  *      `/api/projects/[projectId]/realtime`.
  *
  * Implementation mirrors the project realtime route exactly so future
@@ -29,9 +36,13 @@ import {
 	getConversationChannelName,
 	getProjectRealtime,
 } from "@repo/api/lib/realtime";
+import { canAccessDocumentProject } from "@repo/api/modules/agents/procedures/conversations/document-assistant/_shared";
 import { auth } from "@repo/auth";
 import { getAgentConversationById } from "@repo/database/prisma/queries/agent-conversations";
-import { canSubscribeToDocumentAssistantConversation } from "@repo/database/prisma/queries/document-assistant-conversation";
+import {
+	canSubscribeToDocumentAssistantConversation,
+	getDocumentAssistantThreadRef,
+} from "@repo/database/prisma/queries/document-assistant-conversation";
 import { handle } from "@upstash/realtime";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
@@ -108,12 +119,30 @@ export async function GET(
 			// `getByIdForDocument` already uses to render it. The realtime stream
 			// only carries `message_appended` notifications (content is re-fetched
 			// through that same predicate), so this cannot leak message content.
-			const authorized =
+			let authorized =
 				conversation !== null ||
 				(await canSubscribeToDocumentAssistantConversation({
 					conversationId,
 					userId: session.user.id,
 				}));
+
+			// A document-assistant thread is shown by the thread procedures
+			// only to a caller who can see its document's project, so ask the
+			// same of every subscriber, the owner included: a caller off the
+			// project, or a document no longer in the project the thread
+			// names, gets the same 404. A conversation without a join row is
+			// not about a document and keeps the owner-only rule above.
+			if (authorized) {
+				const threadRef = await getDocumentAssistantThreadRef({
+					conversationId,
+				});
+				if (threadRef !== null) {
+					authorized = await canAccessDocumentProject({
+						...threadRef,
+						userId: session.user.id,
+					});
+				}
+			}
 
 			if (!authorized) {
 				// Always 404 — never reveal whether the row exists in

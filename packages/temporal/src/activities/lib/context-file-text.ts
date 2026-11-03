@@ -16,7 +16,7 @@ export const DEFAULT_CHUNK_OVERLAP = 200;
 /**
  * Sanitize text content by removing null bytes and other problematic characters
  */
-function sanitizeTextForStorage(text: string): string {
+export function sanitizeTextForStorage(text: string): string {
 	return Array.from(text)
 		.filter((char) => {
 			const codePoint = char.codePointAt(0);

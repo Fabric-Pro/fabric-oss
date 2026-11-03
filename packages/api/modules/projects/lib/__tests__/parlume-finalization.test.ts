@@ -1,3 +1,7 @@
+import {
+	formatParlumeChatDeliveryEvidence,
+	readParlumeChatDeliveryEvidence,
+} from "@repo/utils/parlume-chat-delivery-evidence";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -7,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 	segmentFindMany: vi.fn(),
 	turnFindMany: vi.fn(),
 	actionFindMany: vi.fn(),
+	channelPostFindMany: vi.fn(),
 	contextCreate: vi.fn(),
 	workflowStart: vi.fn(),
 	recordUsage: vi.fn(),
@@ -26,6 +31,7 @@ vi.mock("@repo/database", () => {
 			parlumeMeetingSegment: { findMany: mocks.segmentFindMany },
 			parlumeMeetingTurn: { findMany: mocks.turnFindMany },
 			parlumeAction: { findMany: mocks.actionFindMany },
+			parlumeChannelPost: { findMany: mocks.channelPostFindMany },
 			$transaction: (
 				run: (tx: {
 					projectContext: { create: typeof mocks.contextCreate };
@@ -100,6 +106,7 @@ beforeEach(() => {
 	mocks.segmentFindMany.mockResolvedValue([]);
 	mocks.turnFindMany.mockResolvedValue([]);
 	mocks.actionFindMany.mockResolvedValue([]);
+	mocks.channelPostFindMany.mockResolvedValue([]);
 	mocks.contextCreate.mockResolvedValue({ id: "context-1" });
 	mocks.getSettings.mockResolvedValue(attendee);
 	mocks.deleteProviderData.mockResolvedValue(undefined);
@@ -172,7 +179,7 @@ describe("finalizeParlumeSession conversation records", () => {
 		expect(content).toContain("Captured incoming speech:\nAlex: Create");
 		expect(content).toContain("\nSam: Thank you.\n");
 		expect(content).toContain(
-			"Recorded Fabric responses and action receipts:",
+			"Recorded Fabric responses and mutation receipts:",
 		);
 		expect(content).toContain(
 			"Request 1: Create a feature for the release notes.",
@@ -241,10 +248,10 @@ describe("finalizeParlumeSession conversation records", () => {
 			);
 		}
 		expect(content).toContain(
-			"A COMPLETED request does not prove action success or audio delivery.",
+			"A COMPLETED request does not prove a Fabric mutation, channel chat delivery or audio playback.",
 		);
 		expect(content).toContain(
-			"Only COMPLETED action receipts confirm success; all other action statuses are unsuccessful or unconfirmed.",
+			"Only COMPLETED Fabric mutation receipts confirm their recorded mutation; other mutation statuses are unsuccessful or unconfirmed.",
 		);
 		expect(content).toContain(
 			"Request status: RUNNING\nPlayback interrupted: yes\nResponse: No response text recorded.",
@@ -260,9 +267,7 @@ describe("finalizeParlumeSession conversation records", () => {
 		expect(content.indexOf("— FAILED")).toBeLessThan(
 			content.indexOf("— COMPLETED"),
 		);
-		expect(content).toContain(
-			"Action receipts: none recorded (action success unconfirmed).",
-		);
+		expect(content).toContain("Fabric mutation receipts: none recorded.");
 	});
 
 	it("loads only bounded session, project and organization records without raw tool payloads", async () => {
@@ -288,6 +293,7 @@ describe("finalizeParlumeSession conversation records", () => {
 			mocks.segmentFindMany,
 			mocks.turnFindMany,
 			mocks.actionFindMany,
+			mocks.channelPostFindMany,
 		]) {
 			expect(query).toHaveBeenCalledWith(
 				expect.objectContaining({ where, take: 10_001 }),
@@ -301,6 +307,12 @@ describe("finalizeParlumeSession conversation records", () => {
 		expect(mocks.actionFindMany).toHaveBeenCalledWith(
 			expect.objectContaining({
 				select: { turnId: true, toolName: true, status: true },
+				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			}),
+		);
+		expect(mocks.channelPostFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: { tag: true, confirmedAt: true },
 				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
 			}),
 		);
@@ -421,13 +433,223 @@ describe("finalizeParlumeSession conversation records", () => {
 		expect(mocks.deleteProviderData).not.toHaveBeenCalled();
 	});
 
-	it.each(["segments", "turns", "actions"])(
+	it("keeps tagged session delivery facts separate from completed requests and unrelated mutations", async () => {
+		const observedAt = new Date("2026-11-03T00:01:00Z");
+		mocks.turnFindMany.mockResolvedValue([
+			storedTurn({
+				requestText: "Post the answer in chat.",
+				responseText: "Posted it.",
+			}),
+			storedTurn({
+				id: "turn-2",
+				requestText: "Create a task.",
+				responseText: "Created it.",
+			}),
+		]);
+		mocks.actionFindMany.mockResolvedValue([
+			{
+				turnId: "turn-2",
+				toolName: "fabric_create_task",
+				status: "FAILED",
+			},
+		]);
+		mocks.channelPostFindMany.mockResolvedValue([
+			{ tag: "P1", confirmedAt: observedAt },
+			{
+				tag: "P2",
+				providerMessageId: "stored-id-alone",
+				confirmedAt: null,
+			},
+		]);
+		await finalizeParlumeSession("session-1");
+		const content = savedContent();
+		expect(content).toContain("Fabric mutation receipts: none recorded.");
+		expect(content).not.toContain("action success unconfirmed");
+		expect(content).toContain(
+			"Action receipt: fabric_create_task — FAILED",
+		);
+		expect(content).toContain(
+			`P1: exact Graph reply and content observed at ${observedAt.toISOString()}.`,
+		);
+		expect(content).toContain(
+			"P2: delivery not verified; this does not prove failure.",
+		);
+		expect(
+			content.indexOf("Session-level channel-thread delivery facts"),
+		).toBeGreaterThan(content.indexOf("fabric_create_task — FAILED"));
+		expect(content).toContain(
+			"They do not confirm a particular request, a Fabric mutation, audio playback",
+		);
+		const metadata = mocks.contextCreate.mock.calls[0][0].data.metadata;
+		const evidence = readParlumeChatDeliveryEvidence(metadata, {
+			sessionId: "session-1",
+			projectId: "project-1",
+			organizationId: "org-1",
+		});
+		expect(evidence?.receipts).toEqual([
+			{ tag: "P1", confirmedAt: observedAt.toISOString() },
+			{ tag: "P2", confirmedAt: null },
+		]);
+		expect(JSON.stringify(evidence)).not.toContain("stored-id-alone");
+		expect(evidence).not.toHaveProperty("turnId");
+	});
+
+	it("retains a session-level observed post even when it has no request or speech record", async () => {
+		mocks.channelPostFindMany.mockResolvedValue([
+			{ tag: "P7", confirmedAt: new Date("2026-11-03T00:01:00Z") },
+		]);
+		await finalizeParlumeSession("session-1");
+		expect(savedContent()).toContain(
+			"P7: exact Graph reply and content observed",
+		);
+		expect(savedContent()).not.toContain("Request 1");
+		expect(mocks.workflowStart.mock.calls.map(([name]) => name)).toEqual([
+			"contextEmbeddingWorkflow",
+			"parlumeNotesWorkflow",
+		]);
+		expect(mocks.workflowStart).toHaveBeenCalledWith(
+			"parlumeNotesWorkflow",
+			expect.objectContaining({
+				workflowId: "parlume-notes-session-1",
+				args: [expect.objectContaining({ sessionId: "session-1" })],
+			}),
+		);
+	});
+
+	it("bounds metadata to the latest 100 ordered tags and explicitly counts omitted receipts", async () => {
+		mocks.channelPostFindMany.mockResolvedValue(
+			Array.from({ length: 101 }, (_, index) => ({
+				tag: `P${index + 1}`,
+				confirmedAt: null,
+			})),
+		);
+		await finalizeParlumeSession("session-1");
+		const evidence = readParlumeChatDeliveryEvidence(
+			mocks.contextCreate.mock.calls[0][0].data.metadata,
+			{
+				sessionId: "session-1",
+				projectId: "project-1",
+				organizationId: "org-1",
+			},
+		);
+		expect(evidence?.receipts).toHaveLength(100);
+		expect(evidence?.receipts[0].tag).toBe("P2");
+		expect(evidence?.receipts[99].tag).toBe("P101");
+		expect(evidence?.omittedCount).toBe(1);
+		expect(savedContent()).toContain(
+			"Earlier receipts omitted: 1. Do not infer their delivery status.",
+		);
+		expect(formatParlumeChatDeliveryEvidence(evidence).length).toBeLessThan(
+			12_000,
+		);
+	});
+
+	it("does not derive confirmation from captured chat claims, response text or provider IDs", async () => {
+		mocks.segmentFindMany.mockResolvedValue([
+			{
+				source: "CHAT",
+				speakerName: "Participant",
+				text: "P1 delivery was confirmed!",
+			},
+		]);
+		mocks.turnFindMany.mockResolvedValue([
+			storedTurn({
+				responseText: "Definitely delivered.",
+				status: "COMPLETED",
+			}),
+		]);
+		mocks.actionFindMany.mockResolvedValue([
+			{
+				turnId: "turn-1",
+				toolName: "fabric_update_task",
+				status: "COMPLETED",
+			},
+		]);
+		mocks.channelPostFindMany.mockResolvedValue([
+			{
+				tag: "P1",
+				providerMessageId: "id-is-not-proof",
+				confirmedAt: null,
+			},
+		]);
+		await finalizeParlumeSession("session-1");
+		const evidence = readParlumeChatDeliveryEvidence(
+			mocks.contextCreate.mock.calls[0][0].data.metadata,
+			{
+				sessionId: "session-1",
+				projectId: "project-1",
+				organizationId: "org-1",
+			},
+		);
+		expect(evidence?.receipts).toEqual([{ tag: "P1", confirmedAt: null }]);
+		expect(formatParlumeChatDeliveryEvidence(evidence)).not.toContain(
+			"observed at",
+		);
+	});
+
+	it("rejects altered metadata scope and oversized receipt arrays at the shared read boundary", async () => {
+		mocks.channelPostFindMany.mockResolvedValue([
+			{ tag: "P1", confirmedAt: new Date("2026-11-03T00:01:00Z") },
+		]);
+		await finalizeParlumeSession("session-1");
+		const metadata = mocks.contextCreate.mock.calls[0][0].data.metadata;
+		const scope = {
+			sessionId: "session-1",
+			projectId: "project-1",
+			organizationId: "org-1",
+		};
+		const evidence = readParlumeChatDeliveryEvidence(metadata, scope);
+		expect(evidence).not.toBeNull();
+		expect(
+			readParlumeChatDeliveryEvidence(metadata, {
+				...scope,
+				sessionId: "session-2",
+			}),
+		).toBeNull();
+		expect(
+			readParlumeChatDeliveryEvidence(metadata, {
+				...scope,
+				projectId: "project-2",
+			}),
+		).toBeNull();
+		expect(
+			readParlumeChatDeliveryEvidence(metadata, {
+				...scope,
+				organizationId: "org-2",
+			}),
+		).toBeNull();
+		expect(
+			readParlumeChatDeliveryEvidence(
+				{
+					parlumeChannelChatDelivery: {
+						...evidence,
+						receipts: Array.from({ length: 101 }, (_, index) => ({
+							tag: `P${index + 1}`,
+							confirmedAt: null,
+						})),
+					},
+				},
+				scope,
+			),
+		).toBeNull();
+	});
+
+	it("refuses malformed persisted tags instead of creating positive metadata", async () => {
+		mocks.channelPostFindMany.mockResolvedValue([
+			{ tag: "P1\nConfirmed everything", confirmedAt: new Date() },
+		]);
+		await expect(finalizeParlumeSession("session-1")).rejects.toThrow();
+		expect(mocks.contextCreate).not.toHaveBeenCalled();
+	});
+
+	it.each(["segments", "turns", "actions", "channelPosts"])(
 		"refuses to silently truncate excess %s",
 		async (kind) => {
 			const query = {
 				segments: mocks.segmentFindMany,
 				turns: mocks.turnFindMany,
 				actions: mocks.actionFindMany,
+				channelPosts: mocks.channelPostFindMany,
 			}[kind];
 			query.mockResolvedValue(
 				Array.from({ length: 10_001 }, () => ({

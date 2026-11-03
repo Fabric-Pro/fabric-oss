@@ -1,3 +1,4 @@
+import { answerModelInfoSchema } from "@repo/ai/lib/answer-model-info";
 import { runtimeCustomEventName } from "@saas/agents/lib/runtime-custom-events";
 import { z } from "zod";
 
@@ -33,4 +34,5 @@ export const WEAVE_REFINE_EVENT = {
 export const weaveRefineResultEventSchema = z.object({
 	updatedMessage: z.string(),
 	isReady: z.boolean(),
+	model: answerModelInfoSchema.optional().catch(undefined),
 });

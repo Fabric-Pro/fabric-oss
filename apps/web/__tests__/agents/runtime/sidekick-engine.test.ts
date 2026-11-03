@@ -43,7 +43,7 @@ import { createSidekickTools } from "@repo/ai/sidekick";
 import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import type { RunStream, RuntimeCaller } from "@saas/agents/runtime/engine";
 import { SidekickEngine } from "@saas/agents/runtime/sidekick-engine";
-import type { UIMessage } from "ai";
+import { toUIMessageStream, type UIMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { from, lastValueFrom, toArray } from "rxjs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -173,6 +173,101 @@ function suggestingModel(): MockLanguageModelV4 {
 		],
 	});
 }
+
+it("captures each served step before a later step changes the fallback snapshot", async () => {
+	const metadata = {
+		provider: "OPENAI_CHATGPT_PLAN",
+		modelString: "example-configured",
+		answerSnapshot: {
+			provider: "OPENAI_CHATGPT_PLAN",
+			modelString: "example-plan-served",
+		},
+	};
+	let step = 0;
+	useModel(
+		new MockLanguageModelV4({
+			doStream: async () => {
+				if (step++ === 0) {
+					return modelStep(
+						[
+							...textChunks("t1", "Checking."),
+							toolCallChunk(
+								"call-1",
+								"suggest_tools",
+								SUGGEST_TOOLS_INPUT,
+							),
+						],
+						"tool-calls",
+					);
+				}
+				metadata.answerSnapshot = {
+					provider: "OPENAI_DIRECT",
+					modelString: "example-api-served",
+				};
+				return modelStep(textChunks("t2", "Answer."));
+			},
+		}),
+		metadata,
+	);
+	const result = await streamSidekickTurn({
+		userId: USER,
+		agentId: "new",
+		entityType: "new",
+		organizationId: ORG,
+		messages: [
+			{
+				id: "question",
+				role: "user",
+				parts: [{ type: "text", text: "Help" }],
+			},
+		],
+		formSnapshot: SNAPSHOT,
+	});
+	let metadataStep = 0;
+	const reader = toUIMessageStream({
+		stream: result.stream,
+		messageMetadata: ({ part }) =>
+			part.type === "finish-step"
+				? { model: result.getAnswerModel(metadataStep++) }
+				: undefined,
+	}).getReader();
+	const received: unknown[] = [];
+	while (true) {
+		const { value, done } = await reader.read();
+		if (done) {
+			break;
+		}
+		if (value.type === "message-metadata") {
+			received.push(value.messageMetadata);
+		}
+	}
+	expect(received).toEqual([
+		{
+			model: expect.objectContaining({
+				id: "example-plan-served",
+				viaPlan: true,
+			}),
+		},
+		{
+			model: expect.objectContaining({
+				id: "example-api-served",
+				viaPlan: false,
+			}),
+		},
+	]);
+	metadata.answerSnapshot = {
+		provider: "OPENAI_DIRECT",
+		modelString: "example-later",
+	};
+	expect(result.getAnswerModel(0)).toMatchObject({
+		id: "example-plan-served",
+		viaPlan: true,
+	});
+	expect(result.getAnswerModel(1)).toMatchObject({
+		id: "example-api-served",
+		viaPlan: false,
+	});
+});
 
 function input(
 	forwardedProps: unknown,
@@ -527,9 +622,11 @@ describe("SidekickEngine turn", () => {
 			EventType.TOOL_CALL_ARGS,
 			EventType.TOOL_CALL_END,
 			EventType.TOOL_CALL_RESULT,
+			EventType.CUSTOM,
 			EventType.TEXT_MESSAGE_START,
 			EventType.TEXT_MESSAGE_CONTENT,
 			EventType.TEXT_MESSAGE_END,
+			EventType.CUSTOM,
 			EventType.RUN_FINISHED,
 		]);
 		expect(events[1]).toMatchObject({ messageId: `${RUN}:s0:m0` });
@@ -537,7 +634,7 @@ describe("SidekickEngine turn", () => {
 			toolCallName: "suggest_tools",
 			parentMessageId: `${RUN}:s0:m0`,
 		});
-		expect(events[8]).toMatchObject({ messageId: `${RUN}:s1:m1` });
+		expect(events[9]).toMatchObject({ messageId: `${RUN}:s1:m1` });
 		const [result] = toolResults(events);
 		expect(JSON.parse(result?.match(APPLY_TOOLS)?.[1] ?? "null")).toEqual(
 			SUGGEST_TOOLS_INPUT.suggestions,

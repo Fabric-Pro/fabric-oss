@@ -2000,7 +2000,7 @@ model AgentConversation {
   documentAttachment DocumentAssistantConversation?
 
   // Advisor turns started in this conversation (see ConversationTurn).
-  turns ConversationTurn[]
+  turns            ConversationTurn[]
   chatMediaObjects ChatMediaObject[]
 
   @@index([userId, agentId])
@@ -6081,29 +6081,33 @@ model AtlasEdgeOverrideHistory {
 
 // Linked Meetings - Which recurring meetings are linked to a project for transcript sync
 model ProjectLinkedMeeting {
-  id                  String    @id @default(cuid())
-  projectId           String
-  joinUrl             String // Teams meeting join URL (stable across recurring instances)
-  subject             String?
-  organizer           String?
+  id                           String    @id @default(cuid())
+  projectId                    String
+  joinUrl                      String // Teams meeting join URL (stable across recurring instances)
+  // TEAMS | UPLOAD. An UPLOAD row is one uploaded transcript file (#1877): its
+  // joinUrl is `upload:<sha256>`, not a URL Microsoft knows, so it must never
+  // reach the sync or anything else that calls Graph.
+  source                       String    @default("TEAMS")
+  subject                      String?
+  organizer                    String?
   // Admin toggle: whether this meeting appears in the project Meeting Digest. Default true so
   // all currently-linked meetings show up immediately.
-  includedInDigest    Boolean   @default(true)
-  linkedAt            DateTime  @default(now())
+  includedInDigest             Boolean   @default(true)
+  linkedAt                     DateTime  @default(now())
   // Stopped syncing but deliberately kept: the row, its transcripts and their
   // extracted context all stay live and readable — only the sync stops looking
   // at it. Distinct from unlinking, which destroys the context (Fizzy #2355).
   // Null = actively syncing.
-  deactivatedAt       DateTime?
-  deactivatedById     String?
+  deactivatedAt                DateTime?
+  deactivatedById              String?
   // Failure state, mirroring the three channel-monitor models. Meetings had
   // none, which is why a dead sync looked healthy: the fetch threw, the
   // activity swallowed it, and the run still stamped a clean lastRun (#2355).
-  consecutiveFailures Int       @default(0)
-  lastErrorMessage    String?
-  lastErrorAt         DateTime?
-  userId              String?
-  organizationId      String?
+  consecutiveFailures          Int       @default(0)
+  lastErrorMessage             String?
+  lastErrorAt                  DateTime?
+  userId                       String?
+  organizationId               String?
   /// Parlume joins every occurrence of this series at its start time.
   parlumeAutoJoin              Boolean   @default(false)
   /// Who turned auto-join on: their calendar, Microsoft connection and project
@@ -6271,44 +6275,55 @@ enum ParlumeActionStatus {
 /// `parlume_meeting_session_agent_selection` CHECK in the Parlume migrations
 /// is asserted by scripts/assert-handwritten-constraints.sql.
 model ParlumeMeetingSession {
-  id                     String                      @id @default(cuid())
-  projectId              String
-  organizationId         String
-  userId                 String
-  agentKind              ParlumeMeetingAgentKind     @default(TEMPLATE_INSTANCE)
-  agentLabel             String                      @default("Custom Fabric Agent")
-  agentInstanceSId       String?
-  agentInstanceVersionId String?
-  agentInstanceVersion   Int?
-  providerBotId          String?                     @unique
-  streamTokenDigest      String
-  status                 ParlumeMeetingSessionStatus @default(PENDING)
-  wakePhrase             String                      @default("Hey Fabric")
-  toolsReadOnly          Boolean                     @default(true)
+  id                           String                      @id @default(cuid())
+  projectId                    String
+  organizationId               String
+  userId                       String
+  agentKind                    ParlumeMeetingAgentKind     @default(TEMPLATE_INSTANCE)
+  agentLabel                   String                      @default("Custom Fabric Agent")
+  agentInstanceSId             String?
+  agentInstanceVersionId       String?
+  agentInstanceVersion         Int?
+  providerBotId                String?                     @unique
+  streamTokenDigest            String
+  status                       ParlumeMeetingSessionStatus @default(PENDING)
+  wakePhrase                   String                      @default("Hey Fabric")
+  toolsReadOnly                Boolean                     @default(true)
   /// Parlume may offer unprompted suggestions in the meeting chat.
-  suggestionsEnabled     Boolean                     @default(true)
-  endReason              ParlumeMeetingEndReason?
-  lastError              String?                     @db.Text
-  joinedAt               DateTime?
-  hardStopAt             DateTime?
-  leaveRequestedAt       DateTime?
-  captureStoppedAt       DateTime?
-  terminalCallbackAt     DateTime?
-  streamClosedAt         DateTime?
-  streamGeneration       Int                         @default(0)
-  voiceGeneration        Int                         @default(0)
-  finalizationStartedAt  DateTime?
-  finalizedAt            DateTime?
-  transcriptContextId    String?                     @unique
-  providerDataDeletedAt  DateTime?
-  activeTurnId           String?
-  endedAt                DateTime?
-  trigger                ParlumeSessionTrigger       @default(MANUAL)
+  suggestionsEnabled           Boolean                     @default(true)
+  endReason                    ParlumeMeetingEndReason?
+  lastError                    String?                     @db.Text
+  joinedAt                     DateTime?
+  hardStopAt                   DateTime?
+  leaveRequestedAt             DateTime?
+  captureStoppedAt             DateTime?
+  terminalCallbackAt           DateTime?
+  streamClosedAt               DateTime?
+  streamGeneration             Int                         @default(0)
+  voiceGeneration              Int                         @default(0)
+  finalizationStartedAt        DateTime?
+  finalizedAt                  DateTime?
+  transcriptContextId          String?                     @unique
+  providerDataDeletedAt        DateTime?
+  activeTurnId                 String?
+  endedAt                      DateTime?
+  trigger                      ParlumeSessionTrigger       @default(MANUAL)
   /// The linked series an automatic join came from, and which occurrence.
-  linkedMeetingId        String?
-  occurrenceStart        DateTime?
-  createdAt              DateTime                    @default(now())
-  updatedAt              DateTime                    @updatedAt
+  linkedMeetingId              String?
+  occurrenceStart              DateTime?
+  /// Private join path for exact chat resolution; query credentials are omitted.
+  meetingUrl                   String?                     @db.Text
+  channelChatStatus            String                      @default("ATTENDEE")
+  channelChatError             String?                     @db.Text
+  channelIntegrationId         String?
+  channelTeamId                String?
+  channelId                    String?
+  channelRootMessageId         String?
+  channelTenantId              String?
+  channelSubscriptionId        String?                     @unique
+  channelSubscriptionExpiresAt DateTime?
+  createdAt                    DateTime                    @default(now())
+  updatedAt                    DateTime                    @updatedAt
 
   project       Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
   organization  Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -6316,6 +6331,7 @@ model ParlumeMeetingSession {
   linkedMeeting ProjectLinkedMeeting?   @relation(fields: [linkedMeetingId], references: [id], onDelete: SetNull)
   segments      ParlumeMeetingSegment[]
   turns         ParlumeMeetingTurn[]
+  channelPosts  ParlumeChannelPost[]
 
   /// One session per occurrence of a series, however often its join is requested.
   @@unique([linkedMeetingId, occurrenceStart])
@@ -6323,6 +6339,29 @@ model ParlumeMeetingSession {
   @@index([organizationId, status])
   @@index([agentInstanceSId])
   @@map("parlume_meeting_session")
+}
+
+/// A tagged channel post is attempted once, including when Graph's response is lost.
+model ParlumeChannelPost {
+  id                String   @id @default(cuid())
+  sessionId         String
+  projectId         String
+  organizationId    String
+  userId            String
+  tag               String
+  requestDigest     String
+  providerMessageId String?
+  /// When an authenticated Graph read proved this exact tagged reply and content.
+  confirmedAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  session ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, tag])
+  @@index([projectId])
+  @@index([organizationId])
+  @@map("parlume_channel_post")
 }
 
 /// One bounded response request made from a final meeting utterance.
@@ -8072,6 +8111,12 @@ model NewsletterSettings {
   chatChannels         Json? // NewsletterChatChannel[] — selected chat delivery targets; null/[] = none
   approvalChatChannels Json? // NewsletterApprovalChatChannel[] — review-alert targets; null/[] = no chat alerts (Fizzy #2203)
   requireApproval      Boolean   @default(false) // when true, every send is held at PENDING_APPROVAL for reviewer sign-off before delivery
+  // Org-level distribution (Fizzy #1986): reconcile organization members into
+  // the subscriber list before each send. The last sync's result is kept here
+  // so a failure reaches the admin, not only the logs.
+  sendToOrganization   Boolean   @default(false)
+  orgSyncedAt          DateTime?
+  orgSyncError         String?
 
   publicWidgetEnabled     Boolean @default(false)
   publicEmbedToken        String? @unique
@@ -8102,13 +8147,15 @@ model NewsletterSubscriber {
   userId           String?
   email            String
   name             String?
-  status           String    @default("ACTIVE") // PENDING_CONFIRMATION | ACTIVE | UNSUBSCRIBED
+  status           String    @default("ACTIVE") // PENDING_CONFIRMATION | ACTIVE | UNSUBSCRIBED | ORG_REMOVED
   unsubscribeToken String    @unique
   createdByUserId  String
   createdAt        DateTime  @default(now())
   unsubscribedAt   DateTime?
 
   embedTokenVersion Int? // null = non-embed (marketing/legacy); set = embed-originated, version-gated at confirm
+  source            String    @default("MANUAL") // MANUAL | ORG_SYNC
+  excludedAt        DateTime? // an admin left this ORG_SYNC row out; kept so the exclusion survives each sync
 
   project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -9018,8 +9065,8 @@ model UserStory {
   // Cached detection embedding for the incremental duplicate scan. One-to-one;
   // invalidated by a content-hash or embedding-model change and removed on
   // story delete (onDelete: Cascade on the child side).
-  duplicateEmbedding StoryDuplicateEmbedding?
-  routingEmbedding   StoryRoutingEmbedding?
+  duplicateEmbedding       StoryDuplicateEmbedding?
+  routingEmbedding         StoryRoutingEmbedding?
   // Scope / acceptance-criteria section vectors, one row per section kind.
   duplicateFocusEmbeddings StoryDuplicateFocusEmbedding[]
 

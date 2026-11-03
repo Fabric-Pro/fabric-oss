@@ -182,6 +182,7 @@ beforeEach(() => {
 	);
 	m.evidence.mockResolvedValue(healthyEvidence());
 	m.chat.mockResolvedValue({
+		getAnswerModel: () => undefined,
 		textStream: (async function* () {
 			yield "answer";
 		})(),

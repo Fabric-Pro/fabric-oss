@@ -148,6 +148,40 @@ beforeEach(() => {
 });
 
 describe("restoreMeetingProcedure", () => {
+	it("puts an upload back as an upload, or the next sync would send it to Microsoft", async () => {
+		getMeetingArchiveMock.mockResolvedValue(
+			archive({
+				payload: {
+					...PAYLOAD,
+					meeting: { ...PAYLOAD.meeting, source: "UPLOAD" },
+				},
+			}),
+		);
+
+		let linked: Record<string, unknown> | undefined;
+		dbMock.$transaction.mockImplementation(
+			async (fn: (tx: unknown) => Promise<unknown>) =>
+				fn({
+					projectLinkedMeeting: {
+						create: async (args: {
+							data: Record<string, unknown>;
+						}) => {
+							linked = args.data;
+							return { id: "linked_new" };
+						},
+					},
+					projectContext: {
+						create: async () => ({ id: "ctx_1" }),
+					},
+					projectMeetingTranscript: { create: async () => ({}) },
+				}),
+		);
+
+		await handler({ input: INPUT, context: CONTEXT });
+
+		expect(linked?.source).toBe("UPLOAD");
+	});
+
 	it("rebuilds the meeting, re-embeds, and only then drops the archive", async () => {
 		const result = await handler({ input: INPUT, context: CONTEXT });
 

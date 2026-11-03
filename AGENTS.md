@@ -250,6 +250,8 @@ after later revisions:
   eligible for the `skip-changeset` label. Other changes may skip only when
   they genuinely have no user-visible or deployable effect.
 
+The CI changeset check and `pnpm changeset:gate` reject direct bumps outside `fabric-app` and non-private workspace `@fabricorg/*` packages, and cascaded releases outside direct `packages/<name>` or `apps/<name>` directories.
+
 For an impacting change, run `pnpm changeset:gate` (add `--base=<ref>` to
 override the detected base). It counts untracked changesets, lists the releases,
 and exits non-zero when `.releases` is empty. Exit code zero from plain

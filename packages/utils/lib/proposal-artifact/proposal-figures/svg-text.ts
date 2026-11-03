@@ -49,6 +49,7 @@ export interface FigureOptions {
 /** The print column's width, in CSS pixels. */
 export const FIGURE_WIDTH = 662;
 
+/** Every text a template sets, in CSS pixels: none is smaller. */
 export const FONT_SIZE = 12;
 export const LINE_HEIGHT = 16;
 /** Budgeted glyph advance as a fraction of the font size. */
@@ -166,50 +167,110 @@ export function charBudget(width: number, em: number, tracking = 0): number {
 	return Math.max(1, Math.floor(width / (FONT_SIZE * em + tracking)));
 }
 
+/** Characters, counted as code points so a surrogate pair is one. */
+function charCount(text: string): number {
+	return Array.from(text).length;
+}
+
+/** A line's words as drawn: joined by one space. */
+function lineLength(words: readonly string[]): number {
+	return words.reduce(
+		(sum, word, index) => sum + charCount(word) + (index > 0 ? 1 : 0),
+		0,
+	);
+}
+
+/** A word wider than a whole line, cut at its end to the line with an ellipsis. */
+function cutWord(word: string, budget: number): string {
+	return `${Array.from(word)
+		.slice(0, Math.max(0, budget - 1))
+		.join("")}${ELLIPSIS}`;
+}
+
+/**
+ * An input line's words in drawn lines of at most `budget` characters,
+ * broken only at spaces. A word wider than a whole line is cut at its end
+ * (`cutWord`) and ends the text: what followed it would read as a fragment
+ * after the ellipsis.
+ */
+function wordLines(
+	text: string,
+	budget: number,
+): { lines: string[][]; cut: boolean } {
+	const lines: string[][] = [];
+	let line: string[] = [];
+	for (const word of text.split(/\s+/).filter(Boolean)) {
+		const size = charCount(word);
+		if (line.length > 0 && lineLength(line) + 1 + size > budget) {
+			lines.push(line);
+			line = [];
+		}
+		if (size > budget) {
+			lines.push([cutWord(word, budget)]);
+			return { lines, cut: true };
+		}
+		line.push(word);
+	}
+	if (line.length > 0) {
+		lines.push(line);
+	}
+	return { lines, cut: false };
+}
+
 /**
  * One input line as drawn lines of at most `budget` characters: as it is
- * when it fits, otherwise wrapped at words (a word longer than a line is
- * broken), at most `maxLines`, the last cut with an ellipsis. Counts code
- * points, so a surrogate pair is never split.
+ * when it fits, otherwise wrapped at spaces, at most `maxLines`, so a line
+ * never ends inside a word. Text past the last line is cut after the last
+ * whole word that leaves room for an ellipsis; when one word fills the last
+ * line, the ellipsis moves up to the line before it.
+ *
+ * A word is cut inside only when it is wider than a whole line (or, with
+ * the ellipsis, than the only line allowed): at its end, with an ellipsis,
+ * rather than set smaller, so all of a figure's text keeps the 12 px print
+ * floor, and the whole label stays in the figure's description.
  */
 export function wrapLine(
 	text: string,
 	budget: number,
 	maxLines = MAX_WRAPPED_LINES,
 ): string[] {
-	if (Array.from(text).length <= budget) {
+	if (charCount(text) <= budget) {
 		return [text];
 	}
-	const lines: string[] = [];
-	let line: string[] = [];
-	for (const word of text.split(/\s+/).filter(Boolean)) {
-		let chars = Array.from(word);
-		if (line.length > 0 && line.length + 1 + chars.length > budget) {
-			lines.push(line.join(""));
-			line = [];
-		}
-		if (line.length > 0) {
-			line.push(" ");
-		}
-		while (chars.length > budget) {
-			lines.push(chars.slice(0, budget).join(""));
-			chars = chars.slice(budget);
-		}
-		line.push(...chars);
-	}
-	if (line.length > 0) {
-		lines.push(line.join(""));
-	}
+	const { lines } = wordLines(text, budget);
 	if (lines.length <= maxLines) {
-		return lines;
+		return lines.map((words) => words.join(" "));
 	}
 	const kept = lines.slice(0, maxLines);
-	const last = Array.from(kept[maxLines - 1])
-		.slice(0, Math.max(0, budget - 1))
-		.join("")
-		.trimEnd();
-	kept[maxLines - 1] = `${last}${ELLIPSIS}`;
-	return kept;
+	for (;;) {
+		const last = kept[kept.length - 1];
+		while (last.length > 1 && lineLength(last) + 1 > budget) {
+			last.pop();
+		}
+		if (lineLength(last) + 1 <= budget) {
+			last[last.length - 1] += ELLIPSIS;
+			break;
+		}
+		if (kept.length === 1) {
+			kept[0] = [cutWord(last[0], budget)];
+			break;
+		}
+		kept.pop();
+	}
+	return kept.map((words) => words.join(" "));
+}
+
+/**
+ * One input line wrapped at spaces and kept whole, in as many lines as it
+ * takes: null when a word is wider than a whole line, as it could only be
+ * drawn cut.
+ */
+export function wrapWords(text: string, budget: number): string[] | null {
+	if (charCount(text) <= budget) {
+		return [text];
+	}
+	const { lines, cut } = wordLines(text, budget);
+	return cut ? null : lines.map((words) => words.join(" "));
 }
 
 interface TextStyle {
@@ -264,6 +325,16 @@ export function textElement(
 	return `<text ${attributes.join(" ")}>${content}</text>`;
 }
 
+/**
+ * Whether a description line arrives already cut: it ends in an ellipsis
+ * (`…` or `...`), as the fences of documents generated before descriptions
+ * were kept whole may. A template leaves such a line out rather than draw
+ * it cut; a title is drawn as written.
+ */
+export function arrivesCut(line: string): boolean {
+	return /(?:…|\.\.\.)\s*$/.test(line);
+}
+
 /** A label's lines, each wrapped: the first is the title, the rest detail. */
 export interface WrappedLabel {
 	title: string[];
@@ -271,13 +342,38 @@ export interface WrappedLabel {
 	lineCount: number;
 }
 
+/**
+ * A detail line wrapped whole at spaces within the usual line budget, or
+ * null when it cannot be: a word wider than the line, or more lines than a
+ * label takes. A detail is drawn whole or left out, never cut.
+ */
+function wholeDetail(line: string, budget: number): string[] | null {
+	if (arrivesCut(line)) {
+		return null;
+	}
+	const lines = wrapWords(line, budget);
+	return lines !== null && lines.length <= MAX_WRAPPED_LINES ? lines : null;
+}
+
+/** The detail lines that can be drawn whole, each wrapped. */
+function wholeDetails(lines: readonly string[], budget: number): string[][] {
+	return lines.flatMap((line) => {
+		const whole = wholeDetail(line, budget);
+		return whole === null ? [] : [whole];
+	});
+}
+
+/**
+ * A label wrapped: the title as `wrapLine` sets it, and each detail line
+ * whole or left out (see {@link wholeDetail}).
+ */
 export function wrapLabel(
 	lines: readonly string[],
 	budget: number,
 ): WrappedLabel {
 	const [first, ...rest] = lines;
 	const title = first === undefined ? [] : wrapLine(first, budget);
-	const detail = rest.map((line) => wrapLine(line, budget));
+	const detail = wholeDetails(rest, budget);
 	return {
 		title,
 		detail,
@@ -358,17 +454,25 @@ export function spoken(lines: readonly string[]): string {
 /** The light panel: ink at this opacity over the paper. */
 export const PANEL_OPACITY = 0.05;
 
-/** A heading's lines: the first in mono capitals, the rest in Inter. */
+/** A heading's first line in mono capitals, wrapped to `width`. */
+export function monoHeading(line: string, width: number): string[] {
+	return wrapLine(
+		line.toUpperCase(),
+		charBudget(width, MONO_EM, MONO_TRACKING),
+	);
+}
+
+/**
+ * A heading's lines: the first in mono capitals, the rest in Inter, each
+ * drawn whole or left out (see {@link wholeDetail}).
+ */
 export function headingLines(
 	lines: readonly string[],
 	width: number,
 ): { heading: string[]; rest: string[][] } {
 	const [first = "", ...rest] = lines;
 	return {
-		heading: wrapLine(
-			first.toUpperCase(),
-			charBudget(width, MONO_EM, MONO_TRACKING),
-		),
-		rest: rest.map((line) => wrapLine(line, charBudget(width, INTER_EM))),
+		heading: monoHeading(first, width),
+		rest: wholeDetails(rest, charBudget(width, INTER_EM)),
 	};
 }

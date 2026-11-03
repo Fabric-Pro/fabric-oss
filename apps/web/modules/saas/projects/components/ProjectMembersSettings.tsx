@@ -5,6 +5,7 @@ import {
 	FUNCTION_TAG_ORDER,
 } from "@repo/database/src/function-tags";
 import { useSession } from "@saas/auth/hooks/use-session";
+import { ProjectOrgMemberPicker } from "@saas/projects/components/ProjectOrgMemberPicker";
 import {
 	FunctionTagSelect,
 	type FunctionTagValue,
@@ -239,12 +240,16 @@ export function ProjectMembersSettings({ projectId, organizationId }: Props) {
 	const currentUserIsOwner =
 		currentMember?.isOwner || currentMember?.role === "OWNER";
 
-	// Fetch pending invitations (owner only)
+	// Inviting is PROJECT_MEMBERS_MANAGE on the server, which project admins hold
+	// too, and the invitation procedures below use the same gate.
+	const canInviteMembers = currentUserIsOwner || canManageFunctionTags;
+
+	// Fetch pending invitations
 	const { data: sentInvitationsData, isLoading: isLoadingSentInvitations } =
 		useQuery(
 			orpc.projects.members.listSentInvitations.queryOptions({
 				input: { projectId, organizationId: organizationId ?? null },
-				enabled: currentUserIsOwner,
+				enabled: canInviteMembers,
 			}),
 		);
 	const sentInvitations = sentInvitationsData?.invitations ?? [];
@@ -489,228 +494,261 @@ export function ProjectMembersSettings({ projectId, organizationId }: Props) {
 							</p>
 						</div>
 					</div>
-					{currentUserIsOwner && (
-						<Dialog
-							open={inviteDialogOpen}
-							onOpenChange={(open) => {
-								setInviteDialogOpen(open);
-								if (open) {
-									setInviteError(null);
-									setIsDuplicateInviteError(false);
-								}
-							}}
-						>
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<DialogTrigger asChild>
-										<Button size="sm">
-											<PlusIcon className="size-4 mr-2" />
-											Invite Member
-										</Button>
-									</DialogTrigger>
-								</TooltipTrigger>
-								<TooltipContent>
-									{t("inviteMember")}
-								</TooltipContent>
-							</Tooltip>
-							<DialogContent>
-								<DialogHeader>
-									<DialogTitle>Invite Member</DialogTitle>
-									<DialogDescription>
-										{organizationId
-											? "Invite a member from your organization to collaborate on this project."
-											: "Invite another user to collaborate on this project."}
-									</DialogDescription>
-								</DialogHeader>
-								<div className="space-y-4">
-									<div>
-										<Label htmlFor="email">Email</Label>
-										<Input
-											id="email"
-											type="email"
-											placeholder="member@example.com"
-											value={inviteEmail}
-											onChange={(e) =>
-												setInviteEmail(e.target.value)
-											}
-										/>
-										{looksLikeEmail &&
-											emailLookup?.status ===
-												"org_member" && (
-												<p className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-2 text-xs text-foreground/80">
-													This user is a member of
-													your organization. They will
-													be added directly to the
-													project.
-												</p>
-											)}
-										{looksLikeEmail &&
-											emailLookup?.status ===
-												"other_org" && (
-												<p className="mt-2 rounded-md border border-amber-500/40 bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-													This user belongs to another
-													Fabric organization. They
-													will be invited as an
-													external guest with access
-													only to this project.
-												</p>
-											)}
-										{looksLikeEmail &&
-											emailLookup?.status ===
-												"no_account" && (
-												<p className="mt-2 rounded-md border border-amber-500/40 bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-													This email is not registered
-													with Fabric yet. The
-													recipient will be prompted
-													to create an account and
-													will join as a guest on this
-													project only.
-												</p>
-											)}
-										{looksLikeEmail &&
-											emailLookup?.status ===
-												"already_member" && (
-												<p className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-													This user is already a
-													member of the project.
-												</p>
-											)}
-										{looksLikeEmail &&
-											emailLookup?.status ===
-												"already_invited" && (
-												<p className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+					<div className="flex items-center gap-2">
+						{canInviteMembers && organizationId && (
+							<ProjectOrgMemberPicker
+								projectId={projectId}
+								organizationId={organizationId}
+								onAdded={() => {
+									queryClient.invalidateQueries({
+										queryKey:
+											orpc.projects.members.listSentInvitations.queryKey(
+												{
+													input: {
+														projectId,
+														organizationId,
+													},
+												},
+											),
+									});
+								}}
+							/>
+						)}
+						{canInviteMembers && (
+							<Dialog
+								open={inviteDialogOpen}
+								onOpenChange={(open) => {
+									setInviteDialogOpen(open);
+									if (open) {
+										setInviteError(null);
+										setIsDuplicateInviteError(false);
+									}
+								}}
+							>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<DialogTrigger asChild>
+											<Button size="sm">
+												<PlusIcon className="size-4 mr-2" />
+												Invite Member
+											</Button>
+										</DialogTrigger>
+									</TooltipTrigger>
+									<TooltipContent>
+										{t("inviteMember")}
+									</TooltipContent>
+								</Tooltip>
+								<DialogContent>
+									<DialogHeader>
+										<DialogTitle>Invite Member</DialogTitle>
+										<DialogDescription>
+											{organizationId
+												? "Invite a member from your organization to collaborate on this project."
+												: "Invite another user to collaborate on this project."}
+										</DialogDescription>
+									</DialogHeader>
+									<div className="space-y-4">
+										<div>
+											<Label htmlFor="email">Email</Label>
+											<Input
+												id="email"
+												type="email"
+												placeholder="member@example.com"
+												value={inviteEmail}
+												onChange={(e) =>
+													setInviteEmail(
+														e.target.value,
+													)
+												}
+											/>
+											{looksLikeEmail &&
+												emailLookup?.status ===
+													"org_member" && (
+													<p className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-2 text-xs text-foreground/80">
+														This user is a member of
+														your organization. They
+														will be added directly
+														to the project.
+													</p>
+												)}
+											{looksLikeEmail &&
+												emailLookup?.status ===
+													"other_org" && (
+													<p className="mt-2 rounded-md border border-amber-500/40 bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+														This user belongs to
+														another Fabric
+														organization. They will
+														be invited as an
+														external guest with
+														access only to this
+														project.
+													</p>
+												)}
+											{looksLikeEmail &&
+												emailLookup?.status ===
+													"no_account" && (
+													<p className="mt-2 rounded-md border border-amber-500/40 bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+														This email is not
+														registered with Fabric
+														yet. The recipient will
+														be prompted to create an
+														account and will join as
+														a guest on this project
+														only.
+													</p>
+												)}
+											{looksLikeEmail &&
+												emailLookup?.status ===
+													"already_member" && (
+													<p className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+														This user is already a
+														member of the project.
+													</p>
+												)}
+											{looksLikeEmail &&
+												emailLookup?.status ===
+													"already_invited" && (
+													<p className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+														An invitation is already
+														pending for this email.
+													</p>
+												)}
+											{isDuplicateInviteError && (
+												<p className="text-sm text-destructive mt-1">
 													An invitation is already
-													pending for this email.
+													pending for this email.{" "}
+													<button
+														type="button"
+														className="underline"
+														onClick={() => {
+															setInviteDialogOpen(
+																false,
+															);
+															setTimeout(
+																() =>
+																	pendingInvitationsSectionRef.current?.scrollIntoView(
+																		{
+																			behavior:
+																				"smooth",
+																		},
+																	),
+																100,
+															);
+														}}
+													>
+														View pending invitations
+														↓
+													</button>
 												</p>
 											)}
-										{isDuplicateInviteError && (
-											<p className="text-sm text-destructive mt-1">
-												An invitation is already pending
-												for this email.{" "}
-												<button
-													type="button"
-													className="underline"
-													onClick={() => {
-														setInviteDialogOpen(
-															false,
-														);
-														setTimeout(
-															() =>
-																pendingInvitationsSectionRef.current?.scrollIntoView(
-																	{
-																		behavior:
-																			"smooth",
-																	},
-																),
-															100,
-														);
-													}}
-												>
-													View pending invitations ↓
-												</button>
-											</p>
-										)}
-									</div>
-									<div>
-										<Label htmlFor="role">Role</Label>
-										<Select
-											value={inviteRole}
-											onValueChange={(
-												value:
-													| "OWNER"
-													| "PROJECT_ADMIN"
-													| "EDITOR"
-													| "COMMENTER"
-													| "VIEWER",
-											) => setInviteRole(value)}
-										>
-											<SelectTrigger id="role">
-												<SelectValue />
-											</SelectTrigger>
-											<SelectContent>
-												{currentUserIsOwner && (
-													<SelectItem value="OWNER">
-														Owner -{" "}
+										</div>
+										<div>
+											<Label htmlFor="role">Role</Label>
+											<Select
+												value={inviteRole}
+												onValueChange={(
+													value:
+														| "OWNER"
+														| "PROJECT_ADMIN"
+														| "EDITOR"
+														| "COMMENTER"
+														| "VIEWER",
+												) => setInviteRole(value)}
+											>
+												<SelectTrigger id="role">
+													<SelectValue />
+												</SelectTrigger>
+												<SelectContent>
+													{currentUserIsOwner && (
+														<SelectItem value="OWNER">
+															Owner -{" "}
+															{
+																ROLE_DESCRIPTIONS.OWNER
+															}
+														</SelectItem>
+													)}
+													<SelectItem value="PROJECT_ADMIN">
+														Project Admin -{" "}
 														{
-															ROLE_DESCRIPTIONS.OWNER
+															ROLE_DESCRIPTIONS.PROJECT_ADMIN
 														}
 													</SelectItem>
-												)}
-												<SelectItem value="PROJECT_ADMIN">
-													Project Admin -{" "}
-													{
-														ROLE_DESCRIPTIONS.PROJECT_ADMIN
-													}
-												</SelectItem>
-												<SelectItem value="EDITOR">
-													Editor -{" "}
-													{ROLE_DESCRIPTIONS.EDITOR}
-												</SelectItem>
-												<SelectItem value="COMMENTER">
-													Commenter -{" "}
-													{
-														ROLE_DESCRIPTIONS.COMMENTER
-													}
-												</SelectItem>
-												<SelectItem value="VIEWER">
-													Viewer -{" "}
-													{ROLE_DESCRIPTIONS.VIEWER}
-												</SelectItem>
-											</SelectContent>
-										</Select>
+													<SelectItem value="EDITOR">
+														Editor -{" "}
+														{
+															ROLE_DESCRIPTIONS.EDITOR
+														}
+													</SelectItem>
+													<SelectItem value="COMMENTER">
+														Commenter -{" "}
+														{
+															ROLE_DESCRIPTIONS.COMMENTER
+														}
+													</SelectItem>
+													<SelectItem value="VIEWER">
+														Viewer -{" "}
+														{
+															ROLE_DESCRIPTIONS.VIEWER
+														}
+													</SelectItem>
+												</SelectContent>
+											</Select>
+										</div>
+										<div>
+											<Label htmlFor="message">
+												Message (Optional)
+											</Label>
+											<Input
+												id="message"
+												placeholder="Add a personal message..."
+												value={inviteMessage}
+												onChange={(e) =>
+													setInviteMessage(
+														e.target.value,
+													)
+												}
+											/>
+										</div>
 									</div>
-									<div>
-										<Label htmlFor="message">
-											Message (Optional)
-										</Label>
-										<Input
-											id="message"
-											placeholder="Add a personal message..."
-											value={inviteMessage}
-											onChange={(e) =>
-												setInviteMessage(e.target.value)
+									{inviteError && (
+										<p className="text-sm text-destructive">
+											{inviteError}
+										</p>
+									)}
+									<DialogFooter>
+										<Button
+											variant="outline"
+											onClick={() =>
+												setInviteDialogOpen(false)
 											}
-										/>
-									</div>
-								</div>
-								{inviteError && (
-									<p className="text-sm text-destructive">
-										{inviteError}
-									</p>
-								)}
-								<DialogFooter>
-									<Button
-										variant="outline"
-										onClick={() =>
-											setInviteDialogOpen(false)
-										}
-									>
-										Cancel
-									</Button>
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<Button
-												onClick={() =>
-													inviteMutation.mutate()
-												}
-												disabled={
-													!inviteEmail ||
-													inviteMutation.isPending
-												}
-											>
-												{inviteMutation.isPending
-													? "Sending..."
-													: "Send Invitation"}
-											</Button>
-										</TooltipTrigger>
-										<TooltipContent>
-											{t("sendInvitation")}
-										</TooltipContent>
-									</Tooltip>
-								</DialogFooter>
-							</DialogContent>
-						</Dialog>
-					)}
+										>
+											Cancel
+										</Button>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<Button
+													onClick={() =>
+														inviteMutation.mutate()
+													}
+													disabled={
+														!inviteEmail ||
+														inviteMutation.isPending
+													}
+												>
+													{inviteMutation.isPending
+														? "Sending..."
+														: "Send Invitation"}
+												</Button>
+											</TooltipTrigger>
+											<TooltipContent>
+												{t("sendInvitation")}
+											</TooltipContent>
+										</Tooltip>
+									</DialogFooter>
+								</DialogContent>
+							</Dialog>
+						)}
+					</div>
 				</div>
 			</div>
 
@@ -918,8 +956,8 @@ export function ProjectMembersSettings({ projectId, organizationId }: Props) {
 				)}
 			</div>
 
-			{/* Pending Invitations Section (owner only) */}
-			{currentUserIsOwner && (
+			{/* Pending Invitations Section */}
+			{canInviteMembers && (
 				<div
 					ref={pendingInvitationsSectionRef}
 					className="p-4 border-t border-foreground/10"

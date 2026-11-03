@@ -317,32 +317,29 @@ describe("StoryCard", () => {
 		);
 	});
 
-	// Regression: clicking a task in the expanded preview must not open any
-	// modal/dialog or trigger navigation. The team disabled click-to-detail on
-	// task rows after a bug took users to a blank/error page.
-	it("does not open a modal when a task title is clicked", async () => {
+	it("opens the parent work item details when a task title is clicked without opening a modal", async () => {
 		const user = userEvent.setup();
+		const onSelect = vi.fn();
+		const onOpenDetails = vi.fn();
 		renderWithQueryClient(
 			<StoryCard
 				story={buildStory()}
 				projectId="project_1"
-				onSelect={vi.fn()}
+				onSelect={onSelect}
+				onOpenDetails={onOpenDetails}
 				onDelete={vi.fn()}
 			/>,
 		);
 
 		await user.click(screen.getByText("0/2"));
 
-		const titleEl = screen.getByText("Wire Vibe summary links");
-
-		// Title is a non-interactive span — not a button or link.
-		expect(titleEl.tagName).toBe("SPAN");
-		expect(titleEl.closest("button")).toBeNull();
-		expect(titleEl.closest("a")).toBeNull();
+		const titleEl = screen.getByRole("button", {
+			name: "Wire Vibe summary links",
+		});
 
 		await user.click(titleEl);
 
-		// Nothing modal-like should mount as a result of the click.
+		expect(onOpenDetails).toHaveBeenCalledWith("story_1");
 		expect(screen.queryByRole("dialog")).toBeNull();
 	});
 
@@ -1052,6 +1049,45 @@ describe("Roadmap list row contract", () => {
 				name: /Hidden:.*declinedChip/,
 			}),
 		).toBeVisible();
+	});
+
+	it("does not clip the tasks chip when opening spinner mounts with subpixel rounding", () => {
+		mockSecondaryGeometry(500, (element) => {
+			if (element.dataset.secondaryKind === "flags") {
+				return { left: 100, width: 70 };
+			}
+			if (element.parentElement?.dataset.secondaryKind === "flags") {
+				return { left: 100, width: 70.5 };
+			}
+			return { width: 0 };
+		});
+		const onOpenDetails = vi.fn();
+		const view = row(
+			{
+				tasks: [
+					{
+						id: "task-1",
+						title: "Implement greeting",
+						isCompleted: false,
+						order: 1,
+					},
+				],
+			},
+			{ onOpenDetails },
+		);
+		fireEvent.click(screen.getByTestId("story-card-title"));
+		expect(onOpenDetails).toHaveBeenCalledWith("story_1");
+		const flags = view.container.querySelector(
+			'[data-secondary-kind="flags"]',
+		) as HTMLElement;
+		expect(
+			flags.querySelector("[data-loading-spinner]"),
+		).toBeInTheDocument();
+		const tasksBtn = within(flags).getByRole("button", { name: /0\/1/ });
+		expect(tasksBtn.style.visibility).not.toBe("hidden");
+		expect(
+			view.container.querySelector("[data-overflow-summary]"),
+		).toHaveStyle({ display: "none" });
 	});
 
 	it("does not count compact tags as hidden metadata", () => {

@@ -31,6 +31,10 @@ import {
 	databricksPromptCacheForModel,
 	isReasoningModelName,
 } from "@repo/agent-types/databricks-compat";
+import {
+	fetchAgentEndpointExtendedTimeout,
+	validateCustomProviderUrl,
+} from "@repo/utils/agent-endpoint";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import { isRetryableError } from "../retry";
 import {
@@ -1838,6 +1842,49 @@ function createUninstrumentedProviderModel(
 				maxTokens,
 				maxRetries,
 			});
+
+		case "CUSTOM": {
+			const rawBaseUrl = baseUrl?.trim();
+			if (!rawBaseUrl) {
+				throw new Error(
+					"[LangChainModels] Provider CUSTOM requires a base URL. " +
+						"Please configure the base URL in Settings → AI Providers.",
+				);
+			}
+			const urlError = validateCustomProviderUrl(rawBaseUrl);
+			if (urlError) {
+				throw new Error(
+					`[LangChainModels] Invalid CUSTOM base URL: ${urlError}`,
+				);
+			}
+			const configuredDeploymentName = config.deploymentName?.trim();
+			const requestedModel = modelName || model;
+			const customModel = configuredDeploymentName || requestedModel;
+			if (
+				configuredDeploymentName &&
+				configuredDeploymentName !== requestedModel
+			) {
+				console.log(
+					`[LangChainModels] CUSTOM: Using configured model/deployment "${configuredDeploymentName}" ` +
+						`(requested model was "${requestedModel}")`,
+				);
+			}
+			const isReasoning = isReasoningModel(customModel);
+			const baseKwargs: Record<string, unknown> = {
+				model: customModel,
+				apiKey,
+				...(isReasoning ? {} : { temperature, maxTokens }),
+				maxRetries,
+				timeout: GATEWAY_TIMEOUT_MS,
+				configuration: {
+					baseURL: rawBaseUrl.replace(/\/+$/, ""),
+					fetch: fetchAgentEndpointExtendedTimeout,
+				},
+			};
+			return new ChatOpenAI(
+				baseKwargs as ConstructorParameters<typeof ChatOpenAI>[0],
+			);
+		}
 
 		default:
 			// Default to gateway pattern if provider is unknown but we have baseUrl

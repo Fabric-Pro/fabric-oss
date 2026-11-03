@@ -19,18 +19,26 @@ type CatalogRequestPhase =
 	| "organization_mfa_check"
 	| "organization_feature_flags"
 	| "organization_prefetch"
+	| "chat_organization"
+	| "chat_preferences"
+	| "chat_registry"
+	| "chat_ai_config"
 	| "catalog_session"
 	| "catalog_params";
 
 type CatalogRequestTiming = {
 	startedAt: number;
 	phases: Partial<Record<CatalogRequestPhase, number>>;
+	phaseOffsets: Partial<
+		Record<CatalogRequestPhase, { startMs: number; endMs: number }>
+	>;
 };
 
 const getCatalogRequestTiming = cache(
 	(): CatalogRequestTiming => ({
 		startedAt: performance.now(),
 		phases: {},
+		phaseOffsets: {},
 	}),
 );
 
@@ -43,8 +51,27 @@ export async function measureCatalogRequestPhase<T>(
 	try {
 		return await operation();
 	} finally {
-		timing.phases[phase] = Math.round(performance.now() - startedAt);
+		const endedAt = performance.now();
+		timing.phases[phase] = Math.round(endedAt - startedAt);
+		timing.phaseOffsets[phase] = {
+			startMs: Math.round(startedAt - timing.startedAt),
+			endMs: Math.round(endedAt - timing.startedAt),
+		};
 	}
+}
+
+export function logChatRequestTiming(route: "main" | "registered-agent"): void {
+	const timing = getCatalogRequestTiming();
+
+	after(() => {
+		console.info("Chat request timing", {
+			event: "chat.request_timing",
+			route,
+			elapsedAtAfterMs: Math.round(performance.now() - timing.startedAt),
+			phases: timing.phases,
+			phaseOffsets: timing.phaseOffsets,
+		});
+	});
 }
 
 export function logCatalogRequestTiming(): void {

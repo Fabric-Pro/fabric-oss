@@ -23,6 +23,7 @@ import {
 	hashContextContent,
 } from "./context-content-hash";
 import { normalizeContextSourcePathPrefix } from "./context-source-path";
+import { LINKED_MEETING_SOURCE } from "./meeting-transcripts";
 import { createPendingVectorCleanup } from "./pending-vector-cleanup";
 import { getProjectRagSettings } from "./rag-settings";
 import {
@@ -2572,6 +2573,18 @@ export async function deleteUnmanagedContextRow(input: {
 				where: { ...scope, repositorySyncId: null },
 			});
 			if (count > 0) {
+				// An uploaded transcript's series and record go with it, or the
+				// same file could never be added again. Here rather than in the
+				// request, so they leave together or not at all (Fizzy #1877).
+				// Only an UPLOAD row matches: a Teams series has many
+				// transcripts and outlives any one of its contexts.
+				await tx.projectLinkedMeeting.deleteMany({
+					where: {
+						projectId: input.projectId,
+						source: LINKED_MEETING_SOURCE.UPLOAD,
+						transcripts: { some: { contextId: input.contextId } },
+					},
+				});
 				return { status: "deleted" };
 			}
 			const row = await tx.projectContext.findFirst({

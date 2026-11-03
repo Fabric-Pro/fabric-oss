@@ -2,16 +2,14 @@
 
 import { useShowAiUsageLimitToast } from "@saas/payments/lib/ai-usage-limit-toast";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DATA_ANALYST_AGENT_ID } from "../lib/data-analyst-runtime-contract";
 import {
-	applyDataAnalystEvent,
 	type DataAnalystTurn,
 	EMPTY_DATA_ANALYST_TURN,
 	endDataAnalystTurn,
-} from "../lib/data-analyst-runtime-events";
-import { DATA_ANALYST_AGENT_ID } from "../lib/data-analyst-runtime-protocol";
+} from "../lib/data-analyst-turn";
 import { trimHistoryForRequest } from "../lib/direct-chat-turns";
-import { errorMessageOf, isAbortError } from "../lib/direct-runtime-transport";
-import { streamRequestReplyRun } from "../lib/request-reply-runtime";
+import { loadDataAnalystRuntime } from "../lib/load-data-analyst-runtime";
 
 type DataAnalystMessage =
 	| { id: string; role: "user"; content: string }
@@ -74,8 +72,31 @@ export function useDataAnalystChat({
 				]);
 			};
 			update();
+			let runtime:
+				| Awaited<ReturnType<typeof loadDataAnalystRuntime>>
+				| undefined;
 			try {
-				await streamRequestReplyRun({
+				abort.signal.throwIfAborted();
+				let abortLoading = () => {};
+				const loadingAborted = new Promise<never>((_, reject) => {
+					abortLoading = () => reject(abort.signal.reason);
+					abort.signal.addEventListener("abort", abortLoading, {
+						once: true,
+					});
+				});
+				try {
+					runtime = await Promise.race([
+						loadDataAnalystRuntime(),
+						loadingAborted,
+					]);
+				} finally {
+					abort.signal.removeEventListener("abort", abortLoading);
+				}
+				if (controller.current !== abort || abort.signal.aborted) {
+					return;
+				}
+				const { applyEvent, stream } = runtime;
+				await stream({
 					agentId: DATA_ANALYST_AGENT_ID,
 					threadId: threadId.current,
 					messages: trimHistoryForRequest(
@@ -110,7 +131,7 @@ export function useDataAnalystChat({
 						) {
 							return;
 						}
-						turn = applyDataAnalystEvent(turn, event);
+						turn = applyEvent(turn, event);
 						update();
 					},
 				});
@@ -125,12 +146,14 @@ export function useDataAnalystChat({
 				}
 			} catch (error) {
 				turn =
-					isAbortError(error) || abort.signal.aborted
+					runtime?.isAbortError(error) || abort.signal.aborted
 						? endDataAnalystTurn(turn, "stopped", null)
 						: endDataAnalystTurn(
 								turn,
 								"failed",
-								errorMessageOf(error),
+								runtime
+									? runtime.errorMessageOf(error)
+									: "The analysis could not load. Please try again.",
 							);
 			} finally {
 				if (controller.current === abort) {

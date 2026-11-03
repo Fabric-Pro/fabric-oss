@@ -43,7 +43,14 @@ describe("retired agent navigation", () => {
 		(route) => {
 			render(
 				route === "chat" ? (
-					<ChatPage agentId="cexampleregistered00000001" />
+					<ChatPage
+						agentId="cexampleregistered00000001"
+						organization={{
+							id: "example-org-id",
+							slug: "example-org",
+							name: "Example",
+						}}
+					/>
 				) : (
 					<RegisteredAgentTryWorkspace
 						agentId="cexampleregistered00000001"

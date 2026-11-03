@@ -544,6 +544,11 @@ export {
 	parlumeAutoJoinOccurrenceWorkflow,
 	parlumeAutoJoinPlannerWorkflow,
 } from "./parlume-auto-join";
+export { parlumeChannelChatWorkflow } from "./parlume-channel-chat";
+export {
+	parlumeChannelNotificationIngressWorkflow,
+	parlumeChannelNotificationWorkflow,
+} from "./parlume-channel-notification";
 export { parlumeMeetingTurnWorkflow } from "./parlume-meeting-turn";
 export { parlumeNotesWorkflow } from "./parlume-notes";
 export { parlumeRecapWorkflow } from "./parlume-recap";
@@ -867,6 +872,10 @@ export {
 	triggerEventWorkflow,
 	updateScheduleSignal,
 } from "./trigger-system";
+export {
+	type UploadedTranscriptIngestWorkflowInput,
+	uploadedTranscriptIngestWorkflow,
+} from "./uploaded-transcript-ingest";
 // URL Context Sources crawl workflow (Firecrawl scrape/crawl orchestration)
 export {
 	computeNextRefreshAt,

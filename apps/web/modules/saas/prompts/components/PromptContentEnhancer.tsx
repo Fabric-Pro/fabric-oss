@@ -275,8 +275,11 @@ export function PromptContentEnhancer({
 				newContent.trim().length > 0 &&
 				baseline !== newContent
 			) {
-				// Final diff with isComplete=true to show full changes including trailing deletions
-				const diff = diffPartialText(baseline, newContent, true);
+				// Final diff with isComplete=true to show full changes including trailing deletions.
+				// A prompt is saved as raw text, so it is diffed as plain text.
+				const diff = diffPartialText(baseline, newContent, true, {
+					markdown: false,
+				});
 				// Convert placeholder tokens to HTML for display
 				const diffHtml = diffToHtml(diff);
 				setDisplayContent(diffHtml);
@@ -304,7 +307,9 @@ export function PromptContentEnhancer({
 
 			if (baseline.trim().length > 0) {
 				// Has baseline - show diff highlighting (isComplete=false during streaming)
-				const diff = diffPartialText(baseline, newContent, false);
+				const diff = diffPartialText(baseline, newContent, false, {
+					markdown: false,
+				});
 				// Convert placeholder tokens to HTML for display
 				const diffHtml = diffToHtml(diff);
 				setDisplayContent(diffHtml);

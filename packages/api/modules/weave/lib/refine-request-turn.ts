@@ -6,6 +6,7 @@
 
 import { ORPCError } from "@orpc/server";
 import { getAIModelWithMetadata } from "@repo/ai";
+import { answerModelInfo } from "@repo/ai/lib/answer-model-info";
 import { db, hasProjectAccess } from "@repo/database";
 import {
 	type AuthorizedProject,
@@ -146,10 +147,14 @@ export async function resolveRefineModel(args: {
 	userId: string;
 	organizationId: string | undefined;
 }) {
-	const { model, trackUsage } = await getAIModelWithMetadata(
+	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 		{ taskType: "SIMPLE" },
 		{ userId: args.userId, organizationId: args.organizationId },
 	);
 	trackUsage();
-	return model;
+	return {
+		model,
+		getAnswerModel: () =>
+			answerModelInfo(metadata.answerSnapshot ?? metadata),
+	};
 }

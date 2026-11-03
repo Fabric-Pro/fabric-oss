@@ -38,7 +38,12 @@ function arrowMarker(id: string, color: string): string {
 	return `<marker id="${id}" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="${color}"/></marker>`;
 }
 
-const PROCESS_MAX_STEPS = 16;
+/**
+ * The most steps the template draws: six rows of four, which with steps of
+ * one or two lines print at most 672 px tall, within a figure's 792 px at
+ * full size, so the steps keep their 12 px text. More draw as Mermaid.
+ */
+const PROCESS_MAX_STEPS = 24;
 const PROCESS_COLUMNS = 4;
 const PROCESS_COLUMN_GAP = 20;
 const PROCESS_ROW_GAP = 36;
@@ -101,6 +106,86 @@ function processChain(model: FigureModel): FigureNode[] | null {
 	return chain.length === model.nodes.length ? chain : null;
 }
 
+/**
+ * The fewest steps of a plain chain drawn as a numbered process without a
+ * figure line asking for one ({@link isPlainProcessChain}). The engine
+ * draws a top-down chain about 85 px a step: six steps take 481 px, which
+ * print at full size on a section's opening page after a one-line heading
+ * and a two-line paragraph (511 px there), while seven take 565 px, whose
+ * labels would reach the 9 pt print floor only at 522 px, so the figure
+ * would leave that page. Seven steps draw as two rows of the template,
+ * 180 px tall, their text at 12 px.
+ */
+export const INFERRED_PROCESS_MIN_STEPS = 7;
+
+/**
+ * The shapes a plain chain's steps may be declared in: a rectangle, a
+ * rounded one or a stadium, all of which the template draws as its step
+ * box. A decision, a circle, a database or a subroutine says what kind of
+ * step it is, which the box would lose.
+ */
+const PLAIN_STEP_SHAPES: ReadonlySet<string | null> = new Set([
+	null,
+	"[",
+	"(",
+	"([",
+]);
+
+/**
+ * A rectangle's label that opens with a slash or a backslash: Mermaid reads
+ * `[/…/]`, `[\…\]`, `[/…\]` and `[\…/]` as a parallelogram or a trapezoid,
+ * which the step box would lose, slashes left in its text.
+ */
+const SLANTED_LABEL = /^[/\\]/;
+
+/**
+ * The only class a plain chain's step may carry: the plain surface role
+ * every generated step takes, which the template's box draws anyway.
+ */
+const PLAIN_STEP_CLASS = "surface";
+
+/**
+ * Whether `model` is a plain chain the process template draws whole, so a
+ * fence without a figure line may draw it as a numbered process instead of
+ * a Mermaid layout: at least {@link INFERRED_PROCESS_MIN_STEPS} steps in one
+ * simple path of solid, unlabelled arrows ({@link processChain}), none in a
+ * subgraph, no `classDef`, `style` or `linkStyle` line, no class but the
+ * plain surface role, every step in a plain shape, and every label one
+ * line the step's box sets whole, never cut with an ellipsis.
+ */
+export function isPlainProcessChain(model: FigureModel): boolean {
+	if (
+		model.direction === null ||
+		model.styled ||
+		model.nodes.length < INFERRED_PROCESS_MIN_STEPS ||
+		model.edges.some((edge) => edge.dashed)
+	) {
+		return false;
+	}
+	const chain = processChain(model);
+	if (!chain) {
+		return false;
+	}
+	const budget = charBudget(
+		boxWidthOf(PROCESS_COLUMNS, false) - 2 * PROCESS_PAD,
+		INTER_EM,
+	);
+	return chain.every(
+		(node) =>
+			PLAIN_STEP_SHAPES.has(node.shape) &&
+			!(node.shape === "[" && SLANTED_LABEL.test(node.lines[0] ?? "")) &&
+			node.classes.every((name) => name === PLAIN_STEP_CLASS) &&
+			node.lines.length === 1 &&
+			wrapLine(node.lines[0], budget).join(" ") === node.lines[0],
+	);
+}
+
+/** A step box's width in a grid of `columns`, with or without a loop. */
+function boxWidthOf(columns: number, loop: boolean): number {
+	const left = loop ? LOOP_INSET : 0;
+	return (FIGURE_WIDTH - left - (columns - 1) * PROCESS_COLUMN_GAP) / columns;
+}
+
 interface ProcessBox {
 	node: FigureNode;
 	index: number;
@@ -160,8 +245,7 @@ export function processFigureSvg(
 	}
 
 	const left = loop ? LOOP_INSET : 0;
-	const boxWidth =
-		(FIGURE_WIDTH - left - (columns - 1) * PROCESS_COLUMN_GAP) / columns;
+	const boxWidth = boxWidthOf(columns, loop !== null);
 	const innerWidth = boxWidth - 2 * PROCESS_PAD;
 	const eyebrowWidth = innerWidth - PROCESS_SQUARE - 8;
 	const bodyBudget = charBudget(innerWidth, INTER_EM);

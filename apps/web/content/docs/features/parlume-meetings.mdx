@@ -13,7 +13,7 @@ Parlume is a preview that your Fabric operator turns on per organization. If you
 
 ## How a meeting reaches Fabric
 
-Parlume hears the whole meeting and reads its chat, but it only answers when someone addresses it. Speech and chat pass through a meeting bot to Fabric's bridge, which keeps the transcript and hands each request to one of two voices.
+Parlume hears the meeting and reads its chat when access is available, but it only answers when someone addresses it. Speech and ordinary meeting chat pass through the meeting bot to Fabric's bridge. Channel meeting threads use a Microsoft connection the inviter or auto-join enabler is authorized to use. Its signed-in account needs access to the channel and permission to read and send channel messages. Channel replies appear as that Microsoft user, with **Fabric Parlume** attribution and a post tag. The bridge keeps the transcript and hands each request to one of two voices.
 
 ```mermaid
 flowchart LR
@@ -22,7 +22,9 @@ flowchart LR
         CH["Chat"]
     end
     SP --> BOT["Fabric Parlume bot"]
-    CH --> BOT
+    CH -->|"ordinary meeting"| BOT
+    CH -->|"channel thread"| MS["Connected Microsoft account"]
+    MS --> BR
     BOT --> BR["Fabric bridge"]
     BR --> TX["Transcript and notes"]
     BR --> RV["Realtime voice"]
@@ -95,7 +97,7 @@ The line at the top of the card says which Attendee account invitations use now:
     - **Sign in when the meeting requires it** joins as a guest, and signs in only where the meeting admits signed-in users alone.
     - **Always sign in** joins every meeting signed in to Teams.
 
-    The two sign-in choices need a Microsoft 365 account for the bot, set up as the Teams bot login in the Attendee dashboard; Fabric cannot set it. Name the account **Fabric Parlume** so its voice and chat posts are recognized as the bot's own, and, for channel meetings, add it to the team. Choose a sign-in mode only once that account exists.
+    The two sign-in choices need a Microsoft 365 account for the bot, set up as the Teams bot login in the Attendee dashboard; Fabric cannot set it. Name the account **Fabric Parlume** so its voice and ordinary chat posts are recognized as the bot's own. Choose a sign-in mode only once that account exists. Channel thread access uses your connected Microsoft account separately; it does not require a dedicated bot account for chat.
   </Step>
 
   <Step>
@@ -145,7 +147,9 @@ Each link opens the settings page with a **Return to project** link back to the 
   <Step>
     ### Paste the meeting link
 
-    Copy the join link from the meeting invite in Teams or Outlook. Both common formats work: a `teams.microsoft.com/l/meetup-join/…` link as copied, and a `teams.microsoft.com/meet/…` link as long as it keeps its `?p=` passcode, which Parlume needs to join. The page checks the link before you can invite. Fabric passes the link to the meeting provider and does not store it.
+    Copy the join link from the meeting invite in Teams or Outlook. Both common formats work: a `teams.microsoft.com/l/meetup-join/…` link as copied, and a `teams.microsoft.com/meet/…` link as long as it keeps its `?p=` passcode, which Parlume needs to join. The page checks the link before you can invite. Fabric passes the full link, including its passcode, to the meeting provider. It stores a meeting identity URL without the query or fragment.
+
+    For a numeric short link, Fabric asks Microsoft to resolve its meeting ID through your connected account before selecting the channel thread. If Microsoft cannot resolve it uniquely, the live card warns that channel chat is unavailable; the meeting bot may still provide ordinary chat. Use the full join link from the calendar invitation to identify a channel thread directly. If Microsoft access or consent is missing, reconnect the account with the required channel permissions.
   </Step>
 
   <Step>
@@ -178,6 +182,8 @@ Parlume joins as an anonymous external guest, unless your organization has chose
 If the invitation is refused, the card says why: a setting that is missing, or the meeting provider's own reason, such as "Attendee refused the invitation" followed by Attendee's explanation.
 
 Once it is in, the page shows a live card: how long Parlume has been in the meeting, the agent and mode, the spend so far, and the latest requests. **Remove from meeting** asks you to confirm, then Parlume leaves and saves the transcript.
+
+Channel thread reads, replies and request handling stop when the session ends, reaches its time limit or loses access. Fabric also requests removal of the Microsoft notification subscription. If revoked access prevents removal, notification metadata may continue until its lease expires; Fabric rejects it without reading or relaying channel content. Microsoft subscriptions have a minimum 45-minute lease.
 
 ![The live session card and the Requests list below it. The card reads "Live in meeting" with an elapsed time of 31:08 and "Joined 10:02 AM", a Remove from meeting button, the agent Fabric Agent — this project, the mode Actions, and spend so far of $0.38 with the note that bot time is added after the meeting. Its Live activity list shows three requests: Priya asking who owns F-142, Jonas's typed request to put the link to F-142 in the chat, answered with a note that the link was sent as P3, and Maya asking to create a feature for exporting invoices to CSV, answered that it was not created because Parlume was interrupted and that replying "go P2" in the chat will do it. Below, the Requests tab is filtered to Actions and shows Maya's request with an Action block marked Cancelled, reading "Create feature 'Export invoices to CSV'" and "Held before dispatch: the meeting spoke over Parlume. Offered again in the meeting chat."](/images/docs/parlume/parlume-live-session.png)
 
@@ -373,9 +379,11 @@ Organization administrators can edit the instructions behind suggestions, the re
 
 ## When Parlume can't write in the chat
 
-As an anonymous guest, Parlume has no chat box in a channel meeting, or in a meeting whose chat policy excludes anonymous users. Teams drops its messages there without an error, so Parlume watches for its posts to appear. If it has seen no chat message at all since it joined, it treats the chat as unavailable and says once, aloud: "I can't write in this meeting's chat. Guests may not have chat here."
+For ordinary meeting chat, a policy that excludes anonymous guests can leave the meeting bot without a chat box. Teams can drop those messages without an error, so Parlume watches for its posts to appear. If it has seen no chat message at all since it joined, it treats the chat as unavailable and says once, aloud: "I can't write in this meeting's chat. Guests may not have chat here."
 
-From then on Parlume speaks instead of posting: an answer it would have split includes its detail aloud, up to a limit, and ends with "There's more; ask me to continue." As soon as any chat message appears, Parlume writes to the chat again. In a meeting where nobody has typed yet, this means Parlume may treat the chat as unavailable after its first post, until someone writes in it. While the chat is unavailable, Parlume posts no suggestions.
+From then on Parlume speaks instead of posting: an answer it would have split includes its detail aloud, up to a limit, and ends with "There's more; ask me to continue." For ordinary meeting chat, a received message makes the chat available again. In a meeting where nobody has typed yet, this means Parlume may treat the chat as unavailable after its first post, until someone writes in it. While the chat is unavailable, Parlume posts no suggestions.
+
+Channel threads use the connected Microsoft account instead. The live card shows when Fabric is resolving the thread or cannot access it. A known channel thread does not fall back to the meeting bot's chat queue: a reply counts as delivered only after Fabric reads back the created channel reply. Check the connected account's channel membership and consent, or reconnect it if access was revoked.
 
 An anonymous guest also cannot join a meeting that only admits signed-in or same-organization users. For those meetings, set up a Microsoft 365 account for the bot and choose a sign-in mode under [Teams sign-in](#the-meeting-bot). That setting comes with your organization's own Attendee key; if invitations use the operator's shared Attendee account, ask your Fabric operator.
 
@@ -435,8 +443,8 @@ Parlume costs money only while it is in a meeting or waiting in a lobby. Prices 
 | Parlume never joins | Check that a `/meet/…` link still has its `?p=` passcode, and that someone admitted Parlume from the lobby within ten minutes. The session's row in the Sessions list says why it ended. A meeting that only admits signed-in or same-organization users refuses an anonymous guest; see [Teams sign-in](#the-meeting-bot). |
 | Parlume doesn't answer | Start with "Hey Fabric" or "Hey Parlume". Check that the session is still live on the Parlume page; after three minutes without speech or chat messages it leaves. |
 | An answer stopped partway | Someone spoke over Parlume. With the standard voice, the rest of the answer is in the meeting chat. With the realtime voice, ask again. |
-| Parlume says it can't write in the chat | The meeting gives anonymous guests no chat. Parlume will speak its answers instead. If people can type in the chat, a single message from anyone brings Parlume's posts back. |
-| Nothing from Parlume appears in the chat | Same cause as above. Check the request in the Requests tab for a note that its post never appeared. |
+| Parlume says it can't write in the chat | For ordinary meeting chat, the meeting may give anonymous guests no chat; Parlume speaks its answers instead, and a received chat message restores that path. For a channel thread, check the live card warning, the connected Microsoft account's channel access and its read/send consent. |
+| Nothing from Parlume appears in the chat | Check the request in the Requests tab for a note that its post never appeared. For a channel warning, reconnect the Microsoft account with channel permissions or use the full calendar join link when a numeric short link could not be resolved. |
 | A change wasn't made | Read-only meetings refuse every change. In an Actions meeting, look for a held change in the chat and reply `go P<n>`, or check the request's action status. |
 | No suggestions appear | Chat suggestions may be off for this invitation or series, the chat may be unavailable, or there has not been enough new conversation. Parlume posts at most one suggestion every two minutes and ten an hour. |
 | No "Since last time" recap | The meeting must belong to a linked series: an automatic join, or an invitation with the series' own join link. Check that Chat suggestions is on, and that the series had a meeting in the last 90 days with Parlume's notes or a synced transcript. Parlume also stays quiet when it finds nothing worth recapping. |

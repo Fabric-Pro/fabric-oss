@@ -11,6 +11,7 @@ import {
 import { describeParlumeProviderFailure } from "@repo/api/modules/projects/lib/parlume-join-failure";
 import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
 import { db } from "@repo/database";
+import { parseChannelMeetingUrl } from "@repo/integrations/microsoft/parlume-channel";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
@@ -145,10 +146,25 @@ async function forwardChatMessage(
 			providerBotId: botId,
 			status: { in: ["JOINING", "ACTIVE", "LEAVING"] },
 		},
-		select: { id: true },
+		select: {
+			id: true,
+			channelChatStatus: true,
+			channelId: true,
+			channelRootMessageId: true,
+			meetingUrl: true,
+		},
 	});
 	const settings = getParlumeBridgeSettings();
 	if (!session || !settings) {
+		return NextResponse.json({ accepted: true });
+	}
+	const hasChannelBinding = session.channelId || session.channelRootMessageId;
+	if (
+		hasChannelBinding ||
+		(parseChannelMeetingUrl(session.meetingUrl ?? "") &&
+			session.channelChatStatus !== "ATTENDEE" &&
+			session.channelChatStatus !== "UNRESOLVED")
+	) {
 		return NextResponse.json({ accepted: true });
 	}
 	try {

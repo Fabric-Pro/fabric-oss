@@ -298,6 +298,9 @@ Imported commits keep your authorship and `Signed-off-by` trailers. Public relea
    and the PR remains the discussion record through publication. For user-visible
    changes, include a [changeset](packages/fabric-app/README.md#how-to-add-a-changelog-entry)
    for maintainers to carry into the import.
+
+   The CI changeset check and `pnpm changeset:gate` reject direct bumps outside `fabric-app` and non-private workspace `@fabricorg/*` packages, and cascaded releases outside direct `packages/<name>` or `apps/<name>` directories.
+
 2. A maintainer reviews the PR publicly and approves a specific commit for
    import. If you push more commits after approval, they need fresh approval.
    Maintainers either refresh the import before it lands or handle the new

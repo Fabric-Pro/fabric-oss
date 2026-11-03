@@ -33,6 +33,8 @@ import sharp from "sharp";
 import type { PendingAttachmentRef } from "../shared/attachment-types";
 import { TEAMS_TOOL_LIMITS } from "./config/limits";
 import { extractHostedContentRefsFromHtml } from "./hosted-content";
+import { executeParlumeChannelOperation } from "./parlume-channel";
+import { assertParlumeChannelSendAccess } from "./parlume-channel-access";
 import {
 	getRecordingTranscriptContent,
 	listRecordingTranscripts,
@@ -57,6 +59,17 @@ export {
 	extractHostedContentRefsFromHtml,
 } from "./hosted-content";
 export { DownloadFailedError } from "./hosted-content.errors";
+export {
+	assertChannelMessage,
+	type ChannelDestination,
+	type ChannelMessage,
+	channelDestinationSchema,
+	channelMessagePath,
+	channelMessageSchema,
+	isShortTeamsMeetingUrl,
+	parseChannelMeetingUrl,
+	teamsMeetingIdentity,
+} from "./parlume-channel";
 // Re-exported so the transcript-sync activity can tell a channel meeting from an
 // ordinary one before deciding whether the recording fallback is worth trying.
 export { extractChannelThreadId } from "./stream-transcript";
@@ -777,7 +790,9 @@ export async function executeMicrosoftTeamsTool(
 		// dispatch guard, in the same synchronous run as `fetch`: inside an
 		// Advisor chat turn that has stopped or used its token allowance it
 		// is refused with the stop. A no-op outside a turn.
-		const makeRequest = (token: string) => {
+		const singleChannelSend =
+			methodName === "parlume_channel" && args.kind === "send";
+		const makeRequest = async (token: string) => {
 			// Cursors and provider nextLink values share this credential boundary.
 			// Validate the destination again for refreshes and transient retries.
 			const destination = new URL(url);
@@ -805,6 +820,20 @@ export async function executeMicrosoftTeamsTool(
 			if (method !== "GET" && method !== "HEAD") {
 				throwIfDispatchStopped();
 			}
+			if (singleChannelSend) {
+				if (!integrationId) {
+					throw new Error(
+						"A channel send requires a pinned Microsoft connection.",
+					);
+				}
+				await assertParlumeChannelSendAccess(
+					args,
+					userId,
+					organizationId,
+					integrationId,
+				);
+				throwIfDispatchStopped();
+			}
 			return fetch(requestUrl, {
 				...options,
 				redirect: "error",
@@ -818,6 +847,11 @@ export async function executeMicrosoftTeamsTool(
 
 		// First attempt with current token
 		let res = await makeRequest(accessToken);
+		// A channel post has its own durable claim. A failed or lost response
+		// is ambiguous, including 503 and authentication errors; never replay it.
+		if (singleChannelSend) {
+			return res;
+		}
 
 		// Check if we need to refresh the token
 		// Microsoft Graph can return:
@@ -939,6 +973,8 @@ export async function executeMicrosoftTeamsTool(
 	const MAX_PAGE_SIZE = 50;
 
 	switch (methodName) {
+		case "parlume_channel":
+			return executeParlumeChannelOperation(graphRequest, args);
 		// ========== Search Messages (No IDs Required) ==========
 		// Uses Microsoft Graph /search/query endpoint
 		// Note: Search API returns summary snippet, not full body content

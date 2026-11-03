@@ -5,6 +5,12 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Label } from "@ui/components/label";
 import { Switch } from "@ui/components/switch";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
+import { InfoIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useId } from "react";
 import { toast } from "sonner";
@@ -53,7 +59,7 @@ export function PlanSpentFallbackToggle({
 
 	return (
 		<div
-			className="flex w-full items-start gap-2"
+			className="flex w-full items-center gap-2"
 			data-testid="plan-spent-fallback-toggle"
 		>
 			<Switch
@@ -62,13 +68,25 @@ export function PlanSpentFallbackToggle({
 				id={id}
 				onCheckedChange={(value) => mutation.mutate(value)}
 			/>
-			<div className="space-y-0.5">
-				<Label className="font-medium text-xs" htmlFor={id}>
+			<div className="flex min-w-0 items-center gap-1.5">
+				<Label className="truncate font-medium text-xs" htmlFor={id}>
 					{t("toggleLabel")}
 				</Label>
-				<p className="text-muted-foreground text-xs">
-					{t("toggleHint")}
-				</p>
+				<span className="sr-only">{t("toggleHint")}</span>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							type="button"
+							aria-label={t("toggleLabel")}
+							className="inline-flex shrink-0 rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+						>
+							<InfoIcon aria-hidden="true" className="size-3.5" />
+						</button>
+					</TooltipTrigger>
+					<TooltipContent side="bottom" className="max-w-xs text-xs">
+						{t("toggleHint")}
+					</TooltipContent>
+				</Tooltip>
 			</div>
 		</div>
 	);

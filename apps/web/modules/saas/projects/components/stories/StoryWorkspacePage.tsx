@@ -50,6 +50,10 @@ import { createPortal } from "react-dom";
 import { useFeatureMaturationV2Enabled } from "../../hooks/useFeatureMaturationV2Enabled";
 import { useMaturationViewMode } from "../../hooks/useMaturationViewMode";
 import {
+	hasActiveCodingRunOnStory,
+	hasActiveStoryLevelCodingRun,
+} from "../../lib/coding-run-visibility";
+import {
 	buildRoadmapReturnRoute,
 	readRoadmapQuery,
 } from "../../lib/stories/roadmap-return";
@@ -221,6 +225,10 @@ export function StoryWorkspacePage({
 		null,
 	);
 	const [saveSlotEl, setSaveSlotEl] = useState<HTMLDivElement | null>(null);
+	const [implementationOpen, setImplementationOpen] = useState(false);
+	const [implementationTaskId, setImplementationTaskId] = useState<
+		string | null
+	>(null);
 	// Track CopilotKit sidebar expanded state so the fixed-position page
 	// chrome shifts its right edge in lockstep — otherwise the breadcrumb
 	// and action bar (which sit outside the wrapper) get covered by the
@@ -289,7 +297,13 @@ export function StoryWorkspacePage({
 	const canEdit: boolean = storyData?.canEdit ?? false;
 	const canAddTags: boolean = storyData?.canAddTags ?? false;
 	const canManageAllTags: boolean = storyData?.canManageAllTags ?? false;
+	const canExecuteAgents: boolean = storyData?.canExecuteAgents ?? false;
 	const project = projectData?.project;
+	const readOnlyMode: boolean = project?.readOnlyMode ?? false;
+	const storyHasActiveRun = story ? hasActiveCodingRunOnStory(story) : false;
+	const storyHasActiveStoryLevelRun = story
+		? hasActiveStoryLevelCodingRun(story)
+		: false;
 	// Protect and the batch guidance (Fizzy #2211) are editor actions on an
 	// AI-recommended item, behind the lifecycle flag.
 	const showAiRecommendedLifecycle =
@@ -733,6 +747,18 @@ export function StoryWorkspacePage({
 					projectId={projectId}
 					storyId={storyId}
 					story={story}
+					projectName={project.name}
+					canExecuteAgents={canExecuteAgents}
+					readOnlyMode={readOnlyMode}
+					hasActiveCodingRun={storyHasActiveRun}
+					implementationOpen={implementationOpen}
+					onImplementationOpenChange={(open) => {
+						setImplementationOpen(open);
+						if (!open) {
+							setImplementationTaskId(null);
+						}
+					}}
+					focusedTaskId={implementationTaskId}
 					size="sm"
 					repositoryOwner={project.repositoryOwner}
 					repositoryName={project.repositoryName}
@@ -827,6 +853,26 @@ export function StoryWorkspacePage({
 										canEdit={canEdit}
 										canAddTags={canAddTags}
 										canManageAllTags={canManageAllTags}
+										canExecuteAgents={canExecuteAgents}
+										readOnlyMode={readOnlyMode}
+										hasActiveCodingRun={storyHasActiveRun}
+										onImplementTask={
+											canExecuteAgents &&
+											!readOnlyMode &&
+											story.draftingStage ===
+												"PUBLISHED" &&
+											story.deliveryTrack !== "DEFER" &&
+											!storyHasActiveStoryLevelRun
+												? (taskId) => {
+														setImplementationTaskId(
+															taskId,
+														);
+														setImplementationOpen(
+															true,
+														);
+													}
+												: undefined
+										}
 										maturationV2={showMaturationV2}
 										projectId={projectId}
 										projectName={project.name}

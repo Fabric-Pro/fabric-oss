@@ -20,6 +20,8 @@ export function session(
 		toolsReadOnly: true,
 		endReason: null,
 		lastError: null,
+		channelChatStatus: "ATTENDEE",
+		channelChatError: null,
 		joinedAt: new Date("2026-09-30T10:00:00Z"),
 		hardStopAt: null,
 		leaveRequestedAt: null,

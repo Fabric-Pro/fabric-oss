@@ -137,7 +137,7 @@ export class WeaveRefineEngine extends InProcessEngine<
 		{ runId, signal }: InProcessRun,
 	): AsyncIterable<AGUIEvent> {
 		const prompt = await buildRefinePrompt(turn);
-		const model = await resolveRefineModel({
+		const { model, getAnswerModel } = await resolveRefineModel({
 			userId: this.caller.userId,
 			organizationId: turn.organizationId,
 		});
@@ -208,6 +208,7 @@ export class WeaveRefineEngine extends InProcessEngine<
 				value: {
 					updatedMessage: parsed.updatedMessage,
 					isReady: parsed.isReady,
+					model: text ? getAnswerModel() : undefined,
 				},
 			};
 		}

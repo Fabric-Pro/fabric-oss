@@ -11,6 +11,8 @@ import { z } from "zod";
  * - The sources the answer draws on arrive first, as CUSTOM
  *   `fabric.library-chat.sources`; the answer then streams as one assistant
  *   text message.
+ * - A generated answer's served identity arrives as CUSTOM
+ *   `fabric.library-chat.model` after its text ends.
  * - Nothing is saved: the thread lives as long as the dialog.
  */
 
@@ -33,6 +35,7 @@ export type LibrarySource = z.infer<typeof librarySourceSchema>;
 
 export const LIBRARY_CHAT_EVENT = {
 	sources: runtimeCustomEventName(LIBRARY_CHAT_AGENT_ID, "sources"),
+	model: runtimeCustomEventName(LIBRARY_CHAT_AGENT_ID, "model"),
 } as const;
 
 /** The value of `LIBRARY_CHAT_EVENT.sources`. */

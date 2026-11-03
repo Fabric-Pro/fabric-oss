@@ -61,18 +61,32 @@ export function stripInternalStoryFieldsFromMany<T extends object>(
 export function stripRemoteCodingRunSummary<T extends object>(run: T): T {
 	const record = run as T & { providerMetadata?: unknown };
 	const metadata = record.providerMetadata as {
-		executionTarget?: { connectionId?: unknown };
+		executionRuntime?: unknown;
+		executionTarget?: { connectionId?: unknown } | null;
+		llmConnection?: unknown;
+		model?: unknown;
+		fallbackPolicy?: unknown;
+		serverName?: unknown;
 	} | null;
-	if (typeof metadata?.executionTarget?.connectionId !== "string") {
-		return run;
+	if (typeof metadata?.executionTarget?.connectionId === "string") {
+		return {
+			...run,
+			providerSessionId: null,
+			externalUrl: null,
+			externalStatus: null,
+			workingDirectory: null,
+			events: [],
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
+		};
 	}
-	return {
-		...run,
-		providerSessionId: null,
-		externalUrl: null,
-		externalStatus: null,
-		workingDirectory: null,
-		events: [],
-		providerMetadata: { executionRuntime: "fabric-agent-server" },
-	};
+	if (metadata && "executionTarget" in metadata) {
+		const { executionTarget: _executionTarget, ...safeMetadata } =
+			metadata as Record<string, unknown>;
+		return {
+			...run,
+			providerMetadata:
+				Object.keys(safeMetadata).length > 0 ? safeMetadata : null,
+		};
+	}
+	return run;
 }

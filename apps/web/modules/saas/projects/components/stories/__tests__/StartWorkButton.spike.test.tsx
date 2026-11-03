@@ -110,7 +110,9 @@ describe("StartWorkButton — Run a spike", () => {
 		expect(item).not.toHaveAttribute("aria-disabled", "true");
 
 		// Implementation items stay readiness-gated.
-		expect(screen.getByText(/^Fabric Agents$/)).toBeInTheDocument();
+		expect(
+			screen.getByText(/^Fabric Agents Remote Server$/),
+		).toBeInTheDocument();
 
 		await user.click(item);
 		expect(

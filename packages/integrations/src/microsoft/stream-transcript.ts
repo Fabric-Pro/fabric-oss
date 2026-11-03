@@ -30,6 +30,8 @@
  * meeting that was transcribed but not recorded has nothing to hang off.
  */
 
+import { resolveChannelIdentity } from "./channel-identity";
+
 /** Injected `graphRequest` — carries token refresh and throttle backoff. */
 export type GraphFetch = (
 	url: string,
@@ -82,9 +84,6 @@ interface RecordingFile {
  * exactly one of them — and among several candidates the closest always wins.
  */
 const RECORDING_MATCH_TOLERANCE_MS = 12 * 60 * 60 * 1000;
-
-/** Bound on teams walked while resolving a channel thread to its team. */
-const MAX_TEAMS_SCANNED = 200;
 
 /** Most-recent recordings pulled per listing. */
 const RECORDINGS_PAGE_SIZE = 100;
@@ -386,71 +385,40 @@ async function resolveChannelLocationUncached(params: {
 	threadId: string;
 }): Promise<ChannelDriveLocation | null> {
 	const { graphFetch, graphBaseUrl, threadId } = params;
-
-	const teamsRes = await graphFetch(
-		`${graphBaseUrl}/me/joinedTeams?$select=id,displayName`,
+	const identity = await resolveChannelIdentity(
+		graphFetch,
+		graphBaseUrl,
+		threadId,
+	).catch(() => null);
+	if (!identity) {
+		return null;
+	}
+	const folderRes = await graphFetch(
+		`${graphBaseUrl}/teams/${identity.teamId}/channels/${threadId}/filesFolder`,
 	);
-	if (!teamsRes.ok) {
+	if (!folderRes.ok) {
 		console.warn(
-			`[MicrosoftTeams] Could not list joined teams while resolving a channel meeting: ${teamsRes.status}`,
+			`[MicrosoftTeams] Channel resolved but its files folder did not: ${folderRes.status}`,
 		);
 		return null;
 	}
-	const teamsData = (await teamsRes.json()) as { value?: { id: string }[] };
-	const teams = (teamsData.value ?? []).slice(0, MAX_TEAMS_SCANNED);
-
-	for (const team of teams) {
-		const channelsRes = await graphFetch(
-			`${graphBaseUrl}/teams/${team.id}/channels?$select=id,displayName`,
-		);
-		if (!channelsRes.ok) {
-			continue;
-		}
-		const channelsData = (await channelsRes.json()) as {
-			value?: { id: string }[];
-		};
-		const owns = (channelsData.value ?? []).some(
-			(channel) => channel.id === threadId,
-		);
-		if (!owns) {
-			continue;
-		}
-
-		const folderRes = await graphFetch(
-			`${graphBaseUrl}/teams/${team.id}/channels/${threadId}/filesFolder`,
-		);
-		if (!folderRes.ok) {
-			console.warn(
-				`[MicrosoftTeams] Channel resolved but its files folder did not: ${folderRes.status}`,
-			);
-			return null;
-		}
-		const folder = (await folderRes.json()) as {
-			id?: string;
-			parentReference?: { driveId?: string };
-		};
-		if (!folder.id || !folder.parentReference?.driveId) {
-			return null;
-		}
-
-		// A channel with no Recordings folder is resolved, not unresolvable —
-		// it simply has never had a recorded meeting, which is the ordinary case
-		// and must not be reported as a membership problem. Carried as null so
-		// the caller can say which of the two it is.
-		return {
-			teamId: team.id,
-			channelId: threadId,
-			driveId: folder.parentReference.driveId,
-			recordingsFolderId: await findRecordingsFolderId({
-				graphFetch,
-				graphBaseUrl,
-				driveId: folder.parentReference.driveId,
-				filesFolderId: folder.id,
-			}),
-		};
+	const folder = (await folderRes.json()) as {
+		id?: string;
+		parentReference?: { driveId?: string };
+	};
+	if (!folder.id || !folder.parentReference?.driveId) {
+		return null;
 	}
-
-	return null;
+	return {
+		...identity,
+		driveId: folder.parentReference.driveId,
+		recordingsFolderId: await findRecordingsFolderId({
+			graphFetch,
+			graphBaseUrl,
+			driveId: folder.parentReference.driveId,
+			filesFolderId: folder.id,
+		}),
+	};
 }
 
 /**

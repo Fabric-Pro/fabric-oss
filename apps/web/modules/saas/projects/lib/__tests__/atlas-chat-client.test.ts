@@ -88,6 +88,28 @@ beforeEach(() => {
 });
 
 describe("consumeAtlasRouteStream", () => {
+	it("delivers only valid explicit model events alongside a partial reply", async () => {
+		const onModel = vi.fn();
+		const model = { id: "example-served", viaPlan: true };
+		async function* route() {
+			yield "Partial";
+			yield {
+				type: "atlas-chat-model",
+				model: { id: "example-configured" },
+			};
+			yield { type: "unknown", model };
+			yield { type: "atlas-chat-model", model };
+			yield { type: "atlas-chat-interrupted" };
+		}
+		const into = { ...sink(), onModel };
+		await consumeAtlasRouteStream(
+			route(),
+			new AbortController().signal,
+			into,
+		);
+		expect(onModel.mock.calls).toEqual([[model]]);
+		expect(into.onSentinel).toHaveBeenCalledWith("atlas-chat-interrupted");
+	});
 	it("hands over deltas in order and both sentinels, ignores unknown objects, and stops once aborted", async () => {
 		const controller = new AbortController();
 		const into = sink();
@@ -112,6 +134,35 @@ describe("consumeAtlasRouteStream", () => {
 });
 
 describe("streamAtlasRuntime", () => {
+	it("passes validated runtime identity without carrying it to a later run", async () => {
+		const model = { id: "example-runtime-served", viaPlan: false };
+		const onModel = vi.fn();
+		emits([
+			STARTED,
+			text("Answer"),
+			{
+				type: EventType.CUSTOM,
+				name: "fabric.atlas-chat.model",
+				value: model,
+			},
+			FINISHED,
+		]);
+		await streamAtlasRuntime(turn(), { ...sink(), onModel });
+		expect(onModel.mock.calls).toEqual([[model]]);
+		onModel.mockClear();
+		emits([
+			STARTED,
+			text("Next"),
+			{
+				type: EventType.CUSTOM,
+				name: "fabric.atlas-chat.model",
+				value: { id: "example-configured" },
+			},
+			FINISHED,
+		]);
+		await streamAtlasRuntime(turn(), { ...sink(), onModel });
+		expect(onModel).not.toHaveBeenCalled();
+	});
 	it("runs the atlas-chat agent on the conversation, with the options, organization and signal", async () => {
 		emits([STARTED, FINISHED]);
 		const controller = new AbortController();

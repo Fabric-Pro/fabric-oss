@@ -10,9 +10,12 @@ import {
 	timelineToMermaid,
 } from "@repo/utils/glossy/visual-templates";
 import {
-	ALWAYS_WRAPPED_LABEL_CHARS,
+	flowchartNodeLabelsOverflow,
+	nodeLabelLineOverflows,
 	PRINT_FIGURE_MAX_HEIGHT_PX,
+	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
 } from "@repo/utils/proposal-artifact/diagram-label-wrap";
+import { printFigureUnderOpenerMaxHeightPx } from "@repo/utils/proposal-artifact/proposal-theme";
 import {
 	buildProposalThemeTokens,
 	resolveThemePaint,
@@ -25,7 +28,9 @@ import type {
 	ExportBrowser,
 	ExportPageOptions,
 } from "../../../lib/proposal-export/browser";
+import { printFigureMaxHeight } from "../../../lib/proposal-export/build-theme-html";
 import type { DiagramLayout } from "../../../lib/proposal-export/diagram-layout";
+import { prepareExportMarkdown } from "../../../lib/proposal-export/markdown";
 import {
 	diagramFigureNumbers,
 	type ExportDiagram,
@@ -154,6 +159,34 @@ function input(
 		layout: inProcessLayout,
 		...overrides,
 	};
+}
+
+/**
+ * Main's diagrams drawn as the PDF export draws them, each measured against
+ * the height the print page offers it, with the height each was offered and
+ * the height each prints at once drawn, which the page writes on it.
+ */
+async function drawnForPrint(markdown: string) {
+	const prepared = prepareExportMarkdown(markdown);
+	const heightOf = printFigureMaxHeight(prepared, {
+		images: new Map(),
+		projectId: "project-example-1",
+		documentId: "document-example-1",
+	});
+	const heights: number[] = [];
+	const drawn = await renderExportDiagrams(
+		input(prepared.diagramSources, {
+			figureMaxHeight: (index, before) => {
+				const height = heightOf(index, before);
+				heights[index] = height;
+				return height;
+			},
+		}),
+	);
+	const printed = drawn.diagrams.map((_, index) =>
+		heightOf(index, drawn.diagrams),
+	);
+	return { ...drawn, heights, printed };
 }
 
 function svgOf(diagram: ExportDiagram | undefined): string {
@@ -337,9 +370,9 @@ describe("renderExportDiagrams", () => {
 			]),
 		);
 		for (const diagram of diagrams.slice(0, 4)) {
-			expect(diagram).toEqual({ kind: "omitted", numbered: false });
+			expect(diagram).toEqual({ kind: "omitted" });
 		}
-		expect(diagrams[4]).toMatchObject({ kind: "svg", numbered: true });
+		expect(diagrams[4]).toMatchObject({ kind: "svg" });
 		expect(warnings).toEqual([{ code: "DIAGRAM_PLACEHOLDER", count: 4 }]);
 	});
 
@@ -372,7 +405,6 @@ describe("renderExportDiagrams", () => {
 				{
 					kind: "placeholder",
 					caption: DIAGRAM_PLACEHOLDER_CAPTION,
-					numbered: true,
 				},
 			]);
 			expect(warnings).toEqual([
@@ -434,7 +466,6 @@ describe("renderExportDiagrams", () => {
 		)) {
 			expect(diagram).toMatchObject({
 				kind: "placeholder",
-				numbered: true,
 			});
 		}
 		// Kept in place, not left out: only the limit is reported.
@@ -449,7 +480,6 @@ describe("renderExportDiagrams", () => {
 		expect(diagrams[0]).toEqual({
 			kind: "placeholder",
 			caption: DIAGRAM_PLACEHOLDER_CAPTION,
-			numbered: true,
 		});
 		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 }]);
 	});
@@ -468,7 +498,6 @@ describe("renderExportDiagrams", () => {
 		);
 		expect(diagrams[0]).toMatchObject({
 			kind: "placeholder",
-			numbered: true,
 		});
 		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 }]);
 	});
@@ -596,7 +625,6 @@ describe("figure templates and diagrams that do not draw (Fizzy #2946)", () => {
 		expect(diagrams[0]).toMatchObject({
 			kind: "svg",
 			width: 662,
-			numbered: true,
 		});
 		const svg = svgOf(diagrams[0]);
 		expect(svg).toMatch(/^<svg [^>]*\bid="pa-diagram-1"[^>]*\brole="img"/);
@@ -607,8 +635,140 @@ describe("figure templates and diagrams that do not draw (Fizzy #2946)", () => {
 		// Coloured from the paint the diagram roles use.
 		expect(svg).toContain(`fill="${paint.tint}"`);
 		expect(svg).not.toMatch(/<script|foreignObject|\son\w+=/i);
-		// Never turned or re-wrapped, so never measured against the floor.
+		// Never turned or re-wrapped, and short enough to print whole.
 		expect(warnings).toEqual([]);
+	});
+
+	it("keeps a figure template at full size, moving it whole off an opener's page that cannot hold it, and warns only when even a figure's own height shrinks it", async () => {
+		// Eighteen tasks in six workstreams, and four reviews.
+		const gantt = [
+			"%% figure: gantt",
+			"gantt",
+			"  dateFormat YYYY-MM-DD",
+			...Array.from({ length: 6 }, (_, section) => [
+				`  section Workstream ${section + 1}`,
+				...Array.from({ length: 3 }, (_, task) => {
+					const index = section * 3 + task;
+					return `  Task ${index + 1} :t${index}, 2026-11-${String(2 + index).padStart(2, "0")}, 2w`;
+				}),
+			]).flat(),
+			...Array.from(
+				{ length: 4 },
+				(_, index) =>
+					`  Review ${index + 1} :milestone, m${index}, 2026-12-${String(1 + index * 5).padStart(2, "0")}, 0d`,
+			),
+		].join("\n");
+		const fence = ["```mermaid", gantt, "```"].join("\n");
+
+		// A figure of its own holds it at full size, its text at the floor.
+		// A subheading before it leaves it off the opener's page.
+		const afterText = await drawnForPrint(
+			`## Schedule\n\n### By workstream\n\n${fence}`,
+		);
+		const diagram = afterText.diagrams[0];
+		if (diagram?.kind !== "svg") {
+			throw new Error("expected a drawn template");
+		}
+		expect(diagram.width).toBe(662);
+		expect(diagram.textPx).toBe(12);
+		expect(diagram.height).toBeGreaterThan(
+			PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+		);
+		expect(diagram.height).toBeLessThanOrEqual(PRINT_FIGURE_MAX_HEIGHT_PX);
+		expect(afterText.heights).toEqual([PRINT_FIGURE_MAX_HEIGHT_PX]);
+		expect(afterText.printed).toEqual([PRINT_FIGURE_MAX_HEIGHT_PX]);
+		expect(afterText.warnings).toEqual([]);
+
+		// The room under an opener would shrink its text below the floor, so
+		// it keeps a figure's own height and moves whole to the next page.
+		const underOpener = await drawnForPrint(`## Schedule\n\n${fence}`);
+		expect(underOpener.heights).toEqual([
+			PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+		]);
+		expect(underOpener.printed).toEqual([PRINT_FIGURE_MAX_HEIGHT_PX]);
+		expect(underOpener.diagrams[0]).toMatchObject({ kind: "svg" });
+		expect(underOpener.warnings).toEqual([]);
+
+		// A short template keeps the opener's page at full size.
+		const short = [
+			"```mermaid",
+			"%% figure: process",
+			"flowchart TD",
+			'  a["Plan"] --> b["Build"] --> c["Review"]',
+			"```",
+		].join("\n");
+		const shortUnder = await drawnForPrint(`## Schedule\n\n${short}`);
+		expect(shortUnder.printed).toEqual([
+			PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+		]);
+		expect(shortUnder.warnings).toEqual([]);
+
+		// Twenty dated steps of three lines are taller than any page holds:
+		// the last resort, a figure's own height, prints them below the floor.
+		const timeline = [
+			"```mermaid",
+			"%% figure: timeline",
+			"flowchart TD",
+			...Array.from(
+				{ length: 20 },
+				(_, index) =>
+					`  t${index}["Week ${index + 1} of the example pilot<br/>Review the example records with the owners<br/>Agree the actions and the dates"]`,
+			),
+			...Array.from(
+				{ length: 19 },
+				(_, index) => `  t${index} --> t${index + 1}`,
+			),
+			"```",
+		].join("\n");
+		const tallUnder = await drawnForPrint(`## Schedule\n\n${timeline}`);
+		const tall = tallUnder.diagrams[0];
+		if (tall?.kind !== "svg") {
+			throw new Error("expected a drawn template");
+		}
+		expect(tall.height).toBeGreaterThan(PRINT_FIGURE_MAX_HEIGHT_PX);
+		expect(tallUnder.printed).toEqual([PRINT_FIGURE_MAX_HEIGHT_PX]);
+		expect(tallUnder.warnings).toEqual([
+			{ code: "DIAGRAM_BELOW_PRINT_FLOOR", count: 1 },
+		]);
+	});
+
+	it("draws a plain chain of seven steps or more with no figure line from the process template, and leaves six to the engine", async () => {
+		const chain = (steps: number) =>
+			[
+				"%% caption: Every step a request takes",
+				"flowchart TD",
+				...Array.from(
+					{ length: steps - 1 },
+					(_, index) =>
+						`  s${index}["Step ${index + 1}"] --> s${index + 1}["Step ${index + 2}"]`,
+				),
+			].join("\n");
+		const layout = scriptedLayout([]);
+		const sources = [chain(12), chain(6)];
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input(sources, {
+				captions: ["Every step a request takes", null],
+				layout,
+			}),
+		);
+		// The twelve steps need no layout; only the six are laid out.
+		expect(layout.sources).toHaveLength(1);
+		expect(layout.sources[0]).toContain("s5");
+		const grid = diagrams[0];
+		if (grid?.kind !== "svg") {
+			throw new Error("expected a drawn template");
+		}
+		expect(grid.width).toBe(662);
+		expect(grid.textPx).toBe(12);
+		expect(grid.svg).toMatch(/^<svg [^>]*\brole="img"/);
+		expect(grid.svg).toContain("<title>Every step a request takes</title>");
+		expect(grid.svg).toContain("12. Step 12.");
+		expect(svgOf(diagrams[1])).not.toContain('role="img"');
+		expect(diagrams[1]).not.toHaveProperty("textPx");
+		expect(diagramFigureNumbers(diagrams)).toEqual([1, 2]);
+		expect(warnings).toEqual([]);
+		// Main's fences are untouched.
+		expect(sources).toEqual([chain(12), chain(6)]);
 	});
 
 	it("draws a bar chart from its template, cleaned, with its threshold line, and no layout", async () => {
@@ -628,7 +788,6 @@ describe("figure templates and diagrams that do not draw (Fizzy #2946)", () => {
 		expect(diagrams[0]).toMatchObject({
 			kind: "svg",
 			width: 662,
-			numbered: true,
 		});
 		const svg = svgOf(diagrams[0]);
 		expect(svg).toMatch(/^<svg [^>]*\bid="pa-diagram-1"[^>]*\brole="img"/);
@@ -683,7 +842,7 @@ describe("figure templates and diagrams that do not draw (Fizzy #2946)", () => {
 				layout.sources[0]?.startsWith("xychart-beta horizontal\n"),
 			).toBe(true);
 			expect(layout.sources[0]).not.toContain("%%");
-			expect(diagrams[0]).toMatchObject({ kind: "svg", numbered: true });
+			expect(diagrams[0]).toMatchObject({ kind: "svg" });
 			const svg = svgOf(diagrams[0]);
 			expect(svg).not.toContain('role="img"');
 			expect(svg).toContain("xychart-bar");
@@ -714,7 +873,6 @@ describe("figure templates and diagrams that do not draw (Fizzy #2946)", () => {
 		expect(diagrams[0]).toMatchObject({
 			kind: "svg",
 			width: 662,
-			numbered: true,
 		});
 		const svg = svgOf(diagrams[0]);
 		expect(svg).toMatch(/^<svg [^>]*\bid="pa-diagram-1"[^>]*\brole="img"/);
@@ -751,7 +909,6 @@ describe("figure templates and diagrams that do not draw (Fizzy #2946)", () => {
 		expect(layout.sources).toEqual([]);
 		expect(diagrams[0]).toMatchObject({
 			kind: "placeholder",
-			numbered: true,
 		});
 		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 }]);
 	});
@@ -818,7 +975,6 @@ describe("figure templates and diagrams that do not draw (Fizzy #2946)", () => {
 		expect(abandoned.sources).toHaveLength(2);
 		expect(left.diagrams[0]).toMatchObject({
 			kind: "placeholder",
-			numbered: true,
 		});
 		expect(left.warnings).toEqual([
 			{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 },
@@ -833,7 +989,6 @@ describe("figure templates and diagrams that do not draw (Fizzy #2946)", () => {
 		expect(layout.sources).toHaveLength(1);
 		expect(diagrams[0]).toMatchObject({
 			kind: "placeholder",
-			numbered: true,
 		});
 		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 }]);
 	});
@@ -955,7 +1110,6 @@ describe("renderExportDiagrams with PNGs", () => {
 		expect(diagrams[0]).toMatchObject({
 			kind: "svg",
 			png: null,
-			numbered: true,
 		});
 		expect(diagrams[1]).toMatchObject({
 			kind: "svg",
@@ -1047,6 +1201,24 @@ function headersOf(sources: readonly string[]): (string | undefined)[] {
 	return sources.map((source) => source.split("\n")[0]);
 }
 
+/**
+ * Nine ranks top-down, with a branch after the second step and a join
+ * after the third: 735 px tall, not a chain a template draws.
+ */
+const BRANCHED_FLOW = [
+	"flowchart TD",
+	'  a["Request received"] --> b["Check the details"]',
+	'  b --> c["Route to dispatch"]',
+	'  b --> d["Route to a crew lead"]',
+	'  c --> e["Schedule the visit"]',
+	"  d --> e",
+	'  e --> f["Visit the site"]',
+	'  f --> g["Record the work"]',
+	'  g --> h["Review the record"]',
+	'  h --> i["Invoice the client"]',
+	'  i --> j["Close the request"]',
+].join("\n");
+
 describe("the print legibility floor (Fizzy #2946)", () => {
 	/** Four steps left to right, each a whole sentence on one line. */
 	const SIDEWAYS_CHAIN = [
@@ -1092,9 +1264,7 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 			"Close — record the example lessons and the decisions",
 		];
 		for (const label of labels) {
-			expect(label.length).toBeGreaterThanOrEqual(
-				ALWAYS_WRAPPED_LABEL_CHARS,
-			);
+			expect(label.length).toBeGreaterThanOrEqual(40);
 			expect(label.length).toBeLessThan(60);
 		}
 		return [
@@ -1122,7 +1292,7 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 		const { diagrams, warnings } = await renderExportDiagrams(
 			input(sources, { layout }),
 		);
-		// As written and with its four labels of 40 characters or more
+		// As written and with its three labels too wide for their boxes
 		// broken, both sideways and below the floor; then both top-down. The
 		// broken copy turned prints as large as the one as written turned and
 		// is kept.
@@ -1237,9 +1407,7 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 	it("breaks a 57-character label dense in narrow letters, even in a diagram the floor rule turns", async () => {
 		const narrow =
 			"implementation — implementation of the agreed pilot scope";
-		expect(narrow.length).toBeGreaterThanOrEqual(
-			ALWAYS_WRAPPED_LABEL_CHARS,
-		);
+		expect(nodeLabelLineOverflows(narrow)).toBe(true);
 		const fence = [
 			"flowchart LR",
 			`  a["Discovery — agree the example goals"] --> b["${narrow}"]`,
@@ -1275,34 +1443,76 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 		expect(warnings).toEqual([]);
 	});
 
-	it("prints a sideways chain of eight 40- to 55-character labels top-down as written, which prints larger than its broken copy turned", async () => {
-		const chain = eightStepChain();
+	it("prints a sideways chain with labels under 40 characters too wide for their boxes top-down with those broken, as the live page draws it", async () => {
+		// Two labels dense in dashes, m, w and hyphens between two ordinary
+		// ones of 37 and 39 characters; the live page's suite draws the same
+		// chain and expects the same layout.
+		const fence = [
+			"flowchart LR",
+			'  a["Momentum — minimum-time multi-team flow"] --> b["Discovery workshop with the client team"]',
+			'  b --> c["Mid-term metrics — maximum momentum"] --> d["Review the proposal with stakeholders"]',
+		].join("\n");
 		const layout = recordingLayout();
 		const { diagrams, warnings } = await renderExportDiagrams(
-			input([chain], { layout }),
+			input([fence], { layout }),
 		);
-		// As written and broken, both sideways and below the floor; then both
-		// top-down. Broken and turned it is taller than a figure may be; as
-		// written and turned it fits the page, so that one is kept.
+		// As written and with the two dense labels broken, both sideways and
+		// below the floor, then both top-down: the broken copy turned prints
+		// as large as the one as written turned and is kept.
 		expect(headersOf(layout.sources)).toEqual([
 			"flowchart LR",
 			"flowchart LR",
 			"flowchart TD",
 			"flowchart TD",
 		]);
-		const brokenTurned = viewBoxSize(String(layout.sources[2]));
-		expect(brokenTurned.height).toBeGreaterThan(PRINT_FIGURE_MAX_HEIGHT_PX);
-		expect(printedNodeLabelPt(brokenTurned)).toBeLessThan(
-			PRINT_LABEL_FLOOR_PT,
+		const kept = String(layout.sources[2]);
+		expect(kept).toContain(
+			'a["Momentum —<br/>minimum-time multi-team<br/>flow"]',
 		);
-		const kept = String(layout.sources[3]);
-		expect(kept).not.toContain("<br/>");
+		expect(kept).toContain('c["Mid-term metrics —<br/>maximum momentum"]');
+		expect(kept).toContain('b["Discovery workshop with the client team"]');
+		expect(kept).toContain('d["Review the proposal with stakeholders"]');
 		const diagram = diagrams[0];
 		if (diagram?.kind !== "svg") {
 			throw new Error("expected a drawn diagram");
 		}
 		expect(diagram.width).toBeCloseTo(viewBoxSize(kept).width, 0);
-		expect(diagram.svg).not.toContain("<tspan");
+		expect(smallestPrintedLabelPt(diagram)).toBeCloseTo(9.75, 5);
+		expect(warnings).toEqual([]);
+	});
+
+	it("prints a sideways chain of eight 40- to 55-character labels top-down, only the two too wide for their boxes broken", async () => {
+		const chain = eightStepChain();
+		const layout = recordingLayout();
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([chain], { layout }),
+		);
+		// As written and with the two too-wide labels broken, both sideways
+		// and below the floor; then both top-down. Broken and turned it fits a
+		// figure's height and prints as large as the copy as written turned,
+		// whose two labels would spill, so the broken one is kept.
+		expect(headersOf(layout.sources)).toEqual([
+			"flowchart LR",
+			"flowchart LR",
+			"flowchart TD",
+			"flowchart TD",
+		]);
+		const kept = String(layout.sources[2]);
+		expect(
+			kept
+				.split("\n")
+				.filter((line) => line.includes("<br/>"))
+				.map((line) => line.trim().slice(0, 2)),
+		).toEqual(["s1", "s2"]);
+		expect(viewBoxSize(kept).height).toBeLessThanOrEqual(
+			PRINT_FIGURE_MAX_HEIGHT_PX,
+		);
+		expect(layout.sources[3]).not.toContain("<br/>");
+		const diagram = diagrams[0];
+		if (diagram?.kind !== "svg") {
+			throw new Error("expected a drawn diagram");
+		}
+		expect(diagram.width).toBeCloseTo(viewBoxSize(kept).width, 0);
 		expect(smallestPrintedLabelPt(diagram)).toBeCloseTo(9.75, 5);
 		expect(warnings).toEqual([]);
 	});
@@ -1316,7 +1526,7 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 			"Handover — train the example owners",
 		];
 		for (const label of labels) {
-			expect(label.length).toBeLessThan(ALWAYS_WRAPPED_LABEL_CHARS);
+			expect(nodeLabelLineOverflows(label)).toBe(false);
 		}
 		const [lead, first, second, third, after] = labels;
 		const fence = [
@@ -1364,7 +1574,7 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 		if (diagram?.kind !== "svg") {
 			throw new Error("expected a drawn diagram");
 		}
-		expect(diagram.numbered).toBe(true);
+		expect(diagramFigureNumbers(diagrams)).toEqual([1]);
 		expect(printedNodeLabelPt(diagram)).toBeGreaterThanOrEqual(
 			PRINT_LABEL_FLOOR_PT,
 		);
@@ -1372,13 +1582,13 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 	});
 
 	it("keeps the better render and warns when even broken labels are too wide", async () => {
-		// Every label is shorter than the always-broken length, so the first
-		// layout draws them as written and the floor rule runs in full.
+		// Every label fits its box, so the first layout draws them as written
+		// and the floor rule runs in full.
 		const start = "Start — agree the scope and the owners";
 		const workstream = (index: number) =>
 			`Workstream ${index + 1} — prepare example data`;
-		expect(start.length).toBeLessThan(ALWAYS_WRAPPED_LABEL_CHARS);
-		expect(workstream(39).length).toBeLessThan(ALWAYS_WRAPPED_LABEL_CHARS);
+		expect(nodeLabelLineOverflows(start)).toBe(false);
+		expect(nodeLabelLineOverflows(workstream(39))).toBe(false);
 		const siblings = Array.from(
 			{ length: 40 },
 			(_, index) =>
@@ -1410,34 +1620,158 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 		]);
 	});
 
-	it("prints a tall top-down chain of 70-character labels as written, which prints larger than its broken copy", async () => {
+	it("prints a tall top-down chain of 73-character labels broken, which keeps them inside their boxes, though as written it prints larger, and warns", async () => {
 		const chain = tallChain(8);
 		const asWritten = viewBoxSize(chain);
 		expect(asWritten.width).toBeLessThanOrEqual(PRINT_COLUMN_PX);
 		expect(asWritten.height).toBeLessThanOrEqual(
 			PRINT_FIGURE_MAX_HEIGHT_PX,
 		);
+		expect(flowchartNodeLabelsOverflow(chain)).toBe(true);
 
 		const layout = recordingLayout();
 		const { diagrams, warnings } = await renderExportDiagrams(
 			input([chain], { layout }),
 		);
-		// As written and broken; breaking makes it taller than a figure may
-		// be, so the copy as written is kept, and it needs nothing more.
+		// As written and broken. Breaking makes it taller than a figure may
+		// be, so as written it prints larger, but its labels spill out of
+		// their boxes, so the broken copy is kept. Top-down already, with
+		// every long label broken, it has nothing left to try, and its
+		// labels print below the floor.
 		expect(layout.sources).toHaveLength(2);
 		expect(layout.sources[0]).not.toContain("<br/>");
-		expect(layout.sources[1]).toContain("<br/>");
-		const broken = viewBoxSize(String(layout.sources[1]));
+		const kept = String(layout.sources[1]);
+		expect(kept).toContain("<br/>");
+		expect(flowchartNodeLabelsOverflow(kept)).toBe(false);
+		const broken = viewBoxSize(kept);
 		expect(broken.height).toBeGreaterThan(PRINT_FIGURE_MAX_HEIGHT_PX);
-		expect(printedNodeLabelPt(broken)).toBeLessThan(PRINT_LABEL_FLOOR_PT);
+		expect(printedNodeLabelPt(broken)).toBeLessThan(
+			printedNodeLabelPt(asWritten),
+		);
 		const diagram = diagrams[0];
 		if (diagram?.kind !== "svg") {
 			throw new Error("expected a drawn diagram");
 		}
-		expect(diagram.width).toBeCloseTo(asWritten.width, 0);
-		expect(diagram.svg).not.toContain("<tspan");
-		expect(smallestPrintedLabelPt(diagram)).toBeCloseTo(9.75, 5);
-		expect(warnings).toEqual([]);
+		expect(diagram.width).toBeCloseTo(broken.width, 0);
+		expect(diagram.svg).toContain("<tspan");
+		expect(smallestPrintedLabelPt(diagram)).toBeLessThan(
+			PRINT_LABEL_FLOOR_PT,
+		);
+		expect(warnings).toEqual([
+			{ code: "DIAGRAM_BELOW_PRINT_FLOOR", count: 1 },
+		]);
+	});
+
+	it("keeps a diagram right under a section opener, past its subtitle or a block that prints nothing, at full size when the room there would take its labels below the floor, so it moves whole to the next page", async () => {
+		// Nine ranks top-down with a branch and a join, 735 px tall: a figure
+		// of its own holds them at full size; the room left under an opener
+		// would shrink the labels below the floor.
+		const chain = BRANCHED_FLOW;
+		const size = viewBoxSize(chain);
+		expect(size.height).toBeGreaterThan(
+			PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+		);
+		expect(size.height).toBeLessThanOrEqual(PRINT_FIGURE_MAX_HEIGHT_PX);
+		const fence = ["```mermaid", chain, "```"].join("\n");
+		// A fence the engine refuses is left out of the page.
+		const refused = [
+			"```mermaid",
+			`flowchart TD\n  a[${ENGINE_THROWS}] --> b`,
+			"```",
+		].join("\n");
+
+		for (const opener of [
+			"## How a request moves",
+			"## How a request moves\n\n*Every step it takes.*",
+			"## How a request moves\n\n<!-- reviewer note -->",
+			`## How a request moves\n\n${refused}`,
+		]) {
+			const underOpener = await drawnForPrint(`${opener}\n\n${fence}`);
+			expect(underOpener.heights.at(-1)).toBe(
+				PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+			);
+			const diagram = underOpener.diagrams.at(-1);
+			if (diagram?.kind !== "svg") {
+				throw new Error("expected a drawn diagram");
+			}
+			expect(
+				printedNodeLabelPt(
+					diagram,
+					PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+				),
+			).toBeLessThan(PRINT_LABEL_FLOOR_PT);
+			expect(underOpener.printed.at(-1)).toBe(PRINT_FIGURE_MAX_HEIGHT_PX);
+			expect(
+				printedNodeLabelPt(diagram, PRINT_FIGURE_MAX_HEIGHT_PX),
+			).toBe(9.75);
+			expect(underOpener.warnings).toEqual(
+				opener.includes(ENGINE_THROWS)
+					? [{ code: "DIAGRAM_PLACEHOLDER", count: 1 }]
+					: [],
+			);
+		}
+
+		// After a paragraph, still on the opener's page, it is offered less
+		// room by the paragraph's lines, and keeps its own height as well.
+		const afterText = await drawnForPrint(
+			`## How a request moves\n\nEvery request takes these steps.\n\n${fence}`,
+		);
+		const afterParagraph = printFigureUnderOpenerMaxHeightPx(
+			"How a request moves",
+			null,
+			[{ kind: "paragraph", text: "Every request takes these steps." }],
+		);
+		expect(afterParagraph).toBeLessThan(
+			PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+		);
+		expect(afterText.heights).toEqual([afterParagraph]);
+		expect(afterText.printed).toEqual([PRINT_FIGURE_MAX_HEIGHT_PX]);
+		expect(afterText.warnings).toEqual([]);
+
+		// After a subheading it is off the opener's page, has a figure's
+		// full height, and prints at full size.
+		const afterHeading = await drawnForPrint(
+			`## How a request moves\n\n### Every step\n\n${fence}`,
+		);
+		expect(afterHeading.heights).toEqual([PRINT_FIGURE_MAX_HEIGHT_PX]);
+		expect(smallestPrintedLabelPt(afterHeading.diagrams[0])).toBeCloseTo(
+			9.75,
+			5,
+		);
+		expect(afterHeading.warnings).toEqual([]);
+	});
+
+	it("shrinks a diagram on an opener's page to the room there while its labels stay at the floor", async () => {
+		// Seven ranks with a branch and a join, 565 px tall, after a short
+		// paragraph that leaves it a little less.
+		const flow = BRANCHED_FLOW.split("\n")
+			.filter((line) => !/^\s*[ghi] --> /.test(line))
+			.concat('  g --> j["Close the request"]')
+			.join("\n");
+		const size = viewBoxSize(flow);
+		const afterParagraph = printFigureUnderOpenerMaxHeightPx(
+			"How a request moves",
+			null,
+			[{ kind: "paragraph", text: "Every request takes these steps." }],
+		);
+		expect(size.height).toBeGreaterThan(afterParagraph);
+		expect(printedNodeLabelPt(size, afterParagraph)).toBeGreaterThanOrEqual(
+			PRINT_LABEL_FLOOR_PT,
+		);
+
+		const drawn = await drawnForPrint(
+			`## How a request moves\n\nEvery request takes these steps.\n\n${["```mermaid", flow, "```"].join("\n")}`,
+		);
+		expect(drawn.heights).toEqual([afterParagraph]);
+		expect(drawn.printed).toEqual([afterParagraph]);
+		const diagram = drawn.diagrams[0];
+		if (diagram?.kind !== "svg") {
+			throw new Error("expected a drawn diagram");
+		}
+		const printedPt = printedNodeLabelPt(diagram, afterParagraph);
+		expect(printedPt).toBeGreaterThanOrEqual(PRINT_LABEL_FLOOR_PT);
+		expect(printedPt).toBeLessThan(9.75);
+		expect(drawn.warnings).toEqual([]);
 	});
 
 	it("keeps the broken copy when it prints as large as the copy as written", async () => {
@@ -1467,6 +1801,8 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 	});
 
 	it("warns for a figure shrunk below the floor by its height", async () => {
+		// A branch keeps the twelve steps a Mermaid layout rather than a
+		// numbered process.
 		const chain = [
 			"flowchart TD",
 			...Array.from(
@@ -1477,6 +1813,7 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 				{ length: 11 },
 				(_, index) => `  n${index} --> n${index + 1}`,
 			),
+			"  n5 --> side[Side step]",
 		].join("\n");
 		const size = viewBoxSize(chain);
 		expect(size.width).toBeLessThanOrEqual(PRINT_COLUMN_PX);
@@ -1499,9 +1836,7 @@ describe("the print legibility floor (Fizzy #2946)", () => {
 	it("warns when the broken copy it keeps is still below the floor", async () => {
 		const label = (index: number) =>
 			`Workstream ${index + 1} — prepare the example data, the owners and the review notes`;
-		expect(label(0).length).toBeGreaterThanOrEqual(
-			ALWAYS_WRAPPED_LABEL_CHARS,
-		);
+		expect(nodeLabelLineOverflows(label(0))).toBe(true);
 		const fan = [
 			"flowchart TD",
 			...Array.from(
@@ -1761,7 +2096,7 @@ describe("generated Proposal diagrams in print (Fizzy #2946)", () => {
 		}
 	});
 
-	it("prints the same six items in the Glossy layout far larger once turned top-down as written, still below the floor, and warns", async () => {
+	it("prints the same six items in the Glossy layout top-down with its labels broken, which fit their boxes though turned as written it prints larger, and warns", async () => {
 		const glossy = timelineToMermaid({
 			kind: "timeline",
 			items: Array.from({ length: 6 }, (_, index) => ({
@@ -1782,28 +2117,31 @@ describe("generated Proposal diagrams in print (Fizzy #2946)", () => {
 		// As written and broken sideways, then both top-down. Broken and
 		// turned it is taller than a figure may be (about 7.8 pt); as written
 		// and turned it is wider than the column but prints larger (about
-		// 8.3 pt), so that one is kept, still below the floor.
+		// 8.3 pt), yet its labels spill out of their boxes, so the broken
+		// copy turned is kept, still below the floor.
 		expect(headersOf(layout.sources)).toEqual([
 			"flowchart LR",
 			"flowchart LR",
 			"flowchart TD",
 			"flowchart TD",
 		]);
-		const brokenTurned = viewBoxSize(String(layout.sources[2]));
+		const kept = String(layout.sources[2]);
+		const brokenTurned = viewBoxSize(kept);
 		expect(brokenTurned.height).toBeGreaterThan(PRINT_FIGURE_MAX_HEIGHT_PX);
-		expect(layout.sources[3]).not.toContain("<br/>");
-		expect(diagram.width).toBeCloseTo(
-			viewBoxSize(String(layout.sources[3])).width,
-			0,
-		);
-		expect(diagram.width).toBeGreaterThan(PRINT_COLUMN_PX);
-		expect(printedNodeLabelPt(diagram)).toBeGreaterThan(
+		expect(flowchartNodeLabelsOverflow(kept)).toBe(false);
+		const writtenTurned = String(layout.sources[3]);
+		expect(writtenTurned).not.toContain("<br/>");
+		expect(flowchartNodeLabelsOverflow(writtenTurned)).toBe(true);
+		expect(printedNodeLabelPt(viewBoxSize(writtenTurned))).toBeGreaterThan(
 			printedNodeLabelPt(brokenTurned),
 		);
-		expect(smallestPrintedLabelPt(diagram)).toBeGreaterThan(8);
-		expect(smallestPrintedLabelPt(diagram)).toBeLessThan(
-			PRINT_LABEL_FLOOR_PT,
+		expect(diagram.width).toBeCloseTo(brokenTurned.width, 0);
+		expect(printedNodeLabelPt(diagram)).toBeCloseTo(
+			printedNodeLabelPt(brokenTurned),
+			5,
 		);
+		expect(printedNodeLabelPt(diagram)).toBeGreaterThan(7.5);
+		expect(printedNodeLabelPt(diagram)).toBeLessThan(PRINT_LABEL_FLOOR_PT);
 		expect(warnings).toEqual([
 			{ code: "DIAGRAM_BELOW_PRINT_FLOOR", count: 1 },
 		]);

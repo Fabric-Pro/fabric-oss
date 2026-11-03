@@ -36,7 +36,27 @@
  * wrapper that throws `ORPCError`.
  */
 
-import { getUnsafeUrlReason, safeFetchOutbound } from "./url-security";
+import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
+import {
+	createSafeOutboundLookup,
+	getUnsafeUrlReason,
+	safeFetchOutbound,
+} from "./url-security";
+
+const AGENT_EXTENDED_TIMEOUT_MS = 15 * 60 * 1000;
+
+const allowlistedExtendedTimeoutAgent = new UndiciAgent({
+	headersTimeout: AGENT_EXTENDED_TIMEOUT_MS,
+	bodyTimeout: AGENT_EXTENDED_TIMEOUT_MS,
+});
+
+const safeExtendedTimeoutAgent = new UndiciAgent({
+	headersTimeout: AGENT_EXTENDED_TIMEOUT_MS,
+	bodyTimeout: AGENT_EXTENDED_TIMEOUT_MS,
+	connect: {
+		lookup: createSafeOutboundLookup(),
+	},
+});
 
 /**
  * Hosts permitted when `AGENT_DISCOVERY_ALLOWED_HOSTS` is unset and the
@@ -75,18 +95,50 @@ function allowedHosts(): string[] {
  * enumerate every port an agent might listen on, and the host is what decides
  * whether the request leaves the trust boundary.
  */
-function isAgentHostExplicitlyAllowed(urlString: string): boolean {
-	let hostname: string;
+export function isAgentHostExplicitlyAllowed(urlString: string): boolean {
+	let url: URL;
 	try {
-		hostname = new URL(urlString).hostname
-			.toLowerCase()
-			.replace(/^\[|\]$/g, "")
-			.replace(/\.$/, "");
+		url = new URL(urlString);
 	} catch {
 		return false;
 	}
+	if (url.protocol !== "http:" && url.protocol !== "https:") {
+		return false;
+	}
+	const hostname = url.hostname
+		.toLowerCase()
+		.replace(/^\[|\]$/g, "")
+		.replace(/\.$/, "");
 
 	return allowedHosts().includes(hostname);
+}
+
+/**
+ * Authoritative URL validator for custom/remote OpenAI-compatible AI provider
+ * endpoints (`provider === "CUSTOM"`). Used at save time, connection-test time,
+ * and runtime model invocation.
+ */
+export function validateCustomProviderUrl(urlString: string): string | null {
+	let parsed: URL;
+	try {
+		parsed = new URL(urlString);
+	} catch {
+		return "Invalid URL format";
+	}
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		return `Protocol ${parsed.protocol} is not allowed`;
+	}
+	if (parsed.username || parsed.password) {
+		return "Credentials in the endpoint URL are not allowed";
+	}
+	if (parsed.search || parsed.hash) {
+		return "Query strings and URL fragments are not allowed in a base endpoint URL";
+	}
+	const allowlisted = isAgentHostExplicitlyAllowed(parsed.href);
+	if (parsed.protocol !== "https:" && !allowlisted) {
+		return "HTTPS is required for custom provider endpoints unless the host is in AGENT_DISCOVERY_ALLOWED_HOSTS";
+	}
+	return agentEndpointRefusal(parsed.href);
 }
 
 /**
@@ -125,7 +177,10 @@ export async function fetchAgentEndpoint(
 	init?: RequestInit,
 ): Promise<Response> {
 	if (isAgentHostExplicitlyAllowed(urlString)) {
-		return fetch(urlString, init);
+		return fetch(urlString, {
+			...init,
+			redirect: init?.redirect === "manual" ? "manual" : "error",
+		});
 	}
 
 	const refusal = agentEndpointRefusal(urlString);
@@ -138,4 +193,62 @@ export async function fetchAgentEndpoint(
 	// the two bypasses a one-time hostname check leaves open: a name that
 	// resolves to a private address, and a public host that 302s to one.
 	return safeFetchOutbound(urlString, init);
+}
+
+/**
+ * Guarded 15-minute timeout fetch for custom/remote OpenAI-compatible AI
+ * provider calls (`model-factory.ts` and `langchain-models.ts`).
+ */
+export async function fetchAgentEndpointExtendedTimeout(
+	url: string | URL | Request,
+	init?: RequestInit,
+): Promise<Response> {
+	const targetUrl =
+		url instanceof Request
+			? url.url
+			: typeof url === "string"
+				? url
+				: url.toString();
+	const refusal = validateCustomProviderUrl(targetUrl);
+	if (refusal) {
+		throw new Error(refusal);
+	}
+	const base =
+		url instanceof Request
+			? {
+					method: url.method,
+					headers: url.headers,
+					body: url.body,
+					duplex: url.body ? "half" : undefined,
+					signal: url.signal,
+					mode: url.mode,
+					credentials: url.credentials,
+					cache: url.cache,
+					redirect: url.redirect,
+					referrer: url.referrer,
+					referrerPolicy: url.referrerPolicy,
+					integrity: url.integrity,
+					keepalive: url.keepalive,
+				}
+			: undefined;
+	const overrides =
+		base && init
+			? Object.fromEntries(
+					Object.entries(init).filter(
+						([, value]) => value !== undefined,
+					),
+				)
+			: init;
+	const dispatcher = isAgentHostExplicitlyAllowed(targetUrl)
+		? allowlistedExtendedTimeoutAgent
+		: safeExtendedTimeoutAgent;
+	return (await undiciFetch(
+		targetUrl as never,
+		{
+			...base,
+			...overrides,
+			redirect: "error",
+			dispatcher,
+		} as never,
+	)) as unknown as Response;
 }

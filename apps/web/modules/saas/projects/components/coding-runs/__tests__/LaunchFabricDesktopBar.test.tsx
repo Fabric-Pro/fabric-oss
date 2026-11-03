@@ -112,3 +112,23 @@ it("hides the launcher when the bridge is disabled", async () => {
 		screen.queryByTestId("launch-fabric-desktop-bar"),
 	).not.toBeInTheDocument();
 });
+it("embeds the live Remote Server Web UI inside the Fabric Portal and links documentation", async () => {
+	mount();
+	fireEvent.click(
+		await screen.findByTestId("delegate-remote-agent-server-button"),
+	);
+	expect(screen.getByTestId("launch-desktop-bar-docs-link")).toHaveAttribute(
+		"href",
+		"/docs/features/projects#delegating-coding-runs-to-fabric-agents",
+	);
+	fireEvent.click(screen.getByTestId("toggle-embedded-remote-webui-button"));
+	expect(
+		screen.getByTestId("embedded-remote-server-webui"),
+	).toBeInTheDocument();
+	expect(
+		screen.getByTitle("Fabric Agents Remote Server Web UI"),
+	).toHaveAttribute(
+		"src",
+		expect.stringContaining("https://team.example.com/?"),
+	);
+});

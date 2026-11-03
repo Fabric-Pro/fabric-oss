@@ -36,6 +36,7 @@ const {
 vi.mock("@repo/database", () => ({
 	db: dbMock,
 	clearMeetingSyncFailures: clearFailuresMock,
+	LINKED_MEETING_SOURCE: { TEAMS: "TEAMS", UPLOAD: "UPLOAD" },
 	rebindLinkedMeetingsToUser: rebindMock,
 }));
 
@@ -324,6 +325,16 @@ describe("repairSyncProcedure", () => {
 			dbMock.projectLinkedMeeting.findMany.mockResolvedValue([
 				MEETINGS[1],
 			]);
+		});
+
+		it("never reads an uploaded transcript's row from Microsoft", async () => {
+			await handler({ input: SCOPED, context: CONTEXT });
+
+			expect(dbMock.projectLinkedMeeting.findMany).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({ source: "TEAMS" }),
+				}),
+			);
 		});
 
 		it("asks the database for only the named meetings", async () => {

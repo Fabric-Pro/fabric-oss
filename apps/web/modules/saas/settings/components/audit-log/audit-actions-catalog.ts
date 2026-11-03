@@ -307,6 +307,13 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description: "Member voluntarily left the organization.",
 	},
 	{
+		key: "org.member.bulk_invited",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.member.bulk_invited",
+		description:
+			"A pasted list of addresses was invited. Records how many of each outcome, not the addresses.",
+	},
+	{
 		key: "org.api_key.created",
 		categoryId: "org",
 		labelKey: "settings.auditLog.actions.org.api_key.created",
@@ -1479,6 +1486,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.newsletter.approval.required_changed",
 		description:
 			"A project OWNER turned the release-notes approval gate on or off. When on, every send is held for reviewer sign-off before delivery.",
+	},
+	{
+		key: "newsletter.organization_distribution.changed",
+		categoryId: "newsletter",
+		labelKey:
+			"settings.auditLog.actions.newsletter.organization_distribution.changed",
+		description:
+			"Someone turned sending release notes to the entire organization on or off. Turning it off removes the people it added.",
 	},
 	{
 		key: "newsletter.send.approved",

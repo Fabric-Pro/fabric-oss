@@ -1,6 +1,8 @@
 "use client";
 
+import { buildFabricDesktopViewUrl } from "@saas/projects/lib/implementation-session-labels";
 import { AnthropicCapabilityNotice } from "@saas/settings/components/AnthropicCapabilityNotice";
+import { ChatgptConnectCommand } from "@saas/settings/components/chatgpt-plan/ChatgptConnectCommand";
 import {
 	ChatgptPlanOnlyNotice,
 	ChatgptPlanProviderNote,
@@ -39,6 +41,7 @@ import { RadioGroup, RadioGroupItem } from "@ui/components/radio-group";
 import {
 	Tooltip,
 	TooltipContent,
+	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import {
@@ -47,8 +50,11 @@ import {
 	DatabaseIcon,
 	EyeIcon,
 	EyeOffIcon,
+	HelpCircleIcon,
+	LaptopIcon,
 	LoaderIcon,
 	PlayIcon,
+	ServerIcon,
 	SettingsIcon,
 	StarIcon,
 	Trash2Icon,
@@ -61,6 +67,7 @@ import {
 	embeddingsOnlyTakenBy,
 	GATEWAY_SUB_PROVIDERS,
 	getCloudProviders,
+	getCustomRemoteProvider,
 	getDirectProviders,
 	getGatewayProviders,
 	hasCompleteCredentials,
@@ -140,6 +147,8 @@ export function AiProvidersSettingsForm({
 	// (not just the id) so the dialog can show the human-readable name.
 	const [providerToDelete, setProviderToDelete] =
 		useState<ProviderWithIcon | null>(null);
+	const [subscriptionBridgeDialogOpen, setSubscriptionBridgeDialogOpen] =
+		useState(false);
 
 	// Query AI configuration status
 	const { data: configStatus, isLoading: isLoadingStatus } = useQuery({
@@ -169,6 +178,7 @@ export function AiProvidersSettingsForm({
 				clientSecret: data.clientSecret,
 				baseUrl: data.baseUrl,
 				deploymentName: data.deploymentName,
+				organizationId: null, // Explicit null for personal context
 			});
 		},
 	});
@@ -511,13 +521,18 @@ export function AiProvidersSettingsForm({
 		: { apiKey };
 
 	/**
-	 * Azure AI Foundry's deployment name. Test Connection and Save both send
-	 * this one value, so a passing test exercised the deployment that is saved.
+	 * Azure AI Foundry's deployment name or CUSTOM remote bridge's optional
+	 * default model / deployment ID. Test Connection and Save both send this
+	 * value, so a passing test exercised the deployment that is saved.
+	 * For CUSTOM, an empty string on Save explicitly clears a previously saved
+	 * model override.
 	 */
 	const deploymentNamePayload =
-		selectedProvider?.id === "AZURE_AI_FOUNDRY" && deploymentName
-			? deploymentName
-			: undefined;
+		selectedProvider?.id === "AZURE_AI_FOUNDRY"
+			? deploymentName.trim() || undefined
+			: selectedProvider?.id === "CUSTOM"
+				? deploymentName.trim()
+				: undefined;
 
 	/**
 	 * True only when the passing test covered the values currently in the form.
@@ -567,7 +582,7 @@ export function AiProvidersSettingsForm({
 				baseUrl: selectedProvider.requiresBaseUrl
 					? customBaseUrl
 					: undefined,
-				deploymentName: deploymentNamePayload,
+				deploymentName: deploymentNamePayload || undefined,
 			});
 
 			// The user may have edited a field while the request was in flight;
@@ -763,6 +778,7 @@ export function AiProvidersSettingsForm({
 	};
 
 	// Use memoized provider lists from centralized config
+	const customRemoteProvider = useMemo(() => getCustomRemoteProvider(), []);
 	const gatewayProviders = useMemo(() => getGatewayProviders(), []);
 	const directProviders = useMemo(() => getDirectProviders(), []);
 	const cloudProviders = useMemo(() => getCloudProviders(), []);
@@ -967,12 +983,289 @@ export function AiProvidersSettingsForm({
 							</div>
 						)}
 
+					{/* Fabric Agents Remote Server & Desktop Section */}
+					<div>
+						<div className="mb-3 flex flex-wrap items-center gap-2">
+							<h4 className="app-editorial-label">
+								Fabric Agents Remote Server &amp; Desktop
+							</h4>
+							<TooltipProvider delayDuration={150}>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<a
+											href="/docs/features/ai-providers#remote--subscription-agent-bridges"
+											target="_blank"
+											rel="noopener noreferrer"
+											data-testid="ai-providers-bridges-docs-link"
+											aria-label="Fabric Agents Remote Server and Desktop AI bridge documentation"
+											className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+										>
+											<HelpCircleIcon className="size-3" />
+											Docs
+										</a>
+									</TooltipTrigger>
+									<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+										<p className="font-semibold">
+											Remote &amp; Subscription Agent
+											Bridges
+										</p>
+										<p>
+											Connect a Personal or Organization
+											Fabric Agents Remote Server or
+											Fabric Agents Desktop to route AI
+											requests through your subscription
+											harnesses.
+										</p>
+									</TooltipContent>
+								</Tooltip>
+							</TooltipProvider>
+						</div>
+						<div className="grid auto-rows-fr gap-4 md:grid-cols-2">
+							{/* Card 1: Fabric Agents Remote Server (CUSTOM) */}
+							{(() => {
+								const provider = customRemoteProvider;
+								const isConfigured = isProviderConfigured(
+									provider.id,
+								);
+								const isDefault = isProviderDefault(
+									provider.id,
+								);
+								const Icon = provider.icon;
+
+								return (
+									<Card
+										key={provider.id}
+										className={`relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:border-primary/50 hover:shadow-xs ${isDefault ? "border-success/40" : ""}`}
+									>
+										<div className="flex flex-1 flex-col justify-between gap-3">
+											<div className="flex items-start gap-3">
+												<div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/40">
+													<ServerIcon className="size-4 text-primary" />
+												</div>
+												<div className="min-w-0 flex-1">
+													<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+														<h4
+															className="font-semibold text-sm leading-snug"
+															title={
+																provider.name
+															}
+														>
+															{provider.name}
+														</h4>
+														<Badge
+															variant="secondary"
+															className="shrink-0 text-xs"
+														>
+															Personal or Org
+															Server
+														</Badge>
+														{isDefault && (
+															<Badge
+																variant="success"
+																className="shrink-0 text-xs"
+															>
+																<StarIcon className="mr-1 size-3" />
+																Default
+															</Badge>
+														)}
+														{isConfigured && (
+															<Badge
+																variant="outline"
+																className="shrink-0 border-success/40 text-xs text-success"
+															>
+																<CheckCircleIcon className="mr-1 size-3" />
+																Active
+															</Badge>
+														)}
+														<Icon className="sr-only" />
+													</div>
+													<p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+														{provider.description}
+													</p>
+												</div>
+											</div>
+
+											<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
+												<Button
+													variant="outline"
+													size="sm"
+													className="flex-1"
+													onClick={() =>
+														handleConfigureProvider(
+															provider,
+														)
+													}
+												>
+													<SettingsIcon className="mr-2 size-4" />
+													{isConfigured
+														? "Reconfigure Fabric Agents Remote Server"
+														: "Configure Fabric Agents Remote Server"}
+												</Button>
+												{isConfigured && (
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																variant="outline"
+																size="sm"
+																type="button"
+																autoLoading={
+																	false
+																}
+																onClick={() =>
+																	handleTestSavedConnection(
+																		provider.id,
+																	)
+																}
+																disabled={
+																	testingProviderId ===
+																	provider.id
+																}
+															>
+																{testingProviderId ===
+																provider.id ? (
+																	<LoaderIcon className="mr-1 size-3 animate-spin" />
+																) : (
+																	<PlayIcon className="mr-1 size-3" />
+																)}
+																Test
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent side="bottom">
+															<p>
+																Verify the
+																connection is
+																working
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												)}
+												{isConfigured && !isDefault && (
+													<Button
+														variant="outline"
+														size="sm"
+														onClick={() =>
+															handleSetDefault(
+																provider.id,
+															)
+														}
+														disabled={
+															setDefaultMutation.isPending
+														}
+													>
+														<StarIcon className="mr-1 size-3" />
+														Set Default
+													</Button>
+												)}
+												{isConfigured && (
+													<PlanSpentFallbackToggle
+														provider={provider.id}
+														checked={isProviderPlanSpentFallback(
+															provider.id,
+															configStatus,
+														)}
+													/>
+												)}
+												{isConfigured && (
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																variant="outline"
+																size="sm"
+																type="button"
+																autoLoading={
+																	false
+																}
+																onClick={() =>
+																	setProviderToDelete(
+																		provider,
+																	)
+																}
+																disabled={
+																	deleteProviderMutation.isPending &&
+																	deleteProviderMutation.variables ===
+																		provider.id
+																}
+																className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+															>
+																<Trash2Icon className="mr-1 size-3" />
+																Delete
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent side="bottom">
+															<p>
+																Remove this
+																provider from
+																your profile
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												)}
+											</div>
+										</div>
+									</Card>
+								);
+							})()}
+
+							{/* Card 2: Fabric Agents Desktop & Subscription Bridges */}
+							<Card className="relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:border-primary/50 hover:shadow-xs">
+								<div className="flex flex-1 flex-col justify-between gap-3">
+									<div className="flex items-start gap-3">
+										<div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/40">
+											<LaptopIcon className="size-4 text-primary" />
+										</div>
+										<div className="min-w-0 flex-1">
+											<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+												<h4
+													className="font-semibold text-sm leading-snug"
+													title="Fabric Agents Desktop"
+												>
+													Fabric Agents Desktop
+												</h4>
+												<Badge
+													variant="secondary"
+													className="shrink-0 text-xs"
+												>
+													Zero API Cost
+												</Badge>
+											</div>
+											<p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+												Route AI requests and coding
+												tasks through Fabric Agents
+												Desktop or your ChatGPT
+												Plus/Pro, Claude, Codex, Droid,
+												Grok, Kimi, and Cursor
+												subscriptions without paying
+												per-token API fees.
+											</p>
+										</div>
+									</div>
+
+									<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
+										<Button
+											variant="outline"
+											size="sm"
+											className="flex-1"
+											onClick={() =>
+												setSubscriptionBridgeDialogOpen(
+													true,
+												)
+											}
+										>
+											<LaptopIcon className="mr-2 size-4" />
+											Configure Fabric Agents Desktop
+										</Button>
+									</div>
+								</div>
+							</Card>
+						</div>
+					</div>
+
 					{/* AI Gateways Section */}
 					<div>
 						<h4 className="app-editorial-label mb-3">
 							AI Gateways
 						</h4>
-						<div className="grid gap-4 md:grid-cols-2">
+						<div className="grid auto-rows-fr gap-4 md:grid-cols-2">
 							{gatewayProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
 									provider.id,
@@ -993,9 +1286,9 @@ export function AiProvidersSettingsForm({
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors hover:border-primary/50 ${isDefault ? "border-success/40" : ""}`}
+										className={`relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:border-primary/50 hover:shadow-xs ${isDefault ? "border-success/40" : ""}`}
 									>
-										<div className="space-y-3">
+										<div className="flex flex-1 flex-col justify-between gap-3">
 											<div className="flex items-start gap-3">
 												<SiteFavicon
 													url={aiProviderSiteUrl(
@@ -1008,9 +1301,14 @@ export function AiProvidersSettingsForm({
 														<Icon className="size-4" />
 													}
 												/>
-												<div className="flex-1">
-													<div className="flex min-w-0 items-center gap-2">
-														<h4 className="truncate font-semibold">
+												<div className="min-w-0 flex-1">
+													<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+														<h4
+															className="truncate font-semibold text-sm"
+															title={
+																provider.name
+															}
+														>
 															{provider.name}
 														</h4>
 														{isDefault && (
@@ -1042,13 +1340,18 @@ export function AiProvidersSettingsForm({
 															/>
 														)}
 													</div>
-													<p className="mt-1 text-muted-foreground text-xs">
+													<p
+														className="mt-1 text-muted-foreground text-xs leading-relaxed"
+														title={
+															provider.description
+														}
+													>
 														{provider.description}
 													</p>
 												</div>
 											</div>
 
-											<div className="flex gap-2 flex-wrap">
+											<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
 												<Button
 													variant="outline"
 													size="sm"
@@ -1257,7 +1560,7 @@ export function AiProvidersSettingsForm({
 						<h4 className="app-editorial-label mb-3">
 							Direct Providers
 						</h4>
-						<div className="grid items-start gap-4 md:grid-cols-2 lg:grid-cols-3">
+						<div className="grid auto-rows-fr gap-4 md:grid-cols-2 lg:grid-cols-3">
 							{directProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
 									provider.id,
@@ -1278,9 +1581,9 @@ export function AiProvidersSettingsForm({
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors hover:border-primary/50 ${isDefault ? "border-success/40" : ""}`}
+										className={`relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:border-primary/50 hover:shadow-xs ${isDefault ? "border-success/40" : ""}`}
 									>
-										<div className="space-y-3">
+										<div className="flex flex-1 flex-col justify-between gap-3">
 											<div className="flex items-start gap-3">
 												<SiteFavicon
 													url={aiProviderSiteUrl(
@@ -1293,9 +1596,14 @@ export function AiProvidersSettingsForm({
 														<Icon className="size-4" />
 													}
 												/>
-												<div className="flex-1">
-													<div className="flex min-w-0 items-center gap-2">
-														<h4 className="truncate font-semibold text-sm">
+												<div className="min-w-0 flex-1">
+													<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+														<h4
+															className="truncate font-semibold text-sm"
+															title={
+																provider.name
+															}
+														>
 															{provider.name}
 														</h4>
 														{isDefault && (
@@ -1326,7 +1634,12 @@ export function AiProvidersSettingsForm({
 															/>
 														)}
 													</div>
-													<p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
+													<p
+														className="mt-1 text-muted-foreground text-xs leading-relaxed"
+														title={
+															provider.description
+														}
+													>
 														{provider.description}
 													</p>
 												</div>
@@ -1336,7 +1649,7 @@ export function AiProvidersSettingsForm({
 												providerId={provider.id}
 											/>
 
-											<div className="flex gap-2 flex-wrap">
+											<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
 												<Button
 													variant="outline"
 													size="sm"
@@ -1530,7 +1843,7 @@ export function AiProvidersSettingsForm({
 							Enterprise cloud AI services that require additional
 							configuration like resource endpoints.
 						</p>
-						<div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+						<div className="grid auto-rows-fr gap-4 md:grid-cols-2 lg:grid-cols-3">
 							{cloudProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
 									provider.id,
@@ -1551,9 +1864,9 @@ export function AiProvidersSettingsForm({
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors hover:border-primary/50 ${isDefault ? "border-success/40" : ""}`}
+										className={`relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:border-primary/50 hover:shadow-xs ${isDefault ? "border-success/40" : ""}`}
 									>
-										<div className="space-y-3">
+										<div className="flex flex-1 flex-col justify-between gap-3">
 											<div className="flex items-start gap-3">
 												<SiteFavicon
 													url={aiProviderSiteUrl(
@@ -1566,9 +1879,14 @@ export function AiProvidersSettingsForm({
 														<Icon className="size-4" />
 													}
 												/>
-												<div className="flex-1">
-													<div className="flex min-w-0 items-center gap-2">
-														<h4 className="truncate font-semibold text-sm">
+												<div className="min-w-0 flex-1">
+													<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+														<h4
+															className="truncate font-semibold text-sm"
+															title={
+																provider.name
+															}
+														>
 															{provider.name}
 														</h4>
 														{isDefault && (
@@ -1599,13 +1917,18 @@ export function AiProvidersSettingsForm({
 															/>
 														)}
 													</div>
-													<p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
+													<p
+														className="mt-1 text-muted-foreground text-xs leading-relaxed"
+														title={
+															provider.description
+														}
+													>
 														{provider.description}
 													</p>
 												</div>
 											</div>
 
-											<div className="flex gap-2 flex-wrap">
+											<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
 												<Button
 													variant="outline"
 													size="sm"
@@ -2098,6 +2421,54 @@ export function AiProvidersSettingsForm({
 										"Enter gateway URL"
 									}
 								/>
+								{selectedProvider.id === "CUSTOM" && (
+									<div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+										<span className="text-muted-foreground text-xs">
+											Quick presets:
+										</span>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											className="h-6 px-2 text-xs"
+											onClick={() =>
+												handleBaseUrlChange(
+													"http://127.0.0.1:9100/v1",
+												)
+											}
+										>
+											Personal / Local Remote Server
+											(127.0.0.1:9100/v1)
+										</Button>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											className="h-6 px-2 text-xs"
+											onClick={() =>
+												handleBaseUrlChange(
+													"http://127.0.0.1:4100/v1",
+												)
+											}
+										>
+											Fabric Agents Desktop
+											(127.0.0.1:4100/v1)
+										</Button>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											className="h-6 px-2 text-xs"
+											onClick={() =>
+												handleBaseUrlChange(
+													"https://agents.example.com/v1",
+												)
+											}
+										>
+											Organization Remote Server
+										</Button>
+									</div>
+								)}
 								{selectedProvider.baseUrlHelp && (
 									<p className="text-muted-foreground text-xs">
 										{selectedProvider.baseUrlHelp}
@@ -2131,6 +2502,33 @@ export function AiProvidersSettingsForm({
 									you gave when deploying a model in Azure AI
 									Foundry (e.g., "gpt-4o" or
 									"my-custom-deployment").
+								</p>
+							</div>
+						)}
+
+						{/* Default Model / Deployment ID Input (Optional for CUSTOM) */}
+						{selectedProvider?.id === "CUSTOM" && (
+							<div className="space-y-2">
+								<Label htmlFor="deploymentName">
+									Default Model / Deployment ID (Optional)
+								</Label>
+								<Input
+									id="deploymentName"
+									type="text"
+									value={deploymentName}
+									onChange={(e) =>
+										handleDeploymentNameChange(
+											e.target.value,
+										)
+									}
+									placeholder="e.g., gpt-4o, llama3.3, qwen2.5-coder"
+								/>
+								<p className="text-muted-foreground text-xs">
+									When set, requests to this endpoint use this
+									model/deployment identifier. Leave blank to
+									pass the selected catalog model ID directly
+									(probed with <code>gpt-4o</code> during
+									connection tests).
 								</p>
 							</div>
 						)}
@@ -2417,6 +2815,159 @@ export function AiProvidersSettingsForm({
 							) : (
 								"Change Embedding Provider"
 							)}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+
+			{/* Fabric Agents Desktop & Subscription Bridges Dialog */}
+			<Dialog
+				open={subscriptionBridgeDialogOpen}
+				onOpenChange={setSubscriptionBridgeDialogOpen}
+			>
+				<DialogContent className="max-w-lg">
+					<DialogHeader>
+						<DialogTitle>
+							Configure Fabric Agents Desktop &amp; Subscription
+							Bridges
+						</DialogTitle>
+						<DialogDescription>
+							Use your existing ChatGPT Plus/Pro, Claude, Codex,
+							Droid, Grok, Kimi, or Cursor subscription with
+							Fabric Agents Desktop or a Fabric Agents Remote
+							Server without per-token API charges.
+						</DialogDescription>
+					</DialogHeader>
+
+					<div className="space-y-4">
+						<div className="space-y-2 rounded-lg border border-border p-3.5">
+							<div className="flex items-center justify-between gap-2">
+								<p className="font-medium text-sm">
+									1. Fabric Agents Desktop (Local App &amp;
+									OpenAI Proxy)
+								</p>
+								<Badge variant="outline" className="text-xs">
+									Fabric Agents Desktop
+								</Badge>
+							</div>
+							<p className="text-muted-foreground text-xs leading-relaxed">
+								Open Fabric Agents Desktop Settings to enable
+								the local OpenAI-compatible proxy (default{" "}
+								<code>http://127.0.0.1:4100/v1</code>) or assign
+								coding tasks directly from any feature card.
+							</p>
+							<div className="flex flex-wrap items-center gap-2 pt-1">
+								<Button variant="outline" size="sm" asChild>
+									<a
+										href={buildFabricDesktopViewUrl(
+											"settings",
+										)}
+									>
+										<LaptopIcon className="mr-1.5 size-3.5" />
+										Open Fabric Agents Desktop Settings
+									</a>
+								</Button>
+								<Button
+									variant="secondary"
+									size="sm"
+									type="button"
+									onClick={() => {
+										setSubscriptionBridgeDialogOpen(false);
+										handleConfigureProvider(
+											customRemoteProvider,
+										);
+										handleBaseUrlChange(
+											"http://127.0.0.1:4100/v1",
+										);
+									}}
+								>
+									<ServerIcon className="mr-1.5 size-3.5" />
+									Configure Fabric Agents Desktop Endpoint
+								</Button>
+							</div>
+						</div>
+
+						<div className="space-y-2 rounded-lg border border-border p-3.5">
+							<div className="flex items-center justify-between gap-2">
+								<p className="font-medium text-sm">
+									2. Fabric Agents Remote Server (Personal or
+									Organization)
+								</p>
+								<Badge variant="secondary" className="text-xs">
+									Fabric Agents Remote Server
+								</Badge>
+							</div>
+							<p className="text-muted-foreground text-xs leading-relaxed">
+								Connect your Personal Fabric Agents Remote
+								Server (<code>http://127.0.0.1:9100/v1</code>)
+								or your Organization Fabric Agents Remote Server
+								(<code>https://agents.example.com/v1</code>)
+								backed by your subscription tokens.
+							</p>
+							<div className="flex flex-wrap items-center gap-2 pt-1">
+								<Button
+									variant="outline"
+									size="sm"
+									type="button"
+									onClick={() => {
+										setSubscriptionBridgeDialogOpen(false);
+										handleConfigureProvider(
+											customRemoteProvider,
+										);
+										handleBaseUrlChange(
+											"http://127.0.0.1:9100/v1",
+										);
+									}}
+								>
+									<ServerIcon className="mr-1.5 size-3.5" />
+									Personal Remote Server (:9100/v1)
+								</Button>
+								<Button
+									variant="outline"
+									size="sm"
+									type="button"
+									onClick={() => {
+										setSubscriptionBridgeDialogOpen(false);
+										handleConfigureProvider(
+											customRemoteProvider,
+										);
+										handleBaseUrlChange(
+											"https://agents.example.com/v1",
+										);
+									}}
+								>
+									<ServerIcon className="mr-1.5 size-3.5" />
+									Organization Remote Server
+								</Button>
+							</div>
+						</div>
+
+						<div className="space-y-2 rounded-lg border border-border p-3.5">
+							<div className="flex items-center justify-between gap-2">
+								<p className="font-medium text-sm">
+									3. ChatGPT Plus / Pro Subscription Bridge
+								</p>
+								<Badge variant="secondary" className="text-xs">
+									CLI Bridge
+								</Badge>
+							</div>
+							<p className="text-muted-foreground text-xs leading-relaxed">
+								Run this command in your terminal to link your
+								ChatGPT Plus or Pro account to Fabric:
+							</p>
+							<ChatgptConnectCommand />
+						</div>
+					</div>
+
+					<DialogFooter>
+						<Button
+							variant="outline"
+							type="button"
+							onClick={() =>
+								setSubscriptionBridgeDialogOpen(false)
+							}
+						>
+							Close
 						</Button>
 					</DialogFooter>
 				</DialogContent>

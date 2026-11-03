@@ -474,7 +474,13 @@ export async function getUserModelPreference(
 			model: {
 				include: {
 					providerMappings: {
-						where: { provider, isAvailable: true },
+						where: {
+							provider:
+								provider === "CUSTOM"
+									? { in: ["CUSTOM", "OPENAI_DIRECT"] }
+									: provider,
+							isAvailable: true,
+						},
 					},
 				},
 			},
@@ -602,7 +608,13 @@ export async function getOrgModelPreference(
 			model: {
 				include: {
 					providerMappings: {
-						where: { provider, isAvailable: true },
+						where: {
+							provider:
+								provider === "CUSTOM"
+									? { in: ["CUSTOM", "OPENAI_DIRECT"] }
+									: provider,
+							isAvailable: true,
+						},
 					},
 				},
 			},
@@ -752,7 +764,13 @@ async function resolveDeprecatedModel(
 			where: { id: currentModel.replacementModelId },
 			include: {
 				providerMappings: {
-					where: { provider, isAvailable: true },
+					where: {
+						provider:
+							provider === "CUSTOM"
+								? { in: ["CUSTOM", "OPENAI_DIRECT"] }
+								: provider,
+						isAvailable: true,
+					},
 				},
 			},
 		});
@@ -869,9 +887,13 @@ export async function getModelForTask(
 			// Handle deprecation
 			const { model, wasDeprecated, originalModelName } =
 				await resolveDeprecatedModel(orgOverride.model, provider);
-			const providerMapping = model.providerMappings?.find(
-				(m) => m.provider === provider,
-			);
+			const providerMapping =
+				model.providerMappings?.find((m) => m.provider === provider) ??
+				(provider === "CUSTOM"
+					? model.providerMappings?.find(
+							(m) => m.provider === "OPENAI_DIRECT",
+						)
+					: undefined);
 			// DECISION is held to the organization's explicit choice. Typed
 			// decisions send the organization's data to the decision model's
 			// vendor, so a choice that cannot be honoured as made (its gateway
@@ -937,9 +959,13 @@ export async function getModelForTask(
 			// Handle deprecation
 			const { model, wasDeprecated, originalModelName } =
 				await resolveDeprecatedModel(userOverride.model, provider);
-			const providerMapping = model.providerMappings?.find(
-				(m) => m.provider === provider,
-			);
+			const providerMapping =
+				model.providerMappings?.find((m) => m.provider === provider) ??
+				(provider === "CUSTOM"
+					? model.providerMappings?.find(
+							(m) => m.provider === "OPENAI_DIRECT",
+						)
+					: undefined);
 			// Defense-in-depth (PR 1090 review I-1) — same rationale as the
 			// organization branch above. Soft degrade to system default
 			// instead of throwing at `resolveModel`.
@@ -975,9 +1001,13 @@ export async function getModelForTask(
 		// Handle deprecation (unlikely for system defaults, but handle for completeness)
 		const { model, wasDeprecated, originalModelName } =
 			await resolveDeprecatedModel(systemDefault, provider);
-		const providerMapping = model.providerMappings?.find(
-			(m) => m.provider === provider,
-		);
+		const providerMapping =
+			model.providerMappings?.find((m) => m.provider === provider) ??
+			(provider === "CUSTOM"
+				? model.providerMappings?.find(
+						(m) => m.provider === "OPENAI_DIRECT",
+					)
+				: undefined);
 		return {
 			model,
 			providerModelId:
@@ -1017,17 +1047,28 @@ export async function getProviderModelMappingForCanonical(
 		include: {
 			providerMappings: {
 				where: {
-					provider,
+					provider:
+						provider === "CUSTOM"
+							? { in: ["CUSTOM", "OPENAI_DIRECT"] }
+							: provider,
 					isAvailable: true,
 					model: SELECTABLE_CATALOG_MODEL_FILTER,
 				},
-				take: 1,
+				...(provider === "CUSTOM" ? {} : { take: 1 }),
 			},
 		},
 	});
+	const mapping =
+		provider === "CUSTOM"
+			? (model?.providerMappings?.find((m) => m.provider === "CUSTOM") ??
+				model?.providerMappings?.find(
+					(m) => m.provider === "OPENAI_DIRECT",
+				) ??
+				model?.providerMappings?.[0])
+			: model?.providerMappings?.[0];
 	return {
 		exists: model !== null,
-		providerModelId: model?.providerMappings?.[0]?.providerModelId ?? null,
+		providerModelId: mapping?.providerModelId ?? null,
 	};
 }
 
@@ -1040,7 +1081,14 @@ export async function getAvailableCanonicalNameForProviderModelId(
 		where: {
 			...SELECTABLE_CATALOG_MODEL_FILTER,
 			providerMappings: {
-				some: { provider, providerModelId, isAvailable: true },
+				some: {
+					provider:
+						provider === "CUSTOM"
+							? { in: ["CUSTOM", "OPENAI_DIRECT"] }
+							: provider,
+					providerModelId,
+					isAvailable: true,
+				},
 			},
 		},
 		select: { canonicalName: true },

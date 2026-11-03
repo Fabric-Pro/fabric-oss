@@ -157,5 +157,12 @@ export class LibraryChatEngine extends InProcessEngine<
 			throw streamError;
 		}
 		prepared.recordAnswer(await result.usage, Date.now() - generationStart);
+		if (answered && !signal.aborted) {
+			yield {
+				type: EventType.CUSTOM,
+				name: LIBRARY_CHAT_EVENT.model,
+				value: prepared.getAnswerModel(),
+			};
+		}
 	}
 }

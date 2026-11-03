@@ -306,6 +306,47 @@ beforeEach(() => {
 });
 
 describe("the library-chat engine", () => {
+	it("reads the final fallback snapshot and starts each turn with a fresh identity", async () => {
+		const metadata = {
+			modelString: "example-configured",
+			provider: "OPENAI_CHATGPT_PLAN",
+			answerSnapshot: {
+				modelString: "example-initial",
+				provider: "OPENAI_CHATGPT_PLAN",
+			},
+		};
+		m.getAIModelWithMetadata.mockResolvedValueOnce({
+			model: {},
+			metadata,
+			trackUsage: m.trackModel,
+		});
+		m.answer.pauseAfterFirst = async () => {
+			metadata.answerSnapshot = {
+				modelString: "example-api-served",
+				provider: "OPENAI_DIRECT",
+			};
+		};
+		const first = await run();
+		expect(first).toContainEqual({
+			type: EventType.CUSTOM,
+			name: "fabric.library-chat.model",
+			value: expect.objectContaining({
+				id: "example-api-served",
+				viaPlan: false,
+			}),
+		});
+		m.answer.pauseAfterFirst = undefined;
+		const second = await run();
+		expect(second).toContainEqual({
+			type: EventType.CUSTOM,
+			name: "fabric.library-chat.model",
+			value: expect.objectContaining({
+				id: "model-example",
+				viaPlan: false,
+			}),
+		});
+	});
+
 	it("refuses while its flag is off for the caller's organization, before any access check or model call", async () => {
 		m.isFeatureEnabled.mockResolvedValue(false);
 
@@ -366,6 +407,7 @@ describe("the library-chat engine", () => {
 			EventType.TEXT_MESSAGE_CONTENT,
 			EventType.TEXT_MESSAGE_CONTENT,
 			EventType.TEXT_MESSAGE_END,
+			EventType.CUSTOM,
 			EventType.RUN_FINISHED,
 		]);
 		expect(events[1]).toEqual({

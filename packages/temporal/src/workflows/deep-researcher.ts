@@ -35,6 +35,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as deepResearcherActivities from "../activities/deep-researcher";
+import type { AnswerModelInfo } from "../answer-model-info";
 import { extractMeaningfulErrorMessage } from "./meaningful-error-message";
 
 // =============================================================================
@@ -113,6 +114,9 @@ export interface ResearchReportSection {
 }
 
 export interface DeepResearcherOutput {
+	model?: AnswerModelInfo;
+	summaryModel?: AnswerModelInfo;
+	reportModel?: AnswerModelInfo;
 	executionId: string;
 	status: "completed" | "failed" | "timeout" | "cancelled";
 	/** The synthesized research result (flat text) */
@@ -187,6 +191,8 @@ export interface DeepResearcherProgress {
 }
 
 export interface DeepResearcherState {
+	model?: AnswerModelInfo;
+	reportModel?: AnswerModelInfo;
 	executionId: string;
 	status: "running" | "completed" | "failed" | "cancelled";
 	phase: DeepResearcherPhase;
@@ -438,6 +444,8 @@ export async function deepResearcherWorkflow(
 				executionId: state.executionId,
 				status: "completed",
 				result: directResult.result,
+				model: directResult.model,
+				summaryModel: directResult.summaryModel,
 				summary: directResult.summary,
 				sources: directResult.sources,
 				subAgentResults: [],
@@ -621,6 +629,8 @@ export async function deepResearcherWorkflow(
 				});
 
 			state.aggregatedResult = aggregationResult.synthesizedResult;
+			state.model = aggregationResult.model;
+			state.reportModel = aggregationResult.reportModel;
 			state.structuredReport = aggregationResult.structuredReport;
 
 			// ==================================================================
@@ -694,6 +704,8 @@ export async function deepResearcherWorkflow(
 			executionId: state.executionId,
 			status: "completed",
 			result: state.aggregatedResult || undefined,
+			model: state.model,
+			reportModel: state.reportModel,
 			summary: generateExecutiveSummary(
 				input.query,
 				state.aggregatedResult,

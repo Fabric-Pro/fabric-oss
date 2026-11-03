@@ -2,11 +2,11 @@
  * The print column, a printed figure's height, the label floor and the
  * canvas margin, one set for the export and the live page (Fizzy #2946).
  * Both read them from `@repo/utils/proposal-artifact/diagram-label-wrap`,
- * which restates the Word writer's page geometry because, browser-safe, it
- * cannot import it. The export's renderer passes them on as they are, and
- * the restated column and height must stay the Word writer's, so the live
- * page turns and breaks a diagram exactly when print does, on a page the
- * size of the one printed.
+ * which restates the Word writer's page width because, browser-safe, it
+ * cannot import it, and takes a figure's height from the print layer. The
+ * export's renderer passes them on as they are, and the column and height
+ * must stay the Word writer's, so the live page turns and breaks a diagram
+ * exactly when print does, on a page the size of the one printed.
  */
 
 import * as shared from "@repo/utils/proposal-artifact/diagram-label-wrap";

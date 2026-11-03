@@ -10,6 +10,10 @@
  */
 
 import { generateText, getAIModelWithMetadata } from "@repo/ai";
+import {
+	type AnswerModelInfo,
+	answerModelInfo,
+} from "@repo/ai/lib/answer-model-info";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import { heartbeat } from "@temporalio/activity";
 import { z } from "zod";
@@ -72,6 +76,8 @@ export interface AggregateResultsInput {
 }
 
 export interface AggregateResultsOutput {
+	model?: AnswerModelInfo;
+	reportModel?: AnswerModelInfo;
 	synthesizedResult: string;
 	keyThemes: string[];
 	overallConfidence: number;
@@ -335,6 +341,9 @@ Be thorough but concise. Use clear structure and formatting.`;
 					: {}),
 			}),
 		);
+		const servedModel = answerModelInfo(
+			modelMetadata.answerSnapshot ?? modelMetadata,
+		);
 
 		// Calculate overall confidence (weighted average by findings length)
 		const totalWeight = completedResults.reduce(
@@ -426,6 +435,10 @@ Include 2-6 sections. Leave citedSources as an empty array — it will be popula
 
 		return {
 			synthesizedResult: synthesisResult.text,
+			model: synthesisResult.text ? servedModel : undefined,
+			reportModel: answerModelInfo(
+				modelMetadata.answerSnapshot ?? modelMetadata,
+			),
 			keyThemes,
 			overallConfidence: Math.round(weightedConfidence),
 			structuredReport,

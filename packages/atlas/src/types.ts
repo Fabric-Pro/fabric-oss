@@ -6,6 +6,8 @@
  * server-only `AtlasService` (which touches the DB, AI and Qdrant).
  */
 
+import type { AnswerModelInfo } from "@repo/ai/lib/answer-model-info";
+
 export type GraphMode = "TECHNICAL" | "BUSINESS";
 
 /** Technical node kinds describe code structure; business kinds describe value. */
@@ -362,6 +364,7 @@ export type ChatVisibility = "PRIVATE" | "SHARED";
 
 /** A persisted chat turn (the `messages` Json column is an array of these). */
 export interface StoredChatMessage {
+	model?: AnswerModelInfo;
 	role: "user" | "assistant" | "system";
 	content: string;
 	createdAt?: string; // ISO

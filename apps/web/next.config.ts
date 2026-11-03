@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { withContentCollections } from "@content-collections/next";
+import { withMicrofrontends } from "@vercel/microfrontends/next/config";
 import type { NextConfig } from "next";
 import nextIntlPlugin from "next-intl/plugin";
 import { cliManifestEnv } from "./lib/cli-manifest-env";
@@ -871,4 +872,19 @@ const nextConfig: NextConfig = {
 	},
 };
 
-export default withContentCollections(withNextIntl(nextConfig));
+/*
+ * fabric.pro is one domain served by two Vercel projects (Microfrontends, see
+ * microfrontends.json): this app by default, and the marketing site
+ * (fabric-web) for the marketing paths, behind the marketing-on-fabric-web
+ * flag that proxy.ts reads. withMicrofrontends reads microfrontends.json.
+ */
+export default withContentCollections(
+	withNextIntl(
+		// Only the production project is in the group. Any other build (local,
+		// Docker, CI, the staging project, a fork's Vercel project) has no
+		// Microfrontends application to find, so it stays exactly as before.
+		process.env.VERCEL_PROJECT_NAME === "fabric-prod"
+			? withMicrofrontends(nextConfig)
+			: nextConfig,
+	),
+);

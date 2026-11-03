@@ -16,6 +16,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getAIModelWithMetadata, streamText } from "@repo/ai";
+import {
+	type AnswerModelInfo,
+	answerModelInfo,
+} from "@repo/ai/lib/answer-model-info";
 import { listRepositoryBranches } from "@repo/connectors";
 import {
 	bulkRunResumeWorkflowId,
@@ -2017,6 +2021,7 @@ export class AtlasService {
 		// to persist at all.
 		let assistantPersisted = false;
 		let accumulatedText = "";
+		let servedModel: AnswerModelInfo | undefined;
 		let resolvePersistOutcome!: (outcome: {
 			persisted: boolean;
 			interrupted: boolean;
@@ -2042,6 +2047,7 @@ export class AtlasService {
 				resolvePersistOutcome({ persisted: true, interrupted });
 				return;
 			}
+			servedModel = answerModelInfo(metadata.answerSnapshot ?? metadata);
 			try {
 				// A missing conversation row (deleted mid-stream) returns 0 rows
 				// — kept as the historical silent-return for this post-stream
@@ -2050,6 +2056,7 @@ export class AtlasService {
 					{
 						role: "assistant",
 						content: text,
+						model: servedModel,
 						createdAt: new Date().toISOString(),
 						...(interrupted ? { interrupted: true as const } : {}),
 					},
@@ -2118,7 +2125,11 @@ export class AtlasService {
 			}
 		})();
 
-		return { textStream, persistOutcome };
+		return {
+			textStream,
+			persistOutcome,
+			getAnswerModel: () => servedModel,
+		};
 	}
 
 	// ── Shared node positions (draggable layout) ───────────────────────────────
@@ -3847,6 +3858,7 @@ export class AtlasService {
 
 		let assistantPersisted = false;
 		let accumulatedText = "";
+		let servedModel: AnswerModelInfo | undefined;
 		let resolvePersistOutcome!: (outcome: {
 			persisted: boolean;
 			interrupted: boolean;
@@ -3869,11 +3881,13 @@ export class AtlasService {
 				resolvePersistOutcome({ persisted: true, interrupted });
 				return;
 			}
+			servedModel = answerModelInfo(metadata.answerSnapshot ?? metadata);
 			try {
 				await queries.appendMessages(conversationId, [
 					{
 						role: "assistant",
 						content: text,
+						model: servedModel,
 						createdAt: new Date().toISOString(),
 						...(interrupted ? { interrupted: true as const } : {}),
 					},
@@ -3931,7 +3945,11 @@ export class AtlasService {
 			}
 		})();
 
-		return { textStream, persistOutcome };
+		return {
+			textStream,
+			persistOutcome,
+			getAnswerModel: () => servedModel,
+		};
 	}
 
 	// ── Repository acquisition (own clone/walk/redact) ─────────────────────────

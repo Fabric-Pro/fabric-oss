@@ -1,5 +1,34 @@
 # fabric-app
 
+## 1.16.36
+
+### Patch Changes
+
+- 6974b98: Organization admins can invite up to 500 people at once by pasting a list of email addresses, with a result for each one.
+- 6974b98: Keep the Data Analyst welcome and composer server-rendered while loading generation transport, event validation and rich assistant results only when a turn starts. The empty chat no longer initializes those modules during first-focus hydration, and cancelling or resetting during loading cannot start a stale request.
+- 6974b98: Connect Parlume to Teams channel meeting threads through an authorized Microsoft connection, with exact thread binding and observed chat delivery.
+- 6974b98: Accepting an AI edit that changes or removes a link or image now saves the intended destination instead of a corrupted URL.
+- 6974b98: The documentation sidebar now starts directly under the site header instead of leaving an empty band below the logo.
+- 6974b98: Links in table cells of stories pushed to Fizzy now keep only web, email and in-page destinations, and the other formatting tags in those cells are sent without attributes.
+- 6974b98: Flowchart node labels are now broken into lines when their measured font width would come too close to the sides of their box on a document page, when a document is downloaded, and in a client proposal's PDF and Word file, while labels that fit stay on one line regardless of character count, and layouts whose labels fit their boxes are preferred over layouts whose labels spill.
+- 6974b98: Bitbucket no longer appears in the Integrations list for new connections.
+- 6974b98: The marketing home page now names itself as its canonical URL, the MCP registry page loads at /mcp-registry instead of returning a 404, and the sitemap lists the home, changelog, MCP registry and legal pages at the addresses they are served from, so search engines can index them.
+- 6974b98: fabric.pro can now serve its marketing pages from the separate marketing site while the app keeps every other path, switched per environment and off by default.
+- 6974b98: Subscribers keep their place in the newsletter list after being excluded or included, so a row no longer jumps to another page.
+- 6974b98: Project admins can send release notes to their entire organization, with per-person exclusions, and anyone who unsubscribed stays unsubscribed.
+- 6974b98: PDF downloads of documents and Glossy editions keep ordinary words whole in tables, with columns sized to the words they hold instead of splitting them across lines; a table row taller than a page continues on the next page instead of being cut off, long headings and image or diagram placeholders wrap inside the page, and underscores inside identifiers such as `snake_case` stay in the text.
+- 6974b98: Project admins can now add people from their organization to a project by picking them from a searchable list.
+- 6974b98: Generated Proposals now caption every figure, wrap figure text at word boundaries and leave out a description too long to fit instead of cutting it mid-phrase, size an architecture figure's layer names to fit, keep timelines to real dates, capitalize diagram labels and leave out lopsided comparison tables, and the PDF no longer leaves a section's last few lines alone on a nearly empty page. In the PDF and Word file, a diagram's node label is broken into lines when its width would overflow its box, Cyrillic and Greek capitals included, and the PDF draws diagram text set at medium weight, such as node labels and chart axis titles, in the same Inter Medium as the page. On a client proposal's page and in its PDF and Word file, a diagram that is one plain chain of seven or more steps is drawn as a grid of numbered steps, four to a row, instead of a column too tall to read. In the PDF a figure taller than a page allows is shrunk to fit one page with its caption, and a figure on a section's opening page is shrunk to the room left there only while its labels stay readable, otherwise moving whole to the next page, with a warning in the download menu only when a figure's text is too small to read even on a page of its own.
+- 6974b98: A file attached in a client proposal's chat now reaches the model only in the turn it was attached, a proposal's failed model or tool call no longer writes the provider's error text or the proposal's prompt to server logs, the document assistant's live thread updates and restored sidebar require access to the document's project, a trigger whose Slack reply could not be posted is recorded as failed, a Slack or Teams mention whose reply could not be posted no longer leaves that undelivered reply in the thread's history, and the assistant's repository tools name the project's current repository after it changes on an open page.
+- 6974b98: Keep verified Teams channel chat delivery separate from project changes when writing meeting notes and recaps.
+- 6974b98: Registered agent chats now use the organization authorized by their page when rendering the initial chat and selecting its transport, so a delayed organization context does not replace the prefetched welcome with a loading spinner.
+- 6974b98: Add direct task and feature delegation to Fabric Remote Agent Servers and Fabric Desktop with subscription-first AI connection controls, add a Remote & Subscription Agent Bridges section to the AI Providers settings page, and update AI Provider cards to a uniform Databricks Marketplace layout.
+- 6974b98: Switching between the Sidekick and Guide or Preview tabs in the Agent Builder no longer restarts the Sidekick, so its conversation is kept and no new AI request is sent.
+- 6974b98: Show the model that actually answered in Library, Atlas, Sidekick, Weave refinement, Data Analyst, and Research, including saved answers and model fallbacks.
+- 6974b98: The server can now read a meeting transcript from an uploaded file, in preparation for uploading transcripts from project settings.
+- 6974b98: Projects can now add meeting transcripts as .txt, .vtt or .docx files, and get the same summaries, decisions and action items as Teams meetings.
+- 6974b98: Vercel no longer builds deployments from Git pushes; the staging web app is built and deployed by the deployment pipeline for each merged change, so contributors no longer need a Vercel account for their changes to deploy.
+
 ## 1.16.35
 
 ### Patch Changes

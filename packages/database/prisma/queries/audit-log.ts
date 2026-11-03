@@ -80,6 +80,7 @@ export const AUDIT_ACTIONS = [
 	"org.member.role_changed",
 	"org.member.removed",
 	"org.member.left",
+	"org.member.bulk_invited",
 	"org.api_key.created",
 	"org.api_key.revoked",
 	"org.api_key.rotated",
@@ -513,6 +514,8 @@ export const AUDIT_ACTIONS = [
 	// security-relevant external-publication control; changing the requirement or a
 	// reviewer's approve/reject decision is audit-worthy.
 	"newsletter.approval.required_changed",
+	// Turning this on mails everyone in the organization.
+	"newsletter.organization_distribution.changed",
 	"newsletter.send.approved",
 	"newsletter.send.rejected",
 	// dailyBrief (2) — per-project release-notes curation (Fizzy 1869

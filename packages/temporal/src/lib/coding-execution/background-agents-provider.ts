@@ -87,6 +87,8 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			const targetMachine =
 				validated.targetMachine ?? params.targetMachine;
 			const headBranch = validated.headBranch ?? params.headBranch;
+			const fallbackPolicy =
+				validated.fallbackPolicy ?? params.fallbackPolicy;
 
 			debugLog("Creating Fabric Agents coding session", {
 				repoOwner: validated.repoOwner,
@@ -96,6 +98,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 				llmConnection,
 				model,
 				targetMachine,
+				...(fallbackPolicy ? { fallbackPolicy } : {}),
 			});
 
 			const readiness = await this.executionReadiness(params);
@@ -120,6 +123,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 						llmConnection,
 						model,
 						targetMachine,
+						...(fallbackPolicy ? { fallbackPolicy } : {}),
 					}),
 				},
 				() => {
@@ -182,6 +186,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 				let valid = false;
 				try {
 					const link = new URL(data.externalUrl);
+					const controlPlane = new URL(this.controlPlaneUrl);
 					valid =
 						!link.username &&
 						!link.password &&
@@ -189,9 +194,9 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 							link.hostname === "workspace" &&
 							!link.search &&
 							!link.hash) ||
-							(link.protocol === "https:" &&
-								link.origin ===
-									new URL(this.controlPlaneUrl).origin));
+							((link.protocol === "https:" ||
+								link.protocol === controlPlane.protocol) &&
+								link.origin === controlPlane.origin));
 				} catch {
 					/* Invalid URI is rejected before it reaches product links. */
 				}
@@ -215,6 +220,10 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 					: {}),
 				providerMetadata: {
 					...data.providerMetadata,
+					...(fallbackPolicy ? { fallbackPolicy } : {}),
+					...(llmConnection ? { llmConnection } : {}),
+					...(model ? { model } : {}),
+					...(targetMachine ? { targetMachine } : {}),
 					executionRuntime: "fabric-agent-server",
 					executionTarget: {
 						...this.expectedTarget,
@@ -596,7 +605,9 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			const secret = await getRemoteAgentServerSecret(
 				this.expectedTarget,
 				options.method === "POST" &&
-					(url.endsWith("/sessions") || url.endsWith("/prompt")),
+					(url.endsWith("/sessions") ||
+						url.endsWith("/sessions/readiness") ||
+						url.endsWith("/prompt")),
 			);
 			requestOptions = { ...options, headers: getAuthHeaders(secret) };
 		}

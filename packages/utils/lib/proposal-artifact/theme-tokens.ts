@@ -362,41 +362,56 @@ function greyOfLuminance(luminance: number): string {
 	return rgbToHex(value, value, value);
 }
 
+/** The hero's measured bright end as a grey, else pure white. */
+function heroBrightEnd(heroLuminance: number | undefined): string {
+	return heroLuminance !== undefined && Number.isFinite(heroLuminance)
+		? greyOfLuminance(heroLuminance)
+		: "#ffffff";
+}
+
+/** Contrast against white falls as a colour lightens, so it orders them. */
+function lightness(color: string): number {
+	return -contrastRatio(color, "#ffffff");
+}
+
+/**
+ * Whether `color` reads at `floor` over the hero under an ink veil of
+ * `opacity`, and on the ink's side of it. A colour lighter than the ink is
+ * checked over the hero's bright end, `brightest`; a darker one over pure
+ * black. Blended as the page composites it, in sRGB.
+ */
+function readsOverHero(
+	color: string,
+	ink: string,
+	brightest: string,
+	opacity: number,
+	floor: number,
+): boolean {
+	const lighter = lightness(color) > lightness(ink);
+	const veiled = mixHex(ink, lighter ? brightest : "#000000", opacity);
+	// Past the colour, some tone of the hero between the two would match
+	// it, however well the far end contrasts.
+	const onInkSide = lighter
+		? lightness(veiled) < lightness(color)
+		: lightness(veiled) > lightness(color);
+	return onInkSide && contrastRatio(color, veiled) >= floor;
+}
+
 /**
  * The least ink veil, at 1% steps, under which every colour of `texts`
- * still reads at 4.5:1 over the hero, and on the ink's side of it. A colour
- * lighter than the ink is checked over the hero's measured bright end when
- * there is one, else over pure white; a darker one over pure black. Blended
- * as the page composites it, in sRGB.
+ * still reads at 4.5:1 over the hero, its bright end `brightest`.
  */
 function heroVeilFor(
 	ink: string,
 	texts: readonly string[],
-	heroLuminance: number | undefined,
+	brightest: string,
 ): number {
-	const brightest =
-		heroLuminance !== undefined && Number.isFinite(heroLuminance)
-			? greyOfLuminance(heroLuminance)
-			: "#ffffff";
-	// Contrast against white falls as a colour lightens, so it orders them.
-	const lightness = (color: string) => -contrastRatio(color, "#ffffff");
-	const holds = (opacity: number) =>
-		texts.every((color) => {
-			const lighter = lightness(color) > lightness(ink);
-			const veiled = mixHex(
-				ink,
-				lighter ? brightest : "#000000",
-				opacity,
-			);
-			// Past the colour, some tone of the hero between the two would
-			// match it, however well the far end contrasts.
-			const onInkSide = lighter
-				? lightness(veiled) < lightness(color)
-				: lightness(veiled) > lightness(color);
-			return onInkSide && contrastRatio(color, veiled) >= TEXT_CONTRAST;
-		});
 	for (let step = 0; step < 100; step++) {
-		if (holds(step / 100)) {
+		if (
+			texts.every((color) =>
+				readsOverHero(color, ink, brightest, step / 100, TEXT_CONTRAST),
+			)
+		) {
 			return step / 100;
 		}
 	}
@@ -409,14 +424,16 @@ function heroVeilFor(
  * primary, then each accent, whichever first holds: 4.5:1 for text, else
  * the plain text colour; 3:1 for a rule, else the primary lightened until
  * it does. The brand values are read as stored, not as the paper's paint,
- * which drops a light accent that reads well on the ink.
+ * which drops a light accent that reads well on the ink. With a hero, the
+ * rule holds 3:1 over the veiled hero too: a brand colour that does, else
+ * the plain ink's rule lightened until it does.
  */
 function onInkPaint(
 	ink: string,
 	surface: string,
 	brand: readonly string[],
 	primary: string,
-	heroLuminance: number | undefined,
+	hero: { present: boolean; luminance: number | undefined },
 ): Pick<
 	ProposalThemePaint,
 	"onInk" | "onInkMuted" | "onInkAccent" | "onInkRule" | "heroVeil"
@@ -431,32 +448,52 @@ function onInkPaint(
 	const onInkAccent =
 		brand.find((color) => contrastRatio(color, ink) >= TEXT_CONTRAST) ??
 		onInk;
-	// At its lightest the mix is the text colour, which always holds.
-	let onInkRule = brand.find(
-		(color) => contrastRatio(color, ink) >= GRAPHIC_CONTRAST,
+	const brightest = heroBrightEnd(hero.luminance);
+	// The accent is text over the hero too: the cover's and each opener's
+	// eyebrow. The figures' rules are not: one that only just holds 3:1 on
+	// the ink would need the hero veiled away, so the rule is fitted to the
+	// veil the text needs instead.
+	const heroVeil = heroVeilFor(
+		ink,
+		[onInk, onInkMuted, onInkAccent],
+		brightest,
 	);
-	for (let step = 1; onInkRule === undefined; step++) {
-		const lighter = mixHex(primary, onInk, Math.max(1 - step / 10, 0));
-		if (contrastRatio(lighter, ink) >= GRAPHIC_CONTRAST || step >= 10) {
-			onInkRule = lighter;
+	const onPlainInk = (color: string) =>
+		contrastRatio(color, ink) >= GRAPHIC_CONTRAST;
+	// A brand colour that holds, else `base` lightened towards the text
+	// colour until it does. At its lightest the mix is the text colour,
+	// which holds on the ink and, under the veil, over the hero.
+	const ruleWhere = (holds: (color: string) => boolean, base: string) => {
+		const kept = brand.find(holds);
+		if (kept !== undefined) {
+			return kept;
 		}
-	}
-	return {
-		onInk,
-		onInkMuted,
-		onInkAccent,
-		onInkRule,
-		// The accent is text over the hero too: the cover's and each
-		// opener's eyebrow. The figures' rules are left out: one that only
-		// just holds 3:1 on the ink would need the hero veiled away, and
-		// they sit low on the cover, where the fade is taking the hero into
-		// the ink.
-		heroVeil: heroVeilFor(
-			ink,
-			[onInk, onInkMuted, onInkAccent],
-			heroLuminance,
-		),
+		for (let step = 1; ; step++) {
+			const lighter = mixHex(base, onInk, Math.max(1 - step / 10, 0));
+			if (holds(lighter) || step >= 10) {
+				return lighter;
+			}
+		}
 	};
+	const plainRule = ruleWhere(onPlainInk, primary);
+	// The rules above the cover's key figures sit over the hero, where the
+	// fade has not yet taken it into the ink. They keep the plain ink's hue,
+	// only lighter.
+	const onInkRule = hero.present
+		? ruleWhere(
+				(color) =>
+					onPlainInk(color) &&
+					readsOverHero(
+						color,
+						ink,
+						brightest,
+						heroVeil,
+						GRAPHIC_CONTRAST,
+					),
+				plainRule,
+			)
+		: plainRule;
+	return { onInk, onInkMuted, onInkAccent, onInkRule, heroVeil };
 }
 
 /** The editor's own review hues (DocumentEditor.css), not brand values. */
@@ -505,7 +542,10 @@ export interface ProposalThemePaint {
 	onInkMuted: string;
 	/** A brand colour as text on the ink: eyebrows and labels. */
 	onInkAccent: string;
-	/** A brand colour as a rule on the ink: the cover's figure rules. */
+	/**
+	 * A brand colour as a rule on the ink: the cover's figure rules. With a
+	 * hero, it holds 3:1 over the hero under the veil too.
+	 */
 	onInkRule: string;
 	/**
 	 * The opacity of the ink laid over a hero, 0 to 1: enough that the
@@ -598,7 +638,10 @@ export function resolveThemePaint(
 				...normalizeHexColorList(proposer.accents.value, MAX_COLORS),
 			],
 			primary,
-			options.heroLuminance,
+			{
+				present: proposer.hero.value !== null,
+				luminance: options.heroLuminance,
+			},
 		),
 		fonts: {
 			display:

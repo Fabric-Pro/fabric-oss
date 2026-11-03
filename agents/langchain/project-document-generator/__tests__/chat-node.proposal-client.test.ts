@@ -19,8 +19,16 @@ import {
 	ToolMessage,
 } from "@langchain/core/messages";
 import { SYNTHETIC_TOOL_IMAGE_MESSAGE_FLAG } from "@repo/agent-core/recursion";
-import { listAnchorPaths, repairDegradedMarkdown } from "@repo/agent-prompts";
+import {
+	listAnchorPaths,
+	repairDegradedMarkdown,
+	validateDocument,
+} from "@repo/agent-prompts";
 import { logger } from "@repo/logs";
+import {
+	buildAiChatAttachedHint,
+	buildAiChatAttachmentEntry,
+} from "@repo/utils/ai-chat-attachment";
 import {
 	askClarifyingQuestionAction,
 	CREATE_VIEW_ACTION,
@@ -54,6 +62,7 @@ import {
 	proposalDiagramNote,
 	readProposalClientConfig,
 	replaceReplyText,
+	selectProposalAttachmentsForTurn,
 	toolArgumentText,
 	visibleReplyText,
 } from "../nodes/proposal-client-mode";
@@ -116,6 +125,12 @@ vi.mock("@repo/agent-core/services/usage-logging", () => ({
 vi.mock("@copilotkit/sdk-js/langgraph", () => ({
 	convertActionsToDynamicStructuredTools: vi.fn().mockReturnValue([]),
 }));
+
+// The real validator, which a test can make fail once.
+vi.mock("@repo/agent-prompts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@repo/agent-prompts")>();
+	return { ...actual, validateDocument: vi.fn(actual.validateDocument) };
+});
 
 // =============================================================================
 // Fixtures (synthetic)
@@ -793,7 +808,9 @@ describe("client-supplied context on an artifact Proposal", () => {
 				messages: [
 					new HumanMessage("Read the overview first."),
 					new AIMessage({ content: "Done." }),
-					new HumanMessage("Tighten the scope section."),
+					new HumanMessage(
+						"Tighten the scope section.\n\n[Attached: sketch.png]",
+					),
 				],
 			}),
 			artifactConfig({
@@ -813,7 +830,7 @@ describe("client-supplied context on an artifact Proposal", () => {
 		const parts = latest.content as Array<Record<string, any>>;
 		expect(parts[0]).toEqual({
 			type: "text",
-			text: "Tighten the scope section.",
+			text: "Tighten the scope section.\n\n[Attached: sketch.png]",
 		});
 		expect(parts[1]?.type).toBe("text");
 		expect(parts[1]?.text).toBe(
@@ -848,7 +865,9 @@ describe("client-supplied context on an artifact Proposal", () => {
 		await chatNode(
 			createState({
 				messages: [
-					new HumanMessage("Tighten the scope section."),
+					new HumanMessage(
+						"Tighten the scope section.\n\n[Attached: brief.pdf]",
+					),
 					new AIMessage({
 						content: "",
 						tool_calls: [
@@ -868,7 +887,15 @@ describe("client-supplied context on an artifact Proposal", () => {
 					syntheticImageTurn,
 				],
 			}),
-			artifactConfig({ proposal_attachments: [ATTACHED_TEXT] }),
+			artifactConfig({
+				proposal_attachments: [
+					ATTACHED_TEXT,
+					buildAiChatAttachmentEntry(
+						"brief.pdf",
+						"The pilot covers two regions.",
+					),
+				],
+			}),
 		);
 
 		const sent = sentMessages();
@@ -876,11 +903,17 @@ describe("client-supplied context on an artifact Proposal", () => {
 			textOf(message).startsWith("Tighten the scope section."),
 		);
 		expect(textOf(own)).toContain("IGNORE THE REVISION PROMPT");
+		// The file the person's turn names goes in full, read from their
+		// message, not from the turn the agent synthesized after it.
+		expect(textOf(own)).toContain("The pilot covers two regions.");
 		const synthetic = sent.find((message) =>
 			textOf(message).startsWith("Image(s) retrieved by a tool:"),
 		);
 		expect(synthetic).toBeDefined();
 		expect(textOf(synthetic)).not.toContain("IGNORE THE REVISION PROMPT");
+		expect(textOf(synthetic)).not.toContain(
+			"The pilot covers two regions.",
+		);
 	});
 
 	it("reads attachments sent as JSON text, and none outside an artifact run", () => {
@@ -967,6 +1000,254 @@ describe("client-supplied context on an artifact Proposal", () => {
 		expect(sentMessages().at(-1)?.content).toBe(
 			"Tighten the scope section.",
 		);
+	});
+
+	// The editor sends every file of the chat on every run, and the turn
+	// that attached files ends with the `[Attached: a, b]` line naming them.
+	describe("a file in the turns after the one that attached it", () => {
+		const BRIEF_BODY = "The pilot covers the west and east regions.";
+		const BRIEF = buildAiChatAttachmentEntry("brief.pdf", BRIEF_BODY);
+		const SKETCH = buildAiChatAttachmentEntry("sketch.png", PNG_DATA_URL);
+		const ATTACHED_EARLIER =
+			"Attached earlier in this conversation; its content is not repeated in this turn. If you need its content, ask the person to attach it again.";
+
+		/** One entry of the block: the editor's envelope inside the block's own. */
+		function inBlock(entry: string): string {
+			return `<fabric_attachment>\n<fabric_attachment_>\n${entry}\n</fabric_attachment_>\n</fabric_attachment>`;
+		}
+
+		function attachmentText(...entries: string[]): string {
+			return [PROPOSAL_ATTACHMENTS_HEADING, ...entries].join("\n\n");
+		}
+
+		function latestParts(callIndex = 0): Array<Record<string, any>> {
+			const latest = sentMessages(callIndex).at(-1);
+			expect(latest).toBeInstanceOf(HumanMessage);
+			return latest?.content as Array<Record<string, any>>;
+		}
+
+		function imageUrls(callIndex: number): string[] {
+			return sentMessages(callIndex).flatMap((message) =>
+				Array.isArray(message.content)
+					? message.content.flatMap((part) =>
+							(part as { type?: string }).type === "image_url"
+								? [
+										(part as { image_url: { url: string } })
+											.image_url.url,
+									]
+								: [],
+						)
+					: [],
+			);
+		}
+
+		it("sends the file in full in the turn that attached it and only a note naming it in the next", async () => {
+			const attachingTurn = new HumanMessage(
+				"Use the brief for the scope.\n\n[Attached: brief.pdf]",
+			);
+			const editorNotes = "Notes the editor keeps for this chat.";
+			mockInvoke.mockResolvedValueOnce(patchResponse([scopePatch()]));
+			await chatNode(
+				createState({ messages: [attachingTurn] }),
+				artifactConfig({ proposal_attachments: [BRIEF] }),
+			);
+			expect(latestParts(0)[1]?.text).toBe(
+				attachmentText(
+					inBlock(`[Uploaded Document: brief.pdf]\n${BRIEF_BODY}`),
+				),
+			);
+
+			mockInvoke.mockResolvedValueOnce(patchResponse([scopePatch()]));
+			await chatNode(
+				createState({
+					messages: [
+						attachingTurn,
+						new AIMessage({ content: "Updated the scope." }),
+						new HumanMessage("Now shorten the timeline."),
+					],
+				}),
+				artifactConfig({ proposal_attachments: [BRIEF, editorNotes] }),
+			);
+			expect(latestParts(1)).toEqual([
+				{ type: "text", text: "Now shorten the timeline." },
+				{
+					type: "text",
+					text: attachmentText(
+						inBlock(
+							`[Uploaded Document: brief.pdf]\n${ATTACHED_EARLIER}`,
+						),
+						`<fabric_attachment>\n${editorNotes}\n</fabric_attachment>`,
+					),
+				},
+			]);
+			expect(JSON.stringify(sentMessages(1))).not.toContain(BRIEF_BODY);
+		});
+
+		it("sends an image as a part in the turn that attached it and none in the next", async () => {
+			const attachingTurn = new HumanMessage(
+				"Follow the sketch.\n\n[Attached: sketch.png]",
+			);
+			mockInvoke.mockResolvedValueOnce(patchResponse([scopePatch()]));
+			await chatNode(
+				createState({ messages: [attachingTurn] }),
+				artifactConfig({ proposal_attachments: [SKETCH] }),
+			);
+			expect(imageUrls(0)).toEqual([PNG_DATA_URL]);
+
+			mockInvoke.mockResolvedValueOnce(patchResponse([scopePatch()]));
+			await chatNode(
+				createState({
+					messages: [
+						attachingTurn,
+						new AIMessage({ content: "Updated the scope." }),
+						new HumanMessage("Now shorten the timeline."),
+					],
+				}),
+				artifactConfig({ proposal_attachments: [SKETCH] }),
+			);
+			expect(imageUrls(1)).toEqual([]);
+			expect(latestParts(1)[1]?.text).toBe(
+				attachmentText(
+					inBlock(
+						`[Uploaded Image: sketch.png]\n${ATTACHED_EARLIER}`,
+					),
+				),
+			);
+		});
+
+		it("matches a name with a comma, a closing bracket or a line break in the turn that attached it", async () => {
+			const names = [
+				"budget, final.pdf",
+				"scope]v2.pdf",
+				"q3\nbrief.pdf",
+			];
+			mockInvoke.mockResolvedValueOnce(patchResponse([scopePatch()]));
+			await chatNode(
+				createState({
+					messages: [
+						new HumanMessage(
+							`Compare these.\n\n[Attached: ${names.join(", ")}]`,
+						),
+					],
+				}),
+				artifactConfig({
+					proposal_attachments: [
+						buildAiChatAttachmentEntry("v2.pdf", "An older file."),
+						...names.map((name, index) =>
+							buildAiChatAttachmentEntry(
+								name,
+								`Body ${index + 1}.`,
+							),
+						),
+					],
+				}),
+			);
+
+			expect(latestParts()[1]?.text).toBe(
+				attachmentText(
+					inBlock(`[Uploaded Document: v2.pdf]\n${ATTACHED_EARLIER}`),
+					inBlock("[Uploaded Document: budget, final.pdf]\nBody 1."),
+					inBlock("[Uploaded Document: scope]v2.pdf]\nBody 2."),
+					inBlock("[Uploaded Document: q3 brief.pdf]\nBody 3."),
+				),
+			);
+		});
+
+		it("sends only the newer copy of a file attached again in a later turn", async () => {
+			mockInvoke.mockResolvedValueOnce(patchResponse([scopePatch()]));
+			await chatNode(
+				createState({
+					messages: [
+						new HumanMessage(
+							"Use the brief.\n\n[Attached: brief.pdf]",
+						),
+						new AIMessage({ content: "Updated the scope." }),
+						new HumanMessage("Now shorten the timeline."),
+						new AIMessage({ content: "Updated the timeline." }),
+						new HumanMessage(
+							"Here is the revised brief.\n\n[Attached: brief.pdf]",
+						),
+					],
+				}),
+				artifactConfig({
+					proposal_attachments: [
+						buildAiChatAttachmentEntry("brief.pdf", "First draft."),
+						buildAiChatAttachmentEntry(
+							"brief.pdf",
+							"Second draft.",
+						),
+					],
+				}),
+			);
+
+			expect(latestParts()[1]?.text).toBe(
+				attachmentText(
+					inBlock(
+						`[Uploaded Document: brief.pdf]\n${ATTACHED_EARLIER}`,
+					),
+					inBlock("[Uploaded Document: brief.pdf]\nSecond draft."),
+				),
+			);
+		});
+
+		it("keeps the file in full in a follow-up run of the turn that attached it", async () => {
+			mockInvoke.mockResolvedValueOnce(patchResponse([scopePatch()]));
+			await chatNode(
+				createState({
+					messages: [
+						new HumanMessage(
+							"Use the brief for the scope.\n\n[Attached: brief.pdf]",
+						),
+						new AIMessage({
+							content: "",
+							tool_calls: [
+								{
+									id: "call_question_1",
+									name: "ask_clarifying_question",
+									args: { question: "Which regions?" },
+									type: "tool_call" as const,
+								},
+							],
+						}),
+						new ToolMessage({
+							content: "Both regions.",
+							tool_call_id: "call_question_1",
+							name: "ask_clarifying_question",
+						}),
+					],
+				}),
+				artifactConfig({ proposal_attachments: [BRIEF] }),
+			);
+
+			const sent = JSON.stringify(sentMessages());
+			expect(sent).toContain(BRIEF_BODY);
+			expect(sent).not.toContain(ATTACHED_EARLIER);
+		});
+
+		it("reads the line the editor builds to name the turn's files", () => {
+			const older = buildAiChatAttachmentEntry(
+				"notes.pdf",
+				"Notes from an earlier turn.",
+			);
+			const named = [
+				buildAiChatAttachmentEntry("brief.pdf", BRIEF_BODY),
+				buildAiChatAttachmentEntry("budget, final.pdf", "The budget."),
+			];
+			const hint = buildAiChatAttachedHint([
+				"brief.pdf",
+				"budget, final.pdf",
+			]);
+
+			expect(
+				selectProposalAttachmentsForTurn(
+					[older, ...named],
+					`Use these for the scope.\n\n${hint}`,
+				),
+			).toEqual([
+				`<fabric_attachment>\n[Uploaded Document: notes.pdf]\n${ATTACHED_EARLIER}\n</fabric_attachment>`,
+				...named,
+			]);
+		});
 	});
 });
 
@@ -2225,22 +2506,175 @@ describe("a failed run on an artifact Proposal", () => {
 		},
 	);
 
-	it("gives a member the error as today, and keeps its text out of the log", async () => {
-		mockInvoke.mockRejectedValueOnce(providerError());
-		const command = asCommand(
+	it("gives a member the error as today, and logs its class, code and status only", async () => {
+		const consoleSpies = (["log", "error", "warn"] as const).map((method) =>
+			vi.spyOn(console, method).mockImplementation(() => undefined),
+		);
+		try {
+			mockInvoke.mockRejectedValueOnce(providerError(400));
+			const command = asCommand(
+				await chatNode(
+					createState(),
+					guestConfig({ proposal_viewer: "member" }),
+				),
+			);
+
+			expect(lastText(command)).toBe(
+				`Failed to generate document: ${PROVIDER_TEXT}`,
+			);
+			expect(command.update.error).toBe(
+				`Failed to generate document: ${PROVIDER_TEXT}`,
+			);
+			const logs = [
+				capturedLogText(),
+				...consoleSpies.flatMap((spy) =>
+					spy.mock.calls.map((args) => JSON.stringify(args)),
+				),
+			].join("\n");
+			expect(logs).not.toContain("Provider rejected");
+			expectNoPrompt(logs);
+			expect(logs).toContain('"errorType":"Error"');
+			expect(logs).toContain("invalid_request_error");
+			expect(logs).toContain('"httpStatus":400');
+		} finally {
+			for (const spy of consoleSpies) {
+				spy.mockRestore();
+			}
+		}
+	});
+
+	describe("a validator failure on an accepted edit", () => {
+		const VALIDATOR_TEXT = `Validator failed on: ${CLIENT_PROMPT}`;
+		const validatorError = Object.assign(new TypeError(VALIDATOR_TEXT), {
+			code: "example_validator_error",
+		});
+
+		function validationLog(): unknown[] | undefined {
+			return vi
+				.mocked(logger.warn)
+				.mock.calls.find(([message]) =>
+					String(message).includes("Validation error (non-fatal)"),
+				);
+		}
+
+		it("logs the class and code on a Proposal run", async () => {
+			vi.mocked(validateDocument).mockImplementationOnce(() => {
+				throw validatorError;
+			});
+			mockInvoke.mockResolvedValueOnce(patchResponse([scopePatch()]));
+
 			await chatNode(
 				createState(),
 				guestConfig({ proposal_viewer: "member" }),
-			),
-		);
+			);
 
-		expect(lastText(command)).toBe(
-			`Failed to generate document: ${PROVIDER_TEXT}`,
-		);
-		expect(command.update.error).toBe(
-			`Failed to generate document: ${PROVIDER_TEXT}`,
-		);
-		expect(capturedLogText()).not.toContain("Provider rejected");
+			expect(validationLog()?.[1]).toEqual({
+				errorType: "TypeError",
+				errorCode: "example_validator_error",
+			});
+		});
+
+		it("logs the error whole outside a Proposal, as before", async () => {
+			vi.mocked(validateDocument).mockImplementationOnce(() => {
+				throw validatorError;
+			});
+			mockInvoke.mockResolvedValueOnce(
+				new AIMessage({
+					content: "Shortened the timeline.",
+					tool_calls: [
+						{
+							id: "call_write_1",
+							name: "write_document_local",
+							args: {
+								document: PROPOSAL.replace(
+									"Twelve weeks",
+									"Ten weeks",
+								),
+							},
+							type: "tool_call" as const,
+						},
+					],
+				}),
+			);
+
+			await chatNode(createState(), {
+				configurable: { proposal_mode: "none" },
+			});
+
+			expect(validationLog()?.[1]).toBe(validatorError);
+		});
+	});
+
+	describe("a summarizer failure on the truncation retry", () => {
+		const SUMMARIZER_TEXT = `Summarizer rejected the request: ${CLIENT_PROMPT}`;
+
+		/** A history long enough for the input-budget gate to summarize. */
+		function longHistory(): BaseMessage[] {
+			return [
+				new HumanMessage("Outline the proposal."),
+				new AIMessage("Outlined."),
+				new HumanMessage("Add a timeline."),
+				new AIMessage("Added the timeline."),
+				new HumanMessage("Name the team."),
+				new AIMessage("Named the team."),
+				new HumanMessage("Shorten the overview."),
+				new AIMessage("Shortened the overview."),
+				new HumanMessage("Tighten the scope section."),
+			];
+		}
+
+		/**
+		 * The first reply comes back empty and truncated, so the retry forces
+		 * the input-budget gate, whose summarizer runs through the same model
+		 * and fails; the retry then answers.
+		 */
+		async function runWithFailingSummarizer(configurable: {
+			configurable: Record<string, unknown>;
+		}) {
+			mockInvoke
+				.mockResolvedValueOnce(
+					new AIMessage({
+						content: "",
+						tool_calls: [],
+						response_metadata: { finish_reason: "length" },
+					}),
+				)
+				.mockRejectedValueOnce(
+					Object.assign(new Error(SUMMARIZER_TEXT), {
+						status: 400,
+						code: "invalid_request_error",
+					}),
+				)
+				.mockResolvedValueOnce(new AIMessage("Tightened the scope."));
+			await chatNode(
+				createState({ messages: longHistory() }),
+				configurable,
+			);
+			expect(mockInvoke).toHaveBeenCalledTimes(3);
+			return capturedLogText();
+		}
+
+		it("logs the class, code and status on a Proposal run", async () => {
+			const logs = await runWithFailingSummarizer(
+				guestConfig({ proposal_viewer: "member" }),
+			);
+
+			expect(logs).toContain("Budget gate summarizer failed");
+			expect(logs).not.toContain("Summarizer rejected");
+			expectNoPrompt(logs);
+			expect(logs).toContain("invalid_request_error");
+			expect(logs).toContain('"httpStatus":400');
+		});
+
+		it("logs the error text outside a Proposal, as before", async () => {
+			const logs = await runWithFailingSummarizer({
+				configurable: { proposal_mode: "none" },
+			});
+
+			expect(logs).toContain(
+				`Budget gate summarizer failed; dropping old messages with a placeholder",{"error":"${SUMMARIZER_TEXT}"}`,
+			);
+		});
 	});
 
 	it("leaves a run outside a Proposal as it was, error text logged", async () => {

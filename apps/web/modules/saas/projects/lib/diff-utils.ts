@@ -1,5 +1,13 @@
 import { repairDegradedMarkdown } from "@repo/agent-prompts/markdown-repair";
 import {
+	ANY_MARKER_SOURCE,
+	DIFF_ADD_END,
+	DIFF_ADD_START,
+	DIFF_DEL_END,
+	DIFF_DEL_START,
+	resolveEncodedDiffMarkers,
+} from "@repo/utils/diff-markers";
+import {
 	FENCE_MARKER,
 	type FenceRole,
 	scanFences,
@@ -9,26 +17,8 @@ import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { type ArrayChange, diffArrays, diffWords } from "diff";
 import MarkdownIt from "markdown-it";
 import type StateInline from "markdown-it/lib/rules_inline/state_inline.mjs";
+import type Token from "markdown-it/lib/token.mjs";
 import { mentionSpanInlinePlugin } from "./mention-markdown-plugin";
-
-// ============================================
-// Constants - Diff Markers
-// ============================================
-
-/**
- * Unique placeholder tokens that won't be affected by markdown processing.
- * The interior chars are zero-width spaces; the chars adjacent to inline
- * content are `\u00A0` (non-breaking space) so MarkdownIt's emphasis
- * left/right-flanking sees whitespace context and parses constructs like
- * `**[Label]**` immediately after `<ADD_START>` correctly. `\u00A0` is in
- * the Zs Unicode category and is treated as whitespace by markdown-it; the
- * diff plugin consumes the whole marker before render so this never
- * surfaces as visible text.
- */
-const DIFF_ADD_START = "\u200B\u200BADD_START\u200B\u00A0";
-const DIFF_ADD_END = "\u00A0\u200BADD_END\u200B\u200B";
-const DIFF_DEL_START = "\u200B\u200BDEL_START\u200B\u00A0";
-const DIFF_DEL_END = "\u00A0\u200BDEL_END\u200B\u200B";
 
 // ============================================
 // Helper Functions
@@ -40,22 +30,6 @@ const DIFF_DEL_END = "\u00A0\u200BDEL_END\u200B\u200B";
 function escapeRegExp(str: string): string {
 	return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-
-/**
- * Regex alternation matching any of the four diff markers, derived from the
- * constants themselves. Hand-spelled copies of these tokens have silently
- * drifted from the real bytes before — matching ZWSP where the constant
- * carries an NBSP — which disabled the table repairs that depended on them
- * without any test noticing.
- */
-const ANY_MARKER_SOURCE = [
-	DIFF_ADD_START,
-	DIFF_ADD_END,
-	DIFF_DEL_START,
-	DIFF_DEL_END,
-]
-	.map((marker) => escapeRegExp(marker))
-	.join("|");
 
 /** Every diff marker, for `String.replace` only (it resets `lastIndex`). */
 const ANY_MARKER_RE = new RegExp(ANY_MARKER_SOURCE, "g");
@@ -177,6 +151,48 @@ function fenceContextOf(text: string): (offset: number) => boolean {
 		// A fence was open before this line.
 		return roles[low] === "inside" || roles[low] === "close";
 	};
+}
+
+/**
+ * A diff body's lines, except that a line break inside a link (a hard break
+ * in its text) stays in its line. The link is one inline run: split there,
+ * the break would sit outside the markers, and accepting the link's removal
+ * would keep it.
+ */
+function bodyLines(body: string): string[] {
+	if (!/[[<]/.test(body)) {
+		return body.split("\n");
+	}
+	const inLink = new Set<number>();
+	for (const match of body.matchAll(LINK_CONSTRUCT_RE)) {
+		if (match[0].startsWith("\\")) {
+			continue;
+		}
+		for (
+			let at = match[0].indexOf("\n");
+			at !== -1;
+			at = match[0].indexOf("\n", at + 1)
+		) {
+			inLink.add(match.index + at);
+		}
+	}
+	if (inLink.size === 0) {
+		return body.split("\n");
+	}
+	const lines: string[] = [];
+	let start = 0;
+	for (
+		let at = body.indexOf("\n");
+		at !== -1;
+		at = body.indexOf("\n", at + 1)
+	) {
+		if (!inLink.has(at)) {
+			lines.push(body.slice(start, at));
+			start = at + 1;
+		}
+	}
+	lines.push(body.slice(start));
+	return lines;
 }
 
 /**
@@ -364,7 +380,7 @@ function splitMultilineDiffBlocks(text: string): string {
 				return isAddSide ? wrapLine(body, inListContext) : match;
 			}
 
-			const lines = body.split("\n");
+			const lines = bodyLines(body);
 			const output: string[] = [];
 			let inFence = false;
 			for (const line of lines) {
@@ -2236,13 +2252,38 @@ function diffMarkerPlugin(md: MarkdownIt): void {
 }
 
 /**
+ * Resolve diff markers in every Markdown link and image destination `md`
+ * renders, as the save does (Fizzy #2946). The save resolves them in an
+ * `href` or `src` once they are percent-encoded; markers written raw, or
+ * partly encoded, only reach that form here, so resolve them here too: the
+ * destination a person reviews, and the one `validateLink` checks, is the
+ * one saved. Every renderer of reviewed Markdown needs this, the changed
+ * table renderer included.
+ */
+function withLinkResolution(md: MarkdownIt): MarkdownIt {
+	const normalizeLink = md.normalizeLink.bind(md);
+	md.normalizeLink = (url: string) =>
+		resolveEncodedDiffMarkers(normalizeLink(url));
+	// One resolve leaves no encoded marker behind, so a normalized
+	// destination never changes on the save's own pass. Should that ever
+	// stop holding, the destination is refused as a link: the review shows
+	// it as text and the save keeps it as text.
+	const validateLink = md.validateLink.bind(md);
+	md.validateLink = (url: string) =>
+		validateLink(url) && resolveEncodedDiffMarkers(url) === url;
+	return md;
+}
+
+/**
  * Create a configured MarkdownIt instance with diff marker plugin
  */
 function createMarkdownIt(): MarkdownIt {
-	const md = new MarkdownIt({
-		typographer: false,
-		html: true,
-	});
+	const md = withLinkResolution(
+		new MarkdownIt({
+			typographer: false,
+			html: true,
+		}),
+	);
 
 	// Use plugin for safer marker-to-tag conversion
 	md.use(diffMarkerPlugin);
@@ -2851,6 +2892,851 @@ function restoreHtmlTables(value: string, blocks: Map<string, string>): string {
 	return restored;
 }
 
+// One character of link text: anything but a bracket or backslash, an
+// escape, or a line break that does not end the paragraph (a hard break).
+const LINK_TEXT_CHAR = String.raw`[^\[\]\\\n]|\\.|\\?\n(?![ \t]*(?:\n|[-*+][ \t]|\d{1,9}[.)][ \t]|#{1,6}[ \t]|>|\x60{3}|~{3}))`;
+// Link text, holding at most one level of brackets: `[[S2]](…)`, or the
+// `![alt](src)` of a linked image.
+const LINK_TEXT = String.raw`\[(?:${LINK_TEXT_CHAR}|\[(?:${LINK_TEXT_CHAR})*\])*\]`;
+// `<…>`, or a bare destination with escapes and one level of parentheses.
+const LINK_DESTINATION = String.raw`<(?:[^<>\n\\]|\\.)*>|(?:[^\s()\\]|\\.|\((?:[^\s()\\]|\\.)*\))+`;
+const LINK_TITLE = String.raw`"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\((?:[^()\\\n]|\\.)*\)`;
+
+/**
+ * A link or image construct, or a backslash escape. The escape is matched
+ * so the scan steps over an escaped `\[`, which then never starts a link.
+ *
+ * - `[text](dest "title")` and `![alt](src)`; the text may be a Markdown
+ *   image or a raw `<img …/>` (the save's linked image);
+ * - an autolink `<https://…>`;
+ * - a raw `<img …>` tag (the save's image with a width, caption or key);
+ * - a raw one-line `<a …>…</a>` element holding no other `<a`;
+ * - a mention `<span data-type="mention" …>…</span>`, which the save keeps
+ *   as HTML.
+ *
+ * The pattern runs over the whole document on every streaming chunk, so it
+ * must not backtrack: no two alternatives of a repeated group match the
+ * same text, and a nested repetition is closed by a character the outer one
+ * cannot match (see
+ * docs/solutions/security-issues/redos-in-preview-markdown-strip.md).
+ */
+const LINK_CONSTRUCT_RE = new RegExp(
+	[
+		String.raw`\\[\s\S]`,
+		String.raw`!?${LINK_TEXT}\([ \t]*(?:(?:${LINK_DESTINATION})(?:[ \t]+(?:${LINK_TITLE}))?[ \t]*)?\)`,
+		String.raw`<[A-Za-z][A-Za-z0-9+.\-]{1,31}:[^\s<>]*>`,
+		// An unquoted `<` ends the attempt, so an unclosed tag is not scanned
+		// to the end of the document once for every `<img` after it.
+		String.raw`<img\b(?:[^<>"']|"[^"]*"|'[^']*')*>`,
+		// Its text stops at the next `<a` or `</a`, so each attempt ends there.
+		String.raw`<a\b(?:[^<>"'\n]|"[^"\n]*"|'[^'\n]*')*>(?:[^<\n]|<(?!\/?a\b))*<\/a\s*>`,
+		// The tag test mirrors `mentionSpanInlinePlugin`; a span with no `<`
+		// before its close, as that plugin reads it.
+		String.raw`<span\b(?=[^<>]*\bdata-type=(?:"mention"|'mention'))(?:[^<>"']|"[^"]*"|'[^']*')*>[^<\n]*<\/span>`,
+	].join("|"),
+	"gi",
+);
+/**
+ * On the old side only: link-shaped text whose brackets Turndown escaped,
+ * `\[Docs\](https://…)`, a phrase the stored document holds as text. The
+ * agent reads it unescaped and echoes it as `[Docs](https://…)`; keyed on that
+ * form, the echo shares the text's token and is no change, as
+ * `mergePhantomEscapeDiffs` keeps the baseline's escapes. Tried before the
+ * escape alternative, so its `\[` is not stepped over. A link the agent turns
+ * into such text is still a change: the new side never matches this.
+ *
+ * Its text holds no other escaped bracket, so each attempt ends at the next
+ * one and the scan stays linear.
+ */
+const OLD_LINK_CONSTRUCT_RE = new RegExp(
+	[
+		String.raw`!?\\\[(?:[^\[\]\\\n]|\\[^\[\]\n])*\\\]\([ \t]*(?:(?:${LINK_DESTINATION})(?:[ \t]+(?:${LINK_TITLE}))?[ \t]*)?\)`,
+		LINK_CONSTRUCT_RE.source,
+	].join("|"),
+	"gi",
+);
+const LINK_PLACEHOLDER_TAG = "xDIFFLINKx";
+const LINK_PLACEHOLDER_RE = /xDIFFLINKx\d+xENDx/g;
+
+/**
+ * Substitute each link and image construct with a placeholder token, so
+ * the word diff marks a changed one whole and never puts its markers inside
+ * the `(…)` (Fizzy #2946). There markdown-it percent-encoded them into the
+ * `href` or `src` (a host into punycode), an unlink marked only `[` and
+ * `](url)` so the link survived the accept, and a raw `<img>` tag, `<a>`
+ * element or mention span got markers inside its attributes.
+ *
+ * The twin of `extractGfmTablesForDiff`, run after it (a table is already
+ * one token). Code fences are left alone. A construct is keyed on its
+ * agent-unescaped form, so a stored `[\[S2\]](…)` and the agent's echoed
+ * `[[S2]](…)` share a token; a shared token restores to the old text's
+ * bytes, as `mergePhantomEscapeDiffs` keeps the baseline's escapes.
+ */
+function extractLinksForDiff(
+	oldText: string,
+	newText: string,
+): {
+	oldProcessed: string;
+	newProcessed: string;
+	restore: (value: string) => string;
+} {
+	// Text that already spells a placeholder would be restored as a link.
+	// Such a document keeps the plain word diff.
+	if (
+		oldText.includes(LINK_PLACEHOLDER_TAG) ||
+		newText.includes(LINK_PLACEHOLDER_TAG)
+	) {
+		return {
+			oldProcessed: oldText,
+			newProcessed: newText,
+			restore: (value) => value,
+		};
+	}
+
+	const tokenByText = new Map<string, string>();
+	const tokenByKey = new Map<string, string>();
+	const constructByToken = new Map<string, string>();
+
+	const createToken = (construct: string, key: string): string => {
+		// Letters and digits only, so the word diff sees one word.
+		const token = `${LINK_PLACEHOLDER_TAG}${constructByToken.size}xENDx`;
+		constructByToken.set(token, construct);
+		tokenByText.set(construct, token);
+		if (!tokenByKey.has(key)) {
+			tokenByKey.set(key, token);
+		}
+		return token;
+	};
+
+	const substitute = (text: string, isOld: boolean): string => {
+		if (!/[[<]/.test(text)) {
+			return text;
+		}
+		const atomize = (segment: string) =>
+			segment.replace(
+				isOld ? OLD_LINK_CONSTRUCT_RE : LINK_CONSTRUCT_RE,
+				(construct) => {
+					// A bare escape is stepped over; an escaped link text is not.
+					if (construct.length === 2 && construct.startsWith("\\")) {
+						return construct;
+					}
+					const known = tokenByText.get(construct);
+					if (known !== undefined) {
+						return known;
+					}
+					// An old construct keeps its own bytes; a new one takes the
+					// old construct it only differs from by escapes.
+					const key = unescapeAgentLine(construct);
+					return (
+						(isOld ? undefined : tokenByKey.get(key)) ??
+						createToken(construct, key)
+					);
+				},
+			);
+		const lines = text.split("\n");
+		const roles = scanFences(lines);
+		const output: string[] = [];
+		let prose: string[] = [];
+		lines.forEach((line, index) => {
+			if (roles[index] === null) {
+				prose.push(line);
+				return;
+			}
+			if (prose.length > 0) {
+				output.push(atomize(prose.join("\n")));
+				prose = [];
+			}
+			output.push(line);
+		});
+		if (prose.length > 0) {
+			output.push(atomize(prose.join("\n")));
+		}
+		return output.join("\n");
+	};
+
+	return {
+		oldProcessed: substitute(oldText, true),
+		newProcessed: substitute(newText, false),
+		restore: (value) =>
+			constructByToken.size === 0
+				? value
+				: value.replace(
+						LINK_PLACEHOLDER_RE,
+						(token) => constructByToken.get(token) ?? token,
+					),
+	};
+}
+
+/**
+ * A link reference definition on one line: up to three spaces of indent,
+ * `[label]:`, a destination, and an optional title.
+ */
+const REFERENCE_DEFINITION_RE = new RegExp(
+	String.raw`^ {0,3}\[((?:[^\[\]\\]|\\.){1,999})\]:[ \t]*(${LINK_DESTINATION})[ \t]*(?:(${LINK_TITLE})[ \t]*)?$`,
+);
+// The `(…)` of an inline link, tried right after its text's `]`.
+const INLINE_LINK_TAIL_RE = new RegExp(
+	String.raw`\([ \t]*(?:(?:${LINK_DESTINATION})(?:[ \t]+(?:${LINK_TITLE}))?[ \t]*)?\)`,
+	"y",
+);
+// The blockquote markers a label's later lines carry in the source, which
+// markdown-it strips before it reads the label.
+const QUOTE_CONTINUATION_RE = /\n[ \t]*(?:>[ \t]?)*/g;
+
+/** A label as CommonMark matches it: case-folded, inner whitespace collapsed. */
+function referenceKey(label: string): string {
+	return label.trim().replace(/\s+/g, " ").toLowerCase().toUpperCase();
+}
+
+/** Text that can be a link label: no unescaped bracket, not only blanks. */
+function isLinkLabel(text: string): boolean {
+	return (
+		text.length <= 999 &&
+		/\S/.test(text) &&
+		/^(?:[^[\]\\]|\\[\s\S])*$/.test(text)
+	);
+}
+
+/**
+ * Rewrite the full `[text][label]`, collapsed `[text][]` and shortcut
+ * `[label]` references of one paragraph as inline links. Brackets inside a
+ * code span or an HTML tag, escaped, or inside an inline link's `(…)` are
+ * left alone, and so is a label `destinations` does not hold. Also returns
+ * the `[start, end)` span of each reference it rewrote.
+ *
+ * One pass pairs the brackets; a code span's closing run is found through a
+ * cursor per run length, and a tag's `>` through a cursor, that only move
+ * forward, so the scan stays linear.
+ */
+function inlineReferenceUsages(
+	paragraph: string,
+	destinations: Map<string, string>,
+): { text: string; rewritten: [number, number][] } {
+	const rewritten: [number, number][] = [];
+	if (!paragraph.includes("[")) {
+		return { text: paragraph, rewritten };
+	}
+	const runsByLength = new Map<number, number[]>();
+	for (const run of paragraph.matchAll(/`+/g)) {
+		const starts = runsByLength.get(run[0].length) ?? [];
+		starts.push(run.index);
+		runsByLength.set(run[0].length, starts);
+	}
+	const runCursor = new Map<number, number>();
+	const nextRun = (from: number, length: number): number => {
+		const starts = runsByLength.get(length) ?? [];
+		let at = runCursor.get(length) ?? 0;
+		while (at < starts.length && starts[at] < from) {
+			at++;
+		}
+		runCursor.set(length, at);
+		return starts[at] ?? -1;
+	};
+	// The next `>` at or after the last tag start, until none is left.
+	let tagEnd = -1;
+	let tagEndAhead = true;
+
+	const closeOf = new Map<number, number>();
+	const openers: number[] = [];
+	for (let i = 0; i < paragraph.length; i++) {
+		const char = paragraph[i];
+		if (char === "\\") {
+			i++;
+		} else if (char === "`") {
+			let end = i;
+			while (paragraph[end] === "`") {
+				end++;
+			}
+			const close = nextRun(end, end - i);
+			i = (close === -1 ? end : close + end - i) - 1;
+		} else if (char === "<" && /[A-Za-z/!?]/.test(paragraph[i + 1] ?? "")) {
+			// A bracket inside an HTML tag or an autolink is no reference.
+			if (tagEndAhead && tagEnd < i) {
+				tagEnd = paragraph.indexOf(">", i);
+				tagEndAhead = tagEnd !== -1;
+			}
+			if (tagEndAhead) {
+				i = tagEnd;
+			}
+		} else if (char === "[") {
+			openers.push(i);
+		} else if (char === "]") {
+			const open = openers.pop();
+			if (open === undefined) {
+				continue;
+			}
+			closeOf.set(open, i);
+			INLINE_LINK_TAIL_RE.lastIndex = i + 1;
+			if (INLINE_LINK_TAIL_RE.test(paragraph)) {
+				i = INLINE_LINK_TAIL_RE.lastIndex - 1;
+			}
+		}
+	}
+
+	let out = "";
+	let last = 0;
+	for (const [open, close] of [...closeOf].sort(([a], [b]) => a - b)) {
+		if (open < last) {
+			continue;
+		}
+		const text = paragraph.slice(open + 1, close);
+		let label = text;
+		let end = close + 1;
+		const next = paragraph[end];
+		if (next === "[") {
+			const labelClose = closeOf.get(end);
+			if (labelClose === undefined) {
+				continue;
+			}
+			// `[text][]` is labelled by its text.
+			label = paragraph.slice(end + 1, labelClose) || text;
+			end = labelClose + 1;
+		} else if (next === "(" || next === ":") {
+			continue;
+		}
+		const destination = isLinkLabel(label)
+			? destinations.get(referenceKey(label))
+			: undefined;
+		if (destination === undefined) {
+			continue;
+		}
+		out += `${paragraph.slice(last, open)}[${text}](${destination})`;
+		rewritten.push([open, end]);
+		last = end;
+	}
+	return { text: out + paragraph.slice(last), rewritten };
+}
+
+let referenceMarkdownIt: MarkdownIt | undefined;
+
+/** A parser that reads links and definitions as the review renders them. */
+function referenceParser(): MarkdownIt {
+	referenceMarkdownIt ??= createMarkdownIt();
+	return referenceMarkdownIt;
+}
+
+/**
+ * Whether the `(` at `at` makes the bracketed text before it an inline
+ * link, as markdown-it reads one, without leaving the line (`max`). It
+ * falls back to the reference when the destination is refused or the
+ * `(…)` does not close, so `[guide](see below)` is still a usage.
+ */
+function opensInlineLink(text: string, at: number, max: number): boolean {
+	const md = referenceParser();
+	const skipSpaces = (from: number) => {
+		let pos = from;
+		while (pos < max && (text[pos] === " " || text[pos] === "\t")) {
+			pos++;
+		}
+		return pos;
+	};
+	let pos = skipSpaces(at + 1);
+	if (pos >= max) {
+		return false;
+	}
+	const destination = md.helpers.parseLinkDestination(text, pos, max);
+	if (destination.ok) {
+		if (md.validateLink(md.normalizeLink(destination.str))) {
+			pos = destination.pos;
+		}
+		const start = pos;
+		pos = skipSpaces(pos);
+		const title = md.helpers.parseLinkTitle(text, pos, max);
+		if (pos < max && start !== pos && title.ok) {
+			pos = skipSpaces(title.pos);
+		}
+	}
+	return pos < max && text[pos] === ")";
+}
+
+/**
+ * Add to `found` each label of `destinations` that `paragraph` still
+ * writes in brackets outside every `rewritten` span, other than as the text
+ * of an inline link: a usage the rewrite left as written. Brackets in a
+ * code span or an HTML tag count too, so a definition is only removed when
+ * nothing markdown-it could read as one of its usages is left.
+ */
+function addUnrewrittenLabels(
+	paragraph: string,
+	destinations: Map<string, string>,
+	rewritten: [number, number][],
+	found: Set<string>,
+): void {
+	let open = -1;
+	let span = 0;
+	let lineEnd = -1;
+	for (let i = 0; i < paragraph.length; i++) {
+		const char = paragraph[i];
+		if (char === "\\") {
+			i++;
+			continue;
+		}
+		if (char === "[") {
+			open = i;
+			continue;
+		}
+		if (char !== "]" || open === -1) {
+			continue;
+		}
+		const start = open;
+		open = -1;
+		const label = paragraph
+			.slice(start + 1, i)
+			.replace(QUOTE_CONTINUATION_RE, "\n");
+		if (!isLinkLabel(label)) {
+			continue;
+		}
+		const key = referenceKey(label);
+		if (!destinations.has(key) || found.has(key)) {
+			continue;
+		}
+		while (span < rewritten.length && rewritten[span][1] <= start) {
+			span++;
+		}
+		if (span < rewritten.length && rewritten[span][0] <= start) {
+			continue;
+		}
+		if (paragraph[i + 1] === "(") {
+			if (lineEnd < i) {
+				lineEnd = paragraph.indexOf("\n", i);
+				if (lineEnd === -1) {
+					lineEnd = paragraph.length;
+				}
+			}
+			if (opensInlineLink(paragraph, i + 1, lineEnd)) {
+				continue;
+			}
+		}
+		found.add(key);
+	}
+}
+
+/** A definition's destination and optional title, as written. */
+type WrittenDefinition = { destination: string; title?: string };
+
+/** The lines `[start, end)` one definition is written on. */
+type DefinitionLines = { start: number; end: number };
+
+/** The definitions a text writes on one line each. */
+interface ReferenceDefinitions {
+	lines: string[];
+	/** The label of each line that defines one. */
+	labelOf: (string | undefined)[];
+	/** The first definition of each label, the one that wins. */
+	first: Map<string, WrittenDefinition>;
+	/**
+	 * Each label's definition-shaped lines, in a blockquote or a list item
+	 * too, with a title on the next line. Markdown-it may read them as text.
+	 */
+	written: Map<string, DefinitionLines[]>;
+}
+
+// The blockquote and list markers that open a line, and its indent.
+const CONTAINER_PREFIX_RE =
+	/^(?:[ \t]*(?:>|[-+*](?=[ \t])|\d{1,9}[.)](?=[ \t])))*[ \t]*/;
+// A line that holds only a link title.
+const TITLE_LINE_RE = new RegExp(String.raw`^(?:${LINK_TITLE})[ \t]*$`);
+
+function withoutContainers(line: string): string {
+	return line.slice(CONTAINER_PREFIX_RE.exec(line)?.[0].length ?? 0);
+}
+
+/**
+ * The link reference definitions of a text: one line outside a code fence
+ * that starts a block (a definition cannot interrupt a paragraph). While a
+ * text streams its last line may be cut short, so `lastLinePending` leaves
+ * it out.
+ */
+function collectReferenceDefinitions(
+	text: string,
+	lastLinePending: boolean,
+): ReferenceDefinitions {
+	const lines = text.split("\n");
+	const labelOf: (string | undefined)[] = lines.map(() => undefined);
+	const first = new Map<string, WrittenDefinition>();
+	const written = new Map<string, DefinitionLines[]>();
+	if (!text.includes("]:")) {
+		return { lines, labelOf, first, written };
+	}
+	const roles = scanFences(lines);
+	const end = lastLinePending ? lines.length - 1 : lines.length;
+	for (let index = 0; index < end; index++) {
+		if (roles[index] !== null || !lines[index].includes("]:")) {
+			continue;
+		}
+		const match = REFERENCE_DEFINITION_RE.exec(
+			withoutContainers(lines[index]),
+		);
+		if (!match || !/\S/.test(match[1])) {
+			continue;
+		}
+		const next = index + 1;
+		if (match[3] === undefined && next === end && lastLinePending) {
+			// Its title may be on the line still streaming in.
+			continue;
+		}
+		const titled =
+			match[3] === undefined &&
+			next < end &&
+			roles[next] === null &&
+			TITLE_LINE_RE.test(withoutContainers(lines[next]));
+		const label = referenceKey(match[1]);
+		const entries = written.get(label) ?? [];
+		entries.push({ start: index, end: titled ? next + 1 : next });
+		written.set(label, entries);
+	}
+	for (let index = 0; index < end; index++) {
+		const previous = lines[index - 1];
+		const startsBlock =
+			previous === undefined ||
+			!previous.trim() ||
+			labelOf[index - 1] !== undefined ||
+			ATX_HEADING_LINE.test(previous) ||
+			roles[index - 1] === "close";
+		const match =
+			roles[index] === null && startsBlock
+				? REFERENCE_DEFINITION_RE.exec(lines[index])
+				: null;
+		if (!match || !/\S/.test(match[1])) {
+			continue;
+		}
+		const label = referenceKey(match[1]);
+		labelOf[index] = label;
+		if (!first.has(label)) {
+			first.set(label, { destination: match[2], title: match[3] });
+		}
+	}
+	return { lines, labelOf, first, written };
+}
+
+/** A definition as an inline link's `(…)` holds it, spelled as written. */
+function inlineDestination({ destination, title }: WrittenDefinition): string {
+	return title ? `${destination} ${title}` : destination;
+}
+
+type ReadLink = { href: string; title: string };
+
+/** The link markdown-it stores for a definition, or null where it refuses it. */
+function readDefinition({
+	destination,
+	title,
+}: WrittenDefinition): ReadLink | null {
+	const md = referenceParser();
+	const parsed = md.helpers.parseLinkDestination(
+		destination,
+		0,
+		destination.length,
+	);
+	if (!parsed.ok || parsed.pos !== destination.length) {
+		return null;
+	}
+	const href = md.normalizeLink(parsed.str);
+	if (!md.validateLink(href)) {
+		return null;
+	}
+	if (title === undefined) {
+		return { href, title: "" };
+	}
+	const parsedTitle = md.helpers.parseLinkTitle(title, 0, title.length);
+	return parsedTitle.ok && parsedTitle.pos === title.length
+		? { href, title: parsedTitle.str }
+		: null;
+}
+
+/** How markdown-it reads a text's blocks. */
+interface BlockReading {
+	/** Its definitions, the first of each label. */
+	references: Record<string, ReadLink>;
+	/** The lines a block holds. A top-level definition is in none. */
+	inBlock: boolean[];
+	/**
+	 * The lines a block shows: text, code, HTML, a rule or a table. A
+	 * definition it consumed, in a container or not, is in none.
+	 */
+	shown: boolean[];
+	/**
+	 * Each run of inline content, a table as one run; only a paragraph's or
+	 * a heading's is rewritten.
+	 */
+	inline: { start: number; end: number; rewritable: boolean }[];
+}
+
+function readBlocks(text: string, lineCount: number): BlockReading | null {
+	// A lone carriage return breaks a line for markdown-it but not for the
+	// split, so the line numbers would not match.
+	if (/\r(?!\n)/.test(text)) {
+		return null;
+	}
+	const md = referenceParser();
+	const env: { references?: Record<string, ReadLink> } = {};
+	const tokens: Token[] = [];
+	md.block.parse(text.replace(/\r\n/g, "\n"), md, env, tokens);
+	const inBlock: boolean[] = new Array(lineCount).fill(false);
+	const shown: boolean[] = new Array(lineCount).fill(false);
+	const inline: BlockReading["inline"] = [];
+	let previous = "";
+	tokens.forEach((token, index) => {
+		if (!token.map) {
+			return;
+		}
+		const [start, end] = token.map;
+		if (token.level === 0) {
+			inBlock.fill(true, start, end);
+		}
+		if (token.nesting === 0 || token.type === "table_open") {
+			shown.fill(true, start, end);
+		}
+		// markdown-it gives a table cell's inline content no line map, so the
+		// table is one run: its usages are never rewritten, and their labels
+		// keep their definitions.
+		if (token.type === "table_open") {
+			inline.push({ start, end, rewritable: false });
+			return;
+		}
+		const range = `${start}:${end}`;
+		if (token.type !== "inline" || range === previous) {
+			return;
+		}
+		previous = range;
+		const opener = tokens[index - 1]?.type;
+		inline.push({
+			start,
+			end,
+			rewritable:
+				opener === "paragraph_open" || opener === "heading_open",
+		});
+	});
+	return { references: env.references ?? {}, inBlock, shown, inline };
+}
+
+/**
+ * Rewrite the usages of each reference whose definition changed as inline
+ * links, and drop its definitions, before the diff (Fizzy #2946).
+ * markdown-it consumes a definition and the save writes every link inline,
+ * so a changed definition was diffed as a line nobody sees, its markers
+ * percent-encoded into each usage's `href` (a host into punycode). Inline,
+ * a usage is one link construct, diffed whole, and the review shows the
+ * destination the save stores. Each side's usages take that side's
+ * definition; a side without one keeps its usages as written.
+ *
+ * Every other label stays as written on both sides, so unchanged text
+ * diffs as equal and renders as markdown-it reads it. A rewrite can differ
+ * from that reading, so it is held back where it might:
+ *
+ * - a label is left alone unless markdown-it reads each side's definitions
+ *   of it as written: none in a blockquote or an HTML block before them, no
+ *   title on the next line, a destination it accepts;
+ * - only a paragraph's or a heading's usages are rewritten, never a table
+ *   cell's;
+ * - a label keeps its definitions on both sides while any bracketed use of
+ *   it is left as written (followed by `:`, a `(` markdown-it does not read
+ *   as a link, in a table cell or in code), so it still resolves.
+ *
+ * A label whose definitions stay, and differ, has the old side's written
+ * as the new side's, one for one, wherever markdown-it consumes them (in a
+ * blockquote or a list item, with a title on the next line too). Diffed,
+ * their markers would be inside the definition, where they break its
+ * destination or stop it parsing. A usage left as written then shows the
+ * new destination with no change marked on it.
+ *
+ * While the new text streams, a label only the old text defines is left
+ * alone (the new text may not have reached its definition), and so is a
+ * definition on its last line, which may be cut short.
+ */
+function inlineChangedReferenceLinks(
+	oldText: string,
+	newText: string,
+	isComplete: boolean,
+): { oldText: string; newText: string } {
+	const unchanged = { oldText, newText };
+	if (!oldText.includes("]:") && !newText.includes("]:")) {
+		return unchanged;
+	}
+	const before = collectReferenceDefinitions(oldText, false);
+	const after = collectReferenceDefinitions(newText, !isComplete);
+	const changed = new Set<string>();
+	for (const label of new Set([
+		...before.first.keys(),
+		...after.first.keys(),
+	])) {
+		const was = before.first.get(label);
+		const is = after.first.get(label);
+		if (
+			(is === undefined && !isComplete) ||
+			(was !== undefined &&
+				is !== undefined &&
+				inlineDestination(was) === inlineDestination(is))
+		) {
+			continue;
+		}
+		changed.add(label);
+	}
+	const linesOf = (
+		{ lines }: ReferenceDefinitions,
+		{ start, end }: DefinitionLines,
+	) => lines.slice(start, end).join("\n");
+	// Each label whose definitions are written differently on the two sides,
+	// wherever they are. While the new text streams, it may not have reached
+	// all of them yet.
+	const differing = new Set<string>();
+	for (const label of new Set([
+		...before.written.keys(),
+		...after.written.keys(),
+	])) {
+		const was = before.written.get(label) ?? [];
+		const is = after.written.get(label) ?? [];
+		if (
+			was.length === is.length
+				? was.some(
+						(entry, index) =>
+							linesOf(before, entry) !==
+							linesOf(after, is[index]),
+					)
+				: isComplete
+		) {
+			differing.add(label);
+		}
+	}
+	if (changed.size === 0 && differing.size === 0) {
+		return unchanged;
+	}
+
+	const sides: { definitions: ReferenceDefinitions; read: BlockReading }[] =
+		[];
+	for (const [text, definitions] of [
+		[oldText, before],
+		[newText, after],
+	] as const) {
+		const read = readBlocks(text, definitions.lines.length);
+		if (read === null) {
+			return unchanged;
+		}
+		sides.push({ definitions, read });
+	}
+	for (const { definitions, read } of sides) {
+		definitions.labelOf.forEach((label, line) => {
+			if (label !== undefined && read.inBlock[line]) {
+				changed.delete(label);
+			}
+		});
+		for (const label of changed) {
+			const definition = definitions.first.get(label);
+			const stored = Object.hasOwn(read.references, label)
+				? read.references[label]
+				: undefined;
+			const written =
+				definition === undefined
+					? undefined
+					: readDefinition(definition);
+			if (
+				written === null ||
+				written?.href !== stored?.href ||
+				written?.title !== stored?.title
+			) {
+				changed.delete(label);
+			}
+		}
+	}
+	if (changed.size === 0 && differing.size === 0) {
+		return unchanged;
+	}
+
+	const keepDefinitions = new Set<string>();
+	const rewrites = sides.map(({ definitions, read }) => {
+		const regions = new Map<number, { end: number; text: string }>();
+		const destinations = new Map<string, string>();
+		for (const label of changed) {
+			const definition = definitions.first.get(label);
+			if (definition !== undefined) {
+				destinations.set(label, inlineDestination(definition));
+			}
+		}
+		if (destinations.size === 0) {
+			return regions;
+		}
+		for (const { start, end, rewritable } of read.inline) {
+			const paragraph = definitions.lines.slice(start, end).join("\n");
+			if (!paragraph.includes("[")) {
+				continue;
+			}
+			const { text, rewritten } = rewritable
+				? inlineReferenceUsages(paragraph, destinations)
+				: { text: paragraph, rewritten: [] };
+			if (text !== paragraph) {
+				regions.set(start, { end, text });
+			}
+			addUnrewrittenLabels(
+				paragraph,
+				destinations,
+				rewritten,
+				keepDefinitions,
+			);
+		}
+		return regions;
+	});
+
+	// A label whose definitions stay, kept for a usage left as written or
+	// left alone, takes the new side's definitions on both sides. Diffed,
+	// their markers land inside a destination, where the save cannot resolve
+	// them out of a host, or inside a title, which then stops the definition
+	// from parsing. A side whose definitions of it markdown-it does not read
+	// one for one keeps them as written.
+	const dropped = (label: string) =>
+		changed.has(label) && !keepDefinitions.has(label);
+	let synced = 0;
+	for (const label of differing) {
+		const [was, is] = sides.map(({ definitions, read }) =>
+			(definitions.written.get(label) ?? []).flatMap(({ start, end }) =>
+				read.shown[start] ||
+				(dropped(label) && definitions.labelOf[start] === label)
+					? []
+					: [{ start, end: read.shown[end - 1] ? start + 1 : end }],
+			),
+		);
+		if (was.length === 0 || was.length !== is.length) {
+			continue;
+		}
+		was.forEach((entry, index) => {
+			rewrites[0].set(entry.start, {
+				end: entry.end,
+				text: linesOf(after, is[index]),
+			});
+		});
+		synced++;
+	}
+	if (changed.size === 0 && synced === 0) {
+		return unchanged;
+	}
+
+	const assemble = (
+		{ lines, labelOf }: ReferenceDefinitions,
+		regions: Map<number, { end: number; text: string }>,
+	): string => {
+		const output: string[] = [];
+		for (let index = 0; index < lines.length; index++) {
+			const region = regions.get(index);
+			if (region !== undefined) {
+				output.push(region.text);
+				index = region.end - 1;
+				continue;
+			}
+			const label = labelOf[index];
+			if (
+				label === undefined ||
+				!changed.has(label) ||
+				keepDefinitions.has(label)
+			) {
+				output.push(lines[index]);
+			}
+		}
+		return output.join("\n");
+	};
+	return {
+		oldText: assemble(before, rewrites[0]),
+		newText: assemble(after, rewrites[1]),
+	};
+}
+
 /**
  * Slide a pure removal or insertion of whole lines so it starts and ends on a
  * fence boundary when it can. Two diagrams in a row share their opener and
@@ -3302,6 +4188,18 @@ function diffByLines(oldText: string, newText: string): DiffPart[] {
 	return parts;
 }
 
+export interface DiffPartialTextOptions {
+	/**
+	 * Whether the texts are Markdown that a document editor renders and
+	 * saves (the default). A plain-text review, such as the prompt
+	 * enhancer's, shows and saves the raw text, so pass `false`: no
+	 * reference link is rewritten and no encoded marker is resolved before
+	 * the diff. The rest still applies as for Markdown: a complete diff
+	 * normalizes the texts, and every diff takes a table or a link whole.
+	 */
+	markdown?: boolean;
+}
+
 /**
  * Calculate diff between two text strings using word-level comparison
  *
@@ -3311,18 +4209,37 @@ function diffByLines(oldText: string, newText: string): DiffPart[] {
  * @param oldText - The original/baseline text
  * @param newText - The new/streaming text
  * @param isComplete - Whether streaming is complete (default: false)
+ * @param options - See `DiffPartialTextOptions`
  * @returns Text with placeholder tokens for additions and deletions
  */
 export function diffPartialText(
 	oldText: string,
 	newText: string,
 	isComplete = false,
+	options: DiffPartialTextOptions = {},
 ): string {
+	// Diff the destinations the save will store: markers percent-encoded into
+	// one (by an earlier accept, or written by a model) are resolved before
+	// anyone reviews the link (Fizzy #2946). A reference whose definition
+	// changed is written inline, as the save writes it.
+	const { oldText: oldResolved, newText: newResolved } =
+		options.markdown === false
+			? { oldText, newText }
+			: inlineChangedReferenceLinks(
+					resolveEncodedDiffMarkers(oldText),
+					resolveEncodedDiffMarkers(newText),
+					isComplete,
+				);
+
 	// For complete comparisons (version diff), normalize markdown to prevent
 	// false diffs from formatting artifacts like ***, ---|---, multi-blank
 	// lines, etc. Backslash escapes are NOT stripped — see normalizeMarkdownForDiff.
-	const oldNorm = isComplete ? normalizeMarkdownForDiff(oldText) : oldText;
-	const newNorm = isComplete ? normalizeMarkdownForDiff(newText) : newText;
+	const oldNorm = isComplete
+		? normalizeMarkdownForDiff(oldResolved)
+		: oldResolved;
+	const newNorm = isComplete
+		? normalizeMarkdownForDiff(newResolved)
+		: newResolved;
 
 	// Substitute HTML tables with shared placeholders so diffWords treats
 	// each table as one atomic token. Prevents diff markers from landing
@@ -3338,21 +4255,40 @@ export function diffPartialText(
 	// table from parsing at all, and the accept-save round trip then persists
 	// the raw pipes.
 	const {
-		oldProcessed,
-		newProcessed,
+		oldProcessed: oldAfterTables,
+		newProcessed: newAfterTables,
 		blocks: gfmBlocks,
 	} = extractGfmTablesForDiff(oldAfterHtml, newAfterHtml);
 
-	let oldTextToCompare = oldProcessed;
-	if (oldProcessed.length > newProcessed.length && !isComplete) {
-		// make oldText shorter
-		oldTextToCompare = oldProcessed.slice(0, newProcessed.length);
-	}
+	// Links and images too: a changed one is marked whole, and its markers
+	// never reach a destination, a title or an `<img>` attribute.
+	const {
+		oldProcessed,
+		newProcessed,
+		restore: restoreLinks,
+	} = extractLinksForDiff(oldAfterTables, newAfterTables);
+
+	// While streaming, a link the new text has only begun is no link yet:
+	// diffed as text, the unchanged link it will become flickered as a
+	// deletion. Hold it back until it closes; the old text's tail shows it.
+	const newToCompare = isComplete
+		? newProcessed
+		: newProcessed.slice(0, streamedWhole(newProcessed));
+
+	// Then compare only as much old text as has streamed in, cut before any
+	// placeholder that length falls inside: a split one restores to nothing,
+	// and its halves would show as text.
+	const streamCut =
+		oldProcessed.length > newToCompare.length && !isComplete
+			? cutOutsidePlaceholders(oldProcessed, newToCompare.length)
+			: null;
+	const oldTextToCompare =
+		streamCut === null ? oldProcessed : oldProcessed.slice(0, streamCut);
 
 	const changes = mergePhantomEscapeDiffs(
 		isComplete
 			? diffByLines(oldTextToCompare, newProcessed)
-			: diffWords(oldTextToCompare, newProcessed),
+			: diffWords(oldTextToCompare, newToCompare),
 	);
 
 	// When the diff part contains an HTML `<table>` (post-restore) along
@@ -3392,7 +4328,8 @@ export function diffPartialText(
 	// `diff-table-{added,deleted}` div that `stripDiffTags` understands on
 	// save. Split each changed part on the placeholder boundary so the table
 	// gets its own marker pair and the surrounding prose keeps word-level
-	// granularity.
+	// granularity. Links are restored before the markers go on, so a marker
+	// pair always wraps a whole link.
 	const wrapPartWithMarkers = (
 		value: string,
 		startMarker: string,
@@ -3400,7 +4337,7 @@ export function diffPartialText(
 	): string => {
 		if (gfmBlocks.size === 0 || !GFM_TABLE_PLACEHOLDER.test(value)) {
 			return wrapWithMarkers(
-				restoreHtmlTables(value, htmlBlocks),
+				restoreHtmlTables(restoreLinks(value), htmlBlocks),
 				startMarker,
 				endMarker,
 			);
@@ -3418,8 +4355,14 @@ export function diffPartialText(
 				out += `\n\n${startMarker}${table}${endMarker}\n\n`;
 				continue;
 			}
+			if (!/\S/.test(segment)) {
+				// A line break beside the table: the blank lines around it hold
+				// it already, and a marker pair of its own marks no text.
+				out += segment;
+				continue;
+			}
 			out += wrapWithMarkers(
-				restoreHtmlTables(segment, htmlBlocks),
+				restoreHtmlTables(restoreLinks(segment), htmlBlocks),
 				startMarker,
 				endMarker,
 			);
@@ -3428,7 +4371,10 @@ export function diffPartialText(
 	};
 
 	const restoreAll = (value: string): string =>
-		restoreHtmlTables(restoreHtmlTables(value, gfmBlocks), htmlBlocks);
+		restoreHtmlTables(
+			restoreHtmlTables(restoreLinks(value), gfmBlocks),
+			htmlBlocks,
+		);
 
 	let result = "";
 	changes.forEach((part) => {
@@ -3451,15 +4397,55 @@ export function diffPartialText(
 		}
 	});
 
-	if (oldProcessed.length > newProcessed.length && !isComplete) {
-		// Note: the slice above can bisect a placeholder mid-token while
-		// streaming, leaving its literal text in the tail. The HTML-table path
-		// has always had the same exposure; the final render always runs with
-		// `isComplete = true`, which skips the truncation entirely.
-		result += restoreAll(oldProcessed.slice(newProcessed.length));
+	if (streamCut !== null) {
+		result += restoreAll(oldProcessed.slice(streamCut));
 	}
 
 	return result;
+}
+
+const ANY_DIFF_PLACEHOLDER_RE = /x(?:HTMLBLOCK|GFMTABLE|DIFFLINK)x\d+xENDx/g;
+
+// A link, image, `<img>` tag or autolink begun but not yet closed, from its
+// opener to the end of the text.
+const OPEN_CONSTRUCT_TAIL_RE =
+	/^(?:!?\[[^\]\n]*(?:\](?:\([^)\n]*)?)?|<(?:img\b[^>]*|[A-Za-z][A-Za-z0-9+.-]*(?::[^\s<>]*)?))$/i;
+
+/**
+ * The length of a streaming text without the link or image it has only
+ * begun at its end, so the diff never shows an unfinished one as text.
+ */
+function streamedWhole(text: string): number {
+	let cut = text.length;
+	for (const opener of ["[", "<"]) {
+		let at = text.lastIndexOf(opener);
+		if (at === -1 || text[at - 1] === "\\") {
+			continue;
+		}
+		if (opener === "[" && text[at - 1] === "!") {
+			at -= 1;
+		}
+		if (at < cut && OPEN_CONSTRUCT_TAIL_RE.test(text.slice(at))) {
+			cut = at;
+		}
+	}
+	return cut;
+}
+
+/**
+ * `at`, or the start of the table or link placeholder it falls inside, so
+ * that slicing there keeps every placeholder whole on one side.
+ */
+function cutOutsidePlaceholders(text: string, at: number): number {
+	for (const match of text.matchAll(ANY_DIFF_PLACEHOLDER_RE)) {
+		if (match.index >= at) {
+			break;
+		}
+		if (match.index + match[0].length > at) {
+			return match.index;
+		}
+	}
+	return at;
 }
 
 /**
@@ -3612,21 +4598,29 @@ export function fromMarkdown(
 			? fixedText
 			: mergeOrphanBulletContinuations(fixedText);
 
-	// Phase 2: Render markdown with diff marker plugin
+	// Phase 2: Render markdown with diff marker plugin. Its `env` collects the
+	// document's link reference definitions for the tables rendered below.
 	const md = createMarkdownIt();
-	let html = md.render(repairedText);
+	const env: { references?: Record<string, ReadLink> } = {};
+	let html = md.render(repairedText, env);
 
 	// Phase 3: Render extracted tables and reinsert with highlighting
 	if (tables.length > 0) {
-		// Create a fresh MarkdownIt instance for tables (no diff markers in clean tables)
-		const tableMd = new MarkdownIt({
-			typographer: false,
-			html: true,
-		});
+		// Create a fresh MarkdownIt instance for tables (no diff markers in
+		// clean tables). Its links resolve markers as the main renderer's do,
+		// or a cell's link could review one destination and save another.
+		const tableMd = withLinkResolution(
+			new MarkdownIt({
+				typographer: false,
+				html: true,
+			}),
+		);
 
 		tables.forEach((table, index) => {
+			// A cell's reference resolves through the document's definitions,
+			// as markdown-it reads the table in place.
 			const tableHtml = markTableWithDiffType(
-				tableMd.render(table.markdown),
+				tableMd.render(table.markdown, { references: env.references }),
 				table.type,
 			);
 			const highlightClass =
@@ -3788,19 +4782,6 @@ export function stripDiffMarkup(text: string | undefined): string {
 			.replace(new RegExp(escapeRegExp(DIFF_DEL_START), "g"), "")
 			.replace(new RegExp(escapeRegExp(DIFF_DEL_END), "g"), "")
 	);
-}
-
-/**
- * Remove diff marker tokens and stray zero-width characters (U+200B, U+FEFF)
- * from markdown that is about to be saved. A marker that escaped the diff
- * plugin reaches the editor as plain text, and without this pass its invisible
- * characters were written into the stored document. Ordinary non-breaking
- * spaces are left alone; only the ones inside a whole marker are removed.
- */
-export function stripResidualDiffMarkers(markdown: string): string {
-	return markdown
-		.replace(new RegExp(ANY_MARKER_SOURCE, "g"), "")
-		.replace(/[\u200B\uFEFF]/g, "");
 }
 
 // Throttle state for focusOnLastDiff

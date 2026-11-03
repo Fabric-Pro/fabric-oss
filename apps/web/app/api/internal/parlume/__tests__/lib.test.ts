@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 	segmentFindMany: vi.fn(),
 	turnFindMany: vi.fn(),
 	actionFindMany: vi.fn(),
+	channelPostFindMany: vi.fn(),
 	contextCreate: vi.fn(),
 	workflowStart: vi.fn(),
 	deleteProviderData: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock("@repo/database", () => {
 			},
 			parlumeMeetingTurn: { findMany: mocks.turnFindMany },
 			parlumeAction: { findMany: mocks.actionFindMany },
+			parlumeChannelPost: { findMany: mocks.channelPostFindMany },
 			$transaction: (
 				run: (tx: {
 					projectContext: { create: typeof mocks.contextCreate };
@@ -76,6 +78,7 @@ beforeEach(() => {
 	mocks.segmentFindMany.mockResolvedValue([]);
 	mocks.turnFindMany.mockResolvedValue([]);
 	mocks.actionFindMany.mockResolvedValue([]);
+	mocks.channelPostFindMany.mockResolvedValue([]);
 	mocks.getSettings.mockResolvedValue({
 		apiKey: "test-key",
 		baseUrl: "https://attendee.example.com",
@@ -137,6 +140,14 @@ describe("Parlume transcript finalization", () => {
 						provider: "attendee",
 						parlumeSessionId: "session-1",
 						parlumeNotesStatus: "PENDING",
+						parlumeChannelChatDelivery: {
+							version: 1,
+							sessionId: "session-1",
+							projectId: "project-1",
+							organizationId: "org-1",
+							receipts: [],
+							omittedCount: 0,
+						},
 					},
 				}),
 			}),
@@ -205,6 +216,12 @@ describe("Parlume transcript finalization", () => {
 			orderBy: [{ createdAt: "asc" }, { id: "asc" }],
 			take: 10_001,
 		});
+		expect(mocks.channelPostFindMany).toHaveBeenCalledWith({
+			where,
+			select: { tag: true, confirmedAt: true },
+			orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			take: 10_001,
+		});
 		const content = mocks.contextCreate.mock.calls[0][0].data.content;
 		expect(content).toContain("Response: Both changes succeeded.");
 		expect(content).toContain(
@@ -214,10 +231,10 @@ describe("Parlume transcript finalization", () => {
 			"Action receipt: fabric_update_task — FAILED",
 		);
 		expect(content).toContain(
-			"A COMPLETED request does not prove action success or audio delivery.",
+			"A COMPLETED request does not prove a Fabric mutation, channel chat delivery or audio playback.",
 		);
 		expect(content).toContain(
-			"Only COMPLETED action receipts confirm success; all other action statuses are unsuccessful or unconfirmed.",
+			"Only COMPLETED Fabric mutation receipts confirm their recorded mutation; other mutation statuses are unsuccessful or unconfirmed.",
 		);
 		expect(mocks.workflowStart).toHaveBeenCalledWith(
 			"parlumeNotesWorkflow",
@@ -231,5 +248,31 @@ describe("Parlume transcript finalization", () => {
 				],
 			}),
 		);
+	});
+
+	it("keeps a completed chat response neutral when mutation and delivery proof are absent", async () => {
+		mocks.turnFindMany.mockResolvedValue([
+			{
+				id: "turn-1",
+				requestText: "Post the project status in chat.",
+				responseText: "Posted it.",
+				status: "COMPLETED",
+				interruptedAt: null,
+			},
+		]);
+		mocks.channelPostFindMany.mockResolvedValue([
+			{ tag: "P1", confirmedAt: null },
+		]);
+		mocks.contextCreate.mockResolvedValue({ id: "context-1" });
+
+		await finalizeParlumeSession("session-1");
+
+		const content = mocks.contextCreate.mock.calls[0][0].data.content;
+		expect(content).toContain("Fabric mutation receipts: none recorded.");
+		expect(content).not.toContain("action success unconfirmed");
+		expect(content).toContain(
+			"P1: delivery not verified; this does not prove failure.",
+		);
+		expect(content).not.toContain("P1: exact Graph reply");
 	});
 });

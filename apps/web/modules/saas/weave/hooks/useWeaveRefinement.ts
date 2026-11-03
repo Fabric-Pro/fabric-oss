@@ -103,7 +103,11 @@ export function useWeaveRefinement({
 				setIsReady(reply.isReady);
 				setMessages((prev) => [
 					...prev,
-					{ role: "assistant", content: reply.feedback },
+					{
+						role: "assistant",
+						content: reply.feedback,
+						model: reply.model,
+					},
 				]);
 			} catch (error) {
 				if (transport === "runtime" && controller.signal.aborted) {

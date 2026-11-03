@@ -12,6 +12,11 @@
  */
 
 import {
+	type AnswerModelInfo,
+	answerModelInfoSchema,
+} from "@repo/ai/lib/answer-model-info";
+
+import {
 	isAiUsageLimitExceededPayload,
 	useShowAiUsageLimitToast,
 } from "@saas/payments/lib/ai-usage-limit-toast";
@@ -92,6 +97,9 @@ export interface WorkflowTemplateState {
 	};
 	subAgentResults: SubAgentResult[];
 	result: {
+		model?: AnswerModelInfo;
+		summaryModel?: AnswerModelInfo;
+		reportModel?: AnswerModelInfo;
 		text: string | null;
 		summary: string | null;
 		keyFindings: KeyFinding[];
@@ -433,6 +441,14 @@ export function useWorkflowTemplateStream(
 						phase: "completed",
 						result: {
 							text: (event.result as string) || null,
+							model: answerModelInfoSchema.safeParse(event.model)
+								.data,
+							summaryModel: answerModelInfoSchema.safeParse(
+								event.summaryModel,
+							).data,
+							reportModel: answerModelInfoSchema.safeParse(
+								event.reportModel,
+							).data,
 							summary: (event.summary as string) || null,
 							keyFindings:
 								(event.keyFindings as KeyFinding[]) || [],
@@ -611,6 +627,15 @@ export function useWorkflowTemplateStream(
 					phase: "completed",
 					result: {
 						text: data.result.result || null,
+						model: answerModelInfoSchema.safeParse(
+							data.result.model,
+						).data,
+						summaryModel: answerModelInfoSchema.safeParse(
+							data.result.summaryModel,
+						).data,
+						reportModel: answerModelInfoSchema.safeParse(
+							data.result.reportModel,
+						).data,
 						summary: data.result.summary || null,
 						keyFindings: data.result.keyFindings || [],
 						sources: data.result.sources || [],

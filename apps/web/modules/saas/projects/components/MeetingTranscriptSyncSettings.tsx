@@ -11,6 +11,7 @@
 import { useSession } from "@saas/auth/hooks/use-session";
 import { LINKED_MEETINGS_QUERY_KEY } from "@saas/meeting-digest/hooks/use-linked-meeting-join-urls";
 import { LinkedMeetingSelector } from "@saas/meetings/components";
+import { TranscriptFileUpload } from "@saas/projects/components/TranscriptFileUpload";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -1761,6 +1762,12 @@ export function MeetingTranscriptSyncSettings({
 						</div>
 					</div>
 				)}
+
+				<TranscriptFileUpload
+					projectId={projectId}
+					organizationId={organizationId}
+					canEdit={canEdit}
+				/>
 			</Card>
 
 			<LinkedMeetingSelector

@@ -959,6 +959,25 @@
 					"revoke": "Einladung widerrufen",
 					"resend": "Einladung erneut senden"
 				},
+				"bulkInvite": {
+					"open": "Mehrere einladen",
+					"title": "Mehrere Mitglieder einladen",
+					"description": "Füge E-Mail-Adressen ein. Jede Person erhält eine Einladung und wird nach der Annahme Mitglied.",
+					"placeholder": "eins@example.com, zwei@example.com",
+					"submit": "Einladungen senden ({count})",
+					"tooMany": "Du kannst bis zu {max} Adressen auf einmal einladen. Teile die Liste auf und versuche es erneut.",
+					"error": "Die Einladungen konnten nicht gesendet werden. Bitte versuche es erneut.",
+					"summary": "{invited} von {total} eingeladen",
+					"inviteMore": "Weitere einladen",
+					"status": {
+						"invited": "Als Mitglied eingeladen",
+						"invalid": "Keine gültige E-Mail",
+						"duplicate": "Doppelt in dieser Liste",
+						"already_member": "Bereits Mitglied",
+						"already_invited": "Bereits eingeladen",
+						"failed": "Konnte nicht gesendet werden"
+					}
+				},
 				"inviteMember": {
 					"description": "Um ein neues Mitglied einzuladen, sende ihm eine Einladung.",
 					"email": "E-Mail",
@@ -1323,7 +1342,8 @@
 						"invited": "Mitglied eingeladen",
 						"role_changed": "Rolle geändert",
 						"removed": "Mitglied entfernt",
-						"left": "Mitglied ausgetreten"
+						"left": "Mitglied ausgetreten",
+						"bulk_invited": "Mehrere Mitglieder eingeladen"
 					},
 					"api_key": {
 						"created": "API-Schlüssel erstellt",
@@ -1579,6 +1599,9 @@
 				"newsletter": {
 					"approval": {
 						"required_changed": "Newsletter-Freigabepflicht geändert"
+					},
+					"organization_distribution": {
+						"changed": "Versand an die gesamte Organisation geändert"
 					},
 					"send": {
 						"approved": "Newsletter-Versand freigegeben",

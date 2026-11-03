@@ -13,8 +13,8 @@ import { expect, test } from "@playwright/test";
  * PRECONDITIONS — the run fails loudly rather than skipping if these are unmet,
  * because a silent skip in a QA report reads as a pass:
  *   QA_BASE_URL       deployed host running the branch under test. Branch
- *                     previews no longer build automatically (see
- *                     apps/web/scripts/vercel-ignore.sh), so arrange one first.
+ *                     previews are not built (git.deploymentEnabled is false
+ *                     in apps/web/vercel.json), so arrange one first.
  *   QA_PROJECT_ID     a project whose owner has a personal meeting WITH a transcript
  *   E2E_USER_EMAIL / E2E_USER_PASSWORD   (consumed by qa-2104-auth.setup.ts)
  *   PERSONAL_MEETINGS and PERSONAL_INSIGHTS_CACHE both enabled for this user.

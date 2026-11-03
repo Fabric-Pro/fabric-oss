@@ -1081,8 +1081,10 @@ describe("a Proposal's layers and team (Fizzy #2946)", () => {
 		});
 		const { schema, instructions, prompt } =
 			mocks.generateObject.mock.calls[0][0];
-		expect(schema.safeParse({ spec: LAYERS }).success).toBe(true);
-		expect(schema.safeParse({ spec: TEAM }).success).toBe(false);
+		// The visuals step asks for the figure's caption beside the spec.
+		const caption = "Three layers";
+		expect(schema.safeParse({ spec: LAYERS, caption }).success).toBe(true);
+		expect(schema.safeParse({ spec: TEAM, caption }).success).toBe(false);
 		expect(instructions).toContain("## More kinds for this Proposal");
 		expect(prompt).toContain("Requested kind: layers.");
 	});
@@ -1224,5 +1226,426 @@ describe("a Proposal's layers and team (Fizzy #2946)", () => {
 		const { instructions } = mocks.generateObject.mock.calls[0][0];
 		expect(instructions).toContain("## Editing an existing diagram");
 		expect(instructions).toContain("## More kinds for this Proposal");
+	});
+});
+
+describe("a Proposal's timeline dates, comparison columns and caption (Fizzy #2946)", () => {
+	const proposal = {
+		...context,
+		documentType: "PROPOSAL",
+		proposalArtifact: true as const,
+	};
+	/** The same call as Glossy makes it: no Proposal options. */
+	const glossy = { ...context, documentType: "PROPOSAL" };
+
+	function modelReturnsCaptioned(spec: unknown, caption: string) {
+		mocks.generateObject.mockResolvedValueOnce({
+			object: { spec, caption },
+			usage: {},
+		});
+	}
+
+	const stages = {
+		heading: "6. Working plan",
+		markdown: [
+			"The stages below run in order; their timing is agreed later.",
+			"",
+			"1. **Map the current intake.** Interview the warehouse leads.",
+			"2. **Trial the new routing at two depots.** Compare pick times at each depot.",
+		].join("\n"),
+	};
+	// What a model writes when the section dates nothing: a step in `date`.
+	const STAGED_TIMELINE = {
+		kind: "timeline",
+		title: null,
+		items: [
+			{
+				date: "Map the current intake",
+				label: "Interview the warehouse leads",
+				description: null,
+			},
+			{
+				date: "Trial the new routing",
+				label: "Compare pick times",
+				description: null,
+			},
+		],
+	};
+
+	it("drops a timeline whose dates are steps, not periods, as an invalid spec", async () => {
+		modelReturns(STAGED_TIMELINE);
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section: stages,
+			kind: "timeline",
+		});
+
+		expect(result).toMatchObject({
+			status: "dropped",
+			reason: "invalidSpec",
+			violations: [],
+		});
+	});
+
+	it("redraws an existing timeline whose dates are phrases on an edit, keeping its kind and dates", async () => {
+		modelReturns(STAGED_TIMELINE);
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section: stages,
+			kind: "timeline",
+			instruction: "Shorter labels",
+			currentSource: "flowchart TD\n  t0 --> t1",
+		});
+
+		expect(result).toEqual({
+			status: "extracted",
+			spec: {
+				kind: "timeline",
+				items: STAGED_TIMELINE.items.map(({ date, label }) => ({
+					date,
+					label,
+				})),
+			},
+		});
+	});
+
+	it("keeps a timeline whose every date is a short period", async () => {
+		modelReturns(timeline("Q1 2027"));
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section,
+			kind: "timeline",
+		});
+
+		expect(result).toMatchObject({
+			status: "extracted",
+			spec: { kind: "timeline" },
+		});
+	});
+
+	const options = {
+		heading: "Hosting options",
+		markdown: [
+			"The review weighs a managed service, a private cluster and an on-site server.",
+			"The on-site server keeps data in the building, needs its own backups, needs a spare rack and needs an operator.",
+			"The managed service has a monthly fee, no hardware and a shared support desk. The private cluster has a lower fee and some hardware.",
+		].join("\n"),
+	};
+	// The shape seen in a generated Proposal: one restating point for two
+	// options, every other point under the third.
+	const LOPSIDED = {
+		kind: "comparison",
+		title: null,
+		items: [
+			{
+				title: "Managed service",
+				points: ["The review weighs a managed service"],
+			},
+			{
+				title: "Private cluster",
+				points: ["The review weighs a private cluster"],
+			},
+			{
+				title: "On-site server",
+				points: [
+					"The review weighs an on-site server",
+					"Keeps data in the building",
+					"Needs its own backups",
+					"Needs a spare rack",
+				],
+			},
+		],
+	};
+
+	it("drops a comparison whose columns are badly unbalanced, so the section keeps its prose", async () => {
+		modelReturns(LOPSIDED);
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section: options,
+			kind: "comparison",
+		});
+
+		expect(result).toMatchObject({
+			status: "dropped",
+			reason: "invalidSpec",
+		});
+	});
+
+	it("trims a kept comparison so no row is filled in one column only", async () => {
+		modelReturns({
+			kind: "comparison",
+			title: null,
+			items: [
+				{
+					title: "Managed service",
+					points: [
+						"Monthly fee",
+						"No hardware",
+						"Shared support desk",
+					],
+				},
+				{
+					title: "Private cluster",
+					points: ["Lower fee", "Some hardware"],
+				},
+			],
+		});
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section: options,
+			kind: "comparison",
+		});
+
+		expect(result).toMatchObject({
+			status: "extracted",
+			spec: {
+				items: [
+					{ points: ["Monthly fee", "No hardware"] },
+					{ points: ["Lower fee", "Some hardware"] },
+				],
+			},
+		});
+	});
+
+	it("leaves Glossy's extraction of the same responses as it was", async () => {
+		modelReturns(STAGED_TIMELINE);
+		modelReturns(LOPSIDED);
+		modelReturns(timeline("Q1 2027"));
+
+		const staged = await extractGlossyVisual({
+			...glossy,
+			section: stages,
+			kind: "timeline",
+		});
+		const lopsided = await extractGlossyVisual({
+			...glossy,
+			section: options,
+			kind: "comparison",
+		});
+		const dated = await extractGlossyVisual({
+			...glossy,
+			section,
+			kind: "timeline",
+		});
+
+		expect(staged).toEqual({
+			status: "extracted",
+			spec: {
+				kind: "timeline",
+				items: STAGED_TIMELINE.items.map(({ date, label }) => ({
+					date,
+					label,
+				})),
+			},
+		});
+		expect(lopsided).toEqual({
+			status: "extracted",
+			spec: { kind: "comparison", items: LOPSIDED.items },
+		});
+		// No caption is asked for or returned.
+		expect(dated).toEqual({
+			status: "extracted",
+			spec: {
+				kind: "timeline",
+				title: "Implementation Phases",
+				items: [
+					{ date: "Q3 2026", label: "Migration phase starts" },
+					{ date: "Q1 2027", label: "Retirement phase follows" },
+				],
+			},
+		});
+		for (const [call] of mocks.generateObject.mock.calls) {
+			expect(call.schema.shape.caption).toBeUndefined();
+		}
+	});
+
+	it("describes a timeline's dates and a comparison's points to a Proposal only", async () => {
+		const PERIOD_RULE = "never a phase name or a step";
+		const PARALLEL_RULE = "the same aspects, in the same order";
+		const schemaText = async (
+			options: typeof proposal | typeof glossy,
+			kind: "timeline" | "comparison",
+		) => {
+			mocks.generateObject.mockClear();
+			modelReturns(timeline("Q1 2027"));
+			await extractGlossyVisual({ ...options, section, kind });
+			const [[call]] = mocks.generateObject.mock.calls;
+			return JSON.stringify(z.toJSONSchema(call.schema));
+		};
+
+		const proposalTimeline = await schemaText(proposal, "timeline");
+		const proposalComparison = await schemaText(proposal, "comparison");
+		const glossyTimeline = await schemaText(glossy, "timeline");
+		const glossyComparison = await schemaText(glossy, "comparison");
+
+		expect(proposalTimeline).toContain(PERIOD_RULE);
+		expect(proposalComparison).toContain(PARALLEL_RULE);
+		for (const text of [glossyTimeline, glossyComparison]) {
+			expect(text).not.toContain(PERIOD_RULE);
+			expect(text).not.toContain(PARALLEL_RULE);
+		}
+	});
+
+	it("asks an edit to keep a timeline's dates as written, where a new timeline gets the period rule", async () => {
+		const PERIOD_RULE = "never a phase name or a step";
+		const KEEP_RULE = "as the current diagram writes it";
+		const schemaText = async (kind: "timeline" | "auto", edit: boolean) => {
+			mocks.generateObject.mockClear();
+			modelReturns(timeline("Q1 2027"));
+			await extractGlossyVisual({
+				...proposal,
+				section,
+				kind,
+				...(edit
+					? {
+							instruction: "Shorter labels",
+							currentSource: "flowchart TD\n  t0 --> t1",
+						}
+					: {}),
+			});
+			const [[call]] = mocks.generateObject.mock.calls;
+			return JSON.stringify(z.toJSONSchema(call.schema));
+		};
+
+		for (const kind of ["timeline", "auto"] as const) {
+			const generated = await schemaText(kind, false);
+			const edited = await schemaText(kind, true);
+			expect(generated, kind).toContain(PERIOD_RULE);
+			expect(generated, kind).not.toContain(KEEP_RULE);
+			expect(edited, kind).not.toContain(PERIOD_RULE);
+			expect(edited, kind).toContain(KEEP_RULE);
+		}
+	});
+
+	it("asks a Proposal's visuals step for a caption, and an edit for none", async () => {
+		modelReturns(timeline("Q1 2027"));
+		modelReturns(timeline("Q1 2027"));
+
+		await extractGlossyVisual({ ...proposal, section, kind: "timeline" });
+		await extractGlossyVisual({
+			...proposal,
+			section,
+			kind: "timeline",
+			instruction: "Shorter labels",
+			currentSource: "flowchart TD\n  t0 --> t1",
+		});
+
+		const [step, edit] = mocks.generateObject.mock.calls.map(
+			([call]) => call.schema,
+		);
+		expect(step.shape.caption).toBeDefined();
+		expect(edit.shape.caption).toBeUndefined();
+	});
+
+	it("captions the figure with the spec's own title when it has one", async () => {
+		modelReturnsCaptioned(timeline("Q1 2027"), "Migration and retirement");
+
+		const result = await extractGlossyVisual({
+			...proposal,
+			section,
+			kind: "timeline",
+		});
+
+		expect(result).toMatchObject({
+			status: "extracted",
+			caption: "Implementation Phases",
+		});
+	});
+
+	const untitled = { ...timeline("Q1 2027"), title: null };
+
+	it.each([
+		[
+			"as written",
+			"Migration and retirement phases",
+			"Migration and retirement phases",
+		],
+		[
+			"without its full stop",
+			"Migration and retirement phases.",
+			"Migration and retirement phases",
+		],
+		[
+			"without citation markers",
+			"Migration and retirement phases [S2]",
+			"Migration and retirement phases",
+		],
+		[
+			"with a capital",
+			"migration and retirement phases",
+			"Migration and retirement phases",
+		],
+	])(
+		"otherwise captions it with the extraction's caption, %s",
+		async (_label, caption, expected) => {
+			modelReturnsCaptioned(untitled, caption);
+
+			const result = await extractGlossyVisual({
+				...proposal,
+				section,
+				kind: "timeline",
+			});
+
+			expect(result).toMatchObject({
+				status: "extracted",
+				caption: expected,
+			});
+		},
+	);
+
+	it.each([
+		[
+			"uses words the section does not",
+			"An ambitious modernisation roadmap",
+		],
+		["states a figure the section does not", "Migration in 3 phases"],
+		["holds markdown", "**Migration** phases"],
+		[
+			"is longer than a caption",
+			`Migration phase ${"and retirement phase ".repeat(5)}`,
+		],
+		["is blank", "   "],
+	])(
+		"keeps the visual but drops a caption that %s",
+		async (_label, caption) => {
+			modelReturnsCaptioned(untitled, caption);
+
+			const result = await extractGlossyVisual({
+				...proposal,
+				section,
+				kind: "timeline",
+			});
+
+			expect(result).toMatchObject({ status: "extracted" });
+			expect(result).not.toHaveProperty("caption");
+		},
+	);
+
+	it("keeps every Proposal kind's schema within Anthropic's native structured-output limits", async () => {
+		const kinds = [
+			"timeline",
+			"comparison",
+			"flow",
+			"org_chart",
+			"layers",
+			"team",
+		] as const;
+		for (const kind of kinds) {
+			modelReturns(timeline("Q1 2027"));
+			await extractGlossyVisual({ ...proposal, section, kind });
+		}
+
+		for (const [call] of mocks.generateObject.mock.calls) {
+			const counts = countAnthropicSchemaParameters(
+				z.toJSONSchema(call.schema),
+			);
+			expect(counts.unionParameters).toBeLessThanOrEqual(16);
+			expect(counts.optionalParameters).toBeLessThanOrEqual(24);
+		}
 	});
 });

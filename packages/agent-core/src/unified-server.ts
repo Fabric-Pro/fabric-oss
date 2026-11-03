@@ -30,6 +30,7 @@ import {
 } from "./middleware/rate-limit";
 import { isHumanMessage } from "./reasoning-trace/extract";
 import { isPlainTraceMap, pickTraceState } from "./reasoning-trace/seed";
+import { errorLogFields } from "./retry";
 import {
 	type AICredentials,
 	extractAIToken,
@@ -342,6 +343,25 @@ export interface UnifiedServerConfig {
 	supportsStreaming?: boolean;
 	/** A2A protocol version (default: 0.3) */
 	protocolVersion?: string;
+	/**
+	 * Whether a run's logs leave out error and reply text, decided from the
+	 * run's configurable. For such a run, the AG-UI and platform stream
+	 * failures log the error's class, code, HTTP status and the run and
+	 * thread ids instead of the error, the AG-UI handler's reply logs keep
+	 * lengths without a preview, and the state-sanitize logs keep keys,
+	 * counts and tool-call names without the calls' arguments or any message
+	 * text. A failure from before the stream starts reaches the route's own
+	 * catch in the AG-UI handler, `/runs/stream` and
+	 * `/threads/:threadId/runs/stream`; there it is logged by class, code
+	 * and status and answered with a generic message instead of its text.
+	 * As the run's config is not built yet, the routes decide this from the
+	 * request's bags that the config spreads, in the same order. What a
+	 * stream sends is unchanged. Absent, every run logs and answers as
+	 * before.
+	 */
+	redactErrorLogs?: (
+		configurable: AgentRuntimeConfig["configurable"],
+	) => boolean;
 
 	// =============================================================================
 	// Generalist Agent Capabilities
@@ -694,6 +714,13 @@ export class CoalescingEventGate<T> {
 		this.droppingLogged = false;
 	}
 }
+
+/**
+ * What a route answers when a run its `redactErrorLogs` hook names fails
+ * before its stream starts. The error's text can repeat the prompt, and the
+ * caller, such as a Temporal activity, can keep the answer it receives.
+ */
+const NAMED_RUN_FAILURE_MESSAGE = "The agent run failed.";
 
 /**
  * Create a unified server that handles both AG-UI and A2A protocols
@@ -1279,10 +1306,31 @@ export function createUnifiedServer(
 	 *
 	 * The pure transformation lives at module scope (above) so it can be
 	 * exercised directly from unit tests without spinning up the full server.
+	 *
+	 * When `redact` is set, the logs keep keys and counts and name each tool
+	 * call, but leave out its arguments and the message text: a patch call's
+	 * arguments carry the proposed document, which can repeat the prompt.
 	 */
 	const sanitizeStateForCopilotKitWithLog = (
 		state: Record<string, unknown>,
+		redact: boolean,
 	): Record<string, unknown> => {
+		// A redacted log's tool calls: only their names, in either call shape.
+		const toolCallNames = (toolCalls: unknown): unknown[] | undefined =>
+			Array.isArray(toolCalls)
+				? toolCalls.map((toolCall) => {
+						if (!toolCall || typeof toolCall !== "object") {
+							return undefined;
+						}
+						const tc = toolCall as Record<string, unknown>;
+						const name =
+							tc.name ??
+							(tc.function as Record<string, unknown> | undefined)
+								?.name;
+						return typeof name === "string" ? name : undefined;
+					})
+				: undefined;
+
 		// Debug: Log what we're sanitizing including messages with tool_calls
 		const messagesWithToolCalls = Array.isArray(state.messages)
 			? (state.messages as Array<Record<string, unknown>>).filter(
@@ -1302,7 +1350,9 @@ export function createUnifiedServer(
 				toolCallsDetails: messagesWithToolCalls.map((m) => ({
 					role: m.role,
 					type: m.type,
-					toolCalls: m.tool_calls,
+					toolCalls: redact
+						? toolCallNames(m.tool_calls)
+						: m.tool_calls,
 				})),
 			},
 		);
@@ -1325,11 +1375,18 @@ export function createUnifiedServer(
 					? sanitized.messages.length
 					: 0,
 				messagesWithToolCalls: sanitizedMessagesWithToolCalls.length,
-				toolCallsDetails: sanitizedMessagesWithToolCalls.map((m) => ({
-					type: m.type,
-					content: m.content,
-					toolCalls: m.tool_calls,
-				})),
+				toolCallsDetails: sanitizedMessagesWithToolCalls.map((m) =>
+					redact
+						? {
+								type: m.type,
+								toolCalls: toolCallNames(m.tool_calls),
+							}
+						: {
+								type: m.type,
+								content: m.content,
+								toolCalls: m.tool_calls,
+							},
+				),
 			},
 		);
 
@@ -1581,6 +1638,10 @@ export function createUnifiedServer(
 			},
 		);
 
+		// Whether this run's failure is logged without its error text.
+		const redactErrorLogs =
+			config.redactErrorLogs?.(runtimeConfig.configurable) === true;
+
 		// If we have a platform streaming executor, use it for proper CopilotKit compatibility
 		if (platformStreamAgent) {
 			console.log(
@@ -1703,7 +1764,10 @@ export function createUnifiedServer(
 						for await (const event of activeGenerator) {
 							// Sanitize state for CopilotKit compatibility
 							const sanitizedState =
-								sanitizeStateForCopilotKitWithLog(event.state);
+								sanitizeStateForCopilotKitWithLog(
+									event.state,
+									redactErrorLogs,
+								);
 
 							// Debug: Log sanitized state
 							console.log(
@@ -1863,7 +1927,13 @@ export function createUnifiedServer(
 						) {
 							console.error(
 								`[UnifiedServer:${config.name}] Stream error:`,
-								error,
+								redactErrorLogs
+									? {
+											...errorLogFields(error),
+											runId,
+											threadId,
+										}
+									: error,
 							);
 						}
 						// AG-UI's LangGraph adapter builds RUN_ERROR from
@@ -1931,7 +2001,10 @@ export function createUnifiedServer(
 		);
 
 		// Sanitize result for CopilotKit compatibility
-		const result = sanitizeStateForCopilotKitWithLog(rawResult);
+		const result = sanitizeStateForCopilotKitWithLog(
+			rawResult,
+			redactErrorLogs,
+		);
 
 		// Save state to thread storage
 		if (threadId) {
@@ -2032,21 +2105,26 @@ export function createUnifiedServer(
 
 	// POST /runs/stream - Stream a run (no thread)
 	app.post("/runs/stream", async (c: Context) => {
+		// Set once the body is read; the catch below reads it.
+		let redactRunError = false;
 		try {
 			const body = await c.req.json();
 			const input = body.input || {};
 			const bodyConfig = body.config as
 				| { configurable?: Record<string, unknown> }
 				| undefined;
-			// The raw request body can carry `properties.ai_token` /
-			// `configurable.ai_token` — strip the value before it hits the
-			// truncated debug dump below.
-			const redactedBody = JSON.stringify(body).replace(
-				/"(ai_token|aiToken|x-ai-token)"\s*:\s*"[^"]+"/gi,
-				'"$1":"[redacted]"',
-			);
+			// A failure while the run is built, before its stream starts,
+			// is logged and answered without its text for a run the hook
+			// names. The run's config spreads these in this order.
+			redactRunError =
+				config.redactErrorLogs?.({
+					...(bodyConfig?.configurable || {}),
+					...((body.context as Record<string, unknown>) || {}),
+					...((body.properties as Record<string, unknown>) || {}),
+				}) === true;
 
-			// Debug logging to trace AI config - log full body structure
+			// Debug logging to trace AI config - log the body's structure
+			// only: its text is the customer's prompt and content.
 			console.log(
 				`[UnifiedServer:${config.name}] /runs/stream FULL REQUEST:`,
 				JSON.stringify(
@@ -2088,15 +2166,15 @@ export function createUnifiedServer(
 						topLevelAiApiKey: !!body.ai_api_key,
 						topLevelAiModel: body.ai_model,
 						topLevelAiProvider: body.ai_provider,
-						// Log the full body (truncated), with ai_token redacted
-						fullBody: redactedBody.slice(0, 2000),
 					},
 					null,
 					2,
 				),
 			);
 
-			return createLangGraphStreamResponse(
+			// Awaited so a failure while the run is built, before its stream
+			// starts, reaches the catch below.
+			return await createLangGraphStreamResponse(
 				c,
 				input,
 				undefined,
@@ -2106,12 +2184,13 @@ export function createUnifiedServer(
 		} catch (error) {
 			console.error(
 				`[UnifiedServer:${config.name}] Error in /runs/stream:`,
-				error,
+				redactRunError ? errorLogFields(error) : error,
 			);
 			return c.json(
 				{
-					error:
-						error instanceof Error
+					error: redactRunError
+						? NAMED_RUN_FAILURE_MESSAGE
+						: error instanceof Error
 							? error.message
 							: "Unknown error",
 				},
@@ -2122,6 +2201,8 @@ export function createUnifiedServer(
 
 	// POST /threads/:threadId/runs/stream - Stream a run on a thread
 	app.post("/threads/:threadId/runs/stream", async (c: Context) => {
+		// Set once the body is read; the catch below reads it.
+		let redactRunError = false;
 		try {
 			const threadId = c.req.param("threadId")!;
 			const body = await c.req.json();
@@ -2129,6 +2210,15 @@ export function createUnifiedServer(
 			const bodyConfig = body.config as
 				| { configurable?: Record<string, unknown> }
 				| undefined;
+			// A failure while the run is built, before its stream starts,
+			// is logged and answered without its text for a run the hook
+			// names. The run's config spreads these in this order.
+			redactRunError =
+				config.redactErrorLogs?.({
+					...(bodyConfig?.configurable || {}),
+					...((body.context as Record<string, unknown>) || {}),
+					...((body.properties as Record<string, unknown>) || {}),
+				}) === true;
 
 			// Debug logging to trace AI config
 			console.log(
@@ -2168,7 +2258,9 @@ export function createUnifiedServer(
 				},
 			);
 
-			return createLangGraphStreamResponse(
+			// Awaited so a failure while the run is built, before its stream
+			// starts, reaches the catch below.
+			return await createLangGraphStreamResponse(
 				c,
 				input,
 				threadId,
@@ -2178,12 +2270,13 @@ export function createUnifiedServer(
 		} catch (error) {
 			console.error(
 				`[UnifiedServer:${config.name}] Error in /threads/:threadId/runs/stream:`,
-				error,
+				redactRunError ? errorLogFields(error) : error,
 			);
 			return c.json(
 				{
-					error:
-						error instanceof Error
+					error: redactRunError
+						? NAMED_RUN_FAILURE_MESSAGE
+						: error instanceof Error
 							? error.message
 							: "Unknown error",
 				},
@@ -2750,6 +2843,8 @@ export function createUnifiedServer(
 			`[UnifiedServer:${config.name}] AG-UI root POST / handler called`,
 		);
 
+		// Set once the body is read; the catch below reads it.
+		let redactHandlerError = false;
 		try {
 			const body = await c.req.json();
 			const messages = stripEmptyResponseFallbacks(body.messages || []);
@@ -2824,6 +2919,16 @@ export function createUnifiedServer(
 				string,
 				unknown
 			>;
+			// A failure while the run is built, before its stream starts,
+			// is logged and answered without its text for a run the hook
+			// names. The run's config spreads these in this order.
+			redactHandlerError =
+				config.redactErrorLogs?.({
+					...bodyConfigurable,
+					...bodyContext,
+					...bodyForwardedProps,
+					...bodyProperties,
+				}) === true;
 
 			// Log context metadata only (no content to avoid data leaks)
 			console.log(`[UnifiedServer:${config.name}] AG-UI / context:`, {
@@ -2937,6 +3042,10 @@ export function createUnifiedServer(
 				aiProvider: runtimeConfig.configurable?.ai_provider,
 				aiGatewayUrl: runtimeConfig.configurable?.ai_gateway_url,
 			});
+
+			// Whether this run's failure and reply logs leave out their text.
+			const redactErrorLogs =
+				config.redactErrorLogs?.(runtimeConfig.configurable) === true;
 
 			// Shared state for the AG-UI ReadableStream — hoisted so the
 			// cancel() handler can clear the keepalive when the client disconnects.
@@ -3481,6 +3590,7 @@ export function createUnifiedServer(
 										const sanitizedState =
 											sanitizeStateForCopilotKitWithLog(
 												event.state,
+												redactErrorLogs,
 											);
 
 										// Trace writes replace one turn, not the prior turns' maps.
@@ -3696,11 +3806,15 @@ export function createUnifiedServer(
 															{
 																contentLength:
 																	lastAiContent.length,
-																contentPreview:
-																	lastAiContent.slice(
-																		0,
-																		100,
-																	),
+																...(redactErrorLogs
+																	? {}
+																	: {
+																			contentPreview:
+																				lastAiContent.slice(
+																					0,
+																					100,
+																				),
+																		}),
 																isFollowUp:
 																	hasStartedMessage,
 															},
@@ -3966,10 +4080,20 @@ export function createUnifiedServer(
 										hasStartedMessage,
 										usedFriendlyResponse:
 											terminalError === terminalResponse,
-										errorPreview: terminalError.slice(
-											0,
-											200,
-										),
+										...(redactErrorLogs
+											? {
+													errorLength:
+														terminalError.length,
+													runId,
+													threadId,
+												}
+											: {
+													errorPreview:
+														terminalError.slice(
+															0,
+															200,
+														),
+												}),
 									},
 								);
 								// A graph can stream an assistant preamble and
@@ -4051,8 +4175,15 @@ export function createUnifiedServer(
 										{
 											contentLength:
 												fallbackContent.length,
-											contentPreview:
-												fallbackContent.slice(0, 100),
+											...(redactErrorLogs
+												? {}
+												: {
+														contentPreview:
+															fallbackContent.slice(
+																0,
+																100,
+															),
+													}),
 										},
 									);
 									sendEvent({
@@ -4234,7 +4365,13 @@ export function createUnifiedServer(
 						) {
 							console.error(
 								`[UnifiedServer:${config.name}] AG-UI / stream error:`,
-								error,
+								redactErrorLogs
+									? {
+											...errorLogFields(error),
+											runId,
+											threadId,
+										}
+									: error,
 							);
 						} else {
 							console.log(
@@ -4275,12 +4412,13 @@ export function createUnifiedServer(
 		} catch (error) {
 			console.error(
 				`[UnifiedServer:${config.name}] Error in AG-UI / handler:`,
-				error,
+				redactHandlerError ? errorLogFields(error) : error,
 			);
 			return c.json(
 				{
-					error:
-						error instanceof Error
+					error: redactHandlerError
+						? NAMED_RUN_FAILURE_MESSAGE
+						: error instanceof Error
 							? error.message
 							: "Unknown error",
 				},

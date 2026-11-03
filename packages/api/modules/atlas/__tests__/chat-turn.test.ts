@@ -130,10 +130,20 @@ describe("atlas chat turn", () => {
 	});
 
 	it("startAtlasChat builds the service for the caller and maps a thrown AtlasError", async () => {
-		const started = { textStream: [], persistOutcome: Promise.resolve() };
+		const model = { id: "example-actual-served", viaPlan: false };
+		const started = {
+			textStream: [],
+			persistOutcome: Promise.resolve({
+				persisted: true,
+				interrupted: false,
+			}),
+			getAnswerModel: () => model,
+		};
 		m.chat.mockResolvedValue(started);
 
-		await expect(startAtlasChat(CTX, TURN)).resolves.toBe(started);
+		const result = await startAtlasChat(CTX, TURN);
+		expect(result).toBe(started);
+		expect(result.getAnswerModel()).toBe(model);
 		expect(m.serviceCtx).toHaveBeenCalledWith(CTX);
 		expect(m.chat).toHaveBeenCalledWith(TURN);
 

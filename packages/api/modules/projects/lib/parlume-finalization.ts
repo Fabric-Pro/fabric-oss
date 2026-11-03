@@ -1,5 +1,9 @@
 import { db } from "@repo/database";
 import type { ParlumeMeetingSessionStatus } from "@repo/database/prisma/generated/enums";
+import {
+	buildParlumeChatDeliveryEvidence,
+	formatParlumeChatDeliveryEvidence,
+} from "@repo/utils/parlume-chat-delivery-evidence";
 import { deleteParlumeMeetingBotData } from "./parlume-attendee";
 import { parlumeLog } from "./parlume-log";
 import { resolveParlumeAttendeeSettings } from "./parlume-provider-settings";
@@ -135,7 +139,7 @@ export async function finalizeParlumeSession(
 			projectId: session.projectId,
 			organizationId: session.organizationId,
 		};
-		const [segments, turns, actions] = await Promise.all([
+		const [segments, turns, actions, channelPosts] = await Promise.all([
 			db.parlumeMeetingSegment.findMany({
 				where,
 				select: { text: true, speakerName: true, source: true },
@@ -160,14 +164,24 @@ export async function finalizeParlumeSession(
 				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
 				take: MAX_PARLUME_TRANSCRIPT_RECORDS + 1,
 			}),
+			db.parlumeChannelPost.findMany({
+				where,
+				select: { tag: true, confirmedAt: true },
+				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+				take: MAX_PARLUME_TRANSCRIPT_RECORDS + 1,
+			}),
 		]);
 		if (
-			[segments, turns, actions].some(
+			[segments, turns, actions, channelPosts].some(
 				(records) => records.length > MAX_PARLUME_TRANSCRIPT_RECORDS,
 			)
 		) {
 			throw new Error("Parlume transcript exceeds the record limit.");
 		}
+		const chatDeliveryEvidence = buildParlumeChatDeliveryEvidence(
+			where,
+			channelPosts,
+		);
 		const actionsByTurn = new Map<string, typeof actions>();
 		for (const turn of turns) {
 			actionsByTurn.set(turn.id, []);
@@ -203,12 +217,12 @@ export async function finalizeParlumeSession(
 			append(segment.source === "CHAT" ? `[chat] ${line}` : line);
 		}
 		if (turns.length) {
-			append("\nRecorded Fabric responses and action receipts:");
+			append("\nRecorded Fabric responses and mutation receipts:");
 			append(
-				"Responses are generated text. A COMPLETED request does not prove action success or audio delivery. PENDING/RUNNING requests are incomplete. Playback interruption does not determine action success.",
+				"Responses are generated text. A COMPLETED request does not prove a Fabric mutation, channel chat delivery or audio playback. PENDING/RUNNING requests are incomplete. Playback interruption does not determine mutation success.",
 			);
 			append(
-				"Only COMPLETED action receipts confirm success; all other action statuses are unsuccessful or unconfirmed.",
+				"Only COMPLETED Fabric mutation receipts confirm their recorded mutation; other mutation statuses are unsuccessful or unconfirmed. Channel-thread delivery facts are recorded separately at session level.",
 			);
 			for (const [index, turn] of turns.entries()) {
 				append(`\nRequest ${index + 1}: ${turn.requestText}`);
@@ -227,11 +241,14 @@ export async function finalizeParlumeSession(
 						);
 					}
 				} else {
-					append(
-						"Action receipts: none recorded (action success unconfirmed).",
-					);
+					append("Fabric mutation receipts: none recorded.");
 				}
 			}
+		}
+		if (channelPosts.length > 0) {
+			append(
+				`\n${formatParlumeChatDeliveryEvidence(chatDeliveryEvidence)}`,
+			);
 		}
 		if (!content) {
 			requireClaim(
@@ -266,6 +283,7 @@ export async function finalizeParlumeSession(
 							provider: "attendee",
 							parlumeSessionId: session.id,
 							parlumeNotesStatus: "PENDING",
+							parlumeChannelChatDelivery: chatDeliveryEvidence,
 						},
 						extractionStatus: "COMPLETED",
 						extractedAt: new Date(),

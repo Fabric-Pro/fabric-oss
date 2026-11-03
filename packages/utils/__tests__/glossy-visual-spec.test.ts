@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+	balancedProposalComparison,
+	type ComparisonVisualSpec,
+	isProposalTimelinePeriod,
 	type LayersVisualSpec,
 	PROPOSAL_ONLY_VISUAL_KINDS,
+	PROPOSAL_TIMELINE_DATE_MAX_CHARS,
 	proposalVisualSpecSchema,
 	specHash,
 	type TeamVisualSpec,
@@ -493,5 +497,157 @@ describe("proposalVisualSpecSchema (Fizzy #2946)", () => {
 			],
 			figures: [],
 		});
+	});
+});
+
+describe("isProposalTimelinePeriod (Fizzy #2946)", () => {
+	it.each([
+		"Week 1",
+		"Weeks 2–5",
+		"weeks 2-5",
+		"Q3 2026",
+		"Q3–Q4 2026",
+		"H2 2026",
+		"FY2027",
+		"Month 2",
+		"Months 1 to 3",
+		"30 days",
+		"Day 1",
+		"Sprint 3",
+		"Year 1",
+		"March",
+		"Mar 2026",
+		"15 March 2026",
+		"Mid-2026",
+		"End of Q2",
+		"By week 6",
+		"2026",
+		"2026-03-15",
+		"15.03.2026",
+		"KW 12",
+		"Wochen 2–5",
+		"März 2026",
+		"Ende 2026",
+		// Seasons, half-years and fiscal years.
+		"Summer 2026",
+		"Fall 2026",
+		"Herbst 2026",
+		"Frühjahr 2027",
+		"First half 2027",
+		"2. Halbjahr 2026",
+		"FY 2027",
+		"FY 27",
+		// Weeks and months in short, and joined units.
+		"W1–W4",
+		"M1",
+		"Week 1 & 2",
+		// A period counted from the start.
+		"First 30 days",
+		"Next 90 days",
+		"Within 2 weeks",
+		"After 3 months",
+		"Last 2 sprints",
+		"Erste 30 Tage",
+		"Nach 3 Monaten",
+		"Innerhalb 2 Wochen",
+		"vom 1. bis 5. März",
+	])("accepts the date or period %j", (date) => {
+		expect(isProposalTimelinePeriod(date)).toBe(true);
+	});
+
+	it.each([
+		// A step or a phrase, as a model writes when the section dates nothing.
+		"Map the current intake process",
+		"Trial routing at two depots",
+		"Kickoff",
+		// A phase name is a stage, not a period.
+		"Phase 1",
+		"Discovery phase",
+		// A unit without a number says no when.
+		"Weeks",
+		"Next month",
+		"Now",
+		"Ongoing",
+		"TBD",
+		"Weeks 2–5 (pilot)",
+		// A placing word does not make a phrase a period.
+		"Confirm scope",
+		"Confirm scope and success criteria",
+		"First workshop",
+		"After kickoff",
+		"Next steps",
+		"Within scope",
+		"Summer intern hiring",
+		"FY",
+		"Nach Abnahme",
+		"Week 1 & review",
+		"",
+		"   ",
+	])("refuses %j", (date) => {
+		expect(isProposalTimelinePeriod(date)).toBe(false);
+	});
+
+	it("refuses a period longer than the date line holds", () => {
+		const long = "Weeks 1 to 4 of Q3 2026";
+		expect(Array.from(long).length).toBeGreaterThan(
+			PROPOSAL_TIMELINE_DATE_MAX_CHARS,
+		);
+		expect(isProposalTimelinePeriod(long)).toBe(false);
+		expect(PROPOSAL_TIMELINE_DATE_MAX_CHARS).toBe(20);
+	});
+});
+
+describe("balancedProposalComparison (Fizzy #2946)", () => {
+	const comparison = (...columns: number[]): ComparisonVisualSpec => ({
+		kind: "comparison",
+		items: columns.map((count, column) => ({
+			title: `Option ${column + 1}`,
+			points: Array.from(
+				{ length: count },
+				(_, row) => `Aspect ${row + 1} of option ${column + 1}`,
+			),
+		})),
+	});
+	const rows = (spec: ComparisonVisualSpec | null) =>
+		spec?.items.map((item) => item.points.length) ?? null;
+
+	it("refuses a column of fewer than two points", () => {
+		expect(balancedProposalComparison(comparison(1, 1, 6))).toBeNull();
+		expect(balancedProposalComparison(comparison(1, 1))).toBeNull();
+		expect(balancedProposalComparison(comparison(3, 1, 3))).toBeNull();
+	});
+
+	it("refuses columns whose shortest has fewer than half the points of the longest", () => {
+		expect(balancedProposalComparison(comparison(2, 5))).toBeNull();
+		expect(balancedProposalComparison(comparison(6, 2, 6))).toBeNull();
+	});
+
+	it("keeps balanced columns as they are", () => {
+		const spec = comparison(3, 3, 3);
+		expect(balancedProposalComparison(spec)).toEqual(spec);
+		expect(rows(balancedProposalComparison(comparison(2, 2)))).toEqual([
+			2, 2,
+		]);
+	});
+
+	it("leaves no row that only one column fills", () => {
+		// Two columns: every row is filled in both.
+		expect(rows(balancedProposalComparison(comparison(4, 2)))).toEqual([
+			2, 2,
+		]);
+		// Three: a row past the second-longest column would hold one cell.
+		expect(rows(balancedProposalComparison(comparison(4, 2, 2)))).toEqual([
+			2, 2, 2,
+		]);
+		expect(rows(balancedProposalComparison(comparison(4, 3, 2)))).toEqual([
+			3, 3, 2,
+		]);
+		expect(
+			rows(balancedProposalComparison(comparison(6, 4, 3, 3))),
+		).toEqual([4, 4, 3, 3]);
+		// The points kept are each column's first, in order.
+		expect(
+			balancedProposalComparison(comparison(3, 2))?.items[0].points,
+		).toEqual(["Aspect 1 of option 1", "Aspect 2 of option 1"]);
 	});
 });

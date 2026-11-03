@@ -46,6 +46,8 @@ const MAX_HELD_ACTION_CHARS = 200;
 const MAX_HELD_REQUEST_CHARS = 2_000;
 const MAX_RECENT_MESSAGES = 20;
 const MAX_RECENT_CHARS = 1_000;
+const MAX_GRAPH_MESSAGES = 10_000;
+const GRAPH_MESSAGE_COUNT_KEY = "graphChatMessageCount";
 
 export interface ParlumeChatBot {
 	sessionId: string;
@@ -74,6 +76,7 @@ export interface ParlumeChatHost {
 	storage: {
 		get<T>(key: string): Promise<T | undefined>;
 		put<T>(key: string, value: T): Promise<void>;
+		put(entries: Record<string, unknown>): Promise<void>;
 	};
 	postToFabric(path: string, body: object): Promise<Response | null>;
 	/** The session's verified provider bot, or null before one has connected. */
@@ -174,6 +177,7 @@ function parseSendBody(body: unknown): {
  */
 export class ParlumeChatChannel {
 	private state: ParlumeChatState | null = null;
+	private graphMessages: Promise<void> = Promise.resolve();
 	private suggestions: ParlumeSuggestionState | null = null;
 	private newSegments = 0;
 	private chatTurn: { generation: number; startedAt: number } | null = null;
@@ -268,6 +272,47 @@ export class ParlumeChatChannel {
 				{ status: 400 },
 			);
 		}
+		if (message.id.startsWith("graph:")) {
+			const received = this.graphMessages.then(() =>
+				this.receiveGraphMessage(message),
+			);
+			this.graphMessages = received.then(
+				() => undefined,
+				() => undefined,
+			);
+			return received;
+		}
+		return this.receiveMessage(message);
+	}
+
+	private async receiveGraphMessage(
+		message: ParlumeChatMessage,
+	): Promise<Response> {
+		if (!(await this.host.bot())) {
+			return Response.json(
+				{ error: "Meeting stream unavailable" },
+				{ status: 409 },
+			);
+		}
+		const key = `graphChatMessage:${message.id}`;
+		if (await this.host.storage.get<boolean>(key)) {
+			return Response.json({ accepted: true, duplicate: true });
+		}
+		const count =
+			(await this.host.storage.get<number>(GRAPH_MESSAGE_COUNT_KEY)) ?? 0;
+		if (count >= MAX_GRAPH_MESSAGES) {
+			return Response.json(
+				{ error: "Channel message limit reached" },
+				{ status: 429 },
+			);
+		}
+		return this.receiveMessage(message, { key, count: count + 1 });
+	}
+
+	private async receiveMessage(
+		message: ParlumeChatMessage,
+		graphReceipt?: { key: string; count: number },
+	): Promise<Response> {
 		const bot = await this.host.bot();
 		if (!bot) {
 			return Response.json(
@@ -279,13 +324,33 @@ export class ParlumeChatChannel {
 		const observation = observeParlumeChatMessage(
 			state,
 			message,
-			this.host.isParlumeSender(message.senderName),
+			graphReceipt
+				? false
+				: this.host.isParlumeSender(message.senderName),
 			this.host.now(),
 		);
 		if (observation.kind === "duplicate") {
 			return Response.json({ accepted: true, duplicate: true });
 		}
-		await this.saveChatState();
+		if (graphReceipt) {
+			try {
+				if (observation.kind === "participant") {
+					await this.host.noteActivity();
+				}
+				// Receipt, capacity and observed state commit together after
+				// preparation, before any external command effect may begin.
+				await this.host.storage.put({
+					[graphReceipt.key]: true,
+					[GRAPH_MESSAGE_COUNT_KEY]: graphReceipt.count,
+					[CHAT_STATE_KEY]: state,
+				});
+			} catch (error) {
+				this.state = null;
+				throw error;
+			}
+		} else {
+			await this.saveChatState();
+		}
 		if (message.text) {
 			this.host.persistSegment(bot, message);
 			this.recent.push({
@@ -314,7 +379,9 @@ export class ParlumeChatChannel {
 				return Response.json({ accepted: true });
 			}
 			case "participant":
-				await this.host.noteActivity();
+				if (!graphReceipt) {
+					await this.host.noteActivity();
+				}
 				this.handleCommand(bot, message);
 				return Response.json({ accepted: true });
 			default: {

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 	updateManyAndReturn: vi.fn(),
 	warm: vi.fn(),
 	recap: vi.fn(),
+	channelStart: vi.fn(),
 	afterCallbacks: [] as Array<() => unknown>,
 }));
 
@@ -26,6 +27,9 @@ vi.mock("next/server", async (original) => ({
 }));
 vi.mock("../../warm", () => ({ warmParlumeRuntime: mocks.warm }));
 vi.mock("../../recap", () => ({ startParlumeRecap: mocks.recap }));
+vi.mock("../../channel-chat/start", () => ({
+	startParlumeChannelChat: mocks.channelStart,
+}));
 
 import { POST } from "../route";
 
@@ -74,6 +78,38 @@ beforeEach(() => {
 });
 
 describe("Parlume stream verification: warm-up", () => {
+	it("leaves a channel series recap to lifecycle readiness instead of racing its pending binding", async () => {
+		sessionIn("JOINING", "example-series");
+		mocks.findUnique.mockResolvedValue({
+			...(await mocks.findUnique()),
+			channelChatStatus: "PENDING",
+		});
+		await POST(request());
+		for (const callback of mocks.afterCallbacks) {
+			await callback();
+		}
+		expect(mocks.channelStart).toHaveBeenCalledTimes(1);
+		expect(mocks.recap).not.toHaveBeenCalled();
+	});
+	it.each(["JOINING", "ACTIVE"])(
+		"bootstraps channel ownership on admission/reconnect (%s)",
+		async (status) => {
+			sessionIn(status);
+			mocks.findUnique.mockResolvedValue({
+				...(await mocks.findUnique()),
+				channelChatStatus: "PENDING",
+			});
+			await POST(request());
+			for (const callback of mocks.afterCallbacks) {
+				await callback();
+			}
+			expect(mocks.channelStart).toHaveBeenCalledExactlyOnceWith({
+				sessionId: "s1",
+				organizationId: "o1",
+				hardStopAt: "2030-01-01T00:00:00.000Z",
+			});
+		},
+	);
 	it("warms the runtime after the response when the bot is first admitted", async () => {
 		sessionIn("JOINING");
 

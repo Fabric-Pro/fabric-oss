@@ -62,6 +62,8 @@ const rec = vi.hoisted(() => {
 		client,
 		flags: { glossy: false, proposalArtifact: false },
 		mermaidSources: [] as string[],
+		/** Text whose diagrams the engines refuse to draw, when set. */
+		refuseDiagram: null as string | null,
 		pdfImages: [] as string[],
 		docxImages: 0,
 		docxTexts: [] as string[],
@@ -143,7 +145,22 @@ vi.mock(
 vi.mock("beautiful-mermaid", () => ({
 	renderMermaidSVG: (code: string) => {
 		rec.mermaidSources.push(code);
+		if (rec.refuseDiagram !== null && code.includes(rec.refuseDiagram)) {
+			throw new Error("unsupported diagram");
+		}
 		return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 120"></svg>';
+	},
+}));
+
+// The engine it falls back to, which draws nothing here: a diagram the
+// first one refuses is not drawn.
+vi.mock("mermaid", () => ({
+	default: {
+		initialize: () => undefined,
+		mermaidAPI: { getSiteConfig: () => ({}) },
+		render: async () => {
+			throw new Error("unsupported diagram");
+		},
 	},
 }));
 
@@ -330,6 +347,7 @@ function resetRecords() {
 		delete rec.handlers[key];
 	}
 	rec.mermaidSources.length = 0;
+	rec.refuseDiagram = null;
 	rec.pdfImages.length = 0;
 	rec.docxImages = 0;
 	rec.docxTexts.length = 0;
@@ -721,6 +739,142 @@ describe("DocumentDownloadDropdown — server export of a client-document Propos
 			"document-media",
 		);
 	});
+
+	it("captions each figure under its image, numbered in document order, as the page and the PDF do", async () => {
+		rec.handlers["projects.documents.get"] = async () => ({
+			document: {
+				content: [
+					"# Example proposal",
+					"",
+					"```mermaid",
+					"%% fabric-visual: k3v9q2m7x1a8c4d6",
+					"%% caption: Delivery plan [S2]",
+					"%% figure: process",
+					"flowchart LR",
+					"  Discovery --> Build --> Launch",
+					"```",
+					"",
+					"The team grows in the second phase.",
+					"",
+					"```mermaid",
+					"%% fabric-visual: m2c8x4q1v7a3k9d5",
+					"%% caption: Team document-media/project-example/document-example/x.pdf by phase",
+					"flowchart TD",
+					"  Lead --> Engineers",
+					"```",
+				].join("\n"),
+			},
+		});
+		await choose("Markdown (.md)");
+
+		await waitFor(() => expect(rec.downloads).toHaveLength(1));
+		const markdown = await readBlobText(rec.downloads[0].blob);
+		expect(markdown).toContain(
+			`![Delivery plan](${PNG_1PX})\n\n*Figure 1. Delivery plan*`,
+		);
+		expect(markdown).toContain(
+			`![Team by phase](${PNG_1PX})\n\n*Figure 2. Team by phase*`,
+		);
+		expect(markdown.indexOf("Figure 1.")).toBeLessThan(
+			markdown.indexOf("The team grows"),
+		);
+		expect(markdown.indexOf("The team grows")).toBeLessThan(
+			markdown.indexOf("Figure 2."),
+		);
+		// The fence keeps its markers and storage keys; its caption does not.
+		expect(markdown).not.toMatch(/\[S2\]|document-media|%%/);
+		// The caption is printed under the drawing, never drawn in it.
+		expect(rec.mermaidSources).toHaveLength(2);
+		for (const source of rec.mermaidSources) {
+			expect(source).not.toContain("caption");
+		}
+	});
+
+	it("hands a chart to the engine from its header, as the page does, so it draws and is numbered", async () => {
+		rec.handlers["projects.documents.get"] = async () => ({
+			document: {
+				content: [
+					"```mermaid",
+					"%% fabric-visual: k3v9q2m7x1a8c4d6",
+					"%% caption: Hours by phase",
+					"%% figure: bars",
+					"xychart-beta",
+					"  x-axis [Discovery, Build]",
+					"  bar [40, 120]",
+					"```",
+				].join("\n"),
+			},
+		});
+		await choose("Markdown (.md)");
+
+		await waitFor(() => expect(rec.downloads).toHaveLength(1));
+		expect(rec.mermaidSources).toHaveLength(1);
+		expect(rec.mermaidSources[0].startsWith("xychart-beta")).toBe(true);
+		expect(await readBlobText(rec.downloads[0].blob)).toBe(
+			`![Hours by phase](${PNG_1PX})\n\n*Figure 1. Hours by phase*`,
+		);
+	});
+
+	it("numbers the figures the page and the PDF number: one without a caption by its number alone, none for a diagram they leave out", async () => {
+		rec.refuseDiagram = "Unsupported";
+		const leftOut = [
+			"```mermaid",
+			"%% caption: Not drawn",
+			"flowchart LR",
+			"  Unsupported --> Build",
+			"```",
+		].join("\n");
+		const placeholder = [
+			"```mermaid",
+			"%% caption: Budget split",
+			"pie title Unsupported split",
+			'  "Build" : 60',
+			'  "Run" : 40',
+			"```",
+		].join("\n");
+		rec.handlers["projects.documents.get"] = async () => ({
+			document: {
+				content: [
+					"```mermaid",
+					"flowchart LR",
+					"  Discovery --> Build",
+					"```",
+					"",
+					leftOut,
+					"",
+					placeholder,
+					"",
+					"```mermaid",
+					"%% caption: Launch plan",
+					"flowchart LR",
+					"  Build --> Launch",
+					"```",
+				].join("\n"),
+			},
+		});
+		await choose("Markdown (.md)");
+
+		await waitFor(() => expect(rec.downloads).toHaveLength(1));
+		expect(await readBlobText(rec.downloads[0].blob)).toBe(
+			[
+				`![Diagram](${PNG_1PX})`,
+				"",
+				"*Figure 1.*",
+				"",
+				// Printed nowhere, so it keeps its code and takes no number.
+				leftOut,
+				"",
+				// Printed as a numbered placeholder, so its number holds.
+				placeholder,
+				"",
+				"*Figure 2. Budget split*",
+				"",
+				`![Launch plan](${PNG_1PX})`,
+				"",
+				"*Figure 3. Launch plan*",
+			].join("\n"),
+		);
+	});
 });
 
 // ── Everything else: today's browser export ──────────────────────────────
@@ -791,6 +945,25 @@ describe("DocumentDownloadDropdown — browser export of every other document", 
 		expect(await readBlobText(rec.downloads[0].blob)).toBe(
 			"Revenue grew [S1].",
 		);
+	});
+
+	it("keeps a Business Case's diagram uncaptioned and unnumbered in its Markdown", async () => {
+		rec.flags.proposalArtifact = true;
+		const source = `%% caption: Delivery plan\n${MERMAID_SOURCE}`;
+		rec.handlers["projects.documents.get"] = async () => ({
+			document: { content: ["```mermaid", source, "```"].join("\n") },
+		});
+		renderDropdown({ documentType: "BUSINESS_CASE" });
+		const user = await openMenu();
+		await user.click(
+			screen.getByRole("menuitem", { name: "Markdown (.md)" }),
+		);
+
+		await waitFor(() => expect(rec.downloads).toHaveLength(1));
+		expect(await readBlobText(rec.downloads[0].blob)).toBe(
+			`![Diagram](${PNG_1PX})`,
+		);
+		expect(rec.mermaidSources).toEqual([source]);
 	});
 
 	it("reads the document in the route's organization", async () => {

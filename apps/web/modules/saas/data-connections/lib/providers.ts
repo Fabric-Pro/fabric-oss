@@ -483,6 +483,7 @@ export const HIDDEN_INTEGRATION_PROVIDERS: readonly DataConnectionProvider[] = [
 	"GONG",
 	"ZENDESK",
 	"INTERCOM",
+	"BITBUCKET",
 ];
 
 const HIDDEN_INTEGRATION_PROVIDER_SET: ReadonlySet<DataConnectionProvider> =

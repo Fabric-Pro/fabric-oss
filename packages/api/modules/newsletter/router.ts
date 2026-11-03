@@ -14,6 +14,7 @@ import { subscribeToNewsletter } from "./procedures/subscribe-to-newsletter";
 import { addSubscribersProcedure } from "./procedures/subscribers-add";
 import { listSubscribersProcedure } from "./procedures/subscribers-list";
 import { removeSubscriberProcedure } from "./procedures/subscribers-remove";
+import { setSubscriberExcludedProcedure } from "./procedures/subscribers-set-excluded";
 import { unsubscribeProcedure } from "./procedures/unsubscribe";
 
 export const newsletterRouter = {
@@ -28,6 +29,7 @@ export const newsletterRouter = {
 		list: listSubscribersProcedure,
 		add: addSubscribersProcedure,
 		remove: removeSubscriberProcedure,
+		setExcluded: setSubscriberExcludedProcedure,
 	},
 	sends: {
 		list: listSendsProcedure,

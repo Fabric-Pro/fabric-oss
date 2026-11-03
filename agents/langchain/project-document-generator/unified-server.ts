@@ -17,7 +17,7 @@ import {
 	SystemMessage,
 	ToolMessage,
 } from "@langchain/core/messages";
-import type { AgentSkill } from "@repo/agent-core";
+import { type AgentSkill, errorLogFields } from "@repo/agent-core";
 import { PredictiveToolArgsAccumulator } from "@repo/agent-core/predictive-tool-args";
 import { pickTraceState } from "@repo/agent-core/reasoning-trace";
 import { buildAgentConfigurable } from "@repo/agent-core/services/agent-configurable";
@@ -39,9 +39,11 @@ import {
 import {
 	guestEmittedState,
 	isGuestArtifactRun,
+	isProposalRun,
 	PROPOSAL_GUEST_ERROR_REPLY,
 	proposalRunKeys,
 	readProposalClientConfig,
+	visibleReplyText,
 } from "./nodes/proposal-client-mode.js";
 import {
 	PUBLISHING_TOPIC_READABLE,
@@ -126,23 +128,14 @@ function isGuestRunConfig(config: AgentRuntimeConfig | undefined): boolean {
  * The generic error a guest's failed run ends in, with the failure logged by
  * its type and codes only: a provider's or the runtime's error text can
  * repeat the request, the bound prompt included. A new error with no
- * `cause`, since the server logs the thrown error whole.
+ * `cause`, since some of the server's catches still log a thrown error
+ * whole.
  */
 function guestRunError(error: unknown): Error {
-	const details = (error ?? {}) as {
-		code?: unknown;
-		status?: unknown;
-	};
-	console.error("[UnifiedServer] Guest run on a client Proposal failed", {
-		errorType:
-			error instanceof Error ? error.constructor.name : typeof error,
-		...(typeof details.code === "string" || typeof details.code === "number"
-			? { errorCode: details.code }
-			: {}),
-		...(typeof details.status === "number"
-			? { httpStatus: details.status }
-			: {}),
-	});
+	console.error(
+		"[UnifiedServer] Guest run on a client Proposal failed",
+		errorLogFields(error),
+	);
 	return new Error(PROPOSAL_GUEST_ERROR_REPLY);
 }
 
@@ -171,13 +164,29 @@ function withGuestRunErrors(
  * The synchronous executor, the same for a guest on an artifact Proposal: a
  * thrown error becomes the generic one, and an output carrying an error
  * returns the generic reply as its error and its text, which the server and
- * the A2A transform hand back as they are. Every other run's result passes
- * as it is.
+ * the A2A transform hand back as they are. Another classified Proposal run's
+ * thrown error is logged by its class, code and status and thrown as it is.
+ * Every other run's result passes as it is.
  */
 function withGuestInvokeErrors(execute: LangGraphExecutor): LangGraphExecutor {
 	return async (input, config) => {
 		if (!isGuestRunConfig(config)) {
-			return execute(input, config);
+			if (
+				!isProposalRun(
+					config?.configurable as Record<string, unknown> | undefined,
+				)
+			) {
+				return execute(input, config);
+			}
+			try {
+				return await execute(input, config);
+			} catch (error) {
+				console.error(
+					"[UnifiedServer] Run on a client Proposal failed",
+					errorLogFields(error),
+				);
+				throw error;
+			}
 		}
 		let output: Awaited<ReturnType<LangGraphExecutor>>;
 		try {
@@ -197,6 +206,32 @@ function withGuestInvokeErrors(execute: LangGraphExecutor): LangGraphExecutor {
 			textResponse: PROPOSAL_GUEST_ERROR_REPLY,
 		};
 	};
+}
+
+/**
+ * A guest's reply on an artifact Proposal as the streamed path shows it
+ * (Fizzy #2946): the graph's messages reduced the way a guest's browser
+ * receives them, then the last assistant message with visible text, read
+ * as the chat reads it. A reply in thinking and text blocks gives its text;
+ * its thinking, provider metadata and a server-side call's arguments stay
+ * in the graph's state.
+ */
+function guestReplyText(result: unknown): string {
+	const messages = guestEmittedState(result).messages;
+	if (!Array.isArray(messages)) {
+		return "";
+	}
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i] as { type?: unknown; content?: unknown };
+		if (message?.type !== "ai") {
+			continue;
+		}
+		const text = visibleReplyText(message.content);
+		if (text.length > 0) {
+			return text;
+		}
+	}
+	return "";
 }
 
 function normalizeMessages(
@@ -522,6 +557,10 @@ const { app, start } = createUnifiedServer(
 			"langgraph",
 		],
 		supportsStreaming: true, // Enable streaming for CopilotKit
+		// A classified Proposal run's failures are logged without their text:
+		// a provider's error can repeat the request, the bound prompt
+		// included (Fizzy #2946).
+		redactErrorLogs: (configurable) => isProposalRun(configurable),
 	},
 	// Invoke function - wraps the LangGraph graph
 	withGuestInvokeErrors(async (input, runtimeConfig) => {
@@ -845,7 +884,14 @@ const { app, start } = createUnifiedServer(
 		// On failure, prefer the assistant explanation even if the input document survives.
 		// Otherwise, use assistant text when no document was generated.
 		let responseText = result.error ? "" : result.document || "";
-		if (!responseText && result.messages && result.messages.length > 0) {
+		if (!responseText && isGuestArtifactRun(proposalConfig)) {
+			// A guest reads only what the streamed path would show them.
+			responseText = guestReplyText(result);
+		} else if (
+			!responseText &&
+			result.messages &&
+			result.messages.length > 0
+		) {
 			// Find the last AI/assistant message
 			for (let i = result.messages.length - 1; i >= 0; i--) {
 				const msg = result.messages[i];

@@ -28,6 +28,69 @@ const USER: Message = {
 };
 
 describe("sidekickUiMessages", () => {
+	it("retains explicit step metadata for history and clears it at the next user turn", () => {
+		const model = { id: "example-served", viaPlan: false };
+		const messages = sidekickUiMessages([
+			USER,
+			{
+				id: "run-1:s0:m0",
+				role: "assistant",
+				content: "Answer",
+				metadata: { model },
+			},
+			{ id: "user-2", role: "user", content: "Next" },
+			{
+				id: "run-2:s0:m0",
+				role: "assistant",
+				content: "Old answer",
+				metadata: { model: { id: "example-configured" } },
+			},
+		]);
+		expect(messages[1].metadata).toEqual({ model });
+		expect(messages[3].metadata).toBeUndefined();
+	});
+	it("deduplicates models in text order and ignores tool-only step attribution", () => {
+		const plan = {
+			id: "example-plan",
+			provider: "OPENAI_CHATGPT_PLAN",
+			viaPlan: true,
+		};
+		const api = {
+			id: "example-api",
+			provider: "OPENAI_DIRECT",
+			viaPlan: false,
+		};
+		const [, reply] = sidekickUiMessages([
+			USER,
+			{
+				id: "run:s0:m0",
+				role: "assistant",
+				content: "Checking",
+				metadata: { model: plan },
+			},
+			{
+				id: "run:s1:m1",
+				role: "assistant",
+				content: "Answer",
+				metadata: { model: api },
+			},
+			{
+				id: "run:s2:m2",
+				role: "assistant",
+				content: "More",
+				metadata: { model: plan },
+			},
+			{
+				id: "run:s3:m3",
+				role: "assistant",
+				content: "",
+				metadata: {
+					model: { id: "example-tool-only", viaPlan: false },
+				},
+			},
+		]);
+		expect(reply.metadata).toEqual({ model: plan, models: [plan, api] });
+	});
 	it("groups a reply's steps into one assistant message, each tool call with its result", () => {
 		const messages = sidekickUiMessages([
 			USER,

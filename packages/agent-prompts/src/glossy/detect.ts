@@ -89,15 +89,21 @@ const PROPOSAL_KINDS = [
 ];
 
 /**
- * Who a Proposal's diagrams are for. Guidance, not a filter: detection may
- * still propose a technical diagram for a body section where nothing else
- * fits.
+ * Who a Proposal's diagrams are for, and what its timeline and comparison
+ * need (Fizzy #2946): a timeline card's date line holds a date or period,
+ * so undated stages are a flow, drawn as numbered steps, and a comparison
+ * is a table whose rows compare the options on one aspect each. Guidance,
+ * not a filter: detection may still propose a technical diagram for a body
+ * section where nothing else fits, and the extraction refuses a timeline or
+ * comparison that breaks these.
  */
 const PROPOSAL_AUDIENCE_RULES = [
 	"## Audience",
 	"- The visuals sit inline in a client-facing Proposal. Inline visuals are for executive readers: non-technical, glanceable, a few short labels a reader takes in at once.",
 	'- Technical diagrams (system architecture, data flows, detailed processes) fit sections marked appendix="true", where a plainer, more detailed look is fine.',
-	"- Prefer the kind an executive reads fastest: a timeline for phases, a comparison for options, a flow only for a short process.",
+	"- Prefer the kind an executive reads fastest: a timeline for dated phases, a comparison for options, a flow only for a short process.",
+	"- A timeline needs a date or period for every entry, such as Week 1, Weeks 2–5, Q3 2026, or Month 2. Stages the section gives in order without dates or periods are a flow, drawn as numbered steps.",
+	"- A comparison needs at least two options the section describes on the same aspects, at least two each, such as cost and setup effort. Options a paragraph only names are not a comparison.",
 ];
 
 export function buildGlossyDetectInstructions(

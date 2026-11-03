@@ -179,7 +179,53 @@ describe("StartCodingRunDialog", () => {
 		});
 	});
 
-	it("renders 1-click Fabric Desktop deep links for new session and AI connections", () => {
+	it("renders 1-click Fabric Desktop deep links for new session and AI connections and updates link with selected subscription harness", () => {
+		render(
+			<StartCodingRunDialog
+				open
+				onOpenChange={vi.fn()}
+				story={story}
+				projectId="proj_123"
+				repositoryOwner="acme"
+				repositoryName="fabric"
+				defaultBranch="main"
+				bridgeEnabled={false}
+				onConfirm={vi.fn()}
+			/>,
+		);
+
+		// Even when bridgeEnabled={false}, subscription harness & model remain selectable for Fabric Agents Desktop
+		const backendSelect = screen.getByLabelText("Agent backend");
+		expect(backendSelect).not.toBeDisabled();
+		fireEvent.change(backendSelect, { target: { value: "claude-max" } });
+
+		const modelSelect = screen.getByLabelText("Agent model");
+		expect(modelSelect).not.toBeDisabled();
+		fireEvent.change(modelSelect, { target: { value: "claude-opus-5-5" } });
+
+		const desktopLink = screen.getByTestId("dialog-launch-fabric-desktop");
+		const href = desktopLink.getAttribute("href") ?? "";
+		expect(href).toContain("fabricagents://action/new-chat?");
+		expect(href).toContain("projectId=proj_123");
+		expect(href).toContain("harness=claude-max");
+		expect(href).toContain("model=claude-opus-5-5");
+		expect(href).toContain("fallback=subscription_harnesses");
+
+		const aiSettingsLink = screen.getByTestId(
+			"dialog-fabric-desktop-ai-settings",
+		);
+		expect(aiSettingsLink).toHaveAttribute(
+			"href",
+			"fabricagents://settings",
+		);
+	});
+
+	it("copies the MCP task prompt without any hardcoded agents.example.com hostname", () => {
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.assign(navigator, {
+			clipboard: { writeText },
+		});
+
 		render(
 			<StartCodingRunDialog
 				open
@@ -192,18 +238,27 @@ describe("StartCodingRunDialog", () => {
 			/>,
 		);
 
-		const desktopLink = screen.getByTestId("dialog-launch-fabric-desktop");
-		expect(desktopLink).toHaveAttribute(
-			"href",
-			expect.stringContaining("fabricagents://action/new-chat?"),
-		);
+		expect(
+			screen.getByText(
+				/Assign to Fabric Agents Desktop or Subscription CLI/i,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/Prefer to run Claude Code, Codex, Cursor, Antigravity, or Fabric Desktop directly\?/i,
+			),
+		).toBeInTheDocument();
+		expect(document.body.textContent).not.toContain("agents.example.com");
 
-		const aiSettingsLink = screen.getByTestId(
-			"dialog-fabric-desktop-ai-settings",
+		const copyBtn = screen.getByTestId("dialog-copy-mcp-prompt");
+		fireEvent.click(copyBtn);
+
+		expect(writeText).toHaveBeenCalledTimes(1);
+		const copiedPrompt = writeText.mock.calls[0]?.[0] as string;
+		expect(copiedPrompt).toContain(
+			'Implement feature US-1 ("User registration")',
 		);
-		expect(aiSettingsLink).toHaveAttribute(
-			"href",
-			"fabricagents://settings",
-		);
+		expect(copiedPrompt).toContain("fabric_complete_task");
+		expect(copiedPrompt).not.toContain("agents.example.com");
 	});
 });

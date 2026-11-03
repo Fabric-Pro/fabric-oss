@@ -46,6 +46,12 @@ export type MeetingArchivePayload = {
 	version: 1;
 	meeting: {
 		joinUrl: string;
+		/**
+		 * TEAMS or UPLOAD. Optional because older archives do not carry it, and
+		 * those were all Teams meetings. Restored as it was: an upload that came
+		 * back as a TEAMS row would be sent to Microsoft by the next sync.
+		 */
+		source?: string;
 		subject: string | null;
 		organizer: string | null;
 		includedInDigest: boolean;
@@ -82,6 +88,7 @@ export async function buildMeetingArchivePayload(params: {
 		where: { id: params.linkedMeetingId, projectId: params.projectId },
 		select: {
 			joinUrl: true,
+			source: true,
 			subject: true,
 			organizer: true,
 			includedInDigest: true,
@@ -151,6 +158,7 @@ export async function buildMeetingArchivePayload(params: {
 			version: 1,
 			meeting: {
 				joinUrl: meeting.joinUrl,
+				source: meeting.source,
 				subject: meeting.subject,
 				organizer: meeting.organizer,
 				includedInDigest: meeting.includedInDigest,

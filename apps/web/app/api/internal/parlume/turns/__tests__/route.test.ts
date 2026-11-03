@@ -84,6 +84,38 @@ beforeEach(() => {
 });
 
 describe("Parlume acting grant", () => {
+	it("deduplicates a stable Graph message after more than 200 intervening chat requests", async () => {
+		const keys = new Set<string>();
+		mocks.turnCreateMany.mockImplementation(
+			async ({ data }: { data: { dedupeKey: string } }) => {
+				const count = keys.has(data.dedupeKey) ? 0 : 1;
+				keys.add(data.dedupeKey);
+				return { count };
+			},
+		);
+		mocks.turnFindUnique.mockResolvedValue({
+			id: "example-turn",
+			status: "COMPLETED",
+			error: null,
+		});
+		const original = {
+			chatMessageId: "graph:1700000000000",
+			replyChannel: "CHAT",
+		};
+		await POST(request(original));
+		for (let index = 1; index <= 201; index++) {
+			await POST(
+				request({
+					chatMessageId: `graph:${1700000000000 + index}`,
+					replyChannel: "CHAT",
+				}),
+			);
+		}
+		const duplicate = await POST(request(original));
+		expect(await duplicate.json()).toEqual({ accepted: false });
+		expect(mocks.workflowStart).toHaveBeenCalledTimes(202);
+		expect(keys.size).toBe(202);
+	});
 	function acceptNewTurn() {
 		mocks.turnCreateMany.mockResolvedValue({ count: 1 });
 		mocks.turnFindUnique.mockResolvedValue({

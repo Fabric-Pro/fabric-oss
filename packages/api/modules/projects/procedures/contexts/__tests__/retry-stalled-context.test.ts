@@ -63,6 +63,7 @@ vi.mock("@repo/database", () => ({
 	getEnabledUserSearchProviders: mockGetEnabledUserProviders,
 	hasProjectAccess: mockHasProjectAccess,
 	seedSteps: (keys: string[]) => keys.map((key) => ({ key })),
+	UPLOADED_TRANSCRIPT_PROVIDER: "file-upload",
 	updateContextExtractionStatus: mockUpdateContextExtractionStatus,
 }));
 
@@ -215,6 +216,33 @@ describe("retryStalled — dispatch", () => {
 			}),
 		);
 		expect(result.workflowId).toBe(options.workflowId);
+	});
+
+	it("reads an uploaded transcript again with its own workflow", async () => {
+		// The document pipeline would finish the row with no transcript behind
+		// it, and the digest would never show the meeting.
+		mockGetContextById.mockResolvedValue(
+			row({
+				type: "MEETING_TRANSCRIPT",
+				metadata: { provider: "file-upload" },
+				s3Path: "projects/proj-1/ctx.vtt",
+			}),
+		);
+		const handler = await loadHandler();
+		const result = await handler({ input, context: orgCtx });
+
+		expect(result.dispatch).toBe("transcript");
+		const [name, options] = mockTemporalWorkflowStart.mock.calls[0];
+		expect(name).toBe("uploadedTranscriptIngestWorkflow");
+		expect(options.workflowId).toMatch(
+			/^uploaded-transcript-ingest-ctx-1-retry-\d+$/,
+		);
+		expect(options.args[0]).toEqual({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			userId: "user-1",
+			organizationId: ORG_ID,
+		});
 	});
 
 	it("treats a Google Doc as a stored original, not a live integration", async () => {

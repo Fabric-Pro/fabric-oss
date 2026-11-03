@@ -393,6 +393,30 @@ export async function canSubscribeToDocumentAssistantConversation({
 	return membership !== null;
 }
 
+/**
+ * The document a document-assistant thread is about and the project its join
+ * row names, or null for a conversation with no join row (standalone Fabric
+ * AI, Sidekick, Backlog).
+ *
+ * Read without a caller filter, like `canSubscribeToDocumentAssistantConversation`:
+ * the realtime route uses it to ask, after that check, whether the caller can
+ * see the document's own project, the check the thread procedures make.
+ */
+export async function getDocumentAssistantThreadRef({
+	conversationId,
+}: {
+	conversationId: string;
+}): Promise<{
+	documentRefKind: DocumentRefKind;
+	documentRefId: string;
+	projectId: string;
+} | null> {
+	return db.documentAssistantConversation.findFirst({
+		where: { conversationId },
+		select: { documentRefKind: true, documentRefId: true, projectId: true },
+	});
+}
+
 export interface CreateDocumentAssistantConversationInput {
 	tenantFilter: DocumentAssistantTenantFilter;
 	documentRefKind: DocumentRefKind;

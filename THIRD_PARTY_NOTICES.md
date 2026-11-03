@@ -63,8 +63,8 @@ Kysely- and KEK-bound, which doesn't fit the existing portal connector store).
 The Proposal export embeds Inter 4.1 in the PDFs it prints (Fizzy #2946). The
 font files are bundled unmodified, with their licence, in
 `packages/temporal/src/lib/proposal-export/fonts/`:
-`Inter-Regular.woff2`, `Inter-SemiBold.woff2`, `Inter-Bold.woff2` and
-`Inter-ExtraBold.woff2`, from the `web/` folder of the official v4.1 release.
+`Inter-Regular.woff2`, `Inter-Medium.woff2`, `Inter-SemiBold.woff2`,
+`Inter-Bold.woff2` and `Inter-ExtraBold.woff2`, from the `web/` folder of the official v4.1 release.
 
 The Word export embeds two static TrueType faces of the same release, bundled
 unmodified beside them (font version 4.001), from the `extras/ttf/` folder of

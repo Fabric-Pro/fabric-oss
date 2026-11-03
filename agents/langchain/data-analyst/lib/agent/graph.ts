@@ -20,6 +20,7 @@ import { z } from "zod";
 import {
 	getAgentModelAsync,
 	logAgentUsageFromRunnableConfig,
+	servedModelIdentity,
 } from "@repo/agent-core";
 import {
 	buildReasoningUpdate,
@@ -112,6 +113,14 @@ const DataAnalystAnnotation = Annotation.Root({
 	// blocks, or Vercel Gateway raw_response reasoning. Keyed by turnIndex
 	// (= count of human messages preceding the assistant turn). Ephemeral.
 	reasoningByTurn: reasoningByTurnAnnotation(),
+	answerModel: Annotation<{
+		id: string;
+		provider?: string;
+		viaPlan: boolean;
+	} | null>({
+		reducer: (_, update) => update,
+		default: () => null,
+	}),
 });
 
 type DataAnalystState = typeof DataAnalystAnnotation.State;
@@ -866,6 +875,14 @@ async function agentNode(
 		// buildReasoningUpdate protocol P3 (otherwise durationMs ≈ 0).
 		const turnStart = Date.now();
 		const response = await modelWithTools.invoke(messagesWithSystem);
+		const served = servedModelIdentity(model);
+		const answerModel = served
+			? {
+					id: served.model,
+					provider: served.provider,
+					viaPlan: served.provider === "OPENAI_CHATGPT_PLAN",
+				}
+			: null;
 		await logAgentUsageFromRunnableConfig(
 			{ configurable: config?.configurable },
 			response,
@@ -910,6 +927,7 @@ async function agentNode(
 		if (response.tool_calls && response.tool_calls.length > 0) {
 			return {
 				messages: [response as BaseMessage],
+				answerModel,
 				...reasoningByTurnUpdate,
 			};
 		}
@@ -928,6 +946,7 @@ async function agentNode(
 		return {
 			messages: [response as BaseMessage],
 			response: textContent,
+			answerModel,
 			...reasoningByTurnUpdate,
 		};
 	} catch (error) {
@@ -935,6 +954,7 @@ async function agentNode(
 		console.error("[DataAnalyst] Agent error:", msg);
 		return {
 			error: msg,
+			answerModel: null,
 			response: toFriendlyAgentError(msg),
 		};
 	}

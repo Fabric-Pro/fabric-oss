@@ -97,6 +97,7 @@ import {
 	type PMBoardReadErrorKind,
 	pmBoardReadError,
 } from "../../lib/pm-board-read-error";
+import { safeLinkHref } from "../../lib/proposal-export/document-content";
 import { withHeartbeatTicker } from "../lib/activity-liveness";
 import { jobHeartbeat } from "../lib/job-progress";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
@@ -969,34 +970,147 @@ function convertInlineMarkdown(text: string): string {
 /**
  * Inline tags whose content is preserved unchanged inside Lexxy table cells.
  * Lexxy's sanitizer accepts these — anything else inside a cell is stripped
- * down to its text content.
+ * down to its text content. The name ends where a browser ends it, so
+ * `<br/>` is a line break and `<bx>` is no kept tag.
  */
-const LEXXY_CELL_INLINE_TAGS =
-	/<\/?(strong|em|b|i|s|del|strike|br|a)(\s[^>]*)?>/gi;
+const LEXXY_CELL_INLINE_TAG =
+	/^<(\/?)(strong|em|b|i|s|del|strike|br|a)(?=[\s/>])([^>]*)>$/i;
+
+/** A whole tag, or a `<` that begins none. */
+const LEXXY_CELL_TOKEN = /<[^<>]*>|</g;
 
 /**
  * Reduce an HTML cell's inner content to Lexxy-safe HTML:
  *  - Strip any nested <p> / </p> (Lexxy expects exactly one <p> per cell —
  *    Tiptap wraps cell content in <p> already and that's where the single
  *    wrapper comes from in the output).
- *  - Drop any tag not in `LEXXY_CELL_INLINE_TAGS`, keeping inner text.
+ *  - Drop any tag not in `LEXXY_CELL_INLINE_TAG`, keeping inner text.
+ *  - Escape every `<` that begins no whole tag, so an unterminated tag
+ *    (`<a href="javascript:…" title=y` at the end of a cell) reaches Fizzy
+ *    as text: the only tags sent are the ones `lexxyCellTag` writes.
  *  - Empty cells fall back to `<br>` so Lexxy renders an empty line, not a
  *    collapsed cell.
  *
  * NOTE: callers must extract `<img>` tags from `html` BEFORE invoking this —
- * `<img>` is not in `LEXXY_CELL_INLINE_TAGS` so it would be stripped here
+ * `<img>` is not in `LEXXY_CELL_INLINE_TAG` so it would be stripped here
  * (this is the original "tables strip images" bug). See `tiptapTableToLexxy`
  * for the in-cell image extraction logic.
  */
 function sanitizeLexxyCellContent(html: string): string {
 	const stripped = html
-		.replace(/<\/?p[^>]*>/gi, "") // drop nested <p> wrappers
-		.replace(
-			/<(?!\/?(strong|em|b|i|s|del|strike|br|a)(\s[^>]*)?>)[^>]+>/gi,
-			"",
-		)
+		.replace(LEXXY_CELL_TOKEN, (token) => {
+			if (token === "<") {
+				return "&lt;";
+			}
+			const kept = LEXXY_CELL_INLINE_TAG.exec(token);
+			return kept ? lexxyCellTag(kept[1] === "/", kept[2], kept[3]) : "";
+		})
 		.trim();
 	return stripped.length === 0 ? "<br>" : stripped;
+}
+
+/**
+ * A kept inline tag as Fizzy receives it: without attributes, so no event
+ * handler or style leaves Fabric, and a link with only a destination that
+ * `safeLinkHref` keeps (http, https, mailto, a fragment). Any other link,
+ * `javascript:` included, is sent as its text (Fizzy #2946).
+ */
+function lexxyCellTag(
+	closing: boolean,
+	name: string,
+	attributes: string,
+): string {
+	const tag = name.toLowerCase();
+	// A browser reads `</br>` as a line break too.
+	if (tag === "br") {
+		return "<br>";
+	}
+	if (closing) {
+		return `</${tag}>`;
+	}
+	if (tag !== "a") {
+		return `<${tag}>`;
+	}
+	const href = decodeHtmlAttribute(hrefAttribute(attributes) ?? "").trim();
+	// Checked by the export's rule, sent as written.
+	return safeLinkHref(href) === null
+		? "<a>"
+		: `<a href="${escapeHtmlAttribute(href)}">`;
+}
+
+/**
+ * One attribute, read as a browser's tokenizer reads it: a name, then an
+ * optional value, double-quoted, single-quoted (either running to the end
+ * when unclosed) or unquoted.
+ */
+const HTML_ATTRIBUTE =
+	/[\s/]*((?:=|[^\s/>=])[^\s/>=]*)(?:\s*=\s*(?:"([^"]*)"?|'([^']*)'?|([^\s>]*)))?/y;
+
+/**
+ * The raw value of a tag's first `href`, as a browser takes it. Attributes
+ * are read one by one from the left, so `href=` inside another attribute's
+ * quoted value is never mistaken for the link.
+ */
+function hrefAttribute(attributes: string): string | null {
+	HTML_ATTRIBUTE.lastIndex = 0;
+	while (HTML_ATTRIBUTE.lastIndex < attributes.length) {
+		const attribute = HTML_ATTRIBUTE.exec(attributes);
+		if (attribute === null) {
+			return null;
+		}
+		if (attribute[1].toLowerCase() === "href") {
+			return attribute[2] ?? attribute[3] ?? attribute[4] ?? "";
+		}
+	}
+	return null;
+}
+
+const NAMED_CHARACTER_REFERENCES: Record<string, string> = {
+	quot: '"',
+	apos: "'",
+	lt: "<",
+	gt: ">",
+	amp: "&",
+};
+
+/**
+ * Decimal or hexadecimal references, which a browser decodes in an
+ * attribute even without the closing `;`, and the named ones markup
+ * escaping writes.
+ */
+const HTML_CHARACTER_REFERENCE =
+	/&(?:#(\d+);?|#[xX]([0-9a-fA-F]+);?|(quot|apos|lt|gt|amp);)/g;
+
+/**
+ * An attribute value as a browser reads it, in one pass: `&amp;#34;` is the
+ * text `&#34;`, never a quote.
+ */
+function decodeHtmlAttribute(value: string): string {
+	return value.replace(
+		HTML_CHARACTER_REFERENCE,
+		(_reference, decimal?: string, hex?: string, named?: string) => {
+			if (named !== undefined) {
+				return NAMED_CHARACTER_REFERENCES[named];
+			}
+			const codePoint =
+				decimal !== undefined
+					? Number.parseInt(decimal, 10)
+					: Number.parseInt(hex ?? "", 16);
+			const isScalarValue =
+				codePoint > 0 &&
+				codePoint <= 0x10ffff &&
+				(codePoint < 0xd800 || codePoint > 0xdfff);
+			return String.fromCodePoint(isScalarValue ? codePoint : 0xfffd);
+		},
+	);
+}
+
+function escapeHtmlAttribute(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/"/g, "&quot;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
 }
 
 /**

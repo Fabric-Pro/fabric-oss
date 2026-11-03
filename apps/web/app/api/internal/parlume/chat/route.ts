@@ -1,4 +1,5 @@
 import { sendParlumeMeetingChat } from "@repo/api/modules/projects/lib/parlume-attendee";
+import { sendParlumeChannelPost } from "@repo/api/modules/projects/lib/parlume-channel-chat";
 import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
 import { resolveParlumeAttendeeSettings } from "@repo/api/modules/projects/lib/parlume-provider-settings";
 import { db } from "@repo/database";
@@ -15,8 +16,8 @@ const bodySchema = z.object({
 /**
  * Sends a Parlume post to the meeting chat. Called by the bridge, which tags
  * each post and confirms delivery when the post shows up in the chat; only an
- * active session's own bot may send. Attendee only queues the message, so the
- * answer here says "queued", never "delivered".
+ * active session's own bot may send. Graph channel replies are read back before
+ * acceptance; Attendee's response confirms only that the message was queued.
  */
 export async function POST(request: NextRequest) {
 	if (
@@ -36,13 +37,50 @@ export async function POST(request: NextRequest) {
 			providerBotId: parsed.data.botId,
 			status: "ACTIVE",
 		},
-		select: { id: true, providerBotId: true, organizationId: true },
+		select: {
+			id: true,
+			providerBotId: true,
+			organizationId: true,
+			channelChatStatus: true,
+			channelChatError: true,
+			channelId: true,
+			channelRootMessageId: true,
+		},
 	});
 	if (!session?.providerBotId) {
 		return NextResponse.json(
 			{ error: "Session not active" },
 			{ status: 409 },
 		);
+	}
+	if (
+		session.channelId ||
+		session.channelRootMessageId ||
+		(session.channelChatStatus &&
+			session.channelChatStatus !== "ATTENDEE" &&
+			session.channelChatStatus !== "UNRESOLVED")
+	) {
+		if (session.channelChatStatus !== "READY") {
+			return NextResponse.json(
+				{
+					error:
+						session.channelChatError ??
+						"Channel chat is not ready.",
+				},
+				{ status: 409 },
+			);
+		}
+		try {
+			await sendParlumeChannelPost(session.id, parsed.data.message);
+			return NextResponse.json({ sent: true, delivery: "observed" });
+		} catch {
+			return NextResponse.json(
+				{
+					error: "Channel chat delivery could not be confirmed. Check the meeting thread before retrying.",
+				},
+				{ status: 502 },
+			);
+		}
 	}
 	const attendee = await resolveParlumeAttendeeSettings(
 		session.organizationId,

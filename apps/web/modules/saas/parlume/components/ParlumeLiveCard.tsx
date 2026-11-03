@@ -144,6 +144,18 @@ export function ParlumeLiveCard({
 							<Elapsed joinedAt={joinedAt} />
 							<span>Joined {formatClock(joinedAt)}</span>
 						</p>
+						{session.channelChatStatus === "PENDING" && (
+							<p className="text-sm text-muted-foreground">
+								Connecting channel chat…
+							</p>
+						)}
+						{(session.channelChatStatus === "UNAVAILABLE" ||
+							session.channelChatStatus === "UNRESOLVED") && (
+							<output className="block text-sm text-destructive">
+								{session.channelChatError ??
+									"Channel chat is unavailable. Reconnect Microsoft and check channel access."}
+							</output>
+						)}
 					</div>
 				</div>
 				{canRemove && !confirming && !isLeaving && (

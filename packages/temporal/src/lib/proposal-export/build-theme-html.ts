@@ -29,7 +29,9 @@
  * page-number slot empty; whoever prints it finds the page each marker lands
  * on. The `final` pass writes those numbers into the slots and leaves the
  * markers out. A marker is laid out of flow and a slot has a fixed width, so
- * both passes break pages identically.
+ * both passes break pages identically. Whether an opener starts a page or
+ * follows the short tail of the section before it is the layout's decision
+ * too (the theme's opener room), so the passes agree on that as well.
  */
 
 import {
@@ -39,6 +41,8 @@ import {
 	parseColumns,
 } from "@repo/utils/proposal-artifact/proposal-blocks";
 import {
+	PRINT_FIGURE_MAX_HEIGHT_PROPERTY,
+	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
 	PROPOSAL_LABEL_ATTRIBUTE,
 	PROPOSAL_PRINT_CLASSES,
 	PROPOSAL_THEME_ATTRIBUTE,
@@ -82,7 +86,6 @@ import {
 	coverLetter,
 	hasEmptyHeaderRow,
 	isCoverFence,
-	isDocumentMediaKey,
 	isWideTable,
 	printedTitle,
 	rawHtmlFallback,
@@ -103,11 +106,22 @@ import {
 	dataUrl,
 	escapeHtml,
 	footerTitle,
-	isImageParagraph,
+	hasIdColumn,
+	isStepList,
 	plainText,
 	present,
 	styleElement,
 } from "./print-markup";
+import {
+	figureMaxHeightAsDrawn,
+	firstPrintedAfterOpener,
+	type PrintedBlockFacts,
+	pageMarkerText,
+	printedBlockFacts,
+	printFigureMaxHeights,
+	subtitleOf,
+	uploadedRaster,
+} from "./print-openers";
 import {
 	diagramFigureNumbers,
 	type ExportDiagram,
@@ -118,6 +132,14 @@ import {
 	type ProposalExportWarningCode,
 } from "./types";
 import { ExportWarningTally } from "./warnings";
+
+export {
+	PAGE_MARKER_PATTERN,
+	pageMarkerText,
+	printedBlockFacts,
+	printFigureMaxHeight,
+	printFigureMaxHeights,
+} from "./print-openers";
 
 /** One root-level H2 of Main: a section opener and a contents entry. */
 export interface ExportSection {
@@ -173,25 +195,6 @@ export interface BuildThemeHtmlResult {
 	warnings: ProposalExportWarning[];
 }
 
-/**
- * Matches every page marker of a `locate` pass, capturing the section's
- * 1-based index. Global: use it with `matchAll` or `replace`, which do not
- * share its `lastIndex`.
- */
-export const PAGE_MARKER_PATTERN = /PAEXPORTH2N(\d{1,6})E/g;
-
-/**
- * The marker text of section `index`: letters and digits only, so a PDF's
- * text layer keeps it whole, and closed by a letter, so a digit printed
- * right after it cannot extend the number.
- */
-export function pageMarkerText(index: number): string {
-	if (!Number.isSafeInteger(index) || index < 1) {
-		throw new RangeError("A section index is a positive integer.");
-	}
-	return `PAEXPORTH2N${index}E`;
-}
-
 const THEME = PROPOSAL_THEME_CLASSES;
 const PRINT = PROPOSAL_PRINT_CLASSES;
 
@@ -223,74 +226,6 @@ const CODE_LANGUAGE = /^[A-Za-z0-9_+-]{1,40}$/;
 /** An uploaded image's width, as `readUploadedImageTag` constrains it. */
 const IMAGE_WIDTH = /^(?:\d{1,4}px|\d{1,3}%)$/;
 
-/**
- * The longest paragraph, in characters, a section opener takes as its
- * subtitle; a longer one stays in the body.
- */
-const SUBTITLE_MAX_CHARACTERS = 200;
-
-/**
- * A first-column cell that reads as an id, such as "FS-01": short, one word
- * and with a digit, so a column of plain words ("Discovery", "Pro") is not.
- */
-const SHORT_ID = /^(?=[\p{L}\p{N}-]*\p{N})[\p{L}\p{N}-]{1,12}$/u;
-
-/** The children that are more than whitespace. */
-function meaningfulChildren(
-	children: readonly PhrasingContent[],
-): PhrasingContent[] {
-	return children.filter(
-		(child) => !(child.type === "text" && child.value.trim() === ""),
-	);
-}
-
-/**
- * The emphasis a paragraph right after a section heading is made of, when
- * it is nothing else and short enough to be the opener's subtitle.
- */
-function subtitleOf(node: Nodes | undefined): Emphasis | null {
-	if (node?.type !== "paragraph") {
-		return null;
-	}
-	const [only, ...rest] = meaningfulChildren(node.children);
-	if (only?.type !== "emphasis" || rest.length > 0) {
-		return null;
-	}
-	const text = plainText(only);
-	return text !== "" &&
-		Array.from(text).length <= SUBTITLE_MAX_CHARACTERS &&
-		!isImageParagraph(node)
-		? only
-		: null;
-}
-
-/** Whether every body cell of the first column reads as a short id. */
-function hasIdColumn(node: Table): boolean {
-	const rows = node.children.slice(1);
-	return (
-		rows.length > 0 &&
-		rows.every((row) => {
-			const cell = row.children[0];
-			return cell !== undefined && SHORT_ID.test(plainText(cell));
-		})
-	);
-}
-
-/** Whether every item of an ordered list opens with bold text. */
-function isStepList(node: List): boolean {
-	return (
-		node.ordered === true &&
-		node.children.length > 0 &&
-		node.children.every((item) => {
-			const first = item.children[0];
-			return (
-				first?.type === "paragraph" &&
-				meaningfulChildren(first.children)[0]?.type === "strong"
-			);
-		})
-	);
-}
-
 /** The tree walk, with what it collects on the way. */
 class BodyRenderer {
 	readonly sections: ExportSection[] = [];
@@ -315,6 +250,13 @@ class BodyRenderer {
 	private readonly letter: CoverLetter | null;
 	/** The letter's heading and blocks, which the body leaves out. */
 	private readonly letterNodes: ReadonlySet<Nodes>;
+	/** Which images and diagrams print, for the block after an opener. */
+	private readonly facts: PrintedBlockFacts;
+	/**
+	 * The height each diagram's place offers its drawing, before the
+	 * floor's say (`figureMaxHeightAsDrawn`).
+	 */
+	private readonly figureHeights: readonly number[];
 	/**
 	 * The title the page prints under: Main's leading H1, which the body
 	 * then leaves out, or the record's title.
@@ -341,6 +283,8 @@ class BodyRenderer {
 		}
 		this.letter = coverLetter(input.prepared.root);
 		this.letterNodes = letterNodes(this.letter);
+		this.facts = printedBlockFacts(input, input.diagrams);
+		this.figureHeights = printFigureMaxHeights(input.prepared, this.facts);
 	}
 
 	/**
@@ -388,11 +332,17 @@ class BodyRenderer {
 	 * emphasised paragraph right after it as the opener's subtitle. A
 	 * section whose first block is a table too wide for portrait opens on
 	 * that table's landscape page, so its opener is not left alone at the
-	 * foot of the page before it.
+	 * foot of the page before it. Every other opener after the first comes
+	 * after the room it needs below a short tail of the section before it,
+	 * so it can open on that tail's page instead of leaving it almost empty.
+	 * A section's first block is the first that prints anything
+	 * (`firstPrintedAfterOpener`, in `./print-openers`), which is also the
+	 * block `printFigureMaxHeights` finds right after the opener.
 	 */
 	body(): string {
 		const parts: string[] = [];
-		const children = this.input.prepared.root.children;
+		const prepared = this.input.prepared;
+		const children = prepared.root.children;
 		for (let index = 0; index < children.length; index++) {
 			const node = children[index];
 			// The letter prints on its own page, before the contents.
@@ -401,25 +351,43 @@ class BodyRenderer {
 			}
 			if (node?.type === "heading" && node.depth === 2) {
 				const subtitle = subtitleOf(children[index + 1]);
-				if (subtitle) {
-					index++;
-				}
+				// The first opener follows the contents page's own break, with
+				// no section before it to share a page with.
+				const room =
+					this.sections.length > 0
+						? `<div class="${PRINT.openerRoom}" aria-hidden="true"></div>`
+						: "";
 				const opener = this.sectionOpener(
 					node.children,
 					plainText(node),
 					subtitle,
 				);
-				const next = children[index + 1];
-				if (next?.type === "table" && isWideTable(next)) {
-					const table = this.tableMarkup(next);
-					parts.push(
-						table === ""
-							? opener
-							: `<section class="${PRINT.landscape}">${opener}${table}</section>`,
-					);
+				const first = firstPrintedAfterOpener(
+					prepared,
+					index,
+					this.facts,
+				);
+				const next = children[first];
+				if (subtitle) {
 					index++;
+				}
+				if (next?.type === "table" && isWideTable(next)) {
+					// The blocks before it print nothing, but still count what
+					// they leave out.
+					for (index++; index < first; index++) {
+						const skipped = children[index];
+						if (skipped) {
+							this.flow(skipped);
+						}
+					}
+					// A landscape page never shares a portrait one, and a room
+					// moved to a page of its own before it would leave that
+					// page blank, so it has none.
+					parts.push(
+						`<section class="${PRINT.landscape}">${opener}${this.tableMarkup(next)}</section>`,
+					);
 				} else {
-					parts.push(opener);
+					parts.push(`${room}${opener}`);
 				}
 			} else if (node && !this.lifted.has(node)) {
 				parts.push(this.flow(node));
@@ -673,8 +641,25 @@ class BodyRenderer {
 				? `<figcaption class="${THEME.caption}">${label}${label && text ? " " : ""}${text}</figcaption>`
 				: "";
 		if (diagram.kind === "svg") {
+			// The print layer's rule holds a figure right under an opener to
+			// 600 px. A lower limit, under a long opener or after the blocks
+			// before a figure on the opener's page, which always take some
+			// room, the figure carries itself, and so does a figure whose
+			// labels that limit would take below the floor, which keeps a
+			// figure's own height and moves whole to the next page.
+			const offered = this.figureHeights[index];
+			const height =
+				offered === undefined
+					? undefined
+					: figureMaxHeightAsDrawn(offered, diagram);
+			const limit =
+				height !== undefined &&
+				(height < PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX ||
+					height !== offered)
+					? ` style="${PRINT_FIGURE_MAX_HEIGHT_PROPERTY}: ${height}px"`
+					: "";
 			// Allowlisted by the diagram step, which owns its safety.
-			return `<figure class="${THEME.figure} ${PRINT.diagram}">${diagram.svg}${figcaption}</figure>`;
+			return `<figure class="${THEME.figure} ${PRINT.diagram}"${limit}>${diagram.svg}${figcaption}</figure>`;
 		}
 		return `<figure class="${THEME.figure} ${PRINT.diagramPlaceholder}"><p class="${THEME.caption}">${escapeHtml(diagram.caption)}</p>${figcaption}</figure>`;
 	}
@@ -772,18 +757,7 @@ class BodyRenderer {
 		node: Html,
 	): { tag: UploadedImageTag; image: ExportRaster | null } | null {
 		const tag = readUploadedImageTag(node.value);
-		if (!tag) {
-			return null;
-		}
-		const owned = isDocumentMediaKey(
-			tag.key,
-			this.input.projectId,
-			this.input.documentId,
-		);
-		return {
-			tag,
-			image: owned ? (this.input.images.get(tag.key) ?? null) : null,
-		};
+		return tag ? { tag, image: uploadedRaster(tag, this.input) } : null;
 	}
 
 	private image(tag: UploadedImageTag, raster: ExportRaster): string {

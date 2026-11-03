@@ -144,6 +144,8 @@ describe("empty chat hydration", () => {
 			document.body.append(container);
 			container.innerHTML = renderToString(view.element);
 			const heading = container.querySelector("h1")?.textContent;
+			const headingNode = container.querySelector("h1");
+			const composerNode = container.querySelector("textarea");
 			const recoverable = vi.fn();
 			let root: Root | undefined;
 			try {
@@ -157,6 +159,8 @@ describe("empty chat hydration", () => {
 				);
 				expect(heading).toBeTruthy();
 				expect(container.querySelector("textarea")).not.toBeNull();
+				expect(container.querySelector("h1")).toBe(headingNode);
+				expect(container.querySelector("textarea")).toBe(composerNode);
 				expect(recoverable).not.toHaveBeenCalled();
 				expect(network).not.toHaveBeenCalled();
 			} finally {

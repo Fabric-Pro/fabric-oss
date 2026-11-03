@@ -200,4 +200,5 @@ jobs:
             echo "::error::See AGENTS.md § Changesets and delivery for the full format."
             exit 1
           fi
+          node scripts/lib/changeset-package-policy.mjs changeset-status.json
           echo "Changeset present with $RELEASE_COUNT package bump(s) — OK."

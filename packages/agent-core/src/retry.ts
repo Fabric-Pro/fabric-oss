@@ -153,6 +153,41 @@ function httpStatusOf(error: object): number | undefined {
 	);
 }
 
+/** What a log line may say about an error whose text must stay out. */
+export interface ErrorLogFields {
+	/** The constructor name of an `Error`, else the `typeof` of the value. */
+	errorType: string;
+	/** A string or numeric `code` on the error. */
+	errorCode?: string | number;
+	/** The HTTP status from `status`, `statusCode` or `response.status`. */
+	httpStatus?: number;
+}
+
+/**
+ * An error's class, code and HTTP status, for a log line that must not carry
+ * the error's message or the error itself: a provider's error text can repeat
+ * the request it rejected, prompt included. A thrown value that is not an
+ * object gives its `typeof` only.
+ *
+ * @param error - Any thrown value
+ * @returns The fields a redacted log line carries in place of the error
+ */
+export function errorLogFields(error: unknown): ErrorLogFields {
+	if (typeof error !== "object" || error === null) {
+		return { errorType: typeof error };
+	}
+	const code = (error as { code?: unknown }).code;
+	const status = httpStatusOf(error);
+	return {
+		errorType:
+			error instanceof Error ? error.constructor.name : typeof error,
+		...(typeof code === "string" || typeof code === "number"
+			? { errorCode: code }
+			: {}),
+		...(status === undefined ? {} : { httpStatus: status }),
+	};
+}
+
 /** HTTP statuses below 500 that are still transient. */
 const RETRYABLE_4XX_STATUSES = new Set([408, 425, 429]);
 

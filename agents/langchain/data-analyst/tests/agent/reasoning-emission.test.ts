@@ -61,6 +61,7 @@ const baseState = {
 	connectionSuggestions: [],
 	availableDataSources: [],
 	reasoningByTurn: {},
+	answerModel: null,
 };
 
 function messagesWithToolRounds(rounds: number) {

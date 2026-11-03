@@ -567,6 +567,36 @@ describe("ProjectContextsList — imported personal meetings (#2170)", () => {
 		).toBeInTheDocument();
 	});
 
+	it("does not describe an uploaded file as synced, and labels its row", async () => {
+		contextsListMock.mockResolvedValue({
+			contexts: [
+				makeTranscriptContext({
+					metadata: {
+						provider: "file-upload",
+						meetingId: "upload:abc",
+						meetingSubject: "Planning call",
+						meetingDate: "2026-11-02T12:00:00Z",
+					},
+				}),
+			],
+			total: 1,
+			hasMore: false,
+		});
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		expect(
+			await screen.findByText("Uploaded as files"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText("Synced from Microsoft Teams"),
+		).not.toBeInTheDocument();
+
+		await userEvent.setup().click(screen.getByText("Meeting Transcripts"));
+		expect(
+			(await screen.findByText("Planning call")).closest("button"),
+		).toHaveTextContent("Uploaded file");
+	});
+
 	it("leaves a wholly synced group's wording alone", async () => {
 		contextsListMock.mockResolvedValue({
 			contexts: [makeTranscriptContext()],

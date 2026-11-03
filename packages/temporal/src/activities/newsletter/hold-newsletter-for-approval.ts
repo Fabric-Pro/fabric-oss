@@ -1,10 +1,12 @@
 import {
 	emitNewsletterApprovalPendingNotification,
+	getNewsletterSendProjectId,
 	holdNewsletterForApproval,
 	type NewsletterContent,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
+import { reconcileOrganizationSubscribers } from "./reconcile-organization-subscribers";
 
 export interface HoldNewsletterForApprovalInput {
 	sendId: string;
@@ -19,6 +21,13 @@ export async function holdNewsletterForApprovalActivity(
 	input: HoldNewsletterForApprovalInput,
 ): Promise<void> {
 	heartbeat("holdNewsletterForApproval");
+	// Reviewers approve a recipient list, so it has to be current before they
+	// see it. Read from the send rather than passed in: the activity's input is
+	// part of recorded histories.
+	const projectId = await getNewsletterSendProjectId(input.sendId);
+	if (projectId) {
+		await reconcileOrganizationSubscribers(projectId);
+	}
 	await holdNewsletterForApproval({
 		sendId: input.sendId,
 		content: input.content,

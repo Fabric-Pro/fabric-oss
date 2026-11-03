@@ -18,10 +18,38 @@
  * Before printing, the same page is laid out in a throwaway browser page of
  * its own and measured: the cover's size and whether its body ends above the
  * parties, and each figure template's width, text size and whether its text
- * stays inside its boxes. The PDFs are then read for their embedded faces,
+ * stays inside its boxes. The drawn layers and timeline with long names and
+ * phrases are read for lines that end inside a word and descriptions cut
+ * short. The PDFs are then read for their embedded faces,
  * the cover's details, the cover letter's page, the contents page and the
  * pages it points at, the figure numbers, the page two short figures share
- * and the glyph spacing.
+ * and the glyph spacing, and for where each page's text starts and ends: a
+ * page an opener starts has its text at the same height, and a section's
+ * short tail shares its page with the next opener rather than end a page
+ * that is almost empty.
+ *
+ * A third, shaped like a Main from before figure lines
+ * (`OLDER_PROPOSAL`), goes through the same path; its plain Mermaid figures
+ * are measured on the page as the templates are: a top-down chain of
+ * twelve steps prints as a grid of numbered steps, its text at 12 px or
+ * more, whole on the page its section's opener and first paragraph start,
+ * and no label of a sideways chain dense in dashes, m, w and hyphens leaves
+ * its box.
+ *
+ * A fourth (`LONG_OPENER_PROPOSAL`) opens its one section with a heading on
+ * three lines and a subtitle of the longest length, a chain of twenty steps
+ * right under it: the opener, the whole chain, as a grid of numbered steps
+ * at 12 px or more, and its caption print on one page, and no page is left
+ * empty or almost empty.
+ *
+ * A fifth (`BRANCHED_OPENER_PROPOSAL`) puts a top-down flowchart with a
+ * branch, taller than the room its opener leaves at the labels' print
+ * floor, right under the opener: it is not shrunk below the floor but
+ * moves whole, at full size, to the next page. A sixth
+ * (`SHRUNK_OPENER_PROPOSAL`) puts a shorter one under an opener whose
+ * heading takes three lines: a little taller than the room left there, it
+ * is shrunk to that room, its labels still above the floor, and prints on
+ * the opener's page.
  *
  * A synthetic frame goes through the frame export's own launch and print,
  * and its PDF gets the same glyph-spacing check: both launch with the
@@ -38,10 +66,15 @@
  * file in the real-Chromium job on Linux, the platform the worker prints on.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { crc32, deflateSync, inflateSync } from "node:zlib";
 import { extractPdfPageTexts } from "@repo/rag";
-import { readFigureKind } from "@repo/utils/proposal-artifact/proposal-figures";
+import {
+	PRINT_FIGURE_MAX_HEIGHT_PX,
+	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+} from "@repo/utils/proposal-artifact/diagram-label-wrap";
+import { figureKindOf } from "@repo/utils/proposal-artifact/proposal-figures";
 import {
 	PROPOSAL_PRINT_CLASSES,
 	PROPOSAL_THEME_CLASSES,
@@ -65,6 +98,7 @@ import {
 } from "../src/lib/proposal-export/browser";
 import {
 	buildThemeHtml,
+	printFigureMaxHeight,
 	type ThemeHtmlPass,
 } from "../src/lib/proposal-export/build-theme-html";
 import {
@@ -82,11 +116,17 @@ import type {
 	ProposalExportWarning,
 } from "../src/lib/proposal-export/types";
 import {
+	BRANCHED_OPENER_AFTER,
+	BRANCHED_OPENER_FLOW,
+	BRANCHED_OPENER_HEADING,
+	BRANCHED_OPENER_PROPOSAL,
+	BRANCHED_OPENER_TITLE,
 	BROKEN_FENCE_TEXT,
 	COVER_LEAD,
 	FULL_APPENDIX_HEADING,
 	FULL_APPENDIX_LETTER,
 	FULL_COVER,
+	FULL_FIELD_NOTES,
 	FULL_FIGURE_COUNT,
 	FULL_FLOWCHART_FIGURE,
 	FULL_GANTT_FENCE,
@@ -94,6 +134,12 @@ import {
 	FULL_GANTT_MILESTONE,
 	FULL_LAYERS_FIGURE,
 	FULL_LETTER,
+	FULL_LONG_LAYER_LEFT_OUT,
+	FULL_LONG_LAYERS,
+	FULL_LONG_LAYERS_FENCE,
+	FULL_LONG_TIMELINE,
+	FULL_LONG_TIMELINE_FENCE,
+	FULL_NEXT_STEPS_HEADING,
 	FULL_PROPOSAL,
 	FULL_REFUSED_BARS_CAPTION,
 	FULL_REFUSED_BARS_FENCE,
@@ -106,8 +152,23 @@ import {
 	GENERATED_PROPOSAL,
 	GENERATED_SECTIONS,
 	GENERATED_TITLE,
+	LONG_OPENER_CHAIN,
+	LONG_OPENER_HEADING,
+	LONG_OPENER_PROPOSAL,
+	LONG_OPENER_SUBTITLE,
+	LONG_OPENER_TITLE,
+	OLDER_DENSE_LABELS,
+	OLDER_FIGURE_COUNT,
+	OLDER_PROPOSAL,
+	OLDER_TALL_CHAIN,
+	OLDER_TITLE,
 	PROPOSER_NAME,
 	RECIPIENT_NAME,
+	SHRUNK_OPENER_AFTER,
+	SHRUNK_OPENER_FLOW,
+	SHRUNK_OPENER_HEADING,
+	SHRUNK_OPENER_PROPOSAL,
+	SHRUNK_OPENER_TITLE,
 } from "./fixtures/proposal-print-fixtures";
 
 // The package barrel also loads the database client, which the real-Chromium
@@ -152,6 +213,24 @@ const FIGURE_WIDTH_PX = 662;
 const MIN_FIGURE_TEXT_PX = 12;
 /** Sub-pixel slack for layout rounding. */
 const EPSILON_PX = 1;
+
+const POINTS_PER_INCH = 72;
+/** The body pages' bottom margin, which holds the running footer. */
+const FOOTER_MARGIN_IN = 0.9;
+/**
+ * Where text starts on a page an opener starts, in inches from the page
+ * top: the 0.85in top margin and the opener's 18pt padding.
+ */
+const OPENER_TOP_IN = 1.1;
+const OPENER_TOP_SLACK_IN = 0.05;
+/**
+ * The lowest a section's short tail may end, in inches from the page top,
+ * and still have the next opener follow it on its page: a quarter of the
+ * Letter page's body (11in less the 0.85in and 0.9in margins) below the
+ * top margin. A page before an opener's page that ends higher is almost
+ * empty.
+ */
+const SHORT_TAIL_LIMIT_IN = 0.85 + 0.25 * (11 - 0.85 - 0.9);
 
 function pngChunk(type: string, data: Buffer): Buffer {
 	const length = Buffer.alloc(4);
@@ -458,6 +537,188 @@ function occurrences(haystack: string, needle: string): number {
 	return haystack.split(needle).length - 1;
 }
 
+/**
+ * The drawn lines of every `<text>` of the template class `className` in a
+ * cleaned diagram (whose classes carry the cleaner's `dg-` prefix): one
+ * array per element, one entry per `<tspan>`, or its own text.
+ */
+function svgTextLines(svg: string, className: string): string[][] {
+	return Array.from(
+		svg.matchAll(
+			new RegExp(
+				`<text\\b[^>]*\\bclass="dg-${className}"[^>]*>(.*?)</text>`,
+				"g",
+			),
+		),
+	).map(([, content = ""]) =>
+		content.startsWith("<tspan")
+			? Array.from(
+					content.matchAll(/<tspan[^>]*>([^<]*)<\/tspan>/g),
+					(match) => match[1] ?? "",
+				)
+			: [content],
+	);
+}
+
+/**
+ * The lines that end inside a word of `source`, in any case: a line must be
+ * whole words of the source, and only its last word may carry an ellipsis,
+ * after a whole word or after the start of a longer word alone on its line
+ * (a word wider than the line, cut at its end).
+ */
+function linesEndingInsideWords(
+	lines: readonly string[],
+	source: string,
+): string[] {
+	const words = source.toLowerCase().split(/\s+/).filter(Boolean);
+	const whole = new Set(words);
+	return lines.filter((line) => {
+		const tokens = line.toLowerCase().split(" ");
+		return !tokens.every((token, index) => {
+			if (whole.has(token)) {
+				return true;
+			}
+			if (index !== tokens.length - 1 || !token.endsWith("…")) {
+				return false;
+			}
+			const stem = token.slice(0, -1);
+			return (
+				whole.has(stem) ||
+				(tokens.length === 1 &&
+					words.some(
+						(word) =>
+							word.length > stem.length && word.startsWith(stem),
+					))
+			);
+		});
+	});
+}
+
+/** A pdf.js text item, as much of it as the layout reader reads. */
+interface PdfTextItem {
+	str: string;
+	transform: number[];
+}
+
+/** The page proxy pdf-parse hands `pagerender`, as much of it as is read. */
+interface PdfPageData {
+	pageIndex: number;
+	/** The page box in points: left, bottom, right, top. */
+	view: number[];
+	getTextContent(options: {
+		normalizeWhitespace: boolean;
+		disableCombineTextItems: boolean;
+	}): Promise<{ items: PdfTextItem[] }>;
+}
+
+type PdfParse = (
+	buffer: Buffer,
+	options: { pagerender: (page: PdfPageData) => Promise<string> },
+) => Promise<{ numpages: number }>;
+
+/**
+ * pdf-parse, loaded through the page-text reader's own resolution: it is a
+ * dependency of `@repo/rag` only, and not hoisted.
+ */
+function loadPdfParse(): PdfParse {
+	return createRequire(
+		new URL(
+			"../../rag/lib/extraction/extractors/pdf-page-texts.ts",
+			import.meta.url,
+		),
+	)("pdf-parse") as PdfParse;
+}
+
+/** A line of printed text, in inches from the page top. */
+interface PrintedLine {
+	/** The top of its largest text, by font size. */
+	top: number;
+	baseline: number;
+	/** Its text with no whitespace, as `compact` leaves it. */
+	text: string;
+}
+
+interface PrintedPage {
+	landscape: boolean;
+	/** The page's text from top to bottom, the running footer left out. */
+	lines: PrintedLine[];
+}
+
+/**
+ * Where each page's text sits: its items on one baseline joined into a
+ * line, left to right, and anything whose baseline is in the bottom margin
+ * (the running footer) left out.
+ */
+async function printedLayout(pdf: Buffer): Promise<PrintedPage[]> {
+	const pages: PrintedPage[] = [];
+	const result = await loadPdfParse()(pdf, {
+		pagerender: async (page) => {
+			const [left = 0, bottom = 0, right = 0, top = 0] = page.view;
+			const { items } = await page.getTextContent({
+				normalizeWhitespace: false,
+				disableCombineTextItems: false,
+			});
+			const lines = new Map<
+				number,
+				{ top: number; baseline: number; parts: [number, string][] }
+			>();
+			for (const item of items) {
+				const [, , , scale = 0, x = 0, y = 0] = item.transform;
+				if (
+					item.str.trim() === "" ||
+					y - bottom < FOOTER_MARGIN_IN * POINTS_PER_INCH
+				) {
+					continue;
+				}
+				const key = Math.round(y * 10);
+				const line = lines.get(key) ?? {
+					top: Number.POSITIVE_INFINITY,
+					baseline: (top - y) / POINTS_PER_INCH,
+					parts: [],
+				};
+				line.top = Math.min(
+					line.top,
+					(top - y - Math.abs(scale)) / POINTS_PER_INCH,
+				);
+				line.parts.push([x, item.str]);
+				lines.set(key, line);
+			}
+			pages[page.pageIndex] = {
+				landscape: right - left > top - bottom,
+				lines: [...lines.values()]
+					.sort((a, b) => a.baseline - b.baseline)
+					.map((line) => ({
+						top: line.top,
+						baseline: line.baseline,
+						text: compact(
+							line.parts
+								.sort(([a], [b]) => a - b)
+								.map(([, text]) => text)
+								.join(""),
+						),
+					})),
+			};
+			return "";
+		},
+	});
+	return Array.from(
+		{ length: result.numpages },
+		(_, index) => pages[index] ?? { landscape: false, lines: [] },
+	);
+}
+
+/** The eyebrow a section or appendix opener prints first, in capitals. */
+const OPENER_EYEBROW = /^(?:SECTION\d+|APPENDIX[A-Z])$/;
+
+const holdsOpener = (page: PrintedPage) =>
+	page.lines.some((line) => OPENER_EYEBROW.test(line.text));
+
+const startsWithOpener = (page: PrintedPage) =>
+	OPENER_EYEBROW.test(page.lines[0]?.text ?? "");
+
+/** Inches to two places, for a readable failure. */
+const inches = (value: number) => Math.round(value * 100) / 100;
+
 /** Writes a printed PDF for review when an artifact folder is set. */
 function keepArtifact(name: string, pdf: Buffer): void {
 	if (!ARTIFACT_DIR) {
@@ -482,6 +743,15 @@ interface FigureTextProblem {
 	problem: string;
 }
 
+/** A figure as the print page sets it, at the print column's width. */
+interface MeasuredFigure {
+	figure: number;
+	width: number;
+	height: number;
+	smallestTextPx: number;
+	texts: number;
+}
+
 interface PrintGeometry {
 	cover: {
 		width: number;
@@ -492,14 +762,14 @@ interface PrintGeometry {
 		bodyClipped: boolean;
 		partiesTop: number;
 	};
-	figures: {
-		figure: number;
-		width: number;
-		smallestTextPx: number;
-		texts: number;
-	}[];
+	figures: MeasuredFigure[];
 	problems: FigureTextProblem[];
+	/** The figures the engine drew, measured as the templates are. */
+	drawn: MeasuredFigure[];
+	drawnProblems: FigureTextProblem[];
 	forms: PrintedForms;
+	/** Each section opener's heading and subtitle, in lines. */
+	openers: { headingLines: number; subtitleLines: number }[];
 }
 
 /** Card grids, column pairs and headerless tables as the print page lays them out. */
@@ -527,12 +797,13 @@ interface PrintedForms {
 /**
  * The print page laid out in a throwaway page with JavaScript on, only to
  * measure it: the cover at the Letter page's width, then the figure
- * templates at the print column's width. Nothing loads; every request is
- * aborted, as on the export's own pages.
+ * templates and the figures the engine drew at the print column's width.
+ * Nothing loads; every request is aborted, as on the export's own pages.
  */
 async function measurePrintPage(
 	html: string,
 	templateFigures: readonly number[],
+	drawnFigures: readonly number[],
 ): Promise<PrintGeometry> {
 	const browser = await chromium.launch(exportLaunchOptions(PRINT_BUDGET_MS));
 	try {
@@ -591,75 +862,86 @@ async function measurePrintPage(
 			width: Math.ceil(PRINT_COLUMN_PX),
 			height: LETTER_PX.height,
 		});
-		const measured = await page.evaluate(
-			({ figures, epsilon }) => {
-				const problems: {
-					figure: number;
-					text: string;
-					problem: string;
-				}[] = [];
-				const inside = (inner: DOMRect, outer: DOMRect) =>
-					inner.left >= outer.left - epsilon &&
-					inner.right <= outer.right + epsilon &&
-					inner.top >= outer.top - epsilon &&
-					inner.bottom <= outer.bottom + epsilon;
-				const overlaps = (a: DOMRect, b: DOMRect) =>
-					Math.min(a.right, b.right) - Math.max(a.left, b.left) >
-						epsilon &&
-					Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) >
-						epsilon;
-				const results = figures.map((figure) => {
-					const svg = document.getElementById(`pa-diagram-${figure}`);
-					if (!(svg instanceof SVGSVGElement)) {
-						throw new Error(`missing figure ${figure}`);
+		// The same measure for the figure templates and for what the engine
+		// drew: each figure's size and its text, and any text that leaves
+		// the figure or crosses a box edge.
+		const measure = ({
+			figures,
+			epsilon,
+		}: {
+			figures: number[];
+			epsilon: number;
+		}) => {
+			const problems: {
+				figure: number;
+				text: string;
+				problem: string;
+			}[] = [];
+			const inside = (inner: DOMRect, outer: DOMRect) =>
+				inner.left >= outer.left - epsilon &&
+				inner.right <= outer.right + epsilon &&
+				inner.top >= outer.top - epsilon &&
+				inner.bottom <= outer.bottom + epsilon;
+			const overlaps = (a: DOMRect, b: DOMRect) =>
+				Math.min(a.right, b.right) - Math.max(a.left, b.left) >
+					epsilon &&
+				Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > epsilon;
+			const results = figures.map((figure) => {
+				const svg = document.getElementById(`pa-diagram-${figure}`);
+				if (!(svg instanceof SVGSVGElement)) {
+					throw new Error(`missing figure ${figure}`);
+				}
+				const box = svg.getBoundingClientRect();
+				const scale = box.width / svg.viewBox.baseVal.width;
+				const rects = Array.from(svg.querySelectorAll("rect")).map(
+					(rect) => rect.getBoundingClientRect(),
+				);
+				const texts = Array.from(svg.querySelectorAll("text"));
+				let smallest = Number.POSITIVE_INFINITY;
+				for (const text of texts) {
+					const label = text.textContent ?? "";
+					const size =
+						Number.parseFloat(getComputedStyle(text).fontSize) *
+						scale;
+					smallest = Math.min(smallest, size);
+					const bounds = text.getBoundingClientRect();
+					if (!inside(bounds, box)) {
+						problems.push({
+							figure,
+							text: label,
+							problem: "outside the figure",
+						});
 					}
-					const box = svg.getBoundingClientRect();
-					const scale = box.width / svg.viewBox.baseVal.width;
-					const rects = Array.from(svg.querySelectorAll("rect")).map(
-						(rect) => rect.getBoundingClientRect(),
-					);
-					const texts = Array.from(svg.querySelectorAll("text"));
-					let smallest = Number.POSITIVE_INFINITY;
-					for (const text of texts) {
-						const label = text.textContent ?? "";
-						const size =
-							Number.parseFloat(getComputedStyle(text).fontSize) *
-							scale;
-						smallest = Math.min(smallest, size);
-						const bounds = text.getBoundingClientRect();
-						if (!inside(bounds, box)) {
+					// A box the text touches must hold all of it: text that
+					// spills over a box edge overlaps it without being inside.
+					for (const rect of rects) {
+						if (overlaps(bounds, rect) && !inside(bounds, rect)) {
 							problems.push({
 								figure,
 								text: label,
-								problem: "outside the figure",
+								problem: `crosses a box edge (${Math.round(rect.left - box.left)},${Math.round(rect.top - box.top)} ${Math.round(rect.width)}x${Math.round(rect.height)})`,
 							});
 						}
-						// A box the text touches must hold all of it: text that
-						// spills over a box edge overlaps it without being inside.
-						for (const rect of rects) {
-							if (
-								overlaps(bounds, rect) &&
-								!inside(bounds, rect)
-							) {
-								problems.push({
-									figure,
-									text: label,
-									problem: `crosses a box edge (${Math.round(rect.left - box.left)},${Math.round(rect.top - box.top)} ${Math.round(rect.width)}x${Math.round(rect.height)})`,
-								});
-							}
-						}
 					}
-					return {
-						figure,
-						width: box.width,
-						smallestTextPx: smallest,
-						texts: texts.length,
-					};
-				});
-				return { figures: results, problems };
-			},
-			{ figures: [...templateFigures], epsilon: EPSILON_PX },
-		);
+				}
+				return {
+					figure,
+					width: box.width,
+					height: box.height,
+					smallestTextPx: smallest,
+					texts: texts.length,
+				};
+			});
+			return { figures: results, problems };
+		};
+		const measured = await page.evaluate(measure, {
+			figures: [...templateFigures],
+			epsilon: EPSILON_PX,
+		});
+		const drawn = await page.evaluate(measure, {
+			figures: [...drawnFigures],
+			epsilon: EPSILON_PX,
+		});
 
 		// Fragmentation rules only apply in print, so read them there.
 		await page.emulateMedia({ media: "print" });
@@ -739,7 +1021,32 @@ async function measurePrintPage(
 				headerless: PROPOSAL_PRINT_CLASSES.headerless,
 			},
 		);
-		return { cover, ...measured, forms };
+		const openers = await page.evaluate((opener) => {
+			const lines = (text: Element | null) =>
+				text
+					? Math.round(
+							text.getBoundingClientRect().height /
+								Number.parseFloat(
+									getComputedStyle(text).lineHeight,
+								),
+						)
+					: 0;
+			return Array.from(
+				document.querySelectorAll(`.${opener}`),
+				(card) => ({
+					headingLines: lines(card.querySelector(":scope > h2")),
+					subtitleLines: lines(card.querySelector(":scope > p")),
+				}),
+			);
+		}, PROPOSAL_THEME_CLASSES.sectionOpener);
+		return {
+			cover,
+			...measured,
+			drawn: drawn.figures,
+			drawnProblems: drawn.problems,
+			forms,
+			openers,
+		};
 	} finally {
 		await browser.close().catch(() => undefined);
 	}
@@ -748,6 +1055,7 @@ async function measurePrintPage(
 interface PrintedFixture {
 	pdf: Buffer;
 	pages: string[];
+	layout: PrintedPage[];
 	geometry: PrintGeometry;
 	diagrams: ExportDiagram[];
 	diagramWarnings: ProposalExportWarning[];
@@ -768,6 +1076,11 @@ async function printFixture(
 	const diagrams = await renderExportDiagrams({
 		sources: prepared.diagramSources,
 		captions: exportDiagramCaptions(prepared),
+		figureMaxHeight: printFigureMaxHeight(prepared, {
+			images: new Map(),
+			projectId: "project-example-1",
+			documentId: "document-example-1",
+		}),
 		paint: resolveThemePaint(tokens),
 		browser: null,
 		withPng: false,
@@ -786,19 +1099,27 @@ async function printFixture(
 			pass,
 		});
 	// Figure ids follow the fences' order, 1-based. A fence with a figure
-	// line its template refuses draws as Mermaid (a bars fence as a plain
-	// chart), without the template's `role="img"`.
+	// line, or a plain chain drawn as a numbered process, whose template
+	// refuses it draws as Mermaid (a bars fence as a plain chart), without
+	// the template's `role="img"`.
 	const templateFigures = prepared.diagramSources.flatMap((source, index) => {
 		const diagram = diagrams.diagrams[index];
-		return readFigureKind(source) !== null &&
+		return figureKindOf(source) !== null &&
 			diagram?.kind === "svg" &&
 			/^<svg [^>]*\brole="img"/.test(diagram.svg)
 			? [index + 1]
 			: [];
 	});
+	// Every other drawn figure the engine laid out.
+	const drawnFigures = diagrams.diagrams.flatMap((diagram, index) =>
+		diagram.kind === "svg" && !templateFigures.includes(index + 1)
+			? [index + 1]
+			: [],
+	);
 	const geometry = await measurePrintPage(
 		buildHtml({ kind: "final", pageNumbers: null }).html,
 		templateFigures,
+		drawnFigures,
 	);
 	const pdf = await withExportBrowser(
 		Date.now() + PRINT_BUDGET_MS,
@@ -809,6 +1130,7 @@ async function printFixture(
 	return {
 		pdf,
 		pages,
+		layout: await printedLayout(pdf),
 		geometry,
 		diagrams: diagrams.diagrams,
 		diagramWarnings: diagrams.warnings,
@@ -821,6 +1143,26 @@ const fullPrint = once(() =>
 );
 const generatedPrint = once(() =>
 	printFixture(GENERATED_PROPOSAL, GENERATED_TITLE, "generated.pdf"),
+);
+const olderPrint = once(() =>
+	printFixture(OLDER_PROPOSAL, OLDER_TITLE, "older.pdf"),
+);
+const longOpenerPrint = once(() =>
+	printFixture(LONG_OPENER_PROPOSAL, LONG_OPENER_TITLE, "long-opener.pdf"),
+);
+const branchedOpenerPrint = once(() =>
+	printFixture(
+		BRANCHED_OPENER_PROPOSAL,
+		BRANCHED_OPENER_TITLE,
+		"branched-opener.pdf",
+	),
+);
+const shrunkOpenerPrint = once(() =>
+	printFixture(
+		SHRUNK_OPENER_PROPOSAL,
+		SHRUNK_OPENER_TITLE,
+		"shrunk-opener.pdf",
+	),
 );
 const framePrint = once(async () => {
 	const pdf = await printFrameExample();
@@ -1281,6 +1623,131 @@ describe.skipIf(SKIP_BROWSER_E2E)(
 		);
 
 		it(
+			"opens the full fixture's next steps below the field notes' last paragraph, on the page the contents point at",
+			async () => {
+				const { pages } = await fullPrint();
+				const number =
+					FULL_SECTIONS.filter(
+						(section) => section.heading !== FULL_APPENDIX_HEADING,
+					).findIndex(
+						(section) =>
+							section.heading === FULL_NEXT_STEPS_HEADING,
+					) + 1;
+				const lastNote = compact(
+					FULL_FIELD_NOTES[FULL_FIELD_NOTES.length - 1] ?? "",
+				);
+
+				// The last paragraph ran onto a page of its own, which the
+				// next section's opener shares rather than leave it almost
+				// empty.
+				const tail = pages.findIndex((page) =>
+					compact(page).includes(lastNote),
+				);
+				expect(tail).toBeGreaterThan(0);
+				expect(compact(pages[tail - 1] ?? "")).not.toContain(lastNote);
+				const page = compact(pages[tail] ?? "");
+				expect(page).toContain(`SECTION${number}`);
+				expect(page).toContain(compact(FULL_NEXT_STEPS_HEADING));
+				// Pages count from 1, the cover's.
+				expect(
+					contentsPageNumber(
+						pages[2] ?? "",
+						String(number),
+						FULL_NEXT_STEPS_HEADING,
+					),
+				).toBe(tail + 1);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"leaves no page almost empty before a page a section opener starts, in either fixture",
+			async () => {
+				const emptyTails: {
+					fixture: string;
+					page: number;
+					lastBaselineIn: number;
+				}[] = [];
+				let checked = 0;
+
+				for (const fixture of fixtures) {
+					const { layout } = await fixture.print();
+					// The first opener follows the contents page's own break,
+					// so the pages up to the contents page are left out.
+					for (
+						let index = fixture.contentsPage + 1;
+						index < layout.length - 1;
+						index++
+					) {
+						const page = layout[index];
+						const next = layout[index + 1];
+						if (
+							!page ||
+							!next ||
+							page.landscape ||
+							next.landscape ||
+							holdsOpener(page) ||
+							!startsWithOpener(next)
+						) {
+							continue;
+						}
+						checked++;
+						const last =
+							page.lines[page.lines.length - 1]?.baseline ?? 0;
+						if (last <= SHORT_TAIL_LIMIT_IN) {
+							emptyTails.push({
+								fixture: fixture.name,
+								page: index + 1,
+								lastBaselineIn: inches(last),
+							});
+						}
+					}
+				}
+
+				expect(emptyTails).toEqual([]);
+				expect(checked).toBeGreaterThan(0);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"starts the text of every page a section opener starts at the same height, in either fixture",
+			async () => {
+				const misplaced: {
+					fixture: string;
+					page: number;
+					firstTopIn: number;
+				}[] = [];
+				let openers = 0;
+
+				for (const fixture of fixtures) {
+					const { layout } = await fixture.print();
+					for (const [index, page] of layout.entries()) {
+						if (!startsWithOpener(page)) {
+							continue;
+						}
+						openers++;
+						const first = page.lines[0]?.top ?? 0;
+						if (
+							Math.abs(first - OPENER_TOP_IN) >
+							OPENER_TOP_SLACK_IN
+						) {
+							misplaced.push({
+								fixture: fixture.name,
+								page: index + 1,
+								firstTopIn: inches(first),
+							});
+						}
+					}
+				}
+
+				expect(misplaced).toEqual([]);
+				expect(openers).toBeGreaterThan(0);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
 			"draws the full fixture's gantt from its template, with its milestone",
 			async () => {
 				const printed = await fullPrint();
@@ -1291,6 +1758,97 @@ describe.skipIf(SKIP_BROWSER_E2E)(
 				expect(svg).toMatch(/^<svg [^>]*\brole="img"/);
 				expect(svg).toContain(FULL_GANTT_MILESTONE);
 				expect(printed.templateFigures).toContain(FULL_GANTT_FENCE + 1);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"ends every line of the full fixture's long-named layers and long-phrased timeline at a space, and draws a layer description whole or not at all",
+			async () => {
+				const printed = await fullPrint();
+				const drawn = (fence: number) => {
+					const diagram = printed.diagrams[fence];
+					return diagram?.kind === "svg" ? diagram.svg : "";
+				};
+				const layers = drawn(FULL_LONG_LAYERS_FENCE);
+				const timeline = drawn(FULL_LONG_TIMELINE_FENCE);
+
+				// Both drawn from their templates (measured with the others).
+				expect(printed.templateFigures).toEqual(
+					expect.arrayContaining([
+						FULL_LONG_LAYERS_FENCE + 1,
+						FULL_LONG_TIMELINE_FENCE + 1,
+					]),
+				);
+				expect(svgTextLines(layers, "label")).toHaveLength(
+					FULL_LONG_LAYERS.flatMap((layer) => layer.boxes).length,
+				);
+				expect(svgTextLines(timeline, "label")).toHaveLength(
+					FULL_LONG_TIMELINE.length,
+				);
+				const layerWords = FULL_LONG_LAYERS.flatMap((layer) => [
+					layer.name,
+					layer.description ?? "",
+					...layer.boxes,
+				]).join(" ");
+				for (const className of [
+					"layer-title",
+					"layer-subtitle",
+					"label",
+				]) {
+					expect(
+						svgTextLines(layers, className).flatMap((lines) =>
+							linesEndingInsideWords(lines, layerWords),
+						),
+						className,
+					).toEqual([]);
+				}
+				// A three-word name wraps at a space, not one word a line.
+				const names = svgTextLines(layers, "layer-title");
+				expect(names).toHaveLength(FULL_LONG_LAYERS.length);
+				for (const name of names) {
+					expect(name.length, name.join(" ")).toBeLessThanOrEqual(2);
+				}
+				// Each description whole, the one too long for its row left
+				// out, and nothing in the figure cut.
+				expect(
+					svgTextLines(layers, "layer-subtitle").map((lines) =>
+						lines.join(" "),
+					),
+				).toEqual(
+					FULL_LONG_LAYERS.flatMap((layer) =>
+						layer.description &&
+						layer.description !== FULL_LONG_LAYER_LEFT_OUT
+							? [layer.description]
+							: [],
+					),
+				);
+				expect(layers).not.toContain("…");
+
+				const timelineWords = FULL_LONG_TIMELINE.flat().join(" ");
+				for (const className of ["eyebrow", "label", "detail"]) {
+					expect(
+						svgTextLines(timeline, className).flatMap((lines) =>
+							linesEndingInsideWords(lines, timelineWords),
+						),
+						className,
+					).toEqual([]);
+				}
+				// An ellipsis only closes an eyebrow's last line.
+				const eyebrows = svgTextLines(timeline, "eyebrow");
+				expect(eyebrows).toHaveLength(FULL_LONG_TIMELINE.length);
+				for (const lines of eyebrows) {
+					expect(lines.length).toBeLessThanOrEqual(3);
+					expect(lines.slice(0, -1).join(" ")).not.toContain("…");
+				}
+				expect(
+					[
+						...svgTextLines(timeline, "label"),
+						...svgTextLines(timeline, "detail"),
+					]
+						.flat()
+						.join(" "),
+				).not.toContain("…");
 			},
 			FIXTURE_BUDGET_MS,
 		);
@@ -1358,3 +1916,405 @@ describe.skipIf(SKIP_BROWSER_E2E)("Frame PDF printed by Chromium", () => {
 		PRINT_BUDGET_MS,
 	);
 });
+
+describe.skipIf(SKIP_BROWSER_E2E)(
+	"An older Proposal's Mermaid figures printed by Chromium",
+	() => {
+		it(
+			"draws the twelve-step chain as a grid of numbered steps and the dense chain with the engine, and warns of nothing",
+			async () => {
+				const printed = await olderPrint();
+
+				expect(printed.templateFigures).toEqual([1]);
+				expect(
+					printed.geometry.drawn.map(({ figure }) => figure),
+				).toEqual([2]);
+				expect(printed.diagramWarnings).toEqual([]);
+				// Main's fence is still the Mermaid chain it was.
+				expect(OLDER_PROPOSAL).toContain(
+					`s0["${OLDER_TALL_CHAIN[0]}"] --> s1["${OLDER_TALL_CHAIN[1]}"]`,
+				);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"prints the chain's twelve steps in rows of four, its text at 12 px or more inside its boxes, whole on one page with its caption",
+			async () => {
+				const { geometry, layout, diagrams } = await olderPrint();
+
+				const grid = geometry.figures[0];
+				expect(grid?.figure).toBe(1);
+				expect(grid?.width).toBeCloseTo(FIGURE_WIDTH_PX, 0);
+				expect(grid?.smallestTextPx).toBeGreaterThanOrEqual(
+					MIN_FIGURE_TEXT_PX,
+				);
+				expect(
+					geometry.problems.filter(({ figure }) => figure === 1),
+				).toEqual([]);
+				const svg = diagrams[0]?.kind === "svg" ? diagrams[0].svg : "";
+				expect(svg.match(/<rect class="dg-step"/g)).toHaveLength(12);
+				expect(
+					new Set(
+						Array.from(
+							svg.matchAll(
+								/<rect class="dg-step" x="[\d.]+" y="([\d.]+)"/g,
+							),
+							(match) => match[1],
+						),
+					).size,
+				).toBe(3);
+				const pageOf = (text: string) =>
+					layout.findIndex((page) =>
+						page.lines.some((line) => line.text.includes(text)),
+					);
+				const first = pageOf(compact(OLDER_TALL_CHAIN[0]));
+				expect(first).toBeGreaterThan(0);
+				expect(pageOf(compact(OLDER_TALL_CHAIN.at(-1) ?? ""))).toBe(
+					first,
+				);
+				expect(pageOf("Figure1.")).toBe(first);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"prints the first section's opener, its paragraph and the whole grid of steps after them at full size, with its caption, on one page, and points the contents at it",
+			async () => {
+				const { diagrams, geometry, layout, pages } =
+					await olderPrint();
+
+				const pageOf = (text: string) =>
+					layout.findIndex((page) =>
+						page.lines.some((line) => line.text.includes(text)),
+					);
+				expect(layout.findIndex(startsWithOpener)).toBe(2);
+				expect(pageOf(compact(PARAGRAPH).slice(0, 24))).toBe(2);
+				expect(pageOf(compact(OLDER_TALL_CHAIN[0]))).toBe(2);
+				expect(pageOf(compact(OLDER_TALL_CHAIN.at(-1) ?? ""))).toBe(2);
+				expect(pageOf("Figure1.")).toBe(2);
+				expect(
+					contentsPageNumber(
+						pages[1] ?? "",
+						"1",
+						"How a request moves",
+					),
+				).toBe(3);
+
+				// The grid fits the room the opener and the paragraph leave at
+				// its full size: it prints as drawn, never shrunk.
+				const grid = diagrams[0];
+				const room = printFigureMaxHeight(
+					prepareExportMarkdown(OLDER_PROPOSAL),
+					{
+						images: new Map(),
+						projectId: "project-example-1",
+						documentId: "document-example-1",
+					},
+				)(0, diagrams);
+				expect(room).toBeLessThan(PRINT_FIGURE_MAX_HEIGHT_PX);
+				expect(grid?.kind === "svg" ? grid.height : 0).toBeLessThan(
+					room,
+				);
+				expect(
+					Math.abs(
+						(geometry.figures[0]?.height ?? 0) -
+							(grid?.kind === "svg" ? grid.height : 0),
+					),
+				).toBeLessThanOrEqual(EPSILON_PX);
+				expect(
+					geometry.figures[0]?.smallestTextPx,
+				).toBeGreaterThanOrEqual(MIN_FIGURE_TEXT_PX);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"keeps every label inside its box, the dense ones under 40 characters broken into lines",
+			async () => {
+				const { geometry, diagrams } = await olderPrint();
+
+				expect(geometry.drawnProblems).toEqual([]);
+				const dense = diagrams[1];
+				const svg = dense?.kind === "svg" ? dense.svg : "";
+				// Each node label's drawn lines, one entry per `<tspan>`.
+				const labels = Array.from(
+					svg.matchAll(/<text\b[^>]*>(.*?)<\/text>/g),
+					([, content = ""]) =>
+						content.startsWith("<tspan")
+							? Array.from(
+									content.matchAll(
+										/<tspan[^>]*>([^<]*)<\/tspan>/g,
+									),
+									(match) => match[1] ?? "",
+								)
+							: [content],
+				);
+				const lines = (label: string) =>
+					labels.find((text) => text.join(" ") === label)?.length;
+				expect(lines(OLDER_DENSE_LABELS[0])).toBeGreaterThan(1);
+				expect(lines(OLDER_DENSE_LABELS[1])).toBe(1);
+				expect(lines(OLDER_DENSE_LABELS[2])).toBeGreaterThan(1);
+				expect(lines(OLDER_DENSE_LABELS[3])).toBe(1);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"numbers its figures in order",
+			async () => {
+				const text = compact((await olderPrint()).pages.join("\n"));
+
+				expect(text.indexOf("Figure1.")).toBeGreaterThan(-1);
+				expect(text.indexOf("Figure2.")).toBeGreaterThan(
+					text.indexOf("Figure1."),
+				);
+				expect(text).not.toContain(`Figure${OLDER_FIGURE_COUNT + 1}.`);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+	},
+);
+
+describe.skipIf(SKIP_BROWSER_E2E)(
+	"A long section opener printed by Chromium",
+	() => {
+		it(
+			"sets its heading on three lines and its 200-character subtitle on more than three",
+			async () => {
+				const { geometry } = await longOpenerPrint();
+
+				expect(Array.from(LONG_OPENER_SUBTITLE)).toHaveLength(200);
+				expect(geometry.openers).toHaveLength(1);
+				expect(geometry.openers[0]?.headingLines).toBe(3);
+				expect(geometry.openers[0]?.subtitleLines).toBeGreaterThan(3);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+
+		it(
+			"prints the opener, the whole chain under it as a grid of numbered steps at full size and its caption on one page, leaves no page empty, and points the contents at that page",
+			async () => {
+				const { diagrams, geometry, layout, pages, templateFigures } =
+					await longOpenerPrint();
+
+				// The cover, the contents page and the section's one page.
+				expect(pages).toHaveLength(3);
+				const pageOf = (text: string) =>
+					layout.findIndex((page) =>
+						page.lines.some((line) => line.text.includes(text)),
+					);
+				expect(
+					startsWithOpener(
+						layout[2] ?? { landscape: false, lines: [] },
+					),
+				).toBe(true);
+				expect(pageOf(compact(LONG_OPENER_CHAIN[0]))).toBe(2);
+				expect(pageOf(compact(LONG_OPENER_CHAIN.at(-1) ?? ""))).toBe(2);
+				expect(pageOf("Figure1.")).toBe(2);
+
+				// Five rows of four steps, their text at 12 px or more. Taller
+				// than the room the opener is estimated to leave, the grid is
+				// not shrunk to it: it keeps a figure's own height, prints as
+				// drawn, and fits beside the opener as it is.
+				expect(templateFigures).toEqual([1]);
+				const grid = geometry.figures[0];
+				expect(grid?.width).toBeCloseTo(FIGURE_WIDTH_PX, 0);
+				expect(grid?.smallestTextPx).toBeGreaterThanOrEqual(
+					MIN_FIGURE_TEXT_PX,
+				);
+				expect(geometry.problems).toEqual([]);
+				const drawn = diagrams[0];
+				const svg = drawn?.kind === "svg" ? drawn.svg : "";
+				expect(svg.match(/<rect class="dg-step"/g)).toHaveLength(20);
+				const prepared = prepareExportMarkdown(LONG_OPENER_PROPOSAL);
+				const printed = {
+					images: new Map(),
+					projectId: "project-example-1",
+					documentId: "document-example-1",
+				};
+				const offered = printFigureMaxHeight(prepared, printed)(0, []);
+				expect(
+					drawn?.kind === "svg" ? drawn.height : 0,
+				).toBeGreaterThan(offered);
+				expect(
+					printFigureMaxHeight(prepared, printed)(0, diagrams),
+				).toBe(PRINT_FIGURE_MAX_HEIGHT_PX);
+				expect(
+					Math.abs(
+						(grid?.height ?? 0) -
+							(drawn?.kind === "svg" ? drawn.height : 0),
+					),
+				).toBeLessThanOrEqual(EPSILON_PX);
+
+				const contents = compact(pages[1] ?? "");
+				const entry = new RegExp(
+					`1${escapeRegExp(compact(withoutNumber(LONG_OPENER_HEADING)))}(\\d+)`,
+				).exec(contents);
+				expect(entry?.[1]).toBe("3");
+			},
+			FIXTURE_BUDGET_MS,
+		);
+	},
+);
+
+describe.skipIf(SKIP_BROWSER_E2E)(
+	"A tall branched flowchart under a section opener printed by Chromium",
+	() => {
+		it(
+			"keeps its labels at full size rather than shrink them below the floor, and moves the whole figure to the page after its opener's",
+			async () => {
+				const {
+					diagrams,
+					diagramWarnings,
+					geometry,
+					layout,
+					pages,
+					templateFigures,
+				} = await branchedOpenerPrint();
+
+				expect(diagramWarnings).toEqual([]);
+				const drawn = diagrams[0];
+				if (drawn?.kind !== "svg") {
+					throw new Error("expected a drawn diagram");
+				}
+				// Taller than the room under the opener at the floor, it keeps a
+				// figure's own height and prints as drawn, at full size.
+				const prepared = prepareExportMarkdown(
+					BRANCHED_OPENER_PROPOSAL,
+				);
+				const printed = {
+					images: new Map(),
+					projectId: "project-example-1",
+					documentId: "document-example-1",
+				};
+				const offered = printFigureMaxHeight(prepared, printed)(0, []);
+				expect(offered).toBe(PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX);
+				expect(drawn.height * (9 / 9.75)).toBeGreaterThan(offered);
+				expect(drawn.height).toBeLessThanOrEqual(
+					PRINT_FIGURE_MAX_HEIGHT_PX,
+				);
+				expect(
+					printFigureMaxHeight(prepared, printed)(0, diagrams),
+				).toBe(PRINT_FIGURE_MAX_HEIGHT_PX);
+				expect(templateFigures).toEqual([]);
+				const figure = geometry.drawn[0];
+				expect(figure?.figure).toBe(1);
+				expect(
+					Math.abs((figure?.height ?? 0) - drawn.height),
+				).toBeLessThanOrEqual(EPSILON_PX);
+				// The engine's 13 px node labels, unshrunk.
+				expect(figure?.smallestTextPx).toBeCloseTo(13, 1);
+				expect(geometry.drawnProblems).toEqual([]);
+
+				// The opener starts page 3 and holds nothing else; the figure,
+				// its caption and the paragraph after it print on page 4.
+				const pageOf = (text: string) =>
+					layout.findIndex((page) =>
+						page.lines.some((line) => line.text.includes(text)),
+					);
+				expect(layout.findIndex(startsWithOpener)).toBe(2);
+				expect(
+					layout[2]?.lines.some((line) =>
+						line.text.includes(
+							compact(withoutNumber(BRANCHED_OPENER_HEADING)),
+						),
+					),
+				).toBe(true);
+				expect(pageOf(compact(BRANCHED_OPENER_FLOW[0]))).toBe(3);
+				expect(pageOf(compact(BRANCHED_OPENER_FLOW.at(-1) ?? ""))).toBe(
+					3,
+				);
+				expect(pageOf("Figure1.")).toBe(3);
+				expect(
+					pageOf(compact(BRANCHED_OPENER_AFTER).slice(0, 24)),
+				).toBe(3);
+				expect(pages).toHaveLength(4);
+				expect(
+					contentsPageNumber(
+						pages[1] ?? "",
+						"1",
+						withoutNumber(BRANCHED_OPENER_HEADING),
+					),
+				).toBe(3);
+			},
+			FIXTURE_BUDGET_MS,
+		);
+	},
+);
+
+describe.skipIf(SKIP_BROWSER_E2E)(
+	"A branched flowchart a little taller than the room under a long section opener printed by Chromium",
+	() => {
+		it(
+			"shrinks it to that room while its labels stay at the floor or above, on the opener's page",
+			async () => {
+				const {
+					diagrams,
+					diagramWarnings,
+					geometry,
+					layout,
+					pages,
+					templateFigures,
+				} = await shrunkOpenerPrint();
+
+				expect(diagramWarnings).toEqual([]);
+				const drawn = diagrams[0];
+				if (drawn?.kind !== "svg") {
+					throw new Error("expected a drawn diagram");
+				}
+				// The three-line heading leaves less than an opener's usual room;
+				// the figure is taller than that, and its labels reach the floor
+				// there, so it keeps that room.
+				const prepared = prepareExportMarkdown(SHRUNK_OPENER_PROPOSAL);
+				const printed = {
+					images: new Map(),
+					projectId: "project-example-1",
+					documentId: "document-example-1",
+				};
+				const offered = printFigureMaxHeight(prepared, printed)(0, []);
+				expect(offered).toBeLessThan(
+					PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+				);
+				expect(drawn.height).toBeGreaterThan(offered);
+				expect(drawn.height * (9 / 9.75)).toBeLessThanOrEqual(offered);
+				expect(
+					printFigureMaxHeight(prepared, printed)(0, diagrams),
+				).toBe(offered);
+				expect(templateFigures).toEqual([]);
+				const figure = geometry.drawn[0];
+				expect(figure?.figure).toBe(1);
+				expect(
+					Math.abs((figure?.height ?? 0) - offered),
+				).toBeLessThanOrEqual(EPSILON_PX);
+				// The engine's 13 px node labels, shrunk, at 12 px (9 pt) or more.
+				expect(figure?.smallestTextPx).toBeLessThan(13);
+				expect(figure?.smallestTextPx).toBeGreaterThanOrEqual(12);
+				expect(geometry.drawnProblems).toEqual([]);
+
+				// The opener, the whole figure, its caption and the paragraph
+				// after it print on page 3.
+				const pageOf = (text: string) =>
+					layout.findIndex((page) =>
+						page.lines.some((line) => line.text.includes(text)),
+					);
+				expect(layout.findIndex(startsWithOpener)).toBe(2);
+				expect(pageOf(compact(SHRUNK_OPENER_FLOW[0]))).toBe(2);
+				expect(pageOf(compact(SHRUNK_OPENER_FLOW.at(-1) ?? ""))).toBe(
+					2,
+				);
+				expect(pageOf("Figure1.")).toBe(2);
+				expect(pageOf(compact(SHRUNK_OPENER_AFTER).slice(0, 24))).toBe(
+					2,
+				);
+				expect(pages).toHaveLength(3);
+				// The heading wraps on the contents page too.
+				const entry = new RegExp(
+					`1${escapeRegExp(compact(withoutNumber(SHRUNK_OPENER_HEADING)))}(\\d+)`,
+				).exec(compact(pages[1] ?? ""));
+				expect(entry?.[1]).toBe("3");
+			},
+			FIXTURE_BUDGET_MS,
+		);
+	},
+);

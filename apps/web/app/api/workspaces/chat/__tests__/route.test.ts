@@ -13,6 +13,14 @@ import { RetryError } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const generateText = vi.fn();
+const modelMetadata = vi.hoisted(() => ({
+	modelString: "example-configured",
+	provider: "OPENAI_CHATGPT_PLAN",
+	answerSnapshot: {
+		modelString: "example-plan",
+		provider: "OPENAI_CHATGPT_PLAN",
+	},
+}));
 vi.mock("@repo/ai", () => ({
 	enhancePromptWithFabric: vi.fn(async () => ({ fabricUsed: false })),
 	generateText: (...args: unknown[]) => generateText(...args),
@@ -23,7 +31,7 @@ vi.mock("@repo/ai", () => ({
 	})),
 	getAIModelWithMetadata: vi.fn(async () => ({
 		model: { id: "stub-model" },
-		metadata: {},
+		metadata: modelMetadata,
 		trackUsage: () => {},
 	})),
 	getCurrentDateContext: () => "",
@@ -81,6 +89,32 @@ function chat() {
 
 beforeEach(() => {
 	generateText.mockReset();
+	modelMetadata.answerSnapshot = {
+		modelString: "example-plan",
+		provider: "OPENAI_CHATGPT_PLAN",
+	};
+});
+
+describe("POST /api/workspaces/chat — served model", () => {
+	it("serializes a fallback applied during generation rather than the configured model", async () => {
+		generateText.mockImplementationOnce(async () => {
+			modelMetadata.answerSnapshot = {
+				modelString: "example-api-served",
+				provider: "OPENAI_DIRECT",
+			};
+			return { text: "Answer", usage: {} };
+		});
+		const response = await chat();
+		expect(await response.json()).toMatchObject({
+			response: "Answer",
+			model: { id: "example-api-served", viaPlan: false },
+		});
+	});
+	it("does not attribute the static empty-generation fallback", async () => {
+		generateText.mockResolvedValueOnce({ text: "", usage: {} });
+		const response = await chat();
+		expect(await response.json()).not.toHaveProperty("model");
+	});
 });
 
 describe("POST /api/workspaces/chat — usage limit reached during the call", () => {

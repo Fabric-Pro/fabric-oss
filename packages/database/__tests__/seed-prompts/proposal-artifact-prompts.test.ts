@@ -135,7 +135,7 @@ function mainForms(): string {
 
 /**
  * Copied from `SHORT_ID` in
- * `packages/temporal/src/lib/proposal-export/build-theme-html.ts`: the cells
+ * `packages/temporal/src/lib/proposal-export/print-markup.ts`: the cells
  * print reads as an id column. Copied rather than imported: @repo/temporal
  * depends on @repo/database.
  */

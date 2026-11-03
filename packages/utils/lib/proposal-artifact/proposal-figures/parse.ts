@@ -94,6 +94,11 @@ export interface FigureNode {
 	lines: string[];
 	/** Class names from `class` lines and `:::name`, in order, unique. */
 	classes: string[];
+	/**
+	 * The opening of the shape its last label was declared in (`[`, `(`,
+	 * `([`, `{`…), or null when it was never declared with one.
+	 */
+	shape: string | null;
 	/** The subgraph the node was first mentioned in, or null. */
 	subgraph: string | null;
 }
@@ -123,6 +128,11 @@ export interface FigureModel {
 	edges: FigureEdge[];
 	/** Subgraphs in source order. */
 	subgraphs: FigureSubgraph[];
+	/**
+	 * Whether the source holds a `classDef`, `style` or `linkStyle` line,
+	 * which every template ignores.
+	 */
+	styled: boolean;
 }
 
 /** The longest source read at all, in characters. */
@@ -219,6 +229,8 @@ interface NodeRef {
 	id: string;
 	/** The raw label, or undefined when the reference declares none. */
 	label?: string;
+	/** The opening of the label's shape, when there is a label. */
+	shape?: string;
 	classes: string[];
 	end: number;
 }
@@ -264,7 +276,7 @@ function readNodeRef(text: string, start: number): NodeRef | null {
 		classes.push(shorthand[1]);
 		at += shorthand[0].length;
 	}
-	return { id, label, classes, end: at };
+	return { id, label, shape: shape?.[0], classes, end: at };
 }
 
 function skipSpaces(text: string, at: number): number {
@@ -331,7 +343,8 @@ function readStatement(text: string): Statement | null {
  * among them) are skipped, `classDef` lines and `style`/`linkStyle` lines
  * without `url(` are ignored, and `direction` lines inside a subgraph are
  * ignored. A node mentioned inside a subgraph belongs to the first one that
- * mentions it, as in Mermaid; a later label replaces an earlier one.
+ * mentions it, as in Mermaid; a later label replaces an earlier one, and
+ * its shape the earlier shape.
  */
 export function parseFigureSource(source: string): FigureModel | null {
 	if (source.length > MAX_SOURCE_LENGTH) {
@@ -342,13 +355,20 @@ export function parseFigureSource(source: string): FigureModel | null {
 	const subgraphs: FigureSubgraph[] = [];
 	const classLines: { ids: string[]; name: string }[] = [];
 	let direction: string | null = null;
+	let styled = false;
 	let headerSeen = false;
 	let current: FigureSubgraph | null = null;
 
 	const mention = (ref: NodeRef): boolean => {
 		let node = nodes.get(ref.id);
 		if (!node) {
-			node = { id: ref.id, lines: [ref.id], classes: [], subgraph: null };
+			node = {
+				id: ref.id,
+				lines: [ref.id],
+				classes: [],
+				subgraph: null,
+				shape: null,
+			};
 			nodes.set(ref.id, node);
 		}
 		if (ref.label !== undefined) {
@@ -357,6 +377,7 @@ export function parseFigureSource(source: string): FigureModel | null {
 				return false;
 			}
 			node.lines = lines;
+			node.shape = ref.shape ?? null;
 		}
 		for (const name of ref.classes) {
 			if (!node.classes.includes(name)) {
@@ -441,6 +462,7 @@ export function parseFigureSource(source: string): FigureModel | null {
 			if (/url\s*\(/i.test(line)) {
 				return null;
 			}
+			styled = true;
 			continue;
 		}
 		if (isKeyword && keyword === "class") {
@@ -503,5 +525,6 @@ export function parseFigureSource(source: string): FigureModel | null {
 		nodes: Array.from(nodes.values()),
 		edges,
 		subgraphs,
+		styled,
 	};
 }

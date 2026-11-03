@@ -34,7 +34,7 @@ vi.mock("@langchain/langgraph/prebuilt", async (importOriginal) => {
 	class SpyToolNode extends actual.ToolNode {
 		constructor(...args: ConstructorParameters<typeof actual.ToolNode>) {
 			super(...args);
-			toolNodeConstructions();
+			toolNodeConstructions(args[0].map((built) => built.name));
 		}
 	}
 	return { ...actual, ToolNode: SpyToolNode };
@@ -418,5 +418,368 @@ describe("toolNode — logged arguments on a Proposal run", () => {
 	it("still logs the query outside a Proposal", async () => {
 		const logs = await loggedSearch({});
 		expect(logs).toContain("SECRET QUERY TEXT");
+	});
+
+	describe("a repository listing's directory", () => {
+		const DIRECTORY = "SECRET DIRECTORY the model wrote";
+
+		async function loggedListing(configurable: Record<string, unknown>) {
+			vi.stubGlobal(
+				"fetch",
+				vi.fn().mockResolvedValue({
+					ok: true,
+					status: 200,
+					json: async () => ({
+						structure: { entries: [], truncated: false },
+						totalFiles: 0,
+						totalDirectories: 0,
+					}),
+				}),
+			);
+			const spies = (["info", "warn", "error", "debug"] as const).map(
+				(method) =>
+					vi
+						.spyOn(logger, method)
+						.mockImplementation(() => undefined),
+			);
+			await toolNode(
+				createMockState({
+					messages: [
+						toolCallMessage(
+							"call_listing",
+							"list_repository_structure",
+							{ directory: DIRECTORY },
+						),
+					],
+					hasRepoIntegration: true,
+					projectId: "project-example",
+					userId: "user-example",
+				}),
+				{ configurable },
+			);
+			return spies
+				.flatMap((spy) =>
+					spy.mock.calls.map((args) => JSON.stringify(args)),
+				)
+				.join("\n");
+		}
+
+		it("logs only its length on a Proposal run", async () => {
+			const logs = await loggedListing({
+				proposal_mode: "artifact",
+				proposal_client_prompt:
+					"A bound prompt for the example proposal.",
+			});
+			expect(logs).toContain("Executing list_repository_structure");
+			expect(logs).not.toContain("SECRET DIRECTORY");
+			expect(logs).toContain(`[${DIRECTORY.length} chars]`);
+		});
+
+		it("still logs it outside a Proposal", async () => {
+			const logs = await loggedListing({});
+			expect(logs).toContain("Executing list_repository_structure");
+			expect(logs).toContain(DIRECTORY);
+		});
+	});
+});
+
+// A tool failure's text can repeat the call's arguments, which the model may
+// have filled with its server-only prompt (Fizzy #2946).
+describe("toolNode — logged failures on a Proposal run", () => {
+	const SECRET = "SECRET PROMPT TEXT the request repeated";
+	const PROPOSAL_RUN = {
+		proposal_mode: "artifact",
+		proposal_client_prompt: "A bound prompt for the example proposal.",
+	};
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+	});
+
+	function failingFetch() {
+		return vi.fn().mockRejectedValue(
+			Object.assign(new Error(`connect failed: ${SECRET}`), {
+				code: "ECONNREFUSED",
+			}),
+		);
+	}
+
+	async function loggedRun(
+		configurable: Record<string, unknown>,
+		fetchMock: ReturnType<typeof vi.fn>,
+		state: Partial<AgentState>,
+	) {
+		vi.stubGlobal("fetch", fetchMock);
+		const spies = [
+			...(["info", "warn", "error", "debug"] as const).map((method) =>
+				vi.spyOn(logger, method).mockImplementation(() => undefined),
+			),
+			...(["log", "info", "warn", "error", "debug"] as const).map(
+				(method) =>
+					vi
+						.spyOn(console, method)
+						.mockImplementation(() => undefined),
+			),
+		];
+		await toolNode(
+			createMockState({
+				projectId: "project-example",
+				userId: "user-example",
+				...state,
+			}),
+			{ configurable },
+		);
+		return spies
+			.flatMap((spy) =>
+				spy.mock.calls.map((args) => JSON.stringify(args)),
+			)
+			.join("\n");
+	}
+
+	// Every tool whose external call can throw into a logged catch, with the
+	// arguments and gates that get it past its early returns to that call, and
+	// the label of its failure log line.
+	const FAILING_TOOLS: Array<{
+		tool: string;
+		args: Record<string, unknown>;
+		label: string;
+		state?: Partial<AgentState>;
+		configurable?: Record<string, unknown>;
+	}> = [
+		{
+			tool: "search_project_knowledge",
+			args: { query: "auth" },
+			label: "search_project_knowledge failed",
+		},
+		{
+			tool: "read_project_source",
+			args: { sourceId: "source-example" },
+			label: "project-source request failed",
+		},
+		{
+			tool: "list_linked_chats",
+			args: {},
+			label: "list_linked_chats failed",
+			state: { hasTeamsIntegration: true },
+		},
+		{
+			tool: "search_teams_messages",
+			args: { query: "auth" },
+			label: "Teams search failed",
+			state: { hasTeamsIntegration: true },
+		},
+		{
+			tool: "get_chat_messages",
+			args: { chatId: "chat-example" },
+			label: "get_chat_messages failed",
+			state: { hasTeamsIntegration: true },
+		},
+		{
+			tool: "get_teams_channel_messages",
+			args: { teamId: "team-example", channelId: "channel-example" },
+			label: "get_teams_channel_messages failed",
+			state: { hasTeamsIntegration: true },
+		},
+		{
+			tool: "get_full_message",
+			args: { messageId: "message-example", chatId: "chat-example" },
+			label: "get_full_message failed",
+			state: { hasTeamsIntegration: true },
+		},
+		{
+			tool: "list_message_replies",
+			args: {
+				teamId: "team-example",
+				channelId: "channel-example",
+				messageId: "message-example",
+			},
+			label: "list_message_replies failed",
+			state: { hasTeamsIntegration: true },
+		},
+		{
+			tool: "get_message_hosted_content",
+			args: { messageId: "message-example", chatId: "chat-example" },
+			label: "get_message_hosted_content failed",
+			state: { hasTeamsIntegration: true },
+		},
+		{
+			tool: "list_linked_channels",
+			args: {},
+			label: "list_linked_channels failed",
+			state: { hasSlackIntegration: true },
+		},
+		{
+			tool: "search_slack_messages",
+			args: { query: "auth" },
+			label: "Slack search failed",
+			state: { hasSlackIntegration: true },
+		},
+		{
+			tool: "get_channel_messages",
+			args: { channelId: "channel-example" },
+			label: "get_channel_messages failed",
+			state: { hasSlackIntegration: true },
+		},
+		{
+			tool: "get_thread_replies",
+			args: {
+				channelId: "channel-example",
+				threadTs: "1700000000.000100",
+			},
+			label: "get_thread_replies failed",
+			state: { hasSlackIntegration: true },
+		},
+		{
+			tool: "get_shared_files",
+			args: { channelId: "channel-example" },
+			label: "get_shared_files failed",
+			state: { hasSlackIntegration: true },
+		},
+		{
+			tool: "search_repository_code",
+			args: { query: "auth" },
+			label: "search_repository_code failed",
+			state: { hasRepoIntegration: true },
+		},
+		{
+			tool: "get_repository_file",
+			args: { path: "src/example.ts" },
+			label: "get_repository_file failed",
+			state: { hasRepoIntegration: true },
+		},
+		{
+			tool: "list_repository_structure",
+			args: {},
+			label: "list_repository_structure failed",
+			state: { hasRepoIntegration: true },
+		},
+		{
+			tool: "write_document_asset",
+			args: {
+				filename: "diagram.html",
+				contentType: "text/html",
+				content: "<p>Diagram</p>",
+			},
+			label: "write_document_asset failed",
+			state: {
+				activeSkill: "architecture-diagram",
+				documentId: "document-example",
+			},
+			configurable: { ai_token: "token-example" },
+		},
+	];
+
+	// A tool added later without a row above would otherwise leave its catch
+	// unchecked with every test green.
+	it("has a row for every tool the node builds with every gate on", async () => {
+		// No other test sets every gate, so this call builds a fresh node.
+		const constructionsBefore = toolNodeConstructions.mock.calls.length;
+		await toolNode(
+			createMockState({
+				messages: [toolCallMessage("call_unknown", "unknown_tool", {})],
+				activeSkill: "architecture-diagram",
+				documentId: "document-example",
+				hasTeamsIntegration: true,
+				hasSlackIntegration: true,
+				hasRepoIntegration: true,
+			}),
+			{ configurable: {} },
+		);
+
+		expect(toolNodeConstructions.mock.calls.length).toBe(
+			constructionsBefore + 1,
+		);
+		const built = toolNodeConstructions.mock.lastCall?.[0] as string[];
+		expect([...built].sort()).toEqual(
+			FAILING_TOOLS.map((row) => row.tool).sort(),
+		);
+	});
+
+	function failingToolState(row: (typeof FAILING_TOOLS)[number]) {
+		return {
+			messages: [toolCallMessage(`call_${row.tool}`, row.tool, row.args)],
+			...row.state,
+		};
+	}
+
+	it.each(FAILING_TOOLS)(
+		"logs the class and code of a $tool failure on a Proposal run",
+		async (row) => {
+			const fetchMock = failingFetch();
+			const logs = await loggedRun(
+				{ ...PROPOSAL_RUN, ...row.configurable },
+				fetchMock,
+				failingToolState(row),
+			);
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(logs).not.toContain(SECRET);
+			const failureLine = logs
+				.split("\n")
+				.find((line) => line.includes(row.label));
+			expect(failureLine).toContain('"errorType":"Error"');
+			expect(failureLine).toContain('"errorCode":"ECONNREFUSED"');
+		},
+	);
+
+	it.each(FAILING_TOOLS)(
+		"logs the text of a $tool failure outside a Proposal, as before",
+		async (row) => {
+			const logs = await loggedRun(
+				{ ...row.configurable },
+				failingFetch(),
+				failingToolState(row),
+			);
+
+			const failureLine = logs
+				.split("\n")
+				.find((line) => line.includes(row.label));
+			expect(failureLine).toContain(`connect failed: ${SECRET}`);
+		},
+	);
+
+	describe("an asset API's error body", () => {
+		const assetCall = {
+			messages: [
+				toolCallMessage("call_asset", "write_document_asset", {
+					filename: "diagram.html",
+					contentType: "text/html",
+					content: "<p>Diagram</p>",
+				}),
+			],
+			activeSkill: "architecture-diagram",
+			documentId: "document-example",
+		} as Partial<AgentState>;
+
+		function rejectingApi() {
+			return vi.fn().mockResolvedValue({
+				ok: false,
+				status: 422,
+				text: async () => `Bad payload: ${SECRET}`,
+			});
+		}
+
+		it("logs the status only on a Proposal run", async () => {
+			const logs = await loggedRun(
+				{ ...PROPOSAL_RUN, ai_token: "token-example" },
+				rejectingApi(),
+				assetCall,
+			);
+
+			expect(logs).toContain("write_document_asset API error");
+			expect(logs).toContain('"status":422');
+			expect(logs).not.toContain(SECRET);
+		});
+
+		it("logs the body outside a Proposal, as before", async () => {
+			const logs = await loggedRun(
+				{ ai_token: "token-example" },
+				rejectingApi(),
+				assetCall,
+			);
+
+			expect(logs).toContain(`Bad payload: ${SECRET}`);
+		});
 	});
 });

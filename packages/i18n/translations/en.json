@@ -1246,6 +1246,25 @@
 					"revoke": "Revoke invitation",
 					"resend": "Resend invitation"
 				},
+				"bulkInvite": {
+					"open": "Invite many",
+					"title": "Invite many members",
+					"description": "Paste email addresses. Each person gets an invitation and joins as a member when they accept it.",
+					"placeholder": "one@example.com, two@example.com",
+					"submit": "Send invitations ({count})",
+					"tooMany": "You can invite up to {max} addresses at a time. Split the list and try again.",
+					"error": "The invitations could not be sent. Please try again.",
+					"summary": "{invited} of {total} invited",
+					"inviteMore": "Invite more",
+					"status": {
+						"invited": "Invited as member",
+						"invalid": "Not a valid email",
+						"duplicate": "Duplicate in this list",
+						"already_member": "Already a member",
+						"already_invited": "Already invited",
+						"failed": "Could not be sent"
+					}
+				},
 				"inviteMember": {
 					"description": "To invite a new member, send them an invitation.",
 					"duplicateInvite": {
@@ -1632,7 +1651,8 @@
 						"invited": "Member invited",
 						"role_changed": "Member role changed",
 						"removed": "Member removed",
-						"left": "Member left"
+						"left": "Member left",
+						"bulk_invited": "Members invited in bulk"
 					},
 					"api_key": {
 						"created": "API key created",
@@ -1925,6 +1945,9 @@
 				"newsletter": {
 					"approval": {
 						"required_changed": "Newsletter approval requirement changed"
+					},
+					"organization_distribution": {
+						"changed": "Organization distribution changed"
 					},
 					"send": {
 						"approved": "Newsletter send approved",
@@ -10202,6 +10225,12 @@
 		}
 	},
 	"readiness": {
+		"indicator": {
+			"assumed": "assumed",
+			"ariaCollapse": "Project readiness: {level}. Select to collapse the checklist.",
+			"ariaExpandZero": "Project readiness: {level}. No open items. Select to expand the checklist.",
+			"ariaExpandOpen": "Project readiness: {level}. {count} open items. Select to expand the checklist."
+		},
 		"panel": {
 			"label": "Project readiness",
 			"progress": "{completed} / {total} complete · {percent}%",
@@ -10215,7 +10244,8 @@
 			"helpRequestFailed": "Could not request help. Please try again.",
 			"assumedPhase": "Phase assumed from your setup.",
 			"requiredOutstanding": "{count, plural, one {# required item outstanding} other {# required items outstanding}}",
-			"intro": "Complete these steps to get your project ready — Fabric detects each one automatically, so nothing here needs ticking off by hand. Not everything applies to every project: snooze what's early, and mark what you'll never use as not applicable.",
+			"intro": "Fabric checks off completed steps automatically. Snooze what is early or mark items that do not apply.",
+			"introReadOnly": "Fabric checks off completed steps automatically as this project is configured.",
 			"phaseTransition": "Discovery and planning are done. Switch this project to Development / Execution readiness?",
 			"switchPhase": "Switch",
 			"phaseTransitionDismiss": "Not yet",
@@ -10242,7 +10272,9 @@
 			"stateInProgress": "In progress",
 			"targetUnavailable": "This step's destination is switched off for this project, so there is nowhere to send you. An administrator can re-enable the tab in project settings.",
 			"nextUp": "Next: {item}",
-			"unlockedBy": "Complete {prerequisite} to unlock {items}.",
+			"lockedToggle": "Unlocks later ({count})",
+			"lockedAfter": "After {prerequisite}",
+			"lockedChained": "+{count} more after downstream prerequisites",
 			"itemActions": "Actions for this item",
 			"changeCOMPLETED": "Done",
 			"changeREGRESSED": "Needs attention",

@@ -7,6 +7,21 @@ import {
 import { mergeWithTenantFilter } from "../src/tenant-db";
 
 describe("Parlume action tenant boundaries", () => {
+	it("scopes channel send receipts to the active tenant", () => {
+		const filter = runWithTenantContext(
+			createOrganizationContext("example-org", "example-user"),
+			() =>
+				mergeWithTenantFilter("ParlumeChannelPost", {
+					sessionId: "example-session",
+				}),
+		);
+		expect(filter).toEqual({
+			AND: [
+				{ sessionId: "example-session" },
+				{ organizationId: "example-org" },
+			],
+		});
+	});
 	it("adds the active organization to unscoped action queries", () => {
 		const filter = runWithTenantContext(
 			createOrganizationContext("example-org", "example-user"),

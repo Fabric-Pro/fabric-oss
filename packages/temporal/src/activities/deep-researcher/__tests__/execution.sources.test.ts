@@ -46,6 +46,7 @@ beforeEach(() => {
 		model: {},
 		provider: "OPENAI",
 		modelString: "example-model",
+		answerSnapshot: () => undefined,
 	});
 	mocks.retrieveWorkspaceDocumentsActivity.mockResolvedValue({
 		context: "Retrieved synthetic workspace document context.",
@@ -88,6 +89,38 @@ const runners = {
 			query: "Compare concurrency modes.",
 		}),
 };
+
+it("attributes a direct answer before the summary call hands off to another model", async () => {
+	let snapshot = {
+		provider: "OPENAI_CHATGPT_PLAN",
+		modelString: "example-plan-served",
+	};
+	mocks.getAiModelWithSelection.mockResolvedValueOnce({
+		model: {},
+		provider: "OPENAI_CHATGPT_PLAN",
+		modelString: "example-configured",
+		answerSnapshot: () => snapshot,
+	});
+	mocks.generateText
+		.mockReset()
+		.mockResolvedValueOnce({ text: findings, steps: [] })
+		.mockImplementationOnce(async () => {
+			snapshot = {
+				provider: "OPENAI_DIRECT",
+				modelString: "example-api-summary",
+			};
+			return { text: "Summary" };
+		});
+	const result = await runners.direct();
+	expect(result.model).toMatchObject({
+		id: "example-plan-served",
+		viaPlan: true,
+	});
+	expect(result.summaryModel).toMatchObject({
+		id: "example-api-summary",
+		viaPlan: false,
+	});
+});
 
 describe.each(Object.entries(runners))("%s research sources", (_name, run) => {
 	it("preserves retrieved workspace names while excluding model-generated titles and prose", async () => {
