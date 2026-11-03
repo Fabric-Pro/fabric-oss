@@ -15,6 +15,8 @@ const {
 	refreshGh,
 	getValidGitLabAccessToken,
 	decryptApiKey,
+	isFeatureEnabled,
+	resolveCredential,
 } = vi.hoisted(() => ({
 	findFirst: vi.fn(),
 	findUnique: vi.fn(),
@@ -33,6 +35,8 @@ const {
 	// `mockImplementationOnce`. `clearAllMocks` in `beforeEach` resets call
 	// history but not this default implementation.
 	decryptApiKey: vi.fn((v: string) => `dec:${v}`),
+	isFeatureEnabled: vi.fn(),
+	resolveCredential: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -40,9 +44,12 @@ vi.mock("@repo/database", () => ({
 		projectRepositoryIntegration: { findFirst, findUnique },
 		$transaction: transaction,
 	},
+	isFeatureEnabled,
 	setIntegrationStatus,
 	createRepoIntegrationCredentialNotification,
 }));
+
+vi.mock("../credential-manager", () => ({ resolveCredential }));
 
 vi.mock("@repo/utils", () => ({
 	decryptApiKey,
@@ -80,6 +87,7 @@ const base = {
 	encryptedAccessToken: "acc",
 	encryptedRefreshToken: "ref",
 	encryptedPat: null,
+	credentialId: null,
 	tokenExpiresAt: new Date(),
 	updatedAt: new Date(),
 };
@@ -442,6 +450,61 @@ describe("resolveFreshRepoToken", () => {
 			expect(out.token).toBe("dec:acc");
 			expect(out.refreshFault).toBeUndefined();
 		});
+	});
+});
+
+describe("a repository bound to a credential-manager credential", () => {
+	const row = {
+		...base,
+		integrationId: "i1",
+		authMethod: "PAT" as const,
+		provider: "GITHUB" as const,
+		encryptedPat: "stored",
+		credentialId: "cred-1",
+	};
+
+	beforeEach(() => {
+		findUnique.mockResolvedValue({
+			project: { organizationId: "org-1" },
+		});
+		isFeatureEnabled.mockResolvedValue(true);
+	});
+
+	it("reads the repository with the credential, not the stored token", async () => {
+		resolveCredential.mockResolvedValue({
+			ok: true,
+			value: { token: "cred-token", credential: { kind: "OAUTH" } },
+		});
+		expect(await resolveFreshRepoTokenForRow(row)).toEqual({
+			token: "cred-token",
+			authMethod: "OAUTH",
+			provider: "GITHUB",
+		});
+		expect(resolveCredential).toHaveBeenCalledWith(
+			expect.objectContaining({
+				credentialId: "cred-1",
+				actor: { type: "system", organizationId: "org-1" },
+			}),
+		);
+		expect(decryptApiKey).not.toHaveBeenCalled();
+	});
+
+	it("gives no token when the credential cannot be used, never the stored one", async () => {
+		resolveCredential.mockResolvedValue({
+			ok: false,
+			failure: { code: "forbidden" },
+		});
+		const resolved = await resolveFreshRepoTokenForRow(row);
+		expect(resolved.token).toBeNull();
+		expect(decryptApiKey).not.toHaveBeenCalled();
+	});
+
+	it("gives no token while the credential manager is off", async () => {
+		isFeatureEnabled.mockResolvedValue(false);
+		const resolved = await resolveFreshRepoTokenForRow(row);
+		expect(resolved.token).toBeNull();
+		expect(resolveCredential).not.toHaveBeenCalled();
+		expect(decryptApiKey).not.toHaveBeenCalled();
 	});
 });
 

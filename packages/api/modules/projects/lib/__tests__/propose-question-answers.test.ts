@@ -76,6 +76,25 @@ beforeEach(() => {
 });
 
 describe("proposeQuestionAnswers", () => {
+	it("searches with the title, open questions, and description in order", async () => {
+		mocks.generateObject.mockResolvedValue({
+			object: { recommendations: [] },
+		});
+		await proposeQuestionAnswers({
+			feature: feature(),
+			questions: [
+				{ rootId: "one", question: "First question?" },
+				{ rootId: "two", question: "Second question?" },
+			],
+			tenantFilter,
+		});
+		expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				query: "MFA First question? Second question? ## Overview\nAdd MFA.",
+				topK: 5,
+			}),
+		);
+	});
 	it("stamps each question's root metadata with justified options", async () => {
 		mocks.generateObject.mockResolvedValue({
 			object: {

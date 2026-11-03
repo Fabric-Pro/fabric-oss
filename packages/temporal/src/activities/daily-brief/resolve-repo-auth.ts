@@ -50,6 +50,23 @@ export async function resolveRepoAuth(
 	 */
 	ctx?: { userId?: string | null; organizationId?: string | null },
 ): Promise<RepoAuth> {
+	// A credential from the credential manager is the only one used.
+	if (
+		repo.credentialId &&
+		(repo.provider === "GITHUB" || repo.provider === "GITLAB")
+	) {
+		const { token } = await resolveFreshRepoTokenForRow(repo, ctx);
+		if (!token) {
+			return {
+				kind: "unsupported",
+				reason: "The credential chosen for this repository cannot be used",
+			};
+		}
+		return repo.provider === "GITHUB"
+			? { kind: "github", token }
+			: { kind: "gitlab", getToken: async () => token };
+	}
+
 	// PAT-connected GitHub/GitLab. Handled before the OAuth branches because
 	// those are gated on `authMethod === "OAUTH"`, so a PAT row previously fell
 	// all the way through to "unsupported" and every daily-brief collector and

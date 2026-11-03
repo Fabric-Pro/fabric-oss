@@ -6,6 +6,7 @@ import { getSessionCookie } from "better-auth/cookies";
 import { NextRequest, NextResponse } from "next/server";
 import createMiddleware from "next-intl/middleware";
 import { withQuery } from "ufo";
+import { LOCALE_REWRITE_HEADER } from "./lib/locale-rewrite";
 
 const intlMiddleware = createMiddleware(routing);
 const DEFAULT_LOCALE = "en";
@@ -78,6 +79,7 @@ function forwardedRequestHeaders(
 	const headers = new Headers(req.headers);
 	headers.delete(EMBED_FLAG_HEADER);
 	headers.delete("x-vercel-mfe-zone");
+	headers.delete(LOCALE_REWRITE_HEADER);
 	for (const [name, value] of Object.entries(extra)) {
 		headers.set(name, value);
 	}
@@ -88,6 +90,136 @@ function forward(req: NextRequest, extra?: Record<string, string>) {
 	return NextResponse.next({
 		request: { headers: forwardedRequestHeaders(req, extra) },
 	});
+}
+
+/**
+ * Hand same-origin locale rewrites from `next-intl` off to `next.config.ts`
+ * `rewrites().beforeFiles` via `x-fabric-locale-rewrite` instead of returning
+ * `x-middleware-rewrite`.
+ *
+ * When Next.js 16 is bound to a loopback IP (`--hostname 127.0.0.1` or `::1`),
+ * `adapter()` normalizes `x-middleware-rewrite` via `NextURL` to `localhost`,
+ * while `resolveRoutes()` builds `initUrl` from raw `opts.hostname`
+ * (`127.0.0.1`) and checks `getRelativeURL` with `URL.origin`. That origin
+ * mismatch turns an internal `/ -> /en` rewrite into an external HTTP proxy
+ * request back into the same server, where `/en` (`localePrefix: "never"`)
+ * responds `307 Location: /` and loops forever.
+ */
+function rewriteLocaleViaBeforeFiles(
+	req: NextRequest,
+	intlRes: NextResponse,
+): NextResponse {
+	const rewriteHeader = intlRes.headers?.get("x-middleware-rewrite");
+	if (!rewriteHeader) {
+		if (intlRes.headers?.get("x-middleware-next") === "1") {
+			const overrideList = intlRes.headers.get(
+				"x-middleware-override-headers",
+			);
+			if (overrideList) {
+				const kept = overrideList
+					.split(",")
+					.map((k) => k.trim())
+					.filter(
+						(k) =>
+							k.length > 0 &&
+							k !== EMBED_FLAG_HEADER &&
+							k !== "x-vercel-mfe-zone" &&
+							k !== LOCALE_REWRITE_HEADER,
+					);
+				intlRes.headers.delete(
+					`x-middleware-request-${EMBED_FLAG_HEADER}`,
+				);
+				intlRes.headers.delete(
+					"x-middleware-request-x-vercel-mfe-zone",
+				);
+				intlRes.headers.delete(
+					`x-middleware-request-${LOCALE_REWRITE_HEADER}`,
+				);
+				intlRes.headers.set(
+					"x-middleware-override-headers",
+					kept.join(","),
+				);
+			}
+		}
+		return intlRes;
+	}
+
+	let reqOrigin: string;
+	let rewriteUrl: URL;
+	try {
+		reqOrigin = new URL(req.url).origin;
+		rewriteUrl = new URL(rewriteHeader, req.url);
+	} catch {
+		return intlRes;
+	}
+
+	if (rewriteUrl.origin !== reqOrigin) {
+		return intlRes;
+	}
+
+	const localeMatch = rewriteUrl.pathname.match(/^\/([a-z]{2})(\/.*)?$/);
+	if (!localeMatch) {
+		return intlRes;
+	}
+
+	const locale = localeMatch[1];
+	const strippedPathname = localeMatch[2] || "/";
+	let decodedRequestPathname = req.nextUrl.pathname;
+	try {
+		decodedRequestPathname = decodeURI(req.nextUrl.pathname);
+	} catch {
+		// Leave raw pathname when URI decoding fails.
+	}
+	if (
+		strippedPathname !== req.nextUrl.pathname &&
+		strippedPathname !== decodedRequestPathname
+	) {
+		return intlRes;
+	}
+
+	const headers = forwardedRequestHeaders(req);
+	const overrideHeaderList = intlRes.headers.get(
+		"x-middleware-override-headers",
+	);
+	if (overrideHeaderList) {
+		for (const rawKey of overrideHeaderList.split(",")) {
+			const key = rawKey.trim();
+			if (!key) {
+				continue;
+			}
+			const value = intlRes.headers.get(`x-middleware-request-${key}`);
+			if (value !== null) {
+				headers.set(key, value);
+			}
+		}
+	}
+	headers.delete(EMBED_FLAG_HEADER);
+	headers.set(LOCALE_REWRITE_HEADER, locale);
+
+	const nextRes = NextResponse.next({
+		request: { headers },
+	});
+
+	if (intlRes.cookies?.getAll) {
+		for (const cookie of intlRes.cookies.getAll()) {
+			nextRes.cookies.set(cookie);
+		}
+	} else {
+		const setCookies = intlRes.headers.getSetCookie?.() ?? [];
+		for (const cookie of setCookies) {
+			nextRes.headers.append("set-cookie", cookie);
+		}
+	}
+
+	intlRes.headers.forEach((value, key) => {
+		const lower = key.toLowerCase();
+		if (lower === "set-cookie" || lower.startsWith("x-middleware-")) {
+			return;
+		}
+		nextRes.headers.set(key, value);
+	});
+
+	return nextRes;
 }
 
 /**
@@ -329,7 +461,7 @@ export default async function proxy(incoming: NextRequest) {
 		return NextResponse.redirect(new URL("/app", origin));
 	}
 
-	return intlMiddleware(req);
+	return rewriteLocaleViaBeforeFiles(req, intlMiddleware(req));
 }
 
 export const config = {

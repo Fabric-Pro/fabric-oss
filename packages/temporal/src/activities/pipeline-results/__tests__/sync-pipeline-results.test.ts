@@ -98,6 +98,7 @@ function adoRepo(
 		encryptedRefreshToken: null,
 		tokenExpiresAt: null,
 		updatedAt: new Date(),
+		credentialId: null,
 		encryptedPat: "enc",
 		azureOrganization: "example-org",
 		authMethod: "PAT",

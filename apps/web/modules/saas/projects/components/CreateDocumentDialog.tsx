@@ -132,6 +132,7 @@ type Props = {
 	projectId: string;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
+	initialType?: DocumentType;
 };
 
 /**
@@ -340,7 +341,12 @@ async function uploadSourceFile({
 
 const PROMPT_TRIGGER_ID = "create-document-prompt";
 
-export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
+export function CreateDocumentDialog({
+	projectId,
+	open,
+	onOpenChange,
+	initialType,
+}: Props) {
 	const t = useTranslations("projects.documents.create");
 	const tFeedback = useTranslations(
 		"projects.proposalArtifact.generationFeedback",
@@ -520,8 +526,9 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 		if (!open) {
 			return;
 		}
-		setTitle(documentTypeLabel(DEFAULT_DOCUMENT_TYPE));
-		setType(DEFAULT_DOCUMENT_TYPE);
+		const resolvedInitialType = initialType ?? DEFAULT_DOCUMENT_TYPE;
+		setTitle(documentTypeLabel(resolvedInitialType));
+		setType(resolvedInitialType);
 		setSourceText("");
 		setSourceFile(null);
 		setFileRefusal(null);
@@ -532,7 +539,7 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 		setValidationError(null);
 		setGenerateWithAiOverride(null);
 		setHasSourceContent(false);
-	}, [open]);
+	}, [open, initialType]);
 
 	/**
 	 * Commit the source-presence flip only once the field has been quiet.

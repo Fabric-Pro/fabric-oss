@@ -1,8 +1,8 @@
 "use client";
 
-import { getCategoryIcon } from "@saas/agents/lib/category-icons";
 import { buildAgentInstanceChatHref } from "@saas/agents/lib/fabric-agent-links";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
+import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { Button } from "@ui/components/button";
 import {
 	DropdownMenu,
@@ -31,7 +31,6 @@ import {
 	Columns3,
 	CopyIcon,
 	EditIcon,
-	MessageSquare,
 	MoreVerticalIcon,
 	PlayIcon,
 	TrashIcon,
@@ -99,7 +98,6 @@ export function UnifiedAgentListView({
 }
 
 function SystemAgentTableRow({ agent }: { agent: any }) {
-	const AgentIcon = agent.icon || MessageSquare;
 	const agentHref = agent.href || `/app/agents/${agent.id}/try`;
 	const modifiedLabel = agent.updatedAt
 		? formatDistanceToNow(new Date(agent.updatedAt), { addSuffix: true })
@@ -109,8 +107,8 @@ function SystemAgentTableRow({ agent }: { agent: any }) {
 		<TableRow className="group">
 			<TableCell className="py-2.5">
 				<div className="flex items-center gap-2.5 min-w-0">
-					<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-muted/40 text-muted-foreground">
-						<AgentIcon className="h-3.5 w-3.5 text-primary" />
+					<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-muted/40 text-foreground/80">
+						<RobotIcon className="h-3.5 w-3.5" />
 					</div>
 					<Tooltip delayDuration={400}>
 						<TooltipTrigger asChild>
@@ -183,7 +181,6 @@ function InstanceTableRow({
 	basePath: string;
 	onDelete: (id: string) => void;
 }) {
-	const { icon: CategoryIcon } = getCategoryIcon(instance.template?.category);
 	const editHref = `${basePath}/agents/${instance.id}/edit`;
 	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
 	const chatbotHref = buildAgentInstanceChatHref({
@@ -204,8 +201,8 @@ function InstanceTableRow({
 		<TableRow className="group">
 			<TableCell className="py-2.5">
 				<div className="flex items-center gap-2.5 min-w-0">
-					<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-muted/40 text-muted-foreground">
-						<CategoryIcon className="h-3.5 w-3.5 text-primary" />
+					<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-muted/40 text-foreground/80">
+						<RobotIcon className="h-3.5 w-3.5" />
 					</div>
 					<Link
 						href={chatbotHref}

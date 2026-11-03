@@ -1,5 +1,14 @@
 # fabric-app
 
+## 1.16.38
+
+### Patch Changes
+
+- 370ccaf: Speed up simple attached-document questions in Genie, add a dedicated Agent Runtime page in Project Settings, redesign the Project Readiness checklist with direct editor actions, and align AI Agents directory icons with the sidebar navigation.
+- 370ccaf: Answer recommendations now search project context using the open questions, bug re-evaluation searches with the new information you provide, and a project context search query too long for the embedding model is shortened instead of returning no context.
+- 370ccaf: With the credential manager on, a GitHub or GitLab repository can run with a saved credential chosen from its menu, which replaces Reconnect and the token dialog there; the repository then uses only that credential.
+- 370ccaf: Fix an infinite 307 redirect loop on `/` and unprefixed marketing pages when the web server is bound to a loopback IP such as `127.0.0.1` or `::1`.
+
 ## 1.16.37
 
 ### Patch Changes

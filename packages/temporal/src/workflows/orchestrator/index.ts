@@ -40,6 +40,12 @@ import {
 } from "./advisor-history-retention";
 import { recordAdvisorTurnSummary } from "./advisor-request-log";
 import { installApprovalController } from "./approval-controller";
+import {
+	buildClarityUserMessage,
+	GROUNDED_ATTACHMENT_FASTPATH_PATCH,
+	isSimpleGroundedAttachmentQa,
+	resolveIntentUserMessage,
+} from "./attachment-fast-path";
 import { buildConversationSummary } from "./conversation-summary";
 import {
 	buildWorkflowOutput,
@@ -963,11 +969,26 @@ async function runOrchestratorExecution(
 			const upfrontClarificationEnabled =
 				patched("orchestrator-upfront-clarification-v1") &&
 				input.surface === "loom-orchestrator";
+			const fastAttachmentClarityGate =
+				upfrontClarificationEnabled &&
+				!isResuming &&
+				!state.cancelled &&
+				patched(GROUNDED_ATTACHMENT_FASTPATH_PATCH);
+			const skipClarityForGroundedAttachment =
+				fastAttachmentClarityGate &&
+				isSimpleGroundedAttachmentQa({
+					rawMessage: resolveIntentUserMessage(input),
+					hasCompleteInlineAttachments:
+						input.hasCompleteInlineAttachments,
+					executionMode: input.executionMode,
+				});
 			if (
 				upfrontClarificationEnabled &&
 				!isResuming &&
-				!state.cancelled
+				!state.cancelled &&
+				!skipClarityForGroundedAttachment
 			) {
+				updateProgress("routing", "Checking request details...");
 				// The prior turns MUST travel with the message. Each completed turn
 				// ends its execution, so without them this gate re-evaluates from a
 				// blank slate on later turns and re-asks what the user already answered
@@ -996,8 +1017,11 @@ async function runOrchestratorExecution(
 					patched("orchestrator-clarity-organization-context-v1")
 						? companyContextHint
 						: undefined;
+				const clarityMessage = fastAttachmentClarityGate
+					? buildClarityUserMessage(input, state.enrichedMessage)
+					: state.enrichedMessage || input.message;
 				const clarity = await analyzeIntentClarityActivity({
-					message: state.enrichedMessage || input.message,
+					message: clarityMessage,
 					conversationSummary: buildConversationSummary(
 						input.history,
 					),

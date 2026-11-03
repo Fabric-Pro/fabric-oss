@@ -158,6 +158,7 @@ export const updateRepoIntegrationBranchProcedure = tenantProtectedProcedure
 				integrationId: integration.id,
 				provider: integration.provider,
 				authMethod: integration.authMethod,
+				credentialId: integration.credentialId,
 				encryptedAccessToken: integration.encryptedAccessToken,
 				encryptedRefreshToken: integration.encryptedRefreshToken,
 				encryptedPat: integration.encryptedPat,

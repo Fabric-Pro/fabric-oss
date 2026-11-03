@@ -241,6 +241,38 @@ beforeEach(() => {
 	mocks.getProjectFunctionTagClause.mockResolvedValue("");
 });
 
+describe("reevaluateBugProcedure retrieval query", () => {
+	it.each([
+		[
+			"New evidence",
+			"New evidence Login button does nothing on first click Bug summary.",
+		],
+		[undefined, "Login button does nothing on first click Bug summary."],
+		["", "Login button does nothing on first click Bug summary."],
+		[" \t ", "Login button does nothing on first click Bug summary."],
+	])("uses new information when present: %s", async (newInfo, query) => {
+		mocks.getStoryById.mockResolvedValue(
+			bugStory({ description: "Bug summary." }),
+		);
+		mocks.generateObject.mockResolvedValue({
+			object: { needsMoreInfo: false, markdown: "Bug summary." },
+			usage: {},
+		});
+		await handlers.reevaluateBug({
+			input: {
+				projectId: PROJECT_ID,
+				storyId: STORY_ID,
+				organizationId: null,
+				newInfo,
+			},
+			context: ctx,
+		});
+		expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({ query, topK: 5 }),
+		);
+	});
+});
+
 describe("reevaluateBugProcedure attachment guard (spec §6, surface=reevaluate-bug)", () => {
 	it("happy path — model preserved every key, guard is a no-op and no warn fires", async () => {
 		const priorDescription = `Bug summary.\n\n![](${stubSignedUrl(KEY_1)})`;

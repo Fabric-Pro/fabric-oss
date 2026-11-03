@@ -222,42 +222,38 @@ export async function retrieveProjectContexts(
 			}`,
 		);
 
-		// Generate embedding for the query
-		const embeddingResult = await runWithAiCallPurpose(
-			AI_CALL_PURPOSES.projectRetrievalEmbedding,
-			() =>
-				generateEmbedding(
-					query,
-					withDefaultFeature(
-						{
-							conversationId: options.conversationId,
-							userId,
-							organizationId,
-							projectId,
-							tags: ["rag-query", "project-context"],
-							...options.usageOrigin,
-						},
-						"knowledge-search",
-					),
-				),
-		);
-
-		if (
-			!embeddingResult ||
-			!embeddingResult.embedding ||
-			embeddingResult.embedding.length === 0
-		) {
-			logger.warn("[Retrieval] Failed to generate query embedding");
-			return applySummary([]);
-		}
-
 		const searchResults = await searchProjectContextHits({
 			query,
+			embedQuery: async (boundedQuery) => {
+				const result = await runWithAiCallPurpose(
+					AI_CALL_PURPOSES.projectRetrievalEmbedding,
+					() =>
+						generateEmbedding(
+							boundedQuery,
+							withDefaultFeature(
+								{
+									conversationId: options.conversationId,
+									userId,
+									organizationId,
+									projectId,
+									tags: ["rag-query", "project-context"],
+									...options.usageOrigin,
+								},
+								"knowledge-search",
+							),
+						),
+				);
+				if (!result?.embedding?.length) {
+					logger.warn(
+						"[Retrieval] Failed to generate query embedding",
+					);
+				}
+				return result?.embedding ?? [];
+			},
 			fallbackOnSparseFailure: false,
 			projectId,
 			userId,
 			organizationId,
-			queryEmbedding: embeddingResult.embedding,
 			topK: searchTopK,
 			excludeDocumentChunks: true,
 			minSimilarity: similarityThreshold,

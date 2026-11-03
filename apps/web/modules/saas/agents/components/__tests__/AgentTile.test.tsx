@@ -52,6 +52,18 @@ describe("AgentTile", () => {
 		tile.click();
 		expect(onOpen).toHaveBeenCalledTimes(1);
 	});
+
+	it("always renders the shared RobotIcon mark even when a hero emoji is supplied", () => {
+		const { container } = render(
+			<AgentTile
+				name="Custom Backlog Agent"
+				emoji="🤖"
+				status={{ label: "Active", tone: "good" }}
+			/>,
+		);
+		expect(screen.queryByText("🤖")).not.toBeInTheDocument();
+		expect(container.querySelector("svg")).toBeInTheDocument();
+	});
 });
 
 describe("registryStatus", () => {

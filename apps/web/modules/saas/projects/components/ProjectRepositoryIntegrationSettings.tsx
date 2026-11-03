@@ -22,9 +22,11 @@ import {
 } from "@saas/jobs/hooks/use-project-job-progress";
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import { AttachRepositoryPatDialog } from "@saas/projects/components/AttachRepositoryPatDialog";
+import { ChooseRepositoryCredentialDialog } from "@saas/projects/components/ChooseRepositoryCredentialDialog";
 import { timeAgo } from "@saas/projects/components/test-cases/pipeline/pipeline-run";
 import { repositoryProviderSupportsReconnect } from "@saas/projects/lib/repo-reconnect-capability";
 import { getRepoStatusMeta } from "@saas/projects/lib/repo-status-meta";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -257,6 +259,7 @@ export function ProjectRepositoryIntegrationSettings({
 	qaEnabled = false,
 }: ProjectRepositoryIntegrationSettingsProps) {
 	const queryClient = useQueryClient();
+	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
 	const t = useTranslations("tooltips.projectSettings");
 	// Gate edit UI on the capability flag resolved via the permission matrix
 	// on the backend (see `get-project.ts`). Falls back to legacy role-string
@@ -1256,6 +1259,9 @@ export function ProjectRepositoryIntegrationSettings({
 										project.organizationId ?? null
 									}
 									onAttached={invalidateAll}
+									credentialManagerEnabled={
+										credentialManagerEnabled
+									}
 									statusUnavailable={statusUnavailable}
 									canManageIntegrations={
 										canManageIntegrations
@@ -1902,6 +1908,7 @@ export function IntegrationStatusRow({
 	indexingJob,
 	syncHealth = null,
 	onAttached,
+	credentialManagerEnabled = false,
 }: {
 	integration: {
 		id: string;
@@ -1924,6 +1931,8 @@ export function IntegrationStatusRow({
 		 * default for every repository.
 		 */
 		includedInCodeSearch?: boolean;
+		/** The credential-manager credential the repository runs with. */
+		credentialId?: string | null;
 	};
 	projectId: string;
 	organizationId: string | null;
@@ -1973,6 +1982,12 @@ export function IntegrationStatusRow({
 	} | null;
 	/** Called after the attach-PAT dialog successfully rebinds a credential. */
 	onAttached?: () => void;
+	/**
+	 * Whether the organization has the credential manager. Then a GitHub or
+	 * GitLab row chooses its credential there instead of offering Reconnect
+	 * and the PAT dialog.
+	 */
+	credentialManagerEnabled?: boolean;
 }) {
 	const [showFullReindexConfirm, setShowFullReindexConfirm] = useState(false);
 	// AC5 (Fizzy #2252): attaching a PAT to the existing row — the no-disconnect
@@ -2007,6 +2022,14 @@ export function IntegrationStatusRow({
 	const rowMenuReconnect =
 		canReconnect && integration.status !== "REPO_UNAVAILABLE";
 	const canEdit = !isLegacy && branchKnown;
+	const [credentialDialogOpen, setCredentialDialogOpen] = useState(false);
+	const credentialOrganizationId = organizationId;
+	const choosesCredential =
+		credentialManagerEnabled &&
+		!isLegacy &&
+		credentialOrganizationId !== null &&
+		(integration.provider === "GITHUB" ||
+			integration.provider === "GITLAB");
 	const repoLabel = `${integration.repositoryOwner}/${integration.repositoryName}`;
 
 	const [isEditingTag, setIsEditingTag] = useState(false);
@@ -2288,16 +2311,30 @@ export function IntegrationStatusRow({
 										? `: ${syncHealth.lastError}`
 										: ""}
 								</p>
-								{syncHealthReconnectFixes && (
+								{canManageIntegrations && choosesCredential ? (
 									<Button
 										type="button"
 										size="sm"
 										variant="outline"
 										className="h-6 px-2 text-xs"
-										onClick={onReconnect}
+										onClick={() =>
+											setCredentialDialogOpen(true)
+										}
 									>
-										Reconnect
+										Choose credential
 									</Button>
+								) : (
+									syncHealthReconnectFixes && (
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											className="h-6 px-2 text-xs"
+											onClick={onReconnect}
+										>
+											Reconnect
+										</Button>
+									)
 								)}
 							</div>
 						) : (
@@ -2370,7 +2407,17 @@ export function IntegrationStatusRow({
 							</Button>
 						</DropdownMenuTrigger>
 						<DropdownMenuContent align="end" className="w-44">
-							{rowMenuReconnect && (
+							{choosesCredential && (
+								<DropdownMenuItem
+									onClick={() =>
+										setCredentialDialogOpen(true)
+									}
+								>
+									<KeyIcon className="mr-2 size-4" />
+									Choose credential
+								</DropdownMenuItem>
+							)}
+							{rowMenuReconnect && !choosesCredential && (
 								<DropdownMenuItem onClick={onReconnect}>
 									<RefreshCwIcon className="mr-2 size-4" />
 									Reconnect
@@ -2382,7 +2429,7 @@ export function IntegrationStatusRow({
 									Edit branch
 								</DropdownMenuItem>
 							)}
-							{!isLegacy && (
+							{!isLegacy && !choosesCredential && (
 								// AC5 (Fizzy #2252): swap this row's credential for a
 								// validated PAT without disconnecting — THE remedy for
 								// a No-access row.
@@ -2461,6 +2508,25 @@ export function IntegrationStatusRow({
 					onReindex?.("full");
 				}}
 			/>
+			{credentialDialogOpen &&
+				credentialOrganizationId !== null &&
+				(integration.provider === "GITHUB" ||
+					integration.provider === "GITLAB") && (
+					<ChooseRepositoryCredentialDialog
+						open
+						onOpenChange={setCredentialDialogOpen}
+						integration={{
+							id: integration.id,
+							repositoryOwner: integration.repositoryOwner,
+							repositoryName: integration.repositoryName,
+							provider: integration.provider,
+							credentialId: integration.credentialId ?? null,
+						}}
+						projectId={projectId}
+						organizationId={credentialOrganizationId}
+						onSaved={() => onAttached?.()}
+					/>
+				)}
 			{patDialogOpen && (
 				<AttachRepositoryPatDialog
 					open

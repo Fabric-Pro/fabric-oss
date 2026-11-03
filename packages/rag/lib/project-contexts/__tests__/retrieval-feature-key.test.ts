@@ -23,7 +23,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/logs", () => ({
-	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 vi.mock("../../embedding", () => ({ generateEmbedding: vi.fn() }));
@@ -38,7 +38,10 @@ vi.mock("../summary-injection", () => ({
 	applyContextSummary: (list: unknown) => list,
 }));
 
+import { countTokens } from "../../chunking/tokenizer";
 import { generateEmbedding } from "../../embedding";
+import { MAX_TOKENS_PER_INPUT } from "../../embedding/limits";
+import { generateSparseVector } from "../../embedding/sparse";
 import { retrieveProjectContexts } from "../retrieval";
 import { searchSimilarProjectContexts } from "../store";
 
@@ -77,5 +80,34 @@ describe("retrieveProjectContexts feature key", () => {
 		expect(vi.mocked(generateEmbedding).mock.calls[0][1]).toMatchObject({
 			featureKey: "chat-agent",
 		});
+	});
+});
+
+describe("query length", () => {
+	it("bounds a long query and uses the same text for sparse encoding", async () => {
+		const query = "launch plan ".repeat(10000);
+		await retrieveProjectContexts({ ...OPTIONS, query });
+		const embedded = vi.mocked(generateEmbedding).mock.calls[0][0];
+		expect(embedded.length).toBeLessThan(query.length);
+		expect(countTokens(embedded)).toBeLessThanOrEqual(MAX_TOKENS_PER_INPUT);
+		expect(generateSparseVector).toHaveBeenCalledWith(embedded);
+	});
+	it("preserves a query at the embedding limit", async () => {
+		const query = " token".repeat(MAX_TOKENS_PER_INPUT);
+		expect(countTokens(query)).toBe(MAX_TOKENS_PER_INPUT);
+		await retrieveProjectContexts({ ...OPTIONS, query });
+		expect(generateEmbedding).toHaveBeenCalledWith(
+			query,
+			expect.anything(),
+		);
+		expect(generateSparseVector).toHaveBeenCalledWith(query);
+	});
+	it("preserves a short query for both encoders", async () => {
+		await retrieveProjectContexts(OPTIONS);
+		expect(generateEmbedding).toHaveBeenCalledWith(
+			OPTIONS.query,
+			expect.anything(),
+		);
+		expect(generateSparseVector).toHaveBeenCalledWith(OPTIONS.query);
 	});
 });

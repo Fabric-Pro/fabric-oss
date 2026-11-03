@@ -30,6 +30,14 @@ import type {
 	RagContextRetrievalInput,
 } from "@repo/temporal";
 import { PROJECT_REPOSITORY_TOOLS } from "@repo/temporal/project-repository-tool-schemas";
+import {
+	type AiChatAttachmentManifestEntry,
+	DEFAULT_EMPTY_ATTACHMENT_USER_MESSAGE,
+	DEFAULT_INLINE_ATTACHMENT_FASTPATH_MAX_CHARS,
+	formatInlineAiChatAttachmentSection,
+	inspectAiChatAttachmentEntry,
+	shouldSkipInlineAttachmentRag,
+} from "@repo/utils/ai-chat-attachment";
 import type { getSession } from "@saas/auth/lib/server";
 import { v4 as uuidv4 } from "uuid";
 import { seedCarriedOverHistory } from "../carried-over-context";
@@ -436,7 +444,23 @@ export async function resolveOrchestratorTurnRequest({
 		organizationId,
 	});
 
-	if (!requestedExecutionId && !message) {
+	const hasProvidedAttachments =
+		(Array.isArray(inlineAttachmentContexts) &&
+			inlineAttachmentContexts.some(
+				(entry: unknown) =>
+					typeof entry === "string" && entry.length > 0,
+			)) ||
+		(Array.isArray(attachedDocumentIds) &&
+			attachedDocumentIds.length > 0) ||
+		(Array.isArray(attachedImageUrls) && attachedImageUrls.length > 0);
+	const normalizedMessage =
+		typeof message === "string" && message.trim().length > 0
+			? message
+			: hasProvidedAttachments
+				? DEFAULT_EMPTY_ATTACHMENT_USER_MESSAGE
+				: message;
+
+	if (!requestedExecutionId && !normalizedMessage) {
 		return new Response(JSON.stringify({ error: "message is required" }), {
 			status: 400,
 			headers: { "Content-Type": "application/json" },
@@ -463,7 +487,7 @@ export async function resolveOrchestratorTurnRequest({
 		clientRequestKey: clientRequestKey.key,
 		continueFromTurnId,
 		executionMode,
-		message,
+		message: normalizedMessage,
 		requestedExecutionId,
 		workspaceIds,
 		projectId,
@@ -683,45 +707,74 @@ export async function buildOrchestratorWorkflowInput({
 		launchSurface,
 	} = request;
 
-	let messageWithDocumentContext = message ?? "";
+	const inlineEntries =
+		Array.isArray(inlineAttachmentContexts) &&
+		inlineAttachmentContexts.length > 0
+			? inlineAttachmentContexts
+					.filter(
+						(entry: unknown): entry is string =>
+							typeof entry === "string" &&
+							entry.length > 0 &&
+							entry.length <= MAX_INLINE_ATTACHMENT_CHARS,
+					)
+					.slice(0, MAX_INLINE_ATTACHMENTS)
+			: [];
+
+	const hasAnyAttachments =
+		inlineEntries.length > 0 ||
+		(Array.isArray(attachedDocumentIds) &&
+			attachedDocumentIds.length > 0) ||
+		(Array.isArray(attachedImageUrls) && attachedImageUrls.length > 0);
+	const rawUserMessage =
+		typeof message === "string" && message.trim().length > 0
+			? message
+			: hasAnyAttachments
+				? DEFAULT_EMPTY_ATTACHMENT_USER_MESSAGE
+				: (message ?? "");
+
+	let messageWithDocumentContext = rawUserMessage;
 
 	// Files the user attached this turn, delivered whole.
 	//
-	// Additive to the retrieval below, not a replacement for it. Retrieval
-	// returns the top five chunks above a similarity floor, so content
-	// reaches the model only if embedding finished, the query matched
-	// semantically, and the chunk ranked. Tab-joined spreadsheet rows embed
-	// poorly, which makes that least reliable for exactly the format this
-	// was built for. Inline gives completeness on a small file; retrieval
-	// still covers the part a character budget had to cut.
+	// Additive to the retrieval below when any attachment is truncated or
+	// missing inline, and sufficient on its own when server inspection proves
+	// every non-image attachment in this turn fits inline without truncation.
 	// The body is parsed by hand rather than through a zod schema, so the
 	// bounds the sibling direct-chat route gets declaratively have to be
 	// applied here. Count and per-entry length both: the client already
 	// applies the character budget, and this is the server declining to take
 	// its word for it.
-	if (
-		Array.isArray(inlineAttachmentContexts) &&
-		inlineAttachmentContexts.length > 0
-	) {
-		const entries = inlineAttachmentContexts
+	const inspectedInlineEntries = inlineEntries.map((entry) =>
+		inspectAiChatAttachmentEntry(entry),
+	);
+	const attachmentManifest: AiChatAttachmentManifestEntry[] =
+		inspectedInlineEntries
 			.filter(
-				(entry: unknown): entry is string =>
-					typeof entry === "string" &&
-					entry.length > 0 &&
-					entry.length <= MAX_INLINE_ATTACHMENT_CHARS,
+				(entry): entry is NonNullable<typeof entry> => entry !== null,
 			)
-			.slice(0, MAX_INLINE_ATTACHMENTS);
-		if (entries.length > 0) {
-			messageWithDocumentContext = `${messageWithDocumentContext}\n\n${entries.join("\n\n")}`;
-		}
+			.map(({ name, status }) => ({ name, status }));
+
+	if (inlineEntries.length > 0) {
+		messageWithDocumentContext = `${messageWithDocumentContext}\n\n${formatInlineAiChatAttachmentSection(inlineEntries)}`;
 	}
+
+	const uniqueAttachedDocumentIds = Array.isArray(attachedDocumentIds)
+		? Array.from(
+				new Set(
+					attachedDocumentIds.filter(
+						(id: unknown): id is string =>
+							typeof id === "string" && id.length > 0,
+					),
+				),
+			)
+		: [];
+
+	let skippedRagForCompleteInline = false;
 
 	if (
 		chatId &&
-		typeof message === "string" &&
-		message.trim().length > 0 &&
-		Array.isArray(attachedDocumentIds) &&
-		attachedDocumentIds.length > 0
+		rawUserMessage.trim().length > 0 &&
+		uniqueAttachedDocumentIds.length > 0
 	) {
 		try {
 			const chatTenantFilter = organizationId
@@ -733,33 +786,63 @@ export async function buildOrchestratorWorkflowInput({
 			});
 
 			if (chat) {
-				const workflowInput: RagContextRetrievalInput = {
-					usageConversationId: conversationId,
-					chatId: chat.id,
-					userId,
-					organizationId: chat.organizationId || undefined,
-					query: message,
-					topK: 5,
-					minSimilarity: 0.5,
-					documentIds: attachedDocumentIds,
-				};
-				const ragHandle = await temporalClient.workflow.start(
-					"ragContextRetrievalWorkflow",
-					{
-						taskQueue: "document-processing",
-						workflowId: `orchestrator-rag-${chat.id}-${Date.now()}-${uuidv4().slice(0, 8)}`,
-						args: [workflowInput],
-						workflowExecutionTimeout: "2m",
-					},
-				);
-				const ragResult = await ragHandle.result();
+				let nonImageDocumentCount = uniqueAttachedDocumentIds.length;
+				let verifiedAllAttachedDocs = true;
 
-				if (ragResult.success && ragResult.context) {
-					// Append to what is already here rather than rebuilding from
-					// `message`, which would drop the inline entries added
-					// above — the same overwrite-instead-of-join shape that
-					// discarded them inside the direct-chat workflow.
-					messageWithDocumentContext = `${messageWithDocumentContext}\n\n${ragResult.context}`;
+				if (typeof db.chatDocument?.findMany === "function") {
+					const chatDocs = await db.chatDocument.findMany({
+						where: {
+							chatId: chat.id,
+							userId,
+							id: { in: uniqueAttachedDocumentIds },
+						},
+						select: { id: true, mimeType: true },
+					});
+					verifiedAllAttachedDocs =
+						chatDocs.length === uniqueAttachedDocumentIds.length;
+					nonImageDocumentCount = chatDocs.filter(
+						(doc) =>
+							!doc.mimeType?.toLowerCase().startsWith("image/"),
+					).length;
+				}
+
+				skippedRagForCompleteInline =
+					verifiedAllAttachedDocs &&
+					shouldSkipInlineAttachmentRag({
+						rawMessage: rawUserMessage,
+						inlineEntries,
+						nonImageDocumentCount,
+					});
+
+				if (!skippedRagForCompleteInline) {
+					const ragInput: RagContextRetrievalInput = {
+						usageConversationId: conversationId,
+						chatId: chat.id,
+						userId,
+						organizationId: chat.organizationId || undefined,
+						query: rawUserMessage,
+						topK: 5,
+						minSimilarity: 0.5,
+						documentIds: uniqueAttachedDocumentIds,
+					};
+					const ragHandle = await temporalClient.workflow.start(
+						"ragContextRetrievalWorkflow",
+						{
+							taskQueue: "document-processing",
+							workflowId: `orchestrator-rag-${chat.id}-${Date.now()}-${uuidv4().slice(0, 8)}`,
+							args: [ragInput],
+							workflowExecutionTimeout: "2m",
+						},
+					);
+					const ragResult = await ragHandle.result();
+
+					if (ragResult.success && ragResult.context) {
+						// Append to what is already here rather than rebuilding from
+						// `message`, which would drop the inline entries added
+						// above — the same overwrite-instead-of-join shape that
+						// discarded them inside the direct-chat workflow.
+						messageWithDocumentContext = `${messageWithDocumentContext}\n\n${ragResult.context}`;
+					}
 				}
 			}
 		} catch (error) {
@@ -769,6 +852,28 @@ export async function buildOrchestratorWorkflowInput({
 			);
 		}
 	}
+
+	const extractedDocCharCount = inspectedInlineEntries.reduce(
+		(sum, entry) =>
+			entry?.status === "extracted" ? sum + entry.charCount : sum,
+		0,
+	);
+	const allInlineEntriesCleanAndComplete =
+		inlineEntries.length > 0 &&
+		inspectedInlineEntries.every((entry) => entry !== null) &&
+		inspectedInlineEntries.some((entry) => entry?.status === "extracted") &&
+		inspectedInlineEntries.every(
+			(entry) =>
+				entry?.status === "extracted" || entry?.status === "image",
+		) &&
+		extractedDocCharCount > 0 &&
+		extractedDocCharCount <= DEFAULT_INLINE_ATTACHMENT_FASTPATH_MAX_CHARS;
+
+	const hasCompleteInlineAttachments =
+		allInlineEntriesCleanAndComplete &&
+		(uniqueAttachedDocumentIds.length === 0 ||
+			skippedRagForCompleteInline ||
+			!chatId);
 
 	// Union default-enabled MCP config ids into the caller-restricted set
 	// so managed-default servers (e.g. Excalidraw, when `defaultEnabled`)
@@ -840,6 +945,13 @@ export async function buildOrchestratorWorkflowInput({
 	const workflowInput: OrchestratorWorkflowInput = {
 		executionId,
 		message: messageWithDocumentContext,
+		...(messageWithDocumentContext !== rawUserMessage
+			? { rawUserMessage }
+			: {}),
+		...(attachmentManifest.length > 0 ? { attachmentManifest } : {}),
+		...(hasCompleteInlineAttachments
+			? { hasCompleteInlineAttachments: true }
+			: {}),
 		history: effectiveHistory,
 		userId,
 		// A person typed this turn, so its AI steps may run on their own

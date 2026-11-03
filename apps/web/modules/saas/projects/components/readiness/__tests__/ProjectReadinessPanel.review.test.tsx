@@ -297,9 +297,11 @@ describe("a viewer who cannot edit the project", () => {
  * Staging QA follow-ups (Fizzy #2165).
  *
  * The colour assertions are the point of this block: the running theme resolves
- * `--primary` to a teal and `--secondary` to an emerald, so a panel that painted
- * NOT_READY with `primary` showed two greens and reproduced the very complaint
- * the salience work was for. These pin the token, not the pixel.
+ * `--primary` to an accent colour rather than status red, so painting NOT_READY
+ * status indicators with `primary` hid the blocker signal, while full-banner
+ * pink/amber washes turned a workspace checklist into an error banner. These
+ * pin semantic status tokens on the status dot and progress meter while keeping
+ * the card surface neutral.
  */
 describe("readiness level is painted with the right token", () => {
 	function panel() {
@@ -307,28 +309,75 @@ describe("readiness level is painted with the right token", () => {
 			'section[aria-label="Project readiness"]',
 		);
 	}
+	function statusDot() {
+		return document.querySelector('[data-testid="readiness-status-dot"]');
+	}
+	function progressFill() {
+		return document.querySelector('[role="progressbar"] > div');
+	}
 
-	it("paints a not-ready project with destructive, never primary", () => {
+	it("paints a not-ready project's status indicators with destructive, never primary, on a neutral card", () => {
 		mountWith([item()], { level: "NOT_READY" });
-		const cls = panel()?.className ?? "";
-		expect(cls).toContain("border-l-destructive");
-		expect(cls).toContain("bg-destructive/10");
-		expect(cls).not.toContain("primary");
+		const panelCls = panel()?.className ?? "";
+		expect(panelCls).toContain("bg-card");
+		expect(panelCls).not.toContain("bg-destructive/10");
+		expect(panelCls).not.toContain("primary");
+
+		const dotCls = statusDot()?.className ?? "";
+		const fillCls = progressFill()?.className ?? "";
+		expect(dotCls).toContain("bg-destructive");
+		expect(dotCls).not.toContain("primary");
+		expect(fillCls).toContain("bg-destructive");
+		expect(fillCls).not.toContain("primary");
 	});
 
-	it("tints a partially-ready project amber", () => {
+	it("paints a partially-ready project's status indicators amber on a neutral card", () => {
 		mountWith([item()], { level: "PARTIALLY_READY" });
-		const cls = panel()?.className ?? "";
-		expect(cls).toContain("border-l-highlight");
-		expect(cls).toContain("bg-highlight/10");
+		const panelCls = panel()?.className ?? "";
+		expect(panelCls).toContain("bg-card");
+		expect(panelCls).not.toContain("bg-highlight/10");
+
+		expect(statusDot()?.className ?? "").toContain("bg-highlight");
+		expect(progressFill()?.className ?? "").toContain("bg-highlight");
 	});
 
-	it("leaves a ready project untinted — it has nothing to ask for", () => {
+	it("paints a ready project's status indicators emerald on a neutral card", () => {
 		mountWith([item()], { level: "READY" });
-		const cls = panel()?.className ?? "";
-		expect(cls).toContain("bg-muted/40");
-		expect(cls).not.toContain("bg-destructive");
-		expect(cls).not.toContain("bg-highlight");
+		const panelCls = panel()?.className ?? "";
+		expect(panelCls).toContain("bg-card");
+		expect(panelCls).not.toContain("bg-destructive");
+		expect(panelCls).not.toContain("bg-highlight");
+
+		expect(statusDot()?.className ?? "").toContain("bg-success");
+		expect(progressFill()?.className ?? "").toContain("bg-success");
+	});
+
+	it("spotlights required (MUST) gaps with a Required badge and primary CTA while keeping SHOULD rows free of tier-badge noise", () => {
+		mountWith([
+			item({
+				key: "prd",
+				i18nKey: "readiness.items.prd",
+				ctaLabelKey: "readiness.cta.prd",
+				needLevel: "MUST",
+			}),
+			item({
+				key: "feature-snapshot",
+				i18nKey: "readiness.items.featureSnapshot",
+				ctaLabelKey: "readiness.cta.featureSnapshot",
+				needLevel: "SHOULD",
+			}),
+		]);
+
+		expect(screen.getByText("Required")).toBeInTheDocument();
+		expect(screen.queryByText("Recommended")).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(/Snooze what is early/i),
+		).not.toBeInTheDocument();
+
+		const mustCta = screen.getByRole("link", { name: "Create PRD" });
+		const shouldCta = screen.getByRole("link", { name: "Define Features" });
+		expect(mustCta.className).toContain("bg-primary");
+		expect(shouldCta.className).not.toContain("bg-primary");
 	});
 });
 
@@ -349,8 +398,8 @@ describe("recently completed", () => {
 	});
 });
 
-describe("pointing at the destination", () => {
-	function listen() {
+describe("direct destination actions instead of coach-mark tours", () => {
+	function listenSpotlights() {
 		const events: Array<{ anchorId: string; projectTab?: string }> = [];
 		const listener = (e: Event) => {
 			events.push((e as CustomEvent).detail);
@@ -363,27 +412,44 @@ describe("pointing at the destination", () => {
 		};
 	}
 
-	it("spotlights the destination when the item's own action is used", async () => {
+	it("dispatches a direct section-edit action without firing a spotlight tour when Define Features is clicked", async () => {
 		const user = userEvent.setup();
-		const { events, stop } = listen();
+		const { events: spotlights, stop } = listenSpotlights();
+		const directActions: Array<{
+			projectId: string;
+			action: { kind: string; section?: string };
+		}> = [];
+		const onAction = (e: Event) => {
+			directActions.push((e as CustomEvent).detail);
+		};
+		window.addEventListener("fabric:project-readiness-action", onAction);
 
-		// The default fixture is feature-snapshot, whose anchor is on Overview.
-		mountWith([item()]);
-		await user.click(screen.getByText("Define Features"));
+		try {
+			mountWith([item()]);
+			const link = screen.getByRole("link", { name: "Define Features" });
+			link.addEventListener("click", (e) => e.preventDefault());
+			await user.click(link);
 
-		stop();
-		expect(events).toHaveLength(1);
-		expect(events[0].anchorId).toBe("overview-feature-snapshot");
-		expect(events[0].projectTab).toBe("overview");
+			expect(spotlights).toHaveLength(0);
+			expect(directActions).toEqual([
+				{
+					projectId: "p1",
+					action: { kind: "edit-overview", section: "features" },
+				},
+			]);
+		} finally {
+			stop();
+			window.removeEventListener(
+				"fabric:project-readiness-action",
+				onAction,
+			);
+			sessionStorage.clear();
+		}
 	});
 
-	/**
-	 * An item with no anchor navigates quietly. Better than a callout aimed at
-	 * the wrong part of the page.
-	 */
-	it("stays silent for an item with nothing to point at", async () => {
+	it("stays silent on spotlight events for items without inline editors", async () => {
 		const user = userEvent.setup();
-		const { events, stop } = listen();
+		const { events, stop } = listenSpotlights();
 
 		mountWith([
 			item({
@@ -391,7 +457,9 @@ describe("pointing at the destination", () => {
 				ctaLabelKey: "readiness.cta.teamMembers",
 			}),
 		]);
-		await user.click(screen.getByText("Add Members"));
+		const link = screen.getByRole("link", { name: "Add Members" });
+		link.addEventListener("click", (e) => e.preventDefault());
+		await user.click(link);
 
 		stop();
 		expect(events).toHaveLength(0);

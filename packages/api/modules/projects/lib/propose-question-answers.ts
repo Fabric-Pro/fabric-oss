@@ -170,13 +170,19 @@ export async function proposeQuestionAnswers({
 	}
 
 	try {
-		// Same primary signal as the clean-spec build: RAG keyed off the feature.
+		// Prioritize the feature title and open questions before the description.
 		// Best-effort — a retrieval miss just means a spec-only recommendation.
 		let context: string | null = null;
 		try {
 			const contexts = await retrieveProjectContexts({
 				projectId: feature.projectId,
-				query: `${feature.title} ${feature.description ?? ""}`.trim(),
+				query: [
+					feature.title,
+					...questions.map((q) => q.question),
+					feature.description ?? "",
+				]
+					.join(" ")
+					.trim(),
 				userId: tenantFilter.userId,
 				organizationId: tenantFilter.organizationId ?? undefined,
 				topK: 5,

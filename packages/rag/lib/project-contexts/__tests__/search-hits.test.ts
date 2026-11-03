@@ -204,7 +204,11 @@ it("falls back on encoder errors for activities while retaining the main path's 
 	vi.mocked(generateSparseVector).mockImplementation(() => {
 		throw error;
 	});
-	const options = { ...tenant, query: "launch", queryEmbedding: [0.1] };
+	const options = {
+		...tenant,
+		query: "launch",
+		embedQuery: async () => [0.1],
+	};
 	await expect(searchProjectContextHits(options)).resolves.toEqual([]);
 	expect(searchSimilarProjectContexts).toHaveBeenCalledWith({
 		...tenant,

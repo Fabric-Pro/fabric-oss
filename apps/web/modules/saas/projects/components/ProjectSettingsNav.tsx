@@ -12,6 +12,7 @@ import {
 	ListTodoIcon,
 	MailIcon,
 	MegaphoneIcon,
+	ServerCogIcon,
 	SettingsIcon,
 	SparklesIcon,
 	UsersIcon,
@@ -27,6 +28,7 @@ export type SettingsTab =
 	| "knowledge"
 	| "development"
 	| "project-management"
+	| "agent-runtime"
 	| "members"
 	| "retrieval"
 	| "environments"
@@ -78,13 +80,19 @@ const TABS: TabItem[] = [
 		id: "development",
 		label: "Development",
 		icon: WorkflowIcon,
-		description: "Repos, local dev",
+		description: "Repositories & Git",
 	},
 	{
 		id: "project-management",
 		label: "Project Management",
 		icon: ListTodoIcon,
 		description: "PM tool connection & field mapping",
+	},
+	{
+		id: "agent-runtime",
+		label: "Agent Runtime",
+		icon: ServerCogIcon,
+		description: "Desktop, remote servers, harness",
 	},
 	{
 		id: "members",

@@ -177,6 +177,7 @@ export async function listProjectRepoIntegrations(projectId: string) {
 			roleTag: true,
 			includedInCodeSearch: true,
 			tokenScopes: true,
+			credentialId: true,
 			status: true,
 			lastHealthCheck: true,
 			lastError: true,
@@ -620,6 +621,8 @@ export interface ProjectRepoForCodeSearch {
 	encryptedPat: string | null;
 	azureOrganization: string | null;
 	authMethod: RepositoryAuthMethod;
+	/** A credential-manager credential; when set, the only one used. */
+	credentialId: string | null;
 }
 
 /**
@@ -653,6 +656,7 @@ export async function getProjectReposForCodeSearch(
 			encryptedPat: true,
 			azureOrganization: true,
 			authMethod: true,
+			credentialId: true,
 		},
 	});
 
@@ -674,6 +678,7 @@ export async function getProjectReposForCodeSearch(
 		encryptedPat: i.encryptedPat,
 		azureOrganization: i.azureOrganization,
 		authMethod: i.authMethod,
+		credentialId: i.credentialId,
 	}));
 }
 
@@ -715,6 +720,7 @@ export async function getProjectReposForPipelineSync(
 			encryptedPat: true,
 			azureOrganization: true,
 			authMethod: true,
+			credentialId: true,
 		},
 	});
 
@@ -735,6 +741,7 @@ export async function getProjectReposForPipelineSync(
 		encryptedPat: i.encryptedPat,
 		azureOrganization: i.azureOrganization,
 		authMethod: i.authMethod,
+		credentialId: i.credentialId,
 	}));
 }
 

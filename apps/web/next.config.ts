@@ -7,6 +7,7 @@ import { withMicrofrontends } from "@vercel/microfrontends/next/config";
 import type { NextConfig } from "next";
 import nextIntlPlugin from "next-intl/plugin";
 import { cliManifestEnv } from "./lib/cli-manifest-env";
+import { buildLocaleBeforeFilesRewrites } from "./lib/locale-rewrite";
 
 const withNextIntl = nextIntlPlugin("./modules/i18n/request.ts");
 
@@ -732,6 +733,11 @@ const nextConfig: NextConfig = {
 				hostname: "supabase.com",
 			},
 		],
+	},
+	async rewrites() {
+		return {
+			beforeFiles: buildLocaleBeforeFilesRewrites(),
+		};
 	},
 	async redirects() {
 		return [

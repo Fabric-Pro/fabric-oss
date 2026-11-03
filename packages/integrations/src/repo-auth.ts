@@ -75,6 +75,7 @@
 import {
 	createRepoIntegrationCredentialNotification,
 	db,
+	isFeatureEnabled,
 	setIntegrationStatus,
 } from "@repo/database";
 import type {
@@ -82,6 +83,7 @@ import type {
 	RepositoryProvider,
 } from "@repo/database/prisma/zod";
 import { decryptApiKey } from "@repo/utils";
+import { resolveCredential } from "./credential-manager";
 import {
 	type BeforeExchange,
 	isExchangeRefusal,
@@ -281,6 +283,67 @@ async function resolveValidGitLabToken(
 	}
 }
 
+/** Kinds a repository can be read and written with. */
+export const REPOSITORY_CREDENTIAL_KINDS = [
+	"PAT",
+	"OAUTH",
+	"GITHUB_APP_USER",
+] as const;
+
+/**
+ * The token of the credential-manager credential a repository is bound to
+ * (ADR-026). It runs as the system for the repository's organization: who may
+ * use it was checked when it was bound. A credential that cannot be used
+ * (deleted, revoked, needs re-authorization) gives no token; the stored
+ * token columns are never tried instead.
+ */
+async function resolveBoundRepoCredential(input: {
+	integrationId: string;
+	provider: RepositoryProvider;
+	credentialId: string;
+}): Promise<ResolvedRepoToken> {
+	const integration = await db.projectRepositoryIntegration.findUnique({
+		where: { id: input.integrationId },
+		select: { project: { select: { organizationId: true } } },
+	});
+	const organizationId = integration?.project.organizationId;
+	// Bound credentials are used only while the credential manager is on.
+	if (
+		!organizationId ||
+		!(await isFeatureEnabled("CREDENTIAL_MANAGER", organizationId).catch(
+			() => false,
+		))
+	) {
+		return {
+			token: null,
+			authMethod: null,
+			provider: input.provider,
+			credentialFault: "ABSENT",
+		};
+	}
+	const resolved = await resolveCredential({
+		credentialId: input.credentialId,
+		actor: { type: "system", organizationId },
+		requirement: {
+			provider: input.provider,
+			kinds: REPOSITORY_CREDENTIAL_KINDS,
+		},
+	}).catch(() => null);
+	if (!resolved?.ok) {
+		return {
+			token: null,
+			authMethod: null,
+			provider: input.provider,
+			credentialFault: "ABSENT",
+		};
+	}
+	return {
+		token: resolved.value.token,
+		authMethod: resolved.value.credential.kind === "PAT" ? "PAT" : "OAUTH",
+		provider: input.provider,
+	};
+}
+
 /**
  * A stored access token expiring within this window counts as near-expiry and
  * is proactively refreshed. Matches the buffer the project-repo refresh helper
@@ -299,6 +362,8 @@ export interface RepoCredentialRow {
 	integrationId: string;
 	provider: RepositoryProvider;
 	authMethod: RepositoryAuthMethod;
+	/** A credential-manager credential; when set, the only one used. */
+	credentialId: string | null;
 	encryptedAccessToken: string | null;
 	encryptedRefreshToken: string | null;
 	encryptedPat: string | null;
@@ -425,6 +490,15 @@ export async function resolveFreshRepoTokenForRow(
 ): Promise<ResolvedRepoToken> {
 	const { provider, authMethod } = row;
 
+	if (row.credentialId) {
+		stopIfAborted(ctx?.signal);
+		return resolveBoundRepoCredential({
+			integrationId: row.integrationId,
+			provider,
+			credentialId: row.credentialId,
+		});
+	}
+
 	if (authMethod === "PAT") {
 		return { ...decryptedField(row.encryptedPat), authMethod, provider };
 	}
@@ -533,6 +607,7 @@ export async function resolveFreshRepoToken(input: {
 		select: {
 			provider: true,
 			authMethod: true,
+			credentialId: true,
 			encryptedAccessToken: true,
 			encryptedRefreshToken: true,
 			encryptedPat: true,
@@ -582,12 +657,20 @@ export async function forceReExchangeRepoCredentials(input: {
 			select: {
 				provider: true,
 				authMethod: true,
+				credentialId: true,
 				encryptedRefreshToken: true,
 				updatedAt: true,
 			},
 		});
 		stopIfAborted(input.signal);
-		if (!row || row.authMethod !== "OAUTH" || !row.encryptedRefreshToken) {
+		// A bound credential is refreshed by the credential manager; the
+		// stored grant is not the one in use.
+		if (
+			!row ||
+			row.credentialId ||
+			row.authMethod !== "OAUTH" ||
+			!row.encryptedRefreshToken
+		) {
 			return { refreshed: false };
 		}
 		if (row.provider === "GITHUB") {
