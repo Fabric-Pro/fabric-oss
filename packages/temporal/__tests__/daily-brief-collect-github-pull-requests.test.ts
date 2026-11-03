@@ -87,6 +87,7 @@ function ghRepo(integrationId: string, fullName: string): RepoIntegrationRow {
 		encryptedPat: null,
 		azureOrganization: null,
 		authMethod: "OAUTH",
+		includedInCodeSearch: true,
 	};
 }
 

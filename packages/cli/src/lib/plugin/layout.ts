@@ -28,6 +28,10 @@
 
 import { pluginPathFor, projectRulePathFor } from "@fabricorg/sdk";
 import {
+	CHANGE_INSTRUCTIONS_SKILL,
+	changeInstructionsSkill,
+} from "./change-instructions.js";
+import {
 	INSTRUCTION_ACCESS_SKILL,
 	INSTRUCTION_CATALOG,
 	type InstructionCatalogEntry,
@@ -36,6 +40,14 @@ import {
 	instructionAccessSkill,
 	instructionCatalog,
 } from "./instruction-access.js";
+import {
+	KNOWLEDGE_SKILL,
+	type KnowledgeTypes,
+	knowledgeSkill,
+} from "./knowledge.js";
+import { assignedPluginName } from "./plugin-names.js";
+import type { OnDemandRule } from "./rules.js";
+import { RULES_SKILL, rulesSkill } from "./rules-skill.js";
 
 // The mapping is shared with the server, which reports what a plugin leaves
 // out in the Coding Instructions tab; the CLI's own tests keep pinning it here.
@@ -73,7 +85,7 @@ export type MemoryFolders =
 export const SESSION_CONTEXT_LIMIT = 10_000;
 
 /** Bumped when the layout changes, so the same pin renders to a new folder. */
-export const RENDER_VERSION = 6;
+export const RENDER_VERSION = 7;
 
 /**
  * The name of the MCP server in a Claude Code plugin. Claude Code lists a
@@ -113,7 +125,16 @@ export function codexPluginVersion(pin: string): string {
 	return `0.0.0-${pin}`;
 }
 
+/**
+ * The project's plugin name on this machine: the readable name chosen at
+ * set-up (`plugin-names.ts`), else the id-based one.
+ */
 export function pluginNameFor(projectId: string): string {
+	return assignedPluginName(projectId) ?? idPluginName(projectId);
+}
+
+/** The id-based name every plugin had before readable names: `fabric-<id tail>`. */
+export function idPluginName(projectId: string): string {
 	const tail = projectId
 		.toLowerCase()
 		.replace(/[^a-z0-9]/g, "")
@@ -223,7 +244,7 @@ function livingMemorySkill(memory: MemoryFolders, tool: PluginTool): string {
 	const header = [
 		"---",
 		`name: ${LIVING_MEMORY_SKILL}`,
-		"description: Where to write specs, task breakdowns and working notes for this project so they reach its repository through Fabric. Use it whenever you are about to save planning or memory files.",
+		`description: Where to put files that must live in this project's repository (when the user asks for files in the repo). For notes, specs, decisions and other knowledge, use ${KNOWLEDGE_SKILL} instead.`,
 		"---",
 		"",
 		"# Fabric Living Memory",
@@ -268,8 +289,22 @@ export function descriptionFor(projectId: string, gatewayUrl: string): string {
 }
 
 /** The project's MCP gateway as a plugin's MCP configuration. */
-function mcpConfiguration(serverName: string, url: string): Uint8Array {
-	return json({ mcpServers: { [serverName]: { type: "http", url } } });
+function mcpConfiguration(
+	serverName: string,
+	url: string,
+	headersHelper?: string,
+): Uint8Array {
+	return json({
+		mcpServers: {
+			[serverName]: {
+				type: "http",
+				url,
+				// Claude Code asks this command for the Authorization header at
+				// every connection, so the server needs no `/mcp` sign-in.
+				...(headersHelper ? { headersHelper } : {}),
+			},
+		},
+	});
 }
 
 export interface PluginInputs {
@@ -277,8 +312,14 @@ export interface PluginInputs {
 	projectId: string;
 	files: readonly InstructionFile[];
 	memory: MemoryFolders;
+	/** The project's knowledge type catalog, for the fabric-knowledge skill. */
+	knowledge: KnowledgeTypes;
 	/** The project's MCP gateway URL. */
 	gatewayUrl: string;
+	/** Claude Code only: the command that prints the gateway's Authorization header. */
+	mcpHeadersHelper?: string;
+	/** Rules not delivered at session start, indexed by the fabric-rules skill. */
+	onDemandRules?: readonly OnDemandRule[];
 	/** Distinguishes one render from another in the manifest of a Codex plugin. */
 	pin: string;
 	/** Complete source metadata and identity, independent of the render hash. */
@@ -312,7 +353,13 @@ export function buildPlugin(inputs: PluginInputs): PluginFile[] {
 					: nativeTarget;
 		if (
 			target === null ||
-			[LIVING_MEMORY_SKILL, INSTRUCTION_ACCESS_SKILL].some((reserved) =>
+			[
+				LIVING_MEMORY_SKILL,
+				INSTRUCTION_ACCESS_SKILL,
+				KNOWLEDGE_SKILL,
+				CHANGE_INSTRUCTIONS_SKILL,
+				RULES_SKILL,
+			].some((reserved) =>
 				target.toLowerCase().startsWith(`skills/${reserved}/`),
 			)
 		) {
@@ -332,6 +379,26 @@ export function buildPlugin(inputs: PluginInputs): PluginFile[] {
 	put(
 		`skills/${LIVING_MEMORY_SKILL}/SKILL.md`,
 		bytesOf(livingMemorySkill(inputs.memory, inputs.tool)),
+	);
+	put(
+		`skills/${CHANGE_INSTRUCTIONS_SKILL}/SKILL.md`,
+		bytesOf(changeInstructionsSkill(inputs.tool, inputs.projectId)),
+	);
+	put(
+		`skills/${KNOWLEDGE_SKILL}/SKILL.md`,
+		bytesOf(
+			knowledgeSkill(inputs.knowledge, inputs.tool, inputs.projectId),
+		),
+	);
+	put(
+		`skills/${RULES_SKILL}/SKILL.md`,
+		bytesOf(
+			rulesSkill(
+				inputs.onDemandRules ?? [],
+				inputs.tool,
+				inputs.projectId,
+			),
+		),
 	);
 	put(
 		`skills/${INSTRUCTION_ACCESS_SKILL}/SKILL.md`,
@@ -363,7 +430,11 @@ export function buildPlugin(inputs: PluginInputs): PluginFile[] {
 		);
 		put(
 			".mcp.json",
-			mcpConfiguration(CLAUDE_PLUGIN_MCP_SERVER, inputs.gatewayUrl),
+			mcpConfiguration(
+				CLAUDE_PLUGIN_MCP_SERVER,
+				inputs.gatewayUrl,
+				inputs.mcpHeadersHelper,
+			),
 		);
 		const always = alwaysOnFile(inputs.files);
 		const guidance = instructionAccessBootstrap(name, inputs.tool);

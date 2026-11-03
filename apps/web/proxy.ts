@@ -337,7 +337,7 @@ export const config = {
 	// bare prefix also skipped /mcp-registry, which then 404'd because only the
 	// locale rewrite reaches (marketing)/[locale]/mcp-registry.
 	matcher: [
-		"/((?!api|mcp(?:/|$)|\\.well-known|cli/|image-proxy|images|integrations|fonts|fabric-web-assets|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|robots.txt|llms\\.txt|llms-full\\.txt).*)",
+		"/((?!api|mcp(?:/|$)|\\.well-known|cli/|image-proxy|images|integrations|fonts|fabric-web-assets|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|docs-sitemap\\.xml|robots.txt|llms\\.txt|llms-full\\.txt).*)",
 		// Microfrontends: the flag needs to see these to route them (see
 		// MICROFRONTENDS_ONLY_PATHS); the pattern above skips them. It also
 		// skips /fabric-web-assets, fabric-web's asset prefix, which Vercel

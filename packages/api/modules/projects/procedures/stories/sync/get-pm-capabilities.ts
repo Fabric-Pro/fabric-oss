@@ -5,6 +5,12 @@ import {
 	readPmServerIdKeySentinel,
 } from "@repo/database";
 import {
+	gitHubProjectsCredentialMessage,
+	readPmCredentialId,
+	resolveGitHubProjectsCredential,
+} from "@repo/integrations/github/projects-credential";
+import { isGitHubProjectsKey } from "@repo/integrations/github/projects-pm-adapter";
+import {
 	findUsableGitLabConnection,
 	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
 	GITLAB_REST_CAPABILITIES,
@@ -202,6 +208,33 @@ export const getPMCapabilitiesProcedure = tenantProtectedProcedure
 		if (!userMcpConfig && project.projectManagementMcpServerId) {
 			// Reuse the memoized resolver (sentinel → inline, catalog id → DB).
 			const serverKey = await getProjectServerKey();
+			// GitHub Projects (REST): the credential the project chose in the
+			// credential manager, else the caller's own GitHub connection.
+			if (isGitHubProjectsKey(serverKey)) {
+				const credential = await resolveGitHubProjectsCredential(
+					user.id,
+					project.organizationId ?? null,
+					readPmCredentialId(
+						project.projectManagementAdditionalContext,
+					),
+				);
+				const {
+					canFetch: _canFetchInternalOnly,
+					...publicCapabilities
+				} = GITLAB_REST_CAPABILITIES;
+				return {
+					configured: true,
+					capabilities: credential.ok ? publicCapabilities : null,
+					containerName: project.projectManagementContainerName,
+					detectedType: "github",
+					mcpConfigId: null,
+					containerId: project.projectManagementContainerId,
+					additionalContext,
+					error: credential.ok
+						? null
+						: gitHubProjectsCredentialMessage(credential.reason),
+				};
+			}
 			if (serverKey === "gitlab-official") {
 				// The caller's own usable GitLab connection (exclusive tenant); a
 				// reconnect-required connection, or a legacy `gitlab-official` MCP

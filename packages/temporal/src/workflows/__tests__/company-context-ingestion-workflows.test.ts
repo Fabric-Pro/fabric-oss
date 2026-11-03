@@ -139,6 +139,8 @@ vi.mock("@repo/rag", () => ({
 	embedProjectContext: mocks.embedProjectContext,
 	embedCompanyContext: mocks.embedCompanyContext,
 	getCompanyChunkSettings: mocks.getCompanyChunkSettings,
+	parseChunkProfilesConfig: () => ({}),
+	usesPerTypeChunking: () => false,
 	resolveCompanyEmbeddingModel: mocks.resolveCompanyEmbeddingModel,
 	unsupportedEmbeddingModelMessage: (model: { identity: string }) =>
 		`Unsupported embedding model: ${model.identity}`,

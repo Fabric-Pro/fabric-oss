@@ -6,8 +6,8 @@ vi.mock("@temporalio/workflow", () => ({
 }));
 
 import {
-	secondaryUsageOriginFields,
 	secondaryUsageOptionArgs,
+	secondaryUsageOriginFields,
 	usageOriginFields,
 } from "../workflow-usage-attribution";
 

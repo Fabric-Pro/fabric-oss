@@ -58,6 +58,7 @@ describe("the MCP gateway docs", () => {
 	it("finds the instruction tools the gateway serves", () => {
 		expect(instructionToolNames()).toEqual([
 			"fabric_add_instruction_lesson",
+			"fabric_change_instructions",
 			"fabric_get_project_instruction",
 			"fabric_get_project_instruction_bundle",
 			"fabric_instruction_checks",
@@ -397,7 +398,8 @@ describe("the MCP gateway docs", () => {
 	});
 
 	it("never claims the gateway can publish", () => {
-		expect(REFERENCE).toMatch(/no scope and no argument that publishes/);
+		expect(REFERENCE).toMatch(/No argument publishes from the gateway/);
+		expect(REFERENCE).toMatch(/The gateway honours it in one place only/);
 		expect(GUIDE).toMatch(
 			/Only a person with permission to edit coding instructions/,
 		);

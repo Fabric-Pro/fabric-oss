@@ -184,6 +184,12 @@ interface InitLineArgs {
 	baseUrl: string | null;
 	tool: LocalSetupTool;
 	projectId: string;
+	/**
+	 * Clone the project's code repositories into `repos/<name>` in the same
+	 * go (`--repos`), or say no up front (`--no-repos`) so the CLI does not
+	 * ask. Omitted: the line carries neither.
+	 */
+	repos?: boolean;
 }
 
 /**
@@ -207,7 +213,7 @@ function joinInitLine(
 	args: InitLineArgs,
 	mode: { clone: string | null; plugin?: true },
 ): string {
-	const { tarballUrl, baseUrl, tool, projectId } = args;
+	const { tarballUrl, baseUrl, tool, projectId, repos } = args;
 	return [
 		"npx -y",
 		quoteShellArgIfNeeded(tarballUrl),
@@ -218,17 +224,29 @@ function joinInitLine(
 		`--project ${quoteShellArgIfNeeded(projectId)}`,
 		`--tool ${tool}`,
 		...(mode.plugin ? ["--plugin"] : []),
+		// Claude Code's MCP server then needs no /mcp sign-in (headersHelper).
+		...(mode.plugin && tool === "claude-code" ? ["--mcp-sign-in"] : []),
 		...(mode.clone === null
 			? []
 			: [`--clone ${cloneArgument(mode.clone)}`]),
+		...(repos === undefined ? [] : [repos ? "--repos" : "--no-repos"]),
 	].join(" ");
 }
 
 /**
- * The plugin's name, as the CLI names it (`pluginNameFor`): `fabric-` and the
- * last eight letters and digits of the project's id.
+ * The plugin's name as the CLI chooses it on a first set-up
+ * (`plugin-names.ts`): the project's name as a slug (`slotik`), else
+ * `fabric-` and the last eight letters and digits of the project's id. A
+ * plugin installed before readable names keeps its id-based name.
  */
-export function pluginNameForProject(projectId: string): string {
+export function pluginNameForProject(
+	projectId: string,
+	projectName?: string | null,
+): string {
+	const slug = projectName ? slugForPlugin(projectName) : null;
+	if (slug !== null) {
+		return slug;
+	}
 	const tail = projectId
 		.toLowerCase()
 		.replace(/[^a-z0-9]/g, "")
@@ -241,8 +259,11 @@ export function pluginNameForProject(projectId: string): string {
  * `plugin:<plugin>:<server>`, and the CLI names the server `fabric`
  * (`CLAUDE_PLUGIN_MCP_SERVER`).
  */
-export function claudePluginMcpServerLabel(projectId: string): string {
-	return `plugin:${pluginNameForProject(projectId)}:fabric`;
+export function claudePluginMcpServerLabel(
+	projectId: string,
+	projectName?: string | null,
+): string {
+	return `plugin:${pluginNameForProject(projectId, projectName)}:fabric`;
 }
 
 /**
@@ -252,8 +273,11 @@ export function claudePluginMcpServerLabel(projectId: string): string {
  * it will run and asks once; it accepts the answer only from the person's own
  * terminal.
  */
-export function claudePluginInstallCommand(projectId: string): string {
-	const name = pluginNameForProject(projectId);
+export function claudePluginInstallCommand(
+	projectId: string,
+	projectName?: string | null,
+): string {
+	const name = pluginNameForProject(projectId, projectName);
 	return `claude plugin install ${name}@${name} --scope local`;
 }
 
@@ -263,8 +287,11 @@ export function claudePluginInstallCommand(projectId: string): string {
  * unless the person's own marketplace file has another name; then the setup
  * prints the line with that name.
  */
-export function codexPluginAddCommand(projectId: string): string {
-	return `codex plugin add ${pluginNameForProject(projectId)}@personal`;
+export function codexPluginAddCommand(
+	projectId: string,
+	projectName?: string | null,
+): string {
+	return `codex plugin add ${pluginNameForProject(projectId, projectName)}@personal`;
 }
 
 /**
@@ -375,4 +402,21 @@ export function gitCredentialHelp(
 			return unreachable;
 		}
 	}
+}
+
+/** The CLI's `slugForPlugin` (`plugin-names.ts`): keep the two in step. */
+function slugForPlugin(projectName: string): string | null {
+	const slug = projectName
+		.normalize("NFKD")
+		.replace(/\p{M}+/gu, "")
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 32)
+		.replace(/-+$/g, "");
+	return slug.length >= 2 &&
+		/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])$/.test(slug) &&
+		!slug.includes("--")
+		? slug
+		: null;
 }

@@ -1,24 +1,23 @@
 /**
  * Whether anything will ever index a project's repositories.
  *
- * Two switches, both required: the deployment's `FEATURE_CODE_INDEXING` and
- * the project's own `codeSearchEnabled` RAG setting, which defaults off. The
- * trigger that starts indexing asks exactly this, and so does capability
- * gating — which must not tell someone to wait for an index nothing will
- * build. One predicate, so the two can never disagree about it.
+ * One switch: the project's code search mode (spec 2026-10-29
+ * code-index-sync §6a). Only RAG chunks and embeds code; OFF searches nothing
+ * and CODE_SEARCH reads the provider live. The trigger that starts indexing
+ * asks exactly this, and so does capability gating — which must not tell
+ * someone to wait for an index nothing will build. One predicate, so the two
+ * can never disagree about it. Each repository is further included or not
+ * on its own row (`includedInCodeSearch`).
  *
  * Kept free of the trigger's own imports (Temporal, provider tokens) so a
  * reader that only needs the answer does not load the machinery.
  */
 
-/** The deployment-level half: is code indexing switched on here at all? */
-export function isCodeIndexingDeploymentEnabled(): boolean {
-	return process.env.FEATURE_CODE_INDEXING === "true";
-}
+export type CodeSearchMode = "OFF" | "CODE_SEARCH" | "RAG";
 
-/** Both halves, given the project's own code-search setting. */
+/** Whether the project's code search mode builds a code index. */
 export function isCodeIndexingEnabled(
-	codeSearchEnabled: boolean | null | undefined,
+	codeSearchMode: CodeSearchMode | null | undefined,
 ): boolean {
-	return isCodeIndexingDeploymentEnabled() && codeSearchEnabled === true;
+	return codeSearchMode === "RAG";
 }

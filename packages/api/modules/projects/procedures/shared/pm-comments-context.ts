@@ -32,6 +32,7 @@ export function pmCommentsToContextItems(
 const TOOL_LABELS: Record<string, string> = {
 	"azure-devops": "Azure DevOps",
 	fizzy: "Fizzy",
+	github: "GitHub",
 	gitlab: "GitLab",
 	jira: "Jira",
 	linear: "Linear",
@@ -99,6 +100,39 @@ export async function fetchStoryPmComments(args: {
 		const detectedFromKey =
 			pmServerKeyToDetectedType(serverKey) ?? undefined;
 		const linkOrId = story.externalUrl ?? externalId;
+
+		// GitHub Projects: issue comments through the caller's own GitHub
+		// connection (drafts have none). Never MCP.
+		if (detectedFromKey === "github") {
+			const { getGitHubWorkflowCredential } = await import(
+				"@repo/integrations/github"
+			);
+			const {
+				getGitHubIssueCommentsForPM,
+				readGitHubProjectsRepository,
+			} = await import("@repo/integrations/github/projects-pm-adapter");
+			const credential = await getGitHubWorkflowCredential(
+				userId,
+				project.organizationId ?? undefined,
+			);
+			if (!credential) {
+				return [];
+			}
+			const comments = await getGitHubIssueCommentsForPM({
+				source: {
+					token: credential.token,
+					projectId: project.projectManagementContainerId,
+					repository: readGitHubProjectsRepository(
+						project.projectManagementAdditionalContext,
+					),
+				},
+				externalId,
+			});
+			return pmCommentsToContextItems(comments, {
+				toolLabel: TOOL_LABELS.github,
+				linkOrId,
+			});
+		}
 
 		// GitLab: REST Notes path (no MCP comments tool, no RAG coverage).
 		if (detectedFromKey === "gitlab") {

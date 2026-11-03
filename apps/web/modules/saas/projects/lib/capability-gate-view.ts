@@ -273,7 +273,6 @@ const KNOWN_REASON_KEYS: ReadonlySet<string> = new Set([
 	"codebase.indexing-failed",
 	"codebase.never-indexed",
 	"codebase.code-search-off",
-	"codebase.indexing-unavailable",
 	"context.thin",
 	"context.ingestion-stalled",
 	"context.ingesting",

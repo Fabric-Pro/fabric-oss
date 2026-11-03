@@ -183,6 +183,7 @@ describe("PMToolSelect", () => {
 		await user.click(screen.getByRole("option", { name: /Jira/ }));
 
 		expect(onChange).toHaveBeenCalledWith({
+			key: "atlassian",
 			mcpConfigId: null,
 			mcpServerId: "srv_atlassian",
 			isDefault: true,
@@ -219,6 +220,7 @@ describe("PMToolSelect", () => {
 		await user.click(screen.getByRole("option", { name: /Linear/ }));
 
 		expect(onChange).toHaveBeenCalledWith({
+			key: "linear-remote",
 			mcpConfigId: "cfg_linear",
 			mcpServerId: "srv_linear",
 			isDefault: false,
@@ -252,6 +254,7 @@ describe("PMToolSelect", () => {
 		await user.click(screen.getByRole("option", { name: /^None$/ }));
 
 		expect(onChange).toHaveBeenCalledWith({
+			key: null,
 			mcpConfigId: null,
 			mcpServerId: null,
 			isDefault: false,
@@ -406,6 +409,7 @@ describe("PMToolSelect", () => {
 			);
 
 			expect(onChange).toHaveBeenCalledWith({
+				key: "gitlab-official",
 				mcpConfigId: null,
 				mcpServerId: "srv_gitlab_official",
 				isDefault: true,
@@ -556,6 +560,77 @@ describe("PMToolSelect", () => {
 
 			await waitFor(() => {
 				expect(toast.error).toHaveBeenCalledWith("Network error");
+			});
+		});
+	});
+	describe("GitHub Projects", () => {
+		const GITHUB_STUB = {
+			key: "github-remote",
+			displayName: "GitHub Projects",
+			iconKey: "github",
+			isDefault: true,
+			isConfigured: false,
+			mcpServerId: "srv_github",
+			mcpConfigId: null,
+			configDisplayName: null,
+			transport: null,
+		};
+
+		it("tells the user to connect GitHub when it is not connected", async () => {
+			availablePmToolsList.mockResolvedValue([GITHUB_STUB]);
+			render(
+				<PMToolSelect
+					organizationId={null}
+					selectedMcpConfigId={null}
+					selectedMcpServerId="srv_github"
+					onChange={vi.fn()}
+					mcpSettingsUrl="/settings/mcp"
+				/>,
+				{ wrapper },
+			);
+			expect(
+				await screen.findByText(/github isn't connected yet/i),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText(/you'll configure/i),
+			).not.toBeInTheDocument();
+		});
+
+		it("emits its key when the connected REST entry is chosen", async () => {
+			availablePmToolsList.mockResolvedValue([
+				{
+					...GITHUB_STUB,
+					isConfigured: true,
+					configDisplayName: "GitHub Projects",
+					transport: "rest",
+				},
+			]);
+			const onChange = vi.fn();
+			render(
+				<PMToolSelect
+					organizationId={null}
+					selectedMcpConfigId={null}
+					selectedMcpServerId={null}
+					onChange={onChange}
+					mcpSettingsUrl="/settings/mcp"
+				/>,
+				{ wrapper },
+			);
+			await userEvent.click(
+				await screen.findByRole("combobox", {
+					name: /project management/i,
+				}),
+			);
+			await userEvent.click(
+				await screen.findByRole("option", { name: /github projects/i }),
+			);
+			expect(onChange).toHaveBeenCalledWith({
+				key: "github-remote",
+				mcpConfigId: null,
+				mcpServerId: "srv_github",
+				isDefault: true,
+				isConfigured: true,
+				transport: "rest",
 			});
 		});
 	});

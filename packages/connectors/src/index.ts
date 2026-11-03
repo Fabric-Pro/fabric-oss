@@ -22,17 +22,12 @@ export {
 	validateAzureDevOpsPat,
 } from "./azure-devops/discovery";
 export type { AzureDevOpsCaptureIncompleteReason } from "./azure-devops/project-read";
-export { listAzureDevOpsWorkItemTypes } from "./azure-devops/work-item-types";
 export {
 	AzureDevOpsProjectReadError,
 	azureDevOpsOrganization,
 	getAzureDevOpsProjectWorkItemCounts,
 	listAzureDevOpsProjectMembers,
 } from "./azure-devops/project-work-items";
-export type {
-	AzureDevOpsStoryComment,
-	AzureDevOpsStoryCommentsCapture,
-} from "./azure-devops/story-comments";
 export {
 	type AzureDevOpsSprintAssignedObservation,
 	type AzureDevOpsSprintCapture,
@@ -47,11 +42,16 @@ export type {
 	AzureDevOpsSprintRelationKind,
 	AzureDevOpsSprintSelection,
 } from "./azure-devops/sprint-selection";
+export type {
+	AzureDevOpsStoryComment,
+	AzureDevOpsStoryCommentsCapture,
+} from "./azure-devops/story-comments";
 export {
 	type AzureDevOpsStorySnapshot,
 	type AzureDevOpsStorySnapshotsInput,
 	getAzureDevOpsStorySnapshots,
 } from "./azure-devops/story-snapshots";
+export { listAzureDevOpsWorkItemTypes } from "./azure-devops/work-item-types";
 // Base connector
 export {
 	BaseConnector,
@@ -154,6 +154,15 @@ export {
 	isCommitOnBranch,
 	readRepositoryFileAtCommit,
 } from "./repository-compare";
+export type {
+	CreatedGitHubRepository,
+	CreateGitHubRepositoryInput,
+	CreateGitHubRepositoryResult,
+} from "./repository-create";
+export {
+	createGitHubRepository,
+	GITHUB_REPOSITORY_NAME_PATTERN,
+} from "./repository-create";
 // Capped single-file read (request-path helper)
 export type {
 	ReadRepositoryFileInput,

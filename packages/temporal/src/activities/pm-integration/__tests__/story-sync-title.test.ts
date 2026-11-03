@@ -7,7 +7,7 @@
  * other prefix concatenation.
  *
  * Covers both the MCP path (`syncStoryToPM` calling `executeMcpTool`) and the
- * GitLab REST fallback (`syncGitLabStoryViaRest` calling
+ * GitLab REST fallback (`syncStoryViaRest` calling
  * `callPmToolWithFallback`). The Fabric identifier remains discoverable via
  * the "View in Fabric" back-link URL stored in the description — not via the
  * title.
@@ -119,7 +119,7 @@ vi.mock("@repo/integrations/pm", () => ({
 	readLabelStatusMap: () => ({}),
 }));
 
-// `syncGitLabStoryViaRest` now stamps a baseline hash via
+// `syncStoryViaRest` now stamps a baseline hash via
 // `stampPmSyncSuccess` on every successful push/pull (and uses the matching
 // guard helpers on update). The real helpers call `db.userStory.update` →
 // Prisma client, which isn't available under this test's synchronous
@@ -132,7 +132,7 @@ vi.mock("../hierarchy-sync", () => ({
 }));
 
 import { executeMcpTool } from "../../orchestrator/execution/execute-mcp-tool";
-import { syncGitLabStoryViaRest } from "../gitlab-rest-story-sync";
+import { syncStoryViaRest } from "../gitlab-rest-story-sync";
 import { parsePMItemFromGetOutput, syncStoryToPM } from "../story-sync";
 
 const STORY_IDENTIFIER = "12";
@@ -288,7 +288,7 @@ describe("PM-sync outbound title is `story.title` verbatim (no identifier prefix
 		});
 	});
 
-	describe("GitLab REST path: syncGitLabStoryViaRest", () => {
+	describe("GitLab REST path: syncStoryViaRest", () => {
 		it("createItem payload.title='Add login' (NOT '12: Add login' or 'F-12 Add login')", async () => {
 			getStoryById.mockResolvedValue(makeStory());
 			callPmToolWithFallback.mockResolvedValue({
@@ -297,7 +297,7 @@ describe("PM-sync outbound title is `story.title` verbatim (no identifier prefix
 				title: STORY_TITLE,
 			});
 
-			await syncGitLabStoryViaRest({
+			await syncStoryViaRest({
 				...baseMcpInput,
 				mcpConfigId: null,
 				containerId: "100",
@@ -324,7 +324,7 @@ describe("PM-sync outbound title is `story.title` verbatim (no identifier prefix
 				title: STORY_TITLE,
 			});
 
-			await syncGitLabStoryViaRest({
+			await syncStoryViaRest({
 				...baseMcpInput,
 				mcpConfigId: null,
 				containerId: "100",
@@ -335,6 +335,84 @@ describe("PM-sync outbound title is `story.title` verbatim (no identifier prefix
 			expect(call.call.payload.title).toBe(STORY_TITLE);
 			expect(call.call.payload.title).not.toMatch(/^F?-?\d+[:\s]/);
 			expect(call.call.payload.title).not.toContain(STORY_IDENTIFIER);
+		});
+	});
+});
+
+describe("GitHub Projects push through the shared REST sync", () => {
+	const GITHUB_SOURCE = {
+		kind: "rest-github" as const,
+		token: "TOK",
+		projectId: "PVT_board",
+		repository: "example-org/app",
+	};
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		updateStory.mockResolvedValue(undefined);
+		findManyStatuses.mockResolvedValue([]);
+		resolvePmSource.mockResolvedValue(GITHUB_SOURCE);
+	});
+
+	it("creates an issue typed by the story kind and links its owner/repo#number id", async () => {
+		getStoryById.mockResolvedValue(makeStory({ kind: "BUG" }));
+		callPmToolWithFallback.mockResolvedValue({
+			externalId: "example-org/app#7",
+			externalUrl: "https://github.com/example-org/app/issues/7",
+			title: STORY_TITLE,
+			updatedAt: null,
+		});
+
+		const result = await syncStoryViaRest({
+			...baseMcpInput,
+			mcpConfigId: null,
+			containerId: "PVT_board",
+		});
+
+		const call = callPmToolWithFallback.mock.calls[0]![0];
+		expect(call.source).toBe(GITHUB_SOURCE);
+		expect(call.call.tool).toBe("createItem");
+		expect(call.call.payload).toMatchObject({
+			title: STORY_TITLE,
+			issueType: "Bug",
+		});
+		expect(result).toMatchObject({
+			success: true,
+			externalId: "example-org/app#7",
+		});
+		expect(updateStory).toHaveBeenCalledWith(
+			"story-1",
+			"proj-1",
+			expect.objectContaining({ externalId: "example-org/app#7" }),
+			expect.anything(),
+		);
+	});
+
+	it("updates the linked issue as a Feature", async () => {
+		getStoryById.mockResolvedValue(
+			makeStory({
+				externalId: "example-org/app#7",
+				externalUrl: "https://github.com/example-org/app/issues/7",
+				externalMcpServerId: "server-1",
+			}),
+		);
+		callPmToolWithFallback.mockResolvedValue({
+			externalId: "example-org/app#7",
+			externalUrl: "https://github.com/example-org/app/issues/7",
+			title: STORY_TITLE,
+		});
+
+		await syncStoryViaRest({
+			...baseMcpInput,
+			mcpConfigId: null,
+			containerId: "PVT_board",
+		});
+
+		const call = callPmToolWithFallback.mock.calls[0]![0];
+		expect(call.call).toMatchObject({
+			tool: "updateItem",
+			externalId: "example-org/app#7",
+			payload: { title: STORY_TITLE, issueType: "Feature" },
 		});
 	});
 });

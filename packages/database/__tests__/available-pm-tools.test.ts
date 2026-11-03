@@ -49,6 +49,7 @@ const DEFAULT_FIXTURE_SERVERS = [
 		key: "gitlab-official",
 		name: "GitLab (Official)",
 	},
+	{ id: "srv_github", key: "github-remote", name: "GitHub (Official)" },
 ];
 
 function tenantConfigStub(overrides: {
@@ -81,7 +82,7 @@ describe("listAvailablePmTools", () => {
 		findManyWorkflowIntegration.mockResolvedValue([]);
 	});
 
-	it("emits exactly the four defaults when no configs exist (personal context)", async () => {
+	it("emits exactly the five defaults when no configs exist (personal context)", async () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
@@ -93,6 +94,7 @@ describe("listAvailablePmTools", () => {
 			"azure-devops",
 			"atlassian",
 			"gitlab-official",
+			"github-remote",
 		]);
 		expect(result.every((o) => o.isDefault)).toBe(true);
 		expect(result.every((o) => !o.isConfigured)).toBe(true);
@@ -185,6 +187,7 @@ describe("listAvailablePmTools", () => {
 			"azure-devops",
 			"atlassian",
 			"gitlab-official",
+			"github-remote",
 		]);
 		expect(result[0]).toMatchObject({
 			key: "linear-remote",
@@ -226,6 +229,7 @@ describe("listAvailablePmTools", () => {
 			"azure-devops",
 			"atlassian",
 			"gitlab-official",
+			"github-remote",
 		]);
 	});
 
@@ -258,6 +262,7 @@ describe("listAvailablePmTools", () => {
 			"azure-devops",
 			"atlassian",
 			"gitlab-official",
+			"github-remote",
 		]);
 	});
 
@@ -335,6 +340,7 @@ describe("listAvailablePmTools", () => {
 			"azure-devops",
 			"atlassian",
 			"gitlab-official",
+			"github-remote",
 		]);
 		const jira = result.find((o) => o.key === "atlassian");
 		expect(jira?.mcpServerId).toBe("key:atlassian");
@@ -359,6 +365,7 @@ describe("listAvailablePmTools", () => {
 			"azure-devops",
 			"atlassian",
 			"gitlab-official",
+			"github-remote",
 		]);
 	});
 
@@ -636,6 +643,69 @@ describe("listAvailablePmTools", () => {
 				.map((arg: unknown) => (typeof arg === "string" ? arg : ""))
 				.join(" ");
 			expect(messages).toMatch(/gitlab-official/i);
+		});
+	});
+
+	describe("GitHub Projects", () => {
+		it("is a not-configured default labelled GitHub Projects without a connection", async () => {
+			const result = await listAvailablePmTools({
+				userId: "u_1",
+				organizationId: "org_1",
+				gitlab: NOT_CONNECTED,
+				github: { connected: false },
+			});
+			const github = result.find((o) => o.key === "github-remote");
+			expect(github).toMatchObject({
+				displayName: "GitHub Projects",
+				iconKey: "github",
+				isDefault: true,
+				isConfigured: false,
+				mcpServerId: "srv_github",
+				mcpConfigId: null,
+				transport: null,
+			});
+		});
+
+		it("is configured over REST when the caller's GitHub is connected", async () => {
+			const result = await listAvailablePmTools({
+				userId: "u_1",
+				organizationId: "org_1",
+				gitlab: NOT_CONNECTED,
+				github: { connected: true },
+			});
+			const githubRows = result.filter((o) => o.key === "github-remote");
+			expect(githubRows).toHaveLength(1);
+			expect(githubRows[0]).toMatchObject({
+				displayName: "GitHub Projects",
+				isConfigured: true,
+				mcpConfigId: null,
+				transport: "rest",
+			});
+		});
+
+		it("never offers a github-remote MCPConfig as the PM option", async () => {
+			findManyConfig.mockResolvedValue([
+				tenantConfigStub({
+					id: "cfg_github",
+					mcpServer: {
+						id: "srv_github",
+						key: "github-remote",
+						name: "GitHub (Official)",
+						tags: ["project-management"],
+					},
+				}),
+			]);
+			const result = await listAvailablePmTools({
+				userId: "u_1",
+				organizationId: "org_1",
+				gitlab: NOT_CONNECTED,
+				github: { connected: false },
+			});
+			expect(
+				result
+					.filter((o) => o.key === "github-remote")
+					.map((o) => o.mcpConfigId),
+			).toEqual([null]);
 		});
 	});
 });

@@ -1268,8 +1268,8 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			}
 
 			// Auto-start Phase 2 code indexing for every connected repo. Gated by
-			// FEATURE_CODE_INDEXING + the project's codeSearchEnabled setting
-			// inside the helper, which starts one per-repo workflow.
+			// the project's code search mode (RAG) and each repository's
+			// inclusion inside the helper, which starts one per-repo workflow.
 			try {
 				const result = await startCodeIndexingForProject({
 					projectId: input.id,

@@ -12,17 +12,12 @@
  * in this package. The precedence is therefore reproduced, and
  * `selectReviewRecipientIds` is pure so the cases that distinguish it are a
  * plain table test rather than a hope. If the authority changes, change both;
- * each side carries a comment pointing at the other.
+ * path B is narrower on purpose.
  *
  *   A. personal-project owner → OWNER permissions
  *   C. an ACTIVE (accepted, unexpired) ProjectMember row is AUTHORITATIVE — its
  *      role decides and the org role is NOT consulted
- *   B. otherwise the caller's role on the host organization decides
- *
- * The half that is easy to lose is C's negative side. "Active" is doing real
- * work: an unaccepted or expired row is *not* active, so it is not
- * authoritative either, and such a user still reaches B. An org admin whose
- * project invitation lapsed can still approve, and must still be told.
+ *   B. otherwise the org role decides, but only for the project's creator
  */
 
 import {
@@ -98,11 +93,12 @@ export function selectReviewRecipientIds(input: {
 		}
 	}
 
-	// Path B — org role, but ONLY for users without an active project row.
-	// Excluding the inactive ones too would drop an org admin whose project
-	// invitation expired, who can still approve.
+	// Path B — creator only: the project page doesn't admit other org admins.
 	for (const orgMember of orgMembers) {
-		if (activeIds.has(orgMember.userId)) {
+		if (
+			activeIds.has(orgMember.userId) ||
+			orgMember.userId !== project.userId
+		) {
 			continue;
 		}
 		if (canEditProjectSettings(resolveOrgPermissions(orgMember.role))) {

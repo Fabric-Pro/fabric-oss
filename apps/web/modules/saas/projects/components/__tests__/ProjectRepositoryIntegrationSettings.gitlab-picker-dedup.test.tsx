@@ -59,10 +59,8 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						queryKey: ["rag-settings", opts?.input],
 						queryFn: async () => ({
 							settings: {
-								codeSearchEnabled: false,
-								codeSearchProvider: null,
+								codeSearchMode: "OFF",
 							},
-							featureCodeIndexingEnabled: false,
 						}),
 					}),
 				},

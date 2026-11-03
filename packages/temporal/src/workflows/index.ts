@@ -100,6 +100,8 @@ export {
 	type CodeBasedProjectSetupOutput,
 	codeBasedProjectSetupWorkflow,
 } from "./code-based-project-setup";
+// Coding Instructions automatic sync poll (spec §6.1). Named, like the sync.
+export { codeIndexRefreshPollWorkflow } from "./code-index-refresh-poll";
 // Code Indexing workflow (Phase 2: AST-aware code indexing)
 export {
 	type CodeIndexingWorkflowInput,
@@ -395,6 +397,8 @@ export {
 	statusQuery as goalOrientedStatusQuery,
 } from "./goal-oriented-agent";
 export * from "./hybrid-execution";
+// Knowledge hub: debounced topic summary (specs/2026-10-21-ai-artifacts-hub)
+export { instructionConsolidationWorkflow } from "./instruction-consolidation";
 // Coding Instructions direct commit (Fizzy #2878 §10): one workflow per
 // snapshot, waiting for its validation and then pushing one commit. Named,
 // like the sync: only the workflow function belongs in the bundle's registry.
@@ -414,6 +418,7 @@ export {
 // five-minute sweeper. Named, like the sync.
 export { instructionProposalPullRequestSweepWorkflow } from "./instruction-proposal-pull-request-sweep";
 export { projectInstructionRevertCommitWorkflow } from "./instruction-revert-commit";
+export { knowledgeTopicSummaryWorkflow } from "./knowledge-topic-summary";
 // Meeting action item linking (fire-and-forget — matches one meeting's action
 // items to the project's work items once its insights are ready). #1902
 export {
@@ -594,6 +599,7 @@ export {
 	type PmSyncStuckWatchdogOutput,
 	pmSyncStuckWatchdogWorkflow,
 } from "./pm-sync-stuck-watchdog";
+export * from "./project-chunking-analysis";
 export * from "./project-context-embedding";
 // Project context processing workflow (post-creation uploads: extract + embed)
 export {
@@ -616,13 +622,16 @@ export {
 	projectPermanentDeleteWorkflow,
 } from "./project-deletion";
 export * from "./project-document-generation";
+export { projectImportWorkflow } from "./project-import";
 export { projectInstructionReaperWorkflow } from "./project-instruction-reaper";
-// Coding Instructions automatic sync poll (spec §6.1). Named, like the sync.
 export { projectInstructionRepositoryPollWorkflow } from "./project-instruction-repository-poll";
 // Coding Instructions repository sync (design 2026-09-23 §5.2). Named, not
 // `export *`: only the workflow function belongs in the bundle's registry.
 export { projectInstructionRepositorySyncWorkflow } from "./project-instruction-repository-sync";
 export * from "./project-instruction-snapshot";
+// Weave: Loom/Tapestry workflows removed — weave agents are now orchestrated
+// by Fabric Loom via A2A agent delegation.
+export * from "./project-rechunk";
 export { projectRepositorySyncFollowUpWorkflow } from "./project-repository-sync-follow-up";
 // Internal Analysis of a coordinated Proposal (Fizzy #2801), started by the
 // document generation child workflow. Named: only the workflow function

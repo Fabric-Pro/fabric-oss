@@ -14,8 +14,17 @@ vi.mock("@repo/agent-core", () => ({
 	logAgentUsageFromRunnableConfig: vi.fn(),
 }));
 vi.mock("@repo/database/prisma/client", () => ({ db: {} }));
-vi.mock("@repo/rag", () => ({
-	retrieveProjectContexts: vi.fn(async () => []),
+vi.mock("@repo/rag", async () => ({
+	...(await import("@repo/rag/lib/project-contexts/source-name")),
+	contextMetaHeader: () => "",
+	retrieveProjectContexts: vi.fn(async () => [
+		{
+			content: "named body",
+			sourcePath: "docs/plan.md",
+			metadata: { filename: "wrong" },
+		},
+		{ content: "unnamed body" },
+	]),
 }));
 
 afterEach(() => {
@@ -64,6 +73,8 @@ it("opts both research reader calls into service authentication without using pl
 	expect(result.research).toContain(
 		"## Codebase grounding\nExample research",
 	);
+	expect(result.research).toContain("### docs/plan.md");
+	expect(result.research).toContain("### Context 2");
 	expect(plainFetch).not.toHaveBeenCalled();
 	expect(getAgentModelAsync).not.toHaveBeenCalled();
 });

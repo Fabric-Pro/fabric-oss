@@ -261,6 +261,50 @@ OPENAI_API_KEY="sk-..."
 ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
+### Local Models (Ollama, LocalAI)
+
+Developers with the hardware can serve some tasks from local models instead of the
+organization's configured AI provider. Each local provider is switched on alone in
+`.env.local`, so a developer without a GPU leaves it off and nothing changes:
+
+| Provider | Switch | Tasks | Default models |
+|---|---|---|---|
+| Ollama | `FABRIC_LOCAL_OLLAMA` | Embeddings, decisions | `qwen3-embedding:4b`, `qwen3:4b-instruct` |
+| LocalAI | `FABRIC_LOCAL_LOCALAI` | Image generation | `flux.2-klein-4b` |
+
+```env
+FABRIC_LOCAL_OLLAMA="true"
+FABRIC_LOCAL_OLLAMA_GPU="true"                 # pass an NVIDIA GPU through
+FABRIC_LOCAL_OLLAMA_EMBEDDING_MODEL="qwen3-embedding:4b"
+FABRIC_LOCAL_OLLAMA_DECISION_MODEL="off"       # "off" keeps a task on the configured provider
+FABRIC_LOCAL_OLLAMA_DECISION_CPU="true"        # decide on the CPU, leaving the GPU to the rest
+FABRIC_LOCAL_LOCALAI="true"
+FABRIC_LOCAL_LOCALAI_GPU="true"
+FABRIC_LOCAL_LOCALAI_IMAGE_MODEL="flux.2-klein-4b"
+```
+
+Aspire then runs an `ollama` and/or `localai` container, downloads the models into
+their volumes once (`ollama-pull`, `localai-setup`), and points `web`,
+`temporal-worker` and `weave-planners` at them through `FABRIC_LOCAL_<TASK>_BASE_URL`
+/ `_MODEL`. Those variables can also point at a server you run elsewhere. Settings →
+AI Models shows the local model on each task it serves.
+
+- **Embeddings** must return 1536-dimension vectors when asked for them, the width of
+  every Qdrant collection; each request asks for 1536. Vectors indexed with another
+  model do not match, so re-index existing documents after switching.
+- **Decisions** run on the chat model: each question is answered with one option
+  letter, and the letter's logprobs give the probabilities the callers' confidence
+  thresholds read. A refusal falls back to the regular AI model, as before.
+- **Images** are drawn at about 0.6 MP (768×768, or the same area at the requested
+  aspect ratio), which fits FLUX.2 klein 4B next to the embedding model on an 8 GB GPU.
+  Editing an input image is not supported locally. Generated images are stored in
+  MinIO, like gateway images.
+
+On an 8 GB GPU, run embeddings and images on the GPU and decisions on the CPU
+(`FABRIC_LOCAL_OLLAMA_DECISION_CPU=true`). The app honours the `FABRIC_LOCAL_*`
+task variables only under `NODE_ENV=development` (`packages/ai/lib/local-models.ts`);
+deployed environments are unaffected.
+
 ### Aspire Secrets
 
 Sensitive configuration is managed via .NET user secrets:

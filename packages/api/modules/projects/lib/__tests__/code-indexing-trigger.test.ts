@@ -1,7 +1,8 @@
 /**
  * Tests for the per-repo code-indexing trigger. Locks the contract that makes
  * multi-repo indexing + per-repo persistence work:
- *   - gated off by FEATURE_CODE_INDEXING and by codeSearchEnabled
+ *   - gated off unless the project's code search mode is RAG
+ *   - repositories left out of code search are never indexed
  *   - one workflow started per ACTIVE integration (multi-repo)
  *   - a single integration can be targeted (manual re-index / push)
  *   - a repo without a usable token is skipped, not fatal
@@ -9,7 +10,7 @@
  *   - cancel reads the INDEXING row's workflowId and cancels it
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // `workflow.start` resolves to a WorkflowHandle; the Job Hub row records
 // its firstExecutionRunId.
@@ -82,6 +83,7 @@ function repo(id: string, over: Record<string, unknown> = {}) {
 		repositoryUrl: `https://github.com/acme/${id}`,
 		encryptedAccessToken: `tok-${id}`,
 		encryptedPat: null,
+		includedInCodeSearch: true,
 		...over,
 	};
 }
@@ -94,34 +96,44 @@ const baseOpts = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	process.env.FEATURE_CODE_INDEXING = "true";
-	mockRagFindUnique.mockResolvedValue({ codeSearchEnabled: true });
+	mockRagFindUnique.mockResolvedValue({ codeSearchMode: "RAG" });
 	// The trigger derives the tenant from the project itself.
 	mockProjectFindUnique.mockResolvedValue({ organizationId: null });
 });
 
-afterEach(() => {
-	process.env.FEATURE_CODE_INDEXING = undefined;
-});
-
 describe("startCodeIndexingForProject", () => {
-	it("no-ops when FEATURE_CODE_INDEXING is not 'true'", async () => {
-		process.env.FEATURE_CODE_INDEXING = "false";
+	it.each(["OFF", "CODE_SEARCH"])(
+		"no-ops when the code search mode is %s",
+		async (mode) => {
+			mockRagFindUnique.mockResolvedValue({ codeSearchMode: mode });
+			const { startCodeIndexingForProject } = await load();
+			const result = await startCodeIndexingForProject(baseOpts);
+			expect(result.disabledReason).toBe("code-search-disabled");
+			expect(mockStart).not.toHaveBeenCalled();
+		},
+	);
+
+	it("never indexes a repository left out of code search", async () => {
+		mockGetProjectReposForCodeSearch.mockResolvedValue([
+			repo("a"),
+			repo("b", { includedInCodeSearch: false }),
+		]);
 		const { startCodeIndexingForProject } = await load();
 		const result = await startCodeIndexingForProject(baseOpts);
-		expect(result).toEqual({
-			started: 0,
-			skipped: [],
-			disabledReason: "feature-flag",
-		});
-		expect(mockGetTemporalClient).not.toHaveBeenCalled();
+		expect(result.started).toBe(1);
+		expect(
+			mockStart.mock.calls.map((c) => c[1].args[0].integrationId),
+		).toEqual(["a"]);
 	});
 
-	it("no-ops when codeSearchEnabled is off", async () => {
-		mockRagFindUnique.mockResolvedValue({ codeSearchEnabled: false });
+	it("does not fall back to the legacy repository when every one is left out", async () => {
+		mockGetProjectReposForCodeSearch.mockResolvedValue([
+			repo("a", { includedInCodeSearch: false }),
+		]);
 		const { startCodeIndexingForProject } = await load();
 		const result = await startCodeIndexingForProject(baseOpts);
-		expect(result.disabledReason).toBe("code-search-disabled");
+		expect(result.started).toBe(0);
+		expect(mockProjectFindUnique).toHaveBeenCalledTimes(1);
 		expect(mockStart).not.toHaveBeenCalled();
 	});
 
@@ -314,5 +326,26 @@ describe("cancelCodeIndexingForRepo", () => {
 			repositoryIntegrationId: "a",
 		});
 		expect(mockGetHandle).not.toHaveBeenCalled();
+	});
+});
+
+describe("startCodeIndexingForUnindexedRepos", () => {
+	it("indexes only included repositories without a usable index", async () => {
+		mockGetProjectReposForCodeSearch.mockResolvedValue([
+			repo("ready"),
+			repo("failed"),
+			repo("new"),
+			repo("left-out", { includedInCodeSearch: false }),
+		]);
+		mockGetProjectCodeIndexes.mockResolvedValue([
+			{ repositoryIntegrationId: "ready", status: "READY" },
+			{ repositoryIntegrationId: "failed", status: "FAILED" },
+		]);
+		const { startCodeIndexingForUnindexedRepos } = await load();
+		const started = await startCodeIndexingForUnindexedRepos(baseOpts);
+		expect(started).toBe(2);
+		expect(
+			mockStart.mock.calls.map((c) => c[1].args[0].integrationId),
+		).toEqual(["failed", "new"]);
 	});
 });

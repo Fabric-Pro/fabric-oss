@@ -38,6 +38,8 @@ import {
 	type EditSection,
 	ProjectSectionEditDialog,
 } from "./ProjectSectionEditDialog";
+import { ChunkingCheckPrompt } from "./rag-settings/ChunkingCheckPrompt";
+import { RepositoryImportPanel } from "./repository-import/RepositoryImportPanel";
 
 type Project = {
 	id: string;
@@ -299,6 +301,15 @@ export function ProjectOverview({
 
 	return (
 		<div className="space-y-6">
+			<ChunkingCheckPrompt
+				projectId={projectId}
+				settingsHref={`${basePath}/projects/${projectId}?tab=settings&settingsTab=retrieval`}
+			/>
+			<RepositoryImportPanel
+				projectId={projectId}
+				organizationId={organizationId}
+				onApplied={onProjectUpdated}
+			/>
 			{/* Status band: what the project has to work with, in one surface,
 			    with the pipeline beside it. Coverage, the four counts and the
 			    document list used to sit in a hero, an aside, four icon cards

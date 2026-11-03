@@ -39,7 +39,7 @@ export const TEST_CASE_SYNC_CREATE_ACTIVITY_OPTIONS: ActivityOptions = {
 /**
  * `pmSyncSingleStoryWorkflow`'s `syncWorkItemToPM` (single-item push: auto
  * push, retry, Unlink & re-create), whose create may also run on the GitLab
- * REST path (`syncGitLabStoryViaRest`).
+ * REST path (`syncStoryViaRest`).
  */
 export const PM_SYNC_SINGLE_STORY_SYNC_ACTIVITY_OPTIONS: ActivityOptions = {
 	startToCloseTimeout: "60 seconds",

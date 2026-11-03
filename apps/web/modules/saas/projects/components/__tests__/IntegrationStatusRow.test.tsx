@@ -132,7 +132,7 @@ describe("IntegrationStatusRow actions menu", () => {
 
 	it("shows 'Index codebase' in menu when codeIndex is canonical null", async () => {
 		renderRow({
-			featureCodeIndexingEnabled: true,
+			codeSearchMode: "RAG",
 			integration: { ...baseIntegration, codeIndex: null },
 		});
 		await openMenu();
@@ -143,7 +143,7 @@ describe("IntegrationStatusRow actions menu", () => {
 
 	it("shows 'Full re-index' in menu when codeIndex is undefined (fallback row)", async () => {
 		renderRow({
-			featureCodeIndexingEnabled: true,
+			codeSearchMode: "RAG",
 			integration: { ...baseIntegration, codeIndex: undefined },
 		});
 		await openMenu();
@@ -154,7 +154,7 @@ describe("IntegrationStatusRow actions menu", () => {
 
 	it("shows 'Full re-index' in menu when status is unavailable", async () => {
 		renderRow({
-			featureCodeIndexingEnabled: true,
+			codeSearchMode: "RAG",
 			statusUnavailable: true,
 			integration: { ...baseIntegration, codeIndex: null },
 		});
@@ -166,7 +166,7 @@ describe("IntegrationStatusRow actions menu", () => {
 
 	it("shows 'Full re-index' in menu when project carries a legacy index record", async () => {
 		renderRow({
-			featureCodeIndexingEnabled: true,
+			codeSearchMode: "RAG",
 			hasLegacyIndexRecord: true,
 			integration: { ...baseIntegration, codeIndex: null },
 		});

@@ -7,7 +7,11 @@
  */
 
 import { db } from "../client";
-import type { CodeIndexStatus, Prisma } from "../generated/client";
+import type {
+	CodeIndexRefreshInterval,
+	CodeIndexStatus,
+	Prisma,
+} from "../generated/client";
 
 /** Identifies one repo's index row within a project. */
 export interface CodeIndexRepoKey {
@@ -528,5 +532,143 @@ export async function deleteProjectCodeIndex(
 				? { repositoryIntegrationId }
 				: {}),
 		},
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled refresh (spec 2026-10-29 code-index-sync)
+// ---------------------------------------------------------------------------
+
+/** Milliseconds between refresh checks per interval; OFF never checks. */
+export const CODE_INDEX_REFRESH_INTERVAL_MS: Record<
+	Exclude<CodeIndexRefreshInterval, "OFF">,
+	number
+> = {
+	HOURLY: 60 * 60 * 1000,
+	EVERY_6_HOURS: 6 * 60 * 60 * 1000,
+	DAILY: 24 * 60 * 60 * 1000,
+};
+
+/** One repository index whose branch is due to be compared with its commit. */
+export interface DueCodeIndexRefresh {
+	id: string;
+	projectId: string;
+	repositoryIntegrationId: string;
+	userId: string;
+	organizationId: string | null;
+}
+
+/**
+ * Claim the repository indexes due for a refresh check, at most `limit`.
+ *
+ * Due: a finished index (READY or STALE) of a connected repository included
+ * in code search, in a project whose code search mode is RAG and whose
+ * refresh interval is not OFF, whose
+ * next check is unset or past. A row is claimed by moving its next check one
+ * interval ahead first, conditional on the value read, so two polls never
+ * claim the same row and a check that crashes waits a full interval instead
+ * of looping.
+ */
+export async function claimDueCodeIndexRefreshes(args: {
+	now: Date;
+	limit: number;
+}): Promise<DueCodeIndexRefresh[]> {
+	// The index row has no relation to its integration, so excluded
+	// repositories are filtered by id; there are few of them.
+	const excluded = await db.projectRepositoryIntegration.findMany({
+		where: { includedInCodeSearch: false },
+		select: { id: true },
+	});
+	const candidates = await db.projectCodeIndex.findMany({
+		where: {
+			status: { in: ["READY", "STALE"] },
+			repositoryIntegrationId: {
+				not: null,
+				...(excluded.length > 0 && {
+					notIn: excluded.map((e) => e.id),
+				}),
+			},
+			commitSha: { not: "pending" },
+			OR: [
+				{ nextRefreshCheckAt: null },
+				{ nextRefreshCheckAt: { lte: args.now } },
+			],
+			project: {
+				ragSettings: {
+					codeSearchMode: "RAG",
+					codeIndexRefreshInterval: { not: "OFF" },
+				},
+			},
+		},
+		orderBy: { nextRefreshCheckAt: { sort: "asc", nulls: "first" } },
+		take: args.limit,
+		select: {
+			id: true,
+			projectId: true,
+			repositoryIntegrationId: true,
+			userId: true,
+			organizationId: true,
+			nextRefreshCheckAt: true,
+			project: {
+				select: {
+					ragSettings: { select: { codeIndexRefreshInterval: true } },
+				},
+			},
+		},
+	});
+
+	const claimed: DueCodeIndexRefresh[] = [];
+	for (const row of candidates) {
+		const interval = row.project.ragSettings?.codeIndexRefreshInterval;
+		if (!interval || interval === "OFF" || !row.repositoryIntegrationId) {
+			continue;
+		}
+		const { count } = await db.projectCodeIndex.updateMany({
+			where: { id: row.id, nextRefreshCheckAt: row.nextRefreshCheckAt },
+			data: {
+				nextRefreshCheckAt: new Date(
+					args.now.getTime() +
+						CODE_INDEX_REFRESH_INTERVAL_MS[interval],
+				),
+			},
+		});
+		if (count === 1) {
+			claimed.push({
+				id: row.id,
+				projectId: row.projectId,
+				repositoryIntegrationId: row.repositoryIntegrationId,
+				userId: row.userId,
+				organizationId: row.organizationId,
+			});
+		}
+	}
+	return claimed;
+}
+
+/** Record the outcome of one refresh check; `error` null clears the last one. */
+export async function recordCodeIndexRefreshCheck(args: {
+	id: string;
+	checkedAt: Date;
+	error: string | null;
+}): Promise<void> {
+	await db.projectCodeIndex.updateMany({
+		where: { id: args.id },
+		data: {
+			lastRefreshCheckAt: args.checkedAt,
+			lastRefreshError: args.error,
+		},
+	});
+}
+
+/**
+ * A changed interval takes effect from now: the project's indexes are checked
+ * on the next poll (or never, for OFF) instead of at the old interval's time.
+ */
+export async function resetCodeIndexRefreshSchedule(
+	projectId: string,
+): Promise<void> {
+	await db.projectCodeIndex.updateMany({
+		where: { projectId },
+		data: { nextRefreshCheckAt: null },
 	});
 }

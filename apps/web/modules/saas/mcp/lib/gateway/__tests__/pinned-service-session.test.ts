@@ -184,10 +184,17 @@ describe("which gateway tools Parlume gets", () => {
 	it("keeps connection reads, delegated authority and memory tools outside meeting grants", () => {
 		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(38);
 		expect([...FABRIC_PORTAL_EXCLUDED_TOOL_NAMES].sort()).toEqual([
+			"fabric_change_instructions",
 			"fabric_check_authority",
 			"fabric_get_project_pm_connection",
 			"fabric_get_project_pm_item_snapshots",
 			"fabric_get_project_work_item_counts",
+			"fabric_knowledge_add",
+			"fabric_knowledge_search",
+			"fabric_knowledge_topic",
+			"fabric_knowledge_topics",
+			"fabric_knowledge_types",
+			"fabric_list_code_repositories",
 			"fabric_list_project_pm_assigned_items",
 			"fabric_list_project_pm_members",
 			"fabric_list_project_pm_work_item_types",
@@ -197,6 +204,8 @@ describe("which gateway tools Parlume gets", () => {
 			"fabric_memory_write_status",
 			"fabric_request_authority",
 			"fabric_revoke_authority",
+			"fabric_rules_for",
+			"fabric_semantic_search",
 		]);
 	});
 

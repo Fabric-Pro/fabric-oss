@@ -192,7 +192,7 @@ export async function retrieveProjectContextsActivity(
 	topK?: number,
 	options?: SecondaryUsageInput & {
 		turnScope?: TurnScope;
-		/** Each passage keeps at most this many characters, cut at a line or sentence break. */
+		/** Each source's matched passages, joined, keep at most this many characters, cut at a line or sentence break. */
 		maxPassageChars?: number;
 	},
 ): Promise<{ context: string; chunkCount: number }> {
@@ -239,6 +239,7 @@ async function retrieveProjectContextsForTool(
 			userId,
 			organizationId,
 			topK,
+			maxContexts: topK,
 			// Agent project_rag_query: diversify across distinct documents so a
 			// long, multi-chunk document (e.g. a meeting transcript) can't crowd
 			// out other relevant documents (e.g. a PRD) the user is asking about.
@@ -248,9 +249,7 @@ async function retrieveProjectContextsForTool(
 			// Previously implicit in the diversify branch; now stated, because a
 			// background caller wants the opposite.
 			skipRerank: true,
-			...(!usage?.maxPassageChars
-				? { includeMatchedPassages: true }
-				: {}),
+			includeMatchedPassages: true,
 		});
 
 		if (!results || results.length === 0) {
@@ -275,6 +274,7 @@ async function retrieveProjectContextsForTool(
 				(
 					r: {
 						content: string;
+						matchedPassages?: { content: string }[];
 						filename?: string;
 						sourceTitle?: string;
 						sourcePath?: string;
@@ -304,7 +304,13 @@ async function retrieveProjectContextsForTool(
 					// Type label + AI guidance (#1888): metadata arrives
 					// flag-gated from retrieval; header is "" when unset.
 					const content = usage?.maxPassageChars
-						? headAtLineBreak(r.content, usage.maxPassageChars)
+						? headAtLineBreak(
+								r.matchedPassages
+									?.map((p) => p.content)
+									.filter((text) => text.trim())
+									.join("\n\n") || r.content,
+								usage.maxPassageChars,
+							)
 						: r.content;
 					return `### From: ${source}\n${contextMetaHeader(r)}${content}`;
 				},

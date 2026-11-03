@@ -229,6 +229,21 @@ export {
 	type DispatchLifecycleEventInput,
 	dispatchLifecycleEvent,
 } from "./src/lib/lifecycle-dispatcher";
+// Content-type chunking runs (re-chunk, measure, tune), shared by the API and
+// the Fabric agent's tools.
+export {
+	type AnalysisPlan,
+	applyChunkingProposalRun,
+	type ChunkingAnalysisMode,
+	confirmChunkingAnalysisRun,
+	prepareChunkingAnalysisRun,
+	projectChunkingAnalysisWorkflowId,
+	projectRechunkWorkflowId,
+	type RunRefusal,
+	type StartOptionsDecorator,
+	startProjectRechunkRun,
+	type TuneProposal,
+} from "./src/lib/project-chunking-runs";
 // Cross-kind prompt guard (Fizzy #2048) — the creation path runs it after
 // classification, @repo/api's procedures run it before an edit. Pure lib (one
 // binding query, no Temporal SDK, no orpc), so it is safe to import from the API

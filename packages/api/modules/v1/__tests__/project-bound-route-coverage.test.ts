@@ -53,7 +53,8 @@ const TOKEN = "fat_example-access-token";
  *     routes through `resolveV1Context` with the path's project;
  *   - the repository batch POST is read-only and uses the same instruction
  *     project gate before reading pinned file content;
- *   - the memory routes go through `resolveContextProject`, which asks
+ *   - the memory routes, the project's code repositories, its plugin name
+ *     and its knowledge types go through `resolveContextProject`, which asks
  *     `credentialMayReachProject` first;
  *   - the project's document routes call `resolveV1Context` without a project
  *     and so refuse a bound credential.
@@ -61,10 +62,12 @@ const TOKEN = "fat_example-access-token";
 const REACHABLE = [
 	"DELETE /projects/:projectId/contexts/synced-files",
 	"GET /auth/whoami",
+	"GET /projects/:projectId/code-repositories",
 	"GET /projects/:projectId/documents",
 	"GET /projects/:projectId/features",
 	"GET /projects/:projectId/features/:id",
 	"GET /projects/:projectId/features/:id/tasks",
+	"GET /projects/:projectId/instructions/plugin-name",
 	"GET /projects/:projectId/instructions/proposals/:snapshotId/pull-request",
 	"GET /projects/:projectId/instructions/proposals/open",
 	"GET /projects/:projectId/instructions/published",
@@ -72,6 +75,7 @@ const REACHABLE = [
 	"GET /projects/:projectId/instructions/repository/file",
 	"GET /projects/:projectId/instructions/repository/files",
 	"GET /projects/:projectId/instructions/repository/git/:generation/info/refs",
+	"GET /projects/:projectId/knowledge/types",
 	"GET /projects/:projectId/memory/file",
 	"GET /projects/:projectId/memory/files",
 	"GET /projects/:projectId/memory/targets",

@@ -290,3 +290,63 @@ describe("a recipient who has left the organization (Fizzy #2340)", () => {
 		expect(result).toEqual({ delivered: true });
 	});
 });
+
+describe("notification links", () => {
+	it("resolves a context-relative link with the notification's organization slug", () => {
+		const payload = buildWebhookPayload({
+			...NOTIFICATION,
+			link: "projects/p1/publishing/t1#q-r1",
+			organization: { slug: "example-org" },
+		} as never);
+		expect(payload.link).toBe(
+			"https://app.fabric.test/app/example-org/projects/p1/publishing/t1#q-r1",
+		);
+	});
+
+	it("resolves a context-relative link without an organization to /app", () => {
+		const payload = buildWebhookPayload({
+			...NOTIFICATION,
+			organizationId: null,
+			organization: null,
+			link: "projects/p1/publishing/t1#q-r1",
+		} as never);
+		expect(payload.link).toBe(
+			"https://app.fabric.test/app/projects/p1/publishing/t1#q-r1",
+		);
+	});
+
+	it("leaves an already-rooted link unchanged", () => {
+		const payload = buildWebhookPayload({
+			...NOTIFICATION,
+			link: "/app/stories/s1",
+			organization: { slug: "example-org" },
+		} as never);
+		expect(payload.link).toBe("https://app.fabric.test/app/stories/s1");
+	});
+
+	it("passes an already-absolute link through", () => {
+		const payload = buildWebhookPayload({
+			...NOTIFICATION,
+			link: "https://other.example.com/x",
+			organization: { slug: "example-org" },
+		} as never);
+		expect(payload.link).toBe("https://other.example.com/x");
+	});
+
+	it("renders the resolved organization link in the email button", async () => {
+		findNotification.mockResolvedValue({
+			...NOTIFICATION,
+			link: "projects/p1/publishing/t1#q-r1",
+			organization: { slug: "example-org" },
+		});
+
+		const result = await sendNotificationEmailActivity({
+			notificationId: "n1",
+		});
+
+		expect(result).toEqual({ delivered: true });
+		expect(sendEmail.mock.calls[0][0].html).toContain(
+			'href="https://app.fabric.test/app/example-org/projects/p1/publishing/t1#q-r1"',
+		);
+	});
+});

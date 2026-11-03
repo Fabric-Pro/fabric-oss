@@ -57,7 +57,7 @@ vi.mock("@shared/lib/orpc-client", async () => {
 
 beforeEach(installBrowserStubs);
 
-const CLAUDE_CODE_LINE = `${INIT} --project ${PROJECT_ID} --tool claude-code --plugin`;
+const CLAUDE_CODE_LINE = `${INIT} --project ${PROJECT_ID} --tool claude-code --plugin --mcp-sign-in --repos`;
 
 describe("ConnectCliDialog — the tool picker", () => {
 	it("offers Claude Code, Codex, VS Code, Cursor and Other, in that order, as one tablist", async () => {
@@ -322,7 +322,7 @@ describe("ConnectCliDialog — the terminal steps for a repository project", () 
 		await user.click(screen.getByRole("tab", { name: "Codex" }));
 
 		expect((await setupLine()).textContent).toBe(
-			`${INIT} --project ${PROJECT_ID} --tool codex --plugin`,
+			`${INIT} --project ${PROJECT_ID} --tool codex --plugin --repos`,
 		);
 		expect(
 			screen.getByText(/trust this folder when asked/i),
@@ -387,7 +387,7 @@ describe("ConnectCliDialog — where to run the line", () => {
 		await user.click(screen.getByRole("radio", { name: "Already cloned" }));
 
 		expect((await setupLine()).textContent).toBe(
-			`${INIT} --project ${PROJECT_ID} --tool claude-code`,
+			`${INIT} --project ${PROJECT_ID} --tool claude-code --repos`,
 		);
 	});
 
@@ -450,7 +450,7 @@ describe("ConnectCliDialog — where to run the line", () => {
 
 		const cloneLine = (await setupLine()).textContent;
 		expect(cloneLine).toBe(
-			`${INIT} --project ${PROJECT_ID} --tool claude-code --clone instructions`,
+			`${INIT} --project ${PROJECT_ID} --tool claude-code --clone instructions --repos`,
 		);
 		// Windows PowerShell 5.1 rejects `&&`, and there is nothing left to chain.
 		expect(cloneLine).not.toMatch(/&&|git clone|\bcd\b/);
@@ -493,7 +493,7 @@ describe("ConnectCliDialog — where to run the line", () => {
 			screen.getByRole("radio", { name: "Clone it for me" }),
 		).toBeChecked();
 		expect((await setupLine()).textContent).toBe(
-			`${INIT} --project ${PROJECT_ID} --tool codex --clone instructions`,
+			`${INIT} --project ${PROJECT_ID} --tool codex --clone instructions --repos`,
 		);
 	});
 
@@ -514,7 +514,7 @@ describe("ConnectCliDialog — where to run the line", () => {
 		);
 
 		expect((await setupLine()).textContent).toBe(
-			`${INIT_WITH_BASE_URL} --project ${PROJECT_ID} --tool claude-code --clone 'rules&x'`,
+			`${INIT_WITH_BASE_URL} --project ${PROJECT_ID} --tool claude-code --clone 'rules&x' --repos`,
 		);
 	});
 
@@ -528,7 +528,7 @@ describe("ConnectCliDialog — where to run the line", () => {
 		);
 
 		expect((await setupLine()).textContent).toBe(
-			`${INIT} --project ${PROJECT_ID} --tool claude-code --clone ./-rules`,
+			`${INIT} --project ${PROJECT_ID} --tool claude-code --clone ./-rules --repos`,
 		);
 	});
 });
@@ -553,7 +553,7 @@ describe("ConnectCliDialog — the terminal steps for an upload project", () => 
 		expect(screen.queryByRole("radio")).not.toBeInTheDocument();
 		expect(screen.queryByText("Where's the repository?")).toBeNull();
 		expect(line.textContent).toBe(
-			`${INIT} --project ${PROJECT_ID} --tool claude-code --plugin`,
+			`${INIT} --project ${PROJECT_ID} --tool claude-code --plugin --mcp-sign-in --repos`,
 		);
 	});
 
@@ -591,10 +591,10 @@ describe("ConnectCliDialog — the terminal steps for an upload project", () => 
 		expect(
 			within(step).getByTestId("agent-sign-in-plugin-approval"),
 		).toHaveTextContent(
-			"claude plugin install fabric-trewrite@fabric-trewrite --scope local",
+			"claude plugin install checkout-rewrite@checkout-rewrite --scope local",
 		);
 		expect(step).toHaveTextContent(/in your own terminal/i);
-		expect(step).toHaveTextContent("fabric-trewrite");
+		expect(step).toHaveTextContent("checkout-rewrite");
 	});
 
 	it("tells the person how to let the agent use Fabric's tools, naming the plugin's server", async () => {
@@ -604,7 +604,7 @@ describe("ConnectCliDialog — the terminal steps for an upload project", () => 
 		const step = screen.getAllByRole("listitem")[2];
 
 		expect(step).toHaveTextContent(
-			"To let the agent use Fabric's tools, run /mcp, pick plugin:fabric-trewrite:fabric and choose Authenticate.",
+			"The setup also approves Fabric's MCP tools for Claude Code. If they still show as needing authentication, run /mcp, pick plugin:checkout-rewrite:fabric and choose Authenticate.",
 		);
 	});
 
@@ -623,11 +623,11 @@ describe("ConnectCliDialog — the terminal steps for an upload project", () => 
 		expect(steps).toHaveLength(3);
 		expect(steps[2]).toHaveTextContent("Turn on the plugin in Codex");
 		expect(steps[2]).toHaveTextContent(
-			"The setup installs this project's plugin, fabric-trewrite, in Codex. If it could not, run:",
+			"The setup installs this project's plugin, checkout-rewrite, in Codex. If it could not, run:",
 		);
 		expect(
 			within(steps[2]).getByTestId("agent-sign-in-codex-plugin"),
-		).toHaveTextContent("codex plugin add fabric-trewrite@personal");
+		).toHaveTextContent("codex plugin add checkout-rewrite@personal");
 		expect(steps[2]).toHaveTextContent(
 			/marketplace is not named personal/i,
 		);
@@ -684,7 +684,7 @@ describe("ConnectCliDialog — the terminal steps for an upload project", () => 
 		await user.click(screen.getByRole("tab", { name: "Codex" }));
 
 		expect((await setupLine()).textContent).toBe(
-			`${INIT_WITH_BASE_URL} --project ${PROJECT_ID} --tool codex --plugin`,
+			`${INIT_WITH_BASE_URL} --project ${PROJECT_ID} --tool codex --plugin --repos`,
 		);
 	});
 });
@@ -744,7 +744,7 @@ describe("ConnectCliDialog — what the deployment serves", () => {
 			const line = await setupLine();
 
 			expect(line.textContent).toBe(
-				`${INIT_WITH_BASE_URL} --project ${PROJECT_ID} --tool claude-code --plugin`,
+				`${INIT_WITH_BASE_URL} --project ${PROJECT_ID} --tool claude-code --plugin --mcp-sign-in --repos`,
 			);
 			expect(
 				screen.queryByTestId("agent-sign-in-line-unavailable"),

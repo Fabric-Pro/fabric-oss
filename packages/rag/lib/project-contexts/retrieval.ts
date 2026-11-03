@@ -1,3 +1,4 @@
+import { projectContextSourceName } from "./source-name";
 /**
  * Project Context Retrieval with RAG Settings
  *
@@ -13,21 +14,18 @@
 
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
-import {
-	db,
-	getProjectRagSettings,
-	getRetrievableContextById,
-	getRetrievableConversationBundleById,
-} from "@repo/database";
+import { db, getProjectRagSettings } from "@repo/database";
 import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { generateEmbedding } from "../embedding";
-import { generateSparseVector } from "../embedding/sparse";
 import type { TenantContext } from "../embedding/types";
 import { withDefaultFeature } from "../embedding/usage";
-import { rerankContexts } from "../reranking";
+import { selectProjectContexts } from "../reranking/select-project-contexts";
 import type { RerankerProviderType } from "../reranking/types";
-import { searchSimilarProjectContexts } from "./store";
+import {
+	hydrateProjectContextHits,
+	searchProjectContextHits,
+} from "./search-hits";
 import { applyContextSummary } from "./summary-injection";
 
 /**
@@ -85,8 +83,9 @@ export interface ProjectContextRetrievalOptions {
 	 */
 	diversify?: boolean;
 	/**
-	 * Skip reranking even when the project enables it. Only meaningful on the
-	 * `diversify` path.
+	 * Skip reranking on either retrieval path, even when the project enables it.
+	 * The source limit still applies: `rerankTopK` on the default path and
+	 * `maxContexts` on the diversified path.
 	 *
 	 * Diversification and reranking are independent — one restores
 	 * cross-document variety, the other orders what survives — and a caller that
@@ -252,19 +251,15 @@ export async function retrieveProjectContexts(
 			return applySummary([]);
 		}
 
-		// Generate sparse vector for hybrid search
-		const querySparseVector = generateSparseVector(query);
-
-		// Search for similar contexts in Qdrant (hybrid: dense + sparse with RRF)
-		// Note: We pass userId for logging but filtering is primarily by projectId
-		// Access control is handled at the API layer
-		const searchResults = await searchSimilarProjectContexts({
+		const searchResults = await searchProjectContextHits({
+			query,
+			fallbackOnSparseFailure: false,
 			projectId,
 			userId,
 			organizationId,
 			queryEmbedding: embeddingResult.embedding,
-			querySparseVector,
 			topK: searchTopK,
+			excludeDocumentChunks: true,
 			minSimilarity: similarityThreshold,
 			contextIds,
 		});
@@ -278,14 +273,12 @@ export async function retrieveProjectContexts(
 			`[Retrieval] Found ${searchResults.length} similar contexts`,
 		);
 
-		// Deduplicate by contextId (multiple chunks from same context may appear)
-		// while preserving Qdrant's relevance order, then fetch all rows in parallel.
-		const orderedIds: string[] = [];
-		const scoreById = new Map<string, number>();
-		// Which of those ids belong to a captured conversation bundle rather
-		// than to a context row. Carried from the point payload, because the id
-		// alone cannot say which table holds it.
-		const bundleIdById = new Map<string, string>();
+		const hydrated = await hydrateProjectContextHits({
+			hits: searchResults,
+			projectId,
+			userId,
+			organizationId,
+		});
 		const passagesById = new Map<
 			string,
 			Array<{ content: string; score: number }>
@@ -301,43 +294,10 @@ export async function retrieveProjectContexts(
 				}
 				passagesById.set(result.contextId, passages);
 			}
-			if (scoreById.has(result.contextId)) {
-				continue;
-			}
-			scoreById.set(result.contextId, result.score);
-			if (result.conversationBundleId) {
-				bundleIdById.set(result.contextId, result.conversationBundleId);
-			}
-			orderedIds.push(result.contextId);
 		}
 
-		// Full bodies and source metadata still come from Postgres; optional
-		// matched passages above come from the vector hits. Three tables hold bodies:
-		//   - `ProjectContext` — the ordinary case.
-		//   - `ProjectContextUrlPage` — per-page URL chunks are embedded with
-		//     their own page id, which `getRetrievableContextById` falls back to.
-		//   - `ProjectContextConversationBundle` — a monitored channel's captured
-		//     messages (Fizzy #2228). The channel's own context row is a pointer
-		//     with empty `content`, so resolving a bundle hit through the context
-		//     path would return nothing to cite even when it "succeeded". Only
-		//     the payload knows, hence the branch.
-		const fetched = await Promise.all(
-			orderedIds.map((id) => {
-				const bundleId = bundleIdById.get(id);
-				if (!bundleId) {
-					return getRetrievableContextById(id);
-				}
-				return getRetrievableConversationBundleById({
-					bundleId,
-					projectId,
-					tenant: { userId, organizationId },
-				});
-			}),
-		);
-
 		const contexts: RetrievedContext[] = [];
-		for (let i = 0; i < orderedIds.length; i++) {
-			const context = fetched[i];
+		for (const { hit, context } of hydrated) {
 			if (!context) {
 				continue;
 			}
@@ -354,11 +314,11 @@ export async function retrieveProjectContexts(
 			contexts.push({
 				id: context.id,
 				...(options.includeMatchedPassages
-					? { matchedPassages: passagesById.get(orderedIds[i]) ?? [] }
+					? { matchedPassages: passagesById.get(hit.contextId) ?? [] }
 					: {}),
 				type: effectiveType,
 				content: context.content,
-				score: scoreById.get(orderedIds[i]) ?? 0,
+				score: hit.score,
 				metadata: meta ?? undefined,
 				filename: context.originalFilename || undefined,
 				sourceUrl: context.sourceUrl || undefined,
@@ -375,70 +335,21 @@ export async function retrieveProjectContexts(
 			projectId,
 		);
 
-		/**
-		 * Rerank when the project asks for it, falling back to the input order
-		 * if the reranker is unavailable — a failed rerank must never cost the
-		 * caller its results. Shared by both exit paths so they cannot drift.
-		 */
-		const maybeRerank = async (
-			candidates: RetrievedContext[],
-		): Promise<RetrievedContext[]> => {
-			if (!ragSettings.enableReranking || candidates.length <= 1) {
-				return candidates;
-			}
-			// Fall back to 10 if not set (e.g., older settings without this field)
-			const rerankTopK = (ragSettings as any).rerankTopK ?? 10;
-			const rerankerProvider = (ragSettings as any).rerankerProvider as
-				| RerankerProviderType
-				| undefined;
-
-			logger.info(
-				`[Retrieval] Reranking ${candidates.length} contexts → top ${rerankTopK} with ${rerankerProvider || "cross-encoder"}`,
-			);
-
-			try {
-				const { contexts: rerankedContexts, stats } =
-					await rerankContexts({
-						query,
-						contexts: candidates,
-						topK: rerankTopK,
-						provider: rerankerProvider,
-					});
-
-				logger.info(
-					`[Retrieval] Reranking complete: ${stats.inputCount} → ${stats.outputCount} in ${stats.latencyMs}ms (provider: ${stats.provider})`,
-				);
-
-				return rerankedContexts;
-			} catch (error) {
-				// A stopped chat turn is not a reranker outage.
-				rethrowIfDispatchStopped(error);
-				logger.warn(
-					`[Retrieval] Reranking failed, returning original results: ${error}`,
-				);
-				return candidates;
-			}
-		};
-
-		// Diversified retrieval returns the top distinct documents — the candidate
-		// over-fetch + dedup above is what restored cross-document diversity, and
-		// they arrive in hybrid-RRF relevance order. Callers that cannot afford an
-		// extra rerank model call (an agent answering in-line) pass `skipRerank`
-		// and take that order as-is; everyone else reranks the diversified set
-		// below, because diversity and relevance ordering are separate concerns.
-		if (diversify) {
-			const diversified = enrichedContexts.slice(0, maxContexts);
-			logger.info(
-				`[Retrieval] Returning ${diversified.length} distinct contexts (diversified from ${enrichedContexts.length}) for project ${projectId}`,
-			);
-			return applySummary(
-				options.skipRerank
-					? diversified
-					: await maybeRerank(diversified),
-			);
-		}
-
-		const finalContexts = await maybeRerank(enrichedContexts);
+		const rerankTopK = ragSettings.rerankTopK ?? 10;
+		const resultLimit = diversify
+			? options.skipRerank
+				? maxContexts
+				: Math.min(maxContexts, rerankTopK)
+			: rerankTopK;
+		const finalContexts = await selectProjectContexts({
+			contexts: enrichedContexts,
+			hits: searchResults,
+			query,
+			limit: resultLimit,
+			enabled: ragSettings.enableReranking && !options.skipRerank,
+			provider: ragSettings.rerankerProvider as RerankerProviderType,
+			tenant: { userId, organizationId, projectId },
+		});
 
 		logger.info(
 			`[Retrieval] Returning ${finalContexts.length} contexts for project ${projectId}`,
@@ -469,12 +380,7 @@ export function formatContextsForPrompt(contexts: RetrievedContext[]): string {
 		return "";
 	}
 	const formattedContexts = contexts.map((ctx, index) => {
-		const source =
-			ctx.sourcePath ||
-			ctx.filename ||
-			ctx.sourceTitle ||
-			ctx.sourceUrl ||
-			`Context ${index + 1}`;
+		const source = projectContextSourceName(ctx, index);
 		const roleTag = ctx.metadata?.roleTag as string | undefined;
 		const tagPrefix = roleTag ? `${roleTag}: ` : "";
 		// User-declared type label (Fizzy #1888) leads the parenthetical so

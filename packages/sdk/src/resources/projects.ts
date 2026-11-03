@@ -147,8 +147,47 @@ export interface UpdateFeatureOptions {
 	personal?: boolean;
 }
 
+/** A repository connected to a project that holds the software being built. */
+export interface ProjectCodeRepository {
+	id: string;
+	provider: "GITHUB" | "GITLAB" | "AZURE_DEVOPS";
+	/** `owner/name`. */
+	name: string;
+	/** Credential-free HTTPS address; the clone uses the developer's own git sign-in. */
+	cloneUrl: string;
+	defaultBranch: string;
+	roleTag: string | null;
+	/** Its folder in the agent workspace: `repos/<folder>`. */
+	folder: string;
+}
+
 export class ProjectsResource {
 	constructor(private readonly http: FabricHttpClient) {}
+
+	/** The Coding Instructions plugin's name in coding tools (`/<name>:<skill>`). */
+	getPluginName(
+		projectId: string,
+		options: { org?: string } = {},
+	): Promise<{ name: string }> {
+		const q = options.org ? `?org=${encodeURIComponent(options.org)}` : "";
+		return this.http.get<{ name: string }>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/plugin-name${q}`,
+		);
+	}
+
+	/**
+	 * The project's code repositories: every connected repository except the
+	 * one its Coding Instructions read from.
+	 */
+	listCodeRepositories(
+		projectId: string,
+		options: { org?: string } = {},
+	): Promise<{ repositories: ProjectCodeRepository[] }> {
+		const q = options.org ? `?org=${encodeURIComponent(options.org)}` : "";
+		return this.http.get<{ repositories: ProjectCodeRepository[] }>(
+			`/projects/${encodeURIComponent(projectId)}/code-repositories${q}`,
+		);
+	}
 
 	list(options: ListProjectsOptions = {}): Promise<FabricProject[]> {
 		const q = buildQuery(options);

@@ -18,7 +18,10 @@
  * registration is added; an earlier Claude Code one is taken out so an agent
  * does not see two sets of tools.
  */
+import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import path from "node:path";
+import { getClient } from "../../lib/client.js";
 import { CliFailure, describeError } from "../../lib/command-boundary.js";
 import { getConfigPath } from "../../lib/config.js";
 import { runningInCi } from "../../lib/environment.js";
@@ -34,6 +37,7 @@ import {
 	CODEX_HOOKS_RELATIVE_PATH,
 	type InstructionsHookTool,
 	removeCommandHook,
+	updateHookConfig,
 } from "../../lib/instructions/hook.js";
 import { resolveHookLauncher } from "../../lib/instructions/hook-launcher.js";
 import { machine } from "../../lib/instructions/machine.js";
@@ -55,7 +59,12 @@ import {
 	type GatewayRemoval,
 	removeLocalClaudeGateway,
 } from "../../lib/plugin/gateway.js";
-import { pluginNameFor } from "../../lib/plugin/layout.js";
+import { idPluginName, pluginNameFor } from "../../lib/plugin/layout.js";
+import {
+	assignedPluginName,
+	assignPluginName,
+	renamePluginName,
+} from "../../lib/plugin/plugin-names.js";
 import {
 	claudeApprovalCommands,
 	pluginIdFor,
@@ -77,6 +86,8 @@ export interface PluginInitOptions {
 	dest?: string;
 	/** False under `--no-mcp`: the old Claude Code gateway registration is left alone. */
 	mcp?: boolean;
+	/** `--rename`: move an existing install to the project's readable name. */
+	rename?: boolean;
 	format: "text" | "json";
 }
 
@@ -208,6 +219,111 @@ async function probeMemory(
 	}
 }
 
+/**
+ * The plugin's readable name (`plugin-names.ts`), chosen on the first set-up
+ * of the project on this machine. A plugin already installed under its
+ * id-based name (its marketplace folder exists) keeps that name.
+ */
+/**
+ * The plugin name set in Fabric (the project's own, or its name as a slug),
+ * or the project's name when an older deployment has no such setting.
+ */
+async function fabricPluginName(
+	options: PluginInitOptions,
+): Promise<string | null> {
+	const org = options.org ? { org: options.org } : {};
+	try {
+		return (await getClient().projects.getPluginName(options.project, org))
+			.name;
+	} catch {
+		try {
+			return (
+				(await getClient().projects.get(options.project, org)).name ??
+				null
+			);
+		} catch {
+			return null;
+		}
+	}
+}
+
+/**
+ * `--rename`: gives the project its readable name and removes what the
+ * old name left in this folder and in the CLI's cache: the Claude Code
+ * marketplace entry and enabled plugin in the folder's settings, the cached
+ * marketplace, and a rules folder Fabric manages. The set-up that follows
+ * registers the plugin under the new name.
+ */
+async function renameInstalledPlugin(
+	options: PluginInitOptions,
+	root: string,
+	configPath: string,
+): Promise<{ from: string; to: string } | null> {
+	const previous = pluginNameFor(options.project);
+	const projectName = await fabricPluginName(options);
+	const renamed = renamePluginName({
+		projectId: options.project,
+		projectName,
+		previous,
+	});
+	if (renamed === null) {
+		return null;
+	}
+	const oldId = `${previous}@${previous}`;
+	await updateHookConfig({
+		root,
+		tool: "claude-code",
+		update: (settings) => {
+			const next = { ...settings };
+			for (const key of ["extraKnownMarketplaces", "enabledPlugins"]) {
+				const value = next[key];
+				if (
+					value &&
+					typeof value === "object" &&
+					!Array.isArray(value)
+				) {
+					const copy = { ...(value as Record<string, unknown>) };
+					delete copy[previous];
+					delete copy[oldId];
+					next[key] = copy;
+				}
+			}
+			return next;
+		},
+	});
+	await rm(
+		path.join(path.dirname(configPath), "cache", "marketplaces", previous),
+		{
+			recursive: true,
+			force: true,
+		},
+	);
+	const rules = path.join(root, ".claude", "rules", previous);
+	if (existsSync(path.join(rules, ".fabric-managed.json"))) {
+		await rm(rules, { recursive: true, force: true });
+	}
+	return renamed;
+}
+
+async function choosePluginName(
+	options: PluginInitOptions,
+	configPath: string,
+): Promise<void> {
+	if (assignedPluginName(options.project) !== null) {
+		return;
+	}
+	const legacy = idPluginName(options.project);
+	const installed = existsSync(
+		path.join(path.dirname(configPath), "cache", "marketplaces", legacy),
+	);
+	const projectName = installed ? null : await fabricPluginName(options);
+	assignPluginName({
+		projectId: options.project,
+		projectName,
+		keep: installed ? legacy : null,
+	});
+}
+
 export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 	const explicit =
 		options.tool === undefined ? undefined : toolOf(options.tool);
@@ -219,6 +335,17 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 		throw new CliFailure(
 			error instanceof Error ? error.message : String(error),
 			7,
+		);
+	}
+
+	const renamed = options.rename
+		? await renameInstalledPlugin(options, root, getConfigPath())
+		: null;
+	await choosePluginName(options, getConfigPath());
+	if (renamed !== null && options.format !== "json") {
+		process.stdout.write(
+			`Renamed the plugin ${renamed.from} to ${renamed.to}; its skills are now /${renamed.to}:<skill>. Claude Code drops the old one at its next start (to remove it at once: claude plugin uninstall ${renamed.from}@${renamed.from}).
+`,
 		);
 	}
 

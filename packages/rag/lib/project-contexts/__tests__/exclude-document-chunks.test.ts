@@ -133,3 +133,20 @@ describe("excludeDocumentChunks", () => {
 		expect(hasDocumentIdIsNull(must)).toBe(true);
 	});
 });
+
+it("thresholds only the dense prefetch of hybrid search", async () => {
+	getLayoutMock.mockResolvedValue({
+		supportsHybrid: true,
+		denseVectorName: "dense",
+	});
+	searchMock.mockResolvedValue({ points: [] });
+	await searchSimilarProjectContexts({
+		...BASE,
+		minSimilarity: 0.73,
+		querySparseVector: { indices: [1], values: [1] },
+	});
+	const query = searchMock.mock.calls[0][1];
+	expect(query.prefetch[0].score_threshold).toBe(0.73);
+	expect(query.prefetch[1]).not.toHaveProperty("score_threshold");
+	expect(query).not.toHaveProperty("score_threshold");
+});

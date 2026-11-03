@@ -144,7 +144,7 @@ vi.mock("@repo/integrations/pm", () => ({
 	readLabelStatusMap: () => ({}),
 }));
 
-// `syncGitLabStoryViaRest` now stamps a baseline hash via
+// `syncStoryViaRest` now stamps a baseline hash via
 // `stampPmSyncSuccess` on every successful push/pull (and uses the matching
 // guard helpers on update). The real helpers call `db.userStory.update` →
 // Prisma client, which isn't available under this test's synchronous

@@ -27,6 +27,7 @@ const {
 	mockGetProjectSummaryById,
 	WizardStub,
 	SimplifiedStub,
+	StartStub,
 	BreadcrumbsStub,
 	ControlsStub,
 } = vi.hoisted(() => ({
@@ -37,6 +38,7 @@ const {
 	mockGetProjectSummaryById: vi.fn(),
 	WizardStub: () => null,
 	SimplifiedStub: () => null,
+	StartStub: () => null,
 	BreadcrumbsStub: () => null,
 	ControlsStub: () => null,
 }));
@@ -65,6 +67,10 @@ vi.mock("@saas/projects/components/ProjectCreationWizard", () => ({
 
 vi.mock("@saas/projects/components/SimplifiedProjectForm", () => ({
 	SimplifiedProjectForm: SimplifiedStub,
+}));
+
+vi.mock("@saas/projects/components/NewProjectStart", () => ({
+	NewProjectStart: StartStub,
 }));
 
 vi.mock("@saas/shared/components/PageBreadcrumbs", () => ({
@@ -111,10 +117,25 @@ async function callPage(
 
 type RenderedElement = { type: unknown; props: Record<string, unknown> };
 
+/**
+ * The first element of `type` in the returned tree: a direct child of the
+ * page, or the form `NewProjectStart` wraps on a fresh visit.
+ */
 function childOfType(result: unknown, type: unknown): RenderedElement | null {
 	const raw = (result as RenderedElement).props.children;
 	const children = (Array.isArray(raw) ? raw : [raw]) as RenderedElement[];
-	return children.find((child) => child?.type === type) ?? null;
+	for (const child of children) {
+		if (child?.type === type) {
+			return child;
+		}
+		if (child?.type === StartStub) {
+			const inner = childOfType(child, type);
+			if (inner) {
+				return inner;
+			}
+		}
+	}
+	return null;
 }
 
 describe("new-project page — SIMPLIFIED_PROJECT_CREATION", () => {
@@ -171,6 +192,50 @@ describe("new-project page — SIMPLIFIED_PROJECT_CREATION", () => {
 		const props = childOfType(result, SimplifiedStub)?.props;
 		expect(props).not.toHaveProperty("initialStep");
 		expect(props).toMatchObject({ organizationId: ORG_ID });
+	});
+
+	// Repository-import spec §6a: a fresh visit chooses between this form and
+	// an import, in both variants; resume and edit go straight to the form.
+	it.each([
+		[false, WizardStub],
+		[true, SimplifiedStub],
+	])(
+		"offers the import beside the form on a fresh visit (flag %s)",
+		async (flag, form) => {
+			mockIsFeatureEnabled.mockResolvedValue(flag);
+
+			const result = await callPage();
+
+			const start = childOfType(result, StartStub);
+			expect(start?.props).toMatchObject({
+				organizationId: ORG_ID,
+				projectsBasePath: `/app/${ORG_SLUG}/projects`,
+			});
+			expect(childOfType(start, form)).not.toBeNull();
+		},
+	);
+
+	it("does not offer the import to a resumed wizard", async () => {
+		mockIsFeatureEnabled.mockResolvedValue(false);
+
+		const result = await callPage({ step: "2" });
+
+		expect(childOfType(result, StartStub)).toBeNull();
+		expect(childOfType(result, WizardStub)).not.toBeNull();
+	});
+
+	it("does not offer the import when continuing a project", async () => {
+		mockIsFeatureEnabled.mockResolvedValue(true);
+		mockGetProjectSummaryById.mockResolvedValue({
+			id: "proj-1",
+			name: "Draft",
+			status: "DRAFT",
+		});
+
+		const result = await callPage({ projectId: "proj-1" });
+
+		expect(childOfType(result, StartStub)).toBeNull();
+		expect(childOfType(result, SimplifiedStub)).not.toBeNull();
 	});
 });
 

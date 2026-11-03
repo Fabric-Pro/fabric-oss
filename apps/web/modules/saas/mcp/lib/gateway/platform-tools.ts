@@ -76,6 +76,7 @@ import {
 	preserveVisualSlots,
 } from "@repo/utils/glossy/visual-slots";
 import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
+import { createCodeRepositoriesTools } from "./code-repositories-tools";
 import {
 	CHECKOUT_INPUT_SCHEMA,
 	instructionCheckoutCheck,
@@ -119,6 +120,7 @@ import {
 	parseKnowledgeSearchCursor,
 	serializeKnowledgeSearchPage,
 } from "./knowledge-search";
+import { createKnowledgeTools } from "./knowledge-tools";
 import { createMemoryWriteTools } from "./memory-write-tools";
 import {
 	bindToolCall,
@@ -127,6 +129,8 @@ import {
 	serviceSessionHasTool,
 	sessionMayReachProject,
 } from "./project-binding";
+import { createProjectRagTools } from "./project-rag-tools";
+import { createRulesTools } from "./rules-tools";
 import {
 	selectionAllowsTool,
 	selectionRefusalMessage,
@@ -201,6 +205,22 @@ const PAGE_DISCOVERY_TOOLS = toolFamily(
 );
 const MEMORY_WRITE_TOOLS = createMemoryWriteTools({
 	resolveGatewayProjectWriteAccessWithHost,
+});
+const KNOWLEDGE_TOOLS = createKnowledgeTools({
+	resolveGatewayProjectWriteAccessWithHost,
+});
+const CODE_REPOSITORIES_TOOLS = createCodeRepositoriesTools({
+	resolveGatewayProjectWriteAccessWithHost,
+});
+const PROJECT_RAG_TOOLS = createProjectRagTools({
+	resolveGatewayProjectWriteAccessWithHost,
+});
+const RULES_TOOLS = createRulesTools({
+	resolveGatewayProjectReadAccess,
+	listInstructions: (args, session) =>
+		handleListProjectInstructions(args, session),
+	getInstruction: (args, session) =>
+		handleGetProjectInstruction(args, session),
 });
 
 export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
@@ -1130,6 +1150,61 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		_gateway_source: "platform",
 	},
 	{
+		name: "fabric_change_instructions",
+		description:
+			"Changes the project's coding instructions on the user's request: each file's whole new content or a delete, the base you read, a one-line summary. Commits when allowed, else proposes for review.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				projectId: { type: "string" },
+				summary: {
+					type: "string",
+					minLength: 1,
+					maxLength: 300,
+					description: "One line: what changes and why",
+				},
+				intent: {
+					type: "string",
+					enum: ["commit", "propose"],
+					description: "Default commit",
+				},
+				nativeBase: {
+					type: "object",
+					properties: {
+						generation: { type: "integer", minimum: 1 },
+						commitSha: { type: "string" },
+					},
+					required: ["generation", "commitSha"],
+				},
+				baseSnapshotId: {
+					type: "string",
+					minLength: 1,
+					maxLength: 128,
+				},
+				changes: {
+					type: "array",
+					minItems: 1,
+					maxItems: 50,
+					items: {
+						type: "object",
+						properties: {
+							op: { type: "string", enum: ["put", "delete"] },
+							path: { type: "string" },
+							content: { type: "string" },
+							encoding: {
+								type: "string",
+								enum: ["utf8", "base64"],
+							},
+						},
+						required: ["op", "path"],
+					},
+				},
+			},
+			required: ["projectId", "summary", "changes"],
+		},
+		_gateway_source: "platform",
+	},
+	{
 		name: "fabric_add_instruction_lesson",
 		description:
 			"Records a lesson, a mistake the next agent should not repeat (a skipped check, a false assumption, a recurring bug), as a new Lessons/<date>-<slug>.md file in the project's coding instructions. " +
@@ -1280,6 +1355,10 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 
 	// ── Living Memory writes ── (./memory-write-tools)
 	...MEMORY_WRITE_TOOLS.definitions,
+	...KNOWLEDGE_TOOLS.definitions,
+	...RULES_TOOLS.definitions,
+	...CODE_REPOSITORIES_TOOLS.definitions,
+	...PROJECT_RAG_TOOLS.definitions,
 
 	// ── Connected MCP Servers ──
 
@@ -1419,6 +1498,14 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 		scope: "instructions:write",
 		kind: "write",
 	},
+	// Proposes under this scope. Commits only for a sign-in that also names
+	// `instructions:publish` and whose owner LIVE holds INSTRUCTION_CREATE
+	// (the tab's own "Commit to <branch>" gate) on a repository-backed
+	// project.
+	fabric_change_instructions: {
+		scope: "instructions:write",
+		kind: "write",
+	},
 	fabric_create_project: { scope: "projects:write", kind: "write" },
 	fabric_update_project: { scope: "projects:write", kind: "write" },
 	fabric_create_document: { scope: "projects:write", kind: "write" },
@@ -1450,6 +1537,10 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	...FRAME_VERSION_TOOLS.scopes,
 	...PAGE_TOOLS.scopes,
 	...MEMORY_WRITE_TOOLS.scopes,
+	...KNOWLEDGE_TOOLS.scopes,
+	...RULES_TOOLS.scopes,
+	...CODE_REPOSITORIES_TOOLS.scopes,
+	...PROJECT_RAG_TOOLS.scopes,
 
 	// Chats
 	fabric_list_chats: { scope: "chats:read", kind: "read" },
@@ -1491,6 +1582,10 @@ const FAMILY_HANDLERS: ReadonlyMap<string, PlatformToolHandler> = new Map([
 	...FRAME_VERSION_TOOLS.handlers,
 	...PAGE_TOOLS.handlers,
 	...MEMORY_WRITE_TOOLS.handlers,
+	...KNOWLEDGE_TOOLS.handlers,
+	...RULES_TOOLS.handlers,
+	...CODE_REPOSITORIES_TOOLS.handlers,
+	...PROJECT_RAG_TOOLS.handlers,
 ]);
 
 export type AuthorizedPlatformToolCall = {
@@ -1622,6 +1717,8 @@ export async function executeAuthorizedPlatformToolCall({
 				);
 			case "fabric_add_instruction_lesson":
 				return await handleAddInstructionLesson(args, session);
+			case "fabric_change_instructions":
+				return await handleChangeInstructions(args, session);
 			case "fabric_list_workspaces":
 				return await handleListWorkspaces(args, session);
 			case "fabric_get_workspace":
@@ -2409,7 +2506,8 @@ type GatewayWritePermission =
 	| "STORY_UPDATE"
 	| "CONTEXT_READ"
 	| "CONTEXT_CREATE"
-	| "CONTEXT_UPDATE";
+	| "CONTEXT_UPDATE"
+	| "INSTRUCTION_CREATE";
 
 /**
  * {@link resolveGatewayProjectWriteAccess}, plus the tenant to write under —
@@ -6759,6 +6857,150 @@ async function handleProposeProjectInstructionChange(
 		);
 		return errorResult(
 			"The proposal could not be created because of an internal error. Nothing was changed. Try again, or use the project's Coding Instructions tab.",
+		);
+	}
+}
+
+/**
+ * `fabric_change_instructions` — the plugin's "change a rule" flow
+ * (specs/2026-10-21-ai-artifacts-hub §5.3). Under `instructions:write` it
+ * proposes, like `fabric_propose_project_instruction_change`: that scope
+ * never publishes (see that tool's handler). Only a sign-in that also carries
+ * `instructions:publish`, the scope of the REST publish route, whose owner
+ * LIVE holds INSTRUCTION_CREATE, commits to a repository-backed project's
+ * branch through the same `submitInstructionChange` "commit" path as the
+ * tab's "Commit to <branch>" (scan first, protected or busy branch: pull
+ * request). Everyone else, an uploaded project, or intent "propose" goes
+ * through the proposal tool unchanged.
+ */
+/**
+ * Whether a sign-in may commit instructions rather than propose them: it
+ * names `instructions:publish`, the REST publish route's scope. Neither
+ * `mcp:write` nor `*` stands in for it: a browser session carries `*`, and
+ * an agent publishing with nobody in between needs a key a person minted
+ * for exactly that.
+ */
+export function mayPublishInstructions(scopes: readonly string[]): boolean {
+	return scopes.includes("instructions:publish");
+}
+
+async function handleChangeInstructions(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const projectId = args.projectId as string;
+	if (!projectId) {
+		return errorResult("projectId is required");
+	}
+	const summary = typeof args.summary === "string" ? args.summary.trim() : "";
+	if (!summary || summary.length > 300 || /[\r\n]/.test(summary)) {
+		return errorResult(
+			"summary is required: one line of at most 300 characters saying what changes and why",
+		);
+	}
+	const proposeInstead = async (reason: string | null) => {
+		const result = await handleProposeProjectInstructionChange(
+			{ ...args, note: { title: summary.slice(0, 120), body: summary } },
+			session,
+		);
+		if (reason === null || result.isError) {
+			return result;
+		}
+		const first = result.content[0] as { type: string; text?: string };
+		return jsonResult({
+			...(first.text ? JSON.parse(first.text) : {}),
+			committed: false,
+			why: reason,
+		});
+	};
+	if (args.intent === "propose") {
+		return proposeInstead(null);
+	}
+	if (!mayPublishInstructions(session.scopes)) {
+		return proposeInstead(
+			"This sign-in may propose changes to these instructions but not commit them, so this opened a pull request for review.",
+		);
+	}
+
+	const base = instructionChangeBaseSchema.safeParse(args);
+	if (!base.success) {
+		return errorResult(
+			"Pass nativeBase for repository instructions, or baseSnapshotId for uploaded instructions, from the read tools. Both cannot be supplied together.",
+		);
+	}
+	if (base.data.nativeBase === undefined) {
+		return proposeInstead(
+			"This project's instructions are uploaded, not read from a repository, so a change is a proposal a person approves in the Coding Instructions tab.",
+		);
+	}
+	const parsed = readProposedChanges(args);
+	if ("error" in parsed) {
+		return parsed.error;
+	}
+	const access = await resolveGatewayProjectWriteAccessWithHost(
+		projectId,
+		session,
+		"INSTRUCTION_CREATE",
+	);
+	if (access.status === "not-found") {
+		return errorResult(INSTRUCTION_PROJECT_DENIED);
+	}
+	if (access.status === "forbidden") {
+		return proposeInstead(
+			"You may propose changes to these instructions but not commit them, so this opened a pull request for review.",
+		);
+	}
+
+	const [{ submitInstructionChange }, { assertRepositoryWritable }] =
+		await Promise.all([
+			import(
+				"@repo/api/modules/projects/procedures/instructions/submit-change"
+			),
+			import(
+				"@repo/api/modules/projects/procedures/instructions/read-only-guard"
+			),
+		]);
+	try {
+		await assertRepositoryWritable(projectId);
+		const result = await submitInstructionChange({
+			userId: session.userId,
+			projectId,
+			nativeBase: base.data.nativeBase,
+			changes: parsed.changes,
+			mode: "commit",
+			message: summary,
+			audit: {
+				user: {
+					id: session.userId,
+					email: session.email,
+					name: session.userName,
+				},
+				session: {
+					id: session.sessionId,
+					activeOrganizationId: session.organizationId,
+				},
+			},
+			via: "mcp-gateway",
+		});
+		return jsonResult({
+			committed: true,
+			operationId: result.snapshotId,
+			status: result.status,
+			changedFiles: result.putCount,
+			deletedFiles: result.deleteCount,
+			message:
+				"Sent to the instructions repository: it is scanned, then committed to the branch (a protected or busy branch gets a pull request instead). Teammates receive it as a plugin update at their next session; restart yours to load it.",
+		});
+	} catch (error) {
+		const refusal = instructionRefusalMessage(error);
+		if (refusal !== null) {
+			return errorResult(refusal);
+		}
+		console.error("[MCP Gateway] fabric_change_instructions failed:", {
+			error: error instanceof Error ? error.message : error,
+		});
+		return errorResult(
+			"The change could not be sent because of an internal error. Nothing was changed. Try again.",
 		);
 	}
 }

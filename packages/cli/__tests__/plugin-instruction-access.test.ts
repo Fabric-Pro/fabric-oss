@@ -37,6 +37,7 @@ function build(
 		projectId,
 		files,
 		memory: { state: "known", ref: "main", folders: [] },
+		knowledge: { state: "known", types: [] },
 		gatewayUrl: `https://example.com/api/mcp-gateway/projects/${projectId}`,
 		pin: "render-hash",
 		instructionAccess: {

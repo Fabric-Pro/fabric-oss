@@ -1787,7 +1787,7 @@ export function StoryWorkspace({
 		staleTime: 60000,
 	});
 	const codeSearchEnabled =
-		ragSettingsData?.settings?.codeSearchEnabled ?? false;
+		(ragSettingsData?.settings?.codeSearchMode ?? "OFF") !== "OFF";
 
 	const project = projectData?.project;
 	const documents = documentsData?.documents ?? [];
@@ -2122,7 +2122,7 @@ export function StoryWorkspace({
 	// useCoAgent captures initialState at mount, but `ragSettings` / Teams / Slack
 	// queries are async — without this effect the flags are stuck at the mount-time
 	// defaults (typically all false), so code-search tools never bind even when the
-	// "Enable code search for AI agents" toggle is on.
+	// project code search mode is not Off.
 	// Partial update form (matches the pattern already used elsewhere in this file,
 	// e.g. `setAgentState({ document: ... })`); the functional form requires a full
 	// AgentState which we can't construct without the other ref-managed fields.
@@ -3947,7 +3947,7 @@ export function StoryWorkspace({
 	// Expose project context (also carries integration flags for the agent)
 	// hasRepoIntegration is the load-bearing flag that binds code-search tools in
 	// chat-node.ts / tool-node.ts; without it the agent can't search the repo even
-	// when "Enable code search for AI agents" is toggled on for the project.
+	// when the project code search mode is not Off.
 	useCopilotReadable({
 		description: "Project context for the feature",
 		value: useMemo(

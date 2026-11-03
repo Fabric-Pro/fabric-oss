@@ -58,9 +58,38 @@ function gitlabDisplayStatus(
 
 export function normalizePolledState(
 	itemSummary: PMWorkItemSummary,
-	ctx: { kind: "mcp" | "rest-gitlab"; pmTool?: string },
+	ctx: { kind: "mcp" | "rest-gitlab" | "rest-github"; pmTool?: string },
 ): NormalizedPmState {
 	const raw = (itemSummary.raw ?? {}) as Record<string, unknown>;
+
+	// GitHub Projects: the issue's open/closed state, and the board's Status
+	// option as the status string (so `pmTerminalStatuses` like "Done" apply)
+	// and as the `Status::<option>` pseudo-label the label map reads.
+	if (ctx.kind === "rest-github") {
+		const rawState = raw.state;
+		const labels = stringLabels(raw.labels);
+		const isClosed =
+			typeof rawState === "string"
+				? rawState.toLowerCase() === "closed"
+				: null;
+		const status =
+			typeof raw.status === "string" && raw.status.length > 0
+				? raw.status
+				: null;
+		return {
+			statusString: status,
+			isClosed,
+			labels,
+			changedDate: extractChangedDate(raw, undefined),
+			title: itemSummary.title ?? null,
+			description: itemSummary.description ?? null,
+			itemUrl: itemSummary.url ?? null,
+			displayStatus:
+				isClosed === true
+					? "Closed"
+					: (status ?? (isClosed === false ? "Open" : null)),
+		};
+	}
 
 	if (ctx.kind === "rest-gitlab") {
 		const rawState = raw.state;

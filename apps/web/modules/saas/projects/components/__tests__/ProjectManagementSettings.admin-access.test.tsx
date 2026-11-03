@@ -16,6 +16,10 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({ organizationName: "Acme" }),
 }));
 
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 vi.mock("sonner", () => ({
 	toast: { error: vi.fn(), success: vi.fn() },
 }));

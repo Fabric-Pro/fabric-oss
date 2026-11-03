@@ -77,6 +77,7 @@ export function AgentSignInSection({
 						onCloneChoiceChange={setCloneChoice}
 						origin={origin}
 						projectId={projectId}
+						projectName={projectName}
 						tool={picked}
 					/>
 				);

@@ -1384,6 +1384,43 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 		);
 	});
 
+	it("auto-populates GitHub PAT credential from a token pasted in Integrations (`GITHUB_TOKEN`)", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "example-org",
+			name: "example-repo",
+			url: "https://github.com/example-org/example-repo",
+		});
+		mockWorkflowIntegrationFindFirst.mockResolvedValue({
+			credentials: encryptApiKey(
+				JSON.stringify({ GITHUB_TOKEN: "ghp_pasted_token" }),
+			),
+		});
+		mockRepoIntegrationFindFirst.mockResolvedValue(null);
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				projectId: "p1",
+				organizationId: "org-1",
+				repoUrls: ["https://github.com/example-org/example-repo"],
+				selectedDocumentTypes: [],
+				projectTypes: [],
+				projectName: "Proj",
+			},
+			context: baseContext,
+		});
+
+		expect(result.skippedRepos).toBeUndefined();
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				provider: "GITHUB",
+				authMethod: "PAT",
+				encryptedPat: encryptApiKey("ghp_pasted_token"),
+			}),
+		);
+	});
+
 	it("auto-populates GitLab PAT credential when only `pat` fallback key is present", async () => {
 		mockParseRepoUrl.mockReturnValue({
 			provider: "GITLAB",
@@ -1564,6 +1601,72 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 	// but the workflow-start args and the repo_scan_triggered audit metadata
 	// still forwarded the raw caller string — which the workflow then echoes
 	// verbatim into its analysis prompt and `ProjectContext.sourceUrl`.
+	it("forwards each repository's role to the workflow under its canonical url, leaving code unnamed", async () => {
+		const raw = "https://github.com/my-org/handbook.git";
+		mockParseRepoUrl.mockImplementation((url: string) => ({
+			provider: "GITHUB",
+			owner: "my-org",
+			name: url.includes("handbook") ? "handbook" : "my-repo",
+			url: url.includes("handbook")
+				? "https://github.com/my-org/handbook"
+				: "https://github.com/my-org/my-repo",
+		}));
+		mockWorkflowIntegrationFindFirst.mockResolvedValue(null);
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "p1",
+				organizationId: "org-1",
+				repoUrls: ["https://github.com/my-org/my-repo", raw],
+				repoRoles: {
+					"https://github.com/my-org/my-repo": "code",
+					[raw]: "knowledge",
+				},
+				selectedDocumentTypes: [],
+				projectTypes: [],
+				projectName: "Proj",
+			},
+			context: baseContext,
+		});
+
+		const [, options] = mockWorkflowStart.mock.calls[0];
+		const workflowArgs = (options as { args: unknown[] }).args[0] as {
+			repoRoles?: Record<string, string>;
+		};
+		expect(workflowArgs.repoRoles).toEqual({
+			"https://github.com/my-org/handbook": "knowledge",
+		});
+	});
+
+	it("starts the workflow without roles when none is given", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "my-org",
+			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
+		});
+		mockWorkflowIntegrationFindFirst.mockResolvedValue(null);
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "p1",
+				organizationId: "org-1",
+				repoUrls: ["https://github.com/my-org/my-repo"],
+				selectedDocumentTypes: [],
+				projectTypes: [],
+				projectName: "Proj",
+			},
+			context: baseContext,
+		});
+
+		const [, options] = mockWorkflowStart.mock.calls[0];
+		expect(
+			(options as { args: Array<Record<string, unknown>> }).args[0],
+		).not.toHaveProperty("repoRoles");
+	});
+
 	it("passes the canonical url — not the raw userinfo/`.git` string — to the workflow-start args and the repo_scan_triggered audit metadata", async () => {
 		const rawUrl = new URL("https://github.com/my-org/my-repo.git");
 		rawUrl.username = "someuser";

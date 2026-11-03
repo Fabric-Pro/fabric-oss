@@ -185,6 +185,11 @@ export type {
 	DocumentChunk,
 	DocumentLock,
 	DocumentVersion,
+	InstructionConsolidation,
+	KnowledgeArtifactType,
+	KnowledgeEntry,
+	KnowledgeTopic,
+	KnowledgeTopicSummary,
 	MaturationApprovalPreference,
 	MCPConfig,
 	MCPOAuthState,
@@ -195,6 +200,7 @@ export type {
 	ProjectContext,
 	ProjectContextSummary,
 	ProjectDocument,
+	ProjectImportRun,
 	ProjectInvitation,
 	// Collaboration types
 	ProjectMember,
@@ -259,6 +265,9 @@ export {
 	ClarifyingQuestionFrequency,
 	// Code Analysis enums
 	CodeAnalysisStatus,
+	// Scheduled code index refresh (spec 2026-10-29 code-index-sync)
+	CodeIndexRefreshInterval,
+	CodeSearchMode,
 	ContextSummaryStatus,
 	ContextSummaryTrigger,
 	// Feature Maturation V2 (three-tab editor, spec 2026-06-09 §5) — re-exported
@@ -282,10 +291,16 @@ export {
 	FunctionTag,
 	// Document Eval enums
 	GoldenReferenceScope,
+	InstructionConsolidationStatus,
 	// What a LINK context source actually is (Fizzy #2165) — re-exported so
 	// @repo/api and the context queries can type the classification without a
 	// deep-import into the generated client.
 	KnowledgeBaseSourceCategory,
+	// Project knowledge hub
+	KnowledgeSummaryBehavior,
+	KnowledgeTopicKind,
+	KnowledgeTopicSummaryStatus,
+	KnowledgeVisibility,
 	// Last-edit provenance for UserStory (conflict-dialog metadata)
 	LastEditSource,
 	MaturationApprovalMode,
@@ -310,6 +325,7 @@ export {
 	// re-exported so @repo/api can validate these without deep-importing the
 	// generated client.
 	ProjectEnvironmentType,
+	ProjectImportRunStatus,
 	ProjectInvitationStatus,
 	// Collaboration enums
 	ProjectMemberRole,

@@ -568,7 +568,7 @@ export async function findMcpConfigsForRepos(
 					// orchestrator's Phase-1 "code analysis" doc-gen. This is
 					// BEST-EFFORT for Azure DevOps and intentionally never hard-
 					// fails: clone-based AST indexing (`codeIndexingWorkflow`,
-					// PAT-only, gated by FEATURE_CODE_INDEXING) is the SOURCE OF
+					// PAT-only, run for RAG-mode projects) is the SOURCE OF
 					// TRUTH for ADO code context and runs independently off the
 					// `ProjectRepositoryIntegration` / legacy-URL sync. Do NOT
 					// reintroduce a hard ADO-MCP dependency here.

@@ -11,6 +11,9 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	getProjectRagSettings: vi.fn(async () => ({
+		codeSearchMode: "CODE_SEARCH",
+	})),
 	getProjectAccessContext: h.access,
 	getProjectReposForCodeSearch: h.repositories,
 	db: { project: { findUnique: h.project } },

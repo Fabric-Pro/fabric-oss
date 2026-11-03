@@ -8,7 +8,7 @@
  * in the PM tool: the real `_apis/wit/attachments/…` markup becomes inert
  * text and the image is lost from the work item permanently.
  *
- * `syncGitLabStoryViaRest` has stripped these since the placeholders were
+ * `syncStoryViaRest` has stripped these since the placeholders were
  * introduced. The MCP push path — which carries Azure DevOps, Jira, GitHub,
  * Fizzy and Linear — did not, so the data-loss window was open for exactly the
  * integration the card was filed against. These tests pin the strip on the

@@ -1,4 +1,5 @@
 import { listAvailablePmTools } from "@repo/database";
+import { hasGitHubWorkflowConnection } from "@repo/integrations/github";
 import {
 	inspectGitLabPersonalConnection,
 	readGitLabPersonalConnection,
@@ -74,10 +75,16 @@ export const listAvailablePmToolsProcedure = tenantProtectedProcedure
 		// query, which cannot import that service. The personal-scope hint
 		// is read without adoption, so an org-context request never writes
 		// to the caller's personal-scope rows.
-		const [{ summary }, personalScope] = await Promise.all([
-			readGitLabPersonalConnection({ userId, organizationId }),
-			inspectGitLabPersonalConnection({ userId, organizationId: null }),
-		]);
+		const [{ summary }, personalScope, githubConnected] = await Promise.all(
+			[
+				readGitLabPersonalConnection({ userId, organizationId }),
+				inspectGitLabPersonalConnection({
+					userId,
+					organizationId: null,
+				}),
+				hasGitHubWorkflowConnection(userId, organizationId),
+			],
+		);
 		return await listAvailablePmTools({
 			userId,
 			organizationId,
@@ -85,5 +92,6 @@ export const listAvailablePmToolsProcedure = tenantProtectedProcedure
 				state: summary.state,
 				personalScopeConnected: personalScope.state === "connected",
 			},
+			github: { connected: githubConnected },
 		});
 	});

@@ -376,6 +376,10 @@ export {
 	type EmbedSingleContextOutput,
 	embedSingleContextActivity,
 } from "./context-embedding";
+// Knowledge hub: topic summaries (specs/2026-10-21-ai-artifacts-hub)
+export * from "./instruction-consolidation";
+export * from "./project-import";
+export * from "./knowledge-topic-summary";
 // Context Summarization activities (compressed project-history digests)
 export * from "./context-summarization";
 // Re-embeds project contexts stored without their contextual enrichment while
@@ -452,6 +456,7 @@ export * from "./publishing-newsletter-blurb";
 export * from "./publishing-planning";
 export * from "./publishing-refine";
 export * from "./parlume";
+export * from "./code-index-refresh";
 export * from "./parlume-auto-join";
 export * from "./parlume-notes";
 export * from "./parlume-recap";
@@ -1629,3 +1634,5 @@ export {
 } from "./coding-run";
 
 export { findStaleWeaveSessions as findStaleWeaveSessionsWithRuntime } from "./weave/watchdog-activities";
+export * from "./project-chunking";
+export * from "./chunking-analysis";

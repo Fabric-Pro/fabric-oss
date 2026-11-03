@@ -4,9 +4,9 @@ import {
 	turnScopeOptionArgs,
 } from "./turn-contract";
 import {
+	usageOriginFields as originFields,
 	type SecondaryUsageInput,
 	type UsageOrigin,
-	usageOriginFields as originFields,
 } from "./usage-attribution";
 
 export const USAGE_ORIGIN_PATCH = "orchestrator-complete-usage-origin-v1";

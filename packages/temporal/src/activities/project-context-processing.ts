@@ -15,13 +15,20 @@ import { getSystemEmbeddingRAGProviderConfig } from "@repo/ai";
 import {
 	db,
 	type ExtractionStatus,
+	getProjectChunkingSettings,
+	markProjectContextChunkingVersion,
+	type ProjectChunkingSettings,
 	updateContextExtractionStatus,
 } from "@repo/database";
 import {
 	chunkProjectContent,
+	contentKindForContext,
 	generateEmbeddings,
+	isChunkProfile,
+	parseChunkProfilesConfig,
 	storeProjectContext,
 	type TextChunk,
+	usesPerTypeChunking,
 } from "@repo/rag";
 import { heartbeat } from "@temporalio/activity";
 import {
@@ -466,6 +473,7 @@ async function runProjectContextPipeline(
 		console.log("[ProjectContextProcessing] Chunking content");
 		let chunks: TextChunk[];
 
+		const chunkingSettings = await loadChunkingSettings(projectId);
 		const chunkResult = await chunkProjectContent({
 			content: extractedText,
 			mimeType: context.mimeType || "",
@@ -473,6 +481,24 @@ async function runProjectContextPipeline(
 			chunkingThreshold: CHUNKING_THRESHOLD,
 			chunkSize: DEFAULT_CHUNK_SIZE,
 			chunkOverlap: DEFAULT_CHUNK_OVERLAP,
+			// Content-type chunking: only with the project's toggle and the
+			// flag on. Off, the call is exactly what it was.
+			...(usesPerTypeChunking(chunkingSettings)
+				? {
+						chunkByContentType: chunkingSettings.chunkByContentType,
+						organizationId,
+						kind: contentKindForContext({
+							type: context.type,
+							metadata: context.metadata,
+						}),
+						profileOverride: isChunkProfile(context.chunkProfile)
+							? context.chunkProfile
+							: null,
+						chunkProfiles: parseChunkProfilesConfig(
+							chunkingSettings.chunkProfiles,
+						),
+					}
+				: {}),
 		});
 
 		// A file that declares itself an OpenAPI document and then fails to parse
@@ -578,8 +604,15 @@ async function runProjectContextPipeline(
 						totalChunks,
 						// Store original contextId for retrieval mapping
 						originalContextId: contextId,
-						// Endpoint/model identity on spec chunks; empty otherwise.
+						// Endpoint/model identity on spec chunks, the profile on
+						// content-type chunks; empty otherwise.
 						...chunkResult.chunkPayloads[i],
+						...(chunkResult.chunkPayloads[i]?.profile
+							? {
+									chunkingVersion:
+										chunkingSettings.chunkingVersion,
+								}
+							: {}),
 					},
 				});
 				qdrantIds.push(qdrantId);
@@ -632,6 +665,10 @@ async function runProjectContextPipeline(
 		// Step 10: Update embedding status in DB (only if ALL chunks succeeded)
 		if (qdrantIds.length > 0) {
 			await rows.markEmbedded(contextId, { qdrantId: qdrantIds[0] });
+			await recordChunkingVersion(
+				contextId,
+				chunkingSettings.chunkingVersion,
+			);
 		}
 
 		console.log(
@@ -782,5 +819,52 @@ export async function retryProjectContext(
 		// IMPORTANT: Rethrow the error so Temporal can apply retry policy
 		// Returning { success: false } would make Temporal treat this as a successful activity
 		throw error;
+	}
+}
+
+/**
+ * The project's content-type chunking settings. A failed read means today's
+ * chunking: content-type chunking is opt-in, so off is always safe.
+ */
+async function loadChunkingSettings(
+	projectId: string,
+): Promise<
+	Pick<
+		ProjectChunkingSettings,
+		"chunkByContentType" | "chunkProfiles" | "chunkingVersion"
+	>
+> {
+	try {
+		return await getProjectChunkingSettings(projectId);
+	} catch (error) {
+		console.warn(
+			`[ProjectContextProcessing] Could not read chunking settings for ${projectId}; using the project default: ${error}`,
+		);
+		return {
+			chunkByContentType: false,
+			chunkProfiles: null,
+			chunkingVersion: 0,
+		};
+	}
+}
+
+/**
+ * Stamp the chunking version the row's points were written under, once a
+ * project has one. Best-effort: a missed stamp only makes a later re-chunk
+ * redo this row.
+ */
+async function recordChunkingVersion(
+	contextId: string,
+	chunkingVersion: number,
+): Promise<void> {
+	if (chunkingVersion <= 0) {
+		return;
+	}
+	try {
+		await markProjectContextChunkingVersion(contextId, chunkingVersion);
+	} catch (error) {
+		console.warn(
+			`[ProjectContextProcessing] Could not record the chunking version on ${contextId}: ${error}`,
+		);
 	}
 }

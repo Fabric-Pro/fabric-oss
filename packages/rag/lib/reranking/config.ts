@@ -1,88 +1,106 @@
-/**
- * Reranker Configuration
- *
- * Centralized configuration for reranking providers.
- * Uses environment variables with sensible defaults.
- */
-
-import type { RerankerConfig, RerankerProviderType } from "./types";
+/** Tenant-aware configuration for reranking providers. */
+import { resolveProviderApiKey } from "@repo/ai/lib/databricks-oauth";
+import { getOrganizationGatewaySearchConfig } from "@repo/database";
+import type {
+	RerankerConfig,
+	RerankerProviderType,
+	RerankerTenant,
+} from "./types";
 import { RERANKER_MODELS } from "./types";
 
-/**
- * Get the default reranker provider from environment
- */
-export function getDefaultRerankerProvider(): RerankerProviderType {
+/** Ignore unknown environment values so tenant defaults can still apply. */
+export function getDefaultRerankerProvider(): RerankerProviderType | undefined {
 	const provider = process.env.RERANKER_PROVIDER?.toLowerCase();
-	if (provider === "cohere") {
-		return "cohere";
-	}
-	// Default to cross-encoder (free, self-hosted)
-	return "cross-encoder";
+	return provider === "cohere" ||
+		provider === "gateway" ||
+		provider === "cross-encoder"
+		? provider
+		: undefined;
 }
 
-/**
- * Get Cohere API key from environment
- */
 export function getCohereApiKey(): string | undefined {
 	return process.env.COHERE_API_KEY;
 }
 
-/**
- * Check if Cohere provider is available (has API key)
- */
 export function isCohereAvailable(): boolean {
-	const apiKey = getCohereApiKey();
-	return !!apiKey && apiKey.length > 0;
+	return !!getCohereApiKey();
+}
+
+/** Local ONNX inference is unavailable in the Vercel function bundle. */
+export function isCrossEncoderAvailable(): boolean {
+	return process.env.VERCEL !== "1";
+}
+
+/** Resolve only the caller's organization gateway key. */
+export async function resolveRerankerGatewayCredential(
+	tenant?: RerankerTenant,
+) {
+	const config =
+		tenant?.organizationId && tenant.userId
+			? await getOrganizationGatewaySearchConfig(tenant.organizationId)
+			: null;
+	if (!config?.apiKey) {
+		return null;
+	}
+	const apiKey = await resolveProviderApiKey(config);
+	return apiKey
+		? { apiKey, providerConfigId: config.configId ?? undefined }
+		: null;
 }
 
 /**
- * Get the appropriate reranker config based on environment and preferences
- *
- * @param preferredProvider - Optional preferred provider (overrides env)
- * @param overrides - Optional config overrides
- * @returns RerankerConfig for the selected provider
+ * Stored cross-encoder is the historical column default, not an explicit
+ * opt-out. Explicit cloud preferences beat the environment; defaults use the
+ * environment or an available tenant gateway credential.
  */
-export function getRerankerConfig(
+export async function getRerankerConfig(
 	preferredProvider?: RerankerProviderType,
 	overrides?: Partial<RerankerConfig>,
-): RerankerConfig {
-	// Determine provider: preference > env > default
-	let provider: RerankerProviderType =
-		preferredProvider || getDefaultRerankerProvider();
-
-	// If Cohere is selected but no API key, fall back to cross-encoder
+	tenant?: RerankerTenant,
+): Promise<RerankerConfig> {
+	const preference = overrides?.provider ?? preferredProvider;
+	let provider =
+		preference && preference !== "cross-encoder"
+			? preference
+			: getDefaultRerankerProvider();
+	let credential: Awaited<
+		ReturnType<typeof resolveRerankerGatewayCredential>
+	> = null;
+	if (!provider || provider === "gateway") {
+		try {
+			credential = await resolveRerankerGatewayCredential(tenant);
+		} catch {
+			// Credential errors must not expose encrypted or decrypted keys.
+			throw new Error("Gateway reranker credential resolution failed");
+		}
+		provider = credential ? "gateway" : "cross-encoder";
+	}
 	if (provider === "cohere" && !isCohereAvailable()) {
-		console.warn(
-			"[Reranker] Cohere selected but no API key found, falling back to cross-encoder",
-		);
 		provider = "cross-encoder";
 	}
-
-	const baseConfig: RerankerConfig = {
-		provider,
-		timeout: 30000,
-	};
-
-	// Add provider-specific config
-	if (provider === "cohere") {
-		baseConfig.apiKey = getCohereApiKey();
-		baseConfig.model = RERANKER_MODELS.cohere.default;
-	} else {
-		baseConfig.model = RERANKER_MODELS["cross-encoder"].default;
-	}
-
 	return {
-		...baseConfig,
+		timeout: 30000,
 		...overrides,
+		provider,
+		tenant,
+		apiKey:
+			provider === "gateway"
+				? credential?.apiKey
+				: (overrides?.apiKey ?? getCohereApiKey()),
+		providerConfigId:
+			provider === "gateway" ? credential?.providerConfigId : undefined,
+		model:
+			overrides?.model ??
+			(provider === "gateway"
+				? process.env.RERANKER_GATEWAY_MODEL ||
+					RERANKER_MODELS.gateway.default
+				: RERANKER_MODELS[provider].default),
 	};
 }
 
-/**
- * Environment variable names for documentation
- */
 export const RERANKER_ENV_VARS = {
-	/** Provider selection: 'cross-encoder' (default) or 'cohere' */
+	/** Known provider override: cross-encoder, cohere, or gateway. */
 	RERANKER_PROVIDER: "RERANKER_PROVIDER",
-	/** Cohere API key (required for cohere provider) */
+	RERANKER_GATEWAY_MODEL: "RERANKER_GATEWAY_MODEL",
 	COHERE_API_KEY: "COHERE_API_KEY",
 } as const;

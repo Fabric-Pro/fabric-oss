@@ -309,10 +309,19 @@ describe("audit.taxonomy handler", () => {
 		// + 1 project.document_analysis.resolved (a saved revision applied a
 		// finding's recommendation and recorded it as Resolved; stable key,
 		// run id and version only, never text), plus native session continuation = 225.
-		// Manual closure of unknown remote work records a separate recovery action.
+		// Manual closure of unknown remote work records a separate recovery action = 226.
 		// + 1 org.member.bulk_invited for a pasted list of invitations = 227.
 		// + 1 newsletter.organization_distribution.changed = 228.
-		expect(result.actions).toHaveLength(228);
+		// + 1 project.instructions.consolidation_started (a code repository's
+		// AI files moved into a new instructions repository; repositories and
+		// a file count, never a path or content) = 229.
+		// + 2 project.import.{started, applied} (a repository import was started
+		// or its reviewed selection applied; provider and counts only, never
+		// file content) = 231.
+		// + 8 {account, org}.credential.* (a saved outbound credential was
+		// created, updated, deleted, shared or unshared; name and kind only,
+		// never the secret) = 239.
+		expect(result.actions).toHaveLength(239);
 		expect(result.actions).toContain("org.member.bulk_invited");
 		expect(result.actions).toContain("org.member.left");
 		expect(result.actions).toContain("org.chat_approval.decided");
@@ -365,6 +374,9 @@ describe("audit.taxonomy handler", () => {
 		);
 		expect(result.actions).toContain(
 			"project.instructions.repository_migration_completed",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.consolidation_started",
 		);
 		expect(result.actions).toContain("project.instructions.committed");
 		expect(result.actions).toContain(

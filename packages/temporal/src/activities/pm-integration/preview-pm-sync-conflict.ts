@@ -249,9 +249,9 @@ export async function previewPmSyncConflict(
 			}
 			throw error;
 		}
-		if (source.kind !== "rest-gitlab") {
+		if (source.kind === "mcp") {
 			throw ApplicationFailure.nonRetryable(
-				`previewPmSyncConflict: expected rest-gitlab source, got ${source.kind}`,
+				"previewPmSyncConflict: expected a connection-backed source, got mcp",
 				"PmCapabilitiesError",
 			);
 		}
@@ -316,7 +316,7 @@ export async function previewPmSyncConflict(
 		logger.info("pm.sync.conflict.preview", {
 			itemId,
 			itemType,
-			source: "rest-gitlab",
+			source: source.kind,
 		});
 		return {
 			hasConflict: true,

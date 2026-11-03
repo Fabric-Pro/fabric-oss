@@ -202,16 +202,20 @@ error naming the scope, and the `codingInstructions` field on `fabric_list_proje
 | `fabric_instruction_checks` | `instructions:read` | read | Report whether the session is set up the way the instructions expect |
 | `fabric_propose_project_instruction_change` | `instructions:write` | write | Suggest an edit; held for review |
 | `fabric_add_instruction_lesson` | `instructions:write` | write | Record a lesson as a new file under `Lessons/`; held for review |
+| `fabric_change_instructions` | `instructions:write` | write | Change the instructions; held for review, committed only when the sign-in also carries `instructions:publish` |
+| `fabric_list_code_repositories` | `instructions:read` | read | List the project's code repositories with clone URLs and `repos/<folder>` paths; the agent clones them with git |
+| `fabric_semantic_search` | `projects:read` | read | Semantic (RAG) search over the project's Context and code index; ranked passages |
 
 `instructions:write` reaches only the proposal path, which is what a project reader can
-already do in the Coding Instructions tab. There is no scope and no argument that publishes
-from the gateway: a proposal is approved by a person who can edit the instructions, and on a
-project that syncs from a repository it becomes a commit on the proposer's own branch and a
-pull request there.
+already do in the Coding Instructions tab. No argument publishes from the gateway: a proposal
+is approved by a person who can edit the instructions, and on a project that syncs from a
+repository it becomes a commit on the proposer's own branch and a pull request there.
 
 A sign-in grants `mcp:read instructions:read instructions:write` (the `scope` in the `401`
 challenge above). `instructions:publish` is a separate authority that only an organization
-API key created for it carries, and it is not reachable from the gateway.
+API key created for it carries. The gateway honours it in one place only:
+`fabric_change_instructions` commits instead of proposing when the key carries it and its
+owner may edit the instructions.
 
 ### Living Memory writes
 

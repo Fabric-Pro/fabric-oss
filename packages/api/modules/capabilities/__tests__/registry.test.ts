@@ -1179,35 +1179,19 @@ describe("a source that is on its way is not a missing source", () => {
 	});
 });
 
-describe("code indexing switched off for the whole deployment", () => {
-	it("says so, and offers no project setting as the remedy", () => {
+describe("code search mode is not RAG", () => {
+	it("points at the project's code search setting", () => {
 		const gate = gateOf(
 			"atlas.codebase-qa",
 			evidenceWith({
 				codebase: {
 					usable: false,
-					indexingAvailable: false,
-					indexingEnabled: false,
-				},
-			}),
-		);
-		expect(gate.reasonKey).toBe("codebase.indexing-unavailable");
-		expect(gate.remedy).toBeNull();
-		expect(gate.retry.supported).toBe(false);
-	});
-
-	it("keeps 'turn on code search' for the project-setting case", () => {
-		const gate = gateOf(
-			"atlas.codebase-qa",
-			evidenceWith({
-				codebase: {
-					usable: false,
-					indexingAvailable: true,
 					indexingEnabled: false,
 				},
 			}),
 		);
 		expect(gate.reasonKey).toBe("codebase.code-search-off");
+		expect(gate.remedy).toBe("ENABLE_CODE_SEARCH");
 	});
 });
 

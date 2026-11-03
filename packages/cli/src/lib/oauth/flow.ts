@@ -74,6 +74,11 @@ export interface LoginOptions {
 	 * organization-wide. Without it the sign-in is for an organization.
 	 */
 	project?: string;
+	/**
+	 * What the tokens are for: the REST API (the default) or the project's MCP
+	 * gateway, which refuses a token issued for the API. Only with `project`.
+	 */
+	audience?: "api" | "mcp";
 	/** Additional capability scopes for an explicit command, never MCP setup. */
 	scopes?: readonly string[];
 	/** Reused when it was registered with this deployment. */
@@ -100,10 +105,14 @@ function trimBase(baseUrl: string): string {
 }
 
 /** What the sign-in asks the deployment to issue its tokens for. */
-function apiResource(baseUrl: string, project: string | undefined): string {
+function apiResource(
+	baseUrl: string,
+	project: string | undefined,
+	audience: "api" | "mcp" = "api",
+): string {
 	return project === undefined
 		? `${trimBase(baseUrl)}/api/v1`
-		: projectResource(trimBase(baseUrl), "api", project);
+		: projectResource(trimBase(baseUrl), audience, project);
 }
 
 /** A field of a JSON body, when the body is an object and the field is one. */
@@ -297,7 +306,11 @@ export async function loginWithBrowser(
 			state,
 			code_challenge: codeChallengeS256(verifier),
 			code_challenge_method: "S256",
-			resource: apiResource(options.baseUrl, options.project),
+			resource: apiResource(
+				options.baseUrl,
+				options.project,
+				options.audience,
+			),
 		}).toString();
 		return url.toString();
 	};
@@ -356,7 +369,11 @@ export async function loginWithBrowser(
 				redirect_uri: listener.redirectUri,
 				client_id: clientId,
 				code_verifier: verifier,
-				resource: apiResource(options.baseUrl, options.project),
+				resource: apiResource(
+					options.baseUrl,
+					options.project,
+					options.audience,
+				),
 			},
 			options.signal,
 		);

@@ -617,6 +617,19 @@ export function getDefaultHandlerRegistry(): HandlerRegistry {
 		{ priority: HANDLER_PRIORITY.DECISION_CONTEXT },
 	);
 
+	// Chunking tuning handler - the project's chunking analysis and the
+	// approved apply of its proposal (spec 2026-10-28 §8c). Checked before the
+	// generic Fabric AI handler so it claims its two tools.
+	registry.register(
+		() => {
+			const {
+				ChunkingTuningHandler,
+			} = require("./chunking-tuning-handler");
+			return new ChunkingTuningHandler();
+		},
+		{ priority: HANDLER_PRIORITY.DECISION_CONTEXT },
+	);
+
 	// Feature decisions handler - reads a feature's Decision Log tab
 	// (DecisionLogEntry threads). Checked before the generic Fabric AI handler
 	// so it claims the fabric_list_feature_decisions tool.

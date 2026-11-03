@@ -14,6 +14,8 @@ import { inspect } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
+	/** The project's code search mode (CODE_SEARCH: live provider reads). */
+	codeSearchMode: "CODE_SEARCH" as string,
 	repos: [] as Array<Record<string, unknown>>,
 	getRepositoryFile: vi.fn(),
 	listRepositoryStructure: vi.fn(),
@@ -27,6 +29,9 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", async () => ({
+	getProjectRagSettings: vi.fn(async () => ({
+		codeSearchMode: h.codeSearchMode,
+	})),
 	getProjectAccessContext: vi.fn(async () => ({ organizationId: "org-1" })),
 	db: {
 		project: { findUnique: vi.fn(async () => h.project) },
@@ -137,6 +142,7 @@ let logged: () => string;
 beforeEach(() => {
 	vi.clearAllMocks();
 	h.project = null;
+	h.codeSearchMode = "CODE_SEARCH";
 	h.integration = null;
 	h.gitHubToken.mockResolvedValue(null);
 	h.repos = [GITHUB_REPO];

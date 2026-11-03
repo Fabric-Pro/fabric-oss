@@ -95,6 +95,17 @@ export const FABRIC_PORTAL_EXCLUDED_TOOL_NAMES: readonly string[] = [
 	"fabric_memory_read",
 	"fabric_memory_write",
 	"fabric_memory_write_status",
+	// The Coding Instructions plugin's own tools (specs/2026-10-21-ai-artifacts-hub):
+	// a person's coding tool uses them, the agent runtime does not.
+	"fabric_change_instructions",
+	"fabric_rules_for",
+	"fabric_list_code_repositories",
+	"fabric_semantic_search",
+	"fabric_knowledge_types",
+	"fabric_knowledge_add",
+	"fabric_knowledge_search",
+	"fabric_knowledge_topic",
+	"fabric_knowledge_topics",
 ];
 
 const PORTAL_TOOLS: ReadonlySet<string> = new Set(FABRIC_PORTAL_TOOL_NAMES);

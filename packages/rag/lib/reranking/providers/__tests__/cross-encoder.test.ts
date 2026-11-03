@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const transformers = vi.hoisted(() => {
 	const env = {
@@ -35,6 +35,16 @@ vi.mock("@repo/logs", () => ({
 	},
 }));
 
+vi.mock("../../config", () => ({
+	getRerankerConfig: async (_provider: unknown, config: object) => ({
+		provider: "cross-encoder",
+		...config,
+	}),
+	isCrossEncoderAvailable: () => true,
+}));
+
+import { runWithDispatchGuard } from "@repo/utils/dispatch-guard";
+import { rerankContexts } from "../../index";
 import {
 	CrossEncoderRerankerProvider,
 	resetCrossEncoderCache,
@@ -241,4 +251,95 @@ describe("CrossEncoderRerankerProvider", () => {
 			}),
 		).rejects.toThrow("one finite logit per query-document pair");
 	});
+});
+
+afterEach(() => vi.useRealTimers());
+for (const stage of ["load", "inference"] as const) {
+	it(`times out stalled ${stage} and passes through search order`, async () => {
+		vi.useFakeTimers();
+		if (stage === "load") {
+			transformers.pipeline.mockImplementationOnce(
+				() => new Promise(() => {}),
+			);
+		} else {
+			transformers.model.mockImplementationOnce(
+				() => new Promise(() => {}),
+			);
+		}
+		const result = rerankContexts({
+			query: "What is the capital of France?",
+			contexts: [irrelevant, relevant],
+			config: { timeout: 50 },
+		});
+		await vi.advanceTimersByTimeAsync(51);
+		expect(await result).toMatchObject({
+			contexts: [irrelevant, relevant],
+			stats: { model: "fallback-passthrough" },
+		});
+		const later = await rerankContexts({
+			query: "What is the capital of France?",
+			contexts: [irrelevant, relevant],
+			config: { timeout: 50 },
+		});
+		expect(later.contexts[0].id).toBe(relevant.id);
+	});
+}
+it("propagates a dispatch stop during stalled inference", async () => {
+	vi.useFakeTimers();
+	const controller = new AbortController();
+	const stop = Object.assign(new Error("stopped"), {
+		type: "TurnNotDispatchable",
+	});
+	transformers.model.mockImplementationOnce(() => new Promise(() => {}));
+	const result = runWithDispatchGuard(
+		{
+			key: "example",
+			abortSignal: () => controller.signal,
+			rethrowIfStopped: (error: unknown) => {
+				if (error === stop) {
+					throw error;
+				}
+			},
+			assertDispatchable: async () => {},
+		},
+		() =>
+			rerankContexts({
+				query: "What is the capital of France?",
+				contexts: [irrelevant, relevant],
+				config: { timeout: 50 },
+			}),
+	);
+	const assertion = expect(result).rejects.toBe(stop);
+	await vi.advanceTimersByTimeAsync(0);
+	controller.abort(stop);
+	await assertion;
+});
+it("does not publish an abandoned load after a replacement succeeds", async () => {
+	vi.useFakeTimers();
+	let finishOld: (value: typeof transformers.classifier) => void = () => {};
+	transformers.pipeline.mockImplementationOnce(
+		() =>
+			new Promise((resolve) => {
+				finishOld = resolve;
+			}),
+	);
+	const options = {
+		query: "What is the capital of France?",
+		contexts: [irrelevant, relevant],
+		config: { timeout: 50 },
+	};
+	const first = rerankContexts(options);
+	await vi.advanceTimersByTimeAsync(51);
+	expect((await first).stats.model).toBe("fallback-passthrough");
+	expect((await rerankContexts(options)).contexts[0].id).toBe(relevant.id);
+	finishOld(
+		Object.assign(vi.fn(), {
+			tokenizer: vi.fn(() => {
+				throw new Error("abandoned classifier used");
+			}),
+			model: transformers.model,
+		}),
+	);
+	await vi.advanceTimersByTimeAsync(0);
+	expect((await rerankContexts(options)).contexts[0].id).toBe(relevant.id);
 });

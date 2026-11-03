@@ -78,6 +78,89 @@ export function capRules(rules: readonly ProjectRule[]): {
 
 const DECODER = new TextDecoder("utf-8", { fatal: false });
 
+/**
+ * Rule tiers (specs/2026-10-21-ai-artifacts-hub §5.8): what a session always
+ * carries stays small, everything else is loaded when it applies.
+ *
+ *   - a rule with `paths:` is delivered as is: Claude Code loads it only when
+ *     files it names are touched;
+ *   - a rule with neither `paths:` nor `load: on-demand` is always on, while
+ *     the always-on rules together fit `ALWAYS_ON_RULES_BUDGET` characters,
+ *     in path order;
+ *   - every other rule (`load: on-demand`, or past the budget) is not
+ *     delivered: the `fabric-rules` skill lists it with its description, and
+ *     the agent reads it from the plugin or asks `fabric_rules_for` when the
+ *     task calls for it.
+ */
+export const ALWAYS_ON_RULES_BUDGET = 8_000;
+
+export interface OnDemandRule {
+	/** Below `rules/`, POSIX. */
+	path: string;
+	/** The instruction file it came from: its passive copy is `instructions/source/<source>`. */
+	source: string;
+	description: string;
+	paths: string[];
+	reason: "on-demand" | "over-budget";
+}
+
+const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
+
+/** `description:` from the frontmatter, else the first heading or line of the body. */
+function describeRule(text: string, body: string): string {
+	const fm = FRONTMATTER.exec(text);
+	const own = fm ? /^description:\s*(.+)$/m.exec(fm[1] ?? "") : null;
+	const line =
+		own?.[1] ??
+		body
+			.split(/\r?\n/)
+			.map((l) => l.replace(/^#+\s*/, "").trim())
+			.find((l) => l !== "") ??
+		"";
+	const clean = unquote(line).replace(/\s+/g, " ");
+	return clean.length > 160 ? `${clean.slice(0, 157)}...` : clean;
+}
+
+function loadsOnDemand(text: string): boolean {
+	const fm = FRONTMATTER.exec(text);
+	return fm !== null && /^load:\s*["']?on-demand["']?\s*$/m.test(fm[1] ?? "");
+}
+
+export function tierRules(rules: readonly ProjectRule[]): {
+	delivered: ProjectRule[];
+	onDemand: OnDemandRule[];
+	alwaysOnChars: number;
+} {
+	const delivered: ProjectRule[] = [];
+	const onDemand: OnDemandRule[] = [];
+	let alwaysOnChars = 0;
+	for (const rule of rules) {
+		const text = DECODER.decode(rule.bytes);
+		const parsed = parseRule(text);
+		const lazy = loadsOnDemand(text);
+		if (parsed.paths.length > 0 && !lazy) {
+			delivered.push(rule);
+			continue;
+		}
+		if (
+			!lazy &&
+			alwaysOnChars + parsed.body.length <= ALWAYS_ON_RULES_BUDGET
+		) {
+			alwaysOnChars += parsed.body.length;
+			delivered.push(rule);
+			continue;
+		}
+		onDemand.push({
+			path: rule.path,
+			source: rule.source,
+			description: describeRule(text, parsed.body),
+			paths: parsed.paths,
+			reason: lazy ? "on-demand" : "over-budget",
+		});
+	}
+	return { delivered, onDemand, alwaysOnChars };
+}
+
 interface ParsedRule {
 	/** The `paths:` globs the file is scoped to, or none. */
 	paths: string[];

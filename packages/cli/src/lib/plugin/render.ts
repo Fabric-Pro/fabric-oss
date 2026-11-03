@@ -30,6 +30,7 @@ import {
 	type PublishedInstructions,
 	planPluginFiles,
 } from "@fabricorg/sdk";
+import { hasMcpSignIn } from "../oauth/mcp-token.js";
 import { projectResource } from "../oauth/project-resource.js";
 import {
 	assertLocationFree,
@@ -39,6 +40,7 @@ import {
 	type PluginBinding,
 } from "./binding.js";
 import { instructionAccessBootstrap } from "./instruction-access.js";
+import type { KnowledgeTypes } from "./knowledge.js";
 import {
 	alwaysOnFile,
 	buildPlugin,
@@ -48,7 +50,7 @@ import {
 	pluginNameFor,
 	RENDER_VERSION,
 } from "./layout.js";
-import { type ProjectRule, selectRules } from "./rules.js";
+import { type ProjectRule, selectRules, tierRules } from "./rules.js";
 import { readInstructions } from "./source.js";
 
 /** Pins kept per project besides the newest: Claude Code may still be copying an older one. */
@@ -57,7 +59,7 @@ const KEPT_PINS = 3;
 const CODEX_PIN_MARKER = ".fabric-render";
 
 export interface RenderInput {
-	client: Pick<FabricClient, "instructions" | "memory">;
+	client: Pick<FabricClient, "instructions" | "memory" | "knowledge">;
 	projectId: string;
 	org?: string;
 	/** The deployment, as an origin. */
@@ -134,10 +136,55 @@ async function readMemoryFolders(input: RenderInput): Promise<MemoryFolders> {
 	}
 }
 
+async function readKnowledgeTypes(input: RenderInput): Promise<KnowledgeTypes> {
+	try {
+		const { types } = await input.client.knowledge.getProjectTypes(
+			input.projectId,
+		);
+		return { state: "known", types };
+	} catch (error) {
+		input.log?.(
+			`The knowledge types could not be read (${error instanceof Error ? error.message : "unknown error"}); the plugin will say so.`,
+		);
+		return { state: "unavailable" };
+	}
+}
+
+/**
+ * The `fabric mcp header` command line for the plugin's MCP server, run by
+ * this same CLI, when the project has an MCP gateway sign-in on this machine
+ * (`mcp-token.ts`); otherwise none, and Claude Code signs in through `/mcp`.
+ */
+function mcpHeadersHelperFor(
+	origin: string,
+	projectId: string,
+): string | undefined {
+	const deployment = originOf(origin);
+	const script = process.argv[1];
+	if (
+		deployment === null ||
+		!script ||
+		!hasMcpSignIn(deployment, projectId)
+	) {
+		return undefined;
+	}
+	const quote = (value: string) => `"${value.replace(/"/g, '\\"')}"`;
+	return [
+		quote(process.execPath),
+		quote(script),
+		"mcp header --project",
+		projectId,
+		"--base-url",
+		deployment,
+	].join(" ");
+}
+
 function pinOf(
 	sourcePin: string,
 	memory: MemoryFolders,
+	knowledge: KnowledgeTypes,
 	tool: PluginTool,
+	mcpHeadersHelper?: string,
 ): string {
 	return createHash("sha256")
 		.update(
@@ -146,6 +193,8 @@ function pinOf(
 				tool,
 				sourcePin,
 				memory,
+				knowledge,
+				...(mcpHeadersHelper ? { mcpHeadersHelper } : {}),
 			}),
 		)
 		.digest("hex")
@@ -319,12 +368,27 @@ export async function renderPlugin(input: RenderInput): Promise<Rendered> {
 		input.log?.(notPartOfPlugin);
 	}
 	const memory = await readMemoryFolders(input);
-	const pin = pinOf(read.pin, memory, input.tool);
+	const knowledge = await readKnowledgeTypes(input);
+	const mcpHeadersHelper =
+		input.tool === "claude-code"
+			? mcpHeadersHelperFor(input.origin, input.projectId)
+			: undefined;
+	const tiers = tierRules(selectRules(read, input.tool));
+	const pin = pinOf(
+		read.pin,
+		memory,
+		knowledge,
+		input.tool,
+		mcpHeadersHelper,
+	);
 	const files = buildPlugin({
+		mcpHeadersHelper,
+		onDemandRules: tiers.onDemand,
 		tool: input.tool,
 		projectId: input.projectId,
 		files: read.files,
 		memory,
+		knowledge,
 		gatewayUrl: projectResource(input.origin, "mcp", input.projectId),
 		pin,
 		instructionAccess: { listed: read.listed, source: read.source },
@@ -360,7 +424,7 @@ export async function renderPlugin(input: RenderInput): Promise<Rendered> {
 			file: always?.file ?? "Fabric instruction access",
 			text: `${guidance}${always === null ? "" : `\n${always.text}`}`,
 		},
-		rules: selectRules(read, input.tool),
+		rules: tiers.delivered,
 		files,
 	};
 }

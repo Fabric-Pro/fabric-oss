@@ -23,3 +23,5 @@ export * from "./types";
 // live-integration-context is NOT re-exported here to avoid requiring
 // @repo/integrations as a transitive dependency for all @repo/rag consumers.
 // Import directly: import { ... } from "@repo/rag/lib/project-contexts/live-integration-context"
+
+export * from "./source-name";

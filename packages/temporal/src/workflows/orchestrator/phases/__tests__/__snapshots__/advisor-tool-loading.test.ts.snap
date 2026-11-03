@@ -21,9 +21,9 @@ exports[`measures tool loading: '30 tools attached' 1`] = `
     "more": 0,
     "names": [],
   },
-  "initialSchemaBytes": 19368,
+  "initialSchemaBytes": 20092,
   "initialToolCount": 44,
-  "initialToolsHash": "c576e6fb",
+  "initialToolsHash": "14365d90",
   "integrationSearchRuns": 0,
   "integrationSearchRunsUsed": 0,
   "integrationSearchSkips": 0,
@@ -51,7 +51,7 @@ exports[`measures tool loading: '31 tools with discovery' 1`] = `
       "causes": [
         "search_tools",
       ],
-      "hash": "e9bbe09a",
+      "hash": "67184353",
       "round": 2,
     },
   ],
@@ -77,9 +77,9 @@ exports[`measures tool loading: '31 tools with discovery' 1`] = `
       "example_tool_0",
     ],
   },
-  "initialSchemaBytes": 16028,
+  "initialSchemaBytes": 16752,
   "initialToolCount": 14,
-  "initialToolsHash": "bf77b8fc",
+  "initialToolsHash": "95ec6945",
   "integrationSearchRuns": 1,
   "integrationSearchRunsUsed": 0,
   "integrationSearchSkips": 0,
@@ -128,7 +128,7 @@ exports[`measures tool loading: 'catalog overlaps project tool' 1`] = `
       "causes": [
         "search_tools",
       ],
-      "hash": "e9bbe09a",
+      "hash": "67184353",
       "round": 2,
     },
   ],
@@ -154,9 +154,9 @@ exports[`measures tool loading: 'catalog overlaps project tool' 1`] = `
       "example_tool_0",
     ],
   },
-  "initialSchemaBytes": 16028,
+  "initialSchemaBytes": 16752,
   "initialToolCount": 14,
-  "initialToolsHash": "bf77b8fc",
+  "initialToolsHash": "95ec6945",
   "integrationSearchRuns": 1,
   "integrationSearchRunsUsed": 0,
   "integrationSearchSkips": 0,
@@ -205,14 +205,14 @@ exports[`measures tool loading: 'two discoveries' 1`] = `
       "causes": [
         "search_tools",
       ],
-      "hash": "e9bbe09a",
+      "hash": "67184353",
       "round": 2,
     },
     {
       "causes": [
         "search_tools",
       ],
-      "hash": "94333cb1",
+      "hash": "c2cff5b0",
       "round": 4,
     },
   ],
@@ -244,9 +244,9 @@ exports[`measures tool loading: 'two discoveries' 1`] = `
       "example_tool_1",
     ],
   },
-  "initialSchemaBytes": 16028,
+  "initialSchemaBytes": 16752,
   "initialToolCount": 14,
-  "initialToolsHash": "bf77b8fc",
+  "initialToolsHash": "95ec6945",
   "integrationSearchRuns": 2,
   "integrationSearchRunsUsed": 0,
   "integrationSearchSkips": 0,
@@ -307,33 +307,33 @@ exports[`measures tool loading: 'two discoveries' 1`] = `
 
 exports[`tool loading baseline > pins requests before instrumentation: '30 tools attached' 1`] = `
 [
-  "da27dfd237d1013a18e8ddc51696416d9bdd67f1c1bcef7f72f415cbeb9127cc",
-  "37d43103b849d7f59d4bad9aedd692cc30735d01c60c856f7be2ea13578de5e3",
+  "6ac87d1bb4f74ba6f369b56d652de451a891dac95c7d7ef6e25b2405babf707a",
+  "2a460edea6f27e9874a34675d08e3b2b01a062af6082693dc61e89fa8058d282",
 ]
 `;
 
 exports[`tool loading baseline > pins requests before instrumentation: '31 tools with discovery' 1`] = `
 [
-  "5da4b82f47acd0374c03a4b3a940e0d9d26a80a6dedb27026f90f1187abf6d44",
-  "2342131c4c483feed031db32300377154f9fad8feb3215b53dbc35f352c8eed9",
-  "8327b2bbc61c99d35a362d2da2e84b4e91175dde5ea52b0e53b305aae91456ed",
+  "720618b38d214949e7bb7276775b489517741b2d980734cb99f312ce6a89d313",
+  "4133bdb1fb5ec6a35a504c9992ab7ba3a44b6900832ef454e0de86664abca56c",
+  "d3bc8bcdd61ce78b4623949044be54d2e7f8be280ae33c8ff2bd6a9ab5ca716b",
 ]
 `;
 
 exports[`tool loading baseline > pins requests before instrumentation: 'catalog overlaps project tool' 1`] = `
 [
-  "dcd1619eaf3490206e1b3b410154a096c87d0276d041b7bd1127d740c4b5b786",
-  "3c2b29dd3ea58b1bca2d5b157fb2a8a53b35a39b0d4bdf4382d4236a32ec055f",
-  "5f7a62fe24ce1ff49b1cb1fe13891e80bee8eb1f9ad1651d47a8a245d2b6cf1a",
+  "410fdd9c2228b3f42aa732c19ba742e3c6a8e54b9aa216a442265e1fadeea39a",
+  "7bb984487462ce1c1189d9f89a3ca4e9684bab5d512f4b7f7aed29dca23eddfa",
+  "d630fd577e047d082288effe8825fbd809a32daeae73f0ad3590795c287487d1",
 ]
 `;
 
 exports[`tool loading baseline > pins requests before instrumentation: 'two discoveries' 1`] = `
 [
-  "5da4b82f47acd0374c03a4b3a940e0d9d26a80a6dedb27026f90f1187abf6d44",
-  "2342131c4c483feed031db32300377154f9fad8feb3215b53dbc35f352c8eed9",
-  "8327b2bbc61c99d35a362d2da2e84b4e91175dde5ea52b0e53b305aae91456ed",
-  "07cfd6bc2366fbeede0b298a18a5de76942d8740d719b2c6e42c7293317280ee",
-  "7de81337b205d063a68203c67f841ad69d49ef10ca044260cd37fb2a02248d29",
+  "720618b38d214949e7bb7276775b489517741b2d980734cb99f312ce6a89d313",
+  "4133bdb1fb5ec6a35a504c9992ab7ba3a44b6900832ef454e0de86664abca56c",
+  "d3bc8bcdd61ce78b4623949044be54d2e7f8be280ae33c8ff2bd6a9ab5ca716b",
+  "4dd1dc058e7a4a234039b04b0dfdbd0aae0987aaa00a3aed83a873af0f2bc159",
+  "cf1af4918111144992f68c53b12825e207a2159c81d6eb05b32d41f0364b2fa0",
 ]
 `;

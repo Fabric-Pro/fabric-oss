@@ -140,6 +140,24 @@ background activities when the activity independently loads tenant data. Never
 trust a client-provided `organizationId`, role, ownership field, or API scope
 without server-side resolution.
 
+### Outbound credentials
+
+A token, key, OAuth grant or app installation Fabric uses to reach an external
+system is one `Credential` row that consumers reference, never a copy
+([ADR-026](docs/adr/026-outbound-credentials-are-one-entity.md)).
+
+- New code stores and reads outbound credentials only through the credential
+  manager (`queries/credential-store.ts`, `@repo/integrations/credential-manager`).
+  Do not add new encrypted token, key or PAT columns to other tables.
+- When a task touches a legacy store (`WorkflowIntegration.credentials`,
+  `ProjectRepositoryIntegration` token columns, `MCPConfig` tokens and keys,
+  `DataConnection` secrets, provider key tables), propose to the user migrating
+  that consumer: add `credentialId`, read it first with the legacy columns as
+  fallback, backfill separately, and remove the legacy columns only in a later
+  contract step. Do not migrate without their agreement or as a big-bang change.
+- Prefer an app installation or service account over a person's grant; a
+  person's OAuth grant or PAT is the fallback.
+
 ## Database and migration safety
 
 Never run `prisma db push`.

@@ -294,3 +294,50 @@ describe("normalizePolledState — displayStatus (Fizzy #3088)", () => {
 		expect(display({}, { kind: "mcp" })).toBeNull();
 	});
 });
+
+describe("normalizePolledState — GitHub Projects (rest-github)", () => {
+	const item = (raw: Record<string, unknown>): PMWorkItemSummary => ({
+		id: "example-org/app#5",
+		title: "Checkout",
+		url: "https://github.com/example-org/app/issues/5",
+		raw,
+	});
+
+	it("reads the board Status as the status string and keeps its pseudo-label", () => {
+		const n = normalizePolledState(
+			item({
+				state: "opened",
+				status: "In Progress",
+				labels: ["ui", "Status::In Progress"],
+				updatedAt: "2026-10-01T00:00:00Z",
+			}),
+			{ kind: "rest-github" },
+		);
+		expect(n).toMatchObject({
+			statusString: "In Progress",
+			isClosed: false,
+			labels: ["ui", "Status::In Progress"],
+			itemUrl: "https://github.com/example-org/app/issues/5",
+			displayStatus: "In Progress",
+		});
+		expect(n.changedDate?.toISOString()).toBe("2026-10-01T00:00:00.000Z");
+	});
+
+	it("a closed issue reads Closed whatever its Status", () => {
+		const n = normalizePolledState(
+			item({ state: "closed", status: "Done", labels: [] }),
+			{ kind: "rest-github" },
+		);
+		expect(n.isClosed).toBe(true);
+		expect(n.displayStatus).toBe("Closed");
+		expect(n.statusString).toBe("Done");
+	});
+
+	it("an open item with no Status reads Open", () => {
+		const n = normalizePolledState(item({ state: "opened", labels: [] }), {
+			kind: "rest-github",
+		});
+		expect(n.statusString).toBeNull();
+		expect(n.displayStatus).toBe("Open");
+	});
+});

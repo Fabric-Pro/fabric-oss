@@ -14,6 +14,8 @@
  * actually asked and the prose has usually been scrolled past by then.
  */
 
+import { SavedCredentialsView } from "@saas/credential-manager/components/SavedCredentialsView";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { PageHeader } from "@saas/shared/components/PageHeader";
 import { Button } from "@ui/components/button";
 import {
@@ -37,12 +39,14 @@ const McpServersView = dynamic(
 	{ ssr: false },
 );
 
-type Tab = "all" | "integrations" | "mcp";
+type Tab = "all" | "integrations" | "mcp" | "credentials";
 
 const TABS: { value: Tab; label: string }[] = [
 	{ value: "all", label: "All" },
 	{ value: "integrations", label: "Integrations" },
 	{ value: "mcp", label: "MCP servers" },
+	// Shown only while the CREDENTIAL_MANAGER flag is on.
+	{ value: "credentials", label: "Credentials" },
 ];
 
 /**
@@ -81,13 +85,23 @@ export function ConnectionsTabs({
 	const router = useRouter();
 	const pathname = usePathname();
 	const params = useSearchParams();
+	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
 	const rawTab = params.get("tab");
 	const tab: Tab =
 		rawTab === "mcp"
 			? "mcp"
 			: rawTab === "integrations"
 				? "integrations"
-				: "all";
+				: rawTab === "credentials" &&
+						credentialManagerEnabled &&
+						organizationId
+					? "credentials"
+					: "all";
+	const visibleTabs = TABS.filter(
+		(t) =>
+			t.value !== "credentials" ||
+			(credentialManagerEnabled && Boolean(organizationId)),
+	);
 	const serverParam = params.get("server") ?? "";
 
 	const handleServerParamConsumed = useCallback(() => {
@@ -117,7 +131,7 @@ export function ConnectionsTabs({
 		<div className="flex items-center gap-1">
 			<fieldset className="inline-flex rounded-[8px] border border-border bg-background p-0.5">
 				<legend className="sr-only">Connection type</legend>
-				{TABS.map((t) => (
+				{visibleTabs.map((t) => (
 					<button
 						key={t.value}
 						type="button"
@@ -246,28 +260,35 @@ export function ConnectionsTabs({
 					</div>
 				</div>
 			</div>
-			<ConnectionsPageContent
-				addHref={addHref}
-				settingsBasePath={settingsBasePath}
-				apiKeysHref={apiKeysHref}
-				basePath={pathname}
-				toolbarStart={typeTabs}
-				beforeCatalog={
-					tab === "mcp" ? (
-						<div className="border-b border-border pb-8">
-							<McpServersView
-								organizationId={organizationId}
-								initialRegistrySearch={serverParam}
-								onServerParamConsumed={
-									handleServerParamConsumed
-								}
-							/>
-						</div>
-					) : null
-				}
-				view={tab}
-				requestConnectionEnabled={requestConnectionEnabled}
-			/>
+			{tab === "credentials" && organizationId ? (
+				<div className="space-y-6">
+					{typeTabs}
+					<SavedCredentialsView organizationId={organizationId} />
+				</div>
+			) : (
+				<ConnectionsPageContent
+					addHref={addHref}
+					settingsBasePath={settingsBasePath}
+					apiKeysHref={apiKeysHref}
+					basePath={pathname}
+					toolbarStart={typeTabs}
+					beforeCatalog={
+						tab === "mcp" ? (
+							<div className="border-b border-border pb-8">
+								<McpServersView
+									organizationId={organizationId}
+									initialRegistrySearch={serverParam}
+									onServerParamConsumed={
+										handleServerParamConsumed
+									}
+								/>
+							</div>
+						) : null
+					}
+					view={tab === "credentials" ? "all" : tab}
+					requestConnectionEnabled={requestConnectionEnabled}
+				/>
+			)}
 		</div>
 	);
 }

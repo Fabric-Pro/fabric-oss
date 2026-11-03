@@ -52,6 +52,10 @@ vi.mock("@repo/logs", () => ({
 vi.mock("@repo/utils/feature-flag", () => ({
 	isContextSummarizationEnabled: () => false,
 }));
+vi.mock("@repo/rag/lib/project-contexts/store", () => ({
+	searchSimilarProjectContexts: h.search,
+}));
+
 vi.mock("@repo/rag", async () => ({
 	buildDocumentRetrievalQuery: (
 		await import("@repo/rag/lib/project-contexts/document-intents")

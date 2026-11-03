@@ -2888,24 +2888,25 @@ export interface ContextAvailabilityResult {
  * Precedence (first match wins):
  *   1. no live integration row       → not-connected
  *      (DISCONNECTED rows are detached — tokens wiped — and don't count)
- *   2. code-search toggle off        → code-search-disabled
+ *   2. code search mode OFF          → code-search-disabled
  *   3. no ACTIVE integration         → repo-unreachable when every remaining
  *      live row is REPO_UNAVAILABLE (credentials fine, repository unreadable —
  *      re-authenticating fixes nothing), else credentials-expired
  *      (TOKEN_EXPIRED / ERROR)
- *   4. index missing / building      → not-indexed
- *   5. index FAILED                  → indexing-failed
- *   6. index READY / STALE           → available
+ *   4. mode CODE_SEARCH              → available (read live, no index)
+ *   5. index missing / building      → not-indexed
+ *   6. index FAILED                  → indexing-failed
+ *   7. index READY / STALE           → available
  *
  * Multi-repo: a single ACTIVE integration is enough to pass the credential
  * gate, so a healthy repo alongside an expired one still resolves on the index.
  */
 export function deriveCodebaseState(input: {
 	integrationStatuses: string[];
-	codeSearchEnabled: boolean;
+	codeSearchMode: "OFF" | "CODE_SEARCH" | "RAG";
 	codeIndexStatus: string | null;
 }): CodebaseState {
-	const { integrationStatuses, codeSearchEnabled, codeIndexStatus } = input;
+	const { integrationStatuses, codeSearchMode, codeIndexStatus } = input;
 
 	// A DISCONNECTED row is functionally detached (its tokens are wiped, e.g.
 	// after the connecting member was removed), so it does not count as a
@@ -2917,7 +2918,7 @@ export function deriveCodebaseState(input: {
 	if (connectedStatuses.length === 0) {
 		return "not-connected";
 	}
-	if (!codeSearchEnabled) {
+	if (codeSearchMode === "OFF") {
 		return "code-search-disabled";
 	}
 	if (!connectedStatuses.includes("ACTIVE")) {
@@ -2932,6 +2933,10 @@ export function deriveCodebaseState(input: {
 		)
 			? "repo-unreachable"
 			: "credentials-expired";
+	}
+	// Code search reads the repository live, so there is no index to wait for.
+	if (codeSearchMode === "CODE_SEARCH") {
+		return "available";
 	}
 	if (
 		codeIndexStatus === null ||
@@ -3147,8 +3152,11 @@ export async function getProjectContextAvailability(
 		contextTypeCounts.find((c) => c.type === "LINK")?._count ?? 0;
 
 	const codebaseState = deriveCodebaseState({
-		integrationStatuses: repoIntegrations.map((i) => i.status),
-		codeSearchEnabled: ragSettings.codeSearchEnabled,
+		// Only the repositories AI code search reads.
+		integrationStatuses: repoIntegrations
+			.filter((i) => i.includedInCodeSearch !== false)
+			.map((i) => i.status),
+		codeSearchMode: ragSettings.codeSearchMode,
 		// Per-repo: surface the most-available status across all repos.
 		codeIndexStatus: aggregateCodeIndexStatus(codeIndexes),
 	});

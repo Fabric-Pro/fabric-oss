@@ -721,6 +721,68 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		},
 
 		// =======================================================================
+		// Chunking tuning (spec 2026-10-28 §8c). The analysis is read-only for
+		// the project; applying a proposal is a WRITE and goes through the
+		// approval step.
+		// =======================================================================
+		{
+			name: "fabric_tune_chunking",
+			description:
+				"Analyse how the attached project's content is chunked for search and propose better chunking per content type. " +
+				"Call with action 'estimate' first: it returns the bounded cost (sources sampled, questions, embedding calls) and a run id. " +
+				"Only after the person agrees, call with action 'confirm' and that run id to start the analysis. " +
+				"Call with action 'status' and the run id to report progress or show the proposal table. Read-only: nothing changes in the project. " +
+				"KEYWORDS: tune chunking, chunking settings, chunk size, RAG settings, retrieval quality, search quality, improve search, chunk by content type.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					action: {
+						type: "string",
+						enum: ["estimate", "confirm", "status"],
+						description: "estimate (default), confirm, or status.",
+					},
+					runId: {
+						type: "string",
+						description:
+							"The run id an estimate returned; required for confirm and status.",
+					},
+				},
+			},
+			outputSchema: {
+				type: "object",
+				properties: {
+					response: {
+						type: "string",
+						description:
+							"The estimate, the progress, or the proposal table.",
+					},
+				},
+			},
+		},
+		{
+			name: "fabric_update_chunking_settings",
+			description:
+				"Apply a finished chunking proposal from fabric_tune_chunking to the attached project: turns on chunking by content type with the proposed per-type settings and re-chunks the project. " +
+				"Only call after the person approved the proposal. Needs permission to edit the project's settings.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					runId: {
+						type: "string",
+						description: "The run id of the proposal to apply.",
+					},
+				},
+				required: ["runId"],
+			},
+			outputSchema: {
+				type: "object",
+				properties: {
+					response: { type: "string" },
+				},
+			},
+		},
+
+		// =======================================================================
 		// Live Integration Search Tools (Dynamic - executed on-demand)
 		// These tools hit the Slack/Teams APIs live for channels/chats linked to
 		// the project via INTEGRATION contexts. Unlike project_rag_query (which

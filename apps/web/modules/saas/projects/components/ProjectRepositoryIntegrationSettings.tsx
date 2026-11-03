@@ -46,6 +46,7 @@ import {
 } from "@ui/components/dropdown-menu";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
+import { RadioGroup, RadioGroupItem } from "@ui/components/radio-group";
 import {
 	Select,
 	SelectContent,
@@ -79,7 +80,7 @@ import {
 	XIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import {
 	type CodeIndexDetails,
@@ -327,9 +328,10 @@ export function ProjectRepositoryIntegrationSettings({
 		]),
 	);
 
-	// Whether Phase 2 code indexing is enabled on this deployment — gates the
-	// per-repo index badge + Re-index/Cancel controls. Shares the query key with
-	// CodeSearchToggle so it's fetched once.
+	// How AI agents search this project's code — gates the per-repo include
+	// switch (any mode but Off) and the index badge + Re-index/Cancel controls
+	// (RAG only). Shares the query key with CodeSearchModeSetting so it's
+	// fetched once.
 	const { data: ragSettingsData } = useQuery(
 		orpc.projects.ragSettings.get.queryOptions({
 			input: {
@@ -338,8 +340,8 @@ export function ProjectRepositoryIntegrationSettings({
 			},
 		}),
 	);
-	const featureCodeIndexingEnabled =
-		ragSettingsData?.featureCodeIndexingEnabled ?? false;
+	const codeSearchMode: CodeSearchMode =
+		ragSettingsData?.settings?.codeSearchMode ?? "OFF";
 
 	// Fallback: show legacy project.repositoryUrl as a synthetic row for
 	// pre-migration projects where the legacy repo isn't yet represented
@@ -363,7 +365,8 @@ export function ProjectRepositoryIntegrationSettings({
 			? [
 					{
 						id: "__legacy__",
-						status: "ACTIVE",
+						// No integration row: a saved link, not a connection.
+						status: "NOT_CONNECTED",
 						provider: legacyProvider ?? "GITHUB",
 						repositoryOwner: project.repositoryOwner,
 						repositoryName: project.repositoryName,
@@ -1260,9 +1263,7 @@ export function ProjectRepositoryIntegrationSettings({
 									isLegacy={isLegacy}
 									branchKnown={branchKnown}
 									hasLegacyIndexRecord={hasLegacyIndexRecord}
-									featureCodeIndexingEnabled={
-										featureCodeIndexingEnabled
-									}
+									codeSearchMode={codeSearchMode}
 									onReindex={(mode) =>
 										reindexMutation.mutate({
 											integrationId: integration.id,
@@ -1828,9 +1829,9 @@ export function ProjectRepositoryIntegrationSettings({
 					</div>
 				)}
 
-				{/* ── Code search toggle ──────────────────────── */}
+				{/* ── How AI agents search code ─────────────────── */}
 				{hasRepos && (
-					<CodeSearchToggle
+					<CodeSearchModeSetting
 						projectId={project.id}
 						organizationId={project.organizationId ?? null}
 					/>
@@ -1893,7 +1894,7 @@ export function IntegrationStatusRow({
 	isLegacy,
 	hasLegacyIndexRecord,
 	branchKnown = true,
-	featureCodeIndexingEnabled = false,
+	codeSearchMode = "OFF",
 	onReindex,
 	onCancelReindex,
 	isReindexing = false,
@@ -1917,6 +1918,12 @@ export function IntegrationStatusRow({
 		lastError?: string | null;
 		roleTag?: string | null;
 		codeIndex?: (CodeIndexDetails & { filesIndexed: number }) | null;
+		/**
+		 * Whether AI code search may search, read and index this repository.
+		 * Absent on project-payload fallback rows; treated as included, the
+		 * default for every repository.
+		 */
+		includedInCodeSearch?: boolean;
 	};
 	projectId: string;
 	organizationId: string | null;
@@ -1935,8 +1942,12 @@ export function IntegrationStatusRow({
 	 * the monitored branch to "main" (FR-5). Defaults to `true`.
 	 */
 	branchKnown?: boolean;
-	/** Whether Phase 2 code indexing is enabled — gates the per-repo controls. */
-	featureCodeIndexingEnabled?: boolean;
+	/**
+	 * How AI agents search the project's code. Any mode but Off shows the
+	 * "Include in AI code search" switch; RAG also shows the index panel and
+	 * the re-index controls.
+	 */
+	codeSearchMode?: CodeSearchMode;
 	onReindex?: (mode: "incremental" | "full") => void;
 	onCancelReindex?: () => void;
 	isReindexing?: boolean;
@@ -2029,6 +2040,74 @@ export function IntegrationStatusRow({
 		},
 	});
 
+	const isIncludedInCodeSearch = integration.includedInCodeSearch ?? true;
+	const showCodeSearchInclusion = codeSearchMode !== "OFF" && !isLegacy;
+	// The code index exists only in RAG mode, and an excluded repository is
+	// never indexed — so its index panel and re-index controls go with it.
+	const canIndex =
+		codeSearchMode === "RAG" && !isLegacy && isIncludedInCodeSearch;
+	const integrationListQueryKey = [
+		"projects",
+		"repositoryIntegrations",
+		"list",
+		projectId,
+	] as const;
+	const inclusionMutation = useMutation({
+		mutationFn: (included: boolean) =>
+			orpcClient.projects.repositoryIntegrations.updateCodeSearchInclusion(
+				{
+					projectId,
+					integrationId: integration.id,
+					organizationId: organizationId ?? null,
+					included,
+				},
+			),
+		onMutate: async (included) => {
+			await queryClient.cancelQueries({
+				queryKey: integrationListQueryKey,
+			});
+			const previous = queryClient.getQueryData(integrationListQueryKey);
+			queryClient.setQueryData(
+				integrationListQueryKey,
+				(old: { integrations?: Array<{ id: string }> } | undefined) => {
+					if (!old?.integrations) {
+						return old;
+					}
+					return {
+						...old,
+						integrations: old.integrations.map((row) =>
+							row.id === integration.id
+								? { ...row, includedInCodeSearch: included }
+								: row,
+						),
+					};
+				},
+			);
+			return { previous };
+		},
+		onError: (error, _included, context) => {
+			if (context?.previous !== undefined) {
+				queryClient.setQueryData(
+					integrationListQueryKey,
+					context.previous,
+				);
+			}
+			toast.error(
+				error instanceof Error
+					? error.message
+					: "Failed to update AI code search for this repository",
+			);
+		},
+		onSettled: () => {
+			queryClient.invalidateQueries({
+				queryKey: ["projects", "repositoryIntegrations"],
+			});
+			// Which repositories are searchable decides what the capability
+			// gates can promise.
+			queryClient.invalidateQueries({ queryKey: ["capability-gates"] });
+		},
+	});
+
 	// Three independent conditions, all required before this row offers a
 	// Reconnect button:
 	//  - the failure KIND is one reconnecting actually fixes — a missing or
@@ -2056,6 +2135,13 @@ export function IntegrationStatusRow({
 	const hasPriorIndex =
 		!isIndexStateKnown ||
 		hasPriorIndexRecord(integration.codeIndex, hasLegacyIndexRecord);
+	// An index run is going: its Job Hub job, or the row itself. A full
+	// re-index keeps the row READY while it runs, so the job is what shows
+	// it. Nothing may start another run until this one ends or is cancelled.
+	const indexRunning =
+		!!indexingJob ||
+		integration.codeIndex?.status === "INDEXING" ||
+		integration.codeIndex?.status === "PENDING";
 
 	return (
 		<div className={`rounded-lg border p-3 ${meta.bgColor}`}>
@@ -2223,11 +2309,39 @@ export function IntegrationStatusRow({
 							)
 						)}
 						{indexingJob && (
-							<div className="mt-1 text-xs">
+							<div className="mt-1 flex items-center gap-2 text-xs">
 								<InlineJobProgress job={indexingJob} />
+								{canManageIntegrations && onCancelReindex && (
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										className="h-6 gap-1 px-2 text-xs"
+										onClick={onCancelReindex}
+										disabled={isCancellingReindex}
+										aria-label={`Cancel indexing ${repoLabel}`}
+									>
+										<XIcon
+											className="size-3"
+											aria-hidden="true"
+										/>
+										Cancel
+									</Button>
+								)}
 							</div>
 						)}
-						{featureCodeIndexingEnabled && !isLegacy && (
+						{showCodeSearchInclusion && (
+							<CodeSearchInclusionSwitch
+								repoLabel={repoLabel}
+								included={isIncludedInCodeSearch}
+								canManage={canManageIntegrations}
+								isPending={inclusionMutation.isPending}
+								onChange={(included) =>
+									inclusionMutation.mutate(included)
+								}
+							/>
+						)}
+						{canIndex && (
 							<CodeIndexDetailsPanel
 								projectId={projectId}
 								organizationId={organizationId}
@@ -2237,7 +2351,8 @@ export function IntegrationStatusRow({
 								hasLegacyIndexRecord={hasLegacyIndexRecord}
 								canManageIntegrations={canManageIntegrations}
 								onReindex={onReindex}
-								isReindexing={isReindexing}
+								isReindexing={isReindexing || indexRunning}
+								job={indexingJob}
 							/>
 						)}
 					</div>
@@ -2278,13 +2393,12 @@ export function IntegrationStatusRow({
 									Connect with a token (PAT)
 								</DropdownMenuItem>
 							)}
-							{featureCodeIndexingEnabled && !isLegacy && (
+							{canIndex && (
 								<>
 									{(canReconnect || canEdit) && (
 										<DropdownMenuSeparator />
 									)}
-									{integration.codeIndex?.status ===
-									"INDEXING" ? (
+									{indexRunning ? (
 										<DropdownMenuItem
 											onClick={onCancelReindex}
 											disabled={isCancellingReindex}
@@ -2322,9 +2436,7 @@ export function IntegrationStatusRow({
 									)}
 								</>
 							)}
-							{(canReconnect ||
-								canEdit ||
-								(featureCodeIndexingEnabled && !isLegacy)) && (
+							{(canReconnect || canEdit || canIndex) && (
 								<DropdownMenuSeparator />
 							)}
 							<DropdownMenuItem
@@ -2373,44 +2485,34 @@ export function IntegrationStatusRow({
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Honest, user-facing description of how code search is currently served for the
- * project — a pre-built index, or live on-demand repository queries. Deliberately
- * carries no deployment internals (no env-var names, no worker instructions): the
- * previous banner was removed for leaking those. Colours are design tokens only.
+ * Honest, user-facing description of the project's code index in RAG mode.
+ * Deliberately carries no deployment internals (no env-var names, no worker
+ * instructions). Colours are design tokens only. RAG mode has no live-search
+ * fallback, so no state promises one.
  *
- * `indexStatus` crosses an API boundary as a widened string, so the switch fails
- * safe to the "live search" reading for MISSING / unknown values. A pending or
- * errored status lookup is reported honestly ("checking" / "couldn't check")
- * rather than being mistaken for an unindexed project.
+ * `indexStatus` crosses an API boundary as a widened string, so unknown values
+ * read as "not indexed yet". A pending or errored status lookup is reported
+ * honestly ("checking" / "couldn't check") rather than being mistaken for an
+ * unindexed project.
  */
 function getCodeIndexStatusMeta({
-	featureCodeIndexingEnabled,
 	isPending,
 	isError,
 	indexStatus,
 	filesIndexed,
 }: {
-	featureCodeIndexingEnabled: boolean;
 	isPending: boolean;
 	isError: boolean;
 	indexStatus: string | undefined;
 	filesIndexed: number;
 }): { icon: LucideIcon; iconColor: string; spin?: boolean; text: string } {
-	if (!featureCodeIndexingEnabled) {
-		return {
-			icon: SearchIcon,
-			iconColor: "text-muted-foreground",
-			text: "Live on-demand search — agents query the connected repository directly. Code isn't pre-indexed on this deployment.",
-		};
-	}
-
 	// The status lookup failed — say so plainly rather than claiming the code
-	// isn't indexed (it may well be); live search covers the gap meanwhile.
+	// isn't indexed (it may well be).
 	if (isError) {
 		return {
 			icon: AlertTriangleIcon,
 			iconColor: "text-muted-foreground",
-			text: "Couldn't check the code index status — agents use live search meanwhile.",
+			text: "Couldn't check the code index status. Try refreshing.",
 		};
 	}
 
@@ -2462,32 +2564,29 @@ function getCodeIndexStatusMeta({
 			return {
 				icon: AlertTriangleIcon,
 				iconColor: "text-destructive",
-				text: "Code indexing failed — agents fall back to live search.",
+				text: "Code indexing failed — agents can't search this code until it is re-indexed.",
 			};
 		default:
 			return {
 				icon: SearchIcon,
 				iconColor: "text-muted-foreground",
-				text: "Not indexed yet — agents use live search until the code index is built.",
+				text: "Not indexed yet — agents can search the code once the index is built.",
 			};
 	}
 }
 
 function CodeIndexStatusRow({
-	featureCodeIndexingEnabled,
 	isPending,
 	isError,
 	indexStatus,
 	filesIndexed,
 }: {
-	featureCodeIndexingEnabled: boolean;
 	isPending: boolean;
 	isError: boolean;
 	indexStatus: string | undefined;
 	filesIndexed: number;
 }) {
 	const meta = getCodeIndexStatusMeta({
-		featureCodeIndexingEnabled,
 		isPending,
 		isError,
 		indexStatus,
@@ -2510,43 +2609,118 @@ function CodeIndexStatusRow({
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Code search toggle
+// How AI agents search code
 // ─────────────────────────────────────────────────────────────────────
 
-export function CodeSearchToggle({
+export type CodeSearchMode = "OFF" | "CODE_SEARCH" | "RAG";
+
+const CODE_SEARCH_MODE_OPTIONS: Array<{
+	value: CodeSearchMode;
+	label: string;
+	description: string;
+}> = [
+	{
+		value: "OFF",
+		label: "Off",
+		description: "Agents don't search code.",
+	},
+	{
+		value: "CODE_SEARCH",
+		label: "Code search",
+		description:
+			"Agents search the repositories live through GitHub, GitLab, or Azure DevOps. Nothing is indexed.",
+	},
+	{
+		value: "RAG",
+		label: "RAG",
+		description:
+			"Repositories are split into chunks and embedded. Agents search the code index.",
+	},
+];
+
+function isCodeSearchMode(value: string): value is CodeSearchMode {
+	return CODE_SEARCH_MODE_OPTIONS.some((option) => option.value === value);
+}
+
+type CodeIndexRefreshInterval = "OFF" | "HOURLY" | "EVERY_6_HOURS" | "DAILY";
+
+const CODE_INDEX_REFRESH_OPTIONS: Array<{
+	value: CodeIndexRefreshInterval;
+	label: string;
+}> = [
+	{ value: "HOURLY", label: "Every hour" },
+	{ value: "EVERY_6_HOURS", label: "Every 6 hours" },
+	{ value: "DAILY", label: "Every day" },
+	{ value: "OFF", label: "Off" },
+];
+
+/**
+ * Project setting "How AI agents search code" (spec 2026-10-29 §6a). Shown in
+ * Development (repositories) and RAG Settings; one component, one query key.
+ */
+export function CodeSearchModeSetting({
 	projectId,
 	organizationId,
+	anchor = true,
 }: {
 	projectId: string;
 	organizationId: string | null;
+	/**
+	 * Whether this copy is the one capability gates scroll to. The setting is
+	 * also shown on RAG Settings; only the Development copy carries the anchor.
+	 */
+	anchor?: boolean;
 }) {
 	const queryClient = useQueryClient();
+	const fieldId = useId();
+	const labelId = `${fieldId}-label`;
 
 	const ragQueryOptions = orpc.projects.ragSettings.get.queryOptions({
 		input: { projectId, organizationId },
 	});
 
 	const { data: ragSettings } = useQuery(ragQueryOptions);
-	const isEnabled = ragSettings?.settings?.codeSearchEnabled ?? false;
-	const featureCodeIndexingEnabled =
-		ragSettings?.featureCodeIndexingEnabled ?? false;
+	const mode: CodeSearchMode = ragSettings?.settings?.codeSearchMode ?? "OFF";
+	const isRagMode = mode === "RAG";
 
 	const codeIndexStatusQuery = useQuery({
 		...orpc.agents.codeIndex.status.queryOptions({
 			input: { projectId, organizationId },
 		}),
-		enabled: isEnabled && featureCodeIndexingEnabled,
+		enabled: isRagMode,
 	});
 
-	const updateMutation = useMutation({
-		mutationFn: (enabled: boolean) =>
+	const refreshInterval: CodeIndexRefreshInterval =
+		ragSettings?.settings?.codeIndexRefreshInterval ?? "DAILY";
+	const intervalMutation = useMutation({
+		mutationFn: (interval: CodeIndexRefreshInterval) =>
 			orpcClient.projects.ragSettings.update({
 				projectId,
 				organizationId,
-				codeSearchEnabled: enabled,
-				codeSearchProvider: enabled ? "api" : null,
+				codeIndexRefreshInterval: interval,
 			}),
-		onMutate: async (enabled) => {
+		onError: (error) => {
+			toast.error(
+				error instanceof Error
+					? error.message
+					: "Failed to update the refresh interval",
+			);
+		},
+		onSettled: () => {
+			queryClient.invalidateQueries({
+				queryKey: ragQueryOptions.queryKey,
+			});
+		},
+	});
+
+	const updateMutation = useMutation({
+		mutationFn: (codeSearchMode: CodeSearchMode) =>
+			orpcClient.projects.ragSettings.update({
+				projectId,
+				organizationId,
+				codeSearchMode,
+			}),
+		onMutate: async (codeSearchMode) => {
 			await queryClient.cancelQueries({
 				queryKey: ragQueryOptions.queryKey,
 			});
@@ -2561,15 +2735,14 @@ export function CodeSearchToggle({
 						...old,
 						settings: {
 							...old.settings,
-							codeSearchEnabled: enabled,
-							codeSearchProvider: enabled ? "api" : null,
+							codeSearchMode,
 						},
 					};
 				},
 			);
 			return { previous };
 		},
-		onError: (error, _enabled, context) => {
+		onError: (error, _mode, context) => {
 			if (context?.previous) {
 				queryClient.setQueryData(
 					ragQueryOptions.queryKey,
@@ -2579,53 +2752,168 @@ export function CodeSearchToggle({
 			toast.error(
 				error instanceof Error
 					? error.message
-					: "Failed to update code search setting",
+					: "Failed to update how AI agents search code",
 			);
 		},
 		onSettled: () => {
 			queryClient.invalidateQueries({
 				queryKey: ragQueryOptions.queryKey,
 			});
-			// Code search decides whether the capability gates can say
-			// "indexing" or must say "turn code search on" (Fizzy #1930).
+			// The mode decides whether the capability gates can say "indexing"
+			// or must say "turn code search on" (Fizzy #1930).
 			queryClient.invalidateQueries({ queryKey: ["capability-gates"] });
 		},
 	});
 
 	return (
-		<div id={CODE_SEARCH_SETTINGS_ANCHOR_ID} className="space-y-2">
-			<div className="flex items-center justify-between rounded-lg border p-3 bg-muted/20">
+		<div
+			id={anchor ? CODE_SEARCH_SETTINGS_ANCHOR_ID : undefined}
+			className="space-y-2"
+		>
+			<div className="space-y-3 rounded-lg border p-3 bg-muted/20">
 				<div className="space-y-0.5">
-					<Label
-						htmlFor="code-search-toggle"
-						className="text-sm font-medium"
-					>
-						Enable code search for AI agents
-					</Label>
+					<p id={labelId} className="text-sm font-medium">
+						How AI agents search code
+					</p>
 					<p className="text-xs text-muted-foreground">
 						Agents can search repository code, read files, and
-						browse the directory structure across all connected
-						repos.
+						browse the directory structure of the repositories
+						included below.
 					</p>
 				</div>
-				<Switch
-					id="code-search-toggle"
-					checked={isEnabled}
-					onCheckedChange={(checked) =>
-						updateMutation.mutate(checked)
-					}
+				<RadioGroup
+					aria-labelledby={labelId}
+					value={mode}
+					onValueChange={(value) => {
+						if (isCodeSearchMode(value) && value !== mode) {
+							updateMutation.mutate(value);
+						}
+					}}
 					disabled={updateMutation.isPending}
-					aria-label="Enable code search for AI agents"
-				/>
+					className="gap-3"
+				>
+					{CODE_SEARCH_MODE_OPTIONS.map((option) => {
+						const optionId = `${fieldId}-${option.value}`;
+						return (
+							<div
+								key={option.value}
+								className="flex items-start gap-2"
+							>
+								<RadioGroupItem
+									id={optionId}
+									value={option.value}
+									aria-describedby={`${optionId}-description`}
+									className="mt-0.5"
+								/>
+								<div className="space-y-0.5">
+									<Label
+										htmlFor={optionId}
+										className="text-sm font-normal"
+									>
+										{option.label}
+									</Label>
+									<p
+										id={`${optionId}-description`}
+										className="text-xs text-muted-foreground"
+									>
+										{option.description}
+									</p>
+								</div>
+							</div>
+						);
+					})}
+				</RadioGroup>
 			</div>
-			{isEnabled && (
+			{isRagMode && (
+				<div className="flex items-center justify-between gap-4 px-3">
+					<div className="space-y-0.5">
+						<Label
+							htmlFor={`${fieldId}-refresh`}
+							className="text-sm"
+						>
+							Keep the code index up to date
+						</Label>
+						<p className="text-xs text-muted-foreground">
+							Checks the indexed branch and re-embeds only the
+							files that changed.
+						</p>
+					</div>
+					<Select
+						value={refreshInterval}
+						onValueChange={(value) =>
+							intervalMutation.mutate(
+								value as CodeIndexRefreshInterval,
+							)
+						}
+						disabled={intervalMutation.isPending}
+					>
+						<SelectTrigger
+							id={`${fieldId}-refresh`}
+							className="w-40"
+						>
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							{CODE_INDEX_REFRESH_OPTIONS.map((option) => (
+								<SelectItem
+									key={option.value}
+									value={option.value}
+								>
+									{option.label}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				</div>
+			)}
+			{isRagMode && (
 				<CodeIndexStatusRow
-					featureCodeIndexingEnabled={featureCodeIndexingEnabled}
 					isPending={codeIndexStatusQuery.isPending}
 					isError={codeIndexStatusQuery.isError}
 					indexStatus={codeIndexStatusQuery.data?.status}
 					filesIndexed={codeIndexStatusQuery.data?.filesIndexed ?? 0}
 				/>
+			)}
+		</div>
+	);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Per-repository "Include in AI code search"
+// ─────────────────────────────────────────────────────────────────────
+
+function CodeSearchInclusionSwitch({
+	repoLabel,
+	included,
+	canManage,
+	isPending,
+	onChange,
+}: {
+	repoLabel: string;
+	included: boolean;
+	canManage: boolean;
+	isPending: boolean;
+	onChange: (included: boolean) => void;
+}) {
+	const switchId = useId();
+	return (
+		<div className="mt-1.5 space-y-0.5">
+			<div className="flex items-center gap-2">
+				<Switch
+					id={switchId}
+					checked={included}
+					onCheckedChange={onChange}
+					disabled={!canManage || isPending}
+					aria-label={`Include ${repoLabel} in AI code search`}
+				/>
+				<Label htmlFor={switchId} className="text-xs font-normal">
+					Include in AI code search
+				</Label>
+			</div>
+			{!included && (
+				<p className="text-xs text-muted-foreground">
+					AI agents don't search or read this repository.
+				</p>
 			)}
 		</div>
 	);

@@ -18,6 +18,7 @@
  */
 import {
 	type ContextIndexReconcileResult,
+	db,
 	listContextRepositorySyncAwaitingIndex,
 	type PendingVectorCleanupRecord,
 } from "@repo/database";
@@ -122,5 +123,46 @@ export async function settleIndexingChange(input: {
 	}
 	if (input.reindex.included > 0) {
 		await startIndexing(input);
+	}
+	await settleCodeIndex(input);
+}
+
+/**
+ * A file that became Store only is no longer searchable as context, so the
+ * code index takes it back; one that stopped being Store only leaves it.
+ */
+async function settleCodeIndex(input: {
+	reindex: ContextIndexReconcileResult;
+	projectId: string;
+	organizationId: string;
+	syncId: string;
+}): Promise<void> {
+	try {
+		if (input.reindex.changedPaths.length === 0) {
+			return;
+		}
+		const sync = await db.projectContextRepositorySync.findFirst({
+			where: {
+				id: input.syncId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+			},
+			select: { repositoryIntegrationId: true },
+		});
+		if (!sync) {
+			return;
+		}
+		const { reindexContextCoveredPaths } = await import(
+			"../../../../lib/code-index-refresh"
+		);
+		await reindexContextCoveredPaths({
+			projectId: input.projectId,
+			repositoryIntegrationId: sync.repositoryIntegrationId,
+			paths: input.reindex.changedPaths,
+		});
+	} catch (error) {
+		logger.warn(
+			`[WriteFolderIndexing] Could not update the code index for sync ${input.syncId}: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 }

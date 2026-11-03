@@ -69,7 +69,6 @@ import {
 	GenerationDependencyProjectNotFoundError,
 	type GenerationRunStartOutcome,
 	getProjectRagSettings,
-	getRetrievableConversationBundleById,
 	hasProjectAccess,
 	listEmbeddedDocumentsForSweep,
 	markDocumentGenerationFailed,
@@ -94,10 +93,13 @@ import {
 	type RerankerProviderType,
 	type RetrievedContext,
 	reembedProjectDocument,
-	rerankContexts,
 	SUMMARY_CONTEXT_TYPE,
-	searchSimilarProjectContexts,
+	selectProjectContexts,
 } from "@repo/rag";
+import {
+	hydrateProjectContextHits,
+	searchProjectContextHits,
+} from "@repo/rag/lib/project-contexts/search-hits";
 import { documentTypeLabel } from "@repo/utils/document-type-catalog";
 import { countDocumentWords } from "@repo/utils/document-word-count";
 import {
@@ -328,9 +330,11 @@ function describeRetrievedContext(
 	if (bundleIds.has(context.id)) {
 		return { ...OTHER_SOURCE, title };
 	}
+	const parentContextId = context.metadata?.parentContextId;
 	return {
 		kind: "projectContext",
-		id: context.id,
+		// URL-page evidence belongs to the parent context source in the manifest.
+		id: typeof parentContextId === "string" ? parentContextId : context.id,
 		contextType: context.type,
 		title,
 		sourceName: null,
@@ -528,12 +532,14 @@ async function retrieveProjectContextEntries(
 		});
 
 		// Search for relevant contexts using RAG with project settings
-		const results = await searchSimilarProjectContexts({
+		const results = await searchProjectContextHits({
+			query: finalSearchQuery,
 			projectId,
 			userId,
 			organizationId,
 			queryEmbedding,
 			topK: retrieveCount,
+			excludeDocumentChunks: true,
 			minSimilarity: similarityThreshold,
 		});
 
@@ -547,7 +553,8 @@ async function retrieveProjectContextEntries(
 			projectId,
 			organizationId: organizationId ?? null,
 			queryEmbeddingDimensions: queryEmbedding.length,
-			similarityThreshold,
+			minimumSemanticSimilarity: similarityThreshold,
+			scoreKind: "hybrid RRF ranks or dense similarity after fallback",
 			rawResultCount: results.length,
 			topScores: results.slice(0, 5).map((r) => r.score),
 		});
@@ -604,159 +611,72 @@ async function retrieveProjectContextEntries(
 			sampleBaseIds: baseContextIds.slice(0, 3),
 		});
 
-		// Which hits are captured conversation bundles rather than context rows
-		// (Fizzy #2228). Only the point payload can say: the bundle's row id is
-		// not a `ProjectContext` id, and the channel's own context row is a
-		// pointer with empty `content`, so a bundle hit resolved through the
-		// context table returns nothing to cite.
-		const bundleIdByBaseId = new Map<string, string>();
-		for (const r of results) {
-			if (r.conversationBundleId) {
-				bundleIdByBaseId.set(
-					extractBaseContextId(r.contextId),
-					r.conversationBundleId,
-				);
-			}
-		}
-		const rowIds = baseContextIds.filter((id) => !bundleIdByBaseId.has(id));
-		const bundleHits = baseContextIds.flatMap((baseId) => {
-			const bundleId = bundleIdByBaseId.get(baseId);
-			return bundleId ? [{ baseId, bundleId }] : [];
+		const normalizedHits = results
+			.map((hit) => ({
+				...hit,
+				contextId: extractBaseContextId(hit.contextId),
+			}))
+			.filter((hit) => hit.contextId !== excludeContextId);
+		const hydrated = await hydrateProjectContextHits({
+			hits: normalizedHits,
+			projectId,
+			userId,
+			organizationId,
+			lookup: "batch",
 		});
-
-		const [contexts, bundles] = await Promise.all([
-			rowIds.length > 0
-				? db.projectContext.findMany({
-						where: {
-							id: { in: rowIds },
-						},
-						select: {
-							id: true,
-							content: true,
-							type: true,
-							metadata: true,
-							originalFilename: true,
-							sourceUrl: true,
-							sourceTitle: true,
-							sourceType: true,
-							aiInstructions: true,
-						},
-					})
-				: Promise.resolve([]),
-			Promise.all(
-				bundleHits.map(({ bundleId }) =>
-					getRetrievableConversationBundleById({
-						bundleId,
-						projectId,
-						tenant: { userId, organizationId },
-					}),
-				),
+		const bundleIds = new Set(
+			normalizedHits.flatMap((hit) =>
+				hit.conversationBundleId ? [hit.conversationBundleId] : [],
 			),
-		]);
-
-		// Keyed by the hit's base id, which is what the ordered loop below
-		// looks up.
-		const contextMap = new Map<
-			string,
-			(typeof contexts)[number] | NonNullable<(typeof bundles)[number]>
-		>(contexts.map((c) => [c.id, c]));
-		bundles.forEach((bundle, i) => {
-			if (bundle) {
-				contextMap.set(bundleHits[i].baseId, bundle);
-			}
-		});
-
+		);
+		const resolved = hydrated.filter((item) => item.context !== null);
 		activityLogger.debug("Database query results", {
 			requestedCount: baseContextIds.length,
-			foundCount: contextMap.size,
-			bundleCount: bundleHits.length,
+			foundCount: resolved.length,
+			bundleCount: bundleIds.size,
 		});
-		// A hit with no row behind it is dropped below without a trace; say so,
-		// since a prompt silently built on fewer sources than were found is what
-		// "my context was ignored" reports come down to.
-		if (contextMap.size < baseContextIds.length) {
+		if (resolved.length < baseContextIds.length) {
 			activityLogger.warn("RAG hits with no context row were dropped", {
 				projectId,
 				hitCount: baseContextIds.length,
-				resolvedCount: contextMap.size,
-				sampleDroppedIds: baseContextIds
-					.filter((id) => !contextMap.has(id))
+				resolvedCount: resolved.length,
+				sampleDroppedIds: hydrated
+					.filter((item) => !item.context)
+					.map(({ hit }) => hit.contextId)
 					.slice(0, 3),
 			});
 		}
-
-		// Build RetrievedContext array for reranking, preserving Qdrant score order
-		// Use base context ID to look up in map
 		const retrievedContexts: RetrievedContext[] = [];
-		const seenBaseIds = new Set<string>(); // Avoid duplicates from multiple chunks of same doc
-
-		for (const r of results) {
-			const baseId = extractBaseContextId(r.contextId);
-			// Restated rather than left to the map miss above. The Qdrant
-			// payload now carries the chunk text itself, so a future change
-			// that builds contexts from the payload instead of from this
-			// database map would quietly lose the exclusion if the only guard
-			// were the absent map entry.
-			if (excludeContextId && baseId === excludeContextId) {
+		for (const { hit, context: ctx } of resolved) {
+			if (!ctx) {
 				continue;
 			}
-			const ctx = contextMap.get(baseId);
-
-			// Skip if we've already added this context (from another chunk)
-			if (ctx && !seenBaseIds.has(baseId)) {
-				seenBaseIds.add(baseId);
-				retrievedContexts.push({
-					id: ctx.id,
-					type: ctx.type as string, // Cast enum to string for RetrievedContext
-					content: ctx.content,
-					score: r.score,
-					metadata: ctx.metadata as
-						| Record<string, unknown>
-						| undefined,
-					filename: ctx.originalFilename || undefined,
-					sourceUrl: ctx.sourceUrl || undefined,
-					sourceTitle: ctx.sourceTitle || undefined,
-					sourceType: ctx.sourceType ?? undefined,
-					aiInstructions: ctx.aiInstructions ?? undefined,
-				});
-			}
-		}
-
-		// Apply reranking if enabled and we have more than 1 context
-		let finalContexts = retrievedContexts;
-		if (enableReranking && retrievedContexts.length > 1) {
-			activityLogger.info(
-				`[Retrieval] Reranking ${retrievedContexts.length} contexts → top ${rerankTopK} with ${rerankerProvider || "cross-encoder"}`,
-			);
-
-			safeHeartbeat({
-				phase: "reranking",
-				message: `Reranking ${retrievedContexts.length} contexts`,
-				progress: 18,
+			retrievedContexts.push({
+				id: ctx.id,
+				type: ctx.type,
+				content: ctx.content,
+				score: hit.score,
+				metadata: ctx.metadata as Record<string, unknown> | undefined,
+				filename: ctx.originalFilename || undefined,
+				sourceUrl: ctx.sourceUrl || undefined,
+				sourceTitle: ctx.sourceTitle || undefined,
+				sourceType: ctx.sourceType ?? undefined,
+				aiInstructions: ctx.aiInstructions ?? undefined,
 			});
-
-			try {
-				const { contexts: rerankedContexts, stats } =
-					await rerankContexts({
-						query: finalSearchQuery,
-						contexts: retrievedContexts,
-						topK: rerankTopK,
-						provider: rerankerProvider,
-					});
-
-				activityLogger.info(
-					`[Retrieval] Reranking complete: ${stats.inputCount} → ${stats.outputCount} in ${stats.latencyMs}ms (provider: ${stats.provider})`,
-				);
-
-				finalContexts = rerankedContexts;
-			} catch (error) {
-				activityLogger.warn(
-					`[Retrieval] Reranking failed, returning original results: ${error}`,
-				);
-				// Use original contexts on reranking failure
-				finalContexts = retrievedContexts.slice(0, rerankTopK);
-			}
 		}
+
+		const finalContexts = await selectProjectContexts({
+			contexts: retrievedContexts,
+			hits: results.map((hit) => ({
+				...hit,
+				contextId: extractBaseContextId(hit.contextId),
+			})),
+			query: finalSearchQuery,
+			limit: rerankTopK,
+			enabled: enableReranking,
+			provider: rerankerProvider,
+			tenant: { userId, organizationId, projectId },
+		});
 
 		// Enrich code contexts with live repository role tags
 		const enrichedContexts = await enrichContextsWithRoleTags(
@@ -774,7 +694,6 @@ async function retrieveProjectContextEntries(
 
 		// A bundle's envelope carries the bundle's own id, never a context
 		// row's: what tells a conversation from a row in the manifest.
-		const bundleIds = new Set(bundleIdByBaseId.values());
 		const sourcedContents = withSummary.map((c): SourcedContext => {
 			let content = c.content;
 			if (c.sourceType || c.aiInstructions) {

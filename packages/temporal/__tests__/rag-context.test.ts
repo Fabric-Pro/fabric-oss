@@ -68,6 +68,10 @@ vi.mock("@repo/ai", () => ({
 	logEmbeddingUsageAsync: vi.fn(),
 }));
 
+vi.mock("@repo/rag/lib/project-contexts/store", () => ({
+	searchSimilarProjectContexts: searchSimilarProjectContextsMock,
+}));
+
 vi.mock("@repo/rag", () => ({
 	contextMetaHeader: () => "",
 	extractBaseContextId: (id: string) => id.replace(/-chunk-\d+$/, ""),
@@ -368,7 +372,12 @@ describe("retrieveProjectContexts conversation bundles", () => {
 			},
 		]);
 		findManyMock.mockResolvedValue([
-			{ content: "row text", sourceType: null, aiInstructions: null },
+			{
+				id: "ctx-1",
+				content: "row text",
+				sourceType: null,
+				aiInstructions: null,
+			},
 		]);
 		getRetrievableConversationBundleByIdMock.mockResolvedValue({
 			content: "captured messages",

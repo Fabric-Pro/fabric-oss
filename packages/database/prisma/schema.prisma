@@ -185,6 +185,7 @@ model User {
   projectContextPendingVectorCleanups             ProjectContextPendingVectorCleanup[]
   projectContextRepositorySyncs                   ProjectContextRepositorySync[]          @relation("ContextRepositorySyncConfigurer")
   projectContextRepositorySyncRuns                ProjectContextRepositorySyncRun[]       @relation("ContextRepositorySyncRunActor")
+  projectChunkingRuns                             ProjectChunkingRun[]                    @relation("ProjectChunkingRunActor")
   projectContextWriteTargets                      ProjectContextWriteTarget[]             @relation("ContextWriteTargetEditor")
   projectMemoryWrites                             ProjectMemoryWrite[]                    @relation("MemoryWriteActor")
   projectReadinessItemStates                      ProjectReadinessItemState[]
@@ -320,6 +321,8 @@ model User {
   dataConnectionsCreated           DataConnection[]           @relation("DataConnectionCreator")
   dataConnectionCredentials        DataConnectionCredential[] @relation("DataConnectionCredentialUser")
   dataConnectionCredentialsCreated DataConnectionCredential[] @relation("DataConnectionCredentialCreator")
+  credentialsOwned                 Credential[]               @relation("CredentialOwner")
+  credentialsCreated               Credential[]               @relation("CredentialCreator")
 
   // Skill catalog relations
   skills Skill[]
@@ -939,6 +942,7 @@ model Organization {
   projectContextPendingVectorCleanups     ProjectContextPendingVectorCleanup[]
   projectContextRepositorySyncs           ProjectContextRepositorySync[]
   projectContextRepositorySyncRuns        ProjectContextRepositorySyncRun[]
+  projectChunkingRuns                     ProjectChunkingRun[]
   projectContextWriteTargets              ProjectContextWriteTarget[]
   projectMemoryWrites                     ProjectMemoryWrite[]
   projectReadinessItemStates              ProjectReadinessItemState[]
@@ -1031,6 +1035,7 @@ model Organization {
   // Data connection relations
   dataConnections           DataConnection[]
   dataConnectionCredentials DataConnectionCredential[]
+  credentials               Credential[]
 
   // Skill catalog relations
   skills Skill[]
@@ -1146,6 +1151,12 @@ model OrganizationRagSettings {
   chunkSize    Int?
   chunkOverlap Int?
   splitMethod  ChunkSplitMethod?
+
+  // Content-type chunking for company context; see the same fields on
+  // `ProjectRagSettings`. Null means off, today's chunking.
+  chunkByContentType Boolean?
+  chunkProfiles      Json?
+  chunkingVersion    Int      @default(0)
 
   // Embedding settings
   embeddingModel EmbeddingModel?
@@ -2328,6 +2339,10 @@ model SDLCPipeline {
 model Project {
   id                                    String                      @id @default(cuid())
   name                                  String
+  /// The Coding Instructions plugin's name in coding tools (`/<name>:<skill>`);
+  /// NULL means the default, the project's name as a slug
+  /// (specs/2026-10-21-ai-artifacts-hub).
+  instructionPluginName                 String?
   description                           String?
   heroEmojis                            String[]                    @default([])
   heroImageUrl                          String? // AI-generated hero image URL
@@ -2547,9 +2562,16 @@ model Project {
   contextPendingVectorCleanups      ProjectContextPendingVectorCleanup[]
   contextRepositorySync             ProjectContextRepositorySync?        @relation("ProjectContextRepositorySync")
   contextRepositorySyncRuns         ProjectContextRepositorySyncRun[]    @relation("ProjectContextRepositorySyncRuns")
+  chunkingRuns                      ProjectChunkingRun[]
   contextWriteTargets               ProjectContextWriteTarget[]          @relation("ProjectContextWriteTargets")
   memoryWrites                      ProjectMemoryWrite[]                 @relation("ProjectMemoryWrites")
   contextSummaries                  ProjectContextSummary[]
+  knowledgeArtifactTypes            KnowledgeArtifactType[]
+  knowledgeTopics                   KnowledgeTopic[]
+  knowledgeEntries                  KnowledgeEntry[]
+  knowledgeTopicSummaries           KnowledgeTopicSummary[]
+  instructionConsolidations         InstructionConsolidation[]
+  importRuns                        ProjectImportRun[]
   prdSourceContext                  ProjectContext?                      @relation("PrdSourceContext", fields: [prdSourceContextId], references: [id])
   // Engagement profile + delivery-track governance (docs/features/inverted-loop-delivery-tracks.md)
   // Existing rows default to GOVERNED (closest to today's uniform gating); enforcement flags default off.
@@ -2836,6 +2858,10 @@ model ProjectDocument {
   qdrantId    String?
   embeddedAt  DateTime?
   contentHash String? // To detect actual content changes
+
+  // Content-type chunking; see `ProjectContext.chunkProfile`.
+  chunkProfile    String?
+  chunkingVersion Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -3213,6 +3239,14 @@ model ProjectContext {
   qdrantId   String?
   embeddedAt DateTime?
   metadata   Json?
+
+  // Content-type chunking. `chunkProfile` is an optional per-source profile
+  // override (`sectioned`, `whole`, `items`, …; validated in code), null =
+  // automatic. `chunkingVersion` is the project's `ProjectRagSettings.
+  // chunkingVersion` this source's points were written under; null = before
+  // content-type chunking existed, which matches version 0.
+  chunkProfile    String?
+  chunkingVersion Int?
 
   // File upload fields
   s3Path           String?
@@ -4211,6 +4245,278 @@ model ProjectContextSummary {
   @@map("project_context_summary")
 }
 
+// =============================================================================
+// Project knowledge hub (specs/2026-10-21-ai-artifacts-hub §5.5–5.6)
+//
+// Knowledge that engineers' AI tools produce while working (notes, specs,
+// investigations, decisions, handoffs…) lives in Fabric as append-only entries
+// grouped by topic, never as shared mutable files: many authors can write to
+// one topic without conflicts, and the topic's living document is an AI
+// summary built from its entries.
+// =============================================================================
+
+/// How a type's entries feed the topic summary.
+enum KnowledgeSummaryBehavior {
+  MERGE // folded into the summary with the other entries
+  LATEST_WINS // only the newest entry of this type counts (e.g. a handoff)
+  EXCLUDED // kept and searchable, never summarised
+}
+
+/// Who may read entries of a type.
+enum KnowledgeVisibility {
+  MEMBERS
+  MEMBERS_AND_GUESTS
+}
+
+/// What a topic is about.
+enum KnowledgeTopicKind {
+  WORK_ITEM // a story or bug (UserStory), optionally carrying its external id
+  FREE // a free topic keyed by a slug, e.g. "us-developer-journey"
+}
+
+enum ProjectImportRunStatus {
+  RUNNING
+  REVIEW
+  APPLYING
+  COMPLETED
+  FAILED
+}
+
+enum InstructionConsolidationStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum KnowledgeTopicSummaryStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// Project-level catalog of knowledge artifact types. Built-in types are
+/// created on first use for each project and may be edited; admins add custom
+/// ones. Rendered into the plugin's `fabric-knowledge` skill.
+model KnowledgeArtifactType {
+  id              String                   @id @default(cuid())
+  projectId       String
+  /// Stable machine key, unique per project: "note", "handoff", "api-contract".
+  key             String
+  name            String
+  /// Tells the agent when to use this type.
+  description     String                   @db.Text
+  /// Optional markdown skeleton the agent fills in.
+  template        String?                  @db.Text
+  /// Optional JSON Schema for the entry's structured `fields`.
+  fieldSchema     Json?
+  summaryBehavior KnowledgeSummaryBehavior @default(MERGE)
+  visibility      KnowledgeVisibility      @default(MEMBERS)
+  /// Entries older than this are hidden from search and summaries; null keeps them.
+  retentionDays   Int?
+  builtIn         Boolean                  @default(false)
+  archivedAt      DateTime?
+  updatedByUserId String?
+
+  // Tenant isolation (copied from the parent Project)
+  userId         String
+  organizationId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  entries KnowledgeEntry[]
+
+  @@unique([projectId, key])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("knowledge_artifact_type")
+}
+
+/// What knowledge is about: a work item or a free topic.
+model KnowledgeTopic {
+  id              String             @id @default(cuid())
+  projectId       String
+  /// Unique per project: "story:<userStoryId>", "ext:<external id>" or a slug.
+  key             String
+  title           String
+  kind            KnowledgeTopicKind
+  userStoryId     String?
+  /// External work-item reference as written by the user/agent, e.g. "12345" or "ADO-12345".
+  externalRef     String?
+  entryCount      Int                @default(0)
+  lastEntryAt     DateTime?
+  createdByUserId String
+
+  // Tenant isolation (copied from the parent Project)
+  userId         String
+  organizationId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project   Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userStory UserStory?              @relation(fields: [userStoryId], references: [id], onDelete: SetNull)
+  entries   KnowledgeEntry[]
+  summaries KnowledgeTopicSummary[]
+
+  @@unique([projectId, key])
+  @@index([projectId, lastEntryAt])
+  @@index([userStoryId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("knowledge_topic")
+}
+
+/// One immutable contribution to a topic. Never updated in place: a
+/// correction is a new entry that `supersedes` the old one.
+model KnowledgeEntry {
+  id           String  @id @default(cuid())
+  projectId    String
+  topicId      String
+  typeId       String
+  authorUserId String
+  /// The AI tool (MCP client) that wrote it, e.g. "claude-code"; null from the UI.
+  agentClient  String?
+  /// Optional discipline tag of the author for this entry: FE, BE, QA…
+  role         String?
+  title        String
+  body         String  @db.Text
+  /// Structured fields validated against the type's fieldSchema.
+  fields       Json?
+  contentHash  String
+  /// Set on a correction; the superseded entry stays readable as history.
+  supersedesId String? @unique
+  /// For an entry that mirrors a file the agent wrote (e.g. "specs/x/spec.md"):
+  /// saving the same path again on the topic records a new version that
+  /// supersedes the previous one.
+  sourcePath   String?
+
+  qdrantId   String?
+  embeddedAt DateTime?
+
+  // Tenant isolation (copied from the parent Project)
+  userId         String
+  organizationId String?
+
+  createdAt DateTime @default(now())
+
+  project      Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  topic        KnowledgeTopic        @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  type         KnowledgeArtifactType @relation(fields: [typeId], references: [id], onDelete: Restrict)
+  supersedes   KnowledgeEntry?       @relation("KnowledgeEntrySupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
+  supersededBy KnowledgeEntry?       @relation("KnowledgeEntrySupersedes")
+
+  @@index([topicId, createdAt])
+  @@index([topicId, sourcePath])
+  @@index([projectId, createdAt])
+  @@index([typeId])
+  @@index([authorUserId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("knowledge_entry")
+}
+
+/// The topic's living document, synthesized by AI from its entries. Each
+/// regeneration is a new row; older rows are kept as history.
+model KnowledgeTopicSummary {
+  id             String                      @id @default(cuid())
+  topicId        String
+  projectId      String
+  status         KnowledgeTopicSummaryStatus @default(PENDING)
+  content        String?                     @db.Text
+  /// createdAt of the newest entry folded into this summary.
+  coveredThrough DateTime?
+  entryCount     Int                         @default(0)
+  /// [{ entryId, title, authorUserId, createdAt }] cited by the summary.
+  references     Json?
+  model          String?
+  error          String?                     @db.Text
+
+  // Tenant isolation (copied from the parent Project)
+  userId         String
+  organizationId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  topic   KnowledgeTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([topicId, createdAt])
+  @@index([projectId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("knowledge_topic_summary")
+}
+
+/// Importing a project from its repository (specs/2026-10-21-ai-artifacts-hub
+/// §3.1): the analysis a person follows as a checklist, and what it found for
+/// them to confirm. One row per run; the newest is the project's import.
+model ProjectImportRun {
+  id                      String                 @id @default(cuid())
+  projectId               String
+  status                  ProjectImportRunStatus @default(RUNNING)
+  repositoryIntegrationId String
+  /// [{ key, status: PENDING|RUNNING|DONE|SKIPPED|FAILED, detail?, startedAt?, finishedAt? }]
+  steps                   Json
+  /// What the analysis found: stack, documents by kind, summary, AI files.
+  findings                Json?
+  error                   String?                @db.Text
+
+  // Tenant isolation (copied from the parent Project)
+  userId         String
+  organizationId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("project_import_run")
+}
+
+/// Moving a code repository's AI files into a separate instructions
+/// repository that Fabric creates (specs/2026-10-21-ai-artifacts-hub §5.2).
+/// One row per run; the newest is the project's current state.
+model InstructionConsolidation {
+  id                    String                         @id @default(cuid())
+  projectId             String
+  status                InstructionConsolidationStatus @default(RUNNING)
+  /// CREATED | COPYING | CONFIGURING | CLEANUP | DONE
+  step                  String                         @default("CREATED")
+  /// The code repository the files come from.
+  sourceIntegrationId   String
+  /// The instructions repository Fabric created and connected.
+  targetIntegrationId   String?
+  targetRepositoryUrl   String?
+  sourceCommitSha       String?
+  copiedCommitSha       String?
+  cleanupPullRequestUrl String?
+  /// [{ from, to }] the person confirmed; `to` null removes a duplicate only.
+  files                 Json
+  fileCount             Int                            @default(0)
+  error                 String?                        @db.Text
+
+  // Tenant isolation (copied from the parent Project)
+  userId         String
+  organizationId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("instruction_consolidation")
+}
+
 // Wizard Temp Context - Temporary storage for file uploads during project wizard
 // Files are stored here before project creation and moved to ProjectContext after
 model WizardTempContext {
@@ -4756,6 +5062,11 @@ model CompanyContextSource {
   embeddedAt     DateTime?
   embeddingModel String?
 
+  // Content-type chunking; see `ProjectContext.chunkProfile`. The version is
+  // `OrganizationRagSettings.chunkingVersion`.
+  chunkProfile    String?
+  chunkingVersion Int?
+
   // File upload fields. Objects live under `{organizationId}/company-context/`
   // in the project-contexts bucket, which organization deletion sweeps.
   s3Path           String?
@@ -4885,6 +5196,56 @@ model CompanyContextUrlPage {
   @@map("company_context_url_page")
 }
 
+/// What a chunking run does: re-chunk the project (§8a), measure the current
+/// chunking (§8b), or analyse and propose per-type settings (§8c).
+enum ProjectChunkingRunKind {
+  RECHUNK
+  MEASURE
+  TUNE
+}
+
+enum ProjectChunkingRunStatus {
+  RUNNING
+  AWAITING_APPROVAL
+  COMPLETED
+  FAILED
+  SUPERSEDED
+  CANCELLED
+}
+
+/// One chunking run of a project. Holds progress and the result shown on RAG
+/// Settings; a TUNE run keeps its proposal and scores so a later run can show
+/// "since the last tuning". Question sets live here, never in project content.
+model ProjectChunkingRun {
+  id              String                   @id @default(cuid())
+  projectId       String
+  organizationId  String
+  /// Who started it; null for a run the system started.
+  userId          String?
+  kind            ProjectChunkingRunKind
+  status          ProjectChunkingRunStatus @default(RUNNING)
+  /// RECHUNK: the `ProjectRagSettings.chunkingVersion` it writes.
+  chunkingVersion Int?
+  workflowId      String?
+  /// { total, done, failed } sources.
+  progress        Json                     @default("{}")
+  /// RECHUNK: counts; MEASURE/TUNE: per-type scores and the proposal.
+  result          Json?
+  error           String?
+  startedAt       DateTime                 @default(now())
+  finishedAt      DateTime?
+  updatedAt       DateTime                 @updatedAt
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation("ProjectChunkingRunActor", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, kind, startedAt])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("project_chunking_run")
+}
+
 // Project RAG Settings - Per-project RAG configuration
 model ProjectRagSettings {
   id        String @id @default(cuid())
@@ -4895,6 +5256,17 @@ model ProjectRagSettings {
   chunkOverlap Int              @default(500) // 100-1000 chars
   splitMethod  ChunkSplitMethod @default(DOCUMENT) // Structure-aware (markdown, code)
 
+  // Content-type chunking (spec 2026-10-28). Off on every existing row, so
+  // the project chunks exactly as before until someone changes its chunking
+  // settings. `chunkProfiles` is per-type tuning: { [kind or profile]:
+  // { profile?, target?, max?, overlap? } }, validated by
+  // `chunkProfilesConfigSchema` in `@repo/rag`. `chunkingVersion` is bumped
+  // by every saved chunking change; a source whose own `chunkingVersion` is
+  // behind it is re-chunked.
+  chunkByContentType Boolean @default(false)
+  chunkProfiles      Json?
+  chunkingVersion    Int     @default(0)
+
   // Embedding settings
   embeddingModel EmbeddingModel @default(TEXT_EMBEDDING_3_SMALL)
 
@@ -4903,15 +5275,23 @@ model ProjectRagSettings {
   similarityThreshold  Float   @default(0.3) // 0.1-0.9, lower threshold since reranking filters
   enableReranking      Boolean @default(true)
   rerankTopK           Int     @default(10) // Final count after reranking (1-50)
-  rerankerProvider     String  @default("cross-encoder") // cross-encoder | cohere
+  rerankerProvider     String  @default("cross-encoder") // cross-encoder (default selection) | cohere | gateway
   enableEpisodicMemory Boolean @default(true) // Include past project discussions
 
   // Code search settings
-  codeSearchEnabled  Boolean @default(false) // Enable code search tools for AI agents
-  codeSearchProvider String? // "api" | "indexed" | "hybrid" — defaults to "api" when enabled
+  // How AI agents search this project's code (spec 2026-10-29 code-index-sync
+  // §6a): not at all, through the provider API, or through the code index.
+  codeSearchMode     CodeSearchMode @default(OFF)
+  // Superseded by codeSearchMode; kept until a later release drops them.
+  codeSearchEnabled  Boolean        @default(false)
+  codeSearchProvider String?
 
   // Code embedding model (Phase 2: AST-aware indexing)
   codeEmbeddingModel String? @default("TEXT_EMBEDDING_3_SMALL") // "TEXT_EMBEDDING_3_SMALL" | "VOYAGE_CODE_3"
+
+  // How often the code index re-checks each repository's indexed branch and
+  // re-embeds only the files that changed (spec 2026-10-29 code-index-sync).
+  codeIndexRefreshInterval CodeIndexRefreshInterval @default(DAILY)
 
   // Tenant isolation (copied from parent Project)
   userId         String?
@@ -5403,6 +5783,13 @@ model ProjectCodeIndex {
   ownerRunId              String? // firstExecutionRunId of the owning chain
   ownerRunStartedAt       DateTime? // Temporal start time of the claiming run
 
+  // Scheduled refresh (spec 2026-10-29 code-index-sync): when this repo's
+  // branch is next compared with the indexed commit, when it last was, and why
+  // the last check could not run. Claimed by moving nextRefreshCheckAt first.
+  nextRefreshCheckAt DateTime?
+  lastRefreshCheckAt DateTime?
+  lastRefreshError   String?
+
   // Tenant isolation
   userId         String
   organizationId String?
@@ -5410,9 +5797,10 @@ model ProjectCodeIndex {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  files        ProjectCodeFile[]
 
   @@unique([projectId, repositoryIntegrationId, branch])
   @@index([projectId])
@@ -5420,7 +5808,51 @@ model ProjectCodeIndex {
   @@index([userId])
   @@index([organizationId])
   @@index([status])
+  @@index([nextRefreshCheckAt])
   @@map("project_code_index")
+}
+
+/// The full text of one indexed repository file, kept with its code index so
+/// AI agents read files from the index instead of the provider in RAG mode
+/// (spec 2026-10-29 code-index-sync §6b). Written and removed with the
+/// file's vectors; goes away with its index.
+model ProjectCodeFile {
+  id                 String  @id @default(cuid())
+  projectCodeIndexId String
+  projectId          String
+  organizationId     String?
+  path               String
+  /// The file's blob sha in the indexed commit, when the provider gave one.
+  blobSha            String?
+  language           String?
+  content            String  @db.Text
+  lineCount          Int
+  sizeBytes          Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  codeIndex ProjectCodeIndex @relation(fields: [projectCodeIndexId], references: [id], onDelete: Cascade)
+
+  @@unique([projectCodeIndexId, path])
+  @@index([projectId])
+  @@map("project_code_file")
+}
+
+/// How AI agents search a project's code: not at all, through the provider
+/// API (live), or through the chunked and embedded code index (RAG).
+enum CodeSearchMode {
+  OFF
+  CODE_SEARCH
+  RAG
+}
+
+/// How often a project's code index is refreshed from its repositories.
+enum CodeIndexRefreshInterval {
+  OFF
+  HOURLY
+  EVERY_6_HOURS
+  DAILY
 }
 
 enum CodeIndexStatus {
@@ -6343,7 +6775,7 @@ model ParlumeMeetingSession {
 
 /// A tagged channel post is attempted once, including when Graph's response is lost.
 model ParlumeChannelPost {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   sessionId         String
   projectId         String
   organizationId    String
@@ -6353,8 +6785,8 @@ model ParlumeChannelPost {
   providerMessageId String?
   /// When an authenticated Graph read proved this exact tagged reply and content.
   confirmedAt       DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   session ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
@@ -9046,6 +9478,7 @@ model UserStory {
 
   // Feature Maturation V2 — threaded Decision Log changelog
   decisionLogEntries DecisionLogEntry[]
+  knowledgeTopics    KnowledgeTopic[]
 
   // Roadmap Priority — the append-only band-change trail behind each row.
   priorityChanges StoryPriorityChange[]
@@ -15921,9 +16354,12 @@ model WorkspaceRagSettings {
   workspaceId String @unique
 
   // Chunking Configuration
-  chunkSize    Int              @default(3000)
-  chunkOverlap Int              @default(500)
-  splitMethod  ChunkSplitMethod @default(DOCUMENT)
+  chunkSize          Int              @default(3000)
+  chunkOverlap       Int              @default(500)
+  splitMethod        ChunkSplitMethod @default(DOCUMENT)
+  // Content-type chunking; see `ProjectRagSettings`.
+  chunkByContentType Boolean          @default(false)
+  chunkProfiles      Json?
 
   // Embedding Configuration
   embeddingModel EmbeddingModel @default(TEXT_EMBEDDING_3_SMALL)
@@ -18923,6 +19359,118 @@ model DataConnectionCredential {
   @@map("data_connection_credential")
 }
 
+enum CredentialProvider {
+  GITHUB
+  GITLAB
+  AZURE_DEVOPS
+  ATLASSIAN
+  SLACK
+  MICROSOFT
+  GOOGLE
+  NOTION
+  LINEAR
+  OPENAI
+  ANTHROPIC
+  AZURE_OPENAI
+  CUSTOM
+}
+
+enum CredentialKind {
+  APP_INSTALLATION
+  OAUTH
+  GITHUB_APP_USER
+  PAT
+  API_KEY
+  BASIC
+  SERVICE_ACCOUNT
+  CUSTOM
+}
+
+/// Whose identity the provider sees when Fabric uses the credential.
+enum CredentialPrincipal {
+  APP
+  USER
+}
+
+enum CredentialSharing {
+  PRIVATE
+  ORGANIZATION
+}
+
+enum CredentialStatus {
+  ACTIVE
+  EXPIRING
+  NEEDS_REAUTH
+  REVOKED
+  ERROR
+}
+
+/// One outbound credential: a grant or a key Fabric uses to reach an external
+/// system (ADR-026). Consumers reference it
+/// by id instead of keeping a copy of the secret.
+///
+/// Tenancy: `organizationId` is required (ADR-018). `userId` null means the
+/// organization owns the row; set means that member owns it. `sharing`
+/// ORGANIZATION lets other members bind it; organization-owned rows are always
+/// ORGANIZATION. RLS isolates by organization (`org_only_owned`); owner and
+/// sharing rules are enforced in `queries/credentials.ts`.
+///
+/// `encryptedSecret` is `encryptApiKey` ciphertext of a JSON object and is
+/// never selected by list or metadata reads. `APP_INSTALLATION` rows store no
+/// token: one is minted per call from the deployment's app key.
+///
+/// Partial unique indexes owned by migration
+/// 20261031180000_credential_manager and deliberately not declared here
+/// (Prisma models no WHERE clause):
+///   - `credential_account_grant_key`: one live grant per account per owner
+///     per organization — (organizationId, userId, provider, origin,
+///     externalAccountId) NULLS NOT DISTINCT, WHERE kind IN (OAUTH,
+///     GITHUB_APP_USER) AND status <> REVOKED AND externalAccountId IS NOT NULL.
+///   - `credential_installation_key`: one installation binds to one
+///     organization — (provider, origin, installationId) WHERE kind =
+///     APP_INSTALLATION AND installationId IS NOT NULL.
+///
+/// CHECK constraints from the same migration: `credential_org_owned_shared_check`
+/// (userId IS NULL → sharing = ORGANIZATION) and
+/// `credential_app_installation_check` (APP_INSTALLATION → organization-owned,
+/// principal APP, no stored secret).
+model Credential {
+  id                   String              @id @default(cuid())
+  organizationId       String
+  userId               String?
+  sharing              CredentialSharing   @default(PRIVATE)
+  provider             CredentialProvider
+  kind                 CredentialKind
+  principal            CredentialPrincipal @default(USER)
+  label                String
+  origin               String
+  externalAccountId    String?
+  externalAccountLogin String?
+  installationId       String?
+  installation         Json?
+  scopes               String[]            @default([])
+  encryptedSecret      String?             @db.Text
+  generation           Int                 @default(1)
+  status               CredentialStatus    @default(ACTIVE)
+  expiresAt            DateTime?
+  refreshRejectedAt    DateTime?
+  lastCheckedAt        DateTime?
+  lastUsedAt           DateTime?
+  lastError            String?
+  createdByUserId      String?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  owner        User?        @relation("CredentialOwner", fields: [userId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("CredentialCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, provider])
+  @@index([organizationId, userId])
+  @@index([status])
+  @@map("credential")
+}
+
 enum DataConnectionProvider {
   GOOGLE_DRIVE
   S3
@@ -20732,19 +21280,22 @@ model ProjectRepositoryIntegration {
   authMethod RepositoryAuthMethod
 
   // Repository identification
-  repositoryUrl   String
-  repositoryOwner String
-  repositoryName  String
-  defaultBranch   String   @default("main")
-  roleTag         String? // Role tag/label (e.g., "Legacy", "New", "V1 Reference")
+  repositoryUrl        String
+  repositoryOwner      String
+  repositoryName       String
+  defaultBranch        String   @default("main")
+  roleTag              String? // Role tag/label (e.g., "Legacy", "New", "V1 Reference")
+  // Whether AI code search (live or RAG, per the project's codeSearchMode)
+  // reads and indexes this repository.
+  includedInCodeSearch Boolean  @default(true)
   // Branch the QA pipeline-results sync watches for CI runs. NULL = follow
   // defaultBranch. Separate from defaultBranch because that one also drives code
   // indexing: a team whose CI publishes test reports on `develop` must be able to
   // point QA there without moving what Atlas indexes.
-  qaBranch        String?
+  qaBranch             String?
   // Atlas branch pinning (per project+repo) — branches the user keeps handy in
   // the branch switcher. Display-only convenience; does not change monitoring.
-  pinnedBranches  String[] @default([])
+  pinnedBranches       String[] @default([])
 
   // Encrypted credentials (server-side only, never returned to frontend)
   encryptedAccessToken  String?

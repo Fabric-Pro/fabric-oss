@@ -14,3 +14,4 @@ export {
 	reembedProjectDocument,
 	removeDocumentEmbedding,
 } from "./embed";
+export { documentPointIds, rechunkProjectDocument } from "./rechunk";

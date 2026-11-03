@@ -20,14 +20,18 @@ import {
 	type CompanyEmbeddingModel,
 	chunkProjectContent,
 	companyEmbeddingIdentity,
+	contentKindForContext,
 	deleteCompanyContextRowPoints,
 	deleteCompanyContextSourcePoints,
 	generateEmbeddings,
 	getCompanyChunkSettings,
+	isChunkProfile,
+	parseChunkProfilesConfig,
 	resolveCompanyEmbeddingModel,
 	storeCompanyContextPoints,
 	type TextChunk,
 	unsupportedEmbeddingModelMessage,
+	usesPerTypeChunking,
 } from "@repo/rag";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
@@ -268,6 +272,25 @@ export async function processCompanySource(
 			chunkSize: chunking.chunkSize,
 			chunkOverlap: chunking.chunkOverlap,
 			...(chunking.strategy ? { textStrategy: chunking.strategy } : {}),
+			// Content-type chunking: only with the organization's toggle and the
+			// flag on. Off, the call is exactly what it was.
+			...(usesPerTypeChunking(chunking)
+				? {
+						chunkByContentType:
+							chunking.chunkByContentType === true,
+						organizationId,
+						kind: contentKindForContext({
+							type: context.type,
+							metadata: context.metadata,
+						}),
+						profileOverride: isChunkProfile(context.chunkProfile)
+							? context.chunkProfile
+							: null,
+						chunkProfiles: parseChunkProfilesConfig(
+							chunking.chunkProfiles,
+						),
+					}
+				: {}),
 		});
 		if (chunkResult.route.kind === "malformed-openapi") {
 			const reason = `This file looks like an OpenAPI/Swagger document but could not be read: ${chunkResult.route.reason}`;

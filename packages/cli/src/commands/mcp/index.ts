@@ -14,6 +14,7 @@ import type {
 import { Command } from "commander";
 import { getClient, getMcpAuthenticatedFetch } from "../../lib/client.js";
 import { resolveContext } from "../../lib/context.js";
+import { mcpAccessToken } from "../../lib/oauth/mcp-token.js";
 import { printError, printOutput, printRecord } from "../../lib/output.js";
 
 export async function resolveMcpOrganizationId(
@@ -228,6 +229,34 @@ export function buildMcpCommand(): Command {
 		);
 
 	mcp.addCommand(configs);
+
+	// -- header --------------------------------------------------------------
+	// Claude Code's `headersHelper` for the Coding Instructions plugin's MCP
+	// server: prints the Authorization header for the project's gateway, or `{}`
+	// when there is no sign-in to use, so the tool falls back to its own.
+	mcp.command("header")
+		.description(
+			"Print the MCP gateway Authorization header for a project (used by coding tools)",
+		)
+		.requiredOption("--project <id>", "The Fabric project")
+		.requiredOption("--base-url <origin>", "The Fabric deployment")
+		.action(async (opts: { project: string; baseUrl: string }) => {
+			let header: Record<string, string> = {};
+			try {
+				const origin = new URL(opts.baseUrl).origin;
+				const token = await mcpAccessToken(
+					origin,
+					opts.project,
+					AbortSignal.timeout(8_000),
+				);
+				if (token) {
+					header = { Authorization: `Bearer ${token}` };
+				}
+			} catch {
+				header = {};
+			}
+			process.stdout.write(`${JSON.stringify(header)}\n`);
+		});
 
 	// -- serve ---------------------------------------------------------------
 	mcp.command("serve")

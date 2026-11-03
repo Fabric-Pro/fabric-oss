@@ -86,6 +86,7 @@ vi.mock(
 
 import {
 	executePlatformTool,
+	mayPublishInstructions,
 	PLATFORM_TOOL_DEFINITIONS,
 	TOOL_SCOPES,
 } from "../../../../modules/saas/mcp/lib/gateway/platform-tools";
@@ -2447,11 +2448,12 @@ describe("the proposal tool's error surface", () => {
  * made to.
  */
 describe("what instructions:write can reach", () => {
-	// Both tools that hold this scope propose and never publish — the lesson
-	// tool is the positive sibling of the proposal tool, added later, and
-	// shares its scope for the same reason: what it reaches is the proposal
-	// path, which is what a reader can already do in the tab.
-	it("maps only the proposal tools, never a publishing one", () => {
+	// Every tool that holds this scope proposes under it — the lesson tool is
+	// the positive sibling of the proposal tool, added later, and shares its
+	// scope for the same reason: what it reaches is the proposal path, which
+	// is what a reader can already do in the tab. The plugin's change tool
+	// commits only for a sign-in that also names `instructions:publish`.
+	it("maps only tools that propose under it, never a publishing one", () => {
 		const writeScoped = Object.entries(TOOL_SCOPES)
 			.filter(([, v]) => v.scope === "instructions:write")
 			.map(([name]) => name);
@@ -2459,7 +2461,57 @@ describe("what instructions:write can reach", () => {
 		expect(writeScoped).toEqual([
 			"fabric_propose_project_instruction_change",
 			"fabric_add_instruction_lesson",
+			"fabric_change_instructions",
 		]);
+	});
+
+	it("lets only instructions:publish commit, not mcp:write or every scope", () => {
+		expect(
+			mayPublishInstructions(["instructions:read", "instructions:write"]),
+		).toBe(false);
+		expect(mayPublishInstructions(["mcp:write"])).toBe(false);
+		expect(mayPublishInstructions(["*"])).toBe(false);
+		expect(
+			mayPublishInstructions([
+				"instructions:write",
+				"instructions:publish",
+			]),
+		).toBe(true);
+	});
+
+	it("proposes a change asked to commit under instructions:write", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue({
+			snapshotId: "snap_new",
+			version: 8,
+			baseSnapshotId: "snap_1",
+			baseVersion: 7,
+			fileCount: 1,
+			inheritedCount: 0,
+			putCount: 1,
+			deleteCount: 0,
+			proposalStatus: "PENDING",
+			status: "VALIDATING",
+		});
+
+		await executePlatformTool(
+			"fabric_change_instructions",
+			{
+				projectId: "proj_1",
+				summary: "Tighten the testing rule",
+				intent: "commit",
+				changes: [{ op: "put", path: "AGENTS.md", content: "x\n" }],
+				nativeBase: { generation: 3, commitSha: "a".repeat(40) },
+			},
+			writeSession,
+		);
+
+		expect(m.submitInstructionChange).toHaveBeenCalled();
+		for (const [call] of m.submitInstructionChange.mock.calls) {
+			expect((call as Record<string, unknown>).mode).not.toBe("commit");
+		}
 	});
 
 	// Belt and braces at the dispatch layer: the handler passes the proposal

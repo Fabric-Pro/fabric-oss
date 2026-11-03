@@ -21,7 +21,7 @@ import {
 	resolveExistingRoot,
 } from "../../lib/instructions/safe-write.js";
 import { findProjectRoot } from "../../lib/memory/project-root.js";
-import { selectRules } from "../../lib/plugin/rules.js";
+import { selectRules, tierRules } from "../../lib/plugin/rules.js";
 import {
 	type RulesSyncResult,
 	rulesFolderFor,
@@ -83,7 +83,7 @@ export async function syncRulesForProject(input: {
 		timeoutMs: REQUEST_TIMEOUT_MS,
 		signal: AbortSignal.timeout(budget),
 	});
-	const rules = selectRules(read, "claude-code");
+	const rules = tierRules(selectRules(read, "claude-code")).delivered;
 	const root = await resolveExistingRoot(input.root);
 	const folder = rulesFolderFor(input.project);
 	const tree = await git.findWorkTree(root, Date.now() + 8_000);

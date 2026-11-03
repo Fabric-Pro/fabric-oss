@@ -235,7 +235,11 @@ export const saveIntegrationProcedure = tenantProtectedProcedure
 
 		// Merge with existing credentials so masked fields are preserved
 		let mergedCredentials = cleanedCredentials;
-		if (existingIntegrations.length > 0) {
+		// A pasted GitHub token REPLACES a sign-in grant: merged in, the grant's
+		// `access_token` would still be the token read, and the PAT ignored.
+		const replacesGrant =
+			input.type === "GITHUB" && Boolean(cleanedCredentials.GITHUB_TOKEN);
+		if (existingIntegrations.length > 0 && !replacesGrant) {
 			const existing = existingIntegrations[0];
 			try {
 				const existingDecrypted = JSON.parse(

@@ -6,6 +6,9 @@
 
 @source "../node_modules/fumadocs-ui/dist/**/*.js";
 @source "../node_modules/streamdown/dist/index.js";
+/* The dev log quotes CSS warnings back as class candidates; scanning it rebuilds the CSS in a loop. */
+@source not "../.next";
+@source not "../modules/**/__tests__";
 
 @variant dark (&:where(.dark, .dark *));
 
@@ -986,6 +989,22 @@ pre.shiki {
 /* Expanded only: the collapsed hover-peek card keeps Fumadocs' own inset and rounded edges. */
 #nd-sidebar:not([data-collapsed="true"]) {
 	@apply top-0! md:h-[calc(100dvh-4.5rem)]!;
+}
+
+/*
+ * The docs layout already clears the fixed site header (pt-[4.5rem] in
+ * docs/[[...path]]/layout.tsx), so Fumadocs' own top padding on the page
+ * (56px) and the table of contents (48px) left a band of empty space under
+ * the header, and the page, sidebar and "On this page" started at three
+ * different heights. 24px on both lines them up with the sidebar.
+ */
+@media (min-width: 768px) {
+	#nd-page {
+		@apply pt-6!;
+	}
+}
+#nd-toc {
+	@apply pt-6!;
 }
 
 /*

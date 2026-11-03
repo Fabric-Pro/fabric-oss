@@ -40,6 +40,7 @@
 		"./prompts": "./lib/prompts.ts",
 		"./streaming": "./lib/streaming-optimizations.ts",
 		"./model-selector": "./lib/dynamic-model-selector.ts",
+		"./local-models": "./lib/local-models.ts",
 		"./gateway": "./lib/gateway-config.ts",
 		"./capabilities": "./lib/model-capabilities.ts",
 		"./title-generator": "./lib/title-generator.ts",

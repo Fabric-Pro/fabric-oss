@@ -447,7 +447,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 			);
 
 			// Best-effort: kick off code indexing for the newly connected repo
-			// (no-op unless FEATURE_CODE_INDEXING + codeSearchEnabled).
+			// (no-op unless the project's code search mode is RAG).
 			await startCodeIndexingForProject({
 				projectId: input.projectId,
 				userId: user.id,

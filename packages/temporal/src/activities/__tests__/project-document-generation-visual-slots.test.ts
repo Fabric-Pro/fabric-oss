@@ -48,12 +48,17 @@ vi.mock("@repo/database", () => ({
 	listEmbeddedDocumentsForSweep: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("@repo/rag", () => ({
+vi.mock("@repo/rag", async () => ({
 	buildDocumentRetrievalQuery: () => "build document retrieval query",
 	searchSimilarProjectContexts: vi.fn(),
 	extractBaseContextId: (id: string) => id,
 	enrichContextsWithRoleTags: vi.fn(),
 	applyContextSummary: vi.fn(),
+	selectProjectContexts: (
+		await vi.importActual<
+			typeof import("@repo/rag/lib/reranking/select-project-contexts")
+		>("@repo/rag/lib/reranking/select-project-contexts")
+	).selectProjectContexts,
 	rerankContexts: vi.fn(),
 	embedProjectDocument: vi.fn(),
 	reembedProjectDocument: vi.fn(),

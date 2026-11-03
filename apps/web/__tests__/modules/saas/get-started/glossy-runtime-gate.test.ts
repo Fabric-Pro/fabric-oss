@@ -29,6 +29,7 @@ const OFF: GsRuntimeGates = {
 	glossyEdition: false,
 	proposalArtifact: false,
 	parlumeMeetings: false,
+	credentialManager: false,
 };
 const ON: GsRuntimeGates = { ...OFF, glossyEdition: true };
 
@@ -86,6 +87,7 @@ describe("Get Started — Glossy edition page-tour component", () => {
 			glossyEdition: false,
 			proposalArtifact: true,
 			parlumeMeetings: true,
+			credentialManager: false,
 		};
 		expect(componentIds(everyOtherGateOn)).not.toContain(
 			"documents-glossy",

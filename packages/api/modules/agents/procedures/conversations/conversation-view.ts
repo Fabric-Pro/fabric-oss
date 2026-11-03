@@ -16,6 +16,11 @@ import {
 	clarificationOf,
 	formatClarificationTurn,
 } from "@repo/utils/clarification-turns";
+import {
+	dropDuplicatedOperationResults,
+	isOperationResultMessage,
+	operationResultText,
+} from "@repo/utils/operation-result-message";
 import { z } from "zod";
 
 const ToolStatusSchema = z.enum(["pending", "running", "success", "error"]);
@@ -159,9 +164,20 @@ function messagesOf(stored: unknown) {
 	});
 }
 
+/**
+ * The last message the chat itself shows: an operation-result row repeating
+ * a saved answer is skipped, and one that is the only record of an answer is
+ * shown without its header.
+ */
 function lastMessagePreview(messages: ReturnType<typeof messagesOf>) {
-	const last = messages.at(-1);
-	return last ? last.content.slice(0, 100) : null;
+	const last = dropDuplicatedOperationResults(messages).at(-1);
+	if (!last) {
+		return null;
+	}
+	const text = isOperationResultMessage(last)
+		? operationResultText(last.content)
+		: last.content;
+	return text.slice(0, 100);
 }
 
 function fieldsOf(conversation: AgentConversationListForViewer) {

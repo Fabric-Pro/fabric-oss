@@ -2317,10 +2317,17 @@ export async function listAvailablePmTools({
 	userId,
 	organizationId,
 	gitlab,
+	github,
 }: {
 	userId: string;
 	organizationId: string | null;
 	gitlab: PmToolGitLabStatus;
+	/**
+	 * The caller's GitHub connection in the picker's tenant. GitHub Projects
+	 * is configured exactly when it is connected: PM sync acts through it,
+	 * never through an MCPConfig.
+	 */
+	github?: { connected: boolean };
 }): Promise<PmToolOption[]> {
 	const tenantFilter = organizationId
 		? { organizationId, userId }
@@ -2367,6 +2374,11 @@ export async function listAvailablePmTools({
 			continue;
 		}
 		const key = server.key;
+		// GitHub Projects never syncs through an MCPConfig; its option comes
+		// from the GitHub connection below.
+		if (key === "github-remote") {
+			continue;
+		}
 		// A GitLab MCPConfig is a transport record; the person's connection
 		// decides whether GitLab is usable.
 		if (isGitLabPersonalMcpServerKey(key) && !gitlabUsable) {
@@ -2459,6 +2471,33 @@ export async function listAvailablePmTools({
 			transport: "rest",
 		});
 		configuredKeys.add("gitlab-official");
+	}
+
+	// GitHub Projects: configured when the caller's GitHub connection is
+	// usable in this tenant. Transport "rest": the board is read and written
+	// over GitHub's API, so `mcpConfigId` stays null like GitLab REST.
+	if (github?.connected) {
+		const githubServer = defaultServers.find(
+			(s) => s.key === "github-remote",
+		);
+		restGitlabSynthesized.push({
+			key: "github-remote",
+			displayName:
+				DEFAULT_PROJECT_MANAGEMENT_DISPLAY_OVERRIDES["github-remote"] ??
+				githubServer?.name ??
+				"GitHub Projects",
+			iconKey:
+				DEFAULT_PROJECT_MANAGEMENT_ICON_KEY_OVERRIDES[
+					"github-remote"
+				] ?? "github",
+			isDefault: true,
+			isConfigured: true,
+			mcpServerId: resolveServerIdForKey("github-remote"),
+			mcpConfigId: null,
+			configDisplayName: "GitHub Projects",
+			transport: "rest",
+		});
+		configuredKeys.add("github-remote");
 	}
 
 	const defaultStubs: PmToolOption[] = [];

@@ -1049,8 +1049,8 @@ export async function handleProjectTargetCallback(args: {
 		resolvedBranch,
 	);
 
-	// Best-effort: index the newly connected repo (no-op unless
-	// FEATURE_CODE_INDEXING + codeSearchEnabled).
+	// Best-effort: index the newly connected repo (no-op unless the project's
+	// code search mode is RAG).
 	await startCodeIndexingForProject({
 		projectId: state.projectId,
 		userId: state.userId,

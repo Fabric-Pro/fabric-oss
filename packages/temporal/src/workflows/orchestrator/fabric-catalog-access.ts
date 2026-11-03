@@ -39,6 +39,8 @@ export const FABRIC_CATALOG_STEP_HANDLER_ACCESS: Record<string, AccessLevel> = {
 	fabric_list_architecture_decisions: "READ",
 	fabric_list_feature_decisions: "READ",
 	fabric_list_security_findings: "READ",
+	fabric_tune_chunking: "READ",
+	fabric_update_chunking_settings: "WRITE",
 	fabric_youtube_transcript: "READ",
 	fabric_analyze_youtube: "READ",
 	fabric_youtube_metadata: "READ",

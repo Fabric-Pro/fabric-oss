@@ -1,3 +1,4 @@
+import { dropDuplicatedOperationResults } from "@repo/utils/operation-result-message";
 import type {
 	DirectStreamMessage,
 	StreamModelInfo,
@@ -6,10 +7,7 @@ import type {
 } from "../hooks/useDirectStream";
 import { parseTurnTruncation } from "./chat-turn-truncation";
 import { parseChatGptPlanApiBilling } from "./chatgpt-plan-api-billing";
-import {
-	dropDuplicatedOperationResults,
-	settleUnfinishedToolCalls,
-} from "./direct-chat-turns";
+import { settleUnfinishedToolCalls } from "./direct-chat-turns";
 import {
 	type PersistedToolCallStatus,
 	persistedToToolCallStatus,

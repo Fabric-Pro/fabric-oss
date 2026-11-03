@@ -87,6 +87,11 @@ import {
 	withHeartbeatTicker,
 } from "./lib/activity-liveness";
 import {
+	changedCoverage,
+	coveredCodePaths,
+	reindexCodeForContextPaths,
+} from "./lib/context-sync-code-index";
+import {
 	type ContextSyncExecutionState,
 	describeContextSyncExecutions,
 } from "./lib/context-sync-describe";
@@ -974,9 +979,23 @@ async function runSyncAttempt(
 		pending.length === 0 || inventory === null
 			? new Map<string, string>()
 			: blobOidsForKeys(pending, inventory);
+	const codeIndexScope = {
+		projectId: context.projectId,
+		repositoryIntegrationId: context.repositoryIntegrationId,
+	};
+	const coveredBefore = await coveredCodePaths(codeIndexScope);
 	await applyPlannedKeys(run, pending, contentPaths, unchanged, blobOids);
 	await pruneManagedRows(run, plan);
 	await startPendingIndexing(run);
+	// Files this run took in or let go leave or rejoin the code index.
+	const coveredAfter =
+		coveredBefore && (await coveredCodePaths(codeIndexScope));
+	if (coveredBefore && coveredAfter) {
+		await reindexCodeForContextPaths(
+			codeIndexScope,
+			changedCoverage(coveredBefore, coveredAfter),
+		);
+	}
 
 	// 10. The final refresh for an open Context tab.
 	await publishContextChange(run, "updated");

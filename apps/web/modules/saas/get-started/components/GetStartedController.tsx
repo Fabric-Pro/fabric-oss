@@ -183,6 +183,8 @@ export function GetStartedController() {
 	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
 	// Parlume gates one settings entry, the meeting assistant page.
 	const parlumeMeetingsEnabled = useFeatureFlag("PARLUME_MEETINGS");
+	// The credential manager gates one Connections tab.
+	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
 	const gsGates: GsRuntimeGates = useMemo(
 		() => ({
 			publishingSuite: tabGates.publishingSuiteEnabled,
@@ -190,6 +192,7 @@ export function GetStartedController() {
 			glossyEdition: glossyEditionEnabled,
 			proposalArtifact: proposalArtifactEnabled,
 			parlumeMeetings: parlumeMeetingsEnabled,
+			credentialManager: credentialManagerEnabled,
 		}),
 		[
 			tabGates,
@@ -197,6 +200,7 @@ export function GetStartedController() {
 			glossyEditionEnabled,
 			proposalArtifactEnabled,
 			parlumeMeetingsEnabled,
+			credentialManagerEnabled,
 		],
 	);
 	// A tour step / drawer entry pointing at a project tab this viewer can't

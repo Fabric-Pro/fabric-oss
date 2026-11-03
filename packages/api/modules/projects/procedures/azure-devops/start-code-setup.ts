@@ -14,7 +14,7 @@
  *   NOT add a hard dependency on the ADO MCP.
  *
  *   The canonical source of truth for ADO code context is the clone-based
- *   `codeIndexingWorkflow` (PAT-only, gated by `FEATURE_CODE_INDEXING`), which
+ *   `codeIndexingWorkflow` (PAT-only, gated by the project's code search mode), which
  *   is triggered off the `ProjectRepositoryIntegration` / legacy-URL sync that
  *   `repositoryIntegrations.connect` performs — NOT by this procedure. ADO's
  *   `startCodeSetup` exists primarily for parity and to flip

@@ -130,6 +130,16 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 						}),
 				)
 				.optional(),
+			// What each repository is to the project, keyed like `repoTags` by
+			// the caller's URL: the product's code (the default), its coding
+			// instructions, or documentation kept in Living Memory. The analysis
+			// reads each one for what it is instead of all of them as code.
+			repoRoles: z
+				.record(
+					z.string(),
+					z.enum(["code", "instructions", "knowledge"]),
+				)
+				.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -178,6 +188,15 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 		const canonicalRepoUrls = parsedRepoUrls.map(
 			(entry) => entry.parsed.url,
 		);
+		// Keyed by the canonical URL the workflow sees; code is left out, being
+		// what an unnamed repository already is.
+		const repoRoles: Record<string, "instructions" | "knowledge"> = {};
+		for (const entry of parsedRepoUrls) {
+			const role = input.repoRoles?.[entry.raw];
+			if (role === "instructions" || role === "knowledge") {
+				repoRoles[entry.parsed.url] = role;
+			}
+		}
 
 		// Authorization is enforced by `requireProjectPermission` above.
 
@@ -291,6 +310,8 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 				scope?: string;
 				apiKey?: string;
 				pat?: string;
+				GITHUB_TOKEN?: string;
+				token?: string;
 				apiToken?: string;
 			};
 
@@ -322,7 +343,13 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 					);
 				}
 
-				const patToken = credJson.apiKey || credJson.pat;
+				// A token pasted in Integrations is stored as `GITHUB_TOKEN`; the
+				// same keys `getGitHubWorkflowCredential` reads.
+				const patToken =
+					credJson.GITHUB_TOKEN ||
+					credJson.token ||
+					credJson.apiKey ||
+					credJson.pat;
 				const isPat =
 					!credJson.access_token &&
 					!credJson.refresh_token &&
@@ -712,6 +739,9 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 						organizationId,
 						aiToken,
 						repoUrls: canonicalRepoUrls,
+						...(Object.keys(repoRoles).length > 0
+							? { repoRoles }
+							: {}),
 						selectedDocumentTypes,
 						projectTypes,
 						projectName,

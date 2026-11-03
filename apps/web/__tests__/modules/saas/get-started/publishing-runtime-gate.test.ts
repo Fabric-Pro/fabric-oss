@@ -21,6 +21,7 @@ const OFF: GsRuntimeGates = {
 	glossyEdition: false,
 	proposalArtifact: false,
 	parlumeMeetings: false,
+	credentialManager: false,
 };
 const ON: GsRuntimeGates = {
 	publishingSuite: true,
@@ -28,6 +29,7 @@ const ON: GsRuntimeGates = {
 	glossyEdition: false,
 	proposalArtifact: false,
 	parlumeMeetings: false,
+	credentialManager: false,
 };
 
 describe("Get Started — Publishing Suite runtime gate", () => {

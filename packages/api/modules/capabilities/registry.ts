@@ -184,20 +184,6 @@ function indexVerdict(
 		return AVAILABLE;
 	}
 
-	// Checked before everything below, and apart from the project setting.
-	// With code indexing off for the whole deployment, nothing anyone does on
-	// this project will index it — the code-search toggle may already be on,
-	// and pointing at it would send someone to a switch that changes nothing.
-	// No project-level remedy exists, so none is offered.
-	if (!codebase.indexingAvailable) {
-		return {
-			state: "HARD_BLOCK",
-			reasonKey: "codebase.indexing-unavailable",
-			blockingDependency: "code indexing on this deployment",
-			remedy: null,
-		};
-	}
-
 	// Checked before a failed run, not after it. With code search off a retry
 	// is refused at its own door, so pointing at "run it again" would send
 	// someone to a button that cannot work; the setting is the real remedy.
@@ -257,7 +243,6 @@ function codebaseFacts(evidence: CapabilityEvidence): string[] {
 		codebase.connected ? "repo" : "no-repo",
 		codebase.integrationStatus ?? "no-integration",
 		codebase.usable ? "indexed" : "not-indexed",
-		codebase.indexingAvailable ? "indexing-available" : "no-indexing",
 		codebase.indexingEnabled ? "search-on" : "search-off",
 		`completed:${codebase.lastIndexCompletedAt?.toISOString() ?? "never"}`,
 	];

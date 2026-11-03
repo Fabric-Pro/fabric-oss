@@ -4384,8 +4384,21 @@ export function FabricTemporalOrchestratorChat({
 																)}
 															</div>
 														)}
+													{message.clarification && (
+														<p className="mb-1 text-muted-foreground text-xs">
+															{
+																message
+																	.clarification
+																	.question
+															}
+														</p>
+													)}
 													<Response>
-														{message.content}
+														{message.clarification
+															? message
+																	.clarification
+																	.answer
+															: message.content}
 													</Response>
 												</MessageContent>
 											</Message>

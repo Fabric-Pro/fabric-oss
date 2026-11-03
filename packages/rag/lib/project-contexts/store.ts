@@ -174,6 +174,23 @@ export async function storeProjectContext(
 				typeof metadata?.documentVersion === "number"
 					? metadata.documentVersion
 					: null,
+			// Content-type chunking (spec 2026-10-28): the profile that cut
+			// this chunk, why, and where it sits. Only on points written with
+			// content-type chunking on, so every other point keeps exactly
+			// the payload it had.
+			...(typeof metadata?.profile === "string"
+				? {
+						profile: metadata.profile,
+						profileReason: metadata.profileReason ?? null,
+						section: metadata.section ?? null,
+						itemKey: metadata.itemKey ?? null,
+						date: metadata.date ?? null,
+						chunkingVersion:
+							typeof metadata.chunkingVersion === "number"
+								? metadata.chunkingVersion
+								: null,
+					}
+				: {}),
 			createdAt: new Date().toISOString(),
 		};
 
@@ -331,6 +348,7 @@ export async function searchSimilarProjectContexts(
 					prefetch: [
 						{
 							...densePrefetch,
+							score_threshold: minSimilarity,
 							limit: topK * 2,
 							filter,
 						},
@@ -1024,4 +1042,80 @@ export async function deleteOrphanProjectContextPoints(params: {
 
 	await deleteProjectContextPoints(orphans, organizationId);
 	return orphans.length;
+}
+
+/** One stored chunk of a project source, as the quality panel reads it. */
+export interface StoredProjectChunk {
+	/** The source: a context id, or `doc-<documentId>` for a document. */
+	sourceId: string;
+	chunkIndex: number;
+	type: string | null;
+	profile: string | null;
+	/** Heading path a profile put in front of the chunk, when it did. */
+	section: string | null;
+	content: string;
+}
+
+/**
+ * Read back the chunks a project has in the index, payload only, for the
+ * chunking quality panel (spec 2026-10-28 §8b). Bounded by `maxPoints`; the
+ * caller says whether the read was cut short.
+ */
+export async function scrollProjectChunks(params: {
+	projectId: string;
+	organizationId?: string | null;
+	maxPoints: number;
+}): Promise<{ chunks: StoredProjectChunk[]; truncated: boolean }> {
+	const { projectId, organizationId, maxPoints } = params;
+	const collectionName = await getProjectCollection(organizationId);
+	const chunks: StoredProjectChunk[] = [];
+	let offset: string | number | undefined;
+	do {
+		const page = await qdrantClient.scroll(collectionName, {
+			filter: {
+				must: [{ key: "projectId", match: { value: projectId } }],
+			},
+			limit: 256,
+			with_payload: [
+				"contextId",
+				"originalContextId",
+				"chunkIndex",
+				"type",
+				"profile",
+				"section",
+				"content",
+			],
+			with_vector: false,
+			...(offset !== undefined ? { offset } : {}),
+		});
+		for (const point of page.points) {
+			const payload = (point.payload ?? {}) as Record<string, unknown>;
+			const sourceId =
+				(payload.originalContextId as string | undefined) ??
+				(payload.contextId as string | undefined);
+			if (!sourceId) {
+				continue;
+			}
+			chunks.push({
+				sourceId,
+				chunkIndex:
+					typeof payload.chunkIndex === "number"
+						? payload.chunkIndex
+						: 0,
+				type: (payload.type as string | undefined) ?? null,
+				profile: (payload.profile as string | undefined) ?? null,
+				section:
+					typeof payload.section === "string"
+						? payload.section
+						: null,
+				content:
+					typeof payload.content === "string" ? payload.content : "",
+			});
+		}
+		offset = (page.next_page_offset ?? undefined) as
+			| string
+			| number
+			| undefined;
+	} while (offset !== undefined && chunks.length < maxPoints);
+	return { chunks, truncated: offset !== undefined };
 }

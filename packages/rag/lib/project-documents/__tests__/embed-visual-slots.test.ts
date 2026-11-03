@@ -47,6 +47,8 @@ vi.mock("../../chunking", async () => {
 	return {
 		chunkText: chunker.chunkText,
 		detectContentType: chunker.detectContentType,
+		isContentAwareChunkingActive: async () => false,
+		parseChunkProfilesConfig: () => ({}),
 	};
 });
 

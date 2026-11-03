@@ -22,6 +22,11 @@ import {
 	getRAGProviderConfig,
 	isVercelGatewayKey,
 } from "@repo/ai";
+import {
+	getLocalImageModel,
+	getLocalModelConfig,
+	localImageSize,
+} from "@repo/ai/local-models";
 import { logAiUsageAsync } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
 import { isChatGptPlanRefusal } from "../chatgpt-plan-refusal";
@@ -53,15 +58,22 @@ export async function executeAiGenerateImageStep(
 	let interpolatedPrompt = interpolateTemplate(imagePrompt, params.inputs);
 
 	try {
+		// Local development only: a local image server draws the image
+		// (packages/ai/lib/local-models.ts). Null outside NODE_ENV=development.
+		const localImages = getLocalModelConfig("IMAGE");
+
 		// TENANT resolver: a workflow-builder image step runs because someone
 		// executed the workflow, so this is not the background work the system
 		// half is reserved for. Same rule as `image-generation.ts`.
-		const providerConfig = await getRAGProviderConfig({
-			userId: params.userId,
-			organizationId: params.organizationId,
-		});
+		const providerConfig = localImages
+			? null
+			: await getRAGProviderConfig({
+					userId: params.userId,
+					organizationId: params.organizationId,
+				});
 
 		if (
+			providerConfig &&
 			providerConfig.provider !== "VERCEL_GATEWAY" &&
 			!isVercelGatewayKey(providerConfig.apiKey)
 		) {
@@ -69,8 +81,6 @@ export async function executeAiGenerateImageStep(
 				"This image generation path requires a VERCEL_GATEWAY connection or a Vercel gateway key. Configure one in Settings → AI Providers.",
 			);
 		}
-
-		const apiKey = providerConfig.apiKey;
 
 		// If prompt enhancement is enabled, use Fabric AI to improve the prompt
 		let enhancedPrompt: string | undefined;
@@ -98,7 +108,11 @@ export async function executeAiGenerateImageStep(
 			}
 		}
 
-		const gateway = createGateway({ apiKey });
+		const model = localImages
+			? getLocalImageModel(localImages)
+			: createGateway({ apiKey: providerConfig?.apiKey }).imageModel(
+					imageModel,
+				);
 
 		const generationStart = Date.now();
 		// Image APIs bill per image and expose no token counts, so every
@@ -110,8 +124,8 @@ export async function executeAiGenerateImageStep(
 				userId: params.userId,
 				organizationId: params.organizationId,
 				projectId: params.projectId,
-				provider: "VERCEL_GATEWAY",
-				providerModelId: imageModel,
+				provider: localImages ? "CUSTOM" : "VERCEL_GATEWAY",
+				providerModelId: localImages?.model ?? imageModel,
 				taskType: "IMAGE",
 				jobType: params.jobType,
 				featureKey: "workflow",
@@ -128,14 +142,16 @@ export async function executeAiGenerateImageStep(
 		let imageResult: Awaited<ReturnType<typeof generateImage>>;
 		try {
 			imageResult = await generateImage({
-				model: gateway.imageModel(imageModel),
+				model,
 				prompt: interpolatedPrompt,
-				size: imageSize as
-					| "1024x1024"
-					| "256x256"
-					| "512x512"
-					| "1024x1792"
-					| "1792x1024",
+				size: localImages
+					? localImageSize({ size: imageSize })
+					: (imageSize as
+							| "1024x1024"
+							| "256x256"
+							| "512x512"
+							| "1024x1792"
+							| "1792x1024"),
 			});
 		} catch (error) {
 			recordMarker(

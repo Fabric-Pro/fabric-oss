@@ -149,7 +149,7 @@ vi.mock("../hierarchy-sync", () => ({
 	stampPmSyncSuccess: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { syncGitLabStoryViaRest } from "../gitlab-rest-story-sync";
+import { syncStoryViaRest } from "../gitlab-rest-story-sync";
 
 const STORY_TITLE = "Add login";
 const HUMAN_SECRET = "e".repeat(32);
@@ -272,7 +272,7 @@ describe("GitLab attachment PULL wiring (Fizzy #1745)", () => {
 
 	// AC-5
 	it("imports an attachment a human put on the GitLab issue", async () => {
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "pull",
 		} as never);
@@ -290,7 +290,7 @@ describe("GitLab attachment PULL wiring (Fizzy #1745)", () => {
 	// The gate. Everything above must stay unreachable while the flag is off.
 	it("imports nothing when the feature flag is off", async () => {
 		process.env.FABRIC_FEATURE_PM_ATTACHMENT_SYNC = "false";
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "pull",
 		} as never);
@@ -299,7 +299,7 @@ describe("GitLab attachment PULL wiring (Fizzy #1745)", () => {
 
 	it("imports nothing when the project has not opted in", async () => {
 		findUniqueProject.mockResolvedValue({ syncAttachments: false });
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "pull",
 		} as never);
@@ -312,7 +312,7 @@ describe("GitLab attachment PULL wiring (Fizzy #1745)", () => {
 		process.env.FABRIC_ATTACHMENT_MAX_BYTES = "2";
 		try {
 			downloadReturns(Buffer.from([1, 2, 3, 4, 5]));
-			await syncGitLabStoryViaRest({
+			await syncStoryViaRest({
 				...baseInput,
 				direction: "pull",
 			} as never);
@@ -352,7 +352,7 @@ describe("GitLab attachment PULL wiring (Fizzy #1745)", () => {
 				externalAttachmentId: `/uploads/${"f".repeat(32)}/gone.pdf`,
 			},
 		]);
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "pull",
 		} as never);
@@ -366,7 +366,7 @@ describe("GitLab attachment PULL wiring (Fizzy #1745)", () => {
 
 	// A clean pull must stay clean: no FAILURE row, no notification.
 	it("writes no failure row when everything imports cleanly", async () => {
-		await syncGitLabStoryViaRest({
+		await syncStoryViaRest({
 			...baseInput,
 			direction: "pull",
 		} as never);

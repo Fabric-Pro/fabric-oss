@@ -15,6 +15,8 @@ export const PROJECT_TOOL_NAMES = [
 	"fabric_list_architecture_decisions",
 	"fabric_list_feature_decisions",
 	"fabric_list_security_findings",
+	"fabric_tune_chunking",
+	"fabric_update_chunking_settings",
 	"code_search",
 	"code_file_get",
 	"code_tree",

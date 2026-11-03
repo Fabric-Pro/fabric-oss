@@ -76,6 +76,17 @@ export const PROJECT_BOUND_TOOL_NAMES = [
 	"fabric_instruction_checks",
 	"fabric_propose_project_instruction_change",
 	"fabric_add_instruction_lesson",
+	// The Coding Instructions plugin's own flows (specs/2026-10-21-ai-artifacts-hub):
+	// change the instructions, load rules on demand, and the project knowledge hub.
+	"fabric_change_instructions",
+	"fabric_rules_for",
+	"fabric_list_code_repositories",
+	"fabric_semantic_search",
+	"fabric_knowledge_types",
+	"fabric_knowledge_add",
+	"fabric_knowledge_search",
+	"fabric_knowledge_topic",
+	"fabric_knowledge_topics",
 	"fabric_memory_targets",
 	"fabric_memory_read",
 	"fabric_memory_write",

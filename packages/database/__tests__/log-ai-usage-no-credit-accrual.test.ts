@@ -183,6 +183,35 @@ describe("logAiUsage — the credit ledger no longer accrues", () => {
 		expect(creditAccountUpsert).not.toHaveBeenCalled();
 	});
 
+	it("persists a zero-token gateway rerank with no supplied cost", async () => {
+		await logAiUsage({
+			provider: "VERCEL_GATEWAY",
+			providerModelId: "cohere/rerank-v5-pro",
+			taskType: "EMBEDDING",
+			callPurpose: "project-retrieval-rerank",
+			organizationId: "example-org",
+			userId: "example-user",
+			projectId: "example-project",
+			gatewayGenerationId: "example-generation",
+			inputTokens: 0,
+			outputTokens: 0,
+			totalTokens: 0,
+			latencyMs: 12,
+		});
+		expect(usageLogCreate).toHaveBeenCalledExactlyOnceWith({
+			data: expect.objectContaining({
+				totalTokens: 0,
+				inputTokens: 0,
+				outputTokens: 0,
+				costCents: 0,
+				costMicroUsd: 0,
+				gatewayGenerationId: "example-generation",
+				costIsActual: false,
+				callPurpose: "project-retrieval-rerank",
+			}),
+		});
+	});
+
 	it("no longer exports a ledger writer for anything to call", async () => {
 		// The direct check on the removal: a future caller cannot re-import
 		// what no longer exists, and `getTenantAiUsageBreakdown` /

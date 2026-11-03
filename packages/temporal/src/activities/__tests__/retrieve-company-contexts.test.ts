@@ -104,6 +104,11 @@ vi.mock("@repo/ai", () => ({
 	streamText: vi.fn(),
 }));
 
+vi.mock("@repo/rag/lib/project-contexts/store", () => ({
+	searchSimilarProjectContexts: (...args: unknown[]) =>
+		mocks.searchSimilarProjectContexts(...args),
+}));
+
 vi.mock("@repo/rag", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@repo/rag")>();
 	return {
@@ -112,6 +117,11 @@ vi.mock("@repo/rag", async (importOriginal) => {
 			mocks.searchSimilarProjectContexts(...args),
 		applyContextSummary: (...args: unknown[]) =>
 			mocks.applyContextSummary(...args),
+		selectProjectContexts: (
+			await vi.importActual<
+				typeof import("@repo/rag/lib/reranking/select-project-contexts")
+			>("@repo/rag/lib/reranking/select-project-contexts")
+		).selectProjectContexts,
 		rerankContexts: (...args: unknown[]) => mocks.rerankContexts(...args),
 		resolveCompanyEmbeddingModel: (...args: unknown[]) =>
 			mocks.resolveCompanyEmbeddingModel(...args),

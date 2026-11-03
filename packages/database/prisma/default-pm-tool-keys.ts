@@ -30,6 +30,10 @@ export const DEFAULT_PROJECT_MANAGEMENT_KEYS = [
 	"azure-devops",
 	"atlassian",
 	"gitlab-official",
+	// GitHub Projects (v2). The catalog row is GitHub's remote MCP server,
+	// reused only as the PM pointer: PM sync always goes through the
+	// caller's GitHub connection over GraphQL, never this MCP server.
+	"github-remote",
 ] as const;
 
 /**
@@ -40,12 +44,15 @@ export const DEFAULT_PROJECT_MANAGEMENT_KEYS = [
  *   - `gitlab-official` → "GitLab" (catalog row is "GitLab (Official)"
  *     but the wizard says just "GitLab"; the legacy `gitlab` MCPServer
  *     is no longer surfaced as a PM option).
+ *   - `github-remote` → "GitHub Projects" (the PM target is a Projects v2
+ *     board, not the MCP server the catalog row names).
  */
 export const DEFAULT_PROJECT_MANAGEMENT_DISPLAY_OVERRIDES: Readonly<
 	Record<string, string>
 > = {
 	atlassian: "Jira",
 	"gitlab-official": "GitLab",
+	"github-remote": "GitHub Projects",
 };
 
 /**
@@ -63,6 +70,7 @@ export const DEFAULT_PROJECT_MANAGEMENT_ICON_KEY_OVERRIDES: Readonly<
 > = {
 	atlassian: "jira",
 	"gitlab-official": "gitlab",
+	"github-remote": "github",
 };
 
 /**

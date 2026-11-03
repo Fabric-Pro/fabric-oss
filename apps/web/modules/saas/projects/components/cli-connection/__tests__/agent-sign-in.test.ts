@@ -272,7 +272,7 @@ describe("the one-line setup", () => {
 		const line = buildPluginInitLine({ ...LINE, projectId: "project-1" });
 
 		expect(line).toBe(
-			`npx -y ${TARBALL} instructions init --project project-1 --tool claude-code --plugin`,
+			`npx -y ${TARBALL} instructions init --project project-1 --tool claude-code --plugin --mcp-sign-in`,
 		);
 		expect(line).not.toMatch(/--clone|--key|auth login/);
 		expect(
@@ -517,5 +517,22 @@ describe("codexPluginAddCommand", () => {
 		expect(codexPluginAddCommand("---")).toBe(
 			"codex plugin add fabric-project@personal",
 		);
+	});
+
+	describe("the code repositories flag", () => {
+		it("asks the CLI to clone the code into repos/, or not to ask", () => {
+			const base = {
+				tarballUrl: TARBALL,
+				baseUrl: null,
+				tool: "claude-code" as const,
+				projectId: "project-1",
+			};
+			expect(buildPluginInitLine({ ...base, repos: true })).toBe(
+				`npx -y ${TARBALL} instructions init --project project-1 --tool claude-code --plugin --mcp-sign-in --repos`,
+			);
+			expect(buildPluginInitLine({ ...base, repos: false })).toBe(
+				`npx -y ${TARBALL} instructions init --project project-1 --tool claude-code --plugin --mcp-sign-in --no-repos`,
+			);
+		});
 	});
 });

@@ -43,7 +43,13 @@ test("agent source, manifests and scripts cannot invoke or download the retired 
 			"tooling",
 			"**/package.json",
 		],
-		{ cwd: root, encoding: "utf8", windowsHide: true },
+		{
+			cwd: root,
+			encoding: "utf8",
+			// The file list outgrows the 1 MB default buffer.
+			maxBuffer: 64 * 1024 * 1024,
+			windowsHide: true,
+		},
 	)
 		.trim()
 		.split(/\r?\n/)

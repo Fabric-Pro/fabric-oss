@@ -23,6 +23,7 @@ import {
 	TURN_BUDGET_ESTIMATE,
 } from "@repo/ai/lib/turn-budget-estimate";
 import { wrapModelWithTurnBudget } from "@repo/ai/lib/turn-budget-middleware";
+import type { LocalModelConfig } from "@repo/ai/local-models";
 import { fetchCredentialsByProvider, logAiUsageAsync } from "@repo/database";
 import { downloadFile, getSignedUrl } from "@repo/storage";
 import {
@@ -166,48 +167,68 @@ async function generateImageActivityInternal(
 		};
 	}
 
+	// Local development only: a local image server draws every image, whatever
+	// provider the tool asked for (packages/ai/lib/local-models.ts). Null
+	// outside NODE_ENV=development.
+	const { getLocalModelConfig } = await import("@repo/ai/local-models");
+	const localImages = getLocalModelConfig("IMAGE");
+
 	let result: ImageGenerationResult;
 	try {
-		switch (provider) {
-			case "gateway":
-				result = await generateWithGateway({
-					prompt,
-					inputImagePath,
-					gatewayModel,
-					aspectRatio,
-					userId,
-					organizationId,
-					startTime,
-					turnScope,
-					usageConversationId,
-				});
-				break;
+		if (localImages) {
+			result = await generateWithLocalServer({
+				config: localImages,
+				prompt,
+				inputImagePath,
+				aspectRatio,
+				userId,
+				organizationId,
+				startTime,
+				turnScope,
+				usageConversationId,
+			});
+		} else {
+			switch (provider) {
+				case "gateway":
+					result = await generateWithGateway({
+						prompt,
+						inputImagePath,
+						gatewayModel,
+						aspectRatio,
+						userId,
+						organizationId,
+						startTime,
+						turnScope,
+						usageConversationId,
+					});
+					break;
 
-			case "gemini":
-				result = await generateWithGemini({
-					prompt,
-					aspectRatio,
-					quality,
-					model,
-					userId,
-					organizationId,
-					startTime,
-					turnScope,
-					usageConversationId,
-				});
-				break;
+				case "gemini":
+					result = await generateWithGemini({
+						prompt,
+						aspectRatio,
+						quality,
+						model,
+						userId,
+						organizationId,
+						startTime,
+						turnScope,
+						usageConversationId,
+					});
+					break;
 
-			default:
-				result = await generateWithFal({
-					prompt,
-					aspectRatio,
-					quality,
-					model,
-					userId,
-					organizationId,
-					startTime,
-					turnScope,
-				});
+				default:
+					result = await generateWithFal({
+						prompt,
+						aspectRatio,
+						quality,
+						model,
+						userId,
+						organizationId,
+						startTime,
+						turnScope,
+					});
+			}
 		}
 	} catch (error) {
 		if (error instanceof ChatMediaPersistenceError) {
@@ -228,8 +249,11 @@ async function generateImageActivityInternal(
 		);
 		result = {
 			success: false,
-			provider,
-			model: model || getDefaultModel(provider, gatewayModel),
+			provider: localImages ? "local" : provider,
+			model:
+				localImages?.model ||
+				model ||
+				getDefaultModel(provider, gatewayModel),
 			error: errorMessage,
 			durationMs: Date.now() - startTime,
 		};
@@ -550,6 +574,78 @@ async function generateWithGateway(params: {
 		turnScope,
 		usageConversationId,
 	});
+}
+
+/**
+ * Local development only: draws the image on the local OpenAI-compatible
+ * image server and stores it like a gateway image. Logged as provider
+ * "local", which the usage log records as CUSTOM.
+ */
+async function generateWithLocalServer(params: {
+	config: LocalModelConfig;
+	prompt: string;
+	inputImagePath?: string;
+	aspectRatio?: string;
+	userId: string;
+	organizationId?: string;
+	startTime: number;
+	turnScope?: TurnScope;
+	usageConversationId?: string;
+}): Promise<ImageGenerationResult> {
+	const { config, prompt, aspectRatio, userId, organizationId, startTime } =
+		params;
+	const { turnScope, usageConversationId } = params;
+	if (params.inputImagePath) {
+		return {
+			success: false,
+			provider: "local",
+			model: config.model,
+			error: `The local image model '${config.model}' does not edit input images.`,
+			durationMs: Date.now() - startTime,
+		};
+	}
+	const abortSignal = turnScope ? activityAbortSignal() : undefined;
+	const { generateImage } = await import("@repo/ai");
+	const { getLocalImageModel, localImageSize } = await import(
+		"@repo/ai/local-models"
+	);
+	const imageModel = getLocalImageModel(config);
+	const size = localImageSize({
+		aspectRatio: parseAspectRatio(aspectRatio),
+	});
+
+	console.log(
+		`[ImageGeneration] Local (${config.provider}) request: model=${config.model}, size=${size}`,
+	);
+
+	const imageResult = await generateImage({
+		model: turnScope
+			? guardTurnImageModel(imageModel, turnScope)
+			: imageModel,
+		...(abortSignal ? { abortSignal } : {}),
+		prompt,
+		size,
+	});
+	if (!imageResult.image) {
+		return {
+			success: false,
+			provider: "local",
+			model: config.model,
+			error: `The local image server (${config.provider}) returned no image data`,
+			durationMs: Date.now() - startTime,
+		};
+	}
+	const stored = await uploadGatewayImage({
+		buffer: Buffer.from(imageResult.image.uint8Array),
+		mediaType: imageResult.image.mediaType || "image/png",
+		model: config.model,
+		userId,
+		organizationId,
+		startTime,
+		turnScope,
+		usageConversationId,
+	});
+	return { ...stored, provider: "local" };
 }
 
 async function uploadGatewayImage(params: {

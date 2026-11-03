@@ -61,6 +61,10 @@ function handlerOf(tool: string): string {
 const SOURCES = [
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "platform-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "memory-write-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "knowledge-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "rules-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "code-repositories-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "project-rag-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/frame-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/frame-version-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/page-tools.ts"),

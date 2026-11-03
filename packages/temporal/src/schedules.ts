@@ -366,6 +366,19 @@ export const PROJECT_INSTRUCTION_REPOSITORY_POLL_CRON_SCHEDULE = "*/5 * * * *";
 // schedule test derives the interval from the cron and asserts both sides.
 export const PROJECT_INSTRUCTION_REPOSITORY_POLL_EXECUTION_TIMEOUT_MS = 270_000;
 
+// Scheduled code index refresh (spec 2026-10-29 code-index-sync). The
+// project's interval (hourly at the shortest) is carried per repository index
+// by `nextRefreshCheckAt`; this cron only decides how soon a due index is
+// picked up. A tick claims at most 50 indexes and checks four at a time, each
+// check bounded by its two-minute start-to-close, so a full tick ends well
+// inside the 14-minute execution timeout, below the 15-minute interval that
+// overlap SKIP relies on.
+export const CODE_INDEX_REFRESH_POLL_SCHEDULE_ID = "code-index-refresh-poll";
+export const CODE_INDEX_REFRESH_POLL_WORKFLOW_NAME =
+	"codeIndexRefreshPollWorkflow";
+export const CODE_INDEX_REFRESH_POLL_CRON_SCHEDULE = "*/15 * * * *";
+export const CODE_INDEX_REFRESH_POLL_EXECUTION_TIMEOUT_MS = 14 * 60 * 1000;
+
 // Exported for the same reason as the poll's: the registration test asserts
 // the COMPLETE create() payload (Fizzy #2563 spec §9).
 export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_SCHEDULE_ID =
@@ -496,6 +509,7 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerBackgroundJobWatchdogSchedule(scheduleClient);
 		await registerProjectInstructionReaperSchedule(scheduleClient);
 		await registerProjectInstructionRepositoryPollSchedule(scheduleClient);
+		await registerCodeIndexRefreshPollSchedule(scheduleClient);
 		await registerInstructionProposalPullRequestSweepSchedule(
 			scheduleClient,
 		);
@@ -929,6 +943,50 @@ export async function registerProjectInstructionRepositoryPollSchedule(
 		if (error instanceof ScheduleAlreadyRunning) {
 			console.log(
 				`[Worker] Schedule "${PROJECT_INSTRUCTION_REPOSITORY_POLL_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
+/**
+ * Register the scheduled code index refresh poll (spec 2026-10-29
+ * code-index-sync) on `TASK_QUEUE`. The catchup window is one interval:
+ * after an outage one tick runs, since every missed tick would claim the same
+ * due indexes.
+ */
+export async function registerCodeIndexRefreshPollSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: CODE_INDEX_REFRESH_POLL_SCHEDULE_ID,
+			spec: { cronExpressions: [CODE_INDEX_REFRESH_POLL_CRON_SCHEDULE] },
+			action: {
+				type: "startWorkflow",
+				workflowType: CODE_INDEX_REFRESH_POLL_WORKFLOW_NAME,
+				taskQueue: TASK_QUEUE,
+				args: [],
+				workflowExecutionTimeout:
+					CODE_INDEX_REFRESH_POLL_EXECUTION_TIMEOUT_MS,
+			},
+			policies: {
+				overlap: "SKIP",
+				catchupWindow: "15 minutes",
+			},
+			state: {
+				paused: false,
+				note: "Checks each code index whose refresh interval came due, and re-embeds only the files that changed on its branch since the indexed commit.",
+			},
+		});
+		console.log(
+			`[Worker] Schedule "${CODE_INDEX_REFRESH_POLL_SCHEDULE_ID}" registered (every 15 minutes)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${CODE_INDEX_REFRESH_POLL_SCHEDULE_ID}" already exists, skipping`,
 			);
 		} else {
 			throw error;

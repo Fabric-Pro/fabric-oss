@@ -15,6 +15,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { logger } from "@repo/logs";
+import { guardDispatch } from "@repo/utils/dispatch-guard";
 import type {
 	RerankerConfig,
 	RerankerProvider,
@@ -32,16 +33,16 @@ let pipelinePromise: Promise<any> | null = null;
  * Lazy-load the transformers.js pipeline
  * Uses singleton pattern to avoid loading the model multiple times
  */
-async function getOrCreatePipeline(modelName: string): Promise<any> {
+function getOrCreatePipeline(modelName: string): Promise<any> {
 	if (pipeline) {
-		return pipeline;
+		return Promise.resolve(pipeline);
 	}
 
 	if (pipelinePromise) {
 		return pipelinePromise;
 	}
 
-	pipelinePromise = (async () => {
+	const loading = (async () => {
 		try {
 			logger.info(
 				`[CrossEncoderReranker] Loading model ${modelName}... (first load may take a few seconds)`,
@@ -59,15 +60,18 @@ async function getOrCreatePipeline(modelName: string): Promise<any> {
 
 			// Create a text-classification pipeline for cross-encoder scoring
 			// Cross-encoders output a single score for query-document pairs
-			pipeline = await createPipeline("text-classification", modelName, {
-				// Use fp32 for accuracy, fp16 for speed if needed
-				dtype: "fp32",
-			});
+			const loaded = await createPipeline(
+				"text-classification",
+				modelName,
+				{
+					// Use fp32 for accuracy, fp16 for speed if needed
+					dtype: "fp32",
+				},
+			);
 
 			logger.info("[CrossEncoderReranker] Model loaded successfully");
-			return pipeline;
+			return loaded;
 		} catch (error) {
-			pipelinePromise = null;
 			logger.error(
 				`[CrossEncoderReranker] Failed to load model: ${error}`,
 			);
@@ -77,7 +81,22 @@ async function getOrCreatePipeline(modelName: string): Promise<any> {
 		}
 	})();
 
-	return pipelinePromise;
+	pipelinePromise = loading;
+	// Only the current load may publish to the shared cache. A timed-out
+	// load can finish later, after another call has started a replacement.
+	void loading.then(
+		(loaded) => {
+			if (pipelinePromise === loading) {
+				pipeline = loaded;
+			}
+		},
+		() => {
+			if (pipelinePromise === loading) {
+				pipelinePromise = null;
+			}
+		},
+	);
+	return loading;
 }
 
 /**
@@ -111,8 +130,27 @@ export class CrossEncoderRerankerProvider implements RerankerProvider {
 
 		const startTime = Date.now();
 
+		const controller = new AbortController();
+		const timer = setTimeout(
+			() => controller.abort(new Error("Cross-encoder rerank timed out")),
+			this.timeout,
+		);
+		let loading: Promise<any> | undefined;
+		let removeAbortListener = () => {};
 		try {
-			const classifier = await getOrCreatePipeline(this.model);
+			const signal =
+				(await guardDispatch(controller.signal)) ?? controller.signal;
+			const stopped = new Promise<never>((_resolve, reject) => {
+				const abort = () => reject(signal.reason);
+				signal.addEventListener("abort", abort, { once: true });
+				removeAbortListener = () =>
+					signal.removeEventListener("abort", abort);
+				if (signal.aborted) {
+					abort();
+				}
+			});
+			loading = getOrCreatePipeline(this.model);
+			const classifier = await Promise.race([loading, stopped]);
 
 			const documentTexts = documents.map((doc) => {
 				// Truncate content to avoid token limits (512 tokens typical for MiniLM)
@@ -136,7 +174,10 @@ export class CrossEncoderRerankerProvider implements RerankerProvider {
 						truncation: true,
 					},
 				);
-				const { logits } = await classifier.model(modelInputs);
+				const { logits } = await Promise.race([
+					classifier.model(modelInputs),
+					stopped,
+				]);
 				const rows: unknown = logits?.tolist?.();
 				const hasExpectedShape =
 					Array.isArray(logits?.dims) &&
@@ -181,8 +222,14 @@ export class CrossEncoderRerankerProvider implements RerankerProvider {
 
 			return rerankedResults;
 		} catch (error) {
+			if (!pipeline && pipelinePromise === loading) {
+				pipelinePromise = null;
+			}
 			logger.error(`[CrossEncoderReranker] Rerank failed: ${error}`);
 			throw error;
+		} finally {
+			clearTimeout(timer);
+			removeAbortListener();
 		}
 	}
 

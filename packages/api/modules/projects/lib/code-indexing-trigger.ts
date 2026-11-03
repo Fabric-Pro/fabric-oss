@@ -8,8 +8,9 @@
  * index. A project with no integration row but a legacy `Project.repositoryUrl`
  * still indexes via the user's personal OAuth as a single null-integration row.
  *
- * Gated by FEATURE_CODE_INDEXING (env) and the project's `codeSearchEnabled`
- * RAG setting. Best-effort: a repo with no usable token is skipped, not fatal.
+ * Gated by the project's code search mode (only RAG indexes) and each
+ * repository's `includedInCodeSearch`. Best-effort: a repo with no usable
+ * token is skipped, not fatal.
  */
 
 import {
@@ -26,10 +27,7 @@ import { getGitLabAccessToken } from "@repo/integrations/gitlab";
 import { resolveFreshRepoTokenForRow } from "@repo/integrations/repo-auth";
 import { decryptApiKey } from "@repo/utils";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
-import {
-	isCodeIndexingDeploymentEnabled,
-	isCodeIndexingEnabled,
-} from "./code-indexing-enabled";
+import { isCodeIndexingEnabled } from "./code-indexing-enabled";
 
 type RepoProvider = "GITHUB" | "AZURE_DEVOPS" | "GITLAB";
 
@@ -88,7 +86,7 @@ export interface StartCodeIndexingResult {
 	started: number;
 	/** Repos skipped for want of a usable token, keyed by integration id. */
 	skipped: Array<{ repositoryIntegrationId: string | null; reason: string }>;
-	disabledReason?: "feature-flag" | "code-search-disabled";
+	disabledReason?: "code-search-disabled";
 }
 
 /**
@@ -100,10 +98,6 @@ export async function startCodeIndexingForProject(
 ): Promise<StartCodeIndexingResult> {
 	const { projectId, userId } = opts;
 	const skipped: StartCodeIndexingResult["skipped"] = [];
-
-	if (!isCodeIndexingDeploymentEnabled()) {
-		return { started: 0, skipped, disabledReason: "feature-flag" };
-	}
 
 	// Derive the tenant from the project itself — never trust the caller's
 	// organizationId for collection routing / row stamping (the project is the
@@ -119,25 +113,30 @@ export async function startCodeIndexingForProject(
 
 	const ragSettings = await db.projectRagSettings.findUnique({
 		where: { projectId },
-		select: { codeSearchEnabled: true },
+		select: { codeSearchMode: true },
 	});
-	if (!isCodeIndexingEnabled(ragSettings?.codeSearchEnabled)) {
+	if (!isCodeIndexingEnabled(ragSettings?.codeSearchMode)) {
 		return { started: 0, skipped, disabledReason: "code-search-disabled" };
 	}
 
 	const allRepos = await getProjectReposForCodeSearch(projectId);
-	const repos =
-		opts.repositoryIntegrationId != null
-			? allRepos.filter(
-					(r) => r.integrationId === opts.repositoryIntegrationId,
-				)
-			: allRepos;
+	// A repository left out of code search is never indexed; when every
+	// connected one is left out there is nothing to index, legacy included.
+	if (allRepos.length > 0 && !allRepos.some((r) => r.includedInCodeSearch)) {
+		return { started: 0, skipped };
+	}
+	const repos = allRepos.filter(
+		(r) =>
+			r.includedInCodeSearch &&
+			(opts.repositoryIntegrationId == null ||
+				r.integrationId === opts.repositoryIntegrationId),
+	);
 
 	// No project-level integration → fall back to the legacy single-repo path
 	// (project.repositoryUrl + the user's personal OAuth), unless the caller
 	// targeted a specific integration that no longer exists.
 	if (repos.length === 0) {
-		if (opts.repositoryIntegrationId != null) {
+		if (opts.repositoryIntegrationId != null || allRepos.length > 0) {
 			return { started: 0, skipped };
 		}
 		const started = await startLegacyOAuthIndexing({
@@ -397,4 +396,46 @@ export async function cancelCodeIndexingForRepo(params: {
 	} catch {
 		// Workflow may already be closed / not found — best-effort.
 	}
+}
+
+/**
+ * Index the included repositories that have no usable index yet — on a switch
+ * to RAG, or when a repository is included again under RAG. A repository whose
+ * index is READY, STALE or still INDEXING is left alone: the scheduled refresh
+ * brings it up to date file by file, so a switch never re-embeds a whole
+ * repository that is already embedded. Best-effort, like every trigger here.
+ */
+export async function startCodeIndexingForUnindexedRepos(opts: {
+	projectId: string;
+	userId: string;
+	organizationId?: string | null;
+	repositoryIntegrationId?: string;
+}): Promise<number> {
+	const [repos, indexes] = await Promise.all([
+		getProjectReposForCodeSearch(opts.projectId),
+		getProjectCodeIndexes(opts.projectId),
+	]);
+	const usable = new Set(
+		indexes
+			.filter((i) => ["READY", "STALE", "INDEXING"].includes(i.status))
+			.map((i) => i.repositoryIntegrationId),
+	);
+	const due = repos.filter(
+		(r) =>
+			r.includedInCodeSearch &&
+			!usable.has(r.integrationId) &&
+			(opts.repositoryIntegrationId === undefined ||
+				r.integrationId === opts.repositoryIntegrationId),
+	);
+	let started = 0;
+	for (const repo of due) {
+		const result = await startCodeIndexingForProject({
+			projectId: opts.projectId,
+			userId: opts.userId,
+			organizationId: opts.organizationId,
+			repositoryIntegrationId: repo.integrationId,
+		});
+		started += result.started;
+	}
+	return started;
 }

@@ -86,6 +86,7 @@ Ask a clarifying question ONLY when there is genuine, material ambiguity — an 
 - NEVER ask something the conversation already answers, however it was phrased. Treat an answer given earlier as settled — it does not expire, and asking again is the single worst failure here.
 - NEVER re-ask a question that already appears in the conversation, even when the reply was partial or indirect. If a "Clarification — <question>: <answer>" line is present, that question is closed.
 - Read the request in the conversation's context. A request that looks ambiguous alone is often fully determined by what was just discussed — a bare "10 of them" or "do it for the other one" is clear when the subject is established above.
+- A short agreement in any language ("yes", "go ahead", "do it", "ok", "давай", "так") right after the assistant offered or proposed something accepts that offer. It is clear: never ask what it means.
 - Only what is genuinely still unresolved after reading the conversation is a candidate.
 
 "Project context", when present, is the project this conversation is attached to, and it is binding too:

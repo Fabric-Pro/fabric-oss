@@ -6,6 +6,7 @@ import {
 } from "../../advisor-history-retention";
 import type { RiskAssessmentOptions } from "../../risk-assessment";
 import type { IterativeMessage } from "../../types";
+
 const pair = (
 	id: number,
 	chars = 32_000,

@@ -6,6 +6,10 @@ import {
 	pmCreateClaimRecoverableAt,
 	pmCreateClaimRecoveryCutoff,
 } from "@repo/database";
+import {
+	normalizeGitHubItemReference,
+	readGitHubProjectsRepository,
+} from "@repo/integrations/github/projects-pm-adapter";
 import { mcpRowOrigin } from "@repo/integrations/gitlab";
 import {
 	extractCreatedWorkItemRefs,
@@ -198,8 +202,9 @@ function describeError(error: unknown): string {
  * `data.errorCode` says why not. See the module comment.
  */
 export async function linkPmItem(
-	args: LinkPmItemArgs,
+	inputArgs: LinkPmItemArgs,
 ): Promise<LinkPmItemResult> {
+	let args = inputArgs;
 	const { row, projectId, userId } = args;
 	const isTestCase = "testCaseId" in row;
 	const noun = isTestCase ? "test case" : "item";
@@ -292,7 +297,29 @@ export async function linkPmItem(
 	// project check.
 	let ado = false;
 	let pmTool: string | undefined =
-		target.kind === "rest-gitlab" ? "gitlab" : undefined;
+		target.kind === "rest-gitlab"
+			? "gitlab"
+			: target.kind === "rest-github"
+				? "github"
+				: undefined;
+	// GitHub Projects names an issue `owner/name#42`; a URL or a bare number
+	// in the project's repository is accepted and stored in that form.
+	if (target.kind === "rest-github") {
+		const normalized = normalizeGitHubItemReference(
+			args.externalId,
+			readGitHubProjectsRepository(
+				project.projectManagementAdditionalContext,
+			),
+		);
+		if (!normalized) {
+			throw refuse(
+				"BAD_REQUEST",
+				"PM_LINK_INVALID_ID",
+				"Enter the issue as owner/repo#42, its GitHub URL, or #42 for the project's repository.",
+			);
+		}
+		args = { ...args, externalId: normalized };
+	}
 	let idParamHint: string | undefined;
 	let containerValue = project.projectManagementContainerId;
 	if (target.kind === "mcp") {
@@ -582,7 +609,10 @@ function storedRefs(input: {
 	requestedId: string;
 	idParamHint: string | undefined;
 }): { externalId: string | null; externalUrl: string | null } {
-	if (input.target.kind === "rest-gitlab") {
+	if (
+		input.target.kind === "rest-gitlab" ||
+		input.target.kind === "rest-github"
+	) {
 		return { externalId: input.requestedId, externalUrl: input.fetchedUrl };
 	}
 	const config = input.target.mcpConfig as {

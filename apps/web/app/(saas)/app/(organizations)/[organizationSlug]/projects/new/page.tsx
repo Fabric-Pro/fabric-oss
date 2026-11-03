@@ -1,5 +1,6 @@
 import { getProjectSummaryById, isFeatureEnabled } from "@repo/database";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
+import { NewProjectStart } from "@saas/projects/components/NewProjectStart";
 import { ProjectCreationWizard } from "@saas/projects/components/ProjectCreationWizard";
 import { SimplifiedProjectForm } from "@saas/projects/components/SimplifiedProjectForm";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
@@ -58,8 +59,9 @@ export default async function NewProjectPage({
 		redirect(`/app/${organizationSlug}/projects/${project.id}/edit`);
 	}
 
-	// The unified wizard renders directly at `projects/new` — there is no
-	// New-vs-Existing chooser (unified-project-setup spec §4.1). Resume/edit is
+	// The unified wizard renders at `projects/new` — there is no New-vs-Existing
+	// chooser (unified-project-setup spec §4.1); the only choice is from
+	// scratch vs. import from a repository, on a fresh visit. Resume/edit is
 	// preserved: a valid `?projectId=` or a `?step=` short-circuits the
 	// fresh-start path so progress is restored. A genuine fresh visit (neither
 	// present) flags `freshStart` so the wizard drops any stale sessionStorage
@@ -67,6 +69,25 @@ export default async function NewProjectPage({
 	const isEditMode = !!projectId && !!projectName;
 	const isContinuingWizard = !!step;
 	const isFreshStart = !isEditMode && !isContinuingWizard;
+
+	const creationForm = simplifiedCreation ? (
+		// `step` is deliberately not passed through: the simplified
+		// form is one step, and a legacy `?step=` on the URL means
+		// nothing to it.
+		<SimplifiedProjectForm
+			organizationId={organization.id}
+			projectId={isEditMode ? projectId : undefined}
+			// On a fresh visit New Project's start choice titles the page.
+			hideHeading={isFreshStart}
+		/>
+	) : (
+		<ProjectCreationWizard
+			organizationId={organization.id}
+			initialStep={step ? Number.parseInt(step, 10) : undefined}
+			projectId={projectId}
+			freshStart={isFreshStart}
+		/>
+	);
 
 	return (
 		<div className="w-full py-6">
@@ -90,21 +111,18 @@ export default async function NewProjectPage({
 				]}
 				className="mb-6"
 			/>
-			{simplifiedCreation ? (
-				// `step` is deliberately not passed through: the simplified
-				// form is one step, and a legacy `?step=` on the URL means
-				// nothing to it.
-				<SimplifiedProjectForm
+			{isFreshStart ? (
+				// A fresh visit chooses first: this form, or an import from a
+				// repository (repository-import spec §6a). Resume and edit go
+				// straight to the form they continue.
+				<NewProjectStart
 					organizationId={organization.id}
-					projectId={isEditMode ? projectId : undefined}
-				/>
+					projectsBasePath={`/app/${organizationSlug}/projects`}
+				>
+					{creationForm}
+				</NewProjectStart>
 			) : (
-				<ProjectCreationWizard
-					organizationId={organization.id}
-					initialStep={step ? Number.parseInt(step, 10) : undefined}
-					projectId={projectId}
-					freshStart={isFreshStart}
-				/>
+				creationForm
 			)}
 		</div>
 	);

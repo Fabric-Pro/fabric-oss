@@ -1,5 +1,36 @@
 # fabric-app
 
+## 1.16.37
+
+### Patch Changes
+
+- 1fc19d0: The Advisor no longer asks what you mean when you answer its offer with a short agreement such as "go ahead".
+- 1fc19d0: A Deep Research run stopped from the chat now shows that it was stopped, and the agent builder's Sidekick no longer falls back to its older chat route after a full page load.
+- 1fc19d0: The code index now shows which step is running while it indexes, and it splits each file by its kind: documents at their headings, configuration at its top-level keys, and code along its structure.
+- 1fc19d0: Projects now choose how AI agents search their code — Off, live Code search, or RAG — and which repositories are included; in RAG mode every source file in any language is indexed whole with line ranges, kept current by a scheduled refresh, and agents read files and folders from the index. RAG Settings shows each content type's chunks, sizes, recall and sources in one table, where each type can be chunked with its own split method, size and overlap.
+- 1fc19d0: Organizations can turn on a Credentials tab under Connections, where members save a personal access token, API key or user name and token once, keep it private or share it with the organization, and remove it later; every change is recorded in the audit log and the token is never shown again after saving.
+- 1fc19d0: Document generation now searches project context the same way as the other project searches, including website pages and keyword matching where the search index supports it. The project minimum similarity setting and the knowledge search API's `minSimilarity` now filter semantic matches in hybrid search; keyword matches are kept regardless.
+- 1fc19d0: Documentation pages start right under the site header: the empty band above each page is gone, and the page, the sidebar and the "On this page" list now line up.
+- 1fc19d0: Links in notification emails and webhooks now open the right page in Fabric instead of a page-not-found error.
+- 1fc19d0: Project context search reranks results through Vercel AI Gateway with the organization's own gateway key and skips the unavailable local reranker on Vercel without logging load errors when no key is configured.
+- 1fc19d0: When no GitHub Projects board is listed, project settings now say whether the GitHub connection cannot see personal-account boards (fine-grained token or GitHub sign-in) and that a classic token with the repo and project scopes is needed.
+- 1fc19d0: GitHub Projects can now be chosen as a project's project-management tool: pick a Projects board in Project Settings, and stories sync to it as typed issues (Feature or Bug) in a chosen repository — or as draft items when no repository is set — with the board's Status field mapped to Fabric statuses in both directions.
+- 1fc19d0: GitHub Projects can now run with a GitHub token saved in the credential manager: choose a saved credential, or add a new one, right in the project's project-management settings; boards are listed even when the token cannot read the account's organizations.
+- 1fc19d0: Syncing a single feature to GitHub Projects now runs with the project's chosen GitHub credential instead of asking for an MCP connection, and a feature's version history lists the current version first, marked Current, above the earlier versions it can be compared with or restored to.
+- 1fc19d0: The conversation history list now previews a chat's last answer instead of a "SYSTEM" copy of it, for chats that ran on the agent runtime.
+- 1fc19d0: Importing a project from a repository can now connect more code repositories and keep a documentation repository's folders in Living Memory, and the analysis reads the instructions and documentation repositories for what they are rather than as product code.
+- 1fc19d0: A file synced into Living Memory can be removed from it without changing the repository; removed files stay visible in their folder, marked Left out, and can be restored from there.
+- 1fc19d0: Files that Living Memory already keeps in a project's Context are no longer indexed a second time as code, and the code index takes them back when they leave Living Memory; the scheduled code index refresh now runs in local development too.
+- 1fc19d0: Coding tools connected to Fabric's MCP server can now run a semantic search over a project's Context and code index, the same retrieval the Fabric chat answers from.
+- 1fc19d0: Coding tools working through the Coding Instructions plugin can now list a project's code repositories over MCP and clone them with git into the workspace's `repos/` folder.
+- 1fc19d0: Search engines can find the documentation again on fabric.pro: the app publishes its own sitemap of docs, changelog and MCP registry pages at /docs-sitemap.xml, and the old localised workspaces docs address redirects to the Libraries page.
+- 1fc19d0: Voice project context now uses the passages that matched the question and respects its source limit, Weave planning shows real source names instead of "Context N", and the local reranker gives up after its timeout instead of holding a search open.
+- 1fc19d0: Project context search reranks matching passages, caps the sources returned even when reranking is unavailable, and makes the number of sources configurable in project RAG settings.
+- 1fc19d0: Release notes review requests now go only to people who can open the project, so the review link always works.
+- 1fc19d0: Creating a project from a repository now connects it with a GitHub token pasted in Integrations, says which repositories could not be connected, and marks a repository the project only links to as "Not connected" instead of "Active".
+- 1fc19d0: Importing a repository now reads it again after signing in with GitHub, and a pasted GitHub personal access token replaces an earlier GitHub sign-in instead of being ignored.
+- 1fc19d0: The Stopped mark on a stopped Deep Research run now sits on its own line above the New Research button instead of touching it.
+
 ## 1.16.36
 
 ### Patch Changes

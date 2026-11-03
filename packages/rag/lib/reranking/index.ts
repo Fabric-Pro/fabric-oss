@@ -3,8 +3,9 @@
  *
  * Provides document reranking capabilities to improve retrieval quality.
  * Supports multiple providers:
- * - cross-encoder: Self-hosted, free (default)
+ * - cross-encoder: Self-hosted, free
  * - cohere: Cloud API, high quality
+ * - gateway: Tenant-scoped Vercel AI Gateway
  *
  * Usage:
  * ```typescript
@@ -21,13 +22,20 @@
 import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { RetrievedContext } from "../project-contexts/retrieval";
-import { getRerankerConfig, isCohereAvailable } from "./config";
+import {
+	getRerankerConfig,
+	isCohereAvailable,
+	isCrossEncoderAvailable,
+	resolveRerankerGatewayCredential,
+} from "./config";
 import { CohereRerankerProvider } from "./providers/cohere";
 import { CrossEncoderRerankerProvider } from "./providers/cross-encoder";
+import { GatewayRerankerProvider } from "./providers/gateway";
 import type {
 	RerankerConfig,
 	RerankerProvider,
 	RerankerProviderType,
+	RerankerTenant,
 	RerankStats,
 } from "./types";
 import { DEFAULT_RERANK_CONFIG } from "./types";
@@ -38,6 +46,7 @@ export {
 	CrossEncoderRerankerProvider,
 	resetCrossEncoderCache,
 } from "./providers/cross-encoder";
+export { GatewayRerankerProvider } from "./providers/gateway";
 // Re-export types and providers
 export * from "./types";
 
@@ -46,6 +55,8 @@ export * from "./types";
  */
 export function createReranker(config: RerankerConfig): RerankerProvider {
 	switch (config.provider) {
+		case "gateway":
+			return new GatewayRerankerProvider(config);
 		case "cohere":
 			return new CohereRerankerProvider(config);
 		case "cross-encoder":
@@ -55,21 +66,16 @@ export function createReranker(config: RerankerConfig): RerankerProvider {
 	}
 }
 
-/**
- * Get the best available reranker provider
- *
- * Priority:
- * 1. Preferred provider (if specified and available)
- * 2. RERANKER_PROVIDER env var (if set)
- * 3. Cross-encoder (default, always available, free)
- *
- * Note: Cohere requires explicit configuration via preferredProvider or RERANKER_PROVIDER env var.
- * If Cohere is selected but no API key exists, falls back to cross-encoder.
- */
-export function getBestAvailableReranker(
+/** Create a provider using the same tenant-aware selection as retrieval. */
+export async function getBestAvailableReranker(
 	preferredProvider?: RerankerProviderType,
-): RerankerProvider {
-	const config = getRerankerConfig(preferredProvider);
+	tenant?: RerankerTenant,
+): Promise<RerankerProvider> {
+	const config = await getRerankerConfig(
+		preferredProvider,
+		undefined,
+		tenant,
+	);
 	return createReranker(config);
 }
 
@@ -89,6 +95,7 @@ export interface RerankContextsOptions {
 	provider?: RerankerProviderType;
 	/** Custom provider config (optional) */
 	config?: Partial<RerankerConfig>;
+	tenant?: RerankerTenant;
 }
 
 /**
@@ -121,6 +128,7 @@ export async function rerankContexts(
 		minRelevanceScore = DEFAULT_RERANK_CONFIG.minRelevanceScore,
 		provider: preferredProvider,
 		config: customConfig,
+		tenant,
 	} = options;
 
 	// Skip reranking if no contexts or only one
@@ -138,10 +146,31 @@ export async function rerankContexts(
 	}
 
 	const startTime = Date.now();
+	let resolvedProvider = preferredProvider ?? "cross-encoder";
 
 	try {
 		// Get reranker config
-		const config = getRerankerConfig(preferredProvider, customConfig);
+		const config = await getRerankerConfig(
+			preferredProvider,
+			customConfig,
+			tenant,
+		);
+		resolvedProvider = config.provider;
+		if (config.provider === "cross-encoder" && !isCrossEncoderAvailable()) {
+			logger.info(
+				"[Reranking] Skipped: no gateway key is configured for the organization and the local reranker is unavailable on Vercel",
+			);
+			return {
+				contexts,
+				stats: {
+					latencyMs: Date.now() - startTime,
+					inputCount: contexts.length,
+					outputCount: contexts.length,
+					provider: config.provider,
+					model: "skipped",
+				},
+			};
+		}
 		const reranker = createReranker(config);
 
 		logger.info(
@@ -197,7 +226,7 @@ export async function rerankContexts(
 				latencyMs: Date.now() - startTime,
 				inputCount: contexts.length,
 				outputCount: contexts.length,
-				provider: preferredProvider || "cross-encoder",
+				provider: resolvedProvider,
 				model: "fallback-passthrough",
 			},
 		};
@@ -207,12 +236,16 @@ export async function rerankContexts(
 /**
  * Check which reranker providers are currently available
  */
-export async function getAvailableRerankers(): Promise<{
+export async function getAvailableRerankers(tenant?: RerankerTenant): Promise<{
+	gateway: boolean;
 	cohere: boolean;
 	"cross-encoder": boolean;
 }> {
 	return {
+		gateway: !!(await resolveRerankerGatewayCredential(tenant)),
 		cohere: isCohereAvailable(),
-		"cross-encoder": true, // Always available (self-hosted)
+		"cross-encoder": isCrossEncoderAvailable(),
 	};
 }
+
+export { selectProjectContexts } from "./select-project-contexts";

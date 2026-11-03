@@ -170,6 +170,20 @@ function fakeClient(options: {
 				};
 			}),
 		},
+		knowledge: {
+			getProjectTypes: vi.fn(async () => ({
+				types: [
+					{
+						key: "note",
+						name: "Note",
+						description: "A short piece of context worth keeping.",
+						template: null,
+						fieldSchema: null,
+						summaryBehavior: "MERGE" as const,
+					},
+				],
+			})),
+		},
 	};
 	const fetchImpl: typeof fetch = async (url) => {
 		const requested = decodeURIComponent(
@@ -183,7 +197,7 @@ function fakeClient(options: {
 	return {
 		client: client as unknown as Pick<
 			FabricClient,
-			"instructions" | "memory"
+			"instructions" | "memory" | "knowledge"
 		>,
 		calls,
 		fetchImpl,
@@ -301,9 +315,12 @@ describe("rendering a repository project", () => {
 			"hooks/session-context.json",
 			"instructions/CLAUDE.md",
 			"skills/deploy/SKILL.md",
+			"skills/fabric-change-instructions/SKILL.md",
 			"skills/fabric-instruction-access/SKILL.md",
 			"skills/fabric-instruction-access/catalog.json",
+			"skills/fabric-knowledge/SKILL.md",
 			"skills/fabric-living-memory/SKILL.md",
+			"skills/fabric-rules/SKILL.md",
 		]);
 		expect(files["skills/fabric-living-memory/SKILL.md"]).toContain(
 			"`docs/ai/`",
@@ -679,9 +696,12 @@ describe("rendering an uploaded project", () => {
 			".mcp.json",
 			"hooks/hooks.json",
 			"hooks/session-context.json",
+			"skills/fabric-change-instructions/SKILL.md",
 			"skills/fabric-instruction-access/SKILL.md",
 			"skills/fabric-instruction-access/catalog.json",
+			"skills/fabric-knowledge/SKILL.md",
 			"skills/fabric-living-memory/SKILL.md",
+			"skills/fabric-rules/SKILL.md",
 		]);
 		expect(rendered.alwaysOn?.text).toContain("fabric-instruction-access");
 		const files = await tree(rendered.directory);

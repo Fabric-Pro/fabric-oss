@@ -45,6 +45,10 @@ import {
 	updateTask,
 } from "@repo/database";
 import {
+	GitHubProjectsError,
+	isGitHubProjectsKey,
+} from "@repo/integrations/github/projects-pm-adapter";
+import {
 	assertGitLabPmMcpConfigOrigin,
 	GitLabPmOriginMismatchError,
 	requireRecordedGitLabPmOrigin,
@@ -105,7 +109,8 @@ import { runWithTimeout } from "../orchestrator/execution/mcp-call-timeout";
 import type { ExecuteMcpToolOutput } from "../orchestrator/types";
 import {
 	assertPmMcpTargetOrigin,
-	type PMSource,
+	type RestPMSource,
+	resolvePmServerKey,
 	resolvePmSource,
 } from "../pm-source";
 import {
@@ -2215,8 +2220,20 @@ export async function discoverPMToolCapabilitiesResult(params: {
 	//     callPmToolWithFallback on `source.kind === "rest-gitlab"` BEFORE
 	//     consulting capabilities.taskList.toolName
 	if (mcpConfigId == null) {
+		// GitHub Projects rides the same synthesized surface; only the
+		// detected type differs.
+		let restIsGitHub = false;
+		if (params.mcpServerId !== undefined) {
+			try {
+				restIsGitHub = isGitHubProjectsKey(
+					await resolvePmServerKey(params.mcpServerId),
+				);
+			} catch {
+				// An unreadable server row keeps the GitLab surface it had.
+			}
+		}
 		logger.info(
-			"[PM Discovery] Synthesizing REST-GitLab capabilities (pull-only surface)",
+			"[PM Discovery] Synthesizing REST capabilities (pull-only surface)",
 			{
 				mcpServerId: params.mcpServerId,
 				userId,
@@ -2228,7 +2245,7 @@ export async function discoverPMToolCapabilitiesResult(params: {
 			ok: true,
 			capabilities: {
 				hasPMCapabilities: true,
-				detectedType: "gitlab",
+				detectedType: restIsGitHub ? "github" : "gitlab",
 				containerHierarchy: [],
 				availableTools: [],
 				taskList: {
@@ -2629,10 +2646,8 @@ export async function syncStoryToPM(
 	// through the provider-agnostic REST dispatcher. Dynamic import avoids a
 	// static circular dependency (the routine imports types/helpers here).
 	if (maybeMcpConfigId == null) {
-		const { syncGitLabStoryViaRest } = await import(
-			"./gitlab-rest-story-sync"
-		);
-		return syncGitLabStoryViaRest(input);
+		const { syncStoryViaRest } = await import("./gitlab-rest-story-sync");
+		return syncStoryViaRest(input);
 	}
 	const mcpConfigId = maybeMcpConfigId;
 	// The container id names a project on one GitLab instance; a personal
@@ -3062,7 +3077,7 @@ export async function syncStoryToPM(
 			// Stripping keeps the source intact so a transient failure
 			// self-heals on the next pull. Applied here, upstream of the
 			// per-provider branches below, so every MCP provider is covered —
-			// `syncGitLabStoryViaRest` does the same on the REST path.
+			// `syncStoryViaRest` does the same on the REST path.
 			const withoutFailedMedia =
 				stripFailedMediaPlaceholders(rawDescription);
 			const withProviderBackLink = formatBackLinkForProvider(
@@ -6104,9 +6119,9 @@ export async function listWorkItemsFromPM(input: {
 			containerId,
 			additionalContext,
 		});
-		if (source.kind !== "rest-gitlab") {
+		if (source.kind === "mcp") {
 			throw ApplicationFailure.nonRetryable(
-				"listWorkItemsFromPM: resolved source is not rest-gitlab and mcpConfigId is null",
+				"listWorkItemsFromPM: resolved source is not connection-backed and mcpConfigId is null",
 			);
 		}
 		const restResult = (await callPmToolWithFallback({
@@ -6119,7 +6134,7 @@ export async function listWorkItemsFromPM(input: {
 			...restResult,
 			items: boundedListingItems(
 				restResult.items,
-				"listWorkItemsFromPM page (rest-gitlab)",
+				`listWorkItemsFromPM page (${source.kind})`,
 				{
 					page,
 					count: restResult.items.length,
@@ -7382,6 +7397,8 @@ interface RestFetchedIssue {
 	description?: string | null;
 	externalUrl?: string | null;
 	labels?: string[];
+	/** GitHub Projects: the issue's Issue Type (or "Draft"). */
+	workItemType?: string;
 }
 
 /** How one REST issue read ended — recorded exactly once per id. */
@@ -7400,9 +7417,10 @@ type RestReadOutcome =
  */
 function isGitLabRateLimitError(err: unknown): boolean {
 	return (
-		err instanceof Error &&
-		err.name === "GitLabApiError" &&
-		(err as { status?: unknown }).status === 429
+		(err instanceof Error &&
+			err.name === "GitLabApiError" &&
+			(err as { status?: unknown }).status === 429) ||
+		(err instanceof GitHubProjectsError && err.kind === "rate-limited")
 	);
 }
 
@@ -7447,7 +7465,7 @@ function isGitLabRateLimitError(err: unknown): boolean {
  * The result lists are assembled in input order, whatever order reads finish.
  */
 async function fetchGitLabRestItemsByIds(args: {
-	source: Extract<PMSource, { kind: "rest-gitlab" }>;
+	source: RestPMSource;
 	externalIds: string[];
 	userId: string;
 	organizationId: string | null;
@@ -7554,6 +7572,15 @@ async function fetchGitLabRestItemsByIds(args: {
 										: { kind: "not-found" },
 								),
 							(err: unknown) => {
+								// GitHub reports a missing issue as an error,
+								// not a null read: the same positive evidence.
+								if (
+									err instanceof GitHubProjectsError &&
+									err.kind === "not-found"
+								) {
+									record(idx, { kind: "not-found" });
+									return;
+								}
 								if (
 									isGitLabRateLimitError(err) &&
 									!rateLimited
@@ -7649,7 +7676,7 @@ async function fetchGitLabRestItemsByIds(args: {
 				title: outcome.issue.title,
 				description: outcome.issue.description ?? null,
 				url: outcome.issue.externalUrl ?? null,
-				workItemType: "Issue",
+				workItemType: outcome.issue.workItemType ?? "Issue",
 				raw: outcome.issue as unknown as Record<string, unknown>,
 			});
 			return;
@@ -7748,9 +7775,9 @@ export async function fetchPMItemsByIds(input: {
 			additionalContext: input.additionalContext,
 			requireFreshToken: input.requireFreshToken,
 		});
-		if (source.kind !== "rest-gitlab") {
+		if (source.kind === "mcp") {
 			throw ApplicationFailure.nonRetryable(
-				"fetchPMItemsByIds: resolved source is not rest-gitlab and mcpConfigId is null",
+				"fetchPMItemsByIds: resolved source is not connection-backed and mcpConfigId is null",
 			);
 		}
 		return await fetchGitLabRestItemsByIds({
@@ -9342,10 +9369,10 @@ export async function createOrUpdateStoryFromPMItem(input: {
 		// images AND file attachments onto Fabric story-media. Without this a
 		// freshly imported GitLab story shows raw media + literal `{width=…}`.
 		try {
-			const { syncGitLabStoryViaRest } = await import(
+			const { syncStoryViaRest } = await import(
 				"./gitlab-rest-story-sync"
 			);
-			const result = await syncGitLabStoryViaRest({
+			const result = await syncStoryViaRest({
 				storyId: story.id,
 				projectId,
 				mcpConfigId: null,

@@ -3,7 +3,13 @@
  * Handles per-project RAG configuration
  */
 
-import { type ChunkSplitMethod, db, type EmbeddingModel } from "../../client";
+import {
+	type ChunkSplitMethod,
+	type CodeIndexRefreshInterval,
+	type CodeSearchMode,
+	db,
+	type EmbeddingModel,
+} from "../../client";
 
 /**
  * Default RAG settings optimized for hybrid search + reranking pipeline
@@ -24,6 +30,8 @@ const DEFAULT_RAG_SETTINGS = {
 	rerankTopK: 10, // Final count after reranking
 	rerankerProvider: "cross-encoder", // Free, self-hosted default
 	enableEpisodicMemory: true, // Include past project discussions
+	codeSearchMode: "OFF" as CodeSearchMode,
+	// Mirrors codeSearchMode (on unless OFF) until the column is dropped.
 	codeSearchEnabled: false,
 	codeSearchProvider: null as string | null,
 	codeEmbeddingModel: "TEXT_EMBEDDING_3_SMALL" as string | null,
@@ -41,6 +49,11 @@ export async function getProjectRagSettings(projectId: string) {
 	if (!settings) {
 		return {
 			...DEFAULT_RAG_SETTINGS,
+			// Content-type chunking is off until someone turns it on.
+			chunkByContentType: false,
+			chunkProfiles: null,
+			chunkingVersion: 0,
+			codeIndexRefreshInterval: "DAILY" as const,
 			projectId,
 			id: null,
 			createdAt: null,
@@ -69,9 +82,9 @@ export async function upsertProjectRagSettings(
 		rerankTopK?: number;
 		rerankerProvider?: string;
 		enableEpisodicMemory?: boolean;
-		codeSearchEnabled?: boolean;
-		codeSearchProvider?: string | null;
+		codeSearchMode?: CodeSearchMode;
 		codeEmbeddingModel?: string | null;
+		codeIndexRefreshInterval?: CodeIndexRefreshInterval;
 		// Tenant isolation fields
 		userId: string;
 		organizationId?: string;
@@ -99,19 +112,24 @@ export async function upsertProjectRagSettings(
 			enableEpisodicMemory:
 				data.enableEpisodicMemory ??
 				DEFAULT_RAG_SETTINGS.enableEpisodicMemory,
+			codeSearchMode:
+				data.codeSearchMode ?? DEFAULT_RAG_SETTINGS.codeSearchMode,
 			codeSearchEnabled:
-				data.codeSearchEnabled ??
-				DEFAULT_RAG_SETTINGS.codeSearchEnabled,
-			codeSearchProvider:
-				data.codeSearchProvider ??
-				DEFAULT_RAG_SETTINGS.codeSearchProvider,
+				(data.codeSearchMode ?? DEFAULT_RAG_SETTINGS.codeSearchMode) !==
+				"OFF",
 			codeEmbeddingModel:
 				data.codeEmbeddingModel ??
 				DEFAULT_RAG_SETTINGS.codeEmbeddingModel,
+			...(data.codeIndexRefreshInterval !== undefined && {
+				codeIndexRefreshInterval: data.codeIndexRefreshInterval,
+			}),
 			userId: data.userId,
 			organizationId: data.organizationId,
 		},
 		update: {
+			...(data.codeIndexRefreshInterval !== undefined && {
+				codeIndexRefreshInterval: data.codeIndexRefreshInterval,
+			}),
 			...(data.chunkSize !== undefined && { chunkSize: data.chunkSize }),
 			...(data.chunkOverlap !== undefined && {
 				chunkOverlap: data.chunkOverlap,
@@ -138,11 +156,9 @@ export async function upsertProjectRagSettings(
 			...(data.enableEpisodicMemory !== undefined && {
 				enableEpisodicMemory: data.enableEpisodicMemory,
 			}),
-			...(data.codeSearchEnabled !== undefined && {
-				codeSearchEnabled: data.codeSearchEnabled,
-			}),
-			...(data.codeSearchProvider !== undefined && {
-				codeSearchProvider: data.codeSearchProvider,
+			...(data.codeSearchMode !== undefined && {
+				codeSearchMode: data.codeSearchMode,
+				codeSearchEnabled: data.codeSearchMode !== "OFF",
 			}),
 			...(data.codeEmbeddingModel !== undefined && {
 				codeEmbeddingModel: data.codeEmbeddingModel,

@@ -203,6 +203,10 @@ vi.mock("sonner", () => ({
 	toast: { info: state.toastInfo, error: state.toastError, success: vi.fn() },
 }));
 
+// Reads its own queries; covered by its own tests.
+vi.mock("../ConsolidationPanel", () => ({ ConsolidationPanel: () => null }));
+vi.mock("../PluginNameSetting", () => ({ PluginNameSetting: () => null }));
+vi.mock("../RulesHealthPanel", () => ({ RulesHealthPanel: () => null }));
 vi.mock("../ConfigureRepositorySyncDialog", () => ({
 	ConfigureRepositorySyncDialog: () => null,
 }));

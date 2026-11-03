@@ -163,6 +163,10 @@ export const router = publicProcedure
 			"sandboxRouter",
 			() => import("../modules/sandbox/router"),
 		),
+		credentialManager: lazyRouter(
+			"credentialManagerRouter",
+			() => import("../modules/credential-manager/router"),
+		),
 		searchProviders: lazyRouter(
 			"searchProvidersRouter",
 			() => import("../modules/search-providers/router"),

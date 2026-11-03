@@ -26,6 +26,8 @@ vi.mock("@repo/ai", () => ({
 
 vi.mock("@repo/database", () => ({
 	canCreateProjectStory: vi.fn(),
+	// Code search on (indexed), so code_search is offered with the reads.
+	getProjectRagSettings: vi.fn(async () => ({ codeSearchMode: "RAG" })),
 	getProjectAccessContext: h.getProjectAccessContext,
 	searchCodeSymbols: h.searchCodeSymbols,
 	db: {

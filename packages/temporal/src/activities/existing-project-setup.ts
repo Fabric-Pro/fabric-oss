@@ -426,7 +426,7 @@ export async function updateProjectRagSettings(
 	const {
 		projectId,
 		topK = 50,
-		rerankTopK = 20,
+		rerankTopK = 10,
 		enableReranking = true,
 	} = input;
 

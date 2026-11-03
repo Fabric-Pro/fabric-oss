@@ -154,6 +154,7 @@ function pmToolLabel(serverKey: string | null): string {
 		case "jira":
 			return "Jira";
 		case "github":
+		case "github-remote":
 			return "GitHub";
 		case "gitlab":
 		case "gitlab-official":
@@ -170,6 +171,9 @@ function pmToolSlug(serverKey: string | null): string {
 	if (serverKey === "gitlab-official") {
 		return "gitlab";
 	}
+	if (serverKey === "github-remote") {
+		return "github";
+	}
 	return serverKey ?? "unknown";
 }
 
@@ -181,7 +185,7 @@ export interface PmActiveProject {
 	id: string;
 	mcpConfigId: string | null;
 	mcpServerId: string;
-	sourceKind: "mcp" | "rest-gitlab";
+	sourceKind: "mcp" | "rest-gitlab" | "rest-github";
 	/** PM server key (e.g. "azure-devops", "fizzy", "gitlab-official") for labels. */
 	pmTool: string | null;
 	containerId: string;
@@ -233,7 +237,7 @@ export interface FetchAdoWorkItemStatesInput {
 	mcpServerId?: string;
 	/** PM server key (e.g. "azure-devops"); selects the structural batch branch. */
 	pmTool?: string | null;
-	sourceKind?: "mcp" | "rest-gitlab";
+	sourceKind?: "mcp" | "rest-gitlab" | "rest-github";
 	containerId: string;
 	containerName: string | null;
 	lastAdoStatePollAt: Date | null;
@@ -509,7 +513,7 @@ export async function getAdoActiveProjects(): Promise<PmActiveProject[]> {
 		// retries, rather than silently truncating the project set (review finding).
 		// The resolved source may carry a GitLab token; we keep only `.kind` and
 		// discard it.
-		let sourceKind: "mcp" | "rest-gitlab";
+		let sourceKind: "mcp" | "rest-gitlab" | "rest-github";
 		let pmTool: string | null;
 		try {
 			const source = await resolvePmSource({

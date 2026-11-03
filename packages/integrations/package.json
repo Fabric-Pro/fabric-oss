@@ -9,6 +9,10 @@
 			"types": "./src/index.ts",
 			"default": "./src/index.ts"
 		},
+		"./credential-manager": {
+			"types": "./src/credential-manager/index.ts",
+			"default": "./src/credential-manager/index.ts"
+		},
 		"./microsoft": {
 			"types": "./src/microsoft/index.ts",
 			"default": "./src/microsoft/index.ts"
@@ -24,6 +28,14 @@
 		"./github": {
 			"types": "./src/github/index.ts",
 			"default": "./src/github/index.ts"
+		},
+		"./github/projects-credential": {
+			"types": "./src/github/projects-credential.ts",
+			"default": "./src/github/projects-credential.ts"
+		},
+		"./github/projects-pm-adapter": {
+			"types": "./src/github/projects-pm-adapter.ts",
+			"default": "./src/github/projects-pm-adapter.ts"
 		},
 		"./gitlab": {
 			"types": "./src/gitlab/index.ts",

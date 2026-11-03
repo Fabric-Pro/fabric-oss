@@ -1635,6 +1635,30 @@ export async function chunkAndEmbedBatchActivity(
 
 	const { chunkCodeFile, isAstChunkable, applyContextualRetrieval } =
 		await import("@repo/rag/lib/chunking/code-chunker");
+	const { codeFileSkipReason } = await import(
+		"@repo/rag/lib/chunking/code-lines-chunker"
+	);
+	const { chunkRepositoryFile, repositoryFileKind } = await import(
+		"@repo/rag/lib/chunking/repository-file-chunker"
+	);
+	const { findProjectCodeIndexId, upsertProjectCodeFile } = await import(
+		"@repo/database"
+	);
+	// The index row the files' text is stored under; looked up once per batch.
+	// Storing the text is secondary to the vectors: a failure here leaves
+	// file reads to the provider, never the batch failed.
+	const projectCodeIndexId = await findProjectCodeIndexId({
+		projectId,
+		repositoryIntegrationId: repositoryIntegrationId ?? null,
+		branch: input.branch ?? "main",
+	}).catch((error: unknown) => {
+		logger.warn(
+			`[CodeIndexing] Could not find the index row for file text: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+		return null;
+	});
 	const { generateEmbeddings } = await import("@repo/rag/lib/embedding");
 	const { generateSparseVector } = await import(
 		"@repo/rag/lib/embedding/sparse"
@@ -1675,23 +1699,37 @@ export async function chunkAndEmbedBatchActivity(
 			);
 
 			const sourceCode = fs.readFileSync(file.absolutePath, "utf-8");
-			if (!sourceCode.trim()) {
+			// Generated, minified, binary or oversized content is left out;
+			// the file tree still lists the file.
+			const skipReason = codeFileSkipReason(
+				file.relativePath,
+				sourceCode,
+			);
+			if (skipReason) {
+				logger.debug(
+					`[CodeIndexing] Not indexing ${file.relativePath}: ${skipReason}`,
+				);
 				return;
 			}
 
 			const textsToEmbed: string[] = [];
 			const pointPayloads: Array<Record<string, unknown>> = [];
+			const language =
+				detectLanguageFromExt(
+					path.extname(file.relativePath).toLowerCase(),
+				) ?? "text";
 
-			if (isAstChunkable(file.relativePath)) {
-				const chunks = await chunkCodeFile(
-					file.relativePath,
-					sourceCode,
-				);
-				if (chunks.length === 0) {
-					return;
-				}
+			// Code goes to AST where the grammar exists. Docs are cut at their
+			// headings and config at its top-level keys; code without a grammar,
+			// or whose AST yields nothing, is cut on line boundaries.
+			const kind = repositoryFileKind(file.relativePath);
+			const astChunks =
+				kind === "code" && isAstChunkable(file.relativePath)
+					? await chunkCodeFile(file.relativePath, sourceCode)
+					: [];
 
-				for (const chunk of chunks) {
+			if (astChunks.length > 0) {
+				for (const chunk of astChunks) {
 					const textForEmbedding = applyContextualRetrieval(
 						chunk.contextualizedContent,
 						file.relativePath,
@@ -1720,43 +1758,62 @@ export async function chunkAndEmbedBatchActivity(
 						symbolName: chunk.codeMetadata.symbolName ?? null,
 						symbolType: chunk.codeMetadata.symbolType ?? null,
 						chunkIndex: chunk.index,
+						startLine: chunk.codeMetadata.startLine ?? null,
+						endLine: chunk.codeMetadata.endLine ?? null,
 						entities: chunk.codeMetadata.entities,
 						scopeChain: chunk.codeMetadata.scopeChain,
+						fileKind: kind,
 						createdAt: new Date().toISOString(),
 					});
 				}
 			} else {
-				const ext = path.extname(file.relativePath).toLowerCase();
-				const lang = detectLanguageFromExt(ext) ?? "text";
-				const textForEmbedding = applyContextualRetrieval(
-					sourceCode.slice(0, 8000),
+				// Every line of the file, in order: no part of it is left out
+				// of search (it was cut at 8,000 characters before).
+				for (const chunk of chunkRepositoryFile(
 					file.relativePath,
-					repoName,
-				);
-
-				textsToEmbed.push(textForEmbedding);
-				pointPayloads.push({
-					contextId: codeContextId(
-						"code",
+					sourceCode,
+				).chunks) {
+					// A doc section's heading path tells the embedding what the
+					// section is about when its own text does not say.
+					const sectionPath = chunk.headings?.length
+						? `Section: ${chunk.headings.join(" > ")}\n\n`
+						: "";
+					textsToEmbed.push(
+						applyContextualRetrieval(
+							`${sectionPath}${chunk.content}`,
+							file.relativePath,
+							repoName,
+						),
+					);
+					pointPayloads.push({
+						contextId: codeContextId(
+							"code",
+							projectId,
+							repositoryIntegrationId,
+							file.relativePath,
+							chunk.index,
+						),
 						projectId,
-						repositoryIntegrationId,
-						file.relativePath,
-						0,
-					),
-					projectId,
-					repositoryIntegrationId: repositoryIntegrationId ?? null,
-					userId,
-					organizationId: organizationId ?? null,
-					contextType: "CODE_FILE",
-					type: "CODE_FILE",
-					content: sourceCode.slice(0, 8000),
-					filePath: file.relativePath,
-					language: lang,
-					symbolName: null,
-					symbolType: null,
-					chunkIndex: 0,
-					createdAt: new Date().toISOString(),
-				});
+						repositoryIntegrationId:
+							repositoryIntegrationId ?? null,
+						userId,
+						organizationId: organizationId ?? null,
+						contextType: "CODE_FILE",
+						type: "CODE_FILE",
+						content: chunk.content,
+						filePath: file.relativePath,
+						language,
+						symbolName: null,
+						symbolType: null,
+						chunkIndex: chunk.index,
+						startLine: chunk.startLine,
+						endLine: chunk.endLine,
+						fileKind: kind,
+						headings: chunk.headings ?? null,
+						configKeys: chunk.keys ?? null,
+						createdAt: new Date().toISOString(),
+					});
+				}
 			}
 
 			if (textsToEmbed.length === 0) {
@@ -1794,6 +1851,29 @@ export async function chunkAndEmbedBatchActivity(
 			}
 
 			totalChunks += points.length;
+
+			// The file's text, for reading it from the index (RAG mode). After
+			// the vectors, so a stored file always has its chunks.
+			if (projectCodeIndexId) {
+				await upsertProjectCodeFile({
+					projectCodeIndexId,
+					projectId,
+					organizationId: organizationId ?? null,
+					file: {
+						path: file.relativePath,
+						language,
+						content: sourceCode,
+					},
+				}).catch((error: unknown) => {
+					logger.warn(
+						`[CodeIndexing] Storing the text of ${file.relativePath} failed (non-fatal): ${
+							error instanceof Error
+								? error.message
+								: String(error)
+						}`,
+					);
+				});
+			}
 		} catch (error) {
 			const errMsg =
 				error instanceof Error ? error.message : String(error);
@@ -1823,7 +1903,11 @@ export async function chunkAndEmbedBatchActivity(
 	// awaits — no locking needed.
 	const EMBED_CONCURRENCY = 5;
 	await runWithConcurrency(
-		files,
+		await leaveOutContextCoveredFiles(files, {
+			projectId,
+			repositoryIntegrationId,
+			organizationId,
+		}),
 		EMBED_CONCURRENCY,
 		processFile,
 		() => aborted,
@@ -1876,6 +1960,56 @@ export async function chunkAndEmbedBatchActivity(
 }
 
 /**
+ * The batch without the files Living Memory keeps in Context and indexes
+ * there (`listContextCoveredCodePaths`): a document is searched once, as
+ * context. Their earlier code vectors and stored text are removed, so a file
+ * that joined Living Memory leaves the code index on its next run. Decided
+ * per batch rather than in the walk, so the manifest slices every batch
+ * rebuilds stay the same while the sync changes. A failed lookup indexes the
+ * whole batch: a duplicate is better than a missing file.
+ */
+async function leaveOutContextCoveredFiles<T extends { relativePath: string }>(
+	files: T[],
+	scope: {
+		projectId: string;
+		repositoryIntegrationId?: string | null;
+		organizationId?: string | null;
+	},
+): Promise<T[]> {
+	if (!scope.repositoryIntegrationId || files.length === 0) {
+		return files;
+	}
+	try {
+		const { listContextCoveredCodePaths } = await import("@repo/database");
+		const covered = await listContextCoveredCodePaths({
+			projectId: scope.projectId,
+			repositoryIntegrationId: scope.repositoryIntegrationId,
+			paths: files.map((file) => file.relativePath),
+		});
+		if (covered.size === 0) {
+			return files;
+		}
+		await deleteChangedCodeVectorsActivity({
+			projectId: scope.projectId,
+			repositoryIntegrationId: scope.repositoryIntegrationId,
+			organizationId: scope.organizationId,
+			filePaths: [...covered],
+		});
+		logger.info(
+			`[CodeIndexing] Left ${covered.size} file(s) to Living Memory`,
+		);
+		return files.filter((file) => !covered.has(file.relativePath));
+	} catch (error) {
+		logger.warn(
+			`[CodeIndexing] Could not check Living Memory files (indexing all): ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+		return files;
+	}
+}
+
+/**
  * Delete the code-index vectors (chunks + summaries) for a set of changed or
  * removed files, so an incremental re-index doesn't leave stale chunks behind
  * (a shrunk file's extra chunks, or a deleted file's chunks). Propagates Qdrant
@@ -1900,6 +2034,22 @@ export async function deleteChangedCodeVectorsActivity(input: {
 		input.filePaths,
 		input.repositoryIntegrationId ?? null,
 	);
+	// Their stored text goes with them; a changed file is written again
+	// when it is re-embedded.
+	const { deleteProjectCodeFilesForPaths } = await import("@repo/database");
+	await deleteProjectCodeFilesForPaths(
+		{
+			projectId: input.projectId,
+			repositoryIntegrationId: input.repositoryIntegrationId ?? null,
+		},
+		input.filePaths,
+	).catch((error: unknown) => {
+		logger.warn(
+			`[CodeIndexing] Removing stored file text failed (non-fatal): ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	});
 	return { deletedPaths: input.filePaths.length };
 }
 
@@ -1920,13 +2070,17 @@ export async function generateFileSummariesActivity(
 		);
 	}
 	const {
-		files,
 		projectId,
 		repositoryIntegrationId,
 		userId,
 		organizationId,
 		repoName,
 	} = input;
+	const files = await leaveOutContextCoveredFiles(input.files, {
+		projectId,
+		repositoryIntegrationId,
+		organizationId,
+	});
 
 	// Before the work, not after: this is the longest phase of a large index,
 	// and marking it `running` on the way out left it reading `pending` for the
@@ -2149,17 +2303,18 @@ export async function getCodeEmbeddingModelActivity(input: {
 }
 
 /**
- * Check if Phase 2 code indexing is enabled via FEATURE_CODE_INDEXING env var.
- * Defaults to disabled. Set FEATURE_CODE_INDEXING=true to enable.
+ * Code indexing is always enabled in the worker. Whether a repository is
+ * indexed is decided where the run is started: the project's code search
+ * mode is RAG and the repository is included in AI code search (spec
+ * 2026-10-29 code-index-sync §6a.6).
+ *
+ * Kept, returning true, because the code-indexing workflow calls it first:
+ * removing the call would change that workflow's command sequence and break
+ * the replay of runs already in flight. Histories recorded while the old
+ * deployment flag was off replay their recorded `false` unchanged.
  */
 export async function checkCodeIndexingEnabledActivity(): Promise<boolean> {
-	const enabled = process.env.FEATURE_CODE_INDEXING === "true";
-	if (!enabled) {
-		logger.info(
-			"[CodeIndexing] Phase 2 code indexing is disabled (set FEATURE_CODE_INDEXING=true to enable)",
-		);
-	}
-	return enabled;
+	return true;
 }
 
 /**
@@ -2227,6 +2382,31 @@ export async function updateCodeIndexActivity(
 	logger.info(
 		`[CodeIndexing] Updated code index: ${input.filesIndexed} files, ${input.chunksCreated} chunks`,
 	);
+
+	// A full run rewrote the text of every file it still has; drop the rest.
+	if (!input.incremental && fileManifest.length > 0) {
+		try {
+			const { findProjectCodeIndexId, pruneProjectCodeFiles } =
+				await import("@repo/database");
+			const indexId = await findProjectCodeIndexId({
+				projectId: input.projectId,
+				repositoryIntegrationId: input.repositoryIntegrationId ?? null,
+				branch: input.branch ?? "main",
+			});
+			if (indexId) {
+				await pruneProjectCodeFiles(
+					indexId,
+					fileManifest.map((entry) => entry.path),
+				);
+			}
+		} catch (error) {
+			logger.warn(
+				`[CodeIndexing] Pruning stored file text failed (non-fatal): ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
+	}
 
 	// Job Hub: the workflow's terminal success step. Overwrite the running
 	// increments with the authoritative totals — continueAsNew means a batch may

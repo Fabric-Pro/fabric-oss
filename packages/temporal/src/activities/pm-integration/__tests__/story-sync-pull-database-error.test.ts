@@ -109,7 +109,7 @@ vi.mock("@repo/integrations/pm", () => ({
 	readLabelStatusMap: () => ({}),
 }));
 
-// `syncGitLabStoryViaRest` now stamps a baseline hash via
+// `syncStoryViaRest` now stamps a baseline hash via
 // `stampPmSyncSuccess` on every successful push/pull (and uses the matching
 // guard helpers on update). The real helpers call `db.userStory.update` →
 // Prisma client, which isn't available under this test's synchronous
@@ -122,7 +122,7 @@ vi.mock("../hierarchy-sync", () => ({
 }));
 
 import { executeMcpTool } from "../../orchestrator/execution/execute-mcp-tool";
-import { syncGitLabStoryViaRest } from "../gitlab-rest-story-sync";
+import { syncStoryViaRest } from "../gitlab-rest-story-sync";
 import { syncStoryToPM } from "../story-sync";
 
 const STORY_IDENTIFIER = "12";
@@ -365,7 +365,7 @@ describe("a database not-found during a pull keeps a legacy PM link", () => {
 			);
 			callPmToolWithFallback.mockRejectedValue(error);
 
-			const result = await syncGitLabStoryViaRest({
+			const result = await syncStoryViaRest({
 				...baseMcpInput,
 				mcpConfigId: null,
 				containerId: "100",

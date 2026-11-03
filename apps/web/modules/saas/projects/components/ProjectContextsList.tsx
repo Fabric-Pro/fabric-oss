@@ -62,6 +62,7 @@ import {
 	DownloadIcon,
 	ExternalLinkIcon,
 	EyeIcon,
+	EyeOffIcon,
 	FileIcon,
 	FileSpreadsheetIcon,
 	FileTextIcon,
@@ -105,6 +106,7 @@ import {
 	contextSyncLatestRunFingerprint,
 	contextSyncPollInterval,
 	contextSyncRunEnded,
+	offersSyncNow,
 	showsLivingMemorySection,
 	tallyContextDeleteOutcomes,
 } from "../lib/context-repository-sync";
@@ -130,6 +132,10 @@ import {
 } from "./LinkContextManagePanel";
 import { LivingMemorySection } from "./LivingMemorySection";
 import { ProjectSectionHero } from "./ProjectSectionHero";
+import {
+	placeLeftOutPaths,
+	useLivingMemoryExclusion,
+} from "./repository-sync/useLivingMemoryExclusion";
 import { getPmToolBrandIcon } from "./stories/pm-sync/pm-tool-brand-icon";
 
 /** Context types that can be read as a customer scope document (plan §Slice 1). */
@@ -1724,6 +1730,62 @@ export function ProjectContextsList({ projectId }: Props) {
 	};
 	const repositorySyncReadFailed =
 		repositorySyncQuery.isError && !repositorySyncState;
+	// A synced file is never deleted here (the repository is its author):
+	// it is left out of the sync instead, and can be restored from the list
+	// of left-out paths.
+	const livingMemoryExclusion = useLivingMemoryExclusion({
+		projectId,
+		organizationId,
+		state: repositorySyncState,
+		onChanged: onRepositorySyncChanged,
+	});
+	const canLeaveOutSyncedFiles = repositorySyncState
+		? offersSyncNow(repositorySyncState)
+		: false;
+	// What was left out shows where it was, beside the files still synced.
+	const leftOut = placeLeftOutPaths(
+		livingMemoryFolders.map((folder) => folder.path),
+		repositorySyncState?.configured?.excludedPaths ?? [],
+	);
+	const renderLeftOutRow = (path: string) => {
+		const name = path.slice(path.lastIndexOf("/") + 1);
+		return (
+			<div
+				key={`left-out-${path}`}
+				className="flex items-center gap-3 rounded-xl border border-dashed p-3 text-muted-foreground"
+				data-testid="context-left-out-row"
+				data-path={path}
+			>
+				<EyeOffIcon className="size-4 shrink-0" aria-hidden="true" />
+				<div className="min-w-0 flex-1">
+					<p className="truncate text-sm" title={name}>
+						{name}
+					</p>
+					<p className="truncate font-mono text-xs" title={path}>
+						{path}
+					</p>
+				</div>
+				<Badge variant="outline" className="shrink-0 text-xs">
+					{tLivingMemory("repositorySync.exclusions.leftOutBadge")}
+				</Badge>
+				{canLeaveOutSyncedFiles ? (
+					<Button
+						size="sm"
+						variant="outline"
+						className="shrink-0"
+						disabled={livingMemoryExclusion.pending || syncRunning}
+						aria-label={tLivingMemory(
+							"repositorySync.exclusions.restoreAria",
+							{ path },
+						)}
+						onClick={() => void livingMemoryExclusion.restore(path)}
+					>
+						{tLivingMemory("repositorySync.exclusions.restore")}
+					</Button>
+				) : null}
+			</div>
+		);
+	};
 	const livingMemoryProps = {
 		projectId,
 		organizationId,
@@ -2335,6 +2397,42 @@ export function ProjectContextsList({ projectId }: Props) {
 												{deleteMutation.isPending
 													? "Deleting..."
 													: "Delete"}
+											</DropdownMenuItem>
+										</DestructiveTooltip>
+									) : canLeaveOutSyncedFiles &&
+										context.sourcePath ? (
+										<DestructiveTooltip
+											copy={{
+												label: tLivingMemory(
+													"repositorySync.exclusions.leaveOutLabel",
+												),
+												warning: tLivingMemory(
+													"repositorySync.exclusions.leaveOutWarning",
+												),
+											}}
+										>
+											<DropdownMenuItem
+												className="text-destructive focus:text-destructive"
+												data-testid={`context-leave-out-${context.id}`}
+												onClick={(e) => {
+													e.stopPropagation();
+													const path =
+														context.sourcePath;
+													if (path) {
+														void livingMemoryExclusion.leaveOut(
+															path,
+														);
+													}
+												}}
+												disabled={
+													livingMemoryExclusion.pending ||
+													syncRunning
+												}
+											>
+												<TrashIcon className="mr-2 size-4" />
+												{tLivingMemory(
+													"repositorySync.exclusions.leaveOut",
+												)}
 											</DropdownMenuItem>
 										</DestructiveTooltip>
 									) : null}
@@ -3735,6 +3833,25 @@ export function ProjectContextsList({ projectId }: Props) {
 														},
 													)}
 												</Badge>
+												{leftOut.byFolder.has(
+													folder.path,
+												) ? (
+													<Badge
+														variant="outline"
+														className="shrink-0 border-dashed text-muted-foreground text-xs"
+													>
+														{tLivingMemory(
+															"repositorySync.exclusions.listTitle",
+															{
+																count:
+																	leftOut.byFolder.get(
+																		folder.path,
+																	)?.length ??
+																	0,
+															},
+														)}
+													</Badge>
+												) : null}
 												{renderGroupStuckBadge(
 													folderStuck,
 												)}
@@ -3764,11 +3881,38 @@ export function ProjectContextsList({ projectId }: Props) {
 															},
 														),
 												)}
+												{(
+													leftOut.byFolder.get(
+														folder.path,
+													) ?? []
+												).map(renderLeftOutRow)}
 											</div>
 										)}
 									</div>
 								);
 							})}
+							{leftOut.elsewhere.length > 0 ? (
+								<div
+									className="overflow-hidden rounded-xl border border-dashed bg-card/50"
+									data-testid="context-left-out-group"
+								>
+									<h4 className="flex items-center gap-3 px-4 py-3 font-medium text-muted-foreground text-sm">
+										<EyeOffIcon
+											className="size-4 shrink-0"
+											aria-hidden="true"
+										/>
+										{tLivingMemory(
+											"repositorySync.exclusions.listTitle",
+											{ count: leftOut.elsewhere.length },
+										)}
+									</h4>
+									<div className="grid grid-cols-[minmax(0,1fr)] gap-4 border-t p-4 sm:grid-cols-2">
+										{leftOut.elsewhere.map(
+											renderLeftOutRow,
+										)}
+									</div>
+								</div>
+							) : null}
 						</LivingMemorySection>
 					)}
 

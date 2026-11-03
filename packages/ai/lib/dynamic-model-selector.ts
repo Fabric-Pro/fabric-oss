@@ -691,6 +691,13 @@ export async function resolveModelWithProvider(
 		);
 	}
 
+	// Local development only: a local server serves every embedding
+	// (local-models.ts). Null outside NODE_ENV=development.
+	const localEmbeddings = isEmbeddingTask ? getLocalEmbeddingsConfig() : null;
+	if (localEmbeddings) {
+		return toLocalResolvedConfig(localEmbeddings);
+	}
+
 	// Step 1: Get the appropriate provider configuration
 	// For EMBEDDING tasks, use the dedicated embedding provider (if configured)
 	// This ensures embeddings always use the same model, preventing vector incompatibility
@@ -1117,6 +1124,16 @@ import {
 	wrapModelWithDispatchGuard,
 } from "./dispatch-guard-middleware";
 import { aiApiFallbackApproved, currentAiJobType } from "./job-context";
+import {
+	getLocalDecisionModel,
+	getLocalEmbeddingModel,
+	getLocalEmbeddingsConfig,
+	getLocalModelConfig,
+	LOCAL_MODEL_SELECTION_SOURCE,
+	type LocalModelConfig,
+	toLocalEmbeddingsRAGProviderConfig,
+	toLocalResolvedConfig,
+} from "./local-models";
 import { createTextToolCallRecoveryMiddleware } from "./text-tool-call-middleware";
 import {
 	wrapDecisionModelWithTurnBudget,
@@ -1436,6 +1453,12 @@ export async function getAIDecisionModelWithMetadata(
 			"Decision evaluation requires an organization context and a configured decision provider.",
 		);
 	}
+	// Local development only: a local chat model decides (local-models.ts).
+	// Null outside NODE_ENV=development.
+	const localDecisions = getLocalModelConfig("DECISION");
+	if (localDecisions) {
+		return localDecisionModelResult(context, localDecisions);
+	}
 	if (await chatGptPlanCanServeDecision(context)) {
 		throw new DecisionModelDeferredToChatGptPlanError();
 	}
@@ -1627,6 +1650,62 @@ export async function getAIDecisionModelWithMetadata(
 			}
 		},
 	};
+}
+
+/**
+ * The local-development decision model, wrapped like the gateway one minus
+ * what only a gateway has: no cross-vendor fallbacks, no per-model usage
+ * limits (the model is free), no billing headers.
+ */
+function localDecisionModelResult(
+	context: AIOperationContext,
+	config: LocalModelConfig,
+): AIDecisionModelResult {
+	const organizationId = context.organizationId;
+	const metadata: AIModelMetadata = {
+		modelString: config.model,
+		provider: "CUSTOM" as DbAIProvider,
+		configId: null,
+		configSource: null,
+		selectionSource: LOCAL_MODEL_SELECTION_SOURCE,
+		canonicalName: config.model,
+		billingMode: "external_provider",
+		billingCustomerId: null,
+	};
+	const model = wrapDecisionModelWithDispatchGuard(
+		wrapDecisionModelWithTurnBudget(
+			wrapEvaluationModelWithUsageLogging(
+				wrapDecisionModelWithTelemetry(getLocalDecisionModel(config), {
+					provider: metadata.provider,
+					requestModelId: metadata.modelString,
+					requestModelLabel: metadata.canonicalName,
+					organizationId,
+					projectId: context.projectId,
+					featureKey: context.featureKey,
+					jobType: context.jobType,
+				}),
+				{
+					userId: context.userId,
+					organizationId,
+					projectId: context.projectId,
+					conversationId: context.conversationId,
+					frameId: context.frameId,
+					workflowExecutionId: context.workflowExecutionId,
+					agentId: context.agentId,
+					provider: metadata.provider,
+					providerModelId: metadata.modelString,
+					modelCanonicalName: metadata.canonicalName,
+					taskType: "DECISION" as DbAiTaskType,
+					billingCategory: getAiBillingCategory(metadata),
+					billingCustomerId: metadata.billingCustomerId,
+					featureKey: context.featureKey,
+					promptVersionId: context.promptVersionId,
+					jobType: context.jobType,
+				},
+			),
+		),
+	);
+	return { model, metadata, trackUsage: () => {} };
 }
 
 /** Resolve only the evaluation model when call metadata is not needed. */
@@ -2787,7 +2866,12 @@ async function resolveUsableEmbeddingConfig(
 	}
 
 	// Use catalog identity, not the provider ID or an arbitrary Azure deployment.
-	if (!embeddingModelFitsVectorStore(config.canonicalName)) {
+	// A local model is not in the catalog but is always asked for the store's
+	// width (local-models.ts), so it fits by construction.
+	if (
+		config.selectionSource !== LOCAL_MODEL_SELECTION_SOURCE &&
+		!embeddingModelFitsVectorStore(config.canonicalName)
+	) {
 		throw new UnsupportedEmbeddingModelError(config.canonicalName);
 	}
 
@@ -2836,20 +2920,23 @@ export async function getAIEmbeddingModelWithMetadata(
 		taskType: "EMBEDDING",
 	});
 
-	// Resolve the bearer token (decrypted PAT, or a Databricks service-principal
-	// access token) and create the model.
-	const decryptedApiKey = await resolveProviderApiKey(config);
 	const billingState = getTenantAiGatewayBillingState({
 		provider: config.provider,
 		configSource: config.configSource,
 	});
 
-	const model = getEmbeddingModel(config.modelString, {
-		apiKey: decryptedApiKey,
-		provider: config.provider,
-		baseUrl: config.baseUrl,
-		headers: billingState.headers ?? undefined,
-	});
+	// Resolve the bearer token (decrypted PAT, or a Databricks service-principal
+	// access token) and create the model. A local-development model has a
+	// plaintext stand-in key and is built from its own config.
+	const localEmbeddings = getLocalEmbeddingsConfig();
+	const model = localEmbeddings
+		? getLocalEmbeddingModel(localEmbeddings)
+		: getEmbeddingModel(config.modelString, {
+				apiKey: await resolveProviderApiKey(config),
+				provider: config.provider,
+				baseUrl: config.baseUrl,
+				headers: billingState.headers ?? undefined,
+			});
 
 	// Build metadata
 	const metadata: AIModelMetadata = {
@@ -3106,6 +3193,10 @@ export async function getSystemRAGProviderConfig(
 export async function getEmbeddingRAGProviderConfig(
 	context: AIOperationContext,
 ): Promise<RAGProviderConfig> {
+	const localEmbeddings = getLocalEmbeddingsConfig();
+	if (localEmbeddings) {
+		return toLocalEmbeddingsRAGProviderConfig(localEmbeddings);
+	}
 	const documentsProvider = await getEmbeddingProviderConfig({
 		userId: context.userId,
 		organizationId: context.organizationId || undefined,
@@ -3128,6 +3219,10 @@ export async function getEmbeddingRAGProviderConfig(
 export async function getSystemEmbeddingRAGProviderConfig(
 	context: AIOperationContext,
 ): Promise<RAGProviderConfig> {
+	const localEmbeddings = getLocalEmbeddingsConfig();
+	if (localEmbeddings) {
+		return toLocalEmbeddingsRAGProviderConfig(localEmbeddings);
+	}
 	const documentsProvider = await getEmbeddingProviderConfig({
 		userId: context.userId,
 		organizationId: context.organizationId || undefined,

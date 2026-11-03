@@ -40,6 +40,9 @@ vi.mock("@saas/agents/components/FabricChat/shared/ChatInput", () => ({
 			</button>
 		) : null,
 }));
+vi.mock("@saas/agents/components/StoppedIndicator", () => ({
+	StoppedIndicator: () => <output>Stopped</output>,
+}));
 
 import type { useResearchRunStream } from "@saas/agents/hooks/useResearchRunStream";
 import { INITIAL_WORKFLOW_TEMPLATE_STATE } from "@saas/agents/lib/workflow-template-state";
@@ -132,6 +135,52 @@ describe("DeepResearchInlineChat", () => {
 		renderChat(researchStream({ transport: "legacy" }));
 
 		expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+	});
+
+	it("marks a stopped run as Stopped instead of leaving the question unanswered", () => {
+		renderChat(
+			researchStream({
+				state: {
+					...INITIAL_WORKFLOW_TEMPLATE_STATE,
+					status: "cancelled",
+					phase: "cancelled",
+				},
+				isLoading: false,
+				isRunning: false,
+				isComplete: true,
+			}),
+		);
+
+		expect(screen.getByText("Stopped")).toBeTruthy();
+		expect(screen.getByText("New Research")).toBeTruthy();
+	});
+
+	it("a run cancelled elsewhere shows its error, not the Stopped mark", () => {
+		renderChat(
+			researchStream({
+				state: {
+					...INITIAL_WORKFLOW_TEMPLATE_STATE,
+					status: "cancelled",
+					phase: "cancelled",
+					error: "Workflow was cancelled",
+				},
+				isLoading: false,
+				isRunning: false,
+				isComplete: true,
+			}),
+		);
+
+		expect(screen.getByText("Workflow was cancelled")).toBeTruthy();
+		expect(screen.queryByText("Stopped")).toBeNull();
+	});
+
+	it("a running or finished run shows no Stopped mark", () => {
+		const running = renderChat(researchStream());
+		expect(screen.queryByText("Stopped")).toBeNull();
+		running.unmount();
+
+		renderChat(finishedStream(false));
+		expect(screen.queryByText("Stopped")).toBeNull();
 	});
 
 	it("shows the stream's question in the user bubble", () => {

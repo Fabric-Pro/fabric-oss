@@ -72,7 +72,9 @@ export const summarizeContextProcedure = tenantProtectedProcedure
 		// Resolve the effective source selection. Default is all-on (with code-repo
 		// following its flag). A provided selection is flag-gated (code-repo forced
 		// off when its feature is off) and must leave at least one source enabled.
-		const codeRepoEnabled = isCodeRepoSummarySourceEnabled();
+		const codeRepoEnabled = await isCodeRepoSummarySourceEnabled(
+			input.projectId,
+		);
 		const sources: SourceSelection = {
 			context: input.sources?.context ?? true,
 			decisions: input.sources?.decisions ?? true,

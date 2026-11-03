@@ -4,6 +4,8 @@ import {
 	type CliDiscoveryDocument,
 	tarballUrlOnOrigin,
 } from "@saas/cli-distribution/lib/cli-discovery";
+import { Checkbox } from "@ui/components/checkbox";
+import { useState } from "react";
 import type { LocalSetupRoute } from "../../lib/instructions-repository-sync";
 import { CommandBlock } from "./CommandBlock";
 import {
@@ -20,6 +22,7 @@ import {
 	pluginNameForProject,
 } from "./lib/agent-sign-in";
 import type { CheckoutSetup } from "./lib/checkout-setup";
+import { usePluginName } from "./lib/use-plugin-name";
 import { REPOSITORY_STEP_TITLE, RepositoryChoice } from "./RepositoryChoice";
 import { InlineCode, type SetupStep, StepList } from "./SetupSteps";
 
@@ -75,13 +78,15 @@ function setupLineFor(args: {
 	route: LocalSetupRoute;
 	projectId: string;
 	choice: CloneChoice;
+	repos: boolean;
 }): string {
-	const { document, origin, tool, route, projectId, choice } = args;
+	const { document, origin, tool, route, projectId, choice, repos } = args;
 	const line = {
 		tarballUrl: tarballUrlOnOrigin(document, origin),
 		baseUrl: document.origin === origin ? null : origin,
 		tool,
 		projectId,
+		repos,
 	};
 	if (route.kind === "repository" && choice === "clone") {
 		return buildCloneAndInitLine(route, line);
@@ -147,13 +152,15 @@ function CodexTrustNote() {
 function PluginStep({
 	tool,
 	projectId,
+	projectName,
 	announce,
 }: {
 	tool: LocalSetupTool;
 	projectId: string;
+	projectName?: string | null;
 	announce: (message: string) => void;
 }) {
-	const name = pluginNameForProject(projectId);
+	const name = pluginNameForProject(projectId, projectName);
 	if (tool === "claude-code") {
 		return (
 			<>
@@ -165,15 +172,16 @@ function PluginStep({
 				</p>
 				<CommandBlock
 					announce={announce}
-					command={claudePluginInstallCommand(projectId)}
+					command={claudePluginInstallCommand(projectId, projectName)}
 					label="Copy the plugin install command"
 					testId="agent-sign-in-plugin-approval"
 				/>
 				<p className="text-muted-foreground text-sm">
-					To let the agent use Fabric's tools, run{" "}
+					The setup also approves Fabric's MCP tools for Claude Code.
+					If they still show as needing authentication, run{" "}
 					<InlineCode>/mcp</InlineCode>, pick{" "}
 					<InlineCode>
-						{claudePluginMcpServerLabel(projectId)}
+						{claudePluginMcpServerLabel(projectId, projectName)}
 					</InlineCode>{" "}
 					and choose Authenticate.
 				</p>
@@ -188,7 +196,7 @@ function PluginStep({
 			</p>
 			<CommandBlock
 				announce={announce}
-				command={codexPluginAddCommand(projectId)}
+				command={codexPluginAddCommand(projectId, projectName)}
 				label="Copy the Codex plugin command"
 				testId="agent-sign-in-codex-plugin"
 			/>
@@ -206,13 +214,26 @@ function checkoutSteps(args: {
 	tool: LocalSetupTool;
 	route: LocalSetupRoute;
 	projectId: string;
+	projectName?: string | null;
 	line: string;
 	choice: CloneChoice;
 	onChoiceChange: (choice: CloneChoice) => void;
+	repos: boolean;
+	onReposChange: (repos: boolean) => void;
 	announce: (message: string) => void;
 }): SetupStep[] {
-	const { tool, route, projectId, line, choice, onChoiceChange, announce } =
-		args;
+	const {
+		tool,
+		route,
+		projectId,
+		projectName,
+		line,
+		choice,
+		onChoiceChange,
+		repos,
+		onReposChange,
+		announce,
+	} = args;
 	const viaPlugin = choice === "plugin" || route.kind === "upload";
 	return [
 		...(route.kind === "repository"
@@ -240,6 +261,33 @@ function checkoutSteps(args: {
 							{UPLOAD_FOLDER_HINT}
 						</p>
 					) : null}
+					<div className="flex items-start gap-2 text-sm">
+						<Checkbox
+							id="agent-sign-in-code-repos"
+							checked={repos}
+							onCheckedChange={(value) =>
+								onReposChange(value === true)
+							}
+							aria-describedby="agent-sign-in-code-repos-hint"
+						/>
+						<div className="space-y-0.5">
+							<label htmlFor="agent-sign-in-code-repos">
+								Also clone the project's code into{" "}
+								<InlineCode>repos/</InlineCode>
+							</label>
+							<p
+								id="agent-sign-in-code-repos-hint"
+								className="text-muted-foreground text-xs"
+							>
+								The agent works from this folder with each code
+								repository in{" "}
+								<InlineCode>repos/&lt;name&gt;</InlineCode>, and
+								the instructions stay out of them. Run{" "}
+								<InlineCode>fabric repos sync</InlineCode> any
+								time to clone repositories added later.
+							</p>
+						</div>
+					</div>
 					<CommandBlock
 						announce={announce}
 						command={line}
@@ -272,6 +320,7 @@ function checkoutSteps(args: {
 							<PluginStep
 								announce={announce}
 								projectId={projectId}
+								projectName={projectName}
 								tool={tool}
 							/>
 						),
@@ -342,6 +391,7 @@ export function TerminalToolSteps({
 	tool,
 	origin,
 	projectId,
+	projectName,
 	checkout,
 	cloneChoice,
 	onCloneChoiceChange,
@@ -350,11 +400,14 @@ export function TerminalToolSteps({
 	tool: LocalSetupTool;
 	origin: string;
 	projectId: string;
+	projectName?: string | null;
 	checkout?: CheckoutSetup;
 	cloneChoice: CloneChoice;
 	onCloneChoiceChange: (choice: CloneChoice) => void;
 	announce: (message: string) => void;
 }) {
+	const [repos, setRepos] = useState(true);
+	const pluginName = usePluginName(projectId, projectName);
 	if (!checkout) {
 		return (
 			<McpTerminalSteps
@@ -405,6 +458,7 @@ export function TerminalToolSteps({
 				tool,
 				route: localSetup,
 				projectId,
+				projectName: pluginName,
 				line: setupLineFor({
 					document: discovery.document,
 					origin,
@@ -412,9 +466,12 @@ export function TerminalToolSteps({
 					route: localSetup,
 					projectId,
 					choice: cloneChoice,
+					repos,
 				}),
 				choice: cloneChoice,
 				onChoiceChange: onCloneChoiceChange,
+				repos,
+				onReposChange: setRepos,
 				announce,
 			})}
 		/>

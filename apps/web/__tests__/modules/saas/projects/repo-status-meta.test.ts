@@ -50,4 +50,11 @@ describe("getRepoStatusMeta", () => {
 		expect(m.hint).toMatch(/personal access token/i);
 		expect(m.hint).not.toMatch(/re-authenticate/i);
 	});
+
+	it("maps NOT_CONNECTED (a saved link with no connection) to a warning that names Add Repository, never green", () => {
+		const m = getRepoStatusMeta("NOT_CONNECTED");
+		expect(m.label).toBe("Not connected");
+		expect(m.bgColor).not.toContain("green");
+		expect(m.hint).toMatch(/Add Repository/);
+	});
 });

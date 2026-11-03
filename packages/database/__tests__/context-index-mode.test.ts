@@ -217,7 +217,12 @@ describe("reconcileContextIndexing", () => {
 
 		const result = await reconcileContextIndexing(tx as never, input);
 
-		expect(result).toEqual({ excluded: 0, included: 0, cleanups: [] });
+		expect(result).toEqual({
+			excluded: 0,
+			included: 0,
+			cleanups: [],
+			changedPaths: [],
+		});
 		expect(clearMarksCalls()).toEqual([]);
 		expect(m.cleanup.create).not.toHaveBeenCalled();
 	});
@@ -309,13 +314,28 @@ describe("reconcileContextIndexing", () => {
 
 	it("reports rows that stopped being store-only as to be indexed", async () => {
 		m.$queryRaw.mockResolvedValue([
-			{ id: "a", indexingExcluded: false, hadVectors: false },
-			{ id: "b", indexingExcluded: false, hadVectors: false },
+			{
+				id: "a",
+				sourcePath: "docs/a.md",
+				indexingExcluded: false,
+				hadVectors: false,
+			},
+			{
+				id: "b",
+				sourcePath: null,
+				indexingExcluded: false,
+				hadVectors: false,
+			},
 		]);
 
 		const result = await reconcileContextIndexing(tx as never, input);
 
-		expect(result).toEqual({ excluded: 0, included: 2, cleanups: [] });
+		expect(result).toEqual({
+			excluded: 0,
+			included: 2,
+			cleanups: [],
+			changedPaths: ["docs/a.md"],
+		});
 		expect(clearMarksCalls()).toEqual([]);
 	});
 });

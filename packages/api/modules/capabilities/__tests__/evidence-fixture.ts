@@ -28,7 +28,6 @@ export function healthyEvidence(): CapabilityEvidence {
 		codebase: {
 			connected: true,
 			indexingEnabled: true,
-			indexingAvailable: true,
 			usable: true,
 			healthy: true,
 			integrationStatus: "ACTIVE",

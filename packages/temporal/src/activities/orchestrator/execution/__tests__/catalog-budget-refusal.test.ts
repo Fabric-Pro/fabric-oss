@@ -45,6 +45,8 @@ vi.mock("@repo/database", async (importOriginal) => ({
 		organizationId: "org-example-1",
 	})),
 	getProjectCodeIndexes: vi.fn(async () => [{ status: "READY" }]),
+	// The project searches code through its index.
+	getProjectRagSettings: vi.fn(async () => ({ codeSearchMode: "RAG" })),
 	getProjectReposForCodeSearch: vi.fn(async () => [
 		{
 			provider: "GITHUB",

@@ -161,7 +161,8 @@ const githubProvider: OAuthProviderConfig = {
 	name: "GitHub",
 	authorizationUrl: "https://github.com/login/oauth/authorize",
 	tokenUrl: "https://github.com/login/oauth/access_token",
-	scopes: ["repo", "read:user"],
+	// `project`: GitHub Projects (v2) boards as the PM tool.
+	scopes: ["repo", "read:user", "project"],
 	clientIdEnvVar: "FABRIC_GITHUB_CLIENT_ID",
 	clientSecretEnvVar: "FABRIC_GITHUB_CLIENT_SECRET",
 	supportsRefreshToken: true,

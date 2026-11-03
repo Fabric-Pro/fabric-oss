@@ -1,5 +1,5 @@
 /**
- * Unit tests for `syncGitLabStoryViaRest` — the REST-fallback per-story
+ * Unit tests for `syncStoryViaRest` — the REST-fallback per-story
  * push/pull/self-heal routine that `syncStoryToPM` delegates to when no
  * `mcpConfigId` is pinned (GitLab REST fallback projects).
  *
@@ -141,7 +141,7 @@ import {
 	toResolvedTicketStatus,
 } from "@repo/integrations/pm";
 import { logger } from "@repo/logs";
-import { syncGitLabStoryViaRest } from "../pm-integration/gitlab-rest-story-sync";
+import { syncStoryViaRest } from "../pm-integration/gitlab-rest-story-sync";
 // The real status-sync leaf, for the create → poll trace. With a
 // `fabric-ahead` outcome it issues no database call at all.
 import { reconcileStoryMappedStatus } from "../pm-integration/reconcile-story-mapped-status";
@@ -228,7 +228,7 @@ beforeEach(() => {
 	});
 });
 
-describe("syncGitLabStoryViaRest", () => {
+describe("syncStoryViaRest", () => {
 	it("a created issue whose link cannot be saved is reported as a create orphan, stamped FAILED by id", async () => {
 		// Thrown, the error would be retried by Temporal, each retry creating
 		// another issue.
@@ -247,7 +247,7 @@ describe("syncGitLabStoryViaRest", () => {
 			),
 		);
 
-		const result = await syncGitLabStoryViaRest(
+		const result = await syncStoryViaRest(
 			baseInput({ pmSyncAttemptId: "attempt-A" }),
 		);
 
@@ -288,7 +288,7 @@ describe("syncGitLabStoryViaRest", () => {
 			new Error("audit context read failed"),
 		);
 
-		const result = await syncGitLabStoryViaRest(
+		const result = await syncStoryViaRest(
 			baseInput({ pmSyncAttemptId: "attempt-A" }),
 		);
 
@@ -321,7 +321,7 @@ describe("syncGitLabStoryViaRest", () => {
 		updateStory.mockRejectedValueOnce(new Error("database unavailable"));
 
 		try {
-			const result = await syncGitLabStoryViaRest(
+			const result = await syncStoryViaRest(
 				baseInput({ pmSyncAttemptId: "attempt-A" }),
 			);
 
@@ -347,7 +347,7 @@ describe("syncGitLabStoryViaRest", () => {
 			title: "My Feature",
 		});
 
-		const result = await syncGitLabStoryViaRest(baseInput());
+		const result = await syncStoryViaRest(baseInput());
 
 		expect(callPmToolWithFallback).toHaveBeenCalledTimes(1);
 		const call = callPmToolWithFallback.mock.calls[0]![0];
@@ -394,7 +394,7 @@ describe("syncGitLabStoryViaRest", () => {
 		isProjectReadOnly.mockResolvedValueOnce(true);
 		getStoryById.mockResolvedValue(baseStory());
 
-		const result = await syncGitLabStoryViaRest(baseInput());
+		const result = await syncStoryViaRest(baseInput());
 
 		expect(result.success).toBe(false);
 		expect(result.error).toMatch(/read-only/i);
@@ -421,9 +421,7 @@ describe("syncGitLabStoryViaRest", () => {
 			labels: [],
 		});
 
-		const result = await syncGitLabStoryViaRest(
-			baseInput({ direction: "pull" }),
-		);
+		const result = await syncStoryViaRest(baseInput({ direction: "pull" }));
 
 		// The gate lives in the push branch only, so a pull never even checks
 		// read-only — GitLab is read from regardless of the mode.
@@ -437,7 +435,7 @@ describe("syncGitLabStoryViaRest", () => {
 			baseStory({ externalMcpServerId: "a-different-server" }),
 		);
 
-		const result = await syncGitLabStoryViaRest(baseInput());
+		const result = await syncStoryViaRest(baseInput());
 
 		expect(result.success).toBe(false);
 		expect(result.errorCode).toBe("PM_TOOL_MISMATCH");
@@ -473,7 +471,7 @@ describe("syncGitLabStoryViaRest", () => {
 				"../pm-integration/pm-create-claim"
 			);
 
-			const result = await syncGitLabStoryViaRest(
+			const result = await syncStoryViaRest(
 				baseInput({ overrideMismatch: true }),
 			);
 
@@ -533,7 +531,7 @@ describe("syncGitLabStoryViaRest", () => {
 				"../pm-integration/pm-create-claim"
 			);
 
-			const result = await syncGitLabStoryViaRest(
+			const result = await syncStoryViaRest(
 				baseInput({ overrideMismatch: true }),
 			);
 
@@ -558,7 +556,7 @@ describe("syncGitLabStoryViaRest", () => {
 			title: "My Feature",
 		});
 
-		const result = await syncGitLabStoryViaRest(baseInput());
+		const result = await syncStoryViaRest(baseInput());
 
 		expect(callPmToolWithFallback).toHaveBeenCalledTimes(1);
 		const call = callPmToolWithFallback.mock.calls[0]![0];
@@ -578,7 +576,7 @@ describe("syncGitLabStoryViaRest", () => {
 
 		it("a REST legacy pull refusal records pull direction and wording", async () => {
 			getStoryById.mockResolvedValue(legacyAdoRow());
-			const result = await syncGitLabStoryViaRest(
+			const result = await syncStoryViaRest(
 				baseInput({ direction: "pull" }),
 			);
 			expect(result.error).toContain("did not pull");
@@ -602,7 +600,7 @@ describe("syncGitLabStoryViaRest", () => {
 					title: "Someone else's issue",
 				});
 
-				const result = await syncGitLabStoryViaRest(
+				const result = await syncStoryViaRest(
 					baseInput({ direction, pmSyncAttemptId: "attempt-A" }),
 				);
 
@@ -666,7 +664,7 @@ describe("syncGitLabStoryViaRest", () => {
 		it("a caller that records the failure itself (syncWorkItemToPM) gets the result and no second record", async () => {
 			getStoryById.mockResolvedValue(legacyAdoRow());
 
-			const result = await syncGitLabStoryViaRest(
+			const result = await syncStoryViaRest(
 				baseInput({
 					pmSyncAttemptId: "attempt-A",
 					failureRecordedByCaller: true,
@@ -702,7 +700,7 @@ describe("syncGitLabStoryViaRest", () => {
 				title: "Someone else's issue",
 			});
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result).toMatchObject({
 				success: false,
@@ -728,7 +726,7 @@ describe("syncGitLabStoryViaRest", () => {
 				}),
 			);
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result.errorCode).toBe("PM_TOOL_MISMATCH_LEGACY");
 			expect(callPmToolWithFallback).not.toHaveBeenCalled();
@@ -743,7 +741,7 @@ describe("syncGitLabStoryViaRest", () => {
 				}),
 			);
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result.errorCode).toBe("PM_TOOL_MISMATCH_LEGACY");
 			expect(callPmToolWithFallback).not.toHaveBeenCalled();
@@ -763,7 +761,7 @@ describe("syncGitLabStoryViaRest", () => {
 				}),
 			);
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result.errorCode).toBe("PM_TOOL_MISMATCH_LEGACY");
 			expect(callPmToolWithFallback).not.toHaveBeenCalled();
@@ -789,7 +787,7 @@ describe("syncGitLabStoryViaRest", () => {
 				title: "My Feature",
 			});
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result.success).toBe(true);
 			expect(callPmToolWithFallback).toHaveBeenCalledWith(
@@ -827,7 +825,7 @@ describe("syncGitLabStoryViaRest", () => {
 			title: "My Feature",
 		});
 
-		const result = await syncGitLabStoryViaRest(
+		const result = await syncStoryViaRest(
 			baseInput({
 				additionalContext: {
 					labelStatusMap: {
@@ -866,9 +864,7 @@ describe("syncGitLabStoryViaRest", () => {
 		);
 		callPmToolWithFallback.mockRejectedValue(new Error("404 Not Found"));
 
-		const result = await syncGitLabStoryViaRest(
-			baseInput({ direction: "pull" }),
-		);
+		const result = await syncStoryViaRest(baseInput({ direction: "pull" }));
 
 		// The stamped link must NOT be cleared.
 		expect(updateStory).not.toHaveBeenCalledWith(
@@ -901,9 +897,7 @@ describe("syncGitLabStoryViaRest", () => {
 		);
 		callPmToolWithFallback.mockRejectedValue(new Error("404 Not Found"));
 
-		const result = await syncGitLabStoryViaRest(
-			baseInput({ direction: "pull" }),
-		);
+		const result = await syncStoryViaRest(baseInput({ direction: "pull" }));
 
 		expect(updateStory).toHaveBeenCalledWith(
 			"story-1",
@@ -943,9 +937,7 @@ describe("syncGitLabStoryViaRest", () => {
 			new Error("500 Internal Server Error"),
 		);
 
-		const result = await syncGitLabStoryViaRest(
-			baseInput({ direction: "pull" }),
-		);
+		const result = await syncStoryViaRest(baseInput({ direction: "pull" }));
 
 		// The link must NOT be cleared on a transient failure.
 		expect(updateStory).not.toHaveBeenCalledWith("story-1", "proj-1", {
@@ -997,9 +989,7 @@ describe("syncGitLabStoryViaRest", () => {
 			state: "closed",
 		});
 
-		const result = await syncGitLabStoryViaRest(
-			baseInput({ direction: "pull" }),
-		);
+		const result = await syncStoryViaRest(baseInput({ direction: "pull" }));
 
 		expect(result.success).toBe(true);
 		expect(reconcileStoryTerminalStatus).toHaveBeenCalledTimes(1);
@@ -1054,9 +1044,7 @@ describe("syncGitLabStoryViaRest", () => {
 			state: "closed",
 		});
 
-		const result = await syncGitLabStoryViaRest(
-			baseInput({ direction: "pull" }),
-		);
+		const result = await syncStoryViaRest(baseInput({ direction: "pull" }));
 
 		// The thrown reconcile must NOT fail the content pull.
 		expect(result.success).toBe(true);
@@ -1076,7 +1064,7 @@ describe("syncGitLabStoryViaRest", () => {
 		);
 		getStoryById.mockResolvedValue(baseStory());
 
-		const result = await syncGitLabStoryViaRest(baseInput());
+		const result = await syncStoryViaRest(baseInput());
 
 		expect(result.success).toBe(false);
 		expect(callPmToolWithFallback).not.toHaveBeenCalled();
@@ -1106,7 +1094,7 @@ describe("syncGitLabStoryViaRest", () => {
 				labels: [],
 			});
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result.success).toBe(false);
 			// No attempt id in this input: the stamp is by id.
@@ -1166,7 +1154,7 @@ describe("syncGitLabStoryViaRest", () => {
 					title: liveTitle,
 				});
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result.success).toBe(true);
 			expect(stampPmSyncConflict).not.toHaveBeenCalled();
@@ -1197,9 +1185,7 @@ describe("syncGitLabStoryViaRest", () => {
 				labels: [],
 			});
 
-			await syncGitLabStoryViaRest(
-				baseInput({ pmSyncAttemptId: "attempt-A" }),
-			);
+			await syncStoryViaRest(baseInput({ pmSyncAttemptId: "attempt-A" }));
 
 			expect(stampPmSyncConflict).toHaveBeenCalledWith(
 				"story",
@@ -1217,9 +1203,7 @@ describe("syncGitLabStoryViaRest", () => {
 				title: "My Feature",
 			});
 
-			await syncGitLabStoryViaRest(
-				baseInput({ pmSyncAttemptId: "attempt-A" }),
-			);
+			await syncStoryViaRest(baseInput({ pmSyncAttemptId: "attempt-A" }));
 
 			expect(stampPmSyncSuccess).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -1238,7 +1222,7 @@ describe("syncGitLabStoryViaRest", () => {
 				title: "My Feature",
 			});
 
-			const result = await syncGitLabStoryViaRest(
+			const result = await syncStoryViaRest(
 				baseInput({ forceHashOverride: true }),
 			);
 
@@ -1263,7 +1247,7 @@ describe("syncGitLabStoryViaRest", () => {
 				title: "My Feature",
 			});
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result.success).toBe(true);
 			// Only the update fired — guard skipped because baseline was null.
@@ -1286,7 +1270,7 @@ describe("syncGitLabStoryViaRest", () => {
 					title: "My Feature",
 				});
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result.success).toBe(true);
 			expect(stampPmSyncConflict).not.toHaveBeenCalled();
@@ -1304,7 +1288,7 @@ describe("syncGitLabStoryViaRest", () => {
 				title: "My Feature",
 			});
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result.success).toBe(true);
 			expect(getPmSyncBaseline).not.toHaveBeenCalled();
@@ -1323,7 +1307,7 @@ describe("syncGitLabStoryViaRest", () => {
 				labels: [],
 			});
 
-			const result = await syncGitLabStoryViaRest(
+			const result = await syncStoryViaRest(
 				baseInput({ direction: "pull" }),
 			);
 
@@ -1658,7 +1642,7 @@ describe("syncGitLabStoryViaRest", () => {
 			getStoryById.mockResolvedValue(linkedStory());
 			routeGitLab({ liveLabels: ["workflow::todo", "bug"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			// No baseline → the conflict guard is skipped, yet the live read
@@ -1682,7 +1666,7 @@ describe("syncGitLabStoryViaRest", () => {
 			);
 			routeGitLab({ liveLabels: ["workflow::todo"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			const payload = updatePayload();
@@ -1703,7 +1687,7 @@ describe("syncGitLabStoryViaRest", () => {
 			);
 			routeGitLab({ liveLabels: ["workflow::todo"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			// Positive control: the switch-on path ran — the live read came first.
@@ -1725,7 +1709,7 @@ describe("syncGitLabStoryViaRest", () => {
 			);
 			routeGitLab({ liveLabels: ["workflow::blocked-upstream", "bug"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			expect(tools()).toEqual(["fetchItem", "updateItem"]);
@@ -1740,7 +1724,7 @@ describe("syncGitLabStoryViaRest", () => {
 			getStoryById.mockResolvedValue(linkedStory());
 			routeGitLab({ liveLabels: ["workflow::done"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			const payload = updatePayload();
@@ -1768,7 +1752,7 @@ describe("syncGitLabStoryViaRest", () => {
 			getStoryById.mockResolvedValue(story);
 			routeGitLab({ liveLabels: ["workflow::todo", "customer-facing"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			const payload = updatePayload();
@@ -1783,7 +1767,7 @@ describe("syncGitLabStoryViaRest", () => {
 			);
 			routeGitLab({ liveLabels: ["workflow::todo"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			const payload = updatePayload();
@@ -1810,9 +1794,7 @@ describe("syncGitLabStoryViaRest", () => {
 			// Positive control, no interleave: L's label is added, the observed
 			// P label removed, and the ticket ends on exactly L.
 			const calm = routeStatefulGitLab(LIVE);
-			expect((await syncGitLabStoryViaRest(baseInput(ON))).success).toBe(
-				true,
-			);
+			expect((await syncStoryViaRest(baseInput(ON))).success).toBe(true);
 			expect(tools()).toEqual(["fetchItem", "updateItem"]);
 			expect(updatePayload()).toEqual({
 				title: "My Feature",
@@ -1829,9 +1811,7 @@ describe("syncGitLabStoryViaRest", () => {
 			const raced = routeStatefulGitLab(LIVE, (issue) => {
 				issue.labels.push("workflow::done");
 			});
-			expect((await syncGitLabStoryViaRest(baseInput(ON))).success).toBe(
-				true,
-			);
+			expect((await syncStoryViaRest(baseInput(ON))).success).toBe(true);
 			expect(tools()).toEqual(["fetchItem", "updateItem"]);
 			// The same PUT as without the race: nothing the gate did not observe
 			// is removed, so the user's Done label is not stripped.
@@ -1896,7 +1876,7 @@ describe("syncGitLabStoryViaRest", () => {
 				"bug",
 			]);
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			const payload = updatePayload();
@@ -1934,7 +1914,7 @@ describe("syncGitLabStoryViaRest", () => {
 				update: new Error("500 Internal Server Error"),
 			});
 
-			await expect(syncGitLabStoryViaRest(baseInput(ON))).rejects.toThrow(
+			await expect(syncStoryViaRest(baseInput(ON))).rejects.toThrow(
 				"500 Internal Server Error",
 			);
 			// The gate passed and the write was attempted…
@@ -1948,7 +1928,7 @@ describe("syncGitLabStoryViaRest", () => {
 			getStoryById.mockResolvedValue(linkedStory());
 			routeGitLab({ liveLabels: ["workflow::todo"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(false);
 			expect(result.error).toMatch(/read-only/i);
@@ -1960,7 +1940,7 @@ describe("syncGitLabStoryViaRest", () => {
 			getStoryById.mockResolvedValue(linkedStory());
 			routeGitLab({ liveLabels: ["workflow::in-review"] });
 
-			const result = await syncGitLabStoryViaRest(
+			const result = await syncStoryViaRest(
 				baseInput({ ...ON, direction: "pull" }),
 			);
 
@@ -1986,14 +1966,14 @@ describe("syncGitLabStoryViaRest", () => {
 			routeGitLab({ liveLabels: ["workflow::todo"] });
 			userStoryUpdateMany.mockResolvedValueOnce({ count: 0 });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			expect(userStoryUpdateMany.mock.calls[0]?.[0]).toEqual(
 				EXPECTED_STAMP,
 			);
 			expect(logger.info).toHaveBeenCalledWith(
-				"[GitLab REST Sync] status-sync base changed since this push read it; newer base kept",
+				"[REST PM Sync] status-sync base changed since this push read it; newer base kept",
 				{ storyId: "story-1" },
 			);
 		});
@@ -2005,11 +1985,11 @@ describe("syncGitLabStoryViaRest", () => {
 				new Error("connection reset"),
 			);
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			expect(logger.warn).toHaveBeenCalledWith(
-				"[GitLab REST Sync] status-sync base stamp failed (non-fatal)",
+				"[REST PM Sync] status-sync base stamp failed (non-fatal)",
 				{ storyId: "story-1", error: "connection reset" },
 			);
 		});
@@ -2022,7 +2002,7 @@ describe("syncGitLabStoryViaRest", () => {
 				rereadUpdatedAt: "2026-09-21T09:16:00.000Z",
 			});
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			expect(tools()).toEqual(["fetchItem", "updateItem", "fetchItem"]);
@@ -2042,12 +2022,12 @@ describe("syncGitLabStoryViaRest", () => {
 				update: { updatedAt: null },
 			});
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			expect(tools()).toEqual(["fetchItem", "updateItem", "fetchItem"]);
 			expect(logger.warn).toHaveBeenCalledWith(
-				"[GitLab REST Sync] GitLab returned no updated_at; status-sync base not stamped",
+				"[REST PM Sync] GitLab returned no updated_at; status-sync base not stamped",
 				{ storyId: "story-1", externalId: "42" },
 			);
 			expect(userStoryUpdateMany).not.toHaveBeenCalled();
@@ -2057,7 +2037,7 @@ describe("syncGitLabStoryViaRest", () => {
 			getStoryById.mockResolvedValue(linkedStory());
 			routeGitLab({ liveLabels: ["workflow::todo"], liveFails: true });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			expect(tools()).toEqual(["fetchItem", "updateItem"]);
@@ -2080,7 +2060,7 @@ describe("syncGitLabStoryViaRest", () => {
 			);
 			routeGitLab({ liveLabels: ["workflow::todo"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			expect(getPmSyncBaseline).toHaveBeenCalledTimes(1);
@@ -2094,7 +2074,7 @@ describe("syncGitLabStoryViaRest", () => {
 			getPmSyncBaseline.mockResolvedValue("any-baseline");
 			routeGitLab({ liveLabels: ["workflow::todo"], liveFails: true });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			// Positive control: the guard ran its read (and it failed)…
@@ -2115,7 +2095,7 @@ describe("syncGitLabStoryViaRest", () => {
 			getStoryById.mockResolvedValue(linkedStory());
 			routeGitLab({ liveLabels: ["workflow::blocked-upstream", "bug"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			// Positive control: the switch-on path read the live ticket.
@@ -2137,7 +2117,7 @@ describe("syncGitLabStoryViaRest", () => {
 			);
 			routeGitLab({ liveLabels: ["workflow::blocked-upstream", "bug"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			const payload = updatePayload();
@@ -2179,9 +2159,9 @@ describe("syncGitLabStoryViaRest", () => {
 				},
 			});
 			routeGitLab({ liveLabels });
-			expect(
-				(await syncGitLabStoryViaRest(baseInput(SNAPSHOT))).success,
-			).toBe(true);
+			expect((await syncStoryViaRest(baseInput(SNAPSHOT))).success).toBe(
+				true,
+			);
 			expect(updatePayload().addLabels).toEqual(["workflow::in-review"]);
 			expect(updatePayload().removeLabels).toEqual(["workflow::qa"]);
 			expect(userStoryUpdateMany.mock.calls).toEqual([[EXPECTED_STAMP]]);
@@ -2198,7 +2178,7 @@ describe("syncGitLabStoryViaRest", () => {
 			});
 			routeGitLab({ liveLabels });
 
-			const result = await syncGitLabStoryViaRest(baseInput(SNAPSHOT));
+			const result = await syncStoryViaRest(baseInput(SNAPSHOT));
 
 			expect(result.success).toBe(true);
 			expect(tools()).toEqual(["fetchItem", "updateItem"]);
@@ -2220,9 +2200,7 @@ describe("syncGitLabStoryViaRest", () => {
 
 			// Positive control: stored context = the caller's map → replaced.
 			routeGitLab({ liveLabels: ["workflow::todo", "bug"] });
-			expect((await syncGitLabStoryViaRest(baseInput(ON))).success).toBe(
-				true,
-			);
+			expect((await syncStoryViaRest(baseInput(ON))).success).toBe(true);
 			expect(updatePayload().addLabels).toEqual(["workflow::in-review"]);
 			expect(updatePayload().removeLabels).toEqual(["workflow::todo"]);
 			expect(userStoryUpdateMany.mock.calls).toEqual([[EXPECTED_STAMP]]);
@@ -2240,7 +2218,7 @@ describe("syncGitLabStoryViaRest", () => {
 				});
 				routeGitLab({ liveLabels: ["workflow::todo", "bug"] });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				expect(tools()).toEqual(["fetchItem", "updateItem"]);
@@ -2259,7 +2237,7 @@ describe("syncGitLabStoryViaRest", () => {
 			function expectGateDeclined(liveResolved: string) {
 				expect(tools()).toEqual(["fetchItem", "updateItem"]);
 				expect(logger.info).toHaveBeenCalledWith(
-					"[GitLab REST Sync] status labels left for the poll",
+					"[REST PM Sync] status labels left for the poll",
 					{
 						storyId: "story-1",
 						fabricStatusId: "st-progress",
@@ -2284,7 +2262,7 @@ describe("syncGitLabStoryViaRest", () => {
 				);
 				routeGitLab({ liveLabels: ["workflow::todo", "bug"] });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				expectGateDeclined("status");
@@ -2298,7 +2276,7 @@ describe("syncGitLabStoryViaRest", () => {
 					liveLabels: ["workflow::todo", "workflow::done"],
 				});
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				expectGateDeclined("ambiguous");
@@ -2314,7 +2292,7 @@ describe("syncGitLabStoryViaRest", () => {
 				);
 				routeGitLab({ liveLabels: ["workflow::todo"] });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				expectGateDeclined("status");
@@ -2331,7 +2309,7 @@ describe("syncGitLabStoryViaRest", () => {
 				);
 				routeGitLab({ liveLabels: ["workflow::todo"] });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				expectGateDeclined("status");
@@ -2345,14 +2323,14 @@ describe("syncGitLabStoryViaRest", () => {
 				);
 				routeGitLab({ liveLabels: ["workflow::todo"] });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				// Positive control: the switch-on path read the live ticket, then
 				// stopped for want of a link key.
 				expect(tools()).toEqual(["fetchItem", "updateItem"]);
 				expect(logger.info).toHaveBeenCalledWith(
-					"[GitLab REST Sync] status labels unchanged — no live ticket or link key",
+					"[REST PM Sync] status labels unchanged — no live ticket or link key",
 					{ storyId: "story-1", liveTicket: true, linkKey: false },
 				);
 				expect(updatePayload()).toEqual(CONTENT_ONLY);
@@ -2365,7 +2343,7 @@ describe("syncGitLabStoryViaRest", () => {
 			getPmSyncBaseline.mockResolvedValue("any-baseline");
 			routeGitLab({ liveLabels: ["workflow::todo"] });
 
-			const result = await syncGitLabStoryViaRest(
+			const result = await syncStoryViaRest(
 				baseInput({ ...ON, forceHashOverride: true }),
 			);
 
@@ -2429,7 +2407,7 @@ describe("syncGitLabStoryViaRest", () => {
 			);
 			routeGitLab({ liveLabels: ["workflow::todo"] });
 
-			const result = await syncGitLabStoryViaRest(baseInput(ON));
+			const result = await syncStoryViaRest(baseInput(ON));
 
 			expect(result.success).toBe(true);
 			// No baseline + switch off → no live read, exactly as before.
@@ -2476,7 +2454,7 @@ describe("syncGitLabStoryViaRest", () => {
 				getStoryById.mockResolvedValue(unlinkedStory());
 				routeGitLabCreate({ updatedAt: CREATED_AT });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				expect(tools()).toEqual(["createItem"]);
@@ -2499,7 +2477,7 @@ describe("syncGitLabStoryViaRest", () => {
 				);
 				routeGitLabCreate({ updatedAt: CREATED_AT });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				expect(createPayload().labels).toEqual([
@@ -2525,13 +2503,13 @@ describe("syncGitLabStoryViaRest", () => {
 				getStoryById.mockResolvedValue(unlinkedStory());
 				routeGitLabCreate({ updatedAt: null });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				// Positive control: the fallback re-read of the new issue ran.
 				expect(tools()).toEqual(["createItem", "fetchItem"]);
 				expect(logger.warn).toHaveBeenCalledWith(
-					"[GitLab REST Sync] GitLab returned no updated_at; status-sync base not stamped",
+					"[REST PM Sync] GitLab returned no updated_at; status-sync base not stamped",
 					{ storyId: "story-1", externalId: "43" },
 				);
 				expect(userStoryUpdateMany).not.toHaveBeenCalled();
@@ -2545,7 +2523,7 @@ describe("syncGitLabStoryViaRest", () => {
 					rereadUpdatedAt: REREAD_AT,
 				});
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				expect(tools()).toEqual(["createItem", "fetchItem"]);
@@ -2566,7 +2544,7 @@ describe("syncGitLabStoryViaRest", () => {
 				getStoryById.mockResolvedValue(unlinkedStory());
 				routeGitLabCreate({ updatedAt: CREATED_AT, externalUrl: null });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				// Positive control: the switch-on create ran — exactly L's labels.
@@ -2576,7 +2554,7 @@ describe("syncGitLabStoryViaRest", () => {
 					"workflow::in-review",
 				]);
 				expect(logger.warn).toHaveBeenCalledWith(
-					"[GitLab REST Sync] created issue has no web_url; status-sync base not stamped",
+					"[REST PM Sync] created issue has no web_url; status-sync base not stamped",
 					{ storyId: "story-1", externalId: "43" },
 				);
 				// No clock was even needed: no re-read, and nothing stamped.
@@ -2597,7 +2575,7 @@ describe("syncGitLabStoryViaRest", () => {
 
 				// Positive control: stored map = snapshot → today's switch-on labels.
 				routeGitLabCreate({ updatedAt: CREATED_AT });
-				await syncGitLabStoryViaRest(baseInput(ON));
+				await syncStoryViaRest(baseInput(ON));
 				expect(createPayload().labels).toEqual([
 					"customer-facing",
 					"workflow::archived",
@@ -2614,7 +2592,7 @@ describe("syncGitLabStoryViaRest", () => {
 				});
 				routeGitLabCreate({ updatedAt: CREATED_AT });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				expect(createPayload().labels).toEqual([
@@ -2633,7 +2611,7 @@ describe("syncGitLabStoryViaRest", () => {
 				// Positive control: stored context = the caller's map → L's
 				// mapped label is added and the stale mapped one dropped.
 				routeGitLabCreate({ updatedAt: CREATED_AT });
-				await syncGitLabStoryViaRest(baseInput(ON));
+				await syncStoryViaRest(baseInput(ON));
 				expect(createPayload().labels).toEqual([
 					"customer-facing",
 					"workflow::archived",
@@ -2651,7 +2629,7 @@ describe("syncGitLabStoryViaRest", () => {
 				});
 				routeGitLabCreate({ updatedAt: CREATED_AT });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				// Nothing is a status label under the (empty) stored map: the
@@ -2684,7 +2662,7 @@ describe("syncGitLabStoryViaRest", () => {
 				getStoryById.mockResolvedValue(unlinkedStory());
 				routeGitLabCreate({ updatedAt: CREATED_AT });
 
-				const result = await syncGitLabStoryViaRest(baseInput(ON));
+				const result = await syncStoryViaRest(baseInput(ON));
 
 				expect(result.success).toBe(true);
 				// Today's create: story.labels plus the delta's add, unfiltered.
@@ -2702,7 +2680,7 @@ describe("syncGitLabStoryViaRest", () => {
 			it("create → Fabric move → poll: the created ticket is not a change, so the move stands (fabric-ahead)", async () => {
 				getStoryById.mockResolvedValue(unlinkedStory());
 				routeGitLabCreate({ updatedAt: CREATED_AT });
-				await syncGitLabStoryViaRest(baseInput(ON));
+				await syncStoryViaRest(baseInput(ON));
 				const stamp = userStoryUpdateMany.mock.calls[0]?.[0] as
 					| typeof EXPECTED_CREATE_STAMP
 					| undefined;
@@ -2834,7 +2812,7 @@ describe("syncGitLabStoryViaRest", () => {
 					}),
 				);
 
-				const pushed = await syncGitLabStoryViaRest(baseInput(ON));
+				const pushed = await syncStoryViaRest(baseInput(ON));
 
 				expect(pushed.success).toBe(true);
 				expect(tools()).toEqual(["fetchItem", "updateItem"]);
@@ -2871,7 +2849,7 @@ describe("syncGitLabStoryViaRest", () => {
 
 const claimModule = await import("../pm-integration/pm-create-claim");
 
-describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
+describe("syncStoryViaRest create claim (Fizzy #3045)", () => {
 	beforeEach(() => {
 		getStoryById.mockResolvedValue(baseStory());
 		vi.mocked(claimModule.acquirePmCreateClaim).mockResolvedValue({
@@ -2884,7 +2862,7 @@ describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
 			miss: "claimed",
 		});
 
-		const result = await syncGitLabStoryViaRest(baseInput());
+		const result = await syncStoryViaRest(baseInput());
 
 		expect(callPmToolWithFallback).not.toHaveBeenCalled();
 		expect(result).toMatchObject({
@@ -2911,7 +2889,7 @@ describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
 			externalUrl: "https://gitlab.example.com/g/p/-/issues/88",
 		});
 
-		const result = await syncGitLabStoryViaRest(baseInput());
+		const result = await syncStoryViaRest(baseInput());
 
 		expect(callPmToolWithFallback).not.toHaveBeenCalled();
 		expect(result).toMatchObject({
@@ -2970,7 +2948,7 @@ describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
 					},
 				);
 
-				await syncGitLabStoryViaRest(baseInput());
+				await syncStoryViaRest(baseInput());
 
 				// PM_CREATE_SEND_TIMEOUT_MS from before the claim, of which
 				// taking the claim used 10s.
@@ -2985,7 +2963,7 @@ describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
 		it("a claim whose answer came after the ceiling: nothing is sent, the claim is released, and the error offers a retry", async () => {
 			claimAnswersAfter(6 * 60_000);
 
-			const error = await syncGitLabStoryViaRest(baseInput()).then(
+			const error = await syncStoryViaRest(baseInput()).then(
 				() => null,
 				(e: unknown) => e as Error,
 			);
@@ -3015,7 +2993,7 @@ describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
 				new DispatchDeadlinePassedError(),
 			);
 
-			const error = await syncGitLabStoryViaRest(baseInput()).then(
+			const error = await syncStoryViaRest(baseInput()).then(
 				() => null,
 				(e: unknown) => e as Error,
 			);
@@ -3040,9 +3018,7 @@ describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
 		});
 		callPmToolWithFallback.mockRejectedValue(rejected);
 
-		await expect(syncGitLabStoryViaRest(baseInput())).rejects.toBe(
-			rejected,
-		);
+		await expect(syncStoryViaRest(baseInput())).rejects.toBe(rejected);
 		expect(claimModule.releasePmCreateClaim).toHaveBeenCalledWith({
 			storyId: "story-1",
 			claimId: "claim-test",
@@ -3070,7 +3046,7 @@ describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
 		async (_label, error) => {
 			callPmToolWithFallback.mockRejectedValue(error);
 
-			const result = await syncGitLabStoryViaRest(baseInput());
+			const result = await syncStoryViaRest(baseInput());
 
 			expect(result).toMatchObject({
 				success: false,
@@ -3090,7 +3066,7 @@ describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
 			title: "My Feature",
 		});
 
-		const result = await syncGitLabStoryViaRest(baseInput());
+		const result = await syncStoryViaRest(baseInput());
 
 		expect(result).toMatchObject({
 			success: false,
@@ -3116,7 +3092,7 @@ describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
 		});
 		updateStory.mockRejectedValueOnce(new Error("database unavailable"));
 
-		const result = await syncGitLabStoryViaRest(baseInput());
+		const result = await syncStoryViaRest(baseInput());
 
 		expect(result).toMatchObject({ errorCode: "PM_CREATE_ORPHAN" });
 		expect(claimModule.releasePmCreateClaim).not.toHaveBeenCalled();
@@ -3135,7 +3111,7 @@ it("REST writer target consistency uses the recorded self-hosted GitLab instance
 		externalUrl: "https://gitlab.example.com/example/project/-/issues/42",
 		title: "Example",
 	});
-	const result = await syncGitLabStoryViaRest(
+	const result = await syncStoryViaRest(
 		baseInput({
 			additionalContext: {
 				gitlabOrigin: "https://gitlab.example.com",
