@@ -1,0 +1,24 @@
+{
+	"resume": {
+		"workflowId": "example-step-resume-68664945-2b68-4d13-a702-35039d045c4d-workflow",
+		"eventCount": 25,
+		"sha256": "d5e35f770e76142dc67cf917e84a73f9201333277a5ef40cda7a7e4e658a14aa",
+		"oneExternalHttpEffect": true,
+		"firstModelDecisionReplayedWithoutExecution": true,
+		"oneToolActivityAttempt": true,
+		"terminalSuccess": true,
+		"inspectionRequired": false,
+		"replayPassed": true
+	},
+	"lost-ack": {
+		"workflowId": "example-step-lost-ack-602609c3-47c5-4728-8623-74bdb89225ea-workflow",
+		"eventCount": 19,
+		"sha256": "393e75b345d688d8abaa76651eed6fa4cae081709cb1700cdd70cc60752a5a54",
+		"oneExternalHttpEffect": true,
+		"firstModelDecisionReplayedWithoutExecution": true,
+		"oneToolActivityAttempt": true,
+		"terminalSuccess": false,
+		"inspectionRequired": true,
+		"replayPassed": true
+	}
+}

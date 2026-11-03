@@ -201,6 +201,7 @@ export {
 	type DeploymentExecutionInput,
 	type DeploymentExecutionOutput,
 	deploymentExecutionWorkflow,
+	nativeDeploymentExecutionWorkflow,
 	type ExecutionProgress,
 	progressQuery as deploymentProgressQuery,
 } from "./deployment-execution";
@@ -390,6 +391,7 @@ export {
 	type GoalOrientedWorkflowState,
 	type GoalVerificationResult,
 	goalOrientedAgentWorkflow,
+	nativeGoalOrientedAgentWorkflow,
 	progressQuery as goalOrientedProgressQuery,
 	type SuccessCriteria,
 	statusQuery as goalOrientedStatusQuery,

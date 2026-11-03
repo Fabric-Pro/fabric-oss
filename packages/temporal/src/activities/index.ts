@@ -501,11 +501,14 @@ export {
 export {
 	buildExecutionContext,
 	completeExecution,
+	completeDurableDeploymentProjection,
 	type DeploymentConfig as DeploymentExecutionConfig,
 	type ExecutionContext,
 	fetchKnowledge,
 	type InvokeAgentResult,
 	invokeDeploymentAgent,
+	prepareDeploymentAgentTurn,
+	finishDeploymentAgentTurn,
 	loadConversationHistory,
 	loadDeploymentConfiguration,
 	saveConversationMessages,
@@ -658,10 +661,13 @@ export {
 	type CreateGoalOrientedPlanInput,
 	type CreateGoalOrientedPlanOutput,
 	completeGoalExecution,
+	completeDurableGoalProjection,
 	createGoalOrientedPlan,
 	type ExecuteGoalStepInput,
 	type ExecuteGoalStepOutput,
 	executeGoalStep,
+	prepareGoalStep,
+	finishGoalStep,
 	type RecoveryInput,
 	type RecoveryOutput,
 	type VerifyGoalInput,
@@ -1604,3 +1610,8 @@ export { purgeExpiredMeetingArchivesActivity } from "./meeting-archive-retention
 export { preloadFrameToolsActivity } from "./orchestrator/tools/preload-frame-tools";
 
 export { deliverCodingRunFollowUp } from "./coding-run/follow-up";
+
+export {
+	registerNativeAgentExecutionReceipt,
+	completeNativeAgentExecution,
+} from "./agent-execution-native-receipt";

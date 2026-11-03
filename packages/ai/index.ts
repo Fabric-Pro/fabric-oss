@@ -48,6 +48,7 @@ export type {
 // --- Commonly used AI SDK exports (explicit for tree-shaking) ---
 // These are re-exported for convenience. For smaller bundles, import from "ai" directly.
 export {
+	asSchema,
 	// Message conversion utilities
 	convertToModelMessages,
 	// Gateway provider

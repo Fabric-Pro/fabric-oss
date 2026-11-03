@@ -312,6 +312,8 @@ export type {
 export type {
 	FabricAgent,
 	FabricAgentExecution,
+	FabricAgentInstanceExecution,
+	FabricAgentInstanceInvocation,
 	FabricApiKey,
 	FabricApiKeyCreated,
 	FabricChat,

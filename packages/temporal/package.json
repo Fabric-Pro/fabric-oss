@@ -9,6 +9,7 @@
 		".": "./index.ts",
 		"./ai-configuration-refusal": "./src/lib/ai-configuration-refusal.ts",
 		"./client": "./src/client.ts",
+		"./agent-execution-dispatch": "./src/lib/agent-execution-dispatch.ts",
 		"./activities": "./src/activities/index.ts",
 		"./activities/publishing-suggestion": "./src/activities/publishing-suggestion/index.ts",
 		"./backlog-routing-core": "./src/lib/backlog-routing-core.ts",

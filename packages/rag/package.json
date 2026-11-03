@@ -22,6 +22,7 @@
 		"@repo/integrations": "workspace:*",
 		"@repo/logs": "workspace:*",
 		"@repo/openapi-tools": "workspace:*",
+		"@repo/permissions": "workspace:*",
 		"@repo/utils": "workspace:*",
 		"ai": "^7.0.140",
 		"code-chunk": "^0.1.13",

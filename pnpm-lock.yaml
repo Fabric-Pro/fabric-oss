@@ -2897,6 +2897,9 @@ importers:
       '@repo/openapi-tools':
         specifier: workspace:*
         version: link:../openapi-tools
+      '@repo/permissions':
+        specifier: workspace:*
+        version: link:../permissions
       '@repo/utils':
         specifier: workspace:*
         version: link:../utils

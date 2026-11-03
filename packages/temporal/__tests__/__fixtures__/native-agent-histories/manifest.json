@@ -1,0 +1,86 @@
+{
+	"deployment-legacy": {
+		"workflowType": "deploymentExecutionWorkflow",
+		"workflowId": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-deployment-legacy",
+		"eventCount": 29,
+		"sha256": "f23d5770719d1c059a5f486bc0dee514917bb3b40e980bca1d42135b1bec3bb9",
+		"status": "COMPLETED",
+		"receiptAttempts": 0,
+		"modelCalls": 1,
+		"baselineSourceHash": "461997fafa56f9f9c0834c6a1a645377c219287d44fcb97271711de35840ea5a"
+	},
+	"deployment-native": {
+		"workflowType": "nativeDeploymentExecutionWorkflow",
+		"workflowId": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-deployment-native",
+		"eventCount": 37,
+		"sha256": "84dedd5b01cae65c5c05e53a2aaabce3044a353a3d03ed9ea8c2ca44a3894160",
+		"status": "COMPLETED",
+		"receiptAttempts": 2,
+		"modelCalls": 1,
+		"baselineSourceHash": "461997fafa56f9f9c0834c6a1a645377c219287d44fcb97271711de35840ea5a"
+	},
+	"deployment-refusal": {
+		"workflowType": "nativeDeploymentExecutionWorkflow",
+		"workflowId": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-deployment-refusal",
+		"eventCount": 13,
+		"sha256": "7d2c69668ed7eb9b6226668efe5b82e97865b6fab7d52f8d7e5eb9e4d49ceabd",
+		"status": "FAILED",
+		"receiptAttempts": 1,
+		"modelCalls": 0,
+		"baselineSourceHash": "461997fafa56f9f9c0834c6a1a645377c219287d44fcb97271711de35840ea5a"
+	},
+	"goal-legacy": {
+		"workflowType": "goalOrientedAgentWorkflow",
+		"workflowId": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-goal-legacy",
+		"eventCount": 41,
+		"sha256": "86ce4bb09986dcca343ee395956169a3c70fa5ee9574e206ca90d6b5e39118f6",
+		"status": "COMPLETED",
+		"receiptAttempts": 0,
+		"modelCalls": 1,
+		"baselineSourceHash": "3a41aaa3eedd79e87ec0a84edabe5b4cc1523c1be8328588d6cda8a441900b38"
+	},
+	"goal-native": {
+		"workflowType": "nativeGoalOrientedAgentWorkflow",
+		"workflowId": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-goal-native",
+		"eventCount": 49,
+		"sha256": "40cef3be33f127de062ce2ec0b8047502f0ef2a8fe98eb5736458424f4ed25f0",
+		"status": "COMPLETED",
+		"receiptAttempts": 2,
+		"modelCalls": 1,
+		"baselineSourceHash": "3a41aaa3eedd79e87ec0a84edabe5b4cc1523c1be8328588d6cda8a441900b38"
+	},
+	"goal-refusal": {
+		"workflowType": "nativeGoalOrientedAgentWorkflow",
+		"workflowId": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-goal-refusal",
+		"eventCount": 13,
+		"sha256": "e595dc4ec738875cb583498278c38d7a45bdb2bdc3874bb5828adcb5ef528a96",
+		"status": "FAILED",
+		"receiptAttempts": 1,
+		"modelCalls": 0,
+		"baselineSourceHash": "3a41aaa3eedd79e87ec0a84edabe5b4cc1523c1be8328588d6cda8a441900b38"
+	},
+	"deployment-durable": {
+		"workflowType": "nativeDeploymentExecutionWorkflow",
+		"workflowId": "example-native-5b9b4919-d82b-46b1-9d48-b89bacdba476-deployment-762617b8-9b03-4968-bb07-2c10512f95ff",
+		"receiptAttempts": 3,
+		"terminalAttempts": 2,
+		"modelCalls": 2,
+		"toolCalls": 1,
+		"eventCount": 63,
+		"sha256": "a3a01ad5ab1e6d5ee3a36daedadb260384ad51acd6fa64b6363affda83291953",
+		"status": "COMPLETED",
+		"baselineSourceHash": "461997fafa56f9f9c0834c6a1a645377c219287d44fcb97271711de35840ea5a"
+	},
+	"goal-durable": {
+		"workflowType": "nativeGoalOrientedAgentWorkflow",
+		"workflowId": "example-native-5b9b4919-d82b-46b1-9d48-b89bacdba476-goal-f9eb3fd2-6212-4575-a5c5-0aa7918efef3",
+		"receiptAttempts": 3,
+		"terminalAttempts": 2,
+		"modelCalls": 2,
+		"toolCalls": 1,
+		"eventCount": 75,
+		"sha256": "74cb126518a63430fd962bb42c9e692cc277902abfddc23e5426c3e95f801e60",
+		"status": "COMPLETED",
+		"baselineSourceHash": "3a41aaa3eedd79e87ec0a84edabe5b4cc1523c1be8328588d6cda8a441900b38"
+	}
+}

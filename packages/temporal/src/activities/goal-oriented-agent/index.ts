@@ -10,6 +10,7 @@
 
 export {
 	type CompleteGoalInput,
+	completeDurableGoalProjection,
 	completeGoalExecution,
 } from "./completion";
 
@@ -17,6 +18,8 @@ export {
 	type ExecuteGoalStepInput,
 	type ExecuteGoalStepOutput,
 	executeGoalStep,
+	finishGoalStep,
+	prepareGoalStep,
 } from "./execution";
 export {
 	type CreateGoalOrientedPlanInput,

@@ -21,15 +21,26 @@
  */
 
 import {
+	ApplicationFailure,
 	defineQuery,
 	defineSignal,
 	log,
+	patched,
 	proxyActivities,
 	setHandler,
 } from "@temporalio/workflow";
 import type * as deploymentActivities from "../../activities/deployment-execution";
 import type * as goalOrientedActivities from "../../activities/goal-oriented-agent";
 import type * as orchestratorActivities from "../../activities/orchestrator";
+import { hasUnconfirmedAgentEffect } from "../../lib/agent-execution-native-protocol";
+import {
+	persistNativeAgentCompletion,
+	registerNativeAgentReceipt,
+} from "../lib/register-native-agent-receipt";
+import {
+	executeDurableSavedAgentTurn,
+	SAVED_AGENT_DURABLE_STEPS_PATCH,
+} from "../saved-agent-durable-turn";
 
 import {
 	createInitialGoalOrientedState,
@@ -133,10 +144,28 @@ const _planningActivities = proxyActivities<typeof orchestratorActivities>({
 		maximumAttempts: 3,
 	},
 });
+const finalizationActivities = proxyActivities<typeof goalOrientedActivities>({
+	startToCloseTimeout: "1 minute",
+	heartbeatTimeout: "15 seconds",
+	retry: { initialInterval: "1s", maximumInterval: "30s" },
+});
 
 // =============================================================================
 // Main Workflow
 // =============================================================================
+
+/** Distinct type cannot be picked up by a worker that lacks the native protocol. */
+export async function nativeGoalOrientedAgentWorkflow(
+	input: GoalOrientedAgentInput,
+): Promise<GoalOrientedAgentOutput> {
+	if (!input.nativeAdmission) {
+		throw ApplicationFailure.nonRetryable(
+			"Native execution requires a server admission descriptor",
+			"NATIVE_AGENT_ADMISSION_REQUIRED",
+		);
+	}
+	return goalOrientedAgentWorkflow(input);
+}
 
 export async function goalOrientedAgentWorkflow(
 	input: GoalOrientedAgentInput,
@@ -210,6 +239,37 @@ export async function goalOrientedAgentWorkflow(
 	// Main Execution Loop
 	// ==========================================================================
 
+	// Keep native identity retries outside the legacy completion/failure writer.
+	await registerNativeAgentReceipt(input);
+	const nativeSteps = patched(SAVED_AGENT_DURABLE_STEPS_PATCH);
+	let nativeFinalizing = false;
+	async function completeGoalExecution(
+		params: Parameters<typeof goalActivities.completeGoalExecution>[0],
+	) {
+		if (nativeSteps) {
+			nativeFinalizing = true;
+			if (input.nativeAdmission) {
+				await persistNativeAgentCompletion(input, {
+					status: params.status,
+					output: {
+						goalAchieved: params.goalAchieved,
+						...params.output,
+					},
+					error: params.error,
+					durationMs: params.durationMs,
+					tokenUsage: params.tokenUsage,
+				});
+			} else {
+				await finalizationActivities.completeDurableGoalProjection(
+					params,
+				);
+			}
+			nativeFinalizing = false;
+		} else {
+			await goalActivities.completeGoalExecution(params);
+		}
+	}
+
 	try {
 		log.info("Starting goal-oriented agent workflow", {
 			executionId: state.executionId,
@@ -220,6 +280,15 @@ export async function goalOrientedAgentWorkflow(
 		// Check for cancellation
 		if (isCancelled()) {
 			state.status = "cancelled";
+			if (nativeSteps) {
+				await completeGoalExecution({
+					executionId: input.executionId,
+					status: "CANCELLED",
+					goalAchieved: false,
+					error: "Execution cancelled",
+					durationMs: Date.now() - state.startTime,
+				});
+			}
 			return buildOutput(
 				state,
 				"CANCELLED",
@@ -408,24 +477,88 @@ export async function goalOrientedAgentWorkflow(
 				};
 
 				try {
-					const stepResult =
-						await executionActivities.executeGoalStep({
-							step,
-							systemPrompt: state.agentContext.systemPrompt,
-							knowledgeContext: state.knowledgeContext,
-							variables: state.variables,
-							previousStepResults: state.executedSteps,
-							userId: input.userId,
-							organizationId: input.organizationId,
-							mcpConfigIds: state.agentContext.mcpConfigIds,
-							model: state.agentContext.model,
-							executionId: input.executionId,
-							// Pass images only on first iteration's first step
-							imageRefs:
-								state.currentIteration === 1 && stepIndex === 0
-									? input.imageRefs
-									: undefined,
+					const stepInput = {
+						step,
+						systemPrompt: state.agentContext.systemPrompt,
+						knowledgeContext: state.knowledgeContext,
+						variables: state.variables,
+						previousStepResults: state.executedSteps,
+						userId: input.userId,
+						organizationId: input.organizationId,
+						mcpConfigIds: state.agentContext.mcpConfigIds,
+						model: state.agentContext.model,
+						executionId: input.executionId,
+						// Pass images only on first iteration's first step
+						imageRefs:
+							state.currentIteration === 1 && stepIndex === 0
+								? input.imageRefs
+								: undefined,
+					};
+					let stepResult: goalOrientedActivities.ExecuteGoalStepOutput;
+					if (nativeSteps) {
+						const prepared = await goalActivities.prepareGoalStep({
+							...stepInput,
+							projectId: executionContext.projectId,
+							agentInstanceId: executionContext.agentInstanceId,
+							builtInToolNames: executionContext.builtInToolNames,
+							integrationConfigurations:
+								executionContext.integrationConfigurations,
 						});
+						const turn = await executeDurableSavedAgentTurn(
+							prepared,
+							{
+								effectScope: `goal:${state.currentIteration}:${step.id}`,
+							},
+						);
+						if (!turn.success) {
+							const error =
+								turn.error ||
+								"A native goal step requires inspection";
+							const inspectionRequired =
+								hasUnconfirmedAgentEffect(turn.toolCalls);
+							const output = {
+								response: [
+									state.accumulatedResponse.trim(),
+									turn.response,
+								]
+									.filter(Boolean)
+									.join("\n\n"),
+								stepsExecuted: state.executedSteps,
+								toolCalls: turn.toolCalls,
+								inspectionRequired,
+								error,
+							};
+							state.status = "failed";
+							await completeGoalExecution({
+								executionId: input.executionId,
+								status: "FAILED",
+								goalAchieved: false,
+								output,
+								error,
+								tokenUsage: turn.tokenUsage,
+								durationMs: Date.now() - state.startTime,
+							});
+							updateProgress("failed", error);
+							emitEvent("execution.failed", {
+								error,
+								inspectionRequired,
+							});
+							return {
+								...buildOutput(state, "FAILED", false, error),
+								response: output.response,
+								output,
+							};
+						}
+						stepResult = await goalActivities.finishGoalStep({
+							step,
+							result: turn,
+						});
+					} else {
+						stepResult =
+							await executionActivities.executeGoalStep(
+								stepInput,
+							);
+					}
 
 					executedStep.completedAt = new Date().toISOString();
 					executedStep.durationMs = Date.now() - stepStartTime;
@@ -478,6 +611,33 @@ export async function goalOrientedAgentWorkflow(
 						toolCalls: stepResult.toolCalls?.length || 0,
 					});
 				} catch (error) {
+					if (nativeFinalizing) {
+						throw error;
+					}
+					if (nativeSteps) {
+						const error =
+							"A durable goal step could not complete. Inspect recorded steps before a new attempt.";
+						const output = {
+							response: state.accumulatedResponse,
+							stepsExecuted: state.executedSteps,
+							inspectionRequired: true,
+							error,
+						};
+						state.status = "failed";
+						await completeGoalExecution({
+							executionId: input.executionId,
+							status: "FAILED",
+							goalAchieved: false,
+							output,
+							error,
+							durationMs: Date.now() - state.startTime,
+						});
+						updateProgress("failed", error);
+						return {
+							...buildOutput(state, "FAILED", false, error),
+							output,
+						};
+					}
 					const errorMessage =
 						error instanceof Error
 							? error.message
@@ -579,6 +739,15 @@ export async function goalOrientedAgentWorkflow(
 
 		if (isCancelled()) {
 			state.status = "cancelled";
+			if (nativeSteps) {
+				await completeGoalExecution({
+					executionId: input.executionId,
+					status: "CANCELLED",
+					goalAchieved,
+					error: "Execution cancelled",
+					durationMs: Date.now() - state.startTime,
+				});
+			}
 			return buildOutput(
 				state,
 				"CANCELLED",
@@ -589,7 +758,7 @@ export async function goalOrientedAgentWorkflow(
 
 		if (goalAchieved) {
 			// Complete the execution
-			await goalActivities.completeGoalExecution({
+			await completeGoalExecution({
 				executionId: input.executionId,
 				status: "COMPLETED",
 				goalAchieved: true,
@@ -616,7 +785,7 @@ export async function goalOrientedAgentWorkflow(
 		}
 
 		// Max iterations reached without achieving goal
-		await goalActivities.completeGoalExecution({
+		await completeGoalExecution({
 			executionId: input.executionId,
 			status: "COMPLETED",
 			goalAchieved: false,
@@ -651,6 +820,9 @@ export async function goalOrientedAgentWorkflow(
 			`Goal not achieved after ${state.maxIterations} iterations`,
 		);
 	} catch (error) {
+		if (nativeFinalizing) {
+			throw error;
+		}
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 		log.error("Goal-oriented workflow failed", { error: errorMessage });
@@ -662,7 +834,7 @@ export async function goalOrientedAgentWorkflow(
 			durationMs: Date.now() - state.startTime,
 		});
 
-		await goalActivities.completeGoalExecution({
+		await completeGoalExecution({
 			executionId: input.executionId,
 			status: "FAILED",
 			goalAchieved: false,

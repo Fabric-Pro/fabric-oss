@@ -5,6 +5,7 @@
  */
 
 import type { AiFeatureKey, AiJobKey } from "@repo/ai";
+import type { ModelMessage } from "ai";
 
 /**
  * Knowledge source configuration
@@ -127,6 +128,8 @@ export interface ToolCallRecord {
 	args: Record<string, unknown>;
 	/** Result from tool */
 	result: unknown;
+	/** The dispatched effect needs inspection before any new attempt. */
+	inspectionRequired?: boolean;
 	/** Call status */
 	status: "success" | "error" | "pending";
 	/** Duration in milliseconds */
@@ -137,6 +140,8 @@ export interface ToolCallRecord {
  * Input for agent turn execution
  */
 export interface ExecuteAgentTurnInput {
+	/** Internal Temporal step protocol: model decisions only; tools never execute in this call. */
+	durableStep?: { continuationMessages: ModelMessage[] };
 	/** System prompt */
 	systemPrompt: string;
 	/** User message */
@@ -204,6 +209,16 @@ export interface ExecuteAgentTurnInput {
  * Result from agent turn execution
  */
 export interface ExecuteAgentTurnResult {
+	/** Present only for the internal one-model-step protocol. */
+	modelStep?: {
+		messages: ModelMessage[];
+		toolCalls: Array<{
+			id: string;
+			name: string;
+			args: Record<string, unknown>;
+			source: { configId: string; originalName: string };
+		}>;
+	};
 	/** Agent's response text */
 	response: string;
 	/** Tool calls made during execution */

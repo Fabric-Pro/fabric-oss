@@ -76,6 +76,7 @@ export const AUDIT_ACTIONS = [
 	// instance as the resource and exclude prompt text from metadata.
 	"org.agent_definition.imported",
 	"org.agent_definition.exported",
+	"org.agent_execution.admitted",
 	"org.member.invited",
 	"org.member.role_changed",
 	"org.member.removed",

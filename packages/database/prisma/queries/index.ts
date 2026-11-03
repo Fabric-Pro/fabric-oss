@@ -1,6 +1,7 @@
 export * from "./agent-conversation-sharing";
 export * from "./agent-conversations";
 export * from "./agent-deployments";
+export * from "./agent-instance-execution-scope";
 export * from "./agent-memory";
 export * from "./agent-tasks";
 export * from "./agent-templates";
