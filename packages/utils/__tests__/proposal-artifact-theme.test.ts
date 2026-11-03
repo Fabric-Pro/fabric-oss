@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { contrastRatio } from "../lib/brand-colors";
+import * as labelMeasure from "../lib/proposal-artifact/diagram-label-wrap";
 import {
+	PRINT_FIGURE_MAX_HEIGHT_PROPERTY,
+	PRINT_FIGURE_MAX_HEIGHT_PX,
+	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
 	PROPOSAL_LABEL_ATTRIBUTE,
 	PROPOSAL_PAGE_SIZE,
 	PROPOSAL_PAGE_SIZE_LANDSCAPE,
@@ -11,6 +15,7 @@ import {
 	PROPOSAL_THEME_CLASSES,
 	PROPOSAL_THEME_ROOT_SELECTORS,
 	type ProposalPrintThemeOptions,
+	printFigureUnderOpenerMaxHeightPx,
 	proposalThemeCss,
 } from "../lib/proposal-artifact/proposal-theme";
 import {
@@ -1439,9 +1444,10 @@ describe("proposalThemeCss: print", () => {
 		expect(coverRule.get("break-after")).toBe("page");
 		expect(coverRule.get("background-color")).toBe("var(--pa-ink)");
 		// The full-bleed cover is one Letter page tall, and that height is
-		// written nowhere else: it follows the page size constant.
+		// written nowhere else but the room an opener needs and the two
+		// figure limits: all follow the page size constant.
 		expect(coverRule.get("height")).toBe("11in");
-		expect(print.match(/\b11in\b/g)).toHaveLength(1);
+		expect(print.match(/\b11in\b/g)).toHaveLength(4);
 		expect(coverRule.get("color")).toBe("var(--pa-on-ink)");
 		// Block-level, so the named page applies; its parts are laid out
 		// inside it, never around it.
@@ -1860,6 +1866,43 @@ describe("proposalThemeCss: print", () => {
 		);
 	});
 
+	it("lets an opener follow a short tail only through the room before it, which takes no space", () => {
+		const room = `.${PROPOSAL_PRINT_CLASSES.openerRoom}`;
+		const rule = (selector: string) =>
+			declarationsFor(print, `${PRINT_ROOT} ${selector}`);
+
+		// Three quarters of the Letter page's body, less the gap above it:
+		// it fits only below a tail that fills at most a quarter of its page.
+		expect(
+			new Map(atBlock(print, "@page").declarations).get("margin"),
+		).toBe("0.85in 0.8in 0.9in");
+		expect(rule(room).get("--pa-opener-room")).toBe(
+			"calc((11in - 0.85in - 0.9in) * 0.75 - 0.3in)",
+		);
+		expect(rule(room).get("height")).toBe("var(--pa-opener-room)");
+		// Pulled back up by its own height, so the opener after it starts
+		// where the room does.
+		expect(rule(room).get("margin")).toBe(
+			"0.3in 0 calc(-1 * var(--pa-opener-room))",
+		);
+		// Never split: it fits whole or moves to the next page whole.
+		expect(rule(room).get("break-inside")).toBe("avoid");
+
+		// Only the opener right after a room may skip its page break, and
+		// after a landscape page the room starts flush with the new page.
+		expect(rule(`${room} + .pa-section-opener`).get("break-before")).toBe(
+			"auto",
+		);
+		expect(rule(`.pa-landscape + ${room}`).get("margin-top")).toBe("0");
+		const breaks = styleRules(print)
+			.filter((block) => new Map(block.declarations).has("break-before"))
+			.flatMap(selectorsOf);
+		expect(breaks).toEqual([
+			`${PRINT_ROOT} .pa-section-opener`,
+			`${PRINT_ROOT} ${room} + .pa-section-opener`,
+		]);
+	});
+
 	it("draws the opener graphic from the hero under the cover's veil, faded at its left edge", () => {
 		const rule = (selector: string) =>
 			declarationsFor(
@@ -2005,6 +2048,244 @@ describe("proposalThemeCss: print", () => {
 		expect(body.get("print-color-adjust")).toBe("exact");
 		expect(body.get("-webkit-print-color-adjust")).toBe("exact");
 		expect(body.get("background-color")).toBe("var(--pa-surface)");
+	});
+
+	it("shrinks a figure's drawing to what a page holds with its caption, keeping its shape, and less under a section opener", () => {
+		const rule = (selector: string) =>
+			declarationsFor(print, `${PRINT_ROOT} ${selector}`);
+		/** A `calc()` of inch lengths less one another, in CSS pixels. */
+		const pixels = (length: string | undefined) => {
+			const terms = /^calc\((.*)\)$/
+				.exec(length ?? "")?.[1]
+				?.split(" - ");
+			expect(terms?.every((term) => /^\d+(\.\d+)?in$/.test(term))).toBe(
+				true,
+			);
+			const [first = 0, ...rest] = (terms ?? []).map(Number.parseFloat);
+			return Math.round(
+				rest.reduce((sum, term) => sum - term, first) * 96,
+			);
+		};
+
+		// The Letter page's body less an inch for the caption: the height
+		// the Word writer shrinks a picture to and the label measure assumes,
+		// unless the figure carries a lower limit of its own.
+		for (const figure of ["figure", ".pa-figure"]) {
+			const drawing = rule(`${figure} > svg`);
+			const limit = /^var\(([-a-z]+), (calc\(.*\))\)$/.exec(
+				drawing.get("max-height") ?? "",
+			);
+			expect(limit?.[1]).toBe(PRINT_FIGURE_MAX_HEIGHT_PROPERTY);
+			expect(limit?.[2]).toBe("calc(11in - 0.85in - 0.9in - 1in)");
+			expect(pixels(limit?.[2])).toBe(PRINT_FIGURE_MAX_HEIGHT_PX);
+			// Its width follows the height, so it keeps its shape.
+			expect(drawing.get("width")).toBe("auto");
+		}
+		expect(declarationsFor(print, `${PRINT_ROOT} figure svg`)).toEqual(
+			new Map([
+				["max-width", "100%"],
+				["height", "auto"],
+			]),
+		);
+
+		// Right under an opener, which stays on its page, it leaves the
+		// opener's room as well, and that rule wins; a figure under a long
+		// opener carries a lower limit of its own, read first.
+		for (const figure of ["figure", ".pa-figure"]) {
+			const selector = `.pa-section-opener + ${figure} > svg`;
+			const limit = /^var\(([-a-z]+), (calc\(.*\))\)$/.exec(
+				rule(selector).get("max-height") ?? "",
+			);
+			expect(limit?.[1]).toBe(PRINT_FIGURE_MAX_HEIGHT_PROPERTY);
+			expect(limit?.[2]).toBe("calc(11in - 0.85in - 0.9in - 1in - 2in)");
+			expect(pixels(limit?.[2])).toBe(
+				PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+			);
+			expect(
+				compareSpecificity(
+					maxSpecificity(`${PRINT_ROOT} ${selector}`),
+					maxSpecificity(`${PRINT_ROOT} .pa-figure > svg`),
+				),
+			).toBeGreaterThan(0);
+		}
+
+		// The live page sets no such limit.
+		expect(live).not.toContain("max-height");
+
+		// Both heights are the ones the export measures printed labels
+		// against, one number each.
+		expect(PRINT_FIGURE_MAX_HEIGHT_PX).toBe(792);
+		expect(PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX).toBe(600);
+		expect(labelMeasure.PRINT_FIGURE_MAX_HEIGHT_PX).toBe(
+			PRINT_FIGURE_MAX_HEIGHT_PX,
+		);
+		expect(labelMeasure.PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX).toBe(
+			PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+		);
+	});
+
+	it("keeps a figure under an opener with more lines than a two-line heading and a one-line subtitle shorter by those lines, and measures it at the same number", () => {
+		const rule = (selector: string) =>
+			declarationsFor(print, `${PRINT_ROOT} ${selector}`);
+		const heading = rule(".pa-section-opener h2");
+		const subtitle = rule(".pa-section-opener p");
+		// The opener's text as the estimate reads it: the heading on the
+		// card's width (the 6.9in column less 22pt a side), the subtitle
+		// on its own.
+		expect(rule(".pa-section-opener").get("padding")).toBe(
+			"18pt 22pt 20pt",
+		);
+		expect(heading.get("font-size")).toBe("21pt");
+		expect(heading.get("line-height")).toBe("1.15");
+		expect(heading.get("margin")).toBe("0 0 6pt");
+		expect(subtitle.get("font-size")).toBe("10.5pt");
+		expect(subtitle.get("line-height")).toBe("1.45");
+		expect(subtitle.get("max-width")).toBe("3.9in");
+
+		// A heading line is 21pt * 1.15 = 32.2 px, a subtitle line
+		// 10.5pt * 1.45 = 20.3 px, and the space between them 6pt = 8 px.
+		const headingLine = 21 * (4 / 3) * 1.15;
+		const subtitleLine = 10.5 * (4 / 3) * 1.45;
+		const gap = 8;
+		const under = PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX;
+		const word = (count: number, letters = 5) =>
+			Array.from({ length: count }, () => "x".repeat(letters)).join(" ");
+
+		// The 2in room holds two heading lines and a one-line subtitle, or
+		// less: the rule's own limit, 600 px.
+		expect(printFigureUnderOpenerMaxHeightPx("Delivery plan", null)).toBe(
+			under,
+		);
+		expect(
+			printFigureUnderOpenerMaxHeightPx(
+				"How the pilot moves from the first interview",
+				"A short subtitle on one line.",
+			),
+		).toBe(under);
+		// At 0.62 em a character, a heading line holds 34 characters
+		// (603.7 px over 17.36), five of these words, and a subtitle line 43
+		// (374.4 px over 8.68), seven.
+		expect(printFigureUnderOpenerMaxHeightPx(word(10), word(7))).toBe(
+			under,
+		);
+		// A third heading line costs the figure its height.
+		expect(printFigureUnderOpenerMaxHeightPx(word(12), word(7))).toBe(
+			Math.floor(under - headingLine),
+		);
+		// A third heading line without a subtitle fits the subtitle's room.
+		expect(printFigureUnderOpenerMaxHeightPx(word(12), null)).toBe(
+			Math.floor(under - (headingLine - gap - subtitleLine)),
+		);
+		// Three heading lines and the longest subtitle, 200 characters on
+		// five lines.
+		const longest = word(34).slice(0, 200);
+		expect(Array.from(longest)).toHaveLength(200);
+		const long = printFigureUnderOpenerMaxHeightPx(word(15), longest);
+		expect(long).toBe(Math.floor(under - headingLine - 4 * subtitleLine));
+		expect(long).toBeLessThan(500);
+
+		// A line break starts a line, and an opener's limit falls with
+		// every line it adds.
+		expect(
+			printFigureUnderOpenerMaxHeightPx("Plan\nfor\nthe pilot", null),
+		).toBe(printFigureUnderOpenerMaxHeightPx(word(12), null));
+		let previous = under;
+		for (let words = 1; words <= 60; words++) {
+			const limit = printFigureUnderOpenerMaxHeightPx(
+				word(words),
+				longest,
+			);
+			expect(limit).toBeLessThanOrEqual(previous);
+			previous = limit;
+		}
+		// A word wider than a line takes as many lines as it fills.
+		expect(printFigureUnderOpenerMaxHeightPx("x".repeat(69), null)).toBe(
+			printFigureUnderOpenerMaxHeightPx(word(12), null),
+		);
+
+		// However long the opener, its figure keeps 3in, and moves whole to
+		// the next page when even that does not fit under it.
+		expect(printFigureUnderOpenerMaxHeightPx(word(400), longest)).toBe(288);
+
+		// Whole pixels, as the print page writes them on the figure.
+		expect(Number.isInteger(long)).toBe(true);
+	});
+
+	it("keeps a figure after paragraphs and lists on an opener's page shorter by their lines, until they leave it less than 3in", () => {
+		const rule = (selector: string) =>
+			declarationsFor(print, `${PRINT_ROOT} ${selector}`);
+		// The spacing the estimate reads: the body's 10.5pt lines at 1.6, the
+		// opener's 16pt below it, and no block's bottom margin, indent or
+		// space a list item takes wider than 1.25em, 2.4em and 0.85em.
+		const body = declarationsFor(print, PRINT_ROOT);
+		expect(body.get("font-size")).toBe("10.5pt");
+		expect(body.get("line-height")).toBe("1.6");
+		expect(rule(".pa-section-opener").get("margin")).toBe("0 0 16pt");
+		expect(rule("p").get("margin-top")).toBe("0");
+		expect(rule("p").get("margin-bottom")).toBe("1em");
+		expect(rule("ul").get("margin")).toBe("0 0 1em");
+		expect(rule("ul").get("padding")).toBe("0 0 0 1.4em");
+		expect(rule("ol").get("margin")).toBe("0 0 1em");
+		expect(rule("ol.pa-steps").get("margin")).toBe("0.75em 0 1.25em");
+		expect(rule("ol.pa-steps > li").get("margin")).toBe("0 0 0.85em");
+		expect(rule("ol.pa-steps > li").get("padding-left")).toBe("2.4em");
+		expect(rule("li").get("margin-block")).toBe("0.3em");
+		expect(rule("li p").get("margin-block")).toBe("0.25em");
+
+		// A body line is 22.4 px, and holds 76 characters at 0.62 em each
+		// (662.4 px over 8.68): twelve of these words.
+		const line = 14 * 1.6;
+		const word = (count: number) =>
+			Array.from({ length: count }, () => "xxxxx").join(" ");
+		const under = PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX;
+		const paragraph = (text: string) =>
+			({ kind: "paragraph", text }) as const;
+
+		// One paragraph of two lines: the opener's 16pt above it and its
+		// lines.
+		const one = printFigureUnderOpenerMaxHeightPx("Plan", null, [
+			paragraph(word(20)),
+		]);
+		expect(one).toBe(Math.floor(under - 16 * (4 / 3) - 2 * line));
+		// A second paragraph adds 1.25em above it and its own lines.
+		expect(
+			printFigureUnderOpenerMaxHeightPx("Plan", null, [
+				paragraph(word(20)),
+				paragraph(word(5)),
+			]),
+		).toBe(Math.floor(under - 16 * (4 / 3) - 3 * line - 1.25 * 14));
+		// A list's items each take their lines, 2.4em narrower (72
+		// characters), and 0.85em: 74 characters fill a paragraph's line but
+		// two of an item's.
+		const wide = `${word(12)} xx`;
+		expect(
+			printFigureUnderOpenerMaxHeightPx("Plan", null, [paragraph(wide)]),
+		).toBe(Math.floor(under - 16 * (4 / 3) - line));
+		expect(
+			printFigureUnderOpenerMaxHeightPx("Plan", null, [
+				{ kind: "list", items: [word(3), word(3), wide] },
+			]),
+		).toBe(Math.floor(under - 16 * (4 / 3) - 4 * line - 3 * 0.85 * 14));
+		// A long opener's lines come off too.
+		expect(
+			printFigureUnderOpenerMaxHeightPx(word(15), null, [
+				paragraph(word(20)),
+			]),
+		).toBe(
+			printFigureUnderOpenerMaxHeightPx(word(15), null) - (under - one),
+		);
+
+		// Blocks that leave it less than 3in leave the figure its own height,
+		// to move to the next page whole; right under an opener, 3in is the
+		// least it gets.
+		const lines = (count: number) => paragraph(word(12 * count));
+		expect(
+			printFigureUnderOpenerMaxHeightPx("Plan", null, [lines(12)]),
+		).toBeGreaterThanOrEqual(288);
+		expect(
+			printFigureUnderOpenerMaxHeightPx("Plan", null, [lines(14)]),
+		).toBe(PRINT_FIGURE_MAX_HEIGHT_PX);
+		expect(printFigureUnderOpenerMaxHeightPx(word(400), null)).toBe(288);
 	});
 
 	it("cannot be broken out of by the footer text", () => {

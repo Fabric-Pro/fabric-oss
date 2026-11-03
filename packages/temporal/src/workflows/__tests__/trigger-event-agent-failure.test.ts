@@ -147,7 +147,7 @@ describe("trigger event agent failure", () => {
 		},
 	);
 
-	it("sends successful output and records success without a patch marker", async () => {
+	it("sends successful output and records success without the failure marker", async () => {
 		stubs.invokeAgent.mockResolvedValue({
 			success: true,
 			response: "Example response",
@@ -161,7 +161,9 @@ describe("trigger event agent failure", () => {
 		expect(stubs.updateTriggerStats).toHaveBeenCalledExactlyOnceWith(
 			expect.objectContaining({ success: true, organizationId: "org1" }),
 		);
-		expect(stubs.patched).not.toHaveBeenCalled();
+		expect(stubs.patched).toHaveBeenCalledExactlyOnceWith(
+			"trigger-stats-delivery-outcome-2026-11",
+		);
 	});
 
 	it("preserves failed invocation output and success stats for old histories", async () => {
@@ -180,8 +182,114 @@ describe("trigger event agent failure", () => {
 		expect(stubs.updateTriggerStats).toHaveBeenCalledExactlyOnceWith(
 			expect.objectContaining({ success: true, organizationId: "org1" }),
 		);
-		expect(stubs.patched).toHaveBeenCalledExactlyOnceWith(
-			"trigger-event-agent-failure-2026-10",
+		expect(stubs.patched.mock.calls).toEqual([
+			["trigger-event-agent-failure-2026-10"],
+			["trigger-stats-delivery-outcome-2026-11"],
+		]);
+	});
+});
+
+describe("trigger event reply delivery in trigger stats", () => {
+	const FAILED_POST = { success: false, error: "not_in_channel" };
+
+	beforeEach(() => {
+		stubs.invokeAgent.mockResolvedValue({
+			success: true,
+			response: "Example response",
+			executionId: "execution1",
+		});
+		stubs.postToSlack.mockResolvedValue(FAILED_POST);
+	});
+
+	it("fails the run with the post's error when the Slack reply was not delivered", async () => {
+		await expect(triggerEventWorkflow(INPUT)).resolves.toEqual({
+			eventId: "event1",
+			triggerId: "trigger1",
+			success: false,
+			error: "not_in_channel",
+			agentExecutionId: "execution1",
+			response: "Example response",
+			durationMs: expect.any(Number),
+		});
+
+		expect(stubs.log.info).not.toHaveBeenCalledWith(
+			"Trigger event processed successfully",
+			expect.anything(),
+		);
+		expect(stubs.log.error).toHaveBeenCalledWith(
+			"Trigger event reply was not delivered",
+			expect.objectContaining({
+				eventId: "event1",
+				agentExecutionId: "execution1",
+				error: "not_in_channel",
+			}),
+		);
+		expect(stubs.updateTriggerStats).toHaveBeenCalledExactlyOnceWith({
+			triggerId: "trigger1",
+			lastTriggeredAt: expect.any(String),
+			success: true,
+			delivery: { success: false, error: "not_in_channel" },
+			userId: "user1",
+			organizationId: "org1",
+		});
+		expect(stubs.patched).toHaveBeenCalledWith(
+			"trigger-stats-delivery-outcome-2026-11",
+		);
+	});
+
+	it("succeeds when the Read-only gate skipped the Slack reply", async () => {
+		stubs.postToSlack.mockResolvedValue({ success: true, skipped: true });
+
+		await expect(triggerEventWorkflow(INPUT)).resolves.toEqual({
+			eventId: "event1",
+			triggerId: "trigger1",
+			success: true,
+			agentExecutionId: "execution1",
+			response: "Example response",
+			durationMs: expect.any(Number),
+		});
+		expect(stubs.log.info).toHaveBeenCalledWith(
+			"Trigger event processed successfully",
+			expect.objectContaining({ eventId: "event1" }),
+		);
+	});
+
+	it("calls the stats exactly as before for histories without the delivery marker", async () => {
+		stubs.patched.mockImplementation(
+			(id: string) => id !== "trigger-stats-delivery-outcome-2026-11",
+		);
+
+		await expect(triggerEventWorkflow(INPUT)).resolves.toEqual({
+			eventId: "event1",
+			triggerId: "trigger1",
+			success: true,
+			agentExecutionId: "execution1",
+			response: "Example response",
+			durationMs: expect.any(Number),
+		});
+		expect(stubs.log.info).toHaveBeenCalledWith(
+			"Trigger event processed successfully",
+			expect.objectContaining({ eventId: "event1" }),
+		);
+		expect(stubs.log.error).not.toHaveBeenCalled();
+
+		expect(stubs.updateTriggerStats).toHaveBeenCalledTimes(1);
+		const stats = stubs.updateTriggerStats.mock.calls[0][0];
+		expect(Object.keys(stats).sort()).toEqual([
+			"lastTriggeredAt",
+			"organizationId",
+			"success",
+			"triggerId",
+			"userId",
+		]);
+		expect(stats).toMatchObject({
+			triggerId: "trigger1",
+			success: true,
+			userId: "user1",
+			organizationId: "org1",
+		});
+		expect(stubs.patched).toHaveBeenCalledWith(
+			"trigger-stats-delivery-outcome-2026-11",
 		);
 	});
 });

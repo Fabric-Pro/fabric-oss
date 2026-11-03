@@ -28,6 +28,10 @@ vi.mock("sonner", () => ({
 	toast: { error: toastErrorMock, success: toastSuccessMock },
 }));
 
+vi.mock("@saas/projects/components/TranscriptFileUpload", () => ({
+	TranscriptFileUpload: () => null,
+}));
+
 vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
 	useConfirmationAlert: () => ({ confirm: vi.fn() }),
 }));

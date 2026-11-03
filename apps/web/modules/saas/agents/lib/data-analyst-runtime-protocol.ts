@@ -1,13 +1,12 @@
 import { z } from "zod";
-import { runtimeCustomEventName } from "./runtime-custom-events";
 
-export const DATA_ANALYST_AGENT_ID = "data-analyst";
-export const DATA_ANALYST_REGISTRY_AGENT_ID = "data_analyst";
+export {
+	DATA_ANALYST_AGENT_ID,
+	DATA_ANALYST_EVENT,
+} from "./data-analyst-runtime-contract";
+
 export const dataAnalystPropsSchema = z.object({}).strict();
 export type DataAnalystProps = z.infer<typeof dataAnalystPropsSchema>;
-export const DATA_ANALYST_EVENT = {
-	chart: runtimeCustomEventName(DATA_ANALYST_AGENT_ID, "chart"),
-} as const;
 
 const chartTypeSchema = z.enum(["line", "bar", "pie", "area", "scatter"]);
 const chartConfigSchema = z.object({

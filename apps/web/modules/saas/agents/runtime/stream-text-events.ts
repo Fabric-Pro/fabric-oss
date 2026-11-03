@@ -1,5 +1,7 @@
 import { type AGUIEvent, EventType } from "@ag-ui/client";
+import type { AnswerModelInfo } from "@repo/ai/lib/answer-model-info";
 import {
+	SIDEKICK_MODEL_EVENT,
 	stepMessageId,
 	TOOL_ERROR_METADATA,
 } from "@saas/agents/lib/sidekick-runtime-protocol";
@@ -29,10 +31,15 @@ import type { TextStreamPart, ToolSet } from "ai";
  */
 export async function* streamTextRunEvents<TOOLS extends ToolSet>(
 	parts: AsyncIterable<TextStreamPart<TOOLS>>,
-	options: { runId: string; toolErrorText: (error: unknown) => string },
+	options: {
+		runId: string;
+		toolErrorText: (error: unknown) => string;
+		getAnswerModel?: (step: number) => AnswerModelInfo;
+	},
 ): AsyncGenerator<AGUIEvent> {
 	let count = 0;
 	let step = 0;
+	const textMessageIds = new Set<string>();
 	const nextId = () => stepMessageId(options.runId, step, count++);
 	let openText: string | null = null;
 	let stepParentId: string | null = null;
@@ -85,6 +92,7 @@ export async function* streamTextRunEvents<TOOLS extends ToolSet>(
 				}
 				case "text-delta":
 					if (openText && part.text) {
+						textMessageIds.add(openText);
 						yield {
 							type: EventType.TEXT_MESSAGE_CONTENT,
 							messageId: openText,
@@ -136,6 +144,17 @@ export async function* streamTextRunEvents<TOOLS extends ToolSet>(
 				case "finish-step":
 					yield* close();
 					yield* flush();
+					if (options.getAnswerModel && textMessageIds.size) {
+						yield {
+							type: EventType.CUSTOM,
+							name: SIDEKICK_MODEL_EVENT,
+							value: {
+								messageIds: [...textMessageIds],
+								model: options.getAnswerModel(step),
+							},
+						};
+					}
+					textMessageIds.clear();
 					step += 1;
 					stepParentId = null;
 					stepCalls = [];

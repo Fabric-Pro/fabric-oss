@@ -14,6 +14,7 @@
  * of drift — a fix here applies everywhere.
  */
 
+import { stripResidualDiffMarkers } from "@repo/utils/diff-markers";
 import {
 	readDiagramCaption,
 	withDiagramCaption,
@@ -22,7 +23,6 @@ import type { Editor } from "@tiptap/core";
 import TurndownService from "turndown";
 // @ts-expect-error - turndown-plugin-gfm has no types
 import { gfm } from "turndown-plugin-gfm";
-import { stripResidualDiffMarkers } from "./diff-utils";
 import {
 	applyGfmStrikethroughFix,
 	collapseAdjacentBoldSpans,

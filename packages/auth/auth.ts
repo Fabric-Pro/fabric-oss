@@ -36,7 +36,7 @@ import { getTrustedClientIpFromRequest } from "./lib/client-ip";
 import { withEmailVerificationCallback as buildConfirmEmailUrl } from "./lib/email-verification-callback";
 import { assertEmailVerifyNotRevoked } from "./lib/email-verify-revocation";
 import { ensureUserHasOrganization } from "./lib/ensure-user-organization";
-import { buildInvitationToken } from "./lib/invitation-token";
+import { MAX_PENDING_INVITATIONS } from "./lib/invitation-limits";
 import { runInviteReconciliationForUser } from "./lib/invite-reconciliation";
 import { createLazyAuth } from "./lib/lazy-auth";
 import {
@@ -68,6 +68,7 @@ import {
 	seedSessionOrganization,
 	seedSessionOrganizationOnCreate,
 } from "./lib/seed-session-organization";
+import { sendOrganizationInvitationEmail } from "./lib/send-invitation-email";
 import { sessionRevocationOptions } from "./lib/session-revocation-options";
 import { socialProviders } from "./lib/social-providers";
 import { buildTrustedOrigins } from "./lib/trusted-origins";
@@ -1648,27 +1649,12 @@ export const authOptions = {
 			},
 		}),
 		organization({
-			sendInvitationEmail: async (
-				{ email, id, organization },
-				request,
-			) => {
-				const locale = getLocaleFromRequest(request);
-				const existingUser = await getUserByEmail(email);
-
-				const token = buildInvitationToken({ invitationId: id, email });
-				const path = existingUser ? "/auth/login" : "/auth/signup";
-				const url = `${getBaseUrl()}${path}/invite/${encodeURIComponent(token)}`;
-
-				await sendEmail({
-					to: email,
-					templateId: "organizationInvitation",
-					locale,
-					context: {
-						organizationName: organization.name,
-						url,
-					},
-				});
-			},
+			invitationLimit: MAX_PENDING_INVITATIONS,
+			sendInvitationEmail: (invitation, request) =>
+				sendOrganizationInvitationEmail(
+					invitation,
+					getLocaleFromRequest(request),
+				),
 			// Org-context managed-default MCP configs. Better Auth v1.4.9 does
 			// not expose `databaseHooks.member.create.after` (only `user`,
 			// `session`, `account`, `verification` are supported on the core

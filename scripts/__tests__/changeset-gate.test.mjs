@@ -62,6 +62,29 @@ function createFixture(t) {
 		join(dir, "scripts/lib/resolve-base.mjs"),
 	);
 
+	copyFileSync(
+		join(SCRIPTS, "lib/changeset-package-policy.mjs"),
+		join(dir, "scripts/lib/changeset-package-policy.mjs"),
+	);
+	writeFileSync(
+		join(dir, "pnpm-workspace.yaml"),
+		"packages:\n  - packages/*\n  - tooling/*\n",
+	);
+	mkdirSync(join(dir, "packages/fabric-app"), { recursive: true });
+	writeFileSync(
+		join(dir, "packages/fabric-app/package.json"),
+		JSON.stringify({ name: "fabric-app", private: true }),
+	);
+	for (const [name, path] of [
+		["@repo/example", "packages/example"],
+		["example-tool", "tooling/example"],
+	]) {
+		mkdirSync(join(dir, path), { recursive: true });
+		writeFileSync(
+			join(dir, path, "package.json"),
+			JSON.stringify({ name }),
+		);
+	}
 	const bin = join(dir, "node_modules/@changesets/cli");
 	mkdirSync(bin, { recursive: true });
 	writeFileSync(
@@ -86,7 +109,9 @@ function createFixture(t) {
 			"}));",
 			'const mode = process.env.FAKE_STATUS ?? "ok";',
 			'const out = outArg.slice("--output=".length);',
-			'if (mode === "ok") fs.writeFileSync(out, JSON.stringify({ changesets: [{}], releases: [{ name: "fabric-app", type: "patch" }] }));',
+			'if (mode === "ok") fs.writeFileSync(out, JSON.stringify({ changesets: [{ id: "example-change", releases: [{ name: "fabric-app", type: "patch" }] }], releases: [{ name: "fabric-app", type: "patch" }] }));',
+			'if (mode === "internal") fs.writeFileSync(out, JSON.stringify({ changesets: [{ id: "internal-change", releases: [{ name: "@repo/example", type: "patch" }] }], releases: [{ name: "@repo/example", type: "patch" }] }));',
+			'if (mode === "cascade") fs.writeFileSync(out, JSON.stringify({ changesets: [{ id: "cascade-change", releases: [{ name: "fabric-app", type: "patch" }] }], releases: [{ name: "fabric-app", type: "patch" }, { name: "example-tool", type: "patch" }] }));',
 			'if (mode === "empty") fs.writeFileSync(out, JSON.stringify({ changesets: [], releases: [] }));',
 			'if (mode === "garbage") fs.writeFileSync(out, "{nope");',
 			"if (process.env.FAKE_SLEEP) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_SLEEP));",
@@ -324,4 +349,23 @@ test("an odd name under .changeset/pre is still rejected", (t) => {
 	const fixture = createFixture(t);
 	addChangeset(fixture, "pre/café.md");
 	assert.equal(gate(fixture).code, 2);
+});
+
+test("gate rejects a direct internal package through the shared policy", (t) => {
+	const result = gate(createFixture(t), [], { FAKE_STATUS: "internal" });
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(
+		result.stderr,
+		/Direct package: changeset internal-change names @repo\/example/,
+	);
+	assert.doesNotMatch(result.stderr, /could not check/);
+});
+test("gate rejects a cascade outside supported directories", (t) => {
+	const result = gate(createFixture(t), [], { FAKE_STATUS: "cascade" });
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(
+		result.stderr,
+		/Cascade package: example-tool is in tooling\/example/,
+	);
+	assert.doesNotMatch(result.stderr, /could not check/);
 });

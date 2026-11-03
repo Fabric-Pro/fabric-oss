@@ -67,7 +67,16 @@ export default defineConfig({
 				// routes jest-dom through Vite's resolver, which respects the
 				// single project-root `vitest` instance like everything else
 				// here.
-				inline: ["katex", "streamdown", "@testing-library/jest-dom"],
+				//
+				// `@vercel/microfrontends` imports `next/server` with no file
+				// extension, which Next's bundler resolves in the real build but
+				// Node's ESM loader rejects. Inlining sends it through Vite.
+				inline: [
+					"katex",
+					"streamdown",
+					"@testing-library/jest-dom",
+					"@vercel/microfrontends",
+				],
 			},
 		},
 		exclude: [

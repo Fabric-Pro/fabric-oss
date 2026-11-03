@@ -384,6 +384,63 @@ describe("Proposal artifact options (Fizzy #2946)", () => {
 	});
 });
 
+describe("Proposal figure rules (Fizzy #2946)", () => {
+	const glossyDetect = buildGlossyDetectInstructions("PROPOSAL");
+	const proposalDetect = buildGlossyDetectInstructions("PROPOSAL", {
+		proposalArtifact: true,
+	});
+	const glossyExtract = buildGlossyExtractInstructions("PROPOSAL");
+	const proposalExtract = buildGlossyExtractInstructions("PROPOSAL", {
+		proposalArtifact: true,
+	});
+
+	it("tells detection a timeline needs a date or period for every entry, and undated stages are a flow", () => {
+		expect(proposalDetect).toContain(
+			"- A timeline needs a date or period for every entry, such as Week 1, Weeks 2–5, Q3 2026, or Month 2. Stages the section gives in order without dates or periods are a flow, drawn as numbered steps.",
+		);
+		expect(proposalDetect).not.toContain("a timeline for phases,");
+		expect(glossyDetect).not.toContain("A timeline needs a date");
+	});
+
+	it("tells detection a comparison sets the options side by side on shared aspects", () => {
+		expect(proposalDetect).toContain(
+			"- A comparison needs at least two options the section describes on the same aspects, at least two each, such as cost and setup effort. Options a paragraph only names are not a comparison.",
+		);
+		expect(glossyDetect).not.toContain("on the same aspects");
+	});
+
+	it("asks extraction for a short date or period in a timeline's date, never a phase or a step", () => {
+		expect(proposalExtract).toContain(
+			"- timeline: date is only a short date or period as the section gives it, such as Week 1, Weeks 2–5, Q3 2026, or Month 2, at most 20 characters; never a phase name, a step, or a sentence. A timeline with an entry the section gives no date or period for is discarded.",
+		);
+		expect(glossyExtract).not.toContain("never a phase name");
+	});
+
+	it("asks extraction for parallel comparison points on the same aspects", () => {
+		expect(proposalExtract).toContain(
+			"- comparison: points are parallel attributes of each option, one per aspect the section compares them on (such as cost, setup effort, or data control), in the same order and the same number for every option, at least two each, so each row of the table compares one aspect. Each point is a few words, at most 40 characters. Never a sentence that restates the paragraph or repeats the option's name.",
+		);
+		expect(glossyExtract).not.toContain("parallel attributes");
+	});
+
+	it("tells extraction what is left out or cut past a bound, and bounds a layer's description", () => {
+		expect(proposalExtract).toContain(
+			"- A description or detail longer than its bound is left out of the diagram whole; a title longer than its bound is shown without its description, and a much longer one is cut at a word. Write each within its bound.",
+		);
+		expect(proposalExtract).toContain(
+			"A layer's description only when it adds information the name does not already give, at most 28 characters, otherwise null.",
+		);
+		expect(glossyExtract).not.toContain("left out of the diagram whole");
+	});
+
+	it("asks extraction to start every label with a capital letter", () => {
+		expect(proposalExtract).toContain(
+			"- Start every label, name, component, and description with a capital letter, as a heading does; keep the casing of a name such as iOS or eBay.",
+		);
+		expect(glossyExtract).not.toContain("with a capital letter");
+	});
+});
+
 describe("Edit with instructions (Fizzy #2946)", () => {
 	const input = {
 		kind: "flow" as const,
@@ -410,6 +467,30 @@ describe("Edit with instructions (Fizzy #2946)", () => {
 		expect(
 			editing.replace(/## Editing an existing diagram\n(?:.*\n)+?\n/, ""),
 		).toBe(plain);
+	});
+
+	it("tells a Proposal edit to keep a timeline's dates as written and add none", () => {
+		const rule =
+			"- When the current diagram is a timeline, keep each entry's date as the current diagram writes it, and never add a date or period the section does not state: the rule above that discards a timeline without one is for a new timeline, not for an edit.";
+		const editing = buildGlossyExtractInstructions("PROPOSAL", {
+			proposalArtifact: true,
+			editInstruction: true,
+		});
+		expect(editing).toContain(rule);
+		// After the timeline date rule it overrides.
+		expect(editing.indexOf(rule)).toBeGreaterThan(
+			editing.indexOf("- timeline: date is only a short date or period"),
+		);
+		expect(
+			buildGlossyExtractInstructions("PROPOSAL", {
+				proposalArtifact: true,
+			}),
+		).not.toContain("keep each entry's date");
+		expect(
+			buildGlossyExtractInstructions("PROPOSAL", {
+				editInstruction: true,
+			}),
+		).not.toContain("keep each entry's date");
 	});
 
 	it("carries the request and the current source as bounded untrusted blocks", () => {

@@ -9,7 +9,9 @@ import {
 } from "../../../../orpc/procedures";
 
 export const getEligibleUsersProcedure = tenantProtectedProcedure
-	.use(requireProjectPermission(Permissions.PROJECT_MEMBERS_READ))
+	// Lists colleagues' email addresses, so it needs the permission that can act
+	// on them: reading a project's members must not expose the whole organization.
+	.use(requireProjectPermission(Permissions.PROJECT_MEMBERS_MANAGE))
 	.route({
 		method: "GET",
 		path: "/projects/:projectId/members/eligible",
@@ -60,19 +62,30 @@ export const getEligibleUsersProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Get existing members to exclude them
-		const existingMembers = await db.projectMember.findMany({
-			where: {
-				projectId: input.projectId,
-				acceptedAt: { not: null },
-			},
-			select: { userId: true },
-		});
+		// Everyone `canInviteUser` would refuse: offering them only ends in an
+		// error once they are picked.
+		const [existingMembers, pendingInvitations] = await Promise.all([
+			db.projectMember.findMany({
+				where: { projectId: input.projectId },
+				select: { userId: true },
+			}),
+			db.projectInvitation.findMany({
+				where: {
+					projectId: input.projectId,
+					status: "PENDING",
+					expiresAt: { gt: new Date() },
+				},
+				select: { email: true },
+			}),
+		]);
 
 		const excludedUserIds = [
 			project.userId, // Exclude owner
 			...existingMembers.map((m) => m.userId),
 		];
+		const excludedEmails = pendingInvitations.map(
+			(invitation) => invitation.email,
+		);
 
 		// Build query based on project type
 		let eligibleUsers: Array<{
@@ -87,6 +100,7 @@ export const getEligibleUsersProcedure = tenantProtectedProcedure
 			eligibleUsers = await db.user.findMany({
 				where: {
 					id: { notIn: excludedUserIds },
+					email: { notIn: excludedEmails },
 					members: {
 						some: {
 							organizationId: project.organizationId,
@@ -124,6 +138,7 @@ export const getEligibleUsersProcedure = tenantProtectedProcedure
 			eligibleUsers = await db.user.findMany({
 				where: {
 					id: { notIn: excludedUserIds },
+					email: { notIn: excludedEmails },
 					members: { none: {} }, // No organization memberships
 					...(input.search
 						? {

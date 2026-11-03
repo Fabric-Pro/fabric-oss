@@ -6,11 +6,22 @@
  * tenant context separately, so tenant filtering is not applied here.
  */
 
-import { db } from "../../client";
+import { db, type Prisma } from "../../client";
 
 // ---------------------------------------------------------------------------
 // Linked Meetings (project settings)
 // ---------------------------------------------------------------------------
+
+/**
+ * Where a linked meeting came from (Fizzy #1877). An uploaded transcript files
+ * under a linked meeting so the digest and insights read it like any other, but
+ * its `joinUrl` is not a URL Microsoft knows: only a TEAMS row may reach anything
+ * that talks to Graph.
+ */
+export const LINKED_MEETING_SOURCE = {
+	TEAMS: "TEAMS",
+	UPLOAD: "UPLOAD",
+} as const;
 
 /**
  * Link a meeting to a project (upsert by projectId + joinUrl)
@@ -66,7 +77,7 @@ export async function unlinkMeetingFromProject(
  */
 export async function getLinkedMeetings(projectId: string) {
 	return await db.projectLinkedMeeting.findMany({
-		where: { projectId },
+		where: { projectId, source: LINKED_MEETING_SOURCE.TEAMS },
 		include: {
 			_count: {
 				select: { transcripts: true },
@@ -93,7 +104,11 @@ export async function getLinkedMeetings(projectId: string) {
  */
 export async function getLinkedMeetingJoinUrls(projectId: string) {
 	return await db.projectLinkedMeeting.findMany({
-		where: { projectId, deactivatedAt: null },
+		where: {
+			projectId,
+			deactivatedAt: null,
+			source: LINKED_MEETING_SOURCE.TEAMS,
+		},
 		select: {
 			id: true,
 			joinUrl: true,
@@ -111,7 +126,11 @@ export async function getLinkedMeetingJoinUrls(projectId: string) {
  */
 export async function countSyncableLinkedMeetings(projectId: string) {
 	return await db.projectLinkedMeeting.count({
-		where: { projectId, deactivatedAt: null },
+		where: {
+			projectId,
+			deactivatedAt: null,
+			source: LINKED_MEETING_SOURCE.TEAMS,
+		},
 	});
 }
 
@@ -173,6 +192,7 @@ export async function recordMeetingSyncFailure(params: {
 		where: {
 			projectId: params.projectId,
 			deactivatedAt: null,
+			source: LINKED_MEETING_SOURCE.TEAMS,
 			...(params.linkedMeetingIds
 				? { id: { in: params.linkedMeetingIds } }
 				: {}),
@@ -234,6 +254,125 @@ export async function rebindLinkedMeetingsToUser(params: {
 			id: { in: params.linkedMeetingIds },
 		},
 		data: { userId: params.userId },
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Uploaded transcripts (Fizzy #1877)
+// ---------------------------------------------------------------------------
+
+export { UPLOADED_TRANSCRIPT_PROVIDER } from "@repo/utils";
+
+/**
+ * What an uploaded file is filed under. Keyed on its content, so the unique
+ * indexes on both tables are what make the same file the same transcript, and
+ * one series per file so that deleting one upload deletes only that upload: the
+ * delete and archive path works on a whole series.
+ */
+export function uploadedTranscriptKeys(contentSha256: string) {
+	return {
+		joinUrl: `upload:${contentSha256}`,
+		meetingId: `upload:${contentSha256}`,
+		transcriptId: contentSha256,
+	};
+}
+
+/** The transcript this content already produced in this project, if any. */
+export async function findUploadedTranscript(
+	projectId: string,
+	contentSha256: string,
+) {
+	const { meetingId, transcriptId } = uploadedTranscriptKeys(contentSha256);
+	return await db.projectMeetingTranscript.findUnique({
+		where: {
+			projectId_meetingId_transcriptId: {
+				projectId,
+				meetingId,
+				transcriptId,
+			},
+		},
+		select: {
+			id: true,
+			contextId: true,
+			linkedMeetingId: true,
+			meetingSubject: true,
+			syncedAt: true,
+		},
+	});
+}
+
+/**
+ * Store a parsed upload: fill the context row the upload created, and write the
+ * series and tracking record behind it. One transaction, so a failure cannot
+ * leave a finished context with no transcript behind it. A second upload of the
+ * same content loses here on the unique index, which the caller reports as a
+ * duplicate.
+ */
+export async function createUploadedTranscript(params: {
+	projectId: string;
+	contextId: string;
+	contentSha256: string;
+	meetingSubject: string;
+	meetingDate: Date;
+	content: string;
+	contentHash: string | null;
+	sourceTitle: string;
+	metadata: Prisma.InputJsonValue;
+	speakerNames: string[];
+	summary?: string;
+	userId: string;
+	organizationId?: string;
+}) {
+	const { joinUrl, meetingId, transcriptId } = uploadedTranscriptKeys(
+		params.contentSha256,
+	);
+
+	return await db.$transaction(async (tx) => {
+		await tx.projectContext.update({
+			where: { id: params.contextId },
+			data: {
+				content: params.content,
+				contentHash: params.contentHash,
+				sourceTitle: params.sourceTitle,
+				metadata: params.metadata,
+				extractionStatus: "COMPLETED",
+				extractedAt: new Date(),
+			},
+		});
+
+		const series = await tx.projectLinkedMeeting.create({
+			data: {
+				projectId: params.projectId,
+				joinUrl,
+				subject: params.meetingSubject,
+				source: LINKED_MEETING_SOURCE.UPLOAD,
+				userId: params.userId,
+				organizationId: params.organizationId,
+			},
+			select: { id: true },
+		});
+
+		const record = await tx.projectMeetingTranscript.create({
+			data: {
+				projectId: params.projectId,
+				linkedMeetingId: series.id,
+				meetingId,
+				transcriptId,
+				meetingSubject: params.meetingSubject,
+				meetingDate: params.meetingDate,
+				contextId: params.contextId,
+				summary: params.summary,
+				keywords: [],
+				speakerNames: params.speakerNames,
+				contentLength: params.content.length,
+				wasSummarized: false,
+				userId: params.userId,
+				organizationId: params.organizationId,
+			},
+			select: { id: true },
+		});
+
+		return { transcriptRecordId: record.id, linkedMeetingId: series.id };
 	});
 }
 

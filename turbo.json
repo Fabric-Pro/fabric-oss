@@ -152,7 +152,12 @@
 				"@fabricorg/cli#pack:deployment"
 			],
 			"outputs": ["dist/**", ".next/**", "!.next/cache/**"],
-			"inputs": ["$TURBO_DEFAULT$", ".env*"]
+			"inputs": ["$TURBO_DEFAULT$", ".env*"],
+			// next.config.ts wraps the build in withMicrofrontends only for the
+			// fabric-prod project, so the project name changes the output and has
+			// to be in the hash: otherwise a remote-cache hit could hand one
+			// project another's build.
+			"env": ["VERCEL_PROJECT_NAME"]
 		},
 		"type-check": {
 			"dependsOn": ["generate", "^generate", "^build"],

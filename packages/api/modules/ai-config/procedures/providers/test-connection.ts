@@ -5,7 +5,12 @@ import {
 	resolveAzureDeploymentTarget,
 } from "@repo/ai";
 import { type AIProvider, db } from "@repo/database";
+import { hasPermission, resolveOrgPermissions } from "@repo/permissions";
 import { decryptApiKey } from "@repo/utils";
+import {
+	fetchAgentEndpoint,
+	validateCustomProviderUrl,
+} from "@repo/utils/agent-endpoint";
 import { z } from "zod";
 import { checkRateLimit } from "../../../../lib/rate-limit";
 import {
@@ -43,6 +48,7 @@ const AIProviderEnum = z.enum([
 	"PERPLEXITY",
 	"XAI",
 	"CEREBRAS",
+	"CUSTOM",
 ]);
 
 type AIProviderType = z.infer<typeof AIProviderEnum>;
@@ -91,10 +97,11 @@ async function testOpenAICompatible(
 	apiKey: string,
 	baseUrl: string,
 	providerName: string,
+	requestFn: (url: string, init?: RequestInit) => Promise<Response> = fetch,
 ): Promise<ConnectionTestResult> {
 	const start = Date.now();
 	try {
-		const response = await fetch(`${baseUrl}/models`, {
+		const response = await requestFn(`${baseUrl}/models`, {
 			headers: { Authorization: `Bearer ${apiKey}` },
 			signal: AbortSignal.timeout(10000), // 10 second timeout
 		});
@@ -747,6 +754,32 @@ function getProviderTester(
 		case "DATABRICKS":
 			return (apiKey, config) =>
 				testDatabricks(apiKey, config?.baseUrl as string | undefined);
+		case "CUSTOM":
+			return async (apiKey, config) => {
+				const rawBaseUrl = (
+					config?.baseUrl as string | undefined
+				)?.trim();
+				if (!rawBaseUrl) {
+					return {
+						success: false,
+						message:
+							"Custom / Remote Server requires an endpoint base URL",
+					};
+				}
+				const urlError = validateCustomProviderUrl(rawBaseUrl);
+				if (urlError) {
+					return {
+						success: false,
+						message: urlError,
+					};
+				}
+				return await testOpenAICompatible(
+					apiKey,
+					rawBaseUrl.replace(/\/+$/, ""),
+					"Custom / Remote Server",
+					fetchAgentEndpoint,
+				);
+			};
 		case "AWS_BEDROCK":
 		case "GOOGLE_VERTEX_AI":
 			return async () => ({
@@ -784,6 +817,7 @@ export const testProviderConnectionProcedure = tenantProtectedProcedure
 				// Azure AI Foundry only: the deployment the test probes. The
 				// same value `upsert` saves, so the test exercises what is saved.
 				deploymentName: z.string().optional(),
+				organizationId: z.string().nullable().optional(),
 				config: z.record(z.string(), z.unknown()).optional(),
 			})
 			.superRefine((input, ctx) => {
@@ -808,6 +842,22 @@ export const testProviderConnectionProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
+		if (
+			input.organizationId !== null &&
+			context.tenantContext &&
+			context.tenantContext.type === "organization" &&
+			(input.provider === "CUSTOM" || Boolean(input.baseUrl))
+		) {
+			const granted = resolveOrgPermissions(
+				context.activeOrganizationRole,
+			);
+			if (!hasPermission(granted, Permissions.ORG_AI_CONFIG_EDIT)) {
+				throw new ORPCError("FORBIDDEN", {
+					message: `Missing required permission: ${Permissions.ORG_AI_CONFIG_EDIT}`,
+				});
+			}
+		}
+
 		// Check rate limit before processing
 		const rateLimitResult = await checkConnectionTestRateLimit(
 			context.user.id,

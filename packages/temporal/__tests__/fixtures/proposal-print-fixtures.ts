@@ -11,12 +11,33 @@
  *   gantt with a milestone, drawn from its template; a fence with a broken
  *   header (left out);
  *   card grids, two columns, a bars figure and a bars fence its template
- *   refuses (printed as a plain chart); and an appendix holding a table
- *   without a header row.
+ *   refuses (printed as a plain chart); a layers figure with three-word
+ *   names and long descriptions and a timeline whose eyebrows are phrases;
+ *   a section without a subtitle whose last paragraph runs onto a page of
+ *   its own, then a one-paragraph section that opens below it; and an
+ *   appendix holding a table without a header row.
  * - `GENERATED_PROPOSAL`: shaped like a generated Main: a leading `#` title
  *   that differs from the document's name, no preamble, no subtitles, and
  *   process and timeline fences written by the real visual templating with
  *   their figure line, as generation writes them.
+ * - `OLDER_PROPOSAL`: shaped like a Main from before figure lines: plain
+ *   Mermaid fences, each after its section's first paragraph as the
+ *   visuals step places one, a top-down chain of twelve steps, which draws
+ *   as a grid of numbered steps, and a sideways chain of four labels under
+ *   40 characters, two of them dense in dashes, m, w and hyphens, which
+ *   stays a Mermaid layout.
+ * - `LONG_OPENER_PROPOSAL`: one section whose opener is as tall as a
+ *   generated one gets: a heading on three lines and a subtitle of the
+ *   longest length an opener takes, then a top-down chain of twenty steps
+ *   right under it, which draws as a grid of numbered steps.
+ * - `BRANCHED_OPENER_PROPOSAL`: one section whose opener has a heading and
+ *   a short subtitle, then right under it a top-down flowchart with a
+ *   branch and a join, taller than the room the opener leaves at the
+ *   labels' print floor.
+ * - `SHRUNK_OPENER_PROPOSAL`: one section whose opener has a heading on
+ *   three lines and a short subtitle, then right under it a shorter
+ *   top-down flowchart with a branch and a join, a little taller than the
+ *   room the opener leaves, at which its labels still print above the floor.
  */
 import type { VisualSpec } from "@repo/utils/glossy/visual-spec";
 import {
@@ -44,7 +65,8 @@ export const GENERATED_H1 = "A mobile work order pilot for Example Harbor Co";
 export const COVER_LEAD =
 	"Example Studio proposes a twelve-week pilot that moves Example Harbor Co dispatch and field crews from paper work orders to one shared mobile workflow, starting with the regional routes that carry the most repeat visits and ending with a measured review of cost, response time and crew adoption before any wider rollout.";
 
-const PARAGRAPH =
+/** The body paragraph every fixture's sections use. */
+export const PARAGRAPH =
 	"Software teams effectively identify the difficult parts of a workflow first, then focus the pilot on the stages that matter most to the people who run it.";
 
 /** A section's heading as typed, its subtitle, and its body. */
@@ -62,7 +84,7 @@ export const BROKEN_FENCE_TEXT = [
 ];
 
 /** How many figures fixture (a) numbers: every fence but the broken one. */
-export const FULL_FIGURE_COUNT = 8;
+export const FULL_FIGURE_COUNT = 10;
 
 /** The gantt's order among fixture (a)'s fences, and its figure number. */
 export const FULL_GANTT_FENCE = 6;
@@ -80,7 +102,99 @@ export const FULL_FLOWCHART_FIGURE = 4;
 export const FULL_GANTT_MILESTONE = "Pilot review";
 
 /** The figure-template fences of fixture (a), by their order among fences. */
-export const FULL_TEMPLATE_FENCES = [0, 1, 2, 4, 6, 7];
+export const FULL_TEMPLATE_FENCES = [0, 1, 2, 4, 6, 7, 9, 10];
+
+/**
+ * The layers fence with three-word names and long descriptions, and the
+ * timeline fence whose eyebrows are phrases, by their order among fixture
+ * (a)'s fences.
+ */
+export const FULL_LONG_LAYERS_FENCE = 9;
+export const FULL_LONG_TIMELINE_FENCE = 10;
+
+/** A layer: its name, its description (if any), and its boxes. */
+interface FixtureLayer {
+	name: string;
+	description: string | null;
+	boxes: string[];
+}
+
+/**
+ * The long layers' description too long for its row: the figure leaves it
+ * out rather than cut it.
+ */
+export const FULL_LONG_LAYER_LEFT_OUT =
+	"orders, parts reservations and crew positions pass between the work order system and the app through one queue that holds every change while a van is out of signal and replays it in order once the van reconnects";
+
+/**
+ * Layers named in three words, as generation names them, each but the last
+ * with a sentence for a description; the name column holds the first two
+ * whole and leaves the third out.
+ */
+export const FULL_LONG_LAYERS: readonly FixtureLayer[] = [
+	{
+		name: "Scheduling and dispatch",
+		description: "work is planned by region the evening before each shift",
+		boxes: [
+			"route builder",
+			"shift planner",
+			"crew roster",
+			"parts reservation",
+		],
+	},
+	{
+		name: "Records and compliance",
+		description: "every change is kept with who made it and why",
+		boxes: ["audit history", "photo evidence", "safety checklists"],
+	},
+	{
+		name: "Integration and synchronisation",
+		description: FULL_LONG_LAYER_LEFT_OUT,
+		boxes: [
+			"order system bridge",
+			"offline queue",
+			"retry handling",
+			"interoperability gateway",
+		],
+	},
+	{
+		name: "Reporting and finance",
+		description: null,
+		boxes: ["cost dashboards", "invoice export"],
+	},
+];
+
+/**
+ * Timeline steps whose first line, the mono eyebrow, is a phrase rather
+ * than a date: each step's eyebrow, title and detail. One phrase holds a
+ * word wider than the eyebrow; the others wrap past its three lines.
+ */
+export const FULL_LONG_TIMELINE: readonly (readonly [
+	string,
+	string,
+	string,
+])[] = [
+	[
+		"Confirm the rollout order with each regional lead",
+		"Rollout plan",
+		"One region at a time",
+	],
+	[
+		"Train neighbourhood supervisors",
+		"Supervisor training",
+		"Two sessions per depot",
+	],
+	[
+		"Move the remaining depots across in two waves",
+		"Depot moves",
+		"Paper forms kept as backup",
+	],
+	[
+		"Retire the paper forms everywhere",
+		"Paper retired",
+		"Measured against the baseline",
+	],
+];
 
 /**
  * The bars fence of fixture (a) its template refuses (thirteen bars, one
@@ -246,6 +360,27 @@ const REFUSED_BARS_FENCE = fence(
 	"  bar [42, 38, 45, 40, 36, 44, 47, 39, 41, 37, 43, 46, 40]",
 );
 
+const LONG_LAYERS_FENCE = fence(
+	"%% caption: How the platform behind the rollout is layered",
+	"%% figure: layers",
+	"flowchart TB",
+	...FULL_LONG_LAYERS.flatMap((layer, row) => [
+		`subgraph r${row}["${[layer.name, layer.description].filter(Boolean).join("<br/>")}"]`,
+		...layer.boxes.map((box, index) => `  r${row}b${index}["${box}"]`),
+		"end",
+	]),
+);
+
+const LONG_TIMELINE_FENCE = fence(
+	"%% caption: Rollout stages after the pilot review",
+	"%% figure: timeline",
+	"flowchart TD",
+	...FULL_LONG_TIMELINE.map(
+		(step, index) => `  w${index + 1}["${step.join("<br/>")}"]`,
+	),
+	`  ${FULL_LONG_TIMELINE.map((_, index) => `w${index + 1}`).join(" --> ")}`,
+);
+
 /** A grid of labelled cards, two to a row. */
 const CARDS_FENCE = [
 	"```cards",
@@ -314,6 +449,21 @@ const HEADERLESS_TABLE = [
 	"| Finance count | Completed jobs by week, reconciled with operations for one month. |",
 ].join("\n");
 
+/**
+ * Fixture (a)'s field notes: ten paragraphs under an opener without a
+ * subtitle. Nine fill the opener's page, and the tenth runs onto the next
+ * as a short tail: alone there, it would fill 7% of that page's body.
+ */
+const FULL_FIELD_NOTES_HEADING = "Field notes";
+export const FULL_FIELD_NOTES = Array.from(
+	{ length: 10 },
+	(_, index) =>
+		`Paragraph ${index + 1}. The example team reviews each stage of the workflow with the people who run it, records what slows them down, and agrees on the measures the pilot should move before any build starts. Each finding is checked against the example data set.`,
+);
+
+/** The section after the field notes: it opens below their short tail. */
+export const FULL_NEXT_STEPS_HEADING = "Next steps";
+
 /** Fixture (a)'s sections: titles none of which contains another. */
 export const FULL_SECTIONS: readonly FixtureSection[] = [
 	{
@@ -374,6 +524,23 @@ export const FULL_SECTIONS: readonly FixtureSection[] = [
 			COLUMNS_FENCE,
 			BARS_FENCE,
 			REFUSED_BARS_FENCE,
+		],
+	},
+	{
+		heading: "7. Rollout and operations",
+		subtitle: "What follows the pilot review, region by region.",
+		body: [PARAGRAPH, LONG_LAYERS_FENCE, LONG_TIMELINE_FENCE],
+	},
+	{
+		heading: FULL_FIELD_NOTES_HEADING,
+		subtitle: null,
+		body: FULL_FIELD_NOTES,
+	},
+	{
+		heading: FULL_NEXT_STEPS_HEADING,
+		subtitle: null,
+		body: [
+			"Example Harbor Co confirms the pilot region and names its sponsor.",
 		],
 	},
 	{
@@ -518,3 +685,246 @@ export const GENERATED_PROPOSAL = [
 
 /** How many figures fixture (b) numbers. */
 export const GENERATED_FIGURE_COUNT = 2;
+
+/** Fixture (c)'s document name; its Main opens with no `#` title. */
+export const OLDER_TITLE = "Example intake pilot proposal";
+
+/**
+ * Fixture (c)'s first figure: a top-down chain of twelve short steps, as a
+ * document from before figure lines holds it, which the engine would draw
+ * taller than a printed figure may be; it draws as a grid of numbered
+ * steps. Its first and last labels print nowhere else.
+ */
+export const OLDER_TALL_CHAIN = [
+	"Intake desk",
+	"Triage",
+	"Assign owner",
+	"Draft plan",
+	"Review plan",
+	"Approve",
+	"Build",
+	"Verify",
+	"Stage",
+	"Release",
+	"Monitor",
+	"Archive the case",
+] as const;
+
+/**
+ * Fixture (c)'s second figure: a sideways chain of labels under 40
+ * characters, two of them dense in dashes, m, w and hyphens, which Inter
+ * draws wider than the engine's estimate by more than their boxes' padding,
+ * between two ordinary ones, which fit.
+ */
+export const OLDER_DENSE_LABELS = [
+	"Momentum — minimum-time multi-team flow",
+	"Discovery workshop with the client team",
+	"Mid-term metrics — maximum momentum",
+	"Review the proposal with stakeholders",
+] as const;
+
+/** How many figures fixture (c) numbers. */
+export const OLDER_FIGURE_COUNT = 2;
+
+/**
+ * Fixture (c), shaped like an older Main: its diagrams are plain Mermaid
+ * fences without a figure line, one tall and one with dense labels.
+ */
+export const OLDER_PROPOSAL = sectionsMarkdown([
+	{
+		heading: "1. How a request moves",
+		subtitle: null,
+		body: [
+			PARAGRAPH,
+			fence(
+				"%% caption: Every step a request takes",
+				"flowchart TD",
+				...OLDER_TALL_CHAIN.slice(1).map(
+					(label, index) =>
+						`  s${index}["${OLDER_TALL_CHAIN[index]}"] --> s${index + 1}["${label}"]`,
+				),
+			),
+			PARAGRAPH,
+		],
+	},
+	{
+		heading: "2. How the teams work",
+		subtitle: null,
+		body: [
+			PARAGRAPH,
+			fence(
+				"%% caption: Four ways of working",
+				"flowchart LR",
+				...OLDER_DENSE_LABELS.slice(1).map(
+					(label, index) =>
+						`  d${index}["${OLDER_DENSE_LABELS[index]}"] --> d${index + 1}["${label}"]`,
+				),
+			),
+			PARAGRAPH,
+		],
+	},
+]).join("\n\n");
+
+/** Fixture (d)'s document name. */
+export const LONG_OPENER_TITLE = "Example request flow proposal";
+
+/** Fixture (d)'s heading as typed: three lines in the opener. */
+export const LONG_OPENER_HEADING =
+	"1. How the pilot moves every request from the first interview with dispatch to the measured review of cost and adoption";
+
+/** Exactly the longest subtitle an opener takes (200 characters). */
+export const LONG_OPENER_SUBTITLE =
+	"Every request the crews raise moves through the same twenty steps, from the intake desk to the archive, so the closing review can compare the pilot region with the baseline on cost and response times.";
+
+/**
+ * Fixture (d)'s figure: a top-down chain of twenty steps, which the engine
+ * would draw taller than a printed figure may be; it draws as a grid of
+ * numbered steps. Its first and last labels print nowhere else.
+ */
+export const LONG_OPENER_CHAIN = [
+	"Open the request",
+	...Array.from({ length: 18 }, (_, index) => `Step ${index + 2}`),
+	"Close the request",
+] as const;
+
+/**
+ * Fixture (d): the long opener and the chain right under it, then one
+ * short paragraph.
+ */
+export const LONG_OPENER_PROPOSAL = sectionsMarkdown([
+	{
+		heading: LONG_OPENER_HEADING,
+		subtitle: LONG_OPENER_SUBTITLE,
+		body: [
+			fence(
+				"%% caption: Every step a request takes",
+				"flowchart TD",
+				...LONG_OPENER_CHAIN.slice(1).map(
+					(label, index) =>
+						`  c${index}["${LONG_OPENER_CHAIN[index]}"] --> c${index + 1}["${label}"]`,
+				),
+			),
+			"The pilot keeps every step and only changes who acts on it.",
+		],
+	},
+]).join("\n\n");
+
+/** Fixture (e)'s document name. */
+export const BRANCHED_OPENER_TITLE = "Example request routing proposal";
+
+/** Fixture (e)'s heading as typed: one line in the opener. */
+export const BRANCHED_OPENER_HEADING = "1. How a request is routed";
+
+/** Fixture (e)'s subtitle: one line in the opener. */
+export const BRANCHED_OPENER_SUBTITLE = "Two routes, one review.";
+
+/**
+ * Fixture (e)'s figure: nine ranks top-down, with a branch after the second
+ * step and a join after the third, 735 px as drawn: its labels would reach
+ * the print floor at 679 px, more than the 600 px the opener leaves. Its
+ * first and last labels print nowhere else.
+ */
+export const BRANCHED_OPENER_FLOW = [
+	"Request received",
+	"Check the details",
+	"Route to dispatch",
+	"Route to a crew lead",
+	"Schedule the visit",
+	"Visit the site",
+	"Record the work",
+	"Review the record",
+	"Invoice the client",
+	"Close the request",
+] as const;
+
+/** The paragraph after fixture (e)'s figure. */
+export const BRANCHED_OPENER_AFTER =
+	"Both routes meet at the schedule, so the review compares them on one footing.";
+
+/**
+ * Fixture (e): the opener and the branched flowchart right under it, then
+ * one short paragraph.
+ */
+export const BRANCHED_OPENER_PROPOSAL = sectionsMarkdown([
+	{
+		heading: BRANCHED_OPENER_HEADING,
+		subtitle: BRANCHED_OPENER_SUBTITLE,
+		body: [
+			fence(
+				"%% caption: How a request is routed",
+				"flowchart TD",
+				`  a["${BRANCHED_OPENER_FLOW[0]}"] --> b["${BRANCHED_OPENER_FLOW[1]}"]`,
+				`  b --> c["${BRANCHED_OPENER_FLOW[2]}"]`,
+				`  b --> d["${BRANCHED_OPENER_FLOW[3]}"]`,
+				`  c --> e["${BRANCHED_OPENER_FLOW[4]}"]`,
+				"  d --> e",
+				`  e --> f["${BRANCHED_OPENER_FLOW[5]}"]`,
+				`  f --> g["${BRANCHED_OPENER_FLOW[6]}"]`,
+				`  g --> h["${BRANCHED_OPENER_FLOW[7]}"]`,
+				`  h --> i["${BRANCHED_OPENER_FLOW[8]}"]`,
+				`  i --> j["${BRANCHED_OPENER_FLOW[9]}"]`,
+			),
+			BRANCHED_OPENER_AFTER,
+		],
+	},
+]).join("\n\n");
+
+/** Fixture (f)'s document name. */
+export const SHRUNK_OPENER_TITLE = "Example crew routing proposal";
+
+/**
+ * Fixture (f)'s heading as typed: three lines in the opener, so the room
+ * under it is less than an opener with a one-line heading leaves.
+ */
+export const SHRUNK_OPENER_HEADING =
+	"1. How a request is routed from the first call to the closing review of cost and adoption in the pilot";
+
+/** Fixture (f)'s subtitle: one line in the opener. */
+export const SHRUNK_OPENER_SUBTITLE = "Two routes, one review.";
+
+/**
+ * Fixture (f)'s figure: seven ranks top-down, with a branch after the
+ * second step and a join after the third, a little taller than the room
+ * its opener leaves, where its labels still print above the floor. Its
+ * first and last labels print nowhere else.
+ */
+export const SHRUNK_OPENER_FLOW = [
+	"Request logged",
+	"Check the caller",
+	"Send to dispatch",
+	"Send to a crew lead",
+	"Book the visit",
+	"Do the work",
+	"Sign off the job",
+	"Archive the job",
+] as const;
+
+/** The paragraph after fixture (f)'s figure. */
+export const SHRUNK_OPENER_AFTER =
+	"Both routes meet at the booking, so the review weighs them alike.";
+
+/**
+ * Fixture (f): the long opener and the branched flowchart right under it,
+ * then one short paragraph.
+ */
+export const SHRUNK_OPENER_PROPOSAL = sectionsMarkdown([
+	{
+		heading: SHRUNK_OPENER_HEADING,
+		subtitle: SHRUNK_OPENER_SUBTITLE,
+		body: [
+			fence(
+				"%% caption: How a call is routed",
+				"flowchart TD",
+				`  a["${SHRUNK_OPENER_FLOW[0]}"] --> b["${SHRUNK_OPENER_FLOW[1]}"]`,
+				`  b --> c["${SHRUNK_OPENER_FLOW[2]}"]`,
+				`  b --> d["${SHRUNK_OPENER_FLOW[3]}"]`,
+				`  c --> e["${SHRUNK_OPENER_FLOW[4]}"]`,
+				"  d --> e",
+				`  e --> f["${SHRUNK_OPENER_FLOW[5]}"]`,
+				`  f --> g["${SHRUNK_OPENER_FLOW[6]}"]`,
+				`  g --> h["${SHRUNK_OPENER_FLOW[7]}"]`,
+			),
+			SHRUNK_OPENER_AFTER,
+		],
+	},
+]).join("\n\n");

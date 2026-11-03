@@ -41,6 +41,9 @@ export function newsletterSettingsDefaults(projectId: string) {
 		chatChannels: [] as NewsletterChatChannel[],
 		approvalChatChannels: [] as NewsletterApprovalChatChannel[],
 		requireApproval: false,
+		sendToOrganization: false,
+		orgSyncedAt: null as Date | null,
+		orgSyncError: null as string | null,
 		// Per-project embeddable widget fields: present (defaulted) so a project
 		// with NO settings row still yields defined widget fields on first load.
 		publicWidgetEnabled: false,
@@ -66,6 +69,9 @@ export async function getNewsletterSettings(projectId: string) {
  * `db.$transaction(async (tx) => …)` callback. Lets a caller compose the
  * widget-state toggle inside one transaction with the settings upsert + audit. */
 type Tx = Parameters<Parameters<typeof db.$transaction>[0]>[0];
+
+/** A subscriber no longer on the list who keeps their row and unsubscribe token. */
+const ORG_REMOVED_STATUS = "ORG_REMOVED";
 
 /**
  * Resolve a project + its widget config from an opaque embed token. Returns null
@@ -216,6 +222,7 @@ export async function upsertNewsletterSettings(
 		 *  which is the audience for the published notes. */
 		approvalChatChannels?: NewsletterApprovalChatChannel[];
 		requireApproval?: boolean;
+		sendToOrganization?: boolean;
 		// Per-project embeddable-widget presentation. `null` clears a stored
 		// value back to the default; `undefined` (omitted) leaves it untouched
 		// on update — mirrors how `lookbackDays` distinguishes clear vs no-op.
@@ -272,6 +279,7 @@ export async function upsertNewsletterSettings(
 			approvalChatChannels: (rest.approvalChatChannels ??
 				[]) as unknown as Prisma.InputJsonValue,
 			requireApproval: rest.requireApproval ?? false,
+			sendToOrganization: rest.sendToOrganization ?? false,
 			publicWidgetTheme: rest.publicWidgetTheme ?? null,
 			publicWidgetAccent: rest.publicWidgetAccent ?? null,
 			...(rest.publicWidgetConfig !== undefined && {
@@ -279,6 +287,9 @@ export async function upsertNewsletterSettings(
 			}),
 		},
 		update: {
+			...(rest.sendToOrganization !== undefined && {
+				sendToOrganization: rest.sendToOrganization,
+			}),
 			...(rest.enabled !== undefined && { enabled: rest.enabled }),
 			...(rest.cadence !== undefined && { cadence: rest.cadence }),
 			...(rest.dayOfWeek !== undefined && { dayOfWeek: rest.dayOfWeek }),
@@ -416,14 +427,19 @@ export async function listNewsletterSubscribers(projectId: string) {
 	return db.newsletterSubscriber.findMany({
 		// Exclude unconfirmed public sign-ups: they aren't subscribers yet, and the
 		// anonymous double opt-in path could otherwise flood the admin settings list.
-		where: { projectId, status: { not: "PENDING_CONFIRMATION" } },
-		orderBy: { createdAt: "desc" },
+		where: {
+			projectId,
+			status: { notIn: ["PENDING_CONFIRMATION", ORG_REMOVED_STATUS] },
+		},
+		// One sync gives every row the same time, so without a tie-break a row
+		// changes place, and page, as soon as it is updated.
+		orderBy: [{ createdAt: "desc" }, { email: "asc" }],
 	});
 }
 
 export async function listActiveNewsletterSubscribers(projectId: string) {
 	return db.newsletterSubscriber.findMany({
-		where: { projectId, status: "ACTIVE" },
+		where: { projectId, status: "ACTIVE", excludedAt: null },
 		select: { id: true, email: true, name: true, unsubscribeToken: true },
 	});
 }
@@ -455,6 +471,8 @@ export async function addNewsletterSubscriber(data: {
 			status: "ACTIVE",
 			unsubscribedAt: null,
 			name: data.name ?? undefined,
+			source: "MANUAL",
+			excludedAt: null,
 		},
 	});
 }
@@ -536,6 +554,17 @@ export async function enrollProjectMembersAsSubscribers(input: {
 		})),
 		skipDuplicates: true,
 	});
+	// A member whose row was taken off the list keeps that row, so the insert
+	// above skips them. They are here as a project member now, not as an
+	// organization member, so a later purge must leave them.
+	await db.newsletterSubscriber.updateMany({
+		where: {
+			projectId: input.projectId,
+			status: ORG_REMOVED_STATUS,
+			email: { in: emails },
+		},
+		data: { status: "ACTIVE", source: "MANUAL" },
+	});
 	return { enrolled: res.count };
 }
 
@@ -585,6 +614,175 @@ export async function enrollProjectMemberIfNewsletterEnabled(input: {
 	});
 }
 
+const ORG_SYNC_SOURCE = "ORG_SYNC";
+const MAX_ORG_SYNC_ERROR_CHARS = 500;
+const ORG_SYNC_TRANSACTION_TIMEOUT_MS = 60_000;
+/** Advisory-lock class for one project's org-synced subscribers. In the
+ *  `(int4, int4)` space the rest of this repo uses. */
+const ORG_SYNC_ADVISORY_CLASS = 0x4e4c4f53; // "NLOS"
+
+/**
+ * Serializes a sync with turning the setting off, for one project. Without it a
+ * sync that read the setting as on could write its rows after the purge
+ * committed, and they would stay ACTIVE with nothing left to remove them. Take
+ * it before reading `sendToOrganization`.
+ *
+ * MUST use `$executeRaw`, not `$queryRaw`: `pg_advisory_xact_lock()` returns
+ * `void`, which Prisma cannot deserialize.
+ */
+export async function lockOrganizationSubscribers(
+	tx: Tx,
+	projectId: string,
+): Promise<void> {
+	await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ORG_SYNC_ADVISORY_CLASS}::int, hashtext(${projectId}))`;
+}
+
+/**
+ * Reconcile organization members into a project's subscriber list when
+ * "Send to entire organization" is on (Fizzy #1986, FR9, FR13).
+ *
+ * All of it commits together or not at all, so a failure leaves the list as it
+ * was. Someone who left is marked ORG_REMOVED rather than deleted: their row
+ * holds the unsubscribe token in every email they already received, and a link
+ * that stopped matching a row would report success and change nothing.
+ *
+ * It never touches an UNSUBSCRIBED row, so an unsubscribe stays in force through
+ * leaving, rejoining and the setting going off and on (the consent model
+ * `enrollProjectMembersAsSubscribers` documents). An exclusion survives every
+ * sync, and an address someone added by hand stays MANUAL.
+ *
+ * An empty member read throws: an organization always has an owner, so it means
+ * the read went wrong, and treating it as nobody left would empty the list.
+ */
+export async function syncOrganizationSubscribers(
+	projectId: string,
+): Promise<{ added: number; removed: number }> {
+	return db.$transaction(
+		async (tx) => {
+			await lockOrganizationSubscribers(tx, projectId);
+			const nothing = { added: 0, removed: 0 };
+
+			const settings = await tx.newsletterSettings.findUnique({
+				where: { projectId },
+				select: { sendToOrganization: true, createdByUserId: true },
+			});
+			if (!settings?.sendToOrganization) {
+				return nothing;
+			}
+
+			const project = await tx.project.findUnique({
+				where: { id: projectId },
+				select: {
+					organizationId: true,
+					organization: { select: { deletedAt: true } },
+				},
+			});
+			const organizationId = project?.organizationId;
+			if (!organizationId || project.organization?.deletedAt) {
+				return nothing;
+			}
+
+			const members = await tx.member.findMany({
+				where: { organizationId },
+				select: { user: { select: { email: true, name: true } } },
+			});
+			const byEmail = new Map(
+				members.map((member) => [
+					member.user.email.trim().toLowerCase(),
+					member.user.name,
+				]),
+			);
+			if (byEmail.size === 0) {
+				throw new Error(
+					`Found no members for organization ${organizationId}`,
+				);
+			}
+			const emails = Array.from(byEmail.keys());
+
+			const created = await tx.newsletterSubscriber.createMany({
+				data: Array.from(byEmail, ([email, name]) => ({
+					projectId,
+					email,
+					name,
+					userId: null,
+					organizationId,
+					status: "ACTIVE",
+					source: ORG_SYNC_SOURCE,
+					unsubscribeToken: generateUnsubscribeToken(),
+					createdByUserId: settings.createdByUserId,
+				})),
+				skipDuplicates: true,
+			});
+			await tx.newsletterSubscriber.updateMany({
+				where: {
+					projectId,
+					status: ORG_REMOVED_STATUS,
+					email: { in: emails },
+				},
+				data: { status: "ACTIVE" },
+			});
+			const removed = await tx.newsletterSubscriber.updateMany({
+				where: {
+					projectId,
+					source: ORG_SYNC_SOURCE,
+					status: "ACTIVE",
+					email: { notIn: emails },
+				},
+				data: { status: ORG_REMOVED_STATUS, excludedAt: null },
+			});
+			await tx.newsletterSettings.update({
+				where: { projectId },
+				data: { orgSyncedAt: new Date(), orgSyncError: null },
+			});
+
+			return { added: created.count, removed: removed.count };
+		},
+		{ timeout: ORG_SYNC_TRANSACTION_TIMEOUT_MS },
+	);
+}
+
+/** Keeps a failed sync where the settings page can show it (FR17). */
+export async function recordOrganizationSyncFailure(
+	projectId: string,
+	message: string,
+) {
+	return db.newsletterSettings.update({
+		where: { projectId },
+		data: { orgSyncError: message.slice(0, MAX_ORG_SYNC_ERROR_CHARS) },
+	});
+}
+
+/**
+ * Excludes or restores one org-synced subscriber (FR11, FR12). Separate from
+ * `status`, which records the person's own choice: restoring someone an admin
+ * excluded must not override their unsubscribe.
+ */
+export async function setOrganizationSubscriberExcluded(
+	projectId: string,
+	id: string,
+	excluded: boolean,
+) {
+	return db.newsletterSubscriber.updateMany({
+		where: { id, projectId, source: ORG_SYNC_SOURCE },
+		data: { excludedAt: excluded ? new Date() : null },
+	});
+}
+
+/**
+ * Takes org-synced people off the list and clears their exclusions when the
+ * toggle goes off (FR14). Rows are kept, for the unsubscribe links in emails
+ * already sent; see {@link syncOrganizationSubscribers}.
+ */
+export async function purgeOrganizationSubscribers(
+	projectId: string,
+	client: Tx | typeof db = db,
+) {
+	return client.newsletterSubscriber.updateMany({
+		where: { projectId, source: ORG_SYNC_SOURCE, status: "ACTIVE" },
+		data: { status: ORG_REMOVED_STATUS, excludedAt: null },
+	});
+}
+
 export async function removeNewsletterSubscriber(
 	projectId: string,
 	id: string,
@@ -600,7 +798,12 @@ export async function removeNewsletterSubscriber(
 
 export async function unsubscribeByToken(token: string): Promise<boolean> {
 	const res = await db.newsletterSubscriber.updateMany({
-		where: { unsubscribeToken: token, status: "ACTIVE" },
+		// ORG_REMOVED too: an email sent before they came off the list still has
+		// this link, and the opt-out has to outlive a later return to the list.
+		where: {
+			unsubscribeToken: token,
+			status: { in: ["ACTIVE", ORG_REMOVED_STATUS] },
+		},
 		data: { status: "UNSUBSCRIBED", unsubscribedAt: new Date() },
 	});
 	return res.count > 0;
@@ -1427,6 +1630,16 @@ export async function reclaimStaleReviewSends(
 
 /** Send-phase read: everything the approved send needs, straight off the frozen
  *  row (never live settings/client input — Codex finding 3). */
+export async function getNewsletterSendProjectId(
+	sendId: string,
+): Promise<string | null> {
+	const send = await db.newsletterSend.findUnique({
+		where: { id: sendId },
+		select: { projectId: true },
+	});
+	return send?.projectId ?? null;
+}
+
 export async function getNewsletterSendForSendPhase(sendId: string) {
 	return db.newsletterSend.findUnique({
 		where: { id: sendId },

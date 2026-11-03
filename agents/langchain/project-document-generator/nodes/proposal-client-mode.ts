@@ -29,6 +29,12 @@ import {
 	APPLY_DOCUMENT_PATCHES_TOOL,
 	type ToolDefinition,
 } from "@repo/agent-tools";
+import {
+	AI_CHAT_ATTACHED_HINT_PREFIX,
+	AI_CHAT_ATTACHMENT_TAG_CLOSE,
+	AI_CHAT_ATTACHMENT_TAG_OPEN,
+	neutralizeAiChatAttachmentFilename,
+} from "@repo/utils/ai-chat-attachment";
 import { FENCE_MARKER } from "@repo/utils/glossy/outline";
 import {
 	buildEchoGuard,
@@ -1109,6 +1115,108 @@ export function buildProposalAttachmentBlock(
 		return `<${ATTACHMENT_TAG}>\n${neutralized}\n</${ATTACHMENT_TAG}>`;
 	});
 	return [PROPOSAL_ATTACHMENTS_HEADING, ...wrapped].join("\n\n");
+}
+
+/** The line that stands in for a file's content after the turn it was attached in. */
+const ATTACHED_EARLIER_NOTE =
+	"Attached earlier in this conversation; its content is not repeated in this turn. If you need its content, ask the person to attach it again.";
+
+/**
+ * An attachment entry as the editor builds it (`buildAiChatAttachmentEntry`):
+ * the label line `[Uploaded Document: name]` or `[Uploaded Image: name]`,
+ * after a `<fabric_attachment>` line or, in the older shape, without one.
+ * The name is already neutralized, so it holds no line break; it runs to the
+ * label line's last `]`.
+ */
+const ATTACHMENT_ENVELOPE_PATTERN = new RegExp(
+	`^(${AI_CHAT_ATTACHMENT_TAG_OPEN}\\n)?(\\[Uploaded (?:Document|Image): (.*)\\])(?:\\n|$)`,
+);
+
+/**
+ * The names the person attached in the turn `text` is from: the body of its
+ * `[Attached: a, b]` line (`buildAiChatAttachedHint`), neutralized as the
+ * editor neutralizes each name, so a line break inside a name reads as it
+ * does in the entry's label. The body runs to the last `]` after the marker,
+ * since a name may hold one. Null when the turn names no file.
+ */
+function attachedHintBody(text: string): string | null {
+	const start = text.lastIndexOf(AI_CHAT_ATTACHED_HINT_PREFIX);
+	if (start === -1) {
+		return null;
+	}
+	const rest = neutralizeAiChatAttachmentFilename(
+		text.slice(start + AI_CHAT_ATTACHED_HINT_PREFIX.length),
+	);
+	const end = rest.lastIndexOf("]");
+	return end === -1 ? null : rest.slice(0, end);
+}
+
+/**
+ * How many times `name` is a whole item of the hint body: at its start or
+ * right after `, `, and ending right before `, ` or at its end. A name that
+ * holds `, ` or `]` still matches.
+ */
+function countHintItems(body: string, name: string): number {
+	if (!name) {
+		return 0;
+	}
+	let count = 0;
+	for (
+		let at = body.indexOf(name);
+		at !== -1;
+		at = body.indexOf(name, at + 1)
+	) {
+		const end = at + name.length;
+		const startsItem = at === 0 || body.startsWith(", ", at - 2);
+		const endsItem = end === body.length || body.startsWith(", ", end);
+		if (startsItem && endsItem) {
+			count++;
+		}
+	}
+	return count;
+}
+
+/**
+ * The person's attachments for this turn (Fizzy #2946). The editor sends every
+ * file of the chat on every run; only those the person attached in this turn,
+ * as the `[Attached: …]` line of `latestTurnText` names them, go in full.
+ * Every other file becomes a note in the same envelope, with the same label:
+ * the model knows the file exists and can ask for it again, and a note
+ * carries no image. A name listed k times keeps the k most recent entries
+ * with that name, so a file attached again does not bring back its older
+ * copy. An entry outside the envelope passes through as it is.
+ */
+export function selectProposalAttachmentsForTurn(
+	entries: readonly string[],
+	latestTurnText: string,
+): string[] {
+	const hint = attachedHintBody(latestTurnText);
+	const remaining = new Map<string, number>();
+	const selected: string[] = [];
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		const envelope = ATTACHMENT_ENVELOPE_PATTERN.exec(entry);
+		if (!envelope) {
+			selected.push(entry);
+			continue;
+		}
+		const [, open, label, name] = envelope;
+		const left =
+			remaining.get(name) ??
+			(hint === null ? 0 : countHintItems(hint, name));
+		if (left > 0) {
+			remaining.set(name, left - 1);
+			selected.push(entry);
+			continue;
+		}
+		remaining.set(name, 0);
+		selected.push(
+			open
+				? `${open}${label}\n${ATTACHED_EARLIER_NOTE}\n${AI_CHAT_ATTACHMENT_TAG_CLOSE}`
+				: `${label}\n${ATTACHED_EARLIER_NOTE}`,
+		);
+	}
+	return selected.reverse();
 }
 
 // =============================================================================

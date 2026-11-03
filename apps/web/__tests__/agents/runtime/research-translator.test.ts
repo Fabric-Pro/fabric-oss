@@ -287,6 +287,9 @@ describe("ResearchRunTranslator — mapping tables", () => {
 		const outputKeys = Object.keys({
 			...researchOutput(),
 			error: "x",
+			model: undefined,
+			summaryModel: undefined,
+			reportModel: undefined,
 		}).sort();
 		const progressKeys = Object.keys(
 			researchProgress({

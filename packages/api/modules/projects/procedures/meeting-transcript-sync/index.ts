@@ -12,3 +12,7 @@ export { setAutoAnalyzeProcedure } from "./set-auto-analyze";
 export { setMeetingSyncActiveProcedure } from "./set-meeting-sync-active";
 export { triggerSyncNowProcedure } from "./trigger-sync-now";
 export { unlinkMeetingProcedure } from "./unlink-meeting";
+export {
+	createTranscriptUploadUrlProcedure,
+	startTranscriptUploadIngestProcedure,
+} from "./upload-transcript";

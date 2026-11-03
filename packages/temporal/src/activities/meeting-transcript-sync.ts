@@ -29,7 +29,10 @@ import {
 } from "@repo/integrations/microsoft";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
-import { getTemporalClient } from "../client";
+import {
+	formatTranscriptHeader,
+	startTranscriptPipelines,
+} from "./lib/meeting-transcript-pipelines";
 
 // =============================================================================
 // Types
@@ -194,7 +197,7 @@ export function describeMissingTranscripts(
 // =============================================================================
 
 /** Maximum transcript length before LLM summarization kicks in */
-const TRANSCRIPT_SUMMARIZATION_THRESHOLD = 50_000;
+export const TRANSCRIPT_SUMMARIZATION_THRESHOLD = 50_000;
 
 /**
  * How far a stored transcript may sit from a calendar occurrence and still count as covering it.
@@ -845,17 +848,11 @@ export async function fetchAndStoreMeetingTranscript(
 				? new Date(occurrenceDate).toLocaleString()
 				: "Unknown date";
 			const speakerList = Array.from(speakerNames);
-			const header = [
-				`## Meeting Transcript: ${meetingSubject}`,
-				`**Date:** ${formattedDate}`,
-				speakerList.length > 0
-					? `**Participants:** ${speakerList.join(", ")}`
-					: "",
-				"---",
-				"",
-			]
-				.filter(Boolean)
-				.join("\n");
+			const header = formatTranscriptHeader({
+				meetingSubject,
+				formattedDate,
+				speakerNames: speakerList,
+			});
 
 			// The verbatim transcript, always. A summary is generated alongside it
 			// for long meetings (below) but never replaces it: the body is the
@@ -947,150 +944,22 @@ export async function fetchAndStoreMeetingTranscript(
 				organizationId,
 			});
 
-			// Step 9: Start contextEmbeddingWorkflow to embed into Qdrant
+			// Steps 9-11: embedding, auto-analysis and insights.
 			heartbeat("starting embedding workflow");
-			try {
-				const client = await getTemporalClient();
-				await client.workflow.start("contextEmbeddingWorkflow", {
-					taskQueue: "project-documents",
-					workflowId: `context-embedding-${newContext.id}-${Date.now()}`,
-					args: [
-						{
-							// Deliberately no `content`: a transcript is stored
-							// whole now, and an inline body would put the
-							// workflow input at the mercy of the meeting's
-							// length. The activity reads it back by contextId.
-							contextId: newContext.id,
-							projectId,
-							userId,
-							organizationId,
-							type: "MEETING_TRANSCRIPT",
-							metadata: {
-								sourceTitle: `Meeting Transcript: ${meetingSubject}`,
-								provider: "microsoft-teams",
-								meetingId: meetingKey,
-								transcriptId,
-							},
-						},
-					],
-				});
-			} catch (embeddingError) {
-				logger.error(
-					"[MeetingTranscriptSync] Failed to start embedding workflow",
-					{
-						error:
-							embeddingError instanceof Error
-								? embeddingError.message
-								: String(embeddingError),
-						contextId: newContext.id,
-					},
-				);
-				// Non-fatal: the context is stored, just not embedded yet
-			}
-
-			// Step 10: auto-analyze this fresh transcript for feature proposals
-			// when BOTH the sync flag and the opt-in auto-analyze flag are ON.
-			// Fire-and-forget a dedicated workflow (mirrors the embedding start
-			// above) so the ~300s LLM analysis + retries are decoupled from this
-			// ingest activity's 10-min timeout and `meetingTranscriptSyncWorkflow`
-			// stays untouched. A failed start is NON-FATAL — it must not fail
-			// transcript ingest/embedding or abort the loop / per-meeting fetch.
-			try {
-				const project = await db.project.findUnique({
-					where: { id: projectId },
-					select: {
-						meetingTranscriptSyncEnabled: true,
-						meetingTranscriptAutoAnalyzeEnabled: true,
-					},
-				});
-
-				if (
-					project?.meetingTranscriptSyncEnabled &&
-					project?.meetingTranscriptAutoAnalyzeEnabled
-				) {
-					const client = await getTemporalClient();
-					await client.workflow.start(
-						"autoAnalyzeMeetingTranscriptWorkflow",
-						{
-							taskQueue: "ai-chat",
-							// Deterministic, transcript-keyed id (no timestamp
-							// suffix) paired with reject-duplicates so two starts
-							// for the same transcript cannot both run.
-							workflowId: `auto-analyze-meeting-transcript:${transcriptRecord.id}`,
-							workflowIdReusePolicy: "REJECT_DUPLICATE",
-							workflowIdConflictPolicy: "FAIL",
-							args: [
-								{
-									projectId,
-									userId,
-									organizationId,
-									transcriptRecordId: transcriptRecord.id,
-									contextId: newContext.id,
-									meetingId: meetingKey,
-									transcriptId,
-									linkedMeetingId,
-									meetingSubject,
-									meetingDate: occurrenceDate,
-									transcriptText: finalContent,
-								},
-							],
-						},
-					);
-				}
-			} catch (autoAnalyzeError) {
-				logger.error(
-					"[MeetingTranscriptSync] Failed to start auto-analyze workflow",
-					{
-						error:
-							autoAnalyzeError instanceof Error
-								? autoAnalyzeError.message
-								: String(autoAnalyzeError),
-						transcriptRecordId: transcriptRecord.id,
-					},
-				);
-				// Non-fatal: the transcript is stored + embedding kicked off;
-				// auto-analysis simply did not start for this transcript.
-			}
-
-			// Step 11 (#1814): fire-and-forget insights extraction so summaries/
-			// decisions/actions/questions are ready before anyone opens the
-			// digest. Same workflowId scheme as the sheet-open trigger
-			// (extract-insights procedure) — ALLOW_DUPLICATE + FAIL collapses
-			// the race between ingest and a concurrent open. Gated only by the
-			// sync flag: insights are core digest content, not proposal-gated.
-			// Non-fatal like the starts above.
-			try {
-				const client = await getTemporalClient();
-				await client.workflow.start(
-					"extractMeetingInsightsOnDemandWorkflow",
-					{
-						taskQueue: "project-documents",
-						workflowId: `meeting-digest-insights:${transcriptRecord.id}`,
-						workflowIdReusePolicy: "ALLOW_DUPLICATE",
-						workflowIdConflictPolicy: "FAIL",
-						args: [
-							{
-								projectId,
-								organizationId,
-								userId,
-								transcriptCuid: transcriptRecord.id,
-							},
-						],
-					},
-				);
-			} catch (insightsError) {
-				logger.error(
-					"[MeetingTranscriptSync] Failed to start insights extraction workflow",
-					{
-						error:
-							insightsError instanceof Error
-								? insightsError.message
-								: String(insightsError),
-						transcriptRecordId: transcriptRecord.id,
-					},
-				);
-				// Non-fatal: the sheet-open path self-populates as before.
-			}
+			await startTranscriptPipelines({
+				projectId,
+				userId,
+				organizationId,
+				transcriptRecordId: transcriptRecord.id,
+				contextId: newContext.id,
+				linkedMeetingId,
+				meetingId: meetingKey,
+				transcriptId,
+				meetingSubject,
+				meetingDate: occurrenceDate,
+				transcriptText: finalContent,
+				provider: "microsoft-teams",
+			});
 
 			transcriptsFetched++;
 			lastContextId = newContext.id;
@@ -1198,7 +1067,7 @@ export async function updateMeetingTranscriptSyncLastRunActivity(
  * Used above the sync digest threshold to generate a separate summary.
  * The stored transcript body stays whole; AI Update budgets it when analyzing.
  */
-async function summarizeTranscript(
+export async function summarizeTranscript(
 	transcript: string,
 	meetingSubject: string,
 	userId: string,

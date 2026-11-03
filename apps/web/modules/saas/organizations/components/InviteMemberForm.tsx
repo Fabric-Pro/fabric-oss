@@ -2,6 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { authClient } from "@repo/auth/client";
+import { BulkInviteMembersDialog } from "@saas/organizations/components/BulkInviteMembersDialog";
 import { OrganizationRoleSelect } from "@saas/organizations/components/OrganizationRoleSelect";
 import {
 	fullOrganizationQueryKey,
@@ -242,7 +243,10 @@ export function InviteMemberForm({
 						</div>
 					)}
 
-					<div className="mt-4 flex justify-end">
+					<div className="mt-4 flex justify-end gap-2">
+						<BulkInviteMembersDialog
+							organizationId={organizationId}
+						/>
 						<Button
 							type="submit"
 							loading={form.formState.isSubmitting}

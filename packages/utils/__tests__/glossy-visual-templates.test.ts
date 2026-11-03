@@ -19,6 +19,7 @@ import {
 	orgChartToMermaid,
 	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
 	proposalFigureKind,
+	proposalLabelCase,
 	proposalVisualTemplateOptions,
 	SVG_CARD_FONT_STACK,
 	statToSvgCard,
@@ -1007,16 +1008,14 @@ describe("Proposal template options (Fizzy #2946)", () => {
 		expect(label.startsWith(shown)).toBe(true);
 	});
 
-	it("shows at most one detail line, cut at a word, so what shows is a prefix of the checked text", () => {
+	it("leaves a detail longer than one line out whole, never cut", () => {
 		const description =
 			"Structured interviews with finance, operations and legal leads";
-		const lines = flowNode("Discovery", description);
-		expect(lines).toHaveLength(2);
-		const detail = lines[1] ?? "";
-		expect(Array.from(detail).length).toBeLessThanOrEqual(28);
-		expect(detail.endsWith("…")).toBe(true);
-		expect(description.startsWith(detail.slice(0, -1))).toBe(true);
-		expect(description[detail.length - 1]).toBe(" ");
+		expect(flowNode("Discovery", description)).toEqual(["Discovery"]);
+		expect(flowNode("Discovery", "Interviews with finance")).toEqual([
+			"Discovery",
+			"Interviews with finance",
+		]);
 	});
 
 	it("keeps a timeline's date on its own first line", () => {
@@ -1317,7 +1316,7 @@ describe("layers and team (Fizzy #2946)", () => {
 		}
 	});
 
-	it("cuts long labels at a word, leaving a detail that repeats its title out", () => {
+	it("leaves a name longer than one line out whole, and a detail that repeats its title", () => {
 		const source = teamToMermaid({
 			kind: "team",
 			proposer: {
@@ -1332,7 +1331,30 @@ describe("layers and team (Fizzy #2946)", () => {
 			},
 			client: { name: "Client", members: [{ role: "Owner" }] },
 		});
-		expect(source).toContain('p0["Lead<br/>A person with a rather…"]');
+		expect(source).toContain('p0["Lead"]');
+		expect(source).not.toContain("…");
+	});
+
+	it("keeps a member's name under a role longer than the extraction asks for, leaving out only the detail", () => {
+		const source = teamToMermaid({
+			kind: "team",
+			proposer: {
+				name: "Example Studio",
+				members: [
+					{
+						// 35 characters: past the 32 a title keeps its details to.
+						role: "Senior engineer, mobile and offline",
+						name: "Alex Example",
+						description: "Owns sync",
+					},
+				],
+			},
+			client: { name: "Client", members: [{ role: "Owner" }] },
+		});
+		expect(source).toContain(
+			'p0["Senior engineer, mobile and offline<br/>Alex Example"]',
+		);
+		expect(source).not.toContain("Owns sync");
 	});
 
 	it("dispatches layers and team, and asks for their own figures", () => {
@@ -1355,16 +1377,18 @@ describe("proposalVisualTemplateOptions", () => {
 	const TITLE = "Scope the work with both teams together";
 
 	it("writes the title as one label line in a fence a figure template draws", () => {
+		// 30 characters: two lines at 28, within what the extraction asks.
+		const short = "Scope the work with both teams";
 		const flow: FlowVisualSpec = {
 			kind: "flow",
 			steps: [
-				{ label: TITLE, description: "Agree what done looks like" },
+				{ label: short, description: "Agree what done looks like" },
 				{ label: "Build" },
 			],
 		};
 		expect(
 			visualSpecToMermaid(flow, proposalVisualTemplateOptions(flow)),
-		).toContain(`f0["${TITLE}<br/>Agree what done looks like"]`);
+		).toContain(`f0["${short}<br/>Agree what done looks like"]`);
 		const timeline: TimelineVisualSpec = {
 			kind: "timeline",
 			items: [{ date: "Week 1", label: TITLE }],
@@ -1437,5 +1461,358 @@ describe("cutLabelAtWord", () => {
 		const cut = cutLabelAtWord("😀".repeat(20), 10);
 		expect(Array.from(cut)).toHaveLength(10);
 		expect(cut.endsWith("…")).toBe(true);
+	});
+});
+
+describe("Proposal label case (Fizzy #2946)", () => {
+	it("starts a label written all in lower case with a capital", () => {
+		expect(proposalLabelCase("order history")).toBe("Order history");
+		expect(proposalLabelCase("pricing")).toBe("Pricing");
+		expect(proposalLabelCase("q3 2026")).toBe("Q3 2026");
+		expect(proposalLabelCase("ändern")).toBe("Ändern");
+	});
+
+	it("leaves a label with any capital in it as written", () => {
+		for (const label of [
+			"iOS",
+			"eBay",
+			"macOS",
+			"Order history",
+			"pH level",
+		]) {
+			expect(proposalLabelCase(label)).toBe(label);
+		}
+	});
+
+	it("leaves a label that does not start with a letter as written", () => {
+		for (const label of [
+			"3 pilot teams",
+			"“core” team",
+			"(optional) review",
+		]) {
+			expect(proposalLabelCase(label)).toBe(label);
+		}
+	});
+
+	const lowerLayers: LayersVisualSpec = {
+		kind: "layers",
+		layers: [
+			{
+				name: "experience",
+				description: "where orders arrive",
+				components: ["web shop", "iOS app", "eBay listings"],
+			},
+			{ name: "data", components: ["returns", "order history"] },
+		],
+		crosscutting: { name: "security", items: ["audit log", "macOS agent"] },
+	};
+	const lowerTeam: TeamVisualSpec = {
+		kind: "team",
+		proposer: {
+			name: "delivery team",
+			description: "core pod",
+			members: [{ role: "delivery lead", description: "owns the plan" }],
+		},
+		client: {
+			name: "Example Retail",
+			members: [{ role: "product owner" }],
+		},
+		shared: "weekly steering meeting",
+	};
+	const lowerTimeline: TimelineVisualSpec = {
+		kind: "timeline",
+		items: [
+			{
+				date: "week 1",
+				label: "agree the backlog",
+				description: "first release",
+			},
+			{ date: "Weeks 2–5", label: "build" },
+		],
+	};
+	const lowerFlow: FlowVisualSpec = {
+		kind: "flow",
+		steps: [
+			{ label: "intake", description: "requests arrive", lane: "sales" },
+			{ label: "review", lane: "delivery" },
+		],
+	};
+	const lowerProcess: FlowVisualSpec = {
+		kind: "flow",
+		steps: [
+			{ label: "rank requests", description: "sites and shifts" },
+			{ label: "start the trial" },
+		],
+	};
+	const lowerOrgChart: OrgChartVisualSpec = {
+		kind: "org_chart",
+		nodes: [
+			{ id: "lead", label: "programme lead", parentId: null },
+			{ id: "eng", label: "iOS engineer", parentId: "lead" },
+		],
+	};
+
+	/** Every quoted label in a source, its lines split at breaks. */
+	const drawnLines = (source: string): string[] =>
+		[...source.matchAll(/\["([^"]*)"\]/g)].flatMap((match) =>
+			match[1].split("<br/>"),
+		);
+
+	it("capitalises what a Proposal draws for layers, team, timeline, process and flow", () => {
+		const drawn = [
+			lowerLayers,
+			lowerTeam,
+			lowerTimeline,
+			lowerFlow,
+			lowerProcess,
+			lowerOrgChart,
+		].flatMap((spec) =>
+			drawnLines(
+				visualSpecToMermaid(spec, proposalVisualTemplateOptions(spec)),
+			),
+		);
+		expect(drawn).toEqual([
+			"Experience",
+			"Where orders arrive",
+			"Web shop",
+			"iOS app",
+			"eBay listings",
+			"Data",
+			"Returns",
+			"Order history",
+			"Security",
+			"Audit log",
+			"macOS agent",
+			"Delivery team",
+			"Core pod",
+			"Delivery lead",
+			"Owns the plan",
+			"Example Retail",
+			"Product owner",
+			"Weekly steering meeting",
+			"Week 1",
+			"Agree the backlog",
+			"First release",
+			"Weeks 2–5",
+			"Build",
+			"Sales",
+			"Intake",
+			"Requests arrive",
+			"Delivery",
+			"Review",
+			"Rank requests",
+			"Sites and shifts",
+			"Start the trial",
+			"Programme lead",
+			"iOS engineer",
+		]);
+	});
+
+	it("leaves Glossy's drawing of the same specs as it was", () => {
+		expect(timelineToMermaid(lowerTimeline)).toContain(
+			't0["week 1 — agree the backlog (first release)"]',
+		);
+		expect(flowToMermaid(lowerFlow)).toContain('subgraph lane0["sales"]');
+		expect(flowToMermaid(lowerFlow)).toContain(
+			'f0["intake (requests arrive)"]',
+		);
+		expect(flowToMermaid(lowerProcess)).toContain(
+			'f0["rank requests (sites and shifts)"]',
+		);
+		expect(orgChartToMermaid(lowerOrgChart)).toContain(
+			'o0["programme lead"]',
+		);
+	});
+});
+
+describe("Proposal labels are never cut mid-phrase (Fizzy #2946)", () => {
+	// 45 characters: past the 32 the extraction asks for, within the cap.
+	const LONG_TITLE = "Map every intake channel with the depot leads";
+	// 47 characters: past one 28-character line.
+	const LONG_DETAIL = "Interviews with every shift lead at both depots";
+	// 74 characters: past the two-line cap.
+	const OVERLONG_TITLE =
+		"Map every intake channel, form and inbox with the depot and regional leads";
+
+	/** Every label line drawn in `source`, breaks split. */
+	const drawnLines = (source: string): string[] =>
+		[...source.matchAll(/\["([^"]*)"\]/g)].flatMap((match) =>
+			match[1].split("<br/>"),
+		);
+	const proposal = (spec: Parameters<typeof proposalFigureKind>[0]) =>
+		visualSpecToMermaid(spec, proposalVisualTemplateOptions(spec));
+
+	const longSpecs = {
+		timeline: {
+			kind: "timeline",
+			items: [
+				{
+					date: "Week 1",
+					label: LONG_TITLE,
+					description: "Short detail",
+				},
+				{ date: "Week 2", label: "Trial", description: LONG_DETAIL },
+			],
+		} satisfies TimelineVisualSpec,
+		process: {
+			kind: "flow",
+			steps: [
+				{ label: LONG_TITLE, description: "Short detail" },
+				{ label: "Trial", description: LONG_DETAIL },
+			],
+		} satisfies FlowVisualSpec,
+		lanedFlow: {
+			kind: "flow",
+			steps: [
+				{ label: LONG_TITLE, description: "Short detail", lane: "Ops" },
+				{ label: "Trial", description: LONG_DETAIL, lane: "Sales" },
+			],
+		} satisfies FlowVisualSpec,
+		layers: {
+			kind: "layers",
+			layers: [
+				{
+					name: "Channels and intake points",
+					description: LONG_DETAIL,
+					components: [LONG_TITLE, "Web shop"],
+				},
+				{ name: "Data", description: "Orders", components: ["Store"] },
+			],
+			crosscutting: {
+				name: "Operations",
+				description: LONG_DETAIL,
+				items: [LONG_TITLE],
+			},
+		} satisfies LayersVisualSpec,
+		team: {
+			kind: "team",
+			proposer: {
+				name: "Example Studio",
+				description: LONG_DETAIL,
+				members: [
+					{ role: LONG_TITLE, description: "Owns the plan" },
+					{ role: "Engineer", description: LONG_DETAIL },
+				],
+			},
+			client: { name: "Example Retail", members: [{ role: "Owner" }] },
+			shared: LONG_TITLE,
+		} satisfies TeamVisualSpec,
+	};
+
+	it.each(Object.entries(longSpecs))(
+		"draws no label line of a long %s with an ellipsis",
+		(_kind, spec) => {
+			const lines = drawnLines(proposal(spec));
+			expect(lines.length).toBeGreaterThan(0);
+			for (const line of lines) {
+				expect(line).not.toContain("…");
+			}
+			// The long detail is left out whole, never shown in part.
+			expect(lines.some((line) => LONG_DETAIL.startsWith(line))).toBe(
+				false,
+			);
+		},
+	);
+
+	it("keeps a title past its budget whole and leaves its detail out", () => {
+		expect(drawnLines(proposal(longSpecs.process))).toEqual([
+			LONG_TITLE,
+			"Trial",
+		]);
+		expect(drawnLines(proposal(longSpecs.timeline))).toEqual([
+			"Week 1",
+			LONG_TITLE,
+			"Week 2",
+			"Trial",
+		]);
+		expect(drawnLines(proposal(longSpecs.team))).toEqual([
+			"Example Studio",
+			LONG_TITLE,
+			"Engineer",
+			"Example Retail",
+			"Owner",
+			LONG_TITLE,
+		]);
+	});
+
+	it("keeps a detail that fits one line under a title within its budget", () => {
+		const flow: FlowVisualSpec = {
+			kind: "flow",
+			steps: [
+				{
+					label: "Map every intake channel",
+					description: "With the depot leads",
+				},
+				{ label: "Trial" },
+			],
+		};
+		expect(drawnLines(proposal(flow))).toEqual([
+			"Map every intake channel",
+			"With the depot leads",
+			"Trial",
+		]);
+	});
+
+	it("wraps a title within the cap whole in a fence that stays Mermaid", () => {
+		// After the lane's own title.
+		const lines = drawnLines(proposal(longSpecs.lanedFlow));
+		expect(lines.slice(1, 3)).toEqual([
+			"Map every intake channel",
+			"with the depot leads",
+		]);
+	});
+
+	it("gives a title within the cap a third line when its words break unevenly", () => {
+		// 56 characters, the cap, in words that fill no 28-character line.
+		const title =
+			"Stakeholder alignment workshops facilitation preparation";
+		expect(Array.from(title)).toHaveLength(56);
+		const flow: FlowVisualSpec = {
+			kind: "flow",
+			steps: [
+				{ label: title, lane: "Ops" },
+				{ label: "Trial", lane: "Sales" },
+			],
+		};
+		const lines = drawnLines(proposal(flow));
+		// After the lane's own title.
+		expect(lines.slice(1, 4)).toEqual([
+			"Stakeholder alignment",
+			"workshops facilitation",
+			"preparation",
+		]);
+		for (const line of lines) {
+			expect(line).not.toContain("…");
+		}
+	});
+
+	it("cuts only a title past the cap, at a word, as a last resort", () => {
+		const flow: FlowVisualSpec = {
+			kind: "flow",
+			steps: [
+				{ label: OVERLONG_TITLE, description: "Short detail" },
+				{ label: "Trial" },
+			],
+		};
+		const [title, ...rest] = drawnLines(proposal(flow));
+		expect(title.endsWith("…")).toBe(true);
+		expect(OVERLONG_TITLE.startsWith(title.slice(0, -1))).toBe(true);
+		expect(OVERLONG_TITLE[title.length - 1]).toBe(" ");
+		expect(rest).toEqual(["Trial"]);
+	});
+
+	it("leaves Glossy's labels of the same specs as they were", () => {
+		expect(timelineToMermaid(longSpecs.timeline)).toContain(
+			`t0["Week 1 — ${LONG_TITLE} (Short detail)"]`,
+		);
+		expect(timelineToMermaid(longSpecs.timeline)).toContain(
+			`t1["Week 2 — Trial (${LONG_DETAIL})"]`,
+		);
+		expect(flowToMermaid(longSpecs.process)).toContain(
+			`f1["Trial (${LONG_DETAIL})"]`,
+		);
+		expect(flowToMermaid(longSpecs.lanedFlow)).toContain(
+			`f0["${LONG_TITLE} (Short detail)"]`,
+		);
 	});
 });

@@ -1,8 +1,9 @@
 import { routing } from "@i18n/routing";
 import { config as appConfig } from "@repo/config";
 import { RETURN_TO_HEADER } from "@saas/auth/lib/login-redirect";
+import { runMicrofrontendsMiddleware } from "@vercel/microfrontends/next/middleware";
 import { getSessionCookie } from "better-auth/cookies";
-import { type NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import createMiddleware from "next-intl/middleware";
 import { withQuery } from "ufo";
 
@@ -76,6 +77,7 @@ function forwardedRequestHeaders(
 ): Headers {
 	const headers = new Headers(req.headers);
 	headers.delete(EMBED_FLAG_HEADER);
+	headers.delete("x-vercel-mfe-zone");
 	for (const [name, value] of Object.entries(extra)) {
 		headers.set(name, value);
 	}
@@ -88,8 +90,90 @@ function forward(req: NextRequest, extra?: Record<string, string>) {
 	});
 }
 
-export default async function proxy(req: NextRequest) {
+/**
+ * fabric.pro's marketing paths can be served by the marketing site
+ * (fabric-web), a second Vercel project in the same Microfrontends group
+ * (microfrontends.json). Routing is behind the `marketing-on-fabric-web`
+ * flag, read from MARKETING_ON_FABRIC_WEB per environment, so turning it on
+ * is a variable change and turning it off is the rollback. Off, every path
+ * is served by this app exactly as before.
+ */
+const marketingOnFabricWeb = async () =>
+	process.env.MARKETING_ON_FABRIC_WEB === "true";
+
+/**
+ * Paths the matcher includes only for Microfrontends. The rest of this proxy
+ * never handled them (the main matcher skips the root text files and /fonts),
+ * so when the flag keeps them here they pass straight through. The
+ * client-config path is answered by runMicrofrontendsMiddleware whenever the
+ * build has MFE_CONFIG; it reaches the pass-through only in a build without.
+ */
+const MICROFRONTENDS_ONLY_PATHS = [
+	"/.well-known/vercel/microfrontends/client-config",
+	"/llms.txt",
+	"/llms-full.txt",
+	"/sitemap.xml",
+	"/robots.txt",
+];
+
+function isMicrofrontendsOnlyPath(pathname: string): boolean {
+	return (
+		MICROFRONTENDS_ONLY_PATHS.includes(pathname) ||
+		pathname === "/fonts" ||
+		pathname.startsWith("/fonts/")
+	);
+}
+
+/**
+ * `x-vercel-mfe-zone` names the Microfrontends app a request belongs to. Only
+ * runMicrofrontendsMiddleware may set it; a copy a client sent is dropped
+ * before anything below (forward(), the locale middleware) can pass it on as
+ * a request-header override.
+ */
+const MFE_ZONE_HEADER = "x-vercel-mfe-zone";
+
+function withoutClientZone(req: NextRequest): NextRequest {
+	if (!req.headers.has(MFE_ZONE_HEADER)) {
+		return req;
+	}
+	const headers = new Headers(req.headers);
+	headers.delete(MFE_ZONE_HEADER);
+	return new NextRequest(req, { headers });
+}
+
+export default async function proxy(incoming: NextRequest) {
+	const req = withoutClientZone(incoming);
 	const { pathname, origin } = req.nextUrl;
+
+	// MFE_CONFIG is set by withMicrofrontends at build time; without it (a
+	// build outside the Microfrontends group) there is nothing to route.
+	if (process.env.MFE_CONFIG) {
+		const routed = await runMicrofrontendsMiddleware({
+			request: req,
+			flagValues: { "marketing-on-fabric-web": marketingOnFabricWeb },
+		});
+		if (routed) {
+			return routed;
+		}
+		// With the marketing site serving /blog, the app's old /en/blog
+		// addresses (still in search results and the old sitemap) move there.
+		// 307, not 308: browsers keep a permanent redirect, and with the flag
+		// turned back off this app sends /blog to /en/blog, which would loop.
+		// Make it permanent once the flag is retired.
+		const oldBlog = pathname.match(/^\/[a-z]{2}\/blog(\/.*)?$/);
+		if (oldBlog && (await marketingOnFabricWeb())) {
+			return NextResponse.redirect(
+				new URL(
+					`/blog${oldBlog[1] ?? ""}${req.nextUrl.search}`,
+					origin,
+				),
+				307,
+			);
+		}
+	}
+	if (isMicrofrontendsOnlyPath(pathname)) {
+		return NextResponse.next();
+	}
 	const acceptHeader = req.headers.get("accept") || "";
 
 	// Content negotiation for docs: serve markdown when Accept: text/markdown
@@ -249,7 +333,20 @@ export default async function proxy(req: NextRequest) {
 }
 
 export const config = {
+	// `mcp(?:/|$)` and not `mcp`: the MCP endpoint is /mcp and /mcp/..., and a
+	// bare prefix also skipped /mcp-registry, which then 404'd because only the
+	// locale rewrite reaches (marketing)/[locale]/mcp-registry.
 	matcher: [
-		"/((?!api|mcp|\\.well-known|cli/|image-proxy|images|integrations|fonts|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|robots.txt|llms\\.txt|llms-full\\.txt).*)",
+		"/((?!api|mcp(?:/|$)|\\.well-known|cli/|image-proxy|images|integrations|fonts|fabric-web-assets|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|robots.txt|llms\\.txt|llms-full\\.txt).*)",
+		// Microfrontends: the flag needs to see these to route them (see
+		// MICROFRONTENDS_ONLY_PATHS); the pattern above skips them. It also
+		// skips /fabric-web-assets, fabric-web's asset prefix, which Vercel
+		// always routes to fabric-web and so never reaches this proxy.
+		"/.well-known/vercel/microfrontends/client-config",
+		"/llms.txt",
+		"/llms-full.txt",
+		"/sitemap.xml",
+		"/robots.txt",
+		"/fonts/:path*",
 	],
 };

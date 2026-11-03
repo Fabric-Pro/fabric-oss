@@ -13,6 +13,11 @@ const mocks = vi.hoisted(() => ({
 	isFeatureEnabled: vi.fn(),
 	activeUse: vi.fn(),
 	getPlanToken: vi.fn(),
+	getSourcePlanToken: vi.fn(),
+	planSourceOverride: null as
+		| { kind: "user"; userId: string }
+		| { kind: "org"; accountId: string }
+		| null,
 	impersonated: false,
 }));
 
@@ -38,6 +43,7 @@ vi.mock("@repo/logs", () => ({
 
 vi.mock("@repo/ai/lib/chatgpt-plan/plan-credentials", () => ({
 	getChatGptPlanAccessToken: mocks.getPlanToken,
+	getChatGptPlanSourceAccessToken: mocks.getSourcePlanToken,
 }));
 
 vi.mock("@repo/ai/lib/chatgpt-plan/exhaustion-breaker", () => ({
@@ -66,6 +72,18 @@ vi.mock("@repo/ai", async () => {
 			_options: unknown,
 			context: { userId: string; organizationId?: string },
 		) => {
+			if (mocks.planSourceOverride) {
+				return {
+					metadata: {
+						provider: "OPENAI_CHATGPT_PLAN",
+						modelString: "gpt-6-astra",
+						canonicalName: "gpt-6-astra",
+						selectionSource: "chatgpt_plan",
+						planSource: mocks.planSourceOverride,
+					},
+					trackUsage: vi.fn(),
+				};
+			}
 			const onPlan = await shouldUseChatGptPlan(context);
 			return {
 				metadata: onPlan
@@ -109,9 +127,14 @@ const ROUTES = [
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.impersonated = false;
+	mocks.planSourceOverride = null;
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.getPlanToken.mockResolvedValue({
 		accessToken: "plan-access-token",
+		expiresAt: new Date(Date.now() + 30 * 60_000),
+	});
+	mocks.getSourcePlanToken.mockResolvedValue({
+		accessToken: "org-shared-plan-token",
 		expiresAt: new Date(Date.now() + 30 * 60_000),
 	});
 });
@@ -181,6 +204,24 @@ describe.each(ROUTES)("GET /api/agents/%s — ChatGPT plan", (_name, call) => {
 		});
 		const body = await (await call()).json();
 		expect(body.provider).toBe("OPENROUTER");
+		expect(mocks.getPlanToken).not.toHaveBeenCalled();
+	});
+
+	it("uses the organization shared plan token and never falls back to the caller's personal token when planSource is org", async () => {
+		mocks.planSourceOverride = {
+			kind: "org",
+			accountId: "shared-org-account-1",
+		};
+		const body = await (await call()).json();
+		expect(body).toMatchObject({
+			provider: "OPENAI_CHATGPT_PLAN",
+			apiKey: "org-shared-plan-token",
+			model: "gpt-6-astra",
+		});
+		expect(mocks.getSourcePlanToken).toHaveBeenCalledWith({
+			kind: "org",
+			accountId: "shared-org-account-1",
+		});
 		expect(mocks.getPlanToken).not.toHaveBeenCalled();
 	});
 });

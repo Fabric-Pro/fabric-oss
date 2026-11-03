@@ -12,6 +12,7 @@ import {
 	AI_CHAT_WORKBOOK_SIGNATURE_BYTES,
 	applyAiChatTextBudget,
 	buildAiChatAcceptAttribute,
+	buildAiChatAttachedHint,
 	classifyAiChatWorkbook,
 	DEFAULT_AI_CHAT_EXTRACTED_TEXT_BUDGET_CHARS,
 	DEFAULT_AI_CHAT_MAX_FILE_BYTES,
@@ -519,5 +520,22 @@ describe("applyAiChatTextBudget", () => {
 
 		expect(result.outcome).toEqual({ status: "extracted", sheets: [] });
 		expect(result.text).toHaveLength(BUDGET);
+	});
+});
+
+describe("buildAiChatAttachedHint", () => {
+	it("names the turn's files in one bracketed line", () => {
+		expect(buildAiChatAttachedHint(["a.pdf", "b.png"])).toBe(
+			"[Attached: a.pdf, b.png]",
+		);
+		expect(buildAiChatAttachedHint(["notes.pdf"])).toBe(
+			"[Attached: notes.pdf]",
+		);
+	});
+
+	it("keeps each name as the person's file has it", () => {
+		expect(buildAiChatAttachedHint(["q3\nbrief.pdf", "scope]v2.pdf"])).toBe(
+			"[Attached: q3\nbrief.pdf, scope]v2.pdf]",
+		);
 	});
 });

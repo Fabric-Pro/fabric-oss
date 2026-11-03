@@ -15,6 +15,11 @@
  * real fence of a kind it takes is refused. The export's layout also runs
  * out of time on a fence marked as below, which the live page draws as any
  * other.
+ *
+ * A plain chain of seven steps or more with no figure line draws from the
+ * process template on all three, and a shorter one with the engine; the
+ * same fences in a Main get the same "Figure n." and caption on the page,
+ * in the PDF and in the DOCX.
  */
 
 import {
@@ -30,9 +35,20 @@ import {
 	resolveThemePaint,
 	withVisualRoleClassDefs,
 } from "@repo/utils/proposal-artifact/theme-tokens";
+import { readDiagramCaption } from "@repo/utils/proposal-artifact/visual-identity";
+import JSZip from "jszip";
 import { describe, expect, it, vi } from "vitest";
+import { buildProposalDocx } from "../../../lib/proposal-export/build-docx";
+import { buildThemeHtml } from "../../../lib/proposal-export/build-theme-html";
 import type { DiagramLayout } from "../../../lib/proposal-export/diagram-layout";
-import { diagramFigureNumbers } from "../../../lib/proposal-export/types";
+import {
+	exportDiagramCaptions,
+	prepareExportMarkdown,
+} from "../../../lib/proposal-export/markdown";
+import {
+	diagramFigureNumbers,
+	type ExportThemeTokens,
+} from "../../../lib/proposal-export/types";
 import { renderExportDiagrams } from "../render-diagrams";
 
 vi.mock("../../lib/activity-logger", () => ({
@@ -66,14 +82,14 @@ vi.mock("beautiful-mermaid", async (importOriginal) => {
 	};
 });
 
-const paint = resolveThemePaint(
-	buildProposalThemeTokens({
-		organization: null,
-		style: { primaryColor: "#1f3a6b", accentColors: [] },
-		brandKit: null,
-		recipient: null,
-	}),
-);
+const tokens = buildProposalThemeTokens({
+	organization: null,
+	style: { primaryColor: "#1f3a6b", accentColors: [] },
+	brandKit: null,
+	recipient: null,
+});
+
+const paint = resolveThemePaint(tokens);
 
 /** The engine on the test's own thread, so the mock above applies. */
 const inProcessLayout: DiagramLayout = {
@@ -404,6 +420,127 @@ describe("figure numbers on the live page and in the exports", () => {
 		expect(svgs[0]).toContain('role="img"');
 		expect(svgs[1]).toContain('role="img"');
 		expect(svgs[2]).not.toContain('role="img"');
+	});
+
+	it("match, with their captions, for a plain chain of seven steps the process template draws and one of six the engine draws", async () => {
+		const chain = (steps: number, caption: string) =>
+			[
+				"```mermaid",
+				`%% caption: ${caption}`,
+				"flowchart TD",
+				...Array.from(
+					{ length: steps - 1 },
+					(_, index) =>
+						`  s${index}["Step ${index + 1}"] --> s${index + 1}["Step ${index + 2}"]`,
+				),
+				"```",
+			].join("\n");
+		const fences = [
+			chain(7, "Every step a request takes"),
+			chain(6, "The short way round"),
+		];
+		const markdown = [
+			"## How a request moves",
+			fences[0],
+			"Then the short way.",
+			fences[1],
+		].join("\n\n");
+
+		// The live page: what each fence draws with, its number and caption.
+		const bodies = fences.map((fence) =>
+			fence.split("\n").slice(1, -1).join("\n"),
+		);
+		const live: {
+			engine: LiveDiagramEngine | null;
+			caption: string | null;
+		}[] = [];
+		for (const body of bodies) {
+			live.push({
+				engine: await liveEngine(body),
+				caption: readDiagramCaption(body),
+			});
+		}
+		expect(live).toEqual([
+			{ engine: "template", caption: "Every step a request takes" },
+			{ engine: "beautiful-mermaid", caption: "The short way round" },
+		]);
+		let next = 0;
+		const liveNumbers = bodies.map((body, index) =>
+			isLiveFigureCounted(
+				diagramPrintability(body.trim()),
+				live[index]?.engine ?? null,
+			)
+				? ++next
+				: null,
+		);
+		expect(liveNumbers).toEqual([1, 2]);
+
+		// The exports draw the same fences the same way, under the same
+		// numbers and captions.
+		const prepared = prepareExportMarkdown(markdown);
+		const captions = exportDiagramCaptions(prepared);
+		expect(captions).toEqual(live.map(({ caption }) => caption));
+		const { diagrams, warnings } = await renderExportDiagrams({
+			sources: prepared.diagramSources,
+			captions,
+			paint,
+			browser: null,
+			withPng: false,
+			deadline: Date.now() + 60_000,
+			layout: inProcessLayout,
+		});
+		expect(warnings).toEqual([]);
+		expect(diagramFigureNumbers(diagrams)).toEqual(liveNumbers);
+		const svgs = diagrams.map((diagram) =>
+			diagram.kind === "svg" ? diagram.svg : "",
+		);
+		expect(svgs[0]).toContain('role="img"');
+		expect(svgs[0]).toContain("<title>Every step a request takes</title>");
+		expect(svgs[1]).not.toContain('role="img"');
+
+		const exportInput = {
+			prepared,
+			diagrams,
+			images: new Map(),
+			tokens: tokens as unknown as ExportThemeTokens,
+			projectId: "project-example-1",
+			documentId: "document-example-1",
+			title: "Example Proposal",
+			dateLabel: "October 15, 2026",
+		};
+		const { html } = buildThemeHtml({
+			...exportInput,
+			pass: { kind: "final", pageNumbers: new Map() },
+		});
+		const printedCaptions = Array.from(
+			html.matchAll(
+				/<figcaption[^>]*><span[^>]*>(Figure \d+\.)<\/span> ([^<]*)<\/figcaption>/g,
+			),
+			(match) => `${match[1]} ${match[2]}`,
+		);
+		const expected = [
+			"Figure 1. Every step a request takes",
+			"Figure 2. The short way round",
+		];
+		expect(printedCaptions).toEqual(expected);
+
+		// Without a browser the Word file has no pictures, and writes each
+		// figure's placeholder under the same number and caption.
+		const docx = await buildProposalDocx(exportInput);
+		const documentXml =
+			(await (
+				await JSZip.loadAsync(docx.buffer)
+			)
+				.file("word/document.xml")
+				?.async("string")) ?? "";
+		const wordText = Array.from(
+			documentXml.matchAll(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>/g),
+			(match) => match[1],
+		).join("");
+		for (const caption of expected) {
+			expect(wordText).toContain(caption);
+		}
+		expect(wordText).not.toContain("Figure 3.");
 	});
 
 	it("match for a gantt chart its template draws and for one it refuses", async () => {

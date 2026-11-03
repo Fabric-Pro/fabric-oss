@@ -335,17 +335,21 @@ const AI_PROVIDER_METADATA: Record<AIProvider, ProviderMetadata> = {
 	},
 	CUSTOM: {
 		id: "CUSTOM",
-		name: "Custom",
-		displayName: "Custom",
+		name: "Fabric Agents Remote Server",
+		displayName: "Fabric Agents Remote Server",
 		category: "direct",
-		description: "Custom AI provider configuration",
+		description:
+			"Connect to a Personal or Organization Fabric Agents Remote Server, or any OpenAI-compatible /v1 endpoint (Ollama, vLLM, LM Studio).",
 		baseUrl: "",
 		keyPrefix: "",
-		keyPlaceholder: "API key",
+		keyPlaceholder: "Bearer token or shared secret (e.g., local-proxy)",
 		docsUrl: "",
 		requiresBaseUrl: true,
-		baseUrlPlaceholder: "https://your-api-endpoint.com/v1",
-		baseUrlHelp: "Enter your custom API endpoint",
+		baseUrlLabel:
+			"Fabric Agents Remote Server or OpenAI-Compatible URL (/v1)",
+		baseUrlPlaceholder: "https://agents.example.com/v1",
+		baseUrlHelp:
+			"Enter your Personal or Organization Fabric Agents Remote Server /v1 endpoint (or http://127.0.0.1:9100/v1 / http://127.0.0.1:4100/v1 when Fabric runs locally or loopback is allowlisted in AGENT_DISCOVERY_ALLOWED_HOSTS).",
 	},
 	// Cloud Providers
 	AZURE_AI_FOUNDRY: {
@@ -617,6 +621,16 @@ export function getDirectProviders(): ProviderWithIcon[] {
  */
 export function getCloudProviders(): ProviderWithIcon[] {
 	return getProvidersWithIcons().filter((p) => p.category === "cloud");
+}
+
+/**
+ * Get the Custom / Remote OpenAI-compatible server provider with its icon
+ */
+export function getCustomRemoteProvider(): ProviderWithIcon {
+	return {
+		...AI_PROVIDER_METADATA.CUSTOM,
+		icon: getProviderIcon("CUSTOM"),
+	};
 }
 
 // ============================================================================

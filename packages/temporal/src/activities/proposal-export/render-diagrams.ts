@@ -9,10 +9,13 @@
  * writers look a fence's result up by that order.
  *
  * Figure templates. A fence with a `%% figure:` line draws its SVG template
- * (`proposal-figures/`), as the live page does, coloured from the same
+ * (`proposal-figures/`), and so does a fence with none whose flowchart is
+ * one plain chain of seven steps or more, as a numbered process
+ * (`figureKindOf`), as the live page does, coloured from the same
  * paint as the diagram roles. A template needs no layout, is drawn at the
- * print column's width and is never turned or re-wrapped; when the template
- * refuses the source, the fence draws as below.
+ * print column's width and is never turned or re-wrapped, but its text is
+ * measured as a flowchart's labels are, below; when the template refuses
+ * the source, the fence draws as below.
  *
  * Parity with the live page. The page passes the trimmed fence to
  * beautiful-mermaid and, when that throws, falls back to mermaid.js in the
@@ -63,42 +66,62 @@
  *   and counted toward one `DIAGRAM_PLACEHOLDER` warning.
  *
  * Print legibility. A diagram wider than the print column is shrunk to it,
- * and one taller than a printed figure may be (`PRINT_FIGURE_MAX_HEIGHT_PX`,
- * the height the Word writer shrinks a picture to) is shrunk to that, and
- * its labels with it; `printedNodeLabelPt` measures both. A flowchart with
- * node labels of `ALWAYS_WRAPPED_LABEL_CHARS` or more is laid out as
- * prepared and with those labels broken into lines, since the engine's
- * estimate of a long line's width runs short of the text, and the copy
- * whose labels print larger is kept, the broken one on a tie: a tall
- * diagram broken this way can grow taller than a figure may be, and then
- * keeps its labels on one line. When a left-to-right flowchart's labels
- * would print below `PRINT_LABEL_FLOOR_PT`, it is laid out once more
- * top-down (the fence in Main is untouched; only the export's copy turns),
- * as written as well as broken when the broken copy was kept, and the
- * render whose labels print larger is kept. When that is still
- * below the floor, a
- * flowchart's long single-line node labels are broken into lines in the
- * copy (title, sentence and trailing parenthesis apart, then at words) and
- * it is laid out once more, top-down when it was sideways; again the larger
- * labels win. One still below the floor prints as it is and counts toward
- * one `DIAGRAM_BELOW_PRINT_FLOOR` warning. Only flowcharts and state
- * diagrams are measured: other kinds size their text by rules of their own.
- * A flowchart or state diagram keeps a narrow blank margin around its
- * drawing rather than the engine's wide one, so its figure is only as tall
- * as what it draws.
+ * and one taller than its figure may be is shrunk to that, and its labels
+ * with it; `printedNodeLabelPt` measures both. A figure may be as tall as
+ * `PRINT_FIGURE_MAX_HEIGHT_PX`, the height the Word writer shrinks a
+ * picture to and the print layer a drawing. In the PDF, the print page
+ * offers the first figure on a section opener's page, right under it or
+ * after short blocks, at most `PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX`,
+ * less by the lines before it (`figureMaxHeight`), and the figure keeps
+ * that height only when its labels, or a template's 12 px text, still
+ * print at the floor there (`legibleFigureMaxHeightPx`); otherwise it keeps
+ * a figure's own height and moves whole to the next page. A flowchart with
+ * node labels too wide for their boxes (`nodeLabelLineOverflows`: the
+ * engine's estimate of a line's width runs short of Inter, most for text
+ * dense in dashes, m, w and hyphens) is laid out as prepared and with those
+ * labels broken into lines. Of the copies laid out, one whose labels all fit
+ * their boxes always beats one whose labels spill (`printsBetter`), even
+ * when breaking makes it taller than a figure may be and its labels print
+ * smaller; among copies that all fit, or all spill, the one whose labels
+ * print larger is kept, the broken one on a tie. When a left-to-right
+ * flowchart's labels would print below `PRINT_LABEL_FLOOR_PT`, it is laid
+ * out once more top-down (the fence in Main is untouched; only the
+ * export's copy turns), as written as well as broken when the broken copy
+ * was kept, and the render that prints better is kept. When that is still
+ * below the floor, a flowchart's long single-line node labels are broken
+ * into lines in the copy (title, sentence and trailing parenthesis apart,
+ * then at words) and it is laid out once more, top-down when it was
+ * sideways; again the better render wins. One still below the floor prints
+ * as it is and counts toward one `DIAGRAM_BELOW_PRINT_FLOOR` warning. A
+ * figure template's text, 12 px and so exactly at the floor at full size
+ * (`printedTextPt`), prints below it only when the template is taller than
+ * a figure's own height, and counts toward the same warning. Only
+ * flowcharts, state diagrams and templates are warned about: other kinds
+ * size their text by rules of their own, though one keeps a reduced height
+ * only as long as text of the engine's node label size would stay at the
+ * floor under it. A flowchart or state diagram keeps a narrow blank
+ * margin around its drawing rather than the engine's wide one, so its
+ * figure is only as tall as what it draws.
  *
- * The live page draws with the same helpers, label length, measure, floor
- * and canvas margin (`@repo/utils/proposal-artifact/diagram-label-wrap`),
- * so a client Proposal's page lays each fence out as it prints; any other
- * page always breaks the long labels and keeps the author's direction.
+ * The live page draws with the same helpers, label rule, choice, measure,
+ * floor and canvas margin (`@repo/utils/proposal-artifact/diagram-label-wrap`),
+ * so a client Proposal's page lays each fence out as it prints, measured
+ * against a figure's own height wherever the fence sits; any other page
+ * breaks the labels too wide for their boxes and keeps the author's
+ * direction.
  */
 
 import {
-	ALWAYS_WRAPPED_LABEL_CHARS,
 	DIAGRAM_CANVAS_PADDING_PX,
+	flowchartNodeLabelsOverflow,
+	legibleFigureMaxHeightPx,
+	PRINT_FIGURE_MAX_HEIGHT_PX,
 	PRINT_LABEL_FLOOR_PT,
 	printedNodeLabelPt,
+	printedTextPt,
+	printsBetter,
 	turnFlowchartTopDown,
+	type WeighedDiagramCopy,
 	wrapFlowchartNodeLabels,
 } from "@repo/utils/proposal-artifact/diagram-label-wrap";
 import {
@@ -108,6 +131,7 @@ import {
 	printableDiagramKind,
 } from "@repo/utils/proposal-artifact/diagram-printability";
 import {
+	FIGURE_TEXT_PX,
 	type FigurePalette,
 	tryRenderFigure,
 } from "@repo/utils/proposal-artifact/proposal-figures";
@@ -155,6 +179,19 @@ export interface RenderDiagramsInput {
 	 * accessible title. Without it a template is titled by its kind.
 	 */
 	captions?: readonly (string | null)[];
+	/**
+	 * The tallest fence `index`'s place on the page lets it print, in CSS
+	 * pixels, given the diagrams drawn before it: for the PDF, the height
+	 * the print page offers it (`printFigureMaxHeight`), which a diagram
+	 * left out between a section opener and the fence lowers, and which the
+	 * fence keeps only while its labels stay legible under it
+	 * (`legibleFigureMaxHeightPx`). Without it, a figure's own height
+	 * (`PRINT_FIGURE_MAX_HEIGHT_PX`), the Word writer's.
+	 */
+	figureMaxHeight?: (
+		index: number,
+		drawn: readonly ExportDiagram[],
+	) => number;
 	/** The theme as it paints: `resolveThemePaint(tokens)`. */
 	paint: ProposalThemePaint;
 	/** The export's browser; needed only when `withPng`. */
@@ -289,6 +326,11 @@ export async function renderExportDiagrams(
 				diagrams.push(placeholder());
 				continue;
 			}
+			// What the fence's place on the page offers it, before its drawing
+			// says whether its labels stay legible there.
+			const offeredPx =
+				input.figureMaxHeight?.(index, diagrams) ??
+				PRINT_FIGURE_MAX_HEIGHT_PX;
 			const template = drawTemplate(
 				source,
 				palette,
@@ -296,7 +338,18 @@ export async function renderExportDiagrams(
 				scopeId,
 			);
 			if (template) {
-				diagrams.push(drawnDiagram(template));
+				const printedPx = legibleFigureMaxHeightPx(
+					offeredPx,
+					template,
+					FIGURE_TEXT_PX,
+				);
+				if (
+					printedTextPt(FIGURE_TEXT_PX, template, printedPx) <
+					PRINT_LABEL_FLOOR_PT
+				) {
+					belowFloor += 1;
+				}
+				diagrams.push(drawnDiagram(template, FIGURE_TEXT_PX));
 				continue;
 			}
 			const prepared = prepareDiagramSource(source, paint);
@@ -306,10 +359,17 @@ export async function renderExportDiagrams(
 				typeof prepared === "string"
 					? prepared
 					: layout
-						? await renderOne(layout, source, prepared, options, {
-								scopeId,
-								deadline: input.deadline,
-							})
+						? await renderLegible(
+								layout,
+								source,
+								prepared,
+								options,
+								{
+									scopeId,
+									deadline: input.deadline,
+									offeredPx,
+								},
+							)
 						: "notPrintable";
 			if (drawn === "broken") {
 				diagrams.push(OMITTED);
@@ -370,17 +430,22 @@ function diagramScopeId(index: number): string {
 }
 
 function placeholder(): ExportDiagram {
-	return {
-		kind: "placeholder",
-		caption: DIAGRAM_PLACEHOLDER_CAPTION,
-		numbered: true,
-	};
+	return { kind: "placeholder", caption: DIAGRAM_PLACEHOLDER_CAPTION };
 }
 
-const OMITTED: ExportDiagram = { kind: "omitted", numbered: false };
+const OMITTED: ExportDiagram = { kind: "omitted" };
 
-function drawnDiagram(svg: CleanedDiagramSvg): ExportDiagram {
-	return { kind: "svg", ...svg, png: null, numbered: true };
+/**
+ * A drawn diagram, with `textPx` when its print floor is measured on text
+ * other than the engine's node labels (a figure template's).
+ */
+function drawnDiagram(svg: CleanedDiagramSvg, textPx?: number): ExportDiagram {
+	return {
+		kind: "svg",
+		...svg,
+		...(textPx === undefined ? {} : { textPx }),
+		png: null,
+	};
 }
 
 /**
@@ -405,28 +470,78 @@ interface DrawnDiagram {
 }
 
 /**
+ * One fence drawn (`renderOne`) for where the page offers it `offeredPx`,
+ * and kept at that height only while its labels print at the floor there
+ * (`legibleFigureMaxHeightPx`). A flowchart or state diagram whose labels
+ * the offered height would take below the floor keeps a figure's own
+ * height, at which it moves whole to the next page, and is laid out again
+ * for that height, since another of its copies may print better there; it
+ * is still marked below the floor only when it is so at that height. A
+ * chart, a sequence, class or ER diagram is not laid out again: it has no
+ * other copies.
+ */
+async function renderLegible(
+	layout: DiagramLayout,
+	source: string,
+	prepared: PreparedDiagram,
+	options: RenderOptions,
+	at: { scopeId: string; deadline: number; offeredPx: number },
+): Promise<DrawnDiagram | NotDrawn> {
+	const offered = await renderOne(layout, source, prepared, options, {
+		...at,
+		figureMaxHeightPx: at.offeredPx,
+	});
+	if (
+		typeof offered === "string" ||
+		prepared.kind !== "graph" ||
+		legibleFigureMaxHeightPx(at.offeredPx, offered.svg) === at.offeredPx
+	) {
+		return offered;
+	}
+	const own = await renderOne(layout, source, prepared, options, {
+		...at,
+		figureMaxHeightPx: PRINT_FIGURE_MAX_HEIGHT_PX,
+	});
+	const kept = typeof own === "string" ? offered : own;
+	const printedPx = legibleFigureMaxHeightPx(at.offeredPx, kept.svg);
+	return {
+		svg: kept.svg,
+		belowFloor:
+			printedNodeLabelPt(kept.svg, printedPx) < PRINT_LABEL_FLOOR_PT,
+	};
+}
+
+/** A drawn copy of a fence, with what the choice between copies weighs. */
+interface WeighedSvg extends WeighedDiagramCopy {
+	svg: CleanedDiagramSvg;
+	labelPt: number;
+}
+
+/**
  * One fence drawn and cleaned, or why it is not. A flowchart with node
- * labels of `ALWAYS_WRAPPED_LABEL_CHARS` or more is laid out both as
- * prepared and with those labels broken into lines, as the live page draws
- * a Proposal's diagrams, and the copy whose labels print larger is kept:
- * the broken one on a tie, as its labels stay inside their boxes, and the
- * one as prepared when breaking makes the diagram taller than a printed
- * figure may be. A copy the engine refuses drops out. Then a sideways
- * flowchart whose labels would print below the floor is tried top-down too,
- * both the copy kept and, when it is the broken one, the copy as prepared,
- * then a flowchart still below it with every long label broken into lines,
- * and a graph still below it is marked. Labels are measured at the size
- * they print, shrunk to the column's width or a figure's height.
- * Each layout gets at most the per-diagram limit, and never more than the
- * export has left; a fence whose first layout was abandoned is not laid out
- * again as another copy.
+ * labels too wide for their boxes is laid out both as prepared and with
+ * those labels broken into lines, as the live page draws a Proposal's
+ * diagrams, and the copy that prints better (`printsBetter`) is kept: the
+ * broken one whenever its labels fit their boxes and the other's spill,
+ * even when breaking makes the diagram taller than a printed figure may be
+ * and its labels print smaller; else the one whose labels print larger,
+ * the broken one on a tie. A copy the engine refuses drops out. Then a
+ * sideways flowchart whose labels would print below the floor is tried
+ * top-down too, both the copy kept and, when it is the broken one, the
+ * copy as prepared, then a flowchart still below it with every long label
+ * broken into lines, each replacing the copy kept only when it prints
+ * better, and a graph still below it is marked. Labels are measured at the
+ * size they print, shrunk to the column's width or to the figure's height,
+ * `figureMaxHeightPx`. Each layout gets at most the per-diagram limit, and
+ * never more than the export has left; a fence whose first layout was
+ * abandoned is not laid out again as another copy.
  */
 async function renderOne(
 	layout: DiagramLayout,
 	source: string,
 	prepared: PreparedDiagram,
 	options: RenderOptions,
-	at: { scopeId: string; deadline: number },
+	at: { scopeId: string; deadline: number; figureMaxHeightPx: number },
 ): Promise<DrawnDiagram | NotDrawn> {
 	if (source.length > PROPOSAL_EXPORT_LIMITS.maxDiagramSourceLength) {
 		return "notPrintable";
@@ -445,46 +560,57 @@ async function renderOne(
 	if (asPrepared === "notPrintable") {
 		return asPrepared;
 	}
+	const weighed = (svg: CleanedDiagramSvg, text: string): WeighedSvg => ({
+		svg,
+		labelPt: printedNodeLabelPt(svg, at.figureMaxHeightPx),
+		labelsOverflow: flowchartNodeLabelsOverflow(text),
+	});
 	// What the variants below start from: the copy kept of the two.
 	let base = prepared.text;
-	let drawn: CleanedDiagramSvg | NotDrawn = asPrepared;
-	const longBroken = wrapFlowchartNodeLabels(prepared.text, {
-		minChars: ALWAYS_WRAPPED_LABEL_CHARS,
+	let kept: WeighedSvg | NotDrawn =
+		typeof asPrepared === "string"
+			? asPrepared
+			: weighed(asPrepared, prepared.text);
+	const tooWideBroken = wrapFlowchartNodeLabels(prepared.text, {
+		overflowingOnly: true,
 	});
-	if (longBroken !== null) {
+	if (tooWideBroken !== null) {
 		const broken = await drawPrepared(
 			layout,
-			longBroken,
+			tooWideBroken,
 			options,
 			deciding,
 		);
-		if (
-			typeof broken !== "string" &&
-			(typeof drawn === "string" ||
-				printedNodeLabelPt(broken) >= printedNodeLabelPt(drawn))
-		) {
-			base = longBroken;
-			drawn = broken;
+		if (typeof broken !== "string") {
+			const candidate = weighed(broken, tooWideBroken);
+			if (
+				typeof kept === "string" ||
+				printsBetter(candidate, kept, { winsTie: true })
+			) {
+				base = tooWideBroken;
+				kept = candidate;
+			}
 		}
 	}
-	if (typeof drawn === "string") {
-		return drawn;
+	if (typeof kept === "string") {
+		return kept;
 	}
 	// Only a graph's labels are drawn at the node label size; a chart's or
 	// a sequence's text is sized and placed by rules of its own.
 	if (prepared.kind !== "graph") {
-		return { svg: drawn, belowFloor: false };
+		return { svg: kept.svg, belowFloor: false };
 	}
-	let best = drawn;
-	const belowFloor = () => printedNodeLabelPt(best) < PRINT_LABEL_FLOOR_PT;
-	// A variant replaces the best layout only when its labels print larger.
+	let best = kept;
+	const belowFloor = () => best.labelPt < PRINT_LABEL_FLOOR_PT;
+	// A variant replaces the best layout only when it prints better: its
+	// labels fit their boxes where the best's spill, or print larger.
 	const tryVariant = async (variant: string): Promise<void> => {
 		const redrawn = await drawPrepared(layout, variant, options, at);
-		if (
-			typeof redrawn !== "string" &&
-			printedNodeLabelPt(redrawn) > printedNodeLabelPt(best)
-		) {
-			best = redrawn;
+		if (typeof redrawn !== "string") {
+			const candidate = weighed(redrawn, variant);
+			if (printsBetter(candidate, best)) {
+				best = candidate;
+			}
 		}
 	};
 	if (belowFloor()) {
@@ -494,7 +620,8 @@ async function renderOne(
 		}
 		// The copy as written is turned too: broken labels make a turned
 		// diagram taller, and a tall one prints smaller, so it can print
-		// larger than the broken copy turned, which wins a tie.
+		// larger than the broken copy turned, which wins a tie. It is kept
+		// only when its labels fit their boxes as the best one's do.
 		if (base !== prepared.text) {
 			const turnedAsPrepared = turnFlowchartTopDown(prepared.text);
 			if (turnedAsPrepared) {
@@ -508,7 +635,7 @@ async function renderOne(
 			}
 		}
 	}
-	return { svg: best, belowFloor: belowFloor() };
+	return { svg: best.svg, belowFloor: belowFloor() };
 }
 
 /**

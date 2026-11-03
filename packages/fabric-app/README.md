@@ -65,6 +65,8 @@ when the release list is empty. A plain `changeset status` exits zero even when
 the JSON contains `"releases": []`; an impacting PR must have at least one
 release.
 
+The CI changeset check and `pnpm changeset:gate` reject direct bumps outside `fabric-app` and non-private workspace `@fabricorg/*` packages, and cascaded releases outside direct `packages/<name>` or `apps/<name>` directories.
+
 Docs-only, CI-only, Markdown-only, and pure changeset edits are normally
 non-impacting. Do not create meaningless release notes for them; apply the
 `skip-changeset` label and state the no-impact reason in the PR. A different

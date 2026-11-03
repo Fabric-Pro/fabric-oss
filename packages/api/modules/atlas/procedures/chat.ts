@@ -37,20 +37,22 @@ export const atlasChatProcedure = tenantProtectedProcedure
 			userId: context.user.id,
 			organizationId,
 		});
-		const { textStream, persistOutcome } = await startAtlasChat(
-			{ userId: context.user.id, organizationId },
-			{
-				projectId: input.projectId,
-				repositoryIntegrationId: input.repositoryIntegrationId ?? null,
-				mode: input.mode,
-				focusNodeKey: input.focusNodeKey,
-				conversationId: input.conversationId,
-				messages: input.messages,
-			},
-		);
-		// Compose the event iterator: every text delta (strings, as today),
-		// then — once the assistant write settled — at most ONE terminal
-		// object sentinel: persist-failed when the write was lost, else
+		const { textStream, persistOutcome, getAnswerModel } =
+			await startAtlasChat(
+				{ userId: context.user.id, organizationId },
+				{
+					projectId: input.projectId,
+					repositoryIntegrationId:
+						input.repositoryIntegrationId ?? null,
+					mode: input.mode,
+					focusNodeKey: input.focusNodeKey,
+					conversationId: input.conversationId,
+					messages: input.messages,
+				},
+			);
+		// Compose the event iterator: text deltas, then — once the assistant
+		// write settles — served-model metadata when known and at most ONE
+		// terminal sentinel: persist-failed when the write was lost, else
 		// interrupted when an abort/error path cut the reply off (the SDK
 		// converts provider errors into error parts and closes the text
 		// stream NORMALLY, so without this the live client would see an
@@ -64,6 +66,10 @@ export const atlasChatProcedure = tenantProtectedProcedure
 				yield delta;
 			}
 			const note = atlasChatTurnNote(await persistOutcome);
+			const model = getAnswerModel();
+			if (model) {
+				yield { type: "atlas-chat-model" as const, model };
+			}
 			if (note) {
 				yield { type: `atlas-chat-${note}` as const };
 			}

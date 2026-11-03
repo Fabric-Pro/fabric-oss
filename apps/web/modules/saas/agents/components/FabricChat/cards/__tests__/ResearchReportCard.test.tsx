@@ -1,6 +1,12 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../../shared/AnsweredByModel", () => ({
+	AnsweredByModel: ({ model }: { model?: { id: string } }) =>
+		model ? <span>Answered by {model.id}</span> : null,
+}));
+
 import { ResearchReportCard } from "../ResearchReportCard";
 
 const section: ComponentProps<
@@ -34,6 +40,19 @@ const report: ComponentProps<typeof ResearchReportCard>["report"] = {
 };
 
 describe("ResearchReportCard", () => {
+	it("renders the structured report's served model", () => {
+		render(
+			<ResearchReportCard
+				report={{
+					...report,
+					model: { id: "example-report-served", viaPlan: false },
+				}}
+			/>,
+		);
+		expect(
+			screen.getByText("Answered by example-report-served"),
+		).toBeInTheDocument();
+	});
 	it("renders section Markdown and keeps supplied citation numbers and workspace sources", () => {
 		const { container } = render(<ResearchReportCard report={report} />);
 		expect(container.querySelector("strong")?.textContent).toBe(

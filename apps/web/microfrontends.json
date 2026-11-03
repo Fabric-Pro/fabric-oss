@@ -1,0 +1,70 @@
+{
+	"$schema": "https://openapi.vercel.sh/microfrontends.json",
+	"version": "1",
+	"applications": {
+		"fabric-prod": {
+			"packageName": "@repo/web",
+			"development": {
+				"fallback": "fabric.pro"
+			}
+		},
+		"fabric-web": {
+			"assetPrefix": "fabric-web-assets",
+			"routing": [
+				{
+					"group": "marketing-assets",
+					"paths": ["/fabric-web-assets/:path*"]
+				},
+				{
+					"group": "marketing",
+					"flag": "marketing-on-fabric-web",
+					"paths": [
+						"/",
+						"/index.md",
+						"/index.txt",
+						"/opengraph-image",
+						"/blog",
+						"/blog.md",
+						"/blog.txt",
+						"/blog/:path*",
+						"/compare",
+						"/compare.md",
+						"/compare.txt",
+						"/compare/:path*",
+						"/partners",
+						"/partners.md",
+						"/partners.txt",
+						"/partners/:path*",
+						"/brand",
+						"/brand.md",
+						"/brand.txt",
+						"/brand/:path*",
+						"/what-is-a-software-factory",
+						"/what-is-a-software-factory.md",
+						"/what-is-a-software-factory.txt",
+						"/what-is-a-software-factory/:path*",
+						"/what-is-an-agent-harness",
+						"/what-is-an-agent-harness.md",
+						"/what-is-an-agent-harness.txt",
+						"/what-is-an-agent-harness/:path*",
+						"/fabric-vs-8090",
+						"/fabric-vs-8090.md",
+						"/fabric-vs-8090.txt",
+						"/fabric-vs-8090/:path*",
+						"/legal/:path*",
+						"/llms.txt",
+						"/llms-full.txt",
+						"/sitemap.xml",
+						"/robots.txt",
+						"/shots/:path*",
+						"/hero/:path*",
+						"/fonts/:path*",
+						"/08bc67943bdc32167de836633dc4a2f0.txt",
+						"/3e9c1b7a5d2f4e8ab6c0d1f2e3a4b5c6.txt",
+						"/ingest/:path*"
+					]
+				}
+			]
+		}
+	}
+}

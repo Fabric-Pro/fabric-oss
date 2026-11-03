@@ -397,3 +397,57 @@ describe("testing a saved Azure AI Foundry provider", () => {
 		);
 	});
 });
+
+describe("testProviderConnectionProcedure — personal vs organization RBAC", () => {
+	it("blocks a non-admin member from probing an organization CUSTOM baseUrl", async () => {
+		await expect(
+			(testProviderConnectionProcedure as unknown as Handler)._handler({
+				input: {
+					provider: "CUSTOM",
+					apiKey: "fab-secret",
+					baseUrl: "https://remote-agent.example.com/v1",
+					organizationId: "org-1",
+				},
+				context: {
+					user: { id: "user-1" },
+					activeOrganizationRole: "member",
+					tenantContext: {
+						userId: "user-1",
+						type: "organization",
+						organizationId: "org-1",
+					},
+				},
+			}),
+		).rejects.toMatchObject({
+			code: "FORBIDDEN",
+		});
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("allows a non-admin member to test their personal CUSTOM baseUrl (organizationId: null)", async () => {
+		azureResponds(200, { data: [{ id: "gpt-4o" }] });
+
+		const result = await (
+			testProviderConnectionProcedure as unknown as Handler
+		)._handler({
+			input: {
+				provider: "CUSTOM",
+				apiKey: "fab-secret",
+				baseUrl: "https://remote-agent.example.com/v1",
+				organizationId: null,
+			},
+			context: {
+				user: { id: "user-1" },
+				activeOrganizationRole: "member",
+				tenantContext: {
+					userId: "user-1",
+					type: "organization",
+					organizationId: "org-1",
+				},
+			},
+		});
+
+		expect(result.success).toBe(true);
+		expect(fetchMock).toHaveBeenCalled();
+	});
+});

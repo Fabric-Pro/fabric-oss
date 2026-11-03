@@ -550,13 +550,12 @@ export function ProjectKanbanRouteView({
 							</div>
 							<div className="space-y-2">
 								<h2 className="font-semibold tracking-tight text-foreground">
-									Fabric Kanban is not running
+									Fabric Agents local bridge is not running
 								</h2>
 								<p className="text-sm leading-relaxed text-muted-foreground">
-									Start the Kanban CLI locally to view this
-									board
-									<br />
-									embedded right here.
+									Launch Fabric Agents Desktop or start a
+									local Fabric Agents Remote Server to work
+									from this view.
 								</p>
 							</div>
 						</div>
@@ -567,13 +566,15 @@ export function ProjectKanbanRouteView({
 							<div className="px-4 py-3 space-y-2">
 								<div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 									<TerminalIcon className="h-3 w-3" />
-									Step 1 — Install
+									Step 1 — Start Personal Fabric Agents Remote
+									Server
 								</div>
 								<div className="flex items-center justify-between gap-2">
 									<code className="select-all font-mono text-xs text-foreground">
-										npm install -g @fabriccode/kanban
+										npx -y @fabricorg/agent-server --port
+										9100
 									</code>
-									<CopyButton text="npm install -g @fabriccode/kanban" />
+									<CopyButton text="npx -y @fabricorg/agent-server --port 9100" />
 								</div>
 							</div>
 
@@ -581,17 +582,17 @@ export function ProjectKanbanRouteView({
 							<div className="px-4 py-3 space-y-2">
 								<div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 									<TerminalIcon className="h-3 w-3" />
-									Step 2 — Run in embed mode
+									Step 2 — Or open Fabric Agents Desktop
 								</div>
 								<div className="flex items-center justify-between gap-2">
 									<code className="select-all font-mono text-xs text-foreground">
-										fabric-kanban --embed
+										fabric agents desktop
 									</code>
-									<CopyButton text="fabric-kanban --embed" />
+									<CopyButton text="fabric agents desktop" />
 								</div>
 								<p className="text-xs text-muted-foreground">
-									Run from your project's repository
-									directory.
+									Uses your subscription tokens on your
+									workstation or remote server.
 								</p>
 							</div>
 						</div>
@@ -654,7 +655,7 @@ export function ProjectKanbanRouteView({
 				<div className="flex flex-1 items-center justify-center">
 					<div className="flex items-center gap-2 text-sm text-muted-foreground">
 						<Loader2Icon className="h-4 w-4 animate-spin" />
-						Connecting to Fabric Kanban…
+						Connecting to Fabric Agents…
 					</div>
 				</div>
 			</div>
@@ -673,7 +674,7 @@ export function ProjectKanbanRouteView({
 				<iframe
 					ref={iframeRef}
 					src={iframeUrl}
-					title="Fabric Kanban"
+					title="Fabric Agents"
 					className="h-full w-full border-0"
 					allow="clipboard-read; clipboard-write"
 					sandbox="allow-same-origin allow-scripts allow-popups allow-forms"

@@ -23,6 +23,7 @@
  */
 
 import { contentIdentity } from "@repo/utils/content-identity";
+import { stripResidualDiffMarkers } from "@repo/utils/diff-markers";
 import { DOCUMENT_SAVE_BASE_REQUIRED } from "@repo/utils/document-save-base";
 import { SCOPED_REVISION_REFUSAL } from "@repo/utils/proposal-artifact/scoped-revision-codes";
 import {
@@ -999,6 +1000,186 @@ describe("FINDING accept", () => {
 		expect(error.code).toBe("FORBIDDEN");
 		expect(mocks.loadProposalArtifactDocument).not.toHaveBeenCalled();
 		expect(mocks.updateDocument).not.toHaveBeenCalled();
+	});
+});
+
+describe("a stored destination an earlier accept left diff markers in", () => {
+	// What an earlier accept saved for a link whose URL the diff marked: the
+	// deleted and the added run, percent-encoded into the destination.
+	const DAMAGED_URL =
+		"https://example.com/%E2%80%8B%E2%80%8BDEL_START%E2%80%8B%C2%A0old%C2%A0%E2%80%8BDEL_END%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8BADD_START%E2%80%8B%C2%A0new%C2%A0%E2%80%8BADD_END%E2%80%8B%E2%80%8B";
+	/** The Scope section links to it; nothing else differs from `STORED`. */
+	const DAMAGED = withProse(
+		"What the engagement covers.",
+		`What the engagement covers. See [the docs](${DAMAGED_URL}).`,
+	);
+	/** `DAMAGED` as the editor's save now writes it. */
+	const REPAIRED = DAMAGED.replace(DAMAGED_URL, "https://example.com/new");
+
+	beforeEach(async () => {
+		mocks.findUnique.mockResolvedValue({
+			...(await mocks.findUnique()),
+			content: DAMAGED,
+		});
+		mocks.loadProposalFinding.mockResolvedValue({
+			...(await mocks.loadProposalFinding()),
+			finding: {
+				...(await mocks.loadProposalFinding()).finding,
+				sectionHash: proseHashOf(DAMAGED, "Pricing"),
+			},
+		});
+	});
+
+	it("saves a chat accept that patched another section, the destination repaired", async () => {
+		expect(stripResidualDiffMarkers(DAMAGED)).toBe(REPAIRED);
+		const next = withProse(
+			"The fee is agreed later.",
+			"The fee is fixed and paid monthly.",
+			REPAIRED,
+		);
+
+		await call({
+			content: next,
+			expectedVersion: 3,
+			expectedContentHash: contentIdentity(DAMAGED),
+			aiReview: { kind: "CHAT", patchedSectionKeys: [PRICING_KEY] },
+		});
+
+		expect(committed?.content).toBe(next);
+	});
+
+	it("settles a finding accept on another section, the destination repaired", async () => {
+		const candidate = withProse(
+			"The fee is agreed later.",
+			"The fee is fixed at the amount in the commercial annex.",
+			REPAIRED,
+		);
+		const revisionToken = signRevisionToken({
+			userId: "user_member",
+			documentId: "doc_1",
+			runId: "run_1",
+			findingId: "finding_1",
+			baseVersion: 3,
+			response: null,
+			sectionKey: PRICING_KEY,
+			sectionFingerprint: revisionSectionFingerprint(
+				candidate,
+				PRICING_KEY,
+			) as string,
+		});
+
+		await call({
+			content: candidate,
+			expectedVersion: 3,
+			expectedContentHash: contentIdentity(DAMAGED),
+			aiReview: {
+				kind: "FINDING",
+				runId: "run_1",
+				findingId: "finding_1",
+				revisionToken,
+			},
+		});
+
+		expect(committed?.content).toBe(candidate);
+		expect(mocks.writeResolved).toHaveBeenCalledTimes(1);
+	});
+
+	it("guard: still refuses a deletion run added to an untouched clean destination", async () => {
+		const clean = withProse(
+			"What the engagement covers.",
+			"What the engagement covers. See [the docs](https://example.com/docs).",
+		);
+		mocks.findUnique.mockResolvedValue({
+			...(await mocks.findUnique()),
+			content: clean,
+		});
+		const patched = withProse(
+			"The fee is agreed later.",
+			"The fee is fixed and paid monthly.",
+			clean,
+		);
+		const next = patched.replace(
+			"https://example.com/docs",
+			"https://example.com/docs%E2%80%8B%E2%80%8BDEL_START%E2%80%8B%C2%A0old%C2%A0%E2%80%8BDEL_END%E2%80%8B%E2%80%8B",
+		);
+		// Resolved, the incoming body reads as the clean one: only a strict
+		// comparison of what arrives tells them apart.
+		expect(stripResidualDiffMarkers(next)).toBe(patched);
+
+		const error = await refusal(
+			call({
+				content: next,
+				expectedVersion: 3,
+				expectedContentHash: contentIdentity(clean),
+				aiReview: { kind: "CHAT", patchedSectionKeys: [PRICING_KEY] },
+			}),
+		);
+
+		expect(error.message).toBe(
+			"The change altered sections it did not target, so it was not saved.",
+		);
+		expect(error.data).toMatchObject({
+			code: SCOPED_REVISION_REFUSAL.OUTSIDE_TARGET,
+			violations: [expect.objectContaining({ sectionKey: SCOPE_KEY })],
+		});
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+	});
+
+	it("guard: refuses a finding accept that adds a deletion run to an untouched clean destination", async () => {
+		const clean = withProse(
+			"What the engagement covers.",
+			"What the engagement covers. See [the docs](https://example.com/docs).",
+		);
+		mocks.findUnique.mockResolvedValue({
+			...(await mocks.findUnique()),
+			content: clean,
+		});
+		const candidate = withProse(
+			"The fee is agreed later.",
+			"The fee is fixed at the amount in the commercial annex.",
+			clean,
+		);
+		const revisionToken = signRevisionToken({
+			userId: "user_member",
+			documentId: "doc_1",
+			runId: "run_1",
+			findingId: "finding_1",
+			baseVersion: 3,
+			response: null,
+			sectionKey: PRICING_KEY,
+			sectionFingerprint: revisionSectionFingerprint(
+				candidate,
+				PRICING_KEY,
+			) as string,
+		});
+		const next = candidate.replace(
+			"https://example.com/docs",
+			"https://example.com/docs%E2%80%8B%E2%80%8BDEL_START%E2%80%8B%C2%A0old%C2%A0%E2%80%8BDEL_END%E2%80%8B%E2%80%8B",
+		);
+		// Resolved, the incoming body reads as the signed candidate: only a
+		// strict comparison of what arrives tells them apart.
+		expect(stripResidualDiffMarkers(next)).toBe(candidate);
+
+		const error = await refusal(
+			call({
+				content: next,
+				expectedVersion: 3,
+				expectedContentHash: contentIdentity(clean),
+				aiReview: {
+					kind: "FINDING",
+					runId: "run_1",
+					findingId: "finding_1",
+					revisionToken,
+				},
+			}),
+		);
+
+		expect(error.data).toMatchObject({
+			code: SCOPED_REVISION_REFUSAL.OUTSIDE_TARGET,
+			violations: [expect.objectContaining({ sectionKey: SCOPE_KEY })],
+		});
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+		expect(mocks.writeResolved).not.toHaveBeenCalled();
 	});
 });
 

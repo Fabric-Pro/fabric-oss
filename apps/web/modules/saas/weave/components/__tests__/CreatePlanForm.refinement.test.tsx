@@ -53,6 +53,11 @@ const m = vi.hoisted(() => ({
 	toastError: vi.fn(),
 }));
 
+vi.mock("@saas/agents/components/FabricChat/shared/AnsweredByModel", () => ({
+	AnsweredByModel: ({ model }: { model?: { id: string } }) =>
+		model ? <span>Answered by {model.id}</span> : null,
+}));
+
 vi.mock("sonner", () => ({
 	toast: {
 		error: (...args: unknown[]) => m.toastError(...args),
@@ -66,6 +71,8 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useEffectiveOrganizationId: (id?: string | null) =>
+		id === undefined ? m.organizationOnScreen : id,
 	useOrganizationContext: () => ({
 		organizationId: m.organizationOnScreen,
 		basePath: "/app/example-org",
@@ -148,6 +155,7 @@ function deferred<T>(): {
 
 /** The runtime's reply events: the feedback, then the result, then the end. */
 function runtimeReply(reply: {
+	model?: { id: string; viaPlan: boolean };
 	feedback: string;
 	updatedMessage: string;
 	isReady: boolean;
@@ -174,6 +182,7 @@ function runtimeReply(reply: {
 			value: {
 				updatedMessage: reply.updatedMessage,
 				isReady: reply.isReady,
+				model: reply.model,
 			},
 		});
 		if (reply.finished !== false) {
@@ -279,6 +288,29 @@ afterEach(() => {
 });
 
 describe("with the flag off", () => {
+	it("keeps each completed feedback's own served identity", async () => {
+		m.refine
+			.mockResolvedValueOnce({
+				feedback: "First feedback",
+				updatedMessage: "Updated request",
+				isReady: false,
+				model: { id: "example-served", viaPlan: false },
+			})
+			.mockResolvedValueOnce({
+				feedback: "Second feedback",
+				updatedMessage: "Updated again",
+				isReady: false,
+			});
+		form();
+		startRefining();
+		sendRefinement("First input");
+		await screen.findByText("Answered by example-served");
+		sendRefinement("Second input");
+		await screen.findByText("Second feedback");
+		expect(screen.getAllByText("Answered by example-served")).toHaveLength(
+			1,
+		);
+	});
 	it("keeps the legacy failure toast when the form unmounts before the reply", async () => {
 		const reply = deferred<never>();
 		m.refine.mockReturnValue(reply.promise);
@@ -401,6 +433,21 @@ describe("with the flag off", () => {
 });
 
 describe("with the flag on and an organization on screen", () => {
+	it("renders the runtime result's explicit served model", async () => {
+		m.flagOn = true;
+		m.respond = runtimeReply({
+			feedback: "Feedback",
+			updatedMessage: "Updated request",
+			isReady: false,
+			model: { id: "example-runtime-served", viaPlan: true },
+		});
+		form();
+		startRefining();
+		sendRefinement("Input");
+		expect(
+			await screen.findByText("Answered by example-runtime-served"),
+		).toBeInTheDocument();
+	});
 	beforeEach(() => {
 		m.flagOn = true;
 	});

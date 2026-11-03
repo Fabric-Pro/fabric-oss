@@ -91,6 +91,7 @@ jobs:
         run: |
           node --test scripts/__tests__/check-decision-replay-dashboards.test.mjs
           node --test scripts/__tests__/decision-replay-gold.test.mjs
+          node --test scripts/__tests__/changeset-gate.test.mjs scripts/__tests__/changeset-package-policy.test.mjs
           node scripts/check-decision-replay-dashboards.mjs
 
       - name: Format check

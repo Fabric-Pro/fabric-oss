@@ -2722,12 +2722,18 @@ export function CreateAgentPage({
 
 							{/* Tab content */}
 							<div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-								{rightPanelTab === "sidekick" ? (
+								{/* Hidden, not unmounted: remounting drops the chat and
+								    re-sends the auto-start message (a new model run). */}
+								<div
+									hidden={rightPanelTab !== "sidekick"}
+									className="h-full"
+								>
 									<AgentBuilderSidekick
 										agentId={effectiveAgentId}
 										entityType={sidekickEntityType}
 									/>
-								) : (
+								</div>
+								{rightPanelTab === "guide" && (
 									<div
 										className="overflow-y-auto"
 										style={{

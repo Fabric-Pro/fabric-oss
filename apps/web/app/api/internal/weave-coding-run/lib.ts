@@ -499,12 +499,14 @@ export async function executeWeaveCodingRun(
 			return null;
 		}
 
-		// First, check for any active runs
+		// First, check for any active runs on the story in this tenant scope
 		const activeRun = await tx.codingRun.findFirst({
 			where: {
 				storyId: plan.userStory.id,
 				status: { in: [...ACTIVE_CODING_RUN_STATUSES] },
-				...tenantWhere(input.userId, organizationId),
+				...(organizationId
+					? { organizationId }
+					: { userId: input.userId, organizationId: null }),
 			},
 			orderBy: { createdAt: "desc" },
 		});
@@ -520,13 +522,24 @@ export async function executeWeaveCodingRun(
 	if (existingActiveRun) {
 		if (
 			linkedWeaveExecutionId &&
-			existingActiveRun.weaveExecutionId !== linkedWeaveExecutionId
+			existingActiveRun.weaveExecutionId !== linkedWeaveExecutionId &&
+			(!existingActiveRun.weaveExecutionId ||
+				existingActiveRun.userId === input.userId)
 		) {
 			await db.codingRun.update({
 				where: { id: existingActiveRun.id },
 				data: { weaveExecutionId: linkedWeaveExecutionId },
 			});
 		}
+		const existingConnectionId = (
+			existingActiveRun.providerMetadata as
+				| { executionTarget?: { connectionId?: unknown } }
+				| null
+				| undefined
+		)?.executionTarget?.connectionId;
+		const hideExistingExternalUrl =
+			typeof existingConnectionId === "string" &&
+			existingActiveRun.userId !== input.userId;
 		return {
 			executionKind: "coding_run",
 			executionChannel: existingActiveRun.executionChannel,
@@ -537,7 +550,9 @@ export async function executeWeaveCodingRun(
 				`coding-run-${existingActiveRun.id}`,
 			status: "running",
 			pullRequestUrl: existingActiveRun.pullRequestUrl || undefined,
-			externalUrl: existingActiveRun.externalUrl || undefined,
+			externalUrl: hideExistingExternalUrl
+				? undefined
+				: existingActiveRun.externalUrl || undefined,
 			summary: `An implementation session is already active for ${plan.userStory.identifier}. Reusing run ${existingActiveRun.id}.`,
 		};
 	}

@@ -144,6 +144,7 @@ import { useDocumentAssistantHistoryEnabled } from "../../hooks/useDocumentAssis
 import { useEngagementProfileExpanded } from "../../hooks/useEngagementProfileExpanded";
 import { contextEntryBytes } from "../../lib/ai-context-budget";
 import { buildCleanSpecRefreshMessage } from "../../lib/clean-spec-refresh-message";
+import { isCodingRunActive } from "../../lib/coding-run-visibility";
 import {
 	diffPartialText,
 	focusOnAnchor,
@@ -352,6 +353,10 @@ type Props = {
 	canEdit?: boolean;
 	canAddTags?: boolean;
 	canManageAllTags?: boolean;
+	canExecuteAgents?: boolean;
+	readOnlyMode?: boolean;
+	hasActiveCodingRun?: boolean;
+	onImplementTask?: (taskId: string) => void;
 	projectId: string;
 	projectName?: string;
 	projectRepository?: {
@@ -603,6 +608,10 @@ export function StoryWorkspace({
 	canEdit = false,
 	canAddTags = false,
 	canManageAllTags = false,
+	canExecuteAgents = false,
+	readOnlyMode = false,
+	hasActiveCodingRun = false,
+	onImplementTask,
 	projectId,
 	projectName,
 	projectRepository,
@@ -8047,6 +8056,36 @@ export function StoryWorkspace({
 																		task.id,
 																	)
 																}
+																onImplement={
+																	onImplementTask &&
+																	canExecuteAgents &&
+																	!readOnlyMode &&
+																	!hasActiveCodingRun &&
+																	story.draftingStage ===
+																		"PUBLISHED" &&
+																	story.deliveryTrack !==
+																		"DEFER" &&
+																	!task.isCompleted &&
+																	!isCodingRunActive(
+																		task.latestCodingRun,
+																	) &&
+																	![
+																		"running",
+																		"working",
+																		"executing",
+																		"paused",
+																		"checkpoint",
+																		"awaiting_approval",
+																	].includes(
+																		task.agentStatus ??
+																			"",
+																	)
+																		? () =>
+																				onImplementTask(
+																					task.id,
+																				)
+																		: undefined
+																}
 																disabled={
 																	isAiLoading
 																}
@@ -8731,11 +8770,13 @@ function TaskItem({
 	task,
 	onToggle,
 	onDelete,
+	onImplement,
 	disabled,
 }: {
 	task: StoryTask;
 	onToggle: () => void;
 	onDelete: () => void;
+	onImplement?: () => void;
 	disabled?: boolean;
 }) {
 	const [isDeleting, setIsDeleting] = useState(false);
@@ -8777,6 +8818,24 @@ function TaskItem({
 				<Badge variant="outline" className="shrink-0">
 					{task.estimatedHours}h
 				</Badge>
+			)}
+			{onImplement && !task.isCompleted && (
+				<Button
+					type="button"
+					variant="outline"
+					size="sm"
+					disabled={disabled}
+					onClick={(e) => {
+						e.stopPropagation();
+						onImplement();
+					}}
+					aria-label={`Implement task ${task.identifier}`}
+					data-testid={`workspace-task-implement-${task.id}`}
+					className="h-7 px-2.5 text-xs gap-1.5 shrink-0"
+				>
+					<CodeIcon className="size-3.5" />
+					<span>Implement</span>
+				</Button>
 			)}
 			{task.isCompleted && (
 				<CheckCircle2Icon className="size-4 text-success shrink-0" />

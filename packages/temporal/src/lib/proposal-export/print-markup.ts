@@ -1,11 +1,12 @@
 /**
  * The small pieces the Proposal's print page writes with (Fizzy #2946):
- * escaping, the `data:` URL of a raster, a node's plain text, a `<style>`
- * element and the running footer's title. The cover and the body each
+ * escaping, the `data:` URL of a raster, a node's plain text, which tables
+ * and lists take the id-column and steps classes, a `<style>` element and
+ * the running footer's title. The cover and the body each
  * import them from here, so neither depends on the other.
  */
 
-import type { Nodes, Paragraph } from "mdast";
+import type { List, Nodes, Paragraph, PhrasingContent, Table } from "mdast";
 import { readUploadedImageTag } from "./document-content";
 import { exportFailure } from "./failures";
 import { eachNode, flatText } from "./markdown";
@@ -69,6 +70,48 @@ export function isImageParagraph(node: Paragraph): boolean {
 		}
 	});
 	return image;
+}
+
+/** The children that are more than whitespace. */
+export function meaningfulChildren(
+	children: readonly PhrasingContent[],
+): PhrasingContent[] {
+	return children.filter(
+		(child) => !(child.type === "text" && child.value.trim() === ""),
+	);
+}
+
+/**
+ * A first-column cell that reads as an id, such as "FS-01": short, one word
+ * and with a digit, so a column of plain words ("Discovery", "Pro") is not.
+ */
+const SHORT_ID = /^(?=[\p{L}\p{N}-]*\p{N})[\p{L}\p{N}-]{1,12}$/u;
+
+/** Whether every body cell of the first column reads as a short id. */
+export function hasIdColumn(node: Table): boolean {
+	const rows = node.children.slice(1);
+	return (
+		rows.length > 0 &&
+		rows.every((row) => {
+			const cell = row.children[0];
+			return cell !== undefined && SHORT_ID.test(plainText(cell));
+		})
+	);
+}
+
+/** Whether every item of an ordered list opens with bold text. */
+export function isStepList(node: List): boolean {
+	return (
+		node.ordered === true &&
+		node.children.length > 0 &&
+		node.children.every((item) => {
+			const first = item.children[0];
+			return (
+				first?.type === "paragraph" &&
+				meaningfulChildren(first.children)[0]?.type === "strong"
+			);
+		})
+	);
 }
 
 /** Longest document title the footer shows, in characters. */

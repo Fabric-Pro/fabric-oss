@@ -4,6 +4,8 @@ import { buildReleaseWidgetSnippet } from "@marketing/shared/lib/embed-snippet";
 import { getBaseUrl } from "@repo/utils";
 import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
 import { useCapabilityGate } from "@saas/projects/components/capability-gates/useCapabilityGates";
+import { NewsletterOrgDistributionSetting } from "@saas/projects/components/NewsletterOrgDistributionSetting";
+import { NewsletterSubscriberRow } from "@saas/projects/components/NewsletterSubscriberRow";
 import { Pagination } from "@saas/shared/components/Pagination";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -53,7 +55,6 @@ import {
 	CopyIcon,
 	RefreshCwIcon,
 	SendIcon,
-	TrashIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { parseAsInteger, parseAsStringLiteral, useQueryState } from "nuqs";
@@ -243,51 +244,6 @@ function formatDateTime(value: Date | string): string {
 		dateStyle: "medium",
 		timeStyle: "short",
 	});
-}
-
-type SubscriberRowData = {
-	id: string;
-	email: string;
-	name?: string | null;
-	status: string;
-};
-
-/** One subscriber row, shared by the active list and the (revealed)
- *  unsubscribed block so the markup stays in one place. */
-function SubscriberRow({
-	sub,
-	onRemove,
-}: {
-	sub: SubscriberRowData;
-	onRemove: (id: string) => void;
-}) {
-	return (
-		<li className="flex items-center justify-between gap-3 p-3">
-			<div className="min-w-0">
-				<p className="truncate text-sm text-foreground">{sub.email}</p>
-				{sub.name ? (
-					<p className="truncate text-xs text-muted-foreground">
-						{sub.name}
-					</p>
-				) : null}
-			</div>
-			<div className="flex items-center gap-2">
-				<Badge
-					status={sub.status === "ACTIVE" ? "success" : "secondary"}
-				>
-					{sub.status === "ACTIVE" ? "Active" : "Unsubscribed"}
-				</Badge>
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					aria-label={`Remove ${sub.email}`}
-					onClick={() => onRemove(sub.id)}
-				>
-					<TrashIcon className="size-4 text-destructive" />
-				</Button>
-			</div>
-		</li>
-	);
 }
 
 export function ProjectNewsletterSettings({
@@ -553,7 +509,10 @@ export function ProjectNewsletterSettings({
 				// Enabling the newsletter backfills current project members as
 				// ACTIVE subscribers server-side; refresh the list so they show up
 				// immediately instead of only after react-query's next refetch.
-				if (variables.enabled === true) {
+				if (
+					variables.enabled === true ||
+					variables.sendToOrganization !== undefined
+				) {
 					invalidate("subscribers");
 				}
 			},
@@ -612,6 +571,17 @@ export function ProjectNewsletterSettings({
 			invalidate("subscribers");
 		},
 		onError: (e) => toast.error(`Failed to add: ${e.message}`),
+	});
+
+	const setSubscriberExcluded = useMutation({
+		mutationFn: async (input: { id: string; excluded: boolean }) =>
+			orpcClient.newsletter.subscribers.setExcluded({
+				projectId,
+				organizationId: orgId,
+				...input,
+			}),
+		onSuccess: () => invalidate("subscribers"),
+		onError: (e) => toast.error(`Failed to update: ${e.message}`),
 	});
 
 	const removeSubscriber = useMutation({
@@ -1011,6 +981,21 @@ export function ProjectNewsletterSettings({
 							}
 						/>
 					</div>
+
+					{orgId && (
+						<NewsletterOrgDistributionSetting
+							checked={s?.sendToOrganization ?? false}
+							disabled={settingsDisabled}
+							syncError={s?.orgSyncError ?? null}
+							onChange={(next) =>
+								updateSettings.mutate({
+									projectId,
+									organizationId: orgId,
+									sendToOrganization: next,
+								})
+							}
+						/>
+					)}
 
 					{requireApproval ? (
 						<div className="space-y-2">
@@ -1561,9 +1546,15 @@ export function ProjectNewsletterSettings({
 						<>
 							<ul className="divide-y divide-border rounded-lg border border-border">
 								{pagedActiveSubscribers.map((sub) => (
-									<SubscriberRow
+									<NewsletterSubscriberRow
 										key={sub.id}
 										sub={sub}
+										onSetExcluded={(id, excluded) =>
+											setSubscriberExcluded.mutate({
+												id,
+												excluded,
+											})
+										}
 										onRemove={(id) =>
 											removeSubscriber.mutate(id)
 										}
@@ -1612,9 +1603,20 @@ export function ProjectNewsletterSettings({
 									<ul className="mt-2 divide-y divide-border rounded-lg border border-border">
 										{pagedUnsubscribedSubscribers.map(
 											(sub) => (
-												<SubscriberRow
+												<NewsletterSubscriberRow
 													key={sub.id}
 													sub={sub}
+													onSetExcluded={(
+														id,
+														excluded,
+													) =>
+														setSubscriberExcluded.mutate(
+															{
+																id,
+																excluded,
+															},
+														)
+													}
 													onRemove={(id) =>
 														removeSubscriber.mutate(
 															id,

@@ -10,6 +10,7 @@ import {
 	writeResolvedFindingResponse,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import { stripResidualDiffMarkers } from "@repo/utils/diff-markers";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import type { PreservationScope } from "@repo/utils/proposal-artifact/preservation";
 import {
@@ -299,7 +300,11 @@ export async function reviewAiAcceptedSave(args: {
 		documentId: args.documentId,
 		owningOrganizationId: args.owningOrganizationId,
 		userId,
-		previous: args.stored.content,
+		// The stored body as the editor's save rewrites it: diff markers an
+		// earlier accept percent-encoded into a destination are resolved, so a
+		// section that only had one repaired is not a change. The accepted
+		// body is checked exactly as it arrived.
+		previous: stripResidualDiffMarkers(args.stored.content),
 		next,
 		scope,
 		finding: finding

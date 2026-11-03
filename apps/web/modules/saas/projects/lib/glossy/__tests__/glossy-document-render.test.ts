@@ -139,6 +139,8 @@ const recorder = vi.hoisted(() => ({
 		text?: string;
 		/** `text` only: where its widest line ends, in points. */
 		right?: number;
+		/** `text` only: the baseline of its last line, in points from the page's top. */
+		bottom?: number;
 		box?: Box;
 		/** `roundedRect` only: its corner radius, style, and colors. */
 		radius?: number;
@@ -176,6 +178,12 @@ vi.mock("jspdf", async (importOriginal) => {
 				right:
 					(rest[0] as number) +
 					Math.max(0, ...lines.map((line) => doc.getTextWidth(line))),
+				bottom:
+					(rest[1] as number) +
+					(lines.length - 1) *
+						doc.getFontSize() *
+						((rest[2] as { lineHeightFactor?: number } | undefined)
+							?.lineHeightFactor ?? doc.getLineHeightFactor()),
 			});
 			return (text as (...a: unknown[]) => typeof doc)(value, ...rest);
 		}) as typeof doc.text;
@@ -983,6 +991,187 @@ describe("PDF text outside Windows-1252 (Fizzy #2589 follow-up)", () => {
 		for (const event of texts) {
 			expect(event.text).toMatch(WIN_ANSI);
 			expect(event.right).toBeLessThanOrEqual(PAGE_RIGHT_MARGIN + 0.01);
+		}
+	});
+
+	it("sizes table columns to their words, so no cell splits a word across lines", async () => {
+		const cells = [
+			[
+				"Goal",
+				"Metric",
+				"Target",
+				"Measurement Method",
+				"Owner",
+				"Status",
+			],
+			[
+				"Reduce implementation time",
+				"Implementation lead time",
+				"30% faster",
+				"Quarterly measurement",
+				"Delivery Responsibilities Lead",
+				"Not started",
+			],
+			[
+				"Improve accommodation",
+				"Customer satisfaction",
+				"4.5 of 5",
+				"Survey questionnaire",
+				"Customer Experience",
+				"In progress",
+			],
+		];
+		const rows = cells.map((row) => [...row, "Evidence"]);
+		await renderGlossyPdf({
+			content: edition({
+				sections: [
+					{
+						sectionKey: "metrics",
+						headingPath: ["Success Metrics"],
+						heading: "Success Metrics",
+						level: 2,
+						markdown: [
+							`| ${rows[0].join(" | ")} |`,
+							`|${" --- |".repeat(rows[0].length)}`,
+							...rows
+								.slice(1)
+								.map((row) => `| ${row.join(" | ")} |`),
+						].join("\n"),
+						wording: "original",
+						anchors: [],
+					},
+				],
+				visuals: {},
+			}),
+			palette,
+			preparer: { name: "Example Studio" },
+		});
+
+		// A cell's lines are recorded joined by a space, so a whole word
+		// reads back as the cell's own text.
+		expect(pdfTexts()).toEqual(expect.arrayContaining(cells.flat()));
+		for (const event of recorder.pdf.filter((e) => e.op === "text")) {
+			expect(event.right).toBeLessThanOrEqual(PAGE_RIGHT_MARGIN + 0.01);
+		}
+	});
+
+	it("steps the table font down to keep words whole when they cannot fit side by side at full size", async () => {
+		// Together these run wider than the body at 9.5pt.
+		const words = [
+			"Internationalization",
+			"Accommodation",
+			"Responsibilities",
+			"Accountabilities",
+			"Implementation",
+			"Interoperability",
+			"Questionnaire",
+		];
+		await renderGlossyPdf({
+			content: edition({
+				sections: [
+					{
+						sectionKey: "crowded",
+						headingPath: ["Crowded"],
+						heading: "Crowded",
+						level: 2,
+						markdown: [
+							"| A | B | C | D | E | F | G |",
+							"|---|---|---|---|---|---|---|",
+							`| ${words.join(" | ")} |`,
+						].join("\n"),
+						wording: "original",
+						anchors: [],
+					},
+				],
+				visuals: {},
+			}),
+			palette,
+			preparer: { name: "Example Studio" },
+		});
+
+		expect(pdfTexts()).toEqual(expect.arrayContaining(words));
+		for (const event of recorder.pdf.filter((e) => e.op === "text")) {
+			expect(event.right).toBeLessThanOrEqual(PAGE_RIGHT_MARGIN + 0.01);
+		}
+	});
+
+	it("draws a table row taller than a page across pages, above the bottom margin", async () => {
+		const notes = Array(3000).fill("word").join(" ");
+		await renderGlossyPdf({
+			content: edition({
+				sections: [
+					{
+						sectionKey: "tall",
+						headingPath: ["Tall"],
+						heading: "Tall",
+						level: 2,
+						markdown: `| Stage | Notes |\n|---|---|\n| Discovery | ${notes} |`,
+						wording: "original",
+						anchors: [],
+					},
+				],
+				visuals: {},
+			}),
+			palette,
+			preparer: { name: "Example Studio" },
+		});
+
+		const texts = recorder.pdf.filter((event) => event.op === "text");
+		const words = texts
+			.flatMap((event) => (event.text ?? "").split(" "))
+			.filter((word) => word === "word");
+		expect(words).toHaveLength(3000);
+		expect(
+			new Set(
+				texts
+					.filter((event) => event.text?.startsWith("word"))
+					.map((event) => event.page),
+			).size,
+		).toBeGreaterThan(1);
+		for (const event of texts) {
+			expect(event.bottom).toBeLessThanOrEqual(841.89 - 56 + 0.01);
+		}
+	});
+
+	it("moves a table row that fits on a page to the next page whole, wherever the page ends", async () => {
+		const tail = Array(70).fill("tail").join(" ");
+		for (let n = 20; n <= 45; n++) {
+			recorder.pdf.length = 0;
+			const short = Array.from(
+				{ length: n },
+				(_, i) => `| r${i} | short |`,
+			);
+			await renderGlossyPdf({
+				content: edition({
+					sections: [
+						{
+							sectionKey: "rows",
+							headingPath: ["Rows"],
+							heading: "Rows",
+							level: 2,
+							markdown: [
+								"| Stage | Notes |",
+								"|---|---|",
+								...short,
+								`| Last | ${tail} |`,
+							].join("\n"),
+							wording: "original",
+							anchors: [],
+						},
+					],
+					visuals: {},
+				}),
+				palette,
+				preparer: { name: "Example Studio" },
+			});
+
+			const pages = recorder.pdf
+				.filter(
+					(event) =>
+						event.op === "text" && event.text?.startsWith("tail"),
+				)
+				.map((event) => event.page);
+			expect(new Set(pages).size).toBe(1);
 		}
 	});
 

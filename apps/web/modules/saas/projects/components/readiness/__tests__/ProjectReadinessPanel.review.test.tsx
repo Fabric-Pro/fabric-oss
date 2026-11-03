@@ -445,3 +445,166 @@ describe("work already underway", () => {
 		expect(screen.queryByText(/in progress/i)).not.toBeInTheDocument();
 	});
 });
+
+describe("default view prioritisation, Show all reachability, and prerequisite disclosure", () => {
+	it("floats required (MUST) gaps ahead of SHOULD gaps in the default view while preserving checklist order in Show all", async () => {
+		const user = userEvent.setup();
+		mountWith([
+			item({
+				key: "feature-snapshot",
+				i18nKey: "readiness.items.featureSnapshot",
+				needLevel: "SHOULD",
+			}),
+			item({
+				key: "tech-stack",
+				i18nKey: "readiness.items.techStack",
+				ctaLabelKey: "readiness.cta.techStack",
+				needLevel: "SHOULD",
+			}),
+			item({
+				key: "prd",
+				i18nKey: "readiness.items.prd",
+				ctaLabelKey: "readiness.cta.prd",
+				needLevel: "MUST",
+			}),
+		]);
+
+		const defaultRows = screen
+			.getAllByRole("listitem")
+			.map((el) => el.textContent ?? "");
+		expect(defaultRows).toHaveLength(3);
+		expect(defaultRows[0]).toContain("Product Requirement Document (PRD)");
+
+		// With 3 visible rows and all 3 already shown, add a 4th resolved row to
+		// verify Show all restores server checklist order.
+		mountWith([
+			item({
+				key: "feature-snapshot",
+				i18nKey: "readiness.items.featureSnapshot",
+				needLevel: "SHOULD",
+			}),
+			item({
+				key: "tech-stack",
+				i18nKey: "readiness.items.techStack",
+				ctaLabelKey: "readiness.cta.techStack",
+				isComplete: true,
+				isActiveGap: false,
+				needLevel: "SHOULD",
+			}),
+			item({
+				key: "prd",
+				i18nKey: "readiness.items.prd",
+				ctaLabelKey: "readiness.cta.prd",
+				needLevel: "MUST",
+			}),
+		]);
+
+		const showAllButtons = screen.getAllByRole("button", {
+			name: /show all/i,
+		});
+		await user.click(showAllButtons[showAllButtons.length - 1]);
+
+		const expandedLists = document.querySelectorAll("ul");
+		const lastListItems = Array.from(
+			expandedLists[expandedLists.length - 1]?.querySelectorAll("li") ??
+				[],
+		).map((el) => el.textContent ?? "");
+		expect(lastListItems).toHaveLength(3);
+		expect(lastListItems[0]).toContain("Feature Snapshot");
+		expect(lastListItems[1]).toContain("Tech Stack");
+		expect(lastListItems[2]).toContain(
+			"Product Requirement Document (PRD)",
+		);
+	});
+
+	it("keeps Show all reachable when more than five visible active gaps are open", async () => {
+		const user = userEvent.setup();
+		const sevenKeys = [
+			["feature-snapshot", "featureSnapshot"],
+			["tech-stack", "techStack"],
+			["context-source", "contextSource"],
+			["additional-context-sources", "additionalContextSources"],
+			["chat-app-connected", "chatAppConnected"],
+			["pm-system-connected", "pmSystemConnected"],
+			["prd", "prd"],
+		] as const;
+
+		mountWith(
+			sevenKeys.map(([key, camel], idx) =>
+				item({
+					key,
+					i18nKey: `readiness.items.${camel}`,
+					ctaLabelKey: `readiness.cta.${camel}`,
+					needLevel: idx === 6 ? "MUST" : "SHOULD",
+				}),
+			),
+		);
+
+		expect(screen.getAllByRole("listitem")).toHaveLength(5);
+		const toggle = screen.getByRole("button", {
+			name: /show all \(2 more\)/i,
+		});
+		await user.click(toggle);
+		expect(screen.getAllByRole("listitem")).toHaveLength(7);
+	});
+
+	it("tucks locked prerequisites into a disclosure footer and summarises chained items", async () => {
+		const user = userEvent.setup();
+		mountWith([
+			item({
+				key: "prd",
+				i18nKey: "readiness.items.prd",
+				ctaLabelKey: "readiness.cta.prd",
+				needLevel: "MUST",
+			}),
+			item({
+				key: "architecture",
+				i18nKey: "readiness.items.architecture",
+				ctaLabelKey: "readiness.cta.architecture",
+				needLevel: "SHOULD",
+				isVisible: false,
+				isActiveGap: false,
+				blockedBy: "prd",
+			}),
+			item({
+				key: "api-spec",
+				i18nKey: "readiness.items.apiSpec",
+				ctaLabelKey: "readiness.cta.apiSpec",
+				needLevel: "SHOULD",
+				isVisible: false,
+				isActiveGap: false,
+				blockedBy: "architecture",
+			}),
+		]);
+
+		// Locked items are hidden behind the disclosure button by default.
+		expect(
+			screen.queryByText(/Architecture document/),
+		).not.toBeInTheDocument();
+		const unlockToggle = screen.getByRole("button", {
+			name: /Unlocks later \(2\)/i,
+		});
+		await user.click(unlockToggle);
+
+		expect(
+			screen.getByText(/After Product Requirement Document \(PRD\)/),
+		).toBeInTheDocument();
+		expect(screen.getByText(/Architecture document/)).toBeInTheDocument();
+		expect(
+			screen.queryByText(/API specification exists/),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByText(/\+1 more after downstream prerequisites/),
+		).toBeInTheDocument();
+	});
+
+	it("shows read-only intro copy without snooze instructions when the viewer cannot edit", () => {
+		mountWith([item()], { canAct: false });
+		expect(
+			screen.getByText(
+				/Fabric checks off completed steps automatically as this project is configured/i,
+			),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/snooze what/i)).not.toBeInTheDocument();
+	});
+});

@@ -31,6 +31,11 @@
  * parser return null, and so does a model whose shape the requested
  * template cannot draw; the caller then draws the fence as Mermaid.
  *
+ * A flowchart fence with no figure line at all whose graph is one plain
+ * chain of seven steps or more draws as a numbered process too
+ * (`figureKindOf`): the engine would draw it as a column too tall to print
+ * legibly. Only the drawing changes; the fence keeps its Mermaid text.
+ *
  * Every template is 662 px wide (the print column, so print never scales
  * it), sets no text below 12 px, carries `role="img"`, a `<title>` and a
  * `<desc>` that lists its content in reading order, and uses only the
@@ -45,8 +50,13 @@
 import { barsFigureSvg, parseBarsSource } from "./bars";
 import { ganttFigureSvg, parseGanttSource } from "./gantt";
 import { layersFigureSvg } from "./layers";
-import { type FigureKind, parseFigureSource, readFigureKind } from "./parse";
-import { processFigureSvg } from "./process";
+import {
+	FIGURE_LINE,
+	type FigureKind,
+	parseFigureSource,
+	readFigureKind,
+} from "./parse";
+import { isPlainProcessChain, processFigureSvg } from "./process";
 import type { FigureOptions, FigurePalette } from "./svg-text";
 import { teamFigureSvg } from "./team";
 
@@ -79,12 +89,17 @@ export {
 	readFigureKind,
 	withFigureKind,
 } from "./parse";
-export { type ProcessFigureOptions, processFigureSvg } from "./process";
+export {
+	INFERRED_PROCESS_MIN_STEPS,
+	type ProcessFigureOptions,
+	processFigureSvg,
+} from "./process";
 export {
 	FIGURE_PALETTE_ROLES,
 	FIGURE_WIDTH,
 	type FigureOptions,
 	type FigurePalette,
+	FONT_SIZE as FIGURE_TEXT_PX,
 } from "./svg-text";
 export { teamFigureSvg } from "./team";
 
@@ -133,16 +148,40 @@ export function renderFigureSvg(
 }
 
 /**
- * The figure template a fence body asks for, or null when it asks for none,
- * or the template refuses its source, the palette or the options (a paint
- * colour or id prefix it cannot use): the fence then draws as Mermaid.
+ * The figure template a client Proposal draws a fence body with, on its
+ * page, in the PDF and in the Word file alike: the kind its figure line
+ * asks for; for a fence with no figure line at all, `process` when its
+ * flowchart is one plain chain of at least `INFERRED_PROCESS_MIN_STEPS`
+ * steps (`isPlainProcessChain`); else null. A figure line of any value
+ * anywhere in the fence, `none` or one no template knows included, keeps
+ * the fence as written.
+ */
+export function figureKindOf(source: string): FigureKind | null {
+	const asked = readFigureKind(source);
+	if (asked !== null) {
+		return asked;
+	}
+	if (
+		source.split(/\r\n?|\n/).some((line) => FIGURE_LINE.test(line.trim()))
+	) {
+		return null;
+	}
+	const model = parseFigureSource(source);
+	return model && isPlainProcessChain(model) ? "process" : null;
+}
+
+/**
+ * The figure template a fence body draws with (`figureKindOf`), or null when
+ * it takes none, or the template refuses its source, the palette or the
+ * options (a paint colour or id prefix it cannot use): the fence then draws
+ * as Mermaid.
  */
 export function tryRenderFigure(
 	source: string,
 	palette: FigurePalette,
 	options: FigureOptions = {},
 ): string | null {
-	const kind = readFigureKind(source);
+	const kind = figureKindOf(source);
 	if (kind === null) {
 		return null;
 	}

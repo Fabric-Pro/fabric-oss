@@ -179,6 +179,10 @@ const REQUIRES_BASE_URL: Record<
 	},
 	AWS_BEDROCK: { requiresBaseUrl: true, displayName: "AWS Bedrock" },
 	CLOUDFLARE_AI: { requiresBaseUrl: true, displayName: "Cloudflare AI" },
+	CUSTOM: {
+		requiresBaseUrl: true,
+		displayName: "Fabric Remote Server / OpenAI-Compatible",
+	},
 	OPENROUTER: { requiresBaseUrl: false, displayName: "OpenRouter" },
 };
 
@@ -407,6 +411,111 @@ describe("upsertUserProviderProcedure — base URL validation", () => {
 
 			expect(res.success).toBe(true);
 			expect(mockDb.$transaction).toHaveBeenCalledTimes(1);
+		});
+
+		it.each([
+			"https://remote-agent.example.com/v1",
+			"http://127.0.0.1:4100/v1",
+			"http://localhost:4100/v1",
+			"http://[::1]:4100/v1",
+		])(
+			"persists a CUSTOM provider config with allowed base URL %s and optional deploymentName",
+			async (baseUrl) => {
+				vi.stubEnv(
+					"AGENT_DISCOVERY_ALLOWED_HOSTS",
+					"127.0.0.1,localhost,::1",
+				);
+				mockOrgCreate.mockResolvedValueOnce({
+					id: "cpc_custom",
+					provider: "CUSTOM",
+					displayName: "Fabric Remote Server / OpenAI-Compatible",
+					isDefault: true,
+					purpose: "ALL",
+					config: { baseUrl, deploymentName: "qwen2.5-coder" },
+				});
+
+				const res = await upsert._handler({
+					input: {
+						provider: "CUSTOM",
+						apiKey: "fab-secret",
+						baseUrl,
+						deploymentName: "qwen2.5-coder",
+						organizationId: "org-1",
+					},
+					context: orgContext,
+				});
+
+				expect(res.success).toBe(true);
+				expect(mockOrgCreate).toHaveBeenCalledWith({
+					data: expect.objectContaining({
+						organizationId: "org-1",
+						provider: "CUSTOM",
+						config: { baseUrl, deploymentName: "qwen2.5-coder" },
+					}),
+				});
+				vi.unstubAllEnvs();
+			},
+		);
+	});
+
+	describe("rejects unsafe CUSTOM provider endpoints", () => {
+		it.each([
+			["private RFC1918 IP", "http://10.0.0.1:4100/v1"],
+			[
+				"link-local metadata IP",
+				"http://169.254.169.254/latest/meta-data",
+			],
+			["non-HTTPS remote hostname", "http://remote-agent.example.com/v1"],
+		])(
+			"rejects %s before encryption or persistence",
+			async (_, baseUrl) => {
+				await expect(
+					upsert._handler({
+						input: {
+							provider: "CUSTOM",
+							apiKey: "fab-secret",
+							baseUrl,
+							organizationId: "org-1",
+						},
+						context: orgContext,
+					}),
+				).rejects.toMatchObject({
+					code: "BAD_REQUEST",
+					message: expect.stringContaining(
+						"Invalid Custom / Remote Server URL:",
+					),
+				});
+
+				expect(mockEncryptApiKey).not.toHaveBeenCalled();
+				expect(mockDb.$transaction).not.toHaveBeenCalled();
+			},
+		);
+
+		it("rejects loopback URLs in production when not allowlisted in AGENT_DISCOVERY_ALLOWED_HOSTS", async () => {
+			vi.stubEnv("NODE_ENV", "production");
+			vi.stubEnv("AGENT_DISCOVERY_ALLOWED_HOSTS", "");
+			try {
+				await expect(
+					upsert._handler({
+						input: {
+							provider: "CUSTOM",
+							apiKey: "fab-secret",
+							baseUrl: "http://127.0.0.1:4100/v1",
+							organizationId: "org-1",
+						},
+						context: orgContext,
+					}),
+				).rejects.toMatchObject({
+					code: "BAD_REQUEST",
+					message: expect.stringContaining(
+						"Invalid Custom / Remote Server URL:",
+					),
+				});
+				expect(mockEncryptApiKey).not.toHaveBeenCalled();
+				expect(mockDb.$transaction).not.toHaveBeenCalled();
+			} finally {
+				vi.unstubAllEnvs();
+			}
 		});
 	});
 });

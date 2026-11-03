@@ -15,6 +15,10 @@ import {
 	buildSettledDecisionsBlock,
 } from "@repo/temporal/proposal-artifact-settled-decisions";
 import { contentIdentity } from "@repo/utils/content-identity";
+import {
+	resolveEncodedDiffMarkers,
+	stripResidualDiffMarkers,
+} from "@repo/utils/diff-markers";
 import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import { PROPOSAL_CLIENT_REVISION_AGENT_KEY } from "@repo/utils/prompt-action-catalog";
 import { checkPreservation } from "@repo/utils/proposal-artifact/preservation";
@@ -308,9 +312,14 @@ export const reviseProposalSectionProcedure = tenantProtectedProcedure
 			// A request abandoned meanwhile signs nothing.
 			signal?.throwIfAborted();
 
+			// The candidate as the editor's save will store it: diff markers
+			// percent-encoded into a destination are resolved now, so the link
+			// the person reviews is the one the accept keeps.
+			const body = resolveEncodedDiffMarkers(result.body);
+
 			// The server's own sanity check of the splice: only the section's
 			// own lines changed, and every diagram is still there.
-			const spliced = spliceSectionBody(content, sectionKey, result.body);
+			const spliced = spliceSectionBody(content, sectionKey, body);
 			const preservation = spliced
 				? checkPreservation({
 						previous: content,
@@ -318,8 +327,14 @@ export const reviseProposalSectionProcedure = tenantProtectedProcedure
 						scope: { kind: "section", sectionKey },
 					})
 				: null;
+			// The token vouches for the section as the editor's save stores it,
+			// which resolves diff markers an earlier accept percent-encoded into
+			// a destination the candidate kept.
 			const candidate = spliced
-				? revisionSectionFingerprint(spliced, sectionKey)
+				? revisionSectionFingerprint(
+						stripResidualDiffMarkers(spliced),
+						sectionKey,
+					)
 				: undefined;
 			if (!spliced || !preservation?.ok || candidate === undefined) {
 				logger.info(`${LOG_PREFIX} Candidate refused`, {
@@ -336,7 +351,7 @@ export const reviseProposalSectionProcedure = tenantProtectedProcedure
 									),
 								]
 							: [],
-					bodyLength: result.body.length,
+					bodyLength: body.length,
 				});
 				return { status: "INVALID_CANDIDATE" };
 			}
@@ -357,7 +372,7 @@ export const reviseProposalSectionProcedure = tenantProtectedProcedure
 			return {
 				status: "CANDIDATE",
 				sectionKey,
-				body: result.body,
+				body,
 				baseVersion: document.version,
 				baseContentHash: input.baseContentHash,
 				revisionToken,

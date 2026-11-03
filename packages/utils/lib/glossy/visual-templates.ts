@@ -28,6 +28,7 @@ import {
 	PROPOSAL_VISUAL_LINE_MAX_CHARS,
 	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
 	PROPOSAL_VISUAL_TITLE_MAX_LINES,
+	proposalLabelCase,
 	proposalNodeLabel,
 	SVG_CARD_FONT_STACK,
 	VISUAL_COLOR_PLACEHOLDERS,
@@ -50,6 +51,7 @@ export {
 	PROPOSAL_VISUAL_LINE_MAX_CHARS,
 	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
 	PROPOSAL_VISUAL_TITLE_MAX_LINES,
+	proposalLabelCase,
 	SVG_CARD_FONT_STACK,
 	teamToMermaid,
 	VISUAL_COLOR_PLACEHOLDERS,
@@ -59,6 +61,11 @@ export {
 // ---------------------------------------------------------------------------
 // timeline / flow / org_chart -> Mermaid
 // ---------------------------------------------------------------------------
+
+/** A one-line label as the layout draws it: a Proposal's in `proposalLabelCase`. */
+function shownLabel(text: string, options: VisualTemplateOptions): string {
+	return options.layout === "proposal" ? proposalLabelCase(text) : text;
+}
 
 function chainToMermaid<T>(
 	direction: "LR" | "TD",
@@ -179,7 +186,9 @@ export function flowToMermaid(
 	// Every node is declared inside its lane before any edge names it: Mermaid
 	// places a node in the graph where it first appears.
 	lanes.forEach((lane, laneIndex) => {
-		lines.push(`subgraph lane${laneIndex}["${escapeMermaidLabel(lane)}"]`);
+		lines.push(
+			`subgraph lane${laneIndex}["${escapeMermaidLabel(shownLabel(lane, options))}"]`,
+		);
 		spec.steps.forEach((step, index) => {
 			if (stepLane(step) === lane) {
 				lines.push(`f${index}["${flowStepLabel(step, options)}"]`);
@@ -219,7 +228,9 @@ export function orgChartToMermaid(
 		if (!id) {
 			continue;
 		}
-		lines.push(`${id}["${escapeMermaidLabel(node.label)}"]`);
+		lines.push(
+			`${id}["${escapeMermaidLabel(shownLabel(node.label, options))}"]`,
+		);
 		lines.push(nodeColorLine(id, options));
 	}
 	for (const node of spec.nodes) {

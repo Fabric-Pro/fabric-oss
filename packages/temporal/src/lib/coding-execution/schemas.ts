@@ -34,6 +34,9 @@ export const CreateSessionParamsSchema = z.object({
 	llmConnection: z.string().min(1).optional(),
 	model: z.string().min(1).optional(),
 	targetMachine: z.string().min(1).optional(),
+	fallbackPolicy: z
+		.enum(["subscription_harnesses", "org_paid_api", "pause_on_limit"])
+		.optional(),
 });
 
 export type ValidatedCreateSessionParams = z.infer<

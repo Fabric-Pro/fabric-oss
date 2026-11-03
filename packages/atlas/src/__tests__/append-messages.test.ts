@@ -11,12 +11,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockExecuteRaw = vi.fn();
 const mockFindUnique = vi.fn();
+const mockFindFirst = vi.fn();
 const mockUpdate = vi.fn();
 
 vi.mock("@repo/database", () => ({
 	db: {
 		$executeRaw: (...args: unknown[]) => mockExecuteRaw(...args),
 		atlasConversation: {
+			findFirst: (...args: unknown[]) => mockFindFirst(...args),
 			findUnique: (...args: unknown[]) => mockFindUnique(...args),
 			update: (...args: unknown[]) => mockUpdate(...args),
 		},
@@ -28,7 +30,7 @@ vi.mock("@repo/utils", () => ({
 	decryptApiKey: vi.fn(),
 }));
 
-import { appendMessages } from "../queries";
+import { appendMessages, getConversation } from "../queries";
 import type { StoredChatMessage } from "../types";
 
 function lastCall(): { sql: string; values: unknown[] } {
@@ -49,6 +51,52 @@ beforeEach(() => {
 });
 
 describe("appendMessages — atomic UPDATE shape", () => {
+	it("reloads persisted partial identity, leaving old and malformed messages unlabeled", async () => {
+		const model = {
+			id: "example-served",
+			provider: "OPENAI_DIRECT",
+			viaPlan: false,
+		};
+		const partial: StoredChatMessage = {
+			role: "assistant",
+			content: "Partial",
+			interrupted: true,
+			model,
+		};
+		await appendMessages("example-conversation", [partial]);
+		expect(lastCall().values[0]).toBe(JSON.stringify([partial]));
+		mockFindFirst.mockResolvedValue({
+			id: "example-conversation",
+			projectId: "example-project",
+			userId: "example-user",
+			visibility: "PRIVATE",
+			createdAt: new Date("2026-01-01"),
+			updatedAt: new Date("2026-01-01"),
+			messages: [
+				partial,
+				{ role: "assistant", content: "Old" },
+				{
+					role: "assistant",
+					content: "Malformed",
+					model: { id: "example-configured" },
+				},
+				{ role: "user", content: "Question", model },
+			],
+		});
+		const conversation = await getConversation(
+			{ userId: "example-user", organizationId: "example-org" },
+			{
+				conversationId: "example-conversation",
+				projectId: "example-project",
+			},
+		);
+		expect(conversation?.messages[0]).toMatchObject(partial);
+		expect(
+			conversation?.messages
+				.slice(1)
+				.every((message) => message.model === undefined),
+		).toBe(true);
+	});
 	it("issues exactly one raw UPDATE (no read-modify-write)", async () => {
 		await appendMessages("c1", userTurn, "How does auth work?");
 

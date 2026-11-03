@@ -40,6 +40,65 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("useDataAnalystChat", () => {
+	it("loads the first Send's stream and retains validated chart and served-model events", async () => {
+		const chart = {
+			type: "chart",
+			id: "example-chart",
+			chartType: "bar",
+			data: [{ label: "Example", value: 7 }],
+			config: { xAxis: "label", yAxis: "value" },
+		};
+		fetchMock.mockResolvedValueOnce(
+			response([
+				{
+					type: EventType.TOOL_CALL_START,
+					toolCallId: "example-call",
+					toolCallName: "create_chart",
+				},
+				{
+					type: EventType.CUSTOM,
+					name: "fabric.data-analyst.chart",
+					value: { toolCallId: "example-call", chart },
+				},
+				{
+					type: EventType.TOOL_CALL_RESULT,
+					toolCallId: "example-call",
+					messageId: "example-result",
+					role: "tool",
+					content: "Created chart",
+				},
+				{
+					type: EventType.CUSTOM,
+					name: "fabric.data-analyst.model",
+					value: { id: "example-model", viaPlan: true },
+				},
+				{
+					type: EventType.TEXT_MESSAGE_CONTENT,
+					messageId: "answer",
+					delta: "Example answer",
+				},
+				{
+					type: EventType.RUN_FINISHED,
+					threadId: "thread",
+					runId: "run",
+				},
+			]),
+		);
+		const { result } = renderHook(() =>
+			useDataAnalystChat({ organizationId: "example-org" }),
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+		await act(() => result.current.send("Chart the example"));
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(result.current.messages.at(-1)).toMatchObject({
+			turn: {
+				status: "finished",
+				text: "Example answer",
+				model: { id: "example-model", viaPlan: true },
+				toolCalls: [{ status: "complete", result: chart }],
+			},
+		});
+	});
 	it("uses the runtime, current organization and stable text history; reset changes the thread", async () => {
 		const { result } = renderHook(() =>
 			useDataAnalystChat({ organizationId: "org-example-1" }),

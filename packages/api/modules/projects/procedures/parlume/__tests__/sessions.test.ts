@@ -14,6 +14,9 @@ const { handlers, mocks } = vi.hoisted(() => {
 		sessionUpdate: vi.fn(),
 		sessionUpdateMany: vi.fn(),
 		linkedFindFirst: vi.fn(),
+		linkedFindMany: vi.fn(),
+		integration: vi.fn(),
+		graph: vi.fn(),
 		isFeatureEnabled: vi.fn(),
 		resolveVoiceKey: vi.fn(),
 		speechModel: vi.fn(),
@@ -57,6 +60,7 @@ vi.mock("@repo/database", () => ({
 		},
 		projectLinkedMeeting: {
 			findFirst: (...args: unknown[]) => mocks.linkedFindFirst(...args),
+			findMany: (...args: unknown[]) => mocks.linkedFindMany(...args),
 		},
 	},
 	isFeatureEnabled: (...args: unknown[]) => mocks.isFeatureEnabled(...args),
@@ -64,6 +68,13 @@ vi.mock("@repo/database", () => ({
 		mocks.membership(...args),
 	getBuiltInToolConfig: (connections: Record<string, unknown>, key: string) =>
 		connections[key] ?? null,
+	resolveWorkflowIntegrationForProvider: (...args: unknown[]) =>
+		mocks.integration(...args),
+}));
+
+vi.mock("@repo/integrations/microsoft", async (original) => ({
+	...(await original<typeof import("@repo/integrations/microsoft")>()),
+	executeMicrosoftTeamsTool: mocks.graph,
 }));
 
 vi.mock("@repo/ai", () => ({
@@ -162,6 +173,8 @@ beforeEach(() => {
 	vi.resetAllMocks();
 	mocks.contextFindMany.mockResolvedValue([]);
 	mocks.linkedFindFirst.mockResolvedValue(null);
+	mocks.linkedFindMany.mockResolvedValue([]);
+	mocks.integration.mockResolvedValue(null);
 	mocks.sessionCount.mockResolvedValue(0);
 	mocks.projectFindFirst.mockResolvedValue(project);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
@@ -791,6 +804,99 @@ describe("Parlume session procedures", () => {
 				}),
 			}),
 		);
+	});
+	it("persists only the exact chat join path while handing the original invitation to the audio provider", async () => {
+		const meetingUrl =
+			"https://teams.microsoft.com/meet/1234567890123?p=example-passcode#example-fragment";
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl,
+			},
+			context,
+		});
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					meetingUrl:
+						"https://teams.microsoft.com/meet/1234567890123",
+					channelChatStatus: "PENDING",
+				}),
+			}),
+		);
+		expect(mocks.startBot).toHaveBeenCalledWith(
+			expect.objectContaining({ meetingUrl }),
+		);
+	});
+	it("associates a manually invited short link with its exact canonical project series before joining", async () => {
+		const canonical =
+			"https://teams.microsoft.com/l/meetup-join/19%3Aexample%40thread.tacv2/1700000000000?context=example";
+		mocks.integration.mockResolvedValue({ id: "example-integration" });
+		mocks.graph.mockResolvedValue({ joinUrl: canonical });
+		mocks.linkedFindMany.mockResolvedValue([
+			{
+				id: "example-series",
+				joinUrl: canonical.replace("context=example", "context=other"),
+			},
+		]);
+		mocks.sessionFindFirst.mockResolvedValue(null);
+		const meetingUrl =
+			"https://teams.microsoft.com/meet/1234567890123?p=example";
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl,
+			},
+			context,
+		});
+		expect(mocks.linkedFindMany).toHaveBeenCalledWith({
+			where: { projectId: "project-1", deactivatedAt: null },
+			select: { id: true, joinUrl: true },
+		});
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					linkedMeetingId: "example-series",
+					channelIntegrationId: "example-integration",
+					meetingUrl: canonical.split("?")[0],
+					channelChatStatus: "PENDING",
+				}),
+			}),
+		);
+		expect(mocks.startBot).toHaveBeenCalledWith(
+			expect.objectContaining({ meetingUrl }),
+		);
+	});
+	it("refuses a manual short-link bot while an automatic session of its canonical series is live", async () => {
+		const canonical =
+			"https://teams.microsoft.com/l/meetup-join/19%3Aexample%40thread.tacv2/1700000000000";
+		mocks.integration.mockResolvedValue({ id: "example-integration" });
+		mocks.graph.mockResolvedValue({ joinUrl: canonical });
+		mocks.linkedFindMany.mockResolvedValue([
+			{ id: "example-series", joinUrl: canonical },
+		]);
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/meet/1234567890123",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+		expect(mocks.sessionFindFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					linkedMeetingId: "example-series",
+				}),
+			}),
+		);
+		expect(mocks.startBot).not.toHaveBeenCalled();
+		expect(mocks.sessionCreate).not.toHaveBeenCalled();
 	});
 
 	it("tells the inviter Attendee's own reason for refusing the bot", async () => {

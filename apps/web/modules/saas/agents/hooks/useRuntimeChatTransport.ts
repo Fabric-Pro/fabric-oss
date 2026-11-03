@@ -1,7 +1,7 @@
 "use client";
 
 import type { FeatureFlagKey } from "@repo/utils/feature-flag-registry";
-import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useEffectiveOrganizationId } from "@saas/organizations/hooks/use-organization-context";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { useState } from "react";
 
@@ -20,9 +20,10 @@ export type RuntimeChatTransport = "legacy" | "runtime";
  */
 export function useRuntimeChatTransport(
 	flag: FeatureFlagKey,
+	propOrganizationId?: string | null,
 ): RuntimeChatTransport {
 	const enabled = useFeatureFlag(flag);
-	const { organizationId } = useOrganizationContext();
+	const organizationId = useEffectiveOrganizationId(propOrganizationId);
 	const [transport] = useState<RuntimeChatTransport>(() =>
 		enabled && organizationId !== null ? "runtime" : "legacy",
 	);

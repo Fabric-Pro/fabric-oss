@@ -48,6 +48,7 @@ export default async function Page({ params }: Props) {
 	const activeAssistantConversation = await loadDocumentAssistantHydration({
 		userId: session.user.id,
 		organizationId: organization.id,
+		projectId: id,
 		documentRefKind: "PROJECT_DOCUMENT",
 		documentRefId: documentId,
 	});

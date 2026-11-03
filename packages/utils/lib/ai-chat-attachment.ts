@@ -504,7 +504,7 @@ export function applyAiChatTextBudget(
  */
 export const AI_CHAT_ATTACHMENT_TAG = "fabric_attachment";
 export const AI_CHAT_ATTACHMENT_TAG_OPEN = `<${AI_CHAT_ATTACHMENT_TAG}>`;
-const AI_CHAT_ATTACHMENT_TAG_CLOSE = `</${AI_CHAT_ATTACHMENT_TAG}>`;
+export const AI_CHAT_ATTACHMENT_TAG_CLOSE = `</${AI_CHAT_ATTACHMENT_TAG}>`;
 
 /**
  * Every form of the delimiter a body could carry.
@@ -650,6 +650,23 @@ export function buildAiChatAttachmentEntry(
 			: `[Uploaded Document: ${safeName}]`;
 
 	return `${AI_CHAT_ATTACHMENT_TAG_OPEN}\n${inner}\n${AI_CHAT_ATTACHMENT_TAG_CLOSE}`;
+}
+
+/** How the line naming the files attached in one chat turn opens. */
+export const AI_CHAT_ATTACHED_HINT_PREFIX = "[Attached: ";
+
+/**
+ * The line naming the files the person attached in one chat turn, which the
+ * editor appends to their message: `[Attached: a.pdf, b.png]`. The bubble
+ * renders it as file chips, and the Proposal agent reads it to pick which
+ * attached files go to the model in full in this turn.
+ *
+ * The names go in as they are. The agent neutralizes the line's body itself,
+ * the same way `buildAiChatAttachmentEntry` neutralizes each entry's name, and
+ * neutralizing twice would not give the same name again.
+ */
+export function buildAiChatAttachedHint(names: readonly string[]): string {
+	return `${AI_CHAT_ATTACHED_HINT_PREFIX}${names.join(", ")}]`;
 }
 
 function extensionOf(filename: string): string {

@@ -1272,12 +1272,10 @@ describe("buildProposalDocx", () => {
 				width: 400,
 				height: 200,
 				png,
-				numbered: true,
 			},
 			{
 				kind: "placeholder",
 				caption: "Diagram could not be rendered.",
-				numbered: true,
 			},
 			{
 				kind: "svg",
@@ -1285,7 +1283,6 @@ describe("buildProposalDocx", () => {
 				width: 400,
 				height: 200,
 				png: null,
-				numbered: true,
 			},
 		];
 		const fence = (label: string) =>
@@ -1335,12 +1332,10 @@ describe("buildProposalDocx", () => {
 							width: 400,
 							height: 200,
 							png,
-							numbered: true,
 						},
 						{
 							kind: "placeholder",
 							caption: "Not available.",
-							numbered: true,
 						},
 					],
 				},
@@ -1366,7 +1361,6 @@ describe("buildProposalDocx", () => {
 			width: 400,
 			height: 200,
 			png,
-			numbered: true,
 		};
 		const fence = (caption: string | null, label: string) =>
 			[
@@ -1387,12 +1381,11 @@ describe("buildProposalDocx", () => {
 				{
 					diagrams: [
 						drawn,
-						{ kind: "omitted", numbered: false },
+						{ kind: "omitted" },
 						drawn,
 						{
 							kind: "placeholder",
 							caption: "Not available.",
-							numbered: true,
 						},
 					],
 				},

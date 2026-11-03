@@ -4,6 +4,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
+import { reconcileOrganizationSubscribers } from "./reconcile-organization-subscribers";
 
 export interface LoadActiveSubscribersInput {
 	projectId: string;
@@ -34,6 +35,9 @@ export async function loadActiveSubscribersActivity(
 			error: err,
 		});
 	}
+	// Inside the activity for the same replay reason, and after the member
+	// reconcile so a project member keeps the row they were enrolled with.
+	await reconcileOrganizationSubscribers(input.projectId);
 	const rows = await listActiveNewsletterSubscribers(input.projectId);
 	return { subscribers: rows };
 }

@@ -38,6 +38,10 @@ vi.mock("sonner", () => ({
 
 // The component gates unlink behind the shared confirmation dialog (#1905) and
 // is rendered here outside the app's provider tree.
+vi.mock("@saas/projects/components/TranscriptFileUpload", () => ({
+	TranscriptFileUpload: () => null,
+}));
+
 vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
 	useConfirmationAlert: () => ({ confirm: vi.fn() }),
 }));

@@ -310,7 +310,10 @@ describe("audit.taxonomy handler", () => {
 		// finding's recommendation and recorded it as Resolved; stable key,
 		// run id and version only, never text), plus native session continuation = 225.
 		// Manual closure of unknown remote work records a separate recovery action.
-		expect(result.actions).toHaveLength(226);
+		// + 1 org.member.bulk_invited for a pasted list of invitations = 227.
+		// + 1 newsletter.organization_distribution.changed = 228.
+		expect(result.actions).toHaveLength(228);
+		expect(result.actions).toContain("org.member.bulk_invited");
 		expect(result.actions).toContain("org.member.left");
 		expect(result.actions).toContain("org.chat_approval.decided");
 		expect(result.actions).toContain("org.chat_run.cancel_requested");

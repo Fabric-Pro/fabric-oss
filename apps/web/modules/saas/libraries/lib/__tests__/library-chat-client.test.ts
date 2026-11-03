@@ -52,6 +52,35 @@ afterEach(() => {
 });
 
 describe("askLibraryRuntime", () => {
+	it("keeps explicit served identity per turn and ignores malformed metadata", async () => {
+		const model = { id: "example-served", viaPlan: false };
+		const reply = (value: unknown) =>
+			sse([
+				{ type: EventType.RUN_STARTED, threadId: "t", runId: "r" },
+				{
+					type: EventType.TEXT_MESSAGE_START,
+					messageId: "a",
+					role: "assistant",
+				},
+				{
+					type: EventType.TEXT_MESSAGE_CONTENT,
+					messageId: "a",
+					delta: "Answer",
+				},
+				{ type: EventType.TEXT_MESSAGE_END, messageId: "a" },
+				{
+					type: EventType.CUSTOM,
+					name: "fabric.library-chat.model",
+					value,
+				},
+				{ type: EventType.RUN_FINISHED, threadId: "t", runId: "r" },
+			]);
+		fetchMock
+			.mockResolvedValueOnce(reply(model))
+			.mockResolvedValueOnce(reply({ id: "example-configured" }));
+		expect((await ask()).model).toEqual(model);
+		expect((await ask()).model).toBeUndefined();
+	});
 	it("rejects a usage limit with the limits the shared toast shows", async () => {
 		fetchMock.mockImplementation(async () =>
 			sse([

@@ -11,6 +11,7 @@
  * - `stripInlineMarkdown`          — inline Markdown → plain text for jsPDF
  * - `TABLE_ROW`, `TABLE_SEPARATOR`, `splitTableRow`, `readMarkdownTable`
  *                                  — read a GFM table out of Markdown lines
+ * - `layOutPdfTable`               — PDF table column widths sized to their words
  * - `toWinAnsiText`                — text jsPDF's built-in fonts can draw
  * - `getImageDimensions`           — natural size of an image data URL
  * - `tryAddPdfImage`               — place an image on a jsPDF page
@@ -36,9 +37,23 @@ export function stripInlineMarkdown(text: string): string {
 			)
 			.replace(/\*\*\*(.+?)\*\*\*/g, "$1")
 			.replace(/\*\*(.+?)\*\*/g, "$1")
-			.replace(/__(.+?)__/g, "$1")
+			// An underscore inside a word (`snake_case_name`) is not emphasis.
+			// The emphasized text holds underscores only inside a word
+			// (`__max_retries__`), so each opener scans no further than the
+			// next underscore between words and a long line stays linear.
+			.replace(
+				/(?<![\p{L}\p{N}_])___((?:[^_\n]|(?<=[\p{L}\p{N}])_+(?=[\p{L}\p{N}]))+?)___(?![\p{L}\p{N}_])/gu,
+				"$1",
+			)
+			.replace(
+				/(?<![\p{L}\p{N}_])__((?:[^_\n]|(?<=[\p{L}\p{N}])_+(?=[\p{L}\p{N}]))+?)__(?![\p{L}\p{N}_])/gu,
+				"$1",
+			)
 			.replace(/\*(.+?)\*/g, "$1")
-			.replace(/_(.+?)_/g, "$1")
+			.replace(
+				/(?<![\p{L}\p{N}_])_((?:[^_\n]|(?<=[\p{L}\p{N}])_+(?=[\p{L}\p{N}]))+?)_(?![\p{L}\p{N}_])/gu,
+				"$1",
+			)
 			.replace(/`([^`]+)`/g, "$1")
 	);
 }
@@ -93,6 +108,138 @@ export function readMarkdownTable(
 	}
 	const columns = Math.max(...rows.map((row) => row.length));
 	return { rows, columns, next };
+}
+
+/**
+ * The widest word a table always keeps on one line, in ems of the table's
+ * font: wider than any dictionary word (about 10 em in bold Helvetica).
+ * A longer word, such as an identifier, a path or a link, stays whole when
+ * an even share of the table holds it, and otherwise breaks in its cell
+ * rather than squeezing every other column.
+ */
+const TABLE_WORD_CAP_EM = 11;
+
+/** What a word wider than the cap settles for when an even share would crowd the other columns' words, in ems. */
+const TABLE_LINK_MIN_EM = 4;
+
+/** Where each column of a PDF table starts and how wide it is, and the font size and cell padding its cells use. */
+export interface PdfTableLayout {
+	fontSize: number;
+	/** The requested padding, or less when the table has so many columns that it would leave a column no room for text. */
+	padding: number;
+	/** `left` is the column's offset from the table's left edge; widths include padding and add up to the table width. */
+	columns: { left: number; width: number }[];
+}
+
+/**
+ * Column widths for a PDF table, sized to its words (Fizzy #2946): jsPDF's
+ * `splitTextToSize` breaks a word wider than its cell between letters, and
+ * an even share of the page leaves a seven-column table about 60pt of text
+ * per cell. Each column holds at least its widest word on one line, and the
+ * width left over goes to the columns whose text runs longest, as a browser
+ * lays out an auto-width table. A word wider than the cap, such as a link,
+ * asks for no more than an even share of the table, or a few ems when that
+ * would crowd the other columns' words, and counts at the cap when the rest
+ * of the width is shared. When even the widest words do not fit side by
+ * side, the font steps down, by quarter points to `minFontSize`; only past
+ * that can a word still break.
+ *
+ * `rows` holds the text as drawn, header row first; `measure` returns its
+ * width at `fontSize`, in the header's font when `header` is set.
+ */
+export function layOutPdfTable(
+	rows: readonly (readonly string[])[],
+	options: {
+		columns: number;
+		width: number;
+		padding: number;
+		fontSize: number;
+		minFontSize: number;
+		measure: (text: string, header: boolean) => number;
+	},
+): PdfTableLayout {
+	const { columns, width, fontSize, minFontSize, measure } = options;
+	// Padding takes at most a quarter of each column's even share, so a
+	// table with many columns keeps three quarters of its width for text.
+	const padding = Math.min(options.padding, width / columns / 8);
+	const cap = TABLE_WORD_CAP_EM * fontSize;
+	const room = width - columns * padding * 2;
+	// jsPDF keeps a word whose width equals the line's; a hair more absorbs
+	// rounding between its measure and ours.
+	const hair = 0.01;
+	// Per column, the widest word within the cap and the widest past it.
+	const word: number[] = Array(columns).fill(0);
+	const long: number[] = Array(columns).fill(0);
+	let preferred: number[] = Array(columns).fill(0);
+	rows.forEach((row, index) => {
+		const header = index === 0;
+		for (let c = 0; c < columns; c++) {
+			const text = row[c] ?? "";
+			let overCap = 0;
+			for (const token of text.split(" ")) {
+				const tokenWidth = measure(token, header);
+				if (tokenWidth > cap) {
+					long[c] = Math.max(long[c], tokenWidth + hair);
+					overCap += tokenWidth - cap;
+				} else {
+					word[c] = Math.max(word[c], tokenWidth + hair);
+				}
+			}
+			preferred[c] = Math.max(
+				preferred[c],
+				measure(text, header) - overCap + hair,
+			);
+		}
+	});
+
+	const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
+	// Comparisons allow for rounding in the sums.
+	const fits = (values: number[], space: number) =>
+		sum(values) <= space + 1e-6;
+	const minimumFor = (longAsk: number) =>
+		word.map((value, c) => Math.max(value, Math.min(long[c], longAsk)));
+	let minimum = minimumFor(room / columns);
+	if (!fits(minimum, room)) {
+		minimum = minimumFor(TABLE_LINK_MIN_EM * fontSize);
+	}
+	preferred = preferred.map((value, c) => Math.max(value, minimum[c]));
+
+	let size = fontSize;
+	if (!fits(minimum, room)) {
+		size = Math.max(
+			minFontSize,
+			Math.floor(((fontSize * room) / sum(minimum)) * 4) / 4,
+		);
+		// Text widths scale with the font size.
+		minimum = minimum.map((value) => (value * size) / fontSize);
+		preferred = preferred.map((value) => (value * size) / fontSize);
+	}
+
+	let text: number[];
+	if (fits(preferred, room)) {
+		// Every cell fits on one line: widen in proportion.
+		text = preferred.map((value) => (value * room) / sum(preferred));
+	} else if (fits(minimum, room)) {
+		// Every word fits: share what is left by how much text runs longer.
+		const slack = room - sum(minimum);
+		const flex = sum(preferred) - sum(minimum);
+		text = minimum.map(
+			(value, c) => value + (slack * (preferred[c] - value)) / flex,
+		);
+	} else {
+		text = minimum.map((value) => (value * room) / sum(minimum));
+	}
+
+	let left = 0;
+	return {
+		fontSize: size,
+		padding,
+		columns: text.map((value) => {
+			const column = { left, width: value + padding * 2 };
+			left += column.width;
+			return column;
+		}),
+	};
 }
 
 /**

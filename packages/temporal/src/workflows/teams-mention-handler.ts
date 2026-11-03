@@ -298,15 +298,29 @@ export async function teamsMentionHandlerWorkflow(input: {
 					});
 				}
 
-				// Update conversation history
-				state.conversationHistory.push(
-					{ role: "user", content: event.text, ts: event.ts },
-					{
+				// A reply that never reached the thread stays out of the
+				// history and the processed count, so the next mention does
+				// not build on an answer the person never saw. A reply the
+				// Read-only gate skipped reports success. The patch keeps
+				// executions recorded before this change as they were.
+				const undelivered =
+					!postResult.success &&
+					patched("trigger-stats-delivery-outcome-2026-11");
+
+				// Update conversation history. The person's turn is kept
+				// either way, so the next mention still sees what was asked.
+				state.conversationHistory.push({
+					role: "user",
+					content: event.text,
+					ts: event.ts,
+				});
+				if (!undelivered) {
+					state.conversationHistory.push({
 						role: "assistant",
 						content: agentResult.response,
 						ts: postResult.messageId || Date.now().toString(),
-					},
-				);
+					});
+				}
 
 				// Save conversation history to thread mapping for persistence
 				if (threadResult.mapping) {
@@ -324,6 +338,16 @@ export async function teamsMentionHandlerWorkflow(input: {
 					userId: input.userId,
 					organizationId: input.organizationId,
 				});
+
+				if (undelivered) {
+					log.warn("Teams mention reply was not delivered", {
+						eventId: event.eventId,
+						channelId: event.channelId,
+						processedCount: state.processedCount,
+						agentExecutionId: agentResult.executionId,
+					});
+					continue;
+				}
 
 				state.processedCount++;
 

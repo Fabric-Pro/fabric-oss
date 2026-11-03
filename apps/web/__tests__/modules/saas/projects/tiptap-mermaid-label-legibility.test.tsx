@@ -15,8 +15,9 @@
  */
 
 import {
-	ALWAYS_WRAPPED_LABEL_CHARS,
 	DIAGRAM_CANVAS_PADDING_PX,
+	flowchartNodeLabelsOverflow,
+	nodeLabelLineOverflows,
 	PRINT_COLUMN_PX,
 	PRINT_FIGURE_MAX_HEIGHT_PX,
 	PRINT_LABEL_FLOOR_PT,
@@ -123,11 +124,17 @@ const WIDE_PLAN = [
 	"  t2 --> t3",
 ];
 
-/** Eight short steps left to right: too wide to print, nothing to break. */
+/**
+ * Eight short steps left to right and a side step: too wide to print,
+ * nothing to break. The side step keeps it a Mermaid layout on a Proposal's
+ * page, where a plain chain of seven steps or more draws as a numbered
+ * process instead.
+ */
 const LONG_CHAIN = [
 	"flowchart LR",
 	...Array.from({ length: 8 }, (_, index) => `  n${index}["Step ${index}"]`),
 	...Array.from({ length: 7 }, (_, index) => `  n${index} --> n${index + 1}`),
+	'  n3 --> side["Side step"]',
 ];
 
 const SHORT_PLAN = [
@@ -211,6 +218,18 @@ beforeEach(() => {
 	resetLegibleDrawingsForTests();
 });
 
+/**
+ * Four steps left to right: two labels under 40 characters dense in dashes,
+ * m, w and hyphens, which spill from the boxes the engine draws for them on
+ * one line, between two ordinary ones of 37 and 39 characters, which fit.
+ * The export's suite prints the same chain and expects the same layout.
+ */
+const DENSE_CHAIN = [
+	"flowchart LR",
+	'  a["Momentum — minimum-time multi-team flow"] --> b["Discovery workshop with the client team"]',
+	'  b --> c["Mid-term metrics — maximum momentum"] --> d["Review the proposal with stakeholders"]',
+];
+
 describe("long labels on every page", () => {
 	it("breaks a flowchart's long labels into lines and keeps the author's direction", async () => {
 		for (const label of STEP_LABELS) {
@@ -230,7 +249,27 @@ describe("long labels on every page", () => {
 		expect(renderer.native).toEqual([]);
 	});
 
-	it("keeps a wide sideways chain of short labels sideways and as written", async () => {
+	it("breaks labels under 40 characters too wide for their boxes and keeps ordinary ones as written", async () => {
+		const { container } = render(
+			<DiagramHarness markdown={doc(DENSE_CHAIN)} themeRoot={false} />,
+		);
+		const svg = await drawnSvg(container);
+
+		expect(renderer.beautiful).toHaveLength(1);
+		expect(headerOf(renderer.beautiful[0])).toBe("flowchart LR");
+		expect(renderer.beautiful[0]).toContain(
+			'a["Momentum —<br/>minimum-time multi-team<br/>flow"]',
+		);
+		expect(renderer.beautiful[0]).toContain(
+			'c["Mid-term metrics —<br/>maximum momentum"]',
+		);
+		expect(multiLineLabels(svg)).toEqual([
+			"Momentum — minimum-time multi-team flow",
+			"Mid-term metrics — maximum momentum",
+		]);
+	});
+
+	it("keeps a wide sideways flow of short labels sideways and as written", async () => {
 		const { container } = render(
 			<DiagramHarness markdown={doc(LONG_CHAIN)} themeRoot={false} />,
 		);
@@ -344,7 +383,7 @@ describe("the print floor on a Proposal's page", () => {
 		expect(Math.min(...boxLefts)).toBeCloseTo(DIAGRAM_CANVAS_PADDING_PX, 5);
 	});
 
-	it("turns a wide sideways chain of short labels top-down", async () => {
+	it("turns a wide sideways flow of short labels top-down", async () => {
 		const { container } = render(
 			<DiagramHarness
 				markdown={doc(LONG_CHAIN)}
@@ -360,7 +399,7 @@ describe("the print floor on a Proposal's page", () => {
 		);
 	});
 
-	it("draws a tall top-down chain of 70-character labels as written, as it prints, and broken on other pages", async () => {
+	it("draws a tall top-down chain of 73-character labels broken, as it prints, though as written it prints larger, and broken on other pages", async () => {
 		const proposal = render(
 			<DiagramHarness
 				markdown={doc(tallChain(8))}
@@ -370,17 +409,21 @@ describe("the print floor on a Proposal's page", () => {
 		const printed = await drawnSvg(proposal.container);
 
 		// The broken copy and the source as written: breaking makes the chain
-		// taller than a printed figure may be, so the copy as written prints
-		// larger and is kept, and it needs nothing more.
+		// taller than a printed figure may be, so as written it prints
+		// larger, but its labels would spill out of their boxes, so the
+		// broken copy is kept. Top-down already and with every long label
+		// broken, it has nothing left to try.
 		expect(renderer.beautiful).toHaveLength(2);
 		const [broken, written] = renderer.beautiful;
 		expect(broken).toContain("<br/>");
 		expect(written).not.toContain("<br/>");
-		expect(multiLineLabels(printed)).toEqual([]);
+		expect(flowchartNodeLabelsOverflow(String(written))).toBe(true);
+		expect(flowchartNodeLabelsOverflow(String(broken))).toBe(false);
+		expect(multiLineLabels(printed)).toHaveLength(8);
 		const size = declaredSize(printed);
 		expect(size.width).toBeLessThanOrEqual(PRINT_COLUMN_PX);
-		expect(size.height).toBeLessThanOrEqual(PRINT_FIGURE_MAX_HEIGHT_PX);
-		expect(printedNodeLabelPt(size)).toBeCloseTo(9.75, 5);
+		expect(size.height).toBeGreaterThan(PRINT_FIGURE_MAX_HEIGHT_PX);
+		expect(printedNodeLabelPt(size)).toBeLessThan(PRINT_LABEL_FLOOR_PT);
 		proposal.unmount();
 
 		// A page that does not print draws the broken copy alone.
@@ -397,9 +440,7 @@ describe("the print floor on a Proposal's page", () => {
 	it("breaks a 57-character label dense in narrow letters, on a Proposal's page and on any other", async () => {
 		const narrow =
 			"implementation — implementation of the agreed pilot scope";
-		expect(narrow.length).toBeGreaterThanOrEqual(
-			ALWAYS_WRAPPED_LABEL_CHARS,
-		);
+		expect(nodeLabelLineOverflows(narrow)).toBe(true);
 		const chain = [
 			"flowchart LR",
 			`  a["Discovery — agree the example goals"] --> b["${narrow}"]`,
@@ -426,7 +467,7 @@ describe("the print floor on a Proposal's page", () => {
 		expect(multiLineLabels(onScreen)).toEqual([narrow]);
 	});
 
-	it("draws a sideways chain of eight 40- to 55-character labels top-down as written, as it prints", async () => {
+	it("draws a sideways chain of eight 40- to 55-character labels top-down, only the two too wide for their boxes broken, as it prints", async () => {
 		const labels = [
 			"Discovery — agree the example goals and the measures",
 			"Definition — confirm the pilot scope and the criteria",
@@ -437,11 +478,10 @@ describe("the print floor on a Proposal's page", () => {
 			"Planning — agree the next phase and its example dates",
 			"Close — record the example lessons and the decisions",
 		];
-		for (const label of labels) {
-			expect(label.length).toBeGreaterThanOrEqual(
-				ALWAYS_WRAPPED_LABEL_CHARS,
-			);
-		}
+		expect(labels.filter(nodeLabelLineOverflows)).toEqual([
+			labels[1],
+			labels[2],
+		]);
 		const chain = [
 			"flowchart LR",
 			...labels.map((label, index) => `  s${index}["${label}"]`),
@@ -455,8 +495,8 @@ describe("the print floor on a Proposal's page", () => {
 		const svg = await drawnSvg(container);
 
 		// Broken and as written sideways, then both top-down: broken and
-		// turned it is taller than a printed figure may be, so the source as
-		// written turned prints larger and is kept.
+		// turned it fits a figure's height and prints as large as the source
+		// as written turned, whose two labels would spill, so it is kept.
 		expect(renderer.beautiful.map(headerOf)).toEqual([
 			"flowchart LR",
 			"flowchart LR",
@@ -464,11 +504,42 @@ describe("the print floor on a Proposal's page", () => {
 			"flowchart TD",
 		]);
 		expect(renderer.beautiful[3]).not.toContain("<br/>");
-		expect(multiLineLabels(svg)).toEqual([]);
+		expect(multiLineLabels(svg)).toEqual([labels[1], labels[2]]);
 		const size = declaredSize(svg);
 		expect(size.width).toBeLessThanOrEqual(PRINT_COLUMN_PX);
 		expect(size.height).toBeLessThanOrEqual(PRINT_FIGURE_MAX_HEIGHT_PX);
 		expect(printedNodeLabelPt(size)).toBeCloseTo(9.75, 5);
+	});
+
+	it("draws a sideways chain with labels under 40 characters too wide for their boxes top-down with those broken, as it prints", async () => {
+		const { container } = render(
+			<DiagramHarness
+				markdown={doc(DENSE_CHAIN)}
+				visual={{ paint: NAVY }}
+			/>,
+		);
+		const svg = await drawnSvg(container);
+
+		// As written and with the two dense labels broken, both sideways and
+		// below the floor, then both top-down: the broken copy turned prints
+		// as large as the one as written turned and is kept, as in print.
+		expect(renderer.beautiful.map(headerOf)).toEqual([
+			"flowchart LR",
+			"flowchart LR",
+			"flowchart TD",
+			"flowchart TD",
+		]);
+		expect(renderer.beautiful[2]).toContain(
+			'a["Momentum —<br/>minimum-time multi-team<br/>flow"]',
+		);
+		expect(renderer.beautiful[2]).toContain(
+			'c["Mid-term metrics —<br/>maximum momentum"]',
+		);
+		expect(multiLineLabels(svg)).toEqual([
+			"Momentum — minimum-time multi-team flow",
+			"Mid-term metrics — maximum momentum",
+		]);
+		expect(printedNodeLabelPt(declaredSize(svg))).toBeCloseTo(9.75, 5);
 	});
 
 	it("keeps the broken copy of a chain when it prints as large as the source as written", async () => {

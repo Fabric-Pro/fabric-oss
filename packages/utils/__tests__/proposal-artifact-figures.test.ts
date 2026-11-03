@@ -15,7 +15,9 @@ import {
 	FIGURE_WIDTH,
 	type FigureModel,
 	type FigurePalette,
+	figureKindOf,
 	ganttFigureSvg,
+	INFERRED_PROCESS_MIN_STEPS,
 	layersFigureSvg,
 	parseBarsSource,
 	parseFigureSource,
@@ -205,6 +207,59 @@ function drawnTexts(svg: string): string[] {
 	);
 }
 
+/**
+ * The drawn lines of every `<text>` of `className`: one array per element,
+ * one entry per `<tspan>`, or the element's own text when it has one line.
+ */
+function drawnLines(svg: string, className: string): string[][] {
+	return Array.from(
+		svg.matchAll(
+			new RegExp(`<text class="${className}"[^>]*>(.*?)</text>`, "g"),
+		),
+	).map(([, content]) =>
+		content.startsWith("<tspan")
+			? Array.from(
+					content.matchAll(/<tspan[^>]*>([^<]*)<\/tspan>/g),
+					(match) => match[1],
+				)
+			: [content],
+	);
+}
+
+/**
+ * The lines that end inside a word of `source`, in any case. Every line is
+ * whole words of the source; only its last word may carry an ellipsis, and
+ * then it is a whole word too, or the start of a longer word alone on its
+ * line (a word wider than the line, cut at its end).
+ */
+function linesEndingInsideWords(
+	lines: readonly string[],
+	source: string,
+): string[] {
+	const words = source.toLowerCase().split(/\s+/).filter(Boolean);
+	const whole = new Set(words);
+	return lines.filter((line) => {
+		const tokens = line.toLowerCase().split(" ");
+		return !tokens.every((token, index) => {
+			if (whole.has(token)) {
+				return true;
+			}
+			if (index !== tokens.length - 1 || !token.endsWith("…")) {
+				return false;
+			}
+			const stem = token.slice(0, -1);
+			return (
+				whole.has(stem) ||
+				(tokens.length === 1 &&
+					words.some(
+						(word) =>
+							word.length > stem.length && word.startsWith(stem),
+					))
+			);
+		});
+	});
+}
+
 describe("figure line", () => {
 	it("reads the kind from the leading comment block", () => {
 		expect(
@@ -284,7 +339,8 @@ describe("parseFigureSource", () => {
 				kind: "flow",
 				steps: [
 					{
-						label: "Scope the work with both teams together",
+						// Within the 32 characters a title keeps its detail under.
+						label: "Scope the work with both teams",
 						description: "Agree what done looks like",
 					},
 					{
@@ -300,7 +356,7 @@ describe("parseFigureSource", () => {
 		expect(model.nodes.map((node) => node.id)).toEqual(["f0", "f1", "f2"]);
 		expect(model.nodes[0].lines).toEqual([
 			"Scope the work with both",
-			"teams together",
+			"teams",
 			"Agree what done looks like",
 		]);
 		expect(model.nodes[1].lines).toEqual([
@@ -321,7 +377,8 @@ describe("parseFigureSource", () => {
 	});
 
 	it("draws a long generated title as the figure's title, not as detail", () => {
-		const title = "Scope the work with both teams together";
+		// Two lines at 28, within the 32 characters a title keeps its detail under.
+		const title = "Scope the work with both teams";
 		const textOf = (element: string) =>
 			element
 				.replace(/<\/tspan><tspan[^>]*>/g, " ")
@@ -497,6 +554,26 @@ describe("parseFigureSource", () => {
 		expect(model.nodes[0].lines).toEqual(["<b>Bold</b> 100%%"]);
 	});
 });
+
+/**
+ * Timeline eyebrows written as phrases rather than dates: one whose third
+ * line fills the 12-character eyebrow, and one with a word wider than it.
+ */
+const LONG_TIMELINE_ITEMS = [
+	["Agree on the scope with both sponsor teams", "Kickoff", "Interviews"],
+	["Pilot neighbourhood crews", "First build", "Work orders and routing"],
+	["Release to the remaining regions", "Pilot region", "Forty crews"],
+	["Week 12", "Review", "Cost and adoption"],
+];
+const LONG_TIMELINE = lines(
+	"flowchart TD",
+	...LONG_TIMELINE_ITEMS.map(
+		(item, index) => `t${index + 1}["${item.join("<br/>")}"]`,
+	),
+	"t1 --> t2 --> t3 --> t4",
+);
+/** Every word the long timeline's labels hold. */
+const LONG_TIMELINE_TEXT = LONG_TIMELINE_ITEMS.flat().join(" ");
 
 describe("processFigureSvg", () => {
 	it("lays a chain of six out in two rows of four and two", () => {
@@ -737,6 +814,32 @@ describe("processFigureSvg", () => {
 		expect(svg).toContain("<title>Timeline</title>");
 	});
 
+	it("ends every line of a long timeline eyebrow at a space, cutting only a word wider than the eyebrow", () => {
+		const svg = svgOf(
+			processFigureSvg(parsed(LONG_TIMELINE), PALETTE, { dated: true }),
+		);
+		const eyebrows = drawnLines(svg, "eyebrow");
+		expect(eyebrows).toEqual([
+			// The third line ends at the last word the ellipsis leaves room for.
+			["Agree on the", "scope with", "both…"],
+			// A word wider than the line is cut at its end and ends the text.
+			["Pilot", "neighbourho…"],
+			["Release to", "the", "remaining…"],
+			["Week 12"],
+		]);
+		for (const className of ["eyebrow", "label", "detail"]) {
+			expect(
+				drawnLines(svg, className).flatMap((element) =>
+					linesEndingInsideWords(element, LONG_TIMELINE_TEXT),
+				),
+				className,
+			).toEqual([]);
+		}
+		// The whole phrase stays in the description.
+		expect(svg).toContain(`1. ${LONG_TIMELINE_ITEMS[0].join(", ")}.`);
+		expectPrintGeometry(svg);
+	});
+
 	it("is deterministic and scopes its marker ids", () => {
 		const model = parsed(chainSource(5));
 		const one = processFigureSvg(model, PALETTE, { idPrefix: "a1" });
@@ -774,6 +877,64 @@ const LAYERS = lines(
 	"end",
 	"class s3 highlight",
 );
+
+/**
+ * Layers named in three words, as generation names them, each with a
+ * description: one that wraps to a few lines, one short, and one far
+ * longer than a row can hold.
+ */
+const LONG_LAYER_DESCRIPTIONS = [
+	"requests sorted by region before anyone is assigned",
+	"durable history of every change",
+	"vehicle positions and job status stream from every van to the dispatch board every few seconds and are kept for ninety days to feed the weekly review of each region",
+];
+const LONG_LAYER_ROWS: [string, string | null, string[]][] = [
+	[
+		"Scheduling and allocation",
+		LONG_LAYER_DESCRIPTIONS[0],
+		[
+			"request triage",
+			"capacity planning",
+			"route proposal",
+			"crew assignment",
+		],
+	],
+	[
+		"Inspection and compliance",
+		LONG_LAYER_DESCRIPTIONS[1],
+		[
+			"checklists",
+			"photo evidence",
+			"sign-off",
+			"interoperability gateway",
+		],
+	],
+	[
+		"Dispatch and telemetry",
+		LONG_LAYER_DESCRIPTIONS[2],
+		["vehicle positions", "job status", "synchronization status"],
+	],
+	["Billing exports", null, ["invoices", "cost centres"]],
+];
+const longLayers = (extra: string[] = []) =>
+	lines(
+		"flowchart TB",
+		...LONG_LAYER_ROWS.flatMap(([name, description, boxes], row) => [
+			`subgraph l${row}["${description ? `${name}<br/>${description}` : name}"]`,
+			...boxes.map((box, index) => `  l${row}b${index}["${box}"]`),
+			"end",
+		]),
+		...extra,
+	);
+/** Every word the long layers' labels hold. */
+const LONG_LAYERS_TEXT = LONG_LAYER_ROWS.flatMap(
+	([name, description, boxes]) => [name, description ?? "", ...boxes],
+).join(" ");
+
+/** The name column's width: the first layer panel's. */
+function nameColumnWidth(svg: string): number {
+	return Number(/<rect class="layer" [^>]*width="([\d.]+)"/.exec(svg)?.[1]);
+}
 
 describe("layersFigureSvg", () => {
 	it("draws four layer rows and the cross-cutting column", () => {
@@ -840,6 +1001,97 @@ describe("layersFigureSvg", () => {
 		);
 		expect(svg).not.toContain('class="crosscutting"');
 		expectPrintGeometry(svg);
+	});
+
+	it("sizes the name column to the longest name, so a three-word name wraps at spaces to two lines", () => {
+		const svg = svgOf(layersFigureSvg(parsed(longLayers()), PALETTE, {}));
+		expect(nameColumnWidth(svg)).toBeGreaterThan(120);
+		expect(drawnLines(svg, "layer-title")).toEqual([
+			["SCHEDULING AND", "ALLOCATION"],
+			["INSPECTION AND", "COMPLIANCE"],
+			["DISPATCH AND", "TELEMETRY"],
+			["BILLING EXPORTS"],
+		]);
+		// The boxes keep the room their words need.
+		for (const className of ["layer-title", "label"]) {
+			expect(
+				drawnLines(svg, className).flatMap((element) =>
+					linesEndingInsideWords(element, LONG_LAYERS_TEXT),
+				),
+				className,
+			).toEqual([]);
+		}
+		expect(drawnLines(svg, "label").flat().join(" ")).not.toContain("…");
+		expectPrintGeometry(svg);
+	});
+
+	it("draws a layer's description whole, growing its row, or leaves it out: never cut with an ellipsis", () => {
+		const svg = svgOf(layersFigureSvg(parsed(longLayers()), PALETTE, {}));
+		const descriptions = drawnLines(svg, "layer-subtitle");
+		expect(descriptions.map((element) => element.join(" "))).toEqual([
+			LONG_LAYER_DESCRIPTIONS[0],
+			LONG_LAYER_DESCRIPTIONS[1],
+		]);
+		expect(
+			descriptions.flatMap((element) =>
+				linesEndingInsideWords(element, LONG_LAYERS_TEXT),
+			),
+		).toEqual([]);
+		expect(svg).not.toContain("…");
+		// Name and description take five lines: the first row grows past
+		// the 58 px a row of single-line boxes needs.
+		const heights = Array.from(
+			svg.matchAll(/<rect class="layer" [^>]*height="([\d.]+)"/g),
+			(match) => Number(match[1]),
+		);
+		expect(heights[0]).toBeGreaterThanOrEqual(22 + 4 * 16 + 14);
+		// The description left out of the drawing is still read out.
+		const desc = /<desc>([^<]*)<\/desc>/.exec(svg)?.[1] ?? "";
+		expect(desc).toContain(LONG_LAYER_DESCRIPTIONS[2]);
+		expectPrintGeometry(svg);
+	});
+
+	it("widens the name column only as far as the busiest row leaves its boxes room", () => {
+		const busy = (extra: string[]) =>
+			lines(
+				"flowchart TB",
+				'subgraph plan["Scheduling and allocation"]',
+				'  a1["request triage"]',
+				'  a2["capacity planning"]',
+				'  a3["crew assignment"]',
+				'  a4["notifications"]',
+				"end",
+				...extra,
+			);
+		const alone = svgOf(layersFigureSvg(parsed(busy([])), PALETTE, {}));
+		const withSide = svgOf(
+			layersFigureSvg(
+				parsed(
+					busy([
+						'subgraph crosscutting["Cross-cutting"]',
+						'  x1["Identity"]',
+						"end",
+					]),
+				),
+				PALETTE,
+				{},
+			),
+		);
+		expect(nameColumnWidth(withSide)).toBeGreaterThan(120);
+		expect(nameColumnWidth(withSide)).toBeLessThan(nameColumnWidth(alone));
+		for (const svg of [alone, withSide]) {
+			const labels = drawnLines(svg, "label");
+			expect(labels).toHaveLength(4);
+			expect(
+				labels.flatMap((element) =>
+					linesEndingInsideWords(
+						element,
+						"request triage capacity planning crew assignment notifications",
+					),
+				),
+			).toEqual([]);
+			expect(labels.flat().join(" ")).not.toContain("…");
+		}
 	});
 
 	it.each([
@@ -1130,6 +1382,234 @@ describe("renderFigureSvg", () => {
 			renderFigureSvg("layers", chainSource(3), PALETTE, {}),
 		).toBeNull();
 		expect(renderFigureSvg("process", LAYERS, PALETTE, {})).toBeNull();
+	});
+});
+
+describe("a plain chain without a figure line", () => {
+	/** A chain of `count` steps, each a one-line label, joined by arrows. */
+	function plainChain(
+		count: number,
+		{ header = "flowchart TD", extra = [] as string[] } = {},
+	): string {
+		return lines(
+			header,
+			...Array.from(
+				{ length: count - 1 },
+				(_, index) =>
+					`  s${index}["Step ${index + 1}"] --> s${index + 1}["Step ${index + 2}"]`,
+			),
+			...extra,
+		);
+	}
+
+	/** The top of each step box, in drawing order. */
+	const stepTops = (svg: string) =>
+		Array.from(
+			svg.matchAll(/<rect class="step" x="[\d.]+" y="([\d.]+)"/g),
+			(match) => match[1],
+		);
+
+	it("draws seven steps or more as a numbered process, in rows of four", () => {
+		expect(INFERRED_PROCESS_MIN_STEPS).toBe(7);
+		const svg = svgOf(tryRenderFigure(plainChain(7), PALETTE));
+		expect(svg).toContain('role="img"');
+		expect(new Set(stepTops(svg)).size).toBe(2);
+		expect(svg).toContain("<title>Process</title>");
+		expect(svg).toContain("7. Step 7.");
+
+		// Twenty steps: five rows, every step numbered in chain order.
+		const twenty = svgOf(
+			tryRenderFigure(
+				lines(MARKER, "%% caption: Every step", plainChain(20)),
+				PALETTE,
+				{ caption: "Every step" },
+			),
+		);
+		expect(stepTops(twenty)).toHaveLength(20);
+		expect(new Set(stepTops(twenty)).size).toBe(5);
+		expect(twenty).toContain("<title>Every step</title>");
+		expect(twenty).toContain("1. Step 1. 2. Step 2.");
+		expect(twenty).toContain("20. Step 20.");
+		expectPrintGeometry(twenty);
+		expectSafeSvg(twenty);
+	});
+
+	it("leaves six steps or fewer to the Mermaid layout", () => {
+		for (const count of [3, 4, 6]) {
+			expect(figureKindOf(plainChain(count))).toBeNull();
+			expect(tryRenderFigure(plainChain(count), PALETTE)).toBeNull();
+		}
+		expect(figureKindOf(plainChain(7))).toBe("process");
+	});
+
+	it("reads a chain sideways or bottom-up, after its marker and caption, and with up to twenty-four steps", () => {
+		for (const header of ["flowchart LR", "graph TD", "flowchart BT"]) {
+			expect(figureKindOf(plainChain(8, { header }))).toBe("process");
+		}
+		expect(
+			figureKindOf(lines(MARKER, "%% caption: Steps", plainChain(9))),
+		).toBe("process");
+		expect(figureKindOf(plainChain(24))).toBe("process");
+		expect(tryRenderFigure(plainChain(24), PALETTE)).not.toBeNull();
+		expect(figureKindOf(plainChain(25))).toBeNull();
+		// A header without a direction is not one the export draws.
+		expect(figureKindOf(plainChain(8, { header: "flowchart" }))).toBeNull();
+	});
+
+	it("takes the surface role a generated step carries, and rounded or stadium steps", () => {
+		expect(
+			figureKindOf(
+				plainChain(7, {
+					extra: Array.from(
+						{ length: 7 },
+						(_, index) => `class s${index} surface`,
+					),
+				}),
+			),
+		).toBe("process");
+		expect(
+			figureKindOf(
+				lines(
+					"flowchart TD",
+					'  a(["Start"]) --> b("Two") --> c[Three] --> d --> e --> f --> g(["End"])',
+				),
+			),
+		).toBe("process");
+	});
+
+	it("keeps a fence with a figure line of any value as its line says", () => {
+		const chain = plainChain(8);
+		expect(figureKindOf(lines("%% figure: none", chain))).toBeNull();
+		expect(
+			tryRenderFigure(lines("%% figure: none", chain), PALETTE),
+		).toBeNull();
+		expect(figureKindOf(lines("%% figure: unknown", chain))).toBeNull();
+		expect(figureKindOf(lines("%% figure: timeline", chain))).toBe(
+			"timeline",
+		);
+		// A template the line asks for that refuses the chain draws Mermaid.
+		expect(figureKindOf(lines("%% figure: team", chain))).toBe("team");
+		expect(
+			tryRenderFigure(lines("%% figure: team", chain), PALETTE),
+		).toBeNull();
+		// Only the drawing changes: the fence keeps its text and no line.
+		expect(readFigureKind(chain)).toBeNull();
+		// Mermaid reads a comment anywhere, so a line after the header counts.
+		const [header, ...body] = chain.split("\n");
+		const after = lines(header, "%% figure: none", ...body);
+		expect(figureKindOf(after)).toBeNull();
+		expect(tryRenderFigure(after, PALETTE)).toBeNull();
+	});
+
+	it("keeps a slash inside a step's label", () => {
+		expect(
+			figureKindOf(
+				lines(
+					"flowchart TD",
+					"  a --> b[Review/Approve] --> c --> d --> e --> f --> g",
+				),
+			),
+		).toBe("process");
+	});
+
+	it.each([
+		["a branch", plainChain(7, { extra: ["  s2 --> x[Side step]"] })],
+		["a join", plainChain(7, { extra: ["  x[Side step] --> s3"] })],
+		["a dashed edge back", plainChain(7, { extra: ["  s6 -.-> s0"] })],
+		[
+			"a dashed edge",
+			lines("flowchart TD", "  a -.-> b --> c --> d --> e --> f --> g"),
+		],
+		[
+			"a labelled edge",
+			lines(
+				"flowchart TD",
+				"  a -->|go| b --> c --> d --> e --> f --> g",
+			),
+		],
+		["a cycle", plainChain(7, { extra: ["  s6 --> s0"] })],
+		["two chains", lines(plainChain(4), "  t0 --> t1 --> t2 --> t3")],
+		[
+			"a subgraph",
+			lines(
+				"flowchart TD",
+				"subgraph lane[Crew]",
+				"  a --> b --> c --> d --> e --> f --> g",
+				"end",
+			),
+		],
+		["a style line", plainChain(7, { extra: ["style s3 fill:#fde68a"] })],
+		[
+			"a classDef line",
+			plainChain(7, { extra: ["classDef warn fill:#fee2e2"] }),
+		],
+		[
+			"a linkStyle line",
+			plainChain(7, { extra: ["linkStyle 2 stroke:#dc2626"] }),
+		],
+		[
+			"a class that marks a step",
+			plainChain(7, { extra: ["class s3 highlight"] }),
+		],
+		[
+			"a class on a step's shorthand",
+			lines(
+				"flowchart TD",
+				"  a:::primary --> b --> c --> d --> e --> f --> g",
+			),
+		],
+		[
+			"a decision",
+			lines(
+				"flowchart TD",
+				"  a --> b{Approved} --> c --> d --> e --> f --> g",
+			),
+		],
+		[
+			"a circle",
+			lines(
+				"flowchart TD",
+				"  a((Start)) --> b --> c --> d --> e --> f --> g",
+			),
+		],
+		[
+			"a database",
+			lines(
+				"flowchart TD",
+				"  a --> b[(Records)] --> c --> d --> e --> f --> g",
+			),
+		],
+		[
+			"a trapezoid",
+			lines(
+				"flowchart TD",
+				"  a[/Manual check\\] --> b --> c --> d --> e --> f --> g",
+			),
+		],
+		[
+			"a parallelogram",
+			lines(
+				"flowchart TD",
+				"  a --> b[\\Input\\] --> c --> d --> e --> f --> g",
+			),
+		],
+		[
+			"a label of two lines",
+			lines(
+				"flowchart TD",
+				'  a["Intake<br/>desk"] --> b --> c --> d --> e --> f --> g',
+			),
+		],
+		[
+			"a label the step's box would cut",
+			lines(
+				"flowchart TD",
+				`  a["${"Review the request with every stakeholder who signs it off before the build starts"}"] --> b --> c --> d --> e --> f --> g`,
+			),
+		],
+	])("leaves a chain with %s to the Mermaid layout", (_name, source) => {
+		expect(figureKindOf(source)).toBeNull();
+		expect(tryRenderFigure(source, PALETTE)).toBeNull();
 	});
 });
 
@@ -2305,6 +2785,119 @@ describe("gantt figure", () => {
 	});
 });
 
+describe("descriptions that arrive cut", () => {
+	it("leaves out a layer, step or role description ending in an ellipsis, and draws every title as written", () => {
+		const layers = svgOf(
+			layersFigureSvg(
+				parsed(
+					lines(
+						"flowchart TB",
+						'subgraph a["Experience<br/>who signs off before…"]',
+						'  a1["Crew app<br/>offline first..."]',
+						'  a2["Dispatch…<br/>whole detail"]',
+						"end",
+						'subgraph b["Services<br/>kept whole"]',
+						'  b1["Routing"]',
+						"end",
+					),
+				),
+				PALETTE,
+				{},
+			),
+		);
+		expect(
+			drawnLines(layers, "layer-subtitle").map((part) => part.join(" ")),
+		).toEqual(["kept whole"]);
+		expect(drawnLines(layers, "label").flat()).toEqual([
+			"Crew app",
+			"Dispatch…",
+			"Routing",
+		]);
+		expect(drawnLines(layers, "detail").flat()).toEqual(["whole detail"]);
+		expectPrintGeometry(layers);
+
+		const timeline = svgOf(
+			processFigureSvg(
+				parsed(
+					lines(
+						"flowchart TD",
+						't1["Week 1<br/>Kickoff<br/>Agree the first..."]',
+						't2["Week 2<br/>Build the first…<br/>One route at a time"]',
+						"t1 --> t2",
+					),
+				),
+				PALETTE,
+				{ dated: true },
+			),
+		);
+		expect(drawnLines(timeline, "label").flat()).toEqual([
+			"Kickoff",
+			"Build the first…",
+		]);
+		expect(drawnLines(timeline, "detail").flat()).toEqual([
+			"One route at a time",
+		]);
+
+		const team = svgOf(
+			teamFigureSvg(
+				parsed(
+					lines(
+						"flowchart LR",
+						'subgraph pod["Example Studio pod<br/>Four people and…"]',
+						'  p1["Engagement lead<br/>Owns scope and the…"]',
+						'  p2["Senior engineer<br/>Mobile and offline sync"]',
+						"end",
+						'subgraph client["Example Harbor Co"]',
+						'  c1["Operations sponsor"]',
+						"end",
+						"p1 --> c1",
+					),
+				),
+				PALETTE,
+				{},
+			),
+		);
+		expect(drawnLines(team, "team-subtitle")).toEqual([]);
+		expect(drawnLines(team, "detail").flat()).toEqual([
+			"Mobile and offline sync",
+		]);
+		expect(drawnTexts(team).join(" ")).toContain("Engagement lead");
+		// Left out of the drawing only: the description still reads it.
+		expect(team).toContain("Owns scope and the…");
+	});
+
+	it("leaves out a description holding a word wider than its box, rather than draw a fragment of it", () => {
+		// Four steps leave a narrow text column; the first word of the
+		// second step's detail is wider than a whole line of it.
+		const svg = svgOf(
+			processFigureSvg(
+				parsed(
+					lines(
+						"flowchart LR",
+						'p1["Scope<br/>Agree the goals"]',
+						'p2["Plan<br/>Internationalization roadmap"]',
+						'p3["Build<br/>One route at a time"]',
+						'p4["Review<br/>With the crews"]',
+						"p1 --> p2",
+						"p2 --> p3",
+						"p3 --> p4",
+					),
+				),
+				PALETTE,
+				{},
+			),
+		);
+		const details = drawnLines(svg, "detail").flat();
+		expect(details.join(" ")).not.toMatch(/Internationaliz|roadmap/);
+		expect(details).not.toContainEqual(expect.stringMatching(/…$/));
+		expect(details.join(" ")).toContain("Agree the goals");
+		expect(drawnLines(svg, "label").flat()).toContain("Plan");
+		// Left out of the drawing only: the description still reads it.
+		expect(svg).toContain("Internationalization roadmap");
+		expectPrintGeometry(svg);
+	});
+});
+
 describe("figure outlines", () => {
 	interface PaintedRect {
 		left: number;
@@ -2373,7 +2966,34 @@ describe("figure outlines", () => {
 			() =>
 				processFigureSvg(parsed(timeline()), PALETTE, { dated: true }),
 		],
+		[
+			"a timeline with phrases for eyebrows",
+			() =>
+				processFigureSvg(parsed(LONG_TIMELINE), PALETTE, {
+					dated: true,
+				}),
+		],
 		["layers", () => layersFigureSvg(parsed(LAYERS), PALETTE, {})],
+		[
+			"layers with three-word names and long descriptions",
+			() => layersFigureSvg(parsed(longLayers()), PALETTE, {}),
+		],
+		[
+			"layers with three-word names beside a cross-cutting column",
+			() =>
+				layersFigureSvg(
+					parsed(
+						longLayers([
+							'subgraph crosscutting["Cross-cutting<br/>shared by every layer"]',
+							'  x1["Identity and access"]',
+							'  x2["Audit log"]',
+							"end",
+						]),
+					),
+					PALETTE,
+					{},
+				),
+		],
 		[
 			"layers without a cross-cutting column",
 			() =>

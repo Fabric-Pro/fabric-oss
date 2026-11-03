@@ -45,10 +45,21 @@ import { postParlumeSeriesRecap } from "../parlume-recap";
 const NOW = new Date("2026-10-27T09:00:00.000Z");
 const RECAP = "Since last time\n- The team decided to ship the export.";
 
-function notesContext(id: string, notes: string, status = "COMPLETED") {
+function notesContext(
+	id: string,
+	notes: string,
+	status = "COMPLETED",
+	delivery?: unknown,
+) {
 	return {
 		id,
-		metadata: { parlumeNotes: notes, parlumeNotesStatus: status },
+		metadata: {
+			parlumeNotes: notes,
+			parlumeNotesStatus: status,
+			...(delivery === undefined
+				? {}
+				: { parlumeChannelChatDelivery: delivery }),
+		},
 	};
 }
 
@@ -59,6 +70,7 @@ function priorSession(input: {
 	endedAt?: string;
 }) {
 	return {
+		id: `session-${input.contextId}`,
 		transcriptContextId: input.contextId,
 		occurrenceStart: input.occurrenceStart
 			? new Date(input.occurrenceStart)
@@ -107,6 +119,120 @@ afterEach(() => {
 });
 
 describe("postParlumeSeriesRecap: the previous meeting", () => {
+	const observedAt = "2026-10-20T09:35:00.000Z";
+	const evidence = () => ({
+		version: 1,
+		sessionId: "session-c1",
+		projectId: "p1",
+		organizationId: "o1",
+		receipts: [{ tag: "P2", confirmedAt: observedAt }],
+		omittedCount: 0,
+	});
+	function previousWithDelivery(delivery: unknown) {
+		mocks.sessionFindMany.mockResolvedValue([
+			priorSession({
+				contextId: "c1",
+				joinedAt: "2026-10-20T09:01:00Z",
+				endedAt: "2026-10-20T09:40:00Z",
+			}),
+		]);
+		mocks.contextFindMany.mockResolvedValue([
+			notesContext(
+				"c1",
+				"Discussion notes omitted delivery evidence and called it unconfirmed.",
+				"COMPLETED",
+				delivery,
+			),
+		]);
+	}
+	it("supplies deterministic receipts separately even when previous generated notes omitted or misstated delivery", async () => {
+		previousWithDelivery(evidence());
+		await postParlumeSeriesRecap({ sessionId: "s-now" });
+		expect(prompt()).toContain("channel_delivery_evidence");
+		expect(prompt()).toContain(
+			"Discussion notes omitted delivery evidence",
+		);
+		expect(prompt()).toContain(
+			`P2: exact Graph reply and content observed at ${observedAt}.`,
+		);
+		expect(prompt()).toContain(
+			"They do not confirm a particular request, a Fabric mutation, audio playback",
+		);
+		expect(prompt()).toContain(
+			"or that a post remains present and unedited now",
+		);
+		expect(mocks.sessionFindMany.mock.calls[0][0].select.id).toBe(true);
+	});
+	it("keeps a legacy null confirmation unverified without rewriting previous notes", async () => {
+		previousWithDelivery({
+			...evidence(),
+			receipts: [{ tag: "P2", confirmedAt: null }],
+		});
+		await postParlumeSeriesRecap({ sessionId: "s-now" });
+		expect(prompt()).toContain(
+			"P2: delivery not verified; this does not prove failure.",
+		);
+		expect(prompt()).not.toContain("P2: exact Graph reply");
+	});
+	it.each([
+		null,
+		{ ...evidence(), version: 2 },
+		{ ...evidence(), sessionId: "session-other" },
+		{ ...evidence(), projectId: "project-other" },
+		{ ...evidence(), organizationId: "org-other" },
+		{
+			...evidence(),
+			receipts: Array.from({ length: 101 }, (_, index) => ({
+				tag: `P${index + 1}`,
+				confirmedAt: observedAt,
+			})),
+		},
+		{ ...evidence(), receipts: [{ tag: "P2", confirmedAt: "invalid" }] },
+		{
+			...evidence(),
+			receipts: [
+				{ tag: "P2", confirmedAt: observedAt },
+				{ tag: "P2", confirmedAt: observedAt },
+			],
+		},
+		{ ...evidence(), receipts: [], omittedCount: 1 },
+	])(
+		"does not promote malformed, oversized or foreign receipt metadata: %j",
+		async (delivery) => {
+			previousWithDelivery(delivery);
+			await postParlumeSeriesRecap({ sessionId: "s-now" });
+			expect(prompt()).toContain(
+				"No valid delivery metadata is recorded",
+			);
+			expect(prompt()).not.toContain("P2: exact Graph reply");
+		},
+	);
+	it("keeps bounded receipt evidence separate from truncated prior notes", async () => {
+		previousWithDelivery({
+			...evidence(),
+			receipts: Array.from({ length: 100 }, (_, index) => ({
+				tag: `P${index + 1}`,
+				confirmedAt: observedAt,
+			})),
+			omittedCount: 1,
+		});
+		mocks.contextFindMany.mockResolvedValue([
+			notesContext("c1", "a".repeat(20_000), "COMPLETED", {
+				...evidence(),
+				receipts: Array.from({ length: 100 }, (_, index) => ({
+					tag: `P${index + 1}`,
+					confirmedAt: observedAt,
+				})),
+				omittedCount: 1,
+			}),
+		]);
+		await postParlumeSeriesRecap({ sessionId: "s-now" });
+		expect(prompt()).toContain(
+			`P100: exact Graph reply and content observed at ${observedAt}.`,
+		);
+		expect(prompt()).toContain("Earlier receipts omitted: 1");
+		expect(prompt().length).toBeLessThan(22_000);
+	});
 	it("recaps the latest earlier Parlume session of the series from its notes", async () => {
 		mocks.sessionFindMany.mockResolvedValue([
 			priorSession({

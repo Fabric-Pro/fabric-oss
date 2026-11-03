@@ -25,7 +25,7 @@ Fabric is a platform where engineering teams design, build, and deploy AI agents
 - Website: https://fabric.pro
 - Documentation: https://fabric.pro/en/docs
 - Blog: https://fabric.pro/en/blog
-- MCP Registry: https://fabric.pro/en/mcp-registry
-- Changelog: https://fabric.pro/en/changelog
+- MCP Registry: https://fabric.pro/mcp-registry
+- Changelog: https://fabric.pro/changelog
 - Contact TechFabric: https://techfabric.com/contact
 - Full context: https://fabric.pro/llms-full.txt

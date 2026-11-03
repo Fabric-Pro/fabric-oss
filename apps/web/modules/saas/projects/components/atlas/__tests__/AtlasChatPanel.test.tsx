@@ -34,6 +34,10 @@ import {
 // ----------------------------------------------------------------------------
 
 const chatFn = vi.fn();
+vi.mock("@saas/agents/components/FabricChat/shared/AnsweredByModel", () => ({
+	AnsweredByModel: ({ model }: { model?: { id: string } }) =>
+		model ? <span>Answered by {model.id}</span> : null,
+}));
 const systemChatFn = vi.fn();
 const createConversationFn = vi.fn();
 const listFn = vi.fn();
@@ -433,6 +437,26 @@ describe("AtlasChatPanel — list scoping", () => {
 // ----------------------------------------------------------------------------
 
 describe("AtlasChatPanel — persistence failure sentinel", () => {
+	it("renders streamed served metadata with a salvaged partial answer", async () => {
+		const user = userEvent.setup();
+		chatFn.mockImplementation(() =>
+			streamOf([
+				"Partial answer",
+				{
+					type: "atlas-chat-model",
+					model: { id: "example-served", viaPlan: true },
+				},
+				{ type: "atlas-chat-interrupted" },
+			]),
+		);
+		renderPanel();
+		await user.type(screen.getByLabelText("inputLabel"), "Question");
+		await user.click(screen.getByRole("button", { name: "send" }));
+		expect(
+			await screen.findByText("Answered by example-served"),
+		).toBeInTheDocument();
+		expect(screen.getByText("Partial answer")).toBeInTheDocument();
+	});
 	it("fires exactly one warning toast and keeps the rendered answer", async () => {
 		const user = userEvent.setup();
 		chatFn.mockImplementation(() =>

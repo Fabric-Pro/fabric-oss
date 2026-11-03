@@ -1,3 +1,8 @@
+import {
+	PRINT_FIGURE_MAX_HEIGHT_PX,
+	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+	printFigureUnderOpenerMaxHeightPx,
+} from "@repo/utils/proposal-artifact/proposal-theme";
 import { buildProposalThemeTokens } from "@repo/utils/proposal-artifact/theme-tokens";
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -8,6 +13,9 @@ import {
 	MAX_EMBEDDED_IMAGE_CHARS,
 	PAGE_MARKER_PATTERN,
 	pageMarkerText,
+	printedBlockFacts,
+	printFigureMaxHeight,
+	printFigureMaxHeights,
 	type ThemeHtmlPass,
 } from "../build-theme-html";
 import { prepareExportMarkdown } from "../markdown";
@@ -208,6 +216,7 @@ describe("buildThemeHtml: the document", () => {
 		expect(faces).toEqual([
 			{ face: "Poppins 700", ...ttf },
 			{ face: "Inter 400", ...woff2 },
+			{ face: "Inter 500", ...woff2 },
 			{ face: "Inter 600", ...woff2 },
 			{ face: "Inter 700", ...woff2 },
 			{ face: "Inter 800", ...woff2 },
@@ -397,7 +406,6 @@ describe("buildThemeHtml: untrusted content", () => {
 			width: 10,
 			height: 10,
 			png: null,
-			numbered: true,
 		};
 		const { html } = build(
 			[
@@ -1339,6 +1347,53 @@ describe("buildThemeHtml: sections and contents", () => {
 		);
 	});
 
+	it("puts the room an opener needs before every opener but the first and one that opens a landscape page, in both passes", () => {
+		const markdown = [
+			"## One",
+			"",
+			"Text.",
+			"",
+			"## Two",
+			"",
+			"*A subtitle.*",
+			"",
+			"Text.",
+			"",
+			"## Wide",
+			"",
+			"| 1 | 2 | 3 | 4 | 5 | 6 | 7 |",
+			"| - | - | - | - | - | - | - |",
+			"| a | b | c | d | e | f | g |",
+			"",
+			"## Three",
+			"",
+			"## Empty wide",
+			"",
+			"|  |  |  |  |  |  |  |",
+			"| - | - | - | - | - | - | - |",
+		].join("\n");
+		const room = '<div class="pa-opener-room" aria-hidden="true"></div>';
+		const opener = (index: number) =>
+			`<header class="pa-section-opener" id="pa-section-${index}">`;
+
+		for (const pass of [LOCATE, FINAL]) {
+			const body = bodyOf(build(markdown, { pass }).html);
+
+			// Right after the contents page, with nothing before it.
+			expect(body).toContain(`</nav>\n${opener(1)}`);
+			expect(body).toContain(`<p>Text.</p>${room}${opener(2)}`);
+			// The landscape page is its own break: no room before it, and the
+			// opener after it gets one like any other.
+			expect(body).toContain(
+				`<p>Text.</p><section class="pa-landscape">${opener(3)}`,
+			);
+			expect(body).toContain(`</table></section>${room}${opener(4)}`);
+			// A wide table with nothing to print leaves its opener portrait.
+			expect(body).toContain(`</header>${room}${opener(5)}`);
+			expect(body.split(room)).toHaveLength(4);
+		}
+	});
+
 	it("draws the brand graphic in every opener only when there is a hero, above which the marker sits", () => {
 		const graphic =
 			'<div class="pa-section-graphic" aria-hidden="true"></div>';
@@ -1712,7 +1767,6 @@ describe("buildThemeHtml: fences", () => {
 			width: 10,
 			height: 10,
 			png: null,
-			numbered: true,
 		};
 		const fence = (caption: string) =>
 			[
@@ -1743,7 +1797,6 @@ describe("buildThemeHtml: fences", () => {
 					{
 						kind: "placeholder",
 						caption: "Not available.",
-						numbered: true,
 					},
 				],
 			}).html,
@@ -1764,7 +1817,6 @@ describe("buildThemeHtml: fences", () => {
 			width: 10,
 			height: 10,
 			png: null,
-			numbered: true,
 		};
 		const fence = (caption: string) =>
 			`\`\`\`mermaid\n%% caption: ${caption}\nflowchart LR\n  A --> B\n\`\`\``;
@@ -1789,7 +1841,6 @@ describe("buildThemeHtml: fences", () => {
 			width: 10,
 			height: 10,
 			png: null,
-			numbered: true,
 		};
 		const body = bodyOf(
 			build("```mermaid\nflowchart LR\n  A --> B\n```", {
@@ -1801,6 +1852,416 @@ describe("buildThemeHtml: fences", () => {
 		);
 	});
 
+	it("gives a diagram right under a section opener, past its subtitle and every block that prints nothing, the shorter height print allows it there, as the page places it", () => {
+		const fence = (index: number) =>
+			`\`\`\`mermaid\nflowchart LR\n  A${index} --> B\n\`\`\``;
+		const markdown = [
+			// The letter's heading opens no section.
+			"## Cover letter",
+			fence(0),
+			"Kind regards,",
+			"## Overview",
+			fence(1),
+			fence(2),
+			"## Approach",
+			"*How the work runs.*",
+			fence(3),
+			"## Delivery",
+			"The plan in brief.",
+			fence(4),
+			"## Steps",
+			`- A step\n\n  ${fence(5).replaceAll("\n", "\n  ")}`,
+			"## Review",
+			"[example]: https://example.com",
+			fence(6),
+			// Each of these prints nothing: an author's comment, a Markdown
+			// image and an image tag from elsewhere (both dropped), a
+			// footnote's text, a cover block the cover did not take, a table
+			// with nothing in it, a diagram left out and an upload whose bytes
+			// were not read.
+			"## Notes",
+			"<!-- reviewer note -->",
+			fence(7),
+			"## Sources",
+			"![remote](https://example.com/remote.png)",
+			fence(8),
+			"## Elsewhere",
+			'<img src="https://example.com/remote.png" alt="Remote">',
+			fence(9),
+			"## Footnotes",
+			"[^note]: A note no line calls.",
+			fence(10),
+			"## Second cover",
+			"```cover\nfor: Example Harbor Co\n```",
+			fence(11),
+			"## Empty table",
+			"|  |  |\n| - | - |",
+			fence(12),
+			"## Left out",
+			fence(13),
+			fence(14),
+			"## Missing upload",
+			imageTag(mediaKey("missing.png")),
+			fence(15),
+			// An upload with its bytes prints a figure of its own first.
+			"## Upload",
+			imageTag(mediaKey("chart.png")),
+			fence(16),
+		].join("\n\n");
+		const prepared = prepareExportMarkdown(markdown);
+		const images = new Map([[mediaKey("chart.png"), png]]);
+		const diagrams = prepared.diagramSources.map(
+			(_, index): ExportDiagram =>
+				index === 13
+					? { kind: "omitted" }
+					: {
+							kind: "svg",
+							svg: `<svg viewBox="0 0 10 10"><text>d${index}</text></svg>`,
+							width: 10,
+							height: 10,
+							png: null,
+						},
+		);
+		const heights = printFigureMaxHeights(
+			prepared,
+			printedBlockFacts(
+				{ images, projectId: PROJECT, documentId: DOCUMENT },
+				diagrams,
+			),
+		);
+		const opener = PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX;
+		const own = PRINT_FIGURE_MAX_HEIGHT_PX;
+		expect(heights).toEqual([
+			own,
+			opener,
+			own,
+			opener,
+			// After a paragraph, still on the opener's page.
+			printFigureUnderOpenerMaxHeightPx("Delivery", null, [
+				{ kind: "paragraph", text: "The plan in brief." },
+			]),
+			own,
+			opener,
+			...Array.from({ length: 6 }, () => opener),
+			own,
+			opener,
+			opener,
+			own,
+		]);
+
+		// The print layer's rules read the page: a figure that comes right
+		// after an opener's header, or one that carries a lower limit.
+		const body = bodyOf(build(markdown, { diagrams, images }).html);
+		expect(
+			diagrams.map((_, index) => {
+				const figure = new RegExp(
+					`(</header>)?<figure [^>]*?(?: style="--pa-figure-max-height: (\\d+)px")?><svg viewBox="0 0 10 10"><text>d${index}</text>`,
+				).exec(body);
+				return figure?.[2]
+					? Number(figure[2])
+					: figure?.[1]
+						? opener
+						: own;
+			}),
+		).toEqual(heights);
+	});
+
+	it("keeps a diagram under a long section opener shorter by the lines its text takes, writes that limit on its figure, and measures its labels at the same number", () => {
+		const fence = (index: number) =>
+			`\`\`\`mermaid\nflowchart TD\n  A${index} --> B\n\`\`\``;
+		const long =
+			"How the pilot moves every request from the first interview with dispatch to the measured review of cost and adoption";
+		const subtitle =
+			"Every request the crews raise moves through the same twenty steps, from the intake desk to the archive, so the closing review can compare the pilot region with the baseline on cost and response times.";
+		const markdown = [
+			"## Plan",
+			fence(0),
+			`## ${long}`,
+			`*${subtitle}*`,
+			fence(1),
+			// A line break starts a line; a soft one in the subtitle does not.
+			"## Plan<br>for<br>the<br>pilot",
+			fence(2),
+			`## ${long}`,
+			"*Short\nline*",
+			fence(3),
+			"## Plan for the pilot",
+			fence(4),
+		].join("\n\n");
+		const prepared = prepareExportMarkdown(markdown);
+		const diagrams = prepared.diagramSources.map(
+			(_, index): ExportDiagram => ({
+				kind: "svg",
+				svg: `<svg viewBox="0 0 10 10"><text>d${index}</text></svg>`,
+				width: 10,
+				height: 10,
+				png: null,
+			}),
+		);
+		const printed = {
+			images: new Map(),
+			projectId: PROJECT,
+			documentId: DOCUMENT,
+		};
+		const heights = printFigureMaxHeights(
+			prepared,
+			printedBlockFacts(printed, diagrams),
+		);
+		const under = PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX;
+		expect(heights[1]).toBeLessThan(under);
+		expect(heights[2]).toBeLessThan(under);
+		expect(heights[3]).toBeLessThan(under);
+		expect(heights[1]).toBeLessThan(heights[3] ?? 0);
+		expect(heights).toEqual([
+			under,
+			printFigureUnderOpenerMaxHeightPx(long, subtitle),
+			printFigureUnderOpenerMaxHeightPx("Plan\nfor\nthe\npilot", null),
+			printFigureUnderOpenerMaxHeightPx(long, "Short line"),
+			under,
+		]);
+
+		// The diagram step, which draws the fences in order, measures each
+		// at the same height.
+		const measure = printFigureMaxHeight(prepared, printed);
+		expect(
+			heights.map((_, index) => measure(index, diagrams.slice(0, index))),
+		).toEqual(heights);
+
+		// The page writes a limit lower than the rule's on the figure, in
+		// the property the rule reads first, and nothing on the others.
+		const body = bodyOf(build(markdown, { diagrams }).html);
+		const written = Array.from(
+			body.matchAll(
+				/<figure class="pa-figure pa-diagram"(?: style="--pa-figure-max-height: (\d+)px")?><svg viewBox="0 0 10 10"><text>d(\d+)<\/text>/g,
+			),
+			(match) => [Number(match[2]), match[1] ? Number(match[1]) : null],
+		);
+		expect(written).toEqual([
+			[0, null],
+			[1, heights[1]],
+			[2, heights[2]],
+			[3, heights[3]],
+			[4, null],
+		]);
+	});
+
+	it("keeps the first diagram after short blocks on an opener's page shorter by their lines, writes that limit on its figure, and measures its labels at the same number", () => {
+		const fence = (index: number) =>
+			`\`\`\`mermaid\nflowchart TD\n  A${index} --> B\n\`\`\``;
+		const paragraph =
+			"Every request moves through the same steps, from the intake desk to the archive.";
+		const markdown = [
+			"## How a request moves",
+			paragraph,
+			fence(0),
+			"## How the teams work",
+			"- Dispatch\n- Crew leads",
+			fence(1),
+			// A block that is not short text, and text past the floor, leave
+			// the figure after them its own height.
+			"## Notes",
+			"> A callout.",
+			fence(2),
+			"## Background",
+			Array.from({ length: 14 }, () => paragraph).join(" "),
+			fence(3),
+			// Only the first figure shares the opener's page.
+			"## Review",
+			paragraph,
+			fence(4),
+			fence(5),
+		].join("\n\n");
+		const prepared = prepareExportMarkdown(markdown);
+		const diagrams = prepared.diagramSources.map(
+			(_, index): ExportDiagram => ({
+				kind: "svg",
+				svg: `<svg viewBox="0 0 10 10"><text>d${index}</text></svg>`,
+				width: 10,
+				height: 10,
+				png: null,
+			}),
+		);
+		const printed = {
+			images: new Map(),
+			projectId: PROJECT,
+			documentId: DOCUMENT,
+		};
+		const heights = printFigureMaxHeights(
+			prepared,
+			printedBlockFacts(printed, diagrams),
+		);
+		const own = PRINT_FIGURE_MAX_HEIGHT_PX;
+		expect(heights[0]).toBeLessThan(
+			PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+		);
+		expect(heights[1]).toBeLessThan(
+			PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+		);
+		expect(heights).toEqual([
+			printFigureUnderOpenerMaxHeightPx("How a request moves", null, [
+				{ kind: "paragraph", text: paragraph },
+			]),
+			printFigureUnderOpenerMaxHeightPx("How the teams work", null, [
+				{ kind: "list", items: ["Dispatch", "Crew leads"] },
+			]),
+			own,
+			own,
+			heights[0],
+			own,
+		]);
+
+		// The diagram step measures each at the same height.
+		const measure = printFigureMaxHeight(prepared, printed);
+		expect(
+			heights.map((_, index) => measure(index, diagrams.slice(0, index))),
+		).toEqual(heights);
+
+		// The page writes each limit lower than a figure's own on its figure.
+		const body = bodyOf(build(markdown, { diagrams }).html);
+		const written = Array.from(
+			body.matchAll(
+				/<figure class="pa-figure pa-diagram"(?: style="--pa-figure-max-height: (\d+)px")?><svg viewBox="0 0 10 10"><text>d(\d+)<\/text>/g,
+			),
+			(match) => [Number(match[2]), match[1] ? Number(match[1]) : null],
+		);
+		expect(written).toEqual([
+			[0, heights[0]],
+			[1, heights[1]],
+			[2, null],
+			[3, null],
+			[4, heights[0]],
+			[5, null],
+		]);
+	});
+
+	it("writes a figure's own height on a figure on an opener's page whose labels the room there would take below the floor, and the diagram step measures the same number", () => {
+		const fence = (index: number) =>
+			`\`\`\`mermaid\nflowchart TD\n  A${index} --> B\n\`\`\``;
+		const paragraph = "Every request takes these steps.";
+		const markdown = [
+			// Right under an opener, at 600 px.
+			"## Tall flow",
+			fence(0),
+			"## Flow that shrinks a little",
+			fence(1),
+			"## Tall template",
+			fence(2),
+			"## Short template",
+			fence(3),
+			// After a paragraph, at less.
+			"## After a paragraph",
+			paragraph,
+			fence(4),
+			"## Tall flow after a paragraph",
+			paragraph,
+			fence(5),
+		].join("\n\n");
+		const drawing = (
+			index: number,
+			height: number,
+			textPx?: number,
+		): ExportDiagram => ({
+			kind: "svg",
+			svg: `<svg viewBox="0 0 300 ${height}"><text>d${index}</text></svg>`,
+			width: index === 2 || index === 3 ? 662 : 300,
+			height,
+			...(textPx === undefined ? {} : { textPx }),
+			png: null,
+		});
+		// A flow's labels reach the floor at 9 / 9.75 of its height; a
+		// template's 12 px text at its full height.
+		const diagrams = [
+			drawing(0, 735),
+			drawing(1, 640),
+			drawing(2, 620, 12),
+			drawing(3, 500, 12),
+			drawing(4, 565),
+			drawing(5, 735),
+		];
+		const prepared = prepareExportMarkdown(markdown);
+		const printed = {
+			images: new Map(),
+			projectId: PROJECT,
+			documentId: DOCUMENT,
+		};
+		const offered = printFigureMaxHeights(
+			prepared,
+			printedBlockFacts(printed, diagrams),
+		);
+		const under = PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX;
+		const own = PRINT_FIGURE_MAX_HEIGHT_PX;
+		const afterParagraph = printFigureUnderOpenerMaxHeightPx(
+			"After a paragraph",
+			null,
+			[{ kind: "paragraph", text: paragraph }],
+		);
+		expect(offered).toEqual([
+			under,
+			under,
+			under,
+			under,
+			afterParagraph,
+			printFigureUnderOpenerMaxHeightPx(
+				"Tall flow after a paragraph",
+				null,
+				[{ kind: "paragraph", text: paragraph }],
+			),
+		]);
+		expect(afterParagraph).toBeLessThan(565);
+
+		// Before a fence is drawn the diagram step reads what is offered;
+		// once drawn, the height it prints at.
+		const measure = printFigureMaxHeight(prepared, printed);
+		expect(
+			offered.map((_, index) => measure(index, diagrams.slice(0, index))),
+		).toEqual(offered);
+		const heights = offered.map((_, index) => measure(index, diagrams));
+		expect(heights).toEqual([own, under, own, under, afterParagraph, own]);
+
+		// The page writes each height the rule would not give on its own.
+		const body = bodyOf(build(markdown, { diagrams }).html);
+		const written = Array.from(
+			body.matchAll(
+				/<figure class="pa-figure pa-diagram"(?: style="--pa-figure-max-height: (\d+)px")?><svg viewBox="0 0 300 \d+"><text>d(\d+)<\/text>/g,
+			),
+			(match) => [Number(match[2]), match[1] ? Number(match[1]) : null],
+		);
+		expect(written).toEqual([
+			[0, own],
+			[1, null],
+			[2, own],
+			[3, null],
+			[4, afterParagraph],
+			[5, own],
+		]);
+	});
+
+	it("opens a section on its wide table's landscape page past a block that prints nothing, and still counts what that block leaves out", () => {
+		const { html, warnings } = build(
+			[
+				"## Pricing",
+				"",
+				"Fees by phase.",
+				"",
+				"## Appendix A: Assumptions",
+				"",
+				"![remote](https://example.com/remote.png)",
+				"",
+				"| 1 | 2 | 3 | 4 | 5 | 6 | 7 |",
+				"| - | - | - | - | - | - | - |",
+				"| a | b | c | d | e | f | g |",
+			].join("\n"),
+		);
+		const body = bodyOf(html);
+		expect(body.match(/<section class="pa-landscape">/g)).toHaveLength(1);
+		expect(body).toMatch(
+			/<section class="pa-landscape"><header class="pa-section-opener pa-appendix" id="pa-section-2" data-label="Appendix A"><h2>Appendix A: Assumptions<\/h2><\/header><table class="pa-data-table[^"]*">.*?<\/table><\/section>/,
+		);
+		expect(warnings).toEqual([
+			{ code: "EXTERNAL_IMAGE_DROPPED", count: 1 },
+		]);
+	});
+
 	it("takes each diagram by its fence, nested ones included, and numbers only those that print", () => {
 		const svg = (label: string): ExportDiagram => ({
 			kind: "svg",
@@ -1808,7 +2269,6 @@ describe("buildThemeHtml: fences", () => {
 			width: 10,
 			height: 10,
 			png: null,
-			numbered: true,
 		});
 		const markdown = [
 			"```mermaid",
@@ -1839,11 +2299,10 @@ describe("buildThemeHtml: fences", () => {
 		const { html, warnings } = build(markdown, {
 			diagrams: [
 				svg("first"),
-				{ kind: "omitted", numbered: false },
+				{ kind: "omitted" },
 				{
 					kind: "placeholder",
 					caption: "Diagram <unavailable>",
-					numbered: true,
 				},
 			],
 		});

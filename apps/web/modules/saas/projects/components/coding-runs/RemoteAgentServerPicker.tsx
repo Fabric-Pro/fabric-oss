@@ -6,18 +6,41 @@ import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
 	Building2Icon,
 	CheckCircle2Icon,
+	CopyIcon,
 	ExternalLinkIcon,
+	HelpCircleIcon,
+	KeyRoundIcon,
 	LaptopIcon,
 	PlusCircleIcon,
 	ServerIcon,
+	TerminalIcon,
 	Trash2Icon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useId, useState } from "react";
+import { toast } from "sonner";
+
+function generateServerSecret(): string {
+	const bytes = new Uint8Array(24);
+	if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+		crypto.getRandomValues(bytes);
+	} else {
+		for (let i = 0; i < bytes.length; i++) {
+			bytes[i] = Math.floor(Math.random() * 256);
+		}
+	}
+	return `fab_srv_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
 
 export interface RemoteAgentServerOption {
 	id: string;
@@ -104,15 +127,18 @@ export function RemoteAgentServerPicker({
 
 	const applyLocalPreset = () => {
 		if (!name.trim()) {
-			setName("Local Fabric Agents Workstation");
+			setName("Personal Fabric Agents Remote Server");
 		}
 		setUrl("http://127.0.0.1:9100");
 		setScope("PRIVATE");
+		if (secret.length < 32) {
+			setSecret(generateServerSecret());
+		}
 	};
 
 	const applyTeamPreset = () => {
 		if (!name.trim()) {
-			setName("Company Fabric Agents Cluster");
+			setName("Organization Fabric Agents Remote Server");
 		}
 		if (!url.trim() || url === "http://127.0.0.1:9100") {
 			setUrl("https://agents.example.com");
@@ -120,7 +146,17 @@ export function RemoteAgentServerPicker({
 		if (canShare) {
 			setScope("TEAM");
 		}
+		if (secret.length < 32) {
+			setSecret(generateServerSecret());
+		}
 	};
+
+	const effectiveSecretForCommand =
+		secret.length >= 32 ? secret : "<your-32+-char-secret>";
+	const setupCommand =
+		scope === "TEAM"
+			? `docker run -d --name fabric-agents-server -p 9100:9100 -e FABRIC_SERVER_TOKEN="${effectiveSecretForCommand}" ghcr.io/fabric-pro/fabric-agent-server:latest`
+			: `FABRIC_SERVER_TOKEN="${effectiveSecretForCommand}" npx -y @fabricorg/agent-server --port 9100`;
 
 	return (
 		<section
@@ -136,6 +172,35 @@ export function RemoteAgentServerPicker({
 					>
 						{t("title")}
 					</Label>
+					<TooltipProvider delayDuration={150}>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<a
+									href="/docs/features/projects#personal-vs-organization-remote-servers"
+									target="_blank"
+									rel="noopener noreferrer"
+									data-testid="remote-server-picker-docs-link"
+									aria-label="Personal and Organization Fabric Agents Remote Server documentation"
+									className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+								>
+									<HelpCircleIcon className="size-3" />
+									Docs
+								</a>
+							</TooltipTrigger>
+							<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+								<p className="font-semibold">
+									Personal vs. Organization Remote Servers
+								</p>
+								<p>
+									Register multiple Personal servers (
+									<code>PRIVATE</code>, visible only to you)
+									or shared Organization servers (
+									<code>TEAM</code>). Click to open the full
+									setup guide.
+								</p>
+							</TooltipContent>
+						</Tooltip>
+					</TooltipProvider>
 				</div>
 
 				<div className="inline-flex items-center rounded-md border border-border/70 bg-muted/30 p-0.5 text-xs">
@@ -164,7 +229,7 @@ export function RemoteAgentServerPicker({
 						)}
 					>
 						<LaptopIcon className="size-3" />
-						Local ({privateServers.length})
+						Personal ({privateServers.length})
 					</button>
 					<button
 						type="button"
@@ -178,14 +243,14 @@ export function RemoteAgentServerPicker({
 						)}
 					>
 						<Building2Icon className="size-3" />
-						Company ({teamServers.length})
+						Organization ({teamServers.length})
 					</button>
 				</div>
 			</div>
 
 			{/* Visual quick-select server cards */}
 			{visibleServers.length > 0 && (
-				<div className="grid gap-2 sm:grid-cols-2">
+				<div className="grid auto-rows-fr gap-2 sm:grid-cols-2">
 					{visibleServers.map((server) => {
 						const isSelected = server.id === value;
 						const isTeam = server.scope === "TEAM";
@@ -198,7 +263,7 @@ export function RemoteAgentServerPicker({
 								}
 								aria-pressed={isSelected}
 								className={cn(
-									"flex flex-col justify-between gap-1.5 rounded-lg border p-3 text-left transition-all",
+									"flex h-full flex-col justify-between gap-1.5 rounded-lg border p-3 text-left transition-all",
 									isSelected
 										? "border-primary bg-primary/[0.05] ring-1 ring-primary/30"
 										: "border-border/60 bg-muted/15 hover:border-border hover:bg-muted/35",
@@ -211,7 +276,7 @@ export function RemoteAgentServerPicker({
 										) : (
 											<LaptopIcon className="size-3.5 shrink-0 text-primary" />
 										)}
-										<span className="truncate text-xs font-semibold text-foreground">
+										<span className="font-semibold text-xs leading-snug text-foreground">
 											{server.name}
 										</span>
 									</div>
@@ -219,15 +284,17 @@ export function RemoteAgentServerPicker({
 										<CheckCircle2Icon className="size-3.5 shrink-0 text-primary" />
 									)}
 								</div>
-								<div className="flex items-center justify-between gap-2">
-									<span className="truncate font-mono text-[11px] text-muted-foreground">
+								<div className="flex flex-wrap items-center justify-between gap-2">
+									<span className="break-all font-mono text-[11px] text-muted-foreground">
 										{server.url}
 									</span>
 									<Badge
 										variant="outline"
 										className="shrink-0 rounded-full px-1.5 py-0 text-[10px]"
 									>
-										{isTeam ? "Company" : "Local"}
+										{isTeam
+											? "Organization Remote Server"
+											: "Personal Remote Server"}
 									</Badge>
 								</div>
 							</button>
@@ -308,20 +375,52 @@ export function RemoteAgentServerPicker({
 				</div>
 			</div>
 
-			<details className="group rounded-md border border-dashed border-border/80 bg-muted/15 px-3 py-2">
-				<summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-xs font-medium text-foreground">
+			<details
+				open={servers.length === 0}
+				className="group rounded-md border border-dashed border-border/80 bg-muted/15 px-3 py-2"
+			>
+				<summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 text-xs font-medium text-foreground">
 					<span className="inline-flex items-center gap-1.5 underline underline-offset-4">
 						<PlusCircleIcon className="size-3.5 text-primary" />
 						{t("connect")}
 					</span>
 					<span className="text-[11px] text-muted-foreground">
-						Local (:9100) or Company Server
+						Personal Remote Server (:9100) or Organization Remote
+						Server
 					</span>
 				</summary>
 				<div className="mt-3 space-y-3 border-t border-border/60 pt-3">
 					<p className="text-xs leading-5 text-muted-foreground">
 						{t("connectionHelp")}
 					</p>
+					<ol className="list-decimal space-y-1 rounded-md border border-border/60 bg-background/80 p-2.5 pl-6 text-[11px] leading-5 text-muted-foreground">
+						<li>
+							Start your{" "}
+							<code className="font-mono text-foreground">
+								fabric-agent-server
+							</code>{" "}
+							or open <strong>Fabric Agents Desktop</strong> and
+							enable <strong>Execution Bridge</strong> in
+							Settings.
+						</li>
+						<li>
+							Copy the endpoint URL (e.g.{" "}
+							<code className="font-mono text-foreground">
+								http://127.0.0.1:9100
+							</code>{" "}
+							for a Personal Fabric Agents Remote Server or{" "}
+							<code className="font-mono text-foreground">
+								https://agents.example.com
+							</code>{" "}
+							for a personal tunnel or Organization Fabric Agents
+							Remote Server) and the 32+ character shared secret.
+						</li>
+						<li>
+							Verify and connect below so this project can
+							dispatch coding runs directly using your
+							subscription tokens.
+						</li>
+					</ol>
 
 					<div className="flex flex-wrap items-center gap-2">
 						<span className="text-[11px] font-medium text-muted-foreground">
@@ -335,7 +434,8 @@ export function RemoteAgentServerPicker({
 							onClick={applyLocalPreset}
 						>
 							<LaptopIcon className="size-3 text-primary" />
-							Local Workstation (127.0.0.1:9100)
+							Personal Fabric Agents Remote Server
+							(127.0.0.1:9100)
 						</Button>
 						<Button
 							type="button"
@@ -345,7 +445,7 @@ export function RemoteAgentServerPicker({
 							onClick={applyTeamPreset}
 						>
 							<Building2Icon className="size-3 text-primary" />
-							Company Remote Server
+							Organization Fabric Agents Remote Server
 						</Button>
 					</div>
 
@@ -379,9 +479,24 @@ export function RemoteAgentServerPicker({
 					</div>
 					<div className="grid gap-3 sm:grid-cols-2">
 						<div className="space-y-1.5">
-							<Label htmlFor={`${id}-secret`} className="text-xs">
-								{t("secret")}
-							</Label>
+							<div className="flex items-center justify-between gap-2">
+								<Label
+									htmlFor={`${id}-secret`}
+									className="text-xs"
+								>
+									{t("secret")}
+								</Label>
+								<button
+									type="button"
+									onClick={() =>
+										setSecret(generateServerSecret())
+									}
+									className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+								>
+									<KeyRoundIcon className="size-3" />
+									Generate token
+								</button>
+							</div>
 							<Input
 								id={`${id}-secret`}
 								type="password"
@@ -416,6 +531,52 @@ export function RemoteAgentServerPicker({
 							</select>
 						</div>
 					</div>
+
+					{/* 1-Click Copyable Bootstrap Command */}
+					<div className="space-y-1.5 rounded-md border border-primary/20 bg-primary/[0.03] p-2.5">
+						<div className="flex flex-wrap items-center justify-between gap-2">
+							<span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
+								<TerminalIcon className="size-3.5 text-primary" />
+								{scope === "TEAM"
+									? "1-Line Organization Server Setup (uses team pooled seats / org subscription plan)"
+									: "1-Line Personal Server Setup (uses your local subscription CLIs)"}
+							</span>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								className="h-6 gap-1 px-2 text-[11px]"
+								onClick={async () => {
+									try {
+										let tokenToUse = secret;
+										if (tokenToUse.length < 32) {
+											tokenToUse = generateServerSecret();
+											setSecret(tokenToUse);
+										}
+										const cmd =
+											scope === "TEAM"
+												? `docker run -d --name fabric-agents-server -p 9100:9100 -e FABRIC_SERVER_TOKEN="${tokenToUse}" ghcr.io/fabric-pro/fabric-agent-server:latest`
+												: `FABRIC_SERVER_TOKEN="${tokenToUse}" npx -y @fabricorg/agent-server --port 9100`;
+										await navigator.clipboard.writeText(
+											cmd,
+										);
+										toast.success(
+											"Copied server startup command with generated secret token",
+										);
+									} catch {
+										toast.error("Failed to copy command");
+									}
+								}}
+							>
+								<CopyIcon className="size-3" />
+								Copy setup command
+							</Button>
+						</div>
+						<code className="block break-all rounded border border-border/60 bg-background px-2 py-1.5 font-mono text-[11px] text-foreground">
+							{setupCommand}
+						</code>
+					</div>
+
 					<Button
 						type="button"
 						size="sm"

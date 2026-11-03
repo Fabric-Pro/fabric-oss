@@ -1,5 +1,6 @@
 import { interactivePlanModel } from "@repo/ai/lib/chatgpt-plan/pool";
 import {
+	type AIProvider,
 	type AiTaskType,
 	db,
 	getProviderDisplayName,
@@ -97,6 +98,14 @@ export async function listAvailableModels(input: {
 	// Get models from effective providers:
 	// - For explicit general tasks: only the DEFAULT provider (prevents routing confusion)
 	// - For specialized tasks (IMAGE, AUDIO, EMBEDDING, DECISION): all capable providers
+	const queryProviders =
+		effectiveProviders.includes("CUSTOM") &&
+		!effectiveProviders.includes("OPENAI_DIRECT") &&
+		input.taskType !== "EMBEDDING" &&
+		input.taskType !== "IMAGE"
+			? ([...effectiveProviders, "OPENAI_DIRECT"] as AIProvider[])
+			: effectiveProviders;
+
 	// biome-ignore lint/suspicious/noImplicitAnyLet: type inferred from Prisma query with include — cannot be statically declared
 	let models;
 	try {
@@ -105,7 +114,7 @@ export async function listAvailableModels(input: {
 				...SELECTABLE_CATALOG_MODEL_FILTER,
 				providerMappings: {
 					some: {
-						provider: { in: effectiveProviders },
+						provider: { in: queryProviders },
 						isAvailable: true,
 					},
 				},
@@ -127,7 +136,7 @@ export async function listAvailableModels(input: {
 			include: {
 				providerMappings: {
 					where: {
-						provider: { in: effectiveProviders },
+						provider: { in: queryProviders },
 						isAvailable: true,
 					},
 				},
@@ -138,6 +147,40 @@ export async function listAvailableModels(input: {
 		console.error("[AI Config] Error querying models:", error);
 		console.error("[AI Config] Effective providers:", effectiveProviders);
 		throw error;
+	}
+
+	// Project OPENAI_DIRECT non-embedding mappings as CUSTOM when CUSTOM is an effective provider
+	if (effectiveProviders.includes("CUSTOM")) {
+		const includeOpenAiDirect =
+			effectiveProviders.includes("OPENAI_DIRECT");
+		models = models.map((model) => {
+			const nextMappings = [...model.providerMappings];
+			const hasCustomMapping = nextMappings.some(
+				(m) => m.provider === "CUSTOM",
+			);
+			const openAiMapping = nextMappings.find(
+				(m) => m.provider === "OPENAI_DIRECT",
+			);
+			if (
+				!hasCustomMapping &&
+				openAiMapping &&
+				!model.suitableForTasks.includes("EMBEDDING") &&
+				!model.suitableForTasks.includes("IMAGE")
+			) {
+				nextMappings.push({
+					...openAiMapping,
+					provider: "CUSTOM" as AIProvider,
+				});
+			}
+			return {
+				...model,
+				providerMappings: includeOpenAiDirect
+					? nextMappings
+					: nextMappings.filter(
+							(m) => m.provider !== "OPENAI_DIRECT",
+						),
+			};
+		});
 	}
 
 	// What an embeddings-only key may list is its embedding models; an

@@ -22,6 +22,8 @@
  * reusing it would be refused as a duplicate (the same reason the company
  * context retry suffixes its id):
  *
+ * - an uploaded transcript file is read again by its own workflow: the document
+ *   pipeline would finish the row with no transcript behind it (Fizzy #1877);
  * - a row with a stored original (`s3Path`: uploads, and Google Docs, which
  *   are exported to storage) is re-extracted from it, as a retry;
  * - a link is crawled again, with whichever scraper the tenant has enabled
@@ -39,6 +41,7 @@ import {
 	getContextById,
 	hasProjectAccess,
 	seedSteps,
+	UPLOADED_TRANSCRIPT_PROVIDER,
 	updateContextExtractionStatus,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -62,7 +65,7 @@ const TASK_QUEUE = "project-documents";
 
 const IN_FLIGHT_STATUSES = new Set(["PENDING", "EXTRACTING"]);
 
-type RetryDispatch = "processing" | "crawl" | "embedding";
+type RetryDispatch = "processing" | "transcript" | "crawl" | "embedding";
 
 export const retryStalledContextProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.CONTEXT_UPDATE))
@@ -153,8 +156,13 @@ export const retryStalledContextProcedure = tenantProtectedProcedure
 			});
 		}
 
+		const isUploadedTranscript =
+			(existing.metadata as { provider?: string } | null)?.provider ===
+			UPLOADED_TRANSCRIPT_PROVIDER;
 		const dispatch: RetryDispatch | null = existing.s3Path
-			? "processing"
+			? isUploadedTranscript
+				? "transcript"
+				: "processing"
 			: existing.type === "LINK" && existing.sourceUrl
 				? "crawl"
 				: existing.content.trim().length > 0
@@ -231,7 +239,24 @@ export const retryStalledContextProcedure = tenantProtectedProcedure
 		let workflowId: string;
 		try {
 			const temporalClient = await getTemporalClient();
-			if (dispatch === "processing") {
+			if (dispatch === "transcript") {
+				workflowId = `uploaded-transcript-ingest-${existing.id}-retry-${Date.now()}`;
+				await temporalClient.workflow.start(
+					"uploadedTranscriptIngestWorkflow",
+					withCorrelationMemo({
+						taskQueue: TASK_QUEUE,
+						workflowId,
+						args: [
+							{
+								contextId: existing.id,
+								projectId: input.projectId,
+								userId: user.id,
+								organizationId: contextOrganizationId,
+							},
+						],
+					}),
+				);
+			} else if (dispatch === "processing") {
 				workflowId = `project-context-processing-${existing.id}-retry-${Date.now()}`;
 				await temporalClient.workflow.start(
 					"projectContextProcessingWorkflow",

@@ -28,6 +28,7 @@ vi.mock("../../FabricChat/cards/ResearchReportCard", () => ({
 import { WorkflowResultViewer } from "../WorkflowResultViewer";
 
 const RESULT = {
+	reportModel: { id: "example-report-served", viaPlan: false },
 	text: "The full research text.",
 	summary: "A short summary.",
 	keyFindings: [],
@@ -73,6 +74,9 @@ describe("WorkflowResultViewer — saving the report", () => {
 				type: "RESEARCH_REPORT",
 				title: "Market research",
 				organizationId: "org_example",
+				metadata: expect.objectContaining({
+					model: RESULT.reportModel,
+				}),
 			}),
 		);
 		rerender(

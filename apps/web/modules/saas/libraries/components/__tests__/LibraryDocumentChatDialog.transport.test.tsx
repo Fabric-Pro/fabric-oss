@@ -55,6 +55,11 @@ const m = vi.hoisted(() => ({
 	toastError: vi.fn(),
 }));
 
+vi.mock("@saas/agents/components/FabricChat/shared/AnsweredByModel", () => ({
+	AnsweredByModel: ({ model }: { model?: { id: string } }) =>
+		model ? <span>Answered by {model.id}</span> : null,
+}));
+
 vi.mock("sonner", async (importOriginal) => ({
 	...(await importOriginal<typeof import("sonner")>()),
 	toast: { error: (...args: unknown[]) => m.toastError(...args) },
@@ -66,6 +71,8 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useEffectiveOrganizationId: (id?: string | null) =>
+		id === undefined ? m.organizationOnScreen : id,
 	useOrganizationContext: () => ({ organizationId: m.organizationOnScreen }),
 }));
 
@@ -217,6 +224,28 @@ function ask(question: string) {
 }
 
 describe("LibraryDocumentChatDialog transport", () => {
+	it("renders the served footer and leaves a later unknown answer unlabeled", async () => {
+		fetchMock
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						response: "First answer",
+						model: { id: "example-served", viaPlan: false },
+					}),
+				),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ response: "Second answer" })),
+			);
+		render(dialog());
+		ask("First question");
+		await screen.findByText("Answered by example-served");
+		ask("Next question");
+		await screen.findByText("Second answer");
+		expect(screen.getAllByText("Answered by example-served")).toHaveLength(
+			1,
+		);
+	});
 	it("asks the route while the flag is off", async () => {
 		render(dialog());
 

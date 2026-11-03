@@ -143,7 +143,7 @@ export function SettingsMenu({
 							<div
 								ref={scrollRef}
 								data-testid="settings-nav-scroll"
-								className="no-scrollbar flex max-h-[calc(100vh-5.5rem)] scroll-pb-14 flex-col gap-3.5 overflow-y-auto px-2 py-2.5 lg:h-full lg:flex-1"
+								className="no-scrollbar flex max-h-[calc(100dvh-5.5rem)] scroll-pb-14 flex-col gap-3.5 overflow-y-auto px-2 py-2.5 lg:h-full lg:max-h-dvh lg:flex-1"
 							>
 								{menuItems.map((item, index) => (
 									<div key={item.title || `group-${index}`}>

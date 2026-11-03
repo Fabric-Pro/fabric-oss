@@ -64,6 +64,7 @@ import { generateOrganizationSlug } from "./procedures/generate-organization-slu
 import { getFrameSharingPolicyProcedure } from "./procedures/get-frame-sharing-policy";
 import { getGuestOrganizationProcedure } from "./procedures/get-guest-organization";
 import {
+	bulkInviteOrgMembersProcedure,
 	cancelOrgInvitationProcedure,
 	listOrgInvitationsProcedure,
 	resendOrgInvitationProcedure,
@@ -184,6 +185,7 @@ export const organizationsRouter = {
 		list: listOrgInvitationsProcedure,
 		resend: resendOrgInvitationProcedure,
 		cancel: cancelOrgInvitationProcedure,
+		bulk: bulkInviteOrgMembersProcedure,
 	},
 
 	// @mentions autocomplete search

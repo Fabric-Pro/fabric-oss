@@ -1,0 +1,86 @@
+{
+	"changesets": [
+		{
+			"releases": [
+				{
+					"name": "@fabricorg/sdk",
+					"type": "patch"
+				}
+			],
+			"summary": "Improve the SDK.",
+			"id": "policy-fixture"
+		}
+	],
+	"releases": [
+		{
+			"name": "@fabricorg/sdk",
+			"type": "patch",
+			"oldVersion": "0.4.1",
+			"changesets": ["policy-fixture"],
+			"newVersion": "0.4.2"
+		},
+		{
+			"name": "@repo/api",
+			"type": "patch",
+			"oldVersion": "0.0.14",
+			"changesets": [],
+			"newVersion": "0.0.15"
+		},
+		{
+			"name": "@fabricorg/cli",
+			"type": "patch",
+			"oldVersion": "0.4.0",
+			"changesets": [],
+			"newVersion": "0.4.1"
+		},
+		{
+			"name": "@fabricorg/integrations-github",
+			"type": "patch",
+			"oldVersion": "0.1.9",
+			"changesets": [],
+			"newVersion": "0.1.10"
+		},
+		{
+			"name": "@fabricorg/integrations-gmail",
+			"type": "patch",
+			"oldVersion": "0.1.9",
+			"changesets": [],
+			"newVersion": "0.1.10"
+		},
+		{
+			"name": "@fabricorg/integrations-linear",
+			"type": "patch",
+			"oldVersion": "0.1.9",
+			"changesets": [],
+			"newVersion": "0.1.10"
+		},
+		{
+			"name": "@fabricorg/integrations-notion",
+			"type": "patch",
+			"oldVersion": "0.1.9",
+			"changesets": [],
+			"newVersion": "0.1.10"
+		},
+		{
+			"name": "@fabricorg/integrations-slack",
+			"type": "patch",
+			"oldVersion": "0.1.9",
+			"changesets": [],
+			"newVersion": "0.1.10"
+		},
+		{
+			"name": "@fabricorg/sdk-mcp",
+			"type": "patch",
+			"oldVersion": "0.1.9",
+			"changesets": [],
+			"newVersion": "0.1.10"
+		},
+		{
+			"name": "@repo/web",
+			"type": "patch",
+			"oldVersion": "0.0.15",
+			"changesets": [],
+			"newVersion": "0.0.16"
+		}
+	]
+}

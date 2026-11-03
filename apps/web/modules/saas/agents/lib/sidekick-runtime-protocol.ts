@@ -1,6 +1,11 @@
 import { contentToText, type Message, type ToolCall } from "@ag-ui/client";
+import {
+	type AnswerModelInfo,
+	answerModelInfoSchema,
+} from "@repo/ai/lib/answer-model-info";
 import type { UIMessage } from "ai";
 import { z } from "zod";
+import { runtimeCustomEventName } from "./runtime-custom-events";
 
 /**
  * The Agent Builder Sidekick over the agent runtime: what the
@@ -11,14 +16,53 @@ import { z } from "zod";
  *   results included; the last is the person's new message.
  * - `forwardedProps` names the agent being edited and carries the form as
  *   it is now (`sidekickRunPropsSchema`).
- * - The reply streams as AG-UI text and tool-call events; there is no side
- *   payload, so no CUSTOM event.
+ * - Text-producing steps carry a validated CUSTOM model event; a merged
+ *   reply retains its distinct served models in step order.
  * - An assistant message's id names the model step that wrote it
  *   (`stepMessageId`), which is how the reply's steps are rebuilt.
  * - Nothing is saved: the thread lives as long as the panel.
  */
 
 export const SIDEKICK_AGENT_ID = "agent-builder-sidekick";
+export const SIDEKICK_MODEL_EVENT = runtimeCustomEventName(
+	SIDEKICK_AGENT_ID,
+	"model",
+);
+
+export const sidekickModelEventSchema = z.object({
+	messageIds: z.array(z.string()),
+	model: answerModelInfoSchema,
+});
+
+const modelMetadataSchema = z.object({
+	model: answerModelInfoSchema.optional(),
+	models: z.array(answerModelInfoSchema).optional(),
+});
+
+export function sidekickAnswerModels(metadata: unknown): AnswerModelInfo[] {
+	const parsed = modelMetadataSchema.safeParse(metadata);
+	return parsed.success
+		? (parsed.data.models ?? (parsed.data.model ? [parsed.data.model] : []))
+		: [];
+}
+
+export function sidekickModelMetadata(
+	previous: unknown,
+	model: AnswerModelInfo,
+): { model: AnswerModelInfo; models?: AnswerModelInfo[] } {
+	const models = sidekickAnswerModels(previous);
+	if (
+		!models.some(
+			(entry) =>
+				entry.id === model.id &&
+				entry.provider === model.provider &&
+				entry.viaPlan === model.viaPlan,
+		)
+	) {
+		models.push(model);
+	}
+	return { model, ...(models.length > 1 ? { models } : {}) };
+}
 
 /**
  * The id of a run's `n`th assistant message, written in model step `step`.
@@ -110,6 +154,15 @@ export function sidekickUiMessages(messages: readonly Message[]): UIMessage[] {
 				}
 				if (message.content) {
 					reply.parts.push({ type: "text", text: message.content });
+				}
+				const model = answerModelInfoSchema.safeParse(
+					message.metadata?.model,
+				);
+				if (message.content && model.success) {
+					reply.metadata = sidekickModelMetadata(
+						reply.metadata,
+						model.data,
+					);
 				}
 				for (const call of message.toolCalls ?? []) {
 					reply.parts.push(toolPart(call, results.get(call.id)));

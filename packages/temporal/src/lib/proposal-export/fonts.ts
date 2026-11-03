@@ -11,8 +11,10 @@
  * Embedded as base64 `@font-face` rules, so the print page loads nothing and
  * the margin boxes find their font too (Inter is the body font, which makes
  * Chromium load it before it lays the boxes out). Only the weights the theme
- * sets: Poppins 700 for headings, Inter 400/600/700/800 for body, labels,
- * bold and the title, JetBrains Mono 400/500 for the mono role.
+ * sets: Poppins 700 for headings, Inter 400/500/600/700/800 for body,
+ * diagram text the engine sets at 500 as on the page (node labels, chart
+ * axis titles, class annotations), labels, bold and the title, JetBrains
+ * Mono 400/500 for the mono role.
  *
  * Until Chromium runs sandboxed or in a container without secrets, print
  * never embeds an uploaded brand font: the committed files are the only font
@@ -85,6 +87,12 @@ const PRINT_FACES: readonly PrintFace[] = [
 		family: PRINT_FONTS.body,
 		weight: 400,
 		file: "Inter-Regular.woff2",
+		kind: "woff2",
+	},
+	{
+		family: PRINT_FONTS.body,
+		weight: 500,
+		file: "Inter-Medium.woff2",
 		kind: "woff2",
 	},
 	{

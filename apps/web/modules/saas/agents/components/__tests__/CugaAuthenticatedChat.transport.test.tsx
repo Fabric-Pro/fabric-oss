@@ -52,6 +52,8 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useEffectiveOrganizationId: (id?: string | null) =>
+		id === undefined ? m.organizationOnScreen : id,
 	useOrganizationContext: () => ({ organizationId: m.organizationOnScreen }),
 }));
 

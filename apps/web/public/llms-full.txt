@@ -112,7 +112,7 @@ Users configure their preferred provider and model per task type (chat, code gen
 - Website: https://fabric.pro
 - Documentation: https://fabric.pro/en/docs
 - Blog: https://fabric.pro/en/blog
-- MCP Registry: https://fabric.pro/en/mcp-registry
-- Changelog: https://fabric.pro/en/changelog
+- MCP Registry: https://fabric.pro/mcp-registry
+- Changelog: https://fabric.pro/changelog
 - Contact TechFabric: https://techfabric.com/contact
 - Summary: https://fabric.pro/llms.txt

@@ -497,97 +497,110 @@ export function CodingRunTimeline({
 				</div>
 			)}
 
-			{typeof remoteTarget?.connectionId === "string" && (
-				<RemoteSessionConversation
-					active={isActive}
-					codingRunId={codingRunId}
-					organizationId={organizationId}
-				/>
-			)}
+			{(typeof remoteTarget?.connectionId === "string" ||
+				isNativeSession) &&
+				!privateSession && (
+					<RemoteSessionConversation
+						active={isActive}
+						codingRunId={codingRunId}
+						organizationId={organizationId}
+						fallbackWebUrl={!isDeepLink ? sessionUrl : null}
+					/>
+				)}
 
 			{(run.status === "AWAITING_REVIEW" ||
+				run.status === "RUNNING" ||
 				liveStatus?.liveStatus?.providerStatus === "paused" ||
 				(isNativeSession && run.status === "COMPLETED")) &&
 				run.provider === "BACKGROUND_AGENTS" &&
-				!privateSession && (
-					<div className="rounded-lg border border-highlight/30 bg-highlight/5 p-4">
-						<div className="flex items-start gap-3">
-							<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-highlight/10 text-highlight">
-								<MessagesSquareIcon className="size-4" />
-							</div>
-							<div className="min-w-0 flex-1 space-y-3">
-								<div>
-									<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-										{run.status === "COMPLETED"
-											? "Continue this session"
-											: "Agent awaiting input"}
-									</p>
-									<p className="mt-1 text-sm text-foreground/80">
-										Continue this session with another
-										instruction. Native permission, sign-in,
-										and tool-input requests must be resolved
-										in the authenticated Fabric Agents
-										client. Sending a reply here does not
-										approve them.
-									</p>
+				!privateSession &&
+				(() => {
+					const isNativeCheckpoint =
+						isNativeSession &&
+						(run.status === "AWAITING_REVIEW" ||
+							liveStatus?.liveStatus?.providerStatus ===
+								"paused");
+					return (
+						<div className="rounded-lg border border-highlight/30 bg-highlight/5 p-4">
+							<div className="flex items-start gap-3">
+								<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-highlight/10 text-highlight">
+									<MessagesSquareIcon className="size-4" />
 								</div>
-								{(!isNativeSession ||
-									run.status === "COMPLETED") && (
-									<div className="flex gap-2">
-										<Textarea
-											placeholder="Reply to the agent…"
-											value={followUpMessage}
-											onChange={(e) =>
-												setFollowUpMessage(
-													e.target.value,
-												)
-											}
-											rows={2}
-											className="resize-none text-sm"
-											onKeyDown={(e) => {
-												if (
-													e.key === "Enter" &&
-													(e.metaKey || e.ctrlKey) &&
-													followUpMessage.trim()
-												) {
-													e.preventDefault();
-													sendFollowUp.mutate(
-														followUpMessage.trim(),
-													);
-												}
-											}}
-										/>
-										<Button
-											type="button"
-											size="icon"
-											variant="outline"
-											className="mt-auto shrink-0"
-											disabled={
-												!followUpMessage.trim() ||
-												sendFollowUp.isPending
-											}
-											onClick={() =>
-												sendFollowUp.mutate(
-													followUpMessage.trim(),
-												)
-											}
-											aria-label="Send reply"
-										>
-											{sendFollowUp.isPending ? (
-												<Loader2Icon className="size-4 animate-spin" />
-											) : (
-												<MessageSquareIcon className="size-4" />
-											)}
-										</Button>
+								<div className="min-w-0 flex-1 space-y-3">
+									<div>
+										<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+											{isNativeCheckpoint
+												? "Agent awaiting input"
+												: run.status === "COMPLETED"
+													? "Continue this session"
+													: "Send instruction to active session"}
+										</p>
+										<p className="mt-1 text-sm text-foreground/80">
+											{isNativeCheckpoint
+												? "Native permission, sign-in, and tool-input requests must be resolved in the authenticated Fabric Agents client or embedded Server Web UI above. Sending a reply here does not approve them."
+												: "Send a follow-up prompt or instruction directly to this Fabric Agents session."}
+										</p>
 									</div>
-								)}
-								<p className="text-[11px] text-muted-foreground">
-									⌘↵ to send
-								</p>
+									{!isNativeCheckpoint && (
+										<>
+											<div className="flex gap-2">
+												<Textarea
+													placeholder="Reply to the agent…"
+													value={followUpMessage}
+													onChange={(e) =>
+														setFollowUpMessage(
+															e.target.value,
+														)
+													}
+													rows={2}
+													className="resize-none text-sm"
+													onKeyDown={(e) => {
+														if (
+															e.key === "Enter" &&
+															(e.metaKey ||
+																e.ctrlKey) &&
+															followUpMessage.trim()
+														) {
+															e.preventDefault();
+															sendFollowUp.mutate(
+																followUpMessage.trim(),
+															);
+														}
+													}}
+												/>
+												<Button
+													type="button"
+													size="icon"
+													variant="outline"
+													className="mt-auto shrink-0"
+													disabled={
+														!followUpMessage.trim() ||
+														sendFollowUp.isPending
+													}
+													onClick={() =>
+														sendFollowUp.mutate(
+															followUpMessage.trim(),
+														)
+													}
+													aria-label="Send reply"
+												>
+													{sendFollowUp.isPending ? (
+														<Loader2Icon className="size-4 animate-spin" />
+													) : (
+														<MessageSquareIcon className="size-4" />
+													)}
+												</Button>
+											</div>
+											<p className="text-[11px] text-muted-foreground">
+												⌘↵ to send
+											</p>
+										</>
+									)}
+								</div>
 							</div>
 						</div>
-					</div>
-				)}
+					);
+				})()}
 
 			<div className="grid gap-3 sm:grid-cols-2">
 				{sessionUrl && (

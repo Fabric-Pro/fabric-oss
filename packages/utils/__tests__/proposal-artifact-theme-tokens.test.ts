@@ -766,6 +766,65 @@ describe("resolveThemePaint: colours on the ink", () => {
 		expect(paint.onInkAccent).toBe("#f08f72");
 	});
 
+	it("lightens the figures' rule over a light hero until it reads at 3:1 under the veil, and lays no more veil for it", () => {
+		const withHero = (primaryColor: string) =>
+			withProposer({
+				primary: { value: primaryColor, source: "MANUAL" },
+				accents: { value: [], source: "MANUAL" },
+				hero: {
+					value: {
+						kind: "organization-hero",
+						key: "organization-brand/example-org/hero/hero-id.png",
+					},
+					source: "BRAND_KIT",
+				},
+			});
+		const plain = branded("#d6452b");
+
+		// A pale grey hero, measured (#e0e0e0 measures about 0.745), and one
+		// that was not, which counts as white.
+		for (const [heroLuminance, bright] of [
+			[0.745, "#e0e0e0"],
+			[undefined, "#ffffff"],
+		] as const) {
+			const paint = resolveThemePaint(withHero("#d6452b"), {
+				heroLuminance,
+			});
+			const veiled = over(paint.ink, bright, paint.heroVeil);
+
+			// The red holds 3:1 on the plain ink, not over the veiled hero.
+			expect(contrastRatio("#d6452b", paint.ink)).toBeGreaterThanOrEqual(
+				GRAPHIC_CONTRAST,
+			);
+			expect(contrastRatio("#d6452b", veiled)).toBeLessThan(
+				GRAPHIC_CONTRAST,
+			);
+			expect(
+				contrastRatio(paint.onInkRule, veiled),
+			).toBeGreaterThanOrEqual(GRAPHIC_CONTRAST);
+			// Lighter than what it is drawn over, so no tone of the hero
+			// between the two matches it.
+			expect(contrastRatio(paint.onInkRule, "#ffffff")).toBeLessThan(
+				contrastRatio(veiled, "#ffffff"),
+			);
+			// Still the brand's red, lightened, not the text's white.
+			expect(paint.onInkRule).not.toBe(paint.onInk);
+			const [red, green] = [1, 3].map((offset) =>
+				Number.parseInt(paint.onInkRule.slice(offset, offset + 2), 16),
+			);
+			expect(red).toBeGreaterThan(green as number);
+			// The veil is what the text needs, whatever the rule: the same
+			// white and grey text as the neutral theme's get the same veil.
+			expect(paint.heroVeil).toBe(
+				resolveThemePaint(buildProposalThemeTokens(NO_SOURCES), {
+					heroLuminance,
+				}).heroVeil,
+			);
+		}
+		// Without a hero the rule sits on the plain ink, and keeps the red.
+		expect(plain.onInkRule).toBe("#d6452b");
+	});
+
 	it("veils a hero just enough that white and grey text read at 4.5:1 over pure white", () => {
 		for (const paint of [
 			resolveThemePaint(buildProposalThemeTokens(NO_SOURCES)),

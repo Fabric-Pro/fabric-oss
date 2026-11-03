@@ -33,6 +33,11 @@ export interface CreateSessionParams {
 	model?: string;
 	/** Optional target machine / host identifier */
 	targetMachine?: string;
+	/** Optional quota-limit fallback preference stored with this run */
+	fallbackPolicy?:
+		| "subscription_harnesses"
+		| "org_paid_api"
+		| "pause_on_limit";
 }
 
 /**

@@ -33,6 +33,13 @@ let browserClient: QueryClient;
 vi.mock("@saas/auth/lib/server", () => ({
 	getActiveOrganization: m.organization,
 }));
+vi.mock("@saas/shared/lib/catalog-request-timing", () => ({
+	logChatRequestTiming: vi.fn(),
+	measureCatalogRequestPhase: (
+		_phase: string,
+		operation: () => Promise<unknown>,
+	) => operation(),
+}));
 vi.mock("next/headers", () => ({
 	headers: async () =>
 		new Headers({
@@ -68,6 +75,8 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useEffectiveOrganizationId: (id?: string | null) =>
+		id === undefined ? "org-route" : id,
 	useOrganizationContext: () => ({
 		organizationId: "org-route",
 		basePath: "/app/example-org",

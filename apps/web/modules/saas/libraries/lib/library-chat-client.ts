@@ -1,4 +1,8 @@
 import { EventType } from "@ag-ui/client";
+import {
+	type AnswerModelInfo,
+	answerModelInfoSchema,
+} from "@repo/ai/lib/answer-model-info";
 import { collectRequestReplyRun } from "@saas/agents/lib/request-reply-outcome";
 import {
 	LIBRARY_CHAT_AGENT_ID,
@@ -28,6 +32,7 @@ export interface LibraryChatQuestion {
 export interface LibraryChatAnswer {
 	response: string;
 	sources?: LibrarySource[];
+	model?: AnswerModelInfo;
 }
 
 const NO_ANSWER = "I couldn't find relevant information in the documents.";
@@ -57,7 +62,11 @@ export async function askLibraryRoute(
 	}
 
 	const data = await response.json();
-	return { response: data.response || NO_ANSWER, sources: data.sources };
+	return {
+		response: data.response || NO_ANSWER,
+		sources: data.sources,
+		model: answerModelInfoSchema.safeParse(data.model).data,
+	};
 }
 
 /**
@@ -74,7 +83,11 @@ export async function askLibraryRuntime(
 		onText: (text: string) => void;
 	},
 ): Promise<LibraryChatAnswer> {
-	const reply: { text: string; sources?: LibrarySource[] } = { text: "" };
+	const reply: {
+		text: string;
+		sources?: LibrarySource[];
+		model?: AnswerModelInfo;
+	} = { text: "" };
 	await collectRequestReplyRun({
 		agentId: LIBRARY_CHAT_AGENT_ID,
 		threadId: question.threadId,
@@ -95,11 +108,23 @@ export async function askLibraryRuntime(
 					reply.sources = parsed.data.sources;
 					question.onSources(parsed.data.sources);
 				}
+			} else if (
+				event.type === EventType.CUSTOM &&
+				event.name === LIBRARY_CHAT_EVENT.model
+			) {
+				const parsed = answerModelInfoSchema.safeParse(event.value);
+				if (parsed.success) {
+					reply.model = parsed.data;
+				}
 			} else if (event.type === EventType.TEXT_MESSAGE_CONTENT) {
 				reply.text += event.delta;
 				question.onText(reply.text);
 			}
 		},
 	});
-	return { response: reply.text || NO_ANSWER, sources: reply.sources };
+	return {
+		response: reply.text || NO_ANSWER,
+		sources: reply.sources,
+		model: reply.model,
+	};
 }

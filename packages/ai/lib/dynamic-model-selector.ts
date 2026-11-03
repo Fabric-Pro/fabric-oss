@@ -356,6 +356,24 @@ export async function selectModelDynamic(
 			);
 		}
 
+		if (preferredProvider === "CUSTOM") {
+			const openAiMapping = defaultModel.providerMappings?.find(
+				(m) => m.provider === "OPENAI_DIRECT",
+			);
+			return {
+				modelId: defaultModel.id,
+				canonicalName: defaultModel.canonicalName,
+				displayName: defaultModel.displayName,
+				provider: "CUSTOM" as DbAIProvider,
+				providerModelId:
+					openAiMapping?.providerModelId ??
+					defaultModel.canonicalName,
+				selectionSource: "system_default",
+				maxTokens: defaultModel.contextWindow ?? undefined,
+				maxOutputTokens: defaultModel.maxOutputTokens ?? undefined,
+			};
+		}
+
 		const availableMapping = defaultModel.providerMappings?.[0];
 		if (availableMapping) {
 			console.log(
@@ -532,6 +550,7 @@ function mapProviderToPrefix(provider: DbAIProvider): string {
 		case "GROQ":
 			return "groq";
 		case "OPENAI_DIRECT":
+		case "CUSTOM":
 			return "openai";
 		case "ANTHROPIC_DIRECT":
 			return "anthropic";

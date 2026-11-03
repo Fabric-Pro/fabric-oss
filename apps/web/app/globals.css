@@ -968,19 +968,31 @@ pre.shiki {
 	@apply mb-4 rounded-lg p-6;
 }
 
+/*
+ * The sidebar is `absolute` inside Fumadocs' sticky sidebar container, which
+ * already sits below the 4.5rem marketing navbar. A `top-[4.5rem]` here was
+ * written when the sidebar was `fixed` to the viewport; on Fumadocs 16 it
+ * doubles the offset and leaves an empty band under the logo. `top-0` keeps
+ * it flush with the navbar; the height still fills the viewport below it.
+ */
 #nd-sidebar {
-	@apply bg-card! top-[4.5rem] md:h-[calc(100dvh-4.5rem)]!;
+	@apply bg-card!;
 
 	button[data-search-full] {
 		@apply bg-transparent;
 	}
 }
 
+/* Expanded only: the collapsed hover-peek card keeps Fumadocs' own inset and rounded edges. */
+#nd-sidebar:not([data-collapsed="true"]) {
+	@apply top-0! md:h-[calc(100dvh-4.5rem)]!;
+}
+
 /*
- * Docs pages render the Fumadocs sidebar as `position: fixed` (z-index 20),
- * pinned full-height to the viewport. The shared marketing <footer> is a
+ * Docs pages render the Fumadocs sidebar pinned full-height beside the page
+ * (in a sticky container, z-index 20). The shared marketing <footer> is a
  * full-width, statically-positioned sibling rendered after <main>, so at the
- * bottom of the scroll the fixed sidebar paints over the footer's left column
+ * bottom of the scroll the pinned sidebar can paint over the footer's left column
  * (logo + copyright). Lift the footer above the sidebar with an opaque
  * background so it reads as a full-width band below all content. Scoped via
  * `:has(#nd-sidebar)` so only docs pages (which have the sidebar) are affected.

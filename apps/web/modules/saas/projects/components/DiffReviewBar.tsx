@@ -31,13 +31,19 @@ interface DiffRange {
  * ordinary italic and strikethrough formatting is never mistaken
  * for a pending AI change. Added and removed tables carry no marks,
  * so they are found by the table node's `diff` attribute.
+ *
+ * The marks sit on every inline node of a change, not only its text: an
+ * image (inline in this editor, even on a line of its own) and a hard break
+ * carry them too. Counting only text left an image change off the bar, and
+ * split a link holding a hard break into several changes whose marked breaks
+ * no accept or reject ever reached (Fizzy #2946).
  */
 function findDiffRanges(editor: Editor): DiffRange[] {
 	const ranges: DiffRange[] = [];
 	const { doc } = editor.state;
 
 	doc.descendants((node, pos) => {
-		if (!node.isText) {
+		if (!node.isText && !node.isInline) {
 			const diff = node.type.name === "table" ? node.attrs.diff : null;
 			if (diff !== "added" && diff !== "deleted") {
 				return;

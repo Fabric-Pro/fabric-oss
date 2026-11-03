@@ -44,6 +44,10 @@ const { confirmMock, captured } = vi.hoisted(() => {
 	return { confirmMock, captured };
 });
 
+vi.mock("@saas/projects/components/TranscriptFileUpload", () => ({
+	TranscriptFileUpload: () => null,
+}));
+
 vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
 	useConfirmationAlert: () => ({ confirm: confirmMock }),
 }));

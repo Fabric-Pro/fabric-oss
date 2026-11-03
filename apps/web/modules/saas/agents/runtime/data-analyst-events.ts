@@ -1,6 +1,7 @@
 import { type AGUIEvent, type BaseEvent, EventType } from "@ag-ui/client";
 import { EventSchemas } from "@ag-ui/core/schemas";
 import { createChartArtifact } from "@repo/agent-tools";
+import { answerModelInfoSchema } from "@repo/ai/lib/answer-model-info";
 import { z } from "zod";
 import {
 	DATA_ANALYST_EVENT,
@@ -24,6 +25,9 @@ const snapshotToolMessageSchema = z.union([
 	toolResultSchema.extend({ type: z.literal("tool") }),
 ]);
 const snapshotSchema = z.object({ messages: z.array(z.unknown()).optional() });
+const modelSnapshotSchema = z.object({
+	answerModel: answerModelInfoSchema.nullable(),
+});
 const successfulToolSchema = z.object({ success: z.literal(true) });
 
 class DataAnalystAgentError extends Error {
@@ -135,7 +139,10 @@ export class DataAnalystEventTranslator {
 				return [{ type: event.type, toolCallId: event.toolCallId }];
 			}
 			case EventType.STATE_SNAPSHOT:
-				return this.results(event.snapshot);
+				return [
+					...this.results(event.snapshot),
+					...this.model(event.snapshot),
+				];
 			case EventType.TOOL_CALL_RESULT:
 				return this.results({
 					messages: [
@@ -187,6 +194,19 @@ export class DataAnalystEventTranslator {
 		}
 		this.openMessages.clear();
 		return events;
+	}
+
+	private model(snapshot: unknown): AGUIEvent[] {
+		const parsed = modelSnapshotSchema.safeParse(snapshot);
+		return parsed.success
+			? [
+					{
+						type: EventType.CUSTOM,
+						name: DATA_ANALYST_EVENT.model,
+						value: parsed.data.answerModel,
+					},
+				]
+			: [];
 	}
 
 	private results(snapshot: unknown): AGUIEvent[] {
