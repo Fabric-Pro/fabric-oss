@@ -1,6 +1,10 @@
 import { getOrchestratorPreferences } from "@repo/database";
 import FabricAIClient from "@saas/agents/components/fabric-ai/FabricAIClient";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
+import {
+	logChatRequestTiming,
+	measureCatalogRequestPhase,
+} from "@saas/shared/lib/catalog-request-timing";
 import { redirect } from "next/navigation";
 
 /**
@@ -20,8 +24,12 @@ export default async function OrganizationFabricAIPage({
 }: {
 	params: Promise<{ organizationSlug: string }>;
 }) {
+	logChatRequestTiming("main");
 	const { organizationSlug } = await params;
-	const organization = await getActiveOrganization(organizationSlug);
+	const organization = await measureCatalogRequestPhase(
+		"chat_organization",
+		() => getActiveOrganization(organizationSlug),
+	);
 
 	if (!organization) {
 		redirect("/app");
@@ -30,9 +38,8 @@ export default async function OrganizationFabricAIPage({
 	const session = await getSession();
 	let initialPreferences = null;
 	if (session?.user?.id) {
-		const prefs = await getOrchestratorPreferences(
-			session.user.id,
-			organization.id,
+		const prefs = await measureCatalogRequestPhase("chat_preferences", () =>
+			getOrchestratorPreferences(session.user.id, organization.id),
 		);
 		initialPreferences = prefs
 			? {

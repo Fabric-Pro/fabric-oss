@@ -1,6 +1,8 @@
 "use client";
 
 import { classifyLimitError } from "@repo/ai/limits";
+import { AnsweredByModel } from "@saas/agents/components/FabricChat/shared/AnsweredByModel";
+import { sidekickAnswerModels } from "@saas/agents/lib/sidekick-runtime-protocol";
 import { useLimitToast } from "@saas/ai/hooks/useLimitToast";
 import {
 	type AiUsageLimitExceededPayload,
@@ -506,6 +508,12 @@ const MessageBubble = memo(function MessageBubble({
 				>
 					{sidekickDisplayText(textContent)}
 				</Response>
+				{sidekickAnswerModels(message.metadata).map((model) => (
+					<AnsweredByModel
+						key={`${model.provider}:${model.id}:${model.viaPlan}`}
+						model={model}
+					/>
+				))}
 			</div>
 		</div>
 	);

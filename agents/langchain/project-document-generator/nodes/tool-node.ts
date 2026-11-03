@@ -24,6 +24,7 @@ import {
 	tool,
 } from "@langchain/core/tools";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { errorLogFields } from "@repo/agent-core";
 import { SYNTHETIC_TOOL_IMAGE_MESSAGE_FLAG } from "@repo/agent-core/recursion";
 import { logger } from "@repo/logs";
 import { z } from "zod";
@@ -123,6 +124,11 @@ function getAiToken(runtime: ToolRuntime<AgentState>): string | undefined {
 	return runtime.configurable?.ai_token as string | undefined;
 }
 
+/** Whether the route classified this tool's run as a Proposal run. */
+function isProposalToolRun(runtime: ToolRuntime<AgentState>): boolean {
+	return isProposalRun(runtime.configurable as Record<string, unknown>);
+}
+
 /**
  * Text the model wrote into a tool's arguments (a query, a path), for a log
  * line. A classified Proposal run logs its length only: the model may have
@@ -132,10 +138,24 @@ function loggedArgument(
 	runtime: ToolRuntime<AgentState>,
 	value: string | null | undefined,
 ): string | null {
-	if (!isProposalRun(runtime.configurable as Record<string, unknown>)) {
+	if (!isProposalToolRun(runtime)) {
 		return value ?? null;
 	}
 	return value ? `[${value.length} chars]` : null;
+}
+
+/**
+ * What a tool's failure log carries. A classified Proposal run logs the
+ * error's class, code and HTTP status only: an API's or a provider's error
+ * text can repeat the call's arguments, where the model may have repeated its
+ * server-only prompt (Fizzy #2946). Every other run logs `ordinary`.
+ */
+function loggedFailure(
+	runtime: ToolRuntime<AgentState>,
+	error: unknown,
+	ordinary: unknown,
+): unknown {
+	return isProposalToolRun(runtime) ? errorLogFields(error) : ordinary;
 }
 
 /**
@@ -408,9 +428,10 @@ const searchTeamsMessagesTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] Teams search failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] Teams search failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Teams search encountered an error: ${errorMessage}. Continuing without Teams context.`;
 		}
 	},
@@ -531,9 +552,10 @@ const getChatMessagesTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] get_chat_messages failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] get_chat_messages failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Failed to get chat messages: ${errorMessage}`;
 		}
 	},
@@ -624,9 +646,10 @@ const listLinkedChatsTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] list_linked_chats failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] list_linked_chats failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Failed to list linked chats: ${errorMessage}`;
 		}
 	},
@@ -720,9 +743,10 @@ const getTeamsChannelMessagesTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] get_teams_channel_messages failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] get_teams_channel_messages failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Failed to get channel messages: ${errorMessage}`;
 		}
 	},
@@ -830,9 +854,10 @@ const getFullMessageTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] get_full_message failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] get_full_message failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Failed to get full message: ${errorMessage}`;
 		}
 	},
@@ -939,9 +964,10 @@ const listMessageRepliesTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] list_message_replies failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] list_message_replies failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Failed to get message replies: ${errorMessage}`;
 		}
 	},
@@ -1062,9 +1088,10 @@ const getMessageHostedContentTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] get_message_hosted_content failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] get_message_hosted_content failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Failed to get message images: ${errorMessage}`;
 		}
 	},
@@ -1195,9 +1222,10 @@ const listLinkedChannelsTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] list_linked_channels failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] list_linked_channels failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Failed to list linked channels: ${errorMessage}`;
 		}
 	},
@@ -1313,9 +1341,10 @@ const searchSlackMessagesTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] Slack search failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] Slack search failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Slack search encountered an error: ${errorMessage}. Continuing without Slack context.`;
 		}
 	},
@@ -1423,9 +1452,10 @@ const getChannelMessagesTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] get_channel_messages failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] get_channel_messages failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Failed to get channel messages: ${errorMessage}`;
 		}
 	},
@@ -1526,9 +1556,10 @@ const getSlackThreadRepliesTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] get_thread_replies failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] get_thread_replies failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Failed to get thread replies: ${errorMessage}`;
 		}
 	},
@@ -1630,9 +1661,10 @@ const getSlackSharedFilesTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] get_shared_files failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] get_shared_files failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `Failed to get shared files: ${errorMessage}`;
 		}
 	},
@@ -1756,7 +1788,11 @@ const searchProjectKnowledgeTool = tool(
 		} catch (error) {
 			logger.error(
 				"[ToolNode] search_project_knowledge failed:",
-				error instanceof Error ? error.message : error,
+				loggedFailure(
+					runtime,
+					error,
+					error instanceof Error ? error.message : error,
+				),
 			);
 			return "Project knowledge search failed. Continuing without this context.";
 		}
@@ -1824,7 +1860,11 @@ const readProjectSourceTool = tool(
 		} catch (error) {
 			logger.warn(
 				"[ToolNode] project-source request failed:",
-				error instanceof Error ? error.message : error,
+				loggedFailure(
+					runtime,
+					error,
+					error instanceof Error ? error.message : error,
+				),
 			);
 			return "Project source read failed. Try searching project knowledge again.";
 		}
@@ -1943,7 +1983,11 @@ const searchRepositoryCodeTool = tool(
 		} catch (error) {
 			logger.error(
 				"[ToolNode] search_repository_code failed:",
-				error instanceof Error ? error.message : error,
+				loggedFailure(
+					runtime,
+					error,
+					error instanceof Error ? error.message : error,
+				),
 			);
 			return "Code search failed. Continuing without code context.";
 		}
@@ -2062,7 +2106,11 @@ const getRepositoryFileTool = tool(
 		} catch (error) {
 			logger.error(
 				"[ToolNode] get_repository_file failed:",
-				error instanceof Error ? error.message : error,
+				loggedFailure(
+					runtime,
+					error,
+					error instanceof Error ? error.message : error,
+				),
 			);
 			return "File retrieval failed.";
 		}
@@ -2098,7 +2146,7 @@ const listRepositoryStructureTool = tool(
 
 		logger.info("[ToolNode] Executing list_repository_structure", {
 			projectId,
-			directory,
+			directory: loggedArgument(runtime, directory),
 		});
 
 		try {
@@ -2180,7 +2228,11 @@ const listRepositoryStructureTool = tool(
 		} catch (error) {
 			logger.error(
 				"[ToolNode] list_repository_structure failed:",
-				error instanceof Error ? error.message : error,
+				loggedFailure(
+					runtime,
+					error,
+					error instanceof Error ? error.message : error,
+				),
 			);
 			return "Structure listing failed.";
 		}
@@ -2260,7 +2312,9 @@ const writeDocumentAssetTool = tool(
 				const errText = await response.text().catch(() => "");
 				logger.warn("[ToolNode] write_document_asset API error", {
 					status: response.status,
-					error: errText.slice(0, 200),
+					...(isProposalToolRun(runtime)
+						? {}
+						: { error: errText.slice(0, 200) }),
 				});
 				return `write_document_asset failed (${response.status}): ${errText.slice(0, 200) || "unknown error"}`;
 			}
@@ -2281,9 +2335,10 @@ const writeDocumentAssetTool = tool(
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
-			logger.error("[ToolNode] write_document_asset failed", {
-				error: errorMessage,
-			});
+			logger.error(
+				"[ToolNode] write_document_asset failed",
+				loggedFailure(runtime, error, { error: errorMessage }),
+			);
 			return `write_document_asset failed: ${errorMessage}`;
 		}
 	},

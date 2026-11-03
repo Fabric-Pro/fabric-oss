@@ -13,7 +13,8 @@ import type { z } from "zod";
  * - The run's messages are the conversation so far; the last is the question.
  * - `forwardedProps` carries the rest of the `atlas.chat` input
  *   (`atlasChatPropsSchema`); the organization is the runtime request's.
- * - The answer arrives as one assistant text message, then at most one CUSTOM
+ * - The answer arrives as one assistant text message, followed by its explicit
+ *   served-model CUSTOM event when known, then at most one CUSTOM
  *   note (`ATLAS_CHAT_EVENT`) with value `{}`: the turn could not be saved, or
  *   the reply was cut short.
  */
@@ -34,12 +35,13 @@ export const atlasChatPropsSchema = atlasChatInputSchema.pick({
 export type AtlasChatProps = z.infer<typeof atlasChatPropsSchema>;
 
 export const ATLAS_CHAT_EVENT = {
+	model: runtimeCustomEventName(ATLAS_CHAT_AGENT_ID, "model"),
 	"persist-failed": runtimeCustomEventName(
 		ATLAS_CHAT_AGENT_ID,
 		"persist-failed",
 	),
 	interrupted: runtimeCustomEventName(ATLAS_CHAT_AGENT_ID, "interrupted"),
-} as const satisfies Record<AtlasChatTurnNote, string>;
+} as const satisfies Record<AtlasChatTurnNote | "model", string>;
 
 /** The note a CUSTOM event carries, or null for any other event name. */
 export function atlasChatNoteOfEvent(name: string): AtlasChatTurnNote | null {

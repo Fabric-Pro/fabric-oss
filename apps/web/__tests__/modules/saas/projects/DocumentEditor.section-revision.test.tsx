@@ -780,6 +780,79 @@ describe("a section revision in the editor (Fizzy #2946)", () => {
 		expect(settled).toEqual([{ id: "revision-1", result: "accepted" }]);
 	});
 
+	// A changed link used to be diffed word by word: an unlink marked only
+	// `[` and `](url)`, so the link survived the accept, and a changed URL
+	// got its markers inside the `(…)`, percent-encoded into the saved href.
+	// Either way the saved section's fingerprint, which counts link
+	// destinations, was not the candidate's, and the accept-time check
+	// refused every attempt. This fake server runs no such check, so the
+	// fingerprint comparison stands in for it.
+	const RATE_CARD_LINKED = STORED.replace(
+		"A fixed fee for the first phase.",
+		"A fixed fee for the first phase, set by [the rate card](https://example.com/rates).",
+	);
+
+	/** Reviews and accepts `body` as the candidate for the Pricing section. */
+	async function acceptPricingCandidate(body: string) {
+		const view = await mount(RATE_CARD_LINKED);
+		const key = keyOf(RATE_CARD_LINKED, "Pricing");
+		reviseSection.mockResolvedValue({
+			...candidate(),
+			sectionKey: key,
+			body,
+		});
+		view.rerender(tree(REQUEST));
+		await waitFor(() => {
+			expect(reviewBar.props).not.toBeNull();
+		});
+		await settle(50);
+
+		await act(async () => {
+			reviewBar.props?.onAcceptAll();
+		});
+		await settle(50);
+
+		const reviewed = spliceSectionBody(RATE_CARD_LINKED, key, body);
+		expect(reviewed).not.toBeNull();
+		return { key, reviewed: reviewed ?? "" };
+	}
+
+	it("Accept of a candidate that unlinks a phrase but keeps its words saves the candidate's section", async () => {
+		const { key, reviewed } = await acceptPricingCandidate(
+			"A fixed fee for the first phase, set by the rate card.",
+		);
+
+		expect(saveCalls).toHaveLength(1);
+		const saved = saveCalls[0].content as string;
+		expect(saved).toContain("set by the rate card.");
+		expect(saved).not.toContain("https://example.com/rates");
+		expect(sectionFingerprint(saved, key)).toBeDefined();
+		expect(sectionFingerprint(saved, key)).toBe(
+			sectionFingerprint(reviewed, key),
+		);
+		expect(settled).toEqual([{ id: "revision-1", result: "accepted" }]);
+	});
+
+	it("Accept of a candidate that changes only a link's URL saves the new URL whole, as the candidate's section", async () => {
+		const { key, reviewed } = await acceptPricingCandidate(
+			"A fixed fee for the first phase, set by [the rate card](https://example.com/rates-2026).",
+		);
+
+		expect(saveCalls).toHaveLength(1);
+		const saved = saveCalls[0].content as string;
+		expect(saved).toContain(
+			"set by [the rate card](https://example.com/rates-2026).",
+		);
+		expect(saved).not.toContain("https://example.com/rates)");
+		expect(saved).not.toMatch(/%E2%80%8B/i);
+		expect(saved).not.toContain("DEL_START");
+		expect(sectionFingerprint(saved, key)).toBeDefined();
+		expect(sectionFingerprint(saved, key)).toBe(
+			sectionFingerprint(reviewed, key),
+		);
+		expect(settled).toEqual([{ id: "revision-1", result: "accepted" }]);
+	});
+
 	it("answers a revision the server refuses to draft with its status, leaving the editor as it was", async () => {
 		const view = await mount();
 		const before = bodyOf(mockEditor);

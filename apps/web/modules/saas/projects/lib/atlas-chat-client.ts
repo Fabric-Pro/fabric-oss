@@ -1,8 +1,13 @@
 import { EventType } from "@ag-ui/client";
+import {
+	type AnswerModelInfo,
+	answerModelInfoSchema,
+} from "@repo/ai/lib/answer-model-info";
 import type { AtlasChatTurnNote } from "@repo/api/modules/atlas/chat-turn";
 import { collectRequestReplyRun } from "@saas/agents/lib/request-reply-outcome";
 import {
 	ATLAS_CHAT_AGENT_ID,
+	ATLAS_CHAT_EVENT,
 	type AtlasChatProps,
 	atlasChatNoteOfEvent,
 } from "./atlas-chat-runtime-protocol";
@@ -41,6 +46,7 @@ function chatStreamSentinelOf(value: unknown): ChatStreamSentinel | null {
 
 /** Where a turn's stream goes. */
 export interface AtlasChatSink {
+	onModel?: (model: AnswerModelInfo) => void;
 	onDelta: (delta: string) => void;
 	onSentinel: (sentinel: ChatStreamSentinel) => void;
 }
@@ -60,6 +66,18 @@ export async function consumeAtlasRouteStream(
 			continue;
 		}
 		const sentinel = chatStreamSentinelOf(event);
+		if (
+			typeof event === "object" &&
+			event !== null &&
+			"type" in event &&
+			event.type === "atlas-chat-model" &&
+			"model" in event
+		) {
+			const parsed = answerModelInfoSchema.safeParse(event.model);
+			if (parsed.success) {
+				sink.onModel?.(parsed.data);
+			}
+		}
 		if (sentinel) {
 			sink.onSentinel(sentinel);
 		}
@@ -97,6 +115,12 @@ export async function streamAtlasRuntime(
 			if (event.type === EventType.TEXT_MESSAGE_CONTENT) {
 				sink.onDelta(event.delta);
 			} else if (event.type === EventType.CUSTOM) {
+				if (event.name === ATLAS_CHAT_EVENT.model) {
+					const parsed = answerModelInfoSchema.safeParse(event.value);
+					if (parsed.success) {
+						sink.onModel?.(parsed.data);
+					}
+				}
 				const note = atlasChatNoteOfEvent(event.name);
 				if (note) {
 					sink.onSentinel(`atlas-chat-${note}`);

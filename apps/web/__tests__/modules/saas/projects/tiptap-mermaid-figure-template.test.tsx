@@ -4,7 +4,9 @@
  * paint, through the diagram sanitizer, instead of a Mermaid layout. Every
  * other document, a page without the theme's paint and a source the
  * template refuses draw the fence as Mermaid, as before; a chart without
- * its leading `%%` lines, as print draws it. A drawn figure
+ * its leading `%%` lines, as print draws it. A plain chain of seven steps
+ * or more with no figure line draws as a numbered process there too, as
+ * print draws it. A drawn figure
  * carries the hooks the theme numbers it by, and a template shrinks to
  * 550 px before it scrolls.
  *
@@ -228,6 +230,72 @@ describe("figure templates", () => {
 
 		expectMermaidDrawing(svg);
 		expect(svg?.textContent).toContain("Launch");
+	});
+});
+
+describe("a plain chain without a figure line", () => {
+	function chainBody(steps: number): string[] {
+		return [
+			"%% caption: Every step a request takes",
+			"flowchart TD",
+			...Array.from(
+				{ length: steps - 1 },
+				(_, index) =>
+					`  s${index}["Step ${index + 1}"] --> s${index + 1}["Step ${index + 2}"]`,
+			),
+		];
+	}
+
+	it("draws seven steps or more as a numbered process on a Proposal's page, numbered and captioned as print numbers them", async () => {
+		const { container } = render(
+			<DiagramHarness
+				markdown={doc(chainBody(12))}
+				visual={{ paint: NAVY }}
+			/>,
+		);
+		const [svg] = await drawnSvgs(container);
+
+		expect(svg?.getAttribute("role")).toBe("img");
+		expect(svg?.getAttribute("width")).toBe("662");
+		expect(svg?.querySelector("title")?.textContent).toBe(
+			"Every step a request takes",
+		);
+		expect(svg?.querySelectorAll("rect.step")).toHaveLength(12);
+		expect(svg?.querySelector("desc")?.textContent).toContain(
+			"12. Step 12.",
+		);
+		expect(renderer.native).toEqual([]);
+		expect(container.querySelectorAll(".pa-figure-counted")).toHaveLength(
+			1,
+		);
+		expect(container.textContent).toContain("Every step a request takes");
+		expect(
+			container.querySelector("[data-diagram-not-printable]"),
+		).toBeNull();
+	});
+
+	it("leaves six steps to the Mermaid layout", async () => {
+		const { container } = render(
+			<DiagramHarness
+				markdown={doc(chainBody(6))}
+				visual={{ paint: NAVY }}
+			/>,
+		);
+		const [svg] = await drawnSvgs(container);
+
+		expectMermaidDrawing(svg);
+		expect(container.querySelectorAll(".pa-figure-counted")).toHaveLength(
+			1,
+		);
+	});
+
+	it("draws the chain as Mermaid on any other document", async () => {
+		const { container } = render(
+			<DiagramHarness markdown={doc(chainBody(12))} themeRoot={false} />,
+		);
+		const [svg] = await drawnSvgs(container);
+
+		expectMermaidDrawing(svg);
 	});
 });
 

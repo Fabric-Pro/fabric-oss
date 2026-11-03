@@ -1,6 +1,17 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { ORPCError } from "@orpc/server";
-import { db, getBuiltInToolConfig } from "@repo/database";
+import {
+	db,
+	getBuiltInToolConfig,
+	resolveWorkflowIntegrationForProvider,
+} from "@repo/database";
+import {
+	executeMicrosoftTeamsTool,
+	extractChannelThreadId,
+	isShortTeamsMeetingUrl,
+	teamsMeetingIdentity,
+} from "@repo/integrations/microsoft";
+import { z } from "zod";
 import {
 	type AuditRequestContext,
 	recordAuditFromRequest,
@@ -73,13 +84,13 @@ const LIVE_SESSION_STATUSES = [
 ] as const;
 
 /**
- * The project's linked series whose join link this meeting link is, compared
- * the way the auto-join planner matches calendar occurrences (case and
- * surrounding spaces ignored).
+ * Match the original linked invitation first. A numeric short link can also
+ * match the exact canonical identity Microsoft resolved, within this project.
  */
 async function findLinkedSeriesId(
 	projectId: string,
 	meetingUrl: string,
+	canonicalMeetingUrl: string | null,
 ): Promise<string | null> {
 	const series = await db.projectLinkedMeeting.findFirst({
 		where: {
@@ -89,13 +100,77 @@ async function findLinkedSeriesId(
 		},
 		select: { id: true },
 	});
-	return series?.id ?? null;
+	if (series) {
+		return series.id;
+	}
+	const identity = canonicalMeetingUrl
+		? teamsMeetingIdentity(canonicalMeetingUrl)
+		: null;
+	if (!identity) {
+		return null;
+	}
+	const candidates = await db.projectLinkedMeeting.findMany({
+		where: { projectId, deactivatedAt: null },
+		select: { id: true, joinUrl: true },
+	});
+	const shortPath = isShortTeamsMeetingUrl(meetingUrl)
+		? new URL(meetingUrl).pathname.replace(/\/$/, "")
+		: null;
+	const matches = candidates.filter(
+		(candidate) =>
+			teamsMeetingIdentity(candidate.joinUrl) === identity ||
+			(shortPath &&
+				isShortTeamsMeetingUrl(candidate.joinUrl) &&
+				new URL(candidate.joinUrl).pathname.replace(/\/$/, "") ===
+					shortPath),
+	);
+	if (matches.length > 1) {
+		throw new ORPCError("CONFLICT", {
+			message:
+				"Several linked meeting records identify this Teams meeting. Use the full linked meeting invitation.",
+		});
+	}
+	return matches[0]?.id ?? null;
+}
+
+async function resolveShortInvitation(
+	input: StartParlumeMeetingSessionInput,
+): Promise<{ joinUrl: string; integrationId: string } | null> {
+	if (!isShortTeamsMeetingUrl(input.meetingUrl)) {
+		return null;
+	}
+	try {
+		const integration = await resolveWorkflowIntegrationForProvider(
+			"MICROSOFT_GRAPH",
+			input.userId,
+			input.organizationId,
+		);
+		if (!integration) {
+			return null;
+		}
+		const result = z
+			.object({ joinUrl: z.string() })
+			.parse(
+				await executeMicrosoftTeamsTool(
+					"parlume_channel",
+					{ kind: "canonical", meetingUrl: input.meetingUrl },
+					input.userId,
+					input.organizationId,
+					integration.id,
+				),
+			);
+		return { joinUrl: result.joinUrl, integrationId: integration.id };
+	} catch {
+		// Unresolved identity is explicit in channel status; ordinary meeting
+		// audio and provider chat still work without Graph consent.
+		return null;
+	}
 }
 
 /**
  * A session of this linked series whose bot is in the meeting or on its way,
- * whoever started it. Sessions do not store their meeting link, so a meeting
- * that is not a linked series cannot be checked this way.
+ * whoever started it. An unresolved short invitation cannot be associated
+ * with a linked series safely and is not checked through this identity.
  */
 export async function findLiveParlumeSession(linkedMeetingId: string) {
 	return db.parlumeMeetingSession.findFirst({
@@ -125,6 +200,8 @@ export const sessionSelect = {
 	suggestionsEnabled: true,
 	endReason: true,
 	lastError: true,
+	channelChatStatus: true,
+	channelChatError: true,
 	joinedAt: true,
 	hardStopAt: true,
 	leaveRequestedAt: true,
@@ -269,9 +346,14 @@ export async function startParlumeMeetingSession(
 			message: "Enter a Microsoft Teams meeting link.",
 		});
 	}
+	const canonicalInvitation = await resolveShortInvitation(input);
 	const linkedMeetingId =
 		input.linkedMeetingId ??
-		(await findLinkedSeriesId(input.projectId, input.meetingUrl));
+		(await findLinkedSeriesId(
+			input.projectId,
+			input.meetingUrl,
+			canonicalInvitation?.joinUrl ?? null,
+		));
 	if (linkedMeetingId && (await findLiveParlumeSession(linkedMeetingId))) {
 		throw new ORPCError("CONFLICT", {
 			message: PARLUME_ALREADY_IN_MEETING,
@@ -318,6 +400,11 @@ export async function startParlumeMeetingSession(
 		});
 	}
 	const streamToken = randomBytes(32).toString("base64url");
+	const chatMeetingUrl = new URL(
+		canonicalInvitation?.joinUrl ?? input.meetingUrl,
+	);
+	chatMeetingUrl.search = "";
+	chatMeetingUrl.hash = "";
 	const hardStopAt = new Date(Date.now() + PARLUME_MAX_DURATION_MS);
 	const session = await db.parlumeMeetingSession.create({
 		data: {
@@ -336,6 +423,17 @@ export async function startParlumeMeetingSession(
 			trigger: input.trigger,
 			linkedMeetingId,
 			occurrenceStart: input.occurrenceStart ?? null,
+			meetingUrl: chatMeetingUrl.href,
+			channelIntegrationId:
+				canonicalInvitation &&
+				extractChannelThreadId(canonicalInvitation.joinUrl)
+					? canonicalInvitation.integrationId
+					: null,
+			channelChatStatus:
+				extractChannelThreadId(chatMeetingUrl.href) ||
+				isShortTeamsMeetingUrl(chatMeetingUrl.href)
+					? "PENDING"
+					: "ATTENDEE",
 		},
 		select: { id: true },
 	});

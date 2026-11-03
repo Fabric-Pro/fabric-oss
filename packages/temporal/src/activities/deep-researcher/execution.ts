@@ -7,6 +7,10 @@
 
 import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { generateText, isStepCount } from "@repo/ai";
+import {
+	type AnswerModelInfo,
+	answerModelInfo,
+} from "@repo/ai/lib/answer-model-info";
 import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { db } from "@repo/database";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
@@ -79,6 +83,8 @@ export interface ExecuteDirectResearchInput {
 }
 
 export interface ExecuteDirectResearchOutput {
+	model?: AnswerModelInfo;
+	summaryModel?: AnswerModelInfo;
 	result: string;
 	summary: string;
 	sources: string[];
@@ -435,6 +441,8 @@ export async function executeDirectResearch(
 
 	const {
 		model,
+		answerSnapshot,
+		canonicalName,
 		provider: modelProvider,
 		modelString,
 	} = await getAiModelWithSelection(
@@ -508,6 +516,13 @@ Structure your response clearly with sections as appropriate.`;
 			}),
 		);
 
+		const servedModel = answerModelInfo(
+			answerSnapshot() ?? {
+				modelString,
+				provider: modelProvider,
+				canonicalName,
+			},
+		);
 		// Generate a brief summary (also wrapped with heartbeats)
 		const summary = await withHeartbeat(
 			generateSummary(model, input.query, result.text),
@@ -529,6 +544,16 @@ Structure your response clearly with sections as appropriate.`;
 
 		return {
 			result: result.text,
+			model: result.text ? servedModel : undefined,
+			summaryModel: summary
+				? answerModelInfo(
+						answerSnapshot() ?? {
+							modelString,
+							provider: modelProvider,
+							canonicalName,
+						},
+					)
+				: undefined,
 			summary,
 			sources: [...new Set(allSources)],
 		};

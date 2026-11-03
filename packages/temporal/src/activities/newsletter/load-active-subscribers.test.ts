@@ -2,8 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listActiveNewsletterSubscribers = vi.fn();
 const enrollProjectMembersAsSubscribers = vi.fn();
+const syncOrganizationSubscribers = vi.fn();
+const recordOrganizationSyncFailure = vi.fn();
+const logError = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	syncOrganizationSubscribers: (...a: unknown[]) =>
+		syncOrganizationSubscribers(...a),
+	recordOrganizationSyncFailure: (...a: unknown[]) =>
+		recordOrganizationSyncFailure(...a),
 	listActiveNewsletterSubscribers: (...a: unknown[]) =>
 		listActiveNewsletterSubscribers(...a),
 	enrollProjectMembersAsSubscribers: (...a: unknown[]) =>
@@ -11,7 +18,11 @@ vi.mock("@repo/database", () => ({
 }));
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 vi.mock("@repo/logs", () => ({
-	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+	logger: {
+		info: vi.fn(),
+		warn: vi.fn(),
+		error: (...a: unknown[]) => logError(...a),
+	},
 }));
 
 import { loadActiveSubscribersActivity } from "./load-active-subscribers";
@@ -29,6 +40,46 @@ describe("loadActiveSubscribersActivity", () => {
 		enrollProjectMembersAsSubscribers
 			.mockReset()
 			.mockResolvedValue({ enrolled: 1 });
+		syncOrganizationSubscribers
+			.mockReset()
+			.mockResolvedValue({ added: 0, removed: 0 });
+		recordOrganizationSyncFailure.mockReset().mockResolvedValue({});
+		logError.mockReset();
+	});
+
+	it("syncs the organization before reading the list", async () => {
+		await loadActiveSubscribersActivity({ projectId: "p1" });
+
+		expect(syncOrganizationSubscribers).toHaveBeenCalledWith("p1");
+		expect(
+			syncOrganizationSubscribers.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			listActiveNewsletterSubscribers.mock.invocationCallOrder[0] ?? 0,
+		);
+	});
+
+	it("still sends to the existing list when the sync fails, and says so", async () => {
+		syncOrganizationSubscribers.mockRejectedValue(new Error("db down"));
+
+		const out = await loadActiveSubscribersActivity({ projectId: "p1" });
+
+		expect(out.subscribers).toHaveLength(1);
+		expect(logError).toHaveBeenCalled();
+		expect(recordOrganizationSyncFailure).toHaveBeenCalledWith(
+			"p1",
+			"db down",
+		);
+	});
+
+	it("does not fail the send when recording the failure also fails", async () => {
+		syncOrganizationSubscribers.mockRejectedValue(new Error("db down"));
+		recordOrganizationSyncFailure.mockRejectedValue(
+			new Error("still down"),
+		);
+
+		const out = await loadActiveSubscribersActivity({ projectId: "p1" });
+
+		expect(out.subscribers).toHaveLength(1);
 	});
 
 	it("reconciles members then returns the active list", async () => {

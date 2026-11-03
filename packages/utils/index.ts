@@ -48,6 +48,7 @@ export * from "./lib/render-newsletter-chat-message";
 export * from "./lib/render-publishing-chat-message";
 export * from "./lib/safe-yaml";
 export * from "./lib/service-url";
+export * from "./lib/transcript-upload";
 export * from "./lib/upload-size-limits";
 // NOTE: url-security is intentionally NOT re-exported from this barrel — it
 // imports `node:dns` and `undici`, which the client bundler cannot bundle, and

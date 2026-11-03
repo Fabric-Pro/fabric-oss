@@ -3,6 +3,8 @@
  * tenant-scoped (XOR userId/organizationId) and additionally project-scoped;
  * the calling oRPC procedure has already verified project membership.
  */
+
+import { answerModelInfoSchema } from "@repo/ai/lib/answer-model-info";
 import { db, Prisma } from "@repo/database";
 import { resolveFreshRepoTokenForRow } from "@repo/integrations/repo-auth";
 import { logger } from "@repo/logs";
@@ -3039,9 +3041,14 @@ function asStoredMessages(value: Prisma.JsonValue | null): StoredChatMessage[] {
 			(role === "user" || role === "assistant" || role === "system") &&
 			typeof content === "string"
 		) {
+			const model =
+				role === "assistant"
+					? answerModelInfoSchema.safeParse(msg.model).data
+					: undefined;
 			out.push({
 				role,
 				content,
+				...(model ? { model } : {}),
 				createdAt:
 					typeof msg.createdAt === "string"
 						? msg.createdAt

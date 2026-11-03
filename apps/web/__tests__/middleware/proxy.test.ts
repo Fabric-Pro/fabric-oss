@@ -879,6 +879,21 @@ describe("emailed links bypass the intl middleware", () => {
 		).toBe(true);
 	});
 
+	it("skips the MCP endpoint but still localizes /mcp-registry", () => {
+		for (const url of ["/mcp", "/mcp/", "/mcp/sse"]) {
+			expect(
+				unstable_doesMiddlewareMatch({ config: proxyConfig, url }),
+			).toBe(false);
+		}
+		// Skipping it left /mcp-registry with no locale rewrite, so it 404'd.
+		expect(
+			unstable_doesMiddlewareMatch({
+				config: proxyConfig,
+				url: "/mcp-registry",
+			}),
+		).toBe(true);
+	});
+
 	it("leaves the CLI the deployment serves to the static file handler", () => {
 		// The locale middleware would rewrite `/cli/fabric-<v>.tgz` to
 		// `/en/cli/...`, which is no file, so `npx <url>` would get a page.

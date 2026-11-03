@@ -71,6 +71,7 @@ export async function POST(request: NextRequest) {
 		return NextResponse.json({
 			response: result.text || EMPTY_WORKSPACE_CHAT_ANSWER,
 			sources: turn.sources.length > 0 ? turn.sources : undefined,
+			model: result.text ? turn.getAnswerModel() : undefined,
 		});
 	} catch (error) {
 		// AI usage-limit chokepoint hit a HARD limit, at model resolution or

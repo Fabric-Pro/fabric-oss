@@ -130,6 +130,7 @@ export const restoreMeetingProcedure = tenantProtectedProcedure
 				data: {
 					projectId: input.projectId,
 					joinUrl: payload.meeting.joinUrl,
+					source: payload.meeting.source,
 					subject: payload.meeting.subject,
 					organizer: payload.meeting.organizer,
 					includedInDigest: payload.meeting.includedInDigest,

@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
 			projectId: true,
 			toolsReadOnly: true,
 			linkedMeetingId: true,
+			channelChatStatus: true,
 		},
 	});
 	if (
@@ -76,6 +77,24 @@ export async function POST(request: NextRequest) {
 	if (!verified) {
 		return NextResponse.json({ error: "Invalid stream" }, { status: 401 });
 	}
+	if (
+		(session.status === "JOINING" || session.status === "ACTIVE") &&
+		session.channelChatStatus &&
+		session.channelChatStatus !== "ATTENDEE" &&
+		session.hardStopAt
+	) {
+		const hardStopAt = session.hardStopAt.toISOString();
+		after(async () => {
+			const { startParlumeChannelChat } = await import(
+				"../channel-chat/start"
+			);
+			await startParlumeChannelChat({
+				sessionId: session.id,
+				organizationId: session.organizationId,
+				hardStopAt,
+			});
+		});
+	}
 	// The bot has just been admitted: warm what its first question will need
 	// once this response is on its way. A reconnect of the same meeting does
 	// not repeat it.
@@ -99,7 +118,11 @@ export async function POST(request: NextRequest) {
 			});
 		});
 		// A meeting of a linked series opens with one "Since last time" post.
-		if (session.linkedMeetingId) {
+		if (
+			session.linkedMeetingId &&
+			(!session.channelChatStatus ||
+				session.channelChatStatus === "ATTENDEE")
+		) {
 			after(async () => {
 				const { startParlumeRecap } = await import("../recap");
 				await startParlumeRecap(id);

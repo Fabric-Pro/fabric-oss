@@ -58,7 +58,7 @@ export const metadata: Metadata = {
 	openGraph: {
 		type: "website",
 		locale: "en_US",
-		url: `${SITE_URL}/en`,
+		url: `${SITE_URL}/`,
 		siteName: "Fabric AI",
 		title: "Fabric | AI connected to your docs, apps, and people",
 		description:
@@ -83,10 +83,13 @@ export const metadata: Metadata = {
 		creator: "@fabricai",
 	},
 	alternates: {
-		canonical: `${SITE_URL}/en`,
+		// `/en` redirects to `/` (localePrefix "never" while i18n is off), so
+		// the home page is canonical at `/`. Pointing at `/en` made Google
+		// treat `/` as an alternate of a redirect and never index it.
+		canonical: `${SITE_URL}/`,
 		languages: {
-			"en-US": `${SITE_URL}/en`,
-			"x-default": `${SITE_URL}/en`,
+			"en-US": `${SITE_URL}/`,
+			"x-default": `${SITE_URL}/`,
 		},
 	},
 	category: "Technology",
@@ -143,7 +146,7 @@ function JsonLd() {
 		name: "Fabric — The Complete Agent Engineering Platform",
 		description:
 			"Build, ship, and iterate faster with AI agents for software development. From ingesting context to generating code.",
-		url: `${SITE_URL}/en`,
+		url: `${SITE_URL}/`,
 		mainEntity: {
 			"@type": "Product",
 			name: "Fabric AI Platform",

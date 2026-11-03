@@ -43,6 +43,11 @@ export const RESEARCH_RESULT_MAPPING = {
 	error: "RUN_ERROR message (RESEARCH_FAILED or AI_USAGE_LIMIT_EXCEEDED)",
 	structuredReport:
 		"RUN_FINISHED result.structuredReport; TEXT_MESSAGE_* (<key>:assistant)",
+	model: "RUN_FINISHED result.model; metadata.research.result.model",
+	summaryModel:
+		"RUN_FINISHED result.summaryModel; metadata.research.result.summaryModel",
+	reportModel:
+		"RUN_FINISHED result.reportModel; metadata.research.result.reportModel",
 } as const satisfies Record<keyof DeepResearcherOutput, string>;
 
 /**

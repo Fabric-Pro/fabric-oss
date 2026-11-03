@@ -6,9 +6,16 @@ import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
 import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
+import {
 	Building2Icon,
 	CheckCircle2Icon,
 	CpuIcon,
+	HelpCircleIcon,
 	LaptopIcon,
 	RefreshCwIcon,
 	ServerCogIcon,
@@ -24,9 +31,7 @@ import {
 	FABRIC_AGENT_CONNECTIONS,
 	FABRIC_AGENT_FALLBACK_POLICIES,
 	type FabricAgentFallbackPolicy,
-	getExecutionProviderDescription,
 	getExecutionProviderLabel,
-	getExecutionProviderPlatformLabel,
 	getFabricAgentConnectionModels,
 	loadProjectDelegationPreferences,
 	type ProjectDelegationPreferences,
@@ -55,7 +60,9 @@ export function ProjectImplementationDefaultsSettings({
 	const [selectedServerId, setSelectedServerId] = useState("");
 
 	useEffect(() => {
-		setPrefs(loadProjectDelegationPreferences(project.id));
+		const loaded = loadProjectDelegationPreferences(project.id);
+		setPrefs(loaded);
+		setSelectedServerId(loaded.preferredServerId ?? "");
 	}, [project.id]);
 
 	const serversQuery = useQuery({
@@ -121,8 +128,8 @@ export function ProjectImplementationDefaultsSettings({
 						<div className="space-y-1">
 							<div className="flex flex-wrap items-center gap-2">
 								<h3 className="text-lg font-semibold tracking-tight text-foreground">
-									Fabric Remote Server &amp; Subscription
-									Delegation
+									Fabric Agents Remote Server &amp; Fabric
+									Agents Desktop Delegation
 								</h3>
 								<Badge
 									variant="outline"
@@ -130,15 +137,51 @@ export function ProjectImplementationDefaultsSettings({
 								>
 									Subscription Offload Ready
 								</Badge>
+								<TooltipProvider delayDuration={150}>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<a
+												href="/docs/features/projects#delegating-coding-runs-to-fabric-agents"
+												target="_blank"
+												rel="noopener noreferrer"
+												data-testid="implementation-defaults-docs-link"
+												aria-label="Fabric Agents delegation defaults documentation"
+												className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+											>
+												<HelpCircleIcon className="size-3" />
+												Setup Guide
+											</a>
+										</TooltipTrigger>
+										<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+											<p className="font-semibold">
+												Project Delegation Defaults
+											</p>
+											<p>
+												Learn how to configure multiple
+												Personal servers, shared
+												Organization servers,
+												subscription harnesses, and the
+												embedded Server Web UI.
+											</p>
+										</TooltipContent>
+									</Tooltip>
+								</TooltipProvider>
 							</div>
 							<p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
-								Delegate coding tasks to a local workstation or
-								shared company{" "}
-								{getExecutionProviderLabel("BACKGROUND_AGENTS")}{" "}
-								server using your CLI subscriptions (Claude,
-								Codex, Droid, Grok, Kimi, Antigravity, Cursor),
-								and save browser preferences for when
-								subscription quotas are reached.
+								Delegate coding tasks to{" "}
+								<strong>Fabric Agents Desktop</strong>, a{" "}
+								<strong>
+									Personal Fabric Agents Remote Server
+								</strong>
+								, or an{" "}
+								<strong>
+									Organization Fabric Agents Remote Server
+								</strong>{" "}
+								using your CLI subscriptions (Claude, Codex,
+								ChatGPT Plus/Pro, Droid, Grok, Kimi,
+								Antigravity, Cursor), and save browser
+								preferences for when subscription quotas are
+								reached.
 							</p>
 						</div>
 					</div>
@@ -151,19 +194,19 @@ export function ProjectImplementationDefaultsSettings({
 					</Button>
 				</div>
 
-				{/* Step 1: Execution Target Mode (Local vs Company Remote Server) */}
+				{/* Step 1: Execution Target Mode (Personal vs Organization Fabric Agents Remote Server) */}
 				<div className="space-y-3 rounded-lg border border-border/70 bg-muted/15 p-4">
 					<div className="flex flex-wrap items-center justify-between gap-2">
 						<p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-							1. Default execution server target
+							1. Default Fabric Agents Remote Server target
 						</p>
 						<Badge
 							variant="secondary"
 							className="rounded-full text-[11px]"
 						>
 							{prefs.preferredServerScope === "PRIVATE"
-								? "Local Workstation (Private)"
-								: "Company Remote Server (Shared)"}
+								? "Personal Fabric Agents Remote Server"
+								: "Organization Fabric Agents Remote Server"}
 						</Badge>
 					</div>
 					<div className="grid gap-3 sm:grid-cols-2">
@@ -184,15 +227,16 @@ export function ProjectImplementationDefaultsSettings({
 							<div className="space-y-1">
 								<p className="flex items-center gap-2 text-sm font-semibold text-foreground">
 									<LaptopIcon className="size-4 text-primary" />
-									Local Fabric Agents Server
+									Personal Fabric Agents Remote Server
 								</p>
 								<p className="text-xs leading-5 text-muted-foreground">
 									Delegate tasks to{" "}
 									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
 										127.0.0.1:9100
 									</code>{" "}
-									or your personal workstation using your own
-									signed-in CLI subscriptions.
+									or your personal Fabric Agents Remote Server
+									using your own signed-in subscription
+									tokens.
 								</p>
 							</div>
 							{prefs.preferredServerScope === "PRIVATE" && (
@@ -215,7 +259,7 @@ export function ProjectImplementationDefaultsSettings({
 							<div className="space-y-1">
 								<p className="flex items-center gap-2 text-sm font-semibold text-foreground">
 									<Building2Icon className="size-4 text-primary" />
-									Company Remote Server
+									Organization Fabric Agents Remote Server
 								</p>
 								<p className="text-xs leading-5 text-muted-foreground">
 									Run coding sessions on your organization’s
@@ -223,8 +267,8 @@ export function ProjectImplementationDefaultsSettings({
 									{getExecutionProviderLabel(
 										"BACKGROUND_AGENTS",
 									)}{" "}
-									cluster with isolated git worktrees and
-									pooled subscription seats.
+									remote server with isolated git worktrees
+									and pooled subscription seats.
 								</p>
 							</div>
 							{prefs.preferredServerScope === "TEAM" && (
@@ -241,7 +285,10 @@ export function ProjectImplementationDefaultsSettings({
 								servers={serversQuery.data.servers}
 								canShare={serversQuery.data.canShare}
 								value={selectedServerId}
-								onChange={setSelectedServerId}
+								onChange={(id) => {
+									setSelectedServerId(id);
+									updatePrefs({ preferredServerId: id });
+								}}
 							/>
 						</div>
 					)}
@@ -490,63 +537,89 @@ export function ProjectImplementationDefaultsSettings({
 				</div>
 
 				<div className="grid items-stretch gap-5 xl:grid-cols-2">
-					{/* Fabric Agents Card */}
+					{/* Personal Fabric Agents Remote Server Card */}
 					<div className="group relative flex h-full flex-col overflow-hidden rounded-lg border border-primary/20 bg-gradient-to-br from-primary/[0.03] to-primary/[0.06] p-5 shadow-xs">
-						<div className="mb-3 flex items-center gap-3">
-							<div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/20">
-								<ServerCogIcon className="size-4 text-primary" />
+						<div className="mb-3 flex items-center justify-between gap-3">
+							<div className="flex items-center gap-3">
+								<div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/20">
+									<LaptopIcon className="size-4 text-primary" />
+								</div>
+								<h4 className="font-semibold text-sm text-foreground">
+									Personal Fabric Agents Remote Server
+								</h4>
 							</div>
-							<h4 className="font-semibold text-sm text-foreground">
-								{getExecutionProviderLabel("BACKGROUND_AGENTS")}{" "}
-								CLI Quickstart
-							</h4>
+							<Badge
+								variant="outline"
+								className="rounded-full px-2 py-0.5 text-[10px]"
+							>
+								Personal Subscription Tokens
+							</Badge>
 						</div>
 						<p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-							{getExecutionProviderDescription(
-								"BACKGROUND_AGENTS",
-							)}
+							Runs on your workstation (
+							<code className="font-mono text-foreground">
+								127.0.0.1:9100
+							</code>
+							) or personal cloud tunnel. Uses the personal
+							subscription CLIs already logged in on your machine
+							(Claude Max, Codex, Grok, Droid, Kimi, Antigravity,
+							Cursor) — private to your account with zero API
+							token fees.
 						</p>
 						<div className="mt-auto space-y-2 rounded-lg border border-primary/15 bg-background/60 p-3">
 							<div className="flex items-center gap-2">
 								<TerminalIcon className="size-3.5 text-muted-foreground" />
 								<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-									Start remote server (:9100)
+									1-Line Personal Server Quickstart (:9100)
 								</p>
 							</div>
 							<code className="block font-mono text-xs text-foreground">
-								FABRIC_SERVER_TOKEN=&lt;secret&gt;
-								fabric-agent-server --port 9100
+								FABRIC_SERVER_TOKEN=&lt;secret&gt; npx -y
+								@fabricorg/agent-server --port 9100
 							</code>
 						</div>
 					</div>
 
-					{/* Fabric Kanban Card */}
+					{/* Organization Fabric Agents Remote Server & Desktop Card */}
 					<div className="group relative flex h-full flex-col overflow-hidden rounded-lg border border-primary/20 bg-gradient-to-br from-primary/[0.03] to-primary/[0.06] p-5 shadow-xs">
-						<div className="mb-3 flex items-center gap-3">
-							<div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/20">
-								<LaptopIcon className="size-4 text-primary" />
+						<div className="mb-3 flex items-center justify-between gap-3">
+							<div className="flex items-center gap-3">
+								<div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/20">
+									<ServerCogIcon className="size-4 text-primary" />
+								</div>
+								<h4 className="font-semibold text-sm text-foreground">
+									Organization Fabric Agents Remote Server
+								</h4>
 							</div>
-							<h4 className="font-semibold text-sm text-foreground">
-								{getExecutionProviderLabel("KANBAN_LOCAL")}
-							</h4>
+							<Badge
+								variant="outline"
+								className="rounded-full px-2 py-0.5 text-[10px]"
+							>
+								Team Pooled Seats &amp; Org Plan
+							</Badge>
 						</div>
 						<p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-							Queues features for local development through{" "}
-							{getExecutionProviderPlatformLabel("KANBAN_LOCAL")}.
+							Runs on a shared team VM or container in isolated
+							git worktrees. Uses team-authenticated subscription
+							seats on the server profile, your
+							organization&apos;s shared ChatGPT/Claude
+							subscription plan, or automatic fallback to your
+							organization&apos;s AI provider API key.
 							{hasRepositoryContext
 								? ` Connected repository: ${project.repositoryOwner}/${project.repositoryName}.`
-								: " Connect a repository to pull queued items."}
+								: " Connect a repository to dispatch coding runs."}
 						</p>
 						<div className="mt-auto space-y-2 rounded-lg border border-primary/15 bg-background/60 p-3">
 							<div className="flex items-center gap-2">
 								<TerminalIcon className="size-3.5 text-muted-foreground" />
 								<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-									Install &amp; run
+									1-Line Organization Server (Docker / VM)
 								</p>
 							</div>
 							<code className="block font-mono text-xs text-foreground">
-								npm install -g @fabriccode/kanban@latest
-								&amp;&amp; fabric-kanban
+								docker run -d -p 9100:9100 -e
+								FABRIC_SERVER_TOKEN=&lt;secret&gt;
+								ghcr.io/fabric-pro/fabric-agent-server:latest
 							</code>
 						</div>
 					</div>

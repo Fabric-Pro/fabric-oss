@@ -22,6 +22,8 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useEffectiveOrganizationId: (id?: string | null) =>
+		id === undefined ? "org-example" : id,
 	useOrganizationContext: () => ({
 		organizationId: "org-example",
 		organizationName: "Example",
@@ -58,7 +60,14 @@ describe("Analyst registry cache", () => {
 		const queryClient = createQueryClient();
 		const view = render(
 			<QueryClientProvider client={queryClient}>
-				<OrganizationAgentChatView agentId="registered-analyst" />
+				<OrganizationAgentChatView
+					agentId="registered-analyst"
+					organization={{
+						id: "org-example",
+						slug: "example",
+						name: "Example",
+					}}
+				/>
 			</QueryClientProvider>,
 		);
 		try {
@@ -71,7 +80,14 @@ describe("Analyst registry cache", () => {
 			});
 			view.rerender(
 				<QueryClientProvider client={queryClient}>
-					<OrganizationAgentChatView agentId="registered-analyst" />
+					<OrganizationAgentChatView
+						agentId="registered-analyst"
+						organization={{
+							id: "org-example",
+							slug: "example",
+							name: "Example",
+						}}
+					/>
 				</QueryClientProvider>,
 			);
 			expect(

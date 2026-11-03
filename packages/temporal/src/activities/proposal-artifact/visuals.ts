@@ -16,9 +16,13 @@ import {
 	parseOutline,
 	scanFences,
 } from "@repo/utils/glossy/outline";
-import type { ProposalVisualSpec } from "@repo/utils/glossy/visual-spec";
+import type {
+	ComparisonVisualSpec,
+	ProposalVisualSpec,
+} from "@repo/utils/glossy/visual-spec";
 import {
 	proposalFigureKind,
+	proposalLabelCase,
 	proposalVisualTemplateOptions,
 	visualSpecToMermaid,
 } from "@repo/utils/glossy/visual-templates";
@@ -26,10 +30,12 @@ import { coverLetterLabel } from "@repo/utils/proposal-artifact/cover-letter-hea
 import { scrubCitationText } from "@repo/utils/proposal-artifact/export-scrub";
 import { parseMarkdownAst } from "@repo/utils/proposal-artifact/markdown-ast";
 import { withFigureKind } from "@repo/utils/proposal-artifact/proposal-figures";
+import { withoutStorageReferences } from "@repo/utils/proposal-artifact/storage-references";
 import { mintVisualId } from "@repo/utils/proposal-artifact/visual-id-server";
 import {
 	VISUAL_ORIGIN,
 	visualSourceHash,
+	withDiagramCaption,
 } from "@repo/utils/proposal-artifact/visual-identity";
 import {
 	comparisonToMarkdownTable,
@@ -93,6 +99,15 @@ import { activityLogger } from "../lib/activity-logger";
  * comparison table has no fence to carry a marker and stores no spec. The
  * step runs once per generation, so a rerun mints new ids; storing the same
  * spec twice is a no-op.
+ *
+ * Every diagram is captioned (Fizzy #2946): a `%% caption:` line after the
+ * marker and before the figure line, which the live page and print both
+ * read as the figure's caption. It is the extraction's caption (the spec's
+ * title, else the short caption it returned and fact-checked), or else the
+ * section's heading as the export reads it, without its number; either
+ * without a storage path (`figureCaption`). The source hash leaves the
+ * caption out. A comparison table's cells start with a capital as a
+ * diagram's labels do, when written all in lower case.
  *
  * Fail-open: a failed extraction, or a spec that cannot be stored, drops
  * only its own visual, and any other error, or a cancelled attempt, returns
@@ -264,7 +279,13 @@ export async function generateProposalVisuals(
 						return;
 					}
 					if (result.status === "extracted") {
-						rendered = renderProposalVisual(result.spec);
+						rendered = renderProposalVisual(
+							result.spec,
+							figureCaption(
+								result.caption,
+								section.headingCaption,
+							),
+						);
 					} else {
 						dropReason = result.reason;
 						logDrop(opportunity.kind, result, attempt);
@@ -415,6 +436,12 @@ interface ProposalVisualSection {
 	markdown: string;
 	/** The heading, numbering aside, starts with "Appendix" or "Anhang". */
 	appendix: boolean;
+	/**
+	 * The heading as the export reads it, without its section number
+	 * (`CAPTION_SECTION_NUMBER`): the caption of a diagram whose extraction
+	 * gave none. Empty when nothing is left.
+	 */
+	headingCaption: string;
 }
 
 /**
@@ -423,6 +450,17 @@ interface ProposalVisualSection {
  */
 const HEADING_NUMBERING =
 	/^(?:\d+(?:\.\d+)*[A-Za-z]?\\?[.)]?|[A-Za-z]\\?[.)]|[IVXLC]+\\?[.)])\s+/i;
+
+/**
+ * A section number typed before a heading, which its caption leaves out:
+ * "3. ", "3) ", "3.1 ", "1A) ", "B. ", "IV. ". Unlike `HEADING_NUMBERING`,
+ * a single number needs its `.` or `)` and every number has at most three
+ * digits, so a heading that starts with a year or a count ("2026 Roadmap",
+ * "90 Day Plan") keeps it. Read from the heading as the export reads it, so
+ * no escape is left before the mark.
+ */
+const CAPTION_SECTION_NUMBER =
+	/^(?:\d{1,3}(?:\.\d{1,3})+[A-Za-z]?[.)]?|\d{1,3}[A-Za-z]?[.)]|[A-Za-z][.)]|[IVXLC]+[.)])\s+/i;
 
 /** An appendix heading, in English or German, once its numbering is gone. */
 const APPENDIX_HEADING = /^(?:appendix|anhang)(?![\p{L}\p{N}])/iu;
@@ -512,9 +550,30 @@ function proposalVisualSections(content: string): ProposalVisualSection[] {
 			heading: heading.text,
 			markdown,
 			appendix: isAppendixHeading(heading.text),
+			headingCaption: exportedHeadingText(
+				lines[heading.startLine - 1] ?? "",
+			)
+				.trim()
+				.replace(CAPTION_SECTION_NUMBER, ""),
 		});
 	});
 	return sections;
+}
+
+/**
+ * The caption a figure is written with: the extraction's, else the
+ * section's heading, each without a reference to a stored object. The
+ * export removes those as it prints, but the live page shows the fence's
+ * caption line as written. A caption that was only such a reference falls
+ * back to the heading.
+ */
+function figureCaption(
+	caption: string | undefined,
+	headingCaption: string,
+): string {
+	const shown =
+		caption === undefined ? "" : withoutStorageReferences(caption).trim();
+	return shown !== "" ? shown : withoutStorageReferences(headingCaption);
 }
 
 /** A diagram's identity: what its spec row is stored under. */
@@ -535,10 +594,13 @@ interface RenderedVisual {
 /**
  * One extracted spec as the markdown block it becomes in Main, or null for
  * a kind this release does not produce. A diagram's fence opens with a
- * freshly minted marker id, asks for its figure template when it has one,
- * and assigns roles, never colours.
+ * freshly minted marker id, then its caption, then the figure template it
+ * asks for when it has one, and assigns roles, never colours.
  */
-function renderProposalVisual(spec: ProposalVisualSpec): RenderedVisual | null {
+function renderProposalVisual(
+	spec: ProposalVisualSpec,
+	caption: string,
+): RenderedVisual | null {
 	switch (spec.kind) {
 		case "timeline":
 		case "flow":
@@ -546,8 +608,16 @@ function renderProposalVisual(spec: ProposalVisualSpec): RenderedVisual | null {
 		case "layers":
 		case "team": {
 			const visualId = mintVisualId();
+			// Without a marker yet, the caption line goes first and the figure
+			// line after it; `toMermaidFence` puts the marker before both.
 			const source = withFigureKind(
-				visualSpecToMermaid(spec, proposalVisualTemplateOptions(spec)),
+				withDiagramCaption(
+					visualSpecToMermaid(
+						spec,
+						proposalVisualTemplateOptions(spec),
+					),
+					caption,
+				),
 				proposalFigureKind(spec),
 			);
 			const markdown = toMermaidFence(source, visualId);
@@ -566,11 +636,23 @@ function renderProposalVisual(spec: ProposalVisualSpec): RenderedVisual | null {
 		case "comparison":
 			return {
 				kind: spec.kind,
-				markdown: comparisonToMarkdownTable(spec),
+				markdown: comparisonToMarkdownTable(comparisonLabelCase(spec)),
 			};
 		default:
 			return null;
 	}
+}
+
+/** A comparison with every title and point in `proposalLabelCase`. */
+function comparisonLabelCase(spec: ComparisonVisualSpec): ComparisonVisualSpec {
+	return {
+		...spec,
+		items: spec.items.map((item) => ({
+			...item,
+			title: proposalLabelCase(item.title),
+			points: item.points.map(proposalLabelCase),
+		})),
+	};
 }
 
 /**

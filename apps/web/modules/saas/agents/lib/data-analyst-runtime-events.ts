@@ -1,42 +1,22 @@
 import { type AGUIEvent, EventType } from "@ag-ui/client";
+import { answerModelInfoSchema } from "@repo/ai/lib/answer-model-info";
+import { isAiUsageLimitExceededPayload } from "@saas/payments/lib/ai-usage-limit-toast";
 import {
-	type AiUsageLimitExceededPayload,
-	isAiUsageLimitExceededPayload,
-} from "@saas/payments/lib/ai-usage-limit-toast";
-import {
-	type AiErrorToastCopy,
 	describeAiError,
 	isChatGptPlanSpentCode,
 } from "@saas/shared/lib/ai-error-message";
 import { z } from "zod";
-import type { ToolCallItem } from "../components/FabricChat/shared/types";
 import {
 	DATA_ANALYST_EVENT,
-	type DataAnalystChart,
 	dataAnalystChartEventSchema,
 } from "./data-analyst-runtime-protocol";
-import { settleUnfinishedToolCalls } from "./direct-chat-turns";
+import { type DataAnalystTurn, endDataAnalystTurn } from "./data-analyst-turn";
 
-export interface DataAnalystTurn {
-	text: string;
-	toolCalls: ToolCallItem[];
-	argsText: Record<string, string>;
-	charts: Record<string, DataAnalystChart>;
-	status: "running" | "finished" | "failed" | "stopped";
-	error: string | null;
-	planSpent: AiErrorToastCopy | null;
-	usageLimit: AiUsageLimitExceededPayload | null;
-}
-export const EMPTY_DATA_ANALYST_TURN: DataAnalystTurn = {
-	text: "",
-	toolCalls: [],
-	argsText: {},
-	charts: {},
-	status: "running",
-	error: null,
-	planSpent: null,
-	usageLimit: null,
-};
+export {
+	type DataAnalystTurn,
+	EMPTY_DATA_ANALYST_TURN,
+} from "./data-analyst-turn";
+
 const errorMetadataSchema = z.object({
 	fabric: z
 		.object({ status: z.number().optional(), data: z.unknown().optional() })
@@ -44,19 +24,6 @@ const errorMetadataSchema = z.object({
 		.optional(),
 });
 const failedToolResultSchema = z.object({ success: z.literal(false) });
-
-export function endDataAnalystTurn(
-	turn: DataAnalystTurn,
-	status: "failed" | "stopped" | "finished",
-	error: string | null,
-): DataAnalystTurn {
-	return {
-		...turn,
-		status,
-		error,
-		toolCalls: settleUnfinishedToolCalls(turn.toolCalls) ?? [],
-	};
-}
 
 function toolArgs(value: string): unknown {
 	try {
@@ -127,6 +94,13 @@ export function applyDataAnalystEvent(
 				),
 			};
 		case EventType.CUSTOM: {
+			if (event.name === DATA_ANALYST_EVENT.model) {
+				if (event.value === null) {
+					return { ...turn, model: undefined };
+				}
+				const parsed = answerModelInfoSchema.safeParse(event.value);
+				return parsed.success ? { ...turn, model: parsed.data } : turn;
+			}
 			if (event.name !== DATA_ANALYST_EVENT.chart) {
 				return turn;
 			}

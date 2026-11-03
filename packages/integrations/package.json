@@ -17,6 +17,10 @@
 			"types": "./src/microsoft/connection-errors.ts",
 			"default": "./src/microsoft/connection-errors.ts"
 		},
+		"./microsoft/parlume-channel": {
+			"types": "./src/microsoft/parlume-channel.ts",
+			"default": "./src/microsoft/parlume-channel.ts"
+		},
 		"./github": {
 			"types": "./src/github/index.ts",
 			"default": "./src/github/index.ts"

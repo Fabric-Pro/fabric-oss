@@ -213,6 +213,7 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectMeetingTranscript", // Synced meeting transcript tracking
 	"ProjectMeetingAgenda", // Pre-meeting agendas (#1901); RLS-registered user_owned like its siblings
 	"ParlumeMeetingSession", // Project-scoped Teams bot lifecycle
+	"ParlumeChannelPost",
 	"ParlumeMeetingSegment", // Final live transcript segment for a project bot
 	"ParlumeMeetingTurn", // Project-scoped spoken agent response
 	"ParlumeAction",
@@ -376,6 +377,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectMeetingTranscript: "projectId",
 	ProjectMeetingAgenda: "projectId",
 	ParlumeMeetingSession: "projectId",
+	ParlumeChannelPost: "projectId",
 	ParlumeMeetingSegment: "projectId",
 	ParlumeMeetingTurn: "projectId",
 	ParlumeAction: "projectId",

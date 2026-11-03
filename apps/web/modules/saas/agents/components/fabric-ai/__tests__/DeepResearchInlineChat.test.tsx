@@ -48,6 +48,9 @@ import { DeepResearchInlineChat } from "../DeepResearchInlineChat";
 type ResearchStream = ReturnType<typeof useResearchRunStream>;
 
 const RESULT = {
+	model: { id: "example-answer-served", viaPlan: true },
+	summaryModel: { id: "example-summary-served", viaPlan: false },
+	reportModel: { id: "example-report-served", viaPlan: false },
 	text: "The full research text.",
 	summary: "A short summary.",
 	keyFindings: [],

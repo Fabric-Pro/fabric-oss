@@ -5,6 +5,12 @@
  * LLM-generated markdown with diff markers into properly rendered HTML.
  */
 
+import {
+	DIFF_ADD_END,
+	DIFF_ADD_START,
+	DIFF_DEL_END,
+	DIFF_DEL_START,
+} from "@repo/utils/diff-markers";
 import { describe, expect, it } from "vitest";
 import {
 	buildAssertionLines,
@@ -16,6 +22,7 @@ import {
 	fromMarkdown,
 	normalizeMarkdownContent,
 	stripDiffMarkup,
+	toAgentDocument,
 } from "../diff-utils";
 
 describe("diffPartialText", () => {
@@ -1195,5 +1202,395 @@ describe("diffPartialText - preserves intentional escapes", () => {
 		const newText = "\\# Heading\n\nbody";
 		const result = diffPartialText(oldText, newText, true);
 		expect(result).toContain("​​ADD_START​ ");
+	});
+});
+
+describe("diffPartialText - a link or image is diffed whole (Fizzy #2946)", () => {
+	/** The text between each start marker and its end marker, in order. */
+	function runs(diff: string, start: string, end: string): string[] {
+		return diff
+			.split(start)
+			.slice(1)
+			.map((run) => run.slice(0, run.indexOf(end)));
+	}
+	const deletions = (diff: string) =>
+		runs(diff, DIFF_DEL_START, DIFF_DEL_END);
+	const insertions = (diff: string) =>
+		runs(diff, DIFF_ADD_START, DIFF_ADD_END);
+	const destinations = (diff: string) =>
+		[...diff.matchAll(/\]\(([^)]*)\)/g)].map((match) => match[1]);
+
+	it.each([
+		{ path: "complete", isComplete: true },
+		{ path: "streaming", isComplete: false },
+	])(
+		"marks a URL-only change as the whole old link and the whole new one ($path)",
+		({ isComplete }) => {
+			const diff = diffPartialText(
+				"See [the docs](https://example.com/old) for details.",
+				"See [the docs](https://example.com/new) for details.",
+				isComplete,
+			);
+
+			expect(deletions(diff)).toEqual([
+				"[the docs](https://example.com/old)",
+			]);
+			expect(insertions(diff)).toEqual([
+				"[the docs](https://example.com/new)",
+			]);
+			// No marker between `(` and `)`.
+			expect(destinations(diff)).toEqual([
+				"https://example.com/old",
+				"https://example.com/new",
+			]);
+		},
+	);
+
+	it("leaves a stored escaped link the agent echoed unescaped out of the diff", () => {
+		const diff = diffPartialText(
+			"Sources: [\\[S2\\]](https://example.com/s2) are listed.",
+			"Sources: [[S2]](https://example.com/s2) are cited.",
+			true,
+		);
+
+		expect(deletions(diff)).toEqual(["listed"]);
+		expect(insertions(diff)).toEqual(["cited"]);
+		expect(diff).toContain(
+			"Sources: [\\[S2\\]](https://example.com/s2) are ",
+		);
+	});
+
+	it("does not read an escaped bracket as the start of a link", () => {
+		const diff = diffPartialText(
+			"\\[S1\\] is documented in [Docs](https://example.com/docs).",
+			"\\[S1\\] is documented in [Docs](https://example.com/docs2).",
+			true,
+		);
+
+		expect(diff.startsWith("\\[S1\\] is documented in ")).toBe(true);
+		expect(deletions(diff)).toEqual(["[Docs](https://example.com/docs)"]);
+		expect(insertions(diff)).toEqual(["[Docs](https://example.com/docs2)"]);
+	});
+
+	it("keeps literal text after an escaped bracket on the word diff", () => {
+		// `\[S1](…)` is text, not a link. Read as one, its markers would leave
+		// the `\` outside them and the review would render a live link.
+		const diff = diffPartialText(
+			"Cited as \\[S1](https://example.com/s1) here.",
+			"Cited as \\[S1](https://example.com/s2) here.",
+			true,
+		);
+
+		expect(deletions(diff)).toEqual(["s1"]);
+		expect(insertions(diff)).toEqual(["s2"]);
+	});
+});
+
+describe("diffPartialText - a streaming cut never splits a placeholder (Fizzy #2946)", () => {
+	// While streaming, the old text is cut at the new text's length. A cut
+	// inside a placeholder used to leave its two halves in the review as
+	// literal text, and a confirm can save a streaming render.
+	const PLACEHOLDER_FRAGMENT = /xDIFF|xGFM|xHTML|xENDx/;
+
+	it("keeps a link the cut falls inside whole in the old text's tail", () => {
+		const oldText =
+			"Intro [the docs](https://example.com/docs) and more text here.";
+		const result = diffPartialText(oldText, "Intro [the d", false);
+
+		expect(result).not.toMatch(PLACEHOLDER_FRAGMENT);
+		// The begun link is held back, so nothing shows as changed.
+		expect(result).toBe(oldText);
+	});
+
+	it("leaves a cut that ends at a link's start as it was", () => {
+		const oldText =
+			"Intro [the docs](https://example.com/docs) and more text here.";
+
+		expect(diffPartialText(oldText, "Intro ", false)).toBe(oldText);
+	});
+
+	it("keeps a table the cut falls inside whole in the old text's tail", () => {
+		const oldText =
+			"Intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nAfter.";
+		const result = diffPartialText(oldText, "Intro\n\n| A |", false);
+
+		expect(result).not.toMatch(PLACEHOLDER_FRAGMENT);
+		expect(result).toContain("| A | B |\n| --- | --- |\n| 1 | 2 |");
+	});
+
+	it("keeps an HTML table the cut falls inside whole in the old text's tail", () => {
+		const table = "<table><tr><td>A</td><td>B</td></tr></table>";
+		const oldText = `Intro\n\n${table}\n\nAfter.`;
+		// 23 characters: the cut falls inside the table's placeholder.
+		const result = diffPartialText(
+			oldText,
+			"Intro\n\n<table><tr><td>A",
+			false,
+		);
+
+		expect(result).not.toMatch(PLACEHOLDER_FRAGMENT);
+		expect(result).toContain(`${table}\n\nAfter.`);
+	});
+});
+
+describe("diffPartialText - a stored link-shaped text the agent echoed unescaped (Fizzy #2946)", () => {
+	// The agent reads the document with Turndown's bracket escapes removed, so
+	// it echoes a stored `\[Docs\](url)` text as `[Docs](url)`. That is no
+	// change: accepting it must not turn the text into a link.
+	const STORED = "See \\[Docs\\](https://example.com/d) here.";
+
+	it.each([
+		{ path: "complete", isComplete: true },
+		{ path: "streaming", isComplete: false },
+	])("leaves it out of the diff ($path)", ({ isComplete }) => {
+		expect(
+			diffPartialText(STORED, toAgentDocument(STORED), isComplete),
+		).toBe(STORED);
+	});
+
+	it("still shows a link the agent turned into escaped text", () => {
+		const diff = diffPartialText(
+			"See [Docs](https://example.com/d) here.",
+			STORED,
+			true,
+		);
+
+		expect(diff).toContain(DIFF_DEL_START);
+		expect(diff).toContain(DIFF_ADD_START);
+	});
+});
+
+describe("diffPartialText - link scan time on hostile input (Fizzy #2946)", () => {
+	// docs/solutions/security-issues/redos-in-preview-markdown-strip.md: one
+	// long line and a hard time budget. The link scan runs over the whole
+	// document on every streaming chunk.
+	const fixtures = {
+		"unclosed link text": "[a".repeat(20000),
+		"unclosed destinations": "[a](b".repeat(20000),
+		"unclosed escaped link text": "\\[a\\](b".repeat(15000),
+		"unclosed image tags": "<img ".repeat(20000),
+		"unbalanced image tag quotes": '<img a="'.repeat(15000),
+		"nested brackets": "[[[[a]".repeat(15000),
+		"unclosed anchors": '<a href="x">y'.repeat(15000),
+		"unbalanced anchor quotes": '<a href="'.repeat(15000),
+		"unclosed mention spans": '<span data-type="mention">@a'.repeat(15000),
+	};
+
+	it.each(Object.entries(fixtures))(
+		"stays linear on %s",
+		(_name, fixture) => {
+			expect(fixture).not.toContain("\n");
+			const started = performance.now();
+			diffPartialText(fixture, fixture, true);
+			diffPartialText(
+				fixture,
+				fixture.slice(0, fixture.length / 2),
+				false,
+			);
+			expect(performance.now() - started).toBeLessThan(500);
+		},
+	);
+});
+
+describe("diffPartialText - an unchanged link while it streams (Fizzy #2946)", () => {
+	// Until a link's text has streamed in whole it is no link yet; diffed as
+	// text, the unchanged link beside it flickered as a deletion.
+	const STORED =
+		"See [the docs](https://example.com/guide) for details and more.";
+
+	it.each([4, 6, 10, 20, 30, 45, 50, 58])(
+		"shows no change when the stream has reached %i characters",
+		(length) => {
+			expect(
+				diffPartialText(STORED, STORED.slice(0, length), false),
+			).toBe(STORED);
+		},
+	);
+});
+
+describe("diffPartialText - text that looks like a link placeholder (Fizzy #2946)", () => {
+	it("leaves an unchanged document that holds the placeholder's spelling as it is", () => {
+		const stored =
+			"Note xDIFFLINKx0xENDx and [Docs](https://example.com/d) here.";
+
+		expect(diffPartialText(stored, stored, true)).toBe(stored);
+		expect(diffPartialText(stored, stored.slice(0, 30), false)).toBe(
+			stored,
+		);
+	});
+});
+
+describe("diffPartialText - reference link scan time on hostile input (Fizzy #2946)", () => {
+	// With a definition present, every paragraph is scanned for references
+	// on every streaming chunk.
+	const DEFINITION = "[a]: https://example.com/a\n\n";
+	const fixtures = {
+		"unclosed brackets": "[a".repeat(20000),
+		"bracket pairs each opening a label": "[a][".repeat(20000),
+		"unclosed code spans of many lengths": Array.from(
+			{ length: 4000 },
+			(_, index) => `${"`".repeat((index % 40) + 1)}a`,
+		).join(""),
+		"unclosed inline link tails": "[a](b".repeat(20000),
+		"definition-shaped text": "[a]: b ".repeat(15000),
+	};
+
+	it.each(Object.entries(fixtures))(
+		"stays linear on %s",
+		(_name, fixture) => {
+			const text = `${DEFINITION}${fixture}`;
+			const started = performance.now();
+			diffPartialText(text, text, true);
+			diffPartialText(text, text.slice(0, text.length / 2), false);
+			expect(performance.now() - started).toBeLessThan(500);
+		},
+	);
+
+	it("stays linear on many definition lines", () => {
+		const text = `${"[a]: https://example.com/a\n".repeat(20000)}\nSee [a].`;
+		const started = performance.now();
+		diffPartialText(text, text, true);
+		diffPartialText(text, text.slice(0, text.length / 2), false);
+		expect(performance.now() - started).toBeLessThan(500);
+	});
+
+	// A changed definition takes the slow path: the texts are parsed, their
+	// usages rewritten, and every label written in brackets is checked.
+	it.each(
+		Object.entries({
+			...fixtures,
+			"many definition lines": `${"[a]: https://example.com/a\n".repeat(20000)}\nSee [a].`,
+		}),
+	)("stays linear with a changed definition on %s", (_name, fixture) => {
+		const before = `[a]: https://example.com/old\n\n${fixture}`;
+		const after = `[a]: https://example.com/new\n\n${fixture}`;
+		const started = performance.now();
+		diffPartialText(before, after, true);
+		diffPartialText(before, after.slice(0, after.length / 2), false);
+		expect(performance.now() - started).toBeLessThan(500);
+	});
+});
+
+describe("diffPartialText - an unchanged reference document while it streams (Fizzy #2946)", () => {
+	// Definitions usually arrive last. Rewriting every reference link made
+	// each one show as a change until its definition had streamed in.
+	const STORED = [
+		"See [the guide][guide] and the [faq] first.",
+		"",
+		"Then read on.",
+		"",
+		"[guide]: https://example.com/guide",
+		'[faq]: https://example.com/faq "Questions"',
+	].join("\n");
+	const guide = STORED.indexOf("[guide]:");
+	const faq = STORED.indexOf("[faq]:");
+
+	it.each([
+		["before any definition", 20],
+		["at the first definition", guide],
+		["inside the first destination", guide + 18],
+		["after the first definition", faq],
+		["inside the last title", STORED.length - 4],
+		["at the end", STORED.length],
+	])("shows no change %s", (_where, length) => {
+		expect(diffPartialText(STORED, STORED.slice(0, length), false)).toBe(
+			STORED,
+		);
+	});
+
+	it("shows no change while a title on the next line or a quoted definition streams in", () => {
+		const stored = [
+			"See [the guide][guide] and the [faq] first.",
+			"",
+			"[guide]: https://example.com/guide",
+			'"The guide"',
+			"",
+			"> [faq]: https://example.com/faq",
+		].join("\n");
+
+		for (let length = 0; length <= stored.length; length++) {
+			expect(
+				diffPartialText(stored, stored.slice(0, length), false),
+			).toBe(stored);
+		}
+	});
+});
+
+describe("diffPartialText - the line break beside a changed table (Fizzy #2946)", () => {
+	// A changed part that holds a table and a line break gave the break a
+	// marker pair of its own, a change around no text that the renderer had
+	// to drop again.
+	const table = (name: string) =>
+		`| Name | Link |\n| --- | --- |\n| ${name} | [guide] |`;
+	const emptyPair = new RegExp(
+		`(?:${DIFF_ADD_START}\\s*${DIFF_ADD_END}|${DIFF_DEL_START}\\s*${DIFF_DEL_END})`,
+	);
+
+	it.each([
+		["a definition", "[guide]: https://example.com/guide"],
+		["a paragraph", "More text here."],
+	])("marks no line break of its own before %s", (_name, after) => {
+		const diff = diffPartialText(
+			`${table("Pay")}\n\n${after}`,
+			`${table("Pay now")}\n\n${after}`,
+			true,
+		);
+
+		expect(diff).not.toMatch(emptyPair);
+		expect(diff).toMatch(new RegExp(`\\n\\n${escapeForRegExp(after)}$`));
+	});
+});
+
+function escapeForRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+describe("diffPartialText - a plain-text review (Fizzy #2946)", () => {
+	// A prompt is reviewed and saved as raw text, not rendered as Markdown:
+	// its definition-shaped lines are not rewritten as links, and marker
+	// bytes in it are not resolved.
+	const ENC_DEL_START = "%E2%80%8B%E2%80%8BDEL_START%E2%80%8B%C2%A0";
+	const ENC_DEL_END = "%C2%A0%E2%80%8BDEL_END%E2%80%8B%E2%80%8B";
+	const acceptAll = (diff: string) =>
+		diff
+			.replace(
+				new RegExp(`${DIFF_DEL_START}[\\s\\S]*?${DIFF_DEL_END}`, "g"),
+				"",
+			)
+			.replaceAll(DIFF_ADD_START, "")
+			.replaceAll(DIFF_ADD_END, "");
+	const rejectAll = (diff: string) =>
+		diff
+			.replace(
+				new RegExp(`${DIFF_ADD_START}[\\s\\S]*?${DIFF_ADD_END}`, "g"),
+				"",
+			)
+			.replaceAll(DIFF_DEL_START, "")
+			.replaceAll(DIFF_DEL_END, "");
+
+	it("shows a changed definition-shaped line as text", () => {
+		const stored = "Reply in the [Format] below.\n\n[Format]: markdown";
+		const proposed = "Reply in the [Format] below.\n\n[Format]: json";
+		const diff = diffPartialText(stored, proposed, true, {
+			markdown: false,
+		});
+
+		expect(diff).toContain("Reply in the [Format] below.");
+		expect(diff).toContain("[Format]: ");
+		expect(diff).toContain(`${DIFF_DEL_START}markdown${DIFF_DEL_END}`);
+		expect(diff).toContain(`${DIFF_ADD_START}json${DIFF_ADD_END}`);
+		expect(acceptAll(diff)).toBe(proposed);
+		expect(rejectAll(diff)).toBe(stored);
+	});
+
+	it("leaves encoded marker bytes in the text as they are", () => {
+		const stored = `Fetch https://example.com/a${ENC_DEL_START}b${ENC_DEL_END}/c and summarize it.`;
+		const proposed = `${stored} Keep it short.`;
+		const diff = diffPartialText(stored, proposed, true, {
+			markdown: false,
+		});
+
+		expect(diff).toContain(`/a${ENC_DEL_START}b${ENC_DEL_END}/c`);
+		expect(acceptAll(diff)).toBe(proposed);
 	});
 });

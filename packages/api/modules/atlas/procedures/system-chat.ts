@@ -43,21 +43,26 @@ export const systemChatProcedure = tenantProtectedProcedure
 			organizationId,
 		});
 		try {
-			const { textStream, persistOutcome } = await service.systemChat({
-				projectId: input.projectId,
-				repositoryIntegrationIds: input.repositoryIntegrationIds,
-				mode: input.mode,
-				focusNodeKey: input.focusNodeKey,
-				conversationId: input.conversationId,
-				messages: input.messages,
-			});
-			// Same event-iterator contract as `chat`: string deltas, then at most
-			// one terminal sentinel once the assistant write settles.
+			const { textStream, persistOutcome, getAnswerModel } =
+				await service.systemChat({
+					projectId: input.projectId,
+					repositoryIntegrationIds: input.repositoryIntegrationIds,
+					mode: input.mode,
+					focusNodeKey: input.focusNodeKey,
+					conversationId: input.conversationId,
+					messages: input.messages,
+				});
+			// As in `chat`, after text finishes and persistence settles, emit
+			// served-model metadata, then at most one terminal sentinel.
 			return (async function* () {
 				for await (const delta of textStream) {
 					yield delta;
 				}
 				const note = atlasChatTurnNote(await persistOutcome);
+				const model = getAnswerModel();
+				if (model) {
+					yield { type: "atlas-chat-model" as const, model };
+				}
 				if (note) {
 					yield { type: `atlas-chat-${note}` as const };
 				}

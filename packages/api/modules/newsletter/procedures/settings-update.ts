@@ -7,11 +7,15 @@ import {
 	getLinkedSlackChannels,
 	getLinkedTeamsChannels,
 	getNewsletterSettings,
+	lockOrganizationSubscribers,
 	NEWSLETTER_CHAT_PLATFORMS,
 	NEWSLETTER_DELIVERY_DESTINATIONS,
 	NEWSLETTER_DETAIL_LEVELS,
+	purgeOrganizationSubscribers,
 	recordAuditTx,
+	recordOrganizationSyncFailure,
 	setPublicWidgetState,
+	syncOrganizationSubscribers,
 	upsertNewsletterSettings,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -83,6 +87,9 @@ export const updateNewsletterSettingsInput = z.object({
 	// Whether a send requires admin approval before delivery. Audited on a real
 	// transition (see the handler's `newsletter.approval.required_changed` emit).
 	requireApproval: z.boolean().optional(),
+	// Reconcile organization members into the subscriber list before each send.
+	// Organization projects only. Audited on a real transition.
+	sendToOrganization: z.boolean().optional(),
 	// Per-project embeddable-widget owner controls. The on/off flag drives the
 	// embed-token lifecycle (mint on first enable, version bump on disable) and
 	// is applied transactionally; the theme fields are pure presentation.
@@ -96,6 +103,10 @@ export const updateNewsletterSettingsInput = z.object({
 		.optional(),
 	publicWidgetConfig: z.record(z.string(), z.unknown()).nullable().optional(),
 });
+
+// Turning the distribution off waits for a running sync, which can take longer
+// than Prisma's default five seconds for a large organization.
+const ORG_DISTRIBUTION_TRANSACTION_OPTIONS = { timeout: 60_000 };
 
 export const updateSettingsProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_SETTINGS_EDIT))
@@ -113,6 +124,12 @@ export const updateSettingsProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
 		}
 		assertInputOrgMatchesProject(input.organizationId, project);
+		if (input.sendToOrganization && !project.organizationId) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Only an organization project can send to its organization",
+			});
+		}
 
 		// F3: re-validate BOTH submitted lists — the audience list (chatChannels)
 		// and the review-alert list (approvalChatChannels, Fizzy #2203) — against
@@ -174,7 +191,45 @@ export const updateSettingsProcedure = tenantProtectedProcedure
 		//   - the audit + version bump happen ONLY on a REAL transition
 		//     (`changed` from setPublicWidgetState); a no-op same-value update
 		//     emits neither.
+		let organizationDistributionTurnedOn = false;
 		const settings = await db.$transaction(async (tx) => {
+			// A real transition only. Turning it off purges in this transaction, so
+			// a failed purge cannot leave the setting off with those people still
+			// on the list and receiving mail.
+			if (input.sendToOrganization !== undefined) {
+				await lockOrganizationSubscribers(tx, input.projectId);
+				const current = await tx.newsletterSettings.findUnique({
+					where: { projectId: input.projectId },
+					select: { sendToOrganization: true },
+				});
+				const before = current?.sendToOrganization ?? false;
+				if (before !== input.sendToOrganization) {
+					await recordAuditTx(tx, {
+						action: "newsletter.organization_distribution.changed",
+						actor: {
+							type: "user",
+							userId: context.user.id,
+							emailSnapshot: context.user.email ?? null,
+							nameSnapshot: context.user.name ?? null,
+						},
+						organizationId: project.organizationId ?? null,
+						projectId: input.projectId,
+						resource: {
+							type: "newsletter_settings",
+							id: input.projectId,
+						},
+						metadata: {
+							sendToOrganization: input.sendToOrganization,
+						},
+					});
+					if (input.sendToOrganization) {
+						organizationDistributionTurnedOn = true;
+					} else {
+						await purgeOrganizationSubscribers(input.projectId, tx);
+					}
+				}
+			}
+
 			// Audit a real requireApproval transition. Read the pre-write value under
 			// the SAME tx that persists the change (below), so the compare-and-audit
 			// is atomic with the save — mirrors the widget enable/disable audit.
@@ -218,6 +273,7 @@ export const updateSettingsProcedure = tenantProtectedProcedure
 					chatChannels,
 					approvalChatChannels,
 					requireApproval: input.requireApproval,
+					sendToOrganization: input.sendToOrganization,
 					publicWidgetTheme: input.publicWidgetTheme,
 					publicWidgetAccent: input.publicWidgetAccent,
 					publicWidgetConfig: input.publicWidgetConfig,
@@ -250,7 +306,7 @@ export const updateSettingsProcedure = tenantProtectedProcedure
 			}
 
 			return s;
-		});
+		}, ORG_DISTRIBUTION_TRANSACTION_OPTIONS);
 
 		// Auto-enrol current members on a false->true enable transition. Best-effort:
 		// a failure here must never fail the settings save (the next send's reconcile
@@ -266,6 +322,24 @@ export const updateSettingsProcedure = tenantProtectedProcedure
 					projectId: input.projectId,
 					error: err,
 				});
+			}
+		}
+
+		// Outside the transaction, because this reads a whole organization. Best
+		// effort like the backfill above: the next send's sync self-heals, and a
+		// failure stays visible on the settings row.
+		if (organizationDistributionTurnedOn) {
+			try {
+				await syncOrganizationSubscribers(input.projectId);
+			} catch (err) {
+				logger.error("newsletter: organization sync on enable failed", {
+					projectId: input.projectId,
+					error: err,
+				});
+				await recordOrganizationSyncFailure(
+					input.projectId,
+					err instanceof Error ? err.message : String(err),
+				).catch(() => undefined);
 			}
 		}
 

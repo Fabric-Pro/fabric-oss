@@ -1,4 +1,5 @@
 import { EventType } from "@ag-ui/client";
+import type { AnswerModelInfo } from "@repo/ai/lib/answer-model-info";
 import {
 	errorMessageOf,
 	isAbortError,
@@ -23,6 +24,7 @@ import {
  */
 
 export interface RefinementMessage {
+	model?: AnswerModelInfo;
 	role: "user" | "assistant";
 	content: string;
 }
@@ -35,6 +37,7 @@ export interface RefineRequest {
 }
 
 export interface RefineReply {
+	model?: AnswerModelInfo;
 	feedback: string;
 	updatedMessage: string;
 	isReady: boolean;
@@ -57,6 +60,7 @@ export async function refineOverRoute(
 		feedback: result.feedback,
 		updatedMessage: result.updatedMessage,
 		isReady: result.isReady,
+		model: result.model,
 	};
 }
 
@@ -75,7 +79,11 @@ export async function refineOverRuntime(
 ): Promise<RefineReply> {
 	const reply: {
 		text: string;
-		result?: { updatedMessage: string; isReady: boolean };
+		result?: {
+			updatedMessage: string;
+			isReady: boolean;
+			model?: AnswerModelInfo;
+		};
 		failure?: string;
 		finished: boolean;
 	} = { text: "", finished: false };

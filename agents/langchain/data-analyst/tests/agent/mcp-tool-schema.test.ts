@@ -481,6 +481,7 @@ describe("MCP tool schema", () => {
 				connectionSuggestions: [],
 				availableDataSources: [],
 				reasoningByTurn: {},
+				answerModel: null,
 			},
 			{ configurable: { ai_token: "synthetic-token" } },
 		);

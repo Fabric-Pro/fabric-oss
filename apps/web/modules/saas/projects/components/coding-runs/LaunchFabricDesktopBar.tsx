@@ -18,6 +18,12 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
 	Building2Icon,
@@ -25,6 +31,7 @@ import {
 	CopyIcon,
 	CpuIcon,
 	ExternalLinkIcon,
+	HelpCircleIcon,
 	KeyRoundIcon,
 	LaptopIcon,
 	RefreshCwIcon,
@@ -83,8 +90,12 @@ export function LaunchFabricDesktopBar({
 		prefs.preferredServerScope === "TEAM" && !teamServer
 			? "PRIVATE"
 			: prefs.preferredServerScope;
-	const remoteUrl = effectiveScope === "TEAM" ? teamServer?.url : webUiUrl;
+	const defaultRemoteUrl =
+		effectiveScope === "TEAM" ? teamServer?.url : webUiUrl;
+	const [customRemoteUrl, setCustomRemoteUrl] = useState<string | null>(null);
+	const remoteUrl = customRemoteUrl ?? defaultRemoteUrl;
 	const [taskPrompt, setTaskPrompt] = useState(prompt ?? "");
+	const [embedRemoteWebUi, setEmbedRemoteWebUi] = useState(false);
 
 	useEffect(() => {
 		if (typeof window !== "undefined") {
@@ -188,6 +199,34 @@ export function LaunchFabricDesktopBar({
 						<KeyRoundIcon className="mr-1 size-3" />
 						OAuth Login
 					</Button>
+					<TooltipProvider delayDuration={150}>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<a
+									href="/docs/features/projects#delegating-coding-runs-to-fabric-agents"
+									target="_blank"
+									rel="noopener noreferrer"
+									data-testid="launch-desktop-bar-docs-link"
+									aria-label="Fabric Agents Remote Server delegation documentation"
+									className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+								>
+									<HelpCircleIcon className="size-3" />
+									Docs
+								</a>
+							</TooltipTrigger>
+							<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+								<p className="font-semibold">
+									Remote Server Delegation &amp; Live Web UI
+								</p>
+								<p>
+									Configure Personal or Organization Remote
+									Servers, select your subscription harness,
+									and embed the live Server Web UI inside the
+									Fabric Portal.
+								</p>
+							</TooltipContent>
+						</Tooltip>
+					</TooltipProvider>
 				</div>
 			</div>
 
@@ -200,11 +239,12 @@ export function LaunchFabricDesktopBar({
 						<button
 							type="button"
 							aria-pressed={effectiveScope === "PRIVATE"}
-							onClick={() =>
+							onClick={() => {
+								setCustomRemoteUrl(null);
 								updatePrefs({
 									preferredServerScope: "PRIVATE",
-								})
-							}
+								});
+							}}
 							className={cn(
 								"flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors",
 								effectiveScope === "PRIVATE"
@@ -224,11 +264,12 @@ export function LaunchFabricDesktopBar({
 									? "Register a company server to use this option"
 									: undefined
 							}
-							onClick={() =>
+							onClick={() => {
+								setCustomRemoteUrl(null);
 								updatePrefs({
 									preferredServerScope: "TEAM",
-								})
-							}
+								});
+							}}
 							className={cn(
 								"flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors",
 								effectiveScope === "TEAM"
@@ -323,6 +364,14 @@ export function LaunchFabricDesktopBar({
 
 			<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
 				<input
+					type="url"
+					value={remoteUrl ?? ""}
+					onChange={(event) => setCustomRemoteUrl(event.target.value)}
+					placeholder="http://127.0.0.1:9100 or https://agents.example.com"
+					aria-label="Fabric Agents Remote Server URL"
+					className="h-8 w-full rounded-md border border-input bg-background px-2.5 font-mono text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring sm:w-64"
+				/>
+				<input
 					type="text"
 					value={taskPrompt}
 					onChange={(event) => setTaskPrompt(event.target.value)}
@@ -330,7 +379,7 @@ export function LaunchFabricDesktopBar({
 					aria-label="Remote delegation task prompt"
 					className="h-8 flex-1 rounded-md border border-input bg-background px-2.5 text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 				/>
-				<div className="flex items-center gap-1.5">
+				<div className="flex flex-wrap items-center gap-1.5">
 					<Button
 						type="button"
 						size="sm"
@@ -341,6 +390,21 @@ export function LaunchFabricDesktopBar({
 					>
 						<SendIcon className="size-3.5" />
 						Dispatch to Remote Server
+					</Button>
+					<Button
+						type="button"
+						variant={embedRemoteWebUi ? "default" : "outline"}
+						size="sm"
+						className="h-8 gap-1 px-2.5 text-xs"
+						onClick={() =>
+							setEmbedRemoteWebUi((current) => !current)
+						}
+						data-testid="toggle-embedded-remote-webui-button"
+					>
+						<ServerIcon className="size-3" />
+						{embedRemoteWebUi
+							? "Hide Portal Web UI"
+							: "View Web UI in Portal"}
 					</Button>
 					<Button
 						asChild
@@ -361,6 +425,33 @@ export function LaunchFabricDesktopBar({
 					</Button>
 				</div>
 			</div>
+
+			{embedRemoteWebUi && (
+				<div
+					className="overflow-hidden rounded-lg border border-primary/30 bg-background shadow-xs"
+					data-testid="embedded-remote-server-webui"
+				>
+					<div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-muted/30 px-3 py-1.5 text-xs">
+						<span className="font-medium text-foreground">
+							Fabric Agents Remote Server Web UI (
+							{effectiveScope === "TEAM"
+								? "Organization Remote Server"
+								: "Personal Remote Server"}
+							)
+						</span>
+						<span className="truncate font-mono text-[11px] text-muted-foreground">
+							{remoteDelegationUrl}
+						</span>
+					</div>
+					<iframe
+						src={remoteDelegationUrl}
+						title="Fabric Agents Remote Server Web UI"
+						className="h-[560px] w-full border-0"
+						allow="clipboard-read; clipboard-write"
+						sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+					/>
+				</div>
+			)}
 		</div>
 	) : null;
 
@@ -403,16 +494,17 @@ export function LaunchFabricDesktopBar({
 					</div>
 					<div className="flex flex-wrap items-center gap-1.5">
 						<Button
-							type="button"
+							asChild
 							size="sm"
 							className="h-7 px-2.5 text-xs"
-							onClick={() => {
-								window.location.assign(newSessionDeepLink);
-							}}
-							data-testid="launch-fabric-desktop-button"
 						>
-							<LaptopIcon className="mr-1.5 size-3.5" />
-							Launch Fabric Desktop
+							<a
+								href={newSessionDeepLink}
+								data-testid="launch-fabric-desktop-button"
+							>
+								<LaptopIcon className="mr-1.5 size-3.5" />
+								Launch Fabric Desktop
+							</a>
 						</Button>
 						<Button
 							type="button"
@@ -429,17 +521,18 @@ export function LaunchFabricDesktopBar({
 							Delegate to Remote Server
 						</Button>
 						<Button
-							type="button"
+							asChild
 							variant="outline"
 							size="sm"
 							className="h-7 px-2.5 text-xs"
-							onClick={() => {
-								window.location.assign(aiSettingsDeepLink);
-							}}
-							data-testid="launch-fabric-desktop-ai-settings"
 						>
-							<SlidersHorizontalIcon className="mr-1.5 size-3" />
-							AI Connections
+							<a
+								href={aiSettingsDeepLink}
+								data-testid="launch-fabric-desktop-ai-settings"
+							>
+								<SlidersHorizontalIcon className="mr-1.5 size-3" />
+								AI Connections
+							</a>
 						</Button>
 						<Button
 							type="button"

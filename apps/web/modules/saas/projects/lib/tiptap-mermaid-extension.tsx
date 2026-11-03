@@ -1,11 +1,13 @@
 "use client";
 
 import {
-	ALWAYS_WRAPPED_LABEL_CHARS,
 	DIAGRAM_CANVAS_PADDING_PX,
+	flowchartNodeLabelsOverflow,
 	PRINT_LABEL_FLOOR_PT,
 	printedNodeLabelPt,
+	printsBetter,
 	turnFlowchartTopDown,
+	type WeighedDiagramCopy,
 	wrapFlowchartNodeLabels,
 } from "@repo/utils/proposal-artifact/diagram-label-wrap";
 import {
@@ -297,17 +299,17 @@ const BEAUTIFUL_MERMAID_COLORS = {
 	padding: DIAGRAM_CANVAS_PADDING_PX,
 } as const;
 
-interface MeasuredDrawing {
+interface MeasuredDrawing extends WeighedDiagramCopy {
 	svg: string;
-	/** Its node labels as printed, or null when its size is unknown. */
-	labelPt: number | null;
 }
 
 /**
- * An engine drawing with its node labels' printed size, from its width and
- * height: shrunk to the print column, or to the tallest a figure may be.
+ * An engine drawing of `text` with what the choice between drawings weighs:
+ * its node labels' printed size, from its width and height (shrunk to the
+ * print column, or to the tallest a figure may be), and whether a label of
+ * it is too wide for its box.
  */
-function measuredDrawing(svg: string): MeasuredDrawing {
+function measuredDrawing(svg: string, text: string): MeasuredDrawing {
 	const size = readSvgNaturalSize(svg);
 	return {
 		svg,
@@ -318,19 +320,8 @@ function measuredDrawing(svg: string): MeasuredDrawing {
 						width: size.width,
 						height: size.height,
 					}),
+		labelsOverflow: flowchartNodeLabelsOverflow(text),
 	};
-}
-
-/** Whether a drawing's labels print larger than another's, both known. */
-function printsLarger(
-	drawing: MeasuredDrawing,
-	than: MeasuredDrawing,
-): boolean {
-	return (
-		drawing.labelPt !== null &&
-		than.labelPt !== null &&
-		drawing.labelPt > than.labelPt
-	);
 }
 
 /** The engine's drawing of `text`, or null when it refuses it. */
@@ -347,49 +338,52 @@ function drawOrNull(
 
 /**
  * The source drawn by beautiful-mermaid so that its node labels stay
- * legible. On every page but a Proposal's, a flowchart's labels of
- * {@link ALWAYS_WRAPPED_LABEL_CHARS} or more are broken into lines and that
+ * legible. On every page but a Proposal's, a flowchart's labels too wide
+ * for their boxes (`nodeLabelLineOverflows`) are broken into lines and that
  * copy is drawn, in the author's direction: on screen its height does not
  * matter. With `floorRule` (a client-document Proposal's page, which
  * prints) the export's rule follows, measured at the size labels print,
  * shrunk to the print column's width or a printed figure's height: the
- * source as written competes with that copy and the one whose labels print
- * larger is kept, the broken one on a tie; then, when a flowchart's or a
- * state diagram's labels would print below the floor, a sideways flowchart
- * is drawn top-down too, the copy kept and, when that is the broken one,
- * the source as written, and, when that is still below it, with every long
- * label broken (top-down when it was sideways); a drawing replaces the one
- * kept only when its labels print larger. Only the drawn copy changes,
- * never the fence. A copy the engine refuses keeps the drawing before it;
- * the source as written throws as before when there is no broken copy.
+ * source as written competes with that copy and the one that prints better
+ * (`printsBetter`) is kept, the broken one whenever its labels fit their
+ * boxes and the other's spill, else the one whose labels print larger, the
+ * broken one on a tie; then, when a flowchart's or a state diagram's labels
+ * would print below the floor, a sideways flowchart is drawn top-down too,
+ * the copy kept and, when that is the broken one, the source as written,
+ * and, when that is still below it, with every long label broken (top-down
+ * when it was sideways); a drawing replaces the one kept only when it
+ * prints better. Only the drawn copy changes, never the fence. A copy the
+ * engine refuses keeps the drawing before it; the source as written throws
+ * as before when there is no broken copy.
  */
 function drawLegible(
 	source: string,
 	render: (text: string) => string,
 	floorRule: boolean,
 ): string {
-	const longBroken = wrapFlowchartNodeLabels(source, {
-		minChars: ALWAYS_WRAPPED_LABEL_CHARS,
+	const tooWideBroken = wrapFlowchartNodeLabels(source, {
+		overflowingOnly: true,
 	});
 	const brokenSvg =
-		longBroken === null ? null : drawOrNull(render, longBroken);
+		tooWideBroken === null ? null : drawOrNull(render, tooWideBroken);
 	if (!floorRule) {
 		return brokenSvg ?? render(source);
 	}
 	// What the variants below start from: the copy kept of the two.
 	let base = source;
 	let best: MeasuredDrawing;
-	if (brokenSvg === null || longBroken === null) {
-		best = measuredDrawing(render(source));
+	if (brokenSvg === null || tooWideBroken === null) {
+		best = measuredDrawing(render(source), source);
 	} else {
-		base = longBroken;
-		best = measuredDrawing(brokenSvg);
+		base = tooWideBroken;
+		best = measuredDrawing(brokenSvg, tooWideBroken);
 		// Broken labels make a diagram taller, and a tall one prints
-		// smaller: the copy as written is kept when its labels print larger.
+		// smaller: the copy as written is kept when its labels print larger
+		// and fit their boxes as the broken ones do.
 		const writtenSvg = drawOrNull(render, source);
 		const written =
-			writtenSvg === null ? null : measuredDrawing(writtenSvg);
-		if (written !== null && printsLarger(written, best)) {
+			writtenSvg === null ? null : measuredDrawing(writtenSvg, source);
+		if (written !== null && printsBetter(written, best)) {
 			base = source;
 			best = written;
 		}
@@ -401,7 +395,7 @@ function drawLegible(
 	}
 	const belowFloor = (drawing: MeasuredDrawing) =>
 		drawing.labelPt !== null && drawing.labelPt < PRINT_LABEL_FLOOR_PT;
-	const larger = (
+	const better = (
 		kept: MeasuredDrawing,
 		variant: string,
 	): MeasuredDrawing => {
@@ -409,28 +403,29 @@ function drawLegible(
 		if (svg === null) {
 			return kept;
 		}
-		const redrawn = measuredDrawing(svg);
-		return printsLarger(redrawn, kept) ? redrawn : kept;
+		const redrawn = measuredDrawing(svg, variant);
+		return printsBetter(redrawn, kept) ? redrawn : kept;
 	};
 	if (belowFloor(best)) {
 		const turned = turnFlowchartTopDown(base);
 		if (turned) {
-			best = larger(best, turned);
+			best = better(best, turned);
 		}
 		// The source as written is turned too, as print turns it: broken
 		// labels make a turned diagram taller, and a tall one prints
 		// smaller, so it can print larger than the broken copy turned, which
-		// wins a tie.
+		// wins a tie. It is kept only when its labels fit their boxes as the
+		// kept drawing's do.
 		if (base !== source) {
 			const turnedSource = turnFlowchartTopDown(source);
 			if (turnedSource) {
-				best = larger(best, turnedSource);
+				best = better(best, turnedSource);
 			}
 		}
 		if (belowFloor(best)) {
 			const wrapped = wrapFlowchartNodeLabels(turned ?? base);
 			if (wrapped) {
-				best = larger(best, wrapped);
+				best = better(best, wrapped);
 			}
 		}
 	}
@@ -494,16 +489,18 @@ interface DiagramRenderOptions {
  * beautiful-mermaid first, mermaid.js for the types it does not support.
  *
  * With a theme `paint` (a client-document Proposal's page, Fizzy #2946) a
- * fence with a `%% figure:` line draws its SVG template instead, and a
- * flowchart gets the theme's role class definitions appended first, so a
- * generated diagram's `class <id> surface` lines take the brand's colours
- * and follow a Style change without its text changing. Without one the
+ * fence with a `%% figure:` line draws its SVG template instead, as does a
+ * plain chain of seven steps or more with no figure line, as a numbered
+ * process (`figureKindOf`, as the export decides), and a flowchart gets the
+ * theme's role class definitions appended first, so a generated diagram's
+ * `class <id> surface` lines take the brand's colours and follow a Style
+ * change without its text changing. Without one the
  * source is drawn as written, without its caption line. Without a paint,
- * beautiful-mermaid draws a copy with its long node labels broken into
- * lines; with one, as the export prints it, that copy competes with the
- * source as written, and one whose labels would print too small is also
- * turned top-down or broken further (`drawLegibleDiagram`). The fence
- * itself never changes.
+ * beautiful-mermaid draws a copy with its node labels too wide for their
+ * boxes broken into lines; with one, as the export prints it, that copy
+ * competes with the source as written, and one whose labels would print
+ * too small is also turned top-down or broken further
+ * (`drawLegibleDiagram`). The fence itself never changes.
  *
  * beautiful-mermaid finds an xychart on the very first line only, so a
  * chart is handed to it without its leading `%%` lines (marker, caption,

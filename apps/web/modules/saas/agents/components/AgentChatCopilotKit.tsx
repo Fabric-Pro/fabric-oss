@@ -1,6 +1,10 @@
 "use client";
 
-import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import type { Organization } from "@repo/auth";
+import {
+	useEffectiveOrganizationId,
+	useOrganizationContext,
+} from "@saas/organizations/hooks/use-organization-context";
 import { Spinner } from "@shared/components/Spinner";
 import { useQuery } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
@@ -14,7 +18,7 @@ import {
 	agentChatAiConfigQueryOptions,
 	registeredAgentChatQueryOptions,
 } from "../lib/agent-chat-queries";
-import { DATA_ANALYST_REGISTRY_AGENT_ID } from "../lib/data-analyst-runtime-protocol";
+import { DATA_ANALYST_REGISTRY_AGENT_ID } from "../lib/data-analyst-runtime-contract";
 import { DataAnalystChat } from "./data-analyst/DataAnalystChat";
 import type { ReasoningMode } from "./ReasoningModeSelector";
 
@@ -45,6 +49,7 @@ function AgentChatLoading() {
 
 interface AgentChatCopilotKitProps {
 	agentId: string;
+	organization?: Pick<Organization, "id" | "slug" | "name">;
 	/** Use orchestrator mode - routes to specialized agents automatically */
 	useOrchestrator?: boolean;
 }
@@ -70,13 +75,20 @@ interface AgentCapabilities {
  */
 export function AgentChatCopilotKit({
 	agentId,
+	organization,
 	useOrchestrator = false,
 }: AgentChatCopilotKitProps) {
+	const context = useOrganizationContext();
+	const organizationId = useEffectiveOrganizationId(organization?.id);
+	const organizationName = organization?.name ?? context.organizationName;
+	const basePath = organization
+		? `/app/${organization.slug}`
+		: context.basePath;
+	const isOrgContext = organizationId !== null;
 	const dataAnalystTransport = useRuntimeChatTransport(
 		"COPILOTKIT_DATA_ANALYST_CHAT",
+		organizationId,
 	);
-	const { organizationId, organizationName, basePath, isOrgContext } =
-		useOrganizationContext();
 	const [reasoningMode, setReasoningMode] =
 		useState<ReasoningMode>("balanced");
 

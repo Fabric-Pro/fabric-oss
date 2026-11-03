@@ -67,7 +67,6 @@ describe("buildProposalDocx image placement budget", () => {
 			width: 40,
 			height: 20,
 			png: RASTER,
-			numbered: true as const,
 		};
 		const result = await buildProposalDocx({
 			prepared: prepareExportMarkdown([fence, fence, fence].join("\n\n")),

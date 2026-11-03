@@ -118,20 +118,22 @@ describe("WeavePlanList", () => {
 		mocks.useKanbanRuntimeDetected.mockReturnValue("detected");
 	});
 
-	it("shows Fabric Agents and local development delegation for feature-linked approved plans", async () => {
+	it("shows Fabric Agents and Fabric Agents Desktop delegation for feature-linked approved plans", async () => {
 		renderPlanList([approvedPlan()]);
 
 		expect(
 			await screen.findByRole("button", {
-				name: /Fabric Agents/i,
+				name: /^Fabric Agents$/i,
 			}),
 		).toBeEnabled();
 		expect(
 			screen.getByRole("button", {
-				name: /Local development/i,
+				name: /Fabric Agents Desktop/i,
 			}),
 		).toBeEnabled();
-		expect(screen.getByText(/through Fabric Kanban/i)).toBeInTheDocument();
+		expect(
+			screen.getByText(/through Fabric Agents Desktop/i),
+		).toBeInTheDocument();
 	});
 
 	it("disables Fabric Agents for standalone approved plans and explains why", async () => {
@@ -145,7 +147,7 @@ describe("WeavePlanList", () => {
 		]);
 
 		const backgroundButton = await screen.findByRole("button", {
-			name: /Fabric Agents/i,
+			name: /^Fabric Agents$/i,
 		});
 		expect(backgroundButton).toBeDisabled();
 		// The "why is this disabled" copy moved from a native `title` on the
@@ -164,7 +166,7 @@ describe("WeavePlanList", () => {
 		).toBeInTheDocument();
 		expect(
 			screen.getByRole("button", {
-				name: /Local development/i,
+				name: /Fabric Agents Desktop/i,
 			}),
 		).toBeEnabled();
 	});
@@ -219,7 +221,7 @@ describe("WeavePlanList", () => {
 			}),
 		]);
 
-		await screen.findByRole("button", { name: /Fabric Agents/i });
+		await screen.findByRole("button", { name: /^Fabric Agents$/i });
 		expect(
 			screen.queryByRole("button", { name: /Retry generation/i }),
 		).not.toBeInTheDocument();
@@ -255,21 +257,23 @@ describe("WeavePlanList", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("shows the local-development queue toast after a KANBAN_LOCAL start", async () => {
+	it("shows the Fabric Agents Desktop queue toast after a KANBAN_LOCAL start", async () => {
 		mocks.startExecution.mockResolvedValue({ executionId: "exec_1" });
 		const onSelectExecution = vi.fn();
 		renderPlanList([approvedPlan()], { onSelectExecution });
 
 		fireEvent.click(
-			await screen.findByRole("button", { name: /Local development/i }),
+			await screen.findByRole("button", {
+				name: /Fabric Agents Desktop/i,
+			}),
 		);
 
 		await waitFor(() =>
 			expect(mocks.toastSuccess).toHaveBeenCalledWith(
-				"Queued for Local development",
+				"Queued for Fabric Agents Desktop",
 				{
 					description:
-						"Run `fabric-kanban` in your repository to pull queued items.",
+						"Open Fabric Agents Desktop or your Personal Fabric Agents Remote Server to run queued items.",
 				},
 			),
 		);
@@ -281,7 +285,7 @@ describe("WeavePlanList", () => {
 		renderPlanList([approvedPlan()]);
 
 		fireEvent.click(
-			await screen.findByRole("button", { name: /Fabric Agents/i }),
+			await screen.findByRole("button", { name: /^Fabric Agents$/i }),
 		);
 
 		await waitFor(() =>
@@ -291,17 +295,17 @@ describe("WeavePlanList", () => {
 		);
 	});
 
-	it("shows the runtime-not-detected hint without disabling the Local development button", async () => {
+	it("shows the runtime-not-detected hint without disabling the Fabric Agents Desktop button", async () => {
 		mocks.useKanbanRuntimeDetected.mockReturnValue("not-detected");
 		renderPlanList([approvedPlan()]);
 
 		expect(
 			await screen.findByText(
-				/Local fabric-kanban runtime not detected — run `fabric-kanban` in your repository to pull queued work\./,
+				/Local Fabric Agents Desktop runtime not detected — open Fabric Agents Desktop or your Personal Fabric Agents Remote Server to run queued work\./,
 			),
 		).toBeInTheDocument();
 		expect(
-			screen.getByRole("button", { name: /Local development/i }),
+			screen.getByRole("button", { name: /Fabric Agents Desktop/i }),
 		).toBeEnabled();
 	});
 
@@ -310,11 +314,13 @@ describe("WeavePlanList", () => {
 
 		expect(
 			await screen.findByText(
-				/Run fabric-kanban locally to pull queued work\./,
+				/Launch Fabric Agents Desktop or your Personal Fabric Agents Remote Server to run queued work using your subscription tokens\./,
 			),
 		).toBeInTheDocument();
 		expect(
-			screen.queryByText(/Local fabric-kanban runtime not detected/),
+			screen.queryByText(
+				/Local Fabric Agents Desktop runtime not detected/,
+			),
 		).not.toBeInTheDocument();
 		expect(mocks.useKanbanRuntimeDetected).toHaveBeenCalledWith(true);
 	});

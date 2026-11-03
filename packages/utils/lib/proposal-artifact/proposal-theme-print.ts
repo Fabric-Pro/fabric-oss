@@ -4,7 +4,9 @@
  * over the base layer. That is the cover and the landscape pages as named
  * pages, the running footer as `@page` margin boxes, the section openers and
  * the contents page. The cover letter's rules are in
- * `./proposal-theme-print-letter`.
+ * `./proposal-theme-print-letter`; the page size and margins, the `@page`
+ * blocks, the opener room and the figure height limits are in
+ * `./proposal-theme-print-page-flow`.
  *
  * `proposalThemeCss("print", …)` is the way in, and `./proposal-theme`
  * re-exports this module's public names, so importers keep one path.
@@ -15,7 +17,15 @@
 
 import { letterRules } from "./proposal-theme-print-letter";
 import {
-	atRule,
+	BODY_TEXT,
+	figureHeightRules,
+	OPENER_TEXT,
+	openerRoomRules,
+	PAGE_HEIGHTS,
+	PROPOSAL_PAGE_SIZE,
+	pageRules,
+} from "./proposal-theme-print-page-flow";
+import {
 	block,
 	type Declarations,
 	dot,
@@ -31,6 +41,16 @@ import {
 	ZEBRA,
 } from "./proposal-theme-rules";
 import { NEUTRAL_THEME, safeFontFamily } from "./theme-tokens";
+
+export {
+	type OpenerPageBlock,
+	PRINT_FIGURE_MAX_HEIGHT_PROPERTY,
+	PRINT_FIGURE_MAX_HEIGHT_PX,
+	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+	PROPOSAL_PAGE_SIZE,
+	PROPOSAL_PAGE_SIZE_LANDSCAPE,
+	printFigureUnderOpenerMaxHeightPx,
+} from "./proposal-theme-print-page-flow";
 
 /**
  * Classes only the print page writes: the parts of the cover, the eyebrow
@@ -113,7 +133,16 @@ import { NEUTRAL_THEME, safeFontFamily } from "./theme-tokens";
  * it; every graphic reads its small copy, `--pa-hero-opener-image`, when
  * the body has one, so the bytes are embedded once however many sections
  * there are, and each crop print writes of them stays small. Every opener
- * starts a page.
+ * starts a page, unless the section before it ends in a short tail: lines
+ * that ran onto a page of their own and fill no more than a quarter of it.
+ * The opener then follows them on that page, so no page is left almost
+ * empty. Every opener after the first, except one that opens a landscape
+ * page, comes right after an empty room block that decides which:
+ *
+ * ```html
+ * <div class="pa-opener-room" aria-hidden="true"></div>
+ * <header class="pa-section-opener" id="pa-section-2">…</header>
+ * ```
  *
  * An appendix opener takes no section number. It carries
  * `pa-appendix` and its eyebrow as a `data-label` attribute, "Appendix A"
@@ -191,6 +220,13 @@ export const PROPOSAL_PRINT_CLASSES = {
 	letterSignerRole: "pa-letter-signer-role",
 	/** The hero again, cropped to a section opener's right side. */
 	sectionGraphic: "pa-section-graphic",
+	/**
+	 * The room an opener needs below the previous section's last lines: an
+	 * empty block, laid out but drawing nothing, right before the opener.
+	 * When it fits on their page the opener follows them there; when it
+	 * does not, it moves to the next page and the opener starts that page.
+	 */
+	openerRoom: "pa-opener-room",
 	contents: "pa-contents",
 	/** The contents page's "Contents" heading, under the title eyebrow. */
 	contentsTitle: "pa-contents-title",
@@ -233,24 +269,6 @@ export const PROPOSAL_PRINT_CLASSES = {
  * show in place of a number in.
  */
 export const PROPOSAL_LABEL_ATTRIBUTE = "data-label";
-
-/**
- * The printed page size, in one place: US Letter until the page-size
- * question in Fizzy #2946 is answered.
- */
-export const PROPOSAL_PAGE_SIZE = "letter";
-
-/** The page size of a landscape appendix page. */
-export const PROPOSAL_PAGE_SIZE_LANDSCAPE =
-	`${PROPOSAL_PAGE_SIZE} landscape` as const;
-
-/**
- * The portrait page height of each size the constant above may name, so the
- * full-bleed cover follows the page size rather than restating it.
- */
-const PAGE_HEIGHTS = {
-	letter: "11in",
-} as const satisfies Record<typeof PROPOSAL_PAGE_SIZE, string>;
 
 /**
  * The cover's geometry (Fizzy #2946): the brands row from the top margin,
@@ -312,8 +330,8 @@ const PRINT_RULES: readonly ThemeRule[] = [
 	rule("&", {
 		margin: "0",
 		padding: "0",
-		"font-size": "10.5pt",
-		"line-height": "1.6",
+		"font-size": BODY_TEXT.size,
+		"line-height": String(BODY_TEXT.lineHeight),
 		color: "var(--pa-ink)",
 		"background-color": "var(--pa-surface)",
 		"-webkit-print-color-adjust": "exact",
@@ -374,6 +392,9 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"font-size": "7.75pt",
 	}),
 	rule(`${dot(PRINT.diagram)} figcaption`, { "text-align": "left" }),
+	// A figure's drawing is never taller than a page holds with its caption,
+	// less an opener's room right below one.
+	...figureHeightRules(),
 	rule(dot(PRINT.figureNumber), {
 		"font-weight": "500",
 		color: "var(--pa-ink)",
@@ -596,11 +617,11 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		brandsHeight: COVER_BRANDS_HEIGHT,
 		logoHeight: COVER_LOGO_HEIGHT,
 	}),
-	// A section opener: an ink card, at the top of its own page, with a
-	// "Section N" eyebrow, the heading, an optional subtitle and an optional
-	// graphic. A forced break right after the contents page, or a landscape
-	// page starting with the opener, is the same break, so no page is left
-	// blank.
+	// A section opener: an ink card, at the top of its own page or below a
+	// short tail, with a "Section N" eyebrow, the heading, an optional
+	// subtitle and an optional graphic. A forced break right after the
+	// contents page, or a landscape page starting with the opener, is the
+	// same break, so no page is left blank.
 	rule(dot(THEME.sectionOpener), {
 		// The containing block of the graphic and the first pass's marker.
 		// Nothing clips it: the marker must never be cut by a corner.
@@ -610,12 +631,15 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"break-after": "avoid",
 		"box-sizing": "border-box",
 		"min-height": "1.35in",
-		margin: "0 0 16pt",
-		padding: "18pt 22pt 20pt",
+		margin: `0 0 ${OPENER_TEXT.below}`,
+		padding: `18pt ${OPENER_TEXT.sidePadding} 20pt`,
 		"border-radius": "6pt",
 		color: "var(--pa-on-ink)",
 		"background-color": "var(--pa-ink)",
 	}),
+	// The room before an opener, which decides whether it follows a short
+	// tail on that tail's page or starts the next.
+	...openerRoomRules(PRINT),
 	rule(`${dot(THEME.sectionOpener)}::before`, {
 		content: '"Section " counter(pa-section)',
 		position: "relative",
@@ -637,13 +661,14 @@ const PRINT_RULES: readonly ThemeRule[] = [
 	rule(`${dot(THEME.sectionOpener)}${dot(PRINT.appendix)}::before`, {
 		content: `attr(${PROPOSAL_LABEL_ATTRIBUTE})`,
 	}),
-	// Drawn after the graphic, so above it.
+	// Drawn after the graphic, so above it. Its text and the subtitle's are
+	// set as the figure under an opener reads their lines (`OPENER_TEXT`).
 	rule(`${dot(THEME.sectionOpener)} h2`, {
 		position: "relative",
-		margin: "0 0 6pt",
+		margin: `0 0 ${OPENER_TEXT.heading.gap}`,
 		padding: "0",
-		"font-size": "21pt",
-		"line-height": "1.15",
+		"font-size": OPENER_TEXT.heading.size,
+		"line-height": String(OPENER_TEXT.heading.lineHeight),
 		color: "inherit",
 		"background-color": "transparent",
 		"border-radius": "0",
@@ -651,10 +676,10 @@ const PRINT_RULES: readonly ThemeRule[] = [
 	rule(`${dot(THEME.sectionOpener)} h2:last-child`, { "margin-bottom": "0" }),
 	rule(`${dot(THEME.sectionOpener)} p`, {
 		position: "relative",
-		"max-width": "3.9in",
+		"max-width": OPENER_TEXT.subtitle.maxWidth,
 		margin: "0",
-		"font-size": "10.5pt",
-		"line-height": "1.45",
+		"font-size": OPENER_TEXT.subtitle.size,
+		"line-height": String(OPENER_TEXT.subtitle.lineHeight),
 		color: "var(--pa-on-ink-muted)",
 	}),
 	// The hero on the card's right side, under the same veil as on the
@@ -803,94 +828,6 @@ const PRINT_RULES: readonly ThemeRule[] = [
 	rule(dot(PRINT.landscape), { page: "landscape" }),
 ];
 
-/** Every margin box a page can have. */
-const MARGIN_BOXES = [
-	"top-left-corner",
-	"top-left",
-	"top-center",
-	"top-right",
-	"top-right-corner",
-	"bottom-left-corner",
-	"bottom-left",
-	"bottom-center",
-	"bottom-right",
-	"bottom-right-corner",
-	"left-top",
-	"left-middle",
-	"left-bottom",
-	"right-top",
-	"right-middle",
-	"right-bottom",
-] as const;
-
-/** Longest running footer, in characters, before it is cut. */
-const RUNNING_TEXT_LIMIT = 200;
-
-/**
- * `text` as a double-quoted CSS string a document title cannot break out of.
- * Control characters and line breaks become spaces, whitespace collapses,
- * and the text is cut to {@link RUNNING_TEXT_LIMIT} characters. Backslash
- * and quote are escaped, and `<` and `>` become hex escapes so the
- * stylesheet can sit inside a `<style>` element without `</style>` closing
- * it.
- */
-function cssString(text: string): string {
-	const flat = text
-		// Direction overrides and invisible breaks go; the joiners some scripts
-		// and emoji need (U+200C, U+200D) stay.
-		.replace(
-			/[\u00AD\u061C\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g,
-			"",
-		)
-		.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ")
-		.replace(/\s+/g, " ")
-		.trim();
-	const characters = Array.from(flat);
-	const capped =
-		characters.length > RUNNING_TEXT_LIMIT
-			? `${characters
-					.slice(0, RUNNING_TEXT_LIMIT - 1)
-					.join("")
-					.trimEnd()}…`
-			: flat;
-	const escaped = capped.replace(/[\\"<>]/g, (character) => {
-		switch (character) {
-			case "\\":
-				return "\\\\";
-			case '"':
-				return '\\"';
-			case "<":
-				return "\\3c ";
-			default:
-				return "\\3e ";
-		}
-	});
-	return `"${escaped}"`;
-}
-
-/** A margin box's `content`: the text as a string, or nothing at all. */
-function runningContent(text: string): string {
-	const value = cssString(text);
-	return value === '""' ? "none" : value;
-}
-
-function pageRule(
-	name: string | null,
-	declarations: Declarations,
-	boxes: Readonly<Record<string, Declarations>>,
-): string {
-	const own = Object.entries(declarations).map(
-		([property, value]) => `\t${property}: ${value};`,
-	);
-	const nested = Object.entries(boxes).map(([box, boxDeclarations]) =>
-		block([`@${box}`], boxDeclarations, "\t"),
-	);
-	return atRule(
-		name ? `@page ${name}` : "@page",
-		[...own, ...nested].join("\n"),
-	);
-}
-
 /** The print layer: its rules and `@page` blocks, scoped under `root`. */
 export function printLayer(
 	root: string,
@@ -912,14 +849,6 @@ export function printLayer(
 		// otherwise falls back to the inherited text colour.
 		color: "var(--pa-muted)",
 	};
-	const bottom: Declarations = {
-		...furniture,
-		"vertical-align": "top",
-		"padding-top": "0.24in",
-	};
-	const blank = Object.fromEntries(
-		MARGIN_BOXES.map((box) => [box, { content: "none" }]),
-	);
 
 	return [
 		// Margin boxes inherit from the root element, not from the body.
@@ -930,29 +859,6 @@ export function printLayer(
 			"print-color-adjust": "exact",
 		}),
 		emitRules(root, PRINT_RULES),
-		// The cover counts as page 1, so the first body page reads "Page 2".
-		// A footer only: the opener names each section at the top of its page.
-		pageRule(
-			null,
-			{ size: PROPOSAL_PAGE_SIZE, margin: "0.85in 0.8in 0.9in" },
-			{
-				"bottom-left": {
-					...bottom,
-					content: runningContent(options.runningFooter),
-				},
-				"bottom-right": {
-					...bottom,
-					content: '"Page " counter(page) " of " counter(pages)',
-					"text-align": "right",
-					"white-space": "nowrap",
-				},
-			},
-		),
-		pageRule("cover", { margin: "0" }, blank),
-		// The cover is always the first page. Chromium 143 lays it out on the
-		// cover page's geometry but paints page 1 with the default page's
-		// margins and furniture unless the first page carries them itself.
-		pageRule(":first", { margin: "0" }, blank),
-		pageRule("landscape", { size: PROPOSAL_PAGE_SIZE_LANDSCAPE }, {}),
+		...pageRules(options.runningFooter, furniture),
 	].join("\n");
 }

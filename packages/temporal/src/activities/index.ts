@@ -455,6 +455,7 @@ export * from "./parlume";
 export * from "./parlume-auto-join";
 export * from "./parlume-notes";
 export * from "./parlume-recap";
+export * from "./parlume-channel-chat";
 export * from "./parlume-warmup";
 export * from "./publishing-short-post";
 export * from "./publishing-stakeholder-email";
@@ -731,6 +732,14 @@ export {
 	type UpdateMeetingTranscriptSyncLastRunInput,
 	updateMeetingTranscriptSyncLastRunActivity,
 } from "./meeting-transcript-sync";
+// Uploaded transcript files (#1877)
+export {
+	type IngestUploadedTranscriptInput,
+	type IngestUploadedTranscriptOutput,
+	ingestUploadedTranscript,
+	markUploadedTranscriptFailed,
+	startUploadedTranscriptPipelines,
+} from "./meeting-transcript-upload";
 // Meeting Agenda activities (#1901 — pre-meeting agenda generation)
 export * from "./meeting-agenda";
 // Meeting Digest activities (#1902 — action item to work item linking)

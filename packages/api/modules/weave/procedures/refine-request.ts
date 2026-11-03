@@ -79,7 +79,10 @@ export const refineRequestProcedure = protectedProcedure
 		});
 
 		try {
-			const model = await resolveRefineModel({ userId, organizationId });
+			const { model, getAnswerModel } = await resolveRefineModel({
+				userId,
+				organizationId,
+			});
 
 			const { text } = await generateText({
 				model,
@@ -90,6 +93,7 @@ export const refineRequestProcedure = protectedProcedure
 			return {
 				success: true,
 				...parseRefineResponse(text, input.currentMessage),
+				model: text ? getAnswerModel() : undefined,
 			};
 		} catch (error) {
 			rethrowChatGptPlanRefusal(error);

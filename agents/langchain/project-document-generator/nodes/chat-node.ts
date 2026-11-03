@@ -22,6 +22,7 @@ import {
 } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { Command, END, getWriter } from "@langchain/langgraph";
+import { errorLogFields } from "@repo/agent-core";
 import { shapeHistoryForModel } from "@repo/agent-core/message-shape";
 import {
 	hoistRawStopReason,
@@ -106,6 +107,7 @@ import {
 	isGuestArtifactRun,
 	isProposalFrontendAction,
 	isProposalPatchOp,
+	isProposalRun,
 	neutralizeTag,
 	PATCH_ONLY_CORRECTION_PREFIX,
 	PLACEHOLDER_CORRECTION_PREFIX,
@@ -122,6 +124,7 @@ import {
 	proposalFrontendActions,
 	readProposalClientConfig,
 	replaceReplyText,
+	selectProposalAttachmentsForTurn,
 	toolArgumentText,
 	visibleReplyText,
 } from "./proposal-client-mode";
@@ -490,6 +493,21 @@ function findSafeBudgetCut(rest: BaseMessage[], desired: number): number {
 	return rest.length;
 }
 
+/**
+ * Log a failure the run recovers from. A classified Proposal run logs the
+ * error's class, code and HTTP status only: a provider's error text can
+ * repeat the request, the bound prompt included (Fizzy #2946). Every other
+ * run logs `ordinary`, as it always has.
+ */
+function logRunError(
+	message: string,
+	error: unknown,
+	redact: boolean,
+	ordinary: unknown,
+): void {
+	logger.warn(message, redact ? errorLogFields(error) : ordinary);
+}
+
 // Replaces the middle of `modelMessages` with a SystemMessage summary when
 // the char budget is exceeded. The middle (not individual ToolMessages) is
 // swapped so AI tool_calls stay paired with their ToolMessages.
@@ -614,8 +632,10 @@ async function applyInputBudgetGate(
 					})();
 		summaryText = raw.slice(0, BUDGET_SUMMARY_MAX_CHARS);
 	} catch (error) {
-		logger.warn(
+		logRunError(
 			"[Project Document Generator] Budget gate summarizer failed; dropping old messages with a placeholder",
+			error,
+			isProposalRun(config?.configurable),
 			{
 				error: error instanceof Error ? error.message : String(error),
 			},
@@ -1132,8 +1152,10 @@ function buildConfirmChangesCommand(params: {
 			);
 		}
 	} catch (validationError) {
-		logger.warn(
+		logRunError(
 			"[Project Document Generator] Validation error (non-fatal):",
+			validationError,
+			redactPreviews === true,
 			validationError,
 		);
 	}
@@ -2004,6 +2026,23 @@ export function splitRagContextImages(
 		textOnlyContexts.push(cleaned);
 	}
 	return { textOnlyContexts, images };
+}
+
+/**
+ * The index of the person's latest message, -1 when there is none. A human
+ * turn the agent synthesized (tool images) is not the person's, so it is
+ * passed over.
+ */
+function latestPersonMessageIndex(messages: readonly BaseMessage[]): number {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (
+			getMessageType(messages[i]) === "human" &&
+			!isSyntheticToolImageMessage(messages[i])
+		) {
+			return i;
+		}
+	}
+	return -1;
 }
 
 /** Exported for tests. */
@@ -2920,12 +2959,26 @@ export async function chatNode(
 		// beside its bound prompt (Fizzy #2946). The person's attachments
 		// arrive as run config instead and go only into their latest turn,
 		// text and images alike (below); the chat reads the project through
-		// `search_project_knowledge`.
+		// `search_project_knowledge`. The editor sends every file of the chat
+		// on every run, so only the files that turn attached go in full and
+		// the rest as a note naming them. The person's latest message, the
+		// one the block joins, names them; it is still the latest in a
+		// Regenerate or a frontend action's follow-up run of that turn.
+		const latestPersonIdx = latestPersonMessageIndex(state.messages);
 		const {
 			textOnlyContexts: ragContextsForPrompt,
 			images: pendingImages,
 		} = splitRagContextImages(
-			proposalView ? proposalConfig.attachments : state.ragContexts,
+			proposalView
+				? selectProposalAttachmentsForTurn(
+						proposalConfig.attachments,
+						latestPersonIdx >= 0
+							? extractTextFromContent(
+									state.messages[latestPersonIdx].content,
+								)
+							: "",
+					)
+				: state.ragContexts,
 		);
 		const proposalAttachmentBlock = proposalView
 			? buildProposalAttachmentBlock(ragContextsForPrompt)
@@ -4235,16 +4288,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			proposalView &&
 			(proposalAttachmentBlock || pendingImages.length > 0)
 		) {
-			let personIdx = -1;
-			for (let i = messagesWithImages.length - 1; i >= 0; i--) {
-				if (
-					getMessageType(messagesWithImages[i]) === "human" &&
-					!isSyntheticToolImageMessage(messagesWithImages[i])
-				) {
-					personIdx = i;
-					break;
-				}
-			}
+			const personIdx = latestPersonMessageIndex(messagesWithImages);
 			const own =
 				personIdx >= 0 ? messagesWithImages[personIdx].content : "";
 			const ownParts = Array.isArray(own)
@@ -5757,8 +5801,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 		// type, the codes and the stack frames stay.
 		logger.error("[Project Document Generator] Error in chat node", {
 			...(redactModelText ? {} : { error: errorMessage }),
-			errorType:
-				error instanceof Error ? error.constructor.name : typeof error,
+			errorType: errorLogFields(error).errorType,
 			errorStack:
 				error instanceof Error
 					? redactModelText

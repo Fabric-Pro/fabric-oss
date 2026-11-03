@@ -678,7 +678,7 @@ export type AtlasEdgeOverrideHistoryScalarFieldEnum = z.infer<typeof AtlasEdgeOv
 
 // File: ProjectLinkedMeetingScalarFieldEnum.schema.ts
 
-export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'subject', 'organizer', 'includedInDigest', 'linkedAt', 'deactivatedAt', 'deactivatedById', 'consecutiveFailures', 'lastErrorMessage', 'lastErrorAt', 'userId', 'organizationId', 'parlumeAutoJoin', 'parlumeAutoJoinUserId', 'parlumeAutoJoinToolsReadOnly', 'parlumeAutoJoinSuggestions', 'parlumeAutoJoinError', 'parlumeAutoJoinErrorAt'])
+export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'source', 'subject', 'organizer', 'includedInDigest', 'linkedAt', 'deactivatedAt', 'deactivatedById', 'consecutiveFailures', 'lastErrorMessage', 'lastErrorAt', 'userId', 'organizationId', 'parlumeAutoJoin', 'parlumeAutoJoinUserId', 'parlumeAutoJoinToolsReadOnly', 'parlumeAutoJoinSuggestions', 'parlumeAutoJoinError', 'parlumeAutoJoinErrorAt'])
 
 export type ProjectLinkedMeetingScalarFieldEnum = z.infer<typeof ProjectLinkedMeetingScalarFieldEnumSchema>;
 
@@ -690,9 +690,15 @@ export type OrganizationParlumeSettingsScalarFieldEnum = z.infer<typeof Organiza
 
 // File: ParlumeMeetingSessionScalarFieldEnum.schema.ts
 
-export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'suggestionsEnabled', 'endReason', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'voiceGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'trigger', 'linkedMeetingId', 'occurrenceStart', 'createdAt', 'updatedAt'])
+export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'suggestionsEnabled', 'endReason', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'voiceGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'trigger', 'linkedMeetingId', 'occurrenceStart', 'meetingUrl', 'channelChatStatus', 'channelChatError', 'channelIntegrationId', 'channelTeamId', 'channelId', 'channelRootMessageId', 'channelTenantId', 'channelSubscriptionId', 'channelSubscriptionExpiresAt', 'createdAt', 'updatedAt'])
 
 export type ParlumeMeetingSessionScalarFieldEnum = z.infer<typeof ParlumeMeetingSessionScalarFieldEnumSchema>;
+
+// File: ParlumeChannelPostScalarFieldEnum.schema.ts
+
+export const ParlumeChannelPostScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'tag', 'requestDigest', 'providerMessageId', 'confirmedAt', 'createdAt', 'updatedAt'])
+
+export type ParlumeChannelPostScalarFieldEnum = z.infer<typeof ParlumeChannelPostScalarFieldEnumSchema>;
 
 // File: ParlumeMeetingTurnScalarFieldEnum.schema.ts
 
@@ -930,13 +936,13 @@ export type DailyBriefViewScalarFieldEnum = z.infer<typeof DailyBriefViewScalarF
 
 // File: NewsletterSettingsScalarFieldEnum.schema.ts
 
-export const NewsletterSettingsScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'enabled', 'cadence', 'dayOfWeek', 'dayOfMonth', 'sendHourUtc', 'lastSentAt', 'lookbackDays', 'detailLevel', 'deliveryDestination', 'chatChannels', 'approvalChatChannels', 'requireApproval', 'publicWidgetEnabled', 'publicEmbedToken', 'publicEmbedTokenVersion', 'publicWidgetTheme', 'publicWidgetAccent', 'publicWidgetConfig', 'createdByUserId', 'createdAt', 'updatedAt'])
+export const NewsletterSettingsScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'enabled', 'cadence', 'dayOfWeek', 'dayOfMonth', 'sendHourUtc', 'lastSentAt', 'lookbackDays', 'detailLevel', 'deliveryDestination', 'chatChannels', 'approvalChatChannels', 'requireApproval', 'sendToOrganization', 'orgSyncedAt', 'orgSyncError', 'publicWidgetEnabled', 'publicEmbedToken', 'publicEmbedTokenVersion', 'publicWidgetTheme', 'publicWidgetAccent', 'publicWidgetConfig', 'createdByUserId', 'createdAt', 'updatedAt'])
 
 export type NewsletterSettingsScalarFieldEnum = z.infer<typeof NewsletterSettingsScalarFieldEnumSchema>;
 
 // File: NewsletterSubscriberScalarFieldEnum.schema.ts
 
-export const NewsletterSubscriberScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'email', 'name', 'status', 'unsubscribeToken', 'createdByUserId', 'createdAt', 'unsubscribedAt', 'embedTokenVersion'])
+export const NewsletterSubscriberScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'email', 'name', 'status', 'unsubscribeToken', 'createdByUserId', 'createdAt', 'unsubscribedAt', 'embedTokenVersion', 'source', 'excludedAt'])
 
 export type NewsletterSubscriberScalarFieldEnum = z.infer<typeof NewsletterSubscriberScalarFieldEnumSchema>;
 
@@ -6844,6 +6850,7 @@ export const ProjectLinkedMeetingSchema = z.object({
   id: z.string(),
   projectId: z.string(),
   joinUrl: z.string(),
+  source: z.string().default("TEAMS"),
   subject: z.string().nullish(),
   organizer: z.string().nullish(),
   includedInDigest: z.boolean().default(true),
@@ -6920,11 +6927,40 @@ export const ParlumeMeetingSessionSchema = z.object({
   trigger: ParlumeSessionTriggerSchema.default("MANUAL"),
   linkedMeetingId: z.string().nullish(),
   occurrenceStart: z.date().nullish(),
+  meetingUrl: z.string().nullish(),
+  channelChatStatus: z.string().default("ATTENDEE"),
+  channelChatError: z.string().nullish(),
+  channelIntegrationId: z.string().nullish(),
+  channelTeamId: z.string().nullish(),
+  channelId: z.string().nullish(),
+  channelRootMessageId: z.string().nullish(),
+  channelTenantId: z.string().nullish(),
+  channelSubscriptionId: z.string().nullish(),
+  channelSubscriptionExpiresAt: z.date().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
 
 export type ParlumeMeetingSessionType = z.infer<typeof ParlumeMeetingSessionSchema>;
+
+
+// File: ParlumeChannelPost.schema.ts
+
+export const ParlumeChannelPostSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  tag: z.string(),
+  requestDigest: z.string(),
+  providerMessageId: z.string().nullish(),
+  confirmedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ParlumeChannelPostType = z.infer<typeof ParlumeChannelPostSchema>;
 
 
 // File: ParlumeMeetingTurn.schema.ts
@@ -7815,6 +7851,9 @@ export const NewsletterSettingsSchema = z.object({
   chatChannels: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   approvalChatChannels: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   requireApproval: z.boolean(),
+  sendToOrganization: z.boolean(),
+  orgSyncedAt: z.date().nullish(),
+  orgSyncError: z.string().nullish(),
   publicWidgetEnabled: z.boolean(),
   publicEmbedToken: z.string().nullish(),
   publicEmbedTokenVersion: z.number().int().default(1),
@@ -7844,6 +7883,8 @@ export const NewsletterSubscriberSchema = z.object({
   createdAt: z.date(),
   unsubscribedAt: z.date().nullish(),
   embedTokenVersion: z.number().int().nullish(),
+  source: z.string().default("MANUAL"),
+  excludedAt: z.date().nullish(),
 });
 
 export type NewsletterSubscriberType = z.infer<typeof NewsletterSubscriberSchema>;

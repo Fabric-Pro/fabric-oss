@@ -1,4 +1,8 @@
-import { AIMessage, AIMessageChunk } from "@langchain/core/messages";
+import {
+	AIMessage,
+	AIMessageChunk,
+	ToolMessage,
+} from "@langchain/core/messages";
 /**
  * The unified server's two executors (the LangGraph Platform stream and the
  * synchronous invoke), driven with a mocked graph: which frontend actions
@@ -280,6 +284,210 @@ describe("a guest's failed run on the synchronous path", () => {
 		const output = await invoke()(runInput());
 
 		expect(output.error).toBe("Quota");
+	});
+});
+
+describe("error logs of a Proposal run", () => {
+	const PROVIDER_TEXT =
+		"Provider rejected the request: 'You revise a client proposal for Example Org.'";
+
+	function providerError() {
+		return Object.assign(new Error(PROVIDER_TEXT), {
+			status: 400,
+			code: "invalid_request_error",
+		});
+	}
+
+	beforeEach(() => {
+		vi.mocked(console.error).mockClear();
+	});
+
+	it("has the server redact the error logs of a classified Proposal run only", () => {
+		const { redactErrorLogs } = server.args[0] as {
+			redactErrorLogs?: (
+				configurable?: Record<string, unknown>,
+			) => boolean;
+		};
+
+		expect(redactErrorLogs?.(artifactConfig("member").configurable)).toBe(
+			true,
+		);
+		expect(redactErrorLogs?.({ proposal_mode: "unbound" })).toBe(true);
+		expect(redactErrorLogs?.({ proposal_mode: "none" })).toBe(false);
+		expect(redactErrorLogs?.(undefined)).toBe(false);
+	});
+
+	it("logs a member's failure by class, code and status, and throws it as it is", async () => {
+		graph.invoke.mockRejectedValueOnce(providerError());
+
+		await expect(
+			invoke()(runInput(), artifactConfig("member")),
+		).rejects.toThrow(PROVIDER_TEXT);
+
+		const logs = JSON.stringify(vi.mocked(console.error).mock.calls);
+		expect(logs).not.toContain("Example Org");
+		expect(logs).toContain('"errorType":"Error"');
+		expect(logs).toContain("invalid_request_error");
+		expect(logs).toContain('"httpStatus":400');
+	});
+
+	it("logs nothing of its own for a failure outside a Proposal", async () => {
+		graph.invoke.mockRejectedValueOnce(providerError());
+
+		await expect(invoke()(runInput())).rejects.toThrow(PROVIDER_TEXT);
+
+		expect(vi.mocked(console.error)).not.toHaveBeenCalled();
+	});
+});
+
+describe("a guest's reply on the synchronous path", () => {
+	const BOUND_PROMPT = "You revise a client proposal for Example Org.";
+
+	/** An earlier string reply, then a reply in thinking and text blocks. */
+	function blockReplyResult(extra: Record<string, unknown> = {}) {
+		return {
+			document: "",
+			messages: [
+				{ role: "user", content: "Tighten the scope." },
+				new AIMessage("Earlier reply."),
+				{ role: "user", content: "And the timeline." },
+				new AIMessage({
+					content: [
+						{
+							type: "thinking",
+							thinking: `Recalling: ${BOUND_PROMPT}`,
+							signature: "sig_example",
+						},
+						{ type: "text", text: "Done." },
+					],
+				}),
+			],
+			...extra,
+		};
+	}
+
+	it("returns the text of a guest's last reply, without its thinking", async () => {
+		graph.invoke.mockResolvedValueOnce(blockReplyResult());
+
+		const output = await invoke()(runInput(), artifactConfig("guest"));
+
+		expect(output.textResponse).toBe("Done.");
+		expect(JSON.stringify(output)).not.toContain(BOUND_PROMPT);
+	});
+
+	it("keeps a member's reply as today: only string replies are read", async () => {
+		graph.invoke.mockResolvedValueOnce(blockReplyResult());
+
+		const output = await invoke()(runInput(), artifactConfig("member"));
+
+		expect(output.textResponse).toBe("Earlier reply.");
+	});
+
+	it("returns a string reply outside a Proposal as it is", async () => {
+		graph.invoke.mockResolvedValueOnce({
+			document: "",
+			messages: [
+				{ role: "user", content: "Tighten the scope." },
+				new AIMessage("Scope tightened."),
+			],
+		});
+
+		const output = await invoke()(runInput());
+
+		expect(output.textResponse).toBe("Scope tightened.");
+	});
+
+	it("returns neither a guest's reasoning nor a server-side call's arguments", async () => {
+		graph.invoke.mockResolvedValueOnce(
+			blockReplyResult({
+				reasoningByTurn: { 2: `Reasoning about ${BOUND_PROMPT}` },
+				messages: [
+					{ role: "user", content: "Tighten the scope." },
+					new AIMessage({
+						content: "",
+						tool_calls: [
+							{
+								id: "call_search_1",
+								name: "search_project_knowledge",
+								args: { query: BOUND_PROMPT },
+							},
+						],
+					}),
+					{
+						role: "tool",
+						tool_call_id: "call_search_1",
+						content: `No results for "${BOUND_PROMPT}"`,
+					},
+					new AIMessage("Searched the project."),
+				],
+			}),
+		);
+
+		const output = await invoke()(runInput(), artifactConfig("guest"));
+
+		expect(output.textResponse).toBe("Searched the project.");
+		expect(JSON.stringify(output)).not.toContain(BOUND_PROMPT);
+	});
+
+	it("returns a guest's reply, not the text of a frontend action's result after it", async () => {
+		graph.invoke.mockResolvedValueOnce({
+			document: "",
+			messages: [
+				{ role: "user", content: "Tighten the scope." },
+				new AIMessage({
+					content: "Which timeline should the scope follow?",
+					tool_calls: [
+						{
+							id: "call_ask_1",
+							name: "ask_clarifying_question",
+							args: {},
+						},
+					],
+				}),
+				new ToolMessage({
+					content: "The spring timeline.",
+					tool_call_id: "call_ask_1",
+					name: "ask_clarifying_question",
+				}),
+			],
+		});
+
+		const output = await invoke()(runInput(), artifactConfig("guest"));
+
+		expect(output.textResponse).toBe(
+			"Which timeline should the scope follow?",
+		);
+	});
+
+	it("returns an earlier reply when a guest's last one has no visible text, as today", async () => {
+		graph.invoke.mockResolvedValueOnce({
+			document: "",
+			messages: [
+				{ role: "user", content: "Tighten the scope." },
+				new AIMessage("Scope tightened."),
+				new AIMessage({
+					content: [
+						{
+							type: "thinking",
+							thinking: "Checking the timeline.",
+							signature: "sig_example",
+						},
+					],
+				}),
+			],
+		});
+
+		const output = await invoke()(runInput(), artifactConfig("guest"));
+
+		expect(output.textResponse).toBe("Scope tightened.");
+	});
+
+	it("returns no reply for a guest whose result has no messages", async () => {
+		graph.invoke.mockResolvedValueOnce({ document: "" });
+
+		const output = await invoke()(runInput(), artifactConfig("guest"));
+
+		expect(output.textResponse).toBe("");
 	});
 });
 

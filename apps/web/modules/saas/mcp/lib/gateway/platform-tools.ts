@@ -2491,14 +2491,14 @@ async function handleGetFeature(
 		return errorResult("Feature not found");
 	}
 
-	// Find latest coding run with PR info
-	const latestRun = story.tasks
-		.flatMap((t) => t.codingRuns ?? [])
-		.sort(
-			(a, b) =>
-				new Date(b.createdAt).getTime() -
-				new Date(a.createdAt).getTime(),
-		)[0];
+	// Find latest coding run with PR info (across story-level and task-level runs)
+	const latestRun = [
+		...(story.codingRuns ?? []),
+		...story.tasks.flatMap((t) => t.codingRuns ?? []),
+	].sort(
+		(a, b) =>
+			new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+	)[0];
 
 	return jsonResult({
 		id: story.id,

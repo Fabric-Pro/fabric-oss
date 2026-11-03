@@ -16,7 +16,7 @@ import type { ContinuedChat } from "./components/SharedSessionView";
  * implementations for both direct and orchestrator modes.
  *
  * Performance optimizations:
- * - Dynamic imports for heavy chat components (54KB+ each)
+ * - Deferred rich output and on-demand secondary panels
  * - CSS containment for sidebar to prevent CLS
  * - Fixed minimum widths to prevent layout shifts
  */
@@ -24,7 +24,11 @@ import type { ContinuedChat } from "./components/SharedSessionView";
 import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { AgentErrorBoundary } from "@saas/agents/components/AgentErrorBoundary";
 import { useOptionalFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
-import type { TemporalOrchestratorActivityState } from "@saas/agents/components/FabricChat/FabricTemporalOrchestratorChat";
+import { FabricDirectChat } from "@saas/agents/components/FabricChat/FabricDirectChat";
+import {
+	FabricTemporalOrchestratorChat,
+	type TemporalOrchestratorActivityState,
+} from "@saas/agents/components/FabricChat/FabricTemporalOrchestratorChat";
 import { InterfaceModeToggle } from "@saas/agents/components/InterfaceModeToggle";
 import { useOrchestratorConfig } from "@saas/agents/components/OrchestratorConfigPanel";
 import type { MentionableTemplate } from "@saas/agents/hooks/useTemplateMention";
@@ -53,27 +57,6 @@ import {
 import dynamic from "next/dynamic";
 import { isInitialChatRestorePending } from "../../lib/initial-chat-restore";
 import { ChatRestoreLoading } from "../FabricChat/shared/ChatRestoreLoading";
-
-// Dynamic imports for heavy components to improve initial load time
-const FabricDirectChat = dynamic(
-	() =>
-		import("@saas/agents/components/FabricChat/FabricDirectChat").then(
-			(mod) => ({ default: mod.FabricDirectChat }),
-		),
-	{
-		loading: () => <ChatLoadingSkeleton />,
-	},
-);
-
-const FabricTemporalOrchestratorChat = dynamic(
-	() =>
-		import(
-			"@saas/agents/components/FabricChat/FabricTemporalOrchestratorChat"
-		).then((mod) => ({ default: mod.FabricTemporalOrchestratorChat })),
-	{
-		loading: () => <ChatLoadingSkeleton />,
-	},
-);
 
 const SharedSessionView = dynamic(
 	() =>

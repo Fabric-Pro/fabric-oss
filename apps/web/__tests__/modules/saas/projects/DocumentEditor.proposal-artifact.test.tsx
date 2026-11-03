@@ -175,21 +175,37 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	useFeatureFlag: () => false,
 }));
 
-vi.mock("@copilotkit/react-core", () => ({
-	useCoAgent: () => ({ state: {}, setState: vi.fn(), nodeName: undefined }),
-	useCopilotAction: (action: { name: string }) =>
-		meetingActions.set(action.name, action as never),
-	// The repository tools register here, with their availability.
-	useFrontendTool: (tool: { name: string }) =>
-		meetingActions.set(tool.name, tool as never),
-	useCopilotChat: () => ({ isLoading: false, visibleMessages: [] }),
-	useCopilotChatInternal: () => ({
-		messages: meetingState.messages,
-		setMessages: vi.fn(),
-	}),
-	useCopilotReadable: vi.fn(),
-	useCopilotMessagesContext: () => ({ setMessages: vi.fn() }),
-}));
+vi.mock("@copilotkit/react-core", async () => {
+	const { useLayoutEffect } = await import("react");
+	return {
+		useCoAgent: () => ({
+			state: {},
+			setState: vi.fn(),
+			nodeName: undefined,
+		}),
+		useCopilotAction: (action: { name: string }) =>
+			meetingActions.set(action.name, action as never),
+		// The repository tools register here, with their availability. As in
+		// the library, a tool registers when it mounts and again only when its
+		// name or availability changes, and is removed when it unmounts: a
+		// render that changes only its description registers nothing.
+		useFrontendTool: (tool: { name: string; available?: string }) => {
+			useLayoutEffect(() => {
+				meetingActions.set(tool.name, tool as never);
+				return () => {
+					meetingActions.delete(tool.name);
+				};
+			}, [tool.name, tool.available]);
+		},
+		useCopilotChat: () => ({ isLoading: false, visibleMessages: [] }),
+		useCopilotChatInternal: () => ({
+			messages: meetingState.messages,
+			setMessages: vi.fn(),
+		}),
+		useCopilotReadable: vi.fn(),
+		useCopilotMessagesContext: () => ({ setMessages: vi.fn() }),
+	};
+});
 // The props under test act inside the sidebar's children, so it renders them,
 // next to where the real one puts its chat window.
 vi.mock("@copilotkit/react-ui", () => ({
@@ -1080,6 +1096,46 @@ describe("DocumentEditor frontend action definitions", () => {
 		expectShared(actions, githubGetFileContentsAction(REPOSITORY));
 		expect(availability(actions, GITLAB_TOOLS)).toEqual(
 			every(GITLAB_TOOLS, "disabled"),
+		);
+	});
+
+	// The tools stay enabled across the change, so only a new registration
+	// can carry the new repository's name to the model.
+	it("describes the new repository when the project's repository changes while the page is open", async () => {
+		const githubProject = (owner: string, name: string) => ({
+			...project(`https://github.com/${owner}/${name}`),
+			repositoryOwner: owner,
+			repositoryName: name,
+		});
+		fixture.project = githubProject("example", "alpha");
+		meetingActions.clear();
+		const { client } = renderEditor({});
+		const actions = meetingActions as unknown as Registered;
+		await waitFor(() =>
+			expect(
+				actions.get("github_get_file_contents")?.description,
+			).toContain("example/alpha"),
+		);
+
+		fixture.project = githubProject("example", "beta");
+		await act(async () => {
+			await client.invalidateQueries();
+		});
+
+		await waitFor(() =>
+			expect(
+				actions.get("github_get_file_contents")?.description,
+			).toContain("example/beta"),
+		);
+		expect(
+			actions.get("github_get_file_contents")?.description,
+		).not.toContain("example/alpha");
+		expectShared(actions, githubGetFileContentsAction("example/beta"));
+		expectShared(actions, githubGetRepositoryAction("example/beta"));
+		expectShared(actions, githubListPullRequestsAction("example/beta"));
+		expectShared(actions, githubListIssuesAction("example/beta"));
+		expect(availability(actions, GITHUB_TOOLS)).toEqual(
+			every(GITHUB_TOOLS, "enabled"),
 		);
 	});
 });

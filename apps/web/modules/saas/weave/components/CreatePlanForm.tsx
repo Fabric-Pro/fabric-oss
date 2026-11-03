@@ -5,6 +5,8 @@
  * Includes AI-powered refinement and template support.
  */
 
+import { AnsweredByModel } from "@saas/agents/components/FabricChat/shared/AnsweredByModel";
+
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
@@ -295,6 +297,11 @@ export function CreatePlanForm({
 											}`}
 										>
 											{msg.content}
+											{msg.role === "assistant" && (
+												<AnsweredByModel
+													model={msg.model}
+												/>
+											)}
 										</div>
 									))}
 									{isThinking &&

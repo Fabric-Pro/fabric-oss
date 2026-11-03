@@ -151,6 +151,10 @@ export const getProjectProcedure = tenantProtectedProcedure
 			effective?.permissions ?? [],
 			ProjectPerms.INSTRUCTION_UPDATE,
 		);
+		const canExecuteAgents = hasPermission(
+			effective?.permissions ?? [],
+			ProjectPerms.AGENT_EXECUTE,
+		);
 
 		// Member-management capability: definitionally identical to the write
 		// gate in `setForProjectMember` — actual project access (ownership or
@@ -195,6 +199,7 @@ export const getProjectProcedure = tenantProtectedProcedure
 				canPublish,
 				canEditInstructions,
 				canReviewInstructions,
+				canExecuteAgents,
 				canManageMembers,
 				effectiveAttachmentRetentionDays,
 				canManageGovernance,

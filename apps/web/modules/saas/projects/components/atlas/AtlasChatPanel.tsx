@@ -48,7 +48,9 @@
  *      not be saved) — mapped to the inline interrupted marker / warning
  *      toast respectively.
  */
+import type { AnswerModelInfo } from "@repo/ai/lib/answer-model-info";
 import type { ConversationSummary, GraphMode } from "@repo/atlas/types";
+import { AnsweredByModel } from "@saas/agents/components/FabricChat/shared/AnsweredByModel";
 import type { RuntimeChatTransport } from "@saas/agents/hooks/useRuntimeChatTransport";
 import { useRuntimeEligible } from "@saas/agents/hooks/useRuntimeEligible";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
@@ -127,6 +129,7 @@ const BUCKET_LABEL_KEY = {
 } as const;
 
 interface ChatMessage {
+	model?: AnswerModelInfo;
 	id: string;
 	role: "user" | "assistant";
 	content: string;
@@ -471,6 +474,7 @@ export function AtlasChatPanel({
 				id: `server-${i}`,
 				role: m.role as "user" | "assistant",
 				content: m.content,
+				model: m.model,
 				interrupted: m.interrupted === true || undefined,
 			})),
 		);
@@ -615,6 +619,12 @@ export function AtlasChatPanel({
 				let persistFailureNotified = false;
 				let interruptedNotified = false;
 				const sink: AtlasChatSink = {
+					onModel: (model) =>
+						setMessages((prev) =>
+							prev.map((m) =>
+								m.id === assistantId ? { ...m, model } : m,
+							),
+						),
 					onDelta: (delta) => {
 						assistantText += delta;
 						setMessages((prev) =>
@@ -1389,6 +1399,11 @@ export function AtlasChatPanel({
 											</span>
 										)}
 									</div>
+									{message.role === "assistant" && (
+										<AnsweredByModel
+											model={message.model}
+										/>
+									)}
 									{message.role === "assistant" &&
 										message.interrupted && (
 											<p className="mt-1 text-xs text-muted-foreground">

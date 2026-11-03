@@ -3,9 +3,14 @@
  * flowchart turned top-down (Fizzy #2946), so its labels stay legible when
  * the diagram is shrunk to a column. The live page and the Proposal export
  * (`render-diagrams.ts` in the Temporal package) both draw with it, with the
- * same canvas margin, the same always-broken label length and the same
- * print floor, so a fence is laid out alike on the page and in the PDF.
- * Pure string work, browser-safe.
+ * same canvas margin, the same rule for which labels are too wide for their
+ * boxes, the same choice between a fence's laid-out copies and the same
+ * print floor, so a fence is laid out alike on the page and in the PDF,
+ * except that the page measures every fence against a figure's own height
+ * while the PDF measures one that prints on a section opener's page against
+ * the shorter height it is offered there, and may choose another layout
+ * for it, or keep a figure's own height when that one would take its labels
+ * below the floor. Pure string work, browser-safe.
  *
  * Only the copy that is drawn changes: the fence a document holds is never
  * rewritten. Only a `graph`/`flowchart` source is touched; its header line
@@ -20,28 +25,41 @@
  * re-check them on an engine upgrade.
  */
 
-import { PROPOSAL_PAGE_SIZE } from "./proposal-theme";
+import { INTER_ADVANCE_EM_THOUSANDTHS } from "./inter-advances";
+import {
+	PRINT_FIGURE_MAX_HEIGHT_PX,
+	PROPOSAL_PAGE_SIZE,
+} from "./proposal-theme";
 
 /**
- * Portrait page sizes in twips (twentieths of a point), one per size the
- * page-size constant may name. These, the margins, the caption room and the
- * pixel ratio below restate the Word writer's page geometry
- * (`build-docx/styles.ts` in the Temporal package, which this browser-safe
- * module cannot import), the page the export prints on; keep them equal, as
- * the export's parity test checks.
+ * The tallest a printed figure may be, in CSS pixels, and the most it may be
+ * on a section opener's page, less under a long one or after short blocks:
+ * the print layer's own `max-height` limits
+ * (`./proposal-theme-print-page-flow`), one number each for the rule and the
+ * measure.
+ * The first is also the height the Word writer shrinks a taller picture to
+ * (`MAX_IMAGE_HEIGHT`), as the export's parity test checks; the Word writer
+ * has no shorter one.
  */
-const PAGE_SIZE_TWIPS = {
-	letter: { width: 12240, height: 15840 },
-} as const satisfies Record<
-	typeof PROPOSAL_PAGE_SIZE,
-	{ width: number; height: number }
->;
+export {
+	PRINT_FIGURE_MAX_HEIGHT_PX,
+	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+} from "./proposal-theme";
 
-/** The print page's margins, in twips: 0.85in top, 0.8in sides, 0.9in bottom. */
-const PAGE_MARGIN_TWIPS = { top: 1224, side: 1152, bottom: 1296 } as const;
+/**
+ * Portrait page widths in twips (twentieths of a point), one per size the
+ * page-size constant may name. These, the side margin and the pixel ratio
+ * below restate the Word writer's page geometry (`build-docx/styles.ts` in
+ * the Temporal package, which this browser-safe module cannot import), the
+ * page the export prints on; keep them equal, as the export's parity test
+ * checks.
+ */
+const PAGE_WIDTH_TWIPS = {
+	letter: 12240,
+} as const satisfies Record<typeof PROPOSAL_PAGE_SIZE, number>;
 
-/** The room the Word writer keeps under a picture for its caption: 1in. */
-const CAPTION_ROOM_TWIPS = 1440;
+/** The print page's side margin, in twips: 0.8in. */
+const PAGE_SIDE_MARGIN_TWIPS = 1152;
 
 /** Twips per CSS pixel: 1440 per inch over 96 pixels per inch. */
 const TWIPS_PER_PIXEL = 15;
@@ -51,23 +69,7 @@ const TWIPS_PER_PIXEL = 15;
  * the width the print layer's `max-width: 100%` shrinks a diagram to.
  */
 export const PRINT_COLUMN_PX =
-	(PAGE_SIZE_TWIPS[PROPOSAL_PAGE_SIZE].width -
-		PAGE_MARGIN_TWIPS.side -
-		PAGE_MARGIN_TWIPS.side) /
-	TWIPS_PER_PIXEL;
-
-/**
- * The tallest a printed figure may be, in CSS pixels: the portrait page's
- * text height less the room for its caption, the height the Word writer
- * shrinks a taller picture to (`MAX_IMAGE_HEIGHT`). The PDF's text area is
- * that inch taller and shrinks no figure, but a figure taller than it does
- * not fit a page, so this is the height both outputs keep to.
- */
-export const PRINT_FIGURE_MAX_HEIGHT_PX =
-	(PAGE_SIZE_TWIPS[PROPOSAL_PAGE_SIZE].height -
-		PAGE_MARGIN_TWIPS.top -
-		PAGE_MARGIN_TWIPS.bottom -
-		CAPTION_ROOM_TWIPS) /
+	(PAGE_WIDTH_TWIPS[PROPOSAL_PAGE_SIZE] - 2 * PAGE_SIDE_MARGIN_TWIPS) /
 	TWIPS_PER_PIXEL;
 
 /** The smallest a printed diagram's node labels may be, in points. */
@@ -91,23 +93,63 @@ const NODE_LABEL_PX = 13;
 const PT_PER_PX = 0.75;
 
 /**
- * A drawn diagram's node labels as printed, in points, from its size in CSS
- * pixels: shrunk to the print column when it is wider, and to the tallest a
- * printed figure may be when it is taller, whichever shrinks it more.
+ * Text of `textPx` CSS pixels in a drawing, as printed, in points, from the
+ * drawing's size in CSS pixels: shrunk to the print column when it is
+ * wider, and to the tallest its figure may print when it is taller,
+ * whichever shrinks it more. That height is a figure's own,
+ * {@link PRINT_FIGURE_MAX_HEIGHT_PX}, unless the figure prints right after a
+ * section opener (at most `PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX`).
  */
-export function printedNodeLabelPt(size: {
-	width: number;
-	height: number;
-}): number {
+export function printedTextPt(
+	textPx: number,
+	size: { width: number; height: number },
+	figureMaxHeightPx: number = PRINT_FIGURE_MAX_HEIGHT_PX,
+): number {
 	return (
-		NODE_LABEL_PX *
+		textPx *
 		Math.min(
 			1,
 			PRINT_COLUMN_PX / size.width,
-			PRINT_FIGURE_MAX_HEIGHT_PX / size.height,
+			figureMaxHeightPx / size.height,
 		) *
 		PT_PER_PX
 	);
+}
+
+/**
+ * A drawn diagram's node labels as printed, in points
+ * ({@link printedTextPt} at the engine's label size).
+ */
+export function printedNodeLabelPt(
+	size: { width: number; height: number },
+	figureMaxHeightPx: number = PRINT_FIGURE_MAX_HEIGHT_PX,
+): number {
+	return printedTextPt(NODE_LABEL_PX, size, figureMaxHeightPx);
+}
+
+/**
+ * The tallest a figure's drawing prints where the page offers it at most
+ * `offeredPx`: a figure's own height, or less as the first figure on a
+ * section opener's page. A drawing shrunk to `offeredPx` keeps it only when
+ * its text of `textPx` CSS pixels (the engine's node labels unless given;
+ * a figure template's 12 px) still prints at {@link PRINT_LABEL_FLOOR_PT}
+ * or more there, that is when `offeredPx` is at least the height at which
+ * that text reaches the floor. Otherwise the figure keeps a figure's own
+ * height, {@link PRINT_FIGURE_MAX_HEIGHT_PX}, and moves to the next page
+ * whole when the opener's page cannot hold it as drawn; only a drawing
+ * whose text cannot reach the floor on any page prints below it. A figure
+ * template, whose text is exactly at the floor at full size, is never
+ * shrunk under an opener. The print page writes this height on the figure
+ * and the export measures its labels against it, so the two agree.
+ */
+export function legibleFigureMaxHeightPx(
+	offeredPx: number,
+	size: { width: number; height: number },
+	textPx: number = NODE_LABEL_PX,
+): number {
+	return printedTextPt(textPx, size, offeredPx) >= PRINT_LABEL_FLOOR_PT
+		? offeredPx
+		: Math.max(offeredPx, PRINT_FIGURE_MAX_HEIGHT_PX);
 }
 
 /** A left-to-right or right-to-left flowchart header line. */
@@ -146,29 +188,156 @@ export function turnFlowchartTopDown(source: string): string | null {
 const WRAPPED_LABEL_LINE_CHARS = 30;
 
 /**
- * The shortest node label always broken into lines before a flowchart is
- * drawn, in characters: on the live page, in print and in the browser
- * download. beautiful-mermaid sizes a node from an estimate of its text's
- * width plus 20 px of padding a side, and for Inter at its 13 px labels,
- * measured in the browser, the estimate runs short. For plain prose it runs
- * 5 to 9% short, and a 54-character prose label still had 8.8 px to spare
- * a side. For text dense in narrow letters and dashes it runs up to about
- * 30%, or 1 px a character, short, worst for t, f, m and dashes (an em dash
- * by 5.5 px), which uses up the 40 px of padding from about 41 characters:
- * the first such label seen to spill had 44. The threshold rests on that
- * kind of text: from 40, a label is broken into lines of at most 30
- * characters, and every such label of 39 characters or fewer measured
- * stayed inside its box, with at least 1.1 px to spare a side. Text dense
- * in m, w and hyphens runs short by up to 1.4 px a character and can still
- * spill from about 30. The browser download draws in Helvetica, 6 to 11%
- * narrower than Inter for lower-case text, so the same threshold leaves its
- * labels more room. That padding is the engine's own, inside every box;
- * {@link DIAGRAM_CANVAS_PADDING_PX} is the margin around the whole drawing
- * and does not change it. In print, and on a page that prints, the copy as
- * written is kept instead when its labels print larger: broken labels make
- * a diagram taller, and a tall one is shrunk to the height a figure may be.
+ * beautiful-mermaid 1.1.3's padding inside a node's box, a side, in CSS
+ * pixels (its `NODE_PADDING.horizontal`). A rectangle is the narrowest box
+ * it draws around a label of a given width; every other shape is as wide
+ * or wider, so a label that fits a rectangle fits them all. That padding is
+ * the engine's own, inside every box; {@link DIAGRAM_CANVAS_PADDING_PX} is
+ * the margin around the whole drawing and does not change it.
  */
-export const ALWAYS_WRAPPED_LABEL_CHARS = 40;
+const NODE_LABEL_PADDING_PX = 20;
+
+/**
+ * The least room a node label keeps to each side of its box, in CSS pixels.
+ * Closer than about a third of the label's size, text reads as touching its
+ * border; the room also covers kerning, which moved a measured label up to
+ * 0.6 px from the sum of its glyphs, and the box's 1 px stroke.
+ */
+const LABEL_CLEARANCE_PX = 4;
+
+/**
+ * Inter's own advance of each character in its table
+ * (`./inter-advances`), in CSS pixels at the label size. Against the
+ * engine's estimate, Inter is wider for an em dash by 5.6 px, a space by
+ * 1.4 px (a quarter of what a prose label runs over), m by 2.7, a hyphen by
+ * 2.3, w by 1.9, t and f by about 1.4, and a Cyrillic or Greek capital by 1
+ * to 3, while s, r and capital E, F and L are narrower.
+ */
+const INTER_ADVANCE_PX: ReadonlyMap<string, number> = new Map(
+	Object.entries(INTER_ADVANCE_EM_THOUSANDTHS).map(([char, advance]) => [
+		char,
+		(advance * NODE_LABEL_PX) / 1000,
+	]),
+);
+
+/**
+ * The width predicted for a capital letter outside Inter's table, in CSS
+ * pixels: 0.72 em, as wide as Inter's wider capitals, since the engine
+ * counts such a letter as an average lower-case one and a label of them
+ * would otherwise spill unpredicted.
+ */
+const UNLISTED_CAPITAL_PX = 0.72 * NODE_LABEL_PX;
+
+/** A capital letter of any script. */
+const CAPITAL_LETTER = /^\p{Lu}$/u;
+
+/**
+ * beautiful-mermaid 1.1.3's width of a character relative to an average
+ * lower-case letter (`getCharWidth` in its text metrics), for the
+ * characters Inter's table holds and their accented forms; a CJK character
+ * or an emoji, which it counts double, and a combining mark, which it
+ * counts as nothing, are not mirrored. Re-check on an engine upgrade; the
+ * export's engine parity test draws labels to check it.
+ */
+function engineCharWidth(char: string): number {
+	if (char === " ") {
+		return 0.3;
+	}
+	if (char === "W" || char === "M") {
+		return 1.5;
+	}
+	if ("wm@%".includes(char)) {
+		return 1.2;
+	}
+	if ("iltfjI1!|.,:;'".includes(char)) {
+		return 0.4;
+	}
+	if ('()[]{}/\\-"`'.includes(char)) {
+		return 0.5;
+	}
+	if (char === "r") {
+		return 0.8;
+	}
+	return /^[A-Z]$/.test(char) ? 1.2 : 1;
+}
+
+/**
+ * beautiful-mermaid 1.1.3's estimate of a label line's width at its node
+ * label weight, 500 (`measureTextWidth`): 0.57 of the size an average
+ * letter, plus 0.15 of the size a line.
+ */
+const ENGINE_LETTER_PX = NODE_LABEL_PX * 0.57;
+const ENGINE_LINE_EXTRA_PX = NODE_LABEL_PX * 0.15;
+
+/**
+ * Whether one line of node label text would come closer than
+ * {@link LABEL_CLEARANCE_PX} to the sides of the box beautiful-mermaid
+ * draws around it: its width predicted from Inter's own advances, against
+ * the engine's estimate of it plus the padding a side. The engine's
+ * estimate runs short of Inter, most for text dense in dashes, m, w,
+ * hyphens and spaces, so a label of 30 such characters can spill while a
+ * 55-character prose label fits. The live page, print and the browser
+ * download break labels by it alike; the download draws in Helvetica,
+ * narrower than Inter, so its labels get more room.
+ */
+export function nodeLabelLineOverflows(text: string): boolean {
+	return nodeLabelOverflows([text]);
+}
+
+/** One line of node label text's width in CSS pixels, as beautiful-mermaid estimates it. */
+function engineLineWidthPx(text: string): number {
+	let estimate = ENGINE_LINE_EXTRA_PX;
+	for (const char of text) {
+		estimate += engineCharWidth(char) * ENGINE_LETTER_PX;
+	}
+	return estimate;
+}
+
+/**
+ * One line of node label text's width in CSS pixels, predicted from Inter's
+ * own advances. An accented letter takes its base letter's width, a capital
+ * outside the table {@link UNLISTED_CAPITAL_PX} or the engine's estimate,
+ * whichever is wider, and any other character the engine's estimate.
+ */
+function predictedLineWidthPx(text: string): number {
+	let predicted = 0;
+	for (const char of text) {
+		const engineWidth = engineCharWidth(char) * ENGINE_LETTER_PX;
+		predicted +=
+			INTER_ADVANCE_PX.get(char) ??
+			INTER_ADVANCE_PX.get(char.normalize("NFD").charAt(0)) ??
+			(CAPITAL_LETTER.test(char)
+				? Math.max(engineWidth, UNLISTED_CAPITAL_PX)
+				: engineWidth);
+	}
+	return predicted;
+}
+
+/**
+ * The width of the box beautiful-mermaid draws around a node label's lines,
+ * in CSS pixels: its estimate of the widest line plus its padding a side
+ * (`measureMultilineText`), as it sizes a rectangle, the narrowest shape it
+ * draws around a label. A box it would draw narrower than its own minimum
+ * is widened to that, which only adds room.
+ */
+export function nodeLabelBoxWidthPx(lines: readonly string[]): number {
+	return (
+		Math.max(...lines.map(engineLineWidthPx)) + 2 * NODE_LABEL_PADDING_PX
+	);
+}
+
+/**
+ * Whether a node label's lines would come closer than
+ * {@link LABEL_CLEARANCE_PX} to the sides of the box beautiful-mermaid draws
+ * around them ({@link nodeLabelBoxWidthPx}). Each line is predicted on its
+ * own, so a short line dense in dashes can sit under a long one of prose.
+ */
+function nodeLabelOverflows(lines: readonly string[]): boolean {
+	const box = nodeLabelBoxWidthPx(lines);
+	return lines.some(
+		(line) => predictedLineWidthPx(line) + 2 * LABEL_CLEARANCE_PX > box,
+	);
+}
 
 /**
  * beautiful-mermaid 1.1.3's flowchart node shapes, in the order its parser
@@ -296,14 +465,33 @@ function nodeLabelSpans(line: string): LabelSpan[] {
 	return spans;
 }
 
-/** `text` greedily wrapped at spaces; a word longer than a line stays whole. */
+/** A spaced dash, which stays at the end of the word before it. */
+const LONE_DASH = /^[—–-]$/;
+
+/**
+ * `text` greedily wrapped at spaces: a line ends before the word that would
+ * make it longer than {@link WRAPPED_LABEL_LINE_CHARS} or too wide for its
+ * box. A word that is either alone stays whole, and a spaced dash never
+ * starts a line.
+ */
 function wrapAtWords(text: string): string[] {
+	const words: string[] = [];
+	for (const word of text.split(" ")) {
+		const last = words.length - 1;
+		if (LONE_DASH.test(word) && last >= 0) {
+			words[last] = `${words[last]} ${word}`;
+		} else {
+			words.push(word);
+		}
+	}
 	const lines: string[] = [];
 	let line = "";
-	for (const word of text.split(" ")) {
+	for (const word of words) {
+		const longer = `${line} ${word}`;
 		if (
 			line &&
-			Array.from(`${line} ${word}`).length > WRAPPED_LABEL_LINE_CHARS
+			(Array.from(longer).length > WRAPPED_LABEL_LINE_CHARS ||
+				nodeLabelLineOverflows(longer))
 		) {
 			lines.push(line);
 			line = word;
@@ -318,19 +506,22 @@ function wrapAtWords(text: string): string[] {
 }
 
 /**
- * A long single-line label's text broken into lines with `<br/>`, or null
- * to leave it as written: the title before a spaced dash (the dash kept at
- * its end), the sentence, and a trailing parenthesis each start a line of
- * their own, and each wraps at words. Every word stays, in order; only
- * spacing changes. A label shorter than `minChars` stays as written.
+ * A single-line label's text broken into lines with `<br/>`, or null to
+ * leave it as written: the title before a spaced dash (the dash kept at its
+ * end), the sentence, and a trailing parenthesis each start a line of their
+ * own, and each wraps at words. Every word stays, in order; only spacing
+ * changes. A label too wide for its box is broken; with `overflowingOnly`
+ * unset, so is one longer than a wrapped line.
  */
-function wrapLabelText(text: string, minChars: number): string | null {
+function wrapLabelText(text: string, overflowingOnly: boolean): string | null {
 	const collapsed = text.replace(/\s+/g, " ").trim();
-	const length = Array.from(collapsed).length;
 	if (
 		UNWRAPPABLE_LABEL.test(collapsed) ||
-		length <= WRAPPED_LABEL_LINE_CHARS ||
-		length < minChars
+		!(
+			nodeLabelLineOverflows(collapsed) ||
+			(!overflowingOnly &&
+				Array.from(collapsed).length > WRAPPED_LABEL_LINE_CHARS)
+		)
 	) {
 		return null;
 	}
@@ -366,8 +557,8 @@ function labelWords(label: string): string {
 		.trim();
 }
 
-/** One trimmed flowchart line with its long node labels broken, or as is. */
-function wrapLineLabels(line: string, minChars: number): string {
+/** One trimmed flowchart line with its node labels broken, or as is. */
+function wrapLineLabels(line: string, overflowingOnly: boolean): string {
 	const spans = nodeLabelSpans(line);
 	let rewritten = line;
 	for (const span of [...spans].reverse()) {
@@ -376,7 +567,7 @@ function wrapLineLabels(line: string, minChars: number): string {
 			label.length >= 2 && label.startsWith('"') && label.endsWith('"');
 		const wrapped = wrapLabelText(
 			quoted ? label.slice(1, -1) : label,
-			minChars,
+			overflowingOnly,
 		);
 		if (wrapped !== null) {
 			rewritten = `${rewritten.slice(0, span.start)}${
@@ -406,22 +597,24 @@ function wrapLineLabels(line: string, minChars: number): string {
 
 interface WrapFlowchartNodeLabelsOptions {
 	/**
-	 * Break only labels at least this many characters long; without it,
-	 * every label longer than one wrapped line is broken.
+	 * Break only the labels too wide for their boxes
+	 * ({@link nodeLabelLineOverflows}); without it, every label longer than
+	 * one wrapped line is broken too.
 	 */
-	minChars?: number;
+	overflowingOnly?: boolean;
 }
 
 /**
- * A flowchart's copy with its long single-line node labels broken into
- * lines, or null when it is not a flowchart or no label changed. The lines
- * before the header, the header itself, `%%` lines and the lines the engine
- * reads as anything but edges (`classDef`, `class`, `style`, `subgraph` and
- * the like) stay as written.
+ * A flowchart's copy with its single-line node labels too wide for their
+ * boxes, or (without `overflowingOnly`) longer than one wrapped line,
+ * broken into lines; null when it is not a flowchart or no label changed.
+ * The lines before the header, the header itself, `%%` lines and the lines
+ * the engine reads as anything but edges (`classDef`, `class`, `style`,
+ * `subgraph` and the like) stay as written.
  */
 export function wrapFlowchartNodeLabels(
 	source: string,
-	{ minChars = 0 }: WrapFlowchartNodeLabelsOptions = {},
+	{ overflowingOnly = false }: WrapFlowchartNodeLabelsOptions = {},
 ): string | null {
 	const lines = source.split("\n");
 	const headerIndex = headerIndexOf(lines);
@@ -431,15 +624,10 @@ export function wrapFlowchartNodeLabels(
 	let changed = false;
 	const rewritten = lines.map((line, index) => {
 		const trimmed = line.trim();
-		if (
-			index <= headerIndex ||
-			trimmed.length === 0 ||
-			trimmed.startsWith("%%") ||
-			NON_EDGE_LINES.some((pattern) => pattern.test(trimmed))
-		) {
+		if (index <= headerIndex || !isEdgeLine(trimmed)) {
 			return line;
 		}
-		const wrapped = wrapLineLabels(trimmed, minChars);
+		const wrapped = wrapLineLabels(trimmed, overflowingOnly);
 		if (wrapped === trimmed) {
 			return line;
 		}
@@ -447,4 +635,97 @@ export function wrapFlowchartNodeLabels(
 		return `${line.slice(0, line.length - line.trimStart().length)}${wrapped}`;
 	});
 	return changed ? rewritten.join("\n") : null;
+}
+
+/**
+ * Whether one trimmed line after a flowchart's header is read by the engine
+ * as edges and nodes: neither blank, a `%%` comment, nor one of
+ * {@link NON_EDGE_LINES}.
+ */
+function isEdgeLine(trimmed: string): boolean {
+	return (
+		trimmed.length > 0 &&
+		!trimmed.startsWith("%%") &&
+		!NON_EDGE_LINES.some((pattern) => pattern.test(trimmed))
+	);
+}
+
+/** Where both Mermaid engines break a label into lines. */
+const DRAWN_LINE_BREAK = /<br\s*\/?>|\\n/i;
+
+/**
+ * A node label's lines as the engine draws them: unquoted, broken at
+ * `<br/>` and `\n`, spacing collapsed. Inline formatting, which no label
+ * wrap ever touches, counts as written.
+ */
+function drawnLabelLines(label: string): string[] {
+	const unquoted =
+		label.length >= 2 && label.startsWith('"') && label.endsWith('"')
+			? label.slice(1, -1)
+			: label;
+	return unquoted
+		.split(DRAWN_LINE_BREAK)
+		.map((line) => line.replace(/\s+/g, " ").trim())
+		.filter((line) => line.length > 0);
+}
+
+/**
+ * Whether a flowchart's copy has a node label too wide for its box, each
+ * line of a broken label measured in the box its widest line sets
+ * ({@link nodeLabelLineOverflows} for a label on one line). False for any
+ * other diagram, and edge labels and subgraph titles are not read: they sit
+ * in no box. The live page and print weigh a fence's copies by it alike
+ * ({@link printsBetter}).
+ */
+export function flowchartNodeLabelsOverflow(source: string): boolean {
+	const lines = source.split("\n");
+	const headerIndex = headerIndexOf(lines);
+	if (!FLOWCHART_HEADER.test(lines[headerIndex] ?? "")) {
+		return false;
+	}
+	return lines.some((line, index) => {
+		const trimmed = line.trim();
+		return (
+			index > headerIndex &&
+			isEdgeLine(trimmed) &&
+			nodeLabelSpans(trimmed).some((span) =>
+				nodeLabelOverflows(
+					drawnLabelLines(trimmed.slice(span.start, span.end)),
+				),
+			)
+		);
+	});
+}
+
+/** A laid-out copy of a fence, as the choice between its copies weighs it. */
+export interface WeighedDiagramCopy {
+	/** Its node labels as printed, in points; null when its size is unknown. */
+	labelPt: number | null;
+	/** Whether a node label of it is too wide for its box. */
+	labelsOverflow: boolean;
+}
+
+/**
+ * Whether `copy` is drawn rather than `kept`, both laid out from one fence.
+ * A copy whose node labels all fit their boxes beats one with a label that
+ * spills out of its box, however much larger the other prints: breaking
+ * labels makes a diagram taller, and a tall one prints smaller, which the
+ * floor warning reports, while a label across its box's border reads as a
+ * fault in the drawing. Between two copies that fit, or two that spill, the
+ * one whose labels print larger wins; on a tie `copy` wins only with
+ * `winsTie`, and a size that is not known never wins. The live page and
+ * print choose by it alike.
+ */
+export function printsBetter(
+	copy: WeighedDiagramCopy,
+	kept: WeighedDiagramCopy,
+	{ winsTie = false }: { winsTie?: boolean } = {},
+): boolean {
+	if (copy.labelsOverflow !== kept.labelsOverflow) {
+		return kept.labelsOverflow;
+	}
+	if (copy.labelPt === null || kept.labelPt === null) {
+		return false;
+	}
+	return winsTie ? copy.labelPt >= kept.labelPt : copy.labelPt > kept.labelPt;
 }

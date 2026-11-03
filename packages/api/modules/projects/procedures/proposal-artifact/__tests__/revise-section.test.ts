@@ -469,6 +469,52 @@ describe("candidate", () => {
 			`<internal_guidance>\n${TITLE}`,
 		);
 	});
+
+	it("signs the section as the editor's save stores it when a destination holds an earlier accept's diff markers", async () => {
+		// What an earlier accept saved for a link whose URL the diff marked:
+		// the deleted and the added run, percent-encoded into the destination.
+		const damagedUrl =
+			"https://example.com/%E2%80%8B%E2%80%8BDEL_START%E2%80%8B%C2%A0old%C2%A0%E2%80%8BDEL_END%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8BADD_START%E2%80%8B%C2%A0new%C2%A0%E2%80%8BADD_END%E2%80%8B%E2%80%8B";
+		const rollout = "The rollout follows in Q3 2026.";
+		const linked = (text: string) =>
+			text.replace(rollout, `${rollout} See [the plan](${damagedUrl}).`);
+		const damagedMain = linked(MAIN);
+		const document = world.documents.get(DOC_A);
+		if (document) {
+			document.content = damagedMain;
+		}
+		addFinding({
+			sectionHash: findSection(buildSectionMap(damagedMain), APPROACH.key)
+				?.proseHash,
+		});
+		// The model keeps the destination verbatim.
+		modelWrites(linked(MODEL_BODY));
+
+		const result = await reviseSection({
+			baseContentHash: contentIdentity(damagedMain),
+		});
+
+		// The candidate under review already shows the destination the save
+		// stores, so the person approves the link that is kept.
+		const repaired = linked(RESTORED_BODY).replace(
+			damagedUrl,
+			"https://example.com/new",
+		);
+		expect(result).toMatchObject({ status: "CANDIDATE", body: repaired });
+		const spliced = spliceSectionBody(
+			damagedMain,
+			APPROACH.key,
+			linked(RESTORED_BODY),
+		) as string;
+		// The accept saves the candidate with the destination repaired.
+		const saved = spliced.replace(damagedUrl, "https://example.com/new");
+		const signed =
+			revise.signRevisionToken.mock.calls[0][0].sectionFingerprint;
+		expect(signed).toBe(revisionSectionFingerprint(saved, APPROACH.key));
+		expect(signed).not.toBe(
+			revisionSectionFingerprint(spliced, APPROACH.key),
+		);
+	});
 });
 
 describe("refused candidates", () => {

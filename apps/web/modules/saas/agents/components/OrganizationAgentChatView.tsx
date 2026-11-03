@@ -12,10 +12,10 @@
  */
 
 import { isRetiredSystemAgent } from "@repo/agent-types";
+import type { Organization } from "@repo/auth";
 import { config } from "@repo/config";
 import { AgentChatCopilotKit } from "@saas/agents/components/AgentChatCopilotKit";
 import { RetiredAgentNotice } from "@saas/agents/components/RetiredAgentNotice";
-import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { useSidebarCollapse } from "@saas/shared/contexts/SidebarCollapseContext";
 import {
@@ -39,8 +39,14 @@ import { HomeIcon } from "lucide-react";
 import Link from "next/link";
 import { registeredAgentChatQueryOptions } from "../lib/agent-chat-queries";
 
-export function OrganizationAgentChatView({ agentId }: { agentId: string }) {
-	const { basePath, organizationId } = useOrganizationContext();
+export function OrganizationAgentChatView({
+	agentId,
+	organization,
+}: {
+	agentId: string;
+	organization: Pick<Organization, "id" | "slug" | "name">;
+}) {
+	const basePath = `/app/${organization.slug}`;
 	const { isFullscreen } = useFullscreen();
 	const { isCollapsed } = useSidebarCollapse();
 
@@ -53,7 +59,7 @@ export function OrganizationAgentChatView({ agentId }: { agentId: string }) {
 		isLoading,
 		error,
 	} = useQuery({
-		...registeredAgentChatQueryOptions(agentId, organizationId),
+		...registeredAgentChatQueryOptions(agentId, organization.id),
 		retry: false,
 	});
 
@@ -132,7 +138,10 @@ export function OrganizationAgentChatView({ agentId }: { agentId: string }) {
 						</AlertDescription>
 					</Alert>
 				) : (
-					<AgentChatCopilotKit agentId={agentId} />
+					<AgentChatCopilotKit
+						agentId={agentId}
+						organization={organization}
+					/>
 				)}
 			</div>
 		</div>

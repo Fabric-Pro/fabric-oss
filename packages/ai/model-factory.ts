@@ -16,6 +16,10 @@ import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createTypeSafeAi } from "@ai-sdk/typesafe-ai";
 import { databricksPromptCacheForModel } from "@repo/agent-types/databricks-compat";
+import {
+	fetchAgentEndpointExtendedTimeout,
+	validateCustomProviderUrl,
+} from "@repo/utils/agent-endpoint";
 import type {
 	EmbeddingModel,
 	Experimental_DecisionModel,
@@ -435,7 +439,8 @@ export type ProviderType =
 	| "GOOGLE_VERTEX_AI"
 	| "AZURE_AI_FOUNDRY"
 	| "DATABRICKS"
-	| "CLOUDFLARE_AI";
+	| "CLOUDFLARE_AI"
+	| "CUSTOM";
 
 /**
  * Check for gateways served through OpenAI-compatible connection endpoints
@@ -484,7 +489,10 @@ function getCompatibleGatewayProvider(
 			apiKey,
 			baseURL,
 			headers,
-			fetch: gatewayFetch,
+			fetch:
+				provider === "CUSTOM"
+					? fetchAgentEndpointExtendedTimeout
+					: gatewayFetch,
 		});
 		compatibleGatewayProviderCache.set(cacheKey, client);
 	}
@@ -1070,6 +1078,41 @@ export function getModel(
 				).chat(modelWithoutPrefix);
 				break;
 			}
+			case "CUSTOM": {
+				const rawBaseUrl = context.baseUrl?.trim();
+				if (!rawBaseUrl) {
+					throw new Error(
+						"Custom / Remote Server requires a base URL. Please configure your endpoint URL in Settings → AI Providers.",
+					);
+				}
+				const urlError = validateCustomProviderUrl(rawBaseUrl);
+				if (urlError) {
+					throw new Error(
+						`Invalid Custom / Remote Server URL: ${urlError}`,
+					);
+				}
+				const normalizedBaseUrl = rawBaseUrl.replace(/\/+$/, "");
+				const configuredDeploymentName = context.deploymentName?.trim();
+				const customModelId =
+					configuredDeploymentName || modelWithoutPrefix;
+				if (
+					configuredDeploymentName &&
+					configuredDeploymentName !== modelWithoutPrefix
+				) {
+					console.log(
+						`[AI] Custom / Remote Server: Using configured model/deployment "${configuredDeploymentName}" ` +
+							`(requested model was "${modelWithoutPrefix}")`,
+					);
+				}
+				endpointScope = endpointScopeFor(normalizedBaseUrl);
+				baseModel = getCompatibleGatewayProvider(
+					"CUSTOM",
+					context.apiKey,
+					normalizedBaseUrl,
+					context.headers,
+				).chat(customModelId);
+				break;
+			}
 			default:
 				// Fall back to OpenAI-compatible endpoint for unknown providers
 				endpointScope = endpointScopeFor(openAIBaseURL(context.apiKey));
@@ -1353,6 +1396,12 @@ export function getEmbeddingModel(
 				model,
 				false,
 			).embedding(model);
+		}
+
+		if (context.provider === "CUSTOM") {
+			throw new Error(
+				"Custom OpenAI-compatible provider does not support embeddings unless a dedicated embedding provider is configured.",
+			);
 		}
 
 		// Direct provider - OpenAI and compatible providers

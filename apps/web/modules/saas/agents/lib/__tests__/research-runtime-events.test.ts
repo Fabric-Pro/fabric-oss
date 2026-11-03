@@ -36,6 +36,9 @@ const SUB_AGENT = {
 };
 
 const RESULT = {
+	model: { id: "example-answer-served", viaPlan: true },
+	summaryModel: { id: "example-summary-served", viaPlan: false },
+	reportModel: { id: "example-report-served", viaPlan: false },
 	status: "completed",
 	result: "The full research text.",
 	summary: "A short summary.",
@@ -266,6 +269,24 @@ describe("applyResearchRuntimeEvent — a run's events", () => {
 });
 
 describe("applyResearchRuntimeEvent — how a response ends", () => {
+	it("keeps an older or malformed-identity answer readable without inventing a label", () => {
+		const output = apply(running, {
+			type: EventType.RUN_FINISHED,
+			threadId: THREAD,
+			runId: RUN,
+			outcome: { type: "success" },
+			result: {
+				...RESULT,
+				model: { id: "example-configured" },
+				summaryModel: undefined,
+				reportModel: undefined,
+			},
+		}).state;
+		expect(output.result?.text).toBe(RESULT.result);
+		expect(output.result?.model).toBeUndefined();
+		expect(output.result?.summaryModel).toBeUndefined();
+		expect(output.result?.reportModel).toBeUndefined();
+	});
 	it("RUN_FINISHED success completes the run with the result view", () => {
 		const update = apply(running, {
 			type: EventType.RUN_FINISHED,
@@ -414,6 +435,11 @@ describe("applyResearchRuntimeEvent — a saved run", () => {
 		);
 		expect(completed.query).toBe("What changed?");
 		expect(completed.effect).toEqual({ kind: "restored" });
+		expect(completed.state.result).toMatchObject({
+			model: RESULT.model,
+			summaryModel: RESULT.summaryModel,
+			reportModel: RESULT.reportModel,
+		});
 		expect(completed.state).toMatchObject({
 			executionId: EXECUTION,
 			status: "completed",

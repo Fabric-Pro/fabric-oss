@@ -10,7 +10,7 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import { DatabaseIcon, LockIcon } from "lucide-react";
+import { DatabaseIcon, InfoIcon, LockIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useId } from "react";
 import { toast } from "sonner";
@@ -120,20 +120,32 @@ export function EmbeddingsOnlyToggle({
 	});
 
 	return (
-		<div className="flex w-full items-start gap-2">
+		<div className="flex w-full items-center gap-2">
 			<Switch
 				id={id}
 				checked={checked}
 				disabled={disabled || mutation.isPending}
 				onCheckedChange={(value) => mutation.mutate(value)}
 			/>
-			<div className="space-y-0.5">
-				<Label htmlFor={id} className="font-medium text-xs">
+			<div className="flex min-w-0 items-center gap-1.5">
+				<Label htmlFor={id} className="truncate font-medium text-xs">
 					{t("toggleLabel")}
 				</Label>
-				<p className="text-muted-foreground text-xs">
-					{t("toggleHint")}
-				</p>
+				<span className="sr-only">{t("toggleHint")}</span>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							type="button"
+							aria-label={t("toggleLabel")}
+							className="inline-flex shrink-0 rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+						>
+							<InfoIcon aria-hidden="true" className="size-3.5" />
+						</button>
+					</TooltipTrigger>
+					<TooltipContent side="bottom" className="max-w-xs text-xs">
+						{t("toggleHint")}
+					</TooltipContent>
+				</Tooltip>
 			</div>
 		</div>
 	);

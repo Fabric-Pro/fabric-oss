@@ -244,6 +244,13 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"warning",
 		"org",
 	),
+	"org.member.bulk_invited": D(
+		"org.member.bulk_invited",
+		"Members invited in bulk",
+		UserPlus,
+		"info",
+		"org",
+	),
 	"org.api_key.created": D(
 		"org.api_key.created",
 		"API key created",

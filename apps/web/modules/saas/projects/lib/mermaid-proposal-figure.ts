@@ -12,9 +12,11 @@ import {
 
 /**
  * How a Proposal's diagram draws on its live page (Fizzy #2946): a fence
- * with a `%% figure:` line draws its SVG template, a fence the export
- * cannot draw is marked as staying out of the PDF, and a diagram takes a
- * figure number exactly when the export numbers it.
+ * with a `%% figure:` line draws its SVG template, and so does a fence with
+ * none that is a plain chain of seven steps or more, as a numbered process
+ * (`figureKindOf`), a fence the export cannot draw is marked as staying out
+ * of the PDF, and a diagram takes a figure number exactly when the export
+ * numbers it.
  */
 
 /**
@@ -29,9 +31,9 @@ export function figureIdPrefix(reactId: string): string {
 }
 
 /**
- * The unsanitized template SVG a fence asks for, or null when it asks for
- * none, or the template refuses its source or the palette: the fence then
- * draws as Mermaid.
+ * The unsanitized template SVG a fence draws with (`figureKindOf`, the
+ * export's own choice), or null when it takes none, or the template refuses
+ * its source or the palette: the fence then draws as Mermaid.
  */
 export function drawFigureTemplate(
 	code: string,

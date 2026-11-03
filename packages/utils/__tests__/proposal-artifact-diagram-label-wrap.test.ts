@@ -7,10 +7,15 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	flowchartNodeLabelsOverflow,
+	legibleFigureMaxHeightPx,
+	nodeLabelLineOverflows,
 	PRINT_COLUMN_PX,
 	PRINT_FIGURE_MAX_HEIGHT_PX,
+	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
 	PRINT_LABEL_FLOOR_PT,
 	printedNodeLabelPt,
+	printsBetter,
 	turnFlowchartTopDown,
 	wrapFlowchartNodeLabels,
 } from "../lib/proposal-artifact/diagram-label-wrap";
@@ -58,6 +63,26 @@ const LEADING_COMMENTS = [
 	"%% fabric-visual: k3v9q2m7x1a8c4d6",
 	"%% caption: How the example pilot runs",
 ];
+
+/**
+ * Labels under 40 characters dense in dashes, m, w and hyphens, which Inter
+ * draws wider than beautiful-mermaid's estimate by more than the room their
+ * boxes keep.
+ */
+const DENSE_LABELS = [
+	"Momentum — minimum-time multi-team flow",
+	"Mid-term metrics — maximum momentum",
+	"multi-team time-to-market — momentum",
+] as const;
+
+/** Prose labels of 35 to 39 characters, which fit their boxes. */
+const ORDINARY_LABELS = [
+	"Discovery workshop with the client team",
+	"Review the proposal with stakeholders",
+	"Configure and validate the agreed scope",
+	"Weekly status reviews with sponsors",
+	"Map the current reporting landscape",
+] as const;
 
 /** A label of exactly `length` characters, words of five letters apart. */
 function labelOf(length: number): string {
@@ -137,6 +162,165 @@ describe("the print column, a figure's height and the label floor", () => {
 				sized(PRINT_COLUMN_PX * 2, PRINT_FIGURE_MAX_HEIGHT_PX * 4),
 			),
 		).toBeCloseTo(9.75 / 4, 5);
+	});
+
+	it("measures a figure right under a section opener against the shorter height print gives it there", () => {
+		expect(PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX).toBeCloseTo(
+			(11 - 0.85 - 0.9 - 1 - 2) * 96,
+			5,
+		);
+		expect(
+			printedNodeLabelPt(
+				sized(200, PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX),
+				PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+			),
+		).toBe(9.75);
+		// A drawing 735 px tall prints at full size in a figure of its own
+		// and below the floor right under an opener.
+		expect(printedNodeLabelPt(sized(200, 735))).toBe(9.75);
+		expect(
+			printedNodeLabelPt(
+				sized(200, 735),
+				PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+			),
+		).toBeCloseTo((9.75 * 600) / 735, 5);
+		expect(
+			printedNodeLabelPt(
+				sized(200, 735),
+				PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+			),
+		).toBeLessThan(PRINT_LABEL_FLOOR_PT);
+	});
+
+	it("keeps the height an opener's page offers a drawing only while its labels print at the floor there", () => {
+		const under = PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX;
+		const own = PRINT_FIGURE_MAX_HEIGHT_PX;
+		// Labels reach the floor at 9 / 9.75 of a drawing's height: a
+		// drawing 650 px tall stays legible at 600 px, one 651 px does not.
+		const floorShare = PRINT_LABEL_FLOOR_PT / 9.75;
+		expect(legibleFigureMaxHeightPx(under, sized(200, 300))).toBe(under);
+		expect(
+			legibleFigureMaxHeightPx(under, sized(200, under / floorShare)),
+		).toBe(under);
+		expect(legibleFigureMaxHeightPx(under, sized(200, 651))).toBe(own);
+		expect(legibleFigureMaxHeightPx(454, sized(200, 480))).toBe(454);
+		expect(legibleFigureMaxHeightPx(454, sized(200, 565))).toBe(own);
+		// At its own height a figure keeps it, legible or not: it has no
+		// further page to move to.
+		expect(legibleFigureMaxHeightPx(own, sized(200, own * 2))).toBe(own);
+		// A drawing wider than the column that prints below the floor at any
+		// height keeps a figure's own height too.
+		expect(
+			legibleFigureMaxHeightPx(under, sized(PRINT_COLUMN_PX * 2, 300)),
+		).toBe(own);
+	});
+
+	it("never shrinks a figure template's 12 px text under an opener", () => {
+		const under = PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX;
+		const own = PRINT_FIGURE_MAX_HEIGHT_PX;
+		// The template's text is at the floor at full size, so it keeps a
+		// reduced height only when it is no taller.
+		expect(legibleFigureMaxHeightPx(under, sized(662, 504), 12)).toBe(
+			under,
+		);
+		expect(legibleFigureMaxHeightPx(under, sized(662, under), 12)).toBe(
+			under,
+		);
+		expect(legibleFigureMaxHeightPx(454, sized(662, 504), 12)).toBe(own);
+		expect(legibleFigureMaxHeightPx(under, sized(662, under + 1), 12)).toBe(
+			own,
+		);
+	});
+});
+
+describe("which laid-out copy of a fence is drawn", () => {
+	it("finds a node label too wide for its box in a flowchart's copy, and none once it is broken", () => {
+		const source = [
+			"flowchart LR",
+			`  a["${ORDINARY_LABELS[0]}"] --> b["${DENSE_LABELS[0]}"]`,
+			`  b --> c[${ORDINARY_LABELS[1]}]`,
+		].join("\n");
+		expect(flowchartNodeLabelsOverflow(source)).toBe(true);
+		const broken = String(
+			wrapFlowchartNodeLabels(source, { overflowingOnly: true }),
+		);
+		expect(flowchartNodeLabelsOverflow(broken)).toBe(false);
+		expect(
+			flowchartNodeLabelsOverflow(
+				`flowchart TD\n  a["${ORDINARY_LABELS[0]}"] --> b[Done]`,
+			),
+		).toBe(false);
+	});
+
+	it("measures each line of a broken label in the box its widest line sets", () => {
+		const dense = DENSE_LABELS[0];
+		expect(nodeLabelLineOverflows(dense)).toBe(true);
+		expect(
+			flowchartNodeLabelsOverflow(
+				`flowchart TD\n  a["Plan<br/>${dense}"]`,
+			),
+		).toBe(true);
+		// Under a longer line of prose the box is wide enough for it.
+		const prose = "Discovery workshop with the client team and the owners";
+		expect(nodeLabelLineOverflows(prose)).toBe(false);
+		expect(
+			flowchartNodeLabelsOverflow(
+				`flowchart TD\n  a["${prose}<br/>${dense}"]`,
+			),
+		).toBe(false);
+	});
+
+	it("reads only node labels, and only in a flowchart", () => {
+		const dense = DENSE_LABELS[0];
+		expect(
+			flowchartNodeLabelsOverflow(
+				[
+					`%% ${dense}`,
+					"flowchart TD",
+					`  %% ${dense}`,
+					`  subgraph s1 ["${dense}"]`,
+					`    a -->|${dense}| b`,
+					"  end",
+					"  classDef c1 fill:#fff",
+				].join("\n"),
+			),
+		).toBe(false);
+		expect(
+			flowchartNodeLabelsOverflow(`stateDiagram-v2\n  s1 : ${dense}`),
+		).toBe(false);
+	});
+
+	it("draws a copy whose labels fit their boxes over one whose labels spill, however large either prints", () => {
+		const fits = { labelPt: 7.33, labelsOverflow: false };
+		const spills = { labelPt: 9.75, labelsOverflow: true };
+		expect(printsBetter(fits, spills)).toBe(true);
+		expect(printsBetter(spills, fits)).toBe(false);
+		expect(printsBetter(spills, fits, { winsTie: true })).toBe(false);
+		// Its size unknown, a copy that fits still wins on the fit alone.
+		expect(printsBetter({ ...fits, labelPt: null }, spills)).toBe(true);
+	});
+
+	it("draws the copy whose labels print larger among copies that all fit, or all spill, a tie going to the candidate only when told", () => {
+		for (const labelsOverflow of [false, true]) {
+			const larger = { labelPt: 9.75, labelsOverflow };
+			const smaller = { labelPt: 8.42, labelsOverflow };
+			expect(printsBetter(larger, smaller)).toBe(true);
+			expect(printsBetter(smaller, larger)).toBe(false);
+			expect(printsBetter(smaller, larger, { winsTie: true })).toBe(
+				false,
+			);
+			expect(printsBetter(larger, { ...larger })).toBe(false);
+			expect(printsBetter(larger, { ...larger }, { winsTie: true })).toBe(
+				true,
+			);
+			// A size that is not known never wins on size.
+			expect(printsBetter({ ...larger, labelPt: null }, smaller)).toBe(
+				false,
+			);
+			expect(printsBetter(larger, { ...smaller, labelPt: null })).toBe(
+				false,
+			);
+		}
 	});
 });
 
@@ -397,7 +581,9 @@ describe("wrapFlowchartNodeLabels", () => {
 		["an empty source", ""],
 	])("leaves %s untouched", (_kind, source) => {
 		expect(wrapFlowchartNodeLabels(source)).toBeNull();
-		expect(wrapFlowchartNodeLabels(source, { minChars: 1 })).toBeNull();
+		expect(
+			wrapFlowchartNodeLabels(source, { overflowingOnly: true }),
+		).toBeNull();
 	});
 
 	it("returns null when no label is long enough to break", () => {
@@ -408,69 +594,149 @@ describe("wrapFlowchartNodeLabels", () => {
 		).toBeNull();
 	});
 
-	it("breaks only labels at least `minChars` long when asked to", () => {
-		const medium = labelOf(45);
-		const long = labelOf(70);
-		const source = `flowchart LR\n  a["${medium}"] --> b["${long}"]`;
+	it("breaks only the labels too wide for their boxes when asked to", () => {
+		const fits = labelOf(70);
+		const dense = DENSE_LABELS[0];
+		const source = `flowchart LR\n  a["${fits}"]\n  b["${dense}"]\n  a --> b`;
 		const everything = String(wrapFlowchartNodeLabels(source));
-		expect(everything).not.toContain(`a["${medium}"]`);
-		expect(everything).not.toContain(`b["${long}"]`);
+		expect(everything).not.toContain(`a["${fits}"]`);
+		expect(everything).not.toContain(`b["${dense}"]`);
 
-		const longOnly = String(
-			wrapFlowchartNodeLabels(source, { minChars: 60 }),
+		const overflowing = String(
+			wrapFlowchartNodeLabels(source, { overflowingOnly: true }),
 		);
-		expect(longOnly).toContain(`a["${medium}"]`);
-		expect(longOnly).not.toContain(`b["${long}"]`);
-		// The long label breaks exactly as without the threshold.
-		expect(labelLines(longOnly, "b")).toEqual(labelLines(everything, "b"));
+		expect(overflowing).toContain(`a["${fits}"]`);
+		expect(labelLines(overflowing, "b")).toEqual([
+			"Momentum —",
+			"minimum-time multi-team",
+			"flow",
+		]);
+		// The dense label breaks exactly as without the option.
+		expect(labelLines(overflowing, "b")).toEqual(
+			labelLines(everything, "b"),
+		);
 	});
 
-	it("counts `minChars` inclusively, on the label's words with spacing collapsed", () => {
-		const at = labelOf(60);
-		const below = labelOf(59);
-		expect(Array.from(at)).toHaveLength(60);
-		expect(Array.from(below)).toHaveLength(59);
+	it("keeps ordinary labels of 30 to 39 characters as written and breaks those dense in dashes, m, w and hyphens", () => {
+		for (const label of ORDINARY_LABELS) {
+			expect(
+				wrapFlowchartNodeLabels(`flowchart LR\n  a["${label}"]`, {
+					overflowingOnly: true,
+				}),
+			).toBeNull();
+		}
+		for (const label of DENSE_LABELS) {
+			const broken = wrapFlowchartNodeLabels(
+				`flowchart LR\n  a["${label}"]`,
+				{ overflowingOnly: true },
+			);
+			expect(labelLines(String(broken), "a")?.length).toBeGreaterThan(1);
+		}
+	});
+
+	it("predicts Cyrillic and Greek capitals at Inter's width, so an all-caps label too wide for its box is broken and lower-case prose that fits is not", () => {
+		// The engine counts each of these capitals as an average lower-case
+		// letter, which Inter draws narrower than it draws them.
+		for (const label of [
+			"ЦЕНТРАЛИЗОВАННОЕ УПРАВЛЕНИЕ ДОСТУПОМ",
+			"ΚΕΝΤΡΙΚΗ ΔΙΑΧΕΙΡΙΣΗ ΠΡΟΣΒΑΣΗΣ ΟΜΑΔΩΝ",
+		]) {
+			expect(Array.from(label)).toHaveLength(36);
+			expect(nodeLabelLineOverflows(label), label).toBe(true);
+			const broken = wrapFlowchartNodeLabels(
+				`flowchart LR\n  a["${label}"]`,
+				{ overflowingOnly: true },
+			);
+			const lines = labelLines(String(broken), "a") ?? [];
+			expect(lines.length, label).toBeGreaterThan(1);
+			expect(lines.join(" ")).toBe(label);
+		}
+		for (const label of [
+			"Согласование требований с заинтересованными сторонами",
+			"Внедрение системы мониторинга и журналирования",
+		]) {
+			expect(nodeLabelLineOverflows(label), label).toBe(false);
+		}
+	});
+
+	it("decides on the label's words with spacing collapsed", () => {
+		const spaced = ORDINARY_LABELS[0].replaceAll(" ", "    ");
+		expect(nodeLabelLineOverflows(spaced)).toBe(true);
 		expect(
-			wrapFlowchartNodeLabels(`flowchart TD\n  a["${at}"]`, {
-				minChars: 60,
+			wrapFlowchartNodeLabels(`flowchart TD\n  a["${spaced}"]`, {
+				overflowingOnly: true,
 			}),
-		).not.toBeNull();
-		expect(
-			wrapFlowchartNodeLabels(`flowchart TD\n  a["${below}"]`, {
-				minChars: 60,
-			}),
-		).toBeNull();
-		// Doubled spaces do not count toward the threshold.
-		expect(
-			wrapFlowchartNodeLabels(
-				`flowchart TD\n  a["${below.replace(" ", "    ")}"]`,
-				{ minChars: 60 },
-			),
 		).toBeNull();
 	});
 
-	it("never breaks a label one wrapped line holds, however low `minChars` is", () => {
+	it("never breaks a label one wrapped line holds while it fits its box", () => {
+		const short = labelOf(30);
+		expect(nodeLabelLineOverflows(short)).toBe(false);
 		expect(
-			wrapFlowchartNodeLabels(`flowchart TD\n  a["${labelOf(30)}"]`, {
-				minChars: 1,
+			wrapFlowchartNodeLabels(`flowchart TD\n  a["${short}"]`),
+		).toBeNull();
+		expect(
+			wrapFlowchartNodeLabels(`flowchart TD\n  a["${short}"]`, {
+				overflowingOnly: true,
 			}),
 		).toBeNull();
+	});
+
+	it("breaks a label of 30 characters or fewer too wide for its box at its dash", () => {
+		const dense = "Momentum — minimum-time flow";
+		expect(Array.from(dense)).toHaveLength(28);
+		for (const overflowingOnly of [false, true]) {
+			const broken = String(
+				wrapFlowchartNodeLabels(`flowchart TD\n  a["${dense}"]`, {
+					overflowingOnly,
+				}),
+			);
+			expect(labelLines(broken, "a")).toEqual([
+				"Momentum —",
+				"minimum-time flow",
+			]);
+		}
+	});
+
+	it("never leaves a line of several words too wide for its box, nor starts one with a dash", () => {
+		const source = [
+			"flowchart TD",
+			`  a["${DENSE_LABELS.join(" — ")}"]`,
+			'  b["mid-term metrics — minimum time — maximum momentum"]',
+			'  c["minimum-time multi-team —"]',
+		].join("\n");
+		const broken = String(wrapFlowchartNodeLabels(source));
+		for (const id of ["a", "b", "c"]) {
+			const lines = labelLines(broken, id) ?? [];
+			expect(lines.length).toBeGreaterThan(1);
+			for (const line of lines) {
+				expect(line).not.toMatch(/^[—–-] /);
+				if (line.includes(" ")) {
+					expect(nodeLabelLineOverflows(line), line).toBe(false);
+				}
+			}
+		}
 	});
 
 	it("changes nothing in a source it already wrapped", () => {
 		const once = String(wrapFlowchartNodeLabels(LONG_CHAIN));
 		expect(wrapFlowchartNodeLabels(once)).toBeNull();
-		expect(wrapFlowchartNodeLabels(once, { minChars: 60 })).toBeNull();
+		expect(
+			wrapFlowchartNodeLabels(once, { overflowingOnly: true }),
+		).toBeNull();
 
 		const medium = labelOf(45);
 		const source = `flowchart LR\n  a["${medium}"] --> b["${STAGE_LABELS[0]}"]`;
-		const longOnly = String(
-			wrapFlowchartNodeLabels(source, { minChars: 60 }),
+		const overflowing = String(
+			wrapFlowchartNodeLabels(source, { overflowingOnly: true }),
 		);
-		expect(wrapFlowchartNodeLabels(longOnly, { minChars: 60 })).toBeNull();
-		// The full pass then breaks only what the threshold left, and agrees
+		expect(overflowing).toContain(`a["${medium}"]`);
+		expect(
+			wrapFlowchartNodeLabels(overflowing, { overflowingOnly: true }),
+		).toBeNull();
+		// The full pass then breaks only what the first one left, and agrees
 		// with breaking everything at once.
-		const thenAll = String(wrapFlowchartNodeLabels(longOnly));
+		const thenAll = String(wrapFlowchartNodeLabels(overflowing));
 		expect(thenAll).toBe(wrapFlowchartNodeLabels(source));
 		expect(wrapFlowchartNodeLabels(thenAll)).toBeNull();
 	});

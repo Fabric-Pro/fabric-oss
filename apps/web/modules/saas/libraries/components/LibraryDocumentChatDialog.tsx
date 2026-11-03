@@ -7,6 +7,8 @@
  * Uses vector search to find relevant document chunks and AI to answer questions.
  */
 
+import type { AnswerModelInfo } from "@repo/ai/lib/answer-model-info";
+import { AnsweredByModel } from "@saas/agents/components/FabricChat/shared/AnsweredByModel";
 import { useRuntimeChatTransport } from "@saas/agents/hooks/useRuntimeChatTransport";
 import {
 	askLibraryRoute,
@@ -49,6 +51,7 @@ interface LibraryDocumentChatDialogProps {
 }
 
 interface ChatMessage {
+	model?: AnswerModelInfo;
 	role: "user" | "assistant";
 	content: string;
 	sources?: LibrarySource[];
@@ -207,6 +210,7 @@ export function LibraryDocumentChatDialog({
 				{
 					role: "assistant",
 					content: data.response,
+					model: data.model,
 					sources: data.sources,
 					timestamp: new Date(),
 				},
@@ -434,6 +438,11 @@ export function LibraryDocumentChatDialog({
 											<Response className="text-sm [&_pre]:text-xs [&_code]:text-xs">
 												{message.content}
 											</Response>
+										)}
+										{message.role === "assistant" && (
+											<AnsweredByModel
+												model={message.model}
+											/>
 										)}
 									</div>
 								</div>

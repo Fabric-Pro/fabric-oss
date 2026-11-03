@@ -76,7 +76,18 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe.each([
-	["chat", <OrganizationAgentChatView key="chat" agentId="example-agent" />],
+	[
+		"chat",
+		<OrganizationAgentChatView
+			key="chat"
+			agentId="example-agent"
+			organization={{
+				id: "example-org-id",
+				slug: "example-org",
+				name: "Example",
+			}}
+		/>,
+	],
 	[
 		"try",
 		<RegisteredAgentTryWorkspace

@@ -7581,3 +7581,124 @@ it("pull adoption preserves missing-ticket streaks and pending proposals", async
 		expect(data).not.toHaveProperty("externalPmTarget");
 	}
 });
+
+describe("tiptapTableToLexxy — links and attributes in a cell", () => {
+	const cell = (content: string) =>
+		tiptapTableToLexxy(
+			`<table><tbody><tr><td><p>${content}</p></td></tr></tbody></table>`,
+		);
+
+	it.each([
+		"javascript:alert(1)",
+		"JavaScript:alert(1)",
+		"vbscript:msgbox(1)",
+		"data:text/html;base64,PHNjcmlwdD4=",
+		"file:///etc/passwd",
+	])("sends a link to %s as text, without the destination", (href) => {
+		const html = cell(`<a href="${href}">open</a>`);
+
+		expect(html).toContain("<a>open</a>");
+		expect(html.toLowerCase()).not.toMatch(/href|script:|data:|file:/);
+	});
+
+	it("keeps a web link with only its destination", () => {
+		const html = cell(
+			'<a href="https://example.com/a?b=1&amp;c=2" target="_blank" onclick="steal()">docs</a>',
+		);
+
+		expect(html).toContain(
+			'<a href="https://example.com/a?b=1&amp;c=2">docs</a>',
+		);
+		expect(html).not.toContain("onclick");
+		expect(html).not.toContain("target");
+	});
+
+	it("drops attributes from the other inline tags", () => {
+		const html = cell(
+			'<strong onmouseover="steal()">bold</strong> and <em style="x">em</em>',
+		);
+
+		expect(html).toContain("<strong>bold</strong> and <em>em</em>");
+		expect(html).not.toContain("onmouseover");
+	});
+
+	/** Every tag inside the converted cell, which must be one the sanitizer emits. */
+	const tagsInCell = (html: string) => {
+		const inner = /<td><p>([\s\S]*)<\/p><\/td>/.exec(html)?.[1] ?? "";
+		return inner.match(/<[^>]*>?/g) ?? [];
+	};
+	const EMITTED_TAG =
+		/^<(?:\/?(?:strong|em|b|i|s|del|strike|a)|br|a href="[^"<>]*")>$/;
+
+	it.each([
+		{ wrapped: true, content: 'x <a href="javascript:alert(1)" title=y' },
+		{ wrapped: false, content: 'x <a href="javascript:alert(1)" title=y' },
+		{ wrapped: true, content: "x <img src=x onerror=alert(1)//" },
+		{ wrapped: false, content: "x <img src=x onerror=alert(1)//" },
+	])(
+		"escapes an unterminated tag rather than passing it on (in a paragraph: $wrapped): $content",
+		({ wrapped, content }) => {
+			const html = tiptapTableToLexxy(
+				`<table><tbody><tr><td>${wrapped ? `<p>${content}</p>` : content}</td></tr></tbody></table>`,
+			);
+
+			for (const tag of tagsInCell(html)) {
+				expect(tag).toMatch(EMITTED_TAG);
+			}
+			expect(html).not.toMatch(/<(?:a|img)\s/i);
+		},
+	);
+
+	it("escapes a stray < between kept tags, keeping the tags", () => {
+		const html = cell("<strong>a</strong> <em x=1 <b>c</b>");
+
+		expect(html).toContain("<strong>a</strong>");
+		for (const tag of tagsInCell(html)) {
+			expect(tag).toMatch(EMITTED_TAG);
+		}
+	});
+
+	it("reads href only as an attribute name, not inside another attribute's value", () => {
+		const html = cell(
+			'<a title="x href=https://other.example" href="https://example.com/">docs</a>',
+		);
+
+		expect(html).toContain('<a href="https://example.com/">docs</a>');
+		expect(html).not.toContain("other.example");
+	});
+
+	it("takes the first href when a tag repeats it, as a browser does", () => {
+		const html = cell(
+			'<a href="https://example.com/first" href="https://example.com/second">docs</a>',
+		);
+
+		expect(html).toContain('<a href="https://example.com/first">docs</a>');
+	});
+
+	it("decodes numeric character references once before checking the link", () => {
+		expect(
+			cell('<a href="https://example.com/?q=&#34;x&#x22;">docs</a>'),
+		).toContain('<a href="https://example.com/?q=&quot;x&quot;">docs</a>');
+		expect(
+			cell('<a href="https://example.com/?q=&amp;#34;">docs</a>'),
+		).toContain('<a href="https://example.com/?q=&amp;#34;">docs</a>');
+	});
+
+	it.each([
+		"&#106;avascript:alert(1)",
+		"&#x6A;avascript:alert(1)",
+		"&#106avascript:alert(1)",
+	])("refuses a scheme spelled with character references: %s", (href) => {
+		const html = cell(`<a href="${href}">open</a>`);
+
+		expect(html).toContain("<a>open</a>");
+		expect(html.toLowerCase()).not.toMatch(/href|script:/);
+	});
+
+	it.each(["line<br/>two", "line<br />two", "line<BR/>two"])(
+		"keeps a self-closing line break: %s",
+		(content) => {
+			expect(cell(content)).toContain("<td><p>line<br>two</p></td>");
+		},
+	);
+});

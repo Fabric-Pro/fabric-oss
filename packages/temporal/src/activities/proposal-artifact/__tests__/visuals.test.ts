@@ -34,7 +34,11 @@ import {
 	buildProposalThemeTokens,
 	type ProposalThemeSources,
 } from "@repo/utils/proposal-artifact/theme-tokens";
-import { visualSourceHash } from "@repo/utils/proposal-artifact/visual-identity";
+import {
+	DIAGRAM_CAPTION_MAX_CHARS,
+	readDiagramCaption,
+	visualSourceHash,
+} from "@repo/utils/proposal-artifact/visual-identity";
 import {
 	toMermaidFence,
 	toMermaidFenceBody,
@@ -76,7 +80,10 @@ vi.mock("../../lib/activity-logger", () => ({
 
 import { CancelledFailure } from "@temporalio/common";
 import { coverLetter } from "../../../lib/proposal-export/document-content";
-import { prepareExportMarkdown } from "../../../lib/proposal-export/markdown";
+import {
+	exportDiagramCaptions,
+	prepareExportMarkdown,
+} from "../../../lib/proposal-export/markdown";
 import { generateProposalVisuals } from "../visuals";
 
 const MAIN = [
@@ -156,11 +163,14 @@ function brand(
 	};
 }
 
+/** The caption of a diagram in the timeline section, which the mocks give none. */
+const TIMELINE_CAPTION = "%% caption: Timeline and Milestones";
+
 /**
- * The timeline's fence body as the step draws it: the timeline figure line,
- * then roles, no colour.
+ * The timeline's fence body as the step draws it: its section's heading as
+ * the caption, the timeline figure line, then roles, no colour.
  */
-const TIMELINE_SOURCE = `%% figure: timeline\n${visualSpecToMermaid(
+const TIMELINE_SOURCE = `${TIMELINE_CAPTION}\n%% figure: timeline\n${visualSpecToMermaid(
 	TIMELINE,
 	proposalVisualTemplateOptions(TIMELINE),
 )}`;
@@ -506,6 +516,282 @@ describe("generateProposalVisuals — visual identity (Fizzy #2946)", () => {
 	});
 });
 
+describe("generateProposalVisuals — captions (Fizzy #2946)", () => {
+	it("writes the extraction's caption between the marker and the figure line", async () => {
+		detects([["Timeline and Milestones", "timeline"]]);
+		extract.extractGlossyVisual.mockResolvedValueOnce({
+			status: "extracted",
+			spec: TIMELINE,
+			caption: "Discovery to launch",
+		});
+
+		const result = await generateProposalVisuals(INPUT);
+
+		const [{ visualId }] = storedSpecs();
+		const [body] = mermaidBodies(result.content);
+		expect(body.split("\n").slice(0, 3)).toEqual([
+			`%% fabric-visual: ${visualId}`,
+			"%% caption: Discovery to launch",
+			"%% figure: timeline",
+		]);
+		expect(readFigureKind(body)).toBe("timeline");
+	});
+
+	it("captions a figure with its section's heading, without its number or marks, when the extraction gives none", async () => {
+		const content = MAIN.replace(
+			"## Timeline and Milestones",
+			"## 3. **Timeline** and Milestones",
+		);
+		detects([["3. **Timeline** and Milestones", "timeline"]]);
+
+		const result = await generateProposalVisuals({ ...INPUT, content });
+
+		expect(result.insertedCount).toBe(1);
+		const [body] = mermaidBodies(result.content);
+		expect(readDiagramCaption(body)).toBe("Timeline and Milestones");
+	});
+
+	it.each([
+		["2026 Roadmap", "2026 Roadmap"],
+		["90 Day Plan", "90 Day Plan"],
+		["3.1 Timeline", "Timeline"],
+		["3) Timeline", "Timeline"],
+	])(
+		"captions a figure under %j as %j: a year or a count is not a section number",
+		async (heading, caption) => {
+			const content = MAIN.replace(
+				"## Timeline and Milestones",
+				`## ${heading}`,
+			);
+			detects([[heading, "timeline"]]);
+
+			const result = await generateProposalVisuals({ ...INPUT, content });
+
+			expect(result.insertedCount).toBe(1);
+			const [body] = mermaidBodies(result.content);
+			expect(readDiagramCaption(body)).toBe(caption);
+		},
+	);
+
+	it("writes no storage path into a caption, from the extraction or the heading", async () => {
+		const path = "document-media/project-1/doc-1/figure.png";
+		const content = MAIN.replace("## Options", `## Options ${path}`);
+		detects([
+			["Timeline and Milestones", "timeline"],
+			[`Options ${path}`, "timeline"],
+		]);
+		extract.extractGlossyVisual
+			.mockResolvedValueOnce({
+				status: "extracted",
+				spec: TIMELINE,
+				caption: `Discovery plan ${path}`,
+			})
+			.mockResolvedValueOnce({
+				status: "extracted",
+				spec: TIMELINE,
+				caption: path,
+			});
+
+		const result = await generateProposalVisuals({ ...INPUT, content });
+
+		const inserted = mermaidBodies(result.content).filter((body) =>
+			body.startsWith("%% fabric-visual:"),
+		);
+		// A caption that was only a path falls back to the heading, itself
+		// without its path.
+		expect(inserted.map(readDiagramCaption)).toEqual([
+			"Discovery plan",
+			"Options",
+		]);
+		for (const body of inserted) {
+			expect(body).not.toContain("document-media/");
+		}
+	});
+
+	it("gives every figure a caption, a layers figure included", async () => {
+		const layers: LayersVisualSpec = {
+			kind: "layers",
+			layers: [
+				{ name: "Channels", components: ["Web shop"] },
+				{ name: "Data", components: ["Order store"] },
+			],
+		};
+		detects([
+			["Timeline and Milestones", "timeline"],
+			["Payment Schedule", "layers"],
+		]);
+		extract.extractGlossyVisual.mockImplementation(
+			async ({ kind }: { kind: string }) =>
+				kind === "layers"
+					? { status: "extracted", spec: layers }
+					: { status: "extracted", spec: TIMELINE },
+		);
+
+		const result = await generateProposalVisuals(INPUT);
+
+		const inserted = mermaidBodies(result.content).filter((body) =>
+			body.startsWith("%% fabric-visual:"),
+		);
+		expect(inserted.map(readDiagramCaption)).toEqual([
+			"Timeline and Milestones",
+			"Payment Schedule",
+		]);
+	});
+
+	it("keeps the source hash, which leaves the caption out", async () => {
+		detects([["Timeline and Milestones", "timeline"]]);
+		extract.extractGlossyVisual.mockResolvedValueOnce({
+			status: "extracted",
+			spec: TIMELINE,
+			caption: "Discovery to launch",
+		});
+
+		const result = await generateProposalVisuals(INPUT);
+
+		const [row] = storedSpecs();
+		const [body] = mermaidBodies(result.content);
+		const uncaptioned = body
+			.split("\n")
+			.filter((line) => !line.startsWith("%% caption:"))
+			.join("\n");
+		// The fence carries the caption, so the two bodies differ.
+		expect(body).toContain("\n%% caption: Discovery to launch\n");
+		expect(uncaptioned).not.toBe(body);
+		expect(visualSourceHash(body)).toBe(row.sourceHash);
+		expect(visualSourceHash(uncaptioned)).toBe(row.sourceHash);
+	});
+
+	it("shows the live page and print the same caption", async () => {
+		detects([["Timeline and Milestones", "timeline"]]);
+		extract.extractGlossyVisual.mockResolvedValueOnce({
+			status: "extracted",
+			spec: TIMELINE,
+			caption: "Discovery to launch",
+		});
+
+		const result = await generateProposalVisuals(INPUT);
+
+		const generated = mermaidBodies(result.content).findIndex((body) =>
+			body.startsWith("%% fabric-visual:"),
+		);
+		// The page reads the fence's caption line; print reads the same
+		// line from the exported Markdown.
+		expect(
+			readDiagramCaption(mermaidBodies(result.content)[generated]),
+		).toBe("Discovery to launch");
+		expect(
+			exportDiagramCaptions(prepareExportMarkdown(result.content))[
+				generated
+			],
+		).toBe("Discovery to launch");
+	});
+});
+
+describe("generateProposalVisuals — whole labels (Fizzy #2946)", () => {
+	// Past what the extraction asks for a title, within the cap.
+	const LONG_TITLE = "Map every intake channel with the depot leads";
+	// Past one line.
+	const LONG_DETAIL = "Interviews with every shift lead at both depots";
+
+	it.each([
+		[
+			"timeline",
+			{
+				kind: "timeline",
+				items: [
+					{
+						date: "March",
+						label: LONG_TITLE,
+						description: "Short detail",
+					},
+					{ date: "May", label: "Launch", description: LONG_DETAIL },
+				],
+			},
+		],
+		[
+			"flow",
+			{
+				kind: "flow",
+				steps: [
+					{ label: LONG_TITLE, description: "Short detail" },
+					{ label: "Launch", description: LONG_DETAIL },
+				],
+			},
+		],
+		[
+			"layers",
+			{
+				kind: "layers",
+				layers: [
+					{
+						name: "Channels",
+						description: LONG_DETAIL,
+						components: [LONG_TITLE],
+					},
+					{ name: "Data", components: ["Order store"] },
+				],
+			},
+		],
+		[
+			"team",
+			{
+				kind: "team",
+				proposer: {
+					name: "Example Studio",
+					members: [{ role: LONG_TITLE, description: LONG_DETAIL }],
+				},
+				client: {
+					name: "Example Retail",
+					members: [{ role: "Owner" }],
+				},
+			},
+		],
+	] as const)(
+		"writes no %s label cut with an ellipsis into the fence",
+		async (kind, spec) => {
+			detects([["Timeline and Milestones", kind]]);
+			extract.extractGlossyVisual.mockResolvedValueOnce({
+				status: "extracted",
+				spec,
+			});
+
+			const result = await generateProposalVisuals(INPUT);
+
+			const body = mermaidBodies(result.content).find((candidate) =>
+				candidate.startsWith("%% fabric-visual:"),
+			);
+			expect(body).toContain(LONG_TITLE);
+			expect(body).not.toContain("…");
+			expect(body).not.toContain(LONG_DETAIL.slice(0, 20));
+		},
+	);
+});
+
+describe("generateProposalVisuals — comparison label case (Fizzy #2946)", () => {
+	it("starts each all-lower-case header and cell with a capital, leaving other casing as written", async () => {
+		detects([["Options", "comparison"]]);
+		extract.extractGlossyVisual.mockResolvedValueOnce({
+			status: "extracted",
+			spec: {
+				kind: "comparison",
+				items: [
+					{
+						title: "managed service",
+						points: ["faster", "iOS ready"],
+					},
+					{ title: "eBay listings", points: ["cheaper", "slower"] },
+				],
+			},
+		});
+
+		const result = await generateProposalVisuals(INPUT);
+
+		expect(result.content).toContain(
+			"| Managed service | eBay listings |\n| --- | --- |\n| Faster | Cheaper |\n| iOS ready | Slower |",
+		);
+	});
+});
+
 describe("generateProposalVisuals — health check logging (Fizzy #2946)", () => {
 	it("logs the inserted kinds, drops by reason and each drop's violation codes, never section or fact text", async () => {
 		detects([
@@ -607,10 +893,10 @@ describe("generateProposalVisuals — fact-check retry (Fizzy #2946)", () => {
 		expect(result.content).toContain(
 			toMermaidFence(
 				withFigureKind(
-					visualSpecToMermaid(
+					`${TIMELINE_CAPTION}\n${visualSpecToMermaid(
 						RETRY_SPEC,
 						proposalVisualTemplateOptions(RETRY_SPEC),
-					),
+					)}`,
 					"timeline",
 				),
 				rows[0].visualId,
@@ -893,14 +1179,15 @@ describe("generateProposalVisuals — figure templates (Fizzy #2946)", () => {
 		["architecture layers", LAYERS, "layers"],
 		["a team", TEAM, "team"],
 	] as const)(
-		"asks for the template on %s, after the marker, and the template draws it",
+		"asks for the template on %s, after the marker and caption, and the template draws it",
 		async (_, spec, kind) => {
 			const body = await generatedBody(spec);
 
 			const [{ visualId, kind: storedKind }] = storedSpecs();
 			expect(storedKind).toBe(spec.kind);
-			expect(body.split("\n").slice(0, 3)).toEqual([
+			expect(body.split("\n").slice(0, 4)).toEqual([
 				`%% fabric-visual: ${visualId}`,
+				TIMELINE_CAPTION,
 				`%% figure: ${kind}`,
 				"flowchart TD",
 			]);
@@ -960,14 +1247,16 @@ describe("generateProposalVisuals — figure templates (Fizzy #2946)", () => {
 			client: side("Theirs"),
 			shared: text("Forum", 120),
 		};
+		// The longest caption a fence keeps.
+		const caption = text("Caption", DIAGRAM_CAPTION_MAX_CHARS);
 		for (const spec of [layers, team]) {
 			expect(proposalVisualSpecSchema.safeParse(spec).success).toBe(true);
 			const body = toMermaidFenceBody(
 				withFigureKind(
-					visualSpecToMermaid(
+					`%% caption: ${caption}\n${visualSpecToMermaid(
 						spec,
 						proposalVisualTemplateOptions(spec),
-					),
+					)}`,
 					proposalFigureKind(spec),
 				),
 				"k3v9q2m7x1a8c4d6",

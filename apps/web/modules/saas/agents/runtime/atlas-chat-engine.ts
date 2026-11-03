@@ -142,18 +142,19 @@ export class AtlasChatEngine extends InProcessEngine<
 		try {
 			// The `atlas.chat` input, for both audit rows.
 			const call = { ...chat, organizationId };
-			const { textStream, persistOutcome } = await startAtlasChat(
-				{ userId, organizationId },
-				{ ...chat, abortSignal },
-			).catch((error: unknown) => {
-				void recordProcedureFailure(
-					error,
-					audit,
-					call,
-					ATLAS_CHAT_PROCEDURE_PATH,
-				);
-				throw error;
-			});
+			const { textStream, persistOutcome, getAnswerModel } =
+				await startAtlasChat(
+					{ userId, organizationId },
+					{ ...chat, abortSignal },
+				).catch((error: unknown) => {
+					void recordProcedureFailure(
+						error,
+						audit,
+						call,
+						ATLAS_CHAT_PROCEDURE_PATH,
+					);
+					throw error;
+				});
 			recordProcedureActivity(audit, {
 				path: ATLAS_CHAT_PROCEDURE_PATH,
 				input: call,
@@ -203,6 +204,14 @@ export class AtlasChatEngine extends InProcessEngine<
 				yield { type: EventType.TEXT_MESSAGE_END, messageId };
 			}
 			const note = atlasChatTurnNote(await persistOutcome);
+			const model = getAnswerModel();
+			if (opened && model) {
+				yield {
+					type: EventType.CUSTOM,
+					name: ATLAS_CHAT_EVENT.model,
+					value: model,
+				};
+			}
 			if (note) {
 				yield {
 					type: EventType.CUSTOM,

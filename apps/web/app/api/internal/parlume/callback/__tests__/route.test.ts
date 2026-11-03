@@ -802,6 +802,72 @@ describe("Parlume meeting chat messages", () => {
 	beforeEach(() => {
 		mocks.sendChat.mockResolvedValue(undefined);
 	});
+	it.each(["PENDING", "READY", "UNAVAILABLE"])(
+		"leaves known channel messages to Graph while routing is %s",
+		async (channelChatStatus) => {
+			mocks.findFirst.mockResolvedValue({
+				id: "session-1",
+				channelChatStatus,
+				meetingUrl:
+					"https://teams.microsoft.com/l/meetup-join/19%3Aexample%40thread.tacv2/1700000000000",
+			});
+			const response = await POST(chatMessage());
+			expect(response.status).toBe(200);
+			expect(mocks.sendChat).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["ATTENDEE", "UNRESOLVED"])(
+		"keeps signed provider chat for %s fallback",
+		async (channelChatStatus) => {
+			mocks.findFirst.mockResolvedValue({
+				id: "session-1",
+				channelChatStatus,
+				meetingUrl: "https://teams.microsoft.com/meet/1234567890123",
+			});
+			await POST(chatMessage());
+			expect(mocks.sendChat).toHaveBeenCalledTimes(1);
+		},
+	);
+	it("keeps provider chat while an unproven numeric short link is initially resolving", async () => {
+		mocks.findFirst.mockResolvedValue({
+			id: "session-1",
+			channelChatStatus: "PENDING",
+			meetingUrl: "https://teams.microsoft.com/meet/1234567890123",
+		});
+		await POST(chatMessage());
+		expect(mocks.sendChat).toHaveBeenCalledTimes(1);
+	});
+	it.each([
+		{ channelId: "19:example@thread.tacv2" },
+		{ channelRootMessageId: "1700000000000" },
+	])(
+		"uses persisted channel binding when the invitation URL is absent: %j",
+		async (binding) => {
+			mocks.findFirst.mockResolvedValue({
+				id: "session-1",
+				channelChatStatus: "UNRESOLVED",
+				meetingUrl: null,
+				...binding,
+			});
+			await POST(chatMessage());
+			expect(mocks.sendChat).not.toHaveBeenCalled();
+		},
+	);
+	it.each([
+		"https://teams.microsoft.com/l/meetup-join/19%3Aexample%40thread.v2/0",
+		"https://example.com/l/meetup-join/19%3Aexample%40thread.tacv2/1700000000000",
+	])(
+		"does not infer channel ownership from an ordinary or foreign URL: %s",
+		async (meetingUrl) => {
+			mocks.findFirst.mockResolvedValue({
+				id: "session-1",
+				channelChatStatus: "PENDING",
+				meetingUrl,
+			});
+			await POST(chatMessage());
+			expect(mocks.sendChat).toHaveBeenCalledTimes(1);
+		},
+	);
 
 	it("relays a chat message to the session's bridge", async () => {
 		const response = await POST(chatMessage());

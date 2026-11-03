@@ -2,15 +2,17 @@
  * `atlas.chat` procedure — event-stream composition.
  *
  * Locks the API contract: the returned event iterator yields every text delta
- * as a plain string (unchanged), then at most ONE terminal object sentinel —
+ * as a plain string (unchanged), then a served-model object when known,
+ * followed by at most ONE terminal sentinel —
  * `{ type: "atlas-chat-persist-failed" }` when the assistant write was lost,
  * else `{ type: "atlas-chat-interrupted" }` when an abort/error path cut the
  * reply off (the SDK closes the text stream normally on provider errors, so
  * the stream itself carries no error signal — including the
  * error-before-first-token case, which would otherwise look like an endless
  * empty stream to the live client). Old clients ignore non-string events, so
- * both sentinels are backward compatible.
+ * the model event and both sentinels are backward compatible.
  */
+import type { AnswerModelInfo } from "@repo/ai/lib/answer-model-info";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockChat = vi.fn();
@@ -86,6 +88,7 @@ const baseContext = {
 function stubServiceChat(
 	deltas: string[],
 	outcome: { persisted: boolean; interrupted: boolean },
+	model?: AnswerModelInfo,
 ) {
 	mockChat.mockResolvedValue({
 		textStream: (async function* () {
@@ -94,6 +97,7 @@ function stubServiceChat(
 			}
 		})(),
 		persistOutcome: Promise.resolve(outcome),
+		getAnswerModel: () => model,
 	});
 }
 
@@ -110,7 +114,95 @@ beforeEach(() => {
 });
 
 describe("atlasChatProcedure — stream composition", () => {
-	it("yields only string deltas for a clean, persisted completion", async () => {
+	it("reads the final identity only after the assistant persistence settles", async () => {
+		let settle: (outcome: {
+			persisted: boolean;
+			interrupted: boolean;
+		}) => void = () => {};
+		const persistOutcome = new Promise<{
+			persisted: boolean;
+			interrupted: boolean;
+		}>((resolve) => {
+			settle = resolve;
+		});
+		let model = { id: "example-initial", viaPlan: true };
+		const getAnswerModel = vi.fn(() => model);
+		mockChat.mockResolvedValue({
+			textStream: (async function* () {
+				yield "Answer";
+			})(),
+			persistOutcome,
+			getAnswerModel,
+		});
+		const handler = await loadHandler();
+		const iterator = await handler({
+			input: baseInput,
+			context: baseContext,
+		});
+		expect(await iterator.next()).toEqual({ value: "Answer", done: false });
+		const next = iterator.next();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(getAnswerModel).not.toHaveBeenCalled();
+		model = { id: "example-actual-served", viaPlan: false };
+		settle({ persisted: true, interrupted: false });
+		expect(await next).toEqual({
+			value: { type: "atlas-chat-model", model },
+			done: false,
+		});
+		expect(await iterator.next()).toEqual({ value: undefined, done: true });
+		expect(getAnswerModel).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		{ persisted: true, interrupted: false, note: undefined },
+		{ persisted: true, interrupted: true, note: "atlas-chat-interrupted" },
+		{
+			persisted: false,
+			interrupted: false,
+			note: "atlas-chat-persist-failed",
+		},
+		{
+			persisted: false,
+			interrupted: true,
+			note: "atlas-chat-persist-failed",
+		},
+	])(
+		"emits served identity after text and before the terminal note ($persisted/$interrupted)",
+		async ({ persisted, interrupted, note }) => {
+			const model = {
+				id: "example-actual-served",
+				provider: "OPENAI_DIRECT",
+				viaPlan: false,
+			};
+			stubServiceChat(
+				["Partial", " answer"],
+				{ persisted, interrupted },
+				model,
+			);
+			const handler = await loadHandler();
+			expect(
+				await collect(
+					await handler({ input: baseInput, context: baseContext }),
+				),
+			).toEqual([
+				"Partial",
+				" answer",
+				{ type: "atlas-chat-model", model },
+				...(note ? [{ type: note }] : []),
+			]);
+			stubServiceChat(["Next answer"], {
+				persisted: true,
+				interrupted: false,
+			});
+			expect(
+				await collect(
+					await handler({ input: baseInput, context: baseContext }),
+				),
+			).toEqual(["Next answer"]);
+		},
+	);
+
+	it("yields only string deltas for a clean completion with unknown served identity", async () => {
 		stubServiceChat(["Hello", " world"], {
 			persisted: true,
 			interrupted: false,

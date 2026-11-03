@@ -162,6 +162,7 @@ export class SidekickEngine extends InProcessEngine<
 		yield* streamTextRunEvents(result.stream, {
 			runId,
 			toolErrorText: sidekickStreamErrorText,
+			getAnswerModel: result.getAnswerModel,
 		});
 	}
 }

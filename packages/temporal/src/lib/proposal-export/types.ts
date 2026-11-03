@@ -69,8 +69,8 @@ export type ExportDocumentImages = ReadonlyMap<string, ExportRaster>;
  *   error, a layout that failed or ran out of time, a refused SVG); it
  *   prints nothing.
  *
- * `numbered` says whether it takes a "Figure n." number: every figure that
- * prints does, a left-out one does not. Numbers count in document order.
+ * Every figure that prints takes a "Figure n." number, a left-out one does
+ * not ({@link diagramFigureNumbers}). Numbers count in document order.
  */
 export type ExportDiagram =
 	| {
@@ -80,22 +80,29 @@ export type ExportDiagram =
 			/** Intrinsic size in CSS pixels, from the SVG's viewBox. */
 			width: number;
 			height: number;
+			/**
+			 * The size of the text its print floor is measured on, in CSS
+			 * pixels, when it is not the engine's node labels: a figure
+			 * template's 12 px (`legibleFigureMaxHeightPx`).
+			 */
+			textPx?: number;
 			/** A 2x screenshot of the cleaned SVG, rendered only for DOCX. */
 			png: ExportRaster | null;
-			numbered: true;
 	  }
-	| { kind: "placeholder"; caption: string; numbered: true }
-	| { kind: "omitted"; numbered: false };
+	| { kind: "placeholder"; caption: string }
+	| { kind: "omitted" };
 
 /**
  * Each diagram's "Figure n." number, in document order, or null for one
- * that is left out and takes none.
+ * that is left out (or missing) and takes none.
  */
 export function diagramFigureNumbers(
 	diagrams: readonly (ExportDiagram | undefined)[],
 ): (number | null)[] {
 	let next = 0;
-	return diagrams.map((diagram) => (diagram?.numbered ? ++next : null));
+	return diagrams.map((diagram) =>
+		diagram === undefined || diagram.kind === "omitted" ? null : ++next,
+	);
 }
 
 /**

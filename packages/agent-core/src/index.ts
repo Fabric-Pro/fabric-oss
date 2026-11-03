@@ -202,6 +202,8 @@ export { AgentRegistry, globalAgentRegistry } from "./registry";
 // SDK per-request retry in ./services/langchain-models.ts)
 export {
 	calculateRetryDelay,
+	type ErrorLogFields,
+	errorLogFields,
 	isContextOverflowError,
 	isJsonParseError,
 	isRetryableError,
@@ -356,6 +358,7 @@ export {
 } from "./output-truncation";
 export { PredictiveToolArgsAccumulator } from "./predictive-tool-args";
 export { buildAgentConfigurable } from "./services/agent-configurable";
+export { servedModelIdentity } from "./services/served-model";
 // Unified Server (single server for both AG-UI and A2A protocols)
 export type {
 	AgentRuntimeConfig,

@@ -185,7 +185,9 @@ describe("observeResearchRun — polling and the window", () => {
 
 describe("observeResearchRun — how a run ends", () => {
 	it("COMPLETED is saved and finalized before RUN_FINISHED", async () => {
-		const output = researchOutput();
+		const model = { id: "example-answer-served", viaPlan: true };
+		const reportModel = { id: "example-report-served", viaPlan: false };
+		const output = researchOutput({ model, reportModel });
 		const turn = await seedRun({ status: "COMPLETED", result: output });
 		const s = stream();
 
@@ -207,7 +209,11 @@ describe("observeResearchRun — how a run ends", () => {
 		expect(savedAnswer()).toMatchObject({
 			streamStatus: "completed",
 			metadata: {
-				research: { status: "completed", executionId: EXECUTION },
+				research: {
+					status: "completed",
+					executionId: EXECUTION,
+					result: { model, reportModel },
+				},
 			},
 		});
 		expect(w.state.finalizes).toEqual([

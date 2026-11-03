@@ -328,6 +328,7 @@ import {
 } from "./procedures/meeting-digest";
 // Meeting transcript sync procedures
 import {
+	createTranscriptUploadUrlProcedure,
 	disableMeetingTranscriptSyncProcedure,
 	enableMeetingTranscriptSyncProcedure,
 	getTranscriptContentProcedure,
@@ -340,6 +341,7 @@ import {
 	restoreMeetingProcedure,
 	setAutoAnalyzeProcedure,
 	setMeetingSyncActiveProcedure,
+	startTranscriptUploadIngestProcedure,
 	triggerSyncNowProcedure,
 	unlinkMeetingProcedure,
 } from "./procedures/meeting-transcript-sync";
@@ -1159,6 +1161,8 @@ export const projectsRouter = {
 		getContent: getTranscriptContentProcedure,
 		triggerSync: triggerSyncNowProcedure,
 		setAutoAnalyze: setAutoAnalyzeProcedure,
+		createUploadUrl: createTranscriptUploadUrlProcedure,
+		startUploadIngest: startTranscriptUploadIngestProcedure,
 	},
 
 	// AI-recommended item lifecycle (Fizzy #2211). Gated by

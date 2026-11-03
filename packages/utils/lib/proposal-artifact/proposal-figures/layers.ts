@@ -7,6 +7,7 @@
 
 import type { FigureModel, FigureNode, FigureSubgraph } from "./parse";
 import {
+	arrivesCut,
 	charBudget,
 	checkedIdPrefix,
 	checkedPalette,
@@ -15,11 +16,13 @@ import {
 	type FigurePalette,
 	FONT_SIZE,
 	figureTitle,
-	headingLines,
+	INTER_ADVANCE,
 	INTER_EM,
 	LINE_HEIGHT,
 	labelElements,
 	MONO_TRACKING,
+	monoHeading,
+	monoWidth,
 	num,
 	outlinedBox,
 	PANEL_OPACITY,
@@ -28,13 +31,16 @@ import {
 	textElement,
 	wrapLabel,
 	wrapLine,
+	wrapWords,
 } from "./svg-text";
 
 /** The subgraph id that becomes the right-hand column. */
 const CROSSCUTTING_ID = "crosscutting";
 const LAYERS_MAX_ROWS = 8;
 const LAYERS_MAX_BOXES = 5;
-const LAYERS_LABEL_WIDTH = 120;
+/** The name column's narrowest and widest. */
+const LAYERS_LABEL_MIN = 120;
+const LAYERS_LABEL_MAX = 184;
 const LAYERS_SIDE_WIDTH = 140;
 const LAYERS_GAP_X = 8;
 const LAYERS_ROW_GAP = 8;
@@ -46,18 +52,15 @@ const LAYERS_BOX_INSET = 8;
 const LAYERS_BOX_PAD = 6;
 /** The least room a layer box is given, in characters. */
 const LAYERS_MIN_BOX_CHARS = 8;
+/** A description wraps to at most this many lines, or is left out. */
+const LAYERS_DESCRIPTION_LINES = 4;
 
 /**
- * The widths of a row's boxes, sharing `available` in proportion to each
- * label's longest word (and at least `LAYERS_MIN_BOX_CHARS`), so a long
- * word such as "Notifications" gets the room it needs and is not broken
- * while a short neighbour gives some up.
+ * Each box's share of its row, in characters: its label's longest word (at
+ * least `LAYERS_MIN_BOX_CHARS`) and room for its side padding.
  */
-function layerBoxWidths(
-	nodes: readonly FigureNode[],
-	available: number,
-): number[] {
-	const weights = nodes.map(
+function layerBoxWeights(nodes: readonly FigureNode[]): number[] {
+	return nodes.map(
 		(node) =>
 			Math.max(
 				LAYERS_MIN_BOX_CHARS,
@@ -66,16 +69,91 @@ function layerBoxWidths(
 				),
 			) + 2,
 	);
+}
+
+/**
+ * The widths of a row's boxes, sharing `available` in proportion to their
+ * weights, so a long word such as "Notifications" gets the room it needs
+ * and is not cut while a short neighbour gives some up.
+ */
+function layerBoxWidths(
+	nodes: readonly FigureNode[],
+	available: number,
+): number[] {
+	const weights = layerBoxWeights(nodes);
 	const total = weights.reduce((sum, weight) => sum + weight, 0);
 	return weights.map((weight) => (available * weight) / total);
 }
 
 /**
+ * The name column's width. It sets the longest layer name on one line,
+ * widening past `LAYERS_LABEL_MIN` only as far as the busiest row still
+ * leaves each box the room its longest word needs, and never past
+ * `LAYERS_LABEL_MAX`; a narrower column wraps the names at spaces. Within
+ * the same bounds it is never narrower than a name's longest word, so a
+ * name is not cut.
+ */
+function layerNameColumn(
+	names: readonly string[],
+	rows: readonly (readonly FigureNode[])[],
+	boxesRight: number,
+): number {
+	const column = (text: string) =>
+		Math.ceil(monoWidth(text.toUpperCase())) + 2 * LAYERS_PAD;
+	const longestName = Math.max(...names.map(column));
+	const longestWord = Math.max(
+		...names.flatMap((name) => name.split(/\s+/).map(column)),
+	);
+	const busiest = Math.max(
+		...rows.map(
+			(nodes) =>
+				layerBoxWeights(nodes).reduce(
+					(sum, weight) => sum + weight,
+					0,
+				) *
+					INTER_ADVANCE +
+				(nodes.length - 1) * LAYERS_BOX_GAP,
+		),
+	);
+	const room = boxesRight - LAYERS_GAP_X - busiest;
+	return Math.min(
+		LAYERS_LABEL_MAX,
+		Math.max(LAYERS_LABEL_MIN, longestWord, Math.min(longestName, room)),
+	);
+}
+
+/**
+ * A layer's description (its title lines after the name) wrapped at spaces
+ * to `width`: whole, or left out when it would take more than
+ * `LAYERS_DESCRIPTION_LINES` lines, holds a word wider than a line, or
+ * arrives cut (`arrivesCut`). It is never drawn cut, and the figure's
+ * description still reads it.
+ */
+function layerDescription(lines: readonly string[], width: number): string[][] {
+	if (lines.some(arrivesCut)) {
+		return [];
+	}
+	const budget = charBudget(width, INTER_EM);
+	const wrapped: string[][] = [];
+	for (const line of lines) {
+		const whole = wrapWords(line, budget);
+		if (!whole) {
+			return [];
+		}
+		wrapped.push(whole);
+	}
+	const count = wrapped.reduce((sum, part) => sum + part.length, 0);
+	return count > LAYERS_DESCRIPTION_LINES ? [] : wrapped;
+}
+
+/**
  * Architecture layers: one row per subgraph in source order, its title in a
- * light label panel on the left (the first title line in mono capitals, the
- * rest as a subtitle) and its nodes as boxes spread across the rest of the
- * row. A subgraph with the id `crosscutting` becomes a dark column on the
- * right listing its nodes. A `highlight` class gives a box the tint fill and
+ * light label panel on the left (the first title line, the name, in mono
+ * capitals in a column sized to the names; the rest as a subtitle, drawn
+ * whole or not at all) and its nodes as boxes spread across the rest of the
+ * row. A row grows to its panel's text or its tallest box. A subgraph with
+ * the id `crosscutting` becomes a dark column on the right listing its
+ * nodes. A `highlight` class gives a box the tint fill and
  * a primary outline. Edges are not drawn.
  *
  * Null when a node sits outside every subgraph, a layer is empty, there is
@@ -113,11 +191,16 @@ export function layersFigureSvg(
 			return node ? [node] : [];
 		});
 
-	const boxesLeft = LAYERS_LABEL_WIDTH + LAYERS_GAP_X;
 	const boxesRight = side
 		? FIGURE_WIDTH - LAYERS_SIDE_WIDTH - LAYERS_GAP_X
 		: FIGURE_WIDTH;
-	const labelWidth = LAYERS_LABEL_WIDTH - 2 * LAYERS_PAD;
+	const nameColumn = layerNameColumn(
+		layers.map((graph) => graph.title[0] ?? ""),
+		layers.map(nodesOf),
+		boxesRight,
+	);
+	const boxesLeft = nameColumn + LAYERS_GAP_X;
+	const labelWidth = nameColumn - 2 * LAYERS_PAD;
 
 	const rows = layers.map((graph) => {
 		const nodes = nodesOf(graph);
@@ -131,7 +214,11 @@ export function layersFigureSvg(
 				charBudget(boxWidths[index] - 2 * LAYERS_BOX_PAD, INTER_EM),
 			),
 		);
-		const heading = headingLines(graph.title, labelWidth);
+		const [name = "", ...description] = graph.title;
+		const heading = {
+			heading: monoHeading(name, labelWidth),
+			rest: layerDescription(description, labelWidth),
+		};
 		const headingCount =
 			heading.heading.length +
 			heading.rest.reduce((sum, lines) => sum + lines.length, 0);
@@ -156,7 +243,7 @@ export function layersFigureSvg(
 	let y = 0;
 	for (const row of rows) {
 		body.push(
-			`<rect class="layer" x="0" y="${num(y)}" width="${LAYERS_LABEL_WIDTH}" height="${num(row.height)}" rx="4" fill="${colors.ink}" fill-opacity="${PANEL_OPACITY}"/>`,
+			`<rect class="layer" x="0" y="${num(y)}" width="${num(nameColumn)}" height="${num(row.height)}" rx="4" fill="${colors.ink}" fill-opacity="${PANEL_OPACITY}"/>`,
 		);
 		let baseline = y + 22;
 		body.push(
@@ -215,7 +302,11 @@ export function layersFigureSvg(
 	if (side) {
 		const x = FIGURE_WIDTH - LAYERS_SIDE_WIDTH;
 		const width = LAYERS_SIDE_WIDTH - 2 * LAYERS_PAD;
-		const heading = headingLines(side.title, width);
+		const [name = "", ...description] = side.title;
+		const heading = {
+			heading: monoHeading(name, width),
+			rest: layerDescription(description, width),
+		};
 		const parts: string[] = [];
 		let baseline = 22;
 		parts.push(

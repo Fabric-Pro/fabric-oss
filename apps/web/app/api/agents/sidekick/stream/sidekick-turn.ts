@@ -19,6 +19,10 @@ import {
 	streamText,
 	type UIMessage,
 } from "@repo/ai";
+import {
+	type AnswerModelInfo,
+	answerModelInfo,
+} from "@repo/ai/lib/answer-model-info";
 import { makeAppendedStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import {
 	createSidekickTools,
@@ -254,14 +258,25 @@ export async function streamSidekickTurn({
 		modelString: metadata.modelString,
 		hasTools: Object.keys(tools).length > 0,
 	});
-	return streamText({
+	const stepModels: AnswerModelInfo[] = [];
+	const result = streamText({
 		model: aiModel,
 		instructions: promptCacheRequest.system,
 		messages: promptCacheRequest.messages,
 		tools,
 		stopWhen: isStepCount(5),
+		onStepEnd: () => {
+			stepModels.push(
+				answerModelInfo(metadata.answerSnapshot ?? metadata),
+			);
+		},
 		...(prepareStep ? { prepareStep } : {}),
 		...(abortSignal ? { abortSignal } : {}),
+	});
+	return Object.assign(result, {
+		getAnswerModel: (step: number) =>
+			stepModels[step] ??
+			answerModelInfo(metadata.answerSnapshot ?? metadata),
 	});
 }
 

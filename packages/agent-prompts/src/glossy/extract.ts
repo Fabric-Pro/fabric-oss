@@ -61,9 +61,11 @@ export const GLOSSY_EDIT_INSTRUCTION_MAX_CHARS = 500;
 
 /**
  * Bound on the current diagram source an edit reads: above the largest
- * diagram the Proposal templates draw, so a generated one is never cut.
+ * diagram the Proposal templates draw, with every title whole up to two
+ * lines and the caption line (Fizzy #2946), so a generated one is never
+ * cut.
  */
-export const GLOSSY_EDIT_SOURCE_MAX_CHARS = 4_000;
+export const GLOSSY_EDIT_SOURCE_MAX_CHARS = 5_000;
 
 /**
  * The kinds an edit may return: the ones drawn as a diagram. Edit with
@@ -140,18 +142,32 @@ const PROPOSAL_KINDS = [
 /**
  * Label bounds for a Proposal's diagrams, so the label a reader sees at page
  * width is the label that was checked. The Proposal template in @repo/utils
- * wraps a title onto two short lines, leaves out a detail that repeats it,
- * and cuts a longer one at a word only as a fallback.
+ * keeps a title whole up to two short lines and cuts a longer one at a
+ * word, and leaves out whole a detail that repeats the title or does not
+ * fit one line.
+ *
+ * A timeline's date and a comparison's points have rules of their own
+ * (Fizzy #2946), which the extraction enforces for a Proposal: a timeline
+ * whose dates are not short periods (`isProposalTimelinePeriod`, at most
+ * 20 characters) is discarded, and so is a comparison whose columns are
+ * badly uneven (`balancedProposalComparison`). The template starts a label
+ * written all in lower case with a capital, and cuts no description to fit:
+ * it leaves a long one out, and draws a title longer than the extraction
+ * asks for without one, so the rules below ask for both.
  */
 const PROPOSAL_LABEL_RULES = [
 	"## Labels for this Proposal",
 	"The diagram is read at page width by executive readers, so keep every node short:",
 	"- timeline: label is a short title of at most 32 characters; description only when it adds information the title and date do not already give, at most 28 characters, otherwise null.",
+	"- timeline: date is only a short date or period as the section gives it, such as Week 1, Weeks 2–5, Q3 2026, or Month 2, at most 20 characters; never a phase name, a step, or a sentence. A timeline with an entry the section gives no date or period for is discarded.",
 	"- flow: label is a short title of at most 32 characters; description only when it adds information the title does not already give, at most 28 characters, otherwise null.",
 	"- Never repeat the title in the description, and never copy the source bullet into the description with a shortened copy as the title.",
 	"- org_chart: label is the role or person in a few words.",
-	"- layers: every layer name and component is a few words, at most 24 characters; five components share one row.",
+	"- layers: every layer name and component is a few words, at most 24 characters; five components share one row. A layer's description only when it adds information the name does not already give, at most 28 characters, otherwise null.",
 	"- team: role is a few words, at most 28 characters; description only when it adds information the role does not already give, at most 28 characters, otherwise null.",
+	"- comparison: points are parallel attributes of each option, one per aspect the section compares them on (such as cost, setup effort, or data control), in the same order and the same number for every option, at least two each, so each row of the table compares one aspect. Each point is a few words, at most 40 characters. Never a sentence that restates the paragraph or repeats the option's name.",
+	"- Start every label, name, component, and description with a capital letter, as a heading does; keep the casing of a name such as iOS or eBay.",
+	"- A description or detail longer than its bound is left out of the diagram whole; a title longer than its bound is shown without its description, and a much longer one is cut at a word. Write each within its bound.",
 	"Shorten by dropping words, as the fidelity rules allow; never add words to fit.",
 ];
 
@@ -167,6 +183,16 @@ const EDIT_RULES = [
 	"- The current diagram is not a source of facts. Every label, date, figure, and name must come from the section, even when the current diagram shows it.",
 	'- Keep the requested kind. When the requested kind is "auto", choose timeline, flow, or org_chart, whichever the current diagram shows.',
 ];
+
+/**
+ * A Proposal edit's rule for a timeline (Fizzy #2946). The label rules ask a
+ * new timeline for a period in every date and say one without is discarded,
+ * but an edit redraws a timeline that may predate that rule, and the
+ * extraction does not hold an edit to it: asked for dates there, a model
+ * could make some up, which the fact check would then refuse.
+ */
+const PROPOSAL_EDIT_TIMELINE_RULE =
+	"- When the current diagram is a timeline, keep each entry's date as the current diagram writes it, and never add a date or period the section does not state: the rule above that discards a timeline without one is for a new timeline, not for an edit.";
 
 export interface GlossyExtractInstructionOptions extends GlossyPromptOptions {
 	/** The call edits an existing diagram on an editor's request. */
@@ -201,7 +227,15 @@ export function buildGlossyExtractInstructions(
 		...(options.proposalArtifact
 			? [...PROPOSAL_KINDS, "", ...PROPOSAL_LABEL_RULES, ""]
 			: []),
-		...(options.editInstruction ? [...EDIT_RULES, ""] : []),
+		...(options.editInstruction
+			? [
+					...EDIT_RULES,
+					...(options.proposalArtifact
+						? [PROPOSAL_EDIT_TIMELINE_RULE]
+						: []),
+					"",
+				]
+			: []),
 		GLOSSY_UNTRUSTED_GUIDANCE,
 	].join("\n");
 }

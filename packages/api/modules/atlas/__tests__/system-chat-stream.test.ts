@@ -2,12 +2,13 @@
  * `atlas.systemChat` (the System map's multi-repository chat): the same
  * event-stream contract and error mapping as `atlas.chat`.
  *
- * The event iterator yields every text delta as a plain string, then at most
- * ONE terminal object sentinel: `{ type: "atlas-chat-persist-failed" }` when
+ * The iterator yields text deltas, then a served-model object when known,
+ * followed by at most ONE terminal sentinel: `{ type: "atlas-chat-persist-failed" }` when
  * the assistant write was lost, else `{ type: "atlas-chat-interrupted" }`
  * when the reply was cut short. A missing AI provider is PRECONDITION_FAILED
  * in the resolver's own words; an Atlas error goes through `mapAtlasError`.
  */
+import type { AnswerModelInfo } from "@repo/ai/lib/answer-model-info";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({ systemChat: vi.fn() }));
@@ -94,12 +95,14 @@ function ask() {
 function stubSystemChat(
 	deltas: string[],
 	outcome: { persisted: boolean; interrupted: boolean },
+	model?: AnswerModelInfo,
 ) {
 	m.systemChat.mockResolvedValue({
 		textStream: (async function* () {
 			yield* deltas;
 		})(),
 		persistOutcome: Promise.resolve(outcome),
+		getAnswerModel: () => model,
 	});
 }
 
@@ -116,7 +119,89 @@ beforeEach(() => {
 });
 
 describe("systemChatProcedure — stream composition and refusals", () => {
-	it("yields only string deltas for a clean, persisted completion", async () => {
+	it("reads the final identity only after the assistant persistence settles", async () => {
+		let settle: (outcome: {
+			persisted: boolean;
+			interrupted: boolean;
+		}) => void = () => {};
+		const persistOutcome = new Promise<{
+			persisted: boolean;
+			interrupted: boolean;
+		}>((resolve) => {
+			settle = resolve;
+		});
+		let model = { id: "example-initial", viaPlan: true };
+		const getAnswerModel = vi.fn(() => model);
+		m.systemChat.mockResolvedValue({
+			textStream: (async function* () {
+				yield "Answer";
+			})(),
+			persistOutcome,
+			getAnswerModel,
+		});
+		const iterator = await ask();
+		expect(await iterator.next()).toEqual({ value: "Answer", done: false });
+		const next = iterator.next();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(getAnswerModel).not.toHaveBeenCalled();
+		model = { id: "example-actual-served", viaPlan: false };
+		settle({ persisted: true, interrupted: false });
+		expect(await next).toEqual({
+			value: { type: "atlas-chat-model", model },
+			done: false,
+		});
+		expect(await iterator.next()).toEqual({ value: undefined, done: true });
+		expect(getAnswerModel).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		{ persisted: true, interrupted: false, note: undefined },
+		{ persisted: true, interrupted: true, note: "atlas-chat-interrupted" },
+		{
+			persisted: false,
+			interrupted: false,
+			note: "atlas-chat-persist-failed",
+		},
+		{
+			persisted: false,
+			interrupted: true,
+			note: "atlas-chat-persist-failed",
+		},
+	])(
+		"emits served identity after text and before the terminal note ($persisted/$interrupted)",
+		async ({ persisted, interrupted, note }) => {
+			const model = {
+				id: "example-actual-served",
+				provider: "OPENAI_CHATGPT_PLAN",
+				viaPlan: true,
+			};
+			stubSystemChat(
+				["Partial", " answer"],
+				{ persisted, interrupted },
+				model,
+			);
+			expect(await collect(await ask())).toEqual([
+				"Partial",
+				" answer",
+				{ type: "atlas-chat-model", model },
+				...(note ? [{ type: note }] : []),
+			]);
+			stubSystemChat(["Next answer"], {
+				persisted: true,
+				interrupted: false,
+			});
+			expect(await collect(await ask())).toEqual(["Next answer"]);
+		},
+	);
+
+	it("does not label an interrupted turn before the first token", async () => {
+		stubSystemChat([], { persisted: true, interrupted: true });
+		expect(await collect(await ask())).toEqual([
+			{ type: "atlas-chat-interrupted" },
+		]);
+	});
+
+	it("yields only string deltas for a clean completion with unknown served identity", async () => {
 		stubSystemChat(["Hello", " world"], {
 			persisted: true,
 			interrupted: false,

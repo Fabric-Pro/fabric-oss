@@ -50,8 +50,22 @@ Enterprise cloud AI services:
 | **Azure AI Foundry** | Microsoft Azure-hosted models |
 | **AWS Bedrock** | Amazon-hosted models |
 | **Google Vertex AI** | Google Cloud-hosted models |
+| **Databricks** | Databricks Foundation Model APIs and serving endpoints |
 
 Parlume, Fabric's voice agent for Teams meetings, speaks through your organization's Azure AI Foundry, OpenAI or Vercel AI Gateway key. See [Voice providers](/docs/features/parlume-meetings#voice-providers) for which one gives which voice.
+
+### Remote & Subscription Agent Bridges
+
+Connect **Fabric Agents Remote Server** or **Fabric Agents Desktop** on either the **Organization** or **Personal** tab to route AI chat, Advisor, document generation, and coding runs through your subscription harnesses (**ChatGPT Plus/Pro / Codex**, **Claude Max**, **Cursor Pro**, **Factory Droid**, **Kimi Code**, and **Grok CLI**) or a self-hosted OpenAI-compatible `/v1` server (Ollama, vLLM, LM Studio) with zero per-token API cost:
+
+| Bridge | Scope | Description |
+|--------|-------|-------------|
+| **Fabric Agents Remote Server** | Personal or Organization | Connects to a personal (`http://127.0.0.1:9100/v1`) or shared organization (`https://agents.example.com/v1`) `fabric-agent-server` runtime or any OpenAI-compatible `/v1` endpoint. |
+| **Fabric Agents Desktop** | Personal or Organization | Routes AI requests through your local Fabric Agents Desktop bridge (`http://127.0.0.1:4318/v1`) and launches coding sessions via `fabricagents://`. |
+
+![The Remote and Subscription Agent Bridges section in AI Providers settings, showing equal-height marketplace cards for Fabric Agents Remote Server and Fabric Agents Desktop with Zero API Cost badges.](/images/docs/qa/fabric-agents-ai-providers.png)
+
+For delegating repository coding tasks and viewing the live embedded Fabric Agents Remote Server Web UI inside the portal, see [Delegating Coding Runs to Fabric Agents](/docs/features/projects#delegating-coding-runs-to-fabric-agents).
 
 ## Setting Up a Provider
 

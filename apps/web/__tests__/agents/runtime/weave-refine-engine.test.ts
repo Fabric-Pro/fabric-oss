@@ -283,7 +283,10 @@ beforeEach(() => {
 		organizationId: AUTHORIZED_ORG,
 	});
 	m.buildRefinePrompt.mockResolvedValue(PROMPT);
-	m.resolveRefineModel.mockResolvedValue(MODEL);
+	m.resolveRefineModel.mockResolvedValue({
+		model: MODEL,
+		getAnswerModel: () => undefined,
+	});
 	// The caller's organization would be kept if no project were bound.
 	m.hasOrganizationTie.mockResolvedValue(true);
 	m.streamText.mockImplementation(
@@ -305,6 +308,20 @@ beforeEach(() => {
 });
 
 describe("the weave-refine engine", () => {
+	it("includes only the post-generation served model in the completed result", async () => {
+		let served = { id: "example-plan", viaPlan: true };
+		m.resolveRefineModel.mockResolvedValueOnce({
+			model: MODEL,
+			getAnswerModel: () => served,
+		});
+		m.reply.pauseAfterFirst = async () => {
+			served = { id: "example-api-served", viaPlan: false };
+		};
+		const events = await run();
+		expect(resultOf(events)).toMatchObject({
+			value: { model: { id: "example-api-served", viaPlan: false } },
+		});
+	});
 	it("refuses while its flag is off for the caller's organization, before any check or model call", async () => {
 		m.isFeatureEnabled.mockResolvedValue(false);
 

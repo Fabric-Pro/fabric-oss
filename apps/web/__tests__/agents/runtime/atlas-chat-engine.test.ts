@@ -225,6 +225,7 @@ function started(
 			yield* deltas;
 		})(),
 		persistOutcome: Promise.resolve(outcome),
+		getAnswerModel: () => undefined,
 	};
 }
 
@@ -287,7 +288,11 @@ function salvagingChat(deltas: string[], signal?: AbortSignal) {
 	})();
 	return {
 		state,
-		started: { textStream, persistOutcome },
+		started: {
+			textStream,
+			persistOutcome,
+			getAnswerModel: () => undefined,
+		},
 		/** Hold the turn after the first delta. */
 		holdAfterFirst: () => {
 			hold = true;

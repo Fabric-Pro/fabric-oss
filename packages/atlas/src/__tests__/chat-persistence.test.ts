@@ -178,7 +178,7 @@ beforeEach(() => {
 	mockBuildSystemPrompt.mockResolvedValue("SYSTEM PROMPT");
 	mockGetAIModelWithMetadata.mockResolvedValue({
 		model: { id: "model-1" },
-		metadata: { provider: "test" },
+		metadata: { provider: "test", modelString: "example-served" },
 		trackUsage: mockTrackUsage,
 	});
 	stubStream(["Hello", " world"]);
@@ -292,6 +292,48 @@ describe("chat — user turn persisted before streaming", () => {
 });
 
 describe("chat — assistant persistence across completion paths", () => {
+	it("freezes fallback identity with a salvaged partial, before later callbacks can change metadata", async () => {
+		const metadata = {
+			provider: "OPENAI_CHATGPT_PLAN",
+			modelString: "example-configured",
+			answerSnapshot: {
+				provider: "OPENAI_CHATGPT_PLAN",
+				modelString: "example-initial",
+			},
+		};
+		mockGetAIModelWithMetadata.mockResolvedValueOnce({
+			model: {},
+			metadata,
+			trackUsage: mockTrackUsage,
+		});
+		const { textStream, persistOutcome, getAnswerModel } =
+			await new AtlasService(ctx).chat(chatInput);
+		const iterator = textStream[Symbol.asyncIterator]();
+		metadata.answerSnapshot = {
+			provider: "OPENAI_DIRECT",
+			modelString: "example-api-served",
+		};
+		await iterator.next();
+		await iterator.return?.(undefined);
+		await persistOutcome;
+		const model = {
+			id: "example-api-served",
+			provider: "OPENAI_DIRECT",
+			viaPlan: false,
+		};
+		expect(mockAppendMessages.mock.calls[1][1][0]).toMatchObject({
+			content: "Hello",
+			interrupted: true,
+			model,
+		});
+		metadata.answerSnapshot = {
+			provider: "OPENAI_DIRECT",
+			modelString: "example-later",
+		};
+		await streamTextOptions.onEnd({ text: "Hello world", usage: {} });
+		expect(getAnswerModel()).toMatchObject(model);
+		expect(mockAppendMessages).toHaveBeenCalledTimes(2);
+	});
 	it("onEnd appends the assistant message only (the user turn is never re-appended)", async () => {
 		const service = new AtlasService(ctx);
 		const { textStream, persistOutcome } = await service.chat(chatInput);

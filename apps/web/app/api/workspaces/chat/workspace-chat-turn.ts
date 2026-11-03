@@ -7,6 +7,10 @@ import {
 	logEmbeddingUsageAsync,
 	logModelUsageAsync,
 } from "@repo/ai";
+import {
+	type AnswerModelInfo,
+	answerModelInfo,
+} from "@repo/ai/lib/answer-model-info";
 import { db, hasWorkspaceAccess } from "@repo/database";
 import { generateSparseVector, searchWorkspaceChunks } from "@repo/rag";
 import type { LibrarySource } from "@saas/libraries/lib/library-chat-runtime-protocol";
@@ -69,6 +73,7 @@ export interface PreparedWorkspaceChatTurn {
 	instructions: string;
 	messages: Array<{ role: ChatRole; content: string }>;
 	sources: LibrarySource[];
+	getAnswerModel: () => AnswerModelInfo;
 	/** Records the answer's model usage against the workspace's tenant. */
 	recordAnswer: (usage: ModelUsage, latencyMs: number) => void;
 }
@@ -339,6 +344,8 @@ ${getCurrentDateContext()}`;
 		instructions: systemPrompt,
 		messages,
 		sources,
+		getAnswerModel: () =>
+			answerModelInfo(aiMetadata.answerSnapshot ?? aiMetadata),
 		recordAnswer: (usage, latencyMs) =>
 			logModelUsageAsync({
 				context: { userId, organizationId: effectiveOrgId },

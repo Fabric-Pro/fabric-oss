@@ -1,21 +1,22 @@
 "use client";
 
-import { useChatgptPlanSpentAction } from "@saas/shared/components/copilot/use-chatgpt-plan-spent-action";
 import { Button } from "@ui/components/button";
 import { BarChart3, Database, TrendingUp } from "lucide-react";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import {
 	Conversation,
 	ConversationContent,
 } from "../../../../../components/ai-elements/conversation";
-import { DeferredResponse as Response } from "../../../../../components/ai-elements/deferred-response";
 import { useDataAnalystChat } from "../../hooks/useDataAnalystChat";
 import { ChatFailureNotice } from "../FabricChat/shared/ChatFailureNotice";
 import { ChatInput } from "../FabricChat/shared/ChatInput";
 import { ChatWelcome } from "../FabricChat/shared/ChatWelcome";
-import { ToolCallList } from "../FabricChat/shared/ToolCallList";
 
-const NO_REMOTE_IMAGES = { img: () => null };
+const AssistantTurn = lazy(() =>
+	import("./DataAnalystAssistantTurn").then((module) => ({
+		default: module.DataAnalystAssistantTurn,
+	})),
+);
 const SUGGESTIONS = [
 	{
 		label: "Compare categories",
@@ -43,7 +44,6 @@ export function DataAnalystChat({
 		organizationId,
 	});
 	const [input, setInput] = useState("");
-	const planSpentAction = useChatgptPlanSpentAction();
 	const composer = (
 		<ChatInput
 			value={input}
@@ -96,34 +96,48 @@ export function DataAnalystChat({
 									</div>
 								) : (
 									<div key={message.id} className="space-y-3">
-										<ToolCallList
-											toolCalls={message.turn.toolCalls}
-										/>
-										{message.turn.text && (
-											<Response
-												components={NO_REMOTE_IMAGES}
-												streaming={
-													message.turn.status ===
-													"running"
+										{(message.turn.text ||
+											message.turn.toolCalls.length > 0 ||
+											message.turn.planSpent) && (
+											<Suspense
+												fallback={
+													<>
+														{message.turn.text && (
+															<div className="whitespace-pre-wrap">
+																{
+																	message.turn
+																		.text
+																}
+															</div>
+														)}
+														{message.turn.error &&
+															message.turn
+																.planSpent && (
+																<ChatFailureNotice
+																	error={
+																		message
+																			.turn
+																			.error
+																	}
+																/>
+															)}
+													</>
 												}
 											>
-												{message.turn.text}
-											</Response>
+												<AssistantTurn
+													turn={message.turn}
+													organizationId={
+														organizationId
+													}
+												/>
+											</Suspense>
 										)}
-										{message.turn.error && (
-											<ChatFailureNotice
-												error={message.turn.error}
-												action={
-													message.turn.planSpent
-														? planSpentAction(
-																message.turn
-																	.planSpent,
-																organizationId,
-															)
-														: undefined
-												}
-											/>
-										)}
+										{message.turn.error &&
+											!message.turn.planSpent && (
+												<ChatFailureNotice
+													error={message.turn.error}
+												/>
+											)}
 										{message.turn.status === "running" &&
 											!message.turn.text && (
 												<output className="text-sm text-muted-foreground">

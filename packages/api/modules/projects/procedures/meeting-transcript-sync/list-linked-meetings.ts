@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import { db, hasProjectAccess } from "@repo/database";
+import { db, hasProjectAccess, LINKED_MEETING_SOURCE } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -48,7 +48,10 @@ export const listLinkedMeetingsProcedure = tenantProtectedProcedure
 		}
 
 		const linkedMeetings = await db.projectLinkedMeeting.findMany({
-			where: { projectId: input.projectId },
+			where: {
+				projectId: input.projectId,
+				source: LINKED_MEETING_SOURCE.TEAMS,
+			},
 			include: {
 				_count: {
 					select: { transcripts: true },

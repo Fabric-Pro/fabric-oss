@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Proves the release decision: `changeset status` must list at least one
 // release against the PR's base. Exit 0 means a non-empty release list;
-// 1 means empty/missing/unparseable output; 2 means usage or base errors.
+// 1 means a policy failure or empty/missing/unparseable output; 2 means usage or base errors.
 //
 // `changeset status` ignores untracked files, so a brand-new changeset reads
 // as "no changeset". The gate marks untracked .changeset/*.md as
@@ -18,6 +18,7 @@ import {
 import { createRequire } from "node:module";
 import { constants as osConstants, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { checkStatusFile } from "./lib/changeset-package-policy.mjs";
 import {
 	BaseResolutionError,
 	extractBaseArg,
@@ -189,13 +190,21 @@ function main() {
 
 		if (!releases || releases.length === 0) {
 			err(
-				`changeset:gate FAILED against ${base}: ${problem || "no releases"}.`,
+				`changeset:gate FAILED against ${base}: ${problem ? `could not check: ${problem}` : "no releases"}.`,
 			);
 			if (status.stderr) {
 				err(String(status.stderr).trimEnd());
 			}
 			if (status.stdout) {
 				err(String(status.stdout).trimEnd());
+			}
+			return 1;
+		}
+
+		const errors = checkStatusFile(outputFile, cwd);
+		if (errors.length) {
+			for (const error of errors) {
+				err(error);
 			}
 			return 1;
 		}

@@ -186,6 +186,11 @@
 			"import": "./lib/completion-claim-prompts.ts",
 			"default": "./lib/completion-claim-prompts.ts"
 		},
+		"./diff-markers": {
+			"types": "./lib/diff-markers.ts",
+			"import": "./lib/diff-markers.ts",
+			"default": "./lib/diff-markers.ts"
+		},
 		"./direct-chat-memory-prompt": {
 			"types": "./lib/direct-chat-memory-prompt.ts",
 			"import": "./lib/direct-chat-memory-prompt.ts",
@@ -215,6 +220,11 @@
 			"types": "./lib/page-ask-prompt.ts",
 			"import": "./lib/page-ask-prompt.ts",
 			"default": "./lib/page-ask-prompt.ts"
+		},
+		"./parlume-chat-delivery-evidence": {
+			"types": "./lib/parlume-chat-delivery-evidence.ts",
+			"import": "./lib/parlume-chat-delivery-evidence.ts",
+			"default": "./lib/parlume-chat-delivery-evidence.ts"
 		},
 		"./parlume-recap-prompt": {
 			"types": "./lib/parlume-recap-prompt.ts",

@@ -20,6 +20,8 @@
  * | POST `[executionId]/cancel`                      | POST `stop/<threadId>` with `{runId}`                                   |
  * | GET `[executionId]` poll                         | `connect` (MESSAGES_SNAPSHOT, then the live tail)                       |
  */
+
+import { answerModelInfoSchema } from "@repo/ai/lib/answer-model-info";
 import type {
 	DeepResearcherOutput,
 	DeepResearcherPhase,
@@ -99,6 +101,9 @@ export type ResearchRunResult = Pick<
 	| "goalAchieved"
 	| "duration"
 	| "structuredReport"
+	| "model"
+	| "summaryModel"
+	| "reportModel"
 >;
 
 export function researchRunResultOf(
@@ -115,6 +120,9 @@ export function researchRunResultOf(
 		goalAchieved: output.goalAchieved,
 		duration: output.duration,
 		structuredReport: output.structuredReport,
+		model: output.model,
+		summaryModel: output.summaryModel,
+		reportModel: output.reportModel,
 	};
 }
 
@@ -138,6 +146,9 @@ export function researchResultView(
 	const report = result.structuredReport;
 	return {
 		text: result.result || null,
+		model: result.model,
+		summaryModel: result.summaryModel,
+		reportModel: result.reportModel,
 		summary: result.summary || null,
 		keyFindings: result.keyFindings || [],
 		sources: result.sources || [],
@@ -186,6 +197,9 @@ const citationSchema = z.object({
 });
 
 export const researchRunResultSchema = z.object({
+	model: answerModelInfoSchema.optional().catch(undefined),
+	summaryModel: answerModelInfoSchema.optional().catch(undefined),
+	reportModel: answerModelInfoSchema.optional().catch(undefined),
 	status: z.enum(["completed", "failed", "timeout", "cancelled"]),
 	result: z.string().optional(),
 	summary: z.string().optional(),

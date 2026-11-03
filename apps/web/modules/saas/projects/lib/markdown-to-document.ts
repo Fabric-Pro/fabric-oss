@@ -14,7 +14,7 @@
  * - `toSlug`                  — slugify free text for filenames
  * - `parseImgTag`             — read attributes off our serialized `<img/>` HTML
  * - `renderThemedMermaidSvg`  — mermaid code → SVG under the Glossy config
- * - `renderMermaidToPng`      — mermaid code → `{dataUrl, width, height}`
+ * - `renderMermaidToPng`      — mermaid code → `{dataUrl, width, height, engine}`
  * - `renderMarkdownToPdf`     — Markdown → PDF Blob (jsPDF, native text)
  * - `renderMarkdownToDocx`    — Markdown → DOCX Blob (docx + Packer)
  *
@@ -30,12 +30,11 @@
  */
 
 import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
-import {
-	ALWAYS_WRAPPED_LABEL_CHARS,
-	wrapFlowchartNodeLabels,
-} from "@repo/utils/proposal-artifact/diagram-label-wrap";
+import { wrapFlowchartNodeLabels } from "@repo/utils/proposal-artifact/diagram-label-wrap";
+import type { LiveDiagramEngine } from "@repo/utils/proposal-artifact/diagram-printability";
 import {
 	isThematicBreak,
+	layOutPdfTable,
 	normalizeOrderedMarkerEscape,
 	readMarkdownTable,
 	stripInlineMarkdown,
@@ -206,6 +205,18 @@ export async function renderThemedMermaidSvg(
 }
 
 /**
+ * A diagram drawn to a PNG, and the engine that drew it: a client
+ * Proposal's Markdown download numbers its figures by that engine, as the
+ * live page does (`isLiveFigureCounted`).
+ */
+interface MermaidPng {
+	dataUrl: string;
+	width: number;
+	height: number;
+	engine: Exclude<LiveDiagramEngine, "template">;
+}
+
+/**
  * Render a mermaid diagram to a PNG data URL.
  * Tries beautiful-mermaid first (flowchart, sequence, class, state, ER),
  * falls back to native mermaid.js for ALL other types (C4, mindmap, gantt, pie, etc.)
@@ -216,10 +227,13 @@ export async function renderThemedMermaidSvg(
 export async function renderMermaidToPng(
 	code: string,
 	theme?: MermaidExportTheme,
-): Promise<{ dataUrl: string; width: number; height: number } | null> {
+): Promise<MermaidPng | null> {
 	if (theme) {
 		try {
-			return await svgToPng(await renderThemedMermaidSvg(code, theme));
+			const png = await svgToPng(
+				await renderThemedMermaidSvg(code, theme),
+			);
+			return png && { ...png, engine: "mermaid" };
 		} catch (e) {
 			console.error("[Export] Themed Mermaid render failed:", e);
 			return null;
@@ -229,12 +243,11 @@ export async function renderMermaidToPng(
 	// Try beautiful-mermaid first (cleaner output for supported types)
 	try {
 		const beautifulMermaid = await import("beautiful-mermaid");
-		// Long node labels are broken as the page breaks them, so the text
-		// stays inside the boxes the engine's width estimate draws.
+		// Node labels too wide for their boxes are broken as the page breaks
+		// them, so the text stays inside the boxes the engine's width
+		// estimate draws.
 		const drawn =
-			wrapFlowchartNodeLabels(code, {
-				minChars: ALWAYS_WRAPPED_LABEL_CHARS,
-			}) ?? code;
+			wrapFlowchartNodeLabels(code, { overflowingOnly: true }) ?? code;
 		const options = {
 			bg: "#ffffff",
 			fg: "#1a1a1a",
@@ -261,7 +274,7 @@ export async function renderMermaidToPng(
 		}
 		const result = await svgToPng(svg);
 		if (result) {
-			return result;
+			return { ...result, engine: "beautiful-mermaid" };
 		}
 	} catch {
 		// beautiful-mermaid doesn't support this diagram type — fall through
@@ -289,7 +302,7 @@ export async function renderMermaidToPng(
 		});
 		const result = await svgToPng(svg);
 		if (result) {
-			return result;
+			return { ...result, engine: "mermaid" };
 		}
 	} catch (e) {
 		console.error("[Export] Mermaid render failed:", e);
@@ -336,29 +349,63 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 	// up to three lines.
 	const keepWithNext = 96;
 
-	// A grid with a shaded, bold header row. A row moves to the next page
-	// whole when it does not fit; the header never stands alone at a page's
-	// foot, moving with the first row, and is repeated on every page the
-	// table continues onto.
+	// A bold heading, wrapped to the body width so a long one keeps all of
+	// its words on the page; `height` is its one-line height.
+	const drawHeading = (
+		markdown: string,
+		size: number,
+		height: number,
+		after: number,
+	) => {
+		doc.setFontSize(size);
+		doc.setFont("helvetica", "bold");
+		const lineHeightFactor = 1.2;
+		const wrapped: string[] = doc.splitTextToSize(
+			toWinAnsiText(stripInlineMarkdown(markdown)),
+			contentWidth,
+		);
+		const extra = (wrapped.length - 1) * size * lineHeightFactor;
+		checkPageBreak(height + extra + keepWithNext);
+		doc.text(wrapped, margin, y, { lineHeightFactor });
+		y += after + extra;
+	};
+
+	// A grid with a shaded, bold header row, its columns sized to their
+	// words. A row moves to the next page whole when it does not fit; the
+	// header never stands alone at a page's foot, moving with the first row,
+	// and is repeated on every page the table continues onto.
 	const drawTable = (table: { rows: string[][]; columns: number }) => {
-		const cellWidth = contentWidth / table.columns;
-		const padding = 5;
-		const lineHeight = 12;
-		const setRowFont = (header: boolean) => {
+		const fontSize = 9.5;
+		const setRowFont = (header: boolean, size: number) => {
 			doc.setFont("helvetica", header ? "bold" : "normal");
-			doc.setFontSize(9.5);
+			doc.setFontSize(size);
 		};
+		const rows = table.rows.map((row) =>
+			Array.from({ length: table.columns }, (_, c) =>
+				toWinAnsiText(stripInlineMarkdown(tableCellMarkdown(row[c]))),
+			),
+		);
+		const layout = layOutPdfTable(rows, {
+			columns: table.columns,
+			width: contentWidth,
+			padding: 5,
+			fontSize,
+			minFontSize: 8,
+			measure: (text, header) => {
+				setRowFont(header, fontSize);
+				return doc.getTextWidth(text);
+			},
+		});
+		const { padding } = layout;
+		// 12pt lines at 9.5pt, kept in proportion when the font steps down.
+		const lineHeight = (12 * layout.fontSize) / fontSize;
 		const layOut = (row: string[], header: boolean) => {
-			setRowFont(header);
-			const cells: string[][] = Array.from(
-				{ length: table.columns },
-				(_, c) =>
-					doc.splitTextToSize(
-						toWinAnsiText(
-							stripInlineMarkdown(tableCellMarkdown(row[c])),
-						),
-						cellWidth - padding * 2,
-					),
+			setRowFont(header, layout.fontSize);
+			const cells: string[][] = row.map((text, c) =>
+				doc.splitTextToSize(
+					text,
+					layout.columns[c].width - padding * 2,
+				),
 			);
 			const height =
 				Math.max(1, ...cells.map((cell) => cell.length)) * lineHeight +
@@ -366,7 +413,7 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 			return { cells, height, header };
 		};
 		const draw = (row: ReturnType<typeof layOut>) => {
-			setRowFont(row.header);
+			setRowFont(row.header, layout.fontSize);
 			doc.setDrawColor(200, 200, 200);
 			doc.setLineWidth(0.5);
 			if (row.header) {
@@ -374,30 +421,77 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 				doc.rect(margin, y, contentWidth, row.height, "F");
 			}
 			row.cells.forEach((cell, c) => {
-				const x = margin + c * cellWidth;
+				const { left, width } = layout.columns[c];
+				const x = margin + left;
 				if (cell.join("").trim()) {
-					doc.text(cell, x + padding, y + padding + 9, {
-						lineHeightFactor: lineHeight / 9.5,
-					});
+					// The first baseline sits three quarters down its line.
+					doc.text(
+						cell,
+						x + padding,
+						y + padding + lineHeight * 0.75,
+						{
+							lineHeightFactor: lineHeight / layout.fontSize,
+						},
+					);
 				}
-				doc.rect(x, y, cellWidth, row.height, "S");
+				doc.rect(x, y, width, row.height, "S");
 			});
 			y += row.height;
 		};
 
-		const [headerRow = [], ...bodyRows] = table.rows;
+		// Lines `from` to `to` of a row, as a row of their own.
+		const part = (
+			row: ReturnType<typeof layOut>,
+			from: number,
+			to?: number,
+		) => {
+			const cells = row.cells.map((cell) => cell.slice(from, to));
+			const height =
+				Math.max(1, ...cells.map((cell) => cell.length)) * lineHeight +
+				padding * 2;
+			return { cells, height, header: row.header };
+		};
+
+		const [headerRow = [], ...bodyRows] = rows;
 		const header = layOut(headerRow, true);
 		const body = bodyRows.map((row) => layOut(row, false));
+		const pageBottom = pageHeight - margin;
+		// The tallest row that still moves to a new page whole.
+		const pageRoom = pageBottom - margin - header.height;
+		const nextPage = () => {
+			doc.addPage();
+			y = margin;
+			draw(header);
+		};
+		const first = body[0];
 		y += 4;
-		checkPageBreak(header.height + (body[0]?.height ?? 0));
+		checkPageBreak(
+			header.height +
+				(first && first.height > pageRoom
+					? lineHeight + padding * 2
+					: (first?.height ?? 0)),
+		);
 		draw(header);
 		for (const row of body) {
-			if (y + row.height > pageHeight - margin) {
-				doc.addPage();
-				y = margin;
-				draw(header);
+			let rest = row;
+			if (y + rest.height > pageBottom && rest.height <= pageRoom) {
+				nextPage();
 			}
-			draw(row);
+			// A row taller than a page under the header goes on a page at a time.
+			while (y + rest.height > pageBottom) {
+				const fit = Math.floor(
+					(pageBottom - y - padding * 2) / lineHeight,
+				);
+				if (fit < 1 && y === margin + header.height) {
+					break;
+				}
+				if (fit >= 1) {
+					draw(part(rest, 0, fit));
+					rest = part(rest, fit);
+				}
+				nextPage();
+			}
+			draw(rest);
 		}
 		y += 10;
 	};
@@ -416,35 +510,11 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 		}
 
 		if (/^### /.test(line)) {
-			checkPageBreak(22 + keepWithNext);
-			doc.setFontSize(13);
-			doc.setFont("helvetica", "bold");
-			doc.text(
-				toWinAnsiText(stripInlineMarkdown(line.slice(4))),
-				margin,
-				y,
-			);
-			y += 20;
+			drawHeading(line.slice(4), 13, 22, 20);
 		} else if (/^## /.test(line)) {
-			checkPageBreak(26 + keepWithNext);
-			doc.setFontSize(16);
-			doc.setFont("helvetica", "bold");
-			doc.text(
-				toWinAnsiText(stripInlineMarkdown(line.slice(3))),
-				margin,
-				y,
-			);
-			y += 24;
+			drawHeading(line.slice(3), 16, 26, 24);
 		} else if (/^# /.test(line)) {
-			checkPageBreak(30 + keepWithNext);
-			doc.setFontSize(20);
-			doc.setFont("helvetica", "bold");
-			doc.text(
-				toWinAnsiText(stripInlineMarkdown(line.slice(2))),
-				margin,
-				y,
-			);
-			y += 28;
+			drawHeading(line.slice(2), 20, 30, 28);
 		} else if (line.startsWith("```mermaid")) {
 			// Mermaid diagram block: render to PNG and embed
 			const mermaidLines: string[] = [];
@@ -476,19 +546,23 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 			} else {
 				// Fallback: labeled placeholder box
 				const diagramTitle = mermaidLines[0] ?? "diagram";
-				const boxH = 48;
+				doc.setFontSize(11);
+				doc.setFont("helvetica", "italic");
+				const label: string[] = doc.splitTextToSize(
+					toWinAnsiText(`[Diagram: ${diagramTitle}]`),
+					contentWidth - 16,
+				);
+				const boxH = Math.max(48, label.length * 13 + 22);
 				checkPageBreak(boxH + 10);
 				doc.setDrawColor(180, 180, 180);
 				doc.setFillColor(245, 245, 245);
 				doc.roundedRect(margin, y, contentWidth, boxH, 4, 4, "FD");
-				doc.setFontSize(11);
-				doc.setFont("helvetica", "italic");
 				doc.setTextColor(100, 100, 100);
 				doc.text(
-					toWinAnsiText(`[Diagram: ${diagramTitle}]`),
+					label,
 					margin + contentWidth / 2,
-					y + boxH / 2 + 4,
-					{ align: "center" },
+					y + boxH / 2 + 4 - ((label.length - 1) * 13) / 2,
+					{ align: "center", lineHeightFactor: 13 / 11 },
 				);
 				doc.setTextColor(0, 0, 0);
 				y += boxH + 10;
@@ -532,17 +606,18 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 			if (added > 0) {
 				y += added;
 			} else {
-				checkPageBreak(18);
 				doc.setFontSize(10);
 				doc.setFont("helvetica", "italic");
-				doc.setTextColor(100, 100, 100);
-				doc.text(
+				const label: string[] = doc.splitTextToSize(
 					toWinAnsiText(alt ? `[Image: ${alt}]` : "[Image]"),
-					margin,
-					y,
+					contentWidth,
 				);
+				const extra = (label.length - 1) * 12;
+				checkPageBreak(18 + extra);
+				doc.setTextColor(100, 100, 100);
+				doc.text(label, margin, y, { lineHeightFactor: 1.2 });
 				doc.setTextColor(0, 0, 0);
-				y += 18;
+				y += 18 + extra;
 			}
 			// Render caption below image
 			if (caption) {

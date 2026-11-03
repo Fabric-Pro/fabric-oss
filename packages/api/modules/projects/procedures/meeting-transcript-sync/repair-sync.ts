@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/server";
 import {
 	clearMeetingSyncFailures,
 	db,
+	LINKED_MEETING_SOURCE,
 	rebindLinkedMeetingsToUser,
 } from "@repo/database";
 import { executeMicrosoftTeamsTool } from "@repo/integrations/microsoft";
@@ -101,6 +102,7 @@ export const repairSyncProcedure = tenantProtectedProcedure
 			where: {
 				projectId: input.projectId,
 				deactivatedAt: null,
+				source: LINKED_MEETING_SOURCE.TEAMS,
 				...(input.linkedMeetingIds
 					? { id: { in: input.linkedMeetingIds } }
 					: {}),

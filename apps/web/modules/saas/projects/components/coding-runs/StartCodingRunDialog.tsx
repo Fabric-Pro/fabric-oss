@@ -11,10 +11,18 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
+import {
 	CheckCircle2Icon,
 	CodeIcon,
+	CopyIcon,
 	CpuIcon,
 	GitBranchIcon,
+	HelpCircleIcon,
 	LaptopIcon,
 	ListTodoIcon,
 	Loader2Icon,
@@ -22,8 +30,10 @@ import {
 	ShieldCheckIcon,
 	SlidersHorizontalIcon,
 	SparklesIcon,
+	TerminalIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
+import { toast } from "sonner";
 import {
 	buildFabricDesktopNewSessionUrl,
 	buildFabricDesktopViewUrl,
@@ -49,6 +59,8 @@ type Props = {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	story: UserStory | null;
+	projectId?: string;
+	projectName?: string;
 	repositoryOwner?: string;
 	repositoryName?: string;
 	defaultBranch?: string;
@@ -58,6 +70,10 @@ type Props = {
 	initialConnection?: string;
 	initialModel?: string;
 	initialFallbackPolicy?: FabricAgentFallbackPolicy;
+	bridgeEnabled?: boolean;
+	readinessBlocked?: boolean;
+	readinessReason?: string | null;
+	selectedServerUrl?: string;
 	serverPicker?: ReactNode;
 	serverId?: string;
 	serverRequired?: boolean;
@@ -68,6 +84,8 @@ export function StartCodingRunDialog({
 	open,
 	onOpenChange,
 	story,
+	projectId,
+	projectName,
 	repositoryOwner,
 	repositoryName,
 	defaultBranch = "main",
@@ -77,6 +95,10 @@ export function StartCodingRunDialog({
 	initialConnection = "default",
 	initialModel = "default",
 	initialFallbackPolicy = "subscription_harnesses",
+	bridgeEnabled = true,
+	readinessBlocked = false,
+	readinessReason = null,
+	selectedServerUrl,
 	serverPicker,
 	serverId,
 	serverRequired = false,
@@ -141,17 +163,20 @@ export function StartCodingRunDialog({
 
 	const handleConfirm = () => {
 		const llmConnection =
-			selectedConnection && selectedConnection !== "default"
+			bridgeEnabled &&
+			selectedConnection &&
+			selectedConnection !== "default"
 				? selectedConnection
 				: undefined;
 		const model =
-			selectedModel && selectedModel !== "default"
+			bridgeEnabled && selectedModel && selectedModel !== "default"
 				? selectedModel
 				: undefined;
 		const fallbackPolicy =
-			selectedFallbackPolicy !== "subscription_harnesses"
+			bridgeEnabled && selectedFallbackPolicy !== "subscription_harnesses"
 				? selectedFallbackPolicy
 				: undefined;
+		const effectiveServerId = bridgeEnabled ? serverId : undefined;
 		const taskChanged = selectedTaskId !== (focusedTaskId ?? null);
 
 		if (
@@ -159,10 +184,10 @@ export function StartCodingRunDialog({
 			model ||
 			fallbackPolicy ||
 			taskChanged ||
-			serverId
+			effectiveServerId
 		) {
 			onConfirm({
-				...(serverId ? { serverId } : {}),
+				...(effectiveServerId ? { serverId: effectiveServerId } : {}),
 				...(llmConnection ? { llmConnection } : {}),
 				...(model ? { model } : {}),
 				...(fallbackPolicy ? { fallbackPolicy } : {}),
@@ -171,6 +196,26 @@ export function StartCodingRunDialog({
 		} else {
 			onConfirm();
 		}
+	};
+
+	const buildMcpImplementationPrompt = () => {
+		const lines = [
+			`Implement feature ${story.identifier} ("${story.title}")${projectName ? ` in project "${projectName}"` : ""}${projectId ? ` (projectId: ${projectId}, featureId: ${story.id})` : ` (featureId: ${story.id})`}.`,
+			effectiveRepoOwner && effectiveRepoName
+				? `Repository: ${effectiveRepoOwner}/${effectiveRepoName} (base branch: ${effectiveBranch}).`
+				: "",
+			focusedTask
+				? `Primary task: ${focusedTask.identifier} (taskId: ${focusedTask.id}) — ${focusedTask.title}`
+				: incompleteTasks.length > 0
+					? `Open tasks:\n${incompleteTasks.map((t) => `- ${t.identifier} (taskId: ${t.id}): ${t.title}`).join("\n")}`
+					: "",
+			"",
+			"Use the Fabric MCP server tools to stay in sync:",
+			"1. Call `fabric_get_feature` with `projectId` and `featureId` to read the latest feature specification, acceptance criteria, and task list.",
+			"2. As you complete each task, call `fabric_complete_task` with `projectId` and `taskId`.",
+			"3. Call `fabric_get_project_statuses` and `fabric_update_feature_status` when moving the feature status.",
+		];
+		return lines.filter(Boolean).join("\n");
 	};
 
 	return (
@@ -182,12 +227,47 @@ export function StartCodingRunDialog({
 							<CodeIcon className="size-5 text-primary" />
 						</div>
 						<div className="min-w-0 flex-1 space-y-2 pr-8">
-							<Badge
-								variant="outline"
-								className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
-							>
-								{getExecutionProviderLabel("BACKGROUND_AGENTS")}
-							</Badge>
+							<div className="flex flex-wrap items-center gap-2">
+								<Badge
+									variant="outline"
+									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
+								>
+									{getExecutionProviderLabel(
+										"BACKGROUND_AGENTS",
+									)}
+								</Badge>
+								<TooltipProvider delayDuration={150}>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<a
+												href="/docs/features/projects#delegating-coding-runs-to-fabric-agents"
+												target="_blank"
+												rel="noopener noreferrer"
+												data-testid="start-coding-run-docs-link"
+												aria-label="Delegating Coding Runs to Fabric Agents documentation"
+												className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+											>
+												<HelpCircleIcon className="size-3" />
+												Delegation Guide
+											</a>
+										</TooltipTrigger>
+										<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+											<p className="font-semibold">
+												Delegating Coding Runs to Fabric
+												Agents
+											</p>
+											<p>
+												Learn how to configure Personal
+												or Organization Remote Servers,
+												assign specific tasks, use
+												subscription harnesses, and
+												watch the live Server Web UI
+												inside the portal.
+											</p>
+										</TooltipContent>
+									</Tooltip>
+								</TooltipProvider>
+							</div>
 							<DialogTitle className="text-xl leading-tight sm:text-2xl">
 								Send to{" "}
 								{getExecutionProviderLabel("BACKGROUND_AGENTS")}
@@ -203,6 +283,14 @@ export function StartCodingRunDialog({
 
 				<div className="flex-1 space-y-4 overflow-y-auto py-1 pr-1">
 					{serverPicker}
+					{readinessBlocked && readinessReason && (
+						<div
+							role="alert"
+							className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs leading-5 text-destructive"
+						>
+							{readinessReason}
+						</div>
+					)}
 					{!hasRepositoryContext && (
 						<div className="rounded-lg border border-amber-300/40 bg-amber-50/70 p-4 dark:border-amber-700/50 dark:bg-amber-950/20">
 							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -293,7 +381,7 @@ export function StartCodingRunDialog({
 										onClick={() =>
 											handleConnectionChange(option.value)
 										}
-										className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+										className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
 											isSelected
 												? "border-primary bg-primary/10 text-primary"
 												: "border-border/70 bg-muted/20 text-foreground/80 hover:border-border hover:bg-muted/40"
@@ -549,15 +637,54 @@ export function StartCodingRunDialog({
 						Follow its progress and conversation from this project.
 					</p>
 
-					{/* 1-Click Fabric Desktop & Remote Server Launch Bar */}
-					<div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2">
-						<div className="flex items-center gap-2 text-xs">
-							<LaptopIcon className="size-3.5 text-primary" />
-							<span className="font-medium text-foreground">
-								Open in Fabric Desktop or Remote Agent Server
-							</span>
+					{/* Direct Assignment to Fabric Agents Desktop / CLI */}
+					<div className="space-y-2.5 rounded-lg border border-border bg-muted/20 p-3">
+						<div className="flex flex-wrap items-center justify-between gap-2">
+							<div className="flex items-center gap-2 text-xs">
+								<TerminalIcon className="size-3.5 text-primary" />
+								<span className="font-semibold text-foreground">
+									Assign to Fabric Agents Desktop or
+									Subscription CLI
+								</span>
+							</div>
+							<Badge
+								variant="outline"
+								className="rounded-full px-2 py-0 text-[10px] text-muted-foreground"
+							>
+								Uses your selected subscription harness &amp;
+								model
+							</Badge>
 						</div>
+						<p className="text-xs leading-5 text-muted-foreground">
+							Prefer to run Claude Code, Codex, Cursor,
+							Antigravity, or Fabric Desktop directly? Copy the
+							MCP-ready prompt or launch your local Fabric Agents
+							Desktop app with your chosen subscription harness
+							pre-selected.
+						</p>
 						<div className="flex flex-wrap items-center gap-1.5">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								className="h-7 px-2.5 text-xs"
+								data-testid="dialog-copy-mcp-prompt"
+								onClick={async () => {
+									try {
+										await navigator.clipboard.writeText(
+											buildMcpImplementationPrompt(),
+										);
+										toast.success(
+											"Copied implementation prompt with Fabric MCP instructions",
+										);
+									} catch {
+										toast.error("Failed to copy prompt");
+									}
+								}}
+							>
+								<CopyIcon className="mr-1.5 size-3" />
+								Copy implementation prompt
+							</Button>
 							<Button
 								asChild
 								variant="outline"
@@ -567,43 +694,65 @@ export function StartCodingRunDialog({
 								<a
 									href={buildFabricDesktopNewSessionUrl({
 										projectName:
+											projectName ||
 											repositoryName ||
 											story.title ||
 											"Fabric Project",
-										prompt: `Implement feature "${story.title}"${repositoryOwner && repositoryName ? ` in ${repositoryOwner}/${repositoryName}` : ""}${defaultBranch ? ` (base branch: ${defaultBranch})` : ""}.`,
+										projectId,
+										origin:
+											typeof window !== "undefined"
+												? window.location.origin
+												: null,
+										connection: selectedConnection,
+										model: selectedModel,
+										fallbackPolicy: selectedFallbackPolicy,
+										prompt: `Implement feature ${story.identifier} ("${story.title}")${focusedTask ? ` — primary task ${focusedTask.identifier}: ${focusedTask.title}` : ""}${effectiveRepoOwner && effectiveRepoName ? ` in ${effectiveRepoOwner}/${effectiveRepoName}` : ""}${effectiveBranch ? ` (base branch: ${effectiveBranch})` : ""}.`,
 									})}
 									data-testid="dialog-launch-fabric-desktop"
 								>
 									<LaptopIcon className="mr-1.5 size-3" />
-									Open in Fabric Desktop
+									Open in Fabric Agents Desktop
 								</a>
 							</Button>
-							<Button
-								asChild
-								variant="outline"
-								size="sm"
-								className="h-7 px-2.5 text-xs"
-							>
-								<a
-									href={buildRemoteAgentServerDelegationUrl({
-										serverUrl: "https://agents.example.com",
-										projectName:
-											repositoryName ||
-											story.title ||
-											"Fabric Project",
-										prompt: `Implement feature "${story.title}"${repositoryOwner && repositoryName ? ` in ${repositoryOwner}/${repositoryName}` : ""}${defaultBranch ? ` (base branch: ${defaultBranch})` : ""}.`,
-										connection: selectedConnection,
-										model: selectedModel,
-										fallbackPolicy: selectedFallbackPolicy,
-									})}
-									target="_blank"
-									rel="noopener noreferrer"
-									data-testid="dialog-delegate-remote-server"
+							{selectedServerUrl && (
+								<Button
+									asChild
+									variant="outline"
+									size="sm"
+									className="h-7 px-2.5 text-xs"
 								>
-									<CpuIcon className="mr-1.5 size-3" />
-									Delegate to Remote Server
-								</a>
-							</Button>
+									<a
+										href={buildRemoteAgentServerDelegationUrl(
+											{
+												serverUrl: selectedServerUrl,
+												projectName:
+													projectName ||
+													repositoryName ||
+													story.title ||
+													"Fabric Project",
+												projectId,
+												origin:
+													typeof window !==
+													"undefined"
+														? window.location.origin
+														: null,
+												prompt: `Implement feature "${story.title}"${effectiveRepoOwner && effectiveRepoName ? ` in ${effectiveRepoOwner}/${effectiveRepoName}` : ""}${effectiveBranch ? ` (base branch: ${effectiveBranch})` : ""}.`,
+												connection: selectedConnection,
+												model: selectedModel,
+												fallbackPolicy:
+													selectedFallbackPolicy,
+											},
+										)}
+										target="_blank"
+										rel="noopener noreferrer"
+										data-testid="dialog-delegate-remote-server"
+									>
+										<CpuIcon className="mr-1.5 size-3" />
+										Open Selected Fabric Agents Remote
+										Server
+									</a>
+								</Button>
+							)}
 							<Button
 								asChild
 								variant="ghost"
@@ -641,6 +790,7 @@ export function StartCodingRunDialog({
 							onClick={handleConfirm}
 							disabled={
 								isLoading ||
+								readinessBlocked ||
 								!hasRepositoryContext ||
 								serverLoading ||
 								(serverRequired && !serverId)

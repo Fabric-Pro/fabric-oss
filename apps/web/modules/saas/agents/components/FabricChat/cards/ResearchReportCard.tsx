@@ -12,6 +12,7 @@
 
 "use client";
 
+import type { AnswerModelInfo } from "@repo/ai/lib/answer-model-info";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@ui/components/card";
@@ -31,6 +32,7 @@ import {
 	Users,
 } from "lucide-react";
 import { useState } from "react";
+import { AnsweredByModel } from "../shared/AnsweredByModel";
 
 interface Citation {
 	source: string;
@@ -52,6 +54,7 @@ interface KeyFinding {
 }
 
 interface ResearchReportData {
+	model?: AnswerModelInfo;
 	title: string;
 	executiveSummary: string;
 	sections: ReportSection[];
@@ -453,6 +456,7 @@ export function ResearchReportCard({
 						)}
 					</div>
 				)}
+				<AnsweredByModel model={report.model} />
 			</CardContent>
 		</Card>
 	);

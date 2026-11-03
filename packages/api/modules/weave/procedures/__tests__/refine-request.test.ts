@@ -276,7 +276,7 @@ beforeEach(() => {
 	mocks.hasProjectAccess.mockResolvedValue(true);
 	mocks.getAIModelWithMetadata.mockResolvedValue({
 		model: MODEL,
-		metadata: {},
+		metadata: { modelString: "example-served", provider: "OPENAI_DIRECT" },
 		trackUsage: mocks.trackUsage,
 	});
 	mocks.generateText.mockResolvedValue({ text: REPLY, usage: {} });
@@ -284,12 +284,42 @@ beforeEach(() => {
 });
 
 describe("weave.plans.refine", () => {
+	it("reads the served fallback only after generation", async () => {
+		const metadata = {
+			modelString: "example-configured",
+			provider: "OPENAI_CHATGPT_PLAN",
+			answerSnapshot: {
+				modelString: "example-plan",
+				provider: "OPENAI_CHATGPT_PLAN",
+			},
+		};
+		mocks.getAIModelWithMetadata.mockResolvedValueOnce({
+			model: MODEL,
+			metadata,
+			trackUsage: mocks.trackUsage,
+		});
+		mocks.generateText.mockImplementationOnce(async () => {
+			metadata.answerSnapshot = {
+				modelString: "example-api-served",
+				provider: "OPENAI_DIRECT",
+			};
+			return { text: REPLY, usage: {} };
+		});
+		expect(await refine(ORG)).toMatchObject({
+			model: { id: "example-api-served", viaPlan: false },
+		});
+	});
 	it("refines in the caller's organization with the SIMPLE model and the shared prompt", async () => {
 		await expect(refine(ORG)).resolves.toEqual({
 			success: true,
 			feedback: "Which provider?",
 			updatedMessage: "Add login with an example provider",
 			isReady: true,
+			model: {
+				id: "example-served",
+				provider: "OPENAI_DIRECT",
+				viaPlan: false,
+			},
 		});
 
 		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledTimes(1);

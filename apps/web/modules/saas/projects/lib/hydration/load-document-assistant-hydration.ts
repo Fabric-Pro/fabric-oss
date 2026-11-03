@@ -28,18 +28,23 @@
  * Call the underlying DB query (`getActiveDocumentAssistantConversation`)
  * directly in-process, mirroring the oRPC procedure's logic:
  *
- *   1. Resolve tenant filter (XOR: org context OR personal context).
- *   2. Apply the org feature flag gate (personal context always enabled).
- *   3. Query the DB.
- *   4. Re-sign attachment GET URLs (so image previews render after a
+ *   1. Check the caller can see the document's project, and that the
+ *      document is in the page's project (`canAccessDocumentProject`, the
+ *      procedure's own check). A refusal returns no conversation, without
+ *      the fail-open warning: it is not a failed load.
+ *   2. Resolve tenant filter (XOR: org context OR personal context).
+ *   3. Apply the org feature flag gate (personal context always enabled).
+ *   4. Query the DB.
+ *   5. Re-sign attachment GET URLs (so image previews render after a
  *      reload — the persisted URLs in storage are stale by design).
- *   5. Return the same envelope shape the oRPC handler returns, so the
+ *   6. Return the same envelope shape the oRPC handler returns, so the
  *      page-level component contract is unchanged.
  *
  * Org-membership verification is skipped intentionally — the page loader
  * has already established it via `getActiveOrganization(slug)` and would
  * redirect to `/app` if missing. Duplicating the check here would just add
- * latency.
+ * latency. Organization membership does not stand in for project access,
+ * which is why step 1 is not skipped.
  *
  * # Audit
  *
@@ -51,13 +56,18 @@
  * function-fetches-itself loop.
  */
 
+import {
+	canAccessDocumentProject,
+	resignMessageAttachments,
+} from "@repo/api/modules/agents/procedures/conversations/document-assistant/_shared";
 import { db, getActiveDocumentAssistantConversation } from "@repo/database";
-import { resignMessageAttachments } from "@repo/api/modules/agents/procedures/conversations/document-assistant/_shared";
 import { logger } from "@repo/logs";
 
 interface LoadDocumentAssistantHydrationInput {
 	userId: string;
 	organizationId: string | null;
+	/** The project the page names; the document must belong to it. */
+	projectId: string;
 	documentRefKind: "PROJECT_DOCUMENT" | "USER_STORY";
 	documentRefId: string;
 }
@@ -82,10 +92,25 @@ export interface LoadDocumentAssistantHydrationResult {
 export async function loadDocumentAssistantHydration({
 	userId,
 	organizationId,
+	projectId,
 	documentRefKind,
 	documentRefId,
 }: LoadDocumentAssistantHydrationInput): Promise<LoadDocumentAssistantHydrationResult> {
 	try {
+		// The thread procedures show a document's threads only to a caller
+		// who can see its project; organization membership, which the page
+		// loader established, is not enough.
+		if (
+			!(await canAccessDocumentProject({
+				documentRefKind,
+				documentRefId,
+				projectId,
+				userId,
+			}))
+		) {
+			return { conversation: null };
+		}
+
 		// Feature-flag gate: spec §3.11 FR-27. Personal context (no
 		// organizationId) is always treated as enabled; org context defers
 		// to the org's `documentAssistantHistoryEnabled` column.

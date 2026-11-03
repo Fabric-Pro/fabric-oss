@@ -52,6 +52,9 @@ regexes = [
   # Example bearer token in the audit-log OpenAPI spec's embedded curl examples
   # (packages/api/modules/audit/rest/openapi-spec.ts).
   '''^org_abc12345_secret$''',
+  # Synthetic documentation screenshot mock placeholder in historical commit
+  # 973f8cfa2 (tooling/docs-screenshots/mocks/fabric-agents-delegation.html).
+  '''^fab_srv_9f8a2b3c4d5e6f7a8b9c0d1e2f3a4b5c$''',
   # gitleaks' generic-api-key regex spans lines in example env files with empty
   # values (KEY=""\nNEXT_KEY="") and captures the NEXT variable's NAME as the
   # "secret". This is an env-var identifier, not a value — real Lemon Squeezy

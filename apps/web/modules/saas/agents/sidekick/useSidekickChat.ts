@@ -13,6 +13,8 @@ import {
 } from "@saas/agents/lib/direct-runtime-transport";
 import {
 	SIDEKICK_AGENT_ID,
+	SIDEKICK_MODEL_EVENT,
+	sidekickModelEventSchema,
 	sidekickUiMessages,
 } from "@saas/agents/lib/sidekick-runtime-protocol";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
@@ -107,6 +109,29 @@ function useSidekickRuntimeChat(options: SidekickChatOptions): SidekickChat {
 	useEffect(() => {
 		const subscription = agent.subscribe({
 			onMessagesChanged: ({ messages }) => setAgUi([...messages]),
+			onCustomEvent: ({ event, messages }) => {
+				if (event.name !== SIDEKICK_MODEL_EVENT) {
+					return;
+				}
+				const parsed = sidekickModelEventSchema.safeParse(event.value);
+				if (!parsed.success) {
+					return;
+				}
+				return {
+					messages: messages.map((message) =>
+						parsed.data.messageIds.includes(message.id) &&
+						message.role === "assistant"
+							? {
+									...message,
+									metadata: {
+										...message.metadata,
+										model: parsed.data.model,
+									},
+								}
+							: message,
+					),
+				};
+			},
 		});
 		// Closing the panel aborts the request, and the runtime stops a turn
 		// whose response closed, as the route's `useChat` stopped its fetch.

@@ -257,12 +257,18 @@ function AgentBuilderInner({
 
 					{/* Tab content */}
 					<div className="flex-1 overflow-hidden">
-						{activeTab === "sidekick" ? (
+						{/* Hidden, not unmounted: remounting drops the chat and
+						    re-sends the auto-start message (a new model run). */}
+						<div
+							hidden={activeTab !== "sidekick"}
+							className="h-full"
+						>
 							<AgentBuilderSidekick
 								agentId={agentId}
 								entityType="registered"
 							/>
-						) : (
+						</div>
+						{activeTab === "preview" && (
 							<div className="flex h-full items-center justify-center p-6">
 								<p className="text-sm text-muted-foreground">
 									Preview will be available in a future

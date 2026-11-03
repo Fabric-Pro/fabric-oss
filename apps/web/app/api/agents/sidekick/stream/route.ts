@@ -20,7 +20,10 @@ import {
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { AiUsageLimitExceededError } from "@repo/payments";
-import { sidekickRunPropsSchema } from "@saas/agents/lib/sidekick-runtime-protocol";
+import {
+	sidekickModelMetadata,
+	sidekickRunPropsSchema,
+} from "@saas/agents/lib/sidekick-runtime-protocol";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
@@ -144,9 +147,27 @@ export async function POST(request: NextRequest) {
 		// The model checks the usage limits before each step, so a later step
 		// can be refused after the response has started; `onError` sends that
 		// refusal as the limit payload the client toasts, and masks the rest.
+		let step = 0;
+		let stepHasText = false;
+		let modelMetadata: ReturnType<typeof sidekickModelMetadata> | undefined;
 		return createUIMessageStreamResponse({
 			stream: toUIMessageStream({
 				stream: result.stream,
+				messageMetadata: ({ part }) => {
+					if (part.type === "text-delta" && part.text) {
+						stepHasText = true;
+					}
+					if (part.type !== "finish-step") {
+						return;
+					}
+					const model = result.getAnswerModel(step++);
+					if (!stepHasText) {
+						return;
+					}
+					stepHasText = false;
+					modelMetadata = sidekickModelMetadata(modelMetadata, model);
+					return modelMetadata;
+				},
 				onError: sidekickStreamErrorText,
 			}),
 		});

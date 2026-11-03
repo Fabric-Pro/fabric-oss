@@ -7,7 +7,14 @@ import type {
 } from "@repo/temporal/proposal-export-types";
 import { isGlossyEligible } from "@repo/utils/glossy/eligibility";
 import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
-import { scrubProposalExport } from "@repo/utils/proposal-artifact/export-scrub";
+import {
+	isLiveFigureCounted,
+	withoutLeadingChartComments,
+} from "@repo/utils/proposal-artifact/diagram-printability";
+import {
+	scrubCitationText,
+	scrubProposalExport,
+} from "@repo/utils/proposal-artifact/export-scrub";
 import {
 	withoutStorageReferences,
 	withoutStoredObjects,
@@ -81,6 +88,48 @@ interface Props {
 	 */
 	sourceFile?: { contextId: string; filename: string | null } | null;
 	className?: string;
+}
+
+/**
+ * How a client Proposal's Markdown download reads its diagrams (Fizzy
+ * #2946): the caption reader and the live page's own figure rule. They
+ * bring the Markdown parser, so they load with the first such download,
+ * not with every document card this menu renders on.
+ */
+async function loadFigureReaders() {
+	const [
+		{ cleanDiagramCaption, readDiagramCaption, withDiagramCaption },
+		{ livePrintability },
+	] = await Promise.all([
+		import("@repo/utils/proposal-artifact/visual-identity"),
+		import("../lib/mermaid-proposal-figure"),
+	]);
+	return {
+		/**
+		 * The fence's caption as its exports print it: without citation
+		 * markers, which the scrub leaves in a diagram fence, and without
+		 * storage references, tidied again so a removed one leaves no gap.
+		 * Null when nothing is left.
+		 */
+		caption(fence: string): string | null {
+			const caption = readDiagramCaption(fence);
+			return caption === null
+				? null
+				: cleanDiagramCaption(
+						withoutStorageReferences(
+							scrubCitationText(caption).text,
+						),
+					);
+		},
+		/** The fence without its caption line, which is never drawn. */
+		withoutCaption: (fence: string) => withDiagramCaption(fence, null),
+		printability: livePrintability,
+	};
+}
+
+/** Text a Markdown reader shows as written: no emphasis, link or HTML. */
+function literalMarkdown(text: string): string {
+	return text.replace(/[\\`*_[\]<>~&]/g, "\\$&");
 }
 
 /** The extension the original file was uploaded with, without the dot. */
@@ -318,22 +367,59 @@ export function DocumentDownloadDropdown({
 
 			// 1. Replace mermaid code blocks with rendered diagram images
 			const mermaidBlockRe = /```mermaid\n([\s\S]*?)```/g;
-			const mermaidMatches = [...content.matchAll(mermaidBlockRe)];
-			for (const match of mermaidMatches) {
+			const readers = serverExport ? await loadFigureReaders() : null;
+			const parts: string[] = [];
+			let end = 0;
+			let figures = 0;
+			for (const match of content.matchAll(mermaidBlockRe)) {
+				parts.push(content.slice(end, match.index));
+				end = match.index + match[0].length;
+				if (readers === null) {
+					const rendered = await renderMermaidToPng(match[1]);
+					parts.push(
+						rendered ? `![Diagram](${rendered.dataUrl})` : match[0],
+					);
+					continue;
+				}
 				// A diagram is drawn into a PNG, where the scrub of the
 				// finished text below cannot reach, so the client document's
 				// diagram loses its storage references before it is drawn.
-				const code = serverExport
-					? withoutStorageReferences(match[1])
-					: match[1];
-				const rendered = await renderMermaidToPng(code);
-				if (rendered) {
-					content = content.replace(
-						match[0],
-						`![Diagram](${rendered.dataUrl})`,
-					);
-				}
+				// As on its page, the caption is printed under it, never
+				// drawn in it, and a chart is handed over without its
+				// leading `%%` lines.
+				const rendered = await renderMermaidToPng(
+					withoutLeadingChartComments(
+						readers.withoutCaption(
+							withoutStorageReferences(match[1]),
+						),
+					),
+				);
+				// Its caption goes under it as the page, the PDF and the
+				// Word file print it, after "Figure n." when they number it
+				// (`isLiveFigureCounted`): a diagram they leave out keeps
+				// its code and takes no number, and one they print as a
+				// placeholder keeps its code and its number.
+				const caption = readers.caption(match[1]);
+				const text = caption === null ? null : literalMarkdown(caption);
+				const number = isLiveFigureCounted(
+					readers.printability(match[1]),
+					rendered?.engine ?? null,
+				)
+					? ++figures
+					: null;
+				const line =
+					number === null
+						? rendered && text
+						: text
+							? `Figure ${number}. ${text}`
+							: `Figure ${number}.`;
+				const figure = rendered
+					? `![${text ?? "Diagram"}](${rendered.dataUrl})`
+					: match[0];
+				parts.push(line ? `${figure}\n\n*${line}*` : figure);
 			}
+			parts.push(content.slice(end));
+			content = parts.join("");
 
 			// 2. Embed S3/HTTP images as base64 data URLs.
 			// Keep <img> HTML tags (not ![]) to preserve width/sizing in markdown viewers.

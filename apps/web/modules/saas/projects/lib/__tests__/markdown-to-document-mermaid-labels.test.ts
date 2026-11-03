@@ -51,7 +51,7 @@ vi.mock("../document-export-helpers", async (importOriginal) => {
 	};
 });
 
-import { ALWAYS_WRAPPED_LABEL_CHARS } from "@repo/utils/proposal-artifact/diagram-label-wrap";
+import { nodeLabelLineOverflows } from "@repo/utils/proposal-artifact/diagram-label-wrap";
 import { renderMermaidToPng } from "../markdown-to-document";
 
 const LONG_LABEL =
@@ -81,9 +81,7 @@ describe("renderMermaidToPng with beautiful-mermaid", () => {
 	it("breaks a 57-character label dense in narrow letters", async () => {
 		const narrow =
 			"implementation — implementation of the agreed pilot scope";
-		expect(narrow.length).toBeGreaterThanOrEqual(
-			ALWAYS_WRAPPED_LABEL_CHARS,
-		);
+		expect(nodeLabelLineOverflows(narrow)).toBe(true);
 
 		await renderMermaidToPng(
 			`flowchart LR\n  a["${narrow}"] --> b["Review"]`,
@@ -92,6 +90,20 @@ describe("renderMermaidToPng with beautiful-mermaid", () => {
 		expect(engine.calls).toHaveLength(1);
 		expect(engine.calls[0]?.source).toContain(
 			"implementation —<br/>implementation of the agreed<br/>pilot scope",
+		);
+	});
+
+	it("breaks a 39-character label too wide for its box and leaves an ordinary one as written", async () => {
+		await renderMermaidToPng(
+			'flowchart LR\n  a["Momentum — minimum-time multi-team flow"] --> b["Discovery workshop with the client team"]',
+		);
+
+		expect(engine.calls).toHaveLength(1);
+		expect(engine.calls[0]?.source).toContain(
+			'a["Momentum —<br/>minimum-time multi-team<br/>flow"]',
+		);
+		expect(engine.calls[0]?.source).toContain(
+			'b["Discovery workshop with the client team"]',
 		);
 	});
 

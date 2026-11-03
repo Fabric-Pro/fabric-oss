@@ -4,6 +4,7 @@ import { useAnalytics } from "@analytics";
 import {
 	AI_CHAT_DOCUMENT_FORMAT_LABELS,
 	buildAiChatAcceptAttribute,
+	buildAiChatAttachedHint,
 } from "@repo/utils/ai-chat-attachment";
 import {
 	Tooltip,
@@ -477,12 +478,14 @@ export function createCopilotSidebarInput(config: CopilotSidebarInputConfig) {
 			// hardcoded primer prompt is injected into the conversation.
 			//
 			// Snapshot the file names BEFORE `clearAttachments()` runs so the
-			// `[Attached: …]` hint can be appended to the message. The hint is
-			// stripped from the visible bubble by `CopilotUserMessage` (which
-			// renders the names as paperclip chips instead) and exists ONLY
-			// so the bubble has *something* visible when the user sends a
-			// file with no typed text, and so the agent has a one-line cue
-			// that files are staged for this turn.
+			// `[Attached: …]` hint (`buildAiChatAttachedHint`) can be appended
+			// to the message. `CopilotUserMessage` strips it from the visible
+			// bubble and renders the names as paperclip chips instead, so a
+			// file sent with no typed text still shows something. The agent
+			// reads it as the cue that files are staged for this turn, and the
+			// Proposal agent uses it to pick which attached files go to the
+			// model in full: the chat's other files reach the model only as a
+			// note naming them.
 			const typedText = text.trim();
 			const stagedCount = hasAttachments ? attachedFiles.length : 0;
 
@@ -551,7 +554,7 @@ export function createCopilotSidebarInput(config: CopilotSidebarInputConfig) {
 
 			let messageText = typedText;
 			if (successfulNames.length > 0) {
-				const hint = `[Attached: ${successfulNames.join(", ")}]`;
+				const hint = buildAiChatAttachedHint(successfulNames);
 				messageText = messageText ? `${messageText}\n\n${hint}` : hint;
 			}
 

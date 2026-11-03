@@ -142,7 +142,11 @@ describe("subscriber list filters (PENDING never sent, never shown to admins)", 
 		const arg = findMany.mock.calls[0][0] as {
 			where: Record<string, unknown>;
 		};
-		expect(arg.where).toEqual({ projectId: "p1", status: "ACTIVE" });
+		expect(arg.where).toEqual({
+			projectId: "p1",
+			status: "ACTIVE",
+			excludedAt: null,
+		});
 	});
 
 	it("admin list: listNewsletterSubscribers excludes PENDING_CONFIRMATION", async () => {
@@ -152,7 +156,7 @@ describe("subscriber list filters (PENDING never sent, never shown to admins)", 
 		};
 		expect(arg.where).toEqual({
 			projectId: "p1",
-			status: { not: "PENDING_CONFIRMATION" },
+			status: { notIn: ["PENDING_CONFIRMATION", "ORG_REMOVED"] },
 		});
 	});
 });

@@ -60,11 +60,16 @@ import {
 } from "./proposal-theme-rules";
 
 export {
+	type OpenerPageBlock,
+	PRINT_FIGURE_MAX_HEIGHT_PROPERTY,
+	PRINT_FIGURE_MAX_HEIGHT_PX,
+	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
 	PROPOSAL_LABEL_ATTRIBUTE,
 	PROPOSAL_PAGE_SIZE,
 	PROPOSAL_PAGE_SIZE_LANDSCAPE,
 	PROPOSAL_PRINT_CLASSES,
 	type ProposalPrintThemeOptions,
+	printFigureUnderOpenerMaxHeightPx,
 } from "./proposal-theme-print";
 export { PROPOSAL_THEME_CLASSES } from "./proposal-theme-rules";
 

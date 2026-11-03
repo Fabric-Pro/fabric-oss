@@ -43,8 +43,8 @@ export function SettingsSidebarLayout({
 		<SidebarContentLayout
 			className="lg:-ml-6"
 			sidebar={
-				<div className="relative h-full overflow-visible">
-					<div className="h-full w-full overflow-hidden">
+				<div className="relative w-full lg:h-full">
+					<div className="w-full overflow-hidden lg:sticky lg:top-0 lg:max-h-dvh">
 						<SettingsMenu
 							menuItems={menuItems}
 							collapsed={isCollapsed}
@@ -52,18 +52,22 @@ export function SettingsSidebarLayout({
 							showBottomToggle={false}
 						/>
 					</div>
-					<SidebarEdgeHandle
-						isExpanded={!isCollapsed}
-						onClick={toggleCollapsed}
-						expandLabel="Expand settings sidebar"
-						collapseLabel="Collapse settings sidebar"
-						className="hidden lg:flex"
-					/>
+					<div className="pointer-events-none absolute inset-y-0 right-0 hidden w-0 lg:block">
+						<div className="pointer-events-auto sticky top-1/2 h-0 w-0">
+							<SidebarEdgeHandle
+								isExpanded={!isCollapsed}
+								onClick={toggleCollapsed}
+								expandLabel="Expand settings sidebar"
+								collapseLabel="Collapse settings sidebar"
+								className="flex"
+							/>
+						</div>
+					</div>
 				</div>
 			}
 			noGap
 			sidebarClassName={cn(
-				"lg:sticky lg:top-0 lg:self-start lg:h-[calc(100vh-88px)] lg:border-r lg:border-border lg:bg-sidebar/60 lg:overflow-visible lg:transition-[width,max-width] lg:duration-200 lg:ease-in-out lg:z-10",
+				"relative lg:h-auto lg:self-stretch lg:min-h-[calc(100dvh-3rem)] lg:border-r lg:border-border lg:bg-sidebar/60 lg:overflow-visible lg:transition-[width,max-width] lg:duration-200 lg:ease-in-out lg:z-10",
 				isCollapsed
 					? "lg:w-[56px] lg:max-w-[56px]"
 					: "lg:w-[224px] lg:max-w-[224px]",

@@ -812,6 +812,7 @@ export async function updateTriggerStats({
 	lastTriggeredAt,
 	success,
 	error,
+	delivery,
 	userId,
 	organizationId,
 }: {
@@ -819,9 +820,17 @@ export async function updateTriggerStats({
 	lastTriggeredAt: string;
 	success: boolean;
 	error?: string;
+	/**
+	 * The result of posting the reply to Slack, when the run posted one. A
+	 * failed post makes the execution FAILED with the post's error. A reply
+	 * skipped on purpose (Read-only project) reports success, so it still
+	 * counts as success.
+	 */
+	delivery?: { success: boolean; error?: string; skipped?: boolean };
 	userId: string;
 	organizationId?: string;
 }): Promise<void> {
+	const deliveryFailed = delivery?.success === false;
 	try {
 		await db.agentDeploymentTrigger.update({
 			where: { id: triggerId },
@@ -842,10 +851,13 @@ export async function updateTriggerStats({
 				executionId: `trigger-${triggerId}-${Date.now()}`,
 				triggerType: trigger?.type ?? "webhook",
 				triggerId,
-				status: success ? "COMPLETED" : "FAILED",
+				status: success && !deliveryFailed ? "COMPLETED" : "FAILED",
 				startedAt: new Date(lastTriggeredAt),
 				completedAt: new Date(),
-				error: error || null,
+				error:
+					error ||
+					(deliveryFailed ? delivery?.error : undefined) ||
+					null,
 				userId,
 				organizationId: organizationId ?? null,
 				deployment: {

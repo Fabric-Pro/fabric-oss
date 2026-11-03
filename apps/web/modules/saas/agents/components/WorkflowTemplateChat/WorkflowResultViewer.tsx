@@ -9,6 +9,7 @@
  * - All sources
  */
 
+import type { AnswerModelInfo } from "@repo/ai/lib/answer-model-info";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -39,9 +40,13 @@ import type {
 } from "../../hooks/useWorkflowTemplateStream";
 import { researchReportMarkdown } from "../../lib/research-report-markdown";
 import { ResearchReportCard } from "../FabricChat/cards/ResearchReportCard";
+import { AnsweredByModel } from "../FabricChat/shared/AnsweredByModel";
 
 interface WorkflowResultViewerProps {
 	result: {
+		model?: AnswerModelInfo;
+		summaryModel?: AnswerModelInfo;
+		reportModel?: AnswerModelInfo;
 		text: string | null;
 		summary: string | null;
 		keyFindings: KeyFinding[];
@@ -232,6 +237,9 @@ export function WorkflowResultViewer({
 					sources: result.sources,
 					iterations: result.iterations,
 					goalAchieved: result.goalAchieved,
+					model: result.reportModel,
+					summaryModel: result.summaryModel,
+					answerModel: result.model,
 					duration: result.duration,
 				},
 			});
@@ -318,6 +326,7 @@ export function WorkflowResultViewer({
 			<ResearchReportCard
 				report={{
 					...result.structuredReport,
+					model: result.reportModel,
 					keyFindings: result.keyFindings,
 					iterations: result.iterations,
 					duration: result.duration,
@@ -417,6 +426,7 @@ export function WorkflowResultViewer({
 						<div className="prose prose-sm dark:prose-invert max-w-none">
 							<ReactMarkdown>{result.summary}</ReactMarkdown>
 						</div>
+						<AnsweredByModel model={result.summaryModel} />
 					</CardContent>
 				</Card>
 			)}
@@ -452,6 +462,7 @@ export function WorkflowResultViewer({
 						<div className="prose prose-sm dark:prose-invert max-w-none">
 							<ReactMarkdown>{result.text}</ReactMarkdown>
 						</div>
+						<AnsweredByModel model={result.model} />
 					</CardContent>
 				</Card>
 			)}

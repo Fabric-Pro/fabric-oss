@@ -10,6 +10,8 @@ const m = vi.hoisted(() => ({
 	documentLoad: vi.fn(),
 }));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useEffectiveOrganizationId: (id?: string | null) =>
+		id === undefined ? "org-example-1" : id,
 	useOrganizationContext: () => ({
 		organizationId: "org-example-1",
 		basePath: "/app/example-org",
@@ -64,6 +66,50 @@ beforeEach(() => {
 });
 
 describe("Data Analyst chat rollout", () => {
+	it.each([false, true])(
+		"uses the authorized route identity with rollout %s",
+		async (enabled) => {
+			m.enabled = enabled;
+			render(
+				<AgentChatCopilotKit
+					agentId="registered-example"
+					organization={{
+						id: "org-route",
+						slug: "route-org",
+						name: "Route organization",
+					}}
+				/>,
+			);
+			if (enabled) {
+				expect(screen.getByTestId("runtime")).toHaveTextContent(
+					"org-route",
+				);
+			} else {
+				expect(await screen.findByTestId("legacy")).toHaveTextContent(
+					"/api/copilotkit?organizationId=org-route",
+				);
+			}
+		},
+	);
+	it("uses authorized organization branding and settings when configuration is missing", () => {
+		m.configured = false;
+		render(
+			<AgentChatCopilotKit
+				agentId="registered-example"
+				organization={{
+					id: "org-route",
+					slug: "route-org",
+					name: "Route organization",
+				}}
+			/>,
+		);
+		expect(
+			screen.getByText(/The organization "Route organization"/),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("link", { name: "Configure AI Provider" }),
+		).toHaveAttribute("href", "/app/route-org/settings/ai-providers");
+	});
 	it("keeps the existing CopilotKit mount when off", async () => {
 		render(<AgentChatCopilotKit agentId="registered-example" />);
 		expect(await screen.findByTestId("legacy")).toHaveTextContent(

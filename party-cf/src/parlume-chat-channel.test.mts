@@ -28,11 +28,14 @@ const UNAVAILABLE =
 function harness(
 	options: {
 		fabric?: (path: string, body: Record<string, unknown>) => Response;
+		storage?: Map<string, unknown>;
+		beforePut?: (entries: Record<string, unknown>) => void;
+		beforeActivity?: () => void;
 	} = {},
 ) {
 	const clock = { now: 1_000_000 };
 	const state = { busy: false, speaks: true };
-	const data = new Map<string, unknown>();
+	const data = options.storage ?? new Map<string, unknown>();
 	const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
 	const spoken: string[] = [];
 	const turns: Array<Record<string, unknown>> = [];
@@ -47,9 +50,18 @@ function harness(
 	) as { ParlumeChatChannel: new (host: unknown) => Channel };
 	const channel = new ParlumeChatChannel({
 		storage: {
-			get: async (key: string) => data.get(key),
-			put: async (key: string, value: unknown) => {
-				data.set(key, value);
+			get: async (key: string) => structuredClone(data.get(key)),
+			put: async (
+				key: string | Record<string, unknown>,
+				value?: unknown,
+			) => {
+				const entries =
+					typeof key === "string" ? { [key]: value } : key;
+				options.beforePut?.(entries);
+				const copied = structuredClone(entries);
+				for (const [name, entry] of Object.entries(copied)) {
+					data.set(name, entry);
+				}
 			},
 		},
 		postToFabric: async (path: string, body: Record<string, unknown>) => {
@@ -76,6 +88,7 @@ function harness(
 			segments.push(plain(message));
 		},
 		noteActivity: async () => {
+			options.beforeActivity?.();
 			activity++;
 		},
 		wakeAt: (at: number) => wakes.push(at),
@@ -85,6 +98,7 @@ function harness(
 	});
 	return {
 		channel,
+		data,
 		clock,
 		state,
 		requests,
@@ -115,6 +129,126 @@ function chatMessage(text: string, overrides: Record<string, unknown> = {}) {
 		...overrides,
 	};
 }
+
+test("Graph commands remain deduplicated beyond 200 messages and a bridge restart", async () => {
+	const meeting = harness();
+	await meeting.channel.send({ message: "Current project status." });
+	const original = chatMessage("say P1", { id: "graph:1700000000000" });
+	await meeting.channel.receive(original);
+	await flush();
+	assert.equal(meeting.spoken.length, 1);
+	for (let index = 1; index <= 201; index++) {
+		await meeting.channel.receive(
+			chatMessage("A participant observation.", {
+				id: `graph:${1700000000000 + index}`,
+			}),
+		);
+	}
+	assert.equal(
+		(await (await meeting.channel.receive(original)).json()).duplicate,
+		true,
+	);
+	assert.equal(meeting.spoken.length, 1);
+	const restarted = harness({ storage: meeting.data });
+	assert.equal(
+		(await (await restarted.channel.receive(original)).json()).duplicate,
+		true,
+	);
+	await flush();
+	assert.equal(restarted.spoken.length, 0);
+});
+
+test("concurrent Graph notification retries claim a command once", async () => {
+	const meeting = harness();
+	const original = chatMessage("Hey Fabric, what changed?", {
+		id: "graph:1700000000000",
+	});
+	await Promise.all([
+		meeting.channel.receive(original),
+		meeting.channel.receive(original),
+	]);
+	await flush();
+	assert.equal(meeting.turns.length, 1);
+});
+
+test("Graph receipt capacity fails closed without evicting old replay protection", async () => {
+	const meeting = harness({
+		storage: new Map([["graphChatMessageCount", 10_000]]),
+	});
+	const response = await meeting.channel.receive(
+		chatMessage("Hey Fabric, what changed?", { id: "graph:1700000000000" }),
+	);
+	assert.equal(response.status, 429);
+	assert.equal(meeting.turns.length, 0);
+});
+
+for (const failedKey of ["graphChatMessageCount", "chat"]) {
+	test(`Graph storage preparation failure at ${failedKey} leaves its command retryable`, async () => {
+		let fail = true;
+		const meeting = harness({
+			beforePut: (entries) => {
+				if (failedKey in entries && fail) {
+					fail = false;
+					throw new Error("injected pre-dispatch storage failure");
+				}
+			},
+		});
+		const message = chatMessage("Hey Fabric, what changed?", {
+			id: "graph:1700000000000",
+		});
+		await assert.rejects(
+			meeting.channel.receive(message),
+			/injected pre-dispatch storage failure/,
+		);
+		assert.equal(meeting.turns.length, 0);
+		assert.equal(
+			meeting.data.has("graphChatMessage:graph:1700000000000"),
+			false,
+		);
+		await meeting.channel.receive(message);
+		await flush();
+		assert.equal(meeting.turns.length, 1);
+	});
+}
+
+test("Graph activity preparation failure leaves no receipt before dispatch", async () => {
+	let fail = true;
+	const meeting = harness({
+		beforeActivity: () => {
+			if (fail) {
+				fail = false;
+				throw new Error("injected activity failure");
+			}
+		},
+	});
+	const message = chatMessage("Hey Fabric, what changed?", {
+		id: "graph:1700000000000",
+	});
+	await assert.rejects(
+		meeting.channel.receive(message),
+		/injected activity failure/,
+	);
+	await meeting.channel.receive(message);
+	await flush();
+	assert.equal(meeting.turns.length, 1);
+});
+
+test("Graph participant questions use proven post ownership rather than a provider bot display name", async () => {
+	const meeting = harness();
+	await meeting.channel.receive(
+		chatMessage("Hey Fabric, what changed?", {
+			id: "graph:1700000000000",
+			senderName: "Fabric Parlume",
+		}),
+	);
+	await meeting.channel.receive(
+		chatMessage("Hey Fabric, what changed?", {
+			senderName: "Fabric Parlume",
+		}),
+	);
+	await flush();
+	assert.equal(meeting.turns.length, 1);
+});
 
 test("a post is tagged, sent through Fabric and reported only as queued", async () => {
 	const meeting = harness();

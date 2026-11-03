@@ -2,7 +2,10 @@
 
 import { useAnalytics } from "@analytics";
 import { hasExtractionLifecycle } from "@repo/api/modules/projects/lib/extraction-lifecycle";
-import { pmDetectedTypeDisplayName } from "@repo/utils";
+import {
+	pmDetectedTypeDisplayName,
+	UPLOADED_TRANSCRIPT_PROVIDER,
+} from "@repo/utils";
 // The classification the download procedure signs by, so the menu never offers
 // "extracted text" for a row the server returns as the original file.
 import { classifyContext } from "@repo/utils/context-download-class";
@@ -13,6 +16,7 @@ import {
 	useCapabilityGates,
 } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { useProjectContextCountSync } from "@saas/projects/hooks/use-project-context-count-sync";
+import { transcriptProvenanceLabel } from "@saas/projects/lib/transcript-provenance";
 import { ConfluenceIcon } from "@saas/workflows/lib/plugins/confluence/icon";
 import { MicrosoftTeamsIcon } from "@saas/workflows/lib/plugins/microsoft-teams/icon";
 import { TruncatedText } from "@shared/components/TruncatedText";
@@ -184,6 +188,13 @@ type RowContext = {
 	metadataUpdatedAt?: Date | string | null;
 	metadataUpdatedByUserId?: string | null;
 };
+
+function isUploadedTranscript(context: { metadata?: unknown }): boolean {
+	return (
+		(context.metadata as { provider?: string } | null)?.provider ===
+		UPLOADED_TRANSCRIPT_PROVIDER
+	);
+}
 
 function isContextDownloadable(ctx: RowContext): boolean {
 	const cls = classifyContext(ctx);
@@ -2725,13 +2736,21 @@ export function ProjectContextsList({ projectId }: Props) {
 											).length,
 										0,
 									);
+								const uploadedTranscripts =
+									transcriptGroups.reduce(
+										(sum, g) =>
+											sum +
+											g.transcripts.filter(
+												isUploadedTranscript,
+											).length,
+										0,
+									);
 								const provenanceLabel =
-									importedTranscripts === 0
-										? "Synced from Microsoft Teams"
-										: importedTranscripts ===
-												totalTranscripts
-											? "Added from a personal calendar"
-											: `Synced from Microsoft Teams · ${importedTranscripts} added from a personal calendar`;
+									transcriptProvenanceLabel({
+										total: totalTranscripts,
+										imported: importedTranscripts,
+										uploaded: uploadedTranscripts,
+									});
 								const isMeetingsExpanded =
 									expandedGroups.has("meetings-top");
 								const meetingsStuck = stalledCountIn(
@@ -2863,6 +2882,15 @@ export function ProjectContextsList({ projectId }: Props) {
 																					? "s"
 																					: ""}
 																			</span>
+																			{group.transcripts.some(
+																				isUploadedTranscript,
+																			) && (
+																				<span>
+																					·
+																					Uploaded
+																					file
+																				</span>
+																			)}
 																			{latestDate && (
 																				<span>
 																					·{" "}

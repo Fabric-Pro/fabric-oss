@@ -187,7 +187,16 @@ const table = vi.hoisted(() => {
 		}),
 	};
 
-	const models = { projectContext, auditLog, user } as const;
+	const projectLinkedMeeting = {
+		deleteMany: vi.fn(async () => ({ count: 0 })),
+	};
+
+	const models = {
+		projectContext,
+		projectLinkedMeeting,
+		auditLog,
+		user,
+	} as const;
 
 	/** A client whose every model method works on `store`. */
 	function clientOn(store: Store) {

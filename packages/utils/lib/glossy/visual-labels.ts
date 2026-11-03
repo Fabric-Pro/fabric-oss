@@ -183,7 +183,9 @@ export function escapeMermaidLabel(text: string): string {
  *   node; `"roles"` writes `class <id> surface` instead, so the fence holds
  *   no colour and the renderer paints the role from the theme at draw time.
  * - `layout`: `"proposal"` keeps labels short enough to read at page width
- *   (see `proposalNodeLabel`) and always draws a timeline top-down.
+ *   (see `proposalNodeLabel`), starts a label written all in lower case
+ *   with a capital (`proposalLabelCase`) and always draws a timeline
+ *   top-down.
  * - `wrapTitle`: with the `"proposal"` layout, `false` writes a node's title
  *   as one label line instead of wrapping it, for a fence a figure template
  *   draws (see `proposalVisualTemplateOptions`). Glossy never reads it.
@@ -202,8 +204,26 @@ export const PROPOSAL_VISUAL_TEMPLATE_OPTIONS = {
 /** The longest line a Proposal diagram node shows, in characters. */
 export const PROPOSAL_VISUAL_LINE_MAX_CHARS = 28;
 
-/** How many lines a Proposal diagram node's title wraps to at most. */
+/**
+ * How many full lines a Proposal diagram node's title holds before it is
+ * cut. Wrapped at words in a fence that stays Mermaid, a title within that
+ * can take one more line (`proposalNodeLabel`).
+ */
 export const PROPOSAL_VISUAL_TITLE_MAX_LINES = 2;
+
+/**
+ * The longest title the extraction asks a Proposal node for (Fizzy #2946).
+ * A longer title is still drawn whole, up to the cap below, but without its
+ * details, so the node does not grow by both.
+ */
+const PROPOSAL_VISUAL_TITLE_BUDGET_CHARS = 32;
+
+/**
+ * The longest title a Proposal node draws whole: two label lines. Only a
+ * title past it is cut, at a word with an ellipsis, as a last resort.
+ */
+const PROPOSAL_VISUAL_TITLE_CAP_CHARS =
+	PROPOSAL_VISUAL_LINE_MAX_CHARS * PROPOSAL_VISUAL_TITLE_MAX_LINES;
 
 /**
  * A line break inside a quoted node label, which beautiful-mermaid and
@@ -291,7 +311,7 @@ function normaliseForComparison(text: string): string {
  * words once case, punctuation and spacing are ignored. Models often put the
  * source bullet in the detail and a shortened copy of it in the title.
  */
-export function detailRepeatsTitle(title: string, detail: string): boolean {
+function detailRepeatsTitle(title: string, detail: string): boolean {
 	// Padded so only whole words match: "plan" is not found in "planning".
 	const normalTitle = ` ${normaliseForComparison(title)} `;
 	const normalDetail = ` ${normaliseForComparison(detail)} `;
@@ -304,18 +324,85 @@ export function detailRepeatsTitle(title: string, detail: string): boolean {
 }
 
 /**
- * A Proposal node's label lines (Fizzy #2946), each at most
- * `PROPOSAL_VISUAL_LINE_MAX_CHARS`: a timeline's date on its own line, the
- * title wrapped at words to at most two lines, then at most one detail line.
- * A detail that repeats the title is left out. A longer detail is cut at a
- * word with an ellipsis rather than dropped, so what it adds still shows;
- * the extraction asks for one that needs no cut. Every line shown is a
- * prefix of the text that was checked.
+ * A label as a Proposal draws it (Fizzy #2946): one written all in lower
+ * case ("living memory") starts with a capital letter. A label with any
+ * capital in it keeps its casing, so a name such as "iOS" or "eBay" is
+ * never changed, and so does one that does not start with a letter
+ * ("3 pilot teams"). Applied before a label is wrapped or cut, so only its
+ * first character can change; the fact check reads case-insensitively, so
+ * the drawn label is still the one it checked.
+ */
+export function proposalLabelCase(text: string): string {
+	return /\p{Lu}/u.test(text)
+		? text
+		: text.replace(/^\p{Ll}/u, (letter) => letter.toUpperCase());
+}
+
+/**
+ * A title as a Proposal draws it (Fizzy #2946): in `proposalLabelCase`,
+ * whitespace collapsed, and whole up to the two-line cap. Only a title past
+ * the cap is cut, at a word with an ellipsis, as a last resort; the
+ * extraction asks for one well within it. Also used for a date, a layer's
+ * name and a component, which stand as titles of their own.
+ */
+export function proposalTitleText(title: string): string {
+	const shown = proposalLabelCase(title.replace(/\s+/g, " ").trim());
+	return Array.from(shown).length <= PROPOSAL_VISUAL_TITLE_CAP_CHARS
+		? shown
+		: cutLabelAtWord(shown, PROPOSAL_VISUAL_TITLE_CAP_CHARS);
+}
+
+/**
+ * The details a Proposal node draws under `title` (Fizzy #2946), each one
+ * line in `proposalLabelCase`. A detail is never cut: one longer than
+ * `PROPOSAL_VISUAL_LINE_MAX_CHARS` is left out whole, and so is one that
+ * repeats the title. A title longer than the extraction asks for keeps no
+ * details, so it can be drawn whole instead.
+ */
+export function proposalDetailLines(
+	title: string,
+	details: ReadonlyArray<string | undefined>,
+): string[] {
+	if (Array.from(title.trim()).length > PROPOSAL_VISUAL_TITLE_BUDGET_CHARS) {
+		return [];
+	}
+	return proposalKeptDetailLines(title, details);
+}
+
+/**
+ * Details a Proposal node keeps under `title` whatever the title's length
+ * (Fizzy #2946), such as a team member's name, which the card is there to
+ * show: each one line in `proposalLabelCase`, left out whole only when it
+ * is longer than `PROPOSAL_VISUAL_LINE_MAX_CHARS` or repeats the title.
+ */
+export function proposalKeptDetailLines(
+	title: string,
+	details: ReadonlyArray<string | undefined>,
+): string[] {
+	return details.flatMap((detail) => {
+		if (!detail?.trim() || detailRepeatsTitle(title, detail)) {
+			return [];
+		}
+		const shown = proposalLabelCase(detail.replace(/\s+/g, " ").trim());
+		return Array.from(shown).length <= PROPOSAL_VISUAL_LINE_MAX_CHARS
+			? [shown]
+			: [];
+	});
+}
+
+/**
+ * A Proposal node's label lines (Fizzy #2946): a timeline's date on its own
+ * line, the title (`proposalTitleText`), then at most one detail line
+ * (`proposalDetailLines`). No detail is cut: one that does not fit one line
+ * is left out whole, and only a title past the two-line cap is cut, at a
+ * word. Every line shown is the text that was checked, or a prefix of it.
  *
- * Without `wrapTitle` the title is one line cut at the same two-line budget:
- * a figure template reads only the first line after the date as the title
- * and wraps it to its own width, so a second title line would draw as
- * detail.
+ * With `wrapTitle` the title is wrapped at words into lines of
+ * `PROPOSAL_VISUAL_LINE_MAX_CHARS`, for a fence that stays Mermaid; a title
+ * within the cap can need a third line when its words break unevenly.
+ * Without it the title is one line: a figure template reads only the first
+ * line after the date as the title and wraps it to its own width, so a
+ * second title line would draw as detail.
  */
 export function proposalNodeLabel(
 	title: string,
@@ -324,19 +411,20 @@ export function proposalNodeLabel(
 	date?: string,
 ): string {
 	const width = PROPOSAL_VISUAL_LINE_MAX_CHARS;
-	const lines = date ? [cutLabelAtWord(date, width)] : [];
+	const lines = date ? [proposalTitleText(date)] : [];
+	const shownTitle = proposalTitleText(title);
 	if (wrapTitle) {
 		lines.push(
-			...wrapLabelAtWords(title, width, PROPOSAL_VISUAL_TITLE_MAX_LINES),
+			...wrapLabelAtWords(
+				shownTitle,
+				width,
+				PROPOSAL_VISUAL_TITLE_MAX_LINES + 1,
+			),
 		);
 	} else {
-		lines.push(
-			cutLabelAtWord(title, width * PROPOSAL_VISUAL_TITLE_MAX_LINES),
-		);
+		lines.push(shownTitle);
 	}
-	if (detail?.trim() && !detailRepeatsTitle(title, detail)) {
-		lines.push(cutLabelAtWord(detail, width));
-	}
+	lines.push(...proposalDetailLines(title, [detail]));
 	return multilineLabel(lines);
 }
 

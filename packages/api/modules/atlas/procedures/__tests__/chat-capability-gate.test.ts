@@ -127,6 +127,7 @@ beforeEach(() => {
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.gatherCapabilityEvidence.mockResolvedValue(healthyEvidence());
 	mocks.chat.mockResolvedValue({
+		getAnswerModel: () => undefined,
 		textStream: (async function* () {
 			yield "answer";
 		})(),

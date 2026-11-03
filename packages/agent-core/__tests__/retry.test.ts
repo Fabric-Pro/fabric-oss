@@ -2,6 +2,7 @@ import { ContextOverflowError, stampRetryable } from "@langchain/core/errors";
 import { describe, expect, it } from "vitest";
 import {
 	calculateRetryDelay,
+	errorLogFields,
 	isContextOverflowError,
 	isJsonParseError,
 	isRetryableError,
@@ -542,5 +543,49 @@ describe("sleep", () => {
 		const start = Date.now();
 		await sleep(20);
 		expect(Date.now() - start).toBeGreaterThanOrEqual(15);
+	});
+});
+
+describe("errorLogFields", () => {
+	const PROMPT_TEXT = "You revise a client proposal for Example Org.";
+
+	it("keeps the class, code and status of a provider error, not its text", () => {
+		const error = Object.assign(new TypeError(`Rejected: ${PROMPT_TEXT}`), {
+			status: 400,
+			code: "invalid_request_error",
+		});
+
+		const fields = errorLogFields(error);
+
+		expect(fields).toEqual({
+			errorType: "TypeError",
+			errorCode: "invalid_request_error",
+			httpStatus: 400,
+		});
+		expect(JSON.stringify(fields)).not.toContain(PROMPT_TEXT);
+	});
+
+	it("reads the status from the response an SDK error carries", () => {
+		const error = Object.assign(new Error(PROMPT_TEXT), {
+			response: { status: 429, statusText: "Too Many Requests" },
+		});
+
+		expect(errorLogFields(error)).toEqual({
+			errorType: "Error",
+			httpStatus: 429,
+		});
+	});
+
+	it("keeps a numeric code, as a Node system error can carry one", () => {
+		expect(errorLogFields({ code: 503, message: PROMPT_TEXT })).toEqual({
+			errorType: "object",
+			errorCode: 503,
+		});
+	});
+
+	it("returns only the class for a bare string throw", () => {
+		expect(errorLogFields(`Rejected: ${PROMPT_TEXT}`)).toEqual({
+			errorType: "string",
+		});
 	});
 });

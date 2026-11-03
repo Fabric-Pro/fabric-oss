@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
 	findFirst: vi.fn(),
 	settings: vi.fn(),
 	send: vi.fn(),
+	channelSend: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -13,6 +14,9 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
 	sendParlumeMeetingChat: (...args: unknown[]) => mocks.send(...args),
+}));
+vi.mock("@repo/api/modules/projects/lib/parlume-channel-chat", () => ({
+	sendParlumeChannelPost: mocks.channelSend,
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-provider-settings", () => ({
@@ -63,6 +67,76 @@ beforeEach(() => {
 });
 
 describe("Parlume meeting chat fallback", () => {
+	it("routes only a verified ready channel binding through Graph", async () => {
+		mocks.findFirst.mockResolvedValue({
+			id: "session-1",
+			providerBotId: "bot-1",
+			organizationId: "org-1",
+			channelChatStatus: "READY",
+		});
+		const response = await POST(
+			request({ ...message, message: "[P1] Answer" }),
+		);
+		expect(await response.json()).toEqual({
+			sent: true,
+			delivery: "observed",
+		});
+		expect(mocks.channelSend).toHaveBeenCalledWith(
+			"session-1",
+			"[P1] Answer",
+		);
+		expect(mocks.send).not.toHaveBeenCalled();
+	});
+	it.each(["ATTENDEE", "UNRESOLVED"])(
+		"keeps ordinary/resolution-unknown short-link chat on the queued-only Attendee path (%s)",
+		async (channelChatStatus) => {
+			mocks.findFirst.mockResolvedValue({
+				id: "session-1",
+				providerBotId: "bot-1",
+				organizationId: "org-1",
+				channelChatStatus,
+			});
+			const response = await POST(request(message));
+			expect(await response.json()).toEqual({
+				sent: true,
+				delivery: "queued",
+			});
+			expect(mocks.send).toHaveBeenCalled();
+			expect(mocks.channelSend).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["PENDING", "UNAVAILABLE", "STOPPED"])(
+		"never falls back from known channel state %s to provider queue acceptance",
+		async (channelChatStatus) => {
+			mocks.findFirst.mockResolvedValue({
+				id: "session-1",
+				providerBotId: "bot-1",
+				organizationId: "org-1",
+				channelChatStatus,
+				channelChatError: "Channel thread unavailable",
+			});
+			const response = await POST(request(message));
+			expect(response.status).toBe(409);
+			expect(mocks.send).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["UNRESOLVED", "PENDING", "ATTENDEE"])(
+		"refuses provider fallback during a verified channel binding transition (%s)",
+		async (channelChatStatus) => {
+			mocks.findFirst.mockResolvedValue({
+				id: "session-1",
+				providerBotId: "bot-1",
+				organizationId: "org-1",
+				channelChatStatus,
+				channelId: "19:example@thread.tacv2",
+				channelRootMessageId: "1700000000000",
+			});
+			const response = await POST(request(message));
+			expect(response.status).toBe(409);
+			expect(mocks.send).not.toHaveBeenCalled();
+			expect(mocks.channelSend).not.toHaveBeenCalled();
+		},
+	);
 	it("rejects a caller without the service token", async () => {
 		const response = await POST(request(message, "wrong"));
 

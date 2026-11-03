@@ -8,6 +8,32 @@ import {
 } from "../data-analyst-runtime-events";
 
 describe("Data Analyst client event reduction", () => {
+	it("accepts only the producer's explicit served model and clears a failed invocation", () => {
+		const translator = new DataAnalystEventTranslator();
+		const translate = (snapshot: unknown) =>
+			translator.translate({ type: EventType.STATE_SNAPSHOT, snapshot });
+		const model = {
+			id: "example-served",
+			viaPlan: false,
+			provider: "OPENAI_DIRECT",
+		};
+		expect(
+			translate({
+				ai_model: "example-configured",
+				answerModel: { id: "example-invalid" },
+			}),
+		).toEqual([]);
+		const turn = translate({ answerModel: model }).reduce(
+			applyDataAnalystEvent,
+			EMPTY_DATA_ANALYST_TURN,
+		);
+		expect(turn.model).toEqual(model);
+		expect(
+			translate({ answerModel: null }).reduce(applyDataAnalystEvent, turn)
+				.model,
+		).toBeUndefined();
+		expect(EMPTY_DATA_ANALYST_TURN.model).toBeUndefined();
+	});
 	it("shows a returned tool failure as an error rather than a successful completion", () => {
 		const running = applyDataAnalystEvent(EMPTY_DATA_ANALYST_TURN, {
 			type: EventType.TOOL_CALL_START,

@@ -33,7 +33,10 @@ import {
 	withExportBrowser,
 } from "../../lib/proposal-export/browser";
 import { buildProposalDocx } from "../../lib/proposal-export/build-docx";
-import { buildThemeHtml } from "../../lib/proposal-export/build-theme-html";
+import {
+	buildThemeHtml,
+	printFigureMaxHeight,
+} from "../../lib/proposal-export/build-theme-html";
 import {
 	createExportImageBudget,
 	extractDocumentImages,
@@ -179,6 +182,11 @@ export async function exportProposalDocumentActivity(
 				const diagrams = await renderExportDiagrams({
 					sources: prepared.diagramSources,
 					captions: exportDiagramCaptions(prepared),
+					// The Word writer gives every picture a figure's height.
+					figureMaxHeight:
+						input.format === "pdf"
+							? printFigureMaxHeight(prepared, shared)
+							: undefined,
 					paint,
 					browser,
 					withPng: input.format === "docx",

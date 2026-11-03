@@ -36,11 +36,18 @@ const m = vi.hoisted(() => ({
 	showAiUsageLimitToast: vi.fn(),
 }));
 
+vi.mock("@saas/agents/components/FabricChat/shared/AnsweredByModel", () => ({
+	AnsweredByModel: ({ model }: { model?: { id: string } }) =>
+		model ? <span>Answered by {model.id}</span> : null,
+}));
+
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	useFeatureFlag: (key: string) =>
 		key === "COPILOTKIT_SIDEKICK_CHAT" && m.flagOn,
 }));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useEffectiveOrganizationId: (id?: string | null) =>
+		id === undefined ? m.organizationOnScreen : id,
 	useOrganizationContext: () => ({ organizationId: m.organizationOnScreen }),
 }));
 vi.mock("../SidekickFormContext", () => ({
@@ -245,6 +252,75 @@ async function settled() {
 }
 
 describe("AgentBuilderSidekick transport", () => {
+	it.each([false, true])(
+		"renders explicit served identity on either transport (runtime: %s)",
+		async (flagOn) => {
+			m.flagOn = flagOn;
+			const model = { id: "example-served", viaPlan: false };
+			const nextModel = { id: "example-second-served", viaPlan: true };
+			respond = (request) =>
+				flagOn
+					? runtimeReply(request, [
+							...textEvents("run:s0:m0", "Checking"),
+							{
+								type: EventType.CUSTOM,
+								name: "fabric.agent-builder-sidekick.model",
+								value: { messageIds: ["run:s0:m0"], model },
+							},
+							...textEvents("run:s1:m1", "Answer"),
+							{
+								type: EventType.CUSTOM,
+								name: "fabric.agent-builder-sidekick.model",
+								value: {
+									messageIds: ["run:s1:m1"],
+									model: nextModel,
+								},
+							},
+							{
+								type: EventType.TEXT_MESSAGE_START,
+								messageId: "run:s2:m2",
+								role: "assistant",
+							},
+							{
+								type: EventType.TEXT_MESSAGE_END,
+								messageId: "run:s2:m2",
+							},
+							{
+								type: EventType.CUSTOM,
+								name: "fabric.agent-builder-sidekick.model",
+								value: {
+									messageIds: ["run:s2:m2"],
+									model: {
+										id: "example-tool-only",
+										viaPlan: false,
+									},
+								},
+							},
+						])
+					: routeReply([
+							...TEXT_CHUNKS.slice(0, -1),
+							{
+								type: "message-metadata",
+								messageMetadata: {
+									model: nextModel,
+									models: [model, nextModel],
+								},
+							},
+							{ type: "finish" },
+						]);
+			await mountAndOpen();
+			await settled();
+			expect(
+				await screen.findByText("Answered by example-served"),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText("Answered by example-second-served"),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText("Answered by example-tool-only"),
+			).toBeNull();
+		},
+	);
 	it.each([false, true])(
 		"hides assistant control markup without changing the raw follow-up history (runtime: %s)",
 		async (flagOn) => {

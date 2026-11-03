@@ -19,6 +19,8 @@ import {
 	violationCode,
 } from "@repo/utils/glossy/fact-guard";
 import {
+	balancedProposalComparison,
+	isProposalTimelinePeriod,
 	type ProposalOnlyVisualKind,
 	type ProposalVisualSpec,
 	proposalVisualSpecSchema,
@@ -27,6 +29,8 @@ import {
 	visualSpecFacts,
 	visualSpecSchema,
 } from "@repo/utils/glossy/visual-spec";
+import { proposalLabelCase } from "@repo/utils/glossy/visual-templates";
+import { scrubCitationText } from "@repo/utils/proposal-artifact/export-scrub";
 import { diagramFences } from "@repo/utils/proposal-artifact/visual-identity";
 import { z } from "zod";
 import {
@@ -62,6 +66,19 @@ import {
  * only its figure templates draw: their schemas, prompt rules and the strict
  * `proposalVisualSpecSchema` are used for a Proposal only, so a Glossy call
  * still validates with `visualSpecSchema` and never returns either kind.
+ *
+ * A Proposal also holds its timeline and comparison to what its figures and
+ * tables show (Fizzy #2946), after the kind check and before the fact
+ * check: a new timeline whose every date is not a short period
+ * (`isProposalTimelinePeriod`; an edit keeps an existing timeline's dates)
+ * and a comparison whose columns are badly
+ * uneven (`balancedProposalComparison`) are dropped as `invalidSpec`, so
+ * the section keeps its prose; a kept comparison loses the points no other
+ * column has a row for. Its visuals step, outside an edit, also asks for a
+ * `caption` beside the spec: the extracted result carries the spec's title,
+ * else that caption once it is cleaned and passes the fact check on its
+ * own; a caption that does not is left out and the visual kept. An edit
+ * asks for none: the editor keeps the fence's own caption.
  *
  * The model-facing schema below is deliberately lenient — no bounds, every
  * optional field nullable — and built with this package's zod: bounds are
@@ -242,41 +259,128 @@ const PROPOSAL_OUTPUT_SPEC_SCHEMAS = {
 	})(),
 } satisfies Record<ProposalOnlyVisualKind, z.ZodType>;
 
+/**
+ * A Proposal's timeline, its date described as `date` says. The same shape
+ * as Glossy's, so the parameter counts match.
+ */
+function proposalTimelineSchema(date: string) {
+	return z.object({
+		kind: z.enum(["timeline"]),
+		title: nullableText("Optional title from the section's wording."),
+		items: z
+			.array(
+				z.object({
+					date: z.string().describe(date),
+					label: z.string().describe("What happens."),
+					description: nullableText("Optional detail."),
+				}),
+			)
+			.describe("2–8 entries in chronological order."),
+	});
+}
+
+/**
+ * A Proposal's timeline and comparison, described as its rules ask
+ * (Fizzy #2946): a date is a short period and points are parallel
+ * attributes. The same shape as Glossy's, so the parameter counts match.
+ */
+const PROPOSAL_DESCRIBED_SPEC_SCHEMAS = {
+	timeline: proposalTimelineSchema(
+		"A short date or period as the section gives it, such as Week 1 or Q3 2026; never a phase name or a step.",
+	),
+	comparison: z.object({
+		kind: z.enum(["comparison"]),
+		title: nullableText("Optional title from the section's wording."),
+		items: z
+			.array(
+				z.object({
+					title: z.string().describe("The option's name."),
+					points: z
+						.array(z.string())
+						.describe(
+							"2–6 short parallel attributes: the same aspects, in the same order, for every option.",
+						),
+				}),
+			)
+			.describe("2–4 options."),
+	}),
+};
+
 const ALL_OUTPUT_SPEC_SCHEMAS = {
 	...OUTPUT_SPEC_SCHEMAS,
 	...PROPOSAL_OUTPUT_SPEC_SCHEMAS,
 };
 
-/** Structured-output providers want an object at the root, so the spec is a property. */
+const PROPOSAL_ALL_OUTPUT_SPEC_SCHEMAS = {
+	...ALL_OUTPUT_SPEC_SCHEMAS,
+	...PROPOSAL_DESCRIBED_SPEC_SCHEMAS,
+};
+
+/**
+ * A Proposal's schemas for an edit, which redraws a diagram that already
+ * exists: a timeline keeps each entry's date as the current diagram writes
+ * it, as the edit's instructions ask, since one drawn before the period
+ * rule must stay editable (`proposalShaped` does not hold an edit to it).
+ */
+const PROPOSAL_EDIT_OUTPUT_SPEC_SCHEMAS = {
+	...PROPOSAL_ALL_OUTPUT_SPEC_SCHEMAS,
+	timeline: proposalTimelineSchema(
+		"The entry's date or period as the current diagram writes it, when it is a timeline, else as the section gives it; never one the section does not state.",
+	),
+};
+
+/**
+ * The figure's caption, which a Proposal's visuals step asks for beside the
+ * spec. Required and never null, so it adds no union-typed parameter.
+ */
+const CAPTION_OUTPUT_SCHEMA = z
+	.string()
+	.describe(
+		"A caption for the figure: what it shows, in a short phrase of at most 60 characters built from the section's own words like every label, in sentence case, without a full stop, citation markers, links, or markdown.",
+	);
+
+/**
+ * Structured-output providers want an object at the root, so the spec is a
+ * property; a Proposal's visuals step, outside an edit, also asks for a
+ * caption beside it.
+ */
 function outputSchemaFor(
 	kind: ProposalExtractableKind,
 	editing: boolean,
-): z.ZodType<{ spec: unknown }> {
+	proposalArtifact: boolean,
+): z.ZodType<{ spec: unknown; caption?: string }> {
+	const schemas = proposalArtifact
+		? editing
+			? PROPOSAL_EDIT_OUTPUT_SPEC_SCHEMAS
+			: PROPOSAL_ALL_OUTPUT_SPEC_SCHEMAS
+		: ALL_OUTPUT_SPEC_SCHEMAS;
 	if (kind === "auto" && editing) {
 		return z.object({
 			spec: z
 				.union(
-					GLOSSY_EDIT_AUTO_KINDS.map(
-						(editable) => ALL_OUTPUT_SPEC_SCHEMAS[editable],
-					),
+					GLOSSY_EDIT_AUTO_KINDS.map((editable) => schemas[editable]),
 				)
 				.describe("The spec, of the kind the current diagram shows."),
 		});
 	}
-	if (kind === "auto") {
-		return z.object({
-			spec: z
-				.union([
-					OUTPUT_SPEC_SCHEMAS.timeline,
-					OUTPUT_SPEC_SCHEMAS.comparison,
-					OUTPUT_SPEC_SCHEMAS.stat,
-					OUTPUT_SPEC_SCHEMAS.flow,
-					OUTPUT_SPEC_SCHEMAS.org_chart,
-				])
-				.describe("The spec, of the kind that fits the section best."),
-		});
+	const spec =
+		kind === "auto"
+			? z
+					.union([
+						schemas.timeline,
+						schemas.comparison,
+						schemas.stat,
+						schemas.flow,
+						schemas.org_chart,
+					])
+					.describe(
+						"The spec, of the kind that fits the section best.",
+					)
+			: schemas[kind];
+	if (proposalArtifact && !editing) {
+		return z.object({ spec, caption: CAPTION_OUTPUT_SCHEMA });
 	}
-	return z.object({ spec: ALL_OUTPUT_SPEC_SCHEMAS[kind] });
+	return z.object({ spec });
 }
 
 export interface ExtractGlossyVisualInput extends GlossyModelContext {
@@ -333,7 +437,16 @@ export type GlossyExtractionDropReason =
 export type GlossyExtractionResult<
 	Spec extends ProposalExtractedVisualSpec = GlossyExtractedVisualSpec,
 > =
-	| { status: "extracted"; spec: Spec }
+	| {
+			status: "extracted";
+			spec: Spec;
+			/**
+			 * A Proposal's visuals step only: the figure's caption, plain text
+			 * without a full stop. Absent when neither the title nor the
+			 * returned caption makes one.
+			 */
+			caption?: string;
+	  }
 	| {
 			status: "dropped";
 			reason: GlossyExtractionDropReason;
@@ -546,17 +659,22 @@ export async function extractGlossyVisual(
 		promptChars: instructions.length + prompt.length,
 	});
 
+	const proposalArtifact = input.proposalArtifact === true;
 	let raw: unknown;
+	let rawCaption: unknown;
 	try {
 		const { object } = await generateObject({
 			model,
-			schema: zodSchema(outputSchemaFor(input.kind, editing)),
+			schema: zodSchema(
+				outputSchemaFor(input.kind, editing, proposalArtifact),
+			),
 			instructions,
 			prompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 			...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
 		});
 		raw = object.spec;
+		rawCaption = object.caption;
 	} catch (error) {
 		if (NoObjectGeneratedError.isInstance(error)) {
 			const reason =
@@ -575,9 +693,7 @@ export async function extractGlossyVisual(
 
 	// Only a Proposal admits its own kinds; Glossy's validator refuses them.
 	const parsed = (
-		input.proposalArtifact === true
-			? proposalVisualSpecSchema
-			: visualSpecSchema
+		proposalArtifact ? proposalVisualSpecSchema : visualSpecSchema
 	).safeParse(toSpecCandidate(raw));
 	if (!parsed.success) {
 		console.warn(`${EXTRACTION_LOG} Visual dropped`, {
@@ -588,15 +704,30 @@ export async function extractGlossyVisual(
 		});
 		return dropped("invalidSpec");
 	}
-	const spec = parsed.data;
-	if (!isExtractedKind(spec, input.kind, editing)) {
+	const extracted = parsed.data;
+	if (!isExtractedKind(extracted, input.kind, editing)) {
 		console.warn(`${EXTRACTION_LOG} Visual dropped`, {
 			reason: "kindMismatch",
 			kind: input.kind,
-			returnedKind: spec.kind,
+			returnedKind: extracted.kind,
 			projectId: input.projectId,
 		});
 		return dropped("kindMismatch");
+	}
+	const spec = proposalArtifact
+		? proposalShaped(extracted, editing)
+		: extracted;
+	if (spec === null) {
+		console.warn(`${EXTRACTION_LOG} Visual dropped`, {
+			reason: "invalidSpec",
+			cause:
+				extracted.kind === "timeline"
+					? "timelineDates"
+					: "comparisonColumns",
+			kind: extracted.kind,
+			projectId: input.projectId,
+		});
+		return dropped("invalidSpec");
 	}
 
 	const facts = checkVisualFacts(
@@ -613,5 +744,100 @@ export async function extractGlossyVisual(
 		});
 		return dropped("factCheck", facts.violations);
 	}
-	return { status: "extracted", spec };
+	const caption =
+		proposalArtifact && !editing
+			? proposalCaption(spec, rawCaption, section)
+			: null;
+	return caption === null
+		? { status: "extracted", spec }
+		: { status: "extracted", spec, caption };
+}
+
+/**
+ * A Proposal's spec held to what its figures and tables show (Fizzy #2946),
+ * or null to drop it: a new timeline needs a short period in every date,
+ * and a comparison needs columns even enough to read as one table, trimmed
+ * so no row is filled in one column only. An edit redraws a timeline that
+ * already exists, so it keeps its dates as they are: a document generated
+ * before the rule must stay editable. Every other kind passes unchanged.
+ */
+function proposalShaped(
+	spec: ProposalExtractedVisualSpec,
+	editing: boolean,
+): ProposalExtractedVisualSpec | null {
+	if (spec.kind === "timeline" && !editing) {
+		return spec.items.every((item) => isProposalTimelinePeriod(item.date))
+			? spec
+			: null;
+	}
+	if (spec.kind === "comparison") {
+		return balancedProposalComparison(spec);
+	}
+	return spec;
+}
+
+/** The longest caption kept; the extraction asks for 60 characters. */
+const PROPOSAL_CAPTION_MAX_CHARS = 80;
+
+/**
+ * Markup a caption must not hold: code, emphasis, link brackets, tags,
+ * escapes and URLs. Both readers show a caption as plain text, so any of
+ * them would print as typed.
+ */
+const CAPTION_MARKUP = /[`*_[\]<>\\]|:\/\//u;
+
+/**
+ * A figure caption as a Proposal stores it, or null: citation markers
+ * removed, whitespace collapsed, a trailing full stop dropped as the
+ * figure captions are written, and an all-lower-case caption started with
+ * a capital. One that still holds markup, or runs past
+ * `PROPOSAL_CAPTION_MAX_CHARS`, is not a caption.
+ */
+function cleanProposalCaption(value: unknown): string | null {
+	if (typeof value !== "string") {
+		return null;
+	}
+	const text = scrubCitationText(value)
+		.text.replace(/\s+/gu, " ")
+		.trim()
+		.replace(/[\s.;:,]+$/u, "");
+	if (
+		text === "" ||
+		CAPTION_MARKUP.test(text) ||
+		Array.from(text).length > PROPOSAL_CAPTION_MAX_CHARS
+	) {
+		return null;
+	}
+	return proposalLabelCase(text);
+}
+
+/**
+ * The figure's caption: the spec's own title when it has one (already
+ * checked with the spec), else the caption the model returned, checked on
+ * its own as a label with no kind's structural words. Null when neither
+ * makes one; the visual is kept either way.
+ */
+function proposalCaption(
+	spec: ProposalExtractedVisualSpec,
+	rawCaption: unknown,
+	section: Pick<GlossySection, "heading" | "markdown">,
+): string | null {
+	const title = cleanProposalCaption(spec.title);
+	if (title !== null) {
+		return title;
+	}
+	const caption = cleanProposalCaption(rawCaption);
+	if (caption === null) {
+		return null;
+	}
+	// An `auto` spec's hint is a label of its own with no structural words
+	// and no structure check, which is how a caption is read.
+	const facts = checkVisualFacts(
+		{
+			...visualSpecFacts({ kind: "auto", hint: caption }),
+			heading: section.heading,
+		},
+		factSource(section),
+	);
+	return facts.pass ? caption : null;
 }

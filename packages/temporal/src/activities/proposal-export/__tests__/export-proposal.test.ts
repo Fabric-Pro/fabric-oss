@@ -11,13 +11,18 @@
  * Mocked: every stage (`load-export-input` except the real `exportDateLabel`,
  * `load-theme-assets`, `render-diagrams`, `print-pdf`, `upload-export`), the
  * browser (`withExportBrowser` runs `work` on a fake), the page and DOCX
- * builders, the image reader (keeping the real `createExportImageBudget`),
+ * builders (keeping the real `printFigureMaxHeight`), the image reader (keeping the real `createExportImageBudget`),
  * the heartbeat ticker (runs its function directly), the brand record write
  * and the stores the real modules import. `prepareExportMarkdown`,
  * `resolveThemePaint`, `themeTokenHash`, `exportFileName` and
  * `mergeExportWarnings` are real.
  */
 
+import {
+	PRINT_FIGURE_MAX_HEIGHT_PX,
+	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+	printFigureUnderOpenerMaxHeightPx,
+} from "@repo/utils/proposal-artifact/proposal-theme";
 import {
 	buildProposalThemeTokens,
 	type ProposalThemeTokens,
@@ -83,9 +88,15 @@ vi.mock("../upload-export", () => ({
 vi.mock("../../../lib/proposal-export/browser", () => ({
 	withExportBrowser: h.withExportBrowser,
 }));
-vi.mock("../../../lib/proposal-export/build-theme-html", () => ({
-	buildThemeHtml: h.buildThemeHtml,
-}));
+vi.mock(
+	"../../../lib/proposal-export/build-theme-html",
+	async (importOriginal) => ({
+		...(await importOriginal<
+			typeof import("../../../lib/proposal-export/build-theme-html")
+		>()),
+		buildThemeHtml: h.buildThemeHtml,
+	}),
+);
 vi.mock("../../../lib/proposal-export/build-docx", () => ({
 	buildProposalDocx: h.buildProposalDocx,
 }));
@@ -104,6 +115,7 @@ vi.mock("../../lib/activity-liveness", () => ({
 
 import { exportFailure } from "../../../lib/proposal-export/failures";
 import {
+	type ExportDiagram,
 	type ExportRaster,
 	type ExportThemeTokens,
 	PROPOSAL_EXPORT_LIMITS,
@@ -115,6 +127,13 @@ import {
 	exportProposalDocumentActivity,
 	mergeExportWarnings,
 } from "../export-proposal";
+
+/** The height a call to the diagram step gives each fence, if any. */
+function figureMaxHeightOfCall(
+	call: number,
+): ((index: number, drawn: readonly ExportDiagram[]) => number) | undefined {
+	return h.renderExportDiagrams.mock.calls[call]?.[0]?.figureMaxHeight;
+}
 
 const PDF_BYTES = Buffer.from("%PDF-1.7 example proposal");
 const DOCX_BYTES = Buffer.from("PK example proposal docx");
@@ -283,11 +302,18 @@ describe("exportProposalDocumentActivity: PDF", () => {
 		expect(h.renderExportDiagrams).toHaveBeenCalledWith({
 			sources: [DIAGRAM_SOURCE],
 			captions: [null],
+			figureMaxHeight: expect.any(Function),
 			paint: expect.any(Object),
 			browser: h.fakeBrowser,
 			withPng: false,
 			deadline: expect.any(Number),
 		});
+		// After the section's one paragraph, still on the opener's page.
+		expect(figureMaxHeightOfCall(0)?.(0, [])).toBe(
+			printFigureUnderOpenerMaxHeightPx("Overview", null, [
+				{ kind: "paragraph", text: "Example body." },
+			]),
+		);
 		// Layout stops early enough to leave the print its share of the time.
 		const exportDeadline = h.withExportBrowser.mock.calls[0]?.[0] as number;
 		const layoutDeadline = (
@@ -296,6 +322,33 @@ describe("exportProposalDocumentActivity: PDF", () => {
 		expect(exportDeadline - layoutDeadline).toBe(
 			PROPOSAL_EXPORT_LIMITS.afterLayoutReserveMs,
 		);
+	});
+
+	it("measures a diagram right after a section opener against the height print gives it there, and only in the PDF", async () => {
+		const fence = `\`\`\`mermaid\n${DIAGRAM_SOURCE}\n\`\`\``;
+		const content = `## Overview\n\n${fence}\n\n${fence}\n`;
+		arrange({ content });
+		await exportProposalDocumentActivity(input("pdf"));
+		const heightOf = figureMaxHeightOfCall(0);
+		const drawn: ExportDiagram = {
+			kind: "svg",
+			svg: "<svg></svg>",
+			width: 10,
+			height: 10,
+			png: null,
+		};
+		expect(heightOf?.(0, [])).toBe(PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX);
+		// The second follows the first, unless the first is left out.
+		expect(heightOf?.(1, [drawn])).toBe(PRINT_FIGURE_MAX_HEIGHT_PX);
+		expect(heightOf?.(1, [{ kind: "omitted" }])).toBe(
+			PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
+		);
+
+		// The Word writer gives every picture a figure's own height.
+		h.renderExportDiagrams.mockClear();
+		arrange({ content });
+		await exportProposalDocumentActivity(input("docx"));
+		expect(figureMaxHeightOfCall(0)).toBeUndefined();
 	});
 
 	it("prints through printProposalPdf, whose page is built from the shared inputs for each pass", async () => {

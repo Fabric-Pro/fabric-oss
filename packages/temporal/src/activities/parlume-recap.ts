@@ -6,6 +6,10 @@ import {
 	type StoryChangeItem,
 } from "@repo/database";
 import {
+	formatParlumeChatDeliveryEvidence,
+	readParlumeChatDeliveryEvidence,
+} from "@repo/utils/parlume-chat-delivery-evidence";
+import {
 	PARLUME_RECAP_FALLBACK_BODY,
 	PARLUME_RECAP_PROMPT_AGENT_KEY,
 } from "@repo/utils/parlume-recap-prompt";
@@ -37,6 +41,7 @@ type PreviousMeeting = {
 	/** When the previous meeting happened; what changed after it is "since". */
 	heldAt: Date;
 	material: string;
+	chatDeliveryFacts?: string;
 };
 
 /**
@@ -142,6 +147,15 @@ export async function postParlumeSeriesRecap(input: {
 					{ source: "previous_meeting" },
 					previous.material,
 				),
+				...(previous.chatDeliveryFacts
+					? [
+							fenceUntrusted(
+								RECAP_INPUT_TAG,
+								{ source: "channel_delivery_evidence" },
+								previous.chatDeliveryFacts,
+							),
+						]
+					: []),
 				fenceUntrusted(
 					RECAP_INPUT_TAG,
 					{ source: "work_items" },
@@ -211,6 +225,7 @@ async function previousParlumeNotes(
 		orderBy: { joinedAt: "desc" },
 		take: PREVIOUS_SESSION_CANDIDATES,
 		select: {
+			id: true,
 			transcriptContextId: true,
 			occurrenceStart: true,
 			joinedAt: true,
@@ -231,21 +246,26 @@ async function previousParlumeNotes(
 		},
 		select: { id: true, metadata: true },
 	});
-	const notesByContext = new Map(
-		contexts.map((context) => [
-			context.id,
-			completedNotes(context.metadata),
-		]),
+	const contextsById = new Map(
+		contexts.map((context) => [context.id, context]),
 	);
 	for (const candidate of candidates) {
-		const notes = candidate.transcriptContextId
-			? notesByContext.get(candidate.transcriptContextId)
+		const context = candidate.transcriptContextId
+			? contextsById.get(candidate.transcriptContextId)
 			: null;
+		const notes = context ? completedNotes(context.metadata) : null;
 		const heldAt = candidate.endedAt ?? candidate.joinedAt;
 		if (notes && heldAt) {
 			return {
 				source: "parlume_notes",
 				heldAt,
+				chatDeliveryFacts: formatParlumeChatDeliveryEvidence(
+					readParlumeChatDeliveryEvidence(context?.metadata, {
+						sessionId: candidate.id,
+						projectId: scope.projectId,
+						organizationId: scope.organizationId,
+					}),
+				),
 				material: [
 					`Previous meeting on ${isoDate(candidate.occurrenceStart ?? heldAt)}`,
 					"Notes:",

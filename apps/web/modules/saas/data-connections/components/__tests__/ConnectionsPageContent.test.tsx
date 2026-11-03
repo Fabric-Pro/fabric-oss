@@ -941,6 +941,25 @@ describe("ConnectionsPageContent — hidden integrations", () => {
 			await screen.findByRole("link", { name: /Zendesk/i }),
 		).toBeInTheDocument();
 	});
+
+	it("still renders an existing Bitbucket connection", async () => {
+		renderPage([], {
+			data: [
+				{
+					id: "bb-conn-1",
+					provider: "BITBUCKET",
+					status: "CONNECTED",
+					name: "Bitbucket",
+				},
+			],
+			isLoading: false,
+			error: null,
+		});
+
+		expect(
+			await screen.findByRole("link", { name: /Bitbucket/i }),
+		).toBeInTheDocument();
+	});
 });
 
 describe("ConnectionsPageContent — request connection", () => {

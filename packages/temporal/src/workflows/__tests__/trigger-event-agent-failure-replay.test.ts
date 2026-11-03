@@ -1,4 +1,7 @@
-/** Replay proof for the trigger-event agent-failure gate, including a mutant. */
+/**
+ * Replay proof for the trigger-event agent-failure gate, including a mutant,
+ * and for the delivery-outcome gate on the trigger stats call.
+ */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import type { WorkflowHandle } from "@temporalio/client";
@@ -17,6 +20,8 @@ type History = Awaited<ReturnType<WorkflowHandle["fetchHistory"]>>;
 const SOURCE_DIR = resolve(__dirname, "../trigger-system");
 const PATCH_ID = "trigger-event-agent-failure-2026-10";
 const CHECK = 'patched("trigger-event-agent-failure-2026-10")';
+const DELIVERY_PATCH_ID = "trigger-stats-delivery-outcome-2026-11";
+const DELIVERY_CHECK = 'patched("trigger-stats-delivery-outcome-2026-11")';
 const TASK_QUEUE = "trigger-event-agent-failure-replay";
 const ERROR = "Example provider failure";
 const OUTPUT_ACTIVITIES = [
@@ -49,8 +54,14 @@ async function bundleTrigger(
 	const original = readFileSync(join(SOURCE_DIR, "index.ts"), "utf8");
 	// A moved or duplicated call would make the legacy/mutant copies invalid.
 	expect(original.split(CHECK)).toHaveLength(2);
-	const source =
+	expect(original.split(DELIVERY_CHECK)).toHaveLength(2);
+	let source =
 		replacement === null ? original : original.replace(CHECK, replacement);
+	// The legacy copy predates the delivery gate too; the mutant forces only
+	// the failure check on.
+	if (replacement === "false") {
+		source = source.replace(DELIVERY_CHECK, "false");
+	}
 	const dir = mkdtempSync(
 		join(__dirname, ".trigger-event-agent-failure-replay-"),
 	);
@@ -113,7 +124,12 @@ async function record(
 				response,
 			sendWebhook: async () => undefined,
 			sendEmail: async () => undefined,
-			postToSlack: async () => undefined,
+			// The legacy run posts output and the post fails, so its history
+			// also passes the delivery-outcome checks.
+			postToSlack: async () => ({
+				success: false,
+				error: "not_in_channel",
+			}),
 			storeResult: async () => undefined,
 			updateTriggerStats: async () => undefined,
 		},
@@ -147,7 +163,7 @@ function scheduledActivities(history: History): string[] {
 	});
 }
 
-function recordsFailureMarker(history: History): boolean {
+function recordsMarker(history: History, patchId: string): boolean {
 	return (history.events ?? []).some((event) => {
 		const marker = event.markerRecordedEventAttributes;
 		return (
@@ -156,7 +172,7 @@ function recordsFailureMarker(history: History): boolean {
 				(payloads.payloads ?? []).some((payload) =>
 					Buffer.from(payload.data ?? [])
 						.toString("utf8")
-						.includes(PATCH_ID),
+						.includes(patchId),
 				),
 			)
 		);
@@ -184,7 +200,8 @@ describe("trigger event agent failure gate, replay", () => {
 			...OUTPUT_ACTIVITIES,
 			"updateTriggerStats",
 		]);
-		expect(recordsFailureMarker(legacy.history)).toBe(false);
+		expect(recordsMarker(legacy.history, PATCH_ID)).toBe(false);
+		expect(recordsMarker(legacy.history, DELIVERY_PATCH_ID)).toBe(false);
 		await expect(
 			Worker.runReplayHistory(
 				{ workflowBundle: current },
@@ -203,7 +220,7 @@ describe("trigger event agent failure gate, replay", () => {
 
 	it("records the failure marker without output activities and replays", async () => {
 		const today = await record(current, true);
-		expect(recordsFailureMarker(today.history)).toBe(true);
+		expect(recordsMarker(today.history, PATCH_ID)).toBe(true);
 		expect(scheduledActivities(today.history)).toEqual([
 			"loadTriggerConfig",
 			"transformInput",
