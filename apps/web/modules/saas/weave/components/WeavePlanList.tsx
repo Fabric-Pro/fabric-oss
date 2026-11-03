@@ -530,7 +530,7 @@ export function WeavePlanList({
 					`Queued for ${getExecutionProviderLabel("KANBAN_LOCAL")}`,
 					{
 						description:
-							"Run `fabric-kanban` in your repository to pull queued items.",
+							"Open Fabric Agents Desktop or your Personal Fabric Agents Remote Server to run queued items.",
 					},
 				);
 			} else {
@@ -1147,7 +1147,7 @@ export function WeavePlanList({
 																	/>
 																	<span>
 																		{
-																			"Local fabric-kanban runtime not detected — run `fabric-kanban` in your repository to pull queued work."
+																			"Local Fabric Agents Desktop runtime not detected — open Fabric Agents Desktop or your Personal Fabric Agents Remote Server to run queued work."
 																		}
 																	</span>
 																</p>

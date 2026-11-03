@@ -138,7 +138,7 @@ describe("RunSpikeDialog", () => {
 			await screen.findByText("Runs on Fabric Agents"),
 		).toBeInTheDocument();
 		expect(
-			screen.getByText(/default provider is Local development/),
+			screen.getByText(/default provider is Fabric Agents Desktop/),
 		).toBeInTheDocument();
 	});
 

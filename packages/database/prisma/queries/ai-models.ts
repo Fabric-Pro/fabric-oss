@@ -1054,16 +1054,18 @@ export async function getProviderModelMappingForCanonical(
 					isAvailable: true,
 					model: SELECTABLE_CATALOG_MODEL_FILTER,
 				},
+				...(provider === "CUSTOM" ? {} : { take: 1 }),
 			},
 		},
 	});
 	const mapping =
-		model?.providerMappings?.find((m) => m.provider === provider) ??
-		(provider === "CUSTOM"
-			? model?.providerMappings?.find(
+		provider === "CUSTOM"
+			? (model?.providerMappings?.find((m) => m.provider === "CUSTOM") ??
+				model?.providerMappings?.find(
 					(m) => m.provider === "OPENAI_DIRECT",
-				)
-			: undefined);
+				) ??
+				model?.providerMappings?.[0])
+			: model?.providerMappings?.[0];
 	return {
 		exists: model !== null,
 		providerModelId: mapping?.providerModelId ?? null,

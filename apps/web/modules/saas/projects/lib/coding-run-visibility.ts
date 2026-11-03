@@ -1,4 +1,4 @@
-export type CodingRunLifecycleStatus =
+type CodingRunLifecycleStatus =
 	| "QUEUED"
 	| "STARTING"
 	| "RUNNING"
@@ -10,14 +10,15 @@ export type CodingRunLifecycleStatus =
 	| "CANCELLED"
 	| "TERMINATED_STALE";
 
-export const ACTIVE_CODING_RUN_STATUSES: ReadonlySet<string> = new Set([
-	"QUEUED",
-	"STARTING",
-	"RUNNING",
-	"AWAITING_REVIEW",
-	"PR_OPENED",
-	"DEMO_READY",
-]);
+export const ACTIVE_CODING_RUN_STATUSES: ReadonlySet<string> =
+	new Set<CodingRunLifecycleStatus>([
+		"QUEUED",
+		"STARTING",
+		"RUNNING",
+		"AWAITING_REVIEW",
+		"PR_OPENED",
+		"DEMO_READY",
+	]);
 
 export function isCodingRunActive(
 	run: { status?: string | null } | null | undefined,
