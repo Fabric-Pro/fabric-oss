@@ -3,6 +3,7 @@ import {
 	NAVIGATE_TO_SETTINGS_TAB_EVENT,
 	type NavigateToSettingsTabDetail,
 	navigateToProjectSettingsTab,
+	scrollToWhenRendered,
 } from "../settings-tab-navigation";
 
 /**
@@ -83,7 +84,7 @@ describe("navigateToProjectSettingsTab", () => {
 		window.removeEventListener(NAVIGATE_TO_SETTINGS_TAB_EVENT, handler);
 	});
 
-	it("forwards optional anchorId in event detail so ProjectSettings can resolve dynamic sub-tabs", () => {
+	it("keeps event detail limited to projectId and settingsTab when anchorId is passed", () => {
 		const received: NavigateToSettingsTabDetail[] = [];
 		const handler = (event: Event) => {
 			received.push(
@@ -100,9 +101,28 @@ describe("navigateToProjectSettingsTab", () => {
 			{
 				projectId: "p1",
 				settingsTab: "development",
-				anchorId: "project-pm-settings",
 			},
 		]);
 		window.removeEventListener(NAVIGATE_TO_SETTINGS_TAB_EVENT, handler);
+	});
+
+	it("scrolls matching data-onboarding-target anchors when no element id exists", () => {
+		const target = document.createElement("div");
+		target.setAttribute("data-onboarding-target", "settings-chat-monitors");
+		const scrollIntoView = vi.fn();
+		target.scrollIntoView = scrollIntoView;
+		document.body.appendChild(target);
+
+		vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+			cb(0);
+			return 1;
+		});
+
+		try {
+			scrollToWhenRendered("settings-chat-monitors");
+			expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+		} finally {
+			target.remove();
+		}
 	});
 });

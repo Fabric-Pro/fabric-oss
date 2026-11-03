@@ -948,7 +948,7 @@ describe("direct CTA actions (no spotlight tours)", () => {
 			});
 			expect(connectPm).toHaveAttribute(
 				"href",
-				"/app/projects/p1?tab=settings&settingsTab=development&settingsAnchor=project-pm-settings",
+				"/app/projects/p1?tab=settings&settingsTab=project-management&settingsAnchor=project-pm-settings",
 			);
 			connectPm.addEventListener("click", (e) => e.preventDefault());
 			await user.click(connectPm);
@@ -967,10 +967,12 @@ describe("direct CTA actions (no spotlight tours)", () => {
 			expect(settingsEvents).toEqual([
 				{
 					projectId: "p1",
-					settingsTab: "development",
-					anchorId: "project-pm-settings",
+					settingsTab: "project-management",
 				},
 			]);
+			expect(
+				sessionStorage.getItem("fabric-project-settings-tab-p1"),
+			).toBe("project-management");
 		} finally {
 			window.removeEventListener(
 				"fabric:get-started:spotlight",

@@ -179,25 +179,26 @@ export async function executeInitializationPhase(
 					input.hasCompleteInlineAttachments,
 				executionMode: input.executionMode,
 			});
-		const memoryInput = {
-			...secondaryUsageOriginFields(input),
-			...(input.conversationId
-				? { usageConversationId: input.conversationId }
-				: {}),
-			userId: input.userId,
-			organizationId: input.organizationId,
-			projectId,
-			workspaceId,
-			currentQuery: skipSemanticMemoryEmbedding
-				? undefined
-				: fastAttachmentPatch
-					? buildAttachmentMemoryQuery(
-							intentMessage,
-							input.attachmentManifest,
-						)
-					: input.message,
-			...turnScopeField(turn),
-		};
+		const startOrchestratorMemory = () =>
+			loadOrchestratorMemoryActivity({
+				...secondaryUsageOriginFields(input),
+				...(input.conversationId
+					? { usageConversationId: input.conversationId }
+					: {}),
+				userId: input.userId,
+				organizationId: input.organizationId,
+				projectId,
+				workspaceId,
+				currentQuery: skipSemanticMemoryEmbedding
+					? undefined
+					: fastAttachmentPatch
+						? buildAttachmentMemoryQuery(
+								intentMessage,
+								input.attachmentManifest,
+							)
+						: input.message,
+				...turnScopeField(turn),
+			});
 		const lettaInput = {
 			userId: input.userId,
 			organizationId: input.organizationId,
@@ -225,7 +226,7 @@ export async function executeInitializationPhase(
 			);
 			prestarted = {
 				preload: preloadResourcesActivity(preloadInput),
-				memory: loadOrchestratorMemoryActivity(memoryInput),
+				memory: startOrchestratorMemory(),
 				letta: initializeLettaMemory(lettaInput),
 				project: input.projectId
 					? getProjectMetadataActivity(input.projectId, {
@@ -299,7 +300,7 @@ export async function executeInitializationPhase(
 		try {
 			const memoryResult = await (prestarted
 				? prestarted.memory
-				: loadOrchestratorMemoryActivity(memoryInput));
+				: startOrchestratorMemory());
 
 			orchestratorMemoryPrompt = memoryResult.memoryContextPrompt;
 

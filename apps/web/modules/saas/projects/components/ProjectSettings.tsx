@@ -283,7 +283,7 @@ function useSettingsTab(
 			}
 			const resolved = resolveRequestedSettingsTab(
 				detail.settingsTab,
-				detail.anchorId,
+				undefined,
 				pmFieldMappingEnabled,
 				publishingEnabled,
 			);

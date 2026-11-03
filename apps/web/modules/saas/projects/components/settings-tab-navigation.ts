@@ -31,7 +31,6 @@ const SETTINGS_TAB_STORAGE_KEY_PREFIX = "fabric-project-settings-tab-";
 export type NavigateToSettingsTabDetail = {
 	projectId: string;
 	settingsTab: SettingsTab;
-	anchorId?: string;
 };
 
 /**
@@ -68,13 +67,7 @@ export function navigateToProjectSettingsTab(
 		new CustomEvent<NavigateToSettingsTabDetail>(
 			NAVIGATE_TO_SETTINGS_TAB_EVENT,
 			{
-				detail: {
-					projectId,
-					settingsTab,
-					...(options?.anchorId
-						? { anchorId: options.anchorId }
-						: {}),
-				},
+				detail: { projectId, settingsTab },
 			},
 		),
 	);

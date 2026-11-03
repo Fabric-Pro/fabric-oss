@@ -134,11 +134,16 @@ export function buildReadinessActionHref(
 			}
 		}
 	} else {
-		params.set("tab", "settings");
-		params.set("settingsTab", target.subTab);
 		const anchorId = itemKey
 			? SETTINGS_ANCHOR_BY_ITEM_KEY[itemKey]
 			: undefined;
+		const settingsTab =
+			target.subTab === "development" &&
+			anchorId === PM_SETTINGS_ANCHOR_ID
+				? "project-management"
+				: target.subTab;
+		params.set("tab", "settings");
+		params.set("settingsTab", settingsTab);
 		if (anchorId) {
 			params.set("settingsAnchor", anchorId);
 		}
@@ -153,9 +158,15 @@ export function dispatchReadinessItemAction(
 ) {
 	if (target.kind === "settings") {
 		const anchorId = SETTINGS_ANCHOR_BY_ITEM_KEY[itemKey];
+		const settingsTab = (
+			target.subTab === "development" &&
+			anchorId === PM_SETTINGS_ANCHOR_ID
+				? "project-management"
+				: target.subTab
+		) as SettingsTab;
 		navigateToProjectSettingsTab(
 			projectId,
-			target.subTab as SettingsTab,
+			settingsTab,
 			anchorId ? { anchorId } : undefined,
 		);
 		return;
