@@ -53,6 +53,10 @@ describe("resolveStoredSettingsTab", () => {
 
 	it("preserves a valid persisted tab value unchanged", () => {
 		expect(resolveStoredSettingsTab("general", SHUT)).toBe("general");
+		expect(resolveStoredSettingsTab("engagement", SHUT)).toBe("engagement");
+		expect(resolveStoredSettingsTab("agent-runtime", SHUT)).toBe(
+			"agent-runtime",
+		);
 		expect(resolveStoredSettingsTab("knowledge", OPEN)).toBe("knowledge");
 		expect(resolveStoredSettingsTab("development", SHUT)).toBe(
 			"development",

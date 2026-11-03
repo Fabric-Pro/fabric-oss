@@ -19,7 +19,14 @@ import { orchestratorBasePrompt } from "../../../lib/assistant-identity";
 import { formatRepositoryRoleMap } from "../../../lib/repository-role-formatter";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
 import {
+	buildAttachmentMemoryQuery,
+	GROUNDED_ATTACHMENT_FASTPATH_PATCH,
+	isSimpleGroundedAttachmentQa,
+	resolveIntentUserMessage,
+} from "../attachment-fast-path";
+import {
 	type IterativeTurnOptions,
+	rethrowFirstTurnStop,
 	rethrowTurnStop,
 	turnScopeField,
 } from "../turn-contract";
@@ -145,16 +152,13 @@ export async function executeInitializationPhase(
 		usesIterativeExecution(input.executionMode);
 
 	try {
-		// ======================================================================
-		// Step 0: Preload ALL Resources (MCP tools, agents, preferences)
-		// This is loaded ONCE and reused for ALL steps - critical for performance
-		// ======================================================================
-		updateProgress(
-			"routing",
-			"Preloading resources (MCP tools, agents)...",
-		);
+		const intentMessage = resolveIntentUserMessage(input);
+		const fastAttachmentPatch = patched(GROUNDED_ATTACHMENT_FASTPATH_PATCH);
+		const fastInitGate = fastAttachmentPatch && !input.policyContext;
+		const projectId = input.projectId ?? null;
+		const workspaceId = input.workspaceIds?.[0] ?? null;
 
-		const preloadedResources = await preloadResourcesActivity({
+		const preloadInput = {
 			userId: input.userId,
 			organizationId: input.organizationId,
 			instanceId: input.instanceId,
@@ -166,7 +170,111 @@ export async function executeInitializationPhase(
 			// opted-in turn that runs the loop sends it, so every other
 			// turn's preload input, and every recorded one, keeps its shape.
 			...(offersCompanyContext ? { companyContextAdvisor: true } : {}),
-		});
+		};
+		const skipSemanticMemoryEmbedding =
+			fastAttachmentPatch &&
+			isSimpleGroundedAttachmentQa({
+				rawMessage: intentMessage,
+				hasCompleteInlineAttachments:
+					input.hasCompleteInlineAttachments,
+				executionMode: input.executionMode,
+			});
+		const memoryInput = {
+			...secondaryUsageOriginFields(input),
+			...(input.conversationId
+				? { usageConversationId: input.conversationId }
+				: {}),
+			userId: input.userId,
+			organizationId: input.organizationId,
+			projectId,
+			workspaceId,
+			currentQuery: skipSemanticMemoryEmbedding
+				? undefined
+				: fastAttachmentPatch
+					? buildAttachmentMemoryQuery(
+							intentMessage,
+							input.attachmentManifest,
+						)
+					: input.message,
+			...turnScopeField(turn),
+		};
+		const lettaInput = {
+			userId: input.userId,
+			organizationId: input.organizationId,
+			availableAgents: input.enabledAgentIds?.map((id) => ({
+				id,
+				name: id,
+				description: `Agent ${id}`,
+				capabilities: [],
+			})),
+		};
+
+		let prestarted: {
+			preload: ReturnType<typeof preloadResourcesActivity>;
+			memory: ReturnType<typeof loadOrchestratorMemoryActivity>;
+			letta: ReturnType<typeof initializeLettaMemory>;
+			project: ReturnType<typeof getProjectMetadataActivity> | null;
+			instance: ReturnType<typeof loadInstanceMemoryActivity> | null;
+			fabric: ReturnType<typeof applyFabricPatternEnrichment> | null;
+		} | null = null;
+
+		if (fastInitGate) {
+			updateProgress("routing", "Preparing workspace and context...");
+			const canPrestartFabric = patched(
+				"advisor-stable-system-prefix-v1",
+			);
+			prestarted = {
+				preload: preloadResourcesActivity(preloadInput),
+				memory: loadOrchestratorMemoryActivity(memoryInput),
+				letta: initializeLettaMemory(lettaInput),
+				project: input.projectId
+					? getProjectMetadataActivity(input.projectId, {
+							userId: input.userId,
+							organizationId: input.organizationId ?? null,
+						})
+					: null,
+				instance: input.instanceId
+					? loadInstanceMemoryActivity({
+							instanceId: input.instanceId,
+							userId: input.userId,
+							organizationId: input.organizationId,
+						})
+					: null,
+				fabric: canPrestartFabric
+					? applyFabricPatternEnrichment({
+							message: intentMessage,
+							userId: input.userId,
+							organizationId: input.organizationId,
+							basePrompt: "",
+							enableAutoDetection: true,
+						})
+					: null,
+			};
+			const settled = await Promise.allSettled([
+				prestarted.preload,
+				prestarted.memory,
+				prestarted.letta,
+				...(prestarted.project ? [prestarted.project] : []),
+				...(prestarted.instance ? [prestarted.instance] : []),
+				...(prestarted.fabric ? [prestarted.fabric] : []),
+			]);
+			rethrowFirstTurnStop(settled, turn);
+		}
+
+		// ======================================================================
+		// Step 0: Preload ALL Resources (MCP tools, agents, preferences)
+		// This is loaded ONCE and reused for ALL steps - critical for performance
+		// ======================================================================
+		if (!prestarted) {
+			updateProgress(
+				"routing",
+				"Preloading resources (MCP tools, agents)...",
+			);
+		}
+
+		const preloadedResources = await (prestarted
+			? prestarted.preload
+			: preloadResourcesActivity(preloadInput));
 
 		log.info("Resources preloaded", {
 			mcpServers: preloadedResources.mcpTools.length,
@@ -182,27 +290,16 @@ export async function executeInitializationPhase(
 		// Step 0.5: Load Orchestrator Memory (User Preferences + Episodic Memory)
 		// This provides personalized context based on past interactions
 		// ======================================================================
-		updateProgress("routing", "Loading orchestrator memory...");
+		if (!prestarted) {
+			updateProgress("routing", "Loading orchestrator memory...");
+		}
 
 		let orchestratorMemoryPrompt = "";
 
 		try {
-			// Extract project/workspace context from input
-			const projectId = input.projectId ?? null;
-			const workspaceId = input.workspaceIds?.[0] ?? null;
-
-			const memoryResult = await loadOrchestratorMemoryActivity({
-				...secondaryUsageOriginFields(input),
-				...(input.conversationId
-					? { usageConversationId: input.conversationId }
-					: {}),
-				userId: input.userId,
-				organizationId: input.organizationId,
-				projectId,
-				workspaceId,
-				currentQuery: input.message,
-				...turnScopeField(turn),
-			});
+			const memoryResult = await (prestarted
+				? prestarted.memory
+				: loadOrchestratorMemoryActivity(memoryInput));
 
 			orchestratorMemoryPrompt = memoryResult.memoryContextPrompt;
 
@@ -310,18 +407,13 @@ export async function executeInitializationPhase(
 		let lettaAgentId: string | null = null;
 
 		try {
-			updateProgress("routing", "Initializing semantic memory...");
+			if (!prestarted) {
+				updateProgress("routing", "Initializing semantic memory...");
+			}
 
-			const lettaMemory = await initializeLettaMemory({
-				userId: input.userId,
-				organizationId: input.organizationId,
-				availableAgents: input.enabledAgentIds?.map((id) => ({
-					id,
-					name: id,
-					description: `Agent ${id}`,
-					capabilities: [],
-				})),
-			});
+			const lettaMemory = await (prestarted
+				? prestarted.letta
+				: initializeLettaMemory(lettaInput));
 
 			if (lettaMemory) {
 				lettaAgentId = lettaMemory.agentId;
@@ -362,7 +454,9 @@ export async function executeInitializationPhase(
 		// ======================================================================
 		// Step 3: Apply Policy Enrichment
 		// ======================================================================
-		updateProgress("routing", "Applying policy enrichment...");
+		if (!prestarted) {
+			updateProgress("routing", "Applying policy enrichment...");
+		}
 
 		let enrichedMessage = input.message;
 		// Start with the caller's own persona (agent template instructions, the
@@ -497,13 +591,11 @@ export async function executeInitializationPhase(
 				projectId: input.projectId,
 			});
 			try {
-				const projectMetadata = await getProjectMetadataActivity(
-					input.projectId,
-					{
+				const projectMetadata = await (prestarted?.project ??
+					getProjectMetadataActivity(input.projectId, {
 						userId: input.userId,
 						organizationId: input.organizationId ?? null,
-					},
-				);
+					}));
 				if (projectMetadata) {
 					const countsLine = `Available contexts: ${projectMetadata.contextCount}, Generated documents: ${projectMetadata.documentCount}`;
 					const projectContextLines = [
@@ -596,13 +688,19 @@ export async function executeInitializationPhase(
 		// ======================================================================
 		if (input.instanceId) {
 			try {
-				updateProgress("routing", "Loading agent memory and skills...");
+				if (!prestarted?.instance) {
+					updateProgress(
+						"routing",
+						"Loading agent memory and skills...",
+					);
+				}
 
-				const instanceMemory = await loadInstanceMemoryActivity({
-					instanceId: input.instanceId,
-					userId: input.userId,
-					organizationId: input.organizationId,
-				});
+				const instanceMemory = await (prestarted?.instance ??
+					loadInstanceMemoryActivity({
+						instanceId: input.instanceId,
+						userId: input.userId,
+						organizationId: input.organizationId,
+					}));
 
 				if (instanceMemory.fileCount > 0) {
 					if (systemPromptParts) {
@@ -647,16 +745,24 @@ export async function executeInitializationPhase(
 		// Step 4: Apply Fabric AI Pattern Enrichment (Strategy → Context → Pattern)
 		// Auto-detects appropriate patterns based on user message
 		// ======================================================================
-		updateProgress("routing", "Applying Fabric AI pattern enrichment...");
+		if (!prestarted?.fabric) {
+			updateProgress(
+				"routing",
+				"Applying Fabric AI pattern enrichment...",
+			);
+		}
 
 		try {
-			const fabricEnrichment = await applyFabricPatternEnrichment({
-				message: input.message,
-				userId: input.userId,
-				organizationId: input.organizationId,
-				basePrompt: stableSystemPrefix ? "" : enrichedSystemPrompt,
-				enableAutoDetection: true,
-			});
+			const fabricEnrichment = await (prestarted?.fabric ??
+				applyFabricPatternEnrichment({
+					message: fastAttachmentPatch
+						? intentMessage
+						: input.message,
+					userId: input.userId,
+					organizationId: input.organizationId,
+					basePrompt: stableSystemPrefix ? "" : enrichedSystemPrompt,
+					enableAutoDetection: true,
+				}));
 
 			if (fabricEnrichment.fabricAvailable) {
 				if (

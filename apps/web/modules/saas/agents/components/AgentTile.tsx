@@ -5,7 +5,7 @@
  * (the registry) and the agents people build (template instances).
  *
  * Every attribute has a place and a register:
- * - identity: the hero emoji when there is one, otherwise the agents mark
+ * - identity: the shared AI Agents mark matching the left navigation
  * - name, with framework and category in mono beneath it
  * - status as a dot and a word at the top right; a failed health probe says
  *   "Unreachable", not "Error", and carries the probe's reason as a tooltip
@@ -138,17 +138,13 @@ export function scopeLabel(scope?: string | null): string | null {
 	return s[0].toUpperCase() + s.slice(1);
 }
 
-function Mark({ emoji }: { emoji?: string | null }) {
+function Mark() {
 	return (
 		<div
 			aria-hidden="true"
 			className="flex size-9 shrink-0 items-center justify-center rounded-[8px] border border-border bg-muted text-foreground/80"
 		>
-			{emoji ? (
-				<span className="text-[18px] leading-none">{emoji}</span>
-			) : (
-				<RobotIcon className="size-4" />
-			)}
+			<RobotIcon className="size-4" />
 		</div>
 	);
 }
@@ -156,7 +152,6 @@ function Mark({ emoji }: { emoji?: string | null }) {
 export function AgentTile({
 	name,
 	description,
-	emoji,
 	status,
 	meta = [],
 	footer = [],
@@ -230,7 +225,7 @@ export function AgentTile({
 			)}
 		>
 			<div className="flex items-start gap-3 p-4 pb-3">
-				<Mark emoji={emoji} />
+				<Mark />
 				<div className="min-w-0 flex-1">
 					<h3 className="truncate text-[14px] font-medium leading-5 text-foreground">
 						{name}

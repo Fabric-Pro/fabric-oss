@@ -879,3 +879,112 @@ describe("the API Key for CLI row", () => {
 		);
 	});
 });
+
+describe("direct CTA actions (no spotlight tours)", () => {
+	it("routes Define Features, Create PRD, and Connect PM tool directly to their editors/sections without firing spotlight tours", async () => {
+		const user = userEvent.setup();
+		const spotlightHandler = vi.fn();
+		const readinessActionEvents: unknown[] = [];
+		const settingsEvents: unknown[] = [];
+		const onReadinessAction = (event: Event) => {
+			readinessActionEvents.push((event as CustomEvent).detail);
+		};
+		const onSettingsNavigate = (event: Event) => {
+			settingsEvents.push((event as CustomEvent).detail);
+		};
+		window.addEventListener(
+			"fabric:get-started:spotlight",
+			spotlightHandler,
+		);
+		window.addEventListener(
+			"fabric:project-readiness-action",
+			onReadinessAction,
+		);
+		window.addEventListener(
+			"fabric:project-navigate-to-settings-tab",
+			onSettingsNavigate,
+		);
+
+		try {
+			mountWith([
+				item(),
+				item({
+					key: "prd",
+					category: "DOCUMENTS",
+					i18nKey: "readiness.items.prd",
+					ctaLabelKey: "readiness.cta.prd",
+					target: { kind: "tab", tab: "documents" },
+				}),
+				item({
+					key: "pm-system-connected",
+					category: "CONTEXT_AND_CONNECTIONS",
+					i18nKey: "readiness.items.pmSystemConnected",
+					ctaLabelKey: "readiness.cta.pmSystemConnected",
+					needLevel: "SHOULD",
+					target: { kind: "settings", subTab: "development" },
+				}),
+			]);
+
+			const defineFeatures = screen.getByRole("link", {
+				name: "Define Features",
+			});
+			expect(defineFeatures).toHaveAttribute(
+				"href",
+				"/app/projects/p1?tab=overview&edit=features",
+			);
+			defineFeatures.addEventListener("click", (e) => e.preventDefault());
+			await user.click(defineFeatures);
+
+			const createPrd = screen.getByRole("link", { name: "Create PRD" });
+			expect(createPrd).toHaveAttribute(
+				"href",
+				"/app/projects/p1?tab=documents&createDoc=PRD",
+			);
+			createPrd.addEventListener("click", (e) => e.preventDefault());
+			await user.click(createPrd);
+
+			const connectPm = screen.getByRole("link", {
+				name: "Connect PM tool",
+			});
+			expect(connectPm).toHaveAttribute(
+				"href",
+				"/app/projects/p1?tab=settings&settingsTab=development&settingsAnchor=project-pm-settings",
+			);
+			connectPm.addEventListener("click", (e) => e.preventDefault());
+			await user.click(connectPm);
+
+			expect(spotlightHandler).not.toHaveBeenCalled();
+			expect(readinessActionEvents).toEqual([
+				{
+					projectId: "p1",
+					action: { kind: "edit-overview", section: "features" },
+				},
+				{
+					projectId: "p1",
+					action: { kind: "create-document", documentType: "PRD" },
+				},
+			]);
+			expect(settingsEvents).toEqual([
+				{
+					projectId: "p1",
+					settingsTab: "development",
+					anchorId: "project-pm-settings",
+				},
+			]);
+		} finally {
+			window.removeEventListener(
+				"fabric:get-started:spotlight",
+				spotlightHandler,
+			);
+			window.removeEventListener(
+				"fabric:project-readiness-action",
+				onReadinessAction,
+			);
+			window.removeEventListener(
+				"fabric:project-navigate-to-settings-tab",
+				onSettingsNavigate,
+			);
+			sessionStorage.clear();
+		}
+	});
+});

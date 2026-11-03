@@ -558,7 +558,7 @@ const PROJECT_GROUP: GsGroup = {
 			id: "project-settings",
 			label: "Project Settings",
 			description:
-				"Configure the project — details, the recipient brand its Glossy editions are prepared for, PM/integration credentials, context import, deployment environments, the QA testing policy (including which branch each repo's CI results come from), and danger zone.",
+				"Configure the project — details, the recipient brand its Glossy editions are prepared for, PM/integration credentials, Agent Runtime (Fabric Desktop, remote servers, and subscription harnesses), context import, deployment environments, the QA testing policy (including which branch each repo's CI results come from), and danger zone.",
 			icon: SettingsIcon,
 			projectTab: "settings",
 			anchor: anchorForProjectTab("settings"),
@@ -1515,7 +1515,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "project-settings-nav",
 				anchor: "project-settings-nav",
 				title: "This is the project's AI wiring",
-				body: "Not cosmetics: Knowledge = what agents can read, Development = where they run and push code, Project Management = where roadmap work syncs to your PM tool, Retrieval = how RAG chunks it, Environments = the deployment targets automation points at, Testing = the QA policy (rigor, evidence, sceptic roles) agents follow. The green dot means an area is configured, so it doubles as a setup checklist.",
+				body: "Not cosmetics: Knowledge = what agents can read, Development = connected repositories, Project Management = where roadmap work syncs to your PM tool, Agent Runtime = where coding tasks run across Fabric Desktop, remote servers, and subscription harnesses, Retrieval = how RAG chunks it, Environments = the deployment targets automation points at, Testing = the QA policy (rigor, evidence, sceptic roles) agents follow. The green dot means an area is configured, so it doubles as a setup checklist.",
 			},
 			{
 				id: "project-settings-content",
