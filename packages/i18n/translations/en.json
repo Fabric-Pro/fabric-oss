@@ -10202,6 +10202,12 @@
 		}
 	},
 	"readiness": {
+		"indicator": {
+			"assumed": "assumed",
+			"ariaCollapse": "Project readiness: {level}. Select to collapse the checklist.",
+			"ariaExpandZero": "Project readiness: {level}. No open items. Select to expand the checklist.",
+			"ariaExpandOpen": "Project readiness: {level}. {count} open items. Select to expand the checklist."
+		},
 		"panel": {
 			"label": "Project readiness",
 			"progress": "{completed} / {total} complete · {percent}%",
@@ -10215,7 +10221,8 @@
 			"helpRequestFailed": "Could not request help. Please try again.",
 			"assumedPhase": "Phase assumed from your setup.",
 			"requiredOutstanding": "{count, plural, one {# required item outstanding} other {# required items outstanding}}",
-			"intro": "Complete these steps to get your project ready — Fabric detects each one automatically, so nothing here needs ticking off by hand. Not everything applies to every project: snooze what's early, and mark what you'll never use as not applicable.",
+			"intro": "Fabric checks off completed steps automatically. Snooze what is early or mark items that do not apply.",
+			"introReadOnly": "Fabric checks off completed steps automatically as this project is configured.",
 			"phaseTransition": "Discovery and planning are done. Switch this project to Development / Execution readiness?",
 			"switchPhase": "Switch",
 			"phaseTransitionDismiss": "Not yet",
@@ -10242,7 +10249,9 @@
 			"stateInProgress": "In progress",
 			"targetUnavailable": "This step's destination is switched off for this project, so there is nowhere to send you. An administrator can re-enable the tab in project settings.",
 			"nextUp": "Next: {item}",
-			"unlockedBy": "Complete {prerequisite} to unlock {items}.",
+			"lockedToggle": "Unlocks later ({count})",
+			"lockedAfter": "After {prerequisite}",
+			"lockedChained": "+{count} more after downstream prerequisites",
 			"itemActions": "Actions for this item",
 			"changeCOMPLETED": "Done",
 			"changeREGRESSED": "Needs attention",
