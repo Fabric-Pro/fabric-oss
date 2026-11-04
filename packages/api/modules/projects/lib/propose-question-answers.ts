@@ -179,8 +179,10 @@ export async function proposeQuestionAnswers({
 				query: [
 					feature.title,
 					...questions.map((q) => q.question),
-					feature.description ?? "",
+					feature.acceptanceCriteria,
+					feature.description,
 				]
+					.filter(Boolean)
 					.join(" ")
 					.trim(),
 				userId: tenantFilter.userId,

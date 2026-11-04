@@ -3,6 +3,7 @@ import { getArtifactProcedure } from "./procedures/artifacts/get";
 import { listArtifactsProcedure } from "./procedures/artifacts/list";
 import { listArtifactDeliveriesProcedure } from "./procedures/artifacts/list-deliveries";
 import { sendArtifactEmailProcedure } from "./procedures/artifacts/send-email";
+import { reportCapabilitiesProcedure } from "./procedures/capabilities";
 import { archiveInstanceProcedure } from "./procedures/instances/archive";
 import { cancelExecutionProcedure } from "./procedures/instances/cancel-execution";
 import { createInstanceProcedure } from "./procedures/instances/create";
@@ -15,6 +16,10 @@ import { testInstanceConnectionsProcedure } from "./procedures/instances/test-co
 import { updateInstanceProcedure } from "./procedures/instances/update";
 import { versionHistoryProcedure } from "./procedures/instances/versionHistory";
 import { getIntegrationStatus } from "./procedures/integrations/status";
+import {
+	archiveTemplateProcedure,
+	unarchiveTemplateProcedure,
+} from "./procedures/templates/archive";
 import { createTemplateProcedure } from "./procedures/templates/create";
 import { deleteTemplateProcedure } from "./procedures/templates/delete";
 import { getTemplateProcedure } from "./procedures/templates/get";
@@ -25,6 +30,8 @@ import { listReportTemplateSkillsProcedure } from "./procedures/templates/skills
 import { updateTemplateProcedure } from "./procedures/templates/update";
 
 export const reportsRouter = {
+	capabilities: reportCapabilitiesProcedure,
+
 	// Template CRUD (reusable definitions)
 	templates: {
 		list: listTemplatesProcedure,
@@ -32,6 +39,8 @@ export const reportsRouter = {
 		create: createTemplateProcedure,
 		update: updateTemplateProcedure,
 		delete: deleteTemplateProcedure,
+		archive: archiveTemplateProcedure,
+		unarchive: unarchiveTemplateProcedure,
 		skills: {
 			list: listReportTemplateSkillsProcedure,
 			attach: attachReportTemplateSkillProcedure,

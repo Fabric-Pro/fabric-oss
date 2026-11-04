@@ -1,3 +1,4 @@
+import { retrieveProjectContexts } from "@repo/rag";
 import { afterEach, expect, it, vi } from "vitest";
 import { patternGraph } from "../src/pattern/agent.js";
 
@@ -112,3 +113,30 @@ it("cancels reader delegation without starting fallback research or model calls"
 	expect(plainFetch).not.toHaveBeenCalled();
 	expect(getAgentModelAsync).not.toHaveBeenCalled();
 });
+
+it.each([true, false])(
+	"searches planner inputs in order (optional=%s)",
+	async (optional) => {
+		sendMessageSecure.mockResolvedValue({ messages: [] });
+		await patternGraph.invoke(
+			{
+				messages: [{ role: "user", content: "Request" }],
+				projectContext: {
+					projectId: "example-project",
+					projectName: "Example",
+					...(optional ? { techStack: "TypeScript" } : {}),
+				},
+				tenantContext: {
+					userId: "example-user",
+					organizationId: "example-org",
+				},
+			},
+			{ interruptAfter: ["researchNode"] },
+		);
+		expect(retrieveProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				query: optional ? "Request TypeScript" : "Request",
+			}),
+		);
+	},
+);

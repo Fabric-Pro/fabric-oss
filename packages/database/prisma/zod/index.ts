@@ -1908,13 +1908,13 @@ export type AiUsageLimitCounterScalarFieldEnum = z.infer<typeof AiUsageLimitCoun
 
 // File: ReportTemplateScalarFieldEnum.schema.ts
 
-export const ReportTemplateScalarFieldEnumSchema = z.enum(['id', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'templateType', 'category', 'tags', 'definition', 'parameters', 'outputFormat', 'connections', 'fabricConfig', 'schedule', 'evidenceProjectId', 'evidenceReportSlug', 'evidenceConfig', 'userId', 'organizationId', 'scope', 'isPublic', 'version', 'useCount', 'lastUsedAt', 'createdAt', 'updatedAt'])
+export const ReportTemplateScalarFieldEnumSchema = z.enum(['id', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'templateType', 'category', 'tags', 'definition', 'parameters', 'outputFormat', 'connections', 'fabricConfig', 'schedule', 'evidenceProjectId', 'evidenceReportSlug', 'evidenceConfig', 'userId', 'organizationId', 'scope', 'isPublic', 'version', 'useCount', 'lastUsedAt', 'archivedAt', 'createdAt', 'updatedAt'])
 
 export type ReportTemplateScalarFieldEnum = z.infer<typeof ReportTemplateScalarFieldEnumSchema>;
 
 // File: TemplateInstanceScalarFieldEnum.schema.ts
 
-export const TemplateInstanceScalarFieldEnumSchema = z.enum(['id', 'templateId', 'userId', 'organizationId', 'sId', 'version', 'status', 'name', 'description', 'heroEmojis', 'connections', 'parameterDefaults', 'fabricConfig', 'schedule', 'nextRunAt', 'lastRunAt', 'scheduleMode', 'isActive', 'runCount', 'createdAt', 'updatedAt'])
+export const TemplateInstanceScalarFieldEnumSchema = z.enum(['id', 'templateId', 'userId', 'organizationId', 'projectId', 'sId', 'version', 'status', 'name', 'description', 'heroEmojis', 'connections', 'parameterDefaults', 'fabricConfig', 'schedule', 'nextRunAt', 'lastRunAt', 'scheduleMode', 'isActive', 'runCount', 'createdAt', 'updatedAt'])
 
 export type TemplateInstanceScalarFieldEnum = z.infer<typeof TemplateInstanceScalarFieldEnumSchema>;
 
@@ -11696,6 +11696,7 @@ export const ReportTemplateSchema = z.object({
   version: z.number().int().default(1),
   useCount: z.number().int(),
   lastUsedAt: z.date().nullish(),
+  archivedAt: z.date().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -11709,6 +11710,7 @@ export const TemplateInstanceSchema = z.object({
   templateId: z.string(),
   userId: z.string(),
   organizationId: z.string().nullish(),
+  projectId: z.string().nullish(),
   sId: z.string(),
   version: z.number().int().default(1),
   status: TemplateInstanceStatusSchema.default("ACTIVE"),

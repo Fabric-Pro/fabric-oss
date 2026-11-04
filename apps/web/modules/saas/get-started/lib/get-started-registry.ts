@@ -135,20 +135,35 @@ export type GsRuntimeGates = {
 	 * Credentials tab under Connections, which is hidden where it is off.
 	 */
 	credentialManager: boolean;
+	/**
+	 * `REPORT_SUITE_V2`, resolved for the viewer's organization. On, reports
+	 * are managed from each project's Reports tab: the sidebar Reports page
+	 * and its tour go away (`hiddenWhen`), and the project tab's tour names
+	 * its new sub-tabs (`gatedCopy`).
+	 */
+	reportSuite: boolean;
 };
 
 /**
  * Is this drawer item / page tour available to this viewer?
  *
  * `enabled: false` is absolute and is checked first: a build-time exclusion
- * cannot be reopened by a runtime gate. `runtimeGate` then defers to the
- * supplied value. An entry with neither is always available.
+ * cannot be reopened by a runtime gate. `hiddenWhen` then hides an entry a
+ * per-organization flag replaces, and `runtimeGate` shows one only while its
+ * flag is on. An entry with none of them is always available.
  */
 export function isGsEntryEnabled(
-	entry: { enabled?: boolean; runtimeGate?: keyof GsRuntimeGates },
+	entry: {
+		enabled?: boolean;
+		runtimeGate?: keyof GsRuntimeGates;
+		hiddenWhen?: keyof GsRuntimeGates;
+	},
 	gates: GsRuntimeGates,
 ): boolean {
 	if (entry.enabled === false) {
+		return false;
+	}
+	if (entry.hiddenWhen && gates[entry.hiddenWhen]) {
 		return false;
 	}
 	if (entry.runtimeGate) {
@@ -168,6 +183,8 @@ export type GsItem = {
 	enabled?: boolean;
 	/** Gate behind a flag that is resolved per request, not at build time. */
 	runtimeGate?: keyof GsRuntimeGates;
+	/** Hide while this per-request flag is on (it replaces the destination). */
+	hiddenWhen?: keyof GsRuntimeGates;
 	/** Hide unless the signed-in user has this role. */
 	requiresRole?: "admin";
 	/** Only show in this workspace context. */
@@ -335,6 +352,9 @@ const WORKSPACE_GROUP: GsGroup = {
 				"Turn project activity into recurring summaries and AI-assisted check-ins from report templates.",
 			icon: ClipboardListIcon,
 			anchor: "nav-reports",
+			// The report suite removes this page; reports live in each
+			// project's Reports tab ("project-reports").
+			hiddenWhen: "reportSuite",
 			href: ({ basePath }) => `${basePath}/report-templates`,
 		},
 		{
@@ -829,6 +849,8 @@ export type GsPage = {
 	enabled?: boolean;
 	/** Gate behind a flag that is resolved per request, not at build time. */
 	runtimeGate?: keyof GsRuntimeGates;
+	/** Hide while this per-request flag is on (it replaces the page). */
+	hiddenWhen?: keyof GsRuntimeGates;
 	/**
 	 * ISO date the page's tour was introduced. A page added AFTER
 	 * `ONBOARDING_PAGE_BASELINE` auto-opens once for EXISTING users too — not
@@ -1088,12 +1110,22 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				anchor: "reports-browse-templates",
 				title: "Templates are recipes",
 				body: "A template is the shape of a report; you turn it into a running instance with a cadence — daily, weekly, monthly — so project activity becomes a scheduled AI summary that arrives on rhythm, not a one-time export.",
+				gatedCopy: {
+					runtimeGate: "reportSuite",
+					title: "Templates are recipes",
+					body: "A template is the shape of a report. Browse templates opens the Templates tab, where Use template starts a report for this project with its data source and context filled in where Fabric can find them. Admins also create, edit and archive templates there; an archived template stops being offered, and reports made from it keep running.",
+				},
 			},
 			{
 				id: "reports-tabs",
 				anchor: "reports-tabs",
 				title: "Instances vs templates",
 				body: "'My Report Instances' are what's actually running — each shows its last run and Active/Paused state; 'Available Templates' are what you can start from. The instance is the live, scheduled thing.",
+				gatedCopy: {
+					runtimeGate: "reportSuite",
+					title: "This project's reports and templates",
+					body: "'My Instances' lists every report of this project, with its last run and Active/Paused state, and Generate runs one now. 'Templates' lists what you can start a new report from. The tab opens on My Instances once the project has a report, and on Templates until then.",
+				},
 			},
 		],
 	},
@@ -1765,6 +1797,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 		app: true,
 		label: "Reports",
 		icon: ClipboardListIcon,
+		hiddenWhen: "reportSuite",
 		components: [
 			{
 				id: "reports-hub-tabs",

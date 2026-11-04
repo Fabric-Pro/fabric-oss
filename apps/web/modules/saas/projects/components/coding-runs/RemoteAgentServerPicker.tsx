@@ -27,8 +27,68 @@ import {
 	Trash2Icon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const LOOPBACK_PRESET_URLS = new Set([
+	"http://localhost:9100",
+	"http://127.0.0.1:9100",
+	"http://[::1]:9100",
+]);
+
+function normalizeLoopbackHost(hostname?: string): string | null {
+	if (!hostname) {
+		return null;
+	}
+	const trimmed = hostname.trim().toLowerCase();
+	if (!trimmed) {
+		return null;
+	}
+	return trimmed === "::1" ? "[::1]" : trimmed;
+}
+
+export function resolvePersonalLoopbackUrl(portalHostname?: string): string {
+	const host = normalizeLoopbackHost(portalHostname);
+	if (host === "127.0.0.1") {
+		return "http://127.0.0.1:9100";
+	}
+	if (host === "[::1]") {
+		return "http://[::1]:9100";
+	}
+	return "http://localhost:9100";
+}
+
+export function getLoopbackHostMismatchUrl(
+	candidateUrl: string,
+	portalHostname?: string,
+): string | null {
+	const portalHost = normalizeLoopbackHost(portalHostname);
+	if (!portalHost || !LOOPBACK_HOSTS.has(portalHost)) {
+		return null;
+	}
+	let parsed: URL;
+	try {
+		parsed = new URL(candidateUrl.trim());
+	} catch {
+		return null;
+	}
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		return null;
+	}
+	const candidateHost = normalizeLoopbackHost(parsed.hostname);
+	if (
+		!candidateHost ||
+		!LOOPBACK_HOSTS.has(candidateHost) ||
+		candidateHost === portalHost
+	) {
+		return null;
+	}
+	parsed.hostname = portalHost;
+	return parsed.pathname === "/" && !parsed.search && !parsed.hash
+		? parsed.origin
+		: parsed.href;
+}
 
 function generateServerSecret(): string {
 	const bytes = new Uint8Array(24);
@@ -76,6 +136,23 @@ export function RemoteAgentServerPicker({
 	const [scope, setScope] = useState<"PRIVATE" | "TEAM">("PRIVATE");
 	const [scopeFilter, setScopeFilter] = useState<"ALL" | "PRIVATE" | "TEAM">(
 		"ALL",
+	);
+	const [portalHostname, setPortalHostname] = useState<string | undefined>(
+		undefined,
+	);
+
+	useEffect(() => {
+		setPortalHostname(window.location.hostname);
+	}, []);
+
+	const personalPresetUrl = resolvePersonalLoopbackUrl(portalHostname);
+	const personalPresetHostPort = personalPresetUrl.replace(
+		/^https?:\/\//,
+		"",
+	);
+	const suggestedLoopbackUrl = getLoopbackHostMismatchUrl(
+		url,
+		portalHostname,
 	);
 
 	const selected = servers.find((server) => server.id === value);
@@ -129,7 +206,11 @@ export function RemoteAgentServerPicker({
 		if (!name.trim()) {
 			setName("Personal Fabric Agents Remote Server");
 		}
-		setUrl("http://127.0.0.1:9100");
+		const currentHostname =
+			typeof window === "undefined"
+				? portalHostname
+				: window.location.hostname;
+		setUrl(resolvePersonalLoopbackUrl(currentHostname));
 		setScope("PRIVATE");
 		if (secret.length < 32) {
 			setSecret(generateServerSecret());
@@ -140,7 +221,7 @@ export function RemoteAgentServerPicker({
 		if (!name.trim()) {
 			setName("Organization Fabric Agents Remote Server");
 		}
-		if (!url.trim() || url === "http://127.0.0.1:9100") {
+		if (!url.trim() || LOOPBACK_PRESET_URLS.has(url.trim())) {
 			setUrl("https://agents.example.com");
 		}
 		if (canShare) {
@@ -406,7 +487,7 @@ export function RemoteAgentServerPicker({
 						<li>
 							Copy the endpoint URL (e.g.{" "}
 							<code className="font-mono text-foreground">
-								http://127.0.0.1:9100
+								{personalPresetUrl}
 							</code>{" "}
 							for a Personal Fabric Agents Remote Server or{" "}
 							<code className="font-mono text-foreground">
@@ -434,8 +515,8 @@ export function RemoteAgentServerPicker({
 							onClick={applyLocalPreset}
 						>
 							<LaptopIcon className="size-3 text-primary" />
-							Personal Fabric Agents Remote Server
-							(127.0.0.1:9100)
+							Personal Fabric Agents Remote Server (
+							{personalPresetHostPort})
 						</Button>
 						<Button
 							type="button"
@@ -475,6 +556,33 @@ export function RemoteAgentServerPicker({
 								value={url}
 								onChange={(event) => setUrl(event.target.value)}
 							/>
+							{suggestedLoopbackUrl && (
+								<div
+									data-testid="loopback-host-mismatch-hint"
+									className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground"
+								>
+									<span>
+										Match this tab&apos;s loopback hostname
+										so embedded Server Web UI sessions keep
+										their{" "}
+										<code className="font-mono text-foreground">
+											SameSite=Strict
+										</code>{" "}
+										sign-in cookie.
+									</span>
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										className="h-6 px-2 text-xs"
+										onClick={() =>
+											setUrl(suggestedLoopbackUrl)
+										}
+									>
+										Use {suggestedLoopbackUrl}
+									</Button>
+								</div>
+							)}
 						</div>
 					</div>
 					<div className="grid gap-3 sm:grid-cols-2">

@@ -8,6 +8,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { assertCanPublishReportTemplate } from "../../lib/report-access";
 
 // Evidence.dev theme configuration schema
 const evidenceThemeSchema = z
@@ -142,6 +143,8 @@ export const createTemplateProcedure = tenantProtectedProcedure
 			input.organizationId,
 			context.session,
 		);
+
+		await assertCanPublishReportTemplate(input, context.user);
 
 		// Verify organization membership if creating org-scoped template
 		if (input.scope === "ORGANIZATION" && organizationId) {

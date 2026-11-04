@@ -1,5 +1,6 @@
 "use client";
 
+import { classifyDateParameter } from "@saas/reports/lib/date-parameter";
 import { Badge } from "@ui/components/badge";
 import { DatePicker } from "@ui/components/date-picker";
 import { Input } from "@ui/components/input";
@@ -16,6 +17,7 @@ import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
 import { format } from "date-fns";
 import { AlertTriangleIcon, CheckCircle2Icon, InfoIcon } from "lucide-react";
+import { PeriodParameterInput } from "./PeriodParameterInput";
 
 // Parameter schema (JSON Schema-like)
 export type ParameterSchema = {
@@ -39,57 +41,12 @@ type Props = {
 	isRequired?: boolean;
 	isUsedInOutput?: boolean;
 	className?: string;
+	/**
+	 * Report suite treatment: a required value that is still empty shows red,
+	 * and a reporting period offers relative presets beside its date range.
+	 */
+	enhanced?: boolean;
 };
-
-// Detect if a parameter is a date based on name or format
-function isDateParameter(name: string, schema: ParameterSchema): boolean {
-	if (schema.format === "date" || schema.format === "date-time") {
-		return true;
-	}
-	const lower = name.toLowerCase();
-
-	// Direct date keywords
-	if (lower.includes("date")) {
-		return true;
-	}
-
-	// Timestamp patterns: "createdAt", "updated_at", etc.
-	if (lower.endsWith("at") || lower.endsWith("_at")) {
-		return true;
-	}
-
-	// Period patterns: "periodStart", "periodEnd", "period_start", "period_end"
-	if (lower.includes("period")) {
-		return true;
-	}
-
-	// Start/End patterns that likely refer to dates: "startDate", "endDate", "start", "end"
-	// But exclude things like "startWith", "endpoint"
-	if (
-		(lower.endsWith("start") || lower.endsWith("end")) &&
-		!lower.includes("point") &&
-		!lower.includes("with")
-	) {
-		return true;
-	}
-
-	// Time-related: "from", "to", "until", "since", "due", "deadline"
-	if (
-		lower.includes("deadline") ||
-		lower.includes("duedate") ||
-		lower === "from" ||
-		lower === "to" ||
-		lower === "until" ||
-		lower === "since" ||
-		lower.endsWith("from") ||
-		lower.endsWith("to") ||
-		lower.endsWith("until")
-	) {
-		return true;
-	}
-
-	return false;
-}
 
 // Detect if a parameter should use a textarea
 function isLongTextParameter(name: string, schema: ParameterSchema): boolean {
@@ -136,9 +93,25 @@ export function SmartParameterInput({
 	isRequired,
 	isUsedInOutput,
 	className,
+	enhanced = false,
 }: Props) {
 	const hasValue = Boolean(value?.trim());
-	const isDate = isDateParameter(name, schema);
+	const dateKind = classifyDateParameter(name, schema);
+	const isPeriod = enhanced && dateKind === "period";
+	const isDate = dateKind !== null && !isPeriod;
+	const hasDefault = schema.default != null && schema.default !== "";
+	// A required value the server cannot fill from a default.
+	const missing = enhanced && Boolean(isRequired) && !hasValue && !hasDefault;
+	const descriptionId = schema.description
+		? `param-${name}-description`
+		: undefined;
+	const fieldA11y = enhanced
+		? {
+				"aria-required": isRequired || undefined,
+				"aria-invalid": missing || undefined,
+				"aria-describedby": descriptionId,
+			}
+		: {};
 	const isLongText = isLongTextParameter(name, schema);
 	const isEmail = isEmailParameter(name, schema);
 	const isUrl = isUrlParameter(name, schema);
@@ -157,14 +130,37 @@ export function SmartParameterInput({
 		<div className={cn("space-y-2", className)}>
 			{/* Label and badges */}
 			<div className="flex items-center gap-2 flex-wrap">
-				<Label htmlFor={`param-${name}`} className="font-medium">
+				<Label
+					htmlFor={`param-${name}`}
+					className={cn("font-medium", missing && "text-destructive")}
+				>
 					{displayName}
+					{enhanced && isRequired && (
+						<span
+							aria-hidden="true"
+							className="ml-1 text-destructive"
+						>
+							*
+						</span>
+					)}
 				</Label>
-				{isRequired && (
-					<Badge variant="secondary" className="text-xs">
-						Required
-					</Badge>
-				)}
+				{isRequired &&
+					(enhanced ? (
+						<span
+							className={cn(
+								"text-xs font-medium",
+								missing
+									? "text-destructive"
+									: "text-muted-foreground",
+							)}
+						>
+							Required
+						</span>
+					) : (
+						<Badge variant="secondary" className="text-xs">
+							Required
+						</Badge>
+					))}
 				{isUsedInOutput && !hasValue && (
 					<Badge variant="warning" className="text-xs gap-1">
 						<AlertTriangleIcon className="h-3 w-3" />
@@ -181,14 +177,32 @@ export function SmartParameterInput({
 
 			{/* Description */}
 			{schema.description && (
-				<p className="text-xs text-muted-foreground flex items-start gap-1">
+				<p
+					id={descriptionId}
+					className="text-xs text-muted-foreground flex items-start gap-1"
+				>
 					<InfoIcon className="h-3 w-3 mt-0.5 flex-shrink-0" />
 					{schema.description}
 				</p>
 			)}
 
 			{/* Input based on type */}
-			{isDate ? (
+			{isPeriod ? (
+				<PeriodParameterInput
+					id={`param-${name}`}
+					value={value}
+					onChange={onChange}
+					schema={schema}
+					placeholder={
+						schema.default
+							? String(schema.default)
+							: "e.g. Sprint 42, Last 2 weeks, March 2026"
+					}
+					required={isRequired}
+					invalid={missing}
+					describedBy={descriptionId}
+				/>
+			) : isDate ? (
 				<DatePicker
 					value={value || undefined}
 					onChange={(date) => {
@@ -199,6 +213,8 @@ export function SmartParameterInput({
 							? String(schema.default)
 							: `Select ${displayName.toLowerCase()}...`
 					}
+					aria-label={enhanced ? displayName : undefined}
+					className={missing ? "border-destructive" : undefined}
 				/>
 			) : isBoolean ? (
 				<div className="flex items-center gap-2">
@@ -218,7 +234,11 @@ export function SmartParameterInput({
 				</div>
 			) : isEnum ? (
 				<Select value={value || ""} onValueChange={onChange}>
-					<SelectTrigger className="w-full max-w-sm">
+					<SelectTrigger
+						id={`param-${name}`}
+						className="w-full max-w-sm"
+						{...fieldA11y}
+					>
 						<SelectValue
 							placeholder={`Select ${displayName.toLowerCase()}...`}
 						/>
@@ -243,6 +263,7 @@ export function SmartParameterInput({
 					}
 					rows={3}
 					maxLength={schema.maxLength}
+					{...fieldA11y}
 				/>
 			) : (
 				<Input
@@ -269,6 +290,7 @@ export function SmartParameterInput({
 					maxLength={schema.maxLength}
 					pattern={schema.pattern}
 					className={isNumber ? "max-w-[200px]" : ""}
+					{...fieldA11y}
 				/>
 			)}
 

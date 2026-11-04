@@ -10,6 +10,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { assertCanEditReportInstance } from "../../lib/report-access";
 
 const archiveInputSchema = z.object({
 	id: z.string(),
@@ -37,6 +38,8 @@ export const archiveInstanceProcedure = tenantProtectedProcedure
 				message: "Template instance not found or access denied",
 			});
 		}
+
+		await assertCanEditReportInstance(existing, context.user);
 
 		// Cannot archive an already archived instance
 		if (existing.status === "ARCHIVED") {

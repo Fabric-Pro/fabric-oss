@@ -31,15 +31,72 @@ const LOCALE_REWRITE_HAS = [
 	},
 ];
 
+type Join<
+	Items extends readonly string[],
+	Sep extends string,
+> = Items extends readonly [infer Head extends string]
+	? Head
+	: Items extends readonly [
+				infer Head extends string,
+				...infer Tail extends readonly string[],
+			]
+		? `${Head}${Sep}${Join<Tail, Sep>}`
+		: "";
+
 /**
- * Mirrors the negative lookahead in `proxy.ts` `config.matcher` so a client
- * sending `x-fabric-locale-rewrite` on a path that bypasses `proxy.ts`
- * (`/api/*`, `/mcp`, `/.well-known/*`, `/cli/*`, static assets) cannot trigger
- * a locale rewrite. Paths covered by `proxy.ts` strip any client-sent copy of
- * the header in `forwardedRequestHeaders()`.
+ * Canonical list of path-prefix regex patterns excluded from `proxy.ts`
+ * `config.matcher[0]` and from `beforeFiles` subpath locale rewrites.
+ *
+ * Next.js statically parses `export const config` in `proxy.ts` from the SWC
+ * AST (`next/dist/build/analysis/extract-const-value.js`), rejecting imported
+ * identifiers, template expressions, and `.join()` calls. Keep `proxy.ts`
+ * `config.matcher[0]` written as a literal annotated with
+ * `satisfies typeof PROXY_PRIMARY_MATCHER_SOURCE`; both `tsc` and
+ * `proxy-root-locale-rewrite.test.ts` fail whenever the two lists diverge.
  */
-const NON_PROXY_SUBPATH_SOURCE =
-	"/:path((?!api|mcp(?:/|$)|\\.well-known|cli/|image-proxy|images|integrations|fonts|fabric-web-assets|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|robots.txt|llms\\.txt|llms-full\\.txt).+)";
+export const PROXY_EXCLUDED_PATH_PATTERNS = [
+	"api",
+	"mcp(?:/|$)",
+	"\\.well-known",
+	"cli/",
+	"image-proxy",
+	"images",
+	"integrations",
+	"fonts",
+	"fabric-web-assets",
+	"_next/static",
+	"_next/image",
+	"favicon.ico",
+	"icon.png",
+	"manifest\\.json",
+	"sitemap.xml",
+	"docs-sitemap\\.xml",
+	"robots.txt",
+	"llms\\.txt",
+	"llms-full\\.txt",
+] as const;
+
+type ProxyExcludedAlternation = Join<typeof PROXY_EXCLUDED_PATH_PATTERNS, "|">;
+
+const PROXY_EXCLUDED_ALTERNATION = PROXY_EXCLUDED_PATH_PATTERNS.join(
+	"|",
+) as ProxyExcludedAlternation;
+
+/**
+ * Expected string literal for `proxy.ts` `config.matcher[0]`.
+ */
+export const PROXY_PRIMARY_MATCHER_SOURCE =
+	`/((?!${PROXY_EXCLUDED_ALTERNATION}).*)` as const;
+
+/**
+ * Mirrors the negative lookahead in `proxy.ts` `config.matcher[0]` so a client
+ * sending `x-fabric-locale-rewrite` on a path that bypasses `proxy.ts`
+ * (`/api/*`, `/mcp`, `/.well-known/*`, `/cli/*`, `/docs-sitemap.xml`, static
+ * assets) cannot trigger a locale rewrite. Paths covered by `proxy.ts` strip
+ * any client-sent copy of the header in `forwardedRequestHeaders()`.
+ */
+export const NON_PROXY_SUBPATH_SOURCE =
+	`/:path((?!${PROXY_EXCLUDED_ALTERNATION}).+)` as const;
 
 export function buildLocaleBeforeFilesRewrites(): Rewrite[] {
 	// Order is load-bearing: `resolveRoutes()` evaluates every `beforeFiles`

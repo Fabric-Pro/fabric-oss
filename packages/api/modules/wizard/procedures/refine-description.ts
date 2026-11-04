@@ -163,7 +163,14 @@ export const refineDescriptionProcedure = tenantProtectedProcedure
 				if (canAccess) {
 					const projectContexts = await retrieveProjectContexts({
 						projectId,
-						query: description,
+						query: [
+							description,
+							projectName,
+							projectTypes?.join(", "),
+						]
+							.filter(Boolean)
+							.join(" ")
+							.trim(),
 						userId: user.id,
 						organizationId,
 						topK: 5,

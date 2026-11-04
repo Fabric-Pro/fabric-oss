@@ -185,6 +185,8 @@ export function GetStartedController() {
 	const parlumeMeetingsEnabled = useFeatureFlag("PARLUME_MEETINGS");
 	// The credential manager gates one Connections tab.
 	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
+	// The report suite replaces the sidebar Reports page with the project tab.
+	const reportSuiteEnabled = useFeatureFlag("REPORT_SUITE_V2");
 	const gsGates: GsRuntimeGates = useMemo(
 		() => ({
 			publishingSuite: tabGates.publishingSuiteEnabled,
@@ -193,6 +195,7 @@ export function GetStartedController() {
 			proposalArtifact: proposalArtifactEnabled,
 			parlumeMeetings: parlumeMeetingsEnabled,
 			credentialManager: credentialManagerEnabled,
+			reportSuite: reportSuiteEnabled,
 		}),
 		[
 			tabGates,
@@ -201,6 +204,7 @@ export function GetStartedController() {
 			proposalArtifactEnabled,
 			parlumeMeetingsEnabled,
 			credentialManagerEnabled,
+			reportSuiteEnabled,
 		],
 	);
 	// A tour step / drawer entry pointing at a project tab this viewer can't

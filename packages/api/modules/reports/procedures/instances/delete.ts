@@ -7,6 +7,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { assertCanEditReportInstance } from "../../lib/report-access";
 
 const deleteInstanceInputSchema = z.object({
 	id: z.string(),
@@ -34,6 +35,8 @@ export const deleteInstanceProcedure = tenantProtectedProcedure
 				message: "Template instance not found or access denied",
 			});
 		}
+
+		await assertCanEditReportInstance(existing, context.user);
 
 		await deleteTemplateInstance(input.id);
 

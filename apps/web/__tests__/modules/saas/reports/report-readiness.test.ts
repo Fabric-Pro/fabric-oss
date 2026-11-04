@@ -263,3 +263,71 @@ describe("computeReportReadiness", () => {
 		expect(r.connection).toBe("connection_unavailable");
 	});
 });
+
+describe("computeReportReadiness — required provider context fields", () => {
+	const connected = {
+		...base,
+		bindings: { fizzy: { id: "cfg-1" } },
+		requiredParams: [{ key: "projectName", value: "Fabric" }],
+	};
+
+	it("fails the parameters check and names an empty required context field", () => {
+		const r = computeReportReadiness({
+			...connected,
+			requiredContextFields: [
+				{ key: "accountSlug", label: "Account Slug", value: "" },
+				{ key: "boardId", label: "Board", value: "42" },
+			],
+		});
+		const params = r.checks.find((c) => c.key === "params");
+		expect(params?.status).toBe("fail");
+		expect(params?.note).toBe("Fill in: Account Slug");
+		expect(r.missingRequiredParams).toEqual(["Account Slug"]);
+		expect(r.hardBlocked).toBe(true);
+		expect(r.blockReason).toContain("Account Slug");
+	});
+
+	it("treats a whitespace-only context value as empty", () => {
+		const r = computeReportReadiness({
+			...connected,
+			requiredContextFields: [
+				{ key: "accountSlug", label: "Account Slug", value: "   " },
+			],
+		});
+		expect(r.missingRequiredParams).toEqual(["Account Slug"]);
+	});
+
+	it("passes when every required context field is filled", () => {
+		const r = computeReportReadiness({
+			...connected,
+			requiredContextFields: [
+				{ key: "accountSlug", label: "Account Slug", value: "123" },
+				{ key: "boardId", label: "Board", value: "42" },
+			],
+		});
+		expect(r.checks.find((c) => c.key === "params")?.status).toBe("ok");
+		expect(r.hardBlocked).toBe(false);
+	});
+
+	it("lists missing template parameters and context fields together", () => {
+		const r = computeReportReadiness({
+			...connected,
+			requiredParams: [{ key: "projectName", label: "Project Name" }],
+			requiredContextFields: [{ key: "boardId", label: "Board" }],
+		});
+		expect(r.missingRequiredParams).toEqual(["Project Name", "Board"]);
+		expect(r.checks.find((c) => c.key === "params")?.label).toBe(
+			"2 required parameters missing",
+		);
+	});
+
+	it("leaves readiness unchanged when no context fields are passed (flag off)", () => {
+		const withField = computeReportReadiness({
+			...connected,
+			requiredContextFields: [],
+		});
+		const without = computeReportReadiness(connected);
+		expect(withField.checks).toEqual(without.checks);
+		expect(without.hardBlocked).toBe(false);
+	});
+});

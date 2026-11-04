@@ -15,6 +15,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { assertCanEditReportInstance } from "../../lib/report-access";
 import { validateReportConnections } from "../../lib/validate-connections";
 
 export const updateInstanceInputSchema = z.object({
@@ -107,6 +108,8 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 				message: "Template instance not found or access denied",
 			});
 		}
+
+		await assertCanEditReportInstance(existing, context.user);
 
 		// Validate connections if provided. Pass the template's data sources so a
 		// binding keyed by a data source id (e.g. "task-board") can self-heal via

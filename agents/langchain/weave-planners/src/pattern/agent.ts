@@ -196,10 +196,15 @@ Focus on:
 		config.signal?.throwIfAborted();
 		const results = await retrieveProjectContexts({
 			projectId: state.projectContext.projectId,
-			query:
+			query: [
 				typeof userMessage === "string"
 					? userMessage
 					: String(userMessage),
+				state.projectContext.techStack,
+			]
+				.filter(Boolean)
+				.join(" ")
+				.trim(),
 			userId: state.tenantContext.userId,
 			organizationId: state.tenantContext.organizationId ?? undefined,
 			topK: 5,

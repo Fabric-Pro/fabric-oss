@@ -31,6 +31,8 @@ export interface ListReportTemplatesParams {
 	tags?: string[];
 	search?: string;
 	isPublic?: boolean;
+	/** Archived templates are excluded unless this is true. */
+	includeArchived?: boolean;
 	limit?: number;
 	offset?: number;
 	sortBy?: "name" | "createdAt" | "updatedAt" | "useCount" | "lastUsedAt";
@@ -46,6 +48,7 @@ export async function listReportTemplates({
 	tags,
 	search,
 	isPublic,
+	includeArchived = false,
 	limit = 50,
 	offset = 0,
 	sortBy = "updatedAt",
@@ -109,6 +112,10 @@ export async function listReportTemplates({
 	// Public filter
 	if (isPublic !== undefined) {
 		where.isPublic = isPublic;
+	}
+
+	if (!includeArchived) {
+		where.archivedAt = null;
 	}
 
 	// Search filter (name or description)
@@ -291,6 +298,17 @@ export async function updateReportTemplate({
 export async function deleteReportTemplate(id: string) {
 	return db.reportTemplate.delete({
 		where: { id },
+	});
+}
+
+/** Archive (a Date) or unarchive (`null`) a report template. */
+export async function setReportTemplateArchivedAt(
+	id: string,
+	archivedAt: Date | null,
+) {
+	return db.reportTemplate.update({
+		where: { id },
+		data: { archivedAt },
 	});
 }
 
@@ -644,6 +662,7 @@ export interface CreateTemplateInstanceParams {
 	templateId: string;
 	userId: string;
 	organizationId?: string;
+	projectId?: string;
 	name: string;
 	description?: string;
 	heroEmojis?: string[];
@@ -671,6 +690,7 @@ export async function createTemplateInstance(
 			templateId: params.templateId,
 			userId: params.userId,
 			organizationId: params.organizationId,
+			projectId: params.projectId,
 			// Versioning fields
 			sId,
 			version: 1,
@@ -881,6 +901,11 @@ export async function getInstanceScheduleMode(
 export interface ListTemplateInstancesParams {
 	userId: string;
 	organizationId?: string;
+	/**
+	 * List every report of this project, not only the caller's. The caller must
+	 * already be authorized to read the project's reports.
+	 */
+	projectId?: string;
 	templateId?: string;
 	/** @deprecated Use status instead */
 	isActive?: boolean;
@@ -897,6 +922,7 @@ export interface ListTemplateInstancesParams {
 export async function listTemplateInstances({
 	userId,
 	organizationId,
+	projectId,
 	templateId,
 	isActive,
 	status,
@@ -907,12 +933,15 @@ export async function listTemplateInstances({
 	sortOrder = "desc",
 	latestVersionOnly = true,
 }: ListTemplateInstancesParams) {
-	// SECURITY: User-owned pattern - only load instances owned by current user
-	// In org context: user's instances within that org
-	// In personal context: user's personal instances
-	const where: Prisma.TemplateInstanceWhereInput = organizationId
-		? { userId, organizationId } // Org context: user's instances only
-		: { userId, organizationId: null }; // Personal context: user's personal instances
+	// SECURITY: without a project, only the caller's own instances load:
+	// in org context their instances within that org, in personal context
+	// their personal instances. A project's reports are shared with everyone
+	// who may read the project, still inside the XOR tenant filter.
+	const where: Prisma.TemplateInstanceWhereInput = projectId
+		? { projectId, organizationId: organizationId ?? null }
+		: organizationId
+			? { userId, organizationId }
+			: { userId, organizationId: null };
 
 	if (templateId) {
 		where.templateId = templateId;
@@ -1110,6 +1139,7 @@ export async function updateTemplateInstance({
 					templateId: current.templateId,
 					userId: current.userId,
 					organizationId: current.organizationId,
+					projectId: current.projectId,
 					sId: current.sId, // Keep same sId
 					version: current.version + 1, // Increment version
 					status: "ACTIVE",
@@ -1420,6 +1450,7 @@ export async function restoreReportInstanceVersion(
 			templateId: archived.templateId,
 			userId: archived.userId,
 			organizationId: archived.organizationId,
+			projectId: archived.projectId,
 			sId: archived.sId,
 			version: newVersion,
 			status: "ACTIVE",

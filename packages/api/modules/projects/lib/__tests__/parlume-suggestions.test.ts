@@ -340,3 +340,67 @@ describe("suggestParlumeMeetingContribution", () => {
 		);
 	});
 });
+
+it.each([true, false])(
+	"searches transcript then chat (optional=%s)",
+	async (optional) => {
+		mocks.segments.mockImplementation(async ({ where }) =>
+			where.source === "CHAT"
+				? optional
+					? [{ text: "Chat", speakerName: "Sam" }]
+					: []
+				: [{ text: "Speech", speakerName: "Alex" }],
+		);
+		await suggestParlumeMeetingContribution(input);
+		expect(mocks.retrieve).toHaveBeenCalledWith(
+			expect.objectContaining({
+				query: optional ? "Alex: Speech Sam: Chat" : "Alex: Speech",
+			}),
+		);
+	},
+);
+it("bounds the query and preserves the transcript tail", async () => {
+	mocks.segments.mockImplementation(async ({ where }) => [
+		{
+			text: where.source === "CHAT" ? "Chat" : `${"x".repeat(1200)}TAIL`,
+			speakerName: "Alex",
+		},
+	]);
+	await suggestParlumeMeetingContribution(input);
+	expect(mocks.retrieve.mock.calls[0][0].query).toBe(
+		`${"x".repeat(996)}TAIL`,
+	);
+});
+
+it("fits the newest chat into the budget after the transcript", async () => {
+	const transcript = `A: ${"s".repeat(977)}`;
+	mocks.segments.mockImplementation(async ({ where }) =>
+		where.source === "CHAT"
+			? [
+					{ text: "Newest", speakerName: "A" },
+					{ text: "Middle", speakerName: "A" },
+					{ text: "Oldest", speakerName: "A" },
+				]
+			: [{ text: "s".repeat(977), speakerName: "A" }],
+	);
+	await suggestParlumeMeetingContribution(input);
+	const query = mocks.retrieve.mock.calls[0][0].query;
+	expect(query).toBe(`${transcript} A: Middle\nA: Newest`);
+	expect(query).not.toContain("Oldest");
+	expect(query.length).toBeLessThanOrEqual(1000);
+});
+
+it.each([999, 1000])(
+	"omits chat when the transcript uses %i characters",
+	async (length) => {
+		const text = "s".repeat(length - 3);
+		mocks.segments.mockImplementation(async ({ where }) => [
+			{
+				text: where.source === "CHAT" ? "Newest" : text,
+				speakerName: "A",
+			},
+		]);
+		await suggestParlumeMeetingContribution(input);
+		expect(mocks.retrieve.mock.calls[0][0].query).toBe(`A: ${text}`);
+	},
+);

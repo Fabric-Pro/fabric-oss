@@ -135,6 +135,14 @@ describe("FEATURE_FLAG_REGISTRY", () => {
 		expect(FEATURE_FLAG_REGISTRY.PROJECT_SHORTCUTS.default).toBe(false);
 	});
 
+	it("registers REPORT_SUITE_V2 off by default and per organization", () => {
+		expect(FEATURE_FLAG_REGISTRY.REPORT_SUITE_V2.envVar).toBe(
+			"FABRIC_FEATURE_REPORT_SUITE_V2",
+		);
+		expect(FEATURE_FLAG_REGISTRY.REPORT_SUITE_V2.default).toBe(false);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("REPORT_SUITE_V2");
+	});
+
 	it("registers PROJECT_FAVORITES with its env var and default", () => {
 		expect(FEATURE_FLAG_REGISTRY.PROJECT_FAVORITES.envVar).toBe(
 			"FABRIC_FEATURE_PROJECT_FAVORITES",

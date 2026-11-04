@@ -465,6 +465,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	GlossySegmentCache: "projectId",
 	ProjectRecipientBrand: "projectId",
 	ProjectDocumentVisualSpec: "projectId",
+	TemplateInstance: "projectId",
 };
 
 /**

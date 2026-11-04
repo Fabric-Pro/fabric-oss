@@ -1,5 +1,14 @@
 # fabric-app
 
+## 1.16.41
+
+### Patch Changes
+
+- a280dc2: Keep `/docs-sitemap.xml` excluded from `beforeFiles` locale rewrites and lock the excluded-path list shared between `proxy.ts` and `lib/locale-rewrite.ts` against drift.
+- a280dc2: Project context searches for story drafting, feature enhancement, description refinement, meeting suggestions, planning chat, and answer recommendations now include the acceptance criteria and other task inputs used by their AI prompts.
+- a280dc2: Surface specific workspace and service-secret readiness diagnostics when connecting a Fabric Agents remote server, and match loopback presets and embedded Web UI guidance to browser SameSite cookie rules.
+- a280dc2: Reports can be managed from each project's Reports tab, and only platform admins can create system or public report templates.
+
 ## 1.16.40
 
 ### Patch Changes

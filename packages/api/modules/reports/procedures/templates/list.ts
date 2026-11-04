@@ -26,6 +26,8 @@ const listInputSchema = z.object({
 	tags: z.array(z.string()).optional(),
 	search: z.string().optional(),
 	isPublic: z.boolean().optional(),
+	// Template management views list archived templates too; pickers never do.
+	includeArchived: z.boolean().default(false),
 	limit: z.number().min(1).max(100).default(50),
 	offset: z.number().min(0).default(0),
 	sortBy: z
@@ -52,6 +54,7 @@ export const listTemplatesProcedure = tenantProtectedProcedure
 			tags: input.tags,
 			search: input.search,
 			isPublic: input.isPublic,
+			includeArchived: input.includeArchived,
 			limit: input.limit,
 			offset: input.offset,
 			sortBy: input.sortBy,
