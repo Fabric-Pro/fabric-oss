@@ -31,6 +31,9 @@ const h = vi.hoisted(() => ({
 	searchAvailableWorkflows: vi.fn(),
 	getAgentCapabilities: vi.fn(),
 	generateText: vi.fn(),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 	generateEmbeddings: vi.fn(),
 	workflowFindMany: vi.fn(),
@@ -97,6 +100,9 @@ vi.mock("../../tools", () => ({
 }));
 
 vi.mock("@repo/rag/lib/embedding/generator", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: h.generateEmbedding,
 	generateEmbeddings: h.generateEmbeddings,
 }));

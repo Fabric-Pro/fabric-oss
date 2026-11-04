@@ -35,6 +35,9 @@ const { mocks, logs } = vi.hoisted(() => ({
 		isFeatureEnabled: vi.fn(),
 		isOrganizationMember: vi.fn(),
 		resolveCompanyEmbeddingModel: vi.fn(),
+		get generateQueryEmbedding() {
+			return (this as { generateEmbedding: unknown }).generateEmbedding;
+		},
 		generateEmbedding: vi.fn(),
 		searchCompanyContexts: vi.fn(),
 	},
@@ -96,6 +99,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 
 // No `importOriginal`: the barrel boots the whole provider registry.
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	COMPANY_EMBEDDING_RESOLUTION: { organizationOnly: true },
 	companyEmbeddingIdentity: (model: {
 		provider: string;
@@ -103,6 +107,9 @@ vi.mock("@repo/rag", () => ({
 	}) => `${model.provider}:${model.modelString}`,
 	resolveCompanyEmbeddingModel: (...args: unknown[]) =>
 		mocks.resolveCompanyEmbeddingModel(...args),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: (...args: unknown[]) => mocks.generateEmbedding(...args),
 	searchCompanyContexts: (...args: unknown[]) =>
 		mocks.searchCompanyContexts(...args),

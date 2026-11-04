@@ -716,6 +716,7 @@ export async function createTestCaseInPmWithClaim(
 						lastSyncedPmHash: null,
 						pmCreateClaimId: null,
 						pmCreateClaimedAt: null,
+						pmAutoSyncEnabled: true,
 					},
 				});
 				if (count !== 1) {

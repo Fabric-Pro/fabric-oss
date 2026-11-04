@@ -20,6 +20,9 @@ const mocks = vi.hoisted(() => ({
 	getProjectRagSettings: vi.fn(),
 	markDocumentAsEmbedded: vi.fn(),
 	markDocumentAsEmbeddedIfVersionUnchanged: vi.fn(),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 	generateEmbeddings: vi.fn(),
 	storeProjectContext: vi.fn(),
@@ -58,6 +61,9 @@ vi.mock("../../chunking/tokenizer", () => ({
 }));
 
 vi.mock("../../embedding", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: mocks.generateEmbedding,
 	generateEmbeddings: mocks.generateEmbeddings,
 }));

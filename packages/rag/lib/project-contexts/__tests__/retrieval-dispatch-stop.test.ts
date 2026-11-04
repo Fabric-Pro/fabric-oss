@@ -28,7 +28,12 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock("../../embedding", () => ({ generateEmbedding: vi.fn() }));
+vi.mock("../../embedding", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
+	generateEmbedding: vi.fn(),
+}));
 
 vi.mock("../../embedding/sparse", () => ({
 	generateSparseVector: vi.fn(() => ({ indices: [1], values: [1] })),

@@ -64,7 +64,7 @@ import {
 	COMPANY_EMBEDDING_RESOLUTION,
 	type CompanyContextSearchHit,
 	companyEmbeddingIdentity,
-	generateEmbedding,
+	generateQueryEmbedding,
 	resolveCompanyEmbeddingModel,
 	searchCompanyContexts,
 } from "@repo/rag";
@@ -355,7 +355,7 @@ async function findCompanyContextEntries(
 		}
 		// Embedded with the organization's model, the one `model` names and
 		// the sources were written with — never the user's personal one.
-		const queryEmbedding = await generateEmbedding(
+		const queryEmbedding = await generateQueryEmbedding(
 			query,
 			{
 				userId,

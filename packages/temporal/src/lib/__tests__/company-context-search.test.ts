@@ -29,6 +29,9 @@ const { mocks, logs } = vi.hoisted(() => ({
 		isFeatureEnabled: vi.fn(),
 		isOrganizationMember: vi.fn(),
 		resolveCompanyEmbeddingModel: vi.fn(),
+		get generateQueryEmbedding() {
+			return (this as { generateEmbedding: unknown }).generateEmbedding;
+		},
 		generateEmbedding: vi.fn(),
 		searchCompanyContexts: vi.fn(),
 	},
@@ -83,6 +86,9 @@ vi.mock("@repo/rag", async (importOriginal) => {
 		...actual,
 		resolveCompanyEmbeddingModel: (...args: unknown[]) =>
 			mocks.resolveCompanyEmbeddingModel(...args),
+		get generateQueryEmbedding() {
+			return (this as { generateEmbedding: unknown }).generateEmbedding;
+		},
 		generateEmbedding: (...args: unknown[]) =>
 			mocks.generateEmbedding(...args),
 		searchCompanyContexts: (...args: unknown[]) =>

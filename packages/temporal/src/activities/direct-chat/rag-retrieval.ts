@@ -446,9 +446,11 @@ async function retrieveWorkspaceDocuments(
 		const { searchMultipleWorkspaces } = await import(
 			"@repo/rag/lib/workspace-documents/store"
 		);
-		const { generateEmbedding, generateSparseVector } = await import(
-			"@repo/rag"
-		);
+		const {
+			boundQueryForEmbedding,
+			generateQueryEmbedding,
+			generateSparseVector,
+		} = await import("@repo/rag");
 
 		// TENANT side, same reasoning as the project-document retrieval above:
 		// a workspace search runs for a chat turn someone is waiting on.
@@ -459,7 +461,7 @@ async function retrieveWorkspaceDocuments(
 		logger.info("[WorkspaceRAG] Using centralized AI provider config");
 
 		logger.info("[WorkspaceRAG] Generating query embedding...");
-		const embeddingResult = await generateEmbedding(
+		const embeddingResult = await generateQueryEmbedding(
 			message,
 			withDefaultFeature(
 				{
@@ -488,7 +490,9 @@ async function retrieveWorkspaceDocuments(
 			userId,
 			organizationId: organizationId || undefined,
 			queryEmbedding,
-			querySparseVector: generateSparseVector(message),
+			querySparseVector: generateSparseVector(
+				boundQueryForEmbedding(message),
+			),
 			topK,
 			minSimilarity,
 			documentIds,

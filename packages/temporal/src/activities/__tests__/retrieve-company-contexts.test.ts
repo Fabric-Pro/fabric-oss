@@ -127,6 +127,13 @@ vi.mock("@repo/rag", async (importOriginal) => {
 			mocks.resolveCompanyEmbeddingModel(...args),
 		generateEmbedding: (...args: unknown[]) =>
 			mocks.generateEmbedding(...args),
+		// The search embeds through the query helper; keep its real bound and
+		// route the embedding itself to the same mock.
+		generateQueryEmbedding: (text: string, ...rest: unknown[]) =>
+			mocks.generateEmbedding(
+				actual.boundQueryForEmbedding(text),
+				...rest,
+			),
 		searchCompanyContexts: (...args: unknown[]) =>
 			mocks.searchCompanyContexts(...args),
 	};

@@ -68,6 +68,7 @@ describe("updateStory settlesPmCreateClaim", () => {
 			...link,
 			pmCreateClaimId: null,
 			pmCreateClaimedAt: null,
+			pmAutoSyncEnabled: true,
 		});
 	});
 
@@ -90,6 +91,7 @@ describe("updateStory settlesPmCreateClaim", () => {
 		expect(where).not.toHaveProperty("pmCreateClaimId");
 		expect(data).not.toHaveProperty("pmCreateClaimId");
 		expect(data).not.toHaveProperty("pmCreateClaimedAt");
+		expect(data).not.toHaveProperty("pmAutoSyncEnabled");
 	});
 
 	it("a write without it still reports a lost race as a version conflict", async () => {

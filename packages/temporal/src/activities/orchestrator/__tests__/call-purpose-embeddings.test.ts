@@ -3,6 +3,10 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({ purposes: [] as (string | undefined)[] }));
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: async () => {
 		h.purposes.push(currentAiCallPurpose());
 		return { embedding: [0.1], model: "example-model" };

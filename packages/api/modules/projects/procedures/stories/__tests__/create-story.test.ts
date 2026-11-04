@@ -24,6 +24,8 @@ const { handlers, mocks } = vi.hoisted(() => {
 		createStoryFromProposal: vi.fn(),
 		dispatchLifecycleEvent: vi.fn(),
 		userStoryUpdate: vi.fn(),
+		projectFindUnique: vi.fn(),
+		enqueuePmSync: vi.fn(),
 		loggerWarn: vi.fn(),
 		maybeAutoDraftOnStageChange: vi.fn(),
 		workflowStart: vi.fn(),
@@ -34,6 +36,10 @@ const { handlers, mocks } = vi.hoisted(() => {
 // Mocked at the trigger so this suite never loads the Temporal client behind it.
 vi.mock("../../../lib/auto-draft-test-cases", () => ({
 	maybeAutoDraftOnStageChange: mocks.maybeAutoDraftOnStageChange,
+}));
+
+vi.mock("../../../lib/enqueue-pm-sync", () => ({
+	enqueuePmSync: mocks.enqueuePmSync,
 }));
 
 vi.mock("@repo/ai/lib/story-title-generator", () => ({
@@ -55,6 +61,7 @@ vi.mock("@repo/ai/lib/story-title-generator", () => ({
 vi.mock("@repo/database", () => ({
 	db: {
 		userStory: { update: mocks.userStoryUpdate },
+		project: { findUnique: mocks.projectFindUnique },
 	},
 	StoryKindSchema: z.enum(["FEATURE", "BUG"]),
 	FeatureDraftingStageSchema: z.enum([
@@ -139,6 +146,8 @@ beforeEach(() => {
 	// is not a Promise — a bare `vi.fn()` returning undefined throws there.
 	mocks.maybeAutoDraftOnStageChange.mockResolvedValue(undefined);
 	mocks.workflowStart.mockResolvedValue({});
+	mocks.projectFindUnique.mockResolvedValue(null);
+	mocks.enqueuePmSync.mockResolvedValue({ enqueued: true });
 });
 
 describe("createStoryProcedure — title generation", () => {
@@ -400,6 +409,93 @@ describe("createStoryProcedure — delivery-track classification", () => {
 							planEligible: true,
 						},
 					],
+				}),
+			);
+		});
+	});
+});
+
+describe("createStoryProcedure — PM auto-sync default", () => {
+	it("PM connected → enables auto-sync and enqueues initial push", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			projectManagementMcpConfigId: "cfg-1",
+			projectManagementContainerId: "c-1",
+		});
+
+		await handlers.create({
+			input: { ...baseInput, title: "Add SSO login" },
+			context: ctx,
+		});
+
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+			expect.objectContaining({
+				enablePmAutoSync: true,
+			}),
+		);
+		expect(mocks.enqueuePmSync).toHaveBeenCalledWith({
+			itemId: "story-1",
+			itemType: "story",
+			projectId: "project-1",
+			userId: "user-1",
+			triggerSource: "manual-edit",
+			forceInitialPush: true,
+		});
+	});
+
+	it("no PM tool (null) → leaves auto-sync undefined and skips enqueue", async () => {
+		mocks.projectFindUnique.mockResolvedValue(null);
+
+		await handlers.create({
+			input: { ...baseInput, title: "Add SSO login" },
+			context: ctx,
+		});
+
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+			expect.objectContaining({
+				enablePmAutoSync: undefined,
+			}),
+		);
+		expect(mocks.enqueuePmSync).not.toHaveBeenCalled();
+	});
+
+	it("container missing → leaves auto-sync undefined and skips enqueue", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			projectManagementMcpConfigId: "cfg-1",
+			projectManagementContainerId: null,
+		});
+
+		await handlers.create({
+			input: { ...baseInput, title: "Add SSO login" },
+			context: ctx,
+		});
+
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+			expect.objectContaining({
+				enablePmAutoSync: undefined,
+			}),
+		);
+		expect(mocks.enqueuePmSync).not.toHaveBeenCalled();
+	});
+
+	it("enqueue fails → still returns story and logs warning", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			projectManagementMcpConfigId: "cfg-1",
+			projectManagementContainerId: "c-1",
+		});
+		mocks.enqueuePmSync.mockRejectedValue(new Error("down"));
+
+		const result = (await handlers.create({
+			input: { ...baseInput, title: "Add SSO login" },
+			context: ctx,
+		})) as { story: { id: string } };
+
+		expect(result.story.id).toBe("story-1");
+		await vi.waitFor(() => {
+			expect(mocks.loggerWarn).toHaveBeenCalledWith(
+				"enqueuePmSync failed",
+				expect.objectContaining({
+					storyId: "story-1",
+					err: "down",
 				}),
 			);
 		});

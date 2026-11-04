@@ -28,6 +28,9 @@ vi.mock("@repo/database/prisma/queries/lib/oauth-app-row", () => ({
 	OAUTH_APP_ROW_NAMES: [],
 }));
 vi.mock("@repo/rag/lib/embedding/generator", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(async () => ({
 		embedding: [0.1, 0.2],
 		model: "m",

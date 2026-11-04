@@ -29,6 +29,9 @@ vi.mock("@repo/database", async () => ({
 vi.mock("@repo/payments", () => ({}));
 vi.mock("@repo/ai", () => ({}));
 vi.mock("@repo/rag/lib/embedding/generator", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: generateEmbeddingMock,
 	generateEmbeddings: generateEmbeddingsMock,
 }));

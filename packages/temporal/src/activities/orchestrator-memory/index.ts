@@ -1,3 +1,4 @@
+import { boundQueryForEmbedding } from "@repo/rag/lib/embedding/query-bound";
 /**
  * Orchestrator Memory Activities
  *
@@ -310,7 +311,10 @@ export async function searchEpisodicMemoryActivity(
 			...secondaryUsageFields(input),
 			organizationId: organizationId ?? undefined,
 		});
-		const result = await embed({ model: embeddingModel, value: query });
+		const result = await embed({
+			model: embeddingModel,
+			value: boundQueryForEmbedding(query),
+		});
 		const queryEmbedding = result.embedding;
 
 		if (!queryEmbedding || queryEmbedding.length === 0) {

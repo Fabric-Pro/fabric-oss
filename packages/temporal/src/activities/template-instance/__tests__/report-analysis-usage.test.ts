@@ -27,6 +27,10 @@ vi.mock("../rag-processing", () => ({
 	searchReportCollection: async () => [],
 }));
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: async (
 		_text: string,
 		context: Record<string, unknown>,

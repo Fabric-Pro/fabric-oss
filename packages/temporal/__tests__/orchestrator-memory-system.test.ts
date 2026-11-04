@@ -86,11 +86,7 @@ vi.mock("@repo/ai", () => ({
 
 // Mock logger
 vi.mock("@repo/logs", () => ({
-	logger: {
-		info: vi.fn(),
-		warn: vi.fn(),
-		error: vi.fn(),
-	},
+	logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 // =============================================================================

@@ -8,7 +8,7 @@
 import type { AiJobKey } from "@repo/ai";
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { logger } from "@repo/logs";
-import { generateEmbedding } from "@repo/rag";
+import { generateQueryEmbedding } from "@repo/rag";
 import { heartbeat } from "@temporalio/activity";
 import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import { getHandlerForDataSource, inferDataSourceType } from "./handlers";
@@ -586,7 +586,7 @@ async function buildRagEnhancedPrompt(
 		);
 
 		// Generate query embedding
-		const queryEmbedding = await generateEmbedding(
+		const queryEmbedding = await generateQueryEmbedding(
 			task,
 			{
 				userId,

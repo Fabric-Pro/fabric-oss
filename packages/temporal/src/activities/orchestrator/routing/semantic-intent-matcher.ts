@@ -202,7 +202,13 @@ export async function detectUserIntentSemantic(
 	const matches: CapabilityMatch[] = [];
 
 	// Generate embedding for user message
-	const messageEmbedding = await generateEmbedding(message, apiKey);
+	const { boundQueryForEmbedding } = await import(
+		"@repo/rag/lib/embedding/query-bound"
+	);
+	const messageEmbedding = await generateEmbedding(
+		boundQueryForEmbedding(message),
+		apiKey,
+	);
 
 	// Score each capability
 	for (const capability of capabilities) {

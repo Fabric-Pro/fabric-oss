@@ -7466,13 +7466,14 @@ async function handleQueryWorkspace(
 	// Use RAG: embed query then search workspace chunks
 	try {
 		const {
-			generateEmbedding,
+			boundQueryForEmbedding,
+			generateQueryEmbedding,
 			generateSparseVector,
 			searchWorkspaceChunks,
 		} = await import("@repo/rag");
 
 		// Embed the query through the RAG package's single entry point
-		// (generateEmbedding → getAIEmbeddingModelWithMetadata →
+		// (generateQueryEmbedding → getAIEmbeddingModelWithMetadata →
 		// resolveModelWithProvider("EMBEDDING") → getEmbeddingModel) — the SAME
 		// resolver the workspace chunks were embedded with at ingest. This is the
 		// one source of truth for the embedding provider+model, so the query and
@@ -7486,7 +7487,7 @@ async function handleQueryWorkspace(
 		// Azure tenant — or any tenant whose embedding provider ≠ default — it hit
 		// the wrong host or a wrong vector space. Mirrors the other workspace-
 		// search paths (workspaces/chat, api/v1/workspaces).
-		const { embedding } = await generateEmbedding(query, {
+		const { embedding } = await generateQueryEmbedding(query, {
 			userId: session.userId,
 			organizationId: session.organizationId || undefined,
 			featureKey: "knowledge-search",
@@ -7497,7 +7498,9 @@ async function handleQueryWorkspace(
 			userId: session.userId,
 			organizationId: session.organizationId || undefined,
 			queryEmbedding: embedding,
-			querySparseVector: generateSparseVector(query),
+			querySparseVector: generateSparseVector(
+				boundQueryForEmbedding(query),
+			),
 			topK: Math.min((args.limit as number) ?? 10, 50),
 			minSimilarity: 0.4,
 		});
@@ -7515,7 +7518,7 @@ async function handleQueryWorkspace(
 			totalResults: results.length,
 		});
 	} catch (error) {
-		// Reflect the real cause in the primary message. generateEmbedding can
+		// Reflect the real cause in the primary message. generateQueryEmbedding can
 		// fail for reasons other than "RAG not set up": an AI usage limit was
 		// hit, or no embedding provider is configured. Branch on the error name
 		// (each class sets a distinctive `name`) so we don't misattribute a

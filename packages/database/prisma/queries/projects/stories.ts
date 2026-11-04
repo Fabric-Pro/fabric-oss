@@ -1892,7 +1892,11 @@ export async function updateStory(
 				: {}),
 			...(stampFirstHumanEdit ? { firstHumanEditAt: lastEditedAt } : {}),
 			...(settlesClaim !== undefined
-				? { pmCreateClaimId: null, pmCreateClaimedAt: null }
+				? {
+						pmCreateClaimId: null,
+						pmCreateClaimedAt: null,
+						pmAutoSyncEnabled: true,
+					}
 				: {}),
 		};
 

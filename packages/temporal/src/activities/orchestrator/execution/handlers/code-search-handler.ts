@@ -192,7 +192,9 @@ export class CodeSearchHandler implements StepHandler {
 			legacyName?: string;
 		},
 	): Promise<string[]> {
-		const { generateEmbedding } = await import("@repo/rag/lib/embedding");
+		const { boundQueryForEmbedding, generateQueryEmbedding } = await import(
+			"@repo/rag/lib/embedding"
+		);
 		const { generateSparseVector } = await import(
 			"@repo/rag/lib/embedding/sparse"
 		);
@@ -206,7 +208,7 @@ export class CodeSearchHandler implements StepHandler {
 		const embeddingResult = await runWithAiCallPurpose(
 			AI_CALL_PURPOSES.codeSearchEmbedding,
 			() =>
-				generateEmbedding(query, {
+				generateQueryEmbedding(query, {
 					conversationId: usageConversationId,
 					userId,
 					organizationId: organizationId ?? undefined,
@@ -257,7 +259,7 @@ export class CodeSearchHandler implements StepHandler {
 		);
 
 		// Search with hybrid (dense + sparse)
-		const sparse = generateSparseVector(query);
+		const sparse = generateSparseVector(boundQueryForEmbedding(query));
 
 		let searchResults: any[];
 		if (layout.supportsHybrid) {

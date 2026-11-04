@@ -1,3 +1,4 @@
+import { generateQueryEmbedding } from "@repo/rag/lib/embedding/query";
 /**
  * Workflow Search
  *
@@ -7,10 +8,7 @@
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { db } from "@repo/database";
-import {
-	generateEmbedding,
-	generateEmbeddings,
-} from "@repo/rag/lib/embedding/generator";
+import { generateEmbeddings } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { secondaryUsageFields } from "../../../workflows/orchestrator/usage-attribution";
@@ -126,11 +124,11 @@ export async function searchAvailableWorkflows(
 			userId: input.userId,
 			organizationId: input.organizationId,
 		};
-		// Credentials are fetched internally by generateEmbedding()
+		// Credentials are fetched internally by generateQueryEmbedding()
 		const result = await runWithAiCallPurpose(
 			AI_CALL_PURPOSES.capabilitySearchEmbedding,
 			() =>
-				generateEmbedding(
+				generateQueryEmbedding(
 					input.query,
 					toolSearchUsage(tenantContext),
 					undefined,

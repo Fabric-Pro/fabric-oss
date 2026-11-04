@@ -2,7 +2,8 @@ import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { getProjectCodeIndexes } from "@repo/database";
 import { ensureCollection, getCollectionLayout } from "../collection-manager";
-import { generateEmbedding } from "../embedding";
+import { generateQueryEmbedding } from "../embedding";
+import { boundQueryForEmbedding } from "../embedding/query-bound";
 import { generateSparseVector } from "../embedding/sparse";
 import { qdrantClient } from "./client";
 
@@ -47,7 +48,7 @@ export async function searchProjectCodeIndex(input: {
 	const limit = Math.min(input.limit ?? 8, 20);
 	const [embeddingResult, collectionName, layout] = await Promise.all([
 		runWithAiCallPurpose(AI_CALL_PURPOSES.codeSearchEmbedding, () =>
-			generateEmbedding(input.query, {
+			generateQueryEmbedding(input.query, {
 				userId: input.userId,
 				organizationId: input.organizationId,
 				projectId: input.projectId,
@@ -79,7 +80,9 @@ export async function searchProjectCodeIndex(input: {
 							filter,
 						},
 						{
-							query: generateSparseVector(input.query),
+							query: generateSparseVector(
+								boundQueryForEmbedding(input.query),
+							),
 							using: layout.sparseVectorName ?? "sparse",
 							limit: limit * 2,
 							filter,

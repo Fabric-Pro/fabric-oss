@@ -29,6 +29,9 @@ vi.mock("@repo/database", () => ({
 
 // Mock the RAG embedding generator
 vi.mock("@repo/rag/lib/embedding/generator", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi
 		.fn()
 		.mockResolvedValue({ embedding: Array(1536).fill(0), totalTokens: 10 }),

@@ -126,6 +126,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	retrieveProjectContexts: vi.fn(async () => []),
 	formatContextsForPrompt: vi.fn(() => ""),
 }));

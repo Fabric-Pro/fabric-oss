@@ -62,6 +62,7 @@ vi.mock("@repo/rag/lib/chunking/code-chunker", () => ({
 	applyContextualRetrieval: (content: string) => content,
 }));
 vi.mock("@repo/rag/lib/embedding", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	generateEmbeddings: state.generateEmbeddings,
 }));
 vi.mock("@repo/rag/lib/embedding/sparse", () => ({

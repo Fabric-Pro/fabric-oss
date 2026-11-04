@@ -14,6 +14,9 @@ import { ApplicationFailure } from "@temporalio/common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 	searchMultipleWorkspaces: vi.fn(),
 }));
@@ -43,6 +46,10 @@ vi.mock("@repo/rag/lib/workspace-documents/store", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: mocks.generateEmbedding,
 	generateSparseVector: () => ({ indices: [], values: [] }),
 }));

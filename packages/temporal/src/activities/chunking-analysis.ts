@@ -1,3 +1,4 @@
+import { boundQueryForEmbedding } from "@repo/rag/lib/embedding/query-bound";
 /**
  * Chunking analysis activities (spec 2026-10-28 §8b "Measure", §8c).
  *
@@ -224,7 +225,7 @@ export async function evaluateChunkingTypeActivity(
 
 	const questionEmbeddings = (
 		await generateEmbeddings(
-			questions.map((q) => q.question),
+			questions.map((q) => boundQueryForEmbedding(q.question)),
 			tenant,
 		)
 	).embeddings;

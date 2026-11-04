@@ -33,6 +33,10 @@ vi.mock("@repo/database", async (importOriginal) => ({
 	},
 }));
 vi.mock("@repo/rag/lib/embedding", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(async () => ({ embedding: [0.1, 0.2] })),
 }));
 vi.mock("@repo/rag/lib/embedding/sparse", () => ({
@@ -46,6 +50,7 @@ vi.mock("@repo/rag/lib/project-contexts/client", () => ({
 	qdrantClient: { count: h.count, query: h.query },
 }));
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	getProjectRoleTagMaps: vi.fn(async () => ({
 		byIntegrationId: new Map(),
 		byRepoKey: new Map(),

@@ -269,6 +269,7 @@ function unlinkedRow(overrides: Record<string, unknown> = {}): Row {
 		lastPmSyncStatus: null,
 		lastPmSyncError: null,
 		lastPmSyncAttemptId: null,
+		pmAutoSyncEnabled: false,
 		pmCreateClaimId: null,
 		pmCreateClaimedAt: null,
 		...overrides,
@@ -400,6 +401,7 @@ describe("createTestCaseInPmWithClaim", () => {
 			externalMcpServerId: "server-1",
 			// A baseline from an earlier link is not this item's.
 			lastSyncedPmHash: null,
+			pmAutoSyncEnabled: true,
 			pmCreateClaimId: null,
 			pmCreateClaimedAt: null,
 			lastPmSyncStatus: "SUCCESS",

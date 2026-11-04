@@ -310,8 +310,10 @@ async function checkCollectionExists(collectionName: string): Promise<boolean> {
 		logger.error(
 			`[CollectionManager] Failed to check collection existence: ${error}`,
 		);
-		// Don't cache errors
-		return false;
+		// An unanswered check is not "missing": returning false here sent
+		// callers on to create a collection that already existed while Qdrant
+		// was restarting. Rethrow, uncached, so the caller fails and retries.
+		throw error;
 	}
 }
 

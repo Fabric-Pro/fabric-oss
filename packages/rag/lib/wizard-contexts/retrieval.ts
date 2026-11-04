@@ -13,7 +13,7 @@
 
 import { getWizardTempContextById } from "@repo/database";
 import { logger } from "@repo/logs";
-import { generateEmbedding } from "../embedding";
+import { generateQueryEmbedding } from "../embedding";
 import { searchWizardContexts } from "./store";
 import type {
 	RetrievedWizardContext,
@@ -64,7 +64,7 @@ export async function retrieveWizardContexts(
 		);
 
 		// Generate embedding for the query
-		const embeddingResult = await generateEmbedding(
+		const embeddingResult = await generateQueryEmbedding(
 			query,
 			{
 				userId,

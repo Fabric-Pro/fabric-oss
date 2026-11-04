@@ -1,3 +1,4 @@
+import { generateQueryEmbedding } from "@repo/rag/lib/embedding/query";
 /**
  * Tool Index Service
  *
@@ -17,10 +18,7 @@
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { db } from "@repo/database";
-import {
-	generateEmbedding,
-	generateEmbeddings,
-} from "@repo/rag/lib/embedding/generator";
+import { generateEmbeddings } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import {
 	type CapabilityPoint,
@@ -700,7 +698,7 @@ export class ToolIndex {
 			try {
 				const qdrantAvailable = await isCapabilityStoreAvailable();
 				if (qdrantAvailable) {
-					// tenantContext is used internally by generateEmbedding() to resolve
+					// tenantContext is used internally by generateQueryEmbedding() to resolve
 					// the embedding model and API key via getAIEmbeddingModelWithMetadata()
 					const effectiveTenantContext: TenantContext =
 						tenantContext ?? {
@@ -769,7 +767,7 @@ export class ToolIndex {
 	/**
 	 * Search using Qdrant semantic vector search
 	 *
-	 * NOTE: providerConfig is no longer required - generateEmbedding() uses
+	 * NOTE: providerConfig is no longer required - generateQueryEmbedding() uses
 	 * tenantContext internally via getAIEmbeddingModelWithMetadata()
 	 */
 	private async searchQdrant(
@@ -795,7 +793,7 @@ export class ToolIndex {
 		const result = await runWithAiCallPurpose(
 			AI_CALL_PURPOSES.capabilitySearchEmbedding,
 			() =>
-				generateEmbedding(
+				generateQueryEmbedding(
 					query,
 					toolSearchUsage(options.tenantContext),
 				),

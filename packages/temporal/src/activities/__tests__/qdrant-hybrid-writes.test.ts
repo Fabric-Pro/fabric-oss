@@ -32,6 +32,7 @@ vi.mock("@temporalio/activity", () => ({
 	heartbeat: vi.fn(),
 }));
 vi.mock("@repo/rag/lib/embedding", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	generateEmbeddings: vi.fn(async (texts: string[]) => ({
 		embeddings: texts.map(() => [0.1, 0.2]),
 	})),
@@ -47,6 +48,7 @@ vi.mock("@repo/rag/lib/utils", () => ({
 	generatePointId: vi.fn(() => "00000000-0000-0000-0000-000000000001"),
 }));
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	ensureCollection: vi.fn(async () => "project-contexts"),
 	generateEmbeddings: vi.fn(),
 	generatePointId: vi.fn(() => "00000000-0000-0000-0000-000000000001"),

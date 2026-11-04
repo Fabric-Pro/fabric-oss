@@ -19,6 +19,9 @@ const mocks = vi.hoisted(() => ({
 	assertEmbeddingModelUsable: vi.fn(),
 	storeCompanyContextPoints: vi.fn(),
 	storeProjectContext: vi.fn(),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 	generateEmbeddings: vi.fn(),
 	chunkText: vi.fn(),
@@ -46,6 +49,9 @@ vi.mock("../store", () => ({
 }));
 
 vi.mock("../../embedding", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: mocks.generateEmbedding,
 	generateEmbeddings: mocks.generateEmbeddings,
 }));

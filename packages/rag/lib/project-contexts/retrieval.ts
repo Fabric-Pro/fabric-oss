@@ -17,7 +17,7 @@ import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { db, getProjectRagSettings } from "@repo/database";
 import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
-import { generateEmbedding } from "../embedding";
+import { generateQueryEmbedding } from "../embedding";
 import type { TenantContext } from "../embedding/types";
 import { withDefaultFeature } from "../embedding/usage";
 import { selectProjectContexts } from "../reranking/select-project-contexts";
@@ -228,7 +228,7 @@ export async function retrieveProjectContexts(
 				const result = await runWithAiCallPurpose(
 					AI_CALL_PURPOSES.projectRetrievalEmbedding,
 					() =>
-						generateEmbedding(
+						generateQueryEmbedding(
 							boundedQuery,
 							withDefaultFeature(
 								{

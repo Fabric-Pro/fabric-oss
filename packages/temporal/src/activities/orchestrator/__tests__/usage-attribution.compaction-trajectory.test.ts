@@ -26,6 +26,10 @@ vi.mock("../../../lib/redis-publisher", () => ({
 }));
 vi.mock("../utils/model-selector", () => ({ getAiModel: h.getAiModel }));
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(async () => {
 		h.embeddingPurposes.push(currentAiCallPurpose());
 		return { embedding: [0.1], tokens: 1 };

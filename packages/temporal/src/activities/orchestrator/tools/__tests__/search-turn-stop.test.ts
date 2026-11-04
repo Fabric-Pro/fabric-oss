@@ -16,6 +16,9 @@ import { MockActivityEnvironment } from "@temporalio/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const hoisted = vi.hoisted(() => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 	generateEmbeddings: vi.fn(),
 	toolIndexSearch: vi.fn(),
@@ -47,6 +50,9 @@ vi.mock("@repo/database/prisma/queries/lib/oauth-app-row", () => ({
 }));
 
 vi.mock("@repo/rag/lib/embedding/generator", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: hoisted.generateEmbedding,
 	generateEmbeddings: hoisted.generateEmbeddings,
 }));

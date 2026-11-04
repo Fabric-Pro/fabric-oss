@@ -19,15 +19,14 @@ interface RetrievalResult {
 
 // Mock dependencies BEFORE importing any modules that use them
 vi.mock("@repo/logs", () => ({
-	logger: {
-		info: vi.fn(),
-		error: vi.fn(),
-		warn: vi.fn(),
-	},
+	logger: { debug: vi.fn(), info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
 
 // Mock embedding module to avoid API key check
 vi.mock("../../embedding", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 }));
 
