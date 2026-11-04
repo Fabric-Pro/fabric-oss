@@ -656,3 +656,33 @@ describe("enhanceFeatureProcedure — AI could not run at all", () => {
 		expect(mocks.updateStoryDraftingStage).toHaveBeenCalled();
 	});
 });
+
+it.each([true, false])(
+	"searches enhancement inputs in order (optional=%s)",
+	async (optional) => {
+		mocks.getStoryById.mockResolvedValue({
+			id: "story-sb",
+			title: "Title",
+			description: "Body",
+			acceptanceCriteria: optional ? "Criteria" : null,
+			draftingStage: "PLACEHOLDER",
+			kind: "FEATURE",
+			identifier: "F-001",
+			version: 1,
+		});
+		await handlers.enhance({
+			input: {
+				projectId: "project-1",
+				storyId: "story-sb",
+				organizationId: null,
+				targetStage: "PASSIVE_ANALYSIS",
+			},
+			context: ctx,
+		});
+		expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				query: optional ? "Title Criteria Body" : "Title Body",
+			}),
+		);
+	},
+);

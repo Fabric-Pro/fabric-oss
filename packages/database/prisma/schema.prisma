@@ -2793,6 +2793,8 @@ model Project {
 
   remoteAgentServers ProjectRemoteAgentServer[]
 
+  reportInstances TemplateInstance[]
+
   @@index([userId])
   @@index([deletedAt])
   @@index([organizationId])
@@ -17138,6 +17140,9 @@ model ReportTemplate {
   useCount   Int       @default(0)
   lastUsedAt DateTime?
 
+  // Archived templates are hidden from template pickers; existing instances keep running.
+  archivedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -17181,6 +17186,8 @@ model TemplateInstance {
   templateId     String
   userId         String
   organizationId String?
+  // The project whose Reports tab owns this report. Null for reports created outside a project.
+  projectId      String?
 
   // Versioning
   sId     String                 @default(cuid())
@@ -17225,6 +17232,7 @@ model TemplateInstance {
   template     ReportTemplate              @relation(fields: [templateId], references: [id], onDelete: Cascade)
   user         User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization?               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project?                    @relation(fields: [projectId], references: [id], onDelete: SetNull)
   executions   TemplateInstanceExecution[]
 
   @@unique([sId, version])
@@ -17233,6 +17241,7 @@ model TemplateInstance {
   @@index([templateId])
   @@index([userId])
   @@index([organizationId])
+  @@index([projectId])
   @@index([isActive])
   @@index([nextRunAt])
   @@map("template_instance")

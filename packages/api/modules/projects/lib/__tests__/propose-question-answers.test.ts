@@ -337,3 +337,28 @@ describe("normalizeOptions", () => {
 		expect(normalizeOptions("nope")).toEqual([]);
 	});
 });
+
+it.each([true, false])(
+	"searches answer inputs in order (optional=%s)",
+	async (optional) => {
+		mocks.generateObject.mockResolvedValue({
+			object: { recommendations: [] },
+		});
+		await proposeQuestionAnswers({
+			feature: {
+				...feature(),
+				acceptanceCriteria: optional ? "Criteria" : null,
+				description: "Body",
+			},
+			questions: [{ rootId: "one", question: "Question?" }],
+			tenantFilter,
+		});
+		expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				query: optional
+					? "MFA Question? Criteria Body"
+					: "MFA Question? Body",
+			}),
+		);
+	},
+);

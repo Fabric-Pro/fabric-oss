@@ -1,39 +1,27 @@
-"use client";
+import { isFeatureEnabled } from "@repo/database";
+import { getActiveOrganization } from "@saas/auth/lib/server";
+import { ReportTemplatesHub } from "@saas/reports/components/ReportTemplatesHub";
+import { redirect } from "next/navigation";
 
-import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
-import { ReportTemplatesPageTabs } from "@saas/reports/components/ReportTemplatesPageTabs";
-import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
-import { TopRightControls } from "@saas/shared/components/TopRightControls";
+export default async function OrganizationReportTemplatesPage({
+	params,
+}: {
+	params: Promise<{ organizationSlug: string }>;
+}) {
+	const { organizationSlug } = await params;
+	const organization = await getActiveOrganization(organizationSlug);
 
-export default function OrganizationReportTemplatesPage() {
-	const {
-		organizationId,
-		organizationName,
-		basePath: orgBasePath,
-	} = useOrganizationContext();
+	if (!organization) {
+		redirect("/app");
+	}
 
-	const basePath = `${orgBasePath}/report-templates`;
+	// With the report suite on, templates and reports are managed from each
+	// project's Reports tab. Only this list page moves: template, instance and
+	// new-template pages stay reachable, since notification emails link to
+	// report instances.
+	if (await isFeatureEnabled("REPORT_SUITE_V2", organization.id)) {
+		redirect(`/app/${organizationSlug}/projects`);
+	}
 
-	return (
-		<div className="w-full py-6 px-6 space-y-6">
-			<TopRightControls />
-			<PageBreadcrumbs
-				items={[
-					...(organizationId
-						? [
-								{
-									label: organizationName ?? "Organization",
-									href: orgBasePath,
-								},
-							]
-						: []),
-					{ label: "Report Templates" },
-				]}
-			/>
-			<ReportTemplatesPageTabs
-				basePath={basePath}
-				organizationId={organizationId ?? undefined}
-			/>
-		</div>
-	);
+	return <ReportTemplatesHub />;
 }

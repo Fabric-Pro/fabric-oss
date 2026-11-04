@@ -900,7 +900,15 @@ export async function createStoryFromProposal(
 			select: { name: true, description: true },
 		}),
 		(async () => {
-			const query = `${params.title} ${params.description ?? ""}`.trim();
+			const query = [
+				params.title,
+				params.acceptanceCriteria,
+				params.description,
+				params.additionalContext,
+			]
+				.filter(Boolean)
+				.join(" ")
+				.trim();
 			const contexts = await retrieveProjectContexts({
 				projectId: params.projectId,
 				query,
@@ -1285,7 +1293,14 @@ export async function draftBodyByKind(
 			select: { name: true, description: true },
 		}),
 		(async () => {
-			const query = `${params.title} ${params.description ?? ""}`.trim();
+			const query = [
+				params.title,
+				params.acceptanceCriteria,
+				params.description,
+			]
+				.filter(Boolean)
+				.join(" ")
+				.trim();
 			const contexts = await retrieveProjectContexts({
 				projectId: params.projectId,
 				query,

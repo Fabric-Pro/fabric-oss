@@ -126,6 +126,12 @@ export interface ReadinessInput {
 	 */
 	unresolvableDataSources?: string[];
 	requiredParams: ReadinessParam[];
+	/**
+	 * Context fields a connected provider requires (Fizzy's account slug and
+	 * board, an Azure DevOps project). The AI cannot find the data without
+	 * them, so an empty one fails the parameters check like a parameter does.
+	 */
+	requiredContextFields?: ReadinessParam[];
 	skillsCount: number;
 	outputFormat?: string;
 	dataSourceLabel?: string;
@@ -202,12 +208,17 @@ export function computeReportReadiness(input: ReadinessInput): ReportReadiness {
 		bindings,
 		diagnostics,
 		unresolvableDataSources,
-		requiredParams,
+		requiredParams: templateParams,
+		requiredContextFields,
 		skillsCount,
 		outputFormat,
 		dataSourceLabel,
 		dataSourcesMissingProject,
 	} = input;
+	const requiredParams = [
+		...templateParams,
+		...(requiredContextFields ?? []),
+	];
 
 	const connectionTested =
 		Array.isArray(diagnostics) && diagnostics.length > 0;

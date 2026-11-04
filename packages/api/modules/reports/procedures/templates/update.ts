@@ -4,11 +4,14 @@ import type { Prisma } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
 import {
 	Permissions,
-	requireOrganizationMembership,
 	requirePermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	assertCanManageReportTemplate,
+	assertCanPublishReportTemplate,
+} from "../../lib/report-access";
 
 // Evidence.dev theme configuration schema
 const evidenceThemeSchema = z
@@ -157,25 +160,16 @@ export const updateTemplateProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Check ownership
-		if (existing.scope === "USER" && existing.userId !== context.user.id) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You can only update your own templates",
-			});
-		}
+		await assertCanManageReportTemplate(existing, context.user);
 
-		if (existing.scope === "ORGANIZATION" && existing.organizationId) {
-			await requireOrganizationMembership(
-				existing.organizationId,
-				context.user.id,
-				["admin", "owner"],
+		if (
+			input.isPublic !== undefined &&
+			input.isPublic !== existing.isPublic
+		) {
+			await assertCanPublishReportTemplate(
+				{ isPublic: true },
+				context.user,
 			);
-		}
-
-		if (existing.scope === "SYSTEM") {
-			throw new ORPCError("FORBIDDEN", {
-				message: "System templates cannot be modified",
-			});
 		}
 
 		const template = await updateReportTemplate({

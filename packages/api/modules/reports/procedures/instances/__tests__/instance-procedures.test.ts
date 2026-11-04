@@ -10,6 +10,9 @@ const {
 	mockUpdateTemplateInstance,
 	mockValidateReportConnections,
 	mockTemplateScheduleForInheritance,
+	mockAssertCanEditReportInstance,
+	mockCanEditProjectReport,
+	mockAssertProjectPermission,
 } = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...args: unknown[]) => unknown>,
 	mockCreateTemplateInstance: vi.fn(),
@@ -18,6 +21,9 @@ const {
 	mockUpdateTemplateInstance: vi.fn(),
 	mockValidateReportConnections: vi.fn(),
 	mockTemplateScheduleForInheritance: vi.fn(),
+	mockAssertCanEditReportInstance: vi.fn(),
+	mockCanEditProjectReport: vi.fn(),
+	mockAssertProjectPermission: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => {
@@ -46,6 +52,12 @@ vi.mock("../../lib/validate-connections", () => ({
 		mockValidateReportConnections(...a),
 }));
 
+vi.mock("../../../lib/report-access", () => ({
+	assertCanEditReportInstance: (...a: unknown[]) =>
+		mockAssertCanEditReportInstance(...a),
+	canEditProjectReport: (...a: unknown[]) => mockCanEditProjectReport(...a),
+}));
+
 // Chainable oRPC procedure stub — captures the handler fn by the order modules
 // are imported: update first, then create.
 vi.mock("../../../../../orpc/procedures", () => {
@@ -71,9 +83,12 @@ vi.mock("../../../../../orpc/procedures", () => {
 			return makeChainable();
 		},
 		Permissions: {
+			REPORT_READ: "REPORT_READ",
 			REPORT_UPDATE: "REPORT_UPDATE",
 			REPORT_CREATE: "REPORT_CREATE",
 		},
+		assertProjectPermission: (...a: unknown[]) =>
+			mockAssertProjectPermission(...a),
 		requirePermission: () => (c: unknown) => c,
 		requireInputOrgPermission: () => (c: unknown) => c,
 		requireOrganizationMembership: vi.fn().mockResolvedValue(undefined),
@@ -178,6 +193,12 @@ beforeEach(() => {
 	});
 	mockGetTemplateInstance.mockResolvedValue(baseInstance);
 	mockUpdateTemplateInstance.mockResolvedValue(baseUpdated);
+	mockAssertCanEditReportInstance.mockResolvedValue(undefined);
+	mockCanEditProjectReport.mockResolvedValue(true);
+	mockAssertProjectPermission.mockResolvedValue({
+		projectId: "example-project",
+		organizationId: "example-org",
+	});
 });
 
 // ── Handler regression test (Task 7) ────────────────────────────────────────
@@ -304,5 +325,122 @@ describe("createInstanceProcedure — scheduleMode provenance (D2/§7.1)", () =>
 		expect(mockCreateTemplateInstance).toHaveBeenCalledWith(
 			expect.objectContaining({ scheduleMode: "CUSTOM" }),
 		);
+	});
+});
+
+// ── Authorization ────────────────────────────────────────────────────────────
+
+const emptyConnections = {
+	mcpConfigs: [],
+	workflows: [],
+	agents: [],
+	workspaces: [],
+	integrations: [],
+};
+
+describe("updateInstanceProcedure — who may change a report", () => {
+	it("checks the caller against the loaded instance before writing", async () => {
+		await handlers.update({
+			input: { id: "inst-1", name: "renamed" },
+			context: ctx,
+		});
+		expect(mockAssertCanEditReportInstance).toHaveBeenCalledWith(
+			baseInstance,
+			ctx.user,
+		);
+	});
+
+	it("does not write when a same-organization non-owner is refused", async () => {
+		mockAssertCanEditReportInstance.mockRejectedValue(
+			Object.assign(new Error("forbidden"), { code: "FORBIDDEN" }),
+		);
+		await expect(
+			handlers.update({
+				input: { id: "inst-1", name: "renamed" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
+	});
+});
+
+describe("createInstanceProcedure — project reports", () => {
+	beforeEach(() => {
+		mockGetReportTemplate.mockResolvedValue({
+			id: "t1",
+			scope: "SYSTEM",
+			userId: null,
+			organizationId: null,
+			archivedAt: null,
+			definition: null,
+		});
+		mockCreateTemplateInstance.mockResolvedValue({
+			id: "inst-new",
+			sId: "si-new",
+			version: 1,
+			name: "Project Report",
+			templateId: "t1",
+			projectId: "example-project",
+			createdAt: new Date(),
+		});
+		mockTemplateScheduleForInheritance.mockReturnValue(undefined);
+	});
+
+	it("stores the project for a project Editor", async () => {
+		await handlers.create({
+			input: {
+				templateId: "t1",
+				name: "Project Report",
+				projectId: "example-project",
+				connections: emptyConnections,
+			},
+			context: ctx,
+		});
+		expect(mockAssertProjectPermission).toHaveBeenCalledWith(
+			"example-project",
+			ctx.user.id,
+			"REPORT_READ",
+		);
+		expect(mockCreateTemplateInstance).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "example-project" }),
+		);
+	});
+
+	it("refuses a project Viewer and creates nothing", async () => {
+		mockCanEditProjectReport.mockResolvedValue(false);
+		await expect(
+			handlers.create({
+				input: {
+					templateId: "t1",
+					name: "Project Report",
+					projectId: "example-project",
+					connections: emptyConnections,
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(mockCreateTemplateInstance).not.toHaveBeenCalled();
+	});
+
+	it("refuses an archived template", async () => {
+		mockGetReportTemplate.mockResolvedValue({
+			id: "t1",
+			scope: "SYSTEM",
+			userId: null,
+			organizationId: null,
+			archivedAt: new Date(),
+			definition: null,
+		});
+		await expect(
+			handlers.create({
+				input: {
+					templateId: "t1",
+					name: "Project Report",
+					connections: emptyConnections,
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mockCreateTemplateInstance).not.toHaveBeenCalled();
 	});
 });

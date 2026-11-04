@@ -182,6 +182,8 @@ export function NavBar({
 	// present-but-broken entry would be the shape of an outage rather than of
 	// a feature that is simply not on yet.
 	const todoList = useFeatureFlag("TODO_LIST");
+	// Report suite rollout: reports move into each project's Reports tab.
+	const reportSuite = useFeatureFlag("REPORT_SUITE_V2");
 	const settingsPath = useContextPath("settings/general");
 	const accountSettingsPath = useAccountPath("settings/account/profile");
 	const isGuest = useIsGuestInOrg();
@@ -514,13 +516,20 @@ export function NavBar({
 		{
 			label: "Operations",
 			items: [
-				{
-					label: "Reports",
-					href: `${effectiveBasePath}/report-templates`,
-					icon: ClipboardListIcon,
-					onboardingId: "nav-reports",
-					isActive: pathname.includes("/report-templates"),
-				},
+				// The report suite manages reports from each project's Reports
+				// tab, and the report templates page redirects to Projects.
+				...(reportSuite
+					? []
+					: [
+							{
+								label: "Reports",
+								href: `${effectiveBasePath}/report-templates`,
+								icon: ClipboardListIcon,
+								onboardingId: "nav-reports",
+								isActive:
+									pathname.includes("/report-templates"),
+							},
+						]),
 				{
 					label: "System Health",
 					href: `${effectiveBasePath}/system-health`,

@@ -7,6 +7,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { canEditReportInstance } from "../../lib/report-access";
 
 const getInstanceInputSchema = z.object({
 	id: z.string(),
@@ -34,9 +35,14 @@ export const getInstanceProcedure = tenantProtectedProcedure
 			});
 		}
 
+		const canEdit = await canEditReportInstance(instance, context.user);
+
 		return {
 			id: instance.id,
 			organizationId: instance.organizationId,
+			projectId: instance.projectId,
+			userId: instance.userId,
+			canEdit,
 			name: instance.name,
 			description: instance.description,
 			templateId: instance.templateId,

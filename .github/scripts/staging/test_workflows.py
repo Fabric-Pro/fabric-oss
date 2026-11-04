@@ -1128,6 +1128,14 @@ class PullRequestContracts(unittest.TestCase):
         self.assertEqual(run(PLAN_RESULT='success'), 0, 'merged plan job succeeds with planning steps skipped on a no-code PR')
         self.assertNotEqual(run(CHANGES_RESULT=''), 0, 'an empty filter outcome fails closed')
 
+    def test_browser_security_pins_supported_ubuntu_release_for_playwright(self):
+        jobs = workflow('unit-tests.yml')['jobs']
+        self.assertEqual(jobs['browser-security']['runs-on'], 'ubuntu-24.04')
+        self.assertEqual(jobs['warm-chromium-packages']['runs-on'], 'ubuntu-24.04')
+        warmer_steps = {step.get('id'): step for step in jobs['warm-chromium-packages']['steps'] if step.get('id')}
+        self.assertIn("startsWith(steps.playwright.outputs.image, 'ubuntu24-')", warmer_steps['playwright-apt']['if'])
+        self.assertIn("startsWith(steps.playwright.outputs.image, 'ubuntu24-')", warmer_steps['playwright-apt-download']['if'])
+
 
 class AutoMergeContracts(unittest.TestCase):
     NAME = 'auto-merge.yml'

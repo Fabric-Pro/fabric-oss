@@ -77,7 +77,10 @@ vi.mock("../src/lib/classify-work-item", () => ({
 	classifyWorkItem: mocks.classifyWorkItem,
 }));
 
-import { createStoryFromProposal } from "../src/lib/create-story-from-proposal";
+import {
+	createStoryFromProposal,
+	draftBodyByKind,
+} from "../src/lib/create-story-from-proposal";
 
 const baseParams = {
 	projectId: "p1",
@@ -184,3 +187,40 @@ describe("createStoryFromProposal — key and track on every create path", () =>
 		});
 	});
 });
+
+it.each([true, false])(
+	"searches story inputs in order (optional=%s)",
+	async (optional) => {
+		bindPromptAndModel();
+		const parts = optional
+			? {
+					acceptanceCriteria: "Criteria",
+					description: "Body",
+					additionalContext: "Source",
+				}
+			: { description: "Body" };
+		await createStoryFromProposal({
+			...baseParams,
+			title: "Title",
+			...parts,
+		} as never);
+		expect.soft(mocks.retrieveProjectContexts).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				query: optional ? "Title Criteria Body Source" : "Title Body",
+			}),
+		);
+		await draftBodyByKind({
+			projectId: "p1",
+			organizationId: null,
+			userId: "u1",
+			kind: "FEATURE",
+			title: "Title",
+			...parts,
+		});
+		expect.soft(mocks.retrieveProjectContexts).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				query: optional ? "Title Criteria Body" : "Title Body",
+			}),
+		);
+	},
+);

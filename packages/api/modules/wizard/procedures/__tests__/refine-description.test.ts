@@ -374,3 +374,26 @@ describe("refineDescription — (f) one path errors + the other succeeds", () =>
 		expect(callArg?.prompt).not.toContain("wizard:");
 	});
 });
+
+it.each([true, false])(
+	"searches refinement inputs in order (optional=%s)",
+	async (optional) => {
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				sessionId: "session-1",
+				projectId: "project-1",
+				description: "Body",
+				...(optional
+					? { projectName: "Name", projectTypes: ["Web", "API"] }
+					: {}),
+			},
+			context: baseContext,
+		});
+		expect(mockRetrieveProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				query: optional ? "Body Name Web, API" : "Body",
+			}),
+		);
+	},
+);

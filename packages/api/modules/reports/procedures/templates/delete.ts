@@ -3,11 +3,11 @@ import { deleteReportTemplate, getReportTemplate } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requireOrganizationMembership,
 	requirePermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { assertCanManageReportTemplate } from "../../lib/report-access";
 
 const deleteInputSchema = z.object({
 	id: z.string(),
@@ -35,26 +35,7 @@ export const deleteTemplateProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Check ownership
-		if (existing.scope === "USER" && existing.userId !== context.user.id) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You can only delete your own templates",
-			});
-		}
-
-		if (existing.scope === "ORGANIZATION" && existing.organizationId) {
-			await requireOrganizationMembership(
-				existing.organizationId,
-				context.user.id,
-				["admin", "owner"],
-			);
-		}
-
-		if (existing.scope === "SYSTEM") {
-			throw new ORPCError("FORBIDDEN", {
-				message: "System templates cannot be deleted",
-			});
-		}
+		await assertCanManageReportTemplate(existing, context.user);
 
 		await deleteReportTemplate(input.id);
 

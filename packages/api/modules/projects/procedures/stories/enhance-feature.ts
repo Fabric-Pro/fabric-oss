@@ -486,7 +486,14 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 			(async () => {
 				const contexts = await retrieveProjectContexts({
 					projectId: input.projectId,
-					query: `${story.title} ${story.description || ""}`.trim(),
+					query: [
+						story.title,
+						story.acceptanceCriteria,
+						story.description,
+					]
+						.filter(Boolean)
+						.join(" ")
+						.trim(),
 					userId: user.id,
 					organizationId,
 					topK: 5,

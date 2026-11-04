@@ -7,12 +7,14 @@ import {
 import type { Prisma } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
 import {
+	assertProjectPermission,
 	Permissions,
 	requireOrganizationMembership,
 	requirePermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { canEditProjectReport } from "../../lib/report-access";
 import { templateScheduleForInheritance } from "../../lib/resolve-instance-schedule";
 import { validateReportConnections } from "../../lib/validate-connections";
 
@@ -21,6 +23,8 @@ const createInstanceInputSchema = z.object({
 	name: z.string().min(1).max(255),
 	description: z.string().optional(),
 	organizationId: z.string().nullable().optional(),
+	// The project whose Reports tab owns this report; its editors may maintain it.
+	projectId: z.string().optional(),
 	// User's bound connections for the template
 	connections: z.object({
 		mcpConfigs: z.array(z.string()).default([]),
@@ -51,6 +55,23 @@ export const createInstanceProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.REPORT_CREATE))
 	.input(createInstanceInputSchema)
 	.handler(async ({ input, context }) => {
+		// A project report is authorized against the project BEFORE the
+		// organization resolves, so the organization becomes the project's own
+		// and a different input organization is refused.
+		if (input.projectId) {
+			await assertProjectPermission(
+				input.projectId,
+				context.user.id,
+				Permissions.REPORT_READ,
+			);
+			if (!(await canEditProjectReport(input.projectId, context.user))) {
+				throw new ORPCError("FORBIDDEN", {
+					message:
+						"You need at least the Editor role on this project to add a report",
+				});
+			}
+		}
+
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
@@ -66,6 +87,12 @@ export const createInstanceProcedure = tenantProtectedProcedure
 		if (!template) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Report template not found or access denied",
+			});
+		}
+
+		if (template.archivedAt) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "This report template is archived",
 			});
 		}
 
@@ -116,6 +143,7 @@ export const createInstanceProcedure = tenantProtectedProcedure
 			templateId: input.templateId,
 			userId: context.user.id,
 			organizationId,
+			projectId: input.projectId,
 			name: input.name,
 			description: input.description,
 			connections: input.connections,
@@ -131,6 +159,7 @@ export const createInstanceProcedure = tenantProtectedProcedure
 			version: instance.version,
 			name: instance.name,
 			templateId: instance.templateId,
+			projectId: instance.projectId,
 			createdAt: instance.createdAt.toISOString(),
 		};
 	});

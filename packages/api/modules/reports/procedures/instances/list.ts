@@ -2,6 +2,7 @@ import { listTemplateInstances } from "@repo/database";
 import type { TemplateInstanceStatus } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
 import {
+	assertProjectPermission,
 	Permissions,
 	requirePermission,
 	resolveOrganizationId,
@@ -13,6 +14,8 @@ const statusEnum = z.enum(["PENDING", "ACTIVE", "ARCHIVED", "DRAFT"]);
 const listInstancesInputSchema = z.object({
 	templateId: z.string().optional(),
 	organizationId: z.string().nullable().optional(),
+	// List every report of this project instead of only the caller's own.
+	projectId: z.string().optional(),
 	limit: z.number().min(1).max(100).default(20),
 	offset: z.number().min(0).default(0),
 	isActive: z.boolean().optional(),
@@ -25,6 +28,16 @@ export const listInstancesProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.REPORT_READ))
 	.input(listInstancesInputSchema)
 	.handler(async ({ input, context }) => {
+		// A project's reports are shared with everyone who may read them, so the
+		// project is authorized BEFORE the organization resolves to its own.
+		if (input.projectId) {
+			await assertProjectPermission(
+				input.projectId,
+				context.user.id,
+				Permissions.REPORT_READ,
+			);
+		}
+
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
@@ -33,6 +46,7 @@ export const listInstancesProcedure = tenantProtectedProcedure
 		const result = await listTemplateInstances({
 			userId: context.user.id,
 			organizationId,
+			projectId: input.projectId,
 			templateId: input.templateId,
 			limit: input.limit,
 			offset: input.offset,
@@ -57,6 +71,8 @@ export const listInstancesProcedure = tenantProtectedProcedure
 					description: instance.description,
 					templateId: instance.templateId,
 					templateName: instance.template.name,
+					projectId: instance.projectId,
+					userId: instance.userId,
 					isActive: instance.isActive,
 					schedule: instance.schedule,
 					scheduleMode: instance.scheduleMode,

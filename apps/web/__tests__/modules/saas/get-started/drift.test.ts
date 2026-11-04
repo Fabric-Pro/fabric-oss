@@ -112,6 +112,9 @@ const inPageSource = [
 	// the column framed empty space below the tree.
 	"apps/web/modules/saas/projects/components/instructions/InstructionsTree.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
+	// The Reports tab with the report suite on renders this instead, with the
+	// same two anchors.
+	"apps/web/modules/saas/reports/components/ProjectReportSuite.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectOutcomesTab.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectMetricsPanel.tsx",
 	// Top-level app / sidebar pages (anchors live in the list/view component).
@@ -200,6 +203,7 @@ const launcherSource = [
 	"apps/web/modules/saas/projects/components/ProjectContextsList.tsx",
 	"apps/web/modules/saas/projects/components/instructions/InstructionsPageFrame.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
+	"apps/web/modules/saas/reports/components/ProjectReportSuite.tsx",
 	"apps/web/modules/saas/projects/components/security/SecurityAccessibilityPage.tsx",
 	"apps/web/modules/saas/projects/components/ProjectDetails.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectOutcomesTab.tsx",

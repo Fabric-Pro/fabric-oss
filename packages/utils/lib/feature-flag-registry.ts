@@ -440,6 +440,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Both this flag and the project's own Chunk by content type toggle must be on. Off, every source is chunked exactly as before, knowledge entries included (one vector, 24,000-character cut). Flipping it does not re-chunk anything: only saving a project's chunking settings does. Turning it off after projects were re-chunked keeps their existing points; new ingestion falls back to the project setting.",
 	},
+	REPORT_SUITE_V2: {
+		label: "Project report suite",
+		description:
+			"Manages report templates and reports from a project's Reports tab, with guided report setup, visible and editable prompts, relative date ranges and readiness checks, and removes the separate report templates page.",
+		envVar: "FABRIC_FEATURE_REPORT_SUITE_V2",
+		default: false,
+		orgScopable: true,
+		note: "Gates the user interface only. The report permission checks (system and public templates limited to platform admins; report changes limited to the owner, organization admins and owners, platform admins and project editors) apply with the flag off too. Reports created on a project while it was on stay attached to that project when it is turned off.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

@@ -40,6 +40,7 @@ export function PageTourButton({
 	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
 	const parlumeMeetingsEnabled = useFeatureFlag("PARLUME_MEETINGS");
 	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
+	const reportSuiteEnabled = useFeatureFlag("REPORT_SUITE_V2");
 	if (
 		!GET_STARTED_ENABLED ||
 		!pageForTab(pageId, {
@@ -49,6 +50,7 @@ export function PageTourButton({
 			proposalArtifact: proposalArtifactEnabled,
 			parlumeMeetings: parlumeMeetingsEnabled,
 			credentialManager: credentialManagerEnabled,
+			reportSuite: reportSuiteEnabled,
 		})
 	) {
 		return null;

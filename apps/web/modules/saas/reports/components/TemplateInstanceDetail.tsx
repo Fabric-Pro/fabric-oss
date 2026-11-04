@@ -16,6 +16,7 @@ import {
 	type ReportErrorContext,
 } from "@saas/reports/lib/report-error-messages";
 import { computeReportReadiness } from "@saas/reports/lib/report-readiness";
+import { contextFieldsForProviders } from "@saas/reports/lib/report-template-definition";
 import {
 	type ReportInstanceTab,
 	resolveActiveReportTab,
@@ -24,6 +25,7 @@ import {
 	OPERATION_PARAMS,
 	PROVIDER_CONTEXT_FIELDS,
 } from "@saas/shared/components/DataSourceDefinitionBuilder";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { TIME_ZONES } from "@saas/shared/lib/time-zones";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -35,17 +37,6 @@ import {
 	AccordionItem,
 	AccordionTrigger,
 } from "@ui/components/accordion";
-import {
-	AlertDialog,
-	AlertDialogAction,
-	AlertDialogCancel,
-	AlertDialogContent,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogHeader,
-	AlertDialogTitle,
-	AlertDialogTrigger,
-} from "@ui/components/alert-dialog";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -98,7 +89,7 @@ import {
 	TableHeader,
 	TableRow,
 } from "@ui/components/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { Textarea } from "@ui/components/textarea";
 import {
 	Tooltip,
@@ -128,7 +119,6 @@ import {
 	ServerIcon,
 	SettingsIcon,
 	SparklesIcon,
-	TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -137,15 +127,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
-import { type AiTask, AiTaskPromptEditor } from "./AiTaskPromptEditor";
+import { AiTaskPromptEditor } from "./AiTaskPromptEditor";
 import { ArtifactDeliveryHistoryDialog } from "./ArtifactDeliveryHistoryDialog";
 import { CancelExecutionButton } from "./CancelExecutionButton";
+import { ContextFieldInput } from "./ContextFieldInput";
 import {
 	DataSourceConfigGrid,
 	DataSourceConfigTile,
 	type ConnectionBinding as TileConnectionBinding,
 } from "./DataSourceConfigTile";
 import type { ConnectionOption, ResourceOption } from "./DataSourceTile";
+import { DeleteReportInstanceButton } from "./DeleteReportInstanceButton";
 import { ExecutionStatusBadge } from "./ExecutionStatusBadge";
 import { InfoHint } from "./InfoHint";
 import {
@@ -154,7 +146,9 @@ import {
 	type IntegrationType,
 } from "./IntegrationSetupGuide";
 import { ReportConfigBanner } from "./ReportConfigBanner";
+import { ReportPromptCard } from "./ReportPromptCard";
 import { ReportReadinessRail } from "./ReportReadinessRail";
+import { ReportTabContent } from "./ReportTabContent";
 import { RunDiagnosticsPanel } from "./RunDiagnosticsPanel";
 import { SendArtifactEmailDialog } from "./SendArtifactEmailDialog";
 import {
@@ -229,6 +223,8 @@ export function TemplateInstanceDetail({
 	// the run's owner, or an admin/owner of its organization, may cancel it.
 	const { user } = useSession();
 	const { isOrganizationAdmin } = useActiveOrganization();
+	const reportSuite = useFeatureFlag("REPORT_SUITE_V2");
+	const projectsPath = useContextPath("projects");
 
 	// Settings URL based on context - uses hook to get correct path
 	const _integrationsSettingsUrl = useContextPath("settings/integrations");
@@ -688,7 +684,11 @@ export function TemplateInstanceDetail({
 		orpc.reports.instances.delete.mutationOptions({
 			onSuccess: () => {
 				toast.success("Instance deleted");
-				router.push(basePath);
+				router.push(
+					reportSuite && instance?.projectId
+						? `${projectsPath}/${instance.projectId}?tab=reports`
+						: basePath,
+				);
 			},
 			onError: (error) => {
 				showReportError(error.message, "delete");
@@ -1030,6 +1030,24 @@ export function TemplateInstanceDetail({
 		setHasChanges(true);
 	};
 
+	const handleUserPromptChange = (value: string) => {
+		setUserPrompt(value);
+		setHasChanges(true);
+	};
+
+	// `null` drops the customization so the template's task prompt applies.
+	const handleCustomTaskChange = (key: string, value: string | null) => {
+		setCustomAiTasks((prev) => {
+			if (value !== null) {
+				return { ...prev, [key]: value };
+			}
+			const next = { ...prev };
+			delete next[key];
+			return next;
+		});
+		setHasChanges(true);
+	};
+
 	const handleExecute = () => {
 		executeMutation.mutate({ instanceId, organizationId: instanceOrgId });
 	};
@@ -1242,6 +1260,9 @@ export function TemplateInstanceDetail({
 	}
 
 	const emoji = instance.template.heroEmojis?.[0] || "📊";
+	// A viewer who may read this report but not change it; the server refuses
+	// their edits whether or not the report suite is on.
+	const readOnly = !instance.canEdit;
 
 	// ── Readiness model ────────────────────────────────────────────────────────
 	// One source of truth behind the issue banner, the connection status pill and
@@ -1295,6 +1316,18 @@ export function TemplateInstanceDetail({
 				hasDefault: def != null && def !== "",
 			};
 		}),
+		requiredContextFields: reportSuite
+			? contextFieldsForProviders(
+					requiredDataSources.map((d) => d.key),
+					PROVIDER_CONTEXT_FIELDS,
+				)
+					.filter((field) => field.required)
+					.map((field) => ({
+						key: field.key,
+						label: field.label,
+						value: contextValues[field.key],
+					}))
+			: undefined,
 		skillsCount: inheritedSkills.length,
 		outputFormat: instance.template.outputFormat,
 		dataSourceLabel:
@@ -1339,7 +1372,7 @@ export function TemplateInstanceDetail({
 					</p>
 				</div>
 				<div className="flex items-center gap-2">
-					{hasChanges && (
+					{hasChanges && !readOnly && (
 						<Button
 							variant="outline"
 							onClick={handleSave}
@@ -1372,47 +1405,24 @@ export function TemplateInstanceDetail({
 						)}
 						Generate Report
 					</Button>
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={() => testConnections.mutate()}
-						disabled={testConnections.isPending}
-					>
-						Test connections
-					</Button>
-					<AlertDialog>
-						<AlertDialogTrigger asChild>
-							<Button
-								variant="ghost"
-								size="icon"
-								disabled={deleteMutation.isPending}
-								aria-label="Delete report instance"
-							>
-								<TrashIcon className="h-4 w-4 text-muted-foreground" />
-							</Button>
-						</AlertDialogTrigger>
-						<AlertDialogContent>
-							<AlertDialogHeader>
-								<AlertDialogTitle>
-									Delete this report instance?
-								</AlertDialogTitle>
-								<AlertDialogDescription>
-									This permanently deletes “{instance.name}”
-									and its execution history. This can’t be
-									undone.
-								</AlertDialogDescription>
-							</AlertDialogHeader>
-							<AlertDialogFooter>
-								<AlertDialogCancel>Cancel</AlertDialogCancel>
-								<AlertDialogAction
-									onClick={handleDelete}
-									className="bg-destructive text-white hover:bg-destructive/90"
-								>
-									Delete instance
-								</AlertDialogAction>
-							</AlertDialogFooter>
-						</AlertDialogContent>
-					</AlertDialog>
+					{/* The report suite keeps this in the readiness rail only. */}
+					{!reportSuite && (
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => testConnections.mutate()}
+							disabled={testConnections.isPending}
+						>
+							Test connections
+						</Button>
+					)}
+					{!readOnly && (
+						<DeleteReportInstanceButton
+							instanceName={instance.name}
+							onDelete={handleDelete}
+							isDeleting={deleteMutation.isPending}
+						/>
+					)}
 				</div>
 			</div>
 
@@ -1489,7 +1499,7 @@ export function TemplateInstanceDetail({
 				<TabsList className="mb-4">
 					<TabsTrigger value="overview" className="gap-2">
 						<SettingsIcon className="h-4 w-4" />
-						Overview
+						{reportSuite ? "Settings" : "Overview"}
 					</TabsTrigger>
 					<TabsTrigger value="history" className="gap-2">
 						<HistoryIcon className="h-4 w-4" />
@@ -1507,8 +1517,9 @@ export function TemplateInstanceDetail({
 
 				<div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
 					<div className="min-w-0 space-y-6">
-						<TabsContent
+						<ReportTabContent
 							value="overview"
+							readOnly={readOnly}
 							className="mt-0 space-y-6"
 						>
 							{/* What This Report Will Generate - Primary Info Card */}
@@ -1623,6 +1634,17 @@ export function TemplateInstanceDetail({
 									</div>
 								</CardContent>
 							</Card>
+
+							{reportSuite && (
+								<ReportPromptCard
+									userPrompt={userPrompt}
+									onUserPromptChange={handleUserPromptChange}
+									tasks={definition?.aiAgents ?? []}
+									customTasks={customAiTasks}
+									onCustomTaskChange={handleCustomTaskChange}
+									readOnly={readOnly}
+								/>
+							)}
 
 							{/* Inherited Skills */}
 							{inheritedSkills.length > 0 && (
@@ -2128,6 +2150,10 @@ export function TemplateInstanceDetail({
 							<Accordion
 								type="single"
 								collapsible
+								// Opened for a read-only viewer: the disabled tab locks the trigger.
+								defaultValue={
+									readOnly ? "ai-config" : undefined
+								}
 								className="rounded-lg border bg-card"
 							>
 								<AccordionItem
@@ -2517,54 +2543,22 @@ export function TemplateInstanceDetail({
 											</CardContent>
 										</Card>
 
-										{/* AI Analysis Task Customization */}
-										{definition?.aiAgents &&
+										{/* AI Analysis Task Customization (the report suite shows it in the Prompt card) */}
+										{!reportSuite &&
+											definition?.aiAgents &&
 											definition.aiAgents.length > 0 && (
 												<Card>
 													<CardContent className="pt-6">
 														<AiTaskPromptEditor
 															tasks={
-																definition.aiAgents as AiTask[]
+																definition.aiAgents
 															}
 															customTasks={
 																customAiTasks
 															}
-															onCustomTaskChange={(
-																key,
-																value,
-															) => {
-																if (
-																	value ===
-																	null
-																) {
-																	setCustomAiTasks(
-																		(
-																			prev,
-																		) => {
-																			const next =
-																				{
-																					...prev,
-																				};
-																			delete next[
-																				key
-																			];
-																			return next;
-																		},
-																	);
-																} else {
-																	setCustomAiTasks(
-																		(
-																			prev,
-																		) => ({
-																			...prev,
-																			[key]: value,
-																		}),
-																	);
-																}
-																setHasChanges(
-																	true,
-																);
-															}}
+															onCustomTaskChange={
+																handleCustomTaskChange
+															}
 														/>
 													</CardContent>
 												</Card>
@@ -2658,33 +2652,37 @@ export function TemplateInstanceDetail({
 													</div>
 												)}
 
-												{/* User Prompt / AI Instructions */}
-												<div className="space-y-2 pt-4 border-t">
-													<Label htmlFor="user-prompt">
-														AI Instructions (User
-														Prompt)
-													</Label>
-													<Textarea
-														id="user-prompt"
-														value={userPrompt}
-														onChange={(e) => {
-															setUserPrompt(
-																e.target.value,
-															);
-															setHasChanges(true);
-														}}
-														placeholder="Describe what the AI should do with the gathered data..."
-														rows={4}
-														className="font-mono text-sm"
-													/>
-													<p className="text-xs text-muted-foreground">
-														These instructions tell
-														the AI what to do with
-														the data gathered from
-														your data sources. This
-														is the main task prompt.
-													</p>
-												</div>
+												{/* User Prompt / AI Instructions (the report suite shows it in the Prompt card) */}
+												{!reportSuite && (
+													<div className="space-y-2 pt-4 border-t">
+														<Label htmlFor="user-prompt">
+															AI Instructions
+															(User Prompt)
+														</Label>
+														<Textarea
+															id="user-prompt"
+															value={userPrompt}
+															onChange={(e) =>
+																handleUserPromptChange(
+																	e.target
+																		.value,
+																)
+															}
+															placeholder="Describe what the AI should do with the gathered data..."
+															rows={4}
+															className="font-mono text-sm"
+														/>
+														<p className="text-xs text-muted-foreground">
+															These instructions
+															tell the AI what to
+															do with the data
+															gathered from your
+															data sources. This
+															is the main task
+															prompt.
+														</p>
+													</div>
+												)}
 
 												{/* Max Iterations */}
 												<div className="space-y-2 pt-4 border-t">
@@ -3068,55 +3066,42 @@ export function TemplateInstanceDetail({
 																		(
 																			field,
 																		) => (
-																			<div
+																			<ContextFieldInput
 																				key={
 																					field.key
 																				}
-																				className="space-y-1"
-																			>
-																				<Label
-																					htmlFor={`context-${req.key}-${field.key}`}
-																					className="text-sm"
-																				>
-																					{
-																						field.label
-																					}
-																					{field.required && (
-																						<span className="text-destructive ml-1">
-																							*
-																						</span>
-																					)}
-																				</Label>
-																				<Input
-																					id={`context-${req.key}-${field.key}`}
-																					value={
-																						contextValues[
-																							field
-																								.key
-																						] ||
-																						""
-																					}
-																					onChange={(
-																						e,
-																					) =>
-																						handleContextChange(
-																							field.key,
-																							e
-																								.target
-																								.value,
-																						)
-																					}
-																					placeholder={
-																						field.placeholder
-																					}
-																					className="h-9"
-																				/>
-																				<p className="text-[10px] text-muted-foreground">
-																					{
-																						field.helpText
-																					}
-																				</p>
-																			</div>
+																				id={`context-${req.key}-${field.key}`}
+																				label={
+																					field.label
+																				}
+																				required={
+																					field.required
+																				}
+																				value={
+																					contextValues[
+																						field
+																							.key
+																					] ||
+																					""
+																				}
+																				onChange={(
+																					value,
+																				) =>
+																					handleContextChange(
+																						field.key,
+																						value,
+																					)
+																				}
+																				placeholder={
+																					field.placeholder
+																				}
+																				helpText={
+																					field.helpText
+																				}
+																				markMissing={
+																					reportSuite
+																				}
+																			/>
 																		),
 																	)}
 																</div>
@@ -3309,6 +3294,7 @@ export function TemplateInstanceDetail({
 														isUsedInOutput={isUsedInTemplateOutput(
 															key,
 														)}
+														enhanced={reportSuite}
 													/>
 												))}
 											</div>
@@ -3320,6 +3306,9 @@ export function TemplateInstanceDetail({
 							<Accordion
 								type="single"
 								collapsible
+								defaultValue={
+									readOnly ? "template-details" : undefined
+								}
 								className="rounded-lg border bg-card"
 							>
 								<AccordionItem
@@ -3563,10 +3552,10 @@ export function TemplateInstanceDetail({
 									</AccordionContent>
 								</AccordionItem>
 							</Accordion>
-						</TabsContent>
+						</ReportTabContent>
 
 						{/* Execution History Tab */}
-						<TabsContent value="history" className="space-y-4">
+						<ReportTabContent value="history" className="space-y-4">
 							<Card>
 								<CardHeader>
 									<CardTitle>Execution History</CardTitle>
@@ -3826,7 +3815,7 @@ export function TemplateInstanceDetail({
 									)}
 								</CardContent>
 							</Card>
-						</TabsContent>
+						</ReportTabContent>
 					</div>
 					<ReportReadinessRail
 						readiness={reportReadiness}

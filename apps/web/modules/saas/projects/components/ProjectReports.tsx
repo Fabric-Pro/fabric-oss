@@ -1,6 +1,8 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { ProjectReportSuite } from "@saas/reports/components/ProjectReportSuite";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
@@ -24,7 +26,18 @@ type Props = {
 	projectId: string;
 };
 
-export function ProjectReports({ projectId: _projectId }: Props) {
+export function ProjectReports({ projectId }: Props) {
+	// The report suite manages reports and templates from this tab; off, the
+	// tab keeps linking out to the organization's report templates page.
+	const reportSuite = useFeatureFlag("REPORT_SUITE_V2");
+	return reportSuite ? (
+		<ProjectReportSuite projectId={projectId} />
+	) : (
+		<LegacyProjectReports />
+	);
+}
+
+function LegacyProjectReports() {
 	const { basePath, organizationId } = useOrganizationContext();
 	const reportTemplatesPath = `${basePath}/report-templates`;
 

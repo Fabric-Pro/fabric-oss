@@ -4,6 +4,7 @@ import {
 	type DataSourceDefinition,
 	DataSourceDefinitionBuilder,
 } from "@saas/shared/components/DataSourceDefinitionBuilder";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -95,7 +96,7 @@ type Props = {
 export function ReportTemplateForm({
 	templateId,
 	organizationId,
-	basePath = "/app/reports",
+	basePath = "/app/report-templates",
 }: Props) {
 	const router = useRouter();
 	const queryClient = useQueryClient();
@@ -141,8 +142,17 @@ export function ReportTemplateForm({
 		enabled: isEditing,
 	});
 
-	// Check if this is a system template (read-only)
+	// System templates are read-only, except to platform admins under the
+	// report suite (the API lets only them change one).
 	const isSystemTemplate = (templateData as any)?.scope === "SYSTEM";
+	const reportSuite = useFeatureFlag("REPORT_SUITE_V2");
+	const { data: capabilities } = useQuery({
+		...orpc.reports.capabilities.queryOptions({ input: {} }),
+		enabled: reportSuite,
+	});
+	const canEditSystemTemplates =
+		reportSuite && capabilities?.isPlatformAdmin === true;
+	const isReadOnlyTemplate = isSystemTemplate && !canEditSystemTemplates;
 
 	useEffect(() => {
 		if (templateData) {
@@ -431,7 +441,7 @@ export function ReportTemplateForm({
 							</Link>
 						</Button>
 					)}
-					{!isSystemTemplate && (
+					{!isReadOnlyTemplate && (
 						<Button
 							type="submit"
 							disabled={
@@ -447,7 +457,7 @@ export function ReportTemplateForm({
 			</div>
 
 			{/* What This Report Will Generate - Show prominently for system templates */}
-			{isSystemTemplate && templateData && (
+			{isReadOnlyTemplate && templateData && (
 				<section className="space-y-4">
 					<Card className="border-primary/20 bg-gradient-to-br from-primary/5 to-transparent">
 						<CardContent className="pt-6 space-y-4">
@@ -600,8 +610,8 @@ export function ReportTemplateForm({
 						onChange={(e) => setName(e.target.value)}
 						placeholder="Monthly Features Summary"
 						required
-						readOnly={isSystemTemplate}
-						className={isSystemTemplate ? "bg-muted" : ""}
+						readOnly={isReadOnlyTemplate}
+						className={isReadOnlyTemplate ? "bg-muted" : ""}
 					/>
 				</div>
 				<div className="grid grid-cols-[160px_1fr] gap-4 items-start">
@@ -611,8 +621,8 @@ export function ReportTemplateForm({
 						onChange={(e) => setDescription(e.target.value)}
 						placeholder="A monthly summary of all features shipped..."
 						rows={2}
-						readOnly={isSystemTemplate}
-						className={isSystemTemplate ? "bg-muted" : ""}
+						readOnly={isReadOnlyTemplate}
+						className={isReadOnlyTemplate ? "bg-muted" : ""}
 					/>
 				</div>
 				<div className="grid grid-cols-[160px_1fr] gap-4 items-center">
@@ -620,10 +630,10 @@ export function ReportTemplateForm({
 					<Select
 						value={templateType}
 						onValueChange={setTemplateType}
-						disabled={isSystemTemplate}
+						disabled={isReadOnlyTemplate}
 					>
 						<SelectTrigger
-							className={`max-w-xs ${isSystemTemplate ? "bg-muted" : ""}`}
+							className={`max-w-xs ${isReadOnlyTemplate ? "bg-muted" : ""}`}
 						>
 							<SelectValue />
 						</SelectTrigger>
@@ -641,10 +651,10 @@ export function ReportTemplateForm({
 					<Select
 						value={outputFormat}
 						onValueChange={setOutputFormat}
-						disabled={isSystemTemplate}
+						disabled={isReadOnlyTemplate}
 					>
 						<SelectTrigger
-							className={`max-w-xs ${isSystemTemplate ? "bg-muted" : ""}`}
+							className={`max-w-xs ${isReadOnlyTemplate ? "bg-muted" : ""}`}
 						>
 							<SelectValue />
 						</SelectTrigger>
@@ -661,7 +671,7 @@ export function ReportTemplateForm({
 
 			{/* Visibility Section */}
 			{/* Visibility Section - hidden for system templates */}
-			{!isSystemTemplate && (
+			{!isReadOnlyTemplate && (
 				<section className="space-y-4">
 					<h2 className="text-lg font-semibold border-b pb-2">
 						Visibility
@@ -674,7 +684,11 @@ export function ReportTemplateForm({
 							</SelectTrigger>
 							<SelectContent>
 								{scopeOptions
-									.filter((o) => o.value !== "SYSTEM")
+									.filter(
+										(o) =>
+											o.value !== "SYSTEM" ||
+											canEditSystemTemplates,
+									)
 									.map((o) => (
 										<SelectItem
 											key={o.value}
@@ -749,7 +763,7 @@ export function ReportTemplateForm({
 				<DataSourceDefinitionBuilder
 					dataSources={dataSources}
 					onChange={setDataSources}
-					readOnly={isSystemTemplate}
+					readOnly={isReadOnlyTemplate}
 				/>
 			</section>
 
@@ -758,7 +772,7 @@ export function ReportTemplateForm({
 				<ReportTemplateSkillsSection
 					ref={skillsRef}
 					templateId={templateId}
-					readonly={isSystemTemplate}
+					readonly={isReadOnlyTemplate}
 				/>
 			) : (
 				<Card>
@@ -776,7 +790,7 @@ export function ReportTemplateForm({
 			)}
 
 			{/* Editable config sections - hidden for system templates */}
-			{!isSystemTemplate && (
+			{!isReadOnlyTemplate && (
 				<>
 					{/* Fabric AI Enhancement Section */}
 					<section className="space-y-4">
@@ -815,8 +829,8 @@ export function ReportTemplateForm({
 						onChange={(e) => setUserPrompt(e.target.value)}
 						placeholder="Analyze the sprint data and generate a comprehensive report covering: progress on committed items, blockers encountered, velocity trends, and recommendations for the next sprint..."
 						rows={4}
-						readOnly={isSystemTemplate}
-						className={`font-mono text-sm ${isSystemTemplate ? "bg-muted" : ""}`}
+						readOnly={isReadOnlyTemplate}
+						className={`font-mono text-sm ${isReadOnlyTemplate ? "bg-muted" : ""}`}
 					/>
 					<p className="text-xs text-muted-foreground">
 						This prompt tells the AI what to do with the gathered
@@ -830,7 +844,7 @@ export function ReportTemplateForm({
 			<section className="space-y-4">
 				<div className="flex items-center justify-between border-b pb-2">
 					<h2 className="text-lg font-semibold">Report Sections</h2>
-					{!isSystemTemplate && (
+					{!isReadOnlyTemplate && (
 						<Button
 							type="button"
 							variant="outline"
@@ -851,13 +865,13 @@ export function ReportTemplateForm({
 						{sections.map((section, idx) => (
 							<div
 								key={section.id}
-								className={`border rounded-lg p-4 space-y-3 ${isSystemTemplate ? "bg-muted/30" : ""}`}
+								className={`border rounded-lg p-4 space-y-3 ${isReadOnlyTemplate ? "bg-muted/30" : ""}`}
 							>
 								<div className="flex justify-between items-center">
 									<span className="text-sm font-medium text-muted-foreground">
 										Section {idx + 1}
 									</span>
-									{!isSystemTemplate && (
+									{!isReadOnlyTemplate && (
 										<Button
 											type="button"
 											variant="ghost"
@@ -882,15 +896,15 @@ export function ReportTemplateForm({
 												title: e.target.value,
 											})
 										}
-										className={`max-w-xs ${isSystemTemplate ? "bg-muted" : ""}`}
-										readOnly={isSystemTemplate}
+										className={`max-w-xs ${isReadOnlyTemplate ? "bg-muted" : ""}`}
+										readOnly={isReadOnlyTemplate}
 									/>
 								</div>
 								<div className="grid grid-cols-[120px_1fr] gap-3 items-center">
 									<Label className="text-right text-sm">
 										Type
 									</Label>
-									{isSystemTemplate ? (
+									{isReadOnlyTemplate ? (
 										<Input
 											value={
 												section.type === "ai-generated"
@@ -953,11 +967,11 @@ export function ReportTemplateForm({
 											}
 											rows={2}
 											className={
-												isSystemTemplate
+												isReadOnlyTemplate
 													? "bg-muted"
 													: ""
 											}
-											readOnly={isSystemTemplate}
+											readOnly={isReadOnlyTemplate}
 										/>
 									</div>
 								)}
@@ -982,8 +996,8 @@ export function ReportTemplateForm({
 													},
 												})
 											}
-											className={`max-w-[200px] ${isSystemTemplate ? "bg-muted" : ""}`}
-											readOnly={isSystemTemplate}
+											className={`max-w-[200px] ${isReadOnlyTemplate ? "bg-muted" : ""}`}
+											readOnly={isReadOnlyTemplate}
 										/>
 									</div>
 								)}
@@ -994,7 +1008,7 @@ export function ReportTemplateForm({
 			</section>
 
 			{/* Schedule Section - hidden for system templates */}
-			{!isSystemTemplate && (
+			{!isReadOnlyTemplate && (
 				<section className="space-y-4">
 					<h2 className="text-lg font-semibold border-b pb-2">
 						Schedule

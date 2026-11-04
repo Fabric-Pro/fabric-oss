@@ -33,12 +33,12 @@ const PATTERNS: { match: RegExp; message: string }[] = [
 		// connection is gone/changed — the fix is to re-select it, not retry.
 		match: /\b(no access to mcp config|invalid connections?|mcp config(?:uration)? not found|config(?:uration)?[_ ]?not[_ ]?found|connection (?:is )?no longer (?:available|valid)|no longer available)\b/i,
 		message:
-			"This report’s data source connection is no longer available — it may have been removed, reconnected (which creates a new connection), or set up by someone else. Re-select a connection in the Data Source Connection section below, then re-select its project.",
+			"This report’s data source connection is no longer available — it may have been removed, reconnected (which creates a new connection), or set up by someone else. Re-select a connection in the Data Source Connections section below, then re-select its project.",
 	},
 	{
 		match: /\b(401|403|unauthor\w*|forbidden|invalid[_ -]?token|token (?:has )?expired|expired token|authenticat\w*|auth(?:oriz\w+)?[_ ]?(?:fail\w*|error)|reconnect|re-?auth\w*)\b/i,
 		message:
-			"This data source needs to be reconnected. Step 1 — reconnect it (its access has expired). Step 2 — re-select your project in the Data Source Connection section below. Reports fail silently after step 1 alone, so don’t skip step 2.",
+			"This data source needs to be reconnected. Step 1 — reconnect it (its access has expired). Step 2 — re-select your project in the Data Source Connections section below. Reports fail silently after step 1 alone, so don’t skip step 2.",
 	},
 	{
 		match: /\b(ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|timed[_ ]?out|timeout|unreachable|network error|fetch failed|socket hang up|502|503|504)\b/i,
@@ -48,7 +48,7 @@ const PATTERNS: { match: RegExp; message: string }[] = [
 	{
 		match: /\b(no (?:usable )?(?:read[- ]?only )?tools|no tools|0 tools|tool discovery (?:fail\w*)?)\b/i,
 		message:
-			"The connected data source didn’t expose any tools to read from. Reconnect it, then re-select your project in the Data Source Connection section below.",
+			"The connected data source didn’t expose any tools to read from. Reconnect it, then re-select your project in the Data Source Connections section below.",
 	},
 	{
 		match: /\b(rate[- ]?limit\w*|insufficient (?:credits|quota)|out of credits|quota (?:exceeded|exhausted)|429|too many requests)\b/i,
@@ -58,7 +58,7 @@ const PATTERNS: { match: RegExp; message: string }[] = [
 	{
 		match: /\b(no data ?source|not configured|missing connection|select a connection|no connection)\b/i,
 		message:
-			"This report needs a data source. Connect one, then re-select your project in the Data Source Connection section below.",
+			"This report needs a data source. Connect one, then re-select your project in the Data Source Connections section below.",
 	},
 ];
 

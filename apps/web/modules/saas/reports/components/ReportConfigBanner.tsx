@@ -50,7 +50,7 @@ const TONE_ICON: Record<Tone, string> = {
 // data source (step 1), the project/resource must be re-selected — this step is
 // easy to miss, so the connection banners spell it out explicitly.
 const STEP2_PHRASE =
-	"re-select your project in the Data Source Connection section below";
+	"re-select your project in the Data Source Connections section below";
 
 function buildItems(
 	readiness: ReportReadiness,
@@ -90,7 +90,7 @@ function buildItems(
 			tone: "destructive",
 			icon: TriangleAlertIcon,
 			title: "This report’s data source connection is no longer available",
-			message: `The connection saved for this report can’t be found anymore — it may have been removed, reconnected (which creates a new connection), or set up by someone else. Step 1 — pick a connection in the Data Source Connection section below. Step 2 — ${STEP2_PHRASE}. Until then, generating and saving will fail.`,
+			message: `The connection saved for this report can’t be found anymore — it may have been removed, reconnected (which creates a new connection), or set up by someone else. Step 1 — pick a connection in the Data Source Connections section below. Step 2 — ${STEP2_PHRASE}. Until then, generating and saving will fail.`,
 			actions: [
 				{
 					label: "Fix connection",

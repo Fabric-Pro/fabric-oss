@@ -243,12 +243,17 @@ export async function suggestParlumeMeetingContribution(input: {
 	if (!transcript) {
 		return { suggest: false };
 	}
+	const transcriptTail = transcript.slice(-RAG_QUERY_CHARS);
+	const chatBudget = RAG_QUERY_CHARS - transcriptTail.length - 1;
+	const chatTail =
+		chatBudget > 0 ? formatMeetingChat(chat).slice(-chatBudget) : "";
+	const query = [transcriptTail, chatTail].filter(Boolean).join(" ");
 	try {
 		const [workItems, retrieved] = await Promise.all([
 			loadOpenWorkItems(session.projectId),
 			retrieveProjectContexts({
 				projectId: session.projectId,
-				query: transcript.slice(-RAG_QUERY_CHARS),
+				query,
 				userId: session.userId,
 				organizationId: session.organizationId,
 				diversify: true,
