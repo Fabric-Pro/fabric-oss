@@ -490,6 +490,48 @@ function describeRecordModelCallError(
 	};
 }
 
+/** Authentication/authorization failures cannot recover through an activity retry. */
+export function isPermanentProviderFailure(error: unknown): boolean {
+	const pending = [{ error, depth: 0 }];
+	const seen = new Set<unknown>();
+	for (let visited = 0; pending.length > 0 && visited < 64; visited++) {
+		const current = pending.pop();
+		if (
+			!current ||
+			current.depth >= 8 ||
+			!isRecord(current.error) ||
+			seen.has(current.error)
+		) {
+			continue;
+		}
+		seen.add(current.error);
+		try {
+			const described = describeModelCallError(current.error);
+			if (
+				described.statusCode === 401 ||
+				described.statusCode === 403 ||
+				described.details?.name === "GatewayAuthenticationError" ||
+				(described.details?.name === "DatabricksOAuthError" &&
+					(current.error.status === 401 ||
+						current.error.status === 403))
+			) {
+				return true;
+			}
+			const { cause, lastError, errors } = current.error;
+			for (const nested of [
+				cause,
+				...(Array.isArray(errors) ? errors.slice(-8) : []),
+				lastError,
+			]) {
+				pending.push({ error: nested, depth: current.depth + 1 });
+			}
+		} catch {
+			// Malformed provider errors must not mask the original failure.
+		}
+	}
+	return false;
+}
+
 function emit(
 	context: UsageLoggingContext,
 	usage: NormalizedUsage,
@@ -926,7 +968,27 @@ export function createEmbeddingUsageLoggingMiddleware(
 			// Purpose is fixed per invocation; plan rotation may still update the other fields.
 			const callPurpose = context.callPurpose ?? currentAiCallPurpose();
 			const start = Date.now();
-			const result = await doEmbed();
+			let result: Record<string, unknown>;
+			try {
+				result = await doEmbed();
+			} catch (error) {
+				try {
+					const described = describeModelCallError(error);
+					emit(
+						{ ...context, callPurpose },
+						normalizeUsage(undefined),
+						Date.now() - start,
+						false,
+						described.message,
+						undefined,
+						described.statusCode,
+						described.details,
+					);
+				} catch {
+					/* never let logging mask the provider failure */
+				}
+				throw error;
+			}
 			try {
 				const tokens = num(
 					(result.usage as Record<string, unknown> | undefined)

@@ -7,6 +7,7 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 import { logger } from "@repo/logs";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { VECTOR_STORE_DIMENSIONS } from "../embedding/dimensions";
+import { withDenseSearch } from "./dense-search";
 
 // Qdrant configuration from environment variables
 const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
@@ -33,6 +34,7 @@ const QDRANT_WRITE_METHODS: ReadonlySet<PropertyKey> = new Set<
 	"createShardKey",
 	"createShardSnapshot",
 	"createSnapshot",
+	"createVectorName",
 	"delete",
 	"deleteCollection",
 	"deleteFullSnapshot",
@@ -41,6 +43,7 @@ const QDRANT_WRITE_METHODS: ReadonlySet<PropertyKey> = new Set<
 	"deleteShardKey",
 	"deleteShardSnapshot",
 	"deleteSnapshot",
+	"deleteVectorName",
 	"deleteVectors",
 	"overwritePayload",
 	"recoverShardFromSnapshot",
@@ -50,6 +53,7 @@ const QDRANT_WRITE_METHODS: ReadonlySet<PropertyKey> = new Set<
 	"updateCollection",
 	"updateCollectionAliases",
 	"updateCollectionCluster",
+	"updateQuotas",
 	"updateVectors",
 	"upsert",
 ]);
@@ -69,7 +73,7 @@ const QDRANT_WRITE_METHODS: ReadonlySet<PropertyKey> = new Set<
  * check is a no-op there: that work is shared between callers and carries
  * no turn's content, and one turn's stop must not fail it for the others.
  */
-function refuseWritesAfterDispatchStop(client: QdrantClient): QdrantClient {
+function refuseWritesAfterDispatchStop<T extends QdrantClient>(client: T): T {
 	return new Proxy(client, {
 		get(target, property, receiver) {
 			const value = Reflect.get(target, property, receiver);
@@ -98,10 +102,12 @@ function refuseWritesAfterDispatchStop(client: QdrantClient): QdrantClient {
  * Initialize Qdrant client
  */
 export const qdrantClient = refuseWritesAfterDispatchStop(
-	new QdrantClient({
-		url: QDRANT_URL,
-		apiKey: QDRANT_API_KEY,
-	}),
+	withDenseSearch(
+		new QdrantClient({
+			url: QDRANT_URL,
+			apiKey: QDRANT_API_KEY,
+		}),
+	),
 );
 
 /**

@@ -20,10 +20,14 @@
  * @see https://www.anthropic.com/news/contextual-retrieval
  */
 
-import { getAIModelWithMetadata, logModelUsageAsync } from "@repo/ai";
+import {
+	getAIModelWithMetadata,
+	isPermanentProviderFailure,
+	logModelUsageAsync,
+} from "@repo/ai";
 import { cacheableSystem } from "@repo/ai/prompt-cache";
 import { logger } from "@repo/logs";
-import { generateText } from "ai";
+import { generateText, wrapLanguageModel } from "ai";
 import type { TextChunk } from "./types";
 
 /**
@@ -85,15 +89,15 @@ export interface ContextualEnrichmentOptions {
 	maxDocumentContextChars?: number;
 
 	/**
-	 * Called once, after the last chunk, when enrichment stopped because every
-	 * ChatGPT plan that could serve it is spent (Fizzy #2770). The chunks are
+	 * Called once, after the last chunk, when enrichment stopped because the
+	 * provider rejected the call permanently or the ChatGPT plans were spent. The chunks are
 	 * still returned — unenriched from that point on — so a caller that keeps
 	 * them can record that they are owed their context.
 	 */
 	onEnrichmentDeferred?: (deferral: EnrichmentDeferral) => void;
 }
 
-/** Enrichment skipped for a spent ChatGPT plan, not for a failure. */
+/** Enrichment deferred until a plan reset or provider recovery. */
 export interface EnrichmentDeferral {
 	/** When the plan's window resets, if the provider said; null otherwise. */
 	resetAt: Date | null;
@@ -293,14 +297,13 @@ export async function enrichChunksWithContext(
 	);
 
 	const enrichedChunks: EnrichedChunk[] = [];
-	let planSpent: { resetAt: Date | null } | null = null;
+	let deferred: { resetAt: Date | null } | null = null;
 
 	// Process chunks sequentially to avoid overwhelming the LLM
 	// (could be parallelized with rate limiting for faster throughput)
 	for (const chunk of chunks) {
-		// Once every ChatGPT plan is spent (Fizzy #2770) the rest would only be
-		// refused too: they are stored as they are, without asking again.
-		if (planSpent) {
+		// After a permanent refusal, keep the remaining chunks without more calls.
+		if (deferred) {
 			enrichedChunks.push(unenriched(chunk));
 			continue;
 		}
@@ -320,8 +323,10 @@ export async function enrichChunksWithContext(
 				originalContent: chunk.content,
 			});
 		} catch (error) {
-			planSpent = planSpentRefusal(error);
-			if (!planSpent) {
+			deferred =
+				planSpentRefusal(error) ??
+				(isPermanentProviderFailure(error) ? { resetAt: null } : null);
+			if (!deferred) {
 				logger.warn(
 					`[ContextualEnrichment] Failed to enrich chunk ${chunk.index}, using original: ${error}`,
 				);
@@ -335,14 +340,14 @@ export async function enrichChunksWithContext(
 	const enrichedCount = enrichedChunks.filter(
 		(c) => c.contextSummary.length > 0,
 	).length;
-	if (planSpent) {
+	if (deferred) {
 		const unenrichedCount = chunks.length - enrichedCount;
 		logger.warn(
-			`[ContextualEnrichment] Every ChatGPT plan is spent: stored ${unenrichedCount}/${chunks.length} chunks of "${documentTitle}" without context`,
-			{ unenrichedCount, resetAt: planSpent.resetAt?.toISOString() },
+			`[ContextualEnrichment] Enrichment deferred: stored ${unenrichedCount}/${chunks.length} chunks of "${documentTitle}" without context`,
+			{ unenrichedCount, resetAt: deferred.resetAt?.toISOString() },
 		);
 		onEnrichmentDeferred?.({
-			resetAt: planSpent.resetAt,
+			resetAt: deferred.resetAt,
 			unenrichedCount,
 		});
 	}
@@ -379,12 +384,39 @@ export async function enrichChunksWithTenantContext(
 					},
 					// Per-chunk ingestion work: it may run on the organization's
 					// shared ChatGPT plans (Fizzy #2770).
-					{ userId, organizationId, jobType: "context-enrichment" },
+					{
+						userId,
+						organizationId,
+						projectId,
+						jobType: "context-enrichment",
+					},
 				);
 
 			const generationStart = Date.now();
 			const result = await generateText({
-				model,
+				// AI SDK 7 replaces a raw GatewayAuthenticationError in production
+				// with a status-less GatewayError. Keep the original as a cause
+				// before it crosses that boundary, so the loop can stop on it.
+				model: wrapLanguageModel({
+					model: model as Parameters<
+						typeof wrapLanguageModel
+					>[0]["model"],
+					middleware: {
+						wrapGenerate: async ({ doGenerate }) => {
+							try {
+								return await doGenerate();
+							} catch (error) {
+								if (isPermanentProviderFailure(error)) {
+									throw new Error(
+										"Context enrichment provider rejected the request",
+										{ cause: error },
+									);
+								}
+								throw error;
+							}
+						},
+					},
+				}),
 				// The shared document prefix is the cache breakpoint. The marker
 				// is provider-agnostic: Anthropic-direct and the gateway read it
 				// from providerOptions, and the Databricks compat shim marks the

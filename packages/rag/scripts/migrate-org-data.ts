@@ -18,13 +18,16 @@
  * 4. Deletes data from shared collections (after successful copy)
  */
 
+import { pathToFileURL } from "node:url";
 import { logger } from "@repo/logs";
 import {
 	type BaseCollectionName,
 	ensureCollection,
+	getCollectionLayout,
 	getCollectionName,
 	type MigrationResult,
 } from "../lib/collection-manager";
+import { generateSparseVector } from "../lib/embedding/sparse";
 import { qdrantClient } from "../lib/vector-store/client";
 
 // Base collections to migrate
@@ -107,7 +110,7 @@ async function getOrganizationIds(collectionName: string): Promise<string[]> {
 /**
  * Migrate data for a specific organization from a shared collection
  */
-async function migrateOrganizationData(
+export async function migrateOrganizationData(
 	baseCollection: BaseCollectionName,
 	organizationId: string,
 	options: MigrationOptions,
@@ -160,12 +163,45 @@ async function migrateOrganizationData(
 				break;
 			}
 
+			const sourceLayout = !options.dryRun
+				? await getCollectionLayout(baseCollection)
+				: undefined;
+			const targetLayout = !options.dryRun
+				? await getCollectionLayout(baseCollection, organizationId)
+				: undefined;
+
 			// Prepare points for upsert to target collection
-			const pointsToMigrate = scrollResult.points.map((point) => ({
-				id: point.id,
-				vector: point.vector as number[],
-				payload: point.payload,
-			}));
+			const pointsToMigrate = scrollResult.points.map((point) => {
+				const vectors = point.vector as
+					| number[]
+					| Record<
+							string,
+							number[] | { indices: number[]; values: number[] }
+					  >;
+				const embedding = Array.isArray(vectors)
+					? vectors
+					: (vectors[
+							sourceLayout?.denseVectorName ?? ""
+						] as number[]);
+				const sparse = !Array.isArray(vectors)
+					? vectors[sourceLayout?.sparseVectorName ?? "sparse"]
+					: undefined;
+				const vector = targetLayout?.supportsHybrid
+					? {
+							[targetLayout.denseVectorName ?? ""]: embedding,
+							[targetLayout.sparseVectorName ?? "sparse"]:
+								sparse ??
+								generateSparseVector(
+									typeof point.payload?.content === "string"
+										? point.payload.content
+										: "",
+								),
+						}
+					: targetLayout?.denseVectorName
+						? { [targetLayout.denseVectorName]: embedding }
+						: embedding;
+				return { id: point.id, vector, payload: point.payload };
+			});
 
 			if (!options.dryRun && pointsToMigrate.length > 0) {
 				// Upsert to target collection
@@ -295,19 +331,24 @@ async function runMigration(options: MigrationOptions): Promise<void> {
 	);
 }
 
-// Parse command line arguments
-const args = process.argv.slice(2);
-const options: MigrationOptions = {
-	dryRun: args.includes("--dry-run"),
-	specificOrgId: args.find((a) => a.startsWith("--org-id="))?.split("=")[1],
-};
-
-// Run migration
-runMigration(options)
-	.then(() => {
-		process.exit(0);
-	})
-	.catch((error) => {
-		logger.error(`[Migration] Fatal error: ${error}`);
-		process.exit(1);
-	});
+// Importing the migration for tests does not run its operational entry point.
+if (
+	process.argv[1] &&
+	pathToFileURL(process.argv[1]).href === import.meta.url
+) {
+	const args = process.argv.slice(2);
+	const options: MigrationOptions = {
+		dryRun: args.includes("--dry-run"),
+		specificOrgId: args
+			.find((a) => a.startsWith("--org-id="))
+			?.split("=")[1],
+	};
+	runMigration(options)
+		.then(() => {
+			process.exit(0);
+		})
+		.catch((error) => {
+			logger.error(`[Migration] Fatal error: ${error}`);
+			process.exit(1);
+		});
+}

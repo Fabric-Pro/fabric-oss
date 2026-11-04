@@ -1,5 +1,13 @@
 # fabric-app
 
+## 1.16.39
+
+### Patch Changes
+
+- 1da0060: The keyword-vector backfill skips points whose text has no keyword terms instead of stopping on a Qdrant validation error.
+- 1da0060: Enable keyword search on existing project-context Qdrant collections while preserving dense search on older servers.
+- 1da0060: Background document indexing no longer repeats AI work when the embedding provider rejects its credentials, an embedding failure during re-indexing now leaves the document's previous search index in place, and failed embedding calls appear in AI usage.
+
 ## 1.16.38
 
 ### Patch Changes

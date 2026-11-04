@@ -64,7 +64,12 @@ vi.mock("../../chunking", () => ({
 	routeContentForChunking: routeContentForChunkingMock,
 }));
 
-vi.mock("@repo/ai", () => ({ assertEmbeddingModelUsable: vi.fn() }));
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
+	assertEmbeddingModelUsable: vi.fn(),
+}));
 
 vi.mock("@repo/database", () => ({
 	getProjectRagSettings: getProjectRagSettingsMock,

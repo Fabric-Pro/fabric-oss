@@ -134,7 +134,10 @@ vi.mock("@repo/database", () => ({
 		`${organizationId}/company-context/`,
 }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	AIProviderNotConfiguredError: mocks.AIProviderNotConfiguredError,
 	getSystemEmbeddingRAGProviderConfig:
 		mocks.getSystemEmbeddingRAGProviderConfig,
@@ -931,6 +934,32 @@ describe("embedSingleContextActivity with a company owner", () => {
 	beforeEach(() => {
 		mocks.getCompanyContextSource.mockResolvedValue(textSource());
 	});
+
+	it.each([true, false])(
+		"preserves company permanentFailure=%s",
+		async (permanentFailure) => {
+			mocks.embedCompanyContext.mockResolvedValue({
+				success: false,
+				error: "Provider rejected request",
+				permanentFailure,
+			});
+			const error = await embedSingleContextActivity({
+				contextId: SOURCE,
+				userId: USER,
+				type: "TEXT",
+				owner: COMPANY,
+			}).catch((error) => error);
+			const { ensureApplicationFailure } = await import(
+				"@temporalio/common"
+			);
+			expect(ensureApplicationFailure(error)).toMatchObject({
+				nonRetryable: permanentFailure,
+				type: permanentFailure
+					? "EMBEDDING_PROVIDER_REJECTED"
+					: "Error",
+			});
+		},
+	);
 
 	it("embeds a company text into the company collection and marks the row embedded with its model", async () => {
 		const result = await embedSingleContextActivity({

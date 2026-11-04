@@ -260,12 +260,12 @@ export class CodeSearchHandler implements StepHandler {
 		const sparse = generateSparseVector(query);
 
 		let searchResults: any[];
-		if (layout.supportsHybrid && layout.denseVectorName) {
+		if (layout.supportsHybrid) {
 			const queryResult = await qdrantClient.query(collectionName, {
 				prefetch: [
 					{
 						query: embeddingResult.embedding,
-						using: layout.denseVectorName,
+						using: layout.denseVectorName ?? undefined,
 						limit: 20,
 						filter: { must },
 					},
@@ -287,6 +287,7 @@ export class CodeSearchHandler implements StepHandler {
 		} else {
 			const queryResult = await qdrantClient.query(collectionName, {
 				query: embeddingResult.embedding,
+				using: layout.denseVectorName ?? undefined,
 				limit: 10,
 				filter: { must },
 				with_payload: true,

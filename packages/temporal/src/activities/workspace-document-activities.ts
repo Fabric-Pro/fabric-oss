@@ -27,6 +27,7 @@ import {
 } from "@repo/rag";
 import { downloadFile } from "@repo/storage";
 import { ApplicationFailure } from "@temporalio/activity";
+import { throwIfPermanentProviderFailure } from "./lib/embedding-provider-failure";
 
 /**
  * Update workspace document status in database
@@ -101,6 +102,7 @@ export async function processWorkspaceDocument(
 	userId: string,
 	organizationId: string | undefined,
 	extractionStrategy = "local-only",
+	replaceExistingChunks = false,
 ): Promise<{
 	chunkCount: number;
 	extractorUsed?: string;
@@ -207,6 +209,22 @@ export async function processWorkspaceDocument(
 		);
 		console.log(`[Activity] Created ${chunks.length} chunks`);
 
+		const providerConfig = await getSystemEmbeddingRAGProviderConfig({
+			userId,
+			organizationId,
+		});
+		if (chunks.length > 0) {
+			await generateEmbeddings(
+				[chunks[0].content],
+				{
+					userId,
+					organizationId,
+					featureKey: "knowledge-index",
+					tags: ["workspace-document", "rag-embedding"],
+				},
+				providerConfig,
+			);
+		}
 		const chunksForEmbedding = await enrichChunksWithTenantContext(chunks, {
 			documentContent: extractionResult.text,
 			documentTitle: document.originalFilename,
@@ -217,31 +235,16 @@ export async function processWorkspaceDocument(
 			`[Activity] Contextually enriched ${chunksForEmbedding.length} chunks`,
 		);
 
-		if (chunks.length === 0) {
-			console.log("[Activity] No chunks created - document may be empty");
-			return {
-				chunkCount: 0,
-				extractorUsed: extractionResult.extractorUsed,
-				extractionTime: extractionResult.extractionTime,
-				pageCount: extractionResult.pageCount,
-				wordCount,
-				qdrantPointIds: [],
-			};
-		}
-
 		// Step 8: Update status to EMBEDDING
 		await updateWorkspaceDocument(documentId, { status: "EMBEDDING" });
 
 		// Step 9: Generate embeddings and store chunks using centralized config
-		const providerConfig = await getSystemEmbeddingRAGProviderConfig({
-			userId,
-			organizationId,
-		});
 		console.log("[Activity] Using centralized AI provider config");
 
 		// Process chunks in batches
 		const BATCH_SIZE = 50;
 		const allQdrantPointIds: string[] = [];
+		const qdrantBatches: WorkspaceChunkStoreOptions[][] = [];
 		const chunksToStore: Array<{
 			chunkIndex: number;
 			content: string;
@@ -294,13 +297,7 @@ export async function processWorkspaceDocument(
 				}),
 			);
 
-			// Store in Qdrant
-			await updateWorkspaceDocument(documentId, { status: "STORING" });
-			const pointIds = await storeWorkspaceChunksBatch({
-				chunks: qdrantChunks,
-				wait: true,
-			});
-			allQdrantPointIds.push(...pointIds);
+			qdrantBatches.push(qdrantChunks);
 
 			// Prepare PostgreSQL chunk records
 			for (const chunk of batchChunks) {
@@ -310,10 +307,42 @@ export async function processWorkspaceDocument(
 					headings: chunk.metadata?.headings || [],
 				});
 			}
+		}
 
-			console.log(
-				`[Activity] Stored batch ${Math.floor(batchStart / BATCH_SIZE) + 1}, total points: ${allQdrantPointIds.length}`,
-			);
+		// An embedding failure must not delete or overwrite existing vectors.
+		if (replaceExistingChunks) {
+			try {
+				await deleteWorkspaceDocumentFromQdrant(
+					documentId,
+					workspaceId,
+				);
+			} catch {
+				// Preserve the existing best-effort cleanup behavior.
+			}
+			await db.workspaceDocumentChunk.deleteMany({
+				where: { documentId },
+			});
+		}
+
+		if (chunks.length === 0) {
+			console.log("[Activity] No chunks created - document may be empty");
+			return {
+				chunkCount: 0,
+				extractorUsed: extractionResult.extractorUsed,
+				extractionTime: extractionResult.extractionTime,
+				pageCount: extractionResult.pageCount,
+				wordCount,
+				qdrantPointIds: [],
+			};
+		}
+
+		await updateWorkspaceDocument(documentId, { status: "STORING" });
+		for (const qdrantChunks of qdrantBatches) {
+			const pointIds = await storeWorkspaceChunksBatch({
+				chunks: qdrantChunks,
+				wait: true,
+			});
+			allQdrantPointIds.push(...pointIds);
 		}
 
 		// Step 10: Store chunk records in PostgreSQL
@@ -348,6 +377,7 @@ export async function processWorkspaceDocument(
 		) {
 			throw ApplicationFailure.nonRetryable(error.message, error.name);
 		}
+		throwIfPermanentProviderFailure(error);
 		// Transient errors (S3, DB, embedding API) remain retryable
 		throw new Error(
 			`Failed to process workspace document: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -404,18 +434,6 @@ export async function reprocessWorkspaceDocument(
 	try {
 		await assertEmbeddingModelUsable({ userId, organizationId });
 
-		// Clean up any existing Qdrant data
-		try {
-			await deleteWorkspaceDocumentFromQdrant(documentId, workspaceId);
-		} catch {
-			// Ignore errors - document may not have been stored yet
-		}
-
-		// Clean up PostgreSQL chunks
-		await db.workspaceDocumentChunk.deleteMany({
-			where: { documentId },
-		});
-
 		// Reset document status - use db directly to set null values
 		await db.workspaceDocument.update({
 			where: { id: documentId },
@@ -426,9 +444,7 @@ export async function reprocessWorkspaceDocument(
 				extractorUsed: null,
 				pageCount: null,
 				wordCount: null,
-				qdrantPointIds: [],
 				embeddedAt: null,
-				chunkCount: 0,
 				workflowId: null,
 			},
 		});
@@ -440,6 +456,7 @@ export async function reprocessWorkspaceDocument(
 			userId,
 			organizationId,
 			extractionStrategy,
+			true,
 		);
 	} catch (error) {
 		console.error(
@@ -456,6 +473,7 @@ export async function reprocessWorkspaceDocument(
 		) {
 			throw ApplicationFailure.nonRetryable(error.message, error.name);
 		}
+		throwIfPermanentProviderFailure(error);
 		throw new Error(
 			`Failed to reprocess workspace document: ${error instanceof Error ? error.message : "Unknown error"}`,
 		);

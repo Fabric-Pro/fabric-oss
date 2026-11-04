@@ -45,6 +45,10 @@ import {
 } from "../../lib/context-owner";
 import { companyLinkCrawlStore } from "../../lib/context-row-store";
 import { activityLogger } from "../lib/activity-logger";
+import {
+	embeddingFailure,
+	throwIfPermanentProviderFailure,
+} from "../lib/embedding-provider-failure";
 import { COMPANY_CRAWL_NO_EMBEDDING_PROVIDER_MESSAGE } from "./company-gate-activity";
 
 export interface EmbedUrlPageActivityInput {
@@ -178,6 +182,9 @@ export async function embedUrlPageActivity(
 					extractionError: result.error ?? "Unknown embedding error",
 				},
 			});
+			if (result.permanentFailure) {
+				throw embeddingFailure(result);
+			}
 			throw ApplicationFailure.retryable(
 				result.error ?? "URL page embedding failed",
 				"EMBED_URL_PAGE_FAILED",
@@ -227,6 +234,7 @@ export async function embedUrlPageActivity(
 				});
 			throw ApplicationFailure.nonRetryable(error.message, error.name);
 		}
+		throwIfPermanentProviderFailure(error);
 		throw error;
 	} finally {
 		clearInterval(heartbeatInterval);
@@ -344,6 +352,9 @@ async function embedCompanyUrlPage(
 		});
 
 		if (!result.success || !result.embeddingModel) {
+			if (result.permanentFailure) {
+				throw embeddingFailure(result);
+			}
 			throw ApplicationFailure.retryable(
 				result.error ?? "URL page embedding failed",
 				"EMBED_URL_PAGE_FAILED",
@@ -402,6 +413,7 @@ async function embedCompanyUrlPage(
 					},
 				);
 			});
+		throwIfPermanentProviderFailure(error);
 		throw error;
 	} finally {
 		clearInterval(heartbeatInterval);

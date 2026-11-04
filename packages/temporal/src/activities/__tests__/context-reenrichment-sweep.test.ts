@@ -1,3 +1,4 @@
+import { ApplicationFailure } from "@temporalio/common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -114,6 +115,27 @@ describe("reenrichDeferredContextsActivity", () => {
 		expect(id).toBe("ctx-1");
 		expect((retryAt as Date).getTime()).toBeGreaterThan(before);
 		expect(result).toMatchObject({ failed: 1, reenriched: 1 });
+	});
+
+	it("backs off one hour after an in-process non-retryable provider rejection", async () => {
+		mocks.listContextsDueForReenrichment.mockResolvedValue([row("ctx-1")]);
+		mocks.embedSingleContextActivity.mockRejectedValueOnce(
+			ApplicationFailure.nonRetryable(
+				"Provider rejected request",
+				"EMBEDDING_PROVIDER_REJECTED",
+			),
+		);
+		const before = Date.now();
+		const result = await reenrichDeferredContextsActivity();
+		expect(result).toMatchObject({ failed: 1, reenriched: 0 });
+		const [id, retryAt] = mocks.setContextEnrichmentRetryAt.mock.calls[0];
+		expect(id).toBe("ctx-1");
+		expect(retryAt.getTime()).toBeGreaterThanOrEqual(
+			before + 60 * 60 * 1000,
+		);
+		expect(retryAt.getTime()).toBeLessThanOrEqual(
+			Date.now() + 60 * 60 * 1000,
+		);
 	});
 
 	it("clears a context the embed left untouched (emptied or deleted), so it cannot hold the queue", async () => {

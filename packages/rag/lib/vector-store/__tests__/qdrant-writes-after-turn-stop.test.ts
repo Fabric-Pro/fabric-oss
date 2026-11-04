@@ -19,6 +19,7 @@ import {
 } from "@repo/utils/dispatch-guard";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { upsertCapabilities } from "../capability-store";
+import { qdrantClient } from "../client";
 
 const h = vi.hoisted(() => {
 	// Installed before the client module loads: its constructor already
@@ -334,4 +335,34 @@ describe("a collection creation that fails", () => {
 			h.requests.filter((r) => /^PUT \/collections\/[^/]+$/.test(r)),
 		).toEqual([]);
 	});
+});
+
+it.each(["createVectorName", "deleteVectorName"] as const)(
+	"guards the new schema write %s",
+	async (method) => {
+		h.stopped = true;
+		await expect(
+			runWithDispatchGuard(guard, () =>
+				method === "createVectorName"
+					? qdrantClient.createVectorName(
+							"example-collection",
+							"sparse",
+							{ sparse: {} },
+						)
+					: qdrantClient.deleteVectorName(
+							"example-collection",
+							"sparse",
+						),
+			),
+		).rejects.toBe(STOP);
+		expect(writes()).toEqual([]);
+	},
+);
+
+it("guards the new quota write", async () => {
+	h.stopped = true;
+	await expect(
+		runWithDispatchGuard(guard, () => qdrantClient.updateQuotas()),
+	).rejects.toBe(STOP);
+	expect(writes()).toEqual([]);
 });

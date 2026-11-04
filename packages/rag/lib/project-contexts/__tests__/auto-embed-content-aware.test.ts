@@ -15,7 +15,12 @@ const mocks = vi.hoisted(() => ({
 	isFeatureEnabled: vi.fn(),
 }));
 
-vi.mock("@repo/ai", () => ({ assertEmbeddingModelUsable: vi.fn() }));
+vi.mock("@repo/ai", async () => ({
+	assertEmbeddingModelUsable: vi.fn(),
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
+}));
 
 vi.mock("../store", () => ({
 	storeProjectContext: mocks.storeProjectContext,
@@ -66,6 +71,7 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+import { enrichChunksWithTenantContext } from "../../chunking";
 import { embedProjectContext } from "../auto-embed";
 
 const BACKLOG = [
@@ -142,3 +148,38 @@ describe("embedProjectContext with content-type chunking", () => {
 		expect(mocks.markProjectContextChunkingVersion).not.toHaveBeenCalled();
 	});
 });
+
+it.each([401, 429])(
+	"probes before enrichment and preserves classification for HTTP %i",
+	async (statusCode) => {
+		mocks.generateEmbedding.mockRejectedValue(
+			Object.assign(new Error("Provider rejected request"), {
+				statusCode,
+			}),
+		);
+		const result = await embedProjectContext(options());
+		expect(enrichChunksWithTenantContext).not.toHaveBeenCalled();
+		expect(mocks.generateEmbedding).toHaveBeenCalledTimes(1);
+		expect(result.success).toBe(false);
+		expect(result.permanentFailure ?? false).toBe(statusCode === 401);
+		expect(mocks.storeProjectContext).not.toHaveBeenCalled();
+	},
+);
+
+it.each([401, 429])(
+	"stops the chunk loop if HTTP %i begins after the probe",
+	async (statusCode) => {
+		mocks.generateEmbedding
+			.mockResolvedValueOnce({ embedding: [0.1, 0.2] })
+			.mockRejectedValue(
+				Object.assign(new Error("Provider rejected request"), {
+					statusCode,
+				}),
+			);
+		const result = await embedProjectContext(options());
+		expect(mocks.generateEmbedding).toHaveBeenCalledTimes(2);
+		expect(result.success).toBe(false);
+		expect(result.permanentFailure ?? false).toBe(statusCode === 401);
+		expect(mocks.storeProjectContext).not.toHaveBeenCalled();
+	},
+);

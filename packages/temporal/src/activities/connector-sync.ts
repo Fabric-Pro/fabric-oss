@@ -125,6 +125,7 @@ import {
 	testLinearConnection,
 	testZendeskConnection,
 } from "./connector-sync/providers/work";
+import { throwIfPermanentProviderFailure } from "./lib/embedding-provider-failure";
 
 // =============================================================================
 // Types
@@ -1483,6 +1484,7 @@ export async function generateEmbeddings(_input: {
 		) {
 			throw ApplicationFailure.nonRetryable(error.message, error.name);
 		}
+		throwIfPermanentProviderFailure(error);
 		throw error;
 	}
 }
@@ -1553,6 +1555,38 @@ async function embedConnectorDocuments(
 			}
 		}
 
+		const chunks = chunkText(doc.content, doc.title, {});
+		if (chunks.length > 0) {
+			await generateTextEmbeddings(
+				[chunks[0].content],
+				{
+					userId: _input.userId,
+					organizationId: _input.organizationId,
+					featureKey: "knowledge-index",
+					tags: ["connector-sync", "rag-embedding"],
+				},
+				providerConfig,
+			);
+		}
+		const enrichedChunks = await enrichChunksWithTenantContext(chunks, {
+			documentContent: doc.content,
+			documentTitle: doc.title,
+			userId: _input.userId,
+			organizationId: _input.organizationId,
+		});
+		const embeddings = await generateTextEmbeddings(
+			enrichedChunks.map((chunk) => chunk.enrichedContent),
+			{
+				userId: _input.userId,
+				organizationId: _input.organizationId,
+				featureKey: "knowledge-index",
+				tags: ["connector-sync", "rag-embedding"],
+			},
+			providerConfig,
+		);
+
+		// Preserve the existing document until all replacement embeddings are ready.
+
 		if (documentId) {
 			// Clean up any other orphaned documents at the same path that aren't
 			// the one we're about to update (shouldn't normally exist, but defensive).
@@ -1603,24 +1637,6 @@ async function embedConnectorDocuments(
 			documentId = createdDocument.id;
 			created++;
 		}
-
-		const chunks = chunkText(doc.content, doc.title, {});
-		const enrichedChunks = await enrichChunksWithTenantContext(chunks, {
-			documentContent: doc.content,
-			documentTitle: doc.title,
-			userId: _input.userId,
-			organizationId: _input.organizationId,
-		});
-		const embeddings = await generateTextEmbeddings(
-			enrichedChunks.map((chunk) => chunk.enrichedContent),
-			{
-				userId: _input.userId,
-				organizationId: _input.organizationId,
-				featureKey: "knowledge-index",
-				tags: ["connector-sync", "rag-embedding"],
-			},
-			providerConfig,
-		);
 
 		const pointIds = await storeWorkspaceChunksBatch({
 			chunks: enrichedChunks.map((chunk, index) => ({

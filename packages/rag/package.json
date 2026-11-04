@@ -11,12 +11,13 @@
 		"test:watch": "vitest",
 		"test:rag": "dotenv -c -e ../../.env.local -- tsx test-rag.ts",
 		"test:tokenizer": "tsx lib/chunking/tokenizer.test.ts",
-		"test:semantic": "dotenv -c -e ../../.env.local -- tsx lib/chunking/semantic.test.ts"
+		"test:semantic": "dotenv -c -e ../../.env.local -- tsx lib/chunking/semantic.test.ts",
+		"backfill:sparse": "dotenv -c -e ../../.env.local -- tsx scripts/backfill-sparse-vectors.ts"
 	},
 	"dependencies": {
 		"@azure/ai-form-recognizer": "^5.1.0",
 		"@huggingface/transformers": "^3.8.1",
-		"@qdrant/js-client-rest": "^1.16.2",
+		"@qdrant/js-client-rest": "^1.20.0",
 		"@repo/ai": "workspace:*",
 		"@repo/database": "workspace:*",
 		"@repo/integrations": "workspace:*",

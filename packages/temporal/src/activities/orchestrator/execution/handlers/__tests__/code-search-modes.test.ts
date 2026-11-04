@@ -343,3 +343,31 @@ describe.each(["CODE_SEARCH", "RAG"])("live reads in %s mode", (mode) => {
 		expect(h.query).not.toHaveBeenCalled();
 	});
 });
+
+describe("hybrid vector layout", () => {
+	it.each([null, "dense"])(
+		"uses dense %s plus sparse prefetch",
+		async (denseVectorName) => {
+			const { getCollectionLayout } = await import(
+				"@repo/rag/lib/collection-manager"
+			);
+			vi.mocked(getCollectionLayout).mockResolvedValueOnce({
+				collectionName: "project-contexts-example",
+				supportsHybrid: true,
+				denseVectorName,
+				sparseVectorName: "sparse",
+			});
+			await run("code_search", { query: "login" });
+			const request = h.query.mock.calls[0]?.[1];
+			expect(request.query).toEqual({ fusion: "rrf" });
+			expect(request.prefetch[0]).toMatchObject({ query: [0.1, 0.2] });
+			expect(request.prefetch[0].using).toBe(
+				denseVectorName ?? undefined,
+			);
+			expect(request.prefetch[1]).toMatchObject({
+				using: "sparse",
+				query: { indices: [1], values: [1] },
+			});
+		},
+	);
+});

@@ -263,8 +263,9 @@ export async function searchRelevantContext(
   // Search vector database
   const qdrant = new QdrantClient({ url: process.env.QDRANT_URL });
   
-  const results = await qdrant.search(options.collection, {
-    vector: embedding,
+  const { points: results } = await qdrant.query(options.collection, {
+    query: embedding,
+    with_payload: true,
     limit: options.limit ?? 10,
     filter: {
       must: [

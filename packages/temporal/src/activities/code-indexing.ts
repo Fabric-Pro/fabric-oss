@@ -618,13 +618,15 @@ function buildVector(
 ):
 	| number[]
 	| Record<string, number[] | { indices: number[]; values: number[] }> {
-	if (layout.supportsHybrid && layout.denseVectorName) {
+	if (layout.supportsHybrid) {
 		return {
-			[layout.denseVectorName]: embedding,
+			[layout.denseVectorName ?? ""]: embedding,
 			[layout.sparseVectorName ?? "sparse"]: sparse,
 		};
 	}
-	return embedding;
+	return layout.denseVectorName
+		? { [layout.denseVectorName]: embedding }
+		: embedding;
 }
 
 // =============================================================================
@@ -1671,11 +1673,6 @@ export async function chunkAndEmbedBatchActivity(
 	);
 	const { generatePointId } = await import("@repo/rag/lib/utils");
 
-	// getCollectionLayout calls ensureCollection internally
-	const layout = await getCollectionLayout(
-		"project-contexts",
-		organizationId,
-	);
 	const collectionName = getCollectionName(
 		"project-contexts",
 		organizationId,
@@ -1823,6 +1820,11 @@ export async function chunkAndEmbedBatchActivity(
 			const embeddingResult = await generateEmbeddings(
 				textsToEmbed,
 				tenantContext,
+			);
+
+			const layout = await getCollectionLayout(
+				"project-contexts",
+				organizationId,
 			);
 
 			const points = embeddingResult.embeddings.map(
@@ -2111,10 +2113,6 @@ export async function generateFileSummariesActivity(
 	);
 	const { generatePointId } = await import("@repo/rag/lib/utils");
 
-	const layout = await getCollectionLayout(
-		"project-contexts",
-		organizationId,
-	);
 	const collectionName = getCollectionName(
 		"project-contexts",
 		organizationId,
@@ -2189,6 +2187,11 @@ export async function generateFileSummariesActivity(
 		const embeddingResult = await generateEmbeddings(
 			summaryTexts,
 			tenantContext,
+		);
+
+		const layout = await getCollectionLayout(
+			"project-contexts",
+			organizationId,
 		);
 
 		const points = embeddingResult.embeddings.map(

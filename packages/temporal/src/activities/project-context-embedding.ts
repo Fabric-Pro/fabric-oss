@@ -6,6 +6,8 @@ import {
 	generatePointId,
 	qdrantClient,
 } from "@repo/rag";
+import { getCollectionLayout } from "@repo/rag/lib/collection-manager";
+import { generateSparseVector } from "@repo/rag/lib/embedding/sparse";
 
 /**
  * Generate embeddings for project contexts
@@ -74,10 +76,24 @@ export async function storeContextsInQdrant(params: {
 		organizationId,
 	);
 
+	const layout = await getCollectionLayout(
+		"project-contexts",
+		organizationId,
+	);
+
 	// Prepare points for Qdrant with proper point ID format
 	const points = contexts.map((context, index) => ({
 		id: generatePointId(context.id), // Convert CUID to valid Qdrant point ID
-		vector: embeddings[index],
+		vector: layout.supportsHybrid
+			? {
+					[layout.denseVectorName ?? ""]: embeddings[index],
+					[layout.sparseVectorName ?? "sparse"]: generateSparseVector(
+						context.content,
+					),
+				}
+			: layout.denseVectorName
+				? { [layout.denseVectorName]: embeddings[index] }
+				: embeddings[index],
 		payload: {
 			projectId,
 			userId,

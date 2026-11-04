@@ -255,7 +255,7 @@ if (!isPublishMode)
 #pragma warning restore ASPIRECERTIFICATES001
 
     // Qdrant Vector Database (local only)
-    qdrant = builder.AddContainer("qdrant", "qdrant/qdrant", "v1.16.2")
+    qdrant = builder.AddContainer("qdrant", "qdrant/qdrant", "v1.19.2")
         .WithHttpEndpoint(port: 6333, targetPort: 6333, name: "http")
         .WithHttpEndpoint(port: 6334, targetPort: 6334, name: "grpc")
         .WithVolume("fabric-qdrant-data", "/qdrant/storage")

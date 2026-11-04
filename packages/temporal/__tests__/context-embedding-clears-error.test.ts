@@ -56,7 +56,10 @@ const {
 	};
 });
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	AIProviderNotConfiguredError: TestAIProviderNotConfiguredError,
 	getSystemEmbeddingRAGProviderConfig: mockGetRAGProviderConfig,
 }));

@@ -48,7 +48,10 @@ vi.mock("@repo/database", () => ({
 	upsertSyncSchedule: vi.fn(),
 }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {
 		name = "AIProviderNotConfiguredError";
 	},
@@ -108,6 +111,7 @@ import {
 	deleteWorkspaceDocumentChunks,
 	generateEmbeddings as embedTexts,
 	enrichChunksWithTenantContext,
+	storeWorkspaceChunksBatch,
 } from "@repo/rag";
 import {
 	ApplicationFailure,
@@ -3635,7 +3639,7 @@ describe("connector embedding configuration verdicts", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 		});
-		expect(embedTexts).toHaveBeenCalledTimes(3);
+		expect(embedTexts).toHaveBeenCalledTimes(6);
 	});
 	it("skips model resolution when the batch has only unchanged documents", async () => {
 		vi.mocked(getSyncedResourceByExternalId).mockResolvedValue({
@@ -3663,6 +3667,74 @@ describe("connector embedding configuration verdicts", () => {
 		expect(assertEmbeddingModelUsable).not.toHaveBeenCalled();
 		expect(getSystemEmbeddingRAGProviderConfig).not.toHaveBeenCalled();
 		expect(db.workspaceDocument.create).not.toHaveBeenCalled();
+	});
+
+	it.each([401, 429])(
+		"probes before connector enrichment for HTTP %i and preserves retryability",
+		async (statusCode) => {
+			vi.mocked(embedTexts).mockRejectedValue(
+				Object.assign(new Error("Provider rejected request"), {
+					statusCode,
+				}),
+			);
+			const error = await generateEmbeddings(input).catch(
+				(error) => error,
+			);
+			expect(enrichChunksWithTenantContext).not.toHaveBeenCalled();
+			expect(embedTexts).toHaveBeenCalledTimes(1);
+			expect(ensureApplicationFailure(error)).toMatchObject({
+				nonRetryable: statusCode === 401,
+				type:
+					statusCode === 401
+						? "EMBEDDING_PROVIDER_REJECTED"
+						: "Error",
+			});
+		},
+	);
+
+	it("preserves an existing connector document's points when embedding fails after its probe", async () => {
+		vi.mocked(getSyncedResourceByExternalId).mockResolvedValue({
+			documentId: "existing-doc",
+			contentHash: "old",
+		} as never);
+		vi.mocked(embedTexts)
+			.mockResolvedValueOnce({ embeddings: [[0.1]] } as never)
+			.mockRejectedValueOnce(
+				Object.assign(new Error("Provider failed after probe"), {
+					statusCode: 500,
+				}),
+			);
+		await expect(generateEmbeddings(input)).rejects.toThrow(
+			"Provider failed after probe",
+		);
+		expect(embedTexts).toHaveBeenCalledTimes(2);
+		expect(storeWorkspaceChunksBatch).not.toHaveBeenCalled();
+		expect(deleteWorkspaceDocumentChunks).not.toHaveBeenCalled();
+		expect(db.workspaceDocumentChunk.deleteMany).not.toHaveBeenCalled();
+	});
+
+	it("replaces connector vectors only after the replacement embeddings succeed", async () => {
+		vi.mocked(getSyncedResourceByExternalId).mockResolvedValue({
+			documentId: "existing-doc",
+			contentHash: "old",
+		} as never);
+		await expect(generateEmbeddings(input)).resolves.toEqual({
+			created: 0,
+			updated: 1,
+		});
+		expect(deleteWorkspaceDocumentChunks).toHaveBeenCalledTimes(1);
+		expect(
+			vi.mocked(embedTexts).mock.invocationCallOrder.at(-1),
+		).toBeLessThan(
+			vi.mocked(deleteWorkspaceDocumentChunks).mock
+				.invocationCallOrder[0],
+		);
+		expect(
+			vi.mocked(deleteWorkspaceDocumentChunks).mock
+				.invocationCallOrder[0],
+		).toBeLessThan(
+			vi.mocked(storeWorkspaceChunksBatch).mock.invocationCallOrder[0],
+		);
 	});
 
 	it("keeps an ordinary embedding failure retryable", async () => {

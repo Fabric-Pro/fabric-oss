@@ -44,7 +44,10 @@ const mocks = vi.hoisted(() => {
 	};
 });
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	AIProviderNotConfiguredError: mocks.AIProviderNotConfiguredError,
 	getSystemRAGProviderConfig: mocks.getSystemRAGProviderConfig,
 }));
@@ -229,3 +232,25 @@ describe("embedUrlPageActivity with a company owner", () => {
 		expect(mocks.embedCompanyContext).not.toHaveBeenCalled();
 	});
 });
+
+it.each([true, false])(
+	"preserves company URL permanentFailure=%s",
+	async (permanentFailure) => {
+		mocks.embedCompanyContext.mockResolvedValue({
+			success: false,
+			error: "Provider rejected request",
+			permanentFailure,
+		});
+		await expect(embedUrlPageActivity(INPUT)).rejects.toMatchObject({
+			nonRetryable: permanentFailure,
+			type: permanentFailure
+				? "EMBEDDING_PROVIDER_REJECTED"
+				: "EMBED_URL_PAGE_FAILED",
+		});
+		expect(mocks.recordPageFailure).toHaveBeenCalledWith(
+			PAGE,
+			"Provider rejected request",
+			{ pointsRemoved: true },
+		);
+	},
+);

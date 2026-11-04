@@ -35,7 +35,18 @@ const collectionExistsCache = new Map<string, CollectionCacheEntry>();
 
 // Track collections being created to prevent race conditions
 const collectionsBeingCreated = new Map<string, Promise<void>>();
+const SPARSE_ENABLE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 const collectionLayoutCache = new Map<string, CollectionLayout>();
+type CollectionInfo = Awaited<ReturnType<typeof qdrantClient.getCollection>>;
+const sparseEnableFailures = new Map<string, number>();
+const sparseEnableAttempts = new Map<
+	string,
+	Promise<CollectionInfo | undefined>
+>();
+const compatibilityChecks = new Map<string, Promise<CollectionLayout>>();
+// Independent of the layout cache: index retries must not repeat this warning.
+const sparseEnableWarnings = new Set<string>();
+const sparseEnableSuccesses = new Set<string>();
 
 // Default distance metric cast to proper type
 const DEFAULT_DISTANCE_METRIC: DistanceMetric =
@@ -74,6 +85,7 @@ const COLLECTION_CONFIGS: Record<
 		optimizersConfig: { indexingThreshold: 10000 },
 	},
 	"project-contexts": {
+		addSparseInPlace: true,
 		vectorSize: VECTOR_SIZE,
 		distanceMetric: DEFAULT_DISTANCE_METRIC,
 		enableHybrid: true,
@@ -424,30 +436,119 @@ async function ensureHybridCompatibility(
 		return cached;
 	}
 
-	const info = await qdrantClient.getCollection(collectionName);
+	// A dense-only in-place layout needs a schema read in this request. Share
+	// only the enable attempt below, not another caller's degraded inspection.
+	if (config.addSparseInPlace) {
+		return inspectHybridCompatibility(collectionName, config);
+	}
+
+	const existingCheck = compatibilityChecks.get(collectionName);
+	if (existingCheck) {
+		return existingCheck;
+	}
+	const check = inspectHybridCompatibility(collectionName, config);
+	compatibilityChecks.set(collectionName, check);
+	try {
+		return await check;
+	} finally {
+		compatibilityChecks.delete(collectionName);
+	}
+}
+
+async function enableSparseVectors(
+	collectionName: string,
+): Promise<CollectionInfo | undefined> {
+	const existingAttempt = sparseEnableAttempts.get(collectionName);
+	if (existingAttempt) {
+		return existingAttempt;
+	}
+	const attempt = attemptSparseEnablement(collectionName);
+	sparseEnableAttempts.set(collectionName, attempt);
+	try {
+		return await attempt;
+	} finally {
+		sparseEnableAttempts.delete(collectionName);
+	}
+}
+
+function logSparseEnabled(collectionName: string): void {
+	if (sparseEnableSuccesses.has(collectionName)) {
+		return;
+	}
+	sparseEnableSuccesses.add(collectionName);
+	logger.info(
+		`[CollectionManager] Enabled sparse vectors for existing collection: ${collectionName}`,
+	);
+}
+
+async function attemptSparseEnablement(
+	collectionName: string,
+): Promise<CollectionInfo | undefined> {
+	let failure: unknown = "Sparse schema was not confirmed";
+	try {
+		await qdrantClient.createVectorName(collectionName, "sparse", {
+			sparse: {},
+		});
+	} catch (error) {
+		// The server may have applied the change before a lost response or
+		// timeout. Duplicate creates can complete successfully; re-read the schema
+		// even after an error to discover whether this attempt took effect.
+		failure = error;
+	}
+
+	let info: CollectionInfo | undefined;
+	try {
+		info = await qdrantClient.getCollection(collectionName);
+	} catch (error) {
+		failure = error;
+	}
+	if (info?.config.params.sparse_vectors?.sparse) {
+		sparseEnableFailures.delete(collectionName);
+		logSparseEnabled(collectionName);
+	} else {
+		sparseEnableFailures.set(collectionName, Date.now());
+		if (!sparseEnableWarnings.has(collectionName)) {
+			sparseEnableWarnings.add(collectionName);
+			logger.warn(
+				`[CollectionManager] Failed to enable sparse vectors for ${collectionName}: ${failure}`,
+			);
+		}
+	}
+	return info;
+}
+
+async function inspectHybridCompatibility(
+	collectionName: string,
+	config: Omit<CollectionConfig, "baseCollection">,
+): Promise<CollectionLayout> {
+	let info = await qdrantClient.getCollection(collectionName);
 	const params = (info?.config?.params ?? {}) as Record<string, unknown>;
 	const denseVectorName = getDenseVectorName(params.vectors);
-	const sparseVectors = params.sparse_vectors;
-	let supportsHybrid =
-		!!sparseVectors &&
-		typeof sparseVectors === "object" &&
-		Object.keys(sparseVectors as Record<string, unknown>).length > 0;
+	const sparseVectors = params.sparse_vectors as
+		| Record<string, unknown>
+		| null
+		| undefined;
+	let supportsHybrid = !!sparseVectors?.sparse;
 
-	if (config.enableHybrid && !supportsHybrid) {
-		try {
-			await qdrantClient.updateCollection(collectionName, {
-				sparse_vectors: {
-					sparse: {},
-				},
-			});
-			supportsHybrid = true;
-			logger.info(
-				`[CollectionManager] Enabled sparse vectors for existing collection: ${collectionName}`,
-			);
-		} catch (error) {
-			logger.warn(
-				`[CollectionManager] Failed to enable sparse vectors for ${collectionName}: ${error}`,
-			);
+	if (config.addSparseInPlace) {
+		if (supportsHybrid) {
+			if (sparseEnableFailures.delete(collectionName)) {
+				logSparseEnabled(collectionName);
+			}
+		} else {
+			const lastFailure = sparseEnableFailures.get(collectionName);
+			if (
+				sparseEnableAttempts.has(collectionName) ||
+				lastFailure === undefined ||
+				Date.now() - lastFailure >= SPARSE_ENABLE_RETRY_INTERVAL_MS
+			) {
+				const confirmedInfo = await enableSparseVectors(collectionName);
+				if (confirmedInfo) {
+					info = confirmedInfo;
+					supportsHybrid =
+						!!info.config.params.sparse_vectors?.sparse;
+				}
+			}
 		}
 	}
 
@@ -467,12 +568,15 @@ async function ensureHybridCompatibility(
 		sparseVectorName: supportsHybrid ? "sparse" : null,
 		supportsHybrid,
 	};
-	// Only cache the layout once every required payload index is known to
-	// exist. If a transient Qdrant error (e.g. 503, missing manage perm)
+	// Only cache a layout once every required payload index is known
+	// to exist. If a transient Qdrant error (e.g. 503, missing manage perm)
 	// caused a backfill to fail, leave the cache empty so the next call
 	// retries instead of locking in a broken state where deleteProjectContext
 	// would keep returning 400 Bad Request until the worker restarts.
-	if (indexesFullyBackfilled) {
+	if (
+		indexesFullyBackfilled &&
+		(!config.addSparseInPlace || layout.supportsHybrid)
+	) {
 		collectionLayoutCache.set(collectionName, layout);
 	}
 	return layout;
@@ -556,6 +660,7 @@ export function ensureCollection(
 async function provisionCollection(
 	baseCollection: BaseCollectionName,
 	organizationId?: string | null,
+	checkCompatibility = true,
 ): Promise<string> {
 	const collectionName = getCollectionName(baseCollection, organizationId);
 	const config = COLLECTION_CONFIGS[baseCollection];
@@ -563,7 +668,9 @@ async function provisionCollection(
 	// Check if collection exists
 	const exists = await checkCollectionExists(collectionName);
 	if (exists) {
-		await ensureHybridCompatibility(collectionName, config);
+		if (checkCompatibility) {
+			await ensureHybridCompatibility(collectionName, config);
+		}
 		return collectionName;
 	}
 
@@ -599,6 +706,7 @@ export function getCollectionLayout(
 		const collectionName = await provisionCollection(
 			baseCollection,
 			organizationId,
+			false,
 		);
 		return ensureHybridCompatibility(
 			collectionName,

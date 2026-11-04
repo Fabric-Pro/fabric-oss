@@ -68,37 +68,37 @@ export async function searchProjectCodeIndex(input: {
 		],
 	};
 
-	const points =
-		layout.supportsHybrid && layout.denseVectorName
-			? (
-					await qdrantClient.query(collectionName, {
-						prefetch: [
-							{
-								query: embeddingResult.embedding,
-								using: layout.denseVectorName,
-								limit: limit * 2,
-								filter,
-							},
-							{
-								query: generateSparseVector(input.query),
-								using: layout.sparseVectorName ?? "sparse",
-								limit: limit * 2,
-								filter,
-							},
-						],
-						query: { fusion: "rrf" },
-						limit,
-						with_payload: true,
-					})
-				).points
-			: (
-					await qdrantClient.query(collectionName, {
-						query: embeddingResult.embedding,
-						limit,
-						filter,
-						with_payload: true,
-					})
-				).points;
+	const points = layout.supportsHybrid
+		? (
+				await qdrantClient.query(collectionName, {
+					prefetch: [
+						{
+							query: embeddingResult.embedding,
+							using: layout.denseVectorName ?? undefined,
+							limit: limit * 2,
+							filter,
+						},
+						{
+							query: generateSparseVector(input.query),
+							using: layout.sparseVectorName ?? "sparse",
+							limit: limit * 2,
+							filter,
+						},
+					],
+					query: { fusion: "rrf" },
+					limit,
+					with_payload: true,
+				})
+			).points
+		: (
+				await qdrantClient.query(collectionName, {
+					query: embeddingResult.embedding,
+					using: layout.denseVectorName ?? undefined,
+					limit,
+					filter,
+					with_payload: true,
+				})
+			).points;
 
 	return points.flatMap((point) => {
 		const filePath = payloadString(point.payload, "filePath");

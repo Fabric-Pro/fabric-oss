@@ -27,7 +27,10 @@ const mocks = vi.hoisted(() => ({
 	setContextEnrichmentRetryAt: vi.fn(),
 }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	assertEmbeddingModelUsable: mocks.assertEmbeddingModelUsable,
 }));
 
@@ -377,3 +380,68 @@ it("a refused chunked re-embed returns refusal and preserves previous points wit
 	expect(mocks.enrichChunksWithTenantContext).not.toHaveBeenCalled();
 	expect(mocks.deleteProjectContextPoints).not.toHaveBeenCalled();
 });
+
+for (const [label, embed] of [
+	["first embed", embedProjectContext],
+	["re-embed", reembedProjectContext],
+] as const) {
+	it.each([401, 429, 500])(
+		`${label} writes no points when chunk 1 fails with HTTP %i after chunk 0 embedded`,
+		async (statusCode) => {
+			mocks.chunkText.mockReturnValue(chunks(3));
+			mocks.listProjectContextPointIds.mockResolvedValue([
+				pointFor("ctx-1-chunk-0"),
+				pointFor("ctx-1-chunk-1"),
+				pointFor("ctx-1-chunk-2"),
+			]);
+			const points = new Map([
+				[pointFor("ctx-1-chunk-0"), "old chunk 0"],
+				[pointFor("ctx-1-chunk-1"), "old chunk 1"],
+				[pointFor("ctx-1-chunk-2"), "old chunk 2"],
+			]);
+			if (label === "first embed") {
+				points.clear();
+			}
+			const before = [...points];
+			mocks.storeProjectContext.mockImplementation(
+				async ({ contextId, content }) => {
+					points.set(pointFor(contextId), content);
+					return pointFor(contextId);
+				},
+			);
+			mocks.generateEmbedding
+				.mockResolvedValueOnce({ embedding: [0.1, 0.2] })
+				.mockResolvedValueOnce({ embedding: [0.3, 0.4] })
+				.mockRejectedValueOnce(
+					Object.assign(new Error("Provider failed on chunk 1"), {
+						statusCode,
+					}),
+				);
+			const result = await embed(options(LONG));
+			expect(result.success).toBe(false);
+			expect(result.permanentFailure ?? false).toBe(statusCode === 401);
+			expect(mocks.generateEmbedding).toHaveBeenCalledTimes(3);
+			expect(mocks.storeProjectContext).not.toHaveBeenCalled();
+			expect(mocks.deleteProjectContextPoints).not.toHaveBeenCalled();
+			expect([...points]).toEqual(before);
+		},
+	);
+}
+
+it.each([embedProjectContext, reembedProjectContext])(
+	"rejects an empty later vector before writing any point %#",
+	async (embed) => {
+		mocks.chunkText.mockReturnValue(chunks(2));
+		mocks.listProjectContextPointIds.mockResolvedValue([
+			pointFor("ctx-1-chunk-0"),
+		]);
+		mocks.generateEmbedding
+			.mockResolvedValueOnce({ embedding: [0.1] })
+			.mockResolvedValueOnce({ embedding: [0.2] })
+			.mockResolvedValueOnce({ embedding: [] });
+		const result = await embed(options(LONG));
+		expect(result.success).toBe(false);
+		expect(mocks.storeProjectContext).not.toHaveBeenCalled();
+		expect(mocks.deleteProjectContextPoints).not.toHaveBeenCalled();
+	},
+);
