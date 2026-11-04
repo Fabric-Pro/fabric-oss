@@ -28,6 +28,9 @@ vi.mock("@repo/database", () => ({
 	db: { mCPConfig: { findMany: async () => [] } },
 }));
 vi.mock("@repo/rag/lib/embedding/generator", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(async () => ({ embedding: [0.1, 0.2] })),
 	generateEmbeddings: vi.fn(async () => ({ embeddings: [] })),
 }));

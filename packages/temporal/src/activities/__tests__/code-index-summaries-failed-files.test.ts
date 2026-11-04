@@ -36,6 +36,7 @@ const rag = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/rag/lib/embedding", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	generateEmbeddings: rag.generateEmbeddings,
 }));
 vi.mock("@repo/rag/lib/embedding/sparse", () => ({

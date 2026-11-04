@@ -1,3 +1,4 @@
+import { boundQueryForEmbedding } from "../embedding/query-bound";
 /**
  * High-level retrieval interface for RAG
  * Combines embedding generation and vector search
@@ -6,7 +7,7 @@
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { logger } from "@repo/logs";
-import { generateEmbedding } from "../embedding";
+import { generateQueryEmbedding } from "../embedding";
 import { generateSparseVector } from "../embedding/sparse";
 import { type RetrievalResult, searchSimilarChunks } from "../vector-store";
 import type { RetrievalOptions } from "./types";
@@ -74,7 +75,7 @@ export async function retrieveContext(
 		const embeddingResult = await runWithAiCallPurpose(
 			AI_CALL_PURPOSES.chatDocumentRetrievalEmbedding,
 			() =>
-				generateEmbedding(
+				generateQueryEmbedding(
 					query,
 					{
 						userId,
@@ -96,7 +97,9 @@ export async function retrieveContext(
 		);
 
 		// Step 2: Generate sparse vector for hybrid search
-		const querySparseVector = generateSparseVector(query);
+		const querySparseVector = generateSparseVector(
+			boundQueryForEmbedding(query),
+		);
 
 		// Step 3: Search for similar chunks (hybrid: dense + sparse with RRF)
 		logger.info("[Retrieval] Searching for similar chunks (hybrid mode)");

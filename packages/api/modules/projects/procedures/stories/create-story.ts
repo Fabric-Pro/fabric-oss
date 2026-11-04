@@ -30,6 +30,7 @@ import {
 import { dispatchLifecycleEvent } from "../../../agent-deployments/lib/lifecycle-dispatcher";
 import { runInBackground } from "../../../weave/lib/run-in-background";
 import { maybeAutoDraftOnStageChange } from "../../lib/auto-draft-test-cases";
+import { enqueuePmSync } from "../../lib/enqueue-pm-sync";
 import { stripInternalStoryFields } from "../../lib/strip-internal-story-fields";
 import { validateStageForKind } from "../../lib/validate-stage-for-kind";
 
@@ -150,11 +151,19 @@ export const createStoryProcedure = tenantProtectedProcedure
 			resolvedTitleSource = result.source;
 		}
 
-		// `pmAutoSyncEnabled` is omitted intentionally: the manual-UI create
-		// path produces a Fabric-only feature with no externalId, so the
-		// Prisma column default of `false` applies. The user opts in later
-		// via the cloud-sync toggle on the editor / roadmap.
-		//
+		// With a PM tool connected, new items start with auto-sync on and push
+		// their first ticket, like agent-created ones.
+		const pmProject = await db.project.findUnique({
+			where: { id: input.projectId },
+			select: {
+				projectManagementMcpConfigId: true,
+				projectManagementContainerId: true,
+			},
+		});
+		const pmConfigured =
+			!!pmProject?.projectManagementMcpConfigId &&
+			!!pmProject?.projectManagementContainerId;
+
 		// Fizzy #2048 (FR11): `promptId` / `promptVersionId` are the one input
 		// pair this procedure cannot check itself — no row exists yet and the
 		// caller's `kind` is a hint, so the cross-kind check runs inside
@@ -190,6 +199,7 @@ export const createStoryProcedure = tenantProtectedProcedure
 				reporterName: user.name ?? null,
 				reporterSource: "MANUAL",
 				reporterSourceUrl: null,
+				enablePmAutoSync: pmConfigured ? true : undefined,
 			});
 		} catch (error) {
 			if (error instanceof PromptKindMismatchError) {
@@ -295,6 +305,22 @@ export const createStoryProcedure = tenantProtectedProcedure
 				targetStage: story.draftingStage,
 			}),
 		);
+
+		if (pmConfigured) {
+			enqueuePmSync({
+				itemId: story.id,
+				itemType: "story",
+				projectId: input.projectId,
+				userId: user.id,
+				triggerSource: "manual-edit",
+				forceInitialPush: true,
+			}).catch((err) => {
+				logger.warn("enqueuePmSync failed", {
+					storyId: story.id,
+					err: err instanceof Error ? err.message : String(err),
+				});
+			});
+		}
 
 		return {
 			story: stripInternalStoryFields(story),

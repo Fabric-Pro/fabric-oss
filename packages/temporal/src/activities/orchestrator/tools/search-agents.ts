@@ -14,6 +14,7 @@ import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { getAgentsWithEmbeddings, updateAgentEmbedding } from "@repo/database";
 import { generateEmbedding } from "@repo/rag/lib/embedding/generator";
+import { generateQueryEmbedding } from "@repo/rag/lib/embedding/query";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
@@ -268,7 +269,7 @@ async function runAgentSearch(
 			const result = await runWithAiCallPurpose(
 				AI_CALL_PURPOSES.capabilitySearchEmbedding,
 				() =>
-					generateEmbedding(
+					generateQueryEmbedding(
 						input.query,
 						toolSearchUsage(tenantContext),
 						undefined,

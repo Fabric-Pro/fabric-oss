@@ -43,6 +43,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		promptBindingFindMany: vi.fn(),
 		promptVersionFindFirst: vi.fn(),
 		projectFindUnique: vi.fn(),
+		enqueuePmSync: vi.fn(),
 		userStoryUpdate: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		generateObject: vi.fn(),
@@ -153,6 +154,10 @@ vi.mock("../../../../../lib/audit", () => ({
 
 vi.mock("../../../../agent-deployments/lib/lifecycle-dispatcher", () => ({
 	dispatchLifecycleEvent: mocks.dispatchLifecycleEvent,
+}));
+
+vi.mock("../../../lib/enqueue-pm-sync", () => ({
+	enqueuePmSync: mocks.enqueuePmSync,
 }));
 
 vi.mock("../../../../../orpc/procedures", () => {

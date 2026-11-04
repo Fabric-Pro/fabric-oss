@@ -8,6 +8,9 @@ vi.mock("@repo/database", () => ({
 vi.mock("../capability-embeddings", () => ({ cosineSimilarity: vi.fn() }));
 vi.mock("@repo/ai", () => ({ getSystemEmbeddingRAGProviderConfig: vi.fn() }));
 vi.mock("@repo/rag/lib/embedding/generator", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 }));
 vi.mock("../../../../lib/redis-cache", () => ({

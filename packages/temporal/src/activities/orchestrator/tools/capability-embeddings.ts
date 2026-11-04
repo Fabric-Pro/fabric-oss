@@ -11,7 +11,7 @@
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { logger } from "@repo/logs";
-import { generateEmbedding, generateEmbeddings } from "@repo/rag";
+import { generateEmbeddings, generateQueryEmbedding } from "@repo/rag";
 
 // =============================================================================
 // Types
@@ -212,7 +212,7 @@ export async function getOrGenerateEmbedding(
 		const result = await runWithAiCallPurpose(
 			AI_CALL_PURPOSES.capabilitySearchEmbedding,
 			() =>
-				generateEmbedding(
+				generateQueryEmbedding(
 					text,
 					{
 						userId,

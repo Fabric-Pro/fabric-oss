@@ -135,6 +135,7 @@ export async function applyPmLink(
 		externalPmTarget: params.externalPmTarget ?? null,
 		pmCreateClaimId: null,
 		pmCreateClaimedAt: null,
+		pmAutoSyncEnabled: true,
 		lastSyncedPmHash: null,
 		lastPmSyncStatus: null,
 		lastPmSyncError: null,

@@ -70,6 +70,10 @@ vi.mock("@repo/integrations/github", () => ({
 // The query embedding goes through the factory's embedding wrappers, as
 // `generateEmbedding` does for a real tenant.
 vi.mock("@repo/rag/lib/embedding", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(async (query: string) => {
 		const model = wrapEmbeddingModelWithDispatchGuard(
 			wrapEmbeddingModelWithTurnBudget(

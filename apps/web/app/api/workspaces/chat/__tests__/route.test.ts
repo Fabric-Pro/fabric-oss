@@ -59,6 +59,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	generateSparseVector: vi.fn(() => ({ indices: [], values: [] })),
 	searchWorkspaceChunks: vi.fn(async () => []),
 }));

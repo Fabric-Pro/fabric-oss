@@ -29,6 +29,10 @@ vi.mock("@repo/database", () => ({
 	parseRepoUrl: vi.fn(),
 }));
 vi.mock("@repo/rag/lib/embedding", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(async (_query, context) => {
 		seen.push({ purpose: currentAiCallPurpose(), context });
 		return { embedding: [0.1] };

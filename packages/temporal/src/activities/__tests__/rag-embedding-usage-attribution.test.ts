@@ -29,7 +29,13 @@ vi.mock("@repo/database", () => ({
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
-vi.mock("@repo/rag/lib/embedding", () => ({ generateEmbedding: h.embed }));
+vi.mock("@repo/rag/lib/embedding", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
+	generateEmbedding: h.embed,
+}));
 vi.mock("@repo/rag/lib/embedding/sparse", () => ({
 	generateSparseVector: vi.fn(() => ({ indices: [], values: [] })),
 }));
@@ -37,6 +43,7 @@ vi.mock("@repo/rag/lib/vector-store", () => ({
 	searchSimilarChunks: vi.fn(async () => []),
 }));
 vi.mock("@repo/rag", async () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	...(await vi.importActual<
 		typeof import("@repo/rag/lib/retrieval/retriever")
 	>("@repo/rag/lib/retrieval/retriever")),

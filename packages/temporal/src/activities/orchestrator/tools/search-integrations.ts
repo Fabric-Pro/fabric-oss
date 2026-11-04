@@ -1,3 +1,4 @@
+import { generateQueryEmbedding } from "@repo/rag/lib/embedding/query";
 /**
  * Integration Search
  *
@@ -26,10 +27,7 @@ import {
 	listChatEnabledOperations,
 	listRegisteredIntegrationProviders,
 } from "@repo/integrations/executor-registry";
-import {
-	generateEmbedding,
-	generateEmbeddings,
-} from "@repo/rag/lib/embedding/generator";
+import { generateEmbeddings } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { secondaryUsageFields } from "../../../workflows/orchestrator/usage-attribution";
 import { rethrowIfTurnStopped, startTurnHeartbeat } from "../turn-dispatch";
@@ -478,11 +476,11 @@ async function runIntegrationSearch(
 			userId: input.userId,
 			organizationId: input.organizationId,
 		};
-		// Credentials are fetched internally by generateEmbedding()
+		// Credentials are fetched internally by generateQueryEmbedding()
 		const result = await runWithAiCallPurpose(
 			AI_CALL_PURPOSES.capabilitySearchEmbedding,
 			() =>
-				generateEmbedding(
+				generateQueryEmbedding(
 					input.query,
 					toolSearchUsage(tenantContext),
 					undefined,

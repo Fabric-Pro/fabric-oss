@@ -77,12 +77,16 @@ Pushing creates a work item the first time and **overwrites** it on every push a
 
 ### Auto-sync
 
+<Callout type="info">
+Auto-sync turns on by itself whenever a feature or test case is linked to your PM tool, and new features and bugs you create on the roadmap start with it on when your project has a PM tool connected. You can pause it on any item.
+</Callout>
+
 Turn on auto-sync to push a feature automatically every time it's saved. The PM sync chip reflects the current state:
 
 | Chip | Meaning |
 |------|---------|
 | **Synced** | Auto-sync is on and the feature is linked and up to date |
-| **Not synced** | Auto-sync is on, but there's no work item yet — it pushes on the next save |
+| **Not synced** | Auto-sync is on, but there's no work item yet. Choose **Start syncing** to create it |
 | **Paused** | Auto-sync is off; changes won't push until you resume |
 | **PM sync failed** | The last sync failed — open the chip to review the error and retry |
 | **Conflict** | Both Fabric and the tool changed this item — resolve it before syncing |

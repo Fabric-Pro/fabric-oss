@@ -41,6 +41,10 @@ vi.mock("@repo/ai", () => ({
 	logEmbeddingUsageAsync: vi.fn(),
 }));
 vi.mock("@repo/rag", async () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: (await import("@repo/rag/lib/embedding/generator"))
 		.generateEmbedding,
 	searchSimilarExecutions: async () => [],

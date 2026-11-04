@@ -1,5 +1,17 @@
 # fabric-app
 
+## 1.16.40
+
+### Patch Changes
+
+- c6ea9c1: Searches with a very long query, such as a pasted log or document in chat, now trim the query to the embedding model's input limit instead of failing, and the keyword half of the search uses the same trimmed text.
+- c6ea9c1: The data analyst agent's web app now uses the Fabric browser tab icon instead of the default Next.js one.
+- c6ea9c1: Production builds deployed with a prebuilt Vercel output now keep fabric.pro's marketing pages routed to the marketing site, instead of falling back to the portal's own landing page.
+- c6ea9c1: The browser tab icon is now a white Fabric mark on a dark square, so it stays visible on dark browser themes.
+- c6ea9c1: New features and bugs created on the roadmap now start with auto-sync on and create their work item in your connected PM tool, like items created by the AI assistant. You can still pause auto-sync on any item.
+- c6ea9c1: Features and test cases now turn on auto-sync as soon as they're linked to your PM tool, so later edits push automatically. You can still pause auto-sync on any item.
+- c6ea9c1: When the vector database cannot answer whether a collection exists, for example while it restarts, the operation now fails without trying to create the collection, so a later attempt can succeed once the database is back.
+
 ## 1.16.39
 
 ### Patch Changes

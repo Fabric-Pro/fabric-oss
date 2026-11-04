@@ -33,6 +33,7 @@ it.each([{ storyId: "example-story" }, { testCaseId: "example-case" }])(
 		expect(model.updateMany.mock.calls[0][0].data).toMatchObject({
 			externalMcpServerId: "example-server",
 			externalPmTarget: "example-target",
+			pmAutoSyncEnabled: true,
 		});
 	},
 );

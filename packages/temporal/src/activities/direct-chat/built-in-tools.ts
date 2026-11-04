@@ -585,9 +585,8 @@ export async function createCodeSearchTool(
 						? repositoryFilterTerm(searchable[0])
 						: { should: searchable.map(repositoryFilterTerm) };
 
-				const { generateEmbedding } = await import(
-					"@repo/rag/lib/embedding"
-				);
+				const { boundQueryForEmbedding, generateQueryEmbedding } =
+					await import("@repo/rag/lib/embedding");
 				const { generateSparseVector } = await import(
 					"@repo/rag/lib/embedding/sparse"
 				);
@@ -602,7 +601,7 @@ export async function createCodeSearchTool(
 				const embeddingResult = await runWithAiCallPurpose(
 					AI_CALL_PURPOSES.codeSearchEmbedding,
 					() =>
-						generateEmbedding(
+						generateQueryEmbedding(
 							query,
 							withDefaultFeature(
 								{
@@ -671,7 +670,9 @@ export async function createCodeSearchTool(
 				const maxResults = args.maxResults ?? 5;
 				let points: any[] = [];
 				if (layout.supportsHybrid) {
-					const sparse = generateSparseVector(query);
+					const sparse = generateSparseVector(
+						boundQueryForEmbedding(query),
+					);
 					const result = await qdrantClient.query(collectionName, {
 						prefetch: [
 							{

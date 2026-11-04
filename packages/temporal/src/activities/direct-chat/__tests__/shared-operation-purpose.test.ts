@@ -169,9 +169,13 @@ vi.mock("@repo/rag/lib/project-contexts/summary-injection", () => ({
 	applyContextSummary: (rows: unknown) => rows,
 }));
 vi.mock("@repo/rag", async () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	...(await import(
 		"@repo/rag/lib/project-contexts/project-context-passages"
 	)),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: async () => {
 		await (
 			createEmbeddingUsageLoggingMiddleware({

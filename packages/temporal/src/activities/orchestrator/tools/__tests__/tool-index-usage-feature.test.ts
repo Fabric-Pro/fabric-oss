@@ -11,6 +11,9 @@ vi.mock("@repo/database", () => ({
 }));
 
 const embeddings = vi.hoisted(() => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 	generateEmbeddings: vi.fn(),
 }));

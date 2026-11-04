@@ -346,6 +346,10 @@ export async function findRelevantServersBySemantic(
 			"@repo/ai"
 		);
 
+		const { boundQueryForEmbedding } = await import(
+			"@repo/rag/lib/embedding/query-bound"
+		);
+
 		// Generate embedding for query
 		const providerConfig = await getSystemEmbeddingRAGProviderConfig({
 			userId,
@@ -356,7 +360,7 @@ export async function findRelevantServersBySemantic(
 			AI_CALL_PURPOSES.capabilitySearchEmbedding,
 			() =>
 				generateEmbeddings(
-					[query],
+					[boundQueryForEmbedding(query)],
 					toolSearchUsage({
 						userId,
 						organizationId,

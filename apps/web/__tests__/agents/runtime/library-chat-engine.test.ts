@@ -116,6 +116,7 @@ vi.mock("@repo/api/lib/rate-limit", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
 	generateSparseVector: () => ({ indices: [], values: [] }),
 	searchWorkspaceChunks: (...args: unknown[]) =>
 		m.searchWorkspaceChunks(...args),

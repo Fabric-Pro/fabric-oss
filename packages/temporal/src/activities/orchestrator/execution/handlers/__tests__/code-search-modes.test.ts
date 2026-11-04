@@ -52,6 +52,10 @@ vi.mock("@repo/connectors", () => ({
 	listRepositoryStructure: h.listTree,
 }));
 vi.mock("@repo/rag/lib/embedding", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(async () => ({ embedding: [0.1, 0.2] })),
 }));
 vi.mock("@repo/rag/lib/embedding/sparse", () => ({

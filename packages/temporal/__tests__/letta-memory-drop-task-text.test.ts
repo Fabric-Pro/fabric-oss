@@ -18,6 +18,10 @@ vi.mock("../src/activities/orchestrator/utils/model-selector", () => ({
 	getAiModel: vi.fn(),
 }));
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(async () => ({ embedding: [0.1], tokens: 1 })),
 	executionExists: vi.fn(),
 	storeExecutionSummary: vi.fn(),

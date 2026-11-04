@@ -8,6 +8,7 @@ import type { NextConfig } from "next";
 import nextIntlPlugin from "next-intl/plugin";
 import { cliManifestEnv } from "./lib/cli-manifest-env";
 import { buildLocaleBeforeFilesRewrites } from "./lib/locale-rewrite";
+import { isMicrofrontendsBuild } from "./lib/microfrontends-build";
 
 const withNextIntl = nextIntlPlugin("./modules/i18n/request.ts");
 
@@ -895,13 +896,9 @@ export default withContentCollections(
 		// Only the production project is in the group. Any other build (local,
 		// Docker, CI, the staging project, a fork's Vercel project) has no
 		// Microfrontends application to find, so it stays exactly as before.
-		// A prebuilt production deploy (`vercel pull` + `vercel build` on a
-		// machine) does not set VERCEL_PROJECT_NAME, so fabric-prod's Production
-		// environment also carries FABRIC_MICROFRONTENDS=1, which `vercel pull`
-		// brings down; microfrontends.json's packageName names the app. On 3 Nov
-		// 2026 a prebuilt deploy without it shipped with no marketing routing.
-		process.env.VERCEL_PROJECT_NAME === "fabric-prod" ||
-			process.env.FABRIC_MICROFRONTENDS === "1"
+		// isMicrofrontendsBuild also recognises prebuilt production deploys,
+		// which don't set VERCEL_PROJECT_NAME; see lib/microfrontends-build.ts.
+		isMicrofrontendsBuild({ env: process.env, cwd: process.cwd() })
 			? withMicrofrontends(nextConfig)
 			: nextConfig,
 	),

@@ -8,6 +8,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	storeProjectContext: vi.fn(),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 	getProjectRagSettings: vi.fn(),
 	markContextAsEmbedded: vi.fn(),
@@ -34,6 +37,9 @@ vi.mock("../../company-contexts/store", () => ({
 }));
 
 vi.mock("../../embedding", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: mocks.generateEmbedding,
 	generateEmbeddings: vi.fn(),
 }));

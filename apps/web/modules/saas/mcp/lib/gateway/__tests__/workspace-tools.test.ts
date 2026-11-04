@@ -35,6 +35,9 @@ const WORKSPACE_ROW = {
 
 const mocks = vi.hoisted(() => ({
 	getWorkspaceAccessContext: vi.fn(),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 	generateSparseVector: vi.fn(),
 	searchWorkspaceChunks: vi.fn(),
@@ -64,6 +67,10 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: mocks.generateEmbedding,
 	generateSparseVector: mocks.generateSparseVector,
 	searchWorkspaceChunks: mocks.searchWorkspaceChunks,

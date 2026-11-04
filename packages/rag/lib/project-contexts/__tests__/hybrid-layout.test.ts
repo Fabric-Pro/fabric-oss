@@ -16,7 +16,9 @@ const h = vi.hoisted(() => ({
 	getCollection: vi.fn(),
 	count: vi.fn(),
 }));
-vi.mock("@repo/logs", () => ({ logger: { info: vi.fn(), error: vi.fn() } }));
+vi.mock("@repo/logs", () => ({
+	logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
 vi.mock("@repo/database", () => ({
 	db: {
 		documentChunk: {
@@ -34,6 +36,9 @@ vi.mock("../../workspace-documents/client", () => ({ qdrantClient: h }));
 vi.mock("../client", () => ({ qdrantClient: h }));
 vi.mock("../../vector-store/client", () => ({ qdrantClient: h }));
 vi.mock("../../embedding", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(async () => ({ embedding: [0.1, 0.2] })),
 }));
 

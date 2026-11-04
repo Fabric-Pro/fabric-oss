@@ -35,6 +35,10 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/rag/lib/embedding", () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn().mockResolvedValue({ embedding: [0.1, 0.2] }),
 }));
 

@@ -50,6 +50,9 @@ vi.mock("../../collection-manager", () => ({
 }));
 
 vi.mock("../../embedding", () => ({
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: generateEmbeddingMock,
 }));
 

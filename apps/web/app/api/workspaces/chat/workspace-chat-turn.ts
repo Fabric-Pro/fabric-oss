@@ -12,7 +12,11 @@ import {
 	answerModelInfo,
 } from "@repo/ai/lib/answer-model-info";
 import { db, hasWorkspaceAccess } from "@repo/database";
-import { generateSparseVector, searchWorkspaceChunks } from "@repo/rag";
+import {
+	boundQueryForEmbedding,
+	generateSparseVector,
+	searchWorkspaceChunks,
+} from "@repo/rag";
 import type { LibrarySource } from "@saas/libraries/lib/library-chat-runtime-protocol";
 import { embed } from "ai";
 
@@ -139,10 +143,11 @@ export async function prepareWorkspaceChatTurn(args: {
 
 	// Generate embedding for the query
 	console.log("[Workspace Chat] Generating query embedding...");
+	const boundedQuery = boundQueryForEmbedding(message);
 	const embeddingStart = Date.now();
 	const { embedding: queryEmbedding, usage: embeddingUsage } = await embed({
 		model: embeddingModel,
-		value: message,
+		value: boundedQuery,
 	});
 	logEmbeddingUsageAsync({
 		context: { userId, organizationId: effectiveOrgId },
@@ -168,7 +173,7 @@ export async function prepareWorkspaceChatTurn(args: {
 		userId,
 		organizationId: effectiveOrgId, // Use workspace's actual orgId, not request's
 		queryEmbedding,
-		querySparseVector: generateSparseVector(message),
+		querySparseVector: generateSparseVector(boundedQuery),
 		topK: 8,
 		minSimilarity: 0.2, // Lower threshold for better recall
 	});

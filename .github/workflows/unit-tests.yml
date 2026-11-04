@@ -621,7 +621,9 @@ jobs:
     needs: [plan, promotion_policy]
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.plan.outputs.filter_result == 'success' && (github.event_name != 'push' && (github.event_name != 'pull_request' || needs.plan.outputs.code == 'true'))
-    runs-on: ubuntu-latest
+    # Pinned: Playwright does not support Chromium on the Ubuntu 26.04 image
+    # that ubuntu-latest moved to. warm-chromium-packages uses the same label.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       # Same placeholders as the shards: modules on the import path read
@@ -671,8 +673,8 @@ jobs:
       # System libraries are not in the browser cache, so apt installs them on
       # every run. Their .deb files come from the Azure Ubuntu mirror, which
       # sometimes serves them at ~35 kB/s: 22.7 MB of fonts took 10.5 min on
-      # 2026-10-23 and held the required unit-tests check for it. warm-caches
-      # publishes those archives from staging pushes; restoring them into
+      # 2026-10-23 and held the required unit-tests check for it.
+      # warm-chromium-packages publishes those archives from pushes; restoring them into
       # apt's archive directory leaves apt nothing to download. apt still
       # checks each file against the hash in the signed package index and
       # fetches any file that does not match, so a stale or wrong cache only
@@ -870,14 +872,49 @@ jobs:
           path: packages/database/prisma/generated
           key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma.config.ts', 'packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
 
-      # Publishes the apt archives browser-security restores (see there), once
-      # per Playwright version and runner image. Same runner label as that
-      # job, so the archives match its architecture and Ubuntu release. A slow
-      # mirror delays only this push run, which nobody waits on.
+  # Publishes the apt archives browser-security restores (see there), once
+  # per Playwright version and runner image. Same runner label as that job,
+  # so the archives match its architecture and Ubuntu release. It is its own
+  # job, rather than steps in warm-caches, because browser-security is pinned
+  # to an older image than ubuntu-latest while warm-caches must share
+  # ubuntu-latest with the DB jobs. It reads the Playwright version from the
+  # lockfile instead of installing dependencies, so a run that finds the
+  # archives already published stops after the lookup. A slow mirror delays
+  # only this push run, which nobody waits on.
+  warm-chromium-packages:
+    needs: [promotion_policy]
+    name: Warm Chromium packages
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (github.event_name == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          sparse-checkout: pnpm-lock.yaml
+          sparse-checkout-cone-mode: false
+
+      # browser-security keys on the version @repo/temporal's installed
+      # playwright reports, which is the version the lockfile resolves for
+      # that importer. Anything that is not a plain x.y.z fails the job rather
+      # than publishing under a key browser-security's exact lookup misses.
       - name: Resolve Playwright version
         id: playwright
         run: |
-          version="$(pnpm --filter @repo/temporal exec node -p "require('playwright/package.json').version")"
+          version="$(awk '
+            /^importers:/ { in_importers = 1; next }
+            in_importers && /^[^ ]/ { exit }
+            in_importers && /^  packages\/temporal:$/ { in_temporal = 1; next }
+            in_temporal && /^  [^ ]/ { exit }
+            in_temporal && /^      playwright:$/ { in_playwright = 1; next }
+            in_playwright && /^        version: / { sub(/^        version: /, ""); sub(/\(.*/, ""); print; exit }
+            in_playwright && !/^        / { exit }
+          ' pnpm-lock.yaml)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Could not read @repo/temporal's playwright version from pnpm-lock.yaml (got '${version}')."
+            exit 1
+          fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "image=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
 
@@ -889,15 +926,23 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-playwright-apt-${{ steps.playwright.outputs.version }}-${{ steps.playwright.outputs.image }}
           lookup-only: true
 
+      - name: Setup Node.js
+        if: steps.playwright-apt.outputs.cache-hit != 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
       - name: Download Chromium system packages
         id: playwright-apt-download
         if: steps.playwright-apt.outputs.cache-hit != 'true'
+        env:
+          PLAYWRIGHT_VERSION: ${{ steps.playwright.outputs.version }}
         run: |
           shopt -s nullglob
           # apt-get keeps downloaded archives unless an image config cleans
           # them; say so explicitly so the copy below sees them.
           echo 'APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/99-keep-downloaded-packages >/dev/null
-          pnpm --filter @repo/temporal exec playwright install-deps chromium
+          npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps chromium
           mkdir -p "$HOME/playwright-apt-archives"
           debs=(/var/cache/apt/archives/*.deb)
           echo "downloaded ${#debs[@]} package archives"

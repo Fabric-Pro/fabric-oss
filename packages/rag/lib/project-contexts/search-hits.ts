@@ -5,11 +5,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
-import { countTokens, truncateToTokens } from "../chunking/tokenizer";
-import {
-	MAX_RETRIEVAL_QUERY_TOKENS,
-	MAX_TOKENS_PER_INPUT,
-} from "../embedding/limits";
+import { boundQueryForEmbedding } from "../embedding/query-bound";
 import { generateSparseVector } from "../embedding/sparse";
 import { searchSimilarProjectContexts } from "./store";
 import type {
@@ -39,10 +35,7 @@ export async function searchProjectContextHits(
 		fallbackOnSparseFailure = true,
 		...searchOptions
 	} = options;
-	const boundedQuery =
-		countTokens(query) > MAX_TOKENS_PER_INPUT
-			? truncateToTokens(query, MAX_RETRIEVAL_QUERY_TOKENS)
-			: query;
+	const boundedQuery = boundQueryForEmbedding(query);
 	const queryEmbedding = await embedQuery(boundedQuery);
 	if (queryEmbedding.length === 0) {
 		return [];

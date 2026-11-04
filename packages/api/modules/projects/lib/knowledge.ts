@@ -27,7 +27,7 @@ import {
 	type Prisma,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { generateEmbedding } from "@repo/rag/lib/embedding/generator";
+import { generateQueryEmbedding } from "@repo/rag/lib/embedding/query";
 import { embedKnowledgeEntry } from "@repo/rag/lib/knowledge/embed";
 import {
 	type KnowledgeVectorHit,
@@ -229,7 +229,7 @@ export async function searchProjectKnowledgeEntries(params: {
 
 	let semantic: KnowledgeVectorHit[] = [];
 	try {
-		const { embedding } = await generateEmbedding(params.query, {
+		const { embedding } = await generateQueryEmbedding(params.query, {
 			userId: params.userId,
 			organizationId: tenancy.organizationId ?? undefined,
 			projectId: params.projectId,

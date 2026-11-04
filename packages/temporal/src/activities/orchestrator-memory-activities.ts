@@ -21,6 +21,7 @@ import {
 	type ExecutionSummary,
 	executionExists,
 	generateEmbedding,
+	generateQueryEmbedding,
 	searchSimilarExecutions,
 	storeExecutionSummary,
 } from "@repo/rag";
@@ -440,7 +441,7 @@ export async function searchSemanticMemory(
 		const embeddingResult = await runWithAiCallPurpose(
 			AI_CALL_PURPOSES.executionSearchEmbedding,
 			() =>
-				generateEmbedding(
+				generateQueryEmbedding(
 					query,
 					withDefaultFeature(
 						{

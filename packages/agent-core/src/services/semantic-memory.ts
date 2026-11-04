@@ -17,7 +17,7 @@ import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
 	type ExecutionSummary,
-	generateEmbedding,
+	generateQueryEmbedding,
 	searchSimilarExecutions,
 } from "@repo/rag";
 
@@ -62,7 +62,7 @@ export interface MemoryContext {
  * Search for semantically similar past executions.
  * Can be called from both Temporal activities and API routes.
  *
- * SECURITY: Credentials are fetched internally by generateEmbedding() using
+ * SECURITY: Credentials are fetched internally by generateQueryEmbedding() using
  * getAIEmbeddingModelWithMetadata().
  */
 export async function searchSemanticMemory(
@@ -82,7 +82,7 @@ export async function searchSemanticMemory(
 		const embeddingResult = await runWithAiCallPurpose(
 			AI_CALL_PURPOSES.executionSearchEmbedding,
 			() =>
-				generateEmbedding(query, {
+				generateQueryEmbedding(query, {
 					userId,
 					organizationId,
 					featureKey: "chat-agent",

@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
 	filterWorkspaceIdsForTenant: vi.fn(),
 	getEffectiveRagSettings: vi.fn(),
 	searchMultipleWorkspaces: vi.fn(),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: vi.fn(),
 	rows: vi.fn(),
 }));
@@ -87,6 +90,10 @@ vi.mock("@repo/rag/lib/vector-store", () => ({
 }));
 
 vi.mock("@repo/rag", async () => ({
+	boundQueryForEmbedding: vi.fn((text: string) => text),
+	get generateQueryEmbedding() {
+		return (this as { generateEmbedding: unknown }).generateEmbedding;
+	},
 	generateEmbedding: (...args: unknown[]) => mocks.generateEmbedding(...args),
 	formatContextForLLM: () => "context",
 	retrieveContext: (await import("@repo/rag/lib/retrieval/retriever"))

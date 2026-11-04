@@ -1,3 +1,4 @@
+import { boundQueryForEmbedding } from "../embedding/query-bound";
 /**
  * Project-Scoped Unified Search
  *
@@ -18,7 +19,7 @@
 
 import { db, getConnectorBackedDocumentsForWorkspaces } from "@repo/database";
 import { logger } from "@repo/logs";
-import { generateEmbedding, generateSparseVector } from "../embedding";
+import { generateQueryEmbedding, generateSparseVector } from "../embedding";
 import type { RetrievedContext } from "../project-contexts";
 import {
 	contextMetaHeader,
@@ -366,7 +367,7 @@ async function searchWorkspaceDocs(options: {
 		}
 	>;
 }): Promise<UnifiedSearchResult[]> {
-	const embeddingResult = await generateEmbedding(options.query, {
+	const embeddingResult = await generateQueryEmbedding(options.query, {
 		conversationId: options.conversationId,
 		userId: options.userId,
 		organizationId: options.organizationId,
@@ -383,7 +384,9 @@ async function searchWorkspaceDocs(options: {
 		userId: options.userId,
 		organizationId: options.organizationId,
 		queryEmbedding: embeddingResult.embedding,
-		querySparseVector: generateSparseVector(options.query),
+		querySparseVector: generateSparseVector(
+			boundQueryForEmbedding(options.query),
+		),
 		topK: options.topK,
 		minSimilarity: options.minSimilarity,
 		documentIds: options.documentIds,
