@@ -88,8 +88,8 @@ import type {
 	SyncedContextFileResult,
 } from "@fabricorg/sdk";
 import {
-	asCliFailure,
-	type CliFailure,
+	CliFailure,
+	describeDuration,
 	describeError,
 } from "../command-boundary.js";
 import { readFileSafely } from "../instructions/safe-write.js";
@@ -98,6 +98,7 @@ import {
 	hashContextContent,
 	MAX_CONTEXT_FILE_BYTES,
 } from "./classify.js";
+import { contextCliFailure } from "./failure.js";
 import type { ContextLock } from "./lock.js";
 import { CONTEXT_LOCK_VERSION } from "./lock.js";
 import type {
@@ -105,6 +106,10 @@ import type {
 	ContextPlan,
 	ContextPushCandidate,
 } from "./plan.js";
+import type {
+	ContextPushProgress,
+	ContextPushProgressAction,
+} from "./progress.js";
 
 /** On every result of a planned move, but `moved` itself (Fizzy #2636). */
 interface MoveFields {
@@ -430,10 +435,39 @@ export async function pushContextPlan(input: {
 	prune?: boolean;
 	/** The lock the plan was made against: the versions `--prune` names. */
 	lock?: ContextLock | null;
+	/** Told before every request, a `--force` resend included. */
+	onProgress?: ContextPushProgress;
+	/**
+	 * `--timeout`: the run's overall bound, checked before every request. A
+	 * run past it stops as a refusal would, so what the server confirmed is
+	 * still recorded; a request already out finishes or hits its own timeout.
+	 */
+	timeoutMs?: number;
+	/** The clock the bound is measured on; `Date.now` unless a test sets it. */
+	now?: () => number;
 }): Promise<ContextPushRun> {
 	const results: ContextPushResult[] = [];
 	const pruneTargets: string[] = [];
 	const { force } = input;
+	const now = input.now ?? Date.now;
+	const deadline =
+		input.timeoutMs === undefined ? null : now() + input.timeoutMs;
+	let requestIndex = 0;
+	let requestTotal = input.plan.moves.length + input.plan.push.length;
+	let currentPath = "";
+	const progress = (
+		action: ContextPushProgressAction,
+		sourcePath: string,
+	): void => {
+		input.onProgress?.({
+			index: requestIndex,
+			total: requestTotal,
+			action,
+			sourcePath,
+		});
+	};
+	/** The current file's `--force` resend, under the same number. */
+	const progressForce = (): void => progress("force", currentPath);
 
 	const send = (
 		sourcePath: string,
@@ -508,6 +542,7 @@ export async function pushContextPlan(input: {
 			// Read the file again: it may have been saved while the first
 			// request was out, and a resend that names the server's version
 			// must not replace it with content the folder no longer holds.
+			progressForce();
 			const forcedContent = await readPlannedContent(input.root, entry);
 			if (forcedContent === null) {
 				return {
@@ -635,6 +670,7 @@ export async function pushContextPlan(input: {
 			if (!force || (current !== null && current.contentHash === null)) {
 				return asConflict(conflict, false);
 			}
+			progressForce();
 			const forcedContent = await readPlannedContent(input.root, entry);
 			if (forcedContent === null) {
 				return {
@@ -797,6 +833,7 @@ export async function pushContextPlan(input: {
 					current,
 				};
 			}
+			progressForce();
 			try {
 				return fromAnswer(await remove(current.contentHash), current);
 			} catch (retryError) {
@@ -827,14 +864,29 @@ export async function pushContextPlan(input: {
 	 * (returned); any other is this step's own result.
 	 */
 	const step = async (
+		action: ContextPushProgressAction,
+		sourcePath: string,
 		run: () => Promise<ContextPushResult>,
 		failed: (error: unknown, exitCode: number) => ContextPushResult,
 	): Promise<CliFailure | null> => {
+		if (
+			deadline !== null &&
+			input.timeoutMs !== undefined &&
+			now() >= deadline
+		) {
+			return new CliFailure(
+				`Stopped at the --timeout of ${describeDuration(input.timeoutMs)}: ${requestIndex} of ${requestTotal} requests sent. What the server confirmed is recorded in the lock; run again to send the rest.`,
+				1,
+			);
+		}
+		requestIndex += 1;
+		currentPath = sourcePath;
+		progress(action, sourcePath);
 		try {
 			results.push(await run());
 			return null;
 		} catch (error) {
-			const failure = asCliFailure(error);
+			const failure = contextCliFailure(error);
 			if (stopsTheRun(error)) {
 				return failure;
 			}
@@ -870,6 +922,8 @@ export async function pushContextPlan(input: {
 
 	for (const move of input.plan.moves) {
 		const stoppedBy = await step(
+			"move",
+			move.to,
 			() => pushMove(move),
 			(error, exitCode) => ({
 				sourcePath: move.to,
@@ -886,6 +940,8 @@ export async function pushContextPlan(input: {
 
 	for (const entry of input.plan.push) {
 		const stoppedBy = await step(
+			"push",
+			entry.sourcePath,
 			() => pushEntry(entry),
 			(error, exitCode) => ({
 				sourcePath: entry.sourcePath,
@@ -901,12 +957,15 @@ export async function pushContextPlan(input: {
 
 	if (input.prune) {
 		pruneTargets.push(...pruneTargetsSoFar());
+		requestTotal += pruneTargets.length;
 		for (const sourcePath of pruneTargets) {
 			const locked = input.lock?.files[sourcePath];
 			if (!locked || locked.state === "duplicate") {
 				continue;
 			}
 			const stoppedBy = await step(
+				"delete",
+				sourcePath,
 				() => deleteEntry(sourcePath, locked.sha256),
 				(error, exitCode) => ({
 					sourcePath,

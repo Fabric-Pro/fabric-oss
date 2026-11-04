@@ -143,6 +143,8 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectInstructionRepositorySync", // Coding Instructions repository sync configuration
 	"ProjectInstructionRepositorySyncRun", // Coding Instructions repository sync runs
 	"ProjectInstructionProposalBranch", // Member proposal branches (Fizzy #2738)
+	"ProjectInstructionsAccessGrant", // Members' read access to the instructions repository
+	"ProjectInstructionProposalApproval", // Per-reviewer approvals of upload-mode proposals
 	"ProjectDocument", // Project documents
 	"ProjectContext", // Project context files / RAG contexts
 	"DeletedMeetingArchive", // 7-day recovery window for unlinked meetings (#2355)
@@ -222,6 +224,7 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectMeetingAgenda", // Pre-meeting agendas (#1901); RLS-registered user_owned like its siblings
 	"ParlumeMeetingSession", // Project-scoped Teams bot lifecycle
 	"ParlumeChannelPost",
+	"ParlumeSuggestion", // Unprompted suggestions and recaps, listed on the Parlume page
 	"ParlumeMeetingSegment", // Final live transcript segment for a project bot
 	"ParlumeMeetingTurn", // Project-scoped spoken agent response
 	"ParlumeAction",
@@ -281,6 +284,7 @@ const USER_OWNED_TABLES = new Set([
  * Tables that are organization-only (no personal equivalent).
  */
 const ORG_ONLY_TABLES = new Set([
+	"ProjectWorkspaceDocumentLink", // References retain source permissions; projectId is independently authorized.
 	"NonMemberContact", // #2340 a contact has no owning user
 	"CloudProviderConfig",
 	// Outbound credentials: owner/sharing narrowing is in queries/credentials.ts.
@@ -291,6 +295,11 @@ const ORG_ONLY_TABLES = new Set([
 	"OrganizationApiKey",
 	"OrganizationModelPreference",
 	"OrganizationEvalBudget",
+	// Saved evaluation state is organization-owned; requestedBy/createdBy are
+	// attribution, not per-user tenant columns. Only bindings/runs admit guests.
+	"ProjectContextQualityBinding",
+	"ProjectContextQualityRun",
+	"ProjectContextQualityPrincipal",
 	// What a published page keeps between visits: every viewer of the page
 	// reads and writes its shared records, so the organization is the
 	// boundary. The query layer checks access to the page itself first.
@@ -347,6 +356,10 @@ const ORG_ONLY_TABLES = new Set([
 	// `termsAcknowledgedById` are audit fields, not owners.
 	"ChatGptPlanOrgAccount",
 	"ChatGptPlanOrgPolicy",
+	// Report defaults per template for an organization or one of its
+	// projects. `updatedById` is attribution, not an owner, and the rows are
+	// not project-scoped: a project guest never reaches them.
+	"ReportTemplateOverride",
 ]);
 
 /**
@@ -389,12 +402,16 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	BackgroundJob: "projectId",
 	ProjectRagSettings: "projectId",
 	ProjectDatabricksKnowledgeBinding: "projectId",
+	// Principal claims intentionally have no project guest carve-out.
+	ProjectContextQualityBinding: "projectId",
+	ProjectContextQualityRun: "projectId",
 	ProjectLinkedMeeting: "projectId",
 	DeletedMeetingArchive: "projectId",
 	ProjectMeetingTranscript: "projectId",
 	ProjectMeetingAgenda: "projectId",
 	ParlumeMeetingSession: "projectId",
 	ParlumeChannelPost: "projectId",
+	ParlumeSuggestion: "projectId",
 	ParlumeMeetingSegment: "projectId",
 	ParlumeMeetingTurn: "projectId",
 	ParlumeAction: "projectId",
@@ -417,6 +434,8 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectInstructionRepositorySync: "projectId",
 	ProjectInstructionRepositorySyncRun: "projectId",
 	ProjectInstructionProposalBranch: "projectId",
+	ProjectInstructionsAccessGrant: "projectId",
+	ProjectInstructionProposalApproval: "projectId",
 	UserStory: "projectId",
 	TestCase: "projectId",
 	TestPlan: "projectId",

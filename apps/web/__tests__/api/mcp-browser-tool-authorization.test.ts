@@ -287,8 +287,23 @@ describe("hosted browser tools", () => {
 		expect(templateFindMany).not.toHaveBeenCalled();
 	});
 
-	it("allows an authorized admin to execute a template", async () => {
+	it("refuses execute_template without workflows:run even with browser:write", async () => {
 		const result = await callTool("execute_template", ["browser:write"]);
+		expect(JSON.stringify(result)).toContain("workflows:run");
+		expect(workflowStart).not.toHaveBeenCalled();
+	});
+
+	it("refuses list_templates without workflows:read even with browser:read", async () => {
+		const result = await callTool("list_templates", ["browser:read"]);
+		expect(JSON.stringify(result)).toContain("workflows:read");
+		expect(templateFindMany).not.toHaveBeenCalled();
+	});
+
+	it("allows an authorized admin to execute a template", async () => {
+		const result = await callTool("execute_template", [
+			"browser:write",
+			"workflows:run",
+		]);
 		expect(JSON.stringify(result)).toContain("ok");
 		expect(canManageOrganizationReportTemplates).toHaveBeenCalledWith(
 			"user-1",
@@ -318,7 +333,10 @@ describe("hosted browser tools", () => {
 						template.organizationId === where.organizationId,
 				),
 		);
-		const result = await callTool("list_templates", ["browser:read"]);
+		const result = await callTool("list_templates", [
+			"browser:read",
+			"workflows:read",
+		]);
 		expect(JSON.stringify(result)).toContain("same-org-public");
 		expect(JSON.stringify(result)).not.toContain("other-org-public");
 		expect(JSON.stringify(result)).not.toContain("personal");
@@ -346,7 +364,10 @@ describe("hosted browser tools", () => {
 					? otherPublicTemplate
 					: null,
 		);
-		const result = await callTool("execute_template", ["browser:write"]);
+		const result = await callTool("execute_template", [
+			"browser:write",
+			"workflows:run",
+		]);
 		expect(JSON.stringify(result)).toMatch(/not found/i);
 		expect(templateFindFirst).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -358,7 +379,10 @@ describe("hosted browser tools", () => {
 
 	it("refuses execution if the scoped template lookup fails", async () => {
 		templateFindFirst.mockRejectedValue(new Error("lookup failed"));
-		const result = await callTool("execute_template", ["browser:write"]);
+		const result = await callTool("execute_template", [
+			"browser:write",
+			"workflows:run",
+		]);
 		expect(JSON.stringify(result)).toContain("lookup failed");
 		expect(workflowStart).not.toHaveBeenCalled();
 	});

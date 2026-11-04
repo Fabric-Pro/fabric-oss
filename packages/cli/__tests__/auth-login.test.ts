@@ -370,3 +370,52 @@ describe("fabric auth login", () => {
 		);
 	});
 });
+
+describe("explicit saved-agent browser grants", () => {
+	it("does not add run/schedule scopes to ordinary login", async () => {
+		mocks.signInWithBrowser.mockResolvedValue({
+			name: "Example",
+			email: "dev@example.com",
+		});
+		await runLogin([]);
+		expect(mocks.signInWithBrowser).toHaveBeenCalledWith(
+			expect.not.objectContaining({ scopes: expect.anything() }),
+		);
+	});
+	it("requests both explicit recurring/execution scopes only for --agent-schedules", async () => {
+		mocks.signInWithBrowser.mockResolvedValue({
+			name: "Example",
+			email: "dev@example.com",
+		});
+		await runLogin(["--agent-schedules"]);
+		expect(mocks.signInWithBrowser).toHaveBeenCalledWith(
+			expect.objectContaining({
+				scopes: expect.arrayContaining([
+					"agents:read",
+					"agents:execute",
+					"agents:schedule",
+				]),
+			}),
+		);
+	});
+	it("does not grant recurring work with only --agent-runs", async () => {
+		mocks.signInWithBrowser.mockResolvedValue({
+			name: "Example",
+			email: "dev@example.com",
+		});
+		await runLogin(["--agent-runs"]);
+		expect(
+			mocks.signInWithBrowser.mock.calls.at(-1)?.[0].scopes,
+		).not.toContain("agents:schedule");
+	});
+	it.each([
+		["--agent-runs", "--project", "example-project"],
+		["--agent-schedules", "--key", "org_example_key"],
+	])(
+		"rejects incompatible grant scope before authentication",
+		async (...args) => {
+			await expect(runLogin(args)).rejects.toMatchObject({ code: 2 });
+			expect(mocks.signInWithBrowser).not.toHaveBeenCalled();
+		},
+	);
+});

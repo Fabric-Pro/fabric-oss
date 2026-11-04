@@ -21,12 +21,27 @@ import {
 	useState,
 } from "react";
 import type { ChangeMark } from "../../lib/instructions-base-changes";
+import type { BranchMarker } from "./lib/branch-files";
 
 export type TreeFile = {
 	path: string;
 	kind: string;
 	name?: string | null;
 	description?: string | null;
+	/** What the member's own proposal branch does to this file, when anything. */
+	branch?: BranchMarker;
+};
+
+const BRANCH_TAG: Record<BranchMarker, { tag: string; title: string }> = {
+	branchOnly: { tag: "branchOnlyTag", title: "branchOnlyTitle" },
+	deletedOnBranch: {
+		tag: "deletedOnBranchTag",
+		title: "deletedOnBranchTitle",
+	},
+	changedOnBranch: {
+		tag: "changedOnBranchTag",
+		title: "changedOnBranchTitle",
+	},
 };
 
 type Node = {
@@ -511,6 +526,9 @@ export function InstructionsTree({
 		if (node.file) {
 			const active = node.path === selectedPath;
 			const mark = marks?.get(node.path);
+			const branchTag = node.file.branch
+				? BRANCH_TAG[node.file.branch]
+				: null;
 			const markTitle =
 				mark && changes
 					? t(mark === "added" ? "addedTitle" : "changedTitle", {
@@ -541,11 +559,30 @@ export function InstructionsTree({
 						className="size-3.5 shrink-0 text-muted-foreground"
 						aria-hidden="true"
 					/>
-					<span className="truncate">{node.name}</span>
+					<span
+						className={cn(
+							"truncate",
+							node.file.branch === "deletedOnBranch" &&
+								"text-muted-foreground line-through",
+						)}
+					>
+						{node.name}
+					</span>
+					{branchTag ? (
+						<span
+							title={t(branchTag.title)}
+							className="ml-auto shrink-0 pl-2 text-[10.5px] text-muted-foreground"
+						>
+							<span aria-hidden="true">{t(branchTag.tag)}</span>
+							<span className="sr-only">
+								{t(branchTag.title)}
+							</span>
+						</span>
+					) : null}
 					{mark ? (
 						<span
 							title={markTitle}
-							className={`ml-auto w-3 shrink-0 text-center font-medium ${mark === "added" ? "text-success" : "text-highlight-ink"}`}
+							className={`${branchTag ? "" : "ml-auto "}w-3 shrink-0 text-center font-medium ${mark === "added" ? "text-success" : "text-highlight-ink"}`}
 						>
 							<span aria-hidden="true">
 								{t(

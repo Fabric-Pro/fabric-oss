@@ -29,6 +29,7 @@ const m = vi.hoisted(() => ({
 	// Publish first, scan afterwards (Fizzy #2737).
 	recordInstructionDeferredScanOutcome: vi.fn(),
 	getPublishedInstructionSnapshot: vi.fn(),
+	createInstructionPublishedNotifications: vi.fn(),
 }));
 /**
  * Every key in `value`, at any depth, that the audit writer's key denylist
@@ -2093,6 +2094,41 @@ describe("publishInstructionSnapshotActivity", () => {
 			organizationId: "o",
 			snapshotId: "s",
 		});
+	});
+
+	it("notifies the project's members once the pointer actually moved", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: true,
+		});
+
+		await publishInstructionSnapshotActivity(snap);
+
+		expect(m.createInstructionPublishedNotifications).toHaveBeenCalledWith({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "o",
+			actorUserId: snap.userId,
+			via: "automatic",
+		});
+	});
+
+	it("notifies nobody on the idempotent retry or a refused fast-forward", async () => {
+		m.publishInstructionSnapshot.mockResolvedValueOnce({
+			published: true,
+			changed: false,
+		});
+		await publishInstructionSnapshotActivity(snap);
+		m.publishInstructionSnapshot.mockResolvedValueOnce({
+			published: false,
+			changed: false,
+			reason: "base_moved",
+		});
+		await publishInstructionSnapshotActivity(snap);
+
+		expect(
+			m.createInstructionPublishedNotifications,
+		).not.toHaveBeenCalled();
 	});
 
 	it("pre-builds nothing when the fast-forward was refused", async () => {

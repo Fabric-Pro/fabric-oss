@@ -134,6 +134,11 @@ export function SavedCredentialsView({
 								<div className="min-w-0 flex-1 space-y-0.5">
 									<p className="truncate font-medium text-sm">
 										{credential.label}
+										{credential.externalAccountLogin ? (
+											<span className="font-normal text-muted-foreground">
+												{` · ${credential.externalAccountLogin}`}
+											</span>
+										) : null}
 									</p>
 									<p className="truncate text-muted-foreground text-xs">
 										{
@@ -152,9 +157,6 @@ export function SavedCredentialsView({
 											/^https:\/\//,
 											"",
 										)}
-										{credential.externalAccountLogin
-											? ` · ${credential.externalAccountLogin}`
-											: ""}
 										{credential.scopes.length > 0
 											? ` · ${credential.scopes.join(", ")}`
 											: ""}

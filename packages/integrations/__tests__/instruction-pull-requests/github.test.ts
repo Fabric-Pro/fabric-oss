@@ -398,6 +398,76 @@ describe("GitHub open, get and close", () => {
 		expect(error.duplicate).toBeUndefined();
 	});
 
+	it("keeps a 422's message and errors as a sanitized providerMessage, never the raw body", async () => {
+		stubFetch(() =>
+			json(
+				{
+					message: "Validation Failed",
+					errors: [
+						{
+							resource: "PullRequest",
+							field: "base",
+							code: "invalid",
+						},
+						{
+							resource: "PullRequest",
+							code: "custom",
+							message: `token ${TOKEN}`,
+						},
+					],
+					documentation_url: "https://docs.example.com/rest/pulls",
+				},
+				422,
+			),
+		);
+		const error = (await github
+			.open({ ...target(), ...openInput })
+			.catch((e: unknown) => e)) as InstructionPullRequestError;
+		expect(error).toMatchObject({
+			code: "PR_CREATION_REFUSED",
+			cause: "conflict",
+			retryable: false,
+			providerStatus: 422,
+			providerMessage:
+				"Validation Failed — base: invalid; token [REDACTED]",
+		});
+		const serialized = JSON.stringify(error);
+		expect(serialized).not.toContain(TOKEN);
+		expect(serialized).not.toContain("documentation_url");
+		expect(serialized).not.toContain("docs.example.com");
+	});
+
+	it("keeps a 403's message and the accepted permissions header", async () => {
+		stubFetch(() =>
+			json({ message: "Resource not accessible by integration" }, 403, {
+				"x-accepted-github-permissions": "pull_requests=write",
+			}),
+		);
+		const error = (await github
+			.open({ ...target(), ...openInput })
+			.catch((e: unknown) => e)) as InstructionPullRequestError;
+		expect(error).toMatchObject({
+			code: "PR_CREATION_REFUSED",
+			cause: "permission",
+			providerStatus: 403,
+			providerMessage: "Resource not accessible by integration",
+			requiredPermissions: "pull_requests=write",
+		});
+		expect(error.message).toBe(
+			"Pull request provider call failed (PR_CREATION_REFUSED)",
+		);
+	});
+
+	it("keeps only the status when the refusal body is not JSON", async () => {
+		stubFetch(() => new Response("<html>gateway</html>", { status: 404 }));
+		const error = (await github
+			.open({ ...target(), ...openInput })
+			.catch((e: unknown) => e)) as InstructionPullRequestError;
+		expect(error.providerStatus).toBe(404);
+		expect(error.providerMessage).toBeUndefined();
+		expect(JSON.stringify(error)).not.toContain("gateway");
+	});
+
 	it("maps closed-unmerged to CLOSED and closes with PATCH state closed", async () => {
 		const calls = stubFetch(() =>
 			json(githubPull({ number: 11, state: "closed" })),

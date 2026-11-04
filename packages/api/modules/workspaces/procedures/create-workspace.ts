@@ -2,7 +2,7 @@ import { createWorkspace } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -11,7 +11,11 @@ import {
  * Create a new workspace
  */
 export const createWorkspaceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_CREATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_CREATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/document-workspaces",

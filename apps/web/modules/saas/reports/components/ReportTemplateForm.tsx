@@ -1,10 +1,13 @@
 "use client";
 
+import { withProjectContext } from "@saas/reports/lib/project-report-suite";
+import { isRequiredDataSource } from "@saas/reports/lib/report-template-definition";
 import {
 	type DataSourceDefinition,
 	DataSourceDefinitionBuilder,
 } from "@saas/shared/components/DataSourceDefinitionBuilder";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
+import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -91,12 +94,18 @@ type Props = {
 	templateId?: string;
 	organizationId?: string;
 	basePath?: string;
+	/** The project whose Reports tab opened this template, kept on every link. */
+	projectId?: string;
+	/** Where the back arrow leads; the templates page by default. */
+	backHref?: string;
 };
 
 export function ReportTemplateForm({
 	templateId,
 	organizationId,
 	basePath = "/app/report-templates",
+	projectId,
+	backHref,
 }: Props) {
 	const router = useRouter();
 	const queryClient = useQueryClient();
@@ -189,7 +198,9 @@ export function ReportTemplateForm({
 		orpc.reports.templates.create.mutationOptions({
 			onSuccess: (data: any) => {
 				toast.success("Template created");
-				router.push(`${basePath}/${data.id}`);
+				router.push(
+					withProjectContext(`${basePath}/${data.id}`, projectId),
+				);
 			},
 			onError: (error) => {
 				toast.error(error.message || "Failed to create template");
@@ -232,7 +243,7 @@ export function ReportTemplateForm({
 		// Extract unique providers and their types from the data source definitions
 		const providerMap = new Map<
 			string,
-			{ type: "integration" | "mcp"; name: string }
+			{ type: "integration" | "mcp"; name: string; required: boolean }
 		>();
 
 		// Provider display names for better UX
@@ -245,12 +256,19 @@ export function ReportTemplateForm({
 		};
 
 		for (const ds of dataSources) {
-			if (!providerMap.has(ds.provider)) {
-				providerMap.set(ds.provider, {
-					type: ds.type === "mcp" ? "mcp" : "integration",
-					name: providerNames[ds.provider] || ds.provider,
-				});
+			if (ds.type === "fabric") {
+				continue;
 			}
+			// A provider is required while any of its data sources is.
+			const existing = providerMap.get(ds.provider);
+			providerMap.set(ds.provider, {
+				type:
+					existing?.type ??
+					(ds.type === "mcp" ? "mcp" : "integration"),
+				name: providerNames[ds.provider] || ds.provider,
+				required:
+					(existing?.required ?? false) || isRequiredDataSource(ds),
+			});
 		}
 
 		// Build connection requirements from providers
@@ -271,8 +289,10 @@ export function ReportTemplateForm({
 			const requirement = {
 				key,
 				name: info.name,
-				description: `Requires ${info.name} connection`,
-				required: true,
+				description: info.required
+					? `Requires ${info.name} connection`
+					: `Uses a ${info.name} connection when one is connected`,
+				required: info.required,
 			};
 			if (info.type === "mcp") {
 				mcpServerRequirements.push(requirement);
@@ -417,7 +437,7 @@ export function ReportTemplateForm({
 			<div className="flex items-center justify-between">
 				<div className="flex items-center gap-4">
 					<Button variant="ghost" size="icon" asChild>
-						<Link href={basePath}>
+						<Link href={backHref ?? basePath} aria-label="Back">
 							<ArrowLeftIcon className="h-4 w-4" />
 						</Link>
 					</Button>
@@ -434,7 +454,10 @@ export function ReportTemplateForm({
 					{isEditing && (
 						<Button asChild variant="default">
 							<Link
-								href={`${basePath}/${templateId}/instances/new`}
+								href={withProjectContext(
+									`${basePath}/${templateId}/instances/new`,
+									projectId,
+								)}
 							>
 								<PlusIcon className="mr-2 h-4 w-4" />
 								Use Template
@@ -500,12 +523,13 @@ export function ReportTemplateForm({
 															key={i}
 															className="bg-background/80 border rounded-lg p-3"
 														>
-															<p className="text-sm text-muted-foreground whitespace-pre-wrap">
-																{agent.task
-																	.length >
-																600
-																	? `${agent.task.slice(0, 600)}...`
-																	: agent.task}
+															<p className="max-h-80 overflow-y-auto text-sm text-muted-foreground whitespace-pre-wrap">
+																{reportSuite ||
+																agent.task
+																	.length <=
+																	600
+																	? agent.task
+																	: `${agent.task.slice(0, 600)}...`}
 															</p>
 														</div>
 													),
@@ -764,6 +788,7 @@ export function ReportTemplateForm({
 					dataSources={dataSources}
 					onChange={setDataSources}
 					readOnly={isReadOnlyTemplate}
+					showRequired={reportSuite}
 				/>
 			</section>
 
@@ -778,7 +803,7 @@ export function ReportTemplateForm({
 				<Card>
 					<CardContent className="pt-6">
 						<div className="flex items-center gap-2 mb-2">
-							<SparklesIcon className="h-5 w-5 text-highlight" />
+							<PuzzleIcon className="h-5 w-5 text-highlight" />
 							<h3 className="font-semibold">Skills</h3>
 						</div>
 						<p className="text-sm text-muted-foreground">

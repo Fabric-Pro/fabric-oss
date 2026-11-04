@@ -1,8 +1,6 @@
 import { getOrganizationBySlug } from "@repo/database";
 import { AgentDuplicateRouter } from "@saas/agents/components/AgentDuplicateRouter";
 import { getSession } from "@saas/auth/lib/server";
-import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
-import { TopRightControls } from "@saas/shared/components/TopRightControls";
 import { redirect } from "next/navigation";
 
 type Props = {
@@ -30,18 +28,7 @@ export default async function AgentDuplicatePage({ params }: Props) {
 	const basePath = `/app/${organizationSlug}`;
 
 	return (
-		<div className="w-full py-6 space-y-6">
-			<TopRightControls />
-			<PageBreadcrumbs
-				items={[
-					{ label: "Agents", href: `${basePath}/agents` },
-					{
-						label: "Agent Details",
-						href: `${basePath}/agents/${agentId}`,
-					},
-					{ label: "Duplicate Agent" },
-				]}
-			/>
+		<div className="flex h-full min-h-0 flex-1 flex-col">
 			<AgentDuplicateRouter
 				agentId={agentId}
 				organizationId={organizationId}

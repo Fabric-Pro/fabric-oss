@@ -331,3 +331,27 @@ describe("computeReportReadiness — required provider context fields", () => {
 		expect(without.hardBlocked).toBe(false);
 	});
 });
+
+it("labels supported Project knowledge without claiming an external connection test", () => {
+	const r = computeReportReadiness({
+		...base,
+		templateNeedsDataSource: false,
+		requiredDataSources: [],
+		requiredParams: [],
+		projectKnowledge: true,
+	});
+	expect(r.hardBlocked).toBe(false);
+	expect(r.connectionTested).toBe(false);
+	expect(r.connectionLabel).toBe("Project knowledge selected");
+	expect(r.checks[0]?.note).toContain(
+		"project access is checked when this report runs",
+	);
+	expect(r.verdict.subtitle).not.toBe("All checks passed");
+});
+
+it("never lets a Project knowledge display hint bypass missing external bindings", () => {
+	const r = computeReportReadiness({ ...base, projectKnowledge: true });
+	expect(r.hardBlocked).toBe(true);
+	expect(r.connection).toBe("not_configured");
+	expect(r.connectionLabel).not.toBe("Project knowledge selected");
+});

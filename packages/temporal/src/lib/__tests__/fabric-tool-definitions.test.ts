@@ -130,7 +130,7 @@ describe("Fabric's tool definitions", () => {
 		expect(
 			GATEWAY_TOOLS.filter(
 				(tool) =>
-					!/^(workflows|frames|projects|instructions|mcp):(read|write|run)$/.test(
+					!/^(workflows|frames|projects|instructions|mcp|workspaces):(read|write|run)$/.test(
 						tool.scope,
 					),
 			).map((tool) => [tool.name, tool.scope]),

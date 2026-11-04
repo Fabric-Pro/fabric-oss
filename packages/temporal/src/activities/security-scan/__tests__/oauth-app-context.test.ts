@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
 	refresh: vi.fn(),
 	clone: vi.fn(),
 	listRemote: vi.fn(),
+	env: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => ({
@@ -36,7 +37,14 @@ vi.mock("node:fs/promises", async (importOriginal) => ({
 	rm: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("simple-git", () => ({
-	simpleGit: () => ({ clone: mocks.clone, listRemote: mocks.listRemote }),
+	simpleGit: () => ({
+		clone: mocks.clone,
+		listRemote: mocks.listRemote,
+		env(env: Record<string, string>) {
+			mocks.env(env);
+			return this;
+		},
+	}),
 }));
 
 import { resolveRepoTokenActivity } from "../../code-indexing";
@@ -188,7 +196,15 @@ describe.each([
 			network === mocks.listRemote
 				? network.mock.calls[0][0][0]
 				: network.mock.calls[0][0];
-		expect(new URL(url).password).toBe("rotated-access");
+		// The token authenticates through git's environment, never the URL.
+		expect(new URL(url).password).toBe("");
+		expect(mocks.env).toHaveBeenCalledWith(
+			expect.objectContaining({
+				GIT_CONFIG_VALUE_1: `Authorization: Basic ${Buffer.from(
+					"x-access-token:rotated-access",
+				).toString("base64")}`,
+			}),
+		);
 	});
 
 	it("does not resolve or use credentials for an organization that does not own the project", async () => {

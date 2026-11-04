@@ -7,16 +7,20 @@ import {
 	type ProjectReportsTab,
 	pickDefaultProjectReportsTab,
 } from "@saas/reports/lib/project-report-suite";
+import { Pagination } from "@saas/shared/components/Pagination";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
+import { cn } from "@ui/lib";
 import { SparklesIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
 import { ProjectReportInstancesList } from "./ProjectReportInstancesList";
 import { ProjectReportTemplatesList } from "./ProjectReportTemplatesList";
+
+const REPORTS_PER_PAGE = 20;
 
 const NO_CAPABILITIES = {
 	isPlatformAdmin: false,
@@ -38,20 +42,35 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 	const reportTemplatesPath = `${basePath}/report-templates`;
 	const [chosenTab, setChosenTab] = useState<ProjectReportsTab | null>(null);
 	const [showArchived, setShowArchived] = useState(false);
+	const [reportsPage, setReportsPage] = useState(1);
+	const reportsTopRef = useRef<HTMLDivElement>(null);
 
 	const { data: capabilities } = useQuery(
 		orpc.reports.capabilities.queryOptions({ input: { projectId } }),
 	);
-	const { data: instancesData, isError: instancesFailed } = useQuery(
-		orpc.reports.instances.list.queryOptions({
-			input: { organizationId, projectId, limit: 50, offset: 0 },
+	const {
+		data: instancesData,
+		isError: instancesFailed,
+		isPlaceholderData: isPreviousReportsPage,
+	} = useQuery({
+		...orpc.reports.instances.list.queryOptions({
+			input: {
+				organizationId,
+				projectId,
+				limit: REPORTS_PER_PAGE,
+				offset: (reportsPage - 1) * REPORTS_PER_PAGE,
+				countActive: true,
+			},
 		}),
-	);
+		placeholderData: keepPreviousData,
+	});
 	const { data: templatesData, isLoading: isLoadingTemplates } = useQuery(
 		orpc.reports.templates.list.queryOptions({
 			input: {
 				organizationId,
-				includeArchived: showArchived,
+				// The list hides archived templates until asked, and offers
+				// to show them only to someone who may restore one.
+				includeArchived: true,
 				limit: 100,
 				offset: 0,
 			},
@@ -62,9 +81,23 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 
 	const instances = instancesData?.instances ?? [];
 	const templates = templatesData?.templates ?? [];
-	const activeInstances = instances.filter((i) => i.isActive).length;
+	const reportsTotal = instancesData?.total ?? 0;
+	const lastReportsPage = Math.max(
+		1,
+		Math.ceil(reportsTotal / REPORTS_PER_PAGE),
+	);
+	// A deleted report can leave the current page past the end.
+	useEffect(() => {
+		if (
+			instancesData &&
+			!isPreviousReportsPage &&
+			reportsPage > lastReportsPage
+		) {
+			setReportsPage(lastReportsPage);
+		}
+	}, [instancesData, isPreviousReportsPage, reportsPage, lastReportsPage]);
 	// The default waits for the project's report count, so the tab never
-	// flashes from Templates to My Instances once the list arrives. A failed
+	// flashes from Templates to Reports once the list arrives. A failed
 	// count opens on Templates rather than spinning forever.
 	const activeTab =
 		chosenTab ??
@@ -83,10 +116,11 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 				badges={
 					<>
 						<div className="rounded-full border border-border/60 bg-background/50 px-3 py-1.5 text-xs uppercase tracking-wide text-muted-foreground">
-							{instancesData?.total ?? 0} reports
+							{reportsTotal}{" "}
+							{reportsTotal === 1 ? "report" : "reports"}
 						</div>
 						<div className="rounded-full border border-border/60 bg-background/50 px-3 py-1.5 text-xs uppercase tracking-wide text-muted-foreground">
-							{activeInstances} active
+							{instancesData?.activeTotal ?? 0} active
 						</div>
 					</>
 				}
@@ -131,23 +165,46 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 					className="w-full"
 				>
 					<TabsList data-onboarding-target="reports-tabs">
-						<TabsTrigger value="instances">
-							My Instances
-						</TabsTrigger>
+						<TabsTrigger value="instances">Reports</TabsTrigger>
 						<TabsTrigger value="templates">Templates</TabsTrigger>
 					</TabsList>
 
 					<TabsContent value="instances" className="mt-4">
-						<ProjectReportInstancesList
-							instances={instances}
-							organizationId={organizationId}
-							reportTemplatesPath={reportTemplatesPath}
-							onBrowseTemplates={
-								canEdit
-									? () => setChosenTab("templates")
-									: undefined
-							}
-						/>
+						{/* The previous page stays on screen, dimmed, until the next one arrives. */}
+						<div
+							ref={reportsTopRef}
+							aria-busy={isPreviousReportsPage || undefined}
+							className={cn(
+								"scroll-mt-4 motion-safe:transition-opacity",
+								isPreviousReportsPage && "opacity-60",
+							)}
+						>
+							<ProjectReportInstancesList
+								instances={instances}
+								organizationId={organizationId}
+								reportTemplatesPath={reportTemplatesPath}
+								onBrowseTemplates={
+									canEdit
+										? () => setChosenTab("templates")
+										: undefined
+								}
+							/>
+						</div>
+						{reportsTotal > REPORTS_PER_PAGE && (
+							<Pagination
+								className="mt-4"
+								totalItems={reportsTotal}
+								itemsPerPage={REPORTS_PER_PAGE}
+								currentPage={reportsPage}
+								onChangeCurrentPage={(page) => {
+									setReportsPage(page);
+									reportsTopRef.current?.scrollIntoView({
+										block: "start",
+									});
+								}}
+								navigationLabel="Project reports pages"
+							/>
+						)}
 					</TabsContent>
 
 					<TabsContent value="templates" className="mt-4">
@@ -161,6 +218,7 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 								capabilities={capabilities ?? NO_CAPABILITIES}
 								viewerUserId={user?.id}
 								reportTemplatesPath={reportTemplatesPath}
+								projectId={projectId}
 								showArchived={showArchived}
 								onShowArchivedChange={setShowArchived}
 								onUseTemplate={setStartingFrom}

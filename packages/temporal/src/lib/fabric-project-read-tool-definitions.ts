@@ -1,7 +1,9 @@
 /** Shared project and instruction reads offered by Fabric Agent and the MCP gateway. */
+import { FABRIC_LINKED_CONTEXT_READ_TOOL_DEFINITIONS } from "./fabric-linked-context-tool-definitions";
 import { defineFabricTools } from "./fabric-tool-definition";
 
 export const FABRIC_PROJECT_READ_TOOL_DEFINITIONS = defineFabricTools([
+	...FABRIC_LINKED_CONTEXT_READ_TOOL_DEFINITIONS,
 	{
 		name: "fabric_list_projects",
 		description:
@@ -50,7 +52,7 @@ export const FABRIC_PROJECT_READ_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_list_project_instructions",
 		description:
-			"Lists instruction files/metadata; read paths with fabric_get_project_instruction. Repository reads return pinned commitSha/generation; uploaded projects use the published snapshot.",
+			"Lists instruction files/metadata; read fabric_get_project_instruction. Repository: pinned commitSha/generation; upload: published snapshot.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -76,39 +78,37 @@ export const FABRIC_PROJECT_READ_TOOL_DEFINITIONS = defineFabricTools([
 				prefix: {
 					type: "string",
 					description:
-						"Repository projects: only files under this folder, e.g. '.claude/skills'",
+						"Repository folder prefix, e.g. .claude/skills",
 					maxLength: 512,
 				},
 				limit: {
 					type: "integer",
-					description:
-						"Repository projects: files per page (default 200)",
+					description: "Repository page size; default 200",
 					minimum: 1,
 					maximum: 500,
 				},
 				cursor: {
 					type: "string",
 					description:
-						"Repository projects: page.nextCursor, sent with that response's generation and commitSha",
+						"Repository page.nextCursor; include same generation/commitSha",
 					maxLength: 2048,
 				},
 				sinceDigest: {
 					type: "string",
-					description:
-						"Uploaded projects: the digest you last saw; unchanged answers without the file list",
+					description: "Uploaded digest; unchanged omits file list",
 					minLength: 1,
 					maxLength: 128,
 				},
 				generation: {
 					type: "integer",
 					description:
-						"From an earlier repository response; send with commitSha to pin the read",
+						"Pinned repository generation; include commitSha",
 					minimum: 0,
 				},
 				commitSha: {
 					type: "string",
 					description:
-						"From an earlier repository response; send with generation",
+						"Pinned repository commitSha; include generation",
 					pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
 				},
 			},
@@ -120,7 +120,7 @@ export const FABRIC_PROJECT_READ_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_get_project_instruction",
 		description:
-			"Reads a listed path; bundle tool reads the tree. For truncated text pass offset=nextOffset and repository generation/commitSha. Uploaded binaries return a temporary URL; use Git for repository binaries. Scripts/settings are text only, never executed.",
+			"Reads listed path; bundle reads tree. Truncated: offset=nextOffset + repository generation/commitSha. Uploaded binaries: temporary URL; repository binaries: Git. Scripts/settings are text only, never executed.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -144,13 +144,13 @@ export const FABRIC_PROJECT_READ_TOOL_DEFINITIONS = defineFabricTools([
 				generation: {
 					type: "integer",
 					description:
-						"Repository projects: from the first page; required for later pages",
+						"First-page repository pin; required on continuation",
 					minimum: 0,
 				},
 				commitSha: {
 					type: "string",
 					description:
-						"Repository projects: from the first page; required for later pages",
+						"First-page repository pin; required on continuation",
 					pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
 				},
 			},
@@ -162,15 +162,14 @@ export const FABRIC_PROJECT_READ_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_get_project_instruction_bundle",
 		description:
-			"Uploaded: published manifest (snapshot/version/digest, path/sha256/mode) and temporary zip URL; sinceDigest skips unchanged. Repository: pinned Git checkout, no zip.",
+			"Upload: published manifest (snapshot/version/digest/path/sha256/mode) + temporary zip URL; sinceDigest skips unchanged. Repository: pinned Git, no zip.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: { type: "string" },
 				sinceDigest: {
 					type: "string",
-					description:
-						"The digest you last installed; unchanged answers without a zip URL",
+					description: "Installed digest; unchanged omits zip URL",
 					minLength: 1,
 					maxLength: 128,
 				},
@@ -183,7 +182,7 @@ export const FABRIC_PROJECT_READ_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_list_connected_servers",
 		description:
-			"Lists active-org MCP connection names, serverKey/status/toolCount. serverKey is connected:<provider>/<tool>'s provider; discover read schemas separately.",
+			"Lists active-org MCP names/serverKey/status/toolCount. serverKey is connected:<provider>/<tool>'s provider; discover read schemas separately.",
 		inputSchema: { type: "object", properties: {} },
 		annotations: { readOnlyHint: true },
 		scope: "mcp:read",

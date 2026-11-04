@@ -28,6 +28,7 @@ import {
 	getProjectReposForCodeSearch,
 	getProjectScanConfig,
 } from "@repo/database";
+import { GIT_AUTH_UNSAFE, gitAuthForClone } from "@repo/integrations/repo-auth";
 import { logger } from "@repo/logs";
 import { decryptApiKey } from "@repo/utils";
 import { Context } from "@temporalio/activity";
@@ -406,21 +407,22 @@ export async function withHeartbeat<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Build an authenticated HTTPS clone URL for `repo` using its resolved auth.
- * Replicates `cloneRepositoryActivity`'s per-provider convention:
- *   - GitHub: username `x-access-token`, password = OAuth token
- *   - GitLab: username `oauth2`, password = (refresh-aware) access token
- *   - Azure DevOps: empty username, password = PAT
- * Returns null when the repo's auth could not be resolved (skipped upstream).
+ * The credential-free clone URL for `repo` and the git environment that
+ * authenticates it (`gitAuthForClone`, the code-indexing clone's own
+ * convention), so the token never reaches argv or the clone's `.git/config`.
+ * Every git call on the clone — the clone, a later `fetch origin`, an
+ * `ls-remote` — runs with `env` through `simpleGit(...).env(env)` and
+ * `GIT_AUTH_UNSAFE`. Returns null when the repo's auth could not be resolved
+ * (skipped upstream).
  */
-export async function buildAuthenticatedCloneUrl(
+export async function resolveCloneAuth(
 	repo: RepoIntegrationRow,
 	context: {
 		projectId: string;
 		userId?: string | null;
 		organizationId?: string | null;
 	},
-): Promise<string | null> {
+): Promise<{ url: string; env: Record<string, string> } | null> {
 	const authContext = await resolveRepositoryAuthContext({
 		...context,
 		integrationId: repo.integrationId,
@@ -429,29 +431,29 @@ export async function buildAuthenticatedCloneUrl(
 		return null;
 	}
 	const auth = await resolveRepoAuth(repo, authContext);
-	const parsed = new URL(repo.repositoryUrl);
 
 	if (auth.kind === "github") {
-		parsed.username = "x-access-token";
-		parsed.password = auth.token;
-		return parsed.toString();
+		return gitAuthForClone("GITHUB", repo.repositoryUrl, auth.token);
 	}
 	if (auth.kind === "gitlab") {
-		const token = await auth.getToken();
-		parsed.username = "oauth2";
-		parsed.password = token;
-		return parsed.toString();
+		return gitAuthForClone(
+			"GITLAB",
+			repo.repositoryUrl,
+			await auth.getToken(),
+		);
 	}
 	if (auth.kind === "ado") {
-		// resolveRepoAuth returns a Basic header for REST; for `git clone` we
-		// need the PAT itself in the URL. Decrypt it directly (same source).
+		// resolveRepoAuth returns a Basic header for REST; git needs the PAT
+		// itself. Decrypt it directly (same source).
 		if (!repo.encryptedPat) {
 			return null;
 		}
 		try {
-			parsed.username = "";
-			parsed.password = decryptApiKey(repo.encryptedPat);
-			return parsed.toString();
+			return gitAuthForClone(
+				"AZURE_DEVOPS",
+				repo.repositoryUrl,
+				decryptApiKey(repo.encryptedPat),
+			);
 		} catch {
 			return null;
 		}
@@ -575,13 +577,13 @@ export async function runSemgrepScanActivity(
 
 	try {
 		return await withHeartbeat(async () => {
-			// 2. Build the authenticated clone URL + shallow-clone the branch.
-			const authUrl = await buildAuthenticatedCloneUrl(repo, {
+			// 2. Resolve the clone's auth + shallow-clone the branch.
+			const auth = await resolveCloneAuth(repo, {
 				projectId,
 				userId: input.userId,
 				organizationId: input.organizationId,
 			});
-			if (!authUrl) {
+			if (!auth) {
 				return empty("clone-failed", repoSlug);
 			}
 
@@ -589,6 +591,8 @@ export async function runSemgrepScanActivity(
 			await fs.rm(clonePath, { recursive: true, force: true });
 
 			const { simpleGit } = await import("simple-git");
+			const gitAt = (baseDir?: string) =>
+				simpleGit({ baseDir, unsafe: GIT_AUTH_UNSAFE }).env(auth.env);
 			// Resolve the branch to clone: the workflow-provided branch (kept in
 			// sync with the SHA the resolve step read for the diff), else the
 			// project's configured scanBranch, else the repo's default, else "main".
@@ -600,7 +604,7 @@ export async function runSemgrepScanActivity(
 				"main";
 			try {
 				Context.current().heartbeat("cloning");
-				await simpleGit().clone(authUrl, clonePath, [
+				await gitAt().clone(auth.url, clonePath, [
 					"--depth",
 					"1",
 					"--single-branch",
@@ -609,7 +613,7 @@ export async function runSemgrepScanActivity(
 				]);
 			} catch (error) {
 				// NEVER throw — a clone failure degrades to a skip so the LLM
-				// scan still completes. Do not log the URL (it carries a token).
+				// scan still completes.
 				logger.warn("[SemgrepScan] Clone failed — skipping code scan", {
 					projectId,
 					repo: repoSlug,
@@ -636,7 +640,7 @@ export async function runSemgrepScanActivity(
 				const baseSha = input.baseSha;
 				const targetSha = input.targetSha;
 				Context.current().heartbeat("computing diff scope");
-				const git = simpleGit(clonePath);
+				const git = gitAt(clonePath);
 				const scope = await computeSemgrepDiffScope({
 					baseSha,
 					targetSha,

@@ -18,8 +18,9 @@ import {
 	upsertProjectCodeIndex,
 } from "@repo/database";
 import {
-	buildAuthCloneUrl,
 	forceReExchangeRepoCredentials,
+	GIT_AUTH_UNSAFE,
+	gitAuthForClone,
 	isGitAuthError,
 	markRepoReauthRequired,
 	resolveFreshRepoToken,
@@ -124,17 +125,17 @@ export function parseDefaultBranchFromSymref(output: string): string | null {
  */
 async function resolveDefaultBranch(
 	git: SimpleGit,
-	authUrl: string,
+	url: string,
 ): Promise<string> {
 	try {
-		const output = await git.listRemote(["--symref", authUrl, "HEAD"]);
+		const output = await git.listRemote(["--symref", url, "HEAD"]);
 		const branch = parseDefaultBranchFromSymref(output);
 		if (branch) {
 			return branch;
 		}
 	} catch {
-		// Deliberately not logging the error: a simple-git failure message can
-		// embed the token-bearing clone URL. Fall back to the conventional default.
+		// Deliberately not logging the error: git's stderr is not ours to
+		// publish. Fall back to the conventional default.
 		logger.warn(
 			"[CodeIndexing] Could not resolve default branch via ls-remote; falling back to main.",
 		);
@@ -145,11 +146,11 @@ async function resolveDefaultBranch(
 /** Shallow, single-branch clone of one branch. */
 async function cloneBranch(
 	git: SimpleGit,
-	authUrl: string,
+	url: string,
 	clonePath: string,
 	branch: string,
 ): Promise<void> {
-	await git.clone(authUrl, clonePath, [
+	await git.clone(url, clonePath, [
 		"--depth",
 		"1",
 		"--single-branch",
@@ -741,16 +742,18 @@ async function cloneRepository(
 			fs.rmSync(clonePath, { recursive: true, force: true });
 		}
 
-		// `buildAuthCloneUrl` owns the per-provider basic-auth convention
-		// (GitHub: x-access-token, GitLab: oauth2, Azure DevOps: pat).
-		const authUrl = buildAuthCloneUrl(provider, repositoryUrl, token);
+		// The token rides in git's environment, never in the URL, so it is not
+		// in argv, the clone's `.git/config` or a git error.
+		const auth = gitAuthForClone(provider, repositoryUrl, token);
+		const gitAt = (baseDir?: string) =>
+			simpleGit({ baseDir, unsafe: GIT_AUTH_UNSAFE }).env(auth.env);
 
-		const git = simpleGit();
+		const git = gitAt();
 
 		// Resolve the repo's real default branch when none was given, instead of
 		// assuming "main" (a master-default repo would 404 on `--branch main`).
 		const targetBranch =
-			branch || (await resolveDefaultBranch(git, authUrl));
+			branch || (await resolveDefaultBranch(git, auth.url));
 
 		logger.info(
 			`[CodeIndexing] Cloning ${repositoryUrl} (branch: ${targetBranch}) to ${clonePath}`,
@@ -763,9 +766,9 @@ async function cloneRepository(
 					`fetching commit ${input.commitSha.slice(0, 8)}`,
 				);
 				fs.mkdirSync(clonePath, { recursive: true });
-				const localGit = simpleGit(clonePath);
+				const localGit = gitAt(clonePath);
 				await localGit.init();
-				await localGit.addRemote("origin", authUrl);
+				await localGit.addRemote("origin", auth.url);
 				await localGit.fetch([
 					"--depth",
 					"1",
@@ -793,7 +796,7 @@ async function cloneRepository(
 		let effectiveBranch = targetBranch;
 		try {
 			Context.current().heartbeat("cloning");
-			await cloneBranch(git, authUrl, clonePath, effectiveBranch);
+			await cloneBranch(git, auth.url, clonePath, effectiveBranch);
 		} catch (error) {
 			// Only a missing branch is worth retrying — auth/network/not-found
 			// surface immediately (classifyCloneError throws).
@@ -802,7 +805,7 @@ async function cloneRepository(
 			}
 			// Stale stored branch (e.g. "main" for a master-default repo): resolve
 			// the repo's real default and retry once.
-			const fallback = await resolveDefaultBranch(git, authUrl);
+			const fallback = await resolveDefaultBranch(git, auth.url);
 			if (fallback === effectiveBranch) {
 				classifyCloneError(error);
 			}
@@ -814,14 +817,14 @@ async function cloneRepository(
 			}
 			effectiveBranch = fallback;
 			try {
-				await cloneBranch(git, authUrl, clonePath, effectiveBranch);
+				await cloneBranch(git, auth.url, clonePath, effectiveBranch);
 			} catch (retryError) {
 				classifyCloneError(retryError);
 			}
 		}
 
 		Context.current().heartbeat("reading commit");
-		const localGit = simpleGit(clonePath);
+		const localGit = gitAt(clonePath);
 		const log = await localGit.log({ maxCount: 1 });
 		const resolvedCommitSha = log.latest?.hash ?? "unknown";
 

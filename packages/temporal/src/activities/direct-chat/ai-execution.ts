@@ -13,6 +13,7 @@
  */
 
 import { closeMcpClientSafe, getMcpClient } from "@repo/agent-core/backend";
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import type { AggregateUsageRecord } from "@repo/ai";
 import {
@@ -46,6 +47,7 @@ import {
 } from "@repo/ai/skills";
 import {
 	ensureSensitiveOperationAuthority,
+	getAgentTemplateInstanceForExecution,
 	getWorkflowById,
 	isWorkflowLive,
 	listWorkflows,
@@ -62,6 +64,7 @@ import { z } from "zod";
 import { answerModelInfo } from "../../answer-model-info";
 import { resolveCompanyContextChatAccess } from "../../lib/company-context-chat-access";
 import { companyContextHintLine } from "../../lib/company-context-hint";
+import { directApprovalRefusal } from "../../lib/direct-approval-policy";
 import type {
 	ActivityHeartbeatDetails,
 	DirectChatToolCall,
@@ -749,6 +752,18 @@ export async function executeDirectChatActivity(
 	memoryContext: string,
 	toolSuggestionContext: string,
 ): Promise<DirectChatWorkflowOutput> {
+	// A raw tool payload is not a server-issued single-use approval checkpoint.
+	// Refuse before connections, the model or tools so retries cannot dispatch it.
+	const approvalRefusal = directApprovalRefusal(input.approvedToolCall);
+	if (approvalRefusal) {
+		return {
+			success: false,
+			responseText: approvalRefusal.message,
+			error: approvalRefusal.message,
+			durationMs: 0,
+		};
+	}
+
 	const startTime = Date.now();
 	// Fires when the workflow cancels this attempt (Stop, or the client went
 	// away). Temporal delivers it on a heartbeat, which the ticker below and
@@ -880,6 +895,31 @@ async function runDirectChatTurnBody(
 		projectId,
 		conversationId,
 	} = input;
+	if (instanceId) {
+		const scoped = organizationId
+			? await getAgentTemplateInstanceForExecution({
+					instanceId,
+					userId,
+					organizationId,
+				})
+			: null;
+		if (
+			!scoped ||
+			!getAgentImplementationAvailability(
+				scoped.instance.customInstructions,
+			).available ||
+			(scoped.projectId && scoped.projectId !== projectId)
+		) {
+			const message =
+				"Agent implementation is unavailable or access was revoked";
+			return {
+				success: false,
+				responseText: message,
+				error: message,
+				durationMs: 0,
+			};
+		}
+	}
 	// A grant approved in this chat binds to the conversation, not the turn,
 	// so "approve, then ask again" does not prompt a second time.
 	const authorityRunId = conversationId ?? executionId;

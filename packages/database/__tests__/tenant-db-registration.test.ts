@@ -203,6 +203,29 @@ describe("Member proposal branch tables are registered on the tenant path", () =
 });
 
 /**
+ * Members' read access to the instructions repository (spec 2026-11-04 §4.5).
+ * The grant row carries `organizationId`, `projectId` and the member's
+ * `userId`; settings editors manage every member's row inside the
+ * organization, which the org-context arm of user_owned allows.
+ */
+describe("Instructions access grants are registered on the tenant path", () => {
+	it("ProjectInstructionsAccessGrant is user-owned and project-scoped", () => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).toContain("ProjectInstructionsAccessGrant");
+		expect(
+			setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set(["),
+		).not.toContain("ProjectInstructionsAccessGrant");
+		expect(tenantDb).toMatch(
+			/\bProjectInstructionsAccessGrant: "projectId",/,
+		);
+		expect(rls).toMatch(
+			/\{\s*name: "project_instructions_access_grant",\s*policy: "user_owned",?\s*\}/,
+		);
+	});
+});
+
+/**
  * Glossy editions (Fizzy #2589). The five project tables carry organizationId
  * and projectId and no userId, so they are organization-only in tenant-db — a
  * USER_OWNED_TABLES entry would inject a userId filter Prisma rejects — and
@@ -394,6 +417,27 @@ describe("AI output provenance tenant registration", () => {
 		expect(tenantDb).toMatch(/AiOutputProvenance: "projectId",/);
 		expect(rls).toMatch(
 			/\{\s*name: "ai_output_provenance",\s*policy: "user_owned",?\s*\}/,
+		);
+	});
+});
+
+/**
+ * Report template defaults carry `organizationId` and an optional
+ * `projectId`, and no `userId`, so they are organization-only: a
+ * USER_OWNED_TABLES entry would inject a userId filter Prisma rejects, and no
+ * project guest carve-out applies.
+ */
+describe("Report template override tenant registration", () => {
+	it("is organization-only, never user-owned or project-scoped, with an org_only RLS policy", () => {
+		expect(
+			setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set(["),
+		).toContain("ReportTemplateOverride");
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).not.toContain("ReportTemplateOverride");
+		expect(tenantDb).not.toMatch(/\bReportTemplateOverride: "projectId",/);
+		expect(rls).toMatch(
+			/\{\s*name: "report_template_override",\s*policy: "org_only",?\s*\}/,
 		);
 	});
 });

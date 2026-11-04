@@ -87,7 +87,14 @@ async function start(
 ) {
 	active = await boot();
 	const { body: client } = await register(active.call);
-	const path = await authorizeUrl(client.client_id, { resource });
+	const isProjectBound =
+		typeof resource === "string" && resource.includes("/projects/");
+	const path = await authorizeUrl(client.client_id, {
+		resource,
+		scopes: isProjectBound
+			? OAUTH_SCOPES.filter((scope) => !scope.startsWith("agents:"))
+			: OAUTH_SCOPES,
+	});
 	const authorization =
 		method === "GET"
 			? await active.call(path, {

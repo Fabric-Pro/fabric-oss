@@ -26,6 +26,7 @@ const outputSchema = z.object({
 		}),
 	),
 	shareScope: FrameShareScopeSchema,
+	shareToken: z.string().optional(),
 });
 
 /**
@@ -75,5 +76,8 @@ export const listFrameGrantsProcedure = tenantProtectedProcedure
 				accessCount: g.accessCount,
 			})),
 			shareScope: frame.shareScope,
+			...(frame.shareScope === "PUBLIC" && frame.shareToken
+				? { shareToken: frame.shareToken }
+				: {}),
 		};
 	});

@@ -86,6 +86,12 @@ type Flow =
  *
  * `messageRefusal` is the server's refusal of the commit message, kept until
  * the next start so it can sit under the message field it is about.
+ *
+ * `quiet` is for a surface that shows the flow itself, from a dialog whose
+ * submit button already says it is working: no "Committing…" pill, no
+ * success toast and no inline pull-request notice (the surface shows the
+ * result, from `onFinished` and its `snapshotId`), and a failure is
+ * returned as `error` for the dialog to show instead of a toast.
  */
 export function useDirectCommit({
 	projectId,
@@ -93,6 +99,7 @@ export function useDirectCommit({
 	onChanged,
 	onCommitted,
 	onFinished,
+	quiet = false,
 }: {
 	projectId: string;
 	/** The synced branch, for the words. */
@@ -105,12 +112,18 @@ export function useDirectCommit({
 	 * A returned promise is awaited before the commit is announced.
 	 */
 	onCommitted?: CommittedCallback;
-	onFinished?: (result: SettledCommit) => void;
+	onFinished?: (
+		result: SettledCommit,
+		detail: { snapshotId: string | null },
+	) => void;
+	quiet?: boolean;
 }): {
 	start: (request: DirectCommitRequest) => void;
 	busy: boolean;
 	messageRefusal: CommitRefusal | null;
 	clearMessageRefusal: () => void;
+	/** A `quiet` flow's failure, in the person's words; null otherwise. */
+	error: string | null;
 	status: ReactNode;
 } {
 	const t = useTranslations("projects.codingInstructions.commit");
@@ -125,6 +138,18 @@ export function useDirectCommit({
 	}, []);
 	const [messageRefusal, setMessageRefusal] = useState<CommitRefusal | null>(
 		null,
+	);
+	const [error, setError] = useState<string | null>(null);
+	/** A failure said where the surface wants it: a toast, or `error`. */
+	const fail = useCallback(
+		(message: string) => {
+			if (quiet) {
+				setError(message);
+			} else {
+				toast.error(message);
+			}
+		},
+		[quiet],
 	);
 
 	const submit = useMutation({
@@ -155,7 +180,7 @@ export function useDirectCommit({
 				setMessageRefusal(refusal);
 				return;
 			}
-			toast.error(
+			fail(
 				refusal
 					? t(`refusals.${refusal.key}`, { ref: branch })
 					: actionError(error),
@@ -166,6 +191,7 @@ export function useDirectCommit({
 	const start = useCallback(
 		(request: DirectCommitRequest) => {
 			setMessageRefusal(null);
+			setError(null);
 			setFlow({ phase: "submitting", request });
 			submit.mutate(request);
 		},
@@ -289,21 +315,24 @@ export function useDirectCommit({
 				rebased = await rebaseOntoHead(request);
 			} catch (error) {
 				setFlow({ phase: "idle" });
-				toast.error(actionError(error as Error));
+				fail(actionError(error as Error));
 				return;
 			}
 			if (rebased === null) {
 				setFlow({ phase: "idle" });
-				toast.error(t("retryNeedsMerge", { ref: branch }));
+				fail(t("retryNeedsMerge", { ref: branch }));
 				return;
 			}
 			start(rebased);
 		},
-		[actionError, branch, rebaseOntoHead, start, t],
+		[actionError, branch, fail, rebaseOntoHead, start, t],
 	);
 
 	const announceCommitted = useCallback(
-		async (result: Extract<SettledCommit, { kind: "committed" }>) => {
+		async (
+			result: Extract<SettledCommit, { kind: "committed" }>,
+			snapshotId: string | null,
+		) => {
 			// The commit is announced once the page shows it, not before: the
 			// old file would otherwise sit under the toast until the re-read
 			// finishes. The wait is bounded and every outcome of it ends the
@@ -312,54 +341,64 @@ export function useDirectCommit({
 				onChanged,
 				() => onCommitted?.({ sha: result.sha, ref: result.ref }),
 			]);
-			toast.success(
-				t("committed", {
-					sha7: shortCommit(result.sha) ?? "",
-					ref: result.ref,
-				}),
-			);
+			if (!quiet) {
+				toast.success(
+					t("committed", {
+						sha7: shortCommit(result.sha) ?? "",
+						ref: result.ref,
+					}),
+				);
+			}
 			if (reread !== "success") {
 				toast.error(t("rereadFailed"));
 			}
 			if (mounted.current) {
 				setFlow({ phase: "idle" });
-				onFinished?.(result);
+				onFinished?.(result, { snapshotId });
 			}
 		},
-		[onChanged, onCommitted, onFinished, t],
+		[onChanged, onCommitted, onFinished, quiet, t],
 	);
 
 	const settled = useCallback(
-		(result: SettledCommit) => {
+		(result: SettledCommit, snapshotId: string | null) => {
 			switch (result.kind) {
 				case "committed":
-					void announceCommitted(result);
+					void announceCommitted(result, snapshotId);
 					return;
 				case "unchanged":
 					toast.info(t("unchanged"));
 					setFlow({ phase: "idle" });
-					onFinished?.(result);
+					onFinished?.(result, { snapshotId });
 					return;
 				case "rejected":
 					// The findings are in the page's rejected banner, which the
-					// refreshed list brings up.
-					toast.error(t("rejected"));
+					// refreshed list brings up. A quiet surface keeps its
+					// dialog open on the refusal, as on any other failure.
 					setFlow({ phase: "idle" });
 					onChanged();
-					onFinished?.(result);
+					if (quiet) {
+						setError(t("rejected"));
+						return;
+					}
+					toast.error(t("rejected"));
+					onFinished?.(result, { snapshotId });
 					return;
 				case "pull-request":
+					// A quiet surface shows the pull request itself.
 					setFlow((current) =>
-						current.phase === "watching"
+						current.phase === "watching" && !quiet
 							? {
 									phase: "pull-request",
 									snapshotId: current.snapshotId,
 									reason: result.reason,
 								}
-							: current,
+							: quiet
+								? { phase: "idle" }
+								: current,
 					);
 					onChanged();
-					onFinished?.(result);
+					onFinished?.(result, { snapshotId });
 					return;
 				case "branch-moved":
 					setFlow((current) =>
@@ -372,7 +411,7 @@ export function useDirectCommit({
 					);
 					return;
 				case "failed":
-					toast.error(
+					fail(
 						t(`failures.${commitFailureKey(result.code)}`, {
 							ref: branch,
 						}),
@@ -385,7 +424,7 @@ export function useDirectCommit({
 				}
 			}
 		},
-		[announceCommitted, branch, onChanged, onFinished, t],
+		[announceCommitted, branch, fail, onChanged, onFinished, quiet, t],
 	);
 
 	const busy = flow.phase === "submitting" || flow.phase === "watching";
@@ -398,7 +437,13 @@ export function useDirectCommit({
 					snapshotId={flow.snapshotId}
 					native={flow.native}
 					branch={branch}
-					onSettled={settled}
+					indicator={!quiet}
+					onSettled={(result) =>
+						settled(
+							result,
+							flow.phase === "watching" ? flow.snapshotId : null,
+						)
+					}
 				/>
 			) : null}
 			{flow.phase === "pull-request" ? (
@@ -437,6 +482,7 @@ export function useDirectCommit({
 		busy,
 		messageRefusal,
 		clearMessageRefusal: () => setMessageRefusal(null),
+		error,
 		status,
 	};
 }

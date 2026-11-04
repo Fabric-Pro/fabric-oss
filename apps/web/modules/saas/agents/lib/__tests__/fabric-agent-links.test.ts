@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildAgentDetailsHref,
 	buildAgentInstanceChatHref,
 	buildFabricAgentHref,
 	instanceIdFromLegacyNexusAgentParam,
@@ -109,5 +110,42 @@ describe("unifiedChatHrefFromNexusQuery (#2040)", () => {
 		expect(unifiedChatHrefFromNexusQuery("/app/acme", { c: "x" })).toBe(
 			"/app/acme/agents/fabric-ai",
 		);
+	});
+});
+
+describe("saved-agent drawer links", () => {
+	it("preserves directory state and clears a previous selected result", () => {
+		const href = buildAgentDetailsHref({
+			basePath: "/app/example-org",
+			instanceId: "example-agent",
+			directoryQuery:
+				"q=report&scope=ORGANIZATION&view=grid&agentId=old&agentView=runs&runId=old-run",
+		});
+		const url = new URL(href, "https://example.com");
+		expect(url.pathname).toBe("/app/example-org/agents");
+		expect(Object.fromEntries(url.searchParams)).toEqual({
+			q: "report",
+			scope: "ORGANIZATION",
+			view: "grid",
+			agentId: "example-agent",
+		});
+	});
+	it("deep links a result without replacing the directory route", () => {
+		const url = new URL(
+			buildAgentDetailsHref({
+				basePath: "/app/example-org",
+				instanceId: "agent/one",
+				view: "runs",
+				executionId: "run one",
+				directoryQuery: "tab=tasks",
+			}),
+			"https://example.com",
+		);
+		expect(Object.fromEntries(url.searchParams)).toEqual({
+			tab: "tasks",
+			agentId: "agent/one",
+			agentView: "runs",
+			runId: "run one",
+		});
 	});
 });

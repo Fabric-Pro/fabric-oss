@@ -181,9 +181,12 @@ function syncedContextTitle(
 
 /**
  * One bounded attempt to drain the cleanup record the delete queued. Never
- * throws: a failure or a timeout leaves the record to the sweep.
+ * throws: a failure or a timeout leaves the record to the sweep. Shared
+ * with the Living Memory reset (`reset-synced-contexts.ts`).
  */
-async function drainOnce(record: PendingVectorCleanupRecord): Promise<void> {
+export async function drainSyncedContextCleanupOnce(
+	record: PendingVectorCleanupRecord,
+): Promise<void> {
 	const where = `cleanup ${record.id} (context ${record.contextIds.join(", ")}, project ${record.projectId})`;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const drain = drainPendingVectorCleanup(record);
@@ -290,7 +293,7 @@ export async function deleteSyncedContext(
 		};
 	}
 
-	await drainOnce({
+	await drainSyncedContextCleanupOnce({
 		id: cleanupId,
 		projectId: input.projectId,
 		contextIds: [context.id],

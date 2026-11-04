@@ -17,7 +17,7 @@ import {
 	sidekickModelEventSchema,
 	sidekickUiMessages,
 } from "@saas/agents/lib/sidekick-runtime-protocol";
-import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useEffectiveOrganizationId } from "@saas/organizations/hooks/use-organization-context";
 import { type ChatStatus, DefaultChatTransport, type UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SidekickFormSnapshot } from "./SidekickFormContext";
@@ -26,16 +26,22 @@ import type { SidekickEntityType } from "./SidekickSuggestionsContext";
 interface SidekickChatOptions {
 	agentId: string;
 	entityType: SidekickEntityType;
+	organizationId?: string;
+	sessionId?: string;
 	/** The form as it is now, read when a message is sent. */
 	getSnapshot: () => SidekickFormSnapshot;
+	onSendSnapshot?: (snapshot: SidekickFormSnapshot) => void;
 	onError: (error: unknown) => void;
 }
 
 interface SidekickChat {
 	messages: UIMessage[];
 	status: ChatStatus;
+	error: Error | undefined;
 	/** Keeps one identity for the hook's lifetime. */
 	sendMessage: (message: { text: string }) => void;
+	regenerate: () => void | Promise<void>;
+	stop: () => void | Promise<void>;
 }
 
 /**
@@ -45,7 +51,7 @@ interface SidekickChat {
 function useSidekickRouteChat(options: SidekickChatOptions): SidekickChat {
 	const optionsRef = useRef(options);
 	optionsRef.current = options;
-	const { agentId, entityType } = options;
+	const { agentId, entityType, organizationId, sessionId } = options;
 
 	// Build transport that adapts the AI SDK message format to the
 	// Sidekick streaming route's expected request body.
@@ -56,25 +62,30 @@ function useSidekickRouteChat(options: SidekickChatOptions): SidekickChat {
 				prepareSendMessagesRequest: ({ messages }) => {
 					// Send the full AI SDK messages array (preserves tool call structure)
 					// plus custom fields the route needs.
+					const formSnapshot = optionsRef.current.getSnapshot();
+					optionsRef.current.onSendSnapshot?.(formSnapshot);
 					return {
 						body: {
 							agentId,
 							entityType,
-							formSnapshot: optionsRef.current.getSnapshot(),
+							...(organizationId !== undefined
+								? { organizationId }
+								: {}),
+							formSnapshot,
 							messages,
 						},
 					};
 				},
 			}),
-		[agentId, entityType],
+		[agentId, entityType, organizationId],
 	);
 
-	const { messages, status, sendMessage } = useChat({
-		id: `sidekick-${agentId}`,
+	const { messages, status, sendMessage, error, regenerate, stop } = useChat({
+		id: `sidekick-${organizationId ?? "organization"}-${entityType}-${agentId}-${sessionId ?? "default"}`,
 		transport,
-		onError: (error) => optionsRef.current.onError(error),
+		onError: (err) => optionsRef.current.onError(err),
 	});
-	return { messages, status, sendMessage };
+	return { messages, status, sendMessage, error, regenerate, stop };
 }
 
 /**
@@ -93,7 +104,7 @@ function useSidekickRouteChat(options: SidekickChatOptions): SidekickChat {
 function useSidekickRuntimeChat(options: SidekickChatOptions): SidekickChat {
 	const optionsRef = useRef(options);
 	optionsRef.current = options;
-	const { organizationId } = useOrganizationContext();
+	const organizationId = useEffectiveOrganizationId(options.organizationId);
 	const [agent] = useState(
 		() =>
 			new HttpAgent({
@@ -105,6 +116,7 @@ function useSidekickRuntimeChat(options: SidekickChatOptions): SidekickChat {
 	);
 	const [agUi, setAgUi] = useState<Message[]>([]);
 	const [status, setStatus] = useState<ChatStatus>("ready");
+	const [error, setError] = useState<Error | undefined>(undefined);
 
 	useEffect(() => {
 		const subscription = agent.subscribe({
@@ -141,6 +153,59 @@ function useSidekickRuntimeChat(options: SidekickChatOptions): SidekickChat {
 		};
 	}, [agent]);
 
+	const runCurrentThread = useCallback(() => {
+		setError(undefined);
+		setStatus("submitted");
+		let reported = false;
+		const report = (err: unknown) => {
+			if (!reported) {
+				reported = true;
+				const normalized =
+					err instanceof Error ? err : new Error(String(err));
+				setError(normalized);
+				optionsRef.current.onError(err);
+			}
+		};
+		const { agentId, entityType, getSnapshot, onSendSnapshot } =
+			optionsRef.current;
+		const formSnapshot = getSnapshot();
+		onSendSnapshot?.(formSnapshot);
+		agent
+			.runAgent(
+				{
+					forwardedProps: {
+						agentId,
+						entityType,
+						formSnapshot,
+					},
+				},
+				{
+					onRunStartedEvent: () => setStatus("streaming"),
+					onRunErrorEvent: ({ event }) => {
+						// The panel's own abort arrives as a run error coded
+						// "abort"; the route's `useChat` stopped silently too.
+						if (event.code !== "abort") {
+							const usageLimit =
+								event.code === "AI_USAGE_LIMIT_EXCEEDED";
+							report(
+								new Error(event.message, {
+									cause: usageLimit
+										? event.metadata?.fabric
+										: undefined,
+								}),
+							);
+						}
+					},
+				},
+			)
+			.catch((err: unknown) => {
+				if (!isAbortError(err)) {
+					report(err);
+				}
+			})
+			.finally(() => setStatus(reported ? "error" : "ready"));
+	}, [agent]);
+
 	const sendMessage = useCallback(
 		({ text }: { text: string }) => {
 			agent.addMessage({
@@ -148,55 +213,22 @@ function useSidekickRuntimeChat(options: SidekickChatOptions): SidekickChat {
 				role: "user",
 				content: text,
 			});
-			setStatus("submitted");
-			let reported = false;
-			const report = (error: unknown) => {
-				if (!reported) {
-					reported = true;
-					optionsRef.current.onError(error);
-				}
-			};
-			const { agentId, entityType, getSnapshot } = optionsRef.current;
-			agent
-				.runAgent(
-					{
-						forwardedProps: {
-							agentId,
-							entityType,
-							formSnapshot: getSnapshot(),
-						},
-					},
-					{
-						onRunStartedEvent: () => setStatus("streaming"),
-						onRunErrorEvent: ({ event }) => {
-							// The panel's own abort arrives as a run error coded
-							// "abort"; the route's `useChat` stopped silently too.
-							if (event.code !== "abort") {
-								const usageLimit =
-									event.code === "AI_USAGE_LIMIT_EXCEEDED";
-								report(
-									new Error(event.message, {
-										cause: usageLimit
-											? event.metadata?.fabric
-											: undefined,
-									}),
-								);
-							}
-						},
-					},
-				)
-				.catch((error: unknown) => {
-					if (!isAbortError(error)) {
-						report(error);
-					}
-				})
-				.finally(() => setStatus(reported ? "error" : "ready"));
+			runCurrentThread();
 		},
-		[agent],
+		[agent, runCurrentThread],
 	);
 
+	const stop = useCallback(() => {
+		agent.abortRun();
+		setStatus("ready");
+	}, [agent]);
+
+	const regenerate = useCallback(() => {
+		runCurrentThread();
+	}, [runCurrentThread]);
+
 	const messages = useMemo(() => sidekickUiMessages(agUi), [agUi]);
-	return { messages, status, sendMessage };
+	return { messages, status, sendMessage, error, regenerate, stop };
 }
 
 const TRANSPORT_HOOKS = {
@@ -211,10 +243,13 @@ const TRANSPORT_HOOKS = {
  * The Sidekick panel's conversation, over the transport chosen when the
  * panel mounts (`COPILOTKIT_SIDEKICK_CHAT`, see `useRuntimeChatTransport`):
  * the same messages, status and `sendMessage` either way, so suggestion
- * cards, form auto-apply and the limit toasts read one shape.
+ * cards, reviewed form proposals and the limit toasts read one shape.
  */
 export function useSidekickChat(options: SidekickChatOptions): SidekickChat {
-	const transport = useRuntimeChatTransport("COPILOTKIT_SIDEKICK_CHAT");
+	const transport = useRuntimeChatTransport(
+		"COPILOTKIT_SIDEKICK_CHAT",
+		options.organizationId,
+	);
 	const useTransportChat = TRANSPORT_HOOKS[transport];
 	return useTransportChat(options);
 }

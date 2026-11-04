@@ -56,6 +56,57 @@ interface PendingRequest {
 }
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30 * 1000; // 30 seconds
+
+/** How many recent stderr lines are kept to explain a failed exit. */
+const STDERR_TAIL_LINES = 40;
+const STDERR_LINE_MAX_CHARS = 500;
+
+/** A stderr line that might carry a credential is kept only as a marker. */
+function redactStderrLine(line: string): string {
+	const lower = line.toLowerCase();
+	return lower.includes("key") ||
+		lower.includes("token") ||
+		lower.includes("secret") ||
+		lower.includes("password")
+		? "[line redacted - may contain credentials]"
+		: line.slice(0, STDERR_LINE_MAX_CHARS);
+}
+
+/**
+ * What an npm (or npx) run that failed says went wrong, read from its
+ * stderr: the `npm error code` and the first `npm error` line that is not
+ * the "A complete log of this run…" pointer to a debug log that lives inside
+ * the wrapper's container. Null when the lines hold no npm error (the child
+ * failed for another reason).
+ */
+export function summarizeNpmFailure(lines: readonly string[]): string | null {
+	let code: string | null = null;
+	let message: string | null = null;
+	for (const line of lines) {
+		const match = /^npm (?:error|ERR!)\s*(.*)$/.exec(line.trim());
+		if (!match) {
+			continue;
+		}
+		const text = (match[1] ?? "").trim();
+		const codeMatch = /^code\s+(\S+)/.exec(text);
+		if (codeMatch) {
+			code ??= codeMatch[1] ?? null;
+			continue;
+		}
+		if (
+			!text ||
+			/^A complete log of this run can be found in/i.test(text) ||
+			/^Log files were not written/i.test(text)
+		) {
+			continue;
+		}
+		message ??= text;
+	}
+	if (!code && !message) {
+		return null;
+	}
+	return [code, message].filter(Boolean).join(": ");
+}
 const DEFAULT_REQUEST_TIMEOUT_MS = 30 * 1000; // 30 seconds
 
 export class StdioRpcError extends Error {
@@ -74,6 +125,8 @@ export class StdioTransport {
 	private requestId = 0;
 	private pendingRequests = new Map<number | string, PendingRequest>();
 	private isClosing = false;
+	/** Recent stderr lines (redacted), to explain a failed exit. */
+	private stderrTail: string[] = [];
 	private readonly config: StdioTransportConfig;
 	private readonly startupTimeoutMs: number;
 	private readonly requestTimeoutMs: number;
@@ -145,24 +198,37 @@ export class StdioTransport {
 					console.log(
 						`[StdioTransport] Process exited with code: ${code}, signal: ${signal}`,
 					);
-					this.handleProcessExit();
+					// An npm/npx launch that failed is reported once, with the
+					// npm error itself, instead of only its debug-log pointer.
+					const npmFailure =
+						code !== 0 && !this.isClosing
+							? summarizeNpmFailure(this.stderrTail)
+							: null;
+					if (npmFailure) {
+						console.error(
+							`[StdioTransport] npm failed (exit ${code}): ${npmFailure}`,
+						);
+					}
+					this.handleProcessExit(npmFailure);
 				});
 
-				// Handle stderr for debugging
+				// Handle stderr for debugging. `npm error` lines are kept for
+				// the exit summary above rather than logged one by one.
 				this.process.stderr?.on("data", (data: Buffer) => {
-					const message = data.toString().trim();
-					if (message) {
-						// Don't log if it might contain credentials
-						if (
-							!message.toLowerCase().includes("key") &&
-							!message.toLowerCase().includes("token")
-						) {
-							console.error("[StdioTransport] stderr:", message);
-						} else {
-							console.error(
-								"[StdioTransport] stderr: [message redacted - may contain credentials]",
-							);
+					for (const raw of data.toString().split(/\r?\n/)) {
+						const line = raw.trim();
+						if (!line) {
+							continue;
 						}
+						const safe = redactStderrLine(line);
+						this.stderrTail.push(safe);
+						if (this.stderrTail.length > STDERR_TAIL_LINES) {
+							this.stderrTail.shift();
+						}
+						if (/^npm (?:error|ERR!)/.test(line)) {
+							continue;
+						}
+						console.error("[StdioTransport] stderr:", safe);
 					}
 				});
 
@@ -430,11 +496,14 @@ export class StdioTransport {
 	/**
 	 * Handle process exit.
 	 */
-	private handleProcessExit(): void {
+	private handleProcessExit(npmFailure: string | null = null): void {
 		// Reject all pending requests
+		const reason = npmFailure
+			? `Process exited unexpectedly (npm ${npmFailure})`
+			: "Process exited unexpectedly";
 		for (const [id, pending] of this.pendingRequests) {
 			clearTimeout(pending.timeout);
-			pending.reject(new Error("Process exited unexpectedly"));
+			pending.reject(new Error(reason));
 			this.pendingRequests.delete(id);
 		}
 

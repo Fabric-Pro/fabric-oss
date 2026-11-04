@@ -203,10 +203,10 @@ const PICKER_SURFACES = {
 		gateSymbol: "contextUploadConfigFor",
 		labelsSource: "context-upload-copy",
 	},
-	"Library documents": {
+	"Workspace documents": {
 		path: join(
 			WEB_ROOT,
-			"modules/saas/libraries/components/DocumentUploader.tsx",
+			"modules/saas/workspaces/components/DocumentUploader.tsx",
 		),
 		acceptConstant: "WORKSPACE_DOCUMENT_ACCEPT_ATTR",
 		gateSymbol: "workspaceDocumentConfigFor",

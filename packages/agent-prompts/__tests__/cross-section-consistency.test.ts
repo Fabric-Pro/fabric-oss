@@ -34,7 +34,38 @@ describe("cross-section consistency clause", () => {
 			expect(prompt).toContain("CROSS-SECTION CONSISTENCY");
 			expect(prompt).toContain("Acceptance Criteria");
 		});
+
+		it(`names placeholders as stale once the user supplies the value (${toolMode} mode)`, () => {
+			const prompt = buildUnifiedSystemPrompt({
+				documentType: "general",
+				existingDocument,
+				excludeDocumentBody: true,
+				toolMode,
+			});
+			expect(prompt).toContain(
+				"Placeholders such as TBD, TBC, to be determined, to be confirmed, not yet defined or not yet determined are stale once the user asks you to change the document and supplies the value they stand for, or asks you to take it from the provided context",
+			);
+			expect(prompt).toContain(
+				"Leave every placeholder for any other value as it is, and never invent a value that neither the user nor the provided context gives.",
+			);
+			expect(prompt).toContain(
+				"a commercial term such as a fee or a start date repeated in a summary, a schedule and a terms section",
+			);
+			expect(prompt).toContain("re-read every section");
+		});
 	}
+
+	it("asks for a patch on every section that holds a stale placeholder (patch mode)", () => {
+		const prompt = buildUnifiedSystemPrompt({
+			documentType: "general",
+			existingDocument,
+			excludeDocumentBody: true,
+			toolMode: "patch",
+		});
+		expect(prompt).toContain(
+			"replace each placeholder for such a value wherever it appears in the document, in the same call, with a patch for every section that holds one",
+		);
+	});
 
 	it("is present when the document body is embedded (legacy full-body mode)", () => {
 		const prompt = buildUnifiedSystemPrompt({
@@ -44,6 +75,9 @@ describe("cross-section consistency clause", () => {
 			toolMode: "write",
 		});
 		expect(prompt).toContain("CROSS-SECTION CONSISTENCY");
+		expect(prompt).toContain(
+			"never invent a value that neither the user nor the provided context gives",
+		);
 	});
 
 	it("is absent when creating a new document (no existing document)", () => {

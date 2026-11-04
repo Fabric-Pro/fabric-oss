@@ -14,6 +14,7 @@ import { useRef } from "react";
 import { toast } from "sonner";
 import { isBranchChangedRefusal } from "../../lib/instructions-action-error";
 import { instructionsFreshness } from "../../lib/instructions-query-freshness";
+import { BranchFileList } from "./BranchFileList";
 import {
 	branchCardLine,
 	branchPanelPollInterval,
@@ -428,6 +429,12 @@ export function InstructionProposalBranchPanel({
 								</p>
 							) : null}
 						</div>
+						{!readOnly && data?.branch?.id === branch.id ? (
+							<BranchFileList
+								projectId={projectId}
+								onChanged={onChanged}
+							/>
+						) : null}
 						<div className="flex flex-wrap items-center gap-2">
 							{url ? (
 								<Button

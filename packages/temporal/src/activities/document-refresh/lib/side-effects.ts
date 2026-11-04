@@ -9,8 +9,8 @@ import { getTemporalClient } from "../../../client";
  * @repo/api. The refresh cannot — @repo/temporal must not import @repo/api — and
  * for a while it simply skipped them. That was not a cosmetic gap: without the
  * re-embed, Qdrant keeps serving the PRE-refresh document forever, drifting
- * further from the live one on every cycle, while the chat assistant, Atlas, the
- * task agent and the knowledge API all keep answering from a document that no
+ * further from the live one on every cycle, while the chat assistant, Atlas, and
+ * the knowledge API all keep answering from a document that no
  * longer exists.
  *
  * Realtime/activity-feed emission is NOT mirrored here — those emitters live in

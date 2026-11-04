@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: vi.fn(),
+	Output: { object: (spec: unknown) => spec },
 	generateText: (...a: unknown[]) => mocks.generateText(...a),
 	isStepCount: vi.fn(),
 	NoSuchToolError: class NoSuchToolError extends Error {},

@@ -15,6 +15,7 @@
 import { FabricAuthError, FabricClient, FabricError } from "@fabricorg/sdk";
 import { Command } from "commander";
 import { getBaseUrl, getOAuth, saveApiKey } from "../../lib/config.js";
+import { REQUESTED_SCOPES } from "../../lib/oauth/flow.js";
 import { isProjectId } from "../../lib/oauth/project-resource.js";
 import { revokeOAuthSession } from "../../lib/oauth/session.js";
 import {
@@ -114,6 +115,8 @@ async function loginWithKey(
 async function loginInBrowser(opts: {
 	baseUrl?: string;
 	project?: string;
+	agentRuns?: boolean;
+	agentSchedules?: boolean;
 }): Promise<void> {
 	const baseUrl = opts.baseUrl ?? getBaseUrl() ?? DEFAULT_BASE_URL;
 	const effectiveBaseUrl = displayBaseUrl(baseUrl);
@@ -131,6 +134,16 @@ async function loginInBrowser(opts: {
 			origin,
 			explicit: chosenBaseUrl(opts) !== undefined,
 			project: opts.project,
+			...(opts.agentRuns || opts.agentSchedules
+				? {
+						scopes: [
+							...REQUESTED_SCOPES,
+							"agents:read",
+							"agents:execute",
+							...(opts.agentSchedules ? ["agents:schedule"] : []),
+						],
+					}
+				: {}),
 			announce: (url) => {
 				process.stdout.write(
 					`Opening your browser to sign in to ${effectiveBaseUrl}${forProject}.\nIf it does not open, visit:\n\n  ${url}\n\n`,
@@ -164,12 +177,31 @@ export function buildLoginCommand(): Command {
 			"--project <id>",
 			"Sign in for this one project only: the sign-in reaches that project and nothing else (browser sign-in only)",
 		)
+		.option(
+			"--agent-runs",
+			"Explicitly authorize reading, invoking API-enabled saved agents and cancelling your runs",
+		)
+		.option(
+			"--agent-schedules",
+			"Additionally authorize recurring saved-agent work (requires current agent update permission)",
+		)
 		.action(
 			async (opts: {
 				key?: string;
 				baseUrl?: string;
 				project?: string;
+				agentRuns?: boolean;
+				agentSchedules?: boolean;
 			}) => {
+				if (
+					(opts.agentRuns || opts.agentSchedules) &&
+					(opts.project || opts.key !== undefined)
+				) {
+					printError(
+						"Agent run grants require an organization browser sign-in; do not combine them with --project or --key.",
+						2,
+					);
+				}
 				if (opts.project !== undefined) {
 					if (!isProjectId(opts.project)) {
 						printError(

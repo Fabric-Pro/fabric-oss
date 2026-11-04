@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import "../../plugins";
+import { CONNECTOR_ACTIONS } from "../../../../../../../../packages/temporal/src/activities/lib/steps/__tests__/fixtures/connector-actions";
 import { getAllActions, getAllIntegrations } from "../../plugins";
 import { SYSTEM_NODES } from "../../system-nodes";
 
@@ -81,7 +82,13 @@ const ACTIONS_WITHOUT_EXECUTORS = new Set([
 ]);
 
 /** Steps that build `output` from a variable, so source cannot enumerate keys. */
-const OPAQUE_OUTPUT = new Set(["mcp/execute-tool"]);
+// Databricks actions share a bounded statement executor; runtime output and binding
+// are covered in activities/lib/steps/__tests__/databricks-sql.test.ts.
+const OPAQUE_OUTPUT = new Set([
+	"mcp/execute-tool",
+	"databricks-sql/query",
+	"databricks-sql/ai-query",
+]);
 
 function stepSource(importPath: string): string | null {
 	const file = join(STEPS_DIR, `${importPath}.ts`);
@@ -169,6 +176,13 @@ const wiredSystemNodes = SYSTEM_NODES.flatMap((node) =>
 		: [],
 );
 
+/**
+ * Plugins registered solely to configure shared credentials (for example,
+ * organization service principals bound to saved Context Quality evaluations)
+ * rather than to expose workflow builder actions.
+ */
+const CONNECTION_ONLY_PLUGINS = new Set(["DATABRICKS_PLATFORM"]);
+
 describe("plugin hygiene", () => {
 	const plugins = getAllIntegrations();
 
@@ -177,11 +191,65 @@ describe("plugin hygiene", () => {
 		expect(types).toHaveLength(new Set(types).size);
 	});
 
-	it("gives every plugin at least one action", () => {
+	it("requires the Zendesk description before a ticket can be submitted", () => {
+		const action = actions.find(
+			(action) => action.actionId === "zendesk/create-ticket",
+		);
+		expect(
+			action?.configFields?.find((field) => field.key === "description")
+				?.required,
+		).toBe(true);
+	});
+
+	it.each(CONNECTOR_ACTIONS)(
+		"keeps $step runtime metadata aligned with the frontend",
+		(fixture) => {
+			const action = actions.find(
+				(a) => a.stepImportPath === fixture.step,
+			);
+			expect(action).toBeDefined();
+			expect(action?.integrationType).toBe(fixture.provider);
+			expect(
+				getAllIntegrations()
+					.find((plugin) => plugin.type === fixture.provider)
+					?.formFields.map((field) => field.configKey) ?? [],
+			).toEqual(fixture.provider ? fixture.credentialKeys : []);
+			expect(action?.stepFunction).toBe(fixture.fn);
+			expect(
+				action?.configFields
+					?.filter((field) => field.required)
+					.map((field) => field.key) ?? [],
+			).toEqual(fixture.requiredFields);
+			expect(
+				action?.outputFields?.map((field) => field.field) ?? [],
+			).toEqual(fixture.outputFields);
+			expect(
+				Object.fromEntries(
+					(action?.configFields ?? [])
+						.filter((field) => field.defaultValue !== undefined)
+						.map((field) => [field.key, field.defaultValue]),
+				),
+			).toEqual(fixture.defaultConfig);
+		},
+	);
+
+	it("gives every action plugin at least one action, and keeps connection-only plugins actionless", () => {
 		const empty = plugins
-			.filter((p) => p.actions.length === 0)
+			.filter(
+				(p) =>
+					p.actions.length === 0 &&
+					!CONNECTION_ONLY_PLUGINS.has(p.type),
+			)
 			.map((p) => p.type);
 		expect(empty).toEqual([]);
+
+		const unexpectedActions = plugins
+			.filter(
+				(p) =>
+					CONNECTION_ONLY_PLUGINS.has(p.type) && p.actions.length > 0,
+			)
+			.map((p) => p.type);
+		expect(unexpectedActions).toEqual([]);
 	});
 
 	it("makes every plugin either testable or explicitly untestable", () => {

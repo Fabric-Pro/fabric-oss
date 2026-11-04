@@ -14,8 +14,8 @@ import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { buildInstructionSnapshotZip } from "../projects/procedures/instructions/build-zip";
 import {
-	instructionChangeBaseSchema,
 	type InstructionChangeBase,
+	instructionChangeBaseSchema,
 } from "../projects/procedures/instructions/change-base";
 // Type-only: the implementation is imported lazily in the handler below, so
 // registering these routes does not pull the Temporal client and the storage
@@ -32,6 +32,7 @@ import {
 	directPublishedResponse,
 	registerDirectInstructionRepositoryRoutes,
 } from "./instruction-repository-routes";
+import { registerInstructionVersionFileRoutes } from "./instruction-version-files-route";
 
 /** The longest `sinceDigest` accepted, mirroring the MCP tools' input schemas. */
 const INSTRUCTION_DIGEST_MAX_LENGTH = 128;
@@ -173,7 +174,8 @@ function isOrpcNotFound(error: unknown): boolean {
  * are an oRPC-shaped surface and the MCP gateway. Translating here keeps this
  * file's existing error style — `{ error: { message, code } }` plus a status —
  * and gives the CLI something to branch on without parsing prose:
- * `PULL_FIRST` means sync and try again, `REPOSITORY_SOURCE_OF_TRUTH` means the
+ * `PULL_FIRST` means sync (or `push --rebase`) and try again,
+ * `REPOSITORY_SOURCE_OF_TRUTH` means the
  * project's instructions live in git, and the two proposal-cap codes mean wait
  * for a decision.
  *
@@ -341,6 +343,7 @@ export function registerInstructionRoutes(
 ) {
 	registerDirectInstructionRepositoryRoutes(app);
 	registerInstructionGitRoutes(app);
+	registerInstructionVersionFileRoutes(app, refuseDirectRepositoryExport);
 	/**
 	 * GET /projects/:projectId/instructions/published
 	 *
@@ -731,7 +734,11 @@ export function registerInstructionRoutes(
 	 * the stale-base protection: see `readChangeBody`. A base that is no
 	 * longer the published version is `PULL_FIRST` before anything is written,
 	 * for a publish as much as for a proposal — a publish is a fast-forward
-	 * claim on the published pointer, not a merge.
+	 * claim on the published pointer, not a merge. This route never merges:
+	 * `fabric instructions push --rebase` merges in the checkout, reading the
+	 * version it last synced through `versions/:snapshotId/files`, and then
+	 * states its change set against the version published now. A stale
+	 * PROPOSAL is rebased by its proposer through the app's `rebaseProposal`.
 	 *
 	 * The tenant comes from `resolveInstructionProject`, the same resolution
 	 * the two read routes use and for the same reason: the PROJECT decides

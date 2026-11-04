@@ -90,8 +90,7 @@ function buildTokenBody(roomId: string): Record<string, unknown> {
 /**
  * 401/403 are decisions, not glitches. 404 joins them here: the executionId
  * always comes from a workflow that already started, so a missing workflow is
- * terminal (unlike the task-agent plan row, which Temporal writes
- * asynchronously).
+ * terminal.
  */
 function isTerminalTokenStatus(status: number): boolean {
 	return status === 401 || status === 403 || status === 404;

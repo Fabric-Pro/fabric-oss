@@ -1,0 +1,53 @@
+bundle:
+  name: fabric-context-quality-evaluations
+
+include:
+  - .databricks/workspace-bindings.yml
+
+workspace:
+  host: https://workspace-not-configured.invalid
+  root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${var.project_key}/${bundle.target}
+
+variables:
+  project_key:
+    description: A private stable resource key dedicated to one Fabric project.
+
+sync:
+  exclude:
+    - .databricks/**
+    - tests/**
+
+resources:
+  experiments:
+    context_quality_experiment:
+      name: /Users/${workspace.current_user.userName}/fabric-context-quality-${var.project_key}-${bundle.target}
+  jobs:
+    context_quality_evaluation:
+      name: fabric-context-quality-evaluation-${var.project_key}-${bundle.target}
+      max_concurrent_runs: 1
+      timeout_seconds: 1200
+      # The portal supplies four metadata parameters per run. No schedules,
+      # retries, database calls or raw data in job parameters.
+      parameters:
+        - name: snapshot_path
+          default: ""
+        - name: payload_hash
+          default: ""
+        - name: fabric_run_id
+          default: ""
+        - name: experiment_id
+          default: ""
+      tasks:
+        - task_key: evaluate_context_snapshot
+          max_retries: 0
+          retry_on_timeout: false
+          timeout_seconds: 900
+          notebook_task:
+            notebook_path: ./src/evaluate_context.py
+            source: WORKSPACE
+
+targets:
+  test:
+    default: true
+  staging: {}
+  prod: {}

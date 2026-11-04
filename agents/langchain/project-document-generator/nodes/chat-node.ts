@@ -1671,7 +1671,7 @@ function handleProposalPatches(params: {
 			.map((e) => {
 				const message =
 					e.code === "excessive_content_loss"
-						? "These patches would remove most of the document. Use narrower anchors that target only the sections the person asked to change."
+						? "These patches would remove most of the document. Use narrower anchors that target only the sections the change touches."
 						: e.message;
 				const suggestionLine = e.suggestions?.length
 					? `\n  Did you mean: ${e.suggestions.slice(0, 3).join(", ")}`

@@ -29,7 +29,15 @@ const m = vi.hoisted(() => ({
 	proposalBranchIdOf: vi.fn(),
 	wakeBranchAfterCommand: vi.fn(),
 	assertNoOpenMigration: vi.fn(),
+	notifyInstructionsPublished: vi.fn(),
 	requiredPermissions: [] as string[],
+}));
+
+// The publish notification's own behaviour is `instruction-publish-
+// notifications.test.ts`'s (in @repo/database); here only WHEN it is sent.
+vi.mock("../publish-notification", () => ({
+	notifyInstructionsPublished: (...args: unknown[]) =>
+		m.notifyInstructionsPublished(...args),
 }));
 
 // The pre-check is mocked; `migrationOpenFromRefusal`, which answers the
@@ -189,6 +197,7 @@ const proposal = {
 	reviewedAt: null,
 	user: { id: "reader_1", name: "Reader" },
 	reviewer: null,
+	approvals: { count: 0, required: 1, approverUserIds: [] as string[] },
 	isStale: false,
 };
 
@@ -686,11 +695,20 @@ describe("projects.instructions.proposals", () => {
 			ok: true,
 			changed: true,
 			version: 9,
+			published: true,
+			approvals: { count: 1, required: 1 },
 		});
 
-		await run(APPROVE, {
-			projectId: "project_1",
-			snapshotId: "proposal_1",
+		await expect(
+			run(APPROVE, {
+				projectId: "project_1",
+				snapshotId: "proposal_1",
+			}),
+		).resolves.toEqual({
+			approved: true,
+			published: true,
+			version: 9,
+			approvals: { count: 1, required: 1 },
 		});
 
 		// The proposal id IS the snapshot id, and the organization is the
@@ -700,9 +718,97 @@ describe("projects.instructions.proposals", () => {
 			organizationId: "org_1",
 			snapshotId: "proposal_1",
 		});
-		// Scheduled, not awaited: the reviewer's response is unchanged.
+		// Scheduled, not awaited: the reviewer's response is unchanged. The
+		// second scheduled call is the publish notification.
+		expect(m.runInBackground).toHaveBeenCalledTimes(2);
+		expect(m.notifyInstructionsPublished).toHaveBeenCalledWith({
+			snapshotId: "proposal_1",
+			projectId: "project_1",
+			organizationId: "org_1",
+			actorUserId: expect.any(String),
+			via: "proposal_review",
+		});
+	});
+
+	it("passes a per-approval audit row and records an approval that does not yet publish", async () => {
+		m.getInstructionProposal.mockResolvedValue(proposal);
+		m.approveInstructionProposal.mockResolvedValue({
+			ok: true,
+			changed: true,
+			version: 9,
+			published: false,
+			approvals: { count: 1, required: 2 },
+		});
+
+		await expect(
+			run(APPROVE, {
+				projectId: "project_1",
+				snapshotId: "proposal_1",
+			}),
+		).resolves.toEqual({
+			approved: true,
+			published: false,
+			version: 9,
+			approvals: { count: 1, required: 2 },
+		});
+		expect(m.approveInstructionProposal).toHaveBeenCalledWith(
+			expect.objectContaining({
+				audit: expect.objectContaining({
+					action: "project.instructions.published",
+				}),
+				approvalAudit: expect.objectContaining({
+					action: "project.instructions.proposal_approved",
+				}),
+			}),
+		);
+		// Nothing was published: no archive to build, nobody to tell.
+		expect(m.runInBackground).not.toHaveBeenCalled();
+		expect(m.notifyInstructionsPublished).not.toHaveBeenCalled();
+	});
+
+	it("warms the archive but announces nothing on the idempotent re-approval", async () => {
+		m.getInstructionProposal.mockResolvedValue(proposal);
+		m.approveInstructionProposal.mockResolvedValue({
+			ok: true,
+			changed: false,
+			version: 9,
+			published: true,
+			approvals: { count: 1, required: 1 },
+		});
+
+		await run(APPROVE, {
+			projectId: "project_1",
+			snapshotId: "proposal_1",
+		});
+
+		expect(m.notifyInstructionsPublished).not.toHaveBeenCalled();
 		expect(m.runInBackground).toHaveBeenCalledTimes(1);
 	});
+
+	it.each([
+		["not_an_approver", "NOT_AN_APPROVER"],
+		["own_proposal", "OWN_PROPOSAL"],
+	])(
+		"refuses an approval the review policy does not accept (%s)",
+		async (reason, code) => {
+			m.getInstructionProposal.mockResolvedValue(proposal);
+			m.approveInstructionProposal.mockResolvedValue({
+				ok: false,
+				reason,
+			});
+
+			await expect(
+				run(APPROVE, {
+					projectId: "project_1",
+					snapshotId: "proposal_1",
+				}),
+			).rejects.toMatchObject({
+				code: "FORBIDDEN",
+				data: { reason: code },
+			});
+			expect(m.runInBackground).not.toHaveBeenCalled();
+		},
+	);
 
 	it("pre-builds nothing when the approval was refused", async () => {
 		m.getInstructionProposal.mockResolvedValue(proposal);
@@ -1110,5 +1216,40 @@ describe("repository proposals (Fizzy #2563 spec §12)", () => {
 				"/projects/:projectId/instructions/proposals/:snapshotId/pull-request/retry"
 			],
 		).toBeUndefined();
+	});
+});
+
+describe("approval progress on the proposal rows", () => {
+	it("shows the count against the policy and whether the viewer approved", async () => {
+		m.listInstructionProposals.mockResolvedValue({
+			items: [
+				{
+					...proposal,
+					approvals: {
+						count: 1,
+						required: 3,
+						approverUserIds: ["reviewer_1"],
+					},
+				},
+				proposal,
+			],
+			nextCursor: null,
+		});
+
+		const listed = (await run(LIST, { projectId: "project_1" })) as {
+			items: Array<Record<string, unknown>>;
+		};
+
+		expect(listed.items[0]).toMatchObject({
+			approvals: { count: 1, required: 3 },
+			viewerApproved: true,
+		});
+		expect(listed.items[0]?.approvals).not.toHaveProperty(
+			"approverUserIds",
+		);
+		expect(listed.items[1]).toMatchObject({
+			approvals: { count: 0, required: 1 },
+			viewerApproved: false,
+		});
 	});
 });

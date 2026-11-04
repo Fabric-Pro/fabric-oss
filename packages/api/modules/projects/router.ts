@@ -77,6 +77,7 @@ import { bulkDeleteProjectsProcedure } from "./procedures/bulk-delete-projects";
 import { bulkReviewPendingStateChangesProcedure } from "./procedures/bulk-review-pending-state-changes";
 import { githubPushWebhookProcedure } from "./procedures/code-indexing/github-webhook";
 import { addGoogleDocsContextProcedure } from "./procedures/contexts/add-google-docs-context";
+import { assembleContextProcedure } from "./procedures/contexts/assemble-context";
 import { cancelDraftCrawlsProcedure } from "./procedures/contexts/cancel-draft-crawls";
 import { cancelContextSummaryProcedure } from "./procedures/contexts/cancel-summary";
 import { cancelUrlSourceCrawlProcedure } from "./procedures/contexts/cancel-url-source-crawl";
@@ -87,6 +88,7 @@ import { createContextsBatchDownloadUrlProcedure } from "./procedures/contexts/c
 import { deleteContextProcedure } from "./procedures/contexts/delete-context";
 import { deleteSyncedFileProcedure } from "./procedures/contexts/delete-synced-file";
 import { embedProjectContextsProcedure } from "./procedures/contexts/embed-contexts";
+import { getContextManifestProcedure } from "./procedures/contexts/get-context-manifest";
 import { getContextSummaryProcedure } from "./procedures/contexts/get-summary";
 import { getContextSummaryVersionProcedure } from "./procedures/contexts/get-summary-version";
 import { getUrlPageContentProcedure } from "./procedures/contexts/get-url-page-content";
@@ -107,11 +109,13 @@ import { configureContextRepositorySyncProcedure } from "./procedures/contexts/r
 import { disableContextRepositorySyncProcedure } from "./procedures/contexts/repository-sync/disable";
 import { getContextRepositorySyncProcedure } from "./procedures/contexts/repository-sync/get";
 import { listContextRepositoryTreeProcedure } from "./procedures/contexts/repository-sync/list-tree";
+import { readContextRepositoryIgnoreFilesProcedure } from "./procedures/contexts/repository-sync/read-ignore-files";
 import { syncContextRepositoryNowProcedure } from "./procedures/contexts/repository-sync/sync-now";
 import { createContextWriteTargetProcedure } from "./procedures/contexts/repository-sync/write-targets/create";
 import { deleteContextWriteTargetProcedure } from "./procedures/contexts/repository-sync/write-targets/delete";
 import { listContextWriteTargetsProcedure } from "./procedures/contexts/repository-sync/write-targets/list";
 import { updateContextWriteTargetProcedure } from "./procedures/contexts/repository-sync/write-targets/update";
+import { resetLivingMemoryProcedure } from "./procedures/contexts/reset-living-memory";
 import { resolveContextSummaryReferenceProcedure } from "./procedures/contexts/resolve-summary-reference";
 import { restoreContextSummaryVersionProcedure } from "./procedures/contexts/restore-summary-version";
 import { resyncUrlPageProcedure } from "./procedures/contexts/resync-url-page";
@@ -123,6 +127,12 @@ import { updateContextMetadataProcedure } from "./procedures/contexts/update-con
 import { updateContextSummaryProcedure } from "./procedures/contexts/update-summary";
 import { updateUrlSourceProcedure } from "./procedures/contexts/update-url-source";
 import { upsertSyncedFileProcedure } from "./procedures/contexts/upsert-synced-file";
+import {
+	addWorkspaceDocumentLinkProcedure,
+	listWorkspaceDocumentLinksProcedure,
+	readWorkspaceDocumentLinkProcedure,
+	removeWorkspaceDocumentLinkProcedure,
+} from "./procedures/contexts/workspace-document-links";
 // Conversation attachment procedures
 import {
 	attachProjectProcedure,
@@ -232,6 +242,10 @@ import { createDownloadUrlProcedure } from "./procedures/instructions/create-dow
 import { createUploadUrlsProcedure } from "./procedures/instructions/create-upload-urls";
 import { deleteSnapshotProcedure } from "./procedures/instructions/delete-snapshot";
 import { deriveSnapshotProcedure } from "./procedures/instructions/derive-snapshot";
+import {
+	getInstructionsDigestProcedure,
+	markInstructionsSeenProcedure,
+} from "./procedures/instructions/digest";
 import { finalizeSnapshotProcedure } from "./procedures/instructions/finalize-snapshot";
 import { getFileProcedure } from "./procedures/instructions/get-file";
 import { getGitInstructionOperationProcedure } from "./procedures/instructions/get-git-operation";
@@ -241,6 +255,11 @@ import { getSettingsProcedure as getInstructionSettingsProcedure } from "./proce
 import { getSnapshotProcedure } from "./procedures/instructions/get-snapshot";
 import { listFilesProcedure } from "./procedures/instructions/list-files";
 import { listSnapshotsProcedure } from "./procedures/instructions/list-snapshots";
+import {
+	grantInstructionsMemberAccessProcedure,
+	listInstructionsMemberAccessProcedure,
+	revokeInstructionsMemberAccessProcedure,
+} from "./procedures/instructions/member-access/procedures";
 import {
 	getPluginNameProcedure as getInstructionPluginNameProcedure,
 	setPluginNameProcedure as setInstructionPluginNameProcedure,
@@ -252,6 +271,7 @@ import {
 	getProposalBranchesForReviewerProcedure,
 	proposeAgainProcedure,
 	refreshProposalBranchProcedure,
+	restoreMyBranchFileProcedure,
 	retryProposalBranchProcedure,
 	retryProposalConflictProcedure,
 	startOverProposalBranchProcedure,
@@ -268,6 +288,7 @@ import {
 	rejectInstructionProposalProcedure,
 } from "./procedures/instructions/proposals";
 import { publishSnapshotProcedure } from "./procedures/instructions/publish-snapshot";
+import { rebaseInstructionProposalProcedure } from "./procedures/instructions/rebase-proposal";
 import {
 	previewInstructionFileRestoreProcedure,
 	restoreInstructionFileProcedure,
@@ -287,6 +308,10 @@ import {
 	retryConsolidationProcedure,
 	startConsolidationProcedure,
 } from "./procedures/instructions/repository-sync/consolidate";
+import {
+	getConsolidationCleanupPullRequestProcedure,
+	mergeConsolidationCleanupPullRequestProcedure,
+} from "./procedures/instructions/repository-sync/consolidation-cleanup";
 import { disableRepositorySyncProcedure } from "./procedures/instructions/repository-sync/disable";
 import { getRepositorySyncProcedure } from "./procedures/instructions/repository-sync/get";
 import { listInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository-sync/list-commits";
@@ -308,6 +333,7 @@ import {
 	reviewRulesProcedure as reviewInstructionRulesProcedure,
 } from "./procedures/instructions/rules-health";
 import { submitGitInstructionChangeProcedure } from "./procedures/instructions/submit-git-change";
+import { suggestRuleEditsProcedure as suggestInstructionRuleEditsProcedure } from "./procedures/instructions/suggest-rule-edits";
 import { updateSettingsProcedure as updateInstructionSettingsProcedure } from "./procedures/instructions/update-settings";
 import {
 	getKanbanUserPreferenceProcedure,
@@ -413,6 +439,7 @@ import {
 	startParlumeSessionProcedure,
 	stopParlumeSessionProcedure,
 } from "./procedures/parlume/sessions";
+import { listParlumeSuggestionsProcedure } from "./procedures/parlume/suggestions";
 import { getParlumeUsageProcedure } from "./procedures/parlume/usage";
 import { permanentDeleteProjectProcedure } from "./procedures/permanent-delete-project";
 import {
@@ -606,6 +633,8 @@ import { resolveActiveMentionsProcedure } from "./procedures/resolve-active-ment
 import { resolveContentDriftProcedure } from "./procedures/resolve-content-drift";
 import { restoreProjectProcedure } from "./procedures/restore-project";
 import { retrieveSpecContextProcedure } from "./procedures/retrieve-spec-context";
+// Existing project setup procedure
+import { retryExistingSetupProcedure } from "./procedures/retry-existing-setup";
 import { reviewPendingStateChangeProcedure } from "./procedures/review-pending-state-change";
 import {
 	getRoadmapViewProcedure,
@@ -666,7 +695,6 @@ import {
 	enableSlackHuddleIngestProcedure,
 	triggerNowProcedure as triggerSlackHuddleIngestNowProcedure,
 } from "./procedures/slack-huddle-ingest";
-// Existing project setup procedure
 import { startExistingSetupProcedure } from "./procedures/start-existing-setup";
 import { createAttachmentProcedure } from "./procedures/stories/attachments/create-attachment";
 import { createAttachmentUploadUrlProcedure } from "./procedures/stories/attachments/create-attachment-upload-url";
@@ -784,18 +812,12 @@ import {
 	listStoryTagsProcedure,
 	removeStoryTagProcedure,
 } from "./procedures/stories/tags";
-import { cancelTaskAgentProcedure } from "./procedures/stories/tasks/cancel-agent";
-import { cleanupStuckAgentsProcedure } from "./procedures/stories/tasks/cleanup-stuck-agents";
 import {
 	createTaskCommentProcedure,
 	listTaskCommentsProcedure,
 } from "./procedures/stories/tasks/comments";
 import { createTaskProcedure } from "./procedures/stories/tasks/create-task";
 import { deleteTaskProcedure } from "./procedures/stories/tasks/delete-task";
-import { getAgentStatusProcedure } from "./procedures/stories/tasks/get-agent-status";
-import { resolveCheckpointProcedure } from "./procedures/stories/tasks/resolve-checkpoint";
-// Task Agent procedures
-import { startTaskAgentProcedure } from "./procedures/stories/tasks/start-agent";
 import { toggleTaskProcedure } from "./procedures/stories/tasks/toggle-task";
 import { updateTaskProcedure } from "./procedures/stories/tasks/update-task";
 import { updateDraftingStageProcedure } from "./procedures/stories/update-drafting-stage";
@@ -1062,6 +1084,14 @@ export const projectsRouter = {
 		refreshSummary: refreshKnowledgeTopicSummaryProcedure,
 	},
 	contexts: {
+		assemble: assembleContextProcedure,
+		workspaceDocuments: {
+			list: listWorkspaceDocumentLinksProcedure,
+			add: addWorkspaceDocumentLinkProcedure,
+			remove: removeWorkspaceDocumentLinkProcedure,
+			read: readWorkspaceDocumentLinkProcedure,
+		},
+		manifest: getContextManifestProcedure,
 		list: listContextsProcedure,
 		create: createContextProcedure,
 		delete: deleteContextProcedure,
@@ -1081,11 +1111,17 @@ export const projectsRouter = {
 		// relative path, idempotent, with an explicit-overwrite hash check
 		upsertSyncedFile: upsertSyncedFileProcedure,
 		deleteSyncedFile: deleteSyncedFileProcedure,
+		// Every synced file of the project deleted at once, the escape hatch
+		// for a Living Memory in a bad state
+		resetLivingMemory: resetLivingMemoryProcedure,
 		// Living Memory repository sync (Fizzy #2657) — selected paths of a
 		// connected repository's branch, applied by "Sync now"
 		repositorySync: {
 			get: getContextRepositorySyncProcedure,
 			listTree: listContextRepositoryTreeProcedure,
+			// Each ticked folder's .contextignore, for the configure
+			// dialog's preview of what the sync skips
+			readIgnoreFiles: readContextRepositoryIgnoreFilesProcedure,
 			configure: configureContextRepositorySyncProcedure,
 			syncNow: syncContextRepositoryNowProcedure,
 			disable: disableContextRepositorySyncProcedure,
@@ -1321,6 +1357,7 @@ export const projectsRouter = {
 		listSessions: listParlumeSessionsProcedure,
 		start: startParlumeSessionProcedure,
 		stop: stopParlumeSessionProcedure,
+		suggestions: listParlumeSuggestionsProcedure,
 		usage: getParlumeUsageProcedure,
 	},
 
@@ -1433,6 +1470,8 @@ export const projectsRouter = {
 	// Existing project setup (multi-repo + sequential doc gen)
 	existingSetup: {
 		start: startExistingSetupProcedure,
+		// A failed code analysis, run again (Fizzy #3429).
+		retry: retryExistingSetupProcedure,
 		// Paused for a ChatGPT plan reset (Fizzy #2770).
 		pausedRun: {
 			get: getPausedSetupProcedure,
@@ -2166,14 +2205,6 @@ export const projectsRouter = {
 				list: listTaskCommentsProcedure,
 				create: createTaskCommentProcedure,
 			},
-			// Task Agent operations
-			agent: {
-				start: startTaskAgentProcedure,
-				status: getAgentStatusProcedure,
-				resolveCheckpoint: resolveCheckpointProcedure,
-				cancel: cancelTaskAgentProcedure,
-				cleanupStuck: cleanupStuckAgentsProcedure,
-			},
 		},
 	},
 
@@ -2213,6 +2244,9 @@ export const projectsRouter = {
 		// Path-level diff of two versions. Bodies stay behind `getFile`, which
 		// the tab calls per expanded row.
 		compare: compareSnapshotsProcedure,
+		// What changed since the caller last looked, and the marker it reads.
+		getDigest: getInstructionsDigestProcedure,
+		markSeen: markInstructionsSeenProcedure,
 		publish: publishSnapshotProcedure,
 		delete: deleteSnapshotProcedure,
 		createDownloadUrl: createDownloadUrlProcedure,
@@ -2222,8 +2256,18 @@ export const projectsRouter = {
 		// Rules health and AI review (specs/2026-10-21 §5.8).
 		rulesHealth: instructionRulesHealthProcedure,
 		reviewRules: reviewInstructionRulesProcedure,
+		// The review as concrete file edits; nothing is written until they
+		// are submitted through the ordinary change path.
+		suggestRuleEdits: suggestInstructionRuleEditsProcedure,
 		setPluginName: setInstructionPluginNameProcedure,
 		updateSettings: updateInstructionSettingsProcedure,
+		// Members' read access to the instructions repository, so they can
+		// install the plugin (spec 2026-11-04 §4.4, on request).
+		memberAccess: {
+			list: listInstructionsMemberAccessProcedure,
+			grant: grantInstructionsMemberAccessProcedure,
+			revoke: revokeInstructionsMemberAccessProcedure,
+		},
 		proposals: {
 			list: listInstructionProposalsProcedure,
 			get: getInstructionProposalProcedure,
@@ -2231,12 +2275,16 @@ export const projectsRouter = {
 			approve: approveInstructionProposalProcedure,
 			reject: rejectInstructionProposalProcedure,
 			cancel: cancelInstructionProposalProcedure,
+			// The proposer's rebase of a stale upload-mode proposal.
+			rebase: rebaseInstructionProposalProcedure,
 			// A REPOSITORY proposal's pull request (Fizzy #2563 spec §12).
 			getPullRequestStatus: getInstructionProposalPullRequestProcedure,
 			refreshPullRequest: refreshInstructionProposalPullRequestProcedure,
 			// The member's proposal branch (Fizzy #2738 spec §10).
 			myBranch: getMyProposalBranchProcedure,
 			myBranchFile: getMyProposalBranchFileProcedure,
+			// One file on the caller's branch back to its published version.
+			restoreMyBranchFile: restoreMyBranchFileProcedure,
 			// Every member's tracked branch, for a reviewer (spec §10
 			// "Reviewers see every member's branches read-only") —
 			// independent of the proposal list's own pagination.
@@ -2295,6 +2343,12 @@ export const projectsRouter = {
 			startConsolidation: startConsolidationProcedure,
 			getConsolidation: getConsolidationProcedure,
 			retryConsolidation: retryConsolidationProcedure,
+			// Its cleanup pull request: live state, and a merge from Fabric
+			// after the person confirms.
+			getConsolidationCleanupPullRequest:
+				getConsolidationCleanupPullRequestProcedure,
+			mergeConsolidationCleanupPullRequest:
+				mergeConsolidationCleanupPullRequestProcedure,
 			// "Let read-only members propose changes as pull requests"
 			// (Fizzy #2563 Decision 4): never bumps the generation.
 			updateProposalSettings:

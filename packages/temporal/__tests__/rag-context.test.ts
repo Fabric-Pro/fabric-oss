@@ -61,7 +61,7 @@ vi.mock("../src/activities/lib/firecrawl-client", () => ({
 }));
 
 // Stubbed rather than loaded: their full dependency graphs are not needed to
-// drive `retrieveProjectContexts` and `gatherLiveUrlSources`.
+// drive `gatherLiveUrlSources`.
 vi.mock("@repo/ai", () => ({
 	embed: embedMock,
 	getAIEmbeddingModelWithMetadata: getAIEmbeddingModelWithMetadataMock,
@@ -78,10 +78,7 @@ vi.mock("@repo/rag", () => ({
 	searchSimilarProjectContexts: searchSimilarProjectContextsMock,
 }));
 
-import {
-	gatherLiveUrlSources,
-	retrieveProjectContexts,
-} from "../src/activities/task-agent/rag-context";
+import { gatherLiveUrlSources } from "../src/activities/live-url-sources";
 
 // -----------------------------------------------------------------------------
 // Fixtures
@@ -348,59 +345,5 @@ describe("gatherLiveUrlSources", () => {
 		});
 
 		expect(result[0].sourceTitle).toBeNull();
-	});
-});
-
-describe("retrieveProjectContexts conversation bundles", () => {
-	beforeEach(() => {
-		vi.clearAllMocks();
-		getAIEmbeddingModelWithMetadataMock.mockResolvedValue({
-			model: {},
-			metadata: {},
-			trackUsage: vi.fn(),
-		});
-		embedMock.mockResolvedValue({ embedding: [0.1], usage: { tokens: 1 } });
-	});
-
-	it("resolves a bundle hit through the bundle table, tenant-scoped", async () => {
-		searchSimilarProjectContextsMock.mockResolvedValue([
-			{ contextId: "ctx-1-chunk-0", score: 0.9 },
-			{
-				contextId: "bundle-1-chunk-0",
-				score: 0.8,
-				conversationBundleId: "bundle-1",
-			},
-		]);
-		findManyMock.mockResolvedValue([
-			{
-				id: "ctx-1",
-				content: "row text",
-				sourceType: null,
-				aiInstructions: null,
-			},
-		]);
-		getRetrievableConversationBundleByIdMock.mockResolvedValue({
-			content: "captured messages",
-			sourceType: null,
-			aiInstructions: null,
-		});
-
-		const result = await retrieveProjectContexts({
-			projectId: PROJECT_ID,
-			userId: USER_ID,
-			organizationId: ORG_ID,
-			taskTitle: "Task",
-			taskDescription: "Do it",
-		});
-
-		expect(result).toEqual(["row text", "captured messages"]);
-		expect(findManyMock.mock.calls[0][0].where.id).toEqual({
-			in: ["ctx-1"],
-		});
-		expect(getRetrievableConversationBundleByIdMock).toHaveBeenCalledWith({
-			bundleId: "bundle-1",
-			projectId: PROJECT_ID,
-			tenant: { userId: USER_ID, organizationId: ORG_ID },
-		});
 	});
 });

@@ -15,6 +15,7 @@ import {
 	assertNoOpenMigration,
 	migrationOpenFromRefusal,
 } from "./migration-freeze";
+import { notifyInstructionsPublished } from "./publish-notification";
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_UPDATE).
@@ -246,6 +247,18 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 						: {}),
 				},
 			});
+			// After the commit and only for the call that moved the pointer;
+			// the writer's claim makes a rollback to an already-announced
+			// version, or a retry, announce nothing.
+			runInBackground(
+				notifyInstructionsPublished({
+					snapshotId: input.snapshotId,
+					projectId: input.projectId,
+					organizationId,
+					actorUserId: context.user.id,
+					via: "manual",
+				}),
+			);
 		}
 		// Pre-build the download archive for the version that is now the
 		// pointer. The archive is keyed on the snapshot's digest and reused

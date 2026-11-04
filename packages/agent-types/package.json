@@ -24,6 +24,10 @@
 		"./databricks-compat": {
 			"types": "./src/databricks-compat.ts",
 			"default": "./src/databricks-compat.ts"
+		},
+		"./agent-implementation": {
+			"types": "./src/agent-implementation.ts",
+			"default": "./src/agent-implementation.ts"
 		}
 	},
 	"scripts": {

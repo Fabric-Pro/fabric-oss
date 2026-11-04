@@ -58,7 +58,36 @@ describe("Parlume suggestion pass", () => {
 			sessionId: "session-1",
 			botId: "bot-1",
 			previous: ["Earlier idea"],
+			teamAudience: false,
 		});
+	});
+
+	it("passes on the suggestion's kind and audience, and whether the bridge can keep one off the chat", async () => {
+		suggest.mockResolvedValue({
+			suggest: true,
+			kind: "missed_question",
+			text: "Who signs off the migration?",
+			speaker: "Dana",
+			quote: "we cover the data migration",
+			topic: "Data migration",
+			audience: "TEAM",
+		});
+
+		const response = await POST(
+			request({
+				sessionId: "session-1",
+				botId: "bot-1",
+				teamAudience: true,
+			}),
+		);
+
+		expect(await response.json()).toMatchObject({
+			kind: "missed_question",
+			audience: "TEAM",
+		});
+		expect(suggest).toHaveBeenCalledWith(
+			expect.objectContaining({ teamAudience: true }),
+		);
 	});
 
 	it("refuses an oversized list of earlier suggestions", async () => {

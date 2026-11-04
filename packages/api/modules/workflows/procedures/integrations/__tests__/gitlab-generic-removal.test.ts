@@ -34,6 +34,7 @@ vi.mock("@repo/database", async () => {
 		WorkflowIntegrationProviderSchema: z.string(),
 		Prisma: { PrismaClientKnownRequestError: class extends Error {} },
 		listProjectsBoundToIntegration: async () => [],
+		listContextQualityProjectsBoundToIntegration: async () => [],
 		getWorkflowIntegrationById: (
 			id: string,
 			userId: string,
@@ -130,6 +131,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 			orgId ?? undefined,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
 	};
 });
 

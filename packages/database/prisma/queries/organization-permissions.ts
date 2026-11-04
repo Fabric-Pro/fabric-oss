@@ -104,10 +104,19 @@ export async function canCreateProjectInOrganization(
 	);
 }
 
-/**
- * Returns `true` if `userId` may create frames (and slideshows, which are
- * frames) in `organizationId`, matching `requirePermission(WORKSPACE_CREATE)`.
- */
+/** Whether the actor may read frames in the organization; object access is checked separately. */
+export async function canReadOrganizationFrames(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.WORKSPACE_READ,
+	);
+}
+
+/** Whether the actor may create frames in the organization. */
 export async function canCreateOrganizationFrames(
 	userId: string,
 	organizationId: string,
@@ -461,5 +470,24 @@ export async function usersWhoCanCreateOrganizationApiKeys(
 		organizationId,
 		userIds,
 		Permissions.ORG_API_KEYS_CREATE,
+	);
+}
+
+/** Current organization authority for recurring agent execution, matching the Portal schedule gate. */
+export async function canScheduleOrganizationAgents(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return (
+		(await organizationPermissionHolds(
+			userId,
+			organizationId,
+			Permissions.AGENT_EXECUTE,
+		)) &&
+		(await organizationPermissionHolds(
+			userId,
+			organizationId,
+			Permissions.AGENT_UPDATE,
+		))
 	);
 }

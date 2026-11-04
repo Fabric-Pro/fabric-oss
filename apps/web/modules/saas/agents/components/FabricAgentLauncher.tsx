@@ -25,7 +25,10 @@ import { useOrganizationContext } from "@saas/organizations/hooks/use-organizati
 import type { AttachedFile } from "@saas/shared/components/copilot/use-copilot-document-upload";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { SparklesIcon as GenieSparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
-import { isWorkflowCanvasPath } from "@saas/shared/lib/full-height-routes";
+import {
+	isAgentBuilderPath,
+	isWorkflowCanvasPath,
+} from "@saas/shared/lib/full-height-routes";
 import { useIsMobile } from "@shared/hooks/use-is-mobile";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -345,8 +348,8 @@ function buildContextDetails(context: FabricAgentLaunchContext): string {
 			: null,
 		context.surface === "workspace"
 			? context.workspaceId
-				? `Page: the organization Workspace the user has open (workspace id: ${context.workspaceId}). For partial edits, use fabric_get_frame outline, read the needed source window, then fabric_edit_frame_block. Use fabric_update_frame for block structure or full rewrites.`
-				: "Page: the organization's Workspaces list. A new Workspace is a frame created with surface workspace."
+				? `Page: the generated Page the user has open (frame id: ${context.workspaceId}). For partial edits, use fabric_get_frame outline, read the needed source window, then fabric_edit_frame_block. Use fabric_update_frame for block structure or full rewrites.`
+				: "Page: the organization's Pages list. A new Page is a frame created with surface workspace. Document Workspaces are separate document repositories."
 			: null,
 		context.codeContext?.filePath
 			? `Code file: ${context.codeContext.filePath}${
@@ -1579,7 +1582,8 @@ export function FabricAgentLauncherProvider({ children }: PropsWithChildren) {
 	// the keyboard shortcut still opens the launcher there.
 	const shouldShowFloatingTrigger =
 		!pathname?.includes("/agents/fabric-ai") &&
-		!isWorkflowCanvasPath(pathname ?? "");
+		!isWorkflowCanvasPath(pathname ?? "") &&
+		!isAgentBuilderPath(pathname ?? "");
 	const isMobile = useIsMobile();
 
 	return (

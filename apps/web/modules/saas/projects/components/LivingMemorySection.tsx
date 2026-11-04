@@ -5,10 +5,12 @@ import { useTranslations } from "next-intl";
 import { type ReactNode, useId } from "react";
 import type { ContextSyncState } from "../lib/context-repository-sync";
 import { ContextRepositorySyncStatus } from "./ContextRepositorySyncStatus";
+import { ResetLivingMemory } from "./ResetLivingMemory";
 
 /**
  * The Context tab's Living Memory section: its heading, the repository-sync
- * entry point and status (Fizzy #2657), and the synced folders as `children`.
+ * entry point and status, the "Reset Living Memory" action, and
+ * the synced folders as `children`.
  *
  * Shown whenever there is a synced file or something the sync status can say
  * (a configuration, a configurer's "Sync from repository" offer, or a failed
@@ -23,10 +25,13 @@ export function LivingMemorySection({
 	readFailed,
 	onRetry,
 	onChanged,
+	syncedFileCount,
 	children,
 }: {
 	projectId: string;
 	organizationId: string | null;
+	/** Every synced file the tab lists, for the reset's scope. */
+	syncedFileCount: number;
 	state: ContextSyncState | undefined;
 	readFailed: boolean;
 	onRetry: () => void;
@@ -57,14 +62,23 @@ export function LivingMemorySection({
 						{t("description")}
 					</p>
 				</div>
-				<ContextRepositorySyncStatus
-					projectId={projectId}
-					organizationId={organizationId}
-					state={state}
-					readFailed={readFailed}
-					onRetry={onRetry}
-					onChanged={onChanged}
-				/>
+				<div className="flex flex-wrap items-start justify-end gap-3">
+					<ContextRepositorySyncStatus
+						projectId={projectId}
+						organizationId={organizationId}
+						state={state}
+						readFailed={readFailed}
+						onRetry={onRetry}
+						onChanged={onChanged}
+					/>
+					<ResetLivingMemory
+						projectId={projectId}
+						organizationId={organizationId}
+						syncedFileCount={syncedFileCount}
+						repositorySyncConnected={Boolean(state?.configured)}
+						onReset={onChanged}
+					/>
+				</div>
 			</div>
 			{children}
 		</section>

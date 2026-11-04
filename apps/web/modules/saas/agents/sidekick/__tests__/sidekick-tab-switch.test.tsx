@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const flags = vi.hoisted(() => ({ runtimeSidekick: false }));
 
-// The real Sidekick and its chat transport run here: the Sidekick sends an opening
-// message on mount, so remounting it on a tab switch costs a model call.
+// The real Sidekick and its chat transport run here: Sidekick stays mounted across
+// tab switches so an active conversation is preserved without extra model calls.
 vi.mock("@saas/agents/sidekick/SidekickFormContext", () => ({
 	SidekickFormProvider: ({ children }: { children: ReactNode }) => children,
 	useSidekickForm: () => ({ getSnapshot: () => ({}) }),
@@ -39,7 +39,11 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				update: vi.fn(),
 			},
 		},
-		agents: { registry: { get: vi.fn() } },
+		agents: {
+			registry: { get: vi.fn() },
+			previewDraft: vi.fn(),
+		},
+		projects: { list: async () => ({ projects: [] }) },
 		workflows: {
 			integrations: { list: async () => ({ integrations: [] }) },
 		},
@@ -95,6 +99,7 @@ Element.prototype.scrollTo = vi.fn();
 
 const pages = {
 	CreateAgentPage: {
+		tabRole: "tab" as const,
 		otherTab: "Guide",
 		otherContent: "Agent Setup Guide",
 		element: (
@@ -116,6 +121,7 @@ const pages = {
 		),
 	},
 	AgentBuilderPage: {
+		tabRole: "button" as const,
 		otherTab: "Preview",
 		otherContent: "Preview will be available in a future update.",
 		element: <AgentBuilderPage />,
@@ -145,30 +151,46 @@ describe.each(["legacy", "runtime"] as const)("%s transport", (transport) => {
 	});
 
 	it.each(Object.keys(pages) as (keyof typeof pages)[])(
-		"%s sends the opening message once across tab switches",
+		"%s keeps the Sidekick mounted and preserves an active request across tab switches",
 		async (name) => {
-			const { otherTab, otherContent, element } = pages[name];
+			const { tabRole, otherTab, otherContent, element } = pages[name];
 			const view = render(
 				<QueryClientProvider client={new QueryClient()}>
 					<TooltipProvider>{element}</TooltipProvider>
 				</QueryClientProvider>,
 			);
-			await waitFor(() => expect(sidekickCalls()).toBe(1));
 			const input = view.getByPlaceholderText(
 				"Ask Sidekick for suggestions...",
 			);
 			expect(input).toBeVisible();
+			expect(sidekickCalls()).toBe(0);
 
-			// A remounted Sidekick would re-send after its 500 ms auto-start delay.
+			fireEvent.change(input, {
+				target: { value: "Review my current instructions." },
+			});
+			fireEvent.click(view.getByRole("button", { name: "Send message" }));
+			await waitFor(() => expect(sidekickCalls()).toBe(1));
+
 			vi.useFakeTimers();
 			await act(async () => {
-				fireEvent.click(view.getByRole("button", { name: otherTab }));
+				const trigger = view.getByRole(tabRole, { name: otherTab });
+				fireEvent.mouseDown(trigger, { button: 0, ctrlKey: false });
+				fireEvent.click(trigger);
 			});
 			expect(view.getByText(otherContent)).toBeVisible();
-			expect(input).not.toBeVisible();
+			if (tabRole === "tab") {
+				expect(input.closest("[role='tabpanel']")).toHaveAttribute(
+					"data-state",
+					"inactive",
+				);
+			} else {
+				expect(input).not.toBeVisible();
+			}
 
 			await act(async () => {
-				fireEvent.click(view.getByRole("button", { name: "Sidekick" }));
+				const trigger = view.getByRole(tabRole, { name: "Sidekick" });
+				fireEvent.mouseDown(trigger, { button: 0, ctrlKey: false });
+				fireEvent.click(trigger);
 				await vi.advanceTimersByTimeAsync(600);
 			});
 			expect(sidekickCalls()).toBe(1);
@@ -177,6 +199,12 @@ describe.each(["legacy", "runtime"] as const)("%s transport", (transport) => {
 			expect(
 				view.getByPlaceholderText("Ask Sidekick for suggestions..."),
 			).toBe(input);
+			if (tabRole === "tab") {
+				expect(input.closest("[role='tabpanel']")).toHaveAttribute(
+					"data-state",
+					"active",
+				);
+			}
 			expect(input).toBeVisible();
 		},
 	);

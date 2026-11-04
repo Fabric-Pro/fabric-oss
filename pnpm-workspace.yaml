@@ -324,6 +324,9 @@ allowBuilds:
   "unrs-resolver": false
   "utf-8-validate": false
   "workerd": false
+  "@google/genai": false
+  "@mongodb-js/zstd": false
+  "node-liblzma": false
 
 packageExtensions:
   # pnpm elides a direct dependency that is also a peer. A distinct alias plus

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createStdioTransport, StdioRpcError } from "../stdio-transport";
+import {
+	createStdioTransport,
+	StdioRpcError,
+	summarizeNpmFailure,
+} from "../stdio-transport";
 
 describe("StdioTransport request timeout", () => {
 	it("applies a per-request deadline instead of the transport default", async () => {
@@ -49,6 +53,67 @@ describe("StdioTransport JSON-RPC errors", () => {
 					);
 					return true;
 				},
+			);
+		} finally {
+			await transport.close();
+		}
+	});
+});
+
+describe("summarizeNpmFailure", () => {
+	it("names the npm error code and message, not the debug-log pointer", () => {
+		assert.equal(
+			summarizeNpmFailure([
+				"npm error code E404",
+				"npm error 404 Not Found - GET https://registry.npmjs.org/@example%2fmissing-server - Not found",
+				"npm error A complete log of this run can be found in: /var/lib/mcpwrapper/.npm/_logs/2026-01-01T00_00_00_000Z-debug-0.log",
+			]),
+			"E404: 404 Not Found - GET https://registry.npmjs.org/@example%2fmissing-server - Not found",
+		);
+	});
+
+	it("reads the older npm ERR! prefix", () => {
+		assert.equal(
+			summarizeNpmFailure([
+				"npm ERR! code ETARGET",
+				"npm ERR! notarget No matching version",
+			]),
+			"ETARGET: notarget No matching version",
+		);
+	});
+
+	it("returns null when only the debug-log pointer or no npm line is present", () => {
+		assert.equal(
+			summarizeNpmFailure([
+				"npm error A complete log of this run can be found in: /tmp/x.log",
+			]),
+			null,
+		);
+		assert.equal(summarizeNpmFailure(["Server listening"]), null);
+	});
+});
+
+describe("StdioTransport npm failures", () => {
+	it("rejects pending requests with the npm error the child printed", async () => {
+		const transport = await createStdioTransport({
+			command: process.execPath,
+			args: [
+				"-e",
+				`
+			process.stdin.once("data", () => {
+				process.stderr.write("npm error code E404\\n");
+				process.stderr.write("npm error 404 Not Found - GET https://registry.npmjs.org/@example%2fmissing\\n");
+				process.stderr.write("npm error A complete log of this run can be found in: /tmp/x.log\\n");
+				setTimeout(() => process.exit(1), 20);
+			});
+			setInterval(() => {}, 1000);
+		`,
+			],
+		});
+		try {
+			await assert.rejects(
+				transport.request("initialize", {}, 5_000),
+				/Process exited unexpectedly \(npm E404: 404 Not Found/,
 			);
 		} finally {
 			await transport.close();

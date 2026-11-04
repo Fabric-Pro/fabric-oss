@@ -515,6 +515,8 @@ describe("authorizing", () => {
 					resource: [
 						`${APP_URL}/api/mcp-gateway`,
 						`${APP_URL}/api/mcp-gateway/`,
+						`${APP_URL}/mcp`,
+						`${APP_URL}/mcp/`,
 						`${APP_URL}/api/v1`,
 					],
 				},

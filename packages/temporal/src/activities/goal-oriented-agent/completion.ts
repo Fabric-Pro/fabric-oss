@@ -5,6 +5,9 @@
  */
 
 import { type Prisma, updateExecutionStatus } from "@repo/database";
+import { ApplicationFailure } from "@temporalio/common";
+import { prismaErrorCode } from "../../lib/database-error";
+import { withHeartbeatTicker } from "../lib/activity-liveness";
 
 export interface CompleteGoalInput {
 	executionId: string;
@@ -70,4 +73,25 @@ export async function completeGoalExecution(
 		});
 		throw err;
 	}
+}
+
+/** Retry only the update-only projection; completed tool/model steps stay recorded. */
+export function completeDurableGoalProjection(
+	input: CompleteGoalInput,
+): Promise<void> {
+	return withHeartbeatTicker(
+		async () => {
+			try {
+				await completeGoalExecution(input);
+			} catch (error) {
+				if (prismaErrorCode(error) === "P2025")
+					throw ApplicationFailure.nonRetryable(
+						"The execution row is unavailable; completed agent effects were retained in workflow history.",
+						"SAVED_AGENT_EXECUTION_ROW_MISSING",
+					);
+				throw error;
+			}
+		},
+		{ intervalMs: 5000, details: "saved-agent-goal-terminal-projection" },
+	);
 }

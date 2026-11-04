@@ -18,6 +18,7 @@ import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
+import { InstructionReviewPolicySection } from "./InstructionReviewPolicySection";
 
 /**
  * Edits the project's ignore-glob override. Source of truth (`.fabricignore`
@@ -135,7 +136,7 @@ export function InstructionsSettingsDialog({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-xl grid-cols-[minmax(0,1fr)]">
+			<DialogContent className="max-h-[90vh] max-w-xl grid-cols-[minmax(0,1fr)] overflow-y-auto">
 				<DialogHeader>
 					<DialogTitle>{t("title")}</DialogTitle>
 					<DialogDescription>
@@ -187,6 +188,15 @@ export function InstructionsSettingsDialog({
 						</ul>
 					</div>
 				) : null}
+				{repositoryMode ? null : (
+					// Not paused by an open move: the review policy changes
+					// nothing the move carries.
+					<InstructionReviewPolicySection
+						projectId={projectId}
+						open={open}
+						canEdit={mayEdit}
+					/>
+				)}
 				{canEdit ? (
 					<DialogFooter className="sm:justify-between sm:flex-wrap sm:gap-y-2">
 						<Button

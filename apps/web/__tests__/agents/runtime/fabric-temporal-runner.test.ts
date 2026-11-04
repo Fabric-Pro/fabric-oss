@@ -13,8 +13,8 @@
  *   - connect sends one MESSAGES_SNAPSHOT and replays no finished run, then
  *     tails a live one; the stream window ends a response with
  *     `fabric.reconnect` and leaves the workflow running;
- *   - an approval interrupt resumes once, with the recorded call; a replayed
- *     or declined one starts nothing;
+ *   - legacy Direct approval resumes are unavailable; historical pending
+ *     results do not advertise resumable interrupts or start new actions;
  *   - stop records the cancel on the turn, cancels the workflow and writes
  *     the cancel route's audit;
  *   - a finished turn is saved with deterministic ids, then finalized.
@@ -544,79 +544,35 @@ describe("FabricTemporalRunner — approvals", () => {
 		});
 	});
 
-	it("interrupts on an approval, resumes the recorded call once, and refuses a replay", async () => {
+	it("does not advertise a resumable interrupt from a legacy pending result", async () => {
 		const asked = await run(RUN_1, "Create a story");
-		expect(outcome(asked)).toEqual({
-			type: "interrupt",
-			interrupts: [
-				{
-					id: interruptId,
-					reason: "tool_approval",
-					message: "Create the story?",
-					toolCallId: "tool-1",
-					metadata: {
-						toolName: "create_story",
-						args: { title: "From the model" },
-					},
-				},
-			],
-		});
-
-		const resumed = await resume(
-			RUN_2,
-			{ status: "resolved", payload: { approved: true } },
-			// A client cannot substitute the call that runs.
-			{ approvedToolCall: { toolName: "delete_project", args: {} } },
-		);
-
-		expect(outcome(resumed)).toEqual({ type: "success" });
-		expect(w.state.starts).toHaveLength(2);
-		expect(w.state.starts[1]?.approvedToolCall).toEqual({
-			toolName: "create_story",
-			args: { title: "From the model" },
-		});
-		expect(w.state.starts[1]?.conversationId).toBe(THREAD);
-		expect(turnByKey(`${interruptId}:resume`)?.status).toBe("COMPLETED");
-
-		const replay = await resume("run-example-0003", {
-			status: "resolved",
-			payload: { approved: true },
-		});
-		expect(errorCode(replay)).toBe("APPROVAL_NOT_PENDING");
-		expect(w.state.starts).toHaveLength(2);
-	});
-
-	it("re-raises an unanswered approval on connect", async () => {
-		await run(RUN_1, "Create a story");
-
+		expect(outcome(asked)).toEqual({ type: "success" });
+		expect(w.state.starts).toHaveLength(1);
 		const list = await connect();
-
-		expect(types(list)).toEqual([
-			EventType.MESSAGES_SNAPSHOT,
-			EventType.RUN_STARTED,
-			EventType.RUN_FINISHED,
-		]);
-		expect(outcome(list)).toMatchObject({
-			type: "interrupt",
-			interrupts: [{ id: interruptId }],
-		});
+		expect(types(list)).toEqual([EventType.MESSAGES_SNAPSHOT]);
 	});
 
-	it("declines without starting a workflow, and refuses a later approval", async () => {
+	it("refuses raw or replayed resume input without admitting or starting an action", async () => {
 		await run(RUN_1, "Create a story");
+		for (const runId of [RUN_2, "run-example-0003"]) {
+			const list = await resume(
+				runId,
+				{ status: "resolved", payload: { approved: true } },
+				{ approvedToolCall: { toolName: "delete_project", args: {} } },
+			);
+			expect(errorCode(list)).toBe("DIRECT_APPROVAL_UNSUPPORTED");
+			expect(JSON.stringify(list)).toContain(
+				"Advisor Simple (Orchestrator)",
+			);
+		}
+		expect(w.state.starts).toHaveLength(1);
+		expect(turnByKey(`${interruptId}:resume`)).toBeUndefined();
+	});
 
+	it("does not offer a decline/reapprove flow for unsupported historical approvals", async () => {
+		await run(RUN_1, "Create a story");
 		const declined = await resume(RUN_2, { status: "cancelled" });
-		expect(types(declined)).toEqual([
-			EventType.RUN_STARTED,
-			EventType.RUN_FINISHED,
-		]);
-		expect(outcome(declined)).toEqual({ type: "success" });
-
-		const approved = await resume("run-example-0003", {
-			status: "resolved",
-			payload: { approved: true },
-		});
-		expect(errorCode(approved)).toBe("APPROVAL_NOT_PENDING");
+		expect(errorCode(declined)).toBe("DIRECT_APPROVAL_UNSUPPORTED");
 		expect(w.state.starts).toHaveLength(1);
 	});
 });
@@ -999,5 +955,34 @@ describe("stream windows", () => {
 		expect(deadlines.long).toBeGreaterThan(200_000);
 		expect(deadlines.short).toBeLessThanOrEqual(60_000);
 		expect(deadlines.short).toBeGreaterThan(50_000);
+	});
+});
+
+describe("engine-specific runtime discovery capabilities", () => {
+	it("advertises Direct reconnect/state/reasoning while disabling approval resume", async () => {
+		const direct = new FabricRuntimeAgent({ agentId: AGENT_ID });
+		expect(await direct.getCapabilities()).toMatchObject({
+			transport: { streaming: true, resumable: true },
+			state: { snapshots: true, deltas: true },
+			reasoning: { supported: true },
+			humanInTheLoop: {
+				supported: false,
+				approvals: false,
+				interrupts: false,
+			},
+		});
+	});
+	it("retains Orchestrator approvals and does not advertise them for an unnamed registration", async () => {
+		expect(
+			(
+				await new FabricRuntimeAgent({
+					agentId: "fabric-orchestrator",
+				}).getCapabilities()
+			).humanInTheLoop,
+		).toEqual({ supported: true, approvals: true, interrupts: true });
+		expect(
+			(await new FabricRuntimeAgent().getCapabilities()).humanInTheLoop
+				?.approvals,
+		).toBe(false);
 	});
 });

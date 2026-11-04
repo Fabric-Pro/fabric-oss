@@ -1,12 +1,17 @@
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	getCurrentDateContext,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
 // Imported from the SUBPATH (not @repo/ai root) so it stays UNMOCKED in tests
 // that mock the @repo/ai root module (uniform rule across the budget sites).
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import {
 	type DeploymentItem,
 	isCurrentOrgMember,
@@ -241,16 +246,16 @@ export async function curateNewsletterFromReleasesActivity(
 		promptChars: prompt.length,
 	});
 
-	let llmResult: Awaited<
-		ReturnType<typeof generateObject<typeof LlmOutputSchema>>
-	>;
+	let llmResult: StructuredTextResult<z.infer<typeof LlmOutputSchema>>;
 	try {
-		llmResult = await generateObject({
-			model,
-			schema: LlmOutputSchema,
-			prompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
+		llmResult = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: LlmOutputSchema }),
+				prompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			}),
+		);
 	} catch (error) {
 		// However the AI SDK wrapped it, a spent ChatGPT plan leaves under its
 		// own type, which a scheduled send waits on (Fizzy #2770).
@@ -269,7 +274,7 @@ export async function curateNewsletterFromReleasesActivity(
 		projectId,
 	});
 
-	const o = llmResult.object;
+	const o = llmResult.output;
 	const content: NewsletterContent = {
 		schemaVersion: NEWSLETTER_SCHEMA_VERSION as 1,
 		headline: o.headline,

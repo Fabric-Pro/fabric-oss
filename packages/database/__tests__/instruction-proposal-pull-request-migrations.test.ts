@@ -61,6 +61,21 @@ const MEMBER_BRANCHES = "20260927100000_instruction_proposal_branches";
 const DESTINATION_REPOSITORY_COMMIT =
 	"20261002150000_instruction_proposal_destination_repository_commit";
 
+/**
+ * Per-reviewer approvals of upload-mode proposals. It creates its own table
+ * and only READS `proposalDestination`, to backfill one approval for every
+ * FABRIC proposal approved before the table existed; it changes nothing of
+ * this feature's schema.
+ */
+const PROPOSAL_APPROVALS = "20261104160100_instruction_proposal_approval";
+
+/**
+ * A native intent entry may target a file only the member's proposal branch
+ * holds; `branchObjectId` freezes the blob Fabric wrote there. One nullable
+ * column, no default, no backfill.
+ */
+const BRANCH_OBJECT = "20261104170000_instruction_git_intent_branch_object";
+
 /** Every migration of the feature, in the order the deploy applies them. */
 const FEATURE_MIGRATIONS = [
 	TRIGGER,
@@ -70,6 +85,8 @@ const FEATURE_MIGRATIONS = [
 	MEMBER_BRANCHES,
 	DESTINATION_REPOSITORY_COMMIT,
 	"20261006110000_instruction_git_intents",
+	PROPOSAL_APPROVALS,
+	BRANCH_OBJECT,
 ];
 
 /**
@@ -79,7 +96,7 @@ const FEATURE_MIGRATIONS = [
  * sync row's reader opt-in.
  */
 const FEATURE_SCHEMA =
-	/'PULL_REQUEST_MERGED'|"ProjectInstructionProposalDestination"|"ProjectInstructionPullRequestState"|"proposalDestination"|"proposalNote"|"allowReaderProposals"|"mergeSync[A-Za-z]*"|"project_instruction_snapshot_pr_[a-z_]+"|"project_instruction_snapshot_pullRequestOperationId_key"|"pullRequest(?:Attempt|Attempts|Context|HeadSha|Ref|State|OperationId|Failure|Observation|LastCheckedAt|NextAttemptAt|ObligationOpen|ConfirmationDueAt|RefreshAdmittedAt|ExternalId)"/;
+	/'PULL_REQUEST_MERGED'|"ProjectInstructionProposalDestination"|"ProjectInstructionPullRequestState"|"proposalDestination"|"proposalNote"|"allowReaderProposals"|"mergeSync[A-Za-z]*"|"project_instruction_snapshot_pr_[a-z_]+"|"project_instruction_snapshot_pullRequestOperationId_key"|"pullRequest(?:Attempt|Attempts|Context|HeadSha|Ref|State|OperationId|Failure|Observation|LastCheckedAt|NextAttemptAt|ObligationOpen|ConfirmationDueAt|RefreshAdmittedAt|ExternalId)"|"branchObjectId"/;
 
 function readMigration(name: string): string {
 	return readFileSync(join(MIGRATIONS_DIR, name, "migration.sql"), "utf8");
@@ -127,6 +144,17 @@ describe("proposal pull-request migrations (spec §4.5)", () => {
 			.sort();
 
 		expect(touching).toEqual(FEATURE_MIGRATIONS);
+	});
+
+	it("lets the approvals migration only read the feature's schema, in its backfill", () => {
+		const touching = statements(PROPOSAL_APPROVALS).filter((statement) =>
+			FEATURE_SCHEMA.test(statement),
+		);
+
+		expect(touching).toHaveLength(1);
+		expect(touching[0]).toMatch(
+			/^INSERT INTO "project_instruction_proposal_approval" .* WHERE s\."proposalStatus" = 'APPROVED' AND s\."proposalDestination" = 'FABRIC' /,
+		);
 	});
 
 	it("adds the PULL_REQUEST_MERGED trigger alone, so it commits before any use", () => {
@@ -243,6 +271,12 @@ describe("proposal pull-request migrations (spec §4.5)", () => {
 				/\b(?:DROP|RENAME|TRUNCATE|ALTER COLUMN)\b|NOT NULL|DEFAULT/i,
 			);
 		});
+	});
+
+	it("adds branchObjectId as one nullable, idempotent column with no default: metadata-only", () => {
+		expect(statements(BRANCH_OBJECT)).toEqual([
+			`ALTER TABLE "project_instruction_git_intent_entry" ADD COLUMN IF NOT EXISTS "branchObjectId" TEXT`,
+		]);
 	});
 
 	it("names the indexes exactly as the schema maps them, within 63 characters (R18)", () => {

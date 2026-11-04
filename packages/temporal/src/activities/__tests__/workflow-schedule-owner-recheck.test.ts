@@ -15,6 +15,7 @@ interface WorkflowRow {
 	userId: string;
 	status: string;
 	version: number;
+	publishedVersion?: number;
 	projectId: string | null;
 	settings: Record<string, unknown> | null;
 }
@@ -112,6 +113,14 @@ beforeEach(() => {
 });
 
 describe("createScheduledExecution - owner re-check", () => {
+	it("pins scheduled runs to the published version after draft version changes", async () => {
+		row().publishedVersion = 3;
+		const result = await fire();
+		expect(result.version).toBe(3);
+		expect(createWorkflowExecution).toHaveBeenCalledWith(
+			expect.objectContaining({ version: 3 }),
+		);
+	});
 	it("asks whether the owner may still run workflows in the organization", async () => {
 		await fire();
 

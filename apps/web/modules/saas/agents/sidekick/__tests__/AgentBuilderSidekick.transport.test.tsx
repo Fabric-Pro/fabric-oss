@@ -222,12 +222,17 @@ function sidekick() {
 	return <AgentBuilderSidekick agentId="agent-example-1" />;
 }
 
-/** Mount the panel and let its opening message go. */
+function sendPrompt(text = OPENING) {
+	fireEvent.change(screen.getByRole("textbox"), {
+		target: { value: text },
+	});
+	fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+}
+
+/** Mount the panel and send its opening user request. */
 async function mountAndOpen() {
 	const view = render(sidekick());
-	await act(async () => {
-		await vi.advanceTimersByTimeAsync(500);
-	});
+	sendPrompt(OPENING);
 	await waitFor(() => expect(requests).toHaveLength(1));
 	return view;
 }
@@ -271,9 +276,7 @@ describe("AgentBuilderSidekick transport", () => {
 		m.organizationOnScreen = "org-example-1";
 		m.resolvingOrganization = false;
 		view.rerender(sidekick());
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(500);
-		});
+		sendPrompt(OPENING);
 		await waitFor(() => expect(requests).toHaveLength(1));
 		expect(requests[0]?.url).toBe(RUNTIME_URL);
 	});
@@ -442,9 +445,7 @@ describe("AgentBuilderSidekick transport", () => {
 			const view = render(sidekick());
 			m.flagOn = !initial;
 			view.rerender(sidekick());
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(500);
-			});
+			sendPrompt(OPENING);
 			await waitFor(() => expect(requests).toHaveLength(1));
 
 			expect(requests[0]?.url).toBe(url);
@@ -534,10 +535,15 @@ describe("AgentBuilderSidekick transport", () => {
 			respond = reply;
 
 			await mountAndOpen();
+			const applyButton = await screen.findByRole("button", {
+				name: "Apply suggested changes",
+			});
+			expect(m.setFormField).not.toHaveBeenCalled();
+			fireEvent.click(applyButton);
 			await waitFor(() =>
 				expect(
 					m.setFormField.mock.calls.map(([field]) => field),
-				).toEqual(["tools", "name", "description"]),
+				).toEqual(["name", "description", "tools"]),
 			);
 
 			const updates = Object.fromEntries(
@@ -798,9 +804,7 @@ describe("AgentBuilderSidekick transport", () => {
 			const view = render(sidekick());
 			m.getSnapshot = () => ({ name: "Second" });
 			view.rerender(sidekick());
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(500);
-			});
+			sendPrompt(OPENING);
 			await waitFor(() => expect(requests).toHaveLength(1));
 
 			const [request] = requests;

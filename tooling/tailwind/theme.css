@@ -131,10 +131,10 @@
 
 @layer base {
 	/*
-	 * Fabric Workspace design system tokens (Databricks DuBois aesthetics).
+	 * Fabric Workspace design system tokens (design.md — Databricks DuBois aesthetics).
 	 * High-density technical workspace palette: cool slate-tinted canvas, pure white
-	 * elevated cards in light mode (deep carbon-navy in dark mode), Warm Bright Orange
-	 * interactive controls (--primary / --ring), and Databricks Brand Lava emblem accents.
+	 * elevated cards in light mode (deep carbon-navy in dark mode), Fabric orange
+	 * interactive controls (--primary / --ring), and orange workspace emblem accents.
 	 */
 	:root {
 		/*

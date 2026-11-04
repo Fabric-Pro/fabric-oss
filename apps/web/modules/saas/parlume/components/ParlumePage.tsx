@@ -6,6 +6,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
+import { Card } from "@ui/components/card";
 import { useMemo, useState } from "react";
 import { isLiveSession } from "../lib/parlume-format";
 import {
@@ -20,6 +21,7 @@ import { ParlumeJoiningCard } from "./ParlumeJoiningCard";
 import { ParlumeLiveCard } from "./ParlumeLiveCard";
 import { ParlumeLockedCard } from "./ParlumeLockedCard";
 import { ParlumeSpendCard } from "./ParlumeSpendCard";
+import { ParlumeSuggestionsList } from "./ParlumeSuggestionsList";
 
 const POLL_MS = 10_000;
 
@@ -173,6 +175,17 @@ export function ParlumePage({
 					) : (
 						<ParlumeLockedCard />
 					)}
+					{liveSession?.joinedAt &&
+						liveSession.suggestionsEnabled && (
+							<Card className="p-6">
+								<ParlumeSuggestionsList
+									projectId={projectId}
+									sessionId={liveSession.id}
+									refetchInterval={POLL_MS}
+									variant="card"
+								/>
+							</Card>
+						)}
 					<ParlumeActivityPanel
 						projectId={projectId}
 						projectBasePath={projectBasePath}

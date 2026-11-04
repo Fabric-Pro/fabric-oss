@@ -180,6 +180,10 @@ export function ShareFrameSheet({
 	});
 
 	const currentScope = grantsError ? undefined : grantsData?.shareScope;
+	const publicShareUrl =
+		currentScope === "PUBLIC" && grantsData?.shareToken
+			? `${window.location.origin}/share/frame/${grantsData.shareToken}`
+			: "";
 	// PROJECT only makes sense for project-scoped frames; keep it visible when
 	// it is already the current scope so the label is never blank.
 	const scopeOptions = SCOPE_OPTIONS.filter(
@@ -191,9 +195,8 @@ export function ShareFrameSheet({
 	const grants = grantsData?.grants ?? [];
 
 	const handleCopyLink = async () => {
-		// Get share URL from the frame data or construct it
-		const shareUrl = `${window.location.origin}/share/frame/${frameId}`;
-		await navigator.clipboard.writeText(shareUrl);
+		if (!publicShareUrl) return;
+		await navigator.clipboard.writeText(publicShareUrl);
 		setCopied(true);
 		setTimeout(() => setCopied(false), 2000);
 	};
@@ -302,7 +305,8 @@ export function ShareFrameSheet({
 								<Label>Share Link</Label>
 								<div className="flex gap-2">
 									<Input
-										value={`${window.location.origin}/share/frame/${frameId}`}
+										value={publicShareUrl}
+										aria-label="Public share link"
 										readOnly
 										className="flex-1"
 									/>
@@ -310,6 +314,8 @@ export function ShareFrameSheet({
 										variant="outline"
 										size="icon"
 										onClick={handleCopyLink}
+										aria-label="Copy share link"
+										disabled={!publicShareUrl}
 									>
 										{copied ? (
 											<Check className="h-4 w-4" />

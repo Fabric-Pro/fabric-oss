@@ -52,7 +52,10 @@ type PreviousMeeting = {
  * notes were written, or else the series' latest synced transcript. Every read
  * is scoped to the session's own project and organization. With Chat
  * suggestions off for the session, no previous meeting, or a model that finds
- * nothing worth saying, nothing is posted.
+ * nothing worth saying, nothing is posted. A session whose suggestions are for
+ * the team only gets no chat post: the recap is recorded for the Parlume page
+ * instead. A recap sent to the chat is recorded too, with its tag, or with
+ * none when the chat did not take it.
  *
  * Best effort: a failure is logged and the activity never throws, so a recap
  * cannot affect the meeting.
@@ -74,9 +77,11 @@ export async function postParlumeSeriesRecap(input: {
 				userId: true,
 				linkedMeetingId: true,
 				suggestionsEnabled: true,
+				suggestionAudience: true,
 			},
 		});
-		// Chat suggestions is the consent for Parlume's unprompted chat posts.
+		// The "Suggestions and recap" switch is the consent for Parlume's
+		// unprompted posts.
 		if (session && !session.suggestionsEnabled) {
 			skip("suggestions_off");
 			return;
@@ -170,9 +175,24 @@ export async function postParlumeSeriesRecap(input: {
 			skip("nothing_to_recap");
 			return;
 		}
+		const text = recap.slice(0, MAX_RECAP_CHARS);
+		// A team-only session keeps the recap off the meeting chat: external
+		// participants see the chat. Either way the Parlume page lists it, a
+		// meeting recap with its tag, or with none when the chat refused it.
+		if (session.suggestionAudience === "TEAM") {
+			await recordRecap(session, { text, chatTag: null });
+			parlumeActivityLog("info", "recap.recorded", {
+				sessionId,
+				source: previous.source,
+				workItems: workItems.count,
+				chars: recap.length,
+				audience: "TEAM",
+			});
+			return;
+		}
 		const sent = await postParlumeMeetingChat({
 			sessionId: session.id,
-			message: recap.slice(0, MAX_RECAP_CHARS),
+			message: text,
 		});
 		parlumeActivityLog(sent.sent ? "info" : "warn", "recap.posted", {
 			sessionId,
@@ -182,6 +202,19 @@ export async function postParlumeSeriesRecap(input: {
 			sent: sent.sent,
 			...(sent.sent ? { tag: sent.tag } : { reason: sent.reason }),
 		});
+		// The post was attempted; a lost copy for the page is not a failed recap.
+		await recordRecap(session, {
+			text,
+			chatTag: sent.sent ? sent.tag : null,
+		}).catch((error: unknown) =>
+			parlumeActivityLog("warn", "recap.record_failed", {
+				sessionId,
+				error:
+					error instanceof Error
+						? `${error.name}: ${error.message}`.slice(0, 300)
+						: "Unknown error",
+			}),
+		);
 	} catch (error) {
 		parlumeActivityLog("warn", "recap.failed", {
 			sessionId,
@@ -191,6 +224,32 @@ export async function postParlumeSeriesRecap(input: {
 					: "Unknown error",
 		});
 	}
+}
+
+/** The recap as the Parlume page lists it, with the session's own tenancy. */
+async function recordRecap(
+	session: {
+		id: string;
+		projectId: string;
+		organizationId: string;
+		userId: string;
+		suggestionAudience: "MEETING" | "TEAM";
+	},
+	delivery: { text: string; chatTag: string | null },
+): Promise<void> {
+	await db.parlumeSuggestion.create({
+		data: {
+			sessionId: session.id,
+			projectId: session.projectId,
+			organizationId: session.organizationId,
+			userId: session.userId,
+			kind: "RECAP",
+			audience: session.suggestionAudience,
+			text: delivery.text,
+			chatTag: delivery.chatTag,
+		},
+		select: { id: true },
+	});
 }
 
 type RecapScope = {

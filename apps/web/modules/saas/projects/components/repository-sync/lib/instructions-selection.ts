@@ -120,7 +120,10 @@ export type InstructionsSelectionModel = {
 	 * root, no listing, or rules not known.
 	 */
 	includedFileCount: number | null;
-	/** Rows left out by their own rule, not inside another left-out folder. */
+	/**
+	 * Rows left out by their own rule, not inside another left-out folder;
+	 * without a listing, the rules this dialog staged.
+	 */
 	leftOut: readonly InstructionsLeftOut[];
 	/** Saved rules the staged edits remove, in their saved spelling. */
 	removedSavedRules: readonly string[];
@@ -669,7 +672,11 @@ export function instructionsSelectionModel(input: {
 				sameRule(verdict.rule, relative)
 			) {
 				return {
-					row: { membership: "out", disabledReason: null },
+					row: {
+						membership: "out",
+						disabledReason: null,
+						leftOut: true,
+					},
 					action: { type: "removeRules", rules: [verdict.rule] },
 				};
 			}
@@ -694,7 +701,11 @@ export function instructionsSelectionModel(input: {
 		if (found.subtree) {
 			return found.subtree.own
 				? {
-						row: { membership: "out", disabledReason: null },
+						row: {
+							membership: "out",
+							disabledReason: null,
+							leftOut: true,
+						},
 						action: {
 							type: "removeRules",
 							rules: [found.subtree.rule],
@@ -765,6 +776,22 @@ export function instructionsSelectionModel(input: {
 			}
 		}
 		leftOut.sort((a, b) => a.path.localeCompare(b.path));
+	} else if (!input.tree && root !== null && layer === "project") {
+		// No listing to place rules on rows: what this dialog staged (typed
+		// where the tree cannot reach) is still listed, and can be undone.
+		for (const rule of edits.add) {
+			if (DEFAULT_KEYS.has(canonicalKey(rule))) {
+				continue;
+			}
+			const folder = rule.endsWith("/**") ? rule.slice(0, -3) : null;
+			const relative = folder ?? rule;
+			leftOut.push({
+				path: root === "" ? relative : `${root}/${relative}`,
+				type: folder === null ? "file" : "dir",
+				rule,
+				action: { type: "removeRules", rules: [rule] },
+			});
+		}
 	}
 
 	return {

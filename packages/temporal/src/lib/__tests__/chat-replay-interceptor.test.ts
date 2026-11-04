@@ -220,7 +220,6 @@ it.each([
 	"executeStep",
 	"delegateToAgent",
 	"executeAgentAsTool",
-	"executeAgentTurn",
 ])("round trips successful producer metadata: %s", async (activityType) => {
 	h.current().info.activityType = activityType;
 	const recorded = await new ChatReplayActivityInboundInterceptor().execute(

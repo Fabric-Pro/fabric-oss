@@ -43,10 +43,11 @@ import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-appro
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	// Faithful enough to discriminate, which is all the activity asks of it:
 	// the AI SDK names this error class "AI_NoObjectGeneratedError", and the
@@ -296,8 +297,8 @@ beforeEach(() => {
 		metadata: { modelString: "test-model", provider: "test" },
 		trackUsage,
 	});
-	generateObject.mockResolvedValue({
-		object: MODEL_OUTPUT,
+	generateText.mockResolvedValue({
+		output: MODEL_OUTPUT,
 		usage: { totalTokens: 100 },
 	});
 	completeTopicDraft.mockResolvedValue({ persisted: true });
@@ -361,7 +362,7 @@ describe("generateStakeholderEmailActivity — tenancy and actor revalidation", 
 			nonRetryable: true,
 		});
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 
 	it("refuses when the project has left the organization the run was queued under", async () => {
@@ -465,7 +466,7 @@ describe("generateStakeholderEmailActivity — contributor override", () => {
 				where: { id: { in: ["chosen-user"] } },
 			}),
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Chosen Contributor",
 		);
 	});
@@ -481,7 +482,7 @@ describe("generateStakeholderEmailActivity — contributor override", () => {
 		await run();
 
 		expect(userFindMany).not.toHaveBeenCalled();
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).not.toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).not.toContain(
 			"People associated with the work behind this topic",
 		);
 	});
@@ -516,7 +517,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const restricted = prompt.slice(
 			prompt.indexOf("## Unresolved approvals for this topic"),
 		);
@@ -538,7 +539,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const openHeading = prompt.indexOf(
 			"## Unresolved questions that constrain this content type",
 		);
@@ -556,7 +557,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const openHeading = prompt.indexOf(
 			"## Unresolved questions that constrain this content type",
 		);
@@ -575,7 +576,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).not.toMatch(
 			/Unresolved questions that constrain this content type/,
 		);
@@ -595,7 +596,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const restrictedHeading = prompt.indexOf(
 			"## Unresolved approvals for this topic",
 		);
@@ -643,7 +644,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).not.toMatch(
 			/Unresolved questions that constrain this content type/,
 		);
@@ -686,8 +687,8 @@ describe("generateStakeholderEmailActivity — release status is NOT clamped", (
 	 * first thing that should go red.
 	 */
 	it("stores SHIPPED unchanged with an open CLAIM_STRENGTH question", async () => {
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, releaseStatus: "SHIPPED" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, releaseStatus: "SHIPPED" },
 			usage: {},
 		});
 		listTopicDecisions.mockResolvedValue([
@@ -702,8 +703,8 @@ describe("generateStakeholderEmailActivity — release status is NOT clamped", (
 	it("stores SHIPPED unchanged with an open CUSTOMER_NAME question", async () => {
 		// The nearest thing to a comparable thread, and it still says nothing
 		// about whether the work is live.
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, releaseStatus: "SHIPPED" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, releaseStatus: "SHIPPED" },
 			usage: {},
 		});
 		listTopicDecisions.mockResolvedValue([
@@ -730,8 +731,8 @@ describe("generateStakeholderEmailActivity — release status is NOT clamped", (
 	});
 
 	it("stores the model's audience and safety note verbatim", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				audience: "The client steering group",
 				safetyNote: "Generalized the customer reference.",
@@ -748,8 +749,8 @@ describe("generateStakeholderEmailActivity — release status is NOT clamped", (
 	});
 
 	it("keeps a null audience null rather than inventing one", async () => {
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, audience: null },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, audience: null },
 			usage: {},
 		});
 
@@ -765,8 +766,8 @@ describe("generateStakeholderEmailActivity — release status is NOT clamped", (
 		// a local join that would drift away from it, which is exactly what
 		// happened to the Blog Post sibling. The headings are the PO's own, so
 		// the assertion is also the format contract.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				subject: "An email subject",
 				body: "Hi team,\n\nAn update.",
@@ -789,8 +790,8 @@ describe("generateStakeholderEmailActivity — release status is NOT clamped", (
 	it("leaves the advice fields OUT of the seeded body", async () => {
 		// They are advice about the draft. A body carrying them is a body whose
 		// author deletes three sections before pasting it into a mail client.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				audience: "Internal leadership",
 				releaseStatus: "UNCONFIRMED",
@@ -889,8 +890,8 @@ describe("generateStakeholderEmailActivity — the write surface", () => {
 		// `releaseStatus` is required and has no safe default. A run that cannot
 		// produce a valid shape will not produce one on a retry either, and a
 		// half-shaped email persisted as READY is worse than a visible failure.
-		generateObject.mockResolvedValue({
-			object: { subject: "A subject", body: "Hi team," },
+		generateText.mockResolvedValue({
+			output: { subject: "A subject", body: "Hi team," },
 			usage: {},
 		});
 
@@ -908,8 +909,8 @@ describe("generateStakeholderEmailActivity — the write surface", () => {
 		// document null — every safety surface gone while the editor still
 		// showed text, and adopt throwing forever on a draft the server itself
 		// wrote. A visible failure is strictly better.
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, subject: "   " },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, subject: "   " },
 			usage: {},
 		});
 
@@ -925,8 +926,8 @@ describe("generateStakeholderEmailActivity — the write surface", () => {
 		// The panel falls back to UNCONFIRMED on an unreadable value, which is
 		// the right READ behaviour — but a WRITE that accepted "PROBABLY_LIVE"
 		// would leave a row whose stored claim and rendered claim disagree.
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, releaseStatus: "PROBABLY_LIVE" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, releaseStatus: "PROBABLY_LIVE" },
 			usage: {},
 		});
 
@@ -1008,7 +1009,7 @@ describe("generateStakeholderEmailActivity — what it persists", () => {
 		expect(completeTopicDraft.mock.calls[0]?.[0]?.promptSource).toBe(
 			"BOUND",
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Faster incremental builds",
 		);
 	});
@@ -1020,7 +1021,7 @@ describe("generateStakeholderEmailActivity — what it persists", () => {
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"ROLE COMPOSITION: backend",
 		);
 	});
@@ -1039,7 +1040,7 @@ describe("generateStakeholderEmailActivity — the model call", () => {
 		await run();
 
 		expect(
-			generateObject.mock.calls[0]?.[0]?.providerOptions,
+			generateText.mock.calls[0]?.[0]?.providerOptions,
 		).toBeUndefined();
 	});
 
@@ -1058,7 +1059,7 @@ describe("generateStakeholderEmailActivity — the model call", () => {
 
 		await run();
 
-		const sentPrompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const sentPrompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(computeMaxOutputTokenBudget).toHaveBeenCalledWith(
 			expect.anything(),
 			{ promptChars: sentPrompt.length },
@@ -1073,7 +1074,7 @@ describe("generateStakeholderEmailActivity — the model call", () => {
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]).not.toHaveProperty(
+		expect(generateText.mock.calls[0]?.[0]).not.toHaveProperty(
 			"maxOutputTokens",
 		);
 	});
@@ -1121,7 +1122,7 @@ describe("generateStakeholderEmailActivity — the effective analysis reaches th
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("USER PROSE");
 		expect(prompt).not.toContain("AI ANGLE");
 		// The two assertions above pin the ANSWER; this one pins the
@@ -1159,15 +1160,14 @@ describe("generateStakeholderEmailActivity — the effective analysis reaches th
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("AI ANGLE");
 		expect(prompt).toContain(renderAnalysisProse(AI));
 	});
 });
 
 describe("generateStakeholderEmailActivity — the settled-decisions block", () => {
-	const promptSent = () =>
-		generateObject.mock.calls[0]?.[0]?.prompt as string;
+	const promptSent = () => generateText.mock.calls[0]?.[0]?.prompt as string;
 	const settledSection = () => {
 		const prompt = promptSent();
 		const at = prompt.indexOf(SETTLED_DECISIONS_HEADING);
@@ -1350,7 +1350,7 @@ it("keeps READY when seeding throws", async () => {
 		status: "READY",
 		seededWorkingDraft: false,
 	});
-	expect(generateObject).toHaveBeenCalledTimes(1);
+	expect(generateText).toHaveBeenCalledTimes(1);
 	expect(logger.warn).toHaveBeenCalledWith(
 		"[publishing-stakeholder-email] failed to seed a working draft",
 		expect.objectContaining({ error: "seed failed" }),

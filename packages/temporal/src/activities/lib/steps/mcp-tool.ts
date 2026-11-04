@@ -12,6 +12,7 @@ import {
 	OAuthAuthorizationRequiredError,
 } from "@repo/mcp";
 import { getBaseUrl } from "@repo/utils";
+import { redactLogText } from "@repo/utils/log-redaction";
 import type { NodeExecutionResult, StepParams } from "../../types";
 import {
 	formatOutputForDisplay,
@@ -28,11 +29,15 @@ export async function executeMcpToolStep(
 		toolArgs?: string;
 	};
 
-	if (!toolName) {
+	if (typeof toolName !== "string" || !toolName.trim()) {
 		return { success: false, error: "Tool name is required" };
 	}
 
-	if (!mcpServers || mcpServers.length === 0) {
+	if (
+		!Array.isArray(mcpServers) ||
+		mcpServers.length === 0 ||
+		mcpServers.some((id) => typeof id !== "string" || !id.trim())
+	) {
 		return {
 			success: false,
 			error: "At least one MCP server must be selected",
@@ -41,12 +46,20 @@ export async function executeMcpToolStep(
 
 	// Parse tool arguments with smart detection
 	let parsedArgs: Record<string, unknown> = {};
+	if (toolArgs !== undefined && typeof toolArgs !== "string") {
+		return {
+			success: false,
+			error: "Tool arguments must be text or a JSON object encoded as text",
+		};
+	}
 	if (toolArgs) {
 		const trimmedToolArgs = toolArgs.trim();
 		// Detect if the template looks like JSON (starts with { or [)
 		// If so, use JSON-safe escaping to prevent control characters from breaking parsing
 		const looksLikeJson =
-			trimmedToolArgs.startsWith("{") || trimmedToolArgs.startsWith("[");
+			(trimmedToolArgs.startsWith("{") &&
+				!trimmedToolArgs.startsWith("{{")) ||
+			trimmedToolArgs.startsWith("[");
 
 		const interpolatedArgs = interpolateTemplate(toolArgs, params.inputs, {
 			escapeForJson: looksLikeJson,
@@ -55,16 +68,34 @@ export async function executeMcpToolStep(
 
 		if (trimmedArgs.startsWith("{") || trimmedArgs.startsWith("[")) {
 			try {
-				parsedArgs = JSON.parse(trimmedArgs);
+				const value: unknown = JSON.parse(trimmedArgs);
+				if (
+					value === null ||
+					typeof value !== "object" ||
+					Array.isArray(value)
+				) {
+					if (looksLikeJson) {
+						return {
+							success: false,
+							error: "Tool arguments must resolve to a JSON object",
+						};
+					}
+					parsedArgs = { query: trimmedArgs };
+				} else {
+					parsedArgs = value as Record<string, unknown>;
+				}
 			} catch (parseError) {
 				const errorMessage =
 					parseError instanceof Error
 						? parseError.message
 						: "Unknown parse error";
-				return {
-					success: false,
-					error: `Invalid JSON in tool arguments: ${errorMessage}`,
-				};
+				if (looksLikeJson) {
+					return {
+						success: false,
+						error: `Invalid JSON in tool arguments: ${errorMessage}`,
+					};
+				}
+				parsedArgs = { query: trimmedArgs };
 			}
 		} else if (trimmedArgs) {
 			// Auto-wrap plain text in a query object
@@ -81,6 +112,7 @@ export async function executeMcpToolStep(
 	for (const serverId of mcpServers) {
 		let mcpClient: McpClientType | undefined;
 		let serverName = serverId;
+		let dispatched = false;
 
 		try {
 			// Create MCP client using shared factory with OAuth support
@@ -108,11 +140,23 @@ export async function executeMcpToolStep(
 
 			// AI SDK 7 made ToolExecutionOptions.context required. MCP tools declare
 			// no contextSchema, so the SDK's own invocation passes undefined here.
+			dispatched = true;
 			const result = await tool.execute(parsedArgs, {
 				toolCallId: `${toolName}-${Date.now()}`,
 				messages: [],
 				context: undefined,
 			});
+			if (
+				result &&
+				typeof result === "object" &&
+				"isError" in result &&
+				result.isError === true
+			) {
+				return {
+					success: false,
+					error: `Server ${serverName}: ${redactLogText(formatOutputForDisplay(result)).text.slice(0, 2000) || "Tool reported an error"}`,
+				};
+			}
 
 			// Format result for easy access
 			const formattedResult = formatOutputForDisplay(result);
@@ -133,6 +177,14 @@ export async function executeMcpToolStep(
 				},
 			};
 		} catch (serverError) {
+			if (dispatched) {
+				// A connection failure cannot prove a remote write did not happen.
+				// Do not replay it on another selected server.
+				return {
+					success: false,
+					error: `Server ${serverName}: Tool "${toolName}" may have started but did not confirm its result. Inspect the remote server before retrying.`,
+				};
+			}
 			// Handle OAuth authorization required errors specially
 			if (serverError instanceof OAuthAuthorizationRequiredError) {
 				errors.push(

@@ -252,6 +252,36 @@ describe("GitLab open, get and close", () => {
 		expect(calls).toHaveLength(1);
 	});
 
+	it("keeps a refusal's field messages as a sanitized providerMessage", async () => {
+		stubFetch(() =>
+			json(
+				{
+					message: {
+						target_branch: ["is invalid"],
+						source_branch: [`token ${TOKEN}`],
+					},
+				},
+				422,
+			),
+		);
+		const error = await gitlab
+			.open({
+				...target(),
+				sourceRef: BRANCH,
+				targetRef: "main",
+				title: "t",
+				body: "b",
+			})
+			.catch((e: unknown) => e);
+		expect(error).toMatchObject({
+			code: "PR_CREATION_REFUSED",
+			providerStatus: 422,
+			providerMessage:
+				"target_branch: is invalid; source_branch: token [REDACTED]",
+		});
+		expect(JSON.stringify(error)).not.toContain(TOKEN);
+	});
+
 	it("closes with PUT state_event close", async () => {
 		const calls = stubFetch(() =>
 			json(gitlabMergeRequest({ iid: 9, state: "closed" })),

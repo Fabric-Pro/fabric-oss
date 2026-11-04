@@ -6,6 +6,7 @@
 import {
 	adapterError,
 	type Continuation,
+	githubRefusalMessage,
 	LOOKUP_TIMEOUT_MS,
 	MAX_PAGES,
 	OPEN_TIMEOUT_MS,
@@ -18,6 +19,7 @@ import {
 	requestJson,
 	str,
 } from "./http";
+import { requestMerge } from "./merge";
 import {
 	type FindOperationResult,
 	type InstructionPullRequestAdapter,
@@ -276,6 +278,7 @@ export const github: InstructionPullRequestAdapter = {
 				maintainer_can_modify: false,
 			},
 			timeoutMs: OPEN_TIMEOUT_MS,
+			refusalMessage: githubRefusalMessage,
 			isDuplicate: (status, text) =>
 				status === 422 && /already exists/i.test(text),
 		});
@@ -306,6 +309,38 @@ export const github: InstructionPullRequestAdapter = {
 			throw adapterError("close", "unknown");
 		}
 		return observe(pull, "close");
+	},
+
+	async merge(t) {
+		if (!isPositiveDecimalInteger(t.externalId)) {
+			return { kind: "REFUSED", reason: "not_found" };
+		}
+		// GitHub: 405 not mergeable (checks, reviews, conflicts, a forbidden
+		// merge method), 409 the head is no longer `sha`, 403 the credential
+		// may not merge (with X-Accepted-GitHub-Permissions when GitHub says).
+		const result = await requestMerge({
+			target: t,
+			url: `${pullsUrl(t)}/${encodeSegment(t.externalId)}/merge`,
+			origin: GITHUB_API_ORIGIN,
+			headers: headers(t),
+			body: {
+				sha: t.expectedHeadSha,
+				merge_method: t.method,
+				...(t.commitTitle ? { commit_title: t.commitTitle } : {}),
+			},
+			reasonOf: (status) =>
+				status === 405
+					? "not_mergeable"
+					: status === 409
+						? "head_moved"
+						: null,
+		});
+		if (result.kind === "REFUSED") {
+			return result;
+		}
+		const body = isRecord(result.response.body) ? result.response.body : {};
+		const sha = str(body.sha);
+		return { kind: "MERGED", ...(sha ? { mergeCommitSha: sha } : {}) };
 	},
 
 	pullRequestHeadRef(externalId) {

@@ -171,8 +171,16 @@ export type {
 } from "./repository-file";
 export { readRepositoryFile } from "./repository-file";
 // GitHub / GitLab PAT validation (request-path helpers)
-export type { ValidateRepoPatResult } from "./repository-pat";
-export { validateGitHubPat, validateGitLabPat } from "./repository-pat";
+export type {
+	GitHubTokenAccount,
+	ValidateRepoPatResult,
+} from "./repository-pat";
+export {
+	canGitHubTokenListRepositories,
+	readGitHubTokenAccount,
+	validateGitHubPat,
+	validateGitLabPat,
+} from "./repository-pat";
 // Slack connector
 export {
 	listRepositoryPullRequests,

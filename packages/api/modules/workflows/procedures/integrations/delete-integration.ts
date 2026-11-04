@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/client";
 import {
 	deleteWorkflowIntegration,
 	getWorkflowIntegrationById,
+	listContextQualityProjectsBoundToIntegration,
 	listProjectsBoundToIntegration,
 	Prisma,
 } from "@repo/database";
@@ -110,6 +111,17 @@ export const deleteIntegrationProcedure = tenantProtectedProcedure
 		// raw FK error — ProjectDatabricksKnowledgeBinding.integration is
 		// `onDelete: Restrict` so a project's knowledge binding can't be
 		// silently wiped by deleting the connection out from under it.
+		const qualityProjects = organizationId
+			? await listContextQualityProjectsBoundToIntegration(
+					input.integrationId,
+					organizationId,
+				)
+			: [];
+		if (qualityProjects.length)
+			throw new ORPCError("CONFLICT", {
+				message:
+					"This connection is an approved context evaluation destination. Disconnect it in the project's Context Quality settings before deleting it; unresolved cleanup receipts must be retained.",
+			});
 		const boundProjects = await listProjectsBoundToIntegration(
 			input.integrationId,
 		);
@@ -138,7 +150,9 @@ export const deleteIntegrationProcedure = tenantProtectedProcedure
 					input.integrationId,
 				);
 				throw new ORPCError("CONFLICT", {
-					message: bindingConflictMessage(nowBound),
+					message: nowBound.length
+						? bindingConflictMessage(nowBound)
+						: "This connection is bound to one or more projects. Disconnect its knowledge or Context Quality destination before deleting it.",
 				});
 			}
 			throw error;

@@ -81,6 +81,7 @@ export async function applyPlan(input: ApplyInput): Promise<ApplyResult> {
 		// Never written, but the lock is about to record it as a synced
 		// file, so it has to be one.
 		...plan.keptEdited,
+		...plan.overridden,
 	]) {
 		const check = await assertWritableTarget(root, entry.path);
 		if (!check.ok) {

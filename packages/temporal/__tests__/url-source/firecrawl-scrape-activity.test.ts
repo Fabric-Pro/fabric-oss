@@ -21,6 +21,7 @@ vi.mock("../../src/activities/lib/activity-logger", () => ({
 	},
 }));
 
+import { activityLogger } from "../../src/activities/lib/activity-logger";
 import { scrapeUrl } from "../../src/activities/lib/firecrawl-client";
 import {
 	firecrawlScrapeActivity,
@@ -98,7 +99,7 @@ describe("firecrawlScrapeActivity", () => {
 		});
 	});
 
-	it("maps UNSUPPORTED_CONTENT_TYPE to a non-retryable failure", async () => {
+	it("maps UNSUPPORTED_CONTENT_TYPE to a non-retryable failure when the caller does not ask for the outcome", async () => {
 		mockScrapeUrl.mockResolvedValue({
 			success: false,
 			error: {
@@ -118,6 +119,104 @@ describe("firecrawlScrapeActivity", () => {
 			type: "FIRECRAWL_UNSUPPORTED_CONTENT_TYPE",
 			nonRetryable: true,
 		});
+	});
+
+	describe("reportUnsupportedContent", () => {
+		it.each([
+			{
+				url: "https://example.com/docs/logo.svg",
+				message:
+					"The URL returned a file type that Firecrawl cannot process: image/svg+xml.",
+				contentType: "image/svg+xml",
+			},
+			{
+				url: "https://example.com/docs/bundle.zip",
+				message:
+					"The URL returned a file type that Firecrawl cannot process: application/zip",
+				contentType: "application/zip",
+			},
+		])(
+			"returns $contentType as an expected outcome with one warning",
+			async ({ url, message, contentType }) => {
+				mockScrapeUrl.mockResolvedValue({
+					success: false,
+					error: {
+						code: "UNSUPPORTED_CONTENT_TYPE",
+						message,
+						statusCode: 400,
+					},
+				});
+
+				const result = await firecrawlScrapeActivity({
+					url,
+					apiKey: "example-key",
+					reportUnsupportedContent: true,
+				});
+
+				expect(result).toEqual({
+					pageUrl: url,
+					pageTitle: null,
+					markdown: "",
+					unsupported: { contentType, message },
+				});
+				expect(activityLogger.warn).toHaveBeenCalledTimes(1);
+				expect(activityLogger.warn).toHaveBeenCalledWith(
+					"URL is a file type that cannot be indexed; skipped (expected)",
+					{ url, contentType },
+				);
+				expect(activityLogger.error).not.toHaveBeenCalled();
+				expect(
+					JSON.stringify(vi.mocked(activityLogger.warn).mock.calls),
+				).not.toContain("example-key");
+			},
+		);
+
+		it("omits the content type when the message names none", async () => {
+			mockScrapeUrl.mockResolvedValue({
+				success: false,
+				error: {
+					code: "UNSUPPORTED_CONTENT_TYPE",
+					message: "This file type is not supported",
+				},
+			});
+
+			const result = await firecrawlScrapeActivity({
+				url: "https://example.com/file",
+				apiKey: "k",
+				reportUnsupportedContent: true,
+			});
+
+			expect(result.unsupported).toEqual({
+				message: "This file type is not supported",
+			});
+		});
+
+		it.each([
+			["ROBOTS_BLOCKED", true],
+			["QUOTA_EXCEEDED", true],
+			["UNAUTHORIZED", true],
+			["TIMEOUT", false],
+			["UNKNOWN", false],
+		] as const)(
+			"still throws %s with the same retryability",
+			async (code, nonRetryable) => {
+				mockScrapeUrl.mockResolvedValue({
+					success: false,
+					error: { code, message: `${code} from provider` },
+				});
+
+				await expect(
+					firecrawlScrapeActivity({
+						url: "https://example.com",
+						apiKey: "k",
+						reportUnsupportedContent: true,
+					}),
+				).rejects.toMatchObject({
+					type: `FIRECRAWL_${code}`,
+					nonRetryable,
+				});
+			},
+		);
 	});
 
 	it("maps TIMEOUT to a retryable failure", async () => {

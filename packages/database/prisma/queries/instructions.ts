@@ -35,6 +35,15 @@ import {
 } from "./instruction-migration-pointer";
 import { createInstructionStorageCleanupReceipt } from "./instruction-pending-storage-cleanup";
 import {
+	approvalProgressOf,
+	approvalRefusal,
+	countedApprovals,
+	type InstructionReviewPolicy,
+	listProposalApproverIds,
+	recordProposalApprovalTx,
+	reviewPolicyOfSettings,
+} from "./instruction-proposal-approvals";
+import {
 	currentAppend,
 	type EvidenceOp,
 	isEstablished,
@@ -300,7 +309,27 @@ const proposalSelect = {
 	pullRequestObservation: true,
 	mergeSyncRequestedAt: true,
 	mergeSyncRunId: true,
+	approvals: {
+		orderBy: { createdAt: "asc" },
+		select: { userId: true },
+	},
 } satisfies Prisma.ProjectInstructionSnapshotSelect;
+
+/**
+ * A proposal's "2 of 3", counted against the policy the project holds now.
+ * A REPOSITORY proposal is decided on its pull request and has no Fabric
+ * approvals; it reads 0 of the policy, which nothing shows.
+ */
+function proposalApprovalProgress(
+	proposal: { userId: string; approvals: Array<{ userId: string }> },
+	settings: unknown,
+) {
+	return approvalProgressOf({
+		approverUserIds: proposal.approvals.map((approval) => approval.userId),
+		proposerUserId: proposal.userId,
+		settings,
+	});
+}
 
 // ---------------------------------------------------------------------------
 // Create
@@ -876,7 +905,13 @@ export type DerivedInstructionRefusal =
 	/** A direct commit: the member already has the cap of commits waiting to be pushed. */
 	| "commit_proposer_limit"
 	/** A direct commit: the project already has the cap of commits waiting to be pushed. */
-	| "commit_project_limit";
+	| "commit_project_limit"
+	/**
+	 * A rebase: the proposal it replaces is no longer the proposer's pending,
+	 * validated, stale FABRIC proposal (it was decided, canceled or rebased
+	 * meanwhile), so nothing was written.
+	 */
+	| "supersede_unavailable";
 
 /**
  * The active proposal an identical change set already opened.
@@ -1046,7 +1081,34 @@ type CreateDerivedInstructionSnapshotInput = {
 	 * uploaded again. Requires `proposal` and a REPOSITORY `destination`.
 	 */
 	migration?: boolean;
+	/**
+	 * A rebase of a stale proposal: the FABRIC proposal this one replaces.
+	 * Requires `proposal` and no `destination`.
+	 *
+	 * The replaced row must be the same proposer's PENDING, READY,
+	 * FULL_SNAPSHOT FABRIC proposal on a base other than this one. It is
+	 * closed as REJECTED in the same transaction that writes the new row,
+	 * with `audit` recorded beside it, so the proposer's slot moves from the
+	 * old proposal to the new one at once: the admission counts leave the
+	 * replaced row out. A replaced row that moved meanwhile refuses the whole
+	 * derivation as `supersede_unavailable` and nothing is written.
+	 */
+	supersedes?: {
+		snapshotId: string;
+		audit: (created: { id: string; version: number }) => RecordAuditInput;
+	};
 };
+
+/**
+ * Thrown inside the create transaction when the proposal a rebase replaces
+ * could not be closed, so the new row rolls back with it.
+ */
+class SupersededProposalMovedError extends Error {
+	constructor() {
+		super("The proposal being rebased moved during the rebase");
+		this.name = "SupersededProposalMovedError";
+	}
+}
 
 /** `proposalNote`: the shape `proposalNoteSchema` produces. */
 export type ProposalNoteJson = { title?: string; body?: string };
@@ -1253,7 +1315,50 @@ export async function createDerivedInstructionSnapshot(
 			"createDerivedInstructionSnapshot: a migration is a repository proposal with no changes",
 		);
 	}
-	return withVersionRetry(() => allocateAndCreateDerivedSnapshot(input));
+	if (
+		input.supersedes !== undefined &&
+		(!input.proposal ||
+			input.destination !== undefined ||
+			input.commit !== undefined ||
+			input.migration === true)
+	) {
+		// Also a programming error: a rebase replaces one Fabric proposal
+		// with another.
+		throw new Error(
+			"createDerivedInstructionSnapshot: a rebase is a FABRIC proposal",
+		);
+	}
+	try {
+		return await withVersionRetry(() =>
+			allocateAndCreateDerivedSnapshot(input),
+		);
+	} catch (error) {
+		if (error instanceof SupersededProposalMovedError) {
+			return { ok: false, reason: "supersede_unavailable" };
+		}
+		throw error;
+	}
+}
+
+/**
+ * The proposal a rebase replaces, as `supersedes` requires it, or null.
+ * Read under the project row lock the rebase takes as a proposal.
+ */
+function supersededProposalWhere(
+	input: CreateDerivedInstructionSnapshotInput,
+	snapshotId: string,
+) {
+	return {
+		id: snapshotId,
+		projectId: input.projectId,
+		organizationId: input.organizationId,
+		userId: input.userId,
+		proposalStatus: "PENDING" as const,
+		proposalDestination: "FABRIC" as const,
+		contentKind: "FULL_SNAPSHOT" as const,
+		status: "READY" as const,
+		baseSnapshotId: { not: input.baseSnapshotId },
+	} satisfies Prisma.ProjectInstructionSnapshotWhereInput;
 }
 
 function allocateAndCreateDerivedSnapshot(
@@ -1306,6 +1411,24 @@ function allocateAndCreateDerivedSnapshot(
 					return { ok: false, reason: "base_not_published" };
 				}
 			}
+			const supersedes = input.supersedes;
+			if (supersedes) {
+				const replaced = await tx.projectInstructionSnapshot.findFirst({
+					where: supersededProposalWhere(
+						input,
+						supersedes.snapshotId,
+					),
+					select: { id: true },
+				});
+				if (!replaced) {
+					return { ok: false, reason: "supersede_unavailable" };
+				}
+			}
+			// The replaced proposal's slot is the new one's: it is closed
+			// below, in this transaction.
+			const notReplaced = supersedes
+				? { id: { not: supersedes.snapshotId } }
+				: {};
 			const digest = changeSetDigest(input.changes);
 			if (input.proposal) {
 				// A retried proposal is the SAME proposal (Fizzy #2605).
@@ -1432,6 +1555,7 @@ function allocateAndCreateDerivedSnapshot(
 							organizationId: input.organizationId,
 							userId: input.userId,
 							...activeProposalFilter(),
+							...notReplaced,
 						},
 					},
 				);
@@ -1446,6 +1570,7 @@ function allocateAndCreateDerivedSnapshot(
 						projectId: input.projectId,
 						organizationId: input.organizationId,
 						...activeProposalFilter(),
+						...notReplaced,
 					},
 				});
 				if (
@@ -1903,6 +2028,25 @@ function allocateAndCreateDerivedSnapshot(
 					},
 				});
 			}
+			if (supersedes) {
+				// Closed as the proposer's own cancel closes a READY proposal:
+				// REJECTED, reviewed now, its bytes left for retention. A row
+				// that moved since the read above rolls this one back.
+				const closed = await tx.projectInstructionSnapshot.updateMany({
+					where: supersededProposalWhere(
+						input,
+						supersedes.snapshotId,
+					),
+					data: {
+						proposalStatus: "REJECTED",
+						reviewedAt: new Date(),
+					},
+				});
+				if (closed.count !== 1) {
+					throw new SupersededProposalMovedError();
+				}
+				await recordAuditTx(tx, supersedes.audit(snapshot));
+			}
 			return {
 				ok: true,
 				id: snapshot.id,
@@ -2029,7 +2173,10 @@ export async function listInstructionProposals(
 	const [project, proposals] = await Promise.all([
 		db.project.findFirst({
 			where: { id: projectId, organizationId },
-			select: { publishedInstructionSnapshotId: true },
+			select: {
+				publishedInstructionSnapshotId: true,
+				instructionSettings: true,
+			},
 		}),
 		db.projectInstructionSnapshot.findMany({
 			where: {
@@ -2054,6 +2201,10 @@ export async function listInstructionProposals(
 	const page = hasMore ? proposals.slice(0, options.limit) : proposals;
 	const items = page.map((proposal) => ({
 		...proposal,
+		approvals: proposalApprovalProgress(
+			proposal,
+			project.instructionSettings,
+		),
 		isStale:
 			proposal.contentKind === "FULL_SNAPSHOT" &&
 			proposal.proposalStatus === "PENDING" &&
@@ -2083,7 +2234,10 @@ export async function getInstructionProposal(
 	const [project, proposal] = await Promise.all([
 		db.project.findFirst({
 			where: { id: projectId, organizationId },
-			select: { publishedInstructionSnapshotId: true },
+			select: {
+				publishedInstructionSnapshotId: true,
+				instructionSettings: true,
+			},
 		}),
 		db.projectInstructionSnapshot.findFirst({
 			where: {
@@ -2105,6 +2259,10 @@ export async function getInstructionProposal(
 	}
 	return {
 		...proposal,
+		approvals: proposalApprovalProgress(
+			proposal,
+			project.instructionSettings,
+		),
 		isStale:
 			proposal.contentKind === "FULL_SNAPSHOT" &&
 			proposal.proposalStatus === "PENDING" &&
@@ -3737,7 +3895,24 @@ export type InstructionProposalDecisionResult =
  * move's pull request was made from. `migration` is the pointer the lock found.
  */
 export type InstructionProposalApprovalResult =
-	| InstructionProposalDecisionResult
+	| {
+			ok: true;
+			/** True when this call wrote anything: an approval or the publication. */
+			changed: boolean;
+			version: number;
+			/** True once the proposal is APPROVED and published. */
+			published: boolean;
+			/** Counted approvals against the policy read under the lock. */
+			approvals: { count: number; required: number };
+	  }
+	| {
+			ok: false;
+			reason:
+				| InstructionProposalRefusal
+				| "repository_proposal"
+				| "not_an_approver"
+				| "own_proposal";
+	  }
 	| {
 			ok: false;
 			reason: "migration_open";
@@ -3792,6 +3967,15 @@ export type InstructionProposalCancelResult =
  * settings, read under the same lock, name the repository as the source of
  * truth (design 2026-09-23 §4): publishing it would put files in front of
  * agents that the repository never had.
+ *
+ * Each call records the reviewer's approval row and then counts the
+ * proposal's approvals against the review policy read from the same locked
+ * project row (`./instruction-proposal-approvals`). Only the approval that
+ * meets the count publishes, with `audit`; an approval that does not writes
+ * `approvalAudit` instead, so every approval leaves exactly one audit row. A
+ * repeated approval writes nothing new but is counted again, so a lowered
+ * policy publishes on the next approval. With the default policy (one
+ * approval, no approver list) the first approval publishes, as before.
  */
 export async function approveInstructionProposal(input: {
 	snapshotId: string;
@@ -3799,6 +3983,7 @@ export async function approveInstructionProposal(input: {
 	organizationId: string;
 	reviewerUserId: string;
 	audit: RecordAuditInput;
+	approvalAudit?: RecordAuditInput;
 }): Promise<InstructionProposalApprovalResult> {
 	return db.$transaction(async (tx) => {
 		const locked = await tx.$queryRaw<
@@ -3824,6 +4009,7 @@ export async function approveInstructionProposal(input: {
 			},
 			select: {
 				id: true,
+				userId: true,
 				version: true,
 				status: true,
 				proposalStatus: true,
@@ -3843,11 +4029,27 @@ export async function approveInstructionProposal(input: {
 				reason: "repository_proposal" as const,
 			};
 		}
+		const policy = reviewPolicyOfSettings(pointer.instructionSettings);
+		const scope = {
+			snapshotId: proposal.id,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+		};
+		const approvalsNow = async () => ({
+			count: countedApprovals({
+				approverUserIds: await listProposalApproverIds(scope, tx),
+				proposerUserId: proposal.userId,
+				policy,
+			}),
+			required: policy.requiredApprovals,
+		});
 		if (proposal.proposalStatus === "APPROVED") {
 			return {
 				ok: true as const,
 				changed: false,
 				version: proposal.version,
+				published: true,
+				approvals: await approvalsNow(),
 			};
 		}
 		if (proposal.proposalStatus !== "PENDING") {
@@ -3878,6 +4080,38 @@ export async function approveInstructionProposal(input: {
 		) {
 			return { ok: false as const, reason: "stale" as const };
 		}
+		const refusal = approvalRefusal({
+			policy,
+			reviewerUserId: input.reviewerUserId,
+			proposerUserId: proposal.userId,
+		});
+		if (refusal !== null) {
+			return { ok: false as const, reason: refusal };
+		}
+		const recorded = await recordProposalApprovalTx(tx, {
+			...scope,
+			userId: input.reviewerUserId,
+		});
+		const approvals = await approvalsNow();
+		if (approvals.count < approvals.required) {
+			if (recorded && input.approvalAudit) {
+				await recordAuditTx(tx, {
+					...input.approvalAudit,
+					metadata: {
+						...input.approvalAudit.metadata,
+						approvals: approvals.count,
+						requiredApprovals: approvals.required,
+					},
+				});
+			}
+			return {
+				ok: true as const,
+				changed: recorded,
+				version: proposal.version,
+				published: false,
+				approvals,
+			};
+		}
 
 		const reviewedAt = new Date();
 		const decided = await tx.projectInstructionSnapshot.updateMany({
@@ -3907,8 +4141,10 @@ export async function approveInstructionProposal(input: {
 			if (current?.proposalStatus === "APPROVED") {
 				return {
 					ok: true as const,
-					changed: false,
+					changed: recorded,
 					version: proposal.version,
+					published: true,
+					approvals,
 				};
 			}
 			if (
@@ -3939,6 +4175,8 @@ export async function approveInstructionProposal(input: {
 			ok: true as const,
 			changed: true,
 			version: proposal.version,
+			published: true,
+			approvals,
 		};
 	});
 }
@@ -4004,6 +4242,9 @@ export async function rejectInstructionProposal(input: {
 		if (!REJECTABLE_PROPOSAL_STATUSES.includes(proposal.status)) {
 			return { ok: false as const, reason: "in_progress" as const };
 		}
+		// Project first, then snapshot, as an approval takes them: the other
+		// order deadlocks a reject racing an approve.
+		await lockProjectRow(tx, input.projectId, input.organizationId);
 		const decided = await tx.projectInstructionSnapshot.updateMany({
 			where: {
 				id: proposal.id,
@@ -4126,6 +4367,9 @@ export async function cancelInstructionProposal(input: {
 		if (!REJECTABLE_PROPOSAL_STATUSES.includes(proposal.status)) {
 			return { ok: false as const, reason: "in_progress" as const };
 		}
+		// Project first, then snapshot, as an approval takes them: the other
+		// order deadlocks a cancel racing an approve.
+		await lockProjectRow(tx, input.projectId, input.organizationId);
 		const decided = await tx.projectInstructionSnapshot.updateMany({
 			where: {
 				id: proposal.id,
@@ -7004,15 +7248,25 @@ export async function deleteInstructionSnapshot(
 							pullRequestObligationOpen: true,
 							proposalDestination: true,
 							commitOutcome: true,
+							proposalBranch: {
+								select: {
+									state: true,
+									untracked: true,
+									membership: true,
+									mergeSyncRequestedAt: true,
+									createIssuedAt: true,
+									confirmationDueAt: true,
+								},
+							},
 						},
 					},
 				);
 				if (!surviving) {
 					throw new InstructionSnapshotNotDeleted();
 				}
-				// A terminal row whose pull-request operation is unresolved
-				// (Fizzy #2563 spec §4.3): its bytes are what the open,
-				// recovery or settlement still reads.
+				// A terminal row whose pull-request operation is unresolved,
+				// or whose member proposal branch still owes work: its bytes
+				// are what the open, recovery or settlement still reads.
 				if (
 					DELETABLE_STATUSES.includes(surviving.status) &&
 					isUnresolvedPullRequestOperation(surviving)
@@ -7086,6 +7340,7 @@ export async function getProjectInstructionSettings(
 		// The pointer of a move from uploads into a repository that is still
 		// open (Fizzy #2878 §9), or null: present means a move is open.
 		migration: migrationOfSettings(project?.instructionSettings),
+		reviewPolicy: reviewPolicyOfSettings(project?.instructionSettings),
 	};
 }
 
@@ -7094,12 +7349,16 @@ export async function getProjectInstructionSettings(
  * `writeProjectInstructionSettings`, the one writer of the column, so it
  * takes the project row lock and bumps the repository-sync generation when
  * the rules actually change (design 2026-09-23 §4.4). `sourceOfTruth` is
- * written only by the sync configuration functions.
+ * written only by the sync configuration functions. A `reviewPolicy` alone
+ * bumps nothing.
  */
 export async function updateProjectInstructionSettings(
 	projectId: string,
 	organizationId: string,
-	settings: { ignoreGlobs?: string[] | null },
+	settings: {
+		ignoreGlobs?: string[] | null;
+		reviewPolicy?: InstructionReviewPolicy;
+	},
 ): Promise<{ syncGenerationBumped: boolean }> {
 	const result = await db.$transaction((tx) =>
 		writeProjectInstructionSettings(

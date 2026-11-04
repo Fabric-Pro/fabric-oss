@@ -14,7 +14,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const edit = vi.hoisted(() => ({
 	appendProposalVisualSpec: vi.fn(),
 	getLatestProposalVisualSpec: vi.fn(),
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	enforceAiRateLimit: vi.fn(),
 }));
@@ -26,7 +26,7 @@ vi.mock("@repo/database", async () => ({
 }));
 vi.mock("@repo/ai", async () => ({
 	...(await vi.importActual<typeof import("@repo/ai")>("@repo/ai")),
-	generateObject: edit.generateObject,
+	generateText: edit.generateText,
 	getAIModelWithMetadata: edit.getAIModelWithMetadata,
 }));
 vi.mock("../../../../../orpc/procedures", async () => ({
@@ -134,7 +134,7 @@ const HANDOVER_SPEC = {
 };
 
 function modelReturns(spec: unknown) {
-	edit.generateObject.mockResolvedValueOnce({ object: { spec }, usage: {} });
+	edit.generateText.mockResolvedValueOnce({ output: { spec }, usage: {} });
 }
 
 function editVisual(
@@ -157,7 +157,7 @@ function editVisual(
 }
 
 function lastModelCall(): { instructions: string; prompt: string } {
-	const calls = edit.generateObject.mock.calls;
+	const calls = edit.generateText.mock.calls;
 	return calls[calls.length - 1][0];
 }
 
@@ -216,7 +216,7 @@ describe("declared chain", () => {
 	])("refuses %s", async (_label, overrides) => {
 		const result = await inputRefusal(editVisual(USERS.editor, overrides));
 		expect(result.code).toBe("BAD_REQUEST");
-		expect(edit.generateObject).not.toHaveBeenCalled();
+		expect(edit.generateText).not.toHaveBeenCalled();
 	});
 });
 
@@ -422,7 +422,7 @@ describe("editVisual", () => {
 	])("refuses %s as FORBIDDEN", async (_label, userId) => {
 		const result = await refusal(editVisual(userId));
 		expect(result.code).toBe("FORBIDDEN");
-		expect(edit.generateObject).not.toHaveBeenCalled();
+		expect(edit.generateText).not.toHaveBeenCalled();
 		expect(edit.appendProposalVisualSpec).not.toHaveBeenCalled();
 	});
 
@@ -448,7 +448,7 @@ describe("editVisual", () => {
 		expect((await refusal(editVisual(USERS.editor))).code).toBe(
 			"NOT_FOUND",
 		);
-		expect(edit.generateObject).not.toHaveBeenCalled();
+		expect(edit.generateText).not.toHaveBeenCalled();
 	});
 
 	it("answers STALE when the fence's source changed since the editor read it", async () => {
@@ -457,7 +457,7 @@ describe("editVisual", () => {
 		});
 
 		expect(result).toEqual({ status: "STALE" });
-		expect(edit.generateObject).not.toHaveBeenCalled();
+		expect(edit.generateText).not.toHaveBeenCalled();
 		expect(edit.enforceAiRateLimit).not.toHaveBeenCalled();
 	});
 
@@ -592,15 +592,15 @@ describe("editVisual", () => {
 		expect(result.message).toBe(
 			"The diagram could not be redrawn. Try again.",
 		);
-		expect(edit.generateObject).toHaveBeenCalledOnce();
+		expect(edit.generateText).toHaveBeenCalledOnce();
 		expect(edit.appendProposalVisualSpec).not.toHaveBeenCalled();
 	});
 
 	it("stores nothing for a request abandoned while the model ran", async () => {
 		const controller = new AbortController();
-		edit.generateObject.mockImplementationOnce(async () => {
+		edit.generateText.mockImplementationOnce(async () => {
 			controller.abort();
-			return { object: { spec: FLOW_SPEC }, usage: {} };
+			return { output: { spec: FLOW_SPEC }, usage: {} };
 		});
 
 		const pending = call(
@@ -618,7 +618,7 @@ describe("editVisual", () => {
 		);
 
 		await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-		expect(edit.generateObject).toHaveBeenCalledOnce();
+		expect(edit.generateText).toHaveBeenCalledOnce();
 		expect(edit.appendProposalVisualSpec).not.toHaveBeenCalled();
 	});
 
@@ -744,7 +744,7 @@ describe("editVisual", () => {
 			fenceSourceHash: visualSourceHash(GANTT_BODY),
 		});
 		expect(result).toEqual({ status: "UNSUPPORTED_DIAGRAM" });
-		expect(edit.generateObject).not.toHaveBeenCalled();
+		expect(edit.generateText).not.toHaveBeenCalled();
 	});
 
 	it("redraws a flowchart whose header follows a %% comment, and refuses a graph-x header", async () => {
@@ -901,33 +901,33 @@ describe("editVisual", () => {
 
 	it("answers STALE and stores nothing when the section's prose changed while the model ran", async () => {
 		const document = world.documents.get(DOC_A);
-		edit.generateObject.mockImplementationOnce(async () => {
+		edit.generateText.mockImplementationOnce(async () => {
 			if (document) {
 				document.content = document.content.replace(
 					"then the rollout in Q3 2026",
 					"then the rollout in Q4 2026",
 				);
 			}
-			return { object: { spec: FLOW_SPEC }, usage: {} };
+			return { output: { spec: FLOW_SPEC }, usage: {} };
 		});
 
 		const result = await editVisual();
 
 		expect(result).toEqual({ status: "STALE" });
-		expect(edit.generateObject).toHaveBeenCalledOnce();
+		expect(edit.generateText).toHaveBeenCalledOnce();
 		expect(edit.appendProposalVisualSpec).not.toHaveBeenCalled();
 	});
 
 	it("answers STALE and stores nothing when the fence changed while the model ran", async () => {
 		const document = world.documents.get(DOC_A);
-		edit.generateObject.mockImplementationOnce(async () => {
+		edit.generateText.mockImplementationOnce(async () => {
 			if (document) {
 				document.content = document.content.replace(
 					"  s0 --> s1",
 					"  s1 --> s0",
 				);
 			}
-			return { object: { spec: FLOW_SPEC }, usage: {} };
+			return { output: { spec: FLOW_SPEC }, usage: {} };
 		});
 
 		const result = await editVisual();
@@ -938,14 +938,14 @@ describe("editVisual", () => {
 
 	it("still answers with a candidate when only another section changed meanwhile", async () => {
 		const document = world.documents.get(DOC_A);
-		edit.generateObject.mockImplementationOnce(async () => {
+		edit.generateText.mockImplementationOnce(async () => {
 			if (document) {
 				document.content = document.content.replace(
 					"then the handover.",
 					"then the handover and support.",
 				);
 			}
-			return { object: { spec: FLOW_SPEC }, usage: {} };
+			return { output: { spec: FLOW_SPEC }, usage: {} };
 		});
 
 		const result = await editVisual();
@@ -1002,23 +1002,23 @@ describe("editVisual", () => {
 
 			expect(result).toEqual({ status: "STALE" });
 			expect(edit.enforceAiRateLimit).not.toHaveBeenCalled();
-			expect(edit.generateObject).not.toHaveBeenCalled();
+			expect(edit.generateText).not.toHaveBeenCalled();
 			expect(edit.appendProposalVisualSpec).not.toHaveBeenCalled();
 		});
 
 		it("answers STALE and stores nothing when the two swap while the model ran", async () => {
 			const document = world.documents.get(DOC_A);
-			edit.generateObject.mockImplementationOnce(async () => {
+			edit.generateText.mockImplementationOnce(async () => {
 				if (document) {
 					document.content = twinsMain(otherBody, MARKED_BODY);
 				}
-				return { object: { spec: FLOW_SPEC }, usage: {} };
+				return { output: { spec: FLOW_SPEC }, usage: {} };
 			});
 
 			const result = await editVisual();
 
 			expect(result).toEqual({ status: "STALE" });
-			expect(edit.generateObject).toHaveBeenCalledOnce();
+			expect(edit.generateText).toHaveBeenCalledOnce();
 			expect(edit.appendProposalVisualSpec).not.toHaveBeenCalled();
 		});
 
@@ -1080,6 +1080,6 @@ describe("editVisual", () => {
 
 		expect(result).toEqual({ status: "RATE_LIMITED" });
 		expect(edit.enforceAiRateLimit.mock.calls[0][0]).toBe(USERS.editor);
-		expect(edit.generateObject).not.toHaveBeenCalled();
+		expect(edit.generateText).not.toHaveBeenCalled();
 	});
 });

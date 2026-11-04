@@ -14,10 +14,12 @@
  */
 
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import { cacheableSystem } from "@repo/ai/prompt-cache";
 import {
 	createScanFindingReview,
@@ -410,18 +412,20 @@ async function runAdversarialReview(
 				finding.evidence ?? undefined,
 				boundRubric,
 			);
-			const result = await generateObject({
-				model,
-				schema: ReviewResultSchema,
-				// The fixed adversarial rubric is a cacheable system prefix so it
-				// isn't re-billed on every per-finding call; only the finding block
-				// in `prompt` varies. Marker is provider-agnostic.
-				instructions: cacheableSystem(request.system),
-				prompt: request.prompt,
-				temperature: 0,
-			});
+			const result = await requireStructuredOutput(
+				generateText({
+					model,
+					output: Output.object({ schema: ReviewResultSchema }),
+					// The fixed adversarial rubric is a cacheable system prefix so it
+					// isn't re-billed on every per-finding call; only the finding block
+					// in `prompt` varies. Marker is provider-agnostic.
+					instructions: cacheableSystem(request.system),
+					prompt: request.prompt,
+					temperature: 0,
+				}),
+			);
 			return {
-				proposal: mapRawReviewToProposal(finding.id, result.object),
+				proposal: mapRawReviewToProposal(finding.id, result.output),
 				inputTokens: result.usage?.inputTokens ?? 0,
 				outputTokens: result.usage?.outputTokens ?? 0,
 			};

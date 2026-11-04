@@ -14,6 +14,7 @@ const RUN_ID = `${Date.now()}-${process.pid}`;
 const ORGANIZATION_ID = `instruction-proposal-org-${RUN_ID}`;
 const PROPOSER_ID = `instruction-proposal-author-${RUN_ID}`;
 const REVIEWER_ID = `instruction-proposal-reviewer-${RUN_ID}`;
+const SECOND_REVIEWER_ID = `instruction-proposal-second-reviewer-${RUN_ID}`;
 let projectId = "";
 
 function audit(
@@ -66,6 +67,53 @@ async function seedBase(testName: string) {
 	return baseId;
 }
 
+/** A base file each proposal can delete on its own, so no two change sets match. */
+function removablePath(index: number) {
+	return `REMOVE-${index}.md`;
+}
+
+/** Seeds `CLAUDE.md` plus one removable file per proposal the tests make. */
+async function seedBaseFiles(baseId: string) {
+	const basePrefix = `projects/${projectId}/instructions/snapshots/${baseId}/`;
+	const paths = [
+		"CLAUDE.md",
+		...Array.from(
+			{ length: MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROPOSER + 1 },
+			(_, index) => removablePath(index),
+		),
+	];
+	await db.projectInstructionFile.createMany({
+		data: paths.map((path, index) => ({
+			snapshotId: baseId,
+			projectId,
+			organizationId: ORGANIZATION_ID,
+			userId: PROPOSER_ID,
+			path,
+			kind: "INSTRUCTIONS" as const,
+			storageKey: `${basePrefix}base-file-${index}`,
+			sha256: String(index).padStart(64, "0"),
+			size: 10,
+			mimeType: "text/markdown",
+			isText: true,
+		})),
+	});
+	return basePrefix;
+}
+
+function createProposal(baseId: string, basePrefix: string, path: string) {
+	return createDerivedInstructionSnapshot({
+		projectId,
+		organizationId: ORGANIZATION_ID,
+		userId: PROPOSER_ID,
+		baseSnapshotId: baseId,
+		publishOnReady: false,
+		proposal: true,
+		changes: [{ op: "delete", path }],
+		limits: { maxFiles: 5_000, maxTotalBytes: 52_428_800 },
+		baseKeyPrefix: basePrefix,
+	});
+}
+
 describe.skipIf(!hasReachableDatabaseUrl())(
 	"instruction proposal decisions (real Postgres)",
 	() => {
@@ -85,6 +133,14 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 						id: REVIEWER_ID,
 						name: "Proposal Reviewer",
 						email: `${REVIEWER_ID}@example.com`,
+						emailVerified: true,
+						createdAt: now,
+						updatedAt: now,
+					},
+					{
+						id: SECOND_REVIEWER_ID,
+						name: "Second Reviewer",
+						email: `${SECOND_REVIEWER_ID}@example.com`,
 						emailVerified: true,
 						createdAt: now,
 						updatedAt: now,
@@ -130,7 +186,9 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				where: { id: ORGANIZATION_ID },
 			});
 			await db.user.deleteMany({
-				where: { id: { in: [PROPOSER_ID, REVIEWER_ID] } },
+				where: {
+					id: { in: [PROPOSER_ID, REVIEWER_ID, SECOND_REVIEWER_ID] },
+				},
 			});
 			await db.$disconnect();
 		});
@@ -195,44 +253,22 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 
 		it("serializes concurrent proposal admission at the per-proposer cap", async () => {
 			const baseId = await seedBase("admission-race");
-			const basePrefix = `projects/${projectId}/instructions/snapshots/${baseId}/`;
-			await db.projectInstructionFile.createMany({
-				data: ["CLAUDE.md", "REMOVE.md"].map((path, index) => ({
-					snapshotId: baseId,
-					projectId,
-					organizationId: ORGANIZATION_ID,
-					userId: PROPOSER_ID,
-					path,
-					kind: "INSTRUCTIONS" as const,
-					storageKey: `${basePrefix}base-file-${index}`,
-					sha256: String(index).padStart(64, "0"),
-					size: 10,
-					mimeType: "text/markdown",
-					isText: true,
-				})),
-			});
+			const basePrefix = await seedBaseFiles(baseId);
 
+			// Each call deletes a different file: identical change sets
+			// collapse into one proposal before the cap counts.
 			const results = await Promise.all(
 				Array.from(
 					{
 						length:
 							MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROPOSER + 1,
 					},
-					() =>
-						createDerivedInstructionSnapshot({
-							projectId,
-							organizationId: ORGANIZATION_ID,
-							userId: PROPOSER_ID,
-							baseSnapshotId: baseId,
-							publishOnReady: false,
-							proposal: true,
-							changes: [{ op: "delete", path: "REMOVE.md" }],
-							limits: {
-								maxFiles: 5_000,
-								maxTotalBytes: 52_428_800,
-							},
-							baseKeyPrefix: basePrefix,
-						}),
+					(_, index) =>
+						createProposal(
+							baseId,
+							basePrefix,
+							removablePath(index),
+						),
 				),
 			);
 
@@ -254,42 +290,22 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 
 		it("does not free proposal capacity when a receiving upload is canceled before cleanup", async () => {
 			const baseId = await seedBase("cancel-capacity");
-			const basePrefix = `projects/${projectId}/instructions/snapshots/${baseId}/`;
-			await db.projectInstructionFile.createMany({
-				data: ["CLAUDE.md", "README.md"].map((path, index) => ({
-					snapshotId: baseId,
-					projectId,
-					organizationId: ORGANIZATION_ID,
-					userId: PROPOSER_ID,
-					path,
-					kind: "INSTRUCTIONS",
-					storageKey: `${basePrefix}base-file-${index}`,
-					sha256: String(index).repeat(64),
-					size: 10,
-					mimeType: "text/markdown",
-					isText: true,
-				})),
-			});
-			const create = () =>
-				createDerivedInstructionSnapshot({
-					projectId,
-					organizationId: ORGANIZATION_ID,
-					userId: PROPOSER_ID,
-					baseSnapshotId: baseId,
-					publishOnReady: false,
-					proposal: true,
-					changes: [{ op: "delete", path: "CLAUDE.md" }],
-					limits: { maxFiles: 5_000, maxTotalBytes: 52_428_800 },
-					baseKeyPrefix: basePrefix,
-				});
+			const basePrefix = await seedBaseFiles(baseId);
 			const created = [];
 			for (
 				let index = 0;
 				index < MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROPOSER;
 				index++
 			) {
-				created.push(await create());
+				created.push(
+					await createProposal(
+						baseId,
+						basePrefix,
+						removablePath(index),
+					),
+				);
 			}
+			expect(created.every((result) => result.ok)).toBe(true);
 			const first = created[0];
 			expect(first?.ok).toBe(true);
 			if (!first?.ok) throw new Error("expected proposal");
@@ -301,10 +317,45 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				audit: audit("project.instructions.rejected", first.id),
 			});
 
-			await expect(create()).resolves.toEqual({
+			await expect(
+				createProposal(
+					baseId,
+					basePrefix,
+					removablePath(
+						MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROPOSER,
+					),
+				),
+			).resolves.toEqual({
 				ok: false,
 				reason: "proposal_proposer_limit",
 			});
+		});
+
+		it("collapses a retried identical proposal into the pending one instead of counting it", async () => {
+			const baseId = await seedBase("dedup");
+			const basePrefix = await seedBaseFiles(baseId);
+
+			const first = await createProposal(
+				baseId,
+				basePrefix,
+				removablePath(0),
+			);
+			expect(first.ok).toBe(true);
+			if (!first.ok) throw new Error("expected proposal");
+
+			await expect(
+				createProposal(baseId, basePrefix, removablePath(0)),
+			).resolves.toMatchObject({
+				ok: false,
+				reason: "duplicate_proposal",
+				auditWritten: false,
+				existing: { id: first.id, proposalStatus: "PENDING" },
+			});
+			expect(
+				await db.projectInstructionSnapshot.count({
+					where: { projectId, proposalStatus: "PENDING" },
+				}),
+			).toBe(1);
 		});
 
 		it("publishes only one of two concurrent proposals from the same base", async () => {
@@ -395,11 +446,15 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				ok: true,
 				changed: true,
 				version: 2,
+				published: true,
+				approvals: { count: 1, required: 1 },
 			});
 			await expect(approveInstructionProposal(input)).resolves.toEqual({
 				ok: true,
 				changed: false,
 				version: 2,
+				published: true,
+				approvals: { count: 1, required: 1 },
 			});
 			expect(
 				await db.auditLog.count({
@@ -409,6 +464,156 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					},
 				}),
 			).toBe(1);
+		});
+
+		describe("a review policy of two approvals", () => {
+			afterEach(async () => {
+				await db.project.update({
+					where: { id: projectId },
+					data: { instructionSettings: {} },
+				});
+			});
+
+			it("publishes on the second reviewer's approval, never the proposer's, with one audit row per approval", async () => {
+				const baseId = await seedBase("policy-two");
+				const proposalId = `policy-two-proposal-${RUN_ID}`;
+				await createSnapshot({
+					id: proposalId,
+					version: 2,
+					proposalStatus: "PENDING",
+					baseSnapshotId: baseId,
+				});
+				await db.project.update({
+					where: { id: projectId },
+					data: {
+						instructionSettings: {
+							reviewPolicy: { requiredApprovals: 2 },
+						},
+					},
+				});
+				const approveAs = (reviewerUserId: string) =>
+					approveInstructionProposal({
+						snapshotId: proposalId,
+						projectId,
+						organizationId: ORGANIZATION_ID,
+						reviewerUserId,
+						audit: audit(
+							"project.instructions.published",
+							proposalId,
+						),
+						approvalAudit: {
+							...audit(
+								"project.instructions.published",
+								proposalId,
+							),
+							action: "project.instructions.proposal_approved",
+						},
+					});
+
+				await expect(approveAs(PROPOSER_ID)).resolves.toEqual({
+					ok: false,
+					reason: "own_proposal",
+				});
+				await expect(approveAs(REVIEWER_ID)).resolves.toMatchObject({
+					ok: true,
+					published: false,
+					approvals: { count: 1, required: 2 },
+				});
+				// The same reviewer again is the same approval.
+				await expect(approveAs(REVIEWER_ID)).resolves.toMatchObject({
+					changed: false,
+					published: false,
+					approvals: { count: 1, required: 2 },
+				});
+				await expect(
+					approveAs(SECOND_REVIEWER_ID),
+				).resolves.toMatchObject({
+					ok: true,
+					changed: true,
+					published: true,
+					approvals: { count: 2, required: 2 },
+				});
+
+				const project = await db.project.findUniqueOrThrow({
+					where: { id: projectId },
+					select: { publishedInstructionSnapshotId: true },
+				});
+				expect(project.publishedInstructionSnapshotId).toBe(proposalId);
+				const decided =
+					await db.projectInstructionSnapshot.findUniqueOrThrow({
+						where: { id: proposalId },
+						select: { proposalStatus: true, reviewerUserId: true },
+					});
+				expect(decided).toEqual({
+					proposalStatus: "APPROVED",
+					reviewerUserId: SECOND_REVIEWER_ID,
+				});
+				expect(
+					await db.projectInstructionProposalApproval.count({
+						where: { snapshotId: proposalId },
+					}),
+				).toBe(2);
+				expect(
+					await db.auditLog.count({
+						where: {
+							resourceId: proposalId,
+							action: "project.instructions.proposal_approved",
+						},
+					}),
+				).toBe(1);
+				expect(
+					await db.auditLog.count({
+						where: {
+							resourceId: proposalId,
+							action: "project.instructions.published",
+						},
+					}),
+				).toBe(1);
+			});
+
+			it("publishes on the next approval once the policy is lowered under it", async () => {
+				const baseId = await seedBase("policy-lowered");
+				const proposalId = `policy-lowered-proposal-${RUN_ID}`;
+				await createSnapshot({
+					id: proposalId,
+					version: 2,
+					proposalStatus: "PENDING",
+					baseSnapshotId: baseId,
+				});
+				await db.project.update({
+					where: { id: projectId },
+					data: {
+						instructionSettings: {
+							reviewPolicy: { requiredApprovals: 3 },
+						},
+					},
+				});
+				const input = {
+					snapshotId: proposalId,
+					projectId,
+					organizationId: ORGANIZATION_ID,
+					reviewerUserId: REVIEWER_ID,
+					audit: audit("project.instructions.published", proposalId),
+				};
+				await expect(
+					approveInstructionProposal(input),
+				).resolves.toMatchObject({ published: false });
+				await db.project.update({
+					where: { id: projectId },
+					data: {
+						instructionSettings: {
+							reviewPolicy: { requiredApprovals: 1 },
+						},
+					},
+				});
+
+				await expect(
+					approveInstructionProposal(input),
+				).resolves.toMatchObject({
+					published: true,
+					approvals: { count: 1, required: 1 },
+				});
+			});
 		});
 	},
 );

@@ -8,7 +8,7 @@ import {
 
 const {
 	mockGenerateEmbeddings,
-	mockGenerateObject,
+	mockGenerateText,
 	mockTrackUsage,
 	mockGetAIModelWithMetadata,
 	mockResolveModelWithProvider,
@@ -39,7 +39,7 @@ const {
 	return {
 		AiUsageLimitExceededError,
 		mockGenerateEmbeddings: vi.fn(),
-		mockGenerateObject: vi.fn(),
+		mockGenerateText: vi.fn(),
 		mockTrackUsage: vi.fn(),
 		mockGetAIModelWithMetadata: vi.fn(),
 		mockResolveModelWithProvider: vi.fn(),
@@ -62,7 +62,8 @@ const {
 vi.mock("@repo/rag", () => ({ generateEmbeddings: mockGenerateEmbeddings }));
 
 vi.mock("@repo/ai", async () => ({
-	generateObject: mockGenerateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mockGenerateText,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	resolveModelWithProvider: mockResolveModelWithProvider,
 	experimental_decide: mockDecide,
@@ -287,8 +288,8 @@ beforeEach(() => {
 		new Error("no decision model configured"),
 	);
 	arrangeEmbeddings();
-	mockGenerateObject.mockResolvedValue({
-		object: {
+	mockGenerateText.mockResolvedValue({
+		output: {
 			verdicts: [
 				{
 					identifier: "F-1",
@@ -310,7 +311,7 @@ describe("feature flag", () => {
 		expect(result.skipped).toBe("flag-off");
 		expect(mockFindFirstTranscript).not.toHaveBeenCalled();
 		expect(mockGenerateEmbeddings).not.toHaveBeenCalled();
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 });
 
@@ -351,7 +352,7 @@ describe("cache guard", () => {
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
 		expect(result.skipped).toBe("fresh");
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("re-matches a fresh meeting when force is set", async () => {
@@ -365,7 +366,7 @@ describe("cache guard", () => {
 		});
 
 		expect(result.skipped).toBeNull();
-		expect(mockGenerateObject).toHaveBeenCalled();
+		expect(mockGenerateText).toHaveBeenCalled();
 	});
 });
 
@@ -396,8 +397,8 @@ describe("matching", () => {
 	});
 
 	it("stores nothing for a below-threshold verdict", async () => {
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				verdicts: [
 					{ identifier: "F-1", relates: true, confidence: 0.4 },
 				],
@@ -413,8 +414,8 @@ describe("matching", () => {
 	});
 
 	it("stores nothing for a confident 'no'", async () => {
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				verdicts: [
 					{ identifier: "F-1", relates: false, confidence: 0.99 },
 				],
@@ -427,8 +428,8 @@ describe("matching", () => {
 	});
 
 	it("drops a verdict for an identifier the model invented", async () => {
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				verdicts: [
 					{ identifier: "F-999", relates: true, confidence: 0.95 },
 				],
@@ -450,7 +451,7 @@ describe("matching", () => {
 
 		expect(result.linksCreated).toBe(0);
 		// The verifier is never even asked — a rejected pair costs nothing.
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 });
 
@@ -459,10 +460,10 @@ describe("resilience", () => {
 		mockFindFirstTranscript.mockResolvedValue(
 			transcript(["Ship the digest", "Fix the agenda"]),
 		);
-		mockGenerateObject
+		mockGenerateText
 			.mockRejectedValueOnce(new Error("boom"))
 			.mockResolvedValueOnce({
-				object: {
+				output: {
 					verdicts: [
 						{ identifier: "F-1", relates: true, confidence: 0.9 },
 					],
@@ -514,7 +515,7 @@ describe("empty cases", () => {
 
 		expect(result.skipped).toBe("no-stories");
 		expect(mockMarkActionItemsLinked).toHaveBeenCalled();
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 });
 
@@ -553,7 +554,7 @@ describe("wholesale verifier failure", () => {
 		mockFindFirstTranscript.mockResolvedValue(
 			transcript(["Ship the digest", "Fix the agenda"]),
 		);
-		mockGenerateObject.mockRejectedValue(new Error("provider down"));
+		mockGenerateText.mockRejectedValue(new Error("provider down"));
 
 		await expect(linkMeetingActionItemsActivity(baseInput)).rejects.toThrow(
 			/verifier failed for all 2 action item\(s\)/,
@@ -569,10 +570,10 @@ describe("wholesale verifier failure", () => {
 		mockFindFirstTranscript.mockResolvedValue(
 			transcript(["Ship the digest", "Fix the agenda"]),
 		);
-		mockGenerateObject
+		mockGenerateText
 			.mockRejectedValueOnce(new Error("one flaky call"))
 			.mockResolvedValueOnce({
-				object: {
+				output: {
 					verdicts: [
 						{ identifier: "F-1", relates: true, confidence: 0.9 },
 					],
@@ -602,7 +603,7 @@ describe("wholesale verifier failure", () => {
 		expect(result.verifierFailures).toBe(0);
 		expect(result.linksCreated).toBe(0);
 		expect(mockMarkActionItemsLinked).toHaveBeenCalled();
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 });
 
@@ -669,7 +670,7 @@ describe("typed decision fast path", () => {
 				],
 			}),
 		);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(mockDecisionTrackUsage).toHaveBeenCalledTimes(1);
 		expect(mockMarkActionItemsLinked).toHaveBeenCalled();
 		// Two model calls per item are now possible against a 2-minute
@@ -732,7 +733,7 @@ describe("typed decision fast path", () => {
 		expect(mockInsertAutoLinks).toHaveBeenCalledWith(
 			expect.objectContaining({ rows: [] }),
 		);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(mockMarkActionItemsLinked).toHaveBeenCalled();
 	});
 
@@ -742,8 +743,8 @@ describe("typed decision fast path", () => {
 
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
-		expect(mockGenerateObject.mock.calls[0][0].prompt).toContain("F-1");
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
+		expect(mockGenerateText.mock.calls[0][0].prompt).toContain("F-1");
 		expect(result.linksCreated).toBe(1);
 	});
 
@@ -756,8 +757,8 @@ describe("typed decision fast path", () => {
 
 		await linkMeetingActionItemsActivity(baseInput);
 
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
-		expect(mockGenerateObject.mock.calls[0][0].prompt).toContain("F-1");
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
+		expect(mockGenerateText.mock.calls[0][0].prompt).toContain("F-1");
 	});
 
 	it.each([
@@ -795,8 +796,8 @@ describe("typed decision fast path", () => {
 
 			const result = await linkMeetingActionItemsActivity(baseInput);
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(1);
-			expect(mockGenerateObject.mock.calls[0][0].prompt).toContain("F-1");
+			expect(mockGenerateText).toHaveBeenCalledTimes(1);
+			expect(mockGenerateText.mock.calls[0][0].prompt).toContain("F-1");
 			expect(result.linksCreated).toBe(1);
 		},
 	);
@@ -811,8 +812,8 @@ describe("typed decision fast path", () => {
 				candidate_2: 0.02, // no
 			}),
 		);
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				verdicts: [
 					{ identifier: "F-2", relates: true, confidence: 0.88 },
 				],
@@ -821,8 +822,8 @@ describe("typed decision fast path", () => {
 
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
-		const prompt = mockGenerateObject.mock.calls[0][0].prompt;
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
+		const prompt = mockGenerateText.mock.calls[0][0].prompt;
 		expect(prompt).toContain("F-2");
 		expect(prompt).not.toContain("F-1");
 		expect(prompt).not.toContain("F-3");
@@ -851,8 +852,8 @@ describe("typed decision fast path", () => {
 
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
-		const prompt = mockGenerateObject.mock.calls[0][0].prompt;
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
+		const prompt = mockGenerateText.mock.calls[0][0].prompt;
 		expect(prompt).toContain("F-1");
 		expect(prompt).toContain("F-2");
 		expect(prompt).toContain("F-3");
@@ -875,8 +876,8 @@ describe("typed decision fast path", () => {
 		).toBe(true);
 		// A refusal read as probability 0 would settle all three candidates as
 		// "no" and skip the verifier; instead every one of them reaches it.
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
-		const prompt = mockGenerateObject.mock.calls[0][0].prompt;
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
+		const prompt = mockGenerateText.mock.calls[0][0].prompt;
 		expect(prompt).toContain("F-1");
 		expect(prompt).toContain("F-2");
 		expect(prompt).toContain("F-3");
@@ -900,8 +901,8 @@ describe("typed decision fast path", () => {
 		// Retrying the limited item through the language verifier would bill
 		// the very spend the limit refused, so only the second item is
 		// verified.
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
-		const prompt = mockGenerateObject.mock.calls[0][0].prompt;
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
+		const prompt = mockGenerateText.mock.calls[0][0].prompt;
 		expect(prompt).toContain("Fix the agenda");
 		expect(prompt).not.toContain("Ship the digest");
 		expect(result.linksCreated).toBe(1);
@@ -928,7 +929,7 @@ describe("typed decision fast path", () => {
 			/verifier failed for all 1 action item\(s\)/,
 		);
 
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(mockMarkActionItemsLinked).not.toHaveBeenCalled();
 	});
 
@@ -940,7 +941,7 @@ describe("typed decision fast path", () => {
 		);
 
 		expect(mockDecide).not.toHaveBeenCalled();
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(mockMarkActionItemsLinked).not.toHaveBeenCalled();
 	});
 
@@ -956,7 +957,7 @@ describe("typed decision fast path", () => {
 				rows: [expect.objectContaining({ confidence: 0.9 })],
 			}),
 		);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("rejects a probability of exactly the rejection floor", async () => {
@@ -973,7 +974,7 @@ describe("typed decision fast path", () => {
 		expect(mockInsertAutoLinks).toHaveBeenCalledWith(
 			expect.objectContaining({ rows: [] }),
 		);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("does not discard a fast-path link when another item hits the usage limit", async () => {
@@ -1003,7 +1004,7 @@ describe("typed decision fast path", () => {
 				],
 			}),
 		);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(mockMarkActionItemsLinked).toHaveBeenCalled();
 	});
 
@@ -1020,10 +1021,10 @@ describe("typed decision fast path", () => {
 		mockHeartbeat.mockImplementation((message: string) => {
 			order.push(`heartbeat:${message}`);
 		});
-		mockGenerateObject.mockImplementation(async () => {
-			order.push("generateObject");
+		mockGenerateText.mockImplementation(async () => {
+			order.push("generateText");
 			return {
-				object: {
+				output: {
 					verdicts: [
 						{ identifier: "F-1", relates: true, confidence: 0.9 },
 					],
@@ -1034,7 +1035,7 @@ describe("typed decision fast path", () => {
 		await linkMeetingActionItemsActivity(baseInput);
 
 		const evaluateAt = order.indexOf("evaluate");
-		const generateAt = order.indexOf("generateObject");
+		const generateAt = order.indexOf("generateText");
 		// The loop-top cadence beat carries the same message, so take the LAST
 		// one: the beat added for the fall-through.
 		const beatAt = order.lastIndexOf(
@@ -1056,7 +1057,7 @@ describe("typed decision fast path", () => {
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
 		expect(result).toBeDefined();
-		const prompt = mockGenerateObject.mock.calls[0][0].prompt;
+		const prompt = mockGenerateText.mock.calls[0][0].prompt;
 		expect(prompt).toContain("Weekly DSU");
 		expect(prompt).not.toContain("Fabric Dev Sync");
 	});
@@ -1067,8 +1068,8 @@ describe("typed decision fast path", () => {
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
 		expect(mockDecide).not.toHaveBeenCalled();
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
-		expect(mockGenerateObject.mock.calls[0][0].prompt).toBe(
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
+		expect(mockGenerateText.mock.calls[0][0].prompt).toBe(
 			buildMatchPrompt(
 				{ text: "Ship the digest", tentativeOwnerName: null },
 				"Weekly DSU",
@@ -1108,7 +1109,7 @@ describe("decision telemetry", () => {
 
 		// A confident yes and a confident no both use the decision; the
 		// middling answer goes to the language verifier.
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockGenerateText).toHaveBeenCalledOnce();
 		expect(capturedDecisionOutcomes).toEqual([
 			{
 				site: SITE,
@@ -1157,7 +1158,7 @@ describe("decision telemetry", () => {
 		mockDecide.mockImplementationOnce(decideWithRefusal);
 		await linkMeetingActionItemsActivity(baseInput);
 
-		expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+		expect(mockGenerateText).toHaveBeenCalledTimes(2);
 		expect(
 			capturedDecisionOutcomes.map(({ outcome, count }) => [
 				outcome,
@@ -1213,7 +1214,7 @@ describe("decision telemetry", () => {
 				count,
 			]),
 		).toEqual([["limit_exceeded", "jev-1", 3]]);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("records unavailable per candidate when the organization has no decision model", async () => {

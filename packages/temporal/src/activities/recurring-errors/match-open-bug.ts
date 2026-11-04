@@ -27,7 +27,9 @@
  * THROWS, and the scan records it and files the proposal as before: a
  * recurring error still reaches the inbox when matching is unavailable.
  */
-import { generateObject, getAIModelWithMetadata } from "@repo/ai";
+
+import { generateText, getAIModelWithMetadata, Output } from "@repo/ai";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	buildDetectionText,
 	buildVerifierPrompt,
@@ -268,17 +270,22 @@ export function createOpenBugMatcher(
 						similarity: Math.round(similarity * 1000) / 1000,
 					};
 					try {
-						const { object: verdict } = await generateObject({
-							model,
-							schema: VerdictSchema,
-							prompt: buildVerifierPrompt(
-								{ identifier: "Recurring error", text },
-								{
-									identifier: candidate.identifier,
-									text: candidate.text,
-								},
-							),
-						});
+						const { output: verdict } =
+							await requireStructuredOutput(
+								generateText({
+									model,
+									output: Output.object({
+										schema: VerdictSchema,
+									}),
+									prompt: buildVerifierPrompt(
+										{ identifier: "Recurring error", text },
+										{
+											identifier: candidate.identifier,
+											text: candidate.text,
+										},
+									),
+								}),
+							);
 						trackUsage();
 						return {
 							...scored,

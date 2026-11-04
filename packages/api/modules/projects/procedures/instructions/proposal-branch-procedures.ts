@@ -2,7 +2,9 @@
  * The member proposal branch procedures under `projects.instructions.proposals`
  * (Fizzy #2738 spec §10 "Procedures, REST v1 and SDK"): `myBranch`,
  * `myBranchFile`, `closeBranch`, `startOverBranch`, `retryBranch`,
- * `stopTrackingBranch`, `retryConflict` (Try again) and `proposeAgain`.
+ * `stopTrackingBranch`, `retryConflict` (Try again) and `proposeAgain`, and
+ * `restoreMyBranchFile`, which proposes one file's published version back
+ * onto the caller's own branch.
  *
  * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
  * requireProjectPermission(INSTRUCTION_READ), then the live owner-or-reviewer
@@ -31,6 +33,9 @@ import {
 	startOverMyProposalBranch,
 	stopTrackingMyProposalBranch,
 } from "./proposal-branch";
+import { commitShaSchema } from "./repository/commit-sha";
+import { instructionRepositoryFilePathSchema } from "./repository/file-path";
+import { restoreMyBranchFile } from "./restore-branch-file";
 
 const BRANCH_FILE_MAX = 200_000;
 
@@ -289,5 +294,43 @@ export const proposeAgainProcedure = branchProcedure
 			userId: context.user.id,
 			snapshotId: input.snapshotId,
 			requester: requesterOf(context),
+		});
+	});
+
+/**
+ * Restore published version: one file on the caller's own branch back to
+ * what the published pin holds, as an ordinary branch proposal. Authorized
+ * as `submitGitChange`; the admission makes the live proposer check.
+ */
+export const restoreMyBranchFileProcedure = branchProcedure
+	.route({
+		method: "POST",
+		path: "/projects/:projectId/instructions/proposal-branch/restore-file",
+		tags: ["Projects", "Instructions"],
+		summary:
+			"Restore one file on your coding-instructions branch to its published version",
+	})
+	.input(
+		z.object({
+			projectId: z.string(),
+			nativeBase: z.object({
+				generation: z.number().int().positive(),
+				commitSha: commitShaSchema,
+			}),
+			path: instructionRepositoryFilePathSchema,
+		}),
+	)
+	.handler(async ({ input, context }) => {
+		const organizationId = await requireHostingOrganizationId(
+			input.projectId,
+			context.user.id,
+		);
+		return restoreMyBranchFile({
+			projectId: input.projectId,
+			organizationId,
+			userId: context.user.id,
+			nativeBase: input.nativeBase,
+			path: input.path,
+			audit: context,
 		});
 	});

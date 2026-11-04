@@ -123,6 +123,7 @@ import {
 	getPublishedInstructionSnapshot,
 	type InstructionProposalStatus,
 	listInstructionFiles,
+	type RecordAuditInput,
 	rejectAbandonedInstructionSnapshot,
 } from "@repo/database";
 import {
@@ -160,11 +161,11 @@ import {
 	readProposalPullRequest,
 	startAdmittedProposalPullRequest,
 } from "./proposal-pull-request";
-import { versionContentionAsConflict } from "./version-contention";
 import {
-	submitGitIntentChange,
 	type NativeInstructionChangeResult,
+	submitGitIntentChange,
 } from "./submit-git-intent";
+import { versionContentionAsConflict } from "./version-contention";
 
 // Same source `SKILLS_BUCKET_NAME` feeds (config/index.ts), imported the way
 // `create-upload-urls.ts` does.
@@ -271,14 +272,27 @@ type SubmitInstructionChangeSharedInput = {
 	message?: string;
 };
 
+/**
+ * A rebase (`rebase-proposal.ts`): the stale FABRIC proposal the new one
+ * replaces, closed in the transaction that writes it. `audit` builds the
+ * `proposal_rebased` row from the new proposal's id and version.
+ */
+type SupersededInstructionProposal = {
+	snapshotId: string;
+	audit: (created: { id: string; version: number }) => RecordAuditInput;
+};
+
 export type SubmitInstructionChangeInput =
 	| (SubmitInstructionChangeSharedInput & {
 			baseSnapshotId: string;
 			nativeBase?: never;
+			/** Proposal mode on a project that keeps its instructions in Fabric only. */
+			supersedes?: SupersededInstructionProposal;
 	  })
 	| (SubmitInstructionChangeSharedInput & {
 			baseSnapshotId?: never;
 			nativeBase: { generation: number; commitSha: string };
+			supersedes?: never;
 	  });
 
 type SnapshotInstructionChangeResult = {
@@ -534,6 +548,15 @@ export async function submitInstructionChange(
 		...(commit ? { message: input.message ?? "" } : {}),
 	});
 	const repository = admission.destination === "REPOSITORY";
+	if (input.supersedes && (!proposal || admission.destination !== "FABRIC")) {
+		// A rebase replaces a Fabric proposal with a Fabric proposal. A project
+		// that moved to its repository since takes changes as pull requests.
+		throw new ORPCError("PRECONDITION_FAILED", {
+			message:
+				"Only a proposal on a project that keeps its coding instructions in Fabric can be rebased.",
+			data: { reason: "REBASE_UNSUPPORTED" },
+		});
+	}
 	const pullRequestOf = (snapshotId: string) =>
 		repository
 			? readProposalPullRequest({
@@ -652,6 +675,7 @@ export async function submitInstructionChange(
 		},
 		baseKeyPrefix: snapshotPrefix(input.projectId, base.id),
 		note: admission.note,
+		...(input.supersedes ? { supersedes: input.supersedes } : {}),
 		// A REPOSITORY proposal's `upload_started` row is written INSIDE the
 		// create transaction, which alone knows the id and version it
 		// allocates (plan Decision 11); the outer audit below is skipped.

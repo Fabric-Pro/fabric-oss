@@ -17,6 +17,7 @@ import {
 	canReadOrganizationMcpConfigs,
 	fetchCredentialsByProvider,
 } from "@repo/database";
+import { GITHUB_OAUTH_SCOPES } from "@repo/utils/github-oauth-scopes";
 import { NextResponse } from "next/server";
 import {
 	sessionMayCallTools,
@@ -32,7 +33,7 @@ const OAUTH_PROVIDERS = {
 		name: "GitHub",
 		description:
 			"Access GitHub repositories, issues, pull requests, and more",
-		scopes: ["repo", "read:user"],
+		scopes: [...GITHUB_OAUTH_SCOPES],
 		capabilities: [
 			"list_issues",
 			"create_issue",

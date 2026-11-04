@@ -1,6 +1,7 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
@@ -18,7 +19,6 @@ import {
 	ArrowUpDownIcon,
 	LayoutGridIcon,
 	PlusIcon,
-	PuzzleIcon,
 	SearchIcon,
 	SparklesIcon,
 	StarIcon,
@@ -266,7 +266,6 @@ export function SkillsLibrary({ organizationId: propOrgId }: Props) {
 				<div className="flex flex-col items-center justify-center py-16 text-center space-y-3">
 					<PuzzleIcon
 						className="size-10 text-muted-foreground/45"
-						strokeWidth={1.5}
 						aria-hidden="true"
 					/>
 					<p className="text-sm text-muted-foreground">

@@ -1,6 +1,6 @@
 /**
  * Tests for `judgeDecisionContradictions` — the LLM-judge + in-code
- * normalization. `generateObject` is mocked so every assertion targets the
+ * normalization. `generateText` is mocked so every assertion targets the
  * NORMALIZATION contract (the untrusted model output is validated/resolved
  * against the candidate set), not the model itself.
  *
@@ -10,19 +10,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
-	mockGenerateObject,
+	mockGenerateText,
 	mockGetAIModelWithMetadata,
 	mockLogModelUsageAsync,
 	mockTrackUsage,
 } = vi.hoisted(() => ({
-	mockGenerateObject: vi.fn(),
+	mockGenerateText: vi.fn(),
 	mockGetAIModelWithMetadata: vi.fn(),
 	mockLogModelUsageAsync: vi.fn(),
 	mockTrackUsage: vi.fn(),
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mockGenerateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mockGenerateText,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	logModelUsageAsync: mockLogModelUsageAsync,
 }));
@@ -55,10 +56,10 @@ const baseInput = {
 	organizationId: undefined as string | undefined,
 };
 
-/** Make `generateObject` return one model call's raw conflicts. */
+/** Make `generateText` return one model call's raw conflicts. */
 function modelReturns(conflicts: unknown[]) {
-	mockGenerateObject.mockResolvedValue({
-		object: { conflicts },
+	mockGenerateText.mockResolvedValue({
+		output: { conflicts },
 		usage: { inputTokens: 1, outputTokens: 1 },
 	});
 }
@@ -234,7 +235,7 @@ describe("judgeDecisionContradictions — prompt budget", () => {
 	}): Promise<string> {
 		modelReturns([]);
 		await judgeDecisionContradictions({ ...baseInput, ...input });
-		return mockGenerateObject.mock.calls[0][0].prompt as string;
+		return mockGenerateText.mock.calls[0][0].prompt as string;
 	}
 
 	it("truncates a huge artifact item instead of sending it verbatim", async () => {
@@ -286,11 +287,11 @@ describe("judgeDecisionContradictions — degradation", () => {
 		});
 
 		expect(findings).toEqual([]);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("returns [] when the model call throws", async () => {
-		mockGenerateObject.mockRejectedValue(new Error("provider exploded"));
+		mockGenerateText.mockRejectedValue(new Error("provider exploded"));
 
 		const findings = await judgeDecisionContradictions({
 			...baseInput,
@@ -303,13 +304,13 @@ describe("judgeDecisionContradictions — degradation", () => {
 
 	it("returns [] when the model call exceeds the timeout budget", async () => {
 		process.env.DECISION_PRECHECK_TIMEOUT_MS = "20";
-		mockGenerateObject.mockImplementation(
+		mockGenerateText.mockImplementation(
 			() =>
 				new Promise((resolve) =>
 					setTimeout(
 						() =>
 							resolve({
-								object: {
+								output: {
 									conflicts: [
 										{
 											decisionId: "d1",

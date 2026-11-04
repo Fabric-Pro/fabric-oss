@@ -27,7 +27,7 @@ const { mocks } = vi.hoisted(() => ({
 		dbProjectFindFirst: vi.fn(),
 		dbUserStoryFindMany: vi.fn(),
 		dbUserStoryFindFirst: vi.fn(),
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		recordAudit: vi.fn(),
@@ -36,7 +36,8 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));

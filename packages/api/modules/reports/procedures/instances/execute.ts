@@ -1,29 +1,32 @@
 import { ORPCError } from "@orpc/server";
-import {
-	createTemplateInstanceExecution,
-	getTemplateInstance,
-	updateTemplateInstanceExecution,
-} from "@repo/database";
-import type { Prisma } from "@repo/database/prisma/generated/client";
-import { getTemporalClient } from "@repo/temporal";
+import { publicReportParametersSchema } from "@repo/database";
 import { z } from "zod";
-import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
 	Permissions,
 	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	loadGeneratableReport,
+	ReportGenerationError,
+	startReportGeneration,
+} from "../../lib/report-generation";
 
 const executeInstanceInputSchema = z.object({
 	instanceId: z.string(),
 	organizationId: z.string().nullable().optional(),
 	// Optional parameters to override instance defaults
-	parameters: z.record(z.string(), z.unknown()).optional(),
+	parameters: publicReportParametersSchema.optional(),
+	idempotencyKey: z.string().uuid().optional(),
 });
 
 export const executeInstanceProcedure = tenantProtectedProcedure
-	.use(requireInputOrgPermission(Permissions.REPORT_EXECUTE))
+	.use(
+		requireInputOrgPermission(Permissions.REPORT_EXECUTE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(executeInstanceInputSchema)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolveOrganizationId(
@@ -31,88 +34,31 @@ export const executeInstanceProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		// Get the instance with template
-		const instance = await getTemplateInstance({
-			id: input.instanceId,
-			userId: context.user.id,
-			organizationId,
-		});
-
-		if (!instance) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Template instance not found or access denied",
-			});
-		}
-
-		if (!instance.isActive) {
+		if (!organizationId) {
 			throw new ORPCError("BAD_REQUEST", {
-				message: "Cannot execute inactive template instance",
+				message: "An organization is required",
 			});
 		}
 
-		// Create execution record
-		const execution = await createTemplateInstanceExecution({
-			instanceId: input.instanceId,
-			userId: context.user.id,
-			organizationId,
-			parameters: input.parameters as Prisma.InputJsonValue | undefined,
-		});
-
-		// Trigger Temporal workflow
 		try {
-			const client = await getTemporalClient();
-			const workflowId = `template-instance-${execution.id}-${Date.now()}`;
-
-			const handle = await client.workflow.start(
-				"templateInstanceExecutionWorkflow",
-				withCorrelationMemo({
-					taskQueue: "fabric-worker",
-					workflowId,
-					args: [
-						{
-							executionId: execution.id,
-							instanceId: input.instanceId,
-							userId: context.user.id,
-							// A person clicked and waits for this: it may run on their own ChatGPT plan (Fizzy #2770).
-							planEligible: true,
-							organizationId,
-							parameters: input.parameters,
-						},
-					],
-				}),
+			const instance = await loadGeneratableReport(
+				input.instanceId,
+				context.user,
+				organizationId,
 			);
-
-			// Update execution with workflow ID and run ID
-			await updateTemplateInstanceExecution({
-				id: execution.id,
-				workflowId,
-				runId: handle.firstExecutionRunId,
+			return await startReportGeneration({
+				instance,
+				caller: context.user,
+				organizationId,
+				parameters: input.parameters,
+				idempotencyKey: input.idempotencyKey,
+				// A person clicked Generate and waits for the report.
+				planEligible: true,
 			});
-
-			return {
-				executionId: execution.id,
-				workflowId,
-				status: "PENDING",
-				message: "Template instance execution started",
-			};
 		} catch (error) {
-			console.error(
-				"Failed to start template instance execution:",
-				error,
-			);
-
-			// Update execution status to failed
-			await updateTemplateInstanceExecution({
-				id: execution.id,
-				status: "FAILED",
-				error:
-					error instanceof Error
-						? error.message
-						: "Failed to start workflow",
-			});
-
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: "Failed to start template execution",
-			});
+			if (error instanceof ReportGenerationError) {
+				throw new ORPCError(error.code, { message: error.message });
+			}
+			throw error;
 		}
 	});

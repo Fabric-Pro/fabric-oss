@@ -44,6 +44,7 @@ import {
 	readMergeSyncReceipts,
 	refreshProposalPullRequest,
 } from "./proposal-pull-request";
+import { notifyInstructionsPublished } from "./publish-notification";
 
 const BUCKET = config.storage.bucketNames.skills;
 const PROPOSAL_FILE_DEFAULT_MAX = 50_000;
@@ -98,6 +99,15 @@ async function proposalRow(
 		proposer: proposal.user,
 		reviewer: proposal.reviewer,
 		reviewedAt: proposal.reviewedAt,
+		// Upload-mode review policy progress ("2 of 3"). Counted under the
+		// policy the project holds now; a REPOSITORY proposal has none.
+		approvals: {
+			count: proposal.approvals.count,
+			required: proposal.approvals.required,
+		},
+		viewerApproved:
+			viewerUserId !== undefined &&
+			proposal.approvals.approverUserIds.includes(viewerUserId),
 		isStale: proposal.isStale,
 		canCancel:
 			isProposer &&
@@ -479,7 +489,10 @@ export const getInstructionProposalFileProcedure = tenantProtectedProcedure
 	});
 
 function decisionAudit(input: {
-	action: "project.instructions.published" | "project.instructions.rejected";
+	action:
+		| "project.instructions.published"
+		| "project.instructions.proposal_approved"
+		| "project.instructions.rejected";
 	context: {
 		user: { id: string; email: string; name?: string | null };
 		session?: { impersonatedBy?: string | null } | null;
@@ -524,10 +537,26 @@ function decisionError(
 		| "stale"
 		| "already_decided"
 		| "repository_backed"
-		| "repository_proposal",
+		| "repository_proposal"
+		| "not_an_approver"
+		| "own_proposal",
 ): never {
 	if (reason === "not_found") {
 		throw new ORPCError("NOT_FOUND", { message: "Proposal not found" });
+	}
+	if (reason === "not_an_approver") {
+		throw new ORPCError("FORBIDDEN", {
+			message:
+				"This project's review policy names who may approve proposals, and you are not one of them.",
+			data: { reason: "NOT_AN_APPROVER" },
+		});
+	}
+	if (reason === "own_proposal") {
+		throw new ORPCError("FORBIDDEN", {
+			message:
+				"This project needs approvals from reviewers other than the proposer. Ask a teammate to approve it.",
+			data: { reason: "OWN_PROPOSAL" },
+		});
 	}
 	if (reason === "repository_proposal") {
 		// Fizzy #2563 spec §12: a REPOSITORY proposal is decided on its pull
@@ -613,6 +642,15 @@ export const approveInstructionProposalProcedure = tenantProtectedProcedure
 				version: metadata?.version ?? null,
 				decision: "approved",
 			}),
+			approvalAudit: decisionAudit({
+				action: "project.instructions.proposal_approved",
+				context,
+				organizationId,
+				projectId: input.projectId,
+				snapshotId: input.snapshotId,
+				version: metadata?.version ?? null,
+				decision: "approved",
+			}),
 		});
 		if (!result.ok) {
 			if (result.reason === "migration_open") {
@@ -624,6 +662,27 @@ export const approveInstructionProposalProcedure = tenantProtectedProcedure
 				});
 			}
 			return decisionError(result.reason);
+		}
+		if (!result.published) {
+			// Recorded, but the project's review policy needs more approvals
+			// before the proposal publishes.
+			return {
+				approved: true as const,
+				published: false as const,
+				version: result.version,
+				approvals: result.approvals,
+			};
+		}
+		if (result.changed) {
+			runInBackground(
+				notifyInstructionsPublished({
+					snapshotId: input.snapshotId,
+					projectId: input.projectId,
+					organizationId,
+					actorUserId: context.user.id,
+					via: "proposal_review",
+				}),
+			);
 		}
 		// Approving a proposal publishes it, so the same pre-build the manual
 		// publish procedure schedules applies here: the proposal id IS the
@@ -643,6 +702,7 @@ export const approveInstructionProposalProcedure = tenantProtectedProcedure
 			approved: true as const,
 			published: true as const,
 			version: result.version,
+			approvals: result.approvals,
 		};
 	});
 

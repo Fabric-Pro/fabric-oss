@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Stub the model resolution + AI SDK so the fold runs offline. generateObject's
+// Stub the model resolution + AI SDK so the fold runs offline. generateText's
 // returned object is what the fold assembles + sanitizes.
-const { generateObjectMock } = vi.hoisted(() => ({
-	generateObjectMock: vi.fn(),
+const { generateTextMock } = vi.hoisted(() => ({
+	generateTextMock: vi.fn(),
 }));
-vi.mock("ai", () => ({ generateObject: generateObjectMock }));
+vi.mock("ai", () => ({
+	Output: { object: (spec: unknown) => spec },
+	generateText: generateTextMock,
+}));
 vi.mock("../../dynamic-model-selector", () => ({
 	getAIModelWithMetadata: vi.fn(async () => ({
 		model: {},
@@ -40,8 +43,8 @@ describe("foldContextBatch — roadmap + code-repo citations", () => {
 	it("keeps context/decision/roadmap/repo markers and strips invented ones", async () => {
 		// The model cites a context (S1), decision (S2), roadmap (S3), repo (S4),
 		// and one hallucinated marker (S99) that was never supplied.
-		generateObjectMock.mockResolvedValue({
-			object: {
+		generateTextMock.mockResolvedValue({
+			output: {
 				goalsAndScope:
 					"Ship the thing [S1]; direction from roadmap [S3].",
 				keyDecisions: "Adopted Postgres [S2].",
@@ -105,7 +108,7 @@ describe("foldContextBatch — roadmap + code-repo citations", () => {
 		expect(result.citedMarkers).not.toContain("S99");
 
 		// The prompt actually included the roadmap + codebase blocks.
-		const userMsg = generateObjectMock.mock.calls[0][0].messages[0].content;
+		const userMsg = generateTextMock.mock.calls[0][0].messages[0].content;
 		expect(userMsg).toContain("PROJECT ROADMAP");
 		expect(userMsg).toContain("CONNECTED CODE REPOSITORY");
 		expect(userMsg).toContain("Auth revamp");
@@ -113,8 +116,8 @@ describe("foldContextBatch — roadmap + code-repo citations", () => {
 	});
 
 	it("omits roadmap/repo blocks when none are supplied", async () => {
-		generateObjectMock.mockResolvedValue({
-			object: { goalsAndScope: "Just context [S1]." },
+		generateTextMock.mockResolvedValue({
+			output: { goalsAndScope: "Just context [S1]." },
 		});
 
 		await foldContextBatch({
@@ -137,7 +140,7 @@ describe("foldContextBatch — roadmap + code-repo citations", () => {
 			includeProjectSources: true,
 		});
 
-		const userMsg = generateObjectMock.mock.calls[0][0].messages[0].content;
+		const userMsg = generateTextMock.mock.calls[0][0].messages[0].content;
 		expect(userMsg).not.toContain("PROJECT ROADMAP");
 		expect(userMsg).not.toContain("CONNECTED CODE REPOSITORY");
 	});
@@ -165,8 +168,8 @@ describe("foldContextBatch — usage + system prompt", () => {
 	};
 
 	it("returns real token usage + priced cost from the model result", async () => {
-		generateObjectMock.mockResolvedValue({
-			object: { goalsAndScope: "Just context [S1]." },
+		generateTextMock.mockResolvedValue({
+			output: { goalsAndScope: "Just context [S1]." },
 			usage: { inputTokens: 120, outputTokens: 40, totalTokens: 160 },
 		});
 
@@ -181,8 +184,8 @@ describe("foldContextBatch — usage + system prompt", () => {
 	});
 
 	it("defaults usage to zero when the model reports none", async () => {
-		generateObjectMock.mockResolvedValue({
-			object: { goalsAndScope: "Just context [S1]." },
+		generateTextMock.mockResolvedValue({
+			output: { goalsAndScope: "Just context [S1]." },
 		});
 
 		const result = await foldContextBatch({ ...baseInput });
@@ -192,8 +195,8 @@ describe("foldContextBatch — usage + system prompt", () => {
 	});
 
 	it("uses the provided systemPrompt over the built-in guidance", async () => {
-		generateObjectMock.mockResolvedValue({
-			object: { goalsAndScope: "x [S1]." },
+		generateTextMock.mockResolvedValue({
+			output: { goalsAndScope: "x [S1]." },
 		});
 
 		await foldContextBatch({
@@ -202,7 +205,7 @@ describe("foldContextBatch — usage + system prompt", () => {
 		});
 
 		const systemMsg =
-			generateObjectMock.mock.calls[0][0].instructions.content;
+			generateTextMock.mock.calls[0][0].instructions.content;
 		// The admin prompt replaces the content guidance; the built-in guidance
 		// is not used (only the formatting contract is always appended below).
 		expect(systemMsg).toContain("CUSTOM DB PROMPT");
@@ -210,26 +213,26 @@ describe("foldContextBatch — usage + system prompt", () => {
 	});
 
 	it("falls back to the built-in guidance when no systemPrompt is given", async () => {
-		generateObjectMock.mockResolvedValue({
-			object: { goalsAndScope: "x [S1]." },
+		generateTextMock.mockResolvedValue({
+			output: { goalsAndScope: "x [S1]." },
 		});
 
 		await foldContextBatch({ ...baseInput });
 
 		const systemMsg =
-			generateObjectMock.mock.calls[0][0].instructions.content;
+			generateTextMock.mock.calls[0][0].instructions.content;
 		expect(systemMsg).toContain(SYSTEM_GUIDANCE);
 	});
 
 	it("always appends the formatting contract, on top of either prompt", async () => {
-		generateObjectMock.mockResolvedValue({
-			object: { goalsAndScope: "x [S1]." },
+		generateTextMock.mockResolvedValue({
+			output: { goalsAndScope: "x [S1]." },
 		});
 
 		// Built-in guidance path.
 		await foldContextBatch({ ...baseInput });
 		const builtinMsg =
-			generateObjectMock.mock.calls[0][0].instructions.content;
+			generateTextMock.mock.calls[0][0].instructions.content;
 		expect(builtinMsg).toContain(FORMATTING_GUIDANCE);
 
 		// Admin DB-prompt path still gets the formatting contract.
@@ -237,7 +240,7 @@ describe("foldContextBatch — usage + system prompt", () => {
 			...baseInput,
 			systemPrompt: "CUSTOM DB PROMPT",
 		});
-		const dbMsg = generateObjectMock.mock.calls[1][0].instructions.content;
+		const dbMsg = generateTextMock.mock.calls[1][0].instructions.content;
 		expect(dbMsg).toContain("CUSTOM DB PROMPT");
 		expect(dbMsg).toContain(FORMATTING_GUIDANCE);
 	});
@@ -246,13 +249,13 @@ describe("foldContextBatch — usage + system prompt", () => {
 	// SDK warning (and AI SDK 7 will reject the call outright). The system
 	// guidance must travel through the top-level `system` option instead.
 	it("passes the system guidance via `system`, never as a `messages` row", async () => {
-		generateObjectMock.mockResolvedValue({
-			object: { goalsAndScope: "x [S1]." },
+		generateTextMock.mockResolvedValue({
+			output: { goalsAndScope: "x [S1]." },
 		});
 
 		await foldContextBatch({ ...baseInput });
 
-		const callArgs = generateObjectMock.mock.calls[0][0];
+		const callArgs = generateTextMock.mock.calls[0][0];
 		expect(callArgs.instructions).toEqual(
 			expect.objectContaining({
 				role: "system",

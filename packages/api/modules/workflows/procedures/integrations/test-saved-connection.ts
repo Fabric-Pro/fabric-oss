@@ -13,6 +13,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { testDatabricksPlatformConnection } from "../../../context-quality/lib/platform-connection";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
 
 /**
@@ -32,6 +33,8 @@ const IntegrationTypeEnum = z.enum([
 	"CONFLUENCE",
 	"CUSTOM_WEBHOOK",
 	"DATABASE",
+	"DATABRICKS_SQL",
+	"DATABRICKS_PLATFORM",
 	"DATABRICKS_VECTOR_SEARCH",
 	"FAL",
 	"FIRECRAWL",
@@ -711,6 +714,23 @@ async function testDatabaseConnection(
 	}
 }
 
+async function testDatabricksSqlConnection(
+	credentials: Record<string, string>,
+): Promise<TestConnectionResult> {
+	const { verifyDatabricksSqlConnection } = await import(
+		"@repo/integrations"
+	);
+	return verifyDatabricksSqlConnection({
+		DATABRICKS_HOST: credentials.DATABRICKS_HOST || credentials.host || "",
+		DATABRICKS_CLIENT_ID:
+			credentials.DATABRICKS_CLIENT_ID || credentials.clientId || "",
+		DATABRICKS_CLIENT_SECRET:
+			credentials.DATABRICKS_CLIENT_SECRET ||
+			credentials.clientSecret ||
+			"",
+	});
+}
+
 async function testDatabricksVectorSearchConnection(
 	credentials: Record<string, string>,
 ): Promise<TestConnectionResult> {
@@ -1304,11 +1324,12 @@ async function testFrontSavedConnection(
 async function testStripeConnection(
 	credentials: Record<string, string>,
 ): Promise<TestConnectionResult> {
+	const apiKey = credentials.apiKey || credentials.STRIPE_SECRET_KEY;
 	return await probe(
 		"Stripe",
 		"https://api.stripe.com/v1/balance",
-		{ Authorization: `Bearer ${credentials.STRIPE_SECRET_KEY ?? ""}` },
-		Boolean(credentials.STRIPE_SECRET_KEY),
+		{ Authorization: `Bearer ${apiKey ?? ""}` },
+		Boolean(apiKey),
 		"Secret key is required",
 	);
 }
@@ -1316,11 +1337,12 @@ async function testStripeConnection(
 async function testWebflowConnection(
 	credentials: Record<string, string>,
 ): Promise<TestConnectionResult> {
+	const apiKey = credentials.apiKey || credentials.WEBFLOW_API_KEY;
 	return await probe(
 		"Webflow",
 		"https://api.webflow.com/v2/sites",
-		{ Authorization: `Bearer ${credentials.WEBFLOW_API_KEY ?? ""}` },
-		Boolean(credentials.WEBFLOW_API_KEY),
+		{ Authorization: `Bearer ${apiKey ?? ""}` },
+		Boolean(apiKey),
 		"API token is required",
 	);
 }
@@ -1328,11 +1350,12 @@ async function testWebflowConnection(
 async function testClerkConnection(
 	credentials: Record<string, string>,
 ): Promise<TestConnectionResult> {
+	const apiKey = credentials.apiKey || credentials.CLERK_SECRET_KEY;
 	return await probe(
 		"Clerk",
 		"https://api.clerk.com/v1/users?limit=1",
-		{ Authorization: `Bearer ${credentials.CLERK_SECRET_KEY ?? ""}` },
-		Boolean(credentials.CLERK_SECRET_KEY),
+		{ Authorization: `Bearer ${apiKey ?? ""}` },
+		Boolean(apiKey),
 		"Secret key is required",
 	);
 }
@@ -1340,14 +1363,15 @@ async function testClerkConnection(
 async function testBlobConnection(
 	credentials: Record<string, string>,
 ): Promise<TestConnectionResult> {
+	const apiKey = credentials.apiKey || credentials.BLOB_READ_WRITE_TOKEN;
 	return await probe(
 		"Vercel Blob",
 		"https://blob.vercel-storage.com?limit=1",
 		{
-			Authorization: `Bearer ${credentials.BLOB_READ_WRITE_TOKEN ?? ""}`,
+			Authorization: `Bearer ${apiKey ?? ""}`,
 			"x-api-version": "7",
 		},
-		Boolean(credentials.BLOB_READ_WRITE_TOKEN),
+		Boolean(apiKey),
 		"Read/write token is required",
 	);
 }
@@ -1355,7 +1379,8 @@ async function testBlobConnection(
 async function testSuperagentConnection(
 	credentials: Record<string, string>,
 ): Promise<TestConnectionResult> {
-	if (!credentials.SUPERAGENT_API_KEY) {
+	const apiKey = credentials.apiKey || credentials.SUPERAGENT_API_KEY;
+	if (!apiKey) {
 		return { success: false, error: "API key is required" };
 	}
 	// Superagent has no auth-check endpoint; a trivial guard call proves the
@@ -1365,7 +1390,7 @@ async function testSuperagentConnection(
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				Authorization: `Bearer ${credentials.SUPERAGENT_API_KEY}`,
+				Authorization: `Bearer ${apiKey}`,
 			},
 			body: JSON.stringify({ text: "ping" }),
 		});
@@ -1438,6 +1463,8 @@ const connectionTesters: Record<
 	CONFLUENCE: testConfluenceConnection,
 	CUSTOM_WEBHOOK: testWebhookConnection,
 	DATABASE: testDatabaseConnection,
+	DATABRICKS_SQL: testDatabricksSqlConnection,
+	DATABRICKS_PLATFORM: testDatabricksPlatformConnection,
 	DATABRICKS_VECTOR_SEARCH: testDatabricksVectorSearchConnection,
 	FAL: testFalConnection,
 	FIRECRAWL: testFirecrawlConnection,

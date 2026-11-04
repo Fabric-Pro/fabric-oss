@@ -51,7 +51,7 @@ const RUNTIME_ONLY: ReadonlyArray<{
 	{
 		dockerfile: "packages/temporal/Dockerfile",
 		entry: "packages/temporal/package.json",
-		knownGaps: ["permissions"],
+		knownGaps: [],
 	},
 	{
 		dockerfile: "packages/mcp-stdio-wrapper/Dockerfile",

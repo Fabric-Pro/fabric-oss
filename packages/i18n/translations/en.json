@@ -10,8 +10,8 @@
 	"parlume": {
 		"invite": {
 			"suggestions": {
-				"label": "Chat suggestions",
-				"description": "Parlume may offer a short suggestion in the meeting chat now and then, and opens a recurring meeting with a recap of the last one. It reads them aloud only when someone asks."
+				"label": "Suggestions and recap",
+				"description": "Parlume may now and then offer a short suggestion or a question the meeting may have missed, and opens a recurring meeting with a recap of the last one. You choose who sees them. It reads them aloud only when someone asks."
 			}
 		}
 	},
@@ -373,11 +373,14 @@
 				"failed": "The request could not be completed. Start again from your agent.",
 				"signInRequired": "Sign in to continue.",
 				"scopes": {
-					"mcp:read": "Read this organization's projects, features, decisions, documents, project context, document libraries, workflows and frames. Your personal AI chats are not included.",
+					"mcp:read": "Read this organization's projects, features, decisions, documents, project context, document workspaces, workflows and frames. Your personal AI chats are not included.",
 					"instructions:read": "Read coding instructions.",
 					"instructions:write": "Suggest changes to coding instructions. Suggestions are held for review and are never published by the agent.",
 					"repositories:read": "Read the attached repository's files and history to clone or update it through Fabric.",
 					"memory:write": "Write files to this organization's project Living Memory folders in their repositories; may commit directly to the synced branch where a project admin allowed it.",
+					"agents:read": "Read your saved agents' background runs, results and recurring schedules in this organization.",
+					"agents:execute": "Run API-enabled saved agents and request cancellation of your background runs. Completed actions are not undone.",
+					"agents:schedule": "Create and change recurring runs for your API-enabled agents, or pause an existing schedule. Also requires Agents Execute.",
 					"offline_access": "Stay signed in until you revoke it."
 				},
 				"scopesProject": {
@@ -983,6 +986,10 @@
 			"skipTour": "Skip tour",
 			"stepCounter": "Step {current} of {total}",
 			"steps": {
+				"contextWorkspaceDocuments": {
+					"title": "Reuse Workspace documents",
+					"body": "Link original requirements and shared documents to project context without another upload. Everyone still needs access to the original source. Preview the current version or remove a link while preserving the document."
+				},
 				"aiKey": {
 					"body": "Fabric runs on an AI provider you connect — without a key, most features stay quiet. Add one in Settings, for the whole organization if you are an admin or just for yourself otherwise; a personal key applies wherever your organization has none.",
 					"title": "First, add an AI provider key"
@@ -1042,6 +1049,10 @@
 				"welcome": {
 					"body": "This quick tour shows where the core tools live — your AI assistant, projects, documents, roadmap, and code map. It takes under a minute, and you can skip or replay it anytime.",
 					"title": "Welcome to Fabric"
+				},
+				"agent-runs": {
+					"title": "Run an agent and follow its work",
+					"body": "Open a saved agent to try it in chat or run a background task with its project context and connections. The agent drawer keeps Overview, Runs and Triggers together. Edit opens the full-height builder with Sidekick, instruction Preview, and saved-run Insights. Runs & History names the agent on every row. Select an agent name to narrow its history, or All agents to return to the combined view; select a run for progress, output and steps. Start small, inspect the result, then schedule recurring work. On a completed project-bound run, Check this result tests exact phrases in the real recorded answer. Results stay private and do not rerun the agent. Edit current agent changes future runs only."
 				}
 			},
 			"welcome": {
@@ -1845,7 +1856,8 @@
 						"reconnected": "Channel or chat monitor reconnected",
 						"metadata_updated": "Context source details updated",
 						"content_upserted": "Synced context file created, updated or moved",
-						"synced_file_deleted": "Synced context file deleted"
+						"synced_file_deleted": "Synced context file deleted",
+						"synced_files_reset": "Living Memory reset (all synced files deleted)"
 					},
 					"context": {
 						"repository_sync_configured": "Living Memory repository sync configured",
@@ -1879,6 +1891,8 @@
 						"pull_request_merge_sync_requested": "Coding-instructions merge sync requested",
 						"pull_request_merge_observed": "Coding-instructions pull request merge acknowledged",
 						"published_unscanned": "Coding instructions published before secret scan",
+						"proposal_approved": "Coding-instructions proposal approved, more approvals needed",
+						"proposal_rebased": "Coding-instructions proposal rebased onto the published version",
 						"deferred_scan_issues_found": "Coding-instructions secret scan found issues after publishing",
 						"deferred_scan_incomplete": "Coding-instructions secret scan could not finish",
 						"pull_request_branch_updated": "Coding-instructions proposal branch updated",
@@ -1886,8 +1900,14 @@
 						"commit_fell_back_to_pull_request": "Coding-instructions commit opened as a pull request instead",
 						"repository_migration_started": "Coding-instructions move into a repository started",
 						"consolidation_started": "AI files moved into a new instructions repository",
+						"consolidation_cleanup_merged": "AI files cleanup pull request merged",
 						"repository_migration_canceled": "Coding-instructions move into a repository ended without merging",
 						"repository_migration_completed": "Coding-instructions move into a repository finished"
+					},
+					"instructions_access": {
+						"granted": "Instructions repository access granted",
+						"revoked": "Instructions repository access revoked",
+						"failed": "Instructions repository access change failed"
 					}
 				},
 				"story": {
@@ -3042,7 +3062,7 @@
 					},
 					"CHAT": {
 						"name": "Chat",
-						"hint": "Library document chat, Atlas assistant, Agent Builder Sidekick"
+						"hint": "Workspace document chat, Atlas assistant, Agent Builder Sidekick"
 					},
 					"EVAL": {
 						"name": "Evaluation",
@@ -3305,6 +3325,44 @@
 			"closeRun": "Close run",
 			"recoveryClosed": "Run closed. You can start another run.",
 			"recoveryFailed": "Could not close the run.",
+			"board": {
+				"title": "Assign coding work from your project",
+				"description": "Choose a published Roadmap feature, then use Start work to select a registered personal or team Fabric Agents server. Provider and Git credentials stay on the execution host.",
+				"assign": "Choose a feature to assign",
+				"desktop": "Open Fabric Desktop",
+				"setupGuide": "Remote-server setup guide",
+				"optionalBoard": "About the optional local board",
+				"boardHelp": "This optional board checks a separate Fabric Kanban runtime at localhost:3484. Starting Fabric Agents Desktop or a Fabric Agents server on port 9100 does not start this board. Remote assignment remains available through Start work.",
+				"checkBoard": "Check local board"
+			},
+			"setupHelp": "Configure the execution service secret on the server as BACKGROUND_AGENTS_INTERNAL_SECRET. The Web UI token (FABRIC_SERVER_TOKEN) is separate. Sign in to the selected coding backend on that host, then verify this connection.",
+			"setupGuide": "Server setup and connection guide",
+			"launcher": {
+				"title": "Fabric Desktop and remote agents",
+				"description": "Work in the desktop app or assign a feature to a registered personal or team server.",
+				"launch": "Launch Fabric Desktop",
+				"delegate": "Delegate to Remote Server",
+				"ai": "AI Connections",
+				"sources": "Desktop Sources",
+				"signIn": "Connect MCP",
+				"copy": "Copy MCP URL",
+				"copied": "Project MCP URL copied",
+				"copyFailed": "Could not copy the MCP URL. Allow clipboard access and try again.",
+				"remoteHelp": "Connect or select a server below, then choose a feature and use Start work to assign it. The selected server is saved for that assignment dialog. Provider sign-in and usage limits are managed on the remote host.",
+				"organizationRequired": "Open this project in an organization to connect a server.",
+				"loading": "Loading remote servers…",
+				"loadFailed": "Could not load remote servers. Try again.",
+				"retry": "Retry",
+				"disabled": "Remote agent delegation is not enabled on this Portal. Ask an administrator to configure the Fabric Agents bridge.",
+				"chooseFeature": "Choose a feature to assign",
+				"openRemote": "Open remote Web UI",
+				"desktopHelp": "Fabric Desktop must be installed on this computer to open a desktop session. If your browser reports no matching app, install or update Fabric Desktop, then open the link again.",
+				"sourcesHelp": "Desktop Sources are managed inside Fabric Desktop. Install or update the app on this computer before opening its Sources view.",
+				"openInstalled": "Open installed desktop app",
+				"getDesktop": "Get Fabric Desktop",
+				"desktopAi": "Desktop AI settings",
+				"aiHelp": "AI Connections in the Portal configures workflows and chat. Desktop and remote coding agents use the provider accounts configured on their own host."
+			},
 			"portalAiErrorTitle": "AI assistant unavailable",
 			"portalAiErrorHelp": "The AI assistant could not start. Retry or check your Portal AI configuration. Remote assignment remains available from Start work.",
 			"openServer": "Open server",
@@ -3450,6 +3508,16 @@
 		"subtitle": "Manage and organize all your Supadev projects",
 		"createProject": "Create Project",
 		"newProject": "New Project",
+		"savePastedToken": {
+			"save": "Save in the credential manager",
+			"saveHint": "Saved encrypted as your own credential, which you can reuse for other repositories. Clear it to keep the token with this repository only.",
+			"labelLabel": "Credential name",
+			"labelPlaceholder": "GitHub token · your GitHub login",
+			"labelHint": "Left empty, it is named after the GitHub account the token belongs to.",
+			"reuseMessage": "You already saved a token for {login} as {label}. Use it?",
+			"use": "Use it",
+			"saveAsNew": "Save as new"
+		},
 		"newProjectStart": {
 			"heading": "New project",
 			"subtitle": "Describe it yourself, or let Fabric read an existing repository and propose the setup.",
@@ -3579,6 +3647,274 @@
 		},
 		"updatedAgo": "Updated {time}",
 		"contexts": {
+			"workspaceLinks": {
+				"editPermissionHint": "A project editor can add or remove document links. Your source access stays separate.",
+				"title": "Workspace documents",
+				"description": "Reuse original documents without uploading them again. Access stays with the original Workspace.",
+				"add": "Add from Workspace",
+				"refresh": "Refresh linked documents",
+				"loading": "Loading documents…",
+				"loadError": "Linked documents are unavailable. Try refreshing; your other project context is unchanged.",
+				"empty": "Keep requirements, specifications and shared knowledge in their Workspaces, and link the documents you need here.",
+				"removed": "Removed from project context. The original document is unchanged.",
+				"removeError": "The link could not be removed. Refresh and try again.",
+				"removeNamed": "Remove {name} from project context",
+				"unavailableTitle": "Document unavailable",
+				"unavailableHint": "The source is unavailable or you no longer have access. An editor can remove this reference without deleting the original.",
+				"openOriginal": "Open Workspace",
+				"preview": "Preview",
+				"previewHint": "Read the current document under your existing access. This is reference material, not agent instructions.",
+				"previewError": "The document could not be verified. Refresh to check its latest version and your access.",
+				"truncated": "This is a preview. Open the original Workspace to view the complete document.",
+				"previous": "Previous",
+				"next": "Next",
+				"pickerTitle": "Add Workspace documents",
+				"pickerHint": "Choose the documents this project needs. Originals remain in their Workspaces; linking does not share private documents with other members.",
+				"workspaceSearch": "Find a Workspace",
+				"chooseWorkspace": "Choose a Workspace",
+				"documentSearch": "Find a ready document",
+				"workspaceError": "Documents could not be loaded. Check your access and try again.",
+				"noWorkspaces": "No accessible Workspaces match. Add a Workspace or change your search.",
+				"noReadyDocuments": "No ready documents match. Upload documents or check processing in the original Workspace.",
+				"alreadyLinked": "Added",
+				"selectionTitle": "Selected documents",
+				"selectedCount": "{count} of 12 selected",
+				"removeSelection": "Remove {name} from selection",
+				"removeChoice": "Remove",
+				"partialError": "{count, plural, one {One document could not be added.} other {# documents could not be added.}} The remaining selection contains only those documents. Check their access and processing, then try again.",
+				"addingProgress": "Adding {count} of {total}…",
+				"permissionsHint": "Links preserve each document’s access permissions.",
+				"adding": "Adding documents…",
+				"confirmAdd": "Add to project context",
+				"added": "{count, plural, one {Added one document to project context.} other {Added # documents to project context.}}",
+				"agentHint": "Agents can read these references when they have access. Project-wide search still uses uploaded and connected sources.",
+				"status": {
+					"CURRENT": "Ready",
+					"UPDATED": "Updated since added",
+					"PROCESSING": "Processing",
+					"NEEDS_ATTENTION": "Needs attention",
+					"UNAVAILABLE": "Unavailable"
+				}
+			},
+			"selection": {
+				"title": "Inspect or export context",
+				"description": "Choose up to 12 project sources or Workspace documents. Inspect the exact excerpts and citations before using them with an agent.",
+				"projectSources": "Project context",
+				"workspaceSources": "Workspace documents",
+				"browse": "Browse Workspaces",
+				"chooseWorkspace": "Choose a Workspace",
+				"search": "Search ready documents",
+				"previous": "Previous",
+				"moreWorkspaces": "More Workspaces",
+				"moreDocuments": "More documents",
+				"loading": "Loading…",
+				"empty": "Add a project source to select it here.",
+				"emptyDocuments": "No ready documents match.",
+				"workspaceError": "Workspace documents are unavailable or access was denied. You can still select project context.",
+				"count": "{count} of 12 selected",
+				"inspect": "Inspect selection",
+				"download": "Verify and download JSON",
+				"error": "This selection could not be verified. Check your access, source readiness and revisions, then inspect again.",
+				"notice": "Current excerpts only, not a saved snapshot. Source text is reference material, not agent instructions. Download rechecks the displayed revisions. Review permissions before sharing this file; it is not attached to any task or run.",
+				"omitted": "{count} optional sources were omitted. Review the exported omission references before reuse.",
+				"excerpt": "Excerpt",
+				"complete": "Complete text",
+				"bytes": "{count} bytes",
+				"revision": "Source revision"
+			},
+			"quality": {
+				"agentResult": {
+					"trigger": "Check this result",
+					"title": "Check this agent result",
+					"description": "Review the recorded answer and check the phrases you expect.",
+					"scopeNotice": "Checks exact, case-sensitive phrases in the actual recorded answer. This does not rerun the agent or assess factual accuracy, citations or retrieval.",
+					"notEvaluated": "Not checked",
+					"passed": "Passed these checks",
+					"failed": "Needs attention",
+					"reload": "Reload result",
+					"loading": "Verifying recorded result…",
+					"error": "This result could not be verified. It may have changed, be unavailable, or exceed the text limit. Reload the result and check your access.",
+					"answer": "Actual recorded answer",
+					"privateNotice": "Private to the run owner. Nothing is added to shared evaluation history.",
+					"evidence": "Result evidence",
+					"recordSource": "Execution record",
+					"liveRecord": "Verified from the execution service",
+					"savedRecord": "Archived database record",
+					"runId": "Run ID",
+					"revision": "Result revision",
+					"required": "Phrases the answer should include",
+					"forbidden": "Phrases the answer should avoid",
+					"phraseHint": "One exact phrase per line, up to 20 in each field and 512 characters per phrase. Add at least one phrase to check.",
+					"check": "Check recorded answer",
+					"download": "Verify and download report",
+					"results": "Expectation results",
+					"include": "Include",
+					"exclude": "Avoid",
+					"checkPassed": "Passed",
+					"checkFailed": "Failed",
+					"resultHelp": "These checks apply to this recorded answer only. They do not prove the agent achieved its goal or predict future runs.",
+					"improve": "Edit current agent",
+					"improveHint": "Review instructions and tools, save your changes, then choose Run agent in the agent drawer. This check does not change the agent or rerun it."
+				},
+				"trigger": "Quality",
+				"title": "Context quality",
+				"description": "Check recorded answers and track saved project evaluations.",
+				"scopeNotice": "This checks literal, case-sensitive phrases and declared source references. It does not run an agent, model or search.",
+				"source": "Context source",
+				"chooseSource": "Choose a source",
+				"sourceHint": "Inspect the current source to pin its exact text before checking. The selected source is declared as supplied context; no retrieval is performed.",
+				"inspectionRequired": "Inspect this source before checking the recorded answer.",
+				"inspect": "Inspect source",
+				"inspecting": "Inspecting…",
+				"bytes": "{count} bytes",
+				"storeOnly": "Store only · direct read",
+				"revision": "Source revision (SHA-256)",
+				"preview": "Current source preview",
+				"previewTruncated": "The preview shows the first {count} characters. The full inspected source is used for the check.",
+				"recordedAnswer": "Recorded answer",
+				"required": "Required phrases (optional)",
+				"forbidden": "Forbidden phrases (optional)",
+				"phraseHint": "One phrase per line. Literal and case-sensitive; up to 20 phrases of 512 characters per list.",
+				"requireCitation": "Require the selected source to be cited",
+				"expectationHint": "Add a required or forbidden phrase, or require a source citation, to define what this check should verify.",
+				"citation": "The recorded answer cites the selected source.",
+				"citationHint": "References are your declaration. Fabric does not extract or verify citations from the answer text.",
+				"run": "Check recorded answer",
+				"running": "Checking…",
+				"close": "Close check",
+				"result": "Recorded-answer check result",
+				"passed": "Checks passed",
+				"failed": "Checks failed",
+				"checkPassed": "Passed",
+				"checkFailed": "Failed",
+				"resultHelp": "This result applies only to the recorded answer, declared references and pinned source revision. It does not establish semantic correctness or retrieval quality.",
+				"reportDetails": "Report details",
+				"stateless": "Checks run in Fabric without Databricks export. Results are not saved; download the report to keep it. Reports omit source text, answers and phrase values.",
+				"download": "Download report",
+				"noSources": "Add a readable context source before checking an answer. Saved run history remains available.",
+				"errorDenied": "You no longer have access to this source. Choose another source or ask a project administrator.",
+				"errorUnavailable": "The source is unavailable. Choose another source and inspect it again.",
+				"errorStale": "The source changed or is not ready. Inspect it again before checking.",
+				"errorTooLarge": "This check exceeds the size limit. Shorten the answer or expectations, or choose a smaller source.",
+				"errorInvalid": "Check the answer and phrase limits, then try again.",
+				"errorGeneric": "Could not complete the check. Try again.",
+				"checks": {
+					"recorded-answer-present": "Recorded answer is present",
+					"retrieved-sources-available": "Declared context sources are available",
+					"cited-sources-available": "Declared cited sources are available",
+					"citations-retrieved": "Citations refer to declared supplied context",
+					"expected-sources-available": "Expected sources are available",
+					"expected-sources-retrieved": "Expected sources were declared as supplied context",
+					"expected-sources-cited": "Expected sources were declared as cited",
+					"citation-precision": "Citations match expected source references",
+					"required-phrases": "Required literal phrases are present",
+					"forbidden-phrases": "Forbidden literal phrases are absent"
+				},
+				"saved": {
+					"views": "Quality views",
+					"quick": "Quick check",
+					"title": "Saved runs",
+					"create": "Save and run evaluation",
+					"creating": "Saving…",
+					"name": "Name",
+					"nameOptional": "Evaluation name (optional)",
+					"execution": "Execution",
+					"created": "Started",
+					"open": "View",
+					"openNamed": "View {name}",
+					"refresh": "Refresh",
+					"loading": "Loading saved evaluations…",
+					"empty": "No saved evaluations yet. Check an answer, then save an evaluation to track its execution and results.",
+					"details": "Saved evaluation details",
+					"cancellationPending": "Cancellation was requested. Execution may continue until the remote server confirms it has stopped.",
+					"evidenceUnavailable": "Report evidence is unavailable. A source may have been removed or its access changed.",
+					"executionFailed": "The evaluation could not finish. Review the execution status before starting another run.",
+					"counts": "{passed} of {total} cases passed.",
+					"remoteRun": "Databricks execution",
+					"mlflowRun": "MLflow result",
+					"cancel": "Cancel execution",
+					"cancelling": "Requesting cancellation…",
+					"compare": "Compare runs",
+					"comparing": "Comparing…",
+					"baseline": "Baseline",
+					"candidate": "Candidate",
+					"chooseRun": "Choose a completed run",
+					"comparison": "Difference in passed cases: {delta}.",
+					"incompatible": "These runs use different data or scoring settings. A numeric comparison is unavailable.",
+					"error": "Could not load or update the saved evaluation. Check access and try Refresh.",
+					"historyNotice": "Saved runs use pinned snapshots. Source access is checked again before reports are shown.",
+					"exportNotice": "Saving an evaluation sends the selected context, recorded answer and expectations to your project’s approved Databricks connection. Results are retained in Fabric. No model or search is run.",
+					"capabilityError": "Could not check saved evaluation availability. Close and reopen Quality to try again.",
+					"notConfigured": "A project administrator needs to configure an approved evaluation connection before runs can be saved.",
+					"readOnly": "You can view saved results. Project edit permission is required to start or cancel evaluations.",
+					"statuses": {
+						"QUEUED": "Queued",
+						"EXPORTING": "Preparing input",
+						"DISPATCHING": "Starting execution",
+						"RUNNING": "Running",
+						"CANCEL_REQUESTED": "Cancellation requested",
+						"SUCCEEDED": "Completed",
+						"FAILED": "Failed",
+						"CANCELLED": "Cancelled",
+						"RECONCILIATION_REQUIRED": "Execution status unknown"
+					},
+					"older": "Older runs",
+					"firstPage": "Newest runs",
+					"cancellationConfirmed": "Cancellation is confirmed. The evaluation has stopped.",
+					"cleanup": "Export cleanup: {status}.",
+					"cleanupStatuses": {
+						"NOT_REQUIRED": "not required",
+						"PENDING": "pending",
+						"CONFIRMED": "confirmed",
+						"BLOCKED": "blocked, administrator action needed"
+					},
+					"differences": {
+						"dataset": "The evaluation data differs.",
+						"configuration": "The evaluation configuration differs.",
+						"scorer": "The scorer version differs."
+					},
+					"createError": "Could not confirm that the evaluation was saved. Retry with the same unchanged form to reuse its request key, or inspect Saved runs before starting another evaluation."
+				},
+				"setup": {
+					"title": "Settings",
+					"loading": "Loading evaluation settings…",
+					"description": "Choose where this project runs saved evaluations. Credentials are managed in Connections; only explicitly shared Databricks Platform connections are eligible.",
+					"error": "The evaluation settings could not be loaded. Check your access and try again.",
+					"saveError": "The destination could not be saved. Your edits are unchanged. Try again.",
+					"disableError": "Saved evaluations could not be disabled. Your settings are unchanged. Try again.",
+					"deleteError": "The destination and saved history could not be deleted. Your settings are unchanged. Try again.",
+					"errorDenied": "You do not have permission to change evaluation settings. A project administrator must make this change.",
+					"errorUnavailable": "The project or evaluation destination is no longer available. Your edits are unchanged.",
+					"errorInvalid": "The request was not accepted. Check the destination fields. Your edits are unchanged.",
+					"errorConflict": "This change conflicts with the current evaluation state. Your edits are unchanged.",
+					"errorQualification": "The destination could not be verified. Check connection sharing, resource permissions and the approved job template. Your edits are unchanged.",
+					"invalidIds": "Job and experiment IDs must be positive decimal integers no greater than 9007199254740991.",
+					"disable": "Disable saved evaluations",
+					"disabling": "Disabling saved evaluations…",
+					"disabled": "Saved evaluations disabled. The destination, saved history and cleanup receipts are retained.",
+					"disconnect": "Disconnect and delete saved history",
+					"deleteTitle": "Disconnect destination and delete saved history?",
+					"deleteDescription": "This permanently deletes this project's saved evaluation history and destination binding. This cannot be undone. All executions must be settled and remote snapshot cleanup must be confirmed before deletion is allowed. This action does not perform remote cleanup. To keep history, cancel and disable saved evaluations instead.",
+					"confirmDelete": "Disconnect and permanently delete history",
+					"deleting": "Deleting destination and history…",
+					"deleteBlocked": "The destination and history were kept because an execution or remote cleanup is unresolved. Wait for executions to settle and remote cleanup to be confirmed, then try again.",
+					"cancel": "Cancel",
+					"retry": "Reload settings",
+					"saved": "Evaluation destination verified and saved.",
+					"noConnections": "Add a Databricks Platform connection in Connections, then share it with this organization and reload these settings.",
+					"connection": "Organization connection",
+					"select": "Select a shared connection",
+					"workspace": "Databricks workspace URL",
+					"job": "Evaluation job ID",
+					"experiment": "MLflow experiment ID",
+					"volume": "Isolated snapshot volume",
+					"resources": "Use a dedicated job, experiment and volume for this project. The server verifies and pins the notebook code before accepting work.",
+					"enabled": "Allow saved evaluations for this project",
+					"approval": "I approve sending selected source snapshots and recorded answers to these Databricks resources. Snapshots expire within one hour; cleanup receipts remain until deletion is confirmed.",
+					"save": "Verify and save destination",
+					"saving": "Verifying destination…"
+				}
+			},
 			"contextRetry": {
 				"action": "Retry",
 				"actionForRow": "Retry {title}",
@@ -3663,6 +3999,18 @@
 				"description": "Files synced from a working tree, grouped by folder.",
 				"rootFolder": "Project root",
 				"fileCount": "{count, plural, one {# file} other {# files}}",
+				"reset": {
+					"action": "Reset Living Memory",
+					"disabledSyncConnected": "Disconnect the repository sync before resetting: while it is connected, its next run brings the files back.",
+					"title": "Reset Living Memory?",
+					"description": "This deletes every file synced into this project's Living Memory ({count, plural, one {# file} other {# files}}), for every member. Other context sources are not affected. This cannot be undone; push the files again to restore them.",
+					"confirmLabel": "Type the project name, {name}, to confirm",
+					"cancel": "Cancel",
+					"confirm": "Reset Living Memory",
+					"resetting": "Resetting…",
+					"done": "Living Memory reset: {count, plural, =0 {there were no synced files to delete} one {# synced file deleted} other {# synced files deleted}}.",
+					"failed": "Could not reset Living Memory: {message}"
+				},
 				"repositorySync": {
 					"entry": "Sync from repository",
 					"running": "Syncing…",
@@ -3809,15 +4157,23 @@
 							"label": "Folder or file",
 							"placeholder": "e.g. docs or docs/guide.md",
 							"add": "Add",
-							"hint": "Press Enter or Add to sync a folder or file. Leaving something out inside a folder needs the tree, so it can't be done for paths the tree doesn't show.",
+							"hint": "Press Enter or Add to sync a folder or file. To leave something out inside a selected folder, type it below.",
 							"empty": "Type a folder or file, or use Select all to sync the whole repository."
+						},
+						"typedExclusion": {
+							"label": "Leave out a folder or file",
+							"placeholder": "e.g. docs/drafts or docs/old.md",
+							"add": "Leave out",
+							"hint": "Press Enter or Leave out to skip a folder or file inside a selected folder. It is pruned from Living Memory on the next sync.",
+							"empty": "Type a folder or file inside a selected folder.",
+							"noSelection": "Select a folder first: only something inside a selected folder can be left out."
 						},
 						"saveBlocked": {
 							"noRepository": "Choose a repository to sync from.",
 							"noBranch": "Enter the branch to sync from.",
 							"branchMissing": "Branch {ref} wasn't found in the repository. Choose another branch to save."
 						},
-						"contextignoreNotice": "Each selected folder's own .contextignore is honored, the same way `fabric context push` applies it.",
+						"contextignoreNotice": "Each selected folder's own .contextignore is read here and applied the same way `fabric context push` applies it.",
 						"pruneNotice": "A file no longer selected, left out, or removed from the repository is pruned from Living Memory on the next sync.",
 						"actingNotice": "Every sync after this one runs as you, the member who configured it.",
 						"automaticLabel": "Keep in sync automatically",
@@ -3852,16 +4208,30 @@
 						"INSIDE_WHOLE_REPOSITORY": "The whole repository is already selected, so “{path}” syncs already.",
 						"DUPLICATE_PATH": "“{path}” is already selected."
 					},
+					"excludeErrors": {
+						"WHOLE_REPOSITORY": "Leave out a folder or file inside a selected folder, not the whole repository.",
+						"INVALID_PATH": "“{path}” isn't a repository path in its plain form: use '/' between folders, with no leading './' or '/', no trailing '/', no '.' or '..' segments and no surrounding spaces.",
+						"EXCLUDED_FABRIC_PATH": "“{path}” is in a .fabric folder, which Living Memory never syncs, so there is nothing to leave out.",
+						"EXCLUDED_PATH_POLICY_FILE": "“{path}” is a folder's .contextignore, which the sync reads as that folder's policy, so it can't be left out.",
+						"NOTHING_SELECTED": "Select a folder first: only something inside a selected folder can be left out.",
+						"SELECTED": "“{path}” is selected. Stop syncing it in the list above instead of leaving it out.",
+						"OUTSIDE_SELECTION": "“{path}” isn't inside a selected folder, so there is nothing to leave it out of.",
+						"DUPLICATE": "“{path}” is already left out.",
+						"OVERLAP": "“{path}” is inside “{withPath}”, which is already left out.",
+						"TOO_MANY": "Leave out at most {max} folders or files."
+					},
 					"tree": {
 						"label": "Folders and files on this branch",
 						"selectAll": "Select all",
 						"selectNone": "Select none",
 						"selectionActions": "Select",
 						"searchPlaceholder": "Search folders and files",
+						"showSelectedOnly": "Show only selected",
 						"collapseAll": "Collapse all",
 						"loading": "Loading the branch's folders and files…",
 						"empty": "No files on this branch.",
 						"noMatches": "No folders or files match this search.",
+						"noneSelected": "Nothing is selected or left out yet.",
 						"unsupported": "This repository type doesn't support browsing. Type the paths to sync below.",
 						"truncated": "This branch is too large to list in full: only the first {max, number} entries are shown. Type any other path below.",
 						"error": "Couldn't list this branch's folders and files. Type the paths to sync below, or try again later.",
@@ -3886,8 +4256,23 @@
 							"invalidPath": "Not a repository path in its plain form",
 							"codingInstructionsFile": "A coding-instructions file, which Living Memory never syncs",
 							"defaultRule": "Skipped by the default rule {rule}",
+							"contextignoreRule": "Skipped by {rule} in {file}",
+							"policyUnreadable": "{file} can't be applied, so the sync leaves this folder's files as they are",
+							"policyRejected": "Line {line} of {file} can't be evaluated, so the sync fails",
+							"policyFailed": "Couldn't read {file}, so this can't be told yet",
 							"tooManyPaths": "At most {max} folders or files can be selected",
 							"tooManyExcluded": "At most {max} folders or files can be left out"
+						},
+						"notices": {
+							"loading": "Reading the selected folders' .contextignore files…",
+							"rules": "{file} leaves out what it lists, after the default rules. Edit that file in the repository to change what it leaves out.",
+							"unreadable": {
+								"tooLarge": "{file} is larger than 64 KiB, so the sync can't apply it: nothing in that folder is added, changed or pruned until the file is smaller.",
+								"encoding": "{file} isn't UTF-8 text, so the sync can't apply it: nothing in that folder is added, changed or pruned until the file is saved as UTF-8.",
+								"notRegular": "{file} isn't a regular file (it may be a symbolic link), so the sync can't apply it: nothing in that folder is added, changed or pruned until it is one."
+							},
+							"rejected": "Line {line} of {file} has more than two `**` groups, which can't be evaluated in time, so every sync fails until that rule is simplified.",
+							"failed": "Couldn't read {file}, so what it leaves out can't be shown here. Try again later."
 						}
 					},
 					"summary": {
@@ -3906,7 +4291,8 @@
 						"matchNow": "{count, plural, one {# file matches} other {# files match}} right now.",
 						"matchTruncated": "{count, plural, one {# file matches} other {# files match}} in the part of the branch shown; more may exist.",
 						"unreadable": "Files the sync can't read are skipped when it runs.",
-						"policyCaveat": "A ticked folder's .contextignore may leave out more."
+						"policyCaveat": "A ticked folder's .contextignore may leave out more.",
+						"cantCount": "Can't count yet."
 					}
 				},
 				"writeFolders": {
@@ -7208,7 +7594,38 @@
 				"showLeftOut": "Show {count, plural, one {# left-out file} other {# left-out files}}",
 				"hideLeftOut": "Hide left-out files",
 				"leftOutTag": "left out · {rule}",
-				"leftOutTitle": "Left out by {rule}"
+				"leftOutTitle": "Left out by {rule}",
+				"branchOnlyTag": "your branch",
+				"branchOnlyTitle": "Only on your proposal branch. The published version does not have this file.",
+				"deletedOnBranchTag": "deleted on your branch",
+				"deletedOnBranchTitle": "Your proposal branch deletes this file.",
+				"changedOnBranchTag": "changed on your branch",
+				"changedOnBranchTitle": "Your proposal branch changes this file."
+			},
+			"branchFiles": {
+				"branchOnlyBadge": "Only on your branch",
+				"branchOnlyNotice": "This file is only on your proposal branch. The published version does not have it yet.",
+				"changedNotice": "Your proposal branch changes this file. You see the published version here.",
+				"deletedNotice": "Your proposal branch deletes this file. You see the published version here.",
+				"listHeading": "Files your branch changes",
+				"restore": "Restore published version",
+				"restoreConfirmTitle": "Restore {path} to the published version?",
+				"restoreConfirmMessage": "Fabric adds a change to your proposal branch that puts the published version of this file back.",
+				"restoreSuccess": "Suggested. Fabric will put the published version back on your branch.",
+				"deleteFromBranch": "Delete from my branch",
+				"deleteConfirmTitle": "Delete {path} from your proposal branch?",
+				"deleteConfirmMessage": "The published version does not have this file, so Fabric adds a change to your branch that removes it.",
+				"deleteSuccess": "Suggested. Fabric will delete the file from your branch.",
+				"actionLabel": "{action}: {path}",
+				"edit": "Edit",
+				"editorLabel": "Edit {path}",
+				"suggest": "Suggest change",
+				"cancel": "Cancel",
+				"suggestSuccess": "Suggested. Fabric will add the change to your branch.",
+				"noChanges": "There is no change to suggest.",
+				"loadError": "The file on your branch could not be loaded. Refresh and try again.",
+				"binary": "This file cannot be shown here.",
+				"download": "Download it"
 			},
 			"fileHistory": {
 				"button": "History",
@@ -7472,7 +7889,17 @@
 				"save": "Save",
 				"cancel": "Cancel",
 				"close": "Close",
-				"saved": "Settings saved"
+				"saved": "Settings saved",
+				"reviewPolicy": {
+					"title": "Proposal review",
+					"description": "How many reviewers must approve a proposed change before it is published.",
+					"requiredLabel": "Approvals required",
+					"proposerExcluded": "The person who proposed a change cannot approve it.",
+					"restrictLabel": "Only selected members can approve",
+					"tooFewApprovers": "Select at least as many approvers as the approvals you require.",
+					"save": "Save review policy",
+					"saved": "Review policy saved"
+				}
 			},
 			"pluginReport": {
 				"title": "{count, plural, one {# file is} other {# files are}} not delivered to coding tools",
@@ -7742,8 +8169,21 @@
 						"label": "Folder",
 						"placeholder": "e.g. agents or tools/claude",
 						"add": "Use this folder",
-						"hint": "Type the folder that holds the instructions. Leaving something out inside it needs the tree, so it can't be done for folders the tree doesn't show.",
+						"hint": "Type the folder that holds the instructions. To leave something out inside it, type that below.",
 						"empty": "Type a folder, or use Select all to sync the whole repository."
+					},
+					"typedExclusion": {
+						"label": "Leave out a folder or file",
+						"placeholder": "e.g. agents/drafts/ or agents/notes.md",
+						"add": "Leave out",
+						"hint": "Type a path inside the synced folder; end a folder with /. It is added to the project's ignore rules, which folder uploads also use. A .fabricignore with rules in the synced folder replaces those rules.",
+						"empty": "Type a folder or file inside the synced folder.",
+						"noFolder": "Choose the folder to sync first: only something inside it can be left out.",
+						"rulesUnknown": "The project's ignore rules couldn't be loaded, so nothing can be left out here.",
+						"fabricignore": "This folder's .fabricignore file replaces the project's ignore rules. Edit that file in the repository to change what is left out.",
+						"invalid": "“{path}” isn't a usable path inside the repository.",
+						"outside": "“{path}” isn't inside {folder}/, the folder this syncs.",
+						"duplicate": "“{path}” is already left out."
 					},
 					"removalNotice": "Saving removes these project ignore rules, which folder uploads also use:",
 					"movedClearedChanges": "Moving the sync cleared {changes, plural, one {the change} other {the # changes}} you made under {scope, select, root {the whole repository} other {{from}/}}.",
@@ -7774,10 +8214,12 @@
 					"selectNone": "Select none",
 					"selectionActions": "Select",
 					"searchPlaceholder": "Search folders and files",
+					"showSelectedOnly": "Show only selected",
 					"collapseAll": "Collapse all",
 					"loading": "Loading the branch's folders and files…",
 					"empty": "No files on this branch.",
 					"noMatches": "No folders or files match this search.",
+					"noneSelected": "Nothing is selected or left out yet.",
 					"unsupported": "This repository type doesn't support browsing. Type the folder below.",
 					"truncated": "This branch is too large to list in full: only the first {max, number} entries are shown. Type any other folder below.",
 					"error": "Couldn't list this branch's folders and files. Type the folder below, or try again later.",
@@ -8044,7 +8486,28 @@
 				"checkingBody": "The proposal is still being checked. Its file changes will appear when the checks finish.",
 				"validationRejectedBody": "The proposal did not pass its file checks, so it cannot be reviewed or published.",
 				"validationFailedBody": "The proposal checks did not finish. Ask the proposer to submit it again.",
-				"stale": "The published version changed after this proposal was submitted. The proposer must resubmit it against the current version.",
+				"stale": "The published version changed after this proposal was submitted. The proposer can rebase it onto the current version.",
+				"rebase": {
+					"button": "Rebase onto current version",
+					"hint": "Carries your changes onto the version published now. Where a file changed on both sides, the changes are combined when they touch different lines.",
+					"success": "Rebased as proposal version {version}. It replaces the stale proposal.",
+					"duplicate": "You already proposed this change on the published version (proposal version {version}). Cancel the stale proposal.",
+					"dialogTitle": "Resolve the conflicts",
+					"dialogDescription": "These files changed both in your proposal and in published version {version}. Choose what each file should hold, then submit. Nothing changes until you submit.",
+					"cleanCount": "{count, plural, one {# other file was combined without a conflict.} other {# other files were combined without a conflict.}}",
+					"reasons": {
+						"content": "Both sides changed the same lines.",
+						"delete-edit": "One side deleted this file and the other changed it.",
+						"binary": "This file is not text and changed on both sides."
+					},
+					"editText": "Edit the text",
+					"keepPublished": "Keep the published version",
+					"deleteFile": "Delete the file",
+					"textLabel": "Text of {path}",
+					"markersLeft": "Some text still holds conflict markers. Resolve every conflict block before you submit.",
+					"close": "Close",
+					"submit": "Submit rebased proposal"
+				},
 				"add": "Added",
 				"edit": "Edited",
 				"delete": "Deleted",
@@ -8066,6 +8529,15 @@
 				"rejectConfirmTitle": "Reject this proposal?",
 				"rejectConfirmBody": "It will not change the published instructions.",
 				"approveSuccess": "Proposal approved and published.",
+				"approvalRecorded": "Your approval is recorded: {count} of {required}. It publishes once enough reviewers approve.",
+				"approvalProgress": "{count} of {required} approvals",
+				"approveCounted": "Approve ({count} of {required})",
+				"youApproved": "You approved ({count} of {required})",
+				"diffModeLabel": "How to show this change",
+				"diffModeRendered": "Rendered",
+				"diffModeRaw": "Raw lines",
+				"renderedDiffLabel": "Rendered changes to {path}",
+				"frontmatterChanged": "The frontmatter changed too. Switch to raw lines to see it.",
 				"rejectSuccess": "Proposal rejected.",
 				"cancelSuccess": "Proposal canceled.",
 				"previousPage": "Previous",
@@ -8239,6 +8711,28 @@
 						"loadingMoreBranches": "Loading more branches…"
 					}
 				}
+			},
+			"digest": {
+				"title": "Since your last visit",
+				"since": "Last seen {time}",
+				"versionsTitle": "{count, plural, one {# new version published} other {# new versions published}}",
+				"versionUploaded": "Version {version}, published by {name}",
+				"versionFromRepository": "Version {version}, synced from {ref} {sha}",
+				"repository": "the repository",
+				"teammate": "a teammate",
+				"pathsTitle": "{count, plural, one {# file changed} other {# files changed}} (version {from} → version {to})",
+				"change": {
+					"added": "Added",
+					"changed": "Changed",
+					"removed": "Removed"
+				},
+				"morePaths": "and {count} more",
+				"seenVersionGone": "Version {version}, the one you last saw, is no longer kept, so the changed files can't be listed.",
+				"proposalsTitle": "{count, plural, one {# proposal decided} other {# proposals decided}}",
+				"proposalApproved": "{title} was approved by {name}",
+				"proposalRejected": "{title} was rejected by {name}",
+				"proposalVersion": "Proposal version {version}",
+				"markSeen": "Mark all as seen"
 			},
 			"compare": {
 				"title": "Compare versions",
@@ -9467,9 +9961,32 @@
 		}
 	},
 	"workflows": {
+		"results": {
+			"stepOutput": "Step output",
+			"rawOutput": "Raw output",
+			"rawStepOutput": "Raw step output",
+			"draftConfiguration": "Current draft configuration"
+		},
 		"list": {
 			"scheduled": "Scheduled",
 			"scheduledTitle": "Runs on a schedule"
+		},
+		"studio": {
+			"filterActive": "Active",
+			"filterDraft": "Draft",
+			"filterPaused": "Paused",
+			"filterArchived": "Archived",
+			"filterScheduled": "Scheduled",
+			"statusLabel": "Workflow status",
+			"allStatuses": "All statuses",
+			"welcomeTitle": "Build once. Run with confidence.",
+			"welcomeBody": "Create a workflow or open one from the navigator. Connect your existing tools, arrange steps on the canvas, and inspect every run in the same studio.",
+			"composeTitle": "Connect and compose",
+			"composeBody": "Add executable steps using your personal or team connections.",
+			"publishTitle": "Save and publish",
+			"publishBody": "Keep a saved draft, then publish a version to enable schedules and webhook triggers.",
+			"inspectTitle": "Run and inspect",
+			"inspectBody": "Follow execution status, step outputs, and history alongside your workflow."
 		}
 	},
 	"choosePlan": {
@@ -10035,9 +10552,6 @@
 			"expandLane": "Expand the {label} lane to show the work items in it.",
 			"collapseLane": "Collapse the {label} lane back to a narrow column.",
 			"contextStaleness": "When this spec was last rebuilt from connected context. Refreshing folds in documents and answers added since then.",
-			"agentConnected": "Live task-agent updates are streaming in, so this status reflects the current run.",
-			"agentDisconnected": "Live task-agent updates aren't coming through. The status shown may lag until the connection returns.",
-			"agentStatus": "The coding agent for this task is {status}.",
 			"pmSyncChip": {
 				"synced": "Synced — every update to this item pushes to {pmToolName} automatically. Opens a menu of sync actions.",
 				"notsynced": "Auto-sync is on, but no card exists yet — the next save creates one in {pmToolName}. Opens a menu of sync actions.",
@@ -10819,5 +11333,10 @@
 			"title": "Nothing to do",
 			"description": "Action items from your meetings, and to-dos you add yourself, will show up here."
 		}
+	},
+	"agentDirectory": {
+		"agents": "Agents",
+		"runs": "Runs & History",
+		"inbox": "Inbox"
 	}
 }

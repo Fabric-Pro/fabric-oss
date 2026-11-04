@@ -5,7 +5,28 @@
  * secret, and that audit rows name the credential without its secret.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const FULL_SCOPES = "repo, workflow, admin:org, project, user";
+
+/** GitHub's answer to `GET /user` (and `/user/repos`) for the stub. */
+function githubResponse(
+	status: number,
+	scopes: string | null,
+	body: unknown = { id: 42, login: "example-dev" },
+) {
+	return {
+		ok: status >= 200 && status < 300,
+		status,
+		json: async () => body,
+		headers: {
+			get: (name: string) =>
+				name.toLowerCase() === "x-oauth-scopes" ? scopes : null,
+		},
+	};
+}
+
+const fetchMock = vi.fn();
 
 const m = vi.hoisted(() => ({
 	isFeatureEnabled: vi.fn(),
@@ -106,8 +127,16 @@ async function call(
 	});
 }
 
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
+
 beforeEach(() => {
 	vi.clearAllMocks();
+	// No test reaches GitHub: a classic token with every scope by default.
+	fetchMock.mockReset();
+	fetchMock.mockResolvedValue(githubResponse(200, FULL_SCOPES));
+	vi.stubGlobal("fetch", fetchMock);
 	m.isFeatureEnabled.mockResolvedValue(true);
 	m.verifyMembership.mockResolvedValue({ role: "member" });
 	m.createCredential.mockImplementation(async (data) =>
@@ -206,6 +235,161 @@ describe("create", () => {
 		await expect(
 			call("create", { ...base, provider: "CUSTOM" }),
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+	});
+});
+
+describe("create: a GitHub token", () => {
+	const base = {
+		owner: "me",
+		shareWithOrganization: false,
+		provider: "GITHUB",
+		kind: "PAT",
+		label: "Full Fabric",
+		secret: "ghp_example_secret_value",
+	};
+
+	it("stores the account id, login and scopes GitHub reports for the token", async () => {
+		await call("create", base);
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(url).toBe("https://api.github.com/user");
+		expect(init.headers.Authorization).toBe(
+			"Bearer ghp_example_secret_value",
+		);
+		expect(m.createCredential).toHaveBeenCalledWith(
+			expect.objectContaining({
+				externalAccountId: "42",
+				externalAccountLogin: "example-dev",
+				scopes: ["repo", "workflow", "admin:org", "project", "user"],
+			}),
+			{ tx: true },
+		);
+	});
+
+	it("refuses a token GitHub rejects (401) and saves nothing", async () => {
+		fetchMock.mockResolvedValue(githubResponse(401, null, {}));
+		await expect(call("create", base)).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringContaining("GitHub rejected this token"),
+		});
+		expect(m.createCredential).not.toHaveBeenCalled();
+	});
+
+	it("saves without the account when GitHub cannot be reached", async () => {
+		fetchMock.mockRejectedValue(new TypeError("fetch failed"));
+		await call("create", base);
+		expect(m.createCredential).toHaveBeenCalledWith(
+			expect.objectContaining({
+				externalAccountId: null,
+				externalAccountLogin: null,
+			}),
+			{ tx: true },
+		);
+	});
+
+	it("saves without the account when GitHub answers 5xx", async () => {
+		fetchMock.mockResolvedValue(githubResponse(502, null, {}));
+		await call("create", base);
+		expect(m.createCredential).toHaveBeenCalledWith(
+			expect.objectContaining({ externalAccountLogin: null }),
+			{ tx: true },
+		);
+	});
+
+	it("refuses a classic token missing a required scope, naming exactly what to add", async () => {
+		fetchMock.mockResolvedValue(githubResponse(200, "repo, read:org"));
+		const error = await call("create", base).catch((e: unknown) => e);
+		expect(error).toMatchObject({
+			code: "BAD_REQUEST",
+			data: {
+				reason: "GITHUB_TOKEN_MISSING_SCOPES",
+				tokenType: "classic",
+				missing: [
+					"workflow",
+					"admin:org",
+					"project",
+					"read:user",
+					"user:email",
+				],
+			},
+		});
+		expect((error as Error).message).toBe(
+			"This token is missing: workflow, admin:org, project, read:user, user:email. Edit it on GitHub (Settings → Developer settings → Personal access tokens) and add them, then save again.",
+		);
+		expect(JSON.stringify(error)).not.toContain("ghp_example_secret_value");
+		expect(m.createCredential).not.toHaveBeenCalled();
+	});
+
+	it("counts implied scopes: admin:org covers read:org, user covers read:user and user:email", async () => {
+		fetchMock.mockResolvedValue(
+			githubResponse(200, "repo, workflow, admin:org, project, user"),
+		);
+		await call("create", base);
+		expect(m.createCredential).toHaveBeenCalled();
+	});
+
+	it("asks to confirm a fine-grained token's permissions, then saves it once confirmed", async () => {
+		fetchMock.mockImplementation(async (url: string) =>
+			url.includes("/user/repos")
+				? githubResponse(200, null, [])
+				: githubResponse(200, null),
+		);
+		await expect(call("create", base)).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			data: {
+				reason: "GITHUB_TOKEN_CONFIRM_PERMISSIONS",
+				tokenType: "fine-grained",
+				canListRepositories: true,
+				permissions: expect.arrayContaining([
+					{ name: "Contents", access: "write" },
+					{ name: "Metadata", access: "read" },
+				]),
+			},
+		});
+		expect(m.createCredential).not.toHaveBeenCalled();
+		expect(fetchMock.mock.calls.map((c) => c[0])).toContain(
+			"https://api.github.com/user/repos?per_page=1",
+		);
+
+		await call("create", { ...base, confirmFineGrainedPermissions: true });
+		expect(m.createCredential).toHaveBeenCalledWith(
+			expect.objectContaining({
+				externalAccountLogin: "example-dev",
+				scopes: [],
+			}),
+			{ tx: true },
+		);
+	});
+
+	it("asks GitHub nothing for a GitHub Enterprise origin or another kind", async () => {
+		await call("create", {
+			...base,
+			origin: "https://github.example.com",
+		});
+		await call("create", { ...base, kind: "API_KEY" });
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("replacing the secret checks the new token and records its account", async () => {
+		m.getCredentialMetadata.mockResolvedValue(meta());
+		m.updateCredential.mockResolvedValue(meta());
+		await call("update", { id: "cred-1", secret: "ghp_new_value" });
+		expect(m.updateCredential).toHaveBeenCalledWith(
+			expect.objectContaining({
+				secret: { token: "ghp_new_value" },
+				account: {
+					externalAccountId: "42",
+					externalAccountLogin: "example-dev",
+				},
+			}),
+			{ tx: true },
+		);
+
+		fetchMock.mockResolvedValue(githubResponse(401, null, {}));
+		m.updateCredential.mockClear();
+		await expect(
+			call("update", { id: "cred-1", secret: "ghp_bad_value" }),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(m.updateCredential).not.toHaveBeenCalled();
 	});
 });
 

@@ -12,6 +12,7 @@ export type {
 	ConnectionCheckStatus,
 	ConnectionTestResult,
 } from "./connection-test-result";
+export * from "./databricks-sql";
 // Databricks Vector Search
 export * from "./databricks-vector-search/index";
 // GitHub integrations
@@ -27,7 +28,6 @@ export * from "./repo-token-refresh-fault";
 // Shared attachment types + constants (chat-thread image attachments feature)
 export * from "./shared/attachment-constants";
 export * from "./shared/attachment-types";
-
 // Slack integrations
 // Note: Internal utilities are not re-exported to avoid naming conflicts
 export {

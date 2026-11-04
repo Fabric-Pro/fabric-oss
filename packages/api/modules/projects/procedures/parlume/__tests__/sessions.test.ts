@@ -553,7 +553,7 @@ describe("Parlume session procedures", () => {
 			id: `session-${index}`,
 			createdAt,
 			transcriptContextId: null,
-			_count: { turns: index },
+			_count: { turns: index, suggestions: index * 2 },
 		}));
 		mocks.sessionFindMany
 			.mockResolvedValueOnce([])
@@ -564,7 +564,11 @@ describe("Parlume session procedures", () => {
 			input: { projectId: "project-1" },
 			context,
 		})) as {
-			sessions: Array<{ id: string; requestCount: number }>;
+			sessions: Array<{
+				id: string;
+				requestCount: number;
+				suggestionCount: number;
+			}>;
 			nextCursor: unknown;
 			total: number | null;
 		};
@@ -577,6 +581,9 @@ describe("Parlume session procedures", () => {
 		expect(page.sessions.map((entry) => entry.requestCount)).toEqual([
 			0, 1, 2, 3, 4,
 		]);
+		expect(page.sessions.map((entry) => entry.suggestionCount)).toEqual([
+			0, 2, 4, 6, 8,
+		]);
 		expect(page.sessions[0]).not.toHaveProperty("_count");
 		expect(mocks.sessionFindMany).toHaveBeenNthCalledWith(
 			2,
@@ -585,7 +592,7 @@ describe("Parlume session procedures", () => {
 				orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 				take: 6,
 				select: expect.objectContaining({
-					_count: { select: { turns: true } },
+					_count: { select: { turns: true, suggestions: true } },
 				}),
 			}),
 		);
@@ -1120,6 +1127,24 @@ describe("Parlume session procedures", () => {
 		expect(mocks.sessionCreate).toHaveBeenCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({ suggestionsEnabled: false }),
+			}),
+		);
+	});
+
+	it("records an invitation whose suggestions are for the team only", async () => {
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl: "https://teams.microsoft.com/l/meetup-join/example",
+				suggestionAudience: "TEAM",
+			},
+			context,
+		});
+
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ suggestionAudience: "TEAM" }),
 			}),
 		);
 	});

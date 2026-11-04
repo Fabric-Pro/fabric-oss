@@ -23,7 +23,6 @@
  */
 import type {
 	PersistCycleTerminalInput,
-	persistCycleTerminal as PersistFn,
 	PublishingPreferencesSnapshot,
 	PublishingTopicSuggestions,
 	SourceCoverage,
@@ -35,6 +34,7 @@ import {
 	proxyActivities,
 } from "@temporalio/workflow";
 import type * as acts from "../activities/publishing-suggestion";
+import type { persistCycleTerminal as PersistFn } from "../activities/publishing-suggestion/persist-cycle-terminal";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 import {
 	planSpentFailureAsError,

@@ -16,6 +16,7 @@ import {
 	getParlumeReadiness,
 	isParlumeReady,
 } from "../../lib/parlume-readiness";
+import { PARLUME_SUGGESTION_AUDIENCES } from "../../lib/parlume-suggestion-audience";
 import { requireParlumeProject } from "../parlume/sessions";
 
 /** Why auto-join cannot be turned on without the caller's Microsoft account. */
@@ -54,6 +55,9 @@ export const setParlumeAutoJoinProcedure = tenantProtectedProcedure
 			enabled: z.boolean(),
 			toolsReadOnly: z.boolean().default(true),
 			suggestionsEnabled: z.boolean().default(true),
+			// Optional, not defaulted: a client that does not send it must not
+			// turn a team-only series back to the meeting chat.
+			suggestionAudience: z.enum(PARLUME_SUGGESTION_AUDIENCES).optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -110,6 +114,12 @@ export const setParlumeAutoJoinProcedure = tenantProtectedProcedure
 						parlumeAutoJoinUserId: context.user.id,
 						parlumeAutoJoinToolsReadOnly: input.toolsReadOnly,
 						parlumeAutoJoinSuggestions: input.suggestionsEnabled,
+						...(input.suggestionAudience
+							? {
+									parlumeAutoJoinSuggestionAudience:
+										input.suggestionAudience,
+								}
+							: {}),
 						parlumeAutoJoinError: null,
 						parlumeAutoJoinErrorAt: null,
 					}
@@ -123,6 +133,7 @@ export const setParlumeAutoJoinProcedure = tenantProtectedProcedure
 				parlumeAutoJoin: true,
 				parlumeAutoJoinToolsReadOnly: true,
 				parlumeAutoJoinSuggestions: true,
+				parlumeAutoJoinSuggestionAudience: true,
 			},
 		});
 
@@ -140,6 +151,7 @@ export const setParlumeAutoJoinProcedure = tenantProtectedProcedure
 				enabled: updated.parlumeAutoJoin,
 				toolsReadOnly: updated.parlumeAutoJoinToolsReadOnly,
 				suggestionsEnabled: updated.parlumeAutoJoinSuggestions,
+				suggestionAudience: updated.parlumeAutoJoinSuggestionAudience,
 			},
 		});
 
@@ -148,5 +160,6 @@ export const setParlumeAutoJoinProcedure = tenantProtectedProcedure
 			enabled: updated.parlumeAutoJoin,
 			toolsReadOnly: updated.parlumeAutoJoinToolsReadOnly,
 			suggestionsEnabled: updated.parlumeAutoJoinSuggestions,
+			suggestionAudience: updated.parlumeAutoJoinSuggestionAudience,
 		};
 	});

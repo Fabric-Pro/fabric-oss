@@ -13,10 +13,12 @@
 import type { DecisionConflictFinding } from "@repo/agent-types";
 import type { AiJobKey } from "@repo/ai";
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import { logger } from "@repo/logs";
 import { z } from "zod";
 import type { CandidateDecision } from "./select-candidates";
@@ -321,12 +323,16 @@ export async function judgeDecisionContradictions(
 		// burning tokens the moment we stop waiting for it.
 		const abortController = new AbortController();
 		const result = await withTimeout(
-			generateObject({
-				model,
-				schema: DecisionJudgeOutputSchema,
-				prompt: buildJudgePrompt(candidates, items),
-				abortSignal: abortController.signal,
-			}),
+			requireStructuredOutput(
+				generateText({
+					model,
+					output: Output.object({
+						schema: DecisionJudgeOutputSchema,
+					}),
+					prompt: buildJudgePrompt(candidates, items),
+					abortSignal: abortController.signal,
+				}),
+			),
 			resolveTimeoutMs(),
 			() => abortController.abort(),
 		);
@@ -341,7 +347,7 @@ export async function judgeDecisionContradictions(
 			projectId,
 		});
 
-		return normalizeConflicts(result.object.conflicts, candidates, items);
+		return normalizeConflicts(result.output.conflicts, candidates, items);
 	} catch (error) {
 		logger.warn("[Decision Pre-Check] judge failed", {
 			projectId,

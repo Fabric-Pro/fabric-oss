@@ -107,6 +107,11 @@ vi.mock("next-intl", () => ({
 
 import { toast } from "sonner";
 import { ContextWriteTargetsDialog } from "../ContextWriteTargetsDialog";
+import {
+	boxIn,
+	findTreeItem,
+	queryTreeItem,
+} from "../repository-sync/__tests__/tree-queries";
 
 const NS = "projects.contexts.livingMemory.writeFolders";
 
@@ -318,15 +323,11 @@ describe("adding a folder", () => {
 		mount();
 		await openForm(user);
 
-		expect(
-			await screen.findByRole("checkbox", { name: "docs/private" }),
-		).toBeDisabled();
-		expect(
-			screen.queryByRole("checkbox", { name: "src" }),
-		).not.toBeInTheDocument();
-		await user.click(
-			await screen.findByRole("checkbox", { name: "docs/ai" }),
-		);
+		const privateFolder = await findTreeItem("docs/private");
+		expect(privateFolder).toHaveAttribute("aria-disabled", "true");
+		expect(boxIn(privateFolder)).toBeDisabled();
+		expect(queryTreeItem("src")).not.toBeInTheDocument();
+		await user.click(boxIn(await findTreeItem("docs/ai")));
 		expect(screen.getByTestId("write-folder-chosen")).toHaveTextContent(
 			"docs/ai",
 		);

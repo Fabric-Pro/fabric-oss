@@ -165,6 +165,7 @@ describe("resolveTourSteps — viewer has no project", () => {
 			"aiKey",
 			"assistant",
 			"projects",
+			"agent-runs",
 			"overview",
 			"apiKey",
 			"wrapup",
@@ -231,7 +232,7 @@ describe("resolveTourSteps — viewer has no project", () => {
 		});
 
 		expect(steps.filter(isProjectScoped).map((s) => s.id)).toEqual([
-			"documents",
+			"contextWorkspaceDocuments",
 		]);
 	});
 
@@ -246,6 +247,7 @@ describe("resolveTourSteps — viewer has no project", () => {
 			"aiKey",
 			"assistant",
 			"projects",
+			"agent-runs",
 			"apiKey",
 			"wrapup",
 		]);
@@ -333,7 +335,13 @@ describe("resolveTourPosition — the viewer keeps their place", () => {
 	});
 
 	it("skips nothing when several consecutive steps go at once", () => {
-		const steps = without("overview", "documents", "glossy", "roadmap");
+		const steps = without(
+			"overview",
+			"contextWorkspaceDocuments",
+			"documents",
+			"glossy",
+			"roadmap",
+		);
 		expect(steps[resolveTourPosition(steps, "overview")].id).toBe(
 			"proposals",
 		);

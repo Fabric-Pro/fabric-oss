@@ -28,6 +28,7 @@ import {
 	Star,
 } from "lucide-react";
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AgentCard } from "./AgentCard";
@@ -40,7 +41,7 @@ import { UnifiedAgentListView } from "./UnifiedAgentListView";
 const LOOM_AGENT_IDS = new Set([FABRIC_AGENT_ID, "fabric-ai"]);
 
 type ViewMode = "grid" | "list";
-type AgentScope = "ALL" | "SYSTEM" | "ORGANIZATION" | "PERSONAL";
+type AgentScope = "ALL" | "SYSTEM" | "ORGANIZATION";
 
 export function UnifiedAgentView() {
 	const {
@@ -49,11 +50,23 @@ export function UnifiedAgentView() {
 		isOrgContext,
 	} = useOrganizationContext();
 	const queryClient = useQueryClient();
-	const [searchQuery, setSearchQuery] = useState("");
+	const params = useSearchParams();
+
+	const pathname = usePathname();
+	const requestedScope = params.get("scope");
+	const hasRequestedScope =
+		requestedScope === "ALL" ||
+		requestedScope === "SYSTEM" ||
+		requestedScope === "ORGANIZATION";
+	const [searchQuery, setSearchQuery] = useState(params.get("q") ?? "");
 	const [scopeFilter, setScopeFilter] = useState<AgentScope>(
-		isOrgContext ? "ORGANIZATION" : "ALL",
+		hasRequestedScope
+			? requestedScope
+			: isOrgContext
+				? "ORGANIZATION"
+				: "ALL",
 	);
-	const hasOrgContextResolved = useRef(isOrgContext);
+	const hasOrgContextResolved = useRef(isOrgContext || hasRequestedScope);
 
 	// Recompute default scope when org context finishes loading.
 	// useOrganizationContext() initially returns isOrgContext === false until the
@@ -66,7 +79,55 @@ export function UnifiedAgentView() {
 		}
 	}, [isOrgContext]);
 
-	const [viewMode, setViewMode] = useState<ViewMode>("list");
+	const [viewMode, setViewMode] = useState<ViewMode>(
+		params.get("view") === "grid" ? "grid" : "list",
+	);
+	const directoryParams = new URLSearchParams(params.toString());
+	directoryParams.set("q", searchQuery);
+	directoryParams.set("scope", scopeFilter);
+	directoryParams.set("view", viewMode);
+	const directoryQuery = directoryParams.toString();
+
+	const queryText = params.get("q");
+	const requestedView = params.get("view");
+	useEffect(() => {
+		setSearchQuery(queryText ?? "");
+		if (
+			requestedScope === "ALL" ||
+			requestedScope === "SYSTEM" ||
+			requestedScope === "ORGANIZATION"
+		) {
+			setScopeFilter(requestedScope);
+		} else {
+			setScopeFilter(isOrgContext ? "ORGANIZATION" : "ALL");
+		}
+		setViewMode(requestedView === "grid" ? "grid" : "list");
+	}, [queryText, requestedScope, requestedView, isOrgContext]);
+	const updateDirectory = (patch: {
+		q?: string;
+		scope?: AgentScope;
+		view?: ViewMode;
+	}) => {
+		if (patch.q !== undefined) {
+			setSearchQuery(patch.q);
+		}
+		if (patch.scope) {
+			setScopeFilter(patch.scope);
+		}
+		if (patch.view) {
+			setViewMode(patch.view);
+		}
+		const next = new URLSearchParams(window.location.search);
+		for (const [key, value] of Object.entries(patch)) {
+			next.set(key, value);
+		}
+		window.history.replaceState(
+			window.history.state,
+			"",
+			`${pathname}?${next}`,
+		);
+	};
+
 	const [certifiedOnly, setCertifiedOnly] = useState(false);
 	const [popularOnly, setPopularOnly] = useState(false);
 	const [favoritedOnly, setFavoritedOnly] = useState(false);
@@ -74,15 +135,16 @@ export function UnifiedAgentView() {
 	const basePath = `${contextBasePath}/agents`;
 
 	// Fetch system agents from database-backed registry
-	const { data: registryData, isLoading: loadingAvailable } = useQuery(
-		orpc.agents.registry.list.queryOptions({
+	const { data: registryData, isLoading: loadingAvailable } = useQuery({
+		...orpc.agents.registry.list.queryOptions({
 			input: {
 				organizationId: organizationId ?? null,
 				limit: 100,
 				offset: 0,
 			},
 		}),
-	);
+		enabled: !!organizationId,
+	});
 
 	// Fetch agent template instances (staleTime: 0 ensures fresh data after create/delete)
 	const { data: instancesData, isLoading: loadingInstances } = useQuery({
@@ -96,6 +158,7 @@ export function UnifiedAgentView() {
 			},
 		}),
 		staleTime: 0,
+		enabled: !!organizationId,
 	});
 
 	// Delete mutation for instances
@@ -104,7 +167,7 @@ export function UnifiedAgentView() {
 			onSuccess: () => {
 				toast.success("Agent deleted");
 				queryClient.invalidateQueries({
-					queryKey: ["agentTemplates", "instances"],
+					queryKey: orpc.agentTemplates.instances.key(),
 				});
 			},
 			onError: () => {
@@ -152,12 +215,18 @@ export function UnifiedAgentView() {
 		if (!instancesData?.instances) {
 			return [];
 		}
-		return instancesData.instances.map((instance: any) => ({
-			...instance,
-			scope: instance.organizationId ? "ORGANIZATION" : "PERSONAL",
-			_type: "instance" as const,
-		}));
-	}, [instancesData]);
+		return instancesData.instances
+			.filter(
+				(instance) =>
+					!!organizationId &&
+					instance.organizationId === organizationId,
+			)
+			.map((instance: any) => ({
+				...instance,
+				scope: "ORGANIZATION",
+				_type: "instance" as const,
+			}));
+	}, [instancesData, organizationId]);
 
 	// Combined and filtered agents
 	const filteredItems = useMemo(() => {
@@ -230,32 +299,10 @@ export function UnifiedAgentView() {
 	const totalCount = systemAgents.length + instances.length;
 	const systemCount = systemAgents.length;
 	const orgCount = instances.filter((i) => i.scope === "ORGANIZATION").length;
-	const personalCount = instances.filter(
-		(i) => i.scope === "PERSONAL",
-	).length;
-
-	// Build chip config — hide Organization in personal context, and only show Personal when personal items exist
 	const chips: { value: AgentScope; label: string; count: number }[] = [
 		{ value: "ALL", label: "All", count: totalCount },
 		{ value: "SYSTEM", label: "System", count: systemCount },
-		...(isOrgContext
-			? [
-					{
-						value: "ORGANIZATION" as const,
-						label: "Organization",
-						count: orgCount,
-					},
-				]
-			: []),
-		...(personalCount > 0
-			? [
-					{
-						value: "PERSONAL" as const,
-						label: "Personal",
-						count: personalCount,
-					},
-				]
-			: []),
+		{ value: "ORGANIZATION", label: "Organization", count: orgCount },
 	];
 
 	return (
@@ -288,18 +335,18 @@ export function UnifiedAgentView() {
 				}
 			/>
 
-			{/* Full-width Databricks Genie search bar */}
+			{/* Agent search */}
 			<div className="relative w-full">
 				<Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
 				<SearchInput
-					placeholder="Search Genie Agents..."
+					placeholder="Search agents..."
 					value={searchQuery}
-					onChange={(e) => setSearchQuery(e.target.value)}
+					onChange={(e) => updateDirectory({ q: e.target.value })}
 					className="h-10 w-full rounded-full border-border bg-background pl-10 pr-4 text-[13px] shadow-2xs"
 				/>
 			</div>
 
-			{/* Databricks Genie pill filter row */}
+			{/* Agent scope and discovery filters */}
 			<div
 				data-onboarding-target="agents-scope-filter"
 				className="flex flex-wrap items-center gap-2"
@@ -315,7 +362,7 @@ export function UnifiedAgentView() {
 					<button
 						key={value}
 						type="button"
-						onClick={() => setScopeFilter(value)}
+						onClick={() => updateDirectory({ scope: value })}
 						aria-pressed={scopeFilter === value}
 						className={cn(
 							"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
@@ -383,7 +430,7 @@ export function UnifiedAgentView() {
 			<div data-onboarding-target="agents-featured">
 				<FeaturedAgentCard
 					name="Fabric Loom"
-					description="Genie is the AI coworker for engineering & product teams. Start a conversation across your agents, codebases, documents, and workflows."
+					description="Advisor is the AI coworker for engineering & product teams. Start a conversation across your agents, codebases, documents, and workflows."
 					href={`${basePath}/fabric-ai`}
 					icon={<SparklesIcon className="h-6 w-6" />}
 					badge="Orchestrator"
@@ -415,7 +462,7 @@ export function UnifiedAgentView() {
 						"Supports Fast, Balanced & Thorough reasoning modes",
 					]}
 					isPrimary
-					ctaLabel="Explore Genie"
+					ctaLabel="Open Advisor"
 				/>
 			</div>
 
@@ -441,7 +488,7 @@ export function UnifiedAgentView() {
 								viewMode === "list" ? "secondary" : "ghost"
 							}
 							size="sm"
-							onClick={() => setViewMode("list")}
+							onClick={() => updateDirectory({ view: "list" })}
 							aria-label="List view"
 							aria-pressed={viewMode === "list"}
 							className="h-7 gap-1.5 px-2 text-xs"
@@ -454,7 +501,7 @@ export function UnifiedAgentView() {
 								viewMode === "grid" ? "secondary" : "ghost"
 							}
 							size="sm"
-							onClick={() => setViewMode("grid")}
+							onClick={() => updateDirectory({ view: "grid" })}
 							aria-label="Grid view"
 							aria-pressed={viewMode === "grid"}
 							className="h-7 gap-1.5 px-2 text-xs"
@@ -470,10 +517,19 @@ export function UnifiedAgentView() {
 			{filteredItems.length === 0 && (
 				<Alert>
 					<AlertCircle className="h-4 w-4" />
-					<AlertTitle>No Results</AlertTitle>
+					<AlertTitle>
+						{scopeFilter === "ORGANIZATION" &&
+						orgCount === 0 &&
+						!searchQuery.trim()
+							? "No organization agents yet"
+							: "No results"}
+					</AlertTitle>
 					<AlertDescription>
-						No agents match your current filters. Try adjusting your
-						search or filter selection.
+						{scopeFilter === "ORGANIZATION" &&
+						orgCount === 0 &&
+						!searchQuery.trim()
+							? "Choose New to create an agent with a purpose, project knowledge and expected output, or select System to explore available agents."
+							: "No agents match your current filters. Try adjusting your search or filter selection."}
 					</AlertDescription>
 				</Alert>
 			)}
@@ -488,6 +544,7 @@ export function UnifiedAgentView() {
 									key={item.id}
 									instance={item}
 									basePath={contextBasePath}
+									directoryQuery={directoryQuery}
 									onDelete={handleDeleteInstance}
 								/>
 							) : (
@@ -499,6 +556,7 @@ export function UnifiedAgentView() {
 					<UnifiedAgentListView
 						items={filteredItems}
 						basePath={contextBasePath}
+						directoryQuery={directoryQuery}
 						onDeleteInstance={handleDeleteInstance}
 					/>
 				))}

@@ -826,16 +826,24 @@ function extractAnchorPathsList(existingDocument: string): string {
  * the model to apply a decision in ONE section and leave the others (commonly
  * the lower ones like Acceptance Criteria) stale and contradicting it. That is
  * the reported "updates the Use Cases but not the ACs" failure. This makes
- * propagation of a cross-cutting change explicit.
+ * propagation of a cross-cutting change explicit. It also covers placeholders:
+ * once the user supplies a value that the document still marks as TBD or
+ * "not yet defined", every placeholder for that value goes in the same edit,
+ * placeholders for other values stay, and a value that neither the user nor
+ * the provided context gives is never invented.
  */
 function crossSectionConsistencyClause(toolMode: "write" | "patch"): string {
 	const applyLine =
 		toolMode === "patch"
 			? "emit a patch for EVERY section the change touches — not just the first one you find"
 			: "update EVERY section the change touches in your rewrite";
+	const placeholderLine =
+		toolMode === "patch"
+			? "replace each placeholder for such a value wherever it appears in the document, in the same call, with a patch for every section that holds one"
+			: "replace each placeholder for such a value wherever it appears in the document, in your rewrite";
 	return `
 
-**CROSS-SECTION CONSISTENCY (critical):** When the user's change is a decision, requirement, term, rule, or constraint that affects more than one section — e.g. "bulk-added users should be members, not admins", a renamed field, or a changed acceptance rule — ${applyLine}. Update the Acceptance Criteria, Use Cases, Requirements, Data/Validation rules, and every other section that references the changed concept so the whole document stays internally consistent. "Make only the requested change" means do not rewrite UNRELATED content — it does NOT mean apply the decision in one place and leave other sections (especially lower ones like Acceptance Criteria) contradicting it. Before finishing, re-read every section and confirm none contradicts the change you just made.`;
+**CROSS-SECTION CONSISTENCY (critical):** When the user's change is a decision, requirement, term, rule, or constraint that affects more than one section — e.g. "bulk-added users should be members, not admins", a renamed field, a changed acceptance rule, or a commercial term such as a fee or a start date repeated in a summary, a schedule and a terms section — ${applyLine}. Update the Acceptance Criteria, Use Cases, Requirements, Data/Validation rules, and every other section that references the changed concept so the whole document stays internally consistent. "Make only the requested change" means do not rewrite UNRELATED content — it does NOT mean apply the decision in one place and leave other sections (especially lower ones like Acceptance Criteria) contradicting it. Placeholders such as TBD, TBC, to be determined, to be confirmed, not yet defined or not yet determined are stale once the user asks you to change the document and supplies the value they stand for, or asks you to take it from the provided context: ${placeholderLine}. Leave every placeholder for any other value as it is, and never invent a value that neither the user nor the provided context gives. Before finishing, re-read every section and confirm none contradicts the change you just made or still holds a placeholder for a value the user supplied.`;
 }
 
 function buildEditingRules(

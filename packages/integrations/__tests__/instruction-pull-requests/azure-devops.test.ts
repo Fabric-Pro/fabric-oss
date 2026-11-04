@@ -320,6 +320,37 @@ describe("Azure DevOps open, get, close and credentials", () => {
 		expect(calls).toHaveLength(1);
 	});
 
+	it("keeps a refusal's message as a sanitized providerMessage, without the rest of the body", async () => {
+		stubFetch(() =>
+			json(
+				{
+					$id: "1",
+					message:
+						"TF401398: The pull request cannot be activated because the source and/or the target branch no longer exists.",
+					typeKey: "GitPullRequestCannotBeActivated",
+					errorCode: 0,
+				},
+				400,
+			),
+		);
+		const error = (await azureDevOps
+			.open({
+				...target(),
+				sourceRef: BRANCH,
+				targetRef: "main",
+				title: "t",
+				body: "b",
+			})
+			.catch((e: unknown) => e)) as InstructionPullRequestError;
+		expect(error).toMatchObject({
+			providerStatus: 400,
+			providerMessage:
+				"TF401398: The pull request cannot be activated because the source and/or the target branch no longer exists.",
+		});
+		expect(JSON.stringify(error)).not.toContain("typeKey");
+		expect(inspect(error)).not.toContain(PAT);
+	});
+
 	it("is the adapter for AZURE_DEVOPS", () => {
 		expect(adapterFor("AZURE_DEVOPS")).toBe(azureDevOps);
 	});

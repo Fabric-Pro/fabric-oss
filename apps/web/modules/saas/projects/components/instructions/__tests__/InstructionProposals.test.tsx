@@ -41,6 +41,8 @@ const state = vi.hoisted(() => ({
 	reject: vi.fn(),
 	cancel: vi.fn(),
 	approveError: null as Error | null,
+	/** What `approve` answers; null for the default, published response. */
+	approveResult: null as Record<string, unknown> | null,
 	/** What `cancel` answers for the pull request (Fizzy #2563 spec §12). */
 	cancelPullRequest: null as "canceled" | "close_requested" | null,
 	refresh: vi.fn(),
@@ -168,11 +170,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							if (state.approveError) {
 								throw state.approveError;
 							}
-							return {
-								approved: true,
-								published: true,
-								version: 8,
-							};
+							return (
+								state.approveResult ?? {
+									approved: true,
+									published: true,
+									version: 8,
+									approvals: { count: 1, required: 1 },
+								}
+							);
 						}),
 					},
 					reject: {
@@ -348,7 +353,29 @@ vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
 	useConfirmationAlert: () => ({ confirm: confirmMock }),
 }));
 
+// The rebase action is `ProposalRebaseAction.test.tsx`'s; here only WHEN it
+// is offered.
+vi.mock("../ProposalRebaseAction", () => ({
+	ProposalRebaseAction: ({ snapshotId }: { snapshotId: string }) => (
+		<div data-testid="proposal-rebase-action">{snapshotId}</div>
+	),
+}));
+
+// The rendered Markdown diff is the document editor's TipTap pipeline; its
+// stand-in here shows which sides it was handed.
+vi.mock("../RenderedMarkdownDiff", () => ({
+	default: ({ before, after }: { before: string; after: string }) => (
+		<div data-testid="proposal-rendered-diff">
+			{`rendered:${before}=>${after}`}
+		</div>
+	),
+}));
+
+// The branch panel's file list reads the repository; it is its own suite.
+vi.mock("../BranchFileList", () => ({ BranchFileList: () => null }));
+
 import { InstructionProposals } from "../InstructionProposals";
+import { PROPOSAL_DIFF_MODE_STORAGE_KEY } from "../lib/use-proposal-diff-mode";
 
 function Wrapper({ children }: { children: ReactNode }) {
 	return (
@@ -433,6 +460,10 @@ beforeEach(() => {
 	state.reject.mockReset();
 	state.cancel.mockReset();
 	state.approveError = null;
+	state.approveResult = null;
+	// The line-diff assertions below read the raw view; the rendered default
+	// for Markdown has its own tests.
+	window.localStorage.setItem(PROPOSAL_DIFF_MODE_STORAGE_KEY, "raw");
 	state.cancelPullRequest = null;
 	state.refresh.mockReset();
 	state.refreshError = null;
@@ -574,6 +605,32 @@ describe("InstructionProposals", () => {
 		expect(
 			screen.getByRole("button", { name: "Reject" }),
 		).toBeInTheDocument();
+		expect(screen.queryByTestId("proposal-rebase-action")).toBeNull();
+	});
+
+	it("offers the proposer a rebase of their own stale proposal", async () => {
+		const user = userEvent.setup();
+		state.rows = [row({ isStale: true, isProposer: true })];
+		state.detail = {
+			...row({ isStale: true, isProposer: true }),
+			changes: [],
+		};
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		expect(
+			await screen.findByTestId("proposal-rebase-action"),
+		).toHaveTextContent("proposal-8");
 	});
 
 	it("keeps review actions unavailable while validation is still running", async () => {
@@ -2522,5 +2579,215 @@ describe("member proposal branches (Fizzy #2738 spec §10)", () => {
 				expect(state.stopTrackingBranch).toHaveBeenCalled(),
 			);
 		});
+	});
+});
+
+describe("the rendered Markdown diff", () => {
+	function markdownChange(overrides: Record<string, unknown> = {}) {
+		return {
+			path: "CLAUDE.md",
+			op: "edit",
+			before: "# Before",
+			after: "# After",
+			binary: false,
+			beforeOmitted: null,
+			afterOmitted: null,
+			beforeSize: 8,
+			afterSize: 7,
+			...overrides,
+		};
+	}
+	async function openProposal() {
+		const user = userEvent.setup();
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		return user;
+	}
+
+	beforeEach(() => {
+		window.localStorage.removeItem(PROPOSAL_DIFF_MODE_STORAGE_KEY);
+	});
+
+	it("shows a Markdown change rendered by default, with the raw lines behind a remembered toggle", async () => {
+		state.detail = { ...row(), changes: [markdownChange()] };
+		const user = await openProposal();
+
+		expect(
+			await screen.findByTestId("proposal-rendered-diff"),
+		).toHaveTextContent("rendered:# Before=># After");
+		expect(
+			screen.getByRole("button", { name: reviewCopy.diffModeRendered }),
+		).toHaveAttribute("aria-pressed", "true");
+
+		await user.click(
+			screen.getByRole("button", { name: reviewCopy.diffModeRaw }),
+		);
+
+		expect(await screen.findByText("- # Before")).toBeInTheDocument();
+		expect(screen.queryByTestId("proposal-rendered-diff")).toBeNull();
+		expect(
+			window.localStorage.getItem(PROPOSAL_DIFF_MODE_STORAGE_KEY),
+		).toBe("raw");
+	});
+
+	it("keeps the line diff, with no toggle, for a file that is not Markdown", async () => {
+		state.detail = {
+			...row(),
+			changes: [
+				markdownChange({
+					path: "settings.json",
+					before: "{}",
+					after: "[]",
+				}),
+			],
+		};
+		await openProposal();
+
+		expect(await screen.findByText("- {}")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: reviewCopy.diffModeRendered }),
+		).toBeNull();
+	});
+
+	it("renders the body without its frontmatter and says the frontmatter changed", async () => {
+		state.detail = {
+			...row(),
+			changes: [
+				markdownChange({
+					path: "skills/review/SKILL.md",
+					before: "---\nname: a\n---\nBody one",
+					after: "---\nname: b\n---\nBody two",
+				}),
+			],
+		};
+		await openProposal();
+
+		expect(
+			await screen.findByTestId("proposal-rendered-diff"),
+		).toHaveTextContent("rendered:Body one=>Body two");
+		expect(
+			screen.getByText(reviewCopy.frontmatterChanged),
+		).toBeInTheDocument();
+	});
+
+	it("decides 'no textual changes' on the raw sides before rendering", async () => {
+		state.detail = {
+			...row(),
+			changes: [
+				markdownChange({ before: "# Same\n", after: "# Same\n" }),
+			],
+		};
+		await openProposal();
+
+		expect(
+			await screen.findByText(reviewCopy.noTextualChanges),
+		).toBeInTheDocument();
+		expect(screen.queryByTestId("proposal-rendered-diff")).toBeNull();
+	});
+});
+
+describe("the review policy on the proposal card", () => {
+	it("shows the approval count and records an approval that does not publish yet", async () => {
+		const user = userEvent.setup();
+		const counted = {
+			approvals: { count: 1, required: 3 },
+			viewerApproved: false,
+		};
+		state.rows = [row(counted)];
+		state.detail = { ...row(counted), changes: [] };
+		state.approveResult = {
+			approved: true,
+			published: false,
+			version: 8,
+			approvals: { count: 2, required: 3 },
+		};
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		expect(await screen.findByText("1 of 3 approvals")).toBeInTheDocument();
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		await user.click(
+			await screen.findByRole("button", { name: "Approve (1 of 3)" }),
+		);
+
+		await waitFor(() =>
+			expect(state.toastSuccess).toHaveBeenCalledWith(
+				"Your approval is recorded: 2 of 3. It publishes once enough reviewers approve.",
+			),
+		);
+	});
+
+	it("disables Approve for a reviewer who already approved", async () => {
+		const user = userEvent.setup();
+		const counted = {
+			approvals: { count: 1, required: 2 },
+			viewerApproved: true,
+		};
+		state.rows = [row(counted)];
+		state.detail = { ...row(counted), changes: [] };
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+
+		expect(
+			await screen.findByRole("button", {
+				name: "You approved (1 of 2)",
+			}),
+		).toBeDisabled();
+	});
+
+	it("keeps today's single Approve, with no count, under the default policy", async () => {
+		const user = userEvent.setup();
+		const counted = {
+			approvals: { count: 0, required: 1 },
+			viewerApproved: false,
+		};
+		state.rows = [row(counted)];
+		state.detail = { ...row(counted), changes: [] };
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+
+		expect(
+			await screen.findByRole("button", { name: reviewCopy.approve }),
+		).toBeEnabled();
+		expect(screen.queryByTestId("proposal-approval-progress")).toBeNull();
 	});
 });

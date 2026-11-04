@@ -27,10 +27,6 @@ name = "Orchestrator"
 class_name = "Orchestrator"
 
 [[durable_objects.bindings]]
-name = "TaskAgent"
-class_name = "TaskAgent"
-
-[[durable_objects.bindings]]
 name = "Health"
 class_name = "Health"
 
@@ -46,6 +42,10 @@ new_sqlite_classes = ["Document", "Orchestrator", "TaskAgent", "Health"]
 tag = "v2"
 new_sqlite_classes = ["Parlume"]
 
+[[migrations]]
+tag = "v3"
+deleted_classes = ["TaskAgent"]
+
 # Observability: enable Workers Logs (free) for prod debugging.
 [observability]
 enabled = true
@@ -58,7 +58,7 @@ enabled = true
 # apply as-is. PARTYKIT_ENV=production on staging is deliberate: staging
 # rehearses the real production auth mode outside prod — the full token →
 # verify → subscribe flow end-to-end, for document collab and for
-# orchestrator/task-agent alike now that issue #624 has shipped their scoped
+# orchestrator now that issue #624 has shipped their scoped
 # JWTs.
 [env.staging]
 name = "fabric-collab-staging"
@@ -76,10 +76,6 @@ class_name = "Document"
 [[env.staging.durable_objects.bindings]]
 name = "Orchestrator"
 class_name = "Orchestrator"
-
-[[env.staging.durable_objects.bindings]]
-name = "TaskAgent"
-class_name = "TaskAgent"
 
 [[env.staging.durable_objects.bindings]]
 name = "Health"

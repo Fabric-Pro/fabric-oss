@@ -5,22 +5,22 @@
  * These activities are called by the agent supervisor workflow.
  */
 
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 import {
 	type AgentDeploymentHealthStatus,
 	type AgentDeploymentStatus,
 	cancelExecution,
-	createAgentDeploymentExecution,
-	startExecution as dbStartExecution,
+	db,
 	updateDeploymentHealth as dbUpdateDeploymentHealth,
 	updateDeploymentStatus as dbUpdateDeploymentStatus,
 	getAgentDeploymentById,
-	incrementExecutionCounts,
-	incrementExecutionQuota,
+	getAgentTemplateInstanceForExecution,
 	isDeploymentOwnerCurrentMember,
 	type Prisma,
-	updateCurrentExecutions,
-	updateExecutionStatus,
 } from "@repo/database";
+import { getCorrelationIdFromContext } from "@repo/utils/correlation-id";
 import { ApplicationFailure } from "@temporalio/common";
 import { getTemporalClient } from "../client";
 
@@ -124,6 +124,27 @@ export interface StartAgentExecutionInput {
 	timeoutMs: number;
 }
 
+class SupervisorStartRefusal extends Error {}
+const jsonRecord = (value: unknown): Record<string, unknown> =>
+	value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: {};
+function orderedJson(value: unknown): string {
+	if (Array.isArray(value)) {
+		return `[${value.map(orderedJson).join(",")}]`;
+	}
+	if (value && typeof value === "object") {
+		return `{${Object.entries(value)
+			.filter(([, item]) => item !== undefined)
+			.sort(([left], [right]) =>
+				left < right ? -1 : left > right ? 1 : 0,
+			)
+			.map(([key, item]) => `${JSON.stringify(key)}:${orderedJson(item)}`)
+			.join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
 export async function startAgentExecution(
 	input: StartAgentExecutionInput,
 ): Promise<{ success: boolean; error?: string; childWorkflowId?: string }> {
@@ -139,150 +160,365 @@ export async function startAgentExecution(
 		triggerId,
 		timeoutMs,
 	} = input;
-	// Refuse before creating an execution row. The input tenant is only used to
-	// locate the deployment; membership is checked against the stored owner.
-	const deployment = await getAgentDeploymentById(deploymentId, {
-		userId,
-		organizationId,
-	});
-	if (!deployment || !(await isDeploymentOwnerCurrentMember(deployment))) {
-		throw ApplicationFailure.nonRetryable(
-			"Deployment unavailable",
-			"AGENT_DEPLOYMENT_OWNER_NOT_MEMBER",
-		);
-	}
-
+	const childWorkflowId = `deployment-exec-${executionId}`;
+	let membershipLookupFailed = false;
 	try {
-		// Create execution record in database
-		await createAgentDeploymentExecution({
-			deploymentId,
-			executionId,
+		if (!organizationId || !userId || !executionId || !workflowId) {
+			throw new SupervisorStartRefusal(
+				"Execution requires a complete organization and actor identity.",
+			);
+		}
+		// Refuse before claiming an execution row or starting a child workflow.
+		// Membership is checked against the stored deployment owner.
+		const deployment = await getAgentDeploymentById(deploymentId, {
 			userId,
 			organizationId,
-			triggerType,
-			triggerId,
-			input: executionInput as Prisma.InputJsonValue,
-			priority: 5, // Default priority
 		});
-
-		// Mark execution as started
-		await dbStartExecution(executionId, workflowId, `run-${Date.now()}`);
-
-		// Increment counters
-		await updateCurrentExecutions(deploymentId, 1);
-		await incrementExecutionCounts(deploymentId);
-		await incrementExecutionQuota(userId, organizationId);
-
-		// Start child workflow for actual agent execution
-		const childWorkflowId = `deployment-exec-${executionId}`;
-
-		// Shared client: carries the TLS / API-key / fail-closed connection
-		// policy and the configured namespace (a bare `new Client()` would
-		// silently target "default").
-		const client = await getTemporalClient();
-
-		// Get the deployment's task queue and instance config for workflow routing
-		// Use the "agents" task queue which the worker actually polls
-		// The deployment.taskQueue was using sharded queues (agents-org-shared-shard-X)
-		// that no worker was polling, causing workflows to hang indefinitely
-		const taskQueue = "agents";
-
-		// Supervisor workflow ID follows pattern: agent-supervisor-{deploymentId}
-		const supervisorWorkflowId = `agent-supervisor-${deploymentId}`;
-
-		// Determine workflow type based on instance execution mode
-		const instance = deployment?.instance;
-		const executionMode =
-			(instance as { executionMode?: string } | null)?.executionMode ||
-			"single_turn";
-		const isGoalOriented = executionMode === "goal_oriented";
-
-		if (isGoalOriented) {
-			// Use goal-oriented workflow for iterative goal achievement
-			const goal =
-				(instance as { goal?: string } | null)?.goal ||
-				"Complete the requested task";
-			const successCriteria = (
-				instance as { successCriteria?: unknown } | null
-			)?.successCriteria;
-			const maxIterations =
-				(instance as { maxIterations?: number } | null)
-					?.maxIterations || 10;
-
-			await client.workflow.start("goalOrientedAgentWorkflow", {
-				taskQueue,
-				workflowId: childWorkflowId,
-				args: [
-					{
-						executionId,
-						deploymentId,
-						instanceId,
-						userId,
-						organizationId,
-						input: executionInput,
-						goal,
-						successCriteria,
-						maxIterations,
-						triggerType,
-						triggerId,
-						timeoutMs: timeoutMs || 30 * 60 * 1000,
-						supervisorWorkflowId,
-					},
-				],
-			});
-
-			console.log("[AgentSupervisor] Started goal-oriented workflow:", {
-				childWorkflowId,
-				taskQueue,
-				executionId,
-				goalLength: goal.length,
-				maxIterations,
-			});
-		} else {
-			// Use standard single-turn workflow for simple Q&A
-			await client.workflow.start("deploymentExecutionWorkflow", {
-				taskQueue,
-				workflowId: childWorkflowId,
-				args: [
-					{
-						executionId,
-						deploymentId,
-						instanceId,
-						userId,
-						organizationId,
-						input: executionInput,
-						triggerType,
-						triggerId,
-						timeoutMs: timeoutMs || 30 * 60 * 1000,
-						supervisorWorkflowId,
-					},
-				],
-			});
-
-			console.log("[AgentSupervisor] Started single-turn workflow:", {
-				childWorkflowId,
-				taskQueue,
-				executionId,
-			});
+		let ownerIsMember = false;
+		if (deployment) {
+			try {
+				ownerIsMember =
+					await isDeploymentOwnerCurrentMember(deployment);
+			} catch (error) {
+				membershipLookupFailed = true;
+				throw error;
+			}
 		}
-
+		if (!deployment || !ownerIsMember) {
+			throw ApplicationFailure.nonRetryable(
+				"Deployment unavailable",
+				"AGENT_DEPLOYMENT_OWNER_NOT_MEMBER",
+			);
+		}
+		const scope = { deploymentId, executionId, userId, organizationId };
+		const read = () =>
+			db.agentDeploymentExecution.findFirst({ where: scope });
+		const matches = (row: Awaited<ReturnType<typeof read>>) =>
+			!!row &&
+			row.deploymentId === deploymentId &&
+			row.executionId === executionId &&
+			row.userId === userId &&
+			row.organizationId === organizationId &&
+			row.triggerType === triggerType &&
+			(row.triggerId ?? null) === (triggerId ?? null) &&
+			isDeepStrictEqual(row.input ?? {}, executionInput);
+		let execution = await read();
+		if (!matches(execution) || !execution) {
+			throw new SupervisorStartRefusal(
+				"Persisted execution identity, input or trigger does not match this request.",
+			);
+		}
+		if (
+			deployment.id !== deploymentId ||
+			deployment.instanceId !== instanceId ||
+			deployment.userId !== userId ||
+			deployment.organizationId !== organizationId
+		) {
+			throw new SupervisorStartRefusal(
+				"Deployment does not match the persisted execution scope.",
+			);
+		}
+		const scoped = await getAgentTemplateInstanceForExecution({
+			instanceId,
+			userId,
+			organizationId,
+		});
+		if (
+			!scoped ||
+			scoped.instance.id !== instanceId ||
+			scoped.instance.organizationId !== organizationId ||
+			!getAgentImplementationAvailability(
+				scoped.instance.customInstructions,
+			).available
+		) {
+			throw new SupervisorStartRefusal(
+				"The native agent instance is no longer available for this actor and project.",
+			);
+		}
+		const instance = scoped.instance;
+		const goalOriented = instance.executionMode === "goal_oriented";
+		const workflowType = goalOriented
+			? "goalOrientedAgentWorkflow"
+			: "deploymentExecutionWorkflow";
+		const args = {
+			executionId,
+			deploymentId,
+			instanceId,
+			userId,
+			organizationId,
+			input: executionInput,
+			triggerType,
+			...(triggerId ? { triggerId } : {}),
+			timeoutMs: timeoutMs || 30 * 60 * 1000,
+			supervisorWorkflowId: `agent-supervisor-${deploymentId}`,
+			...(goalOriented
+				? {
+						goal: instance.goal || "Complete the requested task",
+						successCriteria: instance.successCriteria,
+						maxIterations: instance.maxIterations || 10,
+					}
+				: {}),
+		};
+		const dispatchHash = createHash("sha256")
+			.update(
+				orderedJson({
+					workflowId,
+					workflowType,
+					args,
+					projectId: scoped.projectId ?? null,
+				}),
+			)
+			.digest("hex");
+		const memo = {
+			version: 1,
+			executionRowId: execution.id,
+			executionId,
+			deploymentId,
+			instanceId,
+			userId,
+			organizationId,
+			workflowType,
+			dispatchHash,
+		};
+		const dispatch = { ...memo, childWorkflowId };
+		const validIntent = (row: typeof execution) =>
+			!!row &&
+			row.workflowId === childWorkflowId &&
+			isDeepStrictEqual(
+				jsonRecord(row.metadata).fabricSupervisorDispatch,
+				dispatch,
+			);
+		let firstDispatch = false;
+		if (
+			!execution.workflowId &&
+			!execution.runId &&
+			execution.status === "PENDING"
+		) {
+			const claimed = await db.agentDeploymentExecution.updateMany({
+				where: {
+					id: execution.id,
+					...scope,
+					workflowId: null,
+					runId: null,
+					status: "PENDING",
+				},
+				data: {
+					workflowId: childWorkflowId,
+					metadata: {
+						...jsonRecord(execution.metadata),
+						fabricSupervisorDispatch: dispatch,
+					} as Prisma.InputJsonValue,
+				},
+			});
+			firstDispatch = claimed.count === 1;
+			execution = await read();
+		}
+		if (!matches(execution) || !execution || !validIntent(execution)) {
+			throw new SupervisorStartRefusal(
+				"Execution is already bound to a different or unverified workflow intent.",
+			);
+		}
+		if (
+			execution.runId &&
+			jsonRecord(execution.metadata).fabricSupervisorReceiptAccounted ===
+				execution.runId
+		) {
+			return { success: true, childWorkflowId };
+		}
+		const client = await getTemporalClient();
+		const verifiedDescription = async () => {
+			const current = await read();
+			const currentDeployment = await getAgentDeploymentById(
+				deploymentId,
+				{ userId, organizationId },
+			);
+			const currentScope = await getAgentTemplateInstanceForExecution({
+				instanceId,
+				userId,
+				organizationId,
+			});
+			if (
+				!matches(current) ||
+				!current ||
+				!validIntent(current) ||
+				!currentDeployment ||
+				currentDeployment.userId !== userId ||
+				currentDeployment.organizationId !== organizationId ||
+				currentDeployment.instanceId !== instanceId ||
+				!currentScope ||
+				currentScope.instance.id !== instanceId ||
+				currentScope.instance.organizationId !== organizationId ||
+				!getAgentImplementationAvailability(
+					currentScope.instance.customInstructions,
+				).available ||
+				(currentScope.projectId ?? null) !== (scoped.projectId ?? null)
+			) {
+				throw new SupervisorStartRefusal(
+					"Execution scope or project access changed before receipt reconciliation.",
+				);
+			}
+			const description = await client.workflow
+				.getHandle(childWorkflowId, execution?.runId ?? undefined)
+				.describe();
+			if (
+				description.type !== workflowType ||
+				!description.runId ||
+				!isDeepStrictEqual(
+					description.memo?.fabricSupervisorExecution,
+					memo,
+				) ||
+				(execution?.runId && execution.runId !== description.runId)
+			) {
+				throw new SupervisorStartRefusal(
+					"Existing workflow does not match this scoped execution intent.",
+				);
+			}
+			return description.runId;
+		};
+		let runId: string;
+		if (firstDispatch) {
+			try {
+				const correlationId = getCorrelationIdFromContext();
+				const handle = await client.workflow.start(workflowType, {
+					taskQueue: "agents",
+					workflowId: childWorkflowId,
+					workflowIdReusePolicy: "REJECT_DUPLICATE",
+					workflowIdConflictPolicy: "FAIL",
+					memo: {
+						fabricSupervisorExecution: memo,
+						...(correlationId ? { correlationId } : {}),
+					},
+					args: [args],
+				});
+				runId = handle.firstExecutionRunId;
+				if (!runId) {
+					throw new Error("Missing Temporal receipt");
+				}
+			} catch {
+				// A lost start response cannot authorize another start. Reconcile only the
+				// existing stable identity; later retries also describe rather than dispatch.
+				runId = await verifiedDescription();
+			}
+		} else {
+			runId = await verifiedDescription();
+		}
+		await db.$transaction(async (tx) => {
+			for (let attempt = 0; attempt < 3; attempt++) {
+				const current = await tx.agentDeploymentExecution.findFirst({
+					where: scope,
+				});
+				if (
+					!matches(current) ||
+					!current ||
+					!validIntent(current) ||
+					(current.runId && current.runId !== runId)
+				) {
+					throw new SupervisorStartRefusal(
+						"Execution receipt identity conflicts with the persisted request.",
+					);
+				}
+				const metadata = jsonRecord(current.metadata);
+				if (metadata.fabricSupervisorReceiptAccounted === runId) {
+					return;
+				}
+				const pending = current.status === "PENDING";
+				const attached = await tx.agentDeploymentExecution.updateMany({
+					where: {
+						id: current.id,
+						...scope,
+						workflowId: childWorkflowId,
+						runId: current.runId,
+						status: current.status,
+						metadata: {
+							equals: current.metadata as Prisma.InputJsonValue,
+						},
+					},
+					data: {
+						runId,
+						metadata: {
+							...metadata,
+							fabricSupervisorReceiptAccounted: runId,
+						} as Prisma.InputJsonValue,
+						...(pending
+							? { status: "RUNNING", startedAt: new Date() }
+							: {}),
+					},
+				});
+				if (attached.count !== 1) {
+					continue;
+				}
+				const reserved =
+					jsonRecord(metadata.fabricAdmission)
+						.executionCountReserved === true;
+				const stillRunning = [
+					"PENDING",
+					"RUNNING",
+					"WAITING_INPUT",
+				].includes(current.status);
+				const counted = await tx.agentDeployment.updateMany({
+					where: {
+						id: deploymentId,
+						instanceId,
+						userId,
+						organizationId,
+					},
+					data: {
+						...(!reserved
+							? {
+									dailyExecutionCount: { increment: 1 },
+									monthlyExecutionCount: { increment: 1 },
+								}
+							: {}),
+						...(stillRunning
+							? { currentExecutions: { increment: 1 } }
+							: {}),
+						lastActiveAt: new Date(),
+					},
+				});
+				if (counted.count !== 1) {
+					throw new SupervisorStartRefusal(
+						"Deployment scope changed before receipt accounting.",
+					);
+				}
+				if (!reserved) {
+					const quota =
+						await tx.organizationDeploymentQuota.updateMany({
+							where: { organizationId },
+							data: {
+								dailyExecutionCount: { increment: 1 },
+								monthlyExecutionCount: { increment: 1 },
+							},
+						});
+					if (quota.count !== 1) {
+						throw new Error(
+							"Execution quota could not be accounted",
+						);
+					}
+				}
+				return;
+			}
+			throw new Error("Receipt changed concurrently");
+		});
 		return { success: true, childWorkflowId };
 	} catch (error) {
-		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
-
-		console.error("[AgentSupervisor] Failed to start execution:", error);
-
-		// Update execution as failed
-		await updateExecutionStatus(executionId, "FAILED", {
-			error: errorMessage,
-			completedAt: new Date(),
-		});
-
-		// Decrement current executions since we failed to start
-		await updateCurrentExecutions(deploymentId, -1);
-
-		return { success: false, error: errorMessage };
+		if (membershipLookupFailed) {
+			throw error;
+		}
+		// A normal return would make the supervisor track a non-admitted run.
+		// Retryable uncertainty re-enters receipt reconciliation, never dispatch.
+		if (error instanceof ApplicationFailure) {
+			throw error;
+		}
+		if (error instanceof SupervisorStartRefusal) {
+			throw ApplicationFailure.nonRetryable(
+				error.message,
+				"SUPERVISOR_EXECUTION_REFUSED",
+			);
+		}
+		throw ApplicationFailure.retryable(
+			"Execution start could not be confirmed. Reconcile the existing execution before another attempt.",
+			"SUPERVISOR_EXECUTION_UNRESOLVED",
+		);
 	}
 }
 

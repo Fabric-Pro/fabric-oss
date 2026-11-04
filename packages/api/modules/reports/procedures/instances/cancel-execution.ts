@@ -42,7 +42,10 @@ export const cancelExecutionProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		const execution = await getTemplateInstanceExecution(input.executionId);
+		const execution = await getTemplateInstanceExecution(
+			input.executionId,
+			{ userId: context.user.id, organizationId },
+		);
 
 		if (!execution) {
 			throw new ORPCError("NOT_FOUND", {

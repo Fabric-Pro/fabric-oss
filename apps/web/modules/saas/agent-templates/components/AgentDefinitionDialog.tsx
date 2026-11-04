@@ -25,6 +25,167 @@ import { useId, useRef, useState } from "react";
 
 const definitions = orpcClient.agentTemplates.instances.definition;
 
+type PreviewDefinition = Awaited<
+	ReturnType<typeof definitions.preview>
+>["definition"];
+
+function PinnedImplementationPreview({
+	definition,
+}: {
+	definition: PreviewDefinition;
+}) {
+	if (definition.apiVersion !== "fabric.ai/v2") {
+		return null;
+	}
+	const implementation = definition.implementation;
+	const bindings = definition.logicalBindings;
+	if (implementation.kind === "native" && bindings.length === 0) {
+		return null;
+	}
+	return (
+		<details className="rounded-md border p-3 text-sm">
+			<summary className="cursor-pointer font-medium">
+				{implementation.kind === "native"
+					? "Destination setup requirements"
+					: "Pinned implementation"}
+			</summary>
+			<div className="mt-3 space-y-3">
+				{implementation.kind !== "native" && (
+					<>
+						<p>
+							These release requirements are preserved on import.
+							Artifact identity and runtime compatibility remain
+							unverified; this creates an execution-disabled
+							draft.
+						</p>
+						<dl className="space-y-2">
+							<div>
+								<dt className="font-medium">Implementation</dt>
+								<dd>
+									{implementation.kind === "harness_finite"
+										? "Harness finite job"
+										: "Harness persistent agent"}
+								</dd>
+							</div>
+							<div>
+								<dt className="font-medium">
+									Selected identity
+								</dt>
+								<dd className="break-all font-mono text-xs">
+									{implementation.entrypoint.identity}
+								</dd>
+							</div>
+							<div>
+								<dt className="font-medium">Entrypoint</dt>
+								<dd className="break-all font-mono text-xs">
+									{implementation.entrypoint.module} · export{" "}
+									{implementation.entrypoint.export}
+								</dd>
+							</div>
+							<div>
+								<dt className="font-medium">Artifact digest</dt>
+								<dd className="break-all font-mono text-xs">
+									{implementation.artifact.digest}
+								</dd>
+							</div>
+							<div>
+								<dt className="font-medium">
+									Repository revision
+								</dt>
+								<dd className="break-all font-mono text-xs">
+									{implementation.artifact.repository.url} @{" "}
+									{
+										implementation.artifact.repository
+											.revision
+									}
+								</dd>
+							</div>
+							<div>
+								<dt className="font-medium">Package pins</dt>
+								<dd>
+									<ul className="space-y-1">
+										{Object.values(
+											implementation.artifact.packages,
+										).map((pkg) => (
+											<li
+												key={pkg.name}
+												className="break-all font-mono text-xs"
+											>
+												{pkg.name}@{pkg.version}
+												{"entrypoint" in pkg
+													? `/${pkg.entrypoint}`
+													: ""}
+											</li>
+										))}
+									</ul>
+								</dd>
+							</div>
+							<div>
+								<dt className="font-medium">Protocol</dt>
+								<dd className="break-all font-mono text-xs">
+									{implementation.protocol.interface} ·{" "}
+									{implementation.protocol.generation} · build
+									manifest v
+									{
+										implementation.artifact
+											.buildManifestVersion
+									}
+								</dd>
+							</div>
+							<div>
+								<dt className="font-medium">
+									Schema requirements
+								</dt>
+								<dd>
+									<ul className="space-y-1">
+										{Object.entries(
+											implementation.schemas,
+										).map(([name, schema]) => (
+											<li
+												key={name}
+												className="break-all font-mono text-xs"
+											>
+												{name}: {schema.path} ·{" "}
+												{schema.digest}
+											</li>
+										))}
+									</ul>
+								</dd>
+							</div>
+						</dl>
+					</>
+				)}
+				{bindings.length > 0 && (
+					<section
+						aria-label="Unresolved logical bindings"
+						className="space-y-2"
+					>
+						<h4 className="font-medium">
+							Unresolved destination setup
+						</h4>
+						<p>
+							Choose and authorize destination resources. These
+							declarations grant no access.
+						</p>
+						<ul className="list-disc space-y-1 pl-5">
+							{bindings.map((binding) => (
+								<li key={binding.name}>
+									{binding.name} ({binding.kind}) ·{" "}
+									{binding.required ? "Required" : "Optional"}
+									{binding.operations.length
+										? ` · ${binding.operations.join(", ")}`
+										: ""}{" "}
+									· Unresolved
+								</li>
+							))}
+						</ul>
+					</section>
+				)}
+			</div>
+		</details>
+	);
+}
+
 export function AgentDefinitionImportDialog({
 	organizationId,
 	onImported,
@@ -164,6 +325,9 @@ export function AgentDefinitionImportDialog({
 								{preview.data.definition.model.model ??
 									"Organization default model"}
 							</p>
+							<PinnedImplementationPreview
+								definition={preview.data.definition}
+							/>
 							{preview.data.definition.requirements.length >
 								0 && (
 								<div>

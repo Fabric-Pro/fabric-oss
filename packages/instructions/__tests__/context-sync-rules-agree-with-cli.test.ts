@@ -25,6 +25,7 @@ import {
 	findContextIgnoreProblem as cliFindContextIgnoreProblem,
 } from "../../cli/src/lib/context-sync/ignore";
 import {
+	buildContextIgnoreRules,
 	CONTEXT_IGNORE_FILENAME,
 	CONTEXT_TEXT_EXTENSIONS,
 	createContextDefaultRules,
@@ -114,6 +115,39 @@ describe("the CLI's rules are the canonical ones", () => {
 			expect(canonical.ignores(`${relative}/`), `${relative}/`).toBe(
 				cli.ignoresDirectory(relative),
 			);
+		}
+	});
+
+	it("leaves out the same files and folders under a folder's .contextignore, which the run and the configure dialog both build here", () => {
+		for (const contextIgnore of [
+			"drafts/\n",
+			"# local only\n*.tmp.md\nlogs\n",
+			"!CLAUDE.md\n!skills/\n",
+			"drafts/\n!drafts/keep.md\n**/archive/**\n",
+			"/top.md\nDocs/Private/\n",
+		]) {
+			const cli = buildCliContextIgnoreRules({ contextIgnore });
+			const canonical = buildContextIgnoreRules({ contextIgnore });
+			for (const relative of [
+				...CORPUS,
+				"drafts/a.md",
+				"drafts/keep.md",
+				"notes/x.tmp.md",
+				"logs/today.md",
+				"a/archive/b.md",
+				"top.md",
+				"sub/top.md",
+				"docs/private/x.md",
+			]) {
+				expect(
+					canonical.ignoresFile(relative),
+					`${contextIgnore} ${relative}`,
+				).toBe(cli.ignoresFile(relative));
+				expect(
+					canonical.ignoresDirectory(relative),
+					`${contextIgnore} ${relative}/`,
+				).toBe(cli.ignoresDirectory(relative));
+			}
 		}
 	});
 

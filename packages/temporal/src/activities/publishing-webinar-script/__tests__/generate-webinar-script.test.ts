@@ -40,10 +40,11 @@ import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-appro
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	// Faithful enough to discriminate, which is all the activity asks of it:
 	// the AI SDK names this error class "AI_NoObjectGeneratedError", and the
@@ -319,8 +320,8 @@ beforeEach(() => {
 		metadata: { modelString: "test-model", provider: "test" },
 		trackUsage,
 	});
-	generateObject.mockResolvedValue({
-		object: MODEL_OUTPUT,
+	generateText.mockResolvedValue({
+		output: MODEL_OUTPUT,
 		usage: { totalTokens: 100 },
 	});
 	completeTopicDraft.mockResolvedValue({ persisted: true });
@@ -387,7 +388,7 @@ describe("generateWebinarScriptActivity — tenancy and actor revalidation", () 
 			nonRetryable: true,
 		});
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 
 	it("refuses when the project has left the organization the run was queued under", async () => {
@@ -482,7 +483,7 @@ describe("generateWebinarScriptActivity — contributor override", () => {
 				where: { id: { in: ["chosen-user"] } },
 			}),
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Chosen Contributor",
 		);
 	});
@@ -530,7 +531,7 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const restricted = prompt.slice(
 			prompt.indexOf("## Unresolved approvals for this topic"),
 		);
@@ -552,7 +553,7 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const openHeading = prompt.indexOf(
 			"## Unresolved questions that constrain this content type",
 		);
@@ -569,7 +570,7 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).not.toMatch(/Unresolved approvals for this topic/);
 		const openHeading = prompt.indexOf(
 			"## Unresolved questions that constrain this content type",
@@ -590,7 +591,7 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const restrictedHeading = prompt.indexOf(
 			"## Unresolved approvals for this topic",
 		);
@@ -636,7 +637,7 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).not.toMatch(/Unresolved approvals for this topic/);
 		expect(prompt).toContain("Yes, we may name them.");
 		expect(persistedContent().generation.restrictedSubjects).toEqual([]);
@@ -661,8 +662,8 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 
 describe("generateWebinarScriptActivity — the asset clamp", () => {
 	it("demotes a claimed-confirmed asset an OPEN approval is about", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["The Latency Chart", "architecture diagram"],
@@ -690,8 +691,8 @@ describe("generateWebinarScriptActivity — the asset clamp", () => {
 	});
 
 	it("demotes a claimed-confirmed asset a SOFT-CLOSED approval is about", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["The Latency Chart", "architecture diagram"],
@@ -723,8 +724,8 @@ describe("generateWebinarScriptActivity — the asset clamp", () => {
 	});
 
 	it("demotes on INTERNAL_UI and VIDEO_WALKTHROUGH, not just ASSET_APPROVAL", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: [
@@ -764,8 +765,8 @@ describe("generateWebinarScriptActivity — the asset clamp", () => {
 		// order of `ASSET_RESTRICTING_KINDS` is ASSET_APPROVAL, INTERNAL_UI,
 		// VIDEO_WALKTHROUGH — so an asset named by both an open ASSET_APPROVAL
 		// and an open INTERNAL_UI thread is attributed to ASSET_APPROVAL.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["dashboard capture"],
@@ -787,8 +788,8 @@ describe("generateWebinarScriptActivity — the asset clamp", () => {
 	});
 
 	it("does not list a demoted asset twice when the model already hedged", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["customer logo"],
@@ -810,8 +811,8 @@ describe("generateWebinarScriptActivity — the asset clamp", () => {
 	});
 
 	it("de-duplicates a demoted asset against a differently-cased hedge", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["The Latency Chart"],
@@ -837,8 +838,8 @@ describe("generateWebinarScriptActivity — the asset clamp", () => {
 	it("leaves every confirmed asset standing when no ASSET-restricting kind is open", async () => {
 		// A framing question (CLAIM_STRENGTH here) is not a claim about an
 		// asset at all.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["architecture diagram"],
@@ -870,8 +871,8 @@ describe("generateWebinarScriptActivity — the asset clamp", () => {
 	});
 
 	it("leaves an ANSWERED asset approval alone — it is not a restriction", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["latency chart"],
@@ -923,8 +924,8 @@ describe("generateWebinarScriptActivity — the write surface", () => {
 	});
 
 	it("seeds through the SHARED composer, carrying the title into the body", async () => {
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, title: "A webinar script title" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, title: "A webinar script title" },
 			usage: {},
 		});
 
@@ -951,8 +952,8 @@ describe("generateWebinarScriptActivity — the write surface", () => {
 	});
 
 	it("writes nothing at all when the output fails schema validation", async () => {
-		generateObject.mockResolvedValue({
-			object: { title: "A title" },
+		generateText.mockResolvedValue({
+			output: { title: "A title" },
 			usage: {},
 		});
 
@@ -965,9 +966,9 @@ describe("generateWebinarScriptActivity — the write surface", () => {
 	});
 
 	it("reports a schema failure RAISED BY THE SDK as the same authored class", async () => {
-		// The case above mocks `generateObject` RETURNING an invalid object, so
+		// The case above mocks `generateText` RETURNING an invalid object, so
 		// it exercises this module's own `safeParse`. Production never took that
-		// path: `generateObject` validates against the zod schema itself and
+		// path: `generateText` validates against the zod schema itself and
 		// throws `NoObjectGeneratedError` before returning, so the authored
 		// message — "the model returned a draft that did not match the expected
 		// shape; generating again usually clears it" — was unreachable, and a
@@ -977,7 +978,7 @@ describe("generateWebinarScriptActivity — the write surface", () => {
 			"No object generated: response did not match schema.",
 		);
 		sdkError.name = "AI_NoObjectGeneratedError";
-		generateObject.mockRejectedValue(sdkError);
+		generateText.mockRejectedValue(sdkError);
 
 		await expect(run()).rejects.toMatchObject({
 			type: "PUBLISHING_WEBINAR_SCRIPT_SCHEMA_VALIDATION_FAILED",
@@ -991,15 +992,15 @@ describe("generateWebinarScriptActivity — the write surface", () => {
 		// The discrimination that makes the branch above safe. A provider outage
 		// is not a schema complaint, and telling a reader to "generate again" is
 		// only honest for the one that is.
-		generateObject.mockRejectedValue(new Error("provider unavailable"));
+		generateText.mockRejectedValue(new Error("provider unavailable"));
 
 		await expect(run()).rejects.toThrow("provider unavailable");
 		expect(completeTopicDraft).not.toHaveBeenCalled();
 	});
 
 	it("rejects a whitespace-only title instead of seeding a headless draft", async () => {
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, title: "   " },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, title: "   " },
 			usage: {},
 		});
 
@@ -1078,7 +1079,7 @@ describe("generateWebinarScriptActivity — what it persists", () => {
 		await run();
 
 		expect(persistedDraft().promptSource).toBe("BOUND");
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Faster incremental builds",
 		);
 	});
@@ -1090,7 +1091,7 @@ describe("generateWebinarScriptActivity — what it persists", () => {
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"ROLE COMPOSITION: backend",
 		);
 	});
@@ -1111,7 +1112,7 @@ describe("generateWebinarScriptActivity — what it persists", () => {
 		expect(persistedContent().generation.refinedFromWorkingDraft).toBe(
 			true,
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"REFINE-CANARY: the saved working script.",
 		);
 	});
@@ -1154,7 +1155,7 @@ describe("generateWebinarScriptActivity — the model call", () => {
 		await run();
 
 		expect(
-			generateObject.mock.calls[0]?.[0]?.providerOptions,
+			generateText.mock.calls[0]?.[0]?.providerOptions,
 		).toBeUndefined();
 	});
 
@@ -1170,7 +1171,7 @@ describe("generateWebinarScriptActivity — the model call", () => {
 
 		await run();
 
-		const sentPrompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const sentPrompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(computeMaxOutputTokenBudget).toHaveBeenCalledWith(
 			expect.anything(),
 			{ promptChars: sentPrompt.length },
@@ -1182,7 +1183,7 @@ describe("generateWebinarScriptActivity — the model call", () => {
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]).not.toHaveProperty(
+		expect(generateText.mock.calls[0]?.[0]).not.toHaveProperty(
 			"maxOutputTokens",
 		);
 	});
@@ -1213,7 +1214,7 @@ describe("generateWebinarScriptActivity — the effective analysis reaches the p
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("USER PROSE");
 		expect(prompt).not.toContain("AI ANGLE");
 		expect(analysisFindFirst).not.toHaveBeenCalled();
@@ -1243,15 +1244,14 @@ describe("generateWebinarScriptActivity — the effective analysis reaches the p
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("AI ANGLE");
 		expect(prompt).toContain(renderAnalysisProse(AI));
 	});
 });
 
 describe("generateWebinarScriptActivity — the settled-decisions block", () => {
-	const promptSent = () =>
-		generateObject.mock.calls[0]?.[0]?.prompt as string;
+	const promptSent = () => generateText.mock.calls[0]?.[0]?.prompt as string;
 	const settledSection = () => {
 		const prompt = promptSent();
 		const at = prompt.indexOf(SETTLED_DECISIONS_HEADING);
@@ -1428,8 +1428,8 @@ describe("generateWebinarScriptActivity — the settled-decisions block", () => 
 
 describe("generateWebinarScriptActivity — the asset confirmation loop", () => {
 	const withAssets = (confirmed: string[], needsConfirmation: string[]) => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: { confirmed, needsConfirmation },
 			},
@@ -1575,8 +1575,8 @@ describe("generateWebinarScriptActivity — a refusal restricts", () => {
 		// The binary gap from the other side. A settled thread leaves the
 		// clamp's unresolved-only input whatever it said, so before this a
 		// denial was the one answer that changed nothing at all.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["the latency chart"],
@@ -1609,8 +1609,8 @@ describe("generateWebinarScriptActivity — a refusal restricts", () => {
 		// confirmed label gets 200 — and the explanation is rewritten on every
 		// generation. Hashing the whole sentence would mint a fresh question
 		// each run instead of finding the one somebody already answered.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: [],
@@ -1636,7 +1636,7 @@ it("keeps READY when seeding throws", async () => {
 		status: "READY",
 		seededWorkingDraft: false,
 	});
-	expect(generateObject).toHaveBeenCalledTimes(1);
+	expect(generateText).toHaveBeenCalledTimes(1);
 	expect(logger.warn).toHaveBeenCalledWith(
 		"[publishing-webinar-script] failed to seed a working draft",
 		expect.objectContaining({ error: "seed failed" }),

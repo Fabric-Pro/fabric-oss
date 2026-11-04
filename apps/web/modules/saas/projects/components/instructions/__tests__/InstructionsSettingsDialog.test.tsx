@@ -70,6 +70,11 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	},
 }));
 
+// Saved on its own; covered by InstructionReviewPolicySection.test.tsx.
+vi.mock("../InstructionReviewPolicySection", () => ({
+	InstructionReviewPolicySection: () => null,
+}));
+
 import { InstructionsSettingsDialog } from "../InstructionsSettingsDialog";
 
 function TestQueryProvider({ children }: { children: ReactNode }) {

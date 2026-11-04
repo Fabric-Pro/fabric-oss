@@ -10,14 +10,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		getProjectScanContent: vi.fn(),
 	},
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: vi.fn(),
 }));
@@ -63,8 +64,8 @@ beforeEach(() => {
 		},
 		trackUsage: vi.fn(),
 	});
-	mocks.generateObject.mockResolvedValue({
-		object: { findings: [] },
+	mocks.generateText.mockResolvedValue({
+		output: { findings: [] },
 		usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
 	});
 	mocks.getProjectScanContent.mockResolvedValue({
@@ -99,8 +100,8 @@ describe("runSecurityScanActivity content loading", () => {
 			mode: "INCREMENTAL",
 			sinceCompletedAt: new Date("2026-09-12T03:35:00.000Z"),
 		});
-		expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-		expect(mocks.generateObject.mock.calls[0]?.[0].prompt).toContain(
+		expect(mocks.generateText).toHaveBeenCalledTimes(1);
+		expect(mocks.generateText.mock.calls[0]?.[0].prompt).toContain(
 			LOADED_TEXT,
 		);
 	});
@@ -115,7 +116,7 @@ describe("runSecurityScanActivity content loading", () => {
 		});
 
 		expect(mocks.getProjectScanContent).not.toHaveBeenCalled();
-		expect(mocks.generateObject.mock.calls[0]?.[0].prompt).toContain(
+		expect(mocks.generateText.mock.calls[0]?.[0].prompt).toContain(
 			"Inline item",
 		);
 	});

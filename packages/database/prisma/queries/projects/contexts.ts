@@ -1094,9 +1094,9 @@ async function resolveContextIdsWithContent(
  * across `ProjectContextUrlPage` rows rather than the parent's `content`, so
  * anything that reads a URL source's body has to reassemble it here.
  *
- * Pages are ordered by `pageUrl` ascending — the same order the in-app
- * drawer and the single-context download use, so the reading order matches
- * what the user saw in Fabric.
+ * Pages are ordered by `pageUrl` ascending, then `id` to make duplicate URLs
+ * deterministic. The primary order matches the in-app drawer; full, paged and
+ * bounded-quality reads preserve the same text and revision.
  *
  * Tenant XOR is re-derived from the caller rather than trusted from the
  * parent row, so a stale mirrored tenant on a child can never leak across
@@ -1113,7 +1113,7 @@ export async function getCrawledUrlSourceMarkdown(
 	const pages = await db.projectContextUrlPage.findMany({
 		where: { parentContextId, ...tenantFilter },
 		select: { pageUrl: true, pageTitle: true, content: true },
-		orderBy: { pageUrl: "asc" },
+		orderBy: [{ pageUrl: "asc" }, { id: "asc" }],
 	});
 
 	return pages
@@ -1163,7 +1163,7 @@ export async function getCrawledUrlSourceMarkdownPage(
 							content,
 							chr(10)
 						),
-						concat(chr(10), '---', chr(10), chr(10)) ORDER BY "pageUrl"
+						concat(chr(10), '---', chr(10), chr(10)) ORDER BY "pageUrl", id
 				),
 				''
 			) AS body

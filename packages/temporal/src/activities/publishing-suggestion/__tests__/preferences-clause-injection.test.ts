@@ -4,8 +4,8 @@
  *
  * Sibling of `role-clause-injection.test.ts` and deliberately shaped like it:
  * the prompt composition is untouched, the splice lives in the async activity
- * between the prompt build and the `generateObject()` call, and it is asserted
- * through the prompt `generateObject` actually receives.
+ * between the prompt build and the `generateText()` call, and it is asserted
+ * through the prompt `generateText` actually receives.
  *
  * The clause is built from the snapshot the DISPATCHER captured and the
  * workflow forwards — never from a fresh read of the settings row. A second
@@ -20,11 +20,12 @@ vi.mock("@temporalio/activity", () => ({
 	Context: { current: () => ({ heartbeat: vi.fn() }) },
 }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 const logModelUsageAsync = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	logModelUsageAsync: (...a: unknown[]) => logModelUsageAsync(...a),
 }));
@@ -63,7 +64,7 @@ const base = {
 };
 
 beforeEach(() => {
-	generateObject.mockReset();
+	generateText.mockReset();
 	getAIModelWithMetadata.mockReset();
 	logModelUsageAsync.mockReset();
 	mockIsCurrentOrgMember.mockReset();
@@ -80,14 +81,14 @@ beforeEach(() => {
 		metadata: { modelString: "test-model", provider: "test" },
 		trackUsage,
 	});
-	generateObject.mockResolvedValue({
-		object: { topics: [] },
+	generateText.mockResolvedValue({
+		output: { topics: [] },
 		usage: { totalTokens: 1 },
 	});
 });
 
 const promptOf = (call = 0) =>
-	(generateObject.mock.calls[call]?.[0] as { prompt: string }).prompt;
+	(generateText.mock.calls[call]?.[0] as { prompt: string }).prompt;
 
 describe("summarizeTopicSuggestions — preferences clause (§7.1(a))", () => {
 	it("splices the clause into the prompt when the snapshot carries preferences", async () => {
@@ -114,7 +115,7 @@ describe("summarizeTopicSuggestions — preferences clause (§7.1(a))", () => {
 		});
 		const withEmptySnapshot = promptOf();
 
-		generateObject.mockClear();
+		generateText.mockClear();
 		await summarizeTopicSuggestions(base);
 		const withNoSnapshotAtAll = promptOf();
 

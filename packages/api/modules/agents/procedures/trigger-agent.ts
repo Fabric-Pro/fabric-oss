@@ -7,60 +7,15 @@
 
 import { ORPCError } from "@orpc/client";
 import { globalAgentRegistry } from "@repo/agent-core";
-import { createAgentTask, updateAgentTaskWorkflow } from "@repo/database";
-import { getTemporalClient } from "@repo/temporal";
+import { REGISTERED_AGENT_EXECUTION_UNSUPPORTED } from "@repo/agent-types";
 import { z } from "zod";
-import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import {
 	agentRateLimitedProcedure,
 	Permissions,
 	requireInputOrgPermission,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
-
-/**
- * Sanitize agent input to prevent prompt injection
- * Removes potentially dangerous patterns while preserving legitimate content
- */
-function sanitizeAgentInput(
-	input: Record<string, unknown>,
-): Record<string, unknown> {
-	const sanitized: Record<string, unknown> = {};
-
-	for (const [key, value] of Object.entries(input)) {
-		if (typeof value === "string") {
-			// Limit string length to prevent abuse
-			const truncated = value.slice(0, 50000);
-			// Remove system prompt injection attempts
-			const cleaned = truncated
-				.replace(
-					/\[INST\]|\[\/INST\]|<\|system\|>|<\|user\|>|<\|assistant\|>/gi,
-					"",
-				)
-				.replace(/<<SYS>>|<\/SYS>>/gi, "")
-				.replace(/Human:|Assistant:|System:/gi, (match) =>
-					match.replace(":", ": "),
-				);
-			sanitized[key] = cleaned;
-		} else if (Array.isArray(value)) {
-			// Limit array size
-			sanitized[key] = value
-				.slice(0, 1000)
-				.map((item) =>
-					typeof item === "string" ? item.slice(0, 10000) : item,
-				);
-		} else if (typeof value === "object" && value !== null) {
-			// Recursively sanitize nested objects (with depth limit)
-			sanitized[key] = sanitizeAgentInput(
-				value as Record<string, unknown>,
-			);
-		} else {
-			sanitized[key] = value;
-		}
-	}
-
-	return sanitized;
-}
+import { resolvedOrganizationId } from "./conversations/resolved-organization";
 
 /**
  * Validated input schema for agent execution
@@ -103,7 +58,7 @@ export const triggerAgent = agentRateLimitedProcedure
 		tags: ["Agents"],
 		summary: "Trigger agent execution",
 		description:
-			"Start an agent execution with Temporal workflow for durability and automatic retries",
+			"Registered agents use their interactive runtime; invoke a saved instance for background execution",
 	})
 	.input(AgentInputSchema)
 	.output(
@@ -116,12 +71,8 @@ export const triggerAgent = agentRateLimitedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
-		const { agentName, organizationId, input: rawAgentInput } = input;
-
-		// Sanitize input to prevent prompt injection attacks
-		const agentInput = sanitizeAgentInput(
-			rawAgentInput as Record<string, unknown>,
-		);
+		const { agentName } = input;
+		const organizationId = resolvedOrganizationId(input, context.session);
 
 		// Verify organization membership if organizationId provided
 		if (organizationId) {
@@ -145,71 +96,8 @@ export const triggerAgent = agentRateLimitedProcedure
 			});
 		}
 
-		// Check agent health before triggering
-		const health = await adapter.healthCheck();
-		if (!health.healthy) {
-			throw new ORPCError("SERVICE_UNAVAILABLE", {
-				message: `Agent "${agentName}" is not healthy: ${health.error || "Unknown error"}`,
-			});
-		}
-
-		// Create agent task record
-		const task = await createAgentTask({
-			agentId: agentName,
-			userId: user.id,
-			organizationId: organizationId ?? undefined,
-			status: "PENDING",
-			stage: "INITIALIZING",
-			input: agentInput,
-			framework: adapter.framework,
+		throw new ORPCError("CONFLICT", {
+			message: REGISTERED_AGENT_EXECUTION_UNSUPPORTED.message,
+			data: { code: REGISTERED_AGENT_EXECUTION_UNSUPPORTED.code },
 		});
-
-		try {
-			// Get Temporal client
-			const temporal = await getTemporalClient();
-
-			// Start Temporal workflow
-			const workflowId = `agent-execution-${task.id}`;
-			const handle = await temporal.workflow.start(
-				"agentExecutionWorkflow",
-				withCorrelationMemo({
-					taskQueue: "agents",
-					workflowId,
-					args: [
-						{
-							taskId: task.id,
-							agentName,
-							userId: user.id,
-							organizationId,
-							input: agentInput,
-						},
-					],
-				}),
-			);
-
-			// Update task with workflow information
-			await updateAgentTaskWorkflow({
-				id: task.id,
-				workflowId: handle.workflowId,
-				runId: handle.firstExecutionRunId,
-			});
-
-			return {
-				taskId: task.id,
-				workflowId: handle.workflowId,
-				runId: handle.firstExecutionRunId,
-				status: "PENDING",
-			};
-		} catch (error) {
-			// Update task status to FAILED if workflow start fails
-			await updateAgentTaskWorkflow({
-				id: task.id,
-				workflowId: "",
-				runId: "",
-			});
-
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: `Failed to start agent execution: ${error instanceof Error ? error.message : "Unknown error"}`,
-			});
-		}
 	});

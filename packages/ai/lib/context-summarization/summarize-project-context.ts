@@ -29,10 +29,11 @@ import {
 	type ContextSourceReference,
 	estimateAiUsageCostUsd,
 } from "@repo/database";
-import { generateObject } from "ai";
+import { generateText, Output } from "ai";
 import { z } from "zod";
 import { getAIModelWithMetadata } from "../dynamic-model-selector";
 import { cacheableSystem } from "../prompt-cache";
+import { requireStructuredOutput } from "../structured-output";
 
 /** A raw context source fed to one fold, with its pre-assigned citation marker. */
 export interface FoldBatchSource {
@@ -422,14 +423,18 @@ export async function foldContextBatch(
 		buildBatchSourceBlock(input.batchSources),
 	);
 
-	const result = await generateObject({
-		model,
-		schema: SummarySchema,
-		instructions: cacheableSystem(
-			`${input.systemPrompt?.trim() || SYSTEM_GUIDANCE}\n${FORMATTING_GUIDANCE}`,
-		),
-		messages: [{ role: "user" as const, content: promptParts.join("\n") }],
-	});
+	const result = await requireStructuredOutput(
+		generateText({
+			model,
+			output: Output.object({ schema: SummarySchema }),
+			instructions: cacheableSystem(
+				`${input.systemPrompt?.trim() || SYSTEM_GUIDANCE}\n${FORMATTING_GUIDANCE}`,
+			),
+			messages: [
+				{ role: "user" as const, content: promptParts.join("\n") },
+			],
+		}),
+	);
 
 	trackUsage();
 
@@ -459,7 +464,7 @@ export async function foldContextBatch(
 		...input.codeRepos.map((r) => r.marker),
 	]);
 	const assembled = truncate(
-		assembleSummary(result.object),
+		assembleSummary(result.output),
 		SUMMARY_CHAR_CAP,
 	);
 	const { content, citedMarkers } = sanitizeCitations(assembled, allowed);

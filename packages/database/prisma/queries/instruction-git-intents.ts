@@ -12,13 +12,13 @@ import { createHash } from "node:crypto";
 import { db, Prisma } from "../client";
 import type { ProjectInstructionFileKind } from "../generated/client";
 import { migrationOfSettings } from "./instruction-migration-pointer";
+import type { PullRequestFailure } from "./instruction-proposal-pull-requests";
 import {
 	activeProposalFilter,
 	MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROJECT,
 	MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROPOSER,
 	withVersionRetry,
 } from "./instructions";
-import type { PullRequestFailure } from "./instruction-proposal-pull-requests";
 import {
 	canCreateProjectInstructions,
 	canReadProjectInstructions,
@@ -31,7 +31,16 @@ type GitIntentBase = {
 	mode: number;
 };
 
-export type GitIntentPut = {
+/**
+ * A branch-relative entry names the blob Fabric wrote at its path on the
+ * member's own proposal branch, where the published version has no file.
+ * Omitted, the entry is relative to the published version, as before.
+ */
+type GitIntentBranchTarget = {
+	branchObjectId?: string;
+};
+
+export type GitIntentPut = GitIntentBranchTarget & {
 	op: "PUT";
 	path: string;
 	base: GitIntentBase | null;
@@ -44,7 +53,7 @@ export type GitIntentPut = {
 	kind: ProjectInstructionFileKind;
 };
 
-export type GitIntentDelete = {
+export type GitIntentDelete = GitIntentBranchTarget & {
 	op: "DELETE";
 	path: string;
 	base: GitIntentBase | null;
@@ -140,8 +149,8 @@ function gitIntentDigest(input: AdmitGitIntentInput): string {
 		.sort((left, right) =>
 			left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
 		)
-		.map((entry) =>
-			entry.op === "PUT"
+		.map((entry) => ({
+			...(entry.op === "PUT"
 				? {
 						op: entry.op,
 						path: entry.path,
@@ -155,8 +164,13 @@ function gitIntentDigest(input: AdmitGitIntentInput): string {
 						path: entry.path,
 						baseObjectId: entry.base?.objectId ?? null,
 						baseMode: entry.base?.mode ?? null,
-					},
-		);
+					}),
+			// Only present on a branch-relative entry, so every published-
+			// relative intent keeps the digest it had before.
+			...(entry.branchObjectId !== undefined
+				? { branchObjectId: entry.branchObjectId }
+				: {}),
+		}));
 	return createHash("sha256")
 		.update(
 			JSON.stringify({
@@ -399,6 +413,8 @@ export async function admitGitIntent(
 										baseObjectId:
 											entry.base?.objectId ?? null,
 										baseMode: entry.base?.mode ?? null,
+										branchObjectId:
+											entry.branchObjectId ?? null,
 										storageKey: entry.storageKey,
 										sha256: entry.sha256,
 										size: entry.size,
@@ -415,6 +431,8 @@ export async function admitGitIntent(
 										baseObjectId:
 											entry.base?.objectId ?? null,
 										baseMode: entry.base?.mode ?? null,
+										branchObjectId:
+											entry.branchObjectId ?? null,
 									},
 						),
 					},
@@ -476,6 +494,7 @@ export function loadGitIntent(input: {
 					path: true,
 					baseObjectId: true,
 					baseMode: true,
+					branchObjectId: true,
 					storageKey: true,
 					sha256: true,
 					size: true,

@@ -1,4 +1,5 @@
 import { db } from "../client";
+import { canAccessReportInstance } from "./lib/report-access";
 import { getNotificationPreferences } from "./notification-preferences";
 
 export interface ReportExecutionEmailContext {
@@ -33,10 +34,31 @@ export async function claimReportExecutionEmail(input: {
 			organizationId: true,
 			instanceId: true,
 			emailSentAt: true,
-			instance: { select: { name: true } },
+			parameters: true,
+			instance: {
+				select: {
+					name: true,
+					userId: true,
+					organizationId: true,
+					fabricConfig: true,
+				},
+			},
 		},
 	});
 	if (!execution) {
+		return null;
+	}
+	if (
+		!execution.organizationId ||
+		!(await canAccessReportInstance(
+			execution.instance,
+			{
+				userId: execution.userId,
+				organizationId: execution.organizationId,
+			},
+			execution.parameters,
+		))
+	) {
 		return null;
 	}
 	if (execution.status !== status) {

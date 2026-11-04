@@ -270,6 +270,7 @@ describe("applyPlan", () => {
 				keptModified: [],
 				keptRenamed: [],
 				keptEdited: [],
+				overridden: [],
 				verified: [
 					{
 						path: "real.md",
@@ -296,6 +297,7 @@ describe("applyPlan", () => {
 					keptModified: [],
 					keptRenamed: [],
 					keptEdited: [],
+					overridden: [],
 					verified: [
 						{
 							path: "linked.md",
@@ -340,6 +342,7 @@ describe("applyPlan", () => {
 			keptModified: [],
 			keptRenamed: [],
 			keptEdited: [],
+			overridden: [],
 		};
 
 		await expect(
@@ -599,6 +602,7 @@ describe("applyPlan and a kept local edit", () => {
 							mode: null,
 						},
 					],
+					overridden: [],
 				},
 				contents: contentsOf({ "a.md": "first" }),
 			}),
@@ -634,6 +638,7 @@ describe("applyPlan and a save that lands after planning", () => {
 			keptModified: [],
 			keptRenamed: [],
 			keptEdited: [],
+			overridden: [],
 		};
 	}
 

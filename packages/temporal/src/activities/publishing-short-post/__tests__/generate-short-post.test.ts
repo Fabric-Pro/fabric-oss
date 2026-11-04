@@ -22,10 +22,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	// Faithful enough to discriminate, which is all the activity asks of it:
 	// the AI SDK names this error class "AI_NoObjectGeneratedError", and the
@@ -216,8 +217,8 @@ beforeEach(() => {
 		metadata: { modelString: "test-model", provider: "test" },
 		trackUsage,
 	});
-	generateObject.mockResolvedValue({
-		object: MODEL_OUTPUT,
+	generateText.mockResolvedValue({
+		output: MODEL_OUTPUT,
 		usage: { totalTokens: 100 },
 	});
 	completeTopicDraft.mockResolvedValue({ persisted: true });
@@ -276,7 +277,7 @@ describe("generateShortPostActivity — tenancy and actor revalidation", () => {
 			nonRetryable: true,
 		});
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 });
 
@@ -301,7 +302,7 @@ describe("generateShortPostActivity — contributor override", () => {
 				where: { id: { in: ["chosen-user"] } },
 			}),
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Chosen Contributor",
 		);
 	});
@@ -323,7 +324,7 @@ describe("generateShortPostActivity — contributor override", () => {
 		// `resolveContributorNames` short-circuits on an empty list, so the
 		// lookup never runs at all.
 		expect(userFindMany).not.toHaveBeenCalled();
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).not.toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).not.toContain(
 			"People associated with the work behind this topic",
 		);
 	});
@@ -392,7 +393,7 @@ describe("generateShortPostActivity — the effective analysis reaches the promp
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("USER PROSE");
 		expect(prompt).not.toContain("AI ANGLE");
 		// The two assertions above pin the ANSWER; this one pins the
@@ -430,7 +431,7 @@ describe("generateShortPostActivity — the effective analysis reaches the promp
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("AI ANGLE");
 		expect(prompt).toContain(renderAnalysisProse(AI));
 	});
@@ -454,8 +455,8 @@ describe("generateShortPostActivity — what it persists", () => {
 	});
 
 	it("fails non-retryably when the model output does not validate FR16's exactly-three contract", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				options: MODEL_OUTPUT.options.slice(0, 2),
 			},
@@ -489,7 +490,7 @@ describe("generateShortPostActivity — what it persists", () => {
 				},
 			},
 		);
-		generateObject.mockRejectedValue(refused);
+		generateText.mockRejectedValue(refused);
 
 		await expect(run()).rejects.toMatchObject({
 			type: "PUBLISHING_SHORT_POST_SCHEMA_VALIDATION_FAILED",
@@ -517,7 +518,7 @@ describe("generateShortPostActivity — what it persists", () => {
 	// right shape, every post empty. A retry does not clear that, so it must
 	// not be reported as one that will.
 	it("reports options with no post text at all as their own failure", async () => {
-		generateObject.mockRejectedValue(refusedAnswer(["", " ", ""]));
+		generateText.mockRejectedValue(refusedAnswer(["", " ", ""]));
 
 		await expect(run()).rejects.toMatchObject({
 			type: "PUBLISHING_SHORT_POST_NO_POST_TEXT",
@@ -527,7 +528,7 @@ describe("generateShortPostActivity — what it persists", () => {
 	});
 
 	it("keeps one empty option a schema mismatch", async () => {
-		generateObject.mockRejectedValue(
+		generateText.mockRejectedValue(
 			refusedAnswer(["", "A post.", "Another post."]),
 		);
 
@@ -537,8 +538,8 @@ describe("generateShortPostActivity — what it persists", () => {
 	});
 
 	it("reports empty options that reach the activity's own check the same way", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				options: MODEL_OUTPUT.options.map((option) => ({
 					...option,
@@ -571,7 +572,7 @@ describe("generateShortPostActivity — a soft-closed question restricts", () =>
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const heading = prompt.indexOf(
 			"## Unresolved approvals for this topic",
 		);

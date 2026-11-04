@@ -24,6 +24,7 @@
 		"@repo/config": "workspace:*",
 		"@repo/connectors": "workspace:*",
 		"@repo/database": "workspace:*",
+		"@repo/databricks": "workspace:*",
 		"@repo/i18n": "workspace:*",
 		"@repo/instructions": "workspace:*",
 		"@repo/integrations": "workspace:*",
@@ -75,6 +76,6 @@
 		"test:watch": "vitest",
 		"type-check": "tsgo --noEmit"
 	},
-	"version": "0.0.19",
+	"version": "0.0.20",
 	"license": "Apache-2.0"
 }

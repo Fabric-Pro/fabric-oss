@@ -31,13 +31,16 @@ no browser, add `--key <api-key>` with an organization API key instead.
 ## The command
 
 ```bash
-fabric context push <dir> --project <id> [--org <slug>] [--force] [--prune] \
-  [--dry-run] [--exclude <pattern>]... [--hook] [--format json]
+fabric context push <dir...> --project <id> [--org <slug>] [--force] [--prune] \
+  [--init] [--timeout <seconds>] [--dry-run] [--exclude <pattern>]... [--hook] \
+  [--format json]
 ```
 
 | Flag | What it does |
 |---|---|
-| `<dir>` | The folder to push. Required: the command never defaults to the working directory, because pushing a repository root by accident would send every text file in it. |
+| `<dir...>` | One or more folders to push. Required: the command never defaults to the working directory, because pushing a repository root by accident would send every text file in it. Several folders are pushed one after another, each with its own lock and its own report. A folder that fails does not stop the next one; the run then exits with the first failure's code. With `--format json`, each folder prints its own JSON object, in order. Two folders that hold the same relative path write to the same entry in the project, so give each folder its own paths. |
+| `--init` | Ignores each folder's lock and replaces it. Every file is sent as new and names no earlier version, so a lock left over from before a [reset](#resetting-living-memory) never reports a file as deleted on the server. A file whose path the server still holds with other content is a conflict, which `--force` resolves. Cannot be combined with `--prune`. |
+| `--timeout <seconds>` | Bounds each folder's push as a whole. The bound is checked before each request; when it is passed, the run stops, records what the server already confirmed, and exits 1 with how many requests were sent. A single request never waits longer than the bound or 60 seconds, whichever is shorter. There is no overall bound by default: a large folder can legitimately take a long time, every request already has its own 60-second timeout, and progress shows that the run is moving. |
 | `--project <id>` | The project whose Context receives the files. |
 | `--org <slug>` | Binds the request to an organization explicitly. The project already decides which organization it is in; a slug that is not the project's own is a 404. |
 | `--force` | On a conflict, replace the server's version with this folder's, once. With `--prune`, also deletes a file that changed on the server, once. See below. |
@@ -48,7 +51,11 @@ fabric context push <dir> --project <id> [--org <slug>] [--force] [--prune] \
 | `--format json` | Prints the plan and every result as one JSON object. File contents are never included. |
 
 Files are sent one request at a time: moves first, then the other files in
-sorted path order, then (with `--prune`) the deletions. The report groups
+sorted path order, then (with `--prune`) the deletions. While it runs, the
+command writes one progress line per request to stderr, such as
+`[3/120] push docs/setup.md`. A `--force` resend repeats the file's number
+with `force`. On a terminal each line replaces the previous one. Under
+`--hook` no progress is written. The report groups
 them by outcome with a count on each group, one line per file for every
 outcome except `unchanged`, which is only counted:
 
@@ -102,6 +109,9 @@ hash the server stores is the hash of the file.
 These are always left out and cannot be re-included:
 
 - `.git/`, `.fabric/` (where the lock lives), `node_modules/`;
+- editor settings: `.idea/`, `.vscode/`, `.vs/`;
+- generated output and lock files: `dist/`, `coverage/`, `.next/`,
+  `.turbo/`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`;
 - coding-instruction files and folders: `CLAUDE.md`, `AGENTS.md`,
   `GEMINI.md`, `.claude/`, `.cursor/`, `.codex/`, and any directory named
   `skills`, `agents`, `hooks`, `rules` or `scripts` at any depth;
@@ -347,9 +357,49 @@ The scope alone does not grant access. On every call the server also checks that
 the key's creator can still add context sources to that project in the app
 (or, for a `--prune` deletion, delete them), with the same permission and
 project-visibility checks the Context tab uses.
-A wildcard `*` key is checked the same way. A missing scope answers
-`Missing required scope: projects:write` and exits 5. A missing permission
+A wildcard `*` key is checked the same way. A missing scope exits 5 with a
+sentence that names the scope and tells you to create a key with it, for
+example `This API key is missing the projects:write scope. Create an API key
+with the projects:write scope and run again, …`. A missing permission
 answers a different sentence and also exits 5.
+
+## Resetting Living Memory
+
+When a project's synced files are in a state that pushing cannot untangle,
+delete all of them and push again:
+
+```bash
+fabric context reset docs/knowledge --project <id> [--org <slug>] [--yes] [--format json]
+fabric context push --init docs/knowledge --project <id>
+```
+
+`fabric context reset` deletes **every** file synced into the project's
+Living Memory, for everyone, and queues their search-index entries for
+removal in the same step. The whole project is reset; there is no reset of
+one folder. Afterwards the files are gone from the Context tab, from
+`fabric context manifest` and from the MCP file listing. A reset of a project
+with nothing synced deletes nothing, so running it twice is harmless.
+
+- It asks you to type the project's name to confirm (its id, when the name
+  cannot be read). Without a terminal, for example in CI, it refuses unless
+  `--yes` is given.
+- With a folder, it also replaces that folder's `.fabric/context.lock` with an
+  empty one, so the next push sends every file as new. A lock that belongs to
+  another project is refused before anything is sent. Without a folder, push
+  with `--init` instead.
+- It needs the same `projects:write` scope, and the key's creator must be
+  able to delete any member's context sources in the project (a project admin
+  or owner; an editor cannot).
+- It is refused while a Living Memory repository sync is connected
+  (`REPOSITORY_SYNC_ACTIVE`, exit 1), because the sync would bring the files
+  back on its next run. Disconnect the sync in the project's Context tab
+  first.
+- Every reset that deleted something is recorded in the audit log as
+  `project.context_source.synced_files_reset`, with who, when, the scope and
+  the number of files.
+
+The Context tab has the same action: **Reset Living Memory**, in the Living
+Memory section.
 
 ## Running it from a hook
 
@@ -394,11 +444,12 @@ reconciles it (a deletion the server finished in the meantime is answered
 
 | Layer | Where |
 |---|---|
-| CLI command | `packages/cli/src/commands/context/index.ts` |
+| CLI command | `packages/cli/src/commands/context/index.ts`, and `reset.ts` beside it |
 | Walk, ignore rules, classification, plan, lock, report | `packages/cli/src/lib/context-sync/` |
 | Guarded reads and writes | `packages/cli/src/lib/instructions/safe-write.ts` |
 | SDK resource | `packages/sdk/src/resources/contexts.ts` (`client.contexts.upsertSyncedFile`, `client.contexts.deleteSyncedFile`) |
-| REST routes | `PUT` and `DELETE /api/v1/projects/:projectId/contexts/synced-files` in `packages/api/modules/v1/contexts.ts` |
+| REST routes | `PUT` and `DELETE /api/v1/projects/:projectId/contexts/synced-files`, and `POST /api/v1/projects/:projectId/contexts/reset`, in `packages/api/modules/v1/contexts.ts` |
+| Reset | `packages/api/modules/projects/lib/reset-synced-contexts.ts` and `resetSyncedContextRows` in `packages/database/prisma/queries/projects/reset-synced-contexts.ts` |
 | Shared server logic | `packages/api/modules/projects/lib/upsert-synced-context.ts`, `packages/api/modules/projects/lib/delete-synced-context.ts` |
 | Compare-and-set queries | `upsertContextBySourcePath` and the delete's `deleteSyncedContextRow`, in `packages/database/prisma/queries/projects/contexts.ts` |
 | Index cleanup after a delete | `createPendingVectorCleanup` in `packages/database/prisma/queries/projects/pending-vector-cleanup.ts`, drained by the request and by the scheduled sweep through `drainPendingVectorCleanup` in `packages/temporal/src/lib/delete-channel-context.ts` |

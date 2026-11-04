@@ -6,8 +6,7 @@
 	"parties": {
 		"document": "document.ts",
 		"health": "health.ts",
-		"orchestrator": "orchestrator.ts",
-		"taskagent": "taskAgent.ts"
+		"orchestrator": "orchestrator.ts"
 	},
 	"vars": {
 		"FABRIC_API_URL": "http://localhost:3001"

@@ -6,7 +6,6 @@ export interface Env {
 	AI: Ai;
 	Main: DurableObjectNamespace;
 	Orchestrator: DurableObjectNamespace;
-	TaskAgent: DurableObjectNamespace;
 	Health: DurableObjectNamespace;
 	Parlume: DurableObjectNamespace;
 }

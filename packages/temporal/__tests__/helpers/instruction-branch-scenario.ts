@@ -243,6 +243,65 @@ export function seedProposal(
 	return proposal;
 }
 
+/**
+ * A native proposal: only the named paths, as `loadGitIntent` returns them.
+ * A string PUTs those bytes, null deletes. `branchObjectId` marks a
+ * branch-relative entry: one the published version has no file for.
+ */
+export function seedGitIntentProposal(
+	s: Scenario,
+	id: string,
+	changes: Record<
+		string,
+		{ content: string | null; branchObjectId?: string; mode?: number }
+	>,
+	over: Partial<FakeProposal> = {},
+): FakeProposal {
+	const proposal = seedProposal(
+		s,
+		id,
+		{},
+		{
+			contentKind: "GIT_INTENT",
+			baseSnapshotId: null,
+			...over,
+		},
+	);
+	s.fake.state.files.delete(id);
+	s.fake.state.gitIntents.set(id, {
+		status: "READY",
+		gitIntentEntries: Object.entries(changes).map(([path, change]) => {
+			const base = path in BASE_FILES;
+			const branchObjectId = change.branchObjectId ?? null;
+			if (change.content === null) {
+				return {
+					operation: "DELETE" as const,
+					path,
+					baseObjectId: base ? "0".repeat(40) : null,
+					baseMode: base ? 0o100644 : null,
+					branchObjectId,
+					storageKey: null,
+					sha256: null,
+					mode: null,
+				};
+			}
+			const storageKey = `instructions/${id}/${path}`;
+			s.storage.set(storageKey, Buffer.from(change.content));
+			return {
+				operation: "PUT" as const,
+				path,
+				baseObjectId: base ? "0".repeat(40) : null,
+				baseMode: base ? 0o100644 : null,
+				branchObjectId,
+				storageKey,
+				sha256: sha256(change.content),
+				mode: change.mode ?? 0o100644,
+			};
+		}),
+	});
+	return proposal;
+}
+
 /** What the loop hands the append: the ids and the attempts claimed. */
 export function appendInput(s: Scenario, snapshotId: string) {
 	const p = s.fake.state.proposals.get(snapshotId) as FakeProposal;

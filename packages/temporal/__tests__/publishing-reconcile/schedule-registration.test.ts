@@ -36,6 +36,7 @@ const { scheduleCreate, FakeScheduleAlreadyRunning, FakeScheduleClient } =
 			FakeScheduleAlreadyRunning: class FakeScheduleAlreadyRunning extends Error {},
 			FakeScheduleClient: class FakeScheduleClient {
 				create = create;
+				getHandle = () => ({ pause: async () => undefined });
 			},
 		};
 	});

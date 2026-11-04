@@ -18,6 +18,10 @@
  * If a caller selects a non-crawl-capable provider (the picker should
  * prevent this at the procedure pre-flight) the activity throws
  * non-retryable rather than silently scrape-only-ing.
+ *
+ * When the input sets `reportUnsupportedContent`, a root URL whose file type
+ * cannot be indexed is not thrown: the activity logs one warning and returns
+ * `{ pages: [], unsupported }` (`lib/unsupported-content.ts`).
  */
 import { ApplicationFailure, heartbeat } from "@temporalio/activity";
 import { activityLogger } from "../lib/activity-logger";
@@ -28,6 +32,10 @@ import {
 	type WebScrapePage,
 	type WebScraperProviderName,
 } from "../lib/web-scraper";
+import {
+	type UnsupportedContent,
+	unsupportedContentOutcome,
+} from "./lib/unsupported-content";
 
 export interface FirecrawlCrawlActivityInput {
 	url: string;
@@ -38,9 +46,26 @@ export interface FirecrawlCrawlActivityInput {
 	excludePaths?: string[];
 	limit?: number;
 	sitemap?: "include" | "skip";
+	/**
+	 * Return an unsupported content type as an outcome instead of throwing
+	 * it. Absent in inputs recorded before it existed, which keep the failure.
+	 */
+	reportUnsupportedContent?: boolean;
 }
 
-export type FirecrawlCrawlActivityOutput = WebScrapePage[];
+/** The crawl of a URL whose file type cannot be indexed. */
+export interface FirecrawlCrawlUnsupportedOutcome {
+	pages: [];
+	unsupported: UnsupportedContent;
+}
+
+/**
+ * The crawled pages, or, only when the input had `reportUnsupportedContent`,
+ * the unsupported-content outcome.
+ */
+export type FirecrawlCrawlActivityOutput =
+	| WebScrapePage[]
+	| FirecrawlCrawlUnsupportedOutcome;
 
 function asActivityFailure(error: WebScrapeError): never {
 	const isPermanent =
@@ -75,6 +100,7 @@ export async function firecrawlCrawlActivity(
 		excludePaths,
 		limit,
 		sitemap,
+		reportUnsupportedContent,
 	} = input;
 
 	activityLogger.info("URL crawl activity start", {
@@ -122,6 +148,15 @@ export async function firecrawlCrawlActivity(
 		});
 
 		if (!result.success) {
+			if (
+				reportUnsupportedContent === true &&
+				result.error.code === "UNSUPPORTED_CONTENT_TYPE"
+			) {
+				return {
+					pages: [],
+					unsupported: unsupportedContentOutcome(url, result.error),
+				};
+			}
 			activityLogger.warn("URL crawl failed", {
 				url,
 				providerName,

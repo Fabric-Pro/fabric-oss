@@ -186,6 +186,9 @@ vi.mock("sonner", () => ({
 	},
 }));
 
+// The branch's file list is its own suite (`BranchFileActions.test.tsx`).
+vi.mock("../BranchFileList", () => ({ BranchFileList: () => null }));
+
 import { InstructionProposalBranchPanel } from "../InstructionProposalBranchPanel";
 
 function Wrapper({ children }: { children: ReactNode }) {

@@ -109,10 +109,12 @@ describe("scopes and audiences", () => {
 		}
 	});
 
-	it("accepts the gateway with and without a trailing slash, and the API", () => {
+	it("accepts the gateway with and without a trailing slash, /mcp, and the API", () => {
 		expect(oauthValidAudiences(`${APP_URL}/`)).toEqual([
 			"https://app.example.com/api/mcp-gateway",
 			"https://app.example.com/api/mcp-gateway/",
+			"https://app.example.com/mcp",
+			"https://app.example.com/mcp/",
 			"https://app.example.com/api/v1",
 		]);
 	});

@@ -1,6 +1,9 @@
 "use client";
 
-import { classifyDateParameter } from "@saas/reports/lib/date-parameter";
+import {
+	classifyDateParameter,
+	isLegacyDateParameter,
+} from "@saas/reports/lib/date-parameter";
 import { Badge } from "@ui/components/badge";
 import { DatePicker } from "@ui/components/date-picker";
 import { Input } from "@ui/components/input";
@@ -96,9 +99,11 @@ export function SmartParameterInput({
 	enhanced = false,
 }: Props) {
 	const hasValue = Boolean(value?.trim());
-	const dateKind = classifyDateParameter(name, schema);
-	const isPeriod = enhanced && dateKind === "period";
-	const isDate = dateKind !== null && !isPeriod;
+	const dateKind = enhanced ? classifyDateParameter(name, schema) : null;
+	const isPeriod = dateKind === "period";
+	const isDate = enhanced
+		? dateKind === "date"
+		: isLegacyDateParameter(name, schema);
 	const hasDefault = schema.default != null && schema.default !== "";
 	// A required value the server cannot fill from a default.
 	const missing = enhanced && Boolean(isRequired) && !hasValue && !hasDefault;

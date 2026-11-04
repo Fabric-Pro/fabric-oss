@@ -16,6 +16,7 @@ import {
 } from "../lib/parlume-format";
 import { MONO_LABEL } from "../lib/parlume-styles";
 import { sessionOutcome, TONE_DOT, TONE_TEXT } from "../lib/parlume-view";
+import { ParlumeSuggestionsList } from "./ParlumeSuggestionsList";
 
 function hasNotesBlock(session: ParlumeSession): boolean {
 	return Boolean(session.notes || session.transcriptContextId);
@@ -26,7 +27,8 @@ function hasDetails(session: ParlumeSession): boolean {
 	return (
 		Boolean(session.lastError) ||
 		hasNotesBlock(session) ||
-		session.requestCount > 0
+		session.requestCount > 0 ||
+		session.suggestionCount > 0
 	);
 }
 
@@ -37,10 +39,12 @@ function notesPlaceholder(session: ParlumeSession): string {
 }
 
 function SessionDetails({
+	projectId,
 	session,
 	projectBasePath,
 	onViewRequests,
 }: {
+	projectId: string;
 	session: ParlumeSession;
 	projectBasePath: string;
 	onViewRequests: (sessionId: string) => void;
@@ -92,6 +96,16 @@ function SessionDetails({
 					)}
 				</div>
 			)}
+			{session.suggestionCount > 0 && (
+				<div className="max-w-2xl">
+					<ParlumeSuggestionsList
+						projectId={projectId}
+						sessionId={session.id}
+						refetchInterval={false}
+						variant="details"
+					/>
+				</div>
+			)}
 		</div>
 	);
 }
@@ -131,6 +145,7 @@ function lengthOf(session: ParlumeSession, now: number): string {
 
 /** A session's row, and the detail row under it while it is open. */
 export function ParlumeSessionRow({
+	projectId,
 	session,
 	cost,
 	now,
@@ -139,6 +154,7 @@ export function ParlumeSessionRow({
 	projectBasePath,
 	onViewRequests,
 }: {
+	projectId: string;
 	session: ParlumeSession;
 	cost: number | undefined;
 	now: number;
@@ -218,6 +234,7 @@ export function ParlumeSessionRow({
 				<TableRow className="bg-muted/40 hover:bg-muted/40">
 					<TableCell id={detailsId} colSpan={6} className="p-0">
 						<SessionDetails
+							projectId={projectId}
 							session={session}
 							projectBasePath={projectBasePath}
 							onViewRequests={onViewRequests}

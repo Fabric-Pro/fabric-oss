@@ -199,6 +199,7 @@ describe("MCP gateway — service credential", () => {
 			organizationId: ORG_A,
 			credential: "service",
 			scopes: [
+				"workspaces:read",
 				"workflows:read",
 				"workflows:write",
 				"workflows:run",
@@ -586,6 +587,7 @@ describe("MCP gateway — service calls are not CLI connections", () => {
 });
 
 const BASE_SCOPES = [
+	"workspaces:read",
 	"workflows:read",
 	"workflows:write",
 	"workflows:run",

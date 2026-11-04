@@ -64,6 +64,8 @@ export function CredentialPicker({
 	const selected = credentials.find((c) => c.id === value);
 	const describe = (c: (typeof credentials)[number]) =>
 		`${c.label} · ${KIND_LABELS[c.kind] ?? c.kind}${
+			c.externalAccountLogin ? ` · ${c.externalAccountLogin}` : ""
+		}${
 			c.ownedByMe
 				? ""
 				: c.owner === "organization"

@@ -32,10 +32,10 @@ export function clampLimit(
 }
 
 export const NO_PAGE_OPEN =
-	"No page to act on. Pass `frameId`, or open the Workspace first.";
+	"No page to act on. Pass `frameId`, or open the Page first.";
 
 /**
- * The page a call means: the `frameId` it names, else the Workspace the person
+ * The page a call means: the `frameId` it names, else the Page the person
  * has open (the agent's default; a page's own calls always name their page).
  * Never `id`: the file tools take the id of a file there, and reading it as a
  * page would open the file's id as a page.
@@ -113,7 +113,7 @@ export function pageUrl(
 		return undefined;
 	}
 	if (frame.surface === "workspace") {
-		return `/app/${slug}/workspaces/${frame.frameId}`;
+		return `/app/${slug}/pages/${frame.frameId}`;
 	}
 	if (frame.surface === "artifact" && frame.projectId) {
 		return `/app/${slug}/projects/${frame.projectId}?tab=artifacts`;

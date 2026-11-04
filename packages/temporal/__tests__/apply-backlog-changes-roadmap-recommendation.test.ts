@@ -70,7 +70,8 @@ vi.mock("../src/lib/trigger-duplicate-detection", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: vi.fn(),
+	Output: { object: (spec: unknown) => spec },
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	logModelUsageAsync: vi.fn(),
 }));

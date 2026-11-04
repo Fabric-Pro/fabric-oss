@@ -23,6 +23,30 @@ const FIZZY_DS = [{ id: "task-board", provider: "fizzy", type: "mcp" }];
 describe("resolveReportConnections (self-heal)", () => {
 	beforeEach(() => resolveReportMcpConfig.mockReset());
 
+	it("leaves a skipped optional source unbound, even when self-heal could connect it", async () => {
+		resolveReportMcpConfig.mockResolvedValue({
+			configId: "cfg-owner",
+			healed: true,
+			enabled: true,
+		});
+		const r = await resolveReportConnections({
+			connections: { mcpConfigs: [], mcpBindings: {} },
+			dataSources: [
+				{
+					id: "task-board",
+					provider: "fizzy",
+					type: "mcp",
+					required: false,
+				},
+			],
+			userId: "u1",
+		});
+		expect(resolveReportMcpConfig).not.toHaveBeenCalled();
+		expect(r.mcpBindings).toEqual({});
+		expect(r.healed).toEqual([]);
+		expect(r.unresolved).toEqual([]);
+	});
+
 	it("prefers the stored config when it resolves — no heal, no regression", async () => {
 		resolveReportMcpConfig.mockResolvedValue({
 			configId: "cfg-live",

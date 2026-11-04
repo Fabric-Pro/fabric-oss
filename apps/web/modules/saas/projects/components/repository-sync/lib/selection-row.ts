@@ -64,6 +64,12 @@ export type SelectionRow = {
 	disabledReason: SelectionMessage | null;
 	/** Something a clickable row should say, wired the same way. */
 	note?: SelectionMessage | null;
+	/**
+	 * The member left this row out themselves (Living Memory: a left-out
+	 * path; Coding Instructions: the row's own ignore rule), so "Show only
+	 * selected" keeps it although it is `out`.
+	 */
+	leftOut?: true;
 };
 
 /**

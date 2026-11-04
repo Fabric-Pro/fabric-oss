@@ -30,7 +30,10 @@ vi.mock("@repo/api/lib/rate-limit", () => ({
 vi.mock("@repo/auth", () => ({ auth: {} }));
 vi.mock("@repo/database", () => ({
 	db: {},
-	getOrganizationMembership: vi.fn(),
+	getOrganizationMembership: vi.fn(async () => ({
+		role: "admin",
+		organization: { deletedAt: null },
+	})),
 	getRegisteredAgentById: vi.fn(),
 }));
 vi.mock("@repo/payments", () => ({

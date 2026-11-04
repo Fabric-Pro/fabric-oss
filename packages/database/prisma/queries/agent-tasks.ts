@@ -174,6 +174,34 @@ export async function updateAgentTaskWorkflow({
 		data: {
 			workflowId,
 			runId,
+			...(runId === ""
+				? { state: { admission: { status: "UNRESOLVED", workflowId } } }
+				: {}),
+		},
+	});
+}
+
+/** An uncertain start must never overwrite an execution that has already advanced. */
+export async function markAgentTaskAdmissionUnresolved(input: {
+	id: string;
+	userId: string;
+	organizationId: string;
+	workflowId: string;
+}) {
+	return db.agentTask.updateMany({
+		where: {
+			id: input.id,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			status: "PENDING",
+		},
+		data: {
+			state: {
+				admission: {
+					status: "UNRESOLVED",
+					workflowId: input.workflowId,
+				},
+			},
 		},
 	});
 }

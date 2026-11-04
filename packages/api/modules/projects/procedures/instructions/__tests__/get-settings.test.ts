@@ -60,6 +60,7 @@ beforeEach(() => {
 	m.getProjectInstructionSettings.mockResolvedValue({
 		ignoreGlobs: ["dist/**"],
 		sourceOfTruth: "UPLOAD",
+		reviewPolicy: { requiredApprovals: 1, approverUserIds: null },
 	});
 });
 
@@ -81,6 +82,8 @@ describe("projects.instructions.getSettings", () => {
 				"**/.DS_Store",
 			],
 			sourceOfTruth: "UPLOAD",
+			// The default policy: one approval publishes, as before.
+			reviewPolicy: { requiredApprovals: 1, approverUserIds: null },
 		});
 		expect(m.getProjectInstructionSettings).toHaveBeenCalledWith(
 			"proj_1",

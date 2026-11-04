@@ -22,8 +22,23 @@
  * (`contexts.repositorySync.configure`, then the first sync). Each repository
  * reaches the analysis with its role (`repoRoles`), so the instructions and
  * the documentation are not read as product code.
+ *
+ * A pasted token, while the credential manager is on, is saved there by
+ * default ("Save in the credential manager", `credentialManager.saveGitHubToken`)
+ * instead of as the person's GitHub connection. The saved credential reads
+ * the repository (`previewRepositoryImport`) and the import binds it to the
+ * GitHub repositories it connects (`existingSetup.start`). When the person
+ * already saved a token for the same account, the form asks: "Use it" reads
+ * with that one, "Save as new" saves the token once more.
  */
 
+import {
+	GitHubTokenChecklist,
+	type GitHubTokenRefusal,
+	needsGitHubTokenConfirmation,
+	readGitHubTokenRefusal,
+} from "@saas/credential-manager/components/GitHubTokenChecklist";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { openOAuthPopup, POPUP_BLOCKED_MESSAGE } from "@shared/lib/oauth-popup";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -54,6 +69,11 @@ import {
 	configureErrorMessage,
 	repositorySyncTreeSelection,
 } from "../lib/instructions-repository-sync";
+import {
+	type ExistingSavedToken,
+	SavedTokenReusePrompt,
+	SaveInCredentialManagerFields,
+} from "./SavePastedTokenFields";
 import { type GitHubRepo, GitHubRepoPicker } from "./wizard/GitHubRepoPicker";
 
 type ImportedRepository = {
@@ -152,6 +172,22 @@ export function RepositoryImportForm({
 	const [needsAccess, setNeedsAccess] = useState(false);
 	const [token, setToken] = useState("");
 	const [savingToken, setSavingToken] = useState(false);
+	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
+	const [saveTokenAsCredential, setSaveTokenAsCredential] = useState(true);
+	const [tokenLabel, setTokenLabel] = useState("");
+	const [existingSavedToken, setExistingSavedToken] =
+		useState<ExistingSavedToken | null>(null);
+	/** Why the server would not save the pasted token, as a checklist. */
+	const [tokenCheck, setTokenCheck] = useState<GitHubTokenRefusal | null>(
+		null,
+	);
+	const [permissionsConfirmed, setPermissionsConfirmed] = useState(false);
+	/**
+	 * The saved credential the import reads and connects with. A ref as well,
+	 * so the read that follows choosing it already sends it.
+	 */
+	const [credentialId, setCredentialId] = useState<string | null>(null);
+	const credentialIdRef = useRef<string | null>(null);
 	/** Which field the repository picker fills while it is open. */
 	const [pickerFor, setPickerFor] = useState<
 		"product" | "instructions" | "code" | "memory" | null
@@ -206,6 +242,9 @@ export function RepositoryImportForm({
 			const proposed = await preview.mutateAsync({
 				organizationId,
 				...input,
+				...(credentialIdRef.current
+					? { credentialId: credentialIdRef.current }
+					: {}),
 			});
 			setRepo(proposed.repository);
 			setName(proposed.name);
@@ -232,10 +271,48 @@ export function RepositoryImportForm({
 		}
 	}, []);
 
-	/** Saves the pasted token as the user's GitHub connection, then reads again. */
-	async function saveToken() {
+	function adoptSavedCredential(id: string) {
+		credentialIdRef.current = id;
+		setCredentialId(id);
+		setExistingSavedToken(null);
+		setToken("");
+		setTokenLabel("");
+		readTyped();
+	}
+
+	/**
+	 * Saves the pasted token, then reads again: in the credential manager
+	 * when the box is ticked, otherwise as the user's GitHub connection.
+	 */
+	async function saveToken(saveAsNew = false) {
 		setSavingToken(true);
 		try {
+			if (credentialManagerEnabled && saveTokenAsCredential) {
+				const target = parseRepositoryReference(source);
+				if (!target) {
+					setProblem(t("errors.repositoryFormat"));
+					return;
+				}
+				const result =
+					await orpcClient.credentialManager.saveGitHubToken({
+						organizationId,
+						token: token.trim(),
+						owner: target.owner,
+						repo: target.repo,
+						label: tokenLabel.trim() || undefined,
+						saveAsNew,
+						confirmFineGrainedPermissions: permissionsConfirmed,
+					});
+				setTokenCheck(null);
+				if (result.existingCredential) {
+					setExistingSavedToken(result.existingCredential);
+					return;
+				}
+				if (result.credential) {
+					adoptSavedCredential(result.credential.id);
+				}
+				return;
+			}
 			await orpcClient.workflows.integrations.save({
 				type: "GITHUB",
 				credentials: { GITHUB_TOKEN: token.trim() },
@@ -244,6 +321,11 @@ export function RepositoryImportForm({
 			setToken("");
 			readTyped();
 		} catch (error) {
+			const refusal = readGitHubTokenRefusal(error);
+			if (refusal) {
+				setTokenCheck(refusal);
+				return;
+			}
 			setProblem(errorMessage(error));
 		} finally {
 			setSavingToken(false);
@@ -622,6 +704,7 @@ export function RepositoryImportForm({
 					selectedDocumentTypes: [],
 					projectTypes: [],
 					projectName: project.name,
+					...(credentialId ? { credentialId } : {}),
 				});
 				// A repository the connection could not read is skipped, not
 				// refused: the project keeps only its link until it is added.
@@ -807,7 +890,14 @@ export function RepositoryImportForm({
 							className="flex flex-col gap-1.5"
 							onSubmit={(event) => {
 								event.preventDefault();
-								if (token.trim() !== "" && !savingToken) {
+								if (
+									token.trim() !== "" &&
+									!savingToken &&
+									!needsGitHubTokenConfirmation(
+										tokenCheck,
+										permissionsConfirmed,
+									)
+								) {
 									void saveToken();
 								}
 							}}
@@ -822,13 +912,28 @@ export function RepositoryImportForm({
 									autoComplete="off"
 									value={token}
 									disabled={savingToken}
-									onChange={(e) => setToken(e.target.value)}
-									aria-describedby={ids.tokenHint}
+									onChange={(e) => {
+										setToken(e.target.value);
+										setExistingSavedToken(null);
+										setTokenCheck(null);
+										setPermissionsConfirmed(false);
+									}}
+									aria-describedby={
+										credentialManagerEnabled &&
+										saveTokenAsCredential
+											? undefined
+											: ids.tokenHint
+									}
 								/>
 								<Button
 									type="submit"
 									disabled={
-										savingToken || token.trim() === ""
+										savingToken ||
+										token.trim() === "" ||
+										needsGitHubTokenConfirmation(
+											tokenCheck,
+											permissionsConfirmed,
+										)
 									}
 								>
 									{savingToken ? (
@@ -840,12 +945,46 @@ export function RepositoryImportForm({
 									{t("access.save")}
 								</Button>
 							</div>
-							<p
-								id={ids.tokenHint}
-								className="text-muted-foreground text-xs"
-							>
-								{t("access.tokenHint")}
-							</p>
+							{credentialManagerEnabled ? (
+								<SaveInCredentialManagerFields
+									save={saveTokenAsCredential}
+									onSaveChange={(next) => {
+										setSaveTokenAsCredential(next);
+										setExistingSavedToken(null);
+									}}
+									label={tokenLabel}
+									onLabelChange={setTokenLabel}
+									disabled={savingToken}
+								/>
+							) : null}
+							{tokenCheck ? (
+								<GitHubTokenChecklist
+									refusal={tokenCheck}
+									confirmed={permissionsConfirmed}
+									onConfirmedChange={setPermissionsConfirmed}
+								/>
+							) : null}
+							{existingSavedToken ? (
+								<SavedTokenReusePrompt
+									existing={existingSavedToken}
+									busy={savingToken}
+									onUse={() =>
+										adoptSavedCredential(
+											existingSavedToken.id,
+										)
+									}
+									onSaveAsNew={() => void saveToken(true)}
+								/>
+							) : null}
+							{credentialManagerEnabled &&
+							saveTokenAsCredential ? null : (
+								<p
+									id={ids.tokenHint}
+									className="text-muted-foreground text-xs"
+								>
+									{t("access.tokenHint")}
+								</p>
+							)}
 						</form>
 					</div>
 				) : null}

@@ -13,6 +13,11 @@
  * description and the README's first paragraph, so the import never depends
  * on an AI provider.
  *
+ * `credentialId` reads with a token saved in the credential manager (the
+ * import form's "Save in the credential manager"), resolved as the caller;
+ * refused while the credential manager is off. Without it the person's
+ * GitHub connection is used, as before.
+ *
  * AUTHORIZATION: tenantProtectedProcedure + PROJECT_CREATE in the resolved
  * organization (as `projects.create`), membership verified.
  */
@@ -25,7 +30,9 @@ import {
 	type RepositoryProfile,
 	repositoryProfile,
 } from "@repo/instructions";
+import { resolveCredential } from "@repo/integrations/credential-manager";
 import { getGitHubWorkflowCredential } from "@repo/integrations/github";
+import { REPOSITORY_CREDENTIAL_KINDS } from "@repo/integrations/repo-auth";
 import { logger } from "@repo/logs";
 import { z } from "zod";
 import {
@@ -34,6 +41,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { resolveCredentialActor } from "../../credential-manager/lib/context";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 
 const MAX_MANIFESTS = 20;
@@ -156,6 +164,36 @@ export function proposedPhaseOf(
 		: "DISCOVERY_PLANNING";
 }
 
+/** A saved GitHub credential the caller may use, as a token to read with. */
+async function savedImportCredential(
+	credentialId: string,
+	organizationId: string | null,
+	userId: string,
+): Promise<{ kind: "pat" | "oauth"; token: string }> {
+	if (!organizationId) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "A saved credential needs an organization.",
+		});
+	}
+	// Refuses while the credential manager is off.
+	const actor = await resolveCredentialActor(organizationId, userId);
+	const resolved = await resolveCredential({
+		credentialId,
+		actor: { type: "user", ...actor },
+		requirement: { provider: "GITHUB", kinds: REPOSITORY_CREDENTIAL_KINDS },
+	});
+	if (!resolved.ok) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "This saved GitHub token cannot be used here.",
+			data: { code: "REPOSITORY_UNREADABLE" },
+		});
+	}
+	return {
+		kind: resolved.value.credential.kind === "PAT" ? "pat" : "oauth",
+		token: resolved.value.token,
+	};
+}
+
 export const previewRepositoryImportProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.PROJECT_CREATE))
 	.route({
@@ -175,6 +213,8 @@ export const previewRepositoryImportProcedure = tenantProtectedProcedure
 			/** The repository's own description and main language, from the picker. */
 			description: z.string().max(1000).nullable().optional(),
 			language: z.string().max(100).nullable().optional(),
+			/** A saved GitHub credential to read with (see above). */
+			credentialId: z.string().min(1).optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -193,10 +233,16 @@ export const previewRepositoryImportProcedure = tenantProtectedProcedure
 				message: "You are not a member of this organization",
 			});
 		}
-		const credential = await getGitHubWorkflowCredential(
-			context.user.id,
-			organizationId ?? undefined,
-		);
+		const credential = input.credentialId
+			? await savedImportCredential(
+					input.credentialId,
+					organizationId ?? null,
+					context.user.id,
+				)
+			: await getGitHubWorkflowCredential(
+					context.user.id,
+					organizationId ?? undefined,
+				);
 		if (!credential) {
 			throw new ORPCError("PRECONDITION_FAILED", {
 				message:

@@ -249,7 +249,7 @@ team's attention. Rules:
  * They are resistant to accidental removal, NOT to deliberate contradiction —
  * a body instructing the model to invent topics will contradict the first
  * clause and the model picks a winner. AgendaSchema still enforces output
- * SHAPE at generateObject regardless, so a broken body can never corrupt the
+ * SHAPE at Output.object regardless, so a broken body can never corrupt the
  * persisted row.
  */
 export function buildAgendaLockedClauses(context: AgendaContext): string {

@@ -1,3 +1,4 @@
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 /**
  * Deployment Execution Activities
  *
@@ -13,24 +14,29 @@
 import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
 import {
 	appendTemplateMessage,
+	canExecuteOrganizationAgents,
 	filterAccessibleWorkspaceIds,
 	getAgentDeploymentById,
-	getBuiltInToolConfig,
+	getProjectAccessContext,
 	getTemplateConversationMessages,
 	isDeploymentOwnerCurrentMember,
+	isProjectSoftDeleted,
 	type Prisma,
 	type TemplateConversationMessage,
 	updateExecutionStatus,
 } from "@repo/database";
+import { readAgentProjectBinding } from "@repo/database/prisma/queries/lib/agent-project-binding";
 import { logger } from "@repo/logs";
 import { ApplicationFailure } from "@temporalio/common";
 import { getTemporalClient } from "../client";
-
+import { prismaErrorCode } from "../lib/database-error";
 // Import shared agent execution utilities
 import {
 	buildAgentExecutionContext,
 	buildKnowledgeContextPrompt,
 	buildUserInputContext,
+	type ExecuteAgentTurnInput,
+	type ExecuteAgentTurnResult,
 	executeAgentTurn,
 	extractBuiltInToolNames,
 	extractMcpConfigIds,
@@ -38,6 +44,7 @@ import {
 	fetchKnowledgeSources,
 	type ToolCallRecord,
 } from "./agent-execution-core";
+import { withHeartbeatTicker } from "./lib/activity-liveness";
 
 // =============================================================================
 // TYPES
@@ -172,6 +179,34 @@ export async function loadDeploymentConfiguration(params: {
 	}
 
 	const instance = deployment.instance;
+	if (
+		!getAgentImplementationAvailability(instance.customInstructions)
+			.available
+	) {
+		throw new Error("Agent implementation is unavailable for execution");
+	}
+	if (
+		!organizationId ||
+		deployment.organizationId !== organizationId ||
+		deployment.userId !== userId ||
+		instance.organizationId !== organizationId ||
+		!(await canExecuteOrganizationAgents(userId, organizationId))
+	) {
+		return null;
+	}
+	const projectId = readAgentProjectBinding(
+		instance.customInstructions,
+		instance.toolConnections,
+	);
+	if (projectId) {
+		const access = await getProjectAccessContext(projectId, userId);
+		if (
+			access?.organizationId !== organizationId ||
+			(await isProjectSoftDeleted(projectId))
+		) {
+			return null;
+		}
+	}
 	const template = instance.template;
 
 	// Stored workspace ids must still be accessible to the owner at run time.
@@ -394,15 +429,20 @@ export async function buildExecutionContext(params: {
 
 	// Project binding lives on the agent (toolConnections["project-context"]),
 	// not the deployment — same resolution as the trigger-system path.
-	const projectContextConfig = getBuiltInToolConfig(
+	const projectId = readAgentProjectBinding(
+		config.instance.customInstructions,
 		config.toolConnections,
-		"project-context",
 	);
-	const boundProjectIdRaw = projectContextConfig?.projectId;
-	const projectId =
-		typeof boundProjectIdRaw === "string" && boundProjectIdRaw.length > 0
-			? boundProjectIdRaw
-			: undefined;
+	if (projectId) {
+		const access = await getProjectAccessContext(projectId, userId);
+		if (
+			!organizationId ||
+			access?.organizationId !== organizationId ||
+			(await isProjectSoftDeleted(projectId))
+		) {
+			throw new Error("Project not found or access denied");
+		}
+	}
 
 	return {
 		agentInstanceId: config.instance.id,
@@ -529,6 +569,26 @@ async function invokeDeploymentAgentInJob(params: {
 		historyMessageCount: conversationHistory?.length ?? 0,
 	});
 
+	const result = await executeAgentTurn(
+		await prepareDeploymentAgentTurn(params),
+	);
+	return finishDeploymentAgentTurn({ executionId, result });
+}
+
+/** Prepare the existing saved-agent input without executing models or tools. */
+export async function prepareDeploymentAgentTurn(
+	params: Parameters<typeof invokeDeploymentAgentInJob>[0],
+): Promise<ExecuteAgentTurnInput> {
+	const {
+		executionId,
+		context,
+		input,
+		knowledgeResult,
+		userId,
+		organizationId,
+		conversationHistory,
+		imageRefs,
+	} = params;
 	// Build knowledge context prompt if we have retrieved chunks
 	let knowledgeContext: string | undefined;
 	if (knowledgeResult && knowledgeResult.chunks.length > 0) {
@@ -538,8 +598,7 @@ async function invokeDeploymentAgentInJob(params: {
 	// Extract user message from input
 	const userMessage = buildUserInputContext(input);
 
-	// Execute agent turn using shared executor
-	const result = await executeAgentTurn({
+	return {
 		systemPrompt: context.systemPrompt,
 		userMessage,
 		knowledgeContext,
@@ -560,7 +619,15 @@ async function invokeDeploymentAgentInJob(params: {
 		agentInstanceId: context.agentInstanceId,
 		callingAgentId: context.agentInstanceId,
 		currentDepth: 0,
-	});
+	};
+}
+
+/** Format the existing result and artifacts without dispatching model/tool work. */
+export async function finishDeploymentAgentTurn(params: {
+	executionId: string;
+	result: ExecuteAgentTurnResult;
+}): Promise<InvokeAgentResult> {
+	const { executionId, result } = params;
 
 	if (!result.success) {
 		throw new Error(result.error || "Agent execution failed");
@@ -631,6 +698,27 @@ export async function completeExecution(params: {
 		);
 		throw err;
 	}
+}
+
+/** Retry only the update-only projection; never rerun the completed agent turn. */
+export function completeDurableDeploymentProjection(
+	params: Parameters<typeof completeExecution>[0],
+): Promise<void> {
+	return withHeartbeatTicker(
+		async () => {
+			try {
+				await completeExecution(params);
+			} catch (error) {
+				if (prismaErrorCode(error) === "P2025")
+					throw ApplicationFailure.nonRetryable(
+						"The execution row is unavailable; completed agent effects were retained in workflow history.",
+						"SAVED_AGENT_EXECUTION_ROW_MISSING",
+					);
+				throw error;
+			}
+		},
+		{ intervalMs: 5000, details: "saved-agent-terminal-projection" },
+	);
 }
 
 /**

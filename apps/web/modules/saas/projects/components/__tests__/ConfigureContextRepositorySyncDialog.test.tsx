@@ -48,11 +48,13 @@ beforeAll(() => {
 	}
 });
 
-const { configureMock, syncNowMock, listTreeMock } = vi.hoisted(() => ({
-	configureMock: vi.fn(),
-	syncNowMock: vi.fn(),
-	listTreeMock: vi.fn(),
-}));
+const { configureMock, syncNowMock, listTreeMock, readIgnoreFilesMock } =
+	vi.hoisted(() => ({
+		configureMock: vi.fn(),
+		syncNowMock: vi.fn(),
+		listTreeMock: vi.fn(),
+		readIgnoreFilesMock: vi.fn(),
+	}));
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
@@ -78,6 +80,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							...options,
 							queryKey: ["listTree", options.input],
 							queryFn: () => listTreeMock(options.input),
+						}),
+					},
+					readIgnoreFiles: {
+						queryOptions: (options: {
+							input: unknown;
+							[key: string]: unknown;
+						}) => ({
+							...options,
+							queryKey: ["readIgnoreFiles", options.input],
+							queryFn: () => readIgnoreFilesMock(options.input),
 						}),
 					},
 				},
@@ -110,10 +122,17 @@ const EMPTY_TREE = { supported: true, entries: [], truncated: false };
 beforeEach(() => {
 	listTreeMock.mockReset();
 	listTreeMock.mockResolvedValue(EMPTY_TREE);
+	readIgnoreFilesMock.mockReset();
+	readIgnoreFilesMock.mockResolvedValue({ supported: true, files: [] });
 });
 
 import { toast } from "sonner";
 import { ConfigureContextRepositorySyncDialog } from "../ConfigureContextRepositorySyncDialog";
+import {
+	boxIn,
+	chevronIn,
+	treeItem,
+} from "../repository-sync/__tests__/tree-queries";
 
 function wrap(ui: React.ReactElement) {
 	const client = new QueryClient({
@@ -481,6 +500,162 @@ describe("ConfigureContextRepositorySyncDialog — typed paths", () => {
 	});
 });
 
+describe("ConfigureContextRepositorySyncDialog — typed paths to leave out", () => {
+	beforeEach(() => {
+		configureMock.mockReset();
+		syncNowMock.mockReset();
+		listTreeMock.mockResolvedValue(UNSUPPORTED);
+	});
+
+	function exclusionInput() {
+		return screen.getByLabelText(
+			`${NS}.configureDialog.typedExclusion.label`,
+		);
+	}
+
+	async function leaveOut(
+		user: ReturnType<typeof userEvent.setup>,
+		path: string,
+	) {
+		await user.clear(exclusionInput());
+		if (path !== "") {
+			await user.type(exclusionInput(), path);
+		}
+		await user.click(
+			screen.getByRole("button", {
+				name: `${NS}.configureDialog.typedExclusion.add`,
+			}),
+		);
+	}
+
+	it("asks for a selection before taking a path to leave out", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+		await screen.findByLabelText(`${NS}.configureDialog.typedPath.label`);
+		expect(exclusionInput()).toBeDisabled();
+		expect(
+			screen.getByText(
+				`${NS}.configureDialog.typedExclusion.noSelection`,
+			),
+		).toBeInTheDocument();
+
+		await addPath(user, "docs");
+		expect(exclusionInput()).toBeEnabled();
+		expect(
+			screen.getByText(`${NS}.configureDialog.typedExclusion.hint`),
+		).toBeInTheDocument();
+	});
+
+	it("leaves out a typed path inside the selection, lists it, and submits it", async () => {
+		configureMock.mockResolvedValue({ syncId: "sync_1", generation: 1 });
+		syncNowMock.mockResolvedValue({ started: true });
+		const user = userEvent.setup();
+		const { onOpenChange } = renderDialog();
+		await screen.findByLabelText(`${NS}.configureDialog.typedPath.label`);
+		await addPath(user, "docs");
+		await leaveOut(user, "docs/drafts");
+
+		expect(
+			within(syncsList()).getByText(
+				`${NS}.configureDialog.selectedPaths.except${JSON.stringify({ path: "docs/drafts" })}`,
+			),
+		).toBeInTheDocument();
+		expect((exclusionInput() as HTMLInputElement).value).toBe("");
+
+		await user.click(saveButton());
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+		expect(configureMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				paths: ["docs"],
+				excludedPaths: ["docs/drafts"],
+			}),
+		);
+	});
+
+	it("refuses what configure would refuse, inline and tied to the input", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+		await screen.findByLabelText(`${NS}.configureDialog.typedPath.label`);
+		await addPath(user, "docs");
+
+		const refusals: [string, string][] = [
+			["", `${NS}.configureDialog.typedExclusion.empty`],
+			[
+				"notes/a.md",
+				`${NS}.excludeErrors.OUTSIDE_SELECTION${JSON.stringify({ path: "notes/a.md" })}`,
+			],
+			[
+				"docs",
+				`${NS}.excludeErrors.SELECTED${JSON.stringify({ path: "docs" })}`,
+			],
+			[
+				"docs/",
+				`${NS}.excludeErrors.INVALID_PATH${JSON.stringify({ path: "docs/" })}`,
+			],
+			[
+				"docs/.contextignore",
+				`${NS}.excludeErrors.EXCLUDED_PATH_POLICY_FILE${JSON.stringify({ path: "docs/.contextignore" })}`,
+			],
+		];
+		for (const [path, copy] of refusals) {
+			await leaveOut(user, path);
+			const error = screen.getByText(copy);
+			expect(error, path).toHaveAttribute("role", "alert");
+			expect(exclusionInput()).toHaveAccessibleDescription(
+				error.textContent ?? "",
+			);
+		}
+		expect(
+			within(syncsList())
+				.getAllByRole("listitem")
+				.map((item) => item.textContent),
+		).toEqual(["docs"]);
+	});
+
+	it("refuses a path already left out, and one inside it", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+		await screen.findByLabelText(`${NS}.configureDialog.typedPath.label`);
+		await addPath(user, "docs");
+		await leaveOut(user, "docs/drafts");
+
+		await leaveOut(user, "docs/drafts");
+		expect(
+			screen.getByText(
+				`${NS}.excludeErrors.DUPLICATE${JSON.stringify({ path: "docs/drafts" })}`,
+			),
+		).toBeInTheDocument();
+
+		await leaveOut(user, "docs/drafts/old.md");
+		expect(
+			screen.getByText(
+				`${NS}.excludeErrors.OVERLAP${JSON.stringify({
+					path: "docs/drafts/old.md",
+					withPath: "docs/drafts",
+				})}`,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("is offered beside a truncated listing", async () => {
+		listTreeMock.mockResolvedValue({ ...TREE, truncated: true });
+		renderDialog();
+		await screen.findByRole("tree", { name: `${NS}.tree.label` });
+		expect(exclusionInput()).toBeInTheDocument();
+	});
+
+	it("is not offered beside a complete listing, where unticking leaves out", async () => {
+		listTreeMock.mockResolvedValue(TREE);
+		renderDialog();
+		await screen.findByRole("tree", { name: `${NS}.tree.label` });
+		expect(
+			screen.queryByLabelText(
+				`${NS}.configureDialog.typedExclusion.label`,
+			),
+		).not.toBeInTheDocument();
+	});
+});
+
 describe("ConfigureContextRepositorySyncDialog — submit", () => {
 	beforeEach(() => {
 		configureMock.mockReset();
@@ -796,17 +971,28 @@ const TREE = {
 };
 
 function treeList() {
-	return screen.getByRole("list", { name: `${NS}.tree.label` });
+	return screen.getByRole("tree", { name: `${NS}.tree.label` });
 }
 
 function visibleTreePaths(): string[] {
 	return within(treeList())
-		.getAllByRole("checkbox")
-		.map((box) => box.getAttribute("aria-label") ?? "");
+		.getAllByRole("treeitem")
+		.map((row) => row.getAttribute("aria-label") ?? "");
 }
 
+/** The row named `path`: what assistive technology reads of it. */
+function treeRow(path: string) {
+	return treeItem(path, treeList());
+}
+
+/** The box drawn in the row named `path`: what a click ticks. */
 function treeCheckbox(path: string) {
-	return within(treeList()).getByRole("checkbox", { name: path });
+	return boxIn(treeRow(path));
+}
+
+/** A folder row's open/close chevron. */
+function treeChevron(path: string) {
+	return chevronIn(treeRow(path));
 }
 
 async function renderTree(
@@ -815,7 +1001,7 @@ async function renderTree(
 ) {
 	listTreeMock.mockResolvedValue(listing);
 	const handles = renderDialog(overrides);
-	await screen.findByRole("list", { name: `${NS}.tree.label` });
+	await screen.findByRole("tree", { name: `${NS}.tree.label` });
 	return handles;
 }
 
@@ -899,39 +1085,30 @@ describe("ConfigureContextRepositorySyncDialog — tree browsing", () => {
 			"src/index.ts",
 			"README.md",
 		]);
-		expect(
-			within(treeList()).getByRole("button", { name: "docs" }),
-		).toHaveAttribute("aria-expanded", "true");
-		expect(
-			within(treeList()).getByRole("button", { name: "api" }),
-		).toHaveAttribute("aria-expanded", "false");
+		expect(treeRow("docs")).toHaveAttribute("aria-expanded", "true");
+		expect(treeRow("docs/api")).toHaveAttribute("aria-expanded", "false");
 	});
 
 	it("reveals a folder's children when it is expanded", async () => {
 		const user = userEvent.setup();
 		await renderTree();
-		await user.click(
-			within(treeList()).getByRole("button", { name: "api" }),
-		);
-		expect(treeCheckbox("docs/api/ref.md")).toBeInTheDocument();
-		expect(
-			within(treeList()).getByRole("button", { name: "api" }),
-		).toHaveAttribute("aria-expanded", "true");
+		await user.click(treeChevron("docs/api"));
+		expect(treeRow("docs/api/ref.md")).toBeInTheDocument();
+		expect(treeRow("docs/api")).toHaveAttribute("aria-expanded", "true");
 	});
 
-	it("names every checkbox by its full path and gives every folder toggle aria-expanded", async () => {
+	it("names every row by its full path, gives every folder aria-expanded and no file one", async () => {
 		await renderTree();
-		for (const box of within(treeList()).getAllByRole("checkbox")) {
-			expect(box).toHaveAccessibleName(
-				box.getAttribute("aria-label") ?? "",
+		for (const row of within(treeList()).getAllByRole("treeitem")) {
+			expect(row).toHaveAccessibleName(
+				row.getAttribute("aria-label") ?? "",
 			);
 		}
 		expect(visibleTreePaths()).toContain("docs/guide.md");
-		for (const name of ["assets", "docs", "api", "src"]) {
-			expect(
-				within(treeList()).getByRole("button", { name }),
-			).toHaveAttribute("aria-expanded");
+		for (const path of ["assets", "docs", "docs/api", "src"]) {
+			expect(treeRow(path)).toHaveAttribute("aria-expanded");
 		}
+		expect(treeRow("README.md")).not.toHaveAttribute("aria-expanded");
 	});
 });
 
@@ -943,8 +1120,8 @@ describe("ConfigureContextRepositorySyncDialog — tree selection", () => {
 
 	it("starts with nothing ticked for a new configuration, and offers no typed input while the tree lists everything", async () => {
 		await renderTree();
-		for (const box of within(treeList()).getAllByRole("checkbox")) {
-			expect(box).toHaveAttribute("aria-checked", "false");
+		for (const row of within(treeList()).getAllByRole("treeitem")) {
+			expect(row).toHaveAttribute("aria-checked", "false");
 		}
 		expect(
 			screen.getByText(`${NS}.summary.nothingSelected`),
@@ -997,12 +1174,14 @@ describe("ConfigureContextRepositorySyncDialog — tree selection", () => {
 		await renderTree();
 		await user.click(treeCheckbox("docs"));
 		await user.click(treeCheckbox("docs/api"));
-		await user.click(
-			within(treeList()).getByRole("button", { name: "api" }),
-		);
+		await user.click(treeChevron("docs/api"));
 
 		expect(treeCheckbox("docs/api/ref.md")).toBeDisabled();
-		expect(treeCheckbox("docs/api/ref.md")).toHaveAccessibleDescription(
+		expect(treeRow("docs/api/ref.md")).toHaveAttribute(
+			"aria-disabled",
+			"true",
+		);
+		expect(treeRow("docs/api/ref.md")).toHaveAccessibleDescription(
 			`${NS}.tree.selection.leftOutBecause${JSON.stringify({ path: "docs/api" })}`,
 		);
 	});
@@ -1061,13 +1240,13 @@ describe("ConfigureContextRepositorySyncDialog — tree selection", () => {
 				],
 			},
 		);
-		expect(treeCheckbox("docs/AGENTS.md")).toHaveAccessibleDescription(
+		expect(treeRow("docs/AGENTS.md")).toHaveAccessibleDescription(
 			`${NS}.tree.selection.codingInstructionsFile`,
 		);
-		expect(treeCheckbox("docs/logo.png")).toHaveAccessibleDescription(
+		expect(treeRow("docs/logo.png")).toHaveAccessibleDescription(
 			`${NS}.tree.selection.nonText`,
 		);
-		expect(treeCheckbox("docs/link.md")).toHaveAccessibleDescription(
+		expect(treeRow("docs/link.md")).toHaveAccessibleDescription(
 			`${NS}.tree.selection.symlink`,
 		);
 		for (const path of [
@@ -1082,7 +1261,7 @@ describe("ConfigureContextRepositorySyncDialog — tree selection", () => {
 			screen.getByRole("button", { name: `${NS}.tree.selectAll` }),
 		);
 		expect(treeCheckbox("skills")).toBeDisabled();
-		expect(treeCheckbox("skills")).toHaveAccessibleDescription(
+		expect(treeRow("skills")).toHaveAccessibleDescription(
 			`${NS}.tree.selection.defaultRule${JSON.stringify({ rule: "skills/" })}`,
 		);
 	});
@@ -1091,7 +1270,7 @@ describe("ConfigureContextRepositorySyncDialog — tree selection", () => {
 		const fifty = Array.from({ length: 50 }, (_, i) => `selected-${i}`);
 		await renderTree({ current: configuration(fifty) });
 		expect(treeCheckbox("README.md")).toBeDisabled();
-		expect(treeCheckbox("README.md")).toHaveAccessibleDescription(
+		expect(treeRow("README.md")).toHaveAccessibleDescription(
 			`${NS}.tree.selection.tooManyPaths${JSON.stringify({ max: 50 })}`,
 		);
 	});
@@ -1209,9 +1388,7 @@ describe("ConfigureContextRepositorySyncDialog — tree search", () => {
 		const user = userEvent.setup();
 		await renderTree();
 		// Collapse a root folder first: clearing the search must restore it.
-		await user.click(
-			within(treeList()).getByRole("button", { name: "src" }),
-		);
+		await user.click(treeChevron("src"));
 		expect(visibleTreePaths()).not.toContain("src/index.ts");
 
 		await user.type(searchBox(), "REF");
@@ -1220,9 +1397,7 @@ describe("ConfigureContextRepositorySyncDialog — tree search", () => {
 			"docs/api",
 			"docs/api/ref.md",
 		]);
-		expect(
-			within(treeList()).getByRole("button", { name: "api" }),
-		).toHaveAttribute("aria-expanded", "true");
+		expect(treeRow("docs/api")).toHaveAttribute("aria-expanded", "true");
 
 		await user.clear(searchBox());
 		expect(visibleTreePaths()).toEqual([
@@ -1233,9 +1408,7 @@ describe("ConfigureContextRepositorySyncDialog — tree search", () => {
 			"src",
 			"README.md",
 		]);
-		expect(
-			within(treeList()).getByRole("button", { name: "api" }),
-		).toHaveAttribute("aria-expanded", "false");
+		expect(treeRow("docs/api")).toHaveAttribute("aria-expanded", "false");
 	});
 
 	it("caps the matches at 200 and asks for a narrower search", async () => {
@@ -1282,7 +1455,7 @@ describe("ConfigureContextRepositorySyncDialog — tree outcomes", () => {
 		).toBeInTheDocument();
 		expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
 		expect(
-			screen.queryByRole("list", { name: `${NS}.tree.label` }),
+			screen.queryByRole("tree", { name: `${NS}.tree.label` }),
 		).not.toBeInTheDocument();
 
 		await addPath(user, "docs");
@@ -1307,11 +1480,19 @@ describe("ConfigureContextRepositorySyncDialog — tree outcomes", () => {
 		expect(
 			within(syncsList()).getByText("notes/today.md"),
 		).toBeInTheDocument();
+		// A path a truncated listing does not hold may be a folder: its
+		// `.contextignore` is read before anything is counted.
 		expect(
-			screen.getByText(
+			await screen.findByText(
 				`${NS}.summary.matchTruncated${JSON.stringify({ count: 0 })}`,
 			),
 		).toBeInTheDocument();
+		expect(readIgnoreFilesMock).toHaveBeenCalledWith({
+			projectId: "proj_1",
+			repositoryIntegrationId: "int_1",
+			ref: "main",
+			folders: ["notes/today.md"],
+		});
 	});
 
 	it("shows a listing refusal inline with configure's copy, and typing still adds a path", async () => {
@@ -1371,5 +1552,167 @@ describe("ConfigureContextRepositorySyncDialog — tree outcomes", () => {
 		});
 		renderDialog();
 		expect(await screen.findByText(`${NS}.tree.error`)).toBeInTheDocument();
+	});
+});
+
+// ── Each ticked folder's .contextignore ────────────────────────────────────
+
+/** `docs/` holds a `.contextignore`; `notes/` holds none. */
+const POLICY_TREE = {
+	supported: true,
+	truncated: false,
+	entries: [
+		{ path: "docs", type: "dir" },
+		{ path: "docs/.contextignore", type: "file" },
+		{ path: "docs/guide.md", type: "file" },
+		{ path: "docs/drafts", type: "dir" },
+		{ path: "docs/drafts/a.md", type: "file" },
+		{ path: "notes", type: "dir" },
+		{ path: "notes/n.md", type: "file" },
+	],
+};
+
+const DOCS_POLICY = "docs/.contextignore";
+
+describe("ConfigureContextRepositorySyncDialog — .contextignore", () => {
+	beforeEach(() => {
+		configureMock.mockReset();
+		syncNowMock.mockReset();
+	});
+
+	async function tickDocs(listing: unknown = POLICY_TREE) {
+		const user = userEvent.setup();
+		await renderTree({}, listing);
+		await user.click(treeCheckbox("docs"));
+		return user;
+	}
+
+	it("reads only the ticked folder's file, and says what its rules leave out", async () => {
+		readIgnoreFilesMock.mockResolvedValue({
+			supported: true,
+			files: [{ folder: "docs", state: "rules", text: "drafts/\n" }],
+		});
+		await tickDocs();
+
+		expect(
+			await screen.findByText(
+				`${NS}.tree.notices.rules${JSON.stringify({ file: DOCS_POLICY })}`,
+			),
+		).toBeInTheDocument();
+		expect(readIgnoreFilesMock).toHaveBeenCalledTimes(1);
+		expect(readIgnoreFilesMock).toHaveBeenCalledWith({
+			projectId: "proj_1",
+			repositoryIntegrationId: "int_1",
+			ref: "main",
+			folders: ["docs"],
+		});
+		expect(treeCheckbox("docs/drafts")).toBeDisabled();
+		expect(treeRow("docs/drafts")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.contextignoreRule${JSON.stringify({
+				rule: "drafts/",
+				file: DOCS_POLICY,
+			})}`,
+		);
+		// The policy file itself never syncs; docs/drafts/a.md is left out.
+		expect(
+			screen.getByText(
+				`${NS}.summary.matchNow${JSON.stringify({ count: 1 })}`,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("reads nothing for a ticked folder the listing shows without one", async () => {
+		const user = userEvent.setup();
+		await renderTree({}, POLICY_TREE);
+		await user.click(treeCheckbox("notes"));
+		expect(
+			screen.getByText(
+				`${NS}.summary.matchNow${JSON.stringify({ count: 1 })}`,
+			),
+		).toBeInTheDocument();
+		expect(readIgnoreFilesMock).not.toHaveBeenCalled();
+	});
+
+	it("waits to count while the file is read", async () => {
+		readIgnoreFilesMock.mockReturnValue(new Promise(() => undefined));
+		await tickDocs();
+		expect(
+			await screen.findByText(`${NS}.tree.notices.loading`),
+		).toBeInTheDocument();
+		expect(screen.getByText(`${NS}.summary.counting`)).toBeInTheDocument();
+		expect(treeCheckbox("docs/guide.md")).toBeDisabled();
+	});
+
+	it("says a file the run would refuse fails every sync, and counts nothing", async () => {
+		readIgnoreFilesMock.mockResolvedValue({
+			supported: true,
+			files: [{ folder: "docs", state: "ruleRejected", line: 2 }],
+		});
+		await tickDocs();
+
+		const notice = await screen.findByText(
+			`${NS}.tree.notices.rejected${JSON.stringify({ file: DOCS_POLICY, line: 2 })}`,
+		);
+		expect(notice).toHaveAttribute("role", "alert");
+		expect(treeCheckbox("docs/guide.md")).toBeDisabled();
+		expect(treeRow("docs/guide.md")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.policyRejected${JSON.stringify({ file: DOCS_POLICY, line: 2 })}`,
+		);
+		expect(screen.getByText(`${NS}.summary.cantCount`)).toBeInTheDocument();
+	});
+
+	it("says a file too large to apply leaves the folder as it is", async () => {
+		readIgnoreFilesMock.mockResolvedValue({
+			supported: true,
+			files: [{ folder: "docs", state: "tooLarge" }],
+		});
+		await tickDocs();
+
+		expect(
+			await screen.findByText(
+				`${NS}.tree.notices.unreadable.tooLarge${JSON.stringify({ file: DOCS_POLICY })}`,
+			),
+		).toBeInTheDocument();
+		expect(treeRow("docs/guide.md")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.policyUnreadable${JSON.stringify({ file: DOCS_POLICY })}`,
+		);
+	});
+
+	it("does not read a .contextignore the listing shows is not a regular file", async () => {
+		await tickDocs({
+			...POLICY_TREE,
+			entries: POLICY_TREE.entries.map((entry) =>
+				entry.path === DOCS_POLICY
+					? { ...entry, regular: false }
+					: entry,
+			),
+		});
+
+		expect(
+			screen.getByText(
+				`${NS}.tree.notices.unreadable.notRegular${JSON.stringify({ file: DOCS_POLICY })}`,
+			),
+		).toBeInTheDocument();
+		expect(treeRow("docs/guide.md")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.policyUnreadable${JSON.stringify({ file: DOCS_POLICY })}`,
+		);
+		expect(readIgnoreFilesMock).not.toHaveBeenCalled();
+	});
+
+	it("says a file that could not be read here leaves nothing to count", async () => {
+		readIgnoreFilesMock.mockRejectedValue({
+			message: "server message",
+			data: { code: "REPOSITORY_UNREACHABLE" },
+		});
+		await tickDocs();
+
+		const notice = await screen.findByText(
+			`${NS}.tree.notices.failed${JSON.stringify({ file: DOCS_POLICY })}`,
+		);
+		expect(notice).toHaveAttribute("role", "alert");
+		expect(treeRow("docs/guide.md")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.policyFailed${JSON.stringify({ file: DOCS_POLICY })}`,
+		);
+		expect(screen.getByText(`${NS}.summary.cantCount`)).toBeInTheDocument();
 	});
 });

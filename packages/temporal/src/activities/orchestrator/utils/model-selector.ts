@@ -104,6 +104,7 @@ export async function getAiModelWithSelection(
 		AIOperationContext,
 		| "projectId"
 		| "featureKey"
+		| "planEligible"
 		| "callPurpose"
 		| "conversationId"
 		| "frameId"

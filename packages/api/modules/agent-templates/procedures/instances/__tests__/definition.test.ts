@@ -342,3 +342,100 @@ describe("agent definition boundaries", () => {
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
 	});
 });
+
+describe("implementation-aware portable draft import", () => {
+	const implementation = {
+		kind: "harness_persistent",
+		artifact: {
+			digest: `sha256:${"a".repeat(64)}`,
+			repository: {
+				url: "https://example.com/agents.git",
+				revision: "b".repeat(40),
+			},
+			packages: {
+				sdk: {
+					name: "@fabric-harness/sdk",
+					version: "6.9.0",
+					entrypoint: "strict",
+				},
+				node: { name: "@fabric-harness/node", version: "6.7.0" },
+			},
+			buildManifestVersion: 2,
+		},
+		entrypoint: {
+			module: "dist/report.mjs",
+			export: "reportAgent",
+			identity: "report-agent",
+		},
+		protocol: {
+			generation: "example-http-v1",
+			interface: "persistent_submission",
+		},
+		schemas: {
+			input: {
+				path: "schemas/input.json",
+				digest: `sha256:${"c".repeat(64)}`,
+			},
+			output: {
+				path: "schemas/output.json",
+				digest: `sha256:${"d".repeat(64)}`,
+			},
+		},
+	};
+	const advanced = {
+		...definition,
+		apiVersion: "fabric.ai/v2",
+		implementation,
+		logicalBindings: [
+			{
+				name: "reports-project",
+				kind: "project",
+				required: true,
+				operations: ["read"],
+			},
+		],
+		expectedOutput: "A cited report",
+	};
+	it("previews exact release metadata and unavailable runtime without starting work", async () => {
+		const result = await call(
+			previewAgentDefinitionProcedure,
+			{ ...input, document: JSON.stringify(advanced) },
+			{ context },
+		);
+		expect(result.definition).toEqual(advanced);
+		expect(result.implementationAvailability).toMatchObject({
+			available: false,
+		});
+		expect(result.notices.join(" ")).toContain(
+			"qualified execution adapter",
+		);
+		expect(result.notices.join(" ")).toContain("unresolved declarations");
+		expect(mocks.transaction).not.toHaveBeenCalled();
+	});
+	it("retains a pinned code release as a disconnected local draft with unresolved logical bindings", async () => {
+		const result = await call(
+			importAgentDefinitionProcedure,
+			{ ...input, document: JSON.stringify(advanced) },
+			{ context },
+		);
+		expect(result.implementationAvailability.available).toBe(false);
+		const data = mocks.instanceCreate.mock.calls[0][0].data;
+		expect(data).toMatchObject({
+			status: "DRAFT",
+			toolConnections: {},
+			triggers: [],
+			workspaceIds: [],
+			isApiExposed: false,
+			customInstructions: {
+				portableDefinitionVersion: "fabric.ai/v2",
+				portableImplementation: implementation,
+				portableBindings: advanced.logicalBindings,
+				expectedOutput: "A cited report",
+			},
+		});
+		expect(data.customInstructions).not.toHaveProperty("projectId");
+		expect(mocks.auditTx.mock.calls[0][1].metadata).not.toHaveProperty(
+			"implementation",
+		);
+	});
+});

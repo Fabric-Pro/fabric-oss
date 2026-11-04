@@ -17,7 +17,7 @@
  * the latter over a fake `getAIModelWithMetadata` that honours an
  * organization key or the requesting editor's personal key.
  * `extractGlossyVisual` is the real one too, behind a spy, over a mocked
- * `generateObject`: a regenerate runs the real spec validation and label
+ * `generateText`: a regenerate runs the real spec validation and label
  * guard against what the "model" returned.
  *
  * `useEditionStore` backs the edition queries with one in-memory edition
@@ -253,7 +253,7 @@ export const mocks = {
 	detect: vi.fn(),
 	/** A spy over the real `extractGlossyVisual`, unless a test replaces it. */
 	extract: vi.fn(),
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	getAIModel: vi.fn(),
 	enforceAiRateLimit: vi.fn(),
 	getSignedUrl: vi.fn(),
@@ -557,7 +557,7 @@ export async function aiModule() {
 	return {
 		...actual,
 		getAIModelWithMetadata: mocks.getAIModel,
-		generateObject: mocks.generateObject,
+		generateText: mocks.generateText,
 	};
 }
 

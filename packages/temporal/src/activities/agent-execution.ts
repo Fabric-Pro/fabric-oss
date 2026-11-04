@@ -4,18 +4,19 @@
  * Activities for agent execution workflow.
  */
 
-import { globalAgentRegistry } from "@repo/agent-core";
+import { REGISTERED_AGENT_EXECUTION_UNSUPPORTED } from "@repo/agent-types";
 import {
 	createAgentTask as dbCreateAgentTask,
 	updateAgentTaskStatus as dbUpdateAgentTaskStatus,
 	updateAgentTaskWorkflow as dbUpdateAgentTaskWorkflow,
 } from "@repo/database";
+import { ApplicationFailure } from "@temporalio/common";
 
 /**
  * Execute an agent
  */
 export async function executeAgent({
-	agentName,
+	agentName: _agentName,
 	userId: _userId,
 	organizationId: _organizationId,
 	input: _input,
@@ -25,38 +26,10 @@ export async function executeAgent({
 	organizationId?: string;
 	input: Record<string, any>;
 }): Promise<Record<string, any>> {
-	// Get agent from registry
-	const adapter = globalAgentRegistry.get(agentName);
-
-	if (!adapter) {
-		throw new Error(`Agent "${agentName}" not found in registry`);
-	}
-
-	// Check agent health
-	const health = await adapter.healthCheck();
-	if (!health.healthy) {
-		throw new Error(
-			`Agent "${agentName}" is not healthy: ${health.error || "Unknown error"}`,
-		);
-	}
-
-	// For CopilotKit agents, execution happens via CopilotKit runtime
-	// This activity just validates the agent is ready
-	// Actual execution is handled by the CopilotKit runtime with AG-UI protocol
-
-	// For non-CopilotKit agents, implement direct execution here
-	// Example:
-	// const response = await fetch(`${adapter.getDeploymentUrl()}/execute`, {
-	//   method: "POST",
-	//   headers: { "Content-Type": "application/json" },
-	//   body: JSON.stringify({ input, userId, organizationId }),
-	// });
-
-	return {
-		agentName,
-		status: "ready",
-		deploymentUrl: adapter.getDeploymentUrl(),
-	};
+	throw ApplicationFailure.nonRetryable(
+		REGISTERED_AGENT_EXECUTION_UNSUPPORTED.message,
+		REGISTERED_AGENT_EXECUTION_UNSUPPORTED.code,
+	);
 }
 
 /**

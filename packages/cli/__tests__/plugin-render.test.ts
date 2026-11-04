@@ -16,8 +16,16 @@ import { FabricError } from "@fabricorg/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gitBlobOid } from "../src/lib/git-blob.js";
 import { mergedAgentsOverride } from "../src/lib/plugin/layout.js";
-import { renderPlugin } from "../src/lib/plugin/render.js";
+import {
+	mcpHeadersHelperCommand,
+	renderPlugin,
+} from "../src/lib/plugin/render.js";
 import { agentsInstructions } from "../src/lib/plugin/rules.js";
+
+const signIn = vi.hoisted(() => ({ has: false }));
+vi.mock("../src/lib/oauth/mcp-token.js", () => ({
+	hasMcpSignIn: () => signIn.has,
+}));
 
 const PROJECT = "cmexampleproject0123456789";
 const ORIGIN = "https://example.com";
@@ -213,6 +221,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	signIn.has = false;
 	await rm(cache, { recursive: true, force: true });
 });
 
@@ -904,5 +913,99 @@ describe("rendering for Codex", () => {
 		expect(
 			rendered.alwaysOn?.text.indexOf("fabric-instruction-access"),
 		).toBeLessThan(rendered.alwaysOn?.text.indexOf("agents rules") ?? -1);
+	});
+});
+
+describe("the plugin's MCP server sign-in", () => {
+	const mcpServer = async (directory: string) =>
+		(
+			JSON.parse(
+				await readFile(path.join(directory, ".mcp.json"), "utf8"),
+			) as {
+				mcpServers: Record<string, Record<string, unknown>>;
+			}
+		).mcpServers.fabric;
+
+	it("names `fabric mcp header` as the headersHelper once the project has an MCP sign-in", async () => {
+		signIn.has = true;
+
+		const rendered = await render(fakeClient({ repo: REPO }));
+
+		const server = await mcpServer(rendered.directory);
+		expect(rendered.mcpHeadersHelper).toBe(true);
+		expect(server?.url).toBe(
+			`${ORIGIN}/api/mcp-gateway/projects/${PROJECT}`,
+		);
+		expect(server?.headersHelper).toEqual(
+			expect.stringMatching(
+				new RegExp(
+					` mcp header --project ${PROJECT} --base-url https://example\\.com$`,
+				),
+			),
+		);
+		expect(server?.headersHelper).not.toContain("\\");
+	});
+
+	it("leaves the server to Claude Code's own sign-in without one, under another pin", async () => {
+		const without = await render(fakeClient({ repo: REPO }));
+		signIn.has = true;
+		const withHelper = await render(fakeClient({ repo: REPO }));
+
+		expect(without.mcpHeadersHelper).toBe(false);
+		expect(await mcpServer(without.directory)).not.toHaveProperty(
+			"headersHelper",
+		);
+		expect(withHelper.pin).not.toBe(without.pin);
+	});
+
+	it("never gives a Codex plugin the header command", async () => {
+		signIn.has = true;
+
+		const rendered = await render(fakeClient({ repo: REPO }), {
+			tool: "codex",
+		});
+
+		expect(rendered.mcpHeadersHelper).toBe(false);
+	});
+
+	it("spells the command like the render command on Windows: forward slashes, quotes only where a path has a space", () => {
+		expect(
+			mcpHeadersHelperCommand({
+				nodePath: "C:\\Program Files\\nodejs\\node.exe",
+				scriptPath:
+					"C:\\Users\\dev\\AppData\\Roaming\\fabricai\\cli\\https-example.com\\fabric.mjs",
+				projectId: PROJECT,
+				origin: ORIGIN,
+				platform: "win32",
+			}),
+		).toBe(
+			`"C:/Program Files/nodejs/node.exe" C:/Users/dev/AppData/Roaming/fabricai/cli/https-example.com/fabric.mjs mcp header --project ${PROJECT} --base-url https://example.com`,
+		);
+	});
+
+	it("writes no command it cannot spell safely", () => {
+		const base = {
+			nodePath: "/usr/bin/node",
+			scriptPath: "/home/dev/.config/fabricai/cli/fabric.mjs",
+			projectId: PROJECT,
+			origin: ORIGIN,
+			platform: "linux" as const,
+		};
+
+		expect(mcpHeadersHelperCommand(base)).toBe(
+			`/usr/bin/node /home/dev/.config/fabricai/cli/fabric.mjs mcp header --project ${PROJECT} --base-url https://example.com`,
+		);
+		expect(
+			mcpHeadersHelperCommand({ ...base, projectId: "x; id" }),
+		).toBeUndefined();
+		expect(
+			mcpHeadersHelperCommand({
+				...base,
+				origin: "https://example.com/$(id)",
+			}),
+		).toBeUndefined();
+		expect(
+			mcpHeadersHelperCommand({ ...base, scriptPath: "/home/dev/a\nb" }),
+		).toBeUndefined();
 	});
 });

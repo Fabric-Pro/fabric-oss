@@ -33,11 +33,19 @@
  * `{ urls: [] }` without any network call and the workflow discovers pages
  * by following in-prefix links from each scraped page. Any other provider is
  * rejected with a non-retryable failure.
+ *
+ * When the input sets `reportUnsupportedContent`, a root URL whose file type
+ * cannot be indexed is not thrown: the activity logs one warning and returns
+ * `{ urls: [], unsupported }` (`lib/unsupported-content.ts`).
  */
 import { ApplicationFailure } from "@temporalio/activity";
 import { activityLogger } from "../lib/activity-logger";
 import { mapSiteUrls } from "../lib/firecrawl-client";
 import type { WebScraperProviderName } from "../lib/web-scraper";
+import {
+	type UnsupportedContent,
+	unsupportedContentOutcome,
+} from "./lib/unsupported-content";
 
 export interface FirecrawlMapActivityInput {
 	url: string;
@@ -47,10 +55,20 @@ export interface FirecrawlMapActivityInput {
 	includePaths?: string[];
 	excludePaths?: string[];
 	limit?: number;
+	/**
+	 * Return an unsupported content type as `unsupported` instead of throwing
+	 * it. Absent in inputs recorded before it existed, which keep the failure.
+	 */
+	reportUnsupportedContent?: boolean;
 }
 
 export interface FirecrawlMapActivityOutput {
 	urls: string[];
+	/**
+	 * Present only when the input had `reportUnsupportedContent` and the URL
+	 * is a file type that cannot be indexed; `urls` is then empty.
+	 */
+	unsupported?: UnsupportedContent;
 }
 
 function asActivityFailure(error: {
@@ -89,6 +107,7 @@ export async function firecrawlMapActivity(
 		includePaths,
 		excludePaths,
 		limit,
+		reportUnsupportedContent,
 	} = input;
 
 	activityLogger.info("URL map activity start", { url, providerName, limit });
@@ -125,6 +144,15 @@ export async function firecrawlMapActivity(
 	});
 
 	if (!result.success) {
+		if (
+			reportUnsupportedContent === true &&
+			result.error.code === "UNSUPPORTED_CONTENT_TYPE"
+		) {
+			return {
+				urls: [],
+				unsupported: unsupportedContentOutcome(url, result.error),
+			};
+		}
 		activityLogger.warn("URL map failed", {
 			url,
 			code: result.error.code,

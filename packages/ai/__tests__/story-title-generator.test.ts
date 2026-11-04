@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockGenerateText,
-	mockGenerateObject,
+	mockStructuredOutput,
 	mockGetAIModelWithMetadata,
 	mockLogModelUsageAsync,
 	mockGetBoundPromptForAgent,
@@ -13,7 +13,7 @@ const {
 	mockLoggerWarn,
 } = vi.hoisted(() => ({
 	mockGenerateText: vi.fn(),
-	mockGenerateObject: vi.fn(),
+	mockStructuredOutput: vi.fn(),
 	mockGetAIModelWithMetadata: vi.fn(),
 	mockLogModelUsageAsync: vi.fn(),
 	mockGetBoundPromptForAgent: vi.fn(),
@@ -24,8 +24,9 @@ const {
 
 vi.mock("ai", async (importOriginal) => ({
 	...(await importOriginal<typeof import("ai")>()),
-	generateText: (args: unknown) => mockGenerateText(args),
-	generateObject: (args: unknown) => mockGenerateObject(args),
+	// Both paths call `generateText`; the structured one passes an `output` spec.
+	generateText: (args: { output?: unknown }) =>
+		args.output ? mockStructuredOutput(args) : mockGenerateText(args),
 }));
 
 vi.mock("../lib/dynamic-model-selector", async () => {
@@ -109,7 +110,7 @@ const ORIGINAL_KILL_SWITCH = process.env.AI_TITLE_GENERATION_ENABLED;
 
 beforeEach(() => {
 	mockGenerateText.mockReset();
-	mockGenerateObject.mockReset();
+	mockStructuredOutput.mockReset();
 	mockGetAIModelWithMetadata.mockReset();
 	mockLogModelUsageAsync.mockReset();
 	mockGetBoundPromptForAgent.mockReset();
@@ -124,12 +125,12 @@ beforeEach(() => {
 	mockGetBoundPromptForAgent.mockResolvedValue(STUB_PROMPT_BINDING);
 	mockProjectFindUnique.mockResolvedValue(null);
 	// Default: existing `generateText`-based tests stub `mockGenerateText`
-	// directly and rely on `generateObject` THROWING so the helper falls
-	// back. Tests targeting the primary `generateObject` path override this
-	// per-test with `mockGenerateObject.mockResolvedValue(...)`.
-	mockGenerateObject.mockRejectedValue(
+	// directly and rely on structured output THROWING so the helper falls
+	// back. Tests targeting the primary structured output path override this
+	// per-test with `mockStructuredOutput.mockResolvedValue(...)`.
+	mockStructuredOutput.mockRejectedValue(
 		new Error(
-			"[test default] generateObject not stubbed — falling back to generateText path",
+			"[test default] structured output not stubbed — falling back to generateText path",
 		),
 	);
 });
@@ -278,7 +279,7 @@ describe("formatTimestamp", () => {
 	});
 });
 
-describe("generateStoryTitleFromDescription — generateObject primary path", () => {
+describe("generateStoryTitleFromDescription — structured output primary path", () => {
 	it.each(["resolution", "object", "text"])(
 		"rethrows wrapped %s usage refusal without an untitled fallback",
 		async (phase) => {
@@ -299,9 +300,9 @@ describe("generateStoryTitleFromDescription — generateObject primary path", ()
 			if (phase === "resolution") {
 				mockGetAIModelWithMetadata.mockRejectedValueOnce(error);
 			} else if (phase === "object") {
-				mockGenerateObject.mockRejectedValueOnce(error);
+				mockStructuredOutput.mockRejectedValueOnce(error);
 			} else {
-				mockGenerateObject.mockRejectedValueOnce(
+				mockStructuredOutput.mockRejectedValueOnce(
 					new Error("Malformed object"),
 				);
 				mockGenerateText.mockRejectedValueOnce(error);
@@ -316,9 +317,9 @@ describe("generateStoryTitleFromDescription — generateObject primary path", ()
 		},
 	);
 
-	it("uses generateObject when the provider supports structured outputs", async () => {
-		mockGenerateObject.mockResolvedValue({
-			object: { title: "Add login flow", is_insufficient: false },
+	it("uses structured output when the provider supports structured outputs", async () => {
+		mockStructuredOutput.mockResolvedValue({
+			output: { title: "Add login flow", is_insufficient: false },
 			usage: STUB_USAGE,
 		});
 
@@ -333,8 +334,8 @@ describe("generateStoryTitleFromDescription — generateObject primary path", ()
 			source: "ai",
 			isInsufficient: false,
 		});
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
-		// generateText must NOT be called when generateObject succeeds —
+		expect(mockStructuredOutput).toHaveBeenCalledOnce();
+		// generateText must NOT be called when structured output succeeds —
 		// avoids the double-LLM-spend regression risk.
 		expect(mockGenerateText).not.toHaveBeenCalled();
 		// And no JSON parse failures should be logged on the happy path —
@@ -345,9 +346,9 @@ describe("generateStoryTitleFromDescription — generateObject primary path", ()
 		);
 	});
 
-	it("generateObject honors is_insufficient=true via provider schema", async () => {
-		mockGenerateObject.mockResolvedValue({
-			object: { title: "Untitled", is_insufficient: true },
+	it("structured output honors is_insufficient=true via provider schema", async () => {
+		mockStructuredOutput.mockResolvedValue({
+			output: { title: "Untitled", is_insufficient: true },
 			usage: STUB_USAGE,
 		});
 
@@ -364,8 +365,8 @@ describe("generateStoryTitleFromDescription — generateObject primary path", ()
 		);
 	});
 
-	it("generateObject throws → falls back to generateText path", async () => {
-		mockGenerateObject.mockRejectedValue(
+	it("structured output throws → falls back to generateText path", async () => {
+		mockStructuredOutput.mockRejectedValue(
 			new Error("provider does not support structured outputs"),
 		);
 		mockGenerateText.mockResolvedValue({
@@ -388,16 +389,16 @@ describe("generateStoryTitleFromDescription — generateObject primary path", ()
 		);
 		// We should log the fallback transition for observability.
 		expect(mockLoggerWarn).toHaveBeenCalledWith(
-			expect.stringContaining("generateObject failed"),
+			expect.stringContaining("structured output failed"),
 			expect.anything(),
 		);
-		// And both LLM calls (generateObject + generateText) should have run.
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		// And both LLM calls (structured output + generateText) should have run.
+		expect(mockStructuredOutput).toHaveBeenCalledOnce();
 		expect(mockGenerateText).toHaveBeenCalledOnce();
 	});
 
-	it("generateObject throws AND generateText returns fenced JSON → fence-strip recovers", async () => {
-		mockGenerateObject.mockRejectedValue(
+	it("structured output throws AND generateText returns fenced JSON → fence-strip recovers", async () => {
+		mockStructuredOutput.mockRejectedValue(
 			new Error("provider doesn't support structured outputs"),
 		);
 		mockGenerateText.mockResolvedValue({
@@ -415,8 +416,8 @@ describe("generateStoryTitleFromDescription — generateObject primary path", ()
 		expect(result.title).toBe("Tidy up the docs sidebar");
 	});
 
-	it("generateObject AND generateText both throw → untitled fallback", async () => {
-		mockGenerateObject.mockRejectedValue(
+	it("structured output AND generateText both throw → untitled fallback", async () => {
+		mockStructuredOutput.mockRejectedValue(
 			new Error("structured-output unsupported"),
 		);
 		mockGenerateText.mockRejectedValue(new Error("network blip"));
@@ -938,7 +939,7 @@ describe("generateStoryTitleFromDescription — inside a chat turn's dispatch gu
 		);
 		class TurnRefusal extends Error {}
 		const refusal = new TurnRefusal("allowance used");
-		mockGenerateObject.mockRejectedValue(refusal);
+		mockStructuredOutput.mockRejectedValue(refusal);
 		mockGenerateText.mockRejectedValue(refusal);
 
 		const outcome = await runWithDispatchGuard(

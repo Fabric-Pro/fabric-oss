@@ -27,16 +27,22 @@
  *
  * Plan: docs/features/inverted-loop-delivery-tracks.md, Slice 2.
  */
+
 import {
 	createDecisionCapture,
 	experimental_decide,
-	generateObject,
+	generateText,
 	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 	recordDecisionOutcome,
 } from "@repo/ai";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import {
 	type DeliveryTrack,
 	db,
@@ -164,7 +170,7 @@ export const TrackClassificationArraySchema = z.array(
 );
 
 /**
- * Root object for `generateObject`. Several providers reject a top-level JSON
+ * Root object for `Output.object`. Several providers reject a top-level JSON
  * array schema, so the array is wrapped; consumers read `.classifications`.
  */
 export const TrackClassificationOutputSchema = z.object({
@@ -1067,19 +1073,19 @@ export async function classifyDeliveryTracks(
 						});
 
 			const started = Date.now();
-			let result: Awaited<
-				ReturnType<
-					typeof generateObject<
-						typeof TrackClassificationOutputSchema
-					>
-				>
+			let result: StructuredTextResult<
+				z.infer<typeof TrackClassificationOutputSchema>
 			>;
 			try {
-				result = await generateObject({
-					model,
-					schema: TrackClassificationOutputSchema,
-					prompt,
-				});
+				result = await requireStructuredOutput(
+					generateText({
+						model,
+						output: Output.object({
+							schema: TrackClassificationOutputSchema,
+						}),
+						prompt,
+					}),
+				);
 			} catch (error) {
 				const message =
 					error instanceof Error ? error.message : String(error);
@@ -1106,7 +1112,7 @@ export async function classifyDeliveryTracks(
 
 			// Post-validate: schema + allowlisted enum + only ids sent here.
 			const parsed = TrackClassificationOutputSchema.safeParse(
-				result.object,
+				result.output,
 			);
 			if (!parsed.success) {
 				errors.push(

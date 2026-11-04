@@ -67,6 +67,7 @@ import {
 	embeddingsOnlyTakenBy,
 	GATEWAY_SUB_PROVIDERS,
 	getCloudProviders,
+	getConfiguredProviderLabel,
 	getCustomRemoteProvider,
 	getDirectProviders,
 	getGatewayProviders,
@@ -831,11 +832,10 @@ export function AiProvidersSettingsForm({
 																}
 																className="text-xs"
 															>
-																{p.displayName ||
-																	p.provider.replace(
-																		/_/g,
-																		" ",
-																	)}
+																{getConfiguredProviderLabel(
+																	p.provider,
+																	p.displayName,
+																)}
 																{p.isDefault &&
 																	" (Default)"}
 															</Badge>
@@ -879,15 +879,14 @@ export function AiProvidersSettingsForm({
 															variant="outline"
 															className="text-xs border-secondary/30 bg-secondary/10 text-secondary"
 														>
-															{configStatus.configuredProviders.find(
-																(p) =>
-																	p.provider ===
-																	configStatus.embeddingProvider,
-															)?.displayName ||
-																configStatus.embeddingProvider.replace(
-																	/_/g,
-																	" ",
-																)}
+															{getConfiguredProviderLabel(
+																configStatus.embeddingProvider,
+																configStatus.configuredProviders.find(
+																	(p) =>
+																		p.provider ===
+																		configStatus.embeddingProvider,
+																)?.displayName,
+															)}
 														</Badge>
 														{configStatus.embeddingModel && (
 															<>

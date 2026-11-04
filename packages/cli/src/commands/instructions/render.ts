@@ -108,6 +108,8 @@ export interface RenderedPlugin {
 	 * memory file and the project rules. `null` when there is neither.
 	 */
 	agentsText: string | null;
+	/** Claude Code only: the plugin's MCP server takes its Authorization header from this CLI. */
+	mcpHeadersHelper: boolean;
 }
 
 /** The render itself, for `render` and for `init`: no printing. */
@@ -146,6 +148,7 @@ export async function renderForProject(input: {
 		reused: rendered.reused,
 		pin: rendered.pin,
 		alwaysOn: rendered.alwaysOn,
+		mcpHeadersHelper: rendered.mcpHeadersHelper,
 		agentsText:
 			input.tool === "codex"
 				? agentsInstructions(

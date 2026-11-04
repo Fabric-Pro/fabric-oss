@@ -40,6 +40,36 @@ const credentialMappers: Partial<
 	AI_GATEWAY: (config) => ({
 		AI_GATEWAY_API_KEY: (config.apiKey as string) || "",
 	}),
+	BLOB: (config) => ({
+		BLOB_READ_WRITE_TOKEN:
+			(config.apiKey as string) ||
+			(config.BLOB_READ_WRITE_TOKEN as string) ||
+			"",
+	}),
+	CLERK: (config) => ({
+		CLERK_SECRET_KEY:
+			(config.apiKey as string) ||
+			(config.CLERK_SECRET_KEY as string) ||
+			"",
+	}),
+	STRIPE: (config) => ({
+		STRIPE_SECRET_KEY:
+			(config.apiKey as string) ||
+			(config.STRIPE_SECRET_KEY as string) ||
+			"",
+	}),
+	SUPERAGENT: (config) => ({
+		SUPERAGENT_API_KEY:
+			(config.apiKey as string) ||
+			(config.SUPERAGENT_API_KEY as string) ||
+			"",
+	}),
+	WEBFLOW: (config) => ({
+		WEBFLOW_API_KEY:
+			(config.apiKey as string) ||
+			(config.WEBFLOW_API_KEY as string) ||
+			"",
+	}),
 	FIRECRAWL: (config) => ({
 		FIRECRAWL_API_KEY: (config.apiKey as string) || "",
 	}),
@@ -58,6 +88,16 @@ const credentialMappers: Partial<
 	}),
 	DATABASE: (config) => ({
 		DATABASE_URL: (config.url as string) || "",
+	}),
+	DATABRICKS_PLATFORM: (config) => ({
+		DATABRICKS_HOST: (config.host as string) || "",
+		DATABRICKS_CLIENT_ID: (config.clientId as string) || "",
+		DATABRICKS_CLIENT_SECRET: (config.clientSecret as string) || "",
+	}),
+	DATABRICKS_SQL: (config) => ({
+		DATABRICKS_HOST: (config.host as string) || "",
+		DATABRICKS_CLIENT_ID: (config.clientId as string) || "",
+		DATABRICKS_CLIENT_SECRET: (config.clientSecret as string) || "",
 	}),
 	DATABRICKS_VECTOR_SEARCH: (config) => ({
 		DATABRICKS_HOST: (config.host as string) || "",

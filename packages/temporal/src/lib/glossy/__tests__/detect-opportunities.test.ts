@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	trackUsage: vi.fn(),
 }));
@@ -18,7 +18,8 @@ vi.mock("@repo/ai", async () => {
 	const actualAi = await vi.importActual<typeof import("ai")>("ai");
 	return {
 		AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {},
-		generateObject: mocks.generateObject,
+		Output: { object: (spec: unknown) => spec },
+		generateText: mocks.generateText,
 		getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 		NoObjectGeneratedError: actualAi.NoObjectGeneratedError,
 		zodSchema: (schema: unknown) => schema,
@@ -46,8 +47,8 @@ function sections(count: number) {
 function modelReturns(
 	opportunities: Array<{ sectionRef: string; kind: string; reason: string }>,
 ) {
-	mocks.generateObject.mockResolvedValueOnce({
-		object: { opportunities },
+	mocks.generateText.mockResolvedValueOnce({
+		output: { opportunities },
 		usage: {},
 	});
 }
@@ -168,7 +169,7 @@ describe("detectGlossyOpportunities", () => {
 		expect(
 			result.status === "detected" ? result.opportunities : [],
 		).toHaveLength(2);
-		expect(mocks.generateObject.mock.calls[0][0].prompt).toContain(
+		expect(mocks.generateText.mock.calls[0][0].prompt).toContain(
 			"at most 2 visuals",
 		);
 	});
@@ -230,7 +231,7 @@ describe("detectGlossyOpportunities", () => {
 				featureKey: "glossy-edition",
 			},
 		);
-		const call = mocks.generateObject.mock.calls[0][0];
+		const call = mocks.generateText.mock.calls[0][0];
 		expect(call).not.toHaveProperty("system");
 		expect(call.instructions).toContain("Untrusted Content Handling");
 		expect(call.instructions).not.toContain("Ignore prior instructions");
@@ -269,7 +270,7 @@ describe("detectGlossyOpportunities", () => {
 		await detectGlossyOpportunities(input);
 		await detectGlossyOpportunities({ ...input, proposalArtifact: true });
 
-		const [glossy, proposal] = mocks.generateObject.mock.calls.map(
+		const [glossy, proposal] = mocks.generateText.mock.calls.map(
 			([call]) => call,
 		);
 		expect(glossy.instructions).not.toContain("## Audience");
@@ -307,18 +308,24 @@ describe("detectGlossyOpportunities", () => {
 				{ sectionKey: "key-1", kind: "team" },
 			],
 		});
-		const [glossyCall, proposalCall] = mocks.generateObject.mock.calls.map(
+		const [glossyCall, proposalCall] = mocks.generateText.mock.calls.map(
 			([call]) => call,
 		);
 		const kindDescription = (call: {
-			schema: {
-				shape: {
-					opportunities: {
-						element: { shape: { kind: { description?: string } } };
+			output: {
+				schema: {
+					shape: {
+						opportunities: {
+							element: {
+								shape: { kind: { description?: string } };
+							};
+						};
 					};
 				};
 			};
-		}) => call.schema.shape.opportunities.element.shape.kind.description;
+		}) =>
+			call.output.schema.shape.opportunities.element.shape.kind
+				.description;
 		expect(kindDescription(glossyCall)).toBe(
 			"One of: timeline, comparison, stat, flow, org_chart.",
 		);
@@ -332,7 +339,7 @@ describe("detectGlossyOpportunities", () => {
 	});
 
 	it("degrades to no opportunities when the response is truncated", async () => {
-		mocks.generateObject.mockRejectedValueOnce(noObjectError("length"));
+		mocks.generateText.mockRejectedValueOnce(noObjectError("length"));
 
 		const result = await detectGlossyOpportunities({
 			...context,
@@ -348,7 +355,7 @@ describe("detectGlossyOpportunities", () => {
 	});
 
 	it("degrades on an unparseable response", async () => {
-		mocks.generateObject.mockRejectedValueOnce(noObjectError("stop"));
+		mocks.generateText.mockRejectedValueOnce(noObjectError("stop"));
 
 		const result = await detectGlossyOpportunities({
 			...context,
@@ -379,12 +386,12 @@ describe("detectGlossyOpportunities", () => {
 			status: "aiProviderNotConfigured",
 			message: expect.not.stringContaining("provider detail"),
 		});
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("propagates any other model failure unchanged", async () => {
 		const failure = new Error("provider outage");
-		mocks.generateObject.mockRejectedValueOnce(failure);
+		mocks.generateText.mockRejectedValueOnce(failure);
 
 		await expect(
 			detectGlossyOpportunities({
@@ -409,6 +416,6 @@ describe("detectGlossyOpportunities", () => {
 			).toEqual({ status: "detected", opportunities: [], discarded: 0 });
 		}
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 });

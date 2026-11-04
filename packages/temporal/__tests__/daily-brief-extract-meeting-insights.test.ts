@@ -12,7 +12,8 @@ vi.mock("zod", () => {
 	return { z, default: z };
 });
 vi.mock("@repo/ai", () => ({
-	generateObject: vi.fn(),
+	Output: { object: (spec: unknown) => spec },
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	getCurrentDateContext: () => "Today is 2026-04-23.",
 	logModelUsageAsync: vi.fn(),
@@ -55,7 +56,7 @@ vi.mock("../src/client", () => ({
 	},
 }));
 
-import { generateObject, getAIModelWithMetadata } from "@repo/ai";
+import { generateText, getAIModelWithMetadata } from "@repo/ai";
 import { db } from "@repo/database";
 import {
 	buildExtractionPrompt,
@@ -150,7 +151,7 @@ describe("extractMeetingInsightsActivity", () => {
 		expect(result.insights[0].decisions).toEqual([
 			{ text: "Split refunds" },
 		]);
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 		expect(db.projectMeetingTranscript.update).not.toHaveBeenCalled();
 	});
 
@@ -176,8 +177,8 @@ describe("extractMeetingInsightsActivity", () => {
 		vi.mocked(db.projectContext.findMany).mockResolvedValueOnce([
 			{ id: "ctx1", content: "Amir: ship F-12 on Friday" },
 		] as never);
-		vi.mocked(generateObject).mockResolvedValueOnce({
-			object: {
+		vi.mocked(generateText).mockResolvedValueOnce({
+			output: {
 				summary: "- Agreed to ship F-12 on Friday",
 				decisions: [{ text: "Ship F-12 on Friday" }],
 				actionItems: [],
@@ -201,7 +202,7 @@ describe("extractMeetingInsightsActivity", () => {
 		expect(result.insights[0].decisions).toEqual([
 			{ text: "Ship F-12 on Friday" },
 		]);
-		expect(generateObject).toHaveBeenCalledOnce();
+		expect(generateText).toHaveBeenCalledOnce();
 		expect(db.projectMeetingTranscript.update).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: { id: "t2" },
@@ -235,8 +236,8 @@ describe("extractMeetingInsightsActivity", () => {
 		vi.mocked(db.projectContext.findMany).mockResolvedValueOnce([
 			{ id: "ctx5", content: "Amir: status only" },
 		] as never);
-		vi.mocked(generateObject).mockResolvedValueOnce({
-			object: {
+		vi.mocked(generateText).mockResolvedValueOnce({
+			output: {
 				summary: "   ",
 				decisions: [],
 				actionItems: [],
@@ -282,8 +283,8 @@ describe("extractMeetingInsightsActivity", () => {
 		vi.mocked(db.projectContext.findMany).mockResolvedValueOnce(
 			[] as never,
 		);
-		vi.mocked(generateObject).mockResolvedValueOnce({
-			object: {
+		vi.mocked(generateText).mockResolvedValueOnce({
+			output: {
 				summary: "- summary of a summary",
 				decisions: [],
 				actionItems: [],
@@ -327,7 +328,7 @@ describe("extractMeetingInsightsActivity", () => {
 		vi.mocked(db.projectContext.findMany).mockResolvedValueOnce([
 			{ id: "ctx7", content: "content body" },
 		] as never);
-		vi.mocked(generateObject).mockRejectedValueOnce(new Error("LLM down"));
+		vi.mocked(generateText).mockRejectedValueOnce(new Error("LLM down"));
 
 		await expect(
 			extractMeetingInsightsActivity({
@@ -380,7 +381,7 @@ describe("extractMeetingInsightsActivity", () => {
 			actionItems: [],
 			openQuestions: [],
 		});
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 		// Regression guard: I2 bug was persisting an empty-cache sentinel here.
 		expect(db.projectMeetingTranscript.update).not.toHaveBeenCalled();
 	});
@@ -404,7 +405,7 @@ describe("extractMeetingInsightsActivity", () => {
 		vi.mocked(db.projectContext.findMany).mockResolvedValueOnce([
 			{ id: "ctx4", content: "content body" },
 		] as never);
-		vi.mocked(generateObject).mockRejectedValueOnce(new Error("LLM down"));
+		vi.mocked(generateText).mockRejectedValueOnce(new Error("LLM down"));
 
 		const result = await extractMeetingInsightsActivity({
 			projectId: "p1",

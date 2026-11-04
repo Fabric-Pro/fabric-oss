@@ -7,12 +7,15 @@ const bodySchema = z.object({
 	sessionId: z.string().min(1).max(128),
 	botId: z.string().min(1).max(256),
 	previous: z.array(z.string().max(1_000)).max(24).default([]),
+	/** The bridge can keep a suggestion off the meeting chat. */
+	teamAudience: z.boolean().default(false),
 });
 
 /**
  * One passive suggestion pass, asked for by the bridge on its timer. Answers
  * `{ suggest: false }` whenever there is nothing worth offering, including a
- * session that turned suggestions off or is no longer live.
+ * session that turned suggestions off or is no longer live. A suggestion
+ * carries its `kind` and the session's current `audience`.
  */
 export async function POST(request: NextRequest) {
 	if (

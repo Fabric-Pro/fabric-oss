@@ -34,7 +34,9 @@ import {
 	parseRepoUrl,
 	syncLegacyProjectRepoOnConnect,
 } from "@repo/database";
+import { resolveCredential } from "@repo/integrations/credential-manager";
 import { getGitLabConnectionToken } from "@repo/integrations/gitlab";
+import { REPOSITORY_CREDENTIAL_KINDS } from "@repo/integrations/repo-auth";
 import { getTemporalClient } from "@repo/temporal";
 import { encryptApiKey } from "@repo/utils";
 import { isCreatableDocumentType } from "@repo/utils/document-type-catalog";
@@ -46,6 +48,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { resolveCredentialActor } from "../../credential-manager/lib/context";
 import {
 	cancelPausedSetupsOfProject,
 	projectSetupIsPaused,
@@ -84,240 +87,278 @@ async function assertSafeRepositoryUrls(
 	}
 }
 
-export const startExistingSetupProcedure = tenantProtectedProcedure
-	.use(requireProjectPermission(Permissions.PROJECT_UPDATE))
-	.route({
-		method: "POST",
-		path: "/projects/existing-setup/start",
-		tags: ["Projects"],
-		summary:
-			"Start existing project setup (code analysis + sequential doc generation)",
-	})
-	.input(
-		z.object({
-			projectId: z.string(),
-			// Accepted for client compatibility and ignored: the tenant is the
-			// project's own organization (see the handler).
-			organizationId: z.string().nullable().optional(),
-			repoUrls: z.array(z.string()).default([]),
-			// A retired type (Features, Fizzy #2776) from a wizard draft saved
-			// before it was retired is dropped rather than generated.
-			selectedDocumentTypes: z
-				.array(z.string())
-				.default([])
-				.transform((types) => types.filter(isCreatableDocumentType)),
-			projectTypes: z.array(z.string()).default([]),
-			projectName: z.string(),
-			documentPrompts: z
-				.record(
-					z.string(),
-					z.object({
-						promptId: z.string().optional(),
-						customInstructions: z.string().optional(),
-					}),
-				)
-				.optional(),
-			repoTags: z
-				.record(
-					z.string(),
-					z
-						.string()
-						.trim()
-						.max(50)
-						.regex(/^(?!.*---)[a-zA-Z0-9_\-./ ]+$/, {
-							message:
-								"Role tag can only contain letters, numbers, spaces, hyphens, underscores, dots, and slashes (and cannot contain '---')",
-						}),
-				)
-				.optional(),
-			// What each repository is to the project, keyed like `repoTags` by
-			// the caller's URL: the product's code (the default), its coding
-			// instructions, or documentation kept in Living Memory. The analysis
-			// reads each one for what it is instead of all of them as code.
-			repoRoles: z
-				.record(
-					z.string(),
-					z.enum(["code", "instructions", "knowledge"]),
-				)
-				.optional(),
-		}),
-	)
-	.handler(async ({ input, context }) => {
-		const { user } = context;
-		const {
+/** The input of `existingSetup.start`, and of a re-run of a failed analysis. */
+const existingSetupInputSchema = z.object({
+	projectId: z.string(),
+	// Accepted for client compatibility and ignored: the tenant is the
+	// project's own organization (see the handler).
+	organizationId: z.string().nullable().optional(),
+	repoUrls: z.array(z.string()).default([]),
+	// A retired type (Features, Fizzy #2776) from a wizard draft saved
+	// before it was retired is dropped rather than generated.
+	selectedDocumentTypes: z
+		.array(z.string())
+		.default([])
+		.transform((types) => types.filter(isCreatableDocumentType)),
+	projectTypes: z.array(z.string()).default([]),
+	projectName: z.string(),
+	documentPrompts: z
+		.record(
+			z.string(),
+			z.object({
+				promptId: z.string().optional(),
+				customInstructions: z.string().optional(),
+			}),
+		)
+		.optional(),
+	repoTags: z
+		.record(
+			z.string(),
+			z
+				.string()
+				.trim()
+				.max(50)
+				.regex(/^(?!.*---)[a-zA-Z0-9_\-./ ]+$/, {
+					message:
+						"Role tag can only contain letters, numbers, spaces, hyphens, underscores, dots, and slashes (and cannot contain '---')",
+				}),
+		)
+		.optional(),
+	// What each repository is to the project, keyed like `repoTags` by
+	// the caller's URL: the product's code (the default), its coding
+	// instructions, or documentation kept in Living Memory. The analysis
+	// reads each one for what it is instead of all of them as code.
+	repoRoles: z
+		.record(z.string(), z.enum(["code", "instructions", "knowledge"]))
+		.optional(),
+	// A GitHub token saved in the credential manager by the import form.
+	// The GitHub repositories are connected with it, bound by
+	// `credentialId` (ADR-026), instead of a copy of the person's GitHub
+	// connection. Refused while the credential manager is off.
+	credentialId: z.string().min(1).optional(),
+});
+
+/** The caller's `organizationId` is never part of it: the tenant is the project's. */
+export type ExistingSetupInput = Omit<
+	z.output<typeof existingSetupInputSchema>,
+	"organizationId"
+>;
+
+/**
+ * Starts the existing-project setup: the code analysis of `input.repoUrls`
+ * and the generation of `input.selectedDocumentTypes`. Shared by
+ * `existingSetup.start` and `existingSetup.retry`; the caller has already
+ * passed `requireProjectPermission(PROJECT_UPDATE)` for `input.projectId`.
+ */
+export async function startExistingProjectSetup({
+	input,
+	user,
+}: {
+	input: ExistingSetupInput;
+	user: { id: string; name?: string | null };
+}) {
+	const {
+		projectId,
+		selectedDocumentTypes,
+		repoUrls,
+		projectTypes,
+		projectName,
+		documentPrompts,
+	} = input;
+	await assertSafeRepositoryUrls(repoUrls);
+
+	// Parse each input URL exactly once into a `{ raw, parsed }` pair.
+	// `assertSafeRepositoryUrls` above already required every entry to
+	// parse, so this never throws in practice — but it means every
+	// downstream consumer (the workflow-start args below, which the
+	// workflow forwards verbatim into its analysis prompt and
+	// `ProjectContext.sourceUrl`; the audit/activity metadata; and the
+	// per-provider integration writes) reads `parsed.url` — the
+	// canonical, userinfo-free, query/fragment-free form — instead of
+	// re-parsing (and risking a different outcome, or a raw string
+	// falling through unparsed) at each site. `raw` is kept only for the
+	// `input.repoTags` lookup, which is keyed by the caller's original
+	// string.
+	const parsedRepoUrls: Array<{
+		raw: string;
+		parsed: NonNullable<ReturnType<typeof parseRepoUrl>>;
+	}> = [];
+	for (const url of repoUrls) {
+		const raw = url.trim();
+		if (!raw) {
+			continue;
+		}
+		const parsed = parseRepoUrl(raw);
+		if (!parsed) {
+			// Unreachable in practice (see above) — but never silently
+			// store or forward a raw string that failed to parse.
+			throw new ORPCError("BAD_REQUEST", {
+				message: `Unsupported repository URL: ${raw}`,
+			});
+		}
+		parsedRepoUrls.push({ raw, parsed });
+	}
+	const canonicalRepoUrls = parsedRepoUrls.map((entry) => entry.parsed.url);
+	// Keyed by the canonical URL the workflow sees; code is left out, being
+	// what an unnamed repository already is.
+	const repoRoles: Record<string, "instructions" | "knowledge"> = {};
+	for (const entry of parsedRepoUrls) {
+		const role = input.repoRoles?.[entry.raw];
+		if (role === "instructions" || role === "knowledge") {
+			repoRoles[entry.parsed.url] = role;
+		}
+	}
+
+	// Authorization is enforced by `requireProjectPermission` above.
+
+	// Get project with PM config info
+	const project = await db.project.findUnique({
+		where: { id: projectId },
+	});
+
+	if (!project) {
+		throw new ORPCError("NOT_FOUND", {
+			message: "Project not found",
+		});
+	}
+
+	// Every tenant use below — the AI token (exchanged for the
+	// organization's provider key), the credentials copied into the
+	// project, the workflow and the activity rows — runs in the
+	// organization that owns the project `requireProjectPermission`
+	// authorized, never in `input.organizationId`, the caller's own string.
+	// A project with no organization is refused before any of them.
+	const organizationId = requireProjectOrganization(project);
+
+	// Check if setup is already in progress. One paused for a ChatGPT
+	// plan reset runs nothing: this setup replaces it (Fizzy #2770).
+	if (
+		project.codeAnalysisStatus === "SCANNING" &&
+		!(await projectSetupIsPaused({
 			projectId,
-			selectedDocumentTypes,
-			repoUrls,
-			projectTypes,
-			projectName,
-			documentPrompts,
-		} = input;
-		await assertSafeRepositoryUrls(repoUrls);
-
-		// Parse each input URL exactly once into a `{ raw, parsed }` pair.
-		// `assertSafeRepositoryUrls` above already required every entry to
-		// parse, so this never throws in practice — but it means every
-		// downstream consumer (the workflow-start args below, which the
-		// workflow forwards verbatim into its analysis prompt and
-		// `ProjectContext.sourceUrl`; the audit/activity metadata; and the
-		// per-provider integration writes) reads `parsed.url` — the
-		// canonical, userinfo-free, query/fragment-free form — instead of
-		// re-parsing (and risking a different outcome, or a raw string
-		// falling through unparsed) at each site. `raw` is kept only for the
-		// `input.repoTags` lookup, which is keyed by the caller's original
-		// string.
-		const parsedRepoUrls: Array<{
-			raw: string;
-			parsed: NonNullable<ReturnType<typeof parseRepoUrl>>;
-		}> = [];
-		for (const url of repoUrls) {
-			const raw = url.trim();
-			if (!raw) {
-				continue;
-			}
-			const parsed = parseRepoUrl(raw);
-			if (!parsed) {
-				// Unreachable in practice (see above) — but never silently
-				// store or forward a raw string that failed to parse.
-				throw new ORPCError("BAD_REQUEST", {
-					message: `Unsupported repository URL: ${raw}`,
-				});
-			}
-			parsedRepoUrls.push({ raw, parsed });
-		}
-		const canonicalRepoUrls = parsedRepoUrls.map(
-			(entry) => entry.parsed.url,
-		);
-		// Keyed by the canonical URL the workflow sees; code is left out, being
-		// what an unnamed repository already is.
-		const repoRoles: Record<string, "instructions" | "knowledge"> = {};
-		for (const entry of parsedRepoUrls) {
-			const role = input.repoRoles?.[entry.raw];
-			if (role === "instructions" || role === "knowledge") {
-				repoRoles[entry.parsed.url] = role;
-			}
-		}
-
-		// Authorization is enforced by `requireProjectPermission` above.
-
-		// Get project with PM config info
-		const project = await db.project.findUnique({
-			where: { id: projectId },
-		});
-
-		if (!project) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Project not found",
-			});
-		}
-
-		// Every tenant use below — the AI token (exchanged for the
-		// organization's provider key), the credentials copied into the
-		// project, the workflow and the activity rows — runs in the
-		// organization that owns the project `requireProjectPermission`
-		// authorized, never in `input.organizationId`, the caller's own string.
-		// A project with no organization is refused before any of them.
-		const organizationId = requireProjectOrganization(project);
-
-		// Check if setup is already in progress. One paused for a ChatGPT
-		// plan reset runs nothing: this setup replaces it (Fizzy #2770).
-		if (
-			project.codeAnalysisStatus === "SCANNING" &&
-			!(await projectSetupIsPaused({
-				projectId,
-				organizationId,
-				userId: user.id,
-			}))
-		) {
-			throw new ORPCError("CONFLICT", {
-				message: "Project setup is already in progress",
-			});
-		}
-
-		// Validate unique role tags
-		if (input.repoTags) {
-			const nonNullTags = Object.values(input.repoTags)
-				.map((t) => t.trim())
-				.filter((t) => t.length > 0);
-			const lowerTags = nonNullTags.map((t) => t.toLowerCase());
-			if (new Set(lowerTags).size !== lowerTags.length) {
-				throw new ORPCError("CONFLICT", {
-					message: "Each repository must have a unique role tag",
-				});
-			}
-
-			const existingWithTags =
-				await db.projectRepositoryIntegration.findMany({
-					where: {
-						projectId,
-						roleTag: { not: null },
-					},
-					select: {
-						roleTag: true,
-						repositoryOwner: true,
-						repositoryName: true,
-					},
-				});
-			for (const tag of nonNullTags) {
-				const collision = existingWithTags.find(
-					(e) => e.roleTag?.toLowerCase() === tag.toLowerCase(),
-				);
-				if (collision) {
-					throw new ORPCError("CONFLICT", {
-						message: `The role tag "${tag}" is already assigned to ${collision.repositoryOwner}/${collision.repositoryName}`,
-					});
-				}
-			}
-		}
-
-		// Issue AI token for the workflow
-		const aiToken = await issueAIToken({
-			userId: user.id,
 			organizationId,
-			impersonated: isAiImpersonatedRequest(),
-			source: "existing-project-setup",
-			expirySeconds: 7200, // 2 hours — sequential doc gen can take a while
-			// Bulk work: the agents it delegates to resolve on the
-			// organization's shared ChatGPT plans, never the clicker's own
-			// (Fizzy #2770).
-			jobType: "project-setup",
+			userId: user.id,
+		}))
+	) {
+		throw new ORPCError("CONFLICT", {
+			message: "Project setup is already in progress",
 		});
+	}
 
-		// Build PM config from project record
-		const pmMcpConfigId = project.projectManagementMcpConfigId ?? undefined;
-		const pmContainerId = project.projectManagementContainerId ?? undefined;
-		const pmAdditionalContext =
-			project.projectManagementAdditionalContext as
-				| Record<string, string>
-				| undefined;
+	// Validate unique role tags
+	if (input.repoTags) {
+		const nonNullTags = Object.values(input.repoTags)
+			.map((t) => t.trim())
+			.filter((t) => t.length > 0);
+		const lowerTags = nonNullTags.map((t) => t.toLowerCase());
+		if (new Set(lowerTags).size !== lowerTags.length) {
+			throw new ORPCError("CONFLICT", {
+				message: "Each repository must have a unique role tag",
+			});
+		}
 
-		const skippedRepos: string[] = [];
+		const existingWithTags = await db.projectRepositoryIntegration.findMany(
+			{
+				where: {
+					projectId,
+					roleTag: { not: null },
+				},
+				select: {
+					roleTag: true,
+					repositoryOwner: true,
+					repositoryName: true,
+				},
+			},
+		);
+		for (const tag of nonNullTags) {
+			const collision = existingWithTags.find(
+				(e) => e.roleTag?.toLowerCase() === tag.toLowerCase(),
+			);
+			if (collision) {
+				throw new ORPCError("CONFLICT", {
+					message: `The role tag "${tag}" is already assigned to ${collision.repositoryOwner}/${collision.repositoryName}`,
+				});
+			}
+		}
+	}
+
+	// Issue AI token for the workflow
+	const aiToken = await issueAIToken({
+		userId: user.id,
+		organizationId,
+		impersonated: isAiImpersonatedRequest(),
+		source: "existing-project-setup",
+		expirySeconds: 7200, // 2 hours — sequential doc gen can take a while
+		// Bulk work: the agents it delegates to resolve on the
+		// organization's shared ChatGPT plans, never the clicker's own
+		// (Fizzy #2770).
+		jobType: "project-setup",
+	});
+
+	// Build PM config from project record
+	const pmMcpConfigId = project.projectManagementMcpConfigId ?? undefined;
+	const pmContainerId = project.projectManagementContainerId ?? undefined;
+	const pmAdditionalContext = project.projectManagementAdditionalContext as
+		| Record<string, string>
+		| undefined;
+
+	const skippedRepos: string[] = [];
+
+	// Auto-populate project-level repo integrations from user's GitHub credentials.
+	// This ensures that when a project is created via the "existing project" flow,
+	// the shared credentials are available to all project members automatically.
+	// Only owners can configure project-level integrations.
+	const projectRole = await getProjectMemberRole(projectId, user.id);
+	if (repoUrls.length > 0 && projectRole === ProjectMemberRole.OWNER) {
+		const orgIdForQuery = organizationId ?? null;
+		const stagedRepos = new Set<string>();
+
+		type DecryptedCredential = {
+			access_token?: string;
+			refresh_token?: string;
+			expires_in?: number;
+			token_obtained_at?: string;
+			scope?: string;
+			apiKey?: string;
+			pat?: string;
+			GITHUB_TOKEN?: string;
+			token?: string;
+			apiToken?: string;
+		};
+
+		// A saved credential the import form chose, resolved as the caller.
+		let savedCredential: {
+			id: string;
+			kind: string;
+			token: string;
+		} | null = null;
+		if (input.credentialId) {
+			// Refuses while the credential manager is off.
+			const actor = await resolveCredentialActor(organizationId, user.id);
+			const resolved = await resolveCredential({
+				credentialId: input.credentialId,
+				actor: { type: "user", ...actor },
+				requirement: {
+					provider: "GITHUB",
+					kinds: REPOSITORY_CREDENTIAL_KINDS,
+				},
+			});
+			if (!resolved.ok) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: "This saved GitHub token cannot be used here.",
+				});
+			}
+			savedCredential = {
+				id: input.credentialId,
+				kind: resolved.value.credential.kind,
+				token: resolved.value.token,
+			};
+		}
 
 		// Auto-populate project-level repo integrations from user's GitHub credentials.
-		// This ensures that when a project is created via the "existing project" flow,
-		// the shared credentials are available to all project members automatically.
-		// Only owners can configure project-level integrations.
-		const projectRole = await getProjectMemberRole(projectId, user.id);
-		if (repoUrls.length > 0 && projectRole === ProjectMemberRole.OWNER) {
-			const orgIdForQuery = organizationId ?? null;
-			const stagedRepos = new Set<string>();
-
-			type DecryptedCredential = {
-				access_token?: string;
-				refresh_token?: string;
-				expires_in?: number;
-				token_obtained_at?: string;
-				scope?: string;
-				apiKey?: string;
-				pat?: string;
-				GITHUB_TOKEN?: string;
-				token?: string;
-				apiToken?: string;
-			};
-
-			// Auto-populate project-level repo integrations from user's GitHub credentials.
-			const userGitHubIntegration =
-				await db.workflowIntegration.findFirst({
+		const userGitHubIntegration = savedCredential
+			? null
+			: await db.workflowIntegration.findFirst({
 					where: {
 						userId: user.id,
 						provider: "GITHUB",
@@ -329,465 +370,487 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 					},
 				});
 
-			if (userGitHubIntegration?.credentials) {
+		const connectionCredentials = userGitHubIntegration?.credentials;
+		if (savedCredential || connectionCredentials) {
+			let credJson: DecryptedCredential = {};
+			if (savedCredential) {
+				// Read as a token: the repository row is bound to the
+				// credential and never stores it.
+				credJson = { token: savedCredential.token };
+			} else if (connectionCredentials) {
 				const { decryptApiKey } = await import("@repo/utils");
-				let credJson: DecryptedCredential = {};
 				try {
-					credJson = JSON.parse(
-						decryptApiKey(userGitHubIntegration.credentials),
-					);
+					credJson = JSON.parse(decryptApiKey(connectionCredentials));
 				} catch (err) {
 					console.warn(
 						"[ExistingSetup] Failed to decrypt or parse GitHub credentials:",
 						err,
 					);
 				}
+			}
 
-				// A token pasted in Integrations is stored as `GITHUB_TOKEN`; the
-				// same keys `getGitHubWorkflowCredential` reads.
-				const patToken =
-					credJson.GITHUB_TOKEN ||
-					credJson.token ||
-					credJson.apiKey ||
-					credJson.pat;
-				const isPat =
-					!credJson.access_token &&
-					!credJson.refresh_token &&
-					Boolean(patToken);
-				const token = (isPat ? patToken : credJson.access_token) || "";
+			// A token pasted in Integrations is stored as `GITHUB_TOKEN`; the
+			// same keys `getGitHubWorkflowCredential` reads.
+			const patToken =
+				credJson.GITHUB_TOKEN ||
+				credJson.token ||
+				credJson.apiKey ||
+				credJson.pat;
+			const isPat =
+				!credJson.access_token &&
+				!credJson.refresh_token &&
+				Boolean(patToken);
+			const token = (isPat ? patToken : credJson.access_token) || "";
 
-				for (const { raw, parsed } of parsedRepoUrls) {
-					if (parsed.provider !== "GITHUB") {
-						continue;
-					}
+			for (const { raw, parsed } of parsedRepoUrls) {
+				if (parsed.provider !== "GITHUB") {
+					continue;
+				}
 
-					const repoLabel = `GitHub: ${parsed.owner}/${parsed.name}`;
-					const repoKey = `GITHUB:${parsed.owner.toLowerCase()}/${parsed.name.toLowerCase()}`;
-					if (stagedRepos.has(repoKey)) {
-						continue;
-					}
+				const repoLabel = `GitHub: ${parsed.owner}/${parsed.name}`;
+				const repoKey = `GITHUB:${parsed.owner.toLowerCase()}/${parsed.name.toLowerCase()}`;
+				if (stagedRepos.has(repoKey)) {
+					continue;
+				}
 
-					const existing =
-						await db.projectRepositoryIntegration.findFirst({
-							where: {
-								projectId,
-								provider: "GITHUB",
-								repositoryOwner: parsed.owner,
-								repositoryName: parsed.name,
-							},
-						});
-					if (existing) {
-						stagedRepos.add(repoKey);
-						continue;
-					}
+				const existing =
+					await db.projectRepositoryIntegration.findFirst({
+						where: {
+							projectId,
+							provider: "GITHUB",
+							repositoryOwner: parsed.owner,
+							repositoryName: parsed.name,
+						},
+					});
+				if (existing) {
+					stagedRepos.add(repoKey);
+					continue;
+				}
 
-					if (!token) {
-						skippedRepos.push(repoLabel);
-						continue;
-					}
+				if (!token) {
+					skippedRepos.push(repoLabel);
+					continue;
+				}
 
-					// Probe the REPOSITORY itself for both credential arms before
-					// creating anything (Fizzy #2252 AC1): an account-level token
-					// being alive says nothing about this repo, and the OAuth arm
-					// used to skip validation entirely, writing Active rows the
-					// app cannot read. Definitive negatives skip the repo — the
-					// same contract the PAT arm already had — while an
-					// inconclusive probe defers to the scheduled sweep instead of
-					// blocking a bulk import on a transient blip. The probe never
-					// throws.
-					const {
-						outcome: accessOutcome,
-						defaultBranch: probedDefaultBranch,
-					} = await verifyRepositoryAccess({
+				// Probe the REPOSITORY itself for both credential arms before
+				// creating anything (Fizzy #2252 AC1): an account-level token
+				// being alive says nothing about this repo, and the OAuth arm
+				// used to skip validation entirely, writing Active rows the
+				// app cannot read. Definitive negatives skip the repo — the
+				// same contract the PAT arm already had — while an
+				// inconclusive probe defers to the scheduled sweep instead of
+				// blocking a bulk import on a transient blip. The probe never
+				// throws.
+				const {
+					outcome: accessOutcome,
+					defaultBranch: probedDefaultBranch,
+				} = await verifyRepositoryAccess({
+					provider: "GITHUB",
+					token,
+					repositoryUrl: `https://github.com/${parsed.owner}/${parsed.name}`,
+					owner: parsed.owner,
+					repo: parsed.name,
+				});
+				if (
+					accessOutcome === "unauthorized" ||
+					accessOutcome === "forbidden" ||
+					accessOutcome === "not-found"
+				) {
+					console.warn(
+						`[ExistingSetup] Skipping GitHub integration for ${parsed.owner}/${parsed.name}: repository probe answered ${accessOutcome}`,
+					);
+					skippedRepos.push(repoLabel);
+					continue;
+				}
+
+				let created = false;
+				try {
+					const resolvedBranch = await resolveDefaultBranch({
+						// The probe's payload already carries default_branch —
+						// passing it here short-circuits resolveDefaultBranch's
+						// second identical fetch.
+						providedBranch:
+							project.defaultBranch ?? probedDefaultBranch,
 						provider: "GITHUB",
 						token,
 						repositoryUrl: `https://github.com/${parsed.owner}/${parsed.name}`,
 						owner: parsed.owner,
 						repo: parsed.name,
 					});
-					if (
-						accessOutcome === "unauthorized" ||
-						accessOutcome === "forbidden" ||
-						accessOutcome === "not-found"
-					) {
+
+					await createProjectRepoIntegration({
+						projectId,
+						provider: "GITHUB",
+						authMethod: savedCredential
+							? savedCredential.kind === "PAT"
+								? "PAT"
+								: "OAUTH"
+							: isPat
+								? "PAT"
+								: "OAUTH",
+						repositoryUrl: parsed.url,
+						repositoryOwner: parsed.owner,
+						repositoryName: parsed.name,
+						defaultBranch: resolvedBranch,
+						encryptedAccessToken: !isPat
+							? encryptApiKey(token)
+							: undefined,
+						// A saved credential is bound, never copied.
+						encryptedPat:
+							isPat && !savedCredential
+								? encryptApiKey(token)
+								: undefined,
+						credentialId: savedCredential?.id,
+						encryptedRefreshToken:
+							!isPat && credJson.refresh_token
+								? encryptApiKey(credJson.refresh_token)
+								: undefined,
+						tokenExpiresAt:
+							!isPat && credJson.expires_in
+								? new Date(
+										(credJson.token_obtained_at
+											? new Date(
+													credJson.token_obtained_at,
+												).getTime()
+											: Date.now()) +
+											credJson.expires_in * 1000,
+									)
+								: undefined,
+						tokenScopes:
+							!isPat && credJson.scope
+								? credJson.scope.split(",")
+								: [],
+						configuredByUserId: user.id,
+						roleTag: input.repoTags?.[raw] ?? null,
+					});
+					created = true;
+					stagedRepos.add(repoKey);
+
+					await syncLegacyProjectRepoOnConnect(
+						projectId,
+						parsed.url,
+						parsed.owner,
+						parsed.name,
+						resolvedBranch,
+					);
+
+					await logRepoIntegrationActivity({
+						projectId,
+						userId: user.id,
+						userName: user.name || "Unknown",
+						organizationId,
+						activityType: "repo_integration_configured",
+						repositoryName: `${parsed.owner}/${parsed.name}`,
+						metadata: {
+							provider: "GITHUB",
+							authMethod: isPat ? "PAT" : "OAUTH",
+							source: "auto_from_existing_setup",
+						},
+					}).catch(() => {});
+				} catch (err) {
+					// Don't fail the setup if auto-population fails
+					console.error(
+						"[ExistingSetup] Error setting up GitHub project repo integration:",
+						err,
+					);
+					if (!created) {
+						skippedRepos.push(repoLabel);
+					}
+				}
+			}
+		}
+
+		// Auto-populate project-level repo integrations from the user's GitLab
+		// connection — a personal access token only. A personal OAuth grant
+		// is never copied into a repository link: GitLab rotates its refresh
+		// token on every use, so two stores holding the same grant break
+		// each other (and a grant shared with a repository link marks the
+		// personal connection reconnect-required). Repositories behind an
+		// OAuth connection are reported as skipped; the user connects them
+		// from the project's repository settings, which issues the
+		// repository link its own grant. The PAT is only ever validated
+		// against gitlab.com below, so the service's default (a
+		// gitlab.com credential only) is the right one here.
+		//
+		// The connection is read (and can be classified) in the PROJECT's
+		// organization, the tenant `requireProjectPermission` authorized
+		// this caller in — not the input's or the session's, which can
+		// name another organization. A project with no organization has
+		// no personal connection to read (ADR-018).
+		const gitlabConnection = project.organizationId
+			? await getGitLabConnectionToken(
+					{
+						userId: user.id,
+						organizationId: project.organizationId,
+					},
+					{ mode: "strict" },
+				)
+			: null;
+
+		if (gitlabConnection?.ok) {
+			const isPat = gitlabConnection.issuer?.kind === "pat";
+			const token = isPat ? gitlabConnection.accessToken : "";
+
+			for (const { raw, parsed } of parsedRepoUrls) {
+				if (parsed.provider !== "GITLAB") {
+					continue;
+				}
+
+				const repoLabel = `GitLab: ${parsed.owner}/${parsed.name}`;
+				const repoKey = `GITLAB:${parsed.owner.toLowerCase()}/${parsed.name.toLowerCase()}`;
+				if (stagedRepos.has(repoKey)) {
+					continue;
+				}
+
+				const existing =
+					await db.projectRepositoryIntegration.findFirst({
+						where: {
+							projectId,
+							provider: "GITLAB",
+							repositoryOwner: parsed.owner,
+							repositoryName: parsed.name,
+						},
+					});
+				if (existing) {
+					stagedRepos.add(repoKey);
+					continue;
+				}
+
+				let created = false;
+				try {
+					if (!isPat || !token) {
 						console.warn(
-							`[ExistingSetup] Skipping GitHub integration for ${parsed.owner}/${parsed.name}: repository probe answered ${accessOutcome}`,
+							`[ExistingSetup] ${parsed.owner}/${parsed.name} needs its own GitLab repository authorization — a personal OAuth grant is not copied into a repository link`,
 						);
 						skippedRepos.push(repoLabel);
 						continue;
 					}
 
-					let created = false;
+					let hostname = "";
 					try {
-						const resolvedBranch = await resolveDefaultBranch({
-							// The probe's payload already carries default_branch —
-							// passing it here short-circuits resolveDefaultBranch's
-							// second identical fetch.
-							providedBranch:
-								project.defaultBranch ?? probedDefaultBranch,
-							provider: "GITHUB",
-							token,
-							repositoryUrl: `https://github.com/${parsed.owner}/${parsed.name}`,
-							owner: parsed.owner,
-							repo: parsed.name,
-						});
-
-						await createProjectRepoIntegration({
-							projectId,
-							provider: "GITHUB",
-							authMethod: isPat ? "PAT" : "OAUTH",
-							repositoryUrl: parsed.url,
-							repositoryOwner: parsed.owner,
-							repositoryName: parsed.name,
-							defaultBranch: resolvedBranch,
-							encryptedAccessToken: !isPat
-								? encryptApiKey(token)
-								: undefined,
-							encryptedPat: isPat
-								? encryptApiKey(token)
-								: undefined,
-							encryptedRefreshToken:
-								!isPat && credJson.refresh_token
-									? encryptApiKey(credJson.refresh_token)
-									: undefined,
-							tokenExpiresAt:
-								!isPat && credJson.expires_in
-									? new Date(
-											(credJson.token_obtained_at
-												? new Date(
-														credJson.token_obtained_at,
-													).getTime()
-												: Date.now()) +
-												credJson.expires_in * 1000,
-										)
-									: undefined,
-							tokenScopes:
-								!isPat && credJson.scope
-									? credJson.scope.split(",")
-									: [],
-							configuredByUserId: user.id,
-							roleTag: input.repoTags?.[raw] ?? null,
-						});
-						created = true;
-						stagedRepos.add(repoKey);
-
-						await syncLegacyProjectRepoOnConnect(
-							projectId,
-							parsed.url,
-							parsed.owner,
-							parsed.name,
-							resolvedBranch,
+						hostname = new URL(outboundRepositoryUrl(raw)).hostname
+							.toLowerCase()
+							.replace(/\.$/, "");
+					} catch {
+						console.warn(
+							`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name} due to invalid URL`,
 						);
-
-						await logRepoIntegrationActivity({
-							projectId,
-							userId: user.id,
-							userName: user.name || "Unknown",
-							organizationId,
-							activityType: "repo_integration_configured",
-							repositoryName: `${parsed.owner}/${parsed.name}`,
-							metadata: {
-								provider: "GITHUB",
-								authMethod: isPat ? "PAT" : "OAUTH",
-								source: "auto_from_existing_setup",
-							},
-						}).catch(() => {});
-					} catch (err) {
-						// Don't fail the setup if auto-population fails
-						console.error(
-							"[ExistingSetup] Error setting up GitHub project repo integration:",
-							err,
-						);
-						if (!created) {
-							skippedRepos.push(repoLabel);
-						}
-					}
-				}
-			}
-
-			// Auto-populate project-level repo integrations from the user's GitLab
-			// connection — a personal access token only. A personal OAuth grant
-			// is never copied into a repository link: GitLab rotates its refresh
-			// token on every use, so two stores holding the same grant break
-			// each other (and a grant shared with a repository link marks the
-			// personal connection reconnect-required). Repositories behind an
-			// OAuth connection are reported as skipped; the user connects them
-			// from the project's repository settings, which issues the
-			// repository link its own grant. The PAT is only ever validated
-			// against gitlab.com below, so the service's default (a
-			// gitlab.com credential only) is the right one here.
-			//
-			// The connection is read (and can be classified) in the PROJECT's
-			// organization, the tenant `requireProjectPermission` authorized
-			// this caller in — not the input's or the session's, which can
-			// name another organization. A project with no organization has
-			// no personal connection to read (ADR-018).
-			const gitlabConnection = project.organizationId
-				? await getGitLabConnectionToken(
-						{
-							userId: user.id,
-							organizationId: project.organizationId,
-						},
-						{ mode: "strict" },
-					)
-				: null;
-
-			if (gitlabConnection?.ok) {
-				const isPat = gitlabConnection.issuer?.kind === "pat";
-				const token = isPat ? gitlabConnection.accessToken : "";
-
-				for (const { raw, parsed } of parsedRepoUrls) {
-					if (parsed.provider !== "GITLAB") {
+						skippedRepos.push(repoLabel);
 						continue;
 					}
 
-					const repoLabel = `GitLab: ${parsed.owner}/${parsed.name}`;
-					const repoKey = `GITLAB:${parsed.owner.toLowerCase()}/${parsed.name.toLowerCase()}`;
-					if (stagedRepos.has(repoKey)) {
+					if (hostname !== "gitlab.com") {
+						console.warn(
+							`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name}: host ${hostname} unsupported`,
+						);
+						skippedRepos.push(repoLabel);
 						continue;
 					}
 
-					const existing =
-						await db.projectRepositoryIntegration.findFirst({
-							where: {
-								projectId,
-								provider: "GITLAB",
-								repositoryOwner: parsed.owner,
-								repositoryName: parsed.name,
-							},
-						});
-					if (existing) {
-						stagedRepos.add(repoKey);
-						continue;
-					}
-
-					let created = false;
-					try {
-						if (!isPat || !token) {
-							console.warn(
-								`[ExistingSetup] ${parsed.owner}/${parsed.name} needs its own GitLab repository authorization — a personal OAuth grant is not copied into a repository link`,
-							);
-							skippedRepos.push(repoLabel);
-							continue;
-						}
-
-						let hostname = "";
-						try {
-							hostname = new URL(
-								outboundRepositoryUrl(raw),
-							).hostname
-								.toLowerCase()
-								.replace(/\.$/, "");
-						} catch {
-							console.warn(
-								`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name} due to invalid URL`,
-							);
-							skippedRepos.push(repoLabel);
-							continue;
-						}
-
-						if (hostname !== "gitlab.com") {
-							console.warn(
-								`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name}: host ${hostname} unsupported`,
-							);
-							skippedRepos.push(repoLabel);
-							continue;
-						}
-
-						const validation = await validateGitLabPat({
-							pat: token,
-							host: "https://gitlab.com",
-							projectPath: `${parsed.owner}/${parsed.name}`,
-						});
-						if (!validation.ok) {
-							console.warn(
-								`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name} due to validation status ${validation.status}`,
-							);
-							skippedRepos.push(repoLabel);
-							continue;
-						}
-
-						const resolvedBranch = await resolveDefaultBranch({
-							providedBranch: project.defaultBranch ?? undefined,
-							provider: "GITLAB",
-							token,
-							repositoryUrl: parsed.url,
-							owner: parsed.owner,
-							repo: parsed.name,
-						});
-
-						await createProjectRepoIntegration({
-							projectId,
-							provider: "GITLAB",
-							authMethod: "PAT",
-							repositoryUrl: parsed.url,
-							repositoryOwner: parsed.owner,
-							repositoryName: parsed.name,
-							defaultBranch: resolvedBranch,
-							encryptedPat: encryptApiKey(token),
-							tokenScopes: [],
-							configuredByUserId: user.id,
-							roleTag: input.repoTags?.[raw] ?? null,
-						});
-						created = true;
-						stagedRepos.add(repoKey);
-
-						await syncLegacyProjectRepoOnConnect(
-							projectId,
-							parsed.url,
-							parsed.owner,
-							parsed.name,
-							resolvedBranch,
-						);
-
-						await logRepoIntegrationActivity({
-							projectId,
-							userId: user.id,
-							userName: user.name || "Unknown",
-							organizationId,
-							activityType: "repo_integration_configured",
-							repositoryName: `${parsed.owner}/${parsed.name}`,
-							metadata: {
-								provider: "GITLAB",
-								authMethod: "PAT",
-								source: "auto_from_existing_setup",
-							},
-						}).catch(() => {});
-					} catch (err) {
-						// Don't fail the setup if auto-population fails
-						console.error(
-							"[ExistingSetup] Error setting up GitLab project repo integration:",
-							err,
-						);
-						if (!created) {
-							skippedRepos.push(repoLabel);
-						}
-					}
-				}
-			}
-		}
-
-		// Azure DevOps repo URLs: NOT auto-created here, intentionally.
-		//
-		// GitHub/GitLab above auto-create a `ProjectRepositoryIntegration` from
-		// the user's stored `workflowIntegration` credentials (OAuth or PAT). Azure DevOps
-		// has NO equivalent: it authenticates with a per-repo PAT, and there is no
-		// stored `workflowIntegration` to copy a token from. Auto-creating an
-		// ADO integration here is therefore impossible without a PAT — which is
-		// exactly why the shared `AzureDevOpsPatRepoPicker` creates the integration
-		// up front (via `repositoryIntegrations.connect`) at repo-selection time.
-		//
-		// Historically ADO URLs fell straight through both branches above and the
-		// integration was never created, so ADO repos were silently dropped. They
-		// are NOT dropped now: the ADO URLs still reach the workflow below in
-		// `repoUrls` (this list is provider-agnostic — never provider-filtered),
-		// and the orchestrator handles them via its graceful ADO MCP-skip while
-		// clone-based `codeIndexingWorkflow` (triggered off the picker's `connect`
-		// → `syncLegacyProjectRepoOnConnect`) remains the source of truth for ADO
-		// code context. This explicit branch documents that contract so a future
-		// reader cannot re-introduce the silent drop.
-		if (repoUrls.length > 0 && projectRole === ProjectMemberRole.OWNER) {
-			for (const { parsed } of parsedRepoUrls) {
-				if (parsed.provider !== "AZURE_DEVOPS") {
-					continue;
-				}
-				const existing =
-					await db.projectRepositoryIntegration.findFirst({
-						where: {
-							projectId,
-							provider: "AZURE_DEVOPS",
-							repositoryOwner: parsed.owner,
-							repositoryName: parsed.name,
-						},
+					const validation = await validateGitLabPat({
+						pat: token,
+						host: "https://gitlab.com",
+						projectPath: `${parsed.owner}/${parsed.name}`,
 					});
-				if (!existing) {
-					// No-op (cannot create without a PAT) — but log so a missing
-					// integration is observable rather than a mystery drop. The
-					// repo URL still flows to the workflow below.
-					console.warn(
-						`[ExistingSetup] Azure DevOps repo "${parsed.owner}/${parsed.name}" has no ProjectRepositoryIntegration; it should have been created by the PAT picker. The URL is still passed to the workflow, but clone-based indexing requires the PAT integration.`,
+					if (!validation.ok) {
+						console.warn(
+							`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name} due to validation status ${validation.status}`,
+						);
+						skippedRepos.push(repoLabel);
+						continue;
+					}
+
+					const resolvedBranch = await resolveDefaultBranch({
+						providedBranch: project.defaultBranch ?? undefined,
+						provider: "GITLAB",
+						token,
+						repositoryUrl: parsed.url,
+						owner: parsed.owner,
+						repo: parsed.name,
+					});
+
+					await createProjectRepoIntegration({
+						projectId,
+						provider: "GITLAB",
+						authMethod: "PAT",
+						repositoryUrl: parsed.url,
+						repositoryOwner: parsed.owner,
+						repositoryName: parsed.name,
+						defaultBranch: resolvedBranch,
+						encryptedPat: encryptApiKey(token),
+						tokenScopes: [],
+						configuredByUserId: user.id,
+						roleTag: input.repoTags?.[raw] ?? null,
+					});
+					created = true;
+					stagedRepos.add(repoKey);
+
+					await syncLegacyProjectRepoOnConnect(
+						projectId,
+						parsed.url,
+						parsed.owner,
+						parsed.name,
+						resolvedBranch,
 					);
-				}
-			}
-		}
 
-		// A setup of this project paused for a ChatGPT plan reset is cancelled
-		// first: the newer setup wins, and the old resume never runs (Fizzy
-		// #2770).
-		await cancelPausedSetupsOfProject({
-			projectId,
-			organizationId,
-			userId: user.id,
-		});
-
-		// Start the Temporal workflow
-		const client = await getTemporalClient();
-		const workflowId = `existing-setup-${projectId}-${Date.now()}`;
-
-		await client.workflow.start(
-			"existingProjectSetupWorkflow",
-			withCorrelationMemo({
-				taskQueue: "project-documents",
-				workflowId,
-				args: [
-					{
+					await logRepoIntegrationActivity({
 						projectId,
 						userId: user.id,
-						// Bulk work: its AI steps run on the organization's shared
-						// ChatGPT plans, never the clicker's own (Fizzy #2770).
-						jobType: "project-setup",
+						userName: user.name || "Unknown",
 						organizationId,
-						aiToken,
-						repoUrls: canonicalRepoUrls,
-						...(Object.keys(repoRoles).length > 0
-							? { repoRoles }
-							: {}),
-						selectedDocumentTypes,
-						projectTypes,
-						projectName,
-						pmMcpConfigId,
-						pmContainerId,
-						pmAdditionalContext,
-						documentPrompts,
-					},
-				],
-				workflowExecutionTimeout: "2h",
-			}),
-		);
-
-		// Update project status immediately
-		await db.project.update({
-			where: { id: projectId },
-			data: {
-				codeAnalysisStatus: "SCANNING",
-				codeAnalysisWorkflowId: workflowId,
-			},
-		});
-
-		// Audit log: user triggered a repo scan
-		if (repoUrls.length > 0) {
-			await logRepoIntegrationActivity({
-				projectId,
-				userId: user.id,
-				userName: user.name || "Unknown",
-				organizationId,
-				activityType: "repo_scan_triggered",
-				metadata: {
-					repoUrls: canonicalRepoUrls,
-					workflowId,
-				},
-			}).catch((err) => {
-				// Don't fail the procedure if audit logging fails
-				console.error(
-					"[AuditLog] Failed to log repo_scan_triggered:",
-					err,
-				);
-			});
+						activityType: "repo_integration_configured",
+						repositoryName: `${parsed.owner}/${parsed.name}`,
+						metadata: {
+							provider: "GITLAB",
+							authMethod: "PAT",
+							source: "auto_from_existing_setup",
+						},
+					}).catch(() => {});
+				} catch (err) {
+					// Don't fail the setup if auto-population fails
+					console.error(
+						"[ExistingSetup] Error setting up GitLab project repo integration:",
+						err,
+					);
+					if (!created) {
+						skippedRepos.push(repoLabel);
+					}
+				}
+			}
 		}
+	}
 
-		return {
+	// Azure DevOps repo URLs: NOT auto-created here, intentionally.
+	//
+	// GitHub/GitLab above auto-create a `ProjectRepositoryIntegration` from
+	// the user's stored `workflowIntegration` credentials (OAuth or PAT). Azure DevOps
+	// has NO equivalent: it authenticates with a per-repo PAT, and there is no
+	// stored `workflowIntegration` to copy a token from. Auto-creating an
+	// ADO integration here is therefore impossible without a PAT — which is
+	// exactly why the shared `AzureDevOpsPatRepoPicker` creates the integration
+	// up front (via `repositoryIntegrations.connect`) at repo-selection time.
+	//
+	// Historically ADO URLs fell straight through both branches above and the
+	// integration was never created, so ADO repos were silently dropped. They
+	// are NOT dropped now: the ADO URLs still reach the workflow below in
+	// `repoUrls` (this list is provider-agnostic — never provider-filtered),
+	// and the orchestrator handles them via its graceful ADO MCP-skip while
+	// clone-based `codeIndexingWorkflow` (triggered off the picker's `connect`
+	// → `syncLegacyProjectRepoOnConnect`) remains the source of truth for ADO
+	// code context. This explicit branch documents that contract so a future
+	// reader cannot re-introduce the silent drop.
+	if (repoUrls.length > 0 && projectRole === ProjectMemberRole.OWNER) {
+		for (const { parsed } of parsedRepoUrls) {
+			if (parsed.provider !== "AZURE_DEVOPS") {
+				continue;
+			}
+			const existing = await db.projectRepositoryIntegration.findFirst({
+				where: {
+					projectId,
+					provider: "AZURE_DEVOPS",
+					repositoryOwner: parsed.owner,
+					repositoryName: parsed.name,
+				},
+			});
+			if (!existing) {
+				// No-op (cannot create without a PAT) — but log so a missing
+				// integration is observable rather than a mystery drop. The
+				// repo URL still flows to the workflow below.
+				console.warn(
+					`[ExistingSetup] Azure DevOps repo "${parsed.owner}/${parsed.name}" has no ProjectRepositoryIntegration; it should have been created by the PAT picker. The URL is still passed to the workflow, but clone-based indexing requires the PAT integration.`,
+				);
+			}
+		}
+	}
+
+	// A setup of this project paused for a ChatGPT plan reset is cancelled
+	// first: the newer setup wins, and the old resume never runs (Fizzy
+	// #2770).
+	await cancelPausedSetupsOfProject({
+		projectId,
+		organizationId,
+		userId: user.id,
+	});
+
+	// Start the Temporal workflow
+	const client = await getTemporalClient();
+	const workflowId = `existing-setup-${projectId}-${Date.now()}`;
+
+	await client.workflow.start(
+		"existingProjectSetupWorkflow",
+		withCorrelationMemo({
+			taskQueue: "project-documents",
 			workflowId,
-			status: "SCANNING" as const,
-			skippedRepos: skippedRepos.length > 0 ? skippedRepos : undefined,
-		};
+			args: [
+				{
+					projectId,
+					userId: user.id,
+					// Bulk work: its AI steps run on the organization's shared
+					// ChatGPT plans, never the clicker's own (Fizzy #2770).
+					jobType: "project-setup",
+					organizationId,
+					aiToken,
+					repoUrls: canonicalRepoUrls,
+					...(Object.keys(repoRoles).length > 0 ? { repoRoles } : {}),
+					selectedDocumentTypes,
+					projectTypes,
+					projectName,
+					pmMcpConfigId,
+					pmContainerId,
+					pmAdditionalContext,
+					documentPrompts,
+				},
+			],
+			workflowExecutionTimeout: "2h",
+		}),
+	);
+
+	// Update project status immediately
+	await db.project.update({
+		where: { id: projectId },
+		data: {
+			codeAnalysisStatus: "SCANNING",
+			codeAnalysisWorkflowId: workflowId,
+		},
+	});
+
+	// Audit log: user triggered a repo scan
+	if (repoUrls.length > 0) {
+		await logRepoIntegrationActivity({
+			projectId,
+			userId: user.id,
+			userName: user.name || "Unknown",
+			organizationId,
+			activityType: "repo_scan_triggered",
+			metadata: {
+				repoUrls: canonicalRepoUrls,
+				workflowId,
+			},
+		}).catch((err) => {
+			// Don't fail the procedure if audit logging fails
+			console.error("[AuditLog] Failed to log repo_scan_triggered:", err);
+		});
+	}
+
+	return {
+		workflowId,
+		status: "SCANNING" as const,
+		skippedRepos: skippedRepos.length > 0 ? skippedRepos : undefined,
+	};
+}
+
+export const startExistingSetupProcedure = tenantProtectedProcedure
+	.use(requireProjectPermission(Permissions.PROJECT_UPDATE))
+	.route({
+		method: "POST",
+		path: "/projects/existing-setup/start",
+		tags: ["Projects"],
+		summary:
+			"Start existing project setup (code analysis + sequential doc generation)",
+	})
+	.input(existingSetupInputSchema)
+	.handler(async ({ input, context }) => {
+		// Accepted for client compatibility and dropped here.
+		const { organizationId: _callerOrganization, ...setup } = input;
+		return startExistingProjectSetup({ input: setup, user: context.user });
 	});

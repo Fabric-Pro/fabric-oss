@@ -92,7 +92,13 @@ const REVIEWED: Record<string, string> = {
 	"packages/api/modules/projects/lib/start-test-case-draft.ts":
 		"Passes the button's flag through; the automatic Ready-for-Dev run sets none",
 	"packages/api/modules/reports/procedures/instances/execute.ts":
-		"A person runs a report now; scheduled runs set none",
+		"A person runs a report now (the Generate button); scheduled runs set none",
+	"packages/api/modules/reports/lib/report-generation.ts":
+		"Passes its caller's flag through to the report workflow",
+	"packages/api/modules/reports/lib/report-agent-commands.ts":
+		"Passes the gateway's flag through for fabric_generate_report",
+	"apps/web/modules/saas/mcp/lib/gateway/tools/report-tools.ts":
+		"fabric_generate_report from a browser session or Fabric Agent in a person's chat (asked on every call); keys and OAuth tokens set false",
 	"apps/web/modules/saas/mcp/lib/gateway/workflow-ai-routing.ts":
 		"A member signed in to the MCP server in the browser starts a browser workflow; keys and tokens set none (Fizzy #2770)",
 	// Publishing Suite drafts a person clicks; the input names them
@@ -167,8 +173,18 @@ const REVIEWED: Record<string, string> = {
 		"Workflow and activity input types (Fizzy #2801)",
 	"packages/temporal/src/activities/orchestrator/delegation/delegate-to-agent.ts":
 		"Claim follows the run's marker",
+	"packages/temporal/src/activities/orchestrator/utils/model-selector.ts":
+		"Passes its caller's flag",
+	"packages/temporal/src/activities/scheduled-report/reconcile-report-starts.ts":
+		"Bounded repair inside the cadence sweep forces planEligible: false",
+	"packages/temporal/src/activities/template-instance/data-fetching.ts":
+		"Passes its input's flag",
+	"packages/temporal/src/activities/template-instance/report-agent-loop.ts":
+		"Passes its input's flag",
 	"packages/temporal/src/activities/weave/delegate-to-weave-agent.ts":
 		"Claim follows the run's marker",
+	"packages/temporal/src/workflows/template-instance-execution.ts":
+		"Passes its input's flag to its report activities",
 };
 
 /**

@@ -1,6 +1,6 @@
 /**
  * `ChangeProposalSchema` is the analyzer's GENERATION schema — the shape
- * `generateObject` forces the model into. A field that is required here is a
+ * `Output.object` forces the model into. A field that is required here is a
  * field the whole run dies on.
  *
  * Found on staging 18 Aug 2026 (Fizzy #2170 acceptance run): 3 of 9 live AI
@@ -38,7 +38,8 @@ import { logger } from "@repo/logs";
 import {
 	asSchema,
 	extractReasoningMiddleware,
-	generateObject,
+	generateText,
+	Output,
 	wrapLanguageModel,
 	zodSchema,
 } from "ai";
@@ -144,19 +145,19 @@ describe("ChangeProposalSchema", () => {
 					),
 				],
 			});
-			const result = await generateObject({
+			const result = await generateText({
 				model,
-				schema: ChangeProposalSchema,
+				output: Output.object({ schema: ChangeProposalSchema }),
 				prompt: "Example",
 				maxRetries: 0,
 			});
-			expect(result.object.summary).toBe("");
-			expect(result.object.changes).toHaveLength(invalidTitle ? 0 : 1);
+			expect(result.output.summary).toBe("");
+			expect(result.output.changes).toHaveLength(invalidTitle ? 0 : 1);
 			if (!invalidTitle) {
-				expect(result.object.changes[0]?.title).toEqual({
+				expect(result.output.changes[0]?.title).toEqual({
 					to: "Example",
 				});
-				expect(result.object.changes[0]).not.toHaveProperty(
+				expect(result.output.changes[0]).not.toHaveProperty(
 					"description",
 				);
 			}
@@ -643,7 +644,7 @@ describe("ChangeProposalSchema", () => {
  * One malformed element must not cost the whole response.
  *
  * The 18 Aug fix made `reasoning` and `sourceContext` optional, which removed
- * ONE instance of a class: `generateObject` validates the entire response, so
+ * ONE instance of a class: `Output.object` validates the entire response, so
  * anything the model gets wrong anywhere in `changes` rejects the lot — the
  * valid changes in the same response included.
  *

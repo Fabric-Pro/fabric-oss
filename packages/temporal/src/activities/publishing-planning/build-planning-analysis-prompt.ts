@@ -1162,7 +1162,7 @@ ${lines.join("\n")}
  * Two things live here rather than in the seed:
  *
  *  1. The OUTPUT CONTRACT. The body an org edits describes what to think about;
- *     how the answer is shaped is a contract with `generateObject` and a Zod
+ *     how the answer is shaped is a contract with `Output.object` and a Zod
  *     schema. An org editing its prompt must not be able to change the response
  *     shape, because the result is not a worse analysis — it is a schema
  *     validation failure that fails the run.

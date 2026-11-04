@@ -65,6 +65,11 @@ function prismaNotFound() {
 
 function tables() {
 	return {
+		// These page-only fixtures have no projects or evaluation principals.
+		project: { findMany: async () => [] },
+		projectContextQualityPrincipal: {
+			deleteMany: async () => ({ count: 0 }),
+		},
 		organization: {
 			delete: async ({ where }: { where: Row }) => {
 				store.calls.push("organization.delete");

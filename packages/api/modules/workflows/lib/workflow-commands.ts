@@ -33,8 +33,8 @@ import {
 	requireWorkflowMembership,
 	requireWorkflowPermission,
 	requireWritableProject,
-	WorkflowCommandError,
 	type WorkflowActor,
+	WorkflowCommandError,
 } from "./workflow-command-context";
 import { validateWorkflowBeforeExecution } from "./workflow-validation";
 
@@ -157,8 +157,35 @@ export async function applyWorkflowUpdateWithSchedule(
 	actor: WorkflowActor,
 	current: EditableWorkflow,
 	input: UpdateWorkflowInput,
-	options?: { expectedUpdatedAt: Date },
+	options?: { expectedUpdatedAt: Date; syncLiveSchedule?: boolean },
 ) {
+	// Status transitions resume a publication, never the mutable editor draft.
+	let activationNodes: unknown;
+	if (input.status !== undefined && isWorkflowLive(input.status)) {
+		if (!current.publishedAt) {
+			throw new WorkflowCommandError(
+				"BAD_REQUEST",
+				"Workflow has never been published; publish it before activating it",
+			);
+		}
+		const snapshot = await db.workflowVersion.findFirst({
+			where: {
+				workflowId: current.id,
+				version: current.publishedVersion ?? current.version,
+				isPublished: true,
+				userId: current.userId,
+				organizationId: actor.organizationId,
+			},
+			select: { nodes: true },
+		});
+		if (!snapshot) {
+			throw new WorkflowCommandError(
+				"BAD_REQUEST",
+				"Published workflow version is missing; publish before activating it",
+			);
+		}
+		activationNodes = snapshot.nodes;
+	}
 	const configProblems = [
 		...workflowScriptProblems(input.nodes ?? current.nodes),
 		...workflowWorkspaceDataProblems(input.nodes ?? current.nodes),
@@ -170,15 +197,14 @@ export async function applyWorkflowUpdateWithSchedule(
 			configProblems.join("\n"),
 		);
 	}
-	// A live workflow's graph is held to the same agentic checks as publish:
-	// editing nodes in place, or reviving a paused workflow, must not let an
-	// unvalidated agent onto its schedule.
+	// Re-check agent access when editing or resuming. A resume validates the
+	// published graph that will execute, independently of saved draft edits.
 	if (
 		(input.nodes !== undefined || input.status !== undefined) &&
 		isWorkflowLive(input.status ?? current.status)
 	) {
 		const { problems } = await findAgenticPublishProblems({
-			nodes: input.nodes ?? current.nodes,
+			nodes: activationNodes ?? input.nodes ?? current.nodes,
 			userId: current.userId,
 			organizationId: actor.organizationId,
 			projectId: current.projectId ?? null,
@@ -190,7 +216,7 @@ export async function applyWorkflowUpdateWithSchedule(
 
 	const { id, ...patch } = input;
 	const updateOptions: [] | [{ expectedUpdatedAt: Date }] = options
-		? [options]
+		? [{ expectedUpdatedAt: options.expectedUpdatedAt }]
 		: [];
 	const workflow = await updateWorkflow(
 		id,
@@ -200,24 +226,18 @@ export async function applyWorkflowUpdateWithSchedule(
 		...updateOptions,
 	);
 
-	// Editing a PUBLISHED workflow's trigger must take effect immediately:
-	// changing the cron, or switching the trigger away from Schedule,
-	// should not require an unpublish/republish cycle.
-	//
-	// A status change has to sync too, and in both directions. Pausing a
-	// workflow used to leave its schedule running — this branch only fired
-	// for PUBLISHED/ACTIVE, so moving to PAUSED simply skipped it and the
-	// cron kept firing against a workflow the author believed was stopped.
-	// Autosave is the reason this is not unconditional: a draft save posts
-	// no status, and reaching for Temporal on every keystroke would be a
-	// round trip for nothing.
+	// Saving a draft must not change production triggers. Publish/rollback
+	// updates the schedule; explicit pause/resume still synchronizes it here.
 	const scheduleShouldBeLive = isWorkflowLive(workflow.status);
 	let schedule: Awaited<ReturnType<typeof syncWorkflowSchedule>> | null =
 		null;
-	if (scheduleShouldBeLive || input.status !== undefined) {
+	if (
+		input.status !== undefined ||
+		(options?.syncLiveSchedule && scheduleShouldBeLive)
+	) {
 		schedule = await syncWorkflowSchedule({
 			workflowId: id,
-			nodes: workflow.nodes,
+			nodes: activationNodes ?? workflow.nodes,
 			userId: workflow.userId,
 			organizationId: workflow.organizationId,
 			projectId: workflow.projectId,

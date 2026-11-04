@@ -141,6 +141,7 @@ describe(".contextignore rules the matcher could not evaluate in time (Fizzy #27
 				evaluated.push(p);
 				return rules.ignoresDirectory(p);
 			},
+			ruleFor: rules.ruleFor,
 		};
 
 		const start = performance.now();

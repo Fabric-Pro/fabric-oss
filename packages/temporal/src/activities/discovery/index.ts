@@ -28,10 +28,15 @@
  */
 
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import {
 	createStoryComment,
 	type DiscoveryRunStatus,
@@ -851,15 +856,15 @@ export async function draftIntegrationContract(
 	}, 30_000);
 
 	const started = Date.now();
-	let result: Awaited<
-		ReturnType<typeof generateObject<typeof IntegrationContractSchema>>
-	>;
+	let result: StructuredTextResult<z.infer<typeof IntegrationContractSchema>>;
 	try {
-		result = await generateObject({
-			model,
-			schema: IntegrationContractSchema,
-			prompt,
-		});
+		result = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: IntegrationContractSchema }),
+				prompt,
+			}),
+		);
 	} finally {
 		clearInterval(heartbeatInterval);
 	}
@@ -875,7 +880,7 @@ export async function draftIntegrationContract(
 
 	// Post-validate: the provider's structured output is not trusted to have
 	// honoured the schema (plan §3.9).
-	const parsed = IntegrationContractSchema.safeParse(result.object);
+	const parsed = IntegrationContractSchema.safeParse(result.output);
 	if (!parsed.success) {
 		const issues = parsed.error.issues
 			.map((i) => `${i.path.join(".")}: ${i.message}`)

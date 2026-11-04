@@ -1,6 +1,7 @@
 "use client";
 
 import { useAgentLabel } from "@saas/agents/hooks/useAgentLabel";
+import { isTaskAdmissionUnresolved } from "@saas/agents/lib/task-admission-status";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
@@ -60,6 +61,7 @@ interface HistoryItem {
 	agentId: string;
 	status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 	stage: string;
+	admissionUnresolved?: boolean;
 	createdAt: string;
 	completedAt?: string;
 	error?: string;
@@ -250,6 +252,9 @@ export function AgentTaskList({
 				id: task.id,
 				agentId: task.agentId,
 				status: normalizeStatus(task.status),
+				admissionUnresolved:
+					!task.runId &&
+					isTaskAdmissionUnresolved(task.status, task.state),
 				stage: task.stage || "Task execution",
 				createdAt: String(task.createdAt),
 				completedAt: task.completedAt
@@ -481,7 +486,7 @@ export function AgentTaskList({
 							return (
 								<div
 									key={`bar-${item.id}`}
-									title={`${formatAgentLabel(item.agentId)} — ${item.status}`}
+									title={`${formatAgentLabel(item.agentId)} — ${item.admissionUnresolved ? "Admission unresolved" : item.status}`}
 									className={cn(
 										"h-9 w-2 shrink-0 rounded-t-[2px] transition-opacity hover:opacity-80",
 										barColor,
@@ -594,7 +599,12 @@ export function AgentTaskList({
 										{durationLabel}
 									</TableCell>
 									<TableCell className="py-2.5 whitespace-nowrap">
-										<RunStatusCell status={task.status} />
+										<RunStatusCell
+											status={task.status}
+											admissionUnresolved={
+												task.admissionUnresolved
+											}
+										/>
 									</TableCell>
 									<TableCell
 										colSpan={2}
@@ -636,7 +646,25 @@ function formatDuration(
 	return `${mins}m ${secs}s`;
 }
 
-function RunStatusCell({ status }: { status: HistoryItem["status"] }) {
+function RunStatusCell({
+	status,
+	admissionUnresolved,
+}: {
+	status: HistoryItem["status"];
+	admissionUnresolved?: boolean;
+}) {
+	if (admissionUnresolved) {
+		return (
+			<span
+				className="inline-flex items-center gap-1.5 text-xs font-medium text-highlight-ink"
+				title="Check the execution before submitting another request; no automatic retry is promised."
+			>
+				<AlertCircle className="h-3.5 w-3.5 shrink-0" />
+				<span>Admission unresolved</span>
+			</span>
+		);
+	}
+
 	switch (status) {
 		case "COMPLETED":
 			return (

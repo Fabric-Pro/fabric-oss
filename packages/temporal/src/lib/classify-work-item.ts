@@ -14,7 +14,7 @@
  *   - Renders the prompt's USER TEMPLATE with the reporter's text + optional
  *     creation_source / additional_context (per the spec artifact).
  *   - Uses the optional typed decision model only for a high-confidence BUG /
- *     FEATURE choice, then otherwise calls generateObject with a Zod schema
+ *     FEATURE choice, then otherwise calls `generateText` + `Output.object` with a Zod schema
  *     matching F-171's exact output shape.
  *   - On ANY failure path (LLM unconfigured, no prompt bound, schema mismatch,
  *     network error), returns the safe fallback: kind=FEATURE, confidence=Low,
@@ -27,12 +27,14 @@ import {
 	AIProviderNotConfiguredError,
 	createDecisionCapture,
 	experimental_decide,
-	generateObject,
+	generateText,
 	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
+	Output,
 	recordDecisionOutcome,
 } from "@repo/ai";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	getBoundPromptForAgent,
 	type ReporterSource,
@@ -337,11 +339,13 @@ export async function classifyWorkItem(
 	try {
 		const { model, trackUsage } = modelResolution;
 
-		const { object } = await generateObject({
-			model,
-			schema: ClassifierOutputSchema,
-			prompt: rendered.rendered,
-		});
+		const { output: object } = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: ClassifierOutputSchema }),
+				prompt: rendered.rendered,
+			}),
+		);
 
 		trackUsage();
 

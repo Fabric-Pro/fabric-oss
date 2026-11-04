@@ -39,6 +39,7 @@ const PROJECT_PM_TOOLS: ReadonlySet<string> = new Set(
 const ATTACHED_PAGE_UNSCOPED_TOOLS: ReadonlySet<string> = new Set([
 	"fabric_list_workspaces",
 	"fabric_get_workspace",
+	"fabric_get_workspace_document",
 	"fabric_query_workspace",
 	"fabric_list_chats",
 	"fabric_page_read_connected",

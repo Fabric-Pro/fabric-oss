@@ -41,8 +41,13 @@ export async function createAgentDeployment(input: CreateAgentDeploymentInput) {
 		monthlyExecutionLimit,
 	} = input;
 
-	return await db.agentDeployment.create({
-		data: {
+	if (!organizationId) {
+		throw new Error("An organization is required to create a deployment");
+	}
+	const deployment = await db.agentDeployment.upsert({
+		where: { instanceId },
+		update: {},
+		create: {
 			instanceId,
 			userId,
 			organizationId,
@@ -64,6 +69,14 @@ export async function createAgentDeployment(input: CreateAgentDeploymentInput) {
 			},
 		},
 	});
+	if (
+		!organizationId ||
+		deployment.organizationId !== organizationId ||
+		deployment.userId !== userId
+	) {
+		throw new Error("Agent deployment not found or access denied");
+	}
+	return deployment;
 }
 
 // =============================================================================
@@ -455,14 +468,50 @@ export async function setDeploymentSupervisor(
 	supervisorRunId: string,
 	taskQueue: string,
 ) {
-	return await db.agentDeployment.update({
-		where: { id },
-		data: {
-			supervisorWorkflowId,
-			supervisorRunId,
-			taskQueue,
-			status: "DEPLOYING",
-		},
+	return db.$transaction(async (tx) => {
+		const deployment = await tx.agentDeployment.findUnique({
+			where: { id },
+		});
+		if (!deployment?.organizationId) {
+			throw new Error("Organization deployment not found");
+		}
+		if (deployment.supervisorRunId) {
+			if (
+				deployment.supervisorWorkflowId !== supervisorWorkflowId ||
+				deployment.supervisorRunId !== supervisorRunId
+			) {
+				throw new Error(
+					"Deployment supervisor receipt conflicts with the admitted run",
+				);
+			}
+			return deployment;
+		}
+		const claimed = await tx.agentDeployment.updateMany({
+			where: {
+				id,
+				organizationId: deployment.organizationId,
+				supervisorRunId: null,
+			},
+			data: { supervisorWorkflowId, supervisorRunId, taskQueue },
+		});
+		if (claimed.count === 1) {
+			await tx.organizationDeploymentQuota.update({
+				where: { organizationId: deployment.organizationId },
+				data: { currentDeployments: { increment: 1 } },
+			});
+		}
+		const admitted = await tx.agentDeployment.findUniqueOrThrow({
+			where: { id },
+		});
+		if (
+			admitted.supervisorWorkflowId !== supervisorWorkflowId ||
+			admitted.supervisorRunId !== supervisorRunId
+		) {
+			throw new Error(
+				"Deployment supervisor receipt conflicts with the admitted run",
+			);
+		}
+		return admitted;
 	});
 }
 

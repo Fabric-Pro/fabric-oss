@@ -22,7 +22,7 @@
  *     between pre-existing items are the manual scan's responsibility, and
  *     re-flagging them on every AI write would be noise;
  *   - COMPLEX verifier tier — in the worker runtime the SIMPLE-tier model
- *     does not reliably satisfy a `generateObject` structured-output schema;
+ *     does not reliably satisfy a `Output.object` structured-output schema;
  *   - THROWS on transient/unexpected failure (embedding, model, DB) and on a
  *     wholesale verifier outage, so the Temporal activity FAILS and is
  *     retried with backoff instead of returning a misleading "0 duplicates"

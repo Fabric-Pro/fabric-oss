@@ -23,6 +23,17 @@ const state = vi.hoisted(() => ({
 		onOpenChange: (o: boolean) => void;
 		onSaved?: () => void;
 	},
+	/** The member's own branch, as `useMyBranchFiles` answers it. */
+	branchId: null as string | null,
+	branchFiles: [] as Array<{
+		path: string;
+		state: "written" | "deleted" | "restored_unavailable";
+		objectId: string | null;
+	}>,
+	treeProps: null as null | {
+		files: Array<{ path: string; branch?: string }>;
+		onSelect: (path: string) => void;
+	},
 }));
 
 function queryOptions(
@@ -180,7 +191,35 @@ vi.mock("../RepositorySyncSettingsSection", () => ({
 }));
 
 vi.mock("../InstructionsTree", () => ({
-	InstructionsTree: () => null,
+	InstructionsTree: (props: {
+		files: Array<{ path: string; branch?: string }>;
+		onSelect: (path: string) => void;
+	}) => {
+		state.treeProps = props;
+		return null;
+	},
+}));
+
+// The branch actions and the branch-only file view are their own suites
+// (`BranchFileActions.test.tsx`); here only what the view merges and opens.
+vi.mock("../BranchFileActions", () => ({
+	useMyBranchFiles: () => ({
+		branchId: state.branchId,
+		files: state.branchFiles,
+	}),
+	useRestoreBranchFile: () => ({
+		request: () => undefined,
+		pending: false,
+		available: true,
+	}),
+	BranchFileNotice: ({ path, marker }: { path: string; marker: string }) => (
+		<div data-testid="branch-file-notice">{`${marker}:${path}`}</div>
+	),
+}));
+vi.mock("../BranchOnlyFileView", () => ({
+	BranchOnlyFileView: ({ path }: { path: string }) => (
+		<div data-testid="branch-only-file-view">{path}</div>
+	),
 }));
 
 vi.mock("../InstructionsCommits", () => ({
@@ -336,6 +375,55 @@ describe("DirectRepositoryInstructions — load order", () => {
 			"href",
 			"https://github.com/example-org/instructions/tree/feature/proposal-1",
 		);
+	});
+});
+
+describe("DirectRepositoryInstructions — the member's proposal branch", () => {
+	it("merges the branch into the tree and opens a branch-only file in its own view", async () => {
+		state.filesGate = null;
+		state.branchId = "branch-1";
+		state.branchFiles = [
+			{
+				path: "skills/new.md",
+				state: "written",
+				objectId: "b".repeat(40),
+			},
+			{ path: "AGENTS.md", state: "deleted", objectId: null },
+		];
+		try {
+			renderDirectInstructions({ canEdit: true });
+			await waitFor(() =>
+				expect(
+					state.treeProps?.files.map((file) => file.path),
+				).toContain("skills/new.md"),
+			);
+			expect(state.treeProps?.files).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						path: "skills/new.md",
+						branch: "branchOnly",
+					}),
+					expect.objectContaining({
+						path: "AGENTS.md",
+						branch: "deletedOnBranch",
+					}),
+				]),
+			);
+			act(() => state.treeProps?.onSelect("skills/new.md"));
+			expect(
+				await screen.findByTestId("branch-only-file-view"),
+			).toHaveTextContent("skills/new.md");
+			act(() => state.treeProps?.onSelect("AGENTS.md"));
+			expect(
+				await screen.findByTestId("branch-file-notice"),
+			).toHaveTextContent("deletedOnBranch:AGENTS.md");
+			expect(
+				screen.queryByTestId("branch-only-file-view"),
+			).not.toBeInTheDocument();
+		} finally {
+			state.branchId = null;
+			state.branchFiles = [];
+		}
 	});
 });
 

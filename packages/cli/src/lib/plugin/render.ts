@@ -13,6 +13,7 @@
  * one render that replaces a directory instead of adding one.
  */
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
 	chmod,
 	mkdir,
@@ -30,8 +31,12 @@ import {
 	type PublishedInstructions,
 	planPluginFiles,
 } from "@fabricorg/sdk";
+import { getConfigPath } from "../config.js";
+import { bundleCopyPath } from "../instructions/hook-launcher.js";
+import { isServedBundle, pathAsCommandWord } from "../launcher.js";
 import { hasMcpSignIn } from "../oauth/mcp-token.js";
-import { projectResource } from "../oauth/project-resource.js";
+import { isProjectId, projectResource } from "../oauth/project-resource.js";
+import { isSafeArgument } from "../shell-words.js";
 import {
 	assertLocationFree,
 	BINDING_FILE,
@@ -50,6 +55,7 @@ import {
 	pluginNameFor,
 	RENDER_VERSION,
 } from "./layout.js";
+import { commandLineProblem } from "./register.js";
 import { type ProjectRule, selectRules, tierRules } from "./rules.js";
 import { readInstructions } from "./source.js";
 
@@ -86,6 +92,8 @@ export interface Rendered {
 	/** The project rules for automatic delivery by the caller. */
 	rules: ProjectRule[];
 	files: PluginFile[];
+	/** Claude Code only: the plugin's MCP server asks this CLI for its Authorization header. */
+	mcpHeadersHelper: boolean;
 }
 
 /** Files named in the line about what the plugin leaves out. */
@@ -151,32 +159,78 @@ async function readKnowledgeTypes(input: RenderInput): Promise<KnowledgeTypes> {
 }
 
 /**
- * The `fabric mcp header` command line for the plugin's MCP server, run by
- * this same CLI, when the project has an MCP gateway sign-in on this machine
- * (`mcp-token.ts`); otherwise none, and Claude Code signs in through `/mcp`.
+ * The `fabric mcp header` command line for the plugin's MCP server
+ * (Claude Code's `headersHelper`), when the project has an MCP gateway
+ * sign-in on this machine (`mcp-token.ts`); otherwise none, and Claude Code
+ * signs in through `/mcp`.
  */
 function mcpHeadersHelperFor(
 	origin: string,
 	projectId: string,
 ): string | undefined {
 	const deployment = originOf(origin);
-	const script = process.argv[1];
+	if (deployment === null || !hasMcpSignIn(deployment, projectId)) {
+		return undefined;
+	}
+	const script = cliScriptPath(deployment);
+	return script === undefined
+		? undefined
+		: mcpHeadersHelperCommand({
+				nodePath: process.execPath,
+				scriptPath: script,
+				projectId,
+				origin: deployment,
+			});
+}
+
+/**
+ * The file that starts this CLI for a coding tool: the served build's kept copy
+ * (`hook-launcher.ts`), the one session hooks run, so a render from `init` and
+ * one at session start agree on the command; otherwise the file this process
+ * runs.
+ */
+function cliScriptPath(deployment: string): string | undefined {
+	if (isServedBundle()) {
+		const copy = bundleCopyPath(path.dirname(getConfigPath()), deployment);
+		if (existsSync(copy)) {
+			return copy;
+		}
+	}
+	return process.argv[1] || undefined;
+}
+
+/**
+ * The helper command, spelled like the plugin's render command
+ * (`renderCommandLine`): forward slashes, and quotes only around a path that
+ * needs them, so the shell Claude Code runs it through on Windows reads it
+ * as written. `undefined` when a part cannot be written safely.
+ */
+export function mcpHeadersHelperCommand(input: {
+	nodePath: string;
+	scriptPath: string;
+	projectId: string;
+	origin: string;
+	platform?: NodeJS.Platform;
+}): string | undefined {
+	const node = pathAsCommandWord(input.nodePath, input.platform);
+	const script = pathAsCommandWord(input.scriptPath, input.platform);
 	if (
-		deployment === null ||
-		!script ||
-		!hasMcpSignIn(deployment, projectId)
+		node === null ||
+		script === null ||
+		!isProjectId(input.projectId) ||
+		!isSafeArgument(input.origin)
 	) {
 		return undefined;
 	}
-	const quote = (value: string) => `"${value.replace(/"/g, '\\"')}"`;
-	return [
-		quote(process.execPath),
-		quote(script),
+	const command = [
+		node,
+		script,
 		"mcp header --project",
-		projectId,
+		input.projectId,
 		"--base-url",
-		deployment,
+		input.origin,
 	].join(" ");
+	return commandLineProblem(command) === null ? command : undefined;
 }
 
 function pinOf(
@@ -426,5 +480,6 @@ export async function renderPlugin(input: RenderInput): Promise<Rendered> {
 		},
 		rules: tiers.delivered,
 		files,
+		mcpHeadersHelper: mcpHeadersHelper !== undefined,
 	};
 }

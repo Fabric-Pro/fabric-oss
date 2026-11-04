@@ -8,7 +8,11 @@ export interface McpConfigForDisplay {
 	id: string;
 	displayName?: string | null;
 	commandArgs?: string[];
-	mcpServer?: { key?: string | null; name?: string | null } | null;
+	mcpServer?: {
+		key?: string | null;
+		name?: string | null;
+		category?: string | null;
+	} | null;
 }
 
 /**

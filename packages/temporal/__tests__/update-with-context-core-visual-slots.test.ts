@@ -21,7 +21,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	logModelUsageAsync: vi.fn(),
 	getProjectFunctionTagClause: vi.fn(),
@@ -31,7 +31,8 @@ vi.mock("@repo/ai", async () => {
 	const actualAi = await vi.importActual<typeof import("ai")>("ai");
 	return {
 		AIProviderNotConfiguredError: class extends Error {},
-		generateObject: mocks.generateObject,
+		Output: { object: (spec: unknown) => spec },
+		generateText: mocks.generateText,
 		getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 		logModelUsageAsync: mocks.logModelUsageAsync,
 		NoObjectGeneratedError: actualAi.NoObjectGeneratedError,
@@ -94,8 +95,8 @@ const baseArgs = {
 };
 
 function modelReturns(updatedDocument: string, hasRelevantContext = true) {
-	mocks.generateObject.mockResolvedValue({
-		object: {
+	mocks.generateText.mockResolvedValue({
+		output: {
 			hasRelevantContext,
 			updatedDocument,
 			needsHumanResolution: false,

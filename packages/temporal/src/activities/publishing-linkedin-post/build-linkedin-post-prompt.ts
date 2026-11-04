@@ -141,7 +141,7 @@ export type LinkedInPostOption = z.infer<typeof LinkedInPostOptionSchema>;
  * choice, and a run that produced them has degenerated in the way the "make the
  * three meaningfully different" instruction exists to prevent.
  *
- * The refinement is invisible to the model — `generateObject` converts this
+ * The refinement is invisible to the model — `Output.object` converts this
  * schema to JSON Schema, which cannot express cross-element uniqueness — which
  * is why the same requirement is also stated in the locked clauses, where an
  * org's prompt edit cannot remove it. This half is the enforcement; that half is

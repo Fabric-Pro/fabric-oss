@@ -8,6 +8,11 @@ const m = vi.hoisted(() => ({
 	runInBackground: vi.fn(),
 	warmInstructionSnapshotExport: vi.fn(),
 	assertNoOpenMigration: vi.fn(),
+	notifyInstructionsPublished: vi.fn(),
+}));
+vi.mock("../publish-notification", () => ({
+	notifyInstructionsPublished: (...a: unknown[]) =>
+		m.notifyInstructionsPublished(...a),
 }));
 // The pre-check is mocked; `migrationOpenFromRefusal`, which answers the
 // writer's own refusal under the project lock, is the real one.
@@ -58,6 +63,7 @@ beforeEach(() => {
 	m.publishInstructionSnapshot.mockReset();
 	m.recordAuditFromRequest.mockReset();
 	m.runInBackground.mockReset();
+	m.notifyInstructionsPublished.mockReset();
 	m.warmInstructionSnapshotExport.mockReset();
 	m.warmInstructionSnapshotExport.mockResolvedValue(undefined);
 	m.assertNoOpenMigration.mockReset();
@@ -397,6 +403,54 @@ describe("projects.instructions.publish", () => {
  * large tree meant `fabric instructions sync` timed out and its retries
  * started further concurrent builds of the same archive.
  */
+describe("telling the project's members a version was published", () => {
+	it("notifies after the call that moved the pointer, naming the actor", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: true,
+			version: 9,
+			previousVersion: 8,
+		});
+
+		await m.handlers.publish!({
+			input: { projectId: "p", snapshotId: "s" },
+			context: ctx,
+		});
+
+		expect(m.notifyInstructionsPublished).toHaveBeenCalledWith({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "org_1",
+			actorUserId: "u",
+			via: "manual",
+		});
+	});
+
+	it("notifies nobody on the idempotent republish or a refusal", async () => {
+		m.publishInstructionSnapshot.mockResolvedValueOnce({
+			published: true,
+			changed: false,
+		});
+		await m.handlers.publish!({
+			input: { projectId: "p", snapshotId: "s" },
+			context: ctx,
+		});
+		m.publishInstructionSnapshot.mockResolvedValueOnce({
+			published: false,
+			changed: false,
+			reason: "not_ready",
+		});
+		await expect(
+			m.handlers.publish!({
+				input: { projectId: "p", snapshotId: "s" },
+				context: ctx,
+			}),
+		).rejects.toBeDefined();
+
+		expect(m.notifyInstructionsPublished).not.toHaveBeenCalled();
+	});
+});
+
 describe("pre-building the export archive on publish", () => {
 	it("schedules the warm for the snapshot that just became the pointer", async () => {
 		m.publishInstructionSnapshot.mockResolvedValue({
@@ -420,8 +474,8 @@ describe("pre-building the export archive on publish", () => {
 		});
 		// Scheduled through the wrapper, not `void`-ed: on Vercel a bare
 		// floating promise is not guaranteed to finish once the response
-		// returns.
-		expect(m.runInBackground).toHaveBeenCalledTimes(1);
+		// returns. The other scheduled call is the publish notification.
+		expect(m.runInBackground).toHaveBeenCalledTimes(2);
 	});
 
 	// The idempotent case is warmed too, and it is cheap: the builder's reuse

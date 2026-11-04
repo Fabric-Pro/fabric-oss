@@ -149,3 +149,27 @@ describe("ShareFrameSheet", () => {
 		expect(screen.queryByText(/Only the people you invite/)).toBeNull();
 	});
 });
+
+it("copies the server-issued public token rather than the internal frame ID", async () => {
+	const writeText = vi.fn().mockResolvedValue(undefined);
+	Object.defineProperty(navigator, "clipboard", {
+		configurable: true,
+		value: { writeText },
+	});
+	mocks.listGrants.mockResolvedValue({
+		shareScope: "PUBLIC",
+		shareToken: "public-token",
+		grants: [],
+	});
+	renderSharing();
+	const link = await screen.findByRole("textbox", {
+		name: "Public share link",
+	});
+	expect(link).toHaveValue(
+		`${window.location.origin}/share/frame/public-token`,
+	);
+	fireEvent.click(screen.getByRole("button", { name: "Copy share link" }));
+	expect(writeText).toHaveBeenCalledWith(
+		`${window.location.origin}/share/frame/public-token`,
+	);
+});

@@ -26,6 +26,7 @@ describe("instruction change sources", () => {
 					operation: "PUT",
 					path: "new.md",
 					baseObjectId: null,
+					branchObjectId: null,
 					mode: 0o100644,
 					storageKey: "changed/new",
 					sha256: "a".repeat(64),
@@ -34,11 +35,17 @@ describe("instruction change sources", () => {
 					operation: "PUT",
 					path: "run.sh",
 					baseObjectId: "b".repeat(40),
+					branchObjectId: null,
 					mode: 0o100755,
 					storageKey: "changed/run",
 					sha256: "c".repeat(64),
 				},
-				{ operation: "DELETE", path: "old.md", baseMode: 0o100644 },
+				{
+					operation: "DELETE",
+					path: "old.md",
+					baseMode: 0o100644,
+					branchObjectId: null,
+				},
 			],
 		});
 		const delta = await loadInstructionChangeDelta(operation);
@@ -58,6 +65,41 @@ describe("instruction change sources", () => {
 			projectId: operation.projectId,
 			organizationId: operation.organizationId,
 		});
+	});
+	it("treats a branch-relative edit as a modification of the branch's file, and a branch-relative delete as a deletion", async () => {
+		h.intent.mockResolvedValue({
+			status: "READY",
+			gitIntentEntries: [
+				{
+					operation: "PUT",
+					path: "branch-only.sh",
+					baseObjectId: null,
+					baseMode: null,
+					branchObjectId: "d".repeat(40),
+					mode: 0o100755,
+					storageKey: "changed/branch-only",
+					sha256: "e".repeat(64),
+				},
+				{
+					operation: "DELETE",
+					path: "branch-gone.md",
+					baseObjectId: null,
+					baseMode: null,
+					branchObjectId: "f".repeat(40),
+				},
+			],
+		});
+		const delta = await loadInstructionChangeDelta(operation);
+		expect(delta.added).toEqual([]);
+		expect(delta.modified).toEqual([
+			{
+				path: "branch-only.sh",
+				mode: 0o100755,
+				storageKey: "changed/branch-only",
+				sha256: "e".repeat(64),
+			},
+		]);
+		expect(delta.deleted).toEqual([{ path: "branch-gone.md", mode: null }]);
 	});
 	it("refuses native bytes before the receipt is sealed", async () => {
 		h.intent.mockResolvedValue({

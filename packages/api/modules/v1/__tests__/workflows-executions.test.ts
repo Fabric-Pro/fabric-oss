@@ -160,7 +160,8 @@ beforeEach(() => {
 	mockGetWorkflowById.mockResolvedValue({
 		id: "wf-1",
 		name: "wf",
-		version: 1,
+		version: 4,
+		publishedVersion: 1,
 		status: "ACTIVE",
 		projectId: null,
 	});
@@ -475,7 +476,7 @@ describe("POST /workflows/:id/trigger — concurrency cap", () => {
 				data: expect.objectContaining({
 					workflowId: "wf-1",
 					version: 1,
-					triggerType: "MANUAL",
+					triggerType: "EVENT",
 					triggerInput: { ticket: "T-1" },
 				}),
 			}),

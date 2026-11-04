@@ -19,6 +19,8 @@ import {
 	validateSlackTriggerConfigs,
 } from "../../../agent-deployments/lib/sync-triggers";
 import { resolvedOrganizationId } from "../../../agents/procedures/conversations/resolved-organization";
+import { assertAgentDefinitionConfigUpdate } from "../../lib/agent-definition";
+import { prepareAgentProjectConfiguration } from "../../lib/agent-project-configuration";
 import {
 	knowledgeConnectionsSchema,
 	knowledgeResourcesSchema,
@@ -66,6 +68,8 @@ const successCriteriaSchema = z
 const createInputSchema = z
 	.object({
 		organizationId: z.string().nullable().optional(),
+		projectId: z.string().trim().min(1).max(200).nullable().optional(),
+		expectedOutput: z.string().trim().max(4000).optional(),
 		templateId: z.string(),
 		name: requiredText("Name", 200),
 		description: requiredText("Description", 500),
@@ -111,6 +115,16 @@ export const createInstanceProcedure = tenantProtectedProcedure
 	.input(createInputSchema)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolvedOrganizationId(input, context.session);
+		try {
+			assertAgentDefinitionConfigUpdate(undefined, input);
+		} catch (error) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					error instanceof Error
+						? error.message
+						: "Invalid agent implementation update",
+			});
+		}
 
 		// Verify template exists and check scope permissions
 		const template = await getAgentTemplate(input.templateId);
@@ -202,6 +216,15 @@ export const createInstanceProcedure = tenantProtectedProcedure
 			}
 		}
 
+		const projectConfiguration = await prepareAgentProjectConfiguration({
+			userId: context.user.id,
+			organizationId,
+			projectId: input.projectId,
+			expectedOutput: input.expectedOutput,
+			customInstructions: input.customInstructions,
+			toolConnections: input.toolConnections,
+		});
+
 		const instance = await createAgentTemplateInstance({
 			templateId: input.templateId,
 			userId: context.user.id,
@@ -210,14 +233,14 @@ export const createInstanceProcedure = tenantProtectedProcedure
 			description: input.description,
 			heroEmojis: input.heroEmojis,
 			heroImageUrl: input.heroImageUrl,
-			customInstructions: input.customInstructions as
+			customInstructions: projectConfiguration.customInstructions as
 				| Prisma.InputJsonValue
 				| undefined,
 			knowledgeConnections: input.knowledgeConnections as
 				| Prisma.InputJsonValue
 				| undefined,
 			knowledgeResources: input.knowledgeResources ?? undefined,
-			toolConnections: input.toolConnections as
+			toolConnections: projectConfiguration.toolConnections as
 				| Prisma.InputJsonValue
 				| undefined,
 			triggers: input.triggers as Prisma.InputJsonValue | undefined,

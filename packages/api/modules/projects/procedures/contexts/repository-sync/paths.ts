@@ -45,21 +45,24 @@
  * a no-op. Then duplicates dropped, sorted, at most 200, each strictly
  * inside exactly one selected path and none inside another left-out path.
  * `contextSyncExcludedPathAllowed` holds the per-path rules, which
- * `listTree` applies to each entry as well.
+ * `listTree` applies to each entry as well; it words the canonical module's
+ * `contextSyncExclusionProblem`, which the configure dialog's typed "leave
+ * out" input applies too.
  */
 import {
 	firstExcludedPathOutsideSelection,
 	isStrictlyInsideContextSyncPath,
 } from "@repo/database";
 import {
+	contextSyncExclusionProblem,
 	contextSyncPathSpellingProblem,
 	defaultRuleForDirectlySelectedFile,
-	isContextIgnorePolicyFile,
 	isInContextSyncFabricDirectory,
 	MAX_CONTEXT_SYNC_PATH_LENGTH,
 } from "@repo/instructions/context-sync-rules";
 
-const MAX_CONTEXT_SYNC_PATHS = 50;
+/** At most this many selected paths, counted after duplicates are dropped. */
+export const MAX_CONTEXT_SYNC_PATHS = 50;
 
 /** At most this many left-out paths, counted after duplicates are dropped. */
 export const MAX_CONTEXT_SYNC_EXCLUDED_PATHS = 200;
@@ -90,26 +93,27 @@ const NOT_CANONICAL_MESSAGE = (path: string) =>
 	`"${path}" is not a repository path in its plain form: use '/' between folders, with no leading './' or '/', no trailing '/', no '.' or '..' segments and no surrounding spaces.`;
 const TOO_LONG_MESSAGE = `A path is at most ${MAX_CONTEXT_SYNC_PATH_LENGTH} characters long.`;
 
+/** The refusal for a spelling or length problem. */
+function spellingRefusal(
+	problem: "too-long" | "not-canonical",
+	path: string,
+): { ok: false; code: "INVALID_PATH"; message: string } {
+	return {
+		ok: false,
+		code: "INVALID_PATH",
+		message:
+			problem === "too-long"
+				? TOO_LONG_MESSAGE
+				: NOT_CANONICAL_MESSAGE(path),
+	};
+}
+
 /** A non-empty path's spelling or length refusal, if it has one. */
 function spellingVerdict(
 	path: string,
 ): { ok: false; code: "INVALID_PATH"; message: string } | null {
-	switch (contextSyncPathSpellingProblem(path)) {
-		case null:
-			return null;
-		case "too-long":
-			return {
-				ok: false,
-				code: "INVALID_PATH",
-				message: TOO_LONG_MESSAGE,
-			};
-		case "not-canonical":
-			return {
-				ok: false,
-				code: "INVALID_PATH",
-				message: NOT_CANONICAL_MESSAGE(path),
-			};
-	}
+	const problem = contextSyncPathSpellingProblem(path);
+	return problem === null ? null : spellingRefusal(problem, path);
 }
 
 const FABRIC_MESSAGE = (path: string) =>
@@ -233,33 +237,37 @@ export type ContextSyncExcludedPathVerdict =
 export function contextSyncExcludedPathAllowed(
 	path: string,
 ): ContextSyncExcludedPathVerdict {
-	if (path === "") {
-		return {
-			ok: false,
-			code: "INVALID_PATH",
-			message:
-				"Leave out a folder or a file inside a selected folder, not the whole repository.",
-		};
+	const problem = contextSyncExclusionProblem(path);
+	switch (problem) {
+		case null:
+			return { ok: true };
+		case "whole-repository":
+			return {
+				ok: false,
+				code: "INVALID_PATH",
+				message:
+					"Leave out a folder or a file inside a selected folder, not the whole repository.",
+			};
+		case "too-long":
+		case "not-canonical":
+			return spellingRefusal(problem, path);
+		case "fabric":
+			return {
+				ok: false,
+				code: "EXCLUDED_PATH",
+				message: FABRIC_MESSAGE(path),
+			};
+		case "policy-file":
+			return {
+				ok: false,
+				code: "EXCLUDED_PATH_POLICY_FILE",
+				message: `"${path}" is a folder's .contextignore, which the sync reads as that folder's policy and never syncs, so it cannot be left out.`,
+			};
+		default: {
+			const unreachable: never = problem;
+			return unreachable;
+		}
 	}
-	const spelling = spellingVerdict(path);
-	if (spelling) {
-		return spelling;
-	}
-	if (isInContextSyncFabricDirectory(path)) {
-		return {
-			ok: false,
-			code: "EXCLUDED_PATH",
-			message: FABRIC_MESSAGE(path),
-		};
-	}
-	if (isContextIgnorePolicyFile(path)) {
-		return {
-			ok: false,
-			code: "EXCLUDED_PATH_POLICY_FILE",
-			message: `"${path}" is a folder's .contextignore, which the sync reads as that folder's policy and never syncs, so it cannot be left out.`,
-		};
-	}
-	return { ok: true };
 }
 
 type ContextSyncExcludedPathsError =

@@ -3,12 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
 	findFirst: vi.fn(),
 	update: vi.fn(),
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	loadSources: vi.fn(),
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: m.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: m.generateText,
 	getAIModelWithMetadata: vi.fn(async () => ({
 		model: {},
 		trackUsage: vi.fn(),
@@ -79,8 +80,8 @@ beforeEach(() => {
 describe("buildChunkingQuestionsActivity", () => {
 	it("keeps only questions whose answer is a passage of the source", async () => {
 		m.findFirst.mockResolvedValue({ result: plan("TUNE") });
-		m.generateObject.mockResolvedValue({
-			object: {
+		m.generateText.mockResolvedValue({
+			output: {
 				questions: [
 					{
 						question: "Who signs off the release?",
@@ -116,7 +117,7 @@ describe("buildChunkingQuestionsActivity", () => {
 
 	it("skips a source whose response does not fit instead of failing the run", async () => {
 		m.findFirst.mockResolvedValue({ result: plan("MEASURE") });
-		m.generateObject.mockRejectedValue(
+		m.generateText.mockRejectedValue(
 			Object.assign(new Error("No object generated"), {
 				name: "AI_NoObjectGeneratedError",
 			}),

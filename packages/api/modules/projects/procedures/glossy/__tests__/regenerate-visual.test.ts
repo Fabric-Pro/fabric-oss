@@ -4,7 +4,7 @@
  *
  * The permission decision, the Glossy gate, `planGlossyKeys`,
  * `planGlossyRegeneration`, and `extractGlossyVisual` — spec validation and
- * the label guard included — are real; the "model" (`generateObject`), the
+ * the label guard included — are real; the "model" (`generateText`), the
  * rate limit, and the audit writer are mocks. The edition queries run over
  * `useEditionStore`, which applies the real queries' guards. That the
  * replacement's cache key is the one the build's extract activity reads is
@@ -101,7 +101,7 @@ const NEW_STAT = {
 
 /** What the "model" answers for the next extraction. */
 function modelReturns(spec: unknown) {
-	mocks.generateObject.mockResolvedValueOnce({ object: { spec }, usage: {} });
+	mocks.generateText.mockResolvedValueOnce({ output: { spec }, usage: {} });
 }
 
 function deferred() {
@@ -393,7 +393,7 @@ describe("projects.glossy.regenerateVisual — BYOK (R10, KTD21)", () => {
 			outcome: "aiProviderNotConfigured",
 			message: expect.stringContaining("AI provider"),
 		});
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 		expect(mocks.applyVisualRegeneration).not.toHaveBeenCalled();
 		expect(store.content).toEqual(content);
 		expect(mocks.recordAudit).not.toHaveBeenCalled();

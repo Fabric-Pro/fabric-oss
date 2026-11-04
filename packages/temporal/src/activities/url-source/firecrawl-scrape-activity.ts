@@ -22,6 +22,11 @@
  *     `UNSUPPORTED_CONTENT_TYPE` → non-retryable
  *   - `TIMEOUT`, `UNKNOWN` → retryable (Temporal handles backoff)
  *
+ * When the input sets `reportUnsupportedContent`, `UNSUPPORTED_CONTENT_TYPE`
+ * is not thrown: it is an expected outcome (an image or archive linked
+ * under a crawl prefix), so the activity logs one warning and returns an
+ * empty page with `unsupported` set (`lib/unsupported-content.ts`).
+ *
  * `ApplicationFailure.type` prefix stays `FIRECRAWL_*` so the workflow's
  * existing classifier (`classifyFailureErrorType`) keeps working without a
  * schema change to the `urlCrawlFailed` telemetry event.
@@ -42,6 +47,10 @@ import type {
 	WebScrapePage,
 	WebScraperProviderName,
 } from "../lib/web-scraper";
+import {
+	type UnsupportedContent,
+	unsupportedContentOutcome,
+} from "./lib/unsupported-content";
 
 export interface FirecrawlScrapeActivityInput {
 	url: string;
@@ -60,6 +69,12 @@ export interface FirecrawlScrapeActivityInput {
 	 * no `discoveredLinks` field at all.
 	 */
 	discoverLinks?: DiscoverLinksOptions;
+	/**
+	 * Return an unsupported content type as `unsupported` instead of throwing
+	 * it. Sent by workflow code that reads the outcome; absent in inputs
+	 * recorded before it existed, which keep the failure.
+	 */
+	reportUnsupportedContent?: boolean;
 }
 
 export interface DiscoverLinksOptions {
@@ -113,6 +128,13 @@ export type FirecrawlScrapeActivityOutput = WebScrapePage & {
 	 * list would not fit.
 	 */
 	discoveredLinks?: string[];
+	/**
+	 * Present only when the input had `reportUnsupportedContent` and the URL
+	 * is a file type the provider cannot index. The page fields are then
+	 * empty (`pageUrl` is the requested URL, `markdown` is `""`) and must not
+	 * be stored.
+	 */
+	unsupported?: UnsupportedContent;
 };
 
 /**
@@ -195,6 +217,7 @@ export async function firecrawlScrapeActivity(
 		providerName = "firecrawl",
 		providerEndpoint,
 		discoverLinks,
+		reportUnsupportedContent,
 	} = input;
 
 	activityLogger.info("URL scrape activity start", { url, providerName });
@@ -219,6 +242,17 @@ export async function firecrawlScrapeActivity(
 	const result = await scraper.scrapeUrl(url);
 
 	if (!result.success) {
+		if (
+			reportUnsupportedContent === true &&
+			result.error.code === "UNSUPPORTED_CONTENT_TYPE"
+		) {
+			return {
+				pageUrl: url,
+				pageTitle: null,
+				markdown: "",
+				unsupported: unsupportedContentOutcome(url, result.error),
+			};
+		}
 		activityLogger.warn("URL scrape failed", {
 			url,
 			providerName,

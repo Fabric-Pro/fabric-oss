@@ -12,6 +12,7 @@ const m = vi.hoisted(() => ({
 	resolveEffectiveProjectPermissions: vi.fn(),
 	recordAuditFromRequest: vi.fn(),
 	assertNoOpenMigration: vi.fn(),
+	canUpdateProjectInstructions: vi.fn(),
 	/** What the settings writer throws, under the project lock, for an open move. */
 	MigrationOpenError: class MigrationOpenError extends Error {
 		pointer = {
@@ -36,6 +37,10 @@ vi.mock("../migration-freeze", async (importOriginal) => ({
 vi.mock("@repo/database", () => ({
 	updateProjectInstructionSettings: (...a: unknown[]) =>
 		m.updateProjectInstructionSettings(...a),
+	canUpdateProjectInstructions: (...a: unknown[]) =>
+		m.canUpdateProjectInstructions(...a),
+	MAX_REQUIRED_INSTRUCTION_APPROVALS: 10,
+	MAX_INSTRUCTION_APPROVERS: 50,
 	InstructionMigrationOpenError: m.MigrationOpenError,
 }));
 vi.mock("../../../../../lib/audit", () => ({
@@ -82,6 +87,78 @@ beforeEach(() => {
 	});
 	m.updateProjectInstructionSettings.mockResolvedValue(undefined);
 	m.assertNoOpenMigration.mockResolvedValue(undefined);
+	m.canUpdateProjectInstructions.mockResolvedValue(true);
+});
+
+describe("projects.instructions.updateSettings review policy", () => {
+	it("saves a review policy alone, without the move pre-check or touching the ignore rules", async () => {
+		await m.handlers.updateSettings!({
+			input: {
+				projectId: "proj_1",
+				reviewPolicy: {
+					requiredApprovals: 2,
+					approverUserIds: ["lead_1", "lead_2"],
+				},
+			},
+			context: ctx,
+		});
+
+		expect(m.assertNoOpenMigration).not.toHaveBeenCalled();
+		expect(m.updateProjectInstructionSettings).toHaveBeenCalledWith(
+			"proj_1",
+			"org_1",
+			{
+				reviewPolicy: {
+					requiredApprovals: 2,
+					approverUserIds: ["lead_1", "lead_2"],
+				},
+			},
+		);
+		expect(m.canUpdateProjectInstructions).toHaveBeenCalledWith(
+			"proj_1",
+			"lead_1",
+		);
+		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+			ctx,
+			expect.objectContaining({
+				action: "project.instructions.settings_updated",
+				metadata: { requiredApprovals: 2, approverCount: 2 },
+			}),
+		);
+	});
+
+	it("refuses an approver who cannot review proposals, and writes nothing", async () => {
+		m.canUpdateProjectInstructions.mockImplementation(
+			async (_projectId: string, userId: string) => userId !== "viewer_1",
+		);
+
+		await expect(
+			m.handlers.updateSettings!({
+				input: {
+					projectId: "proj_1",
+					reviewPolicy: {
+						requiredApprovals: 1,
+						approverUserIds: ["lead_1", "viewer_1"],
+					},
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			data: { reason: "APPROVER_NOT_ELIGIBLE", userIds: ["viewer_1"] },
+		});
+		expect(m.updateProjectInstructionSettings).not.toHaveBeenCalled();
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+
+	it("refuses a request that changes nothing", async () => {
+		await expect(
+			m.handlers.updateSettings!({
+				input: { projectId: "proj_1" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+	});
 });
 
 describe("projects.instructions.updateSettings", () => {

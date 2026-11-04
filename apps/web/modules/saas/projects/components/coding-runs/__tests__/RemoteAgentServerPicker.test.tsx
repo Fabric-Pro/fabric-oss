@@ -66,18 +66,10 @@ afterEach(() => {
 it.each([true, false])(
 	"offers the deployment server only when configured: %s",
 	(configured) => {
-		render(
-			<QueryClientProvider client={new QueryClient()}>
-				<RemoteAgentServerPicker
-					projectId="example-project"
-					servers={[]}
-					canShare={false}
-					hasDefaultServer={configured}
-					value=""
-					onChange={vi.fn()}
-				/>
-			</QueryClientProvider>,
-		);
+		renderPicker({
+			canShare: false,
+			hasDefaultServer: configured,
+		});
 		expect(
 			Boolean(
 				screen.queryByRole("option", { name: "Deployment server" }),

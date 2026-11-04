@@ -11,8 +11,18 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ workflow: vi.fn(), snapshot: vi.fn() }));
+vi.mock("@repo/database", () => ({
+	db: {
+		workflow: { findUnique: mocks.workflow },
+		workflowVersion: { findFirst: mocks.snapshot },
+	},
+}));
+
 import {
 	classifyScheduleOrphan,
+	fetchPublishedWorkflowForSchedule,
 	reconcileWorkflowSchedules,
 } from "../workflow-builder-reconcile-schedules";
 
@@ -29,6 +39,51 @@ const scheduleTrigger = [
 const manualTrigger = [
 	{ id: "n1", type: "trigger", data: { config: { triggerType: "manual" } } },
 ];
+
+describe("published schedule authority", () => {
+	it("does not classify a saved manual draft as an orphaned published schedule", async () => {
+		mocks.workflow.mockResolvedValue({
+			status: "PUBLISHED",
+			version: 5,
+			publishedVersion: 3,
+			userId: "owner",
+			organizationId: "example-org",
+		});
+		mocks.snapshot.mockResolvedValue({ nodes: scheduleTrigger });
+		const workflow = await fetchPublishedWorkflowForSchedule("workflow");
+		expect(classifyScheduleOrphan(workflow)).toBeNull();
+		expect(mocks.snapshot).toHaveBeenCalledWith({
+			where: {
+				workflowId: "workflow",
+				version: 3,
+				isPublished: true,
+				userId: "owner",
+				organizationId: "example-org",
+			},
+			select: { nodes: true },
+		});
+	});
+	it("retains a live schedule when its publication cannot be loaded", async () => {
+		mocks.workflow.mockResolvedValue({
+			status: "PUBLISHED",
+			version: 5,
+			publishedVersion: 3,
+			userId: "owner",
+			organizationId: "example-org",
+		});
+		mocks.snapshot.mockResolvedValue(null);
+		const deleteSchedule = vi.fn();
+		await expect(
+			reconcileWorkflowSchedules({
+				listSchedules: summaries("workflow-builder-workflow"),
+				deleteSchedule,
+				fetchWorkflow: fetchPublishedWorkflowForSchedule,
+				dryRun: false,
+			}),
+		).rejects.toThrow("reconciliation stopped");
+		expect(deleteSchedule).not.toHaveBeenCalled();
+	});
+});
 
 function summaries(...ids: string[]) {
 	return async function* () {

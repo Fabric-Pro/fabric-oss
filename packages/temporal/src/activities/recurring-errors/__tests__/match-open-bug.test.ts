@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
 	listPendingLogProposalsForMatching: vi.fn(),
 	loadStoryVectors: vi.fn(),
 	generateEmbeddings: vi.fn(),
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	trackUsage: vi.fn(),
 }));
@@ -30,7 +30,8 @@ vi.mock("../../../lib/story-vectors", () => ({
 }));
 vi.mock("@repo/rag", () => ({ generateEmbeddings: mocks.generateEmbeddings }));
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 }));
 vi.mock("@repo/logs", () => ({
@@ -71,13 +72,13 @@ function bug(id: string, title: string) {
 
 /** The verifier's answer for each candidate, keyed by its label in the prompt. */
 function answer(byIdentifier: Record<string, object | Error>) {
-	mocks.generateObject.mockImplementation(async ({ prompt }) => {
+	mocks.generateText.mockImplementation(async ({ prompt }) => {
 		for (const [identifier, verdict] of Object.entries(byIdentifier)) {
 			if (prompt.includes(`Item B (${identifier})`)) {
 				if (verdict instanceof Error) {
 					throw verdict;
 				}
-				return { object: verdict };
+				return { output: verdict };
 			}
 		}
 		throw new Error("unexpected candidate");
@@ -140,8 +141,8 @@ describe("createOpenBugMatcher", () => {
 			},
 		]);
 		// A bug with nothing in common with the error never reaches the verifier.
-		expect(mocks.generateObject).toHaveBeenCalledTimes(2);
-		const prompts = mocks.generateObject.mock.calls.map(
+		expect(mocks.generateText).toHaveBeenCalledTimes(2);
+		const prompts = mocks.generateText.mock.calls.map(
 			([call]) => call.prompt,
 		);
 		expect(prompts.join("\n")).not.toContain("Avatar upload");
@@ -361,7 +362,7 @@ describe("createOpenBugMatcher", () => {
 			checked: [],
 		});
 		expect(mocks.generateEmbeddings).not.toHaveBeenCalled();
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("throws when the candidates cannot be loaded, and retries them on the next group", async () => {

@@ -65,8 +65,9 @@ interface UseUrlSourceFormOptions {
 	requireKnowledgeBaseCategory: boolean;
 	/**
 	 * Offer the Live refresh cadence. Live is honored only where retrieval
-	 * re-fetches the page on each AI run, which the project task agent does
-	 * (`rag-context.ts`) and company context retrieval does not; an owner
+	 * re-fetches the page on each AI run, which project analysis does
+	 * (`packages/temporal/src/activities/live-url-sources.ts`, called from
+	 * `enhance-feature.ts`) and company context retrieval does not; an owner
 	 * that cannot honor it turns this off so Live is never offered there.
 	 */
 	allowLiveRefresh: boolean;

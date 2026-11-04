@@ -7,10 +7,16 @@
 
 import type { AiJobKey } from "@repo/ai";
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import {
+	assertProjectReportSourcesReady,
+	canExecuteReportInstance,
+	getTemplateInstanceExecution,
+} from "@repo/database";
 import { logger } from "@repo/logs";
 import { generateQueryEmbedding } from "@repo/rag";
 import { heartbeat } from "@temporalio/activity";
 import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
+import { boundGatheredData } from "./gathered-data-budget";
 import { getHandlerForDataSource, inferDataSourceType } from "./handlers";
 import {
 	buildRagContextPrompt,
@@ -33,6 +39,7 @@ import { getProcessingConfig } from "./types";
 
 // Local result type that uses string for sourceType (workflow compatibility)
 export interface DataSourceResult {
+	provenance?: FetchResult["metadata"]["provenance"];
 	sourceId: string;
 	sourceType: string;
 	provider: string;
@@ -70,6 +77,7 @@ export interface WorkflowDataSourceDefinition {
 }
 
 export interface FetchDataSourcesInput {
+	reportingProtocol?: 1;
 	dataSources: WorkflowDataSourceDefinition[];
 	connections: InstanceConnections;
 	userId: string;
@@ -83,6 +91,7 @@ export interface FetchDataSourcesInput {
 }
 
 export interface FetchDataSourcesResult {
+	isPartial?: boolean;
 	results: DataSourceResult[];
 	/** Qdrant collection name if RAG was used */
 	qdrantCollectionId?: string;
@@ -110,6 +119,35 @@ export async function fetchDataSources(
 		enableRag = false,
 	} = input;
 
+	if (input.reportingProtocol === 1) {
+		if (!organizationId) {
+			throw new Error("Report evidence requires an organization");
+		}
+		const caller = { userId, organizationId };
+		const execution = await getTemplateInstanceExecution(
+			executionId,
+			caller,
+		);
+		if (
+			!execution ||
+			execution.userId !== userId ||
+			execution.status === "CANCELLED" ||
+			!(await canExecuteReportInstance(
+				execution.instance,
+				caller,
+				execution.parameters,
+			))
+		) {
+			throw new Error("Report evidence access revoked");
+		}
+		assertProjectReportSourcesReady(
+			execution.instance.fabricConfig,
+			execution.parameters,
+			execution.instance.template.definition,
+			execution.instance.connections,
+		);
+	}
+
 	logger.info("[DataFetching] Starting data fetch", {
 		executionId,
 		dataSourceCount: dataSources.length,
@@ -119,6 +157,7 @@ export async function fetchDataSources(
 	const results: DataSourceResult[] = [];
 	const fetchStates: Record<string, IncrementalFetchState> = {};
 	let totalRecords = 0;
+	let sourcePartial = false;
 	let qdrantCollectionId: string | undefined;
 
 	// Build fetch context
@@ -274,6 +313,7 @@ export async function fetchDataSources(
 			}
 
 			totalRecords += fetchResult.recordCount;
+			sourcePartial ||= fetchResult.hasMore;
 
 			results.push({
 				sourceId: normalizedDataSource.id,
@@ -283,6 +323,7 @@ export async function fetchDataSources(
 				recordCount: fetchResult.recordCount,
 				ragProcessing,
 				error: fetchResult.error,
+				provenance: fetchResult.metadata.provenance?.slice(0, 20),
 			});
 
 			logger.info("[DataFetching] Data source fetch complete", {
@@ -313,6 +354,26 @@ export async function fetchDataSources(
 		errorCount: results.filter((r) => r.error).length,
 		hasRag: !!qdrantCollectionId,
 	});
+
+	if (input.reportingProtocol === 1) {
+		// Two evidence periods must still fit in the next Temporal activity's input.
+		const bounded = boundGatheredData(
+			Object.fromEntries(
+				results.map((result, index) => [String(index), result.data]),
+			),
+			{ maxBytes: 600_000 },
+		);
+		return {
+			results: results.map((result, index) => ({
+				...result,
+				data: bounded.data[String(index)] ?? null,
+			})),
+			qdrantCollectionId,
+			fetchStates,
+			totalRecords,
+			isPartial: bounded.trimmed || sourcePartial,
+		};
+	}
 
 	return {
 		results,
@@ -386,6 +447,7 @@ export interface ExecuteAiAnalysisInput {
 	organizationId?: string;
 	/** Background-attribution label threaded from the workflow input (Fizzy #1894). */
 	jobType?: AiJobKey;
+	planEligible?: boolean;
 	parameters?: Record<string, unknown>;
 	/** Report sections - informs AI about expected output structure */
 	sections?: ReportSection[];
@@ -408,6 +470,7 @@ export async function executeAiAnalysis(
 		userId,
 		organizationId,
 		jobType,
+		planEligible,
 		parameters = {},
 		sections = [],
 		outputFormat = "MARKDOWN",
@@ -470,6 +533,7 @@ export async function executeAiAnalysis(
 					userId,
 					organizationId,
 					jobType,
+					...(planEligible !== undefined ? { planEligible } : {}),
 					featureKey: "report-generation",
 					callPurpose: AI_CALL_PURPOSES.dataAnalysis,
 				},

@@ -9,6 +9,8 @@
 		"./export": "./src/export/index.ts",
 		"./proposal-branch-ref": "./src/proposal-branch-ref.ts",
 		"./pull-request-text": "./src/pull-request-text.ts",
+		"./rule-findings": "./src/rule-findings.ts",
+		"./rules-health": "./src/rules-health.ts",
 		"./scan-rules-version": "./src/scan-rules-version.ts",
 		"./secrets": "./src/secrets.ts",
 		"./workflow-ids": "./src/workflow-ids.ts"

@@ -47,9 +47,9 @@ export function isPathPrefixLink(ctx: {
  * a horizontal-rule line so the result reads like a small site dump rather
  * than a smashed-together blob.
  *
- * Sort order is `pageUrl ASC` — the same ordering `listUrlPages` uses for
- * the in-app drawer, so the downloaded file's reading order matches what
- * the user saw before exporting.
+ * Sort order is `pageUrl ASC, id ASC`. The URL order matches the in-app
+ * drawer; the id tie-breaker makes duplicate URLs read identically across
+ * full, paged and bounded-quality exports.
  *
  * Returns `""` when the crawl indexed nothing (or indexed only empty pages).
  * Callers must treat that as "crawl indexed no pages" rather than as the
@@ -74,7 +74,7 @@ export async function buildPathPrefixMarkdown(
 			pageTitle: true,
 			content: true,
 		},
-		orderBy: { pageUrl: "asc" },
+		orderBy: [{ pageUrl: "asc" }, { id: "asc" }],
 	});
 
 	return joinCrawledPagesMarkdown(pages);

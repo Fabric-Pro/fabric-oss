@@ -1,25 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoisted mock fns referenced by the vi.mock factories below.
-const { mockListRemote, mockGetRepos, mockGetCheckpoint, mockBuildUrl } =
+const { mockListRemote, mockGetRepos, mockGetCheckpoint, mockResolveAuth } =
 	vi.hoisted(() => ({
 		mockListRemote: vi.fn(),
 		mockGetRepos: vi.fn(),
 		mockGetCheckpoint: vi.fn(),
-		mockBuildUrl: vi.fn(),
+		mockResolveAuth: vi.fn(),
 	}));
 
-// `simpleGit()` → an object with the one method the activity calls.
+// `simpleGit()` → an object with the methods the activity calls.
 vi.mock("simple-git", () => ({
-	simpleGit: () => ({ listRemote: mockListRemote }),
+	simpleGit: () => ({
+		listRemote: mockListRemote,
+		env() {
+			return this;
+		},
+	}),
 }));
 vi.mock("@repo/database", () => ({
 	getProjectReposForCodeSearch: mockGetRepos,
 	getScanCheckpoint: mockGetCheckpoint,
 }));
-// Stub the authed-URL builder so the test never touches real repo auth.
+// Stub the clone-auth resolver so the test never touches real repo auth.
 vi.mock("../semgrep-scan", () => ({
-	buildAuthenticatedCloneUrl: mockBuildUrl,
+	resolveCloneAuth: mockResolveAuth,
 }));
 
 import {
@@ -33,9 +38,10 @@ const HEAD = "abc123def4567890abc123def4567890abc12345";
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockGetRepos.mockResolvedValue([{ owner: "o", repo: "r" }]);
-	mockBuildUrl.mockResolvedValue(
-		"https://x-access-token:tok@github.example/o/r.git",
-	);
+	mockResolveAuth.mockResolvedValue({
+		url: "https://github.example/o/r.git",
+		env: {},
+	});
 	mockListRemote.mockResolvedValue(`${HEAD}\trefs/heads/main`);
 	mockGetCheckpoint.mockResolvedValue(null);
 });

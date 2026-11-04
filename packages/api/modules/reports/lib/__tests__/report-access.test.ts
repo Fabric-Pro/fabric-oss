@@ -20,10 +20,12 @@ vi.mock("../../../../lib/effective-project-permissions", () => ({
 
 import {
 	assertCanEditReportInstance,
+	assertCanGenerateReportInstance,
 	assertCanManageReportTemplate,
 	assertCanPublishReportTemplate,
 	canEditProjectReport,
 	canEditReportInstance,
+	canGenerateReportInstance,
 } from "../report-access";
 
 const ORG = "example-org";
@@ -122,6 +124,22 @@ describe("canEditProjectReport", () => {
 		);
 	});
 
+	it("refuses an organization Viewer whose project row is Editor", async () => {
+		mocks.access.mockResolvedValue(projectMember("EDITOR"));
+		mocks.getOrganizationMembership.mockResolvedValue(orgRole("viewer"));
+		await expect(canEditProjectReport(PROJECT, caller)).resolves.toBe(
+			false,
+		);
+	});
+
+	it("refuses a project guest who is not an organization member", async () => {
+		mocks.access.mockResolvedValue(projectMember("EDITOR"));
+		mocks.getOrganizationMembership.mockResolvedValue(null);
+		await expect(canEditProjectReport(PROJECT, caller)).resolves.toBe(
+			false,
+		);
+	});
+
 	it("refuses a project in a deleted organization", async () => {
 		mocks.access.mockResolvedValue({
 			...projectMember("EDITOR"),
@@ -147,6 +165,27 @@ describe("canEditReportInstance", () => {
 				caller,
 			),
 		).resolves.toBe(true);
+	});
+
+	it("refuses an owner whose organization role no longer writes reports", async () => {
+		mocks.getOrganizationMembership.mockResolvedValue(orgRole("viewer"));
+		await expect(
+			canEditReportInstance(
+				{ ...othersInstance, userId: caller.id },
+				caller,
+			),
+		).resolves.toBe(false);
+	});
+
+	it("refuses an organization Viewer with an Editor row on a project report", async () => {
+		mocks.access.mockResolvedValue(projectMember("EDITOR"));
+		mocks.getOrganizationMembership.mockResolvedValue(orgRole("viewer"));
+		await expect(
+			canEditReportInstance(
+				{ ...othersInstance, projectId: PROJECT },
+				caller,
+			),
+		).resolves.toBe(false);
 	});
 
 	it("refuses a same-organization member editing another member's report", async () => {
@@ -275,5 +314,25 @@ describe("assertCanPublishReportTemplate", () => {
 				caller,
 			),
 		).resolves.toBeUndefined();
+	});
+});
+
+describe("canGenerateReportInstance", () => {
+	it("lets only the owner generate, because a report runs on their connections", () => {
+		expect(canGenerateReportInstance({ userId: caller.id }, caller)).toBe(
+			true,
+		);
+		expect(
+			canGenerateReportInstance(
+				{ userId: "example-other-member" },
+				caller,
+			),
+		).toBe(false);
+		expect(() =>
+			assertCanGenerateReportInstance(
+				{ userId: "example-other-member" },
+				caller,
+			),
+		).toThrow("Only the report's owner can generate it");
 	});
 });

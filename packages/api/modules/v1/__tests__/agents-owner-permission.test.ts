@@ -103,11 +103,12 @@ describe("POST /agents/:id/execute", () => {
 		expect(mocks.start).not.toHaveBeenCalled();
 	});
 
-	it("allows a member's personal key to execute an agent", async () => {
+	it("passes the owner permission gate for a member's personal key and reaches capability validation", async () => {
 		const response = await request();
 
-		expect(response.status).toBe(202);
-		expect(mocks.createAgentTask).toHaveBeenCalledOnce();
-		expect(mocks.start).toHaveBeenCalledOnce();
+		expect(response.status).toBe(409);
+		expect(mocks.findAgent).toHaveBeenCalledOnce();
+		expect(mocks.createAgentTask).not.toHaveBeenCalled();
+		expect(mocks.start).not.toHaveBeenCalled();
 	});
 });

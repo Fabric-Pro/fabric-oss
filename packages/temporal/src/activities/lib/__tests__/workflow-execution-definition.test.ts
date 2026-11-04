@@ -7,6 +7,7 @@ vi.mock("@repo/database", () => ({
 		workflowVersion: { findFirst: mocks.version },
 	},
 }));
+
 import { resolveExecutionGraph } from "../workflow-execution-definition";
 
 const input = {
@@ -32,6 +33,22 @@ beforeEach(() => {
 });
 
 describe("execution graph authority", () => {
+	it.each(["SCHEDULE", "WEBHOOK", "EVENT"])(
+		"uses the accepted published snapshot for %s despite saved draft overrides",
+		async (triggerType) => {
+			mocks.execution.mockResolvedValue({ version: 3, triggerType });
+			const result = await resolveExecutionGraph({
+				...input,
+				override: { nodes: input.nodes, edges: input.edges },
+			});
+			expect(result).toMatchObject({ graph: published, published: true });
+			expect(mocks.version.mock.calls[0][0].where).toMatchObject({
+				version: 3,
+				userId: input.userId,
+				organizationId: input.organizationId,
+			});
+		},
+	);
 	it.each([
 		"workspace-data-read",
 		"workspace-data-write",
@@ -170,7 +187,11 @@ describe("execution graph authority", () => {
 		).toEqual(snapshot);
 	});
 
-	it("continues refusing changed graph values and array order", async () => {
+	it("continues refusing changed values and array order for manual script previews", async () => {
+		mocks.execution.mockResolvedValue({
+			version: 3,
+			triggerType: "MANUAL",
+		});
 		mocks.version.mockResolvedValue({
 			...published,
 			edges: [{ id: "a" }, { id: "b" }],
@@ -179,7 +200,7 @@ describe("execution graph authority", () => {
 			resolveExecutionGraph({
 				...input,
 				override: {
-					nodes: published.nodes,
+					nodes: [{ id: "script", type: "script-transform" }],
 					edges: [{ id: "b" }, { id: "a" }],
 				},
 			}),

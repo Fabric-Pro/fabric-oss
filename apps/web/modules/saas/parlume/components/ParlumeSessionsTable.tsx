@@ -19,6 +19,7 @@ const LIVE_LENGTH_REFRESH_MS = 10_000;
 
 /** Sessions, newest first; finished sessions open to their detail, one at a time. */
 export function ParlumeSessionsTable({
+	projectId,
 	sessions,
 	costBySessionId,
 	projectBasePath,
@@ -31,6 +32,7 @@ export function ParlumeSessionsTable({
 	onLoadMore,
 	onViewRequests,
 }: {
+	projectId: string;
 	sessions: ParlumeSession[];
 	costBySessionId: ReadonlyMap<string, number>;
 	projectBasePath: string;
@@ -104,6 +106,7 @@ export function ParlumeSessionsTable({
 					{sessions.map((session) => (
 						<ParlumeSessionRow
 							key={session.id}
+							projectId={projectId}
 							session={session}
 							cost={costBySessionId.get(session.id)}
 							now={now}

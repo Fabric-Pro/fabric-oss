@@ -14,15 +14,18 @@
  * back to the transcript's `summary` field when no contextId is present or the
  * context has no content.
  */
+
 import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	getCurrentDateContext,
+	Output,
 } from "@repo/ai";
 // Imported from the SUBPATH (not @repo/ai root) so it stays UNMOCKED in tests
 // that mock the @repo/ai root module (uniform rule across the budget sites).
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	computeTodoItemKey,
 	db,
@@ -330,12 +333,16 @@ export async function extractMeetingInsightsActivity(
 		});
 
 		try {
-			const result = await generateObject({
-				model,
-				schema: LlmInsightSchema,
-				prompt,
-				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			});
+			const result = await requireStructuredOutput(
+				generateText({
+					model,
+					output: Output.object({ schema: LlmInsightSchema }),
+					prompt,
+					...(maxOutputTokens !== undefined
+						? { maxOutputTokens }
+						: {}),
+				}),
+			);
 
 			trackUsage();
 
@@ -347,7 +354,7 @@ export async function extractMeetingInsightsActivity(
 					? transcriptText
 					: null;
 
-			const decisions: MeetingDecision[] = result.object.decisions.map(
+			const decisions: MeetingDecision[] = result.output.decisions.map(
 				(d) =>
 					attachAnchor(
 						{
@@ -364,7 +371,7 @@ export async function extractMeetingInsightsActivity(
 					),
 			);
 			const actionItems: MeetingActionItem[] =
-				result.object.actionItems.map((a) =>
+				result.output.actionItems.map((a) =>
 					attachAnchor(
 						{
 							text: a.text,
@@ -378,7 +385,7 @@ export async function extractMeetingInsightsActivity(
 					),
 				);
 			const openQuestions: MeetingOpenQuestion[] =
-				result.object.openQuestions.map((q) =>
+				result.output.openQuestions.map((q) =>
 					attachAnchor(
 						{ text: q.text },
 						q.sourceQuote,
@@ -394,9 +401,9 @@ export async function extractMeetingInsightsActivity(
 			if (anchorContent !== null) {
 				const unmatched =
 					[
-						...result.object.decisions,
-						...result.object.actionItems,
-						...result.object.openQuestions,
+						...result.output.decisions,
+						...result.output.actionItems,
+						...result.output.openQuestions,
 					].filter((i) => i.sourceQuote).length -
 					[...decisions, ...actionItems, ...openQuestions].filter(
 						(i) => i.anchorLine !== undefined,
@@ -415,7 +422,7 @@ export async function extractMeetingInsightsActivity(
 			// itself was the text source, overwriting it would destroy the only
 			// remaining record with a summary-of-a-summary. A blank LLM summary
 			// never wipes an existing one either.
-			const extractedSummary = result.object.summary.trim();
+			const extractedSummary = result.output.summary.trim();
 			const summaryFromTranscriptBody = Boolean(contextText);
 
 			const actionItemRows = buildActionItemRows({

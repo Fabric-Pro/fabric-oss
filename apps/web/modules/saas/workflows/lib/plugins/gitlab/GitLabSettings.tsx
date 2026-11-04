@@ -399,7 +399,7 @@ export function GitLabSettings({
 					{gitlabStatus.username
 						? "Your GitLab account is connected via OAuth. "
 						: "GitLab is connected. "}
-					The task agent can access projects, create issues, and
+					Connected workflows can access projects, create issues, and
 					submit merge requests on your behalf.
 				</p>
 			</div>

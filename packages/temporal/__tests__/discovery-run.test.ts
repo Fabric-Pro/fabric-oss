@@ -46,7 +46,7 @@ const { mocks, StageTransitionBlockedErrorMock } = vi.hoisted(() => {
 			getMcpConfigById: vi.fn(),
 			getMcpConfigCachedTools: vi.fn(),
 			updateStoryDraftingStage: vi.fn(),
-			generateObject: vi.fn(),
+			generateText: vi.fn(),
 			getAIModelWithMetadata: vi.fn(),
 			logModelUsageAsync: vi.fn(),
 			retrieveProjectRagContext: vi.fn(),
@@ -70,7 +70,8 @@ vi.mock("@repo/logs", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -461,8 +462,8 @@ describe("buildIntegrationContractPrompt", () => {
 
 describe("draftIntegrationContract", () => {
 	it("returns the contract and markdown for valid model output", async () => {
-		mocks.generateObject.mockResolvedValue({
-			object: validContract,
+		mocks.generateText.mockResolvedValue({
+			output: validContract,
 			usage: { totalTokens: 10 },
 		});
 		const result = await draftIntegrationContract({
@@ -487,8 +488,8 @@ describe("draftIntegrationContract", () => {
 	});
 
 	it("rejects schema-invalid model output", async () => {
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				...validContract,
 				dataClasses: [
 					{ name: "email", sensitivity: "secret", notes: "" },

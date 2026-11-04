@@ -7,10 +7,16 @@ import {
 	GLOSSY_EDIT_INSTRUCTION_MAX_CHARS,
 	type GlossyDetectableKind,
 } from "@repo/agent-prompts/glossy";
-import { generateObject, NoObjectGeneratedError, zodSchema } from "@repo/ai";
+import {
+	generateText,
+	NoObjectGeneratedError,
+	Output,
+	zodSchema,
+} from "@repo/ai";
 // Imported from the SUBPATH (not @repo/ai root) so it stays unmocked in tests
 // that mock the root module, as in update-with-context-core.ts.
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import type { GlossySection } from "@repo/utils/glossy/cleanup";
 import {
 	checkVisualFacts,
@@ -43,7 +49,7 @@ import {
  * Visual extraction for one Glossy opportunity or slot (Fizzy #2589, R18,
  * R22, AE4).
  *
- * One `generateObject` per visual, with the requested kind's schema; `auto`
+ * One structured `generateText` per visual, with the requested kind's schema; `auto`
  * (a slot that lets the model choose) offers all five. The variant nonce
  * drives a single-visual regenerate. The result is then:
  * 1. validated against the strict `visualSpecSchema` (bounds, org chart tree),
@@ -663,16 +669,22 @@ export async function extractGlossyVisual(
 	let raw: unknown;
 	let rawCaption: unknown;
 	try {
-		const { object } = await generateObject({
-			model,
-			schema: zodSchema(
-				outputSchemaFor(input.kind, editing, proposalArtifact),
-			),
-			instructions,
-			prompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-		});
+		const { output: object } = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({
+					schema: zodSchema(
+						outputSchemaFor(input.kind, editing, proposalArtifact),
+					),
+				}),
+				instructions,
+				prompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+				...(input.abortSignal
+					? { abortSignal: input.abortSignal }
+					: {}),
+			}),
+		);
 		raw = object.spec;
 		rawCaption = object.caption;
 	} catch (error) {

@@ -1,5 +1,25 @@
 # @fabricorg/sdk
 
+## 0.8.0
+
+### Minor Changes
+
+- 16fb521: Manage saved-agent runs and recurring schedules consistently through the Portal, API, SDK, CLI and MCP, with explicit recurring-work authorization and verified cancellation acknowledgements.
+- 16fb521: Add bounded project context discovery across API, SDK, CLI, and MCP, and support invoking saved agents with retained request keys and recoverable execution receipts. Correct supervisor execution identifiers and improve project report readiness, result links, and citations.
+- 16fb521: Coding Instructions: rebase stale proposals, keep CLI local overrides, and edit, delete or restore files on your own proposal branch.
+- 16fb521: Add a "Reset Living Memory" action and `fabric context reset` that delete every synced file of a project at once, plus `fabric context push --init`, several folders per push, progress and `--timeout`.
+- 16fb521: Reuse Workspace documents in Project Context through authorized references, with multi-document selection, source freshness, current previews and removal that preserves originals. The same operations are available through the API, SDK, CLI and MCP, with separate project and source permissions and atomic mutation auditing.
+- 16fb521: Check actual completed agent results against explicit phrase expectations from Run & results, with owner-only evidence, revision verification, a downloadable report and an action to edit the current agent. Equivalent API, SDK, CLI and MCP operations reload the server-recorded answer and preserve run privacy without starting another execution or publishing shared evaluation evidence.
+
+### Patch Changes
+
+- 16fb521: Open saved-agent details in a drawer, inspect execution results on demand, and search paged run history across agent versions through the UI, API, CLI and MCP.
+- 16fb521: Add project context inspection and deterministic recorded-answer checks in the portal, API, SDK, CLI and MCP, with current permission checks and exact content revision pins. Prevent automatic replay of effectful Databricks requests.
+- 16fb521: Improve agent authoring with reviewed configuration suggestions, portable implementation definitions, and clearer execution readiness. Add revision-consistent Workspace document access across API, SDK, CLI, and MCP, and extend recurring reports with evidence periods, restricted audiences, and durable execution admission.
+- 16fb521: Expose saved-agent invocation receipts and verified Temporal execution state types for clients reconnecting to existing runs.
+- 16fb521: Save project context evaluations, coordinate approved Databricks jobs through Temporal, and inspect results, comparisons, cancellation and cleanup status in the portal, API, SDK, CLI and MCP. Add administrator approval for organization connections and isolated execution resources.
+- 16fb521: Select and inspect current Project Context and Workspace document excerpts with citations, revision checks and independent source permissions through the portal, API, SDK, CLI and MCP. Context exports recheck displayed revisions and do not automatically attach private content to shared tasks or agent runs.
+
 ## 0.7.1
 
 ### Patch Changes

@@ -10,7 +10,8 @@
 			"types": "./src/index.ts",
 			"import": "./src/index.ts",
 			"require": "./src/index.ts"
-		}
+		},
+		"./workspace-origin": "./src/workspace-origin.ts"
 	},
 	"scripts": {
 		"type-check": "tsgo --noEmit",

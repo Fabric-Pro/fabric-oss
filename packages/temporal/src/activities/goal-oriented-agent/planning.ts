@@ -8,8 +8,9 @@
  * - Plans with success criteria in mind
  */
 
-import { generateObject } from "@repo/ai";
+import { generateText, Output } from "@repo/ai";
 import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import { z } from "zod";
 import type {
 	AgentVariable,
@@ -156,18 +157,23 @@ ${previousAttemptsContext}
 3. Each step should be verifiable (you can check if it was done correctly)
 4. Consider what tools are available and how to use them effectively
 5. If this is a retry, address the feedback from the previous attempt
+6. A separate verifier checks the goal after the plan. Do not add a step solely to repeat or verify an answer.
+7. The LAST step must produce the complete user-facing deliverable, combining any required data from earlier step variables. Only this latest deliverable is evaluated as the answer, not the concatenated work log.
+8. Use one step for a simple answer. On retry, produce a revised complete deliverable instead of appending a correction to an earlier draft.
 
 Create a focused plan that will achieve the goal. Keep it concise but complete.`;
 
 	const model = await getAiModel(userId, organizationId);
 
-	const result = await generateObject({
-		model,
-		schema: PlanSchema,
-		prompt: planningPrompt,
-	});
+	const result = await requireStructuredOutput(
+		generateText({
+			model,
+			output: Output.object({ schema: PlanSchema }),
+			prompt: planningPrompt,
+		}),
+	);
 
-	const planData = result.object;
+	const planData = result.output;
 
 	// Convert to TaskPlan format with proper type mapping
 	const steps: TaskStep[] = planData.steps.map((step, index) => ({

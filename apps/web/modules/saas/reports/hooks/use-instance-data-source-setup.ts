@@ -11,9 +11,14 @@ import {
 	type McpConfigForDisplay,
 } from "@saas/reports/lib/mcp-utils";
 import {
+	accountSlugFromContext,
+	boardResourceBindings,
 	type ContextField,
 	contextFieldsForProviders,
+	contextWithListedBoard,
+	isRequiredDataSource,
 	pickPrefillContext,
+	projectConnectionDefaults,
 } from "@saas/reports/lib/report-template-definition";
 import {
 	type DataSourceDefinition,
@@ -110,7 +115,7 @@ export function useInstanceDataSourceSetup({
 		null,
 	);
 
-	const { data: mcpConfigsData } = useQuery({
+	const { data: mcpConfigsData, isError: mcpConfigsFailed } = useQuery({
 		...orpc.mcp.configs.list.queryOptions({
 			input: { organizationId, limit: 100 },
 		}),
@@ -124,20 +129,35 @@ export function useInstanceDataSourceSetup({
 		[mcpConfigsData],
 	);
 
+	// An optional source the person has not connected asks for no context.
 	const contextFields: ContextField[] = useMemo(
 		() =>
 			contextFieldsForProviders(
-				Array.from(new Set(dataSources.map((ds) => ds.provider))),
+				Array.from(
+					new Set(
+						dataSources
+							.filter(
+								(ds) =>
+									isRequiredDataSource(ds) ||
+									bindings[ds.id]?.mcpConfigId,
+							)
+							.map((ds) => ds.provider),
+					),
+				),
 				PROVIDER_CONTEXT_FIELDS,
 			),
-		[dataSources],
+		[dataSources, bindings],
 	);
 
 	const allConfigured = useMemo(() => {
-		if (dataSources.length === 0) {
-			return true;
-		}
-		if (!dataSources.every((ds) => bindings[ds.id]?.mcpConfigId)) {
+		if (
+			!dataSources.every(
+				(ds) =>
+					ds.type === "fabric" ||
+					!isRequiredDataSource(ds) ||
+					bindings[ds.id]?.mcpConfigId,
+			)
+		) {
 			return false;
 		}
 		return contextFields.every(
@@ -234,12 +254,8 @@ export function useInstanceDataSourceSetup({
 
 				// Also try to fill accountSlug from hierarchy context
 				// (e.g. if accounts were an intermediate level)
-				const slugFromContext = (
-					additionalContext.account_slug ||
-					additionalContext.accountSlug ||
-					additionalContext.slug ||
-					""
-				).replace(/^\/+/, "");
+				const slugFromContext =
+					accountSlugFromContext(additionalContext);
 				if (slugFromContext) {
 					offerContextValue("accountSlug", slugFromContext);
 				}
@@ -255,6 +271,16 @@ export function useInstanceDataSourceSetup({
 		},
 		[organizationId, offerContextValue],
 	);
+
+	// A board from the project's defaults or an earlier report may no longer
+	// exist; drop it once the board list shows it is gone.
+	const selectedBoardId = contextValues.boardId;
+	useEffect(() => {
+		if (!selectedBoardId) {
+			return;
+		}
+		setContextValues((prev) => contextWithListedBoard(prev, boards));
+	}, [boards, selectedBoardId]);
 
 	const selectMcpConfig = useCallback(
 		(dataSourceId: string, configId: string) => {
@@ -289,16 +315,79 @@ export function useInstanceDataSourceSetup({
 		],
 	);
 
+	/** Skip an optional data source: the report runs without it. */
+	const clearMcpConfig = useCallback((dataSourceId: string) => {
+		setBindings((prev) => {
+			const next = { ...prev };
+			delete next[dataSourceId];
+			return next;
+		});
+	}, []);
+
+	// A project's report starts from the project's own PM connection and
+	// board. It waits for the project so the suggestion below cannot bind a
+	// different server first; a connection the creator cannot use is skipped.
+	const projectDefaultsEnabled =
+		enabled && suggestDefaults && Boolean(projectId);
+	const { data: projectData, isFetched: projectFetched } = useQuery({
+		...orpc.projects.get.queryOptions({
+			input: { id: projectId ?? "", organizationId },
+		}),
+		enabled: projectDefaultsEnabled,
+	});
+	const waitingForProject = projectDefaultsEnabled && !projectFetched;
+	const suggestedRef = useRef(new Set<string>());
+	const projectDefaultsAppliedRef = useRef(false);
+	useEffect(() => {
+		const project = projectData?.project;
+		if (
+			!project ||
+			projectDefaultsAppliedRef.current ||
+			userMcpConfigs.length === 0
+		) {
+			return;
+		}
+		projectDefaultsAppliedRef.current = true;
+		const defaults = projectConnectionDefaults(
+			dataSources,
+			project,
+			userMcpConfigs,
+			isBoardSelectableProvider,
+		);
+		for (const [dataSourceId, config] of Object.entries(
+			defaults.bindings,
+		)) {
+			suggestedRef.current.add(dataSourceId);
+			selectMcpConfig(dataSourceId, config.id);
+		}
+		for (const [key, value] of Object.entries(defaults.context)) {
+			offerContextValue(key, value);
+		}
+	}, [
+		projectData,
+		userMcpConfigs,
+		dataSources,
+		selectMcpConfig,
+		offerContextValue,
+	]);
+
 	// Bind a data source to its MCP server when exactly one recommended server
 	// matches, so the board list and account slug load without a click. Each
 	// data source is suggested once; the person can still pick another.
-	const suggestedRef = useRef(new Set<string>());
 	useEffect(() => {
-		if (!suggestDefaults || userMcpConfigs.length === 0) {
+		if (
+			!suggestDefaults ||
+			waitingForProject ||
+			userMcpConfigs.length === 0
+		) {
 			return;
 		}
 		for (const ds of dataSources) {
-			if (suggestedRef.current.has(ds.id) || bindings[ds.id]) {
+			if (
+				ds.type === "fabric" ||
+				suggestedRef.current.has(ds.id) ||
+				bindings[ds.id]
+			) {
 				continue;
 			}
 			suggestedRef.current.add(ds.id);
@@ -309,6 +398,7 @@ export function useInstanceDataSourceSetup({
 		}
 	}, [
 		suggestDefaults,
+		waitingForProject,
 		userMcpConfigs,
 		dataSources,
 		bindings,
@@ -335,9 +425,18 @@ export function useInstanceDataSourceSetup({
 		}),
 		enabled: prefillEnabled && Boolean(latestInstanceId),
 	});
+	// The project's own board, applied above, wins over an earlier report's.
+	// A connections list that failed or is not asked for will not bring that
+	// board, so it does not hold the prefill back.
+	const projectDefaultsPending =
+		waitingForProject ||
+		(Boolean(projectData?.project?.projectManagementMcpConfigId) &&
+			enabled &&
+			!mcpConfigsFailed &&
+			mcpConfigsData === undefined);
 	const prefilledRef = useRef(false);
 	useEffect(() => {
-		if (!latestInstance || prefilledRef.current) {
+		if (!latestInstance || prefilledRef.current || projectDefaultsPending) {
 			return;
 		}
 		prefilledRef.current = true;
@@ -348,7 +447,12 @@ export function useInstanceDataSourceSetup({
 		for (const [key, value] of Object.entries(prefill)) {
 			offerContextValue(key, value);
 		}
-	}, [latestInstance, contextFields, offerContextValue]);
+	}, [
+		latestInstance,
+		projectDefaultsPending,
+		contextFields,
+		offerContextValue,
+	]);
 
 	/** The `connections` fields `reports.instances.create` takes from this setup. */
 	const buildConnections = useCallback(() => {
@@ -373,13 +477,19 @@ export function useInstanceDataSourceSetup({
 				context[key] = value.trim();
 			}
 		}
-		return { mcpConfigs, mcpBindings, context };
+		const resourceBindings = boardResourceBindings(
+			dataSources.filter((ds) => bindings[ds.id]),
+			context,
+			isBoardSelectableProvider,
+		);
+		return { mcpConfigs, mcpBindings, resourceBindings, context };
 	}, [bindings, contextValues, dataSources]);
 
 	return {
 		userMcpConfigs,
 		bindings,
 		selectMcpConfig,
+		clearMcpConfig,
 		contextFields,
 		contextValues,
 		setContextValue,

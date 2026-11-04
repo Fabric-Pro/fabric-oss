@@ -14,7 +14,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockGenerateObject = vi.hoisted(() => vi.fn());
+const mockGenerateText = vi.hoisted(() => vi.fn());
 const mockGetModel = vi.hoisted(() => vi.fn());
 const mockGetBoundPrompt = vi.hoisted(() => vi.fn());
 const mockRenderTemplate = vi.hoisted(() => vi.fn());
@@ -32,7 +32,8 @@ const StubProviderNotConfigured = vi.hoisted(
 );
 
 vi.mock("ai", () => ({
-	generateObject: mockGenerateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mockGenerateText,
 	zodSchema: (s: unknown) => s,
 	// A real discriminator, not a constant: a test that answers true for every
 	// error would also pass if the prompt salvaged the wrong ones.
@@ -89,7 +90,7 @@ beforeEach(() => {
 
 describe("reviseTestCaseSteps, when the schema rejects the completion", () => {
 	it("returns the recovered revision instead of failing the request", async () => {
-		mockGenerateObject.mockRejectedValue(
+		mockGenerateText.mockRejectedValue(
 			rejectedCompletion(
 				JSON.stringify({
 					rationale: "The fix inverts the case's expected outcome.",
@@ -114,7 +115,7 @@ describe("reviseTestCaseSteps, when the schema rejects the completion", () => {
 	});
 
 	it("still throws when the completion holds nothing to recover", async () => {
-		mockGenerateObject.mockRejectedValue(
+		mockGenerateText.mockRejectedValue(
 			rejectedCompletion("the model apologised and wrote prose"),
 		);
 
@@ -126,7 +127,7 @@ describe("reviseTestCaseSteps, when the schema rejects the completion", () => {
 	it("does not salvage an error that is not a rejected completion", async () => {
 		// A billing or rate-limit failure must stay a failure — salvaging one
 		// would report a revision nobody generated.
-		mockGenerateObject.mockRejectedValue(new Error("rate limit exceeded"));
+		mockGenerateText.mockRejectedValue(new Error("rate limit exceeded"));
 
 		await expect(reviseTestCaseSteps(INPUT, CONTEXT)).rejects.toThrow(
 			"rate limit exceeded",

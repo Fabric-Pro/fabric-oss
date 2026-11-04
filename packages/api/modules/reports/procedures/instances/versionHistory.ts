@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import {
+	canAccessReportInstance,
 	getReportActiveInstanceVersion,
 	getReportInstanceVersionHistory,
 } from "@repo/database";
@@ -37,10 +38,10 @@ export const versionHistoryProcedure = tenantProtectedProcedure
 		}
 
 		// Verify user has access (tenant isolation)
-		const hasAccess = organizationId
-			? activeVersion.organizationId === organizationId
-			: activeVersion.userId === context.user.id &&
-				activeVersion.organizationId === null;
+		const hasAccess = await canAccessReportInstance(activeVersion, {
+			userId: context.user.id,
+			organizationId,
+		});
 
 		if (!hasAccess) {
 			throw new ORPCError("NOT_FOUND", {
@@ -52,6 +53,7 @@ export const versionHistoryProcedure = tenantProtectedProcedure
 		const versions = await getReportInstanceVersionHistory(input.sId, {
 			limit: input.limit,
 			includeArchived: input.includeArchived,
+			caller: { userId: context.user.id, organizationId },
 		});
 
 		return {

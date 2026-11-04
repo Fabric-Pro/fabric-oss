@@ -193,6 +193,8 @@ interface EditorHeaderProps {
 	onRun: () => void;
 	hasSteps: boolean;
 	isBusy: boolean;
+	isDirty?: boolean;
+	onBeforeLeave?: () => boolean;
 }
 
 /**
@@ -217,13 +219,19 @@ export function EditorHeader({
 	onRun,
 	hasSteps,
 	isBusy,
+	isDirty = false,
+	onBeforeLeave,
 }: EditorHeaderProps) {
 	return (
-		<header className="flex h-[52px] shrink-0 items-center gap-3 border-b bg-background pl-2 pr-3">
+		<header className="flex min-h-[52px] shrink-0 flex-wrap items-center gap-2 border-b bg-background px-3 py-2">
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<Link
 						href={workflowsPath}
+						onClick={(e) => {
+							if (onBeforeLeave && !onBeforeLeave())
+								e.preventDefault();
+						}}
 						aria-label="Back to workflows"
 						className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
 					>
@@ -235,10 +243,14 @@ export function EditorHeader({
 
 			<nav
 				aria-label="Breadcrumb"
-				className="flex min-w-0 flex-1 items-center gap-2"
+				className="flex min-w-0 basis-[calc(100%-3rem)] flex-1 items-center gap-2 2xl:basis-0"
 			>
 				<Link
 					href={workflowsPath}
+					onClick={(e) => {
+						if (onBeforeLeave && !onBeforeLeave())
+							e.preventDefault();
+					}}
 					className="shrink-0 text-[13px] text-muted-foreground hover:text-foreground"
 				>
 					Workflows
@@ -253,6 +265,12 @@ export function EditorHeader({
 					workflowName={workflowName}
 					onRename={onRename}
 				/>
+				<span
+					role="status"
+					className="shrink-0 text-xs text-muted-foreground"
+				>
+					{isDirty ? "Unsaved changes" : "Saved draft"}
+				</span>
 				<WorkflowStatusPill
 					status={status}
 					version={version}
@@ -303,7 +321,7 @@ export function EditorHeader({
 				variant="outline"
 				size="sm"
 				onClick={onSave}
-				disabled={isBusy || !hasSteps}
+				disabled={isBusy}
 				data-testid="workflow-save"
 				aria-keyshortcuts="Meta+S Control+S"
 				className="rounded-lg"

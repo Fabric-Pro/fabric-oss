@@ -100,8 +100,11 @@ import {
 	GET_TOOL_SCHEMA_NAME,
 	getToolSchema,
 	isDiscoveryToolName,
+	MANAGE_CONNECTIONS_NAME,
+	MULTI_EXECUTE_TOOL_NAME,
 	type ParsedToolListMode,
 	parseCallToolArguments,
+	parseMultiExecuteArguments,
 	parseToolListMode,
 	SEARCH_TOOLS_NAME,
 	searchTools,
@@ -1247,6 +1250,9 @@ export async function handleGatewayPost(
 	let rpcRequest: JsonRpcRequest;
 	try {
 		const body = await request.json();
+		if (!body || typeof body !== "object" || Array.isArray(body)) {
+			return jsonRpcError(null, -32600, "Invalid Request");
+		}
 		rpcRequest = body as JsonRpcRequest;
 	} catch {
 		return jsonRpcError(null, -32700, "Parse error");
@@ -1339,6 +1345,7 @@ export async function handleGatewayPost(
 				sessionId,
 				clientNameOf(rpcRequest.params),
 				session,
+				rpcRequest.params?.protocolVersion,
 			);
 			break;
 
@@ -1762,22 +1769,35 @@ function gatewayInstructions(
 	);
 }
 
+const SUPPORTED_PROTOCOL_VERSIONS = new Set([
+	"2025-11-25",
+	"2025-06-18",
+	"2025-03-26",
+	"2024-11-05",
+]);
+
 async function handleInitialize(
 	id: string | number,
 	sessionId: string,
 	clientName: string | undefined,
 	session: GatewaySession,
+	requestedProtocolVersion?: unknown,
 ): Promise<NextResponse> {
+	const negotiatedVersion =
+		typeof requestedProtocolVersion === "string" &&
+		SUPPORTED_PROTOCOL_VERSIONS.has(requestedProtocolVersion)
+			? requestedProtocolVersion
+			: PROTOCOL_VERSION;
 	return jsonRpcSuccess(
 		id,
 		{
-			protocolVersion: PROTOCOL_VERSION,
+			protocolVersion: negotiatedVersion,
 			serverInfo: {
 				name: GATEWAY_NAME,
 				version: GATEWAY_VERSION,
 			},
 			capabilities: {
-				tools: { listChanged: true },
+				tools: { listChanged: false },
 				resources: { listChanged: false },
 			},
 			instructions: gatewayInstructions(clientName, session),
@@ -1892,6 +1912,7 @@ async function handleToolsList(
 				name: t.name,
 				description: t.description,
 				inputSchema: t.inputSchema,
+				...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
 				...(t.annotations ? { annotations: t.annotations } : {}),
 				...(mergedMeta ? { _meta: mergedMeta } : {}),
 			};
@@ -1911,6 +1932,7 @@ async function handleToolsList(
 				return {
 					...base,
 					_meta: {
+						...(base._meta ?? {}),
 						requiresAuthority,
 						// Provider-wide, not per tool: a grant also matches on
 						// access level, tool scope and, for a one-shot grant, the
@@ -2142,6 +2164,90 @@ async function handleDiscoveryToolCall(
 	session: GatewaySession,
 	sessionId: string,
 ): Promise<ToolCallResult> {
+	if (
+		toolName === MULTI_EXECUTE_TOOL_NAME ||
+		(toolName === CALL_TOOL_NAME && Array.isArray(toolArgs.calls))
+	) {
+		const batch = parseMultiExecuteArguments(toolArgs);
+		if (!batch.ok) {
+			return batch.result;
+		}
+		if (
+			batch.calls.length > 1 &&
+			batch.calls.some((c) => c.name === "fabric_switch_organization")
+		) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify({
+							error: "fabric_switch_organization cannot be combined with other tools in a parallel batch. Call it in a separate request first.",
+						}),
+					},
+				],
+				isError: true,
+			};
+		}
+		const results = await Promise.all(
+			batch.calls.map(async (c) => {
+				const callSession =
+					batch.calls.length > 1 ? { ...session } : session;
+				const res = await dispatchToolCall(
+					c.name,
+					c.arguments,
+					callSession,
+					sessionId,
+				);
+				return {
+					name: c.name,
+					isError: res.isError ?? false,
+					content: res.content,
+					...(res.structuredContent !== undefined
+						? { structuredContent: res.structuredContent }
+						: {}),
+				};
+			}),
+		);
+		const anyError = results.some((r) => r.isError);
+		return {
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({ results }),
+				},
+			],
+			structuredContent: { results },
+			...(anyError ? { isError: true } : {}),
+		};
+	}
+
+	if (toolName === MANAGE_CONNECTIONS_NAME) {
+		const action =
+			typeof toolArgs.action === "string" ? toolArgs.action : "list";
+		if (action === "request_authority") {
+			return dispatchToolCall(
+				"fabric_request_authority",
+				toolArgs,
+				session,
+				sessionId,
+			);
+		}
+		if (action === "revoke_authority") {
+			return dispatchToolCall(
+				"fabric_revoke_authority",
+				toolArgs,
+				session,
+				sessionId,
+			);
+		}
+		return dispatchToolCall(
+			"fabric_list_connected_servers",
+			toolArgs,
+			session,
+			sessionId,
+		);
+	}
+
 	if (toolName === CALL_TOOL_NAME) {
 		const call = parseCallToolArguments(toolArgs);
 		if (!call.ok) {
@@ -2361,7 +2467,7 @@ async function authorizeDispatchToolCall(
 		return route;
 	}
 	if (route.context.kind === "platform") {
-		const authorization = authorizePlatformToolCall(
+		const authorization = await authorizePlatformToolCall(
 			toolName,
 			toolArgs,
 			session,

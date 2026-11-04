@@ -33,6 +33,10 @@
 			"types": "./src/github/projects-credential.ts",
 			"default": "./src/github/projects-credential.ts"
 		},
+		"./github/instructions-access": {
+			"types": "./src/github/instructions-access.ts",
+			"default": "./src/github/instructions-access.ts"
+		},
 		"./github/projects-pm-adapter": {
 			"types": "./src/github/projects-pm-adapter.ts",
 			"default": "./src/github/projects-pm-adapter.ts"
@@ -117,6 +121,7 @@
 	"dependencies": {
 		"@repo/ai": "workspace:*",
 		"@repo/config": "workspace:*",
+		"@repo/connectors": "workspace:*",
 		"@repo/database": "workspace:*",
 		"@repo/databricks": "workspace:*",
 		"@repo/storage": "workspace:*",

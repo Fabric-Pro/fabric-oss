@@ -181,13 +181,19 @@ async function handle(request: Request): Promise<Response> {
 	};
 	const runtime = new CopilotRuntime({
 		agents: {
-			[DIRECT_AGENT_ID]: new FabricRuntimeAgent(),
-			[ORCHESTRATOR_AGENT_ID]: new FabricRuntimeAgent(),
-			[RESEARCH_AGENT_ID]: new FabricRuntimeAgent(),
+			[DIRECT_AGENT_ID]: new FabricRuntimeAgent({
+				agentId: DIRECT_AGENT_ID,
+			}),
+			[ORCHESTRATOR_AGENT_ID]: new FabricRuntimeAgent({
+				agentId: ORCHESTRATOR_AGENT_ID,
+			}),
+			[RESEARCH_AGENT_ID]: new FabricRuntimeAgent({
+				agentId: RESEARCH_AGENT_ID,
+			}),
 			...Object.fromEntries(
 				Object.keys(inProcessEngines).map((agentId) => [
 					agentId,
-					new FabricRuntimeAgent(),
+					new FabricRuntimeAgent({ agentId }),
 				]),
 			),
 		},

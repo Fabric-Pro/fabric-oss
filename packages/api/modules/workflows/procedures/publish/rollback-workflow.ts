@@ -4,17 +4,23 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import { db, hasWorkflowAccess, isWorkflowLive } from "@repo/database";
+import { db, isWorkflowLive } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
+	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { findAgenticPublishProblems } from "../../lib/agentic-publish-validation";
 import { syncWorkflowSchedule } from "../../lib/sync-workflow-schedule";
+import { loadEditableWorkflow } from "../../lib/workflow-command-context";
+import { validateWorkflowBeforeExecution } from "../../lib/workflow-validation";
+import { workflowActor, workflowCommandErrors } from "../workflow-actor";
 
 const rollbackWorkflowInput = z.object({
 	workflowId: z.string(),
+	organizationId: z.string().nullable().optional(),
 	targetVersion: z.number(),
 });
 
@@ -25,7 +31,12 @@ const rollbackWorkflowOutput = z.object({
 });
 
 export const rollbackWorkflow = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(workflowCommandErrors)
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/workflows/{workflowId}/rollback",
@@ -39,27 +50,15 @@ export const rollbackWorkflow = tenantProtectedProcedure
 		const { workflowId, targetVersion } = input;
 		const userId = context.user.id;
 
-		// Ownership gate. `hasWorkflowAccess` is the same check `get`, `update`
-		// and `executions.start` use: a personal workflow is the owner's alone,
-		// and an organization workflow additionally requires membership.
-		// Membership on its own is NOT sufficient — workflows stay user-owned
-		// inside an organization, so a colleague who cannot even read this
-		// workflow must not be able to roll it back over its author's edits.
-		if (!(await hasWorkflowAccess(workflowId, userId))) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Workflow not found",
-			});
-		}
-
-		const workflow = await db.workflow.findUnique({
-			where: { id: workflowId },
-		});
-
-		if (!workflow) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Workflow not found",
-			});
-		}
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
+		);
+		const workflow = await loadEditableWorkflow(
+			workflowActor(userId, organizationId),
+			workflowId,
+			"publish",
+		);
 
 		// Find the target version
 		const targetVersionData = await db.workflowVersion.findUnique({
@@ -74,6 +73,30 @@ export const rollbackWorkflow = tenantProtectedProcedure
 		if (!targetVersionData) {
 			throw new ORPCError("NOT_FOUND", {
 				message: `Version ${targetVersion} not found`,
+			});
+		}
+
+		// Restoring an older published graph cannot bypass today's publish gates.
+		const nodes = Array.isArray(targetVersionData.nodes)
+			? targetVersionData.nodes
+			: [];
+		const edges = Array.isArray(targetVersionData.edges)
+			? targetVersionData.edges
+			: [];
+		const validation = validateWorkflowBeforeExecution(nodes, edges);
+		if (!validation.valid)
+			throw new ORPCError("BAD_REQUEST", {
+				message: validation.errors.join("; "),
+			});
+		const { problems } = await findAgenticPublishProblems({
+			nodes,
+			userId: workflow.userId,
+			organizationId: workflow.organizationId,
+			projectId: workflow.projectId ?? null,
+		});
+		if (!validation.valid || problems.length > 0) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: [...validation.errors, ...problems].join("; "),
 			});
 		}
 

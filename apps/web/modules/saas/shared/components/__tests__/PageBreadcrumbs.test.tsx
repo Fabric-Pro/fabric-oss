@@ -45,6 +45,25 @@ beforeEach(() => {
 });
 
 describe("PageBreadcrumbs — home href resolution", () => {
+	it("keeps breadcrumb items directly inside their semantic list", () => {
+		setupOrgContext({ isGuest: false });
+		render(
+			<PageBreadcrumbs
+				items={[
+					{ label: "Agents", href: "/app/org-1/agents" },
+					{ label: "Create" },
+				]}
+			/>,
+		);
+		const list = screen.getByRole("list");
+		expect(
+			[...list.children].every((child) => child.tagName === "LI"),
+		).toBe(true);
+		expect(screen.getByText("Create")).toHaveAttribute(
+			"aria-current",
+			"page",
+		);
+	});
 	it("points Home at the org base path for members in an org", () => {
 		setupOrgContext({ isGuest: false });
 		render(<PageBreadcrumbs items={[{ label: "Projects" }]} />);

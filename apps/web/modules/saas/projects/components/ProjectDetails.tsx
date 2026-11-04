@@ -35,6 +35,13 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+} from "@ui/components/dialog";
+import {
 	Popover,
 	PopoverContent,
 	PopoverTrigger,
@@ -73,12 +80,14 @@ import { useProjectTabWarmup } from "../hooks/use-project-tab-warmup";
 import { defaultProjectTabForProfile } from "../lib/default-project-tab";
 import { AgentActivityTab } from "./AgentActivityTab";
 import { LaunchFabricDesktopBar } from "./coding-runs/LaunchFabricDesktopBar";
+// ProjectHeader is always visible, keep static import
+import { FailedCodeAnalysisNotice } from "./FailedCodeAnalysisNotice";
 import { InstructionDraftsProvider } from "./instructions/InstructionDrafts";
 import { loadCodingInstructionsTab } from "./instructions/lib/coding-instructions-warmup";
-// ProjectHeader is always visible, keep static import
 import { PausedSetupNotice, usePausedSetup } from "./PausedSetupNotice";
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectPresenceProvider } from "./ProjectPresenceProvider";
+import { ProjectRepositoryIntegrationSettings } from "./ProjectRepositoryIntegrationSettings";
 import { ProjectSectionHero } from "./ProjectSectionHero";
 import { ProjectTabButton } from "./ProjectTabButton";
 import { ProjectUnavailable } from "./ProjectUnavailable";
@@ -294,23 +303,28 @@ const TAB_STORAGE_KEY = "fabric-project-active-tab";
 // Progress banner for code-based project setup
 function CodeAnalysisBanner({
 	projectId,
+	canEdit,
 	onComplete,
 }: {
 	projectId: string;
+	/** May edit the project: a failed analysis can be run again. */
+	canEdit: boolean;
 	onComplete: () => void;
 }) {
 	const { organizationId } = useOrganizationContext();
 	const [dismissed, setDismissed] = useState(false);
 	const prevPhaseRef = useRef<string | null>(null);
 
-	const { data: statusData } = useQuery({
+	const { data: statusData, refetch: refetchStatus } = useQuery({
 		queryKey: ["code-analysis-status", projectId, organizationId],
 		queryFn: () =>
 			orpcClient.projects.github.setupStatus({
 				projectId,
 				organizationId: organizationId ?? null,
 			}),
-		refetchInterval: 5000,
+		// A failed analysis waits for someone to run it again; nothing to poll.
+		refetchInterval: (query) =>
+			query.state.data?.codeAnalysisStatus === "FAILED" ? false : 5000,
 		enabled: !dismissed,
 	});
 
@@ -342,7 +356,21 @@ function CodeAnalysisBanner({
 	if (dismissed) {
 		return null;
 	}
-	if (!status || status === "COMPLETED" || status === "FAILED") {
+	if (status === "FAILED") {
+		return (
+			<FailedCodeAnalysisNotice
+				projectId={projectId}
+				organizationId={organizationId}
+				canRetry={canEdit}
+				onRetried={() => {
+					refetchStatus();
+					onComplete();
+				}}
+				onDismiss={() => setDismissed(true)}
+			/>
+		);
+	}
+	if (!status || status === "COMPLETED") {
 		return null;
 	}
 	if (pausedSetup) {
@@ -485,6 +513,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 	const initialTabSourceRef = useRef<"default" | "stored">("default");
 	// Raw selection (sessionStorage / deep links may name any known tab); see
 	// `activeTab` further down for the viewer-resolved value.
+	const [connectRepositoryOpen, setConnectRepositoryOpen] = useState(false);
 	const [rawActiveTab, setActiveTab] = useState<TabId>(() => {
 		if (typeof window === "undefined") {
 			return "overview";
@@ -758,6 +787,9 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 	// across consumers, so this adds no extra round trip.
 	const isLoading = isQueryLoading || !tabCustomization.ready;
 	const project = data?.project;
+	// Same gate as Settings → Repositories' Add Repository button.
+	const canConnectRepositories =
+		project?.canEditSettings ?? project?.userRole === "owner";
 
 	// Profile-dependent landing tab (plan Slice 6): once the project is known
 	// and the user made no explicit choice, EXPLORE opens on the backlog chat.
@@ -1190,12 +1222,15 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 			/>
 
 			{/* Code Analysis Progress Banner */}
-			{!shouldHideChrome && project.codeAnalysisStatus === "SCANNING" && (
-				<CodeAnalysisBanner
-					projectId={projectId}
-					onComplete={() => refetch()}
-				/>
-			)}
+			{!shouldHideChrome &&
+				(project.codeAnalysisStatus === "SCANNING" ||
+					project.codeAnalysisStatus === "FAILED") && (
+					<CodeAnalysisBanner
+						projectId={projectId}
+						canEdit={project.canUpdateProject ?? false}
+						onComplete={() => refetch()}
+					/>
+				)}
 
 			{/* Enhanced Tabs */}
 			<div className="min-w-0 w-full">
@@ -1533,7 +1568,39 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 							/>
 						)}
 						{activeTab === "context" && (
-							<ProjectContextsList projectId={projectId} />
+							<ProjectContextsList
+								projectId={projectId}
+								onConnectRepository={
+									user?.id && canConnectRepositories
+										? () => setConnectRepositoryOpen(true)
+										: undefined
+								}
+							/>
+						)}
+						{activeTab === "context" && user?.id && (
+							<Dialog
+								open={connectRepositoryOpen}
+								onOpenChange={setConnectRepositoryOpen}
+							>
+								<DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+									<DialogHeader>
+										<DialogTitle>
+											Connect repository
+										</DialogTitle>
+										<DialogDescription>
+											The same repositories as Settings →
+											Repositories.
+										</DialogDescription>
+									</DialogHeader>
+									{connectRepositoryOpen && (
+										<ProjectRepositoryIntegrationSettings
+											project={project}
+											currentUserId={user.id}
+											startAdding
+										/>
+									)}
+								</DialogContent>
+							</Dialog>
 						)}
 						{activeTab === "coding-instructions" && (
 							<CodingInstructionsTab
@@ -1587,47 +1654,28 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 											<p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
 												Quick start
 											</p>
-											<ol className="space-y-3 text-sm text-muted-foreground">
-												<li className="flex items-start gap-2">
-													<span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
-														1
-													</span>
-													<span>
-														Launch Fabric Agents
-														Desktop or start your
-														remote server
-														<code className="ml-1.5 block mt-1 rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">
-															npx -y
-															@fabricorg/agent-server
-															--port 9100
-														</code>
-													</span>
+											<ol className="list-decimal space-y-3 pl-5 text-sm text-muted-foreground">
+												<li>
+													Open Launch Fabric Desktop
+													for installation and launch
+													options, or use Delegate to
+													Remote Server to connect a
+													personal or team server.
 												</li>
-												<li className="flex items-start gap-2">
-													<span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
-														2
-													</span>
-													<span>
-														Sign in with your
-														subscription harness
-														(Claude Max, Codex,
-														Grok, Droid, Kimi)
-														<code className="ml-1.5 block mt-1 rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">
-															fabric agents
-															delegate --project{" "}
-															{projectId}
-														</code>
-													</span>
+												<li>
+													Sign in to a coding backend
+													and configure Git access on
+													the execution host. Portal
+													AI Connections configures
+													workflows and chat
+													separately.
 												</li>
-												<li className="flex items-start gap-2">
-													<span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
-														3
-													</span>
-													<span>
-														Board loads below —
-														agents pick up tasks
-														automatically
-													</span>
+												<li>
+													Choose a published feature
+													in Roadmap and use Start
+													work to assign it. Follow
+													the actual run and remote
+													session from that feature.
 												</li>
 											</ol>
 											{kanbanStandaloneUrl && (

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 	trackUsage: vi.fn(),
 	collectStories: vi.fn(),
 	postChat: vi.fn(),
+	recordSuggestion: vi.fn(),
 	log: vi.fn(),
 }));
 
@@ -23,6 +24,7 @@ vi.mock("@repo/database", () => ({
 		},
 		projectContext: { findMany: mocks.contextFindMany },
 		projectMeetingTranscript: { findMany: mocks.transcriptFindMany },
+		parlumeSuggestion: { create: mocks.recordSuggestion },
 	},
 	getBoundPromptForAgent: mocks.boundPrompt,
 	tenantWhere: (userId: string, organizationId?: string | null) =>
@@ -100,6 +102,7 @@ beforeEach(() => {
 		userId: "u1",
 		linkedMeetingId: "lm1",
 		suggestionsEnabled: true,
+		suggestionAudience: "MEETING",
 	});
 	mocks.sessionFindMany.mockResolvedValue([]);
 	mocks.contextFindMany.mockResolvedValue([]);
@@ -112,6 +115,7 @@ beforeEach(() => {
 	mocks.generateText.mockResolvedValue({ text: `  ${RECAP}\n` });
 	mocks.collectStories.mockResolvedValue({ stories: [], tasks: [] });
 	mocks.postChat.mockResolvedValue({ sent: true, tag: "P1" });
+	mocks.recordSuggestion.mockResolvedValue({ id: "suggestion-1" });
 });
 
 afterEach(() => {
@@ -634,7 +638,8 @@ describe("postParlumeSeriesRecap: the recap", () => {
 		});
 	});
 
-	it("logs a post the chat could not take", async () => {
+	// As the bridge does for a meeting suggestion the chat refused.
+	it("logs a post the chat could not take, and records the recap with no tag", async () => {
 		mocks.postChat.mockResolvedValue({
 			sent: false,
 			reason: "chat_unavailable",
@@ -649,6 +654,108 @@ describe("postParlumeSeriesRecap: the recap", () => {
 				sent: false,
 				reason: "chat_unavailable",
 			}),
+		);
+		expect(mocks.recordSuggestion).toHaveBeenCalledWith({
+			data: expect.objectContaining({
+				kind: "RECAP",
+				audience: "MEETING",
+				chatTag: null,
+			}),
+			select: { id: true },
+		});
+	});
+});
+
+describe("postParlumeSeriesRecap: who sees it", () => {
+	beforeEach(() => {
+		mocks.sessionFindMany.mockResolvedValue([
+			priorSession({
+				contextId: "c1",
+				joinedAt: "2026-10-20T09:00:00.000Z",
+			}),
+		]);
+		mocks.contextFindMany.mockResolvedValue([
+			notesContext("c1", "Decided to ship the export."),
+		]);
+	});
+
+	function sessionFor(audience: "MEETING" | "TEAM") {
+		mocks.sessionFindUnique.mockResolvedValue({
+			id: "s-now",
+			status: "ACTIVE",
+			projectId: "p1",
+			organizationId: "o1",
+			userId: "u1",
+			linkedMeetingId: "lm1",
+			suggestionsEnabled: true,
+			suggestionAudience: audience,
+		});
+	}
+
+	it("posts a meeting recap in the chat and records it with its tag", async () => {
+		sessionFor("MEETING");
+
+		await postParlumeSeriesRecap({ sessionId: "s-now" });
+
+		expect(mocks.postChat).toHaveBeenCalledTimes(1);
+		expect(mocks.recordSuggestion).toHaveBeenCalledWith({
+			data: {
+				sessionId: "s-now",
+				projectId: "p1",
+				organizationId: "o1",
+				userId: "u1",
+				kind: "RECAP",
+				audience: "MEETING",
+				text: RECAP,
+				chatTag: "P1",
+			},
+			select: { id: true },
+		});
+	});
+
+	// External participants read the meeting chat.
+	it("keeps a team-only recap off the chat and records it for the Parlume page", async () => {
+		sessionFor("TEAM");
+
+		await postParlumeSeriesRecap({ sessionId: "s-now" });
+
+		expect(mocks.postChat).not.toHaveBeenCalled();
+		expect(mocks.recordSuggestion).toHaveBeenCalledWith({
+			data: expect.objectContaining({
+				kind: "RECAP",
+				audience: "TEAM",
+				text: RECAP,
+				chatTag: null,
+			}),
+			select: { id: true },
+		});
+		expect(mocks.log).toHaveBeenCalledWith(
+			"info",
+			"recap.recorded",
+			expect.objectContaining({ sessionId: "s-now", audience: "TEAM" }),
+		);
+	});
+
+	it("still counts a posted recap when its copy for the page cannot be saved", async () => {
+		sessionFor("MEETING");
+		mocks.recordSuggestion.mockRejectedValue(new Error("database down"));
+
+		await postParlumeSeriesRecap({ sessionId: "s-now" });
+
+		expect(mocks.log).toHaveBeenCalledWith(
+			"info",
+			"recap.posted",
+			expect.objectContaining({ sent: true, tag: "P1" }),
+		);
+		expect(mocks.log).toHaveBeenCalledWith(
+			"warn",
+			"recap.record_failed",
+			expect.objectContaining({ sessionId: "s-now" }),
+		);
+		expect(mocks.log).not.toHaveBeenCalledWith(
+			"warn",
+			"recap.failed",
+			expect.anything(),
 		);
 	});
 });

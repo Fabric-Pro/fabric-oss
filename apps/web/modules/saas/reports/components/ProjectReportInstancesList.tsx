@@ -21,12 +21,16 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { OwnerOnlyGenerate } from "./OwnerOnlyGenerate";
 
 type ProjectReportInstance = {
 	id: string;
 	name: string;
 	templateName: string;
 	isActive: boolean;
+	canGenerate: boolean;
+	/** What still stops the report from generating; `null` when it is ready. */
+	generateBlockedReason: string | null;
 	lastRunAt: string | null;
 	latestExecutionStatus: string | null;
 };
@@ -40,7 +44,10 @@ type Props = {
 	onBrowseTemplates?: () => void;
 };
 
-/** The reports a project already has: open one, or generate it now. */
+/**
+ * The reports a project already has: open one, or generate a ready one in
+ * one click. A report that is not ready says what it still needs.
+ */
 export function ProjectReportInstancesList({
 	instances,
 	organizationId,
@@ -103,6 +110,10 @@ export function ProjectReportInstancesList({
 				const isRunning =
 					instance.latestExecutionStatus === "PENDING" ||
 					instance.latestExecutionStatus === "RUNNING";
+				const blockedReason = instance.canGenerate
+					? instance.generateBlockedReason
+					: null;
+				const blockedReasonId = `report-${instance.id}-not-ready`;
 
 				return (
 					<Card key={instance.id}>
@@ -142,34 +153,60 @@ export function ProjectReportInstancesList({
 								</Badge>
 							</div>
 						</CardHeader>
-						<CardFooter className="gap-2 pt-2">
+						<CardFooter className="flex-wrap gap-2 pt-2">
 							<Button variant="outline" size="sm" asChild>
 								<Link href={href}>
 									<SettingsIcon className="mr-1 h-3 w-3" />
 									Configure
 								</Link>
 							</Button>
-							<Button
-								size="sm"
-								onClick={() =>
-									executeMutation.mutate({
-										instanceId: instance.id,
-										organizationId,
-									})
-								}
-								disabled={
-									!instance.isActive ||
-									isRunning ||
-									executeMutation.isPending
-								}
+							<OwnerOnlyGenerate
+								canGenerate={instance.canGenerate}
 							>
-								{isStarting ? (
-									<Loader2Icon className="mr-1 h-3 w-3 motion-safe:animate-spin" />
-								) : (
-									<PlayIcon className="mr-1 h-3 w-3" />
+								{(ownerOnlyId) => (
+									<Button
+										size="sm"
+										onClick={() =>
+											executeMutation.mutate({
+												instanceId: instance.id,
+												organizationId,
+											})
+										}
+										disabled={
+											!instance.canGenerate ||
+											!instance.isActive ||
+											Boolean(blockedReason) ||
+											isRunning ||
+											executeMutation.isPending
+										}
+										aria-describedby={
+											[
+												ownerOnlyId,
+												blockedReason
+													? blockedReasonId
+													: undefined,
+											]
+												.filter(Boolean)
+												.join(" ") || undefined
+										}
+									>
+										{isStarting ? (
+											<Loader2Icon className="mr-1 h-3 w-3 motion-safe:animate-spin" />
+										) : (
+											<PlayIcon className="mr-1 h-3 w-3" />
+										)}
+										Generate
+									</Button>
 								)}
-								Generate
-							</Button>
+							</OwnerOnlyGenerate>
+							{blockedReason && (
+								<p
+									id={blockedReasonId}
+									className="w-full text-xs text-muted-foreground"
+								>
+									Not ready: {blockedReason}
+								</p>
+							)}
 						</CardFooter>
 					</Card>
 				);

@@ -81,6 +81,10 @@ import {
 	RECURRING_ERROR_BUG_FALLBACK_BODY,
 	RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
 } from "@repo/utils/recurring-error-bug-prompt";
+import {
+	REPORT_SAMPLE_FALLBACK_BODY,
+	REPORT_SAMPLE_PROMPT_AGENT_KEY,
+} from "@repo/utils/report-sample-prompt";
 import { db } from "../prisma/client";
 import { isDirectRun } from "./lib/is-direct-run";
 // The retirement guard every SYSTEM-scope insert goes through, and the batched
@@ -474,6 +478,14 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
+	},
+	// report_sample_preview: the sample a report template shows before it has
+	// a successful run. Dedicated agent key, GENERAL + null: one prompt per
+	// tenant covers every template.
+	[REPORT_SAMPLE_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: REPORT_SAMPLE_PROMPT_AGENT_KEY,
 	},
 	// orchestrator_memory_context / direct_chat_memory_context: how each
 	// assistant engine reads what it recalls from earlier conversations and
@@ -6816,6 +6828,28 @@ Rules:
 		structuredFormat: "JSON" as const,
 		isPublic: true,
 		content: RECURRING_ERROR_BUG_FALLBACK_BODY,
+	},
+	{
+		// report_sample_preview: the sample a report template shows, labelled
+		// as sample data, while it has no successful run to preview.
+		//
+		// The body lives in @repo/utils (REPORT_SAMPLE_FALLBACK_BODY) so this
+		// seed and the procedure that resolves the binding share ONE
+		// definition. It takes the template's name, description, sections and
+		// instructions as HANDLEBARS variables.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: REPORT_SAMPLE_PROMPT_AGENT_KEY,
+		name: "Report Sample Preview",
+		description:
+			"Writes the sample a report template shows before it has a successful run: an example report in the template's sections and tone, built from invented example data and labelled as a sample.",
+		category: "document-generation",
+		tags: ["reports", "preview", "sample", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		isPublic: true,
+		content: REPORT_SAMPLE_FALLBACK_BODY,
 	},
 	{
 		// orchestrator_memory_context: how the Orchestrator assistant reads what

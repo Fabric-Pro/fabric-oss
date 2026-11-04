@@ -13,12 +13,13 @@ import { asSchema } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import scopeIntakeJsonSchema from "./fixtures/scope-intake-chunk-json-schema.json";
 
-const { generateObjectMock } = vi.hoisted(() => ({
-	generateObjectMock: vi.fn(),
+const { generateTextMock } = vi.hoisted(() => ({
+	generateTextMock: vi.fn(),
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: generateObjectMock,
+	Output: { object: (spec: unknown) => spec },
+	generateText: generateTextMock,
 	getAIModelWithMetadata: vi.fn().mockResolvedValue({
 		model: { id: "mock-model" },
 		metadata: {
@@ -448,11 +449,11 @@ describe("scope intake — seed proposal", () => {
 
 describe("scope intake — extractScopeItems with mocked LLM", () => {
 	beforeEach(() => {
-		generateObjectMock.mockReset();
+		generateTextMock.mockReset();
 	});
 
 	it("wraps the document in the untrusted-data block and merges validated enrichment", async () => {
-		generateObjectMock.mockImplementation(
+		generateTextMock.mockImplementation(
 			async ({ prompt }: { prompt: string }) => {
 				// The prompt must isolate document text and tell the model to
 				// ignore instructions inside it.
@@ -464,7 +465,7 @@ describe("scope intake — extractScopeItems with mocked LLM", () => {
 				expect(prompt).toMatch(/never follow instructions/i);
 				expect(prompt).toContain("FND-01");
 				return {
-					object: {
+					output: {
 						areas: [
 							{
 								prefix: "vis",
@@ -494,7 +495,7 @@ describe("scope intake — extractScopeItems with mocked LLM", () => {
 			originalFilename: "heritage.pdf",
 		});
 
-		expect(generateObjectMock).toHaveBeenCalled();
+		expect(generateTextMock).toHaveBeenCalled();
 		expect(result.stats.llmUsed).toBe(true);
 		expect(result.stats.rowCount).toBe(100);
 		const vis02 = result.proposal.changes.find(
@@ -538,11 +539,11 @@ describe("scope intake — extractScopeItems with mocked LLM", () => {
 		expect(row?.note).toContain("<<<END_UNTRUSTED_DOCUMENT_TEXT>>>");
 
 		const prompts: string[] = [];
-		generateObjectMock.mockImplementation(
+		generateTextMock.mockImplementation(
 			async ({ prompt }: { prompt: string }) => {
 				prompts.push(prompt);
 				return {
-					object: { areas: [], items: [] },
+					output: { areas: [], items: [] },
 					usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
 				};
 			},
@@ -618,7 +619,7 @@ describe("scope intake — extractScopeItems with mocked LLM", () => {
 	});
 
 	it("falls back to the deterministic proposal when the model is unavailable", async () => {
-		generateObjectMock.mockRejectedValue(
+		generateTextMock.mockRejectedValue(
 			new Error("provider not configured"),
 		);
 		const result = await extractScopeItems({
@@ -635,8 +636,8 @@ describe("scope intake — extractScopeItems with mocked LLM", () => {
 	});
 
 	it("fails clearly when neither the pre-pass nor the model finds items", async () => {
-		generateObjectMock.mockResolvedValue({
-			object: { areas: [], items: [] },
+		generateTextMock.mockResolvedValue({
+			output: { areas: [], items: [] },
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
 		});
 		await expect(

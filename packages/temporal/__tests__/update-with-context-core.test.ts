@@ -2,7 +2,7 @@
  * FR-25: the "Update using context" AI edit flow (`runContextUpdate`)
  * must carry the shared locked-attachment rule so it never claims to have
  * analysed a locked attachment or drops/fabricates one while rewriting the spec.
- * Captures the `generateObject` call and asserts the marker is in the system prompt.
+ * Captures the `generateText` call and asserts the marker is in the system prompt.
  */
 
 import { readFileSync } from "node:fs";
@@ -10,7 +10,7 @@ import { getLockedAttachmentRulesClause } from "@repo/agent-prompts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	logModelUsageAsync: vi.fn(),
 	getProjectFunctionTagClause: vi.fn(),
@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => ({
 // `zodSchema` is mocked here, not on `ai`, because the core imports it from
 // @repo/ai. That is deliberate: `ai` peer-depends on zod, so pnpm installs one
 // copy of `ai` per zod version — importing `zodSchema` straight from `ai` gets a
-// DIFFERENT copy than the `generateObject` it is handed to, and the two types
+// DIFFERENT copy than the `generateText` it is handed to, and the two types
 // refuse to unify. Both must come through @repo/ai.
 // NoObjectGeneratedError is the REAL `ai` class (via importActual), not a
 // stand-in — the core's catch block calls the real `.isInstance()`, which
@@ -28,7 +28,8 @@ vi.mock("@repo/ai", async () => {
 	const actualAi = await vi.importActual<typeof import("ai")>("ai");
 	return {
 		AIProviderNotConfiguredError: class extends Error {},
-		generateObject: mocks.generateObject,
+		Output: { object: (spec: unknown) => spec },
+		generateText: mocks.generateText,
 		getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 		logModelUsageAsync: mocks.logModelUsageAsync,
 		NoObjectGeneratedError: actualAi.NoObjectGeneratedError,
@@ -61,8 +62,8 @@ describe("runContextUpdate — FR-25 locked-attachment rule", () => {
 			metadata: {},
 			trackUsage: vi.fn(),
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				hasRelevantContext: true,
 				updatedDocument: "# Spec\nbody",
 				needsHumanResolution: false,
@@ -98,8 +99,8 @@ describe("runContextUpdate — FR-25 locked-attachment rule", () => {
 			{ taskType: "COMPLEX" },
 			expect.objectContaining({ projectId: "p1" }),
 		);
-		expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-		const system = mocks.generateObject.mock.calls[0][0]
+		expect(mocks.generateText).toHaveBeenCalledTimes(1);
+		const system = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 		expect(system).toContain("DEDICATED ATTACHMENTS");
 		// The original spec-editor instructions must survive intact.
@@ -139,8 +140,8 @@ describe("runContextUpdate — no-op relevance gate", () => {
 
 	it("flips hasRelevantContext to false when the proposed document is identical, preserving the model summary", async () => {
 		const doc = "# Spec\n\nThe body of the spec.";
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				hasRelevantContext: true,
 				updatedDocument: doc,
 				needsHumanResolution: false,
@@ -164,8 +165,8 @@ describe("runContextUpdate — no-op relevance gate", () => {
 		// Same content, only trailing whitespace + CRLF noise — a no-op under the
 		// canonical comparator. Model returns an empty summary.
 		const noisy = "# Spec\r\n\r\nLine one.   \r\nLine two.\t";
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				hasRelevantContext: true,
 				updatedDocument: noisy,
 				needsHumanResolution: false,
@@ -190,8 +191,8 @@ describe("runContextUpdate — no-op relevance gate", () => {
 	it("keeps hasRelevantContext true and the model's document for a real change", async () => {
 		const doc = "# Spec\n\nOld body.";
 		const changed = "# Spec\n\nNew body with an actual update.";
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				hasRelevantContext: true,
 				updatedDocument: changed,
 				needsHumanResolution: false,
@@ -239,8 +240,8 @@ describe("runContextUpdate — function-tag role clause (Fizzy #1767 Stage 4)", 
 			metadata: {},
 			trackUsage: vi.fn(),
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				hasRelevantContext: true,
 				updatedDocument: "# Spec\nbody",
 				needsHumanResolution: false,
@@ -262,7 +263,7 @@ describe("runContextUpdate — function-tag role clause (Fizzy #1767 Stage 4)", 
 			requesterUserId: "u1",
 			surface: "update-with-context",
 		});
-		const system = mocks.generateObject.mock.calls[0][0]
+		const system = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 		expect(system).toContain(ROLE_CLAUSE_SENTINEL);
 	});
@@ -273,14 +274,14 @@ describe("runContextUpdate — function-tag role clause (Fizzy #1767 Stage 4)", 
 			ROLE_CLAUSE_SENTINEL,
 		);
 		await runContextUpdate({ ...baseArgs, projectId: "p1" });
-		const withClause = mocks.generateObject.mock.calls[0][0]
+		const withClause = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 
 		// ...then the flag-OFF shape, from an otherwise-identical invocation.
-		mocks.generateObject.mockClear();
+		mocks.generateText.mockClear();
 		mocks.getProjectFunctionTagClause.mockResolvedValue("");
 		await runContextUpdate({ ...baseArgs, projectId: "p1" });
-		const withoutClause = mocks.generateObject.mock.calls[0][0]
+		const withoutClause = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 
 		expect(withoutClause).not.toContain(ROLE_CLAUSE_SENTINEL);
@@ -295,7 +296,7 @@ describe("runContextUpdate — function-tag role clause (Fizzy #1767 Stage 4)", 
 		await runContextUpdate({ ...baseArgs, projectId: undefined });
 
 		expect(mocks.getProjectFunctionTagClause).not.toHaveBeenCalled();
-		const system = mocks.generateObject.mock.calls[0][0]
+		const system = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 		expect(system).not.toContain(ROLE_CLAUSE_SENTINEL);
 	});
@@ -322,8 +323,8 @@ describe("runContextUpdate — output token budget", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.getProjectFunctionTagClause.mockResolvedValue("");
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				hasRelevantContext: true,
 				updatedDocument: "# Spec\nbody",
 				needsHumanResolution: false,
@@ -352,7 +353,7 @@ describe("runContextUpdate — output token budget", () => {
 			documentMarkdown: "x".repeat(1_000),
 		});
 
-		expect(mocks.generateObject.mock.calls[0][0].maxOutputTokens).toBe(
+		expect(mocks.generateText.mock.calls[0][0].maxOutputTokens).toBe(
 			16_384,
 		);
 	});
@@ -365,7 +366,7 @@ describe("runContextUpdate — output token budget", () => {
 			documentMarkdown: "x".repeat(60_000),
 		});
 
-		expect(mocks.generateObject.mock.calls[0][0].maxOutputTokens).toBe(
+		expect(mocks.generateText.mock.calls[0][0].maxOutputTokens).toBe(
 			42_048,
 		);
 	});
@@ -378,7 +379,7 @@ describe("runContextUpdate — output token budget", () => {
 			documentMarkdown: "x".repeat(300_000),
 		});
 
-		expect(mocks.generateObject.mock.calls[0][0].maxOutputTokens).toBe(
+		expect(mocks.generateText.mock.calls[0][0].maxOutputTokens).toBe(
 			128_000,
 		);
 	});
@@ -391,9 +392,7 @@ describe("runContextUpdate — output token budget", () => {
 			documentMarkdown: "x".repeat(60_000),
 		});
 
-		expect(mocks.generateObject.mock.calls[0][0].maxOutputTokens).toBe(
-			4_096,
-		);
+		expect(mocks.generateText.mock.calls[0][0].maxOutputTokens).toBe(4_096);
 	});
 
 	it("VERCEL_GATEWAY, no catalog cap -> maxOutputTokens omitted entirely", async () => {
@@ -404,7 +403,7 @@ describe("runContextUpdate — output token budget", () => {
 			documentMarkdown: "x".repeat(1_000),
 		});
 
-		expect("maxOutputTokens" in mocks.generateObject.mock.calls[0][0]).toBe(
+		expect("maxOutputTokens" in mocks.generateText.mock.calls[0][0]).toBe(
 			false,
 		);
 	});
@@ -417,7 +416,7 @@ describe("runContextUpdate — output token budget", () => {
 			documentMarkdown: "x".repeat(1_000),
 		});
 
-		expect(mocks.generateObject.mock.calls[0][0].maxOutputTokens).toBe(
+		expect(mocks.generateText.mock.calls[0][0].maxOutputTokens).toBe(
 			16_384,
 		);
 	});
@@ -453,7 +452,7 @@ describe("runContextUpdate — truncation classification", () => {
 	});
 
 	it("rejects with ContextUpdateTruncatedError when the model finishes at 'length'", async () => {
-		mocks.generateObject.mockRejectedValue(
+		mocks.generateText.mockRejectedValue(
 			new actualAiForTests.NoObjectGeneratedError({
 				message: "The generated object could not be parsed.",
 				response: {
@@ -486,7 +485,7 @@ describe("runContextUpdate — truncation classification", () => {
 		// value an unconfigured provider returns — so every caller told the user
 		// to "check your AI settings" for a rate limit, a provider 500 or an
 		// unparseable response, sending them to a page that was already correct.
-		mocks.generateObject.mockRejectedValue(new Error("boom"));
+		mocks.generateText.mockRejectedValue(new Error("boom"));
 
 		await expect(runContextUpdate(baseArgs)).rejects.toBeInstanceOf(
 			ContextUpdateFailedError,
@@ -498,7 +497,7 @@ describe("runContextUpdate — truncation classification", () => {
 		// the unattended sweep records it as the cycle's failure reason. Provider
 		// internals belong in the logs, not in either of those.
 		const underlying = new Error("429 rate_limit_exceeded from provider");
-		mocks.generateObject.mockRejectedValue(underlying);
+		mocks.generateText.mockRejectedValue(underlying);
 
 		const error = await runContextUpdate(baseArgs).catch((e) => e);
 
@@ -509,7 +508,7 @@ describe("runContextUpdate — truncation classification", () => {
 	it("still resolves to null when no AI provider is configured", async () => {
 		// The one remaining null, and the only case for which "check your AI
 		// settings" is the right thing to say.
-		mocks.generateObject.mockRejectedValue(
+		mocks.generateText.mockRejectedValue(
 			new AIProviderNotConfiguredError("no provider"),
 		);
 
@@ -557,8 +556,8 @@ describe("runContextUpdate — document path system string (R10 gate)", () => {
 			metadata: {},
 			trackUsage: vi.fn(),
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				hasRelevantContext: true,
 				updatedDocument: "# Spec\nbody",
 				needsHumanResolution: false,
@@ -573,7 +572,7 @@ describe("runContextUpdate — document path system string (R10 gate)", () => {
 	it("a caller that supplies no addendum gets exactly the base prompt plus the locked-attachment clause", async () => {
 		await runContextUpdate(documentArgs);
 
-		const system = mocks.generateObject.mock.calls[0][0]
+		const system = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 		expect(system).toBe(
 			`${UPDATE_WITH_CONTEXT_SYSTEM_PROMPT}\n\n${getLockedAttachmentRulesClause()}`,
@@ -583,23 +582,23 @@ describe("runContextUpdate — document path system string (R10 gate)", () => {
 	it("the system string ends at the locked-attachment clause — no trailing separator, no empty addendum slot", async () => {
 		await runContextUpdate(documentArgs);
 
-		const system = mocks.generateObject.mock.calls[0][0]
+		const system = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 		expect(system.endsWith(getLockedAttachmentRulesClause())).toBe(true);
 	});
 
 	it("an empty or whitespace-only addendum assembles byte-identically to no addendum at all", async () => {
 		await runContextUpdate(documentArgs);
-		const baseline = mocks.generateObject.mock.calls[0][0]
+		const baseline = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 
 		for (const blank of ["", "   ", "\n\n", "\t \n"]) {
-			mocks.generateObject.mockClear();
+			mocks.generateText.mockClear();
 			await runContextUpdate({
 				...documentArgs,
 				instructionAddendum: blank,
 			});
-			expect(mocks.generateObject.mock.calls[0][0].instructions).toBe(
+			expect(mocks.generateText.mock.calls[0][0].instructions).toBe(
 				baseline,
 			);
 		}
@@ -654,8 +653,8 @@ describe("runContextUpdate — kind-scoped instruction addendum (Fizzy #2048)", 
 			metadata: {},
 			trackUsage: vi.fn(),
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				hasRelevantContext: true,
 				updatedDocument: "# Spec\nbody",
 				needsHumanResolution: false,
@@ -668,15 +667,15 @@ describe("runContextUpdate — kind-scoped instruction addendum (Fizzy #2048)", 
 
 	it("appends the addendum in a fixed position: the no-addendum string, then one separator, then the addendum", async () => {
 		await runContextUpdate(baseArgs);
-		const withoutAddendum = mocks.generateObject.mock.calls[0][0]
+		const withoutAddendum = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 
-		mocks.generateObject.mockClear();
+		mocks.generateText.mockClear();
 		await runContextUpdate({
 			...baseArgs,
 			instructionAddendum: ADDENDUM_SENTINEL,
 		});
-		const withAddendum = mocks.generateObject.mock.calls[0][0]
+		const withAddendum = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 
 		expect(withAddendum).toBe(`${withoutAddendum}\n\n${ADDENDUM_SENTINEL}`);
@@ -692,7 +691,7 @@ describe("runContextUpdate — kind-scoped instruction addendum (Fizzy #2048)", 
 			instructionAddendum: ADDENDUM_SENTINEL,
 		});
 
-		const system = mocks.generateObject.mock.calls[0][0]
+		const system = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 		expect(system).toContain(`\n\n${ROLE_CLAUSE_SENTINEL}`);
 		expect(system.endsWith(`\n\n${ADDENDUM_SENTINEL}`)).toBe(true);
@@ -710,7 +709,7 @@ describe("runContextUpdate — kind-scoped instruction addendum (Fizzy #2048)", 
 			instructionAddendum: catalogText,
 		});
 
-		const system = mocks.generateObject.mock.calls[0][0]
+		const system = mocks.generateText.mock.calls[0][0]
 			.instructions as string;
 		expect(system).toContain(catalogText);
 	});

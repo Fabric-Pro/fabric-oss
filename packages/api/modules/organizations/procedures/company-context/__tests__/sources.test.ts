@@ -2735,6 +2735,10 @@ describe("downloading", () => {
 			parentSourceId: "src_link",
 			organizationId: ORG,
 		});
+		expect(mocks.urlPageFindMany.mock.calls[0]?.[0].orderBy).toEqual([
+			{ pageUrl: "asc" },
+			{ id: "asc" },
+		]);
 		const [key, body] = mocks.uploadFile.mock.calls[0] ?? [];
 		expect(key).toMatch(new RegExp(`^${ORG}/company-context/downloads/`));
 		expect(String(body)).toContain("## Alpha\nhttps://example.com/docs/a");

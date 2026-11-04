@@ -76,6 +76,9 @@ export const AUDIT_ACTIONS = [
 	// instance as the resource and exclude prompt text from metadata.
 	"org.agent_definition.imported",
 	"org.agent_definition.exported",
+	"org.agent_execution.admitted",
+	"org.agent_execution.cancel_requested",
+	"org.agent_schedule.updated",
 	"org.member.invited",
 	"org.member.role_changed",
 	"org.member.removed",
@@ -256,6 +259,11 @@ export const AUDIT_ACTIONS = [
 	"project.pull_request.comment_posted",
 	"project.created",
 	"project.updated",
+	"project.context_quality.binding_configured",
+	"project.context_quality.binding_disabled",
+	"project.context_quality.binding_deleted",
+	"project.context_quality.run_requested",
+	"project.context_quality.cancel_requested",
 	"project.archived",
 	"project.deleted",
 	"project.member.invited",
@@ -302,6 +310,8 @@ export const AUDIT_ACTIONS = [
 	// "who changed what the AI is told about this source" had no answer once an
 	// API key could make the edit as well as a person.
 	"project.context_source.metadata_updated",
+	"project.context_source.workspace_document_linked",
+	"project.context_source.workspace_document_unlinked",
 	// A synced knowledge file's content was created or replaced by its path
 	// (Fizzy #2616) — text every AI prompt that retrieves the project's context
 	// can now draw on. Written by `projects.contexts.upsertSyncedFile` and the
@@ -320,6 +330,12 @@ export const AUDIT_ACTIONS = [
 	// delete is not this row: it is captured under `activity.*`, which the
 	// key-backed REST route never reaches.
 	"project.context_source.synced_file_deleted",
+	// A project's Living Memory was reset: every synced knowledge file of the
+	// project deleted at once, from the Context tab or `fabric context reset`
+	// (`metadata.via` says which), with the count and the scope, never a path
+	// or content. Written in the delete's own transaction, so no reset goes
+	// unrecorded. A reset that found nothing writes no row.
+	"project.context_source.synced_files_reset",
 	// Living Memory repository sync (design 2026-09-23 §5.1, §5.4, §8,
 	// Fizzy #2657): the project's Context pointed at paths of a connected
 	// repository's branch (configured), a run requested (started), each
@@ -410,6 +426,15 @@ export const AUDIT_ACTIONS = [
 	// could not finish. A clean scan writes no row; History shows it. Counts
 	// and rule ids only, never a path or matched text.
 	"project.instructions.published_unscanned",
+	// One reviewer's approval of an upload-mode proposal that did not yet
+	// meet the project's review policy. The approval that meets it writes
+	// `published` instead, so each approval leaves exactly one row.
+	"project.instructions.proposal_approved",
+	// The proposer rebased a stale upload-mode proposal onto the version now
+	// published: a new proposal replaced it, written in the same transaction
+	// that closed the old one. Ids, versions and counts only, never a path
+	// or content.
+	"project.instructions.proposal_rebased",
 	"project.instructions.deferred_scan_issues_found",
 	"project.instructions.deferred_scan_incomplete",
 	// A member proposal branch (Fizzy #2738) changed state, head or pull
@@ -437,6 +462,16 @@ export const AUDIT_ACTIONS = [
 	// repository Fabric created (specs/2026-10-21-ai-artifacts-hub §5.2).
 	// Repositories and counts only, never a path or content.
 	"project.instructions.consolidation_started",
+	// Its cleanup pull request merged from Fabric after the person confirmed.
+	// Repository, pull request number and file count only.
+	"project.instructions.consolidation_cleanup_merged",
+	// Members' read access to the instructions repository (spec 2026-11-04
+	// §4.4): Fabric granted it (team membership or collaborator invitation),
+	// revoked a grant it had made, or a grant failed. GitHub login and
+	// repository only, never a token.
+	"project.instructions_access.granted",
+	"project.instructions_access.revoked",
+	"project.instructions_access.failed",
 	// story (11)
 	"story.created",
 	"story.updated",

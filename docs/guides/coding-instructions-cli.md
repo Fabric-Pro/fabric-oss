@@ -377,7 +377,7 @@ its repository directly there is no copy to hash: `--verify` says so in one line
 `behind`, `diverged`, `not-fetched`, `unknown` or `no-checkout`, with the line
 the text prints, or `null` when current).
 
-### `fabric instructions sync [--project <id>] [--dest <dir>] [--dry-run] [--repair] [--hook]`
+### `fabric instructions sync [--project <id>] [--dest <dir>] [--dry-run] [--repair [--include-overrides]] [--hook]`
 
 Applies the published version. It plans against the working tree rather than
 the lock alone, so it can tell a file it wrote from a file the developer
@@ -392,6 +392,8 @@ edited, and reports which is which:
 | removed | the file left the snapshot and still matched the lock |
 | kept, modified locally | the file left the snapshot but had been edited, so it stayed |
 | kept, renamed in the published snapshot | the lock names it under one spelling and the manifest under another that means the same file; the write covers it, so the old spelling is left alone |
+| local override | the path is one of your [local overrides](#local-overrides-fabric-instructions-override): it is never written or deleted, even when the published version adds, changes or removes it |
+| published changed under your override | the same, and the published version of that file is not the one your last sync saw, so you may want to look at it |
 
 `--dry-run` prints that plan and downloads nothing.
 
@@ -445,6 +447,11 @@ line on stderr, which also names the local-notes files:
   (`.claude/settings.local.json` at the top of the instruction set,
   `CLAUDE.local.md` at any depth), and `fabric instructions` never writes,
   deletes or pushes either one.
+- A file you mean to keep as your own for good, published or not, can be made
+  a [local override](#local-overrides-fabric-instructions-override). `--repair`
+  leaves overrides alone too; `--repair --include-overrides` replaces them
+  with the published version like any other kept edit. `--include-overrides`
+  on its own is refused (exit 2), because only `--repair` replaces anything.
 
 For a repository-sourced project (source of truth `REPOSITORY`), what `sync`
 does depends on the directory it runs in; see
@@ -484,7 +491,44 @@ Commander resolves it: `fabric --format table instructions check` beats
 `FABRIC_FORMAT=json`, because the environment is the root option's default and
 an explicit flag replaces a default.
 
-### `fabric instructions push [--project <id>] [--dest <dir>] [--add <path>] [--publish] [--include-proposed] [--dry-run]`
+### Local overrides: `fabric instructions override`
+
+```
+fabric instructions override add <path-or-pattern> [--dest <dir>]
+fabric instructions override remove <path-or-pattern> [--dest <dir>]
+fabric instructions override list [--dest <dir>] [--format json]
+```
+
+An override names a path this checkout keeps as its own: a published file you
+changed or removed only here, or a file the project never published. `sync`
+never writes or deletes an overridden path and lists it as a local override;
+`push` never sends one, even when `--add` names it, and says on stderr which
+it left out. That is all an override does: the list only ever takes paths out
+of what a command would otherwise touch.
+
+An entry is an exact relative path (`CLAUDE.md`), matched the way a
+case-insensitive filesystem would match it, or a gitignore-style pattern
+(`notes/**`) when it contains `*`, `?` or `[`. Paths go through the same
+refusals as everything else here: no traversal, nothing under `.git/` or
+`.fabric/`.
+
+The list lives in `<dest>/.fabric/local-overrides.json`
+(`{ "version": 1, "paths": [...], "patterns": [...] }`), a file of its own
+rather than part of the lock, so CLIs that predate it keep reading the lock.
+It belongs to this machine: `override add` adds it to `.git/info/exclude` when
+the folder is in a git checkout. A file that exists but cannot be read as a
+valid list stops `sync` and `push` rather than being treated as empty, since
+an empty list would let the next sync overwrite every file you meant to keep.
+`fabric instructions doctor` lists overridden files under its drift check as
+passing, so they no longer count as drift.
+
+Overrides apply to a synced copy (`sync`, `push`, `push --rebase`) and to a
+suggestion from a checkout of a repository-sourced project. Plugin delivery
+(`fabric instructions init` without `--clone`, and `render`) reads the
+instructions from the server, not from this folder, so overrides do not change
+what the plugin serves.
+
+### `fabric instructions push [--project <id>] [--dest <dir>] [--add <path>] [--publish] [--include-proposed] [--rebase] [--dry-run]`
 
 Suggests this checkout's edits back to the project. By default it opens a
 **proposal**: nothing changes for anybody reading the instructions until
@@ -615,12 +659,45 @@ Two refusals you may see:
 
 - *"published instructions moved past your last sync"*: somebody published
   while you were working. The server refuses rather than rebasing your change
-  onto a version you never saw (the spec's `PULL_FIRST` rule; there is no
-  server-side merge in any version). Run `sync`, re-apply the edit, push again.
+  onto a version you never saw (the `PULL_FIRST` rule; the server never merges
+  a change set). Run `sync`, re-apply the edit and push again, or let
+  `push --rebase` do the merge here, where you can see it.
 - *the project's instructions come from its repository*: `--publish` on a
   project whose source of truth is `REPOSITORY`, where the files are changed in
   git and mirrored into Fabric. Commit and push to the repository instead.
   Nothing was sent.
+
+#### `--rebase`: merge your edits onto a newer version
+
+When the published version has moved past your last sync, `push --rebase`
+merges instead of refusing. For each file you changed it reads three
+versions: the one your last sync wrote (from that version's own record,
+`POST .../instructions/versions/:snapshotId/files`, checked byte for byte
+against the lock), yours, and the one published now. A file only you changed
+is sent as it is; a file both sides changed on different lines is merged, the
+merged text is written into your checkout, and that is what is sent; a file
+only the published side changed is not touched. The change set is then stated
+against the version published now, as a proposal.
+
+When a file cannot be merged, nothing is sent and the lock is not changed. A
+text file gets git-style conflict markers (`<<<<<<< local`, `=======`,
+`>>>>>>> published-v<N>`); when one side deleted the file and the other
+changed it, the file is written with the changed side inside the markers. A
+binary file is left as it was. The command lists each and exits 7.
+Edit each file into what it should be (delete it to propose its removal) and
+run `push --rebase` again: files the last run wrote are taken exactly as you
+left them, as long as no conflict marker remains, and the rest are merged
+again. That record lives in `.fabric/rebase.json` and only applies while the
+same version is still published; a successful push removes it.
+
+`--rebase` proposes for review, so it cannot be combined with `--publish`
+(exit 2), and it applies to uploaded projects only: a repository-sourced
+project is brought up to date with git. `--dry-run` prints the merged change
+set and writes nothing. The lock is still never written, so run `sync`
+afterwards to take the new version, as after any push.
+
+A proposal that has gone stale in the Coding Instructions tab is rebased the
+same way by the person who proposed it, from the proposal itself.
 
 On a repository-sourced project a push without `--publish` is a suggestion
 that is reviewed and merged in the repository. Each member has one branch,
@@ -1370,6 +1447,26 @@ project's gateway, so an agent does not see two sets of tools. `--no-mcp`
 leaves it alone. Codex keeps one global list of servers shared by every
 checkout, so an earlier Codex registration is left in place.
 
+By default the plugin's server signs in through Claude Code's own OAuth, from
+`/mcp`. `--mcp-sign-in` saves that step: before it renders the plugin, `init`
+asks for one more browser approval, for the project's MCP gateway (a token for
+the REST API is refused there), and keeps that sign-in beside the CLI's config,
+readable only by the person (`packages/cli/src/lib/oauth/mcp-token.ts`). The
+plugin's `.mcp.json` then names `fabric mcp header --project <id> --base-url
+<origin>` as the server's `headersHelper`, spelled like the render command
+below. Claude Code runs that command at every connection; it prints
+`{"Authorization":"Bearer <token>"}`, refreshing the token when it is about to
+expire, or `{}` when there is no usable sign-in, and always exits 0. When the
+helper's output carries an `Authorization` header Claude Code does not fall
+back to its own OAuth for that server. The checklist says `signed in` only when
+the plugin it rendered carries the helper; otherwise (no terminal or browser,
+an unfinished sign-in, or a CLI path no command can carry) it marks the step
+`! needs sign-in` and gives the step that does it:
+`In Claude Code, run /mcp → plugin:<plugin>:fabric → Authenticate.` A
+clone-mode `init` registers the gateway with `claude mcp add` rather than
+through the plugin, so there `--mcp-sign-in` is skipped. Codex is not given the
+helper.
+
 The command line is printable ASCII, at most 500 characters, with no run of
 four spaces, as Claude Code requires; a path that would break one of those
 (a config folder with non-ASCII characters in it, for example) fails `init`,
@@ -1400,6 +1497,42 @@ settings alone do not make the `claude plugin` commands see the marketplace.)
 Until it is approved, the plugin is declared and not loaded. A changed command
 (for example a new CLI path after a self-update of the kept copy) has to be
 approved again.
+
+#### What `init` prints
+
+The plugin set-up ends with a checklist, one line per step, then only what is
+left for the person to do, numbered, with each command on its own line:
+
+```
+✓ Plugin installed  fabric-<id suffix>@fabric-<id suffix> (local)
+✓ Project rules     5 written → .claude/rules/fabric-<id suffix>/
+✓ Hooks             memory pull at start, push at turn end
+✓ MCP sign-in       signed in (connects next session)
+! Memory access     needs one more sign-in (see below)
+✓ Repositories      example-org/app → repos/app
+
+Next steps:
+  1. Sign in again and approve the memory permission:
+       npx -y <deployment CLI> auth login --project <id>
+  2. Start a new Claude Code session.
+```
+
+`✓` is done, `!` needs the person's attention, `✗` failed and `–` was skipped.
+When nothing is left, the last line is `All set. Start a new Claude Code
+session.` `--verbose` prints the full sentences each step stands for under it.
+In a terminal that cannot show these characters (the plain Windows console,
+the Linux console, or `FABRIC_ASCII=1`) the marks are `[ok]`, `[!]`, `[x]` and
+`[-]`, and arrows are `->`. While `--mcp-sign-in` waits for the browser it
+prints one line on stderr, with the sign-in address as a fallback under it
+(`If the browser didn't open: <url>`). `claude plugin install` asks its own
+`[y/N]` question about the plugin's command in between; that prompt is Claude
+Code's.
+
+`init` exits 1 when a step failed (`✗`, for example a code repository that
+could not be cloned under `--repos`, which used to exit 0), and 0 when only
+steps marked `!` remain. Under `--format json` the JSON report stays the only
+thing on stdout; the `--mcp-sign-in` and `--repos` steps, which it does not
+carry, go to stderr as the same checklist.
 
 The plugin is built from the project's instructions at the current pin (the
 pinned commit for a repository project, the published digest for an uploaded

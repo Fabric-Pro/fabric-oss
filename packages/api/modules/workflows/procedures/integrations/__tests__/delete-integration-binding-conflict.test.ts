@@ -15,6 +15,7 @@ const {
 	deleteByTypeMock,
 	getByIdMock,
 	listBoundMock,
+	listQualityBoundMock,
 	findManyMock,
 	MockPrismaKnownError,
 } = vi.hoisted(() => {
@@ -30,6 +31,7 @@ const {
 		deleteByTypeMock: vi.fn(),
 		getByIdMock: vi.fn(),
 		listBoundMock: vi.fn(),
+		listQualityBoundMock: vi.fn(),
 		findManyMock: vi.fn(),
 		MockPrismaKnownError,
 	};
@@ -42,6 +44,7 @@ vi.mock("@repo/database", async () => {
 		deleteWorkflowIntegrationByType: deleteByTypeMock,
 		getWorkflowIntegrationById: getByIdMock,
 		listProjectsBoundToIntegration: listBoundMock,
+		listContextQualityProjectsBoundToIntegration: listQualityBoundMock,
 		db: { workflowIntegration: { findMany: findManyMock } },
 		Prisma: { PrismaClientKnownRequestError: MockPrismaKnownError },
 		WorkflowIntegrationProviderSchema: z.string(),
@@ -60,6 +63,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: chainable,
 		requirePermission: () => () => ({}),
+		requireInputOrgPermission: () => () => ({}),
 		resolveOrganizationId: (input: unknown) => input ?? undefined,
 		Permissions: { WORKSPACE_DELETE: "workspace:delete" } as const,
 	};
@@ -96,9 +100,33 @@ function handlerOf(procedure: unknown): CapturedHandler {
 beforeEach(() => {
 	vi.clearAllMocks();
 	getByIdMock.mockResolvedValue({ id: "int-1" });
+	listQualityBoundMock.mockResolvedValue([]);
 });
 
 describe("deleteIntegrationProcedure — P2003 race", () => {
+	it("requires disconnecting an approved evaluation destination before deleting its credentials", async () => {
+		listQualityBoundMock.mockResolvedValue([
+			{ projectId: "example-project", projectName: "Example project" },
+		]);
+		const mod = await import("../delete-integration");
+		await expect(
+			handlerOf(mod.deleteIntegrationProcedure)({
+				input: {
+					integrationId: "int-1",
+					organizationId: "example-org",
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: expect.stringContaining("Context Quality"),
+		});
+		expect(listQualityBoundMock).toHaveBeenCalledWith(
+			"int-1",
+			"example-org",
+		);
+		expect(deleteIntegrationMock).not.toHaveBeenCalled();
+	});
 	it("reports a binding created after the pre-check as the named CONFLICT with the dependent project", async () => {
 		// Pre-check sees nothing; the RESTRICT FK then fires on delete; the
 		// re-query names the project that appeared in between.
@@ -152,6 +180,52 @@ describe("deleteIntegrationProcedure — P2003 race", () => {
 });
 
 describe("disconnectByTypeProcedure — P2003 race", () => {
+	it("preserves evaluation credentials and cleanup receipts when disconnecting by provider", async () => {
+		findManyMock.mockResolvedValue([{ id: "int-1" }]);
+		listQualityBoundMock.mockResolvedValue([
+			{ projectId: "example-project", projectName: "Example project" },
+		]);
+		const mod = await import("../disconnect-by-type");
+		await expect(
+			handlerOf(mod.disconnectByTypeProcedure)({
+				input: {
+					type: "DATABRICKS_PLATFORM",
+					organizationId: "example-org",
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: expect.stringContaining("Context Quality"),
+		});
+		expect(listQualityBoundMock).toHaveBeenCalledWith(
+			"int-1",
+			"example-org",
+		);
+		expect(deleteByTypeMock).not.toHaveBeenCalled();
+	});
+	it("reports an evaluation binding created during provider disconnect as a safe conflict", async () => {
+		findManyMock
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce([{ id: "int-1" }]);
+		listQualityBoundMock.mockResolvedValue([
+			{ projectId: "example-project", projectName: "Example project" },
+		]);
+		deleteByTypeMock.mockRejectedValue(new MockPrismaKnownError("P2003"));
+		const mod = await import("../disconnect-by-type");
+		await expect(
+			handlerOf(mod.disconnectByTypeProcedure)({
+				input: {
+					type: "DATABRICKS_PLATFORM",
+					organizationId: "example-org",
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: expect.stringContaining("cleanup receipts"),
+		});
+	});
 	it("reports a binding created after the pre-check as the named CONFLICT with the dependent project", async () => {
 		// Pre-check: no integrations rows yet → no bindings. Post-catch
 		// re-query: the row and its dependent project are visible.

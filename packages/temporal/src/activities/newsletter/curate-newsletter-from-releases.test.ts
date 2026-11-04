@@ -3,9 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: vi.fn().mockResolvedValue({
 		model: {},
 		metadata: { taskType: "SIMPLE" },
@@ -168,7 +169,7 @@ describe("buildReleaseNewsletterPrompt", () => {
 
 describe("curateNewsletterFromReleasesActivity", () => {
 	beforeEach(() => {
-		generateObject.mockReset();
+		generateText.mockReset();
 		mockIsCurrentOrgMember.mockReset();
 		mockIsCurrentOrgMember.mockResolvedValue(true);
 	});
@@ -182,12 +183,12 @@ describe("curateNewsletterFromReleasesActivity", () => {
 			releases: [],
 		});
 		expect(out.content.hasMajorFeatures).toBe(false);
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 
 	it("maps model output into NewsletterContent (prUrl carries release URL)", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				headline: "June",
 				intro: "Lots shipped.",
 				hasMajorFeatures: true,
@@ -230,14 +231,14 @@ describe("curateNewsletterFromReleasesActivity", () => {
 			"removed-admin",
 			"org-9",
 		);
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 		expect(out.content.hasMajorFeatures).toBe(false);
 	});
 
 	it("logs the effective detailLevel and passes it into the prompt", async () => {
 		const { logger } = await import("@repo/logs");
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				headline: "h",
 				intro: "i",
 				hasMajorFeatures: true,
@@ -260,7 +261,7 @@ describe("curateNewsletterFromReleasesActivity", () => {
 				detailLevel: "DETAILED",
 			}),
 		);
-		const promptArg = generateObject.mock.calls[0][0].prompt as string;
+		const promptArg = generateText.mock.calls[0][0].prompt as string;
 		expect(promptArg).toContain("2-4 sentences");
 	});
 });

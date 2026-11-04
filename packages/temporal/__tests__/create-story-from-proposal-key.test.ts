@@ -20,7 +20,7 @@ const { mocks } = vi.hoisted(() => ({
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		projectFindUnique: vi.fn(),
@@ -29,13 +29,14 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	Output: { object: (spec: unknown) => spec },
 	AIProviderNotConfiguredError: class extends Error {
 		constructor() {
 			super("AI provider not configured");
 			this.name = "AIProviderNotConfiguredError";
 		}
 	},
-	generateObject: mocks.generateObject,
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -163,8 +164,8 @@ describe("createStoryFromProposal — key and track on every create path", () =>
 			metadata: { provider: "x", modelId: "y", modelString: "x/y" },
 			trackUsage: vi.fn(),
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: { description: "d", acceptanceCriteria: "ac" },
+		mocks.generateText.mockResolvedValue({
+			output: { description: "d", acceptanceCriteria: "ac" },
 			usage: {},
 		});
 		const result = await createStoryFromProposal(baseParams as never);

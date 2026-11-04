@@ -1,8 +1,18 @@
 /**
  * fabric context
  *
- *   fabric context push <dir> --project <id>   Sync a local knowledge folder
- *                                              into the project's Context.
+ *   fabric context push <dir...> --project <id>   Sync local knowledge folders
+ *                                                 into the project's Context,
+ *                                                 one after another.
+ *   fabric context reset --project <id> [dir]     Delete every synced file of
+ *                                                 the project (`reset.ts`).
+ *
+ * Several folders are pushed in order, each with its own lock and report; a
+ * folder that fails does not stop the next, and the run exits with the first
+ * failure's code. `--init` ignores and replaces each folder's lock, so after
+ * a Living Memory reset every file is sent as new. Progress goes to stderr,
+ * one `[n/total]` line per request (a `--force` resend included), and
+ * `--timeout` bounds each folder's push as a whole.
  *
  * PROJECT Context — the knowledge sources a project's AI features read — and
  * not `fabric ctx`, which switches the CLI's default organization and never
@@ -33,7 +43,7 @@
 import { lstat } from "node:fs/promises";
 import path from "node:path";
 import type { FabricClient } from "@fabricorg/sdk";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { getClient } from "../../lib/client.js";
 import {
 	CliFailure,
@@ -43,9 +53,11 @@ import {
 	withDeadline,
 } from "../../lib/command-boundary.js";
 import { getApiKey } from "../../lib/config.js";
+import { contextCliFailure } from "../../lib/context-sync/failure.js";
 import {
 	type ContextLock,
 	contextLockPath,
+	emptyContextLock,
 	readContextLock,
 	writeContextLock,
 } from "../../lib/context-sync/lock.js";
@@ -53,6 +65,7 @@ import {
 	type ContextPlan,
 	computeContextPlan,
 } from "../../lib/context-sync/plan.js";
+import { stderrProgress } from "../../lib/context-sync/progress.js";
 import {
 	type ContextPushResult,
 	DELETE_STATUSES,
@@ -67,6 +80,11 @@ import {
 import { resolveExistingRoot } from "../../lib/instructions/safe-write.js";
 import { fabricCommand } from "../../lib/launcher.js";
 import { printOutput } from "../../lib/output.js";
+import { registerContextAssembleCommand } from "./assemble.js";
+import { registerContextDocumentCommands } from "./documents.js";
+import { registerContextManifestCommand } from "./manifest.js";
+import { registerContextQualityCommands } from "./quality.js";
+import { registerContextResetCommand } from "./reset.js";
 
 /**
  * Hook mode's one absolute deadline, the same bound `fabric instructions`
@@ -87,6 +105,10 @@ interface PushOptions {
 	prune?: boolean;
 	hook?: boolean;
 	exclude?: string[];
+	/** Ignore and replace each folder's lock: every file is sent as new. */
+	init?: boolean;
+	/** The overall bound on each folder's push, in milliseconds. */
+	timeout?: number;
 	/** Read through `optsWithGlobals()`, never off this object. */
 	format?: string;
 }
@@ -95,19 +117,29 @@ function collectPattern(value: string, previous: string[]): string[] {
 	return [...previous, value];
 }
 
+/** `--timeout <seconds>`, a positive whole number, as milliseconds. */
+function parseTimeoutSeconds(value: string): number {
+	if (!/^\d+$/.test(value) || Number(value) <= 0) {
+		throw new InvalidArgumentError(
+			"--timeout takes a positive whole number of seconds.",
+		);
+	}
+	return Number(value) * 1000;
+}
+
 export function buildContextCommand(): Command {
 	const context = new Command("context").description(
-		"Sync local knowledge files into a project's Context",
+		"Manage project Context and check recorded-output quality",
 	);
 
 	context
 		.command("push")
 		.description(
-			"Push every text file under <dir> into the project's Context by its relative path",
+			"Push every text file under each <dir> into the project's Context by its relative path",
 		)
 		.argument(
-			"<dir>",
-			"Folder to push (required; never the working directory by default)",
+			"<dir...>",
+			"Folders to push, in order, each with its own lock (required; never the working directory by default)",
 		)
 		.requiredOption("--project <id>", "Project ID")
 		.option("--org <slug>", "Organization context")
@@ -130,11 +162,35 @@ export function buildContextCommand(): Command {
 			"--hook",
 			"Hook mode: never fails, never blocks, one line on stderr on failure",
 		)
+		.option(
+			"--init",
+			"Ignore and replace each folder's lock and send every file as new, e.g. after a Living Memory reset",
+		)
+		.option(
+			"--timeout <seconds>",
+			"Stop each folder's push after this many seconds, keeping what the server confirmed (default: no overall bound; each request has its own)",
+			parseTimeoutSeconds,
+		)
 		.option("--format <format>", "Output format: text|json")
-		.action(async function (this: Command, dir: string, opts: PushOptions) {
-			await run(opts, () => runPush(dir, opts, outputFormatFor(this)));
+		.action(async function (
+			this: Command,
+			dirs: string[],
+			opts: PushOptions,
+		) {
+			await run(opts, () =>
+				runPushAll(dirs, opts, outputFormatFor(this)),
+			);
 		});
 
+	registerContextResetCommand(context, {
+		run,
+		client: contextClient,
+		resolveFolder,
+	});
+	registerContextManifestCommand(context);
+	registerContextAssembleCommand(context);
+	registerContextDocumentCommands(context);
+	registerContextQualityCommands(context);
 	return context;
 }
 
@@ -146,6 +202,7 @@ export function buildContextCommand(): Command {
 async function run(
 	opts: { hook?: boolean },
 	body: () => Promise<void>,
+	subcommand = "push",
 ): Promise<void> {
 	try {
 		if (opts.hook) {
@@ -156,7 +213,9 @@ async function run(
 	} catch (error) {
 		const message = describeError(error);
 		if (opts.hook) {
-			process.stderr.write(`fabric: context push failed: ${message}\n`);
+			process.stderr.write(
+				`fabric: context ${subcommand} failed: ${message}\n`,
+			);
 			process.exit(0);
 		}
 		process.stderr.write(`✗ ${message}\n`);
@@ -176,7 +235,10 @@ async function run(
  * `withoutContext()`: the project decides which organization it is in, so an
  * ambient `FABRIC_ORG` must not bind the request; `--org` still does.
  */
-function contextClient(opts: { hook?: boolean }): FabricClient {
+function contextClient(opts: {
+	hook?: boolean;
+	timeout?: number;
+}): FabricClient {
 	if (!getApiKey()) {
 		throw new CliFailure(
 			`Not authenticated. Run: ${fabricCommand("auth login")}`,
@@ -186,7 +248,14 @@ function contextClient(opts: { hook?: boolean }): FabricClient {
 	return getClient(
 		opts.hook
 			? { timeoutMs: HOOK_DEADLINE_MS, retry: { maxRetries: 0 } }
-			: { timeoutMs: PUSH_TIMEOUT_MS },
+			: // A request never outlives an overall --timeout shorter than
+				// its own bound.
+				{
+					timeoutMs: Math.min(
+						PUSH_TIMEOUT_MS,
+						opts.timeout ?? PUSH_TIMEOUT_MS,
+					),
+				},
 	).withoutContext();
 }
 
@@ -224,6 +293,49 @@ function print(lines: string[]): void {
 	process.stdout.write(`${lines.join("\n")}\n`);
 }
 
+/**
+ * Every folder, in order, each with its own lock and its own report. A
+ * folder's failure is reported on stderr and the next folder still goes;
+ * the run then exits with the first failure's code. One folder behaves
+ * exactly as before, its failure thrown as it is.
+ */
+async function runPushAll(
+	dirs: readonly string[],
+	opts: PushOptions,
+	format: OutputFormat,
+): Promise<void> {
+	if (opts.init && opts.prune) {
+		throw new CliFailure(
+			"--init sends every file as new and names no earlier version, so there is nothing for --prune to delete. Run them separately.",
+			2,
+		);
+	}
+	const [only] = dirs;
+	if (dirs.length === 1 && only !== undefined) {
+		await runPush(only, opts, format);
+		return;
+	}
+	const failures: Array<{ dir: string; failure: CliFailure }> = [];
+	for (const dir of dirs) {
+		try {
+			await runPush(dir, opts, format);
+		} catch (error) {
+			const failure = contextCliFailure(error);
+			failures.push({ dir, failure });
+			if (!opts.hook) {
+				process.stderr.write(`✗ ${dir}: ${describeError(failure)}\n`);
+			}
+		}
+	}
+	const [first] = failures;
+	if (first !== undefined) {
+		throw new CliFailure(
+			`${failures.length} of ${dirs.length} folders did not push completely, first ${first.dir}: ${describeError(first.failure)}`,
+			first.failure.exitCode,
+		);
+	}
+}
+
 async function runPush(
 	dir: string,
 	opts: PushOptions,
@@ -233,7 +345,12 @@ async function runPush(
 	// Before any file is read: a push that cannot authenticate should not
 	// spend a walk and a hash of every file finding that out.
 	const client = opts.dryRun ? null : contextClient(opts);
-	const lock = await readLockForProject(root, opts.project);
+	// --init: the lock is neither trusted nor checked. Every file is new, no
+	// earlier version is named, so entries left by a Living Memory reset can
+	// never read as "deleted on the server"; the lock is replaced below.
+	const lock = opts.init
+		? null
+		: await readLockForProject(root, opts.project);
 	const plan = await computeContextPlan({
 		root,
 		lock,
@@ -265,25 +382,41 @@ async function runPush(
 		return;
 	}
 
-	const pushed = await pushContextPlan({
-		client,
-		projectId: opts.project,
-		org: opts.org,
-		root,
-		plan,
-		force: Boolean(opts.force),
-		prune: Boolean(opts.prune),
-		lock,
-	});
+	// Never under --hook, whose contract is one line on stderr on failure.
+	const progress = opts.hook ? null : stderrProgress();
+	let pushed: Awaited<ReturnType<typeof pushContextPlan>>;
+	try {
+		pushed = await pushContextPlan({
+			client,
+			projectId: opts.project,
+			org: opts.org,
+			root,
+			plan,
+			force: Boolean(opts.force),
+			prune: Boolean(opts.prune),
+			lock,
+			...(progress ? { onProgress: progress.report } : {}),
+			...(opts.timeout !== undefined ? { timeoutMs: opts.timeout } : {}),
+		});
+	} finally {
+		progress?.done();
+	}
 
 	// LAST, after every request, and only with what the server answered.
-	const next = nextContextLock({
-		previous: lock,
-		projectId: opts.project,
-		results: pushed.results,
-		forgotten: plan.forgotten,
-		now: new Date(),
-	});
+	const now = new Date();
+	const next =
+		nextContextLock({
+			previous: lock,
+			projectId: opts.project,
+			results: pushed.results,
+			forgotten: plan.forgotten,
+			now,
+		}) ??
+		// --init replaces the lock it ignored, even with nothing new to say,
+		// unless a refusal stopped the run before anything was confirmed.
+		(opts.init && pushed.stoppedBy === null
+			? emptyContextLock(opts.project, now)
+			: null);
 	if (next !== null) {
 		await writeContextLock(root, next);
 	}
@@ -437,6 +570,15 @@ function throwIfIncomplete(
 			sentences.push(
 				"A conflict means the server holds a version this folder did not name, or deleted the one it named: compare the two in the project's Context tab, and use --force to replace the version the conflict reported with this folder's (or to send a deleted file again with no version, which recreates it, or answers duplicate if that content is already stored under another path).",
 			);
+			if (
+				conflicts.some(
+					(r) => r.status === "conflict" && r.current === null,
+				)
+			) {
+				sentences.push(
+					"If the project's Living Memory was reset, push again with --init: it ignores this folder's lock and sends every file as new.",
+				);
+			}
 		}
 	}
 	if (unsupported.length > 0) {

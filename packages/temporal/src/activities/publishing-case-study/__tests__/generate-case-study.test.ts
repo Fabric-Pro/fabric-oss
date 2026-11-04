@@ -45,10 +45,11 @@ import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-appro
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	// Faithful enough to discriminate, which is all the activity asks of it:
 	// the AI SDK names this error class "AI_NoObjectGeneratedError", and the
@@ -306,8 +307,8 @@ beforeEach(() => {
 		metadata: { modelString: "test-model", provider: "test" },
 		trackUsage,
 	});
-	generateObject.mockResolvedValue({
-		object: MODEL_OUTPUT,
+	generateText.mockResolvedValue({
+		output: MODEL_OUTPUT,
 		usage: { totalTokens: 100 },
 	});
 	completeTopicDraft.mockResolvedValue({ persisted: true });
@@ -376,7 +377,7 @@ describe("generateCaseStudyActivity — tenancy and actor revalidation", () => {
 			nonRetryable: true,
 		});
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 
 	it("refuses when the project has left the organization the run was queued under", async () => {
@@ -477,7 +478,7 @@ describe("generateCaseStudyActivity — contributor override", () => {
 				where: { id: { in: ["chosen-user"] } },
 			}),
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Chosen Contributor",
 		);
 	});
@@ -493,7 +494,7 @@ describe("generateCaseStudyActivity — contributor override", () => {
 		await run();
 
 		expect(userFindMany).not.toHaveBeenCalled();
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).not.toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).not.toContain(
 			"People associated with the work behind this topic",
 		);
 	});
@@ -528,7 +529,7 @@ describe("generateCaseStudyActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const restricted = prompt.slice(
 			prompt.indexOf("## Unresolved approvals for this topic"),
 		);
@@ -550,7 +551,7 @@ describe("generateCaseStudyActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const openHeading = prompt.indexOf(
 			"## Unresolved questions that constrain this content type",
 		);
@@ -569,7 +570,7 @@ describe("generateCaseStudyActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const restrictedHeading = prompt.indexOf(
 			"## Unresolved approvals for this topic",
 		);
@@ -617,7 +618,7 @@ describe("generateCaseStudyActivity — the restriction split", () => {
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).not.toMatch(/Unresolved approvals for this topic/);
 		expect(prompt).toContain("Yes, we may name them.");
 		expect(persistedContent().generation.restrictedSubjects).toEqual([]);
@@ -642,8 +643,8 @@ describe("generateCaseStudyActivity — the restriction split", () => {
 
 describe("generateCaseStudyActivity — the clamp", () => {
 	it("lowers APPROVED to APPROVAL_NEEDED when a CUSTOMER_NAME question is open", async () => {
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, customerIdentity: "APPROVED" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, customerIdentity: "APPROVED" },
 			usage: {},
 		});
 		listTopicDecisions.mockResolvedValue([
@@ -659,8 +660,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 	});
 
 	it("lowers APPROVED to APPROVAL_NEEDED when a CUSTOMER_NAME question is SOFT-CLOSED", async () => {
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, customerIdentity: "APPROVED" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, customerIdentity: "APPROVED" },
 			usage: {},
 		});
 		listTopicDecisions.mockResolvedValue([
@@ -680,8 +681,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 	});
 
 	it("lowers CONFIRMED to PLACEHOLDER when a METRICS_APPROVAL question is open", async () => {
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, metricsBasis: "CONFIRMED" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, metricsBasis: "CONFIRMED" },
 			usage: {},
 		});
 		listTopicDecisions.mockResolvedValue([
@@ -702,8 +703,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		// does not need; and it would erase the only signal separating "the
 		// model complied with the locked clause" from "the model ignored it",
 		// because both outcomes would then store APPROVAL_NEEDED.
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, customerIdentity: "ANONYMIZED" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, customerIdentity: "ANONYMIZED" },
 			usage: {},
 		});
 		listTopicDecisions.mockResolvedValue([
@@ -720,8 +721,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		// The draft asserted no number. There is nothing for a metrics approval
 		// to unblock, and marking it PLACEHOLDER would send its author looking
 		// for a number they deliberately did not use.
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, metricsBasis: "QUALITATIVE" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, metricsBasis: "QUALITATIVE" },
 			usage: {},
 		});
 		listTopicDecisions.mockResolvedValue([
@@ -738,8 +739,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		// The clamp only ever lowers. The model saw the narrative; the absence
 		// of an unresolved question is not evidence that the story stopped
 		// needing an approval.
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, customerIdentity: "APPROVAL_NEEDED" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, customerIdentity: "APPROVAL_NEEDED" },
 			usage: {},
 		});
 		listTopicDecisions.mockResolvedValue([]);
@@ -751,8 +752,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 	});
 
 	it("never UPGRADES PLACEHOLDER to CONFIRMED when nothing is unresolved", async () => {
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, metricsBasis: "PLACEHOLDER" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, metricsBasis: "PLACEHOLDER" },
 			usage: {},
 		});
 		listTopicDecisions.mockResolvedValue([]);
@@ -766,8 +767,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		// The clamp is keyed on the specific approval, not on "is anything
 		// unresolved". An open codebase-detail question says nothing about
 		// whether the customer may be named.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				customerIdentity: "APPROVED",
 				metricsBasis: "CONFIRMED",
@@ -786,8 +787,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 	});
 
 	it("clamps both fields independently in one run", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				customerIdentity: "APPROVED",
 				metricsBasis: "CONFIRMED",
@@ -815,8 +816,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		// the clamp did not cover. The NEGATIVE half is the point of this case:
 		// the unrelated asset must SURVIVE, because demoting a whole list on any
 		// unresolved approval teaches the reader to ignore it.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				confirmedAssets: ["The Latency Chart", "architecture diagram"],
 				assetsNeedingConfirmation: [],
@@ -843,8 +844,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 	it("demotes on INTERNAL_UI and VIDEO_WALKTHROUGH, not just ASSET_APPROVAL", async () => {
 		// An unapproved internal UI capture or an unconfirmed walkthrough is the
 		// same claim wearing a different decision kind.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				confirmedAssets: [
 					"admin console screenshot",
@@ -874,8 +875,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 	it("does not list a demoted asset twice when the model already hedged", async () => {
 		// A model that put the same asset in BOTH lists is not rare. Two
 		// entries read as two separate things still to chase.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				confirmedAssets: ["customer logo"],
 				assetsNeedingConfirmation: ["customer logo"],
@@ -898,8 +899,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		// The model hedged in one list and claimed in the other, spelled
 		// differently. Selection has always matched normalized; the dedupe used
 		// exact equality, so the same asset landed twice.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				confirmedAssets: ["The Latency Chart"],
 				assetsNeedingConfirmation: ["the latency chart"],
@@ -925,8 +926,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		// question says nothing about whether a diagram may be used, and a
 		// framing question (CLAIM_STRENGTH here) is not a claim about an asset
 		// at all.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				confirmedAssets: ["architecture diagram"],
 				assetsNeedingConfirmation: [],
@@ -950,8 +951,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 	it("leaves an ANSWERED asset approval alone — it is not a restriction", async () => {
 		// The same rule the subject-shaped block follows. Counting an answered
 		// decision would make the demotion permanent.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				confirmedAssets: ["latency chart"],
 				assetsNeedingConfirmation: [],
@@ -981,8 +982,8 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		// function `@repo/api` re-composes an adopted version with — rather than
 		// a local join that would drift away from it, which is exactly what
 		// happened to the Blog Post sibling.
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, title: "A case study title" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, title: "A case study title" },
 			usage: {},
 		});
 
@@ -1075,8 +1076,8 @@ describe("generateCaseStudyActivity — the write surface", () => {
 		// cannot produce a valid shape will not produce one on a retry either,
 		// and a half-shaped case study persisted as READY is worse than a
 		// visible failure.
-		generateObject.mockResolvedValue({
-			object: { title: "A title", body: "Some body." },
+		generateText.mockResolvedValue({
+			output: { title: "A title", body: "Some body." },
 			usage: {},
 		});
 
@@ -1094,8 +1095,8 @@ describe("generateCaseStudyActivity — the write surface", () => {
 		// and then made the panel's document null — every safety surface gone
 		// while the editor still showed text, and adopt throwing forever on a
 		// draft the server itself wrote. A visible failure is strictly better.
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, title: "   " },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, title: "   " },
 			usage: {},
 		});
 
@@ -1178,7 +1179,7 @@ describe("generateCaseStudyActivity — what it persists", () => {
 		expect(completeTopicDraft.mock.calls[0]?.[0]?.promptSource).toBe(
 			"BOUND",
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Faster incremental builds",
 		);
 	});
@@ -1190,7 +1191,7 @@ describe("generateCaseStudyActivity — what it persists", () => {
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"ROLE COMPOSITION: backend",
 		);
 	});
@@ -1209,7 +1210,7 @@ describe("generateCaseStudyActivity — the model call", () => {
 		await run();
 
 		expect(
-			generateObject.mock.calls[0]?.[0]?.providerOptions,
+			generateText.mock.calls[0]?.[0]?.providerOptions,
 		).toBeUndefined();
 	});
 
@@ -1228,7 +1229,7 @@ describe("generateCaseStudyActivity — the model call", () => {
 
 		await run();
 
-		const sentPrompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const sentPrompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(computeMaxOutputTokenBudget).toHaveBeenCalledWith(
 			expect.anything(),
 			{ promptChars: sentPrompt.length },
@@ -1243,7 +1244,7 @@ describe("generateCaseStudyActivity — the model call", () => {
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]).not.toHaveProperty(
+		expect(generateText.mock.calls[0]?.[0]).not.toHaveProperty(
 			"maxOutputTokens",
 		);
 	});
@@ -1291,7 +1292,7 @@ describe("generateCaseStudyActivity — the effective analysis reaches the promp
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("USER PROSE");
 		expect(prompt).not.toContain("AI ANGLE");
 		// The two assertions above pin the ANSWER; this one pins the
@@ -1329,15 +1330,14 @@ describe("generateCaseStudyActivity — the effective analysis reaches the promp
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("AI ANGLE");
 		expect(prompt).toContain(renderAnalysisProse(AI));
 	});
 });
 
 describe("generateCaseStudyActivity — the settled-decisions block", () => {
-	const promptSent = () =>
-		generateObject.mock.calls[0]?.[0]?.prompt as string;
+	const promptSent = () => generateText.mock.calls[0]?.[0]?.prompt as string;
 	const settledSection = () => {
 		const prompt = promptSent();
 		const at = prompt.indexOf(SETTLED_DECISIONS_HEADING);
@@ -1514,8 +1514,8 @@ describe("generateCaseStudyActivity — the settled-decisions block", () => {
 
 describe("generateCaseStudyActivity — the asset confirmation loop", () => {
 	it("promotes an asset a member cleared for any audience", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				confirmedAssets: [],
 				assetsNeedingConfirmation: [
@@ -1544,8 +1544,8 @@ describe("generateCaseStudyActivity — the asset confirmation loop", () => {
 	});
 
 	it("does NOT promote an internal-only confirmation into a case study", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				confirmedAssets: [],
 				assetsNeedingConfirmation: ["the latency chart"],
@@ -1587,7 +1587,7 @@ it("keeps READY when seeding throws", async () => {
 		status: "READY",
 		seededWorkingDraft: false,
 	});
-	expect(generateObject).toHaveBeenCalledTimes(1);
+	expect(generateText).toHaveBeenCalledTimes(1);
 	expect(logger.warn).toHaveBeenCalledWith(
 		"[publishing-case-study] failed to seed a working draft",
 		expect.objectContaining({ error: "seed failed" }),

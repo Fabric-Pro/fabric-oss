@@ -1,4 +1,5 @@
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 import { FABRIC_AGENT_IDENTITY } from "@repo/ai/lib/fabric-agent-identity";
 import {
 	db,
@@ -192,6 +193,14 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 	) {
 		throw new Error(
 			"The selected agent is no longer available in this project.",
+		);
+	}
+	if (
+		!getAgentImplementationAvailability(instance.customInstructions)
+			.available
+	) {
+		throw new Error(
+			"The selected agent implementation is unavailable for execution.",
 		);
 	}
 	const { allowed: workspaceIds } = await filterWorkspaceIdsForTenant({

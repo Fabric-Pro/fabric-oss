@@ -155,6 +155,12 @@ export const getProjectProcedure = tenantProtectedProcedure
 			effective?.permissions ?? [],
 			ProjectPerms.AGENT_EXECUTE,
 		);
+		// Deleting any member's context source, and with it the Living Memory
+		// reset (`projects.contexts.resetLivingMemory`), which requires it.
+		const canDeleteContexts = hasPermission(
+			effective?.permissions ?? [],
+			Permissions.CONTEXT_DELETE,
+		);
 
 		// Member-management capability: definitionally identical to the write
 		// gate in `setForProjectMember` — actual project access (ownership or
@@ -200,6 +206,7 @@ export const getProjectProcedure = tenantProtectedProcedure
 				canEditInstructions,
 				canReviewInstructions,
 				canExecuteAgents,
+				canDeleteContexts,
 				canManageMembers,
 				effectiveAttachmentRetentionDays,
 				canManageGovernance,

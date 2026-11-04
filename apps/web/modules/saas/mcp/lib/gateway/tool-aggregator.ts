@@ -207,6 +207,9 @@ async function getFullToolList(
 					type: "object",
 					properties: {},
 				},
+				...(tool.outputSchema
+					? { outputSchema: tool.outputSchema }
+					: {}),
 				_gateway_source: server.displayName,
 				_gateway_config_id: server.configId,
 				...(annotations ? { annotations } : {}),
@@ -430,66 +433,78 @@ async function discoverConnectedServerTools(
 
 	const servers: ConnectedServerInfo[] = [];
 	const assigned = assignServerPrefixes(configs);
+	const CACHE_STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-	for (const { config, serverName, prefix } of assigned) {
-		// Use cached tools if available and not stale (24 hour TTL for cache)
-		const cachedTools = config.cachedTools as Array<{
-			name: string;
-			description?: string;
-			inputSchema?: Record<string, unknown>;
-			annotations?: ToolAnnotations;
-		}> | null;
+	// Discover tools across all connected servers in parallel (bounded by Promise.allSettled)
+	// so N uncached servers take max(latency) instead of sum(latency).
+	const discoveredEntries = await Promise.allSettled(
+		assigned.map(async ({ config, serverName, prefix }) => {
+			// Use cached tools if available and not stale (24 hour TTL for cache)
+			const cachedTools = config.cachedTools as Array<{
+				name: string;
+				description?: string;
+				inputSchema?: Record<string, unknown>;
+				outputSchema?: Record<string, unknown>;
+				annotations?: ToolAnnotations;
+			}> | null;
 
-		const cacheAge = config.toolsCachedAt
-			? Date.now() - new Date(config.toolsCachedAt).getTime()
-			: Number.POSITIVE_INFINITY;
-		const CACHE_STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
+			const cacheAge = config.toolsCachedAt
+				? Date.now() - new Date(config.toolsCachedAt).getTime()
+				: Number.POSITIVE_INFINITY;
 
-		if (
-			cachedTools &&
-			Array.isArray(cachedTools) &&
-			cachedTools.length > 0 &&
-			cacheAge < CACHE_STALE_MS
-		) {
-			servers.push({
-				configId: config.id,
-				displayName: serverName,
-				toolPrefix: prefix,
-				tools: cachedTools,
-			});
-		} else {
+			if (
+				cachedTools &&
+				Array.isArray(cachedTools) &&
+				cachedTools.length > 0 &&
+				cacheAge < CACHE_STALE_MS
+			) {
+				return {
+					configId: config.id,
+					displayName: serverName,
+					toolPrefix: prefix,
+					tools: cachedTools,
+				} satisfies ConnectedServerInfo;
+			}
+
 			// Try live tool discovery (with timeout to avoid blocking)
 			try {
 				const liveTools = await discoverToolsLive(config.id, session);
 				if (liveTools.length > 0) {
-					servers.push({
+					return {
 						configId: config.id,
 						displayName: serverName,
 						toolPrefix: prefix,
 						tools: liveTools,
-					});
+					} satisfies ConnectedServerInfo;
 				}
+				return null;
 			} catch (error) {
 				// If live discovery fails, use whatever cached tools exist (even if stale)
-				if (
-					cachedTools &&
-					Array.isArray(cachedTools) &&
-					cachedTools.length > 0
-				) {
-					servers.push({
-						configId: config.id,
-						displayName: serverName,
-						toolPrefix: prefix,
-						tools: cachedTools,
-					});
-				}
-				// Otherwise just skip this server — it's unreachable
 				console.warn("[MCP Gateway] Failed to discover tools:", {
 					serverName,
 					error: error instanceof Error ? error.message : error,
 					stack: error instanceof Error ? error.stack : undefined,
 				});
+				if (
+					cachedTools &&
+					Array.isArray(cachedTools) &&
+					cachedTools.length > 0
+				) {
+					return {
+						configId: config.id,
+						displayName: serverName,
+						toolPrefix: prefix,
+						tools: cachedTools,
+					} satisfies ConnectedServerInfo;
+				}
+				return null;
 			}
+		}),
+	);
+
+	for (const entry of discoveredEntries) {
+		if (entry.status === "fulfilled" && entry.value !== null) {
+			servers.push(entry.value);
 		}
 	}
 
@@ -512,6 +527,7 @@ async function discoverToolsLive(
 		name: string;
 		description?: string;
 		inputSchema?: Record<string, unknown>;
+		outputSchema?: Record<string, unknown>;
 		annotations?: ToolAnnotations;
 	}>
 > {
@@ -537,6 +553,7 @@ async function discoverToolsLive(
 			name: string;
 			description?: string;
 			inputSchema?: Record<string, unknown>;
+			outputSchema?: Record<string, unknown>;
 			annotations?: ToolAnnotations;
 		}> = [];
 
@@ -544,12 +561,21 @@ async function discoverToolsLive(
 			const t = tool as {
 				description?: string;
 				inputSchema?: unknown;
-				metadata?: { annotations?: unknown };
+				outputSchema?: unknown;
+				metadata?: { annotations?: unknown; outputSchema?: unknown };
 			};
+			const rawOutputSchema = t.outputSchema ?? t.metadata?.outputSchema;
+			const outputSchema =
+				rawOutputSchema &&
+				typeof rawOutputSchema === "object" &&
+				!Array.isArray(rawOutputSchema)
+					? normalizeInputSchema(rawOutputSchema)
+					: undefined;
 			tools.push({
 				name,
 				description: t.description,
 				inputSchema: normalizeInputSchema(t.inputSchema),
+				...(outputSchema ? { outputSchema } : {}),
 				annotations: readMcpToolAnnotations(t.metadata?.annotations),
 			});
 		}
@@ -561,6 +587,7 @@ async function discoverToolsLive(
 				name: t.name,
 				description: t.description ?? null,
 				inputSchema: t.inputSchema ?? null,
+				...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
 				annotations: t.annotations ?? null,
 			})),
 		}).catch(() => {});
@@ -580,6 +607,8 @@ async function discoverToolsLive(
 
 export type AuthorizedConnectedServerToolCall = {
 	namespacedToolName: string;
+	originalToolName: string;
+	projectId?: string | null;
 	args: Record<string, unknown>;
 	configId: string;
 	displayName: string;
@@ -723,10 +752,12 @@ export async function authorizeConnectedServerTool(
 			ok: true,
 			context: {
 				namespacedToolName,
+				originalToolName,
+				projectId: session.projectId,
 				args,
 				configId: server.configId,
 				displayName: server.displayName,
-				execute: tool.execute,
+				execute: tool.execute.bind(tool),
 			},
 		};
 	} catch (error) {
@@ -747,16 +778,31 @@ export async function authorizeConnectedServerTool(
 /** Invoke a connected tool after {@link authorizeConnectedServerTool}. */
 export async function executeAuthorizedConnectedServerTool({
 	namespacedToolName,
+	originalToolName,
+	projectId,
 	args,
 	execute,
 }: AuthorizedConnectedServerToolCall): Promise<ToolCallResult> {
 	try {
-		return parseMcpToolResult(
-			await execute(args, {
+		const executeFn = () =>
+			execute(args, {
 				toolCallId: `${namespacedToolName}-${Date.now()}`,
 				messages: [],
-			}),
-		);
+			});
+		const mcpModule = await import("@repo/mcp");
+		const callMcpToolFn =
+			projectId && "callMcpTool" in mcpModule
+				? mcpModule.callMcpTool
+				: undefined;
+		const result =
+			typeof callMcpToolFn === "function"
+				? await callMcpToolFn({
+						toolName: originalToolName,
+						projectId,
+						execute: executeFn,
+					})
+				: await executeFn();
+		return parseMcpToolResult(result);
 	} catch (error) {
 		const message =
 			error instanceof Error ? error.message : "Tool execution failed";
@@ -805,53 +851,122 @@ function normalizeInputSchema(schema: unknown): Record<string, unknown> {
 	return s as Record<string, unknown>;
 }
 
+const MAX_TOOL_TEXT_CHARS = 100_000;
+
+function truncateToolText(text: string): string {
+	if (text.length <= MAX_TOOL_TEXT_CHARS) {
+		return text;
+	}
+	return `${text.slice(0, MAX_TOOL_TEXT_CHARS)}\n\n[Truncated ${text.length - MAX_TOOL_TEXT_CHARS} characters to protect context window]`;
+}
+
+function normalizeContentBlock(
+	block: unknown,
+): ToolCallResult["content"][number] | null {
+	if (!block || typeof block !== "object" || Array.isArray(block)) {
+		return null;
+	}
+	const item = block as Record<string, unknown>;
+	if (item.type === "text" && typeof item.text === "string") {
+		return {
+			type: "text",
+			text: truncateToolText(item.text),
+		};
+	}
+	if (
+		item.type === "image" ||
+		item.type === "audio" ||
+		item.type === "resource" ||
+		item.type === "resource_link"
+	) {
+		return {
+			...item,
+			type: item.type,
+			text: typeof item.text === "string" ? item.text : "",
+		} as ToolCallResult["content"][number];
+	}
+	return null;
+}
+
 /**
- * Parse MCP tool result into gateway format.
+ * Parse MCP tool result into gateway format, preserving multi-block content,
+ * non-text blocks (image, audio, resource, resource_link), structuredContent,
+ * and _meta, while truncating oversized text payloads (>100 KB).
  */
-function parseMcpToolResult(result: unknown): ToolCallResult {
+export function parseMcpToolResult(result: unknown): ToolCallResult {
 	if (result && typeof result === "object" && !Array.isArray(result)) {
 		const obj = result as Record<string, unknown>;
+		const extraFields: Pick<ToolCallResult, "structuredContent" | "_meta"> =
+			{
+				...(obj.structuredContent !== undefined
+					? { structuredContent: obj.structuredContent }
+					: {}),
+				...(obj._meta &&
+				typeof obj._meta === "object" &&
+				!Array.isArray(obj._meta)
+					? { _meta: obj._meta as Record<string, unknown> }
+					: {}),
+			};
 
 		if (obj.isError === true) {
-			const textContent = Array.isArray(obj.content)
-				? (obj.content as Array<{ type?: string; text?: string }>).find(
-						(c) => c.type === "text",
-					)
-				: null;
+			const blocks = Array.isArray(obj.content)
+				? obj.content
+						.map(normalizeContentBlock)
+						.filter(
+							(b): b is ToolCallResult["content"][number] =>
+								b !== null,
+						)
+				: [];
 			return {
-				content: [
-					{
-						type: "text",
-						text:
-							(textContent?.text as string) ||
-							"MCP tool returned an error",
-					},
-				],
+				content:
+					blocks.length > 0
+						? blocks
+						: [
+								{
+									type: "text",
+									text: "MCP tool returned an error",
+								},
+							],
 				isError: true,
+				...extraFields,
 			};
 		}
 
 		if (Array.isArray(obj.content)) {
-			const textContent = (
-				obj.content as Array<{ type?: string; text?: string }>
-			).find((c) => c.type === "text");
-			if (textContent?.text) {
-				return { content: [{ type: "text", text: textContent.text }] };
+			const blocks = obj.content
+				.map(normalizeContentBlock)
+				.filter(
+					(b): b is ToolCallResult["content"][number] => b !== null,
+				);
+			if (blocks.length > 0) {
+				return {
+					content: blocks,
+					...extraFields,
+				};
 			}
 		}
 	}
 
 	if (Array.isArray(result)) {
-		const textContent = (
-			result as Array<{ type?: string; text?: string }>
-		).find((c) => c.type === "text");
-		if (textContent?.text) {
-			return { content: [{ type: "text", text: textContent.text }] };
+		const blocks = result
+			.map(normalizeContentBlock)
+			.filter((b): b is ToolCallResult["content"][number] => b !== null);
+		if (blocks.length > 0) {
+			return { content: blocks };
 		}
 	}
 
 	// Fallback: stringify the result
 	return {
-		content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+		content: [
+			{
+				type: "text",
+				text: truncateToolText(
+					typeof result === "string"
+						? result
+						: (JSON.stringify(result, null, 2) ?? "null"),
+				),
+			},
+		],
 	};
 }

@@ -94,6 +94,12 @@ import {
 	parseHookCommand,
 } from "./hook.js";
 import {
+	LOCAL_OVERRIDES_PATH,
+	type OverrideMatcher,
+	overrideMatcher,
+	readLocalOverrides,
+} from "./local-overrides.js";
+import {
 	type InstructionsLock,
 	LockReadRefusedError,
 	lockPath,
@@ -1592,13 +1598,43 @@ async function checkDrift(
 		);
 	}
 
+	// A local override differs from the published file on purpose: sync and
+	// push leave it alone, so it is shown, never counted as drift.
+	let isOverridden: OverrideMatcher;
+	try {
+		isOverridden = overrideMatcher(await readLocalOverrides(input.root));
+	} catch {
+		return makeCheck(
+			id,
+			"machine",
+			"fail",
+			`${LOCAL_OVERRIDES_PATH} is unreadable, so sync and push refuse to run`,
+			{
+				fix: fixOf(
+					`fix ${LOCAL_OVERRIDES_PATH}, or remove it to drop every local override`,
+				),
+			},
+		);
+	}
+	const overriddenItems = drift
+		.filter((entry) => isOverridden(entry.path))
+		.map((entry) => ({
+			name: sanitizeDisplayText(entry.path, 200),
+			status: "pass" as const,
+			detail: `local override (${DRIFT_DETAIL[entry.reason]}; sync and push leave it alone)`,
+		}));
+	drift = drift.filter((entry) => !isOverridden(entry.path));
+
 	const total = Object.keys(lockState.lock.files).length;
 	if (drift.length === 0) {
 		return makeCheck(
 			id,
 			"machine",
 			"pass",
-			`all ${plural(total, "file")} the last sync wrote still match the lock`,
+			overriddenItems.length === 0
+				? `all ${plural(total, "file")} the last sync wrote still match the lock`
+				: `the last sync's files match the lock, apart from ${plural(overriddenItems.length, "local override")}`,
+			{ items: capItems(overriddenItems, "pass") },
 		);
 	}
 	const push = commands.push() ?? fabricCommand("instructions push");
@@ -1608,17 +1644,20 @@ async function checkDrift(
 	// something `sync` puts back, and still fails.
 	const status = edits === drift.length ? "warn" : "fail";
 	const items = capItems(
-		drift.map((entry) => ({
-			name: sanitizeDisplayText(entry.path, 200),
-			status:
-				entry.reason === "edited"
-					? ("warn" as const)
-					: ("fail" as const),
-			detail:
-				entry.reason === "edited" && entry.kept
-					? "edited (kept by sync)"
-					: DRIFT_DETAIL[entry.reason],
-		})),
+		[
+			...drift.map((entry) => ({
+				name: sanitizeDisplayText(entry.path, 200),
+				status:
+					entry.reason === "edited"
+						? ("warn" as const)
+						: ("fail" as const),
+				detail:
+					entry.reason === "edited" && entry.kept
+						? "edited (kept by sync)"
+						: DRIFT_DETAIL[entry.reason],
+			})),
+			...overriddenItems,
+		],
 		status,
 	);
 	if (status === "warn") {

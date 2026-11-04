@@ -41,7 +41,8 @@ const database = vi.hoisted(() => {
 });
 const settled = vi.hoisted(() => ({ build: vi.fn() }));
 const ai = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	// The structured findings call: `generateText` with an `output` spec.
+	structuredOutput: vi.fn(),
 	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	trackUsage: vi.fn(),
@@ -98,8 +99,11 @@ vi.mock("@repo/ai", async () => {
 	const actualAi = await vi.importActual<typeof import("ai")>("ai");
 	return {
 		AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {},
-		generateObject: ai.generateObject,
-		generateText: ai.generateText,
+		// Both calls go through `generateText`; the findings call carries an
+		// `output` spec (passed through by the `Output.object` stub below).
+		generateText: (args: { output?: unknown }) =>
+			args.output ? ai.structuredOutput(args) : ai.generateText(args),
+		Output: { object: (spec: unknown) => spec },
 		getAIModelWithMetadata: ai.getAIModelWithMetadata,
 		NoObjectGeneratedError: actualAi.NoObjectGeneratedError,
 		zodSchema: (schema: unknown) => schema,
@@ -712,7 +716,7 @@ const FINDING = {
 const STABLE_KEY = /^k1:[0-9a-f]{32}$/;
 
 function modelReturns(findings: unknown[]) {
-	ai.generateObject.mockResolvedValue({ object: { findings } });
+	ai.structuredOutput.mockResolvedValue({ output: { findings } });
 }
 
 type GenerateCall = { instructions: string; prompt: string };
@@ -742,9 +746,9 @@ function storedFindings(index = 0): StoredFinding[] {
 }
 
 function generateCall(): GenerateCall {
-	const call = ai.generateObject.mock.calls[0]?.[0];
+	const call = ai.structuredOutput.mock.calls[0]?.[0];
 	if (!call) {
-		throw new Error("generateObject was not called");
+		throw new Error("the structured generateText call was not made");
 	}
 	return call as GenerateCall;
 }
@@ -962,7 +966,7 @@ describe("runProposalAnalysis", () => {
 			database.markAnalysisRunning.mock.invocationCallOrder[0] ?? 0,
 		);
 		expect(running).toBeLessThan(
-			ai.generateObject.mock.invocationCallOrder[0] ?? 0,
+			ai.structuredOutput.mock.invocationCallOrder[0] ?? 0,
 		);
 		expect(completed).toBeGreaterThan(
 			database.completeAnalysisRun.mock.invocationCallOrder[0] ?? 0,
@@ -1013,9 +1017,11 @@ describe("runProposalAnalysis", () => {
 	// what the findings model call receives.
 	describe("the findings call, pinned", () => {
 		function findingsCall(): Record<string, unknown> {
-			const call = ai.generateObject.mock.calls[0]?.[0];
+			const call = ai.structuredOutput.mock.calls[0]?.[0];
 			if (!call) {
-				throw new Error("generateObject was not called");
+				throw new Error(
+					"the structured generateText call was not made",
+				);
 			}
 			return call as Record<string, unknown>;
 		}
@@ -1048,8 +1054,8 @@ describe("runProposalAnalysis", () => {
 				"instructions",
 				"maxOutputTokens",
 				"model",
+				"output",
 				"prompt",
-				"schema",
 			]);
 			expect(call.model).toEqual({ id: "model-1" });
 			expect(call.maxOutputTokens).toBe(
@@ -1072,7 +1078,9 @@ describe("runProposalAnalysis", () => {
 			await runProposalAnalysis(RUN_INPUT);
 
 			expect(
-				z.toJSONSchema(findingsCall().schema as z.ZodType),
+				z.toJSONSchema(
+					(findingsCall().output as { schema: z.ZodType }).schema,
+				),
 			).toMatchInlineSnapshot(`
 				{
 				  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1808,7 +1816,7 @@ describe("runProposalAnalysis", () => {
 
 			expect(late.outcome).toBe("superseded");
 			expect(database.completeAnalysisRun).toHaveBeenCalledTimes(2);
-			expect(ai.generateObject).toHaveBeenCalledTimes(2);
+			expect(ai.structuredOutput).toHaveBeenCalledTimes(2);
 		});
 	});
 
@@ -1819,7 +1827,7 @@ describe("runProposalAnalysis", () => {
 			const result = await runProposalAnalysis(RUN_INPUT);
 
 			expect(result).toEqual({ outcome: "superseded", findingCount: 0 });
-			expect(ai.generateObject).not.toHaveBeenCalled();
+			expect(ai.structuredOutput).not.toHaveBeenCalled();
 			expect(database.completeAnalysisRun).not.toHaveBeenCalled();
 			expect(realtime.emitDocumentChange).not.toHaveBeenCalled();
 		});
@@ -1937,7 +1945,7 @@ describe("runProposalAnalysis", () => {
 
 				expect(failure.type).toBe("PROMPT_RENDER_FAILED");
 				expect(failure.nonRetryable).toBe(true);
-				expect(ai.generateObject).not.toHaveBeenCalled();
+				expect(ai.structuredOutput).not.toHaveBeenCalled();
 			},
 		);
 	});
@@ -1958,7 +1966,7 @@ describe("runProposalAnalysis", () => {
 		});
 
 		it("fails non-retryably as MODEL_ERROR when the output is refused", async () => {
-			ai.generateObject.mockRejectedValue(
+			ai.structuredOutput.mockRejectedValue(
 				new actualAi.NoObjectGeneratedError({
 					message: "The generated object could not be parsed.",
 					response: {
@@ -1993,7 +2001,7 @@ describe("runProposalAnalysis", () => {
 
 		it("lets a provider outage through so the activity retries it", async () => {
 			const outage = new Error("Upstream 503");
-			ai.generateObject.mockRejectedValue(outage);
+			ai.structuredOutput.mockRejectedValue(outage);
 
 			await expect(runProposalAnalysis(RUN_INPUT)).rejects.toBe(outage);
 		});
@@ -2165,7 +2173,7 @@ describe("runProposalAnalysis", () => {
 			);
 			expect(call.prompt).toBe(REPORT_PROMPT);
 			expect(ai.generateText.mock.invocationCallOrder[0]).toBeGreaterThan(
-				ai.generateObject.mock.invocationCallOrder[0] ?? 0,
+				ai.structuredOutput.mock.invocationCallOrder[0] ?? 0,
 			);
 			// The findings call is untouched by the report call.
 			expect(generateCall().instructions).toBe(FINDINGS_INSTRUCTIONS);
@@ -2191,7 +2199,7 @@ describe("runProposalAnalysis", () => {
 				"prompt",
 			]);
 			expect(call.model).toBe(
-				ai.generateObject.mock.calls[0]?.[0]?.model,
+				ai.structuredOutput.mock.calls[0]?.[0]?.model,
 			);
 			expect(call.maxOutputTokens).toBe(
 				computeScaledOutputTokenBudget(BUDGETED_METADATA, {
@@ -2317,7 +2325,7 @@ describe("runProposalAnalysis", () => {
 						outcome: "completed",
 						findingCount: 1,
 					});
-					expect(ai.generateObject).toHaveBeenCalledTimes(1);
+					expect(ai.structuredOutput).toHaveBeenCalledTimes(1);
 					expect(ai.generateText).not.toHaveBeenCalled();
 					expect(completions()).toEqual([
 						{
@@ -2551,9 +2559,9 @@ describe("runProposalAnalysis", () => {
 			it("is skipped when the findings call ran past the skip point", async () => {
 				vi.useFakeTimers({ toFake: ["Date"] });
 				vi.setSystemTime(new Date("2026-10-15T09:00:00Z"));
-				ai.generateObject.mockImplementation(async () => {
+				ai.structuredOutput.mockImplementation(async () => {
 					vi.setSystemTime(new Date("2026-10-15T09:07:30Z"));
-					return { object: { findings: [FINDING] } };
+					return { output: { findings: [FINDING] } };
 				});
 
 				const result = await runProposalAnalysis(RUN_INPUT);
@@ -2570,9 +2578,9 @@ describe("runProposalAnalysis", () => {
 			it("is aborted at the abort point, measured from the attempt's start", async () => {
 				vi.useFakeTimers({ toFake: ["Date"] });
 				vi.setSystemTime(new Date("2026-10-15T09:00:00Z"));
-				ai.generateObject.mockImplementation(async () => {
+				ai.structuredOutput.mockImplementation(async () => {
 					vi.setSystemTime(new Date("2026-10-15T09:02:00Z"));
-					return { object: { findings: [FINDING] } };
+					return { output: { findings: [FINDING] } };
 				});
 				const deadline = new AbortController();
 				liveness.requestAbortSignal.mockReturnValueOnce(
@@ -2618,9 +2626,9 @@ describe("runProposalAnalysis", () => {
 						toFake: ["Date", "setTimeout", "clearTimeout"],
 					});
 					vi.setSystemTime(new Date("2026-10-15T09:00:00Z"));
-					ai.generateObject.mockImplementation(async () => {
+					ai.structuredOutput.mockImplementation(async () => {
 						vi.setSystemTime(new Date("2026-10-15T09:02:00Z"));
-						return { object: { findings: [FINDING] } };
+						return { output: { findings: [FINDING] } };
 					});
 				}
 

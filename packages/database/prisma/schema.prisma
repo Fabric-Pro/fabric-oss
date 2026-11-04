@@ -341,6 +341,9 @@ model User {
   instructionGitIntentEntries   ProjectInstructionGitIntentEntry[]    @relation("InstructionGitIntentEntryCreator")
   instructionRepositorySyncs    ProjectInstructionRepositorySync[]    @relation("InstructionRepositorySyncDelegate")
   instructionRepositorySyncRuns ProjectInstructionRepositorySyncRun[] @relation("InstructionRepositorySyncRunActor")
+  instructionsAccessGrants      ProjectInstructionsAccessGrant[]      @relation("InstructionsAccessGrantMember")
+  instructionsAccessGrantsMade  ProjectInstructionsAccessGrant[]      @relation("InstructionsAccessGrantCreator")
+  instructionProposalApprovals  ProjectInstructionProposalApproval[]
 
   // Meeting transcript sync relations
   linkedMeetings         ProjectLinkedMeeting[]
@@ -872,6 +875,9 @@ model Organization {
   sdlcArtifacts                    SDLCArtifact[]
   sdlcPipelines                    SDLCPipeline[]
   evalBudget                       OrganizationEvalBudget?
+  contextQualityBindings           ProjectContextQualityBinding[]
+  contextQualityRuns               ProjectContextQualityRun[]
+  contextQualityPrincipals         ProjectContextQualityPrincipal[]
   workflows                        Workflow[]
   browserTasks                     BrowserTask[]
   automationTemplates              AutomationTemplate[]
@@ -890,8 +896,9 @@ model Organization {
   workspaces Workspace[]
 
   // Reporting relations
-  reportTemplates   ReportTemplate[]
-  templateInstances TemplateInstance[]
+  reportTemplates         ReportTemplate[]
+  templateInstances       TemplateInstance[]
+  reportTemplateOverrides ReportTemplateOverride[]
 
   // Task workflow relations
   taskWorkflowPlans TaskWorkflowPlan[]
@@ -1053,6 +1060,8 @@ model Organization {
   instructionGitIntentEntries   ProjectInstructionGitIntentEntry[]
   instructionRepositorySyncs    ProjectInstructionRepositorySync[]
   instructionRepositorySyncRuns ProjectInstructionRepositorySyncRun[]
+  instructionsAccessGrants      ProjectInstructionsAccessGrant[]
+  instructionProposalApprovals  ProjectInstructionProposalApproval[]
 
   // Frame sharing policy
   canShareFramesPublicly   Boolean  @default(true)
@@ -2558,6 +2567,7 @@ model Project {
   updatedAt                         DateTime                             @updatedAt
   organization                      Organization?                        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user                              User                                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceDocumentLinks ProjectWorkspaceDocumentLink[]
   contexts                          ProjectContext[]                     @relation("ProjectContexts")
   contextPendingVectorCleanups      ProjectContextPendingVectorCleanup[]
   contextRepositorySync             ProjectContextRepositorySync?        @relation("ProjectContextRepositorySync")
@@ -2590,6 +2600,8 @@ model Project {
   documents                         ProjectDocument[]
   ragSettings                       ProjectRagSettings?
   databricksKnowledgeBinding        ProjectDatabricksKnowledgeBinding?
+  contextQualityBinding             ProjectContextQualityBinding?
+  contextQualityRuns                ProjectContextQualityRun[]
   scanConfig                        ProjectScanConfig?
   scans                             ProjectScan[]
   scanCheckpoints                   ProjectScanCheckpoint[]
@@ -2688,6 +2700,7 @@ model Project {
   instructionRepositorySync      ProjectInstructionRepositorySync?     @relation("ProjectInstructionRepositorySync")
   instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[] @relation("ProjectInstructionRepositorySyncRuns")
   instructionProposalBranches    ProjectInstructionProposalBranch[]    @relation("ProjectInstructionProposalBranches")
+  instructionsAccessGrants       ProjectInstructionsAccessGrant[]      @relation("ProjectInstructionsAccessGrants")
 
   // Weave (multi-agent orchestration)
   weaveConfig ProjectWeaveConfig?
@@ -2793,7 +2806,8 @@ model Project {
 
   remoteAgentServers ProjectRemoteAgentServer[]
 
-  reportInstances TemplateInstance[]
+  reportInstances         TemplateInstance[]
+  reportTemplateOverrides ReportTemplateOverride[]
 
   @@index([userId])
   @@index([deletedAt])
@@ -3231,6 +3245,27 @@ enum ProjectDocumentFindingType {
   ARCHITECTURE
   BRANDING
   OPPORTUNITY
+}
+
+/// A reference to a Workspace document, never a content copy or a sharing grant.
+/// Current project and Workspace permissions are checked independently on every read.
+model ProjectWorkspaceDocumentLink {
+  id String @id @default(cuid())
+  organizationId String
+  projectId String
+  documentId String
+  addedByUserId String
+  sourceRevisionAtLink String @db.VarChar(64)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document WorkspaceDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, documentId], map: "project_workspace_doc_link_project_document_key")
+  @@index([organizationId, projectId])
+  @@index([documentId])
+  @@map("project_workspace_document_link")
 }
 
 model ProjectContext {
@@ -4499,9 +4534,19 @@ model InstructionConsolidation {
   sourceCommitSha       String?
   copiedCommitSha       String?
   cleanupPullRequestUrl String?
+  /// The cleanup pull request's provider id (GitHub number, GitLab iid).
+  cleanupPullRequestId  String?
+  /// The commit Fabric pushed as the cleanup branch's head; a merge from
+  /// Fabric only merges while the pull request's head is still this commit.
+  cleanupHeadSha        String?
+  /// When the cleanup pull request was first seen merged.
+  cleanupMergedAt       DateTime?
   /// [{ from, to }] the person confirmed; `to` null removes a duplicate only.
   files                 Json
   fileCount             Int                            @default(0)
+  /// Plan files the person kept in the code repository (for example the
+  /// product's own plugin skills); a later move does not offer them again.
+  keptPaths             String[]                       @default([])
   error                 String?                        @db.Text
 
   // Tenant isolation (copied from the parent Project)
@@ -6515,43 +6560,44 @@ model AtlasEdgeOverrideHistory {
 
 // Linked Meetings - Which recurring meetings are linked to a project for transcript sync
 model ProjectLinkedMeeting {
-  id                           String    @id @default(cuid())
-  projectId                    String
-  joinUrl                      String // Teams meeting join URL (stable across recurring instances)
+  id                                String                    @id @default(cuid())
+  projectId                         String
+  joinUrl                           String // Teams meeting join URL (stable across recurring instances)
   // TEAMS | UPLOAD. An UPLOAD row is one uploaded transcript file (#1877): its
   // joinUrl is `upload:<sha256>`, not a URL Microsoft knows, so it must never
   // reach the sync or anything else that calls Graph.
-  source                       String    @default("TEAMS")
-  subject                      String?
-  organizer                    String?
+  source                            String                    @default("TEAMS")
+  subject                           String?
+  organizer                         String?
   // Admin toggle: whether this meeting appears in the project Meeting Digest. Default true so
   // all currently-linked meetings show up immediately.
-  includedInDigest             Boolean   @default(true)
-  linkedAt                     DateTime  @default(now())
+  includedInDigest                  Boolean                   @default(true)
+  linkedAt                          DateTime                  @default(now())
   // Stopped syncing but deliberately kept: the row, its transcripts and their
   // extracted context all stay live and readable — only the sync stops looking
   // at it. Distinct from unlinking, which destroys the context (Fizzy #2355).
   // Null = actively syncing.
-  deactivatedAt                DateTime?
-  deactivatedById              String?
+  deactivatedAt                     DateTime?
+  deactivatedById                   String?
   // Failure state, mirroring the three channel-monitor models. Meetings had
   // none, which is why a dead sync looked healthy: the fetch threw, the
   // activity swallowed it, and the run still stamped a clean lastRun (#2355).
-  consecutiveFailures          Int       @default(0)
-  lastErrorMessage             String?
-  lastErrorAt                  DateTime?
-  userId                       String?
-  organizationId               String?
+  consecutiveFailures               Int                       @default(0)
+  lastErrorMessage                  String?
+  lastErrorAt                       DateTime?
+  userId                            String?
+  organizationId                    String?
   /// Parlume joins every occurrence of this series at its start time.
-  parlumeAutoJoin              Boolean   @default(false)
+  parlumeAutoJoin                   Boolean                   @default(false)
   /// Who turned auto-join on: their calendar, Microsoft connection and project
   /// permissions are what each join uses.
-  parlumeAutoJoinUserId        String?
-  parlumeAutoJoinToolsReadOnly Boolean   @default(true)
-  parlumeAutoJoinSuggestions   Boolean   @default(true)
+  parlumeAutoJoinUserId             String?
+  parlumeAutoJoinToolsReadOnly      Boolean                   @default(true)
+  parlumeAutoJoinSuggestions        Boolean                   @default(true)
+  parlumeAutoJoinSuggestionAudience ParlumeSuggestionAudience @default(MEETING)
   /// Why the last automatic join could not happen, in words for the series' admins.
-  parlumeAutoJoinError         String?
-  parlumeAutoJoinErrorAt       DateTime?
+  parlumeAutoJoinError              String?
+  parlumeAutoJoinErrorAt            DateTime?
 
   project             Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user                User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -6658,6 +6704,26 @@ enum ParlumeSessionTrigger {
   @@map("parlume_session_trigger")
 }
 
+/// Who sees Parlume's unprompted suggestions and recap: everyone in the
+/// meeting, through its chat (external participants included), or only the
+/// project's readers, on the Parlume page.
+enum ParlumeSuggestionAudience {
+  MEETING
+  TEAM
+
+  @@map("parlume_suggestion_audience")
+}
+
+/// What an unprompted contribution is: an answer to a remark, a question the
+/// meeting may have missed, or the "Since last time" recap.
+enum ParlumeSuggestionKind {
+  ANSWER
+  MISSED_QUESTION
+  RECAP
+
+  @@map("parlume_suggestion_kind")
+}
+
 enum ParlumeMeetingTurnStatus {
   PENDING
   RUNNING
@@ -6725,6 +6791,8 @@ model ParlumeMeetingSession {
   toolsReadOnly                Boolean                     @default(true)
   /// Parlume may offer unprompted suggestions in the meeting chat.
   suggestionsEnabled           Boolean                     @default(true)
+  /// Where those suggestions and the recap go: the meeting chat, or the Parlume page only.
+  suggestionAudience           ParlumeSuggestionAudience   @default(MEETING)
   endReason                    ParlumeMeetingEndReason?
   lastError                    String?                     @db.Text
   joinedAt                     DateTime?
@@ -6766,6 +6834,7 @@ model ParlumeMeetingSession {
   segments      ParlumeMeetingSegment[]
   turns         ParlumeMeetingTurn[]
   channelPosts  ParlumeChannelPost[]
+  suggestions   ParlumeSuggestion[]
 
   /// One session per occurrence of a series, however often its join is requested.
   @@unique([linkedMeetingId, occurrenceStart])
@@ -6796,6 +6865,32 @@ model ParlumeChannelPost {
   @@index([projectId])
   @@index([organizationId])
   @@map("parlume_channel_post")
+}
+
+/// One unprompted contribution Parlume made in a session, whoever it was for.
+/// The Parlume page lists them to the project's readers; `chatTag` is set when
+/// it was also posted in the meeting chat.
+model ParlumeSuggestion {
+  id             String                    @id @default(cuid())
+  sessionId      String
+  projectId      String
+  organizationId String
+  /// The session's inviter, for the user_owned RLS policy.
+  userId         String
+  kind           ParlumeSuggestionKind
+  audience       ParlumeSuggestionAudience
+  text           String                    @db.Text
+  speaker        String?
+  quote          String?
+  topic          String?
+  chatTag        String?
+  createdAt      DateTime                  @default(now())
+
+  session ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([projectId])
+  @@map("parlume_suggestion")
 }
 
 /// One bounded response request made from a final meeting utterance.
@@ -8416,6 +8511,15 @@ model ProjectUserPreference {
   /// auto-expand at once. A regression ignores this cap; routine incompleteness
   /// does not.
   readinessAutoExpandedAt           DateTime?
+  /// The Coding Instructions version this person last looked at, for the
+  /// tab's "what changed since your last visit" digest. Written when the tab
+  /// is actually viewed or on "Mark all as seen", never on project load.
+  /// Deliberately not a foreign key: a pruned or deleted snapshot must not
+  /// take the marker with it, so `instructionsSeenVersion` is the fallback.
+  instructionsSeenSnapshotId        String?
+  instructionsSeenVersion           Int?
+  /// When that happened; proposals decided after it are in the digest.
+  instructionsSeenAt                DateTime?
   createdAt                         DateTime  @default(now())
   updatedAt                         DateTime  @updatedAt
 
@@ -15223,6 +15327,8 @@ enum WorkflowIntegrationProvider {
   CONFLUENCE
   CUSTOM_WEBHOOK
   DATABASE
+  DATABRICKS_PLATFORM
+  DATABRICKS_SQL
   DATABRICKS_VECTOR_SEARCH
   FAL
   FIRECRAWL
@@ -15441,6 +15547,7 @@ model WorkflowIntegration {
   workflow                 Workflow?                           @relation(fields: [workflowId], references: [id], onDelete: Cascade)
   agentConfigurations      AgentIntegrationConfiguration[] // Agent instances using this integration
   projectKnowledgeBindings ProjectDatabricksKnowledgeBinding[] // Projects using this integration for read-only knowledge retrieval
+  projectContextQualityBindings ProjectContextQualityBinding[]
 
   // Partial unique index `workflow_integration_personal_gitlab_key`, owned by
   // migration 20261004120100_workflow_integration_personal_gitlab_unique and
@@ -15491,6 +15598,116 @@ model ProjectDatabricksKnowledgeBinding {
 
   @@index([integrationId])
   @@map("project_databricks_knowledge_binding")
+}
+
+/// Administrator-approved remote evaluation destination. Credentials remain in
+/// the explicitly shared WorkflowIntegration; resource/principal changes create
+/// a new configuration version and fence pending work.
+model ProjectContextQualityPrincipal {
+  fingerprint    String   @id @db.VarChar(64)
+  organizationId String
+  createdAt      DateTime @default(now())
+
+  organization Organization                   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  bindings     ProjectContextQualityBinding[]
+
+  @@unique([fingerprint, organizationId], map: "context_quality_principal_fingerprint_org_key")
+  @@index([organizationId])
+  @@map("project_context_quality_principal")
+}
+
+model ProjectContextQualityBinding {
+  id                   String   @id @default(cuid())
+  organizationId       String
+  projectId            String   @unique
+  integrationId        String
+  workspaceOrigin      String   @db.VarChar(512)
+  jobId                String   @db.VarChar(32)
+  experimentId         String   @db.VarChar(32)
+  volumeRoot           String   @db.VarChar(512)
+  notebookPath         String   @db.VarChar(768)
+  notebookSha256       String   @db.VarChar(64)
+  principalFingerprint String   @db.VarChar(64)
+  configHash           String   @db.VarChar(64)
+  configVersion        Int      @default(1)
+  isEnabled            Boolean  @default(false)
+  exportApprovedAt     DateTime?
+  exportApprovedBy     String?
+  createdBy            String
+  updatedBy            String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  project      Project                    @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  integration  WorkflowIntegration        @relation(fields: [integrationId], references: [id], onDelete: Restrict)
+  principal    ProjectContextQualityPrincipal @relation(fields: [principalFingerprint, organizationId], references: [fingerprint, organizationId], onDelete: Restrict)
+  runs         ProjectContextQualityRun[]
+
+  @@unique([id, projectId, organizationId], map: "context_quality_binding_id_project_org_key")
+  @@unique([workspaceOrigin, jobId], map: "context_quality_binding_workspace_job_key")
+  @@unique([workspaceOrigin, experimentId], map: "context_quality_binding_workspace_experiment_key")
+  @@unique([workspaceOrigin, volumeRoot], map: "context_quality_binding_workspace_volume_key")
+  @@index([organizationId])
+  @@index([integrationId])
+  @@map("project_context_quality_binding")
+}
+
+/// Durable admission, immutable private scoring input and minimized result.
+/// Run rows also form the workflow-start and remote-cleanup queues. Restrict
+/// deletion until confirmed remote cleanup so receipts cannot silently vanish.
+/// Migration-owned CHECKs bound status, hashes and exact UTF-8 payload size.
+model ProjectContextQualityRun {
+  id                 String   @id @default(cuid())
+  organizationId     String
+  projectId          String
+  bindingId          String
+  requestedBy        String
+  name               String   @db.VarChar(80)
+  idempotencyKey     String   @db.VarChar(128)
+  requestHash        String   @db.VarChar(64)
+  sourceRefsJson     Json
+  snapshotPayload    String?  @db.Text
+  payloadHash        String   @db.VarChar(64)
+  snapshotHash       String   @db.VarChar(64)
+  scorerVersion      String   @db.VarChar(128)
+  bindingConfigJson  Json
+  bindingConfigHash  String   @db.VarChar(64)
+  localResultJson    Json
+  status             String   @default("QUEUED") @db.VarChar(32)
+  stateVersion       Int      @default(0)
+  workflowId         String   @unique @db.VarChar(256)
+  dispatchToken      String   @unique @db.VarChar(64)
+  remoteRunId        String?  @db.VarChar(32)
+  remoteMlflowRunId  String?  @db.VarChar(64)
+  remoteLookupPageToken String? @db.VarChar(2048)
+  remoteState        String?  @db.VarChar(64)
+  providerReceiptJson Json?
+  resultJson         Json?
+  errorCode          String?  @db.VarChar(64)
+  remoteInputPath    String?  @db.VarChar(768)
+  cleanupStatus      String   @default("NOT_REQUIRED") @db.VarChar(32)
+  cleanupErrorCode   String?  @db.VarChar(64)
+  cancelRequestedAt  DateTime?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  deadlineAt         DateTime
+  snapshotExpiresAt  DateTime
+  snapshotPurgedAt   DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  project      Project                    @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  binding      ProjectContextQualityBinding @relation(fields: [bindingId, projectId, organizationId], references: [id, projectId, organizationId], onDelete: Restrict)
+
+  @@unique([projectId, requestedBy, idempotencyKey], map: "context_quality_run_actor_request_key")
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([organizationId, status])
+  @@index([status, createdAt])
+  @@index([snapshotExpiresAt, cleanupStatus])
+  @@index([bindingId, projectId, organizationId])
+  @@map("project_context_quality_run")
 }
 
 // API keys for triggering workflows externally
@@ -16114,6 +16331,7 @@ model WorkspaceDocument {
   workspace      Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   chunks         WorkspaceDocumentChunk[]
   uploader       User                     @relation("WorkspaceDocumentUploader", fields: [uploadedBy], references: [id])
+  projectContextLinks ProjectWorkspaceDocumentLink[]
   syncedResource SyncedResource? // Link to external synced resource (if created from data connection)
 
   @@index([workspaceId])
@@ -17153,6 +17371,7 @@ model ReportTemplate {
   artifacts    ReportArtifact[]
   instances    TemplateInstance[]
   skills       ReportTemplateSkill[]
+  overrides    ReportTemplateOverride[]
 
   @@index([userId])
   @@index([organizationId])
@@ -17161,6 +17380,40 @@ model ReportTemplate {
   @@index([scope])
   @@index([isPublic])
   @@map("report_template")
+}
+
+// An organization's or a project's defaults for the reports it creates from a
+// template: org-wide when projectId is null, one project's otherwise. A new
+// report takes project values over organization values over the template's.
+// The unique key is NULLS NOT DISTINCT in SQL (Prisma cannot express it), so
+// an organization holds one org-wide row per template.
+model ReportTemplateOverride {
+  id             String  @id @default(cuid())
+  templateId     String
+  organizationId String
+  projectId      String?
+
+  // { [parameterKey]: value } — the report's parameter defaults
+  parameterDefaults Json?
+  // { [key]: value } — human-readable context the report's AI reads
+  context           Json?
+  // Raw schedule input (reportScheduleInputSchema); normalized onto each new report
+  schedule          Json?
+
+  // Attribution, not ownership: who last saved these defaults
+  updatedById String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  template     ReportTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project?       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, organizationId, projectId], map: "report_template_override_scope_key")
+  @@index([organizationId])
+  @@index([projectId])
+  @@map("report_template_override")
 }
 
 // Template instance lifecycle status
@@ -20821,6 +21074,11 @@ model ProjectInstructionSnapshot {
   updatedAt   DateTime  @updatedAt
   readyAt     DateTime?
   publishedAt DateTime?
+  /// When the project's members were told this version was published: the
+  /// claim that makes the publish notification fire at most once per
+  /// snapshot. `publishedAt` cannot serve, because a rollback to this version
+  /// overwrites it. Null until the first publication's fan-out claims it.
+  publishNotifiedAt DateTime?
 
   project          Project                            @relation("ProjectInstructionSnapshots", fields: [projectId], references: [id], onDelete: Cascade)
   organization     Organization                       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -20829,6 +21087,7 @@ model ProjectInstructionSnapshot {
   publishedFor     Project?                           @relation("PublishedInstructionSnapshot")
   files            ProjectInstructionFile[]
   gitIntentEntries ProjectInstructionGitIntentEntry[]
+  approvals        ProjectInstructionProposalApproval[]
 
   baseSnapshot     ProjectInstructionSnapshot?  @relation("DerivedInstructionSnapshots", fields: [baseSnapshotId], references: [id], onDelete: SetNull)
   derivedSnapshots ProjectInstructionSnapshot[] @relation("DerivedInstructionSnapshots")
@@ -20876,20 +21135,24 @@ model ProjectInstructionGitIntentEntry {
   organizationId String
   userId         String
 
-  operation    ProjectInstructionGitIntentOperation
-  path         String
+  operation      ProjectInstructionGitIntentOperation
+  path           String
   /// The object identity/mode observed at the pinned base. Both are null when
   /// the path was absent, and freeze conflict detection for a later write.
-  baseObjectId String?
-  baseMode     Int?
+  baseObjectId   String?
+  baseMode       Int?
+  /// Set only on a branch-relative entry: a change to a file the member's
+  /// proposal branch holds and the published version does not. It freezes
+  /// the blob Fabric wrote there; null for every published-relative entry.
+  branchObjectId String?
   /// PUT-only immutable staged bytes. DELETE carries no blob reference.
-  storageKey   String?
-  sha256       String?
-  size         Int?
-  mimeType     String?
-  isText       Boolean?
-  mode         Int?
-  kind         ProjectInstructionFileKind?
+  storageKey     String?
+  sha256         String?
+  size           Int?
+  mimeType       String?
+  isText         Boolean?
+  mode           Int?
+  kind           ProjectInstructionFileKind?
 
   createdAt DateTime @default(now())
 
@@ -21129,6 +21392,32 @@ model ProjectInstructionFile {
   @@map("project_instruction_file")
 }
 
+/// One reviewer's approval of an upload-mode file proposal. A proposal
+/// publishes once the project's review policy (`instructionSettings
+/// .reviewPolicy.requiredApprovals`) counts enough of these; the policy is
+/// read under the project row lock as each approval lands. A repeated
+/// approval by the same reviewer is the same row. Approvals belong to their
+/// own proposal and are never carried to another one.
+model ProjectInstructionProposalApproval {
+  id             String   @id @default(cuid())
+  snapshotId     String
+  /// Denormalized and held to the parent's value by the composite FK.
+  projectId      String
+  organizationId String
+  userId         String
+  createdAt      DateTime @default(now())
+
+  snapshot     ProjectInstructionSnapshot @relation(fields: [snapshotId, projectId], references: [id, projectId], onDelete: Cascade)
+  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([snapshotId, userId])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("project_instruction_proposal_approval")
+}
+
 /// A project's repository-sync configuration: at most one per project. The
 /// configuration identity is (id, generation); every change that alters what
 /// a run would produce (repository, branch, folder, ignore rules) bumps
@@ -21190,6 +21479,65 @@ model ProjectInstructionRepositorySync {
   @@index([userId])
   @@index([repositoryIntegrationId], map: "project_instruction_repository_sync_integration_idx")
   @@map("project_instruction_repository_sync")
+}
+
+/// How Fabric gave a member read access to the instructions repository.
+enum ProjectInstructionsAccessMode {
+  /// Organization-owned repository: membership of the project's
+  /// `fabric-<project-slug>-instructions` team, which has `pull` on it.
+  TEAM
+  /// Personal-account repository: a repository collaborator. GitHub gives
+  /// collaborators on personal repositories write access.
+  COLLABORATOR
+}
+
+enum ProjectInstructionsAccessStatus {
+  /// GitHub sent an invitation the member has not accepted yet.
+  INVITED
+  ACTIVE
+  FAILED
+  REVOKED
+}
+
+/// One read-access grant Fabric made on a project's coding-instructions
+/// repository, so a member can install the instructions plugin (spec
+/// 2026-11-04 §4.4, §4.5). Every row records access Fabric itself granted:
+/// access a member already had is never recorded, so revoking a row never
+/// removes it.
+///
+/// `repository` (`owner/name`) and `teamSlug` are the ones the grant was made
+/// on, so a revoke reverses exactly that grant even after the project points
+/// at another repository. `lastError` is fixed Fabric text plus GitHub's short
+/// reason; it never holds a token.
+///
+/// Tenancy: organization-scoped (organization projects only, ADR-018); RLS
+/// `user_owned`, registered in src/tenant-db.ts.
+model ProjectInstructionsAccessGrant {
+  id              String                          @id @default(cuid())
+  organizationId  String
+  projectId       String
+  /// The member who was given access.
+  userId          String
+  githubLogin     String
+  repository      String
+  teamSlug        String?
+  mode            ProjectInstructionsAccessMode
+  status          ProjectInstructionsAccessStatus
+  lastError       String?
+  createdByUserId String?
+  createdAt       DateTime                        @default(now())
+  updatedAt       DateTime                        @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project      @relation("ProjectInstructionsAccessGrants", fields: [projectId], references: [id], onDelete: Cascade)
+  user         User         @relation("InstructionsAccessGrantMember", fields: [userId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("InstructionsAccessGrantCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, userId])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([createdByUserId])
+  @@map("project_instructions_access_grant")
 }
 
 /// One logical sync run: inserted by `begin` (status null), completed once by
@@ -21774,6 +22122,13 @@ enum NotificationType {
   ///
   /// Category SYSTEM, always on: the work will not run again by itself.
   CHATGPT_PLAN_WORK_STOPPED
+
+  /// A new Coding Instructions version became the project's published one.
+  /// Sent once per snapshot (`ProjectInstructionSnapshot.publishNotifiedAt`)
+  /// to the project's members who can read the instructions, minus whoever
+  /// published it, so they update their local copy. Category PROJECT, gated
+  /// by the `syncProject` toggle.
+  CODING_INSTRUCTIONS_PUBLISHED
 }
 
 model Notification {

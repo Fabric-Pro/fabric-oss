@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	getDeployment: vi.fn(),
+	scope: vi.fn(),
 	membership: vi.fn(),
 	ownerMember: vi.fn(),
 	quota: vi.fn(),
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("@repo/database", () => ({
 	getAgentDeploymentById: mocks.getDeployment,
+	getAgentTemplateInstanceForExecution: mocks.scope,
 	isDeploymentOwnerCurrentMember: mocks.ownerMember,
 	checkExecutionQuota: mocks.quota,
 	db: { agentDeploymentExecution: { create: mocks.create } },
@@ -36,6 +38,7 @@ vi.mock("../../../../orpc/procedures", () => ({
 	},
 	Permissions: { AGENT_EXECUTE: "AGENT_EXECUTE" },
 	requirePermission: () => () => {},
+	requireInputOrgPermission: () => () => {},
 	resolveOrganizationId: (id: string) => id,
 }));
 
@@ -48,6 +51,7 @@ const handler = (
 )._handler;
 const deployment = {
 	id: "deployment-example",
+	instanceId: "instance-example",
 	userId: "owner-example",
 	organizationId: "example-org",
 	status: "ACTIVE",
@@ -65,6 +69,13 @@ const args = {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.getDeployment.mockResolvedValue(deployment);
+	mocks.scope.mockResolvedValue({
+		instance: {
+			id: deployment.instanceId,
+			organizationId: deployment.organizationId,
+			customInstructions: {},
+		},
+	});
 	mocks.membership.mockResolvedValue({ role: "member" });
 	mocks.ownerMember.mockResolvedValue(true);
 	mocks.quota.mockResolvedValue({ allowed: true });

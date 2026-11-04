@@ -14,6 +14,7 @@ function state(overrides: Partial<ParlumeAutoJoinState> = {}) {
 		enabled: true,
 		toolsReadOnly: true,
 		suggestionsEnabled: true,
+		suggestionAudience: "MEETING" as const,
 		enabledBy: { id: "user-1", name: "Dev Example" },
 		error: null,
 		errorAt: null,
@@ -65,6 +66,7 @@ describe("ParlumeAutoJoinControl", () => {
 			enabled: true,
 			toolsReadOnly: true,
 			suggestionsEnabled: true,
+			suggestionAudience: "MEETING",
 		});
 	});
 
@@ -90,11 +92,12 @@ describe("ParlumeAutoJoinControl", () => {
 			enabled: true,
 			toolsReadOnly: false,
 			suggestionsEnabled: false,
+			suggestionAudience: "MEETING",
 		});
 	});
 
-	it("turns chat suggestions off", async () => {
-		const onChange = renderControl(state());
+	it("turns suggestions and recap off", async () => {
+		const onChange = renderControl(state({ suggestionAudience: "TEAM" }));
 
 		await userEvent.click(screen.getByRole("switch", { name: "label" }));
 
@@ -102,6 +105,43 @@ describe("ParlumeAutoJoinControl", () => {
 			enabled: true,
 			toolsReadOnly: true,
 			suggestionsEnabled: false,
+			suggestionAudience: "TEAM",
+		});
+	});
+
+	it("asks who sees suggestions only while they are on", () => {
+		renderControl(state({ suggestionsEnabled: false }));
+
+		expect(
+			screen.queryByText("Who sees suggestions"),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps a series' suggestions for the team without changing the rest", async () => {
+		const onChange = renderControl(state());
+		expect(
+			screen.getByRole("radio", {
+				name: "Everyone in the meeting (chat)",
+			}),
+		).toBeChecked();
+		expect(
+			screen.getByText(/the recap are posted in the meeting chat/),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/external guests included/),
+		).toBeInTheDocument();
+
+		await userEvent.click(
+			screen.getByRole("radio", {
+				name: "Only your team (Parlume page)",
+			}),
+		);
+
+		expect(onChange).toHaveBeenCalledWith({
+			enabled: true,
+			toolsReadOnly: true,
+			suggestionsEnabled: true,
+			suggestionAudience: "TEAM",
 		});
 	});
 

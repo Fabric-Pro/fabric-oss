@@ -15,7 +15,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	getAgentDeploymentById: vi.fn(),
 	filterAccessibleWorkspaceIds: vi.fn(),
-	isDeploymentOwnerCurrentMember: vi.fn(),
+	isDeploymentOwnerCurrentMember: vi.fn(async () => true),
+	canExecuteOrganizationAgents: vi.fn(async () => true),
+	getProjectAccessContext: vi.fn(),
+	isProjectSoftDeleted: vi.fn(async () => false),
 	loadAgentMemoryContext: vi.fn(),
 	buildAgentExecutionContext: vi.fn(),
 	loggerInfo: vi.fn(),
@@ -28,10 +31,12 @@ const mocks = vi.hoisted(() => ({
 // pool for a test that needs neither.
 vi.mock("@repo/database", () => ({
 	appendTemplateMessage: vi.fn(),
+	canExecuteOrganizationAgents: mocks.canExecuteOrganizationAgents,
 	filterAccessibleWorkspaceIds: (...args: unknown[]) =>
 		mocks.filterAccessibleWorkspaceIds(...args),
-	isDeploymentOwnerCurrentMember: (...args: unknown[]) =>
-		mocks.isDeploymentOwnerCurrentMember(...args),
+	getProjectAccessContext: mocks.getProjectAccessContext,
+	isDeploymentOwnerCurrentMember: mocks.isDeploymentOwnerCurrentMember,
+	isProjectSoftDeleted: mocks.isProjectSoftDeleted,
 	getAgentDeploymentById: (...args: unknown[]) =>
 		mocks.getAgentDeploymentById(...args),
 	getBuiltInToolConfig: vi.fn(),
@@ -86,6 +91,7 @@ function buildDeploymentFixture(workspaceIds: string[]) {
 		organizationId: ROW_ORGANIZATION_ID,
 		instance: {
 			id: "instance-1",
+			organizationId: ROW_ORGANIZATION_ID,
 			name: "My Agent",
 			description: null,
 			customInstructions: null,
@@ -112,9 +118,14 @@ describe("loadDeploymentConfiguration workspace access filtering", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.isDeploymentOwnerCurrentMember.mockResolvedValue(true);
+		mocks.canExecuteOrganizationAgents.mockResolvedValue(true);
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: ROW_ORGANIZATION_ID,
+		});
+		mocks.isProjectSoftDeleted.mockResolvedValue(false);
 	});
 
-	it("filters instance.workspaceIds using the deployment row's own userId/organizationId, not the params", async () => {
+	it("filters stored workspace IDs only after matching the caller and deployment tenant", async () => {
 		mocks.getAgentDeploymentById.mockResolvedValue(
 			buildDeploymentFixture(["ws-a", "ws-b"]),
 		);
@@ -127,13 +138,13 @@ describe("loadDeploymentConfiguration workspace access filtering", () => {
 			deploymentId: "deployment-1",
 			// Caller-supplied tenant, deliberately different from the row's own
 			// fields above — the filter call must ignore these.
-			userId: "user-param-caller",
-			organizationId: "org-param-caller",
+			userId: ROW_USER_ID,
+			organizationId: ROW_ORGANIZATION_ID,
 		});
 
 		expect(mocks.getAgentDeploymentById).toHaveBeenCalledWith(
 			"deployment-1",
-			{ userId: "user-param-caller", organizationId: "org-param-caller" },
+			{ userId: ROW_USER_ID, organizationId: ROW_ORGANIZATION_ID },
 		);
 		expect(mocks.filterAccessibleWorkspaceIds).toHaveBeenCalledWith({
 			workspaceIds: ["ws-a", "ws-b"],
@@ -192,8 +203,8 @@ describe("loadDeploymentConfiguration workspace access filtering", () => {
 
 		await loadDeploymentConfiguration({
 			deploymentId: "deployment-1",
-			userId: "user-param-caller",
-			organizationId: "org-param-caller",
+			userId: ROW_USER_ID,
+			organizationId: ROW_ORGANIZATION_ID,
 		});
 
 		expect(mocks.loggerWarn).toHaveBeenCalledWith(
@@ -213,8 +224,8 @@ describe("loadDeploymentConfiguration workspace access filtering", () => {
 
 		const config = await loadDeploymentConfiguration({
 			deploymentId: "deployment-1",
-			userId: "user-param-caller",
-			organizationId: "org-param-caller",
+			userId: ROW_USER_ID,
+			organizationId: ROW_ORGANIZATION_ID,
 		});
 
 		expect(config?.workspaceIds).toEqual(["ws-a"]);
@@ -225,6 +236,10 @@ describe("loadDeploymentConfiguration workspace access filtering", () => {
 describe("buildExecutionContext meeting isolation", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org-1",
+		});
+		mocks.isProjectSoftDeleted.mockResolvedValue(false);
 		mocks.buildAgentExecutionContext.mockReturnValue({
 			systemPrompt: "template instructions",
 			model: "test-model",
@@ -278,4 +293,53 @@ describe("buildExecutionContext meeting isolation", () => {
 		expect(mocks.loadAgentMemoryContext).not.toHaveBeenCalled();
 		expect(context.systemPrompt).toBe("template instructions");
 	});
+});
+
+it("refuses a mismatched or departed deployment principal before reading knowledge", async () => {
+	vi.clearAllMocks();
+	mocks.isDeploymentOwnerCurrentMember.mockResolvedValue(true);
+	mocks.canExecuteOrganizationAgents.mockResolvedValue(true);
+	mocks.getAgentDeploymentById.mockResolvedValue(
+		buildDeploymentFixture(["ws-a"]),
+	);
+	expect(
+		await loadDeploymentConfiguration({
+			deploymentId: "deployment-1",
+			userId: ROW_USER_ID,
+			organizationId: "other-org",
+		}),
+	).toBeNull();
+	expect(mocks.filterAccessibleWorkspaceIds).not.toHaveBeenCalled();
+	mocks.canExecuteOrganizationAgents.mockResolvedValue(false);
+	expect(
+		await loadDeploymentConfiguration({
+			deploymentId: "deployment-1",
+			userId: ROW_USER_ID,
+			organizationId: ROW_ORGANIZATION_ID,
+		}),
+	).toBeNull();
+	expect(mocks.filterAccessibleWorkspaceIds).not.toHaveBeenCalled();
+});
+
+it("refuses a foreign project even when the owner can access both organizations", async () => {
+	vi.clearAllMocks();
+	mocks.isDeploymentOwnerCurrentMember.mockResolvedValue(true);
+	mocks.canExecuteOrganizationAgents.mockResolvedValue(true);
+	mocks.isProjectSoftDeleted.mockResolvedValue(false);
+	const row = buildDeploymentFixture(["ws-a"]);
+	row.instance.toolConnections = {
+		"project-context": { projectId: "example-project" },
+	};
+	mocks.getAgentDeploymentById.mockResolvedValue(row);
+	mocks.getProjectAccessContext.mockResolvedValue({
+		organizationId: "other-org",
+	});
+	expect(
+		await loadDeploymentConfiguration({
+			deploymentId: "deployment-1",
+			userId: ROW_USER_ID,
+			organizationId: ROW_ORGANIZATION_ID,
+		}),
+	).toBeNull();
+	expect(mocks.filterAccessibleWorkspaceIds).not.toHaveBeenCalled();
 });

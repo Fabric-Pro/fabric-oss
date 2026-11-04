@@ -116,7 +116,7 @@ export type ShortPostOption = z.infer<typeof ShortPostOptionSchema>;
  * choice, and a run that produced them has degenerated in the way the "make the
  * three meaningfully different" instruction exists to prevent.
  *
- * The refinement is invisible to the model: `generateObject` converts this
+ * The refinement is invisible to the model: `Output.object` converts this
  * schema to JSON Schema, which cannot express cross-element uniqueness. That is
  * why the same requirement is also stated in the locked clauses, which an org's
  * prompt edit cannot remove. This half is the enforcement; that half is the

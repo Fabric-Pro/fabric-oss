@@ -42,7 +42,7 @@ const { mocks, AIProviderNotConfiguredError } = vi.hoisted(() => {
 		mocks: {
 			getBoundPromptForAgent: vi.fn(),
 			renderTemplate: vi.fn(),
-			generateObject: vi.fn(),
+			generateText: vi.fn(),
 			getAIModelWithMetadata: vi.fn(),
 			getAIDecisionModelWithMetadata: vi.fn(),
 			doDecide: vi.fn(),
@@ -60,7 +60,7 @@ vi.mock("@repo/ai", async () => {
 	return {
 		AIProviderNotConfiguredError,
 		experimental_decide: sdk.experimental_decide,
-		generateObject: mocks.generateObject,
+		generateText: mocks.generateText,
 		getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 		getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
 		resolveModelWithProvider: vi.fn(),
@@ -195,8 +195,8 @@ beforeEach(() => {
 		metadata: undefined,
 		trackUsage: vi.fn(),
 	});
-	mocks.generateObject.mockResolvedValue({
-		object: { decision: "create", confidence: 1 },
+	mocks.generateText.mockResolvedValue({
+		output: { decision: "create", confidence: 1 },
 		usage: {},
 	});
 	mocks.getAIDecisionModelWithMetadata.mockImplementation(async () =>

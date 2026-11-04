@@ -17,7 +17,13 @@ import type { AiJobKey } from "@repo/ai";
 import { getCurrentDateContext, streamText, tool } from "@repo/ai";
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { withRollingCacheBreakpoint } from "@repo/ai/prompt-cache";
-import { db, resolveReportMcpConfig } from "@repo/database";
+import {
+	assertProjectReportSourcesReady,
+	canExecuteReportInstance,
+	db,
+	getTemplateInstanceExecution,
+	resolveReportMcpConfig,
+} from "@repo/database";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
 import { heartbeat } from "@temporalio/activity";
 import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
@@ -540,6 +546,7 @@ export interface GatheredDataTruncation {
 }
 
 export interface ExecuteAgentLoopInput {
+	reportingProtocol?: 1;
 	/** Task description - what data to gather */
 	taskDescription: string;
 	/** Optional user prompt override (replaces default user message) */
@@ -564,6 +571,7 @@ export interface ExecuteAgentLoopInput {
 	organizationId?: string;
 	/** Background-attribution label threaded from the workflow input (Fizzy #1894). */
 	jobType?: AiJobKey;
+	planEligible?: boolean;
 	/** Execution ID for tracking */
 	executionId: string;
 }
@@ -1386,6 +1394,7 @@ export async function resolveReportConnections(input: {
 		key?: string;
 		provider?: string;
 		type?: string;
+		required?: boolean;
 		config?: { mcpServerKey?: string };
 	}>;
 	userId: string;
@@ -1427,6 +1436,11 @@ export async function resolveReportConnections(input: {
 			(ds.provider ? origBindings[ds.provider] : undefined) ??
 			(ds.key ? origBindings[ds.key] : undefined) ??
 			null;
+		// An optional source left unbound was skipped on purpose: the report
+		// runs without it, so self-heal must not connect it.
+		if (!stored && ds.required === false) {
+			continue;
+		}
 		const serverKeys = [
 			ds.provider,
 			ds.key,
@@ -1564,8 +1578,38 @@ export async function executeAgentDataGatheringLoop(
 		userId,
 		organizationId,
 		jobType,
+		planEligible,
 		executionId,
 	} = input;
+	if (input.reportingProtocol === 1) {
+		if (!organizationId) {
+			throw new Error("Report evidence requires an organization");
+		}
+		const caller = { userId, organizationId };
+		const execution = await getTemplateInstanceExecution(
+			executionId,
+			caller,
+		);
+		if (
+			!execution ||
+			execution.userId !== userId ||
+			execution.status === "CANCELLED" ||
+			!(await canExecuteReportInstance(
+				execution.instance,
+				caller,
+				execution.parameters,
+			))
+		) {
+			throw new Error("Report evidence access revoked");
+		}
+		assertProjectReportSourcesReady(
+			execution.instance.fabricConfig,
+			execution.parameters,
+			execution.instance.template.definition,
+			execution.instance.connections,
+		);
+	}
+
 	// Normalize context: coerce all values to strings (JSON parsing can produce numbers)
 	const context = normalizeContext(rawContext);
 	const toolResults: ToolCallResult[] = [];
@@ -1692,6 +1736,7 @@ export async function executeAgentDataGatheringLoop(
 			jobType,
 			{
 				featureKey: "report-generation",
+				...(planEligible !== undefined ? { planEligible } : {}),
 				callPurpose: AI_CALL_PURPOSES.dataGathering,
 			},
 		);

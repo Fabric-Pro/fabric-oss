@@ -30,6 +30,7 @@ export async function POST(request: NextRequest) {
 			status: true,
 			hardStopAt: true,
 			suggestionsEnabled: true,
+			suggestionAudience: true,
 			userId: true,
 			organizationId: true,
 			projectId: true,
@@ -134,5 +135,6 @@ export async function POST(request: NextRequest) {
 		hardStopAt: session.hardStopAt,
 		streamGeneration: verified.streamGeneration,
 		suggestionsEnabled: session.suggestionsEnabled,
+		suggestionAudience: session.suggestionAudience,
 	});
 }

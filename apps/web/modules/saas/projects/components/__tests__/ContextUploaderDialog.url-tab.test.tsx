@@ -632,7 +632,7 @@ describe("ContextUploaderDialog — URL Context Sources v2 Link tab", () => {
 		expect(pathPrefix).not.toHaveAttribute("aria-disabled", "true");
 	});
 
-	it("offers the Live refresh cadence, which the task agent honors for a project", async () => {
+	it("offers the Live refresh cadence, which project analysis honors for a project", async () => {
 		getUserSearchProvidersMock.mockResolvedValue(CONFIGURED_ROWS);
 		const user = userEvent.setup();
 		wrap(

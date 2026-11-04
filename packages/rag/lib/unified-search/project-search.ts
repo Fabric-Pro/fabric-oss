@@ -309,6 +309,7 @@ async function searchProjectContexts(options: {
 		// Orchestrator unified search: diversify across distinct documents so one
 		// multi-chunk document can't monopolise this source's results. Keep the
 		// returned count at the caller's per-source limit.
+		includeMatchedPassages: true,
 		diversify: true,
 		maxContexts: options.topK,
 	});
@@ -319,10 +320,11 @@ async function searchProjectContexts(options: {
 function contextToUnifiedResult(ctx: RetrievedContext): UnifiedSearchResult {
 	return {
 		id: ctx.id,
-		// Type label + AI guidance (#1888): metadata arrives flag-gated from
-		// retrieval; header is "" when unset, so snippets are unchanged for
-		// unannotated sources.
-		content: `${contextMetaHeader(ctx)}${ctx.content}`,
+		// Reserve type labels and AI guidance with the header so matched chunks
+		// retain the instructions even when the body is cut.
+		content: ctx.content,
+		contentHeader: contextMetaHeader(ctx),
+		matchedPassages: ctx.matchedPassages,
 		source: {
 			type: "project-context",
 			name:
@@ -335,7 +337,10 @@ function contextToUnifiedResult(ctx: RetrievedContext): UnifiedSearchResult {
 			filename: ctx.filename,
 		},
 		relevance: ctx.score,
-		metadata: ctx.metadata,
+		metadata:
+			ctx.type === "PROJECT_SUMMARY"
+				? { ...ctx.metadata, isSummary: true }
+				: ctx.metadata,
 	};
 }
 

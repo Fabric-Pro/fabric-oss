@@ -8,6 +8,7 @@
 import {
 	ActivityFailure,
 	ApplicationFailure,
+	RetryState,
 	TimeoutFailure,
 	TimeoutType,
 } from "@temporalio/common";
@@ -19,8 +20,11 @@ import {
 	computeNextRefreshAt,
 	deriveIncludePaths,
 	extractInPrefixLinks,
+	extractMeaningfulErrorMessage,
 	filterInPrefixLinks,
 	isPermanentScrapeFailure,
+	isUnsupportedContentSkip,
+	unsupportedContentFailure,
 } from "../../src/workflows/url-source-crawl";
 
 describe("deriveIncludePaths", () => {
@@ -262,6 +266,63 @@ describe("isPermanentScrapeFailure", () => {
 		).toBe(false);
 		expect(isPermanentScrapeFailure(scrapeFailure())).toBe(false);
 		expect(isPermanentScrapeFailure(new Error("plain"))).toBe(false);
+	});
+});
+
+describe("unsupportedContentFailure", () => {
+	const message =
+		"The URL returned a file type that Firecrawl cannot process: image/svg+xml.";
+	const legacy = (activityType: string) =>
+		new ActivityFailure(
+			"Activity task failed",
+			activityType,
+			"1",
+			RetryState.NON_RETRYABLE_FAILURE,
+			"worker",
+			ApplicationFailure.nonRetryable(
+				message,
+				"FIRECRAWL_UNSUPPORTED_CONTENT_TYPE",
+			),
+		);
+
+	it.each([
+		"firecrawlScrapeActivity",
+		"firecrawlCrawlActivity",
+		"firecrawlMapActivity",
+	] as const)(
+		"is classified like the %s failure it replaces",
+		(activityType) => {
+			const reported = unsupportedContentFailure(
+				{ contentType: "image/svg+xml", message },
+				activityType,
+			);
+			const old = legacy(activityType);
+
+			expect(isPermanentScrapeFailure(reported)).toBe(true);
+			expect(isPermanentScrapeFailure(old)).toBe(true);
+			expect(classifyFailureStage(reported)).toBe(
+				classifyFailureStage(old),
+			);
+			expect(classifyFailureErrorType(reported)).toBe(
+				classifyFailureErrorType(old),
+			);
+			expect(extractMeaningfulErrorMessage(reported)).toBe(message);
+			expect(extractMeaningfulErrorMessage(old)).toBe(message);
+			expect(isUnsupportedContentSkip(reported)).toBe(true);
+			expect(isUnsupportedContentSkip(old)).toBe(true);
+		},
+	);
+
+	it("does not treat other failures as an expected skip", () => {
+		expect(
+			isUnsupportedContentSkip(
+				ApplicationFailure.nonRetryable(
+					"no",
+					"FIRECRAWL_ROBOTS_BLOCKED",
+				),
+			),
+		).toBe(false);
+		expect(isUnsupportedContentSkip(new Error("plain"))).toBe(false);
 	});
 });
 

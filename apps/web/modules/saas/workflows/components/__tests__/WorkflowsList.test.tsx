@@ -2,183 +2,276 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	listInputs: [] as unknown[],
-	workflows: [] as unknown[],
+	create: vi.fn(),
+	setTransientCollapsed: vi.fn(),
+	push: vi.fn(),
+	workflows: [] as Array<{
+		id: string;
+		name: string;
+		status: string;
+		triggerType: string;
+	}>,
+	inputs: [] as Array<Record<string, unknown>>,
+	hasMore: false,
+	pending: false,
+	error: false,
 }));
-
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
 		organizationId: "org-example",
 		basePath: "/app/org-example",
 	}),
 }));
-
+vi.mock("@saas/shared/contexts/SidebarCollapseContext", () => ({
+	useSidebarCollapse: () => ({
+		setTransientCollapsed: mocks.setTransientCollapsed,
+	}),
+}));
+vi.mock("@saas/get-started/components/PageTourButton", () => ({
+	PageTourButton: () => null,
+}));
+vi.mock("next-intl", () => {
+	const labels: Record<string, string> = {
+		statusLabel: "Workflow status",
+		allStatuses: "All statuses",
+		filterActive: "Active",
+		filterDraft: "Draft",
+		filterPaused: "Paused",
+		filterArchived: "Archived",
+		filterScheduled: "Scheduled",
+	};
+	return { useTranslations: () => (key: string) => labels[key] ?? key };
+});
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push }) }));
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		workflows: {
 			create: { mutationOptions: () => ({}) },
 			list: {
-				queryOptions: ({ input }: { input: unknown }) => {
-					mocks.listInputs.push(input);
-					return { input };
+				queryOptions: ({
+					input,
+				}: {
+					input: Record<string, unknown>;
+				}) => {
+					mocks.inputs.push(input);
+					return {};
 				},
 			},
 		},
 	},
 }));
-
 vi.mock("@tanstack/react-query", () => ({
-	useMutation: () => ({ mutate: vi.fn() }),
+	useMutation: () => ({ mutate: mocks.create, isPending: mocks.pending }),
 	useQuery: () => ({
-		data: { workflows: mocks.workflows },
+		data: {
+			workflows: mocks.workflows,
+			hasMore: mocks.hasMore,
+			nextOffset: 50,
+		},
 		isLoading: false,
+		error: mocks.error,
 		refetch: vi.fn(),
 	}),
 }));
-
 vi.mock("../WorkflowCard", () => ({
-	WorkflowCard: ({ workflow }: { workflow: { name: string } }) => (
-		<div>{workflow.name}</div>
+	WorkflowCard: ({
+		workflow,
+		selected,
+		onBeforeAction,
+	}: {
+		workflow: { name: string };
+		selected: boolean;
+		onBeforeAction: () => boolean;
+	}) => (
+		<button
+			type="button"
+			aria-current={selected ? "page" : undefined}
+			onClick={onBeforeAction}
+		>
+			{workflow.name}
+		</button>
+	),
+}));
+vi.mock("../WorkflowEditor", () => ({
+	WorkflowEditor: ({
+		workflowId,
+		onDirtyChange,
+	}: {
+		workflowId: string;
+		onDirtyChange: (dirty: boolean) => void;
+	}) => (
+		<div>
+			Editor for {workflowId}
+			<button type="button" onClick={() => onDirtyChange(true)}>
+				Edit graph
+			</button>
+		</div>
 	),
 }));
 
-vi.mock("../WorkflowsHero", () => ({ WorkflowsHero: () => null }));
-
 import { WorkflowsList } from "../WorkflowsList";
 
-function workflow(id: string, triggerType: string, status = "PUBLISHED") {
-	return { id, name: `Workflow ${id}`, triggerType, status };
+const workflow = (
+	id: string,
+	triggerType = "MANUAL",
+	status = "PUBLISHED",
+) => ({ id, name: `Workflow ${id}`, triggerType, status });
+function selectStatus(label: string) {
+	fireEvent.keyDown(
+		screen.getByRole("combobox", { name: "Workflow status" }),
+		{
+			key: "Enter",
+		},
+	);
+	fireEvent.click(screen.getByRole("option", { name: label, exact: true }));
 }
-
-function lastInput() {
-	return mocks.listInputs.at(-1) as Record<string, unknown>;
-}
-
-function scheduledPill() {
-	return screen.getByRole("button", { name: /scheduled/ });
-}
-
 beforeEach(() => {
-	mocks.listInputs.length = 0;
+	vi.clearAllMocks();
+	mocks.pending = false;
+	mocks.error = false;
+	mocks.hasMore = false;
+	mocks.inputs = [];
 	mocks.workflows = [
 		workflow("a", "SCHEDULE"),
-		workflow("b", "MANUAL"),
+		workflow("b"),
 		workflow("c", "SCHEDULE", "PAUSED"),
 	];
 });
-
-describe("WorkflowsList — the Active tab", () => {
-	it("counts a published workflow under Active, which is where live workflows belong", () => {
-		render(<WorkflowsList />);
-
-		expect(
-			screen.getByRole("button", { name: /^Active/ }),
-		).toHaveTextContent("Active (2)");
-		expect(
-			screen.getByRole("button", { name: /^Paused/ }),
-		).toHaveTextContent("Paused (1)");
+describe("unified workflow studio", () => {
+	it("uses coordinated shell collapse and restores the user's preference on exit", () => {
+		const view = render(<WorkflowsList />);
+		expect(mocks.setTransientCollapsed).toHaveBeenCalledWith(true);
+		view.unmount();
+		expect(mocks.setTransientCollapsed).toHaveBeenLastCalledWith(null);
 	});
 
-	it("counts a workflow from before publishing had its own status as live too", () => {
+	it("offers one persisted creation flow without prototype execution controls", () => {
+		render(<WorkflowsList />);
+		expect(
+			screen.getByRole("region", { name: "Workflow studio" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getAllByRole("button", { name: "New workflow" }),
+		).toHaveLength(1);
+		expect(
+			screen.queryByRole("button", {
+				name: /^Run all$|^Schedule$|^Export$/,
+			}),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("Create Your First Workflow"),
+		).not.toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
+		expect(mocks.create).toHaveBeenCalledWith({
+			name: "Untitled Workflow",
+			triggerType: "MANUAL",
+			organizationId: "org-example",
+		});
+	});
+	it("searches on the server and pages beyond the first fifty workflows", () => {
+		mocks.hasMore = true;
+		render(<WorkflowsList />);
+		fireEvent.click(screen.getByRole("button", { name: "Next" }));
+		expect(mocks.inputs.at(-1)?.offset).toBe(50);
+		fireEvent.change(
+			screen.getByRole("searchbox", { name: "Search workflows" }),
+			{ target: { value: "Older workflow" } },
+		);
+		expect(mocks.inputs.at(-1)).toMatchObject({
+			search: "Older workflow",
+			offset: 0,
+			limit: 50,
+		});
+	});
+	it("disables repeated creation while the save is pending", () => {
+		mocks.pending = true;
+		render(<WorkflowsList />);
+		expect(
+			screen.getByRole("button", { name: "Creating…" }),
+		).toBeDisabled();
+	});
+	it("opens the same real editor next to saved workflows", () => {
+		render(<WorkflowsList workflowId="a" />);
+		expect(screen.getByText("Editor for a")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Workflow a" }),
+		).toHaveAttribute("aria-current", "page");
+		expect(
+			screen.queryByText("Build once. Run with confidence."),
+		).not.toBeInTheDocument();
+	});
+	it("treats legacy ACTIVE and PUBLISHED as live and queries both live statuses while filtering", () => {
 		mocks.workflows = [
-			workflow("a", "SCHEDULE", "PUBLISHED"),
+			workflow("a", "SCHEDULE"),
 			workflow("b", "MANUAL", "ACTIVE"),
 			workflow("c", "MANUAL", "DRAFT"),
 		];
 		render(<WorkflowsList />);
-
-		expect(
-			screen.getByRole("button", { name: /^Active/ }),
-		).toHaveTextContent("Active (2)");
-		expect(
-			screen.getByRole("button", { name: /^Draft/ }),
-		).toHaveTextContent("Draft (1)");
-	});
-
-	it("lists the published and active workflows and no others when it is chosen", () => {
-		render(<WorkflowsList />);
-
-		fireEvent.click(screen.getByRole("button", { name: /^Active/ }));
-
+		selectStatus("Active");
 		expect(screen.getByText("Workflow a")).toBeInTheDocument();
 		expect(screen.getByText("Workflow b")).toBeInTheDocument();
 		expect(screen.queryByText("Workflow c")).not.toBeInTheDocument();
+		expect(mocks.inputs.at(-1)?.statuses).toEqual(["ACTIVE", "PUBLISHED"]);
 	});
-
-	it("asks the list for every status, since it takes one and a live workflow has two", () => {
+	it("combines schedule, status and search filters", () => {
 		render(<WorkflowsList />);
-
-		fireEvent.click(screen.getByRole("button", { name: /^Active/ }));
-
-		expect(lastInput().status).toBeUndefined();
-	});
-});
-
-describe("WorkflowsList — the Scheduled filter", () => {
-	it("counts the scheduled workflows on its pill", () => {
-		render(<WorkflowsList />);
-
-		expect(scheduledPill()).toHaveTextContent("scheduled (2)");
-	});
-
-	it("asks for every trigger type until the pill is pressed", () => {
-		render(<WorkflowsList />);
-
-		expect(lastInput().triggerType).toBeUndefined();
-		expect(scheduledPill()).toHaveAttribute("aria-pressed", "false");
-	});
-
-	it("asks only for scheduled workflows once it is pressed", () => {
-		render(<WorkflowsList />);
-
-		fireEvent.click(scheduledPill());
-
-		expect(lastInput().triggerType).toBe("SCHEDULE");
-		expect(scheduledPill()).toHaveAttribute("aria-pressed", "true");
-	});
-
-	it("stops filtering when it is pressed again", () => {
-		render(<WorkflowsList />);
-
-		fireEvent.click(scheduledPill());
-		fireEvent.click(scheduledPill());
-
-		expect(lastInput().triggerType).toBeUndefined();
-		expect(scheduledPill()).toHaveAttribute("aria-pressed", "false");
-	});
-
-	it("combines with a status filter instead of replacing it", () => {
-		render(<WorkflowsList />);
-
-		fireEvent.click(screen.getByRole("button", { name: /^Paused/ }));
-		fireEvent.click(scheduledPill());
-
-		expect(lastInput()).toMatchObject({
-			status: "PAUSED",
-			triggerType: "SCHEDULE",
-		});
-	});
-
-	it("says the filters matched nothing, rather than inviting a first workflow", () => {
-		mocks.workflows = [];
-		render(<WorkflowsList />);
-
-		fireEvent.click(scheduledPill());
-
+		fireEvent.click(screen.getByRole("button", { name: "Scheduled" }));
+		selectStatus("Paused");
+		expect(screen.getByText("Workflow c")).toBeInTheDocument();
+		expect(screen.queryByText("Workflow a")).not.toBeInTheDocument();
+		fireEvent.change(
+			screen.getByRole("searchbox", { name: "Search workflows" }),
+			{ target: { value: "missing" } },
+		);
 		expect(
 			screen.getByText("No workflows found matching your filters"),
 		).toBeInTheDocument();
-		expect(
-			screen.queryByText("Create Your First Workflow"),
-		).not.toBeInTheDocument();
 	});
-
-	it("still invites a first workflow when there are none and nothing is filtered", () => {
+	it("has one creation control when the organization has no workflows", () => {
 		mocks.workflows = [];
 		render(<WorkflowsList />);
-
 		expect(
-			screen.getByText("Create Your First Workflow"),
+			screen.getAllByRole("button", { name: "New workflow" }),
+		).toHaveLength(1);
+		expect(
+			screen.getByText("Your saved workflows will appear here."),
+		).toBeInTheDocument();
+	});
+	it("protects dirty edits before creating another workflow", () => {
+		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+		render(<WorkflowsList workflowId="a" />);
+		fireEvent.click(screen.getByRole("button", { name: "Edit graph" }));
+		fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
+		expect(confirm).toHaveBeenCalledWith(
+			"Discard unsaved workflow changes?",
+		);
+		expect(mocks.create).not.toHaveBeenCalled();
+		confirm.mockRestore();
+	});
+	it("shows a retry action when the list cannot load", () => {
+		mocks.error = true;
+		render(<WorkflowsList />);
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Could not load workflows",
+		);
+		expect(
+			screen.getByRole("button", { name: "Try again" }),
+		).toBeInTheDocument();
+	});
+	it("collapses and reopens navigation without unmounting the editor", () => {
+		render(<WorkflowsList workflowId="a" />);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Hide workflow navigator" }),
+		);
+		expect(screen.getByText("Editor for a")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("navigation", { name: "Saved workflows" }),
+		).not.toBeInTheDocument();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Show workflow navigator" }),
+		);
+		expect(
+			screen.getByRole("navigation", { name: "Saved workflows" }),
 		).toBeInTheDocument();
 	});
 });

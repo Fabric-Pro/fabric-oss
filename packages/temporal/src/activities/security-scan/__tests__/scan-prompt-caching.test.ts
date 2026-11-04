@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		getBoundPromptForAgent: vi.fn(),
@@ -21,7 +21,8 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -81,8 +82,8 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.getAIModelWithMetadata.mockResolvedValue(makeAIModelMock());
 	mocks.getBoundPromptForAgent.mockResolvedValue(null); // → in-code default guidance
-	mocks.generateObject.mockResolvedValue({
-		object: { findings: [] },
+	mocks.generateText.mockResolvedValue({
+		output: { findings: [] },
 		usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
 	});
 });
@@ -98,8 +99,8 @@ describe("runScan — provider-agnostic prompt caching", () => {
 			customRules: [],
 		});
 
-		expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-		const call = mocks.generateObject.mock.calls[0]?.[0];
+		expect(mocks.generateText).toHaveBeenCalledTimes(1);
+		const call = mocks.generateText.mock.calls[0]?.[0];
 
 		// System prompt (the cacheable prefix) carries the FIXED guidance...
 		expect(call.instructions.role).toBe("system");
@@ -128,7 +129,7 @@ describe("runScan — provider-agnostic prompt caching", () => {
 			customRules: [],
 		});
 
-		const call = mocks.generateObject.mock.calls[0]?.[0];
+		const call = mocks.generateText.mock.calls[0]?.[0];
 		// The additive Anthropic cache breakpoint. Non-Anthropic providers ignore
 		// the `anthropic` namespace, so this is safe to always attach (here the
 		// resolved model is OPENAI_DIRECT and the call is unchanged for it).
@@ -147,7 +148,7 @@ describe("runScan — provider-agnostic prompt caching", () => {
 			customRules: [],
 		});
 
-		const call = mocks.generateObject.mock.calls[0]?.[0];
+		const call = mocks.generateText.mock.calls[0]?.[0];
 		expect(call.maxRetries).toBe(0);
 		expect(call.abortSignal).toBeInstanceOf(AbortSignal);
 		// Must NOT pass the old combined `prompt`-only shape (no system message).
@@ -164,7 +165,7 @@ describe("runScan — provider-agnostic prompt caching", () => {
 			customRules: [],
 		});
 
-		const call = mocks.generateObject.mock.calls[0]?.[0];
+		const call = mocks.generateText.mock.calls[0]?.[0];
 		expect(call.instructions.content).toContain("WCAG 2.1 Level AA");
 		expect(call.instructions.content).not.toContain("A03 Injection");
 		expect(call.instructions.providerOptions).toEqual({

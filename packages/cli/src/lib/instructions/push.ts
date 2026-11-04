@@ -187,7 +187,7 @@ function refuseStaleLedger(detail: string): never {
  */
 function assertLockMatchesManifest(
 	lock: InstructionsLock,
-	manifest: readonly InstructionManifestEntry[],
+	manifest: readonly LedgerManifestEntry[],
 ): void {
 	const published = new Map(
 		manifest.map((entry) => [entry.path, entry.sha256]),
@@ -235,8 +235,11 @@ export async function computePushPlan(input: {
 	 * single file is read. The manifest is the authority for WHICH paths this
 	 * command may touch; the lock only supplies the hashes it compares
 	 * against, and every one of those has to agree with the manifest too.
+	 *
+	 * `push --rebase` passes the manifest of the version the lock names
+	 * instead, read from that version's own record (`rebase-push.ts`).
 	 */
-	manifest: readonly InstructionManifestEntry[];
+	manifest: readonly LedgerManifestEntry[];
 	/** Paths to send as new files, from `--add`. */
 	added?: readonly string[];
 }): Promise<PushPlan> {
@@ -325,6 +328,37 @@ export async function computePushPlan(input: {
 
 	return { entries, unchanged };
 }
+
+/**
+ * Take the developer's local overrides out of `plan` (`local-overrides.ts`).
+ * An overridden path is never sent, whether the lock names it or `--add`
+ * does; the caller says which were left out. Only ever removes entries.
+ */
+export function setAsideOverridden(
+	plan: PushPlan,
+	isOverridden: (relativePath: string) => boolean,
+): { plan: PushPlan; overridden: string[] } {
+	const overridden = plan.entries
+		.filter((entry) => isOverridden(entry.path))
+		.map((entry) => entry.path);
+	if (overridden.length === 0) {
+		return { plan, overridden };
+	}
+	const left = new Set(overridden);
+	return {
+		plan: {
+			entries: plan.entries.filter((entry) => !left.has(entry.path)),
+			unchanged: plan.unchanged,
+		},
+		overridden,
+	};
+}
+
+/** What the ledger check reads of a manifest entry. */
+export type LedgerManifestEntry = Pick<
+	InstructionManifestEntry,
+	"path" | "sha256"
+>;
 
 /** Total unencoded bytes the selected inline puts would carry. */
 export function pushContentBytes(entries: readonly PushPlanEntry[]): number {

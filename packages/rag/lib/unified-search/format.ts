@@ -5,7 +5,13 @@
  * with source attribution and badges for transparency.
  */
 
+import { packPassageBlocks } from "../passage-packer";
 import type { ProjectSearchResponse, UnifiedSearchResult } from "./types";
+
+// Bounds the JSON-encoded Planner knowledge-search plan-step result carried
+// into later prompts and the workflow payload, including wrappers and headers.
+// Keep the 10,000-character allowance consistent with the project-context compactor.
+const UNIFIED_SEARCH_RESULT_CHARS = 10_000;
 
 /**
  * Format unified search results for LLM prompt injection.
@@ -20,24 +26,51 @@ export function formatUnifiedResultsForPrompt(
 		return "";
 	}
 
-	const formattedResults = response.results.map((result, _index) => {
-		const sourceLabel = formatSourceLabel(result);
-		const relevancePercent = (result.relevance * 100).toFixed(1);
-
-		return `--- [${result.source.badge}] ${sourceLabel} (relevance: ${relevancePercent}%) ---\n${result.content}`;
+	const blocks = response.results.map((result) => {
+		const matched = Boolean(result.matchedPassages?.length);
+		const project = result.source.type === "project-context";
+		const summary = result.metadata?.isSummary === true;
+		const referencesAt = summary
+			? result.content.indexOf("SOURCE REFERENCES")
+			: -1;
+		const dividerAt =
+			referencesAt >= 0
+				? result.content.lastIndexOf("---", referencesAt)
+				: -1;
+		const splitAt = dividerAt >= 0 ? dividerAt : referencesAt;
+		const body =
+			splitAt >= 0
+				? result.content.slice(0, splitAt).trimEnd()
+				: result.content;
+		const extent = project
+			? matched
+				? "Matched passages only.\n"
+				: summary
+					? "Showing the start of the summary.\n"
+					: "Showing the start of the document.\n"
+			: "";
+		return {
+			header: `--- [${result.source.badge}] ${formatSourceLabel(result)} (relevance: ${(result.relevance * 100).toFixed(1)}%) ---\n${result.contentHeader ?? ""}${extent}`,
+			passages: result.matchedPassages?.length
+				? result.matchedPassages
+				: [{ content: body, score: result.relevance }],
+			matched: true,
+			references: splitAt >= 0 ? result.content.slice(splitAt) : "",
+		};
 	});
-
 	const sourcesSummary = response.sourcesSearched
 		.map((s) => `${s}: ${response.sourceCounts[s]}`)
 		.join(", ");
-
-	return `
-<unified_search_results>
-Sources searched: ${sourcesSummary} (${response.searchTimeMs}ms)
-
-${formattedResults.join("\n\n")}
-</unified_search_results>
-`.trim();
+	return packPassageBlocks(blocks, {
+		maxChars: UNIFIED_SEARCH_RESULT_CHARS,
+		prioritizeResultOrder: true,
+		omittedNote: "\n[Content omitted to fit the result budget.]",
+		render: (rendered, omittedBlocks) =>
+			`<unified_search_results>\nSources searched: ${sourcesSummary} (${response.searchTimeMs}ms)\n\n${rendered.join("\n\n")}${omittedBlocks ? `\n[${omittedBlocks} source blocks omitted because their headers exceed the result budget; narrow the search to retrieve them.]` : ""}\n</unified_search_results>`,
+		measure: (output) => JSON.stringify(output).length,
+		metadataOverflow:
+			"[Search metadata exceeds the result budget; narrow the search.]",
+	});
 }
 
 /**

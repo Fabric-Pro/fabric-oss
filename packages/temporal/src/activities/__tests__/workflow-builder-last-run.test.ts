@@ -9,9 +9,16 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { recordRunStartedMock, updateExecutionMock } = vi.hoisted(() => ({
-	recordRunStartedMock: vi.fn(),
-	updateExecutionMock: vi.fn(),
+const { currentContextMock, recordRunStartedMock, updateExecutionMock } =
+	vi.hoisted(() => ({
+		currentContextMock: vi.fn(),
+		recordRunStartedMock: vi.fn(),
+		updateExecutionMock: vi.fn(),
+	}));
+
+vi.mock("@temporalio/activity", () => ({
+	Context: { current: currentContextMock },
+	heartbeat: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -31,11 +38,45 @@ const STARTED_AT = new Date("2026-10-17T12:00:00.000Z");
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	currentContextMock.mockImplementation(() => {
+		throw new Error("No activity context");
+	});
 	recordRunStartedMock.mockResolvedValue(1);
 	updateExecutionMock.mockResolvedValue({ id: "exec-1" });
 });
 
 describe("updateWorkflowExecutionStatus → Workflow.lastRunAt", () => {
+	it("records the actual Temporal workflow ID for a scheduled child once it is running", async () => {
+		currentContextMock.mockReturnValue({
+			info: {
+				workflowExecution: {
+					workflowId: "workflow-execution-example",
+					runId: "example-run",
+				},
+			},
+		});
+		await updateWorkflowExecutionStatus({
+			executionId: "exec-1",
+			status: "RUNNING",
+			startedAt: STARTED_AT,
+		});
+		expect(updateExecutionMock).toHaveBeenCalledWith(
+			"exec-1",
+			expect.objectContaining({
+				temporalRunId: "workflow-execution-example",
+			}),
+		);
+	});
+	it("does not invent a Temporal ID outside an activity context", async () => {
+		await updateWorkflowExecutionStatus({
+			executionId: "exec-1",
+			status: "RUNNING",
+			startedAt: STARTED_AT,
+		});
+		expect(updateExecutionMock.mock.calls[0][1]).not.toHaveProperty(
+			"temporalRunId",
+		);
+	});
 	it("stamps the run start before writing RUNNING", async () => {
 		await updateWorkflowExecutionStatus({
 			executionId: "exec-1",

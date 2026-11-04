@@ -17,8 +17,10 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 	useSession: () => ({ user: { id: "user_1" } }),
 }));
 
+const route = vi.hoisted(() => ({ current: "/app/projects/project_1" }));
+
 vi.mock("next/navigation", () => ({
-	usePathname: () => "/app/projects/project_1",
+	usePathname: () => route.current,
 }));
 
 /**
@@ -371,6 +373,7 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 }));
 
 afterEach(() => {
+	route.current = "/app/projects/project_1";
 	cleanup();
 	conversationDetail.current = undefined;
 	conversationDetail.loading = false;
@@ -740,7 +743,7 @@ describe("FabricAgentLauncher", () => {
 		expect(prompt).not.toContain("Workspace");
 	});
 
-	it("tells the agent which Workspace page it was opened from", async () => {
+	it("tells the agent which generated Page it was opened from", async () => {
 		render(
 			<FabricAgentLauncherProvider>
 				<SurfaceContextHarness
@@ -753,14 +756,12 @@ describe("FabricAgentLauncher", () => {
 		fireEvent.keyDown(document, { key: "j", ctrlKey: true });
 
 		const prompt = (await screen.findByTestId("system-prompt")).textContent;
-		expect(prompt).toContain(
-			"the organization Workspace the user has open",
-		);
-		expect(prompt).toContain("workspace id: workspace_1");
+		expect(prompt).toContain("the generated Page the user has open");
+		expect(prompt).toContain("frame id: workspace_1");
 		expect(prompt).toContain("fabric_update_frame");
 	});
 
-	it("tells the agent a Workspaces list is where a new Workspace starts, not a Workspace to change", async () => {
+	it("tells the agent a Pages list is where a new Page starts, not a Page to change", async () => {
 		render(
 			<FabricAgentLauncherProvider>
 				<SurfaceContextHarness surface="workspace" />
@@ -770,7 +771,7 @@ describe("FabricAgentLauncher", () => {
 		fireEvent.keyDown(document, { key: "j", ctrlKey: true });
 
 		const prompt = (await screen.findByTestId("system-prompt")).textContent;
-		expect(prompt).toContain("the organization's Workspaces list");
+		expect(prompt).toContain("the organization's Pages list");
 		expect(prompt).not.toContain("workspace id");
 		expect(prompt).not.toContain("fabric_update_frame");
 	});
@@ -804,7 +805,7 @@ describe("FabricAgentLauncher", () => {
 		).toBeInTheDocument();
 	});
 
-	it("keeps the surface and Workspace of an explicit launch", async () => {
+	it("keeps the surface and Page of an explicit launch", async () => {
 		function Opener() {
 			const { openLauncher } = useFabricAgentLauncher();
 			return (
@@ -833,7 +834,7 @@ describe("FabricAgentLauncher", () => {
 		);
 
 		const prompt = (await screen.findByTestId("system-prompt")).textContent;
-		expect(prompt).toContain("workspace id: workspace_2");
+		expect(prompt).toContain("frame id: workspace_2");
 		expect(document.body).toHaveTextContent(
 			"initial input: Add a refresh button.",
 		);
@@ -1831,4 +1832,17 @@ describe("FabricAgentLauncher — conversation history", () => {
 		);
 		expect(screen.getByTestId("chat-conversation")).toHaveTextContent("");
 	});
+});
+
+it("leaves agent authoring to Sidekick without a competing floating trigger", () => {
+	route.current = "/app/example-org/agents/example-agent/edit";
+	render(
+		<FabricAgentLauncherProvider>
+			<div>Editor content</div>
+		</FabricAgentLauncherProvider>,
+	);
+	expect(screen.getByText("Editor content")).toBeInTheDocument();
+	expect(
+		screen.queryByRole("button", { name: /Fabric Agent/i }),
+	).not.toBeInTheDocument();
 });

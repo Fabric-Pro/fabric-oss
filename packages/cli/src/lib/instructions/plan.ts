@@ -56,11 +56,18 @@ type PlanAction =
 	| "deleted"
 	| "kept-modified"
 	| "kept-renamed"
-	| "kept-edited";
+	| "kept-edited"
+	| "overridden";
 
 export interface PlanEntry {
 	path: string;
 	action: PlanAction;
+	/**
+	 * An `overridden` entry only: the published version of this path is not
+	 * the one the lock recorded, so it changed (or was added or removed)
+	 * under the developer's override, which this sync left alone.
+	 */
+	publishedChanged?: boolean;
 	/** The published hash, for everything the manifest still carries. */
 	sha256?: string;
 	mode?: number | null;
@@ -94,6 +101,12 @@ export interface SyncPlan {
 	 * `kept: true`.
 	 */
 	keptEdited: PlanEntry[];
+	/**
+	 * Paths the developer keeps as local overrides (`local-overrides.ts`)
+	 * whose local state is not the published one: never written or deleted.
+	 * A still-published one is recorded in the lock as a kept edit.
+	 */
+	overridden: PlanEntry[];
 }
 
 /**
@@ -294,6 +307,12 @@ export async function computeSyncPlan(
 		 * `sync --repair` was given (spec §6.4).
 		 */
 		keepLocalEdits?: boolean;
+		/**
+		 * The developer's local overrides. An overridden path is never
+		 * written or deleted, whatever `keepLocalEdits` says; the CLI leaves
+		 * this out only under `sync --repair --include-overrides`.
+		 */
+		isOverridden?: (relativePath: string) => boolean;
 	} = {},
 ): Promise<SyncPlan> {
 	const { destination, manifest, lock } = input;
@@ -352,6 +371,17 @@ export async function computeSyncPlan(
 				? undefined
 				: lockedFiles.get(renamedFrom));
 		const lockedHash = locked?.sha256;
+		if (options.isOverridden?.(entry.path)) {
+			entries.push({
+				path: entry.path,
+				action: "overridden",
+				sha256: entry.sha256,
+				mode: entry.mode,
+				localSha256: localHash,
+				publishedChanged: lock !== null && lockedHash !== entry.sha256,
+			});
+			continue;
+		}
 		// A path the lock does not name under this spelling OR a renamed one
 		// (a file that was there before the first sync) has no `lockedHash`,
 		// so it lands here too: it is the developer's until `--repair` says
@@ -403,6 +433,18 @@ export async function computeSyncPlan(
 		if (localHash === null) {
 			continue;
 		}
+		if (options.isOverridden?.(lockedPath)) {
+			// Unpublished, and the developer's: it stays, and the lock stops
+			// naming it.
+			entries.push({
+				path: lockedPath,
+				action: "overridden",
+				sha256: locked.sha256,
+				localSha256: localHash,
+				publishedChanged: true,
+			});
+			continue;
+		}
 		entries.push({
 			path: lockedPath,
 			action: localHash === locked.sha256 ? "deleted" : "kept-modified",
@@ -430,6 +472,7 @@ export async function computeSyncPlan(
 		),
 		keptRenamed: entries.filter((entry) => entry.action === "kept-renamed"),
 		keptEdited: entries.filter((entry) => entry.action === "kept-edited"),
+		overridden: entries.filter((entry) => entry.action === "overridden"),
 	};
 }
 

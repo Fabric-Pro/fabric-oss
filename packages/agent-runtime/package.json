@@ -20,12 +20,17 @@
 		"./model-resolver": {
 			"types": "./src/model-resolver/index.ts",
 			"default": "./src/model-resolver/index.ts"
+		},
+		"./harness": {
+			"types": "./src/harness/index.ts",
+			"default": "./src/harness/index.ts"
 		}
 	},
 	"scripts": {
 		"type-check": "tsgo --noEmit"
 	},
 	"dependencies": {
+		"@fabric-harness/client": "6.3.0",
 		"hono": "^4.13.11",
 		"uuid": "^14.0.2"
 	},

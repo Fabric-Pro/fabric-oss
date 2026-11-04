@@ -138,4 +138,38 @@ describe("Parlume stream verification", () => {
 			select: { streamGeneration: true },
 		});
 	});
+
+	// The bridge gates every suggestion pass on this audience, so it must
+	// arrive with the stream rather than be learned from later passes.
+	it("tells the bridge who the session's suggestions are for", async () => {
+		mocks.findUnique.mockResolvedValue({
+			id: "s1",
+			providerBotId: "b1",
+			streamTokenDigest: createHash("sha256")
+				.update("a".repeat(32))
+				.digest("hex"),
+			status: "ACTIVE",
+			hardStopAt: new Date("2030-01-01T00:00:00.000Z"),
+			suggestionsEnabled: true,
+			suggestionAudience: "TEAM",
+		});
+
+		const response = await POST(
+			request(
+				{ sessionId: "s1", streamToken: "a".repeat(32), botId: "b1" },
+				"service-secret",
+			),
+		);
+
+		expect(await response.json()).toMatchObject({
+			valid: true,
+			suggestionsEnabled: true,
+			suggestionAudience: "TEAM",
+		});
+		expect(mocks.findUnique).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: expect.objectContaining({ suggestionAudience: true }),
+			}),
+		);
+	});
 });

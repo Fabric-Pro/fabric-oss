@@ -25,8 +25,9 @@ import {
 	getProjectReposForCodeSearch,
 	getScanCheckpoint,
 } from "@repo/database";
+import { GIT_AUTH_UNSAFE } from "@repo/integrations/repo-auth";
 import { logger } from "@repo/logs";
-import { buildAuthenticatedCloneUrl } from "./semgrep-scan";
+import { resolveCloneAuth } from "./semgrep-scan";
 
 export interface ResolveScanCommitInput {
 	projectId: string;
@@ -110,22 +111,21 @@ export async function resolveScanCommitActivity(
 	}
 
 	try {
-		// 1. Remote HEAD SHA WITHOUT cloning — `git ls-remote <authUrl>
+		// 1. Remote HEAD SHA WITHOUT cloning — `git ls-remote <url>
 		// refs/heads/<branch>` over the project's first active repo.
 		let targetSha: string | null = null;
 		const repos = await getProjectReposForCodeSearch(projectId);
 		const repo = repos[0];
 		if (repo) {
-			const authUrl = await buildAuthenticatedCloneUrl(repo, {
+			const auth = await resolveCloneAuth(repo, {
 				projectId,
 				organizationId: input.organizationId,
 			});
-			if (authUrl) {
+			if (auth) {
 				const { simpleGit } = await import("simple-git");
-				const output = await simpleGit().listRemote([
-					authUrl,
-					`refs/heads/${trimmedBranch}`,
-				]);
+				const output = await simpleGit({ unsafe: GIT_AUTH_UNSAFE })
+					.env(auth.env)
+					.listRemote([auth.url, `refs/heads/${trimmedBranch}`]);
 				targetSha = parseLsRemoteSha(output ?? "");
 			}
 		}

@@ -18,10 +18,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 }));
 
@@ -186,8 +187,8 @@ beforeEach(() => {
 		metadata: { modelString: "test-model", provider: "test" },
 		trackUsage,
 	});
-	generateObject.mockResolvedValue({
-		object: MODEL_OUTPUT,
+	generateText.mockResolvedValue({
+		output: MODEL_OUTPUT,
 		usage: { totalTokens: 100 },
 	});
 	completePlanningAnalysis.mockResolvedValue({ persisted: true });
@@ -262,7 +263,7 @@ describe("generatePlanningAnalysisActivity — actor revalidation", () => {
 			nonRetryable: true,
 		});
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 
 	it("refuses when the project has left the organization the run was queued under", async () => {
@@ -298,13 +299,13 @@ describe("generatePlanningAnalysisActivity — actor revalidation", () => {
 		await expect(run({ organizationId: null })).rejects.toMatchObject({
 			type: "PUBLISHING_ACTOR_INVALID",
 		});
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 
 	it("still generates for an authorized run that carries no organization", async () => {
 		await run({ organizationId: null });
 
-		expect(generateObject).toHaveBeenCalled();
+		expect(generateText).toHaveBeenCalled();
 	});
 });
 
@@ -353,7 +354,7 @@ describe("generatePlanningAnalysisActivity — prompt resolution", () => {
 		expect(completePlanningAnalysis.mock.calls[0]?.[0]?.promptSource).toBe(
 			"BOUND",
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Bounded retry budgets",
 		);
 	});
@@ -382,7 +383,7 @@ describe("generatePlanningAnalysisActivity — prompt resolution", () => {
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"ROLE COMPOSITION: backend",
 		);
 	});
@@ -409,7 +410,7 @@ describe("generatePlanningAnalysisActivity — contributor override", () => {
 				where: { id: { in: ["chosen-user"] } },
 			}),
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Chosen Contributor",
 		);
 	});
@@ -431,7 +432,7 @@ describe("generatePlanningAnalysisActivity — contributor override", () => {
 		// `resolveContributorNames` short-circuits on an empty list, so the
 		// lookup never runs at all.
 		expect(userFindMany).not.toHaveBeenCalled();
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).not.toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).not.toContain(
 			"People associated with the work behind this topic",
 		);
 	});
@@ -463,7 +464,7 @@ describe("generatePlanningAnalysisActivity — the model call", () => {
 		await run();
 
 		expect(
-			generateObject.mock.calls[0]?.[0]?.providerOptions,
+			generateText.mock.calls[0]?.[0]?.providerOptions,
 		).toBeUndefined();
 	});
 
@@ -476,8 +477,8 @@ describe("generatePlanningAnalysisActivity — the model call", () => {
 		// `question` is required on every recommended question. A run that cannot
 		// produce a valid shape will not produce one on a retry either, and a
 		// half-shaped analysis persisted as READY is worse than a visible failure.
-		generateObject.mockResolvedValue({
-			object: { recommendedQuestions: [{ subject: "no question text" }] },
+		generateText.mockResolvedValue({
+			output: { recommendedQuestions: [{ subject: "no question text" }] },
 			usage: {},
 		});
 
@@ -559,8 +560,8 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 		// []`). Worse: the reconcile writer stores `answerOptions ?? Prisma.DbNull`
 		// on refresh, so an omitted field does not leave existing options alone —
 		// it ERASES them on every regeneration.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				supportingAssets: {
 					requiresApproval: [
@@ -649,8 +650,8 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 	it("hands every folded list to reconciliation, and an empty one where nothing was folded (Fizzy #1988)", async () => {
 		// One run with all four shapes: a question and a blocker something was
 		// folded into, and a question and a blocker nothing was folded into.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				recommendedQuestions: [
 					{
@@ -786,7 +787,7 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 });
 
 describe("generatePlanningAnalysisActivity — output budget", () => {
-	// Repo review bot on #61: `generateObject()` with no `maxOutputTokens`. An
+	// Repo review bot on #61: `generateText()` with no `maxOutputTokens`. An
 	// unbounded generation fails as a HANG rather than an error — it burns the
 	// activity's whole 480s budget and then reports a timeout, which reads as a
 	// broken feature rather than a slow one. This repository already has the
@@ -797,7 +798,7 @@ describe("generatePlanningAnalysisActivity — output budget", () => {
 		// The FULL prompt, including the appended role clause — the clamp exists
 		// to reserve context-window room for the input, so measuring anything
 		// shorter than what is actually sent would under-reserve.
-		const sentPrompt = generateObject.mock.calls[0]?.[0]?.prompt;
+		const sentPrompt = generateText.mock.calls[0]?.[0]?.prompt;
 		expect(computeMaxOutputTokenBudget).toHaveBeenCalledWith(
 			expect.anything(),
 			{ promptChars: sentPrompt.length },
@@ -809,7 +810,7 @@ describe("generatePlanningAnalysisActivity — output budget", () => {
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]?.maxOutputTokens).toBe(12_345);
+		expect(generateText.mock.calls[0]?.[0]?.maxOutputTokens).toBe(12_345);
 	});
 
 	it("omits the field entirely when the helper declines to set one", async () => {
@@ -820,7 +821,7 @@ describe("generatePlanningAnalysisActivity — output budget", () => {
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]).not.toHaveProperty(
+		expect(generateText.mock.calls[0]?.[0]).not.toHaveProperty(
 			"maxOutputTokens",
 		);
 	});
@@ -872,7 +873,7 @@ describe("generatePlanningAnalysisActivity — decisions already settled", () =>
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("ALREADY settled");
 		expect(prompt).toContain("Keep the customer unnamed for now.");
 	});
@@ -894,7 +895,7 @@ describe("generatePlanningAnalysisActivity — decisions already settled", () =>
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Not needed — the piece will not name anyone.",
 		);
 	});
@@ -919,7 +920,7 @@ describe("generatePlanningAnalysisActivity — decisions already settled", () =>
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).not.toContain("ALREADY settled");
 		expect(prompt).not.toContain("May we name the customer?");
 	});
@@ -943,8 +944,8 @@ describe("generatePlanningAnalysisActivity — one decision, one item per run", 
 	// subject differently on purpose — so the fold is subject-level.
 
 	it("commits one item when a blocker restates a question", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				recommendedQuestions: [
 					{
@@ -983,8 +984,8 @@ describe("generatePlanningAnalysisActivity — one decision, one item per run", 
 	});
 
 	it("still commits a blocker the run raised no question about", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				recommendedQuestions: [],
 				blockers: [

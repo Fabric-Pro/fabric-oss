@@ -6,7 +6,7 @@
  * `.describe()` text) into the system message, where code-written framing
  * outranks the prompt's own OUTPUT FORMAT and the model writes a thin draft.
  *
- * Model-independent: asserts on the request handed to `generateObject`, not on
+ * Model-independent: asserts on the request handed to `generateText`, not on
  * any model's output. The whole prompt is compared EXACTLY against the
  * allowed code-written labels around the user-owned blocks, so any new
  * sentence of framing fails here. Every user-owned block — the bound prompt,
@@ -28,7 +28,7 @@ const { mocks } = vi.hoisted(() => ({
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		projectFindUnique: vi.fn(),
@@ -38,8 +38,9 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	Output: { object: (spec: unknown) => spec },
 	AIProviderNotConfiguredError: class extends Error {},
-	generateObject: mocks.generateObject,
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -156,8 +157,8 @@ beforeEach(() => {
 type Kind = "FEATURE" | "BUG";
 
 function mockDraft(kind: Kind) {
-	mocks.generateObject.mockResolvedValue({
-		object:
+	mocks.generateText.mockResolvedValue({
+		output:
 			kind === "BUG"
 				? { needsMoreInfo: false, markdown: "card" }
 				: { description: "body" },
@@ -166,10 +167,14 @@ function mockDraft(kind: Kind) {
 }
 
 function capturedCall(): { prompt: string; schema: z.ZodObject } {
-	expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-	return mocks.generateObject.mock.calls[0]?.[0] as {
-		prompt: string;
-		schema: z.ZodObject;
+	// `Output.object` is stubbed as a passthrough, so `output` is its spec.
+	const call = mocks.generateText.mock.calls[0]?.[0] as
+		| { prompt: string; output: { schema: z.ZodObject } }
+		| undefined;
+	expect(mocks.generateText).toHaveBeenCalledTimes(1);
+	return {
+		prompt: call?.prompt ?? "",
+		schema: call?.output.schema as z.ZodObject,
 	};
 }
 

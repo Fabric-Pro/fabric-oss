@@ -42,6 +42,14 @@ export interface CreateProjectRepoIntegrationInput {
 	 */
 	status?: RepositoryIntegrationStatus;
 	lastError?: string | null;
+	/**
+	 * The credential-manager row this repository is read with (ADR-026).
+	 * Set only while `CREDENTIAL_MANAGER` is on. An OAuth connect still writes
+	 * the token columns above alongside it until the contract phase; a pasted
+	 * token saved in the credential manager is set here instead of
+	 * `encryptedPat`.
+	 */
+	credentialId?: string | null;
 }
 
 export type RepoCredentialResult =
@@ -230,6 +238,9 @@ export async function createProjectRepoIntegration(
 			configuredByUserId: input.configuredByUserId,
 			status: input.status ?? "ACTIVE",
 			lastError: input.lastError,
+			...(input.credentialId !== undefined
+				? { credentialId: input.credentialId }
+				: {}),
 		},
 	});
 }

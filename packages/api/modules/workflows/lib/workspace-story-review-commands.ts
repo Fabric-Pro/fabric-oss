@@ -9,19 +9,19 @@ import {
 	adoStoryReviewConfigFieldsSchema,
 	adoStoryReviewConfigSchema,
 } from "@repo/temporal/ado-story-review-config";
-import { ADO_STORY_REVIEW_NODE_TYPE } from "@repo/temporal/workflow-node-types";
 import {
 	findScheduleCron,
 	findScheduleTimezone,
 } from "@repo/temporal/workflow-builder-schedule";
+import { ADO_STORY_REVIEW_NODE_TYPE } from "@repo/temporal/workflow-node-types";
 import { z } from "zod";
 import { findAgenticPublishProblems } from "./agentic-publish-validation";
 import {
 	loadEditableWorkflow,
 	loadReadableWorkflow,
 	requireWritableProject,
-	WorkflowCommandError,
 	type WorkflowActor,
+	WorkflowCommandError,
 } from "./workflow-command-context";
 import {
 	applyWorkflowUpdateWithSchedule,
@@ -479,7 +479,10 @@ export async function configureWorkspaceStoryReviewCommand(
 			actor,
 			current,
 			{ id: current.id, nodes },
-			{ expectedUpdatedAt: new Date(parsed.data.expectedUpdatedAt) },
+			{
+				expectedUpdatedAt: new Date(parsed.data.expectedUpdatedAt),
+				syncLiveSchedule: true,
+			},
 		);
 		return {
 			workflow: descriptor({ ...current, ...workflow }, binding),

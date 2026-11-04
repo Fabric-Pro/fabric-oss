@@ -23,7 +23,7 @@ import {
 
 const {
 	mockGenerateEmbeddings,
-	mockGenerateObject,
+	mockGenerateText,
 	mockTrackUsage,
 	mockGetAIModelWithMetadata,
 	mockListActiveStories,
@@ -46,7 +46,7 @@ const {
 	return {
 		AiUsageLimitExceededError,
 		mockGenerateEmbeddings: vi.fn(),
-		mockGenerateObject: vi.fn(),
+		mockGenerateText: vi.fn(),
 		mockTrackUsage: vi.fn(),
 		mockGetAIModelWithMetadata: vi.fn(),
 		mockListActiveStories: vi.fn(),
@@ -64,7 +64,8 @@ const {
 vi.mock("@repo/rag", () => ({ generateEmbeddings: mockGenerateEmbeddings }));
 
 vi.mock("@repo/ai", async () => ({
-	generateObject: mockGenerateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mockGenerateText,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	resolveModelWithProvider: mockResolveModelWithProvider,
 	experimental_decide: mockDecide,
@@ -443,12 +444,12 @@ describe("judgeRoutingItem", () => {
 			expect(judgement.confidence).toBe(1);
 			expect(judgement.alternatives).toHaveLength(0);
 		}
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("returns an enrich judgement from the language judge above threshold", async () => {
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				decision: "enrich",
 				targetIdentifier: "F-1",
 				confidence: 0.9,
@@ -476,8 +477,8 @@ describe("judgeRoutingItem", () => {
 	});
 
 	it("degrades to create when the language judge names an identifier off the shortlist", async () => {
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				decision: "enrich",
 				targetIdentifier: "F-999",
 				confidence: 0.99,
@@ -501,7 +502,7 @@ describe("judgeRoutingItem", () => {
 	});
 
 	it("resolves to a failed judgement, never throwing, when the language judge errors", async () => {
-		mockGenerateObject.mockRejectedValue(new Error("gateway timeout"));
+		mockGenerateText.mockRejectedValue(new Error("gateway timeout"));
 
 		const judgement = await judgeRoutingItem({
 			itemText: "Export throttling detail",
@@ -545,7 +546,7 @@ describe("judgeRoutingItem", () => {
 		});
 
 		expect(judgement.kind).toBe("failed");
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("treats a decision refusal as no decision and falls through to the language judge", async () => {
@@ -554,8 +555,8 @@ describe("judgeRoutingItem", () => {
 			trackUsage: mockDecisionTrackUsage,
 		});
 		mockDecide.mockImplementation(decideWithRefusal);
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				decision: "enrich",
 				targetIdentifier: "F-1",
 				confidence: 0.9,
@@ -582,7 +583,7 @@ describe("judgeRoutingItem", () => {
 		if (judgement.kind === "enrich") {
 			expect(judgement.source).toBe("language_model");
 		}
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockGenerateText).toHaveBeenCalledOnce();
 		expect(mockDecisionTrackUsage).not.toHaveBeenCalled();
 	});
 
@@ -610,8 +611,8 @@ describe("judgeRoutingItem", () => {
 					}
 				}),
 		);
-		mockGenerateObject.mockResolvedValue({
-			object: { decision: "create", confidence: 1 },
+		mockGenerateText.mockResolvedValue({
+			output: { decision: "create", confidence: 1 },
 		});
 		const { decisionModel } = await resolveRoutingModels(BASE);
 		const controller = new AbortController();
@@ -633,12 +634,12 @@ describe("judgeRoutingItem", () => {
 		// The aborted fast path falls through rather than failing the whole
 		// judgement — the language judge still gets a chance to answer.
 		expect(judgement.kind).toBe("create");
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockGenerateText).toHaveBeenCalledOnce();
 	});
 
-	it("calls onBeforeLanguageJudge and forwards abortSignal to generateObject", async () => {
-		mockGenerateObject.mockResolvedValue({
-			object: { decision: "create", confidence: 1 },
+	it("calls onBeforeLanguageJudge and forwards abortSignal to generateText", async () => {
+		mockGenerateText.mockResolvedValue({
+			output: { decision: "create", confidence: 1 },
 		});
 		const onBeforeLanguageJudge = vi.fn();
 		const controller = new AbortController();
@@ -656,7 +657,7 @@ describe("judgeRoutingItem", () => {
 		});
 
 		expect(onBeforeLanguageJudge).toHaveBeenCalledOnce();
-		expect(mockGenerateObject.mock.calls[0][0].abortSignal).toBe(
+		expect(mockGenerateText.mock.calls[0][0].abortSignal).toBe(
 			controller.signal,
 		);
 	});
@@ -732,8 +733,8 @@ describe("judgeRoutingItem", () => {
 
 		beforeEach(() => {
 			resetCapturedDecisionOutcomes();
-			mockGenerateObject.mockResolvedValue({
-				object: { decision: "create", confidence: 1 },
+			mockGenerateText.mockResolvedValue({
+				output: { decision: "create", confidence: 1 },
 			});
 		});
 
@@ -787,7 +788,7 @@ describe("judgeRoutingItem", () => {
 
 				await judge(decisionModel, [1, 0], [TICKET_A, TICKET_B]);
 
-				expect(mockGenerateObject).toHaveBeenCalledOnce();
+				expect(mockGenerateText).toHaveBeenCalledOnce();
 				expect(capturedDecisionOutcomes).toEqual([
 					{
 						site: SITE,
@@ -835,7 +836,7 @@ describe("judgeRoutingItem", () => {
 					expect(judgement.target.identifier).toBe("F-1");
 					expect(judgement.source).toBe("decision_evaluation");
 				}
-				expect(mockGenerateObject).not.toHaveBeenCalled();
+				expect(mockGenerateText).not.toHaveBeenCalled();
 				expect(capturedDecisionOutcomes).toEqual([
 					{
 						site: SITE,
@@ -857,7 +858,7 @@ describe("judgeRoutingItem", () => {
 
 					await judge(decisionModel, [1, 0], [TICKET_A], threshold);
 
-					expect(mockGenerateObject).toHaveBeenCalledOnce();
+					expect(mockGenerateText).toHaveBeenCalledOnce();
 					expect(capturedDecisionOutcomes).toEqual([
 						expect.objectContaining({ outcome: "below_threshold" }),
 					]);
@@ -922,7 +923,7 @@ describe("judgeRoutingItem", () => {
 					model,
 				]),
 			).toEqual([["limit_exceeded", "example-decider"]]);
-			expect(mockGenerateObject).not.toHaveBeenCalled();
+			expect(mockGenerateText).not.toHaveBeenCalled();
 		});
 
 		it("records unavailable for an item judged without a decision model, but nothing when no candidate is shortlisted", async () => {

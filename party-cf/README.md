@@ -21,10 +21,10 @@ Cloudflare Workers + Durable Objects deployment of the realtime collaboration se
 |---------|-------|-----|---------|
 | `Main` | `Document` | `/parties/main/<documentId>` | Y.js CRDT sync (`YServer` from y-partyserver). State persisted to Durable Object SQLite via `onLoad`/`onSave`. |
 | `Orchestrator` | `Orchestrator` | `/parties/orchestrator/<executionId>` | Broadcasts orchestrator status to subscribed clients. |
-| `TaskAgent` | `TaskAgent` | `/parties/task-agent/<planId>` *and* `/parties/taskagent/<planId>` (legacy) | Broadcasts task-agent status. The Worker entry rewrites the no-hyphen path so the temporal publisher (which uses `taskagent`) keeps working. |
+| `Parlume` | `Parlume` | `/parties/parlume/<id>` | Meeting audio transcription. |
 | `Health` | `Health` | `/parties/health/<id>` | Aspire-style health check (also available at root `/health`). |
 
-All four `class_name`s are declared as `new_sqlite_classes` in `wrangler.toml` (modern DO storage backend; cannot be switched later). Staging redeclares its own `[[env.staging.durable_objects.bindings]]` set — Durable Object namespaces are per-Worker, so staging and production never share storage.
+The active classes are declared as `new_sqlite_classes` in `wrangler.toml` (modern DO storage backend; cannot be switched later). Staging redeclares its own `[[env.staging.durable_objects.bindings]]` set — Durable Object namespaces are per-Worker, so staging and production never share storage.
 
 ## Files
 
@@ -38,7 +38,7 @@ party-cf/
     ├── env.ts             # Env interface (typed bindings + secrets)
     ├── document.ts        # Y.js doc DO (extends YServer)
     ├── orchestrator.ts    # extends Server, hibernation enabled
-    ├── taskAgent.ts       # extends Server, hibernation enabled
+    ├── parlume.ts         # meeting transcription
     └── health.ts          # extends Server
 ```
 
@@ -51,7 +51,7 @@ Set as Cloudflare Worker secrets, **not** in `wrangler.toml`. Each Worker (prod,
 | `FABRIC_API_URL` | GitHub `Production`/`dev` environment secret (mirrored to Azure KV `fabric-api-url` by `deploy-azure-container-apps.yml`) | The public URL of the Fabric web app (e.g. `https://fabric.example.com`) |
 | `AGENT_SERVICE_SECRET` | GitHub `Production`/`dev` environment secret (mirrored to Azure KV `agent-service-secret`) | Must match the value the web app and Temporal worker send |
 
-`PARTYKIT_ENV=production` is set as a plain var in `wrangler.toml` for both the default (prod) and `[env.staging]` sections (not secret) — staging intentionally runs in "production" auth mode. That rehearses the real token → verify → subscribe flow end-to-end for **document collab** and — since issue #624 shipped their scoped JWTs — for **orchestrator/task-agent** as well (their publish/replay paths are exercised regardless, via `AGENT_SERVICE_SECRET`).
+`PARTYKIT_ENV=production` is set as a plain var in `wrangler.toml` for both the default (prod) and `[env.staging]` sections (not secret) — staging intentionally runs in "production" auth mode. That rehearses the real token → verify → subscribe flow end-to-end for **document collab** and — since issue #624 shipped their scoped JWTs — for **orchestrator** as well (their publish/replay paths are exercised regardless, via `AGENT_SERVICE_SECRET`).
 
 ## Local commands
 
@@ -152,11 +152,10 @@ The web app reads `NEXT_PUBLIC_PARTYKIT_HOST` at build time. Until that's update
    Redeploy, then verify in the browser: DevTools → Network → **Socket** filter (Chrome renamed WS) shows a held-open `wss://` connection to the worker, and the console logs `[useCollaborativeEditor] Status event: connected` / `Sync event: true`.
 4. Temporal worker cutover (Azure): flip the GitHub dev-scope `PARTYKIT_HOST` secret to the staging worker host (bare hostname, no scheme) and dispatch `deploy-azure-container-apps.yml` so the Key Vault `partykit-host` secret syncs and the temporal-worker revision picks it up (`main.bicep` maps it to `NEXT_PUBLIC_PARTYKIT_HOST`).
 5. Cutover caveats: the new worker starts with EMPTY Durable Object storage — have users save/close active collaborative documents first, and force/announce a reload after the web redeploy (already-open tabs keep the old build-time host, so the same document can otherwise split-brain across two CRDT rooms that both save to the DB).
-6. Verify end-to-end on staging: two-browser document collab; orchestrator + task-agent live UI (since #624 these subscribe with their own scoped JWTs, so they need the same `COLLAB_JWT_SECRET` on the web side — a missing secret 500s the token route and the live panel silently stays empty).
+6. Verify end-to-end on staging: two-browser document collab; orchestrator live UI (since #624 these subscribe with their own scoped JWTs, so they need the same `COLLAB_JWT_SECRET` on the web side — a missing secret 500s the token route and the live panel silently stays empty).
 7. Soak, then decommission hosted PartyKit staging: keep the partykit.dev deployment as instant rollback for a soak window; afterwards delete the hosted deployment, revoke its credentials, and neuter `party/package.json`'s `deploy` script so the sunsetting platform can't be redeployed by accident.
 
 ## Notes
 
-- **Hibernation is enabled** on the `Document`, `Orchestrator`, and `TaskAgent` DO classes via `static options = { hibernate: true }`. This lets WebSockets stay open while the DO isolate is evicted, dramatically reducing duty cycle. Y.js doc state survives because `onSave` writes to DO storage (debounced 2s, max 10s). `Health` does not set hibernation.
+- **Hibernation is enabled** on the `Document` and `Orchestrator` DO classes via `static options = { hibernate: true }`. This lets WebSockets stay open while the DO isolate is evicted, dramatically reducing duty cycle. Y.js doc state survives because `onSave` writes to DO storage (debounced 2s, max 10s). `Health` does not set hibernation.
 - **Y.js state persists per-document** in DO SQLite storage, not in the Fabric database. The DB stores the canonical markdown via the document save API path; the Y.js layer is for live multiplayer presence and conflict-free merging.
-- **The temporal publisher's URL inconsistency** (`/parties/taskagent/` vs the client's `/parties/task-agent/`) is masked by a rewrite in `src/index.ts`. If you ever change either side to align them, the rewrite can go.

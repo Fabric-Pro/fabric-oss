@@ -14,10 +14,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	// Faithful enough to discriminate, which is all the activity asks of it:
 	// the AI SDK names this error class "AI_NoObjectGeneratedError", and the
@@ -211,8 +212,8 @@ beforeEach(() => {
 		metadata: { modelString: "test-model", provider: "test" },
 		trackUsage,
 	});
-	generateObject.mockResolvedValue({
-		object: MODEL_OUTPUT,
+	generateText.mockResolvedValue({
+		output: MODEL_OUTPUT,
 		usage: { totalTokens: 100 },
 	});
 	completeTopicDraft.mockResolvedValue({ persisted: true });
@@ -274,7 +275,7 @@ describe("generateLinkedInPostActivity — tenancy and actor revalidation", () =
 			nonRetryable: true,
 		});
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 });
 
@@ -392,15 +393,15 @@ describe("generateLinkedInPostActivity — how it fails", () => {
 	it("lets a model failure propagate and commits nothing", async () => {
 		// The workflow owns the failure marker; this activity must not swallow
 		// the error into a status, or the attempt would never be marked failed.
-		generateObject.mockRejectedValue(new Error("provider unavailable"));
+		generateText.mockRejectedValue(new Error("provider unavailable"));
 		await expect(run()).rejects.toThrow("provider unavailable");
 		expect(completeTopicDraft).not.toHaveBeenCalled();
 		expect(trackUsage).not.toHaveBeenCalled();
 	});
 
 	it("fails non-retryably when the output breaks the exactly-three contract, and commits nothing", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				options: MODEL_OUTPUT.options.slice(0, 2),
 			},

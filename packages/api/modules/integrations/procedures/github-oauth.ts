@@ -1,7 +1,7 @@
 /**
  * GitHub OAuth Procedures
  *
- * Handles GitHub OAuth flow for task agent integration.
+ * Handles GitHub OAuth flow for connected integrations.
  * Stores OAuth tokens in WorkflowIntegration model.
  */
 
@@ -30,6 +30,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { startCodeIndexingForProject } from "../../projects/lib/code-indexing-trigger";
+import {
+	type SavedGrant,
+	saveGitHubGrantAsCredential,
+} from "../lib/github-grant-credential";
 import {
 	exchangeCodeForToken,
 	type GitHubTokenResponse,
@@ -325,6 +329,17 @@ export const githubOAuthProcedures = {
 					tokenResponse.access_token,
 				);
 
+				// While the credential manager is on, the grant is also saved as
+				// the member's credential in the state's (verified) organization.
+				const saveGrant = () =>
+					saveGitHubGrantAsCredential({
+						organizationId: state.organizationId ?? null,
+						user: context.user,
+						tokenResponse,
+						githubUser,
+						clientId,
+					});
+
 				// Route credentials based on targetType in the OAuth state.
 				// This branching happens here (in the callback) rather than in a separate
 				// handler because: (1) GitHub redirects to a single callback URL — we can't
@@ -381,6 +396,8 @@ export const githubOAuthProcedures = {
 						};
 					}
 
+					const credentialId = await saveGrant();
+
 					const { connectedStatus } =
 						await handleProjectTargetCallback({
 							state: {
@@ -396,6 +413,7 @@ export const githubOAuthProcedures = {
 							},
 							tokenResponse,
 							githubUser,
+							credentialId,
 						});
 
 					// AC1's "told at connect time": the popup and toast carry the
@@ -416,7 +434,11 @@ export const githubOAuthProcedures = {
 					};
 				}
 
-				// User-level integration: store in WorkflowIntegration (existing behavior)
+				// User-level integration: store in WorkflowIntegration (existing
+				// behavior). It has no credential reference yet, so the saved
+				// credential is not linked from it.
+				await saveGrant();
+
 				const credentials = JSON.stringify({
 					access_token: tokenResponse.access_token,
 					token_type: tokenResponse.token_type,
@@ -909,6 +931,12 @@ export async function handleProjectTargetCallback(args: {
 	};
 	tokenResponse: GitHubTokenResponse;
 	githubUser: GitHubUser;
+	/**
+	 * The credential this grant was saved as (`saveGitHubGrantAsCredential`).
+	 * `undefined` leaves the row's binding untouched (credential manager off);
+	 * `null` clears it so the fresh legacy tokens are read.
+	 */
+	credentialId?: SavedGrant;
 }): Promise<{
 	connectedStatus: "ACTIVE" | "TOKEN_EXPIRED" | "REPO_UNAVAILABLE";
 }> {
@@ -988,6 +1016,11 @@ export async function handleProjectTargetCallback(args: {
 		// A re-authenticated credential must start with a full retirement
 		// budget: a stale count would let one failed sweep retire this row.
 		probeFailCount: 0,
+		// ADR-026 expand phase: reference the saved credential and keep
+		// dual-writing the token columns above.
+		...(args.credentialId !== undefined
+			? { credentialId: args.credentialId }
+			: {}),
 	};
 
 	// Upsert: update if integration already exists (e.g. re-auth), otherwise create
@@ -1037,6 +1070,9 @@ export async function handleProjectTargetCallback(args: {
 			status: integrationData.status,
 			lastError: integrationData.lastError,
 			configuredByUserId: state.userId,
+			...(args.credentialId !== undefined
+				? { credentialId: args.credentialId }
+				: {}),
 		});
 		integrationId = created.id;
 	}

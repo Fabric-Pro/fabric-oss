@@ -46,7 +46,8 @@ vi.mock("@repo/database", () => ({
 }));
 // Keep the heavy AI SDK + notification side effects out of this DB-only test.
 vi.mock("@repo/ai", () => ({
-	generateObject: vi.fn(),
+	Output: { object: (spec: unknown) => spec },
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	logModelUsageAsync: vi.fn(),
 }));

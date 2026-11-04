@@ -59,7 +59,8 @@ vi.mock("@repo/ai", async () => {
 			metadata: { provider: "example" },
 			trackUsage: vi.fn(),
 		})),
-		generateObject: ai.generateObject,
+		Output: ai.Output,
+		generateText: ai.generateText,
 		logModelUsageAsync: vi.fn(),
 	};
 });

@@ -37,7 +37,7 @@ import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-appro
  *     shape-level assertion while doing it.
  *  3. THE PROMPT'S VOCABULARY AND THE SCHEMA'S ENUMS ARE THE SAME LIST. The
  *     locked clauses enumerate the audience and release-status values in prose;
- *     `generateObject` validates against the enum. A value the clause offers
+ *     `generateText` validates against the enum. A value the clause offers
  *     that the enum rejects makes a COMPLIANT model answer unparseable, and the
  *     failure surfaces as a non-retryable schema error blaming the model.
  *  4. `generation.revisionVersion` / `generation.aiVersion` come from the ONE
@@ -54,10 +54,11 @@ import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-appro
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	// Faithful enough to discriminate, which is all the activity asks of it:
 	// the AI SDK names this error class "AI_NoObjectGeneratedError", and the
@@ -316,8 +317,8 @@ beforeEach(() => {
 		metadata: { modelString: "test-model", provider: "test" },
 		trackUsage,
 	});
-	generateObject.mockResolvedValue({
-		object: MODEL_OUTPUT,
+	generateText.mockResolvedValue({
+		output: MODEL_OUTPUT,
 		usage: { totalTokens: 100 },
 	});
 	completeTopicDraft.mockResolvedValue({ persisted: true });
@@ -344,8 +345,8 @@ const run = (overrides: Record<string, unknown> = {}) =>
 const persistedContent = () => completeTopicDraft.mock.calls[0]?.[0]?.content;
 /** The whole first argument `completeTopicDraft` was called with. */
 const persistedDraft = () => completeTopicDraft.mock.calls[0]?.[0];
-/** The prompt string `generateObject` was actually sent. */
-const sentPrompt = () => generateObject.mock.calls[0]?.[0]?.prompt as string;
+/** The prompt string `generateText` was actually sent. */
+const sentPrompt = () => generateText.mock.calls[0]?.[0]?.prompt as string;
 /** The body `seedWorkingDraftIfAbsent` was asked to write. */
 const seededBody = () =>
 	seedWorkingDraftIfAbsent.mock.calls[0]?.[0]?.body as string;
@@ -394,7 +395,7 @@ describe("generateNewsletterBlurbActivity — tenancy and actor revalidation", (
 			nonRetryable: true,
 		});
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 
 	it("refuses when the project has left the organization the run was queued under", async () => {
@@ -877,7 +878,7 @@ describe("generateNewsletterBlurbActivity — the model call", () => {
 	it("validates against the TRANSFORMED schema, which is what the model's JSON schema is built from", async () => {
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]?.schema).toBe(
+		expect(generateText.mock.calls[0]?.[0]?.output?.schema).toBe(
 			PublishingNewsletterBlurbSchema,
 		);
 	});
@@ -886,7 +887,7 @@ describe("generateNewsletterBlurbActivity — the model call", () => {
 		await run();
 
 		expect(
-			generateObject.mock.calls[0]?.[0]?.providerOptions,
+			generateText.mock.calls[0]?.[0]?.providerOptions,
 		).toBeUndefined();
 	});
 
@@ -909,7 +910,7 @@ describe("generateNewsletterBlurbActivity — the model call", () => {
 			expect.anything(),
 			{ promptChars: sentPrompt().length },
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.maxOutputTokens).toBe(8192);
+		expect(generateText.mock.calls[0]?.[0]?.maxOutputTokens).toBe(8192);
 	});
 
 	it("omits maxOutputTokens entirely when the helper declines to set one", async () => {
@@ -919,7 +920,7 @@ describe("generateNewsletterBlurbActivity — the model call", () => {
 
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]).not.toHaveProperty(
+		expect(generateText.mock.calls[0]?.[0]).not.toHaveProperty(
 			"maxOutputTokens",
 		);
 	});
@@ -928,7 +929,7 @@ describe("generateNewsletterBlurbActivity — the model call", () => {
 describe("generateNewsletterBlurbActivity — the prompt and the schema agree", () => {
 	/**
 	 * The enumerated list a locked clause offers the model, read off the prompt
-	 * `generateObject` was actually sent.
+	 * `generateText` was actually sent.
 	 *
 	 * Sliced rather than searched whole: every one of these values occurs a
 	 * SECOND time in the sentence that follows its list ("On UNSPECIFIED,
@@ -990,8 +991,8 @@ describe("generateNewsletterBlurbActivity — the prompt and the schema agree", 
 
 describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 	it("demotes a claimed-confirmed asset an OPEN approval is about", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["The Latency Chart", "architecture diagram"],
@@ -1019,8 +1020,8 @@ describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 	});
 
 	it("demotes a claimed-confirmed asset a SOFT-CLOSED approval is about", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["The Latency Chart", "architecture diagram"],
@@ -1052,8 +1053,8 @@ describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 	});
 
 	it("demotes on INTERNAL_UI and VIDEO_WALKTHROUGH, not just ASSET_APPROVAL", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: [
@@ -1088,8 +1089,8 @@ describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 		// map's size asserted first: on a clean run `assetKinds` is absent and
 		// a loop over its entries would never execute, which is the shape of
 		// assertion that cannot fail.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["admin console screenshot", "latency chart"],
@@ -1119,8 +1120,8 @@ describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 		// INTERNAL_UI, VIDEO_WALKTHROUGH — so an asset named by both an open
 		// ASSET_APPROVAL and an open INTERNAL_UI thread is attributed to
 		// ASSET_APPROVAL, whichever order the threads arrive in.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["dashboard capture"],
@@ -1142,8 +1143,8 @@ describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 	});
 
 	it("never upgrades: an asset the model itself hedged stays hedged", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: [],
@@ -1163,8 +1164,8 @@ describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 	});
 
 	it("de-duplicates a demoted asset against a differently-cased hedge", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["The Latency Chart"],
@@ -1190,8 +1191,8 @@ describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 	it("leaves every confirmed asset standing when no ASSET-restricting kind is open", async () => {
 		// A framing question (CLAIM_STRENGTH here) is not a claim about whether
 		// an asset exists and may be used.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["architecture diagram"],
@@ -1224,8 +1225,8 @@ describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 	});
 
 	it("leaves an ANSWERED asset approval alone — it is not a restriction", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: ["latency chart"],
@@ -1298,8 +1299,8 @@ describe("generateNewsletterBlurbActivity — what it persists", () => {
 		// prompt while the skeleton actively asks for a CTA string — and an
 		// activity that spread `result.object` would store `UNKNOWN` beside a
 		// real call to action, then compose a working draft that drops it.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				ctaState: "UNKNOWN",
 				suggestedCta: "Reply to this email to join the pilot.",
@@ -1319,8 +1320,8 @@ describe("generateNewsletterBlurbActivity — what it persists", () => {
 	it("persists the parsed document's normalized safety note", async () => {
 		// Same property from the other side: a blank note arrives as null, not
 		// as whitespace a downstream reader has to re-trim.
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, safetyNote: "   " },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, safetyNote: "   " },
 			usage: {},
 		});
 
@@ -1443,8 +1444,8 @@ describe("generateNewsletterBlurbActivity — what it persists", () => {
 
 describe("generateNewsletterBlurbActivity — the write surface", () => {
 	it("seeds a body that starts with the composed headline", async () => {
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, headline: "NB-SEED-CANARY headline" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, headline: "NB-SEED-CANARY headline" },
 			usage: {},
 		});
 
@@ -1468,8 +1469,8 @@ describe("generateNewsletterBlurbActivity — the write surface", () => {
 		// compose that merely happens to start with the headline: an OMITTED
 		// call to action is a decision with no text to carry, so the section
 		// must not appear at all.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				ctaState: "OMITTED",
 				suggestedCta: null,
@@ -1484,8 +1485,8 @@ describe("generateNewsletterBlurbActivity — the write surface", () => {
 	});
 
 	it("writes nothing at all when the output fails schema validation", async () => {
-		generateObject.mockResolvedValue({
-			object: { headline: "A headline" },
+		generateText.mockResolvedValue({
+			output: { headline: "A headline" },
 			usage: {},
 		});
 
@@ -1501,8 +1502,8 @@ describe("generateNewsletterBlurbActivity — the write surface", () => {
 		// `.trim()` before `.min(1)`: the weak form makes the run SUCCEED, seed
 		// a working draft with an empty heading, and then every downstream
 		// reader narrows the stored document to null.
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, headline: "   " },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, headline: "   " },
 			usage: {},
 		});
 
@@ -1873,8 +1874,8 @@ describe("generateNewsletterBlurbActivity — the settled-decisions block", () =
 
 describe("generateNewsletterBlurbActivity — the asset confirmation loop", () => {
 	it("promotes an asset a member cleared for any audience", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: [],
@@ -1905,8 +1906,8 @@ describe("generateNewsletterBlurbActivity — the asset confirmation loop", () =
 	});
 
 	it("does NOT promote an internal-only confirmation into a newsletter", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				...MODEL_OUTPUT,
 				suggestedAssets: {
 					confirmed: [],
@@ -1950,7 +1951,7 @@ it("keeps READY when seeding throws", async () => {
 		status: "READY",
 		seededWorkingDraft: false,
 	});
-	expect(generateObject).toHaveBeenCalledTimes(1);
+	expect(generateText).toHaveBeenCalledTimes(1);
 	expect(logger.warn).toHaveBeenCalledWith(
 		"[publishing-newsletter-blurb] failed to seed a working draft",
 		expect.objectContaining({ error: "seed failed" }),

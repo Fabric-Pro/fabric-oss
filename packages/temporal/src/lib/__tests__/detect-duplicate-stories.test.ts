@@ -32,7 +32,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // reference them without hitting the temporal-dead-zone.
 const {
 	mockGenerateEmbeddings,
-	mockGenerateObject,
+	mockGenerateText,
 	mockTrackUsage,
 	mockGetAIModelWithMetadata,
 	mockResolveModelWithProvider,
@@ -54,7 +54,7 @@ const {
 	mockLoggerInfo,
 } = vi.hoisted(() => ({
 	mockGenerateEmbeddings: vi.fn(),
-	mockGenerateObject: vi.fn(),
+	mockGenerateText: vi.fn(),
 	mockTrackUsage: vi.fn(),
 	mockGetAIModelWithMetadata: vi.fn(),
 	mockResolveModelWithProvider: vi.fn(),
@@ -81,6 +81,7 @@ vi.mock("@repo/rag", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	Output: { object: (spec: unknown) => spec },
 	// A real class, not a stub: the scan rethrows it by `instanceof` so a
 	// configuration refusal keeps its own type instead of being rewrapped as a
 	// transient embedding failure, and `instanceof` against a `vi.fn()` is
@@ -91,7 +92,7 @@ vi.mock("@repo/ai", () => ({
 			this.name = "AIProviderNotConfiguredError";
 		}
 	},
-	generateObject: mockGenerateObject,
+	generateText: mockGenerateText,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	resolveModelWithProvider: mockResolveModelWithProvider,
 }));
@@ -175,8 +176,8 @@ function arrange(
 		});
 		return { embeddings, model: "text-embedding-3-small" };
 	});
-	mockGenerateObject.mockResolvedValue({
-		object: { ...verdict, reasoning: "test" },
+	mockGenerateText.mockResolvedValue({
+		output: { ...verdict, reasoning: "test" },
 	});
 }
 
@@ -371,7 +372,7 @@ describe("detectAndFlagDuplicateStories", () => {
 
 		expect(result.candidates).toBe(0);
 		expect(result.confirmed).toBe(0);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
 	});
 
@@ -469,13 +470,13 @@ describe("detectAndFlagDuplicateStories", () => {
 		// First candidate pair's verifier throws; the second returns a confident
 		// duplicate verdict.
 		let call = 0;
-		mockGenerateObject.mockImplementation(async () => {
+		mockGenerateText.mockImplementation(async () => {
 			call += 1;
 			if (call === 1) {
 				throw new Error("verifier 429");
 			}
 			return {
-				object: {
+				output: {
 					sameWorkItem: true,
 					confidence: 0.95,
 					reasoning: "dup",
@@ -513,7 +514,7 @@ describe("detectAndFlagDuplicateStories", () => {
 		arrange(stories, (id) =>
 			id === "existing" ? [1, 1, 0] : [1, 1, 0.02],
 		);
-		mockGenerateObject.mockRejectedValue(
+		mockGenerateText.mockRejectedValue(
 			new Error("No object generated: response did not match schema."),
 		);
 
@@ -566,8 +567,8 @@ describe("detectAndFlagDuplicateStories", () => {
 				? [1, 0, 0]
 				: [0.78, Math.sqrt(1 - 0.78 * 0.78), 0],
 		);
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "overlapping_scope",
 				confidence: 0.85,
 				reasoning: "same capability, different framing",
@@ -609,8 +610,8 @@ describe("detectAndFlagDuplicateStories", () => {
 		arrange(stories, (id) =>
 			id === "existing" ? [1, 1, 0] : [1, 1, 0.02],
 		);
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "distinct",
 				confidence: 0.9,
 				reasoning: "different work",
@@ -660,8 +661,8 @@ describe("detectAndFlagDuplicateStories", () => {
 			arrange(stories, (id) =>
 				id === "existing" ? [1, 1, 0] : [1, 1, 0.02],
 			);
-			mockGenerateObject.mockResolvedValue({
-				object: {
+			mockGenerateText.mockResolvedValue({
+				output: {
 					relationship: "distinct",
 					confidence: 0.9,
 					reasoning: "different work",
@@ -699,8 +700,8 @@ describe("detectAndFlagDuplicateStories", () => {
 		arrange(stories, (id) =>
 			id === "existing" ? [1, 1, 0] : [1, 1, 0.02],
 		);
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "same_work_item",
 				confidence: 0.6,
 				reasoning: "probably the same login work",
@@ -767,7 +768,7 @@ describe("detectAndFlagDuplicateStories", () => {
 		});
 
 		expect(result.candidates).toBe(0);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("reuses cached embeddings — only stale items are embedded, and fresh vectors are persisted after verification", async () => {
@@ -850,13 +851,13 @@ describe("detectAndFlagDuplicateStories", () => {
 					: [1, 1, 0.4],
 		);
 		let call = 0;
-		mockGenerateObject.mockImplementation(async () => {
+		mockGenerateText.mockImplementation(async () => {
 			call += 1;
 			if (call === 1) {
 				throw new Error("verifier 429");
 			}
 			return {
-				object: {
+				output: {
 					relationship: "same_work_item",
 					confidence: 0.95,
 					reasoning: "dup",
@@ -992,7 +993,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 		// Near-identical documents, yet orthogonal Scope sections score the
 		// pair far under the bar: no candidate, no verifier call, no flag.
 		expect(result.candidates).toBe(0);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
 		expect(mockWithdrawPendingDuplicateLinks).toHaveBeenCalledWith(
 			"proj-1",
@@ -1045,8 +1046,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			},
 		];
 		arrangeByText(stories, () => [1, 0, 0]);
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "same_work_item",
 				confidence: 0.9,
 				reasoning: "the same checklist",
@@ -1105,8 +1106,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			}
 			return [1, 0, 0];
 		});
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "overlapping_scope",
 				confidence: 0.85,
 				reasoning: "both deliver the first-run checklist",
@@ -1119,7 +1120,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 		});
 
 		expect(result.confirmed).toBe(1);
-		const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+		const { prompt } = mockGenerateText.mock.calls[0][0] as {
 			prompt: string;
 		};
 		expect(prompt).toContain(
@@ -1180,8 +1181,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			}
 			return [1, 0, 0];
 		});
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "overlapping_scope",
 				confidence: 0.85,
 				reasoning: "same first-run checklist",
@@ -1200,7 +1201,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			"AC1: Given a new user, when they sign in, then the checklist shows",
 			"AC1: Given a new user, when they first sign in, then the checklist shows",
 		]);
-		const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+		const { prompt } = mockGenerateText.mock.calls[0][0] as {
 			prompt: string;
 		};
 		expect(prompt).toContain(
@@ -1249,8 +1250,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			}
 			return [0.62, Math.sqrt(1 - 0.62 ** 2), 0];
 		});
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "overlapping_scope",
 				confidence: 0.85,
 				reasoning: "both put images on feature proposals",
@@ -1268,10 +1269,10 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 		);
 		expect(weighted).toBeLessThan(0.7);
 		expect(weighted).toBeGreaterThanOrEqual(0.62);
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
 		expect(mockRecordDistinctVerdict).not.toHaveBeenCalled();
 		expect(result.confirmed).toBe(1);
-		const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+		const { prompt } = mockGenerateText.mock.calls[0][0] as {
 			prompt: string;
 		};
 		expect(prompt).toContain("<acceptance_criteria_a>");
@@ -1322,8 +1323,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			}
 			return [1, 0, 0];
 		});
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "overlapping_scope",
 				confidence: 0.85,
 				reasoning: "both deliver the invoice CSV export",
@@ -1337,7 +1338,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 		expect(result.candidates).toBe(1);
 		expect(result.confirmed).toBe(1);
-		const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+		const { prompt } = mockGenerateText.mock.calls[0][0] as {
 			prompt: string;
 		};
 		expect(prompt).toContain(
@@ -1394,8 +1395,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			},
 		];
 		arrangeByText(stories, () => [1, 0, 0]);
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "overlapping_scope",
 				confidence: 0.85,
 				reasoning: "same checklist",
@@ -1432,7 +1433,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 				},
 			],
 		);
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
 	});
 
 	it("re-checks a feature pair when Scope changes past where the document text is cut", async () => {
@@ -1450,8 +1451,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			mockListVerdictValidPairKeys.mockResolvedValue([]);
 			mockListStoryDuplicateEmbeddingMetadata.mockResolvedValue([]);
 			mockListStoryDuplicateFocusEmbeddings.mockResolvedValue([]);
-			mockGenerateObject.mockResolvedValue({
-				object: {
+			mockGenerateText.mockResolvedValue({
+				output: {
 					relationship: "distinct",
 					confidence: 0.9,
 					reasoning: "different exports",
@@ -1520,8 +1521,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			},
 		];
 		arrangeByText(stories, () => [1, 0, 0]);
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "distinct",
 				confidence: 0.9,
 				reasoning: "neither defines any work",
@@ -1533,7 +1534,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			targetStoryIds: ["new"],
 		});
 
-		const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+		const { prompt } = mockGenerateText.mock.calls[0][0] as {
 			prompt: string;
 		};
 		expect(prompt).toMatch(
@@ -1573,8 +1574,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			arrangeByText(stories, (text) =>
 				text.startsWith("Login times out") ? [1, 1, 0] : [1, 1, 0.02],
 			);
-			mockGenerateObject.mockResolvedValue({
-				object: {
+			mockGenerateText.mockResolvedValue({
+				output: {
 					relationship: "same_work_item",
 					confidence: 0.95,
 					reasoning: "same timeout",
@@ -1592,7 +1593,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(
 				kindA === "FEATURE" ? 2 : 1,
 			);
-			const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+			const { prompt } = mockGenerateText.mock.calls[0][0] as {
 				prompt: string;
 			};
 			expect(prompt).not.toContain("<scope_a>");
@@ -1667,9 +1668,9 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 		});
 		// The verifier links the pair whose Scope blocks share the checklist
 		// and calls the MCP one distinct.
-		mockGenerateObject.mockImplementation(
+		mockGenerateText.mockImplementation(
 			async ({ prompt }: { prompt: string }) => ({
-				object: prompt.includes("<scope_a>\nIn scope:\n- MCP server")
+				output: prompt.includes("<scope_a>\nIn scope:\n- MCP server")
 					? {
 							relationship: "distinct",
 							confidence: 0.9,
@@ -1761,8 +1762,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 		];
 		const verdicts = (...relationships: string[]) => {
 			for (const relationship of relationships) {
-				mockGenerateObject.mockResolvedValueOnce({
-					object: {
+				mockGenerateText.mockResolvedValueOnce({
+					output: {
 						relationship,
 						confidence: 0.9,
 						reasoning: "test",
@@ -1795,7 +1796,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			await run();
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+			expect(mockGenerateText).toHaveBeenCalledTimes(1);
 			expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledTimes(1);
 		});
 
@@ -1805,7 +1806,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			await run();
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockGenerateText).toHaveBeenCalledTimes(2);
 			expect(mockTrackUsage).toHaveBeenCalledTimes(2);
 			expect(mockRecordDistinctVerdict).toHaveBeenCalledWith(
 				expect.objectContaining({ clearsPendingFlag: true }),
@@ -1819,7 +1820,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			const result = await run();
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockGenerateText).toHaveBeenCalledTimes(2);
 			expect(mockRecordDistinctVerdict).not.toHaveBeenCalled();
 			expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
 			expect(mockStampVerifiedHashes).toHaveBeenCalledWith(
@@ -1838,7 +1839,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			await run();
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockGenerateText).toHaveBeenCalledTimes(2);
 			expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
 			expect(mockStampVerifiedHashes).toHaveBeenCalledTimes(1);
 		});
@@ -1849,7 +1850,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			await run();
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockGenerateText).toHaveBeenCalledTimes(2);
 			expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledWith(
 				expect.objectContaining({ linkType: "DUPLICATE" }),
 			);
@@ -1861,7 +1862,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			await run();
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+			expect(mockGenerateText).toHaveBeenCalledTimes(1);
 			expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledTimes(1);
 		});
 
@@ -1873,7 +1874,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 				contentHashA: string;
 				contentHashB: string;
 			};
-			mockGenerateObject.mockClear();
+			mockGenerateText.mockClear();
 			mockUpsertPendingDuplicateLink.mockClear();
 			// Between the next run's selection and its verification, another
 			// run verified the same content.
@@ -1886,7 +1887,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			const result = await run();
 
-			expect(mockGenerateObject).not.toHaveBeenCalled();
+			expect(mockGenerateText).not.toHaveBeenCalled();
 			expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
 			expect(result.candidates).toBe(1);
 		});
@@ -1897,7 +1898,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			await run();
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+			expect(mockGenerateText).toHaveBeenCalledTimes(1);
 		});
 
 		it("raises a flag at the softer tier when two verdicts flag it at different tiers", async () => {
@@ -1906,7 +1907,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			const result = await run();
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockGenerateText).toHaveBeenCalledTimes(2);
 			expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledWith(
 				expect.objectContaining({ linkType: "OVERLAP" }),
 			);
@@ -1933,7 +1934,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			await run();
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockGenerateText).toHaveBeenCalledTimes(2);
 			expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledWith(
 				expect.objectContaining({ linkType: "DUPLICATE" }),
 			);
@@ -1949,7 +1950,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			};
 			expect(written.contentHashA).not.toBe(hashDetectionText(""));
 			mockUpsertPendingDuplicateLink.mockClear();
-			mockGenerateObject.mockClear();
+			mockGenerateText.mockClear();
 			// Nothing stored when this run reads the pair; by the time its
 			// verdict is in, an overlapping run has stored one on the same
 			// content.
@@ -1965,7 +1966,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 
 			await run();
 
-			expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+			expect(mockGenerateText).toHaveBeenCalledTimes(1);
 			expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
 		});
 
@@ -1973,7 +1974,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			mockGetDuplicateLinkState.mockRejectedValue(new Error("db down"));
 
 			await expect(run()).rejects.toThrow(/verifier failed for all 1/);
-			expect(mockGenerateObject).not.toHaveBeenCalled();
+			expect(mockGenerateText).not.toHaveBeenCalled();
 		});
 	});
 
@@ -1998,8 +1999,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 		const hashOf = async (kind: "FEATURE" | "BUG") => {
 			mockUpsertPendingDuplicateLink.mockClear();
 			arrangeByText(asKind(kind), () => [1, 0, 0]);
-			mockGenerateObject.mockResolvedValue({
-				object: {
+			mockGenerateText.mockResolvedValue({
+				output: {
 					relationship: "same_work_item",
 					confidence: 0.9,
 					reasoning: "test",
@@ -2047,8 +2048,8 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			},
 		];
 		arrangeByText(stories, () => [1, 0, 0]);
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				relationship: "same_work_item",
 				confidence: 0.9,
 				reasoning: "the same checklist",
@@ -2099,7 +2100,7 @@ describe("candidates left over by the per-run cap", () => {
 		});
 
 		expect(mockListActiveStoriesForDetection).toHaveBeenCalledTimes(1);
-		expect(mockGenerateObject).toHaveBeenCalledTimes(60);
+		expect(mockGenerateText).toHaveBeenCalledTimes(60);
 		expect(result).toMatchObject({
 			candidates: 60,
 			confirmed: 60,
@@ -2110,7 +2111,7 @@ describe("candidates left over by the per-run cap", () => {
 
 	it("reports the pairs it could not verify so the workflow stops", async () => {
 		arrange(overCap, () => [1, 0, 0]);
-		mockGenerateObject.mockRejectedValueOnce(new Error("rate limited"));
+		mockGenerateText.mockRejectedValueOnce(new Error("rate limited"));
 
 		const result = await detectAndFlagDuplicateStories({
 			...baseParams,
@@ -2147,10 +2148,10 @@ describe("candidates left over by the run's time budget", () => {
 	it("stops starting verifications once the budget is spent and reports the rest for the next run", async () => {
 		arrange(thirty, () => [1, 0, 0]);
 		// Each verification takes a tenth of the budget, so ten fit.
-		mockGenerateObject.mockImplementation(async () => {
+		mockGenerateText.mockImplementation(async () => {
 			clock += RUN_TIME_BUDGET_MS / 10;
 			return {
-				object: {
+				output: {
 					sameWorkItem: true,
 					confidence: 0.95,
 					reasoning: "test",
@@ -2163,7 +2164,7 @@ describe("candidates left over by the run's time budget", () => {
 			targetStoryIds: ["new"],
 		});
 
-		expect(mockGenerateObject).toHaveBeenCalledTimes(10);
+		expect(mockGenerateText).toHaveBeenCalledTimes(10);
 		expect(result).toMatchObject({
 			candidates: 10,
 			confirmed: 10,
@@ -2192,7 +2193,7 @@ describe("candidates left over by the run's time budget", () => {
 			targetStoryIds: ["new"],
 		});
 
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
 		expect(result).toMatchObject({ candidates: 1, truncated: 29 });
 	});
 });

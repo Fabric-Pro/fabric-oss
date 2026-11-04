@@ -251,7 +251,7 @@ export interface RunAgenticCaseResult {
 const RAW_REPLY_LOG_LIMIT = 2_000;
 
 /**
- * The fields that actually explain a `generateObject` failure.
+ * The fields that actually explain a structured-output failure.
  *
  * Its message is the same sentence — "No object generated: could not parse the
  * response" — whether the model answered in prose, ran out of tokens midway

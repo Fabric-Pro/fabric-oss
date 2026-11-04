@@ -55,7 +55,7 @@ async function secretsMatch(
 }
 
 /**
- * Authorizes the service-to-service surface of the orchestrator/task-agent
+ * Authorizes the service-to-service surface of the orchestrator
  * rooms: publish (Temporal activities), room cleanup, and room status.
  *
  * An unset AGENT_SERVICE_SECRET is a misconfiguration, not an open door — in

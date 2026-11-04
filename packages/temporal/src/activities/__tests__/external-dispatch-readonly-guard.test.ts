@@ -5,7 +5,7 @@
  * service (MCP client, GitHub/Teams OAuth executors) WITHOUT consulting the
  * read-only gate — so a write escapes while the project is in Read-only mode.
  * The 2026-07-23 post-ship review found two shipped instances of exactly this
- * (the task-agent tool loop and the legacy Fizzy push), both invisible to the
+ * (including the legacy Fizzy push), invisible to the
  * api-side guard because it only scans web/API surfaces.
  *
  * THE RULE: every activity module that imports an external-dispatch primitive
@@ -69,7 +69,7 @@ const ALLOWLIST: ReadonlyMap<string, string> = new Map([
 	],
 	[
 		"packages/temporal/src/activities/shared/oauth-tool-executors.ts",
-		"shared executor PRIMITIVE — gating happens at every dispatch call site (chokepoint, task-agent, agent-executor)",
+		"shared executor PRIMITIVE — gating happens at every dispatch call site (chokepoint, agent-executor)",
 	],
 	[
 		"packages/temporal/src/activities/teams-channel-monitor/fetch-new-messages.ts",

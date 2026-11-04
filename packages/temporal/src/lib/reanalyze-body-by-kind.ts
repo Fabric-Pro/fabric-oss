@@ -23,15 +23,17 @@
 import { getLockedAttachmentRulesClause } from "@repo/agent-prompts";
 import {
 	AIProviderNotConfiguredError,
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 // Imported from the SUBPATH (not @repo/ai root) so it stays UNMOCKED in tests
 // that mock the @repo/ai root module without spreading real exports (uniform
 // rule across the budget sites; see update-with-context-core.ts).
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import { getBoundPromptForAgent, type StoryKind } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
@@ -281,13 +283,17 @@ export async function reanalyzeBodyByKind(
 				inputChars: existingDescription.length,
 				promptChars: promptWithRules.length,
 			});
-			const { object, usage } = await generateObject({
-				model,
-				schema: ReanalyzedBugSchema,
-				abortSignal: params.abortSignal,
-				prompt: promptWithRules,
-				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			});
+			const { output: object, usage } = await requireStructuredOutput(
+				generateText({
+					model,
+					output: Output.object({ schema: ReanalyzedBugSchema }),
+					abortSignal: params.abortSignal,
+					prompt: promptWithRules,
+					...(maxOutputTokens !== undefined
+						? { maxOutputTokens }
+						: {}),
+				}),
+			);
 			trackUsage();
 			logModelUsageAsync({
 				context: { userId, organizationId: orgId },
@@ -363,13 +369,15 @@ export async function reanalyzeBodyByKind(
 				(existingAcceptanceCriteria?.length ?? 0),
 			promptChars: promptWithRules.length,
 		});
-		const { object, usage } = await generateObject({
-			model,
-			schema: ReanalyzedFeatureSchema,
-			abortSignal: params.abortSignal,
-			prompt: promptWithRules,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
+		const { output: object, usage } = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: ReanalyzedFeatureSchema }),
+				abortSignal: params.abortSignal,
+				prompt: promptWithRules,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			}),
+		);
 		trackUsage();
 		logModelUsageAsync({
 			context: { userId, organizationId: orgId },

@@ -31,6 +31,8 @@ import "./canva";
 import "./clickup";
 import "./confluence";
 import "./databricks-vector-search";
+import "./databricks-sql";
+import "./databricks-platform";
 import "./fal";
 import "./firecrawl";
 import "./freshservice";
@@ -55,6 +57,7 @@ import "./clerk";
 import "./stripe";
 import "./superagent";
 import "./webflow";
+
 // Re-export individual plugins for direct access
 export { linearPlugin } from "./linear";
 export { mcpPlugin } from "./mcp";

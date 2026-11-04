@@ -24,6 +24,29 @@ export const ACTION_ONLY_PROVIDERS: ReadonlyArray<{
 	category: (typeof PROVIDER_CATEGORIES)[number]["id"];
 }> = [
 	{
+		type: "DATABRICKS_PLATFORM",
+		keywords: [
+			"databricks",
+			"jobs",
+			"mlflow",
+			"evaluations",
+			"context quality",
+		],
+		category: "knowledge-docs",
+	},
+	{
+		type: "DATABRICKS_SQL",
+		keywords: [
+			"databricks",
+			"sql",
+			"warehouse",
+			"unity catalog",
+			"ai_query",
+			"tables",
+		],
+		category: "knowledge-docs",
+	},
+	{
 		type: "DATABRICKS_VECTOR_SEARCH",
 		keywords: ["databricks", "vector search", "rag", "embeddings", "index"],
 		category: "knowledge-docs",

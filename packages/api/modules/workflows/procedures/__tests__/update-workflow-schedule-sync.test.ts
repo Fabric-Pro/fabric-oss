@@ -23,11 +23,19 @@ vi.mock("@repo/database", () => ({
 	hasWorkflowAccess: accessMock,
 	getWorkflowById: async () => ({
 		id: "wf-1",
-		status: "DRAFT",
+		status: "PUBLISHED",
+		version: 2,
+		publishedVersion: 2,
+		publishedAt: new Date("2026-01-01T00:00:00Z"),
 		userId: "user-1",
 		organizationId: "org-1",
 		nodes: [],
 	}),
+	db: {
+		workflowVersion: {
+			findFirst: async () => ({ nodes: saved("PUBLISHED").nodes }),
+		},
+	},
 	canUpdateOrganizationWorkflows: async () => true,
 	isWorkflowLive: (status: string) =>
 		status === "PUBLISHED" || status === "ACTIVE",
@@ -158,7 +166,7 @@ describe("status changes sync the schedule", () => {
 });
 
 describe("editing a live workflow", () => {
-	it("re-syncs the cron without needing a republish", async () => {
+	it("leaves the published schedule unchanged until republish", async () => {
 		updateWorkflowMock.mockResolvedValue(saved("PUBLISHED"));
 
 		await update({
@@ -166,10 +174,8 @@ describe("editing a live workflow", () => {
 			context: ctx,
 		});
 
-		const [args] = syncScheduleMock.mock.calls[0];
-		expect(args.active).toBe(true);
-		// The saved graph is what the cron is read from.
-		expect(args.nodes).toEqual(saved("PUBLISHED").nodes);
+		expect(updateWorkflowMock).toHaveBeenCalledOnce();
+		expect(syncScheduleMock).not.toHaveBeenCalled();
 	});
 });
 

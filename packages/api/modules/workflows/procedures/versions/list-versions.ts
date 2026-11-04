@@ -3,14 +3,18 @@ import { getWorkflowVersions, hasWorkflowAccess } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
 
 export const listWorkflowVersionsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/workflows/{id}/versions",

@@ -8,13 +8,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 	},
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: vi.fn(),
 }));
@@ -87,13 +88,13 @@ beforeEach(() => {
 		metadata: { modelString: "model", provider: "OPENAI_CHATGPT_PLAN" },
 		trackUsage: vi.fn(),
 	});
-	mocks.generateObject.mockImplementation(async (call: unknown) => {
+	mocks.generateText.mockImplementation(async (call: unknown) => {
 		const key = itemOf(call);
 		if (spentFor.has(key)) {
 			throw new SubscriptionPlanExhaustedError("No usage left.", null);
 		}
 		return {
-			object: { findings: [finding(`Finding in ${key}`)] },
+			output: { findings: [finding(`Finding in ${key}`)] },
 			usage: { inputTokens: 10, outputTokens: 5 },
 		};
 	});
@@ -120,7 +121,7 @@ describe("runSecurityScanActivity — every shared plan spent part-way", () => {
 		]);
 		// The refused chunk is not retried inside the attempt.
 		expect(
-			mocks.generateObject.mock.calls.filter(
+			mocks.generateText.mock.calls.filter(
 				([call]) => itemOf(call) === "B",
 			),
 		).toHaveLength(1);
@@ -139,12 +140,12 @@ describe("runSecurityScanActivity — every shared plan spent part-way", () => {
 				items: [item("A"), item("C")],
 			})
 		).findings;
-		mocks.generateObject.mockClear();
+		mocks.generateText.mockClear();
 
 		const output = await runSecurityScanActivity({ ...INPUT, resume });
 
 		expect(
-			mocks.generateObject.mock.calls.map(([call]) => itemOf(call)),
+			mocks.generateText.mock.calls.map(([call]) => itemOf(call)),
 		).toEqual(["B"]);
 		expect(output.findings.map((f) => f.title).sort()).toEqual([
 			"Finding in A",

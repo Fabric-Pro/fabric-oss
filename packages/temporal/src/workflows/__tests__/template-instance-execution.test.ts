@@ -177,3 +177,164 @@ describe("templateInstanceExecutionWorkflow — a spent ChatGPT plan (Fizzy #277
 		);
 	});
 });
+
+describe("report admission protocol compatibility", () => {
+	it("retains the legacy activity arguments when no protocol is present", async () => {
+		activityStubs.updateInstanceExecutionStatus.mockResolvedValue(true);
+		activityStubs.fetchTemplateInstanceWithTemplate.mockResolvedValue(null);
+		await expect(
+			templateInstanceExecutionWorkflow(INPUT),
+		).rejects.toThrow();
+		expect(
+			activityStubs.fetchTemplateInstanceWithTemplate,
+		).toHaveBeenCalledWith({
+			instanceId: INPUT.instanceId,
+			userId: INPUT.userId,
+			organizationId: INPUT.organizationId,
+		});
+	});
+	it("loads the admitted snapshot and fails strict completeness before reading or publishing evidence", async () => {
+		activityStubs.updateInstanceExecutionStatus.mockResolvedValue(true);
+		activityStubs.fetchTemplateInstanceWithTemplate.mockResolvedValue({
+			reportingExecution: { config: { partialData: "require_complete" } },
+		});
+		await expect(
+			templateInstanceExecutionWorkflow({
+				...INPUT,
+				reportingProtocol: 1,
+			}),
+		).rejects.toThrow(/complete historical evidence/);
+		expect(
+			activityStubs.fetchTemplateInstanceWithTemplate,
+		).toHaveBeenCalledWith({
+			instanceId: INPUT.instanceId,
+			userId: INPUT.userId,
+			organizationId: INPUT.organizationId,
+			executionId: INPUT.executionId,
+		});
+		expect(activityStubs.fetchDataSources).not.toHaveBeenCalled();
+		expect(
+			activityStubs.executeAgentDataGatheringLoop,
+		).not.toHaveBeenCalled();
+		expect(activityStubs.storeInstanceArtifact).not.toHaveBeenCalled();
+	});
+});
+
+it("runs pinned primary and comparison periods through rendering with bounded provenance for organization reports", async () => {
+	activityStubs.updateInstanceExecutionStatus.mockResolvedValue(true);
+	const window = {
+		start: "2026-10-01T00:00:00.000Z",
+		end: "2026-11-01T00:00:00.000Z",
+		cutoff: "2026-11-02T09:00:00.000Z",
+		timezone: "UTC",
+		comparison: {
+			start: "2026-09-01T00:00:00.000Z",
+			end: "2026-10-01T00:00:00.000Z",
+		},
+	};
+	activityStubs.fetchTemplateInstanceWithTemplate.mockResolvedValue({
+		id: "inst-1",
+		name: "Delivery",
+		parameterDefaults: {},
+		connections: {},
+		fabricConfig: {},
+		template: {
+			id: "template-1",
+			name: "Delivery summary",
+			definition: {
+				dataSources: [
+					{
+						id: "source-1",
+						type: "mcp",
+						provider: "example",
+						operation: "read",
+						config: {},
+					},
+				],
+			},
+			fabricConfig: null,
+			outputFormat: "MARKDOWN",
+		},
+		reportingParameters: { team: "Example" },
+		reportingExecution: {
+			config: {
+				period: "monthly",
+				partialData: "allow_with_notice",
+				publication: "draft",
+			},
+			window,
+		},
+	});
+	activityStubs.fetchReportTemplateSkills.mockResolvedValue([]);
+	activityStubs.resolveReportConnections.mockResolvedValue({
+		mcpConfigs: [],
+		mcpBindings: {},
+		healed: [],
+		unresolved: [],
+	});
+	activityStubs.checkFabricHealth.mockResolvedValue({ healthy: false });
+	activityStubs.fetchDataSources.mockImplementation(async () => ({
+		results: [
+			{
+				sourceId: "source-1",
+				sourceType: "mcp",
+				provider: "example",
+				data: [{ title: "Example" }],
+				recordCount: 1,
+			},
+		],
+		fetchStates: {},
+		totalRecords: 1,
+	}));
+	activityStubs.renderInstanceReport.mockResolvedValue({
+		markdown: "# Delivery summary",
+		title: "Delivery",
+		generatedAt: window.cutoff,
+	});
+	activityStubs.storeInstanceArtifact.mockResolvedValue({ id: "artifact-1" });
+	const result = await templateInstanceExecutionWorkflow({
+		...INPUT,
+		reportingProtocol: 1,
+	});
+	expect(result.status).toBe("COMPLETED");
+	expect(activityStubs.fetchDataSources).toHaveBeenNthCalledWith(
+		1,
+		expect.objectContaining({
+			reportingProtocol: 1,
+			dateRange: {
+				start: window.start,
+				end: window.end,
+				period: "monthly",
+			},
+		}),
+	);
+	expect(activityStubs.fetchDataSources).toHaveBeenNthCalledWith(
+		2,
+		expect.objectContaining({
+			dateRange: window.comparison,
+			parameters: expect.objectContaining({
+				reportEvidenceRole: "comparison",
+			}),
+		}),
+	);
+	expect(activityStubs.renderInstanceReport).toHaveBeenCalledWith(
+		expect.objectContaining({
+			dataResults: [
+				expect.objectContaining({ sourceId: "source-1" }),
+				expect.objectContaining({ sourceId: "comparison:source-1" }),
+			],
+		}),
+	);
+	expect(activityStubs.storeInstanceArtifact).toHaveBeenCalledWith(
+		expect.objectContaining({
+			content: expect.stringContaining("Evidence notice"),
+			metadata: expect.objectContaining({
+				reporting: expect.objectContaining({
+					state: "partial",
+					window,
+				}),
+			}),
+		}),
+	);
+	expect(activityStubs.indexInstanceArtifactForRag).toHaveBeenCalledOnce();
+});

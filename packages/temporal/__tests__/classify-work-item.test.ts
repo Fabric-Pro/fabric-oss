@@ -42,7 +42,7 @@ const { mocks, AIProviderNotConfiguredError, AiUsageLimitExceededError } =
 				experimental_decide: vi.fn(),
 				getBoundPromptForAgent: vi.fn(),
 				getAIDecisionModelWithMetadata: vi.fn(),
-				generateObject: vi.fn(),
+				generateText: vi.fn(),
 				getAIModelWithMetadata: vi.fn(),
 				logModelUsageAsync: vi.fn(),
 				renderTemplate: vi.fn(),
@@ -54,7 +54,8 @@ vi.mock("@repo/ai", async () => ({
 	AIProviderNotConfiguredError,
 	experimental_decide: mocks.experimental_decide,
 	getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 	recordDecisionOutcome: await (
@@ -177,7 +178,7 @@ describe("classifyWorkItem", () => {
 			featureKey: "story-classification",
 		});
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 		expect(decisionTrackUsage).toHaveBeenCalledOnce();
 		expect(mocks.logModelUsageAsync).not.toHaveBeenCalled();
 	});
@@ -240,8 +241,8 @@ describe("classifyWorkItem", () => {
 		mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
 			new AIProviderNotConfiguredError(),
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				kind: "BUG",
 				confidence: "High",
 				fallback_used: false,
@@ -263,7 +264,7 @@ describe("classifyWorkItem", () => {
 				featureKey: "story-classification",
 			},
 		);
-		expect(mocks.generateObject).toHaveBeenCalledOnce();
+		expect(mocks.generateText).toHaveBeenCalledOnce();
 	});
 
 	it.each([
@@ -287,8 +288,8 @@ describe("classifyWorkItem", () => {
 			mocks.experimental_decide.mockResolvedValue({
 				answers: { workItemKind: answer },
 			});
-			mocks.generateObject.mockResolvedValue({
-				object: {
+			mocks.generateText.mockResolvedValue({
+				output: {
 					kind: "FEATURE",
 					confidence: "Medium",
 					fallback_used: false,
@@ -302,7 +303,7 @@ describe("classifyWorkItem", () => {
 
 			expect(result.kind).toBe("FEATURE");
 			expect(mocks.getAIModelWithMetadata).toHaveBeenCalledOnce();
-			expect(mocks.generateObject).toHaveBeenCalledOnce();
+			expect(mocks.generateText).toHaveBeenCalledOnce();
 			expect(decisionTrackUsage).toHaveBeenCalledOnce();
 		},
 	);
@@ -314,8 +315,8 @@ describe("classifyWorkItem", () => {
 			version: { content: "classifier prompt body" },
 		});
 		mocks.experimental_decide.mockImplementation(decideWithRefusal);
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				kind: "BUG",
 				confidence: "High",
 				fallback_used: false,
@@ -338,7 +339,7 @@ describe("classifyWorkItem", () => {
 			kind: "BUG",
 			rationale: "existing classifier result",
 		});
-		expect(mocks.generateObject).toHaveBeenCalledOnce();
+		expect(mocks.generateText).toHaveBeenCalledOnce();
 	});
 
 	it("uses the existing language classifier when decision evaluation throws", async () => {
@@ -350,8 +351,8 @@ describe("classifyWorkItem", () => {
 		mocks.experimental_decide.mockRejectedValue(
 			new Error("gateway timeout"),
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				kind: "FEATURE",
 				confidence: "Medium",
 				fallback_used: false,
@@ -382,7 +383,7 @@ describe("classifyWorkItem", () => {
 			AiUsageLimitExceededError,
 		);
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("returns the LLM output verbatim on happy path (BUG)", async () => {
@@ -391,8 +392,8 @@ describe("classifyWorkItem", () => {
 			format: "MARKDOWN",
 			version: { content: "classifier prompt body" },
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				kind: "BUG",
 				confidence: "High",
 				fallback_used: false,
@@ -408,7 +409,7 @@ describe("classifyWorkItem", () => {
 		expect(result.confidence).toBe("High");
 		expect(result.fallback_used).toBe(false);
 		expect(result.primary_signals).toContain("returns 500");
-		expect(mocks.generateObject).toHaveBeenCalledOnce();
+		expect(mocks.generateText).toHaveBeenCalledOnce();
 		expect(mocks.logModelUsageAsync).not.toHaveBeenCalled();
 	});
 
@@ -420,7 +421,7 @@ describe("classifyWorkItem", () => {
 
 		expect(result).toEqual(SAFE_FALLBACK);
 		// We should NOT have called the LLM if no prompt is bound.
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("returns SAFE_FALLBACK when the bound key isn't bug_classifier", async () => {
@@ -435,7 +436,7 @@ describe("classifyWorkItem", () => {
 		const result = await classifyWorkItem(STANDARD_INPUT);
 
 		expect(result).toEqual(SAFE_FALLBACK);
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("returns SAFE_FALLBACK when AI provider is not configured", async () => {
@@ -444,7 +445,7 @@ describe("classifyWorkItem", () => {
 			format: "MARKDOWN",
 			version: { content: "classifier prompt body" },
 		});
-		mocks.generateObject.mockRejectedValue(
+		mocks.generateText.mockRejectedValue(
 			new AIProviderNotConfiguredError(),
 		);
 
@@ -459,7 +460,7 @@ describe("classifyWorkItem", () => {
 			format: "MARKDOWN",
 			version: { content: "classifier prompt body" },
 		});
-		mocks.generateObject.mockRejectedValue(new Error("network down"));
+		mocks.generateText.mockRejectedValue(new Error("network down"));
 
 		const result = await classifyWorkItem(STANDARD_INPUT);
 
@@ -475,8 +476,8 @@ describe("classifyWorkItem", () => {
 			format: "HANDLEBARS",
 			version: { content: "classifier prompt body" },
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				kind: "BUG",
 				confidence: "High",
 				fallback_used: true,
@@ -500,8 +501,8 @@ describe("classifyWorkItem", () => {
 			format: "HANDLEBARS",
 			version: { content: "classifier prompt body" },
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				kind: "BUG",
 				confidence: "Low",
 				fallback_used: false,
@@ -525,8 +526,8 @@ describe("classifyWorkItem", () => {
 			format: "HANDLEBARS",
 			version: { content: "classifier prompt body" },
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				kind: "BUG",
 				confidence: "High",
 				fallback_used: false,
@@ -548,8 +549,8 @@ describe("classifyWorkItem", () => {
 			format: "MARKDOWN",
 			version: { content: "classifier prompt body" },
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				kind: "FEATURE",
 				confidence: "Medium",
 				fallback_used: false,
@@ -574,8 +575,8 @@ describe("classifyWorkItem", () => {
 			format: "MARKDOWN",
 			version: { content: "classifier prompt body" },
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				kind: "FEATURE",
 				confidence: "Low",
 				fallback_used: true,
@@ -611,7 +612,7 @@ describe("classifyWorkItem decision telemetry", () => {
 		version: { content: "classifier prompt body" },
 	};
 	const LANGUAGE_RESULT = {
-		object: {
+		output: {
 			kind: "FEATURE",
 			confidence: "Medium",
 			fallback_used: false,
@@ -624,7 +625,7 @@ describe("classifyWorkItem decision telemetry", () => {
 	beforeEach(() => {
 		resetCapturedDecisionOutcomes();
 		mocks.getBoundPromptForAgent.mockResolvedValue(BOUND_PROMPT);
-		mocks.generateObject.mockResolvedValue(LANGUAGE_RESULT);
+		mocks.generateText.mockResolvedValue(LANGUAGE_RESULT);
 		mocks.getAIDecisionModelWithMetadata.mockResolvedValue({
 			model: { modelId: "openai/example-decider" },
 			metadata: {
@@ -680,7 +681,7 @@ describe("classifyWorkItem decision telemetry", () => {
 
 			await classifyWorkItem(STANDARD_INPUT);
 
-			expect(mocks.generateObject).toHaveBeenCalledOnce();
+			expect(mocks.generateText).toHaveBeenCalledOnce();
 			expect(capturedDecisionOutcomes).toEqual([
 				{
 					site: "classify-work-item",
@@ -751,7 +752,7 @@ describe("classifyWorkItem decision telemetry", () => {
 			["limit_exceeded", "example-decider"],
 			["limit_exceeded", "none"],
 		]);
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("treats a limit error the SDK wrapped in a RetryError like an unwrapped one: limit_exceeded, the unwrapped instance rethrown, no language call", async () => {
@@ -772,7 +773,7 @@ describe("classifyWorkItem decision telemetry", () => {
 			]),
 		).toEqual([["limit_exceeded", "example-decider"]]);
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("labels a refusal by the gateway fallback model with that model, although the SDK threw", async () => {

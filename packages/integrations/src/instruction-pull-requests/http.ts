@@ -5,14 +5,21 @@
  * failure. Independent of the GitHub and GitLab tool handlers' transports
  * (plan R6).
  */
-import { type AdapterOperation, adapterError, statusError } from "./classify";
+import {
+	type AdapterOperation,
+	adapterError,
+	type RefusalDiagnostic,
+	type RefusalMessageReader,
+	refusalDiagnostic,
+	statusError,
+} from "./classify";
 import type { Target } from "./types";
 
 export type JsonResponse = { status: number; headers: Headers; body: unknown };
 
 /** Same-origin redirects a GET may follow (a renamed repository); never for a write. */
 const MAX_REDIRECTS = 3;
-/** Bytes of an error body read to recognise a duplicate refusal; never kept. */
+/** Characters of an error body read to recognise a duplicate or its reason; the raw text is never kept. */
 const MAX_ERROR_BODY_CHARS = 16 * 1024;
 
 function sameOrigin(url: string, origin: string): boolean {
@@ -41,6 +48,13 @@ export async function requestJson(input: {
 	timeoutMs: number;
 	/** Given only for `open`: whether a refusal's body says the pull request already exists. */
 	isDuplicate?: (status: number, text: string) => boolean;
+	/**
+	 * Given only for `merge`: sees a refusal's status and headers (never its
+	 * body) first and may throw its own error in place of the generic one.
+	 */
+	onRefusal?: (status: number, headers: Headers) => void;
+	/** Given only for `open`: reads the provider's own reason for a refusal, kept sanitized on the error. */
+	refusalMessage?: RefusalMessageReader;
 }): Promise<JsonResponse> {
 	const { target, operation, origin } = input;
 	const signal = AbortSignal.any([
@@ -97,20 +111,30 @@ export async function requestJson(input: {
 			throw adapterError(operation, "auth");
 		}
 		if (!res.ok) {
+			input.onRefusal?.(res.status, res.headers);
 			let duplicate = false;
-			if (input.isDuplicate) {
-				const text = await res.text().catch(() => "");
-				duplicate = input.isDuplicate(
-					res.status,
-					text.slice(0, MAX_ERROR_BODY_CHARS),
+			let diagnostic: RefusalDiagnostic | undefined;
+			if (input.isDuplicate || input.refusalMessage) {
+				const text = (await res.text().catch(() => "")).slice(
+					0,
+					MAX_ERROR_BODY_CHARS,
 				);
+				duplicate = input.isDuplicate?.(res.status, text) ?? false;
+				// A duplicate is adopted, not reported, so its reason is not kept.
+				if (!duplicate && input.refusalMessage) {
+					diagnostic = refusalDiagnostic({
+						status: res.status,
+						headers: res.headers,
+						text,
+						read: input.refusalMessage,
+						secrets: [target.auth.token],
+					});
+				}
 			}
-			throw statusError(
-				operation,
-				res.status,
-				res.headers,
-				duplicate ? { duplicate: true } : {},
-			);
+			throw statusError(operation, res.status, res.headers, {
+				...(duplicate ? { duplicate: true as const } : {}),
+				...diagnostic,
+			});
 		}
 		let text: string;
 		try {

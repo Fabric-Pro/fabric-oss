@@ -219,12 +219,12 @@ export function classifyAccessLevel(
 	toolName: string,
 	annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean },
 ): "READ" | "WRITE" {
-	// 1. Explicit annotation takes priority
-	if (annotations?.readOnlyHint === true) {
-		return "READ";
-	}
+	// 1. Explicit annotation takes priority (destructiveHint overrides readOnlyHint)
 	if (annotations?.destructiveHint === true) {
 		return "WRITE";
+	}
+	if (annotations?.readOnlyHint === true) {
+		return "READ";
 	}
 
 	// 2. Strip namespace prefix for pattern matching
@@ -269,6 +269,9 @@ export function classifyConnectedToolAccess(
 	credential: GatewayCredential,
 ): "READ" | "WRITE" {
 	if (isDelegatedCredential(credential)) {
+		if (annotations?.destructiveHint === true) {
+			return "WRITE";
+		}
 		return annotations?.readOnlyHint === true ? "READ" : "WRITE";
 	}
 	return classifyAccessLevel(toolName, annotations);
@@ -344,9 +347,11 @@ export async function enforceAuthority(params: {
 		return { authorized: true };
 	}
 
-	const { checkAuthority, ensureSensitiveOperationAuthority } = await import(
-		"@repo/database"
-	);
+	const {
+		checkAuthority,
+		consumeRequestGrant,
+		ensureSensitiveOperationAuthority,
+	} = await import("@repo/database");
 
 	const baseToolName = toolName.includes("__")
 		? toolName.split("__").slice(1).join("__")
@@ -374,6 +379,7 @@ export async function enforceAuthority(params: {
 				runType: boundRunType,
 				runId: boundRunId,
 				toolName: baseToolName,
+				candidateRequestFingerprint: requestFingerprint,
 			});
 	const pendingSessionId =
 		"pendingSessionId" in result &&
@@ -389,9 +395,25 @@ export async function enforceAuthority(params: {
 			: undefined;
 
 	if (result.authorized) {
+		if (boundAuthoritySessionId && result.grant?.kind === "REQUEST") {
+			const consumed = await consumeRequestGrant(result.grant.id);
+			if (consumed?.consumed !== true) {
+				return {
+					authorized: false,
+					reason: "One-shot authority grant was already consumed by a concurrent request.",
+					action: "request_authority",
+				};
+			}
+		}
 		return {
 			authorized: true,
-			grant: result.grant,
+			grant:
+				result.grant?.kind === "REQUEST"
+					? ({
+							...result.grant,
+							consumed: true,
+						} as typeof result.grant)
+					: result.grant,
 		};
 	}
 
@@ -439,17 +461,27 @@ export async function enforceAuthority(params: {
 
 /**
  * Generate a fingerprint for a one-shot request grant.
- * Hashes the tool name and sorted argument keys+values.
+ * Uses canonical recursive key sorting identical to `authorityRequestFingerprint`
+ * in `@repo/database` so gateway and database fingerprints always match.
  */
 export async function generateRequestFingerprint(
 	toolName: string,
 	args: Record<string, unknown>,
 ): Promise<string> {
-	const sortedArgs = Object.keys(args)
-		.sort()
-		.map((k) => `${k}=${JSON.stringify(args[k])}`)
-		.join("&");
-	const payload = `${toolName}:${sortedArgs}`;
+	const canonical = (value: unknown): unknown => {
+		if (Array.isArray(value)) {
+			return value.map(canonical);
+		}
+		if (typeof value === "object" && value !== null) {
+			return Object.fromEntries(
+				Object.entries(value)
+					.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+					.map(([key, entry]) => [key, canonical(entry)]),
+			);
+		}
+		return value;
+	};
+	const payload = `${toolName}:${JSON.stringify(canonical(args))}`;
 
 	// Use Web Crypto API for hashing
 	const encoder = new TextEncoder();

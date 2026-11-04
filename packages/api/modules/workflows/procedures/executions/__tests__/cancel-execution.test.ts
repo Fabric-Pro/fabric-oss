@@ -42,6 +42,7 @@ vi.mock("@repo/temporal", () => ({
 vi.mock("../../../../../orpc/procedures", () => ({
 	Permissions: { WORKSPACE_UPDATE: "workspace:update" },
 	requirePermission: () => (next: unknown) => next,
+	requireInputOrgPermission: () => (next: unknown) => next,
 	resolveOrganizationId: (input: string | null | undefined) => input ?? null,
 	tenantProtectedProcedure: {
 		use: () => ({

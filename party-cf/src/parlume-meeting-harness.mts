@@ -144,6 +144,7 @@ export function meeting(
 		transcription,
 		auraCalls,
 		alarms,
+		data,
 	};
 }
 

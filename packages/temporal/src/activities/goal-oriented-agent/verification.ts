@@ -7,8 +7,9 @@
  * - Tool success requirements
  */
 
-import { generateObject } from "@repo/ai";
+import { generateText, Output } from "@repo/ai";
 import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import { z } from "zod";
 import type {
 	AgentVariable,
@@ -19,6 +20,8 @@ import type {
 import { getAiModel } from "../orchestrator/utils/model-selector";
 
 export interface VerifyGoalInput {
+	/** Only the latest complete deliverable is an answer; other data is supporting context. */
+	outputMode?: "candidate";
 	goal: string;
 	successCriteria: SuccessCriteria;
 	executedSteps: ExecutedStep[];
@@ -81,6 +84,7 @@ async function verifyGoalAchievementInJob(
 				variables,
 				userId,
 				organizationId,
+				input.outputMode,
 			);
 	}
 }
@@ -93,6 +97,7 @@ async function verifyWithLlmJudge(
 	variables: Record<string, AgentVariable>,
 	userId: string,
 	organizationId?: string,
+	outputMode?: "candidate",
 ): Promise<GoalVerificationResult> {
 	const model = await getAiModel(userId, organizationId);
 
@@ -119,12 +124,13 @@ ${evaluationPrompt}
 ## Steps Executed
 ${executionSummary}
 
-## Accumulated Output
+## ${outputMode === "candidate" ? "Current Complete Deliverable" : "Accumulated Output"}
 ${accumulatedResponse.slice(0, 5000)}
 
 ${variablesSummary ? `## Variables/Data Collected\n${variablesSummary}` : ""}
 
 ## Instructions
+${outputMode === "candidate" ? "Judge ONLY the Current Complete Deliverable as the final answer. Variables and step history are supporting work, may contain intermediate drafts, and must not be concatenated with the deliverable or treated as additional answer text. An earlier draft is not the current answer. Check all factual and action requirements against the available evidence; do not infer tool success from prose." : ""}
 Evaluate whether the goal has been achieved based on:
 1. Were all necessary steps completed successfully?
 2. Does the output/result match what the goal required?
@@ -132,13 +138,15 @@ Evaluate whether the goal has been achieved based on:
 
 Be strict but fair. If the core objective is met, consider it achieved even if there are minor issues.`;
 
-	const result = await generateObject({
-		model,
-		schema: VerificationResultSchema,
-		prompt,
-	});
+	const result = await requireStructuredOutput(
+		generateText({
+			model,
+			output: Output.object({ schema: VerificationResultSchema }),
+			prompt,
+		}),
+	);
 
-	const verification = result.object;
+	const verification = result.output;
 
 	// Apply confidence threshold
 	const confidenceThreshold = successCriteria.confidenceThreshold || 0.8;

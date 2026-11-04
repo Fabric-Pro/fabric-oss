@@ -187,9 +187,19 @@ export async function openConsolidationCleanupActivity(
 		if (opened.pullRequestUrl) {
 			await updateInstructionConsolidation(run.id, input.projectId, {
 				cleanupPullRequestUrl: opened.pullRequestUrl,
+				...(opened.pullRequestId
+					? { cleanupPullRequestId: opened.pullRequestId }
+					: {}),
+				// The head Fabric first saw is the one a merge from Fabric
+				// expects; a retry that finds the pull request again never
+				// replaces it with whatever the branch holds by then.
+				...(opened.headSha && !run.cleanupHeadSha
+					? { cleanupHeadSha: opened.headSha }
+					: {}),
 			});
 		}
-		return opened;
+		// The workflow's result keeps its shape.
+		return { pullRequestUrl: opened.pullRequestUrl };
 	} catch (error) {
 		stepFailure(error);
 	}

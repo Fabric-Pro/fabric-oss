@@ -4,6 +4,7 @@
  */
 
 export * from "./conversations";
+export * from "./document-chat";
 export * from "./documents";
 export * from "./members";
 export * from "./rag-settings";

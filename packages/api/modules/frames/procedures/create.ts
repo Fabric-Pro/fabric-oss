@@ -2,7 +2,7 @@ import { createFrame } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -38,7 +38,11 @@ const inputSchema = z.object({
 
 export const createFrameProcedure = tenantProtectedProcedure
 	.use(publicSharingErrors)
-	.use(requirePermission(Permissions.WORKSPACE_CREATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_CREATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/frames",

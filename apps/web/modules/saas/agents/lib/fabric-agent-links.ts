@@ -151,3 +151,30 @@ export function unifiedChatHrefFromNexusQuery(
 	}
 	return `${basePath}/agents/fabric-ai`;
 }
+
+/** Agent inspection stays over the directory; editing uses its existing full-page route. */
+export function buildAgentDetailsHref({
+	basePath,
+	instanceId,
+	view,
+	executionId,
+	directoryQuery,
+}: {
+	basePath: string;
+	instanceId: string;
+	view?: "overview" | "runs" | "schedule" | "new";
+	executionId?: string;
+	directoryQuery?: string;
+}): string {
+	const params = new URLSearchParams(directoryQuery);
+	params.set("agentId", instanceId);
+	params.delete("agentView");
+	params.delete("runId");
+	if (view && view !== "overview") {
+		params.set("agentView", view);
+	}
+	if (executionId) {
+		params.set("runId", executionId);
+	}
+	return `${basePath}/agents?${params}`;
+}

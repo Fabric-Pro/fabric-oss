@@ -1,14 +1,14 @@
 /**
  * Shared primitives for the room-scoped "live" JWTs behind
- * /api/orchestrator/{token,verify} and /api/task-agent/{token,verify}.
+ * /api/orchestrator/{token,verify}.
  *
  * Each pair has to agree on three things — the audience, the signing secret and
  * the lifetime. While those were declared once per route, a one-sided edit to
  * either half would have 401'd every token in flight, so they live here now.
  *
  * Deliberately free of `@repo/temporal` and `@repo/database` imports: the
- * task-agent routes never touch Temporal, and this module sits on their hot
- * path. Orchestrator-specific ownership logic lives in ./orchestrator-access.
+ * module sits on the live routes hot path. Orchestrator-specific ownership
+ * logic lives in ./orchestrator-access.
  */
 
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
@@ -21,18 +21,17 @@ import { type JWTPayload, jwtVerify, SignJWT } from "jose";
 const LIVE_TOKEN_TTL_SECONDS = 600;
 
 /**
- * Audience pins a token to one subscribe path: an orchestrator, task-agent or
+ * Audience pins a token to one subscribe path: an orchestrator or
  * collab token can never be replayed against a sibling surface.
  */
 export const ORCHESTRATOR_TOKEN_AUDIENCE = "orchestrator-live";
-export const TASK_AGENT_TOKEN_AUDIENCE = "task-agent-live";
 
 /** Orchestrator execution IDs, as minted by the workflow start path. */
 export const EXECUTION_ID_PATTERN = /^orch-[a-f0-9-]{36}$/;
 
 /**
  * Every reconnect fetches a fresh token, so the budget is well above the
- * bounded retry schedules in useOrchestratorPartyKit / useTaskAgentPartyKit.
+ * bounded retry schedules in useOrchestratorPartyKit.
  */
 const LIVE_RATE_LIMIT = { limit: 60, windowMs: 60_000 };
 

@@ -155,6 +155,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	},
 }));
 
+import {
+	boxIn,
+	chevronIn,
+	findTreeItem,
+	treeItem,
+} from "../../repository-sync/__tests__/tree-queries";
 import { ConfigureRepositorySyncDialog } from "../ConfigureRepositorySyncDialog";
 import { RepositorySyncRuns } from "../RepositorySyncRuns";
 import { RepositorySyncSettingsSection } from "../RepositorySyncSettingsSection";
@@ -321,9 +327,11 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 
 	const submit = () =>
 		screen.getByRole("button", { name: directCopy.saveConnection });
-	const treeList = () => screen.getByRole("list", { name: copy.tree.label });
-	const box = (path: string) =>
-		within(treeList()).getByRole("checkbox", { name: path });
+	const treeList = () => screen.getByRole("tree", { name: copy.tree.label });
+	/** What assistive technology reads of a row. */
+	const item = (path: string) => treeItem(path, treeList());
+	/** The box drawn in a row, for the pointer. */
+	const box = (path: string) => boxIn(item(path));
 	const syncsList = () =>
 		screen.getByRole("list", {
 			name: copy.configureDialog.selectedPaths.label,
@@ -333,9 +341,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 
 	/** Tick `agents` in the tree, once it is listed. */
 	async function pickAgents(user: ReturnType<typeof userEvent.setup>) {
-		await user.click(
-			await screen.findByRole("checkbox", { name: "agents" }),
-		);
+		await user.click(boxIn(await findTreeItem("agents")));
 	}
 
 	/** Type a folder into the typed input and use it. */
@@ -474,9 +480,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		expect(
 			screen.getByLabelText(copy.configureDialog.branchLabel),
 		).toHaveValue("main");
-		expect(
-			await screen.findByRole("checkbox", { name: "agents" }),
-		).toBeChecked();
+		expect(await findTreeItem("agents")).toBeChecked();
 		expect(within(syncsList()).getByText("agents/")).toBeInTheDocument();
 	});
 
@@ -591,7 +595,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 	it("closes on Escape when nothing is in flight", async () => {
 		const user = userEvent.setup();
 		const { onOpenChange } = renderDialog();
-		await screen.findByRole("list", { name: copy.tree.label });
+		await screen.findByRole("tree", { name: copy.tree.label });
 
 		await user.keyboard("{Escape}");
 
@@ -601,7 +605,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 	describe("choosing the folder in the selection tree (Fizzy #2725, #2750 §4)", () => {
 		it("lists the chosen repository's branch under the branch field", async () => {
 			renderDialog();
-			const list = await screen.findByRole("list", {
+			const list = await screen.findByRole("tree", {
 				name: copy.tree.label,
 			});
 			expect(m.listTree).toHaveBeenCalledWith({
@@ -620,11 +624,9 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 
 		it("ticks nothing for a new configuration and keeps Save disabled, pointing at why", async () => {
 			renderDialog();
-			await screen.findByRole("list", { name: copy.tree.label });
-			for (const checkbox of within(treeList()).getAllByRole(
-				"checkbox",
-			)) {
-				expect(checkbox).not.toBeChecked();
+			await screen.findByRole("tree", { name: copy.tree.label });
+			for (const row of within(treeList()).getAllByRole("treeitem")) {
+				expect(row).not.toBeChecked();
 			}
 			expect(submit()).toBeDisabled();
 			expect(submit()).toHaveAccessibleDescription(
@@ -636,7 +638,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			).toHaveTextContent("Select all to sync the whole repository.");
 			// Coding Instructions syncs one folder: a file can't be ticked.
 			expect(box("agents/CLAUDE.md")).toBeDisabled();
-			expect(box("agents/CLAUDE.md")).toHaveAccessibleDescription(
+			expect(item("agents/CLAUDE.md")).toHaveAccessibleDescription(
 				sel.syncsAFolder,
 			);
 			// No typed input while the tree lists the whole branch.
@@ -706,11 +708,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 					rootPath: "tools/claude/skills",
 				},
 			});
-			expect(
-				await screen.findByRole("checkbox", {
-					name: "tools/claude/skills",
-				}),
-			).toBeChecked();
+			expect(await findTreeItem("tools/claude/skills")).toBeChecked();
 		});
 
 		it("unticking the folder, or removing it from the list, selects nothing", async () => {
@@ -739,7 +737,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		it("Select all syncs the whole repository; Select none clears it", async () => {
 			const user = userEvent.setup();
 			const { onOpenChange } = renderDialog();
-			await screen.findByRole("list", { name: copy.tree.label });
+			await screen.findByRole("tree", { name: copy.tree.label });
 			await user.click(
 				screen.getByRole("button", { name: copy.tree.selectNone }),
 			);
@@ -858,10 +856,87 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 				current: CONFIGURED.configured,
 				...props,
 			});
-			await screen.findByRole("list", { name: copy.tree.label });
+			await screen.findByRole("tree", { name: copy.tree.label });
 			await waitFor(() => expect(box("agents/drafts")).toBeEnabled());
 			return rendered;
 		}
+
+		it("leaves out a typed path where the provider has no listing, staging what unticking its row would, and lists it to undo", async () => {
+			m.listTree.mockResolvedValue(UNSUPPORTED);
+			const user = userEvent.setup();
+			const { onOpenChange } = renderDialog({
+				current: CONFIGURED.configured,
+			});
+			const typed = copy.configureDialog.typedExclusion;
+			const input = await screen.findByLabelText(typed.label);
+			await waitFor(() => expect(input).toBeEnabled());
+			const leaveOut = async (path: string) => {
+				await user.clear(input);
+				if (path !== "") {
+					await user.type(input, path);
+				}
+				await user.click(
+					screen.getByRole("button", { name: typed.add }),
+				);
+			};
+
+			await leaveOut("");
+			expect(screen.getByRole("alert")).toHaveTextContent(typed.empty);
+			await leaveOut("tools/notes.md");
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				typed.outside
+					.replace("{path}", "tools/notes.md")
+					.replace("{folder}", "agents"),
+			);
+			await leaveOut("agents/dr*fts/");
+			expect(screen.getByRole("alert")).toHaveTextContent(sel.wildcard);
+
+			// A folder ends in `/`; a file is its path in the folder.
+			await leaveOut("agents/drafts/");
+			await leaveOut("agents/notes.md");
+			expect(input).toHaveValue("");
+			await leaveOut("agents/notes.md");
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				typed.duplicate.replace("{path}", "agents/notes.md"),
+			);
+			for (const path of ["agents/drafts/", "agents/notes.md"]) {
+				expect(
+					within(syncsList()).getByText(
+						copy.configureDialog.selectedPaths.except.replace(
+							"{path}",
+							path,
+						),
+					),
+				).toBeInTheDocument();
+			}
+			// Undone from the list, as a tick would.
+			await user.click(
+				within(syncsList()).getByRole("button", {
+					name: copy.configureDialog.selectedPaths.includeAgain.replace(
+						"{path}",
+						"agents/notes.md",
+					),
+				}),
+			);
+
+			await user.click(submit());
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			// The first rule of a project with none starts from the defaults.
+			expect(configured().ignoreGlobs).toEqual([
+				...DEFAULT_IGNORE_GLOBS,
+				"drafts/**",
+			]);
+		});
+
+		it("asks for the folder before taking a typed path to leave out", async () => {
+			m.listTree.mockResolvedValue(UNSUPPORTED);
+			renderDialog();
+			const typed = copy.configureDialog.typedExclusion;
+			expect(await screen.findByLabelText(typed.label)).toBeDisabled();
+			expect(screen.getByText(typed.noFolder)).toBeInTheDocument();
+		});
 
 		it("saves exclusions atomically with the connection without starting an import", async () => {
 			const user = userEvent.setup();
@@ -915,11 +990,9 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			const user = userEvent.setup();
 			await renderOnAgents();
 			await user.click(box("agents/skills"));
-			await user.click(
-				within(treeList()).getByRole("button", { name: "skills" }),
-			);
+			await user.click(chevronIn(item("agents/skills")));
 			expect(box("agents/skills/review.md")).toBeDisabled();
-			expect(box("agents/skills/review.md")).toHaveAccessibleDescription(
+			expect(item("agents/skills/review.md")).toHaveAccessibleDescription(
 				sel.leftOutBecause.replace("{path}", "agents/skills"),
 			);
 		});
@@ -939,15 +1012,15 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			await renderOnAgents();
 			expect(box("agents/tasks")).toBeDisabled();
 			expect(box("agents/tasks")).not.toBeChecked();
-			expect(box("agents/tasks")).toHaveAccessibleDescription(
+			expect(item("agents/tasks")).toHaveAccessibleDescription(
 				sel.cause.default.replace("{rule}", "**/tasks/**"),
 			);
-			expect(box("agents/link.md")).toHaveAccessibleDescription(
+			expect(item("agents/link.md")).toHaveAccessibleDescription(
 				sel.notRegular,
 			);
 			expect(box("agents/dr*fts")).toBeDisabled();
 			expect(box("agents/dr*fts")).toBeChecked();
-			expect(box("agents/dr*fts")).toHaveAccessibleDescription(
+			expect(item("agents/dr*fts")).toHaveAccessibleDescription(
 				sel.wildcard,
 			);
 		});
@@ -955,9 +1028,9 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		it("disables every new rule once the project's list is full, saying so", async () => {
 			stored = Array.from({ length: 200 }, (_, i) => `rule-${i}/**`);
 			renderDialog({ current: CONFIGURED.configured });
-			await screen.findByRole("list", { name: copy.tree.label });
+			await screen.findByRole("tree", { name: copy.tree.label });
 			await waitFor(() =>
-				expect(box("agents/skills")).toHaveAccessibleDescription(
+				expect(item("agents/skills")).toHaveAccessibleDescription(
 					/already has .* ignore rules/,
 				),
 			);
@@ -1197,9 +1270,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 					rootPath: "tools",
 				},
 			});
-			const leftOut = await screen.findByRole("checkbox", {
-				name: "tools/claude/settings.json",
-			});
+			const leftOut = await findTreeItem("tools/claude/settings.json");
 			expect(leftOut).not.toBeChecked();
 			// Its only file is out, so the folder is out too.
 			expect(box("tools/claude")).not.toBeChecked();
@@ -1271,9 +1342,9 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			expect(
 				await screen.findByText(copy.tree.notices.settingsError),
 			).toHaveAttribute("role", "alert");
-			await screen.findByRole("list", { name: copy.tree.label });
+			await screen.findByRole("tree", { name: copy.tree.label });
 			expect(box("agents/skills")).toBeDisabled();
-			expect(box("agents/skills")).toHaveAccessibleDescription(
+			expect(item("agents/skills")).toHaveAccessibleDescription(
 				sel.cantTellYet,
 			);
 			expect(
@@ -1303,7 +1374,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			});
 			m.listTree.mockResolvedValue(listing);
 			renderDialog({ current: CONFIGURED.configured });
-			await screen.findByRole("list", { name: copy.tree.label });
+			await screen.findByRole("tree", { name: copy.tree.label });
 		}
 
 		it("reads it when the listing has it; with rules it replaces the project's and no row can be left out here", async () => {
@@ -1325,14 +1396,32 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			});
 			// The file's rule applies; the project's does not.
 			expect(box("agents/drafts")).not.toBeChecked();
-			expect(box("agents/drafts")).toHaveAccessibleDescription(
+			expect(item("agents/drafts")).toHaveAccessibleDescription(
 				sel.cause.fabricignore.replace("{rule}", "drafts/"),
 			);
 			expect(box("agents/skills")).toBeChecked();
 			expect(box("agents/skills")).toBeDisabled();
-			expect(box("agents/skills")).toHaveAccessibleDescription(
+			expect(item("agents/skills")).toHaveAccessibleDescription(
 				sel.fabricignore,
 			);
+		});
+
+		it("takes no typed path to leave out while the file's rules replace the project's", async () => {
+			m.readIgnoreFile.mockResolvedValue({
+				supported: true,
+				state: "rules",
+				rules: ["drafts/"],
+			});
+			// Truncated, so the typed inputs are offered beside the tree.
+			await renderOnAgents(["skills/**"], {
+				...WITH_IGNORE_FILE,
+				truncated: true,
+			});
+			const typed = copy.configureDialog.typedExclusion;
+			await waitFor(() =>
+				expect(screen.getByLabelText(typed.label)).toBeDisabled(),
+			);
+			expect(screen.getByText(typed.fabricignore)).toBeInTheDocument();
 		});
 
 		it("keeps the project's rules, and unticking, when the file has no rules", async () => {
@@ -1389,7 +1478,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			).toHaveAttribute("role", "alert");
 			for (const path of ["agents/skills", "agents/drafts"]) {
 				expect(box(path)).toBeDisabled();
-				expect(box(path)).toHaveAccessibleDescription(sel.cantTellYet);
+				expect(item(path)).toHaveAccessibleDescription(sel.cantTellYet);
 			}
 		});
 
@@ -1400,7 +1489,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 				await screen.findByText(copy.tree.notices.ignoreFileLoading),
 			).toBeInTheDocument();
 			expect(box("agents/skills")).toBeDisabled();
-			expect(box("agents/skills")).toHaveAccessibleDescription(
+			expect(item("agents/skills")).toHaveAccessibleDescription(
 				sel.cantTellYet,
 			);
 			expect(screen.getByText(copy.summary.counting)).toBeInTheDocument();
@@ -1420,7 +1509,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			});
 			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
 			expect(m.readIgnoreFile).not.toHaveBeenCalled();
-			expect(box("agents/.fabricignore")).toHaveAccessibleDescription(
+			expect(item("agents/.fabricignore")).toHaveAccessibleDescription(
 				sel.notRegular,
 			);
 		});

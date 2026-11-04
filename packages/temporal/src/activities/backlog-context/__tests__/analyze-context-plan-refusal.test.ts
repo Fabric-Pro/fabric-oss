@@ -14,14 +14,15 @@ import { ApplicationFailure } from "@temporalio/common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	releaseSlackClaim: vi.fn(),
 	releaseMeetingClaim: vi.fn(),
 	fetchThread: vi.fn(),
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: async () => ({
 		model: { id: "plan-model" },
 		metadata: { modelString: "openai-chatgpt-plan:gpt-6-astra" },
@@ -145,7 +146,7 @@ describe("analyzeContextAndPropose — a ChatGPT plan refusal", () => {
 		"hands a background caller the %s plan's own error",
 		async (_label, make) => {
 			const leaf = make();
-			mocks.generateObject.mockRejectedValue(retryErrorAround(leaf));
+			mocks.generateText.mockRejectedValue(retryErrorAround(leaf));
 			await expect(
 				analyzeContextAndPropose({
 					...ANALYZE_INPUT,
@@ -156,7 +157,7 @@ describe("analyzeContextAndPropose — a ChatGPT plan refusal", () => {
 	);
 
 	it("keeps the classified failure for a person's own analysis", async () => {
-		mocks.generateObject.mockRejectedValue(
+		mocks.generateText.mockRejectedValue(
 			retryErrorAround(
 				new SubscriptionPlanExhaustedError("No usage left", null),
 			),
@@ -172,7 +173,7 @@ describe("analyzeContextAndPropose — a ChatGPT plan refusal", () => {
 describe("background callers, through the real analyzer", () => {
 	it("Slack: gives the thread's claim back on a spent plan", async () => {
 		const leaf = new SubscriptionPlanExhaustedError("No usage left", null);
-		mocks.generateObject.mockRejectedValue(retryErrorAround(leaf));
+		mocks.generateText.mockRejectedValue(retryErrorAround(leaf));
 		await expect(
 			analyzeSlackThreadActivity({
 				projectId: "proj-1",
@@ -190,7 +191,7 @@ describe("background callers, through the real analyzer", () => {
 
 	it("meeting auto-analysis: fails with the type the workflow waits on, claim released", async () => {
 		const leaf = new SubscriptionPlanExhaustedError("No usage left", null);
-		mocks.generateObject.mockRejectedValue(retryErrorAround(leaf));
+		mocks.generateText.mockRejectedValue(retryErrorAround(leaf));
 		const error = await autoAnalyzeMeetingTranscriptActivity({
 			projectId: "proj-1",
 			userId: "user-1",

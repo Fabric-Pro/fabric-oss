@@ -12,13 +12,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockFindMany,
-	mockGenerateObject,
+	mockGenerateText,
 	mockGetAIModelWithMetadata,
 	mockLogModelUsageAsync,
 	mockTrackUsage,
 } = vi.hoisted(() => ({
 	mockFindMany: vi.fn(),
-	mockGenerateObject: vi.fn(),
+	mockGenerateText: vi.fn(),
 	mockGetAIModelWithMetadata: vi.fn(),
 	mockLogModelUsageAsync: vi.fn(),
 	mockTrackUsage: vi.fn(),
@@ -29,7 +29,8 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mockGenerateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mockGenerateText,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	logModelUsageAsync: mockLogModelUsageAsync,
 }));
@@ -97,8 +98,8 @@ describe("runDecisionPrecheck", () => {
 	// work, so it runs where the job runs instead of half the job on the API.
 	it("runs the judge as the background job that asked for the check", async () => {
 		arrangeOneCandidate();
-		mockGenerateObject.mockResolvedValue({
-			object: { conflicts: [] },
+		mockGenerateText.mockResolvedValue({
+			output: { conflicts: [] },
 			usage: {},
 		});
 
@@ -115,8 +116,8 @@ describe("runDecisionPrecheck", () => {
 
 	it("returns conflicts when the judge flags a genuine contradiction", async () => {
 		arrangeOneCandidate();
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				conflicts: [
 					{
 						decisionId: "d1",
@@ -154,7 +155,7 @@ describe("runDecisionPrecheck", () => {
 			findings: [],
 		});
 		// Never reached the model when there are no candidates.
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("returns an ok/empty result when there are no candidate decisions", async () => {
@@ -164,12 +165,12 @@ describe("runDecisionPrecheck", () => {
 
 		expect(result.status).toBe("ok");
 		expect(result.findings).toEqual([]);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("returns an ok/empty result when the model call errors", async () => {
 		arrangeOneCandidate();
-		mockGenerateObject.mockRejectedValue(new Error("provider exploded"));
+		mockGenerateText.mockRejectedValue(new Error("provider exploded"));
 
 		const result = await runDecisionPrecheck(input);
 
@@ -180,13 +181,13 @@ describe("runDecisionPrecheck", () => {
 	it("returns an ok/empty result when the model call times out", async () => {
 		arrangeOneCandidate();
 		process.env.DECISION_PRECHECK_TIMEOUT_MS = "20";
-		mockGenerateObject.mockImplementation(
+		mockGenerateText.mockImplementation(
 			() =>
 				new Promise((resolve) =>
 					setTimeout(
 						() =>
 							resolve({
-								object: {
+								output: {
 									conflicts: [
 										{
 											decisionId: "d1",
@@ -209,8 +210,8 @@ describe("runDecisionPrecheck", () => {
 
 	it("returns an ok/empty result when the judge finds no conflicts", async () => {
 		arrangeOneCandidate();
-		mockGenerateObject.mockResolvedValue({
-			object: { conflicts: [] },
+		mockGenerateText.mockResolvedValue({
+			output: { conflicts: [] },
 			usage: {},
 		});
 

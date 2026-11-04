@@ -24,6 +24,7 @@ vi.mock("../../../orpc/procedures", async () => {
 		resolveOrganizationId: vi.fn((inputOrgId, _session) => inputOrgId),
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
 		requireProjectPermission: () => (c: unknown) => c,
 	};
 });

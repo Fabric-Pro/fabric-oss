@@ -20,6 +20,7 @@ import {
 	type ProjectStatus,
 } from "../../client";
 import { isOrganizationMember } from "../verify-organization-membership";
+import { deleteSettledContextQualityRunsInTransaction } from "./context-quality-runs";
 
 /**
  * Create a new project
@@ -965,8 +966,23 @@ export async function permanentDeleteProject(
 			}
 		: { id: projectId };
 
-	return await db.project.delete({
-		where: whereClause,
+	return await db.$transaction(async (tx) => {
+		const project = await tx.project.findFirst({
+			where: whereClause,
+			select: { organizationId: true },
+		});
+		if (project?.organizationId) {
+			const receipts = await deleteSettledContextQualityRunsInTransaction(
+				tx,
+				{ projectId, organizationId: project.organizationId },
+			);
+			if (!receipts.deleted) {
+				throw new Error(
+					"Project deletion is waiting for confirmed context evaluation cleanup.",
+				);
+			}
+		}
+		return tx.project.delete({ where: whereClause });
 	});
 }
 
@@ -1112,8 +1128,9 @@ export async function getProjectStats(userId: string, organizationId?: string) {
 export async function getProjectAccessContext(
 	projectId: string,
 	userId: string,
+	client: Prisma.TransactionClient = db,
 ): Promise<{ organizationId: string | null } | null> {
-	const project = await db.project.findFirst({
+	const project = await client.project.findFirst({
 		where: {
 			id: projectId,
 		},
@@ -1139,7 +1156,7 @@ export async function getProjectAccessContext(
 		}
 
 		// Check if user is a project member (collaborator)
-		const projectMembership = await db.projectMember.findFirst({
+		const projectMembership = await client.projectMember.findFirst({
 			where: {
 				projectId,
 				userId,
@@ -1160,14 +1177,14 @@ export async function getProjectAccessContext(
 	//  (b) Caller is a project-scoped guest: no OrgMember row, but an
 	//      accepted ProjectMember row. This is the external-guest path.
 	const [orgMembership, projectMembership] = await Promise.all([
-		db.member.findFirst({
+		client.member.findFirst({
 			where: {
 				organizationId: project.organizationId,
 				userId,
 			},
 			select: { id: true },
 		}),
-		db.projectMember.findFirst({
+		client.projectMember.findFirst({
 			where: {
 				projectId,
 				userId,
@@ -1204,8 +1221,9 @@ export async function hasProjectAccess(
 	projectId: string,
 	userId: string,
 	_organizationId?: string,
+	client: Prisma.TransactionClient = db,
 ): Promise<boolean> {
-	return (await getProjectAccessContext(projectId, userId)) !== null;
+	return (await getProjectAccessContext(projectId, userId, client)) !== null;
 }
 
 /**
@@ -1219,8 +1237,9 @@ export async function hasProjectAccess(
  */
 export async function isProjectSoftDeleted(
 	projectId: string,
+	client: Prisma.TransactionClient = db,
 ): Promise<boolean> {
-	const project = await db.project.findFirst({
+	const project = await client.project.findFirst({
 		where: { id: projectId, deletedAt: { not: null } },
 		select: { id: true },
 	});
@@ -1571,11 +1590,13 @@ async function projectPermissionHolds(
 export async function canEditProject(
 	projectId: string,
 	userId: string,
+	client: Prisma.TransactionClient = db,
 ): Promise<boolean> {
 	return projectPermissionHolds(
 		projectId,
 		userId,
 		Permissions.PROJECT_UPDATE,
+		client,
 	);
 }
 

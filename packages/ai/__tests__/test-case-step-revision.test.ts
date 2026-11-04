@@ -12,13 +12,14 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockGenerateObject = vi.hoisted(() => vi.fn());
+const mockGenerateText = vi.hoisted(() => vi.fn());
 const mockGetModel = vi.hoisted(() => vi.fn());
 const mockGetBoundPrompt = vi.hoisted(() => vi.fn());
 const mockRenderTemplate = vi.hoisted(() => vi.fn());
 
 vi.mock("ai", () => ({
-	generateObject: mockGenerateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mockGenerateText,
 	zodSchema: (s: unknown) => s,
 	// The prompt now asks whether a thrown error was a rejected structured
 	// output before deciding to rethrow. Nothing in this suite throws one, so
@@ -78,8 +79,8 @@ beforeEach(() => {
 
 describe("reviseTestCaseSteps", () => {
 	it("drops steps with no action, so a blank row never reaches a reviewer", async () => {
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				steps: [
 					{ action: "Apply code SAVE10", expected: "Total drops" },
 					{ action: "   ", expected: "orphaned expectation" },
@@ -103,8 +104,8 @@ describe("reviseTestCaseSteps", () => {
 	it("returns an empty step list rather than inventing coverage", async () => {
 		// The caller turns this into "nothing left to verify" and stores NO
 		// proposal — an empty proposal a person could accept would blank the case.
-		mockGenerateObject.mockResolvedValue({
-			object: { steps: [], rationale: "The feature dropped discounts." },
+		mockGenerateText.mockResolvedValue({
+			output: { steps: [], rationale: "The feature dropped discounts." },
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
 		});
 
@@ -124,7 +125,7 @@ describe("reviseTestCaseSteps", () => {
 		// Collapsing this into `null` would tell the user to configure a provider
 		// they already have, and hide a billing or rate-limit failure they can act
 		// on.
-		mockGenerateObject.mockRejectedValue(new Error("insufficient credits"));
+		mockGenerateText.mockRejectedValue(new Error("insufficient credits"));
 
 		await expect(reviseTestCaseSteps(INPUT, CONTEXT)).rejects.toThrow(
 			"insufficient credits",
@@ -134,8 +135,8 @@ describe("reviseTestCaseSteps", () => {
 	it("passes the case's current steps into the prompt", async () => {
 		// Without them the model re-drafts from scratch and returns a near-
 		// duplicate — the exact failure an update path exists to avoid.
-		mockGenerateObject.mockResolvedValue({
-			object: { steps: [{ action: "a", expected: "b" }], rationale: "r" },
+		mockGenerateText.mockResolvedValue({
+			output: { steps: [{ action: "a", expected: "b" }], rationale: "r" },
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
 		});
 
@@ -148,8 +149,8 @@ describe("reviseTestCaseSteps", () => {
 	});
 
 	it("names a case with no steps rather than rendering an empty slot", async () => {
-		mockGenerateObject.mockResolvedValue({
-			object: { steps: [{ action: "a", expected: "b" }], rationale: "r" },
+		mockGenerateText.mockResolvedValue({
+			output: { steps: [{ action: "a", expected: "b" }], rationale: "r" },
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
 		});
 

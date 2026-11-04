@@ -3,6 +3,7 @@
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card, CardContent } from "@ui/components/card";
+import { Label } from "@ui/components/label";
 import {
 	Select,
 	SelectContent,
@@ -10,6 +11,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
+import { Switch } from "@ui/components/switch";
 import { cn } from "@ui/lib";
 import {
 	ChevronDownIcon,
@@ -26,10 +28,12 @@ import {
 // Parameters and context are configured at instance level
 export type DataSourceDefinition = {
 	id: string;
-	type: "integration" | "mcp" | "workspace" | "user-input";
+	type: "integration" | "mcp" | "workspace" | "user-input" | "fabric";
 	provider: string;
 	// Operation is optional - only used for legacy non-agentic templates
 	operation?: string;
+	// `false` lets a report skip this source; absent means required
+	required?: boolean;
 };
 
 // Operation parameter definition for instance-level configuration
@@ -45,15 +49,30 @@ export const DATA_SOURCE_PROVIDERS: Record<
 	string,
 	{
 		label: string;
-		type: "integration" | "mcp";
+		type: "integration" | "mcp" | "fabric";
+		/** The `MCPServer.category` of the tools that can supply this data. */
+		category?: string;
 		operations: { value: string; label: string; description: string }[];
 	}
 > = {
+	fabric_project: {
+		label: "Project knowledge",
+		type: "fabric",
+		operations: [
+			{
+				value: "project_knowledge",
+				label: "Read project knowledge",
+				description:
+					"Read completed generated documents and shared project text notes using the report project audience.",
+			},
+		],
+	},
 	// Azure DevOps MCP Server - Primary provider for sprint and work item reports
 	// Tool names from: https://github.com/microsoft/azure-devops-mcp (actual MCP tool names)
 	azure_devops: {
 		label: "Azure DevOps",
 		type: "mcp",
+		category: "Project Management",
 		operations: [
 			// Sprint/Iteration operations
 			{
@@ -117,6 +136,7 @@ export const DATA_SOURCE_PROVIDERS: Record<
 	fizzy: {
 		label: "Fizzy",
 		type: "mcp",
+		category: "Project Management",
 		operations: [
 			{
 				value: "fizzy_get_boards",
@@ -605,6 +625,7 @@ type DataSourceItemProps = {
 	isFirst: boolean;
 	isLast: boolean;
 	readOnly?: boolean;
+	showRequired: boolean;
 };
 
 function DataSourceItem({
@@ -617,6 +638,7 @@ function DataSourceItem({
 	isFirst,
 	isLast,
 	readOnly = false,
+	showRequired,
 }: DataSourceItemProps) {
 	const provider = DATA_SOURCE_PROVIDERS[dataSource.provider];
 
@@ -632,6 +654,12 @@ function DataSourceItem({
 			border: "border-blue-200 dark:border-blue-800",
 			icon: "text-muted-foreground",
 			iconBg: "bg-blue-100 dark:bg-blue-900",
+		},
+		fabric: {
+			bg: "bg-muted",
+			border: "border-border",
+			icon: "text-muted-foreground",
+			iconBg: "bg-muted",
 		},
 		workspace: {
 			bg: "bg-amber-50 dark:bg-amber-950/30",
@@ -690,7 +718,9 @@ function DataSourceItem({
 							colors.icon,
 						)}
 					>
-						{dataSource.type === "integration" ? (
+						{dataSource.type === "fabric" ? (
+							<DatabaseIcon className="h-4 w-4" />
+						) : dataSource.type === "integration" ? (
 							<PlugIcon className="h-4 w-4" />
 						) : (
 							<ServerIcon className="h-4 w-4" />
@@ -707,6 +737,10 @@ function DataSourceItem({
 								onUpdate({
 									provider: value,
 									type: newProvider?.type || "mcp",
+									operation:
+										newProvider?.type === "fabric"
+											? "project_knowledge"
+											: undefined,
 								});
 							}}
 							disabled={readOnly}
@@ -733,6 +767,28 @@ function DataSourceItem({
 
 					{/* Info & Delete */}
 					<div className="flex items-center gap-2">
+						{showRequired && dataSource.type !== "fabric" && (
+							<div className="flex items-center gap-1.5">
+								<Switch
+									id={`data-source-required-${dataSource.id}`}
+									checked={dataSource.required !== false}
+									onCheckedChange={(checked) =>
+										onUpdate({
+											required: checked
+												? undefined
+												: false,
+										})
+									}
+									disabled={readOnly}
+								/>
+								<Label
+									htmlFor={`data-source-required-${dataSource.id}`}
+									className="text-xs text-muted-foreground"
+								>
+									Required
+								</Label>
+							</div>
+						)}
 						{contextFields.length > 0 && (
 							<Badge
 								variant="secondary"
@@ -777,12 +833,15 @@ type DataSourceDefinitionBuilderProps = {
 	dataSources: DataSourceDefinition[];
 	onChange: (dataSources: DataSourceDefinition[]) => void;
 	readOnly?: boolean;
+	/** Offer marking a source optional, so a report may run without it. */
+	showRequired?: boolean;
 };
 
 export function DataSourceDefinitionBuilder({
 	dataSources,
 	onChange,
 	readOnly = false,
+	showRequired = false,
 }: DataSourceDefinitionBuilderProps) {
 	const addDataSource = () => {
 		const newId = `ds-${Date.now()}`;
@@ -888,6 +947,7 @@ export function DataSourceDefinitionBuilder({
 							isFirst={index === 0}
 							isLast={index === dataSources.length - 1}
 							readOnly={readOnly}
+							showRequired={showRequired}
 						/>
 					))}
 				</div>

@@ -206,7 +206,11 @@ vi.mock("sonner", () => ({
 // Reads its own queries; covered by its own tests.
 vi.mock("../ConsolidationPanel", () => ({ ConsolidationPanel: () => null }));
 vi.mock("../PluginNameSetting", () => ({ PluginNameSetting: () => null }));
+vi.mock("../PluginAccessPanel", () => ({ PluginAccessPanel: () => null }));
 vi.mock("../RulesHealthPanel", () => ({ RulesHealthPanel: () => null }));
+vi.mock("../InstructionsDigestPanel", () => ({
+	InstructionsDigestPanel: () => null,
+}));
 vi.mock("../ConfigureRepositorySyncDialog", () => ({
 	ConfigureRepositorySyncDialog: () => null,
 }));

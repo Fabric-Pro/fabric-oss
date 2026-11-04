@@ -6,6 +6,7 @@
 import { createCredentialProcedure } from "./procedures/create";
 import { deleteCredentialProcedure } from "./procedures/delete";
 import { listCredentials } from "./procedures/list";
+import { saveGitHubTokenProcedure } from "./procedures/save-github-token";
 import { updateCredentialProcedure } from "./procedures/update";
 
 export const credentialManagerRouter = {
@@ -13,4 +14,5 @@ export const credentialManagerRouter = {
 	create: createCredentialProcedure,
 	update: updateCredentialProcedure,
 	delete: deleteCredentialProcedure,
+	saveGitHubToken: saveGitHubTokenProcedure,
 };

@@ -165,9 +165,14 @@ Each link opens the settings page with a **Return to project** link back to the 
   </Step>
 
   <Step>
-    ### Decide on chat suggestions
+    ### Decide on suggestions and who sees them
 
-    **Chat suggestions** is on by default. With it on, Parlume may now and then post a short [suggestion](#suggestions) in the meeting chat, and speaks it only when someone replies `go`. In a meeting of a linked series it also opens with a [recap of the last meeting](#since-last-time). Turn it off for this invitation if you only want Parlume to answer when asked.
+    **Suggestions and recap** is on by default. With it on, Parlume may now and then offer a short [suggestion](#suggestions), such as the answer to a question someone just asked or a question the meeting may have missed. In a meeting of a linked series it also opens with a [recap of the last meeting](#since-last-time). Turn it off for this invitation if you only want Parlume to answer when asked.
+
+    While it is on, choose [who sees suggestions](#who-sees-suggestions):
+
+    - **Everyone in the meeting (chat)**, the default, posts suggestions and the recap in the meeting chat. Every participant reads them, external guests included.
+    - **Only your team (Parlume page)** posts nothing in the chat. Suggestions and the recap appear on the project's Parlume page, for people who can read the project.
   </Step>
 
   <Step>
@@ -214,9 +219,9 @@ The switch also needs the Meeting Digest's upcoming meetings, which your Fabric 
   </Step>
 
   <Step>
-    ### Choose the mode and chat suggestions
+    ### Choose the mode and suggestions
 
-    The switch reveals the same choices as the invite card: **Read-only** or **Actions**, and **Chat suggestions**. A change saves straight away. Automatic joins always use **Fabric Agent — this project**.
+    The switch reveals the same choices as the invite card: **Read-only** or **Actions**, **Suggestions and recap**, and, while that is on, who sees them. A change saves straight away and applies from the next meeting Parlume joins; a meeting already in progress keeps the choices it started with. Automatic joins always use **Fabric Agent — this project**.
   </Step>
 
   <Step>
@@ -358,11 +363,30 @@ Parlume stores every chat message with the meeting's transcript, on the same tim
 
 ### Suggestions
 
-With **Chat suggestions** on, Parlume looks at the conversation soon after new remarks come in, at most every 45 seconds, while it is neither speaking nor answering. It reads the last few minutes of the meeting, the recent chat, the project's open work items and its knowledge. If it has something useful to add, such as the answer to a question someone just asked, it posts one short suggestion that names the remark it answers:
+With **Suggestions and recap** on, Parlume looks at the conversation soon after new remarks come in, at most every 45 seconds, while it is neither speaking nor answering. It reads the last few minutes of the meeting, the earlier part of the meeting, the recent chat, the project's open work items and its knowledge. In a meeting of a linked series it also reads that meeting's agenda, when one is ready, and the questions the series' previous meeting left open. It offers one of two kinds of suggestion, each naming the remark it is about:
 
-`[P8] Suggestion on export owner, re Jonas: "who owns the export". … (reply "go P8" and I'll say it)`
+- **An answer**, when the project's work items or knowledge answer a question someone just asked, or correct or complete something just said:
 
-It posts at most one suggestion every two minutes and ten an hour, and skips one that answers a remark it already answered, or repeats a suggestion, from the last hour. It speaks a suggestion only when someone replies `go P8` or says "Parlume, go P8", and then starts with whose remark it answers ("Jonas, on export owner: …"). To ask about it instead, type `more P8` or say "Parlume, tell me more about P8". A suggestion is written by a model from what was said, so it can be wrong, and something said in the meeting can steer it. It can only be posted or read aloud; it cannot call tools or change anything.
+  `[P8] Suggestion on export owner, re Jonas: "who owns the export". … (reply "go P8" and I'll say it)`
+
+- **A possibly missed question**, when the topic under discussion leaves a question nobody has asked yet: an agenda item or an open question from the last meeting that has not come up, or something a newcomer or a client would need answered. A question already asked earlier in the meeting does not count:
+
+  `[P9] Possibly missed question on data migration, re Jonas: "we move the data in March". Who signs off the migrated data? (reply "go P9" and I'll ask it)`
+
+It offers at most one suggestion every two minutes and ten an hour, and skips one that answers a remark it already answered, or repeats a suggestion, from the last hour. In the chat, it speaks a suggestion only when someone replies `go P8` or says "Parlume, go P8": an answer starts with whose remark it answers ("Jonas, on export owner: …"), and a missed question is asked as a question ("A question we may not have covered on data migration: …"). To ask about it instead, type `more P8` or say "Parlume, tell me more about P8". A suggestion is written by a model from what was said, so it can be wrong, and something said in the meeting can steer it. It can only be shown, posted or read aloud; it cannot call tools or change anything.
+
+If your organization has edited the **Parlume Meeting Suggestions** prompt, it keeps your wording, and Parlume offers missed questions only when your wording asks for them.
+
+### Who sees suggestions
+
+The invitation, or the series' auto-join settings, decides where suggestions and the recap go:
+
+| Choice | Where they appear | Who can see them |
+|--------|-------------------|------------------|
+| **Everyone in the meeting (chat)** (default) | The meeting chat, and the Parlume page | Everyone in the meeting, external guests included, and people who can read the project |
+| **Only your team (Parlume page)** | The Parlume page only | People who can read the project |
+
+With **Only your team**, nothing is posted in the chat and nothing is spoken: `go` and `say` work only on chat posts. The **Suggestions** list on the Parlume page shows each suggestion and recap of the live meeting as it arrives, and of a finished meeting in its session details. Each item shows its kind (suggestion, possibly missed question or recap), the remark it is about, the text, the time, and where it went: "Sent to the chat as P8", "Team only", or that the chat did not take it.
 
 ### Since last time
 
@@ -373,7 +397,7 @@ The recap is built from:
 - the notes of the series' previous Parlume meeting in this project, or, if no earlier Parlume meeting of the series has notes, the series' latest synced transcript with its summary, decisions, open questions and open action items, as long as that meeting was in the last 90 days;
 - the project's work items created or edited since that meeting, up to 15, with their current status.
 
-**Chat suggestions** controls the recap too: with it off on the invite card, or in the series' auto-join settings, Parlume posts no recap. The recap goes to the chat only and is never spoken unprompted; `say P1` reads it aloud like any other post. A session gets at most one recap. Nothing is posted when there is no earlier meeting to recap or nothing worth saying. Like a suggestion, the recap is written by a model and can be wrong.
+**Suggestions and recap** controls the recap too: with it off on the invite card, or in the series' auto-join settings, Parlume makes no recap. The recap goes where suggestions go: to the meeting chat, or, with **Only your team**, only to the Parlume page's **Suggestions** list. It is never spoken unprompted; in the chat, `say P1` reads it aloud like any other post. A session gets at most one recap. Nothing is posted when there is no earlier meeting to recap or nothing worth saying. Like a suggestion, the recap is written by a model and can be wrong.
 
 Organization administrators can edit the instructions behind suggestions, the recap and the realtime voice in the [Prompt Library](/docs/features/prompts), as **Parlume Meeting Suggestions**, **Parlume Series Recap** and **Parlume Realtime Voice** under Meetings & Intake.
 
@@ -381,7 +405,7 @@ Organization administrators can edit the instructions behind suggestions, the re
 
 For ordinary meeting chat, a policy that excludes anonymous guests can leave the meeting bot without a chat box. Teams can drop those messages without an error, so Parlume watches for its posts to appear. If it has seen no chat message at all since it joined, it treats the chat as unavailable and says once, aloud: "I can't write in this meeting's chat. Guests may not have chat here."
 
-From then on Parlume speaks instead of posting: an answer it would have split includes its detail aloud, up to a limit, and ends with "There's more; ask me to continue." For ordinary meeting chat, a received message makes the chat available again. In a meeting where nobody has typed yet, this means Parlume may treat the chat as unavailable after its first post, until someone writes in it. While the chat is unavailable, Parlume posts no suggestions.
+From then on Parlume speaks instead of posting: an answer it would have split includes its detail aloud, up to a limit, and ends with "There's more; ask me to continue." For ordinary meeting chat, a received message makes the chat available again. In a meeting where nobody has typed yet, this means Parlume may treat the chat as unavailable after its first post, until someone writes in it. While the chat is unavailable, Parlume posts no suggestions; with **Only your team** it keeps adding them to the Parlume page, which needs no chat.
 
 Channel threads use the connected Microsoft account instead. The live card shows when Fabric is resolving the thread or cannot access it. A known channel thread does not fall back to the meeting bot's chat queue: a reply counts as delivered only after Fabric reads back the created channel reply. Check the connected account's channel membership and consent, or reconnect it if access was revoked.
 
@@ -409,6 +433,7 @@ Speaker names come from Teams, and Fabric does not check them against anyone's F
 | Transcript of the meeting, including chat lines marked `[chat]` | Project Context, after the meeting |
 | Meeting notes, generated from the transcript | Project Context, after the meeting |
 | Each request: who asked, when, the answer, and for changes the exact action details, status and outcome | The **Requests** tab on the Parlume page |
+| Each suggestion and recap: its kind, the remark it is about, the text and where it went | The **Suggestions** list on the Parlume page |
 | Spend per session | The Parlume page |
 
 The notes take Parlume's records into account: a change that failed or could not be confirmed is not reported as done. Parlume does not create a profile of the people in the meeting. After the session ends, Fabric asks the meeting provider to delete its copy of the bot's data.
@@ -446,8 +471,9 @@ Parlume costs money only while it is in a meeting or waiting in a lobby. Prices 
 | Parlume says it can't write in the chat | For ordinary meeting chat, the meeting may give anonymous guests no chat; Parlume speaks its answers instead, and a received chat message restores that path. For a channel thread, check the live card warning, the connected Microsoft account's channel access and its read/send consent. |
 | Nothing from Parlume appears in the chat | Check the request in the Requests tab for a note that its post never appeared. For a channel warning, reconnect the Microsoft account with channel permissions or use the full calendar join link when a numeric short link could not be resolved. |
 | A change wasn't made | Read-only meetings refuse every change. In an Actions meeting, look for a held change in the chat and reply `go P<n>`, or check the request's action status. |
-| No suggestions appear | Chat suggestions may be off for this invitation or series, the chat may be unavailable, or there has not been enough new conversation. Parlume posts at most one suggestion every two minutes and ten an hour. |
-| No "Since last time" recap | The meeting must belong to a linked series: an automatic join, or an invitation with the series' own join link. Check that Chat suggestions is on, and that the series had a meeting in the last 90 days with Parlume's notes or a synced transcript. Parlume also stays quiet when it finds nothing worth recapping. |
+| No suggestions appear | Suggestions and recap may be off for this invitation or series, the chat may be unavailable, or there has not been enough new conversation. Parlume offers at most one suggestion every two minutes and ten an hour, and only when it has something specific to add. |
+| No suggestions in the chat, but the Parlume page lists them | The invitation or series uses **Only your team (Parlume page)**. Choose **Everyone in the meeting (chat)** for the next invitation, or change the series' setting for its next meeting. |
+| No "Since last time" recap | The meeting must belong to a linked series: an automatic join, or an invitation with the series' own join link. Check that Suggestions and recap is on, and, for a team-only meeting, look in the Parlume page's **Suggestions** list, and that the series had a meeting in the last 90 days with Parlume's notes or a synced transcript. Parlume also stays quiet when it finds nothing worth recapping. |
 | Parlume did not join a meeting of an auto-join series | Read the notice under the series in **Configure meetings**. The meeting must be on the enabler's Teams calendar, with the series' join link, and must not have started more than ten minutes before Parlume found it. Auto-join also skips a project in Read-only mode and a series whose syncing is stopped. |
 | No **Parlume joins automatically** switch in Configure meetings | The Meeting Digest's upcoming meetings are not enabled for your organization. Ask your Fabric operator. |
 | Parlume uses the standard voice | Your organization has no Azure AI Foundry or OpenAI key on the Organization tab of AI Providers, the Azure resource has no deployment with the name set under **Azure realtime deployment**, or the realtime session could not start or reconnect. **Test realtime voice** shows each provider's answer. |

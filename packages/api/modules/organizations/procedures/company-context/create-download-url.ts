@@ -41,7 +41,7 @@ async function companySourceText(
 	const pages = await db.companyContextUrlPage.findMany({
 		where: { parentSourceId: source.id, organizationId },
 		select: { pageUrl: true, pageTitle: true, content: true },
-		orderBy: { pageUrl: "asc" },
+		orderBy: [{ pageUrl: "asc" }, { id: "asc" }],
 	});
 	return pages.length > 0 ? joinCrawledPagesMarkdown(pages) : source.content;
 }

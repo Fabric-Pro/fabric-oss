@@ -18,6 +18,7 @@ import {
 	ListTodoIcon,
 	Loader2Icon,
 	MegaphoneIcon,
+	ScrollTextIcon,
 	Share2Icon,
 	TerminalIcon,
 	UserPlusIcon,
@@ -121,6 +122,11 @@ function resolveIcon(notification: {
 	}
 	if (notification.type === "CHATGPT_PLAN_WORK_STOPPED") {
 		return AlertCircleIcon;
+	}
+	// A new Coding Instructions version: PROJECT's flag would read as a
+	// status change, and this row is about the files agents now read.
+	if (notification.type === "CODING_INSTRUCTIONS_PUBLISHED") {
+		return ScrollTextIcon;
 	}
 	// Two types reuse the MENTION category, for its opt-out toggle rather than
 	// for its meaning. They therefore DO land in the Mentions tab, which filters

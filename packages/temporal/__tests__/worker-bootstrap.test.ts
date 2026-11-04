@@ -289,18 +289,18 @@ describe("activity slots and the database pool", () => {
 	});
 
 	it("sizes the pool at half the slots that can touch the database, rounded up", () => {
-		expect(total()).toBe(114);
+		expect(total()).toBe(116);
 		// The assistant-run slots never open a database connection, so they
 		// add no pool connections.
 		const databaseSlots = total() - worker.ACTIVITY_SLOTS.aguiRuns;
-		expect(databaseSlots).toBe(104);
+		expect(databaseSlots).toBe(106);
 		expect(
 			worker.databaseSlotTotal(worker.selectTaskQueueWorkers({})),
 		).toBe(databaseSlots);
 		expect(process.env.DATABASE_POOL_MAX).toBe(
 			String(Math.ceil(databaseSlots / 2)),
 		);
-		expect(process.env.DATABASE_POOL_MAX).toBe("52");
+		expect(process.env.DATABASE_POOL_MAX).toBe("53");
 	});
 
 	it("gives every slot entry to exactly one created worker", () => {
@@ -318,7 +318,7 @@ describe("task queue selection (Fizzy #2730)", () => {
 		Object.values(worker.ACTIVITY_SLOTS).reduce((sum, n) => sum + n, 0);
 
 	it("polls every queue when no selection is set", () => {
-		expect(createdQueues()).toHaveLength(21);
+		expect(createdQueues()).toHaveLength(22);
 		expect(
 			worker.selectTaskQueueWorkers({}).map((queue) => queue.taskQueue),
 		).toEqual(createdQueues());

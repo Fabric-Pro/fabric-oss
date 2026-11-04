@@ -31,9 +31,11 @@ import {
 } from "../external-api/middleware/api-key-auth";
 import { externalApiRateLimit } from "../external-api/middleware/api-rate-limit";
 import type { ExternalApiVariables } from "../external-api/types";
+import { registerAgentInstanceRoutes } from "./agent-instances";
 import { registerAgentRoutes } from "./agents";
 import { registerChannelRoutes } from "./channels";
 import { registerChatRoutes } from "./chats";
+import { registerContextQualityRoutes } from "./context-quality";
 import { registerContextRoutes } from "./contexts";
 import { registerDocumentRoutes } from "./documents";
 import { registerFeatureRoutes } from "./features";
@@ -85,6 +87,7 @@ const CLI_SCOPES = [
 	"chats:write",
 	"workspaces:read",
 	"agents:read",
+	"agents:schedule", // Explicit permission to manage recurring agent execution
 	"agents:execute",
 	"agents:stream",
 	"mcp:read",
@@ -438,6 +441,7 @@ export function createPublicV1Routes() {
 	registerWorkflowRoutes(app);
 	registerPromptRoutes(app);
 	registerAgentRoutes(app);
+	registerAgentInstanceRoutes(app);
 	registerSkillRoutes(app);
 	registerMcpRoutes(app);
 	registerFrameRoutes(app);
@@ -450,6 +454,7 @@ export function createPublicV1Routes() {
 	registerInstructionRoutes(app);
 	registerInstructionCheckoutRoutes(app);
 	registerContextRoutes(app);
+	registerContextQualityRoutes(app);
 	registerMemoryWriteRoutes(app);
 	registerKnowledgeHubRoutes(app);
 	registerProjectCodeRepositoryRoutes(app);

@@ -1,6 +1,6 @@
 ---
 title: Workflow-Builder
-description: Automatisierungen auf einem visuellen Canvas bauen — Trigger, KI, Bedingungen und 27 angebundene Dienste, dauerhaft ausgeführt.
+description: Automatisierungen auf einem visuellen Canvas bauen — Trigger, KI, Bedingungen und angebundene Dienste, dauerhaft ausgeführt.
 audience: Organisationsmitglieder, die Workflows erstellen und pflegen
 owner: Platform team
 ---
@@ -37,8 +37,7 @@ flowchart LR
 
     **Workflows** in der Seitenleiste, dann **New Workflow**. Der Workflow wird sofort als
     `Untitled Workflow` angelegt und öffnet sich auf einem leeren Canvas; umbenennen
-    können Sie ihn in der Kopfzeile. Ein Workflow gehört Ihnen, innerhalb des Kontos oder
-    der Organisation, in der Sie ihn angelegt haben.
+    können Sie ihn in der Kopfzeile. Ein Workflow gehört Ihnen, innerhalb Ihrer Organisation. Navigator, Canvas, Einstellungen und Laufverlauf gehören zum selben Studio.
   </Step>
 
   <Step>
@@ -63,9 +62,7 @@ flowchart LR
     ### Aktionsknoten hinzufügen und verbinden
 
     **Add a Step** auf dem leeren Canvas und danach **+** in der Werkzeugleiste öffnen den
-    Tab **Actions**; die Wahl einer Aktion füllt den neuen Knoten. Das Hinzufügen
-    verbindet ihn nicht — ziehen Sie dafür zwischen den Anschlusspunkten zweier Knoten,
-    denn ein Knoten, in den nichts hineinführt, läuft nie.
+    Tab **Add step**; die Wahl einer Aktion füllt den neuen Knoten. Neue Schritte behalten vorhandene Verbindungen. Mit **+** auf einer Kante fügen Sie einen Schritt dazwischen ein; unter dem letzten Schritt hängen Sie einen an.
 
     Ein Knoten läuft, sobald jeder direkt eingehende Knoten sein Ergebnis geliefert hat,
     und Knoten, die gleichzeitig bereit sind, laufen gleichzeitig. Die Ausnahme ist
@@ -78,24 +75,45 @@ flowchart LR
 
     Ein Klick auf einen Knoten öffnet sein Panel. Die Felder unterscheiden sich je Knoten
     — **Generate Text** erwartet einen Prompt und ein Modell, **Send Slack Message** einen
-    Kanal und eine Nachricht. Jedes Textfeld akzeptiert Referenzen auf frühere Knoten.
+    Kanal und eine Nachricht. Template-Felder akzeptieren Referenzen auf frühere Knoten. Dynamische SQL-Werte werden als benannte Parameter gebunden.
   </Step>
 
   <Step>
     ### Aus dem Editor ausführen
 
-    **Run** führt den Graphen sofort aus, einschließlich ungespeicherter Änderungen, und
-    zeigt pro Knoten Status, Eingabe, Ausgabe und Dauer im Ausführungspanel. Das
-    funktioniert auch im Entwurf — zum Testen ist keine Veröffentlichung nötig.
+    **Run** speichert zuerst den angezeigten Graphen und startet dann den Lauf. Status, Eingabe, Ausgabe und Dauer erscheinen im Ausführungspanel. Gewöhnliche Integrationsschritte lassen sich als Entwurf testen. Skript-, Plattform- und Workspace-Datenschritte benötigen eine passende veröffentlichte Version.
   </Step>
 
   <Step>
     ### Veröffentlichen
 
-    Das Veröffentlichen legt den Graphen als nummerierte Version ab und öffnet die
+    **Publish** speichert den angezeigten Graphen vor dem Öffnen des Dialogs. Ein fehlgeschlagener Speichervorgang verhindert die Veröffentlichung. Das Veröffentlichen legt den Graphen als nummerierte Version ab und öffnet die
     externen Trigger: Der Webhook nimmt Anfragen an, der Zeitplan beginnt zu feuern.
   </Step>
 </Steps>
+
+## Databricks SQL und KI
+
+Fügen Sie **Run Databricks SQL** oder **Databricks AI query** über **Add step** hinzu.
+Konfigurieren Sie **Databricks SQL & AI** unter Connections mit Workspace-URL und
+OAuth-M2M-Service-Principal. Wählen Sie Ihre eigene oder eine ausdrücklich mit der
+Organisation geteilte Verbindung und ein vorhandenes SQL-Warehouse. Vector Search und
+KI-Modellanbieter behalten separate Zugangsdaten.
+
+SQL verwendet Unity-Catalog-Namen wie `catalog.schema.table`. Dynamische Werte binden
+Sie als benannte Parameter, zum Beispiel `:status` mit `{{Previous step.status}}` als
+Parameterwert. SQL-Quelltext wird nicht durch Template-Werte ersetzt. Nicht auflösbare
+Referenzen lassen den Schritt fehlschlagen. Die KI-Aktion ruft `ai_query` genau einmal
+mit höchstens 8.192 Eingabezeichen und 512 Ausgabetokens auf. Sie benötigt ein kompatibles
+Warehouse und die Berechtigung für den Modellendpunkt; Classic SQL wird nicht unterstützt.
+
+Fabric prüft vor dem Absenden, ob das Warehouse läuft. Verwalten Sie Compute in
+Databricks. Ergebnisse sind auf 1.000 Zeilen und 1 MB begrenzt; nach 90 Sekunden wird
+abgebrochen. Bei einer Unterbrechung sendet Fabric einen Abbruch an Databricks. Nicht
+bestätigte Übermittlungen werden nicht automatisch wiederholt. Prüfen Sie vorher den
+Databricks-Abfrageverlauf. SQL und KI können Databricks-Kosten verursachen. Zeitpläne
+und Laufverlauf bleiben in Fabric.
+
 
 ## Trigger
 
@@ -404,12 +422,8 @@ Das Veröffentlichen eines Workflows:
 2. Erzeugt Webhook-URL und Signaturgeheimnis, falls Sie den Webhook-Trigger aktivieren
 3. Registriert den Zeitplan, falls die Art des Trigger-Knotens **Schedule** ist
 
-<Callout type="warning">
-Das Veröffentlichen steuert, **ob** externe Trigger angenommen werden — nicht, **welche**
-Version sie ausführen. Webhook- und Zeitplan-Läufe führen immer den aktuell gespeicherten
-Stand aus. Eine Änderung, die Sie an einem veröffentlichten Workflow speichern, wirkt also
-schon beim nächsten Lauf; einen zweiten Veröffentlichungsschritt gibt es nicht. Nutzen Sie
-Rollback, wenn Sie auf einen früheren Stand zurück müssen.
+<Callout type="info">
+Zeitplan-Läufe verwenden die unveränderliche veröffentlichte Version. Veröffentlichen Sie erneut, damit ein Zeitplan Ihre Änderungen übernimmt. Workflows ohne Skript-, native Plattform- oder Workspace-Datenschritte verwenden bei Editor- und Webhook-Läufen den aktuellen gespeicherten Entwurf. Die genannten Schritte benötigen eine passende veröffentlichte Version.
 </Callout>
 
 **Version History** listet jede veröffentlichte Version. Ein Rollback stellt den Graphen

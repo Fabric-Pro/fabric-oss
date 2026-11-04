@@ -11,10 +11,12 @@ import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { badRequest, notFound, ok, resolveV1Context } from "./helpers";
+import { registerWorkspaceDocumentContentRoutes } from "./workspace-document-content";
 
 export function registerWorkspaceRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
 ) {
+	registerWorkspaceDocumentContentRoutes(app);
 	app.get("/workspaces", requireScope("workspaces:read"), async (c) => {
 		const apiCtx = c.get("externalApiContext");
 		const ctx = await resolveV1Context(
@@ -71,10 +73,14 @@ export function registerWorkspaceRoutes(
 		}
 
 		const id = c.req.param("id");
+		if (!id) return c.json(notFound("Workspace"), 404);
+		const access = await getWorkspaceAccessContext(id, ctx.userId);
+		if (!access || access.organizationId !== (ctx.organizationId ?? null)) {
+			return c.json(notFound("Workspace"), 404);
+		}
 		const ws = await db.workspace.findFirst({
 			where: {
 				id,
-				userId: ctx.userId,
 				organizationId: ctx.organizationId ?? null,
 			},
 			include: {

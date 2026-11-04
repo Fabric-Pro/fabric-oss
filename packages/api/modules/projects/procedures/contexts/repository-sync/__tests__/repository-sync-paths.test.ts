@@ -126,6 +126,16 @@ describe("the length limit", () => {
 			code: "INVALID_PATH",
 		});
 	});
+
+	it("names a 513-character path as too long, not as misspelled", () => {
+		const path = `docs/${"x".repeat(508)}`;
+		expect(path.length).toBe(513);
+		expect(contextSyncPathSelectable(path)).toEqual({
+			ok: false,
+			code: "INVALID_PATH",
+			message: "A path is at most 512 characters long.",
+		});
+	});
 });
 
 describe("the shared spelling predicate agrees with normalizeContextSourcePath (Fizzy #2750)", () => {
@@ -159,7 +169,7 @@ describe("the shared spelling predicate agrees with normalizeContextSourcePath (
 		["a KELVIN SIGN, which NFC rewrites", "docs/\u212Aey.md"],
 		["exactly the storage-key bound", "d".repeat(512)],
 		["one past the storage-key bound", "d".repeat(513)],
-		["within configure's bound, past the storage key's", "d".repeat(1024)],
+		["well past the storage-key bound", "d".repeat(1024)],
 		["over configure's bound", `docs/${"x".repeat(1024)}`],
 		["a leading ./", "./docs"],
 		["a lone .", "."],
@@ -232,13 +242,14 @@ describe("the shared spelling predicate agrees with normalizeContextSourcePath (
 		expect(compared).toBe(20_000);
 	});
 
-	it("says too-long only past configure's own bound, and leaves the whole repository to the caller", () => {
-		expect(contextSyncPathSpellingProblem("d".repeat(1025))).toBe(
+	it("says too-long past the storage key's bound, and leaves the whole repository to the caller", () => {
+		expect(contextSyncPathSpellingProblem("d".repeat(513))).toBe(
 			"too-long",
 		);
 		expect(contextSyncPathSpellingProblem("d".repeat(1024))).toBe(
-			"not-canonical",
+			"too-long",
 		);
+		expect(contextSyncPathSpellingProblem("d".repeat(512))).toBeNull();
 		expect(contextSyncPathSpellingProblem("")).toBeNull();
 	});
 });

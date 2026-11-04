@@ -1,10 +1,18 @@
 "use client";
 
+import {
+	getProjectReportSetupReason,
+	hasProjectKnowledgeSource,
+	type ReportEvidenceConfig,
+	reportEvidenceConfigSchema,
+} from "@repo/database/prisma/queries/lib/report-evidence";
 import { useOrganizationContext } from "@saas/organizations/hooks";
 import { useInstanceDataSourceSetup } from "@saas/reports/hooks/use-instance-data-source-setup";
+import { withProjectContext } from "@saas/reports/lib/project-report-suite";
 import {
 	parseTemplateDefinition,
 	parseTemplateWorkspaces,
+	promptOverrideFields,
 } from "@saas/reports/lib/report-template-definition";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -39,23 +47,29 @@ import {
 	InstanceContextFields,
 	InstanceDataSourcePicker,
 } from "./InstanceDataSourceFields";
+import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
+import { ReportTemplatePreview } from "./ReportTemplatePreview";
 
 type Props = {
 	templateId: string;
 	organizationId?: string | null;
 	basePath?: string;
+	/** The project whose Reports tab the new report belongs to. */
+	projectId?: string;
 };
 
 export function CreateInstanceForm({
 	templateId,
 	organizationId: propOrgId,
 	basePath = "/app/report-templates",
+	projectId: requestedProjectId,
 }: Props) {
 	const router = useRouter();
 	const queryClient = useQueryClient();
 	const { organizationId: contextOrgId, loaded: orgContextLoaded } =
 		useOrganizationContext();
 	const reportSuite = useFeatureFlag("REPORT_SUITE_V2");
+	const projectId = reportSuite ? requestedProjectId : undefined;
 
 	// Use prop if explicitly provided, otherwise fall back to context
 	// IMPORTANT: Must be string | null, never undefined (undefined causes session fallback)
@@ -73,8 +87,9 @@ export function CreateInstanceForm({
 
 	const [name, setName] = useState("");
 	const [description, setDescription] = useState("");
+	const [reporting, setReporting] = useState<ReportEvidenceConfig>();
 	const [selectedWorkspaces, setSelectedWorkspaces] = useState<string[]>([]);
-	// Optional prompt override - pre-populated from template
+	// Shown pre-filled with the template's prompt; saved only once edited.
 	const [promptOverride, setPromptOverride] = useState("");
 	// Max iterations for agentic data gathering
 	const [maxIterations, setMaxIterations] = useState<number | undefined>(
@@ -90,6 +105,19 @@ export function CreateInstanceForm({
 		[template?.connections],
 	);
 	const { dataSources } = definition;
+	const requiresProjectKnowledge = hasProjectKnowledgeSource({ dataSources });
+
+	useEffect(() => {
+		if (requiresProjectKnowledge && !reporting) {
+			setReporting(
+				reportEvidenceConfigSchema.parse({
+					version: 1,
+					period: "weekly",
+					...(projectId ? { projectId } : {}),
+				}),
+			);
+		}
+	}, [requiresProjectKnowledge, reporting, projectId]);
 
 	// Initialize form when template loads
 	useEffect(() => {
@@ -107,6 +135,7 @@ export function CreateInstanceForm({
 		enabled: orgContextLoaded,
 		autoDetect: reportSuite,
 		suggestDefaults: reportSuite,
+		projectId,
 	});
 
 	// Fetch user's workspaces
@@ -118,10 +147,25 @@ export function CreateInstanceForm({
 	});
 	const userWorkspaces = workspacesData?.workspaces ?? [];
 
+	const projectSetupReason = getProjectReportSetupReason(
+		reporting ? { reporting } : undefined,
+		{ dataSources },
+		{
+			mcpConfigs: Object.values(setup.bindings)
+				.map((binding) => binding.mcpConfigId)
+				.filter(Boolean),
+			workspaces: selectedWorkspaces,
+		},
+	);
+
 	const createMutation = useMutation(
 		orpc.reports.instances.create.mutationOptions({
 			onSuccess: (data) => {
-				toast.success("Instance created successfully");
+				toast.success(
+					projectSetupReason
+						? "Project report draft created; source setup required"
+						: "Instance created successfully",
+				);
 				queryClient.invalidateQueries({
 					queryKey: ["reports", "instances"],
 				});
@@ -134,30 +178,38 @@ export function CreateInstanceForm({
 	);
 
 	const handleCreate = () => {
+		if (requiresProjectKnowledge && !reporting?.projectId) {
+			toast.error("Choose a project for Project knowledge");
+			return;
+		}
 		if (!name.trim()) {
 			toast.error("Please enter a name for the instance");
 			return;
 		}
 
-		if (!setup.allConfigured) {
+		if (!setup.allConfigured && !reporting?.projectId) {
 			toast.error(
 				"Please configure MCP servers and fill required context fields",
 			);
 			return;
 		}
 
-		const { mcpConfigs, mcpBindings, context } = setup.buildConnections();
+		const { mcpConfigs, mcpBindings, resourceBindings, context } =
+			setup.buildConnections();
 
 		createMutation.mutate({
 			templateId,
 			name: name.trim(),
 			description: description.trim() || undefined,
 			organizationId,
+			projectId,
+			reporting,
 			connections: {
 				mcpConfigs,
 				mcpBindings,
+				resourceBindings,
 				context,
-				promptOverride: promptOverride.trim() || undefined,
+				...promptOverrideFields(promptOverride, definition.userPrompt),
 				maxIterations: maxIterations || undefined,
 				workflows: [],
 				agents: [],
@@ -211,6 +263,14 @@ export function CreateInstanceForm({
 			<div className="grid gap-6 lg:grid-cols-3">
 				{/* Main Form */}
 				<div className="lg:col-span-2 space-y-6">
+					{projectId && (
+						<ReportTemplatePreview
+							templateId={templateId}
+							projectId={projectId}
+							organizationId={organizationId}
+						/>
+					)}
+
 					{/* Instance Name */}
 					<Card>
 						<CardContent className="pt-6 space-y-4">
@@ -257,8 +317,8 @@ export function CreateInstanceForm({
 										Data Source Configuration
 									</h3>
 									<p className="text-sm text-muted-foreground">
-										Select your MCP server for each data
-										source.
+										Connect external sources, or use shared
+										project knowledge.
 									</p>
 								</div>
 								<InstanceDataSourcePicker
@@ -352,6 +412,21 @@ export function CreateInstanceForm({
 						</Card>
 					)}
 
+					<Card>
+						<CardContent className="pt-6 space-y-4">
+							<h3 className="font-medium">
+								Reporting period and audience
+							</h3>
+							<ReportEvidenceSettings
+								value={reporting}
+								sourceDefinition={{ dataSources }}
+								requireProject={requiresProjectKnowledge}
+								onChange={setReporting}
+								organizationId={organizationId}
+							/>
+						</CardContent>
+					</Card>
+
 					{/* Workspaces */}
 					{workspaces.enabled && userWorkspaces.length > 0 && (
 						<Card>
@@ -359,7 +434,7 @@ export function CreateInstanceForm({
 								<div>
 									<h3 className="font-medium flex items-center gap-2">
 										<FolderOpenIcon className="h-4 w-4" />
-										Document Libraries
+										Document Workspaces
 									</h3>
 									<p className="text-sm text-muted-foreground">
 										{workspaces.description ||
@@ -376,7 +451,7 @@ export function CreateInstanceForm({
 									}
 								>
 									<SelectTrigger>
-										<SelectValue placeholder="Select a library (optional)..." />
+										<SelectValue placeholder="Select a workspace (optional)..." />
 									</SelectTrigger>
 									<SelectContent>
 										{userWorkspaces.map((ws) => (
@@ -404,7 +479,10 @@ export function CreateInstanceForm({
 									onClick={handleCreate}
 									disabled={
 										createMutation.isPending ||
-										!setup.allConfigured ||
+										(requiresProjectKnowledge &&
+											!reporting?.projectId) ||
+										(!setup.allConfigured &&
+											!reporting?.projectId) ||
 										!name.trim()
 									}
 									className="w-full"
@@ -417,7 +495,11 @@ export function CreateInstanceForm({
 									) : (
 										<>
 											<PlusIcon className="mr-2 h-4 w-4" />
-											Create Instance
+											{projectSetupReason
+												? "Create draft"
+												: reporting?.projectId
+													? "Create report"
+													: "Create Instance"}
 										</>
 									)}
 								</Button>
@@ -426,7 +508,12 @@ export function CreateInstanceForm({
 									className="w-full"
 									asChild
 								>
-									<Link href={`${basePath}/${templateId}`}>
+									<Link
+										href={withProjectContext(
+											`${basePath}/${templateId}`,
+											projectId,
+										)}
+									>
 										<ArrowLeftIcon className="mr-2 h-4 w-4" />
 										Back to Template
 									</Link>

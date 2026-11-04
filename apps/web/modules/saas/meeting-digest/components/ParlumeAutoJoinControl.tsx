@@ -1,6 +1,7 @@
 "use client";
 
 import { ParlumeModePicker } from "@saas/parlume/components/ParlumeModePicker";
+import { ParlumeSuggestionAudiencePicker } from "@saas/parlume/components/ParlumeSuggestionAudiencePicker";
 import { ParlumeSuggestionsToggle } from "@saas/parlume/components/ParlumeSuggestionsToggle";
 import { useSettingsReturnUrl } from "@saas/settings/hooks/use-settings-return-url";
 import { Label } from "@ui/components/label";
@@ -48,6 +49,7 @@ const DEFAULT_STATE: ParlumeAutoJoinState = {
 	enabled: false,
 	toolsReadOnly: true,
 	suggestionsEnabled: true,
+	suggestionAudience: "MEETING",
 	enabledBy: null,
 	error: null,
 	errorAt: null,
@@ -56,7 +58,7 @@ const DEFAULT_STATE: ParlumeAutoJoinState = {
 
 /**
  * One linked series' "Parlume joins automatically" switch and, while it is
- * on, the mode and chat-suggestion choices its joins use.
+ * on, the mode, chat-suggestion and suggestion-audience choices its joins use.
  */
 export function ParlumeAutoJoinControl({
 	linkedMeetingId,
@@ -82,6 +84,7 @@ export function ParlumeAutoJoinControl({
 		enabled: current.enabled,
 		toolsReadOnly: current.toolsReadOnly,
 		suggestionsEnabled: current.suggestionsEnabled,
+		suggestionAudience: current.suggestionAudience,
 	};
 	const fix = current.error
 		? autoJoinFixLink(current.error, settingsBasePath)
@@ -144,6 +147,21 @@ export function ParlumeAutoJoinControl({
 						disabled={pending}
 						idPrefix={idPrefix}
 					/>
+					{current.suggestionsEnabled && (
+						<div className="sm:pl-12">
+							<ParlumeSuggestionAudiencePicker
+								audience={current.suggestionAudience}
+								onChange={(suggestionAudience) =>
+									onChange({
+										...settings,
+										suggestionAudience,
+									})
+								}
+								disabled={pending}
+								idPrefix={idPrefix}
+							/>
+						</div>
+					)}
 				</div>
 			)}
 

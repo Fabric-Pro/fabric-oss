@@ -42,6 +42,33 @@ active run between servers.
 
 ## Configure a dedicated server
 
+### Local development from the Fabric Agents checkout
+
+Use the current Fabric Agents repository with its dependencies installed and Web UI assets built. The Portal CLI command `fabric agents desktop` prints a `fabricagents://` link; it does not start the desktop application or a server. There is no published `@fabricorg/agent-server` package to launch with the previously displayed `npx` command.
+
+For an isolated development server, run the following from the Fabric Agents repository root:
+
+```bash
+umask 077
+export FABRIC_CONFIG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/fabric-agents/portal-dev"
+mkdir -p "$FABRIC_CONFIG_DIR/workspaces"
+export FABRIC_SKIP_CREDENTIALS_MIGRATION=1
+export FABRIC_SERVER_QUIET_TOKEN=1
+export FABRIC_RPC_HOST=127.0.0.1
+export FABRIC_RPC_PORT=9100
+export FABRIC_SERVER_TOKEN="$(openssl rand -hex 32)"
+export BACKGROUND_AGENTS_INTERNAL_SECRET="$(openssl rand -hex 32)"
+export FABRIC_WEBUI_DIR="$PWD/apps/webui/dist"
+export FABRIC_BUNDLED_ASSETS_ROOT="$PWD/apps/electron"
+bun run server:start
+```
+
+Build session tools with `bun run server:build:subprocess` before executing coding sessions. Build the Web UI first with `bun run webui:build` if `apps/webui/dist` is absent. Keep the two generated secrets private and retain them for the lifetime of the profile. Open the configured HTTP endpoint for the Web UI and use its own authentication. Register that endpoint in the Portal with the execution service secret, then configure a workspace, Git access, and a supported coding backend on that host. Successful `/health` and Web UI responses prove startup, not coding readiness or a completed assignment.
+
+The optional embedded local board is a separate Fabric Kanban runtime at `localhost:3484`. Starting Fabric Agents Desktop or the server above does not start that board. Use a published Roadmap feature's **Start work** action to assign work to a registered Fabric Agents server regardless of the optional board's availability.
+
+### Connect the Portal and worker
+
 Set `BACKGROUND_AGENTS_URL` to the trusted HTTPS execution endpoint (or an owned
 loopback SSH tunnel), and configure a dedicated service HMAC secret in
 `BACKGROUND_AGENTS_INTERNAL_SECRET` on the application worker/API and server.

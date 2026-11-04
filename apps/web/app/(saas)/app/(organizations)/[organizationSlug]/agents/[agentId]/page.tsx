@@ -1,7 +1,7 @@
 "use client";
 
 import { isRetiredSystemAgent } from "@repo/agent-types";
-import { AgentInstanceDetail } from "@saas/agent-templates/components/AgentInstanceDetail";
+import { AgentDetailsRedirect } from "@saas/agents/components/AgentDetailsRedirect";
 import { RetiredAgentNotice } from "@saas/agents/components/RetiredAgentNotice";
 import {
 	getAgentSelectionSummary,
@@ -84,9 +84,15 @@ export default function OrganizationAgentDetailsPage() {
 	const params = useParams();
 	const router = useRouter();
 	const agentId = params.agentId as string;
-	const { basePath } = useOrganizationContext();
+	const { basePath, organizationId } = useOrganizationContext();
 
 	const agentsBasePath = `${basePath}/agents`;
+
+	// CUIDs are 25-char lowercase alphanumeric — these are template instance IDs.
+	// Registered agents use slug-format agentIds (e.g. "deep-researcher", "prompt_enhancer").
+	// Skip the registry lookup entirely for instance IDs to avoid a 404 console error.
+	const isInstanceId =
+		agentId.length >= 20 && /^[a-z][a-z0-9]+$/.test(agentId);
 
 	// Fetch agent details from registry
 	const {
@@ -103,6 +109,7 @@ export default function OrganizationAgentDetailsPage() {
 			}
 		},
 		retry: false,
+		enabled: !isInstanceId,
 	});
 
 	// Parse metadata for additional info
@@ -270,6 +277,14 @@ export default function OrganizationAgentDetailsPage() {
 		router.push(`${agentsBasePath}/${agentId}/${routingInfo.route}`);
 	};
 
+	if (!organizationId) return <Spinner />;
+
+	// Render instance view immediately — no registry query needed
+	if (isInstanceId) {
+		return (
+			<AgentDetailsRedirect instanceId={agentId} basePath={basePath} />
+		);
+	}
 	if (agent && isRetiredSystemAgent(agent)) {
 		return <RetiredAgentNotice basePath={basePath} />;
 	}
@@ -285,7 +300,9 @@ export default function OrganizationAgentDetailsPage() {
 	}
 
 	if (error || !agent) {
-		return <AgentInstanceDetail instanceId={agentId} basePath={basePath} />;
+		return (
+			<AgentDetailsRedirect instanceId={agentId} basePath={basePath} />
+		);
 	}
 
 	const statusInfo = getStatusInfo();

@@ -1,0 +1,35 @@
+{
+	"legacy": {
+		"workflowType": "scheduleTriggerWorkflow",
+		"workflowId": "example-schedule-a15234db-e926-4321-812a-9208cc23a313-legacy",
+		"firstExecutionRunId": "01a1a2f7-273b-74c9-a5f2-e486ee71d54c",
+		"eventCount": 11,
+		"sha256": "c3b24f78e864bf96df74b6e8a9e43c51aa165784c534f105309143b94ff6602e",
+		"activityAttempts": 2,
+		"baselineSourceHash": "a13155ae201d3799740a1edaf4797ab54ede752841c89cce0c0a66918a1e230c",
+		"recordedSourceHash": "a13155ae201d3799740a1edaf4797ab54ede752841c89cce0c0a66918a1e230c"
+	},
+	"managed": {
+		"workflowType": "managedAgentRunScheduleWorkflow",
+		"workflowId": "example-schedule-a15234db-e926-4321-812a-9208cc23a313-managed",
+		"firstExecutionRunId": "01a1a2f7-2c66-746c-8977-754645f66856",
+		"eventCount": 11,
+		"sha256": "704f54b4569363fcaa6ad715eddcf134c1a0945357664e709da7e9701b60efff",
+		"activityAttempts": 2,
+		"baselineSourceHash": "a13155ae201d3799740a1edaf4797ab54ede752841c89cce0c0a66918a1e230c",
+		"recordedSourceHash": "94c8ade77d1035364c7ce0d6c73dbc1bff18b756ba0ec4653d2b7bd620b499cc"
+	},
+	"managed-fenced": {
+		"workflowType": "managedAgentRunScheduleWorkflow",
+		"workflowId": "example-schedule-mixed-ca71e38f-5e47-4087-a128-dc4498bdc514",
+		"firstExecutionRunId": "01a1a321-0e26-79d1-9085-c31c8352317c",
+		"activityAttempts": 2,
+		"legacyHandlerCalls": 0,
+		"managedHandlerCalls": 1,
+		"observedUnregisteredActivity": true,
+		"eventCount": 13,
+		"sha256": "8b195ee6f9e84a9c37a69ee8a6e2c2d10b319beb1a048df8e2600fa4694f6385",
+		"baselineSourceHash": "a13155ae201d3799740a1edaf4797ab54ede752841c89cce0c0a66918a1e230c",
+		"recordedSourceHash": "d76d6d26cecb686aaaff3de33f68ded325bf59c096b82a5bd8e924fde0285b60"
+	}
+}

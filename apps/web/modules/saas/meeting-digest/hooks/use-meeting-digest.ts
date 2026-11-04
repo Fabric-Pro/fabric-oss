@@ -1,5 +1,6 @@
 "use client";
 
+import type { ParlumeSuggestionAudience } from "@repo/api/modules/projects/lib/parlume-suggestion-audience";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { endOfMonth, format, startOfMonth } from "date-fns";
@@ -15,6 +16,7 @@ export interface ParlumeAutoJoinSettings {
 	enabled: boolean;
 	toolsReadOnly: boolean;
 	suggestionsEnabled: boolean;
+	suggestionAudience: ParlumeSuggestionAudience;
 }
 
 export interface ConfigMeeting {

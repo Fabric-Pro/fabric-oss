@@ -13,7 +13,6 @@
  * - Other agent-based workflows
  */
 
-// Agent execution with tool loops
 export {
 	executeAgentTurn,
 	loadMcpToolsForAgent,
@@ -32,6 +31,11 @@ export {
 	type InstanceConfig,
 	type TemplateConfig,
 } from "./context-builder";
+// Agent execution with tool loops
+export {
+	executeSavedAgentModelStep,
+	executeSavedAgentToolStep,
+} from "./durable-steps";
 // Knowledge fetching (RAG)
 export {
 	buildKnowledgeContextPrompt,

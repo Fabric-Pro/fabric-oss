@@ -33,6 +33,7 @@ import {
 } from "@repo/integrations/gitlab";
 import { triggerMcpToolIngestion } from "@repo/temporal";
 import { decryptApiKey, encryptApiKey, hashApiKey } from "@repo/utils";
+import { GITHUB_OAUTH_SCOPES } from "@repo/utils/github-oauth-scopes";
 import {
 	classifyOAuthErrorCode,
 	sanitizeOAuthErrorText,
@@ -206,7 +207,7 @@ const KNOWN_DEFAULT_SCOPES: Array<{
 	},
 	{
 		hostname: "api.githubcopilot.com",
-		scopes: ["repo", "read:org", "read:user"],
+		scopes: [...GITHUB_OAUTH_SCOPES],
 	},
 	{
 		serverKey: "google-drive",

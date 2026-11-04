@@ -143,6 +143,10 @@ export const router = publicProcedure
 			"projectsRouter",
 			() => import("../modules/projects/router"),
 		),
+		contextQuality: lazyRouter(
+			"contextQualityRouter",
+			() => import("../modules/context-quality/router"),
+		),
 		capabilities: lazyRouter(
 			"capabilitiesRouter",
 			() => import("../modules/capabilities/router"),

@@ -10,6 +10,7 @@
  */
 import {
 	adapterError,
+	azureDevOpsRefusalMessage,
 	LOOKUP_TIMEOUT_MS,
 	MAX_PAGES,
 	OPEN_TIMEOUT_MS,
@@ -315,6 +316,7 @@ export const azureDevOps: InstructionPullRequestAdapter = {
 				description: azureDevOpsDescription(t.body),
 			},
 			timeoutMs: OPEN_TIMEOUT_MS,
+			refusalMessage: azureDevOpsRefusalMessage,
 			// TF401179: an active pull request for this source and target exists.
 			isDuplicate: (status, text) =>
 				status === 409 && /TF401179/.test(text),
@@ -346,6 +348,12 @@ export const azureDevOps: InstructionPullRequestAdapter = {
 			throw adapterError("close", "unknown");
 		}
 		return observe(t, pull, "close");
+	},
+
+	async merge() {
+		// Azure DevOps completes a pull request asynchronously, behind branch
+		// policies; Fabric does not drive that yet. The person merges there.
+		return { kind: "REFUSED", reason: "unsupported" };
 	},
 
 	pullRequestHeadRef() {

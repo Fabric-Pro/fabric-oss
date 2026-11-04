@@ -38,9 +38,10 @@ import type { AiJobKey } from "@repo/ai";
 import {
 	createDecisionCapture,
 	experimental_decide,
-	generateObject,
+	generateText,
 	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
+	Output,
 	recordDecisionOutcome,
 	resolveModelWithProvider,
 } from "@repo/ai";
@@ -48,6 +49,7 @@ import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 // Subpath import (not the @repo/ai root) so it stays UNMOCKED in tests that
 // mock the root module — the uniform rule across the budget call sites.
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	baseModelName,
 	buildRoutingJudgePrompt,
@@ -69,7 +71,7 @@ import { type CandidateStory, selectCandidates } from "./action-item-link-core";
 
 /**
  * Judge verdict. Declared with this package's `zod` (not shared from
- * @repo/database) because the AI SDK's `generateObject` is sensitive to the
+ * @repo/database) because the AI SDK's `Output.object` is sensitive to the
  * exact zod build it is handed — the same reason `VerdictSchema` is local in
  * `detect-duplicate-stories.ts`. Only the prompt is shared.
  *
@@ -717,7 +719,7 @@ export async function resolveRoutingModels(params: {
 	const { userId, organizationId, projectId, logPrefix, jobType } = params;
 
 	// COMPLEX, matching `detect-duplicate-stories.ts`: the SIMPLE tier does not
-	// reliably satisfy a `generateObject` schema in the worker runtime, and a
+	// reliably satisfy a `Output.object` schema in the worker runtime, and a
 	// verdict that never parses would route everything to Create while looking
 	// like a clean evaluation.
 	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
@@ -802,7 +804,7 @@ export interface JudgeRoutingItemParams {
 	/** For logging only. */
 	title?: string;
 	logPrefix: string;
-	/** Called immediately before the language judge's `generateObject` call —
+	/** Called immediately before the language judge's structured `generateText` call —
 	 * the Temporal activity's extra heartbeat for a decision evaluation that
 	 * ran its full timeout before falling through. Omitted by the API caller. */
 	onBeforeLanguageJudge?: () => void;
@@ -960,13 +962,15 @@ export async function judgeRoutingItem(
 				})
 			: undefined;
 		onBeforeLanguageJudge?.();
-		const { object: verdict } = await generateObject({
-			model: judge.model,
-			schema: RoutingVerdictSchema,
-			prompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			...(abortSignal ? { abortSignal } : {}),
-		});
+		const { output: verdict } = await requireStructuredOutput(
+			generateText({
+				model: judge.model,
+				output: Output.object({ schema: RoutingVerdictSchema }),
+				prompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+				...(abortSignal ? { abortSignal } : {}),
+			}),
+		);
 		judge.trackUsage();
 
 		// Resolve the model's identifier against the shortlist it was shown. A

@@ -932,6 +932,130 @@ describe("the request", () => {
 	});
 });
 
+describe("local overrides", () => {
+	async function overrideIn(
+		dest: string,
+		overrides: { paths?: string[]; patterns?: string[] },
+	): Promise<void> {
+		await writeFile(
+			path.join(dest, ".fabric", "local-overrides.json"),
+			JSON.stringify({
+				version: 1,
+				paths: overrides.paths ?? [],
+				patterns: overrides.patterns ?? [],
+			}),
+		);
+	}
+
+	it("leaves an overridden edit out of the proposal and says so", async () => {
+		mocks.submitChange.mockResolvedValue(accepted());
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n", "CLAUDE.md": "two\n" },
+			{ "AGENTS.md": "edited\n", "CLAUDE.md": "mine only\n" },
+		);
+		await overrideIn(dest, { paths: ["CLAUDE.md"] });
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		const [, , changes] = mocks.submitChange.mock.calls[0] ?? [];
+		expect(changes).toEqual([
+			{
+				op: "put",
+				path: "AGENTS.md",
+				content: "edited\n",
+				encoding: "utf8",
+			},
+		]);
+		expect(result.stderr).toContain("Left out 1 local override(s)");
+		expect(result.stderr).toContain("CLAUDE.md");
+	});
+
+	it("never sends an overridden file named by --add, nor a deletion under a pattern", async () => {
+		mocks.submitChange.mockResolvedValue(accepted());
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n", "notes/old.md": "old\n" },
+			{
+				"AGENTS.md": "edited\n",
+				"notes/new.md": "private\n",
+			},
+		);
+		await overrideIn(dest, { patterns: ["notes/**"] });
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--add",
+			"notes/new.md",
+		]);
+
+		expect(result.code).toBe(0);
+		const [, , changes] = mocks.submitChange.mock.calls[0] ?? [];
+		expect(changes).toEqual([
+			{
+				op: "put",
+				path: "AGENTS.md",
+				content: "edited\n",
+				encoding: "utf8",
+			},
+		]);
+		expect(result.stderr).toContain("notes/new.md");
+		expect(result.stderr).toContain("notes/old.md");
+	});
+
+	it("says nothing is left to push when only overrides changed", async () => {
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "mine only\n" },
+		);
+		await overrideIn(dest, { paths: ["AGENTS.md"] });
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain("apart from your local overrides");
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+	});
+
+	it("refuses to push with an unreadable overrides file, sending nothing", async () => {
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "edited\n" },
+		);
+		await writeFile(
+			path.join(dest, ".fabric", "local-overrides.json"),
+			"{ not json",
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).not.toBe(0);
+		expect(result.stderr).toContain("local-overrides.json is unreadable");
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+	});
+});
+
 describe("the lock is never written", () => {
 	it("leaves it exactly as it was after a successful proposal", async () => {
 		mocks.submitChange.mockResolvedValue(accepted());
@@ -2590,9 +2714,12 @@ describe("changes an open proposal already carries", () => {
 			publish: true,
 			baseSnapshotId: "snap-7",
 			baseVersion: 7,
+			rebasedFromVersion: null,
+			merged: [],
 			put: [],
 			deleted: [],
 			unchanged: 1,
+			overridden: [],
 			alreadyProposed: [
 				{
 					path: "AGENTS.md",

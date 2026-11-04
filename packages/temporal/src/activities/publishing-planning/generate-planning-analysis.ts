@@ -29,9 +29,13 @@
  * to write it.
  */
 
-import { generateObject, getAIModelWithMetadata } from "@repo/ai";
+import { generateText, getAIModelWithMetadata, Output } from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import {
 	completePlanningAnalysis,
 	type DraftCommitRefusal,
@@ -272,24 +276,28 @@ export async function generatePlanningAnalysisActivity(
 	});
 
 	const beat = setInterval(() => heartbeat(), 10_000);
-	let result: Awaited<ReturnType<typeof generateObject>>;
+	let result: StructuredTextResult<unknown>;
 	try {
-		result = await generateObject({
-			model,
-			schema: PublishingPlanningAnalysisSchema,
-			prompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
+		result = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({
+					schema: PublishingPlanningAnalysisSchema,
+				}),
+				prompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			}),
+		);
 	} finally {
 		clearInterval(beat);
 	}
 
 	trackUsage();
 
-	// Fail closed. `generateObject` already validates, but it is not the only way
+	// Fail closed. `Output.object` already validates, but it is not the only way
 	// an object reaches this line — and the cost of being wrong is a page that
 	// renders an unfinished analysis as a finished one.
-	const parsed = PublishingPlanningAnalysisSchema.safeParse(result.object);
+	const parsed = PublishingPlanningAnalysisSchema.safeParse(result.output);
 	if (!parsed.success) {
 		throw ApplicationFailure.nonRetryable(
 			`Planning analysis failed schema validation: ${parsed.error.message}`,

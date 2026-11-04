@@ -7,10 +7,11 @@
 import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ generateObject: vi.fn() }));
+const mocks = vi.hoisted(() => ({ generateText: vi.fn() }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: async () => ({
 		model: {},
 		metadata: {
@@ -72,7 +73,7 @@ beforeEach(() => {
 
 describe("extractMeetingInsightsActivity — spent ChatGPT plan", () => {
 	it("throws the spent plan instead of storing an empty extraction", async () => {
-		mocks.generateObject.mockRejectedValue(
+		mocks.generateText.mockRejectedValue(
 			new SubscriptionPlanExhaustedError("Every plan is spent.", null),
 		);
 		await expect(
@@ -81,7 +82,7 @@ describe("extractMeetingInsightsActivity — spent ChatGPT plan", () => {
 	});
 
 	it("still degrades any other model failure to an empty extraction", async () => {
-		mocks.generateObject.mockRejectedValue(new Error("provider hiccup"));
+		mocks.generateText.mockRejectedValue(new Error("provider hiccup"));
 		await expect(
 			extractMeetingInsightsActivity(input),
 		).resolves.toMatchObject({

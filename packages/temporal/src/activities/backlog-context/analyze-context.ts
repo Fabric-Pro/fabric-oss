@@ -8,16 +8,22 @@
  * Also includes applyBacklogChanges() which creates/updates items in Fabric DB
  * from approved change proposals.
  */
+
 import type { DecisionPrecheckResult } from "@repo/agent-types";
 import {
 	type AiJobKey,
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
 // Imported from the SUBPATH (not @repo/ai root) so it stays UNMOCKED in tests
 // that mock the @repo/ai root module (uniform rule across the budget sites).
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import {
 	appendAppliedChangeIndexes,
 	createStory,
@@ -220,7 +226,7 @@ export const backlogChangeItemSchema = z.object({
 	//
 	// This is the GENERATION schema, though, so a required field here is
 	// not a validation rule — it is a liveness condition on the model.
-	// When it omitted one sentence, `generateObject` threw a ZodError and
+	// When it omitted one sentence, `Output.object` threw a ZodError and
 	// the WHOLE run died, discarding every other valid change in the same
 	// response. Measured on staging 18 Aug 2026: 3 of 9 live AI Update
 	// runs lost, on both the imported and team-synced lanes.
@@ -563,7 +569,7 @@ function logDiscardedChanges(report: GenerationParseReport, kept: number) {
 /**
  * Drop the changes the model malformed; keep the ones it got right.
  *
- * `generateObject` validates the WHOLE response, so anything wrong anywhere in
+ * `Output.object` validates the WHOLE response, so anything wrong anywhere in
  * `changes` rejects the lot — every valid change in the same response included.
  * Measured on staging: runs lost that way on both the imported-meeting and
  * team-synced lanes, first on a missing `reasoning` string (18 Aug, fixed by
@@ -711,7 +717,7 @@ function dropUnusableChanges(
 }
 
 /**
- * Change proposal schema for generateObject.
+ * Change proposal schema for Output.object.
  * Defines the structured output the LLM must produce.
  */
 const proposalObjectSchema = z.object({
@@ -871,7 +877,7 @@ export function fillMissingUpdateTitles(
  * A generated change proposal plus the async decision pre-check result. The
  * pre-check field is a POST-hoc type intersection, deliberately NOT part of
  * `ChangeProposalSchema`: it is stamped AFTER generation (never emitted by the
- * analyzer LLM), so keeping it off the `generateObject` contract avoids forcing
+ * analyzer LLM), so keeping it off the `Output.object` contract avoids forcing
  * a strict-enum field into the model's output schema and prevents a model-echoed
  * value from ever surviving `.parse`. The sidebar renders these findings from the
  * workflow result before a row exists; the monitor paths fold them into
@@ -2734,7 +2740,7 @@ export async function structurePreserveUpdates(params: {
  * structured change proposals using LLM.
  *
  * Uses resolveModelWithCredentials for COMPLEX task type, then calls
- * generateObject with a runtime validator and the shared structured-output schema.
+ * Output.object with a runtime validator and the shared structured-output schema.
  */
 export async function analyzeContextAndPropose(
 	input: AnalyzeContextInput,
@@ -2875,9 +2881,7 @@ export async function analyzeContextAndPropose(
 			parseReport = report;
 		},
 	});
-	let result: Awaited<
-		ReturnType<typeof generateObject<typeof generationSchema>>
-	>;
+	let result: StructuredTextResult<GenerationProposal>;
 	try {
 		// Resolve AI model via centralized entry point
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
@@ -2931,12 +2935,14 @@ export async function analyzeContextAndPropose(
 				"MEETING_TRANSCRIPT_BUDGET_EXHAUSTED",
 			);
 		}
-		result = await generateObject({
-			model,
-			schema: generationSchema,
-			prompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
+		result = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: generationSchema }),
+				prompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			}),
+		);
 
 		trackUsage();
 		logModelUsageAsync({
@@ -3010,7 +3016,7 @@ export async function analyzeContextAndPropose(
 	}
 
 	const proposal = fillMissingUpdateTitles(
-		result.object,
+		result.output,
 		existingBacklog?.stories,
 		parseReport,
 	);

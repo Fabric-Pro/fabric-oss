@@ -35,12 +35,14 @@
 import {
 	createDecisionCapture,
 	experimental_decide,
-	generateObject,
+	generateText,
 	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
+	Output,
 	recordDecisionOutcome,
 } from "@repo/ai";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	ACTION_ITEM_LINK_VERSION,
 	type AutoLinkRow,
@@ -628,18 +630,20 @@ export async function linkMeetingActionItemsActivity(
 		});
 
 		try {
-			const { object } = await generateObject({
-				model,
-				schema: VerdictSchema,
-				prompt: buildMatchPrompt(
-					{
-						text: item.text,
-						tentativeOwnerName: item.tentativeOwnerName,
-					},
-					meetingSubject,
-					promptCandidates,
-				),
-			});
+			const { output: object } = await requireStructuredOutput(
+				generateText({
+					model,
+					output: Output.object({ schema: VerdictSchema }),
+					prompt: buildMatchPrompt(
+						{
+							text: item.text,
+							tentativeOwnerName: item.tentativeOwnerName,
+						},
+						meetingSubject,
+						promptCandidates,
+					),
+				}),
+			);
 			trackUsage();
 
 			for (const verdict of object.verdicts) {

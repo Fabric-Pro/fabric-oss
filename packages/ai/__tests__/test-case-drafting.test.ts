@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
-	mockGenerateObject,
+	mockGenerateText,
 	mockGetAIModelWithMetadata,
 	mockTrackUsage,
 	mockLogModelUsageAsync,
@@ -10,7 +10,7 @@ const {
 	mockRenderTemplate,
 	MockNoObjectGeneratedError,
 } = vi.hoisted(() => ({
-	mockGenerateObject: vi.fn(),
+	mockGenerateText: vi.fn(),
 	mockGetAIModelWithMetadata: vi.fn(),
 	mockTrackUsage: vi.fn(),
 	mockLogModelUsageAsync: vi.fn(),
@@ -39,9 +39,10 @@ const {
 }));
 
 // Mock `ai` — `zodSchema` is a passthrough (the schema value is irrelevant
-// because `generateObject` itself is mocked).
+// because `generateText` itself is mocked).
 vi.mock("ai", () => ({
-	generateObject: (args: unknown) => mockGenerateObject(args),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (args: unknown) => mockGenerateText(args),
 	zodSchema: (schema: unknown) => schema,
 	NoObjectGeneratedError: MockNoObjectGeneratedError,
 }));
@@ -755,8 +756,8 @@ describe("test_case_drafter prompt resolution", () => {
 			metadata: STUB_METADATA,
 			trackUsage: mockTrackUsage,
 		});
-		mockGenerateObject.mockResolvedValue({
-			object: { testCases: [] },
+		mockGenerateText.mockResolvedValue({
+			output: { testCases: [] },
 			usage: STUB_USAGE,
 		});
 	};
@@ -892,8 +893,8 @@ describe("draftTestCases", () => {
 		// it under no project, so drafting bills the workspace while the
 		// project's Usage tab stays flat and reads as "this run was free".
 		readyModel();
-		mockGenerateObject.mockResolvedValue({
-			object: { testCases: [] },
+		mockGenerateText.mockResolvedValue({
+			output: { testCases: [] },
 			usage: { inputTokens: 1, outputTokens: 1 },
 		});
 
@@ -917,8 +918,8 @@ describe("draftTestCases", () => {
 	// deciding a case is finished remains a person's call either way.
 	it("normalizes model output to a non-READY state and records usage", async () => {
 		readyModel();
-		mockGenerateObject.mockResolvedValue({
-			object: {
+		mockGenerateText.mockResolvedValue({
+			output: {
 				testCases: [
 					rawCase({
 						title: "  Sign in works  ",
@@ -974,8 +975,8 @@ describe("draftTestCases", () => {
 
 	it("asks for a completion budget scaled to the requested case count", async () => {
 		readyModel();
-		mockGenerateObject.mockResolvedValue({
-			object: { testCases: [] },
+		mockGenerateText.mockResolvedValue({
+			output: { testCases: [] },
 			usage: STUB_USAGE,
 		});
 
@@ -984,7 +985,7 @@ describe("draftTestCases", () => {
 			{ userId: "u1" },
 		);
 
-		expect(mockGenerateObject.mock.calls[0][0].maxOutputTokens).toBe(
+		expect(mockGenerateText.mock.calls[0][0].maxOutputTokens).toBe(
 			draftMaxOutputTokens(12),
 		);
 	});
@@ -1000,7 +1001,7 @@ describe("draftTestCases", () => {
 		);
 
 		expect(result).toBeNull();
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(mockLoggerWarn).not.toHaveBeenCalled();
 	});
 
@@ -1011,7 +1012,7 @@ describe("draftTestCases", () => {
 		// provider they already have. The error propagates so the caller can
 		// surface the real reason.
 		readyModel();
-		mockGenerateObject.mockRejectedValue(new Error("gateway exploded"));
+		mockGenerateText.mockRejectedValue(new Error("gateway exploded"));
 
 		await expect(
 			draftTestCases({ title: "Auth" }, { userId: "u1" }),
@@ -1024,19 +1025,17 @@ describe("draftTestCases", () => {
 		// Billing / rate-limit / auth failures are re-thrown on the first attempt:
 		// re-asking the same provider only doubles the bill and the latency.
 		readyModel();
-		mockGenerateObject.mockRejectedValue(
-			new Error("credit balance too low"),
-		);
+		mockGenerateText.mockRejectedValue(new Error("credit balance too low"));
 
 		await expect(
 			draftTestCases({ title: "Auth" }, { userId: "u1" }),
 		).rejects.toThrow("credit balance too low");
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
 	});
 
 	it("repairs a non-conforming completion with one retry, and logs the raw completion", async () => {
 		readyModel();
-		mockGenerateObject
+		mockGenerateText
 			.mockRejectedValueOnce(
 				new MockNoObjectGeneratedError({
 					message: "response did not match schema",
@@ -1045,7 +1044,7 @@ describe("draftTestCases", () => {
 				}),
 			)
 			.mockResolvedValueOnce({
-				object: { testCases: [rawCase({ title: "Repaired" })] },
+				output: { testCases: [rawCase({ title: "Repaired" })] },
 				usage: STUB_USAGE,
 			});
 
@@ -1056,10 +1055,10 @@ describe("draftTestCases", () => {
 
 		expect(result).toHaveLength(1);
 		expect(result?.[0].title).toBe("Repaired");
-		expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+		expect(mockGenerateText).toHaveBeenCalledTimes(2);
 
 		// The retry re-sends the prompt with a repair instruction appended.
-		const retryPrompt = mockGenerateObject.mock.calls[1][0].prompt;
+		const retryPrompt = mockGenerateText.mock.calls[1][0].prompt;
 		expect(retryPrompt).toContain(TEST_CASE_DRAFTER_PROMPT_FALLBACK_BODY);
 		expect(retryPrompt).toContain("could not be parsed");
 		expect(retryPrompt).toContain(
@@ -1087,7 +1086,7 @@ describe("draftTestCases", () => {
 	// returned nothing. The text was already paid for and was perfectly good.
 	it("recovers a wrapped completion from the text instead of paying for a retry", async () => {
 		readyModel();
-		mockGenerateObject.mockRejectedValueOnce(
+		mockGenerateText.mockRejectedValueOnce(
 			new MockNoObjectGeneratedError({
 				message: "No object generated: response did not match schema.",
 				// The exact shape seen in production: the envelope kept, the
@@ -1109,7 +1108,7 @@ describe("draftTestCases", () => {
 		expect(result).toHaveLength(1);
 		expect(result?.[0].title).toBe("Recovered from text");
 		// The whole point: no second generation was bought.
-		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
 	});
 
 	// The exact live sequence, and the reason the salvage runs on BOTH attempts:
@@ -1118,7 +1117,7 @@ describe("draftTestCases", () => {
 	// first-attempt-only salvage throws that away after paying for both.
 	it("salvages the RETRY's completion when the first attempt truncated", async () => {
 		readyModel();
-		mockGenerateObject
+		mockGenerateText
 			.mockRejectedValueOnce(
 				new MockNoObjectGeneratedError({
 					message:
@@ -1150,12 +1149,12 @@ describe("draftTestCases", () => {
 		expect(result).toHaveLength(1);
 		expect(result?.[0].title).toBe("Salvaged from retry");
 		// Still exactly two generations — the salvage never adds a third.
-		expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+		expect(mockGenerateText).toHaveBeenCalledTimes(2);
 	});
 
 	it("surfaces the error when the repair retry also fails", async () => {
 		readyModel();
-		mockGenerateObject.mockRejectedValue(
+		mockGenerateText.mockRejectedValue(
 			new MockNoObjectGeneratedError({
 				message: "No object generated: response did not match schema",
 			}),
@@ -1165,7 +1164,7 @@ describe("draftTestCases", () => {
 			draftTestCases({ title: "Auth" }, { userId: "u1" }),
 		).rejects.toThrow("response did not match schema");
 		// Exactly one retry — never a loop.
-		expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+		expect(mockGenerateText).toHaveBeenCalledTimes(2);
 	});
 });
 

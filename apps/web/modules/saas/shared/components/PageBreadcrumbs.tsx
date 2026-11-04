@@ -14,6 +14,7 @@ import {
 	BreadcrumbSeparator,
 } from "@ui/components/breadcrumb";
 import { HomeIcon } from "lucide-react";
+import { Fragment } from "react";
 
 type BreadcrumbItemType = {
 	label: string;
@@ -85,10 +86,7 @@ export function PageBreadcrumbs({
 						const isLast = index === visibleItems.length - 1;
 
 						return (
-							<div
-								key={index}
-								className="flex items-center gap-1.5"
-							>
+							<Fragment key={index}>
 								<BreadcrumbItem>
 									{isLast || !item.href ? (
 										<BreadcrumbPage className="text-xs">
@@ -104,7 +102,7 @@ export function PageBreadcrumbs({
 									)}
 								</BreadcrumbItem>
 								{!isLast && <BreadcrumbSeparator />}
-							</div>
+							</Fragment>
 						);
 					})}
 				</BreadcrumbList>

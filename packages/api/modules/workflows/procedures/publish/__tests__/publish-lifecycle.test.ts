@@ -19,6 +19,7 @@
  * still have done the damage.
  */
 
+import { getWorkflowById } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -62,10 +63,10 @@ vi.mock("@repo/database", () => ({
 	// The shared commands read the workflow with its owner and organization in
 	// the filter, so an org member who does not own it gets no row; the same
 	// row the rollback path loads with `findUnique`.
-	getWorkflowById: async (_id: string, userId: string) => {
+	getWorkflowById: vi.fn(async (_id: string, userId: string) => {
 		const workflow = await workflowFindUniqueMock();
 		return workflow && workflow.userId === userId ? workflow : null;
-	},
+	}),
 	canUpdateOrganizationWorkflows: async () => true,
 }));
 
@@ -105,6 +106,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		Permissions: { WORKSPACE_UPDATE: "workspace:update" },
 		requirePermission: () => (next: unknown) => next,
+		requireInputOrgPermission: () => (next: unknown) => next,
 		resolveOrganizationId: (
 			input: string | null | undefined,
 			session: { activeOrganizationId?: string | null },
@@ -229,7 +231,7 @@ describe("ownership is required, not just org membership", () => {
 			}),
 		).rejects.toThrow();
 
-		expect(accessMock).toHaveBeenCalledWith("wf-1", COLLEAGUE);
+		expect(getWorkflowById).toHaveBeenCalledWith("wf-1", COLLEAGUE, ORG);
 		expectNoMutation();
 	});
 
@@ -429,4 +431,19 @@ describe("publish", () => {
 			}),
 		);
 	});
+});
+
+it("refuses restoring a graph that fails current publish validation before writing a version", async () => {
+	versionFindUniqueMock.mockResolvedValueOnce({ nodes: [], edges: [] });
+	await expect(
+		rollback({
+			input: {
+				workflowId: "wf-1",
+				targetVersion: 1,
+				organizationId: ORG,
+			},
+			context: ctx(OWNER),
+		}),
+	).rejects.toMatchObject({ code: "BAD_REQUEST" });
+	expectNoMutation();
 });

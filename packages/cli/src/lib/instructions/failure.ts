@@ -11,6 +11,7 @@
  * prints it on its own line, never inside the sentence.
  */
 import { CliFailure } from "../command-boundary.js";
+import { scopeNamed } from "../missing-scope.js";
 import { takeAuthFailure } from "../oauth/auth-failure.js";
 import { takeUpgradeNotice } from "../user-agent.js";
 import { outcomeFailure, outcomeLine } from "./outcome.js";
@@ -32,18 +33,6 @@ function readProperty(error: unknown, name: string): unknown {
 	return typeof error === "object" && error !== null && name in error
 		? Reflect.get(error, name)
 		: undefined;
-}
-
-/**
- * The permission a refusal names (`Missing required scope: instructions:write`),
- * only when it has the shape of one — a closed vocabulary, never free text.
- */
-function scopeNamed(message: unknown): string | null {
-	const named =
-		typeof message === "string"
-			? /\bscope: ([a-z]+:[a-z]+)\b/.exec(message)?.[1]
-			: undefined;
-	return named ?? null;
 }
 
 /**

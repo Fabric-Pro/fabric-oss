@@ -29,7 +29,7 @@ import {
 	RefreshCwIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	canProposeAgain,
@@ -55,7 +55,7 @@ import {
 	InstructionProposalBranchPanel,
 	type MyProposalBranch,
 } from "./InstructionProposalBranchPanel";
-import { countDiffLines, toDiffRows } from "./lib/instruction-diff";
+import { countDiffLines } from "./lib/instruction-diff";
 import {
 	branchPanelPollInterval,
 	listInFlightStates,
@@ -69,6 +69,13 @@ import {
 	useInvalidateListOnBranchStateChange,
 	useRefreshSettleWindow,
 } from "./lib/instructions-proposal-views";
+import {
+	needsSeveralApprovals,
+	ProposalApprovalBadge,
+	type ProposalApprovals,
+} from "./ProposalApprovalProgress";
+import { ProposalChangeView } from "./ProposalChangeDiff";
+import { ProposalRebaseAction } from "./ProposalRebaseAction";
 
 /**
  * A REPOSITORY proposal is MERGED or CLOSED once its pull request settles
@@ -108,6 +115,10 @@ type ProposalRow = {
 	note?: { title?: string; body?: string } | null;
 	/** Null for a FABRIC proposal. */
 	pullRequest?: ProposalPullRequest | null;
+	/** Upload-mode review policy progress ("2 of 3"). */
+	approvals?: ProposalApprovals;
+	/** The viewer's own approval is already recorded. */
+	viewerApproved?: boolean;
 };
 
 type ProposalChange = {
@@ -147,6 +158,21 @@ function omissionCopyKey(
 }
 
 type ProposalDetail = ProposalRow & { changes: ProposalChange[] | null };
+
+/**
+ * The proposer's own stale upload-mode proposal, validated and pending, is
+ * the one a rebase can carry onto the published version.
+ */
+function offersRebase(proposal: ProposalRow): boolean {
+	return (
+		proposal.isStale &&
+		proposal.isProposer &&
+		proposal.destination !== "REPOSITORY" &&
+		proposal.contentKind !== "GIT_INTENT" &&
+		proposal.status === "READY" &&
+		proposal.proposalStatus === "PENDING"
+	);
+}
 type ProposalFilePage = {
 	path: string;
 	side: "before" | "after";
@@ -370,65 +396,6 @@ function PullRequestStatus({
  * wall nobody scrolls to the decision buttons through.
  */
 const AUTO_EXPAND_CHANGE_LIMIT = 5;
-
-/**
- * One changed file's before/after as a unified diff.
- *
- * A missing side is empty text FOR THE DIFF — an `add` has no before and
- * reads as all `+`, a `delete` has no after and reads as all `−` — but the
- * two are not the same thing when deciding what to say instead of a diff. A
- * side that is `null` is absent; a side that is `""` is a real, empty file.
- * Collapsing them made an added or deleted EMPTY file claim its text "did not
- * change", which is the opposite of what happened to it. So the null check
- * comes first, and only two PRESENT equal sides are an unchanged body.
- *
- * Both bodies are already in hand — `buildProposalChanges` sends them inline
- * — so nothing is fetched here.
- */
-function ProposalChangeDiff({
-	before,
-	after,
-}: {
-	before: string | null;
-	after: string | null;
-}) {
-	const t = useTranslations("projects.codingInstructions.proposalReview");
-	const rows = useMemo(
-		() => toDiffRows(diffLines(before ?? "", after ?? "")),
-		[before, after],
-	);
-	// One side absent: the file was added or deleted outright.
-	const oneSided = before === null || after === null;
-	if (oneSided && (before ?? "") === "" && (after ?? "") === "") {
-		return (
-			<p className="text-muted-foreground text-sm">{t("emptyFile")}</p>
-		);
-	}
-	if (!oneSided && before === after) {
-		return (
-			<p className="text-muted-foreground text-sm">
-				{t("noTextualChanges")}
-			</p>
-		);
-	}
-	return (
-		<pre className="max-h-64 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs">
-			{rows.map((row, index) => (
-				<span
-					key={`${index}-${row.text.length}`}
-					className={cn(
-						row.added &&
-							"bg-emerald-500/15 text-emerald-800 dark:text-emerald-300",
-						row.removed &&
-							"bg-red-500/15 text-red-800 dark:text-red-300",
-					)}
-				>
-					{row.text}
-				</span>
-			))}
-		</pre>
-	);
-}
 
 function validationLabel(
 	status: ValidationStatus,
@@ -739,8 +706,15 @@ export function InstructionProposals({
 	};
 	const approve = useMutation(
 		orpc.projects.instructions.proposals.approve.mutationOptions({
-			onSuccess: () => {
-				toast.success(t("approveSuccess"));
+			onSuccess: (result) => {
+				toast.success(
+					result.published
+						? t("approveSuccess")
+						: t("approvalRecorded", {
+								count: result.approvals.count,
+								required: result.approvals.required,
+							}),
+				);
 				refreshState();
 			},
 			onError: (error) => {
@@ -1078,6 +1052,14 @@ export function InstructionProposals({
 															t,
 														)}
 													</Badge>
+													{proposal.proposalStatus ===
+													"PENDING" ? (
+														<ProposalApprovalBadge
+															approvals={
+																proposal.approvals
+															}
+														/>
+													) : null}
 												</span>
 											)}
 										</Button>
@@ -1275,6 +1257,16 @@ export function InstructionProposals({
 								{t("stale")}
 							</p>
 						) : null}
+						{offersRebase(selected) ? (
+							<ProposalRebaseAction
+								projectId={projectId}
+								snapshotId={selected.id}
+								onRebased={(rebasedId) => {
+									setSelectedId(rebasedId);
+									refreshState();
+								}}
+							/>
+						) : null}
 						{VALIDATING.has(selected.status) ? (
 							<p
 								aria-live="polite"
@@ -1383,7 +1375,8 @@ export function InstructionProposals({
 													{t("binary")}
 												</p>
 											) : diffable ? (
-												<ProposalChangeDiff
+												<ProposalChangeView
+													path={change.path}
 													before={change.before}
 													after={change.after}
 												/>
@@ -1594,7 +1587,14 @@ export function InstructionProposals({
 								{selected.status === "READY" &&
 								!selected.isStale ? (
 									<Button
-										disabled={deciding}
+										disabled={
+											deciding ||
+											(needsSeveralApprovals(
+												selected.approvals,
+											) &&
+												selected.viewerApproved ===
+													true)
+										}
 										onClick={() =>
 											approve.mutate({
 												projectId,
@@ -1602,7 +1602,25 @@ export function InstructionProposals({
 											})
 										}
 									>
-										{t("approve")}
+										{!needsSeveralApprovals(
+											selected.approvals,
+										)
+											? t("approve")
+											: selected.viewerApproved
+												? t("youApproved", {
+														count: selected
+															.approvals.count,
+														required:
+															selected.approvals
+																.required,
+													})
+												: t("approveCounted", {
+														count: selected
+															.approvals.count,
+														required:
+															selected.approvals
+																.required,
+													})}
 									</Button>
 								) : null}
 								<Button

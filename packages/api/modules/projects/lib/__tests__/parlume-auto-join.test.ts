@@ -84,6 +84,7 @@ function series(overrides: Record<string, unknown> = {}) {
 		parlumeAutoJoinUserId: "user-1",
 		parlumeAutoJoinToolsReadOnly: false,
 		parlumeAutoJoinSuggestions: false,
+		parlumeAutoJoinSuggestionAudience: "MEETING",
 		project: { organizationId: "org-1" },
 		...overrides,
 	};
@@ -131,6 +132,7 @@ describe("runParlumeAutoJoin", () => {
 				agentKind: "FABRIC_AGENT",
 				toolsReadOnly: false,
 				suggestionsEnabled: false,
+				suggestionAudience: "MEETING",
 				trigger: "AUTO",
 				linkedMeetingId: "lm-1",
 				occurrenceStart,
@@ -141,6 +143,25 @@ describe("runParlumeAutoJoin", () => {
 			where: { id: "lm-1", parlumeAutoJoinError: { not: null } },
 			data: { parlumeAutoJoinError: null, parlumeAutoJoinErrorAt: null },
 		});
+	});
+
+	it("copies the series' suggestion audience into the session it starts", async () => {
+		mocks.seriesFindFirst.mockResolvedValue(
+			series({
+				parlumeAutoJoinSuggestions: true,
+				parlumeAutoJoinSuggestionAudience: "TEAM",
+			}),
+		);
+
+		await runParlumeAutoJoin(input);
+
+		expect(mocks.start).toHaveBeenCalledWith(
+			expect.objectContaining({
+				suggestionsEnabled: true,
+				suggestionAudience: "TEAM",
+			}),
+			{},
+		);
 	});
 
 	it.each([

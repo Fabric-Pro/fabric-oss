@@ -16,6 +16,7 @@ import {
 import {
 	type AgentDefinition,
 	exportAgentDefinition,
+	getAgentImplementationAvailability,
 	MAX_AGENT_DEFINITION_BYTES,
 	PORTABLE_SKILL_PATH,
 	parseAgentDefinition,
@@ -33,6 +34,38 @@ const notices = [
 	"Instructions and skill text are included verbatim. Review their contents before sharing or running the agent. Conversation history and learned memory are excluded.",
 ];
 
+function definitionMetadata(definition: AgentDefinition) {
+	return definition.apiVersion === "fabric.ai/v2"
+		? {
+				portableDefinitionVersion: definition.apiVersion,
+				portableImplementation: definition.implementation,
+				portableBindings: definition.logicalBindings,
+				...(definition.expectedOutput === undefined
+					? {}
+					: { expectedOutput: definition.expectedOutput }),
+			}
+		: {
+				portableDefinitionVersion: definition.apiVersion,
+				portableImplementation: { kind: "native" as const },
+				portableBindings: [],
+			};
+}
+function definitionNotices(definition: AgentDefinition) {
+	const availability = getAgentImplementationAvailability(
+		definitionMetadata(definition),
+	);
+	return [
+		...notices,
+		...(definition.apiVersion === "fabric.ai/v2" &&
+		definition.logicalBindings.length
+			? [
+					"Logical bindings are unresolved declarations. Destination connections, project access and operation grants must be explicitly selected and authorized before activation.",
+				]
+			: []),
+		...(availability.reason ? [availability.reason] : []),
+	];
+}
+
 function parseDocument(document: string): AgentDefinition {
 	try {
 		const definition = parseAgentDefinition(document);
@@ -46,7 +79,7 @@ function parseDocument(document: string): AgentDefinition {
 		// Parser errors may contain the offending text, including pasted credentials.
 		throw new ORPCError("BAD_REQUEST", {
 			message:
-				"Invalid agent definition. Use fabric.ai/v1 JSON or YAML, unique skill paths, no YAML aliases, and a file smaller than 1 MB.",
+				"Invalid agent definition. Use fabric.ai/v1 or fabric.ai/v2 JSON or YAML, unique skill paths, no YAML aliases, and a file smaller than 1 MB.",
 		});
 	}
 }
@@ -58,10 +91,16 @@ export const previewAgentDefinitionProcedure = tenantProtectedProcedure
 			requireOrganization: true,
 		}),
 	)
-	.handler(async ({ input }) => ({
-		definition: parseDocument(input.document),
-		notices,
-	}));
+	.handler(async ({ input }) => {
+		const definition = parseDocument(input.document);
+		return {
+			definition,
+			notices: definitionNotices(definition),
+			implementationAvailability: getAgentImplementationAvailability(
+				definitionMetadata(definition),
+			),
+		};
+	});
 
 export const exportAgentDefinitionProcedure = tenantProtectedProcedure
 	.input(
@@ -137,11 +176,15 @@ export const exportAgentDefinitionProcedure = tenantProtectedProcedure
 			resource: { type: "agent_instance", id: instance.id },
 			metadata: { format: input.format, version: instance.version },
 		});
+		const availability = getAgentImplementationAvailability(
+			instance.customInstructions,
+		);
 		return {
 			document,
 			filename: `agent.${input.format}`,
 			notices: [
 				...notices,
+				...(availability.reason ? [availability.reason] : []),
 				...skippedFiles.map((file) => `Skipped file: ${file.path}`),
 			],
 		};
@@ -187,6 +230,7 @@ export const importAgentDefinitionProcedure = tenantProtectedProcedure
 					customInstructions: {
 						...customInstructions,
 						portableRequirements: definition.requirements,
+						...definitionMetadata(definition),
 					},
 					modelOverride: model,
 					modelConfig,
@@ -231,5 +275,11 @@ export const importAgentDefinitionProcedure = tenantProtectedProcedure
 			return created;
 		});
 		markCuratedAuditWritten();
-		return { instance, notices };
+		return {
+			instance,
+			notices: definitionNotices(definition),
+			implementationAvailability: getAgentImplementationAvailability(
+				definitionMetadata(definition),
+			),
+		};
 	});

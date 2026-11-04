@@ -1,4 +1,7 @@
-import { listTemplateInstances } from "@repo/database";
+import {
+	getProjectReportSetupReason,
+	listTemplateInstances,
+} from "@repo/database";
 import type { TemplateInstanceStatus } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
 import {
@@ -8,6 +11,8 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { canGenerateReportInstance } from "../../lib/report-access";
+import { reportGenerationBlockedReason } from "../../lib/report-generation-readiness";
 
 const statusEnum = z.enum(["PENDING", "ACTIVE", "ARCHIVED", "DRAFT"]);
 
@@ -15,13 +20,15 @@ const listInstancesInputSchema = z.object({
 	templateId: z.string().optional(),
 	organizationId: z.string().nullable().optional(),
 	// List every report of this project instead of only the caller's own.
-	projectId: z.string().optional(),
+	projectId: z.string().min(1).max(128).optional(),
 	limit: z.number().min(1).max(100).default(20),
 	offset: z.number().min(0).default(0),
 	isActive: z.boolean().optional(),
 	status: z.union([statusEnum, z.array(statusEnum)]).optional(),
 	search: z.string().optional(),
 	latestVersionOnly: z.boolean().default(true),
+	// Also return `activeTotal`: the switched-on reports across every page.
+	countActive: z.boolean().default(false),
 });
 
 export const listInstancesProcedure = tenantProtectedProcedure
@@ -57,6 +64,7 @@ export const listInstancesProcedure = tenantProtectedProcedure
 				| undefined,
 			search: input.search,
 			latestVersionOnly: input.latestVersionOnly,
+			countActive: input.countActive,
 		});
 
 		return {
@@ -73,7 +81,18 @@ export const listInstancesProcedure = tenantProtectedProcedure
 					templateName: instance.template.name,
 					projectId: instance.projectId,
 					userId: instance.userId,
+					canGenerate: canGenerateReportInstance(
+						instance,
+						context.user,
+					),
 					isActive: instance.isActive,
+					generateBlockedReason:
+						reportGenerationBlockedReason(instance),
+					setupRequiredReason: getProjectReportSetupReason(
+						instance.fabricConfig,
+						instance.template.definition,
+						instance.connections,
+					),
 					schedule: instance.schedule,
 					scheduleMode: instance.scheduleMode,
 					lastRunAt: instance.lastRunAt?.toISOString() || null,
@@ -87,5 +106,6 @@ export const listInstancesProcedure = tenantProtectedProcedure
 				};
 			}),
 			total: result.total,
+			activeTotal: result.activeTotal,
 		};
 	});

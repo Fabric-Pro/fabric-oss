@@ -1,31 +1,28 @@
 import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/client";
 import { createId } from "@paralleldrive/cuid2";
+import { config } from "@repo/config";
 import {
+	type AdmitGitIntentInput,
 	admitGitIntent,
 	findExistingGitIntent,
-	type AdmitGitIntentInput,
 	type GitIntentEntry,
+	readMemberBranchWrittenPaths,
 } from "@repo/database";
-import {
-	resolveIgnoreGlobs,
-	scanTextForSecrets,
-	snapshotKey,
-} from "@repo/instructions";
-import { config } from "@repo/config";
+import { scanTextForSecrets, snapshotKey } from "@repo/instructions";
 import { getStorageProvider } from "@repo/storage";
 import type { AuditRequestContext } from "../../../../lib/audit";
 import { validateInstructionChanges } from "./change-set";
 import { startDirectCommitWorkflow } from "./direct-commit-workflow";
+import { admitInstructionProposal } from "./proposal-admission";
+import { startAdmittedProposalPullRequest } from "./proposal-pull-request";
+import { listDirectRepositoryFiles } from "./repository/direct-read";
 import {
 	assertDirectRepositoryPin,
 	assertDirectRepositorySourceCurrent,
 	loadDirectRepositorySource,
 	resolveDirectRepositoryIgnore,
 } from "./repository/direct-source";
-import { listDirectRepositoryFiles } from "./repository/direct-read";
-import { admitInstructionProposal } from "./proposal-admission";
-import { startAdmittedProposalPullRequest } from "./proposal-pull-request";
 
 const SKILLS_BUCKET = config.storage.bucketNames.skills;
 
@@ -145,9 +142,28 @@ export async function submitGitIntentChange(
 		const filesByPath = new Map(
 			listed.files.map((file) => [file.path, file]),
 		);
+		// A path the published version lacks may still be a file Fabric wrote
+		// on the caller's OWN proposal branch: a proposal may then delete or
+		// edit it there. A direct commit targets the synced branch, never a
+		// member's, so it reads no branch.
+		const onBranch = await readMemberBranchWrittenPaths({
+			projectId: input.projectId,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			paths:
+				input.mode === "proposal"
+					? changes
+							.filter((change) => !filesByPath.has(change.path))
+							.map((change) => change.path)
+					: [],
+		});
 		const snapshotId = createId();
 		const entries: GitIntentEntry[] = changes.map((change, index) => {
 			const base = filesByPath.get(change.path);
+			const branchFile = base ? undefined : onBranch.get(change.path);
+			const branchTarget = branchFile
+				? { branchObjectId: branchFile.objectId }
+				: {};
 			let baseEntry: { objectId: string; mode: number } | null = null;
 			if (base) {
 				if (base.blobId === undefined || base.mode === undefined) {
@@ -162,13 +178,18 @@ export async function submitGitIntentChange(
 				};
 			}
 			if (change.op === "delete") {
-				if (baseEntry === null) {
+				if (baseEntry === null && branchFile === undefined) {
 					refusal(
 						"REPOSITORY_BASE_UNAVAILABLE",
 						"That file is no longer in the repository.",
 					);
 				}
-				return { op: "DELETE", path: change.path, base: baseEntry };
+				return {
+					op: "DELETE",
+					path: change.path,
+					base: baseEntry,
+					...branchTarget,
+				};
 			}
 			const bytes = bytesByPath.get(change.path);
 			if (!bytes) {
@@ -189,8 +210,11 @@ export async function submitGitIntentChange(
 				size: change.size,
 				mimeType: change.mimeType,
 				isText: textPaths.has(change.path),
-				mode: baseEntry?.mode ?? 0o100644,
+				// An edit keeps the file's mode: the branch's for a file only
+				// the branch holds, so an executable stays executable.
+				mode: branchFile?.mode ?? baseEntry?.mode ?? 0o100644,
 				kind: change.kind,
+				...branchTarget,
 			};
 		});
 

@@ -12,11 +12,14 @@
  * caller files the deterministic report instead. A recurring error must still
  * reach the inbox when drafting is unavailable.
  */
+
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import { getBoundPromptForAgent } from "@repo/database";
 import { logger } from "@repo/logs";
 import { renderTemplate, type TemplateFormat } from "@repo/utils";
@@ -156,16 +159,18 @@ export async function draftRecurringBugReport(input: {
 			},
 		);
 		const start = Date.now();
-		const result = await generateObject({
-			model,
-			schema: BugReportSchema,
-			system: `${rendered.rendered}\n\n${RECURRING_ERROR_EVIDENCE_GUIDANCE}`,
-			prompt: fenceUntrusted(
-				EVIDENCE_TAG,
-				{ source: input.subject.source },
-				evidenceText(input.subject),
-			),
-		});
+		const result = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: BugReportSchema }),
+				system: `${rendered.rendered}\n\n${RECURRING_ERROR_EVIDENCE_GUIDANCE}`,
+				prompt: fenceUntrusted(
+					EVIDENCE_TAG,
+					{ source: input.subject.source },
+					evidenceText(input.subject),
+				),
+			}),
+		);
 		trackUsage();
 		logModelUsageAsync({
 			context: { userId: input.userId, organizationId },
@@ -176,12 +181,12 @@ export async function draftRecurringBugReport(input: {
 			projectId: input.projectId,
 		});
 
-		const title = result.object.title.trim().slice(0, 120);
-		const description = result.object.description.trim();
+		const title = result.output.title.trim().slice(0, 120);
+		const description = result.output.description.trim();
 		if (!title || !description) {
 			return null;
 		}
-		const priority = result.object.priority?.trim().toUpperCase() ?? "";
+		const priority = result.output.priority?.trim().toUpperCase() ?? "";
 		return {
 			title,
 			// The scan's own evidence block leads, so the frequency, window and

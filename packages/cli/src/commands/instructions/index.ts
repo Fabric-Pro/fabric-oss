@@ -134,6 +134,11 @@ import {
 	runLessonPrompt,
 } from "../../lib/instructions/lesson-prompt.js";
 import {
+	overrideMatcher,
+	readLocalOverrides,
+	reportOverriddenLeftOut,
+} from "../../lib/instructions/local-overrides.js";
+import {
 	type InstructionsLock,
 	LOCK_DIRECTORY,
 	LOCK_FILENAME,
@@ -184,9 +189,18 @@ import {
 	MAX_INLINE_PUSH_BYTES,
 	MAX_PUSH_CHANGES,
 	materializePushChanges,
+	type PushPlan,
 	pushContentBytes,
+	setAsideOverridden,
 	setAsideProposed,
 } from "../../lib/instructions/push.js";
+import {
+	clearRebaseState,
+	type RebaseInput,
+	type RebaseOutcome,
+	rebaseConflictLines,
+	rebasePush,
+} from "../../lib/instructions/rebase-push.js";
 import { resolveProjectFromCheckout } from "../../lib/instructions/resolve-project.js";
 import {
 	resolveDestinationRoot,
@@ -197,6 +211,7 @@ import {
 	selfUpdateLine,
 	startBackgroundSelfUpdate,
 } from "../../lib/instructions/self-update.js";
+import { changedSinceLastSyncLine } from "../../lib/instructions/since-last-sync.js";
 import {
 	IN_MEMORY_SNAPSHOT_BYTES,
 	type StagedFileContents,
@@ -224,13 +239,24 @@ import { projectAccessToken } from "../../lib/oauth/session.js";
 import { signInWithBrowser } from "../../lib/oauth/sign-in.js";
 import { DEFAULT_ORIGIN, normalizeOrigin } from "../../lib/origin.js";
 import { printOutput } from "../../lib/output.js";
+import {
+	type McpSignIn,
+	pluginMcpServerName,
+	reportMcpSignIn,
+} from "../../lib/plugin/mcp-sign-in.js";
 import { isPlainOrigin } from "../../lib/shell-words.js";
+import {
+	renderSummary,
+	Summary,
+	supportsUnicodeMarks,
+} from "../../lib/summary.js";
 import { takeUpgradeNotice } from "../../lib/user-agent.js";
 import {
-	describeOutcomes,
+	REPOS_FOLDER,
 	syncCodeRepositories,
 } from "../../lib/workspace/code-repos.js";
-import { runPluginInit } from "./init-plugin.js";
+import { runPluginInit, toolDisplayName } from "./init-plugin.js";
+import { registerOverrideCommand } from "./override.js";
 import { registerRenderCommand } from "./render.js";
 import { registerRulesCommand } from "./rules.js";
 
@@ -334,6 +360,7 @@ export function buildInstructionsCommand(): Command {
 
 	registerRenderCommand(instructions);
 	registerRulesCommand(instructions);
+	registerOverrideCommand(instructions);
 
 	// Started by the session hook, detached, when it had no time left for
 	// the kept copy's daily update (`startBackgroundSelfUpdate`). Not for
@@ -434,6 +461,10 @@ export function buildInstructionsCommand(): Command {
 			"Replace local edits to synced files with the published version; without it, sync keeps them",
 		)
 		.option(
+			"--include-overrides",
+			"With --repair, also replace the files listed as local overrides",
+		)
+		.option(
 			"--no-fast-forward",
 			"Under --hook in a checkout of a repository project: only report, never fetch or fast-forward",
 		)
@@ -447,6 +478,7 @@ export function buildInstructionsCommand(): Command {
 			opts: RawOptions & {
 				dryRun?: boolean;
 				repair?: boolean;
+				includeOverrides?: boolean;
 				fastForward?: boolean;
 			},
 		) {
@@ -487,6 +519,10 @@ export function buildInstructionsCommand(): Command {
 			"--include-proposed",
 			"Also send changes your open proposals already carry (left out by default)",
 		)
+		.option(
+			"--rebase",
+			"When a newer version was published since the last sync, merge your edits onto it instead of refusing; a conflict is written into the file with markers and nothing is sent",
+		)
 		.option("--dry-run", "Print the change set and send nothing")
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
@@ -497,6 +533,7 @@ export function buildInstructionsCommand(): Command {
 				message?: string;
 				wait?: boolean;
 				includeProposed?: boolean;
+				rebase?: boolean;
 				dryRun?: boolean;
 			},
 		) {
@@ -567,10 +604,15 @@ export function buildInstructionsCommand(): Command {
 			"Give an already-installed plugin the project's readable name (e.g. /slotik:<skill>)",
 		)
 		.option("--format <format>", "Output format: text|json")
+		.option(
+			"--verbose",
+			"Under each step of the checklist, also print the full sentences it stands for",
+		)
 		.action(async function (
 			this: Command,
 			opts: RawOptions & {
 				tool: string;
+				verbose?: boolean;
 				repos?: boolean;
 				rename?: boolean;
 				mcpSignIn?: boolean;
@@ -599,16 +641,28 @@ export function buildInstructionsCommand(): Command {
 				}
 				// A bare `init` is the plugin: no clone. Only a request for a
 				// clone, or a folder that already is one, keeps the clone setup.
+				const format = outputFormatFor(this);
+				const summary = new Summary();
 				if (!cloneMode) {
 					const bound = await withProject(
 						{ ...opts, hook: false },
 						"init",
 					);
+					let tools: string[] | null = null;
 					if (
 						opts.plugin ||
 						!(await insideInstructionsCheckout(bound))
 					) {
-						await runPluginInit({
+						// Signed in before the render, so the plugin it
+						// writes already carries the header command.
+						const mcpSignIn = opts.mcpSignIn
+							? await signInForPluginMcp(
+									bound,
+									opts.tool,
+									opts.mcp,
+								)
+							: null;
+						const plugin = await runPluginInit({
 							project: bound.project,
 							origin: deploymentOrigin(bound),
 							org: bound.org,
@@ -616,20 +670,41 @@ export function buildInstructionsCommand(): Command {
 							dest: opts.dest,
 							mcp: opts.mcp,
 							rename: opts.rename,
-							format: outputFormatFor(this),
+							format,
+							// The JSON report already carries all of it.
+							summary:
+								format === "json" ? new Summary() : summary,
 						});
+						tools = plugin.tools;
+						if (mcpSignIn !== null) {
+							reportMcpSignIn(summary, {
+								signIn: mcpSignIn,
+								headersHelper: plugin.claudeMcpHeadersHelper,
+								serverName: pluginMcpServerName(bound.project),
+							});
+						}
 					} else {
-						await runInit(bound, outputFormatFor(this));
+						await runInit(bound, format);
+						if (opts.mcpSignIn) {
+							summary.add(
+								"skipped",
+								"MCP sign-in",
+								"only the plugin's MCP server uses it",
+							);
+						}
 					}
-					if (opts.mcpSignIn) {
-						await setUpMcpSignIn(bound, opts.tool, opts.mcp);
-					}
-					return setUpCodeRepositories(
+					await setUpCodeRepositories(
 						opts.repos,
 						bound.project,
 						bound.org,
 						path.resolve(opts.dest ?? process.cwd()),
+						summary,
 					);
+					return finishInitSummary(summary, {
+						format,
+						verbose: opts.verbose === true,
+						tools,
+					});
 				}
 				// A new folder has no checkout to find the project from.
 				if (
@@ -642,8 +717,8 @@ export function buildInstructionsCommand(): Command {
 					{ ...opts, hook: false },
 					"init",
 				);
-				await runInit(bound, outputFormatFor(this));
-				return setUpCodeRepositories(
+				await runInit(bound, format);
+				await setUpCodeRepositories(
 					opts.repos,
 					bound.project,
 					bound.org,
@@ -652,7 +727,13 @@ export function buildInstructionsCommand(): Command {
 							? opts.clone
 							: (opts.dest ?? process.cwd()),
 					),
+					summary,
 				);
+				return finishInitSummary(summary, {
+					format,
+					verbose: opts.verbose === true,
+					tools: null,
+				});
 			});
 		});
 
@@ -1754,9 +1835,12 @@ function syncCommand(opts: { project: string }): string {
 	return fabricCommand(`instructions sync --project ${opts.project}`);
 }
 
-/** What a push says when the published version has moved past the lock. */
+/**
+ * What a push says when the published version has moved past the lock: sync
+ * first, or carry the edits onto the newer version with `--rebase`.
+ */
 function pullFirstLine(): string {
-	return `published instructions moved past your last sync; run \`${fabricCommand("instructions sync")}\` then push again`;
+	return `published instructions moved past your last sync; run \`${fabricCommand("instructions sync")}\` then push again, or \`${fabricCommand("instructions push --rebase")}\` to merge your edits onto the newer version`;
 }
 
 function listPaths(label: string, paths: string[]): void {
@@ -2139,10 +2223,17 @@ async function runSync(
 	opts: CommonOptions & {
 		dryRun?: boolean;
 		repair?: boolean;
+		includeOverrides?: boolean;
 		fastForward?: boolean;
 	},
 	format: OutputFormat,
 ): Promise<void> {
+	if (opts.includeOverrides && !opts.repair) {
+		throw new CliFailure(
+			"--include-overrides only changes what --repair replaces. Add --repair, or drop --include-overrides.",
+			2,
+		);
+	}
 	const synced = await syncOnce(opts);
 	if (synced.kind === "reported") {
 		// A checkout of the repository (Fizzy #2708): the files arrive with
@@ -2198,6 +2289,17 @@ async function runSync(
 			`fabric: ${result.keptEdited.length} local edit(s) kept; run ${repairInstruction(opts)} to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
 		);
 	}
+	// What a new version changed, computed locally from the lock's previous
+	// version and the files this run wrote; stderr only, like the line above.
+	const sinceLastSync = opts.hook
+		? changedSinceLastSyncLine({
+				...result,
+				previousVersion: synced.previousVersion,
+			})
+		: null;
+	if (sinceLastSync !== null) {
+		process.stderr.write(`${sinceLastSync}\n`);
+	}
 }
 
 interface SyncOutcome {
@@ -2230,6 +2332,14 @@ interface SyncOutcome {
 	 * §6.4). Always empty under `--repair`, which reports them as `replaced`.
 	 */
 	keptEdited: string[];
+	/**
+	 * Paths listed as local overrides whose local state is not the published
+	 * one. Never written or deleted, except under `--repair
+	 * --include-overrides`, which reports them as `replaced` instead.
+	 */
+	overridden: string[];
+	/** The overridden paths whose published version changed since the last sync. */
+	overriddenPublishedChanged: string[];
 	verified: number;
 	lockPath: string;
 }
@@ -2254,6 +2364,8 @@ function emptyOutcome(
 		keptRenamed: [],
 		drifted: [],
 		keptEdited: [],
+		overridden: [],
+		overriddenPublishedChanged: [],
 		verified: 0,
 		lockPath: lockPath(destination),
 	};
@@ -2265,7 +2377,12 @@ function emptyOutcome(
  * might be one — only reported, writing nothing (Fizzy #2708).
  */
 type SyncResult =
-	| { kind: "synced"; outcome: SyncOutcome }
+	| {
+			kind: "synced";
+			outcome: SyncOutcome;
+			/** The lock's version before this run; null without a lock. */
+			previousVersion: number | null;
+	  }
 	| {
 			kind: "reported";
 			destination: string;
@@ -2282,6 +2399,8 @@ async function syncOnce(
 	opts: CommonOptions & {
 		dryRun?: boolean;
 		repair?: boolean;
+		/** With `repair`: replace the local overrides too. */
+		includeOverrides?: boolean;
 		/** `false` for `--no-fast-forward`: a hook that only reports. */
 		fastForward?: boolean;
 		/**
@@ -2439,12 +2558,21 @@ async function syncOnce(
 		hint,
 		published,
 	));
+	// The version this folder held before the run, for the hook's
+	// "changed since your last sync" line.
+	const previousVersion = lock?.snapshotVersion ?? null;
 
 	// Canonical from here on: every write resolves against this, so a
 	// symlinked `--dest` (or `/tmp` on macOS) is decided once rather than at
 	// each write.
 	const root = await resolveDestinationRoot(destination);
 	const outcome = emptyOutcome(opts, root);
+	// The developer's local overrides are never written or deleted, unless
+	// `--repair --include-overrides` asks for exactly that.
+	const isOverridden =
+		opts.repair && opts.includeOverrides
+			? undefined
+			: overrideMatcher(await readLocalOverrides(root));
 
 	if (!published.published || !published.snapshot) {
 		// A real failure for a person who asked for a copy; the `--hook`
@@ -2466,8 +2594,13 @@ async function syncOnce(
 		// tree reported success indefinitely. The ledger is the local half of
 		// the question, and hashing it is the price of a command that applies
 		// things.
-		const drift =
+		const allDrift =
 			lock === null ? [] : await findLedgerDrift({ root, lock });
+		// An overridden path differs on purpose, and nothing here touches it.
+		const drift = allDrift.filter((entry) => !isOverridden?.(entry.path));
+		outcome.overridden = allDrift
+			.filter((entry) => isOverridden?.(entry.path))
+			.map((entry) => entry.path);
 		const edits = drift.filter((entry) => entry.reason === "edited");
 		// Spec §6.4: without `--repair` an edit is kept, so a tree whose only
 		// differences are edits needs no manifest and no download. Recording
@@ -2482,15 +2615,15 @@ async function syncOnce(
 				// Decision 41: mark what is kept now, and drop a marker whose
 				// file was put back by hand, so the lock says what is true. A
 				// run that finds the same edits again writes nothing.
-				const reconciled = reconcileKeptInLock(
-					lock,
-					outcome.keptEdited,
-				);
+				const reconciled = reconcileKeptInLock(lock, [
+					...outcome.keptEdited,
+					...outcome.overridden,
+				]);
 				if (reconciled.changed) {
 					await writeLock(root, reconciled.lock);
 				}
 			}
-			return { kind: "synced", outcome };
+			return { kind: "synced", outcome, previousVersion };
 		}
 
 		outcome.drifted = drift.map(describeLedgerDrift);
@@ -2519,14 +2652,14 @@ async function syncOnce(
 
 	let plan = await computeSyncPlan(
 		{ destination: root, manifest, lock },
-		{ keepLocalEdits },
+		{ keepLocalEdits, isOverridden },
 	);
 	fillPlanPaths(outcome, plan);
 
 	if (opts.dryRun) {
 		// The plan is computable from the manifest alone, so a dry run
 		// downloads nothing at all.
-		return { kind: "synced", outcome };
+		return { kind: "synced", outcome, previousVersion };
 	}
 
 	let contents: FileContents = new Map<string, Uint8Array>();
@@ -2612,7 +2745,7 @@ async function syncOnce(
 				});
 				plan = await computeSyncPlan(
 					{ destination: root, manifest, lock },
-					{ keepLocalEdits },
+					{ keepLocalEdits, isOverridden },
 				);
 				fillPlanPaths(outcome, plan);
 			}
@@ -2654,11 +2787,11 @@ async function syncOnce(
 		manifest,
 		// Published hash plus `kept: true`: `push` diffs the edit against the
 		// version everyone else has, and the next run still knows it was kept.
-		kept: outcome.keptEdited,
+		kept: [...outcome.keptEdited, ...outcome.overridden],
 	});
 	await writeLock(root, lockToWrite);
 
-	return { kind: "synced", outcome };
+	return { kind: "synced", outcome, previousVersion };
 }
 
 function fillPlanPaths(outcome: SyncOutcome, plan: SyncPlan): void {
@@ -2675,6 +2808,10 @@ function fillPlanPaths(outcome: SyncOutcome, plan: SyncPlan): void {
 	outcome.keptModified = plan.keptModified.map((entry) => entry.path);
 	outcome.keptRenamed = plan.keptRenamed.map((entry) => entry.path);
 	outcome.keptEdited = plan.keptEdited.map((entry) => entry.path);
+	outcome.overridden = plan.overridden.map((entry) => entry.path);
+	outcome.overriddenPublishedChanged = plan.overridden
+		.filter((entry) => entry.publishedChanged === true)
+		.map((entry) => entry.path);
 	outcome.verified = plan.verified.length;
 }
 
@@ -2687,6 +2824,7 @@ function reportSync(
 			`Coding instructions are up to date (version ${outcome.version}).`,
 		);
 		reportKeptEdits(outcome, opts);
+		reportOverrides(outcome);
 		return;
 	}
 
@@ -2716,11 +2854,22 @@ function reportSync(
 		total === 0 &&
 		outcome.keptModified.length === 0 &&
 		outcome.keptRenamed.length === 0 &&
-		outcome.keptEdited.length === 0
+		outcome.keptEdited.length === 0 &&
+		outcome.overridden.length === 0
 	) {
 		line("Everything in this folder already matched.");
 	}
 	reportKeptEdits(outcome, opts);
+	reportOverrides(outcome);
+}
+
+/** The local overrides this run left alone, and the ones published moved under. */
+function reportOverrides(outcome: SyncOutcome): void {
+	listPaths("local override", outcome.overridden);
+	listPaths(
+		"published changed under your override",
+		outcome.overriddenPublishedChanged,
+	);
 }
 
 /**
@@ -2777,12 +2926,21 @@ interface PushOutcome {
 	dryRun: boolean;
 	/** `--publish`: what this push ASKED for, known before anything is sent. */
 	publish: boolean;
-	/** The snapshot the change set was stated against — the lock's. */
+	/**
+	 * The snapshot the change set was stated against: the lock's, or under
+	 * `--rebase` the published one the edits were merged onto.
+	 */
 	baseSnapshotId: string;
 	baseVersion: number;
+	/** Under `--rebase`, the version the lock names; otherwise null. */
+	rebasedFromVersion: number | null;
+	/** Under `--rebase`, the paths whose merged text was written into the checkout. */
+	merged: string[];
 	put: string[];
 	deleted: string[];
 	unchanged: number;
+	/** Local overrides this push left out: never sent, `--add` included. */
+	overridden: string[];
 	/**
 	 * Changes left out because one of the caller's open proposals already
 	 * carries them (Fizzy #2739), each with the newest proposal that does.
@@ -2854,9 +3012,11 @@ interface PushOutcome {
  *
  * The diff is computed against `.fabric/instructions.lock` — the snapshot the
  * last sync applied — and that snapshot id is sent as the base. A push whose
- * base is no longer the published version is REFUSED rather than rebased: the
- * spec's `PULL_FIRST` rule (§6.12), and the reason there is no server-side
- * merge in any version.
+ * base is no longer the published version is REFUSED with `PULL_FIRST`,
+ * unless `--rebase` asks for the edits to be merged onto the published
+ * version first (`lib/instructions/rebase-push.ts`). The merge happens HERE,
+ * in the checkout, where a conflict can be resolved; the server still only
+ * accepts a change set stated against the version it currently publishes.
  *
  * The published manifest is fetched FIRST, and it decides two things before a
  * file is opened: whether the lock still names the published version, and
@@ -2891,6 +3051,7 @@ async function runPush(
 		message?: string;
 		wait?: boolean;
 		includeProposed?: boolean;
+		rebase?: boolean;
 		dryRun?: boolean;
 	},
 	format: OutputFormat,
@@ -2901,6 +3062,13 @@ async function runPush(
 	if (opts.message !== undefined && opts.publish) {
 		throw new CliFailure(
 			"--message describes a suggestion for review; --publish makes a version directly, which carries no message. Drop one of them.",
+			2,
+		);
+	}
+	// A merge nobody has looked at is not something to publish unreviewed.
+	if (opts.rebase && opts.publish) {
+		throw new CliFailure(
+			"--rebase proposes your merged edits for review; it cannot be combined with --publish. Drop one of them.",
 			2,
 		);
 	}
@@ -2916,6 +3084,12 @@ async function runPush(
 		PUSH_TIMEOUT_MS,
 	);
 	const published = await fetchPublished(client, opts);
+	if (opts.rebase && published.sourceOfTruth !== "UPLOAD") {
+		throw new CliFailure(
+			"--rebase merges onto a newer uploaded version; this project's instructions come from its repository, so bring your checkout up to date with git instead. Nothing was sent.",
+			2,
+		);
+	}
 	const direct = directRepositoryRead(published);
 	if (direct && published.repository) {
 		await runNativeInstructionPush({
@@ -2952,22 +3126,97 @@ async function runPush(
 			4,
 		);
 	}
-	if (published.snapshot.id !== lock.snapshotId) {
+	const rebasing = published.snapshot.id !== lock.snapshotId;
+	if (rebasing && !opts.rebase) {
 		// Exactly what the server would answer, decided locally so nothing is
 		// read or sent first.
 		throw new CliFailure(pullFirstLine(), 7);
 	}
+	// The version the change set is stated against: the lock's, or under
+	// `--rebase` the published one the edits were merged onto.
+	const base = rebasing
+		? {
+				snapshotId: published.snapshot.id,
+				version: published.snapshot.version,
+			}
+		: { snapshotId: lock.snapshotId, version: lock.snapshotVersion };
 
-	const computed = await computePushPlan({
-		root,
-		lock,
-		manifest: published.manifest ?? [],
-		added: opts.add,
-	});
+	// The developer's local overrides are never sent, `--add` included, and
+	// an overridden `--add` path is not even read.
+	const isOverridden = overrideMatcher(await readLocalOverrides(root));
+	const added = (opts.add ?? []).filter((p) => !isOverridden(p));
+	let planned: { plan: PushPlan; overridden: string[] };
+	let merged: string[] = [];
+	if (rebasing) {
+		const rebased = await rebaseOntoPublished({
+			client,
+			projectId: opts.project,
+			org: orgSlugFor(opts),
+			root,
+			lock,
+			published: {
+				snapshot: published.snapshot,
+				manifest: published.manifest ?? [],
+			},
+			added,
+			isOverridden,
+			dryRun: Boolean(opts.dryRun),
+			timeoutMs: PUSH_TIMEOUT_MS,
+		});
+		if (rebased.kind === "conflicts") {
+			if (format === "json") {
+				printOutput(
+					{
+						projectId: opts.project,
+						destination: root,
+						dryRun: Boolean(opts.dryRun),
+						rebasedOnto: base,
+						conflicts: rebased.conflicts,
+						merged: rebased.merged,
+						overridden: rebased.overridden,
+					},
+					{ format: "json" },
+				);
+			} else {
+				for (const text of rebaseConflictLines(
+					rebased,
+					base.version,
+					fabricCommand("instructions push --rebase"),
+					Boolean(opts.dryRun),
+				)) {
+					line(text);
+				}
+			}
+			throw new CliFailure(
+				"The rebase stopped at a conflict; nothing was sent.",
+				7,
+			);
+		}
+		planned = rebased;
+		merged = rebased.merged;
+	} else {
+		planned = setAsideOverridden(
+			await computePushPlan({
+				root,
+				lock,
+				manifest: published.manifest ?? [],
+				added,
+			}),
+			isOverridden,
+		);
+	}
+	const computed = planned.plan;
+	const overridden = [
+		...planned.overridden,
+		...(opts.add ?? []).filter((p) => isOverridden(p)),
+	].sort();
+	reportOverriddenLeftOut(overridden);
 
 	if (computed.entries.length === 0) {
 		throw new CliFailure(
-			`Nothing to push: every file the last sync wrote still matches version ${lock.snapshotVersion}. Add a new file with --add <path> if you meant to suggest one.`,
+			rebasing
+				? `Nothing to push: once merged onto version ${base.version}, none of your edits is left to send${overridden.length > 0 ? " apart from your local overrides" : ""}.`
+				: `Nothing to push: every file the last sync wrote still matches version ${lock.snapshotVersion}${overridden.length > 0 ? ", apart from your local overrides" : ""}. Add a new file with --add <path> if you meant to suggest one.`,
 			7,
 		);
 	}
@@ -2989,7 +3238,7 @@ async function runPush(
 			({ plan, alreadyProposed } = setAsideProposed(
 				computed,
 				lookup.proposals,
-				lock.snapshotId,
+				base.snapshotId,
 			));
 			openProposalCheck = { state: "checked", reason: null };
 		} else {
@@ -3018,8 +3267,10 @@ async function runPush(
 		destination: root,
 		dryRun: Boolean(opts.dryRun),
 		publish: Boolean(opts.publish),
-		baseSnapshotId: lock.snapshotId,
-		baseVersion: lock.snapshotVersion,
+		baseSnapshotId: base.snapshotId,
+		baseVersion: base.version,
+		rebasedFromVersion: rebasing ? lock.snapshotVersion : null,
+		merged,
 		put: plan.entries
 			.filter((entry) => entry.action === "put")
 			.map((entry) => entry.path),
@@ -3027,6 +3278,7 @@ async function runPush(
 			.filter((entry) => entry.action === "delete")
 			.map((entry) => entry.path),
 		unchanged: plan.unchanged.length,
+		overridden,
 		alreadyProposed: alreadyProposed.map((entry) => ({
 			path: entry.path,
 			action: entry.action,
@@ -3089,13 +3341,13 @@ async function runPush(
 			const submitted = opts.publish
 				? await client.instructions.publishChange(
 						opts.project,
-						lock.snapshotId,
+						base.snapshotId,
 						changes,
 						{ org: orgSlugFor(opts) },
 					)
 				: await client.instructions.submitChange(
 						opts.project,
-						lock.snapshotId,
+						base.snapshotId,
 						changes,
 						{ org: orgSlugFor(opts), ...(note ? { note } : {}) },
 					);
@@ -3112,6 +3364,9 @@ async function runPush(
 			}
 		} catch (error) {
 			throw asPushFailure(error);
+		}
+		if (rebasing) {
+			await clearRebaseState(root);
 		}
 	}
 
@@ -3163,6 +3418,21 @@ async function runPush(
 	}
 	if (verdict?.fails) {
 		throw new CliFailure(verdict.text, 7);
+	}
+}
+
+/** `rebasePush`, with the one failure it has its own sentence for. */
+async function rebaseOntoPublished(input: RebaseInput): Promise<RebaseOutcome> {
+	try {
+		return await rebasePush(input);
+	} catch (error) {
+		if (error instanceof PublishedChangedError) {
+			throw new CliFailure(
+				`A newer version was published while your edits were being merged. Nothing was sent; run \`${fabricCommand("instructions push --rebase")}\` again.`,
+				7,
+			);
+		}
+		throw error;
 	}
 }
 
@@ -3314,6 +3584,17 @@ function reportPush(outcome: PushOutcome): void {
 	);
 	listPaths("changed", outcome.put);
 	listPaths("deleted", outcome.deleted);
+	if (outcome.rebasedFromVersion !== null) {
+		line(
+			`Your edits since version ${outcome.rebasedFromVersion} were merged onto version ${outcome.baseVersion}.`,
+		);
+		listPaths(
+			outcome.dryRun
+				? "would merge both sides' changes"
+				: "merged both sides' changes (written into the checkout)",
+			outcome.merged,
+		);
+	}
 	reportAlreadyProposed(outcome);
 
 	if (outcome.dryRun) {
@@ -3416,27 +3697,30 @@ async function isEmptyFolder(folder: string): Promise<boolean> {
 /**
  * The Coding Instructions plugin's MCP server without a `/mcp` sign-in
  * (`mcp-token.ts`): one more browser approval, for the project's MCP gateway,
- * kept on this machine. Skipped for Codex, under `--no-mcp`, when there is
- * already one, and where no browser can be used (a hook, CI, no terminal).
- * A failure is not the set-up's: Claude Code then signs in through `/mcp`.
+ * kept on this machine. The plugin rendered after it then names
+ * `fabric mcp header` as its server's `headersHelper`, which Claude Code runs
+ * at every connection. Skipped for Codex, under `--no-mcp`, when there is
+ * already one, and where no browser can be used (a hook, CI, no terminal);
+ * `null` when it does not apply at all.
  */
-async function setUpMcpSignIn(
+async function signInForPluginMcp(
 	opts: CommonOptions,
 	tool: string | undefined,
 	mcp: boolean | undefined,
-): Promise<void> {
+): Promise<McpSignIn | null> {
 	if (
 		mcp === false ||
 		(tool !== undefined && tool !== "claude-code") ||
-		opts.project === undefined ||
-		!canPrompt() ||
-		runningInCi()
+		opts.project === undefined
 	) {
-		return;
+		return null;
+	}
+	if (!canPrompt() || runningInCi()) {
+		return "no-browser";
 	}
 	const origin = deploymentOrigin(opts);
 	if (hasMcpSignIn(origin, opts.project)) {
-		return;
+		return "already";
 	}
 	try {
 		await signInForMcp({
@@ -3444,24 +3728,18 @@ async function setUpMcpSignIn(
 			origin,
 			projectId: opts.project,
 			signal: AbortSignal.timeout(SIGN_IN_TIMEOUT_MS),
+			// The one line shown while the browser is waited on.
 			announce: (url) => {
 				process.stderr.write(
-					`One more approval: Fabric's MCP tools for Claude Code, so you never sign in through /mcp.
-If the browser does not open, visit:
-
-  ${url}
-
+					`… MCP sign-in: approve Fabric's MCP tools for Claude Code in the browser.
+  If the browser didn't open: ${url}
 `,
 				);
 			},
 		});
-		process.stderr.write(
-			"Claude Code's Fabric MCP server is signed in; it connects at the next session.\n",
-		);
+		return "signed-in";
 	} catch {
-		process.stderr.write(
-			"The MCP sign-in did not finish; in Claude Code, run /mcp and choose Authenticate for the Fabric server instead.\n",
-		);
+		return "failed";
 	}
 }
 
@@ -3475,6 +3753,7 @@ async function setUpCodeRepositories(
 	project: string,
 	org: string | undefined,
 	workspace: string,
+	summary: Summary,
 ): Promise<void> {
 	if (wanted !== true) {
 		return;
@@ -3488,8 +3767,84 @@ async function setUpCodeRepositories(
 			process.stderr.write(`${message}
 `),
 	});
-	process.stdout.write(`${describeOutcomes(outcomes)}
-`);
+	const label = "Repositories";
+	if (outcomes.length === 0) {
+		summary.add(
+			"skipped",
+			label,
+			"none connected besides the instructions",
+		);
+		return;
+	}
+	const failed = outcomes.filter((o) => o.status === "failed");
+	const details = outcomes.map((o) =>
+		o.status === "failed"
+			? `${REPOS_FOLDER}/${o.folder} (${o.name}): not cloned — ${o.hint}`
+			: `${REPOS_FOLDER}/${o.folder} (${o.name})${o.status === "present" ? " already here" : " cloned"}`,
+	);
+	if (failed.length === 0) {
+		summary.add(
+			"ok",
+			label,
+			outcomes
+				.map(
+					(o) =>
+						`${o.name} → ${REPOS_FOLDER}/${o.folder}${o.status === "present" ? " (already here)" : ""}`,
+				)
+				.join(", "),
+			details,
+		);
+		return;
+	}
+	summary.add(
+		"failed",
+		label,
+		`${failed.length} of ${outcomes.length} not cloned: ${failed.map((o) => o.name).join(", ")}`,
+		details,
+	);
+	for (const o of failed) {
+		if (o.status === "failed") {
+			summary.todo(`${o.name}: ${o.hint}.`);
+		}
+	}
+}
+
+/**
+ * The checklist, once, after every step has run. Under `--format json` the
+ * report on stdout stays the only thing there, so the steps after it go to
+ * stderr. A failed step fails the command; one that only needs the person's
+ * action does not.
+ */
+function finishInitSummary(
+	summary: Summary,
+	input: {
+		format: "text" | "json";
+		verbose: boolean;
+		/** The tools set up as a plugin; null when another path printed its own ending. */
+		tools: string[] | null;
+	},
+): void {
+	const names = [...new Set((input.tools ?? []).map(toolDisplayName))];
+	if (summary.steps.length > 0 || summary.next.length > 0) {
+		const text = renderSummary(summary, {
+			ascii: !supportsUnicodeMarks(),
+			verbose: input.verbose,
+			finally:
+				input.format === "json" || names.length === 0
+					? undefined
+					: `Start a new ${names.join(" or ")} session.`,
+		});
+		(input.format === "json" ? process.stderr : process.stdout).write(
+			`${text}\n`,
+		);
+	}
+	const failed = summary.failed;
+	if (failed > 0) {
+		throw new CliFailure(
+			`${failed === 1 ? "One step" : `${failed} steps`} of the set-up failed (marked above).`,
+			1,
+		);
+	}
 }
 
 async function cloneProjectRepository(

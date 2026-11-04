@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffectiveOrganizationId } from "@saas/organizations/hooks";
+import { createReportExecutionRequests } from "@saas/reports/lib/report-execution-request";
 import { Pagination } from "@saas/shared/components/Pagination";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -33,7 +34,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { parseAsInteger, useQueryState } from "nuqs";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 
 /**
@@ -67,6 +68,7 @@ export function TemplateInstancesList({
 			input: {
 				templateId,
 				organizationId,
+				status: ["ACTIVE", "DRAFT"],
 				limit: ITEMS_PER_PAGE,
 				offset: (Math.max(1, currentPage) - 1) * ITEMS_PER_PAGE,
 			},
@@ -74,13 +76,23 @@ export function TemplateInstancesList({
 		placeholderData: keepPreviousData,
 	});
 
+	const executionRequests = useRef(createReportExecutionRequests());
 	const executeMutation = useMutation(
 		orpc.reports.instances.execute.mutationOptions({
-			onSuccess: () => {
-				toast.success("Execution started");
-				refetch();
+			onSuccess: async (result, variables) => {
+				executionRequests.current.settle(
+					variables.instanceId,
+					result.status,
+				);
+				if (result.startConfirmed) {
+					toast.success("Execution started");
+				} else {
+					toast.info("Execution admitted; waiting for confirmation");
+				}
+				await refetch();
 			},
-			onError: (error) => {
+			onError: (error, variables) => {
+				executionRequests.current.failed(variables.instanceId);
 				toast.error(error.message || "Failed to execute");
 			},
 		}),
@@ -99,6 +111,14 @@ export function TemplateInstancesList({
 	);
 
 	const instances = data?.instances ?? [];
+	useEffect(() => {
+		for (const instance of data?.instances ?? []) {
+			executionRequests.current.observe(
+				instance.id,
+				instance.latestExecutionStatus ?? undefined,
+			);
+		}
+	}, [data]);
 
 	const total = data?.total ?? 0;
 	const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE));
@@ -117,7 +137,11 @@ export function TemplateInstancesList({
 	}, [data, isPlaceholderData, currentPage, totalPages, setCurrentPage]);
 
 	const handleExecute = (instanceId: string) => {
-		executeMutation.mutate({ instanceId, organizationId });
+		const idempotencyKey = executionRequests.current.begin(instanceId);
+		if (!idempotencyKey) {
+			return;
+		}
+		executeMutation.mutate({ instanceId, organizationId, idempotencyKey });
 	};
 
 	const handleDelete = (id: string) => {
@@ -195,7 +219,11 @@ export function TemplateInstancesList({
 									}
 									className="text-xs"
 								>
-									{instance.isActive ? "Active" : "Paused"}
+									{instance.setupRequiredReason
+										? "Setup required"
+										: instance.isActive
+											? "Active"
+											: "Paused"}
 								</Badge>
 								{instance.schedule &&
 									instance.scheduleMode !== "OFF" && (
@@ -251,6 +279,13 @@ export function TemplateInstancesList({
 										}
 										disabled={
 											!instance.isActive ||
+											executionRequests.current.isPending(
+												instance.id,
+											) ||
+											instance.latestExecutionStatus ===
+												"PENDING" ||
+											instance.latestExecutionStatus ===
+												"RUNNING" ||
 											executeMutation.isPending
 										}
 									>

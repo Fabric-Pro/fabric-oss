@@ -217,6 +217,28 @@ describe("templates.delete", () => {
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(mocks.deleteReportTemplate).not.toHaveBeenCalled();
 	});
+
+	it("refuses a platform admin deleting a SYSTEM template", async () => {
+		mocks.isPlatformAdmin.mockResolvedValue(true);
+		mocks.getReportTemplate.mockResolvedValue(systemTemplate);
+		await expect(
+			mocks.handlers.delete({
+				input: { id: systemTemplate.id },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(mocks.deleteReportTemplate).not.toHaveBeenCalled();
+	});
+
+	it("lets an organization admin delete an organization template", async () => {
+		mocks.getOrganizationMembership.mockResolvedValue({ role: "admin" });
+		mocks.getReportTemplate.mockResolvedValue(orgTemplate);
+		await mocks.handlers.delete({
+			input: { id: orgTemplate.id },
+			context: ctx,
+		});
+		expect(mocks.deleteReportTemplate).toHaveBeenCalledWith(orgTemplate.id);
+	});
 });
 
 describe("templates.archive / templates.unarchive", () => {

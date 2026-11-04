@@ -82,6 +82,7 @@ const ORG_VERIFIERS = new Set([
 
 /** Calls whose FIRST argument may be the input organization. */
 const SANCTIONED_FIRST_ARG = new Set([
+	"resolveBoundOrganization",
 	"resolveOrganizationId",
 	"resolveOrganizationIdForCaller",
 	"resolveSourceCredentialOrganizationId",
@@ -715,7 +716,10 @@ function findProcedureFiles(dir: string): string[] {
 		}
 		if (
 			!dir.includes(`${sep}procedures${sep}`) &&
-			!dir.endsWith("procedures")
+			!dir.endsWith("procedures") &&
+			// Some modules declare real handlers inline in their router rather
+			// than under procedures/. They owe the same organization checks.
+			entry.name !== "router.ts"
 		) {
 			continue;
 		}
@@ -742,6 +746,11 @@ function rawConsumerFiles(): string[] {
 }
 
 describe("input-org raw-consumer ratchet (Fizzy #2904)", () => {
+	it("includes inline module router handlers in its discovery", () => {
+		expect(findProcedureFiles(modulesRoot)).toContain(
+			resolve(modulesRoot, "context-quality/router.ts"),
+		);
+	});
 	it("introduces no new procedure that consumes the input organization directly", () => {
 		const known = new Set(baseline as string[]);
 		const consumers = rawConsumers();

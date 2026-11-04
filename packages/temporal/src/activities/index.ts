@@ -9,7 +9,26 @@ export * from "./agent-execution";
 // Durable AG-UI agent runs (CopilotKit document, feature and topic assistants)
 export { runAgUiAgentActivity } from "./ag-ui-agent-run";
 // Shared agent execution core module (reusable by deployment-execution, template-instance, etc.)
-export * from "./agent-execution-core";
+// Keep the shared executeAgentTurn helper out of worker registration.
+export {
+	loadMcpToolsForAgent,
+	previewAgentTurn,
+	buildAgentExecutionContext,
+	buildSystemPrompt,
+	buildUserInputContext,
+	executeSavedAgentModelStep,
+	executeSavedAgentToolStep,
+	extractBuiltInToolNames,
+	extractMcpConfigIds,
+	buildKnowledgeContextPrompt,
+	fetchKnowledgeSources,
+	type PreviewAgentTurnInput,
+	type PreviewAgentTurnResult,
+	type ConnectionMappings,
+	type InstanceConfig,
+	type TemplateConfig,
+} from "./agent-execution-core";
+export type * from "./agent-execution-core/types";
 // Agent health monitor activities (scheduled health checks for registered agents)
 export {
 	type AgentHealthCheckTarget,
@@ -507,11 +526,14 @@ export {
 export {
 	buildExecutionContext,
 	completeExecution,
+	completeDurableDeploymentProjection,
 	type DeploymentConfig as DeploymentExecutionConfig,
 	type ExecutionContext,
 	fetchKnowledge,
 	type InvokeAgentResult,
 	invokeDeploymentAgent,
+	prepareDeploymentAgentTurn,
+	finishDeploymentAgentTurn,
 	loadConversationHistory,
 	loadDeploymentConfiguration,
 	saveConversationMessages,
@@ -664,10 +686,13 @@ export {
 	type CreateGoalOrientedPlanInput,
 	type CreateGoalOrientedPlanOutput,
 	completeGoalExecution,
+	completeDurableGoalProjection,
 	createGoalOrientedPlan,
 	type ExecuteGoalStepInput,
 	type ExecuteGoalStepOutput,
 	executeGoalStep,
+	prepareGoalStep,
+	finishGoalStep,
 	type RecoveryInput,
 	type RecoveryOutput,
 	type VerifyGoalInput,
@@ -1295,7 +1320,10 @@ export {
 	writeSandboxFile,
 } from "./sandbox";
 // Schedule trigger activities (for Temporal scheduled executions)
-export { signalSupervisorForScheduledExecution } from "./schedule-trigger";
+export {
+	signalSupervisorForScheduledExecution,
+	dispatchManagedAgentScheduledExecution,
+} from "./schedule-trigger";
 // Scheduled report activities (fire due report instances on a 15-min Temporal Schedule)
 export {
 	dispatchScheduledReportActivity,
@@ -1418,31 +1446,14 @@ export {
 	type PublishSyncedContextDeletedInput,
 	publishSyncedContextDeleted,
 } from "./synced-context-deletion";
-// Task Agent activities (Weft-style agent execution for story tasks)
+// Live URL retrieval activities used by project analysis.
 export {
-	type AddWorkflowLogInput,
-	type AgentMessage,
-	addWorkflowLog,
-	type BroadcastProgressInput,
-	broadcastProgress,
-	type ExecuteAgentTurnInput,
-	type ExecuteAgentTurnOutput,
-	type ExecuteMcpToolInput,
-	executeAgentTurn,
-	executeTaskAgentTool,
+	gatherLiveUrlSources,
 	formatLiveUrlSourcesForPrompt,
 	type GatherLiveUrlSourcesInput,
-	gatherLiveUrlSources,
-	type InitializeWorkflowPlanInput,
-	initializeWorkflowPlan,
-	type LiveUrlContent,
 	type LiveUrlContentMode,
-	type LoadMcpConfigurationInput,
-	loadMcpConfiguration,
-	type MCPConfiguration,
-	type UpdateWorkflowPlanInput,
-	updateWorkflowPlan,
-} from "./task-agent";
+	type LiveUrlContent,
+} from "./live-url-sources";
 // Teams Channel Monitor activities (scheduled poll of linked Teams channels for backlog proposals)
 export {
 	type AnalyzeChannelThreadInput,
@@ -1636,3 +1647,15 @@ export {
 export { findStaleWeaveSessions as findStaleWeaveSessionsWithRuntime } from "./weave/watchdog-activities";
 export * from "./project-chunking";
 export * from "./chunking-analysis";
+
+export {
+	executeSavedContextQualityEvaluation,
+	settleCancelledContextQualityEvaluation,
+} from "./context-quality-evaluation";
+
+export { recoverContextQualityEvaluations } from "./context-quality-recovery";
+export { recoverAgentExecutionReceipts } from "./agent-execution-receipt-recovery";
+export {
+	registerNativeAgentExecutionReceipt,
+	completeNativeAgentExecution,
+} from "./agent-execution-native-receipt";

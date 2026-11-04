@@ -303,6 +303,17 @@ export interface CreateInstructionFileDownloadsInput {
 	paths: string[];
 }
 
+/** Named files of a version that was published, which may since have been replaced. */
+export interface InstructionVersionFileDownloads {
+	snapshotId: string;
+	version: number;
+	digest: string;
+	files: InstructionFileDownload[];
+	/** The asked-for paths that version does not hold. */
+	missing: string[];
+	expiresInSeconds: number;
+}
+
 export interface GetPublishedInstructionsOptions {
 	/** The digest already held locally; turns the call into a delta. */
 	sinceDigest?: string;
@@ -788,6 +799,29 @@ export class InstructionsResource {
 	}
 
 	/**
+	 * Short-lived signed URLs for named files of a version that WAS published,
+	 * by its `snapshotId`, such as the one `.fabric/instructions.lock` names
+	 * after the published version has moved on. `fabric instructions push
+	 * --rebase` reads it as the common base of a three-way merge.
+	 *
+	 * A snapshot that was never published, or is not this project's, is a 404.
+	 * Paths the version does not hold come back in `missing`. Requires a key
+	 * with `instructions:read`; builds nothing, so the client's normal retry
+	 * policy applies.
+	 */
+	createVersionFileDownloadUrls(
+		projectId: string,
+		snapshotId: string,
+		paths: string[],
+		options: CreateInstructionDownloadOptions = {},
+	): Promise<InstructionVersionFileDownloads> {
+		return this.http.post<InstructionVersionFileDownloads>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/versions/${encodeURIComponent(snapshotId)}/files${buildQuery(options)}`,
+			{ paths },
+		);
+	}
+
+	/**
 	 * Suggest a change to the project's coding instructions.
 	 *
 	 * It opens a PROPOSAL and only a proposal: nothing is published until
@@ -804,9 +838,11 @@ export class InstructionsResource {
 	 * `getPublished`, or the one recorded in `.fabric/instructions.lock`. A
 	 * base that is no longer the published version comes back as a 409 whose
 	 * `FabricError.code` is `PULL_FIRST`, meaning sync and make the change
-	 * again. It has no default on purpose: falling back to whatever is
-	 * published now would silently rebase an edit onto a version the caller
-	 * never read. The other codes this call can answer with are
+	 * again, or merge the change onto the published version first and state
+	 * it against that one (what `fabric instructions push --rebase` does,
+	 * reading the old version through `createVersionFileDownloadUrls`). It
+	 * has no default on purpose: falling back to whatever is published now
+	 * would silently rebase an edit onto a version the caller never read. The other codes this call can answer with are
 	 * `NOTHING_PUBLISHED`, `PROPOSAL_PROPOSER_LIMIT`, `PROPOSAL_PROJECT_LIMIT`,
 	 * `NOTE_REJECTED` (422, `data.field` names the field) and, for a project
 	 * whose instructions come from its repository, `REPOSITORY_UNAVAILABLE`

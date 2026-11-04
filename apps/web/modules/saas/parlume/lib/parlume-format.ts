@@ -14,6 +14,10 @@ export type ParlumeRequest = Awaited<
 
 export type ParlumeAction = ParlumeRequest["actions"][number];
 
+export type ParlumeSuggestionItem = Awaited<
+	ReturnType<typeof orpcClient.projects.parlume.suggestions>
+>["items"][number];
+
 export type ParlumeAgent = Awaited<
 	ReturnType<typeof orpcClient.projects.parlume.listAgents>
 >["agents"][number];

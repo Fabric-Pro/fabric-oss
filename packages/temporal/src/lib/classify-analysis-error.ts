@@ -1,6 +1,6 @@
 /**
  * Classify any error thrown by the AI Update generate-path LLM call
- * (`analyzeContextAndPropose` → model resolution + `generateObject`) into a
+ * (`analyzeContextAndPropose` → model resolution + structured `generateText`) into a
  * stable `errorClass`, an actionable user message, and structured log fields.
  *
  * Bug #391: that call site was previously unguarded, so failures surfaced as an
@@ -256,7 +256,7 @@ function isContentFilterFinish(error: unknown): boolean {
  * Fizzy #2395: recognise a structured-output validation failure anywhere in the
  * cause chain, not just at the leaf `descendToProviderError` lands on.
  *
- * `generateObject` reports a schema rejection as a three-link chain —
+ * `Output.object` reports a schema rejection as a three-link chain —
  * `NoObjectGeneratedError` → `.cause` `TypeValidationError` → `.cause`
  * `ZodError`. `descendToProviderError` (added for #1681 to reach a provider
  * `statusCode`) walks straight past both wrappers to that `ZodError` leaf
@@ -378,7 +378,7 @@ export function classifyBacklogAnalysisError(
 		return build("provider_content_filter", probe, { statusCode });
 	}
 
-	// 4) Structured-output parse failure from `generateObject`. The marker walk
+	// 4) Structured-output parse failure from `Output.object`. The marker walk
 	// runs on the original error and catches the real AI SDK chain (#2395); the
 	// regex stays for the name-only shapes that reach here without markers —
 	// a re-thrown or serialized error, and the tests that construct one.

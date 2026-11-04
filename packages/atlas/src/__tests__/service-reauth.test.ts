@@ -26,7 +26,7 @@ vi.mock("../credentials", () => ({ ensureFreshRepoCredentials: vi.fn() }));
 vi.mock("../commits", () => ({ countCommitsSince: vi.fn() }));
 
 // The clone-auth helpers moved to `@repo/integrations`; keep the real pure
-// helpers (buildAuthCloneUrl, isGitAuthError) and stub only the two async
+// helpers (gitAuthForClone, isGitAuthError) and stub only the two async
 // recovery functions the reauth path drives.
 vi.mock("@repo/integrations", async (importActual) => ({
 	...(await importActual<typeof import("@repo/integrations")>()),
@@ -63,6 +63,9 @@ vi.mock("simple-git", () => ({
 		revparse: (...a: unknown[]) => mockRevparse(...a),
 		show: (...a: unknown[]) => mockShow(...a),
 		raw: (...a: unknown[]) => mockRaw(...a),
+		env() {
+			return this;
+		},
 	})),
 }));
 

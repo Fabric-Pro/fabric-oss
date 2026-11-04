@@ -50,6 +50,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import type { UnsupportedContent } from "../activities/url-source/lib/unsupported-content";
 import {
 	type ContextOwner,
 	contextOwnerTaskQueue,
@@ -92,26 +93,132 @@ export type UrlCrawlFailureErrorType =
 	| "TIMEOUT"
 	| "UNKNOWN";
 
-export function classifyFailureStage(error: unknown): UrlCrawlFailureStage {
-	if (error instanceof ActivityFailure) {
-		const at = error.activityType;
-		if (at === "firecrawlScrapeActivity") {
-			return "firecrawl-scrape";
-		}
-		if (at === "firecrawlCrawlActivity") {
-			return "firecrawl-crawl";
-		}
-		if (at === "embedUrlPageActivity") {
-			return "embed";
-		}
-		if (at === "embedSingleContextActivity") {
-			return "embed";
-		}
-		if (at === "upsertUrlPageActivity") {
-			return "upsert";
-		}
+function stageOfActivity(at: string | undefined): UrlCrawlFailureStage {
+	if (at === "firecrawlScrapeActivity") {
+		return "firecrawl-scrape";
+	}
+	if (at === "firecrawlCrawlActivity") {
+		return "firecrawl-crawl";
+	}
+	if (at === "embedUrlPageActivity") {
+		return "embed";
+	}
+	if (at === "embedSingleContextActivity") {
+		return "embed";
+	}
+	if (at === "upsertUrlPageActivity") {
+		return "upsert";
 	}
 	return "unknown";
+}
+
+export function classifyFailureStage(error: unknown): UrlCrawlFailureStage {
+	if (error instanceof ActivityFailure) {
+		return stageOfActivity(error.activityType);
+	}
+	// An unsupported content type the activity reported as an outcome is
+	// raised by the workflow itself (`unsupportedContentFailure`), so it
+	// carries the activity that reported it to keep the same stage.
+	const reported = unsupportedContentDetails(error);
+	if (reported) {
+		return stageOfActivity(reported.activityType);
+	}
+	return "unknown";
+}
+
+// ---------------------------------------------------------------------------
+// Unsupported content type: an expected skip, not an error
+// ---------------------------------------------------------------------------
+
+const UNSUPPORTED_CONTENT_TYPE_FAILURE = "FIRECRAWL_UNSUPPORTED_CONTENT_TYPE";
+
+interface UnsupportedContentDetails {
+	statusCode: null;
+	activityType: string;
+	contentType?: string;
+}
+
+/**
+ * The failure the activity used to throw for a URL whose file type cannot be
+ * indexed (an image, an archive), rebuilt from the outcome it now returns.
+ *
+ * The Firecrawl activities now report `UNSUPPORTED_CONTENT_TYPE` as an
+ * `unsupported` result, so the worker no longer logs an exception for it.
+ * The workflow raises this in place of the old activity failure, inside the
+ * same `try`, so the same `catch` blocks handle it: the same page record
+ * (permanent), the same prune, the same final status and the same message
+ * (`extractMeaningfulErrorMessage` reads this message just as it read the
+ * old failure's cause). Raising and catching it schedules no command.
+ *
+ * The catch blocks still handle the activity failure itself, unchanged:
+ * histories recorded before the change contain `ActivityTaskFailed` for
+ * these URLs and must replay down the same path with the same commands, and
+ * a scrape that an older activity worker runs during a rollout still throws.
+ * A history recorded after it contains `ActivityTaskCompleted` with the
+ * outcome and replays through the check below. Both paths schedule the same
+ * commands in the same order, so no `patched()` marker is needed; the
+ * `reportUnsupportedContent` flag is an activity input, which replay does
+ * not compare.
+ */
+export function unsupportedContentFailure(
+	unsupported: UnsupportedContent,
+	activityType:
+		| "firecrawlScrapeActivity"
+		| "firecrawlCrawlActivity"
+		| "firecrawlMapActivity",
+): ApplicationFailure {
+	const details: UnsupportedContentDetails = {
+		statusCode: null,
+		activityType,
+		...(unsupported.contentType !== undefined
+			? { contentType: unsupported.contentType }
+			: {}),
+	};
+	return ApplicationFailure.create({
+		message: unsupported.message,
+		type: UNSUPPORTED_CONTENT_TYPE_FAILURE,
+		nonRetryable: true,
+		details: [details],
+	});
+}
+
+function unsupportedContentDetails(
+	error: unknown,
+): UnsupportedContentDetails | undefined {
+	if (
+		!(error instanceof ApplicationFailure) ||
+		error.type !== UNSUPPORTED_CONTENT_TYPE_FAILURE
+	) {
+		return undefined;
+	}
+	const first: unknown = error.details?.[0];
+	if (
+		typeof first === "object" &&
+		first !== null &&
+		typeof (first as { activityType?: unknown }).activityType === "string"
+	) {
+		return first as UnsupportedContentDetails;
+	}
+	return undefined;
+}
+
+/**
+ * Whether a failure is an unsupported content type: either the outcome an
+ * activity reported (raised by `unsupportedContentFailure`) or, in a history
+ * recorded before that, the activity's own non-retryable failure. Either is
+ * an expected skip and is logged as a warning, not an error.
+ */
+export function isUnsupportedContentSkip(error: unknown): boolean {
+	const cause = error instanceof ActivityFailure ? error.cause : error;
+	return (
+		cause instanceof ApplicationFailure &&
+		cause.type === UNSUPPORTED_CONTENT_TYPE_FAILURE
+	);
+}
+
+/** The content type an unsupported-content failure names, if known. */
+function unsupportedContentType(error: unknown): string | undefined {
+	return unsupportedContentDetails(error)?.contentType;
 }
 
 /**
@@ -744,7 +851,14 @@ export async function urlSourceCrawlWorkflow(
 					...(providerEndpoint !== undefined
 						? { providerEndpoint }
 						: {}),
+					reportUnsupportedContent: true,
 				});
+				if (page.unsupported) {
+					throw unsupportedContentFailure(
+						page.unsupported,
+						"firecrawlScrapeActivity",
+					);
+				}
 			} catch (scrapeError) {
 				await recordRetryFailure(scrapeError, "fetch");
 				throw scrapeError;
@@ -810,7 +924,14 @@ export async function urlSourceCrawlWorkflow(
 				apiKey,
 				...(providerName !== undefined ? { providerName } : {}),
 				...(providerEndpoint !== undefined ? { providerEndpoint } : {}),
+				reportUnsupportedContent: true,
 			});
+			if (page.unsupported) {
+				throw unsupportedContentFailure(
+					page.unsupported,
+					"firecrawlScrapeActivity",
+				);
+			}
 
 			// Store markdown directly on the parent row (matches the legacy
 			// LINK behavior — no child rows for single-page sources). The
@@ -959,7 +1080,14 @@ export async function urlSourceCrawlWorkflow(
 				...(providerName !== undefined ? { providerName } : {}),
 				...(includePaths.length > 0 ? { includePaths } : {}),
 				limit: maxPages,
+				reportUnsupportedContent: true,
 			});
+			if (mapResult.unsupported) {
+				throw unsupportedContentFailure(
+					mapResult.unsupported,
+					"firecrawlMapActivity",
+				);
+			}
 
 			log.info("[UrlSourceCrawl] map returned urls", {
 				contextId,
@@ -1093,7 +1221,7 @@ export async function urlSourceCrawlWorkflow(
 					discoveredLinks?: string[];
 				};
 				try {
-					page = await firecrawlScrapeForCrawlActivity({
+					const scraped = await firecrawlScrapeForCrawlActivity({
 						url: targetUrl,
 						apiKey,
 						...(providerName !== undefined ? { providerName } : {}),
@@ -1103,15 +1231,34 @@ export async function urlSourceCrawlWorkflow(
 						...(discoverLinks !== undefined
 							? { discoverLinks }
 							: {}),
+						reportUnsupportedContent: true,
 					});
+					if (scraped.unsupported) {
+						throw unsupportedContentFailure(
+							scraped.unsupported,
+							"firecrawlScrapeActivity",
+						);
+					}
+					page = scraped;
 				} catch (scrapeError) {
-					log.warn("[UrlSourceCrawl] per-url scrape failed", {
-						pageUrl: targetUrl,
-						reason:
-							scrapeError instanceof Error
-								? scrapeError.message
-								: String(scrapeError),
-					});
+					if (isUnsupportedContentSkip(scrapeError)) {
+						log.warn(
+							"[UrlSourceCrawl] URL is a file type that cannot be indexed; skipped (expected)",
+							{
+								pageUrl: targetUrl,
+								contentType:
+									unsupportedContentType(scrapeError),
+							},
+						);
+					} else {
+						log.warn("[UrlSourceCrawl] per-url scrape failed", {
+							pageUrl: targetUrl,
+							reason:
+								scrapeError instanceof Error
+									? scrapeError.message
+									: String(scrapeError),
+						});
+					}
 					// Record the failure on the page at the requested URL —
 					// the only URL known when the scrape fails — with the
 					// real cause, not the "Activity task failed" wrapper; the
@@ -1275,7 +1422,7 @@ export async function urlSourceCrawlWorkflow(
 			// all scrapes + returns the full list. Kept ONLY so old
 			// histories replay deterministically. New crawls take the
 			// patched branch above.
-			const legacyPages = await firecrawlCrawlActivity({
+			const crawled = await firecrawlCrawlActivity({
 				url,
 				apiKey,
 				...(providerName !== undefined ? { providerName } : {}),
@@ -1283,7 +1430,15 @@ export async function urlSourceCrawlWorkflow(
 					includePaths.length > 0 ? includePaths : undefined,
 				limit: maxPages,
 				sitemap: "include",
+				reportUnsupportedContent: true,
 			});
+			if (!Array.isArray(crawled)) {
+				throw unsupportedContentFailure(
+					crawled.unsupported,
+					"firecrawlCrawlActivity",
+				);
+			}
+			const legacyPages = crawled;
 
 			log.info("[UrlSourceCrawl] crawl returned pages", {
 				contextId,
@@ -1587,12 +1742,31 @@ export async function urlSourceCrawlWorkflow(
 		const failureStage = classifyFailureStage(error);
 		const failureErrorType = classifyFailureErrorType(error);
 
-		log.error("[UrlSourceCrawl] failed", {
-			contextId,
-			error: errorMessage,
-			stage: failureStage,
-			errorType: failureErrorType,
-		});
+		// A source that is itself a file type that cannot be indexed ends
+		// FAILED with the same message as before, but it is an expected
+		// outcome, so it is a warning, not an error.
+		if (isUnsupportedContentSkip(error)) {
+			log.warn(
+				"[UrlSourceCrawl] URL is a file type that cannot be indexed; skipped (expected)",
+				{
+					contextId,
+					url:
+						mode === "retry-single-page"
+							? (retryPageUrl ?? url)
+							: url,
+					contentType: unsupportedContentType(error),
+					error: errorMessage,
+					stage: failureStage,
+				},
+			);
+		} else {
+			log.error("[UrlSourceCrawl] failed", {
+				contextId,
+				error: errorMessage,
+				stage: failureStage,
+				errorType: failureErrorType,
+			});
+		}
 
 		// Group 10.1 telemetry: `project_context_url_crawl_failed`. Server-side
 		// emitted as a structured log event tagged `analytics_event` so the

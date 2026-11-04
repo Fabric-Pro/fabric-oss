@@ -157,10 +157,10 @@ export function WorkspacesSheet({
 			<SheetContent className="w-full sm:max-w-xl flex flex-col p-0">
 				<SheetHeader className="px-6 pt-6 pb-4 border-b">
 					<SheetTitle className="text-xl">
-						Select Libraries
+						Select Workspaces
 					</SheetTitle>
 					<SheetDescription>
-						Choose libraries to give your agent access to for
+						Choose workspaces to give your agent access to for
 						knowledge retrieval (RAG)
 					</SheetDescription>
 				</SheetHeader>
@@ -170,7 +170,7 @@ export function WorkspacesSheet({
 					<div className="relative">
 						<SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
 						<SearchInput
-							placeholder="Search libraries..."
+							placeholder="Search workspaces..."
 							value={searchQuery}
 							onChange={(e) => setSearchQuery(e.target.value)}
 							className="pl-10 bg-background"
@@ -193,12 +193,12 @@ export function WorkspacesSheet({
 								<FolderIcon className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
 								<p className="text-muted-foreground mb-2">
 									{searchQuery
-										? "No libraries match your search"
-										: "No libraries found"}
+										? "No workspaces match your search"
+										: "No workspaces found"}
 								</p>
 								<p className="text-sm text-muted-foreground">
-									Create a library first to add documents for
-									your agent to access.
+									Create a workspace first to add documents
+									for your agent to access.
 								</p>
 							</div>
 						)}
@@ -211,8 +211,8 @@ export function WorkspacesSheet({
 									<span className="text-sm text-muted-foreground">
 										{workspaces.length}{" "}
 										{workspaces.length === 1
-											? "library"
-											: "libraries"}{" "}
+											? "workspace"
+											: "workspaces"}{" "}
 										available
 									</span>
 									<div className="flex gap-2">
@@ -473,11 +473,8 @@ export function WorkspacesSheet({
 							>
 								Cancel
 							</Button>
-							<Button
-								onClick={() => onOpenChange(false)}
-								className="bg-emerald-500 hover:bg-emerald-600"
-							>
-								Add libraries
+							<Button onClick={() => onOpenChange(false)}>
+								Add workspaces
 							</Button>
 						</div>
 					</div>

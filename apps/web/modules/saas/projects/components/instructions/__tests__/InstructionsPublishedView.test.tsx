@@ -335,6 +335,10 @@ vi.mock("../InstructionFileView", () => ({
 		);
 	},
 }));
+// Reads the project's members; covered by its own tests.
+vi.mock("../InstructionReviewPolicySection", () => ({
+	InstructionReviewPolicySection: () => null,
+}));
 /** The props the proposals dialog was last mounted with. */
 const proposalsProps: Array<Record<string, unknown>> = [];
 vi.mock("../InstructionProposals", () => ({
