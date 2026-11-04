@@ -6,7 +6,10 @@ import { getSessionCookie } from "better-auth/cookies";
 import { NextRequest, NextResponse } from "next/server";
 import createMiddleware from "next-intl/middleware";
 import { withQuery } from "ufo";
-import { LOCALE_REWRITE_HEADER } from "./lib/locale-rewrite";
+import {
+	LOCALE_REWRITE_HEADER,
+	type PROXY_PRIMARY_MATCHER_SOURCE,
+} from "./lib/locale-rewrite";
 
 const intlMiddleware = createMiddleware(routing);
 const DEFAULT_LOCALE = "en";
@@ -468,8 +471,11 @@ export const config = {
 	// `mcp(?:/|$)` and not `mcp`: the MCP endpoint is /mcp and /mcp/..., and a
 	// bare prefix also skipped /mcp-registry, which then 404'd because only the
 	// locale rewrite reaches (marketing)/[locale]/mcp-registry.
+	// Next.js parses `export const config` statically from the AST (rejecting
+	// identifiers and `.join()`), so keep this entry a literal synced with
+	// `PROXY_EXCLUDED_PATH_PATTERNS` in `./lib/locale-rewrite`.
 	matcher: [
-		"/((?!api|mcp(?:/|$)|\\.well-known|cli/|image-proxy|images|integrations|fonts|fabric-web-assets|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|docs-sitemap\\.xml|robots.txt|llms\\.txt|llms-full\\.txt).*)",
+		"/((?!api|mcp(?:/|$)|\\.well-known|cli/|image-proxy|images|integrations|fonts|fabric-web-assets|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|docs-sitemap\\.xml|robots.txt|llms\\.txt|llms-full\\.txt).*)" satisfies typeof PROXY_PRIMARY_MATCHER_SOURCE,
 		// Microfrontends: the flag needs to see these to route them (see
 		// MICROFRONTENDS_ONLY_PATHS); the pattern above skips them. It also
 		// skips /fabric-web-assets, fabric-web's asset prefix, which Vercel

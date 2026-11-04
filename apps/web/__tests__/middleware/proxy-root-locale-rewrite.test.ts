@@ -23,11 +23,30 @@ vi.mock("next-intl/navigation", () => ({
 	createNavigation: () => ({}),
 }));
 
-import { LOCALE_REWRITE_HEADER } from "../../lib/locale-rewrite";
+import {
+	LOCALE_REWRITE_HEADER,
+	NON_PROXY_SUBPATH_SOURCE,
+	PROXY_EXCLUDED_PATH_PATTERNS,
+	PROXY_PRIMARY_MATCHER_SOURCE,
+} from "../../lib/locale-rewrite";
 import proxy, { config as proxyConfig } from "../../proxy";
 
 const APP_ROOT = path.resolve(__dirname, "../..");
 const requireNext = createRequire(import.meta.url);
+const { getPageStaticInfo } = requireNext(
+	"next/dist/build/analysis/get-page-static-info",
+) as {
+	getPageStaticInfo: (params: {
+		pageFilePath: string;
+		nextConfig: Record<string, unknown>;
+		isDev: boolean;
+		page: string;
+		pageType: "pages" | "app";
+	}) => Promise<{
+		hadUnsupportedValue: boolean;
+		middleware?: { matchers?: unknown[] };
+	}>;
+};
 const loadConfig = requireNext("next/dist/server/config").default as (
 	phase: string,
 	dir: string,
@@ -91,15 +110,68 @@ const { parseUrl } = requireNext(
 	};
 };
 
+let loadedNextConfig: Record<string, unknown> = {};
 let beforeFilesRoutes: ReturnType<typeof buildCustomRoute>[] = [];
 
 beforeAll(async () => {
-	const loadedConfig = await loadConfig(PHASE_PRODUCTION_BUILD, APP_ROOT);
-	const customRoutes = await loadCustomRoutes(loadedConfig);
+	loadedNextConfig = await loadConfig(PHASE_PRODUCTION_BUILD, APP_ROOT);
+	const customRoutes = await loadCustomRoutes(loadedNextConfig);
 	beforeFilesRoutes = customRoutes.rewrites.beforeFiles.map((item) =>
 		buildCustomRoute("before_files_rewrite", item),
 	);
 });
+
+function splitTopLevelAlternation(body: string): string[] {
+	const parts: string[] = [];
+	let current = "";
+	let depth = 0;
+	for (let i = 0; i < body.length; i++) {
+		const ch = body[i];
+		if (ch === "\\") {
+			current += body.slice(i, i + 2);
+			i += 1;
+			continue;
+		}
+		if (ch === "(") {
+			depth += 1;
+		} else if (ch === ")" && depth > 0) {
+			depth -= 1;
+		} else if (ch === "|" && depth === 0) {
+			parts.push(current);
+			current = "";
+			continue;
+		}
+		current += ch;
+	}
+	parts.push(current);
+	return parts;
+}
+
+function extractNegativeLookaheadPatterns(source: string): string[] {
+	const prefix = "(?!";
+	const start = source.indexOf(prefix);
+	if (start === -1) {
+		throw new Error(`No negative lookahead found in: ${source}`);
+	}
+	let depth = 1;
+	for (let i = start + prefix.length; i < source.length; i++) {
+		if (source[i] === "\\") {
+			i += 1;
+			continue;
+		}
+		if (source[i] === "(") {
+			depth += 1;
+		} else if (source[i] === ")") {
+			depth -= 1;
+			if (depth === 0) {
+				return splitTopLevelAlternation(
+					source.slice(start + prefix.length, i),
+				);
+			}
+		}
+	}
+	throw new Error(`Unclosed negative lookahead in: ${source}`);
+}
 
 /**
  * Simulates the `resolve-routes.js` pipeline when Next.js 16 is bound to
@@ -343,6 +415,32 @@ describe("root `/` locale rewrite on loopback dev/server hosts", () => {
 		}
 	});
 
+	it("keeps proxy.ts config.matcher[0] and NON_PROXY_SUBPATH_SOURCE locked to PROXY_EXCLUDED_PATH_PATTERNS and statically parseable by Next.js", async () => {
+		const proxyExcluded = extractNegativeLookaheadPatterns(
+			proxyConfig.matcher[0],
+		);
+		const beforeFilesExcluded = extractNegativeLookaheadPatterns(
+			NON_PROXY_SUBPATH_SOURCE,
+		);
+
+		expect(proxyConfig.matcher[0]).toBe(PROXY_PRIMARY_MATCHER_SOURCE);
+		expect(proxyExcluded).toEqual([...PROXY_EXCLUDED_PATH_PATTERNS]);
+		expect(beforeFilesExcluded).toEqual([...PROXY_EXCLUDED_PATH_PATTERNS]);
+		expect(proxyExcluded).toEqual(beforeFilesExcluded);
+
+		const staticInfo = await getPageStaticInfo({
+			pageFilePath: path.join(APP_ROOT, "proxy.ts"),
+			nextConfig: loadedNextConfig,
+			isDev: false,
+			page: "/proxy",
+			pageType: "pages",
+		});
+		expect(staticInfo.hadUnsupportedValue).toBe(false);
+		expect(staticInfo.middleware?.matchers).toHaveLength(
+			proxyConfig.matcher.length,
+		);
+	});
+
 	it("ignores client-sent x-fabric-locale-rewrite headers on matcher-excluded and microfrontends-only paths", async () => {
 		for (const excludedPath of [
 			"/api/health",
@@ -353,6 +451,7 @@ describe("root `/` locale rewrite on loopback dev/server hosts", () => {
 			"/fabric-web-assets/app.js",
 			"/_next/static/chunks/main.js",
 			"/favicon.ico",
+			"/docs-sitemap.xml",
 		]) {
 			const result = await simulateLoopbackRouteResolution(excludedPath, {
 				headers: {
