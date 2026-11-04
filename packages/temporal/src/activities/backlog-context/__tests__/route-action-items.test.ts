@@ -30,7 +30,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockGenerateEmbeddings,
-	mockGenerateObject,
+	mockGenerateText,
 	mockTrackUsage,
 	mockGetAIModelWithMetadata,
 	mockListActiveStories,
@@ -57,7 +57,7 @@ const {
 	return {
 		AiUsageLimitExceededError,
 		mockGenerateEmbeddings: vi.fn(),
-		mockGenerateObject: vi.fn(),
+		mockGenerateText: vi.fn(),
 		mockTrackUsage: vi.fn(),
 		mockGetAIModelWithMetadata: vi.fn(),
 		mockListActiveStories: vi.fn(),
@@ -79,7 +79,8 @@ vi.mock("@repo/rag", () => ({ generateEmbeddings: mockGenerateEmbeddings }));
 vi.mock("@temporalio/activity", () => ({ heartbeat: mockHeartbeat }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mockGenerateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mockGenerateText,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	resolveModelWithProvider: mockResolveModelWithProvider,
 	experimental_decide: mockDecide,
@@ -192,7 +193,7 @@ function arrange(
 		model: { id: "test-model" },
 		trackUsage: mockTrackUsage,
 	});
-	mockGenerateObject.mockResolvedValue({ object: verdict });
+	mockGenerateText.mockResolvedValue({ output: verdict });
 }
 
 /**
@@ -370,7 +371,7 @@ describe("routeActionItemsToExistingTickets", () => {
 
 	it("contains a single item's judge failure and stamps the error", async () => {
 		arrange({ decision: "create", confidence: 1 });
-		mockGenerateObject.mockRejectedValue(new Error("model exploded"));
+		mockGenerateText.mockRejectedValue(new Error("model exploded"));
 
 		const result = await routeActionItemsToExistingTickets({
 			...BASE_PARAMS,
@@ -426,7 +427,7 @@ describe("routeActionItemsToExistingTickets", () => {
 		expect(result.changes[0].routing?.decision).toBe("create");
 		expect(result.changes[0].routing?.error).toBeUndefined();
 		expect(mockGenerateEmbeddings).not.toHaveBeenCalled();
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("skips the judge entirely when nothing clears the cosine floor", async () => {
@@ -447,7 +448,7 @@ describe("routeActionItemsToExistingTickets", () => {
 		});
 
 		expect(result.created).toBe(1);
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 	});
 
 	it("embeds the ticket's acceptance criteria, not just title and description", async () => {
@@ -597,7 +598,7 @@ describe("output token budget", () => {
 		// Unbounded generation fails as a hang, not an error — and a hung judge
 		// inside a heartbeated batch reads as a broken feature rather than a
 		// slow one.
-		const call = mockGenerateObject.mock.calls[0][0];
+		const call = mockGenerateText.mock.calls[0][0];
 		expect(call.maxOutputTokens).toBeGreaterThan(0);
 		expect(call.maxOutputTokens).toBeLessThanOrEqual(8192);
 	});
@@ -618,7 +619,7 @@ describe("output token budget", () => {
 
 		expect(result.created).toBe(1);
 		expect(
-			mockGenerateObject.mock.calls[0][0].maxOutputTokens,
+			mockGenerateText.mock.calls[0][0].maxOutputTokens,
 		).toBeUndefined();
 	});
 });
@@ -820,7 +821,7 @@ describe("bounded, heartbeated judging", () => {
 		});
 
 		// 40 judged, 5 over the cap.
-		expect(mockGenerateObject).toHaveBeenCalledTimes(40);
+		expect(mockGenerateText).toHaveBeenCalledTimes(40);
 		expect(result.created).toBe(40);
 		expect(result.failed).toBe(5);
 		// The overflow must SAY it was not evaluated. An unevaluated item
@@ -841,7 +842,7 @@ describe("the judge prompt comes from the prompt library", () => {
 	 * has to degrade to the shipped wording rather than failing an ingest.
 	 */
 	function promptSentToJudge(): string {
-		return mockGenerateObject.mock.calls[0][0].prompt as string;
+		return mockGenerateText.mock.calls[0][0].prompt as string;
 	}
 
 	it("renders the bound prompt when an operator has one", async () => {
@@ -931,7 +932,7 @@ describe("typed decision model fast path", () => {
 			changes: [createChange()],
 		});
 
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(result.enriched).toBe(1);
 		const change = result.changes[0];
 		expect(change.action).toBe("update");
@@ -981,7 +982,7 @@ describe("typed decision model fast path", () => {
 			changes: [createChange()],
 		});
 
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(result.created).toBe(1);
 		expect(result.enriched).toBe(0);
 		expect(result.changes[0].action).toBe("create");
@@ -1062,7 +1063,7 @@ describe("typed decision model fast path", () => {
 
 		// 0.89 is below the 0.9 decision floor, so the language judge decides —
 		// and its own reasoning comes back on the row.
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockGenerateText).toHaveBeenCalledOnce();
 		expect(result.enriched).toBe(1);
 		expect(result.changes[0].routing?.confidence).toBe(0.91);
 		// A completed-but-uncertain evaluation still spent the provider.
@@ -1090,7 +1091,7 @@ describe("typed decision model fast path", () => {
 		});
 
 		// A target off the shortlist must never address some other row.
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockGenerateText).toHaveBeenCalledOnce();
 		expect(result.changes[0].action).toBe("create");
 		expect(result.changes[0].existingId).toBeUndefined();
 	});
@@ -1115,7 +1116,7 @@ describe("typed decision model fast path", () => {
 			changes: [createChange()],
 		});
 
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockGenerateText).toHaveBeenCalledOnce();
 		expect(result.changes[0].action).toBe("create");
 	});
 
@@ -1130,7 +1131,7 @@ describe("typed decision model fast path", () => {
 			changes: [createChange()],
 		});
 
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockGenerateText).toHaveBeenCalledOnce();
 		expect(result.created).toBe(1);
 	});
 
@@ -1158,7 +1159,7 @@ describe("typed decision model fast path", () => {
 		// 0.93 clears the 0.9 decision floor but not the operator's 0.95, and
 		// the operator's knob has to bind both judgements or configuring a
 		// decision model would quietly loosen it.
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockGenerateText).toHaveBeenCalledOnce();
 		expect(result.changes[0].action).toBe("create");
 		expect(result.enriched).toBe(0);
 	});
@@ -1178,7 +1179,7 @@ describe("typed decision model fast path", () => {
 		// Unchanged from before the fast path existed: one language judgement,
 		// one enrichment, and no error stamp for the missing decision model.
 		expect(mockDecide).not.toHaveBeenCalled();
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockGenerateText).toHaveBeenCalledOnce();
 		expect(result.enriched).toBe(1);
 		expect(result.failed).toBe(0);
 		expect(result.changes[0].routing?.error).toBeUndefined();
@@ -1201,7 +1202,7 @@ describe("typed decision model fast path", () => {
 			changes: [createChange()],
 		});
 
-		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockGenerateText).toHaveBeenCalledOnce();
 		expect(result.enriched).toBe(1);
 		expect(result.failed).toBe(0);
 	});
@@ -1222,7 +1223,7 @@ describe("typed decision model fast path", () => {
 			changes: [createChange()],
 		});
 
-		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockGenerateText).not.toHaveBeenCalled();
 		expect(result.failed).toBe(1);
 		expect(result.changes[0].action).toBe("create");
 		expect(result.changes[0].routing?.error).toContain(

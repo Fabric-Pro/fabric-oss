@@ -47,6 +47,7 @@ COPY packages/mcp-registry/package.json ./packages/mcp-registry/
 COPY packages/observability/package.json ./packages/observability/
 COPY packages/openapi-tools/package.json ./packages/openapi-tools/
 COPY packages/rag/package.json ./packages/rag/
+COPY packages/permissions/package.json ./packages/permissions/
 COPY packages/search/package.json ./packages/search/
 COPY packages/storage/package.json ./packages/storage/
 COPY packages/utils/package.json ./packages/utils/

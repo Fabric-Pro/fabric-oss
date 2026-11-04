@@ -15,7 +15,8 @@ import { requireHostingOrganizationId } from "./hosting-organization";
  * Reads a project's coding-instructions settings: its ignore-glob override
  * (`null` when the project has never set one), the built-in default globs
  * every upload falls back to absent an override or an uploaded
- * `.fabricignore`, and the resolved source of truth.
+ * `.fabricignore`, the resolved source of truth, and the upload-mode
+ * proposal review policy.
  */
 export const getSettingsProcedure = tenantProtectedProcedure
 	.use(projectNotFoundUnlessVisible)
@@ -45,5 +46,8 @@ export const getSettingsProcedure = tenantProtectedProcedure
 			ignoreGlobs: s.ignoreGlobs,
 			defaultIgnoreGlobs: [...DEFAULT_IGNORE_GLOBS],
 			sourceOfTruth: s.sourceOfTruth,
+			// Upload-mode proposal review policy; `{ requiredApprovals: 1,
+			// approverUserIds: null }` when the project never set one.
+			reviewPolicy: s.reviewPolicy,
 		};
 	});

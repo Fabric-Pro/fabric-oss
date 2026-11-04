@@ -33,9 +33,11 @@ vi.mock("../../external-api/middleware/api-rate-limit", () => ({
 }));
 
 for (const [modulePath, name] of [
+	["../agent-instances", "registerAgentInstanceRoutes"],
 	["../agents", "registerAgentRoutes"],
 	["../channels", "registerChannelRoutes"],
 	["../chats", "registerChatRoutes"],
+	["../context-quality", "registerContextQualityRoutes"],
 	["../contexts", "registerContextRoutes"],
 	["../documents", "registerDocumentRoutes"],
 	["../features", "registerFeatureRoutes"],

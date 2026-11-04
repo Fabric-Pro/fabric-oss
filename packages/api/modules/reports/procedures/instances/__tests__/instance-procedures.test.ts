@@ -13,7 +13,12 @@ const {
 	mockAssertCanEditReportInstance,
 	mockCanEditProjectReport,
 	mockAssertProjectPermission,
+	mockCanAccess,
+	mockFindProject,
+	mockOverrides,
 } = vi.hoisted(() => ({
+	mockFindProject: vi.fn(),
+	mockOverrides: vi.fn(),
 	handlers: {} as Record<string, (...args: unknown[]) => unknown>,
 	mockCreateTemplateInstance: vi.fn(),
 	mockGetReportTemplate: vi.fn(),
@@ -24,6 +29,7 @@ const {
 	mockAssertCanEditReportInstance: vi.fn(),
 	mockCanEditProjectReport: vi.fn(),
 	mockAssertProjectPermission: vi.fn(),
+	mockCanAccess: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => {
@@ -31,9 +37,22 @@ vi.mock("@repo/database", async (importOriginal) => {
 	const real = await importOriginal<typeof import("@repo/database")>();
 	return {
 		reportScheduleInputSchema: real.reportScheduleInputSchema,
+		reportEvidenceConfigSchema: real.reportEvidenceConfigSchema,
+		readReportEvidenceConfig: real.readReportEvidenceConfig,
+		assertPublicReportParameters: real.assertPublicReportParameters,
+		publicReportParametersSchema: real.publicReportParametersSchema,
+		getProjectReportSetupReason: real.getProjectReportSetupReason,
+		hasProjectKnowledgeSource: real.hasProjectKnowledgeSource,
+		canAccessReportInstance: mockCanAccess,
+		db: {
+			project: {
+				findUnique: (...a: unknown[]) => mockFindProject(...a),
+			},
+		},
 		createTemplateInstance: (...a: unknown[]) =>
 			mockCreateTemplateInstance(...a),
 		getReportTemplate: (...a: unknown[]) => mockGetReportTemplate(...a),
+		resolveReportTemplateDefaults: (...a: unknown[]) => mockOverrides(...a),
 		getTemplateInstance: (...a: unknown[]) => mockGetTemplateInstance(...a),
 		updateTemplateInstance: (...a: unknown[]) =>
 			mockUpdateTemplateInstance(...a),
@@ -47,7 +66,7 @@ vi.mock("../../../../../lib/audit", () => ({
 	recordAuditFromRequest: vi.fn(),
 }));
 
-vi.mock("../../lib/validate-connections", () => ({
+vi.mock("../../../lib/validate-connections", () => ({
 	validateReportConnections: (...a: unknown[]) =>
 		mockValidateReportConnections(...a),
 }));
@@ -93,7 +112,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 		requireInputOrgPermission: () => (c: unknown) => c,
 		requireOrganizationMembership: vi.fn().mockResolvedValue(undefined),
 		resolveOrganizationId: (input: string | null | undefined) =>
-			input ?? null,
+			input ?? "org-1",
 	};
 });
 
@@ -165,12 +184,15 @@ describe("updateInstanceInputSchema — scheduleUpdate validation", () => {
 
 const ctx = {
 	user: { id: "u1", email: "u@example.com" },
-	session: { id: "s1", activeOrganizationId: null },
+	session: { id: "s1", activeOrganizationId: "org-1" },
 	headers: undefined,
 };
 
 const baseInstance = {
 	id: "inst-1",
+	organizationId: "org-1",
+	userId: "u1",
+	_count: { executions: 0 },
 	template: { definition: null },
 };
 
@@ -187,6 +209,7 @@ const baseUpdated = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockCanAccess.mockResolvedValue(true);
 	mockValidateReportConnections.mockResolvedValue({
 		valid: true,
 		errors: [],
@@ -198,6 +221,11 @@ beforeEach(() => {
 	mockAssertProjectPermission.mockResolvedValue({
 		projectId: "example-project",
 		organizationId: "example-org",
+	});
+	mockOverrides.mockResolvedValue({
+		parameterDefaults: {},
+		context: {},
+		schedule: undefined,
 	});
 });
 
@@ -243,9 +271,9 @@ describe("createInstanceProcedure — scheduleMode provenance (D2/§7.1)", () =>
 	beforeEach(() => {
 		mockGetReportTemplate.mockResolvedValue({
 			id: "t1",
-			scope: "USER",
+			scope: "ORGANIZATION",
 			userId: "u1",
-			organizationId: null,
+			organizationId: "org-1",
 			// Template has its own schedule — should be inherited but mode must still
 			// reflect the INSTANCE's own provenance, not the merged effectiveSchedule.
 			schedule: {
@@ -362,6 +390,32 @@ describe("updateInstanceProcedure — who may change a report", () => {
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
 	});
+
+	it("validates an editor's connection changes against the report owner", async () => {
+		const storedConnections = {
+			...emptyConnections,
+			mcpBindings: { fizzy: "example-owner-config" },
+		};
+		mockGetTemplateInstance.mockResolvedValue({
+			...baseInstance,
+			userId: "example-owner",
+			connections: storedConnections,
+		});
+		const editor = { ...ctx, user: { id: "example-editor" } };
+		await handlers.update({
+			input: { id: "inst-1", connections: storedConnections },
+			context: editor,
+		});
+		expect(mockValidateReportConnections).toHaveBeenCalledWith(
+			storedConnections,
+			"example-owner",
+			"org-1",
+			undefined,
+			storedConnections,
+			{ sameServerOnly: true },
+		);
+		expect(mockUpdateTemplateInstance).toHaveBeenCalled();
+	});
 });
 
 describe("createInstanceProcedure — project reports", () => {
@@ -406,6 +460,121 @@ describe("createInstanceProcedure — project reports", () => {
 		);
 	});
 
+	it("fills the Project Name parameter with the project's name", async () => {
+		mockGetReportTemplate.mockResolvedValue({
+			id: "t1",
+			scope: "SYSTEM",
+			userId: null,
+			organizationId: null,
+			archivedAt: null,
+			definition: null,
+			parameters: {
+				properties: {
+					projectName: { type: "string" },
+					sprintId: { type: "string" },
+				},
+			},
+		});
+		mockFindProject.mockResolvedValue({ name: "Example Project" });
+		await handlers.create({
+			input: {
+				templateId: "t1",
+				name: "Project Report",
+				projectId: "example-project",
+				connections: emptyConnections,
+			},
+			context: ctx,
+		});
+		expect(mockCreateTemplateInstance).toHaveBeenCalledWith(
+			expect.objectContaining({
+				parameterDefaults: { projectName: "Example Project" },
+			}),
+		);
+	});
+
+	it("starts from the organization's and project's defaults, under what the caller sent", async () => {
+		mockGetReportTemplate.mockResolvedValue({
+			id: "t1",
+			scope: "SYSTEM",
+			userId: null,
+			organizationId: null,
+			archivedAt: null,
+			definition: null,
+			parameters: { properties: { projectName: { type: "string" } } },
+		});
+		mockFindProject.mockResolvedValue({ name: "Example Project" });
+		mockOverrides.mockResolvedValue({
+			parameterDefaults: { team: "Example team" },
+			context: { teamName: "Default team", boardName: "Example board" },
+			schedule: { frequency: "weekly", dayOfWeek: 1 },
+		});
+		await handlers.create({
+			input: {
+				templateId: "t1",
+				name: "Project Report",
+				projectId: "example-project",
+				connections: {
+					...emptyConnections,
+					context: { teamName: "Chosen team" },
+				},
+			},
+			context: ctx,
+		});
+		expect(mockOverrides).toHaveBeenCalledWith({
+			templateId: "t1",
+			organizationId: "org-1",
+			projectId: "example-project",
+		});
+		expect(mockCreateTemplateInstance).toHaveBeenCalledWith(
+			expect.objectContaining({
+				parameterDefaults: {
+					projectName: "Example Project",
+					team: "Example team",
+				},
+				connections: expect.objectContaining({
+					context: {
+						teamName: "Chosen team",
+						boardName: "Example board",
+					},
+				}),
+				schedule: expect.objectContaining({
+					frequency: "weekly",
+					dayOfWeek: 1,
+				}),
+				scheduleMode: "INHERITED",
+			}),
+		);
+	});
+
+	it("keeps an explicit schedule over the defaults' schedule", async () => {
+		mockOverrides.mockResolvedValue({
+			parameterDefaults: {},
+			context: {},
+			schedule: { frequency: "weekly", dayOfWeek: 1 },
+		});
+		await handlers.create({
+			input: {
+				templateId: "t1",
+				name: "Project Report",
+				projectId: "example-project",
+				connections: emptyConnections,
+				schedule: {
+					frequency: "daily",
+					hour: 8,
+					minute: 0,
+					timezone: "UTC",
+				},
+			},
+			context: ctx,
+		});
+		expect(mockCreateTemplateInstance).toHaveBeenCalledWith(
+			expect.objectContaining({
+				schedule: expect.objectContaining({ frequency: "daily" }),
+				scheduleMode: "CUSTOM",
+			}),
+		);
+	});
+
 	it("refuses a project Viewer and creates nothing", async () => {
 		mockCanEditProjectReport.mockResolvedValue(false);
 		await expect(
@@ -442,5 +611,95 @@ describe("createInstanceProcedure — project reports", () => {
 			}),
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 		expect(mockCreateTemplateInstance).not.toHaveBeenCalled();
+	});
+});
+
+describe("report audience and reserved configuration", () => {
+	it("rejects a forged execution snapshot in parameter defaults", () => {
+		expect(
+			updateInstanceInputSchema.safeParse({
+				id: "inst-1",
+				parameterDefaults: { __fabricReportExecution: {} },
+			}).success,
+		).toBe(false);
+	});
+	it("rejects a project audience change once bound", async () => {
+		mockGetTemplateInstance.mockResolvedValue({
+			...baseInstance,
+			fabricConfig: {
+				reporting: {
+					version: 1,
+					period: "weekly",
+					projectId: "project-1",
+				},
+			},
+		});
+		await expect(
+			handlers.update({
+				input: {
+					id: "inst-1",
+					fabricConfig: {
+						reporting: {
+							version: 1,
+							period: "weekly",
+							projectId: "project-2",
+						},
+					},
+				},
+				context: ctx,
+			}),
+		).rejects.toThrow("audience cannot be changed");
+		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
+	});
+	it("does not make previously indexed organization results private retroactively", async () => {
+		mockGetTemplateInstance.mockResolvedValue({
+			...baseInstance,
+			_count: { executions: 1 },
+		});
+		await expect(
+			handlers.update({
+				input: {
+					id: "inst-1",
+					fabricConfig: {
+						reporting: {
+							version: 1,
+							period: "weekly",
+							projectId: "project-1",
+						},
+					},
+				},
+				context: ctx,
+			}),
+		).rejects.toThrow("audience cannot be changed");
+		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
+	});
+	it("checks project write access before changing an existing project report", async () => {
+		mockGetTemplateInstance.mockResolvedValue({
+			...baseInstance,
+			fabricConfig: {
+				reporting: {
+					version: 1,
+					period: "weekly",
+					projectId: "project-1",
+				},
+			},
+		});
+		mockCanAccess.mockResolvedValue(false);
+		await expect(
+			handlers.update({
+				input: {
+					id: "inst-1",
+					fabricConfig: {
+						reporting: {
+							version: 1,
+							period: "weekly",
+							projectId: "project-1",
+						},
+					},
+				},
+				context: ctx,
+			}),
+		).rejects.toThrow("access denied");
+		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
 	});
 });

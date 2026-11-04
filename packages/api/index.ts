@@ -12,6 +12,10 @@ import { webhookHandler as paymentsWebhookHandler } from "@repo/payments";
 import { getBaseUrl } from "@repo/utils";
 import { type ErrorHandler, Hono } from "hono";
 import { logger as honoLogger } from "hono/logger";
+import {
+	AGENT_RESULT_RPC_PATH,
+	agentResultResponsePrivacy,
+} from "./lib/agent-result-response-privacy";
 import { wireAuditObservability } from "./lib/audit";
 import { authRateLimitMiddleware } from "./lib/auth-rate-limit";
 import {
@@ -56,6 +60,7 @@ export const app = new Hono()
 	// Correlation ID middleware - must be first for tracing
 	.use(correlationIdMiddleware)
 	.use(asyncCorrelationMiddleware)
+	.use(AGENT_RESULT_RPC_PATH, agentResultResponsePrivacy)
 	// Logger middleware
 	.use(honoLogger((message, ...rest) => logger.log(message, ...rest)))
 	// Boot-time provider registry sync, once the first request is handled

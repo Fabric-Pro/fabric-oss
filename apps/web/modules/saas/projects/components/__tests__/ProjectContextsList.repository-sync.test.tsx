@@ -182,6 +182,10 @@ vi.mock("next/link", () => ({
 vi.mock("../ContextUploaderDialog", () => ({
 	ContextUploaderDialog: () => null,
 }));
+// Has its own suite; it reads `projects.get`, which this file does not mock.
+vi.mock("../ResetLivingMemory", () => ({
+	ResetLivingMemory: () => null,
+}));
 vi.mock("../DownloadAllContextsButton", () => ({
 	DownloadAllContextsButton: () => null,
 }));

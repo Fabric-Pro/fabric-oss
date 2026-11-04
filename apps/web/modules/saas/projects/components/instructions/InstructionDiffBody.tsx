@@ -23,12 +23,18 @@ export function InstructionDiffBody({
 	before,
 	after,
 	truncated,
+	wrap = false,
 }: {
 	path: string;
 	before: string;
 	after: string;
 	/** Either side was longer than what was loaded. */
 	truncated: boolean;
+	/**
+	 * Wrap long lines instead of scrolling sideways, for a diff inside a
+	 * narrow list (the rules edits dialog). The compare views keep columns.
+	 */
+	wrap?: boolean;
 }) {
 	const t = useTranslations("projects.codingInstructions.compare");
 	const parts = useMemo(() => diffLines(before, after), [before, after]);
@@ -53,7 +59,12 @@ export function InstructionDiffBody({
 			) : null}
 			<pre
 				data-testid={`instruction-file-diff-${path}`}
-				className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs"
+				className={cn(
+					"max-h-72 rounded-md border bg-muted/40 p-3 font-mono text-xs",
+					wrap
+						? "overflow-y-auto overflow-x-hidden whitespace-pre-wrap [overflow-wrap:anywhere]"
+						: "overflow-auto",
+				)}
 			>
 				{rows.map((row, index) => (
 					<span

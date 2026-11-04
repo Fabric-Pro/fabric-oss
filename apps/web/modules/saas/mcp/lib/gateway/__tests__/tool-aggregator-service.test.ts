@@ -1,3 +1,4 @@
+import { FABRIC_WORKSPACE_TOOL_DEFINITIONS } from "@repo/temporal/fabric-gateway-tools";
 /**
  * What Fabric's own agent runtime is offered through the gateway: the platform
  * tools its scopes reach, and none of the person's connected servers. It
@@ -11,6 +12,7 @@ import { FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS } from "@repo/temporal/fabric-pa
 import { FABRIC_PAGE_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-tool-definitions";
 import { FABRIC_PROJECT_PM_TOOL_DEFINITIONS } from "@repo/temporal/fabric-project-pm-tool-definitions";
 import { FABRIC_PROJECT_READ_TOOL_DEFINITIONS } from "@repo/temporal/fabric-project-read-tool-definitions";
+import { FABRIC_REPORT_TOOL_DEFINITIONS } from "@repo/temporal/fabric-report-tool-definitions";
 import { FABRIC_WORKFLOW_TOOL_DEFINITIONS } from "@repo/temporal/fabric-workflow-tool-definitions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -75,6 +77,7 @@ describe("tools offered to the service credential", () => {
 			]),
 		);
 		const expected = [
+			...FABRIC_WORKSPACE_TOOL_DEFINITIONS,
 			...FABRIC_WORKFLOW_TOOL_DEFINITIONS,
 			...FABRIC_FRAME_TOOL_DEFINITIONS,
 			...FABRIC_FRAME_VERSION_TOOL_DEFINITIONS,
@@ -82,6 +85,7 @@ describe("tools offered to the service credential", () => {
 			...FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS,
 			...FABRIC_PROJECT_READ_TOOL_DEFINITIONS,
 			...FABRIC_PROJECT_PM_TOOL_DEFINITIONS,
+			...FABRIC_REPORT_TOOL_DEFINITIONS,
 		]
 			.filter(
 				(tool) =>
@@ -120,6 +124,16 @@ describe("tools offered to the service credential", () => {
 			expect(offered).not.toContain(name);
 		}
 		expect(offered).not.toContain("fabric_page_read_connected");
+	});
+
+	it("keeps the report tools outside a meeting's pinned grant", async () => {
+		const { tools } = await getAggregatedTools(
+			session({ pinnedProjectId: "project-1" }),
+		);
+		const offered = tools.map((tool) => tool.name);
+		for (const { name } of FABRIC_REPORT_TOOL_DEFINITIONS) {
+			expect(offered).not.toContain(name);
+		}
 	});
 
 	it("never discovers the person's connected servers", async () => {

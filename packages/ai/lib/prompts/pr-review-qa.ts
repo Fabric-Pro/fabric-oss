@@ -5,12 +5,13 @@ import {
 	criterionIndexFromRef,
 	parseAcceptanceCriteria,
 } from "@repo/utils/acceptance-criteria";
-import { generateObject, type LanguageModel, zodSchema } from "ai";
+import { generateText, type LanguageModel, Output, zodSchema } from "ai";
 import { z } from "zod";
 import {
 	AIProviderNotConfiguredError,
 	getAIModelWithMetadata,
 } from "../dynamic-model-selector";
+import { requireStructuredOutput } from "../structured-output";
 import { logModelUsageAsync } from "../usage-logging";
 
 /**
@@ -637,20 +638,26 @@ export async function reviewPullRequestForQa(input: {
 
 		const facts = buildPrReviewContext(input);
 		const start = Date.now();
-		const { object, usage } = await generateObject({
-			model: model as LanguageModel,
-			schema: zodSchema(PrReviewQaGenerationSchema),
-			prompt: composePrReviewPrompt({
-				body: rendered.rendered,
-				strategyDepth: input.strategyDepth,
-				facts,
+		const { output: object, usage } = await requireStructuredOutput(
+			generateText({
+				model: model as LanguageModel,
+				output: Output.object({
+					schema: zodSchema(PrReviewQaGenerationSchema),
+				}),
+				prompt: composePrReviewPrompt({
+					body: rendered.rendered,
+					strategyDepth: input.strategyDepth,
+					facts,
+				}),
+				// Sized to the cap the prompt states, not to the depth-narrowed cap
+				// below it: the model is asked for up to the full number and the
+				// narrowing is applied afterwards, so budgeting for the smaller one
+				// would truncate a response we asked for.
+				maxOutputTokens: prReviewMaxOutputTokens(
+					PR_REVIEW_MAX_FINDINGS,
+				),
 			}),
-			// Sized to the cap the prompt states, not to the depth-narrowed cap
-			// below it: the model is asked for up to the full number and the
-			// narrowing is applied afterwards, so budgeting for the smaller one
-			// would truncate a response we asked for.
-			maxOutputTokens: prReviewMaxOutputTokens(PR_REVIEW_MAX_FINDINGS),
-		});
+		);
 
 		logModelUsageAsync({
 			context: {

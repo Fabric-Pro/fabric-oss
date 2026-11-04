@@ -39,7 +39,7 @@ const { mocks } = vi.hoisted(() => ({
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		projectFindUnique: vi.fn(),
@@ -48,13 +48,14 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	Output: { object: (spec: unknown) => spec },
 	AIProviderNotConfiguredError: class extends Error {
 		constructor() {
 			super("AI provider not configured");
 			this.name = "AIProviderNotConfiguredError";
 		}
 	},
-	generateObject: mocks.generateObject,
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -113,7 +114,7 @@ const BASE_PARAMS = {
 /**
  * Wires the mocks for a full successful create+draft pass targeting `kind`,
  * mirroring the fixtures in draft-body-by-kind.test.ts. Both the Clean Spec
- * agent name AND the schema shape returned by `generateObject` are matched to
+ * agent name AND the schema shape returned by `generateText` are matched to
  * `kind` — if the source resolved the WRONG agent, `getBoundPromptForAgent`
  * would still return content (so the run wouldn't crash) but the returned
  * `key`/schema pairing lets the assertions below catch the mismatch instead of
@@ -147,8 +148,8 @@ function mockSuccessfulDraftFlow(kind: "FEATURE" | "BUG") {
 	mocks.createFeatureVersion.mockResolvedValue({ id: "ver-1" });
 
 	if (kind === "BUG") {
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				title: undefined,
 				needsMoreInfo: false,
 				markdown: "## Steps to Reproduce\n1. export a large report",
@@ -156,8 +157,8 @@ function mockSuccessfulDraftFlow(kind: "FEATURE" | "BUG") {
 			usage: { totalTokens: 100 },
 		});
 	} else {
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				description: "Structured feature description.",
 				acceptanceCriteria: "Given/When/Then",
 			},

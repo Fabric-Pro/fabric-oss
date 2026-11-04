@@ -6,7 +6,7 @@
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
@@ -15,6 +15,7 @@ import { workflowActor, workflowCommandErrors } from "../workflow-actor";
 
 const unpublishWorkflowInput = z.object({
 	workflowId: z.string(),
+	organizationId: z.string().nullable().optional(),
 });
 
 const unpublishWorkflowOutput = z.object({
@@ -24,7 +25,11 @@ const unpublishWorkflowOutput = z.object({
 
 export const unpublishWorkflow = tenantProtectedProcedure
 	.use(workflowCommandErrors)
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/workflows/{workflowId}/unpublish",
@@ -38,7 +43,7 @@ export const unpublishWorkflow = tenantProtectedProcedure
 		unpublishWorkflowCommand(
 			workflowActor(
 				context.user.id,
-				resolveOrganizationId(undefined, context.session),
+				resolveOrganizationId(input.organizationId, context.session),
 			),
 			input.workflowId,
 		),

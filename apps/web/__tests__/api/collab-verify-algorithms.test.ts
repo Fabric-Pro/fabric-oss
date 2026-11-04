@@ -6,7 +6,7 @@
  * `POST /api/collab/verify` after pinning `algorithms: ["HS256"]` (issue #624).
  *
  * Regression guard for the document-collab path, which the orchestrator and
- * task-agent live routes were modelled on: existing 1-hour collab tokens must
+ * orchestrator live routes were modelled on: existing 1-hour collab tokens must
  * keep verifying (no audience was added, deliberately — pinning one would 401
  * in-flight tokens during a rolling deploy), while a token signed with another
  * HMAC algorithm is now refused.

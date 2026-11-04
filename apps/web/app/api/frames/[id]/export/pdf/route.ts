@@ -5,6 +5,10 @@
  */
 
 import { auth } from "@repo/auth";
+import {
+	canReadOrganizationFrames,
+	getAccessibleFrameById,
+} from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { exportFrameToPDF } from "@repo/temporal/workflows";
 import { type NextRequest, NextResponse } from "next/server";
@@ -34,6 +38,32 @@ export async function POST(
 			body.organizationId ??
 			session.session.activeOrganizationId ??
 			undefined;
+		if (
+			!organizationId ||
+			!(await canReadOrganizationFrames(session.user.id, organizationId))
+		) {
+			return NextResponse.json(
+				{ error: "Frame not found" },
+				{ status: 404 },
+			);
+		}
+		const frame = await getAccessibleFrameById({
+			id: frameId,
+			userId: session.user.id,
+			userEmail: session.user.email,
+			organizationId,
+		});
+		if (!frame)
+			return NextResponse.json(
+				{ error: "Frame not found" },
+				{ status: 404 },
+			);
+		if (orientation !== "portrait" && orientation !== "landscape") {
+			return NextResponse.json(
+				{ error: "Invalid orientation" },
+				{ status: 400 },
+			);
+		}
 
 		// Start the Temporal workflow
 		const client = await getTemporalClient();
@@ -41,7 +71,7 @@ export async function POST(
 
 		const handle = await client.workflow.start(exportFrameToPDF, {
 			workflowId,
-			taskQueue: "frame-exports",
+			taskQueue: "fabric-worker",
 			args: [
 				{
 					frameId,

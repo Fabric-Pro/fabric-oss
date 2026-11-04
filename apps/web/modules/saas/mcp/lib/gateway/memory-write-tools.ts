@@ -67,7 +67,7 @@ const MEMORY_WRITE_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_memory_targets",
 		description:
-			"Lists a project's Living Memory write folders: targetId, mode, indexMode, repository, branch, last synced commit. ingesting: true means landed files reach Living Memory at the next sync. PULL_REQUEST folders open a pull request; DIRECT_PUSH folders commit to the branch. STORE_ONLY files are readable but left out of all search and summaries; INDEXED ones are embedded.",
+			"Lists Living Memory targetId/mode/indexMode/repository/branch/last commit. ingesting=true: next sync ingests landed files. PULL_REQUEST opens PR; DIRECT_PUSH commits branch. STORE_ONLY: readable, excluded from search/summaries; INDEXED: embedded.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -81,7 +81,7 @@ const MEMORY_WRITE_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_memory_read",
 		description:
-			"Lists or reads files in a Living Memory folder, Store only ones included. No path: lists under prefix, paged by after/limit (nextCursor). With path: returns its text, paged by offset/maxBytes (default 12000, max 50000; nextOffset). E.g. prefix docs/ai/specs/<work-item-id>.",
+			"Lists Living Memory files, including Store only. Without path: prefix + after/limit, continue nextCursor. With path: text via offset/maxBytes (default 12000, max 50000), continue nextOffset.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -105,7 +105,7 @@ const MEMORY_WRITE_TOOL_DEFINITIONS = defineFabricTools([
 	},
 	{
 		name: "fabric_memory_write",
-		description: `Writes plain text files into a Living Memory folder (see fabric_memory_targets) as one commit; all land or none do. Per file: a repository-relative path inside the folder and its full content, or delete: true. A file without ifMatchOid is create-only (refused if the path exists); to replace or delete pass ifMatchOid, the git blob id at the path (fabric_memory_write_status reports it as currentOid when refused). Dot-prefixed path segments are not writable. At most ${MAX_FILES} files and ${MAX_INLINE_MIB} MiB. The outcome is in fabric_memory_write_status. DIRECT_PUSH commits to the branch (or opens a pull request if it is protected); PULL_REQUEST opens one, invisible to Living Memory until merged. Not for instruction files: use fabric_propose_project_instruction_change.`,
+		description: `Atomically writes plain text files in a Living Memory target (fabric_memory_targets): relative paths + whole content or delete:true. No ifMatchOid: create-only; replace/delete require current git blob ifMatchOid (refusal reports currentOid). Dot-prefixed segments refused; At most ${MAX_FILES} files and ${MAX_INLINE_MIB} MiB. Check fabric_memory_write_status. DIRECT_PUSH commits or opens PR on protected branches; PULL_REQUEST opens a pull request, invisible to Living Memory until merged. Not for instructions: fabric_propose_project_instruction_change.`,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -141,7 +141,7 @@ const MEMORY_WRITE_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_memory_write_status",
 		description:
-			"Reads a Living Memory write receipt: PENDING, then COMMITTED, PULL_REQUEST (with its URL), CONFLICT or REFUSED (a verdict per path, currentOid for a changed path), or FAILED.",
+			"Reads write receipt: PENDING/COMMITTED/PULL_REQUEST (URL)/CONFLICT/REFUSED (per-path verdict/currentOid)/FAILED.",
 		inputSchema: {
 			type: "object",
 			properties: {

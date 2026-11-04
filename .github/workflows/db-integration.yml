@@ -1050,6 +1050,42 @@ jobs:
           if (passed !== 4) { console.error(`::error::expected exactly 4 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
+      - name: Run the instruction proposal decision suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+          VITEST_INCLUDE_INTEGRATION: '1'
+        # Concurrent approve/reject, the per-proposer admission cap under a
+        # race, cancel not freeing capacity early, the retried-push dedup, and
+        # one publication per base. Each is a lock or a unique constraint that
+        # only real Postgres honours. The file was not listed here before, so
+        # it went stale when the dedup landed without anyone seeing it fail.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/instruction-proposal-approval.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=instruction-proposal-approval-results.json
+
+      - name: 'Guard: assert the instruction proposal decision suite executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guards above: the file self-skips
+        # without DATABASE_URL, so a green step proves nothing on its own, and
+        # the count is exact so a dropped case is noticed. 8 = the 6 decision
+        # cases plus the 2 review-policy cases (the second reviewer's approval
+        # publishes, never the proposer's; a lowered policy publishes on the
+        # next approval).
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/instruction-proposal-approval-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(`instruction-proposal-approval-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/instruction-proposal-approval.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
+          if (passed !== 8) { console.error(`::error::expected exactly 8 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
       - name: Run the workflow execution reservation suite against real Postgres
         env:
           RUN_DB_INTEGRATION: '1'

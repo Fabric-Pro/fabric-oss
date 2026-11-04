@@ -2373,7 +2373,7 @@ function CapabilitiesList({
 			iconBg: capability.iconBgClassName,
 			href:
 				capability.id === "discover-knowledge"
-					? `${basePath}/libraries`
+					? `${basePath}/workspaces`
 					: capability.id === "discover-tools"
 						? `${basePath}/mcp-servers`
 						: undefined,

@@ -104,3 +104,63 @@ describe("workspace and connector usage siblings", () => {
 		},
 	);
 });
+
+it("requests matched text and preserves passage scores through cross-source ranking", async () => {
+	const matchedPassages = [
+		{ content: "Relevant match", score: 0.7 },
+		{ content: "Second match", score: 0.5 },
+	];
+	mocks.retrieveProjectContexts.mockResolvedValue([
+		{
+			id: "example-context",
+			type: "TEXT",
+			content: "Whole body",
+			score: 0.8,
+			matchedPassages,
+		},
+	]);
+	const res = await projectSearch({
+		projectId: "example-project",
+		query: "match",
+		userId: "example-user",
+		sources: ["project-context", "web"],
+		webSearchFn: async () => [
+			{
+				id: "example-web",
+				content: "Snippet",
+				source: { type: "web", name: "Web", badge: "Web" },
+				relevance: 1,
+			},
+		],
+		sourceWeights: { web: 1, "project-context": 0.5 },
+		totalLimit: 2,
+	});
+	expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+		expect.objectContaining({ includeMatchedPassages: true }),
+	);
+	expect(res.results.map((r) => r.id)).toEqual([
+		"example-web",
+		"example-context",
+	]);
+	expect(res.results[1].matchedPassages).toBe(matchedPassages);
+});
+
+it("carries summary identity so the formatter can reserve its reference legend", async () => {
+	mocks.retrieveProjectContexts.mockResolvedValue([
+		{
+			id: "example-summary",
+			type: "PROJECT_SUMMARY",
+			content:
+				"Summary [S1]\n---\nSOURCE REFERENCES\n[S1] = example-source",
+			score: 1,
+		},
+	]);
+	const res = await projectSearch({
+		projectId: "example-project",
+		userId: "example-user",
+		query: "summary",
+		sources: ["project-context"],
+	});
+	expect(res.results[0].metadata?.isSummary).toBe(true);
+	expect(res.results[0].content).toContain("SOURCE REFERENCES");
+});

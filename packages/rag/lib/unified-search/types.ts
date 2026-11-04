@@ -32,8 +32,14 @@ export interface UnifiedSearchResult {
 	/** Unique ID for this result (chunk ID, search result hash, etc.) */
 	id: string;
 
-	/** The text content of this result */
+	/** Source body or snippet; used as a body-start fallback without matched chunks. */
 	content: string;
+
+	/** Matched chunks with their retrieval scores; empty means body-start fallback. */
+	matchedPassages?: Array<{ content: string; score: number }>;
+
+	/** Source instructions reserved alongside the result header. */
+	contentHeader?: string;
 
 	/** Source metadata for transparency and badges */
 	source: {

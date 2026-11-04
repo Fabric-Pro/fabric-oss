@@ -13,7 +13,7 @@
  *   - The BUG empty/prefix-only-title fallback still resolves to "Untitled bug"
  *     (REQ-21 / AC12 — no regression).
  *
- * The LLM (`generateObject`) and the persistence layer (`createStory`) are
+ * The LLM (`generateText`) and the persistence layer (`createStory`) are
  * mocked; the pure normalizers from `@repo/utils` run for real so the assertion
  * exercises the actual write-time behavior.
  */
@@ -32,7 +32,7 @@ const { mocks } = vi.hoisted(() => ({
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		projectFindUnique: vi.fn(),
@@ -41,13 +41,14 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	Output: { object: (spec: unknown) => spec },
 	AIProviderNotConfiguredError: class extends Error {
 		constructor() {
 			super("AI provider not configured");
 			this.name = "AIProviderNotConfiguredError";
 		}
 	},
-	generateObject: mocks.generateObject,
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -158,8 +159,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 				rationale: "epic signal",
 			});
 			setupDraftingPath();
-			mocks.generateObject.mockResolvedValue({
-				object: {
+			mocks.generateText.mockResolvedValue({
+				output: {
 					description: "# Payments Platform\n\nEpic body text.",
 				},
 				usage: { totalTokens: 10 },
@@ -186,8 +187,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 				rationale: "feature signal",
 			});
 			setupDraftingPath();
-			mocks.generateObject.mockResolvedValue({
-				object: {
+			mocks.generateText.mockResolvedValue({
+				output: {
 					description: "# SSO Login\n\nFeature body text.",
 				},
 				usage: { totalTokens: 10 },
@@ -218,8 +219,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 				rationale: "story signal",
 			});
 			setupDraftingPath();
-			mocks.generateObject.mockResolvedValue({
-				object: {
+			mocks.generateText.mockResolvedValue({
+				output: {
 					description: "# Export to CSV\n\nStory body text.",
 				},
 				usage: { totalTokens: 10 },
@@ -246,8 +247,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 				rationale: "bug signal",
 			});
 			setupDraftingPath();
-			mocks.generateObject.mockResolvedValue({
-				object: {
+			mocks.generateText.mockResolvedValue({
+				output: {
 					title: "[BUG] No output generated",
 					needsMoreInfo: false,
 					markdown:
@@ -279,8 +280,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 				rationale: "bug signal",
 			});
 			setupDraftingPath();
-			mocks.generateObject.mockResolvedValue({
-				object: {
+			mocks.generateText.mockResolvedValue({
+				output: {
 					title: "Bug: [BUG] No output generated",
 					needsMoreInfo: false,
 					markdown: "Some bug body without a duplicating heading.",
@@ -307,8 +308,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 				rationale: "feature signal",
 			});
 			setupDraftingPath();
-			mocks.generateObject.mockResolvedValue({
-				object: { description: "Feature body, no duplicate heading." },
+			mocks.generateText.mockResolvedValue({
+				output: { description: "Feature body, no duplicate heading." },
 				usage: { totalTokens: 10 },
 			});
 
@@ -335,8 +336,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 				rationale: "bug signal",
 			});
 			setupDraftingPath();
-			mocks.generateObject.mockResolvedValue({
-				object: {
+			mocks.generateText.mockResolvedValue({
+				output: {
 					title,
 					needsMoreInfo: false,
 					markdown: `# Bug: ${title}\n\nBug Metadata\n- Severity: Medium\n- Area: AI Update`,
@@ -370,8 +371,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 			});
 			setupDraftingPath();
 			const body = "# Overview\n\nThis describes the feature.";
-			mocks.generateObject.mockResolvedValue({
-				object: { description: body },
+			mocks.generateText.mockResolvedValue({
+				output: { description: body },
 				usage: { totalTokens: 10 },
 			});
 
@@ -396,8 +397,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 			setupDraftingPath();
 			const body =
 				"This feature lets users export.\n\n## Details\n\nMore text.";
-			mocks.generateObject.mockResolvedValue({
-				object: { description: body },
+			mocks.generateText.mockResolvedValue({
+				output: { description: body },
 				usage: { totalTokens: 10 },
 			});
 
@@ -422,8 +423,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 				rationale: "bug signal",
 			});
 			setupDraftingPath();
-			mocks.generateObject.mockResolvedValue({
-				object: {
+			mocks.generateText.mockResolvedValue({
+				output: {
 					title: undefined,
 					needsMoreInfo: false,
 					markdown: "Bug body without a heading.",
@@ -450,8 +451,8 @@ describe("createStoryFromProposal — write-time title/body normalization", () =
 				rationale: "bug signal",
 			});
 			setupDraftingPath();
-			mocks.generateObject.mockResolvedValue({
-				object: {
+			mocks.generateText.mockResolvedValue({
+				output: {
 					title: "[BUG] Bug:",
 					needsMoreInfo: false,
 					markdown: "Bug body without a heading.",

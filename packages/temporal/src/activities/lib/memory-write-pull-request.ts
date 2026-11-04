@@ -24,7 +24,10 @@ import {
 import {
 	InstructionPullRequestError,
 	type PullRequestObservation,
+	refusalLogFields,
+	repositoryLogFields,
 } from "@repo/integrations/instruction-pull-requests";
+import { logger } from "@repo/logs";
 import type { BranchCredential } from "./instruction-branch-credential";
 import { ProposalStepFailure } from "./instruction-proposal-boundary";
 import { providerCall } from "./instruction-proposal-operation";
@@ -118,6 +121,17 @@ export async function openMemoryWritePullRequest(input: {
 				if (raced !== null) {
 					return raced;
 				}
+			}
+			if (
+				error instanceof InstructionPullRequestError &&
+				!error.duplicate
+			) {
+				logger.warn("[memory-write] pull request refused", {
+					...refusalLogFields(error),
+					sourceRef: input.sourceRef,
+					targetRef: input.targetRef,
+					repository: repositoryLogFields(target.repository),
+				});
 			}
 			throw error;
 		}

@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { CancelExecutionButton } from "./CancelExecutionButton";
 import { ExecutionStatusBadge } from "./ExecutionStatusBadge";
+import { OwnerOnlyGenerate } from "./OwnerOnlyGenerate";
 
 interface RailExecution {
 	id: string;
@@ -93,8 +94,10 @@ function RailLabel({ children }: { children: React.ReactNode }) {
 export function ReportReadinessRail({
 	readiness,
 	onGenerate,
+	canGenerate = true,
 	isGenerating,
 	onTest,
+	showConnectionTest = true,
 	isTesting,
 	latestExecution,
 	executionCount,
@@ -108,8 +111,11 @@ export function ReportReadinessRail({
 }: {
 	readiness: ReportReadiness;
 	onGenerate: () => void;
+	/** False when the viewer does not own the report. */
+	canGenerate?: boolean;
 	isGenerating: boolean;
 	onTest: () => void;
+	showConnectionTest?: boolean;
 	isTesting: boolean;
 	latestExecution?: RailExecution;
 	executionCount: number;
@@ -180,34 +186,47 @@ export function ReportReadinessRail({
 
 			{/* Primary actions */}
 			<div className="space-y-2 rounded-lg border bg-card p-4">
-				<Button
-					className="w-full"
-					size="lg"
-					onClick={onGenerate}
-					disabled={readiness.hardBlocked || isGenerating}
-					autoLoading={false}
-				>
-					{isGenerating ? (
-						<Loader2Icon className="size-4 animate-spin" />
-					) : (
-						<PlayIcon className="size-4" />
+				<OwnerOnlyGenerate canGenerate={canGenerate} className="w-full">
+					{(ownerOnlyId) => (
+						<Button
+							className="w-full"
+							size="lg"
+							onClick={onGenerate}
+							disabled={
+								!canGenerate ||
+								readiness.hardBlocked ||
+								isGenerating
+							}
+							aria-describedby={ownerOnlyId}
+							autoLoading={false}
+						>
+							{isGenerating ? (
+								<Loader2Icon className="size-4 motion-safe:animate-spin" />
+							) : (
+								<PlayIcon className="size-4" />
+							)}
+							Generate Report
+						</Button>
 					)}
-					Generate Report
-				</Button>
-				<Button
-					variant="outline"
-					className="w-full"
-					onClick={onTest}
-					disabled={isTesting}
-					autoLoading={false}
-				>
-					{isTesting ? (
-						<Loader2Icon className="size-4 animate-spin" />
-					) : (
-						<PlugIcon className="size-4" />
-					)}
-					{isTesting ? "Testing connections…" : "Test connections"}
-				</Button>
+				</OwnerOnlyGenerate>
+				{showConnectionTest && (
+					<Button
+						variant="outline"
+						className="w-full"
+						onClick={onTest}
+						disabled={isTesting}
+						autoLoading={false}
+					>
+						{isTesting ? (
+							<Loader2Icon className="size-4 animate-spin" />
+						) : (
+							<PlugIcon className="size-4" />
+						)}
+						{isTesting
+							? "Testing connections…"
+							: "Test connections"}
+					</Button>
+				)}
 				{readiness.hardBlocked && readiness.blockReason && (
 					<p className="px-1 pt-0.5 text-center text-xs leading-relaxed text-muted-foreground">
 						{readiness.blockReason}

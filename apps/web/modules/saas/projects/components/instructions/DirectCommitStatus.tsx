@@ -40,19 +40,22 @@ import { useCallback, useEffect, useRef } from "react";
  *
  * Mounted only while a commit is in flight, which is also why the query lives
  * here and not in the view that starts it: a view that never commits never
- * asks for it.
+ * asks for it. `indicator={false}` keeps the wait and drops the pill, for a
+ * surface whose own button already shows the commit in progress.
  */
 export function DirectCommitWatcher({
 	projectId,
 	snapshotId,
 	native = false,
 	branch,
+	indicator = true,
 	onSettled,
 }: {
 	projectId: string;
 	snapshotId: string;
 	native?: boolean;
 	branch: string;
+	indicator?: boolean;
 	onSettled: (result: SettledCommit) => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.commit");
@@ -148,6 +151,9 @@ export function DirectCommitWatcher({
 		return () => clearTimeout(timer);
 	}, [report]);
 
+	if (!indicator) {
+		return null;
+	}
 	return (
 		<output className="inline-flex w-fit items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary text-sm">
 			<Loader2Icon

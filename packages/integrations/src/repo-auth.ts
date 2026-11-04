@@ -54,8 +54,8 @@
  *    the credential-expiry notification once, on a genuine transition INTO that
  *    state, when recovery isn't possible — so the UI surfaces an actionable
  *    "Reconnect" state and the configuring user is told.
- *  - `buildAuthCloneUrl` / `isGitAuthError` are the shared clone-URL builder and
- *    auth-error classifier both clone paths use.
+ *  - `gitAuthForClone` / `isGitAuthError` are the shared clone authentication
+ *    and auth-error classifier both clone paths use.
  *
  * The recovery helpers are best-effort and NEVER throw — a recovery attempt
  * must never mask the underlying clone failure with an error of its own. The
@@ -97,25 +97,80 @@ import {
 } from "./gitlab/index";
 import type { RepoTokenRefreshFault } from "./repo-token-refresh-fault";
 
-export function buildAuthCloneUrl(
+/** The HTTPS basic-auth username each provider expects beside a token. */
+export function gitUsernameFor(provider: string): string {
+	if (provider === "AZURE_DEVOPS") {
+		return "pat";
+	}
+	if (provider === "GITLAB") {
+		return "oauth2";
+	}
+	// GITHUB and anything else that accepts token-as-password basic auth.
+	return "x-access-token";
+}
+
+/**
+ * Worker variables a git child spawned through simple-git may not inherit:
+ * simple-git refuses to run when its env sets one of these (an editor, a
+ * pager, an askpass, a config path), and a stray `GIT_*` variable would
+ * change what git does.
+ */
+const NON_INHERITED_GIT_ENV =
+	/^(git_|editor$|visual$|pager$|prefix$|ssh_askpass$)/i;
+
+/**
+ * The repository URL to hand git, and the environment that authenticates it,
+ * so the token never reaches argv, a remote URL, `.git/config` or a git error
+ * message.
+ *
+ * The token travels as an `Authorization` header in git's environment-only
+ * config (`GIT_CONFIG_COUNT`), scoped to the repository's own origin with
+ * `http.<origin>/.extraHeader`, so a remote on any other host never matches
+ * it; curl drops an `Authorization` header on a cross-host redirect, and a
+ * proxy never receives it. `credential.helper` is emptied so no
+ * host helper is consulted, and `GIT_TERMINAL_PROMPT=0` makes a refused
+ * token fail instead of prompting. The lazy fetches a partial clone spawns
+ * inherit the same environment, so every git call on the clone — not only
+ * the clone itself — must use it.
+ *
+ * Pass `env` to simple-git's `.env()` together with `GIT_AUTH_UNSAFE`: simple-git
+ * refuses `GIT_CONFIG_COUNT` and `credential.helper` unless told they are
+ * intended.
+ */
+export function gitAuthForClone(
 	provider: string,
 	repositoryUrl: string,
 	token: string,
-): string {
+	source: NodeJS.ProcessEnv = process.env,
+): { url: string; env: Record<string, string> } {
 	const url = new URL(repositoryUrl);
-	if (provider === "AZURE_DEVOPS") {
-		url.username = "pat";
-		url.password = token;
-	} else if (provider === "GITLAB") {
-		url.username = "oauth2";
-		url.password = token;
-	} else {
-		// GITHUB and anything else that accepts token-as-password basic auth.
-		url.username = "x-access-token";
-		url.password = token;
+	url.username = "";
+	url.password = "";
+	const env: Record<string, string> = {};
+	for (const [key, value] of Object.entries(source)) {
+		if (value !== undefined && !NON_INHERITED_GIT_ENV.test(key)) {
+			env[key] = value;
+		}
 	}
-	return url.toString();
+	const basic = Buffer.from(`${gitUsernameFor(provider)}:${token}`).toString(
+		"base64",
+	);
+	Object.assign(env, {
+		GIT_TERMINAL_PROMPT: "0",
+		GIT_CONFIG_COUNT: "2",
+		GIT_CONFIG_KEY_0: "credential.helper",
+		GIT_CONFIG_VALUE_0: "",
+		GIT_CONFIG_KEY_1: `http.${url.origin}/.extraHeader`,
+		GIT_CONFIG_VALUE_1: `Authorization: Basic ${basic}`,
+	});
+	return { url: url.toString(), env };
 }
+
+/** The simple-git `unsafe` flags `gitAuthForClone`'s environment needs. */
+export const GIT_AUTH_UNSAFE = {
+	allowUnsafeConfigEnvCount: true,
+	allowUnsafeCredentialHelper: true,
+} as const;
 
 /**
  * A `git` transport AUTHENTICATION failure (dead/rotated token, revoked grant,

@@ -17,12 +17,13 @@
 import { getBoundPromptForAgent } from "@repo/database";
 import { logger } from "@repo/logs";
 import { renderTemplate, type TemplateFormat } from "@repo/utils";
-import { generateObject, NoObjectGeneratedError, zodSchema } from "ai";
+import { generateText, NoObjectGeneratedError, Output, zodSchema } from "ai";
 import { z } from "zod";
 import {
 	AIProviderNotConfiguredError,
 	getAIModelWithMetadata,
 } from "../dynamic-model-selector";
+import { requireStructuredOutput } from "../structured-output";
 import { logModelUsageAsync } from "../usage-logging";
 
 /**
@@ -303,12 +304,16 @@ async function generateStepProposal(params: {
 		}
 
 		const start = Date.now();
-		const { object, usage } = await generateObject({
-			model,
-			schema: zodSchema(ReviseTestCaseStepsSchema),
-			prompt: rendered.rendered,
-			maxOutputTokens: REVISION_MAX_OUTPUT_TOKENS,
-		});
+		const { output: object, usage } = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({
+					schema: zodSchema(ReviseTestCaseStepsSchema),
+				}),
+				prompt: rendered.rendered,
+				maxOutputTokens: REVISION_MAX_OUTPUT_TOKENS,
+			}),
+		);
 
 		trackUsage();
 		logModelUsageAsync({

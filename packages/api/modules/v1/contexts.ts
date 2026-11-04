@@ -4,6 +4,7 @@
  *   PUT    /projects/:projectId/contexts/synced-files   push one text file by its path
  *                                                      (or move it, `movedFromSourcePath`)
  *   DELETE /projects/:projectId/contexts/synced-files   delete one, in the version named
+ *   POST   /projects/:projectId/contexts/reset          delete every synced file at once
  *
  * The key-backed twin of `projects.contexts.upsertSyncedFile`. That procedure
  * is a `tenantProtectedProcedure`, whose chain authenticates through
@@ -43,6 +44,7 @@
  * HOSTING organization, never a caller-supplied one; an organization key must
  * be that organization's; and `?org=` still binds when it is sent.
  */
+
 import { db, hasProjectAccess } from "@repo/database";
 import { hasPermission, Permissions } from "@repo/permissions";
 import type { Hono } from "hono";
@@ -60,7 +62,10 @@ import {
 	syncedContextDeleteConflictMessage,
 } from "../projects/lib/synced-context-conflict";
 import { MAX_SYNCED_CONTEXT_BYTES } from "../projects/lib/synced-context-limits";
+import { registerContextAssemblyRoutes } from "./context-assembly";
+import { registerContextManifestRoutes } from "./context-manifest";
 import { badRequest, forbidden, notFound, ok } from "./helpers";
+import { registerWorkspaceDocumentLinkRoutes } from "./workspace-document-links";
 
 /**
  * Bound on the path as sent, before normalising — the oRPC twin's
@@ -107,6 +112,9 @@ export interface RequiredContextPermission {
 		| typeof Permissions.CONTEXT_DELETE;
 	/** The nested 403's sentence. */
 	refusal: string;
+	/** Consumer-specific copy; authorization remains identical across surfaces. */
+	organizationRefusal?: string;
+	personalRefusal?: string;
 }
 
 const PUSH_PERMISSION: RequiredContextPermission = {
@@ -160,6 +168,7 @@ export async function resolveContextProject(
 		return {
 			error: {
 				message:
+					required.personalRefusal ??
 					"Synced context files are an organization surface; ?personal=1 is not supported",
 			},
 			status: 403,
@@ -184,7 +193,9 @@ export async function resolveContextProject(
 	if (!hostingOrganizationId) {
 		return {
 			error: {
-				message: "Synced context files require an organization project",
+				message:
+					required.organizationRefusal ??
+					"Synced context files require an organization project",
 			},
 			status: 403,
 		};
@@ -374,6 +385,9 @@ function syncedFileRefusalStatus(error: unknown): 400 | 403 | null {
 export function registerContextRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
 ) {
+	registerContextManifestRoutes(app);
+	registerContextAssemblyRoutes(app);
+	registerWorkspaceDocumentLinkRoutes(app);
 	/**
 	 * PUT /projects/:projectId/contexts/synced-files
 	 *
@@ -641,6 +655,85 @@ export function registerContextRoutes(
 					},
 					409,
 				);
+			}
+
+			return c.json(ok(result));
+		},
+	);
+
+	/**
+	 * POST /projects/:projectId/contexts/reset
+	 *
+	 * Reset the project's Living Memory: delete every synced file at once,
+	 * the key-backed twin of `projects.contexts.resetLivingMemory`. No body.
+	 * Same gates, same order, as the DELETE above (`projects:write`, then the
+	 * key creator's live `CONTEXT_DELETE`, visibility first): a reset deletes
+	 * every member's files, and that is the permission that deletes any
+	 * member's file one at a time.
+	 *
+	 * Answers 200 `{ data: { deleted } }`, `deleted` being 0 when there was
+	 * nothing to delete, so a repeat is harmless; 409 `{ error: { message,
+	 * code: "REPOSITORY_SYNC_ACTIVE", repository, ref } }` while a repository
+	 * sync is connected, deleting nothing.
+	 */
+	app.post(
+		"/projects/:projectId/contexts/reset",
+		requireScope("projects:write"),
+		async (c) => {
+			const apiCtx = c.get("externalApiContext");
+			const projectId = c.req.param("projectId");
+			if (!projectId) {
+				return c.json(badRequest("projectId is required"), 400);
+			}
+
+			const resolved = await resolveContextProject(
+				projectId,
+				apiCtx,
+				{
+					org: c.req.query("org"),
+					personal: c.req.query("personal") === "1",
+				},
+				DELETE_PERMISSION,
+			);
+			if ("error" in resolved) {
+				return c.json({ error: resolved.error }, resolved.status);
+			}
+
+			const actor = await db.user.findUnique({
+				where: { id: resolved.userId },
+				select: { email: true, name: true },
+			});
+
+			const { resetSyncedContexts, repositorySyncActiveBody } =
+				await import("../projects/lib/reset-synced-contexts");
+			let result: Awaited<ReturnType<typeof resetSyncedContexts>>;
+			try {
+				result = await resetSyncedContexts({
+					projectId,
+					userId: resolved.userId,
+					organizationId: resolved.organizationId,
+					via: "v1-api",
+					request: {
+						headers: c.req.raw.headers,
+						user: {
+							id: resolved.userId,
+							email: actor?.email ?? "",
+							name: actor?.name ?? null,
+						},
+					},
+				});
+			} catch (error) {
+				const active = repositorySyncActiveBody(error);
+				if (active) {
+					return c.json(active, 409);
+				}
+				const status = syncedFileRefusalStatus(error);
+				if (status === null) {
+					throw error;
+				}
+				const message =
+					error instanceof Error ? error.message : "Request refused";
+				return c.json({ error: { message } }, status);
 			}
 
 			return c.json(ok(result));

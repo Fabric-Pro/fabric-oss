@@ -37,10 +37,9 @@
  * | admission refusal (4xx/5xx body)    | RUN_ERROR `{message, code}` (`HTTP_<status>` when the body names none), metadata.fabric = the body |
  * | stream window reached               | CUSTOM `fabric.reconnect` `{executionId, runId}`; the response ends, the turn does not |
  *
- * Approval (see `direct-approval.ts`): resuming an interrupt approved starts
- * a new turn keyed `<interruptId>:resume` that runs the call the interrupted
- * turn's workflow recorded, never arguments the client sends; declining
- * starts nothing; a replayed or stale answer is `APPROVAL_NOT_PENDING`.
+ * Direct approval resume is unavailable until a durable action receipt is
+ * implemented. Resume requests return DIRECT_APPROVAL_UNSUPPORTED; read-only
+ * chat, observation, reconnect and cancellation remain available.
  */
 import {
 	contentToText,
@@ -55,6 +54,11 @@ import {
 	requestConversationTurnCancel,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
+import {
+	DIRECT_APPROVAL_CAPABILITIES,
+	DIRECT_APPROVAL_UNSUPPORTED_MESSAGE,
+	DIRECT_RUNTIME_AGENT_ID,
+} from "@repo/temporal/direct-approval-policy";
 import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import {
 	approvalMessage,
@@ -114,7 +118,7 @@ import {
 } from "./thread";
 
 /** The runtime agent id the Direct engine serves. */
-export const DIRECT_AGENT_ID = "fabric-direct";
+export const DIRECT_AGENT_ID = DIRECT_RUNTIME_AGENT_ID;
 
 /** The AG-UI run id is the turn's client key: the chat routes' key format. */
 export const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
@@ -398,9 +402,8 @@ export class DirectEngine implements RuntimeEngine {
 	}
 
 	/**
-	 * Answer a pending interrupt. Approved, the call the interrupted turn's
-	 * workflow recorded runs as a new turn; declined or cancelled, nothing
-	 * runs and a tombstone on the answer's key refuses any later answer.
+	 * Refuse legacy Direct resumes before admission. Historical lookup remains
+	 * behind the capability gate for a future receipt-backed implementation.
 	 */
 	private async resume(
 		threadId: string,
@@ -412,6 +415,15 @@ export class DirectEngine implements RuntimeEngine {
 			refuseForbidden(stream);
 			return;
 		}
+		if (!DIRECT_APPROVAL_CAPABILITIES.approvalResume) {
+			refuse(
+				stream,
+				"DIRECT_APPROVAL_UNSUPPORTED",
+				DIRECT_APPROVAL_UNSUPPORTED_MESSAGE,
+			);
+			return;
+		}
+
 		const approval = await pendingApprovalFor(
 			this.caller,
 			threadId,

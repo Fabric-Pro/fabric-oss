@@ -36,6 +36,10 @@ import { createDownloadUrlProcedure } from "../create-download-url";
 import { createUploadUrlsProcedure } from "../create-upload-urls";
 import { deleteSnapshotProcedure } from "../delete-snapshot";
 import { deriveSnapshotProcedure } from "../derive-snapshot";
+import {
+	getInstructionsDigestProcedure,
+	markInstructionsSeenProcedure,
+} from "../digest";
 import { finalizeSnapshotProcedure } from "../finalize-snapshot";
 import { getFileProcedure } from "../get-file";
 import { getPublishedSnapshotProcedure } from "../get-published";
@@ -81,6 +85,8 @@ const PROCEDURES = [
 	["listSnapshots", listSnapshotsProcedure],
 	["getSettings", getSettingsProcedure],
 	["getSnapshot", getSnapshotProcedure],
+	["getDigest", getInstructionsDigestProcedure],
+	["markSeen", markInstructionsSeenProcedure],
 ] as const;
 
 const visibility = projectNotFoundUnlessVisible as unknown as TaggedMiddleware;

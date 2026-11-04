@@ -1,19 +1,20 @@
 /**
  * GitHub OAuth Utilities
  *
- * Handles GitHub OAuth flow for task agent integration.
+ * Handles GitHub OAuth flow for connected integrations.
  * Similar to Weft's implementation.
  */
+
+import { GITHUB_OAUTH_SCOPES } from "@repo/utils/github-oauth-scopes";
 
 // GitHub OAuth configuration
 const GITHUB_AUTH_URL = "https://github.com/login/oauth/authorize";
 const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
 const GITHUB_API_URL = "https://api.github.com";
 
-// Scopes needed for repo access and PR creation, and `project` for GitHub
-// Projects (v2) boards used as the PM tool. Ignored by a GitHub App, whose
-// "Projects" permission governs board access instead.
-const GITHUB_SCOPES = ["repo", "read:user", "project"];
+// One scope set for every GitHub connect; ignored by a GitHub App, whose
+// permissions govern access instead.
+const GITHUB_SCOPES = GITHUB_OAUTH_SCOPES;
 
 export interface GitHubTokenResponse {
 	access_token: string;

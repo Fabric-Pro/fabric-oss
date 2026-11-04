@@ -13,15 +13,16 @@
 
 import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import {
-	generateObject,
 	generateText,
 	isStepCount,
 	NoSuchToolError,
+	Output,
 	streamText,
 } from "@repo/ai";
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	invalidateMcpClientCache,
 	OAuthAuthorizationRequiredError,
@@ -942,24 +943,28 @@ export class McpToolHandler implements StepHandler {
 						return null;
 					}
 
-					// Use generateObject with the tool's schema to repair the input
-					const { object: repairedArgs } = await runWithAiCallPurpose(
+					// Use structured output (`Output.object`) with the tool's schema to repair the input
+					const { output: repairedArgs } = await runWithAiCallPurpose(
 						AI_CALL_PURPOSES.toolArgumentRepair,
 						() =>
-							generateObject({
-								model,
-								schema: tool.inputSchema as z.ZodType,
-								prompt: [
-									`The model tried to call the tool "${toolCall.toolName}" with the following inputs:`,
-									typeof toolCall.input === "string"
-										? toolCall.input
-										: JSON.stringify(toolCall.input),
-									`But the input was malformed. Error: ${error instanceof Error ? error.message : String(error)}`,
-									"The tool accepts the following schema:",
-									JSON.stringify(inputSchema(toolCall)),
-									"Please fix the inputs to match the schema exactly.",
-								].join("\n"),
-							}),
+							requireStructuredOutput(
+								generateText({
+									model,
+									output: Output.object({
+										schema: tool.inputSchema as z.ZodType,
+									}),
+									prompt: [
+										`The model tried to call the tool "${toolCall.toolName}" with the following inputs:`,
+										typeof toolCall.input === "string"
+											? toolCall.input
+											: JSON.stringify(toolCall.input),
+										`But the input was malformed. Error: ${error instanceof Error ? error.message : String(error)}`,
+										"The tool accepts the following schema:",
+										JSON.stringify(inputSchema(toolCall)),
+										"Please fix the inputs to match the schema exactly.",
+									].join("\n"),
+								}),
+							),
 					);
 
 					console.log(

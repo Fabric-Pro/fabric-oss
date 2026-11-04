@@ -319,6 +319,21 @@ async function applyRLS() {
 				name: "project_instruction_proposal_branch_operation",
 				policy: "org_only",
 			},
+			// Members' read access to the instructions repository (spec
+			// 2026-11-04 §4.5). The row names the member it was granted to;
+			// project settings editors manage every member's row, which the
+			// org-context arm of user_owned allows.
+			{
+				name: "project_instructions_access_grant",
+				policy: "user_owned",
+			},
+			// Per-reviewer approvals of upload-mode proposals. The row names
+			// the reviewer; the review transaction counts every reviewer's row
+			// in the organization context.
+			{
+				name: "project_instruction_proposal_approval",
+				policy: "user_owned",
+			},
 			{ name: "project_document", policy: "user_owned" }, // Project documents
 			{ name: "project_document_asset", policy: "user_owned" }, // Binary/HTML artifacts attached to generated docs
 			{ name: "project_context", policy: "user_owned" }, // Project context files
@@ -421,6 +436,7 @@ async function applyRLS() {
 			{ name: "project_meeting_agenda", policy: "user_owned" }, // Generated pre-meeting agendas (#1901)
 			{ name: "parlume_meeting_session", policy: "user_owned" }, // Project-scoped Teams bot lifecycle
 			{ name: "parlume_channel_post", policy: "user_owned" },
+			{ name: "parlume_suggestion", policy: "user_owned" }, // Parlume's unprompted suggestions and recaps, listed to project readers
 			{ name: "parlume_meeting_segment", policy: "user_owned" }, // Final live transcript segments
 			{ name: "parlume_meeting_turn", policy: "user_owned" }, // Project-scoped spoken agent responses
 			{ name: "parlume_action", policy: "user_owned" },
@@ -538,6 +554,21 @@ async function applyRLS() {
 			{
 				name: "project_databricks_knowledge_binding",
 				policy: "project_scoped",
+			},
+			// Guests retain project access, but writes must copy the actual
+			// project's organization, not a caller-supplied tenant.
+			{
+				name: "project_context_quality_binding",
+				policy: "project_member_or_tenant_consistent",
+			},
+			{
+				name: "project_workspace_document_link",
+				policy: "project_member_or_tenant_consistent",
+			},
+			{ name: "project_context_quality_principal", policy: "org_only" },
+			{
+				name: "project_context_quality_run",
+				policy: "project_member_or_tenant_consistent",
 			},
 			{ name: "project_user_preference", policy: "per_user_within_org" },
 			// One person's dismissal of the CLI connection prompt (Fizzy #2457).
@@ -807,6 +838,12 @@ async function applyRLS() {
 			// a source its reader already resolved.
 			{ name: "chat_gpt_plan_org_account", policy: "org_only" },
 			{ name: "chat_gpt_plan_org_policy", policy: "org_only" },
+
+			// Report defaults an organization or one of its projects sets for
+			// the reports it creates from a template. No userId owner
+			// (updatedById is attribution) and no project guest path: only
+			// organization members change or apply them.
+			{ name: "report_template_override", policy: "org_only" },
 
 			// Dynamic agents
 			{ name: "offloaded_tool_output", policy: "user_owned" }, // Large tool outputs

@@ -11,9 +11,10 @@ import {
 	resolveScepticRoles,
 } from "@repo/utils/qa-test-types";
 import {
-	generateObject,
+	generateText,
 	type LanguageModel,
 	NoObjectGeneratedError,
+	Output,
 	zodSchema,
 } from "ai";
 import { z } from "zod";
@@ -21,6 +22,10 @@ import {
 	AIProviderNotConfiguredError,
 	getAIModelWithMetadata,
 } from "../dynamic-model-selector";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "../structured-output";
 import { logModelUsageAsync } from "../usage-logging";
 
 /**
@@ -30,7 +35,7 @@ import { logModelUsageAsync } from "../usage-logging";
  *
  * Two design rules from this codebase shape the schema:
  *
- *  1. **Lenient `generateObject` schema** — the AI gateway rejects schemas
+ *  1. **Lenient `Output.object` schema** — the AI gateway rejects schemas
  *     built with `z.enum` / `z.preprocess` ("Schema type is missing"), so the
  *     model only ever returns plain strings. `priority` is asked of the model
  *     but comes back as free text and is mapped onto the Prisma enum by
@@ -152,7 +157,7 @@ export const DraftTestCasesSchema = z.object({
 		.describe("The drafted test cases for the feature."),
 });
 
-/** The raw shape `generateObject` returns for {@link DraftTestCasesSchema}. */
+/** The raw shape `Output.object` returns for {@link DraftTestCasesSchema}. */
 export type DraftTestCasesObject = z.infer<typeof DraftTestCasesSchema>;
 
 /** A single normalized step ready for persistence (`TestCaseStep`). */
@@ -1011,14 +1016,14 @@ export function normalizeDraftedTestCases(
  * the latency on an already-failing request.
  */
 /**
- * A generation recovered from a rejected completion. Mirrors the `generateObject`
+ * A generation recovered from a rejected completion. Mirrors the `generateText`
  * result the caller reads — the cases are already normalized, so the caller's
  * own normalization pass is a no-op over them.
  */
 interface SalvagedGeneration {
-	object: { testCases: DraftedTestCase[] };
+	output: { testCases: DraftedTestCase[] };
 	usage:
-		| NonNullable<Awaited<ReturnType<typeof generateObject>>["usage"]>
+		| NonNullable<StructuredTextResult<unknown>["usage"]>
 		| Record<string, never>;
 }
 
@@ -1030,12 +1035,16 @@ async function generateDraftedTestCasesObject(params: {
 	strategyDepth?: string | null;
 }) {
 	const call = (prompt: string) =>
-		generateObject({
-			model: params.model,
-			schema: zodSchema(DraftTestCasesSchema),
-			prompt,
-			maxOutputTokens: params.maxOutputTokens,
-		});
+		requireStructuredOutput(
+			generateText({
+				model: params.model,
+				output: Output.object({
+					schema: zodSchema(DraftTestCasesSchema),
+				}),
+				prompt,
+				maxOutputTokens: params.maxOutputTokens,
+			}),
+		);
 
 	/** The rejection to surface when neither attempt yields anything usable. */
 	let lastRejection: Error | undefined;
@@ -1095,7 +1104,7 @@ async function generateDraftedTestCasesObject(params: {
 			// recorded by the global interceptor that wraps the model either
 			// way, so an empty tally here loses no accounting.
 			return {
-				object: { testCases: salvaged },
+				output: { testCases: salvaged },
 				usage: error.usage ?? {},
 			};
 		}
@@ -1182,7 +1191,7 @@ export async function draftTestCases(
 		const coverageClause = `\n\nCoverage requirement: give EVERY acceptance criterion at least one test case before adding depth anywhere — breadth of criterion coverage over multiple cases for one criterion. The case limit (${maxTestCases}) accommodates this.`;
 
 		const generationStart = Date.now();
-		const { object, usage } = await generateDraftedTestCasesObject({
+		const { output: object, usage } = await generateDraftedTestCasesObject({
 			model,
 			prompt: rendered.rendered + coverageClause,
 			maxOutputTokens: draftMaxOutputTokens(maxTestCases),

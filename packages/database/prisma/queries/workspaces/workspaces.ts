@@ -451,8 +451,9 @@ export async function getWorkspaceAccessContext(
 	workspaceId: string,
 	userId: string,
 	agentId?: string,
+	client: Prisma.TransactionClient = db,
 ): Promise<{ organizationId: string | null } | null> {
-	const workspace = await db.workspace.findFirst({
+	const workspace = await client.workspace.findFirst({
 		where: { id: workspaceId },
 		select: {
 			id: true,
@@ -478,7 +479,7 @@ export async function getWorkspaceAccessContext(
 	const organizationId = workspace.organizationId;
 
 	// Organization workspace - MUST verify org membership first
-	const orgMembership = await db.member.findFirst({
+	const orgMembership = await client.member.findFirst({
 		where: {
 			organizationId,
 			userId,
@@ -499,15 +500,15 @@ export async function getWorkspaceAccessContext(
 
 	// Check membership in any group
 	const [isAdmin, isContributor, isStakeholder] = await Promise.all([
-		db.workspaceAdministrator.findFirst({
+		client.workspaceAdministrator.findFirst({
 			where: { workspaceId, userId },
 			select: { id: true },
 		}),
-		db.workspaceContributor.findFirst({
+		client.workspaceContributor.findFirst({
 			where: { workspaceId, userId },
 			select: { id: true },
 		}),
-		db.workspaceStakeholder.findFirst({
+		client.workspaceStakeholder.findFirst({
 			where: { workspaceId, userId },
 			select: { id: true },
 		}),
@@ -519,7 +520,7 @@ export async function getWorkspaceAccessContext(
 
 	// Check agent access if agentId provided
 	if (agentId) {
-		const isAgent = await db.workspaceAgent.findFirst({
+		const isAgent = await client.workspaceAgent.findFirst({
 			where: { workspaceId, agentId },
 			select: { id: true },
 		});

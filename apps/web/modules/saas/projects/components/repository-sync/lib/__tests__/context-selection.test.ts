@@ -11,8 +11,10 @@ import {
 	applyContextAction,
 	CONTEXT_SYNC_MAX_EXCLUDED_PATHS,
 	type ContextAction,
+	type ContextFolderPolicy,
 	type ContextRepositoryTreeEntry,
 	type ContextSelection,
+	contextIgnorePathOf,
 	contextSelectionModel,
 	contextSummary,
 	contextSummaryLead,
@@ -604,32 +606,214 @@ describe("the count and the summary", () => {
 		expect(summaryOf(selection, "unsupported").count).toBeNull();
 	});
 
-	it("warns that a ticked folder's .contextignore may leave out more when its listing shows one, or the listing is truncated or unavailable", () => {
+	it("warns that a ticked folder's .contextignore may leave out more only where no listing is read alongside it", () => {
 		const policy = { key: "summary.policyCaveat" };
-		// `docs/.contextignore` is listed.
+		// With a listing, each ticked folder's file is read and applied, so
+		// the rows and the count already say what it leaves out.
 		expect(
 			summaryOf({ paths: ["docs"], excludedPaths: [] }).notes,
-		).toContainEqual(policy);
-		// `skills` has none, and the listing is complete.
-		expect(
-			summaryOf({ paths: ["skills"], excludedPaths: [] }).notes,
 		).not.toContainEqual(policy);
 		expect(
 			summaryOf({ paths: ["skills"], excludedPaths: [] }, "ready", true)
 				.notes,
-		).toContainEqual(policy);
+		).not.toContainEqual(policy);
+		for (const listing of ["unsupported", "error", "loading"] as const) {
+			expect(
+				summaryOf({ paths: ["skills"], excludedPaths: [] }, listing)
+					.notes,
+				listing,
+			).toContainEqual(policy);
+		}
+		// Only files ticked, as the listing says: no folder policy applies.
 		expect(
-			summaryOf({ paths: ["skills"], excludedPaths: [] }, "unsupported")
-				.notes,
-		).toContainEqual(policy);
-		// Only files ticked: no folder policy is read, and nothing is live.
-		const filesOnly = summaryOf({
-			paths: ["README.md"],
-			excludedPaths: [],
-		});
-		expect(filesOnly.notes).toEqual([{ key: "summary.unreadable" }]);
+			summaryOf({ paths: ["README.md"], excludedPaths: [] }).notes,
+		).toEqual([{ key: "summary.unreadable" }]);
+		// Without a listing a ticked path may be a folder, so it keeps both.
+		expect(
+			summaryOf(
+				{ paths: ["README.md"], excludedPaths: [] },
+				"unsupported",
+			).notes,
+		).toEqual([
+			{ key: "summary.later" },
+			{ key: "summary.unreadable" },
+			policy,
+		]);
 		expect(summaryOf({ paths: ["docs"], excludedPaths: [] }).notes).toEqual(
-			[{ key: "summary.later" }, { key: "summary.unreadable" }, policy],
+			[{ key: "summary.later" }, { key: "summary.unreadable" }],
 		);
+	});
+});
+
+describe("each ticked folder's .contextignore", () => {
+	const DOCS_POLICY = "docs/.contextignore";
+
+	function withPolicies(
+		selection: ContextSelection,
+		policies: [string, ContextFolderPolicy][],
+	) {
+		const tree = indexRepositoryTree(ENTRIES);
+		const model = contextSelectionModel({
+			tree,
+			selection,
+			policies: new Map(policies),
+		});
+		const row = (path: string) => {
+			const node = tree.nodes.get(path);
+			if (!node) {
+				throw new Error(`no node ${path}`);
+			}
+			return { ...model.row(node), action: model.actionFor(node) };
+		};
+		const summary = contextSummary({
+			model,
+			tree,
+			listing: "ready",
+			truncated: false,
+		});
+		return { model, row, summary };
+	}
+
+	const DOCS: ContextSelection = { paths: ["docs"], excludedPaths: [] };
+
+	it("finds a ticked folder's own file", () => {
+		expect(contextIgnorePathOf("docs")).toBe(DOCS_POLICY);
+		expect(contextIgnorePathOf("")).toBe(".contextignore");
+	});
+
+	it("leaves out what the file's rules list, naming the rule and the file, and counts without it", () => {
+		const built = withPolicies(DOCS, [
+			["docs", { kind: "rules", text: "old/\n*.md\n!guide.md\n" }],
+		]);
+		expect(built.row("docs/old")).toMatchObject({
+			membership: "out",
+			disabledReason: {
+				key: "tree.selection.contextignoreRule",
+				values: { rule: "old/", file: DOCS_POLICY },
+			},
+			action: null,
+		});
+		// A negation re-includes what the file's own rules left out.
+		expect(built.row("docs/guide.md")).toMatchObject({
+			membership: "in",
+			disabledReason: null,
+		});
+		expect(built.model.includedFileCount).toBe(1);
+		expect(built.model.policies).toBe("known");
+		expect(built.summary.count).toEqual({
+			key: "summary.matchNow",
+			values: { count: 1 },
+		});
+	});
+
+	it("never lets the file re-include what the defaults leave out, and says it is the default", () => {
+		const built = withPolicies(DOCS, [
+			["docs", { kind: "rules", text: "!skills/\n" }],
+		]);
+		expect(built.row("docs/skills")).toMatchObject({
+			membership: "out",
+			disabledReason: {
+				key: "tree.selection.defaultRule",
+				values: { rule: "skills/" },
+			},
+		});
+	});
+
+	it("applies a folder's file only inside that folder", () => {
+		const built = withPolicies(
+			{ paths: ["docs", "skills"], excludedPaths: [] },
+			[["docs", { kind: "rules", text: "*.md\n" }]],
+		);
+		expect(built.row("docs/guide.md").membership).toBe("out");
+		expect(built.row("skills/x.md").membership).toBe("in");
+		expect(built.row("skills").membership).toBe("in");
+	});
+
+	it("cannot tell a row while the file is read, and waits to count", () => {
+		const built = withPolicies(DOCS, [["docs", { kind: "loading" }]]);
+		expect(built.row("docs/guide.md")).toMatchObject({
+			membership: "unknown",
+			disabledReason: { key: "tree.selection.cantTellYet" },
+			action: null,
+		});
+		expect(built.model.policies).toBe("loading");
+		expect(built.summary.count).toEqual({ key: "summary.counting" });
+	});
+
+	it("cannot tell a row under a file the run cannot apply, and still counts what it can", () => {
+		for (const reason of ["tooLarge", "encoding", "notRegular"] as const) {
+			const built = withPolicies(DOCS, [
+				["docs", { kind: "unreadable", reason }],
+			]);
+			expect(built.row("docs/guide.md"), reason).toMatchObject({
+				membership: "unknown",
+				disabledReason: {
+					key: "tree.selection.policyUnreadable",
+					values: { file: DOCS_POLICY },
+				},
+			});
+			expect(built.model.policies).toBe("known");
+			expect(built.summary.count).toEqual({
+				key: "summary.matchNow",
+				values: { count: 0 },
+			});
+		}
+	});
+
+	it("counts nothing under a file the run refuses, or one that could not be read", () => {
+		const rejected = withPolicies(DOCS, [
+			["docs", { kind: "rejected", line: 3 }],
+		]);
+		expect(rejected.row("docs/guide.md")).toMatchObject({
+			membership: "unknown",
+			disabledReason: {
+				key: "tree.selection.policyRejected",
+				values: { file: DOCS_POLICY, line: 3 },
+			},
+		});
+		expect(rejected.model.policies).toBe("failed");
+		expect(rejected.summary.count).toEqual({ key: "summary.cantCount" });
+
+		const failed = withPolicies(DOCS, [["docs", { kind: "failed" }]]);
+		expect(failed.row("docs/guide.md").disabledReason).toEqual({
+			key: "tree.selection.policyFailed",
+			values: { file: DOCS_POLICY },
+		});
+		expect(failed.summary.count).toEqual({ key: "summary.cantCount" });
+	});
+
+	it("refuses rules text the run would refuse, naming its line", () => {
+		const built = withPolicies(DOCS, [
+			["docs", { kind: "rules", text: "a\n**/b/**/c/**/d\n" }],
+		]);
+		expect(built.row("docs/guide.md")).toMatchObject({
+			membership: "unknown",
+			disabledReason: {
+				key: "tree.selection.policyRejected",
+				values: { file: DOCS_POLICY, line: 2 },
+			},
+		});
+	});
+
+	it("still lets the member re-include what they left out, and marks it as theirs", () => {
+		const built = withPolicies(
+			{ paths: ["docs"], excludedPaths: ["docs/old"] },
+			[["docs", { kind: "loading" }]],
+		);
+		expect(built.row("docs/old")).toMatchObject({
+			membership: "out",
+			leftOut: true,
+			action: { type: "reinclude", path: "docs/old" },
+		});
+		// Rows the member did not choose carry no mark.
+		expect(built.row("docs/guide.md").leftOut).toBeUndefined();
+	});
+
+	it("ignores the policies of folders that are not ticked", () => {
+		const built = withPolicies({ paths: ["skills"], excludedPaths: [] }, [
+			["docs", { kind: "failed" }],
+		]);
+		expect(built.model.policies).toBe("known");
+		expect(built.row("skills/x.md").membership).toBe("in");
 	});
 });

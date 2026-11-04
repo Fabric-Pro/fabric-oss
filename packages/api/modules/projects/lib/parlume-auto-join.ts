@@ -118,6 +118,7 @@ export async function runParlumeAutoJoin(input: {
 			parlumeAutoJoinUserId: true,
 			parlumeAutoJoinToolsReadOnly: true,
 			parlumeAutoJoinSuggestions: true,
+			parlumeAutoJoinSuggestionAudience: true,
 			project: { select: { organizationId: true } },
 		},
 	});
@@ -219,6 +220,7 @@ export async function runParlumeAutoJoin(input: {
 				agentKind: FABRIC_AGENT_KIND,
 				toolsReadOnly: series.parlumeAutoJoinToolsReadOnly,
 				suggestionsEnabled: series.parlumeAutoJoinSuggestions,
+				suggestionAudience: series.parlumeAutoJoinSuggestionAudience,
 				trigger: "AUTO",
 				linkedMeetingId,
 				occurrenceStart,

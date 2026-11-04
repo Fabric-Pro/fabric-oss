@@ -44,9 +44,13 @@ export type Cause =
 	| "unknown";
 
 /**
- * A sanitized provider failure. The message is fixed per code, and nothing
- * the provider or the transport said is kept, so logging, serialising or
- * inspecting it cannot print a token, a URL or a response body.
+ * A sanitized provider failure. The message is fixed per code. Of what the
+ * provider said, only a refused `open` keeps anything: the status, the
+ * provider's own error message parsed out of its JSON body (scrubbed of the
+ * token and credential-shaped text, one line, about 300 characters), and
+ * GitHub's `X-Accepted-GitHub-Permissions` header. Never the raw body, a
+ * response or request header beyond that one, a URL or the transport error, so
+ * logging, serialising or inspecting it cannot print a token.
  */
 export class InstructionPullRequestError extends Error {
 	readonly code: InstructionPullRequestFailureCode;
@@ -56,6 +60,12 @@ export class InstructionPullRequestError extends Error {
 	override readonly cause: Cause;
 	/** The provider refused `open` because a pull request for this branch exists (plan Decision 6). */
 	readonly duplicate?: true;
+	/** A refused `open` only: the HTTP status the provider answered with. */
+	readonly providerStatus?: number;
+	/** A refused `open` only: the provider's own error message, sanitized (see the class comment). */
+	readonly providerMessage?: string;
+	/** A refused GitHub `open` (403/404): the permissions the endpoint accepts, e.g. `pull_requests=write`. */
+	readonly requiredPermissions?: string;
 
 	constructor(input: {
 		code: InstructionPullRequestFailureCode;
@@ -63,6 +73,9 @@ export class InstructionPullRequestError extends Error {
 		cause: Cause;
 		retryAfterSeconds?: number;
 		duplicate?: true;
+		providerStatus?: number;
+		providerMessage?: string;
+		requiredPermissions?: string;
 	}) {
 		super(`Pull request provider call failed (${input.code})`);
 		this.name = "InstructionPullRequestError";
@@ -74,6 +87,15 @@ export class InstructionPullRequestError extends Error {
 		}
 		if (input.duplicate) {
 			this.duplicate = true;
+		}
+		if (input.providerStatus !== undefined) {
+			this.providerStatus = input.providerStatus;
+		}
+		if (input.providerMessage !== undefined) {
+			this.providerMessage = input.providerMessage;
+		}
+		if (input.requiredPermissions !== undefined) {
+			this.requiredPermissions = input.requiredPermissions;
 		}
 	}
 }
@@ -99,6 +121,36 @@ export type FindOperationResult =
 	| { kind: "ABSENT" }
 	| { kind: "INCONCLUSIVE"; cause: Cause; retryAfterSeconds?: number };
 
+/**
+ * Why a provider refused to merge, in the adapter's vocabulary. Nothing the
+ * provider said is kept except `acceptedPermissions`, GitHub's
+ * `X-Accepted-GitHub-Permissions` header (permission names, never a secret).
+ */
+export type MergeRefusalReason =
+	/** Checks, reviews, conflicts, or a merge method the repository forbids. */
+	| "not_mergeable"
+	/** The source branch moved past the head Fabric expected. */
+	| "head_moved"
+	/** The credential may not merge here. */
+	| "permission"
+	| "auth"
+	| "not_found"
+	| "rate_limit"
+	| "transient"
+	/** This provider's adapter does not merge pull requests. */
+	| "unsupported"
+	| "unknown";
+
+export type MergeResult =
+	| { kind: "MERGED"; mergeCommitSha?: string }
+	| {
+			kind: "REFUSED";
+			reason: MergeRefusalReason;
+			/** GitHub's `X-Accepted-GitHub-Permissions`, e.g. `contents=write; pull_requests=write`. */
+			acceptedPermissions?: string;
+			retryAfterSeconds?: number;
+	  };
+
 export interface InstructionPullRequestAdapter {
 	/**
 	 * Every pull request whose source is `sourceRef` in the frozen repository,
@@ -121,6 +173,20 @@ export interface InstructionPullRequestAdapter {
 	): Promise<PullRequestObservation>;
 	get(i: Target & { externalId: string }): Promise<PullRequestObservation>;
 	close(i: Target & { externalId: string }): Promise<PullRequestObservation>;
+	/**
+	 * Merges the pull request only while its source head is still
+	 * `expectedHeadSha`. Called once, never retried here. A provider refusal
+	 * is a REFUSED result, not an error; only cancellation throws.
+	 */
+	merge(
+		i: Target & {
+			externalId: string;
+			expectedHeadSha: string;
+			method: "merge" | "squash";
+			/** The merge commit's title; the provider's default when omitted. */
+			commitTitle?: string;
+		},
+	): Promise<MergeResult>;
 	/**
 	 * The provider ref that carries the pull request's source head commit,
 	 * fetchable from the source repository (spec §7 "Adapters"). `null` when

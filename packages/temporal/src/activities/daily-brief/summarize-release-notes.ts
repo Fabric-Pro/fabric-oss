@@ -13,14 +13,20 @@
  * on rejection, so the rest of the brief still ships and the UI can surface
  * "summary unavailable."
  */
+
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	getCurrentDateContext,
+	Output,
 } from "@repo/ai";
 // Imported from the SUBPATH (not @repo/ai root) so it stays UNMOCKED in tests
 // that mock the @repo/ai root module (uniform rule across the budget sites).
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import type { GithubItem, ReleaseNotesSummary } from "@repo/database";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
@@ -159,16 +165,16 @@ export async function summarizeReleaseNotesActivity(
 		promptChars: prompt.length,
 	});
 
-	let llmResult: Awaited<
-		ReturnType<typeof generateObject<typeof LlmOutputSchema>>
-	>;
+	let llmResult: StructuredTextResult<z.infer<typeof LlmOutputSchema>>;
 	try {
-		llmResult = await generateObject({
-			model,
-			schema: LlmOutputSchema,
-			prompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
+		llmResult = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: LlmOutputSchema }),
+				prompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			}),
+		);
 	} finally {
 		clearInterval(heartbeatInterval);
 	}
@@ -176,12 +182,12 @@ export async function summarizeReleaseNotesActivity(
 	trackUsage();
 
 	const summary: ReleaseNotesSummary = {
-		...(llmResult.object.prod && llmResult.object.prod.trim().length > 0
-			? { prod: llmResult.object.prod.trim() }
+		...(llmResult.output.prod && llmResult.output.prod.trim().length > 0
+			? { prod: llmResult.output.prod.trim() }
 			: {}),
-		...(llmResult.object.staging &&
-		llmResult.object.staging.trim().length > 0
-			? { staging: llmResult.object.staging.trim() }
+		...(llmResult.output.staging &&
+		llmResult.output.staging.trim().length > 0
+			? { staging: llmResult.output.staging.trim() }
 			: {}),
 	};
 

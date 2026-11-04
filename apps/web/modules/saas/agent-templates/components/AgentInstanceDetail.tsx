@@ -1,5 +1,6 @@
 "use client";
 
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 import { buildAgentInstanceChatHref } from "@saas/agents/lib/fabric-agent-links";
 import { useOrganizationId } from "@saas/organizations/hooks/use-organization-context";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
@@ -55,12 +56,15 @@ import {
 	AgentDefinitionExportDialog,
 	AgentDefinitionRequirements,
 } from "./AgentDefinitionDialog";
+import { AgentImplementationNotice } from "./AgentImplementationNotice";
+import { AgentRunsPanel } from "./AgentRunsPanel";
 
 type IntegrationConfig = {
 	integrationType: string;
 };
 
 type InstanceWithTemplate = {
+	id?: string;
 	template?: {
 		displayName: string;
 		description?: string | null;
@@ -146,6 +150,9 @@ export function AgentInstanceDetail({
 	);
 
 	const instance = data?.instance as InstanceWithTemplate | undefined;
+	const implementationAvailability = getAgentImplementationAvailability(
+		instance?.customInstructions,
+	);
 
 	const { data: mcpData } = useQuery(
 		orpc.mcp.configs.list.queryOptions({
@@ -290,8 +297,8 @@ export function AgentInstanceDetail({
 
 	return (
 		<div className="bg-background">
-			<div className="flex w-full">
-				<div className="flex-1 overflow-y-auto">
+			<div className="flex w-full flex-col xl:flex-row">
+				<div className="min-w-0 flex-1">
 					<div className="space-y-8 p-6">
 						<section className="rounded-lg border border-border bg-card p-6">
 							<div className="flex flex-col gap-5 lg:flex-row lg:items-start">
@@ -336,39 +343,95 @@ export function AgentInstanceDetail({
 											</p>
 										</div>
 										<div className="flex flex-wrap items-center gap-2">
-											{instance.organizationId && (
-												<AgentDefinitionExportDialog
-													key={`${instance.organizationId}:${instanceId}`}
-													organizationId={
-														instance.organizationId
-													}
-													instanceId={instanceId}
-												/>
-											)}
-											<Button variant="outline" asChild>
-												<Link
-													href={`${basePath}/agents/${instanceId}/memory`}
+											{instance.organizationId &&
+												implementationAvailability.available && (
+													<AgentDefinitionExportDialog
+														key={`${instance.organizationId}:${instanceId}`}
+														organizationId={
+															instance.organizationId
+														}
+														instanceId={instanceId}
+													/>
+												)}
+											{implementationAvailability.available ? (
+												<Button
+													variant="outline"
+													asChild
 												>
-													<BrainIcon className="mr-2 h-4 w-4" />
-													Memory
-												</Link>
-											</Button>
+													<Link
+														href={`${basePath}/agents/${instanceId}/memory`}
+													>
+														<BrainIcon className="mr-2 h-4 w-4" />
+														Memory
+													</Link>
+												</Button>
+											) : (
+												<Button
+													variant="outline"
+													disabled
+												>
+													Memory is code-owned
+												</Button>
+											)}
 											<Button variant="outline" asChild>
 												<Link
 													href={`${basePath}/agents/${instanceId}/edit`}
 												>
 													<EditIcon className="mr-2 h-4 w-4" />
-													Edit
+													{implementationAvailability.available
+														? "Edit"
+														: "Inspect implementation"}
 												</Link>
 											</Button>
-											<Button asChild>
-												<Link href={chatbotAgentHref}>
+											{implementationAvailability.available ? (
+												<Button
+													variant="outline"
+													asChild
+												>
+													<Link
+														href={chatbotAgentHref}
+													>
+														<PlayIcon className="mr-2 h-4 w-4" />
+														Try in chat
+													</Link>
+												</Button>
+											) : (
+												<Button disabled>
 													<PlayIcon className="mr-2 h-4 w-4" />
 													Start Chat
-												</Link>
-											</Button>
+												</Button>
+											)}
+											{implementationAvailability.available &&
+												instance.organizationId && (
+													<Button
+														onClick={() => {
+															const task =
+																document.getElementById(
+																	"agent-run-task",
+																);
+															task?.focus();
+															task?.scrollIntoView?.(
+																{
+																	block: "center",
+																},
+															);
+														}}
+													>
+														<PlayIcon className="size-4" />
+														Run
+													</Button>
+												)}
 										</div>
 									</div>
+
+									<AgentImplementationNotice
+										customInstructions={
+											instance.customInstructions
+										}
+										organizationId={instance.organizationId}
+										instanceId={instanceId}
+										basePath={basePath}
+									/>
 
 									<AgentDefinitionRequirements
 										requirements={
@@ -403,25 +466,21 @@ export function AgentInstanceDetail({
 												)}
 											</span>
 										</div>
-										{instance.lastRunAt && (
-											<div className="rounded-full border border-border/70 bg-background px-3 py-1.5 text-sm text-muted-foreground">
-												<span className="mr-1 text-muted-foreground/70">
-													Last run
-												</span>
-												<span>
-													{formatDistanceToNow(
-														new Date(
-															instance.lastRunAt,
-														),
-														{ addSuffix: true },
-													)}
-												</span>
-											</div>
-										)}
 									</div>
 								</div>
 							</div>
 						</section>
+
+						{implementationAvailability.available &&
+							instance.organizationId && (
+								<AgentRunsPanel
+									key={`${instance.organizationId}:${instance.id ?? instanceId}`}
+									instanceId={instance.id ?? instanceId}
+									organizationId={instance.organizationId}
+									goal={instance.goal}
+									editHref={`${basePath}/agents/${instanceId}/edit`}
+								/>
+							)}
 
 						<section>
 							<div className="mb-4">
@@ -460,7 +519,7 @@ export function AgentInstanceDetail({
 									Knowledge & Tools
 								</h3>
 								<p className="text-sm text-muted-foreground">
-									Connected libraries, integrations, and
+									Connected workspaces, integrations, and
 									capabilities.
 								</p>
 							</div>
@@ -476,7 +535,7 @@ export function AgentInstanceDetail({
 												Knowledge
 											</h4>
 											<p className="text-xs text-muted-foreground">
-												Libraries & integrations
+												Workspaces & integrations
 											</p>
 										</div>
 									</div>
@@ -722,7 +781,7 @@ export function AgentInstanceDetail({
 					</div>
 				</div>
 
-				<div className="min-h-[calc(100vh-120px)] w-[346px] border-l border-border bg-card/50">
+				<div className="w-full shrink-0 border-t border-border bg-card/50 xl:w-80 xl:border-t-0 xl:border-l">
 					<div className="sticky top-16">
 						<div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
 							<div>
@@ -766,30 +825,16 @@ export function AgentInstanceDetail({
 								<p className="mb-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 									Activity
 								</p>
+								{implementationAvailability.available &&
+									instance.organizationId && (
+										<Link
+											href="#agent-runs"
+											className="mb-3 block text-sm text-primary-ink underline underline-offset-4"
+										>
+											View background run history
+										</Link>
+									)}
 								<div className="grid grid-cols-2 gap-2">
-									<div className="rounded-lg border border-border/60 bg-background p-3">
-										<p className="text-lg font-semibold">
-											{instance.runCount || 0}
-										</p>
-										<p className="text-[11px] text-muted-foreground">
-											Total runs
-										</p>
-									</div>
-									<div className="rounded-lg border border-border/60 bg-background p-3">
-										<p className="text-lg font-semibold">
-											{instance.lastRunAt
-												? format(
-														new Date(
-															instance.lastRunAt,
-														),
-														"MMM d",
-													)
-												: "-"}
-										</p>
-										<p className="text-[11px] text-muted-foreground">
-											Last run
-										</p>
-									</div>
 									<div className="rounded-lg border border-border/60 bg-background p-3">
 										<p className="text-lg font-semibold">
 											{format(

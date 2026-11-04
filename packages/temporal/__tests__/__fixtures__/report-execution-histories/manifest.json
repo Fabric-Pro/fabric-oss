@@ -1,0 +1,17 @@
+{
+	"legacy": {
+		"workflowId": "example-report-replay-7c254669-472f-4e1c-878e-bab1555c7e7b-legacy",
+		"eventCount": 89,
+		"sha256": "3d7e863496bd54c44ce3d5777e68dfe6d5f2c14384cead9050eeae630f9e18d6"
+	},
+	"protocol1": {
+		"workflowId": "example-report-replay-7c254669-472f-4e1c-878e-bab1555c7e7b-protocol1",
+		"eventCount": 83,
+		"sha256": "a0209130e4961ba644913f376193c42588692c4def8d766d9c67dcde17734320"
+	},
+	"refusal": {
+		"workflowId": "example-report-replay-121179ca-ec1f-44cc-9fed-b8f89e8ce3b2-refusal",
+		"eventCount": 65,
+		"sha256": "6d3d623b5035a0029b35f915d57e109f763dd6398f9aa2f4521777c27064ac87"
+	}
+}

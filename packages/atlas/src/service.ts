@@ -31,8 +31,9 @@ import {
 	recordAudit,
 } from "@repo/database";
 import {
-	buildAuthCloneUrl,
 	forceReExchangeRepoCredentials,
+	GIT_AUTH_UNSAFE,
+	gitAuthForClone,
 	isGitAuthError,
 	markRepoReauthRequired,
 } from "@repo/integrations";
@@ -4265,7 +4266,11 @@ export class AtlasService {
 		clonePath: string,
 		abortSignal?: AbortSignal,
 	): Promise<{ commitSha: string; commitAt: Date | null }> {
-		const authUrl = buildAuthCloneUrl(
+		// The token rides in git's environment, never in the URL, so it is not
+		// in argv, the clone's `.git/config` or a git error. The
+		// sparse checkout's lazy blob fetches inherit the same environment, so
+		// every git invocation below carries it.
+		const auth = gitAuthForClone(
 			creds.provider,
 			creds.repositoryUrl,
 			creds.token,
@@ -4275,17 +4280,18 @@ export class AtlasService {
 		// of waiting for it to finish. Spread the option only when a signal is
 		// present so the no-signal path keeps the original behaviour. Applied to
 		// EVERY git invocation below so a "Cancel" kills whichever step is live.
-		const gitOptions: Partial<SimpleGitOptions> = abortSignal
-			? { abort: abortSignal }
-			: {};
-		const git = simpleGit(gitOptions);
+		const gitOptions: Partial<SimpleGitOptions> = {
+			unsafe: GIT_AUTH_UNSAFE,
+			...(abortSignal ? { abort: abortSignal } : {}),
+		};
+		const git = simpleGit(gitOptions).env(auth.env);
 
 		// (1) Blobless + shallow + single-branch + no-checkout. Only HEAD's commit +
 		// tree objects arrive now (`--filter=blob:none` → partial clone, remote kept
 		// as a promisor); NO blobs and NO history, so the initial download is tiny
 		// and `.git` stays small. Blobs are back-filled lazily by the sparse-checkout
 		// below. Nothing is materialized to the working tree yet (`--no-checkout`).
-		await git.clone(authUrl, clonePath, [
+		await git.clone(auth.url, clonePath, [
 			"--depth",
 			"1",
 			"--single-branch",
@@ -4295,7 +4301,7 @@ export class AtlasService {
 			"--no-checkout",
 		]);
 
-		const local = simpleGit(clonePath, gitOptions);
+		const local = simpleGit(clonePath, gitOptions).env(auth.env);
 
 		// Commit metadata comes from the commit/tree objects (present in a blobless
 		// clone), so it's resolved up-front and independent of which blobs we fetch.

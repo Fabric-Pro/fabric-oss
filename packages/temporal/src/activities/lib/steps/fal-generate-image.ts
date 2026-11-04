@@ -5,6 +5,7 @@
 
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { connectorErrorMessage } from "../connector-error";
 import { interpolateTemplate } from "./utils";
 
 export async function executeFalGenerateImageStep(
@@ -20,14 +21,27 @@ export async function executeFalGenerateImageStep(
 		model?: string;
 		prompt?: string;
 		imageSize?: string;
-		numInferenceSteps?: number;
-		guidanceScale?: number;
+		numInferenceSteps?: number | string;
+		guidanceScale?: number | string;
 	};
 
 	if (!prompt) {
 		return { success: false, error: "Prompt is required" };
 	}
 
+	const steps = Number(numInferenceSteps);
+	const guidance = Number(guidanceScale);
+	if (
+		!Number.isInteger(steps) ||
+		steps < 1 ||
+		!Number.isFinite(guidance) ||
+		guidance < 0
+	) {
+		return {
+			success: false,
+			error: "Inference steps must be a positive integer and guidance must be non-negative",
+		};
+	}
 	const credentials = await fetchCredentialsByProvider(
 		"FAL",
 		params.userId,
@@ -53,8 +67,8 @@ export async function executeFalGenerateImageStep(
 			body: JSON.stringify({
 				prompt: interpolatedPrompt,
 				image_size: imageSize,
-				num_inference_steps: numInferenceSteps,
-				guidance_scale: guidanceScale,
+				num_inference_steps: steps,
+				guidance_scale: guidance,
 				num_images: 1,
 			}),
 		});
@@ -64,10 +78,10 @@ export async function executeFalGenerateImageStep(
 		if (!response.ok) {
 			return {
 				success: false,
-				error:
-					result.detail ||
-					result.message ||
+				error: connectorErrorMessage(
+					result.detail || result.message,
 					`HTTP ${response.status}`,
+				),
 			};
 		}
 

@@ -178,3 +178,113 @@ describe("agent definition dialogs", () => {
 		expect(click).toHaveBeenCalledTimes(1);
 	});
 });
+
+it("keeps advanced release pins inspectable with explicit unresolved bindings before draft import", async () => {
+	const digest = `sha256:${"a".repeat(64)}`;
+	mocks.preview.mockResolvedValue({
+		...preview,
+		definition: {
+			...preview.definition,
+			apiVersion: "fabric.ai/v2",
+			implementation: {
+				kind: "harness_finite",
+				artifact: {
+					digest,
+					repository: {
+						url: "https://example.com/agents.git",
+						revision: "b".repeat(40),
+					},
+					packages: {
+						sdk: {
+							name: "@fabric-harness/sdk",
+							version: "6.9.0",
+							entrypoint: "strict",
+						},
+						node: {
+							name: "@fabric-harness/node",
+							version: "6.7.0",
+						},
+					},
+					buildManifestVersion: 2,
+				},
+				entrypoint: {
+					identity: "example-report-job",
+					module: "dist/report.mjs",
+					export: "reportJob",
+				},
+				protocol: {
+					interface: "finite_job",
+					generation: "example-http-v1",
+				},
+				schemas: {
+					input: { path: "schemas/input.json", digest },
+					output: { path: "schemas/output.json", digest },
+				},
+			},
+			logicalBindings: [
+				{
+					name: "project-context",
+					kind: "knowledge",
+					required: true,
+					operations: ["read"],
+				},
+			],
+		},
+	});
+	mount(
+		<AgentDefinitionImportDialog
+			organizationId="example-org"
+			onImported={vi.fn()}
+		/>,
+	);
+	await showPreview();
+	const disclosure = screen.getByText("Pinned implementation");
+	expect(disclosure.closest("details")).not.toHaveAttribute("open");
+	fireEvent.click(disclosure);
+	expect(screen.getByText("example-report-job")).toBeInTheDocument();
+	expect(
+		screen.getByText(/dist\/report.mjs · export reportJob/),
+	).toBeInTheDocument();
+	expect(screen.getByText(digest)).toBeInTheDocument();
+	expect(
+		screen.getByText(/finite_job · example-http-v1/),
+	).toBeInTheDocument();
+	expect(screen.getByText(/input: schemas\/input.json/)).toBeInTheDocument();
+	expect(
+		screen.getByText(/output: schemas\/output.json/),
+	).toBeInTheDocument();
+	expect(
+		screen.getByRole("region", { name: "Unresolved logical bindings" }),
+	).toHaveTextContent(
+		"project-context (knowledge) · Required · read · Unresolved",
+	);
+	expect(
+		screen.getByText(
+			/Artifact identity and runtime compatibility remain unverified/,
+		),
+	).toBeInTheDocument();
+	expect(mocks.import).not.toHaveBeenCalled();
+});
+
+it("keeps the native import preview simple when it has no unresolved logical bindings", async () => {
+	mocks.preview.mockResolvedValue({
+		...preview,
+		definition: {
+			...preview.definition,
+			apiVersion: "fabric.ai/v2",
+			implementation: { kind: "native" },
+			logicalBindings: [],
+		},
+	});
+	mount(
+		<AgentDefinitionImportDialog
+			organizationId="example-org"
+			onImported={vi.fn()}
+		/>,
+	);
+	await showPreview();
+	expect(screen.queryByText("Pinned implementation")).not.toBeInTheDocument();
+	expect(
+		screen.queryByText("Destination setup requirements"),
+	).not.toBeInTheDocument();
+});

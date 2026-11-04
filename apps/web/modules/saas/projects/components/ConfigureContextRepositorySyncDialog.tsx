@@ -34,9 +34,15 @@ import {
 	contextSyncTreeErrorMessage,
 	validateContextSyncPathAddition,
 } from "../lib/context-repository-sync";
+import {
+	contextSyncExclusionMessage,
+	validateContextSyncExclusionAddition,
+} from "../lib/context-sync-exclusion-validation";
 import { AddRepositoryPathInput } from "./repository-sync/AddRepositoryPathInput";
+import { ContextIgnoreNotices } from "./repository-sync/ContextIgnoreNotices";
 import {
 	applyContextAction,
+	CONTEXT_SYNC_MAX_EXCLUDED_PATHS,
 	type ContextAction,
 	type ContextRepositoryTreeEntry,
 	type ContextSelection,
@@ -55,6 +61,7 @@ import {
 import { RepositorySyncSelectionTree } from "./repository-sync/RepositorySyncSelectionTree";
 import { SelectedPathsList } from "./repository-sync/SelectedPathsList";
 import { SelectionSummary } from "./repository-sync/SelectionSummary";
+import { useContextIgnorePolicies } from "./repository-sync/useContextIgnorePolicies";
 
 const NAMESPACE = "projects.contexts.livingMemory.repositorySync";
 
@@ -75,8 +82,12 @@ const LIST_TREE_STALE_MS = 5 * 60 * 1000;
  * and unticking something inside a ticked folder leaves it out, pruned from
  * Living Memory on the next sync. The selection is the one reducer
  * (`./repository-sync/lib/context-selection.ts`) the tree, the list under
- * it and the typed "Add a path" input all use; the typed input is offered
- * where the tree cannot reach (no listing, a truncated one, or a failed one).
+ * it and the typed inputs all use; the typed inputs — a path to sync, and a
+ * path to leave out, validated as `configure` validates left-out paths —
+ * are offered where the tree cannot reach (no listing, a truncated one, or
+ * a failed one). Each ticked folder's own `.contextignore` is read
+ * alongside the listing (`useContextIgnorePolicies`), so the tree, its
+ * notices and the live count show what the run will skip by it.
  * Nothing is ticked for a new configuration, and Save waits until something
  * is. Save always sends `excludedPaths` explicitly — `[]` clears what was
  * left out — since only a caller that omits it (the status card's toggle)
@@ -184,9 +195,19 @@ export function ConfigureContextRepositorySyncDialog({
 		[entries],
 	);
 	const truncated = listing.status === "ready" && listing.truncated;
+	// Each ticked folder's `.contextignore`, read as the run reads it, so
+	// the tree and the count show what it leaves out.
+	const policies = useContextIgnorePolicies({
+		projectId,
+		repositoryIntegrationId: integrationId,
+		ref: debouncedBranch,
+		tree: treeIndex,
+		truncated,
+		paths: selection.paths,
+	});
 	const model = useMemo(
-		() => contextSelectionModel({ tree: treeIndex, selection }),
-		[treeIndex, selection],
+		() => contextSelectionModel({ tree: treeIndex, selection, policies }),
+		[treeIndex, selection, policies],
 	);
 	const summary = contextSummary({
 		model,
@@ -226,6 +247,30 @@ export function ConfigureContextRepositorySyncDialog({
 			return {
 				key: "pathErrors.TOO_MANY_PATHS",
 				values: { max: CONTEXT_SYNC_MAX_PATHS },
+			};
+		}
+		setSelection(result.selection);
+		clearInlineError();
+		return null;
+	}
+
+	/** A typed path to leave out: the same transition as unticking it. */
+	function addTypedExclusion(raw: string): SelectionMessage | null {
+		if (raw.trim() === "") {
+			return { key: "configureDialog.typedExclusion.empty" };
+		}
+		const validated = validateContextSyncExclusionAddition(raw, selection);
+		if (!validated.ok) {
+			return contextSyncExclusionMessage(validated.error);
+		}
+		const result = applyContextAction(selection, {
+			type: "exclude",
+			path: validated.path,
+		});
+		if (!result.ok) {
+			return {
+				key: "excludeErrors.TOO_MANY",
+				values: { max: CONTEXT_SYNC_MAX_EXCLUDED_PATHS },
 			};
 		}
 		setSelection(result.selection);
@@ -422,6 +467,7 @@ export function ConfigureContextRepositorySyncDialog({
 						onSelectNone={() => apply({ type: "selectNone" })}
 						disabled={pending}
 						initiallyOpen={initiallyOpen}
+						notices={<ContextIgnoreNotices policies={policies} />}
 						summary={
 							<SelectionSummary
 								namespace={NAMESPACE}
@@ -446,16 +492,31 @@ export function ConfigureContextRepositorySyncDialog({
 						}))}
 					/>
 					{offersTypedPath(listing) ? (
-						<AddRepositoryPathInput
-							namespace={NAMESPACE}
-							disabled={pending}
-							onAdd={addTypedPath}
-							serverErrorId={
-								inlineErrorField === "paths"
-									? ids.error
-									: undefined
-							}
-						/>
+						<>
+							<AddRepositoryPathInput
+								namespace={NAMESPACE}
+								disabled={pending}
+								onAdd={addTypedPath}
+								serverErrorId={
+									inlineErrorField === "paths"
+										? ids.error
+										: undefined
+								}
+							/>
+							<AddRepositoryPathInput
+								namespace={NAMESPACE}
+								mode="exclude"
+								disabled={pending}
+								blockedReason={
+									selection.paths.length === 0
+										? {
+												key: "configureDialog.typedExclusion.noSelection",
+											}
+										: null
+								}
+								onAdd={addTypedExclusion}
+							/>
+						</>
 					) : null}
 
 					{inlineError ? (

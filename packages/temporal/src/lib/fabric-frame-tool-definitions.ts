@@ -74,7 +74,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_create_frame",
 		description:
-			"Creates html/json/mermaid/markdown blocks. surface=artifact uses projectId (default current project); workspace = org Workspace. Html: a designed page (inline <style>, light/dark, tiles/cards/tables, SVG charts); no network. Scripts act as viewer: window.fabric.call(tool, args)->Promise, fabric.openAgent(prompt), fabric.navigate('/app/...'); discover via fabric_list_page_tools, declare in runtimeTools. PRIVATE: owner-only outside projects, keeps linked project members. Artifact/Workspace grant project/organization access; shareOnCreate adds an allowed public link. Create only when asked; chat renders ```mermaid directly.",
+			"Creates html/json/mermaid/markdown blocks only when asked (chat renders ```mermaid). surface=artifact: current/projectId; workspace: organization Pages. Html: inline <style>, light/dark, tiles/cards/tables/SVG; no network. Scripts act as viewer: window.fabric.call(tool, args)->Promise, fabric.openAgent(prompt), fabric.navigate('/app/...'). Discover fabric_list_page_tools; declare runtimeTools. PRIVATE: owner-only outside projects, linked project members retain access. Artifact/Pages grant project/org access; shareOnCreate adds an allowed public link.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -104,7 +104,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_update_frame",
 		description:
-			"Updates title, description, blocks or runtimeTools; omitted fields stay. To change text inside a block use fabric_edit_frame_block. frameId defaults to open Workspace. Runtime: see fabric_create_frame.",
+			"Edits title/description/blocks/runtimeTools; omitted fields stay. Text edits: fabric_edit_frame_block. frameId defaults to open Page. Runtime: fabric_create_frame.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -123,7 +123,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_edit_frame_block",
 		description:
-			"Replaces exact text in one saved block without resending it. First read fabric_get_frame outline:true, then the block's source window. oldText must match once unless replaceAll. Pass the latest read or edit updatedAt as expectedUpdatedAt; on conflict re-read.",
+			"Replaces saved block text. Read fabric_get_frame outline:true then source window. oldText must match once unless replaceAll. Send latest read/edit updatedAt as expectedUpdatedAt; conflicts require re-read.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -154,7 +154,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_get_frame",
 		description:
-			"Reads blocks/surface/tools and published share URL. frameId defaults to open Workspace. outline:true lists block ids/types/sizes only. For edits read blockId with offset:0,limit:6000, follow nextOffset, restart on updatedAt change, then use fabric_edit_frame_block. Never edit summaries.",
+			"Reads blocks/surface/tools/share URL; default open Page. outline:true: ids/types/sizes only. Edit: read blockId offset:0,limit:6000, follow nextOffset, restart if updatedAt changes, then fabric_edit_frame_block. Never edit summaries.",
 		inputSchema: {
 			type: "object",
 			properties: {

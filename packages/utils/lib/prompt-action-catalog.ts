@@ -50,6 +50,7 @@ import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "./publishing-stakeholder
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "./publishing-suggestion-prompt";
 import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "./publishing-webinar-script-prompt";
 import { RECURRING_ERROR_BUG_PROMPT_AGENT_KEY } from "./recurring-error-bug-prompt";
+import { REPORT_SAMPLE_PROMPT_AGENT_KEY } from "./report-sample-prompt";
 
 export type PromptStoryKind = "FEATURE" | "BUG" | null;
 
@@ -190,6 +191,11 @@ export const PROMPT_FEATURE_TYPES = {
 		label: "Workspaces",
 		description:
 			"What Fabric says when a published page asks it a question.",
+	},
+	REPORTS: {
+		label: "Reports",
+		description:
+			"The project reports Fabric generates, and the sample a template shows before its first report.",
 	},
 	ASSISTANT: {
 		label: "Assistant",
@@ -512,6 +518,15 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		key: RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
 		label: "Recurring error — bug report",
 		featureType: "QUALITY",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The sample a report template shows before it has a successful run.
+		// Editing it changes the sample's length, layout and tone; the screen
+		// labels it as sample data whatever the prompt says.
+		key: REPORT_SAMPLE_PROMPT_AGENT_KEY,
+		label: "Report sample preview",
+		featureType: "REPORTS",
 		actions: nonStage("GENERAL"),
 	},
 	{

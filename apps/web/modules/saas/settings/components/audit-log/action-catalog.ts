@@ -792,6 +792,13 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"warning",
 		"project",
 	),
+	"project.context_source.synced_files_reset": D(
+		"project.context_source.synced_files_reset",
+		"Living Memory reset (all synced files deleted)",
+		Trash2,
+		"warning",
+		"project",
+	),
 
 	"project.meeting_digest.action_item_toggled": D(
 		"project.meeting_digest.action_item_toggled",

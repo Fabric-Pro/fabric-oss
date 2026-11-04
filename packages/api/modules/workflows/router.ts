@@ -30,6 +30,10 @@ import { getWorkflowStatsProcedure } from "./procedures/get-workflow-stats";
 import { deleteIntegrationProcedure } from "./procedures/integrations/delete-integration";
 import { disconnectByTypeProcedure } from "./procedures/integrations/disconnect-by-type";
 import { listDatabricksIndexesProcedure } from "./procedures/integrations/list-databricks-indexes";
+import {
+	listDatabricksSqlConnectionsProcedure,
+	listDatabricksSqlWarehousesProcedure,
+} from "./procedures/integrations/list-databricks-sql-warehouses";
 import { listIntegrationStatusProcedure } from "./procedures/integrations/list-integration-status";
 import { listIntegrationsProcedure } from "./procedures/integrations/list-integrations";
 import { listSlackChannelsProcedure } from "./procedures/integrations/list-slack-channels";
@@ -113,6 +117,8 @@ export const workflowsRouter = {
 		listTeamsChats: listTeamsChatsProcedure,
 		listSlackChannels: listSlackChannelsProcedure,
 		listDatabricksIndexes: listDatabricksIndexesProcedure,
+		listDatabricksSqlWarehouses: listDatabricksSqlWarehousesProcedure,
+		listDatabricksSqlConnections: listDatabricksSqlConnectionsProcedure,
 	},
 
 	// Approval operations (Human-in-the-Loop)

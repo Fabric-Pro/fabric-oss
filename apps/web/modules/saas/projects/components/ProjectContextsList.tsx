@@ -64,6 +64,7 @@ import type { LucideIcon } from "lucide-react";
 import {
 	CheckCircleIcon,
 	ChevronDownIcon,
+	CodeIcon,
 	CopyIcon,
 	DownloadIcon,
 	ExternalLinkIcon,
@@ -122,6 +123,8 @@ import {
 	triggerBlobDownload,
 	triggerUrlDownload,
 } from "../lib/markdown-to-document";
+import { ContextQualityDialog } from "./ContextQualityDialog";
+import { ContextSelectionPanel } from "./ContextSelectionPanel";
 import {
 	ContextSourceDetailsDialog,
 	ContextSourceMetaLine,
@@ -138,6 +141,7 @@ import {
 } from "./LinkContextManagePanel";
 import { LivingMemorySection } from "./LivingMemorySection";
 import { ProjectSectionHero } from "./ProjectSectionHero";
+import { ProjectWorkspaceDocuments } from "./ProjectWorkspaceDocuments";
 import {
 	placeLeftOutPaths,
 	useLivingMemoryExclusion,
@@ -454,6 +458,12 @@ const integrationProviderConfig: Record<
 
 type Props = {
 	projectId: string;
+	/**
+	 * Opens the project's repository connection (Fizzy #3430): the same
+	 * connections as Settings → Repositories. Absent when the viewer cannot
+	 * connect repositories.
+	 */
+	onConnectRepository?: () => void;
 };
 
 const contextTypeConfig: Record<
@@ -930,7 +940,7 @@ export function UrlContextCard({
 	);
 }
 
-export function ProjectContextsList({ projectId }: Props) {
+export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 	const { organizationId, organizationSlug } = useOrganizationContext();
 	const [uploaderOpen, setUploaderOpen] = useState(false);
 	// Context Source Type Labeling (#1888): the row menus flip this target;
@@ -1836,6 +1846,10 @@ export function ProjectContextsList({ projectId }: Props) {
 		readFailed: repositorySyncReadFailed,
 		onRetry: () => void repositorySyncQuery.refetch(),
 		onChanged: onRepositorySyncChanged,
+		syncedFileCount: livingMemoryFolders.reduce(
+			(total, folder) => total + folder.files.length,
+			0,
+		),
 	};
 	const showLivingMemorySection = showsLivingMemorySection({
 		folderCount: livingMemoryFolders.length,
@@ -2652,12 +2666,42 @@ export function ProjectContextsList({ projectId }: Props) {
 										{t("addContext")}
 									</TooltipContent>
 								</Tooltip>
+								{onConnectRepository && (
+									<Button
+										variant="outline"
+										className="gap-2"
+										onClick={onConnectRepository}
+									>
+										<CodeIcon
+											className="size-4"
+											aria-hidden="true"
+										/>
+										Connect repository
+									</Button>
+								)}
 								<DownloadAllContextsButton
 									projectId={projectId}
 									organizationId={organizationId}
 									totalContexts={contexts.length}
 									totalBytesEstimate={totalBytesEstimate}
 								/>
+								<span data-onboarding-target="context-quality">
+									<ContextQualityDialog
+										projectId={projectId}
+										organizationId={organizationId}
+										sources={contexts.map((source) => ({
+											id: source.id,
+											title: getContextDisplayTitle(
+												source,
+											),
+											version: [
+												source.contentHash,
+												source.updatedAt,
+												source.extractionStatus,
+											].join(":"),
+										}))}
+									/>
+								</span>
 							</div>
 						</div>
 					</div>
@@ -2686,6 +2730,24 @@ export function ProjectContextsList({ projectId }: Props) {
 			/>
 
 			<ContextSummaryPanel projectId={projectId} />
+			<ProjectWorkspaceDocuments
+				projectId={projectId}
+				organizationId={organizationId}
+				organizationSlug={organizationSlug}
+			/>
+			<ContextSelectionPanel
+				projectId={projectId}
+				organizationId={organizationId}
+				sources={contexts.map((source) => ({
+					id: source.id,
+					title: getContextDisplayTitle(source),
+					version: [
+						source.contentHash,
+						source.updatedAt,
+						source.extractionStatus,
+					].join(":"),
+				}))}
+			/>
 			{/* Scope intake progress */}
 			{scopeIntakeContextId && intakeProgressQuery.data && (
 				<output className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-foreground/10 bg-muted px-4 py-3 text-sm">

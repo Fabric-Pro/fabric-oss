@@ -44,6 +44,7 @@ import {
 	getWorkspaceRagSettingsProcedure,
 	updateWorkspaceRagSettingsProcedure,
 } from "./procedures/rag-settings";
+import { readDocumentContentProcedure } from "./procedures/read-document-content";
 import {
 	archiveWorkspaceProcedure,
 	deleteWorkspaceProcedure,
@@ -82,6 +83,7 @@ export const documentWorkspacesRouter = {
 	documents: {
 		list: listDocumentsProcedure,
 		get: getDocumentProcedure,
+		readContent: readDocumentContentProcedure,
 		getStats: getDocumentStatsProcedure,
 		createUploadUrl: createUploadUrlProcedure,
 		confirmUpload: confirmUploadProcedure,

@@ -24,6 +24,12 @@ import { createTemplateProcedure } from "./procedures/templates/create";
 import { deleteTemplateProcedure } from "./procedures/templates/delete";
 import { getTemplateProcedure } from "./procedures/templates/get";
 import { listTemplatesProcedure } from "./procedures/templates/list";
+import {
+	getTemplateOverridesProcedure,
+	setTemplateOverrideProcedure,
+} from "./procedures/templates/overrides";
+import { previewTemplateProcedure } from "./procedures/templates/preview";
+import { sampleTemplateProcedure } from "./procedures/templates/sample";
 import { attachReportTemplateSkillProcedure } from "./procedures/templates/skills-attach";
 import { detachReportTemplateSkillProcedure } from "./procedures/templates/skills-detach";
 import { listReportTemplateSkillsProcedure } from "./procedures/templates/skills-list";
@@ -41,10 +47,17 @@ export const reportsRouter = {
 		delete: deleteTemplateProcedure,
 		archive: archiveTemplateProcedure,
 		unarchive: unarchiveTemplateProcedure,
+		preview: previewTemplateProcedure,
+		sample: sampleTemplateProcedure,
 		skills: {
 			list: listReportTemplateSkillsProcedure,
 			attach: attachReportTemplateSkillProcedure,
 			detach: detachReportTemplateSkillProcedure,
+		},
+		// An organization's and a project's defaults for new reports
+		overrides: {
+			get: getTemplateOverridesProcedure,
+			set: setTemplateOverrideProcedure,
 		},
 	},
 

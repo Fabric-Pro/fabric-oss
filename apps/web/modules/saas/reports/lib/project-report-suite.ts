@@ -20,6 +20,28 @@ export function pickDefaultProjectReportsTab(
 	return instanceTotal > 0 ? "instances" : "templates";
 }
 
+/** A project's Reports tab, under the organization's base path. */
+export function projectReportsHref(
+	organizationBasePath: string,
+	projectId: string,
+): string {
+	return `${organizationBasePath}/projects/${encodeURIComponent(projectId)}?tab=reports`;
+}
+
+/**
+ * A template page opened from a project's Reports tab carries the project,
+ * so its back links, its "Use template" and the report it creates stay in
+ * that project.
+ */
+export function withProjectContext(
+	path: string,
+	projectId: string | null | undefined,
+): string {
+	return projectId
+		? `${path}?projectId=${encodeURIComponent(projectId)}`
+		: path;
+}
+
 export type ReportTemplateScope = "SYSTEM" | "ORGANIZATION" | "USER";
 
 export type ReportSuiteCapabilities = {
@@ -51,6 +73,56 @@ export function canManageReportTemplate(
 			return unreachable;
 		}
 	}
+}
+
+/**
+ * Whether a template is listed. Archived templates are listed only to the
+ * people who may restore them, so an author finds their own archived personal
+ * template while other members never see archived templates they cannot use.
+ */
+export function isReportTemplateListed(
+	template: {
+		scope: ReportTemplateScope;
+		userId: string | null;
+		archivedAt: Date | string | null;
+	},
+	capabilities: ReportSuiteCapabilities,
+	viewerUserId: string | undefined,
+): boolean {
+	return (
+		!template.archivedAt ||
+		canManageReportTemplate(template, capabilities, viewerUserId)
+	);
+}
+
+/**
+ * The templates a project's list shows, from a list fetched with archived
+ * templates included, and whether the viewer may restore any archived one:
+ * the "Show archived templates" switch is offered only then.
+ */
+export function listedReportTemplates<
+	T extends {
+		scope: ReportTemplateScope;
+		userId: string | null;
+		archivedAt: Date | string | null;
+	},
+>(
+	templates: T[],
+	capabilities: ReportSuiteCapabilities,
+	viewerUserId: string | undefined,
+	showArchived: boolean,
+): { templates: T[]; hasRestorable: boolean } {
+	const listed = templates.filter((template) =>
+		isReportTemplateListed(template, capabilities, viewerUserId),
+	);
+	const hasRestorable = listed.some((template) => template.archivedAt);
+	return {
+		templates:
+			showArchived && hasRestorable
+				? listed
+				: listed.filter((template) => !template.archivedAt),
+		hasRestorable,
+	};
 }
 
 /** "New template" is offered to the admins who can publish one, when they may edit this project's reports. */

@@ -1,5 +1,6 @@
 "use client";
 
+import { GITHUB_OAUTH_SCOPES } from "@repo/utils/github-oauth-scopes";
 import { useContextPath } from "@saas/organizations/hooks";
 import { Badge } from "@ui/components/badge";
 import { Card, CardContent, CardHeader } from "@ui/components/card";
@@ -168,7 +169,7 @@ const INTEGRATION_GUIDES: Record<IntegrationType, IntegrationGuide> = {
 		name: "GitHub",
 		description:
 			"Connect to GitHub to access repositories, issues, and pull requests",
-		scopes: ["repo", "read:org", "read:user"],
+		scopes: [...GITHUB_OAUTH_SCOPES],
 		steps: [
 			{
 				title: "1. Create a Personal Access Token",

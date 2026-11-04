@@ -7,6 +7,7 @@
  */
 
 import type { OAuthAppProvider } from "@repo/database/prisma/queries/lib/oauth-app-row";
+import { GITHUB_OAUTH_SCOPES } from "@repo/utils/github-oauth-scopes";
 
 /** Every provider with an OAuth app, and so a reserved `<PROVIDER>_OAUTH_APP` row name. */
 export type OAuthProviderType = OAuthAppProvider;
@@ -161,8 +162,7 @@ const githubProvider: OAuthProviderConfig = {
 	name: "GitHub",
 	authorizationUrl: "https://github.com/login/oauth/authorize",
 	tokenUrl: "https://github.com/login/oauth/access_token",
-	// `project`: GitHub Projects (v2) boards as the PM tool.
-	scopes: ["repo", "read:user", "project"],
+	scopes: [...GITHUB_OAUTH_SCOPES],
 	clientIdEnvVar: "FABRIC_GITHUB_CLIENT_ID",
 	clientSecretEnvVar: "FABRIC_GITHUB_CLIENT_SECRET",
 	supportsRefreshToken: true,

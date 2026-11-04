@@ -12,7 +12,7 @@
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
@@ -21,6 +21,7 @@ import { workflowActor, workflowCommandErrors } from "../workflow-actor";
 
 const publishWorkflowInput = z.object({
 	workflowId: z.string(),
+	organizationId: z.string().nullable().optional(),
 	changelog: z.string().optional(),
 	enableWebhook: z.boolean().optional().default(false),
 	enableSchedule: z.boolean().optional().default(false),
@@ -82,7 +83,11 @@ const publishWorkflowOutput = z.discriminatedUnion("success", [
 
 export const publishWorkflow = tenantProtectedProcedure
 	.use(workflowCommandErrors)
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/workflows/{workflowId}/publish",
@@ -97,7 +102,7 @@ export const publishWorkflow = tenantProtectedProcedure
 		publishWorkflowCommand(
 			workflowActor(
 				context.user.id,
-				resolveOrganizationId(undefined, context.session),
+				resolveOrganizationId(input.organizationId, context.session),
 			),
 			input,
 		),

@@ -1,13 +1,13 @@
 ---
 title: Workflow Builder
-description: Build automations on a visual canvas — triggers, AI, conditions and 27 connected services, executed durably.
+description: Build automations on a visual canvas — triggers, AI, conditions and connected services, executed durably.
 audience: Organization members building and maintaining workflows
 owner: Platform team
 ---
 
 The Workflow Builder is a visual canvas for automations. You place nodes, connect them,
 publish, and Fabric runs the graph durably: every node's input, output and timing is
-recorded, failed steps retry, and a run survives a restart of the service executing it.
+recorded. Retry-safe steps can retry; external side effects and Databricks statements are not automatically resubmitted. A run survives a restart of the service executing it.
 
 ## What a workflow is
 
@@ -31,7 +31,7 @@ flowchart LR
 
     **Workflows** in the sidebar, then **New Workflow**. The workflow is created straight
     away as `Untitled Workflow` and opens on an empty canvas; rename it from the header.
-    A workflow belongs to you, inside the account or organization you created it in.
+    A workflow belongs to you inside your organization. Saved workflows, the canvas, step settings, and run history share one studio.
   </Step>
 
   <Step>
@@ -56,9 +56,7 @@ flowchart LR
     ### Add and connect action nodes
 
     **Add a Step** on an empty canvas, and **+** in the toolbar after that, open the
-    **Actions** tab; picking an action fills in the new node. Adding a node does not
-    connect it — drag between the handles of two nodes to do that, since a node with
-    nothing feeding it never runs.
+    **Add step** tab; picking an action fills in the new step and preserves its connections. Use **+** on an edge to insert a step or below the last step to append one.
 
     A node runs once every node feeding it has produced its result, and nodes that are
     ready together run together. A **Condition** is the exception: it sends the run down
@@ -70,27 +68,51 @@ flowchart LR
 
     Click a node to open its panel. Fields differ per node — a **Generate Text** node
     takes a prompt and a model, a **Send Slack Message** node takes a channel and a
-    message. Any text field accepts references to earlier nodes.
+    message. Template fields accept references to earlier nodes. Databricks SQL source stays static; dynamic values go in named parameters.
   </Step>
 
   <Step>
     ### Run it from the editor
 
-    **Run** executes what is on the canvas, including unsaved changes, and streams
+    **Run** first saves the displayed graph, then executes it and shows
     per-node status, input, output and duration into the execution panel. This works on a
-    draft — you do not have to publish to test. An editor run sends no trigger payload,
+    draft for ordinary integration steps. Script, native platform, and workspace data steps require a matching published version. An editor run sends no trigger payload,
     so references to webhook fields resolve to nothing.
   </Step>
 
   <Step>
     ### Publish
 
-    Save first: publishing versions the **saved** graph, not what is on screen, and
-    nothing autosaves. Publishing then opens the external triggers — the webhook starts
+    **Publish** saves the displayed graph before opening the publish dialog. A failed save leaves your edits in the studio and does not publish them. Publishing then opens the external triggers — the webhook starts
     accepting requests and the schedule starts firing. A graph that fails validation is
     not published, and the dialog lists what to fix.
   </Step>
 </Steps>
+
+## Databricks SQL and AI
+
+Add **Run Databricks SQL** or **Databricks AI query** from **Add step**. In Connections,
+configure **Databricks SQL & AI** with a workspace URL and an OAuth M2M service principal.
+This is separate from Databricks Vector Search and AI model-provider credentials.
+Choose your own connection or one explicitly shared with your organization, then select
+an existing SQL warehouse. Discovery lists warehouse metadata without executing SQL.
+
+Use three-part Unity Catalog table names such as `catalog.schema.table`. For dynamic
+values, write `:status` in SQL and add a typed named parameter with a value such as
+`{{Previous step.status}}`. Template expressions are rejected in SQL source, and missing
+references fail the step. Only the selected connection's Databricks permissions apply.
+
+The AI action calls `ai_query` once with a bound request of up to 8,192 characters and
+512 output tokens. It requires a compatible warehouse and a model endpoint the service
+principal may query. Classic SQL warehouses do not support this function.
+
+Fabric checks that the warehouse is running before submitting; manage compute in
+Databricks. SQL execution can incur Databricks compute and model charges. Results are
+limited to 1,000 rows and 1 MB. Statements have a 90-second deadline; cancellation is
+sent to Databricks when a running statement is interrupted. An unconfirmed submission
+is not retried automatically: inspect Databricks query history before running again.
+Statement IDs, bounded rows, column metadata, and truncation status appear in step outputs.
+Fabric continues to manage schedules and run history through its workflow engine.
 
 ## Triggers
 
@@ -395,11 +417,8 @@ Publishing a workflow:
 2. Generates the webhook URL and signing secret, if you enable the webhook trigger
 3. Registers the schedule, if the trigger node's type is **Schedule**
 
-<Callout type="warning">
-Publishing controls **whether** external triggers are accepted, not **which** version
-they run. Webhook and scheduled runs always execute the workflow's current saved state,
-so an edit you save to a published workflow takes effect on the very next run — there is
-no second publish step. Use rollback if you need to get back to an earlier state.
+<Callout type="info">
+Scheduled runs use their immutable published version. Publish again for a schedule to pick up changes. Workflows without script, native platform, or workspace data steps use the current saved draft for editor and webhook runs. Workflows containing those steps require a matching published version.
 </Callout>
 
 **Version History** lists every published version. Rolling back restores that version's

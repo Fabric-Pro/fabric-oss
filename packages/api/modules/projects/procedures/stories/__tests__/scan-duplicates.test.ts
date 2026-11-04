@@ -70,7 +70,8 @@ vi.mock("@repo/ai", () => ({
 			this.name = "AIProviderNotConfiguredError";
 		}
 	},
-	generateObject: (...a: unknown[]) => mockGenerateObject(...a),
+	generateText: (...a: unknown[]) => mockGenerateObject(...a),
+	Output: { object: (spec: unknown) => spec },
 	getAIModelWithMetadata: (...a: unknown[]) =>
 		mockGetAIModelWithMetadata(...a),
 	resolveModelWithProvider: (...a: unknown[]) =>
@@ -327,7 +328,7 @@ describe("scanDuplicatesProcedure — verdict routing", () => {
 			model: EMBEDDING_MODEL,
 		});
 		mockGenerateObject.mockResolvedValue({
-			object: {
+			output: {
 				relationship: "same_work_item",
 				confidence: 0.95,
 				reasoning: "same bug",
@@ -376,7 +377,7 @@ describe("scanDuplicatesProcedure — verdict routing", () => {
 			model: EMBEDDING_MODEL,
 		});
 		mockGenerateObject.mockResolvedValue({
-			object: {
+			output: {
 				relationship: "overlapping_scope",
 				confidence: 0.85,
 				reasoning: "same capability, different framing",
@@ -447,7 +448,7 @@ describe("scanDuplicatesProcedure — verdict routing", () => {
 			model: EMBEDDING_MODEL,
 		});
 		mockGenerateObject.mockResolvedValue({
-			object: {
+			output: {
 				relationship: "distinct",
 				confidence: 0.9,
 				reasoning: "opposite changes",
@@ -470,7 +471,7 @@ describe("scanDuplicatesProcedure — verdict routing", () => {
 	});
 
 	it("surfaces verifierFailures without throwing when every candidate pair fails to verify (the manual path must not masquerade as a clean scan)", async () => {
-		// A transient verifier/AI outage: generateObject rejects for the single
+		// A transient verifier/AI outage: generateText rejects for the single
 		// candidate pair. The manual scan does NOT throw on a wholesale verifier
 		// failure (unlike the Temporal path), so the ONLY signal the UI has that
 		// the scan couldn't check anything is verifierFailures === candidates.
@@ -534,7 +535,7 @@ describe("scanDuplicatesProcedure — verdict routing", () => {
 			model: EMBEDDING_MODEL,
 		});
 		mockGenerateObject.mockResolvedValue({
-			object: {
+			output: {
 				relationship: "overlapping_scope",
 				confidence: 0.4,
 				reasoning: "unsure",
@@ -637,7 +638,7 @@ describe("scanDuplicatesProcedure — embedding cache + verdict-driven verificat
 			model: EMBEDDING_MODEL,
 		});
 		mockGenerateObject.mockResolvedValue({
-			object: {
+			output: {
 				relationship: "same_work_item",
 				confidence: 0.92,
 				reasoning: "same",
@@ -738,7 +739,7 @@ describe("scanDuplicatesProcedure — embedding cache + verdict-driven verificat
 		);
 		mockListStoryDuplicateEmbeddings.mockResolvedValue(cachedRows);
 		mockGenerateObject.mockResolvedValue({
-			object: {
+			output: {
 				relationship: "same_work_item",
 				confidence: 0.9,
 				reasoning: "same",
@@ -803,7 +804,7 @@ describe("scanDuplicatesProcedure — embedding cache + verdict-driven verificat
 			model: EMBEDDING_MODEL,
 		});
 		mockGenerateObject.mockResolvedValue({
-			object: {
+			output: {
 				relationship: "distinct",
 				confidence: 0.9,
 				reasoning: "no",
@@ -952,7 +953,7 @@ describe("scanDuplicatesProcedure — embedding cache + verdict-driven verificat
 		mockGenerateObject
 			.mockRejectedValueOnce(new Error("verifier timeout"))
 			.mockResolvedValue({
-				object: {
+				output: {
 					relationship: "same_work_item",
 					confidence: 0.9,
 					reasoning: "same",
@@ -990,7 +991,7 @@ describe("scanDuplicatesProcedure — embedding cache + verdict-driven verificat
 			model: EMBEDDING_MODEL,
 		});
 		mockGenerateObject.mockResolvedValue({
-			object: {
+			output: {
 				relationship: "distinct",
 				confidence: 0.9,
 				reasoning: "no",

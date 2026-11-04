@@ -108,7 +108,7 @@ export interface AnalyzeChannelThreadOutput {
  *
  * Keep this focused on WHAT to look for, not HOW to format — the
  * ChangeProposalSchema (with its {from, to} title/description shapes)
- * is provided by generateObject and handles formatting.
+ * is provided by Output.object and handles formatting.
  */
 const THREAD_ANALYSIS_USER_PROMPT = `The context below is a Microsoft Teams channel discussion (one thread with all replies). Analyze it and propose backlog changes — features or bugs — that the discussion implies.
 

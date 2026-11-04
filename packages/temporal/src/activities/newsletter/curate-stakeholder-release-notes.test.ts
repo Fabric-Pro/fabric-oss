@@ -5,9 +5,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // one. Mock it (matches the daily-brief activity test convention).
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: vi.fn().mockResolvedValue({
 		model: {},
 		metadata: { taskType: "SIMPLE" },
@@ -46,9 +47,9 @@ const pr = (over: Partial<GithubItem> = {}): GithubItem =>
 
 describe("curateStakeholderReleaseNotesActivity", () => {
 	beforeEach(() => {
-		// Reset generateObject's call history between tests — the "maps output"
+		// Reset generateText's call history between tests — the "maps output"
 		// test calls it, and the TOCTOU-skip test asserts it is NOT called.
-		generateObject.mockReset();
+		generateText.mockReset();
 		mockIsCurrentOrgMember.mockReset();
 		mockIsCurrentOrgMember.mockResolvedValue(true);
 	});
@@ -63,12 +64,12 @@ describe("curateStakeholderReleaseNotesActivity", () => {
 		});
 		expect(out.content.hasMajorFeatures).toBe(false);
 		expect(out.content.highlights).toEqual([]);
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 
 	it("maps the model output into NewsletterContent", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				headline: "June Update",
 				intro: "Shipped a lot.",
 				hasMajorFeatures: true,
@@ -108,7 +109,7 @@ describe("curateStakeholderReleaseNotesActivity", () => {
 			"removed-admin",
 			"org-9",
 		);
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 		expect(out.content.hasMajorFeatures).toBe(false);
 		expect(out.content.highlights).toEqual([]);
 		expect(out.aiUsageTokens).toBeNull();

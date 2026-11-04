@@ -12,9 +12,10 @@
  */
 
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
-import { generateObject, zodSchema } from "ai";
+import { generateText, Output, zodSchema } from "ai";
 import { z } from "zod";
 import { getAIModelWithMetadata } from "./dynamic-model-selector";
+import { requireStructuredOutput } from "./structured-output";
 import { logModelUsageAsync } from "./usage-logging";
 
 /**
@@ -292,12 +293,16 @@ export async function extractRelevantExcerpts(
 	const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
 	try {
-		const { object, usage } = await generateObject({
-			model,
-			schema: zodSchema(ExtractionResultSchema),
-			prompt,
-			abortSignal: controller.signal,
-		});
+		const { output: object, usage } = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({
+					schema: zodSchema(ExtractionResultSchema),
+				}),
+				prompt,
+				abortSignal: controller.signal,
+			}),
+		);
 
 		trackUsage();
 		logModelUsageAsync({

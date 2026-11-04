@@ -70,6 +70,29 @@ export function toDiffRows(parts: DiffPart[]): DiffRow[] {
 	});
 }
 
+/** Whether a path is a Markdown file the review can show rendered. */
+export function isMarkdownPath(path: string): boolean {
+	return /\.(md|mdx|markdown)$/i.test(path);
+}
+
+const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
+
+/**
+ * A Markdown file's leading YAML frontmatter and the body after it. The
+ * rendered diff shows the body only: frontmatter is metadata, which the
+ * editor would draw as a stray rule and a paragraph of keys, so a change to
+ * it is left to the raw line diff.
+ */
+export function splitFrontmatter(text: string): {
+	frontmatter: string | null;
+	body: string;
+} {
+	const match = FRONTMATTER.exec(text);
+	return match
+		? { frontmatter: match[0], body: text.slice(match[0].length) }
+		: { frontmatter: null, body: text };
+}
+
 /** Lines a part renders, matching `prefixDiffPart` exactly. */
 function renderedLineCount(value: string): number {
 	if (value === "") {

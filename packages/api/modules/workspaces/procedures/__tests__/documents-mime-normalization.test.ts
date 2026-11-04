@@ -72,7 +72,7 @@ vi.mock("../../../../orpc/procedures", () => {
 	});
 	return {
 		Permissions: { WORKSPACE_UPDATE: "workspace:update" },
-		requirePermission: () => vi.fn(),
+		requireInputOrgPermission: () => vi.fn(),
 		resolveOrganizationId: () => null,
 		tenantProtectedProcedure: chainable,
 	};

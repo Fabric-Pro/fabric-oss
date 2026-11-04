@@ -23,10 +23,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	// Faithful enough to discriminate, which is all the activity asks of it:
 	// the AI SDK names this error class "AI_NoObjectGeneratedError", and the
@@ -204,8 +205,8 @@ beforeEach(() => {
 		metadata: { modelString: "test-model", provider: "test" },
 		trackUsage,
 	});
-	generateObject.mockResolvedValue({
-		object: MODEL_OUTPUT,
+	generateText.mockResolvedValue({
+		output: MODEL_OUTPUT,
 		usage: { totalTokens: 100 },
 	});
 	completeTopicDraft.mockResolvedValue({ persisted: true });
@@ -265,7 +266,7 @@ describe("generateBlogPostActivity — tenancy and actor revalidation", () => {
 			nonRetryable: true,
 		});
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 });
 
@@ -290,7 +291,7 @@ describe("generateBlogPostActivity — contributor override", () => {
 				where: { id: { in: ["chosen-user"] } },
 			}),
 		);
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).toContain(
 			"Chosen Contributor",
 		);
 	});
@@ -312,7 +313,7 @@ describe("generateBlogPostActivity — contributor override", () => {
 		// `resolveContributorNames` short-circuits on an empty list, so the
 		// lookup never runs at all.
 		expect(userFindMany).not.toHaveBeenCalled();
-		expect(generateObject.mock.calls[0]?.[0]?.prompt).not.toContain(
+		expect(generateText.mock.calls[0]?.[0]?.prompt).not.toContain(
 			"People associated with the work behind this topic",
 		);
 	});
@@ -362,8 +363,8 @@ describe("generateBlogPostActivity — what it persists", () => {
 	});
 
 	it("fails non-retryably when the model output does not validate", async () => {
-		generateObject.mockResolvedValue({
-			object: { ...MODEL_OUTPUT, title: "" },
+		generateText.mockResolvedValue({
+			output: { ...MODEL_OUTPUT, title: "" },
 			usage: {},
 		});
 
@@ -417,7 +418,7 @@ describe("generateBlogPostActivity — the effective analysis reaches the prompt
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("USER PROSE");
 		expect(prompt).not.toContain("AI ANGLE");
 		// The two assertions above pin the ANSWER; this one pins the
@@ -455,7 +456,7 @@ describe("generateBlogPostActivity — the effective analysis reaches the prompt
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("AI ANGLE");
 		expect(prompt).toContain(renderAnalysisProse(AI));
 	});
@@ -478,7 +479,7 @@ describe("generateBlogPostActivity — a soft-closed question restricts", () => 
 
 		await run();
 
-		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const prompt = generateText.mock.calls[0]?.[0]?.prompt as string;
 		const heading = prompt.indexOf(
 			"## Unresolved approvals for this topic",
 		);
@@ -494,7 +495,7 @@ it("keeps READY when seeding throws", async () => {
 		status: "READY",
 		seededWorkingDraft: false,
 	});
-	expect(generateObject).toHaveBeenCalledTimes(1);
+	expect(generateText).toHaveBeenCalledTimes(1);
 	expect(logger.warn).toHaveBeenCalledWith(
 		"[publishing-blog-post] failed to seed a working draft",
 		expect.objectContaining({ error: "seed failed" }),

@@ -28,6 +28,7 @@ import {
 	getProjectReposForCodeSearch,
 	getProjectScanConfig,
 } from "@repo/database";
+import { GIT_AUTH_UNSAFE } from "@repo/integrations/repo-auth";
 import { logger } from "@repo/logs";
 import { Context } from "@temporalio/activity";
 import {
@@ -37,10 +38,10 @@ import {
 	type ScanFindingDraft,
 } from "./scan-schemas";
 import {
-	buildAuthenticatedCloneUrl,
 	isBinaryMissing,
 	type RepoSource,
 	repoSourceFromRepo,
+	resolveCloneAuth,
 	withHeartbeat,
 } from "./semgrep-scan";
 
@@ -220,17 +221,19 @@ export async function runGitHistorySecretScanActivity(
 
 	try {
 		return await withHeartbeat(async () => {
-			const authUrl = await buildAuthenticatedCloneUrl(repo, {
+			const auth = await resolveCloneAuth(repo, {
 				projectId,
 				userId: input.userId,
 				organizationId: input.organizationId,
 			});
-			if (!authUrl) {
+			if (!auth) {
 				return empty("clone-failed", repoSlug);
 			}
 
 			await fs.rm(clonePath, { recursive: true, force: true });
 			const { simpleGit } = await import("simple-git");
+			const gitAt = (baseDir?: string) =>
+				simpleGit({ baseDir, unsafe: GIT_AUTH_UNSAFE }).env(auth.env);
 			// Resolve the branch to clone: the workflow-provided branch (kept in
 			// sync with the resolve step's SHA), else the project's configured
 			// scanBranch, else the repo's default, else "main".
@@ -245,7 +248,7 @@ export async function runGitHistorySecretScanActivity(
 				// FULL clone (no --depth) so gitleaks can inspect every commit —
 				// and so the base commit is present for the incremental log-opts
 				// scoping below (no --shallow-exclude fetch needed).
-				await simpleGit().clone(authUrl, clonePath, [
+				await gitAt().clone(auth.url, clonePath, [
 					"--single-branch",
 					"--branch",
 					targetBranch,
@@ -270,7 +273,7 @@ export async function runGitHistorySecretScanActivity(
 			if (input.codeScanMode === "DIFF" && input.baseSha) {
 				const baseSha = input.baseSha;
 				try {
-					const countOut = await simpleGit(clonePath).raw([
+					const countOut = await gitAt(clonePath).raw([
 						"rev-list",
 						"--count",
 						`${baseSha}..HEAD`,

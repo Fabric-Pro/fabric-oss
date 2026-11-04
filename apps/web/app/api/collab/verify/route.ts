@@ -87,8 +87,8 @@ export async function POST(req: Request) {
 			// audience — collab tokens live for an hour, so adding one would
 			// 401 in-flight tokens during a rolling deploy. Cross-surface
 			// confusion is instead prevented by claim shape: no other token
-			// route may mint a `documentId` claim, and the orchestrator /
-			// task-agent tokens carry their own `aud`.
+			// route may mint a `documentId` claim, and orchestrator
+			// tokens carry their own `aud`.
 			const { payload } = await jwtVerify(token, secretKey, {
 				algorithms: ["HS256"],
 			});

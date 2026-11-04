@@ -33,6 +33,11 @@ export const listWorkflowsProcedure = tenantProtectedProcedure
 			limit: z.number().min(1).max(100).optional().default(20),
 			offset: z.number().min(0).optional().default(0),
 			status: WorkflowBuilderStatusSchema.optional(),
+			statuses: z
+				.array(WorkflowBuilderStatusSchema)
+				.min(1)
+				.max(5)
+				.optional(),
 			triggerType: WorkflowTriggerTypeSchema.optional(),
 			search: z.string().max(INPUT_BOUNDS.name).optional(),
 			isTemplate: z.boolean().optional(),

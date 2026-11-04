@@ -8,8 +8,9 @@
  * what is pinned is what ships: each procedure carries
  * `projectNotFoundUnlessVisible` BEFORE its permission gate, the gate names
  * CONTEXT_READ for `get` and CONTEXT_CREATE for the three mutations and for
- * `listTree` (a read that spends the integration's credential, Fizzy
- * #2674), and the real gate refuses a read-only member all four.
+ * `listTree` and `readIgnoreFiles` (reads that spend the integration's
+ * credential), and the real gate refuses a read-only member
+ * every one of those.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -36,6 +37,7 @@ import { configureContextRepositorySyncProcedure } from "../configure";
 import { disableContextRepositorySyncProcedure } from "../disable";
 import { getContextRepositorySyncProcedure } from "../get";
 import { listContextRepositoryTreeProcedure } from "../list-tree";
+import { readContextRepositoryIgnoreFilesProcedure } from "../read-ignore-files";
 import { syncContextRepositoryNowProcedure } from "../sync-now";
 
 type TaggedMiddleware = ((
@@ -61,6 +63,7 @@ const READ = [["get", getContextRepositorySyncProcedure]] as const;
 // Every procedure that writes or spends the integration's credential.
 const MUTATING = [
 	["listTree", listContextRepositoryTreeProcedure],
+	["readIgnoreFiles", readContextRepositoryIgnoreFilesProcedure],
 	["configure", configureContextRepositorySyncProcedure],
 	["syncNow", syncContextRepositoryNowProcedure],
 	["disable", disableContextRepositorySyncProcedure],
@@ -87,7 +90,7 @@ describe("contexts.repositorySync: the composed chain", () => {
 		}
 	});
 
-	it("decides visibility before permission on every one of the five", () => {
+	it("decides visibility before permission on every one of them", () => {
 		for (const [name, procedure] of ALL) {
 			const middlewares = chain(procedure);
 			const visibility = middlewares.indexOf(

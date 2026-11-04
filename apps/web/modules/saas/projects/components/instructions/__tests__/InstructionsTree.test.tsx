@@ -6,6 +6,7 @@
  * accessible name and the markers' wording can be asserted against actual
  * shipped copy rather than a key.
  */
+import en from "@repo/i18n/translations/en.json";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -887,5 +888,50 @@ describe("InstructionsTree on a large repository", () => {
 				globalThis.ResizeObserver = original;
 			}
 		});
+	});
+
+	it("names what the member's proposal branch does to each file, and opens a branch-only file", async () => {
+		const onSelect = vi.fn();
+		render(
+			<InstructionsTree
+				files={[
+					{ path: "CLAUDE.md", kind: "INSTRUCTIONS" },
+					{
+						path: "AGENTS.md",
+						kind: "INSTRUCTIONS",
+						branch: "deletedOnBranch",
+					},
+					{
+						path: "README.md",
+						kind: "OTHER",
+						branch: "changedOnBranch",
+					},
+					{
+						path: "NEW.md",
+						kind: "OTHER",
+						branch: "branchOnly",
+					},
+				]}
+				selectedPath={null}
+				onSelect={onSelect}
+			/>,
+		);
+		const copy = en.projects.codingInstructions.tree;
+		const branchOnly = screen.getByRole("button", { name: /NEW\.md/ });
+		expect(branchOnly).toHaveTextContent(copy.branchOnlyTag);
+		expect(
+			within(branchOnly).getByText(copy.branchOnlyTitle),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /AGENTS\.md/ }),
+		).toHaveTextContent(copy.deletedOnBranchTag);
+		expect(
+			screen.getByRole("button", { name: /README\.md/ }),
+		).toHaveTextContent(copy.changedOnBranchTag);
+		expect(
+			screen.getByRole("button", { name: /CLAUDE\.md/ }),
+		).not.toHaveTextContent(copy.changedOnBranchTag);
+		await userEvent.click(branchOnly);
+		expect(onSelect).toHaveBeenCalledWith("NEW.md");
 	});
 });

@@ -11,7 +11,7 @@
  * normalized/defaulted in `mapRawTicketDraftToContent`, never in the schema.
  *
  * This file holds only pure, dependency-free mapping/formatting helpers — the
- * actual `generateObject` call (model resolution + prompt) lives in
+ * actual structured `generateText` call (model resolution + prompt) lives in
  * `grouping-activities.ts`, mirroring the `review-schemas.ts` /
  * `review-activities.ts` split.
  *

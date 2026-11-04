@@ -33,6 +33,10 @@ import {
 	type FabricProjectReadToolName,
 } from "./fabric-project-read-tool-definitions";
 import {
+	FABRIC_REPORT_TOOL_DEFINITIONS,
+	type FabricReportToolName,
+} from "./fabric-report-tool-definitions";
+import {
 	callNeedsConfirmation,
 	type FabricToolDefinition,
 	toolAccess,
@@ -42,18 +46,29 @@ import {
 	type FabricWorkflowToolName,
 } from "./fabric-workflow-tool-definitions";
 
+import {
+	FABRIC_WORKSPACE_TOOL_DEFINITIONS,
+	type FabricWorkspaceToolName,
+} from "./fabric-workspace-tool-definitions";
+
+export { FABRIC_WORKSPACE_TOOL_DEFINITIONS } from "./fabric-workspace-tool-definitions";
+
 export type FabricGatewayToolName =
+	| FabricWorkspaceToolName
 	| FabricWorkflowToolName
 	| FabricFrameToolName
 	| FabricPageToolName
 	| FabricFrameVersionToolName
 	| FabricProjectReadToolName
 	| FabricProjectPmToolName
+	| FabricReportToolName
 	| FabricPageDiscoveryToolName;
 
 export const FABRIC_GATEWAY_TOOL_DEFINITIONS = [
+	...FABRIC_WORKSPACE_TOOL_DEFINITIONS,
 	...FABRIC_PROJECT_READ_TOOL_DEFINITIONS,
 	...FABRIC_PROJECT_PM_TOOL_DEFINITIONS,
+	...FABRIC_REPORT_TOOL_DEFINITIONS,
 	...FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS,
 	...FABRIC_WORKFLOW_TOOL_DEFINITIONS,
 	...FABRIC_FRAME_TOOL_DEFINITIONS,

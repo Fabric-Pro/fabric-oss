@@ -11,24 +11,37 @@ import {
 } from "./lib/selection-row";
 import type { RepositorySyncNamespace } from "./RepositorySyncSelectionTree";
 
+/** The copy each mode reads under `configureDialog`. */
+const COPY_KEYS = {
+	include: "configureDialog.typedPath",
+	exclude: "configureDialog.typedExclusion",
+} as const;
+
 /**
- * The typed "Add a path" input, offered where the tree cannot reach every
- * path: a provider with no listing, a truncated listing, or a listing that
- * failed (Fizzy #2750 §3.2). What it adds goes through the same adapter
- * transition as a tick (Coding Instructions: the synced folder; Living
- * Memory: one more selected path), so typing can never do what the tree
- * could not. Exclusions are chosen in the tree only, which the hint says.
+ * The typed path inputs, offered where the tree cannot reach every path: a
+ * provider with no listing, a truncated listing, or a listing that failed.
+ * What one adds goes through the same adapter
+ * transition as a tick (`include`: Coding Instructions' synced folder, or
+ * one more Living Memory selected path) or an untick (`exclude`: a path
+ * left out, as Living Memory's left-out paths or Coding Instructions' own
+ * ignore rules), so typing can never do what the tree could not. While
+ * `blockedReason` is set the input takes nothing and says why.
  */
 export function AddRepositoryPathInput({
 	namespace,
+	mode = "include",
 	onAdd,
 	disabled,
+	blockedReason = null,
 	serverErrorId,
 }: {
 	namespace: RepositorySyncNamespace;
+	mode?: "include" | "exclude";
 	/** Add the typed path; the refusal to show inline, or `null` when added. */
 	onAdd: (raw: string) => SelectionMessage | null;
 	disabled: boolean;
+	/** Why nothing can be typed now (no folder chosen yet, rules unknown). */
+	blockedReason?: SelectionMessage | null;
 	/** The dialog's own inline error, when it is about this field. */
 	serverErrorId?: string;
 }) {
@@ -36,9 +49,11 @@ export function AddRepositoryPathInput({
 	const id = useId();
 	const [value, setValue] = useState("");
 	const [error, setError] = useState<SelectionMessage | null>(null);
+	const copy = COPY_KEYS[mode];
 	const inputId = `${id}-input`;
 	const errorId = `${id}-error`;
 	const hintId = `${id}-hint`;
+	const off = disabled || blockedReason !== null;
 
 	function add() {
 		const refusal = onAdd(value);
@@ -54,15 +69,13 @@ export function AddRepositoryPathInput({
 			.join(" ") || undefined;
 	return (
 		<div className="flex flex-col gap-1.5">
-			<Label htmlFor={inputId}>
-				{t("configureDialog.typedPath.label")}
-			</Label>
+			<Label htmlFor={inputId}>{t(`${copy}.label`)}</Label>
 			<div className="flex gap-2">
 				<Input
 					id={inputId}
 					value={value}
-					placeholder={t("configureDialog.typedPath.placeholder")}
-					disabled={disabled}
+					placeholder={t(`${copy}.placeholder`)}
+					disabled={off}
 					onChange={(e) => {
 						setValue(e.target.value);
 						setError(null);
@@ -80,9 +93,9 @@ export function AddRepositoryPathInput({
 					type="button"
 					variant="outline"
 					onClick={add}
-					disabled={disabled}
+					disabled={off}
 				>
-					{t("configureDialog.typedPath.add")}
+					{t(`${copy}.add`)}
 				</Button>
 			</div>
 			{error ? (
@@ -95,7 +108,9 @@ export function AddRepositoryPathInput({
 				</p>
 			) : (
 				<p id={hintId} className="text-muted-foreground text-xs">
-					{t("configureDialog.typedPath.hint")}
+					{blockedReason
+						? translateSelectionMessage(t, blockedReason)
+						: t(`${copy}.hint`)}
 				</p>
 			)}
 		</div>

@@ -1094,12 +1094,11 @@ export function ToolsSheet({
 							<SparklesIcon className="h-4 w-4 text-primary" />
 							<span className="text-sm font-medium">
 								{selectedTools.length + selectedSkillIds.length}{" "}
-								capability
 								{selectedTools.length +
-									selectedSkillIds.length !==
+									selectedSkillIds.length ===
 								1
-									? "ies"
-									: "y"}{" "}
+									? "capability"
+									: "capabilities"}{" "}
 								selected
 							</span>
 						</div>
@@ -1110,10 +1109,7 @@ export function ToolsSheet({
 							>
 								Cancel
 							</Button>
-							<Button
-								onClick={() => onOpenChange(false)}
-								className="bg-emerald-500 hover:bg-emerald-600"
-							>
+							<Button onClick={() => onOpenChange(false)}>
 								Add capabilities
 							</Button>
 						</div>

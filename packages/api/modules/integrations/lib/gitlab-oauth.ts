@@ -1,7 +1,7 @@
 /**
  * GitLab OAuth Utilities
  *
- * Handles GitLab OAuth flow for task agent integration.
+ * Handles GitLab OAuth flow for connected integrations.
  * Mirrors the GitHub OAuth utilities pattern.
  */
 

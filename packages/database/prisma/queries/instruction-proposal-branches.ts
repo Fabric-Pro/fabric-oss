@@ -645,6 +645,9 @@ export type BranchProjectionEntry = {
 	state: "written" | "deleted" | "restored_unavailable";
 	sha256: string | null;
 	snapshotId: string | null;
+	/** The Git blob at the path and its mode; both null when it is deleted. */
+	objectId: string | null;
+	mode: string | null;
 };
 
 export type ProjectionOp = {
@@ -661,7 +664,9 @@ export type ProjectionOp = {
  * `deleted` when null, `written` from `beforeSource` when Fabric holds those
  * bytes, `restored_unavailable` when it does not (a start version Fabric
  * never stored). A restored write's hash is the one Fabric recorded when it
- * wrote that same object, when it did. Issued, `unknown` and `not_pushed`
+ * wrote that same object, when it did. Each entry also carries the blob and
+ * mode at the path, so a reader can tell a branch file from the published
+ * one by Git identity. Issued, `unknown` and `not_pushed`
  * operations are not on the branch as far as Fabric can prove.
  */
 export function projectEntries(
@@ -688,6 +693,8 @@ export function projectEntries(
 					state: "deleted",
 					sha256: null,
 					snapshotId: null,
+					objectId: null,
+					mode: null,
 				});
 			} else if (source === null) {
 				byPath.set(e.path, {
@@ -695,6 +702,8 @@ export function projectEntries(
 					state: "restored_unavailable",
 					sha256: null,
 					snapshotId: null,
+					objectId: entry.oid,
+					mode: entry.mode,
 				});
 			} else {
 				byPath.set(e.path, {
@@ -705,6 +714,8 @@ export function projectEntries(
 							? e.afterSha256
 							: (hashes.get(entry.oid) ?? null),
 					snapshotId: source,
+					objectId: entry.oid,
+					mode: entry.mode,
 				});
 			}
 		}
@@ -3094,6 +3105,14 @@ export async function projectMemberBranch(i: {
 	branchId: string;
 	organizationId: string;
 }): Promise<BranchProjectionEntry[]> {
+	return projectEntries(await listEstablishedBranchOps(i));
+}
+
+/** A branch's established operations, in execution order: what `projectEntries` reads. */
+export async function listEstablishedBranchOps(i: {
+	branchId: string;
+	organizationId: string;
+}): Promise<ProjectionOp[]> {
 	const ops = await db.projectInstructionProposalBranchOperation.findMany({
 		where: {
 			organizationId: i.organizationId,
@@ -3108,14 +3127,12 @@ export async function projectMemberBranch(i: {
 		},
 		orderBy: { executionSeq: "asc" },
 	});
-	return projectEntries(
-		ops.map((op) => ({
-			kind: op.kind,
-			executionSeq: op.executionSeq,
-			outcome: op.outcome as OpOutcome,
-			entries: parseOperationEntries(op.entries),
-		})),
-	);
+	return ops.map((op) => ({
+		kind: op.kind,
+		executionSeq: op.executionSeq,
+		outcome: op.outcome as OpOutcome,
+		entries: parseOperationEntries(op.entries),
+	}));
 }
 
 /** The member's accepting branch in the project (the partial index's predicate), or null. */

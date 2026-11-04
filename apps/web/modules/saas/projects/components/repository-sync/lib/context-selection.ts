@@ -17,17 +17,24 @@
  * `skills/x.md` under a ticked root is left out by `skills/`), while a file
  * ticked directly is judged by its basename only, as the run does (so the
  * same file, ticked on its own, syncs). Only text files sync, a symbolic
- * link never does, a `.fabric` segment never does, and a folder's
- * `.contextignore` is read as its policy, never synced.
+ * link never does, a `.fabric` segment never does, and a ticked folder's
+ * `.contextignore` is read as its policy, never synced: the dialog reads
+ * it (`ContextFolderPolicy`) and its rules leave out what they name, behind
+ * the defaults, as in the run (`buildContextIgnoreRules`). A policy the run
+ * cannot evaluate protects the folder, and one it refuses fails the run, so
+ * rows inside either cannot be told.
  *
  * Membership is computed over the whole listing and selection. Rule-based
  * skips never make a folder mixed; what the member left out does, and so,
  * for a folder that is not selected itself, do selected paths inside it.
  */
 import {
+	buildContextIgnoreRules,
+	CONTEXT_IGNORE_FILENAME,
+	type ContextIgnoreRules,
 	contextSyncPathSpellingProblem,
-	createContextDefaultRules,
 	defaultRuleForDirectlySelectedFile,
+	findContextIgnoreProblem,
 	hasContextTextExtension,
 	isContextIgnorePolicyFile,
 	isExcludedDirectlySelectedFile,
@@ -195,6 +202,110 @@ const POLICY_FILE = message("policyFile");
 const NON_TEXT = message("nonText");
 const INVALID_PATH = message("invalidPath");
 const CODING_INSTRUCTIONS_FILE = message("codingInstructionsFile");
+const CANT_TELL_YET = message("cantTellYet");
+
+/**
+ * A ticked folder's `.contextignore`, read as the run reads it (`readIgnorePolicies`
+ * in `@repo/temporal`): none (the defaults alone); being read; its rules
+ * (UTF-8 text of at most 64 KiB); a file the run cannot evaluate, which
+ * protects the folder (larger, not UTF-8, or not a regular file); a rule the
+ * run refuses to evaluate, which fails the run; or a read that failed here.
+ */
+export type ContextFolderPolicy =
+	| { kind: "defaults" }
+	| { kind: "loading" }
+	| { kind: "rules"; text: string }
+	| { kind: "unreadable"; reason: "tooLarge" | "encoding" | "notRegular" }
+	| { kind: "rejected"; line: number }
+	| { kind: "failed" };
+
+const DEFAULTS_ONLY: ContextFolderPolicy = { kind: "defaults" };
+
+/** The policy file the run applies for a selected folder. */
+export function contextIgnorePathOf(folder: string): string {
+	return folder === ""
+		? CONTEXT_IGNORE_FILENAME
+		: `${folder}/${CONTEXT_IGNORE_FILENAME}`;
+}
+
+/**
+ * Whether the policies of the ticked folders are all known: `loading` while
+ * any is read, `failed` when one could not be read or fails the run (no
+ * count can be promised then).
+ */
+type ContextPoliciesStatus = "known" | "loading" | "failed";
+
+/** A ticked folder's rules, or why the rows inside it cannot be told. */
+type OwnerRules =
+	| { kind: "ready"; rules: ContextIgnoreRules }
+	| { kind: "unknown"; why: SelectionMessage };
+
+/** What the rules make of a row inside a ticked folder. */
+type RuleVerdict =
+	| { kind: "syncs" }
+	| { kind: "skipped"; why: SelectionMessage }
+	| { kind: "unknown"; why: SelectionMessage };
+
+/** The rules one ticked folder's policy gives, as the run would build them. */
+function ownerRulesOf(folder: string, policy: ContextFolderPolicy): OwnerRules {
+	const file = contextIgnorePathOf(folder);
+	switch (policy.kind) {
+		case "defaults":
+			return { kind: "ready", rules: buildContextIgnoreRules() };
+		case "rules": {
+			// The server already refused such a file; the run would too.
+			const problem = findContextIgnoreProblem(policy.text);
+			return problem
+				? {
+						kind: "unknown",
+						why: message("policyRejected", {
+							file,
+							line: problem.line,
+						}),
+					}
+				: {
+						kind: "ready",
+						rules: buildContextIgnoreRules({
+							contextIgnore: policy.text,
+						}),
+					};
+		}
+		case "loading":
+			return { kind: "unknown", why: CANT_TELL_YET };
+		case "unreadable":
+			return {
+				kind: "unknown",
+				why: message("policyUnreadable", { file }),
+			};
+		case "rejected":
+			return {
+				kind: "unknown",
+				why: message("policyRejected", { file, line: policy.line }),
+			};
+		case "failed":
+			return { kind: "unknown", why: message("policyFailed", { file }) };
+		default: {
+			const unreachable: never = policy;
+			return unreachable;
+		}
+	}
+}
+
+/** The status of these policies together (`ContextPoliciesStatus`). */
+function contextPoliciesStatus(
+	policies: Iterable<ContextFolderPolicy>,
+): ContextPoliciesStatus {
+	let status: ContextPoliciesStatus = "known";
+	for (const policy of policies) {
+		if (policy.kind === "failed" || policy.kind === "rejected") {
+			return "failed";
+		}
+		if (policy.kind === "loading") {
+			status = "loading";
+		}
+	}
+	return status;
+}
 
 /** Why `configure` would refuse `path` as a selected path, if it would. */
 function selectRefusalMessage(
@@ -258,16 +369,27 @@ export type ContextSelectionModel = {
 	row: (node: RepositoryTreeNode) => SelectionRow;
 	/** What a click on this row does, or `null` when it cannot be clicked. */
 	actionFor: (node: RepositoryTreeNode) => ContextAction | null;
-	/** Listed files that would sync; `null` without a listing. */
+	/**
+	 * Listed files that would sync, each ticked folder's `.contextignore`
+	 * applied; `null` without a listing.
+	 */
 	includedFileCount: number | null;
+	/** Whether the ticked folders' policies are known (the count's caveat). */
+	policies: ContextPoliciesStatus;
 };
 
 export function contextSelectionModel(input: {
 	/** The whole listing, or `null` without one. */
 	tree: RepositoryTreeIndex<ContextRepositoryTreeEntry> | null;
 	selection: ContextSelection;
+	/**
+	 * Each ticked folder's `.contextignore` as read so far; a folder not in
+	 * it has none (the defaults alone).
+	 */
+	policies?: ReadonlyMap<string, ContextFolderPolicy>;
 }): ContextSelectionModel {
 	const { selection, tree } = input;
+	const policies = input.policies ?? new Map<string, ContextFolderPolicy>();
 	const selected = new Set(selection.paths);
 	const excluded = new Set(selection.excludedPaths);
 	/** Folders that hold a selected path below them. */
@@ -284,8 +406,17 @@ export function contextSelectionModel(input: {
 			holdsExcluded.add(ancestor);
 		}
 	}
-	// A fresh matcher per model: it caches every path it answers.
-	const rules = createContextDefaultRules();
+	// Fresh matchers per model, one per ticked folder: each caches every
+	// path it answers.
+	const ownerRules = new Map<string, OwnerRules>();
+	function rulesOf(owner: string): OwnerRules {
+		let rules = ownerRules.get(owner);
+		if (!rules) {
+			rules = ownerRulesOf(owner, policies.get(owner) ?? DEFAULTS_ONLY);
+			ownerRules.set(owner, rules);
+		}
+		return rules;
+	}
 
 	/** The selected path `path` is, or is inside. */
 	function ownerOf(path: string): string | null {
@@ -311,39 +442,53 @@ export function contextSelectionModel(input: {
 	}
 
 	/**
-	 * Why a path inside the selected folder `owner` does not sync by rule,
-	 * judged relative to that folder as the run judges it; `null` when it
-	 * syncs.
+	 * Whether a path inside the selected folder `owner` syncs by rule,
+	 * judged relative to that folder as the run judges it: the defaults,
+	 * then the folder's `.contextignore`. Rows under a folder whose policy is
+	 * not known, or that the run would protect or fail on, cannot be told.
 	 */
-	function ruleSkip(
-		node: RepositoryTreeNode,
-		owner: string,
-	): SelectionMessage | null {
+	function ruleVerdict(node: RepositoryTreeNode, owner: string): RuleVerdict {
+		const skipped = (why: SelectionMessage): RuleVerdict => ({
+			kind: "skipped",
+			why,
+		});
 		if (isInContextSyncFabricDirectory(node.path)) {
-			return FABRIC;
+			return skipped(FABRIC);
 		}
 		const file = node.type === "file";
 		if (file && node.regular === false) {
-			return SYMLINK;
+			return skipped(SYMLINK);
 		}
 		if (file && isContextIgnorePolicyFile(node.path)) {
-			return POLICY_FILE;
+			return skipped(POLICY_FILE);
+		}
+		const rules = rulesOf(owner);
+		if (rules.kind === "unknown") {
+			return rules;
 		}
 		const relative =
 			owner === "" ? node.path : node.path.slice(owner.length + 1);
-		let rule: string | null;
+		let hit: ReturnType<ContextIgnoreRules["ruleFor"]>;
 		try {
-			rule = rules.ruleFor(relative, file ? "file" : "directory");
+			hit = rules.rules.ruleFor(relative, file ? "file" : "directory");
 		} catch {
-			return INVALID_PATH;
+			return skipped(INVALID_PATH);
 		}
-		if (rule !== null) {
-			return message("defaultRule", { rule });
+		if (hit?.source === "default") {
+			return skipped(message("defaultRule", { rule: hit.rule }));
+		}
+		if (hit?.source === "contextignore") {
+			return skipped(
+				message("contextignoreRule", {
+					rule: hit.rule,
+					file: contextIgnorePathOf(owner),
+				}),
+			);
 		}
 		if (file && !hasContextTextExtension(node.path)) {
-			return NON_TEXT;
+			return skipped(NON_TEXT);
 		}
-		return null;
+		return { kind: "syncs" };
 	}
 
 	/** Why a directly selected file does not sync, if it does not. */
@@ -427,13 +572,23 @@ export function contextSelectionModel(input: {
 			}
 			if (excluded.has(path)) {
 				return {
-					row: { membership: "out", disabledReason: null },
+					row: {
+						membership: "out",
+						disabledReason: null,
+						leftOut: true,
+					},
 					action: { type: "reinclude", path },
 				};
 			}
-			const skip = ruleSkip(node, owner);
-			if (skip) {
-				return disabled(skip);
+			const verdict = ruleVerdict(node, owner);
+			if (verdict.kind === "skipped") {
+				return disabled(verdict.why);
+			}
+			if (verdict.kind === "unknown") {
+				return {
+					row: { membership: "unknown", disabledReason: verdict.why },
+					action: null,
+				};
 			}
 			if (node.type === "dir" && holdsExcluded.has(path)) {
 				return {
@@ -481,7 +636,7 @@ export function contextSelectionModel(input: {
 		return (
 			!excluded.has(node.path) &&
 			excludedAncestorOf(node.path) === null &&
-			ruleSkip(node, owner) === null
+			ruleVerdict(node, owner).kind === "syncs"
 		);
 	}
 
@@ -505,6 +660,12 @@ export function contextSelectionModel(input: {
 					0,
 				)
 			: null,
+		policies: contextPoliciesStatus(
+			selection.paths.flatMap((path) => {
+				const policy = policies.get(path);
+				return policy ? [policy] : [];
+			}),
+		),
 	};
 }
 
@@ -566,10 +727,11 @@ export function contextSummaryLead(
 /**
  * The dialog's summary under the tree: what syncs, that later files inside a
  * ticked folder sync too, the live count of listed files that match the
- * known rules (never a promise), and what the count cannot see — a file the
- * run cannot read, and a ticked folder's `.contextignore`, which the tree
- * does not read (shown when a ticked folder's listing has one, or the
- * listing is truncated or unavailable).
+ * rules (each ticked folder's `.contextignore` included; never a promise),
+ * and what the count cannot see — a file the run cannot read, and, without
+ * a listing, the ticked folders' `.contextignore` files, which are read only
+ * alongside one. While a policy is read the count waits; one that could not
+ * be read, or that fails the run, leaves nothing to count.
  */
 export function contextSummary(input: {
 	model: ContextSelectionModel;
@@ -594,20 +756,17 @@ export function contextSummary(input: {
 		notes.push({ key: "summary.later" });
 	}
 	notes.push({ key: "summary.unreadable" });
-	const policyListed = folders.some((folder) =>
-		input.tree?.nodes.has(
-			folder === "" ? ".contextignore" : `${folder}/.contextignore`,
-		),
-	);
-	if (
-		folders.length > 0 &&
-		(policyListed || input.listing !== "ready" || input.truncated)
-	) {
+	if (folders.length > 0 && input.listing !== "ready") {
 		notes.push({ key: "summary.policyCaveat" });
 	}
 	let count: SelectionMessage | null = null;
-	if (input.listing === "loading") {
+	if (
+		input.listing === "loading" ||
+		(input.listing === "ready" && input.model.policies === "loading")
+	) {
 		count = { key: "summary.counting" };
+	} else if (input.listing === "ready" && input.model.policies === "failed") {
+		count = { key: "summary.cantCount" };
 	} else if (
 		input.listing === "ready" &&
 		input.model.includedFileCount !== null

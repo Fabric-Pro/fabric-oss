@@ -13,16 +13,29 @@ vi.mock("@repo/config", () => ({
 }));
 vi.mock("@repo/database", () => ({
 	db: { agentDeploymentExecution: { findFirst: mocks.findFirst } },
+	getAgentTemplateInstanceForRead: async () => ({
+		instance: {},
+		projectId: "example-project",
+	}),
+	getProjectAccessContext: async () => ({ organizationId: "example-org" }),
+	isProjectSoftDeleted: async () => false,
+	readAgentExecutionAdmission: () => null,
 	resolveExecutionChatMediaAccess: mocks.resolveExecutionChatMediaAccess,
 }));
 vi.mock("@repo/storage", () => ({ getSignedUrl: mocks.getSignedUrl }));
+vi.mock("@repo/temporal", () => ({
+	getTemporalClient: async () => {
+		throw new Error("Offline");
+	},
+}));
 
 import { getExecution } from "../get-execution";
 
 const path = "example-org/generated-images/1794200000000-abc123xy.png";
 const context = {
-	userId: "example-viewer",
+	userId: "example-owner",
 	organizationId: "example-org",
+	scopes: ["agents:read"],
 } as never;
 
 beforeEach(() => {
@@ -31,6 +44,11 @@ beforeEach(() => {
 		id: "execution-example",
 		userId: "example-owner",
 		organizationId: "example-org",
+		deployment: {
+			instanceId: "example-instance",
+			userId: "example-owner",
+			organizationId: "example-org",
+		},
 		status: "COMPLETED",
 		priority: 5,
 		input: {},
@@ -66,7 +84,7 @@ describe("getExecution artifact media access", () => {
 		expect(result?.artifacts).toEqual([]);
 		expect(mocks.resolveExecutionChatMediaAccess).toHaveBeenCalledWith({
 			storageKey: path,
-			userId: "example-viewer",
+			userId: "example-owner",
 			organizationId: "example-org",
 			execution: {
 				userId: "example-owner",

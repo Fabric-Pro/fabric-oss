@@ -50,6 +50,14 @@ export async function chooseProject(
 	return number >= 1 && number <= projects.length ? number - 1 : null;
 }
 
+/** One line the person typed, trimmed: for a confirmation that must be typed out. */
+export async function askLine(
+	question: string,
+	streams: PromptStreams = { input: process.stdin, output: process.stderr },
+): Promise<string> {
+	return await ask(question, streams);
+}
+
 /** Whether the person said yes. Anything but `y` or `yes` is no. */
 export async function confirm(
 	question: string,

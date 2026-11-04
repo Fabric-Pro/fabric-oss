@@ -570,13 +570,17 @@ export function ProjectImplementationDefaultsSettings({
 							<div className="flex items-center gap-2">
 								<TerminalIcon className="size-3.5 text-muted-foreground" />
 								<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-									1-Line Personal Server Quickstart (:9100)
+									Personal server setup
 								</p>
 							</div>
-							<code className="block font-mono text-xs text-foreground">
-								FABRIC_SERVER_TOKEN=&lt;secret&gt; npx -y
-								@fabricorg/agent-server --port 9100
-							</code>
+							<a
+								className="text-sm text-primary underline underline-offset-4"
+								href="/docs/features/projects#personal-vs-organization-remote-servers"
+								target="_blank"
+								rel="noopener noreferrer"
+							>
+								Open the server setup guide
+							</a>
 						</div>
 					</div>
 
@@ -613,14 +617,17 @@ export function ProjectImplementationDefaultsSettings({
 							<div className="flex items-center gap-2">
 								<TerminalIcon className="size-3.5 text-muted-foreground" />
 								<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-									1-Line Organization Server (Docker / VM)
+									Organization server setup
 								</p>
 							</div>
-							<code className="block font-mono text-xs text-foreground">
-								docker run -d -p 9100:9100 -e
-								FABRIC_SERVER_TOKEN=&lt;secret&gt;
-								ghcr.io/fabric-pro/fabric-agent-server:latest
-							</code>
+							<a
+								className="text-sm text-primary underline underline-offset-4"
+								href="/docs/features/projects#personal-vs-organization-remote-servers"
+								target="_blank"
+								rel="noopener noreferrer"
+							>
+								Open the server setup guide
+							</a>
 						</div>
 					</div>
 				</div>

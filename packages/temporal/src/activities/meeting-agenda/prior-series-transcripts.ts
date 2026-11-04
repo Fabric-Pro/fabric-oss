@@ -2,8 +2,10 @@ import { db, tenantWhere } from "@repo/database";
 
 /**
  * The earlier transcripts of one linked meeting series, newest first, with
- * their open action items. Shared by the pre-meeting agenda and Parlume's
- * "Since last time" recap, so both read a series' history the same way.
+ * their open action items. Shared by the pre-meeting agenda, Parlume's
+ * "Since last time" recap and its live suggestions (through the package's
+ * `./prior-series-transcripts` export), so all read a series' history the
+ * same way.
  *
  * Kept out of this directory's barrel: every export of the activities barrel
  * is registered as a Temporal activity, and this is a query, not one.

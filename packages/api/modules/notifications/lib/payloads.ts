@@ -406,6 +406,29 @@ const promptDefaultUpdatedPayload = z.object({
 });
 
 /**
+ * A new Coding Instructions version was published. Written by
+ * `createInstructionPublishedNotifications` in `@repo/database`, which every
+ * publish path calls (the Temporal activity included) and which bypasses this
+ * validator; this registration keeps the map total and mirrors
+ * `InstructionPublishedPayload` there, which a test parses against it.
+ */
+const codingInstructionsPublishedPayload = z.object({
+	projectId: z.string(),
+	snapshotId: z.string(),
+	version: z.number().int().positive(),
+	source: z.enum(["UPLOAD", "REPOSITORY"]),
+	sourceRef: z.string().nullable(),
+	shortCommitSha: z.string().nullable(),
+	via: z.enum(["manual", "proposal_review", "automatic"]),
+	publishedByUserId: z.string().nullable(),
+	publishedByName: z.string().nullable(),
+	update: z.discriminatedUnion("kind", [
+		z.object({ kind: z.literal("cli_sync"), command: z.string() }),
+		z.object({ kind: z.literal("git_pull"), ref: z.string().nullable() }),
+	]),
+});
+
+/**
  * A prompt was proposed as a shared default and is waiting for review (FR16).
  *
  * `summaryDegraded` travels with the summary so the queue can say whether it is
@@ -577,6 +600,8 @@ const NotificationPayloadByType = {
 	[NotificationType.CHATGPT_PLAN_WORK_STOPPED]: chatGptPlanWorkStoppedPayload,
 	[NotificationType.WORKFLOW_RUN_COMPLETED]: workflowRunPayload,
 	[NotificationType.WORKFLOW_RUN_FAILED]: workflowRunPayload,
+	[NotificationType.CODING_INSTRUCTIONS_PUBLISHED]:
+		codingInstructionsPublishedPayload,
 } as const;
 
 export function validatePayload(

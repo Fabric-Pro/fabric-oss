@@ -35,12 +35,12 @@ vi.mock("@repo/payments", () => ({
 	trackMeterEvent: vi.fn(),
 }));
 
-const generateObjectMock = vi.hoisted(() => vi.fn());
+const generateTextMock = vi.hoisted(() => vi.fn());
 vi.mock("ai", async (importActual) => {
 	const actual = await importActual<typeof import("ai")>();
 	return {
 		...actual,
-		generateObject: generateObjectMock,
+		generateText: generateTextMock,
 	};
 });
 
@@ -80,7 +80,7 @@ function raw(count: number) {
 
 describe("extractRelevantExcerpts", () => {
 	beforeEach(() => {
-		generateObjectMock.mockReset();
+		generateTextMock.mockReset();
 	});
 
 	it("returns empty for empty input without calling the model", async () => {
@@ -92,7 +92,7 @@ describe("extractRelevantExcerpts", () => {
 		expect(res.excerpts).toEqual([]);
 		expect(res.returned).toBe(0);
 		expect(res.fallback).toBe(false);
-		expect(generateObjectMock).not.toHaveBeenCalled();
+		expect(generateTextMock).not.toHaveBeenCalled();
 	});
 
 	it("short-circuits when the raw payload already fits the budget", async () => {
@@ -119,15 +119,15 @@ describe("extractRelevantExcerpts", () => {
 			maxExcerpts: 8,
 			maxCharsPerExcerpt: 400,
 		});
-		expect(generateObjectMock).not.toHaveBeenCalled();
+		expect(generateTextMock).not.toHaveBeenCalled();
 		expect(res.fallback).toBe(false);
 		expect(res.returned).toBe(2);
 		expect(res.excerpts.map((e) => e.messageId).sort()).toEqual(["a", "b"]);
 	});
 
 	it("respects maxExcerpts and caps each excerpt at maxCharsPerExcerpt", async () => {
-		generateObjectMock.mockResolvedValue({
-			object: {
+		generateTextMock.mockResolvedValue({
+			output: {
 				excerpts: raw(20).map((m, i) => ({
 					messageId: m.messageId,
 					from: m.from,
@@ -156,8 +156,8 @@ describe("extractRelevantExcerpts", () => {
 	});
 
 	it("drops excerpts with unknown messageIds", async () => {
-		generateObjectMock.mockResolvedValue({
-			object: {
+		generateTextMock.mockResolvedValue({
+			output: {
 				excerpts: [
 					{
 						messageId: "nope",
@@ -189,7 +189,7 @@ describe("extractRelevantExcerpts", () => {
 	});
 
 	it("falls back to deterministic reducer when the LLM throws", async () => {
-		generateObjectMock.mockRejectedValue(new Error("provider 500"));
+		generateTextMock.mockRejectedValue(new Error("provider 500"));
 		const input = raw(12);
 
 		const res = await extractRelevantExcerpts({
@@ -215,7 +215,7 @@ describe("extractRelevantExcerpts", () => {
 		// The deterministic fallback would hand the stopped turn an answer.
 		class StopError extends Error {}
 		const stop = new StopError("turn stopped");
-		generateObjectMock.mockRejectedValue(stop);
+		generateTextMock.mockRejectedValue(stop);
 		const guard: DispatchGuard = {
 			key: "turn-1",
 			assertDispatchable: async () => undefined,
@@ -240,7 +240,7 @@ describe("extractRelevantExcerpts", () => {
 		).rejects.toBe(stop);
 
 		// Inside the same guard, an ordinary provider failure still falls back.
-		generateObjectMock.mockRejectedValue(new Error("provider 500"));
+		generateTextMock.mockRejectedValue(new Error("provider 500"));
 		const res = await runWithDispatchGuard(guard, () =>
 			extractRelevantExcerpts({
 				rawMessages: raw(12),
@@ -254,7 +254,7 @@ describe("extractRelevantExcerpts", () => {
 	});
 
 	it("does not hang on a message body with a huge unclosed HTML tag run (js/polynomial-redos)", async () => {
-		generateObjectMock.mockRejectedValue(new Error("provider 500"));
+		generateTextMock.mockRejectedValue(new Error("provider 500"));
 		const unclosedTag = `<${"a".repeat(50_000)}`;
 		const input = [
 			{
@@ -280,7 +280,7 @@ describe("extractRelevantExcerpts", () => {
 	});
 
 	it("falls back when the LLM returns malformed output (Zod rejects)", async () => {
-		generateObjectMock.mockRejectedValue(
+		generateTextMock.mockRejectedValue(
 			new Error("Expected object, got undefined at .excerpts"),
 		);
 
@@ -297,7 +297,7 @@ describe("extractRelevantExcerpts", () => {
 
 	it("falls back when the LLM call times out", async () => {
 		// Simulate a hang that exceeds the timeout.
-		generateObjectMock.mockImplementation(
+		generateTextMock.mockImplementation(
 			async ({ abortSignal }: { abortSignal?: AbortSignal }) => {
 				await new Promise((resolve, reject) => {
 					if (abortSignal) {
@@ -308,7 +308,7 @@ describe("extractRelevantExcerpts", () => {
 					setTimeout(resolve, 10_000);
 				});
 				return {
-					object: { excerpts: [] },
+					output: { excerpts: [] },
 					usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
 				};
 			},

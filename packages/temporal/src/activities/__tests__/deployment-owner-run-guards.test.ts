@@ -2,8 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	getDeployment: vi.fn(),
+	scope: vi.fn(),
 	member: vi.fn(),
 	createExecution: vi.fn(),
+	findExecution: vi.fn(),
+	updateExecution: vi.fn(),
+	transaction: vi.fn(),
 	startExecution: vi.fn(),
 	updateCurrentExecutions: vi.fn(),
 	incrementExecutionCounts: vi.fn(),
@@ -18,6 +22,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("@repo/database", () => ({
 	getAgentDeploymentById: mocks.getDeployment,
+	getAgentTemplateInstanceForExecution: mocks.scope,
 	isDeploymentOwnerCurrentMember: mocks.member,
 	createAgentDeploymentExecution: mocks.createExecution,
 	startExecution: mocks.startExecution,
@@ -27,12 +32,17 @@ vi.mock("@repo/database", () => ({
 	updateExecutionStatus: mocks.updateExecutionStatus,
 	checkExecutionQuota: mocks.quota,
 	db: {
+		$transaction: mocks.transaction,
 		agentDeployment: { findUnique: mocks.getDeployment },
 		agentDeploymentTrigger: {
 			findFirst: mocks.trigger,
 			update: mocks.updateTrigger,
 		},
-		agentDeploymentExecution: { create: mocks.createScheduled },
+		agentDeploymentExecution: {
+			create: mocks.createScheduled,
+			findFirst: mocks.findExecution,
+			updateMany: mocks.updateExecution,
+		},
 	},
 }));
 vi.mock("../../client", () => ({
@@ -49,6 +59,7 @@ import { signalSupervisorForScheduledExecution } from "../schedule-trigger";
 
 const deployment = {
 	id: "deployment-example",
+	instanceId: "instance-example",
 	userId: "owner-example",
 	organizationId: "example-org",
 	status: "ACTIVE",
@@ -74,7 +85,55 @@ const scheduleInput = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	let row: Record<string, unknown> = {
+		id: "execution-row-example",
+		executionId: startInput.executionId,
+		deploymentId: deployment.id,
+		userId: deployment.userId,
+		organizationId: deployment.organizationId,
+		input: {},
+		triggerType: "WEBHOOK",
+		triggerId: null,
+		status: "PENDING",
+		workflowId: null,
+		runId: null,
+		metadata: null,
+	};
 	mocks.getDeployment.mockResolvedValue(deployment);
+	mocks.scope.mockResolvedValue({
+		projectId: null,
+		instance: {
+			id: deployment.instanceId,
+			organizationId: deployment.organizationId,
+			customInstructions: {},
+			executionMode: "single_turn",
+			goal: null,
+			successCriteria: null,
+			maxIterations: 10,
+		},
+	});
+	mocks.findExecution.mockImplementation(async () => structuredClone(row));
+	mocks.updateExecution.mockImplementation(
+		async ({ data }: { data: Record<string, unknown> }) => {
+			row = { ...row, ...structuredClone(data) };
+			return { count: 1 };
+		},
+	);
+	mocks.transaction.mockImplementation(async (fn) =>
+		fn({
+			agentDeploymentExecution: {
+				findFirst: mocks.findExecution,
+				updateMany: mocks.updateExecution,
+			},
+			agentDeployment: { updateMany: async () => ({ count: 1 }) },
+			organizationDeploymentQuota: {
+				updateMany: async () => ({ count: 1 }),
+			},
+		}),
+	);
+	mocks.workflowStart.mockResolvedValue({
+		firstExecutionRunId: "run-example",
+	});
 	mocks.member.mockResolvedValue(true);
 	mocks.quota.mockResolvedValue({ allowed: true });
 	mocks.trigger.mockResolvedValue({
@@ -92,7 +151,7 @@ describe("startAgentExecution", () => {
 			type: "AGENT_DEPLOYMENT_OWNER_NOT_MEMBER",
 			nonRetryable: true,
 		});
-		expect(mocks.createExecution).not.toHaveBeenCalled();
+		expect(mocks.updateExecution).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 
@@ -101,7 +160,7 @@ describe("startAgentExecution", () => {
 		await expect(startAgentExecution(startInput)).rejects.toThrow(
 			"lookup failed",
 		);
-		expect(mocks.createExecution).not.toHaveBeenCalled();
+		expect(mocks.updateExecution).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 
@@ -110,7 +169,7 @@ describe("startAgentExecution", () => {
 			success: true,
 		});
 		expect(mocks.member).toHaveBeenCalledWith(deployment);
-		expect(mocks.createExecution).toHaveBeenCalledTimes(1);
+		expect(mocks.updateExecution).toHaveBeenCalled();
 		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
 	});
 });

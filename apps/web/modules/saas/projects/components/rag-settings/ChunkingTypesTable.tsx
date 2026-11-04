@@ -382,8 +382,8 @@ export function ChunkingTypesTable({
 
 	return (
 		<div className="space-y-3">
-			<div className="flex items-start justify-between gap-4">
-				<div className="space-y-1">
+			<div className="flex flex-wrap items-start justify-between gap-4">
+				<div className="min-w-0 flex-1 basis-80 space-y-1">
 					<h4
 						className={
 							compact
@@ -408,7 +408,7 @@ export function ChunkingTypesTable({
 						type.
 					</p>
 				</div>
-				<div className="flex shrink-0 items-center gap-2">
+				<div className="flex flex-wrap items-center gap-2">
 					<ChunkingAnalysisActions projectId={projectId} />
 					{editable && (
 						<Button
@@ -446,29 +446,37 @@ export function ChunkingTypesTable({
 					<table className="w-full text-sm">
 						<thead>
 							<tr className="text-left text-foreground/50 text-xs">
-								<th className="pb-2 font-normal">Type</th>
-								<th className="pb-2 font-normal">Sources</th>
-								<th className="pb-2 font-normal">Chunks</th>
-								<th className="pb-2 font-normal">
+								<th className="whitespace-nowrap pr-3 pb-2 font-normal">
+									Type
+								</th>
+								<th className="whitespace-nowrap pr-3 pb-2 font-normal">
+									Sources
+								</th>
+								<th className="whitespace-nowrap pr-3 pb-2 font-normal">
+									Chunks
+								</th>
+								<th className="whitespace-nowrap pr-3 pb-2 font-normal">
 									Size (median / p90 / max)
 								</th>
-								<th className="pb-2 font-normal">Recall</th>
+								<th className="whitespace-nowrap pr-3 pb-2 font-normal">
+									Recall
+								</th>
 								{editable && (
 									<>
-										<th className="pb-2 font-normal">
+										<th className="whitespace-nowrap pr-3 pb-2 font-normal">
 											Chunking
 										</th>
-										<th className="pb-2 font-normal">
+										<th className="whitespace-nowrap pr-3 pb-2 font-normal">
 											Suggested
 										</th>
 									</>
 								)}
 								{editable && advanced && (
 									<>
-										<th className="pb-2 font-normal">
+										<th className="whitespace-nowrap pr-3 pb-2 font-normal">
 											Target
 										</th>
-										<th className="pb-2 font-normal">
+										<th className="whitespace-nowrap pr-3 pb-2 font-normal">
 											Max
 										</th>
 									</>
@@ -517,7 +525,7 @@ export function ChunkingTypesTable({
 										<td className="py-2 pr-3 tabular-nums">
 											{stats ? n(stats.chunks) : "–"}
 										</td>
-										<td className="py-2 pr-3 font-mono text-xs">
+										<td className="whitespace-nowrap py-2 pr-3 font-mono text-xs">
 											{stats?.sizes
 												? `${n(stats.sizes.p50)} / ${n(stats.sizes.p90)} / ${n(stats.sizes.max)}`
 												: "–"}
@@ -819,7 +827,7 @@ function CustomChunkFields({
 			</Select>
 			<Input
 				type="number"
-				className="h-8 w-28"
+				className="h-8 w-32"
 				aria-label={`Chunk size for ${type}`}
 				min={CUSTOM_CHUNK_LIMITS.minSize}
 				max={CUSTOM_CHUNK_LIMITS.maxSize}
@@ -832,7 +840,7 @@ function CustomChunkFields({
 			/>
 			<Input
 				type="number"
-				className="h-8 w-28"
+				className="h-8 w-32"
 				aria-label={`Chunk overlap for ${type}`}
 				min={0}
 				max={CUSTOM_CHUNK_LIMITS.maxOverlap}

@@ -11,6 +11,7 @@ import { leaveParlumeMeetingBot } from "../../lib/parlume-attendee";
 import { finalizeParlumeSession } from "../../lib/parlume-finalization";
 import { parlumeLog } from "../../lib/parlume-log";
 import { resolveParlumeAttendeeSettings } from "../../lib/parlume-provider-settings";
+import { PARLUME_SUGGESTION_AUDIENCES } from "../../lib/parlume-suggestion-audience";
 import {
 	getParlumeReadiness,
 	isParlumeReady,
@@ -71,6 +72,9 @@ const startSessionInput = projectInput
 		meetingUrl: z.string().url(),
 		toolsReadOnly: z.boolean().default(true),
 		suggestionsEnabled: z.boolean().default(true),
+		suggestionAudience: z
+			.enum(PARLUME_SUGGESTION_AUDIENCES)
+			.default("MEETING"),
 	})
 	.superRefine((input, context) => {
 		const agentKind = input.agentKind ?? TEMPLATE_INSTANCE_KIND;
@@ -207,7 +211,7 @@ export const listParlumeSessionsProcedure = tenantProtectedProcedure
 				},
 				select: {
 					...sessionSelect,
-					_count: { select: { turns: true } },
+					_count: { select: { turns: true, suggestions: true } },
 				},
 				orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 				take: SESSIONS_PAGE_SIZE + 1,
@@ -261,6 +265,7 @@ export const listParlumeSessionsProcedure = tenantProtectedProcedure
 				return {
 					...session,
 					requestCount: _count.turns,
+					suggestionCount: _count.suggestions,
 					notes: notes?.notes ?? null,
 					notesStatus: notes?.status ?? null,
 				};
@@ -294,6 +299,7 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 				agentInstanceSId: input.agentInstanceSId,
 				toolsReadOnly: input.toolsReadOnly,
 				suggestionsEnabled: input.suggestionsEnabled,
+				suggestionAudience: input.suggestionAudience,
 				trigger: "MANUAL",
 			},
 			context,

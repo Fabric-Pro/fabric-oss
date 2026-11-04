@@ -7,10 +7,16 @@ import {
 	GLOSSY_REASON_MAX_CHARS,
 	type GlossyDetectableKind,
 } from "@repo/agent-prompts/glossy";
-import { generateObject, NoObjectGeneratedError, zodSchema } from "@repo/ai";
+import {
+	generateText,
+	NoObjectGeneratedError,
+	Output,
+	zodSchema,
+} from "@repo/ai";
 // Imported from the SUBPATH (not @repo/ai root) so it stays unmocked in tests
 // that mock the root module, as in update-with-context-core.ts.
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	PROPOSAL_ONLY_VISUAL_KINDS,
 	type ProposalOnlyVisualKind,
@@ -25,7 +31,7 @@ import {
 /**
  * Visual-opportunity detection for a Glossy build (Fizzy #2589, R17, KTD9).
  *
- * One document-level `generateObject` over the sections to consider: every
+ * One document-level structured `generateText` over the sections to consider: every
  * section on a first build, only the changed ones on a rebuild, with the
  * remaining budget as `limit`. The model's answer is untrusted output, so it
  * is filtered here rather than by the schema — one bad item must not fail
@@ -207,18 +213,24 @@ export async function detectGlossyOpportunities(
 
 	let object: z.infer<typeof GlossyDetectionOutputSchema>;
 	try {
-		({ object } = await generateObject({
-			model,
-			schema: zodSchema(
-				proposal
-					? ProposalDetectionOutputSchema
-					: GlossyDetectionOutputSchema,
-			),
-			instructions,
-			prompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-		}));
+		({ output: object } = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({
+					schema: zodSchema(
+						proposal
+							? ProposalDetectionOutputSchema
+							: GlossyDetectionOutputSchema,
+					),
+				}),
+				instructions,
+				prompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+				...(input.abortSignal
+					? { abortSignal: input.abortSignal }
+					: {}),
+			}),
+		));
 	} catch (error) {
 		if (NoObjectGeneratedError.isInstance(error)) {
 			const reason =

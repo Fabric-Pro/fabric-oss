@@ -12,6 +12,11 @@ import {
 	toClientCredential,
 } from "../lib/context";
 import {
+	checkGitHubTokenForSave,
+	type GitHubTokenAccountRead,
+	isGitHubDotComOrigin,
+} from "../lib/github-token-check";
+import {
 	clientCredentialSchema,
 	credentialOriginSchema,
 	credentialProviderSchema,
@@ -56,6 +61,8 @@ export const createCredentialProcedure = tenantProtectedProcedure
 					.max(100)
 					.optional(),
 				expiresAt: z.coerce.date().optional(),
+				/** The person confirmed a fine-grained GitHub token's permissions. */
+				confirmFineGrainedPermissions: z.boolean().default(false),
 			})
 			.refine((v) => v.kind !== "BASIC" || Boolean(v.username), {
 				message: "A user name is required for this kind",
@@ -84,6 +91,21 @@ export const createCredentialProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// A GitHub token is checked and its account read before it is saved
+		// (lib/github-token-check.ts); unreachable GitHub saves it without one.
+		let account: GitHubTokenAccountRead | null = null;
+		if (
+			input.provider === "GITHUB" &&
+			input.kind === "PAT" &&
+			isGitHubDotComOrigin(origin)
+		) {
+			account = await checkGitHubTokenForSave({
+				token: input.secret,
+				confirmFineGrainedPermissions:
+					input.confirmFineGrainedPermissions,
+			});
+		}
+
 		const ownerUserId =
 			input.owner === "organization" ? null : context.user.id;
 		const credential = await db.$transaction(async (tx) => {
@@ -100,7 +122,9 @@ export const createCredentialProcedure = tenantProtectedProcedure
 					principal: "USER",
 					label: input.label,
 					origin,
-					scopes: input.scopes,
+					externalAccountId: account?.id ?? null,
+					externalAccountLogin: account?.login ?? null,
+					scopes: account ? account.scopes : input.scopes,
 					secret:
 						input.kind === "BASIC"
 							? { username: input.username, token: input.secret }

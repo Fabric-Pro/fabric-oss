@@ -32,7 +32,8 @@ vi.mock("../src/lib/create-story-from-proposal", () => ({
 	createStoryFromProposal: vi.fn(),
 }));
 vi.mock("@repo/ai", () => ({
-	generateObject: vi.fn(),
+	Output: { object: (spec: unknown) => spec },
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	logModelUsageAsync: vi.fn(),
 }));

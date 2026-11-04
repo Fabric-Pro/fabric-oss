@@ -20,6 +20,8 @@ const getSessionMock = vi.fn();
 const getAIModelWithMetadataMock = vi.fn();
 const hasOrganizationTieMock = vi.fn();
 const startWorkflowMock = vi.fn();
+const scopedInstanceMock = vi.fn();
+const projectAccessMock = vi.fn();
 
 vi.mock("@saas/auth/lib/server", () => ({
 	getSession: () => getSessionMock(),
@@ -63,7 +65,9 @@ vi.mock("@repo/database", () => ({
 	hasOrganizationTie: (...args: unknown[]) => hasOrganizationTieMock(...args),
 	getConversationWorkspaces: vi.fn(async () => []),
 	getConversationProject: vi.fn(async () => null),
-	getProjectAccessContext: vi.fn(async () => null),
+	getProjectAccessContext: (...args: unknown[]) => projectAccessMock(...args),
+	getAgentTemplateInstanceForExecution: (...args: unknown[]) =>
+		scopedInstanceMock(...args),
 	filterAccessibleWorkspaceIds: vi.fn(async () => ({
 		allowed: [],
 		dropped: [],
@@ -106,6 +110,12 @@ describe("POST fabric-ai/stream — the Advisor's company-context opt-in", () =>
 			session: { activeOrganizationId: ORGANIZATION_ID },
 		});
 		hasOrganizationTieMock.mockResolvedValue(true);
+		scopedInstanceMock.mockResolvedValue({
+			instance: { customInstructions: {} },
+		});
+		projectAccessMock.mockResolvedValue({
+			organizationId: ORGANIZATION_ID,
+		});
 		getAIModelWithMetadataMock.mockResolvedValue({ trackUsage: vi.fn() });
 		startWorkflowMock.mockImplementation(
 			async (_type: string, options: { workflowId: string }) => ({
@@ -151,5 +161,53 @@ describe("POST fabric-ai/stream — the Advisor's company-context opt-in", () =>
 		const { input } = started();
 		expect(input.instanceId).toBe("instance-1");
 		expect(input.companyContextAdvisor).toBe(true);
+	});
+	it("refuses an unavailable implementation before workflow admission", async () => {
+		scopedInstanceMock.mockResolvedValue({
+			instance: {
+				customInstructions: {
+					portableImplementation: { kind: "harness_finite" },
+				},
+			},
+		});
+		const response = await post({
+			message: "run",
+			organizationId: ORGANIZATION_ID,
+			instanceId: "example-agent",
+		});
+		expect(response.status).toBe(409);
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+	it("refuses revoked instance access before workflow admission", async () => {
+		scopedInstanceMock.mockResolvedValue(null);
+		const response = await post({
+			message: "run",
+			organizationId: ORGANIZATION_ID,
+			instanceId: "example-agent",
+		});
+		expect(response.status).toBe(404);
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+	it("propagates the persisted project even when the request omits it", async () => {
+		scopedInstanceMock.mockResolvedValue({
+			instance: { customInstructions: {} },
+			projectId: "example-project",
+		});
+		const response = await post({
+			message: "run",
+			organizationId: ORGANIZATION_ID,
+			instanceId: "example-agent",
+		});
+		expect(response.status).toBe(200);
+		expect(started().input.projectId).toBe("example-project");
+	});
+	it("rejects legacy raw approvals before admission", async () => {
+		const response = await post({
+			message: "approve",
+			organizationId: ORGANIZATION_ID,
+			approvedToolCall: { toolName: "fabric_execute_workflow", args: {} },
+		});
+		expect(response.status).toBe(409);
+		expect(startWorkflowMock).not.toHaveBeenCalled();
 	});
 });

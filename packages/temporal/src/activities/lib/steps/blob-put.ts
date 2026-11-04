@@ -46,10 +46,18 @@ export async function executeBlobPutStep(
 
 	try {
 		const resolvedPath = interpolateTemplate(pathname, params.inputs);
-		const url = new URL(
-			`/${resolvedPath.replace(/^\/+/, "")}`,
-			BLOB_API_URL,
-		);
+		const segments = resolvedPath.replace(/^\/+/, "").split("/");
+		if (
+			!resolvedPath.trim() ||
+			segments.some((segment) => segment === "." || segment === "..")
+		) {
+			return {
+				success: false,
+				error: "Blob path must not be empty or contain dot segments",
+			};
+		}
+		const url = new URL(BLOB_API_URL);
+		url.pathname = `/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`;
 		if (addRandomSuffix === "false") {
 			url.searchParams.set("addRandomSuffix", "false");
 		}
@@ -67,6 +75,7 @@ export async function executeBlobPutStep(
 
 		const response = await fetch(url.toString(), {
 			method: "PUT",
+			redirect: "error",
 			headers,
 			body: interpolateTemplate(body, params.inputs),
 		});

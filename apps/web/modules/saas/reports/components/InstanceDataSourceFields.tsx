@@ -7,11 +7,18 @@ import {
 import {
 	findMatchingMcpConfigs,
 	getMcpConfigDisplayName,
+	type McpConfigForDisplay,
 } from "@saas/reports/lib/mcp-utils";
+import {
+	groupReportConnections,
+	reportSourceCategory,
+} from "@saas/reports/lib/report-source-categories";
+import { isRequiredDataSource } from "@saas/reports/lib/report-template-definition";
 import {
 	DATA_SOURCE_PROVIDERS,
 	type DataSourceDefinition,
 } from "@saas/shared/components/DataSourceDefinitionBuilder";
+import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card, CardContent } from "@ui/components/card";
 import { Input } from "@ui/components/input";
@@ -32,12 +39,38 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { ContextFieldInput } from "./ContextFieldInput";
+import { ReportConnectionSelect } from "./ReportConnectionSelect";
 
 /**
  * The data-source part of creating a report — an MCP server per data source,
  * then the context the AI needs — shared by the create dialog and the create
  * page. State lives in `useInstanceDataSourceSetup`.
  */
+
+/** A data source's own servers, then its category's, then every other one. */
+function mcpConnectionGroups(
+	provider: string,
+	matchingConfigs: McpConfigForDisplay[],
+	otherConfigs: McpConfigForDisplay[],
+) {
+	const toOption = (config: McpConfigForDisplay) => ({
+		value: config.id,
+		label: getMcpConfigDisplayName(config),
+	});
+	return groupReportConnections(
+		matchingConfigs.map(toOption),
+		otherConfigs,
+		reportSourceCategory(
+			provider,
+			DATA_SOURCE_PROVIDERS,
+			matchingConfigs.map((config) => config.mcpServer?.category),
+		),
+		(config) => ({
+			option: toOption(config),
+			category: config.mcpServer?.category,
+		}),
+	);
+}
 
 export function InstanceDataSourcePicker({
 	setup,
@@ -46,14 +79,33 @@ export function InstanceDataSourcePicker({
 	setup: InstanceDataSourceSetup;
 	dataSources: DataSourceDefinition[];
 }) {
-	const { userMcpConfigs, bindings, selectMcpConfig } = setup;
+	const { userMcpConfigs, bindings, selectMcpConfig, clearMcpConfig } = setup;
 
 	return (
 		<div className="space-y-3">
 			{dataSources.map((ds) => {
+				if (ds.type === "fabric") {
+					return (
+						<Card key={ds.id}>
+							<CardContent className="pt-4 space-y-2">
+								<h3 className="font-medium">
+									Project knowledge
+								</h3>
+								<p className="text-sm text-muted-foreground">
+									Reads completed Fabric-generated documents
+									and shared text notes from the selected
+									project. Imported files and private notes
+									are excluded. No external connection is
+									needed.
+								</p>
+							</CardContent>
+						</Card>
+					);
+				}
 				const provider = DATA_SOURCE_PROVIDERS[ds.provider];
 				const binding = bindings[ds.id];
 				const isConfigured = Boolean(binding?.mcpConfigId);
+				const required = isRequiredDataSource(ds);
 				const matchingConfigs = findMatchingMcpConfigs(
 					userMcpConfigs,
 					ds.provider,
@@ -70,7 +122,9 @@ export function InstanceDataSourcePicker({
 							"border transition-colors",
 							isConfigured
 								? "border-green-200 bg-green-50/50 dark:border-green-800 dark:bg-green-950/20"
-								: "border-amber-200 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20",
+								: required
+									? "border-amber-200 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20"
+									: "border-border bg-muted/30",
 						)}
 					>
 						<CardContent className="p-4">
@@ -85,15 +139,34 @@ export function InstanceDataSourcePicker({
 										</span>
 										{isConfigured ? (
 											<CheckCircle2Icon className="h-4 w-4 text-success" />
-										) : (
+										) : required ? (
 											<AlertCircleIcon className="h-4 w-4 text-highlight" />
+										) : null}
+										{!required && (
+											<Badge
+												variant="outline"
+												className="text-xs"
+											>
+												Optional
+											</Badge>
 										)}
 									</div>
 									<p className="text-xs text-muted-foreground">
-										AI will use read-only tools to gather
-										data
+										{required || isConfigured
+											? "AI will use read-only tools to gather data"
+											: "Skipped: the report runs without this source unless you connect it"}
 									</p>
 								</div>
+								{!required && isConfigured && (
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										onClick={() => clearMcpConfig(ds.id)}
+									>
+										Skip this source
+									</Button>
+								)}
 							</div>
 
 							<div className="mt-3">
@@ -101,9 +174,27 @@ export function InstanceDataSourcePicker({
 									htmlFor={selectId}
 									className="text-xs text-muted-foreground"
 								>
-									MCP Server *
+									{required ? "MCP Server *" : "MCP Server"}
 								</Label>
-								{userMcpConfigs.length > 0 ? (
+								{setup.suggestDefaults ? (
+									<div className="mt-1">
+										<ReportConnectionSelect
+											id={selectId}
+											groups={mcpConnectionGroups(
+												ds.provider,
+												matchingConfigs,
+												otherConfigs,
+											)}
+											value={binding?.mcpConfigId || ""}
+											onValueChange={(value) =>
+												selectMcpConfig(ds.id, value)
+											}
+											placeholder="Select MCP server..."
+											connectHref={`/app/mcp-servers?connect=${ds.provider}`}
+											required={required}
+										/>
+									</div>
+								) : userMcpConfigs.length > 0 ? (
 									<Select
 										value={binding?.mcpConfigId || ""}
 										onValueChange={(value) =>

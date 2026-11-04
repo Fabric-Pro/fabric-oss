@@ -55,6 +55,7 @@ const suggestions = loadParlumeModule("./parlume-suggestions.ts", fetch) as {
 		input: { now: number; newSegments: number },
 	): boolean;
 	parseParlumeSuggestion(body: unknown): Suggestion | null;
+	parseParlumeSuggestionAudience(body: unknown): "MEETING" | "TEAM" | null;
 	isNearDuplicateParlumeSuggestion(
 		state: unknown,
 		suggestion: Pick<Suggestion, "text" | "quote">,
@@ -69,12 +70,14 @@ const suggestions = loadParlumeModule("./parlume-suggestions.ts", fetch) as {
 	spokenParlumeSuggestion(suggestion: Suggestion): string;
 };
 type Suggestion = {
+	kind: "answer" | "missed_question";
 	text: string;
 	speaker: string;
 	quote: string;
 	topic: string;
 };
 const roadmapExport: Suggestion = {
+	kind: "answer",
 	text: "F-12 already covers the roadmap export.",
 	speaker: "Sam",
 	quote: "we still need an export",
@@ -424,4 +427,51 @@ test("a suggestion is read leniently, names the remark it answers, and a near-du
 		suggestions.spokenParlumeSuggestion(roadmapExport),
 		"Sam, on Roadmap export: F-12 already covers the roadmap export.",
 	);
+});
+
+test("a suggestion's kind is an answer unless it says it is a missed question", () => {
+	const { kind: _kind, ...withoutKind } = roadmapExport;
+	const kindOf = (kind: unknown) =>
+		suggestions.parseParlumeSuggestion({
+			suggest: true,
+			...withoutKind,
+			...(kind === undefined ? {} : { kind }),
+		})?.kind;
+
+	assert.equal(kindOf(undefined), "answer", "a prompt that never asks");
+	assert.equal(kindOf("something_else"), "answer");
+	assert.equal(kindOf("missed_question"), "missed_question");
+});
+
+test("a missed question is posted and spoken as a question to ask", () => {
+	const missed: Suggestion = {
+		kind: "missed_question",
+		text: "Who signs off the data migration before go-live?",
+		speaker: "Alex",
+		quote: "we move the data in March",
+		topic: "Data migration",
+	};
+
+	assert.equal(
+		suggestions.formatParlumeSuggestion("P3", missed),
+		'Possibly missed question on Data migration, re Alex: "we move the data in March". Who signs off the data migration before go-live? (reply "go P3" and I\'ll ask it)',
+	);
+	assert.equal(
+		suggestions.spokenParlumeSuggestion(missed),
+		"A question we may not have covered on Data migration: Who signs off the data migration before go-live?",
+	);
+});
+
+test("only an explicit TEAM keeps a suggestion off the chat, and an unknown audience is refused", () => {
+	const audience = (value: unknown) =>
+		suggestions.parseParlumeSuggestionAudience({
+			suggest: true,
+			...(value === undefined ? {} : { audience: value }),
+		});
+
+	assert.equal(audience("TEAM"), "TEAM");
+	assert.equal(audience("MEETING"), "MEETING");
+	assert.equal(audience(undefined), "MEETING", "a Fabric without audiences");
+	assert.equal(audience("EVERYONE"), null);
+	assert.equal(suggestions.parseParlumeSuggestionAudience("yes"), null);
 });

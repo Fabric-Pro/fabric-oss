@@ -41,6 +41,8 @@ function listTypeDirs(): string[] {
 // against the new code and will age out of the fetch window (`--since-days`).
 // Remove an entry once its old-shape histories have aged out of staging.
 const INTENTIONAL_REWRITE_SKIP = new Set<string>([
+	// Removed unused story-task agent; no executions recorded on staging or prod.
+	"taskAgentWorkflow",
 	// PR #1832: security "Group into tickets" was rewritten from write-during-run
 	// into a propose → review → apply workflow — old activities such as
 	// checkAgentAccessActivity / processThemeActivity no longer exist, so the

@@ -14,9 +14,10 @@ import { z } from "zod";
 import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { workspaceBoundaryMiddleware } from "../lib/workspace-boundary";
 
 const WorkspaceGroupSchema = z.enum([
 	"administrators",
@@ -28,12 +29,18 @@ const WorkspaceGroupSchema = z.enum([
  * Get all members of a workspace
  */
 export const getWorkspaceMembersProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		// TENANT ISOLATION (SOC 2 CC6.1): verify the caller can access this
 		// workspace before returning its members (names + emails). Without this,
@@ -56,14 +63,20 @@ export const getWorkspaceMembersProcedure = tenantProtectedProcedure
  * Add a user to a workspace group
  */
 export const addWorkspaceMemberProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 			userId: z.string(),
 			group: WorkspaceGroupSchema,
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -88,13 +101,19 @@ export const addWorkspaceMemberProcedure = tenantProtectedProcedure
  * Remove a user from a workspace
  */
 export const removeWorkspaceMemberProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 			userId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -107,14 +126,20 @@ export const removeWorkspaceMemberProcedure = tenantProtectedProcedure
  * Change a member's group
  */
 export const changeWorkspaceMemberGroupProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 			userId: z.string(),
 			newGroup: WorkspaceGroupSchema,
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -132,13 +157,19 @@ export const changeWorkspaceMemberGroupProcedure = tenantProtectedProcedure
  * Add an agent to workspace
  */
 export const addWorkspaceAgentProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 			agentId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -158,13 +189,19 @@ export const addWorkspaceAgentProcedure = tenantProtectedProcedure
  * Remove an agent from workspace
  */
 export const removeWorkspaceAgentProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 			agentId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -177,14 +214,20 @@ export const removeWorkspaceAgentProcedure = tenantProtectedProcedure
  * Search users who can be added to a workspace
  */
 export const searchUsersForWorkspaceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 			query: z.string().min(1).max(INPUT_BOUNDS.name),
 			limit: z.number().min(1).max(20).optional(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		// TENANT ISOLATION (SOC 2 CC6.1): searching users to add requires manage
 		// access to the target workspace. Without this gate the endpoint was a

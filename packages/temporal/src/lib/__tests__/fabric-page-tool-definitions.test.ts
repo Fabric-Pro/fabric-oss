@@ -103,6 +103,7 @@ describe("NOT_FOR_PAGES", () => {
 		"fabric_page_comment_add",
 		"fabric_list_project_pm_assigned_items",
 		"fabric_get_project_pm_item_snapshots",
+		"fabric_generate_report",
 	])("keeps %s from pages", (name) => {
 		expect(NOT_FOR_PAGES.has(name)).toBe(true);
 	});

@@ -46,6 +46,7 @@ import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "@repo/utils/publishing-s
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "@repo/utils/publishing-suggestion-prompt";
 import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "@repo/utils/publishing-webinar-script-prompt";
 import { RECURRING_ERROR_BUG_PROMPT_AGENT_KEY } from "@repo/utils/recurring-error-bug-prompt";
+import { REPORT_SAMPLE_PROMPT_AGENT_KEY } from "@repo/utils/report-sample-prompt";
 import { describe, expect, it } from "vitest";
 
 const SEED = readFileSync(
@@ -102,6 +103,7 @@ const KEY_CONSTANTS: Record<string, string> = {
 	PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
 	PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
 	RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
+	REPORT_SAMPLE_PROMPT_AGENT_KEY,
 };
 
 function resolveKeyConstant(name: string): string {

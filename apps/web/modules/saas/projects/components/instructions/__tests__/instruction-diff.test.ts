@@ -7,7 +7,50 @@
  */
 import { diffLines } from "diff";
 import { describe, expect, it } from "vitest";
-import { countDiffLines, toDiffRows } from "../lib/instruction-diff";
+import {
+	countDiffLines,
+	isMarkdownPath,
+	splitFrontmatter,
+	toDiffRows,
+} from "../lib/instruction-diff";
+
+describe("isMarkdownPath", () => {
+	it("knows Markdown by its extension, in any case", () => {
+		expect(isMarkdownPath("CLAUDE.md")).toBe(true);
+		expect(isMarkdownPath("docs/Guide.MDX")).toBe(true);
+		expect(isMarkdownPath("notes.markdown")).toBe(true);
+		expect(isMarkdownPath(".claude/settings.json")).toBe(false);
+		expect(isMarkdownPath("md")).toBe(false);
+	});
+});
+
+describe("splitFrontmatter", () => {
+	it("separates leading frontmatter from the body", () => {
+		expect(splitFrontmatter("---\ntitle: x\n---\n# Body\n")).toEqual({
+			frontmatter: "---\ntitle: x\n---\n",
+			body: "# Body\n",
+		});
+	});
+
+	it("handles CRLF line endings", () => {
+		expect(splitFrontmatter("---\r\na: 1\r\n---\r\ntext")).toEqual({
+			frontmatter: "---\r\na: 1\r\n---\r\n",
+			body: "text",
+		});
+	});
+
+	it("leaves a rule that is not at the start, or a file without one, whole", () => {
+		const text = "# Title\n\n---\nnot: frontmatter\n---\n";
+		expect(splitFrontmatter(text)).toEqual({
+			frontmatter: null,
+			body: text,
+		});
+		expect(splitFrontmatter("plain")).toEqual({
+			frontmatter: null,
+			body: "plain",
+		});
+	});
+});
 
 /** The text the <pre> actually shows, as the rows are concatenated in it. */
 function rendered(parts: Parameters<typeof countDiffLines>[0]): string {

@@ -17,6 +17,7 @@ const { findUnique, txUpdateMany, txCreate, transaction } = vi.hoisted(() => {
 vi.mock("../prisma/client", () => ({
 	db: {
 		templateInstanceExecution: { findUnique },
+		member: { findUnique: vi.fn().mockResolvedValue({ role: "owner" }) },
 		$transaction: transaction,
 	},
 }));
@@ -26,10 +27,15 @@ import { emitReportExecutionNotification } from "../prisma/queries/report-execut
 function execution(overrides: Record<string, unknown> = {}) {
 	return {
 		userId: "user-1",
-		organizationId: null,
+		organizationId: "org-1",
 		instanceId: "inst-1",
 		notificationEmittedAt: null,
-		instance: { name: "Weekly Sales" },
+		instance: {
+			name: "Weekly Sales",
+			userId: "user-1",
+			organizationId: "org-1",
+			fabricConfig: null,
+		},
 		...overrides,
 	};
 }
@@ -60,7 +66,7 @@ describe("emitReportExecutionNotification — COMPLETED", () => {
 		expect(txCreate).toHaveBeenCalledTimes(1);
 		expect(txCreate.mock.calls[0][0].data).toMatchObject({
 			userId: "user-1",
-			organizationId: null,
+			organizationId: "org-1",
 			type: "REPORT_COMPLETED",
 			category: "SYSTEM",
 			title: 'Report "Weekly Sales" is ready',
@@ -192,4 +198,13 @@ describe("emitReportExecutionNotification — idempotency + durability", () => {
 			}),
 		).rejects.toThrow("db connection lost");
 	});
+});
+
+it("skips an obsolete personal report rather than emitting a personal route", async () => {
+	findUnique.mockResolvedValue(execution({ organizationId: null }));
+	await emitReportExecutionNotification({
+		executionId: "exec-1",
+		status: "COMPLETED",
+	});
+	expect(transaction).not.toHaveBeenCalled();
 });

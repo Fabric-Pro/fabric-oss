@@ -2,7 +2,8 @@
  * The member proposal branch procedures (Fizzy #2738 spec §10 "Procedures,
  * REST v1 and SDK"; Decisions 11, 14, 17, 18, 19; §4.3 "Try again"):
  * `myBranch`, `myBranchFile`, `closeBranch`, `startOverBranch`,
- * `retryBranch`, `stopTrackingBranch`, `retryConflict` and `proposeAgain`.
+ * `retryBranch`, `stopTrackingBranch`, `retryConflict`, `proposeAgain` and
+ * `restoreMyBranchFile`.
  *
  * The procedures, the services in `proposal-branch.ts` and the live
  * permission checks in `proposal-authorization.ts` run for real; the
@@ -50,6 +51,13 @@ const m = vi.hoisted(() => ({
 	withDeadline: vi.fn(),
 	downloadFile: vi.fn(),
 	getSignedUrl: vi.fn(),
+	restoreMyBranchFile: vi.fn(),
+}));
+
+// Restore published version is its own suite (`restore-branch-file.test.ts`);
+// here it is the seam the procedure hands the caller and tenant to.
+vi.mock("../restore-branch-file", () => ({
+	restoreMyBranchFile: (...a: unknown[]) => m.restoreMyBranchFile(...a),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => ({
@@ -185,6 +193,8 @@ const TRY_AGAIN =
 	"/projects/:projectId/instructions/proposals/:snapshotId/try-again";
 const PROPOSE_AGAIN =
 	"/projects/:projectId/instructions/proposals/:snapshotId/propose-again";
+const RESTORE_FILE =
+	"/projects/:projectId/instructions/proposal-branch/restore-file";
 
 const OWNER = "member_1";
 const REVIEWER = "reviewer_1";
@@ -316,8 +326,35 @@ describe("member proposal branch procedures", () => {
 				REFRESH,
 				TRY_AGAIN,
 				PROPOSE_AGAIN,
+				RESTORE_FILE,
 			].sort(),
 		);
+	});
+
+	describe("restoreMyBranchFile", () => {
+		it("restores for the caller in the hosting organization, never a named member", async () => {
+			m.restoreMyBranchFile.mockResolvedValue({
+				kind: "native",
+				operationId: "snap_restore",
+				nativeBase: { generation: 2, commitSha: "a".repeat(40) },
+				operation: "delete",
+				status: "READY",
+			});
+			await expect(
+				run(RESTORE_FILE, OWNER, {
+					nativeBase: { generation: 2, commitSha: "a".repeat(40) },
+					path: "rules/branch-only.md",
+				}),
+			).resolves.toMatchObject({ operation: "delete" });
+			expect(m.restoreMyBranchFile).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectId: "project_1",
+					organizationId: "org_1",
+					userId: OWNER,
+					path: "rules/branch-only.md",
+				}),
+			);
+		});
 	});
 
 	describe("refreshBranch", () => {

@@ -698,16 +698,19 @@ export async function denyAuthorityGrant(
 }
 
 /**
- * Consume a one-shot REQUEST grant (marks it as used).
+ * Consume a one-shot REQUEST grant atomically (marks it as used only if still APPROVED).
  */
-export async function consumeRequestGrant(grantId: string) {
-	return db.authorityGrant.update({
-		where: { id: grantId },
+export async function consumeRequestGrant(
+	grantId: string,
+): Promise<{ consumed: boolean; count: number }> {
+	const result = await db.authorityGrant.updateMany({
+		where: { id: grantId, status: "APPROVED" },
 		data: {
 			status: "CONSUMED",
 			consumedAt: new Date(),
 		},
 	});
+	return { consumed: result.count === 1, count: result.count };
 }
 
 // ─── Authority Checking (Core Enforcement) ──────────────────────────────────
@@ -1165,6 +1168,12 @@ export interface EnsureSensitiveAuthorityInput {
 	 * call, and no content-creation exemption skips the question.
 	 */
 	requestFingerprint?: string;
+	/**
+	 * Optional fingerprint of the current call used to match an existing one-shot
+	 * REQUEST grant (if the user chose one-shot approval) without forcing the
+	 * call to reject BROAD grants or raise a REQUEST-only pending session.
+	 */
+	candidateRequestFingerprint?: string;
 	ttlMinutes?: number;
 }
 
@@ -1216,23 +1225,44 @@ export interface EnsureSensitiveAuthorityResult {
  * They are classified as WRITE by name pattern ("create_*") but are functionally
  * idempotent rendering operations.
  */
-const CONTENT_CREATION_TOOLS = new Set([
+const SAFE_PROVIDER_CONTENT_CREATION_TOOLS: Record<
+	string,
+	ReadonlySet<string>
+> = {
 	// Excalidraw
-	"create_view",
+	excalidraw: new Set(["create_view"]),
 	// Draw.io MCP App / tool server
-	"create_diagram",
-	"open_drawio_xml",
-	"open_drawio_csv",
-	"open_drawio_mermaid",
+	drawio: new Set([
+		"create_diagram",
+		"open_drawio_xml",
+		"open_drawio_csv",
+		"open_drawio_mermaid",
+	]),
 	// First-class Frame tools (create/read/update/share are all content operations)
-	"fabric_create_frame",
-	"fabric_create_slideshow",
-	"fabric_update_frame",
-	"fabric_edit_frame_block",
-	"fabric_get_frame",
-	"fabric_list_frames",
-	"fabric_share_frame",
-]);
+	fabric: new Set([
+		"fabric_create_frame",
+		"fabric_create_slideshow",
+		"fabric_update_frame",
+		"fabric_edit_frame_block",
+		"fabric_get_frame",
+		"fabric_list_frames",
+		"fabric_share_frame",
+	]),
+};
+
+function isSafeContentCreationTool(
+	providerKey: string,
+	toolName: string,
+): boolean {
+	const normalizedProvider = providerKey.startsWith("custom:")
+		? providerKey
+		: providerKey.toLowerCase();
+	return (
+		SAFE_PROVIDER_CONTENT_CREATION_TOOLS[normalizedProvider]?.has(
+			toolName,
+		) === true
+	);
+}
 
 export async function ensureSensitiveOperationAuthority(
 	input: EnsureSensitiveAuthorityInput,
@@ -1250,6 +1280,7 @@ export async function ensureSensitiveOperationAuthority(
 		toolName,
 		toolScope,
 		requestFingerprint,
+		candidateRequestFingerprint,
 		ttlMinutes = 30,
 	} = input;
 
@@ -1258,7 +1289,7 @@ export async function ensureSensitiveOperationAuthority(
 	if (
 		accessLevel === "READ" ||
 		(toolName &&
-			CONTENT_CREATION_TOOLS.has(toolName) &&
+			isSafeContentCreationTool(providerKey, toolName) &&
 			!requestFingerprint)
 	) {
 		return {
@@ -1273,7 +1304,7 @@ export async function ensureSensitiveOperationAuthority(
 		providerKey,
 		accessLevel,
 		toolName,
-		requestFingerprint,
+		requestFingerprint: requestFingerprint ?? candidateRequestFingerprint,
 		requireRequestGrant: requestFingerprint !== undefined,
 		boundRunType: runType,
 		boundRunId: runId,
@@ -1281,7 +1312,14 @@ export async function ensureSensitiveOperationAuthority(
 
 	if (authority.authorized) {
 		if (authority.grant?.kind === "REQUEST") {
-			await consumeRequestGrant(authority.grant.id);
+			const consumed = await consumeRequestGrant(authority.grant.id);
+			if (consumed?.consumed !== true) {
+				return {
+					authorized: false,
+					reason: "One-shot authority grant was already consumed by a concurrent request.",
+					action: "request_authority",
+				};
+			}
 		}
 		return {
 			authorized: true,

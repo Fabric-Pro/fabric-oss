@@ -9,6 +9,7 @@
  * `agent-builder-sidekick` engine.
  */
 
+import { ORPCError } from "@orpc/client";
 import {
 	createUIMessageStreamResponse,
 	toUIMessageStream,
@@ -19,6 +20,10 @@ import {
 	chatGptPlanReconnectRefusal,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import {
+	authorizeInputOrganization,
+	Permissions,
+} from "@repo/api/orpc/procedures";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import {
 	sidekickModelMetadata,
@@ -38,6 +43,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const sidekickStreamSchema = sidekickRunPropsSchema.extend({
+	organizationId: z.string().min(1).max(200).optional(),
 	conversationId: z.string().max(200).optional(),
 	messages: z.array(z.any()),
 });
@@ -103,9 +109,13 @@ export async function POST(request: NextRequest) {
 		const {
 			agentId,
 			entityType,
+			organizationId: requestedOrganizationId,
 			formSnapshot,
 			messages: clientMessages,
 		} = parseResult.data;
+
+		const sessionOrganizationId =
+			session.session?.activeOrganizationId ?? undefined;
 
 		// The tenant is the entity's own organization, not the session's
 		// active one (`authorizeSidekickEntity`).
@@ -114,13 +124,58 @@ export async function POST(request: NextRequest) {
 			agentId,
 			entityType,
 			sessionOrganizationId:
-				session.session?.activeOrganizationId ?? undefined,
+				requestedOrganizationId ?? sessionOrganizationId,
 		});
 		if (!access.ok) {
 			return new Response(JSON.stringify({ error: access.error }), {
 				status: access.status,
 				headers: { "Content-Type": "application/json" },
 			});
+		}
+
+		// Saved builders must agree with any explicitly selected organization,
+		// never silently billing or discovering connections in a different tenant.
+		if (
+			requestedOrganizationId !== undefined &&
+			requestedOrganizationId !== access.organizationId
+		) {
+			return Response.json(
+				{ error: "Agent not found or access denied" },
+				{ status: 404 },
+			);
+		}
+
+		// Instance and unsaved template builders require AGENT_TEMPLATE_MANAGE in
+		// the target organization before spending model tokens or probing tools.
+		if (access.entityType !== "registered") {
+			if (!access.organizationId) {
+				return Response.json(
+					{ error: "Agent not found or access denied" },
+					{ status: 404 },
+				);
+			}
+			try {
+				await authorizeInputOrganization(
+					Permissions.AGENT_TEMPLATE_MANAGE,
+					access.organizationId,
+					{
+						user: { id: userId },
+						session: {
+							activeOrganizationId: sessionOrganizationId ?? null,
+						},
+					},
+					{ requireOrganization: true },
+				);
+			} catch (error) {
+				if (
+					!(error instanceof ORPCError) ||
+					(error.code !== "FORBIDDEN" &&
+						error.code !== "UNAUTHORIZED")
+				) {
+					throw error;
+				}
+				return Response.json({ error: "Forbidden" }, { status: 403 });
+			}
 		}
 
 		// The full message history from the client (includes tool calls and

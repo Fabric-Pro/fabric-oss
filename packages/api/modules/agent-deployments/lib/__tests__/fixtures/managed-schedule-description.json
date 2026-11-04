@@ -1,0 +1,103 @@
+{
+	"spec": {
+		"calendars": [
+			{
+				"second": [
+					{
+						"start": 0,
+						"end": 0,
+						"step": 1
+					}
+				],
+				"minute": [
+					{
+						"start": 15,
+						"end": 15,
+						"step": 1
+					}
+				],
+				"hour": [
+					{
+						"start": 20,
+						"end": 20,
+						"step": 1
+					}
+				],
+				"dayOfMonth": [
+					{
+						"start": 3,
+						"end": 3,
+						"step": 1
+					}
+				],
+				"month": [
+					{
+						"start": "NOVEMBER",
+						"end": "NOVEMBER",
+						"step": 1
+					}
+				],
+				"year": [],
+				"dayOfWeek": [
+					{
+						"start": "SUNDAY",
+						"end": "SUNDAY",
+						"step": 1
+					},
+					{
+						"start": "MONDAY",
+						"end": "MONDAY",
+						"step": 1
+					},
+					{
+						"start": "TUESDAY",
+						"end": "TUESDAY",
+						"step": 1
+					},
+					{
+						"start": "WEDNESDAY",
+						"end": "WEDNESDAY",
+						"step": 1
+					},
+					{
+						"start": "THURSDAY",
+						"end": "THURSDAY",
+						"step": 1
+					},
+					{
+						"start": "FRIDAY",
+						"end": "FRIDAY",
+						"step": 1
+					},
+					{
+						"start": "SATURDAY",
+						"end": "SATURDAY",
+						"step": 1
+					}
+				],
+				"comment": ""
+			}
+		],
+		"intervals": [],
+		"skip": [],
+		"timezone": "UTC"
+	},
+	"action": {
+		"type": "startWorkflow",
+		"workflowType": "managedAgentRunScheduleWorkflow",
+		"taskQueue": "agents",
+		"args": [
+			{
+				"managedRunSchedule": 1,
+				"triggerType": "SCHEDULE",
+				"triggerId": "fabric-run-schedule-example-deployment",
+				"deploymentId": "example-deployment",
+				"userId": "example-user",
+				"organizationId": "example-org"
+			}
+		]
+	},
+	"state": {
+		"paused": false
+	}
+}

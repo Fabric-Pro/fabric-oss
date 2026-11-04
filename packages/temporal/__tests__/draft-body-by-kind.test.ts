@@ -22,7 +22,7 @@ const { mocks } = vi.hoisted(() => ({
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		projectFindUnique: vi.fn(),
@@ -32,8 +32,9 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	Output: { object: (spec: unknown) => spec },
 	AIProviderNotConfiguredError: class extends Error {},
-	generateObject: mocks.generateObject,
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -100,7 +101,7 @@ describe("draftBodyByKind", () => {
 		});
 		expect(res.aiDrafted).toBe(false);
 		expect(res.description).toBe("raw desc");
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("routes FEATURE to the Clean Spec feature binding and returns description+AC", async () => {
@@ -109,8 +110,8 @@ describe("draftBodyByKind", () => {
 			format: "HANDLEBARS",
 			key: "feature_clean_spec_generator",
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				description: "structured feature",
 				acceptanceCriteria: "GWT",
 			},
@@ -139,8 +140,8 @@ describe("draftBodyByKind", () => {
 			format: "HANDLEBARS",
 			key: "bug_clean_spec_generator",
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				title: "",
 				needsMoreInfo: true,
 				markdown: "## Steps to Reproduce\n1. x",
@@ -174,8 +175,8 @@ describe("draftBodyByKind", () => {
 				format: "HANDLEBARS",
 				key: "feature_placeholder",
 			}); // legacy fallback
-		mocks.generateObject.mockResolvedValue({
-			object: { description: "legacy-drafted feature" },
+		mocks.generateText.mockResolvedValue({
+			output: { description: "legacy-drafted feature" },
 			usage: {},
 		});
 		const res = await draftBodyByKind({

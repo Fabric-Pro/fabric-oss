@@ -24,6 +24,7 @@ export const API_KEY_SCOPES = [
 	"browser:write", // Run browser automation tasks, templates and web content extraction
 	// Agents
 	"agents:read", // Read agent metadata, list available agents
+	"agents:schedule", // Explicit permission to manage recurring agent execution
 	"agents:execute", // Trigger agent executions via API
 	"agents:stream", // Access real-time execution streams
 	// CLI / SDK scopes

@@ -140,13 +140,14 @@ export async function authorizeUrl(
 		withChallenge?: boolean;
 		/** A challenge sent as it is, instead of the one the verifier makes. */
 		codeChallenge?: string;
+		scopes?: readonly string[];
 	} = {},
 ): Promise<string> {
 	const query = new URLSearchParams({
 		response_type: "code",
 		client_id: clientId,
 		redirect_uri: REDIRECT_URI,
-		scope: OAUTH_SCOPES.join(" "),
+		scope: (options.scopes ?? OAUTH_SCOPES).join(" "),
 		state: "state-example",
 	});
 	if (options.withChallenge !== false) {

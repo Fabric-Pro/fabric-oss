@@ -291,6 +291,11 @@ Externe Tools verbinden:
 
 Wenn Ihr Projekt mit einem GitHub-Repository verknüpft und mit einer **Fabric Agents (`fabric-agent-server`)**-Laufzeitumgebung verbunden ist, können Sie Implementierungsaufgaben direkt aus dem Projekt delegieren:
 
+Unter **Coding Agents** öffnet **Fabric Desktop starten** Installations- und Startoptionen. Desktop-Links setzen eine für `fabricagents://` registrierte App voraus. Meldet der Browser keine passende App, Fabric Desktop installieren oder aktualisieren. **KI-Verbindungen** öffnet die Portal-Einstellungen für Workflows und Chat; Desktop- und Remote-Coding-Agenten verwenden die Konten auf ihrem eigenen Host.
+
+**An Remote-Server delegieren** lädt die registrierten persönlichen und Team-Server. Die Verbindung nutzt das Ausführungsdienst-Geheimnis `BACKGROUND_AGENTS_INTERNAL_SECRET`; das Web-UI-Token `FABRIC_SERVER_TOKEN` ist davon getrennt. Nach der Auswahl ein veröffentlichtes Roadmap-Feature über **Arbeit starten** zuweisen. Das Öffnen der Remote-Weboberfläche allein startet keine Ausführung und bestätigt keine Abonnementguthaben.
+
+
 Die native Bridge ist optional. Vor der Aktivierung müssen alle aktiven oder pausierten Läufe beendet, ein passender dedizierter Server eingerichtet und `FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED=true` sowohl in der API als auch im Temporal-Worker gesetzt werden. Ohne diese Aktivierung bleibt das bisherige Ausführungsprotokoll erhalten; native Backend-, Modell- und Maschinenoptionen sind dann nicht verfügbar.
 
 

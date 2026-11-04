@@ -10,11 +10,26 @@
  */
 import { runWithOrganizationLogContext } from "@repo/utils/organization-log-context";
 
+const wrappedActivities = new WeakMap<object, object>();
+
+/** Follow declared activity wrappers to their original implementation. */
+export function unwrapActivity(fn: object): object {
+	let current = fn;
+	let wrapped = wrappedActivities.get(current);
+	while (wrapped) {
+		current = wrapped;
+		wrapped = wrappedActivities.get(current);
+	}
+	return current;
+}
+
 type WithOrganizationId = { organizationId?: string | null };
 
 export function withOrganizationLogContext<Args, R>(
 	fn: (args: Args) => Promise<R>,
 ): (args: Args & WithOrganizationId) => Promise<R> {
-	return (args) =>
+	const wrapped = (args: Args & WithOrganizationId) =>
 		runWithOrganizationLogContext(args.organizationId, () => fn(args));
+	wrappedActivities.set(wrapped, fn);
+	return wrapped;
 }

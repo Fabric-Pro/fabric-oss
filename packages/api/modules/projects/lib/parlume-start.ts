@@ -27,6 +27,7 @@ import {
 } from "./parlume-attendee";
 import { parlumeLog } from "./parlume-log";
 import { resolveParlumeAttendeeSettings } from "./parlume-provider-settings";
+import type { ParlumeSuggestionAudience } from "./parlume-suggestion-audience";
 import {
 	PARLUME_VOICE_REQUIRED,
 	resolveParlumeVoiceEngine,
@@ -198,6 +199,7 @@ export const sessionSelect = {
 	wakePhrase: true,
 	toolsReadOnly: true,
 	suggestionsEnabled: true,
+	suggestionAudience: true,
 	endReason: true,
 	lastError: true,
 	channelChatStatus: true,
@@ -312,6 +314,8 @@ export interface StartParlumeMeetingSessionInput {
 	agentInstanceSId?: string;
 	toolsReadOnly: boolean;
 	suggestionsEnabled: boolean;
+	/** Where suggestions and the recap go; MEETING means every participant sees them. */
+	suggestionAudience: ParlumeSuggestionAudience;
 	trigger: "MANUAL" | "AUTO";
 	/**
 	 * The linked series and occurrence an automatic join is for. A manual
@@ -419,6 +423,7 @@ export async function startParlumeMeetingSession(
 			streamTokenDigest: digestStreamToken(streamToken),
 			toolsReadOnly: input.toolsReadOnly,
 			suggestionsEnabled: input.suggestionsEnabled,
+			suggestionAudience: input.suggestionAudience,
 			hardStopAt,
 			trigger: input.trigger,
 			linkedMeetingId,
@@ -510,6 +515,7 @@ export async function startParlumeMeetingSession(
 					: {}),
 				toolsReadOnly: input.toolsReadOnly,
 				suggestionsEnabled: input.suggestionsEnabled,
+				suggestionAudience: input.suggestionAudience,
 				hardStopAt: hardStopAt.toISOString(),
 				...(input.trigger === "AUTO"
 					? {

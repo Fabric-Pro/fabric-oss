@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
 	canReadProjectInstructions,
 	claimInstructionSnapshotValidation,
+	createInstructionPublishedNotifications,
 	failInstructionSnapshot,
 	getInstructionSnapshotById,
 	getPublishedInstructionSnapshot,
@@ -2280,6 +2281,19 @@ export async function publishInstructionSnapshotActivity(
 					},
 				},
 	});
+	if (r.published && r.changed) {
+		// After the commit, only for the call that moved the pointer, and at
+		// most once per snapshot (the writer claims `publishNotifiedAt`). In-app
+		// only from here: external delivery is started by the API's writers,
+		// which this worker cannot import. Never throws.
+		await createInstructionPublishedNotifications({
+			snapshotId: ref.snapshotId,
+			projectId: ref.projectId,
+			organizationId: ref.organizationId,
+			actorUserId: unscanned ? snapshot.userId : ref.userId,
+			via: "automatic",
+		});
+	}
 	if (unscanned) {
 		return r.published
 			? { published: true }

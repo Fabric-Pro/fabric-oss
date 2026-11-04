@@ -7,6 +7,7 @@
  */
 
 import {
+	getMcpConfigById,
 	getWorkflowIntegrationById,
 	resolveReportMcpConfig,
 } from "@repo/database";
@@ -86,6 +87,25 @@ export function serverKeysForBinding(
 }
 
 /**
+ * Whether a config connects to the data source's own server. Any connected
+ * tool may fill a data source, but only the report's owner chooses one of
+ * another tool: an editor may not repoint the owner's connections.
+ */
+async function bindsToOwnServer(
+	configId: string,
+	serverKeys: string[],
+	userId: string,
+	organizationId?: string,
+): Promise<boolean> {
+	const config = await getMcpConfigById(configId, { userId, organizationId });
+	const serverKey = config?.mcpServer.key.trim().toLowerCase();
+	return (
+		!!serverKey &&
+		serverKeys.some((key) => key.trim().toLowerCase() === serverKey)
+	);
+}
+
+/**
  * Validate MCP bindings — a binding is valid when its stored config id still
  * resolves for the user.
  *
@@ -99,8 +119,9 @@ export function serverKeysForBinding(
 async function validateMcpBindings(
 	mcpBindings: Record<string, string> | undefined,
 	userId: string,
-	organizationId?: string,
-	dataSources?: ReportDataSourceMeta[],
+	organizationId: string | undefined,
+	dataSources: ReportDataSourceMeta[] | undefined,
+	sameServerOnly: boolean,
 ): Promise<ValidationResult> {
 	const result: ValidationResult = {
 		valid: true,
@@ -146,6 +167,23 @@ async function validateMcpBindings(
 					configId,
 					valid: false,
 					error: `The connection for "${bindingKey}" is disabled. Enable it or re-select a connection.`,
+				};
+			}
+
+			if (
+				sameServerOnly &&
+				!(await bindsToOwnServer(
+					resolved.configId,
+					serverKeysForBinding(bindingKey, dataSources),
+					userId,
+					organizationId,
+				))
+			) {
+				return {
+					bindingKey,
+					configId,
+					valid: false,
+					error: `Only the report's owner can connect a different tool to "${bindingKey}".`,
 				};
 			}
 
@@ -236,14 +274,34 @@ async function validateIntegrationBindings(
 	return result;
 }
 
+function changedBindings(
+	next: Record<string, string> | undefined,
+	previous: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+	if (!next || !previous) {
+		return next;
+	}
+	return Object.fromEntries(
+		Object.entries(next).filter(([key, id]) => previous[key] !== id),
+	);
+}
+
 /**
- * Validate all report connections at once
+ * Validate all report connections at once.
+ *
+ * `userId` is the report's owner: reports run on their owner's connections, so
+ * a binding is valid only when it resolves for the owner. Pass the stored
+ * `previousConnections` on update so bindings that did not change are not
+ * re-checked. `sameServerOnly` is for a caller who is not the owner: a
+ * changed MCP binding must then connect to the data source's own server.
  */
 export async function validateReportConnections(
 	connections: unknown,
 	userId: string,
 	organizationId?: string,
 	dataSources?: ReportDataSourceMeta[],
+	previousConnections?: unknown,
+	{ sameServerOnly = false }: { sameServerOnly?: boolean } = {},
 ): Promise<ValidationResult> {
 	const result: ValidationResult = {
 		valid: true,
@@ -269,17 +327,27 @@ export async function validateReportConnections(
 	}
 
 	const parsedConnections = parseResult.data;
+	const previous = reportConnectionsSchema.safeParse(
+		previousConnections ?? {},
+	).data;
 
 	// Validate MCP bindings and integration bindings in parallel
 	const [mcpResult, integrationResult] = await Promise.all([
 		validateMcpBindings(
-			parsedConnections.mcpBindings,
+			changedBindings(
+				parsedConnections.mcpBindings,
+				previous?.mcpBindings,
+			),
 			userId,
 			organizationId,
 			dataSources,
+			sameServerOnly,
 		),
 		validateIntegrationBindings(
-			parsedConnections.integrationBindings,
+			changedBindings(
+				parsedConnections.integrationBindings,
+				previous?.integrationBindings,
+			),
 			userId,
 			organizationId,
 		),

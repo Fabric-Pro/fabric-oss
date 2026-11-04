@@ -45,6 +45,7 @@ import {
 } from "@repo/utils/oauth-project-resource";
 import { APIError } from "better-auth/api";
 import { parse as parseCookies } from "cookie";
+import { authorizeOAuthAgentScopes } from "./oauth-agent-scopes";
 import { PROJECT_ACCESS_DENIED_DESCRIPTION } from "./oauth-project-binding";
 import {
 	OAUTH_DEFAULT_SCOPES,
@@ -214,10 +215,28 @@ async function resolveConsentReferenceId(
 ): Promise<string> {
 	const binding = await liveProjectBinding();
 	if (!binding) {
-		return resolveConsentOrganizationId(userId, activeOrganizationId);
+		const organizationId = await resolveConsentOrganizationId(
+			userId,
+			activeOrganizationId,
+		);
+		const query = (await getOAuthProviderState())?.query;
+		await authorizeOAuthAgentScopes(
+			userId,
+			organizationId,
+			new URLSearchParams(query ?? "").get("scope")?.split(/\s+/) ?? [],
+			false,
+		);
+		return organizationId;
 	}
 
 	await refuseUntilPasswordChanged(userId);
+	const query = (await getOAuthProviderState())?.query;
+	await authorizeOAuthAgentScopes(
+		userId,
+		"",
+		new URLSearchParams(query ?? "").get("scope")?.split(/\s+/) ?? [],
+		true,
+	);
 	const target = await resolveOAuthProjectGrantTarget(
 		userId,
 		binding.projectId,

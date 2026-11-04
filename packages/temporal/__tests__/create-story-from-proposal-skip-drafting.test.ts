@@ -23,7 +23,7 @@ const { mocks } = vi.hoisted(() => ({
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		projectFindUnique: vi.fn(),
@@ -32,13 +32,14 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	Output: { object: (spec: unknown) => spec },
 	AIProviderNotConfiguredError: class extends Error {
 		constructor() {
 			super("AI provider not configured");
 			this.name = "AIProviderNotConfiguredError";
 		}
 	},
-	generateObject: mocks.generateObject,
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -123,7 +124,7 @@ describe("createStoryFromProposal — skipDrafting", () => {
 		// Drafting infrastructure must NOT be touched.
 		expect(mocks.getBoundPromptForAgent).not.toHaveBeenCalled();
 		expect(mocks.getPromptById).not.toHaveBeenCalled();
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 		expect(mocks.retrieveProjectContexts).not.toHaveBeenCalled();
 		expect(mocks.fetchLiveIntegrationContext).not.toHaveBeenCalled();
 		expect(mocks.createFeatureVersion).not.toHaveBeenCalled();
@@ -173,8 +174,8 @@ describe("createStoryFromProposal — skipDrafting", () => {
 			metadata: { provider: "test" },
 			trackUsage: vi.fn(),
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				title: undefined,
 				needsMoreInfo: false,
 				markdown: "Bug card markdown.",
@@ -197,7 +198,7 @@ describe("createStoryFromProposal — skipDrafting", () => {
 		// Drafting MUST run for bugs even when skipDrafting=true, otherwise
 		// needsMoreInfo defaults to false silently.
 		expect(mocks.getBoundPromptForAgent).toHaveBeenCalled();
-		expect(mocks.generateObject).toHaveBeenCalled();
+		expect(mocks.generateText).toHaveBeenCalled();
 		expect(mocks.createFeatureVersion).toHaveBeenCalled();
 		expect(result.aiDrafted).toBe(true);
 	});
@@ -227,7 +228,7 @@ describe("createStoryFromProposal — skipDrafting", () => {
 		// No classifier, no prompt, no drafting LLM call, no version.
 		expect(mocks.classifyWorkItem).not.toHaveBeenCalled();
 		expect(mocks.getBoundPromptForAgent).not.toHaveBeenCalled();
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 		expect(mocks.createFeatureVersion).not.toHaveBeenCalled();
 
 		// Body persisted verbatim + triage flag carried (not silently dropped).
@@ -273,8 +274,8 @@ describe("createStoryFromProposal — skipDrafting", () => {
 			metadata: { provider: "test" },
 			trackUsage: vi.fn(),
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: { needsMoreInfo: false, markdown: "Bug card." },
+		mocks.generateText.mockResolvedValue({
+			output: { needsMoreInfo: false, markdown: "Bug card." },
 			usage: { totalTokens: 100 },
 		});
 		mocks.createFeatureVersion.mockResolvedValue({ id: "ver-1" });
@@ -290,7 +291,7 @@ describe("createStoryFromProposal — skipDrafting", () => {
 			skipDrafting: true, // ← but no bodyAlreadyDrafted
 		});
 
-		expect(mocks.generateObject).toHaveBeenCalled();
+		expect(mocks.generateText).toHaveBeenCalled();
 		expect(result.aiDrafted).toBe(true);
 	});
 
@@ -324,8 +325,8 @@ describe("createStoryFromProposal — skipDrafting", () => {
 			metadata: { provider: "test" },
 			trackUsage: vi.fn(),
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: { description: "Re-drafted feature description." },
+		mocks.generateText.mockResolvedValue({
+			output: { description: "Re-drafted feature description." },
 			usage: { totalTokens: 80 },
 		});
 		mocks.createFeatureVersion.mockResolvedValue({ id: "ver-1" });
@@ -338,7 +339,7 @@ describe("createStoryFromProposal — skipDrafting", () => {
 		// Default behavior preserved: drafting runs for features when a
 		// prompt is bound (matches Slack/Teams approval, manual UI, tool).
 		expect(mocks.getBoundPromptForAgent).toHaveBeenCalled();
-		expect(mocks.generateObject).toHaveBeenCalled();
+		expect(mocks.generateText).toHaveBeenCalled();
 		expect(result.aiDrafted).toBe(true);
 	});
 });

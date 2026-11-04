@@ -30,6 +30,12 @@ import {
 	CREDENTIAL_PROVIDER_LABELS,
 	type CredentialProviderKey,
 } from "../lib/labels";
+import {
+	GitHubTokenChecklist,
+	type GitHubTokenRefusal,
+	needsGitHubTokenConfirmation,
+	readGitHubTokenRefusal,
+} from "./GitHubTokenChecklist";
 
 type ManualKind = "PAT" | "API_KEY" | "BASIC";
 
@@ -80,8 +86,19 @@ export function AddCredentialDialog({
 	const [secret, setSecret] = useState("");
 	const [owner, setOwner] = useState<"me" | "organization">("me");
 	const [share, setShare] = useState(false);
+	// GitHub's answer about the pasted token, when the server refused it.
+	const [tokenCheck, setTokenCheck] = useState<GitHubTokenRefusal | null>(
+		null,
+	);
+	const [permissionsConfirmed, setPermissionsConfirmed] = useState(false);
+
+	const clearTokenCheck = () => {
+		setTokenCheck(null);
+		setPermissionsConfirmed(false);
+	};
 
 	const reset = () => {
+		clearTokenCheck();
 		setLabel("");
 		setOrigin("");
 		setUsername("");
@@ -102,6 +119,7 @@ export function AddCredentialDialog({
 				origin: origin.trim() || undefined,
 				username: kind === "BASIC" ? username.trim() : undefined,
 				secret,
+				confirmFineGrainedPermissions: permissionsConfirmed,
 			}),
 		onSuccess: (result) => {
 			toast.success("Credential saved");
@@ -112,10 +130,21 @@ export function AddCredentialDialog({
 				label: result.credential.label,
 			});
 		},
-		onError: (error) =>
+		onError: (error) => {
+			// A GitHub token short of what Fabric needs keeps the form open
+			// with the checklist instead of a toast.
+			const refusal = readGitHubTokenRefusal(error);
+			if (refusal) {
+				setTokenCheck(refusal);
+				if (refusal.reason !== "GITHUB_TOKEN_CONFIRM_PERMISSIONS") {
+					setPermissionsConfirmed(false);
+				}
+				return;
+			}
 			toast.error("Could not save the credential", {
 				description: error instanceof Error ? error.message : undefined,
-			}),
+			});
+		},
 	});
 
 	const needsOrigin = ASK_ORIGIN.has(provider);
@@ -123,7 +152,8 @@ export function AddCredentialDialog({
 		label.trim().length > 0 &&
 		secret.trim().length > 0 &&
 		(kind !== "BASIC" || username.trim().length > 0) &&
-		(provider !== "CUSTOM" || origin.trim().length > 0);
+		(provider !== "CUSTOM" || origin.trim().length > 0) &&
+		!needsGitHubTokenConfirmation(tokenCheck, permissionsConfirmed);
 
 	const submit = (event: FormEvent) => {
 		event.preventDefault();
@@ -165,9 +195,10 @@ export function AddCredentialDialog({
 							<Select
 								value={provider}
 								disabled={fixedProvider !== undefined}
-								onValueChange={(v) =>
-									setProvider(v as CredentialProviderKey)
-								}
+								onValueChange={(v) => {
+									setProvider(v as CredentialProviderKey);
+									clearTokenCheck();
+								}}
 							>
 								<SelectTrigger id={`${id}-provider`}>
 									<SelectValue />
@@ -187,7 +218,10 @@ export function AddCredentialDialog({
 							<Label htmlFor={`${id}-kind`}>Type</Label>
 							<Select
 								value={kind}
-								onValueChange={(v) => setKind(v as ManualKind)}
+								onValueChange={(v) => {
+									setKind(v as ManualKind);
+									clearTokenCheck();
+								}}
 							>
 								<SelectTrigger id={`${id}-kind`}>
 									<SelectValue />
@@ -261,12 +295,23 @@ export function AddCredentialDialog({
 							id={`${id}-secret`}
 							type="password"
 							value={secret}
-							onChange={(e) => setSecret(e.target.value)}
+							onChange={(e) => {
+								setSecret(e.target.value);
+								clearTokenCheck();
+							}}
 							autoComplete="off"
 							spellCheck={false}
 							required
 						/>
 					</div>
+
+					{tokenCheck ? (
+						<GitHubTokenChecklist
+							refusal={tokenCheck}
+							confirmed={permissionsConfirmed}
+							onConfirmedChange={setPermissionsConfirmed}
+						/>
+					) : null}
 
 					{isOrganizationAdmin ? (
 						<div className="space-y-1.5">

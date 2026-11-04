@@ -33,6 +33,56 @@ export interface WorkspaceQueryHit {
 	headings: string[];
 }
 
+/** Direct extracted-text reads do not require an AI provider or vector index. */
+export interface ReadWorkspaceDocumentOptions {
+	org?: string;
+	/** Unicode code point offset. Continuations require expectedRevision. */
+	offset?: number;
+	/** 1..20,000 Unicode code points; default 12,000. */
+	limit?: number;
+	expectedRevision?: string;
+}
+export interface WorkspaceDocumentContentPage {
+	id: string;
+	workspaceId: string;
+	organizationId: string;
+	sourceKind: "workspace_document";
+	filename: string;
+	mimeType: string;
+	status: "READY";
+	text: string;
+	revision: string;
+	contentHash: string;
+	offset: number;
+	limit: number;
+	totalCharacters: number;
+	totalBytes: number;
+	nextOffset: number | null;
+	truncated: boolean;
+	offsetUnit: "unicode_code_points";
+	readMode: "direct";
+	historicalVersionsAvailable: false;
+}
+export interface WorkspaceDocumentListPage {
+	documents: {
+		id: string;
+		filename: string;
+		mimeType: string;
+		status: string;
+		updatedAt: string;
+	}[];
+	total: number;
+	nextOffset: number | null;
+	/** Inserts/deletes between requests can shift offsets. */
+	paginationMode: "live_offset";
+	snapshotConsistent: false;
+}
+export interface ListWorkspaceDocumentsOptions {
+	org?: string;
+	offset?: number;
+	limit?: number;
+}
+
 export class WorkspacesResource {
 	constructor(private readonly http: FabricHttpClient) {}
 
@@ -54,6 +104,27 @@ export class WorkspacesResource {
 		}
 		const q = params.toString() ? `?${params.toString()}` : "";
 		return this.http.get<FabricWorkspaceDetail>(`/workspaces/${id}${q}`);
+	}
+
+	/** Discover IDs/status with live offset pagination, not a snapshot; requires no AI provider. */
+	listDocuments(
+		workspaceId: string,
+		options: ListWorkspaceDocumentsOptions = {},
+	): Promise<WorkspaceDocumentListPage> {
+		return this.http.get(
+			`/workspaces/${encodeURIComponent(workspaceId)}/documents${buildQuery(options)}`,
+		);
+	}
+
+	/** Read one bounded page. Pin expectedRevision on every continuation; stale revisions return 409. */
+	readDocument(
+		workspaceId: string,
+		documentId: string,
+		options: ReadWorkspaceDocumentOptions = {},
+	): Promise<WorkspaceDocumentContentPage> {
+		return this.http.get(
+			`/workspaces/${encodeURIComponent(workspaceId)}/documents/${encodeURIComponent(documentId)}/content${buildQuery(options)}`,
+		);
 	}
 
 	/**

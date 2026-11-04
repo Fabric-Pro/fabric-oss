@@ -49,6 +49,7 @@ vi.mock("../../../../../orpc/procedures", () => ({
 		WORKSPACE_READ: "workspace:read",
 	},
 	requirePermission: () => (next: unknown) => next,
+	requireInputOrgPermission: () => (next: unknown) => next,
 	resolveOrganizationId: (input: string | null | undefined) => input ?? null,
 	tenantProtectedProcedure: {
 		use: () => ({

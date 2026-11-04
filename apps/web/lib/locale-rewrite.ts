@@ -49,10 +49,9 @@ type Join<
  *
  * Next.js statically parses `export const config` in `proxy.ts` from the SWC
  * AST (`next/dist/build/analysis/extract-const-value.js`), rejecting imported
- * identifiers, template expressions, and `.join()` calls. Keep `proxy.ts`
- * `config.matcher[0]` written as a literal annotated with
- * `satisfies typeof PROXY_PRIMARY_MATCHER_SOURCE`; both `tsc` and
- * `proxy-root-locale-rewrite.test.ts` fail whenever the two lists diverge.
+ * identifiers, template expressions, `.join()` calls and `satisfies`
+ * expressions. Keep `proxy.ts` `config.matcher[0]` a plain string literal;
+ * `proxy-root-locale-rewrite.test.ts` fails whenever the two lists diverge.
  */
 export const PROXY_EXCLUDED_PATH_PATTERNS = [
 	"api",

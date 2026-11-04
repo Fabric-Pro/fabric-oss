@@ -1,19 +1,25 @@
 import { ORPCError } from "@orpc/server";
 import {
+	canAccessReportInstance,
 	createTemplateInstance,
+	db,
 	getReportTemplate,
+	hasProjectKnowledgeSource,
+	reportEvidenceConfigSchema,
 	reportScheduleInputSchema,
+	resolveReportTemplateDefaults,
 } from "@repo/database";
 import type { Prisma } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
 import {
 	assertProjectPermission,
 	Permissions,
+	requireInputOrgPermission,
 	requireOrganizationMembership,
-	requirePermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { projectParameterDefaults } from "../../lib/project-parameter-defaults";
 import { canEditProjectReport } from "../../lib/report-access";
 import { templateScheduleForInheritance } from "../../lib/resolve-instance-schedule";
 import { validateReportConnections } from "../../lib/validate-connections";
@@ -30,6 +36,18 @@ const createInstanceInputSchema = z.object({
 		mcpConfigs: z.array(z.string()).default([]),
 		// Mapping of data source ID to user's MCP config ID
 		mcpBindings: z.record(z.string(), z.string()).optional(),
+		// Resource bindings for MCP connections (e.g., board ID for Fizzy), so a
+		// new report starts with its board selected
+		resourceBindings: z
+			.record(
+				z.string(),
+				z.object({
+					resourceId: z.string(),
+					resourceName: z.string(),
+					resourceType: z.string(),
+				}),
+			)
+			.optional(),
 		// Mapping of data source ID to parameter values
 		parameterBindings: z
 			.record(z.string(), z.record(z.string(), z.string()))
@@ -44,15 +62,23 @@ const createInstanceInputSchema = z.object({
 		context: z.record(z.string(), z.string()).optional(),
 		// Optional prompt override for customizing analysis
 		promptOverride: z.string().optional(),
+		// "user" when a person wrote the override; only then is it added to
+		// the template's AI tasks.
+		promptOverrideSource: z.literal("user").optional(),
 		// Max AI iterations for agentic data gathering (default: 15)
 		maxIterations: z.number().int().min(1).max(50).optional(),
 	}),
 	// Optional schedule for automated execution (shared schema — single source of truth).
 	schedule: reportScheduleInputSchema.optional(),
+	reporting: reportEvidenceConfigSchema.optional(),
 });
 
 export const createInstanceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.REPORT_CREATE))
+	.use(
+		requireInputOrgPermission(Permissions.REPORT_CREATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(createInstanceInputSchema)
 	.handler(async ({ input, context }) => {
 		// A project report is authorized against the project BEFORE the
@@ -77,6 +103,29 @@ export const createInstanceProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
+		if (!organizationId) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "An organization is required",
+			});
+		}
+		if (
+			input.reporting?.projectId &&
+			!(await canAccessReportInstance(
+				{
+					userId: context.user.id,
+					organizationId,
+					fabricConfig: { reporting: input.reporting },
+				},
+				{ userId: context.user.id, organizationId },
+				undefined,
+				true,
+			))
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Project report access denied",
+			});
+		}
+
 		// Verify template exists and user has access
 		const template = await getReportTemplate({
 			id: input.templateId,
@@ -93,6 +142,15 @@ export const createInstanceProcedure = tenantProtectedProcedure
 		if (template.archivedAt) {
 			throw new ORPCError("BAD_REQUEST", {
 				message: "This report template is archived",
+			});
+		}
+
+		if (
+			hasProjectKnowledgeSource(template.definition) &&
+			!(input.reporting?.projectId ?? input.projectId)
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Choose a project audience for Project knowledge",
 			});
 		}
 
@@ -128,15 +186,51 @@ export const createInstanceProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// The organization's and the project's defaults for this template,
+		// project over organization; what the caller sent wins over both.
+		const overrides = await resolveReportTemplateDefaults({
+			templateId: input.templateId,
+			organizationId,
+			projectId: input.projectId,
+		});
+		const overrideSchedule = reportScheduleInputSchema.safeParse(
+			overrides.schedule,
+		);
+
 		// Inherit the template's schedule when the instance create omits one — but only
 		// from a template this owner actually owns (never SYSTEM/public → cross-tenant). D3.
 		const effectiveSchedule =
 			input.schedule ??
+			(overrideSchedule.success ? overrideSchedule.data : undefined) ??
 			templateScheduleForInheritance(
 				template,
 				context.user.id,
 				organizationId ?? null,
 			);
+
+		// A project's report starts with the parameters the project answers.
+		const project = input.projectId
+			? await db.project.findUnique({
+					where: { id: input.projectId },
+					select: { name: true },
+				})
+			: null;
+		const parameterDefaults = {
+			...(project
+				? projectParameterDefaults(template.parameters, project)
+				: undefined),
+			...overrides.parameterDefaults,
+		};
+		const connections =
+			Object.keys(overrides.context).length > 0
+				? {
+						...input.connections,
+						context: {
+							...overrides.context,
+							...input.connections.context,
+						},
+					}
+				: input.connections;
 
 		// Create the instance
 		const instance = await createTemplateInstance({
@@ -146,7 +240,14 @@ export const createInstanceProcedure = tenantProtectedProcedure
 			projectId: input.projectId,
 			name: input.name,
 			description: input.description,
-			connections: input.connections,
+			connections,
+			parameterDefaults:
+				Object.keys(parameterDefaults).length > 0
+					? parameterDefaults
+					: undefined,
+			fabricConfig: input.reporting
+				? { reporting: input.reporting }
+				: undefined,
 			schedule: effectiveSchedule as Prisma.InputJsonValue | undefined,
 			// CUSTOM iff the caller supplied an explicit per-instance schedule; otherwise the
 			// instance follows the template (INHERITED), even when a schedule was inherited. (D2/§7.1)

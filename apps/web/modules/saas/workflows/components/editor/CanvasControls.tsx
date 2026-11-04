@@ -13,11 +13,12 @@ import {
 	useEdges,
 	useNodes,
 	useReactFlow,
+	useStore,
 	useViewport,
 	ViewportPortal,
 } from "@xyflow/react";
 import { MapIcon, MinusIcon, PlusIcon, ScanIcon } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { lastStep } from "../../lib/graph-edits";
 
 /**
@@ -69,7 +70,20 @@ function PillButton({
 export function CanvasControls() {
 	const { zoomIn, zoomOut, fitView } = useReactFlow();
 	const { zoom } = useViewport();
+	const width = useStore((state) => state.width);
+	const height = useStore((state) => state.height);
 	const [showMiniMap, setShowMiniMap] = useState(false);
+	useEffect(() => {
+		if (!width || !height) {
+			return;
+		}
+		// The app rail, navigator, and run panel all change the canvas bounds.
+		// Fit after their layout transition settles, without changing the graph.
+		const timeout = window.setTimeout(() => {
+			void fitView(FIT_VIEW_OPTIONS);
+		}, 120);
+		return () => window.clearTimeout(timeout);
+	}, [width, height, fitView]);
 
 	return (
 		<>

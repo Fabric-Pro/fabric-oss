@@ -25,7 +25,7 @@ export type FakeBranch = BranchRow;
 
 export type FakeProposal = {
 	id: string;
-	contentKind: "FULL_SNAPSHOT";
+	contentKind: "FULL_SNAPSHOT" | "GIT_INTENT";
 	projectId: string;
 	organizationId: string;
 	userId: string;
@@ -89,6 +89,8 @@ export type FakeState = {
 		status: string;
 	}>;
 	files: Map<string, FakeFile[]>;
+	/** A native proposal's changed-path receipt (`loadGitIntent`), by snapshot id. */
+	gitIntents: Map<string, FakeGitIntent>;
 	audits: Array<{ action: string; metadata?: Record<string, unknown> }>;
 	/** Ordered trace of fact and lifecycle writes, for order assertions. */
 	trace: string[];
@@ -121,6 +123,22 @@ export type FakeState = {
 	 * check: a test interleaves two overlapping attempts here.
 	 */
 	beforeIssue: null | (() => Promise<void>);
+};
+
+export type FakeGitIntentEntry = {
+	operation: "PUT" | "DELETE";
+	path: string;
+	baseObjectId: string | null;
+	baseMode: number | null;
+	branchObjectId: string | null;
+	storageKey: string | null;
+	sha256: string | null;
+	mode: number | null;
+};
+
+export type FakeGitIntent = {
+	status: string;
+	gitIntentEntries: FakeGitIntentEntry[];
 };
 
 export type FakeSyncRun = {
@@ -191,6 +209,7 @@ export function createFakeDatabase(real: Real) {
 		ops: [],
 		reservations: [],
 		files: new Map(),
+		gitIntents: new Map(),
 		audits: [],
 		trace: [],
 		userNames: new Map(),
@@ -2250,6 +2269,20 @@ export function createFakeDatabase(real: Real) {
 		canReadProjectInstructions: async () => state.canRead,
 		listInstructionFiles: async (snapshotId: string) =>
 			clone(state.files.get(snapshotId) ?? []),
+		loadGitIntent: async (i: {
+			snapshotId: string;
+			projectId: string;
+			organizationId: string;
+		}) => {
+			const p = proposalOf(i.snapshotId, i.organizationId);
+			const intent = state.gitIntents.get(i.snapshotId);
+			return p &&
+				p.projectId === i.projectId &&
+				p.contentKind === "GIT_INTENT" &&
+				intent
+				? clone(intent)
+				: null;
+		},
 		getProjectRepoIntegration: async () => null,
 	};
 
@@ -2261,6 +2294,7 @@ export function createFakeDatabase(real: Real) {
 		state.ops.length = 0;
 		state.reservations.length = 0;
 		state.files.clear();
+		state.gitIntents.clear();
 		state.audits.length = 0;
 		state.trace.length = 0;
 		state.userNames.clear();

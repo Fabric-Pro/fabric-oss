@@ -128,6 +128,7 @@ export type OnboardingArea =
 	| "proposals"
 	| "atlas"
 	| "coding-instructions"
+	| "context"
 	| "apiKey"
 	| "wrapup";
 
@@ -305,6 +306,15 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 			side: "bottom",
 		},
 	},
+	{
+		id: "agent-runs",
+		area: "assistant",
+		icon: SparklesIcon,
+		target: {
+			kind: "center",
+			navigate: (base) => `${base}/agents?tab=tasks`,
+		},
+	},
 	// Fizzy #2340. Gated: the To Do page ships to named organizations first,
 	// and for everyone else the sidebar entry this step points at is not
 	// rendered at all.
@@ -329,6 +339,17 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 			kind: "projectComponent",
 			tab: "overview",
 			anchorId: "overview-readiness",
+			side: "bottom",
+		},
+	},
+	{
+		id: "contextWorkspaceDocuments",
+		area: "context",
+		icon: FileTextIcon,
+		target: {
+			kind: "projectComponent",
+			tab: "context",
+			anchorId: "context-workspace-documents",
 			side: "bottom",
 		},
 	},

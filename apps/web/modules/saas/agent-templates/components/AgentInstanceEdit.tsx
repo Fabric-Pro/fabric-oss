@@ -1,5 +1,6 @@
 "use client";
 
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
@@ -8,6 +9,8 @@ import { Card, CardContent } from "@ui/components/card";
 import { AlertCircleIcon } from "lucide-react";
 import Link from "next/link";
 import { useMemo } from "react";
+import { agentProjectFormState } from "../lib/agent-project-form";
+import { ReadOnlyAgentImplementation } from "./AgentImplementationNotice";
 import {
 	type AgentBuilderInitialValues,
 	CreateAgentPage,
@@ -72,6 +75,11 @@ export function AgentInstanceEdit({
 				organizationId: organizationId ?? undefined,
 			},
 		}),
+	);
+
+	const projectBinding = agentProjectFormState(
+		data?.instance?.customInstructions,
+		data?.instance?.toolConnections,
 	);
 
 	const initialValues = useMemo<AgentBuilderInitialValues | null>(() => {
@@ -139,6 +147,14 @@ export function AgentInstanceEdit({
 		return {
 			name: instance.name,
 			description: instance.description ?? "",
+			projectId: agentProjectFormState(
+				customInstructions,
+				instance.toolConnections,
+			).projectId,
+			expectedOutput:
+				typeof customInstructions.expectedOutput === "string"
+					? customInstructions.expectedOutput
+					: "",
 			instructions:
 				typeof customInstructions.additionalContext === "string"
 					? customInstructions.additionalContext
@@ -201,6 +217,22 @@ export function AgentInstanceEdit({
 	}
 
 	const instance = data.instance as InstanceWithTemplate;
+	if (
+		!getAgentImplementationAvailability(instance.customInstructions)
+			.available
+	) {
+		return (
+			<ReadOnlyAgentImplementation
+				name={instance.name}
+				templateInstructions={instance.template?.instructions}
+				customInstructions={instance.customInstructions}
+				organizationId={organizationId}
+				instanceId={instanceId}
+				basePath={basePath}
+			/>
+		);
+	}
+
 	if (!instance.template || !initialValues) {
 		return (
 			<Card>
@@ -219,14 +251,26 @@ export function AgentInstanceEdit({
 	}
 
 	return (
-		<CreateAgentPage
-			template={instance.template}
-			organizationId={organizationId ?? undefined}
-			basePath={basePath}
-			mode="edit"
-			instanceId={instanceId}
-			instanceSId={instance.sId}
-			initialValues={initialValues}
-		/>
+		<>
+			{projectBinding.needsReview && (
+				<p
+					role="alert"
+					className="m-6 rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm"
+				>
+					This agent has conflicting project settings. Choose the
+					intended project before saving. Saving without a project
+					clears the stale binding.
+				</p>
+			)}
+			<CreateAgentPage
+				template={instance.template}
+				organizationId={organizationId ?? undefined}
+				basePath={basePath}
+				mode="edit"
+				instanceId={instanceId}
+				instanceSId={instance.sId}
+				initialValues={initialValues}
+			/>
+		</>
 	);
 }

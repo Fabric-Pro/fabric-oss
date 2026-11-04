@@ -104,6 +104,12 @@ export const AVAILABLE_SCOPES = [
 		description: "Trigger agent executions via API",
 	},
 	{
+		id: "agents:schedule",
+		label: "Agents Schedule",
+		description:
+			"Manage recurring agent runs (also requires Agents Execute)",
+	},
+	{
 		id: "agents:stream",
 		label: "Agents Stream",
 		description: "Access real-time agent execution streams",
@@ -135,8 +141,8 @@ export const AVAILABLE_SCOPES = [
 	},
 	{
 		id: "workspaces:read",
-		label: "Libraries Read",
-		description: "Read document libraries and run knowledge queries",
+		label: "Workspaces Read",
+		description: "Read document workspaces and run knowledge queries",
 	},
 	{
 		id: "workflows:read",

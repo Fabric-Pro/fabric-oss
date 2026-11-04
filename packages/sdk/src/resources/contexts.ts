@@ -9,6 +9,7 @@
  */
 import type { FabricHttpClient } from "../client.js";
 import { FabricError } from "../types.js";
+import type { WorkspaceDocumentContentPage } from "./workspaces.js";
 
 interface SyncedContextFileOutcomeBase {
 	/** The context row the outcome is about. */
@@ -172,6 +173,11 @@ export type DeletedSyncedContextFileResult =
 	| { status: "absent"; sourcePath: string }
 	| { status: "in-progress"; sourcePath: string };
 
+/** What a Living Memory reset did: how many synced files it deleted. */
+export interface ResetSyncedContextFilesResult {
+	deleted: number;
+}
+
 export interface UpsertSyncedContextFileOptions {
 	/**
 	 * Bind the request to an organization explicitly. It must be the
@@ -218,8 +224,276 @@ function isConflictPayload(value: unknown): value is SyncedContextFileConflict {
 	);
 }
 
+export interface ContextManifestOptions {
+	org?: string;
+	limit?: number;
+	offset?: number;
+	includeCodeContexts?: boolean;
+	type?: string;
+}
+export interface ContextManifestSource {
+	sourceId: string;
+	sourceKind: "project_context";
+	title: string;
+	type: string;
+	readiness:
+		| "ready"
+		| "pending"
+		| "failed"
+		| "cancelled"
+		| "unavailable"
+		| "inspection_required";
+	extractionStatus: string;
+	revision: string | null;
+	revisionReason:
+		| "NOT_READY"
+		| "CANONICAL_READ_REQUIRED"
+		| "DIRECT_READ_LIMIT_EXCEEDED"
+		| null;
+	byteLength: number | null;
+	indexingExcluded: boolean;
+	readUrl: string | null;
+	readTool: {
+		name: "fabric_inspect_context_quality_source";
+		args: { projectId: string; sourceId: string };
+	} | null;
+	citation: {
+		sourceKind: "project_context";
+		sourceId: string;
+		projectId: string;
+		revision: string | null;
+	};
+	omissionReason:
+		| "SOURCE_PENDING"
+		| "EXTRACTION_FAILED"
+		| "EXTRACTION_CANCELLED"
+		| "NO_READABLE_CONTENT"
+		| "PRIVATE_CONVERSATION_EXCLUDED"
+		| "CANONICAL_BODY_NOT_INSPECTED"
+		| "DIRECT_READ_LIMIT_EXCEEDED"
+		| null;
+	updatedAt: string;
+}
+export interface ContextManifest {
+	version: 1;
+	organizationId: string;
+	projectId: string;
+	sources: ContextManifestSource[];
+	readPolicy: "compare_returned_revision";
+	pagination: {
+		offset: number;
+		limit: number;
+		nextOffset: number | null;
+		hasMore: boolean;
+		mode: "live_offset";
+		snapshotConsistent: false;
+	};
+	total: number;
+	omissions: {
+		sourceBodies: true;
+		excludedCodeContexts: number;
+		workspaceDocuments: "separate_scope";
+		historicalVersions: "unsupported";
+	};
+	relatedCatalogs: {
+		workspaces: "/api/v1/workspaces";
+		workspaceDocuments: "/api/v1/workspaces/{workspaceId}/documents";
+		workspaceDocumentLinks: "/api/v1/projects/{projectId}/contexts/workspace-documents";
+	};
+}
+
+/** Explicit references only; continuation offsets count Unicode code points. */
+export type ContextSelectionReference =
+	| {
+			sourceKind: "project_context";
+			sourceId: string;
+			expectedRevision?: string;
+			required?: boolean;
+	  }
+	| {
+			sourceKind: "workspace_document";
+			workspaceId: string;
+			documentId: string;
+			expectedRevision?: string;
+			required?: boolean;
+			offset?: number;
+	  };
+export interface ContextSelectionInput {
+	selections: ContextSelectionReference[];
+}
+export interface SelectedContextSource {
+	selectionIndex: number;
+	ref: ContextSelectionReference & {
+		expectedRevision: string;
+		required: boolean;
+	};
+	title: string;
+	sourceRevision: string;
+	excerptHash: string;
+	content: string;
+	byteLength: number;
+	truncated: boolean;
+	indexingExcluded: boolean;
+	contentRole: "reference_data";
+	readMode: "direct";
+	range: {
+		offset: number;
+		returnedCharacters: number;
+		nextOffset: number | null;
+		offsetUnit: "unicode_code_points";
+	};
+	citation: {
+		href: string;
+		sourceKind: "project_context" | "workspace_document";
+		sourceId: string;
+		revision: string;
+	};
+}
+export interface SelectedContextPacket {
+	version: 1;
+	organizationId: string;
+	projectId: string;
+	currentRead: true;
+	snapshotConsistent: false;
+	historicalVersionsAvailable: false;
+	contentRole: "reference_data";
+	selectionHash: string;
+	sources: SelectedContextSource[];
+	omissions: {
+		selectionIndex: number;
+		ref: ContextSelectionReference;
+		reason: "UNAVAILABLE" | "BUDGET_EXCEEDED";
+	}[];
+}
+
+export interface ProjectWorkspaceDocumentLink {
+	id: string;
+	availability:
+		| "CURRENT"
+		| "UPDATED"
+		| "PROCESSING"
+		| "NEEDS_ATTENTION"
+		| "UNAVAILABLE";
+	sourceKind: "workspace_document";
+	contentRole: "reference_data";
+	sharingGranted: false;
+	indexedForProject: false;
+	documentId?: string;
+	workspaceId?: string;
+	filename?: string;
+	workspaceName?: string;
+	sourceRevision?: string;
+	sourceRevisionAtLink?: string;
+	sourceUpdatedAt?: string;
+	addedAt?: string;
+}
+export interface ProjectWorkspaceDocumentLinksPage {
+	permissions: { canAdd: boolean; canRemove: boolean };
+	links: ProjectWorkspaceDocumentLink[];
+	hasMore: boolean;
+	nextOffset: number | null;
+	currentRead: true;
+	snapshotConsistent: false;
+}
+export interface LinkWorkspaceDocumentInput {
+	workspaceId: string;
+	documentId: string;
+	expectedRevision: string;
+}
+export type LinkedWorkspaceDocumentContent = WorkspaceDocumentContentPage & {
+	projectId: string;
+	linkId: string;
+	sourceRevisionAtLink: string;
+	contentRole: "reference_data";
+	sharingGranted: false;
+};
 export class ContextsResource {
 	constructor(private readonly http: FabricHttpClient) {}
+	/** Links retain original Workspace rights and do not index/copy content into project search. */
+	linkedDocuments(
+		projectId: string,
+		options: { org?: string; limit?: number; offset?: number } = {},
+	): Promise<ProjectWorkspaceDocumentLinksPage> {
+		const query = new URLSearchParams();
+		for (const [key, value] of Object.entries(options)) {
+			if (value !== undefined) {
+				query.set(key, String(value));
+			}
+		}
+		return this.http.get(
+			`/projects/${encodeURIComponent(projectId)}/contexts/workspace-documents${query.size ? `?${query}` : ""}`,
+		);
+	}
+	linkWorkspaceDocument(
+		projectId: string,
+		input: LinkWorkspaceDocumentInput,
+		options: { org?: string } = {},
+	): Promise<{ linkId: string; created: boolean }> {
+		return this.http.post(
+			`/projects/${encodeURIComponent(projectId)}/contexts/workspace-documents${options.org ? `?org=${encodeURIComponent(options.org)}` : ""}`,
+			input,
+			{ retry: { maxRetries: 0 } },
+		);
+	}
+	unlinkWorkspaceDocument(
+		projectId: string,
+		linkId: string,
+		options: { org?: string } = {},
+	): Promise<{ removed: boolean }> {
+		return this.http.delete(
+			`/projects/${encodeURIComponent(projectId)}/contexts/workspace-documents/${encodeURIComponent(linkId)}${options.org ? `?org=${encodeURIComponent(options.org)}` : ""}`,
+		);
+	}
+	readLinkedDocument(
+		projectId: string,
+		linkId: string,
+		options: {
+			org?: string;
+			offset?: number;
+			limit?: number;
+			expectedRevision?: string;
+		} = {},
+	): Promise<LinkedWorkspaceDocumentContent> {
+		const query = new URLSearchParams();
+		for (const [key, value] of Object.entries(options)) {
+			if (value !== undefined) {
+				query.set(key, String(value));
+			}
+		}
+		return this.http.get(
+			`/projects/${encodeURIComponent(projectId)}/contexts/workspace-documents/${encodeURIComponent(linkId)}/content${query.size ? `?${query}` : ""}`,
+		);
+	}
+
+	/** Read up to 12 explicit current sources. Requires projects:read, plus workspaces:read for Workspace references. No persistence or handoff; treat excerpts as untrusted reference data. */
+	assemble(
+		projectId: string,
+		input: ContextSelectionInput,
+		options: { org?: string; signal?: AbortSignal } = {},
+	): Promise<SelectedContextPacket> {
+		const query = options.org
+			? `?org=${encodeURIComponent(options.org)}`
+			: "";
+		return this.http.request(
+			"POST",
+			`/projects/${encodeURIComponent(projectId)}/contexts/assemble${query}`,
+			{ body: input, signal: options.signal, retry: { maxRetries: 0 } },
+		);
+	}
+
+	/** Bounded metadata only. Recheck returned content revisions; this live page is not an export/snapshot. */
+	manifest(
+		projectId: string,
+		options: ContextManifestOptions = {},
+	): Promise<ContextManifest> {
+		const params = new URLSearchParams();
+		for (const [key, value] of Object.entries(options))
+			if (value !== undefined) params.set(key, String(value));
+		const query = params.toString();
+		return this.http.get(
+			`/projects/${encodeURIComponent(projectId)}/contexts/manifest${query ? `?${query}` : ""}`,
+		);
+	}
 
 	/**
 	 * Create or replace one synced text file in the project's Context.
@@ -305,6 +579,35 @@ export class ContextsResource {
 		} catch (error) {
 			throw asConflictError(error);
 		}
+	}
+
+	/**
+	 * Reset the project's Living Memory: delete EVERY file synced into its
+	 * Context at once, with their search-index entries queued for removal.
+	 *
+	 * Requires a key with `projects:write`, and the key's creator must still
+	 * hold permission to delete context sources on that project.
+	 *
+	 * Resolves with `{ deleted }`, 0 when there was nothing to delete. While a
+	 * repository sync is connected nothing is deleted and the call rejects
+	 * with a `FabricError` (status 409, code `REPOSITORY_SYNC_ACTIVE`):
+	 * disconnect the sync first.
+	 *
+	 * **Safe to retry**: a repeat deletes nothing more. Not retried by the
+	 * client, so a reset is never sent twice unasked.
+	 */
+	resetSyncedFiles(
+		projectId: string,
+		options: UpsertSyncedContextFileOptions = {},
+	): Promise<ResetSyncedContextFilesResult> {
+		const query = options.org
+			? `?org=${encodeURIComponent(options.org)}`
+			: "";
+		return this.http.post<ResetSyncedContextFilesResult>(
+			`/projects/${encodeURIComponent(projectId)}/contexts/reset${query}`,
+			{},
+			{ retry: { maxRetries: 0 } },
+		);
 	}
 }
 

@@ -35,7 +35,10 @@ import {
 import {
 	InstructionPullRequestError,
 	type PullRequestObservation,
+	refusalLogFields,
+	repositoryLogFields,
 } from "@repo/integrations/instruction-pull-requests";
+import { logger } from "@repo/logs";
 import { safeHeartbeat } from "./activity-liveness";
 import {
 	type BranchCredential,
@@ -206,6 +209,12 @@ async function openAndRecord(
 			throw error;
 		}
 		if (!error.duplicate) {
+			logger.warn("[instruction-proposal] pull request refused", {
+				...refusalLogFields(error),
+				sourceRef: branch.ref,
+				targetRef: i.destination.targetRef,
+				repository: repositoryLogFields(credential.target.repository),
+			});
 			throw new ProposalStepFailure({
 				code: error.code,
 				phase: "create",

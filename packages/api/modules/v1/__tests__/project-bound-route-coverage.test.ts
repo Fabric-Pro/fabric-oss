@@ -56,13 +56,26 @@ const TOKEN = "fat_example-access-token";
  *   - the memory routes, the project's code repositories, its plugin name
  *     and its knowledge types go through `resolveContextProject`, which asks
  *     `credentialMayReachProject` first;
+ *   - context-quality inspection and recorded-output scoring use that same
+ *     `resolveContextProject`/`credentialMayReachProject` gate and then repeat
+ *     current source permission/revision checks in the shared reader;
  *   - the project's document routes call `resolveV1Context` without a project
  *     and so refuse a bound credential.
  */
 const REACHABLE = [
 	"DELETE /projects/:projectId/contexts/synced-files",
+	"DELETE /projects/:projectId/contexts/workspace-documents/:linkId",
 	"GET /auth/whoami",
 	"GET /projects/:projectId/code-repositories",
+	"GET /projects/:projectId/context-quality/agent-results/:executionId",
+	"GET /projects/:projectId/context-quality/runs",
+	"GET /projects/:projectId/context-quality/runs/:runId",
+	"GET /projects/:projectId/context-quality/runs/capabilities",
+	"GET /projects/:projectId/context-quality/runs/compare",
+	"GET /projects/:projectId/context-quality/sources/:sourceId",
+	"GET /projects/:projectId/contexts/manifest",
+	"GET /projects/:projectId/contexts/workspace-documents",
+	"GET /projects/:projectId/contexts/workspace-documents/:linkId/content",
 	"GET /projects/:projectId/documents",
 	"GET /projects/:projectId/features",
 	"GET /projects/:projectId/features/:id",
@@ -82,6 +95,13 @@ const REACHABLE = [
 	"GET /projects/:projectId/memory/writes/:writeId",
 	"PATCH /projects/:projectId/features/:id",
 	"POST /instructions/checkouts/resolve",
+	"POST /projects/:projectId/context-quality/agent-results/:executionId/evaluate",
+	"POST /projects/:projectId/context-quality/evaluate",
+	"POST /projects/:projectId/context-quality/runs",
+	"POST /projects/:projectId/context-quality/runs/:runId/cancel",
+	"POST /projects/:projectId/contexts/assemble",
+	"POST /projects/:projectId/contexts/reset",
+	"POST /projects/:projectId/contexts/workspace-documents",
 	"POST /projects/:projectId/documents",
 	"POST /projects/:projectId/features",
 	"POST /projects/:projectId/instructions/changes",
@@ -90,6 +110,7 @@ const REACHABLE = [
 	"POST /projects/:projectId/instructions/repository/files/read",
 	"POST /projects/:projectId/instructions/repository/git/:generation/git-upload-pack",
 	"POST /projects/:projectId/instructions/versions",
+	"POST /projects/:projectId/instructions/versions/:snapshotId/files",
 	"POST /projects/:projectId/memory/upload-urls",
 	"POST /projects/:projectId/memory/writes",
 	"PUT /projects/:projectId/contexts/synced-files",

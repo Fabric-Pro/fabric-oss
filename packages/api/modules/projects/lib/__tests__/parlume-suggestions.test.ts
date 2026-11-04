@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
 	stories: vi.fn(),
 	storyCount: vi.fn(),
 	users: vi.fn(),
+	agenda: vi.fn(),
+	priorTranscripts: vi.fn(),
 	log: vi.fn(),
 }));
 
@@ -19,11 +21,19 @@ vi.mock("@repo/database", () => ({
 	db: {
 		parlumeMeetingSession: { findFirst: mocks.session },
 		parlumeMeetingSegment: { findMany: mocks.segments },
+		projectMeetingAgenda: { findFirst: mocks.agenda },
 		userStory: { findMany: mocks.stories, count: mocks.storyCount },
 		user: { findMany: mocks.users },
 	},
 	getBoundPromptForAgent: mocks.boundPrompt,
 	hasProjectAccess: mocks.hasAccess,
+	tenantWhere: vi.fn(),
+}));
+vi.mock("@repo/temporal/prior-series-transcripts", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("@repo/temporal/prior-series-transcripts")
+	>()),
+	findPriorSeriesTranscripts: mocks.priorTranscripts,
 }));
 vi.mock("@repo/ai", () => ({
 	generateObject: mocks.generate,
@@ -52,16 +62,24 @@ beforeEach(() => {
 		organizationId: "org-1",
 		userId: "user-1",
 		suggestionsEnabled: true,
+		suggestionAudience: "MEETING",
+		linkedMeetingId: null,
+		occurrenceStart: null,
+		createdAt: new Date("2026-11-04T10:00:00Z"),
 	});
 	mocks.hasAccess.mockResolvedValue(true);
 	mocks.segments.mockImplementation(async ({ where }) =>
 		where.source === "CHAT"
 			? [{ text: "Link to the spec?", speakerName: "Sam" }]
-			: [
-					{ text: "Who owns the export?", speakerName: "Alex" },
-					{ text: "We said Friday.", speakerName: "Sam" },
-				],
+			: where.createdAt.lt
+				? earlierSpeech
+				: [
+						{ text: "Who owns the export?", speakerName: "Alex" },
+						{ text: "We said Friday.", speakerName: "Sam" },
+					],
 	);
+	mocks.agenda.mockResolvedValue(null);
+	mocks.priorTranscripts.mockResolvedValue([]);
 	mocks.retrieve.mockResolvedValue([
 		{ type: "TEXT", content: "F-12 Export the roadmap" },
 	]);
@@ -101,9 +119,18 @@ const anchored = {
 	topic: "Export ownership",
 };
 
+/** What the service answers for `anchored`: an answer, for the whole meeting. */
+const answered = { ...anchored, kind: "answer", audience: "MEETING" };
+
 const speech = [
 	{ text: "Who owns the export?", speakerName: "Alex" },
 	{ text: "We said Friday.", speakerName: "Sam" },
+];
+
+/** Said before the live window. */
+const earlierSpeech = [
+	{ text: "Next we cover the data migration.", speakerName: "Dana" },
+	{ text: "Welcome, everyone.", speakerName: "Alex" },
 ];
 
 describe("normalizeParlumeSuggestion", () => {
@@ -116,6 +143,7 @@ describe("normalizeParlumeSuggestion", () => {
 			},
 			{
 				...anchored,
+				kind: "answer",
 				text: "Ask who owns it.",
 				quote: "Who owns the export?",
 			},
@@ -139,6 +167,55 @@ describe("normalizeParlumeSuggestion", () => {
 		expect(normalizeParlumeSuggestion(output, speech)).toEqual({
 			suggest: false,
 		});
+	});
+
+	// An organization's edited prompt may never mention kind.
+	it.each([
+		[undefined, "answer"],
+		["answer", "answer"],
+		["something else", "answer"],
+		["missed_question", "missed_question"],
+		["Missed question", "missed_question"],
+	])("reads kind %j as %s", (kind, expected) => {
+		const result = normalizeParlumeSuggestion(
+			{ ...anchored, kind },
+			speech,
+		);
+		expect(result.suggest && result.kind).toBe(expected);
+	});
+
+	// A missed question points at the remark that opened its topic, which
+	// may come before the live window; an answer answers a recent remark.
+	it("anchors a missed question in the earlier meeting, an answer only in the window", () => {
+		const opener = {
+			...anchored,
+			speaker: "Dana",
+			quote: "we cover the data migration",
+			topic: "Data migration",
+			text: "Who signs off the migration?",
+		};
+
+		expect(
+			normalizeParlumeSuggestion(
+				{ ...opener, kind: "missed_question" },
+				speech,
+				earlierSpeech,
+			),
+		).toEqual({ ...opener, suggest: true, kind: "missed_question" });
+		expect(
+			normalizeParlumeSuggestion(
+				{ ...opener, kind: "answer" },
+				speech,
+				earlierSpeech,
+			),
+		).toEqual({ suggest: false });
+		expect(
+			normalizeParlumeSuggestion(
+				{ ...opener, kind: "missed_question", quote: "nobody said it" },
+				speech,
+				earlierSpeech,
+			),
+		).toEqual({ suggest: false });
 	});
 
 	it("caps a long suggestion", () => {
@@ -174,7 +251,7 @@ describe("suggestParlumeMeetingContribution", () => {
 				...input,
 				previous: ["Earlier idea"],
 			}),
-		).resolves.toEqual(anchored);
+		).resolves.toEqual(answered);
 
 		expect(mocks.model).toHaveBeenCalledWith(
 			{ taskType: "SIMPLE", complexity: "simple" },
@@ -203,6 +280,191 @@ describe("suggestParlumeMeetingContribution", () => {
 			expect.objectContaining({
 				where: { projectId: "project-1", status: { isFinal: false } },
 			}),
+		);
+	});
+
+	it("gives the meeting before the window, oldest first, fenced as untrusted data", async () => {
+		await suggestParlumeMeetingContribution(input);
+
+		const [{ prompt }] = mocks.generate.mock.calls[0];
+		expect(prompt).toContain(
+			'<meeting_input source="earlier_meeting" trust="untrusted">\nAlex: Welcome, everyone.\nDana: Next we cover the data migration.\n</meeting_input>',
+		);
+		expect(mocks.segments).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					source: "SPEECH",
+					createdAt: { lt: expect.any(Date) },
+				}),
+			}),
+		);
+	});
+
+	it("keeps the most recent part of a long earlier meeting", async () => {
+		const long = Array.from({ length: 300 }, (_, index) => ({
+			text: `Remark number ${index} about the plan.`,
+			speakerName: "Alex",
+		}));
+		mocks.segments.mockImplementation(async ({ where }) =>
+			where.source === "CHAT" ? [] : where.createdAt.lt ? long : speech,
+		);
+
+		await suggestParlumeMeetingContribution(input);
+
+		const [{ prompt }] = mocks.generate.mock.calls[0];
+		// Newest first from the database: index 0 is the latest remark.
+		expect(prompt).toContain("Remark number 0 about the plan.");
+		expect(prompt).not.toContain("Remark number 299 about the plan.");
+	});
+
+	it("leaves out the agenda and previous questions for a session outside a series", async () => {
+		await suggestParlumeMeetingContribution(input);
+
+		const [{ prompt }] = mocks.generate.mock.calls[0];
+		expect(prompt).not.toContain('source="agenda"');
+		expect(prompt).not.toContain('source="previous_meeting_questions"');
+		expect(mocks.agenda).not.toHaveBeenCalled();
+		expect(mocks.priorTranscripts).not.toHaveBeenCalled();
+	});
+
+	it("gives a series session its occurrence's ready agenda and the previous meeting's open questions", async () => {
+		mocks.session.mockResolvedValue({
+			id: "session-1",
+			projectId: "project-1",
+			organizationId: "org-1",
+			userId: "user-1",
+			suggestionsEnabled: true,
+			suggestionAudience: "MEETING",
+			linkedMeetingId: "series-1",
+			occurrenceStart: new Date("2026-11-04T09:00:00Z"),
+			createdAt: new Date("2026-11-04T08:59:00Z"),
+		});
+		mocks.agenda.mockResolvedValue({
+			content: "1. Data migration\n2. Training plan",
+		});
+		mocks.priorTranscripts.mockResolvedValue([
+			{
+				extractedQuestions: [
+					{ text: "Who owns the training plan?" },
+					{ nope: true },
+				],
+			},
+		]);
+
+		await suggestParlumeMeetingContribution(input);
+
+		const [{ prompt }] = mocks.generate.mock.calls[0];
+		expect(prompt).toContain(
+			'<meeting_input source="agenda" trust="untrusted">\n1. Data migration\n2. Training plan\n</meeting_input>',
+		);
+		expect(prompt).toContain(
+			'<meeting_input source="previous_meeting_questions" trust="untrusted">\n- Who owns the training plan?\n</meeting_input>',
+		);
+		expect(mocks.agenda).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					projectId: "project-1",
+					linkedMeetingId: "series-1",
+					status: "READY",
+					occurrenceStart: {
+						gte: new Date("2026-11-04T00:00:00Z"),
+						lt: new Date("2026-11-05T00:00:00Z"),
+					},
+				},
+			}),
+		);
+		expect(mocks.priorTranscripts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "project-1",
+				organizationId: "org-1",
+				linkedMeetingId: "series-1",
+				before: new Date("2026-11-04T09:00:00Z"),
+				take: 1,
+			}),
+		);
+	});
+
+	it("still asks when the agenda or previous meeting cannot be read", async () => {
+		mocks.session.mockResolvedValue({
+			id: "session-1",
+			projectId: "project-1",
+			organizationId: "org-1",
+			userId: "user-1",
+			suggestionsEnabled: true,
+			suggestionAudience: "MEETING",
+			linkedMeetingId: "series-1",
+			occurrenceStart: null,
+			createdAt: new Date("2026-11-04T08:59:00Z"),
+		});
+		mocks.agenda.mockRejectedValue(new Error("database unavailable"));
+		mocks.priorTranscripts.mockRejectedValue(new Error("timeout"));
+
+		await expect(suggestParlumeMeetingContribution(input)).resolves.toEqual(
+			answered,
+		);
+	});
+
+	it("answers with the session's current audience", async () => {
+		mocks.session.mockResolvedValue({
+			id: "session-1",
+			projectId: "project-1",
+			organizationId: "org-1",
+			userId: "user-1",
+			suggestionsEnabled: true,
+			suggestionAudience: "TEAM",
+			linkedMeetingId: null,
+			occurrenceStart: null,
+			createdAt: new Date("2026-11-04T08:59:00Z"),
+		});
+
+		await expect(
+			suggestParlumeMeetingContribution({ ...input, teamAudience: true }),
+		).resolves.toEqual({ ...answered, audience: "TEAM" });
+	});
+
+	// A bridge that cannot keep a suggestion off the chat would post a
+	// team-only one to every participant.
+	it("offers a team-only session nothing through a bridge that would post it", async () => {
+		mocks.session.mockResolvedValue({
+			id: "session-1",
+			projectId: "project-1",
+			organizationId: "org-1",
+			userId: "user-1",
+			suggestionsEnabled: true,
+			suggestionAudience: "TEAM",
+			linkedMeetingId: null,
+			occurrenceStart: null,
+			createdAt: new Date("2026-11-04T08:59:00Z"),
+		});
+
+		await expect(suggestParlumeMeetingContribution(input)).resolves.toEqual(
+			{ suggest: false },
+		);
+		expect(mocks.generate).not.toHaveBeenCalled();
+	});
+
+	it("passes a missed question through with its kind", async () => {
+		mocks.generate.mockResolvedValue({
+			object: {
+				suggest: true,
+				kind: "missed_question",
+				text: "Who signs off the migration?",
+				speaker: "Dana",
+				quote: "we cover the data migration",
+				topic: "Data migration",
+			},
+		});
+
+		await expect(suggestParlumeMeetingContribution(input)).resolves.toEqual(
+			{
+				suggest: true,
+				kind: "missed_question",
+				text: "Who signs off the migration?",
+				speaker: "Dana",
+				quote: "we cover the data migration",
+				topic: "Data migration",
+				audience: "MEETING",
+			},
 		);
 	});
 
@@ -314,7 +576,7 @@ describe("suggestParlumeMeetingContribution", () => {
 		mocks.retrieve.mockRejectedValue(new Error("No embeddings"));
 
 		await expect(suggestParlumeMeetingContribution(input)).resolves.toEqual(
-			anchored,
+			answered,
 		);
 		expect(mocks.generate.mock.calls[0]?.[0].prompt).not.toContain(
 			'source="project"',
@@ -329,6 +591,7 @@ describe("suggestParlumeMeetingContribution", () => {
 		await expect(suggestParlumeMeetingContribution(input)).resolves.toEqual(
 			{
 				suggest: false,
+				audience: "MEETING",
 			},
 		);
 		expect(mocks.log).toHaveBeenCalledWith(

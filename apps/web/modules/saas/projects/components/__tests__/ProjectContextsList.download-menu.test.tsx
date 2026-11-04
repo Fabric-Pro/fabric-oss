@@ -373,3 +373,41 @@ describe("ProjectContextsList — downloading an uploaded OpenAPI file (Fizzy #2
 		).not.toBeInTheDocument();
 	});
 });
+
+describe("ProjectContextsList — connecting a repository from Context (Fizzy #3430)", () => {
+	beforeEach(() => {
+		contextsListMock.mockReset();
+		gateRef.current = null;
+	});
+
+	it("offers Connect repository and calls the handler", async () => {
+		serveContexts([
+			uploadedContext("ctx_spec", "API_SPEC", "petstore.json"),
+		]);
+		const onConnectRepository = vi.fn();
+		const user = userEvent.setup();
+		wrap(
+			<ProjectContextsList
+				projectId="proj_1"
+				onConnectRepository={onConnectRepository}
+			/>,
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: /connect repository/i }),
+		);
+		expect(onConnectRepository).toHaveBeenCalledTimes(1);
+	});
+
+	it("shows no Connect repository button without a handler", async () => {
+		serveContexts([
+			uploadedContext("ctx_spec", "API_SPEC", "petstore.json"),
+		]);
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		await screen.findByRole("button", { name: /add context/i });
+		expect(
+			screen.queryByRole("button", { name: /connect repository/i }),
+		).not.toBeInTheDocument();
+	});
+});

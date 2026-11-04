@@ -458,6 +458,101 @@ async function performTokenRefresh(
 const GITHUB_DEFAULT_TOKEN_LIFETIME_MS = 8 * 60 * 60 * 1000;
 
 /**
+ * The OAuth client that may refresh a credential-manager grant (ADR-026):
+ * resolved exactly as the legacy paths do (`getGitHubClientCredentials`: env,
+ * then the organization's or owner's `GITHUB_OAUTH_APP` record), and only
+ * when it is the client named by the grant's `issuer`. A grant exchanged
+ * under another client is refused by GitHub as if it were dead, so a mismatch
+ * resolves to no client rather than a misleading rejection.
+ *
+ * Static configuration: call it BEFORE taking a refresh lock.
+ */
+export async function resolveGitHubRefreshClient(input: {
+	issuer?: string;
+	userId?: string;
+	organizationId?: string;
+}): Promise<{ clientId: string; clientSecret: string } | null> {
+	const creds = await getGitHubClientCredentials(
+		input.userId,
+		input.organizationId,
+	);
+	if (!creds) {
+		return null;
+	}
+	if (input.issuer && sanitizeCredential(input.issuer) !== creds.clientId) {
+		console.warn(
+			"[GitHub] Credential refresh skipped: the configured OAuth client is not the one that issued the grant",
+		);
+		return null;
+	}
+	return creds;
+}
+
+export const GITHUB_REFRESH_EXCHANGE_BUDGET_MS =
+	GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS;
+
+/**
+ * One GitHub refresh-token exchange, through the same `refreshOAuthToken`
+ * call, endpoint and deadline as the legacy refreshers. Persists nothing:
+ * the caller writes the result under its own lock and fence.
+ *
+ * `rejected` only when GitHub named the grant as dead (`isGrantRejected`);
+ * a network fault, a 5xx or any ambiguous code is `unavailable`, so the
+ * caller keeps the stored token and blames nobody.
+ */
+export async function exchangeGitHubRefreshToken(input: {
+	refreshToken: string;
+	client: { clientId: string; clientSecret: string };
+}): Promise<
+	| {
+			ok: true;
+			accessToken: string;
+			/** Null when GitHub did not rotate the refresh token. */
+			refreshToken: string | null;
+			expiresAt: Date;
+			scope: string | null;
+	  }
+	| { ok: false; reason: "rejected" | "unavailable" }
+> {
+	let result: Awaited<ReturnType<typeof refreshOAuthToken>>;
+	try {
+		result = await refreshOAuthToken({
+			tokenEndpoint: "https://github.com/login/oauth/access_token",
+			refreshToken: input.refreshToken,
+			clientId: input.client.clientId,
+			clientSecret: input.client.clientSecret,
+			timeoutMs: GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS,
+		});
+	} catch {
+		return { ok: false, reason: "unavailable" };
+	}
+	if (!result.ok) {
+		// `errorMessage` is redacted and bounded by `refreshOAuthToken`.
+		console.warn(
+			`[GitHub] Credential refresh failed: ${result.errorMessage}`,
+		);
+		return {
+			ok: false,
+			reason: isGrantRejected(result.errorCode)
+				? "rejected"
+				: "unavailable",
+		};
+	}
+	return {
+		ok: true,
+		accessToken: result.accessToken,
+		refreshToken: result.refreshToken,
+		expiresAt: new Date(
+			Date.now() +
+				(result.expiresIn
+					? result.expiresIn * 1000
+					: GITHUB_DEFAULT_TOKEN_LIFETIME_MS),
+		),
+		scope: result.scope,
+	};
+}
+
+/**
  * A stored token expiring beyond this window counts as already-fresh — when a
  * concurrent refresher persisted it, the loser reuses it instead of exchanging
  * again (mirrors the 60 s buffer in the code-search route).

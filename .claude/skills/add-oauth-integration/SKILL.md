@@ -20,30 +20,10 @@ OAuth integrations allow users to connect third-party services using OAuth 2.0 f
 
 ## Architecture Overview
 
-```
-User clicks "Connect" → OAuth popup → Provider auth → Callback stores token
-                                                            ↓
-                                                   WorkflowIntegration table
-                                                            ↓
-                        ┌───────────────────────────────────┴───────────────────────────────────┐
-                        ↓                                                                       ↓
-              TASK AGENT PATH                                                      ORCHESTRATOR PATH
-         (Custom agents: /app/agents/{id})                                 (Fabric AI: /app/agents/fabric-ai)
-                        ↓                                                                       ↓
-         mcp-tools.ts → loadMcpConfiguration                               preload-resources.ts → loadOAuthIntegrationTools
-         agent-execution.ts → workflow guidance                            initialization.ts → passes enabledIntegrationIds
-```
-
-## ⚠️ CRITICAL: Two Code Paths
-
-OAuth integrations must be implemented in **BOTH** code paths:
-
-| Path | Interface | When Used | Key Files |
-|------|-----------|-----------|-----------|
-| **Task Agent** | `/app/agents/{agentId}` | Custom registered agents | `mcp-tools.ts`, `agent-execution.ts` |
-| **Orchestrator** | `/app/agents/fabric-ai` | Fabric AI Agent (main interface) | `preload-resources.ts`, `initialization.ts` |
-
-**If you only implement the Task Agent path, your integration will NOT work in Fabric AI Agent!**
+OAuth tools are loaded separately by the orchestrator and by supported custom
+agents. For example, `agent-execution-core/agent-executor.ts` loads Microsoft
+Teams OAuth tools for custom agents. Register the provider, account and workflow
+guidance, then update the tool-loading paths that should support the integration.
 
 ## Files to Update (Checklist)
 
@@ -177,94 +157,12 @@ export {
 } from "./conditional-accounts";
 ```
 
-### 5. Tool Execution in Temporal
-**File:** `packages/temporal/src/activities/task-agent/mcp-tools.ts`
-
-Add tool execution handler:
-
-```typescript
-// 1. Add check in executeTaskAgentTool
-if (mcpTool.configId.startsWith("your-provider-connected:")) {
-	const methodName = toolName.split("__")[1] || toolName;
-	return executeYourProviderTool(methodName, args, userId, organizationId);
-}
-
-// 2. Implement the execution function
-async function executeYourProviderTool(
-	methodName: string,
-	args: Record<string, unknown>,
-	userId: string,
-	organizationId?: string,
-): Promise<unknown> {
-	// Get token from WorkflowIntegration (uses XOR pattern)
-	const integration = organizationId
-		? await db.workflowIntegration.findFirst({
-				where: { organizationId, provider: "YOUR_PROVIDER", isActive: true },
-			})
-		: await db.workflowIntegration.findFirst({
-				where: { userId, organizationId: null, provider: "YOUR_PROVIDER", isActive: true },
-			});
-
-	if (!integration?.credentials) {
-		throw new Error("Provider not connected. Please connect in Settings > Integrations.");
-	}
-
-	const credentialsJson = decryptApiKey(integration.credentials);
-	const { access_token } = JSON.parse(credentialsJson);
-
-	// Call provider API based on methodName
-	switch (methodName) {
-		case "list_items":
-			// Implement API call
-			break;
-		// ... more cases
-	}
-}
-
-// 3. Add conditional loading in loadMcpConfiguration
-const yourProviderIntegration = organizationId
-	? await db.workflowIntegration.findFirst({
-			where: { organizationId, provider: "YOUR_PROVIDER", isActive: true },
-		})
-	: await db.workflowIntegration.findFirst({
-			where: { userId, organizationId: null, provider: "YOUR_PROVIDER", isActive: true },
-		});
-
-if (yourProviderIntegration) {
-	const { YOUR_PROVIDER_ACCOUNT } = await import("@repo/mcp-registry");
-	// Add tools from YOUR_PROVIDER_ACCOUNT.mcps
-}
-```
-
-### 6. Agent Execution - Add Workflow Guidance
-**File:** `packages/temporal/src/activities/task-agent/agent-execution.ts`
-
-```typescript
-// 1. Import the guidance
-import {
-	GITHUB_WORKFLOW_GUIDANCE,
-	MICROSOFT_TEAMS_WORKFLOW_GUIDANCE,
-	YOUR_PROVIDER_WORKFLOW_GUIDANCE, // Add import
-	getAlwaysEnabledWorkflowGuidance,
-} from "@repo/mcp-registry";
-
-// 2. Check if tools are connected
-const hasYourProviderConnected = mcpConfig.tools.some((t) =>
-	t.configId.startsWith("your-provider-connected:"),
-);
-
-// 3. Add guidance in buildAgentSystemPrompt
-if (hasYourProviderConnected && YOUR_PROVIDER_WORKFLOW_GUIDANCE) {
-	workflowGuidance = workflowGuidance
-		? `${workflowGuidance}\n\n${YOUR_PROVIDER_WORKFLOW_GUIDANCE}`
-		: YOUR_PROVIDER_WORKFLOW_GUIDANCE;
-}
-```
-
-### 7. Orchestrator Path - Preload Resources (CRITICAL!)
+### 5. Orchestrator Path - Preload Resources (CRITICAL!)
 **File:** `packages/temporal/src/activities/orchestrator/preload/preload-resources.ts`
 
-This is the **most commonly missed step**. Without this, your integration works in custom agents but NOT in Fabric AI Agent.
+Orchestrator preloading is separate from custom-agent loading. Adding a provider
+to a custom agent does not make its tools available to Fabric AI Agent; add the
+provider here as well when it should be available through the orchestrator.
 
 ```typescript
 // In loadOAuthIntegrationTools function, add a new block for your provider:
@@ -342,7 +240,7 @@ if (yourProviderIntegration?.accessToken) {
 }
 ```
 
-### 8. Orchestrator Path - Initialization Phase
+### 6. Orchestrator Path - Initialization Phase
 **File:** `packages/temporal/src/workflows/orchestrator/phases/initialization.ts`
 
 Ensure `enabledIntegrationIds` is passed to the preload activity:
@@ -373,7 +271,7 @@ export interface PreloadResourcesInput {
 
 ## Part 2: UI and Configuration
 
-### 9. Plugin UI Components
+### 7. Plugin UI Components
 **Directory:** `apps/web/modules/saas/workflows/lib/plugins/your-provider/`
 
 Create these files:
@@ -508,18 +406,7 @@ Check Temporal worker logs for:
 
 ## Common Pitfalls
 
-### 1. Missing Orchestrator Path (CRITICAL!)
-**Problem:** Integration works in custom agents (`/app/agents/{id}`) but NOT in Fabric AI Agent (`/app/agents/fabric-ai`).
-
-**Cause:** You only implemented the Task Agent path and forgot the Orchestrator path.
-
-**Solution:** Add your integration to BOTH:
-1. `packages/temporal/src/activities/task-agent/mcp-tools.ts` (Task Agent)
-2. `packages/temporal/src/activities/orchestrator/preload/preload-resources.ts` (Orchestrator)
-
-See sections 7-8 above for the Orchestrator implementation.
-
-### 2. enabledIntegrationIds Not Passed Through
+### 1. enabledIntegrationIds Not Passed Through
 **Problem:** Integration is connected and enabled in UI, but tools don't load in Fabric AI Agent.
 
 **Cause:** `enabledIntegrationIds` isn't being passed from workflow input to preload activity.
@@ -532,7 +419,7 @@ const preloadedResources = await preloadResourcesActivity({
 });
 ```
 
-### 3. Integration ID Format Mismatch
+### 2. Integration ID Format Mismatch
 **Problem:** Integration shows as enabled in UI but preload function says "disabled in preferences".
 
 **Cause:** The UI may pass IDs in different formats:
@@ -548,7 +435,7 @@ const isEnabledViaFilterIds = filterIds
 	: false;
 ```
 
-### 4. Provider Name Mismatch
+### 3. Provider Name Mismatch
 **Problem:** After OAuth completes, UI doesn't update to show connected state.
 
 **Cause:** The `providerName` in your Settings component doesn't match the `name` field in `oauth-providers.ts`.
@@ -562,31 +449,30 @@ const provider = { name: "Microsoft 365" };
 <OAuthSettings providerName="Microsoft 365" ... />
 ```
 
-### 5. "OAuth not configured on server"
+### 4. "OAuth not configured on server"
 **Problem:** Integration shows this message instead of Connect button.
 
 **Solution:**
 1. Check env vars are set in `.env.local`
 2. Restart the dev server (env vars are loaded at startup)
 
-### 6. Tools Not Appearing in Fabric AI Agent
+### 5. Tools Not Appearing in Fabric AI Agent
 **Problem:** Connected but AI doesn't use your tools.
 
 **Causes & Solutions:**
 1. **Missing Orchestrator path**: Add to `preload-resources.ts` (most common!)
-2. **Missing from loadMcpConfiguration**: Add conditional loading check in Task Agent path
-3. **Missing workflow guidance**: Add guidance to agent-execution.ts
-4. **Using wrong interface**: Use Fabric AI Agent (`/app/agents/fabric-ai`), not basic Chat
+2. **Missing workflow guidance**: Register guidance in `packages/mcp-registry/src/workflow-guidance.ts` and wire it into the supported loading path.
+3. **Using wrong interface**: Use Fabric AI Agent (`/app/agents/fabric-ai`), not basic Chat
 
-### 7. Tool Execution Fails
+### 6. Tool Execution Fails
 **Problem:** AI tries to use tool but gets error.
 
 **Solutions:**
-1. Check `executeYourProviderTool` function exists in mcp-tools.ts
+1. Check the provider's tools are wired into the loading path you updated (`orchestrator/preload/preload-resources.ts` for Fabric AI Agent, `agent-execution-core/agent-executor.ts` for custom agents)
 2. Check configId prefix matches (`your-provider-connected:`)
 3. Verify WorkflowIntegration record exists with correct provider enum
 
-### 8. Tenant Isolation Issues
+### 7. Tenant Isolation Issues
 **Problem:** Personal credentials used in org context or vice versa.
 
 **Solution:** Always use XOR pattern in queries:
@@ -606,7 +492,6 @@ const provider = { name: "Microsoft 365" };
 - [ ] OAuth Connect button shows (not "not configured")
 - [ ] OAuth flow completes successfully
 - [ ] UI shows "Connected" status
-- [ ] **Task Agent path**: Tools load in custom agents (`/app/agents/{id}`)
 - [ ] **Orchestrator path**: Tools load in Fabric AI Agent (`/app/agents/fabric-ai`)
 - [ ] Enable/disable toggle in Orchestrator preferences works
 - [ ] AI can execute tools successfully
@@ -621,9 +506,6 @@ For reference, see the Microsoft Teams implementation:
 | OAuth Provider | `packages/api/modules/integrations/lib/oauth-providers.ts` → `microsoftGraphProvider` |
 | Workflow Guidance | `packages/mcp-registry/src/workflow-guidance.ts` → `MICROSOFT_TEAMS_WORKFLOW_GUIDANCE` |
 | Account Definition | `packages/mcp-registry/src/conditional-accounts.ts` → `MICROSOFT_TEAMS_ACCOUNT` |
-| **Task Agent Path** | |
-| Tool Execution | `packages/temporal/src/activities/task-agent/mcp-tools.ts` → `executeMicrosoftTeamsTool` |
-| Agent Guidance | `packages/temporal/src/activities/task-agent/agent-execution.ts` |
 | **Orchestrator Path** | |
 | Preload Resources | `packages/temporal/src/activities/orchestrator/preload/preload-resources.ts` → `loadOAuthIntegrationTools` |
 | Initialization | `packages/temporal/src/workflows/orchestrator/phases/initialization.ts` → passes `enabledIntegrationIds` |

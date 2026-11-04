@@ -88,6 +88,20 @@ export interface ContextLock {
 	files: Record<string, ContextLockEntry>;
 }
 
+/**
+ * A lock that confirms nothing: what `fabric context push --init` and
+ * `fabric context reset <dir>` leave, so the next push sends every file as
+ * new and names no earlier version.
+ */
+export function emptyContextLock(projectId: string, now: Date): ContextLock {
+	return {
+		version: CONTEXT_LOCK_VERSION,
+		projectId,
+		pushedAt: now.toISOString(),
+		files: {},
+	};
+}
+
 export function contextLockPath(root: string): string {
 	return path.join(root, CONTEXT_LOCK_DIRECTORY, CONTEXT_LOCK_FILENAME);
 }

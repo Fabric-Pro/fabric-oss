@@ -11,15 +11,24 @@ import {
 import { printOutput } from "../output.js";
 import { classifyCheckout } from "./checkout.js";
 import * as git from "./git.js";
+import {
+	overrideMatcher,
+	readLocalOverrides,
+	reportOverriddenLeftOut,
+} from "./local-overrides.js";
 import { computeNativePushPlan } from "./native-push-plan.js";
 import { lookUpOpenProposals } from "./open-proposals.js";
-import { materializePushChanges, setAsideProposed } from "./push.js";
-import { splitMessage, waitForPullRequest } from "./pull-request-wait.js";
 import {
+	type PushPullRequestStatus,
 	pullRequestVerdict,
 	pushPullRequest,
-	type PushPullRequestStatus,
 } from "./pull-request-verdict.js";
+import { splitMessage, waitForPullRequest } from "./pull-request-wait.js";
+import {
+	materializePushChanges,
+	setAsideOverridden,
+	setAsideProposed,
+} from "./push.js";
 
 export async function runNativeInstructionPush(input: {
 	client: FabricClient;
@@ -99,12 +108,24 @@ export async function runNativeInstructionPush(input: {
 			7,
 		);
 	}
-	let plan = await computeNativePushPlan({
-		root: input.root,
-		files: listed.files,
-		changedPaths: changed.value,
-		added: input.add,
-	});
+	// The developer's local overrides are never sent, `--add` included.
+	const isOverridden = overrideMatcher(await readLocalOverrides(input.root));
+	const planned = setAsideOverridden(
+		await computeNativePushPlan({
+			root: input.root,
+			files: listed.files,
+			changedPaths: changed.value,
+			added: (input.add ?? []).filter((p) => !isOverridden(p)),
+		}),
+		isOverridden,
+	);
+	reportOverriddenLeftOut(
+		[
+			...planned.overridden,
+			...(input.add ?? []).filter((p) => isOverridden(p)),
+		].sort(),
+	);
+	let plan = planned.plan;
 	if (plan.entries.length === 0)
 		throw new CliFailure(
 			"Nothing to push: Git reports no instruction content changes. Add a new file with --add <path>.",

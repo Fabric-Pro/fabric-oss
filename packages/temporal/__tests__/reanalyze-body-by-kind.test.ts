@@ -19,7 +19,7 @@ const { mocks, FakeAIProviderNotConfiguredError } = vi.hoisted(() => {
 	}
 	return {
 		mocks: {
-			generateObject: vi.fn(),
+			generateText: vi.fn(),
 			getAIModelWithMetadata: vi.fn(),
 			logModelUsageAsync: vi.fn(),
 			getBoundPromptForAgent: vi.fn(),
@@ -31,8 +31,9 @@ const { mocks, FakeAIProviderNotConfiguredError } = vi.hoisted(() => {
 });
 
 vi.mock("@repo/ai", () => ({
+	Output: { object: (spec: unknown) => spec },
 	AIProviderNotConfiguredError: FakeAIProviderNotConfiguredError,
-	generateObject: mocks.generateObject,
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -110,8 +111,8 @@ describe("reanalyzeBodyByKind — BUG", () => {
 			"Unknown.",
 			"Null form ref on first render.",
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: { needsMoreInfo: false, markdown: merged },
+		mocks.generateText.mockResolvedValue({
+			output: { needsMoreInfo: false, markdown: merged },
 			usage: {},
 		});
 		const res = await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
@@ -140,8 +141,8 @@ describe("reanalyzeBodyByKind — BUG", () => {
 			"login is broken",
 			"user says login broke",
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: { needsMoreInfo: false, markdown: mutated },
+		mocks.generateText.mockResolvedValue({
+			output: { needsMoreInfo: false, markdown: mutated },
 			usage: {},
 		});
 		const res = await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
@@ -152,8 +153,8 @@ describe("reanalyzeBodyByKind — BUG", () => {
 
 	it("safe-holds when the model drops the Original Description section", async () => {
 		const dropped = "## Steps to Reproduce\n1. x\n## Actual Result\ny";
-		mocks.generateObject.mockResolvedValue({
-			object: { needsMoreInfo: false, markdown: dropped },
+		mocks.generateText.mockResolvedValue({
+			output: { needsMoreInfo: false, markdown: dropped },
 			usage: {},
 		});
 		const res = await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
@@ -164,8 +165,8 @@ describe("reanalyzeBodyByKind — BUG", () => {
 	it("safe-holds on a destructive (cross-type) rewrite", async () => {
 		const reformatted =
 			"## Feature Narrative\nAs a user...\n## Acceptance Criteria\nGIVEN...";
-		mocks.generateObject.mockResolvedValue({
-			object: { needsMoreInfo: false, markdown: reformatted },
+		mocks.generateText.mockResolvedValue({
+			output: { needsMoreInfo: false, markdown: reformatted },
 			usage: {},
 		});
 		const res = await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
@@ -179,8 +180,8 @@ describe("reanalyzeBodyByKind — FEATURE", () => {
 		"As a user, I want bulk export, so that I can archive.\n\n## Overview\nExport to CSV.\n\n## Open Questions\n- Which formats?";
 
 	it("returns merged description + AC and uses the feature prompt", async () => {
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				description: `${FEATURE_BODY}\n- Add: rate limits?`,
 				acceptanceCriteria: "GIVEN export WHEN large THEN paginates",
 			},
@@ -205,8 +206,8 @@ describe("reanalyzeBodyByKind — FEATURE", () => {
 	});
 
 	it("does not wipe existing AC when the model returns blank AC", async () => {
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				description: `${FEATURE_BODY}\nmore`,
 				acceptanceCriteria: "  ",
 			},
@@ -226,19 +227,19 @@ describe("reanalyzeBodyByKind — FEATURE", () => {
 
 describe("reanalyzeBodyByKind — FR-25 locked-attachment rule", () => {
 	it("appends the DEDICATED ATTACHMENTS rule to the BUG re-analysis prompt", async () => {
-		mocks.generateObject.mockResolvedValue({
-			object: { needsMoreInfo: false, markdown: BUG_BODY },
+		mocks.generateText.mockResolvedValue({
+			output: { needsMoreInfo: false, markdown: BUG_BODY },
 			usage: {},
 		});
 		await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
-		const prompt = mocks.generateObject.mock.calls[0][0].prompt as string;
+		const prompt = mocks.generateText.mock.calls[0][0].prompt as string;
 		expect(prompt).toContain("DEDICATED ATTACHMENTS");
 	});
 
 	it("appends the DEDICATED ATTACHMENTS rule to the FEATURE re-analysis prompt", async () => {
 		const body = "As a user, I want X, so that Y.";
-		mocks.generateObject.mockResolvedValue({
-			object: { description: body },
+		mocks.generateText.mockResolvedValue({
+			output: { description: body },
 			usage: {},
 		});
 		await reanalyzeBodyByKind({
@@ -246,7 +247,7 @@ describe("reanalyzeBodyByKind — FR-25 locked-attachment rule", () => {
 			kind: "FEATURE",
 			existingDescription: body,
 		});
-		const prompt = mocks.generateObject.mock.calls[0][0].prompt as string;
+		const prompt = mocks.generateText.mock.calls[0][0].prompt as string;
 		expect(prompt).toContain("DEDICATED ATTACHMENTS");
 	});
 });
@@ -258,11 +259,11 @@ describe("reanalyzeBodyByKind — failure modes safe-hold", () => {
 		expect(res.fallbackUsed).toBe(true);
 		expect(res.fallbackReason).toBe("prompt_not_bound");
 		expect(res.description).toBe(BUG_BODY);
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("safe-holds when the provider is not configured", async () => {
-		mocks.generateObject.mockRejectedValue(
+		mocks.generateText.mockRejectedValue(
 			new FakeAIProviderNotConfiguredError(),
 		);
 		const res = await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
@@ -272,7 +273,7 @@ describe("reanalyzeBodyByKind — failure modes safe-hold", () => {
 	});
 
 	it("safe-holds when the LLM call throws", async () => {
-		mocks.generateObject.mockRejectedValue(new Error("boom"));
+		mocks.generateText.mockRejectedValue(new Error("boom"));
 		const res = await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
 		expect(res.fallbackUsed).toBe(true);
 		expect(res.fallbackReason).toBe("llm_error");
@@ -285,8 +286,8 @@ describe("reanalyzeBodyByKind — function-tag role clause (Fizzy #1767 Stage 4)
 		"PROJECT CONTRIBUTOR ROLES — sentinel-test-clause-reanalyze-body";
 
 	beforeEach(() => {
-		mocks.generateObject.mockResolvedValue({
-			object: { needsMoreInfo: false, markdown: BUG_BODY },
+		mocks.generateText.mockResolvedValue({
+			output: { needsMoreInfo: false, markdown: BUG_BODY },
 			usage: {},
 		});
 	});
@@ -303,7 +304,7 @@ describe("reanalyzeBodyByKind — function-tag role clause (Fizzy #1767 Stage 4)
 			requesterUserId: "u1",
 			surface: "reanalyze-body",
 		});
-		const prompt = mocks.generateObject.mock.calls[0][0].prompt as string;
+		const prompt = mocks.generateText.mock.calls[0][0].prompt as string;
 		expect(prompt).toContain(ROLE_CLAUSE_SENTINEL);
 	});
 
@@ -313,14 +314,13 @@ describe("reanalyzeBodyByKind — function-tag role clause (Fizzy #1767 Stage 4)
 			ROLE_CLAUSE_SENTINEL,
 		);
 		await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
-		const withClause = mocks.generateObject.mock.calls[0][0]
-			.prompt as string;
+		const withClause = mocks.generateText.mock.calls[0][0].prompt as string;
 
 		// ...then the flag-OFF shape, from an otherwise-identical invocation.
-		mocks.generateObject.mockClear();
+		mocks.generateText.mockClear();
 		mocks.getProjectFunctionTagClause.mockResolvedValue("");
 		await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
-		const withoutClause = mocks.generateObject.mock.calls[0][0]
+		const withoutClause = mocks.generateText.mock.calls[0][0]
 			.prompt as string;
 
 		expect(withoutClause).not.toContain(ROLE_CLAUSE_SENTINEL);
@@ -346,8 +346,8 @@ describe("reanalyzeBodyByKind — markdown entity cleanup", () => {
 			"Unknown.",
 			"The team&#x27;s null form ref, per QA&#x27;s repro.",
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: { markdown: merged, needsMoreInfo: false },
+		mocks.generateText.mockResolvedValue({
+			output: { markdown: merged, needsMoreInfo: false },
 			usage: {},
 		});
 
@@ -364,8 +364,8 @@ describe("reanalyzeBodyByKind — markdown entity cleanup", () => {
 			"Unknown.",
 			"The team&amp;#x27;s decision stands.",
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: { markdown: merged, needsMoreInfo: false },
+		mocks.generateText.mockResolvedValue({
+			output: { markdown: merged, needsMoreInfo: false },
 			usage: {},
 		});
 
@@ -376,8 +376,8 @@ describe("reanalyzeBodyByKind — markdown entity cleanup", () => {
 	});
 
 	it("cleans a FEATURE description and its acceptance criteria", async () => {
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				description: "## Story\nThe user&#x27;s workspace loads.",
 				acceptanceCriteria:
 					"GIVEN the user&#x27;s session THEN it works.",
@@ -414,8 +414,8 @@ describe("reanalyzeBodyByKind — markdown entity cleanup", () => {
 			},
 			format: "HANDLEBARS",
 		});
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				description: "## Story\nR&D <team> body.",
 				acceptanceCriteria: "### Feed Generation & Access",
 			},
@@ -433,7 +433,7 @@ describe("reanalyzeBodyByKind — markdown entity cleanup", () => {
 		});
 
 		// Assert
-		const prompt = JSON.stringify(mocks.generateObject.mock.calls[0]?.[0]);
+		const prompt = JSON.stringify(mocks.generateText.mock.calls[0]?.[0]);
 		expect(prompt).toContain("Feed Generation & Access");
 		expect(prompt).toContain("R&D <team> body.");
 		expect(prompt).toContain('GIVEN a \\"valid\\" feed');
@@ -446,8 +446,8 @@ describe("reanalyzeBodyByKind — markdown entity cleanup", () => {
 			"Unknown.",
 			"Affects R&D and Q&A flows.",
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: { markdown: merged, needsMoreInfo: false },
+		mocks.generateText.mockResolvedValue({
+			output: { markdown: merged, needsMoreInfo: false },
 			usage: {},
 		});
 
@@ -462,7 +462,7 @@ describe("merge cancellation", () => {
 		"forwards abort to %s generation and safe-holds",
 		async (kind) => {
 			const controller = new AbortController();
-			mocks.generateObject.mockImplementation(async ({ abortSignal }) => {
+			mocks.generateText.mockImplementation(async ({ abortSignal }) => {
 				expect(abortSignal).toBe(controller.signal);
 				controller.abort();
 				throw new DOMException("Cancelled", "AbortError");
@@ -472,8 +472,8 @@ describe("merge cancellation", () => {
 				kind,
 				abortSignal: controller.signal,
 			});
-			expect(mocks.generateObject).toHaveBeenCalledOnce();
-			expect(mocks.generateObject.mock.calls[0][0].abortSignal).toBe(
+			expect(mocks.generateText).toHaveBeenCalledOnce();
+			expect(mocks.generateText.mock.calls[0][0].abortSignal).toBe(
 				controller.signal,
 			);
 			expect(logger.warn).toHaveBeenCalled();
@@ -494,7 +494,7 @@ describe("merge cancellation", () => {
 		expect(result.fallbackReason).toBe("aborted");
 		expect(mocks.getBoundPromptForAgent).not.toHaveBeenCalled();
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("stops before model resolution if cancelled during prompt lookup", async () => {
@@ -510,7 +510,7 @@ describe("merge cancellation", () => {
 		});
 		expect(result.fallbackReason).toBe("aborted");
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it.each(["BUG", "FEATURE"] as const)(
@@ -519,10 +519,10 @@ describe("merge cancellation", () => {
 			const controller = new AbortController();
 			const body =
 				kind === "BUG" ? BUG_BODY : "## Story\nExisting feature body.";
-			mocks.generateObject.mockImplementationOnce(async () => {
+			mocks.generateText.mockImplementationOnce(async () => {
 				controller.abort();
 				return {
-					object:
+					output:
 						kind === "BUG"
 							? { markdown: body, needsMoreInfo: false }
 							: { description: body },
@@ -543,7 +543,7 @@ describe("merge cancellation", () => {
 	);
 
 	it("safe-holds a provider AbortError when our signal did not abort", async () => {
-		mocks.generateObject.mockRejectedValueOnce(
+		mocks.generateText.mockRejectedValueOnce(
 			new DOMException("Provider timed out", "AbortError"),
 		);
 		const result = await reanalyzeBodyByKind({

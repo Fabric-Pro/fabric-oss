@@ -66,14 +66,22 @@ const gitControl = vi.hoisted(() => ({
 	afterClone: null as null | ((clonePath: string) => Promise<void>),
 	/** When set, reading the cloned commit fails with this error. */
 	logError: null as null | Error,
+	/** Every URL git was handed, and the env each git instance ran with. */
+	urls: [] as string[],
+	envs: [] as Record<string, string>[],
 }));
 
 // simple-git stand-in: a "clone" materialises REPO_FILES at the target path.
 vi.mock("simple-git", () => ({
-	simpleGit: (dir?: string) => ({
-		clone: async (_url: string, clonePath: string) => {
+	simpleGit: ({ baseDir: dir }: { baseDir?: string } = {}) => ({
+		clone: async (url: string, clonePath: string) => {
+			gitControl.urls.push(url);
 			writeRepo(clonePath);
 			await gitControl.afterClone?.(clonePath);
+		},
+		env(env: Record<string, string>) {
+			gitControl.envs.push(env);
+			return this;
 		},
 		listRemote: async () => "ref: refs/heads/main\tHEAD\n",
 		log: async () => {
@@ -175,6 +183,8 @@ beforeEach(() => {
 	gitControl.clonePaths.length = 0;
 	gitControl.afterClone = null;
 	gitControl.logError = null;
+	gitControl.urls.length = 0;
+	gitControl.envs.length = 0;
 });
 
 afterEach(async () => {
@@ -367,6 +377,28 @@ describe("prepareRepositoryActivity", () => {
 			expect(artifactsExist(clonePath)).toBe(false);
 			expect(fs.existsSync(path.dirname(clonePath))).toBe(false);
 		}
+	});
+});
+
+describe("clone credentials", () => {
+	it("hands git a token-free URL and carries the token only in git's environment", async () => {
+		const out = await runActivity(prepareRepositoryActivity, cloneInput());
+
+		expect(gitControl.urls).toEqual([
+			"https://github.com/example-org/example-repo",
+		]);
+		const basic = Buffer.from("x-access-token:example-token").toString(
+			"base64",
+		);
+		expect(gitControl.envs.length).toBeGreaterThan(0);
+		for (const env of gitControl.envs) {
+			expect(env).toMatchObject({
+				GIT_TERMINAL_PROMPT: "0",
+				GIT_CONFIG_KEY_1: "http.https://github.com/.extraHeader",
+				GIT_CONFIG_VALUE_1: `Authorization: Basic ${basic}`,
+			});
+		}
+		expect(JSON.stringify(out)).not.toContain("example-token");
 	});
 });
 

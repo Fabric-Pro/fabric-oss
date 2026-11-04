@@ -185,6 +185,9 @@ vi.mock("simple-git", () => ({
 		},
 		listRemote: async () => "ref: refs/heads/main\tHEAD\n",
 		log: async () => ({ latest: { hash: "0123456789abcdef" } }),
+		env() {
+			return this;
+		},
 	}),
 }));
 

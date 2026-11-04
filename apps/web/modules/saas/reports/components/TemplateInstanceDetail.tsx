@@ -1,10 +1,16 @@
 "use client";
 
 import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
+import {
+	hasProjectKnowledgeSource,
+	type ReportEvidenceConfig,
+	readReportEvidenceConfig,
+} from "@repo/database/prisma/queries/lib/report-evidence";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { gitlabStatusQueryOptions } from "@saas/data-connections/lib/gitlab-status-query";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
+import { useReportConnectionTest } from "@saas/reports/hooks/use-report-connection-test";
 import {
 	findMatchingMcpConfigs,
 	getMcpConfigDisplayName,
@@ -15,8 +21,15 @@ import {
 	humanizeReportError,
 	type ReportErrorContext,
 } from "@saas/reports/lib/report-error-messages";
+import { createReportExecutionRequests } from "@saas/reports/lib/report-execution-request";
 import { computeReportReadiness } from "@saas/reports/lib/report-readiness";
-import { contextFieldsForProviders } from "@saas/reports/lib/report-template-definition";
+import {
+	contextFieldsForProviders,
+	contextWithBoundBoard,
+	parseTemplateDefinition,
+	promptOverrideFields,
+	templateSystemPrompt,
+} from "@saas/reports/lib/report-template-definition";
 import {
 	type ReportInstanceTab,
 	resolveActiveReportTab,
@@ -26,6 +39,7 @@ import {
 	PROVIDER_CONTEXT_FIELDS,
 } from "@saas/shared/components/DataSourceDefinitionBuilder";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
+import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
 import { TIME_ZONES } from "@saas/shared/lib/time-zones";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -124,14 +138,14 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
 import { AiTaskPromptEditor } from "./AiTaskPromptEditor";
 import { ArtifactDeliveryHistoryDialog } from "./ArtifactDeliveryHistoryDialog";
 import { CancelExecutionButton } from "./CancelExecutionButton";
 import { ContextFieldInput } from "./ContextFieldInput";
 import {
+	type CategorizedConnection,
+	connectionGroupsForSource,
 	DataSourceConfigGrid,
 	DataSourceConfigTile,
 	type ConnectionBinding as TileConnectionBinding,
@@ -145,10 +159,18 @@ import {
 	IntegrationSetupGuide,
 	type IntegrationType,
 } from "./IntegrationSetupGuide";
+import {
+	CONNECTIONS_OWNER_ONLY_MESSAGE,
+	OwnerOnlyGenerate,
+} from "./OwnerOnlyGenerate";
+import { ReportArtifactContent } from "./ReportArtifactContent";
 import { ReportConfigBanner } from "./ReportConfigBanner";
+import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
 import { ReportPromptCard } from "./ReportPromptCard";
 import { ReportReadinessRail } from "./ReportReadinessRail";
+import { ReportSystemPromptCard } from "./ReportSystemPromptCard";
 import { ReportTabContent } from "./ReportTabContent";
+import { ReportTemplatePreview } from "./ReportTemplatePreview";
 import { RunDiagnosticsPanel } from "./RunDiagnosticsPanel";
 import { SendArtifactEmailDialog } from "./SendArtifactEmailDialog";
 import {
@@ -230,6 +252,7 @@ export function TemplateInstanceDetail({
 	const _integrationsSettingsUrl = useContextPath("settings/integrations");
 	// Used by the connection issue banner's "Reconnect" action.
 	const mcpSettingsUrl = useContextPath("settings/mcp");
+	const projectSourcePath = useContextPath("projects");
 
 	const {
 		data: instance,
@@ -320,6 +343,7 @@ export function TemplateInstanceDetail({
 	const [hasChanges, setHasChanges] = useState(false);
 
 	// Scheduling state
+	const [reporting, setReporting] = useState<ReportEvidenceConfig>();
 	const [scheduleMode, setScheduleMode] = useState<ScheduleMode>("INHERITED");
 	const [scheduleFrequency, setScheduleFrequency] =
 		useState<ScheduleFrequency>("weekly");
@@ -558,6 +582,8 @@ export function TemplateInstanceDetail({
 				setParameterDefaults(stringDefaults);
 			}
 
+			setReporting(readReportEvidenceConfig(instance.fabricConfig));
+
 			// Initialize Fabric AI config from instance overrides
 			const fabricConfig = instance.fabricConfig as {
 				strategy?: string;
@@ -629,10 +655,20 @@ export function TemplateInstanceDetail({
 		}),
 	);
 
+	const executionRequests = useRef(createReportExecutionRequests());
 	const executeMutation = useMutation(
 		orpc.reports.instances.execute.mutationOptions({
-			onSuccess: () => {
-				toast.success("Report generation started!");
+			onSuccess: (result) => {
+				executionRequests.current.settle(instanceId, result.status);
+				if (result.status === "COMPLETED") {
+					toast.info("This report execution has already finished");
+				} else if (result.startConfirmed) {
+					toast.success("Report generation started");
+				} else {
+					toast.info(
+						"Report queued; waiting for execution confirmation",
+					);
+				}
 				// Start polling immediately
 				setExecutionInProgress(true);
 				refetch();
@@ -640,6 +676,7 @@ export function TemplateInstanceDetail({
 				goToTab("history");
 			},
 			onError: (error) => {
+				executionRequests.current.failed(instanceId);
 				showReportError(error.message, "generate");
 			},
 		}),
@@ -650,6 +687,10 @@ export function TemplateInstanceDetail({
 	const hasActiveExecution = executions.some(
 		(e) => e.status === "RUNNING" || e.status === "PENDING",
 	);
+
+	useEffect(() => {
+		executionRequests.current.observe(instanceId, executions[0]?.status);
+	}, [instanceId, executions[0]?.id, executions[0]?.status]);
 
 	// Clear executionInProgress flag when we detect the execution is no longer active
 	useEffect(() => {
@@ -696,25 +737,18 @@ export function TemplateInstanceDetail({
 		}),
 	);
 
-	const testConnections = useMutation({
-		mutationFn: () =>
-			orpcClient.reports.instances.testConnections({
-				instanceId,
-				organizationId: instanceOrgId,
-			}),
-		onSuccess: (res) => {
-			const bad = res.diagnostics.filter(
-				(d) => d.outcome !== "connected",
-			);
-			if (bad.length) {
-				toast.warning(
-					`${bad.length} data source${bad.length === 1 ? "" : "s"} need attention`,
-				);
-			} else {
-				toast.success("All data sources connected");
-			}
-		},
-		onError: (e) => showReportError(e.message, "test"),
+	// With the report suite, the owner's saved connections are tested on
+	// their own; another viewer's test would run on their own connections.
+	const testConnections = useReportConnectionTest({
+		instanceId,
+		organizationId: instanceOrgId,
+		automatic:
+			reportSuite &&
+			instance?.canGenerate === true &&
+			Object.values(bindings).some(
+				(binding) => binding.type === "mcp" && Boolean(binding.id),
+			),
+		onError: (message) => showReportError(message, "test"),
 	});
 
 	const _handleBindingChange = (reqKey: string, value: string) => {
@@ -918,6 +952,7 @@ export function TemplateInstanceDetail({
 		const hasCustomAiTasks = Object.keys(customAiTasks).length > 0;
 		const hasCustomSystemPrompt = customSystemPrompt.trim().length > 0;
 		const fabricConfig =
+			reporting ||
 			fabricStrategy ||
 			fabricContext ||
 			fabricPattern ||
@@ -925,6 +960,7 @@ export function TemplateInstanceDetail({
 			hasCustomAiTasks ||
 			hasCustomSystemPrompt
 				? {
+						reporting,
 						strategy: fabricStrategy || undefined,
 						context: fabricContext || undefined,
 						pattern: fabricPattern || undefined,
@@ -979,7 +1015,12 @@ export function TemplateInstanceDetail({
 					Object.keys(filteredContext).length > 0
 						? filteredContext
 						: undefined,
-				promptOverride: userPrompt.trim() || undefined,
+				...promptOverrideFields(
+					userPrompt,
+					parseTemplateDefinition(instance?.template.definition)
+						.userPrompt,
+					instance?.connections,
+				),
 				maxIterations: maxIterations || undefined,
 				workflows: [],
 				agents: [],
@@ -1049,7 +1090,23 @@ export function TemplateInstanceDetail({
 	};
 
 	const handleExecute = () => {
-		executeMutation.mutate({ instanceId, organizationId: instanceOrgId });
+		if (
+			executeMutation.isPending ||
+			executionInProgress ||
+			hasActiveExecution
+		) {
+			return;
+		}
+		const requestKey = executionRequests.current.begin(instanceId);
+		if (!requestKey) {
+			return;
+		}
+		testConnections.testBeforeRun();
+		executeMutation.mutate({
+			instanceId,
+			organizationId: instanceOrgId,
+			idempotencyKey: requestKey,
+		});
 	};
 
 	const handleDelete = () => {
@@ -1192,6 +1249,7 @@ export function TemplateInstanceDetail({
 			id: string;
 			key?: string | null;
 			name?: string | null;
+			category?: string | null;
 		} | null;
 	};
 
@@ -1203,6 +1261,18 @@ export function TemplateInstanceDetail({
 	// Find matching MCP configs for a required key (using shared utility)
 	const getMatchingMcpConfigs = (key: string) => {
 		return findMatchingMcpConfigs(userMcpConfigs as McpConfigItem[], key);
+	};
+
+	// Every connected server, for the report suite's all-tools view.
+	const categorizedMcpConfigs = (): CategorizedConnection[] => {
+		const configs: McpConfigItem[] = userMcpConfigs;
+		return configs.map((config) => ({
+			id: config.id,
+			name: getMcpConfigDisplayName(config),
+			type: "mcp",
+			isAuthenticated: isMcpConfigAuthenticated(config),
+			category: config.mcpServer?.category,
+		}));
 	};
 
 	// A data source is "resolvable" when the report can connect to its STORED
@@ -1289,7 +1359,14 @@ export function TemplateInstanceDetail({
 		})
 		.map((d) => d.name);
 
-	const reportReadiness = computeReportReadiness({
+	const projectKnowledgeSelected =
+		hasProjectKnowledgeSource(instance.template.definition) &&
+		!!readReportEvidenceConfig(instance.fabricConfig)?.projectId &&
+		!instance.setupRequiredReason;
+	// A board picked on the data source tile counts as the Board ID field.
+	const readinessContext = contextWithBoundBoard(contextValues, bindings);
+	const sourceReadiness = computeReportReadiness({
+		projectKnowledge: projectKnowledgeSelected,
 		templateNeedsDataSource: hasAnyDataSources,
 		requiredDataSources: requiredDataSources.map((d) => ({
 			key: d.key,
@@ -1301,12 +1378,14 @@ export function TemplateInstanceDetail({
 		diagnostics: testConnections.data?.diagnostics,
 		// Required data sources bound to a config that can't resolve for this user
 		// (not the stored id, not a self-heal fallback) → surfaced as "Reconnect
-		// required". Gated on the configs query so nothing flashes while loading.
-		unresolvableDataSources: mcpConfigsLoaded
-			? requiredDataSources
-					.filter((d) => !isDataSourceResolvable(d.key))
-					.map((d) => d.key)
-			: undefined,
+		// required". Gated on the configs query so nothing flashes while loading,
+		// and left to the owner: the list holds the viewer's configs, not theirs.
+		unresolvableDataSources:
+			mcpConfigsLoaded && instance.canGenerate
+				? requiredDataSources
+						.filter((d) => !isDataSourceResolvable(d.key))
+						.map((d) => d.key)
+				: undefined,
 		requiredParams: requiredParamKeys.map((key) => {
 			const def = templateParams?.properties?.[key]?.default;
 			return {
@@ -1316,24 +1395,41 @@ export function TemplateInstanceDetail({
 				hasDefault: def != null && def !== "",
 			};
 		}),
+		// An optional source left unconnected asks for no context.
 		requiredContextFields: reportSuite
 			? contextFieldsForProviders(
-					requiredDataSources.map((d) => d.key),
+					requiredDataSources
+						.filter((d) => d.required || bindings[d.key]?.id)
+						.map((d) => d.key),
 					PROVIDER_CONTEXT_FIELDS,
 				)
 					.filter((field) => field.required)
 					.map((field) => ({
 						key: field.key,
 						label: field.label,
-						value: contextValues[field.key],
+						value: readinessContext[field.key],
 					}))
 			: undefined,
 		skillsCount: inheritedSkills.length,
 		outputFormat: instance.template.outputFormat,
-		dataSourceLabel:
-			requiredDataSources.map((d) => d.name).join(", ") ||
-			instance.template.name,
+		dataSourceLabel: projectKnowledgeSelected
+			? "Project knowledge"
+			: requiredDataSources.map((d) => d.name).join(", ") ||
+				instance.template.name,
 	});
+
+	const reportReadiness = instance.setupRequiredReason
+		? {
+				...sourceReadiness,
+				hardBlocked: true,
+				blockReason: instance.setupRequiredReason,
+				verdict: {
+					tone: "warning" as const,
+					title: "Project report setup required",
+					subtitle: instance.setupRequiredReason,
+				},
+			}
+		: sourceReadiness;
 
 	const scrollToConnection = () =>
 		connectionCardRef.current?.scrollIntoView({
@@ -1353,7 +1449,7 @@ export function TemplateInstanceDetail({
 			{/* Config issue banner — surfaces any blocking problem up front */}
 			<ReportConfigBanner
 				readiness={reportReadiness}
-				onTest={() => testConnections.mutate()}
+				onTest={testConnections.test}
 				onScrollToConnection={scrollToConnection}
 				onScrollToParams={scrollToParameters}
 				reconnectHref={mcpSettingsUrl}
@@ -1386,31 +1482,43 @@ export function TemplateInstanceDetail({
 							Save Changes
 						</Button>
 					)}
-					<Button
-						onClick={handleExecute}
-						disabled={
-							executeMutation.isPending ||
-							reportReadiness.hardBlocked
-						}
-						title={
-							reportReadiness.hardBlocked
-								? reportReadiness.blockReason
-								: undefined
-						}
-					>
-						{executeMutation.isPending ? (
-							<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
-						) : (
-							<PlayIcon className="mr-2 h-4 w-4" />
+					<OwnerOnlyGenerate canGenerate={instance.canGenerate}>
+						{(ownerOnlyId) => (
+							<Button
+								onClick={handleExecute}
+								disabled={
+									!instance.canGenerate ||
+									executeMutation.isPending ||
+									executionInProgress ||
+									hasActiveExecution ||
+									executionRequests.current.isPending(
+										instanceId,
+									) ||
+									reportReadiness.hardBlocked
+								}
+								title={
+									instance.canGenerate &&
+									reportReadiness.hardBlocked
+										? reportReadiness.blockReason
+										: undefined
+								}
+								aria-describedby={ownerOnlyId}
+							>
+								{executeMutation.isPending ? (
+									<Loader2Icon className="mr-2 h-4 w-4 motion-safe:animate-spin" />
+								) : (
+									<PlayIcon className="mr-2 h-4 w-4" />
+								)}
+								Generate Report
+							</Button>
 						)}
-						Generate Report
-					</Button>
+					</OwnerOnlyGenerate>
 					{/* The report suite keeps this in the readiness rail only. */}
-					{!reportSuite && (
+					{!reportSuite && !projectKnowledgeSelected && (
 						<Button
 							variant="outline"
 							size="sm"
-							onClick={() => testConnections.mutate()}
+							onClick={testConnections.test}
 							disabled={testConnections.isPending}
 						>
 							Test connections
@@ -1549,12 +1657,13 @@ export function TemplateInstanceDetail({
 															key={i}
 															className="bg-background/80 border rounded-lg p-3"
 														>
-															<p className="text-sm text-muted-foreground whitespace-pre-wrap">
-																{agent.task
-																	.length >
-																500
-																	? `${agent.task.slice(0, 500)}...`
-																	: agent.task}
+															<p className="max-h-80 overflow-y-auto text-sm text-muted-foreground whitespace-pre-wrap">
+																{reportSuite ||
+																agent.task
+																	.length <=
+																	500
+																	? agent.task
+																	: `${agent.task.slice(0, 500)}...`}
 															</p>
 														</div>
 													),
@@ -1645,13 +1754,23 @@ export function TemplateInstanceDetail({
 									readOnly={readOnly}
 								/>
 							)}
+							{reportSuite && (
+								<ReportSystemPromptCard
+									customSystemPrompt={customSystemPrompt}
+									templateSystemPrompt={templateSystemPrompt(
+										instance.template.fabricConfig,
+									)}
+									onChange={handleSystemPromptChange}
+									readOnly={readOnly}
+								/>
+							)}
 
 							{/* Inherited Skills */}
 							{inheritedSkills.length > 0 && (
 								<Card>
 									<CardHeader className="pb-3">
 										<CardTitle className="flex items-center gap-2 text-lg">
-											<SparklesIcon className="h-5 w-5 text-highlight" />
+											<PuzzleIcon className="h-5 w-5 text-highlight" />
 											Skills
 										</CardTitle>
 										<CardDescription>
@@ -1667,7 +1786,7 @@ export function TemplateInstanceDetail({
 													className="flex items-center justify-between p-3 rounded-lg border bg-amber-50/30 border-amber-200/50 dark:bg-amber-950/10 dark:border-amber-900/30"
 												>
 													<div className="flex items-center gap-3 min-w-0">
-														<SparklesIcon className="h-4 w-4 text-highlight shrink-0" />
+														<PuzzleIcon className="h-4 w-4 text-highlight shrink-0" />
 														<div className="min-w-0">
 															<span className="font-medium text-sm block truncate">
 																{ts.skill.name}
@@ -1737,6 +1856,40 @@ export function TemplateInstanceDetail({
 											rows={2}
 										/>
 									</div>
+								</CardContent>
+							</Card>
+
+							<Card>
+								<CardHeader className="pb-3">
+									<CardTitle>
+										Reporting period and audience
+									</CardTitle>
+									<CardDescription>
+										Choose the evidence your report covers
+										and who can open it.
+									</CardDescription>
+								</CardHeader>
+								<CardContent>
+									<ReportEvidenceSettings
+										value={reporting}
+										sourceDefinition={
+											instance.template.definition
+										}
+										sourceConnections={instance.connections}
+										organizationId={instanceOrgId}
+										lockAudience={
+											instance.executionCount > 0
+										}
+										lockedProjectId={
+											readReportEvidenceConfig(
+												instance.fabricConfig,
+											)?.projectId
+										}
+										onChange={(next) => {
+											setReporting(next);
+											setHasChanges(true);
+										}}
+									/>
 								</CardContent>
 							</Card>
 
@@ -2569,16 +2722,22 @@ export function TemplateInstanceDetail({
 											<CardHeader>
 												<CardTitle className="flex items-center gap-2">
 													<CodeIcon className="h-4 w-4" />
-													System Prompt
+													{/* The report suite shows the system prompt in its own card. */}
+													{reportSuite
+														? "Iteration budget"
+														: "System Prompt"}
 												</CardTitle>
 												<CardDescription>
-													Customize the AI's behavior
-													and persona for this report
-													instance
+													{reportSuite
+														? "How much data gathering the AI may do for this report"
+														: "Customize the AI's behavior and persona for this report instance"}
 												</CardDescription>
 											</CardHeader>
 											<CardContent className="space-y-4">
-												<div className="space-y-2">
+												<div
+													className="space-y-2"
+													hidden={reportSuite}
+												>
 													<div className="flex items-center justify-between">
 														<Label htmlFor="system-prompt">
 															Custom System Prompt
@@ -2628,29 +2787,36 @@ export function TemplateInstanceDetail({
 												</div>
 
 												{/* Show default prompt as reference */}
-												{!customSystemPrompt && (
-													<div className="bg-muted/50 rounded-lg p-3 text-xs">
-														<p className="font-medium mb-1">
-															Default System
-															Prompt:
-														</p>
-														<p className="text-muted-foreground italic">
-															"You are an AI
-															assistant helping to
-															generate reports and
-															analyze data. Be
-															concise, accurate,
-															and format your
-															response in markdown
-															when appropriate.
-															Base your analysis
-															only on the provided
-															data context. Cite
-															specific data points
-															when making claims."
-														</p>
-													</div>
-												)}
+												{!reportSuite &&
+													!customSystemPrompt && (
+														<div className="bg-muted/50 rounded-lg p-3 text-xs">
+															<p className="font-medium mb-1">
+																Default System
+																Prompt:
+															</p>
+															<p className="text-muted-foreground italic">
+																"You are an AI
+																assistant
+																helping to
+																generate reports
+																and analyze
+																data. Be
+																concise,
+																accurate, and
+																format your
+																response in
+																markdown when
+																appropriate.
+																Base your
+																analysis only on
+																the provided
+																data context.
+																Cite specific
+																data points when
+																making claims."
+															</p>
+														</div>
+													)}
 
 												{/* User Prompt / AI Instructions (the report suite shows it in the Prompt card) */}
 												{!reportSuite && (
@@ -2951,11 +3117,29 @@ export function TemplateInstanceDetail({
 															connectionOptions={
 																connectionOptions
 															}
+															connectionGroups={
+																reportSuite &&
+																!isIntegrationSource
+																	? connectionGroupsForSource(
+																			req.key,
+																			connectionOptions,
+																			categorizedMcpConfigs(),
+																		)
+																	: undefined
+															}
+															connectHref={
+																mcpSettingsUrl
+															}
 															resources={
 																resourceOptions
 															}
 															isLoadingResources={
 																isLoadingResources
+															}
+															connectionLockedReason={
+																instance.canGenerate
+																	? undefined
+																	: CONNECTIONS_OWNER_ONLY_MESSAGE
 															}
 															onConnectionChange={(
 																connectionId,
@@ -3808,10 +3992,27 @@ export function TemplateInstanceDetail({
 											</TableBody>
 										</Table>
 									) : (
-										<p className="text-sm text-muted-foreground text-center py-8">
-											No executions yet. Click "Generate
-											Report" to create your first report.
-										</p>
+										<>
+											<p className="text-sm text-muted-foreground text-center py-8">
+												{instance.canGenerate
+													? 'No executions yet. Click "Generate Report" to create your first report.'
+													: "No reports yet. The report's owner can generate it."}
+											</p>
+											{reportSuite &&
+												instance.projectId && (
+													<ReportTemplatePreview
+														templateId={
+															instance.templateId
+														}
+														projectId={
+															instance.projectId
+														}
+														organizationId={
+															instanceOrgId
+														}
+													/>
+												)}
+										</>
 									)}
 								</CardContent>
 							</Card>
@@ -3820,8 +4021,10 @@ export function TemplateInstanceDetail({
 					<ReportReadinessRail
 						readiness={reportReadiness}
 						onGenerate={handleExecute}
+						canGenerate={instance.canGenerate}
 						isGenerating={executeMutation.isPending}
-						onTest={() => testConnections.mutate()}
+						onTest={testConnections.test}
+						showConnectionTest={!projectKnowledgeSelected}
 						isTesting={testConnections.isPending}
 						latestExecution={latestExecution}
 						executionCount={
@@ -3830,10 +4033,11 @@ export function TemplateInstanceDetail({
 						onViewHistory={() => goToTab("history")}
 						meta={{
 							template: instance.template.name,
-							dataSource:
-								requiredDataSources
-									.map((d) => d.name)
-									.join(", ") || "—",
+							dataSource: projectKnowledgeSelected
+								? "Project knowledge"
+								: requiredDataSources
+										.map((d) => d.name)
+										.join(", ") || "—",
 							output: instance.template.outputFormat,
 							skillsCount: inheritedSkills.length,
 						}}
@@ -3893,128 +4097,11 @@ export function TemplateInstanceDetail({
 					</DialogHeader>
 					<div className="flex-1 overflow-auto border rounded-lg bg-background">
 						{viewingArtifact?.content && (
-							<>
-								{/* Detect if content is HTML (by file extension or content) */}
-								{viewingArtifact.name
-									.toLowerCase()
-									.endsWith(".html") ||
-								viewingArtifact.name
-									.toLowerCase()
-									.endsWith(".htm") ||
-								viewingArtifact.content
-									.trim()
-									.startsWith("<!DOCTYPE") ||
-								viewingArtifact.content
-									.trim()
-									.startsWith("<html") ? (
-									<iframe
-										srcDoc={viewingArtifact.content}
-										className="w-full h-full min-h-[500px] border-0"
-										title={viewingArtifact.name}
-										sandbox="allow-same-origin"
-									/>
-								) : (
-									<div className="p-6 prose prose-sm dark:prose-invert max-w-none">
-										<Markdown
-											remarkPlugins={[remarkGfm]}
-											components={{
-												h1: ({ children }) => (
-													<h1 className="text-2xl font-bold mt-6 mb-4 pb-2 border-b">
-														{children}
-													</h1>
-												),
-												h2: ({ children }) => (
-													<h2 className="text-xl font-semibold mt-5 mb-3">
-														{children}
-													</h2>
-												),
-												h3: ({ children }) => (
-													<h3 className="text-lg font-medium mt-4 mb-2">
-														{children}
-													</h3>
-												),
-												p: ({ children }) => (
-													<p className="mb-3 leading-relaxed">
-														{children}
-													</p>
-												),
-												ul: ({ children }) => (
-													<ul className="list-disc pl-6 mb-3 space-y-1">
-														{children}
-													</ul>
-												),
-												ol: ({ children }) => (
-													<ol className="list-decimal pl-6 mb-3 space-y-1">
-														{children}
-													</ol>
-												),
-												li: ({ children }) => (
-													<li className="leading-relaxed">
-														{children}
-													</li>
-												),
-												blockquote: ({ children }) => (
-													<blockquote className="border-l-4 border-muted-foreground/30 pl-4 italic text-muted-foreground my-4">
-														{children}
-													</blockquote>
-												),
-												code: ({
-													className,
-													children,
-												}) => {
-													const isInline = !className;
-													if (isInline) {
-														return (
-															<code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">
-																{children}
-															</code>
-														);
-													}
-													return (
-														<pre className="bg-muted p-4 rounded-lg overflow-x-auto my-4">
-															<code className="text-sm font-mono">
-																{children}
-															</code>
-														</pre>
-													);
-												},
-												table: ({ children }) => (
-													<div className="overflow-x-auto my-4">
-														<table className="min-w-full border-collapse border border-border">
-															{children}
-														</table>
-													</div>
-												),
-												thead: ({ children }) => (
-													<thead className="bg-muted">
-														{children}
-													</thead>
-												),
-												th: ({ children }) => (
-													<th className="border border-border px-3 py-2 text-left font-medium">
-														{children}
-													</th>
-												),
-												td: ({ children }) => (
-													<td className="border border-border px-3 py-2">
-														{children}
-													</td>
-												),
-												hr: () => (
-													<hr className="my-6 border-border" />
-												),
-												strong: ({ children }) => (
-													<strong className="font-semibold">
-														{children}
-													</strong>
-												),
-											}}
-										>
-											{viewingArtifact.content}
-										</Markdown>
-									</div>
-								)}
-							</>
+							<ReportArtifactContent
+								name={viewingArtifact.name}
+								content={viewingArtifact.content}
+								projectSourcePath={projectSourcePath}
+							/>
 						)}
 					</div>
 					<DialogFooter>

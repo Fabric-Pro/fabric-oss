@@ -20,11 +20,12 @@ vi.mock("@temporalio/activity", () => ({
 	},
 }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 const logModelUsageAsync = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	logModelUsageAsync: (...a: unknown[]) => logModelUsageAsync(...a),
 }));
@@ -70,7 +71,7 @@ const VALID_TOPIC = {
 };
 
 beforeEach(() => {
-	generateObject.mockReset();
+	generateText.mockReset();
 	getAIModelWithMetadata.mockReset();
 	logModelUsageAsync.mockReset();
 	mockIsCurrentOrgMember.mockReset();
@@ -84,8 +85,8 @@ beforeEach(() => {
 
 describe("summarizeTopicSuggestions", () => {
 	it("returns the model's topics and usage tokens on the happy path", async () => {
-		generateObject.mockResolvedValue({
-			object: { topics: [VALID_TOPIC] },
+		generateText.mockResolvedValue({
+			output: { topics: [VALID_TOPIC] },
 			usage: { totalTokens: 123 },
 		});
 
@@ -126,8 +127,8 @@ describe("summarizeTopicSuggestions", () => {
 	});
 
 	it("runs a clicked scan as the manual publishing job, which only the shared ChatGPT plans serve (Fizzy #2770)", async () => {
-		generateObject.mockResolvedValue({
-			object: { topics: [] },
+		generateText.mockResolvedValue({
+			output: { topics: [] },
 			usage: { totalTokens: 1 },
 		});
 
@@ -148,8 +149,8 @@ describe("summarizeTopicSuggestions", () => {
 	});
 
 	it("does not revalidate membership for a personal (organizationId=null) context", async () => {
-		generateObject.mockResolvedValue({
-			object: { topics: [] },
+		generateText.mockResolvedValue({
+			output: { topics: [] },
 			usage: { totalTokens: 1 },
 		});
 
@@ -161,7 +162,7 @@ describe("summarizeTopicSuggestions", () => {
 		});
 
 		expect(mockIsCurrentOrgMember).not.toHaveBeenCalled();
-		expect(generateObject).toHaveBeenCalledTimes(1);
+		expect(generateText).toHaveBeenCalledTimes(1);
 	});
 
 	it("revalidates org membership before model resolution and throws PUBLISHING_ACTOR_INVALID when the actor is no longer a member", async () => {
@@ -181,12 +182,12 @@ describe("summarizeTopicSuggestions", () => {
 			"org-9",
 		);
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 
 	it("throws PUBLISHING_SCHEMA_VALIDATION_FAILED and never returns when the model output fails schema validation", async () => {
-		generateObject.mockResolvedValue({
-			object: { topics: [{ title: "", pitch: "", provenance: {} }] }, // title/pitch violate min(1)
+		generateText.mockResolvedValue({
+			output: { topics: [{ title: "", pitch: "", provenance: {} }] }, // title/pitch violate min(1)
 			usage: { totalTokens: 5 },
 		});
 
@@ -202,9 +203,9 @@ describe("summarizeTopicSuggestions", () => {
 		});
 	});
 
-	it("passes the built prompt and resolved model through to generateObject", async () => {
-		generateObject.mockResolvedValue({
-			object: { topics: [] },
+	it("passes the built prompt and resolved model through to generateText", async () => {
+		generateText.mockResolvedValue({
+			output: { topics: [] },
 			usage: { totalTokens: 1 },
 		});
 
@@ -226,7 +227,7 @@ describe("summarizeTopicSuggestions", () => {
 				jobType: "publishing-suggestion",
 			},
 		);
-		const callArgs = generateObject.mock.calls[0][0] as {
+		const callArgs = generateText.mock.calls[0][0] as {
 			model: unknown;
 			prompt: string;
 		};
@@ -238,8 +239,8 @@ describe("summarizeTopicSuggestions", () => {
 	// be bounded to TOTAL_CONTEXT_MAX_BYTES before it reaches the prompt, even
 	// though each individual collector already respects its own per-source cap.
 	it("bounds an oversized aggregate context before building the prompt", async () => {
-		generateObject.mockResolvedValue({
-			object: { topics: [] },
+		generateText.mockResolvedValue({
+			output: { topics: [] },
 			usage: { totalTokens: 1 },
 		});
 
@@ -263,7 +264,7 @@ describe("summarizeTopicSuggestions", () => {
 			},
 		});
 
-		const callArgs = generateObject.mock.calls[0][0] as { prompt: string };
+		const callArgs = generateText.mock.calls[0][0] as { prompt: string };
 		// The prompt template itself (instructions) plus the bounded context
 		// must stay well under what the raw ~1.5MB context would have produced.
 		expect(callArgs.prompt.length).toBeLessThan(
@@ -276,8 +277,8 @@ describe("summarizeTopicSuggestions", () => {
 	});
 
 	it("normalizes and passes through the model angle (FR9/10)", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				topics: [
 					{
 						title: "T1",
@@ -303,8 +304,8 @@ describe("summarizeTopicSuggestions", () => {
 	});
 
 	it("normalizes and passes through the subject field", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				topics: [
 					{
 						title: "T1",
@@ -351,8 +352,8 @@ const stepCalls = () =>
 
 describe("summarizeTopicSuggestions — Job Hub steps", () => {
 	it("completes collect as it starts, and drives summarize through running to completed", async () => {
-		generateObject.mockResolvedValue({
-			object: { topics: [VALID_TOPIC] },
+		generateText.mockResolvedValue({
+			output: { topics: [VALID_TOPIC] },
 			usage: { totalTokens: 5 },
 		});
 
@@ -379,7 +380,7 @@ describe("summarizeTopicSuggestions — Job Hub steps", () => {
 	});
 
 	it("marks summarize FAILED and never completed, because the close sweep records a reached-and-failed step as skipped", async () => {
-		generateObject.mockRejectedValue(new Error("model unavailable"));
+		generateText.mockRejectedValue(new Error("model unavailable"));
 
 		await expect(summarizeTopicSuggestions(JOB_INPUT)).rejects.toThrow(
 			"model unavailable",
@@ -396,8 +397,8 @@ describe("summarizeTopicSuggestions — Job Hub steps", () => {
 	});
 
 	it("returns the same summary when the underlying job writer rejects", async () => {
-		generateObject.mockResolvedValue({
-			object: { topics: [VALID_TOPIC] },
+		generateText.mockResolvedValue({
+			output: { topics: [VALID_TOPIC] },
 			usage: { totalTokens: 5 },
 		});
 		setBackgroundJobStep.mockRejectedValue(new Error("db down"));
@@ -425,8 +426,8 @@ describe("summarizeTopicSuggestions — highlight cap", () => {
 	});
 
 	it("keeps at most two highlights, in the model's own order", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				topics: [
 					topicWith({ title: "A", highlightReason: "first" }),
 					topicWith({ title: "B", highlightReason: "second" }),
@@ -453,8 +454,8 @@ describe("summarizeTopicSuggestions — highlight cap", () => {
 	});
 
 	it("treats a blank reason as no highlight, and does not spend the cap on it", async () => {
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				topics: [
 					topicWith({ title: "A", highlightReason: "   " }),
 					topicWith({ title: "B", highlightReason: "real" }),
@@ -480,8 +481,8 @@ describe("summarizeTopicSuggestions — highlight cap", () => {
 		// I4: the raw schema is loose on purpose. A strict shape here would
 		// throw PUBLISHING_SCHEMA_VALIDATION_FAILED — non-retryable — and lose
 		// the whole day's cycle over one malformed field.
-		generateObject.mockResolvedValue({
-			object: {
+		generateText.mockResolvedValue({
+			output: {
 				topics: [
 					topicWith({ title: "A", highlightReason: { nope: 1 } }),
 				],

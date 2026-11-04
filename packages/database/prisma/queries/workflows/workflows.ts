@@ -98,6 +98,7 @@ export async function listWorkflows(options: {
 	limit?: number;
 	offset?: number;
 	status?: WorkflowBuilderStatus;
+	statuses?: WorkflowBuilderStatus[];
 	triggerType?: WorkflowTriggerType;
 	search?: string;
 	isTemplate?: boolean;
@@ -109,6 +110,7 @@ export async function listWorkflows(options: {
 		limit = 20,
 		offset = 0,
 		status,
+		statuses,
 		triggerType,
 		search,
 		isTemplate,
@@ -123,7 +125,11 @@ export async function listWorkflows(options: {
 	const where: Prisma.WorkflowWhereInput = {
 		userId,
 		...orgFilter,
-		...(status ? { status } : {}),
+		...(statuses?.length
+			? { status: { in: statuses } }
+			: status
+				? { status }
+				: {}),
 		...(triggerType ? { triggerType } : {}),
 		...(isTemplate !== undefined ? { isTemplate } : {}),
 		...(projectId ? { projectId } : {}),

@@ -25,6 +25,7 @@ const mockClone = vi.fn();
 const mockRevparse = vi.fn();
 const mockShow = vi.fn();
 const mockRaw = vi.fn();
+const mockEnv = vi.fn();
 const mockWriteFileSync = vi.fn();
 const mockRmSync = vi.fn();
 
@@ -32,7 +33,7 @@ vi.mock("../credentials", () => ({ ensureFreshRepoCredentials: vi.fn() }));
 vi.mock("../commits", () => ({ countCommitsSince: vi.fn() }));
 
 // The clone-auth helpers moved to `@repo/integrations`; keep the real pure
-// helpers (buildAuthCloneUrl, isGitAuthError) and stub only the two async
+// helpers (gitAuthForClone, isGitAuthError) and stub only the two async
 // recovery functions the clone path drives.
 vi.mock("@repo/integrations", async (importActual) => ({
 	...(await importActual<typeof import("@repo/integrations")>()),
@@ -80,6 +81,10 @@ vi.mock("simple-git", () => ({
 		revparse: (...a: unknown[]) => mockRevparse(...a),
 		show: (...a: unknown[]) => mockShow(...a),
 		raw: (...a: unknown[]) => mockRaw(...a),
+		env(env: Record<string, string>) {
+			mockEnv(env);
+			return this;
+		},
 	})),
 }));
 
@@ -178,6 +183,30 @@ beforeEach(() => {
 	mockRaw.mockResolvedValue("");
 	mockResolveRepoCredentials.mockResolvedValue(creds);
 	mockForceReExchange.mockResolvedValue({ refreshed: false });
+});
+
+describe("cloneRepo — credentials", () => {
+	it("clones a token-free URL and carries the token only in every git instance's environment", async () => {
+		const service = new AtlasService(ctx);
+		await cloneRepo(service, creds, "/tmp/fabric-cu-auth");
+
+		expect(mockClone.mock.calls[0]?.[0]).toBe(
+			"https://github.com/acme/widgets",
+		);
+		const basic = Buffer.from("x-access-token:stale-token").toString(
+			"base64",
+		);
+		// The clone and the instance in the clone directory both carry it: the
+		// sparse checkout's lazy blob fetches authenticate through the second.
+		expect(mockEnv).toHaveBeenCalledTimes(2);
+		for (const [env] of mockEnv.mock.calls) {
+			expect(env).toMatchObject({
+				GIT_TERMINAL_PROMPT: "0",
+				GIT_CONFIG_KEY_1: "http.https://github.com/.extraHeader",
+				GIT_CONFIG_VALUE_1: `Authorization: Basic ${basic}`,
+			});
+		}
+	});
 });
 
 describe("cloneRepo — blobless shallow clone", () => {

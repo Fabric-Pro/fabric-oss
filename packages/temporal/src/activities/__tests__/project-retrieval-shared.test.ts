@@ -62,7 +62,6 @@ vi.mock("@repo/rag", async () => ({
 }));
 
 import { retrieveProjectContexts as documentContexts } from "../project-document-generation";
-import { retrieveProjectContexts as taskContexts } from "../task-agent/rag-context";
 
 const tenant = {
 	projectId: "example-project",
@@ -100,15 +99,6 @@ for (const operation of [
 	{
 		name: "document generation",
 		call: () => documentContexts({ ...tenant, documentType: "PRD" }),
-	},
-	{
-		name: "task agent",
-		call: () =>
-			taskContexts({
-				...tenant,
-				taskTitle: "Launch",
-				taskDescription: "Requirements",
-			}),
 	},
 ]) {
 	describe(operation.name, () => {

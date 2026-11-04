@@ -87,7 +87,7 @@ export interface ScanRunResult {
 /**
  * The model frequently emits its own severity vocabulary — mixed case plus
  * axe/WCAG-style synonyms ("Serious", "Moderate", "Minor"). Normalize any of
- * those to our canonical enum so generateObject never rejects an otherwise-good
+ * those to our canonical enum so Output.object never rejects an otherwise-good
  * finding (a strict enum previously failed the entire scan when the model
  * returned "Critical"/"Serious"). Unknown values fall back to MEDIUM.
  */

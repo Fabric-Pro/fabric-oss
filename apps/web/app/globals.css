@@ -77,6 +77,25 @@ body[data-scroll-locked] {
 	overflow-y: scroll !important;
 }
 
+/* The dedicated agent editor uses independent scrolling panes. Hide their
+ * scrollbar chrome without disabling wheel, touch, or keyboard scrolling.
+ * The root gutter returns automatically when the editor unmounts. */
+html:has([data-onboarding-target="agent-builder-workspace"]) {
+	scrollbar-gutter: auto;
+	scrollbar-width: none;
+}
+
+[data-onboarding-target="agent-builder-workspace"],
+[data-onboarding-target="agent-builder-workspace"] * {
+	scrollbar-width: none;
+}
+
+html:has([data-onboarding-target="agent-builder-workspace"])::-webkit-scrollbar,
+[data-onboarding-target="agent-builder-workspace"]::-webkit-scrollbar,
+[data-onboarding-target="agent-builder-workspace"] *::-webkit-scrollbar {
+	display: none;
+}
+
 /*
  * Fabric Workspace design system (Databricks DuBois aesthetics).
  * The reading face is the clean technical sans stack (Inter / system-ui).

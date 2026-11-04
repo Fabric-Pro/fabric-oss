@@ -39,6 +39,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 			orgId ?? null,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
 	};
 });
 

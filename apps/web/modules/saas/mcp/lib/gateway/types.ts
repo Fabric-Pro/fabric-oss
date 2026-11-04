@@ -144,6 +144,7 @@ export interface GatewayToolDefinition {
 	name: string;
 	description: string;
 	inputSchema: Record<string, unknown>;
+	outputSchema?: Record<string, unknown>;
 	/** Source: "platform" for Fabric tools, or MCPConfig displayName for connected servers */
 	_gateway_source?: string;
 	/** MCPConfig ID if this tool comes from a connected server */
@@ -161,11 +162,23 @@ export interface GatewayToolDefinition {
 			resourceUri: string;
 		};
 		"ui/resourceUri"?: string;
+		"io.modelcontextprotocol/ui"?: {
+			resourceUri: string;
+		};
 	};
 }
 
 export interface ToolCallResult {
-	content: Array<{ type: "text"; text: string }>;
+	content: Array<{
+		type: "text" | "image" | "audio" | "resource" | "resource_link";
+		text: string;
+		data?: string;
+		mimeType?: string;
+		resource?: Record<string, unknown>;
+		uri?: string;
+		name?: string;
+		description?: string;
+	}>;
 	isError?: boolean;
 	structuredContent?: unknown;
 	_meta?: Record<string, unknown>;
@@ -189,6 +202,7 @@ export interface ConnectedServerInfo {
 		name: string;
 		description?: string;
 		inputSchema?: Record<string, unknown>;
+		outputSchema?: Record<string, unknown>;
 		annotations?: ToolAnnotations;
 	}>;
 }

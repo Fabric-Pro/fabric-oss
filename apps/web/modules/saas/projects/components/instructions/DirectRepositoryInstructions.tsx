@@ -16,6 +16,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { defaultSelectedPath } from "../../lib/instructions-default-file";
 import { AddInstructionFileDialog } from "./AddInstructionFileDialog";
+import {
+	BranchFileNotice,
+	useMyBranchFiles,
+	useRestoreBranchFile,
+} from "./BranchFileActions";
+import { BranchOnlyFileView } from "./BranchOnlyFileView";
 import { ConfigureRepositorySyncDialog } from "./ConfigureRepositorySyncDialog";
 import { InstructionFileView } from "./InstructionFileView";
 import { InstructionProposals } from "./InstructionProposals";
@@ -30,6 +36,7 @@ import {
 } from "./InstructionsStatusStrip";
 import { InstructionsTree, type TreeFile } from "./InstructionsTree";
 import { type RepositoryLinks, repositoryWebUrl } from "./instruction-links";
+import { withBranchFiles } from "./lib/branch-files";
 import { RepositoryHeaderBadge } from "./RepositoryHeaderBadge";
 import { RepositorySyncSettingsSection } from "./RepositorySyncSettingsSection";
 import {
@@ -322,6 +329,19 @@ function ReadyRepositoryInstructions({
 		(draftOwner
 			? { files: draftOwner.files, incomplete: false, refusal: null }
 			: undefined);
+	const canCommit = canEdit && !readOnlyMode;
+	const canPropose = canEdit || (canRead && allowReaderProposals);
+	// The member's own proposal branch, merged into the tree: files only it
+	// holds can be opened, and every file it changes or deletes says so.
+	const myBranch = useMyBranchFiles(projectId, canPropose && readable);
+	const restore = useRestoreBranchFile({
+		projectId,
+		nativeBase: pin,
+		onChanged: onRefresh,
+	});
+	const treeFiles = listing
+		? withBranchFiles(listing.files, myBranch.files)
+		: undefined;
 	const head = commits.data?.commits.find(
 		(commit) => commit.sha === pin.commitSha,
 	);
@@ -344,7 +364,9 @@ function ReadyRepositoryInstructions({
 		files.data === undefined
 			? (wantedPath ?? defaultPath ?? null)
 			: wantedPath !== null &&
-					files.data.files.some((file) => file.path === wantedPath)
+					(treeFiles ?? files.data.files).some(
+						(file) => file.path === wantedPath,
+					)
 				? wantedPath
 				: defaultSelectedPath(files.data.files);
 	const viewPath =
@@ -365,8 +387,9 @@ function ReadyRepositoryInstructions({
 		},
 		[draftOwner, t],
 	);
-	const canCommit = canEdit && !readOnlyMode;
-	const canPropose = canEdit || (canRead && allowReaderProposals);
+	const viewMarker = draftOwner
+		? undefined
+		: treeFiles?.find((file) => file.path === viewPath)?.branch;
 	const repositoryTarget = {
 		repository: repositoryLabel ?? repository.ref,
 		ref: repository.ref,
@@ -524,9 +547,9 @@ function ReadyRepositoryInstructions({
 					) : (
 						<div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[340px_minmax(0,1fr)]">
 							<div className="min-w-0">
-								{listing ? (
+								{treeFiles ? (
 									<InstructionsTree
-										files={listing.files}
+										files={treeFiles}
 										leftOut={
 											files.data &&
 											files.data.excludedCount > 0
@@ -557,40 +580,75 @@ function ReadyRepositoryInstructions({
 								data-onboarding-target="coding-instructions-file-view"
 								className="min-w-0 overflow-hidden rounded-lg border bg-card"
 							>
-								{viewPath ? (
-									<InstructionFileView
+								{viewPath &&
+								viewMarker === "branchOnly" &&
+								myBranch.branchId !== null ? (
+									<BranchOnlyFileView
+										key={viewPath}
 										projectId={projectId}
-										nativeBase={viewBase}
-										currentNativeBase={pin}
+										branchId={myBranch.branchId}
 										path={viewPath}
-										nativeFile={files.data?.files.find(
-											(file) => file.path === viewPath,
-										)}
-										canCommit={
-											canCommit && listing !== undefined
-										}
-										canPropose={
-											canPropose && listing !== undefined
-										}
-										repositoryTarget={repositoryTarget}
-										repositoryLinks={repositoryLinks}
-										onOpenPath={selectPath}
-										onRenamed={(to) =>
-											renameFollow.begin(viewPath, to)
-										}
+										nativeBase={pin}
+										canPropose={canPropose}
 										existingPaths={
 											new Set(
-												listing?.files.map(
+												treeFiles?.map(
 													(file) => file.path,
 												),
 											)
 										}
+										repositoryLinks={repositoryLinks}
+										onOpenPath={selectPath}
+										restore={restore}
 										onChanged={onRefresh}
-										onCommitted={rereadOpenFile}
-										onNativeDraftStateChange={
-											onNativeDraftStateChange
-										}
 									/>
+								) : viewPath ? (
+									<>
+										{viewMarker === "changedOnBranch" ||
+										viewMarker === "deletedOnBranch" ? (
+											<BranchFileNotice
+												path={viewPath}
+												marker={viewMarker}
+												restore={restore}
+											/>
+										) : null}
+										<InstructionFileView
+											projectId={projectId}
+											nativeBase={viewBase}
+											currentNativeBase={pin}
+											path={viewPath}
+											nativeFile={files.data?.files.find(
+												(file) =>
+													file.path === viewPath,
+											)}
+											canCommit={
+												canCommit &&
+												listing !== undefined
+											}
+											canPropose={
+												canPropose &&
+												listing !== undefined
+											}
+											repositoryTarget={repositoryTarget}
+											repositoryLinks={repositoryLinks}
+											onOpenPath={selectPath}
+											onRenamed={(to) =>
+												renameFollow.begin(viewPath, to)
+											}
+											existingPaths={
+												new Set(
+													listing?.files.map(
+														(file) => file.path,
+													),
+												)
+											}
+											onChanged={onRefresh}
+											onCommitted={rereadOpenFile}
+											onNativeDraftStateChange={
+												onNativeDraftStateChange
+											}
+										/>
+									</>
 								) : (
 									<p className="p-6 text-muted-foreground text-sm">
 										{t("selectFile")}

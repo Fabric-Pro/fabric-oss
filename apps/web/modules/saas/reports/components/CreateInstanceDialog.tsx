@@ -1,10 +1,17 @@
 "use client";
 
+import {
+	getProjectReportSetupReason,
+	hasProjectKnowledgeSource,
+	type ReportEvidenceConfig,
+	reportEvidenceConfigSchema,
+} from "@repo/database/prisma/queries/lib/report-evidence";
 import { useEffectiveOrganizationId } from "@saas/organizations/hooks";
 import { useInstanceDataSourceSetup } from "@saas/reports/hooks/use-instance-data-source-setup";
 import {
 	parseTemplateDefinition,
 	parseTemplateWorkspaces,
+	promptOverrideFields,
 } from "@saas/reports/lib/report-template-definition";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -41,6 +48,8 @@ import {
 	InstanceContextFields,
 	InstanceDataSourcePicker,
 } from "./InstanceDataSourceFields";
+import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
+import { ReportTemplatePreview } from "./ReportTemplatePreview";
 
 type ReportTemplate = {
 	id: string;
@@ -85,9 +94,10 @@ export function CreateInstanceDialog({
 	const reportSuite = useFeatureFlag("REPORT_SUITE_V2");
 	const [name, setName] = useState(`My ${template.name}`);
 	const [description, setDescription] = useState("");
+	const [reporting, setReporting] = useState<ReportEvidenceConfig>();
 	const [selectedWorkspaces, setSelectedWorkspaces] = useState<string[]>([]);
 
-	// Optional prompt override - pre-populated from template
+	// Shown pre-filled with the template's prompt; saved only once edited.
 	const [promptOverride, setPromptOverride] = useState("");
 
 	const definition = useMemo(
@@ -99,6 +109,19 @@ export function CreateInstanceDialog({
 		[template.connections],
 	);
 	const { dataSources } = definition;
+	const requiresProjectKnowledge = hasProjectKnowledgeSource({ dataSources });
+
+	useEffect(() => {
+		if (requiresProjectKnowledge && !reporting) {
+			setReporting(
+				reportEvidenceConfigSchema.parse({
+					version: 1,
+					period: "weekly",
+					...(reportSuite && projectId ? { projectId } : {}),
+				}),
+			);
+		}
+	}, [requiresProjectKnowledge, reporting, reportSuite, projectId]);
 
 	// Pre-populate prompt from template on mount
 	const templateUserPrompt = definition.userPrompt;
@@ -124,10 +147,25 @@ export function CreateInstanceDialog({
 	);
 	const userWorkspaces = workspacesData?.workspaces ?? [];
 
+	const projectSetupReason = getProjectReportSetupReason(
+		reporting ? { reporting } : undefined,
+		{ dataSources },
+		{
+			mcpConfigs: Object.values(setup.bindings)
+				.map((binding) => binding.mcpConfigId)
+				.filter(Boolean),
+			workspaces: selectedWorkspaces,
+		},
+	);
+
 	const createMutation = useMutation(
 		orpc.reports.instances.create.mutationOptions({
 			onSuccess: (data) => {
-				toast.success("Instance created successfully");
+				toast.success(
+					projectSetupReason
+						? "Project report draft created; source setup required"
+						: "Instance created successfully",
+				);
 				queryClient.invalidateQueries({
 					queryKey: ["reports", "instances"],
 				});
@@ -145,22 +183,28 @@ export function CreateInstanceDialog({
 	);
 
 	const handleCreate = () => {
+		if (requiresProjectKnowledge && !reporting?.projectId) {
+			toast.error("Choose a project for Project knowledge");
+			return;
+		}
 		if (!name.trim()) {
 			toast.error("Please enter a name for the instance");
 			return;
 		}
 
-		if (!setup.allConfigured) {
+		if (!setup.allConfigured && !reporting?.projectId) {
 			toast.error(
 				"Please configure MCP servers and fill required context fields",
 			);
 			return;
 		}
 
-		const { mcpConfigs, mcpBindings, context } = setup.buildConnections();
+		const { mcpConfigs, mcpBindings, resourceBindings, context } =
+			setup.buildConnections();
 
 		createMutation.mutate({
 			templateId: template.id,
+			reporting,
 			name: name.trim(),
 			description: description.trim() || undefined,
 			organizationId,
@@ -168,8 +212,9 @@ export function CreateInstanceDialog({
 			connections: {
 				mcpConfigs,
 				mcpBindings,
+				resourceBindings,
 				context, // Human-readable context for AI
-				promptOverride: promptOverride.trim() || undefined,
+				...promptOverrideFields(promptOverride, templateUserPrompt),
 				workflows: [],
 				agents: [],
 				workspaces: selectedWorkspaces,
@@ -196,6 +241,14 @@ export function CreateInstanceDialog({
 				</DialogHeader>
 
 				<div className="space-y-6 py-4">
+					{reportSuite && projectId && (
+						<ReportTemplatePreview
+							templateId={template.id}
+							projectId={projectId}
+							organizationId={organizationId}
+						/>
+					)}
+
 					{/* Instance Name */}
 					<div className="space-y-2">
 						<Label htmlFor="instance-name">Instance Name *</Label>
@@ -234,8 +287,8 @@ export function CreateInstanceDialog({
 									Data Source Configuration
 								</h3>
 								<p className="text-sm text-muted-foreground">
-									Select your MCP server and configure
-									parameters for each data source.
+									Connect external sources, or use shared
+									project knowledge.
 								</p>
 							</div>
 							<InstanceDataSourcePicker
@@ -287,13 +340,26 @@ export function CreateInstanceDialog({
 						</div>
 					)}
 
+					<div className="space-y-4 border-t pt-4">
+						<h3 className="font-medium">
+							Reporting period and audience
+						</h3>
+						<ReportEvidenceSettings
+							value={reporting}
+							sourceDefinition={{ dataSources }}
+							requireProject={requiresProjectKnowledge}
+							onChange={setReporting}
+							organizationId={organizationId}
+						/>
+					</div>
+
 					{/* Optional: document libraries for RAG context */}
 					{workspaces.enabled && userWorkspaces.length > 0 && (
 						<div className="space-y-3">
 							<div>
 								<h3 className="font-medium flex items-center gap-2">
 									<FolderOpenIcon className="h-4 w-4" />
-									Document Libraries
+									Document Workspaces
 								</h3>
 								<p className="text-sm text-muted-foreground">
 									{workspaces.description ||
@@ -308,7 +374,7 @@ export function CreateInstanceDialog({
 								}
 							>
 								<SelectTrigger>
-									<SelectValue placeholder="Select a library (optional)..." />
+									<SelectValue placeholder="Select a workspace (optional)..." />
 								</SelectTrigger>
 								<SelectContent>
 									{userWorkspaces.map((ws) => (
@@ -342,7 +408,10 @@ export function CreateInstanceDialog({
 					<Button
 						onClick={handleCreate}
 						disabled={
-							createMutation.isPending || !setup.allConfigured
+							createMutation.isPending ||
+							(requiresProjectKnowledge &&
+								!reporting?.projectId) ||
+							(!setup.allConfigured && !reporting?.projectId)
 						}
 					>
 						{createMutation.isPending ? (
@@ -353,7 +422,11 @@ export function CreateInstanceDialog({
 						) : (
 							<>
 								<PlusIcon className="mr-2 h-4 w-4" />
-								Create Instance
+								{projectSetupReason
+									? "Create draft"
+									: reporting?.projectId
+										? "Create report"
+										: "Create Instance"}
 							</>
 						)}
 					</Button>

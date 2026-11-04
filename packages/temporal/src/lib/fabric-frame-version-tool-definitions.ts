@@ -44,7 +44,7 @@ export const FABRIC_FRAME_VERSION_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_duplicate_frame",
 		description:
-			"Forks a page you can open into a copy of your own, keeping its surface and project. Page data is not copied. The page's tools are copied only when you pass runtimeTools.",
+			"Forks an accessible page; keeps surface/project, not page data. Tools copy only with runtimeTools.",
 		inputSchema: {
 			type: "object",
 			properties: {

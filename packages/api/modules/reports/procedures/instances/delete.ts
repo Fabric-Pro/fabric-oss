@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/server";
-import { deleteTemplateInstance, getTemplateInstance } from "@repo/database";
+import {
+	canAccessReportInstance,
+	deleteTemplateInstance,
+	getTemplateInstance,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -37,6 +41,19 @@ export const deleteInstanceProcedure = tenantProtectedProcedure
 		}
 
 		await assertCanEditReportInstance(existing, context.user);
+
+		if (
+			!(await canAccessReportInstance(
+				existing,
+				{ userId: context.user.id, organizationId },
+				undefined,
+				true,
+			))
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Project report write access denied",
+			});
+		}
 
 		await deleteTemplateInstance(input.id);
 

@@ -13,6 +13,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 const mocks = vi.hoisted(() => ({
 	recordAuditMock: vi.fn(),
@@ -72,6 +73,7 @@ import {
 	ALWAYS_SKIP_PATHS,
 	auditErrorMiddleware,
 	REDACTED_BODY_FIELDS,
+	REDACTED_INPUT_PATHS,
 	REDACTED_SECRET_FIELDS,
 	recordProcedureFailure,
 } from "../audit-error-middleware";
@@ -251,14 +253,15 @@ describe("REDACTED_BODY_FIELDS (Fizzy #2946)", () => {
 		]);
 	});
 
-	it.each([...REDACTED_BODY_FIELDS.keys(), ...REDACTED_SECRET_FIELDS.keys()])(
-		"%s is captured, not skipped, so its entry is live",
-		(path) => {
-			vi.stubEnv("FABRIC_AUDIT_ERROR_CAPTURE_SKIP_PATHS", "");
-			expect(ALWAYS_SKIP_PATHS as readonly string[]).not.toContain(path);
-			expect(__shouldSkipForTest(path)).toBe(false);
-		},
-	);
+	it.each([
+		...REDACTED_BODY_FIELDS.keys(),
+		...REDACTED_SECRET_FIELDS.keys(),
+		...REDACTED_INPUT_PATHS,
+	])("%s is captured, not skipped, so its entry is live", (path) => {
+		vi.stubEnv("FABRIC_AUDIT_ERROR_CAPTURE_SKIP_PATHS", "");
+		expect(ALWAYS_SKIP_PATHS as readonly string[]).not.toContain(path);
+		expect(__shouldSkipForTest(path)).toBe(false);
+	});
 
 	it("records a thrown projects.documents.update body as its size and hash, keeping the other fields", async () => {
 		const input = {
@@ -789,7 +792,6 @@ describe("REDACTED_BODY_FIELDS (Fizzy #2946)", () => {
 					"projects.publishingSuite.amendTopicQuestion",
 					"codingRuns.sendFollowUp",
 					"weave.executions.signalApproval",
-					"projects.stories.tasks.agent.resolveCheckpoint",
 					"ai.chats.messages.add",
 				].map((path) => [path, REDACTED_BODY_FIELDS.get(path)]),
 			),
@@ -818,10 +820,6 @@ describe("REDACTED_BODY_FIELDS (Fizzy #2946)", () => {
 			"projects.publishingSuite.amendTopicQuestion": ["answer"],
 			"codingRuns.sendFollowUp": ["message"],
 			"weave.executions.signalApproval": ["feedback"],
-			"projects.stories.tasks.agent.resolveCheckpoint": [
-				"feedback",
-				"userData",
-			],
 			"ai.chats.messages.add": [
 				"messages[].parts[].text",
 				"messages[].parts[].input",
@@ -1190,10 +1188,167 @@ describe("an Advisor execution record (saveTurn, update, create)", () => {
 	);
 });
 
+describe("whole-input confidential evaluation capture", () => {
+	const PRIVATE = "example-confidential-evaluation-material";
+	it.each(["inspect", "evaluate"])(
+		"redacts actual agent-result %s input and error causes from shared audit metadata",
+		async (operation) => {
+			await __captureErrorForTest(
+				new ORPCError("BAD_REQUEST", {
+					message: PRIVATE,
+					cause: new Error(PRIVATE),
+				}),
+				buildContext(),
+				{
+					[PRIVATE]: PRIVATE,
+					requiredPhrases: [PRIVATE],
+					projectId: PRIVATE,
+				},
+				["contextQuality", "agentResults", operation],
+			);
+			const recorded = mocks.recordAuditMock.mock.calls[0]?.[0];
+			expect(recorded.metadata.input).toEqual({ redacted: true });
+			expect(recorded.metadata.exception.message).toBe(
+				"Context evaluation failed.",
+			);
+			expect(recorded.metadata).not.toHaveProperty("cause");
+			expect(JSON.stringify(recorded)).not.toContain(PRIVATE);
+		},
+	);
+	it("registers exactly the confidential evaluation path without suppressing its audit", () => {
+		expect([...REDACTED_INPUT_PATHS]).toEqual([
+			"contextQuality.agentResults.inspect",
+			"contextQuality.agentResults.evaluate",
+			"contextQuality.evaluate",
+			"contextQuality.runs.create",
+		]);
+		expect(
+			__redactBodyFieldsForTest("contextQuality.inspect", {
+				sourceId: "source-1",
+			}),
+		).toEqual({ sourceId: "source-1" });
+	});
+	it.each([
+		[
+			"unnested cases",
+			{
+				projectId: "project-1",
+				cases: [{ recordedAnswer: PRIVATE }],
+				unexpectedTopLevelPrivate: PRIVATE,
+			},
+		],
+		["unknown field name", { projectId: "project-1", [PRIVATE]: PRIVATE }],
+		["scalar", PRIVATE],
+		["array", [{ recordedAnswer: PRIVATE }, { [PRIVATE]: PRIVATE }]],
+		["null", null],
+		["undefined", undefined],
+	])(
+		"redacts %s without suppressing the failure event",
+		async (_label, input) => {
+			const original = structuredClone(input);
+			await __captureErrorForTest(
+				new ORPCError("BAD_REQUEST", { message: "Evaluation refused" }),
+				buildContext(),
+				input,
+				["contextQuality", "evaluate"],
+			);
+			expect(mocks.recordAuditMock).toHaveBeenCalledTimes(1);
+			const recorded = mocks.recordAuditMock.mock.calls[0]?.[0];
+			expect(recorded.metadata.input).toEqual({ redacted: true });
+			expect(recorded.metadata.procedure.path).toBe(
+				"contextQuality.evaluate",
+			);
+			expect(recorded.metadata.errorCode).toBe("BAD_REQUEST");
+			expect(recorded.outcome).toBe("failure");
+			expect(JSON.stringify(recorded)).not.toContain(PRIVATE);
+			expect(input).toEqual(original);
+		},
+	);
+
+	it("does not retain validation messages or causes that echo private field names", async () => {
+		const input = { projectId: "project-1", [PRIVATE]: PRIVATE };
+		const validation = z
+			.strictObject({ projectId: z.string() })
+			.safeParse(input);
+		expect(validation.success).toBe(false);
+		await __captureErrorForTest(
+			new ORPCError("BAD_REQUEST", {
+				message: `Invalid field ${PRIVATE}`,
+				cause: validation.error,
+			}),
+			buildContext(),
+			input,
+			["contextQuality", "evaluate"],
+		);
+		const recorded = mocks.recordAuditMock.mock.calls[0]?.[0];
+		expect(recorded.metadata.exception.message).toBe(
+			"Context evaluation failed.",
+		);
+		expect(recorded.metadata).not.toHaveProperty("cause");
+		expect(JSON.stringify(recorded)).not.toContain(PRIVATE);
+	});
+
+	it("does not retain private multiline validation messages through stack traces", async () => {
+		await __captureErrorForTest(
+			new ORPCError("BAD_REQUEST", {
+				message: `Malformed evaluation\n${PRIVATE}`,
+			}),
+			buildContext(),
+			{ unexpectedField: PRIVATE },
+			["contextQuality", "evaluate"],
+		);
+		const recorded = mocks.recordAuditMock.mock.calls[0]?.[0];
+		expect(recorded.metadata.exception.message).toBe(
+			"Context evaluation failed.",
+		);
+		expect(recorded.metadata.exception).not.toHaveProperty("stacktrace");
+		expect(JSON.stringify(recorded)).not.toContain(PRIVATE);
+	});
+
+	it("keeps the verified project attribution while ignoring malformed input identity fields", async () => {
+		await runWithProjectBindingHolder(async () => {
+			recordAuthorizedProject({
+				projectId: "project-verified",
+				organizationId: "org-verified",
+			});
+			await __captureErrorForTest(
+				new ORPCError("BAD_REQUEST", { message: "Evaluation refused" }),
+				buildContext(),
+				{
+					organizationId: PRIVATE,
+					projectId: PRIVATE,
+					cases: [{ recordedAnswer: PRIVATE }],
+				},
+				["contextQuality", "evaluate"],
+			);
+		});
+		const recorded = mocks.recordAuditMock.mock.calls[0]?.[0];
+		expect(recorded.projectId).toBe("project-verified");
+		expect(recorded.organizationId).toBe("org-verified");
+		expect(JSON.stringify(recorded)).not.toContain(PRIVATE);
+	});
+
+	it("uses the authenticated session organization before a project was authorized", async () => {
+		await __captureErrorForTest(
+			new ORPCError("BAD_REQUEST", { message: "Evaluation refused" }),
+			buildContext(),
+			{ organizationId: PRIVATE, unexpectedPrivateField: PRIVATE },
+			["contextQuality", "evaluate"],
+		);
+		const recorded = mocks.recordAuditMock.mock.calls[0]?.[0];
+		expect(recorded.organizationId).toBe("org-1");
+		expect(mocks.hasOrganizationTieMock).toHaveBeenCalledWith(
+			"user-1",
+			"org-1",
+		);
+		expect(JSON.stringify(recorded)).not.toContain(PRIVATE);
+	});
+});
+
 describe("REDACTED_SECRET_FIELDS", () => {
 	const CODE = "example-oauth-authorization-code-0123456789";
 
-	it("covers every OAuth callback that takes a code", () => {
+	it("covers OAuth authorization codes", () => {
 		expect([...REDACTED_SECRET_FIELDS]).toEqual([
 			["integrations.github.callback", ["code"]],
 			["integrations.gitlab.callback", ["code"]],
@@ -1233,6 +1388,34 @@ describe("REDACTED_SECRET_FIELDS", () => {
 			expect(input.code).toBe(CODE);
 		},
 	);
+
+	it("drops the entire evaluation, including malformed answer and expectation fields, without size or hash", async () => {
+		mocks.recordAuditMock.mockReset();
+		const evaluation = {
+			cases: [
+				{
+					recordedAnswer: "private example answer",
+					expectations: { requiredPhrases: ["private phrase"] },
+				},
+			],
+			unknownPrivateField: "private malformed input",
+		};
+		const input = { projectId: "project-1", evaluation };
+		await __captureErrorForTest(
+			Object.assign(new Error("Evaluation refused"), {
+				code: "BAD_REQUEST",
+			}),
+			buildContext(),
+			input,
+			["contextQuality", "evaluate"],
+		);
+		const recorded = mocks.recordAuditMock.mock.calls[0]?.[0];
+		expect(recorded.metadata.input).toEqual({ redacted: true });
+		expect(JSON.stringify(recorded)).not.toContain("private example");
+		expect(JSON.stringify(recorded)).not.toContain("private phrase");
+		expect(JSON.stringify(recorded)).not.toContain("private malformed");
+		expect(input.evaluation).toBe(evaluation);
+	});
 
 	it("leaves a callback without a code as it is", () => {
 		expect(

@@ -181,7 +181,7 @@ export async function POST(request: NextRequest) {
 										ok: false as const,
 										result: asToolCallResult(blocked),
 									}
-								: authorizePlatformToolCall(
+								: await authorizePlatformToolCall(
 										toolName,
 										toolArgs,
 										gatewaySession,

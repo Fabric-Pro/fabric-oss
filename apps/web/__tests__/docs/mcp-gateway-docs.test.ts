@@ -387,9 +387,12 @@ describe("the MCP gateway docs", () => {
 	it("no longer describes the dialog's key as read-only, or the old dialog name", () => {
 		expect(GUIDE).not.toMatch(/mints a read-only key/);
 		expect(GUIDE).not.toMatch(/Connect your coding agent/);
+		// The dialog mints exactly these four scopes
+		// (`ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS` in ConnectCliDialog).
 		expect(GUIDE).toMatch(
-			/carries `mcp:read`, `instructions:read` and `instructions:write`/,
+			/carries `mcp:read`, `instructions:read`, `instructions:write` and\s+`memory:write`/,
 		);
+		expect(GUIDE).toMatch(/that write is committed with no\s+review/);
 	});
 
 	it("says a repository project's suggestion becomes a pull request, not that changes must be made in the repository", () => {

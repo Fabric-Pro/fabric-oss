@@ -10,6 +10,11 @@
  * The panel shows the newest run (polled while it runs) and opens the dialog:
  * pick the code repository, review the scanned files, name the new
  * repository, and optionally paste a GitHub token that may create it.
+ *
+ * The review has two groups: development instructions (checked, moved) and
+ * files shipped with the product (unchecked, they stay): the skills and
+ * settings the repository's own coding-tool plugin publishes, generated
+ * copies, and files kept on an earlier move. Each shipped file says why.
  */
 
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -150,6 +155,12 @@ export function ConsolidationPanel({
 				</p>
 			) : null}
 			{run ? <RunStatus run={run} /> : null}
+			{run?.status === "COMPLETED" && run.cleanupPullRequestUrl ? (
+				<CleanupPullRequest
+					projectId={projectId}
+					fallbackUrl={run.cleanupPullRequestUrl}
+				/>
+			) : null}
 			{canEdit && run?.status === "FAILED" && run.targetRepositoryUrl ? (
 				<Button
 					size="sm"
@@ -258,24 +269,208 @@ function RunStatus({ run }: { run: RunView }) {
 					{run.error}
 				</p>
 			) : null}
-			{run.status === "COMPLETED" ? (
-				<p className="text-muted-foreground text-xs">
-					Merge the cleanup pull request, then connect your coding
-					tool to Fabric (the Coding Instructions plugin) to keep
-					working with the instructions.
-				</p>
+			{run.status === "COMPLETED" && !run.cleanupPullRequestUrl ? (
+				<p className="text-muted-foreground text-xs">{NEXT_STEP}</p>
 			) : null}
 		</div>
 	);
 }
 
+const NEXT_STEP =
+	"Connect your coding tool to Fabric (the Coding Instructions plugin) to keep working with the instructions.";
+
+/**
+ * The cleanup pull request, read live from the code repository: merge it
+ * here after a confirmation, or open it to merge it yourself. A merge found
+ * on open or on a refetch shows the next step.
+ */
+function CleanupPullRequest({
+	projectId,
+	fallbackUrl,
+}: {
+	projectId: string;
+	fallbackUrl: string;
+}) {
+	const queryClient = useQueryClient();
+	const [confirming, setConfirming] = useState(false);
+	const [problem, setProblem] = useState<string | null>(null);
+	const status = useQuery(
+		orpc.projects.instructions.repositorySync.getConsolidationCleanupPullRequest.queryOptions(
+			{ input: { projectId } },
+		),
+	);
+	const merge = useMutation(
+		orpc.projects.instructions.repositorySync.mergeConsolidationCleanupPullRequest.mutationOptions(),
+	);
+	const pr = status.data?.pullRequest ?? null;
+	const url = pr?.url || fallbackUrl;
+
+	async function confirmMerge() {
+		if (!pr?.number) {
+			return;
+		}
+		setProblem(null);
+		try {
+			await merge.mutateAsync({
+				projectId,
+				pullRequestNumber: pr.number,
+			});
+			toast.success("Cleanup merged.");
+			setConfirming(false);
+		} catch (error) {
+			setProblem(errorMessage(error));
+		}
+		void queryClient.invalidateQueries({
+			queryKey:
+				orpc.projects.instructions.repositorySync.getConsolidationCleanupPullRequest.key(),
+		});
+	}
+
+	if (status.isPending) {
+		return (
+			<p className="text-muted-foreground text-xs">
+				Checking the cleanup pull request…
+			</p>
+		);
+	}
+	if (pr?.state === "MERGED") {
+		return (
+			<div className="flex flex-col gap-1" aria-live="polite">
+				<Badge status="success" className="self-start">
+					Cleanup merged
+				</Badge>
+				<p className="text-muted-foreground text-xs">
+					Next: {NEXT_STEP.charAt(0).toLowerCase()}
+					{NEXT_STEP.slice(1)}
+				</p>
+			</div>
+		);
+	}
+	if (pr?.state === "CLOSED") {
+		return (
+			<output className="block text-xs">
+				Pull request #{pr.number} was closed without merging, so the AI
+				files are still in the code repository. Reopen it in{" "}
+				{providerName(pr.provider)}, or move the AI files out again.
+			</output>
+		);
+	}
+	const open = pr?.state === "OPEN";
+	return (
+		<div className="flex flex-col gap-2">
+			<p className="text-muted-foreground text-xs">
+				{open
+					? `Merge the cleanup pull request to remove the AI files from ${pr.repository}, then connect your coding tool.`
+					: "Merge the cleanup pull request, then connect your coding tool to Fabric (the Coding Instructions plugin)."}
+			</p>
+			<div className="flex flex-wrap items-center gap-3">
+				{open && pr.canMerge ? (
+					<Button
+						size="sm"
+						className="self-start"
+						onClick={() => {
+							setProblem(null);
+							setConfirming(true);
+						}}
+					>
+						Merge cleanup PR
+					</Button>
+				) : null}
+				<a
+					href={url}
+					target="_blank"
+					rel="noreferrer"
+					className="inline-flex items-center gap-1 text-xs underline"
+				>
+					{open && pr.canMerge
+						? "I'll merge it myself"
+						: "Open the cleanup pull request"}
+					<ExternalLinkIcon className="size-3" aria-hidden="true" />
+					<span className="sr-only">(opens in a new tab)</span>
+				</a>
+			</div>
+			{problem && !confirming ? (
+				<p role="alert" className="text-destructive text-xs">
+					{problem}
+				</p>
+			) : null}
+			{confirming && pr ? (
+				<Dialog
+					open
+					onOpenChange={(next) => {
+						if (!next && !merge.isPending) {
+							setConfirming(false);
+						}
+					}}
+				>
+					<DialogContent className="max-w-md">
+						<DialogHeader>
+							<DialogTitle>
+								Merge the cleanup pull request
+							</DialogTitle>
+							<DialogDescription>
+								Merge pull request #{pr.number} into{" "}
+								<code>{pr.defaultBranch}</code>? It deletes{" "}
+								{pr.fileCount} AI tool files from{" "}
+								{pr.repository}.
+							</DialogDescription>
+						</DialogHeader>
+						{problem ? (
+							<p
+								role="alert"
+								className="text-destructive text-xs"
+							>
+								{problem}
+							</p>
+						) : null}
+						<DialogFooter>
+							<Button
+								type="button"
+								variant="outline"
+								disabled={merge.isPending}
+								onClick={() => setConfirming(false)}
+							>
+								Cancel
+							</Button>
+							<Button
+								type="button"
+								disabled={merge.isPending}
+								onClick={() => void confirmMerge()}
+							>
+								{merge.isPending ? (
+									<Loader2Icon
+										className="size-4 motion-safe:animate-spin"
+										aria-hidden="true"
+									/>
+								) : null}
+								Merge
+							</Button>
+						</DialogFooter>
+					</DialogContent>
+				</Dialog>
+			) : null}
+		</div>
+	);
+}
+
+function providerName(provider: string): string {
+	return provider === "GITLAB"
+		? "GitLab"
+		: provider === "AZURE_DEVOPS"
+			? "Azure DevOps"
+			: "GitHub";
+}
+
 type PlanItem = {
-	from: string;
+	path: string;
 	to: string | null;
 	target: string;
 	tool: string;
 	defaultIncluded: boolean;
 	duplicateOf?: string;
+	group: "development" | "product";
+	reason?: string;
+	selected: boolean;
 };
 
 function ConsolidationDialog({
@@ -306,17 +501,22 @@ function ConsolidationDialog({
 	const [token, setToken] = useState("");
 	const [problem, setProblem] = useState<string | null>(null);
 	const plan = preview.data;
-	const items = (plan?.items ?? []) as PlanItem[];
+	const items = (plan?.files ?? []) as PlanItem[];
 	const pending = preview.isPending || start.isPending;
 
-	const groups = useMemo(() => {
+	const { development, product } = useMemo(() => {
 		const byTarget = new Map<string, PlanItem[]>();
+		const shipped: PlanItem[] = [];
 		for (const item of items) {
+			if (item.group === "product") {
+				shipped.push(item);
+				continue;
+			}
 			const list = byTarget.get(item.target) ?? [];
 			list.push(item);
 			byTarget.set(item.target, list);
 		}
-		return [...byTarget.entries()];
+		return { development: [...byTarget.entries()], product: shipped };
 	}, [items]);
 
 	async function scan() {
@@ -328,9 +528,9 @@ function ConsolidationDialog({
 			});
 			setSelected(
 				new Set(
-					(result.items as PlanItem[])
-						.filter((i) => i.defaultIncluded)
-						.map((i) => i.from),
+					(result.files as PlanItem[])
+						.filter((i) => i.selected)
+						.map((i) => i.path),
 				),
 			);
 			setOwner(result.suggested.owner);
@@ -387,6 +587,8 @@ function ConsolidationDialog({
 	}
 
 	const chosen = selected?.size ?? 0;
+	const countSelected = (list: PlanItem[]) =>
+		list.filter((item) => selected?.has(item.path)).length;
 	const tokenRequired = plan ? !plan.storedTokenAvailable : false;
 	const blocked =
 		!plan ||
@@ -456,87 +658,90 @@ function ConsolidationDialog({
 					) : null}
 
 					{plan && items.length > 0 ? (
-						<fieldset className="flex flex-col gap-3">
-							<legend className="mb-1 font-medium text-sm">
+						<div className="flex flex-col gap-4">
+							<p
+								className="font-medium text-sm"
+								aria-live="polite"
+							>
 								{chosen} of {items.length} files selected
-							</legend>
-							{groups.map(([target, list]) => (
-								<div
-									key={target}
-									className="flex flex-col gap-1"
+							</p>
+							{development.length > 0 ? (
+								<fieldset
+									className="flex flex-col gap-3"
+									aria-describedby={`${id}-development-hint`}
 								>
-									<p className="text-muted-foreground text-xs">
-										{TARGET_LABELS[target] ?? target}
+									<legend className="mb-1 font-medium text-sm">
+										Development instructions (move) ·{" "}
+										{countSelected(
+											development.flatMap(
+												([, list]) => list,
+											),
+										)}{" "}
+										selected
+									</legend>
+									<p
+										id={`${id}-development-hint`}
+										className="text-muted-foreground text-xs"
+									>
+										Instructions for working on this
+										repository. They move to the
+										instructions repository.
 									</p>
-									<ul className="flex flex-col gap-1">
-										{list.map((item) => {
-											const checkboxId = `${id}-${item.from}`;
-											return (
-												<li
-													key={item.from}
-													className="flex items-start gap-2 text-xs"
-												>
-													<Checkbox
-														id={checkboxId}
-														checked={
-															selected?.has(
-																item.from,
-															) ?? false
-														}
-														disabled={pending}
-														onCheckedChange={(
-															value,
-														) =>
-															toggle(
-																item.from,
-																value === true,
-															)
-														}
-													/>
-													<label
-														htmlFor={checkboxId}
-														className="min-w-0 break-all"
-													>
-														<code>{item.from}</code>
-														{item.to ? (
-															<span className="text-muted-foreground">
-																{" → "}
-																<code>
-																	{item.to}
-																</code>
-															</span>
-														) : (
-															<span className="text-muted-foreground">
-																{" "}
-																(same as{" "}
-																{
-																	item.duplicateOf
-																}
-																; removed only)
-															</span>
-														)}
-														{item.defaultIncluded ? null : (
-															<span className="text-muted-foreground">
-																{" "}
-																· a root folder
-																that may be
-																application code
-															</span>
-														)}
-													</label>
-												</li>
-											);
-										})}
-									</ul>
-								</div>
-							))}
+									{development.map(([target, list]) => (
+										<div
+											key={target}
+											className="flex flex-col gap-1"
+										>
+											<p className="text-muted-foreground text-xs">
+												{TARGET_LABELS[target] ??
+													target}
+											</p>
+											<FileList
+												id={id}
+												items={list}
+												selected={selected}
+												pending={pending}
+												onToggle={toggle}
+											/>
+										</div>
+									))}
+								</fieldset>
+							) : null}
+							{product.length > 0 ? (
+								<fieldset
+									className="flex flex-col gap-1"
+									aria-describedby={`${id}-product-hint`}
+								>
+									<legend className="mb-1 font-medium text-sm">
+										Shipped with your product (stay) ·{" "}
+										{countSelected(product)} selected
+									</legend>
+									<p
+										id={`${id}-product-hint`}
+										className="text-muted-foreground text-xs"
+									>
+										Your product publishes or generates
+										these files, for example its own
+										coding-tool plugin. Moving them out
+										would break it, so they stay in the code
+										repository unless you check them.
+									</p>
+									<FileList
+										id={id}
+										items={product}
+										selected={selected}
+										pending={pending}
+										onToggle={toggle}
+									/>
+								</fieldset>
+							) : null}
 							{plan.skipped.length > 0 ? (
 								<p className="text-muted-foreground text-xs">
 									Left in place:{" "}
 									{plan.skipped.map((s) => s.path).join(", ")}
 								</p>
 							) : null}
-						</fieldset>
+						</div>
 					) : null}
 
 					{plan && items.length > 0 ? (
@@ -626,10 +831,87 @@ function ConsolidationDialog({
 								aria-hidden="true"
 							/>
 						) : null}
-						Create repository and move {chosen} files
+						Move {chosen} {chosen === 1 ? "file" : "files"}
 					</Button>
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>
+	);
+}
+
+function FileList({
+	id,
+	items,
+	selected,
+	pending,
+	onToggle,
+}: {
+	id: string;
+	items: PlanItem[];
+	selected: Set<string> | null;
+	pending: boolean;
+	onToggle: (path: string, on: boolean) => void;
+}) {
+	return (
+		<ul className="flex flex-col gap-1">
+			{items.map((item) => {
+				const checkboxId = `${id}-${item.path}`;
+				const reasonId = `${checkboxId}-reason`;
+				return (
+					<li
+						key={item.path}
+						className="flex items-start gap-2 text-xs"
+					>
+						<Checkbox
+							id={checkboxId}
+							checked={selected?.has(item.path) ?? false}
+							disabled={pending}
+							aria-describedby={
+								item.reason ? reasonId : undefined
+							}
+							onCheckedChange={(value) =>
+								onToggle(item.path, value === true)
+							}
+						/>
+						<div className="flex min-w-0 flex-col gap-0.5">
+							<label
+								htmlFor={checkboxId}
+								className="min-w-0 break-all"
+							>
+								<code>{item.path}</code>
+								{item.to ? (
+									<span className="text-muted-foreground">
+										{" → "}
+										<code>{item.to}</code>
+									</span>
+								) : (
+									<span className="text-muted-foreground">
+										{" "}
+										(same as {item.duplicateOf}; removed
+										only)
+									</span>
+								)}
+								{item.group === "development" &&
+								!item.defaultIncluded ? (
+									<span className="text-muted-foreground">
+										{" "}
+										· a root folder that may be application
+										code
+									</span>
+								) : null}
+							</label>
+							{item.reason ? (
+								<p
+									id={reasonId}
+									className="break-words text-muted-foreground"
+								>
+									{item.reason}
+								</p>
+							) : null}
+						</div>
+					</li>
+				);
+			})}
+		</ul>
 	);
 }

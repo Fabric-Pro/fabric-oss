@@ -46,7 +46,6 @@ import { DEFAULT_MCP_TOOL_TIMEOUT_MS } from "../../../activities/orchestrator/ex
 import type { DirectChatUsageLimitRefusal } from "../../../types";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
 import { ADVISOR_ANSWER_SNAPSHOT_PATCH } from "../advisor-answer-snapshot";
-import { resolveIntentUserMessage } from "../attachment-fast-path";
 import {
 	admitCallable,
 	CALL_TOOL_DEFINITIONS,
@@ -78,6 +77,7 @@ import {
 	recordAdvisorToolExecution,
 	recordAdvisorToolSet,
 } from "../advisor-request-log";
+import { resolveIntentUserMessage } from "../attachment-fast-path";
 import {
 	COMPANY_CONTEXT_SEARCH_DESCRIPTION,
 	COMPANY_CONTEXT_SEARCH_INPUT_SCHEMA,

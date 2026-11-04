@@ -35,6 +35,8 @@ export async function createInstructionConsolidation(input: {
 	targetIntegrationId: string;
 	targetRepositoryUrl: string;
 	files: InstructionConsolidationFile[];
+	/** Plan files the person kept in the code repository. */
+	keptPaths?: string[];
 }): Promise<InstructionConsolidation> {
 	return db.instructionConsolidation.create({
 		data: {
@@ -46,6 +48,7 @@ export async function createInstructionConsolidation(input: {
 			targetRepositoryUrl: input.targetRepositoryUrl,
 			files: input.files as unknown as Prisma.InputJsonArray,
 			fileCount: input.files.length,
+			keptPaths: input.keptPaths ?? [],
 		},
 	});
 }
@@ -64,6 +67,20 @@ export async function getLatestInstructionConsolidation(
 		where: { projectId },
 		orderBy: { createdAt: "desc" },
 	});
+}
+
+/**
+ * Every path a person kept in the code repository on an earlier move of this
+ * project, so the next review does not offer it for moving again.
+ */
+export async function getKeptInstructionConsolidationPaths(
+	projectId: string,
+): Promise<string[]> {
+	const rows = await db.instructionConsolidation.findMany({
+		where: { projectId },
+		select: { keptPaths: true },
+	});
+	return [...new Set(rows.flatMap((row) => row.keptPaths))].sort();
 }
 
 /** A run still in progress blocks a second one for the same project. */
@@ -85,11 +102,25 @@ export async function updateInstructionConsolidation(
 		sourceCommitSha?: string;
 		copiedCommitSha?: string;
 		cleanupPullRequestUrl?: string;
+		cleanupPullRequestId?: string;
+		cleanupHeadSha?: string;
 		error?: string | null;
 	},
 ): Promise<void> {
 	await db.instructionConsolidation.updateMany({
 		where: { id, projectId },
 		data,
+	});
+}
+
+/** Records the cleanup pull request as merged, once: a later sighting keeps the first time. */
+export async function markInstructionConsolidationCleanupMerged(
+	id: string,
+	projectId: string,
+	mergedAt: Date,
+): Promise<void> {
+	await db.instructionConsolidation.updateMany({
+		where: { id, projectId, cleanupMergedAt: null },
+		data: { cleanupMergedAt: mergedAt },
 	});
 }

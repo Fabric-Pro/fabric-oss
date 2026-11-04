@@ -34,6 +34,7 @@ import {
 	PERMISSION_MIDDLEWARE_TAG,
 	Permissions,
 } from "../../../../../orpc/procedures";
+import { restoreMyBranchFileProcedure } from "../proposal-branch-procedures";
 import {
 	approveInstructionProposalProcedure,
 	cancelInstructionProposalProcedure,
@@ -44,6 +45,7 @@ import {
 	refreshInstructionProposalPullRequestProcedure,
 	rejectInstructionProposalProcedure,
 } from "../proposals";
+import { rebaseInstructionProposalProcedure } from "../rebase-proposal";
 
 type TaggedMiddleware = ((
 	options: { context: unknown; next: () => unknown },
@@ -73,6 +75,8 @@ const PROCEDURES = [
 	["cancel", cancelInstructionProposalProcedure],
 	["getPullRequest", getInstructionProposalPullRequestProcedure],
 	["refreshPullRequest", refreshInstructionProposalPullRequestProcedure],
+	["rebase", rebaseInstructionProposalProcedure],
+	["restoreMyBranchFile", restoreMyBranchFileProcedure],
 ] as const;
 
 const visibility = projectNotFoundUnlessVisible as unknown as TaggedMiddleware;
@@ -85,7 +89,7 @@ beforeEach(() => {
 });
 
 describe("instruction proposal procedures: project visibility (Fizzy #2727)", () => {
-	it("decides visibility before permission on every one of the eight", () => {
+	it("decides visibility before permission on every one of the ten", () => {
 		for (const [name, procedure] of PROCEDURES) {
 			const middlewares = chain(procedure);
 			const visibilityAt = middlewares.indexOf(visibility);

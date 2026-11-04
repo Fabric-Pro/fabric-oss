@@ -24,6 +24,7 @@ import {
 } from "@repo/database";
 import { withRefreshLock } from "@repo/database/prisma/queries/lib/refresh-lock";
 import { credentialLockKey } from "@repo/database/prisma/queries/lib/refresh-lock-key";
+import { needsAccountBackfill, recordMissingAccount } from "./account";
 import {
 	type CredentialProviderName,
 	type CredentialRequirement,
@@ -48,22 +49,53 @@ export type RefreshOutcome =
 
 export type CredentialAdapter = {
 	provider: CredentialProviderName;
-	/** Exchange the stored refresh token. Must use `secret.issuer`'s client. */
+	/**
+	 * Runs BEFORE the refresh lock: static configuration the exchange needs,
+	 * such as the OAuth client named by `secret.issuer`. Looking that up under
+	 * the lock would hold its pooled connection while asking for a second
+	 * one. The result is handed to `refresh` as `prepared`.
+	 */
+	prepareRefresh?: (input: {
+		credential: CredentialMetadata;
+		secret: CredentialSecret;
+	}) => Promise<unknown>;
+	/**
+	 * Exchange the stored refresh token. Must use `secret.issuer`'s client.
+	 * `assertBudget(ms)` throws when the lock's transaction has less than
+	 * `ms` left; call it immediately before the exchange.
+	 */
 	refresh?: (input: {
 		credential: CredentialMetadata;
 		secret: CredentialSecret;
+		prepared?: unknown;
+		assertBudget?: (requiredMs: number) => void;
 	}) => Promise<RefreshOutcome>;
 	/** Mint a short-lived token for an `APP_INSTALLATION` row. */
 	mintInstallationToken?: (input: {
 		credential: CredentialMetadata;
 		requirement: CredentialRequirement;
 	}) => Promise<{ token: string; expiresAt: Date } | null>;
+	/**
+	 * The provider account a stored token acts as, for a row saved without
+	 * one (`account.ts`). Null when the provider would not say. `scopes`
+	 * only when the provider reported them; omitted keeps the stored ones.
+	 */
+	readAccount?: (input: {
+		credential: CredentialMetadata;
+		token: string;
+	}) => Promise<{ id: string; login: string; scopes?: string[] } | null>;
 };
 
 const adapters = new Map<CredentialProviderName, CredentialAdapter>();
 
 export function registerCredentialAdapter(adapter: CredentialAdapter): void {
 	adapters.set(adapter.provider, adapter);
+}
+
+export function getCredentialAdapter(
+	provider: CredentialProviderName,
+): CredentialAdapter | undefined {
+	return adapters.get(provider);
 }
 
 /** Test seam. */
@@ -172,9 +204,14 @@ export async function resolveCredential(input: {
 		typeof secret.refreshToken === "string" &&
 		adapter?.refresh
 	) {
+		const prepared = await adapter.prepareRefresh?.({
+			credential: current,
+			secret,
+		});
 		const refreshed = await refreshUnderLock({
 			credential: current,
 			adapter,
+			prepared,
 			now,
 		});
 		if (refreshed === "needs-reauth") {
@@ -189,6 +226,18 @@ export async function resolveCredential(input: {
 	const token = tokenFromSecret(secret);
 	if (!token) {
 		return { ok: false, failure: { code: "no-secret" } };
+	}
+	// A row saved without its account learns it on first use, once; this
+	// never fails the resolve.
+	if (needsAccountBackfill(current) && adapter?.readAccount) {
+		const login = await recordMissingAccount({
+			credential: current,
+			token,
+			readAccount: adapter.readAccount,
+		});
+		if (login) {
+			current = { ...current, externalAccountLogin: login };
+		}
 	}
 	await touchCredentialUsed({ id: current.id, organizationId });
 	return {
@@ -218,6 +267,7 @@ export async function resolveCredential(input: {
 async function refreshUnderLock(input: {
 	credential: CredentialMetadata;
 	adapter: CredentialAdapter;
+	prepared?: unknown;
 	now: () => number;
 }): Promise<
 	| { credential: CredentialMetadata; secret: CredentialSecret }
@@ -225,7 +275,7 @@ async function refreshUnderLock(input: {
 	| "needs-reauth"
 > {
 	const { organizationId, id } = input.credential;
-	return withRefreshLock(credentialLockKey(id), async (tx) => {
+	return withRefreshLock(credentialLockKey(id), async (tx, assertBudget) => {
 		// Everything under the lock goes through `tx`: a write on the outer
 		// client would check out a second pooled connection while holding it.
 		const latest = await readCredentialSecret({ id, organizationId }, tx);
@@ -238,6 +288,8 @@ async function refreshUnderLock(input: {
 		const outcome = await input.adapter.refresh?.({
 			credential: latest.credential,
 			secret: latest.secret,
+			prepared: input.prepared,
+			assertBudget,
 		});
 		if (!outcome) {
 			return null;
@@ -276,6 +328,8 @@ async function refreshUnderLock(input: {
 		return {
 			credential: {
 				...latest.credential,
+				// `replaceCredentialSecretIfGeneration` bumped it with the secret.
+				generation: latest.credential.generation + 1,
 				expiresAt: outcome.expiresAt,
 				scopes: outcome.scopes ?? latest.credential.scopes,
 				status: "ACTIVE",

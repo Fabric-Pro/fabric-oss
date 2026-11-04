@@ -180,8 +180,8 @@ export function registerWorkflowRoutes(
 				organizationId: ctx.organizationId ?? null,
 				data: {
 					workflowId: workflow.id,
-					version: workflow.version,
-					triggerType: "MANUAL",
+					version: workflow.publishedVersion ?? workflow.version,
+					triggerType: "EVENT",
 					triggerInput: body.triggerInput ?? {},
 				},
 			});

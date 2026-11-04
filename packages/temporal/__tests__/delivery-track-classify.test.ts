@@ -41,7 +41,7 @@ const { mocks, AIProviderNotConfiguredError, AiUsageLimitExceededError } =
 				projectFindFirst: vi.fn(),
 				userStoryFindMany: vi.fn(),
 				userStoryUpdateMany: vi.fn(),
-				generateObject: vi.fn(),
+				generateText: vi.fn(),
 				getAIModelWithMetadata: vi.fn(),
 				getAIDecisionModelWithMetadata: vi.fn(),
 				experimental_decide: vi.fn(),
@@ -67,7 +67,8 @@ vi.mock("@repo/logs", () => ({
 vi.mock("@repo/ai", async () => ({
 	AIProviderNotConfiguredError,
 	experimental_decide: mocks.experimental_decide,
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
@@ -210,8 +211,8 @@ function modelReturns(
 		confidence: number;
 	}>,
 ) {
-	mocks.generateObject.mockResolvedValue({
-		object: { classifications },
+	mocks.generateText.mockResolvedValue({
+		output: { classifications },
 		usage: { inputTokens: 10, outputTokens: 10 },
 	});
 }
@@ -445,8 +446,8 @@ describe("classifyDeliveryTracks", () => {
 			userId: "u1",
 		});
 
-		expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-		const prompt: string = mocks.generateObject.mock.calls[0][0].prompt;
+		expect(mocks.generateText).toHaveBeenCalledTimes(1);
+		const prompt: string = mocks.generateText.mock.calls[0][0].prompt;
 		// The instruction sentence names the delimiters before the block, so
 		// locate the block itself (last opening delimiter, then its close).
 		const start = prompt.lastIndexOf(UNTRUSTED_DATA_START);
@@ -493,8 +494,8 @@ describe("classifyDeliveryTracks", () => {
 			userId: "u1",
 		});
 
-		expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-		const prompt: string = mocks.generateObject.mock.calls[0][0].prompt;
+		expect(mocks.generateText).toHaveBeenCalledTimes(1);
+		const prompt: string = mocks.generateText.mock.calls[0][0].prompt;
 
 		// Exactly one data block: the opening marker appears in the
 		// instruction sentence and once as the real block; the closing marker
@@ -625,7 +626,7 @@ describe("classifyDeliveryTracks", () => {
 			userId: "u1",
 		});
 
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
 		expect(out.classified).toBe(1);
 		expect(mocks.userStoryUpdateMany.mock.calls[0][0].data).toMatchObject({
@@ -743,7 +744,7 @@ describe("classifyDeliveryTracks", () => {
 				userId: "u1",
 			});
 
-			const prompt: string = mocks.generateObject.mock.calls[0][0].prompt;
+			const prompt: string = mocks.generateText.mock.calls[0][0].prompt;
 			const deferRow = prompt
 				.split("\n")
 				.find((line) => line.startsWith("| DEFER |"));
@@ -778,7 +779,7 @@ describe("classifyDeliveryTracks", () => {
 			userId: "u1",
 		});
 
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 		expect(out.classified).toBe(2);
 		const tracks = mocks.userStoryUpdateMany.mock.calls.map(
 			(c) => [c[0].where.id, c[0].data.deliveryTrack] as const,
@@ -927,7 +928,7 @@ describe("classifyDeliveryTracks", () => {
 				featureKey: "delivery-track",
 			});
 			expect(mocks.experimental_decide).toHaveBeenCalledTimes(1);
-			expect(mocks.generateObject).not.toHaveBeenCalled();
+			expect(mocks.generateText).not.toHaveBeenCalled();
 			// A completed evaluation used the organization provider.
 			expect(decisionTrackUsage).toHaveBeenCalledTimes(1);
 			expect(out.classified).toBe(2);
@@ -1014,8 +1015,8 @@ describe("classifyDeliveryTracks", () => {
 				storyIds: ["s-1", "s-2", "s-3"],
 			});
 
-			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-			const prompt: string = mocks.generateObject.mock.calls[0][0].prompt;
+			expect(mocks.generateText).toHaveBeenCalledTimes(1);
+			const prompt: string = mocks.generateText.mock.calls[0][0].prompt;
 			// The allowlist — and the whole prompt — carries the leftover only.
 			expect(prompt).toContain("Story ids in this batch: s-2");
 			expect(prompt).not.toContain("s-1");
@@ -1079,8 +1080,8 @@ describe("classifyDeliveryTracks", () => {
 				storyIds: ["s-1", "s-2"],
 			});
 
-			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-			const prompt: string = mocks.generateObject.mock.calls[0][0].prompt;
+			expect(mocks.generateText).toHaveBeenCalledTimes(1);
+			const prompt: string = mocks.generateText.mock.calls[0][0].prompt;
 			expect(prompt).toContain("Story ids in this batch: s-2");
 			expect(prompt).not.toContain("s-1");
 			expect(out.classified).toBe(1);
@@ -1146,8 +1147,8 @@ describe("classifyDeliveryTracks", () => {
 			});
 
 			expect(decisionTrackUsage).toHaveBeenCalledTimes(1);
-			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-			const prompt: string = mocks.generateObject.mock.calls[0][0].prompt;
+			expect(mocks.generateText).toHaveBeenCalledTimes(1);
+			const prompt: string = mocks.generateText.mock.calls[0][0].prompt;
 			expect(prompt).toContain("Story ids in this batch: s-1, s-2, s-3");
 			expect(out.classified).toBe(3);
 			expect(out.results.every((r) => r.source === "model")).toBe(true);
@@ -1173,8 +1174,8 @@ describe("classifyDeliveryTracks", () => {
 			});
 
 			expect(mocks.experimental_decide).not.toHaveBeenCalled();
-			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-			expect(mocks.generateObject.mock.calls[0][0].prompt).toContain(
+			expect(mocks.generateText).toHaveBeenCalledTimes(1);
+			expect(mocks.generateText.mock.calls[0][0].prompt).toContain(
 				"Story ids in this batch: s-1",
 			);
 			expect(out.classified).toBe(1);
@@ -1193,7 +1194,7 @@ describe("classifyDeliveryTracks", () => {
 			await expect(
 				classifyDeliveryTracks({ ...ORG_INPUT, storyIds: ["s-1"] }),
 			).rejects.toThrow(AiUsageLimitExceededError);
-			expect(mocks.generateObject).not.toHaveBeenCalled();
+			expect(mocks.generateText).not.toHaveBeenCalled();
 		});
 
 		it("propagates a usage-limit error raised by the decision evaluation", async () => {
@@ -1206,7 +1207,7 @@ describe("classifyDeliveryTracks", () => {
 			await expect(
 				classifyDeliveryTracks({ ...ORG_INPUT, storyIds: ["s-1"] }),
 			).rejects.toThrow(AiUsageLimitExceededError);
-			expect(mocks.generateObject).not.toHaveBeenCalled();
+			expect(mocks.generateText).not.toHaveBeenCalled();
 		});
 
 		it("treats a decision refusal as no decision and sends the batch to the language model", async () => {
@@ -1232,7 +1233,7 @@ describe("classifyDeliveryTracks", () => {
 					mocks.experimental_decide.mock.results[0]?.value,
 				),
 			).toBe(true);
-			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+			expect(mocks.generateText).toHaveBeenCalledTimes(1);
 			expect(out.errors).toHaveLength(0);
 			// The language model's track, never a refusal read as a track.
 			expect(out.results).toEqual([
@@ -1265,7 +1266,7 @@ describe("classifyDeliveryTracks", () => {
 			});
 
 			expect(decisionTrackUsage).not.toHaveBeenCalled();
-			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+			expect(mocks.generateText).toHaveBeenCalledTimes(1);
 			expect(out.classified).toBe(1);
 			// The decision model is a fast path, not a dependency: its failure
 			// is not the run's error.
@@ -1461,7 +1462,7 @@ describe("classifyDeliveryTracks", () => {
 						({ outcome, model, count }) => [outcome, model, count],
 					),
 				).toEqual([["limit_exceeded", "example-decider", 3]]);
-				expect(mocks.generateObject).not.toHaveBeenCalled();
+				expect(mocks.generateText).not.toHaveBeenCalled();
 			});
 
 			it("labels a refusal by the gateway fallback model with that model, for every story in the batch", async () => {

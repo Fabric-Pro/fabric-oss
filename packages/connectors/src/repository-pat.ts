@@ -42,6 +42,89 @@ export async function validateGitHubPat({
 	return response.ok ? { ok: true } : { ok: false, status: response.status };
 }
 
+export type GitHubTokenAccount =
+	| {
+			ok: true;
+			id: string;
+			login: string;
+			scopes: string[];
+			/**
+			 * `classic` when GitHub sent the `X-OAuth-Scopes` header (a classic
+			 * token or an OAuth grant, whose scopes are then known), otherwise
+			 * `fine-grained`: its permissions cannot be read up front.
+			 */
+			tokenType: "classic" | "fine-grained";
+	  }
+	| { ok: false; status?: number };
+
+const GITHUB_HEADERS = (pat: string) => ({
+	Authorization: `Bearer ${pat}`,
+	Accept: "application/vnd.github+json",
+	"X-GitHub-Api-Version": "2022-11-28",
+});
+
+/**
+ * The GitHub account a token acts as: `GET /user` gives its id and login, and
+ * the `X-OAuth-Scopes` header its classic scopes. A fine-grained token sends
+ * no such header; its scopes are then an empty list. Never throws for a
+ * provider answer; a transport failure propagates to the caller.
+ */
+export async function readGitHubTokenAccount({
+	pat,
+	signal,
+}: {
+	pat: string;
+	signal?: AbortSignal;
+}): Promise<GitHubTokenAccount> {
+	const response = await fetch("https://api.github.com/user", {
+		headers: GITHUB_HEADERS(pat),
+		signal,
+	});
+	if (!response.ok) {
+		return { ok: false, status: response.status };
+	}
+	const body = (await response.json()) as { id?: unknown; login?: unknown };
+	if (
+		(typeof body.id !== "number" && typeof body.id !== "string") ||
+		typeof body.login !== "string" ||
+		body.login === ""
+	) {
+		return { ok: false };
+	}
+	const header = response.headers.get("x-oauth-scopes");
+	const scopes = (header ?? "")
+		.split(",")
+		.map((scope) => scope.trim())
+		.filter((scope) => scope !== "");
+	return {
+		ok: true,
+		id: String(body.id),
+		login: body.login,
+		scopes,
+		tokenType: header === null ? "fine-grained" : "classic",
+	};
+}
+
+/**
+ * Whether the token may list the repositories it reaches
+ * (`GET /user/repos?per_page=1`): a cheap, read-only probe of a fine-grained
+ * token, whose permissions GitHub does not report. Never throws for a
+ * provider answer; a transport failure propagates to the caller.
+ */
+export async function canGitHubTokenListRepositories({
+	pat,
+	signal,
+}: {
+	pat: string;
+	signal?: AbortSignal;
+}): Promise<boolean> {
+	const response = await fetch(
+		"https://api.github.com/user/repos?per_page=1",
+		{ headers: GITHUB_HEADERS(pat), signal },
+	);
+	return response.ok;
+}
+
 /**
  * Validate a GitLab PAT by calling `GET {host}/api/v4/projects/{path}` with the
  * `PRIVATE-TOKEN` header — i.e. can this token READ THE REPO we're connecting.

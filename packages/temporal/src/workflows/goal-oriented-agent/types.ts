@@ -5,6 +5,7 @@
  * context building with orchestrator-style planning and verification.
  */
 
+import type { NativeAgentAdmission } from "../../lib/agent-execution-native-protocol";
 import type {
 	AgentVariable,
 	ALTKConfig,
@@ -29,6 +30,8 @@ export type {
 // =============================================================================
 
 export interface GoalOrientedAgentInput {
+	/** Only server-admitted native executions use the durable receipt protocol. */
+	nativeAdmission?: NativeAgentAdmission;
 	executionId: string;
 	deploymentId: string;
 	instanceId: string;
@@ -232,6 +235,7 @@ export interface GoalOrientedProgressUpdate {
 		| "executing"
 		| "verifying"
 		| "recovering"
+		| "cancelled"
 		| "completed"
 		| "failed";
 	message: string;

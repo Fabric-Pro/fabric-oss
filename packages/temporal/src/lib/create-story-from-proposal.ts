@@ -1,12 +1,14 @@
 import {
 	AIProviderNotConfiguredError,
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
 // Imported from the SUBPATH (not @repo/ai root) so it stays UNMOCKED in tests
 // that mock the @repo/ai root module (uniform rule across the budget sites).
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	createFeatureVersion,
 	createStory,
@@ -365,12 +367,16 @@ async function draftFeatureWithAI({
 			// F-171: bug drafting returns a full bug card (markdown) plus a
 			// structured needsMoreInfo flag the LLM evaluates per the
 			// bug_creation prompt's rules.
-			const { object, usage } = await generateObject({
-				model,
-				schema: DraftedBugSchema,
-				prompt: draftPrompt,
-				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			});
+			const { output: object, usage } = await requireStructuredOutput(
+				generateText({
+					model,
+					output: Output.object({ schema: DraftedBugSchema }),
+					prompt: draftPrompt,
+					...(maxOutputTokens !== undefined
+						? { maxOutputTokens }
+						: {}),
+				}),
+			);
 
 			trackUsage();
 			logModelUsageAsync({
@@ -390,12 +396,14 @@ async function draftFeatureWithAI({
 			};
 		}
 
-		const { object, usage } = await generateObject({
-			model,
-			schema: DraftedFeatureSchema,
-			prompt: draftPrompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
+		const { output: object, usage } = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: DraftedFeatureSchema }),
+				prompt: draftPrompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			}),
+		);
 
 		trackUsage();
 		logModelUsageAsync({

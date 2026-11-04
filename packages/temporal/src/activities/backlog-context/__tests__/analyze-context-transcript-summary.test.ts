@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	structuredOutput: vi.fn(),
 	generateText: vi.fn(),
 	getModel: vi.fn(),
 	info: vi.fn(),
@@ -15,8 +15,10 @@ const mocks = vi.hoisted(() => ({
 	redisSet: vi.fn(),
 }));
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
-	generateText: mocks.generateText,
+	Output: { object: (spec: unknown) => spec },
+	// The analysis call passes an `output` spec; transcript summaries do not.
+	generateText: (args: { output?: unknown }) =>
+		args.output ? mocks.structuredOutput(args) : mocks.generateText(args),
 	getAIModelWithMetadata: mocks.getModel,
 	logModelUsageAsync: mocks.logUsage,
 }));
@@ -92,7 +94,7 @@ const run = (transcripts: string[], architectureDecisions?: string) =>
 			architectureDecisions,
 		},
 	});
-const prompt = (): string => mocks.generateObject.mock.calls[0][0].prompt;
+const prompt = (): string => mocks.structuredOutput.mock.calls[0][0].prompt;
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -107,8 +109,8 @@ beforeEach(() => {
 		metadata: {},
 		trackUsage: mocks.trackUsage,
 	});
-	mocks.generateObject.mockResolvedValue({
-		object: { changes: [], summary: "Analyzed" },
+	mocks.structuredOutput.mockResolvedValue({
+		output: { changes: [], summary: "Analyzed" },
 		usage: {},
 	});
 	mocks.generateText.mockReset().mockResolvedValue({
@@ -376,7 +378,7 @@ it("stops new rounds when the remaining time reaches the analysis reserve", asyn
 	);
 	await vi.advanceTimersByTimeAsync(10_000);
 	expect(mocks.generateText).toHaveBeenCalledTimes(6);
-	expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+	expect(mocks.structuredOutput).toHaveBeenCalledTimes(1);
 	expect(mocks.info).toHaveBeenCalledWith(
 		expect.any(String),
 		expect.objectContaining({
@@ -395,7 +397,7 @@ it("does not start a round without its reserve plus time for analysis and merge"
 	});
 	await run([meeting("original", 400_000)]);
 	expect(mocks.generateText).not.toHaveBeenCalled();
-	expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+	expect(mocks.structuredOutput).toHaveBeenCalledTimes(1);
 });
 
 it("aborts a slow summary at its call timeout and continues analysis", async () => {
@@ -406,7 +408,7 @@ it("aborts a slow summary at its call timeout and continues analysis", async () 
 	const signal = mocks.generateText.mock.calls[0][0].abortSignal;
 	expect(signal).toBeInstanceOf(AbortSignal);
 	expect(signal.aborted).toBe(true);
-	expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+	expect(mocks.structuredOutput).toHaveBeenCalledTimes(1);
 	expect(mocks.redisSet).not.toHaveBeenCalled();
 	await analysis;
 	expect(vi.getTimerCount()).toBe(0);
@@ -429,7 +431,7 @@ it("reuses a successful cached summary on a later attempt", async () => {
 		expect.stringContaining("Preserve the requested export"),
 		604800,
 	);
-	expect(mocks.generateObject).toHaveBeenCalledTimes(2);
+	expect(mocks.structuredOutput).toHaveBeenCalledTimes(2);
 });
 
 it.each(["get", "set"])(
@@ -458,7 +460,7 @@ it("bounds Redis wait time before continuing without a cache", async () => {
 	await vi.advanceTimersByTimeAsync(5_000);
 	expect(mocks.redisGet).toHaveBeenCalled();
 	expect(mocks.redisSet).toHaveBeenCalled();
-	expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+	expect(mocks.structuredOutput).toHaveBeenCalledTimes(1);
 	await analysis;
 });
 
@@ -629,7 +631,7 @@ it("allows a summary past 45 seconds and aborts at 60 seconds", async () => {
 	const analysis = run([meeting("large", 400_000)]);
 	await vi.advanceTimersByTimeAsync(59_999);
 	expect(mocks.generateText.mock.calls[0][0].abortSignal.aborted).toBe(false);
-	expect(mocks.generateObject).not.toHaveBeenCalled();
+	expect(mocks.structuredOutput).not.toHaveBeenCalled();
 	await vi.advanceTimersByTimeAsync(1);
 	await analysis;
 	expect(mocks.generateText.mock.calls[0][0].abortSignal.aborted).toBe(true);

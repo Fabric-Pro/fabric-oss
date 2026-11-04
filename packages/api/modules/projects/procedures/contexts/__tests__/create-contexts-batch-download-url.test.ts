@@ -1030,7 +1030,7 @@ describe("createContextsBatchDownloadUrl", () => {
 					organizationId: null,
 					userId: "user-1",
 				},
-				orderBy: { pageUrl: "asc" },
+				orderBy: [{ pageUrl: "asc" }, { id: "asc" }],
 			}),
 		);
 	});

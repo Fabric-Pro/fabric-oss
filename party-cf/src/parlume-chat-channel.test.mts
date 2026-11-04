@@ -6,12 +6,20 @@ import { loadParlumeModule } from "./parlume-test-runtime.mts";
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+type Audience = "MEETING" | "TEAM";
+
 type Channel = {
 	send(body: unknown): Promise<Response>;
 	receive(body: unknown): Promise<Response>;
 	checkDeliveries(): Promise<void>;
-	runSuggestionPass(input: { enabled: boolean }): Promise<void>;
-	nextWakeAt(input: { suggestions: boolean }): Promise<number | null>;
+	runSuggestionPass(input: {
+		enabled: boolean;
+		audience: Audience;
+	}): Promise<void>;
+	nextWakeAt(input: {
+		suggestions: boolean;
+		audience: Audience;
+	}): Promise<number | null>;
 	noteSpeechSegment(): boolean;
 	beginChatTurn(generation: number): void;
 	isChatTurnCurrent(generation: number): boolean;
@@ -115,6 +123,50 @@ function harness(
 		events: (name: string) => logs.filter((entry) => entry.event === name),
 	};
 }
+
+const records = (meeting: ReturnType<typeof harness>) =>
+	meeting.requests.filter((r) => r.path.endsWith("/suggestions"));
+
+/** A meeting whose every pass Fabric answers with this suggestion. */
+function suggesting(answer: Record<string, unknown>) {
+	return harness({
+		fabric: (path) =>
+			path.endsWith("/suggest")
+				? Response.json({
+						suggest: true,
+						text: "Who signs off the migration?",
+						speaker: "Alex",
+						quote: "we move the data in March",
+						topic: "Data migration",
+						...answer,
+					})
+				: Response.json({ accepted: true }),
+	});
+}
+
+/** Enough speech for a due pass, then the pass, for the verified audience. */
+async function passAfter(
+	meeting: ReturnType<typeof harness>,
+	ms: number,
+	audience: Audience = "MEETING",
+) {
+	for (let index = 0; index < 3; index++) {
+		meeting.channel.noteSpeechSegment();
+	}
+	meeting.clock.now += ms;
+	await meeting.channel.runSuggestionPass({ enabled: true, audience });
+}
+
+/** Marks the chat unavailable: it has shown nothing, and a post never appears. */
+async function loseChat(meeting: ReturnType<typeof harness>) {
+	await meeting.channel.send({ message: "The link" });
+	meeting.clock.now += 15_000;
+	await meeting.channel.checkDeliveries();
+	assert.equal(await meeting.channel.isAvailable(), false);
+}
+
+const suggestPasses = (meeting: ReturnType<typeof harness>) =>
+	meeting.requests.filter((r) => r.path.endsWith("/suggest")).length;
 
 let messageNumber = 0;
 function chatMessage(text: string, overrides: Record<string, unknown> = {}) {
@@ -571,22 +623,39 @@ test("a suggestion pass asks Fabric only when due, posts one with its go handle,
 		meeting.requests.filter((r) => r.path.endsWith("/suggest"));
 	await meeting.channel.receive(chatMessage("Morning"));
 	meeting.channel.noteSpeechSegment();
-	await meeting.channel.runSuggestionPass({ enabled: true });
+	await meeting.channel.runSuggestionPass({
+		enabled: true,
+		audience: "MEETING",
+	});
 	assert.equal(suggests().length, 0, "one remark is not enough");
 
 	// The first pass runs as soon as enough is said, with no interval to wait.
 	meeting.channel.noteSpeechSegment();
-	await meeting.channel.runSuggestionPass({ enabled: true });
+	await meeting.channel.runSuggestionPass({
+		enabled: true,
+		audience: "MEETING",
+	});
 
 	assert.deepEqual(suggests()[0]?.body, {
 		sessionId: "session-1",
 		botId: "bot-1",
 		previous: [],
+		teamAudience: true,
 	});
 	assert.equal(
 		meeting.posts()[0]?.body.message,
 		'[P1] Suggestion on Roadmap export, re Sam: "we still need an export". F-12 already covers this. (reply "go P1" and I\'ll say it)',
 	);
+	assert.deepEqual(records(meeting)[0]?.body, {
+		sessionId: "session-1",
+		botId: "bot-1",
+		kind: "answer",
+		text: "F-12 already covers this.",
+		speaker: "Sam",
+		quote: "we still need an export",
+		topic: "Roadmap export",
+		chatTag: "P1",
+	});
 	await meeting.channel.receive(chatMessage("go P1"));
 	await flush();
 	assert.deepEqual(meeting.spoken, [
@@ -595,7 +664,10 @@ test("a suggestion pass asks Fabric only when due, posts one with its go handle,
 
 	// The counter starts again: no pass until two more segments.
 	meeting.clock.now += 45_000;
-	await meeting.channel.runSuggestionPass({ enabled: true });
+	await meeting.channel.runSuggestionPass({
+		enabled: true,
+		audience: "MEETING",
+	});
 	assert.equal(suggests().length, 1);
 });
 
@@ -619,10 +691,16 @@ test("suggestions are skipped while disabled, busy or with the chat unavailable,
 			meeting.channel.noteSpeechSegment();
 		}
 		meeting.clock.now += 300_000;
-		await meeting.channel.runSuggestionPass({ enabled });
+		await meeting.channel.runSuggestionPass({
+			enabled,
+			audience: "MEETING",
+		});
 	};
 	await meeting.channel.receive(chatMessage("Morning"));
-	await meeting.channel.runSuggestionPass({ enabled: true });
+	await meeting.channel.runSuggestionPass({
+		enabled: true,
+		audience: "MEETING",
+	});
 
 	await pass(false);
 	meeting.state.busy = true;
@@ -650,12 +728,187 @@ test("no suggestion pass while the chat is unavailable", async () => {
 	}
 	meeting.clock.now += 90_000;
 
-	await meeting.channel.runSuggestionPass({ enabled: true });
+	await meeting.channel.runSuggestionPass({
+		enabled: true,
+		audience: "MEETING",
+	});
 
 	assert.equal(
 		meeting.requests.filter((r) => r.path.endsWith("/suggest")).length,
 		0,
 	);
+});
+
+test("a team-only suggestion is recorded for the Parlume page and never posted in the chat", async () => {
+	const meeting = suggesting({ kind: "missed_question", audience: "TEAM" });
+	await meeting.channel.receive(chatMessage("Morning"));
+
+	await passAfter(meeting, 0, "TEAM");
+
+	assert.equal(meeting.posts().length, 0);
+	assert.deepEqual(records(meeting)[0]?.body, {
+		sessionId: "session-1",
+		botId: "bot-1",
+		kind: "missed_question",
+		text: "Who signs off the migration?",
+		speaker: "Alex",
+		quote: "we move the data in March",
+		topic: "Data migration",
+		chatTag: null,
+	});
+	assert.equal(meeting.events("suggestion.pass")[0]?.meta.audience, "TEAM");
+});
+
+// TEAM wins whichever side says it: the session as verified, or the pass.
+for (const [verified, answered] of [
+	["TEAM", "MEETING"],
+	["MEETING", "TEAM"],
+	["TEAM", undefined],
+] as const) {
+	test(`a suggestion is kept off the chat when verified ${verified} and answered ${answered ?? "(none)"}`, async () => {
+		const meeting = suggesting(
+			answered === undefined ? {} : { audience: answered },
+		);
+		await meeting.channel.receive(chatMessage("Morning"));
+
+		await passAfter(meeting, 0, verified);
+
+		assert.equal(meeting.posts().length, 0);
+		assert.equal(records(meeting).length, 1);
+		assert.equal(records(meeting)[0]?.body.chatTag, null);
+	});
+}
+
+test("a meeting suggestion is posted, then recorded with its tag; a missed question asks to be asked", async () => {
+	const meeting = suggesting({
+		kind: "missed_question",
+		audience: "MEETING",
+	});
+	await meeting.channel.receive(chatMessage("Morning"));
+
+	await passAfter(meeting, 0);
+
+	assert.equal(
+		meeting.posts()[0]?.body.message,
+		'[P1] Possibly missed question on Data migration, re Alex: "we move the data in March". Who signs off the migration? (reply "go P1" and I\'ll ask it)',
+	);
+	assert.equal(records(meeting)[0]?.body.chatTag, "P1");
+	// Fabric takes the audience from the session, not from the bridge.
+	assert.equal(records(meeting)[0]?.body.audience, undefined);
+	await meeting.channel.receive(chatMessage("go P1"));
+	await flush();
+	assert.deepEqual(meeting.spoken, [
+		"A question we may not have covered on Data migration: Who signs off the migration?",
+	]);
+});
+
+test("team-only suggestions count toward the same limits and duplicates", async () => {
+	const meeting = suggesting({ audience: "TEAM" });
+	await meeting.channel.receive(chatMessage("Morning"));
+
+	await passAfter(meeting, 0, "TEAM");
+	await passAfter(meeting, 60_000, "TEAM");
+	assert.equal(records(meeting).length, 1, "within two minutes of the last");
+
+	await passAfter(meeting, 120_000, "TEAM");
+	assert.equal(records(meeting).length, 1, "the same suggestion again");
+	assert.equal(
+		meeting.events("suggestion.pass").at(-1)?.meta.duplicate,
+		true,
+	);
+});
+
+test("a failed record leaves the meeting chat as it was", async () => {
+	const meeting = harness({
+		fabric: (path) =>
+			path.endsWith("/suggest")
+				? Response.json({
+						suggest: true,
+						kind: "answer",
+						audience: "MEETING",
+						text: "F-12 already covers this.",
+						speaker: "Sam",
+						quote: "we still need an export",
+						topic: "Roadmap export",
+					})
+				: path.endsWith("/suggestions")
+					? new Response(null, { status: 500 })
+					: Response.json({ accepted: true }),
+	});
+	await meeting.channel.receive(chatMessage("Morning"));
+
+	await passAfter(meeting, 0);
+
+	assert.equal(meeting.posts().length, 1);
+	assert.equal(meeting.events("suggestion.record_failed").length, 1);
+});
+
+test("a suggestion for an audience the bridge does not know is neither posted nor recorded", async () => {
+	const meeting = suggesting({ audience: "EVERYONE" });
+	await meeting.channel.receive(chatMessage("Morning"));
+
+	await passAfter(meeting, 0, "TEAM");
+
+	assert.equal(meeting.posts().length, 0);
+	assert.equal(records(meeting).length, 0);
+});
+
+// The audience comes from the verified stream, so it holds before the first
+// pass and whatever a pass answers.
+test("a team-only session suggests even when the chat went unavailable before its first pass", async () => {
+	const meeting = suggesting({ audience: "TEAM" });
+	await loseChat(meeting);
+	for (let index = 0; index < 3; index++) {
+		meeting.channel.noteSpeechSegment();
+	}
+	assert.notEqual(
+		await meeting.channel.nextWakeAt({
+			suggestions: true,
+			audience: "TEAM",
+		}),
+		null,
+		"a pass is scheduled",
+	);
+
+	await passAfter(meeting, 0, "TEAM");
+
+	assert.equal(suggestPasses(meeting), 1);
+	assert.equal(records(meeting).length, 1);
+});
+
+test("a meeting session runs no pass while its chat is unavailable", async () => {
+	const meeting = suggesting({ audience: "MEETING" });
+	await loseChat(meeting);
+
+	await passAfter(meeting, 0, "MEETING");
+
+	assert.equal(suggestPasses(meeting), 0);
+});
+
+test("an answer with no audience does not stop a team-only session's later passes", async () => {
+	let answer: Record<string, unknown> = { suggest: false };
+	const meeting = harness({
+		fabric: (path) =>
+			path.endsWith("/suggest")
+				? Response.json(answer)
+				: Response.json({ accepted: true }),
+	});
+	await loseChat(meeting);
+
+	await passAfter(meeting, 0, "TEAM");
+	answer = {
+		suggest: true,
+		audience: "TEAM",
+		text: "Who signs off the migration?",
+		speaker: "Alex",
+		quote: "we move the data in March",
+		topic: "Data migration",
+	};
+	await passAfter(meeting, 60_000, "TEAM");
+
+	assert.equal(suggestPasses(meeting), 2);
+	assert.equal(records(meeting).length, 1);
+	assert.equal(records(meeting)[0]?.body.chatTag, null);
 });
 
 test("at most one suggestion every two minutes, ten an hour", async () => {
@@ -692,14 +945,20 @@ test("at most one suggestion every two minutes, ten an hour", async () => {
 		},
 	});
 	await meeting.channel.receive(chatMessage("Morning"));
-	await meeting.channel.runSuggestionPass({ enabled: true });
+	await meeting.channel.runSuggestionPass({
+		enabled: true,
+		audience: "MEETING",
+	});
 	const passEvery = async (ms: number, passes: number) => {
 		for (let pass = 0; pass < passes; pass++) {
 			for (let segment = 0; segment < 3; segment++) {
 				meeting.channel.noteSpeechSegment();
 			}
 			meeting.clock.now += ms;
-			await meeting.channel.runSuggestionPass({ enabled: true });
+			await meeting.channel.runSuggestionPass({
+				enabled: true,
+				audience: "MEETING",
+			});
 		}
 	};
 	// A pass every 45 seconds for 90 seconds: one post, then quiet.
@@ -733,7 +992,7 @@ test("a chat request is being answered until its final post or two minutes", asy
 test("the next wake is the earliest future delivery deadline or suggestion pass", async () => {
 	const meeting = harness();
 	const wake = (suggestions = true) =>
-		meeting.channel.nextWakeAt({ suggestions });
+		meeting.channel.nextWakeAt({ suggestions, audience: "MEETING" });
 	assert.equal(await wake(), null, "nothing said: no pass to wake for");
 
 	assert.equal(meeting.channel.noteSpeechSegment(), false);
@@ -743,7 +1002,10 @@ test("the next wake is the earliest future delivery deadline or suggestion pass"
 	assert.equal(await wake(false), null, "suggestions off");
 
 	meeting.state.busy = true;
-	await meeting.channel.runSuggestionPass({ enabled: true });
+	await meeting.channel.runSuggestionPass({
+		enabled: true,
+		audience: "MEETING",
+	});
 	meeting.clock.now += 60_000;
 	assert.equal(
 		await wake(),
@@ -751,7 +1013,10 @@ test("the next wake is the earliest future delivery deadline or suggestion pass"
 		"due but busy: shortly, not in a tight loop",
 	);
 	meeting.state.busy = false;
-	await meeting.channel.runSuggestionPass({ enabled: true });
+	await meeting.channel.runSuggestionPass({
+		enabled: true,
+		audience: "MEETING",
+	});
 	meeting.channel.noteSpeechSegment();
 	meeting.channel.noteSpeechSegment();
 	assert.equal(await wake(), 1_105_000, "the pass interval after a pass");
@@ -774,11 +1039,17 @@ test("a due pass waits for the gap after the last post, not for the next timer",
 				: Response.json({ accepted: true }),
 	});
 	await meeting.channel.receive(chatMessage("Morning"));
-	await meeting.channel.runSuggestionPass({ enabled: true });
+	await meeting.channel.runSuggestionPass({
+		enabled: true,
+		audience: "MEETING",
+	});
 	meeting.channel.noteSpeechSegment();
 	meeting.channel.noteSpeechSegment();
 	meeting.clock.now += 45_000;
-	await meeting.channel.runSuggestionPass({ enabled: true });
+	await meeting.channel.runSuggestionPass({
+		enabled: true,
+		audience: "MEETING",
+	});
 	assert.equal(meeting.posts().length, 1);
 	const postedAt = meeting.clock.now;
 	await meeting.channel.receive(
@@ -790,7 +1061,10 @@ test("a due pass waits for the gap after the last post, not for the next timer",
 	meeting.channel.noteSpeechSegment();
 	meeting.channel.noteSpeechSegment();
 	assert.equal(
-		await meeting.channel.nextWakeAt({ suggestions: true }),
+		await meeting.channel.nextWakeAt({
+			suggestions: true,
+			audience: "MEETING",
+		}),
 		postedAt + 120_000,
 	);
 });

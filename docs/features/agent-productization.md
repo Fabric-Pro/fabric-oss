@@ -4,7 +4,7 @@ Implementation roadmap for governed, operable agents across Fabric's existing or
 
 - **Audience**: Product and engineering
 - **Owner**: Engineering team
-- **Status**: In progress; shared chat transport, approval controls, and portable draft definitions are implemented; broader parity milestones remain open.
+- **Status**: In progress; shared chat transport, Orchestrator/Weave checkpoint controls, and portable draft definitions are implemented; Direct approval resumption is explicitly unavailable; broader parity remains open.
 
 ## Scope
 
@@ -125,7 +125,14 @@ Implemented:
 
 The Direct workflow-start confirmations remain local controls, separate from these
 Orchestrator/Weave checkpoint decisions. They do not provide durable cross-tab start
-idempotency. Exact tool-argument digests, activity-time authorization across every
+idempotency. Direct also accepts client-supplied `approvedToolCall` arguments rather than a
+server-issued pending checkpoint; that payload is not durable proof of human approval, although
+executor resource authorization remains necessary. Gate protected Direct mutations on a persisted,
+single-use, expiring checkpoint bound to the admitted run, actor, organization, tool and argument
+digest. Do not trust a forged/replayed client assertion or dispatch an unkeyed write from a
+retrying chat activity. Use the shared idempotent action/receipt boundary; where an effect cannot
+be reconciled or made retry-safe, refuse automatic retries and surface the uncertain outcome.
+Exact tool-argument digests, activity-time authorization across every
 executor, and broader lifecycle-event convergence remain open. The journal covers
 committed primary-run output, not uncommitted provider chunks, external AG-UI
 streams, or the history of every approval transition. The final workflow result
@@ -170,6 +177,19 @@ Next increments:
 Acceptance: transport fragmentation and schema tests; all engine outcome tests;
 cancel/interrupt/approval races; workflow replay; no repeated write on reconnect;
 cross-tenant denial; sibling component tests; accessible long-history rendering.
+
+Before admitting new mutating Harness/Genie/report/deployment actions, bind the authorization
+contract to organization, current actor/grants, run, tool/action identity, target and argument digest.
+Actions requiring a human decision use an exact runtime-authority checkpoint; generic chat
+approve-all cannot satisfy that decision or a later changed write. Reject stale, altered or replayed
+approval for another operation and recheck at dispatch. Idempotent retry attaches to the original
+operation/decision rather than asking the user again or consuming authority for different arguments.
+
+Bounded autonomous draft/artifact writes may use an explicit approved policy with the same resource,
+action, destination, time and budget constraints; this is not a mandate for a human prompt before
+every harmless report update. Model assent and generic approve-all are not such a policy. Preserve
+existing publication/write-lane rules and add negative tests for approve-all, changed arguments,
+expired/revoked grants and a second unrelated write, plus a positive exact-retry test.
 
 ### 2. Canonical tool governance
 
@@ -224,11 +244,73 @@ revoked group membership, stale ACLs, citation authorization, deletion propagati
 and equivalent permission behavior in RAG, MCP and project context. Prove two
 existing providers before expanding the connector inventory.
 
+### Default creation and deliberate advanced implementation
+
+Implemented default authoring preserves the current Agents page, template/custom creation builder, instance identities and Temporal
+execution. The default creation experience asks for a purpose, selected Project/knowledge and
+expected output. Offer a few relevant starters such as project assistant, documentation maintainer
+and recurring report; creating a report directly still uses Reports and its template builder.
+Do not require every report/document to become a new persistent agent.
+
+Use the existing Sidekick to propose editable name, description and instructions. Show the selected
+sources, allowed capabilities and output in a compact review. A sample invokes the normal authorized
+Fabric run path and shows real results/citations, or a truthful setup/error state. Sampling is an
+explicit bounded action, not an implicit charge on every field edit; saving configuration remains
+possible without a successful sample. Default invocation is on demand. Activating a schedule,
+external delivery or write action is a deliberate authorized action. Reuse the organization's
+configured model policy and inspectable server-enforced limits. No Databricks resource IDs,
+credentials, runtime matrix or native console is part of this path.
+
+Qualify the reused builder rather than assuming its current controls meet this contract. Remove
+Sidekick's mount-time paid request; conversational assistance and the sample each start from an
+explicit user action. AI-suggested field/tool/MCP changes are reviewable proposals, with permission
+expansion explicitly accepted before activation. Remove simulated `setTimeout` AI generators or
+label deterministic template suggestions accurately. Persist a typed selected-project binding and
+expected-output contract through create/update/import; verify its organization and current project
+access on the server and again when activities load it. A JSON project-context tool setting is not
+an authorization grant. Test no-spend-on-open, declined suggestions, changed bindings, invalid
+project IDs and preserved advanced values.
+
+An **Advanced configuration** expander edits the same definition and preserves existing values:
+
+- Existing goal-oriented execution, success criteria, iteration/time/tool limits and supported human
+  checkpoints; no second loop editor.
+- Selected knowledge/data scopes, read/write tool actions, required approvals and live connection
+  readiness; a connected server does not implicitly grant all its tools.
+- Prompt/model policy, output schema, skill/dependency release pins, webhook/API exposure, timezone,
+  delivery audience and retention where supported.
+- An optional supported Harness implementation artifact when configuration is insufficient. Finite
+  work uses `defineAgent()` from the strict public SDK contract; persistent `createAgent()` is
+  selected only for an addressable cross-interaction requirement. Compile/package reviewed code in
+  a qualified build boundary, never evaluate arbitrary imported TypeScript in the application API.
+
+Advanced authoring does not require infrastructure-admin rights. The server validates the same
+commands and resource permissions for builder, import, API, CLI and MCP callers. Publishing an
+implementation pins its schema, package/protocol generation, repository revision/artifact digest,
+logical tool/context requirements and bindings. Surface unsupported requirements before activation.
+
+Pin the implementation entrypoint as well as the artifact: finite job name or explicit
+`responses.agent`/exported agent identity, entry module and expected protocol/input/output schemas.
+The current Harness App build can select the first persistent agent when `responses.agent` is
+omitted; a matching multi-agent bundle digest therefore does not prove the intended agent is being
+served. Reject ambiguous artifacts in the initial adapter. Test the correct bundle with a wrong
+selected agent, reordered/default selection, and a mismatched entrypoint or schema before allowing
+publication, evaluation or invocation.
+Retain existing workers as the default; platform routing selects a qualified provider from an
+approved policy and never silently changes the identity/runtime of an admitted run.
+
+Harness augments existing Fabric-created agents; it does not require rewriting all current loops,
+replacing their workers, importing a sibling source tree, or creating a second user-facing registry.
+A public finite-job or persistent-invocation adapter carries bounded inputs, versioned bindings,
+receipts/events and output/artifact references. Temporal retains application schedules, approvals
+and delivery recovery; provider-local session/submission durability is a separate subordinate
+contract. The framework builders remain independently usable outside Portal.
+
 ### 4. Agent-as-code and publication
 
 Implemented:
 
-- Versioned `fabric.ai/v1` JSON/YAML definitions for template/custom instructions,
+- Versioned `fabric.ai/v1` and `fabric.ai/v2` JSON/YAML definitions for template/custom instructions,
   skill files, basic model policy and goal execution settings. Export uses an
   allowlist instead of serializing database rows or connection configuration.
 - **Export agent** on the agent detail page; **Import agent** in the creation
@@ -245,6 +327,19 @@ Implemented:
   Conversation history and learned memory are excluded. Instruction and skill text
   are intentional exports and must be reviewed before sharing.
 
+The v2 descriptor additionally pins implementation kind, repository/package artifact identity,
+entrypoint and protocol/input/output schema hashes, and carries logical destination binding
+requirements. Import creates a disconnected draft with no triggers, API exposure or copied approvals.
+Unsupported implementations are inspectable and exportable but cannot publish, activate, expose
+an API or execute through native fallbacks. A v1 export refuses a lossy Harness conversion.
+Generic configuration updates cannot overwrite reserved implementation metadata.
+
+The public finite Harness client adapter validates complete trusted-target configuration and
+real actor/project allowlist arrays before admission. Credential/client preparation precedes
+claiming the job. Only a request that might have reached the transport is classified as uncertain;
+known local aborts use a durable not-started receipt. No live target or persistent hosting is implied
+by the existence of this adapter.
+
 Current limits: model options are restricted to model name, temperature, topP and
 maxTokens; availability is reviewed in the destination. Skill files must use
 `skills/<name>/SKILL.md`. Requirements record original intent, not a live binding
@@ -259,6 +354,15 @@ JSON manifest with a YAML representation for instructions, skill revisions, tool
 references, triggers and model policy. Export portable logical references, never
 secrets or source-organization database IDs as destination authority.
 
+Version this publication schema to include an optional implementation descriptor: existing native
+runtime, `harness_finite` or `harness_persistent`, with public package/protocol generation,
+repository revision, artifact digest and exact entrypoint/schema requirements. The current v1
+portable-draft schema cannot silently round-trip an advanced implementation. An older exporter
+must refuse unsupported implementations or explicitly offer a clearly labeled configuration-only
+draft; importing one must never activate a different runtime by default. Code-owned fields remain
+read-only in UI/YAML until a rebuild produces a new release. One manifest references the reviewed
+artifact rather than maintaining a competing editable copy of its TypeScript logic.
+
 Import into an explicitly resolved destination organization as a draft. Validate
 size, syntax, supported schema version, model availability and resource binding;
 show unresolved resources and a diff before publication. Triggers remain disabled
@@ -266,6 +370,17 @@ until rebound and authorized. Persist immutable published snapshots and pin each
 execution to one snapshot. Rollback creates a new publication from an old snapshot.
 Add Git-backed synchronization only after the import and publishing path is sound.
 Reuse Sidekick for conversational creation with the same server validation.
+
+Include deployment/team lifecycle and rollback in this release slice. Characterize
+`packages/api/modules/agent-deployments/`, instance update/restore queries and
+`packages/api/modules/agents/procedures/restore-instance-version.ts`: require matching non-null
+organization, current execution permissions and a worker-polled supervisor queue, with durable
+start/receipt reconciliation. Team adoption or a second member's edit cannot inherit another
+person's private OAuth or departed-owner authority; require explicit authorized rebinding where
+necessary. Authorized organization-agent discovery/mentions must agree with the directory.
+Restore preserves all executable snapshot fields, including instruction/skill memory files and
+API policy, but disabled/revoked credentials, exposure or triggers do not reactivate through
+rollback. Keep declaration separate from live grants and require normal activation checks.
 
 Acceptance: deterministic export/import round trips, cross-organization rebinding,
 secret exclusion, immutable published versions, concurrent publish behavior,

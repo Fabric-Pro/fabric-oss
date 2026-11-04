@@ -173,6 +173,7 @@ export function WriteFolderPicker({
 				summary={null}
 				initiallyOpen={openAtStart}
 				noteKeys={NOTE_KEYS}
+				offerSelectedOnly={false}
 			/>
 			<div className="flex flex-col gap-1.5">
 				<Label htmlFor={typedId}>{t("picker.typedLabel")}</Label>

@@ -175,6 +175,7 @@ function fakeAdapter() {
 		open: open as unknown as InstructionPullRequestAdapter["open"],
 		get: vi.fn(),
 		close: vi.fn(),
+		merge: vi.fn(),
 		pullRequestHeadRef: () => null,
 	};
 	return {

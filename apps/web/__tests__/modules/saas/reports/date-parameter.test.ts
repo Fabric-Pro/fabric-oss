@@ -4,6 +4,7 @@ import {
 	formatPeriodRange,
 	getPeriodPresets,
 	isDateParameter,
+	isLegacyDateParameter,
 	parameterNameWords,
 	parsePeriodRange,
 } from "@saas/reports/lib/date-parameter";
@@ -151,5 +152,27 @@ describe("period ranges", () => {
 		expect(parsePeriodRange("Last 2 weeks")).toBeNull();
 		expect(parsePeriodRange("2026-03-01")).toBeNull();
 		expect(parsePeriodRange("")).toBeNull();
+	});
+});
+
+describe("isLegacyDateParameter (report suite off)", () => {
+	it.each(["timeframe", "timespan", "reportTimeframe"])(
+		"keeps %s a plain text field, as before the report suite",
+		(name) => {
+			expect(isLegacyDateParameter(name, {})).toBe(false);
+		},
+	);
+
+	it.each(["startDate", "createdAt", "periodStart", "deadline", "from"])(
+		"still offers a date picker for %s",
+		(name) => {
+			expect(isLegacyDateParameter(name, {})).toBe(true);
+		},
+	);
+
+	it("trusts an explicit date format", () => {
+		expect(isLegacyDateParameter("value", { format: "date-time" })).toBe(
+			true,
+		);
 	});
 });

@@ -92,6 +92,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 			orgId ?? null,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
 		// The real resolver's rule for the organization a request names (the
 		// input's, else the session's; an explicit null suppresses the session
 		// fallback; none refused when required). Membership and role are

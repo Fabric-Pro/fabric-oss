@@ -160,11 +160,10 @@ export async function updateFrameShareScope(
 	if (input.shareScope === "PUBLIC") {
 		// Generate token if not exists
 		shareToken = frame.shareToken ?? randomUUID();
-	} else if (input.shareScope === "PRIVATE") {
-		// Clear token for private frames
+	} else {
+		// Leaving public sharing revokes the URL for every non-public scope.
 		shareToken = null;
 	}
-	// For EMAILS_ONLY and WORKSPACE_AND_EMAILS, keep existing token if any
 
 	await db.agentWorkspaceFile.update({
 		where: { id: input.frameId },

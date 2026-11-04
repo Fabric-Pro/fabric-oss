@@ -81,6 +81,8 @@ const PAGE_COVERAGE_EXEMPT = new Set<string>();
 // at. New page anchors must live in one of these (extend the list if a covered
 // component moves to a new file).
 const inPageSource = [
+	"apps/web/modules/saas/agents/components/AgentEditRouter.tsx",
+	"apps/web/modules/saas/agent-templates/components/CreateAgentPage.tsx",
 	"apps/web/modules/saas/projects/components/ProjectOverview.tsx",
 	"apps/web/modules/saas/projects/components/DocumentsList.tsx",
 	"apps/web/modules/saas/projects/components/stories/StoriesRoadmap.tsx",
@@ -91,6 +93,7 @@ const inPageSource = [
 	"apps/web/modules/saas/projects/components/security/SecurityAccessibilityPage.tsx",
 	"apps/web/modules/saas/projects/components/security/ScanConfigCard.tsx",
 	"apps/web/modules/saas/projects/components/ProjectContextsList.tsx",
+	"apps/web/modules/saas/projects/components/ProjectWorkspaceDocuments.tsx",
 	"apps/web/modules/saas/projects/components/ContextSummaryPanel.tsx",
 	// The repository-sync entry point / status carries its own two page-tour
 	// anchors ("Sync from repository", "Sync now") even though it mounts
@@ -119,13 +122,15 @@ const inPageSource = [
 	"apps/web/modules/saas/projects/components/outcomes/ProjectMetricsPanel.tsx",
 	// Top-level app / sidebar pages (anchors live in the list/view component).
 	"apps/web/modules/saas/agents/components/UnifiedAgentView.tsx",
+	"apps/web/modules/saas/agent-templates/components/AgentDetailsDrawer.tsx",
+	"apps/web/modules/saas/agent-templates/components/AgentRunHistory.tsx",
 	"apps/web/modules/saas/prompts/components/PromptsList.tsx",
 	"apps/web/modules/saas/projects/components/ProjectsList.tsx",
 	"apps/web/modules/saas/workflows/components/WorkflowsList.tsx",
 	"apps/web/modules/saas/data-connections/components/ConnectionsPageContent.tsx",
-	"apps/web/modules/saas/libraries/components/LibrariesList.tsx",
-	"apps/web/modules/saas/libraries/components/LibraryCard.tsx",
 	"apps/web/modules/saas/workspaces/components/WorkspacesList.tsx",
+	"apps/web/modules/saas/workspaces/components/WorkspaceCard.tsx",
+	"apps/web/modules/saas/pages/components/PagesList.tsx",
 	"apps/web/modules/saas/mcp/components/McpServersView.tsx",
 	"apps/web/modules/saas/reports/components/ReportTemplatesPageTabs.tsx",
 	"apps/web/modules/saas/reports/components/ReportTemplatesList.tsx",
@@ -179,13 +184,13 @@ const inPageSource = [
 // wired id must resolve to a page (the bijection test below). Add a launcher on
 // a new page → add its file here in the same change.
 const launcherSource = [
+	"apps/web/modules/saas/workflows/components/WorkflowsList.tsx",
 	// Sidebar page heroes (getStartedPageId on PageHeader).
 	"apps/web/modules/saas/agents/components/AgentsHero.tsx",
 	"apps/web/modules/saas/prompts/components/PromptsHero.tsx",
 	"apps/web/modules/saas/projects/components/ProjectsHero.tsx",
-	"apps/web/modules/saas/workflows/components/WorkflowsHero.tsx",
-	"apps/web/modules/saas/libraries/components/LibrariesHero.tsx",
 	"apps/web/modules/saas/workspaces/components/WorkspacesHero.tsx",
+	"apps/web/modules/saas/pages/components/PagesHero.tsx",
 	"apps/web/modules/saas/reports/components/ReportsHero.tsx",
 	"apps/web/modules/saas/skills/components/SkillsHero.tsx",
 	"apps/web/modules/saas/agent-templates/components/AgentTemplatesHero.tsx",
@@ -502,7 +507,7 @@ describe("get-started — new-page auto-open eligibility", () => {
 		).toBe(false);
 	});
 
-	it.each([["artifacts"], ["workspaces"]])(
+	it.each([["artifacts"], ["pages"]])(
 		"the %s page, new with agent-written pages, announces itself once to existing users",
 		(tab) => {
 			const page = GET_STARTED_PAGES.find(

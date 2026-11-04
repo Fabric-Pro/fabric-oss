@@ -6,10 +6,12 @@ const mocks = vi.hoisted(() => ({
 	credentials: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
+	Prisma: { JsonNull: null },
 	db: {
 		agentDeploymentTrigger: {
 			findMany: mocks.findMany,
 			update: mocks.update,
+			updateMany: mocks.update,
 		},
 	},
 }));
@@ -58,7 +60,10 @@ describe("Slack lifecycle activation", () => {
 		await pauseDeploymentTriggers("deployment-example");
 		expect(mocks.update).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: "trigger-example" },
+				where: expect.objectContaining({
+					id: "trigger-example",
+					deploymentId: "deployment-example",
+				}),
 				data: {
 					isActive: false,
 					config: {
@@ -119,7 +124,10 @@ describe("Slack lifecycle activation", () => {
 		await resumeDeploymentTriggers("deployment-example");
 		expect(mocks.update).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: "trigger-example" },
+				where: expect.objectContaining({
+					id: "trigger-example",
+					deploymentId: "deployment-example",
+				}),
 				data: {
 					isActive: true,
 					config: { channel: "slack", chatIdPattern: "^T0EXAMPLE/" },

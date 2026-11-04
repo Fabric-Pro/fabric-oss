@@ -1,6 +1,7 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -23,13 +24,7 @@ import {
 } from "@ui/components/dialog";
 import { SearchInput } from "@ui/components/search-input";
 import { cn } from "@ui/lib";
-import {
-	CheckIcon,
-	PlusIcon,
-	SearchIcon,
-	SparklesIcon,
-	XIcon,
-} from "lucide-react";
+import { CheckIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
 import {
 	forwardRef,
 	useCallback,
@@ -262,7 +257,7 @@ export const ReportTemplateSkillsSection = forwardRef<
 				<div className="flex items-center justify-between">
 					<div>
 						<CardTitle className="flex items-center gap-2 text-lg">
-							<SparklesIcon className="h-5 w-5 text-highlight" />
+							<PuzzleIcon className="h-5 w-5 text-highlight" />
 							Skills
 							{hasPendingChanges && (
 								<Badge
@@ -481,7 +476,7 @@ export const ReportTemplateSkillsSection = forwardRef<
 								)}
 							>
 								<div className="flex items-center gap-3 min-w-0">
-									<SparklesIcon className="h-4 w-4 text-highlight shrink-0" />
+									<PuzzleIcon className="h-4 w-4 text-highlight shrink-0" />
 									<div className="min-w-0">
 										<span className="font-medium text-sm block truncate">
 											{skill.name}

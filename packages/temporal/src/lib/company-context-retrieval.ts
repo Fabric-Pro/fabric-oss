@@ -51,12 +51,13 @@ const MAX_PROFILE_FIELD_CHARS = 2000;
 /**
  * How long the company half may take before generation goes on without it.
  *
- * It runs inside `retrieveProjectContexts`, after the project half, and the
- * tightest timeout that activity runs under is the task agent's 30-second
- * heartbeat timeout (document generation allows 2 minutes between heartbeats
- * and 15 minutes in all). The company half heartbeats as it starts, so 20
- * seconds from there leaves that heartbeat room to spare, while still
- * covering a slow embedding call and search.
+ * It runs alongside project retrieval inside `retrieveProjectContexts`.
+ * Bounding this optional work lets generation proceed if company retrieval
+ * stalls. The company half heartbeats when it starts; its 20-second budget
+ * fits within the document-generation child's 2-minute activity heartbeat
+ * timeout and 15-minute start-to-close timeout (`document-generation-child.ts`).
+ * The value was originally chosen for the removed task agent's 30-second
+ * heartbeat budget; it has not been retuned for document generation.
  */
 export const COMPANY_RETRIEVAL_TIMEOUT_MS = 20_000;
 

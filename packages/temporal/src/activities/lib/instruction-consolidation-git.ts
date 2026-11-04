@@ -18,16 +18,26 @@
  */
 import path from "node:path";
 import { getProjectRepoIntegration } from "@repo/database";
-import { type ConsolidationItem, scopeHeader } from "@repo/instructions";
+import {
+	type ConsolidationItem,
+	cleanupBranchName,
+	scopeHeader,
+} from "@repo/instructions";
 import { resolveFreshRepoToken } from "@repo/integrations";
 import {
 	adapterFor,
+	githubPermissionsInWords,
 	InstructionPullRequestError,
+	type PullRequestObservation,
+	type RepositoryProviderName,
+	refusalLogFields,
+	refusalReason,
 	repositoryIdentity,
+	repositoryLogFields,
 	type Target,
 } from "@repo/integrations/instruction-pull-requests";
 import { logger } from "@repo/logs";
-import { initBranchWorkspace } from "./instruction-branch-git";
+import { fetchSyncedTip, initBranchWorkspace } from "./instruction-branch-git";
 import {
 	assertObjectId,
 	buildGitEnv,
@@ -58,15 +68,6 @@ export type CommitIdentity = { name: string; email: string };
 /** The largest single file copied; instruction files are text. */
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
-/** The cleanup branch; one per consolidation run. */
-export function cleanupBranchName(consolidationId: string): string {
-	const suffix = consolidationId
-		.toLowerCase()
-		.replace(/[^a-z0-9]/g, "")
-		.slice(-8);
-	return `fabric/move-ai-instructions-${suffix}`;
-}
-
 /** The push's own answer, redacted by the runner: what to read when a push is refused. */
 function logPushOutcome(
 	ref: string,
@@ -82,6 +83,22 @@ function logPushOutcome(
 		summary: line?.summary ?? null,
 		stderr: error?.stderrTail.slice(-1500) ?? null,
 	});
+}
+
+/**
+ * What a person reads when the cleanup pull request was refused: the
+ * missing GitHub permission when GitHub named it, else the provider's
+ * sanitized reason appended to the fixed text.
+ */
+function cleanupRefusalMessage(
+	provider: RepositoryProviderName,
+	error: InstructionPullRequestError,
+): string {
+	if (error.requiredPermissions) {
+		return `GitHub refused: the credential this repository uses lacks ${githubPermissionsInWords(error.requiredPermissions)} permission. Grant it to the Fabric GitHub App or choose a credential that has it. The cleanup branch was pushed; its pull request can also be opened from the branch in the code repository.`;
+	}
+	const reason = refusalReason(provider, error);
+	return `The cleanup branch was pushed, but its pull request could not be opened${reason ? ` (${reason})` : ""}. Open it from the branch in the code repository.`;
 }
 
 export class ConsolidationStepError extends Error {
@@ -220,13 +237,23 @@ async function headTree(ws: Workspace, signal: AbortSignal): Promise<string> {
 	return stdout.toString("utf8").trim();
 }
 
-/** Fast-forwards `branch` on origin from `expected` to `sha`; true when it already points at `sha`. */
-async function pushFastForward(
-	ws: Workspace,
-	input: { sha: string; expected: string; branch: string },
+/**
+ * Fast-forwards `branch` on origin from `expected` to `sha` (whose tree is
+ * `tree`) and returns the commit the branch now carries.
+ *
+ * A refused push is checked against the remote before it counts as a
+ * failure: an earlier attempt whose answer was lost may already have landed
+ * this commit, or an equivalent one (the same tree under another SHA, when
+ * the retry built its commit on a different source tip). Either is the copy
+ * done; only a branch that carries something else is PUSH_REFUSED.
+ */
+export async function pushCopiedCommit(
+	ws: Pick<Workspace, "dir" | "env">,
+	input: { sha: string; tree: string; expected: string; branch: string },
 	signal: AbortSignal,
-): Promise<void> {
+): Promise<string> {
 	assertObjectId(input.sha, "push");
+	assertObjectId(input.tree, "push");
 	assertObjectId(input.expected, "push");
 	const ref = `refs/heads/${input.branch}`;
 	const { stdout, error } = await runPush({
@@ -246,12 +273,57 @@ async function pushFastForward(
 	const line = porcelainFlag(stdout, ref);
 	logPushOutcome(ref, line, error);
 	if (error === null && (line?.flag === " " || line?.flag === "=")) {
-		return;
+		return input.sha;
+	}
+	const landed = await landedEquivalent(ws, input, signal);
+	if (landed !== null) {
+		logger.info(
+			"[instruction-consolidation] refused push had already landed",
+			{
+				ref,
+				flag: line?.flag ?? null,
+				sameCommit: landed === input.sha,
+			},
+		);
+		return landed;
 	}
 	throw new ConsolidationStepError(
 		"PUSH_REFUSED",
 		"The instructions repository refused the commit. Check that the credential may push to its default branch.",
 	);
+}
+
+/**
+ * The remote branch's current tip when it is `sha` itself or a commit with
+ * the same tree; null when the branch carries anything else or is gone.
+ */
+async function landedEquivalent(
+	ws: Pick<Workspace, "dir" | "env">,
+	input: { sha: string; tree: string; branch: string },
+	signal: AbortSignal,
+): Promise<string | null> {
+	const tip = await fetchSyncedTip({
+		dir: ws.dir,
+		env: ws.env,
+		signal,
+		branch: input.branch,
+		allowedRef: input.branch,
+	});
+	if (tip.kind === "absent") {
+		return null;
+	}
+	if (tip.sha === input.sha) {
+		return tip.sha;
+	}
+	const { stdout } = await runGit({
+		cwd: ws.dir,
+		args: ["rev-parse", "--verify", `${tip.sha}^{tree}`],
+		env: ws.env,
+		signal,
+		label: "rev-parse",
+		maxStdoutBytes: 256,
+	});
+	return stdout.toString("utf8").trim() === input.tree ? tip.sha : null;
 }
 
 /** Pushes `sha` to a new branch; `exists` when the branch is already there. */
@@ -452,16 +524,24 @@ export async function runConsolidationCopy(input: {
 			date: input.date,
 			message: `Move AI instructions from ${sourceName}\n\n${delta.length - 2} files consolidated from ${sourceName}@${sourceSha.slice(0, 12)}.`,
 		});
-		await pushFastForward(
+		const copiedCommitSha = await pushCopiedCommit(
 			target,
-			{ sha, expected: targetSha, branch: target.defaultBranch },
+			{ sha, tree, expected: targetSha, branch: target.defaultBranch },
 			input.signal,
 		);
-		return { sourceCommitSha: sourceSha, copiedCommitSha: sha };
+		return { sourceCommitSha: sourceSha, copiedCommitSha };
 	} finally {
 		await removeSyncRunDir(runDir).catch(() => {});
 	}
 }
+
+export type ConsolidationCleanupResult = {
+	pullRequestUrl: string | null;
+	/** The provider id (GitHub number, GitLab iid, Azure DevOps id). */
+	pullRequestId?: string;
+	/** The pull request's head when Fabric opened (or first found) it. */
+	headSha?: string;
+};
 
 /**
  * Removes `files` from the source repository in one commit on a new branch,
@@ -479,8 +559,13 @@ export async function runConsolidationCleanup(input: {
 	committer: CommitIdentity;
 	date: string;
 	signal: AbortSignal;
-}): Promise<{ pullRequestUrl: string | null }> {
+}): Promise<ConsolidationCleanupResult> {
 	const runDir = await createSyncRunDir();
+	const found = (value: PullRequestObservation) => ({
+		pullRequestUrl: value.url,
+		pullRequestId: value.externalId,
+		headSha: value.headSha,
+	});
 	try {
 		const source = await openWorkspace({
 			projectId: input.projectId,
@@ -498,7 +583,7 @@ export async function runConsolidationCleanup(input: {
 			sourceRef: branch,
 		});
 		if (existing.kind === "FOUND") {
-			return { pullRequestUrl: existing.value.url };
+			return found(existing.value);
 		}
 
 		const sha = await revParseHead({
@@ -566,26 +651,36 @@ export async function runConsolidationCleanup(input: {
 				title: "Move AI instructions out of the code repository",
 				body,
 			});
-			return { pullRequestUrl: opened.url };
+			return found(opened);
 		} catch (error) {
 			if (
 				error instanceof InstructionPullRequestError &&
 				error.duplicate
 			) {
-				const found = await adapter.findOperation({
+				const again = await adapter.findOperation({
 					...source.target,
 					sourceRef: branch,
 				});
-				if (found.kind === "FOUND") {
-					return { pullRequestUrl: found.value.url };
+				if (again.kind === "FOUND") {
+					return found(again.value);
 				}
 			}
 			if (error instanceof InstructionPullRequestError) {
+				const repository = source.target.repository;
+				logger.warn(
+					"[instruction-consolidation] pull request refused",
+					{
+						...refusalLogFields(error),
+						sourceRef: branch,
+						targetRef: source.defaultBranch,
+						repository: repositoryLogFields(repository),
+					},
+				);
 				throw new ConsolidationStepError(
 					error.code === "AUTHENTICATION_FAILED"
 						? "AUTHENTICATION_FAILED"
 						: "PULL_REQUEST_FAILED",
-					"The cleanup branch was pushed, but its pull request could not be opened. Open it from the branch in the code repository.",
+					cleanupRefusalMessage(repository.provider, error),
 				);
 			}
 			throw error;

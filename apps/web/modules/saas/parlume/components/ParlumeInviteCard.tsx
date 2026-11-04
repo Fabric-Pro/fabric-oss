@@ -2,6 +2,7 @@
 
 import { ORPCError } from "@orpc/client";
 import { isTeamsMeetingUrl } from "@repo/api/modules/projects/lib/parlume-meeting-url";
+import type { ParlumeSuggestionAudience } from "@repo/api/modules/projects/lib/parlume-suggestion-audience";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -33,6 +34,7 @@ import {
 } from "./ParlumeAgentPicker";
 import { ParlumeModePicker } from "./ParlumeModePicker";
 import { ParlumeReadinessChecklist } from "./ParlumeReadinessChecklist";
+import { ParlumeSuggestionAudiencePicker } from "./ParlumeSuggestionAudiencePicker";
 import { ParlumeSuggestionsToggle } from "./ParlumeSuggestionsToggle";
 
 function UrlHint({ url, valid }: { url: string; valid: boolean }) {
@@ -76,6 +78,8 @@ export function ParlumeInviteCard({
 	const [meetingUrl, setMeetingUrl] = useState("");
 	const [toolsReadOnly, setToolsReadOnly] = useState(true);
 	const [suggestionsEnabled, setSuggestionsEnabled] = useState(true);
+	const [suggestionAudience, setSuggestionAudience] =
+		useState<ParlumeSuggestionAudience>("MEETING");
 	const [error, setError] = useState<string | null>(null);
 	const [isInviting, setIsInviting] = useState(false);
 	const agentsQuery = useQuery({
@@ -120,10 +124,12 @@ export function ParlumeInviteCard({
 				meetingUrl: url,
 				toolsReadOnly,
 				suggestionsEnabled,
+				suggestionAudience,
 			});
 			setMeetingUrl("");
 			setToolsReadOnly(true);
 			setSuggestionsEnabled(true);
+			setSuggestionAudience("MEETING");
 			await Promise.all([
 				queryClient.invalidateQueries({
 					queryKey: [SESSIONS_QUERY_KEY, projectId],
@@ -246,11 +252,22 @@ export function ParlumeInviteCard({
 					/>
 				</div>
 
-				<ParlumeSuggestionsToggle
-					checked={suggestionsEnabled}
-					onChange={setSuggestionsEnabled}
-					disabled={isInviting}
-				/>
+				<div className="space-y-4">
+					<ParlumeSuggestionsToggle
+						checked={suggestionsEnabled}
+						onChange={setSuggestionsEnabled}
+						disabled={isInviting}
+					/>
+					{suggestionsEnabled && (
+						<div className="sm:pl-12">
+							<ParlumeSuggestionAudiencePicker
+								audience={suggestionAudience}
+								onChange={setSuggestionAudience}
+								disabled={isInviting}
+							/>
+						</div>
+					)}
+				</div>
 
 				<div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5">
 					<p className="text-sm leading-5 text-muted-foreground">

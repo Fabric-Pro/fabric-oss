@@ -47,6 +47,10 @@ import {
 	SELECT_NONE_INSTRUCTIONS,
 } from "../repository-sync/lib/instructions-selection";
 import {
+	instructionsTypedExclusion,
+	instructionsTypedExclusionBlock,
+} from "../repository-sync/lib/instructions-typed-exclusion";
+import {
 	ancestorsOf,
 	indexRepositoryTree,
 } from "../repository-sync/lib/repository-tree";
@@ -131,7 +135,10 @@ function ignoreFileStateOf(input: {
  * pattern is relative to the folder of the tree it was staged in. Whenever
  * the staged edits would remove a saved rule, the dialog lists it before
  * Save. A provider with no listing, a truncated listing, or a failed one
- * offers the folder as typed text.
+ * offers the folder as typed text, and a typed path to leave out, which
+ * stages the same pattern unticking its row would
+ * (`instructionsTypedExclusion`); the left-out list shows what was staged
+ * so even without a listing.
  *
  * Save re-reads the saved rules, applies the staged edits to that fresh list
  * (so a rule someone else saved meanwhile survives), and sends the result
@@ -356,6 +363,16 @@ export function ConfigureRepositorySyncDialog({
 		if (folder !== root) {
 			apply({ type: "setRoot", root: folder });
 		}
+		return null;
+	}
+
+	/** A typed path to leave out: the same edit as unticking its row. */
+	function addTypedExclusion(raw: string): SelectionMessage | null {
+		const typed = instructionsTypedExclusion({ raw, model, savedGlobs });
+		if (!typed.ok) {
+			return typed.message;
+		}
+		apply(typed.action);
 		return null;
 	}
 
@@ -597,16 +614,27 @@ export function ConfigureRepositorySyncDialog({
 						}))}
 					/>
 					{typedPath ? (
-						<AddRepositoryPathInput
-							namespace={NAMESPACE}
-							disabled={pending}
-							onAdd={addTypedFolder}
-							serverErrorId={
-								inlineErrorField === "root"
-									? ids.error
-									: undefined
-							}
-						/>
+						<>
+							<AddRepositoryPathInput
+								namespace={NAMESPACE}
+								disabled={pending}
+								onAdd={addTypedFolder}
+								serverErrorId={
+									inlineErrorField === "root"
+										? ids.error
+										: undefined
+								}
+							/>
+							<AddRepositoryPathInput
+								namespace={NAMESPACE}
+								mode="exclude"
+								disabled={pending}
+								blockedReason={instructionsTypedExclusionBlock(
+									model,
+								)}
+								onAdd={addTypedExclusion}
+							/>
+						</>
 					) : null}
 					{removedRules.length > 0 ? (
 						<div

@@ -16,14 +16,21 @@ const MAX_SUGGESTION_CHARS = 500;
 const MAX_ANCHOR_CHARS = 120;
 const NEAR_DUPLICATE_OVERLAP = 0.6;
 
+/** Who sees a session's suggestions: everyone in the meeting chat, or only the project's team. */
+export type ParlumeSuggestionAudience = "MEETING" | "TEAM";
+
 export interface ParlumeSuggestionState {
 	lastPassAt: number;
-	/** Suggestions posted within the last hour, oldest first. */
+	/** Suggestions accepted within the last hour, oldest first, whoever they were for. */
 	recent: Array<{ at: number; text: string; quote?: string }>;
 }
 
-/** A suggestion and the remark it answers: who said it, their words, the topic. */
+/**
+ * A suggestion and the remark it answers: who said it, their words, the
+ * topic. A missed question names the remark that opened its topic.
+ */
 export interface ParlumeSuggestion {
+	kind: "answer" | "missed_question";
 	text: string;
 	speaker: string;
 	quote: string;
@@ -94,7 +101,8 @@ function field(body: Record<string, unknown>, key: string, max: number) {
 
 /**
  * The suggestion in Fabric's answer, read leniently: anything malformed, or
- * not naming the remark it answers, is no suggestion.
+ * not naming the remark it answers, is no suggestion. A missing or unknown
+ * kind is an answer.
  */
 export function parseParlumeSuggestion(
 	body: unknown,
@@ -102,13 +110,39 @@ export function parseParlumeSuggestion(
 	if (!isRecord(body) || body.suggest !== true) {
 		return null;
 	}
-	const suggestion = {
+	const anchors = {
 		text: field(body, "text", MAX_SUGGESTION_CHARS),
 		speaker: field(body, "speaker", MAX_ANCHOR_CHARS),
 		quote: field(body, "quote", MAX_ANCHOR_CHARS),
 		topic: field(body, "topic", MAX_ANCHOR_CHARS),
 	};
-	return Object.values(suggestion).every(Boolean) ? suggestion : null;
+	return Object.values(anchors).every(Boolean)
+		? {
+				kind:
+					body.kind === "missed_question"
+						? "missed_question"
+						: "answer",
+				...anchors,
+			}
+		: null;
+}
+
+/**
+ * The session's audience in Fabric's answer. Only an explicit TEAM keeps a
+ * suggestion off the chat: an answer without one comes from a Fabric that
+ * predates audiences, whose sessions all post in the meeting.
+ */
+export function parseParlumeSuggestionAudience(
+	body: unknown,
+): ParlumeSuggestionAudience | null {
+	if (!isRecord(body)) {
+		return null;
+	}
+	return body.audience === "TEAM"
+		? "TEAM"
+		: body.audience === "MEETING" || body.audience === undefined
+			? "MEETING"
+			: null;
 }
 
 function words(text: string): Set<string> {
@@ -159,10 +193,29 @@ export function formatParlumeSuggestion(
 	tag: string,
 	suggestion: ParlumeSuggestion,
 ): string {
-	return `Suggestion on ${suggestion.topic}, re ${suggestion.speaker}: "${suggestion.quote}". ${suggestion.text} (reply "go ${tag}" and I'll say it)`;
+	const anchor = `${suggestion.topic}, re ${suggestion.speaker}: "${suggestion.quote}". ${suggestion.text}`;
+	switch (suggestion.kind) {
+		case "answer":
+			return `Suggestion on ${anchor} (reply "go ${tag}" and I'll say it)`;
+		case "missed_question":
+			return `Possibly missed question on ${anchor} (reply "go ${tag}" and I'll ask it)`;
+		default: {
+			const unreachable: never = suggestion.kind;
+			return unreachable;
+		}
+	}
 }
 
 /** What "go P4" reads aloud: whose remark it answers, then the suggestion. */
 export function spokenParlumeSuggestion(suggestion: ParlumeSuggestion): string {
-	return `${suggestion.speaker}, on ${suggestion.topic}: ${suggestion.text}`;
+	switch (suggestion.kind) {
+		case "answer":
+			return `${suggestion.speaker}, on ${suggestion.topic}: ${suggestion.text}`;
+		case "missed_question":
+			return `A question we may not have covered on ${suggestion.topic}: ${suggestion.text}`;
+		default: {
+			const unreachable: never = suggestion.kind;
+			return unreachable;
+		}
+	}
 }

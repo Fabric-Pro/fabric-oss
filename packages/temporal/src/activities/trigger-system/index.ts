@@ -1,3 +1,4 @@
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 /**
  * Trigger System Activities
  *
@@ -11,13 +12,16 @@ import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
 import {
+	canExecuteOrganizationAgents,
 	db,
-	hasProjectAccess,
+	getProjectAccessContext,
 	isDeploymentOwnerCurrentMember,
 	isProjectReadOnly,
+	isProjectSoftDeleted,
 	type Prisma,
 	resolveWorkflowIntegrationForProvider,
 } from "@repo/database";
+import { readAgentProjectBinding } from "@repo/database/prisma/queries/lib/agent-project-binding";
 import { channelRegistry } from "@repo/integrations";
 import { sendSlackMessage } from "@repo/integrations/slack";
 import { decryptApiKey } from "@repo/utils";
@@ -294,7 +298,6 @@ async function invokeAgentInJob({
 			getAgentDeploymentById,
 			extractEnabledBuiltInToolKeys,
 			mapBuiltInKeysToFabricToolIds,
-			getBuiltInToolConfig,
 		} = await import("@repo/database");
 		const deployment = await getAgentDeploymentById(agentId, {
 			userId,
@@ -320,20 +323,35 @@ async function invokeAgentInJob({
 		}
 
 		const instance = deployment.instance;
+		if (
+			!getAgentImplementationAvailability(instance.customInstructions)
+				.available
+		) {
+			throw new Error(
+				"Agent implementation is unavailable for execution",
+			);
+		}
+		if (
+			!organizationId ||
+			deployment.organizationId !== organizationId ||
+			instance.organizationId !== organizationId ||
+			!(await canExecuteOrganizationAgents(userId, organizationId))
+		) {
+			return {
+				success: false,
+				response: "",
+				error: "Agent not found or access denied",
+			};
+		}
 		const template = instance.template;
 
 		// Project binding lives on the agent (toolConnections["project-context"]),
 		// not the trigger — same agent answers about the same project across
 		// Slack, web chat, and schedules.
-		const projectContextConfig = getBuiltInToolConfig(
+		const projectId = readAgentProjectBinding(
+			instance.customInstructions,
 			instance.toolConnections,
-			"project-context",
 		);
-		const projectIdRaw = projectContextConfig?.projectId;
-		const projectId =
-			typeof projectIdRaw === "string" && projectIdRaw.length > 0
-				? projectIdRaw
-				: undefined;
 		boundProjectId = projectId;
 
 		const { getAIModelWithMetadata, getCurrentDateContext } = await import(
@@ -352,24 +370,24 @@ async function invokeAgentInJob({
 		// only checks org-level scope, which would let any org member reach
 		// any org project. hasProjectAccess enforces the project-membership
 		// contract used by the rest of the project RAG entry points.
-		const [{ model, metadata }, projectAccessOk] = await Promise.all([
-			getAIModelWithMetadata(
-				{ taskType: "CHAT" },
-				{ userId, organizationId },
-			),
-			projectId
-				? hasProjectAccess(projectId, userId, organizationId)
-				: Promise.resolve(false),
-		]);
-
-		const verifiedProjectId =
-			projectId && projectAccessOk ? projectId : undefined;
-		if (projectId && !verifiedProjectId) {
-			console.warn(
-				"[TriggerSystem] Skipping project context — bound project not accessible to agent owner",
-				{ executionId, agentId, projectId, userId, organizationId },
-			);
+		if (projectId) {
+			const access = await getProjectAccessContext(projectId, userId);
+			if (
+				access?.organizationId !== organizationId ||
+				(await isProjectSoftDeleted(projectId))
+			) {
+				return {
+					success: false,
+					response: "",
+					error: "Project not found or access denied",
+				};
+			}
 		}
+		const verifiedProjectId = projectId;
+		const { model, metadata } = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			{ userId, organizationId },
+		);
 
 		// Build the system-prompt block only after access is verified.
 		const projectBlock = verifiedProjectId

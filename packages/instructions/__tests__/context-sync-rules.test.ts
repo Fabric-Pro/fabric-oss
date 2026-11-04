@@ -12,18 +12,22 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	buildContextIgnoreRules,
 	CONTEXT_IGNORE_FILENAME,
 	CONTEXT_SYNC_FABRIC_DIRECTORY,
 	CONTEXT_TEXT_EXTENSIONS,
 	contextSyncBasename,
+	contextSyncExclusionProblem,
 	contextSyncPathSpellingProblem,
 	createContextDefaultRules,
 	DEFAULT_CONTEXT_IGNORE_PATTERNS,
+	decodeContextIgnore,
 	defaultRuleForDirectlySelectedFile,
 	hasContextTextExtension,
 	isContextIgnorePolicyFile,
 	isExcludedDirectlySelectedFile,
 	isInContextSyncFabricDirectory,
+	MAX_CONTEXT_IGNORE_BYTES,
 	MAX_CONTEXT_SYNC_PATH_LENGTH,
 } from "../src/context-sync-rules";
 
@@ -35,7 +39,14 @@ describe("the constants", () => {
 			".claude/",
 			".cursor/",
 			".codex/",
+			".idea/",
+			".vscode/",
+			".vs/",
 			"node_modules/",
+			"dist/",
+			"coverage/",
+			".next/",
+			".turbo/",
 			"CLAUDE.md",
 			"AGENTS.md",
 			"GEMINI.md",
@@ -44,6 +55,9 @@ describe("the constants", () => {
 			"hooks/",
 			"rules/",
 			"scripts/",
+			"package-lock.json",
+			"npm-shrinkwrap.json",
+			"pnpm-lock.yaml",
 			".contextignore",
 		]);
 		expect(CONTEXT_IGNORE_FILENAME).toBe(".contextignore");
@@ -67,6 +81,8 @@ describe("a directly selected file: judged by its basename", () => {
 		["deep/down/Claude.MD", "CLAUDE.md"],
 		["docs/.contextignore", ".contextignore"],
 		["docs/.ContextIgnore", ".contextignore"],
+		["package-lock.json", "package-lock.json"],
+		["web/pnpm-lock.yaml", "pnpm-lock.yaml"],
 	])("%j is left out by the default rule %j, in any case", (file, rule) => {
 		expect(defaultRuleForDirectlySelectedFile(file)).toBe(rule);
 		expect(isExcludedDirectlySelectedFile(file)).toBe(true);
@@ -110,6 +126,12 @@ describe("inside a selected folder: the defaults relative to it, gitignore style
 		["deep/down/hooks/run.md", "file", "hooks/"],
 		[".git/HEAD.txt", "file", ".git/"],
 		["node_modules/pkg/README.md", "file", "node_modules/"],
+		["web/dist/assets/manifest.json", "file", "dist/"],
+		[".vscode/settings.json", "file", ".vscode/"],
+		["app/.idea/workspace.json", "file", ".idea/"],
+		["coverage/coverage-summary.json", "file", "coverage/"],
+		["apps/web/.next/build-manifest.json", "file", ".next/"],
+		["packages/api/package-lock.json", "file", "package-lock.json"],
 		["CLAUDE.md", "file", "CLAUDE.md"],
 		["docs/claude.md", "file", "CLAUDE.md"],
 		// A folder named after a file pattern is left out with its contents.
@@ -278,7 +300,6 @@ describe("a selected or left-out path's spelling and length (Fizzy #2750 §5.2)"
 			"docs/a\u0000.md",
 			"docs/a\u200b.md",
 			"C:docs",
-			"d".repeat(513),
 		]) {
 			expect(contextSyncPathSpellingProblem(refused), refused).toBe(
 				"not-canonical",
@@ -287,10 +308,14 @@ describe("a selected or left-out path's spelling and length (Fizzy #2750 §5.2)"
 	});
 
 	it("refuses a path past configure's input bound as too long, before its spelling", () => {
-		expect(MAX_CONTEXT_SYNC_PATH_LENGTH).toBe(1024);
-		expect(contextSyncPathSpellingProblem(` ${"d".repeat(1024)}`)).toBe(
+		expect(MAX_CONTEXT_SYNC_PATH_LENGTH).toBe(512);
+		expect(contextSyncPathSpellingProblem(` ${"d".repeat(512)}`)).toBe(
 			"too-long",
 		);
+		expect(contextSyncPathSpellingProblem("d".repeat(513))).toBe(
+			"too-long",
+		);
+		expect(contextSyncPathSpellingProblem("d".repeat(512))).toBeNull();
 	});
 });
 
@@ -317,5 +342,105 @@ describe("the module stays browser-safe", () => {
 			"@repo/database/prisma/queries/projects/context-source-path",
 			"ignore",
 		]);
+	});
+});
+
+describe("a selected folder's rules: the defaults, then its .contextignore", () => {
+	it("names the rule that leaves an entry out, and the layer it comes from", () => {
+		const rules = buildContextIgnoreRules({
+			contextIgnore: "# drafts stay local\ndrafts/\n*.tmp.md\n",
+		});
+		expect(rules.ruleFor("CLAUDE.md", "file")).toEqual({
+			rule: "CLAUDE.md",
+			source: "default",
+		});
+		expect(rules.ruleFor("docs/drafts", "directory")).toEqual({
+			rule: "drafts/",
+			source: "contextignore",
+		});
+		// A file under a left-out folder is left out with it.
+		expect(rules.ruleFor("docs/drafts/a.md", "file")).toEqual({
+			rule: "drafts/",
+			source: "contextignore",
+		});
+		expect(rules.ruleFor("notes/x.TMP.md", "file")).toEqual({
+			rule: "*.tmp.md",
+			source: "contextignore",
+		});
+		expect(rules.ruleFor("notes/keep.md", "file")).toBeNull();
+	});
+
+	it("never lets the .contextignore re-include what the defaults leave out", () => {
+		const rules = buildContextIgnoreRules({
+			contextIgnore: "!CLAUDE.md\n!skills/\n",
+		});
+		expect(rules.ignoresFile("CLAUDE.md")).toBe(true);
+		expect(rules.ruleFor("skills/x.md", "file")).toEqual({
+			rule: "skills/",
+			source: "default",
+		});
+	});
+
+	it("agrees with its own yes/no answers on every entry", () => {
+		const rules = buildContextIgnoreRules({
+			contextIgnore: "drafts/\n!drafts/keep.md\n**/*.bak.md\nlogs\n",
+		});
+		for (const relative of [
+			"keep.md",
+			"drafts/a.md",
+			"drafts/keep.md",
+			"docs/x.bak.md",
+			"logs",
+			"logs/today.md",
+			"node_modules/a.md",
+			"AGENTS.md",
+		]) {
+			expect(rules.ruleFor(relative, "file") !== null, relative).toBe(
+				rules.ignoresFile(relative),
+			);
+			expect(
+				rules.ruleFor(relative, "directory") !== null,
+				`${relative}/`,
+			).toBe(rules.ignoresDirectory(relative));
+		}
+	});
+
+	it("refuses a rule over the `**` cap rather than evaluating it", () => {
+		expect(() =>
+			buildContextIgnoreRules({
+				contextIgnore: "drafts/\n**/a/**/b/**/c\n",
+			}),
+		).toThrow(/line 2 has 3 .* groups; at most 2/);
+	});
+});
+
+describe("decodeContextIgnore", () => {
+	it("reads UTF-8 text, dropping a byte-order mark, and refuses anything else", () => {
+		expect(decodeContextIgnore(new TextEncoder().encode("drafts/\n"))).toBe(
+			"drafts/\n",
+		);
+		expect(
+			decodeContextIgnore(new Uint8Array([0xef, 0xbb, 0xbf, 0x61])),
+		).toBe("a");
+		expect(decodeContextIgnore(new Uint8Array([0x61, 0xff]))).toBeNull();
+		expect(MAX_CONTEXT_IGNORE_BYTES).toBe(64 * 1024);
+	});
+});
+
+describe("contextSyncExclusionProblem", () => {
+	it.each([
+		["", "whole-repository"],
+		["docs/", "not-canonical"],
+		[" docs", "not-canonical"],
+		["docs/../x", "not-canonical"],
+		["a".repeat(MAX_CONTEXT_SYNC_PATH_LENGTH + 1), "too-long"],
+		["docs/.fabric/lock.md", "fabric"],
+		["docs/.FABRIC", "fabric"],
+		["docs/.contextignore", "policy-file"],
+		["docs/.ContextIgnore", "policy-file"],
+		["docs/drafts", null],
+		["docs/CLAUDE.md", null],
+	] as const)("%j is %j", (path, problem) => {
+		expect(contextSyncExclusionProblem(path)).toBe(problem);
 	});
 });

@@ -388,10 +388,6 @@ const REDACTED_BODY_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
 	// run's follow-up instruction.
 	["weave.executions.signalApproval", ["feedback"]],
 	["codingRuns.sendFollowUp", ["message"]],
-	[
-		"projects.stories.tasks.agent.resolveCheckpoint",
-		["feedback", "userData"],
-	],
 	["projects.backlog.startAnalysis", ["userPrompt"]],
 	[
 		"projects.backlog.applyChanges",
@@ -494,6 +490,21 @@ const REDACTED_SECRET_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
 	["mcp.atlassianCloud.callback", ["code"]],
 ]);
 
+/**
+ * Paths whose complete request is confidential, including invalid shapes and
+ * unknown keys. Field lists cannot protect a malformed evaluation sent outside
+ * its declared subtree. These failures still emit an audit event, but record
+ * only a redaction marker, never size/hash or caller-supplied identity fields.
+ * Validation messages/causes may repeat the same data, so those captures use a
+ * fixed message and omit causes/stacks while retaining code/status/correlation.
+ */
+const REDACTED_INPUT_PATHS: ReadonlySet<string> = new Set([
+	"contextQuality.agentResults.inspect",
+	"contextQuality.agentResults.evaluate",
+	"contextQuality.evaluate",
+	"contextQuality.runs.create",
+]);
+
 /** What an error capture records in place of a body field. */
 type BodyFieldSummary =
 	| { redacted: true; bytes: number; contentHash: string }
@@ -579,6 +590,7 @@ function redactPath(
 /**
  * Replace the fields `REDACTED_BODY_FIELDS` and `REDACTED_SECRET_FIELDS` list
  * for `path` with their summaries, before the input snapshot is sanitized.
+ * `REDACTED_INPUT_PATHS` replaces any input shape with a single marker first.
  * Returns a copy; the request's own input is never modified. Any other path is
  * returned as it is.
  *
@@ -590,6 +602,9 @@ function redactPath(
  * input stays as it is.
  */
 function redactBodyFields(path: string, input: unknown): unknown {
+	if (REDACTED_INPUT_PATHS.has(path)) {
+		return { redacted: true };
+	}
 	const bodyFields = REDACTED_BODY_FIELDS.get(path) ?? [];
 	const secretFields = REDACTED_SECRET_FIELDS.get(path) ?? [];
 	if (bodyFields.length === 0 && secretFields.length === 0) {
@@ -868,7 +883,16 @@ export async function recordProcedureFailure(
 
 		const classification = classifyError(err);
 		const exception = buildException(err);
-		const cause = extractCauseChain(err);
+		const confidentialInput = REDACTED_INPUT_PATHS.has(renderedPath);
+		if (confidentialInput) {
+			// Preserve the original thrown value; only the persisted capture is
+			// minimized. Validation can echo arbitrary submitted field names.
+			exception.message = "Context evaluation failed.";
+			// Error stacks repeat multiline messages before their frames; those
+			// messages can contain a malformed request's arbitrary field names.
+			delete exception.stacktrace;
+		}
+		const cause = confidentialInput ? undefined : extractCauseChain(err);
 		const fingerprint = computeFingerprint(
 			exception.type,
 			readErrorCode(err),
@@ -920,7 +944,7 @@ export async function recordProcedureFailure(
 		// Keep them in metadata.input; successful activity attribution is separate.
 		const authorizedProject = peekAuthorizedProject();
 		const candidateOrganizationId = auditOrganizationId(
-			readOrganizationIdFromInput(input),
+			confidentialInput ? undefined : readOrganizationIdFromInput(input),
 			context.session?.activeOrganizationId,
 		);
 		let organizationId = authorizedProject?.organizationId ?? null;
@@ -1041,6 +1065,7 @@ export const auditErrorMiddleware = os
 export {
 	ALWAYS_SKIP_PATHS,
 	REDACTED_BODY_FIELDS,
+	REDACTED_INPUT_PATHS,
 	REDACTED_SECRET_FIELDS,
 	recordProcedureFailure as __captureErrorForTest,
 	redactBodyFields as __redactBodyFieldsForTest,

@@ -6,8 +6,6 @@
  * what both /api/orchestrator/token and /api/orchestrator/verify check against.
  * One implementation keeps the mint-time and connect-time gates from drifting.
  *
- * Kept out of ./live-tokens so the task-agent routes, which never touch
- * Temporal, do not pull `@repo/temporal` into their module graph.
  */
 
 import { getOrganizationMembership } from "@repo/database";

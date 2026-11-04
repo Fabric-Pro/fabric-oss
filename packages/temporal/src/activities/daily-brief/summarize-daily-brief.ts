@@ -11,15 +11,21 @@
  * validation fails we throw a non-retryable ApplicationFailure so the workflow
  * flips the brief to FAILED without burning another LLM call.
  */
+
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	getCurrentDateContext,
+	Output,
 } from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 // Imported from the SUBPATH (not @repo/ai root) so it stays UNMOCKED in tests
 // that mock the @repo/ai root module (uniform rule across the budget sites).
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import {
 	type AheadItem,
 	DAILY_BRIEF_SCHEMA_VERSION,
@@ -342,16 +348,16 @@ export async function summarizeDailyBriefActivity(
 		promptChars: finalPrompt.length,
 	});
 
-	let llmResult: Awaited<
-		ReturnType<typeof generateObject<typeof LlmOutputSchema>>
-	>;
+	let llmResult: StructuredTextResult<z.infer<typeof LlmOutputSchema>>;
 	try {
-		llmResult = await generateObject({
-			model,
-			schema: LlmOutputSchema,
-			prompt: finalPrompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
+		llmResult = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: LlmOutputSchema }),
+				prompt: finalPrompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			}),
+		);
 	} finally {
 		clearInterval(heartbeatInterval);
 	}
@@ -364,7 +370,7 @@ export async function summarizeDailyBriefActivity(
 		narrative: string;
 	};
 	const narrativeByKey = new Map<string, StorylineNarrativeEntry>(
-		(llmResult.object.storylineNarratives as StorylineNarrativeEntry[]).map(
+		(llmResult.output.storylineNarratives as StorylineNarrativeEntry[]).map(
 			(n) => [n.storyCuid, n],
 		),
 	);
@@ -384,7 +390,7 @@ export async function summarizeDailyBriefActivity(
 	});
 
 	const explanationByTarget = new Map(
-		llmResult.object.priorityActionExplanations.map((e) => [
+		llmResult.output.priorityActionExplanations.map((e) => [
 			e.targetCuid,
 			e.whyItMatters,
 		]),
@@ -402,7 +408,7 @@ export async function summarizeDailyBriefActivity(
 
 	const content: DailyBriefContent = {
 		schemaVersion: DAILY_BRIEF_SCHEMA_VERSION,
-		executiveSummary: llmResult.object.executiveSummary,
+		executiveSummary: llmResult.output.executiveSummary,
 		priorityActions: enrichedPriorityActions,
 		sections,
 		partialFailures:

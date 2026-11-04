@@ -63,6 +63,11 @@ const mocks = vi.hoisted(() => ({
 		deleteMany: vi.fn(),
 		updateMany: vi.fn(),
 	},
+	// Per-reviewer approvals the review transaction records and counts.
+	approval: {
+		createMany: vi.fn(),
+		findMany: vi.fn(),
+	},
 	$transaction: vi.fn(),
 	// The reaper's candidate query is raw SQL: one UNIONed relation, so the
 	// page is a window of ONE order rather than two separately-skipped ones.
@@ -91,6 +96,7 @@ vi.mock("../prisma/client", async () => {
 			projectInstructionRepositorySyncRun: mocks.repositorySyncRun,
 			projectInstructionPendingStorageCleanup:
 				mocks.pendingStorageCleanup,
+			projectInstructionProposalApproval: mocks.approval,
 			$transaction: mocks.$transaction,
 			$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
 		},
@@ -162,9 +168,14 @@ beforeEach(() => {
 		mocks.repositorySync,
 		mocks.repositorySyncRun,
 		mocks.pendingStorageCleanup,
+		mocks.approval,
 	]) {
 		for (const fn of Object.values(group)) fn.mockReset();
 	}
+	// Default: the reviewer's approval is new and is the only one, which is
+	// what the default policy (one approval) publishes on.
+	mocks.approval.createMany.mockResolvedValue({ count: 1 });
+	mocks.approval.findMany.mockResolvedValue([{ userId: "reviewer" }]);
 	mocks.$transaction.mockReset();
 	mocks.$queryRaw.mockReset();
 	auditMocks.recordAuditTx.mockReset();
@@ -181,6 +192,7 @@ beforeEach(() => {
 				project: mocks.project,
 				projectInstructionPendingStorageCleanup:
 					mocks.pendingStorageCleanup,
+				projectInstructionProposalApproval: mocks.approval,
 				// `publishInstructionSnapshot` takes the project row's write
 				// lock through raw SQL before it reads anything.
 				$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
@@ -387,7 +399,24 @@ describe("instruction proposal decisions", () => {
 				reviewerUserId: "reviewer",
 				audit: proposalAudit,
 			}),
-		).toEqual({ ok: true, changed: true, version: 9 });
+		).toEqual({
+			ok: true,
+			changed: true,
+			version: 9,
+			published: true,
+			approvals: { count: 1, required: 1 },
+		});
+		expect(mocks.approval.createMany).toHaveBeenCalledWith({
+			data: [
+				{
+					snapshotId: "proposal",
+					projectId: "p",
+					organizationId: "o",
+					userId: "reviewer",
+				},
+			],
+			skipDuplicates: true,
+		});
 		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith({
 			where: {
 				id: "proposal",
@@ -418,6 +447,187 @@ describe("instruction proposal decisions", () => {
 			expect.anything(),
 			proposalAudit,
 		);
+	});
+
+	describe("review policy", () => {
+		const pending = {
+			id: "proposal",
+			userId: "proposer",
+			version: 9,
+			status: "READY",
+			proposalStatus: "PENDING",
+			baseSnapshotId: "base",
+		};
+		const approvalAudit = {
+			...proposalAudit,
+			action: "project.instructions.proposal_approved",
+			metadata: { source: "file_proposal_review" },
+		} as const;
+		function lockedWithPolicy(reviewPolicy: unknown) {
+			mocks.$queryRaw.mockResolvedValue([
+				{ pointerId: "base", instructionSettings: { reviewPolicy } },
+			]);
+			mocks.snapshot.findFirst.mockResolvedValue(pending);
+		}
+		function approveAs(reviewerUserId: string) {
+			return approveInstructionProposal({
+				snapshotId: "proposal",
+				projectId: "p",
+				organizationId: "o",
+				reviewerUserId,
+				audit: proposalAudit,
+				approvalAudit,
+			});
+		}
+
+		it("lets the proposer approve and publish their own proposal under the default policy, as before", async () => {
+			lockedPointer("base");
+			mocks.snapshot.findFirst.mockResolvedValue(pending);
+			mocks.approval.findMany.mockResolvedValue([{ userId: "proposer" }]);
+			mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+			mocks.project.updateMany.mockResolvedValue({ count: 1 });
+
+			expect(await approveAs("proposer")).toEqual({
+				ok: true,
+				changed: true,
+				version: 9,
+				published: true,
+				approvals: { count: 1, required: 1 },
+			});
+			expect(auditMocks.recordAuditTx).toHaveBeenCalledTimes(1);
+			expect(auditMocks.recordAuditTx).toHaveBeenCalledWith(
+				expect.anything(),
+				proposalAudit,
+			);
+		});
+
+		it("records an approval that does not meet the count without publishing, with one approval audit row", async () => {
+			lockedWithPolicy({ requiredApprovals: 2 });
+
+			expect(await approveAs("reviewer")).toEqual({
+				ok: true,
+				changed: true,
+				version: 9,
+				published: false,
+				approvals: { count: 1, required: 2 },
+			});
+			expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+			expect(mocks.project.updateMany).not.toHaveBeenCalled();
+			expect(auditMocks.recordAuditTx).toHaveBeenCalledTimes(1);
+			expect(auditMocks.recordAuditTx).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({
+					action: "project.instructions.proposal_approved",
+					metadata: {
+						source: "file_proposal_review",
+						approvals: 1,
+						requiredApprovals: 2,
+					},
+				}),
+			);
+		});
+
+		it("publishes on the approval that meets the count, re-reading the policy and the base under the lock", async () => {
+			lockedWithPolicy({ requiredApprovals: 2 });
+			mocks.approval.findMany.mockResolvedValue([
+				{ userId: "first" },
+				{ userId: "reviewer" },
+			]);
+			mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+			mocks.project.updateMany.mockResolvedValue({ count: 1 });
+
+			expect(await approveAs("reviewer")).toEqual({
+				ok: true,
+				changed: true,
+				version: 9,
+				published: true,
+				approvals: { count: 2, required: 2 },
+			});
+			expect(mocks.snapshot.updateMany).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						proposalStatus: "APPROVED",
+						reviewerUserId: "reviewer",
+					}),
+				}),
+			);
+			expect(auditMocks.recordAuditTx).toHaveBeenCalledTimes(1);
+			expect(auditMocks.recordAuditTx).toHaveBeenCalledWith(
+				expect.anything(),
+				proposalAudit,
+			);
+		});
+
+		it("never counts the proposer's own approval above one required approval", async () => {
+			lockedWithPolicy({ requiredApprovals: 2 });
+			mocks.approval.findMany.mockResolvedValue([
+				{ userId: "proposer" },
+				{ userId: "reviewer" },
+			]);
+
+			const result = await approveAs("reviewer");
+
+			expect(result).toMatchObject({
+				published: false,
+				approvals: { count: 1, required: 2 },
+			});
+		});
+
+		it("refuses the proposer's own approval above one required approval, writing nothing", async () => {
+			lockedWithPolicy({ requiredApprovals: 2 });
+
+			expect(await approveAs("proposer")).toEqual({
+				ok: false,
+				reason: "own_proposal",
+			});
+			expect(mocks.approval.createMany).not.toHaveBeenCalled();
+			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+		});
+
+		it("refuses a reviewer the approver list does not name, writing nothing", async () => {
+			lockedWithPolicy({
+				requiredApprovals: 1,
+				approverUserIds: ["lead"],
+			});
+
+			expect(await approveAs("reviewer")).toEqual({
+				ok: false,
+				reason: "not_an_approver",
+			});
+			expect(mocks.approval.createMany).not.toHaveBeenCalled();
+		});
+
+		it("treats a repeated approval as the same one: no new row, no audit, no publication", async () => {
+			lockedWithPolicy({ requiredApprovals: 3 });
+			mocks.approval.createMany.mockResolvedValue({ count: 0 });
+
+			expect(await approveAs("reviewer")).toEqual({
+				ok: true,
+				changed: false,
+				version: 9,
+				published: false,
+				approvals: { count: 1, required: 3 },
+			});
+			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+		});
+
+		it("refuses a stale proposal before recording any approval", async () => {
+			mocks.$queryRaw.mockResolvedValue([
+				{
+					pointerId: "moved",
+					instructionSettings: {
+						reviewPolicy: { requiredApprovals: 2 },
+					},
+				},
+			]);
+			mocks.snapshot.findFirst.mockResolvedValue(pending);
+
+			expect(await approveAs("reviewer")).toEqual({
+				ok: false,
+				reason: "stale",
+			});
+			expect(mocks.approval.createMany).not.toHaveBeenCalled();
+		});
 	});
 
 	it("refuses a pending proposal while the repository is the source of truth, and writes nothing", async () => {
@@ -4500,6 +4710,91 @@ describe("retention of pull-request operations", () => {
 			});
 			// Thrown inside the transaction, so the file delete rolled back.
 			expect(mocks.$transaction).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	const SETTLED_BRANCH = {
+		state: "MERGED",
+		untracked: false,
+		membership: { status: "settled" },
+		mergeSyncRequestedAt: null,
+		createIssuedAt: null,
+		confirmationDueAt: null,
+	};
+
+	it.each([
+		["an open branch", { ...SETTLED_BRANCH, state: "OPEN" }],
+		[
+			"a merged branch whose membership is pending",
+			{ ...SETTLED_BRANCH, membership: { status: "pending" } },
+		],
+		[
+			"a merged branch that still owes a merge sync",
+			{
+				...SETTLED_BRANCH,
+				mergeSyncRequestedAt: new Date("2026-09-27T10:00:00.000Z"),
+			},
+		],
+	])(
+		"a manual delete of a version held by %s is refused as pull_request_unresolved",
+		async (_, proposalBranch) => {
+			mocks.file.deleteMany.mockResolvedValue({ count: 2 });
+			mocks.snapshot.deleteMany.mockResolvedValue({ count: 0 });
+			mocks.snapshot.findFirst.mockResolvedValue({
+				id: "s",
+				status: "READY",
+				pullRequestState: null,
+				pullRequestObligationOpen: false,
+				mergeSyncRequestedAt: null,
+				proposalBranch,
+			});
+			mocks.snapshot.count.mockResolvedValue(0);
+
+			expect(await deleteInstructionSnapshot("s", "p", "org_1")).toEqual({
+				deleted: false,
+				reason: "pull_request_unresolved",
+			});
+			expect(
+				mocks.snapshot.findFirst.mock.calls[0]![0].select
+					.proposalBranch,
+			).toEqual({
+				select: {
+					state: true,
+					untracked: true,
+					membership: true,
+					mergeSyncRequestedAt: true,
+					createIssuedAt: true,
+					confirmationDueAt: true,
+				},
+			});
+		},
+	);
+
+	it.each([
+		["a settled branch", SETTLED_BRANCH],
+		[
+			"an untracked open branch",
+			{ ...SETTLED_BRANCH, state: "OPEN", untracked: true },
+		],
+	])(
+		"keeps answering active for a version held by %s",
+		async (_, proposalBranch) => {
+			mocks.file.deleteMany.mockResolvedValue({ count: 2 });
+			mocks.snapshot.deleteMany.mockResolvedValue({ count: 0 });
+			mocks.snapshot.findFirst.mockResolvedValue({
+				id: "s",
+				status: "READY",
+				pullRequestState: null,
+				pullRequestObligationOpen: false,
+				mergeSyncRequestedAt: null,
+				proposalBranch,
+			});
+			mocks.snapshot.count.mockResolvedValue(0);
+
+			expect(await deleteInstructionSnapshot("s", "p", "org_1")).toEqual({
+				deleted: false,
+				reason: "active",
+			});
 		},
 	);
 

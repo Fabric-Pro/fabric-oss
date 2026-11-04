@@ -5,7 +5,8 @@ const dbMock = vi.hoisted(() => ({
 	projectLinkedMeeting: { findUniqueOrThrow: vi.fn() },
 }));
 const aiMock = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	Output: { object: (spec: unknown) => spec },
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	logModelUsageAsync: vi.fn(),
 }));
@@ -84,8 +85,8 @@ beforeEach(() => {
 		metadata: { provider: "azure" },
 		trackUsage: vi.fn(),
 	});
-	aiMock.generateObject.mockResolvedValue({
-		object: {
+	aiMock.generateText.mockResolvedValue({
+		output: {
 			items: [{ title: "Carry-over actions", intent: "carry_over" }],
 		},
 		usage: { inputTokens: 100, outputTokens: 50 },
@@ -97,7 +98,7 @@ describe("generateAgendaActivity", () => {
 		await generateAgendaActivity(INPUT);
 
 		expect(
-			aiMock.generateObject.mock.calls[0]?.[0]?.providerOptions,
+			aiMock.generateText.mock.calls[0]?.[0]?.providerOptions,
 		).toBeUndefined();
 	});
 
@@ -140,7 +141,7 @@ describe("generateAgendaActivity", () => {
 	});
 
 	it("rethrows LLM failures so the workflow retry policy engages", async () => {
-		aiMock.generateObject.mockRejectedValue(new Error("model timeout"));
+		aiMock.generateText.mockRejectedValue(new Error("model timeout"));
 
 		await expect(generateAgendaActivity(INPUT)).rejects.toThrow(
 			"model timeout",
@@ -206,7 +207,7 @@ describe("prompt binding tenancy (#2178)", () => {
 
 		await generateAgendaActivity(INPUT);
 
-		const { prompt } = aiMock.generateObject.mock.calls[0][0];
+		const { prompt } = aiMock.generateText.mock.calls[0][0];
 		expect(prompt).toContain("ORG CUSTOM BODY");
 		expect(prompt).toContain("Draft the migration");
 		// The locked clause survives an override that never mentions it.

@@ -17,7 +17,7 @@ import {
 	generateSparseVector,
 	searchWorkspaceChunks,
 } from "@repo/rag";
-import type { LibrarySource } from "@saas/libraries/lib/library-chat-runtime-protocol";
+import type { WorkspaceDocumentSource } from "@saas/agents/lib/workspace-document-chat-protocol";
 import { embed } from "ai";
 
 /**
@@ -76,7 +76,7 @@ export interface PreparedWorkspaceChatTurn {
 	model: LanguageModel;
 	instructions: string;
 	messages: Array<{ role: ChatRole; content: string }>;
-	sources: LibrarySource[];
+	sources: WorkspaceDocumentSource[];
 	getAnswerModel: () => AnswerModelInfo;
 	/** Records the answer's model usage against the workspace's tenant. */
 	recordAnswer: (usage: ModelUsage, latencyMs: number) => void;
@@ -94,8 +94,11 @@ export async function prepareWorkspaceChatTurn(args: {
 	workspace: WorkspaceChatWorkspace;
 	message: string;
 	history: ReadonlyArray<{ role: ChatRole; content: string }>;
+	ragSettings?: { topK: number; similarityThreshold: number };
 }): Promise<PreparedWorkspaceChatTurn> {
 	const { userId, workspace, message } = args;
+	const topK = args.ragSettings?.topK ?? 8;
+	const minSimilarity = args.ragSettings?.similarityThreshold ?? 0.2;
 	const workspaceId = workspace.id;
 	// Use the workspace's actual organizationId (null for personal workspaces)
 	const effectiveOrgId = workspace.organizationId || undefined;
@@ -165,8 +168,8 @@ export async function prepareWorkspaceChatTurn(args: {
 	console.log("[Workspace Chat] Searching workspace documents...", {
 		workspaceId,
 		organizationId: effectiveOrgId || "(none - personal workspace)",
-		topK: 8,
-		minSimilarity: 0.2,
+		topK,
+		minSimilarity,
 	});
 	const searchResults = await searchWorkspaceChunks({
 		workspaceId,
@@ -174,8 +177,8 @@ export async function prepareWorkspaceChatTurn(args: {
 		organizationId: effectiveOrgId, // Use workspace's actual orgId, not request's
 		queryEmbedding,
 		querySparseVector: generateSparseVector(boundedQuery),
-		topK: 8,
-		minSimilarity: 0.2, // Lower threshold for better recall
+		topK,
+		minSimilarity,
 	});
 
 	console.log(
@@ -209,7 +212,7 @@ export async function prepareWorkspaceChatTurn(args: {
 
 	// Fetch actual content from PostgreSQL
 	let context = "";
-	const sources: LibrarySource[] = [];
+	const sources: WorkspaceDocumentSource[] = [];
 
 	if (searchResults.length > 0) {
 		// Build queries using documentId and chunkIndex (since Qdrant chunkId is ${documentId}-${chunkIndex})
@@ -223,6 +226,7 @@ export async function prepareWorkspaceChatTurn(args: {
 		const chunks = await db.workspaceDocumentChunk.findMany({
 			where: {
 				OR: chunkQueries,
+				document: { workspaceId },
 			},
 			select: {
 				id: true,

@@ -70,9 +70,10 @@ vi.mock("@repo/database", async (importOriginal) => {
 });
 
 const getAIModelWithMetadata = vi.fn();
-const generateObject = vi.fn();
+const generateText = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	// Faithful enough to discriminate, which is all the activity asks of it:
 	// the AI SDK names this error class "AI_NoObjectGeneratedError", and the
@@ -228,7 +229,7 @@ describe.each(ACTIVITIES)("$name — the refusal path", ({ run }) => {
 			nonRetryable: true,
 		});
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
-		expect(generateObject).not.toHaveBeenCalled();
+		expect(generateText).not.toHaveBeenCalled();
 	});
 
 	it("refuses a project that left the organization before resolving any model", async () => {

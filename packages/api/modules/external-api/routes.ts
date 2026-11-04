@@ -7,12 +7,16 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { executionRequestKey } from "./lib/execution-request-key";
 import { requireApiKey, requireScope } from "./middleware/api-key-auth";
 import { externalApiRateLimit } from "./middleware/api-rate-limit";
 import { usageLogger } from "./middleware/usage-logger";
 import { executeAgent } from "./procedures/execute-agent";
 import { getExposedAgent } from "./procedures/get-agent";
-import { getExecution } from "./procedures/get-execution";
+import {
+	authorizeAgentExecutionStream,
+	getExecution,
+} from "./procedures/get-execution";
 import { listExposedAgents } from "./procedures/list-agents";
 import { generateOpenApiSpec } from "./procedures/openapi-docs";
 import { createExecutionStreamHandler } from "./procedures/stream-execution";
@@ -35,6 +39,7 @@ export function createExternalApiRoutes() {
 				"Authorization",
 				"X-Correlation-ID",
 				"X-Idempotency-Key",
+				"Idempotency-Key",
 			],
 			allowMethods: ["POST", "GET", "OPTIONS"],
 			exposeHeaders: [
@@ -219,6 +224,25 @@ export function createExternalApiRoutes() {
 				}
 			}
 
+			let requestKey: string | undefined;
+			try {
+				requestKey = executionRequestKey(
+					body.idempotencyKey,
+					c.req.header("Idempotency-Key"),
+					c.req.header("X-Idempotency-Key"),
+				);
+			} catch {
+				return c.json(
+					{
+						error: {
+							code: "INVALID_EXECUTION_REQUEST",
+							message: "Invalid or conflicting request keys",
+						},
+					},
+					400,
+				);
+			}
+
 			const result = await executeAgent(
 				instanceId,
 				{
@@ -228,10 +252,7 @@ export function createExternalApiRoutes() {
 						| "NORMAL"
 						| "HIGH"
 						| "CRITICAL",
-					idempotencyKey:
-						body.idempotencyKey ||
-						c.req.header("X-Idempotency-Key") ||
-						undefined,
+					idempotencyKey: requestKey,
 					stream: body.stream,
 					imageRefs,
 				},
@@ -268,14 +289,21 @@ export function createExternalApiRoutes() {
 						data.workflowId,
 					);
 
-					return new Response(eventStream, {
-						headers: {
-							"Content-Type": "text/event-stream",
-							"Cache-Control": "no-cache",
-							Connection: "keep-alive",
-							"X-Execution-Id": data.executionId,
+					return new Response(
+						authorizeAgentExecutionStream(
+							eventStream,
+							data.executionId,
+							ctx,
+						),
+						{
+							headers: {
+								"Content-Type": "text/event-stream",
+								"Cache-Control": "no-cache",
+								Connection: "keep-alive",
+								"X-Execution-Id": data.executionId,
+							},
 						},
-					});
+					);
 				}
 			}
 

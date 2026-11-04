@@ -780,3 +780,18 @@ describe("dynamic registration", () => {
 		).toBe(400);
 	});
 });
+
+describe("live elevated agent consent authority", () => {
+	it("refuses agent execution and schedule grants after the owner becomes a viewer", async () => {
+		const ctx = await boot();
+		const { client } = await signIn(ctx);
+		membership.agentRole = "viewer";
+		const response = await ctx.call(await authorizeUrl(client.client_id), {
+			redirect: "manual",
+			headers: { accept: "text/html" },
+		});
+		expect(response.status).toBe(403);
+		expect(await rowsOf(ctx, "oauthConsent")).toHaveLength(1);
+		expect(await rowsOf(ctx, "oauthAccessToken")).toHaveLength(1);
+	});
+});

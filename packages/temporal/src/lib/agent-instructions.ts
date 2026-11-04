@@ -36,6 +36,12 @@ export function buildAgentInstructions(
 		if (custom.constraints) {
 			parts.push(`## Constraints\n${custom.constraints}`);
 		}
+		if (
+			typeof custom.expectedOutput === "string" &&
+			custom.expectedOutput.trim()
+		) {
+			parts.push(`## Expected Output\n${custom.expectedOutput.trim()}`);
+		}
 	}
 
 	// Add instance-specific description if provided

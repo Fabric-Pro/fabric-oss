@@ -3465,7 +3465,7 @@ function DocumentWorkspacesSection({
 				<div className="flex items-center gap-2 mb-2">
 					<FolderOpen className="h-4 w-4 text-muted-foreground" />
 					<span className="text-xs font-medium">
-						Document Libraries
+						Document Workspaces
 					</span>
 				</div>
 				<div className="space-y-2">
@@ -3520,7 +3520,7 @@ function DocumentWorkspacesSection({
 				<div className="flex items-center gap-2">
 					<FolderOpen className="h-4 w-4 text-muted-foreground" />
 					<span className="text-xs font-medium">
-						Document Libraries
+						Document Workspaces
 					</span>
 				</div>
 				<Link

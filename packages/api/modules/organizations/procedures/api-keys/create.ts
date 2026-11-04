@@ -52,6 +52,7 @@ export const ORG_API_KEY_SCOPES = [
 	"projects:read", // Read project data
 	"projects:write", // Modify project data
 	"agents:read", // Read agent metadata, list available agents
+	"agents:schedule", // Explicit permission to manage recurring agent execution
 	"agents:execute", // Trigger agent executions via API
 	"agents:stream", // Access real-time execution streams
 	// The MCP tool surface. Until scopes were enforced there, `mcp:read` and

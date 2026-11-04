@@ -1,3 +1,7 @@
+vi.mock("../reconcile-report-starts", () => ({
+	reconcileReportStarts: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {

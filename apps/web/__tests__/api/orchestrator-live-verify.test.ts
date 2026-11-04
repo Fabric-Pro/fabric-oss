@@ -115,10 +115,10 @@ describe("POST /api/orchestrator/verify", () => {
 		expect(response.status).toBe(401);
 	});
 
-	it("401s on a task-agent token replayed here", async () => {
+	it("401s on a different-audience token replayed here", async () => {
 		const token = await signToken(
 			{ userId: "user-1", executionId: EXECUTION_ID },
-			{ audience: "task-agent-live" },
+			{ audience: "other-live" },
 		);
 
 		const response = await callRoute(token);

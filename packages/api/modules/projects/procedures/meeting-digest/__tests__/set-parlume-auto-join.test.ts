@@ -82,6 +82,8 @@ const input = {
 	enabled: true,
 	toolsReadOnly: false,
 	suggestionsEnabled: false,
+	// Not the default, so a dropped field shows.
+	suggestionAudience: "TEAM" as "MEETING" | "TEAM",
 };
 
 function run(overrides: Partial<typeof input> = {}) {
@@ -106,6 +108,8 @@ beforeEach(() => {
 		parlumeAutoJoin: data.parlumeAutoJoin,
 		parlumeAutoJoinToolsReadOnly: data.parlumeAutoJoinToolsReadOnly ?? true,
 		parlumeAutoJoinSuggestions: data.parlumeAutoJoinSuggestions ?? true,
+		parlumeAutoJoinSuggestionAudience:
+			data.parlumeAutoJoinSuggestionAudience ?? "MEETING",
 	}));
 });
 
@@ -120,6 +124,7 @@ describe("setParlumeAutoJoin", () => {
 			enabled: true,
 			toolsReadOnly: false,
 			suggestionsEnabled: false,
+			suggestionAudience: "TEAM",
 		});
 		expect(mocks.update).toHaveBeenCalledWith({
 			where: { id: "lm-1" },
@@ -128,10 +133,25 @@ describe("setParlumeAutoJoin", () => {
 				parlumeAutoJoinUserId: "user-1",
 				parlumeAutoJoinToolsReadOnly: false,
 				parlumeAutoJoinSuggestions: false,
+				parlumeAutoJoinSuggestionAudience: "TEAM",
 				parlumeAutoJoinError: null,
 				parlumeAutoJoinErrorAt: null,
 			},
 			select: expect.any(Object),
+		});
+	});
+
+	// A stale client that does not know about audiences must not turn a
+	// team-only series back to the meeting chat.
+	it("leaves the series' audience as it is when the caller does not send one", async () => {
+		await run({ suggestionAudience: undefined });
+
+		expect(mocks.update.mock.calls[0]?.[0].data).not.toHaveProperty(
+			"parlumeAutoJoinSuggestionAudience",
+		);
+		expect(mocks.update.mock.calls[0]?.[0].data).toMatchObject({
+			parlumeAutoJoin: true,
+			parlumeAutoJoinSuggestions: false,
 		});
 	});
 
@@ -219,6 +239,7 @@ describe("setParlumeAutoJoin", () => {
 				enabled: true,
 				toolsReadOnly: false,
 				suggestionsEnabled: false,
+				suggestionAudience: "TEAM",
 			},
 		});
 	});

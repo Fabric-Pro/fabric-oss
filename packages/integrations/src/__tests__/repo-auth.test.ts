@@ -67,8 +67,8 @@ vi.mock("../gitlab/index", () => ({
 
 import { runExchangeGate } from "../exchange-gate";
 import {
-	buildAuthCloneUrl,
 	forceReExchangeRepoCredentials,
+	gitAuthForClone,
 	isGitAuthError,
 	markRepoReauthRequired,
 	REPO_REAUTH_NOTIFY_BOUND_MS,
@@ -146,14 +146,76 @@ describe("isGitAuthError", () => {
 	});
 });
 
-describe("buildAuthCloneUrl", () => {
+describe("gitAuthForClone", () => {
 	const url = "https://host/o/r.git";
-	it("uses the per-provider basic-auth username", () => {
-		expect(buildAuthCloneUrl("GITHUB", url, "T")).toContain(
-			"x-access-token:T@",
+	const basic = (user: string) =>
+		`Authorization: Basic ${Buffer.from(`${user}:T`).toString("base64")}`;
+
+	it("returns the URL without credentials, even when the stored URL carries some", () => {
+		expect(gitAuthForClone("GITHUB", url, "T", {}).url).toBe(url);
+		expect(
+			gitAuthForClone(
+				"GITHUB",
+				"https://old:secret@host/o/r.git",
+				"T",
+				{},
+			).url,
+		).toBe(url);
+	});
+
+	it("authenticates only the repository's origin, with the per-provider basic-auth username", () => {
+		for (const [provider, user] of [
+			["GITHUB", "x-access-token"],
+			["GITLAB", "oauth2"],
+			["AZURE_DEVOPS", "pat"],
+		] as const) {
+			expect(gitAuthForClone(provider, url, "T", {}).env).toEqual({
+				GIT_TERMINAL_PROMPT: "0",
+				GIT_CONFIG_COUNT: "2",
+				GIT_CONFIG_KEY_0: "credential.helper",
+				GIT_CONFIG_VALUE_0: "",
+				GIT_CONFIG_KEY_1: "http.https://host/.extraHeader",
+				GIT_CONFIG_VALUE_1: basic(user),
+			});
+		}
+	});
+
+	it("keeps the worker's ordinary variables and drops the ones that change what git runs", () => {
+		const { env } = gitAuthForClone("GITHUB", url, "T", {
+			PATH: "/usr/bin",
+			HTTPS_PROXY: "http://proxy.example.com",
+			GIT_DIR: "/elsewhere",
+			GIT_ASKPASS: "/bin/echo",
+			git_ssh_command: "ssh -x",
+			EDITOR: "vi",
+		});
+		expect(env.PATH).toBe("/usr/bin");
+		expect(env.HTTPS_PROXY).toBe("http://proxy.example.com");
+		for (const key of [
+			"GIT_DIR",
+			"GIT_ASKPASS",
+			"git_ssh_command",
+			"EDITOR",
+		]) {
+			expect(env).not.toHaveProperty(key);
+		}
+	});
+
+	it("puts the token nowhere but the header value", () => {
+		const { url: cloneUrl, env } = gitAuthForClone(
+			"GITHUB",
+			url,
+			"T0KEN",
+			{},
 		);
-		expect(buildAuthCloneUrl("GITLAB", url, "T")).toContain("oauth2:T@");
-		expect(buildAuthCloneUrl("AZURE_DEVOPS", url, "T")).toContain("pat:T@");
+		expect(cloneUrl).not.toContain("T0KEN");
+		const { GIT_CONFIG_VALUE_1, ...rest } = env;
+		expect(JSON.stringify(rest)).not.toContain(
+			Buffer.from("x-access-token:T0KEN").toString("base64"),
+		);
+		expect(GIT_CONFIG_VALUE_1).toContain(
+			Buffer.from("x-access-token:T0KEN").toString("base64"),
+		);
 	});
 });
 

@@ -214,3 +214,36 @@ describe("the sessions in the execution history", () => {
 		expect(await screen.findByText("Stage: Indexing")).toBeInTheDocument();
 	});
 });
+
+it("shows unresolved admission without promising the task was queued for retry", async () => {
+	mocks.tasksList.mockResolvedValue([
+		{
+			id: "example-task",
+			agentId: "example-agent",
+			status: "PENDING",
+			stage: "INITIALIZING",
+			state: { admission: { status: "UNRESOLVED" } },
+			createdAt: "2026-11-02T12:00:00Z",
+		},
+	]);
+	renderList({ organizationId: "example-org" });
+	expect(await screen.findByText("Admission unresolved")).toBeInTheDocument();
+	expect(screen.queryByText("Pending")).not.toBeInTheDocument();
+});
+it("shows the completed result even when an older admission receipt was unresolved", async () => {
+	mocks.tasksList.mockResolvedValue([
+		{
+			id: "example-task",
+			agentId: "example-agent",
+			status: "COMPLETED",
+			stage: "DONE",
+			state: { admission: { status: "UNRESOLVED" } },
+			createdAt: "2026-11-02T12:00:00Z",
+		},
+	]);
+	renderList({ organizationId: "example-org" });
+	expect(
+		await screen.findByRole("row", { name: /example-agent.*Succeeded/ }),
+	).toBeInTheDocument();
+	expect(screen.queryByText("Admission unresolved")).not.toBeInTheDocument();
+});

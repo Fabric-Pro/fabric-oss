@@ -21,7 +21,8 @@ const mocks = vi.hoisted(() => ({
 	streamText: vi.fn(),
 	getAiModelWithSelection: vi.fn(),
 	getAiModel: vi.fn(),
-	generateObject: vi.fn(),
+	/** The repair call: `generateText` with an `output` spec. */
+	structuredOutput: vi.fn(),
 	generateText: vi.fn(),
 	repairPurpose: undefined as string | undefined,
 	rows: vi.fn(),
@@ -29,11 +30,14 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({ logAiUsageAsync: mocks.rows }));
 vi.mock("@repo/ai", () => ({
-	generateObject: (...args: unknown[]) => {
+	Output: { object: (spec: unknown) => spec },
+	generateText: (args: { output?: unknown }) => {
+		if (!args.output) {
+			return mocks.generateText(args);
+		}
 		mocks.repairPurpose = currentAiCallPurpose();
-		return mocks.generateObject(...args);
+		return mocks.structuredOutput(args);
 	},
-	generateText: (...args: unknown[]) => mocks.generateText(...args),
 	isStepCount: vi.fn(),
 	NoSuchToolError: class NoSuchToolError extends Error {
 		static isInstance() {
@@ -180,7 +184,7 @@ it("labels tool-handler generation and repair on its reused model", async () => 
 	expect(mocks.getAiModelWithSelection.mock.calls[0][5]).not.toHaveProperty(
 		"callPurpose",
 	);
-	mocks.generateObject.mockResolvedValue({ object: { query: "example" } });
+	mocks.structuredOutput.mockResolvedValue({ output: { query: "example" } });
 	const repair = mocks.streamText.mock.calls[0][0].repairToolCall;
 	const result = await repair({
 		toolCall: { toolName: "example_search", input: "{}" },
@@ -239,9 +243,9 @@ it("request scopes distinguish tool-handler generation from repair on one model"
 	const options = mocks.streamText.mock.calls[0][0];
 	await runWithAiCallPurpose("compaction", async () => {
 		await options.model.doGenerate({ prompt: [] });
-		mocks.generateObject.mockImplementationOnce(async ({ model }) => {
+		mocks.structuredOutput.mockImplementationOnce(async ({ model }) => {
 			await model.doGenerate({ prompt: [] });
-			return { object: { query: "example" } };
+			return { output: { query: "example" } };
 		});
 		await options.repairToolCall({
 			toolCall: { toolName: "example_search", input: "{}" },

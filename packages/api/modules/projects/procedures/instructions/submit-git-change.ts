@@ -7,12 +7,18 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { MAX_CHANGES } from "./change-set";
 import { requireHostingOrganizationId } from "./hosting-organization";
 import { noteWithCommitMessage } from "./proposal-message-note";
 import { commitShaSchema } from "./repository/commit-sha";
 import { type NativeChange, submitGitIntentChange } from "./submit-git-intent";
 
-/** Browser file actions retain the 5 MB file limit without deriving or uploading a full tree. */
+/**
+ * Browser file actions retain the 5 MB limit, summed over the whole action,
+ * without deriving or uploading a full tree. An action is one file, a rename
+ * (two), or the rule edits "Apply suggestions" submits together (up to the
+ * change-set cap, the same one `commitChange` takes).
+ */
 export const submitGitInstructionChangeProcedure = tenantProtectedProcedure
 	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
@@ -59,7 +65,7 @@ export const submitGitInstructionChangeProcedure = tenantProtectedProcedure
 					]),
 				)
 				.min(1)
-				.max(2),
+				.max(MAX_CHANGES),
 		}),
 	)
 	.handler(async ({ input, context }) => {

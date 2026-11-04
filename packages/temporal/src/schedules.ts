@@ -12,6 +12,7 @@
 import { INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID } from "@repo/instructions/workflow-ids";
 import { ScheduleAlreadyRunning, ScheduleClient } from "@temporalio/client";
 import { createConnection, getTemporalConfig } from "./client";
+import { retireAgentExecutionReceiptRecoverySchedule } from "./schedules/agent-execution-receipt-recovery";
 import { ensureAiUsageSchedules } from "./scripts/ensure-ai-usage-schedules";
 import { ensureContextSummarizationSchedules } from "./scripts/ensure-context-summarization-schedules";
 import { ensureMonitoringSchedules } from "./scripts/ensure-monitoring-schedules";
@@ -508,6 +509,8 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerMeetingArchiveRetentionSchedule(scheduleClient);
 		await registerBackgroundJobWatchdogSchedule(scheduleClient);
 		await registerProjectInstructionReaperSchedule(scheduleClient);
+		await registerContextQualityRecoverySchedule(scheduleClient);
+		await retireAgentExecutionReceiptRecoverySchedule(scheduleClient);
 		await registerProjectInstructionRepositoryPollSchedule(scheduleClient);
 		await registerCodeIndexRefreshPollSchedule(scheduleClient);
 		await registerInstructionProposalPullRequestSweepSchedule(
@@ -2732,5 +2735,30 @@ async function registerBackgroundJobWatchdogSchedule(
 		} else {
 			throw error;
 		}
+	}
+}
+
+/** Saved evaluation rows are the durable start-outbox and cleanup receipts. */
+export async function registerContextQualityRecoverySchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: "context-quality-recovery",
+			spec: { intervals: [{ every: "1 minute" }] },
+			action: {
+				type: "startWorkflow",
+				workflowType: "contextQualityRecoveryWorkflow",
+				taskQueue: TASK_QUEUE,
+				args: [],
+			},
+			policies: { overlap: "SKIP", catchupWindow: "1 minute" },
+			state: {
+				paused: false,
+				note: "Recover existing context evaluation admissions and remove expired snapshots; preserve unresolved cleanup receipts.",
+			},
+		});
+	} catch (error) {
+		if (!(error instanceof ScheduleAlreadyRunning)) throw error;
 	}
 }

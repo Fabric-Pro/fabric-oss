@@ -20,7 +20,7 @@ import type { FabricClient, ProjectCodeRepository } from "@fabricorg/sdk";
 import { cloneInto, findWorkTree } from "../instructions/git.js";
 import { cloneableUrl } from "../instructions/git-literals.js";
 
-const REPOS_FOLDER = "repos";
+export const REPOS_FOLDER = "repos";
 const WORKSPACE_FILE = ".fabric-workspace.json";
 const CLONE_TIMEOUT_MS = 10 * 60_000;
 

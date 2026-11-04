@@ -1,12 +1,28 @@
 /**
- * HTTP outcomes to sanitized adapter errors (Fizzy #2563 spec §10, §11). Only
- * the status and a few headers are read here; a body never is.
+ * HTTP outcomes to sanitized adapter errors (Fizzy #2563 spec §10, §11).
+ *
+ * The classification (code, cause, retry hint) comes from the status and the
+ * rate-limit headers alone; no body ever changes it. A refused `open` is the
+ * one exception to "a body is never read", for diagnosis only: without the
+ * provider's reason a refusal ("the pull request could not be opened") cannot
+ * be acted on. What is read then, and kept on the error:
+ *
+ * - the provider's own error message from the JSON body: GitHub `message`
+ *   plus each `errors[]` entry's `message`, or its `field` and `code`; GitLab
+ *   `message` (a string, a list, or field to messages); Azure DevOps `message`;
+ * - GitHub's `X-Accepted-GitHub-Permissions` header on a 403 or 404, which
+ *   names permissions, not credentials.
+ *
+ * Both are scrubbed of the token and credential-shaped text, collapsed to one
+ * line and bounded. The raw body, any other header and anything request-side
+ * are never kept.
  */
 import type { InstructionPullRequestFailureCode } from "@repo/database";
+import { scrubAndTrim } from "@repo/utils/scrub-secrets";
 import { type Cause, InstructionPullRequestError } from "./types";
 
 /** Which adapter call failed: the same cause means different things to each. */
-export type AdapterOperation = "lookup" | "open" | "close";
+export type AdapterOperation = "lookup" | "open" | "close" | "merge";
 
 /** Lookups and closes: 20 s. `open`: 60 s (spec §10, Global Constraints). */
 export const LOOKUP_TIMEOUT_MS = 20_000;
@@ -54,12 +70,32 @@ const CODES: Record<
 		transient: { code: "PROVIDER_TEMPORARY", retryable: true },
 		unknown: { code: "PROVIDER_TEMPORARY", retryable: true },
 	},
+	// Internal only: `merge` turns every error into a REFUSED result by cause.
+	merge: {
+		auth: { code: "AUTHENTICATION_FAILED", retryable: false },
+		permission: { code: "PROVIDER_TEMPORARY", retryable: false },
+		rate_limit: { code: "PROVIDER_RATE_LIMITED", retryable: true },
+		not_found: { code: "PROVIDER_TEMPORARY", retryable: false },
+		conflict: { code: "PROVIDER_TEMPORARY", retryable: false },
+		transient: { code: "PROVIDER_TEMPORARY", retryable: true },
+		unknown: { code: "PROVIDER_TEMPORARY", retryable: false },
+	},
+};
+
+/** What a refused `open` said, already sanitized (see the module comment). */
+export type RefusalDiagnostic = {
+	providerStatus: number;
+	providerMessage?: string;
+	requiredPermissions?: string;
 };
 
 export function adapterError(
 	operation: AdapterOperation,
 	cause: Cause,
-	extra: { retryAfterSeconds?: number; duplicate?: true } = {},
+	extra: {
+		retryAfterSeconds?: number;
+		duplicate?: true;
+	} & Partial<RefusalDiagnostic> = {},
 ): InstructionPullRequestError {
 	const { code, retryable } = CODES[operation][cause];
 	return new InstructionPullRequestError({
@@ -127,12 +163,12 @@ export function causeOfStatus(status: number, headers: Headers): Cause {
 	return "unknown";
 }
 
-/** A non-2xx response as an adapter error, without reading its body. */
+/** A non-2xx response as an adapter error; `extra` never changes the classification. */
 export function statusError(
 	operation: AdapterOperation,
 	status: number,
 	headers: Headers,
-	extra: { duplicate?: true } = {},
+	extra: { duplicate?: true } & Partial<RefusalDiagnostic> = {},
 ): InstructionPullRequestError {
 	const cause = causeOfStatus(status, headers);
 	return adapterError(operation, cause, {
@@ -154,3 +190,106 @@ export type Continuation =
 	| { kind: "end" }
 	| { kind: "next"; next: string }
 	| { kind: "inconclusive" };
+
+/** Longest provider message kept on an error. */
+const MAX_PROVIDER_MESSAGE_CHARS = 300;
+/** Longest accepted-permissions header kept on an error. */
+const MAX_PERMISSIONS_CHARS = 120;
+
+/** Reads a provider's error message out of a parsed JSON body. */
+export type RefusalMessageReader = (body: unknown) => string | undefined;
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+	typeof v === "object" && v !== null && !Array.isArray(v);
+
+const text = (v: unknown): string | undefined =>
+	typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
+
+/** GitHub: `message`, then each `errors[]` entry's `message` or `field: code`. */
+export const githubRefusalMessage: RefusalMessageReader = (body) => {
+	if (!isObject(body)) {
+		return undefined;
+	}
+	const details = (Array.isArray(body.errors) ? body.errors : [])
+		.map((entry) => {
+			if (!isObject(entry)) {
+				return text(entry);
+			}
+			const message = text(entry.message);
+			if (message) {
+				return message;
+			}
+			const field = text(entry.field);
+			const code = text(entry.code);
+			return field && code ? `${field}: ${code}` : (code ?? field);
+		})
+		.filter((d): d is string => d !== undefined);
+	const message = text(body.message);
+	if (details.length === 0) {
+		return message;
+	}
+	return message ? `${message} — ${details.join("; ")}` : details.join("; ");
+};
+
+/** GitLab: `message`, which is a string, a list of strings, or field to messages. */
+export const gitlabRefusalMessage: RefusalMessageReader = (body) => {
+	if (!isObject(body)) {
+		return undefined;
+	}
+	const flat = (v: unknown): string[] =>
+		Array.isArray(v)
+			? v.map(text).filter((s): s is string => s !== undefined)
+			: [text(v)].filter((s): s is string => s !== undefined);
+	const { message } = body;
+	if (isObject(message)) {
+		const parts = Object.entries(message).flatMap(([field, value]) =>
+			flat(value).map((m) => `${field}: ${m}`),
+		);
+		return parts.length > 0 ? parts.join("; ") : undefined;
+	}
+	const parts = flat(message);
+	return parts.length > 0 ? parts.join("; ") : undefined;
+};
+
+/** Azure DevOps: `message`. */
+export const azureDevOpsRefusalMessage: RefusalMessageReader = (body) =>
+	isObject(body) ? text(body.message) : undefined;
+
+/**
+ * The sanitized diagnostic of a refused `open`, from its status, headers and
+ * body text. `secrets` are the values the request carried (the token).
+ */
+export function refusalDiagnostic(input: {
+	status: number;
+	headers: Headers;
+	text: string;
+	read: RefusalMessageReader;
+	secrets: readonly string[];
+}): RefusalDiagnostic {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(input.text);
+	} catch {
+		parsed = undefined;
+	}
+	const raw = input.read(parsed);
+	const providerMessage =
+		raw === undefined
+			? undefined
+			: scrubAndTrim(raw, input.secrets, MAX_PROVIDER_MESSAGE_CHARS) ||
+				undefined;
+	const header =
+		input.status === 403 || input.status === 404
+			? input.headers.get("x-accepted-github-permissions")
+			: null;
+	const requiredPermissions =
+		header === null
+			? undefined
+			: scrubAndTrim(header, input.secrets, MAX_PERMISSIONS_CHARS) ||
+				undefined;
+	return {
+		providerStatus: input.status,
+		...(providerMessage ? { providerMessage } : {}),
+		...(requiredPermissions ? { requiredPermissions } : {}),
+	};
+}

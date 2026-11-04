@@ -431,6 +431,57 @@ export interface FabricAgentExecution {
 	warning?: string;
 }
 
+/** Durable receipt for a saved agent instance invocation; completed replays may include output. */
+export interface FabricAgentInstanceInvocation {
+	executionId: string;
+	deploymentId: string;
+	workflowId: string;
+	runId: string | null;
+	status: string;
+	admissionStatus: "CONFIRMED" | "UNRESOLVED";
+	idempotent: boolean;
+	output?: unknown;
+}
+
+export interface FabricAgentInstanceExecution
+	extends Omit<FabricAgentInstanceInvocation, "idempotent"> {
+	/** Original admitted project; absent/null for legacy runs with no retained binding. */
+	projectId?: string | null;
+	/** Temporal is authoritative when available; database is an archival projection. */
+	executionStateSource?: "temporal" | "database";
+	nativeStateAvailable?: boolean;
+	nativeReadStatus?:
+		| "AVAILABLE"
+		| "UNAVAILABLE"
+		| "NOT_FOUND"
+		| "IDENTITY_UNVERIFIED"
+		| "RESULT_UNAVAILABLE";
+	/** Last archived status; a nonterminal projection alone does not prove liveness. */
+	lastRecordedStatus?: string;
+	progress?: unknown;
+	/** Complete verified native result, including goal-oriented response/verification. */
+	result?: unknown;
+	priority: number;
+	input: unknown;
+	error: string | null;
+	queuedAt: string;
+	startedAt: string | null;
+	completedAt: string | null;
+	durationMs: number | null;
+	tokenUsage: {
+		inputTokens: number | null;
+		outputTokens: number | null;
+		totalCost: number | null;
+	};
+	steps: unknown;
+	artifacts?: Array<{
+		id: string;
+		name: string;
+		mimeType: string;
+		url: string;
+	}>;
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------

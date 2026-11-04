@@ -109,6 +109,7 @@
 				"content-collections.ts",
 				"modules/i18n/request.ts",
 				"playwright.qa-2104.config.ts",
+				"playwright.report-live.config.ts",
 				"tests/*.setup.ts"
 			],
 			"ignoreDependencies": [
@@ -117,6 +118,9 @@
 				"content-collections",
 				"@fabricorg/cli"
 			]
+		},
+		"packages/agent-runtime": {
+			"ignoreDependencies": ["vitest"]
 		},
 		"packages/api": {
 			"entry": ["scripts/*.ts"]
@@ -145,12 +149,7 @@
 			"entry": ["__tests__/fixtures/coding-bridge-server.fixture.mts"]
 		},
 		"party": {
-			"entry": [
-				"document.ts",
-				"health.ts",
-				"orchestrator.ts",
-				"taskAgent.ts"
-			],
+			"entry": ["document.ts", "health.ts", "orchestrator.ts"],
 			"ignoreDependencies": ["yjs"]
 		},
 		"services/sandbox-worker": {

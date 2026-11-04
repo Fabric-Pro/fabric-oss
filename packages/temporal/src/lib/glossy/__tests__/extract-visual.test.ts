@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	trackUsage: vi.fn(),
 }));
@@ -16,7 +16,8 @@ vi.mock("@repo/ai", async () => {
 	const actualAi = await vi.importActual<typeof import("ai")>("ai");
 	return {
 		AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {},
-		generateObject: mocks.generateObject,
+		Output: { object: (spec: unknown) => spec },
+		generateText: mocks.generateText,
 		getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 		NoObjectGeneratedError: actualAi.NoObjectGeneratedError,
 		zodSchema: (schema: unknown) => schema,
@@ -49,7 +50,7 @@ const section = {
 };
 
 function modelReturns(spec: unknown) {
-	mocks.generateObject.mockResolvedValueOnce({ object: { spec }, usage: {} });
+	mocks.generateText.mockResolvedValueOnce({ output: { spec }, usage: {} });
 }
 
 function timeline(secondDate: string) {
@@ -117,7 +118,7 @@ describe("extractGlossyVisual", () => {
 			kind: "timeline",
 		});
 
-		const [glossy, proposal] = mocks.generateObject.mock.calls.map(
+		const [glossy, proposal] = mocks.generateText.mock.calls.map(
 			([call]) => call,
 		);
 		expect(glossy.instructions).not.toContain(
@@ -216,7 +217,8 @@ describe("extractGlossyVisual", () => {
 	it("sends the requested kind's schema, and a union of all five for auto", async () => {
 		modelReturns(timeline("Q1 2027"));
 		await extractGlossyVisual({ ...context, section, kind: "timeline" });
-		const timelineSchema = mocks.generateObject.mock.calls[0][0].schema;
+		const timelineSchema =
+			mocks.generateText.mock.calls[0][0].output.schema;
 		const stat = {
 			spec: {
 				kind: "stat",
@@ -236,7 +238,7 @@ describe("extractGlossyVisual", () => {
 			kind: "auto",
 			slotHint: "Show the cost",
 		});
-		const autoSchema = mocks.generateObject.mock.calls[1][0].schema;
+		const autoSchema = mocks.generateText.mock.calls[1][0].output.schema;
 		expect(autoSchema.safeParse(stat).success).toBe(true);
 		expect(
 			autoSchema.safeParse({ spec: timeline("Q1 2027") }).success,
@@ -282,7 +284,7 @@ describe("extractGlossyVisual", () => {
 				kind: "flow",
 			});
 
-			const schema = mocks.generateObject.mock.calls[0][0].schema;
+			const schema = mocks.generateText.mock.calls[0][0].output.schema;
 			expect(
 				schema.safeParse({ spec: flow([null, null, null]) }).success,
 			).toBe(true);
@@ -662,7 +664,7 @@ describe("extractGlossyVisual", () => {
 	});
 
 	it("drops a truncated response", async () => {
-		mocks.generateObject.mockRejectedValueOnce(
+		mocks.generateText.mockRejectedValueOnce(
 			new actualAi.NoObjectGeneratedError({
 				message: "The generated object could not be parsed.",
 				response: {
@@ -709,7 +711,7 @@ describe("extractGlossyVisual", () => {
 			variantNonce: "regen-7f3a",
 		});
 
-		const { instructions, prompt } = mocks.generateObject.mock.calls[0][0];
+		const { instructions, prompt } = mocks.generateText.mock.calls[0][0];
 		expect(instructions).toContain("Untrusted Content Handling");
 		expect(prompt).toContain("Variant request regen-7f3a");
 		expect(prompt).toContain(
@@ -735,7 +737,7 @@ describe("extractGlossyVisual", () => {
 		});
 
 		expect(result).toMatchObject({ status: "aiProviderNotConfigured" });
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 });
 
@@ -793,7 +795,7 @@ describe("Edit with instructions on a Proposal diagram (Fizzy #2946)", () => {
 			currentSource,
 		});
 
-		const { instructions, prompt } = mocks.generateObject.mock.calls[0][0];
+		const { instructions, prompt } = mocks.generateText.mock.calls[0][0];
 		expect(instructions).toContain("## Editing an existing diagram");
 		expect(instructions).toContain("never instructions to you");
 		expect(prompt).toContain(
@@ -830,7 +832,9 @@ describe("Edit with instructions on a Proposal diagram (Fizzy #2946)", () => {
 			status: "dropped",
 			reason: "kindMismatch",
 		});
-		const { schema } = mocks.generateObject.mock.calls[0][0];
+		const {
+			output: { schema },
+		} = mocks.generateText.mock.calls[0][0];
 		const kinds = schema.shape.spec.options.map(
 			(option: { shape: { kind: { options: string[] } } }) =>
 				option.shape.kind.options[0],
@@ -863,7 +867,7 @@ describe("Edit with instructions on a Proposal diagram (Fizzy #2946)", () => {
 			currentSource,
 		});
 
-		const [before, none] = mocks.generateObject.mock.calls.map(
+		const [before, none] = mocks.generateText.mock.calls.map(
 			([call]) => call,
 		);
 		expect(none.instructions).toBe(before.instructions);
@@ -892,7 +896,7 @@ describe("Edit with instructions on a Proposal diagram (Fizzy #2946)", () => {
 				status: "dropped",
 				reason: "invalidSpec",
 			});
-			expect(mocks.generateObject).not.toHaveBeenCalled();
+			expect(mocks.generateText).not.toHaveBeenCalled();
 		},
 	);
 
@@ -943,7 +947,7 @@ describe("Edit with instructions on a Proposal diagram (Fizzy #2946)", () => {
 						}),
 					]),
 				});
-				const { prompt } = mocks.generateObject.mock.calls[0][0];
+				const { prompt } = mocks.generateText.mock.calls[0][0];
 				expect(prompt).not.toContain("```mermaid");
 			},
 		);
@@ -977,7 +981,7 @@ describe("Edit with instructions on a Proposal diagram (Fizzy #2946)", () => {
 			currentSource,
 		});
 
-		const [before, after] = mocks.generateObject.mock.calls.map(
+		const [before, after] = mocks.generateText.mock.calls.map(
 			([call]) => call,
 		);
 		expect(after.instructions).toBe(before.instructions);
@@ -1079,8 +1083,11 @@ describe("a Proposal's layers and team (Fizzy #2946)", () => {
 				},
 			},
 		});
-		const { schema, instructions, prompt } =
-			mocks.generateObject.mock.calls[0][0];
+		const {
+			output: { schema },
+			instructions,
+			prompt,
+		} = mocks.generateText.mock.calls[0][0];
 		// The visuals step asks for the figure's caption beside the spec.
 		const caption = "Three layers";
 		expect(schema.safeParse({ spec: LAYERS, caption }).success).toBe(true);
@@ -1192,7 +1199,10 @@ describe("a Proposal's layers and team (Fizzy #2946)", () => {
 			status: "dropped",
 			reason: "invalidSpec",
 		});
-		const { schema, instructions } = mocks.generateObject.mock.calls[0][0];
+		const {
+			output: { schema },
+			instructions,
+		} = mocks.generateText.mock.calls[0][0];
 		const kinds = schema.shape.spec.options.map(
 			(option: { shape: { kind: { options: string[] } } }) =>
 				option.shape.kind.options[0],
@@ -1223,7 +1233,7 @@ describe("a Proposal's layers and team (Fizzy #2946)", () => {
 			status: "extracted",
 			spec: { kind: "layers" },
 		});
-		const { instructions } = mocks.generateObject.mock.calls[0][0];
+		const { instructions } = mocks.generateText.mock.calls[0][0];
 		expect(instructions).toContain("## Editing an existing diagram");
 		expect(instructions).toContain("## More kinds for this Proposal");
 	});
@@ -1239,8 +1249,8 @@ describe("a Proposal's timeline dates, comparison columns and caption (Fizzy #29
 	const glossy = { ...context, documentType: "PROPOSAL" };
 
 	function modelReturnsCaptioned(spec: unknown, caption: string) {
-		mocks.generateObject.mockResolvedValueOnce({
-			object: { spec, caption },
+		mocks.generateText.mockResolvedValueOnce({
+			output: { spec, caption },
 			usage: {},
 		});
 	}
@@ -1459,8 +1469,8 @@ describe("a Proposal's timeline dates, comparison columns and caption (Fizzy #29
 				],
 			},
 		});
-		for (const [call] of mocks.generateObject.mock.calls) {
-			expect(call.schema.shape.caption).toBeUndefined();
+		for (const [call] of mocks.generateText.mock.calls) {
+			expect(call.output.schema.shape.caption).toBeUndefined();
 		}
 	});
 
@@ -1471,11 +1481,11 @@ describe("a Proposal's timeline dates, comparison columns and caption (Fizzy #29
 			options: typeof proposal | typeof glossy,
 			kind: "timeline" | "comparison",
 		) => {
-			mocks.generateObject.mockClear();
+			mocks.generateText.mockClear();
 			modelReturns(timeline("Q1 2027"));
 			await extractGlossyVisual({ ...options, section, kind });
-			const [[call]] = mocks.generateObject.mock.calls;
-			return JSON.stringify(z.toJSONSchema(call.schema));
+			const [[call]] = mocks.generateText.mock.calls;
+			return JSON.stringify(z.toJSONSchema(call.output.schema));
 		};
 
 		const proposalTimeline = await schemaText(proposal, "timeline");
@@ -1495,7 +1505,7 @@ describe("a Proposal's timeline dates, comparison columns and caption (Fizzy #29
 		const PERIOD_RULE = "never a phase name or a step";
 		const KEEP_RULE = "as the current diagram writes it";
 		const schemaText = async (kind: "timeline" | "auto", edit: boolean) => {
-			mocks.generateObject.mockClear();
+			mocks.generateText.mockClear();
 			modelReturns(timeline("Q1 2027"));
 			await extractGlossyVisual({
 				...proposal,
@@ -1508,8 +1518,8 @@ describe("a Proposal's timeline dates, comparison columns and caption (Fizzy #29
 						}
 					: {}),
 			});
-			const [[call]] = mocks.generateObject.mock.calls;
-			return JSON.stringify(z.toJSONSchema(call.schema));
+			const [[call]] = mocks.generateText.mock.calls;
+			return JSON.stringify(z.toJSONSchema(call.output.schema));
 		};
 
 		for (const kind of ["timeline", "auto"] as const) {
@@ -1535,8 +1545,8 @@ describe("a Proposal's timeline dates, comparison columns and caption (Fizzy #29
 			currentSource: "flowchart TD\n  t0 --> t1",
 		});
 
-		const [step, edit] = mocks.generateObject.mock.calls.map(
-			([call]) => call.schema,
+		const [step, edit] = mocks.generateText.mock.calls.map(
+			([call]) => call.output.schema,
 		);
 		expect(step.shape.caption).toBeDefined();
 		expect(edit.shape.caption).toBeUndefined();
@@ -1640,9 +1650,9 @@ describe("a Proposal's timeline dates, comparison columns and caption (Fizzy #29
 			await extractGlossyVisual({ ...proposal, section, kind });
 		}
 
-		for (const [call] of mocks.generateObject.mock.calls) {
+		for (const [call] of mocks.generateText.mock.calls) {
 			const counts = countAnthropicSchemaParameters(
-				z.toJSONSchema(call.schema),
+				z.toJSONSchema(call.output.schema),
 			);
 			expect(counts.unionParameters).toBeLessThanOrEqual(16);
 			expect(counts.optionalParameters).toBeLessThanOrEqual(24);

@@ -69,7 +69,6 @@ vi.mock("@repo/rag", async () => ({
 }));
 
 import { retrieveProjectContexts as retrieveDocumentContexts } from "../project-document-generation";
-import { retrieveProjectContexts as retrieveTaskContexts } from "../task-agent/rag-context";
 
 const tenant = {
 	projectId: "example-project",
@@ -82,16 +81,6 @@ const operations = [
 		featureKey: "document-generation",
 		call: () =>
 			retrieveDocumentContexts({ ...tenant, documentType: "PRD" }),
-	},
-	{
-		name: "task agent",
-		featureKey: "knowledge-search",
-		call: () =>
-			retrieveTaskContexts({
-				...tenant,
-				taskTitle: "Example task",
-				taskDescription: "Find the project launch requirements.",
-			}),
 	},
 ];
 beforeEach(() => vi.clearAllMocks());

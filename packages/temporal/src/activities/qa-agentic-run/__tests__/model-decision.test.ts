@@ -21,12 +21,15 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-const generateObject = vi.fn();
+/** The structured call: `generateText` with an `output` spec. */
+const structuredOutput = vi.fn();
+/** The plain-text recovery call. */
 const generateText = vi.fn();
 
 vi.mock("@repo/ai", () => ({
-	generateObject: (...args: unknown[]) => generateObject(...args),
-	generateText: (...args: unknown[]) => generateText(...args),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (args: { output?: unknown }) =>
+		args.output ? structuredOutput(args) : generateText(args),
 	NoObjectGeneratedError: {
 		isInstance: (err: unknown) => NoObjectGeneratedError.isInstance(err),
 	},
@@ -85,50 +88,51 @@ function call(overrides: Partial<Parameters<typeof decideWithModel>[0]> = {}) {
 }
 
 beforeEach(() => {
-	generateObject.mockReset();
+	structuredOutput.mockReset();
 	generateText.mockReset();
 });
 
 describe("decideWithModel", () => {
 	it("sends an explicit output budget even when the catalog knows no cap", async () => {
-		generateObject.mockResolvedValue({ object: { kind: "click" } });
+		structuredOutput.mockResolvedValue({ output: { kind: "click" } });
 
 		await call();
 
 		// The regression: with no budget the SDK sends no `max_tokens` at all, and
 		// a reasoning deployment answers with an empty body at its own default.
-		expect(generateObject).toHaveBeenCalledWith(
+		expect(structuredOutput).toHaveBeenCalledWith(
 			expect.objectContaining({
+				output: { schema: ActSchema },
 				maxOutputTokens: DECISION_OUTPUT_TOKEN_CEILING,
 			}),
 		);
 	});
 
 	it("clamps the budget down to the model's catalog cap rather than over-asking", async () => {
-		generateObject.mockResolvedValue({ object: {} });
+		structuredOutput.mockResolvedValue({ output: {} });
 
 		await call({
 			metadata: { provider: "AZURE_AI_FOUNDRY", maxOutputTokens: 4_096 },
 		});
 
-		expect(generateObject).toHaveBeenCalledWith(
+		expect(structuredOutput).toHaveBeenCalledWith(
 			expect.objectContaining({ maxOutputTokens: 4_096 }),
 		);
 	});
 
 	it("leaves structured-output policy to the model middleware", async () => {
-		generateObject.mockResolvedValue({ object: {} });
+		structuredOutput.mockResolvedValue({ output: {} });
 
 		await call();
 
 		expect(
-			generateObject.mock.calls[0]?.[0]?.providerOptions,
+			structuredOutput.mock.calls[0]?.[0]?.providerOptions,
 		).toBeUndefined();
 	});
 
 	it("returns the object without a second call when the schema is honoured", async () => {
-		generateObject.mockResolvedValue({
-			object: { kind: "click", name: "Sign in" },
+		structuredOutput.mockResolvedValue({
+			output: { kind: "click", name: "Sign in" },
 		});
 
 		const decision = await call();
@@ -142,7 +146,7 @@ describe("decideWithModel", () => {
 	});
 
 	it("recovers a decision from a prose-wrapped reply when the deployment ignores the schema", async () => {
-		generateObject.mockRejectedValue(
+		structuredOutput.mockRejectedValue(
 			parseFailure("I would click Sign in.", "stop"),
 		);
 		generateText.mockResolvedValue({
@@ -163,7 +167,7 @@ describe("decideWithModel", () => {
 
 	it("rethrows the ORIGINAL failure when the fallback also yields no object", async () => {
 		const original = parseFailure("", "length");
-		generateObject.mockRejectedValue(original);
+		structuredOutput.mockRejectedValue(original);
 		generateText.mockResolvedValue({ text: "I am afraid I cannot help." });
 
 		// The original carries finishReason/usage/raw reply; the fallback's own
@@ -176,7 +180,7 @@ describe("decideWithModel", () => {
 		// names the cause in the step observation. The fallback's own error (a
 		// rate limit, say) would replace that diagnosis with a symptom.
 		const original = parseFailure("", "length");
-		generateObject.mockRejectedValue(original);
+		structuredOutput.mockRejectedValue(original);
 		generateText.mockRejectedValue(new Error("429 Too Many Requests"));
 
 		await expect(call()).rejects.toBe(original);
@@ -184,7 +188,7 @@ describe("decideWithModel", () => {
 
 	it("does not retry a transport or auth failure, which no rewording fixes", async () => {
 		const boom = new TypeError("fetch failed");
-		generateObject.mockRejectedValue(boom);
+		structuredOutput.mockRejectedValue(boom);
 
 		await expect(call()).rejects.toBe(boom);
 		expect(generateText).not.toHaveBeenCalled();

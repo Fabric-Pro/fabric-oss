@@ -6,7 +6,7 @@ import {
 	LIBRARY_CHAT_EVENT,
 	type LibraryChatProps,
 	libraryChatPropsSchema,
-} from "@saas/libraries/lib/library-chat-runtime-protocol";
+} from "@saas/agents/lib/workspace-document-chat-protocol";
 import {
 	checkWorkspaceChatAccess,
 	EMPTY_WORKSPACE_CHAT_ANSWER,

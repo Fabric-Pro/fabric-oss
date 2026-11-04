@@ -11,7 +11,11 @@ import type {
 	ExecutedStep,
 	TaskStep,
 } from "../../workflows/goal-oriented-agent/types";
-import { executeAgentTurn } from "../agent-execution-core";
+import {
+	type ExecuteAgentTurnInput,
+	type ExecuteAgentTurnResult,
+	executeAgentTurn,
+} from "../agent-execution-core";
 
 export interface ExecuteGoalStepInput {
 	step: TaskStep;
@@ -27,6 +31,10 @@ export interface ExecuteGoalStepInput {
 	/** Execution ID for real-time event publishing via Redis */
 	executionId?: string;
 	/** Optional image references for multimodal input */
+	projectId?: string;
+	agentInstanceId?: string;
+	builtInToolNames?: string[];
+	integrationConfigurations?: ExecuteAgentTurnInput["integrationConfigurations"];
 	imageRefs?: Array<{
 		storagePath: string;
 		mimeType: string;
@@ -58,6 +66,14 @@ export interface ExecuteGoalStepOutput {
 async function executeGoalStepInJob(
 	input: ExecuteGoalStepInput,
 ): Promise<ExecuteGoalStepOutput> {
+	const result = await executeAgentTurn(await prepareGoalStep(input));
+	return finishGoalStep({ step: input.step, result });
+}
+
+/** Build the same step instructions/context without executing a model or tool. */
+export async function prepareGoalStep(
+	input: ExecuteGoalStepInput,
+): Promise<ExecuteAgentTurnInput> {
 	const {
 		step,
 		systemPrompt,
@@ -97,8 +113,7 @@ ${step.inputs ? `## Step Inputs\n${JSON.stringify(step.inputs, null, 2)}` : ""}
 Please complete this task. Use the available tools if needed.
 If this task requires specific data from previous steps, it should be available in the variables above.`;
 
-	// Execute using the shared agent executor
-	const result = await executeAgentTurn({
+	return {
 		systemPrompt: `${systemPrompt}\n\nYou are executing a specific step in a goal-oriented plan.`,
 		userMessage: stepPrompt,
 		knowledgeContext,
@@ -109,7 +124,19 @@ If this task requires specific data from previous steps, it should be available 
 		maxIterations: 5, // Limit iterations per step
 		executionId,
 		imageRefs,
-	});
+		projectId: input.projectId,
+		agentInstanceId: input.agentInstanceId,
+		builtInToolNames: input.builtInToolNames,
+		integrationConfigurations: input.integrationConfigurations,
+	};
+}
+
+/** Retain goal output/variable extraction without repeating any model/tool effect. */
+export async function finishGoalStep(params: {
+	step: TaskStep;
+	result: ExecuteAgentTurnResult;
+}): Promise<ExecuteGoalStepOutput> {
+	const { step, result } = params;
 
 	if (!result.success) {
 		throw new Error(result.error || "Step execution failed");

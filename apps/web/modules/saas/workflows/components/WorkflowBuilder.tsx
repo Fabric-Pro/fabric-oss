@@ -73,8 +73,15 @@ import { VersionHistoryPanel } from "./VersionHistoryPanel";
 interface WorkflowBuilderProps {
 	initialNodes?: WorkflowNode[];
 	initialEdges?: WorkflowEdge[];
-	onSave?: (nodes: WorkflowNode[], edges: WorkflowEdge[]) => void;
-	onRun?: (nodes: WorkflowNode[], edges: WorkflowEdge[]) => void;
+	onSave?: (
+		nodes: WorkflowNode[],
+		edges: WorkflowEdge[],
+	) => void | Promise<void>;
+	onRun?: (
+		nodes: WorkflowNode[],
+		edges: WorkflowEdge[],
+	) => void | Promise<void>;
+	onDirtyChange?: (dirty: boolean) => void;
 	isLoading?: boolean;
 	workflowName?: string;
 	workflowId?: string;
@@ -134,6 +141,7 @@ function WorkflowBuilderInner({
 	initialEdges = NO_EDGES,
 	onSave,
 	onRun,
+	onDirtyChange,
 	isLoading = false,
 	workflowName = "Untitled Workflow",
 	workflowId = "",
@@ -192,12 +200,57 @@ function WorkflowBuilderInner({
 	const [nodes, setNodes, onNodesChange] = useNodesState(getStartingNodes());
 	const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(initialEdges);
 
-	// Update nodes when initialNodes change
+	const signature = JSON.stringify(serializeGraph({ nodes, edges }));
+	const [savedSignature, setSavedSignature] = useState(() =>
+		JSON.stringify(
+			serializeGraph({ nodes: getStartingNodes(), edges: initialEdges }),
+		),
+	);
+	const incomingSignature = JSON.stringify({
+		nodes: initialNodes,
+		edges: initialEdges,
+	});
+	const lastIncoming = useRef(incomingSignature);
+	const dirty = signature !== savedSignature;
+	const [isCommitting, setIsCommitting] = useState(false);
+	const commitInFlight = useRef(false);
 	useEffect(() => {
-		if (initialNodes.length > 0) {
-			setNodes(withReadableLayout<Node>(initialNodes, initialEdges));
-		}
-	}, [initialNodes, initialEdges, setNodes]);
+		onDirtyChange?.(dirty);
+	}, [dirty, onDirtyChange]);
+	useEffect(() => {
+		if (!dirty) return;
+		const onBeforeUnload = (event: BeforeUnloadEvent) => {
+			event.preventDefault();
+			event.returnValue = "";
+		};
+		window.addEventListener("beforeunload", onBeforeUnload);
+		return () => window.removeEventListener("beforeunload", onBeforeUnload);
+	}, [dirty]);
+	// Refetches must never replace edits. Identity changes remount the entire builder.
+	useEffect(() => {
+		if (incomingSignature === lastIncoming.current) return;
+		lastIncoming.current = incomingSignature;
+		if (dirty || isCommitting) return;
+		const nextNodes = getStartingNodes();
+		setNodes(nextNodes);
+		setEdges(initialEdges);
+		setSavedSignature(
+			JSON.stringify(
+				serializeGraph({ nodes: nextNodes, edges: initialEdges }),
+			),
+		);
+		setSelectedNodeId(null);
+		setHistory([]);
+		setHistoryIndex(-1);
+	}, [
+		incomingSignature,
+		dirty,
+		isCommitting,
+		initialNodes,
+		initialEdges,
+		setNodes,
+		setEdges,
+	]);
 
 	// Save to history when nodes or edges change (for undo/redo)
 	// Uses debouncing to avoid creating too many history entries during rapid changes
@@ -428,16 +481,36 @@ function WorkflowBuilderInner({
 		[setNodes, reactFlowInstance],
 	);
 
+	const commitGraph = useCallback(
+		async (action: "save" | "run" | "publish" | "versions") => {
+			if (commitInFlight.current || isLoading) return;
+			commitInFlight.current = true;
+			setIsCommitting(true);
+			const graph = serializeGraph({ nodes, edges });
+			try {
+				if (action === "run") {
+					await onRun?.(graph.nodes, graph.edges);
+				} else {
+					await onSave?.(graph.nodes, graph.edges);
+				}
+				setSavedSignature(JSON.stringify(graph));
+				if (action === "publish") setShowPublishDialog(true);
+				if (action === "versions") setShowVersionHistory(true);
+			} catch {
+				// The command owner reports the error. Keep edits dirty and do not open publishing.
+			} finally {
+				commitInFlight.current = false;
+				setIsCommitting(false);
+			}
+		},
+		[nodes, edges, onSave, onRun, isLoading],
+	);
 	const handleSave = useCallback(() => {
-		const graph = serializeGraph({ nodes, edges });
-		onSave?.(graph.nodes, graph.edges);
-	}, [nodes, edges, onSave]);
-
-	// Runs the graph on the canvas, so unsaved changes run too.
+		void commitGraph("save");
+	}, [commitGraph]);
 	const handleRun = useCallback(() => {
-		const graph = serializeGraph({ nodes, edges });
-		onRun?.(graph.nodes, graph.edges);
-	}, [nodes, edges, onRun]);
+		void commitGraph("run");
+	}, [commitGraph]);
 
 	// Handler for updating node data
 	const handleUpdateNode = useCallback(
@@ -737,20 +810,37 @@ function WorkflowBuilderInner({
 				onUndo={handleUndo}
 				onRedo={handleRedo}
 				onOpenVersions={
-					workflowId ? () => setShowVersionHistory(true) : undefined
+					workflowId
+						? () => {
+								void commitGraph("versions");
+							}
+						: undefined
 				}
 				onExport={handleExportJSON}
 				onSave={handleSave}
 				onPublish={
-					workflowId ? () => setShowPublishDialog(true) : undefined
+					workflowId
+						? () => {
+								void commitGraph("publish");
+							}
+						: undefined
 				}
 				onRun={handleRun}
 				hasSteps={hasRealNodes}
-				isBusy={isLoading}
+				isBusy={isLoading || isCommitting}
+				isDirty={dirty}
+				onBeforeLeave={() =>
+					!dirty ||
+					window.confirm("Discard unsaved workflow changes?")
+				}
 			/>
 
-			<div className="flex min-h-0 flex-1 overflow-hidden">
-				{runsPanel}
+			<div className="relative flex min-h-0 flex-1 overflow-hidden">
+				{runsPanel && (
+					<div className="absolute inset-y-0 left-0 z-30 flex xl:static xl:z-auto">
+						{runsPanel}
+					</div>
+				)}
 
 				<div className="workflow-canvas relative min-w-0 flex-1 overflow-hidden">
 					<div
@@ -828,6 +918,7 @@ function WorkflowBuilderInner({
 			{/* Publish Dialog */}
 			{workflowId && (
 				<PublishDialog
+					organizationId={organizationId}
 					open={showPublishDialog}
 					onOpenChange={setShowPublishDialog}
 					workflowId={workflowId}
@@ -841,6 +932,8 @@ function WorkflowBuilderInner({
 			{/* Version History Panel */}
 			{workflowId && (
 				<VersionHistoryPanel
+					organizationId={organizationId}
+					onRestored={onPublished}
 					open={showVersionHistory}
 					onOpenChange={setShowVersionHistory}
 					workflowId={workflowId}
@@ -856,7 +949,10 @@ function WorkflowBuilderInner({
 export function WorkflowBuilder(props: WorkflowBuilderProps) {
 	return (
 		<ReactFlowProvider>
-			<WorkflowBuilderInner {...props} />
+			<WorkflowBuilderInner
+				key={`${props.organizationId}:${props.workflowId}`}
+				{...props}
+			/>
 		</ReactFlowProvider>
 	);
 }

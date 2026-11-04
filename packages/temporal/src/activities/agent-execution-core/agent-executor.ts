@@ -113,7 +113,10 @@ interface McpToolInfo {
 function isExecutableToolDefinition(toolDef: unknown): toolDef is {
 	description?: string;
 	inputSchema: Parameters<typeof tool>[0]["inputSchema"];
-	execute: (args: Record<string, unknown>) => Promise<unknown>;
+	execute: (
+		args: Record<string, unknown>,
+		options?: unknown,
+	) => Promise<unknown>;
 } {
 	return !!(
 		toolDef &&
@@ -226,7 +229,10 @@ export async function executeAgentTurn(
 			tools[toolName] = tool({
 				description: toolDef.description || toolName,
 				inputSchema: toolDef.inputSchema,
-				execute: async (args: Record<string, unknown>) => {
+				execute: async (
+					args: Record<string, unknown>,
+					options?: unknown,
+				) => {
 					// Read-only mode: block external write tools
 					// before the authority flow; the agent relays the error.
 					const readOnlyBlock = await guardToolWriteForReadOnly(
@@ -268,7 +274,7 @@ export async function executeAgentTurn(
 						});
 					}
 
-					return toolDef.execute(args);
+					return toolDef.execute(args, options);
 				},
 			} as unknown as Parameters<typeof tool>[0]);
 		}
@@ -413,6 +419,20 @@ export async function executeAgentTurn(
 		if (preparedResponse !== undefined) {
 			return { response: preparedResponse, toolCalls: [], success: true };
 		}
+		// The workflow owns the loop for durable saved runs. Advertise identical
+		// schemas but remove every executable callback before the model sees them.
+		if (input.durableStep) {
+			for (const [name, definition] of Object.entries(tools)) {
+				if (!isExecutableToolDefinition(definition)) {
+					delete tools[name];
+					continue;
+				}
+				tools[name] = tool({
+					description: definition.description,
+					inputSchema: definition.inputSchema,
+				});
+			}
+		}
 		const hasTools = Object.keys(tools).length > 0;
 		logger.info("[AgentExecutor] Tools loaded", {
 			toolCount: Object.keys(tools).length,
@@ -426,13 +446,16 @@ export async function executeAgentTurn(
 		);
 
 		// Build conversation messages (async when images are present)
-		const messages = await buildConversationMessages(
-			conversationHistory,
-			userMessage,
-			imageRefs,
-			userId,
-			organizationId,
-		);
+		const messages = [
+			...(await buildConversationMessages(
+				conversationHistory,
+				userMessage,
+				imageRefs,
+				userId,
+				organizationId,
+			)),
+			...(input.durableStep?.continuationMessages ?? []),
+		];
 
 		// Get AI model - use override if provided, otherwise use dynamic selection
 		const usageContext: AgentUsageContext = {
@@ -491,6 +514,7 @@ export async function executeAgentTurn(
 
 		// Track token usage
 		let tokenUsage: ExecuteAgentTurnResult["tokenUsage"];
+		let modelStep: ExecuteAgentTurnResult["modelStep"];
 
 		const llmStartedAt = Date.now();
 		recordTurnValue("agent.preLlmMs", llmStartedAt - startTime);
@@ -500,7 +524,7 @@ export async function executeAgentTurn(
 		if (hasTools) {
 			const stream = streamText({
 				model: aiModel,
-				stopWhen: isStepCount(maxIterations),
+				stopWhen: isStepCount(input.durableStep ? 1 : maxIterations),
 				prepareStep: makeStepCacheBreakpoint({
 					provider: aiProvider,
 					modelString: aiModelString,
@@ -560,6 +584,9 @@ export async function executeAgentTurn(
 
 					if (step.toolCalls && step.toolCalls.length > 0) {
 						for (const tc of step.toolCalls) {
+							if (input.durableStep) {
+								continue;
+							}
 							const matchingResult = step.toolResults?.find(
 								(r) => r.toolCallId === tc.toolCallId,
 							);
@@ -613,8 +640,34 @@ export async function executeAgentTurn(
 
 			// Await full result - streamText properties are PromiseLike
 			const result = await stream;
-			responseText = (await result.text) || "Task completed.";
+			responseText =
+				(await result.text) ||
+				(input.durableStep ? "" : "Task completed.");
 			const usage = await result.usage;
+			if (input.durableStep) {
+				modelStep = {
+					messages: (await result.response).messages,
+					toolCalls: (await result.toolCalls).map((call) => {
+						if ("invalid" in call && call.invalid) {
+							throw new Error(
+								"The model returned invalid tool arguments.",
+							);
+						}
+						return {
+							id: call.toolCallId,
+							name: call.toolName,
+							args: call.input as Record<string, unknown>,
+							source: {
+								configId:
+									toolToConfig[call.toolName]?.configId ?? "",
+								originalName:
+									toolToConfig[call.toolName]?.originalName ??
+									"",
+							},
+						};
+					}),
+				};
+			}
 			recordTurnValue("llm.totalMs", Date.now() - llmStartedAt);
 			recordTurnUsage("llm", usage);
 			tokenUsage = extractTokenUsage({ usage });
@@ -648,6 +701,12 @@ export async function executeAgentTurn(
 			const result = await stream;
 			responseText = (await result.text) || "Task completed.";
 			const usage = await result.usage;
+			if (input.durableStep) {
+				modelStep = {
+					messages: (await result.response).messages,
+					toolCalls: [],
+				};
+			}
 			recordTurnValue("llm.totalMs", Date.now() - llmStartedAt);
 			recordTurnUsage("llm", usage);
 			tokenUsage = extractTokenUsage({ usage });
@@ -669,6 +728,7 @@ export async function executeAgentTurn(
 
 		return {
 			response: responseText,
+			...(modelStep ? { modelStep } : {}),
 			toolCalls,
 			tokenUsage,
 			success: true,
@@ -1325,7 +1385,7 @@ async function buildConversationMessages(
  * Only checks structural error indicators (error fields, success=false),
  * NOT string content which may contain "error" in normal data.
  */
-function isErrorResult(result: unknown): boolean {
+export function isErrorResult(result: unknown): boolean {
 	if (!result) {
 		return true;
 	}

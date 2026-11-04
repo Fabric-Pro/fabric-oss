@@ -416,6 +416,60 @@ describe("ContextsResource.deleteSyncedFile (Fizzy #2636)", () => {
 	});
 });
 
+describe("ContextsResource.resetSyncedFiles", () => {
+	it("sends a POST to the reset route and resolves with the count", async () => {
+		const { client, captured } = buildClient({
+			rawBody: { data: { deleted: 3 } },
+		});
+
+		const result = await client.contexts.resetSyncedFiles("proj 1");
+
+		expect(result).toEqual({ deleted: 3 });
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.method).toBe("POST");
+		expect(captured[0]?.url).toBe(
+			"https://test.fabric/api/v1/projects/proj%201/contexts/reset",
+		);
+	});
+
+	it("binds ?org= when given", async () => {
+		const { client, captured } = buildClient({
+			rawBody: { data: { deleted: 0 } },
+		});
+
+		await client.contexts.resetSyncedFiles("proj-1", {
+			org: "example-org",
+		});
+
+		expect(captured[0]?.url).toBe(
+			"https://test.fabric/api/v1/projects/proj-1/contexts/reset?org=example-org",
+		);
+	});
+
+	it("rejects a connected repository sync with its code, once, never retried", async () => {
+		const { client, captured } = buildClient({
+			status: 409,
+			rawBody: {
+				error: {
+					message: "Disconnect the repository sync first",
+					code: "REPOSITORY_SYNC_ACTIVE",
+					repository: "example-org/notes",
+					ref: "main",
+				},
+			},
+		});
+
+		const error = await client.contexts
+			.resetSyncedFiles("proj-1")
+			.catch((e: unknown) => e);
+
+		expect(error).toBeInstanceOf(FabricError);
+		expect((error as FabricError).status).toBe(409);
+		expect((error as FabricError).code).toBe("REPOSITORY_SYNC_ACTIVE");
+		expect(captured).toHaveLength(1);
+	});
+});
+
 describe("FabricHttpClient.delete", () => {
 	it("still sends no body for a DELETE that has none", async () => {
 		const { client, captured } = buildClient({

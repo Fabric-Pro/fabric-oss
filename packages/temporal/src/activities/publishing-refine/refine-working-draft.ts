@@ -31,9 +31,13 @@
  * appears in the candidates grid. The whole point of the slice.
  */
 
-import { generateObject, getAIModelWithMetadata } from "@repo/ai";
+import { generateText, getAIModelWithMetadata, Output } from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import {
 	completeRefinement,
 	type DraftCommitRefusal,
@@ -204,24 +208,26 @@ export async function refineWorkingDraftActivity(
 	const schema = refinementSchemaFor(postType);
 
 	const beat = setInterval(() => heartbeat(), 10_000);
-	let result: Awaited<ReturnType<typeof generateObject>>;
+	let result: StructuredTextResult<unknown>;
 	try {
-		result = await generateObject({
-			model,
-			schema,
-			prompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
+		result = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema }),
+				prompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			}),
+		);
 	} finally {
 		clearInterval(beat);
 	}
 
 	trackUsage();
 
-	// Fail closed. `generateObject` already validates, but it is not the only
+	// Fail closed. `Output.object` already validates, but it is not the only
 	// way an object reaches this line — and the cost of being wrong here is a
 	// proposal offering an empty body over a real draft.
-	const parsed = schema.safeParse(result.object);
+	const parsed = schema.safeParse(result.output);
 	if (!parsed.success) {
 		throw ApplicationFailure.nonRetryable(
 			`Refinement failed schema validation: ${parsed.error.message}`,

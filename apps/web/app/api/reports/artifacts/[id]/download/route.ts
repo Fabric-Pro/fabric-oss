@@ -1,5 +1,6 @@
 import { auth } from "@repo/auth";
 import { getTemplateInstanceArtifact } from "@repo/database";
+import { downloadFile } from "@repo/storage";
 import { type NextRequest, NextResponse } from "next/server";
 
 export async function GET(
@@ -16,7 +17,16 @@ export async function GET(
 		}
 
 		const { id } = await params;
-		const artifact = await getTemplateInstanceArtifact(id);
+		const organizationId = session.session.activeOrganizationId;
+		if (!organizationId)
+			return NextResponse.json(
+				{ error: "Artifact not found" },
+				{ status: 404 },
+			);
+		const artifact = await getTemplateInstanceArtifact(id, {
+			userId: session.user.id,
+			organizationId,
+		});
 
 		if (!artifact) {
 			return NextResponse.json(
@@ -25,32 +35,36 @@ export async function GET(
 			);
 		}
 
-		// Verify ownership
-		if (artifact.userId !== session.user.id) {
-			return NextResponse.json(
-				{ error: "Access denied" },
-				{ status: 403 },
-			);
-		}
-
-		// Return content if stored in database
-		if (artifact.content) {
-			const headers = new Headers();
-			headers.set("Content-Type", artifact.mimeType);
-			headers.set(
-				"Content-Disposition",
-				`attachment; filename="${artifact.name}"`,
-			);
-
+		const headers = new Headers();
+		headers.set("Content-Type", artifact.mimeType);
+		headers.set(
+			"Content-Disposition",
+			`attachment; filename*=UTF-8''${encodeURIComponent(artifact.name).replace(/'/g, "%27")}`,
+		);
+		headers.set("Cache-Control", "private, no-store");
+		if (
+			artifact.content !== null &&
+			artifact.content !== undefined &&
+			!artifact.s3Path
+		) {
 			return new NextResponse(artifact.content, { headers });
 		}
-
-		// If stored in S3, redirect to signed URL (TODO: implement S3 signed URL)
 		if (artifact.s3Path && artifact.s3Bucket) {
-			return NextResponse.json(
-				{ error: "S3 download not yet implemented" },
-				{ status: 501 },
-			);
+			const { data } = await downloadFile(artifact.s3Path, {
+				bucket: artifact.s3Bucket,
+			});
+			if (
+				!(await getTemplateInstanceArtifact(id, {
+					userId: session.user.id,
+					organizationId,
+				}))
+			) {
+				return NextResponse.json(
+					{ error: "Artifact not found" },
+					{ status: 404 },
+				);
+			}
+			return new NextResponse(new Uint8Array(data), { headers });
 		}
 
 		return NextResponse.json(

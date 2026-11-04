@@ -45,7 +45,7 @@ const {
 	runContextUpdateMock,
 	sideEffectsMock,
 	flagMock,
-	generateObjectMock,
+	generateTextMock,
 	getModelMock,
 	proposalClientMock,
 	turnOffAutoApplyMock,
@@ -62,7 +62,7 @@ const {
 	runContextUpdateMock: vi.fn(),
 	sideEffectsMock: vi.fn(),
 	flagMock: vi.fn(),
-	generateObjectMock: vi.fn(),
+	generateTextMock: vi.fn(),
 	getModelMock: vi.fn(),
 	proposalClientMock: vi.fn(),
 	turnOffAutoApplyMock: vi.fn(),
@@ -121,7 +121,7 @@ vi.mock("@repo/logs", () => ({
 // wholesale and never reaches these.
 vi.mock("@repo/ai", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@repo/ai")>()),
-	generateObject: generateObjectMock,
+	generateText: generateTextMock,
 	getAIModelWithMetadata: getModelMock,
 	logModelUsageAsync: vi.fn(),
 }));
@@ -765,7 +765,7 @@ describe("committed cycle", () => {
 
 	it("re-embeds the document so the rest of the system stops serving the old one", async () => {
 		// Without this, Qdrant keeps serving the PRE-refresh document forever, while
-		// chat, Atlas, the task agent and the knowledge API all keep answering from a
+		// chat, Atlas, the knowledge API all keep answering from a
 		// document that no longer exists.
 		await runDocumentRefreshActivity(DUE);
 
@@ -1274,8 +1274,8 @@ describe("visual slots (Fizzy #2589)", () => {
 	const REWRITE_WITH_SLOT = `# PRD\n\n## Rollout\n\nPhase one covers discovery and design.\n\n${SLOT}\n\nPhase two covers delivery.\n`;
 
 	const modelReturns = (updatedDocument: string) => {
-		generateObjectMock.mockResolvedValue({
-			object: {
+		generateTextMock.mockResolvedValue({
+			output: {
 				hasRelevantContext: true,
 				updatedDocument,
 				needsHumanResolution: false,

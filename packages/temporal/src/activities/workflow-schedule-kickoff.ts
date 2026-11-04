@@ -129,7 +129,7 @@ export async function createScheduledExecution(
 
 	const execution = await createWorkflowExecution({
 		workflowId: input.workflowId,
-		version: workflow.version,
+		version: workflow.publishedVersion ?? workflow.version,
 		triggerType: "SCHEDULE",
 		triggerInput: {
 			source: "schedule",
@@ -140,7 +140,7 @@ export async function createScheduledExecution(
 
 	return {
 		executionId: execution.id,
-		version: workflow.version,
+		version: workflow.publishedVersion ?? workflow.version,
 		projectId: workflow.projectId ?? undefined,
 		shouldRun: true,
 	};

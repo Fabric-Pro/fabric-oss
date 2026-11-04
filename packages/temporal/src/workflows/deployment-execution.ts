@@ -18,17 +18,33 @@ import {
 	ApplicationFailure,
 	defineQuery,
 	defineSignal,
+	getExternalWorkflowHandle,
 	log,
+	patched,
 	proxyActivities,
 	setHandler,
 } from "@temporalio/workflow";
 import type * as deploymentActivities from "../activities/deployment-execution";
+import {
+	hasUnconfirmedAgentEffect,
+	type NativeAgentAdmission,
+} from "../lib/agent-execution-native-protocol";
+import {
+	persistNativeAgentCompletion,
+	registerNativeAgentReceipt,
+} from "./lib/register-native-agent-receipt";
+import {
+	executeDurableSavedAgentTurn,
+	SAVED_AGENT_DURABLE_STEPS_PATCH,
+} from "./saved-agent-durable-turn";
 
 // =============================================================================
 // TYPES
 // =============================================================================
 
 export interface DeploymentExecutionInput {
+	/** Only server-admitted native executions use the durable receipt protocol. */
+	nativeAdmission?: NativeAgentAdmission;
 	executionId: string;
 	deploymentId: string;
 	instanceId: string;
@@ -175,10 +191,28 @@ const agentActivities = proxyActivities<typeof deploymentActivities>({
 		maximumAttempts: 2,
 	},
 });
+const finalizationActivities = proxyActivities<typeof deploymentActivities>({
+	startToCloseTimeout: "1 minute",
+	heartbeatTimeout: "15 seconds",
+	retry: { initialInterval: "1s", maximumInterval: "30s" },
+});
 
 // =============================================================================
 // WORKFLOW IMPLEMENTATION
 // =============================================================================
+
+/** Distinct type keeps pre-native workers from accepting a new protocol run. */
+export async function nativeDeploymentExecutionWorkflow(
+	input: DeploymentExecutionInput,
+): Promise<DeploymentExecutionOutput> {
+	if (!input.nativeAdmission) {
+		throw ApplicationFailure.nonRetryable(
+			"Native execution requires a server admission descriptor",
+			"NATIVE_AGENT_ADMISSION_REQUIRED",
+		);
+	}
+	return deploymentExecutionWorkflow(input);
+}
 
 export async function deploymentExecutionWorkflow(
 	input: DeploymentExecutionInput,
@@ -242,9 +276,72 @@ export async function deploymentExecutionWorkflow(
 		triggerType: input.triggerType,
 	});
 
+	// Identity persistence has its own durable retry lifecycle. A storage failure
+	// must not enter the legacy catch and claim agent work failed before it began.
+	await registerNativeAgentReceipt(input);
+	const nativeSteps = patched(SAVED_AGENT_DURABLE_STEPS_PATCH);
+	let nativeFinalizing = false;
+	async function completeExecution(
+		params: Parameters<typeof activities.completeExecution>[0],
+	) {
+		if (nativeSteps) {
+			nativeFinalizing = true;
+			if (input.nativeAdmission) {
+				await persistNativeAgentCompletion(input, {
+					status: params.status,
+					output: params.output ?? {},
+					error: params.error,
+					durationMs: params.durationMs,
+					tokenUsage: params.tokenUsage,
+				});
+			} else {
+				await finalizationActivities.completeDurableDeploymentProjection(
+					params,
+				);
+			}
+			nativeFinalizing = false;
+		} else {
+			await activities.completeExecution(params);
+		}
+	}
+
+	async function notifySupervisor(success: boolean) {
+		if (!input.supervisorWorkflowId) return;
+		if (nativeSteps && patched("saved-agent-native-supervisor-signal-v1")) {
+			try {
+				await getExternalWorkflowHandle(
+					input.supervisorWorkflowId,
+				).signal("executionCompleted", {
+					executionId: input.executionId,
+					success,
+				});
+			} catch {
+				// A missing/closed parent cannot invalidate the durably stored outcome.
+				log.warn(
+					"Supervisor completion notification was not delivered",
+				);
+			}
+			return;
+		}
+		await activities.signalSupervisorCompletion({
+			supervisorWorkflowId: input.supervisorWorkflowId,
+			executionId: input.executionId,
+			success,
+		});
+	}
+
 	try {
 		// Check for early cancellation
 		if (cancelled) {
+			if (nativeSteps) {
+				await completeExecution({
+					executionId: input.executionId,
+					status: "CANCELLED",
+					output: {},
+					error: "Execution cancelled before start",
+					durationMs: Date.now() - startTime,
+				});
+			}
 			return {
 				executionId: input.executionId,
 				status: "CANCELLED",
@@ -285,6 +382,15 @@ export async function deploymentExecutionWorkflow(
 
 		// Check for cancellation
 		if (cancelled) {
+			if (nativeSteps) {
+				await completeExecution({
+					executionId: input.executionId,
+					status: "CANCELLED",
+					output: {},
+					error: "Execution cancelled during configuration",
+					durationMs: Date.now() - startTime,
+				});
+			}
 			return {
 				executionId: input.executionId,
 				status: "CANCELLED",
@@ -319,6 +425,15 @@ export async function deploymentExecutionWorkflow(
 
 		// Check for cancellation
 		if (cancelled) {
+			if (nativeSteps) {
+				await completeExecution({
+					executionId: input.executionId,
+					status: "CANCELLED",
+					output: {},
+					error: "Execution cancelled after context build",
+					durationMs: Date.now() - startTime,
+				});
+			}
 			return {
 				executionId: input.executionId,
 				status: "CANCELLED",
@@ -389,6 +504,15 @@ export async function deploymentExecutionWorkflow(
 
 		// Check for cancellation
 		if (cancelled) {
+			if (nativeSteps) {
+				await completeExecution({
+					executionId: input.executionId,
+					status: "CANCELLED",
+					output: {},
+					error: "Execution cancelled after knowledge fetch",
+					durationMs: Date.now() - startTime,
+				});
+			}
 			return {
 				executionId: input.executionId,
 				status: "CANCELLED",
@@ -438,7 +562,7 @@ export async function deploymentExecutionWorkflow(
 			hasConversationHistory: !!conversationHistory?.length,
 		});
 
-		const result = await agentActivities.invokeDeploymentAgent({
+		const invocation = {
 			executionId: input.executionId,
 			context,
 			input: input.input,
@@ -448,7 +572,86 @@ export async function deploymentExecutionWorkflow(
 			timeoutMs: input.timeoutMs,
 			conversationHistory,
 			imageRefs: input.imageRefs,
-		});
+		};
+		let result: deploymentActivities.InvokeAgentResult;
+		if (nativeSteps) {
+			const prepared =
+				await activities.prepareDeploymentAgentTurn(invocation);
+			const turn = await executeDurableSavedAgentTurn(prepared, {
+				isCancelled: () => cancelled,
+			});
+			if (turn.cancelled) {
+				const error = turn.error ?? "Execution cancelled";
+				const output = {
+					response: turn.response,
+					toolCalls: turn.toolCalls,
+					inspectionRequired: hasUnconfirmedAgentEffect(
+						turn.toolCalls,
+					),
+					cancelled: true,
+				};
+				await completeExecution({
+					executionId: input.executionId,
+					status: "CANCELLED",
+					output,
+					error,
+					tokenUsage: turn.tokenUsage,
+					durationMs: Date.now() - startTime,
+				});
+				await notifySupervisor(false);
+				updateProgress({ phase: "cancelled", message: error });
+				emitEvent("execution.cancelled", { output, reason: error });
+				return {
+					executionId: input.executionId,
+					status: "CANCELLED",
+					output,
+					error,
+					tokenUsage: turn.tokenUsage,
+					durationMs: Date.now() - startTime,
+				};
+			}
+			if (!turn.success) {
+				const error =
+					turn.error || "Native agent step requires inspection";
+				const inspectionRequired = hasUnconfirmedAgentEffect(
+					turn.toolCalls,
+				);
+				const output = {
+					response: turn.response,
+					toolCalls: turn.toolCalls,
+					inspectionRequired,
+					error,
+				};
+				await completeExecution({
+					executionId: input.executionId,
+					status: "FAILED",
+					output,
+					error,
+					tokenUsage: turn.tokenUsage,
+					durationMs: Date.now() - startTime,
+				});
+				await notifySupervisor(false);
+				updateProgress({ phase: "failed", message: error });
+				emitEvent("execution.failed", {
+					error,
+					inspectionRequired,
+				});
+				return {
+					executionId: input.executionId,
+					status: "FAILED",
+					output,
+					error,
+					tokenUsage: turn.tokenUsage,
+					durationMs: Date.now() - startTime,
+				};
+			}
+			result = await activities.finishDeploymentAgentTurn({
+				executionId: input.executionId,
+				result: turn,
+			});
+		} else {
+			result = await agentActivities.invokeDeploymentAgent(invocation);
+		}
 
 		// Update progress with completed tool calls
 		if (result.toolCalls && result.toolCalls.length > 0) {
@@ -508,7 +711,7 @@ export async function deploymentExecutionWorkflow(
 			message: "Finalizing execution...",
 		});
 
-		await activities.completeExecution({
+		await completeExecution({
 			executionId: input.executionId,
 			status: "COMPLETED",
 			output: result.output,
@@ -517,13 +720,7 @@ export async function deploymentExecutionWorkflow(
 		});
 
 		// Signal supervisor that execution is complete
-		if (input.supervisorWorkflowId) {
-			await activities.signalSupervisorCompletion({
-				supervisorWorkflowId: input.supervisorWorkflowId,
-				executionId: input.executionId,
-				success: true,
-			});
-		}
+		await notifySupervisor(true);
 
 		updateProgress({
 			phase: "completed",
@@ -543,6 +740,9 @@ export async function deploymentExecutionWorkflow(
 			tokenUsage: result.tokenUsage,
 		};
 	} catch (error) {
+		if (nativeFinalizing) {
+			throw error;
+		}
 		if (error instanceof ApplicationFailure) {
 			throw error;
 		}
@@ -564,7 +764,7 @@ export async function deploymentExecutionWorkflow(
 		});
 
 		// Update execution record as failed
-		await activities.completeExecution({
+		await completeExecution({
 			executionId: input.executionId,
 			status: "FAILED",
 			error: errorMessage,
@@ -572,13 +772,7 @@ export async function deploymentExecutionWorkflow(
 		});
 
 		// Signal supervisor that execution failed
-		if (input.supervisorWorkflowId) {
-			await activities.signalSupervisorCompletion({
-				supervisorWorkflowId: input.supervisorWorkflowId,
-				executionId: input.executionId,
-				success: false,
-			});
-		}
+		await notifySupervisor(false);
 
 		throw ApplicationFailure.nonRetryable(
 			errorMessage,

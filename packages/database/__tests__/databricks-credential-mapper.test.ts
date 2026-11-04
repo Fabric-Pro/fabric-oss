@@ -24,38 +24,41 @@ import {
 	fetchCredentialsByIdInTenant,
 } from "../prisma/queries/workflows/credential-fetcher";
 
-describe("DATABRICKS_VECTOR_SEARCH credential mapper", () => {
-	beforeEach(() => findFirstMock.mockReset());
+describe.each(["DATABRICKS_VECTOR_SEARCH", "DATABRICKS_SQL"] as const)(
+	"%s credential mapper",
+	(provider) => {
+		beforeEach(() => findFirstMock.mockReset());
 
-	it("maps host/clientId/clientSecret to DATABRICKS_* keys", async () => {
-		findFirstMock.mockResolvedValue({
-			id: "int-1",
-			provider: "DATABRICKS_VECTOR_SEARCH",
-			isActive: true,
-			credentials: `enc:${JSON.stringify({
-				host: "https://adb-test.azuredatabricks.net",
-				clientId: "sp",
-				clientSecret: "secret",
-			})}`,
+		it("maps host/clientId/clientSecret to DATABRICKS_* keys", async () => {
+			findFirstMock.mockResolvedValue({
+				id: "int-1",
+				provider,
+				isActive: true,
+				credentials: `enc:${JSON.stringify({
+					host: "https://adb-test.azuredatabricks.net",
+					clientId: "sp",
+					clientSecret: "secret",
+				})}`,
+			});
+
+			const creds = await fetchCredentialsById("int-1", "user-1");
+
+			expect(creds).toMatchObject({
+				DATABRICKS_HOST: "https://adb-test.azuredatabricks.net",
+				DATABRICKS_CLIENT_ID: "sp",
+				DATABRICKS_CLIENT_SECRET: "secret",
+			});
 		});
 
-		const creds = await fetchCredentialsById("int-1", "user-1");
+		it("returns null when no matching integration is found", async () => {
+			findFirstMock.mockResolvedValue(null);
 
-		expect(creds).toMatchObject({
-			DATABRICKS_HOST: "https://adb-test.azuredatabricks.net",
-			DATABRICKS_CLIENT_ID: "sp",
-			DATABRICKS_CLIENT_SECRET: "secret",
+			const creds = await fetchCredentialsById("missing", "user-1");
+
+			expect(creds).toBeNull();
 		});
-	});
-
-	it("returns null when no matching integration is found", async () => {
-		findFirstMock.mockResolvedValue(null);
-
-		const creds = await fetchCredentialsById("missing", "user-1");
-
-		expect(creds).toBeNull();
-	});
-});
+	},
+);
 
 describe("fetchCredentialsByIdInTenant", () => {
 	beforeEach(() => findFirstMock.mockReset());

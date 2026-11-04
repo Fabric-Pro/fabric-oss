@@ -97,7 +97,10 @@ function writeCheckout(dir: string) {
 	fs.symlinkSync("a.ts", path.join(dir, "src/link.ts"));
 }
 vi.mock("simple-git", () => ({
-	simpleGit: (dir?: string) => ({
+	simpleGit: ({ baseDir: dir }: { baseDir?: string } = {}) => ({
+		env() {
+			return this;
+		},
 		init: async () => {
 			state.paths.push(dir as string);
 		},

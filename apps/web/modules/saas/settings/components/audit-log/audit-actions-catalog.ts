@@ -1007,6 +1007,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A synced knowledge file was deleted from a project's Context by its path, from the app (`web`) or the public API (`v1-api`, which `fabric context push --prune` uses), as `metadata.via` says. The delete only happens when the caller named the stored version's hash, so a file someone else changed since is never deleted by it; `metadata.sourcePath` and `metadata.contentHash` identify the version that was deleted. The resource name is the file's title; its content is never recorded. A delete of a path that no longer exists, or one refused because the file changed first, writes no row. Deleting a source from the Context tab is recorded separately, not as this action.",
 	},
 	{
+		key: "project.context_source.synced_files_reset",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_source.synced_files_reset",
+		description:
+			"A project's Living Memory was reset: every synced knowledge file in the project was deleted at once, from the app (`web`) or the public API (`v1-api`, which `fabric context reset` uses), as `metadata.via` says. `metadata.deletedCount` is how many files were deleted and `metadata.scope` is `project`, the whole project. Their entries in the search index were queued for removal in the same step. No path or content is recorded. A reset of a project that held no synced files writes no row, and a project with a connected repository sync is refused until the sync is disconnected.",
+	},
+	{
 		key: "project.context.repository_sync_configured",
 		categoryId: "project",
 		labelKey:
@@ -1226,6 +1234,22 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A coding-instructions version was published before its content secret scan ran, because the member who uploaded or edited it chose to and acknowledged the risk. The actor is that member; `metadata.version` and `metadata.fileCount` describe the version.",
 	},
 	{
+		key: "project.instructions.proposal_approved",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.proposal_approved",
+		description:
+			"A reviewer approved a coding-instructions file proposal that still needs more approvals under the project's review policy. Nothing was published. `metadata.approvals` and `metadata.requiredApprovals` carry the count after this approval; the approval that meets the policy records `project.instructions.published` instead.",
+	},
+	{
+		key: "project.instructions.proposal_rebased",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.proposal_rebased",
+		description:
+			"The proposer rebased a stale coding-instructions proposal onto the version now published. The resource is the replaced proposal, closed in the same transaction that created its replacement; `metadata.rebasedSnapshotId` and `metadata.rebasedVersion` name the new proposal, with the base versions and change counts. Never a path or file content.",
+	},
+	{
 		key: "project.instructions.deferred_scan_issues_found",
 		categoryId: "project",
 		labelKey:
@@ -1279,6 +1303,38 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.project.instructions.consolidation_started",
 		description:
 			"Created a separate instructions repository for a project and started moving the AI tool files of its code repository there: one commit on the new repository, Coding Instructions read from it, and a pull request removing the files from the code repository. The resource names the new repository; `metadata.sourceRepository` names the code repository and `metadata.fileCount` how many files. Never a file path or file content.",
+	},
+	{
+		key: "project.instructions.consolidation_cleanup_merged",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.consolidation_cleanup_merged",
+		description:
+			"Merged, from Fabric and after a confirmation, the pull request that removes the AI tool files from a project's code repository once they moved to its instructions repository. The resource names the code repository; `metadata.pullRequest` is the pull request number, `metadata.mergeMethod` how it merged and `metadata.fileCount` how many files it removes. Never a file path, file content or a token.",
+	},
+	{
+		key: "project.instructions_access.granted",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions_access.granted",
+		description:
+			"Gave a project member read access to the project's coding-instructions repository so they can install the instructions plugin: membership of the project's GitHub team on an organization repository, or a collaborator invitation on a personal one. GitHub may send an invitation the member must accept first. The resource is the member's grant; `metadata.githubLogin` and `metadata.repository` say who and where. Never a token.",
+	},
+	{
+		key: "project.instructions_access.revoked",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions_access.revoked",
+		description:
+			"Took back read access to the coding-instructions repository that Fabric had granted a member. Access the member had before Fabric granted any is never removed. `metadata.githubLogin` and `metadata.repository` say who and where. Never a token.",
+	},
+	{
+		key: "project.instructions_access.failed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions_access.failed",
+		description:
+			"A grant or revoke of read access to the coding-instructions repository failed at GitHub; the person who acted was shown GitHub's reason. `metadata.githubLogin` and `metadata.repository` say who and where. Never a token.",
 	},
 	{
 		key: "project.instructions.repository_migration_canceled",
@@ -1914,7 +1970,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.parlume.auto_join_changed",
 		description:
-			"A project administrator turned Parlume's automatic joining of a linked meeting series on or off, with the mode and chat suggestions its joins use.",
+			"A project administrator turned Parlume's automatic joining of a linked meeting series on or off, with the mode, suggestions and recap, and who sees them, that its joins use.",
 	},
 	{
 		key: "project.parlume.action_confirmed",
@@ -2012,6 +2068,84 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey: "settings.auditLog.actions.weave.session.recovery_closed",
 		description:
 			"A project editor closed a coding run with an unknown remote outcome after checking the original server for orphaned work. Closing the record releases the active slot without claiming remote work stopped.",
+	},
+	{
+		key: "org.agent_execution.admitted",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_execution.admitted",
+		description:
+			"An agent run passed deployment and quota admission and was recorded for execution. Records the deployment, instance and workflow IDs and whether an idempotency key was supplied, never prompt text.",
+	},
+	{
+		key: "org.agent_execution.cancel_requested",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.agent_execution.cancel_requested",
+		description:
+			"An authorized caller requested cancellation of an in-flight managed agent execution. Records the workflow and run IDs, never execution input or output.",
+	},
+	{
+		key: "org.agent_schedule.updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_schedule.updated",
+		description:
+			"A member or API caller created, updated or paused a managed agent's recurring run schedule. Records the instance and deployment IDs, whether scheduling is enabled, cron expression and timezone.",
+	},
+	{
+		key: "project.context_quality.binding_configured",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_quality.binding_configured",
+		description:
+			"A project administrator verified and saved the Databricks destination binding for saved context-quality evaluations, recording whether evaluations are enabled.",
+	},
+	{
+		key: "project.context_quality.binding_disabled",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_quality.binding_disabled",
+		description:
+			"A project administrator disabled saved context-quality evaluations for the project while retaining its destination binding, saved history and cleanup receipts.",
+	},
+	{
+		key: "project.context_quality.binding_deleted",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_quality.binding_deleted",
+		description:
+			"A project administrator disconnected the Databricks evaluation destination and permanently deleted the project's saved context-quality evaluation history after runs and snapshot cleanup settled.",
+	},
+	{
+		key: "project.context_quality.run_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_quality.run_requested",
+		description:
+			"A project member admitted and started a saved context-quality evaluation run against the project's configured Databricks destination. Records the binding ID, never source snapshots.",
+	},
+	{
+		key: "project.context_quality.cancel_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_quality.cancel_requested",
+		description:
+			"A project member requested cancellation of a saved context-quality evaluation run, recording durable cancellation intent and signaling the evaluation workflow.",
+	},
+	{
+		key: "project.context_source.workspace_document_linked",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_source.workspace_document_linked",
+		description:
+			"A workspace document was linked into a project as a live context reference without copying document bytes or widening workspace access. Records the pinned source revision.",
+	},
+	{
+		key: "project.context_source.workspace_document_unlinked",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_source.workspace_document_unlinked",
+		description:
+			"A workspace document link was removed from a project's context sources while leaving the underlying workspace document intact.",
 	},
 ];
 

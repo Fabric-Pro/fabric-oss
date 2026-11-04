@@ -48,8 +48,40 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // adds 239: the plugin's agent clones the project's repositories from its list.
 // fabric_semantic_search adds 333: the plugin's agent asks the project's RAG
 // before it walks the code.
+// The two context-quality tools add 501 (explicit source/revision inspection)
+// and 1,969 (bounded recorded-answer cases, source pins and expectations).
+// Both schemas are required before calling; descriptions were shortened by
+// 219 characters. Add exactly their measured sizes, without extra headroom.
+// Saved context-quality runs (6 tools: 4,206), completed agent-result checks
+// (2 tools: 1,277), saved-agent run and schedule controls (6 tools: 3,585),
+// and Workspace document reads, project document links and bounded context
+// assembly (6 tools: 4,659) add 13,727 of required pre-call schemas and
+// scope/revision contracts; tightening existing descriptions offsets 4,789,
+// leaving 8,938 net with no extra headroom.
+// fabric_list_project_reports (316) and fabric_generate_report (381) add 697:
+// one line each to choose the tool, the schemas needed to call it, and where
+// instanceId comes from. Owner-only, AI credits, polling and parameter rules
+// were moved to the list result, the refusal, the approval card and the
+// errors. Add exactly that, with no extra headroom.
+const CONTEXT_QUALITY_BUDGETS: Readonly<Record<string, number>> = {
+	fabric_inspect_context_quality_source: 501,
+	fabric_evaluate_context_quality: 1_969,
+};
 const TOTAL_BUDGET =
-	53_244 + 2_118 + 31 + 163 + 188 + 115 + 894 + 4_024 + 239 + 333;
+	53_244 +
+	2_118 +
+	31 +
+	163 +
+	188 +
+	115 +
+	894 +
+	4_024 +
+	239 +
+	333 +
+	501 +
+	1_969 +
+	8_938 +
+	697;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;
@@ -90,7 +122,7 @@ describe("platform tool definition size", () => {
 					size >
 					(name === "fabric_page_configure_story_review"
 						? SPRINT_CONFIG_BUDGET
-						: PER_TOOL_BUDGET),
+						: (CONTEXT_QUALITY_BUDGETS[name] ?? PER_TOOL_BUDGET)),
 			)
 			.map(({ name, size }) => `${name}: ${size}`);
 		expect(over).toEqual([]);

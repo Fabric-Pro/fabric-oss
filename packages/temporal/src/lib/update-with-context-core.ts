@@ -1,10 +1,11 @@
 import { getLockedAttachmentRulesClause } from "@repo/agent-prompts";
 import {
 	AIProviderNotConfiguredError,
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
 	NoObjectGeneratedError,
+	Output,
 	zodSchema,
 } from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
@@ -12,6 +13,7 @@ import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 // suite mocks the @repo/ai root module without spreading real exports, same as
 // getProjectFunctionTagClause above.
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import { listDecisionLogThreads } from "@repo/database/prisma/queries/feature-maturation";
 import {
 	EXTERNAL_INDEX_CONTEXT_TYPE,
@@ -260,7 +262,7 @@ export async function runContextUpdate({
 	instructionAddendum,
 }: RunContextUpdateArgs): Promise<ContextUpdateResult | null> {
 	// Hoisted so the catch block below can log the provider even when the
-	// failure happens inside generateObject, after metadata was resolved.
+	// failure happens inside Output.object, after metadata was resolved.
 	let metadata:
 		| Awaited<ReturnType<typeof getAIModelWithMetadata>>["metadata"]
 		| undefined;
@@ -331,13 +333,17 @@ ${formatContextItems(contextItems)}`;
 		});
 
 		const generationStart = Date.now();
-		const { object, usage } = await generateObject({
-			model,
-			schema: zodSchema(ContextUpdateSchema),
-			instructions: system,
-			prompt: userPrompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
+		const { output: object, usage } = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({
+					schema: zodSchema(ContextUpdateSchema),
+				}),
+				instructions: system,
+				prompt: userPrompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			}),
+		);
 
 		trackUsage();
 		logModelUsageAsync({

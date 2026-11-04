@@ -2,6 +2,7 @@ import type {
 	ParlumeAction,
 	ParlumeRequest,
 	ParlumeSession,
+	ParlumeSuggestionItem,
 } from "../../lib/parlume-format";
 
 export const PROJECT_BASE_PATH = "/app/example-org/projects/example-project";
@@ -18,6 +19,8 @@ export function session(
 		status: "ENDED",
 		wakePhrase: "Hey Fabric",
 		toolsReadOnly: true,
+		suggestionsEnabled: false,
+		suggestionAudience: "MEETING",
 		endReason: null,
 		lastError: null,
 		channelChatStatus: "ATTENDEE",
@@ -32,6 +35,7 @@ export function session(
 		createdAt: new Date("2026-09-30T09:59:00Z"),
 		updatedAt: new Date("2026-09-30T10:30:00Z"),
 		requestCount: 0,
+		suggestionCount: 0,
 		notes: null,
 		notesStatus: null,
 		...overrides,
@@ -49,6 +53,23 @@ export function liveSession(
 		createdAt: new Date(Date.now() - 6 * 60_000),
 		...overrides,
 	});
+}
+
+export function suggestion(
+	overrides: Partial<ParlumeSuggestionItem> = {},
+): ParlumeSuggestionItem {
+	return {
+		id: "suggestion-1",
+		kind: "ANSWER",
+		audience: "MEETING",
+		text: "EX-12 already covers the export.",
+		speaker: "Attendee One",
+		quote: "we still need an export",
+		topic: "Roadmap export",
+		chatTag: "P2",
+		createdAt: new Date("2026-09-30T10:07:00Z"),
+		...overrides,
+	};
 }
 
 export function action(overrides: Partial<ParlumeAction> = {}): ParlumeAction {

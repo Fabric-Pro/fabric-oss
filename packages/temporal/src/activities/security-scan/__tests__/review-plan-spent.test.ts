@@ -10,7 +10,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/ai", () => ({
-	generateObject: vi.fn(),
+	Output: { object: (spec: unknown) => spec },
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	logModelUsageAsync: vi.fn(),
 }));
@@ -37,7 +38,7 @@ vi.mock("@temporalio/activity", async (importOriginal) => ({
 }));
 
 import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
-import { generateObject, getAIModelWithMetadata } from "@repo/ai";
+import { generateText, getAIModelWithMetadata } from "@repo/ai";
 import { ApplicationFailure } from "@temporalio/activity";
 import {
 	type FindingReviewProgress,
@@ -83,13 +84,13 @@ beforeEach(() => {
 		metadata: { modelString: "model" },
 		trackUsage: vi.fn(),
 	} as never);
-	vi.mocked(generateObject).mockImplementation((async (call: unknown) => {
+	vi.mocked(generateText).mockImplementation((async (call: unknown) => {
 		const id = findingOf(call);
 		if (spentFor.has(id)) {
 			throw new SubscriptionPlanExhaustedError("No usage left.", null);
 		}
 		return {
-			object: { verdict: "uncertain", reasoning: id },
+			output: { verdict: "uncertain", reasoning: id },
 			usage: { inputTokens: 2, outputTokens: 1 },
 		};
 	}) as never);
@@ -119,9 +120,7 @@ describe("runFindingReviewActivity — every shared plan spent part-way", () => 
 		]);
 		expect(progress.inputTokens).toBe(6);
 		expect(
-			vi
-				.mocked(generateObject)
-				.mock.calls.map(([call]) => findingOf(call)),
+			vi.mocked(generateText).mock.calls.map(([call]) => findingOf(call)),
 		).toEqual(["f1", "f2", "f3", "f4"]);
 	});
 
@@ -141,9 +140,7 @@ describe("runFindingReviewActivity — every shared plan spent part-way", () => 
 		const output = await runFindingReviewActivity({ ...INPUT, resume });
 
 		expect(
-			vi
-				.mocked(generateObject)
-				.mock.calls.map(([call]) => findingOf(call)),
+			vi.mocked(generateText).mock.calls.map(([call]) => findingOf(call)),
 		).toEqual(["f2", "f5", "f6"]);
 		expect(output.reviewedCount).toBe(6);
 		expect(output.proposals.map((p) => p.findingId)).toEqual([
@@ -159,12 +156,12 @@ describe("runFindingReviewActivity — every shared plan spent part-way", () => 
 	});
 
 	it("passes over a finding whose judge failed for any other reason, as before", async () => {
-		vi.mocked(generateObject).mockImplementation((async (call: unknown) => {
+		vi.mocked(generateText).mockImplementation((async (call: unknown) => {
 			if (findingOf(call) === "f2") {
 				throw new Error("gateway 500");
 			}
 			return {
-				object: { verdict: "uncertain" },
+				output: { verdict: "uncertain" },
 				usage: { inputTokens: 2, outputTokens: 1 },
 			};
 		}) as never);

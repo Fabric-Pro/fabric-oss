@@ -1,9 +1,5 @@
 import { ORPCError } from "@orpc/client";
-import {
-	diffInstructionManifests,
-	getInstructionSnapshot,
-	listInstructionFiles,
-} from "@repo/database";
+import { getInstructionSnapshot } from "@repo/database";
 import { z } from "zod";
 import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
@@ -11,6 +7,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { compareInstructionVersions } from "./compare-core";
 import { requireHostingOrganizationId } from "./hosting-organization";
 import { isInstructionSnapshotContentReadable } from "./proposal-authorization";
 
@@ -79,71 +76,13 @@ export const compareSnapshotsProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Snapshot not found" });
 		}
 
-		const [fromFiles, toFiles] = await Promise.all([
-			listInstructionFiles(from.id, organizationId),
-			listInstructionFiles(to.id, organizationId),
-		]);
-		const fromByPath = new Map(fromFiles.map((f) => [f.path, f]));
-		const toByPath = new Map(toFiles.map((f) => [f.path, f]));
-		// The one manifest diff this repository has, rather than a second
-		// implementation of the same comparison: a different `sha256` OR a
-		// different normalised `mode` is the digest's own unit of change, so
-		// "changed" here means exactly what it means to the installed-copy
-		// diff MCP clients read.
-		const changes = diffInstructionManifests(fromFiles, toFiles);
-
-		const added = changes.added.flatMap((path) => {
-			const file = toByPath.get(path);
-			return file
-				? [
-						{
-							path: file.path,
-							kind: file.kind,
-							isText: file.isText,
-							size: file.size,
-						},
-					]
-				: [];
-		});
-		const removed = changes.removed.flatMap((path) => {
-			const file = fromByPath.get(path);
-			return file
-				? [
-						{
-							path: file.path,
-							kind: file.kind,
-							isText: file.isText,
-							size: file.size,
-						},
-					]
-				: [];
-		});
-		const changed = changes.changed.flatMap((path) => {
-			const before = fromByPath.get(path);
-			const after = toByPath.get(path);
-			return before && after
-				? [
-						{
-							path: after.path,
-							kind: after.kind,
-							// Diffable only when BOTH sides are text: a file
-							// that turned binary (or stopped being one) has no
-							// honest line diff to render.
-							isText: before.isText && after.isText,
-							fromSize: before.size,
-							toSize: after.size,
-						},
-					]
-				: [];
-		});
-
 		return {
 			from: { id: from.id, version: from.version },
 			to: { id: to.id, version: to.version },
-			added,
-			removed,
-			changed,
-			// Everything the `to` version carries that this diff did not name.
-			unchangedCount: toFiles.length - added.length - changed.length,
+			...(await compareInstructionVersions({
+				fromSnapshotId: from.id,
+				toSnapshotId: to.id,
+				organizationId,
+			})),
 		};
 	});

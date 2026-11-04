@@ -11,6 +11,12 @@
 import { PAT_INVALID_REASON } from "@repo/api/modules/projects/procedures/repository-integrations/lib/pat-validation-errors";
 import { classificationForRawKind } from "@repo/utils/pipeline-sync-failure-kinds";
 import {
+	GitHubTokenChecklist,
+	type GitHubTokenRefusal,
+	needsGitHubTokenConfirmation,
+	readGitHubTokenRefusal,
+} from "@saas/credential-manager/components/GitHubTokenChecklist";
+import {
 	GITLAB_STATUS_QUERY_KEY,
 	gitlabStatusQueryOptions,
 } from "@saas/data-connections/lib/gitlab-status-query";
@@ -23,6 +29,11 @@ import {
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import { AttachRepositoryPatDialog } from "@saas/projects/components/AttachRepositoryPatDialog";
 import { ChooseRepositoryCredentialDialog } from "@saas/projects/components/ChooseRepositoryCredentialDialog";
+import {
+	type ExistingSavedToken,
+	SavedTokenReusePrompt,
+	SaveInCredentialManagerFields,
+} from "@saas/projects/components/SavePastedTokenFields";
 import { timeAgo } from "@saas/projects/components/test-cases/pipeline/pipeline-run";
 import { repositoryProviderSupportsReconnect } from "@saas/projects/lib/repo-reconnect-capability";
 import { getRepoStatusMeta } from "@saas/projects/lib/repo-status-meta";
@@ -224,6 +235,8 @@ interface ProjectRepositoryIntegrationSettingsProps {
 	 * feature-gated endpoint.
 	 */
 	qaEnabled?: boolean;
+	/** Open the add-repository form at once (the Context tab's entry point). */
+	startAdding?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -257,6 +270,7 @@ export function ProjectRepositoryIntegrationSettings({
 	project,
 	currentUserId,
 	qaEnabled = false,
+	startAdding = false,
 }: ProjectRepositoryIntegrationSettingsProps) {
 	const queryClient = useQueryClient();
 	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
@@ -479,7 +493,9 @@ export function ProjectRepositoryIntegrationSettings({
 	const isLoadingRepos = reposQuery.isLoading;
 
 	// ── Local state ──────────────────────────────────────────────────
-	const [isAddingRepo, setIsAddingRepo] = useState(false);
+	const [isAddingRepo, setIsAddingRepo] = useState(
+		startAdding && canManageIntegrations,
+	);
 	const [selectedRepoUrl, setSelectedRepoUrl] = useState("");
 	const [manualRepoUrl, setManualRepoUrl] = useState("");
 	const [isConnectingOAuth, setIsConnectingOAuth] = useState(false);
@@ -500,6 +516,17 @@ export function ProjectRepositoryIntegrationSettings({
 	const [adoOrganization, setAdoOrganization] = useState("");
 	const [adoRepoUrl, setAdoRepoUrl] = useState("");
 	const [isSubmittingPat, setIsSubmittingPat] = useState(false);
+	// "Save in the credential manager" beside a pasted GitHub token: on by
+	// default while the credential manager is on.
+	const [savePatAsCredential, setSavePatAsCredential] = useState(true);
+	const [patCredentialLabel, setPatCredentialLabel] = useState("");
+	const [existingSavedToken, setExistingSavedToken] =
+		useState<ExistingSavedToken | null>(null);
+	// Why the server would not save the pasted GitHub token, as a checklist.
+	const [patTokenCheck, setPatTokenCheck] =
+		useState<GitHubTokenRefusal | null>(null);
+	const [patPermissionsConfirmed, setPatPermissionsConfirmed] =
+		useState(false);
 	const [showGitLabPicker, setShowGitLabPicker] = useState(false);
 	const [showAdoPicker, setShowAdoPicker] = useState(false);
 
@@ -1110,67 +1137,121 @@ export function ProjectRepositoryIntegrationSettings({
 	// also needs the organization; GitHub/GitLab need only the URL + token. A
 	// scoped PAT is the reliable way to pull CI pipeline results from GitHub,
 	// since the GitHub App's OAuth token is Contents-scoped and can't read Actions.
-	const handleConnectPat = useCallback(async () => {
-		const url = adoRepoUrl.trim();
-		if (!patValue.trim() || !url) {
-			toast.error("Enter the repository URL and access token.");
-			return;
-		}
+	//
+	// A GitHub token saved in the credential manager may name one the person
+	// already saved for the same account; then nothing is connected yet and
+	// the form asks. "Use it" sends `credentialId`, "Save as new" `saveAsNew`.
+	const handleConnectPat = useCallback(
+		async (followUp?: { credentialId: string } | { saveAsNew: true }) => {
+			const url = adoRepoUrl.trim();
+			if ((!patValue.trim() && !followUp) || !url) {
+				toast.error("Enter the repository URL and access token.");
+				return;
+			}
 
-		const provider = detectProvider(url);
-		const parsed = parseRepoFromUrl(url);
-		if (!provider || !parsed) {
-			toast.error("Unsupported or unparseable repository URL");
-			return;
-		}
-		if (provider === "AZURE_DEVOPS" && !adoOrganization.trim()) {
-			toast.error("Organization name is required for Azure DevOps");
-			return;
-		}
+			const provider = detectProvider(url);
+			const parsed = parseRepoFromUrl(url);
+			if (!provider || !parsed) {
+				toast.error("Unsupported or unparseable repository URL");
+				return;
+			}
+			if (provider === "AZURE_DEVOPS" && !adoOrganization.trim()) {
+				toast.error("Organization name is required for Azure DevOps");
+				return;
+			}
 
-		setIsSubmittingPat(true);
-		try {
-			await orpcClient.projects.repositoryIntegrations.connect({
-				projectId: project.id,
-				organizationId: project.organizationId ?? null,
-				provider,
-				authMethod: "PAT",
-				repositoryUrl: url,
-				repositoryOwner: parsed.owner,
-				repositoryName: parsed.name,
-				pat: patValue,
-				roleTag: roleTagInput.trim() || undefined,
-				...(provider === "AZURE_DEVOPS"
-					? { azureOrganization: adoOrganization.trim() }
-					: {}),
-			});
+			const savesCredential =
+				credentialManagerEnabled &&
+				provider === "GITHUB" &&
+				savePatAsCredential;
+			const usesCredentialId =
+				followUp && "credentialId" in followUp
+					? followUp.credentialId
+					: undefined;
 
-			toast.success("Repository connected!");
-			setShowPatForm(false);
-			setPatValue("");
-			setRoleTagInput("");
-			setAdoOrganization("");
-			setAdoRepoUrl("");
-			setIsAddingRepo(false);
-			invalidateAll();
-		} catch (error) {
-			toast.error(
-				error instanceof Error
-					? error.message
-					: "Failed to connect repository",
-			);
-		} finally {
-			setIsSubmittingPat(false);
-		}
-	}, [
-		project.id,
-		project.organizationId,
-		patValue,
-		roleTagInput,
-		adoOrganization,
-		adoRepoUrl,
-		invalidateAll,
-	]);
+			setIsSubmittingPat(true);
+			try {
+				const result =
+					await orpcClient.projects.repositoryIntegrations.connect({
+						projectId: project.id,
+						organizationId: project.organizationId ?? null,
+						provider,
+						authMethod: "PAT",
+						repositoryUrl: url,
+						repositoryOwner: parsed.owner,
+						repositoryName: parsed.name,
+						...(usesCredentialId
+							? { credentialId: usesCredentialId }
+							: { pat: patValue }),
+						...(savesCredential && !usesCredentialId
+							? {
+									saveCredential: {
+										label:
+											patCredentialLabel.trim() ||
+											undefined,
+										saveAsNew: Boolean(
+											followUp && "saveAsNew" in followUp,
+										),
+										confirmFineGrainedPermissions:
+											patPermissionsConfirmed,
+									},
+								}
+							: {}),
+						roleTag: roleTagInput.trim() || undefined,
+						...(provider === "AZURE_DEVOPS"
+							? { azureOrganization: adoOrganization.trim() }
+							: {}),
+					});
+
+				if (
+					"existingCredential" in result &&
+					result.existingCredential
+				) {
+					setExistingSavedToken(result.existingCredential);
+					return;
+				}
+
+				toast.success("Repository connected!");
+				setExistingSavedToken(null);
+				setPatTokenCheck(null);
+				setPatPermissionsConfirmed(false);
+				setPatCredentialLabel("");
+				setShowPatForm(false);
+				setPatValue("");
+				setRoleTagInput("");
+				setAdoOrganization("");
+				setAdoRepoUrl("");
+				setIsAddingRepo(false);
+				invalidateAll();
+			} catch (error) {
+				const refusal = readGitHubTokenRefusal(error);
+				if (refusal) {
+					setPatTokenCheck(refusal);
+					return;
+				}
+				toast.error(
+					error instanceof Error
+						? error.message
+						: "Failed to connect repository",
+				);
+			} finally {
+				setIsSubmittingPat(false);
+			}
+		},
+		[
+			project.id,
+			project.organizationId,
+			patValue,
+			roleTagInput,
+			adoOrganization,
+			adoRepoUrl,
+			invalidateAll,
+			credentialManagerEnabled,
+			savePatAsCredential,
+			patCredentialLabel,
+			patPermissionsConfirmed,
+		],
+	);
 
 	// ── Derived state ────────────────────────────────────────────────
 	const hasRepos = integrationList.length > 0;
@@ -1784,20 +1865,76 @@ export function ProjectRepositoryIntegrationSettings({
 												type="password"
 												placeholder="Paste your token here"
 												value={patValue}
-												onChange={(e) =>
-													setPatValue(e.target.value)
-												}
+												onChange={(e) => {
+													setPatValue(e.target.value);
+													setExistingSavedToken(null);
+													setPatTokenCheck(null);
+													setPatPermissionsConfirmed(
+														false,
+													);
+												}}
 												className="text-sm font-mono"
 											/>
 										</div>
+										{credentialManagerEnabled &&
+										patProvider === "GITHUB" ? (
+											<SaveInCredentialManagerFields
+												save={savePatAsCredential}
+												onSaveChange={(next) => {
+													setSavePatAsCredential(
+														next,
+													);
+													setExistingSavedToken(null);
+												}}
+												label={patCredentialLabel}
+												onLabelChange={
+													setPatCredentialLabel
+												}
+												disabled={isSubmittingPat}
+											/>
+										) : null}
+										{patTokenCheck ? (
+											<GitHubTokenChecklist
+												refusal={patTokenCheck}
+												confirmed={
+													patPermissionsConfirmed
+												}
+												onConfirmedChange={
+													setPatPermissionsConfirmed
+												}
+											/>
+										) : null}
+										{existingSavedToken ? (
+											<SavedTokenReusePrompt
+												existing={existingSavedToken}
+												busy={isSubmittingPat}
+												onUse={() =>
+													void handleConnectPat({
+														credentialId:
+															existingSavedToken.id,
+													})
+												}
+												onSaveAsNew={() =>
+													void handleConnectPat({
+														saveAsNew: true,
+													})
+												}
+											/>
+										) : null}
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<Button
 													size="sm"
-													onClick={handleConnectPat}
+													onClick={() =>
+														void handleConnectPat()
+													}
 													disabled={
 														isSubmittingPat ||
 														!patValue.trim() ||
+														needsGitHubTokenConfirmation(
+															patTokenCheck,
+															patPermissionsConfirmed,
+														) ||
 														!adoRepoUrl.trim() ||
 														(isAdo &&
 															!adoOrganization.trim())

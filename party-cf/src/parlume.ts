@@ -32,6 +32,7 @@ import {
 	type ParlumeStreamConnection,
 	parseParlumeSpeakerUpdates,
 } from "./parlume-stream-auth";
+import type { ParlumeSuggestionAudience } from "./parlume-suggestions";
 import {
 	ParlumeTranscriber,
 	type ParlumeTranscript,
@@ -78,6 +79,8 @@ interface BridgeState {
 	botId: string | null;
 	hardStopAt: string | null;
 	suggestionsEnabled?: boolean;
+	/** Absent from a Fabric that predates audiences, whose sessions are all MEETING. */
+	suggestionAudience?: ParlumeSuggestionAudience;
 }
 
 type StreamConnection = ParlumeStreamConnection;
@@ -1135,7 +1138,8 @@ export class Parlume extends Server<Env> {
 		await this.reportIdleMeeting(bridge);
 		await this.chat.checkDeliveries();
 		const suggestions = this.suggestionsEnabled(bridge);
-		await this.chat.runSuggestionPass({ enabled: suggestions });
+		const audience = bridge.suggestionAudience ?? "MEETING";
+		await this.chat.runSuggestionPass({ enabled: suggestions, audience });
 		const [flushed, turnsFlushed] = await Promise.all([
 			this.flushPendingSegments(),
 			this.flushPendingTurns(),
@@ -1150,7 +1154,10 @@ export class Parlume extends Server<Env> {
 				: !turnsFlushed
 					? TURN_RETRY_MS
 					: ACCESS_CHECK_MS;
-			const chatWakeAt = await this.chat.nextWakeAt({ suggestions });
+			const chatWakeAt = await this.chat.nextWakeAt({
+				suggestions,
+				audience,
+			});
 			await this.ctx.storage.setAlarm(
 				Math.min(
 					hardStopAt,
@@ -1187,7 +1194,10 @@ export class Parlume extends Server<Env> {
 			return;
 		}
 		const [wakeAt, alarm] = await Promise.all([
-			this.chat.nextWakeAt({ suggestions: true }),
+			this.chat.nextWakeAt({
+				suggestions: true,
+				audience: bridge.suggestionAudience ?? "MEETING",
+			}),
 			this.ctx.storage.getAlarm(),
 		]);
 		if (wakeAt !== null && alarm !== null && wakeAt < alarm) {
@@ -1282,6 +1292,12 @@ export class Parlume extends Server<Env> {
 			botId,
 			hardStopAt: data.hardStopAt,
 			suggestionsEnabled: data.suggestionsEnabled === true,
+			// TEAM unless Fabric says MEETING or predates audiences.
+			suggestionAudience:
+				data.suggestionAudience === undefined ||
+				data.suggestionAudience === "MEETING"
+					? "MEETING"
+					: "TEAM",
 		});
 		// A provider reconnect may follow a transient WebSocket close. Do not
 		// let that old close finalize the session after this newer stream proves

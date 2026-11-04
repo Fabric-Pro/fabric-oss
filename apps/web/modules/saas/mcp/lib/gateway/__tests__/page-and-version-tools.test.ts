@@ -473,7 +473,7 @@ describe("fabric_restore_frame_version", () => {
 		expect(payload(result)).toMatchObject({
 			frameId: "frame-1",
 			restoredVersion: 2,
-			pageUrl: "/app/example-org/workspaces/frame-1",
+			pageUrl: "/app/example-org/pages/frame-1",
 		});
 	});
 
@@ -537,7 +537,7 @@ describe("fabric_duplicate_frame", () => {
 		});
 		expect(payload(result)).toMatchObject({
 			frameId: "frame-2",
-			pageUrl: "/app/example-org/workspaces/frame-2",
+			pageUrl: "/app/example-org/pages/frame-2",
 		});
 	});
 

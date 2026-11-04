@@ -8,7 +8,7 @@
  *
  * The model call is NOT stubbed out at `draftBodyByKind`. `getBoundPromptForAgent`
  * resolves a template whose content names the agent it was bound under, and the
- * `generateObject` stub answers with the body THAT template would produce. So an
+ * `generateText` stub answers with the body THAT template would produce. So an
  * assertion on the persisted body is an assertion about which template actually
  * ran — a test that only checked which prompt was resolved would not prove that
  * the body the user ends up with changed shape.
@@ -19,7 +19,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		// @repo/ai
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		// @repo/database
@@ -53,8 +53,9 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	Output: { object: (spec: unknown) => spec },
 	AIProviderNotConfiguredError: class extends Error {},
-	generateObject: mocks.generateObject,
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -309,11 +310,11 @@ function bindTemplatesToRedrafts() {
 			key: agentName,
 		}),
 	);
-	mocks.generateObject.mockImplementation(
+	mocks.generateText.mockImplementation(
 		async ({ prompt }: { prompt: string }) => {
 			if (prompt.includes("TEMPLATE::feature_clean_spec_generator")) {
 				return {
-					object: {
+					output: {
 						description: FEATURE_REDRAFT,
 						acceptanceCriteria: FEATURE_REDRAFT_CRITERIA,
 					},
@@ -322,7 +323,7 @@ function bindTemplatesToRedrafts() {
 			}
 			if (prompt.includes("TEMPLATE::bug_clean_spec_generator")) {
 				return {
-					object: {
+					output: {
 						title: "",
 						needsMoreInfo: true,
 						markdown: BUG_REDRAFT,
@@ -543,7 +544,7 @@ describe("regenerateBodyForKindActivity — refusals", () => {
 
 	it("writes nothing when the model call fails, leaving the prior body intact", async () => {
 		mocks.getStoryById.mockResolvedValue(storyRow({ kind: "FEATURE" }));
-		mocks.generateObject.mockRejectedValue(new Error("provider timeout"));
+		mocks.generateText.mockRejectedValue(new Error("provider timeout"));
 
 		const result = await regenerateBodyForKindActivity(INPUT);
 
@@ -556,8 +557,8 @@ describe("regenerateBodyForKindActivity — refusals", () => {
 		mocks.getStoryById.mockResolvedValue(
 			storyRow({ kind: "FEATURE", description: BUG_BODY }),
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: { description: "## Feature Narrative\nTBD." },
+		mocks.generateText.mockResolvedValue({
+			output: { description: "## Feature Narrative\nTBD." },
 			usage: {},
 		});
 
@@ -588,8 +589,8 @@ describe("regenerateBodyForKindActivity — refusals", () => {
 		mocks.getStoryById.mockResolvedValue(
 			storyRow({ kind: "FEATURE", description: BUG_BODY }),
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: { description: "   " },
+		mocks.generateText.mockResolvedValue({
+			output: { description: "   " },
 			usage: {},
 		});
 
@@ -685,8 +686,8 @@ describe("regenerateBodyForKindActivity — inline images", () => {
 		mocks.getStoryById.mockResolvedValue(
 			storyRow({ kind: "FEATURE", description: bodyWithImage }),
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				description: `${FEATURE_REDRAFT}\n\n![](${MEDIA_KEY})`,
 				acceptanceCriteria: FEATURE_REDRAFT_CRITERIA,
 			},
@@ -874,8 +875,8 @@ describe("regenerateBodyForKindActivity — guard selection", () => {
 		mocks.getStoryById.mockResolvedValue(
 			storyRow({ kind: "FEATURE", description: BUG_BODY }),
 		);
-		mocks.generateObject.mockResolvedValue({
-			object: { description: "## Feature Narrative\nTBD." },
+		mocks.generateText.mockResolvedValue({
+			output: { description: "## Feature Narrative\nTBD." },
 			usage: {},
 		});
 

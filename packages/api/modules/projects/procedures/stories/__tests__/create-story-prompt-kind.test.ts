@@ -46,7 +46,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		enqueuePmSync: vi.fn(),
 		userStoryUpdate: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		retrieveProjectContexts: vi.fn(),
 		formatContextsForPrompt: vi.fn(),
@@ -88,7 +88,8 @@ vi.mock("@repo/ai", () => {
 	return {
 		AIProviderNotConfiguredError,
 		getAIModelWithMetadata: mocks.getAIModelWithMetadata,
-		generateObject: mocks.generateObject,
+		generateText: mocks.generateText,
+		Output: { object: (spec: unknown) => spec },
 		logModelUsageAsync: mocks.logModelUsageAsync,
 	};
 });
@@ -214,7 +215,7 @@ function queriedDocumentTypes(): string[] {
 function expectNothingWritten() {
 	expect(mocks.createStory).not.toHaveBeenCalled();
 	expect(mocks.createFeatureVersion).not.toHaveBeenCalled();
-	expect(mocks.generateObject).not.toHaveBeenCalled();
+	expect(mocks.generateText).not.toHaveBeenCalled();
 	expect(mocks.userStoryUpdate).not.toHaveBeenCalled();
 	expect(mocks.dispatchLifecycleEvent).not.toHaveBeenCalled();
 }
@@ -295,8 +296,8 @@ beforeEach(() => {
 		metadata: { providerKey: "stub" },
 		trackUsage: vi.fn(),
 	});
-	mocks.generateObject.mockResolvedValue({
-		object: {
+	mocks.generateText.mockResolvedValue({
+		output: {
 			description: "AI-drafted feature body",
 			acceptanceCriteria: "AI-drafted criteria",
 			markdown: "AI-drafted bug card",
@@ -557,7 +558,7 @@ describe("createStoryProcedure — inputs the guard leaves alone", () => {
 
 		expect(result.story.id).toBe("story-1");
 		expect(mocks.promptBindingFindMany).not.toHaveBeenCalled();
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("does not refuse a version id the caller cannot see, for the same reason", async () => {

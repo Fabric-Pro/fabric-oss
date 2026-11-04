@@ -201,6 +201,11 @@
 			"import": "./lib/recurring-error-bug-prompt.ts",
 			"default": "./lib/recurring-error-bug-prompt.ts"
 		},
+		"./report-sample-prompt": {
+			"types": "./lib/report-sample-prompt.ts",
+			"import": "./lib/report-sample-prompt.ts",
+			"default": "./lib/report-sample-prompt.ts"
+		},
 		"./untrusted-fence": {
 			"types": "./lib/untrusted-fence.ts",
 			"import": "./lib/untrusted-fence.ts",
@@ -430,6 +435,11 @@
 			"types": "./lib/feature-flag.ts",
 			"import": "./lib/feature-flag.ts",
 			"default": "./lib/feature-flag.ts"
+		},
+		"./github-oauth-scopes": {
+			"types": "./lib/github-oauth-scopes.ts",
+			"import": "./lib/github-oauth-scopes.ts",
+			"default": "./lib/github-oauth-scopes.ts"
 		},
 		"./feature-flag-registry": {
 			"types": "./lib/feature-flag-registry.ts",

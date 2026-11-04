@@ -295,3 +295,32 @@ describe("frame sharing queries", () => {
 		expect(access.scope).toBe("PRIVATE");
 	});
 });
+
+it.each(["PRIVATE", "EMAILS_ONLY", "WORKSPACE_AND_EMAILS"] as const)(
+	"revokes public tokens when changing to %s and rotates them when publishing again",
+	async (shareScope) => {
+		const first = await updateFrameShareScope({
+			frameId: testFrameId,
+			userId: USER_ID,
+			shareScope: "PUBLIC",
+		});
+		expect(first.shareToken).toBeTruthy();
+		await updateFrameShareScope({
+			frameId: testFrameId,
+			userId: USER_ID,
+			shareScope,
+		});
+		const privateFrame = await db.agentWorkspaceFile.findUnique({
+			where: { id: testFrameId },
+		});
+		expect(privateFrame?.shareToken).toBeNull();
+		expect(privateFrame?.isPublic).toBe(false);
+		const second = await updateFrameShareScope({
+			frameId: testFrameId,
+			userId: USER_ID,
+			shareScope: "PUBLIC",
+		});
+		expect(second.shareToken).toBeTruthy();
+		expect(second.shareToken).not.toBe(first.shareToken);
+	},
+);

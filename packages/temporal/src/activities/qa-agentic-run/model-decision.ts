@@ -32,8 +32,9 @@
  * the three causes was real without anyone reading a log.
  */
 
-import { generateObject, generateText, NoObjectGeneratedError } from "@repo/ai";
+import { generateText, NoObjectGeneratedError, Output } from "@repo/ai";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import type { LanguageModel } from "ai";
 import type { z } from "zod";
 import { safeHeartbeat } from "../lib/activity-liveness";
@@ -203,7 +204,7 @@ export interface DecideWithModelInput<S extends z.ZodType> {
  * Ask the model for one structured decision.
  *
  * Throws only when BOTH strategies fail; the thrown error is the original
- * `generateObject` failure, so {@link describeModelFailure} can still name the
+ * structured-output failure, so {@link describeModelFailure} can still name the
  * cause. A partial answer is preferred to no answer everywhere here — the
  * schemas are all-optional by design, so `{}` is a legitimate result that the
  * caller normalises into a safe no-op.
@@ -223,13 +224,17 @@ export async function decideWithModel<S extends z.ZodType>(
 		}) ?? DECISION_OUTPUT_TOKEN_CEILING;
 
 	try {
-		const { object } = await withHeartbeat(input.heartbeatDetails, () =>
-			generateObject({
-				model,
-				schema,
-				prompt,
-				maxOutputTokens,
-			}),
+		const { output: object } = await withHeartbeat(
+			input.heartbeatDetails,
+			() =>
+				requireStructuredOutput(
+					generateText({
+						model,
+						output: Output.object({ schema }),
+						prompt,
+						maxOutputTokens,
+					}),
+				),
 		);
 		return { value: object as z.infer<S>, via: "object", calls: 1 };
 	} catch (err) {

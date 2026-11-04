@@ -2,6 +2,8 @@
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { ReportTemplateForm } from "@saas/reports/components/ReportTemplateForm";
+import { useReportProjectContext } from "@saas/reports/hooks/use-report-project-context";
+import { projectReportsHref } from "@saas/reports/lib/project-report-suite";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -23,6 +25,10 @@ export default function OrganizationEditReportTemplatePage({ params }: Props) {
 	} = useOrganizationContext();
 
 	const basePath = `${orgBasePath}/report-templates`;
+	const projectId = useReportProjectContext();
+	const backHref = projectId
+		? projectReportsHref(orgBasePath, projectId)
+		: basePath;
 
 	// Fetch template to get its name for breadcrumbs
 	// Gate on loaded to prevent sending organizationId: null before org context is ready
@@ -57,7 +63,12 @@ export default function OrganizationEditReportTemplatePage({ params }: Props) {
 								},
 							]
 						: []),
-					{ label: "Report Templates", href: basePath },
+					{
+						label: projectId
+							? "Project reports"
+							: "Report Templates",
+						href: backHref,
+					},
 					{ label: template.name },
 				]}
 			/>
@@ -65,6 +76,8 @@ export default function OrganizationEditReportTemplatePage({ params }: Props) {
 				templateId={templateId}
 				basePath={basePath}
 				organizationId={organizationId ?? undefined}
+				projectId={projectId}
+				backHref={backHref}
 			/>
 		</div>
 	);

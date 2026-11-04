@@ -412,7 +412,7 @@ describe("fabric_create_frame", () => {
 
 		expect(payload(result)).toMatchObject({
 			frameId: "frame-1",
-			pageUrl: "/app/example-org/workspaces/frame-1",
+			pageUrl: "/app/example-org/pages/frame-1",
 		});
 	});
 
@@ -880,7 +880,7 @@ describe("fabric_list_frames", () => {
 			{
 				frameId: "workspace-1",
 				surface: "workspace",
-				pageUrl: "/app/example-org/workspaces/workspace-1",
+				pageUrl: "/app/example-org/pages/workspace-1",
 			},
 			{
 				frameId: "artifact-1",

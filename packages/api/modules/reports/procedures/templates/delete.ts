@@ -35,6 +35,13 @@ export const deleteTemplateProcedure = tenantProtectedProcedure
 			});
 		}
 
+		if (existing.scope === "SYSTEM") {
+			throw new ORPCError("FORBIDDEN", {
+				message:
+					"System templates cannot be deleted; archive them instead",
+			});
+		}
+
 		await assertCanManageReportTemplate(existing, context.user);
 
 		await deleteReportTemplate(input.id);

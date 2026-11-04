@@ -38,6 +38,36 @@ test("enough speech brings the alarm forward to the suggestion pass, not the nex
 	assert.ok(pass <= Date.now() + 45_000, "at the pass interval");
 });
 
+// The audience the session was verified with gates every pass, so it must
+// survive in the bridge's state; anything but MEETING keeps suggestions off
+// the chat.
+for (const [verified, stored] of [
+	["TEAM", "TEAM"],
+	["MEETING", "MEETING"],
+	[undefined, "MEETING"],
+	["EVERYONE", "TEAM"],
+] as const) {
+	test(`a stream verified with audience ${verified ?? "(none)"} keeps ${stored}`, async () => {
+		const harness = await connectedMeeting({
+			verify: async () =>
+				Response.json({
+					valid: true,
+					hardStopAt: new Date(Date.now() + 3_600_000).toISOString(),
+					streamGeneration: 1,
+					suggestionsEnabled: true,
+					...(verified === undefined
+						? {}
+						: { suggestionAudience: verified }),
+				}),
+		});
+
+		const bridge = harness.data.get("bridge") as {
+			suggestionAudience?: string;
+		};
+		assert.equal(bridge?.suggestionAudience, stored);
+	});
+}
+
 test("speech does not move the alarm when the invitation turned suggestions off", async () => {
 	const harness = await connectedMeeting();
 	const accessCheck = harness.alarms.at(-1);

@@ -88,7 +88,7 @@ Fabric's worker declares **21 task queues** (`packages/temporal/src/worker.ts`).
 | 6 | `workflow-builder` | Workflow-builder executions | 10 / 10 | `worker.ts:283` |
 | 7 | `fabric-worker` | General-purpose / misc workflows | 5 / 5 | `worker.ts:297` |
 | 8 | `fabric-orchestrator` | CUGA-inspired agent orchestrator (long-running) | 10 / 5 | `worker.ts:318` |
-| 9 | `agents` | Kanban task-agent workflows | 10 / 5 | `worker.ts:332` |
+| 9 | `agents` | Shared agent workflows | 10 / 5 | `worker.ts:332` |
 | 10 | `code-indexing` | AST-aware code indexing (tree-sitter + embeddings) | 3 / 3 | `worker.ts:346` |
 | 11 | `atlas` | Repo "Atlas" analysis — **must match `ATLAS_TASK_QUEUE` in `@repo/atlas`** | 2 / 2 | `worker.ts:365` |
 | 12 | `trigger-system` | Webhooks, schedules, Slack mentions | 10 / 10 | `worker.ts:377` |

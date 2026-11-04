@@ -1,5 +1,6 @@
 "use client";
 
+import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
 /**
  * SkillAutocomplete - Dropdown for /slash-command skill search results
  *
@@ -8,7 +9,7 @@
  */
 
 import { cn } from "@ui/lib";
-import { Loader2, PuzzleIcon } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import type { SlashCommandSkill } from "../../../hooks/useSkillSlashCommand";
 
 export interface SkillAutocompleteProps {

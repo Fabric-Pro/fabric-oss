@@ -38,7 +38,7 @@ export function useWorkflowRuns(
 			(query.state.data?.executions ?? []).some((e) => isActive(e.status))
 				? ACTIVE_RUN_POLL_MS
 				: false,
-		enabled: Boolean(workflowId),
+		enabled: Boolean(workflowId && organizationId),
 	});
 }
 
@@ -56,7 +56,7 @@ export function useWorkflowRunStats(
 			}),
 		refetchInterval: (query) =>
 			(query.state.data?.running ?? 0) > 0 ? ACTIVE_RUN_POLL_MS : false,
-		enabled: Boolean(workflowId),
+		enabled: Boolean(workflowId && organizationId),
 	});
 }
 
@@ -71,7 +71,7 @@ export function useViewedExecution(
 	return useQuery(
 		orpc.workflows.executions.get.queryOptions({
 			input: { executionId: executionId ?? "", organizationId },
-			enabled: Boolean(executionId),
+			enabled: Boolean(executionId && organizationId),
 			refetchInterval: (query) => {
 				const status = query.state.data?.execution?.status;
 				return status && isActive(status) ? VIEWED_RUN_POLL_MS : false;

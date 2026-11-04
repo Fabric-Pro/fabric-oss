@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import {
+	canAccessReportInstance,
 	getTemplateInstance,
 	restoreReportInstanceVersion,
 } from "@repo/database";
@@ -40,6 +41,19 @@ export const restoreInstanceProcedure = tenantProtectedProcedure
 		}
 
 		await assertCanEditReportInstance(existing, context.user);
+
+		if (
+			!(await canAccessReportInstance(
+				existing,
+				{ userId: context.user.id, organizationId },
+				undefined,
+				true,
+			))
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Project report write access denied",
+			});
+		}
 
 		// Can only restore archived instances
 		if (existing.status !== "ARCHIVED") {

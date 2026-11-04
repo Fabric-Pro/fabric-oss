@@ -20,7 +20,7 @@ const { mocks } = vi.hoisted(() => ({
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		projectFindUnique: vi.fn(),
@@ -29,13 +29,14 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	Output: { object: (spec: unknown) => spec },
 	AIProviderNotConfiguredError: class extends Error {
 		constructor() {
 			super("AI provider not configured");
 			this.name = "AIProviderNotConfiguredError";
 		}
 	},
-	generateObject: mocks.generateObject,
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -158,7 +159,7 @@ describe("createStoryFromProposal — requireCleanSpec", () => {
 
 	it("throws instead of creating a raw-field stub when drafting fails", async () => {
 		mocks.getBoundPromptForAgent.mockResolvedValue(BOUND_CLEAN_SPEC);
-		mocks.generateObject.mockRejectedValue(new Error("model down"));
+		mocks.generateText.mockRejectedValue(new Error("model down"));
 
 		await expect(createStoryFromProposal(BASE_PARAMS)).rejects.toThrow(
 			/could not be drafted/,
@@ -168,8 +169,8 @@ describe("createStoryFromProposal — requireCleanSpec", () => {
 
 	it("ignores skipDrafting / bodyAlreadyDrafted and drafts through Clean Spec", async () => {
 		mocks.getBoundPromptForAgent.mockResolvedValue(BOUND_CLEAN_SPEC);
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				description: "Full drafted spec.",
 				acceptanceCriteria: "- Given a search, it can be saved",
 			},
@@ -187,7 +188,7 @@ describe("createStoryFromProposal — requireCleanSpec", () => {
 			expect.objectContaining({ projectId: "proj-1" }),
 		);
 		expect(result.aiDrafted).toBe(true);
-		expect(mocks.generateObject).toHaveBeenCalled();
+		expect(mocks.generateText).toHaveBeenCalled();
 		const call = mocks.createStory.mock.calls[0]?.[0] as Record<
 			string,
 			unknown
@@ -244,7 +245,7 @@ describe("AI configuration refusals", () => {
 			if (source === "model") {
 				mocks.getAIModelWithMetadata.mockRejectedValueOnce(thrown);
 			} else {
-				mocks.generateObject.mockRejectedValueOnce(thrown);
+				mocks.generateText.mockRejectedValueOnce(thrown);
 			}
 			await expect(
 				createStoryFromProposal({
@@ -257,7 +258,7 @@ describe("AI configuration refusals", () => {
 	);
 	it("keeps the review-time raw body on a configuration refusal", async () => {
 		mocks.getBoundPromptForAgent.mockResolvedValue(BOUND_CLEAN_SPEC);
-		mocks.generateObject.mockRejectedValueOnce(
+		mocks.generateText.mockRejectedValueOnce(
 			Object.assign(new Error("refused"), {
 				name: "ChatGptPlanAuthError",
 			}),

@@ -1,10 +1,10 @@
 import { listInstructionFiles, loadGitIntent } from "@repo/database";
+import { ProposalStepFailure } from "./instruction-proposal-boundary";
 import {
 	computeEffectiveDelta,
 	type EffectiveDelta,
 	type FileRow,
 } from "./instruction-proposal-commit";
-import { ProposalStepFailure } from "./instruction-proposal-boundary";
 
 /** Native receipts contain only changed paths; uploaded snapshots retain their full-tree diff. */
 export async function loadInstructionChangeDelta(operation: {
@@ -61,7 +61,20 @@ export async function loadInstructionChangeDelta(operation: {
 			storageKey: entry.storageKey,
 			mode: entry.mode,
 		};
-		delta[entry.baseObjectId === null ? "added" : "modified"].push(row);
+		delta[isNewPath(entry) ? "added" : "modified"].push(row);
 	}
 	return delta;
+}
+
+/**
+ * A PUT adds a path only when neither the published version nor the
+ * member's branch held it. A branch-relative entry edits the file Fabric
+ * wrote on the branch, so it is a modification there, whose mode the tip
+ * keeps.
+ */
+function isNewPath(entry: {
+	baseObjectId: string | null;
+	branchObjectId: string | null;
+}): boolean {
+	return entry.baseObjectId === null && entry.branchObjectId === null;
 }

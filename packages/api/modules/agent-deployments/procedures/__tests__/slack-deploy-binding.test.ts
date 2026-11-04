@@ -41,6 +41,8 @@ vi.mock("../../../../orpc/procedures", () => ({
 	},
 	Permissions: { AGENT_UPDATE: "AGENT_UPDATE" },
 	requirePermission: () => () => {},
+	requireInputOrgPermission: () => () => {},
+	resolveOrganizationId: (id: string) => id,
 }));
 
 import { activateInstanceTriggers } from "../deploy";

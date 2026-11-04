@@ -29,8 +29,11 @@ import {
 	isNearDuplicateParlumeSuggestion,
 	isParlumeSuggestionPassDue,
 	nextParlumeSuggestionPassAt,
+	type ParlumeSuggestion,
+	type ParlumeSuggestionAudience,
 	type ParlumeSuggestionState,
 	parseParlumeSuggestion,
+	parseParlumeSuggestionAudience,
 	spokenParlumeSuggestion,
 } from "./parlume-suggestions";
 
@@ -428,15 +431,24 @@ export class ParlumeChatChannel {
 
 	/**
 	 * One suggestion pass, when it is due and nothing else is going on. Fabric
-	 * decides whether there is anything worth offering; the bridge limits how
-	 * often, and drops one too close to a recent suggestion.
+	 * decides whether there is anything worth offering and who it is for; the
+	 * bridge limits how often, and drops one too close to a recent suggestion.
+	 * A suggestion is posted in the chat only when both the verified session
+	 * and the pass's answer say it is for the meeting; otherwise it is for the
+	 * team and is not. Either is recorded for the Parlume page and counts
+	 * toward the limits. `audience` is the one Fabric gave when it verified the
+	 * stream.
 	 */
-	async runSuggestionPass(input: { enabled: boolean }): Promise<void> {
+	async runSuggestionPass(input: {
+		enabled: boolean;
+		audience: ParlumeSuggestionAudience;
+	}): Promise<void> {
 		if (!input.enabled || this.host.isBusy()) {
 			return;
 		}
 		const chat = await this.chatState();
-		if (chat.unavailable) {
+		// A team-only session needs no chat.
+		if (chat.unavailable && input.audience !== "TEAM") {
 			return;
 		}
 		const suggestions = await this.suggestionState();
@@ -461,11 +473,19 @@ export class ParlumeChatChannel {
 			{
 				...bot,
 				previous: suggestions.recent.map((entry) => entry.text),
+				teamAudience: true,
 			},
 		);
-		const suggestion = response
-			? parseParlumeSuggestion(await response.json().catch(() => null))
-			: null;
+		const body = response ? await response.json().catch(() => null) : null;
+		const answered = parseParlumeSuggestionAudience(body);
+		// TEAM wins on any disagreement; an audience nobody knows is dropped.
+		const audience: ParlumeSuggestionAudience | null =
+			answered === null
+				? null
+				: answered === "MEETING" && input.audience === "MEETING"
+					? "MEETING"
+					: "TEAM";
+		const suggestion = audience ? parseParlumeSuggestion(body) : null;
 		const duplicate =
 			suggestion !== null &&
 			isNearDuplicateParlumeSuggestion(suggestions, suggestion, now);
@@ -473,23 +493,56 @@ export class ParlumeChatChannel {
 			...bot,
 			answered: response !== null,
 			suggested: suggestion !== null,
+			kind: suggestion?.kind ?? null,
+			audience,
 			duplicate,
 		});
-		if (!suggestion || duplicate || this.host.isBusy()) {
+		if (!suggestion || !audience || duplicate || this.host.isBusy()) {
 			return;
 		}
 		acceptParlumeSuggestion(suggestions, suggestion, now);
 		await this.saveSuggestionState();
-		await this.post(bot, {
-			text: spokenParlumeSuggestion(suggestion),
-			turnId: null,
-			kind: "suggestion",
-			compose: (tag) => formatParlumeSuggestion(tag, suggestion),
+		const posted =
+			audience === "MEETING"
+				? await this.post(bot, {
+						text: spokenParlumeSuggestion(suggestion),
+						turnId: null,
+						kind: "suggestion",
+						compose: (tag) =>
+							formatParlumeSuggestion(tag, suggestion),
+					})
+				: null;
+		await this.recordSuggestion(bot, suggestion, {
+			chatTag: posted?.sent ? posted.tag : null,
 		});
 	}
 
+	// The record is the Parlume page's copy; a failed one leaves the meeting
+	// as it was and the pass goes on. Fabric takes the audience from the
+	// session, so only where it went is sent.
+	private async recordSuggestion(
+		bot: ParlumeChatBot,
+		suggestion: ParlumeSuggestion,
+		delivery: { chatTag: string | null },
+	): Promise<void> {
+		const recorded = await this.host.postToFabric(
+			"/api/internal/parlume/suggestions",
+			{ ...bot, ...suggestion, ...delivery },
+		);
+		if (!recorded) {
+			this.host.log("warn", "suggestion.record_failed", {
+				...bot,
+				kind: suggestion.kind,
+				posted: delivery.chatTag !== null,
+			});
+		}
+	}
+
 	/** The next time the Durable Object's alarm should fire for the chat. */
-	async nextWakeAt(input: { suggestions: boolean }): Promise<number | null> {
+	async nextWakeAt(input: {
+		suggestions: boolean;
+		audience: ParlumeSuggestionAudience;
+	}): Promise<number | null> {
 		const now = this.host.now();
 		const chat = await this.chatState();
 		const deadline = nextParlumeChatDeadline(chat);
@@ -499,7 +552,7 @@ export class ParlumeChatChannel {
 		// run (it was busy) is tried again shortly.
 		const nextPass =
 			input.suggestions &&
-			!chat.unavailable &&
+			(!chat.unavailable || input.audience === "TEAM") &&
 			hasParlumeSuggestionMaterial(this.newSegments)
 				? Math.max(
 						nextParlumeSuggestionPassAt(

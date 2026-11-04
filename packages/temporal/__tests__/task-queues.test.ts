@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	COMPANY_CONTEXT_TASK_QUEUE,
+	CONTEXT_QUALITY_TASK_QUEUE,
 	CONTEXT_SYNC_ACTIVITY_TASK_QUEUE,
 	GLOSSY_EDITION_TASK_QUEUE,
 	ORCHESTRATOR_TASK_QUEUE,
@@ -68,5 +69,12 @@ describe("PROPOSAL_EXPORT_TASK_QUEUE", () => {
 		]) {
 			expect(PROPOSAL_EXPORT_TASK_QUEUE).not.toBe(otherQueue);
 		}
+	});
+});
+
+describe("CONTEXT_QUALITY_TASK_QUEUE", () => {
+	it("isolates long remote-job polling from project foreground work", () => {
+		expect(CONTEXT_QUALITY_TASK_QUEUE).toBe("context-quality");
+		expect(CONTEXT_QUALITY_TASK_QUEUE).not.toBe("project-operations");
 	});
 });

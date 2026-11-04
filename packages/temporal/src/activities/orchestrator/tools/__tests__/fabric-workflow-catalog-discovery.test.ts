@@ -105,6 +105,8 @@ describe("the catalogue's gateway tools", () => {
 			"Azure DevOps work item counts",
 			"fabric_get_project_work_item_counts",
 		],
+		["project reports list reports", "fabric_list_project_reports"],
+		["regenerate report refresh the report", "fabric_generate_report"],
 	])("discovers %s as %s", async (query, name) => {
 		expect(await rank(query)).toContain(name);
 	});

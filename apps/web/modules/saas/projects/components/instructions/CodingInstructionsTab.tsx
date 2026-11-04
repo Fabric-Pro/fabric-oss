@@ -35,6 +35,7 @@ import { ProjectKnowledgePanel } from "../knowledge/ProjectKnowledgePanel";
 import { ConfigureRepositorySyncDialog } from "./ConfigureRepositorySyncDialog";
 import { ConsolidationPanel } from "./ConsolidationPanel";
 import { DirectRepositoryInstructions } from "./DirectRepositoryInstructions";
+import { InstructionsDigestPanel } from "./InstructionsDigestPanel";
 import { InstructionsEmptyState } from "./InstructionsEmptyState";
 import {
 	InstructionsPublishedView,
@@ -46,6 +47,7 @@ import {
 	InstructionsTabSkeleton,
 } from "./InstructionsTabState";
 import { MoveInstructionsDialog } from "./MoveInstructionsDialog";
+import { PluginAccessPanel } from "./PluginAccessPanel";
 import { PluginNameSetting } from "./PluginNameSetting";
 import { RulesHealthPanel } from "./RulesHealthPanel";
 import { UploadFolderDialog } from "./UploadFolderDialog";
@@ -158,10 +160,18 @@ export function CodingInstructionsTab(props: CodingInstructionsTabProps) {
 						projectId={props.projectId}
 						canEdit={props.canEdit && !props.readOnlyMode}
 					/>
-					<RulesHealthPanel projectId={props.projectId} />
+					<RulesHealthPanel
+						projectId={props.projectId}
+						canEdit={props.canEdit}
+						readOnlyMode={props.readOnlyMode}
+					/>
 					<ConsolidationPanel
 						projectId={props.projectId}
 						canEdit={props.canEdit && !props.readOnlyMode}
+					/>
+					<PluginAccessPanel
+						projectId={props.projectId}
+						readOnlyMode={props.readOnlyMode}
 					/>
 					<CodingInstructionsBody {...props} />
 				</>
@@ -843,7 +853,12 @@ function SnapshotCodingInstructionsTab({
 			<InstructionsPublishedView
 				projectId={projectId}
 				projectName={projectName}
-				notice={settingsNotice}
+				notice={
+					<>
+						{settingsNotice}
+						<InstructionsDigestPanel projectId={projectId} />
+					</>
+				}
 				published={
 					(published.data as unknown as
 						| InstructionsSnapshot

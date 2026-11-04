@@ -1,0 +1,290 @@
+{
+	"events": [
+		{
+			"eventId": "1",
+			"eventTime": "2026-11-03T18:37:39.247186251Z",
+			"eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+			"taskId": "1487895",
+			"workflowExecutionStartedEventAttributes": {
+				"workflowType": {
+					"name": "nativeGoalOrientedAgentWorkflow"
+				},
+				"taskQueue": {
+					"name": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-goal-refusal",
+					"kind": "TASK_QUEUE_KIND_NORMAL"
+				},
+				"input": {
+					"payloads": [
+						{
+							"metadata": {
+								"encoding": "anNvbi9wbGFpbg=="
+							},
+							"data": "eyJleGVjdXRpb25JZCI6ImV4YW1wbGUtZXhlY3V0aW9uIiwiZGVwbG95bWVudElkIjoiZXhhbXBsZS1kZXBsb3ltZW50IiwiaW5zdGFuY2VJZCI6ImV4YW1wbGUtaW5zdGFuY2UiLCJ1c2VySWQiOiJleGFtcGxlLXVzZXIiLCJvcmdhbml6YXRpb25JZCI6ImV4YW1wbGUtb3JnIiwiaW5wdXQiOnsibWVzc2FnZSI6IkV4YW1wbGUgZGVsaXZlcnkifSwidHJpZ2dlclR5cGUiOiJBUEkiLCJ0aW1lb3V0TXMiOjMwMDAwMCwiZ29hbCI6IlByb2R1Y2UgYW4gZXhhbXBsZSBhbnN3ZXIiLCJtYXhJdGVyYXRpb25zIjoxLCJuYXRpdmVBZG1pc3Npb24iOnsidmVyc2lvbiI6MSwiZXhlY3V0aW9uUm93SWQiOiJleGFtcGxlLXJvdyIsInJlcXVlc3RIYXNoIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSJ9fQ=="
+						}
+					]
+				},
+				"workflowTaskTimeout": "10s",
+				"originalExecutionRunId": "01a1a2b3-de2f-72d4-9f4c-7eebbfd0df8a",
+				"identity": "example-worker",
+				"firstExecutionRunId": "01a1a2b3-de2f-72d4-9f4c-7eebbfd0df8a",
+				"attempt": 1,
+				"firstWorkflowTaskBackoff": "0s",
+				"memo": {
+					"fields": {
+						"fabricAgentAdmission": {
+							"metadata": {
+								"encoding": "anNvbi9wbGFpbg=="
+							},
+							"data": "eyJ2ZXJzaW9uIjoxLCJleGVjdXRpb25JZCI6ImV4YW1wbGUtcm93IiwidXNlcklkIjoiZXhhbXBsZS11c2VyIiwib3JnYW5pemF0aW9uSWQiOiJleGFtcGxlLW9yZyIsInJlcXVlc3RIYXNoIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSJ9"
+						}
+					}
+				},
+				"header": {},
+				"workflowId": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-goal-refusal"
+			}
+		},
+		{
+			"eventId": "2",
+			"eventTime": "2026-11-03T18:37:39.247279028Z",
+			"eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+			"taskId": "1487896",
+			"workflowTaskScheduledEventAttributes": {
+				"taskQueue": {
+					"name": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-goal-refusal",
+					"kind": "TASK_QUEUE_KIND_NORMAL"
+				},
+				"startToCloseTimeout": "10s",
+				"attempt": 1
+			}
+		},
+		{
+			"eventId": "3",
+			"eventTime": "2026-11-03T18:37:39.256838297Z",
+			"eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+			"taskId": "1487901",
+			"workflowTaskStartedEventAttributes": {
+				"scheduledEventId": "2",
+				"identity": "example-worker",
+				"requestId": "5b500fd6-0825-49bf-9f43-b0dc714a203d",
+				"historySizeBytes": "1108",
+				"workerVersion": {
+					"buildId": "@temporalio/worker@1.23.0+9498a52c69089ae979059e7c80988fc18e8e358bcdd192ba1c167ea1d63e2420"
+				}
+			}
+		},
+		{
+			"eventId": "4",
+			"eventTime": "2026-11-03T18:37:39.347626652Z",
+			"eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+			"taskId": "1487905",
+			"workflowTaskCompletedEventAttributes": {
+				"scheduledEventId": "2",
+				"startedEventId": "3",
+				"identity": "example-worker",
+				"workerVersion": {
+					"buildId": "@temporalio/worker@1.23.0+9498a52c69089ae979059e7c80988fc18e8e358bcdd192ba1c167ea1d63e2420"
+				},
+				"sdkMetadata": {
+					"coreUsedFlags": [3, 2, 1],
+					"sdkName": "temporal-typescript",
+					"sdkVersion": "1.23.0"
+				},
+				"meteringMetadata": {}
+			}
+		},
+		{
+			"eventId": "5",
+			"eventTime": "2026-11-03T18:37:39.347689936Z",
+			"eventType": "EVENT_TYPE_MARKER_RECORDED",
+			"taskId": "1487906",
+			"markerRecordedEventAttributes": {
+				"markerName": "core_patch",
+				"details": {
+					"patch-data": {
+						"payloads": [
+							{
+								"metadata": {
+									"encoding": "anNvbi9wbGFpbg=="
+								},
+								"data": "eyJpZCI6InNhdmVkLWFnZW50LW5hdGl2ZS1yZWNlaXB0LXYxIiwiZGVwcmVjYXRlZCI6ZmFsc2V9"
+							}
+						]
+					}
+				},
+				"workflowTaskCompletedEventId": "4"
+			}
+		},
+		{
+			"eventId": "6",
+			"eventTime": "2026-11-03T18:37:39.348507759Z",
+			"eventType": "EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES",
+			"taskId": "1487907",
+			"upsertWorkflowSearchAttributesEventAttributes": {
+				"workflowTaskCompletedEventId": "4",
+				"searchAttributes": {
+					"indexedFields": {
+						"TemporalChangeVersion": {
+							"metadata": {
+								"type": "S2V5d29yZExpc3Q=",
+								"encoding": "anNvbi9wbGFpbg=="
+							},
+							"data": "WyJzYXZlZC1hZ2VudC1uYXRpdmUtcmVjZWlwdC12MSJd"
+						}
+					}
+				}
+			}
+		},
+		{
+			"eventId": "7",
+			"eventTime": "2026-11-03T18:37:39.348554683Z",
+			"eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+			"taskId": "1487908",
+			"activityTaskScheduledEventAttributes": {
+				"activityId": "1",
+				"activityType": {
+					"name": "registerNativeAgentExecutionReceipt"
+				},
+				"taskQueue": {
+					"name": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-goal-refusal",
+					"kind": "TASK_QUEUE_KIND_NORMAL"
+				},
+				"header": {},
+				"input": {
+					"payloads": [
+						{
+							"metadata": {
+								"encoding": "anNvbi9wbGFpbg=="
+							},
+							"data": "eyJleGVjdXRpb25JZCI6ImV4YW1wbGUtZXhlY3V0aW9uIiwiZGVwbG95bWVudElkIjoiZXhhbXBsZS1kZXBsb3ltZW50IiwiaW5zdGFuY2VJZCI6ImV4YW1wbGUtaW5zdGFuY2UiLCJ1c2VySWQiOiJleGFtcGxlLXVzZXIiLCJvcmdhbml6YXRpb25JZCI6ImV4YW1wbGUtb3JnIiwiaW5wdXQiOnsibWVzc2FnZSI6IkV4YW1wbGUgZGVsaXZlcnkifSwidHJpZ2dlclR5cGUiOiJBUEkiLCJ0aW1lb3V0TXMiOjMwMDAwMCwiZ29hbCI6IlByb2R1Y2UgYW4gZXhhbXBsZSBhbnN3ZXIiLCJtYXhJdGVyYXRpb25zIjoxLCJuYXRpdmVBZG1pc3Npb24iOnsidmVyc2lvbiI6MSwiZXhlY3V0aW9uUm93SWQiOiJleGFtcGxlLXJvdyIsInJlcXVlc3RIYXNoIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSJ9LCJ3b3JrZmxvd0lkIjoiZXhhbXBsZS1uYXRpdmUtZGJiZGUzYzQtYjg0Ni00ZTU2LTgzYjQtZmNiZWE1NTFlNWVmLWdvYWwtcmVmdXNhbCIsInJ1bklkIjoiMDFhMWEyYjMtZGUyZi03MmQ0LTlmNGMtN2VlYmJmZDBkZjhhIiwid29ya2Zsb3dUeXBlIjoibmF0aXZlR29hbE9yaWVudGVkQWdlbnRXb3JrZmxvdyIsImFkbWlzc2lvbk1lbW8iOnsidmVyc2lvbiI6MSwiZXhlY3V0aW9uSWQiOiJleGFtcGxlLXJvdyIsInVzZXJJZCI6ImV4YW1wbGUtdXNlciIsIm9yZ2FuaXphdGlvbklkIjoiZXhhbXBsZS1vcmciLCJyZXF1ZXN0SGFzaCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEifX0="
+						}
+					]
+				},
+				"scheduleToCloseTimeout": "0s",
+				"scheduleToStartTimeout": "0s",
+				"startToCloseTimeout": "60s",
+				"heartbeatTimeout": "15s",
+				"workflowTaskCompletedEventId": "4",
+				"retryPolicy": {
+					"initialInterval": "1s",
+					"backoffCoefficient": 2,
+					"maximumInterval": "30s"
+				},
+				"useWorkflowBuildId": true
+			}
+		},
+		{
+			"eventId": "8",
+			"eventTime": "2026-11-03T18:37:39.352670813Z",
+			"eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+			"taskId": "1487914",
+			"activityTaskStartedEventAttributes": {
+				"scheduledEventId": "7",
+				"identity": "example-worker",
+				"requestId": "3df711ca-2407-4c7e-8a9c-83533430b2ae",
+				"attempt": 1,
+				"workerVersion": {
+					"buildId": "@temporalio/worker@1.23.0+9498a52c69089ae979059e7c80988fc18e8e358bcdd192ba1c167ea1d63e2420"
+				}
+			}
+		},
+		{
+			"eventId": "9",
+			"eventTime": "2026-11-03T18:37:39.360559655Z",
+			"eventType": "EVENT_TYPE_ACTIVITY_TASK_FAILED",
+			"taskId": "1487915",
+			"activityTaskFailedEventAttributes": {
+				"failure": {
+					"message": "Example native receipt refused",
+					"source": "TypeScriptSDK",
+					"stackTrace": "ApplicationFailure: Example native receipt refused\n    at ApplicationFailure.nonRetryable (/example/Development/fabric-oss/node_modules/.pnpm/@temporalio+common@1.23.0/node_modules/@temporalio/common/lib/failure.js:208:16)\n    at registerNativeAgentExecutionReceipt (/example/Development/fabric-oss/.git/sync-backups/factory-temporal-native/record-native-histories.cjs:6:1370)",
+					"applicationFailureInfo": {
+						"type": "NATIVE_AGENT_RECEIPT_REFUSED",
+						"nonRetryable": true
+					}
+				},
+				"scheduledEventId": "7",
+				"startedEventId": "8",
+				"identity": "example-worker",
+				"retryState": "RETRY_STATE_NON_RETRYABLE_FAILURE"
+			}
+		},
+		{
+			"eventId": "10",
+			"eventTime": "2026-11-03T18:37:39.360567279Z",
+			"eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+			"taskId": "1487916",
+			"workflowTaskScheduledEventAttributes": {
+				"taskQueue": {
+					"name": "example-worker-9b526981866c49ec989187a25a2ae7b8",
+					"kind": "TASK_QUEUE_KIND_STICKY",
+					"normalName": "example-native-dbbde3c4-b846-4e56-83b4-fcbea551e5ef-goal-refusal"
+				},
+				"startToCloseTimeout": "10s",
+				"attempt": 1
+			}
+		},
+		{
+			"eventId": "11",
+			"eventTime": "2026-11-03T18:37:39.363462802Z",
+			"eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+			"taskId": "1487920",
+			"workflowTaskStartedEventAttributes": {
+				"scheduledEventId": "10",
+				"identity": "example-worker",
+				"requestId": "ea7c411a-2b52-45e8-a1b8-b7c7ea6938df",
+				"historySizeBytes": "3618",
+				"workerVersion": {
+					"buildId": "@temporalio/worker@1.23.0+9498a52c69089ae979059e7c80988fc18e8e358bcdd192ba1c167ea1d63e2420"
+				}
+			}
+		},
+		{
+			"eventId": "12",
+			"eventTime": "2026-11-03T18:37:39.384324389Z",
+			"eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+			"taskId": "1487924",
+			"workflowTaskCompletedEventAttributes": {
+				"scheduledEventId": "10",
+				"startedEventId": "11",
+				"identity": "example-worker",
+				"workerVersion": {
+					"buildId": "@temporalio/worker@1.23.0+9498a52c69089ae979059e7c80988fc18e8e358bcdd192ba1c167ea1d63e2420"
+				},
+				"sdkMetadata": {},
+				"meteringMetadata": {}
+			}
+		},
+		{
+			"eventId": "13",
+			"eventTime": "2026-11-03T18:37:39.384393183Z",
+			"eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_FAILED",
+			"taskId": "1487925",
+			"workflowExecutionFailedEventAttributes": {
+				"failure": {
+					"message": "Activity task failed",
+					"cause": {
+						"message": "Example native receipt refused",
+						"source": "TypeScriptSDK",
+						"stackTrace": "ApplicationFailure: Example native receipt refused\n    at ApplicationFailure.nonRetryable (/example/Development/fabric-oss/node_modules/.pnpm/@temporalio+common@1.23.0/node_modules/@temporalio/common/lib/failure.js:208:16)\n    at registerNativeAgentExecutionReceipt (/example/Development/fabric-oss/.git/sync-backups/factory-temporal-native/record-native-histories.cjs:6:1370)",
+						"applicationFailureInfo": {
+							"type": "NATIVE_AGENT_RECEIPT_REFUSED",
+							"nonRetryable": true
+						}
+					},
+					"activityFailureInfo": {
+						"scheduledEventId": "7",
+						"startedEventId": "8",
+						"identity": "example-worker",
+						"activityType": {
+							"name": "registerNativeAgentExecutionReceipt"
+						},
+						"activityId": "1",
+						"retryState": "RETRY_STATE_NON_RETRYABLE_FAILURE"
+					}
+				},
+				"retryState": "RETRY_STATE_RETRY_POLICY_NOT_SET",
+				"workflowTaskCompletedEventId": "12"
+			}
+		}
+	]
+}

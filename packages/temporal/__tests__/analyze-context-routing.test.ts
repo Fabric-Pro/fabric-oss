@@ -24,7 +24,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		heartbeat: vi.fn(),
@@ -38,7 +38,15 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	// Only the structured (`output`) call is mocked; any other generateText call
+	// fails, as it did when this module mocked generateObject alone.
+	generateText: (args: { output?: unknown }) =>
+		args.output
+			? mocks.generateText(args)
+			: Promise.reject(
+					new Error("unstructured generateText is not mocked"),
+				),
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 	// The routing pass's optional decision fast path. These wiring tests run
@@ -132,8 +140,8 @@ beforeEach(() => {
 		metadata: { modelString: "anthropic:claude-test" },
 		trackUsage: vi.fn(),
 	});
-	mocks.generateObject.mockResolvedValue({
-		object: {
+	mocks.generateText.mockResolvedValue({
+		output: {
 			summary: "Capture export improvements.",
 			contextSummary: "",
 			changes: [{ ...CAPTURED_CREATE }],
@@ -158,12 +166,12 @@ beforeEach(() => {
 });
 
 function modelResponse(value: unknown) {
-	mocks.generateObject.mockImplementation(async ({ schema }) => {
-		const parsed = await asSchema(schema).validate?.(value);
+	mocks.generateText.mockImplementation(async ({ output }) => {
+		const parsed = await asSchema(output.schema).validate?.(value);
 		if (!parsed?.success) {
 			throw parsed?.error ?? new Error("No schema validator");
 		}
-		return { object: parsed.value, usage: {} };
+		return { output: parsed.value, usage: {} };
 	});
 }
 
@@ -741,8 +749,8 @@ describe("allowRouting wiring", () => {
 	});
 
 	it("keeps the analyzer itself create-only, so routing decides enrichment alone", async () => {
-		mocks.generateObject.mockResolvedValue({
-			object: {
+		mocks.generateText.mockResolvedValue({
+			output: {
 				summary: "",
 				contextSummary: "",
 				changes: [

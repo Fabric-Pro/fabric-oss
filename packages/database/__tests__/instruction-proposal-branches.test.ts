@@ -699,12 +699,21 @@ describe("projectEntries (spec §10)", () => {
 			})),
 		];
 		expect(projectEntries(ops)).toEqual([
-			{ path: "a.md", state: "written", sha256: "h2", snapshotId: "s2" },
+			{
+				path: "a.md",
+				state: "written",
+				sha256: "h2",
+				snapshotId: "s2",
+				objectId: "o2",
+				mode: "100644",
+			},
 			{
 				path: "gone.md",
 				state: "deleted",
 				sha256: null,
 				snapshotId: null,
+				objectId: null,
+				mode: null,
 			},
 		]);
 	});
@@ -755,18 +764,29 @@ describe("projectEntries (spec §10)", () => {
 			entries: second.entries,
 		};
 		expect(projectEntries([append, second, revert])).toEqual([
-			{ path: "a.md", state: "written", sha256: "h1", snapshotId: "s1" },
+			{
+				path: "a.md",
+				state: "written",
+				sha256: "h1",
+				snapshotId: "s1",
+				objectId: "o1",
+				mode: "100644",
+			},
 			{
 				path: "new.md",
 				state: "deleted",
 				sha256: null,
 				snapshotId: null,
+				objectId: null,
+				mode: null,
 			},
 			{
 				path: "start.md",
 				state: "restored_unavailable",
 				sha256: null,
 				snapshotId: null,
+				objectId: "o0",
+				mode: "100644",
 			},
 		]);
 	});
@@ -795,7 +815,14 @@ describe("projectEntries (spec §10)", () => {
 				},
 			]),
 		).toEqual([
-			{ path: "a.md", state: "written", sha256: "h1", snapshotId: "s1" },
+			{
+				path: "a.md",
+				state: "written",
+				sha256: "h1",
+				snapshotId: "s1",
+				objectId: "o1",
+				mode: "100644",
+			},
 		]);
 	});
 

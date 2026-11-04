@@ -17,6 +17,11 @@ import {
 	resolveCredentialActor,
 	toClientCredential,
 } from "../lib/context";
+import {
+	checkGitHubTokenForSave,
+	type GitHubTokenAccountRead,
+	isGitHubDotComOrigin,
+} from "../lib/github-token-check";
 import { clientCredentialSchema } from "../lib/schemas";
 
 const REPLACEABLE_KINDS = new Set(["PAT", "API_KEY", "BASIC"]);
@@ -54,6 +59,8 @@ export const updateCredentialProcedure = tenantProtectedProcedure
 				.max(100)
 				.optional(),
 			expiresAt: z.coerce.date().nullable().optional(),
+			/** The person confirmed a fine-grained GitHub token's permissions. */
+			confirmFineGrainedPermissions: z.boolean().default(false),
 		}),
 	)
 	.output(z.object({ credential: clientCredentialSchema }))
@@ -96,6 +103,22 @@ export const updateCredentialProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// A replacement GitHub token passes the same check as a new one, and
+		// the account it acts as replaces the stored one.
+		const checksGitHubToken =
+			input.secret !== undefined &&
+			existing.provider === "GITHUB" &&
+			existing.kind === "PAT" &&
+			isGitHubDotComOrigin(existing.origin);
+		let account: GitHubTokenAccountRead | null = null;
+		if (checksGitHubToken && input.secret !== undefined) {
+			account = await checkGitHubTokenForSave({
+				token: input.secret,
+				confirmFineGrainedPermissions:
+					input.confirmFineGrainedPermissions,
+			});
+		}
+
 		const nextSharing =
 			input.shareWithOrganization === undefined
 				? undefined
@@ -112,8 +135,16 @@ export const updateCredentialProcedure = tenantProtectedProcedure
 					organizationId: input.organizationId,
 					label: input.label,
 					sharing: nextSharing,
-					scopes: input.scopes,
+					scopes: account ? account.scopes : input.scopes,
 					expiresAt: input.expiresAt,
+					account: checksGitHubToken
+						? account
+							? {
+									externalAccountId: account.id,
+									externalAccountLogin: account.login,
+								}
+							: null
+						: undefined,
 					secret:
 						input.secret === undefined
 							? undefined
@@ -158,7 +189,7 @@ export const updateCredentialProcedure = tenantProtectedProcedure
 				labelChanged:
 					input.label !== undefined && input.label !== existing.label,
 				secretReplaced: input.secret !== undefined,
-				scopesChanged: input.scopes !== undefined,
+				scopesChanged: input.scopes !== undefined || account !== null,
 				expiryChanged: input.expiresAt !== undefined,
 			};
 			if (Object.values(otherChanges).some(Boolean)) {

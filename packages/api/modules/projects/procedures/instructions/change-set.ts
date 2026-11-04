@@ -140,6 +140,12 @@ export function derivedSnapshotRefusal(
 					"This project already has 25 commits waiting to be pushed. Try again after some have finished.",
 				data: { reason: "COMMIT_PROJECT_LIMIT" },
 			});
+		case "supersede_unavailable":
+			return new ORPCError("CONFLICT", {
+				message:
+					"That proposal was decided, canceled or rebased while it was being rebased, so nothing was changed.",
+				data: { reason: "REBASE_UNAVAILABLE" },
+			});
 	}
 }
 

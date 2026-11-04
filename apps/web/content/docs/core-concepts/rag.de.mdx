@@ -54,13 +54,13 @@ flowchart TB
 
 ### 1. Dokumentenaufnahme
 
-Wenn Sie Dokumente in eine Bibliothek hochladen, verarbeitet Fabric diese durch eine Pipeline:
+Wenn Sie Dokumente in eine Workspace hochladen, verarbeitet Fabric diese durch eine Pipeline:
 
 <Steps>
   <Step>
     ### Hochladen
 
-    Ziehen Sie Dateien per Drag & Drop in eine Bibliothek. Unterstützte Formate:
+    Ziehen Sie Dateien per Drag & Drop in eine Workspace. Unterstützte Formate:
     - **PDF** – Einschließlich gescannter Dokumente (mit OCR)
     - **Word** – .docx Dateien
     - **Markdown** – .md Dateien
@@ -157,19 +157,19 @@ Die KI generiert eine Antwort, die Informationen aus allen relevanten Abschnitte
 
 ## RAG in Fabric nutzen
 
-### Eine Bibliothek erstellen
+### Eine Workspace erstellen
 
 <Steps>
   <Step>
-    ### Zu Bibliotheken navigieren
+    ### Zu Workspaces navigieren
 
-    Klicken Sie in der linken Seitenleiste auf **Libraries**.
+    Klicken Sie in der linken Seitenleiste auf **Workspaces**.
   </Step>
 
   <Step>
-    ### Neue Bibliothek erstellen
+    ### Neue Workspace erstellen
 
-    Klicken Sie auf **Create Library** und geben Sie einen beschreibenden Namen wie „Produktdokumentation" oder „Engineering-Spezifikationen" ein.
+    Klicken Sie auf **Create Workspace** und geben Sie einen beschreibenden Namen wie „Produktdokumentation" oder „Engineering-Spezifikationen" ein.
   </Step>
 
   <Step>
@@ -185,22 +185,22 @@ Die KI generiert eine Antwort, die Informationen aus allen relevanten Abschnitte
   </Step>
 </Steps>
 
-### Bibliotheken an Agenten anhängen
+### Workspaces an Agenten anhängen
 
 Beim Starten eines Gesprächs mit einem Agenten:
 
 1. Klicken Sie auf die Schaltfläche **Anhängen** in der Chat-Oberfläche
-2. Wählen Sie eine oder mehrere Bibliotheken aus
-3. Der Agent hat nun Zugriff auf alle Dokumente in diesen Bibliotheken
+2. Wählen Sie eine oder mehrere Workspaces aus
+3. Der Agent hat nun Zugriff auf alle Dokumente in diesen Workspaces
 
-**Tipp:** Sie können für verschiedene Arten von Fragen unterschiedliche Bibliotheken anhängen. Zum Beispiel:
+**Tipp:** Sie können für verschiedene Arten von Fragen unterschiedliche Workspaces anhängen. Zum Beispiel:
 - „Produktdokumentation" anhängen beim Generieren von PRDs
 - „Technische Spezifikationen" anhängen beim Generieren von Architekturdokumenten
 - „Code-Repos" anhängen beim Generieren von API-Dokumentation
 
-### Bibliotheken in Projekten
+### Workspaces in Projekten
 
-Projekte können eigene Bibliotheken haben:
+Projekte können eigene Workspaces haben:
 
 1. Gehen Sie zu **Projekte > Ihr Projekt**
 2. Klicken Sie auf die Registerkarte **Dokumente**
@@ -221,7 +221,7 @@ Projekte können eigene Bibliotheken haben:
 - Massive Dateien mit gemischten Themen hochladen
 - Sensible Daten ohne Überlegung einbeziehen
 - Doppelten Inhalt hochladen
-- Veraltete Dokumente in Bibliotheken belassen
+- Veraltete Dokumente in Workspaces belassen
 
 ### Optimierung der Abschnittsgröße
 
@@ -247,13 +247,13 @@ RAG in Fabric ist vollständig mandantenfähig:
 ### Datenisolierung
 
 - **Organisationsgrenzen** – Dokumente sind nach Organisation isoliert
-- **Benutzer-Scoping** – Persönliche Bibliotheken sind privat
+- **Benutzer-Scoping** – Persönliche Workspaces sind privat
 - **Keine Kreuzkontamination** – Anfragen geben nie die Daten anderer Mandanten zurück
 
 ### Zugangskontrolle
 
 - **Bibliotheksberechtigungen** – Kontrollieren Sie, wer anzeigen/bearbeiten kann
-- **Rollenbasierter Zugriff** – Admins können alle Bibliotheken verwalten
+- **Rollenbasierter Zugriff** – Admins können alle Workspaces verwalten
 - **Protokollierung** – Dokumentenzugriff verfolgen
 
 ### Datensicherheit
@@ -270,7 +270,7 @@ Der Fabric-Orchestrator verwendet RAG als ersten Schritt vor der Weiterleitung o
 flowchart LR
     subgraph ORCH["Orchestrator RAG-Phase"]
         direction TB
-        S1[1. Angehängte Bibliotheken prüfen]
+        S1[1. Angehängte Workspaces prüfen]
         S2[2. Benutzeranfrage einbetten]
         S3[3. Bibliotheksdokumente durchsuchen]
         S4[4. Relevanten Kontext einfügen]
@@ -287,9 +287,9 @@ Der Orchestrator erkennt bibliotheksbezogene Absichten:
 
 | Ausdruck | Aktion |
 |--------|--------|
-| „meine Dokumente" | Angehängte Bibliotheken durchsuchen |
+| „meine Dokumente" | Angehängte Workspaces durchsuchen |
 | „hochgeladene Dateien" | Hochgeladene Dokumente verwenden |
-| „persönliche Dokumente" | Bibliotheken des Benutzers durchsuchen |
+| „persönliche Dokumente" | Workspaces des Benutzers durchsuchen |
 | „basierend auf unseren..." | Relevanten Kontext abrufen |
 
 Wenn Bibliotheksinhalte verfügbar sind, bevorzugt der Orchestrator:
@@ -369,7 +369,7 @@ flowchart TB
 ### „Keine relevanten Dokumente gefunden"
 
 - Prüfen Sie, ob Dokumente vollständig verarbeitet wurden
-- Stellen Sie sicher, dass die Bibliothek angehängt ist
+- Stellen Sie sicher, dass die Workspace angehängt ist
 - Versuchen Sie, Ihre Frage umzuformulieren
 - Stellen Sie sicher, dass die Dokumente relevante Informationen enthalten
 

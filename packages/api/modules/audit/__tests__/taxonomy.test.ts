@@ -321,8 +321,46 @@ describe("audit.taxonomy handler", () => {
 		// + 8 {account, org}.credential.* (a saved outbound credential was
 		// created, updated, deleted, shared or unshared; name and kind only,
 		// never the secret) = 239.
-		expect(result.actions).toHaveLength(239);
+		// + 1 org.agent_execution.admitted = 240.
+		// + 9 saved context-quality lifecycle and background-run control actions = 249.
+		// + 3 project.instructions_access.{granted, revoked, failed} (a
+		// member's read access to the instructions repository granted,
+		// revoked or failed; GitHub login and repository only, never a
+		// token) = 252.
+		// + 1 project.context_source.synced_files_reset (every synced
+		// knowledge file of a project deleted at once; the count and the
+		// scope, never a path or content) = 253.
+		// + 1 project.instructions.consolidation_cleanup_merged (the AI files
+		// cleanup pull request merged from Fabric; repository, number and a
+		// file count, never a path or a token)
+		// + 1 project.instructions.proposal_approved (a reviewer's approval
+		// of an upload-mode proposal that still needs more approvals under
+		// the project's review policy; version and counts only) = 255.
+		// + 1 project.instructions.proposal_rebased (a stale upload-mode
+		// proposal replaced by its rebase onto the published version; ids,
+		// versions and counts only) = 256.
+		expect(result.actions).toHaveLength(256);
+		expect(result.actions).toContain(
+			"project.instructions.consolidation_cleanup_merged",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.proposal_rebased",
+		);
+		expect(result.actions).toContain(
+			"project.context_source.synced_files_reset",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.proposal_approved",
+		);
+		expect(result.actions).toContain("project.instructions_access.granted");
+		expect(result.actions).toContain("project.instructions_access.revoked");
+		expect(result.actions).toContain("project.instructions_access.failed");
 		expect(result.actions).toContain("org.member.bulk_invited");
+		expect(result.actions).toContain(
+			"org.agent_execution.cancel_requested",
+		);
+		expect(result.actions).toContain("org.agent_schedule.updated");
+		expect(result.actions).toContain("org.agent_execution.admitted");
 		expect(result.actions).toContain("org.member.left");
 		expect(result.actions).toContain("org.chat_approval.decided");
 		expect(result.actions).toContain("org.chat_run.cancel_requested");

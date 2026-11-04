@@ -19,7 +19,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
  */
 
 const aiMock = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	logModelUsageAsync: vi.fn(),
 }));
@@ -134,8 +134,8 @@ suite("generateAgendaActivity against real Postgres (#2105)", () => {
 		});
 		// Shaped as the model is instructed to answer: the carried item flagged,
 		// the other not.
-		aiMock.generateObject.mockResolvedValue({
-			object: {
+		aiMock.generateText.mockResolvedValue({
+			output: {
 				items: [
 					{
 						title: "Vendor contract",
@@ -188,7 +188,7 @@ suite("generateAgendaActivity against real Postgres (#2105)", () => {
 	});
 
 	it("feeds the real carried item into the prompt it sends the model", async () => {
-		const prompt = aiMock.generateObject.mock.calls.at(-1)?.[0]
+		const prompt = aiMock.generateText.mock.calls.at(-1)?.[0]
 			?.prompt as string;
 
 		expect(prompt).toContain("Carried forward");

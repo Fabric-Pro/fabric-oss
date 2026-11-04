@@ -7,6 +7,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import type { ParlumeSuggestionAudience } from "../../lib/parlume-suggestion-audience";
 
 export interface ConfigRow {
 	linkedMeetingId: string;
@@ -20,6 +21,7 @@ export interface ParlumeAutoJoinState {
 	enabled: boolean;
 	toolsReadOnly: boolean;
 	suggestionsEnabled: boolean;
+	suggestionAudience: ParlumeSuggestionAudience;
 	/** Who turned it on; null when off, or when their account is gone. */
 	enabledBy: { id: string; name: string } | null;
 	error: string | null;
@@ -34,6 +36,7 @@ export function toParlumeAutoJoinState(row: {
 	parlumeAutoJoin: boolean;
 	parlumeAutoJoinToolsReadOnly: boolean;
 	parlumeAutoJoinSuggestions: boolean;
+	parlumeAutoJoinSuggestionAudience: ParlumeSuggestionAudience;
 	parlumeAutoJoinError: string | null;
 	parlumeAutoJoinErrorAt: Date | null;
 	parlumeAutoJoinUser: { id: string; name: string } | null;
@@ -42,6 +45,7 @@ export function toParlumeAutoJoinState(row: {
 		enabled: row.parlumeAutoJoin,
 		toolsReadOnly: row.parlumeAutoJoinToolsReadOnly,
 		suggestionsEnabled: row.parlumeAutoJoinSuggestions,
+		suggestionAudience: row.parlumeAutoJoinSuggestionAudience,
 		enabledBy: row.parlumeAutoJoin ? row.parlumeAutoJoinUser : null,
 		error: row.parlumeAutoJoinError,
 		errorAt: row.parlumeAutoJoinErrorAt,
@@ -111,6 +115,7 @@ export const listConfigurableMeetingsProcedure = tenantProtectedProcedure
 				parlumeAutoJoin: true,
 				parlumeAutoJoinToolsReadOnly: true,
 				parlumeAutoJoinSuggestions: true,
+				parlumeAutoJoinSuggestionAudience: true,
 				parlumeAutoJoinError: true,
 				parlumeAutoJoinErrorAt: true,
 				parlumeAutoJoinUser: { select: { id: true, name: true } },

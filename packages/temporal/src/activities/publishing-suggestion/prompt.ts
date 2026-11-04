@@ -57,7 +57,7 @@ export {
  *    `persistCycleTerminal` stores.
  *
  * The output contract is here for the same reason its four siblings' are: it
- * describes the shape `generateObject` will parse, not something a tenant gets
+ * describes the shape `Output.object` will parse, not something a tenant gets
  * to have an opinion about.
  */
 export function buildTopicSuggestionLockedClauses(): string {

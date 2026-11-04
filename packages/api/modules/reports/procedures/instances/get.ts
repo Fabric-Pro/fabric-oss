@@ -1,5 +1,8 @@
 import { ORPCError } from "@orpc/server";
-import { getTemplateInstance } from "@repo/database";
+import {
+	getProjectReportSetupReason,
+	getTemplateInstance,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -7,7 +10,10 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { canEditReportInstance } from "../../lib/report-access";
+import {
+	canEditReportInstance,
+	canGenerateReportInstance,
+} from "../../lib/report-access";
 
 const getInstanceInputSchema = z.object({
 	id: z.string(),
@@ -43,6 +49,7 @@ export const getInstanceProcedure = tenantProtectedProcedure
 			projectId: instance.projectId,
 			userId: instance.userId,
 			canEdit,
+			canGenerate: canGenerateReportInstance(instance, context.user),
 			name: instance.name,
 			description: instance.description,
 			templateId: instance.templateId,
@@ -64,6 +71,11 @@ export const getInstanceProcedure = tenantProtectedProcedure
 			schedule: instance.schedule,
 			scheduleMode: instance.scheduleMode,
 			isActive: instance.isActive,
+			setupRequiredReason: getProjectReportSetupReason(
+				instance.fabricConfig,
+				instance.template.definition,
+				instance.connections,
+			),
 			lastRunAt: instance.lastRunAt?.toISOString() || null,
 			nextRunAt: instance.nextRunAt?.toISOString() || null,
 			createdAt: instance.createdAt.toISOString(),

@@ -6,46 +6,36 @@
  * and the shared `firecrawl-client` wrapper for the HTTP boundary + typed error mapping.
  */
 
-import { getSearchProviderConfig } from "@repo/database";
-import { decryptApiKey } from "@repo/utils";
 import type { NodeExecutionResult, StepParams } from "../../types";
 import { scrapeUrl } from "../firecrawl-client";
+import { getFirecrawlApiKey } from "../firecrawl-credentials";
 import { interpolateTemplate } from "./utils";
-
-async function getFirecrawlApiKey(
-	userId: string,
-	organizationId?: string,
-): Promise<string | null> {
-	try {
-		const config = await getSearchProviderConfig({
-			userId,
-			organizationId,
-			providerName: "firecrawl",
-		});
-
-		if (config?.encryptedApiKey) {
-			return decryptApiKey(config.encryptedApiKey);
-		}
-
-		return null;
-	} catch (error) {
-		console.error("[Firecrawl] Error getting API key:", error);
-		return null;
-	}
-}
 
 export async function executeFirecrawlScrapeStep(
 	params: StepParams,
 ): Promise<NodeExecutionResult> {
 	const { url, formats = ["markdown"] } = params.nodeConfig as {
 		url?: string;
-		formats?: string[];
+		formats?: string[] | string;
 	};
 
 	if (!url) {
 		return { success: false, error: "URL is required" };
 	}
 
+	const requestedFormats = typeof formats === "string" ? [formats] : formats;
+	if (
+		!Array.isArray(requestedFormats) ||
+		requestedFormats.length === 0 ||
+		requestedFormats.some(
+			(format) => typeof format !== "string" || !format.trim(),
+		)
+	) {
+		return {
+			success: false,
+			error: "Formats must be a non-empty list of format names",
+		};
+	}
 	const interpolatedUrl = interpolateTemplate(url, params.inputs);
 	const apiKey = await getFirecrawlApiKey(
 		params.userId,
@@ -59,7 +49,10 @@ export async function executeFirecrawlScrapeStep(
 		};
 	}
 
-	const result = await scrapeUrl(interpolatedUrl, { apiKey, formats });
+	const result = await scrapeUrl(interpolatedUrl, {
+		apiKey,
+		formats: requestedFormats,
+	});
 
 	if (!result.success) {
 		return {

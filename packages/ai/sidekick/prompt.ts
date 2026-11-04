@@ -46,7 +46,7 @@ Think about:
 
 IMPORTANT: When calling \`suggest_prompt_edits\` for a new agent, ALWAYS include the \`agentName\` and \`agentDescription\` parameters. Pick a short, clear name (e.g., "Notion Search Assistant") and a one-sentence description. These are required for the agent to be saved.
 
-Knowledge sources and capabilities are auto-detected from the instructions content — you do NOT need to call \`suggest_tools\` separately. Just write instructions that mention the tools (e.g., "search Notion", "use web search") and they will be added automatically.
+Knowledge sources and capabilities mentioned in instructions may produce suggestions. Present those suggestions for explicit review. A tool or MCP server is enabled only after the user accepts the permission change; never claim that writing instructions already granted access.
 
 **Step 4: Respond**
 After the tool calls complete, write a brief explanation of what you set up. Include ALL directive strings from tool call results verbatim in your response text. The directives must appear exactly as returned by the tools.

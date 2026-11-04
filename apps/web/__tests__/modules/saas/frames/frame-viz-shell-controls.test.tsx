@@ -74,7 +74,7 @@ describe("what a page is called", () => {
 	it("names a page by its surface, without the plain kind badge", () => {
 		renderShell({ surface: "workspace" });
 
-		expect(screen.getByText("Workspace")).toBeInTheDocument();
+		expect(screen.getByText("Page")).toBeInTheDocument();
 		expect(screen.queryByText("Frame")).toBeNull();
 	});
 
@@ -100,7 +100,7 @@ describe("what a page is called", () => {
 	it("says what it is loading in the surface's words", () => {
 		renderShell({ surface: "workspace" });
 
-		expect(screen.getByText("Loading workspace…")).toBeInTheDocument();
+		expect(screen.getByText("Loading page…")).toBeInTheDocument();
 	});
 });
 

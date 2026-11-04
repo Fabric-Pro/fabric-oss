@@ -21,10 +21,12 @@
  */
 
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import { createPendingBacklogProposal, db } from "@repo/database";
 import { logger } from "@repo/logs";
 import { ApplicationFailure, heartbeat } from "@temporalio/activity";
@@ -871,11 +873,13 @@ export async function extractScopeItems(
 					// outside activity context
 				}
 				const startedAt = Date.now();
-				const result = await generateObject({
-					model,
-					schema: ScopeLlmChunkSchema,
-					prompt,
-				});
+				const result = await requireStructuredOutput(
+					generateText({
+						model,
+						output: Output.object({ schema: ScopeLlmChunkSchema }),
+						prompt,
+					}),
+				);
 				trackUsage();
 				logModelUsageAsync({
 					context: { userId, organizationId },
@@ -886,7 +890,7 @@ export async function extractScopeItems(
 					projectId,
 				});
 				llmUsed = true;
-				const parsed = ScopeLlmChunkSchema.parse(result.object);
+				const parsed = ScopeLlmChunkSchema.parse(result.output);
 				for (const area of parsed.areas) {
 					const prefix = area.prefix.trim().toUpperCase();
 					if (prePass.areas[prefix] && area.title.trim()) {

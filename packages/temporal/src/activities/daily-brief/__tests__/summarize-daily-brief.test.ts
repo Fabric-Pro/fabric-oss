@@ -3,13 +3,13 @@
  *
  * `buildPrompt()` itself is pure and untouched by Stage 4 (this surface has
  * no pre-existing locked-attachment clause); the splice lives in the async
- * activity, between `buildPrompt(...)` and the `generateObject()` call, and
- * is asserted here through the prompt `generateObject` actually receives.
+ * activity, between `buildPrompt(...)` and the `generateText()` call, and
+ * is asserted here through the prompt `generateText` actually receives.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	getCurrentDateContext: vi.fn(),
 	logModelUsageAsync: vi.fn(),
@@ -19,7 +19,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	generateText: mocks.generateText,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	getCurrentDateContext: mocks.getCurrentDateContext,
 	logModelUsageAsync: mocks.logModelUsageAsync,
@@ -82,8 +83,8 @@ beforeEach(() => {
 		trackUsage: mocks.trackUsage,
 	});
 	mocks.getCurrentDateContext.mockReturnValue("Today is 2026-07-20.");
-	mocks.generateObject.mockResolvedValue({
-		object: {
+	mocks.generateText.mockResolvedValue({
+		output: {
 			executiveSummary: "A concise summary.",
 			storylineNarratives: [],
 			priorityActionExplanations: [],
@@ -111,7 +112,7 @@ describe("summarizeDailyBriefActivity — function-tag role clause (Fizzy #1767 
 			requesterUserId: "user-1",
 			surface: "daily-brief",
 		});
-		const prompt = mocks.generateObject.mock.calls[0][0].prompt;
+		const prompt = mocks.generateText.mock.calls[0][0].prompt;
 		expect(prompt).toContain(ROLE_CLAUSE_SENTINEL);
 	});
 
@@ -121,13 +122,13 @@ describe("summarizeDailyBriefActivity — function-tag role clause (Fizzy #1767 
 			ROLE_CLAUSE_SENTINEL,
 		);
 		await summarizeDailyBriefActivity({ ...baseInput });
-		const withClause = mocks.generateObject.mock.calls[0][0].prompt;
+		const withClause = mocks.generateText.mock.calls[0][0].prompt;
 
 		// ...then the flag-OFF shape, from an otherwise-identical invocation.
-		mocks.generateObject.mockClear();
+		mocks.generateText.mockClear();
 		mocks.getProjectFunctionTagClause.mockResolvedValue("");
 		await summarizeDailyBriefActivity({ ...baseInput });
-		const withoutClause = mocks.generateObject.mock.calls[0][0].prompt;
+		const withoutClause = mocks.generateText.mock.calls[0][0].prompt;
 
 		expect(withoutClause).not.toContain(ROLE_CLAUSE_SENTINEL);
 		expect(withClause).toBe(`${withoutClause}\n\n${ROLE_CLAUSE_SENTINEL}`);
@@ -154,7 +155,7 @@ describe("summarizeDailyBriefActivity — prompt-cache-stable prefix (date + win
 	it("opens with the stable instruction text, not the per-run window, and places the date context then the window after the static rules", async () => {
 		await summarizeDailyBriefActivity({ ...baseInput });
 
-		const prompt = mocks.generateObject.mock.calls[0][0].prompt as string;
+		const prompt = mocks.generateText.mock.calls[0][0].prompt as string;
 
 		// The window used to be interpolated straight into the opening
 		// sentence, fragmenting the shared cacheable prefix on every run.

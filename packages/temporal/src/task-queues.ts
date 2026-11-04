@@ -98,3 +98,6 @@ export const PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE =
  * concurrency, not memory: every queue still shares one worker process.
  */
 export const PROPOSAL_EXPORT_TASK_QUEUE = "proposal-export" as const;
+
+/** Long-running remote evaluation polling has two dedicated activity slots. */
+export const CONTEXT_QUALITY_TASK_QUEUE = "context-quality" as const;

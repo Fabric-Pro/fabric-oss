@@ -47,6 +47,109 @@ const PM_HANDLER_BODY =
 		/handlers\.set\(tool\.name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
 	)?.[1] ?? "";
 
+const CONTEXT_QUALITY_FAMILY_SOURCE = readFileSync(
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/context-quality-tools.ts"),
+	"utf8",
+);
+
+// This is an explicit proof for this injected factory, not permission credit
+// for arbitrary functions named authorize. The wiring and both guarded calls
+// are verified below before these bodies participate in the coverage scan.
+const CONTEXT_QUALITY_HANDLERS = [
+	["fabric_inspect_context_quality_source", "inspectContextQualitySource"],
+	["fabric_evaluate_context_quality", "evaluateProjectContext"],
+].map(([tool, command]) => ({
+	tool,
+	command,
+	name: handlerOf(tool),
+	body:
+		CONTEXT_QUALITY_FAMILY_SOURCE.match(
+			new RegExp(
+				`handlers\\.set\\(\\s*"${tool}",\\s*async \\(args, session\\) => \\{([\\s\\S]*?)\\n\\t{1,2}\\},?\\s*\\);`,
+			),
+		)?.[1] ?? "",
+}));
+
+const SAVED_CONTEXT_QUALITY_HANDLER_BODY =
+	CONTEXT_QUALITY_FAMILY_SOURCE.match(
+		/handlers\.set\(name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	)?.[1] ?? "";
+const SAVED_CONTEXT_QUALITY_TOOLS = [
+	"fabric_context_quality_run_capabilities",
+	"fabric_create_context_quality_run",
+	"fabric_list_context_quality_runs",
+	"fabric_get_context_quality_run",
+	"fabric_cancel_context_quality_run",
+	"fabric_compare_context_quality_runs",
+] as const;
+
+const AGENT_RESULT_QUALITY_FAMILY_SOURCE = readFileSync(
+	resolve(
+		process.cwd(),
+		GATEWAY_DIRECTORY,
+		"tools/agent-result-quality-tools.ts",
+	),
+	"utf8",
+);
+const AGENT_RESULT_QUALITY_HANDLER_BODY =
+	AGENT_RESULT_QUALITY_FAMILY_SOURCE.match(
+		/handlers\.set\(name, async \(raw, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	)?.[1] ?? "";
+const AGENT_RESULT_QUALITY_TOOLS = [
+	"fabric_inspect_agent_run_result",
+	"fabric_check_agent_run_result",
+] as const;
+
+const CONTEXT_SELECTION_FAMILY_SOURCE = readFileSync(
+	resolve(
+		process.cwd(),
+		GATEWAY_DIRECTORY,
+		"tools/context-selection-tools.ts",
+	),
+	"utf8",
+);
+const CONTEXT_SELECTION_HANDLER_BODY =
+	CONTEXT_SELECTION_FAMILY_SOURCE.match(
+		/const handler: PlatformToolHandler = async \(args, session\) => \{([\s\S]*?)\n\t\};/,
+	)?.[1] ?? "";
+const CONTEXT_SELECTION_TOOLS = ["fabric_assemble_project_context"] as const;
+
+const WORKSPACE_DOCUMENT_LINK_FAMILY_SOURCE = readFileSync(
+	resolve(
+		process.cwd(),
+		GATEWAY_DIRECTORY,
+		"tools/workspace-document-link-tools.ts",
+	),
+	"utf8",
+);
+const WORKSPACE_DOCUMENT_LINK_HANDLER_BODY =
+	WORKSPACE_DOCUMENT_LINK_FAMILY_SOURCE.match(
+		/handlers\.set\(name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	)?.[1] ?? "";
+const WORKSPACE_DOCUMENT_LINK_TOOLS = [
+	"fabric_list_project_workspace_documents",
+	"fabric_read_project_workspace_document",
+	"fabric_link_workspace_document",
+	"fabric_unlink_workspace_document",
+] as const;
+
+const AGENT_RUN_FAMILY_SOURCE = readFileSync(
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/agent-run-tools.ts"),
+	"utf8",
+);
+const AGENT_RUN_HANDLER_BODY =
+	AGENT_RUN_FAMILY_SOURCE.match(
+		/handlers\.set\(name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	)?.[1] ?? "";
+const AGENT_RUN_TOOLS = [
+	"fabric_search_agent_runs",
+	"fabric_list_agent_runs",
+	"fabric_get_agent_run",
+	"fabric_cancel_agent_run",
+	"fabric_get_agent_run_schedule",
+	"fabric_set_agent_run_schedule",
+] as const;
+
 function handlerOf(tool: string): string {
 	return `handle${tool
 		.replace(/^fabric_/, "")
@@ -72,6 +175,7 @@ const SOURCES = [
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/page-file-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/page-comment-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/page-ask-tool.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/report-tools.ts"),
 ];
 
 /** Resolves what the caller may *do*. */
@@ -114,11 +218,17 @@ const WRITE_PREFIXES = [
 	"handleComplete",
 	"handleShare",
 	"handleExecute",
+	// `fabric_generate_report` starts a run that spends the owner's AI credits.
+	"handleGenerate",
 	"handleSwitch",
 	"handleRequest",
 	"handleRevoke",
 	"handleRestore",
 	"handleDuplicate",
+	"handleCancel",
+	"handleLink",
+	"handleUnlink",
+	"handleSetAgentRunSchedule",
 	"handleSetPage",
 	"handleDeletePage",
 	"handleUploadPage",
@@ -172,6 +282,10 @@ const WRITE_EXEMPT = new Map<string, string>([
 	[
 		"handleDuplicateFrame",
 		"returns a handler that delegates to the frame service, which gates on WORKSPACE_CREATE and opens the source page as the caller",
+	],
+	[
+		"handleGenerateReport",
+		"delegates to generateReportForAgent, which checks REPORT_EXECUTE on the caller's organization role and refuses anyone but the report's owner; the report's project is asked of resolveGatewayProjectReadAccess, which keeps a project-bound session to its project",
 	],
 	[
 		"handleRequestAuthority",
@@ -240,6 +354,29 @@ function handlerBodies(): Array<{ name: string; body: string }> {
 			body: PM_HANDLER_BODY,
 		})),
 	);
+	out.push(
+		...CONTEXT_QUALITY_HANDLERS.map(({ name, body }) => ({ name, body })),
+		...SAVED_CONTEXT_QUALITY_TOOLS.map((tool) => ({
+			name: handlerOf(tool),
+			body: SAVED_CONTEXT_QUALITY_HANDLER_BODY,
+		})),
+		...AGENT_RESULT_QUALITY_TOOLS.map((tool) => ({
+			name: handlerOf(tool),
+			body: AGENT_RESULT_QUALITY_HANDLER_BODY,
+		})),
+		...CONTEXT_SELECTION_TOOLS.map((tool) => ({
+			name: handlerOf(tool),
+			body: CONTEXT_SELECTION_HANDLER_BODY,
+		})),
+		...WORKSPACE_DOCUMENT_LINK_TOOLS.map((tool) => ({
+			name: handlerOf(tool),
+			body: WORKSPACE_DOCUMENT_LINK_HANDLER_BODY,
+		})),
+		...AGENT_RUN_TOOLS.map((tool) => ({
+			name: handlerOf(tool),
+			body: AGENT_RUN_HANDLER_BODY,
+		})),
+	);
 	return out;
 }
 
@@ -247,6 +384,128 @@ const isWrite = (name: string) =>
 	WRITE_PREFIXES.some((prefix) => name.startsWith(prefix));
 
 describe("platform tool authorization coverage", () => {
+	it("wires both context-quality handlers through the canonical project guard before source/scoring access", () => {
+		const platform = readFileSync(SOURCES[0], "utf8");
+		expect(platform).toMatch(
+			/const CONTEXT_QUALITY_TOOLS = createContextQualityTools\(\s*resolveGatewayProjectReadAccess,\s*resolveGatewayProjectWriteAccessWithHost,?\s*\);/,
+		);
+		expect(platform).toContain("...CONTEXT_QUALITY_TOOLS.definitions");
+		expect(platform).toContain("...CONTEXT_QUALITY_TOOLS.handlers");
+		for (const { tool, command, body } of CONTEXT_QUALITY_HANDLERS) {
+			expect(PLATFORM_TOOL_DEFINITIONS.map(({ name }) => name)).toContain(
+				tool,
+			);
+			expect(body.length, tool).toBeGreaterThan(100);
+			expect(body, tool).toMatch(
+				/const access = await authorize\(input\.data\.projectId, session\);\s*if \(!access\?\.organizationId\) \{\s*return errorResult\("Project not found or access denied"\);\s*\}/,
+			);
+			expect(body, tool).toContain(
+				"organizationId: access.organizationId",
+			);
+			expect(body, tool).toContain("userId: session.userId");
+			expect(body.indexOf(`await ${command}(`), tool).toBeGreaterThan(
+				body.indexOf("await authorize("),
+			);
+		}
+	});
+
+	it("holds saved writes to the host-aware PROJECT_UPDATE gate before shared-command reauthorization", () => {
+		expect(SAVED_CONTEXT_QUALITY_HANDLER_BODY.length).toBeGreaterThan(100);
+		expect(SAVED_CONTEXT_QUALITY_HANDLER_BODY).toContain(
+			"if (!resolveGatewayProjectWriteAccessWithHost)",
+		);
+		expect(SAVED_CONTEXT_QUALITY_HANDLER_BODY).toMatch(
+			/await resolveGatewayProjectWriteAccessWithHost\(\s*input\.data\.projectId,\s*session,\s*"PROJECT_UPDATE",?\s*\)/,
+		);
+		expect(
+			SAVED_CONTEXT_QUALITY_HANDLER_BODY.indexOf("await command("),
+		).toBeGreaterThan(
+			SAVED_CONTEXT_QUALITY_HANDLER_BODY.indexOf(
+				"await resolveGatewayProjectWriteAccessWithHost(",
+			),
+		);
+		expect(SAVED_CONTEXT_QUALITY_HANDLER_BODY).toContain(
+			"organizationId = access.organizationId",
+		);
+		expect(SAVED_CONTEXT_QUALITY_HANDLER_BODY).toContain(
+			"userId: session.userId",
+		);
+		for (const tool of SAVED_CONTEXT_QUALITY_TOOLS) {
+			expect(CONTEXT_QUALITY_FAMILY_SOURCE).toContain(`"${tool}"`);
+			expect(PLATFORM_TOOL_DEFINITIONS.map(({ name }) => name)).toContain(
+				tool,
+			);
+		}
+	});
+
+	it("wires agent-result quality, context selection, workspace-document links, and agent-run controls through canonical guards", () => {
+		const platform = readFileSync(SOURCES[0], "utf8");
+		expect(platform).toMatch(
+			/const AGENT_RESULT_QUALITY_TOOLS = createAgentResultQualityTools\(\s*resolveGatewayProjectReadAccess,?\s*\);/,
+		);
+		expect(platform).toMatch(
+			/const CONTEXT_SELECTION_TOOLS = createContextSelectionTools\(\s*resolveGatewayProjectReadAccess,?\s*\);/,
+		);
+		expect(platform).toMatch(
+			/const WORKSPACE_DOCUMENT_LINK_TOOLS = createWorkspaceDocumentLinkTools\(\s*resolveGatewayProjectReadAccess,?\s*\);/,
+		);
+		expect(platform).toContain(
+			"const AGENT_RUN_TOOLS = createAgentRunTools();",
+		);
+
+		expect(AGENT_RESULT_QUALITY_HANDLER_BODY.length).toBeGreaterThan(100);
+		expect(
+			AGENT_RESULT_QUALITY_HANDLER_BODY.indexOf("agentResultCommands()"),
+		).toBeGreaterThan(
+			AGENT_RESULT_QUALITY_HANDLER_BODY.indexOf(
+				"await authorize(projectId, session)",
+			),
+		);
+
+		expect(CONTEXT_SELECTION_HANDLER_BODY.length).toBeGreaterThan(100);
+		expect(
+			CONTEXT_SELECTION_HANDLER_BODY.indexOf("assembleSelectedContext("),
+		).toBeGreaterThan(
+			CONTEXT_SELECTION_HANDLER_BODY.indexOf(
+				"await authorize(projectId, session)",
+			),
+		);
+
+		expect(WORKSPACE_DOCUMENT_LINK_HANDLER_BODY.length).toBeGreaterThan(
+			100,
+		);
+		expect(
+			WORKSPACE_DOCUMENT_LINK_HANDLER_BODY.indexOf(
+				"workspaceDocumentLinkCommands()",
+			),
+		).toBeGreaterThan(
+			WORKSPACE_DOCUMENT_LINK_HANDLER_BODY.indexOf(
+				"await authorize(projectId, session)",
+			),
+		);
+
+		expect(AGENT_RUN_HANDLER_BODY.length).toBeGreaterThan(100);
+		expect(AGENT_RUN_HANDLER_BODY).toContain(
+			'session.credential === "service"',
+		);
+		expect(
+			AGENT_RUN_HANDLER_BODY.indexOf("await command("),
+		).toBeGreaterThan(
+			AGENT_RUN_HANDLER_BODY.indexOf("!session.organizationId"),
+		);
+
+		for (const tool of [
+			...AGENT_RESULT_QUALITY_TOOLS,
+			...CONTEXT_SELECTION_TOOLS,
+			...WORKSPACE_DOCUMENT_LINK_TOOLS,
+			...AGENT_RUN_TOOLS,
+		]) {
+			expect(PLATFORM_TOOL_DEFINITIONS.map(({ name }) => name)).toContain(
+				tool,
+			);
+		}
+	});
+
 	it("wires every PM definition through the canonical project guard before any PM lookup", () => {
 		const platform = readFileSync(SOURCES[0], "utf8");
 		expect(platform).toMatch(
@@ -266,6 +525,49 @@ describe("platform tool authorization coverage", () => {
 		expect(
 			PM_HANDLER_BODY.indexOf("await readProjectPmTool("),
 		).toBeGreaterThan(PM_HANDLER_BODY.indexOf("await authorize("));
+	});
+
+	it("wires the report tools through the canonical project guard and the API's report commands", () => {
+		const platform = readFileSync(SOURCES[0], "utf8");
+		expect(platform).toContain(
+			"const REPORT_TOOLS = createReportTools(resolveGatewayProjectReadAccess);",
+		);
+		expect(platform).toContain("...REPORT_TOOLS.definitions");
+		expect(platform).toContain("...REPORT_TOOLS.handlers");
+		const bodies = new Map(
+			handlerBodies().map(({ name, body }) => [name, body]),
+		);
+		const list = bodies.get("handleListProjectReports") ?? "";
+		expect(list.indexOf("listProjectReportsForAgent(")).toBeGreaterThan(
+			list.indexOf("await authorize(parsed.data.projectId, session)"),
+		);
+		expect(list.indexOf("await authorize(")).toBeGreaterThan(-1);
+		const generate = bodies.get("handleGenerateReport") ?? "";
+		expect(generate).toContain("await authorize(projectId, session)");
+		expect(generate).toContain("sessionMayReachProject(session, null)");
+		expect(generate.indexOf("generateReportForAgent(")).toBeGreaterThan(
+			generate.indexOf("!organizationId"),
+		);
+		// The exemption for handleGenerateReport rests on these API checks.
+		const commands = readFileSync(
+			resolve(
+				process.cwd(),
+				"../../packages/api/modules/reports/lib/report-agent-commands.ts",
+			),
+			"utf8",
+		);
+		expect(commands).toContain(
+			"await assertAgentMayReachReports(actor, Permissions.REPORT_EXECUTE);",
+		);
+		expect(commands).toContain("await loadGeneratableReport(");
+		for (const tool of [
+			"fabric_list_project_reports",
+			"fabric_generate_report",
+		]) {
+			expect(PLATFORM_TOOL_DEFINITIONS.map(({ name }) => name)).toContain(
+				tool,
+			);
+		}
 	});
 
 	it("every write resolves the caller's permission, not just their sight of the resource", () => {

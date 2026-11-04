@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { buildAgentRunsCommand } from "./runs.js";
 /**
  * fabric agents
  *
@@ -179,7 +181,9 @@ export function buildAgentsCommand(): Command {
 	// -- execute -------------------------------------------------------------
 	agents
 		.command("execute <id>")
-		.description("Execute an agent")
+		.description(
+			"Legacy registered agent execution; use invoke-instance for saved agents",
+		)
 		.option("--org <slug>", "Organization context")
 		.option("--personal", "Retired — context is organization-only")
 		.option("--input <json>", 'Input JSON (e.g. \'{"key":"value"}\')')
@@ -228,6 +232,204 @@ export function buildAgentsCommand(): Command {
 					"Run ID": result.runId ?? "(pending)",
 					Status: result.status,
 					...(result.warning ? { Warning: result.warning } : {}),
+				});
+			},
+		);
+
+	// -- invoke-instance ----------------------------------------------------
+	agents
+		.command("invoke-instance <id>")
+		.description(
+			"Run a saved agent instance or recover the same invocation using its request ID",
+		)
+		.option(
+			"--org <slug>",
+			"Organization context (or configured organization default)",
+		)
+		.option("--input <json>", "Input JSON object")
+		.option("--priority <priority>", "LOW|NORMAL|HIGH|CRITICAL", "NORMAL")
+		.option(
+			"--idempotency-key <key>",
+			"Stable request ID; reuse unchanged input to recover an unresolved invocation",
+		)
+		.option("--request-id <key>", "Alias for --idempotency-key")
+		.option("--format <format>", "Output format: table|json|yaml", "table")
+		.action(
+			async (
+				id: string,
+				opts: {
+					org?: string;
+					input?: string;
+					priority: string;
+					idempotencyKey?: string;
+					requestId?: string;
+					format: string;
+				},
+			) => {
+				const ctx = resolveContext(undefined, opts.org, true);
+				if (!ctx) {
+					printError("Select an organization with --org <slug>.", 2);
+				}
+				if (
+					opts.idempotencyKey &&
+					opts.requestId &&
+					opts.idempotencyKey !== opts.requestId
+				) {
+					printError(
+						"--request-id and --idempotency-key must name the same request.",
+						2,
+					);
+				}
+				const key =
+					opts.idempotencyKey ?? opts.requestId ?? randomUUID();
+				if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(key)) {
+					printError(
+						"Request ID must be 1–200 letters, digits, dots, underscores, colons or hyphens.",
+						2,
+					);
+				}
+				if (
+					!["LOW", "NORMAL", "HIGH", "CRITICAL"].includes(
+						opts.priority,
+					)
+				) {
+					printError(
+						"--priority must be LOW, NORMAL, HIGH or CRITICAL.",
+						2,
+					);
+				}
+				let input: Record<string, unknown> = {};
+				if (opts.input) {
+					try {
+						const parsed: unknown = JSON.parse(opts.input);
+						if (
+							!parsed ||
+							typeof parsed !== "object" ||
+							Array.isArray(parsed)
+						) {
+							throw new Error("not an object");
+						}
+						input = parsed as Record<string, unknown>;
+					} catch {
+						printError("--input must be a JSON object.", 2);
+					}
+				}
+				if (!["table", "json", "yaml"].includes(opts.format)) {
+					printError("--format must be table, json or yaml.", 2);
+				}
+				const client = getClient();
+				let receipt: import("@fabricorg/sdk").FabricAgentInstanceInvocation;
+				try {
+					receipt = await client.agents.invokeInstance(id, {
+						org: ctx.slug,
+						input,
+						priority: opts.priority as
+							| "LOW"
+							| "NORMAL"
+							| "HIGH"
+							| "CRITICAL",
+						idempotencyKey: key,
+					});
+				} catch (error) {
+					const message =
+						error instanceof Error
+							? error.message
+							: "Invocation could not be confirmed.";
+					const data =
+						error && typeof error === "object" && "data" in error
+							? error.data
+							: undefined;
+					const recovery =
+						data && typeof data === "object"
+							? Object.entries(data)
+									.filter(
+										([name, value]) =>
+											[
+												"executionId",
+												"deploymentId",
+												"workflowId",
+											].includes(name) &&
+											typeof value === "string",
+									)
+									.map(([name, value]) => `${name}: ${value}`)
+									.join("\n")
+							: "";
+					printError(
+						`${message}\nRequest ID: ${key}${recovery ? `\n${recovery}` : ""}\nTo recover this request, rerun invoke-instance with --idempotency-key ${key}, the same instance, organization, input and priority. Do not use a new key while the previous outcome is unresolved.`,
+						1,
+					);
+				}
+				if (opts.format === "json" || opts.format === "yaml") {
+					printOutput(
+						{ ...receipt, idempotencyKey: key },
+						{ format: opts.format },
+					);
+					return;
+				}
+				printRecord({
+					"Execution ID": receipt.executionId,
+					"Deployment ID": receipt.deploymentId,
+					"Workflow ID": receipt.workflowId,
+					"Run ID": receipt.runId ?? "(pending)",
+					Status: receipt.status,
+					Admission: receipt.admissionStatus,
+					Replayed: receipt.idempotent,
+					"Request ID": key,
+				});
+			},
+		);
+
+	agents
+		.command("instance-execution <executionId>")
+		.description(
+			"Read one saved agent execution's admission, status and result",
+		)
+		.option(
+			"--org <slug>",
+			"Organization context (or configured organization default)",
+		)
+		.option("--format <format>", "Output format: table|json|yaml", "json")
+		.action(
+			async (
+				executionId: string,
+				opts: { org?: string; format: string },
+			) => {
+				const ctx = resolveContext(undefined, opts.org, true);
+				if (!ctx) {
+					printError("Select an organization with --org <slug>.", 2);
+				}
+				if (!["table", "json", "yaml"].includes(opts.format)) {
+					printError("--format must be table, json or yaml.", 2);
+				}
+				let execution: import("@fabricorg/sdk").FabricAgentInstanceExecution;
+				try {
+					execution = await getClient().agents.getInstanceExecution(
+						executionId,
+						{ org: ctx.slug },
+					);
+				} catch (error) {
+					printError(
+						error instanceof Error
+							? error.message
+							: "Execution could not be read.",
+						1,
+					);
+				}
+				if (opts.format === "json" || opts.format === "yaml") {
+					printOutput(execution, { format: opts.format });
+					return;
+				}
+				printRecord({
+					"Execution ID": execution.executionId,
+					"Deployment ID": execution.deploymentId,
+					"Workflow ID": execution.workflowId,
+					"Run ID": execution.runId ?? "(pending)",
+					Status: execution.status,
+					Admission: execution.admissionStatus,
+					...(execution.error ? { Error: execution.error } : {}),
+					...(execution.output === undefined
+						? {}
+						: { Output: JSON.stringify(execution.output) }),
 				});
 			},
 		);
@@ -540,5 +742,6 @@ Examples:
 			},
 		);
 
+	agents.addCommand(buildAgentRunsCommand());
 	return agents;
 }

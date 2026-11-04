@@ -27,71 +27,38 @@ import {
 // the entry with a few exports still gets the real bound.
 import { MAX_CONTEXT_SOURCE_PATH_LENGTH } from "@repo/database/prisma/queries/projects/context-source-path";
 import {
+	buildContextIgnoreRules,
 	CONTEXT_IGNORE_FILENAME,
-	createContextDefaultRules,
-	findContextIgnoreProblem,
+	type ContextIgnoreRules,
 	hasContextTextExtension,
 	isExcludedDirectlySelectedFile,
 	isInContextSyncFabricDirectory,
+	MAX_CONTEXT_IGNORE_BYTES,
 } from "@repo/instructions/context-sync-rules";
-import ignore from "ignore";
 
-type Ignore = ReturnType<typeof ignore>;
-
-export { CONTEXT_IGNORE_FILENAME, isExcludedDirectlySelectedFile };
-
-/** A selected folder's `.contextignore` counts only up to this size (§5.3.1 step 6). */
-export const MAX_CONTEXT_IGNORE_BYTES = 64 * 1024;
+/**
+ * A selected folder's rules (the defaults, then its `.contextignore`) and
+ * the policy file's size cap are the canonical module's, which the
+ * configure dialog's preview builds its rules with too, so the two cannot
+ * drift. The run refuses a rule over the `**` cap before it gets to
+ * `buildContextIgnoreRules` (`readIgnorePolicies`), which also throws for
+ * one, so the matcher is never handed it, whoever calls. The matcher THROWS
+ * for a path it cannot evaluate (empty, `./`-prefixed); `matchContextEntry`
+ * turns that into `unmatchable`.
+ */
+export {
+	buildContextIgnoreRules,
+	CONTEXT_IGNORE_FILENAME,
+	type ContextIgnoreRules,
+	isExcludedDirectlySelectedFile,
+	MAX_CONTEXT_IGNORE_BYTES,
+};
 
 /**
  * The ceiling on one synced file: the CLI's `MAX_CONTEXT_FILE_BYTES` and the
  * API's `MAX_SYNCED_CONTEXT_BYTES`.
  */
 export const MAX_CONTEXT_FILE_BYTES = 2 * 1024 * 1024;
-
-export interface ContextIgnoreRules {
-	/** Is this file (relative to the folder, `/`-separated) left out? */
-	ignoresFile(relativePath: string): boolean;
-	/** Is this directory left out, with everything beneath it? */
-	ignoresDirectory(relativePath: string): boolean;
-}
-
-/**
- * The CLI's `buildContextIgnoreRules`, minus `--exclude` (a sync has only
- * the folder's `.contextignore`). Two matchers rather than one pattern list,
- * so a user's `!CLAUDE.md` cannot re-include what the defaults exclude.
- * Case-insensitive (the package's default), gitignore semantics, and a file
- * under an ignored directory is ignored with it, which is what makes one
- * flat inventory match the CLI's walk (which never descends into one).
- *
- * The matcher THROWS for a path it cannot evaluate (empty, `./`-prefixed);
- * `matchContextEntry` turns that into `unmatchable`.
- */
-export function buildContextIgnoreRules(
-	input: { contextIgnore?: string | null } = {},
-): ContextIgnoreRules {
-	const defaults = createContextDefaultRules();
-	const user: Ignore = ignore();
-	if (input.contextIgnore) {
-		// The run refuses such a file before it gets here (`readIgnorePolicies`);
-		// this keeps the matcher from ever being handed one, whoever calls.
-		const problem = findContextIgnoreProblem(input.contextIgnore);
-		if (problem) {
-			throw new Error(
-				`.contextignore line ${problem.line} has ${problem.groups} \`**\` groups; at most ${problem.max} can be evaluated`,
-			);
-		}
-		user.add(input.contextIgnore);
-	}
-	const ignores = (candidate: string) =>
-		defaults.ignores(candidate) || user.ignores(candidate);
-	return {
-		ignoresFile: (relativePath) => ignores(relativePath),
-		// The trailing slash is what makes a directory-only pattern
-		// (`drafts/`) match.
-		ignoresDirectory: (relativePath) => ignores(`${relativePath}/`),
-	};
-}
 
 /** Git tree entry modes (`git ls-tree`). */
 const GIT_REGULAR_FILE_MODES: ReadonlySet<string> = new Set([

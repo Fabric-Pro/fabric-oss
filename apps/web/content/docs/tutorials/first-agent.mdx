@@ -147,7 +147,7 @@ Before creating an agent, define its purpose:
 
     **RAG Access**
     - Toggle on RAG if the agent needs to reference documents
-    - Select which libraries it can access
+    - Select which workspaces it can access
 
     **MCP Tools**
     - Enable specific MCP servers (GitHub, Jira, etc.)
@@ -238,9 +238,9 @@ Enhance your agent with RAG context:
 
 <Steps>
   <Step>
-    ### Create a Library
+    ### Create a Workspace
 
-    Go to **Libraries → Create Library** and name it appropriately (e.g., "Report Templates").
+    Go to **Workspaces → Create Workspace** and name it appropriately (e.g., "Report Templates").
   </Step>
 
   <Step>
@@ -253,9 +253,9 @@ Enhance your agent with RAG context:
   </Step>
 
   <Step>
-    ### Link Library to Agent
+    ### Link Workspace to Agent
 
-    In your agent's settings, enable RAG and select the library.
+    In your agent's settings, enable RAG and select the workspace.
   </Step>
 </Steps>
 
@@ -400,7 +400,7 @@ You are a Bug Report Generator that creates detailed, actionable bug reports fro
 
 - Make your system prompt more specific
 - Add examples of good output
-- Attach libraries with reference documents
+- Attach workspaces with reference documents
 
 ### Agent ignores instructions
 
@@ -425,7 +425,7 @@ You are a Bug Report Generator that creates detailed, actionable bug reports fro
 ## Next Steps
 
 <Cards>
-  <Card title="Prompt Library" href="/docs/features/prompts">
+  <Card title="Prompt Workspace" href="/docs/features/prompts">
     Save prompts for your custom agents
   </Card>
   <Card title="MCP Integration" href="/docs/integrations/mcp">

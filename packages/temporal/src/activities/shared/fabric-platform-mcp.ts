@@ -14,6 +14,7 @@
  */
 
 import { jsonSchema, tool } from "@repo/ai";
+import { directApprovalUnavailableResult } from "../../lib/direct-approval-policy";
 import { isFabricChatTool } from "../../lib/fabric-gateway-tools";
 import type { FabricServiceActor } from "../../lib/fabric-mcp-service-headers";
 import {
@@ -47,6 +48,8 @@ export {
  * ask for them does not carry them.
  */
 export interface FabricPlatformToolOptions {
+	/** Direct has no durable approval checkpoint/action receipt; hide unsupported approval cards. */
+	confirmationMode?: "unavailable";
 	portal?: { offer: boolean };
 }
 
@@ -143,6 +146,14 @@ export async function loadFabricPlatformTools(
 		}
 		const verdict = await confirmation.check(listing, args, abortSignal);
 		if (verdict.kind === "answer") {
+			if (
+				options.confirmationMode === "unavailable" &&
+				typeof verdict.result === "object" &&
+				verdict.result !== null &&
+				"requiresConfirmation" in verdict.result &&
+				verdict.result.requiresConfirmation === true
+			)
+				return directApprovalUnavailableResult();
 			return verdict.result;
 		}
 		const result = await gateway.call(listing.name, args, abortSignal);
@@ -178,6 +189,8 @@ export async function loadFabricPlatformTools(
 			offered.map((listing) => [listing.name, toolAccess(listing)]),
 		),
 		runApproved: async (toolName, args) => {
+			if (options.confirmationMode === "unavailable")
+				return directApprovalUnavailableResult();
 			const listing = byName.get(toolName);
 			if (!listing || !listingNeedsConfirmation(listing, args)) {
 				return {

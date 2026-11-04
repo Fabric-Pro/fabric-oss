@@ -581,6 +581,22 @@ export function getProviderDisplayName(providerId: string): string {
 	);
 }
 
+/** A connection's custom label must not hide the model provider behind it. */
+export function getConfiguredProviderLabel(
+	providerId: string,
+	displayName?: string | null,
+): string {
+	const provider = getProviderDisplayName(providerId);
+	const label = displayName?.trim();
+	if (!label || label.toLowerCase() === provider.toLowerCase()) {
+		return provider;
+	}
+	if (label.startsWith(`${provider} (`)) {
+		return label;
+	}
+	return `${provider} · ${label}`;
+}
+
 // ============================================================================
 // Enhanced Provider Lists
 // ============================================================================

@@ -1,7 +1,7 @@
 /**
  * GitLab OAuth Procedures
  *
- * Handles GitLab OAuth flow for task agent integration.
+ * Handles GitLab OAuth flow for connected integrations.
  * Stores OAuth tokens in WorkflowIntegration model.
  * Mirrors the GitHub OAuth procedures pattern.
  */

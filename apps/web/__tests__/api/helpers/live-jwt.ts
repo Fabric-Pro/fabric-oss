@@ -1,6 +1,6 @@
 /**
  * Shared scaffolding for the live-room JWT route suites
- * (/api/orchestrator/verify, /api/task-agent/verify, /api/collab/verify).
+ * (/api/orchestrator/verify, /api/collab/verify).
  *
  * Every option here exists to produce a negative case the routes must refuse —
  * a different secret, a sibling audience, no audience at all, an already-expired

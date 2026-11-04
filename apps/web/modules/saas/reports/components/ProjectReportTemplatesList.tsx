@@ -3,8 +3,10 @@
 import {
 	canCreateReportTemplate,
 	canManageReportTemplate,
+	listedReportTemplates,
 	type ReportSuiteCapabilities,
 	type ReportTemplateScope,
+	withProjectContext,
 } from "@saas/reports/lib/project-report-suite";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -25,10 +27,13 @@ import {
 	FileTextIcon,
 	PencilIcon,
 	PlusIcon,
+	SlidersHorizontalIcon,
 	SparklesIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
 import { toast } from "sonner";
+import { ReportTemplateDefaultsDialog } from "./ReportTemplateDefaultsDialog";
 
 export type ProjectReportTemplate = {
 	id: string;
@@ -54,6 +59,8 @@ type Props<T extends ProjectReportTemplate> = {
 	viewerUserId: string | undefined;
 	/** Where template pages live (`…/report-templates`). */
 	reportTemplatesPath: string;
+	/** Template pages opened from here lead back to this project. */
+	projectId: string;
 	showArchived: boolean;
 	onShowArchivedChange: (show: boolean) => void;
 	onUseTemplate: (template: T) => void;
@@ -70,14 +77,19 @@ export function ProjectReportTemplatesList<T extends ProjectReportTemplate>({
 	capabilities,
 	viewerUserId,
 	reportTemplatesPath,
+	projectId,
 	showArchived,
 	onShowArchivedChange,
 	onUseTemplate,
 }: Props<T>) {
 	const queryClient = useQueryClient();
 	const canStartReports = capabilities.canEditProjectReports !== false;
-	const managesTemplates =
-		capabilities.isPlatformAdmin || capabilities.isOrganizationAdmin;
+	const { templates: listedTemplates, hasRestorable } = listedReportTemplates(
+		templates,
+		capabilities,
+		viewerUserId,
+		showArchived,
+	);
 
 	const invalidateTemplates = () =>
 		queryClient.invalidateQueries({
@@ -106,40 +118,45 @@ export function ProjectReportTemplatesList<T extends ProjectReportTemplate>({
 		}),
 	);
 	const isChanging = archiveMutation.isPending || unarchiveMutation.isPending;
+	// Project editors set this project's defaults, organization admins the
+	// organization's; the dialog offers each only what the API allows.
+	const canSetDefaults = canStartReports || capabilities.isOrganizationAdmin;
+	const [defaultsFor, setDefaultsFor] = useState<T | null>(null);
 
 	return (
 		<div className="space-y-4">
-			{(managesTemplates || canCreateReportTemplate(capabilities)) && (
-				<div className="flex flex-wrap items-center justify-between gap-3">
-					{managesTemplates ? (
-						<div className="flex items-center gap-2">
-							<Switch
-								id="report-templates-show-archived"
-								checked={showArchived}
-								onCheckedChange={onShowArchivedChange}
-							/>
-							<Label
-								htmlFor="report-templates-show-archived"
-								className="text-sm text-muted-foreground"
-							>
-								Show archived templates
-							</Label>
-						</div>
-					) : (
-						<span />
-					)}
-					{canCreateReportTemplate(capabilities) && (
-						<Button asChild size="sm">
-							<Link href={`${reportTemplatesPath}/new`}>
-								<PlusIcon className="mr-1 h-4 w-4" />
-								New template
-							</Link>
-						</Button>
-					)}
-				</div>
-			)}
+			<div className="flex flex-wrap items-center justify-between gap-3">
+				{hasRestorable && (
+					<div className="flex items-center gap-2">
+						<Switch
+							id="report-templates-show-archived"
+							checked={showArchived}
+							onCheckedChange={onShowArchivedChange}
+						/>
+						<Label
+							htmlFor="report-templates-show-archived"
+							className="text-sm text-muted-foreground"
+						>
+							Show archived templates
+						</Label>
+					</div>
+				)}
+				{canCreateReportTemplate(capabilities) && (
+					<Button asChild size="sm" className="ml-auto">
+						<Link
+							href={withProjectContext(
+								`${reportTemplatesPath}/new`,
+								projectId,
+							)}
+						>
+							<PlusIcon className="mr-1 h-4 w-4" />
+							New template
+						</Link>
+					</Button>
+				)}
+			</div>
 
-			{templates.length === 0 ? (
+			{listedTemplates.length === 0 ? (
 				<div className="py-12 text-center">
 					<FileTextIcon
 						aria-hidden="true"
@@ -154,7 +171,7 @@ export function ProjectReportTemplatesList<T extends ProjectReportTemplate>({
 				</div>
 			) : (
 				<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-					{templates.map((template) => {
+					{listedTemplates.map((template) => {
 						const archived = Boolean(template.archivedAt);
 						const canManage = canManageReportTemplate(
 							template,
@@ -238,6 +255,18 @@ export function ProjectReportTemplatesList<T extends ProjectReportTemplate>({
 											Use template
 										</Button>
 									)}
+									{canSetDefaults && !archived && (
+										<Button
+											size="sm"
+											variant="ghost"
+											onClick={() =>
+												setDefaultsFor(template)
+											}
+										>
+											<SlidersHorizontalIcon className="mr-2 h-4 w-4" />
+											Defaults
+										</Button>
+									)}
 									{canManage && (
 										<Button
 											size="sm"
@@ -245,7 +274,10 @@ export function ProjectReportTemplatesList<T extends ProjectReportTemplate>({
 											asChild
 										>
 											<Link
-												href={`${reportTemplatesPath}/${template.id}`}
+												href={withProjectContext(
+													`${reportTemplatesPath}/${template.id}`,
+													projectId,
+												)}
 											>
 												<PencilIcon className="mr-2 h-4 w-4" />
 												Edit
@@ -280,6 +312,13 @@ export function ProjectReportTemplatesList<T extends ProjectReportTemplate>({
 						);
 					})}
 				</div>
+			)}
+			{defaultsFor && (
+				<ReportTemplateDefaultsDialog
+					template={defaultsFor}
+					projectId={projectId}
+					onClose={() => setDefaultsFor(null)}
+				/>
 			)}
 		</div>
 	);

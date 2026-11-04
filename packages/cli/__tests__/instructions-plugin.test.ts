@@ -45,6 +45,7 @@ const { mocks } = vi.hoisted(() => ({
 		listRepositoryFiles: vi.fn(),
 		readRepositoryFiles: vi.fn(),
 		getTargets: vi.fn(),
+		listCodeRepositories: vi.fn(),
 		run: vi.fn(),
 	},
 }));
@@ -76,6 +77,7 @@ vi.mock("../src/lib/client.js", () => {
 			readRepositoryFiles: mocks.readRepositoryFiles,
 		},
 		memory: { getTargets: mocks.getTargets },
+		projects: { listCodeRepositories: mocks.listCodeRepositories },
 		knowledge: {
 			getProjectTypes: vi.fn(async () => ({ types: [] })),
 		},
@@ -651,7 +653,9 @@ describe("fabric instructions init --plugin", () => {
 					"utf8",
 				),
 			).toBe("Names.\n");
-			expect(result.stdout).toContain(`delivered to ${FOLDER}/`);
+			expect(result.stdout).toMatch(
+				new RegExp(`Project rules +2 written (→|->) ${FOLDER}/`),
+			);
 			const status = execFileSync(
 				"git",
 				["status", "--porcelain", "-uall"],
@@ -731,12 +735,111 @@ describe("fabric instructions init --plugin", () => {
 		]);
 
 		expect(mocks.getPublished).toHaveBeenCalled();
-		expect(result.stdout).toContain("approve the plugin's command once");
-		expect(result.stdout).toContain("claude plugin marketplace add");
-		expect(result.stdout).toContain(
-			"claude plugin install fabric-0project@fabric-0project --scope local",
+		expect(result.code).toBe(0);
+		expect(result.stdout).toMatch(
+			/Plugin registered +fabric-0project@fabric-0project: approve its command once/,
 		);
-		expect(result.stdout).toContain("Memory folders are ready");
+		expect(result.stdout).toMatch(/Memory access +memory folders ready/);
+		// The commands are in the numbered next steps, each on its own line.
+		const next = result.stdout.slice(result.stdout.indexOf("Next steps:"));
+		expect(next).toMatch(
+			/\n {2}\d\. Approve the plugin's command in your own terminal, from this folder:\n/,
+		);
+		expect(next).toMatch(/\n {7}claude plugin marketplace add /);
+		expect(next).toContain(
+			"\n       claude plugin install fabric-0project@fabric-0project --scope local\n",
+		);
+		expect(next).toMatch(/\d\. Start a new Claude Code session\.$/m);
+	});
+
+	it("prints the full sentences under each step with --verbose", async () => {
+		const result = await runCli([
+			"init",
+			"--plugin",
+			"--project",
+			PROJECT,
+			"--tool",
+			"claude-code",
+			"--dest",
+			await makeTree(),
+			"--verbose",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			"Added hooks: memory files are pulled at session start and sent when a turn ends.",
+		);
+		expect(result.stdout).toContain(
+			"Memory folders are ready: files agents write there reach the repository through Fabric.",
+		);
+	});
+
+	describe("with --repos", () => {
+		const initWithRepos = async (dest: string) =>
+			runCli([
+				"init",
+				"--plugin",
+				"--project",
+				PROJECT,
+				"--tool",
+				"claude-code",
+				"--dest",
+				dest,
+				"--repos",
+			]);
+
+		it("lists a repository already in place as one done step and exits 0", async () => {
+			const dest = await makeTree();
+			await mkdir(path.join(dest, "repos", "app"), { recursive: true });
+			await writeFile(
+				path.join(dest, "repos", "app", "README.md"),
+				"app\n",
+			);
+			mocks.listCodeRepositories.mockResolvedValue({
+				repositories: [
+					{
+						folder: "app",
+						name: "example-org/app",
+						cloneUrl: "https://git.example.com/example-org/app.git",
+						defaultBranch: "main",
+						provider: "GITHUB",
+					},
+				],
+			});
+
+			const result = await initWithRepos(dest);
+
+			expect(result.code).toBe(0);
+			expect(result.stdout).toMatch(
+				/Repositories +example-org\/app (→|->) repos\/app \(already here\)/,
+			);
+		});
+
+		it("marks a repository that could not be cloned as failed and exits non-zero", async () => {
+			const dest = await makeTree();
+			mocks.listCodeRepositories.mockResolvedValue({
+				repositories: [
+					{
+						folder: "app",
+						name: "example-org/app",
+						cloneUrl: "http://git.example.com/example-org/app.git",
+						defaultBranch: "main",
+						provider: "GITHUB",
+					},
+				],
+			});
+
+			const result = await initWithRepos(dest);
+
+			expect(result.code).toBe(1);
+			expect(result.stdout).toMatch(
+				/^(✗|\[x\]) +Repositories +1 of 1 not cloned: example-org\/app$/m,
+			);
+			expect(result.stdout).toMatch(
+				/\d\. example-org\/app: its address cannot be cloned\./,
+			);
+			expect(result.stderr).toContain("One step of the set-up failed");
+		});
 	});
 
 	it("replaces a clone-mode hook for the project and leaves another project's alone", async () => {
@@ -1074,8 +1177,8 @@ describe("fabric instructions init --plugin", () => {
 			expect(removals).toEqual([
 				["mcp", "remove", SERVER, "--scope", "local"],
 			]);
-			expect(result.stdout).toContain(
-				`Removed the earlier Claude Code registration ${SERVER}`,
+			expect(result.stdout).toMatch(
+				new RegExp(`Earlier MCP entry +${SERVER} removed`),
 			);
 		});
 
@@ -1423,9 +1526,10 @@ describe("fabric instructions init --plugin", () => {
 					["plugin", "add", "fabric-0project@personal"],
 					expect.objectContaining({ timeoutMs: 120_000 }),
 				);
-				expect(result.stdout).toContain(
-					"Installed the fabric-0project plugin in Codex.",
+				expect(result.stdout).toMatch(
+					/Codex plugin +fabric-0project@personal installed/,
 				);
+				expect(result.stdout).toMatch(/Start a new Codex session\.$/m);
 				expect(result.stdout).not.toContain("plugin browser");
 			});
 
@@ -1446,10 +1550,13 @@ describe("fabric instructions init --plugin", () => {
 				const result = await initCodex();
 
 				expect(result.code).toBe(0);
-				expect(result.stdout).toContain(
-					"Run: codex plugin add fabric-0project@mine",
+				expect(result.stdout).toMatch(
+					/Codex plugin +listed, but Codex did not install it/,
 				);
-				expect(result.stdout).not.toContain("Installed the");
+				expect(result.stdout).toMatch(
+					/\d\. Install the plugin in Codex:\n {7}codex plugin add fabric-0project@mine\n/,
+				);
+				expect(result.stdout).not.toContain("All set.");
 			});
 
 			it("prints the command when codex exits with an error", async () => {
@@ -1463,7 +1570,7 @@ describe("fabric instructions init --plugin", () => {
 				const result = await initCodex();
 
 				expect(result.stdout).toContain(
-					"Run: codex plugin add fabric-0project@personal",
+					"\n       codex plugin add fabric-0project@personal\n",
 				);
 			});
 		});

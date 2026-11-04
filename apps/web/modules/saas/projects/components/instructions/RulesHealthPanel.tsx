@@ -4,17 +4,41 @@
  * Rules health (specs/2026-10-21-ai-artifacts-hub §5.8): how much of every
  * coding session the project's rules take, how they are loaded (always on,
  * by path, on demand), what is duplicated or too long, and an AI review for
- * contradictions and merges.
+ * contradictions and merges, whose suggestions an editor can apply as reviewed
+ * file edits (`ApplyRuleSuggestions`).
+ *
+ * One story throughout: the checks, the review and the suggested edits speak
+ * in the shared finding categories (`@repo/instructions/rule-findings`) and
+ * count files the same way, the badge and the budget meter read the same
+ * computed state (`rulesHealthState`), and an applied commit shows here as
+ * one result line once the edits dialog has closed.
  */
 
+import type { RuleFinding } from "@repo/instructions/rule-findings";
+import { summarizeRuleFindings } from "@repo/instructions/rule-findings";
+import {
+	RULE_FINDING_LABELS,
+	rulesHealthState,
+} from "@saas/projects/lib/rule-suggestions";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
-import { Markdown } from "@ui/components/markdown";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
+import { cn } from "@ui/lib";
 import { ChevronDownIcon, ChevronRightIcon, Loader2Icon } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
+import { ApplyRuleSuggestions } from "./ApplyRuleSuggestions";
+import { RuleReviewFindings, RuleReviewSummary } from "./RuleReview";
+import {
+	type AppliedRuleSuggestions,
+	RuleSuggestionsResult,
+} from "./RuleSuggestionsResult";
 
 const TIER_LABELS: Record<string, string> = {
 	"always-on": "always on",
@@ -32,8 +56,26 @@ const FINDING_LABELS: Record<string, string> = {
 	empty: "Empty rule",
 };
 
-export function RulesHealthPanel({ projectId }: { projectId: string }) {
+/** The meter's colour for each budget state. */
+const BUDGET_BAR_CLASS = {
+	headroom: "bg-muted-foreground/60",
+	close: "bg-amber-500",
+	over: "bg-destructive",
+} as const;
+
+export function RulesHealthPanel({
+	projectId,
+	canEdit = false,
+	readOnlyMode = false,
+}: {
+	projectId: string;
+	/** Whether this viewer may change the instructions (INSTRUCTION_CREATE). */
+	canEdit?: boolean;
+	readOnlyMode?: boolean;
+}) {
+	const checksId = useId();
 	const [open, setOpen] = useState(false);
+	const [applied, setApplied] = useState<AppliedRuleSuggestions | null>(null);
 	const health = useQuery({
 		...orpc.projects.instructions.rulesHealth.queryOptions({
 			input: { projectId },
@@ -55,31 +97,48 @@ export function RulesHealthPanel({ projectId }: { projectId: string }) {
 		100,
 		Math.round((data.alwaysOnChars / data.budget) * 100),
 	);
+	const state = rulesHealthState(data);
+	const flagged = state.summary.files.length;
+	const reviewFindings = (review.data?.findings ?? null) as
+		| RuleFinding[]
+		| null;
+	const reviewSummary = reviewFindings
+		? summarizeRuleFindings(reviewFindings)
+		: null;
+
+	const showChecks = () => {
+		setOpen(true);
+		requestAnimationFrame(() => {
+			const list = document.getElementById(checksId);
+			list?.scrollIntoView?.({ block: "nearest" });
+			list?.focus();
+		});
+	};
 
 	return (
 		<Card className="flex flex-col gap-2 p-4">
-			<button
-				type="button"
-				className="flex w-full flex-wrap items-center justify-between gap-2 text-left"
-				aria-expanded={open}
-				onClick={() => setOpen((v) => !v)}
-			>
-				<span className="flex items-center gap-2 font-medium text-sm">
-					{open ? (
-						<ChevronDownIcon
-							className="size-4"
-							aria-hidden="true"
-						/>
-					) : (
-						<ChevronRightIcon
-							className="size-4"
-							aria-hidden="true"
-						/>
-					)}
-					Rules health
-				</span>
-				<span className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-					<span>
+			<div className="flex w-full flex-wrap items-center justify-between gap-2">
+				<button
+					type="button"
+					className="flex flex-1 flex-wrap items-center justify-between gap-2 text-left"
+					aria-expanded={open}
+					onClick={() => setOpen((v) => !v)}
+				>
+					<span className="flex items-center gap-2 font-medium text-sm">
+						{open ? (
+							<ChevronDownIcon
+								className="size-4"
+								aria-hidden="true"
+							/>
+						) : (
+							<ChevronRightIcon
+								className="size-4"
+								aria-hidden="true"
+							/>
+						)}
+						Rules health
+					</span>
+					<span className="text-muted-foreground text-xs">
 						{data.rules.length} rules ·{" "}
 						{Object.entries(counts)
 							.map(
@@ -88,15 +147,41 @@ export function RulesHealthPanel({ projectId }: { projectId: string }) {
 							)
 							.join(" · ")}
 					</span>
-					{data.findings.length > 0 ? (
-						<Badge status="warning">
-							{data.findings.length} to clean up
-						</Badge>
-					) : (
-						<Badge status="success">clean</Badge>
-					)}
-				</span>
-			</button>
+				</button>
+				{flagged > 0 ? (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<button
+								type="button"
+								data-testid="rules-health-badge"
+								className="rounded-sm focus-visible:outline-2 focus-visible:outline-ring"
+								onClick={showChecks}
+							>
+								<Badge status="warning">
+									{flagged} to clean up
+								</Badge>
+							</button>
+						</TooltipTrigger>
+						<TooltipContent className="max-w-xs">
+							<p>
+								Files the checks flagged:{" "}
+								{state.summary.counts
+									.map(
+										(entry) =>
+											`${entry.files} ${RULE_FINDING_LABELS[entry.category]}`,
+									)
+									.join(", ")}
+								. Clean-up covers duplicate, long, empty and
+								undescribed rules. Select to see the files.
+							</p>
+						</TooltipContent>
+					</Tooltip>
+				) : (
+					<Badge status="success" data-testid="rules-health-badge">
+						clean
+					</Badge>
+				)}
+			</div>
 			<div className="flex items-center gap-2 text-xs">
 				<span className="text-muted-foreground">Always-on budget</span>
 				<div
@@ -108,7 +193,9 @@ export function RulesHealthPanel({ projectId }: { projectId: string }) {
 					aria-valuenow={data.alwaysOnChars}
 				>
 					<div
-						className={`h-full ${used >= 100 ? "bg-destructive" : used >= 80 ? "bg-amber-500" : "bg-primary"}`}
+						data-testid="rules-budget-bar"
+						data-state={state.budget}
+						className={cn("h-full", BUDGET_BAR_CLASS[state.budget])}
 						style={{ width: `${used}%` }}
 					/>
 				</div>
@@ -117,6 +204,16 @@ export function RulesHealthPanel({ projectId }: { projectId: string }) {
 					{data.budget.toLocaleString()}
 				</span>
 			</div>
+			{reviewSummary ? (
+				<RuleReviewSummary summary={reviewSummary} />
+			) : null}
+			{applied ? (
+				<RuleSuggestionsResult
+					projectId={projectId}
+					result={applied}
+					onDismiss={() => setApplied(null)}
+				/>
+			) : null}
 			{open ? (
 				<div className="flex flex-col gap-3">
 					<p className="text-muted-foreground text-xs">
@@ -126,7 +223,12 @@ export function RulesHealthPanel({ projectId }: { projectId: string }) {
 						for them, through the plugin's fabric-rules skill.
 					</p>
 					{data.findings.length > 0 ? (
-						<ul className="flex flex-col gap-2">
+						<ul
+							id={checksId}
+							tabIndex={-1}
+							aria-label="What the checks found"
+							className="flex flex-col gap-2 focus-visible:outline-none"
+						>
 							{data.findings.map((finding, index) => (
 								<li
 									key={`${finding.kind}-${index}`}
@@ -157,7 +259,10 @@ export function RulesHealthPanel({ projectId }: { projectId: string }) {
 							variant="outline"
 							className="self-start"
 							disabled={review.isPending}
-							onClick={() => review.mutate({ projectId })}
+							onClick={() => {
+								setApplied(null);
+								review.mutate({ projectId });
+							}}
 						>
 							{review.isPending ? (
 								<Loader2Icon
@@ -175,10 +280,29 @@ export function RulesHealthPanel({ projectId }: { projectId: string }) {
 								{review.error.message}
 							</p>
 						) : null}
-						{review.data ? (
-							<div className="rounded-md border p-3 text-sm">
-								<Markdown>{review.data.review}</Markdown>
-							</div>
+						{reviewFindings ? (
+							<>
+								<div className="rounded-md border p-3">
+									<RuleReviewFindings
+										findings={reviewFindings}
+									/>
+								</div>
+								{reviewFindings.length > 0 ? (
+									<ApplyRuleSuggestions
+										projectId={projectId}
+										findings={reviewFindings}
+										canEdit={canEdit}
+										readOnlyMode={readOnlyMode}
+										onApplied={(result) => {
+											// The review described the rules
+											// before this change; the line
+											// says what became of it instead.
+											review.reset();
+											setApplied(result);
+										}}
+									/>
+								) : null}
+							</>
 						) : null}
 					</div>
 				</div>

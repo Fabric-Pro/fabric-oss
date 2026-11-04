@@ -1,7 +1,5 @@
 import { CreateCustomAgent } from "@saas/agent-templates";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
-import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
-import { TopRightControls } from "@saas/shared/components/TopRightControls";
 import { redirect } from "next/navigation";
 
 type Props = {
@@ -32,20 +30,7 @@ export default async function CreateAgentPage({ params }: Props) {
 	const basePath = `/app/${organizationSlug}/agents`;
 
 	return (
-		<div className="min-h-screen">
-			<div className="w-full space-y-6 px-6 py-6">
-				<TopRightControls />
-				<PageBreadcrumbs
-					items={[
-						{
-							label: organization.name,
-							href: `/app/${organizationSlug}`,
-						},
-						{ label: "Agents", href: basePath },
-						{ label: "Create Custom Agent" },
-					]}
-				/>
-			</div>
+		<div className="flex h-full min-h-0 flex-1 flex-col">
 			<CreateCustomAgent
 				organizationId={organization.id}
 				basePath={basePath}

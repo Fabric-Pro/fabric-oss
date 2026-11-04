@@ -3,7 +3,7 @@ import { db, getBoundPromptForAgent } from "@repo/database";
 import { logger } from "@repo/logs";
 import { renderTemplate, type TemplateFormat } from "@repo/utils";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
-import { generateObject, generateText } from "ai";
+import { generateText, Output } from "ai";
 import { z } from "zod";
 import {
 	AIProviderNotConfiguredError,
@@ -14,11 +14,12 @@ import {
 	promptGenerateStoryTitle,
 	STORY_TITLE_GENERATOR_PROMPT_FALLBACK_BODY,
 } from "./prompts";
+import { requireStructuredOutput } from "./structured-output";
 import { logModelUsageAsync } from "./usage-logging";
 
 /**
  * Zod schema describing the shape the LLM must return. Passed to
- * `generateObject` for validation against the caller's Zod schema. The shared
+ * `Output.object` for validation against the caller's Zod schema. The shared
  * model middleware selects upstream enforcement for supported routes and schemas,
  * with guidance-only fallback after strict rejection. The manual JSON parse below
  * handles providers whose replies still do not meet the structured-output contract.
@@ -364,7 +365,7 @@ export async function generateStoryTitleFromDescription(
 
 		const generationStart = Date.now();
 
-		// Primary path: generateObject validates the response against the Zod schema.
+		// Primary path: structured output (`generateText` + `Output.object`) validates the response against the Zod schema.
 		// The shared model middleware selects strict enforcement on supported routes
 		// and schemas, and retries rejected strict requests with schema guidance.
 		//
@@ -385,24 +386,26 @@ export async function generateStoryTitleFromDescription(
 		let rawTextForFallback = "";
 
 		try {
-			const generated = await generateObject({
-				model,
-				schema: TITLE_RESPONSE_SCHEMA,
-				prompt: rendered.rendered,
-			});
-			parsed = generated.object as TitleResponse;
+			const generated = await requireStructuredOutput(
+				generateText({
+					model,
+					output: Output.object({ schema: TITLE_RESPONSE_SCHEMA }),
+					prompt: rendered.rendered,
+				}),
+			);
+			parsed = generated.output as TitleResponse;
 			usage = generated.usage as typeof usage;
-		} catch (generateObjectError) {
+		} catch (structuredOutputError) {
 			// A turn stop or a token-allowance refusal is not a malformed
 			// answer to retry another way.
-			rethrowIfDispatchStopped(generateObjectError);
-			const limitError = findAiUsageLimitError(generateObjectError);
+			rethrowIfDispatchStopped(structuredOutputError);
+			const limitError = findAiUsageLimitError(structuredOutputError);
 			if (limitError) {
 				throw limitError;
 			}
 			logger.warn(
-				"[story-title-generator] generateObject failed; falling back to generateText + manual JSON parse",
-				generateObjectError,
+				"[story-title-generator] structured output failed; falling back to generateText + manual JSON parse",
+				structuredOutputError,
 			);
 			const textResult = await generateText({
 				model,
@@ -447,7 +450,7 @@ export async function generateStoryTitleFromDescription(
 		if (parsed?.is_insufficient === true) {
 			result = untitledFallback({ isInsufficient: true });
 		} else {
-			// `parsed?.title` covers the happy `generateObject` path and the
+			// `parsed?.title` covers the happy structured-output path and the
 			// successful manual-JSON-parse paths. `rawTextForFallback` (the
 			// generateText output, only populated in the fallback branch) is
 			// the very-last-resort title source for providers that returned

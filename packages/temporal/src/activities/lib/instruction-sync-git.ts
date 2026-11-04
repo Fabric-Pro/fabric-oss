@@ -403,17 +403,6 @@ export function buildGitEnv(input: {
 	return env;
 }
 
-/** The HTTPS username `buildAuthCloneUrl` (`@repo/integrations`) uses per provider. */
-export function gitUsernameFor(provider: string): string {
-	if (provider === "AZURE_DEVOPS") {
-		return "pat";
-	}
-	if (provider === "GITLAB") {
-		return "oauth2";
-	}
-	return "x-access-token";
-}
-
 /**
  * The integration's URL as `origin + pathname`, userinfo stripped, or null
  * when it is not HTTPS or carries a query or a fragment. Defined beside the
@@ -421,6 +410,8 @@ export function gitUsernameFor(provider: string): string {
  * and proposal admission share one reading of a stored URL.
  */
 export { credentialFreeUrl } from "@repo/integrations/instruction-pull-requests";
+/** The HTTPS username each provider expects, shared with the code-indexing and Atlas clones. */
+export { gitUsernameFor } from "@repo/integrations/repo-auth";
 
 export function cloneArgs(input: {
 	url: string;

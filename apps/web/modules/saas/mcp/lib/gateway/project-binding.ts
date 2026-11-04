@@ -67,7 +67,22 @@ export const PROJECT_BOUND_TOOL_NAMES = [
 	"fabric_create_document",
 	"fabric_update_document",
 	"fabric_list_project_contexts",
+	"fabric_list_project_workspace_documents",
+	"fabric_read_project_workspace_document",
+	"fabric_link_workspace_document",
+	"fabric_unlink_workspace_document",
+	"fabric_assemble_project_context",
 	"fabric_get_project_context",
+	"fabric_inspect_agent_run_result",
+	"fabric_check_agent_run_result",
+	"fabric_inspect_context_quality_source",
+	"fabric_evaluate_context_quality",
+	"fabric_context_quality_run_capabilities",
+	"fabric_create_context_quality_run",
+	"fabric_list_context_quality_runs",
+	"fabric_get_context_quality_run",
+	"fabric_cancel_context_quality_run",
+	"fabric_compare_context_quality_runs",
 	"fabric_update_project_context",
 	"fabric_upsert_project_context",
 	"fabric_list_project_instructions",
@@ -91,6 +106,10 @@ export const PROJECT_BOUND_TOOL_NAMES = [
 	"fabric_memory_read",
 	"fabric_memory_write",
 	"fabric_memory_write_status",
+	// Reports: listing names the project; generating resolves the report's
+	// project and asks the project-access helper about it.
+	"fabric_list_project_reports",
+	"fabric_generate_report",
 ] as const;
 
 /**
@@ -100,11 +119,18 @@ export const PROJECT_BOUND_TOOL_NAMES = [
  */
 export const PROJECT_BOUND_HIDDEN_TOOL_NAMES: readonly string[] = [
 	"fabric_get_identity",
+	"fabric_list_agent_runs",
+	"fabric_search_agent_runs",
+	"fabric_get_agent_run",
+	"fabric_cancel_agent_run",
+	"fabric_get_agent_run_schedule",
+	"fabric_set_agent_run_schedule",
 	"fabric_list_organizations",
 	"fabric_switch_organization",
 	"fabric_create_project",
 	"fabric_list_workspaces",
 	"fabric_get_workspace",
+	"fabric_get_workspace_document",
 	"fabric_query_workspace",
 	// The workflow, frame, version and page families: every tool of a family is organization-wide.
 	...FABRIC_WORKFLOW_TOOL_DEFINITIONS.map((tool) => tool.name),

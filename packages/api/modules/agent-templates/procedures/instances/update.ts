@@ -1,4 +1,5 @@
 import { ORPCError } from "@orpc/server";
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 import type { AgentInstanceStatus } from "@repo/database";
 import {
 	archiveInstanceVersion,
@@ -20,6 +21,8 @@ import {
 	validateSlackTriggerConfigs,
 } from "../../../agent-deployments/lib/sync-triggers";
 import { resolvedOrganizationId } from "../../../agents/procedures/conversations/resolved-organization";
+import { assertAgentDefinitionConfigUpdate } from "../../lib/agent-definition";
+import { prepareAgentProjectConfiguration } from "../../lib/agent-project-configuration";
 import {
 	knowledgeConnectionsSchema,
 	knowledgeResourcesSchema,
@@ -70,6 +73,8 @@ const updateInputSchema = z
 	.object({
 		id: z.string(),
 		organizationId: z.string().nullable().optional(),
+		projectId: z.string().trim().min(1).max(200).nullable().optional(),
+		expectedOutput: z.string().trim().max(4000).optional(),
 		name: optionalTrimmedText("Name", 200),
 		description: optionalTrimmedText("Description", 500),
 		heroEmojis: z.array(z.string()).optional(),
@@ -126,6 +131,37 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 		const existing = await getAgentTemplateInstance(input.id);
 		if (!existing || existing.organizationId !== organizationId) {
 			throw new ORPCError("NOT_FOUND", { message: "Instance not found" });
+		}
+
+		try {
+			assertAgentDefinitionConfigUpdate(
+				existing.customInstructions,
+				input,
+			);
+		} catch (error) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					error instanceof Error
+						? error.message
+						: "Invalid agent implementation update",
+			});
+		}
+
+		if (
+			input.status === "ACTIVE" ||
+			input.status === "PENDING" ||
+			input.isActive === true ||
+			input.createNewVersion ||
+			input.isApiExposed === true
+		) {
+			const availability = getAgentImplementationAvailability(
+				existing.customInstructions,
+			);
+			if (!availability.available) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: availability.reason,
+				});
+			}
 		}
 
 		// Validate workspace access if workspaceIds provided. Access alone only
@@ -193,24 +229,16 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			}
 		}
 
-		// Imported connection requirements describe resources still awaiting
-		// rebinding. Editing prose must not silently discard that declaration.
-		const previousInstructions = existing.customInstructions;
-		const portableRequirements =
-			previousInstructions &&
-			typeof previousInstructions === "object" &&
-			!Array.isArray(previousInstructions)
-				? previousInstructions.portableRequirements
-				: undefined;
-		const customInstructions =
-			input.customInstructions === undefined
-				? undefined
-				: {
-						...(portableRequirements !== undefined
-							? { portableRequirements }
-							: {}),
-						...input.customInstructions,
-					};
+		const projectConfiguration = await prepareAgentProjectConfiguration({
+			userId: context.user.id,
+			organizationId,
+			projectId: input.projectId,
+			expectedOutput: input.expectedOutput,
+			customInstructions: input.customInstructions,
+			toolConnections: input.toolConnections,
+			previousInstructions: existing.customInstructions,
+			previousToolConnections: existing.toolConnections,
+		});
 
 		if (input.triggers !== undefined) {
 			try {
@@ -237,14 +265,14 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			description: input.description,
 			heroEmojis: input.heroEmojis,
 			heroImageUrl: input.heroImageUrl ?? undefined,
-			customInstructions: customInstructions as
+			customInstructions: projectConfiguration.customInstructions as
 				| Prisma.InputJsonValue
 				| undefined,
 			knowledgeConnections: input.knowledgeConnections as
 				| Prisma.InputJsonValue
 				| undefined,
 			knowledgeResources: input.knowledgeResources ?? undefined,
-			toolConnections: input.toolConnections as
+			toolConnections: projectConfiguration.toolConnections as
 				| Prisma.InputJsonValue
 				| undefined,
 			triggers: input.triggers as Prisma.InputJsonValue | undefined,

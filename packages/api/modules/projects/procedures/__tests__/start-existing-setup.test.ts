@@ -184,6 +184,20 @@ vi.mock("@repo/connectors", () => ({
 	validateGitLabPat: (...args: unknown[]) => mockValidateGitLabPat(...args),
 }));
 
+// A GitHub token the import form saved in the credential manager.
+const mockResolveCredential = vi.fn();
+const mockResolveCredentialActor = vi.fn();
+vi.mock("@repo/integrations/credential-manager", () => ({
+	resolveCredential: (...args: unknown[]) => mockResolveCredential(...args),
+}));
+vi.mock("@repo/integrations/repo-auth", () => ({
+	REPOSITORY_CREDENTIAL_KINDS: ["PAT", "OAUTH", "GITHUB_APP_USER"],
+}));
+vi.mock("../../../credential-manager/lib/context", () => ({
+	resolveCredentialActor: (...args: unknown[]) =>
+		mockResolveCredentialActor(...args),
+}));
+
 vi.mock("../../../../orpc/procedures", () => {
 	const builder: Record<string, unknown> = {};
 	builder.use = () => builder;
@@ -213,6 +227,7 @@ interface HandlerInput {
 	selectedDocumentTypes?: string[];
 	projectTypes?: string[];
 	projectName: string;
+	credentialId?: string;
 }
 
 type Handler = (args: {
@@ -1863,5 +1878,100 @@ describe("startExistingSetupProcedure — a setup paused for a ChatGPT plan rese
 		).rejects.toMatchObject({ code: "CONFLICT" });
 		expect(mockCancelPausedSetupsOfProject).not.toHaveBeenCalled();
 		expect(mockWorkflowStart).not.toHaveBeenCalled();
+	});
+});
+
+describe("startExistingSetupProcedure — a GitHub token saved by the import form", () => {
+	const GITHUB_URL = "https://github.com/example-org/booking-app";
+
+	beforeEach(() => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "example-org",
+			name: "booking-app",
+			url: GITHUB_URL,
+		});
+		mockRepoIntegrationFindFirst.mockResolvedValue(null);
+		mockResolveDefaultBranch.mockResolvedValue("main");
+		mockResolveCredentialActor.mockResolvedValue({
+			userId: "user-1",
+			organizationId: "org-1",
+			canManageOrganizationIntegrations: false,
+		});
+		mockResolveCredential.mockResolvedValue({
+			ok: true,
+			value: {
+				credential: { id: "cred-1", kind: "PAT" },
+				token: "saved-token",
+				expiresAt: null,
+			},
+		});
+	});
+
+	it("binds the saved credential by credentialId and never copies the token", async () => {
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "p1",
+				organizationId: "org-1",
+				repoUrls: [GITHUB_URL],
+				projectName: "Proj",
+				credentialId: "cred-1",
+			},
+			context: baseContext,
+		});
+
+		// Resolved as the caller in the project's organization.
+		expect(mockResolveCredentialActor).toHaveBeenCalledWith(
+			"org-1",
+			"user-1",
+		);
+		expect(mockResolveCredential).toHaveBeenCalledWith(
+			expect.objectContaining({
+				credentialId: "cred-1",
+				actor: expect.objectContaining({
+					type: "user",
+					userId: "user-1",
+				}),
+			}),
+		);
+		// The person's GitHub connection is not read.
+		expect(mockWorkflowIntegrationFindFirst).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({ provider: "GITHUB" }),
+			}),
+		);
+		expect(mockVerifyRepositoryAccess).toHaveBeenCalledWith(
+			expect.objectContaining({ token: "saved-token" }),
+		);
+		const created = mockCreateProjectRepoIntegration.mock.calls[0]?.[0];
+		expect(created).toMatchObject({
+			provider: "GITHUB",
+			authMethod: "PAT",
+			credentialId: "cred-1",
+		});
+		expect(created.encryptedPat).toBeUndefined();
+		expect(created.encryptedAccessToken).toBeUndefined();
+	});
+
+	it("refuses a saved credential the caller may not use", async () => {
+		mockResolveCredential.mockResolvedValue({
+			ok: false,
+			failure: { code: "forbidden" },
+		});
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "p1",
+					organizationId: "org-1",
+					repoUrls: [GITHUB_URL],
+					projectName: "Proj",
+					credentialId: "cred-other",
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
 	});
 });

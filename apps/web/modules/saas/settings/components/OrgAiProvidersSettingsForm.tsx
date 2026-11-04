@@ -54,6 +54,7 @@ import {
 	embeddingsOnlyTakenBy,
 	GATEWAY_SUB_PROVIDERS,
 	getCloudProviders,
+	getConfiguredProviderLabel,
 	getCustomRemoteProvider,
 	getDirectProviders,
 	getGatewayProviders,
@@ -834,11 +835,10 @@ export function OrgAiProvidersSettingsForm({
 																}
 																className="text-xs"
 															>
-																{p.displayName ||
-																	p.provider.replace(
-																		/_/g,
-																		" ",
-																	)}
+																{getConfiguredProviderLabel(
+																	p.provider,
+																	p.displayName,
+																)}
 																{p.isDefault &&
 																	" (Default)"}
 															</Badge>
@@ -899,17 +899,18 @@ export function OrgAiProvidersSettingsForm({
 															variant="outline"
 															className="text-xs border-secondary/30 bg-secondary/10 text-secondary"
 														>
-															{configStatus.configuredProviders.find(
-																(p) =>
-																	p.provider ===
-																	configStatus
-																		.organizationEmbedding
-																		?.provider,
-															)?.displayName ||
-																configStatus.organizationEmbedding.provider.replace(
-																	/_/g,
-																	" ",
-																)}
+															{getConfiguredProviderLabel(
+																configStatus
+																	.organizationEmbedding
+																	.provider,
+																configStatus.configuredProviders.find(
+																	(p) =>
+																		p.provider ===
+																		configStatus
+																			.organizationEmbedding
+																			?.provider,
+																)?.displayName,
+															)}
 														</Badge>
 														{configStatus
 															.organizationEmbedding

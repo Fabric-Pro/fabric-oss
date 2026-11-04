@@ -305,3 +305,31 @@ describe("Parlume canonical agent adapters", () => {
 		);
 	});
 });
+
+it.each([
+	{ kind: "harness_finite" },
+	{ kind: "harness_persistent" },
+	{ kind: "unknown" },
+	{ kind: "native", artifact: { digest: "invalid" } },
+])(
+	"does not run an unavailable implementation natively through a project-bound Parlume session: %j",
+	async (portableImplementation) => {
+		mocks.instance.mockResolvedValue({
+			id: "example-version",
+			toolConnections: {
+				"project-context": { projectId: session.projectId },
+			},
+			customInstructions: { portableImplementation },
+		});
+		await expect(
+			loadParlumeAgent({
+				...session,
+				agentKind: "TEMPLATE_INSTANCE",
+				agentInstanceSId: "example-stable-agent",
+			}),
+		).rejects.toThrow("implementation is unavailable");
+		expect(mocks.workspaces).not.toHaveBeenCalled();
+		expect(mocks.custom).not.toHaveBeenCalled();
+		expect(mocks.builtin).not.toHaveBeenCalled();
+	},
+);

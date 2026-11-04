@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/client";
 import {
 	db,
 	deleteWorkflowIntegrationByType,
+	listContextQualityProjectsBoundToIntegration,
 	listProjectsBoundToIntegration,
 	Prisma,
 	WorkflowIntegrationProviderSchema,
@@ -141,18 +142,33 @@ export const disconnectByTypeProcedure = tenantProtectedProcedure
 			});
 			return (
 				await Promise.all(
-					rows.map((row) => listProjectsBoundToIntegration(row.id)),
+					rows.map((row) =>
+						input.type === "DATABRICKS_PLATFORM"
+							? organizationId
+								? listContextQualityProjectsBoundToIntegration(
+										row.id,
+										organizationId,
+									)
+								: Promise.resolve([])
+							: listProjectsBoundToIntegration(row.id),
+					),
 				)
 			).flat();
 		};
 		const conflictMessage = (bound: Array<{ projectName: string }>) => {
+			if (input.type === "DATABRICKS_PLATFORM") {
+				return "This connection is an approved context evaluation destination for one or more projects. Disconnect it in each project's Context Quality settings before deleting it; unresolved cleanup receipts must be retained.";
+			}
 			const names =
 				bound.length > 0
 					? bound.map((p) => p.projectName).join(", ")
 					: "one or more projects";
 			return `This connection is used as project knowledge by: ${names}. Disconnect it from those projects' settings first.`;
 		};
-		if (input.type === "DATABRICKS_VECTOR_SEARCH") {
+		if (
+			input.type === "DATABRICKS_VECTOR_SEARCH" ||
+			input.type === "DATABRICKS_PLATFORM"
+		) {
 			const bound = await listBoundForType();
 			if (bound.length > 0) {
 				throw new ORPCError("CONFLICT", {

@@ -6,15 +6,20 @@
  *   → persistScanResults  (failScan on any error)
  *
  * Each scanner resolves an AI model via the centralized entry point and calls
- * generateObject against a strict findings schema. All DB writes happen in
+ * `generateText` + `Output.object` against a strict findings schema. All DB writes happen in
  * activities, so the workflow stays replay-safe.
  */
 
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import { classifyLimitError } from "@repo/ai/limits";
 import { cacheableSystem } from "@repo/ai/prompt-cache";
 import {
@@ -38,6 +43,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
+import type { z } from "zod";
 import { describeScanFailureReason } from "../../workflows/scan-failure-hint";
 import {
 	findPlanExhausted,
@@ -93,7 +99,7 @@ const SCAN_INITIAL_CONCURRENCY = 3;
 const SCAN_MAX_CONCURRENCY = 8;
 
 /**
- * Hard per-chunk timeout for a single `generateObject` LLM call. With the SDK's
+ * Hard per-chunk timeout for a single structured `generateText` LLM call. With the SDK's
  * own retry disabled (`maxRetries: 0`) there is no request timeout, so a stalled
  * connection would keep a chunk in flight until the 60-min activity ceiling and
  * discard every already-successful chunk. Aborting the individual call turns it
@@ -554,9 +560,7 @@ async function runScan(
 	// Resilient map-reduce: a single chunk's transient LLM failure is retried
 	// once then skipped, so the rest of a many-chunk FULL scan still aggregates
 	// instead of the whole scan dying with zero findings.
-	type ChunkResult = Awaited<
-		ReturnType<typeof generateObject<typeof ScanResultSchema>>
-	>;
+	type ChunkResult = StructuredTextResult<z.infer<typeof ScanResultSchema>>;
 	let chunkResults: Array<ChunkResult | null>;
 	let failedChunks: number[];
 	// Underlying per-chunk errors, kept so a wholesale failure can tell the user
@@ -576,23 +580,25 @@ async function runScan(
 					return Promise.reject(plan.spent);
 				}
 				const request = buildRequest(chunk);
-				return generateObject({
-					model,
-					schema: ScanResultSchema,
-					// Send the fixed guidance (role + OWASP/WCAG list + rubric +
-					// knowledge packs + output contract) as a cacheable `system`
-					// prefix so it isn't re-billed on every one of a scan's 30-60
-					// chunks; only the <document> block in `prompt` varies. The
-					// marker is provider-agnostic (see @repo/ai/prompt-cache).
-					instructions: cacheableSystem(request.system),
-					prompt: request.prompt,
-					temperature: 0,
-					maxRetries: 0,
-					// Bound a single stalled LLM call so it can't hang the whole
-					// scanner to the 60-min ceiling — an aborted call becomes a
-					// normal chunk failure (retried once, then skipped).
-					abortSignal: AbortSignal.timeout(SCAN_CHUNK_TIMEOUT_MS),
-				});
+				return requireStructuredOutput(
+					generateText({
+						model,
+						output: Output.object({ schema: ScanResultSchema }),
+						// Send the fixed guidance (role + OWASP/WCAG list + rubric +
+						// knowledge packs + output contract) as a cacheable `system`
+						// prefix so it isn't re-billed on every one of a scan's 30-60
+						// chunks; only the <document> block in `prompt` varies. The
+						// marker is provider-agnostic (see @repo/ai/prompt-cache).
+						instructions: cacheableSystem(request.system),
+						prompt: request.prompt,
+						temperature: 0,
+						maxRetries: 0,
+						// Bound a single stalled LLM call so it can't hang the whole
+						// scanner to the 60-min ceiling — an aborted call becomes a
+						// normal chunk failure (retried once, then skipped).
+						abortSignal: AbortSignal.timeout(SCAN_CHUNK_TIMEOUT_MS),
+					}),
+				);
 			},
 			{
 				initialConcurrency: SCAN_INITIAL_CONCURRENCY,
@@ -679,7 +685,7 @@ async function runScan(
 		}
 		inputTokens += result.usage?.inputTokens ?? 0;
 		outputTokens += result.usage?.outputTokens ?? 0;
-		for (const raw of result.object.findings) {
+		for (const raw of result.output.findings) {
 			// Suppress the self-referential ECHO class at the source: a finding the
 			// model itself classified as meta-content (its evidence only describes /
 			// tracks / tests an issue, rather than introducing one or exposing an

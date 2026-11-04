@@ -37,7 +37,7 @@ export interface ReconcileWorkflowSchedulesOutput {
 	reasons: Record<string, number>;
 }
 
-/** What a workflow row has to look like for its schedule to be legitimate. */
+/** Nodes must come from the publication, independently of editor drafts. */
 export interface ReconcilableWorkflow {
 	status: string;
 	nodes: unknown;
@@ -119,15 +119,45 @@ export async function reconcileWorkflowSchedules(args: {
 	return { scanned, orphansDeleted, dryRun: args.dryRun, reasons };
 }
 
-const defaultWorkflowFetcher: WorkflowFetcher = async (workflowId) => {
+export const fetchPublishedWorkflowForSchedule: WorkflowFetcher = async (
+	workflowId,
+) => {
 	// Reconciliation is a system sweep, so it reads across tenants
 	// deliberately — it is asking "does this row still exist and still want a
 	// schedule", not serving a user's request.
 	const workflow = await db.workflow.findUnique({
 		where: { id: workflowId },
-		select: { status: true, nodes: true },
+		select: {
+			status: true,
+			version: true,
+			publishedVersion: true,
+			userId: true,
+			organizationId: true,
+		},
 	});
-	return workflow ?? null;
+	if (!workflow) {
+		return null;
+	}
+	if (workflow.status !== "PUBLISHED" && workflow.status !== "ACTIVE") {
+		return { status: workflow.status, nodes: [] };
+	}
+	const snapshot = await db.workflowVersion.findFirst({
+		where: {
+			workflowId,
+			version: workflow.publishedVersion ?? workflow.version,
+			isPublished: true,
+			userId: workflow.userId,
+			organizationId: workflow.organizationId,
+		},
+		select: { nodes: true },
+	});
+	if (!snapshot) {
+		// Missing evidence is not proof that a live schedule is an orphan.
+		throw new Error(
+			"Published workflow version is missing; schedule reconciliation stopped",
+		);
+	}
+	return { status: workflow.status, nodes: snapshot.nodes };
 };
 
 export async function reconcileWorkflowSchedulesActivity(
@@ -144,7 +174,7 @@ export async function reconcileWorkflowSchedulesActivity(
 		deleteSchedule: async (workflowId) => {
 			await deleteWorkflowSchedule(workflowId, scheduleClient);
 		},
-		fetchWorkflow: defaultWorkflowFetcher,
+		fetchWorkflow: fetchPublishedWorkflowForSchedule,
 		dryRun,
 	});
 

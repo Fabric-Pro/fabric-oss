@@ -204,6 +204,7 @@ export {
 	type DeploymentExecutionOutput,
 	deploymentExecutionWorkflow,
 	type ExecutionProgress,
+	nativeDeploymentExecutionWorkflow,
 	progressQuery as deploymentProgressQuery,
 } from "./deployment-execution";
 // Automatic duplicate detection (fire-and-forget background scan of new stories)
@@ -392,6 +393,7 @@ export {
 	type GoalOrientedWorkflowState,
 	type GoalVerificationResult,
 	goalOrientedAgentWorkflow,
+	nativeGoalOrientedAgentWorkflow,
 	progressQuery as goalOrientedProgressQuery,
 	type SuccessCriteria,
 	statusQuery as goalOrientedStatusQuery,
@@ -720,6 +722,7 @@ export {
 } from "./scan-finding-review";
 // Schedule Trigger workflow (lightweight workflow for scheduled executions)
 export {
+	managedAgentRunScheduleWorkflow,
 	type ScheduleTriggerInput,
 	type ScheduleTriggerOutput,
 	scheduleTriggerWorkflow,
@@ -797,20 +800,7 @@ export {
 // Synced context deletion workflow (compare-and-set delete behind
 // `fabric context push --prune`, Fizzy #2636)
 export { syncedContextDeletionWorkflow } from "./synced-context-deletion";
-// Task Agent workflow (Weft-style agent execution for story tasks)
-export {
-	type AgentStep,
-	type CheckpointData,
-	type CheckpointResolution,
-	cancelWorkflowSignal,
-	resolveCheckpointSignal,
-	statusQuery as taskAgentStatusQuery,
-	type TaskAgentWorkflowInput,
-	type TaskAgentWorkflowOutput,
-	taskAgentWorkflow,
-	type WorkflowArtifact,
-	type WorkflowStatus,
-} from "./task-agent-workflow";
+
 // Teams Channel Monitor workflow (scheduled polling of linked Teams channels for backlog proposals)
 export {
 	cancelTeamsChannelMonitorSignal,
@@ -934,9 +924,16 @@ export {
 	workspaceDocumentDeletionWorkflow,
 	workspaceDocumentProcessingWorkflow,
 } from "./workspace-document-processing";
+
 // Weave: Loom/Tapestry workflows removed — weave agents are now orchestrated
 // by Fabric Loom via A2A agent delegation.
 
+export { agentExecutionReceiptRecoveryWorkflow } from "./agent-execution-receipt-recovery";
 export { codingRunFollowUpWorkflow } from "./coding-run-follow-up";
-
 export { remoteCodingRunWorkflow } from "./coding-run-workflow";
+export {
+	type ContextQualityEvaluationWorkflowInput,
+	type ContextQualityEvaluationWorkflowOutput,
+	contextQualityEvaluationWorkflow,
+} from "./context-quality-evaluation";
+export { contextQualityRecoveryWorkflow } from "./context-quality-recovery";

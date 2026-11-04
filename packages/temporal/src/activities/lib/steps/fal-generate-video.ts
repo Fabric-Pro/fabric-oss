@@ -5,6 +5,7 @@
 
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { connectorErrorMessage } from "../connector-error";
 import { interpolateTemplate } from "./utils";
 
 export async function executeFalGenerateVideoStep(
@@ -71,10 +72,10 @@ export async function executeFalGenerateVideoStep(
 		if (!response.ok) {
 			return {
 				success: false,
-				error:
-					result.detail ||
-					result.message ||
+				error: connectorErrorMessage(
+					result.detail || result.message,
 					`HTTP ${response.status}`,
+				),
 			};
 		}
 

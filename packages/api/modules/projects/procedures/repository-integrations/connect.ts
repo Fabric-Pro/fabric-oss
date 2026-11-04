@@ -10,6 +10,21 @@
  *    A scoped PAT is the reliable way to pull CI pipeline results from GitHub,
  *    since the GitHub App's OAuth token is Contents-scoped and can't read Actions.
  *
+ * Saving a pasted GitHub token (credential manager on, ADR-026): with
+ * `saveCredential`, the validated token is saved as the caller's private
+ * `PAT` credential and the repository is bound to it by `credentialId`;
+ * `encryptedPat` is not written. When the caller already saved a token for
+ * the same GitHub account, nothing is written and the answer is
+ * `{ existingCredential }`. The form then asks, and sends ONE more request:
+ *  - "Use it": the same input with `credentialId` set to that credential (and
+ *    no `pat`); the credential is resolved as the caller, probed against the
+ *    repository and bound. `setCredential` cannot do this step because there
+ *    is no integration to choose a credential for yet.
+ *  - "Save as new": the same input with `saveCredential.saveAsNew: true`.
+ * With the credential manager off, `saveCredential` is ignored and the token
+ * is stored as before; `credentialId` is refused. GitHub only: GitLab's
+ * `/user` needs a permission a least-privilege repository token lacks.
+ *
  * Note: PAT validation uses the synchronous connectors helpers (request path) —
  * NOT the Temporal health-check activities. This keeps the handler thin per
  * `backend/api.md` ("no business logic in procedures").
@@ -25,6 +40,7 @@ import {
 import {
 	createProjectRepoIntegration,
 	db,
+	isFeatureEnabled,
 	logRepoIntegrationActivity,
 	parseRepoUrl,
 	syncLegacyProjectRepoOnConnect,
@@ -39,18 +55,40 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveCredentialActor } from "../../../credential-manager/lib/context";
+import {
+	saveCredentialInputSchema,
+	savePastedGitHubToken,
+	toPastedTokenCredential,
+} from "../../../credential-manager/lib/pasted-token";
 import { startCodeIndexingForProject } from "../../lib/code-indexing-trigger";
 import {
 	gitHubPatValidationMessage,
 	gitLabPatValidationMessage,
 	PAT_INVALID_REASON,
 } from "./lib/pat-validation-errors";
+import { resolveSavedCredentialForRepository } from "./lib/saved-credential";
 
 /**
  * Maximum number of stored PAT candidates to evaluate sequentially
  * before failing, bounding interactive latency on the connect path.
  */
 const MAX_CANDIDATE_CREDENTIALS = 5;
+
+/**
+ * The organization a credential-manager step runs in: the project's own,
+ * which the permission middleware authorized, never the caller's input.
+ */
+async function projectOrganizationId(projectId: string): Promise<string> {
+	const project = await db.project.findUnique({
+		where: { id: projectId },
+		select: { organizationId: true },
+	});
+	if (!project?.organizationId) {
+		throw new ORPCError("NOT_FOUND", { message: "Project not found" });
+	}
+	return project.organizationId;
+}
 
 export const connectRepoIntegrationInputSchema = z.object({
 	projectId: z.string(),
@@ -79,6 +117,13 @@ export const connectRepoIntegrationInputSchema = z.object({
 	pat: z.string().optional(),
 	azureOrganization: z.string().optional(),
 	sourceIntegrationId: z.string().optional(),
+	/**
+	 * Save the pasted GitHub token in the credential manager and bind it
+	 * (see the procedure doc). Ignored while the credential manager is off.
+	 */
+	saveCredential: saveCredentialInputSchema.optional(),
+	/** Connect with this saved credential instead of a pasted token. */
+	credentialId: z.string().min(1).optional(),
 });
 
 export const connectRepoIntegrationProcedure = tenantProtectedProcedure
@@ -128,11 +173,36 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 			let patToUse = input.pat;
 			let encryptedPat = input.pat ? encryptApiKey(input.pat) : null;
 			let validatedAgainstRepo = false;
+			let boundCredentialId: string | undefined;
 
-			// If pat is empty or whitespace-only:
-			// - If explicitly provided (e.g. "" or "   ") or provider is not GITHUB, reject immediately.
-			// - If pat was omitted (undefined) and provider is GITHUB, resolve and reuse stored active project PATs.
-			if (!patToUse || !patToUse.trim()) {
+			if (input.credentialId) {
+				if (provider !== "GITHUB") {
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"Only GitHub repositories can be connected with a saved token here.",
+					});
+				}
+				// Refuses while the credential manager is off.
+				const actor = await resolveCredentialActor(
+					await projectOrganizationId(input.projectId),
+					user.id,
+				);
+				const resolved = await resolveSavedCredentialForRepository({
+					credentialId: input.credentialId,
+					actor,
+					provider,
+					repositoryUrl: parsed.url,
+					owner: repositoryOwner,
+					repo: repositoryName,
+				});
+				patToUse = resolved.token;
+				encryptedPat = null;
+				validatedAgainstRepo = true;
+				boundCredentialId = input.credentialId;
+			} else if (!patToUse || !patToUse.trim()) {
+				// If pat is empty or whitespace-only:
+				// - If explicitly provided (e.g. "" or "   ") or provider is not GITHUB, reject immediately.
+				// - If pat was omitted (undefined) and provider is GITHUB, resolve and reuse stored active project PATs.
 				if (provider !== "GITHUB" || input.pat !== undefined) {
 					throw new ORPCError("BAD_REQUEST", {
 						message: "PAT is required for PAT authentication",
@@ -411,6 +481,70 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 				}
 			}
 
+			// A pasted GitHub token, to be saved in the credential manager.
+			let savedCredential:
+				| ReturnType<typeof toPastedTokenCredential>
+				| undefined;
+			if (
+				!boundCredentialId &&
+				input.saveCredential &&
+				provider === "GITHUB" &&
+				input.pat?.trim()
+			) {
+				const credentialOrganizationId = await projectOrganizationId(
+					input.projectId,
+				);
+				if (
+					await isFeatureEnabled(
+						"CREDENTIAL_MANAGER",
+						credentialOrganizationId,
+					)
+				) {
+					const actor = await resolveCredentialActor(
+						credentialOrganizationId,
+						user.id,
+					);
+					// Refuse a repository already connected before saving
+					// anything, so a refused connect leaves no credential.
+					const alreadyConnected =
+						await db.projectRepositoryIntegration.findFirst({
+							where: {
+								projectId: input.projectId,
+								provider,
+								repositoryOwner,
+								repositoryName,
+							},
+							select: { id: true },
+						});
+					if (alreadyConnected) {
+						throw new ORPCError("CONFLICT", {
+							message:
+								"Repository is already connected to this project",
+						});
+					}
+					const saved = await savePastedGitHubToken({
+						actor,
+						user,
+						token: patToUse,
+						label: input.saveCredential.label,
+						saveAsNew: input.saveCredential.saveAsNew,
+						confirmFineGrainedPermissions:
+							input.saveCredential.confirmFineGrainedPermissions,
+					});
+					if (saved.outcome === "existing") {
+						// Nothing written: the form asks whether to use it.
+						return {
+							existingCredential: toPastedTokenCredential(
+								saved.credential,
+							),
+						};
+					}
+					boundCredentialId = saved.credential.id;
+					savedCredential = toPastedTokenCredential(saved.credential);
+					encryptedPat = null;
+				}
+			}
+
 			let integration: Awaited<
 				ReturnType<typeof createProjectRepoIntegration>
 			>;
@@ -425,6 +559,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 					defaultBranch: resolvedBranch,
 					roleTag: normalizedRoleTag,
 					encryptedPat: encryptedPat ?? undefined,
+					credentialId: boundCredentialId,
 					azureOrganization: input.azureOrganization,
 					configuredByUserId: user.id,
 				});
@@ -471,6 +606,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 				metadata: {
 					provider,
 					authMethod: input.authMethod,
+					...(boundCredentialId ? { source: "saved" } : {}),
 				},
 			});
 
@@ -490,10 +626,15 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 				metadata: {
 					provider,
 					authMethod: input.authMethod,
+					...(boundCredentialId ? { source: "saved" } : {}),
 				},
 			});
 
-			return { integration: { id: integration.id }, success: true };
+			return {
+				integration: { id: integration.id },
+				success: true,
+				...(savedCredential ? { savedCredential } : {}),
+			};
 		}
 
 		// authMethod === "OAUTH": OAuth credentials are stored during the

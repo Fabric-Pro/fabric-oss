@@ -6,19 +6,29 @@
 
 import { randomUUID } from "node:crypto";
 import {
+	AgentExecutionAdmissionError,
 	checkExecutionQuota,
 	db,
 	isDeploymentOwnerCurrentMember,
 	type Prisma,
 } from "@repo/database";
+import { isManagedAgentRunSchedule } from "@repo/database/prisma/queries/lib/managed-agent-run-schedule";
+import { ApplicationFailure } from "@temporalio/common";
 import { getTemporalClient } from "../client";
 import type { ExecutionRequest } from "../workflows/agent-supervisor";
+import { withHeartbeatTicker } from "./lib/activity-liveness";
+import { dispatchManagedAgentSchedule } from "./lib/managed-agent-scheduled-dispatch";
 
 // =============================================================================
 // TYPES
 // =============================================================================
 
 interface SignalSupervisorInput {
+	managedRunSchedule?: 1;
+	userId?: string;
+	organizationId?: string;
+	occurrenceWorkflowId?: string;
+	occurrenceFirstRunId?: string;
 	supervisorWorkflowId: string;
 	deploymentId: string;
 	triggerId: string;
@@ -34,6 +44,35 @@ interface SignalSupervisorOutput {
 // =============================================================================
 // ACTIVITIES
 // =============================================================================
+
+/** Distinct task type prevents older workers from executing the legacy signaling path. */
+export async function dispatchManagedAgentScheduledExecution(
+	input: SignalSupervisorInput,
+): Promise<SignalSupervisorOutput> {
+	if (input.managedRunSchedule !== 1 || input.triggerType !== "SCHEDULE") {
+		throw ApplicationFailure.nonRetryable(
+			"A managed schedule occurrence protocol is required",
+			"INVALID_MANAGED_SCHEDULE_ACTIVITY",
+		);
+	}
+	return withHeartbeatTicker(
+		async () => {
+			try {
+				return await signalSupervisorForScheduledExecution(input);
+			} catch (error) {
+				if (error instanceof AgentExecutionAdmissionError) {
+					return {
+						success: false,
+						error: "The managed schedule occurrence was refused by its admission policy.",
+					};
+				}
+				// Native retries reconcile the same occurrence after transient storage or dispatch failures.
+				throw error;
+			}
+		},
+		{ intervalMs: 5_000, details: "managed-agent-scheduled-dispatch" },
+	);
+}
 
 /**
  * Signal the supervisor workflow to queue a scheduled execution
@@ -58,6 +97,22 @@ export async function signalSupervisorForScheduledExecution(
 
 		if (!deployment) {
 			return { success: false, error: "Deployment not found" };
+		}
+		if (
+			input.managedRunSchedule === 1 ||
+			isManagedAgentRunSchedule(trigger?.config)
+		) {
+			if (input.managedRunSchedule !== 1 || !trigger) {
+				return {
+					success: false,
+					error: "Managed schedule occurrence identity is required.",
+				};
+			}
+			return await dispatchManagedAgentSchedule(
+				{ ...input, managedRunSchedule: 1 },
+				deployment,
+				trigger,
+			);
 		}
 		if (deployment.status !== "ACTIVE") {
 			return {
@@ -143,7 +198,7 @@ export async function signalSupervisorForScheduledExecution(
 		const handle = temporalClient.workflow.getHandle(supervisorWorkflowId);
 
 		const executionRequest: ExecutionRequest = {
-			executionId: execution.id,
+			executionId: execution.executionId,
 			input: executionInput,
 			triggerType,
 			triggerId: trigger.id,
@@ -155,7 +210,8 @@ export async function signalSupervisorForScheduledExecution(
 
 		return { success: true, executionId: execution.id };
 	} catch (error) {
-		if (membershipLookupFailed) {
+		// Reconcile deterministic occurrences and transient membership lookup failures on Activity retry.
+		if (membershipLookupFailed || input.managedRunSchedule === 1) {
 			throw error;
 		}
 		console.error("[ScheduleTrigger] Failed to signal supervisor:", error);

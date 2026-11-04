@@ -5,8 +5,8 @@
  * - Identity & organization management
  * - Projects (list, get, create, update, delete)
  * - Documents (list, get, create, update)
- * - Document libraries & RAG queries (the `*_workspace` tools)
- * - Frames (pages on a project's Artifacts tab and organization Workspaces;
+ * - Document workspaces & RAG queries (the `*_workspace` tools)
+ * - Frames (pages on a project's Artifacts tab and organization Pages;
  *   see ./tools/frame-tools)
  * - Workflows (see ./tools/workflow-tools)
  * - AI Chats
@@ -52,6 +52,7 @@ import {
 	type InstructionFileKind,
 	validateRelativePath,
 } from "@repo/instructions";
+import { FABRIC_WORKSPACE_TOOL_DEFINITIONS } from "@repo/temporal/fabric-gateway-tools";
 import { FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-discovery-tool-definitions";
 import { pageMayDeclareTool } from "@repo/temporal/fabric-page-tool-definitions";
 import { FABRIC_PROJECT_READ_TOOL_DEFINITIONS } from "@repo/temporal/fabric-project-read-tool-definitions";
@@ -141,12 +142,18 @@ import {
 	scopeSatisfied,
 	type ToolScope,
 } from "./tool-scope";
+import { createAgentResultQualityTools } from "./tools/agent-result-quality-tools";
+import { createAgentRunTools } from "./tools/agent-run-tools";
+import { createContextQualityTools } from "./tools/context-quality-tools";
+import { createContextSelectionTools } from "./tools/context-selection-tools";
 import { createFrameTools } from "./tools/frame-tools";
 import { createFrameVersionTools } from "./tools/frame-version-tools";
 import { createPageTools } from "./tools/page-tools";
 import { createProjectPmTools } from "./tools/project-pm-tools";
+import { createReportTools } from "./tools/report-tools";
 import { type PlatformToolHandler, toolFamily } from "./tools/tool-family";
 import { WORKFLOW_TOOL_HANDLERS } from "./tools/workflow-tools";
+import { createWorkspaceDocumentLinkTools } from "./tools/workspace-document-link-tools";
 import {
 	type GatewaySession,
 	type GatewayToolDefinition,
@@ -160,6 +167,10 @@ import {
 // (shared with the Orchestrator's catalogue) paired with their handlers. A
 // page may declare a tool only if the table below has it, so the frame family
 // asks this module's names, which exist once the table is built.
+const AGENT_RUN_TOOLS = createAgentRunTools();
+const CONTEXT_SELECTION_TOOLS = createContextSelectionTools(
+	resolveGatewayProjectReadAccess,
+);
 const WORKFLOW_TOOLS = toolFamily(
 	FABRIC_WORKFLOW_TOOL_DEFINITIONS,
 	WORKFLOW_TOOL_HANDLERS,
@@ -172,9 +183,21 @@ const FRAME_VERSION_TOOLS = createFrameVersionTools((name) =>
 );
 const PAGE_TOOLS = createPageTools();
 const PROJECT_PM_TOOLS = createProjectPmTools(resolveGatewayProjectReadAccess);
+const REPORT_TOOLS = createReportTools(resolveGatewayProjectReadAccess);
+const AGENT_RESULT_QUALITY_TOOLS = createAgentResultQualityTools(
+	resolveGatewayProjectReadAccess,
+);
+const CONTEXT_QUALITY_TOOLS = createContextQualityTools(
+	resolveGatewayProjectReadAccess,
+	resolveGatewayProjectWriteAccessWithHost,
+);
+const WORKSPACE_DOCUMENT_LINK_TOOLS = createWorkspaceDocumentLinkTools(
+	resolveGatewayProjectReadAccess,
+);
 const PROJECT_READ_TOOLS = toolFamily(
 	FABRIC_PROJECT_READ_TOOL_DEFINITIONS,
 	new Map([
+		...WORKSPACE_DOCUMENT_LINK_TOOLS.readHandlers,
 		["fabric_list_projects", handleListProjects],
 		["fabric_get_project", handleGetProject],
 		["fabric_list_project_instructions", handleListProjectInstructions],
@@ -226,12 +249,15 @@ const RULES_TOOLS = createRulesTools({
 export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	...PROJECT_READ_TOOLS.definitions,
 	...PROJECT_PM_TOOLS.definitions,
+	...REPORT_TOOLS.definitions,
+	...CONTEXT_QUALITY_TOOLS.definitions,
+	...AGENT_RESULT_QUALITY_TOOLS.definitions,
 	...PAGE_DISCOVERY_TOOLS.definitions,
 	// ── Identity ──
 	{
 		name: "fabric_get_identity",
 		description:
-			"Returns the caller's userId, email, role, active organizationId and the organizations they belong to. Call it first to learn the session's context. 'mode' is always 'organization': every session runs inside one organization.",
+			"Returns userId/email/role, active organizationId and memberships. Call first for session context. mode is always organization.",
 		inputSchema: { type: "object", properties: {} },
 		annotations: { readOnlyHint: true },
 		_gateway_source: "platform",
@@ -239,7 +265,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_organizations",
 		description:
-			"Lists the organizations the user belongs to, with their role in each. Use an id with fabric_switch_organization.",
+			"Lists your organizations and roles. Use an id with fabric_switch_organization.",
 		inputSchema: { type: "object", properties: {} },
 		annotations: { readOnlyHint: true },
 		_gateway_source: "platform",
@@ -247,7 +273,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_switch_organization",
 		description:
-			"Switches the session's active organization; every later call is scoped to it. organizationId must name an organization you belong to.",
+			"Scopes subsequent calls to an organization you belong to.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -309,9 +335,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_features",
 		description:
-			"Lists project features and bugs with identifier, kind, status, priority, size, draftingStage and task counts. " +
-			"Use draftingStage='PUBLISHED' for fully specified items; for ready work, also use the Backlog statusId from fabric_get_project_statuses. " +
-			"Each row id is its featureId.",
+			"Lists features/bugs with kind, identifier, status, priority, size, draftingStage and task counts; id is featureId for both. Only PUBLISHED is fully specified; ready-to-start also needs the Backlog statusId from fabric_get_project_statuses.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -350,8 +374,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				},
 				search: {
 					type: "string",
-					description:
-						"Match on title, description or identifier (e.g. 'F-001')",
+					description: "Match title/description/identifier",
 				},
 				assignedToMe: {
 					type: "boolean",
@@ -379,10 +402,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_feature",
 		description:
-			"Gets a feature or bug in full: description, acceptance criteria, draftingStage, tasks (ids, completion, repository and branch), latest PR and PM-tool link. Read it before implementing. " +
-			"If draftingStage is not 'PUBLISHED' the spec may be incomplete: confirm with the user before building on it. " +
-			"pmSync.autoSyncEnabled=false means the PM card is a snapshot, so Fabric is the source of truth. " +
-			"For why the spec says what it does use fabric_get_feature_decisions; for its history, fabric_get_feature_versions.",
+			"Read before implementing: feature/bug spec, acceptance criteria, draftingStage, tasks (ids/completion/repository/branch), latest PR and PM link. If not PUBLISHED, confirm incomplete scope with the user. pmSync.autoSyncEnabled=false: PM card is a snapshot; Fabric is authoritative. Decisions/history: fabric_get_feature_decisions/fabric_get_feature_versions.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -401,8 +421,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_feature_decisions",
 		description:
-			"Returns a feature's Decision Log: question threads and their answers, verbatim, showing why the spec says what it does. Quote 'content'; never paraphrase it as a decision. " +
-			"Entries carry 'source' (HUMAN, or AI_CONFIRMED: AI-proposed and unchallenged) and answers carry 'answerSource'. Treat AI_CONFIRMED-only decisions as drafts to confirm, and OPEN threads as unanswered scope risk.",
+			"Verbatim Decision Log threads/answers: quote content, never paraphrase as a decision. source=HUMAN or AI_CONFIRMED (AI-proposed, unchallenged); answers include answerSource. Confirm AI_CONFIRMED-only drafts; OPEN means unanswered scope risk.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -432,7 +451,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_feature_versions",
 		description:
-			"Returns a feature's revision history, newest first, with each revision's change summary and author; bodies are omitted. Pass 'version' to get one revision in full.",
+			"Newest-first revision summaries/authors, no bodies. Pass version for that revision's full spec.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -465,7 +484,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_statuses",
 		description:
-			"Lists a project's Kanban status columns: id, name, color, isDefault (the starting column) and isFinal (the done column). Get a statusId here for fabric_update_feature_status or a statusId filter.",
+			"Lists Kanban id/name/color/isDefault (start)/isFinal (done). Use ids for status changes/filters.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -481,7 +500,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_feature_status",
 		description:
-			"Moves a feature or bug to another status column: typically In Progress when you start, Review when it is ready for review, and the isFinal column once shipped. Requires edit permission on the project.",
+			"Moves feature/bug to statusId; requires project edit permission. Use In Progress at start, Review for review, isFinal once shipped.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -504,7 +523,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_complete_task",
 		description:
-			"Marks a task (an id from fabric_get_feature tasks[].id) complete, or reopens it with completed=false.",
+			"Completes a fabric_get_feature tasks[].id; completed=false reopens it.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -526,7 +545,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_feature_task",
 		description:
-			"Adds a task to a feature or bug, for implementation work it does not yet capture or to break vague work into concrete steps.",
+			"Adds implementation work or breaks vague work into a concrete task on a feature/bug.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -551,7 +570,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_bug",
 		description:
-			"Files a BUG through the project template. Always supply fingerprint: matches open bugs by fingerprint, then normalized title. created=false succeeds with the existing id/identifier; never reword/resend. Closed/declined bugs allow new filing. Requires work-item create permission in the active tenant's project.",
+			"Files BUG via project template; requires work-item create permission. Always send stable fingerprint. Matches open bugs by fingerprint then normalized title; created=false returns existing id/identifier: never reword/resend. Closed/declined permits new filing.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -560,18 +579,17 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				},
 				title: {
 					type: "string",
-					description:
-						"One-line specific symptom, e.g. 'Checkout returns 500 when cart is empty'. Max 500 characters.",
+					description: "Specific symptom; max 500 characters.",
 				},
 				description: {
 					type: "string",
 					description:
-						"What you observed: error, relevant stack frames, trigger, environment, frequency, first seen. Max 50000 characters.",
+						"Error/stack/trigger/environment/frequency/first seen; max 50000 characters.",
 				},
 				fingerprint: {
 					type: "string",
 					description:
-						"Stable key for the underlying error, e.g. a hash of exception type, stack top and route with timestamps and IDs stripped. Send the same value on every sighting. Max 200 characters.",
+						"Stable error fingerprint; e.g. hash exception/stack-top/route without timestamps/IDs. Reuse every sighting; max 200 characters.",
 				},
 				priority: {
 					type: "string",
@@ -586,7 +604,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_feature",
 		description:
-			"Files an agreed FEATURE placeholder for project drafting; short request/context suffice. Never file speculative work. Open normalized-title matches return created=false and existing id; never reword/resend. Requires work-item create permission in the active tenant's project.",
+			"Files an agreed FEATURE draft placeholder; short request/context suffice. Never speculative. Open normalized-title match: created=false/existing id; never reword/resend. Requires project work-item create permission.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -595,13 +613,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				},
 				title: {
 					type: "string",
-					description:
-						"Short capability statement, e.g. 'Export the roadmap as CSV'. Max 500 characters.",
+					description: "Capability statement; max 500 characters.",
 				},
 				description: {
 					type: "string",
 					description:
-						"The request and its context: who asked, the problem, constraints, links. Max 50000 characters.",
+						"Requester/problem/constraints/links; max 50000 characters.",
 				},
 				priority: {
 					type: "string",
@@ -622,7 +639,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_task",
 		description:
-			"Updates a task's title, description, completion, repositoryUrl or targetBranch. After implementing, record the repository, branch and PR link here so others can see where the work landed.",
+			"Edits title/description/completion/repositoryUrl/targetBranch. After implementation record repository, branch and PR link here.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -658,7 +675,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_search_project_knowledge",
 		description:
-			"Literal, case-insensitive keyword search over one project's features, documents and readable context text (code-index contexts excluded). Returns ranked excerpts, ids and the tool to read each in full. Requires projects:read and features:read (or an MCP read/write scope). Page with nextCursor, keeping the same project and query; pages are live, not a snapshot.",
+			"Literal case-insensitive search of project features/documents/readable context, excluding code index. Returns ranked excerpts/ids/full-read tools. Needs projects:read AND features:read, or MCP read/write scope. Continue nextCursor with same project/query; pages are live, not snapshots.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -693,7 +710,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_documents",
 		description:
-			"Lists a project's authored documents (PRDs, technical specs, architecture, API specs…) with id, title, type and status; read one with fabric_get_document. For implementation context filter type to PRD, TECHNICAL_SPEC or ARCHITECTURE.",
+			"Lists authored project documents (id/title/type/status). Read via fabric_get_document; implementation context: PRD, TECHNICAL_SPEC, ARCHITECTURE.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -732,10 +749,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_document",
 		description:
-			"Reads a project document's full markdown with its title, type, status, version and contentHash. " +
-			"A `<visual-slot …></visual-slot>` line is a placeholder marker for a visual, not prose: do not quote, summarize or rewrite it. " +
-			"A mermaid fence opening with `%% fabric-visual: <id>` is a generated diagram; that line is its id. " +
-			"A `%% caption: <text>` line is a diagram's caption.",
+			"Reads document markdown/title/type/status/version/contentHash. `<visual-slot …></visual-slot>` is a visual placeholder marker, not prose: never quote, summarize or rewrite it. Mermaid first line `%% fabric-visual: <id>` identifies a generated diagram; `%% caption: <text>` is its caption.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -751,7 +765,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_document",
 		description:
-			"Creates a markdown document in a project (PRD, technical spec, architecture, API spec…), e.g. to record a design or implementation notes. Status defaults to DRAFT.",
+			"Creates project markdown (PRD/spec/architecture/API spec/design/implementation notes). Default status DRAFT.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -792,11 +806,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_document",
 		description:
-			"Updates a document's title, content or status; omitted fields are unchanged. A content change replaces the whole body and saves a version. " +
-			"Send the version and contentHash you read as expectedVersion and expectedContentHash (both or neither). " +
-			"Keep a mermaid fence's `%% fabric-visual: <id>` first line; never invent or copy one. " +
-			"A `%% caption: <text>` line after it is the diagram's caption. " +
-			"Fabric restores it only while the diagram's body is unchanged; a changed body leaves it a person's diagram, its saved spec unused.",
+			"Edits title/content/status; omitted fields stay. Content replaces the body and saves a version. Send read version/contentHash as expectedVersion/expectedContentHash (both or neither). Keep mermaid's first `%% fabric-visual: <id>`; never invent or copy it. `%% caption: <text>` is its caption. Fabric restores markers only while a diagram body is unchanged; changed bodies become a person's diagram, saved spec unused.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -809,7 +819,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				content: {
 					type: "string",
 					description:
-						"The whole new markdown body. `<visual-slot …></visual-slot>` lines are managed by Fabric: stored slots are kept in place and any slot tag sent here is ignored, so omit them. A changed mermaid body loses its marker.",
+						"Whole markdown body. Stored `<visual-slot …></visual-slot>` tags are kept in place and sent ones ignored, so omit them. A changed mermaid body loses its marker.",
 				},
 				status: {
 					type: "string",
@@ -835,11 +845,15 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_project_contexts",
 		description:
-			"Lists the source material on a project's Context tab (uploads, meeting transcripts, crawled links, notes, integration sources) as summaries without bodies; read one with fabric_get_project_context. Authored documents are in fabric_list_documents. " +
-			"contentAvailable=false comes with an unavailableReason. Code-index entries are hidden by default; excludedCodeContexts counts them.",
+			"Lists Context summaries (no bodies): uploads/transcripts/crawls/notes/integrations; read via fabric_get_project_context (authored docs: fabric_list_documents). Linked Workspace docs: fabric_list_project_workspace_documents/fabric_read_project_workspace_document. Code index excluded by default. format=manifest returns revisions and read refs.",
 		inputSchema: {
 			type: "object",
 			properties: {
+				format: {
+					type: "string",
+					enum: ["summary", "manifest"],
+					default: "summary",
+				},
 				projectId: {
 					type: "string",
 				},
@@ -865,17 +879,17 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						"TEST_CASE",
 					],
 					description:
-						"One source type. CODE_FILE or CODE_FILE_SUMMARY overrides the code-index exclusion.",
+						"CODE_FILE/CODE_FILE_SUMMARY override code-index exclusion.",
 				},
 				includeCodeContexts: {
 					type: "boolean",
 					description:
-						"Include code-index entries in an unfiltered list; there are usually thousands",
+						"Include code index in unfiltered lists; potentially thousands",
 					default: false,
 				},
 				limit: {
 					type: "number",
-					description: "Max 200",
+					description: "Max 200; manifest 50",
 					default: 50,
 				},
 				offset: {
@@ -891,9 +905,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_context",
 		description:
-			"Reads one Context source in full: a transcript, an upload's extracted text, a crawled page, a note or a captured Teams/Slack conversation. " +
-			"Long bodies are paged: when 'truncated' is true, call again with offset=nextOffset. Uploads also return originalFile.url, a short-lived link to the original file. " +
-			"If contentAvailable is false, read unavailableReason: an empty body does not mean an empty source.",
+			"Reads Context transcript/upload text/crawl/note/captured Teams or Slack. If truncated, continue offset=nextOffset. Upload originalFile.url expires. contentAvailable=false: read unavailableReason; empty body need not mean empty source.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -923,8 +935,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_project_context",
 		description:
-			"Edits a Context source's type label (sourceType) and AI instructions (aiInstructions), the Context tab's 'Source details' fields; title, type and body cannot be edited. " +
-			"Pass the two values you last read as 'expected': if they changed since, nothing is written and the error returns the current values. Omit a field to keep it; pass null to clear it.",
+			"Edits only sourceType/aiInstructions (Source details), not title/type/body. Send both last-read values as expected; drift writes nothing and returns current values. Omit to keep, null to clear.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -933,8 +944,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				},
 				projectId: {
 					type: "string",
-					description:
-						"The context's projectId, as fabric_get_project_context returns it",
+					description: "projectId from fabric_get_project_context",
 				},
 				sourceType: {
 					type: ["string", "null"],
@@ -950,7 +960,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				expected: {
 					type: "object",
 					description:
-						"The sourceType and aiInstructions you last read; null for an empty field",
+						"Last-read sourceType/aiInstructions; null if empty",
 					properties: {
 						sourceType: {
 							type: ["string", "null"],
@@ -975,7 +985,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_upsert_project_context",
 		description:
-			"Upserts Context text keyed by the file's path ('sourcePath'). Returns 'created', 'updated' (re-indexed), 'unchanged', or 'duplicate' for identical content already stored. Replacing needs 'expectedContentHash' from fabric_get_project_context, fabric_list_project_contexts or a 'conflict'; omission never means overwrite. A 'conflict' writes nothing: re-read/merge/retry. Rename uses 'movedFromSourcePath' and its current hash with unchanged content to return 'moved'; otherwise returns the ordinary result and moveNotApplied. 'REPOSITORY_MANAGED' paths are refused. Coding instructions (CLAUDE.md, AGENTS.md, .claude/, skills/agents/hooks) use fabric_propose_project_instruction_change.",
+			"Upserts text keyed by the file's path (sourcePath): 'created'/'updated' (re-indexed)/'unchanged'/'duplicate' (identical stored content). Replace needs 'expectedContentHash' from fabric_get_project_context/fabric_list_project_contexts or 'conflict'; omission never means overwrite. 'conflict' writes nothing: re-read/merge/retry. Rename: 'movedFromSourcePath' + its hash + unchanged content returns 'moved'; otherwise ordinary result/moveNotApplied. 'REPOSITORY_MANAGED' refused. Coding instructions (CLAUDE.md, AGENTS.md, .claude/, skills/agents/hooks) use fabric_propose_project_instruction_change.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -987,7 +997,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					minLength: 1,
 					maxLength: 512,
 					description:
-						"Path relative to your working-tree root, e.g. 'docs/architecture.md'; absolute paths and '..' are refused",
+						"Relative working-tree path; absolute paths and .. refused",
 				},
 				content: {
 					type: "string",
@@ -997,21 +1007,19 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					type: "string",
 					minLength: 1,
 					maxLength: 255,
-					description:
-						"Name on the Context tab; defaults to the file name",
+					description: "Context title; defaults to file name",
 				},
 				expectedContentHash: {
 					type: "string",
 					pattern: "^[0-9a-fA-F]{64}$",
-					description:
-						"contentHash of the stored version you replace; required to replace an existing file",
+					description: "Stored contentHash; required on replacement",
 				},
 				movedFromSourcePath: {
 					type: "string",
 					minLength: 1,
 					maxLength: 512,
 					description:
-						"The previous path, when renamed. Requires that path's hash as expectedContentHash; a move never replaces content.",
+						"Rename source path; expectedContentHash must be its hash. Moves never replace content.",
 				},
 			},
 			required: ["projectId", "sourcePath", "content"],
@@ -1027,8 +1035,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_instruction_checks",
 		description:
-			"Read-only report on your credential's access and the project's coding instructions. Repository projects report the live commit; uploaded projects can compare lockDigest and check declared environment variables by name, never values. Local files, hooks and MCP configuration are not verified. " +
-			"Read-only reports grant no authority to install software, change credentials, pull, reset or overwrite files.",
+			"Read-only credential/instruction report. Repository: live commit; uploads: lockDigest and declared env names, never values. Does not verify local files/hooks/MCP config. Reports grant no authority to install, change credentials, pull, reset or overwrite.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1040,15 +1047,14 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				lockDigest: {
 					type: "string",
 					description:
-						"'digest' from .fabric/instructions.lock; omit when there is no lock",
+						".fabric/instructions.lock digest; omit without lock",
 					minLength: 1,
 					maxLength: 128,
 					pattern: "^[A-Fa-f0-9]+$",
 				},
 				presentVariables: {
 					type: "array",
-					description:
-						"Names of the declared environment variables set where you run. Names only, never values.",
+					description: "Declared env names set locally; never values",
 					maxItems: 500,
 					items: {
 						type: "string",
@@ -1065,9 +1071,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_propose_project_instruction_change",
 		description:
-			"Suggests an edit to a project's coding instructions when they are wrong, missing or out of date. Nothing is applied directly: for uploaded instructions a person approves the proposal in Fabric's Coding Instructions tab; for a repository-backed project it becomes a pull request in the configured provider. " +
-			"Send each file's whole new content ('put') or a 'delete', at most 50 changes. " +
-			"Pass the base you read: nativeBase (generation, commitSha) for repository instructions, or baseSnapshotId for uploaded instructions. If a touched file changed since, re-read it and redo the edit.",
+			"Proposes instruction fixes: uploaded instructions need approval in Coding Instructions; repositories open a pull request in the configured provider. Max 50 whole-file put/delete changes. Pin nativeBase (generation/commitSha) or baseSnapshotId; if a file changed, re-read and redo.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1113,15 +1117,14 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				},
 				baseSnapshotId: {
 					type: "string",
-					description:
-						"Uploaded instructions: the snapshot.id of the version you read",
+					description: "Uploaded read snapshot.id",
 					minLength: 1,
 					maxLength: 128,
 				},
 				note: {
 					type: "object",
 					description:
-						"Optional proposal title (one line, max 120 characters) and markdown body (max 4096 bytes). Never put a credential in either.",
+						"Optional title (one line, max 120 chars)/markdown body (max 4096 bytes). Never credentials.",
 					properties: {
 						title: {
 							type: "string",
@@ -1207,8 +1210,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_add_instruction_lesson",
 		description:
-			"Records a lesson, a mistake the next agent should not repeat (a skipped check, a false assumption, a recurring bug), as a new Lessons/<date>-<slug>.md file in the project's coding instructions. " +
-			"It awaits review: for uploaded instructions a person approves the proposal in Fabric's Coding Instructions tab; for a repository-backed project it is a pull-request suggestion in the configured provider.",
+			"Proposes a lesson (mistake/cause/prevention) as Lessons/<date>-<slug>.md: uploaded instructions need approval in Coding Instructions; repositories get pull-request suggestions in the configured provider.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1240,7 +1242,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				note: {
 					type: "object",
 					description:
-						"Optional proposal title (one line, max 120 characters) and markdown body (max 4096 bytes). Never put a credential in either.",
+						"Optional title (one line, max 120 chars)/markdown body (max 4096 bytes). Never credentials.",
 					properties: {
 						title: {
 							type: "string",
@@ -1259,82 +1261,23 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		_gateway_source: "platform",
 	},
 
-	// ── Document libraries (RAG knowledge bases; "Workspace" in the tool names) ──
-	{
-		name: "fabric_list_workspaces",
-		description:
-			"Lists the document libraries (RAG knowledge bases) you can access. They are separate from projects and hold indexed documents for semantic search across large corpora. Workspace pages are frames: use fabric_list_frames.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				search: {
-					type: "string",
-					description: "Match on library name",
-				},
-				limit: {
-					type: "number",
-					default: 20,
-				},
-				offset: {
-					type: "number",
-					default: 0,
-				},
-			},
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_get_workspace",
-		description:
-			"Gets a document library's name, description and indexed documents. To search its content use fabric_query_workspace.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				workspaceId: {
-					type: "string",
-				},
-			},
-			required: ["workspaceId"],
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_query_workspace",
-		description:
-			"Semantic (RAG) search across a document library's documents; returns the most relevant chunks with similarity scores.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				workspaceId: {
-					type: "string",
-				},
-				query: {
-					type: "string",
-					description:
-						"Natural-language description of what you need",
-				},
-				limit: {
-					type: "number",
-					description: "Max 50",
-					default: 10,
-				},
-			},
-			required: ["workspaceId", "query"],
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
+	// Document Workspaces use the same definitions in MCP and every chat engine.
+	...FABRIC_WORKSPACE_TOOL_DEFINITIONS.map(({ scope: _scope, ...tool }) => ({
+		...tool,
+		_gateway_source: "platform" as const,
+	})),
 
 	// ── Workflows ── (./tools/workflow-tools)
 	...WORKFLOW_TOOLS.definitions,
+	...AGENT_RUN_TOOLS.definitions,
+	...CONTEXT_SELECTION_TOOLS.definitions,
+	...WORKSPACE_DOCUMENT_LINK_TOOLS.writes.definitions,
 
 	// ── AI Chats ──
 	{
 		name: "fabric_list_chats",
 		description:
-			"Lists your recent AI chat conversations in the active context, with id, title and timestamps.",
+			"Lists recent chats (id/title/timestamps) in the active organization.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1366,7 +1309,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_request_authority",
 		description:
-			"Requests time-limited READ or WRITE authority to use connected servers' tools. Returns a pending session that a person must approve in Fabric; check it with fabric_check_authority.",
+			"Requests temporary READ/WRITE access to connected tools. A person must approve in Fabric; poll fabric_check_authority.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1526,13 +1469,20 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	// Workspaces
 	fabric_list_workspaces: { scope: "workspaces:read", kind: "read" },
 	fabric_get_workspace: { scope: "workspaces:read", kind: "read" },
+	fabric_get_workspace_document: { scope: "workspaces:read", kind: "read" },
 	fabric_query_workspace: { scope: "workspaces:read", kind: "read" },
 
 	// Workflows and frames: each tool's scope is part of its definition
 	...PROJECT_READ_TOOLS.scopes,
 	...PROJECT_PM_TOOLS.scopes,
+	...REPORT_TOOLS.scopes,
+	...CONTEXT_QUALITY_TOOLS.scopes,
+	...AGENT_RESULT_QUALITY_TOOLS.scopes,
 	...PAGE_DISCOVERY_TOOLS.scopes,
 	...WORKFLOW_TOOLS.scopes,
+	...AGENT_RUN_TOOLS.scopes,
+	...CONTEXT_SELECTION_TOOLS.scopes,
+	...WORKSPACE_DOCUMENT_LINK_TOOLS.writes.scopes,
 	...FRAME_TOOLS.scopes,
 	...FRAME_VERSION_TOOLS.scopes,
 	...PAGE_TOOLS.scopes,
@@ -1576,8 +1526,14 @@ export function platformToolScope(toolName: string): ToolScope {
 const FAMILY_HANDLERS: ReadonlyMap<string, PlatformToolHandler> = new Map([
 	...PROJECT_READ_TOOLS.handlers,
 	...PROJECT_PM_TOOLS.handlers,
+	...REPORT_TOOLS.handlers,
+	...CONTEXT_QUALITY_TOOLS.handlers,
+	...AGENT_RESULT_QUALITY_TOOLS.handlers,
 	...PAGE_DISCOVERY_TOOLS.handlers,
 	...WORKFLOW_TOOLS.handlers,
+	...AGENT_RUN_TOOLS.handlers,
+	...CONTEXT_SELECTION_TOOLS.handlers,
+	...WORKSPACE_DOCUMENT_LINK_TOOLS.writes.handlers,
 	...FRAME_TOOLS.handlers,
 	...FRAME_VERSION_TOOLS.handlers,
 	...PAGE_TOOLS.handlers,
@@ -1602,11 +1558,11 @@ export type PlatformToolAuthorization =
  * Run every platform check that precedes the tool handler. Durable replay asks
  * this same function before it claims or returns a receipt.
  */
-export function authorizePlatformToolCall(
+export async function authorizePlatformToolCall(
 	toolName: string,
 	requestedArgs: Record<string, unknown>,
 	session: GatewaySession,
-): PlatformToolAuthorization {
+): Promise<PlatformToolAuthorization> {
 	if (
 		session.credential === "service" &&
 		!serviceSessionHasTool(session, toolName)
@@ -1636,12 +1592,70 @@ export function authorizePlatformToolCall(
 
 	const required = platformToolScope(toolName);
 	if (!scopeSatisfied(session.scopes, required, session.credential)) {
-		return {
-			ok: false,
-			result: errorResult(
-				`This ${credentialSubject(session.credential)} does not have the "${required.scope}" scope required by ${toolName}.`,
-			),
-		};
+		let humanApprovedWrite = false;
+		if (
+			session.credential === "oauth" &&
+			session.scopes.includes("mcp:read") &&
+			required.kind === "write" &&
+			!required.scope.startsWith("chats:")
+		) {
+			try {
+				const {
+					authorityRequestFingerprint,
+					checkAuthority,
+					consumeRequestGrant,
+				} = await import("@repo/database");
+				if (typeof checkAuthority === "function") {
+					const requestFingerprint =
+						typeof authorityRequestFingerprint === "function"
+							? authorityRequestFingerprint(toolName, bound.args)
+							: undefined;
+					const authCheck = await checkAuthority({
+						userId: session.userId,
+						organizationId: session.organizationId || undefined,
+						providerKey: "fabric",
+						accessLevel: "WRITE",
+						toolName,
+						requestFingerprint,
+						boundRunType: "MCP_GATEWAY",
+						boundRunId: session.sessionId,
+					});
+					if (authCheck?.authorized) {
+						if (authCheck.grant?.kind === "REQUEST") {
+							if (typeof consumeRequestGrant === "function") {
+								const consumed = await consumeRequestGrant(
+									authCheck.grant.id,
+								);
+								humanApprovedWrite =
+									consumed?.consumed === true;
+							} else {
+								humanApprovedWrite = false;
+							}
+						} else {
+							humanApprovedWrite = true;
+						}
+					}
+				}
+			} catch {
+				humanApprovedWrite = false;
+			}
+		}
+
+		if (!humanApprovedWrite) {
+			const hint =
+				session.credential === "oauth" &&
+				session.scopes.includes("mcp:read") &&
+				required.kind === "write" &&
+				!required.scope.startsWith("chats:")
+					? ' Call fabric_request_authority with providerKey "fabric" and accessLevel "WRITE" to request human approval.'
+					: "";
+			return {
+				ok: false,
+				result: errorResult(
+					`This ${credentialSubject(session.credential)} does not have the "${required.scope}" scope required by ${toolName}.${hint}`,
+				),
+			};
+		}
 	}
 
 	return { ok: true, context: { toolName, args: bound.args, session } };
@@ -1723,6 +1737,8 @@ export async function executeAuthorizedPlatformToolCall({
 				return await handleListWorkspaces(args, session);
 			case "fabric_get_workspace":
 				return await handleGetWorkspace(args, session);
+			case "fabric_get_workspace_document":
+				return await handleGetWorkspaceDocument(args, session);
 			case "fabric_query_workspace":
 				return await handleQueryWorkspace(args, session);
 			case "fabric_list_chats":
@@ -1768,7 +1784,7 @@ export async function executePlatformTool(
 	requestedArgs: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const authorization = authorizePlatformToolCall(
+	const authorization = await authorizePlatformToolCall(
 		toolName,
 		requestedArgs,
 		session,
@@ -4508,6 +4524,47 @@ async function handleListProjectContexts(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
+	if (args.format === "manifest") {
+		const projectId =
+			typeof args.projectId === "string" ? args.projectId : "";
+		const access = projectId
+			? await resolveGatewayProjectReadAccess(projectId, session)
+			: null;
+		if (!access?.organizationId)
+			return errorResult(
+				"Project context manifest not found or access denied.",
+				{ code: "NOT_FOUND" },
+			);
+		const { readContextManifest, ContextManifestError } = await import(
+			"@repo/api/modules/projects/lib/context-manifest-reader"
+		);
+		try {
+			return jsonResult(
+				await readContextManifest(
+					{
+						userId: session.userId,
+						organizationId: access.organizationId,
+						projectId,
+					},
+					{
+						limit: args.limit,
+						offset: args.offset,
+						includeCodeContexts: args.includeCodeContexts,
+						type: args.type,
+					},
+				),
+			);
+		} catch (error) {
+			if (error instanceof ContextManifestError)
+				return errorResult(error.message, { code: error.code });
+			return errorResult("Context manifest could not be read.");
+		}
+	}
+	if (args.format !== undefined && args.format !== "summary")
+		return errorResult("Use format=summary or manifest.", {
+			code: "INVALID_INPUT",
+		});
+
 	const { listProjectContextSummaries } = await import("@repo/database");
 
 	const projectId = args.projectId as string;
@@ -7416,33 +7473,74 @@ async function handleGetWorkspace(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getWorkspaceById } = await import("@repo/database");
-
-	const workspaceId = args.workspaceId as string;
-	if (!workspaceId) {
-		return errorResult("workspaceId is required");
+	const workspaceId =
+		typeof args.workspaceId === "string" ? args.workspaceId : "";
+	const access = workspaceId
+		? await resolveGatewayWorkspaceReadAccess(workspaceId, session)
+		: null;
+	if (!access?.organizationId)
+		return errorResult("Workspace document not found or access denied.", {
+			code: "NOT_FOUND",
+		});
+	const { getWorkspaceDocumentCatalog, WorkspaceDocumentContentError } =
+		await import(
+			"@repo/database/prisma/queries/workspaces/document-content"
+		);
+	try {
+		return jsonResult(
+			await getWorkspaceDocumentCatalog(
+				{
+					userId: session.userId,
+					organizationId: access.organizationId,
+				},
+				{ workspaceId, limit: args.limit, offset: args.offset },
+			),
+		);
+	} catch (error) {
+		if (error instanceof WorkspaceDocumentContentError)
+			return errorResult(error.message, { code: error.code });
+		return errorResult("Workspace documents could not be listed.");
 	}
+}
 
-	// The shared workspace read gate, before the row is read: workspace access
-	// plus the organization-key binding.
-	if (!(await resolveGatewayWorkspaceReadAccess(workspaceId, session))) {
-		return errorResult("Workspace not found or access denied");
+async function handleGetWorkspaceDocument(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const workspaceId =
+		typeof args.workspaceId === "string" ? args.workspaceId : "";
+	const access = workspaceId
+		? await resolveGatewayWorkspaceReadAccess(workspaceId, session)
+		: null;
+	if (!access?.organizationId)
+		return errorResult("Workspace document not found or access denied.", {
+			code: "NOT_FOUND",
+		});
+	const { readWorkspaceDocumentContent, WorkspaceDocumentContentError } =
+		await import(
+			"@repo/database/prisma/queries/workspaces/document-content"
+		);
+	try {
+		return jsonResult(
+			await readWorkspaceDocumentContent(
+				{
+					userId: session.userId,
+					organizationId: access.organizationId,
+				},
+				{
+					workspaceId,
+					documentId: args.documentId,
+					offset: args.offset,
+					limit: args.limit,
+					expectedRevision: args.expectedRevision,
+				},
+			),
+		);
+	} catch (error) {
+		if (error instanceof WorkspaceDocumentContentError)
+			return errorResult(error.message, { code: error.code });
+		return errorResult("Workspace document content could not be read.");
 	}
-
-	const workspace = await getWorkspaceById(workspaceId, session.userId);
-	if (!workspace) {
-		return errorResult("Workspace not found or access denied");
-	}
-
-	return jsonResult({
-		id: workspace.id,
-		name: workspace.name,
-		description: workspace.description,
-		status: workspace.status,
-		type: workspace.type,
-		createdAt: workspace.createdAt,
-		updatedAt: workspace.updatedAt,
-	});
 }
 
 async function handleQueryWorkspace(
@@ -7628,9 +7726,13 @@ async function handleRequestAuthority(
 		runId: session.sessionId, // Bind authority to this specific gateway session
 		ttlMinutes,
 		grants: providers.map((p) => ({
-			providerType: "MCP" as const,
+			providerType:
+				p.providerKey === "fabric"
+					? ("FABRIC_NATIVE" as const)
+					: ("MCP" as const),
 			providerKey: p.providerKey,
-			providerDisplayName: p.providerKey,
+			providerDisplayName:
+				p.providerKey === "fabric" ? "Fabric Platform" : p.providerKey,
 			accessLevel: p.accessLevel,
 			metadata: p.reason ? { reason: p.reason } : undefined,
 		})),
@@ -7737,6 +7839,17 @@ async function handleRevokeAuthority(
 
 	if (!authSession) {
 		return errorResult("Authority session not found or access denied");
+	}
+	if (
+		session.credential === "oauth" &&
+		!session.scopes.includes("mcp:write") &&
+		!session.scopes.includes("*") &&
+		(authSession.runType !== "MCP_GATEWAY" ||
+			authSession.runId !== session.sessionId)
+	) {
+		return errorResult(
+			"OAuth clients without mcp:write scope may only revoke authority sessions bound to their own MCP gateway session",
+		);
 	}
 	if (authSession.status !== "ACTIVE") {
 		return errorResult(

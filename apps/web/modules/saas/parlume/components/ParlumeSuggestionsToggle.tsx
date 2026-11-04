@@ -4,7 +4,7 @@ import { Label } from "@ui/components/label";
 import { Switch } from "@ui/components/switch";
 import { useTranslations } from "next-intl";
 
-/** Whether Parlume may offer unprompted suggestions in the meeting chat. */
+/** Whether Parlume may offer unprompted suggestions and a recap; the audience picker says who sees them. */
 export function ParlumeSuggestionsToggle({
 	checked,
 	onChange,

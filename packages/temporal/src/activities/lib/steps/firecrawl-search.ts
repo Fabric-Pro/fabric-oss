@@ -5,45 +5,30 @@
  * Uses the unified search providers configuration from UserSearchProvider/OrganizationSearchProvider
  */
 
-import { getSearchProviderConfig } from "@repo/database";
-import { decryptApiKey } from "@repo/utils";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { connectorErrorMessage } from "../connector-error";
+import { getFirecrawlApiKey } from "../firecrawl-credentials";
 import { interpolateTemplate } from "./utils";
-
-async function getFirecrawlApiKey(
-	userId: string,
-	organizationId?: string,
-): Promise<string | null> {
-	try {
-		const config = await getSearchProviderConfig({
-			userId,
-			organizationId,
-			providerName: "firecrawl",
-		});
-
-		if (config?.encryptedApiKey) {
-			return decryptApiKey(config.encryptedApiKey);
-		}
-
-		return null;
-	} catch (error) {
-		console.error("[Firecrawl] Error getting API key:", error);
-		return null;
-	}
-}
 
 export async function executeFirecrawlSearchStep(
 	params: StepParams,
 ): Promise<NodeExecutionResult> {
 	const { query, limit = 5 } = params.nodeConfig as {
 		query?: string;
-		limit?: number;
+		limit?: number | string;
 	};
 
 	if (!query) {
 		return { success: false, error: "Query is required" };
 	}
 
+	const resultLimit = Number(limit);
+	if (!Number.isInteger(resultLimit) || resultLimit < 1) {
+		return {
+			success: false,
+			error: "Search limit must be a positive integer",
+		};
+	}
 	const interpolatedQuery = interpolateTemplate(query, params.inputs);
 	const apiKey = await getFirecrawlApiKey(
 		params.userId,
@@ -64,20 +49,37 @@ export async function executeFirecrawlSearchStep(
 				"Content-Type": "application/json",
 				Authorization: `Bearer ${apiKey}`,
 			},
-			body: JSON.stringify({ query: interpolatedQuery, limit }),
+			body: JSON.stringify({
+				query: interpolatedQuery,
+				limit: resultLimit,
+			}),
 		});
 
 		const result = await response.json();
+		if (!response.ok || result.success !== true) {
+			return {
+				success: false,
+				error: connectorErrorMessage(
+					result.error || result,
+					`Firecrawl returned status ${response.status}`,
+				),
+			};
+		}
+		if (!Array.isArray(result.data)) {
+			return {
+				success: false,
+				error: "Firecrawl returned an invalid search result",
+			};
+		}
 		const results = result.data;
 		return {
-			success: result.success,
+			success: true,
 			output: {
 				results,
 				// Declared in outputFields, so the UI offers it for
 				// autocomplete — it has to actually be here.
 				count: Array.isArray(results) ? results.length : 0,
 			},
-			error: result.success ? undefined : result.error,
 		};
 	} catch (error) {
 		return {

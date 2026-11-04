@@ -132,6 +132,7 @@ describe("ParlumePage invitation", () => {
 				meetingUrl,
 				toolsReadOnly: true,
 				suggestionsEnabled: true,
+				suggestionAudience: "MEETING",
 			}),
 		);
 	});
@@ -260,6 +261,7 @@ describe("ParlumePage invitation", () => {
 				meetingUrl,
 				toolsReadOnly: true,
 				suggestionsEnabled: true,
+				suggestionAudience: "MEETING",
 			}),
 		);
 	});
@@ -365,7 +367,7 @@ describe("ParlumePage invitation", () => {
 		expect(inviteButton()).toBeEnabled();
 	});
 
-	it("invites without chat suggestions when the inviter turns them off", async () => {
+	it("invites without suggestions and recap when the inviter turns them off", async () => {
 		showPage();
 		await readyToInvite();
 		fireEvent.click(screen.getByRole("switch", { name: "label" }));
@@ -375,6 +377,38 @@ describe("ParlumePage invitation", () => {
 				expect.objectContaining({ suggestionsEnabled: false }),
 			),
 		);
+	});
+
+	it("invites with suggestions for the team only, and says who sees each choice", async () => {
+		showPage();
+		await readyToInvite();
+		expect(
+			screen.getByText(/external guests included/),
+		).toBeInTheDocument();
+		fireEvent.click(
+			screen.getByRole("radio", {
+				name: "Only your team (Parlume page)",
+			}),
+		);
+		fireEvent.click(inviteButton());
+		await waitFor(() =>
+			expect(mocks.start).toHaveBeenCalledWith(
+				expect.objectContaining({
+					suggestionsEnabled: true,
+					suggestionAudience: "TEAM",
+				}),
+			),
+		);
+	});
+
+	it("hides the audience choice while suggestions are off", async () => {
+		showPage();
+		await readyToInvite();
+		expect(screen.getByText("Who sees suggestions")).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("switch", { name: "label" }));
+
+		expect(screen.queryByText("Who sees suggestions")).toBeNull();
 	});
 
 	it("reports a failed invitation", async () => {

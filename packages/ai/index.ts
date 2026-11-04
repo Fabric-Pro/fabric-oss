@@ -48,6 +48,7 @@ export type {
 // --- Commonly used AI SDK exports (explicit for tree-shaking) ---
 // These are re-exported for convenience. For smaller bundles, import from "ai" directly.
 export {
+	asSchema,
 	// Message conversion utilities
 	convertToModelMessages,
 	// Gateway provider
@@ -77,6 +78,10 @@ export {
 	// unify against the same class.
 	NoObjectGeneratedError,
 	NoSuchToolError,
+	// Structured-output spec for `generateText({ output: Output.object(...) })`,
+	// the supported replacement for the deprecated `generateObject`. Re-exported
+	// for the same single-copy-of-`ai` reason as `zodSchema` below.
+	Output,
 	pipeTextStreamToResponse,
 	streamObject,
 	streamText,

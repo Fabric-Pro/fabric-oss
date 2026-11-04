@@ -1,6 +1,12 @@
 import { ORPCError } from "@orpc/server";
 import {
+	assertPublicReportParameters,
+	canAccessReportInstance,
+	getProjectReportSetupReason,
 	getTemplateInstance,
+	publicReportParametersSchema,
+	readReportEvidenceConfig,
+	reportEvidenceConfigSchema,
 	reportScheduleInputSchema,
 	updateTemplateInstance,
 } from "@repo/database";
@@ -51,13 +57,17 @@ export const updateInstanceInputSchema = z.object({
 			context: z.record(z.string(), z.string()).optional(),
 			// Optional prompt override for customizing analysis
 			promptOverride: z.string().optional(),
+			// "user" when a person wrote the override; only then is it added
+			// to the template's AI tasks.
+			promptOverrideSource: z.literal("user").optional(),
 			// Max AI iterations for agentic data gathering (default: 15)
 			maxIterations: z.number().int().min(1).max(50).optional(),
 		})
 		.optional(),
-	parameterDefaults: z.record(z.string(), z.unknown()).optional(),
+	parameterDefaults: publicReportParametersSchema.optional(),
 	fabricConfig: z
 		.object({
+			reporting: reportEvidenceConfigSchema.optional(),
 			strategy: z.string().optional(),
 			context: z.string().optional(),
 			pattern: z.string().optional(),
@@ -111,6 +121,69 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 
 		await assertCanEditReportInstance(existing, context.user);
 
+		if (!organizationId) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "An organization is required",
+			});
+		}
+		assertPublicReportParameters(input.parameterDefaults);
+		const originalReporting = readReportEvidenceConfig(
+			existing.fabricConfig,
+		);
+		if (
+			input.fabricConfig?.reporting &&
+			input.fabricConfig.reporting.projectId !==
+				originalReporting?.projectId
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"A report audience cannot be changed. Create a new report for the project audience you need.",
+			});
+		}
+
+		const mergedFabricConfig = input.fabricConfig
+			? {
+					...(existing.fabricConfig as Record<
+						string,
+						unknown
+					> | null),
+					...input.fabricConfig,
+				}
+			: undefined;
+		if (
+			!(await canAccessReportInstance(
+				existing,
+				{ userId: context.user.id, organizationId },
+				undefined,
+				true,
+			)) ||
+			(mergedFabricConfig &&
+				!(await canAccessReportInstance(
+					{ ...existing, fabricConfig: mergedFabricConfig },
+					{ userId: context.user.id, organizationId },
+					undefined,
+					true,
+				)))
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Project report access denied",
+			});
+		}
+
+		const setupReason = getProjectReportSetupReason(
+			mergedFabricConfig ?? existing.fabricConfig,
+			existing.template.definition,
+			input.connections ?? existing.connections,
+		);
+		if (
+			setupReason &&
+			(input.isActive === true ||
+				input.status === "ACTIVE" ||
+				(input.scheduleUpdate && input.scheduleUpdate.mode !== "off"))
+		) {
+			throw new ORPCError("BAD_REQUEST", { message: setupReason });
+		}
+
 		// Validate connections if provided. Pass the template's data sources so a
 		// binding keyed by a data source id (e.g. "task-board") can self-heal via
 		// its server provider (e.g. "fizzy").
@@ -126,9 +199,11 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			)?.dataSources;
 			const validation = await validateReportConnections(
 				input.connections,
-				context.user.id,
+				existing.userId,
 				organizationId ?? undefined,
 				templateDataSources,
+				existing.connections,
+				{ sameServerOnly: existing.userId !== context.user.id },
 			);
 			if (!validation.valid) {
 				throw new ORPCError("BAD_REQUEST", {
@@ -146,7 +221,7 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			parameterDefaults: input.parameterDefaults as
 				| Prisma.InputJsonValue
 				| undefined,
-			fabricConfig: input.fabricConfig as
+			fabricConfig: mergedFabricConfig as
 				| Prisma.InputJsonValue
 				| undefined,
 			...(input.scheduleUpdate && {

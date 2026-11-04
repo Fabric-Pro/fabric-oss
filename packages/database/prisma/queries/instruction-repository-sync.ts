@@ -34,6 +34,7 @@ import {
 	instructionRepositoryImportAllowed,
 	migrationOfSettings,
 } from "./instruction-migration-pointer";
+import type { InstructionReviewPolicy } from "./instruction-proposal-approvals";
 import {
 	type InstructionSyncLimitDetail,
 	parseInstructionSyncLimitDetail,
@@ -180,6 +181,13 @@ export async function writeProjectInstructionSettings(
 		 * sync row's life.
 		 */
 		migration?: InstructionMigrationPointer | null;
+		/**
+		 * The upload-mode proposal review policy
+		 * (`./instruction-proposal-approvals`). It changes nothing a sync run
+		 * would produce, so it never bumps the generation and is not frozen
+		 * by an open move.
+		 */
+		reviewPolicy?: InstructionReviewPolicy;
 	},
 ): Promise<{
 	written: boolean;

@@ -127,7 +127,10 @@ vi.mock("@repo/database", async (original) => {
 
 import { classifyReadOnlyToolAccess } from "@repo/utils/read-only-mode";
 import { FABRIC_CHAT_TOOL_DEFINITIONS } from "../../lib/fabric-gateway-tools";
-import { FABRIC_PORTAL_TOOL_NAMES } from "../../lib/fabric-portal-tools";
+import {
+	FABRIC_PORTAL_EXCLUDED_TOOL_NAMES,
+	FABRIC_PORTAL_TOOL_NAMES,
+} from "../../lib/fabric-portal-tools";
 import { confirmationMeta, toolAccess } from "../../lib/fabric-tool-definition";
 import { fabricToolSources } from "../direct-chat/fabric-turn-tools";
 import {
@@ -168,6 +171,11 @@ const PORTAL_READS: readonly string[] = [
 	"fabric_instruction_checks",
 	"fabric_query_workspace",
 ];
+const MEETING_EXCLUDED_WRITES = FABRIC_CHAT_TOOL_DEFINITIONS.filter(
+	(tool) =>
+		toolAccess(tool) === "WRITE" &&
+		FABRIC_PORTAL_EXCLUDED_TOOL_NAMES.includes(tool.name),
+).map((tool) => tool.name);
 const PORTAL_LISTING = FABRIC_PORTAL_TOOL_NAMES.map((name) => ({
 	name,
 	description: `The ${name} tool.`,
@@ -286,9 +294,22 @@ describe("Fabric tools in a read-only meeting", () => {
 		expect(gatewayCalls("fabric_list_workflows")).toHaveLength(1);
 	});
 
+	it.each(MEETING_EXCLUDED_WRITES)(
+		"never offers the meeting-excluded Fabric change %s",
+		async (name) => {
+			const { tools } = await turnTools(
+				createParlumeToolRuntime({ ...context, toolsReadOnly: true }),
+			);
+
+			expect(tools[name]).toBeUndefined();
+		},
+	);
+
 	it.each(
 		FABRIC_CHAT_TOOL_DEFINITIONS.filter(
-			(tool) => toolAccess(tool) === "WRITE",
+			(tool) =>
+				toolAccess(tool) === "WRITE" &&
+				!MEETING_EXCLUDED_WRITES.includes(tool.name),
 		).map((tool) => tool.name),
 	)(
 		"refuses the Fabric change %s without reaching the gateway or proposing",

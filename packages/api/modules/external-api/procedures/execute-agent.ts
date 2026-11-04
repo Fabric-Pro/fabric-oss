@@ -6,17 +6,25 @@
  * Auto-creates a lightweight deployment if none exists.
  */
 
-import { randomUUID } from "node:crypto";
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 import {
+	AgentExecutionAdmissionError,
+	type AgentExecutionDispatch,
+	type AuditActor,
+	admitAgentDeploymentExecution,
 	checkExecutionQuota,
 	createAgentDeployment,
 	db,
+	findAgentExecutionAdmission,
+	getAgentTemplateInstanceForExecution,
 	isDeploymentOwnerCurrentMember,
+	normalizeAgentExecutionRequest,
 	Prisma,
 	updateDeploymentStatus,
+	validateAgentExecutionRequestKey,
 } from "@repo/database";
-import { getTemporalClient } from "@repo/temporal";
-import { withCorrelationMemo } from "../../../lib/temporal-correlation";
+import { getCorrelationIdFromContext } from "../../../lib/correlation-id";
+import { dispatchAdmittedAgentExecution } from "../../agent-deployments/lib/dispatch-execution";
 import type { ExternalApiContext } from "../types";
 
 const PRIORITY_MAP: Record<string, number> = {
@@ -33,7 +41,7 @@ interface ImageRef {
 	accessUserId?: string;
 }
 
-interface ExecuteAgentInput {
+export interface ExecuteAgentInput {
 	input: Record<string, unknown>;
 	priority?: "LOW" | "NORMAL" | "HIGH" | "CRITICAL";
 	idempotencyKey?: string;
@@ -45,10 +53,11 @@ interface ExecuteAgentInput {
  * Get existing deployment or auto-create a lightweight one for API execution.
  * No supervisor workflow is started — executions run directly.
  */
-async function getOrCreateDeployment(
+/** Internal only: caller must already verify the current instance/credential owner. */
+export async function getOrCreateDeployment(
 	instanceId: string,
 	instanceName: string,
-	ctx: ExternalApiContext,
+	ctx: AgentExecutionActor,
 ) {
 	const existing = await db.agentDeployment.findFirst({
 		where: { instanceId },
@@ -56,6 +65,7 @@ async function getOrCreateDeployment(
 			id: true,
 			userId: true,
 			organizationId: true,
+			status: true,
 		},
 	});
 	if (existing) {
@@ -80,7 +90,12 @@ async function getOrCreateDeployment(
 		) {
 			const raced = await db.agentDeployment.findFirst({
 				where: { instanceId },
-				select: { id: true, userId: true, organizationId: true },
+				select: {
+					id: true,
+					userId: true,
+					organizationId: true,
+					status: true,
+				},
 			});
 			if (raced) {
 				return raced;
@@ -98,17 +113,66 @@ async function getOrCreateDeployment(
 		id: deployment.id,
 		userId: deployment.userId,
 		organizationId: deployment.organizationId,
+		status: "ACTIVE" as const,
 	};
 }
 
-export async function executeAgent(
+interface AgentExecutionActor {
+	userId: string;
+	organizationId: string | undefined;
+	boundProjectId?: string;
+}
+export function executeAgent(
 	instanceId: string,
 	body: ExecuteAgentInput,
 	ctx: ExternalApiContext,
 ) {
-	const tenantFilter = ctx.organizationId
-		? { organizationId: ctx.organizationId }
-		: { userId: ctx.userId, organizationId: null };
+	return executeAgentForActor(instanceId, body, ctx, {
+		requireApiExposure: true,
+		actor: {
+			type: ctx.keyType === "oauth" ? "agent" : "api_key",
+			userId: ctx.userId,
+		},
+	});
+}
+/** Authenticated Portal callers share native admission without publishing an API. */
+export function executeAgentFromPortal(
+	instanceId: string,
+	body: ExecuteAgentInput,
+	actor: AgentExecutionActor,
+) {
+	return executeAgentForActor(instanceId, body, actor, {
+		requireApiExposure: false,
+		actor: { type: "user", userId: actor.userId },
+	});
+}
+async function executeAgentForActor(
+	instanceId: string,
+	body: ExecuteAgentInput,
+	ctx: AgentExecutionActor,
+	policy: { requireApiExposure: boolean; actor: AuditActor },
+) {
+	if (!ctx.organizationId) {
+		return { error: "An organization is required", status: 403 as const };
+	}
+	let normalizedRequest: ReturnType<typeof normalizeAgentExecutionRequest>;
+	try {
+		validateAgentExecutionRequestKey(body.idempotencyKey);
+		normalizedRequest = normalizeAgentExecutionRequest({
+			input: body.input ?? {},
+			priority: PRIORITY_MAP[body.priority ?? "NORMAL"] ?? 5,
+			imageRefs: body.imageRefs,
+		});
+	} catch (error) {
+		if (error instanceof AgentExecutionAdmissionError) {
+			return {
+				error: { code: error.code, message: error.message },
+				status: 400 as const,
+			};
+		}
+		throw error;
+	}
+	const tenantFilter = { organizationId: ctx.organizationId };
 
 	// Find the instance with execution mode details.
 	// The identifier may be an sId (stable across versions) or a record id.
@@ -118,7 +182,7 @@ export async function executeAgent(
 			where: {
 				sId: instanceId,
 				...tenantFilter,
-				isApiExposed: true,
+				...(policy.requireApiExposure ? { isApiExposed: true } : {}),
 				status: "ACTIVE",
 			},
 			select: {
@@ -132,6 +196,7 @@ export async function executeAgent(
 						id: true,
 						userId: true,
 						organizationId: true,
+						status: true,
 					},
 				},
 			},
@@ -140,7 +205,7 @@ export async function executeAgent(
 			where: {
 				id: instanceId,
 				...tenantFilter,
-				isApiExposed: true,
+				...(policy.requireApiExposure ? { isApiExposed: true } : {}),
 				status: "ACTIVE",
 			},
 			select: {
@@ -154,6 +219,7 @@ export async function executeAgent(
 						id: true,
 						userId: true,
 						organizationId: true,
+						status: true,
 					},
 				},
 			},
@@ -163,21 +229,56 @@ export async function executeAgent(
 		return { error: "Agent not found", status: 404 as const };
 	}
 
+	const scoped = await getAgentTemplateInstanceForExecution({
+		instanceId: instance.id,
+		userId: ctx.userId,
+		organizationId: ctx.organizationId,
+	});
+	if (
+		!scoped ||
+		(ctx.boundProjectId && scoped.projectId !== ctx.boundProjectId)
+	) {
+		return {
+			error: "Agent not found or access denied",
+			status: 404 as const,
+		};
+	}
+	if (
+		!getAgentImplementationAvailability(scoped.instance.customInstructions)
+			.available
+	) {
+		return {
+			error: "Agent implementation is unavailable for execution",
+			status: 409 as const,
+		};
+	}
+
+	// The instance author remains the credential owner until a deployment exists.
+	// Check before auto-creation so a first caller cannot claim another member's agent.
+	if (
+		(instance.deployment?.userId ?? scoped.instance.userId) !== ctx.userId
+	) {
+		return {
+			error: "This deployment must be executed by its owner",
+			status: 403 as const,
+		};
+	}
+
 	// Get or auto-create deployment
 	const deployment =
 		instance.deployment ??
 		(await getOrCreateDeployment(instance.id, instance.name, ctx));
 
-	// Check execution quota before creating anything
-	const quotaCheck = await checkExecutionQuota(
-		deployment.id,
-		deployment.userId,
-		deployment.organizationId ?? undefined,
-	);
-	if (!quotaCheck.allowed) {
+	// Deployment tools and credentials belong to its admitting actor. Match the
+	// owner-only in-app execution contract rather than borrowing another member's
+	// authority through an organization API key.
+	if (
+		deployment.userId !== ctx.userId ||
+		deployment.organizationId !== ctx.organizationId
+	) {
 		return {
-			error: quotaCheck.reason || "Execution quota exceeded",
-			status: 429 as const,
+			error: "This deployment must be executed by its owner",
+			status: 403 as const,
 		};
 	}
 
@@ -185,193 +286,129 @@ export async function executeAgent(
 		return { error: "Agent not found", status: 404 as const };
 	}
 
-	// Idempotency check + execution creation in a single serializable transaction
-	// so two concurrent requests with the same key cannot both see "no existing row"
-	// and create duplicate executions.
-	const executionId = randomUUID();
-	const priority = PRIORITY_MAP[body.priority || "NORMAL"] ?? 5;
-
-	const txResult = await db.$transaction(
-		async (tx) => {
-			if (body.idempotencyKey) {
-				const existing = await tx.agentDeploymentExecution.findFirst({
-					where: {
-						deploymentId: deployment.id,
-						metadata: {
-							path: ["idempotencyKey"],
-							equals: body.idempotencyKey,
-						},
-					},
-					select: {
-						id: true,
-						executionId: true,
-						status: true,
-						output: true,
-					},
-				});
-
-				if (existing) {
+	try {
+		const request = normalizedRequest;
+		const target = {
+			instanceId: instance.id,
+			...(scoped.projectId ? { projectId: scoped.projectId } : {}),
+		};
+		const dispatch: AgentExecutionDispatch =
+			instance.executionMode === "goal_oriented"
+				? {
+						...target,
+						workflowType: "nativeGoalOrientedAgentWorkflow",
+						goal: instance.goal || "Complete the requested task",
+						maxIterations: instance.maxIterations || 10,
+					}
+				: {
+						...target,
+						workflowType: "nativeDeploymentExecutionWorkflow",
+					};
+		const admission = {
+			organizationId: ctx.organizationId,
+			userId: ctx.userId,
+			deploymentId: deployment.id,
+			idempotencyKey: body.idempotencyKey,
+			request,
+			dispatch,
+			actor: policy.actor,
+			correlationId: getCorrelationIdFromContext(),
+			triggerType: policy.requireApiExposure
+				? ("API" as const)
+				: ("MANUAL" as const),
+		};
+		let execution = await findAgentExecutionAdmission(admission);
+		let reused = !!execution;
+		if (!execution) {
+			if (deployment.status !== "ACTIVE") {
+				return {
+					error: "Deployment is not active",
+					status: 409 as const,
+				};
+			}
+			const quota = await checkExecutionQuota(
+				deployment.id,
+				ctx.userId,
+				ctx.organizationId,
+			);
+			if (!quota.allowed) {
+				// A concurrent identical request may have reserved the final
+				// allowance since our first lookup. Recover its receipt first.
+				execution = await findAgentExecutionAdmission(admission);
+				if (!execution) {
 					return {
-						idempotent: true as const,
-						existing,
+						error: quota.reason || "Execution quota exceeded",
+						status: 429 as const,
 					};
 				}
+				reused = true;
 			}
-
-			const created = await tx.agentDeploymentExecution.create({
-				data: {
-					deploymentId: deployment.id,
-					executionId,
-					userId: deployment.userId,
-					organizationId: deployment.organizationId,
-					triggerType: "API",
-					input: (body.input || {}) as Prisma.InputJsonValue,
-					priority,
-					status: "PENDING",
-					queuedAt: new Date(),
-					metadata: {
-						apiKeyId: ctx.keyId,
-						apiKeyType: ctx.keyType,
-						...(body.idempotencyKey
-							? { idempotencyKey: body.idempotencyKey }
-							: {}),
-					} as Prisma.InputJsonValue,
-				},
-			});
-
-			return { idempotent: false as const, created };
-		},
-		{ isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-	);
-
-	if (txResult.idempotent) {
-		return {
-			data: {
-				executionId: txResult.existing.id,
-				deploymentId: deployment.id,
-				status: txResult.existing.status,
-				output: txResult.existing.output,
-				idempotent: true,
-			},
-			status: 200 as const,
-		};
-	}
-
-	const execution = txResult.created;
-
-	// Start the execution workflow directly (no supervisor needed)
-	const temporalClient = await getTemporalClient();
-	const workflowId = `deployment-exec-${execution.id}`;
-	const taskQueue = "agents";
-	const timeoutMs = 30 * 60 * 1000; // 30 minutes
-
-	const executionMode = instance.executionMode || "single_turn";
-	const isGoalOriented = executionMode === "goal_oriented";
-
-	// Start the workflow — separate try/catch so a DB update failure
-	// after a successful workflow start doesn't incorrectly mark FAILED.
-	try {
-		if (isGoalOriented) {
-			const goal = instance.goal || "Complete the requested task";
-			const maxIterations = instance.maxIterations || 10;
-
-			await temporalClient.workflow.start(
-				"goalOrientedAgentWorkflow",
-				withCorrelationMemo({
-					taskQueue,
-					workflowId,
-					args: [
-						{
-							executionId,
-							deploymentId: deployment.id,
-							instanceId: instance.id,
-							userId: deployment.userId,
-							organizationId: deployment.organizationId,
-							input: body.input || {},
-							// An external caller, no member at a screen: the run is
-							// a background job, on the organization's shared
-							// ChatGPT plans when they serve it (Fizzy #2770).
-							jobType: "external-agent",
-							goal,
-							maxIterations,
-							triggerType: "API",
-							timeoutMs,
-							supervisorWorkflowId: undefined,
-							imageRefs: body.imageRefs,
-						},
-					],
-				}),
-			);
-		} else {
-			await temporalClient.workflow.start(
-				"deploymentExecutionWorkflow",
-				withCorrelationMemo({
-					taskQueue,
-					workflowId,
-					args: [
-						{
-							executionId,
-							deploymentId: deployment.id,
-							instanceId: instance.id,
-							userId: deployment.userId,
-							organizationId: deployment.organizationId,
-							input: body.input || {},
-							// An external caller, no member at a screen: the run is
-							// a background job, on the organization's shared
-							// ChatGPT plans when they serve it (Fizzy #2770).
-							jobType: "external-agent",
-							triggerType: "API",
-							timeoutMs,
-							supervisorWorkflowId: undefined,
-							imageRefs: body.imageRefs,
-						},
-					],
-				}),
-			);
+			if (!execution) {
+				const admitted = await admitAgentDeploymentExecution(admission);
+				execution = admitted.execution;
+				reused = admitted.reused;
+			}
 		}
-	} catch (err) {
-		// Mark as FAILED only if workflow start itself fails
-		await db.agentDeploymentExecution.update({
-			where: { id: execution.id },
-			data: {
-				status: "FAILED",
-				error:
-					err instanceof Error
-						? err.message
-						: "Failed to start workflow",
-				completedAt: new Date(),
-			},
+		const receipt = await dispatchAdmittedAgentExecution(execution, {
+			allowStart: deployment.status === "ACTIVE",
 		});
+		const row = receipt.execution;
+		if (receipt.revoked) {
+			return {
+				error: "Agent not found or access denied",
+				status: 404 as const,
+			};
+		}
+		if (!receipt.confirmed) {
+			return {
+				error: {
+					code: "ADMISSION_UNRESOLVED",
+					message:
+						receipt.reason === "identity_mismatch"
+							? "The existing workflow identity does not match this request. Inspect that execution before submitting separate work."
+							: receipt.reason === "legacy_start_unconfirmed"
+								? "Fabric cannot confirm this older execution in Temporal. Inspect its existing outcome before submitting separate work."
+								: receipt.recoverable === false
+									? "This legacy execution has no recoverable admission snapshot. Inspect its existing outcome before submitting a separate run."
+									: "Execution admission is unresolved. Retry the same request key to recover this execution; use a new key only for a separate run.",
+					data: {
+						executionId: row.id,
+						deploymentId: row.deploymentId,
+						workflowId: row.workflowId,
+						retryable:
+							!!body.idempotencyKey &&
+							receipt.recoverable !== false,
+					},
+				},
+				status: 503 as const,
+			};
+		}
 		return {
-			error: "Failed to start agent execution",
-			status: 500 as const,
-		};
-	}
-
-	// Transition to RUNNING — best-effort; if this fails the workflow
-	// is still running and will update the record itself.
-	try {
-		await db.agentDeploymentExecution.update({
-			where: { id: execution.id },
 			data: {
-				status: "RUNNING",
-				startedAt: new Date(),
-				workflowId,
+				executionId: row.id,
+				deploymentId: row.deploymentId,
+				workflowId: row.workflowId,
+				workflowExecutionId: row.executionId,
+				runId: row.runId,
+				status: row.status,
+				admissionStatus: "CONFIRMED" as const,
+				idempotent: reused,
+				...(row.status === "COMPLETED" ? { output: row.output } : {}),
 			},
-		});
-	} catch {
-		// Non-critical: workflow will update status on its own
+			status: reused ? (200 as const) : (202 as const),
+		};
+	} catch (error) {
+		if (error instanceof AgentExecutionAdmissionError) {
+			return {
+				error: { code: error.code, message: error.message },
+				status:
+					error.code === "IDEMPOTENCY_CONFLICT"
+						? (409 as const)
+						: error.code === "EXECUTION_QUOTA_EXCEEDED"
+							? (429 as const)
+							: (400 as const),
+			};
+		}
+		throw error;
 	}
-
-	return {
-		data: {
-			executionId: execution.id,
-			status: "RUNNING",
-			deploymentId: deployment.id,
-			workflowId,
-			/** UUID used by the workflow for Redis pub/sub channels */
-			workflowExecutionId: executionId,
-		},
-		status: 202 as const,
-	};
 }

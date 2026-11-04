@@ -24,15 +24,16 @@ import {
 	updateWorkflowExecution,
 } from "@repo/database";
 import { READ_ONLY_MODE_MESSAGE } from "@repo/utils/read-only-mode";
+import { Context } from "@temporalio/activity";
 import { withHeartbeatTicker } from "./lib/activity-liveness";
 import { redactSensitiveData } from "./lib/redact-sensitive-data";
-import { resolveExecutionGraph } from "./lib/workflow-execution-definition";
-import { resolveWorkspaceWorkflowUsageOrigin } from "./lib/workspace-workflow-usage-origin";
 import {
 	executeStep,
 	hasStep,
 	isExternalWriteNodeType,
 } from "./lib/step-registry";
+import { resolveExecutionGraph } from "./lib/workflow-execution-definition";
+import { resolveWorkspaceWorkflowUsageOrigin } from "./lib/workspace-workflow-usage-origin";
 import { guardToolWriteForReadOnly } from "./shared/read-only-gate";
 import type { NodeExecutionResult } from "./types";
 
@@ -106,7 +107,19 @@ export async function updateWorkflowExecutionStatus(params: {
 		});
 	}
 
+	// A scheduled child has no API-side start acknowledgement to persist its ID.
+	// Record it from the running activity, after Temporal has accepted the run.
+	let temporalWorkflowId: string | undefined;
+	if (params.status === "RUNNING") {
+		try {
+			temporalWorkflowId =
+				Context.current().info.workflowExecution?.workflowId;
+		} catch {
+			/* Direct local activity calls have no Temporal context. */
+		}
+	}
 	await updateWorkflowExecution(params.executionId, {
+		...(temporalWorkflowId ? { temporalRunId: temporalWorkflowId } : {}),
 		status: params.status as Prisma.EnumWorkflowExecutionStatusFieldUpdateOperationsInput["set"],
 		startedAt: params.startedAt,
 		completedAt: params.completedAt,

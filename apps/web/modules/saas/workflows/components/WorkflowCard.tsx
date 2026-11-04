@@ -46,7 +46,9 @@ interface WorkflowCardProps {
 			versions: number;
 		};
 	};
-	variant?: "grid" | "list";
+	variant?: "grid" | "list" | "navigator";
+	selected?: boolean;
+	onBeforeAction?: () => boolean;
 	onRefresh?: () => void;
 }
 
@@ -74,6 +76,8 @@ export function WorkflowCard({
 	workflow,
 	variant = "grid",
 	onRefresh,
+	selected,
+	onBeforeAction,
 }: WorkflowCardProps) {
 	const router = useRouter();
 	const { basePath: orgBasePath, organizationId } = useOrganizationContext();
@@ -84,6 +88,7 @@ export function WorkflowCard({
 			onSuccess: () => {
 				toast.success("Workflow deleted");
 				onRefresh?.();
+				if (selected) router.push(basePath);
 			},
 			onError: () => {
 				toast.error("Failed to delete workflow");
@@ -131,6 +136,93 @@ export function WorkflowCard({
 	};
 
 	const isScheduled = workflow.triggerType === "SCHEDULE";
+
+	if (variant === "navigator") {
+		return (
+			<div
+				className={cn(
+					"mb-1 flex items-center rounded-md border border-transparent focus-within:ring-1 focus-within:ring-ring",
+					selected ? "border-border bg-accent" : "hover:bg-accent/60",
+				)}
+			>
+				<Link
+					href={`${basePath}/${workflow.id}`}
+					aria-current={selected ? "page" : undefined}
+					onClick={(e) => {
+						if (!selected && onBeforeAction && !onBeforeAction())
+							e.preventDefault();
+					}}
+					className="min-w-0 flex-1 rounded-md px-3 py-2.5 focus-visible:outline-2 focus-visible:outline-ring"
+				>
+					<span
+						className="block truncate text-sm font-medium"
+						title={workflow.name}
+					>
+						{workflow.name}
+					</span>
+					<span className="mt-1 block text-xs text-muted-foreground">
+						{isLive
+							? "Published"
+							: WORKFLOW_STATUS_DISPLAY[workflow.status].label}
+						{isScheduled ? " · Scheduled" : ""}
+					</span>
+				</Link>
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<Button
+							size="icon-sm"
+							variant="ghost"
+							className="mr-1 shrink-0"
+							aria-label={`Actions for ${workflow.name}`}
+						>
+							<MoreHorizontalIcon className="size-4" />
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent align="start">
+						{workflow.status !== "DRAFT" && (
+							<DropdownMenuItem
+								onSelect={() => {
+									if (!onBeforeAction || onBeforeAction())
+										handleStatusToggle();
+								}}
+							>
+								{isLive ? "Pause workflow" : "Resume workflow"}
+							</DropdownMenuItem>
+						)}
+						<DropdownMenuItem
+							onSelect={() => {
+								if (!onBeforeAction || onBeforeAction())
+									duplicateMutation.mutate({
+										id: workflow.id,
+										organizationId,
+									});
+							}}
+						>
+							Duplicate workflow
+						</DropdownMenuItem>
+						<DropdownMenuSeparator />
+						<DropdownMenuItem
+							className="text-destructive"
+							onSelect={() => {
+								if (
+									(!onBeforeAction || onBeforeAction()) &&
+									window.confirm(
+										`Delete workflow “${workflow.name}”? This cannot be undone.`,
+									)
+								)
+									deleteMutation.mutate({
+										id: workflow.id,
+										organizationId,
+									});
+							}}
+						>
+							Delete workflow
+						</DropdownMenuItem>
+					</DropdownMenuContent>
+				</DropdownMenu>
+			</div>
+		);
+	}
 
 	const triggerLabel = workflow.triggerType
 		.toLowerCase()

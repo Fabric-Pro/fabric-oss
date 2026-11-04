@@ -4,8 +4,8 @@
  *
  * The prompt composition itself is untouched by FR2; the splice lives in the
  * async activity, between `composeTopicSuggestionPrompt(...)` and the
- * `generateObject()` call, and is asserted here through the prompt
- * `generateObject` actually receives.
+ * `generateText()` call, and is asserted here through the prompt
+ * `generateText` actually receives.
  *
  * This is a SEPARATE module from `@repo/ai` (mocked in the sibling
  * `summarize-topic-suggestions.test.ts`), so it needs its own `vi.mock`.
@@ -19,11 +19,12 @@ vi.mock("@temporalio/activity", () => ({
 	Context: { current: () => ({ heartbeat: vi.fn() }) },
 }));
 
-const generateObject = vi.fn();
+const generateText = vi.fn();
 const getAIModelWithMetadata = vi.fn();
 const logModelUsageAsync = vi.fn();
 vi.mock("@repo/ai", () => ({
-	generateObject: (...a: unknown[]) => generateObject(...a),
+	Output: { object: (spec: unknown) => spec },
+	generateText: (...a: unknown[]) => generateText(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
 	logModelUsageAsync: (...a: unknown[]) => logModelUsageAsync(...a),
 }));
@@ -64,7 +65,7 @@ function stubModel() {
 }
 
 beforeEach(() => {
-	generateObject.mockReset();
+	generateText.mockReset();
 	getAIModelWithMetadata.mockReset();
 	logModelUsageAsync.mockReset();
 	mockIsCurrentOrgMember.mockReset();
@@ -77,14 +78,14 @@ beforeEach(() => {
 	// keeps asserting the pre-FR2 prompt shape.
 	clause.mockResolvedValue("");
 	stubModel();
-	generateObject.mockResolvedValue({
-		object: { topics: [] },
+	generateText.mockResolvedValue({
+		output: { topics: [] },
 		usage: { totalTokens: 1 },
 	});
 });
 
 describe("summarizeTopicSuggestions — function-tag role clause (FR2 / Fizzy #1767)", () => {
-	it("appends the resolved role clause to the prompt handed to generateObject when the helper returns a non-empty string", async () => {
+	it("appends the resolved role clause to the prompt handed to generateText when the helper returns a non-empty string", async () => {
 		clause.mockResolvedValue("ROLE CONTEXT: alice is an ENGINEER.");
 
 		await summarizeTopicSuggestions({
@@ -99,7 +100,7 @@ describe("summarizeTopicSuggestions — function-tag role clause (FR2 / Fizzy #1
 			requesterUserId: "user-1",
 			surface: "publishing-suite",
 		});
-		const callArgs = generateObject.mock.calls[0][0] as { prompt: string };
+		const callArgs = generateText.mock.calls[0][0] as { prompt: string };
 		expect(
 			callArgs.prompt.endsWith("ROLE CONTEXT: alice is an ENGINEER."),
 		).toBe(true);
@@ -115,12 +116,12 @@ describe("summarizeTopicSuggestions — function-tag role clause (FR2 / Fizzy #1
 			context: {},
 		});
 
-		const withoutClause = generateObject.mock.calls[0][0].prompt;
+		const withoutClause = generateText.mock.calls[0][0].prompt;
 
 		// Re-run with a non-empty clause from an otherwise-identical invocation
 		// to prove the base prompt is byte-for-byte identical (no dangling
 		// separator) when the clause is absent.
-		generateObject.mockClear();
+		generateText.mockClear();
 		clause.mockResolvedValue("ROLE CONTEXT: sentinel");
 		await summarizeTopicSuggestions({
 			projectId: "proj-a",
@@ -128,7 +129,7 @@ describe("summarizeTopicSuggestions — function-tag role clause (FR2 / Fizzy #1
 			actorUserId: "user-1",
 			context: {},
 		});
-		const withClause = generateObject.mock.calls[0][0].prompt;
+		const withClause = generateText.mock.calls[0][0].prompt;
 
 		expect(withoutClause).not.toContain("ROLE CONTEXT:");
 		expect(withClause).toBe(`${withoutClause}\n\nROLE CONTEXT: sentinel`);

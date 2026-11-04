@@ -1,6 +1,13 @@
 "use client";
 
 import { McpLogo } from "@saas/mcp/components/McpLogo";
+import {
+	groupReportConnections,
+	type ReportConnectionGroups,
+	type ReportConnectionOption,
+	reportSourceCategory,
+} from "@saas/reports/lib/report-source-categories";
+import { DATA_SOURCE_PROVIDERS } from "@saas/shared/components/DataSourceDefinitionBuilder";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { TemporalLogo } from "@saas/workflows/components/TemporalLogo";
 import { Badge } from "@ui/components/badge";
@@ -23,6 +30,7 @@ import {
 	ServerIcon,
 	TriangleAlertIcon,
 } from "lucide-react";
+import { ReportConnectionSelect } from "./ReportConnectionSelect";
 
 // Data source types
 export type DataSourceType =
@@ -41,6 +49,48 @@ type ConnectionOption = {
 	isRecommended?: boolean;
 	isAuthenticated?: boolean;
 };
+
+/** A connected tool the categorical picker can offer beyond the source's own. */
+export type CategorizedConnection = ConnectionOption & {
+	category?: string | null;
+};
+
+function toPickerOption(option: ConnectionOption): ReportConnectionOption {
+	const unauthenticated = option.isAuthenticated === false;
+	return {
+		value: `${option.type || "mcp"}:${option.id}`,
+		label: option.name,
+		disabled: unauthenticated,
+		hint: unauthenticated ? "(Not authenticated)" : undefined,
+	};
+}
+
+/**
+ * The categorical picker's groups for a data source: `own` (its provider's
+ * connections) first, then `connected` split by the provider's category.
+ */
+export function connectionGroupsForSource(
+	provider: string,
+	own: ConnectionOption[],
+	connected: CategorizedConnection[],
+): ReportConnectionGroups {
+	const ownIds = new Set(own.map((option) => option.id));
+	return groupReportConnections(
+		own.map(toPickerOption),
+		connected,
+		reportSourceCategory(
+			provider,
+			DATA_SOURCE_PROVIDERS,
+			connected
+				.filter((connection) => ownIds.has(connection.id))
+				.map((connection) => connection.category),
+		),
+		(connection) => ({
+			option: toPickerOption(connection),
+			category: connection.category,
+		}),
+	);
+}
 
 // Resource option for MCP connections
 type ResourceOption = {
@@ -80,8 +130,22 @@ type Props = {
 
 	// Available options
 	connectionOptions: ConnectionOption[];
+	/**
+	 * The categorical picker (report suite): `connectionOptions` first, then
+	 * the source's category, with every other tool behind "Show all tools".
+	 * Values are `type:id`, like `connectionOptions`.
+	 */
+	connectionGroups?: ReportConnectionGroups;
+	/** Where a tool for this source is connected, for the categorical picker. */
+	connectHref?: string;
 	resources?: ResourceOption[];
 	isLoadingResources?: boolean;
+	/**
+	 * Why this viewer may not change the connection, shown in place of the
+	 * pickers. A report runs on its owner's connections, which the viewer's
+	 * own connection list cannot show or check.
+	 */
+	connectionLockedReason?: string;
 
 	// Handlers
 	onConnectionChange: (
@@ -181,22 +245,58 @@ export function DataSourceConfigTile({
 	binding,
 	bindingResolvable,
 	connectionOptions,
+	connectionGroups,
+	connectHref,
 	resources,
 	isLoadingResources,
+	connectionLockedReason,
 	onConnectionChange,
 	onResourceChange,
 }: Props) {
 	// A binding can exist but no longer resolve (deleted / reconnected / wrong
 	// context). That is NOT "connected" — both generation and save would fail —
-	// so surface it honestly instead of a misleading green badge.
+	// so surface it honestly instead of a misleading green badge. Another
+	// person's connection cannot be checked from this viewer's list.
 	const bindingUnavailable =
-		Boolean(binding?.id) && bindingResolvable === false;
+		Boolean(binding?.id) &&
+		bindingResolvable === false &&
+		!connectionLockedReason;
 	const isConnected = Boolean(binding?.id) && !bindingUnavailable;
 	const colors = getDataSourceColors(type, isConnected);
 
 	// Separate recommended from other options
 	const recommendedOptions = connectionOptions.filter((o) => o.isRecommended);
 	const otherOptions = connectionOptions.filter((o) => !o.isRecommended);
+	const selectedValue = binding ? `${binding.type}:${binding.id}` : "";
+
+	const selectConnection = (value: string) => {
+		if (!value) {
+			onConnectionChange(null, "mcp");
+			return;
+		}
+		const [connType, connId] = value.split(":");
+		// A pick from the category or all-tools groups is not in
+		// `connectionOptions`; its label is in the groups.
+		const groupedOptions = connectionGroups
+			? [
+					...connectionGroups.recommended,
+					...connectionGroups.related,
+					...connectionGroups.others.flatMap(
+						(group) => group.options,
+					),
+				]
+			: [];
+		const name =
+			connectionOptions.find(
+				(o) => o.id === connId && (o.type || "mcp") === connType,
+			)?.name ??
+			groupedOptions.find((option) => option.value === value)?.label;
+		onConnectionChange(
+			connId,
+			connType === "integration" ? "integration" : "mcp",
+			name,
+		);
+	};
 
 	return (
 		<Card
@@ -224,6 +324,11 @@ export function DataSourceConfigTile({
 							{required && (
 								<Badge variant="secondary" className="text-xs">
 									Required
+								</Badge>
+							)}
+							{required === false && (
+								<Badge variant="outline" className="text-xs">
+									Optional
 								</Badge>
 							)}
 							{isConnected ? (
@@ -261,94 +366,103 @@ export function DataSourceConfigTile({
 
 				{/* Connection Selector */}
 				<div className="space-y-3">
-					<Select
-						value={binding ? `${binding.type}:${binding.id}` : ""}
-						onValueChange={(value) => {
-							if (!value) {
-								onConnectionChange(null, "mcp");
-								return;
-							}
-							const [connType, connId] = value.split(":");
-							const option = connectionOptions.find(
-								(o) => o.id === connId,
-							);
-							onConnectionChange(
-								connId,
-								connType as "mcp" | "integration",
-								option?.name,
-							);
-						}}
-					>
-						<SelectTrigger className="w-full bg-background">
-							<SelectValue placeholder="Select connection..." />
-						</SelectTrigger>
-						<SelectContent>
-							{recommendedOptions.length > 0 && (
-								<SelectGroup>
-									<div className="px-2 py-1.5 text-xs font-medium text-success dark:text-green-400 flex items-center gap-1">
-										<CheckCircle2Icon className="h-3 w-3" />
-										Recommended
-									</div>
-									{recommendedOptions.map((option) => {
-										const optType = option.type || "mcp";
-										return (
-											<SelectItem
-												key={`${optType}:${option.id}`}
-												value={`${optType}:${option.id}`}
-												disabled={
-													option.isAuthenticated ===
-													false
-												}
-											>
-												<div className="flex items-center gap-2">
-													<span>{option.name}</span>
-													{option.isAuthenticated ===
-														false && (
-														<span className="text-xs text-muted-foreground">
-															(Not authenticated)
+					{connectionLockedReason ? (
+						<p className="text-sm text-muted-foreground">
+							{connectionLockedReason}
+						</p>
+					) : connectionGroups ? (
+						<ReportConnectionSelect
+							groups={connectionGroups}
+							value={selectedValue}
+							onValueChange={selectConnection}
+							placeholder="Select connection..."
+							connectHref={connectHref ?? "/app/mcp-servers"}
+							required={required}
+						/>
+					) : (
+						<Select
+							value={selectedValue}
+							onValueChange={selectConnection}
+						>
+							<SelectTrigger className="w-full bg-background">
+								<SelectValue placeholder="Select connection..." />
+							</SelectTrigger>
+							<SelectContent>
+								{recommendedOptions.length > 0 && (
+									<SelectGroup>
+										<div className="px-2 py-1.5 text-xs font-medium text-success dark:text-green-400 flex items-center gap-1">
+											<CheckCircle2Icon className="h-3 w-3" />
+											Recommended
+										</div>
+										{recommendedOptions.map((option) => {
+											const optType =
+												option.type || "mcp";
+											return (
+												<SelectItem
+													key={`${optType}:${option.id}`}
+													value={`${optType}:${option.id}`}
+													disabled={
+														option.isAuthenticated ===
+														false
+													}
+												>
+													<div className="flex items-center gap-2">
+														<span>
+															{option.name}
 														</span>
-													)}
-												</div>
-											</SelectItem>
-										);
-									})}
-								</SelectGroup>
-							)}
-							{otherOptions.length > 0 && (
-								<SelectGroup>
-									<SelectLabel>Other Options</SelectLabel>
-									{otherOptions.map((option) => {
-										const optType = option.type || "mcp";
-										return (
-											<SelectItem
-												key={`${optType}:${option.id}`}
-												value={`${optType}:${option.id}`}
-												disabled={
-													option.isAuthenticated ===
-													false
-												}
-											>
-												<div className="flex items-center gap-2">
-													<span>{option.name}</span>
-													{option.isAuthenticated ===
-														false && (
-														<span className="text-xs text-muted-foreground">
-															(Not authenticated)
+														{option.isAuthenticated ===
+															false && (
+															<span className="text-xs text-muted-foreground">
+																(Not
+																authenticated)
+															</span>
+														)}
+													</div>
+												</SelectItem>
+											);
+										})}
+									</SelectGroup>
+								)}
+								{otherOptions.length > 0 && (
+									<SelectGroup>
+										<SelectLabel>Other Options</SelectLabel>
+										{otherOptions.map((option) => {
+											const optType =
+												option.type || "mcp";
+											return (
+												<SelectItem
+													key={`${optType}:${option.id}`}
+													value={`${optType}:${option.id}`}
+													disabled={
+														option.isAuthenticated ===
+														false
+													}
+												>
+													<div className="flex items-center gap-2">
+														<span>
+															{option.name}
 														</span>
-													)}
-												</div>
-											</SelectItem>
-										);
-									})}
-								</SelectGroup>
-							)}
-							{connectionOptions.length === 0 && (
-								<SelectItem value="_none" disabled>
-									No connections available
-								</SelectItem>
-							)}
-						</SelectContent>
-					</Select>
+														{option.isAuthenticated ===
+															false && (
+															<span className="text-xs text-muted-foreground">
+																(Not
+																authenticated)
+															</span>
+														)}
+													</div>
+												</SelectItem>
+											);
+										})}
+									</SelectGroup>
+								)}
+								{connectionOptions.length === 0 && (
+									<SelectItem value="_none" disabled>
+										No connections available
+									</SelectItem>
+								)}
+							</SelectContent>
+						</Select>
+					)}
 
 					{/* The saved connection no longer resolves — tell the user to
 					    re-pick one rather than letting Generate/Save fail cryptically. */}
@@ -364,88 +478,95 @@ export function DataSourceConfigTile({
 					)}
 
 					{/* Resource Selector (for MCP connections) */}
-					{binding && type === "mcp" && onResourceChange && (
-						<div className="pl-4 border-l-2 border-muted">
-							{isLoadingResources ? (
-								<div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-									<Loader2Icon className="h-4 w-4 animate-spin" />
-									Loading resources...
-								</div>
-							) : resources && resources.length > 0 ? (
-								<div className="space-y-2">
-									<p className="text-xs font-medium text-muted-foreground">
-										Select Resource
-									</p>
-									<Select
-										value={binding.resourceId || ""}
-										onValueChange={(value) => {
-											const resource = resources.find(
-												(r) => r.id === value,
-											);
-											if (resource) {
-												onResourceChange(
-													resource.id,
-													resource.name,
-													resource.type,
+					{binding &&
+						type === "mcp" &&
+						onResourceChange &&
+						!connectionLockedReason && (
+							<div className="pl-4 border-l-2 border-muted">
+								{isLoadingResources ? (
+									<div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+										<Loader2Icon className="h-4 w-4 animate-spin" />
+										Loading resources...
+									</div>
+								) : resources && resources.length > 0 ? (
+									<div className="space-y-2">
+										<p className="text-xs font-medium text-muted-foreground">
+											Select Resource
+										</p>
+										<Select
+											value={binding.resourceId || ""}
+											onValueChange={(value) => {
+												const resource = resources.find(
+													(r) => r.id === value,
 												);
-											}
-										}}
-									>
-										<SelectTrigger className="w-full bg-background">
-											<SelectValue placeholder="Select resource..." />
-										</SelectTrigger>
-										<SelectContent>
-											{/* Group resources by type */}
-											{Array.from(
-												new Set(
-													resources.map(
-														(r) => r.type,
+												if (resource) {
+													onResourceChange(
+														resource.id,
+														resource.name,
+														resource.type,
+													);
+												}
+											}}
+										>
+											<SelectTrigger className="w-full bg-background">
+												<SelectValue placeholder="Select resource..." />
+											</SelectTrigger>
+											<SelectContent>
+												{/* Group resources by type */}
+												{Array.from(
+													new Set(
+														resources.map(
+															(r) => r.type,
+														),
 													),
-												),
-											).map((resourceType) => (
-												<SelectGroup key={resourceType}>
-													<SelectLabel className="capitalize">
-														{resourceType}s
-													</SelectLabel>
-													{resources
-														.filter(
-															(r) =>
-																r.type ===
-																resourceType,
-														)
-														.map((resource) => (
-															<SelectItem
-																key={
-																	resource.id
-																}
-																value={
-																	resource.id
-																}
-															>
-																{resource.name}
-																{resource.description && (
-																	<span className="text-xs text-muted-foreground ml-1">
-																		-{" "}
-																		{resource.description.slice(
-																			0,
-																			30,
-																		)}
-																	</span>
-																)}
-															</SelectItem>
-														))}
-												</SelectGroup>
-											))}
-										</SelectContent>
-									</Select>
-								</div>
-							) : (
-								<p className="text-xs text-muted-foreground py-2">
-									No resources available
-								</p>
-							)}
-						</div>
-					)}
+												).map((resourceType) => (
+													<SelectGroup
+														key={resourceType}
+													>
+														<SelectLabel className="capitalize">
+															{resourceType}s
+														</SelectLabel>
+														{resources
+															.filter(
+																(r) =>
+																	r.type ===
+																	resourceType,
+															)
+															.map((resource) => (
+																<SelectItem
+																	key={
+																		resource.id
+																	}
+																	value={
+																		resource.id
+																	}
+																>
+																	{
+																		resource.name
+																	}
+																	{resource.description && (
+																		<span className="text-xs text-muted-foreground ml-1">
+																			-{" "}
+																			{resource.description.slice(
+																				0,
+																				30,
+																			)}
+																		</span>
+																	)}
+																</SelectItem>
+															))}
+													</SelectGroup>
+												))}
+											</SelectContent>
+										</Select>
+									</div>
+								) : (
+									<p className="text-xs text-muted-foreground py-2">
+										No resources available
+									</p>
+								)}
+							</div>
+						)}
 				</div>
 
 				{/* Connected resource info */}

@@ -1,3 +1,4 @@
+import { workspaceBoundaryMiddleware } from "../lib/workspace-boundary";
 /**
  * Workspace RAG Settings Procedures
  *
@@ -13,7 +14,7 @@ import {
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -21,7 +22,11 @@ import {
  * Get RAG settings for a workspace
  */
 export const getWorkspaceRagSettingsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/document-workspaces/{workspaceId}/rag-settings",
@@ -35,6 +40,7 @@ export const getWorkspaceRagSettingsProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { workspaceId } = input;
 		const { user } = context;
@@ -66,7 +72,11 @@ export const getWorkspaceRagSettingsProcedure = tenantProtectedProcedure
  * Update RAG settings for a workspace
  */
 export const updateWorkspaceRagSettingsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "PUT",
 		path: "/document-workspaces/{workspaceId}/rag-settings",
@@ -98,6 +108,7 @@ export const updateWorkspaceRagSettingsProcedure = tenantProtectedProcedure
 			enableReranking: z.boolean().optional(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		// `organizationId` is taken out only so it never reaches the settings
 		// write below; access is the workspace's own, not the request's.

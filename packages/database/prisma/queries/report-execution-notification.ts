@@ -18,6 +18,7 @@
  * the Prisma create types accept them.
  */
 import { db } from "../client";
+import { canAccessReportInstance } from "./lib/report-access";
 
 export interface EmitReportExecutionNotificationInput {
 	executionId: string;
@@ -41,12 +42,33 @@ export async function emitReportExecutionNotification(
 			organizationId: true,
 			instanceId: true,
 			notificationEmittedAt: true,
-			instance: { select: { name: true } },
+			parameters: true,
+			instance: {
+				select: {
+					name: true,
+					userId: true,
+					organizationId: true,
+					fabricConfig: true,
+				},
+			},
 		},
 	});
 
 	// No recipient — nothing a retry can fix; return (never throw).
 	if (!execution || !execution.userId) {
+		return;
+	}
+	if (
+		!execution.organizationId ||
+		!(await canAccessReportInstance(
+			execution.instance,
+			{
+				userId: execution.userId,
+				organizationId: execution.organizationId,
+			},
+			execution.parameters,
+		))
+	) {
 		return;
 	}
 	// Fast-path idempotent skip — avoids opening a tx when already emitted.

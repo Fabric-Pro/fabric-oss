@@ -11,14 +11,11 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import { verifyRepositoryAccess } from "@repo/connectors";
 import {
 	db,
 	getProjectRepoIntegration,
 	logRepoIntegrationActivity,
 } from "@repo/database";
-import { resolveCredential } from "@repo/integrations/credential-manager";
-import { REPOSITORY_CREDENTIAL_KINDS } from "@repo/integrations/repo-auth";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
@@ -27,16 +24,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { resolveCredentialActor } from "../../../credential-manager/lib/context";
-
-const ACCESS_MESSAGES: Record<string, string> = {
-	unauthorized:
-		"The provider rejected this credential. Choose another one or reconnect it in the credential manager.",
-	forbidden:
-		"This credential cannot read the repository. Grant it access to the repository, or choose another one.",
-	"not-found":
-		"This credential cannot see the repository. Grant it access to the repository, or choose another one.",
-	unreachable: "The provider could not be reached. Try again in a moment.",
-};
+import { resolveSavedCredentialForRepository } from "./lib/saved-credential";
 
 export const setRepoIntegrationCredentialProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_SETTINGS_EDIT))
@@ -95,40 +83,14 @@ export const setRepoIntegrationCredentialProcedure = tenantProtectedProcedure
 		}
 
 		if (input.credentialId) {
-			const resolved = await resolveCredential({
+			await resolveSavedCredentialForRepository({
 				credentialId: input.credentialId,
-				actor: { type: "user", ...actor },
-				requirement: {
-					provider: integration.provider,
-					kinds: REPOSITORY_CREDENTIAL_KINDS,
-				},
-			});
-			if (!resolved.ok) {
-				throw new ORPCError("BAD_REQUEST", {
-					message:
-						resolved.failure.code === "needs-reauth"
-							? "This credential needs to be reconnected in the credential manager."
-							: "This credential cannot be used for this repository.",
-				});
-			}
-			const access = await verifyRepositoryAccess({
+				actor,
 				provider: integration.provider,
-				token: resolved.value.token,
 				repositoryUrl: integration.repositoryUrl,
 				owner: integration.repositoryOwner,
 				repo: integration.repositoryName,
-				gitlabAuth:
-					resolved.value.credential.kind === "PAT"
-						? "private-token"
-						: "bearer",
 			});
-			if (access.outcome !== "accessible") {
-				throw new ORPCError("BAD_REQUEST", {
-					message:
-						ACCESS_MESSAGES[access.outcome] ??
-						"This credential cannot read the repository.",
-				});
-			}
 		}
 
 		const updated = await db.projectRepositoryIntegration.update({

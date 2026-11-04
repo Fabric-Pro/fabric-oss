@@ -1,8 +1,10 @@
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	Output,
 } from "@repo/ai";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import { db, getBoundPromptForAgent } from "@repo/database";
 import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
@@ -110,11 +112,13 @@ export async function generateAgendaActivity(
 	};
 
 	const start = Date.now();
-	const result = await generateObject({
-		model,
-		schema: AgendaSchema,
-		prompt,
-	});
+	const result = await requireStructuredOutput(
+		generateText({
+			model,
+			output: Output.object({ schema: AgendaSchema }),
+			prompt,
+		}),
+	);
 
 	trackUsage();
 	logModelUsageAsync({
@@ -129,8 +133,8 @@ export async function generateAgendaActivity(
 		where: { id: agendaId },
 		data: {
 			status: "READY",
-			content: renderAgendaMarkdown(result.object),
-			generatedStructure: result.object,
+			content: renderAgendaMarkdown(result.output),
+			generatedStructure: result.output,
 			// Also the data behind the sheet's "How this agenda was built"
 			// expander (#2105 / UC1 step 4) — the window and caps are persisted
 			// alongside the counts so a reader can tell "nothing carried over"
@@ -169,7 +173,7 @@ export async function generateAgendaActivity(
 	logger.info("[meeting-agenda] generated", {
 		agendaId,
 		projectId,
-		itemCount: result.object.items.length,
+		itemCount: result.output.items.length,
 		hadPriorTranscripts: context.hadPriorTranscripts,
 		promptSource: promptProvenance.source,
 	});

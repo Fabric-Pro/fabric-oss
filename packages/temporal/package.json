@@ -7,8 +7,10 @@
 	"types": "./**/*.ts",
 	"exports": {
 		".": "./index.ts",
+		"./direct-approval-policy": "./src/lib/direct-approval-policy.ts",
 		"./ai-configuration-refusal": "./src/lib/ai-configuration-refusal.ts",
 		"./client": "./src/client.ts",
+		"./agent-execution-dispatch": "./src/lib/agent-execution-dispatch.ts",
 		"./activities": "./src/activities/index.ts",
 		"./activities/publishing-suggestion": "./src/activities/publishing-suggestion/index.ts",
 		"./backlog-routing-core": "./src/lib/backlog-routing-core.ts",
@@ -26,6 +28,7 @@
 		"./parlume-aura-usage": "./src/activities/parlume-aura-usage.ts",
 		"./parlume-realtime-usage": "./src/activities/parlume-realtime-usage.ts",
 		"./parlume-voice-context": "./src/activities/parlume-voice-context.ts",
+		"./prior-series-transcripts": "./src/activities/meeting-agenda/prior-series-transcripts.ts",
 		"./payload-size-guard": "./src/lib/payload-size-guard.ts",
 		"./pm-sync-user-error": "./src/activities/pm-integration/pm-sync-user-error.ts",
 		"./pm-sync-start": "./src/lib/pm-sync-start.ts",
@@ -65,6 +68,7 @@
 		"./fabric-project-pm-tool-definitions": "./src/lib/fabric-project-pm-tool-definitions.ts",
 		"./fabric-page-discovery-tool-definitions": "./src/lib/fabric-page-discovery-tool-definitions.ts",
 		"./fabric-frame-version-tool-definitions": "./src/lib/fabric-frame-version-tool-definitions.ts",
+		"./fabric-report-tool-definitions": "./src/lib/fabric-report-tool-definitions.ts",
 		"./fabric-gateway-tools": "./src/lib/fabric-gateway-tools.ts",
 		"./fabric-portal-tools": "./src/lib/fabric-portal-tools.ts",
 		"./workflows": "./src/workflows/index.ts",
@@ -79,7 +83,8 @@
 		"./repository-sync-subjects": "./src/activities/lib/repository-sync-subjects.ts",
 		"./report-diagnostics": "./src/activities/template-instance/mcp-diagnostics.ts",
 		"./approval-rollout": "./src/lib/approval-rollout.ts",
-		"./coding-execution-rollout": "./src/lib/coding-execution/bridge-rollout.ts"
+		"./coding-execution-rollout": "./src/lib/coding-execution/bridge-rollout.ts",
+		"./task-queues": "./src/task-queues.ts"
 	},
 	"scripts": {
 		"dev": "tsx src/worker.ts",
@@ -95,7 +100,6 @@
 	"dependencies": {
 		"@ag-ui/client": "1.0.2",
 		"@ag-ui/langgraph": "0.0.44",
-		"@anthropic-ai/sdk": "^0.71.2",
 		"@aws-sdk/client-s3": "^3.927.0",
 		"@azure/identity": "^4.14.1",
 		"@google/genai": "^1.41.0",
@@ -123,6 +127,7 @@
 		"@repo/config": "workspace:*",
 		"@repo/connectors": "workspace:*",
 		"@repo/database": "workspace:*",
+		"@repo/databricks": "workspace:*",
 		"@repo/evidence": "workspace:*",
 		"@repo/fabric-ai": "workspace:*",
 		"@repo/instructions": "workspace:*",
@@ -150,7 +155,6 @@
 		"date-fns": "^4.1.0",
 		"docx": "^9.6.1",
 		"fast-xml-parser": "^5.0.0",
-		"ignore": "7.0.9",
 		"ioredis": "^5.11.1",
 		"jszip": "^3.10.1",
 		"playwright": "^1.57.0",

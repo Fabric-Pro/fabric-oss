@@ -8,6 +8,8 @@
 import { generateText } from "@repo/ai";
 // Import MCP queries for dynamic discovery
 import {
+	assertProjectReportSourcesReady,
+	canExecuteReportInstance,
 	createTemplateInstanceArtifact,
 	createTemplateInstanceArtifactChunks,
 	emitReportExecutionNotification,
@@ -16,7 +18,14 @@ import {
 	getMcpConfigByIdInternal,
 	getMcpServerByKey,
 	getTemplateInstance,
+	getTemplateInstanceArtifact,
+	getTemplateInstanceExecution,
 	listMcpConfigsForTenant,
+	REPORT_EXECUTION_SNAPSHOT_KEY,
+	REPORT_RECOVERY_KEY,
+	type ReportExecutionSnapshot,
+	readReportProjectBindings,
+	reportExecutionSnapshotSchema,
 	updateTemplateInstanceArtifactRag,
 	updateTemplateInstanceLastRunAt,
 } from "@repo/database";
@@ -69,7 +78,14 @@ export async function fetchTemplateInstanceWithTemplate(input: {
 	instanceId: string;
 	userId: string;
 	organizationId?: string;
-}) {
+	executionId?: string;
+}): Promise<
+	| (NonNullable<Awaited<ReturnType<typeof getTemplateInstance>>> & {
+			reportingExecution?: ReportExecutionSnapshot;
+			reportingParameters?: Record<string, unknown>;
+	  })
+	| null
+> {
 	logger.info("[TemplateInstance] Fetching instance with template", {
 		instanceId: input.instanceId,
 	});
@@ -80,7 +96,74 @@ export async function fetchTemplateInstanceWithTemplate(input: {
 		organizationId: input.organizationId,
 	});
 
-	return instance;
+	if (instance) {
+		assertProjectReportSourcesReady(
+			instance.fabricConfig,
+			undefined,
+			instance.template.definition,
+			instance.connections,
+		);
+	}
+	if (!instance || !input.executionId) {
+		return instance;
+	}
+	if (!input.organizationId || !instance.isActive) {
+		throw new Error("Report execution is no longer authorized");
+	}
+	const caller = {
+		userId: input.userId,
+		organizationId: input.organizationId,
+	};
+	const execution = await getTemplateInstanceExecution(
+		input.executionId,
+		caller,
+	);
+	if (
+		!execution ||
+		execution.instanceId !== input.instanceId ||
+		execution.userId !== input.userId ||
+		!(await canExecuteReportInstance(
+			instance,
+			caller,
+			execution.parameters,
+		))
+	) {
+		throw new Error("Report execution is no longer authorized");
+	}
+	assertProjectReportSourcesReady(
+		instance.fabricConfig,
+		execution.parameters,
+		instance.template.definition,
+		instance.connections,
+	);
+	const parameters = execution.parameters as Record<string, unknown> | null;
+	const snapshot = reportExecutionSnapshotSchema.parse(
+		parameters?.[REPORT_EXECUTION_SNAPSHOT_KEY],
+	);
+	if (
+		snapshot.instanceId !== input.instanceId ||
+		snapshot.organizationId !== input.organizationId ||
+		snapshot.userId !== input.userId
+	) {
+		throw new Error("Report snapshot identity mismatch");
+	}
+	if (
+		snapshot.origin === "scheduled" &&
+		(instance.scheduleMode === "OFF" || instance.status !== "ACTIVE")
+	) {
+		throw new Error("Scheduled report is paused");
+	}
+	const {
+		[REPORT_EXECUTION_SNAPSHOT_KEY]: _snapshot,
+		[REPORT_RECOVERY_KEY]: _recovery,
+		...reportingParameters
+	} = parameters ?? {};
+	return {
+		...instance,
+		...(snapshot.instance as Partial<typeof instance>),
+		reportingExecution: snapshot,
+		reportingParameters,
+	};
 }
 
 // =============================================================================
@@ -1529,6 +1612,47 @@ export async function storeInstanceArtifact(input: {
 	mimeType: string;
 	metadata?: Prisma.InputJsonValue;
 }): Promise<{ id: string }> {
+	if (!input.organizationId) {
+		throw new Error("An organization is required for report artifacts");
+	}
+	const caller = {
+		userId: input.userId,
+		organizationId: input.organizationId,
+	};
+	const execution = await getTemplateInstanceExecution(
+		input.executionId,
+		caller,
+	);
+	if (
+		!execution ||
+		execution.userId !== input.userId ||
+		execution.status === "CANCELLED" ||
+		!execution.instance.isActive ||
+		!(await canExecuteReportInstance(
+			execution.instance,
+			caller,
+			execution.parameters,
+		))
+	) {
+		throw new Error("Report artifact access was revoked");
+	}
+	assertProjectReportSourcesReady(
+		execution.instance.fabricConfig,
+		execution.parameters,
+		execution.instance.template.definition,
+		execution.instance.connections,
+	);
+	const admitted = (execution.parameters as Record<string, unknown> | null)?.[
+		REPORT_EXECUTION_SNAPSHOT_KEY
+	];
+	if (
+		admitted &&
+		reportExecutionSnapshotSchema.parse(admitted).origin === "scheduled" &&
+		(execution.instance.status !== "ACTIVE" ||
+			execution.instance.scheduleMode === "OFF")
+	) {
+		throw new Error("Scheduled report was paused before publication");
+	}
 	const artifact = await createTemplateInstanceArtifact({
 		executionId: input.executionId,
 		userId: input.userId,
@@ -1567,6 +1691,24 @@ export async function indexInstanceArtifactForRag(input: {
 		userId,
 		organizationId,
 	} = input;
+
+	const artifact = await getTemplateInstanceArtifact(artifactId, {
+		userId,
+		organizationId,
+	});
+	if (!artifact) {
+		throw new Error("Report artifact access denied");
+	}
+	// Global artifact retrieval does not yet carry a project ACL. Withhold restricted
+	// artifacts from that index even when called by an old workflow history.
+	if (
+		readReportProjectBindings(
+			artifact.execution.instance.fabricConfig,
+			artifact.execution.parameters,
+		).length
+	) {
+		return { chunkCount: 0 };
+	}
 
 	const chunks: string[] = [];
 	let start = 0;

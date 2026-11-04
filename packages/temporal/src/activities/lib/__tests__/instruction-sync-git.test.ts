@@ -166,7 +166,7 @@ describe("git-askpass.sh", () => {
 });
 
 describe("provider plumbing", () => {
-	it("uses the username buildAuthCloneUrl uses for each provider", () => {
+	it("uses each provider's basic-auth username", () => {
 		expect(gitUsernameFor("GITHUB")).toBe("x-access-token");
 		expect(gitUsernameFor("GITLAB")).toBe("oauth2");
 		expect(gitUsernameFor("AZURE_DEVOPS")).toBe("pat");

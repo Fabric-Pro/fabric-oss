@@ -30,12 +30,17 @@
  */
 
 import {
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
 	NoObjectGeneratedError,
+	Output,
 } from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import {
 	completeTopicDraft,
 	type DraftCommitRefusal,
@@ -306,16 +311,18 @@ export async function generateShortPostActivity(
 	});
 
 	const beat = setInterval(() => heartbeat(), 10_000);
-	let result: Awaited<ReturnType<typeof generateObject>>;
+	let result: StructuredTextResult<unknown>;
 	try {
-		result = await generateObject({
-			model,
-			schema: PublishingShortPostSchema,
-			prompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
+		result = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: PublishingShortPostSchema }),
+				prompt,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			}),
+		);
 	} catch (error) {
-		// `generateObject` validates against the zod schema ITSELF and throws
+		// `Output.object` validates against the zod schema ITSELF and throws
 		// before returning, so the `safeParse` below — and the authored
 		// message its failure class carries — was unreachable on the one path
 		// that actually fails in practice. A reader got the neutral "the
@@ -340,12 +347,12 @@ export async function generateShortPostActivity(
 
 	trackUsage();
 
-	// Fail closed. `generateObject` already validates, but it is not the only way
+	// Fail closed. `Output.object` already validates, but it is not the only way
 	// an object reaches this line — and the cost of being wrong is a panel that
 	// renders two options as though three were the contract.
-	const parsed = PublishingShortPostSchema.safeParse(result.object);
+	const parsed = PublishingShortPostSchema.safeParse(result.output);
 	if (!parsed.success) {
-		if (everyOptionTextIsEmpty(result.object)) {
+		if (everyOptionTextIsEmpty(result.output)) {
 			throw noPostTextFailure(parsed.error.message);
 		}
 		throw ApplicationFailure.nonRetryable(

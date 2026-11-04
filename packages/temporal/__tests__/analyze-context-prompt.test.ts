@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
-		generateObject: vi.fn(),
+		generateText: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		heartbeat: vi.fn(),
@@ -23,7 +23,15 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	generateObject: mocks.generateObject,
+	Output: { object: (spec: unknown) => spec },
+	// Only the structured (`output`) call is mocked; any other generateText call
+	// fails, as it did when this module mocked generateObject alone.
+	generateText: (args: { output?: unknown }) =>
+		args.output
+			? mocks.generateText(args)
+			: Promise.reject(
+					new Error("unstructured generateText is not mocked"),
+				),
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
@@ -87,8 +95,8 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.getBoundPromptForAgent.mockResolvedValue(null);
 	mocks.getAIModelWithMetadata.mockResolvedValue(makeAIModelMock());
-	mocks.generateObject.mockResolvedValue({
-		object: { summary: "", contextSummary: "", changes: [] },
+	mocks.generateText.mockResolvedValue({
+		output: { summary: "", contextSummary: "", changes: [] },
 		usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
 	});
 });
@@ -108,8 +116,8 @@ describe("analyzer prompt — Story removal (DSU 2026-05-23)", () => {
 			expect.anything(),
 			expect.objectContaining({ projectId: "project-1" }),
 		);
-		expect(mocks.generateObject).toHaveBeenCalledOnce();
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		expect(mocks.generateText).toHaveBeenCalledOnce();
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 		expect(prompt).toBeTypeOf("string");
 
@@ -129,7 +137,7 @@ describe("analyzer prompt — Story removal (DSU 2026-05-23)", () => {
 			userPrompt: "Analyze",
 		});
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		// The old section had the literal heading "User Stories (type: \"story\")".
@@ -152,7 +160,7 @@ describe("analyzer prompt — Story removal (DSU 2026-05-23)", () => {
 			pmToolType: "fizzy",
 		});
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		// New wording: "type: \"feature\"" or "type: \"bug\"". Old wording was
@@ -177,7 +185,7 @@ describe("analyzer prompt — Story removal (DSU 2026-05-23)", () => {
 			userPrompt: "Analyze",
 		});
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 		// The new hierarchy rule no longer mentions Stories as a layer.
 		expect(prompt).not.toMatch(
@@ -187,7 +195,7 @@ describe("analyzer prompt — Story removal (DSU 2026-05-23)", () => {
 
 	it('the GENERATION schema keeps type:"story" out of the result — story emission is structurally impossible', () => {
 		// Story retirement is now enforced at the schema level, not via a
-		// runtime warn: `generateObject` is called with `ChangeProposalSchema`,
+		// runtime warn: `generateText` is called with `ChangeProposalSchema`,
 		// whose `type` enum only permits epic/feature/bug. The model physically
 		// cannot emit a User Story, so the old prompt-drift `logger.warn`
 		// detector (and the warn block it asserted) was removed.
@@ -238,7 +246,7 @@ describe("analyzer prompt — Epic suppression for channel-monitor flow (Bug 142
 			allowEpics: false,
 		});
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		// Rule 8's epic description ("Use for large strategic initiatives that
@@ -257,7 +265,7 @@ describe("analyzer prompt — Epic suppression for channel-monitor flow (Bug 142
 			allowEpics: false,
 		});
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		// Mirror the story-retirement wording: explicit "do not propose epic".
@@ -283,7 +291,7 @@ describe("analyzer prompt — Epic suppression for channel-monitor flow (Bug 142
 			// epic-suppression only fired when pmToolType was a flat tool.
 		});
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 		expect(prompt.toLowerCase()).toMatch(
 			/do not propose .*type.*"?epic"?|epic.*has been retired|do not propose .*epic/i,
@@ -300,7 +308,7 @@ describe("analyzer prompt — Epic suppression for channel-monitor flow (Bug 142
 			userPrompt: "Analyze",
 		});
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		// Epic guidance must never appear — every flow is feature/bug-only now.
@@ -323,7 +331,7 @@ describe("analyzer prompt — capture-as-is (create-only) for monitored-channel 
 	it('with allowUpdates:false, adds an explicit CREATE-ONLY constraint and instructs action:"create"', async () => {
 		await analyzeContextAndPropose({ ...BASE, allowUpdates: false });
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		// The critical create-only constraint must be present.
@@ -339,7 +347,7 @@ describe("analyzer prompt — capture-as-is (create-only) for monitored-channel 
 	it("with allowUpdates:false, drops the update-bearing Rule 1 / Rule 9 / Rule 10 directives", async () => {
 		await analyzeContextAndPropose({ ...BASE, allowUpdates: false });
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		// Rule 1's "Update existing items" heading must be gone.
@@ -353,8 +361,8 @@ describe("analyzer prompt — capture-as-is (create-only) for monitored-channel 
 	});
 
 	it("with allowUpdates:false, a model-emitted update action is dropped from the returned proposal", async () => {
-		mocks.generateObject.mockResolvedValueOnce({
-			object: {
+		mocks.generateText.mockResolvedValueOnce({
+			output: {
 				summary: "",
 				contextSummary: "",
 				changes: [
@@ -393,7 +401,7 @@ describe("analyzer prompt — capture-as-is (create-only) for monitored-channel 
 	it("default (allowUpdates unset) keeps the update directives — regression guard for AI Update (AC2)", async () => {
 		await analyzeContextAndPropose({ ...BASE });
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		// The AI Update / document analyzer / ADO flow MUST still get the full
@@ -405,8 +413,8 @@ describe("analyzer prompt — capture-as-is (create-only) for monitored-channel 
 	});
 
 	it("default (allowUpdates unset) does NOT drop update actions from the proposal (AC2)", async () => {
-		mocks.generateObject.mockResolvedValueOnce({
-			object: {
+		mocks.generateText.mockResolvedValueOnce({
+			output: {
 				summary: "",
 				contextSummary: "",
 				changes: [
@@ -470,7 +478,7 @@ describe("analyzer prompt — bug sections are guard-visible (Fizzy #2048)", () 
 
 	async function buildPrompt(): Promise<string> {
 		await analyzeContextAndPropose({ ...BASE });
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 		expect(prompt).toBeTypeOf("string");
 		return prompt;
@@ -785,7 +793,7 @@ describe("analyzer prompt — type-specific body template from the catalog (Fizz
 		extra: Record<string, unknown> = {},
 	): Promise<string> {
 		await analyzeContextAndPropose({ ...BASE, ...extra });
-		const prompt: string = mocks.generateObject.mock.calls[0]?.[0].prompt;
+		const prompt: string = mocks.generateText.mock.calls[0]?.[0].prompt;
 		expect(prompt).toBeTypeOf("string");
 		return prompt;
 	}
@@ -943,7 +951,7 @@ describe("analyzer prompt — type-specific body template from the catalog (Fizz
 		const proposal = await analyzeContextAndPropose({ ...BASE });
 		expect(proposal).toBeDefined();
 
-		const prompt: string = mocks.generateObject.mock.calls[0]?.[0].prompt;
+		const prompt: string = mocks.generateText.mock.calls[0]?.[0].prompt;
 		expect(prompt).toContain(FEATURE_SKELETON_MARKER);
 		expect(prompt).toContain(BUG_SKELETON_MARKER);
 	});
@@ -1090,7 +1098,7 @@ describe("analyzer prompt — application-log context (Fizzy #1234)", () => {
 			userPrompt: "Analyze",
 		});
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		expect(prompt).toContain("### Application Logs");
@@ -1109,7 +1117,7 @@ describe("analyzer prompt — application-log context (Fizzy #1234)", () => {
 			userPrompt: "Analyze",
 		});
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		expect(prompt).not.toContain("### Application Logs");
@@ -1130,7 +1138,7 @@ describe("analyzer prompt — application-log context (Fizzy #1234)", () => {
 			userPrompt: "Analyze",
 		});
 
-		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
+		const callArgs = mocks.generateText.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
 
 		expect(prompt).toContain("### Application Logs");
@@ -1158,7 +1166,7 @@ describe("meeting transcript budget guard", () => {
 				"meeting could not fit in the analysis",
 			),
 		});
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 });
 
@@ -1178,7 +1186,7 @@ it("sends the complete meeting with a trimmed backlog through the real activity"
 			})),
 		},
 	});
-	const prompt = mocks.generateObject.mock.calls[0]?.[0].prompt;
+	const prompt = mocks.generateText.mock.calls[0]?.[0].prompt;
 	expect(prompt).toContain(transcript);
 	expect(prompt).toContain("[id:example-item-0]");
 	expect(prompt).not.toContain("[id:example-item-1299]");
@@ -1247,7 +1255,7 @@ describe("minimum useful meeting evidence", () => {
 					(section) => section.key === "meetingTranscripts",
 				)?.grantedTokens,
 			).toBe(grant);
-			expect(mocks.generateObject).not.toHaveBeenCalled();
+			expect(mocks.generateText).not.toHaveBeenCalled();
 		},
 	);
 
@@ -1260,8 +1268,8 @@ describe("minimum useful meeting evidence", () => {
 					(section) => section.key === "meetingTranscripts",
 				)?.grantedTokens,
 			).toBe(grant);
-			expect(mocks.generateObject).toHaveBeenCalledOnce();
-			expect(mocks.generateObject.mock.calls[0]?.[0].prompt).toContain(
+			expect(mocks.generateText).toHaveBeenCalledOnce();
+			expect(mocks.generateText.mock.calls[0]?.[0].prompt).toContain(
 				"Meeting: improve exports and document retries.",
 			);
 		},
@@ -1275,8 +1283,8 @@ describe("minimum useful meeting evidence", () => {
 				(section) => section.key === "meetingTranscripts",
 			),
 		).toMatchObject({ requestedTokens: 5, grantedTokens: 5 });
-		expect(mocks.generateObject).toHaveBeenCalledOnce();
-		expect(mocks.generateObject.mock.calls[0]?.[0].prompt).toContain(
+		expect(mocks.generateText).toHaveBeenCalledOnce();
+		expect(mocks.generateText.mock.calls[0]?.[0].prompt).toContain(
 			transcript,
 		);
 	});
@@ -1289,6 +1297,6 @@ describe("minimum useful meeting evidence", () => {
 			message:
 				"The meeting could not fit in the analysis. Shorten your instructions, then retry.",
 		});
-		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 });

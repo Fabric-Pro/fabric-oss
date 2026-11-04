@@ -4,23 +4,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AgentDetailsPage from "@/app/(saas)/app/(organizations)/[organizationSlug]/agents/[agentId]/page";
 
 const m = vi.hoisted(() => ({
-	id: "cexampleregistered00000001",
+	id: "example-agent",
 	get: vi.fn(),
+	push: vi.fn(),
+	replace: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({
 	useParams: () => ({ agentId: m.id }),
-	useRouter: () => ({ push: vi.fn() }),
+	useRouter: () => ({ push: m.push, replace: m.replace }),
 }));
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: { agents: { registry: { get: m.get } } },
 }));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
-	useOrganizationContext: () => ({ basePath: "/app/example-org" }),
-}));
-vi.mock("@saas/agent-templates/components/AgentInstanceDetail", () => ({
-	AgentInstanceDetail: ({ instanceId }: { instanceId: string }) => (
-		<div data-testid="instance">{instanceId}</div>
-	),
+	useOrganizationContext: () => ({
+		basePath: "/app/example-org",
+		organizationId: "example-org",
+	}),
 }));
 vi.mock("@saas/shared/utils/generateHeroImage", () => ({
 	generateHeroImage: () => "",
@@ -47,14 +47,15 @@ function mount() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	m.id = "cexampleregistered00000001";
+	m.id = "example-agent";
 });
 afterEach(cleanup);
 
 describe("agent details identity", () => {
-	it("shows a deliberate retired notice for stale registered SYSTEM CUGA CUIDs", async () => {
+	it("shows a deliberate retired notice for retired SYSTEM CUGA slugs", async () => {
+		m.id = "cuga_generalist";
 		m.get.mockResolvedValue({
-			id: m.id,
+			id: "cexampleregistered00000001",
 			agentId: "cuga_generalist",
 			scope: "SYSTEM",
 		});
@@ -65,37 +66,49 @@ describe("agent details identity", () => {
 				.getByRole("link", { name: "Back to Agents" })
 				.getAttribute("href"),
 		).toBe("/app/example-org/agents");
-		expect(screen.queryByTestId("instance")).toBeNull();
+		expect(m.replace).not.toHaveBeenCalled();
 		expect(screen.queryByRole("button", { name: /Try/ })).toBeNull();
 	});
-	it.each(["cexampleregistered00000001", "example-agent"])(
-		"resolves registry ID %s before considering template instances",
-		async (id) => {
-			m.id = id;
-			m.get.mockResolvedValue({
-				id,
-				agentId: "example-agent",
-				name: "example-agent",
-				displayName: "Example Registered Agent",
-				framework: "A2A",
-				status: "ACTIVE",
-				scope: "SYSTEM",
-				metadata: null,
-			});
-			mount();
-			await screen.findByRole("heading", {
-				name: "Example Registered Agent",
-			});
-			expect(m.get).toHaveBeenCalledWith({ id });
-			expect(screen.queryByTestId("instance")).toBeNull();
-		},
-	);
-	it("falls back to the actual instance resolver only after a registry miss", async () => {
+	it("resolves slug registry IDs before redirecting to the directory drawer", async () => {
+		m.id = "example-agent";
+		m.get.mockResolvedValue({
+			id: "cexampleregistered00000001",
+			agentId: "example-agent",
+			name: "example-agent",
+			displayName: "Example Registered Agent",
+			framework: "A2A",
+			status: "ACTIVE",
+			scope: "SYSTEM",
+			metadata: null,
+		});
+		mount();
+		await screen.findByRole("heading", {
+			name: "Example Registered Agent",
+		});
+		expect(m.get).toHaveBeenCalledWith({ id: "example-agent" });
+		expect(m.replace).not.toHaveBeenCalled();
+	});
+	it("redirects template instance CUIDs immediately without querying the registry", async () => {
+		m.id = "cexampleregistered00000001";
+		mount();
+		await waitFor(() =>
+			expect(m.replace).toHaveBeenCalledWith(
+				"/app/example-org/agents?agentId=cexampleregistered00000001",
+				{ scroll: false },
+			),
+		);
+		expect(m.get).not.toHaveBeenCalled();
+	});
+	it("redirects to the directory drawer after a registry miss on a slug", async () => {
+		m.id = "example-agent";
 		m.get.mockRejectedValue(new Error("Not found"));
 		mount();
 		await waitFor(() =>
-			expect(screen.getByTestId("instance").textContent).toBe(m.id),
+			expect(m.replace).toHaveBeenCalledWith(
+				"/app/example-org/agents?agentId=example-agent",
+				{ scroll: false },
+			),
 		);
-		expect(m.get).toHaveBeenCalledWith({ id: m.id });
+		expect(m.get).toHaveBeenCalledWith({ id: "example-agent" });
 	});
 });

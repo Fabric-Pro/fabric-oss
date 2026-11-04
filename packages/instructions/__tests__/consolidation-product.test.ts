@@ -1,0 +1,270 @@
+import { describe, expect, it } from "vitest";
+import { planConsolidation } from "../src/consolidation";
+import {
+	detectProductFiles,
+	generatedHeaderCandidates,
+	generatedMarker,
+	pluginManifestPaths,
+	reviewConsolidation,
+} from "../src/consolidation-product";
+
+/** A repository that ships its own Claude Code plugin (the motivating case). */
+const PRODUCT_REPO = [
+	".claude-plugin/plugin.json",
+	".claude-plugin/marketplace.json",
+	".claude/skills/example-product-setup/SKILL.md",
+	".claude/skills/example-product-query/SKILL.md",
+	".claude/rules/git.md",
+	".claude/settings.json",
+	".agents/skills/example-product-setup/SKILL.md",
+	"AGENTS.md",
+	"CLAUDE.md",
+	".mcp.json",
+	"ai/build.mjs",
+	"src/index.ts",
+];
+
+describe("pluginManifestPaths", () => {
+	it("names the plugin and marketplace manifests of every supported tool", () => {
+		expect(
+			pluginManifestPaths([
+				".claude-plugin/plugin.json",
+				".claude-plugin/marketplace.json",
+				".codex-plugin/plugin.json",
+				"plugins/example/.cursor-plugin/plugin.json",
+				".agents/plugins/marketplace.json",
+				".claude/settings.json",
+				"plugin.json",
+			]),
+		).toEqual([
+			".agents/plugins/marketplace.json",
+			".claude-plugin/marketplace.json",
+			".claude-plugin/plugin.json",
+			".codex-plugin/plugin.json",
+			"plugins/example/.cursor-plugin/plugin.json",
+		]);
+	});
+});
+
+describe("detectProductFiles", () => {
+	it("keeps the skills folder a plugin.json points at, the manifests, and the shipped root files", () => {
+		const product = detectProductFiles({
+			paths: PRODUCT_REPO,
+			manifests: {
+				".claude-plugin/plugin.json": JSON.stringify({
+					name: "example-product",
+					skills: ["./.claude/skills/"],
+					mcpServers: "./.mcp.json",
+				}),
+			},
+		});
+		expect(
+			product.get(".claude/skills/example-product-setup/SKILL.md"),
+		).toBe("used by .claude-plugin/plugin.json (skills)");
+		expect(
+			product.get(".claude/skills/example-product-query/SKILL.md"),
+		).toBe("used by .claude-plugin/plugin.json (skills)");
+		expect(product.get(".mcp.json")).toBe(
+			"used by .claude-plugin/plugin.json (mcpServers)",
+		);
+		expect(product.get(".claude-plugin/plugin.json")).toMatch(
+			/plugin manifest/,
+		);
+		expect(product.get(".claude-plugin/marketplace.json")).toMatch(
+			/plugin manifest/,
+		);
+		expect(product.get("AGENTS.md")).toMatch(
+			/repository is itself a plugin \(\.claude-plugin\/marketplace\.json at its root\)/,
+		);
+		// Development files stay development.
+		expect(product.has(".claude/rules/git.md")).toBe(false);
+		expect(product.has(".claude/settings.json")).toBe(false);
+		expect(product.has("CLAUDE.md")).toBe(false);
+		expect(product.has("src/index.ts")).toBe(false);
+	});
+
+	it("follows a marketplace plugin whose source is the repository root", () => {
+		const product = detectProductFiles({
+			paths: [
+				".claude-plugin/marketplace.json",
+				"skills/example-product-setup/SKILL.md",
+				"commands/example-product-init.md",
+				".claude/agents/reviewer.md",
+				"plugins/extra/.claude-plugin/plugin.json",
+				"plugins/extra/agents/helper.md",
+			],
+			manifests: {
+				".claude-plugin/marketplace.json": JSON.stringify({
+					name: "example-org",
+					plugins: [
+						{ name: "example-product", source: "./" },
+						{ name: "extra", source: "./plugins/extra" },
+						{
+							name: "remote",
+							source: { source: "github", repo: "example-org/x" },
+						},
+					],
+				}),
+				"plugins/extra/.claude-plugin/plugin.json": JSON.stringify({
+					name: "extra",
+				}),
+			},
+		});
+		expect(product.get("skills/example-product-setup/SKILL.md")).toBe(
+			'loaded by plugin "example-product" in .claude-plugin/marketplace.json from the plugin root',
+		);
+		expect(product.get("commands/example-product-init.md")).toMatch(
+			/example-product/,
+		);
+		expect(product.get("plugins/extra/agents/helper.md")).toBe(
+			"loaded by plugins/extra/.claude-plugin/plugin.json from the plugin root",
+		);
+		expect(product.has(".claude/agents/reviewer.md")).toBe(false);
+	});
+
+	it("reads Codex manifests and their string component paths", () => {
+		const product = detectProductFiles({
+			paths: [
+				".codex-plugin/plugin.json",
+				".agents/skills/example-product-setup/SKILL.md",
+				".agents/skills/dev-only/SKILL.md",
+			],
+			manifests: {
+				".codex-plugin/plugin.json": JSON.stringify({
+					name: "example-product",
+					skills: "./.agents/skills/example-product-setup",
+				}),
+			},
+		});
+		expect(
+			product.get(".agents/skills/example-product-setup/SKILL.md"),
+		).toBe("used by .codex-plugin/plugin.json (skills)");
+		expect(product.has(".agents/skills/dev-only/SKILL.md")).toBe(false);
+	});
+
+	it("keeps a file whose header says a repository script generates it", () => {
+		const product = detectProductFiles({
+			paths: [
+				".agents/skills/example-product-setup/SKILL.md",
+				".claude/rules/git.md",
+			],
+			manifests: {},
+			headers: {
+				".agents/skills/example-product-setup/SKILL.md":
+					"---\nname: example-product-setup\n---\n<!-- Generated by ai/build.mjs from ai/skills. Do not edit. -->\n# Setup\n",
+				".claude/rules/git.md": "# Git\nThis rule was not generated.\n",
+			},
+		});
+		expect(
+			product.get(".agents/skills/example-product-setup/SKILL.md"),
+		).toBe(
+			"generated by ai/build.mjs; the generator lives in the code repository",
+		);
+		expect(product.has(".claude/rules/git.md")).toBe(false);
+	});
+
+	it("finds nothing in a repository without a manifest or generated files", () => {
+		const product = detectProductFiles({
+			paths: [
+				"AGENTS.md",
+				".mcp.json",
+				".claude/skills/review/SKILL.md",
+				"skills/review/SKILL.md",
+			],
+			manifests: {},
+			headers: { "AGENTS.md": "# Agents\n" },
+		});
+		expect(product.size).toBe(0);
+	});
+
+	it("ignores refs that leave the repository and malformed manifests", () => {
+		const product = detectProductFiles({
+			paths: [
+				".claude-plugin/plugin.json",
+				"plugins/a/.claude-plugin/plugin.json",
+				".claude/skills/x/SKILL.md",
+			],
+			manifests: {
+				".claude-plugin/plugin.json": "{ not json",
+				"plugins/a/.claude-plugin/plugin.json": JSON.stringify({
+					skills: ["../../../outside", "./", "https://example.com/x"],
+				}),
+			},
+		});
+		expect(product.has(".claude/skills/x/SKILL.md")).toBe(false);
+	});
+});
+
+describe("generatedMarker", () => {
+	it("needs both the word and a script path", () => {
+		expect(generatedMarker("// generated by scripts/gen-skills.ts\n")).toBe(
+			"generated by scripts/gen-skills.ts",
+		);
+		expect(generatedMarker("# Auto-generated, do not edit\n")).toBeNull();
+		expect(generatedMarker("Run ai/build.mjs to rebuild.\n")).toBeNull();
+		expect(
+			generatedMarker(
+				`${"line\n".repeat(20)}generated by ai/build.mjs\n`,
+			),
+		).toBeNull();
+	});
+});
+
+describe("reviewConsolidation", () => {
+	const plan = planConsolidation(
+		PRODUCT_REPO.map((path) => ({
+			path,
+			oid: path.includes("example-product-setup")
+				? "a".repeat(40)
+				: undefined,
+		})),
+	);
+	const product = detectProductFiles({
+		paths: PRODUCT_REPO,
+		manifests: {
+			".claude-plugin/plugin.json": JSON.stringify({
+				skills: ["./.claude/skills/"],
+			}),
+		},
+	});
+
+	it("unchecks product files and keeps development defaults", () => {
+		const files = reviewConsolidation(plan, product, ["CLAUDE.md"]);
+		const byPath = Object.fromEntries(files.map((f) => [f.path, f]));
+		expect(
+			byPath[".claude/skills/example-product-setup/SKILL.md"],
+		).toMatchObject({ group: "product", selected: false });
+		// The Codex copy is identical to a product skill, so it stays too.
+		expect(
+			byPath[".agents/skills/example-product-setup/SKILL.md"],
+		).toMatchObject({
+			group: "product",
+			selected: false,
+			reason: expect.stringMatching(/identical copy/),
+		});
+		expect(byPath[".claude/rules/git.md"]).toMatchObject({
+			group: "development",
+			selected: true,
+		});
+		expect(byPath["CLAUDE.md"]).toMatchObject({
+			group: "product",
+			selected: false,
+			reason: expect.stringMatching(/kept in the code repository/),
+		});
+		expect(byPath["AGENTS.md"]?.group).toBe("product");
+		expect(
+			files.filter((f) => f.selected && f.group === "product"),
+		).toEqual([]);
+	});
+
+	it("offers header reads only for text files not already known", () => {
+		expect(generatedHeaderCandidates(plan.items, product, 100)).toEqual([
+			".claude/rules/git.md",
+			".claude/settings.json",
+			"CLAUDE.md",
+		]);
+		expect(generatedHeaderCandidates(plan.items, product, 1)).toEqual([
+			".claude/rules/git.md",
+		]);
+	});
+});

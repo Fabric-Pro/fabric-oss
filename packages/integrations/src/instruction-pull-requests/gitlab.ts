@@ -7,6 +7,7 @@
 import {
 	adapterError,
 	type Continuation,
+	gitlabRefusalMessage,
 	LOOKUP_TIMEOUT_MS,
 	MAX_PAGES,
 	OPEN_TIMEOUT_MS,
@@ -19,6 +20,7 @@ import {
 	requestJson,
 	str,
 } from "./http";
+import { requestMerge } from "./merge";
 import {
 	type FindOperationResult,
 	type InstructionPullRequestAdapter,
@@ -271,6 +273,7 @@ export const gitlab: InstructionPullRequestAdapter = {
 				remove_source_branch: false,
 			},
 			timeoutMs: OPEN_TIMEOUT_MS,
+			refusalMessage: gitlabRefusalMessage,
 			// GitLab refuses a second open merge request for one source branch with 409.
 			isDuplicate: (status) => status === 409,
 		});
@@ -305,6 +308,41 @@ export const gitlab: InstructionPullRequestAdapter = {
 			throw adapterError("close", "unknown");
 		}
 		return observe(t, mr, "close");
+	},
+
+	async merge(t) {
+		if (!isPositiveDecimalInteger(t.externalId)) {
+			return { kind: "REFUSED", reason: "not_found" };
+		}
+		// GitLab: 405/406/422 not mergeable (draft, conflicts, pipeline,
+		// approvals), 409 the head is no longer `sha`.
+		const result = await requestMerge({
+			target: t,
+			url: `${projectUrl(t)}/merge_requests/${encodeSegment(t.externalId)}/merge`,
+			origin: GITLAB_API_ORIGIN,
+			headers: headers(t),
+			body: {
+				sha: t.expectedHeadSha,
+				squash: t.method === "squash",
+				...(t.commitTitle
+					? t.method === "squash"
+						? { squash_commit_message: t.commitTitle }
+						: { merge_commit_message: t.commitTitle }
+					: {}),
+			},
+			reasonOf: (status) =>
+				status === 405 || status === 406 || status === 422
+					? "not_mergeable"
+					: status === 409
+						? "head_moved"
+						: null,
+		});
+		if (result.kind === "REFUSED") {
+			return result;
+		}
+		const body = isRecord(result.response.body) ? result.response.body : {};
+		const sha = str(body.merge_commit_sha) ?? str(body.squash_commit_sha);
+		return { kind: "MERGED", ...(sha ? { mergeCommitSha: sha } : {}) };
 	},
 
 	pullRequestHeadRef(externalId) {

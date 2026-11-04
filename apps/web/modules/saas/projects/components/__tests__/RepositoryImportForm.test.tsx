@@ -65,6 +65,14 @@ const m = vi.hoisted(() => ({
 	toastSuccess: vi.fn(),
 	toastError: vi.fn(),
 	searchParams: new URLSearchParams(),
+	credentialManager: false,
+	saveGitHubToken: vi.fn(),
+	saveConnection: vi.fn(),
+}));
+
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "CREDENTIAL_MANAGER" ? m.credentialManager : false,
 }));
 
 vi.mock("next/navigation", () => ({
@@ -106,7 +114,8 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				},
 			},
 		},
-		workflows: { integrations: { save: vi.fn() } },
+		workflows: { integrations: { save: m.saveConnection } },
+		credentialManager: { saveGitHubToken: m.saveGitHubToken },
 		integrations: { github: { start: vi.fn() } },
 	},
 }));
@@ -151,6 +160,8 @@ async function readProduct(user: ReturnType<typeof userEvent.setup>) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	m.searchParams = new URLSearchParams();
+	m.credentialManager = false;
+	m.saveConnection.mockResolvedValue({});
 	m.preview.mockResolvedValue({
 		repository: {
 			owner: "example-org",
@@ -783,5 +794,219 @@ describe("NewProjectStart", () => {
 			"booking-app",
 		);
 		expect(m.preview).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("a pasted token saved in the credential manager", () => {
+	const TOKEN = "github_pat_example";
+
+	async function openTokenField(user: ReturnType<typeof userEvent.setup>) {
+		m.preview.mockRejectedValueOnce(
+			Object.assign(new Error("Connect GitHub to import."), {
+				data: { code: "GITHUB_NOT_CONNECTED" },
+			}),
+		);
+		renderForm();
+		await user.type(
+			screen.getByLabelText("GitHub repository"),
+			"example-org/booking-app",
+		);
+		await user.click(screen.getByRole("button", { name: "Read" }));
+		await user.type(
+			await screen.findByLabelText("Or paste a personal access token"),
+			TOKEN,
+		);
+	}
+
+	it("flag off: no checkbox, and the token is saved as the GitHub connection", async () => {
+		const user = userEvent.setup();
+		await openTokenField(user);
+
+		expect(
+			screen.queryByLabelText("Save in the credential manager"),
+		).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Save and read" }));
+
+		await waitFor(() => expect(m.saveConnection).toHaveBeenCalled());
+		expect(m.saveGitHubToken).not.toHaveBeenCalled();
+	});
+
+	it("flag on: the checkbox is ticked and the name defaults to the GitHub login", async () => {
+		m.credentialManager = true;
+		const user = userEvent.setup();
+		await openTokenField(user);
+
+		expect(
+			screen.getByRole("checkbox", {
+				name: "Save in the credential manager",
+			}),
+		).toBeChecked();
+		const label = screen.getByLabelText("Credential name");
+		expect(label).toHaveValue("");
+		expect(label).toHaveAttribute(
+			"placeholder",
+			"GitHub token · your GitHub login",
+		);
+	});
+
+	it("saves a new token, then reads and imports with that credential", async () => {
+		m.credentialManager = true;
+		m.saveGitHubToken.mockResolvedValue({
+			credential: {
+				id: "cred-new",
+				label: "GitHub token · example-dev",
+				externalAccountLogin: "example-dev",
+			},
+		});
+		const user = userEvent.setup();
+		await openTokenField(user);
+		await user.type(screen.getByLabelText("Credential name"), "CI token");
+		await user.click(screen.getByRole("button", { name: "Save and read" }));
+
+		await screen.findByLabelText("Project title");
+		expect(m.saveGitHubToken).toHaveBeenCalledWith({
+			organizationId: "org_1",
+			token: TOKEN,
+			owner: "example-org",
+			repo: "booking-app",
+			label: "CI token",
+			saveAsNew: false,
+			confirmFineGrainedPermissions: false,
+		});
+		expect(m.saveConnection).not.toHaveBeenCalled();
+		expect(m.preview).toHaveBeenLastCalledWith(
+			expect.objectContaining({ credentialId: "cred-new" }),
+			expect.anything(),
+		);
+
+		await user.click(
+			screen.getByRole("button", { name: "Create project" }),
+		);
+		await waitFor(() => expect(m.push).toHaveBeenCalled());
+		expect(m.existingSetup.mock.calls[0]?.[0]).toMatchObject({
+			credentialId: "cred-new",
+		});
+	});
+
+	it("a fine-grained token: shows the permissions to confirm, and sends the confirmation", async () => {
+		m.credentialManager = true;
+		m.saveGitHubToken
+			.mockRejectedValueOnce(
+				Object.assign(new Error("Confirm the permissions."), {
+					code: "BAD_REQUEST",
+					data: {
+						reason: "GITHUB_TOKEN_CONFIRM_PERMISSIONS",
+						tokenType: "fine-grained",
+						permissions: [{ name: "Contents", access: "write" }],
+						canListRepositories: false,
+					},
+				}),
+			)
+			.mockResolvedValueOnce({
+				credential: {
+					id: "cred-new",
+					label: "GitHub token · example-dev",
+					externalAccountLogin: "example-dev",
+				},
+			});
+		const user = userEvent.setup();
+		await openTokenField(user);
+		const save = screen.getByRole("button", { name: "Save and read" });
+		await user.click(save);
+
+		expect(
+			await screen.findByText(/would not list repositories/),
+		).toBeInTheDocument();
+		expect(save).toBeDisabled();
+		await user.click(
+			screen.getByRole("checkbox", { name: "I've granted these" }),
+		);
+		await user.click(save);
+		await screen.findByLabelText("Project title");
+		expect(m.saveGitHubToken).toHaveBeenLastCalledWith(
+			expect.objectContaining({ confirmFineGrainedPermissions: true }),
+		);
+	});
+
+	it("asks before reusing a token already saved for the account, and 'Use it' reads with it", async () => {
+		m.credentialManager = true;
+		m.saveGitHubToken.mockResolvedValue({
+			existingCredential: {
+				id: "cred-old",
+				label: "Laptop token",
+				externalAccountLogin: "example-dev",
+			},
+		});
+		const user = userEvent.setup();
+		await openTokenField(user);
+		await user.click(screen.getByRole("button", { name: "Save and read" }));
+
+		expect(
+			await screen.findByText(
+				"You already saved a token for example-dev as Laptop token. Use it?",
+			),
+		).toBeInTheDocument();
+		expect(m.preview).toHaveBeenCalledTimes(1);
+
+		await user.click(screen.getByRole("button", { name: "Use it" }));
+		await screen.findByLabelText("Project title");
+		expect(m.saveGitHubToken).toHaveBeenCalledTimes(1);
+		expect(m.preview).toHaveBeenLastCalledWith(
+			expect.objectContaining({ credentialId: "cred-old" }),
+			expect.anything(),
+		);
+	});
+
+	it("'Save as new' sends the token once more with saveAsNew", async () => {
+		m.credentialManager = true;
+		m.saveGitHubToken
+			.mockResolvedValueOnce({
+				existingCredential: {
+					id: "cred-old",
+					label: "Laptop token",
+					externalAccountLogin: "example-dev",
+				},
+			})
+			.mockResolvedValueOnce({
+				credential: {
+					id: "cred-second",
+					label: "GitHub token · example-dev",
+					externalAccountLogin: "example-dev",
+				},
+			});
+		const user = userEvent.setup();
+		await openTokenField(user);
+		await user.click(screen.getByRole("button", { name: "Save and read" }));
+		await user.click(
+			await screen.findByRole("button", { name: "Save as new" }),
+		);
+
+		await screen.findByLabelText("Project title");
+		expect(m.saveGitHubToken).toHaveBeenCalledTimes(2);
+		expect(m.saveGitHubToken.mock.calls[1]?.[0]).toMatchObject({
+			saveAsNew: true,
+		});
+		expect(m.preview).toHaveBeenLastCalledWith(
+			expect.objectContaining({ credentialId: "cred-second" }),
+			expect.anything(),
+		);
+	});
+
+	it("with the box cleared, saves the token as the GitHub connection", async () => {
+		m.credentialManager = true;
+		const user = userEvent.setup();
+		await openTokenField(user);
+		await user.click(
+			screen.getByRole("checkbox", {
+				name: "Save in the credential manager",
+			}),
+		);
+		expect(
+			screen.queryByLabelText("Credential name"),
+		).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Save and read" }));
+
+		await waitFor(() => expect(m.saveConnection).toHaveBeenCalled());
+		expect(m.saveGitHubToken).not.toHaveBeenCalled();
 	});
 });

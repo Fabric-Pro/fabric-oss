@@ -74,6 +74,7 @@ import {
 	writeClaudeMarketplace,
 } from "../../lib/plugin/register.js";
 import { rulesFolderFor, rulesSyncLines } from "../../lib/plugin/rules-sync.js";
+import type { Summary, SummaryStep } from "../../lib/summary.js";
 import { refreshAgentsOverride, renderForProject } from "./render.js";
 import { syncRulesForProject } from "./rules.js";
 
@@ -89,6 +90,8 @@ export interface PluginInitOptions {
 	/** `--rename`: move an existing install to the project's readable name. */
 	rename?: boolean;
 	format: "text" | "json";
+	/** Where the text output's steps are collected; the caller renders it. */
+	summary: Summary;
 }
 
 type MemoryAccess = "ready" | "no-folders" | "needs-sign-in" | "unavailable";
@@ -98,7 +101,11 @@ interface ToolResult {
 	settingsPath: string;
 	pluginDirectory: string;
 	pluginId: string;
-	steps: string[];
+}
+
+/** The coding tool as a person names it. */
+export function toolDisplayName(tool: string): string {
+	return tool === "codex" ? "Codex" : "Claude Code";
 }
 
 type PluginApproval =
@@ -165,7 +172,9 @@ async function approveClaudePlugin(input: {
 async function deliverRules(
 	options: PluginInitOptions,
 	root: string,
-): Promise<string[]> {
+): Promise<void> {
+	const label = "Project rules";
+	const folder = `${rulesFolderFor(options.project)}/`;
 	try {
 		const result = await syncRulesForProject({
 			project: options.project,
@@ -174,21 +183,47 @@ async function deliverRules(
 			root,
 		});
 		const notes = rulesSyncLines(result);
-		return result.written.length + result.unchanged > 0 || notes.length > 0
-			? [
-					`Project rules are delivered to ${rulesFolderFor(options.project)}/ (kept out of commits; refreshed at each session start).`,
-					...notes,
-				]
-			: [];
-	} catch (error) {
-		return [
-			`The project's rules could not be delivered now (${describeError(error)}); the session hook retries at each start.`,
+		if (
+			result.written.length + result.unchanged === 0 &&
+			notes.length === 0
+		) {
+			options.summary.add("skipped", label, "none in this project");
+			return;
+		}
+		const details = [
+			`Project rules are delivered to ${folder} (kept out of commits; refreshed at each session start).`,
+			...notes,
 		];
+		if (result.refused !== null) {
+			options.summary.add(
+				"action",
+				label,
+				`not delivered: ${folder} cannot be used`,
+				details,
+			);
+			return;
+		}
+		const counts =
+			result.written.length > 0 || result.removed.length > 0
+				? `${result.written.length} written${result.removed.length > 0 ? `, ${result.removed.length} removed` : ""}`
+				: "up to date";
+		const kept = result.kept.length + result.skipped.length;
+		options.summary.add(
+			"ok",
+			label,
+			`${counts} → ${folder}${kept > 0 ? ` (${kept} left alone)` : ""}`,
+			details,
+		);
+	} catch (error) {
+		options.summary.add(
+			"action",
+			label,
+			"not delivered now; retried at each session start",
+			[
+				`The project's rules could not be delivered now (${describeError(error)}); the session hook retries at each start.`,
+			],
+		);
 	}
-}
-
-function line(text: string): void {
-	process.stdout.write(`${text}\n`);
 }
 
 function toolOf(value: string): InstructionsHookTool {
@@ -324,7 +359,20 @@ async function choosePluginName(
 	});
 }
 
-export async function runPluginInit(options: PluginInitOptions): Promise<void> {
+/** Sets the plugin up; returns the tools it set up. */
+export interface PluginInitResult {
+	tools: InstructionsHookTool[];
+	/**
+	 * Whether the Claude Code plugin's MCP server takes its Authorization
+	 * header from this CLI (`fabric mcp header`); `null` when no Claude Code
+	 * plugin was set up.
+	 */
+	claudeMcpHeadersHelper: boolean | null;
+}
+
+export async function runPluginInit(
+	options: PluginInitOptions,
+): Promise<PluginInitResult> {
 	const explicit =
 		options.tool === undefined ? undefined : toolOf(options.tool);
 	const destination = path.resolve(options.dest ?? process.cwd());
@@ -342,10 +390,15 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 		? await renameInstalledPlugin(options, root, getConfigPath())
 		: null;
 	await choosePluginName(options, getConfigPath());
-	if (renamed !== null && options.format !== "json") {
-		process.stdout.write(
-			`Renamed the plugin ${renamed.from} to ${renamed.to}; its skills are now /${renamed.to}:<skill>. Claude Code drops the old one at its next start (to remove it at once: claude plugin uninstall ${renamed.from}@${renamed.from}).
-`,
+	const summary = options.summary;
+	if (renamed !== null) {
+		summary.add(
+			"ok",
+			"Plugin renamed",
+			`${renamed.from} → ${renamed.to} (skills: /${renamed.to}:<skill>)`,
+			[
+				`Renamed the plugin ${renamed.from} to ${renamed.to}; its skills are now /${renamed.to}:<skill>. Claude Code drops the old one at its next start (to remove it at once: claude plugin uninstall ${renamed.from}@${renamed.from}).`,
+			],
 		);
 	}
 
@@ -374,6 +427,8 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 	const results: ToolResult[] = [];
 	const excludes: string[] = [".fabric"];
 	let marketplaceDirectory: string | null = null;
+	let claudePlugin: SummaryStep | null = null;
+	let claudeMcpHeadersHelper: boolean | null = null;
 	for (const tool of tools) {
 		const rendered = await renderForProject({
 			project: options.project,
@@ -381,8 +436,8 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 			org: options.org,
 			tool,
 		});
-		const steps: string[] = [];
 		if (tool === "claude-code") {
+			claudeMcpHeadersHelper = rendered.mcpHeadersHelper;
 			const command = renderCommandLine({
 				launcherPrefix: launcher.prefix,
 				nodeWord: pathAsCommandWord(process.execPath),
@@ -405,35 +460,64 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 				marketplaceDirectory,
 			});
 			excludes.push(CLAUDE_SETTINGS_RELATIVE_PATH);
-			steps.push(...(await deliverRules(options, root)));
-			steps.push(
-				`Registered the ${pluginNameFor(options.project)} plugin in ${path.relative(root, registered.settingsPath) || registered.settingsPath} (marketplace folder ${marketplaceDirectory}); Claude Code builds it from Fabric at the start of each session.`,
+			// Settled by the approval below; added first, so it leads the list.
+			claudePlugin = summary.add(
+				"ok",
+				"Plugin registered",
+				`${pluginIdFor(options.project)} (local)`,
+				[
+					`Registered the ${pluginNameFor(options.project)} plugin in ${path.relative(root, registered.settingsPath) || registered.settingsPath} (marketplace folder ${marketplaceDirectory}); Claude Code builds it from Fabric at the start of each session.`,
+				],
 			);
+			await deliverRules(options, root);
 		} else {
 			const registration = await registerCodexPlugin({
 				home: machine.home() ?? root,
 				projectId: options.project,
 				pluginDirectory: rendered.directory,
 			});
-			steps.push(
-				`Rendered the ${pluginNameFor(options.project)} plugin to ${rendered.directory} and listed it in ${registration.marketplaceFile} (marketplace "${registration.marketplaceName}").`,
-			);
+			const listed = `Rendered the ${pluginNameFor(options.project)} plugin to ${rendered.directory} and listed it in ${registration.marketplaceFile} (marketplace "${registration.marketplaceName}").`;
 			const installed = await installCodexPlugin({
 				run,
 				projectId: options.project,
 				marketplaceName: registration.marketplaceName,
 				cwd: root,
 			});
-			steps.push(
-				installed.kind === "installed"
-					? `Installed the ${pluginNameFor(options.project)} plugin in Codex.`
-					: `Codex did not install the plugin. Run: ${installed.line ?? "codex plugin add, with the plugin and marketplace names above"}`,
-			);
+			if (installed.kind === "installed") {
+				summary.add(
+					"ok",
+					"Codex plugin",
+					`${pluginNameFor(options.project)}@${registration.marketplaceName} installed`,
+					[
+						listed,
+						`Installed the ${pluginNameFor(options.project)} plugin in Codex.`,
+					],
+				);
+			} else {
+				const install =
+					installed.line ??
+					`codex plugin add ${pluginNameFor(options.project)}@${registration.marketplaceName}`;
+				summary.add(
+					"action",
+					"Codex plugin",
+					"listed, but Codex did not install it (see below)",
+					[
+						listed,
+						`Codex did not install the plugin. Run: ${install}`,
+					],
+				);
+				summary.todo("Install the plugin in Codex:", [install]);
+			}
 			if (rendered.agentsText !== null) {
 				await refreshAgentsOverride(root, rendered.agentsText);
 				excludes.push("AGENTS.override.md");
-				steps.push(
-					"Wrote AGENTS.override.md (kept out of commits): the project's AGENTS.md, then the instructions and the project's rules.",
+				summary.add(
+					"ok",
+					"AGENTS.override.md",
+					"written (kept out of commits)",
+					[
+						"Wrote AGENTS.override.md (kept out of commits): the project's AGENTS.md, then the instructions and the project's rules.",
+					],
 				);
 			}
 		}
@@ -451,11 +535,25 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 				? CODEX_HOOKS_RELATIVE_PATH
 				: CLAUDE_SETTINGS_RELATIVE_PATH,
 		);
-		steps.push(
-			tool === "claude-code"
-				? "Added hooks: memory files are pulled at session start and sent when a turn ends."
-				: "Added hooks: the plugin is refreshed and memory files are exchanged at session start (Codex has no end-of-turn hook).",
-		);
+		if (tool === "claude-code") {
+			summary.add(
+				"ok",
+				"Hooks",
+				"memory pull at start, push at turn end",
+				[
+					"Added hooks: memory files are pulled at session start and sent when a turn ends.",
+				],
+			);
+		} else {
+			summary.add(
+				"ok",
+				"Codex hooks",
+				"plugin refresh and memory exchange at session start",
+				[
+					"Added hooks: the plugin is refreshed and memory files are exchanged at session start (Codex has no end-of-turn hook).",
+				],
+			);
+		}
 		// An earlier clone-mode setup kept the checkout current by hook; the
 		// plugin makes that hook redundant, so it is taken out.
 		for (const subcommand of ["check", "sync"]) {
@@ -475,7 +573,6 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 				tool === "claude-code"
 					? pluginIdFor(options.project)
 					: pluginNameFor(options.project),
-			steps,
 		});
 	}
 
@@ -540,80 +637,136 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 			},
 			{ format: "json" },
 		);
-		return;
+		return {
+			tools: results.map((result) => result.tool),
+			claudeMcpHeadersHelper,
+		};
 	}
 
-	for (const result of results) {
-		for (const step of result.steps) {
-			line(step);
-		}
-	}
 	if (excluded?.kind === "failed") {
-		line(
-			`Add these to .git/info/exclude yourself so they stay out of commits: ${excluded.entries.join(", ")}`,
+		summary.add(
+			"action",
+			"Git exclude",
+			"could not be updated (see below)",
+			[
+				`Add these to .git/info/exclude yourself so they stay out of commits: ${excluded.entries.join(", ")}`,
+			],
+		);
+		summary.todo(
+			"Add these to .git/info/exclude so they stay out of commits:",
+			excluded.entries,
 		);
 	}
 	if (!detected.detected && explicit === undefined) {
-		line(
-			"No coding tool was found on this machine, so Claude Code was set up. Pass --tool codex for Codex.",
+		summary.add(
+			"skipped",
+			"Tool detection",
+			"no coding tool found; set up Claude Code (--tool codex for Codex)",
+			[
+				"No coding tool was found on this machine, so Claude Code was set up. Pass --tool codex for Codex.",
+			],
 		);
 	}
 	if (launcher.warning !== null) {
-		line(launcher.warning);
+		summary.add("action", "Session hook", "see below", [launcher.warning]);
+		summary.todo(launcher.warning);
 	}
 	switch (gateway.kind) {
 		case "removed":
-			line(
-				`Removed the earlier Claude Code registration ${gateway.name} (this folder's local scope): the plugin carries the project's MCP server, and keeping both would show two sets of tools.`,
+			summary.add(
+				"ok",
+				"Earlier MCP entry",
+				`${gateway.name} removed (the plugin carries the MCP server)`,
+				[
+					`Removed the earlier Claude Code registration ${gateway.name} (this folder's local scope): the plugin carries the project's MCP server, and keeping both would show two sets of tools.`,
+				],
 			);
 			break;
-		case "failed":
-			line(
-				`The earlier Claude Code registration ${gateway.name} could not be removed, so agents may see two sets of tools. Run: claude mcp remove ${gateway.name} --scope local`,
+		case "failed": {
+			const remove = `claude mcp remove ${gateway.name} --scope local`;
+			summary.add(
+				"action",
+				"Earlier MCP entry",
+				`${gateway.name} not removed; agents may see two sets of tools`,
+				[
+					`The earlier Claude Code registration ${gateway.name} could not be removed, so agents may see two sets of tools. Run: ${remove}`,
+				],
 			);
+			summary.todo("Remove the earlier MCP entry:", [remove]);
 			break;
+		}
 		case "none":
 		case "unchecked":
 			break;
 		default:
 			assertNever(gateway);
 	}
-	if (approval.kind === "approved") {
-		line("Approved the plugin's command in Claude Code.");
-	} else if (approval.kind === "manual") {
-		line(
-			"Claude Code asks you to approve the plugin's command once, in your own terminal. Run, from this folder:",
-		);
-		for (const command of approval.lines) {
-			line(`  ${command}`);
+	if (claudePlugin !== null) {
+		if (approval.kind === "approved") {
+			claudePlugin.label = "Plugin installed";
+			claudePlugin.details.push(
+				"Approved the plugin's command in Claude Code.",
+			);
+		} else if (approval.kind === "manual") {
+			claudePlugin.status = "action";
+			claudePlugin.detail = `${pluginIdFor(options.project)}: approve its command once (see below)`;
+			claudePlugin.details.push(
+				"Claude Code asks you to approve the plugin's command once, in your own terminal; it shows the exact command and will not accept it from inside a coding session.",
+			);
+			summary.todo(
+				"Approve the plugin's command in your own terminal, from this folder:",
+				approval.lines,
+			);
 		}
-		line(
-			"Claude Code shows the exact command that will run and asks you to confirm; it will not accept it from inside a coding session.",
-		);
 	}
+	const memoryLabel = "Memory access";
 	switch (memory) {
 		case "ready":
-			line(
+			summary.add("ok", memoryLabel, "memory folders ready", [
 				"Memory folders are ready: files agents write there reach the repository through Fabric.",
-			);
+			]);
 			break;
 		case "no-folders":
-			line(
-				"This project has no memory folders yet. A project admin adds them in the project's Context tab.",
+			summary.add(
+				"skipped",
+				memoryLabel,
+				"no memory folders yet (a project admin adds them in the Context tab)",
+				[
+					"This project has no memory folders yet. A project admin adds them in the project's Context tab.",
+				],
 			);
 			break;
-		case "needs-sign-in":
-			line(
-				`This sign-in cannot reach the memory folders yet. Sign in again and approve the memory permission: ${fabricCommand(`auth login --project ${options.project}`, options.origin)}`,
+		case "needs-sign-in": {
+			const login = fabricCommand(
+				`auth login --project ${options.project}`,
+				options.origin,
 			);
+			summary.add(
+				"action",
+				memoryLabel,
+				"needs one more sign-in (see below)",
+				[
+					`This sign-in cannot reach the memory folders yet. Sign in again and approve the memory permission: ${login}`,
+				],
+			);
+			summary.todo("Sign in again and approve the memory permission:", [
+				login,
+			]);
 			break;
+		}
 		case "unavailable":
-			line("The memory folders could not be checked just now.");
+			summary.add(
+				"action",
+				memoryLabel,
+				"could not be checked just now",
+				["The memory folders could not be checked just now."],
+			);
 			break;
 	}
-	line(
-		`Set up ${results.map((result) => result.tool).join(" and ")} for project ${options.project} as a plugin. Start a new session to use it.`,
-	);
+	return {
+		tools: results.map((result) => result.tool),
+		claudeMcpHeadersHelper,
+	};
 }
 
 function assertNever(value: never): never {

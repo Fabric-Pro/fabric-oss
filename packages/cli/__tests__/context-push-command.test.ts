@@ -892,8 +892,10 @@ describe("fabric context push — other outcomes", () => {
 
 		expect(result.code).toBe(5);
 		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(2);
+		// Names the scope and says to create a key that carries it, rather
+		// than printing the server's bare refusal.
 		expect(result.stderr).toContain(
-			"Missing required scope: projects:write",
+			"This API key is missing the projects:write scope. Create an API key with the projects:write scope",
 		);
 		expect((await readLockFile(dir)).files).toHaveProperty("a.md");
 	});

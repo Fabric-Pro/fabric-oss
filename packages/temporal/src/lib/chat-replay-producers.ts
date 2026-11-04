@@ -5,5 +5,4 @@ export const chatReplayProducerActivities = new Set([
 	"executeStep",
 	"delegateToAgent",
 	"executeAgentAsTool",
-	"executeAgentTurn",
 ]);

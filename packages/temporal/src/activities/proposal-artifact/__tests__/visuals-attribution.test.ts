@@ -8,7 +8,7 @@ import { buildProposalThemeTokens } from "@repo/utils/proposal-artifact/theme-to
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	generateObject: vi.fn(),
+	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	trackUsage: vi.fn(),
 }));
@@ -27,7 +27,8 @@ vi.mock("@repo/ai", async () => {
 	const actualAi = await vi.importActual<typeof import("ai")>("ai");
 	return {
 		AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {},
-		generateObject: mocks.generateObject,
+		Output: { object: (spec: unknown) => spec },
+		generateText: mocks.generateText,
 		getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 		NoObjectGeneratedError: actualAi.NoObjectGeneratedError,
 		zodSchema: (schema: unknown) => schema,
@@ -73,16 +74,16 @@ beforeEach(() => {
 		metadata: { provider: "OPENAI" },
 		trackUsage: mocks.trackUsage,
 	});
-	mocks.generateObject
+	mocks.generateText
 		.mockResolvedValueOnce({
-			object: {
+			output: {
 				opportunities: [
 					{ sectionRef: "sec-1", kind: "timeline", reason: "Dates." },
 				],
 			},
 		})
 		.mockResolvedValueOnce({
-			object: {
+			output: {
 				spec: {
 					kind: "timeline",
 					title: null,

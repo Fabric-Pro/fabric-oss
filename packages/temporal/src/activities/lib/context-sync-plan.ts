@@ -12,6 +12,7 @@ import type {
 	ContextSyncAttentionReason,
 	ContextSyncPlan,
 } from "@repo/database";
+import { decodeContextIgnore } from "@repo/instructions/context-sync-rules";
 import type { ContextInventoryEntry } from "./context-sync-inventory";
 import {
 	buildContextIgnoreRules,
@@ -144,17 +145,8 @@ export function ignorePolicyForEntry(
 export function ignorePolicyFromBytes(
 	bytes: Uint8Array | null,
 ): ContextIgnorePolicy {
-	if (bytes === null) {
-		return { kind: "unreadable" };
-	}
-	try {
-		return {
-			kind: "file",
-			text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-		};
-	} catch {
-		return { kind: "unreadable" };
-	}
+	const text = bytes === null ? null : decodeContextIgnore(bytes);
+	return text === null ? { kind: "unreadable" } : { kind: "file", text };
 }
 
 /** An entry the rules keep: to be checked out, measured and classified. */

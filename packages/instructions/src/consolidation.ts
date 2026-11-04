@@ -384,3 +384,12 @@ export function scopeHeader(from: string): string {
 	const dir = from.split("/").slice(0, -1).join("/");
 	return `> Applies when working on files under \`${dir}/\`.\n\n`;
 }
+
+/** The code repository's cleanup branch; one per consolidation run. */
+export function cleanupBranchName(consolidationId: string): string {
+	const suffix = consolidationId
+		.toLowerCase()
+		.replace(/[^a-z0-9]/g, "")
+		.slice(-8);
+	return `fabric/move-ai-instructions-${suffix}`;
+}

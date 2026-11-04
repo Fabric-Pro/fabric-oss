@@ -68,11 +68,13 @@
 
 import {
 	AIProviderNotConfiguredError,
-	generateObject,
+	generateText,
 	getAIModelWithMetadata,
+	Output,
 	resolveModelWithProvider,
 } from "@repo/ai";
 import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	baseModelName,
 	buildVerifierPrompt,
@@ -120,7 +122,7 @@ import { z } from "zod";
  * therefore optional with a generous cap: a valid verdict must never be
  * discarded just because the model was verbose. (A tight `.max(400)` here
  * previously meant an over-long reasoning would fail the *whole*
- * `generateObject` schema with `NoObjectGeneratedError`.) */
+ * `Output.object` schema with `NoObjectGeneratedError`.) */
 export const VerdictSchema = z.object({
 	// Declared FIRST on purpose. Structured output is generated in field order,
 	// so making the model write each item's own problem before it reaches
@@ -800,11 +802,13 @@ export async function runDuplicateScanCore(
 			bothFeatures,
 		});
 		const verify = async () => {
-			const { object: verdict } = await generateObject({
-				model,
-				schema: VerdictSchema,
-				prompt,
-			});
+			const { output: verdict } = await requireStructuredOutput(
+				generateText({
+					model,
+					output: Output.object({ schema: VerdictSchema }),
+					prompt,
+				}),
+			);
 			trackUsage();
 			const relationship = normalizeVerifierRelationship(verdict);
 			const outcome = classifyVerdict(relationship, verdict.confidence);

@@ -64,16 +64,23 @@ function requiredToolScope(
 
 /**
  * Whether the session's credential holds the scope `tool` requires: the same
- * scope check a direct `tools/call` makes before running it.
+ * scope check a direct `tools/call` makes before running it. OAuth agents
+ * holding `mcp:read` may also discover non-chat Fabric platform write tools so
+ * they can request human approval for them.
  */
 export function credentialAllowsTool(
 	session: Pick<GatewaySession, "credential" | "scopes">,
 	tool: EligibilityTool,
 ): boolean {
-	return scopeSatisfied(
-		session.scopes,
-		requiredToolScope(session, tool),
-		session.credential,
+	const required = requiredToolScope(session, tool);
+	if (scopeSatisfied(session.scopes, required, session.credential)) {
+		return true;
+	}
+	return (
+		session.credential === "oauth" &&
+		session.scopes.includes("mcp:read") &&
+		required.kind === "write" &&
+		!required.scope.startsWith("chats:")
 	);
 }
 
@@ -81,15 +88,26 @@ export function credentialAllowsTool(
  * Whether a call to `tool` goes through the runtime-authority gate with a
  * chance of being refused there. `enforceAuthority` passes a connected tool it
  * classifies as READ without a grant and asks for one for a WRITE. Platform
- * tools are routed to `executePlatformTool` by `dispatchToolCall` and do not
- * reach it.
+ * tools require runtime authority only when called by an OAuth agent relying on
+ * human-approved write elevation.
  */
 export function toolRequiresAuthority(
-	session: Pick<GatewaySession, "credential">,
+	session: Pick<GatewaySession, "credential"> & {
+		scopes?: readonly string[];
+	},
 	tool: EligibilityTool,
 ): boolean {
 	if (isPlatformToolName(tool.name)) {
-		return false;
+		if (session.credential !== "oauth") {
+			return false;
+		}
+		const required = requiredToolScope(session, tool);
+		const scopes = session.scopes ?? [];
+		return (
+			required.kind === "write" &&
+			!required.scope.startsWith("chats:") &&
+			!scopeSatisfied(scopes, required, session.credential)
+		);
 	}
 	return (
 		classifyConnectedToolAccess(

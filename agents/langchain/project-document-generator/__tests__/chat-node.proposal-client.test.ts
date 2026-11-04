@@ -479,6 +479,43 @@ describe("chat on an artifact Proposal", () => {
 		);
 	});
 
+	it("updates every section and content block that depends on a requested change", async () => {
+		mockInvoke.mockResolvedValueOnce(patchResponse([scopePatch()]));
+		await chatNode(createState(), artifactConfig());
+
+		const system = systemText();
+		expect(system).not.toMatch(
+			/only the sections the person asks about may change/i,
+		);
+		expect(system).toContain("You never rewrite the whole document.");
+		expect(system).toContain(
+			"When the person asks you to change the proposal, change every section and content block that states or depends on the fact they change or supply, and leave unrelated sections as they are.",
+		);
+		expect(system).toContain(
+			"A question or a request for review changes nothing.",
+		);
+		expect(system).toContain(
+			"unless the person asks to change it or a change they ask for alters a value it states or depends on, such as a fee or a start date. Keep its fence and format when you change it.",
+		);
+		expect(system).toContain(
+			"(TBD, TBC, to be determined, to be confirmed, not yet defined, not yet determined) is stale once the person asks you to change the proposal and supplies the value it stands for, or asks you to take it from the project knowledge",
+		);
+		expect(system).toContain(
+			"Replace each stand-in for such a value wherever it appears in the proposal, in the same call, with a patch for every section that holds one.",
+		);
+		expect(system).toContain(
+			"Leave every stand-in for any other value as it is, and never invent a value that neither the person nor the project knowledge gives.",
+		);
+
+		const patchTool = boundTools().find(
+			(tool) =>
+				tool.function?.name === PROPOSAL_PATCHES_TOOL.function.name,
+		);
+		expect(patchTool?.function?.description).toContain(
+			"unless the person asks to change it or a change they ask for alters a value it states or depends on",
+		);
+	});
+
 	it("leaves the block out when the route sends none (a guest)", async () => {
 		mockInvoke.mockResolvedValueOnce(patchResponse([scopePatch()]));
 		await chatNode(

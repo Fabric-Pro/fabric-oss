@@ -14,6 +14,7 @@ import {
 	HISTORY_QUERY_KEY,
 	LIVE_ACTIVITY_QUERY_KEY,
 	SESSIONS_QUERY_KEY,
+	SUGGESTIONS_QUERY_KEY,
 	USAGE_QUERY_KEY,
 } from "../lib/query-keys";
 import { ALL_SESSIONS, ParlumeRequestsPanel } from "./ParlumeRequestsPanel";
@@ -26,6 +27,7 @@ const REFRESHED_KEYS = [
 	USAGE_QUERY_KEY,
 	HISTORY_QUERY_KEY,
 	LIVE_ACTIVITY_QUERY_KEY,
+	SUGGESTIONS_QUERY_KEY,
 ];
 
 export interface ParlumeSessionsView {
@@ -159,6 +161,7 @@ export function ParlumeActivityPanel({
 				</div>
 				<TabsContent value="sessions" className="mt-0">
 					<ParlumeSessionsTable
+						projectId={projectId}
 						sessions={sessions.items}
 						costBySessionId={costBySessionId}
 						projectBasePath={projectBasePath}

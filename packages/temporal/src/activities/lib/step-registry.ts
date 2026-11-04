@@ -17,8 +17,8 @@
 import {
 	ADO_STORY_REVIEW_NODE_TYPE,
 	AGENT_TASK_NODE_TYPE,
-	PUBLISH_FRAME_NODE_TYPE,
 	NATIVE_PLATFORM_READ_NODE_TYPE,
+	PUBLISH_FRAME_NODE_TYPE,
 	SCRIPT_TRANSFORM_NODE_TYPE,
 	WORKSPACE_DATA_READ_NODE_TYPE,
 	WORKSPACE_DATA_WRITE_NODE_TYPE,
@@ -56,6 +56,18 @@ interface StepRegistryEntry {
  * 3. Add an entry here mapping the node type to the step
  */
 export const stepRegistry: Record<string, StepRegistryEntry> = {
+	"databricks-sql-query": {
+		name: "Databricks SQL",
+		load: async () =>
+			(await import("./steps/databricks-sql-query"))
+				.executeDatabricksSqlStep,
+	},
+	"databricks-sql-ai-query": {
+		name: "Databricks AI query",
+		load: async () =>
+			(await import("./steps/databricks-sql-ai-query"))
+				.executeDatabricksAiQueryStep,
+	},
 	[NATIVE_PLATFORM_READ_NODE_TYPE]: {
 		name: "Native Platform Read",
 		load: async () =>

@@ -8,7 +8,6 @@ This package hosts the PartyKit-style servers that power realtime features in Fa
 |-------|------|---------|
 | `document` | `document.ts` | Y.js CRDT sync for the collaborative document editor. Auth via `/api/collab/verify` on the web app. |
 | `orchestrator` | `orchestrator.ts` | Live status broadcast for the Temporal orchestrator (agent runs). Auth via `AGENT_SERVICE_SECRET`. |
-| `taskagent` | `taskAgent.ts` | Live status broadcast for individual task agents. Auth via `AGENT_SERVICE_SECRET`. |
 | `health` | `health.ts` | Health check endpoint for Aspire. |
 
 Local dev runs through Aspire (`./aspire.sh restart`), which calls `start-dev.sh` to spawn `partykit dev` on the port Aspire assigned.
@@ -33,8 +32,8 @@ When you change shared logic (auth shapes, message types), **update both folders
 | Var | Purpose |
 |-----|---------|
 | `PARTYKIT_ENV` | Set to `production` to enforce real auth. Anything else allows dev fallback (no token verification). |
-| `FABRIC_API_URL` | Origin of the Fabric web app. Used to call `/api/collab/verify`, `/api/orchestrator/verify`, `/api/task-agent/verify`. |
-| `AGENT_SERVICE_SECRET` | Shared secret with the web app for orchestrator/taskagent broadcast POSTs. |
+| `FABRIC_API_URL` | Origin of the Fabric web app. Used to call `/api/collab/verify`, `/api/orchestrator/verify`. |
+| `AGENT_SERVICE_SECRET` | Shared secret with the web app for orchestrator broadcast POSTs. |
 
 For staging set these via `partykit env add`. For production see [`../party-cf/README.md`](../party-cf/README.md).
 

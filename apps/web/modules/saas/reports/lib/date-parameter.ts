@@ -86,6 +86,47 @@ export function isDateParameter(
 	return classifyDateParameter(name, schema) !== null;
 }
 
+/**
+ * The substring rules that chose a date picker before the report suite, kept
+ * unchanged for the pages that render without it.
+ */
+export function isLegacyDateParameter(
+	name: string,
+	schema: DateParameterSchema,
+): boolean {
+	if (schema.format === "date" || schema.format === "date-time") {
+		return true;
+	}
+	const lower = name.toLowerCase();
+	if (lower.includes("date")) {
+		return true;
+	}
+	if (lower.endsWith("at") || lower.endsWith("_at")) {
+		return true;
+	}
+	if (lower.includes("period")) {
+		return true;
+	}
+	if (
+		(lower.endsWith("start") || lower.endsWith("end")) &&
+		!lower.includes("point") &&
+		!lower.includes("with")
+	) {
+		return true;
+	}
+	return (
+		lower.includes("deadline") ||
+		lower.includes("duedate") ||
+		lower === "from" ||
+		lower === "to" ||
+		lower === "until" ||
+		lower === "since" ||
+		lower.endsWith("from") ||
+		lower.endsWith("to") ||
+		lower.endsWith("until")
+	);
+}
+
 export type PeriodPreset = {
 	id: string;
 	label: string;

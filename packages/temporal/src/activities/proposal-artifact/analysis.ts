@@ -1,15 +1,16 @@
 import { truncateCodePoints } from "@repo/agent-prompts/glossy";
 import {
 	AIProviderNotConfiguredError,
-	generateObject,
 	generateText,
 	getAIModelWithMetadata,
 	NoObjectGeneratedError,
+	Output,
 	zodSchema,
 } from "@repo/ai";
 // Imported from the SUBPATH (not @repo/ai root) so it stays unmocked in tests
 // that mock the root module, as in the Glossy model calls.
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
+import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	completeAnalysisRun,
 	createAnalysisRun,
@@ -456,15 +457,21 @@ export async function runProposalAnalysis(
 
 	let output: z.infer<typeof ProposalAnalysisOutputSchema>;
 	try {
-		({ object: output } = await withHeartbeatTicker(() =>
-			generateObject({
-				model,
-				schema: zodSchema(ProposalAnalysisOutputSchema),
-				instructions,
-				prompt,
-				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-				...(abortSignal ? { abortSignal } : {}),
-			}),
+		({ output } = await withHeartbeatTicker(() =>
+			requireStructuredOutput(
+				generateText({
+					model,
+					output: Output.object({
+						schema: zodSchema(ProposalAnalysisOutputSchema),
+					}),
+					instructions,
+					prompt,
+					...(maxOutputTokens !== undefined
+						? { maxOutputTokens }
+						: {}),
+					...(abortSignal ? { abortSignal } : {}),
+				}),
+			),
 		));
 	} catch (error) {
 		if (NoObjectGeneratedError.isInstance(error)) {

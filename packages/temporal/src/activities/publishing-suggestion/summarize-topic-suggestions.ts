@@ -8,7 +8,7 @@
  * membership immediately before model resolution (org model resolution
  * prefers the actor's PERSONAL provider, so a removed/deleted admin must not
  * keep powering suggestion cycles under their identity — TOCTOU), resolve a
- * COMPLEX-tier model, call `generateObject` against
+ * COMPLEX-tier model, call `generateText` + `Output.object` against
  * `PublishingTopicSuggestionsSchema`, and fail closed on invalid output.
  *
  * The prompt itself comes from the Prompt Library, resolved here through
@@ -22,10 +22,10 @@
  * fallback the way a newsletter send does; a stale actor here must fail the
  * cycle so it can be retried/reclaimed under a valid one.
  *
- * The structured-output schema handed to `generateObject` is a LOCAL zod
+ * The structured-output schema handed to `Output.object` is a LOCAL zod
  * definition (mirroring `PublishingTopicSuggestionsSchema`'s shape), not the
  * `@repo/database` schema object itself — passing a cross-package schema
- * straight into `generateObject` fails to typecheck (`ai`'s `FlexibleSchema`
+ * straight into `Output.object` fails to typecheck (`ai`'s `FlexibleSchema`
  * expects the SAME zod module instance it resolved as a peer dep; a schema
  * built from `@repo/database`'s zod copy is structurally identical but a
  * different `ZodType` instance). Same workaround used by
@@ -40,8 +40,12 @@
  * boundary rather than before it.
  */
 
-import { generateObject, getAIModelWithMetadata } from "@repo/ai";
+import { generateText, getAIModelWithMetadata, Output } from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
+import {
+	requireStructuredOutput,
+	type StructuredTextResult,
+} from "@repo/ai/lib/structured-output";
 import {
 	getBoundPromptForAgent,
 	isCurrentOrgMember,
@@ -294,15 +298,15 @@ async function runSummarizeTopicSuggestions(
 		() => Context.current().heartbeat(),
 		10_000,
 	);
-	let result: Awaited<
-		ReturnType<typeof generateObject<typeof LlmOutputSchema>>
-	>;
+	let result: StructuredTextResult<z.infer<typeof LlmOutputSchema>>;
 	try {
-		result = await generateObject({
-			model,
-			schema: LlmOutputSchema,
-			prompt: finalPrompt,
-		});
+		result = await requireStructuredOutput(
+			generateText({
+				model,
+				output: Output.object({ schema: LlmOutputSchema }),
+				prompt: finalPrompt,
+			}),
+		);
 	} catch (error) {
 		// However the AI SDK wrapped it, a spent ChatGPT plan leaves under its
 		// own type, which the workflow waits on (Fizzy #2770).
@@ -331,7 +335,7 @@ async function runSummarizeTopicSuggestions(
 	let highlightsUsed = 0;
 
 	const normalizedObject = {
-		topics: result.object.topics.map((t) => {
+		topics: result.output.topics.map((t) => {
 			const enrichment = normalizeTopicEnrichment({
 				relevantFunctionTags: t.relevantFunctionTags,
 				postTypeRecommendations: t.postTypeRecommendations,

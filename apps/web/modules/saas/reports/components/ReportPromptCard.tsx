@@ -30,13 +30,14 @@ function rowsFor(text: string, min: number): number {
 }
 
 /** A prompt in full: editable text, or plain text a viewer can read and copy. */
-function PromptText({
+export function PromptText({
 	id,
 	value,
 	onChange,
 	readOnly,
 	placeholder,
 	describedBy,
+	onBlur,
 }: {
 	id: string;
 	value: string;
@@ -44,6 +45,7 @@ function PromptText({
 	readOnly: boolean;
 	placeholder: string;
 	describedBy?: string;
+	onBlur?: () => void;
 }) {
 	if (readOnly) {
 		return (
@@ -65,6 +67,7 @@ function PromptText({
 			id={id}
 			value={value}
 			onChange={(e) => onChange(e.target.value)}
+			onBlur={onBlur}
 			placeholder={placeholder}
 			rows={rowsFor(value, 6)}
 			className="font-mono text-sm"

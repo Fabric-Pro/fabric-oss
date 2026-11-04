@@ -86,7 +86,8 @@ vi.mock("@repo/ai", () => {
 			encryptedClientSecret?: string | null;
 		}) =>
 			Boolean(c.apiKey) || Boolean(c.clientId && c.encryptedClientSecret),
-		generateObject: (...a: unknown[]) => mockGenerateObject(...a),
+		generateText: (...a: unknown[]) => mockGenerateObject(...a),
+		Output: { object: (spec: unknown) => spec },
 		getAIModelWithMetadata: (...a: unknown[]) =>
 			mockGetAIModelWithMetadata(...a),
 		resolveModelWithProvider: (...a: unknown[]) =>
@@ -258,7 +259,7 @@ function arrange(
 		model: { id: "test-model" },
 		trackUsage: vi.fn(),
 	});
-	mockGenerateObject.mockResolvedValue({ object: verdict });
+	mockGenerateObject.mockResolvedValue({ output: verdict });
 }
 
 function arrangeDecision(answers: Record<string, unknown>) {
@@ -477,7 +478,7 @@ describe("checkDuplicateProcedure — decision outcomes", () => {
 			model: "text-embedding-3-small",
 		});
 		mockGenerateObject.mockResolvedValue({
-			object: { decision: "create", confidence: 1 },
+			output: { decision: "create", confidence: 1 },
 		});
 		resolveModel?.();
 		resolveCorpusStories?.();

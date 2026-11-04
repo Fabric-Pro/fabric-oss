@@ -103,3 +103,34 @@ describe("ReportReadinessRail — artifact suppression for CANCELLED (R10)", () 
 		expect(artifactButton()).toBeInTheDocument();
 	});
 });
+
+it("omits the external connection test when its report only reads Project knowledge", () => {
+	render(<ReportReadinessRail {...baseProps} showConnectionTest={false} />);
+	expect(
+		screen.queryByRole("button", { name: "Test connections" }),
+	).not.toBeInTheDocument();
+	expect(
+		screen.getByRole("button", { name: "Generate Report" }),
+	).toBeEnabled();
+});
+
+it("disables Generate with a visible owner-only explanation for a non-owner", () => {
+	render(<ReportReadinessRail {...baseProps} canGenerate={false} />);
+	const generate = screen.getByRole("button", { name: "Generate Report" });
+	expect(generate).toBeDisabled();
+	const explanation = screen.getByText(
+		"Only the report's owner can generate it, because it runs on the owner's connections.",
+	);
+	expect(generate).toHaveAttribute("aria-describedby", explanation.id);
+	expect(generate).toHaveAccessibleDescription(explanation.textContent ?? "");
+});
+
+it("shows no owner-only explanation to the owner", () => {
+	render(<ReportReadinessRail {...baseProps} canGenerate />);
+	expect(
+		screen.queryByText(/Only the report's owner can generate it/),
+	).not.toBeInTheDocument();
+	expect(
+		screen.getByRole("button", { name: "Generate Report" }),
+	).not.toHaveAttribute("aria-describedby");
+});

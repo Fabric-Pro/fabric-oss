@@ -26,6 +26,7 @@ vi.mock("../../hooks/use-meeting-digest", () => ({
 					enabled: false,
 					toolsReadOnly: true,
 					suggestionsEnabled: true,
+					suggestionAudience: "MEETING",
 					enabledBy: null,
 					error: null,
 					errorAt: null,
@@ -150,6 +151,7 @@ describe("MeetingDigestTab — Parlume auto-join", () => {
 			enabled: true,
 			toolsReadOnly: true,
 			suggestionsEnabled: true,
+			suggestionAudience: "MEETING",
 		});
 	});
 

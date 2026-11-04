@@ -1,6 +1,9 @@
 "use client";
 
-import { buildAgentInstanceChatHref } from "@saas/agents/lib/fabric-agent-links";
+import {
+	buildAgentDetailsHref,
+	buildAgentInstanceChatHref,
+} from "@saas/agents/lib/fabric-agent-links";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Button } from "@ui/components/button";
 import {
@@ -40,6 +43,7 @@ interface InstanceAgentCardProps {
 	};
 	basePath: string;
 	onDelete: (id: string) => void;
+	directoryQuery?: string;
 }
 
 const STATUS: Record<string, AgentTileStatus> = {
@@ -63,17 +67,22 @@ export function InstanceAgentCard({
 	instance,
 	basePath,
 	onDelete,
+	directoryQuery,
 }: InstanceAgentCardProps) {
 	const router = useRouter();
 	const status = STATUS[instance.status] ?? STATUS.DRAFT;
 	const editHref = `${basePath}/agents/${instance.id}/edit`;
+	const detailHref = buildAgentDetailsHref({
+		basePath,
+		instanceId: instance.id,
+		directoryQuery,
+	});
 	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
 	const chatbotHref = buildAgentInstanceChatHref({
 		basePath,
 		instance,
 		unifiedAgentInterface,
 	});
-	const runCount = instance.runCount ?? 0;
 	const category = instance.template?.category
 		? instance.template.category.toLowerCase().replace(/_/g, " ")
 		: null;
@@ -90,15 +99,13 @@ export function InstanceAgentCard({
 				category,
 			]}
 			footer={[
-				runCount === 0
-					? "No runs yet"
-					: `${runCount} ${runCount === 1 ? "run" : "runs"}`,
-				instance.lastRunAt
-					? `last run ${ago(instance.lastRunAt)}`
-					: ago(instance.updatedAt),
+				"Run & results",
+				instance.updatedAt
+					? `updated ${ago(instance.updatedAt)}`
+					: null,
 			]}
-			ariaLabel={`Try ${instance.name}`}
-			onOpen={() => router.push(chatbotHref)}
+			ariaLabel={`Open ${instance.name}`}
+			onOpen={() => router.push(detailHref)}
 			menu={
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
@@ -112,6 +119,19 @@ export function InstanceAgentCard({
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end">
+						<DropdownMenuItem asChild>
+							<Link
+								href={buildAgentDetailsHref({
+									basePath,
+									instanceId: instance.id,
+									directoryQuery,
+									view: "runs",
+								})}
+							>
+								<PlayIcon className="mr-2 h-4 w-4" />
+								Run & results
+							</Link>
+						</DropdownMenuItem>
 						<DropdownMenuItem asChild>
 							<Link href={editHref}>
 								<EditIcon className="mr-2 h-4 w-4" />

@@ -336,9 +336,10 @@ describe("getCrawledUrlSourceMarkdown", () => {
 			organizationId: "org-1",
 		});
 
-		expect(urlPageFindMany.mock.calls[0][0].orderBy).toEqual({
-			pageUrl: "asc",
-		});
+		expect(urlPageFindMany.mock.calls[0][0].orderBy).toEqual([
+			{ pageUrl: "asc" },
+			{ id: "asc" },
+		]);
 		expect(markdown).toBe(
 			"## Install\nhttps://example.com/a\n\nRun it.\n" +
 				"\n---\n\n" +
@@ -371,6 +372,7 @@ describe("getCrawledUrlSourceMarkdownPage", () => {
 		expect(urlPageFindMany).not.toHaveBeenCalled();
 		const call = rawQuery.mock.calls[0];
 		expect(sqlOf(call)).toContain("string_agg");
+		expect(sqlOf(call)).toContain('ORDER BY "pageUrl", id');
 		expect(sqlOf(call)).toContain("body, ?::integer, ?::integer");
 		expect(sqlOf(call)).toContain('"parentContextId" = ?');
 		expect(paramsOf(call)).toContain("ctx-link");

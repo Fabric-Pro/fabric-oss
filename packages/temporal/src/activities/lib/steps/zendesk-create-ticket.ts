@@ -1,5 +1,6 @@
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { connectorErrorMessage } from "../connector-error";
 import { interpolateTemplate } from "./utils";
 
 export async function executeZendeskCreateTicketStep(
@@ -74,10 +75,10 @@ export async function executeZendeskCreateTicketStep(
 		if (!response.ok) {
 			return {
 				success: false,
-				error:
-					result?.error ||
-					result?.description ||
+				error: connectorErrorMessage(
+					result?.error || result?.description,
 					`Zendesk returned status ${response.status}`,
+				),
 			};
 		}
 
