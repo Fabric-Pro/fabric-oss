@@ -177,3 +177,94 @@ it("reports deployment server availability without returning its URL", async () 
 	});
 	expect(absent.hasDefaultServer).toBe(false);
 });
+
+it("surfaces actionable workspace creation guidance when a fresh server reports workspace: false", async () => {
+	f.ready.mockRejectedValueOnce(
+		Object.assign(
+			new Error("Execution readiness checks failed: workspace"),
+			{
+				code: "SESSION_VALIDATION_ERROR",
+			},
+		),
+	);
+	await expect(
+		f.handlers["POST /coding-runs/remote-servers"]({ input, context }),
+	).rejects.toMatchObject({
+		code: "SERVICE_UNAVAILABLE",
+		message:
+			"This Fabric Agents server is reachable, but it has no workspace yet. Open the server Web UI or Fabric Agents Desktop, create a workspace, and verify again.",
+	});
+	expect(f.create).not.toHaveBeenCalled();
+});
+
+it("lists only allowlisted failed readiness checks and strips untrusted server tokens", async () => {
+	f.ready.mockRejectedValueOnce(
+		Object.assign(
+			new Error(
+				`Execution readiness checks failed: workspace, permissionPolicy, ${input.secret}, untrusted_key`,
+			),
+			{ code: "SESSION_VALIDATION_ERROR" },
+		),
+	);
+	let thrown: unknown;
+	try {
+		await f.handlers["POST /coding-runs/remote-servers"]({
+			input,
+			context,
+		});
+	} catch (err) {
+		thrown = err;
+	}
+	expect(thrown).toMatchObject({
+		code: "SERVICE_UNAVAILABLE",
+		message:
+			"This Fabric Agents server is reachable, but it has no workspace yet and failed readiness checks (permissionPolicy). Create a workspace on the server, check its configuration, and verify again.",
+	});
+	expect(JSON.stringify(thrown)).not.toContain(input.secret);
+	expect(JSON.stringify(thrown)).not.toContain("untrusted_key");
+});
+
+it("distinguishes execution secret auth rejection from generic reachability errors without echoing secrets", async () => {
+	f.ready.mockRejectedValueOnce(
+		Object.assign(new Error("Execution readiness authorization failed"), {
+			code: "AUTH_ERROR",
+		}),
+	);
+	let thrown: unknown;
+	try {
+		await f.handlers["POST /coding-runs/remote-servers"]({
+			input,
+			context,
+		});
+	} catch (err) {
+		thrown = err;
+	}
+	expect(thrown).toMatchObject({
+		code: "SERVICE_UNAVAILABLE",
+		message:
+			"The server rejected the execution service secret. Confirm that BACKGROUND_AGENTS_INTERNAL_SECRET on the server matches this secret (the Web UI token FABRIC_SERVER_TOKEN is separate) and try again.",
+	});
+	expect(JSON.stringify(thrown)).not.toContain(input.secret);
+	expect(f.create).not.toHaveBeenCalled();
+});
+
+it("preserves the generic fallback message on unexpected network or protocol errors", async () => {
+	f.ready.mockRejectedValueOnce(
+		new Error(`connect ECONNREFUSED ${input.secret}`),
+	);
+	let thrown: unknown;
+	try {
+		await f.handlers["POST /coding-runs/remote-servers"]({
+			input,
+			context,
+		});
+	} catch (err) {
+		thrown = err;
+	}
+	expect(thrown).toMatchObject({
+		code: "SERVICE_UNAVAILABLE",
+		message:
+			"Could not verify this server. Check its URL, service secret, protocol version, and network access.",
+	});
+	expect(JSON.stringify(thrown)).not.toContain(input.secret);
+});

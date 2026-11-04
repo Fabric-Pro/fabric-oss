@@ -232,7 +232,7 @@ export function ProjectImplementationDefaultsSettings({
 								<p className="text-xs leading-5 text-muted-foreground">
 									Delegate tasks to{" "}
 									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-										127.0.0.1:9100
+										localhost:9100
 									</code>{" "}
 									or your personal Fabric Agents Remote Server
 									using your own signed-in subscription
@@ -558,7 +558,7 @@ export function ProjectImplementationDefaultsSettings({
 						<p className="mb-3 text-xs leading-relaxed text-muted-foreground">
 							Runs on your workstation (
 							<code className="font-mono text-foreground">
-								127.0.0.1:9100
+								localhost:9100
 							</code>
 							) or personal cloud tunnel. Uses the personal
 							subscription CLIs already logged in on your machine
