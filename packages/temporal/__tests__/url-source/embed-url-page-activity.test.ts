@@ -15,7 +15,10 @@ vi.mock("@repo/database/prisma/client", () => ({
 	},
 }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	assertEmbeddingModelUsable: vi.fn(),
 	AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {
 		name = "AIProviderNotConfiguredError";
@@ -84,6 +87,52 @@ describe("embedUrlPageActivity", () => {
 				provider: "OPENAI_DIRECT",
 			} as never);
 	});
+
+	it.each([true, false])(
+		"preserves permanentFailure=%s at the URL activity boundary",
+		async (permanentFailure) => {
+			mockEmbed.mockResolvedValue({
+				success: false,
+				error: "Provider rejected request",
+				permanentFailure,
+			});
+			await expect(embedUrlPageActivity(baseInput)).rejects.toMatchObject(
+				{
+					nonRetryable: permanentFailure,
+					type: permanentFailure
+						? "EMBEDDING_PROVIDER_REJECTED"
+						: "EMBED_URL_PAGE_FAILED",
+				},
+			);
+		},
+	);
+
+	it.each([401, 429])(
+		"preserves retryability of a thrown wrapped URL provider HTTP %i",
+		async (statusCode) => {
+			mockEmbed.mockRejectedValue(
+				new Error("Embedding failed", {
+					cause: Object.assign(
+						new Error("Provider rejected request"),
+						{ statusCode },
+					),
+				}),
+			);
+			const error = await embedUrlPageActivity(baseInput).catch(
+				(error) => error,
+			);
+			const { ensureApplicationFailure } = await import(
+				"@temporalio/common"
+			);
+			expect(ensureApplicationFailure(error)).toMatchObject({
+				nonRetryable: statusCode === 401,
+				type:
+					statusCode === 401
+						? "EMBEDDING_PROVIDER_REJECTED"
+						: "Error",
+			});
+		},
+	);
 
 	it("stamps spec §8.1 metadata onto the embed call", async () => {
 		mockEmbed.mockResolvedValue({

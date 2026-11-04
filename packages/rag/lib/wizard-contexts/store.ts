@@ -16,7 +16,8 @@
 
 import { db } from "@repo/database";
 import { logger } from "@repo/logs";
-import { ensureCollection } from "../collection-manager";
+import { ensureCollection, getCollectionLayout } from "../collection-manager";
+import { generateSparseVector } from "../embedding/sparse";
 import { generatePointId as generatePointIdBase } from "../utils";
 import { qdrantClient } from "../vector-store/client";
 import type {
@@ -72,6 +73,10 @@ export async function storeWizardContext(
 	try {
 		// Get collection name (creates org-specific collection if needed)
 		const collectionName = await getWizardCollection(organizationId);
+		const layout = await getCollectionLayout(
+			"project-contexts",
+			organizationId,
+		);
 
 		// Generate deterministic point ID
 		const pointId = generatePointId(contextId, chunkIndex);
@@ -82,7 +87,15 @@ export async function storeWizardContext(
 			points: [
 				{
 					id: pointId,
-					vector: embedding,
+					vector: layout.supportsHybrid
+						? {
+								[layout.denseVectorName ?? ""]: embedding,
+								[layout.sparseVectorName ?? "sparse"]:
+									generateSparseVector(options.content),
+							}
+						: layout.denseVectorName
+							? { [layout.denseVectorName]: embedding }
+							: embedding,
 					payload: {
 						contextId,
 						sessionId,
@@ -144,6 +157,10 @@ export async function searchWizardContexts(
 	try {
 		// Get collection name (org data is in separate collection = physical isolation)
 		const collectionName = await getWizardCollection(organizationId);
+		const layout = await getCollectionLayout(
+			"project-contexts",
+			organizationId,
+		);
 
 		// Build filter with defense-in-depth tenant isolation
 		const filter: {
@@ -188,7 +205,9 @@ export async function searchWizardContexts(
 
 		// Search Qdrant
 		const searchResult = await qdrantClient.search(collectionName, {
-			vector: queryEmbedding,
+			vector: layout.denseVectorName
+				? { name: layout.denseVectorName, vector: queryEmbedding }
+				: queryEmbedding,
 			limit: topK,
 			score_threshold: minSimilarity,
 			filter,

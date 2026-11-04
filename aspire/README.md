@@ -285,6 +285,31 @@ docker ps --format '{{.Names}}' | grep -E '^(postgres|cache|qdrant|minio|tempora
 docker stop $(docker ps -q --filter name=-<suffix>)
 ```
 
+### Reset the Local Qdrant Volume for 1.19.2
+
+The local Qdrant pin moves from 1.16.2 to 1.19.2. A single-node Qdrant
+upgrade cannot skip minor versions, so an existing 1.16.2
+`fabric-qdrant-data` volume must be reset for this upgrade. This deletes local
+vectors; these commands leave PostgreSQL, object storage and repository
+configuration intact.
+
+Stop the AppHost and any separately started local Temporal worker, then remove
+only the containers using the Qdrant volume and the volume itself:
+
+```bash
+docker ps -aq --filter volume=fabric-qdrant-data | xargs -r docker rm -f
+docker volume rm fabric-qdrant-data
+./aspire.sh run
+```
+
+After restarting, rebuild project document vectors with **Project settings →
+Retrieval → Re-chunk now**, then confirm **Re-chunk**. For each indexed repository,
+choose **Full re-index** in its project repository integration settings and
+confirm it; **Update index** only processes changed files and does not restore
+an empty vector store. Re-upload any local chat or library/workspace documents
+whose vectors you still need. The sparse backfill cannot recreate deleted dense
+vectors.
+
 ### Resource Shows FailedToStart on a Slow Machine
 
 Aspire 13.6.4 retries a timed-out create request and checks whether the

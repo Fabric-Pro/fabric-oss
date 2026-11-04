@@ -670,13 +670,13 @@ export async function createCodeSearchTool(
 
 				const maxResults = args.maxResults ?? 5;
 				let points: any[] = [];
-				if (layout.supportsHybrid && layout.denseVectorName) {
+				if (layout.supportsHybrid) {
 					const sparse = generateSparseVector(query);
 					const result = await qdrantClient.query(collectionName, {
 						prefetch: [
 							{
 								query: embeddingResult.embedding,
-								using: layout.denseVectorName,
+								using: layout.denseVectorName ?? undefined,
 								limit: maxResults * 2,
 								filter: { must },
 							},
@@ -698,6 +698,7 @@ export async function createCodeSearchTool(
 				} else {
 					const result = await qdrantClient.query(collectionName, {
 						query: embeddingResult.embedding,
+						using: layout.denseVectorName ?? undefined,
 						limit: maxResults,
 						filter: { must },
 						with_payload: true,

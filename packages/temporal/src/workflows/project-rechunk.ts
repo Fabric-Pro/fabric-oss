@@ -85,9 +85,9 @@ export async function projectRechunkWorkflow(
 	let lastError: string | undefined;
 	for (let i = 0; i < queue.length && !superseded; i += RECHUNK_CONCURRENCY) {
 		const batch = queue.slice(i, i + RECHUNK_CONCURRENCY);
-		// A source whose activity fails after its retries (a timeout, a
-		// crashed worker) counts as failed; it keeps its old points and the
-		// run goes on, so the run never stays RUNNING with nobody working it.
+		// A source whose activity fails after its retries counts as failed and
+		// the run goes on. Context embedding generation finishes before the first
+		// Qdrant write, preserving its old points on a provider failure.
 		const outcomes = await Promise.all(
 			batch.map((item) =>
 				rechunkProjectSourceActivity({ ...scope, ...item }).catch(

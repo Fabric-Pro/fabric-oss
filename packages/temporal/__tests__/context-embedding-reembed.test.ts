@@ -41,7 +41,10 @@ const mocks = vi.hoisted(() => ({
 	embedSingleContextActivity: vi.fn(),
 }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	AIProviderNotConfiguredError: class extends Error {},
 	getSystemEmbeddingRAGProviderConfig:
 		mocks.getSystemEmbeddingRAGProviderConfig,

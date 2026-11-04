@@ -37,6 +37,10 @@ import {
 } from "../lib/context-owner";
 import { companyContextRowStore } from "../lib/context-row-store";
 import { activityLogger } from "./lib/activity-logger";
+import {
+	embeddingFailure,
+	throwIfPermanentProviderFailure,
+} from "./lib/embedding-provider-failure";
 
 export interface EmbedSingleContextInput {
 	contextId: string;
@@ -403,7 +407,7 @@ export async function embedSingleContextActivity(
 				throw result.refusal;
 			}
 			if (!result.success) {
-				throw new Error(result.error || "Embedding generation failed");
+				throw embeddingFailure(result);
 			}
 
 			// Flip the parent ProjectContext row from PENDING to COMPLETED so
@@ -517,6 +521,7 @@ export async function embedSingleContextActivity(
 		// best-effort (log + continue). AIProviderNotConfigured is handled
 		// above and intentionally NOT re-thrown (a missing provider won't
 		// fix itself on retry).
+		throwIfPermanentProviderFailure(error);
 		throw error instanceof Error ? error : new Error(errorMessage);
 	}
 }
@@ -664,7 +669,7 @@ async function embedCompanySource(
 				throw result.refusal;
 			}
 			if (!result.success || !result.embeddingModel) {
-				throw new Error(result.error || "Embedding generation failed");
+				throw embeddingFailure(result);
 			}
 
 			const marked = await rows.markEmbedded(contextId, {
@@ -743,6 +748,7 @@ async function embedCompanySource(
 				);
 			},
 		);
+		throwIfPermanentProviderFailure(error);
 		throw error instanceof Error ? error : new Error(errorMessage);
 	}
 }

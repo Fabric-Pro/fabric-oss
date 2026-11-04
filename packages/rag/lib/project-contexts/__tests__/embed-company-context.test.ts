@@ -33,7 +33,10 @@ vi.mock("../../company-contexts/store", () => ({
 	storeCompanyContextPoints: mocks.storeCompanyContextPoints,
 }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	assertEmbeddingModelUsable: mocks.assertEmbeddingModelUsable,
 }));
 
@@ -254,9 +257,13 @@ describe("embedCompanyContext", () => {
 				embeddingModel: MODEL,
 			}),
 		]);
-		// One embedding call for every chunk, with its document context, on
-		// the organization's model.
-		expect(mocks.generateEmbeddings).toHaveBeenCalledTimes(1);
+		// A probe of the first original chunk precedes the enriched batch.
+		expect(mocks.generateEmbeddings).toHaveBeenCalledTimes(2);
+		expect(mocks.generateEmbeddings).toHaveBeenNthCalledWith(
+			1,
+			["part one"],
+			expect.objectContaining({ organizationOnly: true }),
+		);
 		expect(mocks.generateEmbeddings).toHaveBeenCalledWith(
 			["ctx: part one", "ctx: part two"],
 			expect.objectContaining({ organizationOnly: true }),
@@ -460,6 +467,17 @@ describe("embedProjectContext is unchanged", () => {
 		});
 		expect(mocks.generateEmbedding.mock.calls).toEqual([
 			[
+				"part one",
+				{
+					userId: "user-1",
+					organizationId: ORG,
+					projectId: "proj-1",
+					tags: ["project-context", "text"],
+					featureKey: "knowledge-index",
+				},
+				{ apiKey: "key" },
+			],
+			[
 				"ctx: part one",
 				{
 					userId: "user-1",
@@ -597,5 +615,27 @@ it.each(["project", "company"] as const)(
 		});
 		expect(mocks.generateEmbedding).not.toHaveBeenCalled();
 		expect(mocks.generateEmbeddings).not.toHaveBeenCalled();
+	},
+);
+
+it.each([401, 429])(
+	"stops company enrichment before a failing HTTP %i probe",
+	async (statusCode) => {
+		mocks.generateEmbeddings.mockRejectedValueOnce(
+			Object.assign(new Error("Provider rejected request"), {
+				statusCode,
+			}),
+		);
+		const result = await embedCompanyContext({
+			contextId: "example-context",
+			userId: "example-user",
+			content: LONG,
+			type: "TEXT",
+			company,
+		});
+		expect(mocks.enrichChunksWithTenantContext).not.toHaveBeenCalled();
+		expect(mocks.generateEmbeddings).toHaveBeenCalledTimes(1);
+		expect(result.success).toBe(false);
+		expect(result.permanentFailure ?? false).toBe(statusCode === 401);
 	},
 );

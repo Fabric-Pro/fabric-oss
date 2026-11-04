@@ -622,9 +622,7 @@ export async function retryFailedDocument(documentId: string, userId: string) {
 			extractorUsed: null,
 			pageCount: null,
 			wordCount: null,
-			qdrantPointIds: [],
 			embeddedAt: null,
-			chunkCount: 0,
 			workflowId: null,
 		},
 	});

@@ -1,3 +1,4 @@
+import { embed, embedMany } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { logAiUsageAsync } = vi.hoisted(() => ({ logAiUsageAsync: vi.fn() }));
@@ -10,6 +11,7 @@ import {
 	describeModelCallError,
 	recordAggregateUsage,
 	selectAggregateUsageForLogging,
+	wrapEmbeddingModelWithUsageLogging,
 	wrapEvaluationModelWithUsageLogging,
 } from "../usage-logging-middleware";
 
@@ -670,6 +672,49 @@ describe("usage-logging middleware — wrapEmbed (embeddings)", () => {
 		});
 	});
 });
+
+it.each(["single", "batch"])(
+	"logs a failed %s embedding and rethrows the original error",
+	async (kind) => {
+		logAiUsageAsync.mockReset();
+		const failure = Object.assign(new Error("Authentication failed"), {
+			name: "GatewayAuthenticationError",
+			statusCode: 401,
+			isRetryable: false,
+		});
+		const model = wrapEmbeddingModelWithUsageLogging(
+			{
+				specificationVersion: "v4",
+				provider: "example",
+				modelId: "example-embedding",
+				maxEmbeddingsPerCall: 16,
+				supportsParallelCalls: true,
+				doEmbed: async () => {
+					throw failure;
+				},
+			},
+			{ ...CTX, taskType: "EMBEDDING" as any },
+		);
+		const call =
+			kind === "single"
+				? embed({ model, value: "Example" })
+				: embedMany({ model, values: ["Example", "Second"] });
+		await expect(call).rejects.toBe(failure);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: false,
+			inputTokens: 0,
+			outputTokens: 0,
+			totalTokens: 0,
+			errorStatusCode: 401,
+			errorMessage: "Authentication failed",
+			errorDetails: {
+				name: "GatewayAuthenticationError",
+				isRetryable: false,
+			},
+		});
+	},
+);
 
 describe("usage-logging middleware — evaluation models", () => {
 	beforeEach(() => logAiUsageAsync.mockReset());

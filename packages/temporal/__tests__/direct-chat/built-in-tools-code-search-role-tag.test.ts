@@ -151,3 +151,40 @@ describe("code_search tool roleTag attribution", () => {
 		});
 	});
 });
+
+it.each([null, "dense"])(
+	"queries mixed/named dense %s with sparse",
+	async (denseVectorName) => {
+		const { getCollectionLayout } = await import(
+			"@repo/rag/lib/collection-manager"
+		);
+		vi.mocked(getCollectionLayout).mockResolvedValueOnce({
+			collectionName: "project-contexts",
+			supportsHybrid: true,
+			denseVectorName,
+			sparseVectorName: "sparse",
+		});
+		mockFindManyIntegrations.mockResolvedValue([
+			{
+				id: "integ-legacy",
+				repositoryOwner: "example-org",
+				repositoryName: "payment-v1",
+			},
+		]);
+		mockQdrantQuery.mockClear();
+		const tools = await createBuiltInTools({
+			projectId: "proj-123",
+			userId: "user-1",
+			organizationId: "org-1",
+		});
+		await (tools.code_search as any).execute({ query: "keyword" });
+		const request = mockQdrantQuery.mock.calls[0]?.[1];
+		expect(request.query).toEqual({ fusion: "rrf" });
+		expect(request.prefetch[0]).toMatchObject({ query: [0.1, 0.2] });
+		expect(request.prefetch[0].using).toBe(denseVectorName ?? undefined);
+		expect(request.prefetch[1]).toMatchObject({
+			using: "sparse",
+			query: { indices: [], values: [] },
+		});
+	},
+);

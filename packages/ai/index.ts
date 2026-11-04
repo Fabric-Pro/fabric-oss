@@ -333,6 +333,8 @@ export type {
 	UsageLoggingContext,
 } from "./lib/usage-logging-middleware";
 export {
+	describeModelCallError,
+	isPermanentProviderFailure,
 	readTokenCount,
 	recordAggregateUsage,
 	selectAggregateUsageForLogging,

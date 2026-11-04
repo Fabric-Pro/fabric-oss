@@ -9,6 +9,7 @@ import { getSystemEmbeddingRAGProviderConfig } from "@repo/ai";
 import { db } from "@repo/database/prisma/client";
 import { reembedProjectContext as ragReembed } from "@repo/rag";
 import { deleteOrphanProjectContextPoints } from "@repo/rag/lib/project-contexts/store";
+import { embeddingFailure } from "./lib/embedding-provider-failure";
 
 export interface ProjectContextForReprocess {
 	id: string;
@@ -211,6 +212,9 @@ export async function reembedProjectContext(params: {
 	});
 
 	if (!result.success) {
+		if (result.permanentFailure) {
+			throw embeddingFailure(result);
+		}
 		throw new Error(
 			`Failed to re-embed context ${contextId}: ${result.error}`,
 		);

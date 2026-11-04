@@ -416,7 +416,9 @@ export async function searchSimilarChunks(
 
 		// First, let's try searching WITHOUT the filter AND without score threshold
 		const searchResultNoFilter = await qdrantClient.search(collectionName, {
-			vector: queryEmbedding,
+			vector: layout.denseVectorName
+				? { name: layout.denseVectorName, vector: queryEmbedding }
+				: queryEmbedding,
 			limit: topK,
 			// Remove score_threshold to see ALL results
 		});
@@ -435,7 +437,9 @@ export async function searchSimilarChunks(
 		const searchResultLowThreshold = await qdrantClient.search(
 			collectionName,
 			{
-				vector: queryEmbedding,
+				vector: layout.denseVectorName
+					? { name: layout.denseVectorName, vector: queryEmbedding }
+					: queryEmbedding,
 				limit: topK,
 				score_threshold: 0.1, // Very low threshold
 			},

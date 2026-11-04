@@ -15,6 +15,7 @@ import {
 	enrichChunksWithTenantContext,
 	extractionFactory,
 	generateEmbeddings,
+	storeWorkspaceChunksBatch,
 } from "@repo/rag";
 import { downloadFile } from "@repo/storage";
 import {
@@ -27,7 +28,10 @@ import {
 	reprocessWorkspaceDocument,
 } from "../src/activities/workspace-document-activities";
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {
 		name = "AIProviderNotConfiguredError";
 	},
@@ -195,3 +199,159 @@ for (const [label, activity] of activities) {
 		},
 	);
 }
+
+for (const [label, activity] of activities) {
+	it.each([401, 429])(
+		`${label} probes before enrichment for HTTP %i and preserves retryability`,
+		async (statusCode) => {
+			vi.mocked(generateEmbeddings).mockRejectedValue(
+				Object.assign(new Error("Provider rejected request"), {
+					statusCode,
+				}),
+			);
+			const error = await activity(
+				"doc-1",
+				"workspace-1",
+				"user-1",
+				"org-1",
+			).catch((error) => error);
+			expect(enrichChunksWithTenantContext).not.toHaveBeenCalled();
+			expect(generateEmbeddings).toHaveBeenCalledTimes(1);
+			expect(ensureApplicationFailure(error)).toMatchObject({
+				nonRetryable: statusCode === 401,
+				type:
+					statusCode === 401
+						? "EMBEDDING_PROVIDER_REJECTED"
+						: "Error",
+			});
+		},
+	);
+}
+
+for (const [label, activity] of activities) {
+	it(`${label} preserves vectors when a later embedding batch fails`, async () => {
+		vi.mocked(chunkText).mockReturnValue(
+			Array.from({ length: 51 }, (_, index) => ({
+				index,
+				content: `Example chunk ${index}`,
+				metadata: {},
+			})) as never,
+		);
+		vi.mocked(generateEmbeddings)
+			.mockResolvedValueOnce({ embeddings: [[0.1]] } as never)
+			.mockResolvedValueOnce({
+				embeddings: Array.from({ length: 50 }, () => [0.2]),
+			} as never)
+			.mockRejectedValueOnce(
+				Object.assign(new Error("Provider failed on second batch"), {
+					statusCode: 429,
+				}),
+			);
+		vi.mocked(storeWorkspaceChunksBatch).mockResolvedValue([
+			"example-point",
+		]);
+		await expect(
+			activity("doc-1", "workspace-1", "user-1", "org-1"),
+		).rejects.toThrow("Provider failed on second batch");
+		expect(generateEmbeddings).toHaveBeenCalledTimes(3);
+		expect(storeWorkspaceChunksBatch).not.toHaveBeenCalled();
+		expect(deleteWorkspaceDocumentChunks).not.toHaveBeenCalled();
+	});
+}
+
+it("cleans up a reprocessed workspace only after every embedding batch succeeds", async () => {
+	vi.mocked(chunkText).mockReturnValue(
+		Array.from({ length: 51 }, (_, index) => ({
+			index,
+			content: `Example chunk ${index}`,
+			metadata: {},
+		})) as never,
+	);
+	vi.mocked(generateEmbeddings).mockImplementation(
+		async (texts) =>
+			({
+				embeddings: texts.map((text) => [
+					Number(text.split(" ").at(-1)),
+				]),
+			}) as never,
+	);
+	vi.mocked(storeWorkspaceChunksBatch).mockImplementation(
+		async ({ chunks }) =>
+			chunks.map((chunk) => `example-point-${chunk.chunkIndex}`),
+	);
+	const result = await reprocessWorkspaceDocument(
+		"doc-1",
+		"workspace-1",
+		"user-1",
+		"org-1",
+	);
+	expect(result.qdrantPointIds).toHaveLength(51);
+	expect(deleteWorkspaceDocumentChunks).toHaveBeenCalledTimes(1);
+	expect(
+		vi.mocked(generateEmbeddings).mock.invocationCallOrder.at(-1),
+	).toBeLessThan(
+		vi.mocked(deleteWorkspaceDocumentChunks).mock.invocationCallOrder[0],
+	);
+	expect(
+		vi.mocked(deleteWorkspaceDocumentChunks).mock.invocationCallOrder[0],
+	).toBeLessThan(
+		vi.mocked(storeWorkspaceChunksBatch).mock.invocationCallOrder[0],
+	);
+	expect(
+		vi.mocked(storeWorkspaceChunksBatch).mock.calls[0][0].chunks[0]
+			.embedding,
+	).toEqual([0]);
+	expect(
+		vi.mocked(storeWorkspaceChunksBatch).mock.calls[1][0].chunks[0]
+			.embedding,
+	).toEqual([50]);
+});
+
+it.each([401, 429])(
+	"preserves recorded workspace points after a failed reprocess (HTTP %i)",
+	async (statusCode) => {
+		const row = {
+			id: "doc-1",
+			originalFilename: "example.txt",
+			s3Path: "example.txt",
+			s3Bucket: "example",
+			mimeType: "text/plain",
+			qdrantPointIds: ["example-point-0", "example-point-1"],
+			chunkCount: 2,
+		};
+		vi.mocked(db.workspaceDocument.findFirst).mockImplementation(
+			() => Promise.resolve({ ...row }) as never,
+		);
+		vi.mocked(db.workspaceDocument.update).mockImplementation(
+			({ data }) => Promise.resolve(Object.assign(row, data)) as never,
+		);
+		vi.mocked(updateWorkspaceDocument).mockImplementation(
+			async (_id, data) => Object.assign(row, data) as never,
+		);
+		vi.mocked(generateEmbeddings).mockRejectedValueOnce(
+			Object.assign(new Error("Embedding provider failed"), {
+				statusCode,
+			}),
+		);
+		try {
+			await expect(
+				reprocessWorkspaceDocument(
+					"doc-1",
+					"workspace-1",
+					"user-1",
+					"org-1",
+				),
+			).rejects.toThrow("Embedding provider failed");
+			expect(row.qdrantPointIds).toEqual([
+				"example-point-0",
+				"example-point-1",
+			]);
+			expect(row.chunkCount).toBe(2);
+			expect(deleteWorkspaceDocumentChunks).not.toHaveBeenCalled();
+			expect(storeWorkspaceChunksBatch).not.toHaveBeenCalled();
+		} finally {
+			vi.mocked(db.workspaceDocument.update).mockReset();
+			vi.mocked(updateWorkspaceDocument).mockReset();
+		}
+	},
+);

@@ -20,7 +20,10 @@
  * @see https://weaviate.io/blog/chunking-strategies-for-rag
  */
 
-import { assertEmbeddingModelUsable } from "@repo/ai";
+import {
+	assertEmbeddingModelUsable,
+	isPermanentProviderFailure,
+} from "@repo/ai";
 import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 
 import {
@@ -123,6 +126,8 @@ function normalizeProviderConfig(
 
 export interface EmbedResult {
 	success: boolean;
+	/** Provider authentication/authorization failed; an activity retry cannot repair it. */
+	permanentFailure?: boolean;
 	/** Configuration verdict for callers that distinguish refusal from transient failure. */
 	refusal?: UnsupportedEmbeddingModelError;
 	qdrantId?: string;
@@ -622,6 +627,9 @@ async function embedContext(
 		return {
 			success: false,
 			error: errorMessage,
+			...(isPermanentProviderFailure(error)
+				? { permanentFailure: true }
+				: {}),
 			...(error instanceof UnsupportedEmbeddingModelError
 				? { refusal: error }
 				: {}),
@@ -832,6 +840,31 @@ async function embedWithChunking(
 		organizationId,
 		...(owner.kind === "company" ? COMPANY_EMBEDDING_RESOLUTION : {}),
 	});
+	// Confirm this document's embedding path before paying for enrichment.
+	// The original first chunk is small and uses the same tenant/model resolution.
+	if (chunks.length > 0) {
+		if (owner.kind === "company") {
+			await generateEmbeddings([chunks[0].content], {
+				userId,
+				organizationId,
+				featureKey: "knowledge-index",
+				tags: ["company-context", type.toLowerCase()],
+				...COMPANY_EMBEDDING_RESOLUTION,
+			});
+		} else {
+			await generateEmbedding(
+				chunks[0].content,
+				{
+					userId,
+					organizationId,
+					projectId,
+					featureKey: "knowledge-index",
+					tags: ["project-context", type.toLowerCase()],
+				},
+				normalizeProviderConfig(apiKey ?? ""),
+			);
+		}
+	}
 	const enrichedChunks = await enrichChunksWithTenantContext(chunks, {
 		documentContent: content,
 		documentTitle: metadata?.filename || contextId,
@@ -862,11 +895,11 @@ async function embedWithChunking(
 	// Normalize provider config
 	const providerConfig = normalizeProviderConfig(apiKey ?? "");
 
-	// Generate embeddings and store each chunk
+	// Generate every embedding before overwriting any deterministic point id.
 	let firstQdrantId: string | undefined;
 	const pointIds: string[] = [];
 	let successCount = 0;
-	const errors: string[] = [];
+	const chunkEmbeddings: number[][] = [];
 
 	for (const chunk of enrichedChunks) {
 		try {
@@ -886,60 +919,10 @@ async function embedWithChunking(
 				providerConfig,
 			);
 
-			if (
-				!embeddingResult ||
-				!embeddingResult.embedding ||
-				embeddingResult.embedding.length === 0
-			) {
-				logger.warn(
-					`[AutoEmbed] Failed to generate embedding for chunk ${chunk.index}`,
-				);
-				errors.push(`Chunk ${chunk.index}: Empty embedding result`);
-				continue;
+			if (!embeddingResult?.embedding?.length) {
+				throw new Error("Empty embedding result");
 			}
-
-			// Use contextId-chunkIndex as unique ID for each chunk
-			const chunkContextId =
-				enrichedChunks.length > 1
-					? `${contextId}-chunk-${chunk.index}`
-					: contextId;
-
-			// IMPORTANT: Always set originalContextId so filter-based deletion
-			// can find and delete ALL chunks for a context (fixes orphaned chunk issue)
-			const qdrantId = await storeProjectContext({
-				contextId: chunkContextId,
-				projectId: owner.projectId,
-				userId,
-				organizationId,
-				content: chunk.originalContent,
-				embedding: embeddingResult.embedding,
-				metadata: {
-					type: specRoute.kind === "openapi" ? "API_SPEC" : type,
-					filename: metadata?.filename,
-					sourceUrl: metadata?.sourceUrl,
-					sourceTitle: metadata?.sourceTitle,
-					provider: metadata?.provider,
-					// Endpoint/model identity on spec chunks; empty otherwise.
-					...(specPayloads[chunk.index] ?? {}),
-					chunkIndex: chunk.index,
-					totalChunks: enrichedChunks.length,
-					headings: chunk.metadata.headings,
-					section: chunk.metadata.section,
-					// originalContextId enables filter-based deletion of all chunks
-					originalContextId: contextId,
-					// See the single-chunk path: a long captured conversation
-					// chunks like anything else, and every one of its chunks has
-					// to resolve back to the bundle row.
-					conversationBundleId: metadata?.conversationBundleId,
-					parentContextId: metadata?.parentContextId,
-				},
-			});
-
-			if (!firstQdrantId) {
-				firstQdrantId = qdrantId;
-			}
-			pointIds.push(qdrantId);
-			successCount++;
+			chunkEmbeddings.push(embeddingResult.embedding);
 		} catch (error) {
 			if (error instanceof UnsupportedEmbeddingModelError) {
 				return { success: false, error: error.message, refusal: error };
@@ -949,16 +932,65 @@ async function embedWithChunking(
 			logger.error(
 				`[AutoEmbed] Failed to embed chunk ${chunk.index}: ${errorMsg}`,
 			);
-			errors.push(`Chunk ${chunk.index}: ${errorMsg}`);
+			// Stop this document on the first failed call; transient failures
+			// still let the enclosing activity retry, permanent ones do not.
+			return {
+				success: false,
+				error: `Failed to embed chunk ${chunk.index}: ${errorMsg}`,
+				...(isPermanentProviderFailure(error)
+					? { permanentFailure: true }
+					: {}),
+			};
 		}
 	}
 
-	if (successCount === 0) {
-		const errorDetail = errors.length > 0 ? `: ${errors[0]}` : "";
-		return {
-			success: false,
-			error: `Failed to embed any chunks${errorDetail}`,
-		};
+	if (chunkEmbeddings.length === 0) {
+		return { success: false, error: "Failed to embed any chunks" };
+	}
+
+	for (const [index, chunk] of enrichedChunks.entries()) {
+		// Use contextId-chunkIndex as unique ID for each chunk
+		const chunkContextId =
+			enrichedChunks.length > 1
+				? `${contextId}-chunk-${chunk.index}`
+				: contextId;
+
+		// IMPORTANT: Always set originalContextId so filter-based deletion
+		// can find and delete ALL chunks for a context (fixes orphaned chunk issue)
+		const qdrantId = await storeProjectContext({
+			contextId: chunkContextId,
+			projectId: owner.projectId,
+			userId,
+			organizationId,
+			content: chunk.originalContent,
+			embedding: chunkEmbeddings[index],
+			metadata: {
+				type: specRoute.kind === "openapi" ? "API_SPEC" : type,
+				filename: metadata?.filename,
+				sourceUrl: metadata?.sourceUrl,
+				sourceTitle: metadata?.sourceTitle,
+				provider: metadata?.provider,
+				// Endpoint/model identity on spec chunks; empty otherwise.
+				...(specPayloads[chunk.index] ?? {}),
+				chunkIndex: chunk.index,
+				totalChunks: enrichedChunks.length,
+				headings: chunk.metadata.headings,
+				section: chunk.metadata.section,
+				// originalContextId enables filter-based deletion of all chunks
+				originalContextId: contextId,
+				// See the single-chunk path: a long captured conversation
+				// chunks like anything else, and every one of its chunks has
+				// to resolve back to the bundle row.
+				conversationBundleId: metadata?.conversationBundleId,
+				parentContextId: metadata?.parentContextId,
+			},
+		});
+
+		if (!firstQdrantId) {
+			firstQdrantId = qdrantId;
+		}
+		pointIds.push(qdrantId);
+		successCount++;
 	}
 
 	// Update database with embedding status (use first chunk's ID).
@@ -988,9 +1020,9 @@ async function embedWithChunking(
  *
  * Writes the new points first and only then removes the old ones the new
  * embed did not overwrite (point ids are deterministic per chunk, so an
- * unchanged id is replaced in place). A failed embed — a provider outage, or
- * a model whose vectors the collection cannot hold — leaves the old points
- * untouched, so the context stays searchable on its previous embedding.
+ * unchanged id is replaced in place). Every chunk is embedded before the
+ * first point is written, so an embedding generation failure leaves the old
+ * points untouched. Qdrant write failures are not an atomic rollback.
  *
  * @param options - Embed options with new content
  * @returns Embed result
@@ -1028,6 +1060,9 @@ export async function reembedProjectContext(
 		return {
 			success: false,
 			error: errorMessage,
+			...(isPermanentProviderFailure(error)
+				? { permanentFailure: true }
+				: {}),
 			...(error instanceof UnsupportedEmbeddingModelError
 				? { refusal: error }
 				: {}),

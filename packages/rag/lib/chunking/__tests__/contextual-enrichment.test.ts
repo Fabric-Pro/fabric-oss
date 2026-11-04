@@ -28,11 +28,15 @@ const { generateTextMock, getAIModelWithMetadataMock, logModelUsageAsyncMock } =
 		logModelUsageAsyncMock: vi.fn(),
 	}));
 
-vi.mock("ai", () => ({
+vi.mock("ai", async () => ({
+	...(await vi.importActual<typeof import("ai")>("ai")),
 	generateText: generateTextMock,
 }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	getAIModelWithMetadata: getAIModelWithMetadataMock,
 	logModelUsageAsync: logModelUsageAsyncMock,
 }));
@@ -286,7 +290,12 @@ describe("enrichChunksWithTenantContext", () => {
 		getAIModelWithMetadataMock.mockReset();
 		logModelUsageAsyncMock.mockReset();
 		getAIModelWithMetadataMock.mockResolvedValue({
-			model: { id: "fake-model" },
+			model: {
+				specificationVersion: "v4",
+				provider: "example",
+				modelId: "example",
+				supportedUrls: {},
+			},
 			metadata: { provider: "ANTHROPIC_DIRECT" },
 			trackUsage: vi.fn(),
 		});
@@ -339,4 +348,126 @@ describe("enrichChunksWithTenantContext", () => {
 			}),
 		);
 	});
+});
+
+// Removing the permanent-failure stop makes this issue one LLM call per chunk.
+it.each([
+	{ statusCode: 401 },
+	{ statusCode: 403 },
+	{ name: "GatewayAuthenticationError" },
+])(
+	"defers the document after a permanent enrichment failure %j",
+	async (failure) => {
+		const generateContext = vi.fn().mockRejectedValue(failure);
+		const deferred = vi.fn();
+		const result = await enrichChunksWithContext(chunks, {
+			documentContent: "Example document",
+			documentTitle: "Example",
+			generateContext,
+			onEnrichmentDeferred: deferred,
+		});
+		expect(generateContext).toHaveBeenCalledTimes(1);
+		expect(result.map((c) => c.enrichedContent)).toEqual(
+			chunks.map((c) => c.content),
+		);
+		expect(result.map((c) => c.contextSummary)).toEqual(["", "", ""]);
+		expect(deferred).toHaveBeenCalledExactlyOnceWith({
+			resetAt: null,
+			unenrichedCount: 3,
+		});
+	},
+);
+
+it("continues enrichment after a transient provider failure", async () => {
+	const generateContext = vi
+		.fn()
+		.mockRejectedValueOnce({ statusCode: 429 })
+		.mockResolvedValue("Context");
+	const deferred = vi.fn();
+	const result = await enrichChunksWithContext(chunks, {
+		documentContent: "Example document",
+		documentTitle: "Example",
+		generateContext,
+		onEnrichmentDeferred: deferred,
+	});
+	expect(generateContext).toHaveBeenCalledTimes(3);
+	expect(result.map((c) => c.contextSummary)).toEqual([
+		"",
+		"Context",
+		"Context",
+	]);
+	expect(deferred).not.toHaveBeenCalled();
+});
+
+it("attributes enrichment usage to the project at model resolution", async () => {
+	getAIModelWithMetadataMock.mockResolvedValue({
+		model: {
+			specificationVersion: "v4",
+			provider: "example",
+			modelId: "example",
+			supportedUrls: {},
+		},
+		metadata: {},
+		trackUsage: vi.fn(),
+	});
+	generateTextMock.mockResolvedValue({ text: "Context", usage: {} });
+	await enrichChunksWithTenantContext(chunks.slice(0, 1), {
+		documentContent: "Example",
+		documentTitle: "Example",
+		userId: "example-user",
+		organizationId: "example-org",
+		projectId: "example-project",
+	});
+	expect(getAIModelWithMetadataMock.mock.lastCall?.[1]).toEqual({
+		userId: "example-user",
+		organizationId: "example-org",
+		projectId: "example-project",
+		jobType: "context-enrichment",
+	});
+});
+
+it("preserves gateway authentication classification through production generateText wrapping", async () => {
+	vi.stubEnv("NODE_ENV", "production");
+	try {
+		const failure = Object.assign(new Error("Authentication failed"), {
+			name: "GatewayAuthenticationError",
+			statusCode: 401,
+			isRetryable: false,
+			[Symbol.for("vercel.ai.gateway.error")]: true,
+			[Symbol.for("vercel.ai.gateway.error.GatewayAuthenticationError")]:
+				true,
+		});
+		const doGenerate = vi.fn().mockRejectedValue(failure);
+		getAIModelWithMetadataMock.mockResolvedValue({
+			model: {
+				specificationVersion: "v4",
+				provider: "example",
+				modelId: "example-model",
+				supportedUrls: {},
+				doGenerate,
+			},
+			metadata: {},
+			trackUsage: vi.fn(),
+		});
+		const actual = await vi.importActual<typeof import("ai")>("ai");
+		generateTextMock.mockImplementation(actual.generateText);
+		const deferred = vi.fn();
+		const result = await enrichChunksWithTenantContext(chunks, {
+			documentContent: "Example",
+			documentTitle: "Example",
+			userId: "example-user",
+			organizationId: "example-org",
+			onEnrichmentDeferred: deferred,
+		});
+		expect(doGenerate).toHaveBeenCalledTimes(1);
+		expect(result.map((c) => c.enrichedContent)).toEqual(
+			chunks.map((c) => c.content),
+		);
+		expect(deferred).toHaveBeenCalledExactlyOnceWith({
+			resetAt: null,
+			unenrichedCount: 3,
+		});
+	} finally {
+		vi.unstubAllEnvs();
+	}
 });

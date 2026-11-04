@@ -168,6 +168,37 @@ describe("Project Contexts Reprocess Workflow", () => {
 	});
 
 	describe("reembedProjectContext activity", () => {
+		it.each([true, false])(
+			"preserves reprocess permanentFailure=%s",
+			async (permanentFailure) => {
+				vi.mocked(ragReembed).mockResolvedValue({
+					success: false,
+					error: "Provider rejected request",
+					permanentFailure,
+				});
+				const { reembedProjectContext } = await import(
+					"../src/activities/project-contexts-reprocess"
+				);
+				const error = await reembedProjectContext({
+					contextId: "example-context",
+					projectId: "example-project",
+					userId: "example-user",
+					organizationId: "example-org",
+					content: "Example",
+					type: "TEXT",
+				}).catch((error) => error);
+				const { ensureApplicationFailure } = await import(
+					"@temporalio/common"
+				);
+				expect(ensureApplicationFailure(error)).toMatchObject({
+					nonRetryable: permanentFailure,
+					type: permanentFailure
+						? "EMBEDDING_PROVIDER_REJECTED"
+						: "Error",
+				});
+			},
+		);
+
 		it("should call RAG reembed with correct parameters", async () => {
 			(ragReembed as ReturnType<typeof vi.fn>).mockResolvedValue({
 				success: true,

@@ -70,7 +70,10 @@ const {
 	};
 });
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	AIProviderNotConfiguredError: TestAIProviderNotConfiguredError,
 	getSystemEmbeddingRAGProviderConfig: mockGetRAGProviderConfig,
 }));
@@ -258,3 +261,47 @@ it("records an embedding configuration refusal without requesting another attemp
 		error.message,
 	);
 });
+
+it.each([true, false])(
+	"sets Temporal retryability from structured permanentFailure=%s",
+	async (permanentFailure) => {
+		mockEmbedProjectContext.mockResolvedValue({
+			success: false,
+			error: "Provider rejected request",
+			permanentFailure,
+		});
+		const error = await embedSingleContextActivity(baseInput).catch(
+			(error) => error,
+		);
+		const { ensureApplicationFailure } = await import("@temporalio/common");
+		expect(ensureApplicationFailure(error)).toMatchObject({
+			nonRetryable: permanentFailure,
+			type: permanentFailure ? "EMBEDDING_PROVIDER_REJECTED" : "Error",
+		});
+		expect(mockRecordContextIndexingFailure).toHaveBeenCalledWith(
+			"ctx-1",
+			"Search indexing failed: Provider rejected request",
+		);
+	},
+);
+
+it.each([401, 429])(
+	"preserves a thrown wrapped provider HTTP %i at the context activity",
+	async (statusCode) => {
+		mockEmbedProjectContext.mockRejectedValue(
+			new Error("Embedding generation failed", {
+				cause: Object.assign(new Error("Provider rejected request"), {
+					statusCode,
+				}),
+			}),
+		);
+		const error = await embedSingleContextActivity(baseInput).catch(
+			(error) => error,
+		);
+		const { ensureApplicationFailure } = await import("@temporalio/common");
+		expect(ensureApplicationFailure(error)).toMatchObject({
+			nonRetryable: statusCode === 401,
+			type: statusCode === 401 ? "EMBEDDING_PROVIDER_REJECTED" : "Error",
+		});
+	},
+);

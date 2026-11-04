@@ -855,7 +855,10 @@ vi.mock("@repo/database/prisma/client", async (importOriginal) => ({
 	},
 }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isPermanentProviderFailure: (
+		await import("@repo/ai/lib/usage-logging-middleware")
+	).isPermanentProviderFailure,
 	AIProviderNotConfiguredError: h.AIProviderNotConfiguredError,
 	getSystemRAGProviderConfig: vi.fn(async () => ({
 		apiKey: "test-key",

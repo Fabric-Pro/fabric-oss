@@ -55,9 +55,11 @@ export interface CollectionConfig {
 	 * - "sparse": BM25 term-frequency sparse vector for keyword matching
 	 *
 	 * Enables hybrid search using Qdrant's prefetch + RRF fusion.
-	 * Existing collections with unnamed vectors still work — this only applies to new collections.
+	 * Existing collection schemas are retained unless addSparseInPlace is enabled.
 	 */
 	enableHybrid?: boolean;
+	/** Add the sparse schema to an existing dense-only collection when supported. */
+	addSparseInPlace?: boolean;
 	/**
 	 * When true, the collection exists only per organization: there is no
 	 * shared personal collection, and resolving its name without an
