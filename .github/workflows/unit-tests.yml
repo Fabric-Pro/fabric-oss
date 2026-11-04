@@ -621,7 +621,9 @@ jobs:
     needs: [plan, promotion_policy]
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.plan.outputs.filter_result == 'success' && (github.event_name != 'push' && (github.event_name != 'pull_request' || needs.plan.outputs.code == 'true'))
-    runs-on: ubuntu-latest
+    # Pinned to 24.04 while GitHub rolls ubuntu-latest onto 26.04: the locked
+    # Playwright release rejects ubuntu26.04-x64 during `playwright install`.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       # Same placeholders as the shards: modules on the import path read
@@ -656,13 +658,16 @@ jobs:
         run: |
           version="$(pnpm --filter @repo/temporal exec node -p "require('playwright/package.json').version")"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
 
       - name: Cache Playwright browsers
         id: playwright-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-chromium-${{ steps.playwright.outputs.version }}
+          key: ${{ runner.os }}-${{ steps.playwright.outputs.os }}-playwright-chromium-${{ steps.playwright.outputs.version }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-chromium-${{ steps.playwright.outputs.version }}
 
       - name: Install Chromium
         if: steps.playwright-cache.outputs.cache-hit != 'true'
@@ -871,9 +876,9 @@ jobs:
           key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma.config.ts', 'packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
 
       # Publishes the apt archives browser-security restores (see there), once
-      # per Playwright version and runner image. Same runner label as that
-      # job, so the archives match its architecture and Ubuntu release. A slow
-      # mirror delays only this push run, which nobody waits on.
+      # per Playwright version and 24.04 runner image. warm-caches stays on
+      # ubuntu-latest to match db-integration.yml's Prisma cache contract, so
+      # skip the Playwright apt warm step when ubuntu-latest lands on 26.04.
       - name: Resolve Playwright version
         id: playwright
         run: |
@@ -883,6 +888,7 @@ jobs:
 
       - name: Check published Chromium system packages
         id: playwright-apt
+        if: startsWith(steps.playwright.outputs.image, 'ubuntu24-')
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/playwright-apt-archives
@@ -891,7 +897,7 @@ jobs:
 
       - name: Download Chromium system packages
         id: playwright-apt-download
-        if: steps.playwright-apt.outputs.cache-hit != 'true'
+        if: startsWith(steps.playwright.outputs.image, 'ubuntu24-') && steps.playwright-apt.outputs.cache-hit != 'true'
         run: |
           shopt -s nullglob
           # apt-get keeps downloaded archives unless an image config cleans
