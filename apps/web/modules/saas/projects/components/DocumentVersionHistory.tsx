@@ -55,12 +55,15 @@ import { VersionDiffViewer } from "./VersionDiffViewer";
 /**
  * Why Restore is closed off right now (Fizzy #2946): a generation run is
  * queued or writing the document, which refuses the restore anyway, or this
- * tab's own regeneration is under way or waiting for its review.
+ * tab's own regeneration is under way or waiting for its review, or an
+ * assistant proposal holds the room: another tab reviews it, or nobody does
+ * any more and it waits to be removed.
  */
 export type RestoreBlockedReason =
 	| "runLive"
 	| "regenerating"
-	| "proposalElsewhere";
+	| "proposalElsewhere"
+	| "proposalOrphaned";
 
 interface DocumentVersionHistoryProps {
 	open: boolean;
@@ -162,7 +165,9 @@ export function DocumentVersionHistory({
 				? t("restoreBlocked.regenerating")
 				: restoreBlockedReason === "proposalElsewhere"
 					? t("restoreBlocked.proposalElsewhere")
-					: null;
+					: restoreBlockedReason === "proposalOrphaned"
+						? t("restoreBlocked.proposalOrphaned")
+						: null;
 	const restoreBlocked = restoreBlockedText !== null;
 	const rowRestoreBlockedId = useId();
 	const dialogRestoreBlockedId = useId();

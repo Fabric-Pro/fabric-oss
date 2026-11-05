@@ -26,7 +26,8 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 	getProjectFunctionTagClause: mocks.getProjectFunctionTagClause,
 }));
 
-vi.mock("@repo/rag", () => ({
+vi.mock("@repo/rag", async () => ({
+	...(await import("@repo/rag/lib/project-contexts/retrieval")),
 	retrieveProjectContexts: mocks.retrieveProjectContexts,
 	formatContextsForPrompt: mocks.formatContextsForPrompt,
 }));
@@ -362,3 +363,35 @@ it.each([true, false])(
 		);
 	},
 );
+
+it("injects bounded matched passages", async () => {
+	mocks.retrieveProjectContexts.mockResolvedValue([
+		{
+			id: "example-source",
+			type: "TEXT",
+			score: 1,
+			content: "WHOLE_BODY".repeat(10000),
+			matchedPassages: [
+				{ content: "MATCHED_PASSAGE", score: 1 },
+				{ content: "x".repeat(30000), score: 0.5 },
+			],
+		},
+	]);
+	mocks.generateObject.mockResolvedValue({ object: { recommendations: [] } });
+	await proposeQuestionAnswers({
+		feature: feature(),
+		questions: [{ rootId: "one", question: "Why?" }],
+		tenantFilter,
+	});
+	expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+		expect.objectContaining({ includeMatchedPassages: true }),
+	);
+	const text = JSON.stringify(mocks.generateObject.mock.calls[0][0]);
+	expect(text).toContain("MATCHED_PASSAGE");
+	expect(text).not.toContain("WHOLE_BODY");
+	const prompt = mocks.generateObject.mock.calls[0][0].prompt;
+	expect(
+		prompt.match(/<project_context>[\s\S]*?<\/project_context>/)?.[0]
+			.length,
+	).toBeLessThanOrEqual(20000);
+});

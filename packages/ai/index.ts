@@ -302,6 +302,12 @@ export {
 	TEST_CASE_IMPLEMENTATION_REVISER_PROMPT_FALLBACK_BODY,
 	TEST_CASE_STEP_REVISER_PROMPT_FALLBACK_BODY,
 } from "./lib/prompts/test-case-step-revision";
+// --- Report parameter defaults (from lib/report-parameter-defaults) ---
+export {
+	generateReportParameterDefaults,
+	type ReportParameterDefaultsRequest,
+	type ReportParameterToSuggest,
+} from "./lib/report-parameter-defaults";
 // --- Gateway text-to-speech (from lib/speech-model) ---
 export {
 	type AISpeechModelResult,

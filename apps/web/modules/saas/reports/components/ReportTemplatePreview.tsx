@@ -6,23 +6,18 @@ import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { formatDistanceToNow } from "date-fns";
-import {
-	EyeIcon,
-	Loader2Icon,
-	RotateCcwIcon,
-	SparklesIcon,
-} from "lucide-react";
-import { useState } from "react";
+import { EyeIcon, Loader2Icon, RotateCcwIcon } from "lucide-react";
 import { ReportArtifactContent } from "./ReportArtifactContent";
 
 const SAMPLE_ARTIFACT_NAME = "sample-report.md";
 
 /**
  * What a template produces, shown before a report is set up: the newest
- * successful report made from it in this project, or — on request, for
- * someone who may add reports to the project — an AI-written sample labelled
- * as sample data. A sample is written once per template per session and kept
- * in the query cache, so reopening the template does not spend on it again.
+ * successful report made from it in this project, or else a sample labelled
+ * as sample data, requested as soon as the preview opens. The API returns the
+ * template's stored sample when there is one, and otherwise writes one, storing
+ * it only for someone who may add reports to the project; it is kept in the
+ * query cache, so reopening the template asks again only after a reload.
  */
 export function ReportTemplatePreview({
 	templateId,
@@ -34,21 +29,20 @@ export function ReportTemplatePreview({
 	organizationId: string | null | undefined;
 }) {
 	const projectSourcePath = useContextPath("projects");
-	const [sampleRequested, setSampleRequested] = useState(false);
 	const input = { templateId, projectId, organizationId };
 	const preview = useQuery(
 		orpc.reports.templates.preview.queryOptions({ input }),
 	);
-	// The sample asks the same question the API does: may this caller add
-	// reports to the project.
-	const { data: capabilities } = useQuery(
-		orpc.reports.capabilities.queryOptions({ input: { projectId } }),
-	);
-	const canGenerateSample = capabilities?.canEditProjectReports === true;
 	const run = preview.data?.run ?? null;
 	const sample = useQuery({
-		...orpc.reports.templates.sample.queryOptions({ input }),
-		enabled: canGenerateSample && sampleRequested && !run,
+		...orpc.reports.templates.sample.queryOptions({
+			input: { templateId, organizationId, projectId },
+		}),
+		// The stored sample belongs to the template, not the project.
+		queryKey: orpc.reports.templates.sample.queryKey({
+			input: { templateId, organizationId },
+		}),
+		enabled: preview.isSuccess && !run,
 		staleTime: Number.POSITIVE_INFINITY,
 		gcTime: Number.POSITIVE_INFINITY,
 		retry: false,
@@ -135,33 +129,33 @@ export function ReportTemplatePreview({
 						No report from this template has run in this project
 						yet.
 					</p>
-					{canGenerateSample && (
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							disabled={sample.isFetching}
-							onClick={() =>
-								sampleRequested
-									? void sample.refetch()
-									: setSampleRequested(true)
-							}
-						>
-							{sample.isFetching ? (
-								<Loader2Icon className="mr-2 h-4 w-4 motion-safe:animate-spin" />
-							) : (
-								<SparklesIcon className="mr-2 h-4 w-4" />
-							)}
-							{sample.isFetching
-								? "Writing a sample..."
-								: "Show a sample with example data"}
-						</Button>
-					)}
-					{sample.error && (
-						<p role="alert" className="text-xs text-destructive">
-							{sample.error.message}
+					{sample.isFetching ? (
+						<p className="flex items-center gap-2 text-sm text-muted-foreground">
+							<Loader2Icon
+								aria-hidden="true"
+								className="h-4 w-4 motion-safe:animate-spin"
+							/>
+							Preparing a sample with example data...
 						</p>
-					)}
+					) : sample.isError ? (
+						<>
+							<p
+								role="alert"
+								className="text-xs text-destructive"
+							>
+								{sample.error.message}
+							</p>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => void sample.refetch()}
+							>
+								<RotateCcwIcon className="mr-2 h-4 w-4" />
+								Try again
+							</Button>
+						</>
+					) : null}
 				</div>
 			)}
 		</section>

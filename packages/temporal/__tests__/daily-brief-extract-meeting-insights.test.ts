@@ -3,11 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Mock external dependencies so the module can be loaded without network/DB/node_modules.
 // zod is used only in LlmInsightSchema (not in buildExtractionPrompt), so a stub is fine.
 vi.mock("zod", () => {
-	const schema = { min: () => schema, optional: () => schema };
+	const schema = {
+		min: () => schema,
+		optional: () => schema,
+		default: () => schema,
+	};
 	const z = {
 		object: () => schema,
 		array: () => schema,
 		string: () => schema,
+		enum: () => schema,
 	};
 	return { z, default: z };
 });
@@ -20,6 +25,8 @@ vi.mock("@repo/ai", () => ({
 }));
 vi.mock("@repo/database", () => ({
 	setAiUsageRecorder: vi.fn(),
+	// Problem Log drafts (Fizzy #2277); never throws in production.
+	draftProblemsFromContext: vi.fn().mockResolvedValue(0),
 	db: {
 		projectMeetingTranscript: {
 			findMany: vi.fn(),

@@ -56,6 +56,7 @@ export function ReportEvidenceSettings({
 	});
 	const update = (changes: Partial<ReportEvidenceConfig>) =>
 		onChange(reportEvidenceConfigSchema.parse({ ...value, ...changes }));
+	const assignedProjectId = lockedProjectId ?? value?.projectId;
 	if (!value) {
 		return (
 			<div className="space-y-3">
@@ -309,14 +310,15 @@ export function ReportEvidenceSettings({
 												{project.name}
 											</SelectItem>
 										))}
-										{lockedProjectId &&
+										{/* An organization admin may report on a project they hold no row on, which this list leaves out. */}
+										{assignedProjectId &&
 											!data?.projects.some(
 												(project) =>
 													project.id ===
-													lockedProjectId,
+													assignedProjectId,
 											) && (
 												<SelectItem
-													value={lockedProjectId}
+													value={assignedProjectId}
 												>
 													Assigned project
 												</SelectItem>

@@ -19,6 +19,7 @@
  */
 import { CliFailure } from "../command-boundary.js";
 import { fabricCommand, isServedBundle } from "../launcher.js";
+import { signInCanGrant } from "../missing-scope.js";
 import { BAD_BASE_URL_LINE } from "../origin.js";
 import { isSafeArgument, NO_COMMAND } from "../shell-words.js";
 import { sanitizeDisplayText } from "./checks.js";
@@ -564,7 +565,9 @@ const LINES: { [K in OutcomeId]: (params: OutcomeParams[K]) => string } = {
 	forbidden: () =>
 		"You do not have access to this project's coding instructions. Ask a project maintainer for access.",
 	"missing-scope": ({ scope, origin }) =>
-		`This credential is missing ${scope === null ? "a permission this needs" : `the ${scope} permission`}. Create a key that carries it, or run: ${loginCommand(origin)}`,
+		scope !== null && !signInCanGrant(scope)
+			? `This credential is missing the ${scope} permission, which a browser sign-in does not carry. Create a key that carries it and sign in with it: ${loginCommand(origin)} --key <api-key>`
+			: `This credential is missing ${scope === null ? "a permission this needs" : `the ${scope} permission`}. Create a key that carries it, or run: ${loginCommand(origin)}`,
 	"proposal-limit-proposer": () =>
 		"You already have five active coding-instructions proposals on this project. Wait for one to be reviewed, or withdraw one. Nothing was sent.",
 	"proposal-limit-project": () =>

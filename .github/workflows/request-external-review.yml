@@ -2,9 +2,10 @@ name: Request OSS review
 
 # Replaces native CODEOWNERS auto-review (see .github/CODEOWNERS).
 # This workflow requests the designated reviewer for non-relay pull requests
-# in fabric-oss, or the owners team when that reviewer authored the PR. Relay
-# App PRs publish authorized internal changes and need no second review request.
-# The internal repository does not request reviews.
+# in fabric-oss. Self-authored PRs skip automatic assignment; requesting a
+# self-review is invalid, and the built-in token cannot resolve the owners team.
+# Relay App PRs need no second review request. The internal repository does not
+# request reviews.
 #
 # pull_request_target (not pull_request) so the base repository's token can
 # write review requests even when the PR comes from a fork. Nothing is
@@ -34,16 +35,15 @@ jobs:
           NUMBER: ${{ github.event.pull_request.number }}
         run: |
           REVIEWER=preddy4690
-          REVIEWER_FIELD=reviewers
-          if [[ "$AUTHOR" == "$REVIEWER" ]]; then
-            REVIEWER=owners
-            REVIEWER_FIELD=team_reviewers
+          if [[ "${AUTHOR,,}" == "${REVIEWER,,}" ]]; then
+            echo "Skipping automatic review assignment for a self-authored pull request."
+            exit 0
           fi
           # Reopening a PR can return 422 after a request or review. Confirm
           # that state before treating the response as a no-op.
           if ! ERR=$(gh api --method POST \
             "repos/${{ github.repository }}/pulls/${NUMBER}/requested_reviewers" \
-            -f "${REVIEWER_FIELD}[]=${REVIEWER}" 2>&1); then
+            -f "reviewers[]=${REVIEWER}" 2>&1); then
             case "$ERR" in
               *422*|*Unprocessable*)
                 REQUESTED=$(gh api \

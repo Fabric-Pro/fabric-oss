@@ -395,6 +395,10 @@ export {
 	type EmbedSingleContextOutput,
 	embedSingleContextActivity,
 } from "./context-embedding";
+// Living Memory decision extraction (decisions in a synced file's confirmed
+// version, offered as review candidates in the Decisions tab)
+export { extractLivingMemoryDecisionsActivity } from "./living-memory-decisions/extract-decisions";
+export { scanLivingMemoryFirstSyncFilesActivity } from "./living-memory-decisions/scan-first-sync-files";
 // Knowledge hub: topic summaries (specs/2026-10-21-ai-artifacts-hub)
 export * from "./instruction-consolidation";
 export * from "./project-import";
@@ -1223,6 +1227,7 @@ export {
 	type SendProjectDeletionReminderOutput,
 	sendProjectDeletionReminderActivity,
 } from "./project-deletion";
+export { monitoredProjectExistsActivity } from "./monitored-project";
 export * from "./project-document-generation";
 export * from "./project-instructions";
 // Coding Instructions proposal pull requests (Fizzy #2563 spec §6, §9). The

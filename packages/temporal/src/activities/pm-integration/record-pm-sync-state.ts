@@ -1,4 +1,4 @@
-import { db, PmSyncStatus, type Prisma } from "@repo/database";
+import { db, PmSyncStatus, type Prisma, recordProblem } from "@repo/database";
 import { logger } from "@repo/logs";
 import { humanizePmSyncError } from "./humanize-pm-sync-error";
 import {
@@ -473,6 +473,22 @@ export async function recordPmSyncFailureLog(
 				organizationId: ctx.organizationId,
 				userId: ctx.organizationId ? null : ctx.userId,
 				projectId: ctx.projectId,
+			});
+			// Problem Log (Fizzy #2277): one entry per item + error class, so
+			// repeated failures of the same push aggregate.
+			const pmTool = input.pmTool ?? ctx.mcpServerKey ?? "unknown";
+			await recordProblem({
+				organizationId: ctx.organizationId,
+				projectId: ctx.projectId,
+				affectedUserId: input.actorUserId ?? null,
+				category: "INTEGRATION_FAILURE",
+				severity: "ERROR",
+				source: `pm-sync:${pmTool}`,
+				title: `Could not sync "${ctx.title}" to ${pmTool}`,
+				description: humanizePmSyncError(input.errorMessage),
+				fingerprint: `${itemType}:${itemId}|${errorClass}`,
+				sourceId: itemId,
+				metadata: { errorClass, triggerSource, itemType },
 			});
 		}
 	} catch (error) {

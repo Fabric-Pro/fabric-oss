@@ -29,6 +29,7 @@ import type {
 	BackgroundJobStatus,
 } from "../generated/client";
 import { advisoryObjectKey } from "./lib/refresh-lock-key";
+import { recordFailedBackgroundJobProblems } from "./problem-log";
 
 // =============================================================================
 // Types
@@ -1096,6 +1097,12 @@ export async function failBackgroundJob(
 			status: "FAILED",
 			completedAt: now,
 		});
+		await recordFailedBackgroundJobProblems({
+			workflowId: key.workflowId,
+			...sourceIdWhere(key.sourceId),
+			...(ordered ? { runId: ordered.runId } : runIdWhere(key.runId)),
+			completedAt: now,
+		});
 	} catch {
 		// Best-effort telemetry.
 	}
@@ -1312,5 +1319,9 @@ export async function failStaleBackgroundJobs(args: {
 	// running on the step it was on. Scoped by `completedAt` to the rows this
 	// sweep just closed.
 	await skipUnreachedSteps({ status: "FAILED", completedAt: now });
+	await recordFailedBackgroundJobProblems({
+		errorClass: "TimedOut",
+		completedAt: now,
+	});
 	return result.count;
 }

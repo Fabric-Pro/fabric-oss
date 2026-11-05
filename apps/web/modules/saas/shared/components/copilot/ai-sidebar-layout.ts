@@ -22,6 +22,15 @@ import { useEffect, useState } from "react";
 export const AI_SIDEBAR_CONTENT_SHIFT_CLASS = "sm:right-[28rem]";
 
 /**
+ * Whether a `<CopilotSidebar>` should mount open. Below the breakpoint it docks
+ * at, the panel covers the whole screen and the page's own controls with it, so
+ * there it starts closed.
+ */
+export function aiSidebarStartsOpen(): boolean {
+	return !globalThis.window?.matchMedia?.("(max-width: 639.98px)").matches;
+}
+
+/**
  * Tracks whether the CopilotKit assistant sidebar is currently docked-open, so
  * a host page's fixed page-chrome wrapper can reserve space for it via
  * `AI_SIDEBAR_CONTENT_SHIFT_CLASS`. Watches the document for CopilotKit

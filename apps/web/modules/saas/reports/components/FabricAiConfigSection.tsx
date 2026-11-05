@@ -23,7 +23,6 @@ import {
 	SelectValue,
 } from "@ui/components/select";
 import { Switch } from "@ui/components/switch";
-import { Textarea } from "@ui/components/textarea";
 import {
 	Tooltip,
 	TooltipContent,
@@ -34,7 +33,6 @@ import {
 	BrainCircuitIcon,
 	ChevronDownIcon,
 	HelpCircleIcon,
-	MessageSquareTextIcon,
 	SparklesIcon,
 	WandIcon,
 } from "lucide-react";
@@ -46,8 +44,6 @@ export interface FabricConfig {
 	pattern?: string;
 	variables?: Record<string, string>;
 	enableAutoDetection?: boolean;
-	/** Default user prompt for the LLM (defines the task - can be overridden per instance) */
-	defaultPrompt?: string;
 }
 
 type Props = {
@@ -205,8 +201,7 @@ export function FabricAiConfigSection({
 		value.strategy ||
 		value.context ||
 		value.pattern ||
-		value.enableAutoDetection === false ||
-		value.defaultPrompt;
+		value.enableAutoDetection === false;
 
 	return (
 		<Card className="border-dashed">
@@ -414,47 +409,6 @@ export function FabricAiConfigSection({
 									</SelectContent>
 								</Select>
 							</div>
-						</div>
-
-						{/* Default Prompt (User Message) */}
-						<div className="space-y-2">
-							<TooltipProvider>
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<Label className="flex items-center gap-1">
-											<MessageSquareTextIcon className="h-4 w-4" />
-											Default Prompt
-											<HelpCircleIcon className="h-3 w-3 text-muted-foreground" />
-										</Label>
-									</TooltipTrigger>
-									<TooltipContent className="max-w-xs">
-										<p>
-											The task prompt sent to the AI.
-											Defines what the AI should do with
-											the data. Can be overridden per
-											instance.
-										</p>
-									</TooltipContent>
-								</Tooltip>
-							</TooltipProvider>
-							<Textarea
-								placeholder="Enter the task prompt for report generation. E.g., 'Analyze the sprint data and generate a comprehensive report covering: progress, blockers, and recommendations...'"
-								value={value.defaultPrompt || ""}
-								onChange={(e) =>
-									handleChange(
-										"defaultPrompt",
-										e.target.value || undefined,
-									)
-								}
-								rows={4}
-								className="font-mono text-sm"
-							/>
-							<p className="text-xs text-muted-foreground">
-								This is sent as the user message to the AI.
-								Fabric AI strategy/context/pattern provide the
-								system instructions. Can be overridden per
-								instance.
-							</p>
 						</div>
 
 						{/* Template Variables */}

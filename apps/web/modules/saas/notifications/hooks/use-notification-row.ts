@@ -7,6 +7,7 @@ import {
 	AlertCircleIcon,
 	AtSignIcon,
 	BellIcon,
+	BookOpenTextIcon,
 	BotIcon,
 	CheckCircleIcon,
 	CircleAlertIcon,
@@ -127,6 +128,11 @@ function resolveIcon(notification: {
 	// status change, and this row is about the files agents now read.
 	if (notification.type === "CODING_INSTRUCTIONS_PUBLISHED") {
 		return ScrollTextIcon;
+	}
+	// Decision candidates found in synced Living Memory files: the same book
+	// glyph the Decisions tab uses for them, not PROJECT's status flag.
+	if (notification.type === "DECISION_CANDIDATES_READY") {
+		return BookOpenTextIcon;
 	}
 	// Two types reuse the MENTION category, for its opt-out toggle rather than
 	// for its meaning. They therefore DO land in the Mentions tab, which filters

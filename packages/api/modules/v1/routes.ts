@@ -19,6 +19,7 @@
  *   GET  /projects/:id/instructions/proposals/open → The caller's open proposals' hashes
  *   PUT  /projects/:id/contexts/synced-files → Push one knowledge file into the project's Context by path
  *   DELETE /projects/:id/contexts/synced-files → Delete one synced knowledge file by path, in the version named
+ *   POST /projects/:id/contexts/synced-files/missing → Which of the paths named hold no synced file
  */
 
 import { createHash, randomBytes } from "node:crypto";

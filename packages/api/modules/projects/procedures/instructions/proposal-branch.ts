@@ -23,14 +23,12 @@ import {
 	closeProposalBranch,
 	countLiveBranchChanges,
 	getAcceptingBranchForMember,
-	getInstructionFileByPath,
 	getInstructionRepositorySyncForProposal,
 	getMemberProposalBranch,
 	getUsersByIds,
 	joinProposalBranch,
 	listMemberBranches,
 	listProposalBranchOwnerIds,
-	loadGitIntent,
 	type ProposalBranchNaming,
 	projectMemberBranch,
 	proposeBranchProposalAgain,
@@ -40,7 +38,6 @@ import {
 	stopTrackingBranch,
 	tryBranchProposalAgain,
 } from "@repo/database";
-import { fileTypingFor } from "@repo/instructions";
 import { memberBranchRef } from "@repo/instructions/proposal-branch-ref";
 import {
 	repositoryIdentity,
@@ -49,6 +46,7 @@ import {
 import { getStorageProvider } from "@repo/storage";
 import { getTemporalClient } from "@repo/temporal";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
+import { findBranchWrittenFile } from "./branch-written-file";
 import {
 	assertRepositoryProposalAccess,
 	canReviewInstructionProposals,
@@ -612,46 +610,14 @@ export async function readMyProposalBranchFile(
 	if (!entry || entry.state !== "written" || entry.snapshotId === null) {
 		return branchFileNotFound();
 	}
-	const intent = await loadGitIntent({
+	const file = await findBranchWrittenFile({
 		snapshotId: entry.snapshotId,
 		projectId: caller.projectId,
 		organizationId: caller.organizationId,
+		path: caller.path,
+		sha256: entry.sha256,
 	});
-	const changed =
-		intent?.status === "READY"
-			? intent.gitIntentEntries.find(
-					(file) =>
-						file.path === caller.path && file.operation === "PUT",
-				)
-			: undefined;
-	const file = intent
-		? changed &&
-			changed.storageKey !== null &&
-			changed.sha256 !== null &&
-			changed.size !== null
-			? {
-					projectId: caller.projectId,
-					path: changed.path,
-					sha256: changed.sha256,
-					storageKey: changed.storageKey,
-					size: changed.size,
-					mimeType:
-						changed.mimeType ??
-						fileTypingFor(changed.path).mimeType,
-					isText: changed.isText,
-					mode: changed.mode,
-				}
-			: null
-		: await getInstructionFileByPath(
-				entry.snapshotId,
-				caller.organizationId,
-				caller.path,
-			);
-	if (
-		!file ||
-		file.projectId !== caller.projectId ||
-		(entry.sha256 !== null && file.sha256 !== entry.sha256)
-	) {
+	if (!file) {
 		return branchFileNotFound();
 	}
 	const storage = getStorageProvider();

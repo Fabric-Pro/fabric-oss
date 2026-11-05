@@ -11,6 +11,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	handlers,
+	mockAssertPermission,
+	mockCanGenerate,
 	mockGetExecution,
 	mockCancelActive,
 	mockDeleteArtifacts,
@@ -19,6 +21,8 @@ const {
 	mockTerminate,
 } = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...a: unknown[]) => unknown>,
+	mockAssertPermission: vi.fn(),
+	mockCanGenerate: vi.fn(),
 	mockGetExecution: vi.fn(),
 	mockCancelActive: vi.fn(),
 	mockDeleteArtifacts: vi.fn(),
@@ -62,12 +66,20 @@ vi.mock("../../../../../orpc/procedures", () => {
 		get tenantProtectedProcedure() {
 			return makeChainable();
 		},
-		Permissions: { REPORT_EXECUTE: "REPORT_EXECUTE" },
+		Permissions: {
+			REPORT_EXECUTE: "REPORT_EXECUTE",
+			REPORT_READ: "REPORT_READ",
+		},
 		requirePermission: () => (c: unknown) => c,
 		resolveOrganizationId: (input: string | null | undefined) =>
 			input ?? null,
 	};
 });
+
+vi.mock("../../../lib/report-access", () => ({
+	assertReportPermission: (...a: unknown[]) => mockAssertPermission(...a),
+	canGenerateReportInstance: (...a: unknown[]) => mockCanGenerate(...a),
+}));
 
 import "../cancel-execution";
 
@@ -87,12 +99,55 @@ beforeEach(() => {
 		workflow: { getHandle: () => ({ terminate: mockTerminate }) },
 	});
 	mockTerminate.mockResolvedValue(undefined);
+	mockCanGenerate.mockResolvedValue(true);
 	mockGetOrgMembership.mockResolvedValue({ role: "admin" });
 	mockDeleteArtifacts.mockResolvedValue(0);
 	mockCancelActive.mockResolvedValue(true);
 });
 
 describe("cancelExecutionProcedure", () => {
+	it("refuses an owner whose role lost REPORT_EXECUTE, before flipping anything", async () => {
+		mockGetExecution.mockResolvedValue({
+			id: "e0",
+			userId: "u1",
+			organizationId: "org1",
+			status: "RUNNING",
+			workflowId: "wf0",
+		});
+		mockAssertPermission.mockRejectedValueOnce(new Error("Missing"));
+
+		await expect(
+			call({ executionId: "e0", organizationId: "org1" }),
+		).rejects.toThrow("Missing");
+		expect(mockAssertPermission).toHaveBeenCalledWith(
+			"org1",
+			ctx.user,
+			"REPORT_EXECUTE",
+		);
+		expect(mockCancelActive).not.toHaveBeenCalled();
+		expect(mockTerminate).not.toHaveBeenCalled();
+	});
+
+	it("refuses an owner whose project role no longer lets them generate the report, before flipping anything", async () => {
+		const instance = { userId: "u1", projectId: "example-project" };
+		mockGetExecution.mockResolvedValue({
+			id: "e0",
+			userId: "u1",
+			organizationId: "org1",
+			status: "RUNNING",
+			workflowId: "wf0",
+			instance,
+		});
+		mockCanGenerate.mockResolvedValue(false);
+
+		await expect(
+			call({ executionId: "e0", organizationId: "org1" }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(mockCanGenerate).toHaveBeenCalledWith(instance, ctx.user);
+		expect(mockCancelActive).not.toHaveBeenCalled();
+		expect(mockTerminate).not.toHaveBeenCalled();
+	});
+
 	it("owner cancels a RUNNING execution → flips CANCELLED, clears artifacts, terminates (AE2)", async () => {
 		mockGetExecution.mockResolvedValue({
 			id: "e1",

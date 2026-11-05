@@ -1,9 +1,9 @@
 {
-	"title": "Tutorials",
+	"title": "Anleitungen",
 	"pages": [
 		"first-document",
-		"first-agent",
 		"first-workflow",
+		"testing-a-work-item",
 		"setup-integrations",
 		"organization-setup"
 	]

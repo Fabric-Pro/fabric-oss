@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/client";
 import { config } from "@repo/config";
 import { readRepositoryFileAtCommit } from "@repo/connectors";
-import { loadGitIntent } from "@repo/database";
+import { findMemberBranchWrite, loadGitIntent } from "@repo/database";
 import {
 	fileTypingFor,
 	instructionTextPage,
 	SNAPSHOT_LIMITS,
 } from "@repo/instructions";
 import { getStorageProvider } from "@repo/storage";
+import { findBranchWrittenFile } from "./branch-written-file";
 import {
 	assertDirectRepositoryPin,
 	assertDirectRepositorySourceCurrent,
@@ -39,6 +40,52 @@ function unavailable(): never {
 	});
 }
 
+/** Stored bytes, checked against the size and hash recorded with them. */
+async function readStored(
+	stored: {
+		storageKey: string;
+		sha256: string;
+		size: number;
+		isText: boolean | null;
+	},
+	maxBytes: number,
+): Promise<Side> {
+	if (!stored.isText)
+		return { text: null, size: stored.size, omitted: "BINARY" };
+	if (stored.size > maxBytes)
+		return { text: null, size: stored.size, omitted: "FILE_TOO_LARGE" };
+	const object = await getStorageProvider().downloadFile(stored.storageKey, {
+		bucket: config.storage.bucketNames.skills,
+	});
+	if (
+		object.data.byteLength !== stored.size ||
+		createHash("sha256").update(object.data).digest("hex") !== stored.sha256
+	)
+		return unavailable();
+	return decodeSide(object.data);
+}
+
+function decodeSide(bytes: Uint8Array): Side {
+	try {
+		if (bytes.includes(0))
+			return {
+				text: null,
+				size: bytes.byteLength,
+				omitted: "BINARY",
+			};
+		return {
+			text: new TextDecoder("utf-8", {
+				fatal: true,
+				ignoreBOM: true,
+			}).decode(bytes),
+			size: bytes.byteLength,
+			omitted: null,
+		};
+	} catch {
+		return { text: null, size: bytes.byteLength, omitted: "BINARY" };
+	}
+}
+
 async function openContent(scope: Scope) {
 	const intent = await loadGitIntent(scope);
 	if (
@@ -61,6 +108,37 @@ async function openContent(scope: Scope) {
 		source.integrationId === intent.repositoryIntegrationId &&
 		source.ref === intent.sourceRef;
 	if (baseReadable) await assertDirectRepositoryPin(source, pin);
+	/**
+	 * The "before" side of a branch-relative entry: the file Fabric wrote on
+	 * the proposer's branch as the blob the entry froze, from Fabric's own
+	 * stored copy. The repository's branch tip is not read, because the
+	 * proposal itself may have been appended over that blob since.
+	 */
+	const readBranchBefore = async (
+		path: string,
+		branchObjectId: string,
+		maxBytes: number,
+	): Promise<Side> => {
+		const write = await findMemberBranchWrite({
+			projectId: scope.projectId,
+			userId: intent.userId,
+			organizationId: scope.organizationId,
+			path,
+			objectId: branchObjectId,
+		});
+		const file = write
+			? await findBranchWrittenFile({
+					...write,
+					projectId: scope.projectId,
+					organizationId: scope.organizationId,
+					path,
+				})
+			: null;
+		if (!file) return { text: null, size: null, omitted: "SOURCE_CHANGED" };
+		if (maxBytes <= 0)
+			return { text: null, size: file.size, omitted: "RESPONSE_LIMIT" };
+		return readStored(file, maxBytes);
+	};
 	const readSide = async (
 		path: string,
 		side: "before" | "after",
@@ -70,10 +148,11 @@ async function openContent(scope: Scope) {
 			(entry) => entry.path === path,
 		);
 		if (!entry) return unavailable();
-		if (
-			(side === "before" && entry.baseObjectId === null) ||
-			(side === "after" && entry.operation === "DELETE")
-		)
+		if (side === "before" && entry.baseObjectId === null)
+			return entry.branchObjectId === null
+				? { text: null, size: null, omitted: null }
+				: readBranchBefore(path, entry.branchObjectId, maxBytes);
+		if (side === "after" && entry.operation === "DELETE")
 			return { text: null, size: null, omitted: null };
 		if (side === "before" && !baseReadable)
 			return { text: null, size: null, omitted: "SOURCE_CHANGED" };
@@ -83,7 +162,6 @@ async function openContent(scope: Scope) {
 				size: side === "after" ? entry.size : null,
 				omitted: "RESPONSE_LIMIT",
 			};
-		let bytes: Uint8Array;
 		if (side === "after") {
 			if (
 				entry.storageKey === null ||
@@ -91,55 +169,26 @@ async function openContent(scope: Scope) {
 				entry.size === null
 			)
 				return unavailable();
-			if (!entry.isText)
-				return { text: null, size: entry.size, omitted: "BINARY" };
-			if (entry.size > maxBytes)
-				return {
-					text: null,
+			return readStored(
+				{
+					storageKey: entry.storageKey,
+					sha256: entry.sha256,
 					size: entry.size,
-					omitted: "FILE_TOO_LARGE",
-				};
-			const object = await getStorageProvider().downloadFile(
-				entry.storageKey,
-				{ bucket: config.storage.bucketNames.skills },
-			);
-			if (
-				object.data.byteLength !== entry.size ||
-				createHash("sha256").update(object.data).digest("hex") !==
-					entry.sha256
-			)
-				return unavailable();
-			bytes = object.data;
-		} else {
-			const result = await readRepositoryFileAtCommit({
-				...source.repository,
-				sha: pin.commitSha,
-				path: directRepositoryPath(source, path),
+					isText: entry.isText,
+				},
 				maxBytes,
-			});
-			if (!result.ok || result.state === "absent") return unavailable();
-			if (result.state === "tooLarge")
-				return { text: null, size: null, omitted: "FILE_TOO_LARGE" };
-			bytes = result.bytes;
+			);
 		}
-		try {
-			if (bytes.includes(0))
-				return {
-					text: null,
-					size: bytes.byteLength,
-					omitted: "BINARY",
-				};
-			return {
-				text: new TextDecoder("utf-8", {
-					fatal: true,
-					ignoreBOM: true,
-				}).decode(bytes),
-				size: bytes.byteLength,
-				omitted: null,
-			};
-		} catch {
-			return { text: null, size: bytes.byteLength, omitted: "BINARY" };
-		}
+		const result = await readRepositoryFileAtCommit({
+			...source.repository,
+			sha: pin.commitSha,
+			path: directRepositoryPath(source, path),
+			maxBytes,
+		});
+		if (!result.ok || result.state === "absent") return unavailable();
+		if (result.state === "tooLarge")
+			return { text: null, size: null, omitted: "FILE_TOO_LARGE" };
+		return decodeSide(result.bytes);
 	};
 	return {
 		intent,
@@ -162,22 +211,24 @@ export async function buildNativeProposalChanges(scope: Scope) {
 		remaining -= after.text === null ? 0 : (after.size ?? 0);
 		const binary =
 			before.omitted === "BINARY" || after.omitted === "BINARY";
+		// A branch-relative entry changes a file the proposer's branch holds:
+		// an edit or delete of that file, never an added one.
+		const hadFile =
+			entry.baseObjectId !== null || entry.branchObjectId !== null;
 		changes.push({
 			path: entry.path,
 			op:
 				entry.operation === "DELETE"
 					? ("delete" as const)
-					: entry.baseObjectId === null
-						? ("add" as const)
-						: ("edit" as const),
+					: hadFile
+						? ("edit" as const)
+						: ("add" as const),
 			before: binary ? null : before.text,
 			after: binary ? null : after.text,
 			beforeSize: before.size,
 			afterSize: after.size,
 			beforeOmitted:
-				binary && entry.baseObjectId !== null
-					? ("BINARY" as const)
-					: before.omitted,
+				binary && hadFile ? ("BINARY" as const) : before.omitted,
 			afterOmitted:
 				binary && entry.operation === "PUT"
 					? ("BINARY" as const)

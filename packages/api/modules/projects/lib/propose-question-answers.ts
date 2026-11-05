@@ -35,7 +35,10 @@ import {
 	setDecisionMetadata,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { formatContextsForPrompt, retrieveProjectContexts } from "@repo/rag";
+import {
+	formatContextPassagesForPrompt,
+	retrieveProjectContexts,
+} from "@repo/rag";
 import { combineCleanSpec } from "@repo/utils/clean-spec-content";
 import { zodSchema } from "ai";
 import { z } from "zod";
@@ -175,6 +178,7 @@ export async function proposeQuestionAnswers({
 		let context: string | null = null;
 		try {
 			const contexts = await retrieveProjectContexts({
+				includeMatchedPassages: true,
 				projectId: feature.projectId,
 				query: [
 					feature.title,
@@ -190,7 +194,11 @@ export async function proposeQuestionAnswers({
 				topK: 5,
 			});
 			context =
-				contexts.length > 0 ? formatContextsForPrompt(contexts) : null;
+				contexts.length > 0
+					? formatContextPassagesForPrompt(contexts, {
+							maxChars: PROJECT_CONTEXT_MAX_CHARS,
+						})
+					: null;
 		} catch (err) {
 			logger.warn("[maturation] recommendation RAG retrieval failed", {
 				storyId: feature.id,
@@ -348,3 +356,6 @@ export function normalizeOptions(options: unknown): RecommendedOption[] {
 	}
 	return out;
 }
+
+// Bounds the project-context prompt section at the evaluated 20,000-character value.
+const PROJECT_CONTEXT_MAX_CHARS = 20000;

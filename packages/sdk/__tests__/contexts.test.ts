@@ -416,6 +416,43 @@ describe("ContextsResource.deleteSyncedFile (Fizzy #2636)", () => {
 	});
 });
 
+describe("ContextsResource.findMissingSyncedFiles", () => {
+	it("posts the paths in the body and resolves with what is missing", async () => {
+		const { client, captured } = buildClient({
+			rawBody: { data: { missing: ["docs/a.md"] } },
+		});
+
+		const result = await client.contexts.findMissingSyncedFiles("proj 1", [
+			"docs/a.md",
+			"docs/b.md",
+		]);
+
+		expect(result).toEqual({ missing: ["docs/a.md"] });
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.method).toBe("POST");
+		expect(captured[0]?.url).toBe(
+			"https://test.fabric/api/v1/projects/proj%201/contexts/synced-files/missing",
+		);
+		expect(captured[0]?.body).toEqual({
+			sourcePaths: ["docs/a.md", "docs/b.md"],
+		});
+	});
+
+	it("binds ?org= when given", async () => {
+		const { client, captured } = buildClient({
+			rawBody: { data: { missing: [] } },
+		});
+
+		await client.contexts.findMissingSyncedFiles("proj-1", ["a.md"], {
+			org: "example-org",
+		});
+
+		expect(captured[0]?.url).toBe(
+			"https://test.fabric/api/v1/projects/proj-1/contexts/synced-files/missing?org=example-org",
+		);
+	});
+});
+
 describe("ContextsResource.resetSyncedFiles", () => {
 	it("sends a POST to the reset route and resolves with the count", async () => {
 		const { client, captured } = buildClient({

@@ -6,6 +6,9 @@ import { defineConfig } from "vitest/config";
 // or integration-CI invocation.
 const INTEGRATION_TESTS = [
 	"__tests__/report-project-knowledge.integration.test.ts",
+	// Every role against the report tenant checker over real rows: no second
+	// identity exists on a shared environment to prove these live.
+	"__tests__/report-access-roles.integration.test.ts",
 	"__tests__/workspace-document-chat.integration.test.ts",
 	"__tests__/conversation-turn-events.integration.test.ts",
 	"__tests__/decision-replay.integration.test.ts",

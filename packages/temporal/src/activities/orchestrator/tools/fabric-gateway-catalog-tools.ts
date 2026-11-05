@@ -107,11 +107,35 @@ const DISCOVERY: Record<FabricChatToolName, Discovery> = {
 		keywords:
 			"project reports, list reports, report runs, which reports, generated report, last report run",
 	},
+	fabric_list_report_templates: {
+		when: "To find the report templates a project can start a new report from, before adding one.",
+		how: "Use the projectId. Each template lists its parameters; needsConnection means the new report needs a data source connected on its page.",
+		keywords:
+			"report templates, available templates, which reports can I add, new report options, template catalog",
+	},
+	fabric_create_project_report: {
+		when: "To add a new report to a project, from a template or from what the person asks it to cover; the person approves it first. It does not generate the report.",
+		how: "Send prompt with what the report should cover, templateId from fabric_list_report_templates, or both; a prompt alone starts from the Custom report template. Make the real call: the approval card is where the person decides. Show reportUrl and generateBlockedReason from the result; call fabric_generate_report only when canGenerate is true and the person wants a run.",
+		keywords:
+			"create a report, add a report, new project report, report from template, custom report, report from prompt, set up a report",
+	},
 	fabric_generate_report: {
 		when: "To generate or regenerate one of the person's own project reports now; the person approves it first because it spends AI credits.",
 		how: "Get instanceId from fabric_list_project_reports and only call it for a report with canGenerate true. Make the real call: the approval card is where the person decides.",
 		keywords:
 			"generate the report, run the report, generate a report now, refresh the report, regenerate report",
+	},
+	fabric_get_report_content: {
+		when: "To read the contents of a project report now and the instructions it was generated with, before changing or discussing it.",
+		how: "Get instanceId from fabric_list_project_reports. To change the report, write new instructions from these with fabric_update_report_prompt.",
+		keywords:
+			"read the report, show the report, report content, report instructions, what the report says, latest report",
+	},
+	fabric_update_report_prompt: {
+		when: "To change what a project report covers or how it is written, such as making a section shorter, before generating it again.",
+		how: "Read the current instructions with fabric_get_report_content first and send the complete new text as userPrompt; a run adds it to each of the report's AI tasks, so the tasks themselves stay. Make the real call: the approval card is where the person decides. Then call fabric_generate_report if the person wants a new run.",
+		keywords:
+			"change the report, edit report instructions, report prompt, make the report shorter, rewrite report section, iterate on the report",
 	},
 	fabric_list_projects: {
 		when: "To find a Fabric project by its name and get the projectId for its data or a Workspace.",

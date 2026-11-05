@@ -12,7 +12,13 @@ import {
 import { Label } from "@ui/components/label";
 import { Textarea } from "@ui/components/textarea";
 import { RotateCcwIcon } from "lucide-react";
+import { type ReactNode, useState } from "react";
 import type { AiTask } from "./AiTaskPromptEditor";
+import { RefineButton } from "./RefinePromptButton";
+import {
+	RefinePromptDialog,
+	type RefinePromptRequest,
+} from "./RefinePromptDialog";
 
 type Props = {
 	userPrompt: string;
@@ -22,7 +28,13 @@ type Props = {
 	/** `null` resets the task to the template's prompt. */
 	onCustomTaskChange: (key: string, value: string | null) => void;
 	readOnly: boolean;
+	/** Offers "Refine with AI" on each prompt, in this organization's context. */
+	refine?: { organizationId: string | null };
+	/** Shown under the prompts, e.g. saving them to the template. */
+	actions?: ReactNode;
 };
+
+const USER_PROMPT_LABEL = "AI Instructions (User Prompt)";
 
 /** Rows that show a prompt whole: one per line, within reason. */
 function rowsFor(text: string, min: number): number {
@@ -88,7 +100,15 @@ export function ReportPromptCard({
 	customTasks,
 	onCustomTaskChange,
 	readOnly,
+	refine,
+	actions,
 }: Props) {
+	// The prompt being refined, and where the refined text goes.
+	const [refining, setRefining] = useState<{
+		request: RefinePromptRequest;
+		apply: (content: string) => void;
+	} | null>(null);
+	const canRefine = Boolean(refine) && !readOnly;
 	return (
 		<Card>
 			<CardHeader>
@@ -104,9 +124,26 @@ export function ReportPromptCard({
 			</CardHeader>
 			<CardContent className="space-y-6">
 				<div className="space-y-2">
-					<Label htmlFor="user-prompt">
-						AI Instructions (User Prompt)
-					</Label>
+					<div className="flex flex-wrap items-center gap-2">
+						<Label htmlFor="user-prompt">{USER_PROMPT_LABEL}</Label>
+						{canRefine && (
+							<div className="ml-auto">
+								<RefineButton
+									label={USER_PROMPT_LABEL}
+									onClick={() =>
+										setRefining({
+											request: {
+												id: "report-user-prompt",
+												title: USER_PROMPT_LABEL,
+												content: userPrompt,
+											},
+											apply: onUserPromptChange,
+										})
+									}
+								/>
+							</div>
+						)}
+					</div>
 					<PromptText
 						id="user-prompt"
 						value={userPrompt}
@@ -130,15 +167,15 @@ export function ReportPromptCard({
 					const isCustomized = taskKey in customTasks;
 					const prompt = customTasks[taskKey] ?? task.task;
 					const id = `task-prompt-${taskKey}`;
+					const label =
+						task.agentId === "default"
+							? "AI Analysis"
+							: task.agentId;
 
 					return (
 						<div key={taskKey} className="space-y-2 border-t pt-4">
 							<div className="flex flex-wrap items-center gap-2">
-								<Label htmlFor={id}>
-									{task.agentId === "default"
-										? "AI Analysis"
-										: task.agentId}
-								</Label>
+								<Label htmlFor={id}>{label}</Label>
 								{task.outputVariable && (
 									<Badge
 										variant="outline"
@@ -155,20 +192,44 @@ export function ReportPromptCard({
 										Customized
 									</Badge>
 								)}
-								{isCustomized && !readOnly && (
-									<Button
-										type="button"
-										variant="ghost"
-										size="sm"
-										className="ml-auto h-7 text-xs"
-										onClick={() =>
-											onCustomTaskChange(taskKey, null)
-										}
-									>
-										<RotateCcwIcon className="mr-1 h-3 w-3" />
-										Reset to template
-									</Button>
-								)}
+								<div className="ml-auto flex items-center gap-1">
+									{canRefine && (
+										<RefineButton
+											label={label}
+											onClick={() =>
+												setRefining({
+													request: {
+														id: `report-task-${taskKey}`,
+														title: label,
+														content: prompt,
+													},
+													apply: (content) =>
+														onCustomTaskChange(
+															taskKey,
+															content,
+														),
+												})
+											}
+										/>
+									)}
+									{isCustomized && !readOnly && (
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											className="h-7 text-xs"
+											onClick={() =>
+												onCustomTaskChange(
+													taskKey,
+													null,
+												)
+											}
+										>
+											<RotateCcwIcon className="mr-1 h-3 w-3" />
+											Reset to template
+										</Button>
+									)}
+								</div>
 							</div>
 							<PromptText
 								id={id}
@@ -182,7 +243,16 @@ export function ReportPromptCard({
 						</div>
 					);
 				})}
+				{actions}
 			</CardContent>
+			{refine && (
+				<RefinePromptDialog
+					request={refining?.request ?? null}
+					organizationId={refine.organizationId}
+					onApply={(content) => refining?.apply(content)}
+					onClose={() => setRefining(null)}
+				/>
+			)}
 		</Card>
 	);
 }

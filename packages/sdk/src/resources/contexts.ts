@@ -178,6 +178,11 @@ export interface ResetSyncedContextFilesResult {
 	deleted: number;
 }
 
+/** Which of the paths named hold no synced file on the server. */
+export interface MissingSyncedContextFilesResult {
+	missing: string[];
+}
+
 export interface UpsertSyncedContextFileOptions {
 	/**
 	 * Bind the request to an organization explicitly. It must be the
@@ -579,6 +584,27 @@ export class ContextsResource {
 		} catch (error) {
 			throw asConflictError(error);
 		}
+	}
+
+	/**
+	 * Which of up to 500 paths hold no synced file in the project, for example
+	 * after a Living Memory reset. Writes nothing.
+	 *
+	 * Requires a key with `projects:write`, and the key's creator must still
+	 * hold permission to read context sources on that project.
+	 */
+	findMissingSyncedFiles(
+		projectId: string,
+		sourcePaths: readonly string[],
+		options: UpsertSyncedContextFileOptions = {},
+	): Promise<MissingSyncedContextFilesResult> {
+		const query = options.org
+			? `?org=${encodeURIComponent(options.org)}`
+			: "";
+		return this.http.post<MissingSyncedContextFilesResult>(
+			`/projects/${encodeURIComponent(projectId)}/contexts/synced-files/missing${query}`,
+			{ sourcePaths },
+		);
 	}
 
 	/**

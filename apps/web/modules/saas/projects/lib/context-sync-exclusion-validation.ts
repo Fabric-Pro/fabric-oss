@@ -9,12 +9,16 @@
  * authoritative either way. What the path covers, and the 200-path cap, are
  * the selection reducer's (`applyContextAction`'s `exclude`), as for a tick.
  */
-import { contextSyncExclusionProblem } from "@repo/instructions/context-sync-rules";
+import {
+	contextSyncExclusionProblem,
+	MAX_CONTEXT_SYNC_PATH_LENGTH,
+} from "@repo/instructions/context-sync-rules";
 import { isStrictlyInside } from "../components/repository-sync/lib/repository-tree";
 import type { ContextSyncMessage } from "./context-repository-sync";
 
 export type ContextSyncExclusionError =
 	| { code: "WHOLE_REPOSITORY" }
+	| { code: "PATH_TOO_LONG" }
 	| { code: "INVALID_PATH"; path: string }
 	| { code: "EXCLUDED_FABRIC_PATH"; path: string }
 	| { code: "EXCLUDED_PATH_POLICY_FILE"; path: string }
@@ -48,6 +52,7 @@ export function validateContextSyncExclusionAddition(
 		case "whole-repository":
 			return { ok: false, error: { code: "WHOLE_REPOSITORY" } };
 		case "too-long":
+			return { ok: false, error: { code: "PATH_TOO_LONG" } };
 		case "not-canonical":
 			return { ok: false, error: { code: "INVALID_PATH", path } };
 		case "fabric":
@@ -94,6 +99,8 @@ export function contextSyncExclusionMessage(
 		case "WHOLE_REPOSITORY":
 		case "NOTHING_SELECTED":
 			return { key };
+		case "PATH_TOO_LONG":
+			return { key, values: { max: MAX_CONTEXT_SYNC_PATH_LENGTH } };
 		case "INVALID_PATH":
 		case "EXCLUDED_FABRIC_PATH":
 		case "EXCLUDED_PATH_POLICY_FILE":

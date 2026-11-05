@@ -28,6 +28,10 @@ import {
 } from "./DecisionAtoms";
 import { DecisionStatusSelect } from "./DecisionStatusSelect";
 import {
+	LIVING_MEMORY_SOURCE_KIND,
+	LivingMemoryBadge,
+} from "./LivingMemoryBadge";
+import {
 	primaryRelationship,
 	type RelationshipIndex,
 	type RelationshipKind,
@@ -203,6 +207,9 @@ function DecisionTableRow({
 								and complete the details.
 							</TooltipContent>
 						</Tooltip>
+					)}
+					{d.sourceKind === LIVING_MEMORY_SOURCE_KIND && (
+						<LivingMemoryBadge variant="icon" />
 					)}
 					{d.vouchedAt && (
 						<BadgeCheckIcon

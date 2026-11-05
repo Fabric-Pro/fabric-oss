@@ -1,5 +1,11 @@
 import { config } from "@repo/config";
-import { DocsBody, DocsPage } from "fumadocs-ui/page";
+import { MarkdownCopyButton } from "fumadocs-ui/layouts/docs/page";
+import {
+	DocsBody,
+	DocsDescription,
+	DocsPage,
+	DocsTitle,
+} from "fumadocs-ui/page";
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { docsSource } from "../../../../docs-source";
@@ -24,6 +30,10 @@ export default async function DocumentationPage(props: {
 		params.locale !== config.i18n.defaultLocale &&
 		(page.locale ?? config.i18n.defaultLocale) ===
 			config.i18n.defaultLocale;
+	const slug = params.path?.join("/") ?? "";
+	const markdownUrl = slug
+		? `/api/docs/raw/${params.locale}/${slug}`
+		: `/api/docs/raw/${params.locale}`;
 
 	return (
 		<DocsPage
@@ -38,26 +48,34 @@ export default async function DocumentationPage(props: {
 			data-docs-section={section}
 			breadcrumb={{
 				enabled: true,
-				includePage: true,
+				includePage: false,
 				includeSeparator: true,
 			}}
 			tableOfContent={{
 				enabled: true,
 			}}
 		>
+			<div className="mb-3 flex items-start justify-between gap-4">
+				<DocsTitle className="docs-title">{page.data.title}</DocsTitle>
+				<MarkdownCopyButton
+					markdownUrl={markdownUrl}
+					className="mt-2 shrink-0"
+				>
+					{t("documentation.copyPage")}
+				</MarkdownCopyButton>
+			</div>
+			{page.data.description ? (
+				<DocsDescription className="docs-lede text-lg leading-relaxed">
+					{page.data.description}
+				</DocsDescription>
+			) : null}
 			<DocsBody>
 				{isFallbackContent && (
 					<div className="mb-4 rounded-lg border border-muted bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
 						{t("documentation.fallbackNotice")}
 					</div>
 				)}
-				<h1 className="text-foreground">{page.data.title}</h1>
-				{page.data.description && (
-					<p className="-mt-6 text-foreground/50 text-lg lg:text-xl">
-						{page.data.description}
-					</p>
-				)}
-				<div className="prose dark:prose-invert max-w-full prose-a:text-foreground prose-p:text-foreground/80">
+				<div className="prose dark:prose-invert max-w-full prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-foreground prose-p:text-foreground">
 					<MdxClient code={page.data.body} />
 				</div>
 			</DocsBody>

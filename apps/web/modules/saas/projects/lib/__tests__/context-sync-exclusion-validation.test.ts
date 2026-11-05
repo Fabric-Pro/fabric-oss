@@ -40,11 +40,24 @@ describe("validateContextSyncExclusionAddition", () => {
 				path,
 			).toEqual({ ok: false, error: { code: "INVALID_PATH", path } });
 		}
-		const long = `docs/${"x".repeat(1024)}`;
-		expect(validateContextSyncExclusionAddition(long, DOCS)).toEqual({
+		const long = `docs/${"x".repeat(508)}`;
+		const refusal = validateContextSyncExclusionAddition(long, DOCS);
+		expect(refusal).toEqual({
 			ok: false,
-			error: { code: "INVALID_PATH", path: long },
+			error: { code: "PATH_TOO_LONG" },
 		});
+		expect(
+			!refusal.ok && contextSyncExclusionMessage(refusal.error),
+		).toEqual({
+			key: "excludeErrors.PATH_TOO_LONG",
+			values: { max: 512 },
+		});
+		expect(
+			validateContextSyncExclusionAddition(
+				`docs/${"x".repeat(507)}`,
+				DOCS,
+			).ok,
+		).toBe(true);
 		expect(
 			validateContextSyncExclusionAddition("docs/.fabric/lock", DOCS),
 		).toEqual({

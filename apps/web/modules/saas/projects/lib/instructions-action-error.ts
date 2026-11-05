@@ -13,6 +13,8 @@ export type InstructionActionErrorKey =
 	| "preconditionFailed"
 	| "tooManyRequests"
 	| "readOnlyMode"
+	| "ownProposal"
+	| "notAnApprover"
 	| "generic";
 
 /** Carried in `data.errorCode` by every write a project in Read-only mode refuses (`@repo/utils`). */
@@ -151,12 +153,39 @@ export function isBranchChangedRefusal(error: unknown): boolean {
 	);
 }
 
+/**
+ * An approval the review policy refused. "No permission" would be wrong: the
+ * person may review, just not this proposal.
+ */
+function approvalRefusalKey(
+	error: unknown,
+): "ownProposal" | "notAnApprover" | null {
+	if (codeOf(error) !== "FORBIDDEN") {
+		return null;
+	}
+	const data =
+		error && typeof error === "object" && "data" in error
+			? error.data
+			: undefined;
+	if (!data || typeof data !== "object" || !("reason" in data)) {
+		return null;
+	}
+	if (data.reason === "OWN_PROPOSAL") {
+		return "ownProposal";
+	}
+	return data.reason === "NOT_AN_APPROVER" ? "notAnApprover" : null;
+}
+
 /** The line for an error: its code's own, or the generic one. */
 export function instructionActionErrorKey(
 	error: unknown,
 ): InstructionActionErrorKey {
 	if (isReadOnlyModeRefusal(error)) {
 		return "readOnlyMode";
+	}
+	const approvalRefusal = approvalRefusalKey(error);
+	if (approvalRefusal) {
+		return approvalRefusal;
 	}
 	const code = codeOf(error);
 	return (code && KEY_BY_CODE.get(code)) || "generic";

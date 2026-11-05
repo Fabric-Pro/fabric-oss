@@ -68,6 +68,8 @@ export const PROJECT_EMBEDDING_TASK_QUEUE = "project-embeddings" as const;
  * Interactive document generation, including tracking and dependency probes.
  * Separate from both indexing and the legacy project-documents activity queue,
  * which must keep draining commands already recorded in workflow histories.
+ * Activities only: its worker has no workflow bundle, so never start a workflow
+ * here.
  */
 export const PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE =
 	"project-document-generation" as const;
@@ -86,6 +88,8 @@ export const AGUI_RUN_TASK_QUEUE = "agui-runs" as const;
  * Project discovery, scope intake, meeting operations and ingestion control.
  * Five independent activity slots keep visible progress off both bulk indexing
  * and legacy scheduled commands. Workflow starts keep their existing queues.
+ * Activities only: its worker has no workflow bundle, so never start a workflow
+ * here.
  */
 export const PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE =
 	"project-operations" as const;

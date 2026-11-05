@@ -95,6 +95,8 @@ const REVIEWED: Record<string, string> = {
 		"A person runs a report now (the Generate button); scheduled runs set none",
 	"packages/api/modules/reports/lib/report-generation.ts":
 		"Passes its caller's flag through to the report workflow",
+	"packages/api/modules/reports/lib/report-one-click.ts":
+		"A person clicks Generate report on a template card and waits for it; scheduled runs set none",
 	"packages/api/modules/reports/lib/report-agent-commands.ts":
 		"Passes the gateway's flag through for fabric_generate_report",
 	"apps/web/modules/saas/mcp/lib/gateway/tools/report-tools.ts":

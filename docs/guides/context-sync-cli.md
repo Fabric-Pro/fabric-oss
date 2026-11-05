@@ -64,6 +64,7 @@ outcome except `unchanged`, which is only counted:
 | created | a new path; stored and queued for indexing |
 | updated | the stored version was the one this folder last pushed, and it was replaced |
 | unchanged | the server already holds exactly this content, or the lock shows the file has not changed and nothing was sent |
+| missing on the server | the lock records this file as pushed and it has not changed, but the server no longer holds it; nothing was sent, and `--init` sends it again |
 | moved `<old> -> <new>` | a file moved or renamed without changing; the stored source was renamed in place |
 | not moved | a move the server did not apply, saying why and what was stored at the new path instead (see [Moves](#moves)) |
 | duplicate of `<path>` | a new path whose content is already stored under `<path>`; nothing was stored |
@@ -144,7 +145,10 @@ push:
 ```
 
 - A file whose sha256 matches its lock entry is not sent at all, so a second
-  push of an unchanged folder makes no requests.
+  push of an unchanged folder sends no files. It only asks whether the server
+  still holds them, one request per 500 files; a file it no longer holds is
+  reported as [missing on the server](#resetting-living-memory). `--dry-run`
+  makes no requests.
 - A changed file is sent with its lock entry's hash as the version it replaces.
 - A file the lock does not name is sent with no version, so it can create a
   new source or confirm an identical one but never overwrite anything.
@@ -349,9 +353,11 @@ third attempt.
 ## The key it needs
 
 `projects:write`, the same scope the MCP tool `fabric_upsert_project_context`
-requires. The read-only key that **Connect your agent** mints cannot push,
-and a member with the read-only viewer role cannot put this scope on an
-organization key. `--prune` needs no other scope.
+requires. A browser sign-in does not carry it, so `context push` and
+`context reset` need an API key: `fabric auth login --key <api-key>`. The
+read-only key that **Connect your agent** mints cannot push, and a member with
+the read-only viewer role cannot put this scope on an organization key.
+`--prune` needs no other scope.
 
 The scope alone does not grant access. On every call the server also checks that
 the key's creator can still add context sources to that project in the app
@@ -359,8 +365,9 @@ the key's creator can still add context sources to that project in the app
 project-visibility checks the Context tab uses.
 A wildcard `*` key is checked the same way. A missing scope exits 5 with a
 sentence that names the scope and tells you to create a key with it, for
-example `This API key is missing the projects:write scope. Create an API key
-with the projects:write scope and run again, …`. A missing permission
+example `This credential is missing the projects:write scope, which a browser
+sign-in does not carry. Create an API key with the projects:write scope and
+sign in with it: …`. A missing permission
 answers a different sentence and also exits 5.
 
 ## Resetting Living Memory
@@ -387,6 +394,13 @@ with nothing synced deletes nothing, so running it twice is harmless.
   empty one, so the next push sends every file as new. A lock that belongs to
   another project is refused before anything is sent. Without a folder, push
   with `--init` instead.
+- Any other folder's lock, on any machine, still records the files as pushed,
+  so a plain push from it sends nothing for them. The push lists them under
+  `missing on the server`, says to use `--init`, and exits 0. They are not sent
+  again by themselves, so a file someone deleted on purpose does not come back.
+  The same applies to a file a reset removed while a push was running. If the
+  check fails, the push says it could not check those files, still exits 0, and
+  `--format json` sets `missingCheckIncomplete`.
 - It needs the same `projects:write` scope, and the key's creator must be
   able to delete any member's context sources in the project (a project admin
   or owner; an editor cannot).
@@ -448,7 +462,7 @@ reconciles it (a deletion the server finished in the meantime is answered
 | Walk, ignore rules, classification, plan, lock, report | `packages/cli/src/lib/context-sync/` |
 | Guarded reads and writes | `packages/cli/src/lib/instructions/safe-write.ts` |
 | SDK resource | `packages/sdk/src/resources/contexts.ts` (`client.contexts.upsertSyncedFile`, `client.contexts.deleteSyncedFile`) |
-| REST routes | `PUT` and `DELETE /api/v1/projects/:projectId/contexts/synced-files`, and `POST /api/v1/projects/:projectId/contexts/reset`, in `packages/api/modules/v1/contexts.ts` |
+| REST routes | `PUT` and `DELETE /api/v1/projects/:projectId/contexts/synced-files`, `POST /api/v1/projects/:projectId/contexts/synced-files/missing`, and `POST /api/v1/projects/:projectId/contexts/reset`, in `packages/api/modules/v1/contexts.ts` |
 | Reset | `packages/api/modules/projects/lib/reset-synced-contexts.ts` and `resetSyncedContextRows` in `packages/database/prisma/queries/projects/reset-synced-contexts.ts` |
 | Shared server logic | `packages/api/modules/projects/lib/upsert-synced-context.ts`, `packages/api/modules/projects/lib/delete-synced-context.ts` |
 | Compare-and-set queries | `upsertContextBySourcePath` and the delete's `deleteSyncedContextRow`, in `packages/database/prisma/queries/projects/contexts.ts` |

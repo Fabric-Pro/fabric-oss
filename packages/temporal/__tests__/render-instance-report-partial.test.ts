@@ -35,3 +35,45 @@ describe("renderInstanceReport partial notice", () => {
 		expect(out.markdown).toMatch(/partial data/i);
 	});
 });
+
+describe("renderInstanceReport no-records notice", () => {
+	const withSection = {
+		...baseInput,
+		template: {
+			name: "Board Report",
+			definition: {
+				sections: [
+					{
+						id: "intro",
+						type: "text",
+						title: "Introduction",
+						config: { template: "" },
+					},
+				],
+			},
+		},
+	};
+
+	it("says the sources returned nothing instead of rendering only empty sections", async () => {
+		const out = await renderInstanceReport({
+			...withSection,
+			noRecords: true,
+		});
+		expect(out.markdown).toContain("**No records found**");
+		expect(out.markdown).toContain("## Introduction");
+	});
+
+	it("says so in HTML output", async () => {
+		const out = await renderInstanceReport({
+			...withSection,
+			outputFormat: "HTML",
+			noRecords: true,
+		});
+		expect(out.markdown).toContain("<strong>No records found</strong>");
+	});
+
+	it("omits the notice when the run found records", async () => {
+		const out = await renderInstanceReport(withSection);
+		expect(out.markdown).not.toMatch(/no records found/i);
+	});
+});

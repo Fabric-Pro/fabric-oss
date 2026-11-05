@@ -41,6 +41,7 @@ import {
 	SettingsIcon,
 	ShieldCheckIcon,
 	TargetIcon,
+	TriangleAlertIcon,
 } from "lucide-react";
 
 export const tabs = [
@@ -139,6 +140,12 @@ export const tabs = [
 		id: "artifacts",
 		label: "Artifacts",
 		icon: CodeIcon,
+	},
+	// Problem Log (Fizzy #2277): failures Fabric recorded for this project.
+	{
+		id: "problem-log",
+		label: "Problem Log",
+		icon: TriangleAlertIcon,
 	},
 	{
 		id: "atlas",

@@ -55,6 +55,8 @@ export * from "./glossy-editions";
 export * from "./has-any-personal-project";
 export * from "./kanban-templates";
 export * from "./list-guest-projects";
+export * from "./living-memory-decision-notifications";
+export * from "./living-memory-decisions";
 export * from "./log-source";
 export * from "./meeting-action-item-keys";
 export * from "./meeting-action-item-links";

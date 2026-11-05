@@ -201,6 +201,11 @@
 			"import": "./lib/recurring-error-bug-prompt.ts",
 			"default": "./lib/recurring-error-bug-prompt.ts"
 		},
+		"./report-parameter-defaults-prompt": {
+			"types": "./lib/report-parameter-defaults-prompt.ts",
+			"import": "./lib/report-parameter-defaults-prompt.ts",
+			"default": "./lib/report-parameter-defaults-prompt.ts"
+		},
 		"./report-sample-prompt": {
 			"types": "./lib/report-sample-prompt.ts",
 			"import": "./lib/report-sample-prompt.ts",
@@ -215,6 +220,11 @@
 			"types": "./lib/shared-session-summary.ts",
 			"import": "./lib/shared-session-summary.ts",
 			"default": "./lib/shared-session-summary.ts"
+		},
+		"./living-memory-decisions-prompt": {
+			"types": "./lib/living-memory-decisions-prompt.ts",
+			"import": "./lib/living-memory-decisions-prompt.ts",
+			"default": "./lib/living-memory-decisions-prompt.ts"
 		},
 		"./page-limits": {
 			"types": "./lib/page-limits.ts",

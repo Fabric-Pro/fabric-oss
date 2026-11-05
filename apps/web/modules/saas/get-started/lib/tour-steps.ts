@@ -110,6 +110,7 @@ export type ProjectTabId =
 	| "reports"
 	| "usage"
 	| "artifacts"
+	| "problem-log"
 	| "outcomes"
 	| "atlas"
 	| "security"

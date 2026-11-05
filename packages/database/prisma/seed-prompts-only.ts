@@ -18,6 +18,10 @@ import {
 	DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY,
 } from "@repo/utils/direct-chat-memory-prompt";
 import {
+	LIVING_MEMORY_DECISIONS_FALLBACK_BODY,
+	LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
+} from "@repo/utils/living-memory-decisions-prompt";
+import {
 	ORCHESTRATOR_MEMORY_FALLBACK_BODY,
 	ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
 } from "@repo/utils/orchestrator-memory-prompt";
@@ -81,6 +85,10 @@ import {
 	RECURRING_ERROR_BUG_FALLBACK_BODY,
 	RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
 } from "@repo/utils/recurring-error-bug-prompt";
+import {
+	REPORT_PARAMETER_DEFAULTS_FALLBACK_BODY,
+	REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY,
+} from "@repo/utils/report-parameter-defaults-prompt";
 import {
 	REPORT_SAMPLE_FALLBACK_BODY,
 	REPORT_SAMPLE_PROMPT_AGENT_KEY,
@@ -468,6 +476,16 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		storyKind: null as null,
 		targetKey: PARLUME_RECAP_PROMPT_AGENT_KEY,
 	},
+	// living_memory_decision_extractor: reads the decisions a synced Living
+	// Memory file records, which the Decisions tab offers as review
+	// candidates. Dedicated agent key, GENERAL + null: one prompt per tenant
+	// covers every project and file. The file is fenced as untrusted data and
+	// the output fields are fixed code-side.
+	[LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
+	},
 	// recurring_error_bug_reporter: the bug report the recurring-error scan
 	// files for a recurring error group or a cluster of open bug reports.
 	// Dedicated agent key so the scan resolves a prompt distinct from every
@@ -486,6 +504,14 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: REPORT_SAMPLE_PROMPT_AGENT_KEY,
+	},
+	// report_parameter_defaults: the starting values a new report's settings
+	// take from its project. Dedicated agent key, GENERAL + null: one prompt per
+	// tenant covers every template.
+	[REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY,
 	},
 	// orchestrator_memory_context / direct_chat_memory_context: how each
 	// assistant engine reads what it recalls from earlier conversations and
@@ -6804,6 +6830,33 @@ Rules:
 		content: PARLUME_RECAP_FALLBACK_BODY,
 	},
 	{
+		// living_memory_decision_extractor: when a synced Living Memory file's
+		// new version has been indexed, a model reads it and lists the
+		// decisions it records; the Decisions tab offers them as review
+		// candidates.
+		//
+		// The body lives in @repo/utils (LIVING_MEMORY_DECISIONS_FALLBACK_BODY)
+		// so this seed and the activity that resolves the binding share ONE
+		// definition. No variables. Structured JSON output: the fields (text,
+		// rationale, sourceQuote) are the activity's schema, and the file is
+		// fenced as untrusted data code-side.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
+		name: "Living Memory Decision Extractor",
+		description:
+			"Reads a synced Living Memory file and lists the decisions it records, each with its rationale and a quote from the file, so the team can review them as candidates in the Decisions tab.",
+		category: "meetings",
+		tags: ["decisions", "living-memory", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: LIVING_MEMORY_DECISIONS_FALLBACK_BODY,
+	},
+	{
 		// recurring_error_bug_reporter: the bug report the recurring-error scan
 		// files when an application error group, or a cluster of open bug
 		// reports, keeps recurring.
@@ -6850,6 +6903,28 @@ Rules:
 		format: "HANDLEBARS" as const,
 		isPublic: true,
 		content: REPORT_SAMPLE_FALLBACK_BODY,
+	},
+	{
+		// report_parameter_defaults: the starting values a new report's settings
+		// take from its project's name and description, which the person can
+		// change. A template marks the settings this must never fill.
+		//
+		// The body lives in @repo/utils
+		// (REPORT_PARAMETER_DEFAULTS_FALLBACK_BODY) so this seed and the
+		// generator share ONE definition.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY,
+		name: "Report Parameter Defaults",
+		description:
+			"Suggests neutral starting values for a new report's settings from the project's name and description, without inventing facts. The person can change every value.",
+		category: "document-generation",
+		tags: ["reports", "parameters", "defaults", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		isPublic: true,
+		content: REPORT_PARAMETER_DEFAULTS_FALLBACK_BODY,
 	},
 	{
 		// orchestrator_memory_context: how the Orchestrator assistant reads what

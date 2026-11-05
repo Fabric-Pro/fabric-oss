@@ -1,14 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import { db, getTemplateInstance } from "@repo/database";
-import { getCachedMcpClientForConfig } from "@repo/mcp";
-import type { McpServerDiagnostic } from "@repo/temporal/report-diagnostics";
-import {
-	classifyConnectionError,
-	classifyToolOutcome,
-	deriveProviders,
-	isReadOnlyTool,
-	redactMessage,
-} from "@repo/temporal/report-diagnostics";
+import { getTemplateInstance } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -16,6 +7,12 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	assertReportPermission,
+	canEditReportInstance,
+	canGenerateReportInstance,
+} from "../../lib/report-access";
+import { probeReportConnections } from "../../lib/report-connection-test";
 
 const testConnectionsInputSchema = z.object({
 	instanceId: z.string(),
@@ -40,32 +37,39 @@ const diagnosticSchema = z.object({
 	readOnlyToolCount: z.number(),
 	errorMessage: z.string().optional(),
 });
-const testConnectionsOutputSchema = z.object({
+export const testConnectionsOutputSchema = z.object({
 	diagnostics: z.array(diagnosticSchema),
 });
 
 /**
  * Pre-flight: connect to the instance's bound MCP configs and report per-server
  * read-only-tool availability WITHOUT running a full report. Lets a user verify
- * (or repair) connections before triggering an expensive generation.
- *
- * Uses the SAME shared helpers (deriveProviders / classifyToolOutcome /
- * classifyConnectionError) as the actual generation run, so the pre-flight and
- * the run can't disagree about a server's outcome.
+ * (or repair) connections before triggering an expensive generation. Every
+ * Generate runs the same test (`report-connection-test`) for the report's
+ * required data sources before it admits a run.
  *
  * AUTHORIZATION: tenantProtectedProcedure + REPORT_EXECUTE — this opens live
  * outbound MCP connections (network egress, possible token refresh), matching
  * the bar of `execute`, the only other report op that touches MCP servers.
  * Forwards organizationId to every MCP call so tenant-isolated configs resolve.
+ * Whoever may generate the report or edit it may test it; someone who only reads
+ * it has nothing to repair, and that includes an owner demoted to a Viewer row on
+ * the report's project. The middleware only admits members and the handler
+ * asks for REPORT_EXECUTE, which a platform admin holds wherever they belong.
  */
 export const testInstanceConnectionsProcedure = tenantProtectedProcedure
-	.use(requireInputOrgPermission(Permissions.REPORT_EXECUTE))
+	.use(requireInputOrgPermission(Permissions.REPORT_READ))
 	.input(testConnectionsInputSchema)
 	.output(testConnectionsOutputSchema)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
+		);
+		await assertReportPermission(
+			organizationId,
+			context.user,
+			Permissions.REPORT_EXECUTE,
 		);
 
 		const instance = await getTemplateInstance({
@@ -78,100 +82,27 @@ export const testInstanceConnectionsProcedure = tenantProtectedProcedure
 				message: "Template instance not found or access denied",
 			});
 		}
+		if (
+			!(await canGenerateReportInstance(instance, context.user)) &&
+			!(await canEditReportInstance(instance, context.user))
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message:
+					"You can read this report, but not test its connections",
+			});
+		}
 
 		const connections = (instance.connections ?? {}) as {
 			mcpConfigs?: string[];
 		};
-		const definition = (instance.template?.definition ?? {}) as {
-			dataSources?: Array<{
-				provider?: string;
-				config?: { mcpServerKey?: string };
-			}>;
-		};
-		const providers = deriveProviders(definition.dataSources);
-
 		const configIds = Array.isArray(connections.mcpConfigs)
 			? connections.mcpConfigs
 			: [];
 
-		// Friendly-name fallback for connections that fail before the server
-		// identifies itself (otherwise the UI shows a raw config id).
-		const displayRows = configIds.length
-			? await db.mCPConfig.findMany({
-					// TENANT ISOLATION (SOC 2 CC6.1): scope the display-name
-					// lookup to the caller's tenant so a stray/foreign configId
-					// can never surface another tenant's config/server names.
-					where: {
-						id: { in: configIds },
-						...(organizationId
-							? { organizationId }
-							: {
-									userId: context.user.id,
-									organizationId: null,
-								}),
-					},
-					select: {
-						id: true,
-						displayName: true,
-						mcpServer: { select: { name: true } },
-					},
-				})
-			: [];
-		const displayNames: Record<string, string> = {};
-		for (const r of displayRows) {
-			const name = r.displayName || r.mcpServer?.name;
-			if (name) {
-				displayNames[r.id] = name;
-			}
-		}
-
-		// Probe every config concurrently — independent network round trips, each
-		// with its own connection timeout. Sequential probing made one slow/dead
-		// server block all the others (N x timeout latency on a user-facing call).
-		const diagnostics = await Promise.all(
-			configIds.map(async (configId): Promise<McpServerDiagnostic> => {
-				try {
-					const result = await getCachedMcpClientForConfig({
-						configId,
-						userId: context.user.id,
-						organizationId: organizationId ?? undefined,
-						// Only lists the server's tools.
-						access: "read",
-					});
-					const serverName =
-						result.serverName || displayNames[configId] || configId;
-					const allTools = await result.client.tools();
-					const total = Object.keys(allTools).length;
-					let readOnly = 0;
-					for (const toolName of Object.keys(allTools)) {
-						if (isReadOnlyTool(toolName, providers)) {
-							readOnly++;
-						}
-					}
-					return {
-						configId,
-						serverName,
-						outcome: classifyToolOutcome(total, readOnly),
-						toolCount: total,
-						readOnlyToolCount: readOnly,
-					};
-				} catch (error) {
-					const raw =
-						error instanceof Error ? error.message : String(error);
-					const serverName =
-						(error as { serverName?: string })?.serverName ||
-						displayNames[configId] ||
-						configId;
-					return {
-						configId,
-						serverName,
-						outcome: classifyConnectionError(error),
-						toolCount: 0,
-						readOnlyToolCount: 0,
-						errorMessage: redactMessage(raw),
-					};
-				}
-			}),
+		const diagnostics = await probeReportConnections(
+			configIds,
+			instance.template?.definition,
+			{ userId: context.user.id, organizationId: organizationId ?? null },
 		);
 
 		return { diagnostics };

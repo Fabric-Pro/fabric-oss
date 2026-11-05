@@ -39,6 +39,7 @@ import {
 	isContextIgnorePolicyFile,
 	isExcludedDirectlySelectedFile,
 	isInContextSyncFabricDirectory,
+	MAX_CONTEXT_SYNC_PATH_LENGTH,
 } from "@repo/instructions/context-sync-rules";
 import { CONTEXT_SYNC_MAX_PATHS } from "../../../lib/context-repository-sync";
 import {
@@ -201,8 +202,18 @@ const SYMLINK = message("symlink");
 const POLICY_FILE = message("policyFile");
 const NON_TEXT = message("nonText");
 const INVALID_PATH = message("invalidPath");
+const PATH_TOO_LONG = message("pathTooLong", {
+	max: MAX_CONTEXT_SYNC_PATH_LENGTH,
+});
 const CODING_INSTRUCTIONS_FILE = message("codingInstructionsFile");
 const CANT_TELL_YET = message("cantTellYet");
+
+/** An unusable path's reason: its length when that is what is wrong with it. */
+function invalidPathMessage(path: string): SelectionMessage {
+	return contextSyncPathSpellingProblem(path) === "too-long"
+		? PATH_TOO_LONG
+		: INVALID_PATH;
+}
 
 /**
  * A ticked folder's `.contextignore`, read as the run reads it (`readIgnorePolicies`
@@ -326,7 +337,7 @@ function selectRefusalMessage(
 		return null;
 	}
 	if (refusal === "INVALID_PATH") {
-		return INVALID_PATH;
+		return invalidPathMessage(path);
 	}
 	if (isInContextSyncFabricDirectory(path)) {
 		return FABRIC;
@@ -354,7 +365,7 @@ function excludeRefusalMessage(
 		case undefined:
 			return null;
 		case "INVALID_PATH":
-			return INVALID_PATH;
+			return invalidPathMessage(path);
 		case "EXCLUDED_PATH":
 			return FABRIC;
 		case "EXCLUDED_PATH_POLICY_FILE":
@@ -472,7 +483,7 @@ export function contextSelectionModel(input: {
 		try {
 			hit = rules.rules.ruleFor(relative, file ? "file" : "directory");
 		} catch {
-			return skipped(INVALID_PATH);
+			return skipped(invalidPathMessage(node.path));
 		}
 		if (hit?.source === "default") {
 			return skipped(message("defaultRule", { rule: hit.rule }));

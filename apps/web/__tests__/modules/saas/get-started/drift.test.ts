@@ -168,6 +168,7 @@ const inPageSource = [
 	"apps/web/modules/saas/projects/components/DiagramsList.tsx",
 	"apps/web/modules/saas/projects/components/ProjectUsage.tsx",
 	"apps/web/modules/saas/projects/components/ProjectArtifactsList.tsx",
+	"apps/web/modules/saas/projects/components/problem-log/ProblemLogTab.tsx",
 	"apps/web/modules/saas/projects/components/atlas/ProjectAtlas.tsx",
 	"apps/web/modules/saas/projects/components/ProjectSettingsNav.tsx",
 	"apps/web/modules/saas/projects/components/ProjectSettings.tsx",
@@ -224,6 +225,7 @@ const launcherSource = [
 	"apps/web/modules/saas/projects/components/DiagramsList.tsx",
 	"apps/web/modules/saas/projects/components/ProjectUsage.tsx",
 	"apps/web/modules/saas/projects/components/ProjectArtifactsList.tsx",
+	"apps/web/modules/saas/projects/components/problem-log/ProblemLogTab.tsx",
 	"apps/web/modules/saas/projects/components/atlas/ProjectAtlas.tsx",
 	"apps/web/modules/saas/projects/components/ProjectSettings.tsx",
 ];

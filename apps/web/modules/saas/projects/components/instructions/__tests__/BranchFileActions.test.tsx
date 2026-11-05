@@ -125,6 +125,7 @@ vi.mock("@saas/projects/hooks/use-instruction-action-error", () => ({
 
 import {
 	BranchFileActionButton,
+	BranchFileNotice,
 	useRestoreBranchFile,
 } from "../BranchFileActions";
 import { BranchFileList } from "../BranchFileList";
@@ -279,6 +280,45 @@ describe("BranchFileActionButton", () => {
 			expect(state.toastError).toHaveBeenCalledWith("That didn't work."),
 		);
 		expect(state.toastSuccess).not.toHaveBeenCalled();
+	});
+
+	it("says a changed file is changed without claiming the published version is shown", () => {
+		function NoticeHarness({
+			marker,
+		}: {
+			marker: "changedOnBranch" | "deletedOnBranch";
+		}) {
+			const restore = useRestoreBranchFile({
+				projectId: "p",
+				nativeBase: PIN,
+			});
+			return (
+				<BranchFileNotice
+					path="AGENTS.md"
+					marker={marker}
+					restore={restore}
+				/>
+			);
+		}
+		const changed = render(<NoticeHarness marker="changedOnBranch" />, {
+			wrapper: Wrapper,
+		});
+		expect(
+			screen.getByText("Your proposal branch changes this file."),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(/You see the published version here/),
+		).not.toBeInTheDocument();
+		changed.unmount();
+
+		render(<NoticeHarness marker="deletedOnBranch" />, {
+			wrapper: Wrapper,
+		});
+		expect(
+			screen.getByText(
+				"Your proposal branch deletes this file. You see the published version here.",
+			),
+		).toBeInTheDocument();
 	});
 
 	it("is unavailable while the published pin is unknown", () => {

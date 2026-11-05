@@ -59,7 +59,8 @@ export interface SectionRevisionOutcome {
 	 * Why it was refused or failed: a `reviseSection` status, a scoped
 	 * revision refusal code of the save, or one of the editor's own codes
 	 * (`SECTION_CHANGED_MEANWHILE`, `NO_BASE`, `SAVE_FAILED`, `HELD_ELSEWHERE`,
-	 * `EDITOR_BUSY`, `NO_CHANGE`, `INTERRUPTED`). Each has its reason under
+	 * `HELD_UNANSWERED`, `REMOVED_UNANSWERED`, `EDITOR_BUSY`, `NO_CHANGE`,
+	 * `INTERRUPTED`). Each has its reason under
 	 * `projects.proposalArtifact.revision.reasons`.
 	 */
 	code?: string;
@@ -83,6 +84,16 @@ export const SECTION_REVISION_EDITOR_CODES = {
 	NO_BASE: "NO_BASE",
 	SAVE_FAILED: "SAVE_FAILED",
 	HELD_ELSEWHERE: "HELD_ELSEWHERE",
+	/**
+	 * The room holds an assistant proposal nobody reviews any more (Fizzy
+	 * #2946), which holds the editor until it is taken out.
+	 */
+	HELD_UNANSWERED: "HELD_UNANSWERED",
+	/**
+	 * Taken out of the room under its review: this editor's state was out of
+	 * the room for longer than the others wait for a reviewer (Fizzy #2946).
+	 */
+	REMOVED_UNANSWERED: "REMOVED_UNANSWERED",
 	EDITOR_BUSY: "EDITOR_BUSY",
 	NO_CHANGE: "NO_CHANGE",
 	INTERRUPTED: "INTERRUPTED",
@@ -164,6 +175,11 @@ interface UseSectionRevisionOptions {
 	blockedReason: () => string | null;
 	/** Whether another editor in the room reviews a proposal right now. */
 	heldElsewhere: () => boolean;
+	/**
+	 * Whether what holds it is a proposal the room holds that nobody reviews
+	 * any more, rather than another editor's review (Fizzy #2946).
+	 */
+	heldUnanswered?: () => boolean;
 	/** Called right before the candidate's diff goes into the editor. */
 	beforePreview: () => void;
 	/** Called with the request's id once its candidate is shown for review. */
@@ -204,6 +220,7 @@ export function useSectionRevision({
 	resolveBase,
 	blockedReason,
 	heldElsewhere,
+	heldUnanswered,
 	beforePreview,
 	onReviewShown,
 	saveAccept,
@@ -234,6 +251,7 @@ export function useSectionRevision({
 		resolveBase,
 		blockedReason,
 		heldElsewhere,
+		heldUnanswered,
 		beforePreview,
 		onReviewShown,
 		saveAccept,
@@ -249,12 +267,21 @@ export function useSectionRevision({
 		resolveBase,
 		blockedReason,
 		heldElsewhere,
+		heldUnanswered,
 		beforePreview,
 		onReviewShown,
 		saveAccept,
 		onSettled,
 	};
 
+	// What holds the editor, as the code its refusal is said by.
+	const heldCode = useCallback(
+		() =>
+			latest.current.heldUnanswered?.() === true
+				? SECTION_REVISION_EDITOR_CODES.HELD_UNANSWERED
+				: SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE,
+		[],
+	);
 	const reason = useCallback(
 		(code: string | undefined) =>
 			t(`reasons.${sectionRevisionReasonKey(code)}`),
@@ -389,11 +416,7 @@ export function useSectionRevision({
 			// Another editor's review began meanwhile: the room holds that
 			// proposal, and nothing of this one goes in.
 			if (latest.current.heldElsewhere()) {
-				finish(
-					asked,
-					"refused",
-					SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE,
-				);
+				finish(asked, "refused", heldCode());
 				return;
 			}
 			const current = latest.current.getEditorMarkdownForSave(ed);
@@ -523,7 +546,7 @@ export function useSectionRevision({
 			return;
 		}
 		if (latest.current.heldElsewhere()) {
-			toast.info(reason(SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE));
+			toast.info(reason(heldCode()));
 			return;
 		}
 		const content = latest.current.getEditorMarkdownForSave(ed);
@@ -553,7 +576,7 @@ export function useSectionRevision({
 				}
 			},
 		});
-	}, [finish, reason, setPhase]);
+	}, [finish, heldCode, reason, setPhase]);
 
 	/** Puts the body from before the review back, and answers it rejected. */
 	const reject = useCallback((): boolean => {
@@ -565,7 +588,7 @@ export function useSectionRevision({
 		// Not over the room while another editor's review holds over this
 		// one: the room holds that review's proposal.
 		if (latest.current.heldElsewhere()) {
-			toast.info(reason(SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE));
+			toast.info(reason(heldCode()));
 			return false;
 		}
 		try {
@@ -577,19 +600,23 @@ export function useSectionRevision({
 		}
 		finish(candidate.request, "rejected");
 		return true;
-	}, [finish, reason]);
+	}, [finish, heldCode, reason]);
 
 	// Another editor's review, begun at the same moment, holds over this one
 	// (Fizzy #2946): it withdraws without writing the editor. A save being
-	// answered goes on.
-	const withdraw = useCallback(() => {
-		const asked = activeRef.current;
-		if (!asked || phaseRef.current === "applying") {
-			return;
-		}
-		tokenRef.current += 1;
-		finish(asked, "refused", SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE);
-	}, [finish]);
+	// answered goes on. Also when its diff was taken out of the room under
+	// it, which `code` says.
+	const withdraw = useCallback(
+		(code: string = SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE) => {
+			const asked = activeRef.current;
+			if (!asked || phaseRef.current === "applying") {
+				return;
+			}
+			tokenRef.current += 1;
+			finish(asked, "refused", code);
+		},
+		[finish],
+	);
 
 	// This review holds over another begun at the same moment whose editor
 	// wrote into the room before it withdrew: the room gets this diff again.

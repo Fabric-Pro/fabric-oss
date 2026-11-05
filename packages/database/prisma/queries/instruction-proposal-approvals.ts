@@ -10,12 +10,21 @@
  * The default (`requiredApprovals: 1`, no approver list) is today's
  * behaviour exactly: the first approval publishes, and a proposer who may
  * review may approve their own proposal. Above one, the proposer's own
- * approval never counts and is refused.
+ * approval never counts and is refused, so an approver list must name at
+ * least one more member than the approvals it requires: otherwise a listed
+ * approver's own proposal could never collect enough.
+ *
+ * An approval counts only while its approver still holds the publish
+ * permission (`INSTRUCTION_UPDATE`), checked when it is counted: someone who
+ * left the project, or lost the role, no longer moves a proposal toward
+ * publishing, and the "2 of 3" a proposal shows agrees with the count the
+ * approval transaction uses.
  *
  * A repository-mode project ignores the policy: its proposals are pull
  * requests, decided by the provider's own review rules.
  */
 import { db, type Prisma } from "../client";
+import { canUpdateProjectInstructions } from "./projects/projects";
 
 export const MAX_REQUIRED_INSTRUCTION_APPROVALS = 10;
 export const MAX_INSTRUCTION_APPROVERS = 50;
@@ -90,24 +99,56 @@ export function approvalRefusal(input: {
 }
 
 /**
- * How many of a proposal's approvals count toward the policy: the listed
- * approvers' only when a list is set, and never the proposer's own above one
- * required approval.
+ * The fewest approvers a list may name for `requiredApprovals`: one more
+ * than required above one, because a listed approver cannot approve their
+ * own proposal and the rest must still be enough.
+ */
+export function minimumInstructionApprovers(requiredApprovals: number): number {
+	return requiredApprovals > 1 ? requiredApprovals + 1 : requiredApprovals;
+}
+
+/**
+ * How many of a proposal's approvals count toward the policy: only those of
+ * approvers in `permittedUserIds` (who still hold the publish permission),
+ * the listed approvers' only when a list is set, and never the proposer's
+ * own above one required approval.
  */
 export function countedApprovals(input: {
 	approverUserIds: readonly string[];
+	permittedUserIds: ReadonlySet<string>;
 	proposerUserId: string;
 	policy: InstructionReviewPolicy;
 }): number {
 	return new Set(
 		input.approverUserIds.filter(
 			(userId) =>
+				input.permittedUserIds.has(userId) &&
 				(input.policy.requiredApprovals === 1 ||
 					userId !== input.proposerUserId) &&
 				(input.policy.approverUserIds === null ||
 					input.policy.approverUserIds.includes(userId)),
 		),
 	).size;
+}
+
+/**
+ * Of `userIds`, the ones who may publish the project's instructions right
+ * now (`INSTRUCTION_UPDATE`, the permission a review requires). Each distinct
+ * id is checked once, one after another so `client` may be the review
+ * transaction's, which then reads the same moment as the decision.
+ */
+export async function approversStillPermitted(
+	projectId: string,
+	userIds: Iterable<string>,
+	client: Prisma.TransactionClient = db,
+): Promise<Set<string>> {
+	const permitted = new Set<string>();
+	for (const userId of new Set(userIds)) {
+		if (await canUpdateProjectInstructions(projectId, userId, client)) {
+			permitted.add(userId);
+		}
+	}
+	return permitted;
 }
 
 type ApprovalScope = {
@@ -162,9 +203,15 @@ export type ProposalApprovalProgress = {
 	approverUserIds: string[];
 };
 
-/** The approval progress a proposal row shows ("2 of 3"). */
+/**
+ * The approval progress a proposal row shows ("2 of 3"). `permittedUserIds`
+ * is `approversStillPermitted` over its approvers, so the count matches the
+ * one an approval would act on; `approverUserIds` stays everyone who
+ * approved.
+ */
 export function approvalProgressOf(input: {
 	approverUserIds: readonly string[];
+	permittedUserIds: ReadonlySet<string>;
 	proposerUserId: string;
 	settings: unknown;
 }): ProposalApprovalProgress {
@@ -172,6 +219,7 @@ export function approvalProgressOf(input: {
 	return {
 		count: countedApprovals({
 			approverUserIds: input.approverUserIds,
+			permittedUserIds: input.permittedUserIds,
 			proposerUserId: input.proposerUserId,
 			policy,
 		}),

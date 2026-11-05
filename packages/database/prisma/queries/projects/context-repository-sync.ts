@@ -269,6 +269,8 @@ export interface LockedContextRepositorySync {
 	excludedPaths: string[];
 	generation: number;
 	activeRunKey: string | null;
+	/** NULL until a run of this configuration has applied: its first sync. */
+	lastAppliedCommitSha: string | null;
 	/** `begin` refuses an automatic run while this is off (design §11.1). */
 	automatic: boolean;
 	/** `begin` refuses an automatic run while this is set. */
@@ -302,8 +304,8 @@ export async function getContextRepositorySyncForUpdate(
 	const rows = await tx.$queryRaw<LockedContextRepositorySync[]>`
 		SELECT "id", "projectId", "organizationId", "userId",
 			"repositoryIntegrationId", "ref", "paths", "excludedPaths", "generation",
-			"activeRunKey", "automatic", "automaticPausedReason", "failureCount",
-			"pendingCommitSha",
+			"activeRunKey", "lastAppliedCommitSha", "automatic",
+			"automaticPausedReason", "failureCount", "pendingCommitSha",
 			(clock_timestamp() AT TIME ZONE 'UTC') AS "now"
 		FROM "project_context_repository_sync"
 		WHERE "id" = ${syncId}
@@ -326,8 +328,8 @@ export async function lockContextRepositorySyncByProject(
 	const rows = await tx.$queryRaw<LockedContextRepositorySync[]>`
 		SELECT "id", "projectId", "organizationId", "userId",
 			"repositoryIntegrationId", "ref", "paths", "excludedPaths", "generation",
-			"activeRunKey", "automatic", "automaticPausedReason", "failureCount",
-			"pendingCommitSha",
+			"activeRunKey", "lastAppliedCommitSha", "automatic",
+			"automaticPausedReason", "failureCount", "pendingCommitSha",
 			(clock_timestamp() AT TIME ZONE 'UTC') AS "now"
 		FROM "project_context_repository_sync"
 		WHERE "projectId" = ${scope.projectId}
@@ -1570,7 +1572,8 @@ export async function confirmUnchangedRepositoryContext(
  *    project-wide duplicate-by-hash refusal: identical content at two paths
  *    is allowed for repository writes (§2). An insert that loses the path to
  *    a concurrent writer does not abort the batch (ON CONFLICT DO NOTHING);
- *    the key is decided from the row that won;
+ *    the key is decided from the row that won. Under `firstSync` the new row
+ *    records that this version is not read for decisions;
  *  - managed by this sync, same hash → `unchanged` (nothing written);
  *  - managed by this sync, different hash → UPDATE guarded on the id, the
  *    project, the tenant, the path, the hash read and `repositorySyncId =
@@ -1595,6 +1598,7 @@ export async function applyRepositoryContextBatch(
 		actingUserId: string;
 		files: RepositoryContextFile[];
 		decided: ReadonlySet<string>;
+		firstSync?: boolean;
 	},
 ): Promise<ContextSyncOutcomes> {
 	const outcomes = new Map<string, ContextSyncApplyOutcome>();
@@ -1617,6 +1621,7 @@ async function applyOne(
 		organizationId: string;
 		syncId: string;
 		actingUserId: string;
+		firstSync?: boolean;
 	},
 	file: RepositoryContextFile,
 ): Promise<ContextSyncApplyOutcome> {
@@ -1648,6 +1653,7 @@ async function applyOne(
 					...(file.sourceBlobOid
 						? { sourceBlobOid: file.sourceBlobOid }
 						: {}),
+					...(input.firstSync ? { skipDecisionScan: true } : {}),
 					now,
 				}),
 			],

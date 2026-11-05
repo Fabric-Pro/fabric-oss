@@ -144,6 +144,183 @@ describe("validateReportConnections", () => {
 		expect(result.valid).toBe(true);
 	});
 
+	describe("a source that asks for a data type", () => {
+		const genericSource = {
+			id: "project-management",
+			type: "mcp",
+			dataType: "project-management",
+		};
+		const genericStored = {
+			...stored,
+			mcpBindings: { "project-management": "example-config-a" },
+		};
+
+		it("names no server for a changed binding to fall back on", async () => {
+			await validateReportConnections(
+				{
+					...stored,
+					mcpBindings: { "project-management": "example-config-b" },
+				},
+				OWNER,
+				ORG,
+				[genericSource],
+			);
+			expect(mocks.resolveReportMcpConfig).toHaveBeenCalledWith(
+				expect.objectContaining({
+					storedConfigId: "example-config-b",
+					serverKeys: [],
+				}),
+			);
+		});
+
+		it("accepts a non-owner's change to another tool of the data type", async () => {
+			mocks.getMcpConfigById.mockResolvedValue({
+				id: "example-config-b",
+				mcpServer: {
+					key: "linear",
+					category: "Project Management",
+					tags: [],
+				},
+			});
+			const result = await validateReportConnections(
+				{
+					...genericStored,
+					mcpBindings: { "project-management": "example-config-b" },
+				},
+				OWNER,
+				ORG,
+				[genericSource],
+				genericStored,
+				{ sameServerOnly: true },
+			);
+			expect(result.valid).toBe(true);
+		});
+
+		it("refuses a non-owner's change to a tool of another data type", async () => {
+			mocks.getMcpConfigById.mockResolvedValue({
+				id: "example-config-b",
+				mcpServer: {
+					key: "gitlab",
+					category: "Developer Tools",
+					tags: ["git"],
+				},
+			});
+			const result = await validateReportConnections(
+				{
+					...genericStored,
+					mcpBindings: { "project-management": "example-config-b" },
+				},
+				OWNER,
+				ORG,
+				[genericSource],
+				genericStored,
+				{ sameServerOnly: true },
+			);
+			expect(result.valid).toBe(false);
+			expect(result.invalidBindings).toEqual(["example-config-b"]);
+		});
+	});
+
+	describe("raw mcpConfigs entries", () => {
+		const withRawEntry = {
+			...stored,
+			mcpConfigs: ["example-config-a", "example-config-raw"],
+		};
+
+		it("refuses a new entry from a caller who is not the owner", async () => {
+			const result = await validateReportConnections(
+				withRawEntry,
+				OWNER,
+				ORG,
+				undefined,
+				stored,
+				{ sameServerOnly: true },
+			);
+
+			expect(result.valid).toBe(false);
+			expect(result.invalidBindings).toEqual(["example-config-raw"]);
+			expect(mocks.getMcpConfigById).not.toHaveBeenCalled();
+		});
+
+		it("refuses a new entry that does not resolve for the owner", async () => {
+			mocks.getMcpConfigById.mockResolvedValue(null);
+
+			const result = await validateReportConnections(
+				withRawEntry,
+				OWNER,
+				ORG,
+				undefined,
+				stored,
+			);
+
+			expect(result.valid).toBe(false);
+			expect(result.invalidBindings).toEqual(["example-config-raw"]);
+			expect(mocks.getMcpConfigById).toHaveBeenCalledWith(
+				"example-config-raw",
+				{ userId: OWNER, organizationId: ORG },
+			);
+		});
+
+		it("refuses a new entry the owner has disabled", async () => {
+			mocks.getMcpConfigById.mockResolvedValue({ enabled: false });
+
+			const result = await validateReportConnections(
+				withRawEntry,
+				OWNER,
+				ORG,
+				undefined,
+				stored,
+			);
+
+			expect(result.valid).toBe(false);
+		});
+
+		it("accepts a new entry that resolves for the owner", async () => {
+			mocks.getMcpConfigById.mockResolvedValue({ enabled: true });
+
+			const result = await validateReportConnections(
+				withRawEntry,
+				OWNER,
+				ORG,
+				undefined,
+				stored,
+			);
+
+			expect(result).toMatchObject({ valid: true, errors: [] });
+		});
+
+		it("keeps an entry the report already stores, even for a caller who is not the owner", async () => {
+			const result = await validateReportConnections(
+				withRawEntry,
+				OWNER,
+				ORG,
+				undefined,
+				withRawEntry,
+				{ sameServerOnly: true },
+			);
+
+			expect(result.valid).toBe(true);
+			expect(mocks.getMcpConfigById).not.toHaveBeenCalled();
+		});
+
+		it("checks an entry the submitted bindings hold as a binding, not as a raw entry", async () => {
+			const connections = {
+				mcpConfigs: ["example-config-b"],
+				mcpBindings: { fizzy: "example-config-b" },
+			};
+
+			const result = await validateReportConnections(
+				connections,
+				OWNER,
+				ORG,
+			);
+
+			expect(result.valid).toBe(true);
+			expect(mocks.resolveReportMcpConfig).toHaveBeenCalledTimes(1);
+			expect(mocks.getMcpConfigById).not.toHaveBeenCalled();
+		});
+	});
+
 	it("checks every binding when there are no stored connections", async () => {
 		await validateReportConnections(stored, OWNER, ORG);
 		expect(mocks.resolveReportMcpConfig).toHaveBeenCalledTimes(1);

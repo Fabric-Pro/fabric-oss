@@ -25,6 +25,12 @@ import { WORKFLOW_INTERCEPTOR_MODULES } from "../src/lib/workflow-interceptor-mo
 // so `require.resolve` would fail here. Webpack resolves the extension.
 const WORKFLOWS_PATH = resolve(__dirname, "..", "src", "workflows");
 
+let bundled: ReturnType<typeof bundleWorkflowCode> | undefined;
+function productionBundle() {
+	bundled ??= bundleWorkflowCode(buildWorkflowBundleOptions(WORKFLOWS_PATH));
+	return bundled;
+}
+
 describe("workflow bundle options", () => {
 	it("carries every workflow interceptor module", () => {
 		const options = buildWorkflowBundleOptions(WORKFLOWS_PATH);
@@ -45,10 +51,22 @@ describe("workflow bundle options", () => {
 		);
 	});
 
+	it("inlines a source map with mappings but no source text", async () => {
+		const { code } = await productionBundle();
+
+		const comment = code.lastIndexOf("//# sourceMappingURL=data:");
+		expect(comment).toBeGreaterThan(0);
+		const base64 = code
+			.slice(code.indexOf("base64,", comment) + 7)
+			.trimEnd();
+		const map = JSON.parse(Buffer.from(base64, "base64").toString());
+		expect(map.mappings.length).toBeGreaterThan(0);
+		expect(map.sources.length).toBeGreaterThan(0);
+		expect(map.sourcesContent).toBeUndefined();
+	}, 120_000);
+
 	it("produces a bundle that carries the interceptor", async () => {
-		const bundle = await bundleWorkflowCode(
-			buildWorkflowBundleOptions(WORKFLOWS_PATH),
-		);
+		const bundle = await productionBundle();
 
 		// The generated entrypoint only exposes interceptor modules through
 		// importInterceptors(); if the module had been dropped, the bundle

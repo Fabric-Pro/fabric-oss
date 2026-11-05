@@ -30,6 +30,7 @@ import {
 	updateTemplateInstanceLastRunAt,
 } from "@repo/database";
 import type { Prisma } from "@repo/database/prisma/generated/client";
+import { sectionHasHeading } from "@repo/database/prisma/queries/lib/report-section-headings";
 import { logger } from "@repo/logs";
 // Import orchestrator activities for MCP execution
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
@@ -1295,6 +1296,8 @@ export async function renderInstanceReport(input: {
 	};
 	outputFormat?: string;
 	isPartial?: boolean;
+	/** The template's data sources returned no records for this run. */
+	noRecords?: boolean;
 }): Promise<RenderedReport> {
 	const {
 		instance,
@@ -1305,6 +1308,7 @@ export async function renderInstanceReport(input: {
 		dateRange,
 		outputFormat = "MARKDOWN",
 		isPartial = false,
+		noRecords = false,
 	} = input;
 
 	const isHtmlFormat = outputFormat === "HTML" || outputFormat === "PDF";
@@ -1374,15 +1378,31 @@ export async function renderInstanceReport(input: {
 		}
 	}
 
+	if (noRecords) {
+		const notice =
+			"The connected sources returned no records for this period, so there was nothing to analyse. Check that the selected board or project had activity in the period, or choose a longer period.";
+		if (isHtmlFormat) {
+			lines.push(
+				`<p class="report-no-records-notice"><strong>No records found</strong> — ${notice}</p>`,
+			);
+			lines.push("<hr>");
+		} else {
+			lines.push(`> **No records found** — ${notice}`);
+			lines.push("");
+		}
+	}
+
 	// Render sections
 	const sections = definition.sections || [];
 
 	for (const section of sections) {
-		if (isHtmlFormat) {
-			lines.push(`<h2>${escapeHtml(section.title)}</h2>`);
-		} else {
-			lines.push(`## ${section.title}`);
-			lines.push("");
+		if (sectionHasHeading(section)) {
+			if (isHtmlFormat) {
+				lines.push(`<h2>${escapeHtml(section.title)}</h2>`);
+			} else {
+				lines.push(`## ${section.title}`);
+				lines.push("");
+			}
 		}
 
 		switch (section.type) {
@@ -1396,6 +1416,11 @@ export async function renderInstanceReport(input: {
 						);
 					}
 				}
+				// The seeded footers ask for this, and it is never a parameter
+				content = content.replaceAll(
+					"{{generatedAt}}",
+					new Date().toLocaleString(),
+				);
 				if (isHtmlFormat) {
 					lines.push(`<p>${escapeHtml(content)}</p>`);
 				} else {

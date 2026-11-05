@@ -26,8 +26,9 @@ export const REPORT_SAMPLE_PROMPT_AGENT_KEY = "report_sample_preview";
  * `output_format`, `report_instructions`, `section_titles`, `data_sources`.
  * All but `template_name` may be empty.
  *
- * The output is shown to the person choosing a template, labelled as sample
- * data by the screen, never stored as a report and never sent anywhere.
+ * The output is shown to the people choosing a template, labelled as sample
+ * data by the screen. It is kept as the template's sample (one per distinct
+ * rendered prompt), never stored as a report and never sent anywhere.
  *
  * INSERT-ONLY once seeded: changing this text does nothing on an environment
  * that has already run the seed. Ship wording changes as an explicit UPDATE

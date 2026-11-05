@@ -139,6 +139,10 @@ export const router = publicProcedure
 			"paymentsRouter",
 			() => import("../modules/payments/router"),
 		),
+		problemLog: lazyRouter(
+			"problemLogRouter",
+			() => import("../modules/problem-log/router"),
+		),
 		projects: lazyRouter(
 			"projectsRouter",
 			() => import("../modules/projects/router"),

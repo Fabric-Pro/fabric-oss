@@ -19,6 +19,7 @@ import {
 } from "@temporalio/workflow";
 import type * as meetingTranscriptSyncActivities from "../activities/meeting-transcript-sync";
 import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
+import { resolveIdleMonitorAction } from "./lib/idle-monitor";
 
 // =============================================================================
 // Types
@@ -187,6 +188,23 @@ export async function meetingTranscriptSyncWorkflow(
 				isRunning: false,
 				meetingsChecked: 0,
 			};
+			if (isOneShot) {
+				// One-shot has no interval to wait on, so continuing here polled
+				// without pause. Gated for executions already doing that.
+				if (patched("meeting-sync-one-shot-no-meetings-2026-11")) {
+					break;
+				}
+				continue;
+			}
+			const idleAction = await resolveIdleMonitorAction(projectId);
+			if (idleAction === "end") {
+				break;
+			}
+			if (idleAction === "continue-as-new") {
+				await continueAsNew<typeof meetingTranscriptSyncWorkflow>(
+					input,
+				);
+			}
 			continue;
 		}
 

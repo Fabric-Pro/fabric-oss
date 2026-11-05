@@ -143,7 +143,7 @@ export function derivedSnapshotRefusal(
 		case "supersede_unavailable":
 			return new ORPCError("CONFLICT", {
 				message:
-					"That proposal was decided, canceled or rebased while it was being rebased, so nothing was changed.",
+					"That proposal was decided or canceled, or another rebase of it is still being checked, so nothing was changed.",
 				data: { reason: "REBASE_UNAVAILABLE" },
 			});
 	}

@@ -155,6 +155,18 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					createdAt: now,
 				},
 			});
+			// An approval counts only while its approver holds the publish
+			// permission, which an organization member's role grants.
+			await db.member.createMany({
+				data: [PROPOSER_ID, REVIEWER_ID, SECOND_REVIEWER_ID].map(
+					(userId) => ({
+						organizationId: ORGANIZATION_ID,
+						userId,
+						role: "member",
+						createdAt: now,
+					}),
+				),
+			});
 			const project = await db.project.create({
 				data: {
 					name: "Instruction Proposal Integration",
@@ -569,6 +581,65 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 						},
 					}),
 				).toBe(1);
+			});
+
+			it("stops counting an approver who left the organization", async () => {
+				const baseId = await seedBase("policy-departed");
+				const proposalId = `policy-departed-proposal-${RUN_ID}`;
+				await createSnapshot({
+					id: proposalId,
+					version: 2,
+					proposalStatus: "PENDING",
+					baseSnapshotId: baseId,
+				});
+				await db.project.update({
+					where: { id: projectId },
+					data: {
+						instructionSettings: {
+							reviewPolicy: { requiredApprovals: 2 },
+						},
+					},
+				});
+				const approveAs = (reviewerUserId: string) =>
+					approveInstructionProposal({
+						snapshotId: proposalId,
+						projectId,
+						organizationId: ORGANIZATION_ID,
+						reviewerUserId,
+						audit: audit(
+							"project.instructions.published",
+							proposalId,
+						),
+					});
+
+				await expect(approveAs(REVIEWER_ID)).resolves.toMatchObject({
+					published: false,
+					approvals: { count: 1, required: 2 },
+				});
+				const departed = await db.member.findFirstOrThrow({
+					where: {
+						organizationId: ORGANIZATION_ID,
+						userId: REVIEWER_ID,
+					},
+				});
+				await db.member.delete({ where: { id: departed.id } });
+				try {
+					await expect(
+						approveAs(SECOND_REVIEWER_ID),
+					).resolves.toMatchObject({
+						ok: true,
+						published: false,
+						approvals: { count: 1, required: 2 },
+					});
+					const proposal =
+						await db.projectInstructionSnapshot.findUniqueOrThrow({
+							where: { id: proposalId },
+							select: { proposalStatus: true },
+						});
+					expect(proposal.proposalStatus).toBe("PENDING");
+				} finally {
+					await db.member.create({ data: departed });
+				}
 			});
 
 			it("publishes on the next approval once the policy is lowered under it", async () => {

@@ -339,7 +339,11 @@ describe("audit.taxonomy handler", () => {
 		// + 1 project.instructions.proposal_rebased (a stale upload-mode
 		// proposal replaced by its rebase onto the published version; ids,
 		// versions and counts only) = 256.
-		expect(result.actions).toHaveLength(256);
+		// + 1 project.problem_log.status_changed (Problem Log transition
+		// history, Fizzy #2277) = 257.
+		// + 1 project.problem_log.reviewed (a drafted entry confirmed or
+		// dismissed; decision and edited field names only) = 258.
+		expect(result.actions).toHaveLength(258);
 		expect(result.actions).toContain(
 			"project.instructions.consolidation_cleanup_merged",
 		);
@@ -369,6 +373,8 @@ describe("audit.taxonomy handler", () => {
 		expect(result.actions).toContain(
 			"backlog.recurring_errors.scan_failed",
 		);
+		expect(result.actions).toContain("project.problem_log.status_changed");
+		expect(result.actions).toContain("project.problem_log.reviewed");
 		expect(result.actions).toContain(
 			"project.proposal_artifact.export_started",
 		);

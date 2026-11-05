@@ -4,8 +4,31 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => {
 	const value: Record<string, unknown> = {};
-	return { template: { value }, mutate: vi.fn() };
+	return {
+		template: { value },
+		mutate: vi.fn(),
+		reportSuite: { on: false },
+		setupOptions: vi.fn(),
+	};
 });
+vi.mock(
+	"@saas/reports/hooks/use-instance-data-source-setup",
+	async (importOriginal) => {
+		const real =
+			await importOriginal<
+				typeof import("@saas/reports/hooks/use-instance-data-source-setup")
+			>();
+		return {
+			...real,
+			useInstanceDataSourceSetup: (
+				options: Parameters<typeof real.useInstanceDataSourceSetup>[0],
+			) => {
+				m.setupOptions(options);
+				return real.useInstanceDataSourceSetup(options);
+			},
+		};
+	},
+);
 vi.mock("@saas/organizations/hooks", () => ({
 	useContextPath: () => "/app/example-org/mcp-servers",
 	useOrganizationContext: () => ({
@@ -16,7 +39,7 @@ vi.mock("@saas/organizations/hooks", () => ({
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
-	useFeatureFlag: () => false,
+	useFeatureFlag: () => m.reportSuite.on,
 }));
 vi.mock("@saas/projects/lib/pm-tool-analyzer", () => ({
 	analyzePMToolCapabilities: vi.fn(),
@@ -30,6 +53,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 	return {
 		orpc: {
 			reports: {
+				project: query("project"),
 				templates: { get: query("template") },
 				instances: {
 					list: query("instances"),
@@ -110,7 +134,30 @@ function template(sources: (typeof projectSource)[]) {
 
 beforeEach(() => {
 	m.mutate.mockClear();
+	m.setupOptions.mockClear();
+	m.reportSuite.on = false;
 });
+
+describe.each([false, true])("with the report suite %s", (reportSuite) => {
+	it("auto-detects a data source's board in the dialog only with the report suite on", () => {
+		m.reportSuite.on = reportSuite;
+		const value = template([projectSource]);
+		m.template.value = value;
+
+		render(
+			<CreateInstanceDialog
+				template={value}
+				organizationId="example-org"
+				onClose={vi.fn()}
+			/>,
+		);
+
+		expect(m.setupOptions).toHaveBeenCalledWith(
+			expect.objectContaining({ autoDetect: reportSuite }),
+		);
+	});
+});
+
 describe.each(["form", "dialog"])("%s source readiness", (surface) => {
 	function show(sources: (typeof projectSource)[]) {
 		const value = template(sources);
@@ -135,6 +182,20 @@ describe.each(["form", "dialog"])("%s source readiness", (surface) => {
 			screen.getByRole("button", { name: "Choose example project" }),
 		);
 	}
+	it("keeps the old flow with the report suite off", () => {
+		show([projectSource]);
+
+		expect(
+			screen.queryByRole("button", { name: "Generate report" }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByText("Abandon setup")).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("region", { name: "Readiness" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("region", { name: "AI Analysis prompt" }),
+		).not.toBeInTheDocument();
+	});
 	it("offers creation of a ready Project knowledge report with an accurate shared source scope", () => {
 		show([projectSource]);
 		const create = screen.getByRole("button", {

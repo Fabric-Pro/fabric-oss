@@ -7,17 +7,18 @@
 export type ProjectReportsTab = "instances" | "templates";
 
 /**
- * A project that already has reports opens on them; an empty one opens on
- * the templates it can start from. `null` while the count is still loading,
- * so the caller renders nothing rather than flashing the wrong tab.
+ * A viewer who has reports in this project, drafts included, opens on them;
+ * anyone else opens on the templates they can start from. `null` while the
+ * count is still loading, so the caller renders nothing rather than flashing
+ * the wrong tab.
  */
 export function pickDefaultProjectReportsTab(
-	instanceTotal: number | undefined,
+	ownReportTotal: number | undefined,
 ): ProjectReportsTab | null {
-	if (instanceTotal === undefined) {
+	if (ownReportTotal === undefined) {
 		return null;
 	}
-	return instanceTotal > 0 ? "instances" : "templates";
+	return ownReportTotal > 0 ? "instances" : "templates";
 }
 
 /** A project's Reports tab, under the organization's base path. */
@@ -49,6 +50,12 @@ export type ReportSuiteCapabilities = {
 	isOrganizationAdmin: boolean;
 	/** `null` when no project was named. */
 	canEditProjectReports: boolean | null;
+	/**
+	 * Whether the viewer may set the project's report defaults, which an
+	 * organization Viewer with an Editor project row may and cannot add reports;
+	 * `null` when no project was named.
+	 */
+	canSetProjectDefaults?: boolean | null;
 };
 
 /**

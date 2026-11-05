@@ -1,5 +1,7 @@
+import { ORPCError } from "@orpc/server";
 import { createReportTemplate } from "@repo/database";
 import type { Prisma } from "@repo/database/prisma/generated/client";
+import { REPORT_DATA_TYPES } from "@repo/database/prisma/queries/lib/report-data-types";
 import { z } from "zod";
 import {
 	Permissions,
@@ -8,7 +10,11 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { assertCanPublishReportTemplate } from "../../lib/report-access";
+import {
+	assertCanPublishReportTemplate,
+	assertReportPermission,
+	isOrganizationReportAdmin,
+} from "../../lib/report-access";
 
 // Evidence.dev theme configuration schema
 const evidenceThemeSchema = z
@@ -72,6 +78,8 @@ const requiredDataSourceSchema = z.object({
 	name: z.string(), // Display name
 	description: z.string().optional(),
 	required: z.boolean().default(true),
+	// A generic source: `key` is its id, and the person chooses the tool
+	dataType: z.enum(REPORT_DATA_TYPES).optional(),
 });
 
 // Schema for template connection requirements
@@ -135,8 +143,10 @@ const createInputSchema = z.object({
 	isPublic: z.boolean().default(false),
 });
 
+// The middleware only admits members: a platform admin creates templates from
+// any project's Reports tab, whatever their organization role there.
 export const createTemplateProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.REPORT_CREATE))
+	.use(requirePermission(Permissions.REPORT_READ))
 	.input(createInputSchema)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolveOrganizationId(
@@ -144,14 +154,41 @@ export const createTemplateProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
+		await assertReportPermission(
+			organizationId,
+			context.user,
+			Permissions.REPORT_CREATE,
+		);
 		await assertCanPublishReportTemplate(input, context.user);
 
-		// Verify organization membership if creating org-scoped template
-		if (input.scope === "ORGANIZATION" && organizationId) {
+		// Any template made in an organization is stamped with it, so the
+		// caller must belong to it.
+		if (organizationId) {
 			await requireOrganizationMembership(
 				organizationId,
 				context.user.id,
 			);
+		}
+
+		// An organization template is published to every member, so only its
+		// admins and owners create one; members create their own (USER) ones.
+		if (input.scope === "ORGANIZATION") {
+			if (!organizationId) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: "An organization template needs an organization",
+				});
+			}
+			if (
+				!(await isOrganizationReportAdmin(
+					organizationId,
+					context.user.id,
+				))
+			) {
+				throw new ORPCError("FORBIDDEN", {
+					message:
+						"Only organization admins and owners can create organization templates",
+				});
+			}
 		}
 
 		const template = await createReportTemplate({

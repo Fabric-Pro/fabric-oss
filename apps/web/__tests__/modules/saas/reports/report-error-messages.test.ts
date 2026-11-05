@@ -42,6 +42,13 @@ describe("humanizeReportError", () => {
 		}
 	});
 
+	it("says an interrupted run stopped, not that the data source was unreachable", () => {
+		const msg = humanizeReportError("Activity task timed out", "generate");
+		expect(msg).toMatch(/stopped before it finished/i);
+		expect(msg).toMatch(/generate the report again/i);
+		expect(msg).not.toMatch(/couldn’t reach/i);
+	});
+
 	it("maps rate-limit / out-of-credits errors", () => {
 		expect(
 			humanizeReportError("429 Too Many Requests", "generate"),
@@ -65,6 +72,23 @@ describe("humanizeReportError", () => {
 				/TypeError|node:|\.ts:|TLSSocket|<anonymous>/,
 			);
 		}
+	});
+
+	it("shows Generate's refusal word for word, naming each data source that failed", () => {
+		const refusal =
+			"A required data source did not connect, so the report was not generated. Fizzy: its sign-in was refused or has expired; GitHub: its server offers no tools. Fix the connection on the report page, then generate again.";
+
+		expect(refusal.length).toBeGreaterThan(180);
+		expect(humanizeReportError(refusal, "generate")).toBe(refusal);
+	});
+
+	it("does not show a refusal that names a raw connection id", () => {
+		expect(
+			humanizeReportError(
+				"A required data source did not connect, so the report was not generated. cmnj4fcfm000i04l5s69i0gil: its server could not be reached.",
+				"generate",
+			),
+		).toMatch(/generating this report/i);
 	});
 
 	it("lets a short, clean validation message through unchanged", () => {

@@ -320,6 +320,12 @@ describe("push --rebase", () => {
 			"ONE\ntwo\nTHREE\n",
 		);
 		expect(result.stdout).toContain("merged onto version 8");
+		expect(result.stdout).toContain(
+			"it still names version 7. `fabric instructions sync` moves it to the published version and keeps your merged edits.",
+		);
+		expect(result.stdout).not.toContain(
+			"still names the published version",
+		);
 		expect(await lockOf(dest)).toBe(lockBefore);
 	});
 
@@ -418,6 +424,47 @@ describe("push --rebase", () => {
 			"ONE\ntwo\nthree\n",
 		);
 		expect(result.stdout).toContain("Would send");
+	});
+
+	it("names the removed version, not the project, when the server no longer keeps it", async () => {
+		const dest = await staleCheckout({
+			base: { "AGENTS.md": "one\ntwo\nthree\n" },
+			local: { "AGENTS.md": "ONE\ntwo\nthree\n" },
+			published: { "AGENTS.md": "one\ntwo\nTHREE\n" },
+		});
+		mocks.createVersionFileDownloadUrls.mockRejectedValue(
+			Object.assign(new Error("Version not found"), { status: 404 }),
+		);
+
+		const result = await push(dest, "--rebase");
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain(
+			"Version 7, which this folder last synced, is no longer kept",
+		);
+		expect(result.stderr).toContain("instructions sync");
+		expect(result.stderr).not.toContain("Project not found");
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"ONE\ntwo\nthree\n",
+		);
+	});
+
+	it("leaves a refusal other than a missing version to the usual sentence", async () => {
+		const dest = await staleCheckout({
+			base: { "AGENTS.md": "one\n" },
+			local: { "AGENTS.md": "ONE\n" },
+			published: { "AGENTS.md": "one\ntwo\n" },
+		});
+		mocks.createVersionFileDownloadUrls.mockRejectedValue(
+			Object.assign(new Error("Forbidden"), { status: 403 }),
+		);
+
+		const result = await push(dest, "--rebase");
+
+		expect(result.code).not.toBe(0);
+		expect(result.stderr).not.toContain("no longer kept");
+		expect(mocks.submitChange).not.toHaveBeenCalled();
 	});
 
 	it("refuses a lock that lists a file the synced version never held", async () => {

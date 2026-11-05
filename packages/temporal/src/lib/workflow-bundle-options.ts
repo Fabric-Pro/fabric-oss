@@ -47,6 +47,12 @@ export function buildWorkflowBundleOptions(
 				...config.optimization,
 				minimize: false,
 			};
+			// Keep stack trace mappings but leave the source text out of the map.
+			// The SDK copies the whole bundle, map included, into every workflow
+			// thread, and reads the source text only for a stack trace query with
+			// `showStackTraceSources`, which no worker here sets. The map must
+			// stay inline: the SDK refuses a bundle without one.
+			config.devtool = "inline-nosources-source-map";
 			return config;
 		},
 	};

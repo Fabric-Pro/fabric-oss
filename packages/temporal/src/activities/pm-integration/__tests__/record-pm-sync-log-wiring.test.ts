@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	recordPmSyncLog: vi.fn(),
+	recordProblem: vi.fn(),
 	// @repo/database surface used across the three sites under test.
 	epicFindUnique: vi.fn(),
 	featureFindUnique: vi.fn(),
@@ -84,6 +85,7 @@ vi.mock("@repo/database", () => ({
 	findFabricItemByExternalId: mocks.findFabricItemByExternalId,
 	getLinkedExternalIds: mocks.getLinkedExternalIds,
 	createPmSyncConflictNotifications: mocks.createPmSyncConflictNotifications,
+	recordProblem: mocks.recordProblem,
 }));
 
 // `humanizePmSyncError` is a pure helper; keep the real one (identity-ish for
@@ -107,6 +109,7 @@ import { recordPmSyncFailure } from "../record-pm-sync-state";
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.recordPmSyncLog.mockResolvedValue(undefined);
+	mocks.recordProblem.mockResolvedValue(undefined);
 	mocks.epicUpdate.mockResolvedValue({});
 	mocks.featureUpdate.mockResolvedValue({});
 	mocks.userStoryUpdate.mockResolvedValue({});
@@ -158,6 +161,31 @@ describe("recordPmSyncFailure → FAILURE log row + entityType mapping", () => {
 				// org context → userId is null (XOR).
 				organizationId: "org-1",
 				userId: null,
+			}),
+		);
+	});
+
+	it("logs the failure to the Problem Log as an integration failure (Fizzy #2277)", async () => {
+		mocks.userStoryFindUnique.mockResolvedValue(
+			stubEntity({ externalMcpServerId: null }),
+		);
+
+		await recordPmSyncFailure({
+			itemId: "story-9",
+			itemType: "story",
+			errorMessage: "boom",
+			errorClass: "PmCreateError",
+			triggerSource: "ai-update",
+		});
+
+		expect(mocks.recordProblem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-1",
+				projectId: "proj-1",
+				category: "INTEGRATION_FAILURE",
+				severity: "ERROR",
+				fingerprint: "story:story-9|PmCreateError",
+				sourceId: "story-9",
 			}),
 		);
 	});

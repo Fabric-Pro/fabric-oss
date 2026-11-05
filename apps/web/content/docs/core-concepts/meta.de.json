@@ -1,1 +1,10 @@
-{ "title": "Kernkonzepte", "pages": ["architecture", "rag", "workflows"] }
+{
+	"title": "Konzepte",
+	"pages": [
+		"architecture",
+		"rag",
+		"workflows",
+		"runtime-authority",
+		"mcp-authority"
+	]
+}

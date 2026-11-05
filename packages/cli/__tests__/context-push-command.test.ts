@@ -7,7 +7,8 @@
  *
  *  - a first push states no version for any path, so it can only create or
  *    confirm, never overwrite;
- *  - a second push of an unchanged folder makes no request at all;
+ *  - a second push of an unchanged folder sends no file, and only asks whether
+ *    the server still holds them;
  *  - a changed file names the version it replaces — the hash the lock
  *    recorded — so somebody else's edit on the server is a conflict, not a
  *    silent clobber;
@@ -38,6 +39,7 @@ const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		upsertSyncedFile: vi.fn(),
 		deleteSyncedFile: vi.fn(),
+		findMissingSyncedFiles: vi.fn(),
 		getApiKey: vi.fn<() => string | undefined>(),
 		/** The overrides the command handed `getClient`. */
 		clientOverrides: vi.fn(),
@@ -57,6 +59,7 @@ vi.mock("../src/lib/client.js", () => {
 		contexts: {
 			upsertSyncedFile: mocks.upsertSyncedFile,
 			deleteSyncedFile: mocks.deleteSyncedFile,
+			findMissingSyncedFiles: mocks.findMissingSyncedFiles,
 		},
 		withoutContext: () => client,
 	};
@@ -251,6 +254,8 @@ function callsFor(sourcePath: string) {
 beforeEach(() => {
 	mocks.upsertSyncedFile.mockReset();
 	mocks.deleteSyncedFile.mockReset();
+	mocks.findMissingSyncedFiles.mockReset();
+	mocks.findMissingSyncedFiles.mockResolvedValue({ missing: [] });
 	mocks.clientOverrides.mockReset();
 	mocks.getApiKey.mockReset();
 	mocks.getApiKey.mockReturnValue("org_test_key");
@@ -302,7 +307,7 @@ describe("fabric context push — first and second run", () => {
 		expect(result.stdout).toContain("created (3)");
 	});
 
-	it("makes no request at all when nothing changed since the lock", async () => {
+	it("sends no file when nothing changed since the lock", async () => {
 		const files = { "a.md": "# A\n", "b/c.md": "# C\n" };
 		const dir = await makeFolder(files);
 		const lock = await seedLock(dir, files);
@@ -748,7 +753,7 @@ describe("fabric context push — other outcomes", () => {
 		});
 	});
 
-	it("makes no request for an unchanged duplicate on the next run", async () => {
+	it("sends nothing and asks nothing for an unchanged duplicate on the next run", async () => {
 		const dir = await makeFolder({ "copy.md": "# Same\n" });
 		mocks.upsertSyncedFile.mockResolvedValue(
 			duplicateOf("copy.md", "# Same\n", "docs/same.md"),
@@ -761,6 +766,7 @@ describe("fabric context push — other outcomes", () => {
 
 		expect(second.code).toBe(0);
 		expect(mocks.upsertSyncedFile).not.toHaveBeenCalled();
+		expect(mocks.findMissingSyncedFiles).not.toHaveBeenCalled();
 		expect(await readLockFile(dir)).toEqual(afterFirst);
 	});
 
@@ -895,7 +901,7 @@ describe("fabric context push — other outcomes", () => {
 		// Names the scope and says to create a key that carries it, rather
 		// than printing the server's bare refusal.
 		expect(result.stderr).toContain(
-			"This API key is missing the projects:write scope. Create an API key with the projects:write scope",
+			"This credential is missing the projects:write scope, which a browser sign-in does not carry. Create an API key with the projects:write scope and sign in with it: fabric auth login --key <api-key>",
 		);
 		expect((await readLockFile(dir)).files).toHaveProperty("a.md");
 	});
@@ -1077,6 +1083,168 @@ describe("fabric context push — arguments and output", () => {
 			retry?: unknown;
 		};
 		expect(overrides.retry).toBeUndefined();
+	});
+});
+
+describe("fabric context push — files the server no longer holds", () => {
+	const files = { "a.md": "# A\n", "b.md": "# B\n" };
+
+	it("lists a file the lock records but the server lost, sends nothing and keeps the lock", async () => {
+		const dir = await makeFolder(files);
+		const lock = await seedLock(dir, files);
+		mocks.findMissingSyncedFiles.mockResolvedValue({ missing: ["b.md"] });
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.findMissingSyncedFiles).toHaveBeenCalledWith(
+			"project-1",
+			["a.md", "b.md"],
+			{ org: undefined },
+		);
+		expect(mocks.upsertSyncedFile).not.toHaveBeenCalled();
+		expect(result.stdout).toContain("missing on the server (1)\n  b.md");
+		expect(result.stdout).toContain("context push --init <dir>");
+		expect(result.stdout).toMatch(/unchanged \(1\)/);
+		expect(await readLockFile(dir)).toEqual(lock);
+	});
+
+	it("says it again on the next run, until the files are sent", async () => {
+		const dir = await makeFolder(files);
+		await seedLock(dir, files);
+		mocks.findMissingSyncedFiles.mockResolvedValue({
+			missing: ["a.md", "b.md"],
+		});
+
+		await runCli(["push", dir, "--project", "project-1"]);
+		const second = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(second.stdout).toContain("missing on the server (2)");
+		expect(second.stdout).not.toMatch(/unchanged \(/);
+	});
+
+	it("restores them with --init, which does not need to ask", async () => {
+		const dir = await makeFolder(files);
+		await seedLock(dir, files);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--init",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(callsFor("a.md")).toHaveLength(1);
+		expect(callsFor("b.md")).toHaveLength(1);
+		expect(mocks.findMissingSyncedFiles).not.toHaveBeenCalled();
+		expect(result.stdout).not.toContain("missing on the server");
+	});
+
+	it("carries them in --format json, apart from the unchanged count", async () => {
+		const dir = await makeFolder(files);
+		await seedLock(dir, files);
+		mocks.findMissingSyncedFiles.mockResolvedValue({ missing: ["b.md"] });
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--format",
+			"json",
+		]);
+
+		const parsed = JSON.parse(result.stdout) as {
+			missingOnServer: string[];
+			counts: Record<string, number>;
+		};
+		expect(parsed.missingOnServer).toEqual(["b.md"]);
+		expect(parsed.counts.unchanged).toBe(1);
+	});
+
+	it("says the check did not finish when the server cannot answer, and still exits 0", async () => {
+		const dir = await makeFolder(files);
+		await seedLock(dir, files);
+		mocks.findMissingSyncedFiles.mockRejectedValue(
+			new FabricError("Not found", 404, "NOT_FOUND"),
+		);
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("Could not check whether the server");
+		expect(result.stdout).toMatch(/unchanged \(2\)/);
+		expect(result.stdout).not.toContain("missing on the server");
+	});
+
+	it("marks an unfinished check in --format json", async () => {
+		const dir = await makeFolder(files);
+		await seedLock(dir, files);
+		mocks.findMissingSyncedFiles.mockRejectedValue(
+			new FabricError("Not found", 404, "NOT_FOUND"),
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--format",
+			"json",
+		]);
+
+		const parsed = JSON.parse(result.stdout) as {
+			missingOnServer: string[];
+			missingCheckIncomplete: boolean;
+		};
+		expect(parsed.missingOnServer).toEqual([]);
+		expect(parsed.missingCheckIncomplete).toBe(true);
+	});
+
+	it("says nothing about the check when it finished clean", async () => {
+		const dir = await makeFolder(files);
+		await seedLock(dir, files);
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.stdout).not.toContain("Could not check");
+		expect(result.stdout).not.toContain("missing on the server");
+	});
+
+	it("does not ask on --dry-run", async () => {
+		const dir = await makeFolder(files);
+		await seedLock(dir, files);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--dry-run",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.findMissingSyncedFiles).not.toHaveBeenCalled();
+	});
+
+	it("never fails a --hook run, and names the files in its report", async () => {
+		const dir = await makeFolder(files);
+		await seedLock(dir, files);
+		mocks.findMissingSyncedFiles.mockResolvedValue({ missing: ["b.md"] });
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--hook",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("missing on the server (1)");
+		expect(result.stderr).toBe("");
 	});
 });
 

@@ -134,6 +134,7 @@ import {
 	runLessonPrompt,
 } from "../../lib/instructions/lesson-prompt.js";
 import {
+	NO_OVERRIDES,
 	overrideMatcher,
 	readLocalOverrides,
 	reportOverriddenLeftOut,
@@ -195,6 +196,7 @@ import {
 	setAsideProposed,
 } from "../../lib/instructions/push.js";
 import {
+	BaseVersionRemovedError,
 	clearRebaseState,
 	type RebaseInput,
 	type RebaseOutcome,
@@ -1966,10 +1968,21 @@ async function runCheck(
 	// `--verify` it also hashes every file the lock names, which is what
 	// answers "is my checkout still what was published" as opposed to "has
 	// the published version moved". `sync` always does this.
-	const drift =
+	const ledgerDrift =
 		opts.verify && lock !== null
 			? await findLedgerDrift({ root, lock })
 			: [];
+	// A local override differs on purpose, and `sync --repair` leaves it alone,
+	// so it is not drift to put back.
+	const isOverridden = overrideMatcher(
+		ledgerDrift.length === 0
+			? NO_OVERRIDES
+			: await readLocalOverrides(root),
+	);
+	const drift = ledgerDrift.filter((entry) => !isOverridden(entry.path));
+	const overriddenDrift = ledgerDrift
+		.filter((entry) => isOverridden(entry.path))
+		.map((entry) => entry.path);
 
 	if (format === "json") {
 		printOutput(
@@ -1980,6 +1993,7 @@ async function runCheck(
 				localDigest: lock?.digest ?? null,
 				verified: Boolean(opts.verify),
 				drifted: drift.map(describeLedgerDrift),
+				localOverrides: overriddenDrift,
 				// Spec §6.4: the edits an earlier sync saw and kept.
 				keptEdited: drift
 					.filter((entry) => entry.reason === "edited" && entry.kept)
@@ -2019,7 +2033,7 @@ async function runCheck(
 	// `--verify` promises to report local drift and three of those branches
 	// used to return before saying a word about it.
 	if (opts.verify) {
-		reportDrift(opts, drift);
+		reportDrift(opts, drift, overriddenDrift);
 	}
 	if (checkout?.line) {
 		line(checkout.line);
@@ -2114,11 +2128,21 @@ function describeRepositorySource(
 }
 
 /** What `--verify` found, in the two places the report can end. */
-function reportDrift(opts: CommonOptions, drift: LedgerDrift[]): void {
+function reportDrift(
+	opts: CommonOptions,
+	drift: LedgerDrift[],
+	overridden: string[],
+): void {
 	if (drift.length === 0) {
-		line("Every file in this folder matches the lock.");
+		line(
+			overridden.length === 0
+				? "Every file in this folder matches the lock."
+				: "Every file in this folder matches the lock, apart from your local overrides:",
+		);
+		listPaths("local override", overridden);
 		return;
 	}
+	listPaths("local override", overridden);
 	line(`${drift.length} local file(s) no longer match the lock:`);
 	listPaths("drifted", drift.map(describeLedgerDrift));
 	// Spec §6.4: `sync` puts back what is missing or chmod-ed, and keeps an
@@ -3421,7 +3445,7 @@ async function runPush(
 	}
 }
 
-/** `rebasePush`, with the one failure it has its own sentence for. */
+/** `rebasePush`, with the failures it has its own sentences for. */
 async function rebaseOntoPublished(input: RebaseInput): Promise<RebaseOutcome> {
 	try {
 		return await rebasePush(input);
@@ -3429,6 +3453,12 @@ async function rebaseOntoPublished(input: RebaseInput): Promise<RebaseOutcome> {
 		if (error instanceof PublishedChangedError) {
 			throw new CliFailure(
 				`A newer version was published while your edits were being merged. Nothing was sent; run \`${fabricCommand("instructions push --rebase")}\` again.`,
+				7,
+			);
+		}
+		if (error instanceof BaseVersionRemovedError) {
+			throw new CliFailure(
+				`Version ${error.version}, which this folder last synced, is no longer kept, so your edits cannot be merged automatically. Nothing was sent. Run \`${fabricCommand("instructions sync")}\`, which keeps your edits. A push then sends each edited file whole, so first check that those files still hold what was published since, then run \`${fabricCommand("instructions push")}\`.`,
 				7,
 			);
 		}
@@ -3607,6 +3637,12 @@ function reportPush(outcome: PushOutcome): void {
 	}
 
 	line(pushVerdict(outcome));
+	if (outcome.rebasedFromVersion !== null) {
+		line(
+			`Your lock was not changed: it still names version ${outcome.rebasedFromVersion}. \`${fabricCommand("instructions sync")}\` moves it to the published version and keeps your merged edits.`,
+		);
+		return;
+	}
 	line(
 		outcome.publish
 			? `Your lock was not changed: it still names version ${outcome.baseVersion}, which is what \`${fabricCommand("instructions sync")}\` compares against.`

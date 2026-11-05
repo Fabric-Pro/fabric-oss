@@ -83,6 +83,12 @@ import { DecisionsTable } from "./DecisionsTable";
 import { DecisionTypesDialog } from "./DecisionTypesDialog";
 import { decisionsToMarkdown, downloadMarkdown } from "./decisionMarkdown";
 import {
+	LIVING_MEMORY_SOURCE_KIND,
+	LivingMemoryBadge,
+	LivingMemoryLegendItem,
+} from "./LivingMemoryBadge";
+import { LivingMemoryCandidatesStrip } from "./LivingMemoryCandidatesStrip";
+import {
 	buildRelationshipIndex,
 	type DecisionLite,
 	primaryRelationship,
@@ -242,6 +248,7 @@ function DecisionLegend() {
 							— extracted from a meeting transcript.
 						</span>
 					</li>
+					<LivingMemoryLegendItem />
 					<li className="flex items-start gap-2">
 						<BadgeCheckIcon className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
 						<span className="text-muted-foreground">
@@ -638,6 +645,19 @@ export function DecisionsList({
 					})
 				}
 				onOpenDecision={(id) => {
+					setDetailId(id);
+					setDetailOpen(true);
+				}}
+			/>
+
+			{/* Decisions found in synced Living Memory files; renders nothing
+			    until a candidate exists. */}
+			<LivingMemoryCandidatesStrip
+				projectId={projectId}
+				organizationId={organizationId}
+				canEdit={canEdit}
+				onCreated={(id) => {
+					listQuery.refetch();
 					setDetailId(id);
 					setDetailOpen(true);
 				}}
@@ -1554,6 +1574,9 @@ function DecisionRow({
 								and complete the details.
 							</TooltipContent>
 						</Tooltip>
+					)}
+					{item.sourceKind === LIVING_MEMORY_SOURCE_KIND && (
+						<LivingMemoryBadge />
 					)}
 				</div>
 				{/* title (stretched click target) */}

@@ -73,6 +73,12 @@ vi.mock("../src/activities/lib/activity-logger", () => ({
 	activityLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+// Decision extraction is started after a successful embed and reads the row
+// itself; stubbed so the row reads pinned here stay exactly the embed's own.
+vi.mock("../src/activities/lib/living-memory-decision-start", () => ({
+	startLivingMemoryDecisionExtraction: vi.fn(async () => "not_eligible"),
+}));
+
 vi.mock("@temporalio/workflow", () => ({
 	ApplicationFailure: {
 		nonRetryable: (message: string) => new Error(message),

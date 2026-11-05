@@ -7,7 +7,9 @@
  *   push             its hash is not the one the lock holds for its path —
  *                    sent with the lock's hash as `expectedContentHash`, or
  *                    with none when the lock does not name the path
- *   unchanged-local  its hash is the lock's: no request at all
+ *   unchanged-local  its hash is the lock's: not sent; the run only asks
+ *                    afterwards whether the server still holds it
+ *                    (`missing-on-server.ts`)
  *   skipped          not something this command sends (see
  *                    `ContextSkipReason`), with the reason
  *

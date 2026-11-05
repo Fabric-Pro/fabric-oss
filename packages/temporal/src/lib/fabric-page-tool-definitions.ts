@@ -57,8 +57,10 @@ export const PAGE_ASK_PER_MINUTE = 10;
  * - Restoring an earlier version replaces what people see, and making a copy of
  *   a page carries a page's tools into another page; both are decisions for the
  *   person in a chat, not for a page.
- * - Generating a report spends its owner's AI credits; the owner decides that
- *   in a chat or on the report page, never a page's script.
+ * - Generating a report spends its owner's AI credits, and changing a report's
+ *   instructions changes every later run; a person decides either in a chat or
+ *   on the report page, never a page's script. Reading a report is left to
+ *   pages, as listing them is.
  * - Comments are written from the comments panel, as the person using it. A page
  *   may read the ones on it and cannot add one.
  *
@@ -87,7 +89,10 @@ export const NOT_FOR_PAGES: ReadonlySet<string> = new Set([
 	"fabric_page_comment_add",
 	"fabric_list_project_pm_assigned_items",
 	"fabric_get_project_pm_item_snapshots",
+	"fabric_list_report_templates",
+	"fabric_create_project_report",
 	"fabric_generate_report",
+	"fabric_update_report_prompt",
 ]);
 
 /**

@@ -879,6 +879,12 @@ vi.mock("../../../client", () => ({
 	getTemporalClient: async () => h.temporal.client,
 }));
 
+// Started only after a project row's embed; stubbed so no row read or
+// workflow start is added to the paths pinned here.
+vi.mock("../../lib/living-memory-decision-start", () => ({
+	startLivingMemoryDecisionExtraction: vi.fn(async () => "not_eligible"),
+}));
+
 vi.mock("../lib/emit-completion-notification", () => ({
 	emitCompletionNotification: h.projectOnly.emitCompletionNotification,
 }));

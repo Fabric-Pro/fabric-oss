@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	contextMetaHeader,
+	formatContextPassagesForPrompt,
 	formatContextsForPrompt,
 	type RetrievedContext,
 } from "../retrieval";
@@ -153,3 +154,49 @@ describe("formatContextsForPrompt synced files", () => {
 		expect(out).toContain("--- docs/architecture.md (TEXT");
 	});
 });
+
+it("formats bounded excerpts with the canonical framing", () => {
+	const contexts: RetrievedContext[] = [
+		{
+			id: "example-source",
+			type: "TEXT",
+			score: 1,
+			content: "WHOLE_BODY".repeat(10000),
+			matchedPassages: [
+				{ content: "MATCHED_PASSAGE", score: 1 },
+				{ content: "x".repeat(30000), score: 0.5 },
+			],
+		},
+	];
+	const whole = formatContextsForPrompt(contexts);
+	const output = formatContextPassagesForPrompt(contexts, { maxChars: 6000 });
+	expect(output.length).toBeLessThanOrEqual(6000);
+	expect(
+		output.startsWith(`${whole.slice(0, whole.indexOf("\n\n--- "))}\n\n`),
+	).toBe(true);
+	expect(output).toContain("MATCHED_PASSAGE");
+	expect(output).not.toContain("WHOLE_BODY");
+	expect(output).toContain("Excerpts only.");
+	expect(output).not.toContain("fabric_get_project_source");
+	expect(output.endsWith("\n</project_context>")).toBe(true);
+	expect(formatContextPassagesForPrompt([], { maxChars: 6000 })).toBe("");
+});
+
+it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 20, 6000.5])(
+	"rejects an unusable passage budget (%s)",
+	(maxChars) => {
+		expect(() =>
+			formatContextPassagesForPrompt(
+				[
+					{
+						id: "example-source",
+						type: "TEXT",
+						score: 1,
+						content: "body",
+					},
+				],
+				{ maxChars },
+			),
+		).toThrow(RangeError);
+	},
+);

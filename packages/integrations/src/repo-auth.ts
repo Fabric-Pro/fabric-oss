@@ -113,10 +113,13 @@ export function gitUsernameFor(provider: string): string {
  * Worker variables a git child spawned through simple-git may not inherit:
  * simple-git refuses to run when its env sets one of these (an editor, a
  * pager, an askpass, a config path), and a stray `GIT_*` variable would
- * change what git does.
+ * change what git does. The exceptions are the CA settings an operator sets
+ * so git trusts a self-hosted provider behind an internal certificate
+ * authority (`INHERITED_GIT_ENV`); `GIT_SSL_NO_VERIFY` is not among them.
  */
 const NON_INHERITED_GIT_ENV =
 	/^(git_|editor$|visual$|pager$|prefix$|ssh_askpass$)/i;
+const INHERITED_GIT_ENV = /^git_ssl_(cainfo|capath)$/i;
 
 /**
  * The repository URL to hand git, and the environment that authenticates it,
@@ -133,9 +136,9 @@ const NON_INHERITED_GIT_ENV =
  * inherit the same environment, so every git call on the clone — not only
  * the clone itself — must use it.
  *
- * Pass `env` to simple-git's `.env()` together with `GIT_AUTH_UNSAFE`: simple-git
- * refuses `GIT_CONFIG_COUNT` and `credential.helper` unless told they are
- * intended.
+ * Pass `env` to simple-git's `.env()` and spread `GIT_AUTH_OPTIONS` into its
+ * options: simple-git refuses every `GIT_*` variable set through `.env()`, and
+ * `GIT_CONFIG_COUNT` and `credential.helper`, unless told they are intended.
  */
 export function gitAuthForClone(
 	provider: string,
@@ -148,7 +151,10 @@ export function gitAuthForClone(
 	url.password = "";
 	const env: Record<string, string> = {};
 	for (const [key, value] of Object.entries(source)) {
-		if (value !== undefined && !NON_INHERITED_GIT_ENV.test(key)) {
+		if (
+			value !== undefined &&
+			(INHERITED_GIT_ENV.test(key) || !NON_INHERITED_GIT_ENV.test(key))
+		) {
 			env[key] = value;
 		}
 	}
@@ -166,10 +172,22 @@ export function gitAuthForClone(
 	return { url: url.toString(), env };
 }
 
-/** The simple-git `unsafe` flags `gitAuthForClone`'s environment needs. */
-export const GIT_AUTH_UNSAFE = {
-	allowUnsafeConfigEnvCount: true,
-	allowUnsafeCredentialHelper: true,
+/** The simple-git options `gitAuthForClone`'s environment needs. */
+export const GIT_AUTH_OPTIONS = {
+	allowEnvironment: [
+		"GIT_TERMINAL_PROMPT",
+		"GIT_CONFIG_COUNT",
+		"GIT_CONFIG_KEY_0",
+		"GIT_CONFIG_VALUE_0",
+		"GIT_CONFIG_KEY_1",
+		"GIT_CONFIG_VALUE_1",
+		"GIT_SSL_CAINFO",
+		"GIT_SSL_CAPATH",
+	],
+	unsafe: {
+		allowUnsafeConfigEnvCount: true,
+		allowUnsafeCredentialHelper: true,
+	},
 } as const;
 
 /**

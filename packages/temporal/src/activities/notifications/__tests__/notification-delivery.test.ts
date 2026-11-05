@@ -18,6 +18,8 @@ const {
 	sendEmail,
 	safeFetchOutbound,
 	unsafeReason,
+	recordProblem,
+	activityInfo,
 } = vi.hoisted(() => ({
 	findNotification: vi.fn(),
 	findUser: vi.fn(),
@@ -26,6 +28,8 @@ const {
 	sendEmail: vi.fn(),
 	safeFetchOutbound: vi.fn(),
 	unsafeReason: vi.fn(),
+	recordProblem: vi.fn(),
+	activityInfo: { attempt: 1 },
 }));
 
 vi.mock("@repo/database", () => ({
@@ -35,6 +39,10 @@ vi.mock("@repo/database", () => ({
 		member: { findFirst: findMember },
 	},
 	getDeliveryPreferences: getDeliveryPrefs,
+	recordProblem,
+}));
+vi.mock("@temporalio/activity", () => ({
+	Context: { current: () => ({ info: activityInfo }) },
 }));
 vi.mock("@repo/mail", () => ({ sendEmail }));
 const TEST_BASE_URL = "https://app.fabric.test";
@@ -101,6 +109,8 @@ beforeEach(() => {
 	global.fetch = vi.fn(() => {
 		throw new Error("notification webhook bypassed outbound guard");
 	});
+	recordProblem.mockResolvedValue(undefined);
+	activityInfo.attempt = 1;
 });
 
 describe("sendNotificationEmailActivity", () => {
@@ -133,6 +143,26 @@ describe("sendNotificationEmailActivity", () => {
 			notificationId: "n1",
 		});
 		expect(result).toEqual({ delivered: false, reason: "send-failed" });
+	});
+
+	it("logs a failed send to the Problem Log (Fizzy #2277)", async () => {
+		sendEmail.mockResolvedValue(false);
+		await sendNotificationEmailActivity({ notificationId: "n1" });
+		expect(recordProblem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-1",
+				projectId: "p1",
+				affectedUserId: "u1",
+				category: "NOTIFICATION_FAILURE",
+				source: "notification:email",
+				fingerprint: "STORY_MENTION|send-failed",
+			}),
+		);
+	});
+
+	it("logs nothing when the send succeeds", async () => {
+		await sendNotificationEmailActivity({ notificationId: "n1" });
+		expect(recordProblem).not.toHaveBeenCalled();
 	});
 });
 
@@ -214,6 +244,43 @@ describe("sendNotificationWebhookActivity", () => {
 		await expect(
 			sendNotificationWebhookActivity({ notificationId: "n1" }),
 		).rejects.toThrow("connection reset");
+	});
+
+	it("does not log a non-2xx before the final attempt: a retry may recover", async () => {
+		safeFetchOutbound.mockResolvedValue({ ok: false, status: 500 });
+		activityInfo.attempt = 2;
+		await expect(
+			sendNotificationWebhookActivity({ notificationId: "n1" }),
+		).rejects.toThrow(/500/);
+		expect(recordProblem).not.toHaveBeenCalled();
+	});
+
+	it("logs a non-2xx on the final attempt to the Problem Log (Fizzy #2277)", async () => {
+		safeFetchOutbound.mockResolvedValue({ ok: false, status: 503 });
+		activityInfo.attempt = 3;
+		await expect(
+			sendNotificationWebhookActivity({ notificationId: "n1" }),
+		).rejects.toThrow(/503/);
+		expect(recordProblem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				category: "NOTIFICATION_FAILURE",
+				source: "notification:webhook",
+				fingerprint: "STORY_MENTION|http-503",
+			}),
+		);
+	});
+
+	it("logs a network failure on the final attempt", async () => {
+		safeFetchOutbound.mockRejectedValue(new Error("ECONNRESET"));
+		activityInfo.attempt = 3;
+		await expect(
+			sendNotificationWebhookActivity({ notificationId: "n1" }),
+		).rejects.toThrow(/ECONNRESET/);
+		expect(recordProblem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				fingerprint: "STORY_MENTION|request-failed",
+			}),
+		);
 	});
 
 	it("blocks an unsafe (SSRF) target URL without fetching or throwing", async () => {

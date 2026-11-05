@@ -710,6 +710,15 @@ export const AUDIT_ACTIONS = [
 	// does for a project source. Adding and removing sources is captured
 	// under `activity.organizations.companyContext.*`.
 	"org.company_context.metadata_updated",
+	// Problem Log (Fizzy #2277): a problem entry moved between OPEN and
+	// RESOLVED, by a member or by the system reopening it on recurrence.
+	// These rows ARE the entry's transition history (previous/new status,
+	// optional note); the entry itself only stores its current status.
+	"project.problem_log.status_changed",
+	// Problem Log (Fizzy #2277): a member confirmed (optionally edited) or
+	// dismissed an entry drafted from project context. Decision, source type
+	// and the names of edited fields only, never the edited text.
+	"project.problem_log.reviewed",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

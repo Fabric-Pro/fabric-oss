@@ -37,6 +37,7 @@ const TAB_TYPES: Partial<Record<Tab, NotificationsListInput["types"]>> = {
 		"TODO_ASSIGNED",
 		"TODO_MEETING_ITEMS_ASSIGNED",
 		"CODING_INSTRUCTIONS_PUBLISHED",
+		"DECISION_CANDIDATES_READY",
 	],
 	conflict: ["PM_SYNC_CONFLICT"],
 };

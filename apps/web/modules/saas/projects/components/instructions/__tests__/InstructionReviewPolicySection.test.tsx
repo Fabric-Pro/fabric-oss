@@ -1,7 +1,8 @@
 /**
  * The upload-mode review policy in Settings: it is seeded from the saved
  * policy, saved on its own (never with the ignore rules), and refuses to save
- * a restricted list shorter than the approvals it requires.
+ * a restricted list shorter than the approvals it requires, plus one above a
+ * single approval (a listed approver cannot approve their own proposal).
  *
  * `next-intl` is left on the shared echoing mock (`vitest.setup.ts`).
  */
@@ -138,6 +139,21 @@ describe("InstructionReviewPolicySection", () => {
 				approverUserIds: ["lead_1", "lead_2"],
 			},
 		});
+	});
+
+	it("blocks a save when only as many approvers are selected as approvals required above one", async () => {
+		m.policy = {
+			requiredApprovals: 2,
+			approverUserIds: ["lead_1", "lead_2"],
+		};
+		renderSection();
+
+		expect(await screen.findByLabelText("Lead One")).toBeChecked();
+		expect(screen.getByLabelText("lead2@example.com")).toBeChecked();
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"tooFewApprovers",
+		);
+		expect(screen.getByRole("button", { name: "save" })).toBeDisabled();
 	});
 
 	it("blocks a save when fewer approvers are selected than approvals required", async () => {

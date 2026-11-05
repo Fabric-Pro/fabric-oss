@@ -1,5 +1,6 @@
 "use client";
 
+import { MAX_CONTEXT_SYNC_PATH_LENGTH } from "@repo/instructions/context-sync-rules";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -216,7 +217,7 @@ export function WriteFolderPicker({
 						{t(`errors.${typedProblem}`, {
 							path: typed,
 							withPath: "",
-							max: 0,
+							max: MAX_CONTEXT_SYNC_PATH_LENGTH,
 						})}
 					</p>
 				) : (

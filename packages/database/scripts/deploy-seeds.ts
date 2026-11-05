@@ -152,6 +152,15 @@ async function main() {
 		{
 			name: "report-templates",
 			file: "seed-report-templates.ts",
+			// The seed derives each template's `isGeneric` from the catalog
+			// rule, and its standard templates and their data sources come from
+			// the rest, so a change to any of them must re-run it.
+			dependencies: [
+				"queries/lib/report-template-catalog.ts",
+				"queries/lib/report-data-types.ts",
+				"seed-report-sections.ts",
+				"seed-report-standard-templates.ts",
+			],
 			description: "Report templates",
 		},
 		{

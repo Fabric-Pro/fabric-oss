@@ -30,7 +30,11 @@
 
 import { os } from "@orpc/server";
 import { auth } from "@repo/auth";
-import { ERROR_CATEGORY, hasOrganizationTie } from "@repo/database";
+import {
+	ERROR_CATEGORY,
+	hasOrganizationTie,
+	recordProblem,
+} from "@repo/database";
 import { contentIdentity } from "@repo/utils/content-identity";
 import {
 	type AuditRequestContext,
@@ -42,7 +46,7 @@ import {
 	getCorrelationIdFromContext,
 } from "../../lib/correlation-id";
 import { flushSpansOnFailure } from "../../lib/request-span";
-import { classifyError } from "./audit-error-mapping";
+import { classifyError, problemLogClassification } from "./audit-error-mapping";
 import {
 	buildException,
 	computeFingerprint,
@@ -975,6 +979,31 @@ export async function recordProcedureFailure(
 			// `recordAuditFromRequest`'s own resolution misses (e.g. tests).
 			correlationId,
 		});
+
+		// Problem Log (Fizzy #2277): 5xx-class failures and access denials,
+		// aggregated per procedure + error signature + project + user.
+		const problem = problemLogClassification(classification);
+		if (problem) {
+			void recordProblem({
+				organizationId,
+				projectId: readProjectIdFromInput(input) ?? null,
+				affectedUserId: context.user?.id ?? null,
+				category: problem.category,
+				severity: problem.severity,
+				source: `api:${renderedPath}`,
+				title:
+					problem.category === "SECURITY_EVENT"
+						? `Access denied: ${renderedPath}`
+						: `${exception.type} in ${renderedPath}`,
+				description: exception.message || null,
+				fingerprint,
+				metadata: {
+					errorCode: readErrorCode(err),
+					httpStatus: readHttpStatus(err),
+					correlationId,
+				},
+			});
+		}
 
 		// v2 item 4: persist any buffered request spans now that the
 		// audit row has been emitted. The span buffer was opened by

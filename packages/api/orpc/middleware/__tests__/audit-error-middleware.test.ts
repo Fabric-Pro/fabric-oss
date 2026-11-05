@@ -17,6 +17,7 @@ import { z } from "zod";
 
 const mocks = vi.hoisted(() => ({
 	recordAuditMock: vi.fn(),
+	recordProblemMock: vi.fn(),
 	getTrustedClientIpMock: vi.fn().mockReturnValue("203.0.113.42"),
 	flushSpansOnFailureMock: vi.fn().mockResolvedValue(undefined),
 	hasOrganizationTieMock: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 		...actual,
 		recordAudit: mocks.recordAuditMock,
 		hasOrganizationTie: mocks.hasOrganizationTieMock,
+		recordProblem: mocks.recordProblemMock,
 	};
 });
 
@@ -81,6 +83,8 @@ import { sanitizeInput } from "../audit-error-sanitize";
 
 beforeEach(() => {
 	mocks.recordAuditMock.mockReset();
+	mocks.recordProblemMock.mockReset();
+	mocks.recordProblemMock.mockResolvedValue(undefined);
 	mocks.flushSpansOnFailureMock.mockClear();
 	mocks.hasOrganizationTieMock.mockReset().mockResolvedValue(true);
 });
@@ -1465,6 +1469,65 @@ describe("__isCaptureDisabledForTest", () => {
 	it("returns false when env is unset", () => {
 		vi.stubEnv("FABRIC_AUDIT_ERROR_CAPTURE_DISABLED", "");
 		expect(__isCaptureDisabledForTest()).toBe(false);
+	});
+});
+
+describe("captureError → Problem Log (Fizzy #2277)", () => {
+	it("logs an internal error as a SYSTEM_ERROR for the caller, project and procedure", async () => {
+		await __captureErrorForTest(
+			new TypeError("boom"),
+			buildContext(),
+			{ projectId: "proj-42" },
+			["projects", "get"],
+		);
+		expect(mocks.recordProblemMock).toHaveBeenCalledTimes(1);
+		expect(mocks.recordProblemMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-1",
+				projectId: "proj-42",
+				affectedUserId: "user-1",
+				category: "SYSTEM_ERROR",
+				severity: "ERROR",
+				source: "api:projects.get",
+				fingerprint: expect.any(String),
+			}),
+		);
+	});
+
+	it("logs an access denial as a SECURITY_EVENT warning", async () => {
+		const err = Object.assign(new Error("forbidden!"), {
+			code: "FORBIDDEN",
+		});
+		await __captureErrorForTest(err, buildContext(), undefined, [
+			"projects",
+			"delete",
+		]);
+		expect(mocks.recordProblemMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				category: "SECURITY_EVENT",
+				severity: "WARNING",
+			}),
+		);
+	});
+
+	it.each(["BAD_REQUEST", "NOT_FOUND", "CONFLICT", "TOO_MANY_REQUESTS"])(
+		"does not log an expected %s rejection",
+		async (code) => {
+			const err = Object.assign(new Error("rejected"), { code });
+			await __captureErrorForTest(err, buildContext(), undefined, [
+				"foo",
+			]);
+			expect(mocks.recordAuditMock).toHaveBeenCalledTimes(1);
+			expect(mocks.recordProblemMock).not.toHaveBeenCalled();
+		},
+	);
+
+	it("logs nothing when capture is skipped for the path", async () => {
+		vi.stubEnv("FABRIC_AUDIT_ERROR_CAPTURE_DISABLED", "true");
+		await __captureErrorForTest(new Error("x"), buildContext(), undefined, [
+			"foo",
+		]);
+		expect(mocks.recordProblemMock).not.toHaveBeenCalled();
 	});
 });
 

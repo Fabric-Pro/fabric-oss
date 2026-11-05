@@ -161,6 +161,7 @@ const USER_OWNED_TABLES = new Set([
 	// collection to aim at off the record — so it gets the same floor as the
 	// tables it cleans up after.
 	"ProjectContextPendingVectorCleanup",
+	"ProjectContextDecisionExtraction", // Decisions extracted from synced Living Memory files
 	"ProjectContextRepositorySync", // Living Memory repository sync configuration
 	"ProjectContextRepositorySyncRun", // Living Memory repository sync run receipts
 	"ProjectChunkingRun", // Content-type chunking runs (re-chunk, measure, tune)
@@ -360,6 +361,10 @@ const ORG_ONLY_TABLES = new Set([
 	// projects. `updatedById` is attribution, not an owner, and the rows are
 	// not project-scoped: a project guest never reaches them.
 	"ReportTemplateOverride",
+	// Problem Log (Fizzy #2277). Organization-owned with no owning userId, and
+	// NOT project-scoped: a project guest never reads the organization's
+	// problem log. Readers filter by the caller's project access on top.
+	"ProblemLogEntry",
 ]);
 
 /**
@@ -386,6 +391,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectContextConversationBundle: "projectId",
 	ProjectContextConversationClaim: "projectId",
 	ProjectContextPendingVectorCleanup: "projectId",
+	ProjectContextDecisionExtraction: "projectId",
 	ProjectContextRepositorySync: "projectId",
 	ProjectContextRepositorySyncRun: "projectId",
 	ProjectChunkingRun: "projectId",

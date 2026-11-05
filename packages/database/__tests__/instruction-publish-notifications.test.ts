@@ -134,26 +134,18 @@ describe("createInstructionPublishedNotifications", () => {
 		);
 	});
 
-	it("also tells organization members who can read the project without being added to it", async () => {
+	it("never tells an organization member who is not on the project, even one whose organization role grants read", async () => {
 		mocks.orgMemberFindMany.mockResolvedValue([
 			{ userId: "org-reader" },
-			{ userId: "org-no-read" },
-			{ userId: "actor" },
+			{ userId: "member" },
 		]);
-		mocks.canRead.mockImplementation(
-			async (_projectId: string, userId: string) =>
-				userId !== "guest-no-read" && userId !== "org-no-read",
-		);
 
 		const rows = await createInstructionPublishedNotifications(args);
 
-		expect(mocks.orgMemberFindMany).toHaveBeenCalledWith({
-			where: { organizationId: "org" },
-			select: { userId: true },
-		});
+		expect(mocks.orgMemberFindMany).not.toHaveBeenCalled();
+		expect(mocks.canRead).not.toHaveBeenCalledWith("proj", "org-reader");
 		expect(rows.map((row) => row.userId).sort()).toEqual([
 			"member",
-			"org-reader",
 			"owner",
 		]);
 	});

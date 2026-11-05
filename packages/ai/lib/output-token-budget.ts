@@ -230,6 +230,32 @@ export function computeMaxOutputTokenBudget(
 	);
 }
 
+/**
+ * The longest prompt, in characters, that a model's context window takes while
+ * leaving room for its output, by the estimate `clampToProviderAndContext` uses.
+ * Output gets at most half of the window, so a small window still takes a prompt.
+ *
+ * @returns The limit, or `undefined` when the window is unknown.
+ */
+export function maxPromptCharsForContext(
+	metadata: BudgetMetadata,
+): number | undefined {
+	const { contextWindow } = metadata;
+	if (!contextWindow) {
+		return undefined;
+	}
+	const outputTokens = Math.min(
+		computeMaxOutputTokenBudget(metadata, { promptChars: 0 }) ??
+			MAXIMAL_OUTPUT_TOKEN_CEILING,
+		Math.floor(contextWindow / 2),
+	);
+	return Math.max(
+		0,
+		(contextWindow - outputTokens - CONTEXT_WINDOW_MARGIN_TOKENS) *
+			CONTEXT_CLAMP_CHARS_PER_TOKEN,
+	);
+}
+
 /** Catalog rows with no positive finite output limit leave the cap unknown. */
 function catalogOutputTokenCap(
 	value: number | null | undefined,

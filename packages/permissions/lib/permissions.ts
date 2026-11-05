@@ -70,6 +70,10 @@ export const Permissions = {
 	ARCHITECTURE_DECISION_UPDATE: "architecture_decision:update",
 	ARCHITECTURE_DECISION_DELETE: "architecture_decision:delete",
 
+	// Problem Log (Fizzy #2277): read entries; change status and review drafts
+	PROBLEM_LOG_READ: "problem_log:read",
+	PROBLEM_LOG_MANAGE: "problem_log:manage",
+
 	// Test Cases
 	TEST_CASE_READ: "test-case:read",
 	TEST_CASE_CREATE: "test-case:create",

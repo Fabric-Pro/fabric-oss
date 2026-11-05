@@ -6,11 +6,14 @@
  */
 import { asCliFailure, CliFailure } from "../command-boundary.js";
 import { fabricCommand } from "../launcher.js";
-import { missingScopeOf } from "../missing-scope.js";
+import { missingScopeOf, signInCanGrant } from "../missing-scope.js";
 
 function missingScopeSentence(scope: string | null): string {
 	const named = scope ?? "projects:write";
-	return `This API key is missing the ${named} scope. Create an API key with the ${named} scope and run again, or sign in with: ${fabricCommand("auth login")}`;
+	if (signInCanGrant(named)) {
+		return `This credential is missing the ${named} scope. Create an API key with the ${named} scope and run again, or sign in with: ${fabricCommand("auth login")}`;
+	}
+	return `This credential is missing the ${named} scope, which a browser sign-in does not carry. Create an API key with the ${named} scope and sign in with it: ${fabricCommand("auth login")} --key <api-key>`;
 }
 
 export function contextCliFailure(error: unknown): CliFailure {

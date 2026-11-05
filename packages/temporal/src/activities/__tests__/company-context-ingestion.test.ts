@@ -199,6 +199,12 @@ vi.mock("../../client", () => ({
 	getScheduleClient: mocks.getScheduleClient,
 }));
 
+// Started only after a project row's embed; stubbed so no row read or
+// workflow start is added to the paths pinned here.
+vi.mock("../lib/living-memory-decision-start", () => ({
+	startLivingMemoryDecisionExtraction: vi.fn(async () => "not_eligible"),
+}));
+
 import { deleteSingleContextActivity } from "../context-deletion";
 import { embedSingleContextActivity } from "../context-embedding";
 import {

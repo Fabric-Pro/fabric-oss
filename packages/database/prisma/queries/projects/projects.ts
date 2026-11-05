@@ -240,6 +240,8 @@ export async function getProjectById(
 				},
 			},
 			repositoryIntegrations: {
+				// Oldest first: a new report reads the first active one.
+				orderBy: { createdAt: "asc" },
 				select: {
 					id: true,
 					status: true,
@@ -265,6 +267,146 @@ export async function getProjectById(
 		},
 	});
 	return project ? withFavoriteFlag(project) : null;
+}
+
+/**
+ * A live project as the report surface reads it, and nothing else: an
+ * organization admin may hold no row on the project, and its goals, settings,
+ * documents and contexts belong to its members. The caller authorizes first;
+ * this checks nothing about them. `organizationId` is null for a personal project.
+ */
+export function getProjectForReportsOnly(
+	projectId: string,
+	organizationId: string | null,
+) {
+	return db.project.findFirst({
+		where: { id: projectId, organizationId, deletedAt: null },
+		select: {
+			id: true,
+			name: true,
+			description: true,
+			organizationId: true,
+			status: true,
+			projectManagementMcpServerId: true,
+			projectManagementMcpConfigId: true,
+			projectManagementContainerId: true,
+			projectManagementContainerName: true,
+			projectManagementAdditionalContext: true,
+			repositoryIntegrations: {
+				orderBy: { createdAt: "asc" },
+				select: {
+					id: true,
+					status: true,
+					provider: true,
+					repositoryOwner: true,
+					repositoryName: true,
+				},
+			},
+		},
+	});
+}
+
+/**
+ * An organization's live projects, drafts left out, whatever row the caller holds
+ * on them, for someone who inherits Project Editor on their reports. The caller
+ * authorizes first; this is no access check. It holds what a project card shows,
+ * and `members` is only the caller's own row, so a card can tell a project they
+ * belong to from one they reach through their role alone.
+ */
+export async function listOrganizationProjectsForReports(options: {
+	userId: string;
+	organizationId: string;
+	limit: number;
+	offset: number;
+	status?: ProjectStatus;
+	search?: string;
+}) {
+	const { userId, organizationId, limit, offset, status, search } = options;
+	const inOrganization: Prisma.ProjectWhereInput = {
+		organizationId,
+		deletedAt: null,
+		...(search
+			? {
+					OR: [
+						{ name: { contains: search, mode: "insensitive" } },
+						{
+							description: {
+								contains: search,
+								mode: "insensitive",
+							},
+						},
+						{ tags: { has: search } },
+					],
+				}
+			: {}),
+	};
+	const where: Prisma.ProjectWhereInput = {
+		...inOrganization,
+		status: status && status !== "DRAFT" ? status : { not: "DRAFT" },
+	};
+	const [projects, total, statusGroups] = await Promise.all([
+		db.project.findMany({
+			where,
+			select: {
+				id: true,
+				userId: true,
+				name: true,
+				description: true,
+				status: true,
+				projectTypes: true,
+				tags: true,
+				color: true,
+				icon: true,
+				createdAt: true,
+				updatedAt: true,
+				organization: {
+					select: { id: true, slug: true, name: true },
+				},
+				members: {
+					where: {
+						userId,
+						acceptedAt: { not: null },
+						OR: [
+							{ expiresAt: null },
+							{ expiresAt: { gt: new Date() } },
+						],
+					},
+					select: { role: true },
+				},
+				userPreferences: {
+					where: { userId },
+					select: { favoritedAt: true },
+					take: 1,
+				},
+				_count: {
+					select: {
+						documents: true,
+						contexts: {
+							where: { importedDocuments: { none: {} } },
+						},
+					},
+				},
+			},
+			orderBy: { updatedAt: "desc" },
+			take: limit,
+			skip: offset,
+		}),
+		db.project.count({ where }),
+		db.project.groupBy({
+			by: ["status"],
+			where: { ...inOrganization, status: { not: "DRAFT" } },
+			_count: true,
+		}),
+	]);
+	const statusCounts: Record<string, number> = {};
+	for (const group of statusGroups) {
+		statusCounts[group.status] = group._count;
+	}
+	return {
+		projects: projects.map(withFavoriteFlag),
+		total,
+		statusCounts,
+	};
 }
 
 /**
@@ -1674,6 +1816,23 @@ export async function canReadProjectInstructions(
 		userId,
 		Permissions.INSTRUCTION_READ,
 		client,
+	);
+}
+
+/**
+ * Background counterpart of
+ * `requireProjectPermission(ARCHITECTURE_DECISION_CREATE)`: who may turn a
+ * Living Memory decision candidate into a decision, and so who is told that
+ * new candidates wait for review.
+ */
+export async function canCreateArchitectureDecisions(
+	projectId: string,
+	userId: string,
+): Promise<boolean> {
+	return projectPermissionHolds(
+		projectId,
+		userId,
+		Permissions.ARCHITECTURE_DECISION_CREATE,
 	);
 }
 

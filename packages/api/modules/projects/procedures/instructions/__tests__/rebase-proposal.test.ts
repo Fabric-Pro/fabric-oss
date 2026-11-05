@@ -4,9 +4,9 @@
  *
  * `@repo/instructions` is NOT mocked, so the merge under test is the real
  * one. `submitInstructionChange` is the seam: its own suite covers the
- * validation, scan and atomic close it performs with `supersedes`, and here
- * the question is what this file hands it, and that a conflict hands it
- * nothing.
+ * validation and scan, the database suite covers the link `supersedes` writes
+ * and the close at READY, and here the question is what this file hands it,
+ * and that a conflict hands it nothing.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -139,6 +139,18 @@ function proposal(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+/** The proposal the rebase wrote, read back: it records what it replaces. */
+function rebased() {
+	return proposal({
+		id: "snap_rebased",
+		version: 9,
+		isStale: false,
+		baseSnapshotId: "snap_published",
+		status: "VALIDATING",
+		supersedesSnapshotId: "snap_proposal",
+	});
+}
+
 function arrange(input: { base: File[]; ours: File[]; theirs: File[] }) {
 	objects.clear();
 	const lists: Record<string, ReturnType<typeof filesOf>> = {
@@ -149,12 +161,17 @@ function arrange(input: { base: File[]; ours: File[]; theirs: File[] }) {
 	m.listInstructionFiles.mockImplementation(async (id: string) => lists[id]);
 }
 
-function rebase(resolutions: unknown[] = []) {
+/** `expected` null sends no published version at all. */
+function rebase(
+	resolutions: unknown[] = [],
+	expected: string | null = "snap_published",
+) {
 	return rebaseInstructionProposal({
 		userId: PROPOSER,
 		projectId: PROJECT,
 		snapshotId: "snap_proposal",
 		resolutions: resolutions as never,
+		...(expected === null ? {} : { expectedPublishedSnapshotId: expected }),
 		audit: context,
 	});
 }
@@ -165,7 +182,7 @@ beforeEach(() => {
 	m.assertNoOpenMigration.mockResolvedValue(undefined);
 	m.getInstructionProposal
 		.mockResolvedValueOnce(proposal())
-		.mockResolvedValue(proposal({ proposalStatus: "REJECTED" }));
+		.mockResolvedValue(rebased());
 	m.getPublishedInstructionSnapshot.mockResolvedValue({
 		id: "snap_published",
 	});
@@ -261,7 +278,7 @@ describe("rebaseInstructionProposal", () => {
 		});
 	});
 
-	it("proposes the merged change on the published version and replaces the stale proposal", async () => {
+	it("proposes the merged change on the published version, linked to the stale proposal it replaces", async () => {
 		arrange({
 			base: [
 				{ path: "AGENTS.md", text: "one\ntwo\nthree\n" },
@@ -314,24 +331,15 @@ describe("rebaseInstructionProposal", () => {
 			},
 			{ op: "delete", path: "old.md" },
 		]);
-		expect(
-			call.supersedes.audit({ id: "snap_rebased", version: 9 }),
-		).toMatchObject({
-			action: "project.instructions.proposal_rebased",
-			organizationId: ORG,
-			projectId: PROJECT,
-			resource: { id: "snap_proposal", name: "v7" },
-			metadata: {
-				rebasedSnapshotId: "snap_rebased",
-				rebasedVersion: 9,
-				fromBaseVersion: 6,
-				toBaseVersion: 8,
-				changeCount: 3,
-			},
-		});
-		expect(
-			JSON.stringify(call.supersedes.audit({ id: "x", version: 1 })),
-		).not.toContain("AGENTS.md");
+		// Only the link is handed over: the stale proposal is closed, and its
+		// audit row written, when the new one passes its checks.
+		expect(call.supersedes).toEqual({ snapshotId: "snap_proposal" });
+		expect(m.getInstructionProposal).toHaveBeenLastCalledWith(
+			"snap_rebased",
+			PROJECT,
+			ORG,
+			{ proposerUserId: PROPOSER },
+		);
 	});
 
 	it("returns the conflicts with their markers and writes nothing", async () => {
@@ -406,7 +414,7 @@ describe("rebaseInstructionProposal", () => {
 		m.getInstructionProposal
 			.mockReset()
 			.mockResolvedValueOnce(proposal())
-			.mockResolvedValue(proposal({ proposalStatus: "REJECTED" }));
+			.mockResolvedValue(rebased());
 		await rebase([
 			{ op: "put", path: "AGENTS.md", content: "a\nboth\nc\n" },
 		]);
@@ -484,12 +492,74 @@ describe("rebaseInstructionProposal", () => {
 			ours: [{ path: "AGENTS.md", text: "b\n" }],
 			theirs: [{ path: "AGENTS.md", text: "a\n" }],
 		});
-		m.getInstructionProposal.mockReset().mockResolvedValue(proposal());
+		m.getInstructionProposal
+			.mockReset()
+			.mockResolvedValueOnce(proposal())
+			.mockResolvedValue(
+				proposal({
+					id: "snap_rebased",
+					version: 9,
+					isStale: false,
+					supersedesSnapshotId: null,
+				}),
+			);
 
 		await expect(rebase()).resolves.toEqual({
 			outcome: "duplicate",
 			snapshotId: "snap_rebased",
 			version: 9,
+		});
+	});
+
+	it("reports a rebase of this proposal written by an earlier attempt as rebased", async () => {
+		arrange({
+			base: [{ path: "AGENTS.md", text: "a\n" }],
+			ours: [{ path: "AGENTS.md", text: "b\n" }],
+			theirs: [{ path: "AGENTS.md", text: "a\n" }],
+		});
+
+		await expect(rebase()).resolves.toMatchObject({
+			outcome: "rebased",
+			snapshotId: "snap_rebased",
+		});
+	});
+
+	it.each([
+		["without the published version they were made against", null],
+		["made against a version that is no longer published", "snap_older"],
+	])("refuses resolutions %s and writes nothing", async (_name, expected) => {
+		arrange({
+			base: [{ path: "AGENTS.md", text: "a\nb\nc\n" }],
+			ours: [{ path: "AGENTS.md", text: "a\nours\nc\n" }],
+			theirs: [{ path: "AGENTS.md", text: "a\ntheirs\nc\n" }],
+		});
+
+		await expect(
+			rebase(
+				[{ op: "put", path: "AGENTS.md", content: "a\nboth\nc\n" }],
+				expected,
+			),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: {
+				reason: "REBASE_PUBLISHED_CHANGED",
+				publishedSnapshotId: "snap_published",
+			},
+		});
+		expect(m.listInstructionFiles).not.toHaveBeenCalled();
+		expect(m.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("reads the conflicts without a published version to compare, since there are no resolutions yet", async () => {
+		arrange({
+			base: [{ path: "AGENTS.md", text: "a\nb\nc\n" }],
+			ours: [{ path: "AGENTS.md", text: "a\nours\nc\n" }],
+			theirs: [{ path: "AGENTS.md", text: "a\ntheirs\nc\n" }],
+		});
+
+		await expect(rebase([], null)).resolves.toMatchObject({
+			outcome: "conflicts",
+			publishedSnapshotId: "snap_published",
 		});
 	});
 });
