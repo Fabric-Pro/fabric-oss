@@ -1,7 +1,16 @@
 "use client";
 
+import {
+	REPORT_DATA_TYPE_INFO,
+	type ReportDataType,
+} from "@repo/database/prisma/queries/lib/report-data-types";
 import { withProjectContext } from "@saas/reports/lib/project-report-suite";
-import { isRequiredDataSource } from "@saas/reports/lib/report-template-definition";
+import {
+	isRequiredDataSource,
+	reportDataSourceLabel,
+	reportProviderLabel,
+} from "@saas/reports/lib/report-template-definition";
+import { reportTemplateScopeOptions } from "@saas/reports/lib/report-template-publishing";
 import {
 	type DataSourceDefinition,
 	DataSourceDefinitionBuilder,
@@ -69,12 +78,6 @@ const outputFormats = [
 	{ value: "PDF", label: "PDF" },
 	{ value: "EVIDENCE_EMBED", label: "Evidence.dev Dashboard" },
 	{ value: "MULTI_FORMAT", label: "Multi-Format (MD + HTML + Evidence)" },
-];
-
-const scopeOptions = [
-	{ value: "USER", label: "Personal" },
-	{ value: "ORGANIZATION", label: "Organization" },
-	{ value: "SYSTEM", label: "System (Pre-seeded)" },
 ];
 
 type AiAgent = {
@@ -155,13 +158,23 @@ export function ReportTemplateForm({
 	// report suite (the API lets only them change one).
 	const isSystemTemplate = (templateData as any)?.scope === "SYSTEM";
 	const reportSuite = useFeatureFlag("REPORT_SUITE_V2");
-	const { data: capabilities } = useQuery({
-		...orpc.reports.capabilities.queryOptions({ input: {} }),
-		enabled: reportSuite,
-	});
+	// Also read without the report suite: only organization admins and
+	// owners may create an organization template.
+	const { data: capabilities } = useQuery(
+		orpc.reports.capabilities.queryOptions({ input: {} }),
+	);
 	const canEditSystemTemplates =
 		reportSuite && capabilities?.isPlatformAdmin === true;
 	const isReadOnlyTemplate = isSystemTemplate && !canEditSystemTemplates;
+	const scopeOptions = reportTemplateScopeOptions({
+		inOrganization: Boolean(organizationId),
+		roles: capabilities,
+		canCreateSystemTemplates: canEditSystemTemplates,
+		currentScope: isEditing ? templateData?.scope : undefined,
+	});
+	// A scope the viewer may not create falls back to "Only me".
+	const selectedScope =
+		scopeOptions.find((option) => option.value === scope)?.value ?? "USER";
 
 	useEffect(() => {
 		if (templateData) {
@@ -243,31 +256,35 @@ export function ReportTemplateForm({
 		// Extract unique providers and their types from the data source definitions
 		const providerMap = new Map<
 			string,
-			{ type: "integration" | "mcp"; name: string; required: boolean }
+			{
+				type: "integration" | "mcp";
+				name: string;
+				required: boolean;
+				dataType?: ReportDataType;
+			}
 		>();
-
-		// Provider display names for better UX
-		const providerNames: Record<string, string> = {
-			microsoft_graph: "Microsoft Teams / Graph",
-			slack: "Slack",
-			github: "GitHub",
-			linear: "Linear",
-			jira: "Jira",
-		};
 
 		for (const ds of dataSources) {
 			if (ds.type === "fabric") {
 				continue;
 			}
-			// A provider is required while any of its data sources is.
-			const existing = providerMap.get(ds.provider);
-			providerMap.set(ds.provider, {
+			// A generic source is its own requirement, keyed by its id as its
+			// binding is. A provider is required while any of its data sources is.
+			const key = ds.provider ?? ds.id;
+			const existing = providerMap.get(key);
+			providerMap.set(key, {
 				type:
 					existing?.type ??
 					(ds.type === "mcp" ? "mcp" : "integration"),
-				name: providerNames[ds.provider] || ds.provider,
+				name:
+					ds.dataType && !ds.provider
+						? REPORT_DATA_TYPE_INFO[ds.dataType].sourceName
+						: reportProviderLabel(key),
 				required:
 					(existing?.required ?? false) || isRequiredDataSource(ds),
+				...(ds.dataType && !ds.provider
+					? { dataType: ds.dataType }
+					: {}),
 			});
 		}
 
@@ -283,6 +300,7 @@ export function ReportTemplateForm({
 			name: string;
 			description: string;
 			required: boolean;
+			dataType?: ReportDataType;
 		}> = [];
 
 		for (const [key, info] of providerMap) {
@@ -290,9 +308,10 @@ export function ReportTemplateForm({
 				key,
 				name: info.name,
 				description: info.required
-					? `Requires ${info.name} connection`
-					: `Uses a ${info.name} connection when one is connected`,
+					? `Requires a ${info.name} connection`
+					: `Uses ${info.name} when it is connected`,
 				required: info.required,
+				...(info.dataType ? { dataType: info.dataType } : {}),
 			};
 			if (info.type === "mcp") {
 				mcpServerRequirements.push(requirement);
@@ -318,8 +337,7 @@ export function ReportTemplateForm({
 			fabricConfig.context ||
 			fabricConfig.pattern ||
 			fabricConfig.variables ||
-			fabricConfig.enableAutoDetection === false ||
-			fabricConfig.defaultPrompt;
+			fabricConfig.enableAutoDetection === false;
 
 		// Only include evidenceConfig if output format is Evidence-related and has values
 		const isEvidenceOutput =
@@ -357,7 +375,7 @@ export function ReportTemplateForm({
 				description: description || undefined,
 				templateType: templateType as any,
 				outputFormat: outputFormat as any,
-				scope: scope as any,
+				scope: selectedScope,
 				organizationId: organizationId ?? null,
 				category: category || undefined,
 				tags: tags.length > 0 ? tags : undefined,
@@ -560,13 +578,9 @@ export function ReportTemplateForm({
 																variant="secondary"
 																className="text-xs"
 															>
-																{ds.type ===
-																"integration"
-																	? `${ds.provider || ds.id} API`
-																	: ds.type ===
-																			"mcp"
-																		? `${(ds.config?.mcpServerKey as string) || "MCP"} → ${(ds.config?.toolName as string) || ds.id}`
-																		: ds.id}
+																{reportDataSourceLabel(
+																	ds,
+																)}
 															</Badge>
 														),
 													)}
@@ -693,7 +707,6 @@ export function ReportTemplateForm({
 				</div>
 			</section>
 
-			{/* Visibility Section */}
 			{/* Visibility Section - hidden for system templates */}
 			{!isReadOnlyTemplate && (
 				<section className="space-y-4">
@@ -702,25 +715,21 @@ export function ReportTemplateForm({
 					</h2>
 					<div className="grid grid-cols-[160px_1fr] gap-4 items-center">
 						<Label className="text-right">Scope</Label>
-						<Select value={scope} onValueChange={setScope}>
+						{/* An existing template keeps its scope; publishing widens it. */}
+						<Select
+							value={selectedScope}
+							onValueChange={setScope}
+							disabled={isEditing}
+						>
 							<SelectTrigger className="max-w-xs">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
-								{scopeOptions
-									.filter(
-										(o) =>
-											o.value !== "SYSTEM" ||
-											canEditSystemTemplates,
-									)
-									.map((o) => (
-										<SelectItem
-											key={o.value}
-											value={o.value}
-										>
-											{o.label}
-										</SelectItem>
-									))}
+								{scopeOptions.map((o) => (
+									<SelectItem key={o.value} value={o.value}>
+										{o.label}
+									</SelectItem>
+								))}
 							</SelectContent>
 						</Select>
 					</div>

@@ -106,14 +106,15 @@ export function findReadableInstructionVersion(input: {
 /**
  * Versions that have held the published pointer and are newer than the
  * marker, oldest first. A version published, rolled back and published again
- * appears once.
+ * appears once. When more than the limit qualify, the NEWEST ones are kept:
+ * the query reads newest first and the page is reversed.
  */
-export function listInstructionVersionsPublishedSince(input: {
+export async function listInstructionVersionsPublishedSince(input: {
 	projectId: string;
 	organizationId: string;
 	afterVersion: number;
 }) {
-	return db.projectInstructionSnapshot.findMany({
+	const newestFirst = await db.projectInstructionSnapshot.findMany({
 		where: {
 			projectId: input.projectId,
 			organizationId: input.organizationId,
@@ -121,7 +122,7 @@ export function listInstructionVersionsPublishedSince(input: {
 			publishedAt: { not: null },
 			...readableVersionFilter,
 		},
-		orderBy: { version: "asc" },
+		orderBy: { version: "desc" },
 		take: DIGEST_LIST_LIMIT,
 		select: {
 			id: true,
@@ -133,6 +134,7 @@ export function listInstructionVersionsPublishedSince(input: {
 			user: { select: { id: true, name: true } },
 		},
 	});
+	return newestFirst.reverse();
 }
 
 /**
@@ -140,6 +142,10 @@ export function listInstructionVersionsPublishedSince(input: {
  * `proposerUserId` narrows to the viewer's own, plus the approved ones every
  * reader may see, for a viewer who cannot review (the visibility the History
  * list applies).
+ *
+ * Only a reviewer's decision counts. A proposal its proposer withdrew, or one a
+ * rebase replaced, is also closed as REJECTED and reviewed now, but nobody
+ * rejected it, so it has no `reviewerUserId` and is not listed.
  */
 export function listInstructionProposalsResolvedSince(input: {
 	projectId: string;
@@ -152,6 +158,7 @@ export function listInstructionProposalsResolvedSince(input: {
 			projectId: input.projectId,
 			organizationId: input.organizationId,
 			proposalStatus: { in: ["APPROVED", "REJECTED"] },
+			reviewerUserId: { not: null },
 			reviewedAt: { gt: input.since },
 			...(input.proposerUserId !== undefined
 				? {

@@ -158,7 +158,7 @@ describe("worker bootstrap", () => {
 			maxConcurrentActivityTaskExecutions: 4,
 			reuseV8Context: true,
 		});
-		// Registered with the same activities and bundle as every other queue.
+		// Registered with the same activities and bundle as every workflow queue.
 		expect(glossy?.[0].activities).toBe(
 			mocks.create.mock.calls[0][0].activities,
 		);
@@ -220,6 +220,23 @@ describe("worker bootstrap", () => {
 				mocks.create.mock.calls[0][0].activities,
 			);
 		}
+	});
+
+	it("gives every queue a workflow bundle except the activity-only ones", () => {
+		const activityOnly = [
+			"project-document-generation",
+			"project-operations",
+		];
+		const sharedBundle = mocks.create.mock.calls[0][0].workflowBundle;
+		expect(sharedBundle).toBeDefined();
+		for (const [options] of mocks.create.mock.calls) {
+			expect(options.workflowBundle, String(options.taskQueue)).toBe(
+				activityOnly.includes(String(options.taskQueue))
+					? undefined
+					: sharedBundle,
+			);
+		}
+		expect(createdQueues()).toEqual(expect.arrayContaining(activityOnly));
 	});
 
 	it("unwraps AI usage-limit refusals in every worker's activities, innermost", () => {

@@ -11,7 +11,10 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { assertCanEditReportInstance } from "../../lib/report-access";
+import {
+	assertCanEditReportInstance,
+	assertReportPermission,
+} from "../../lib/report-access";
 
 const deleteInstanceInputSchema = z.object({
 	id: z.string(),
@@ -19,12 +22,17 @@ const deleteInstanceInputSchema = z.object({
 });
 
 export const deleteInstanceProcedure = tenantProtectedProcedure
-	.use(requireInputOrgPermission(Permissions.REPORT_DELETE))
+	.use(requireInputOrgPermission(Permissions.REPORT_READ))
 	.input(deleteInstanceInputSchema)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
+		);
+		await assertReportPermission(
+			organizationId,
+			context.user,
+			Permissions.REPORT_DELETE,
 		);
 
 		// Verify instance exists and user has access

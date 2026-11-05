@@ -27,7 +27,10 @@ type ProjectReportInstance = {
 	id: string;
 	name: string;
 	templateName: string;
+	status: string;
 	isActive: boolean;
+	/** The report's owner. */
+	userId?: string | null;
 	canGenerate: boolean;
 	/** What still stops the report from generating; `null` when it is ready. */
 	generateBlockedReason: string | null;
@@ -37,6 +40,7 @@ type ProjectReportInstance = {
 
 type Props = {
 	instances: ProjectReportInstance[];
+	viewerUserId?: string;
 	organizationId: string | null;
 	/** Where report instance pages live (`…/report-templates`). */
 	reportTemplatesPath: string;
@@ -50,6 +54,7 @@ type Props = {
  */
 export function ProjectReportInstancesList({
 	instances,
+	viewerUserId,
 	organizationId,
 	reportTemplatesPath,
 	onBrowseTemplates,
@@ -144,12 +149,17 @@ export function ProjectReportInstancesList({
 								</div>
 								<Badge
 									variant={
-										instance.isActive
+										instance.isActive &&
+										instance.status !== "DRAFT"
 											? "default"
 											: "secondary"
 									}
 								>
-									{instance.isActive ? "Active" : "Paused"}
+									{instance.status === "DRAFT"
+										? "Draft"
+										: instance.isActive
+											? "Active"
+											: "Paused"}
 								</Badge>
 							</div>
 						</CardHeader>
@@ -162,6 +172,10 @@ export function ProjectReportInstancesList({
 							</Button>
 							<OwnerOnlyGenerate
 								canGenerate={instance.canGenerate}
+								viewerIsOwner={
+									viewerUserId !== undefined &&
+									instance.userId === viewerUserId
+								}
 							>
 								{(ownerOnlyId) => (
 									<Button

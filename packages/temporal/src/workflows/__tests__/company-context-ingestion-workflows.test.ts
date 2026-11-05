@@ -175,6 +175,12 @@ vi.mock("../../client", () => ({
 	getTemporalClient: vi.fn(),
 }));
 
+// Started only after a project row's embed; stubbed so no row read or
+// workflow start is added to the paths pinned here.
+vi.mock("../../activities/lib/living-memory-decision-start", () => ({
+	startLivingMemoryDecisionExtraction: vi.fn(async () => "not_eligible"),
+}));
+
 import { deleteSingleContextActivity } from "../../activities/context-deletion";
 import { embedSingleContextActivity } from "../../activities/context-embedding";
 import {

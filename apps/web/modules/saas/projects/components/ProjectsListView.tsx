@@ -62,6 +62,10 @@ interface ProjectsListViewProps {
 		}>;
 	}>;
 	canDeleteProject?: (projectId: string) => boolean;
+	/** False for a project the caller reaches only through their organization role. */
+	belongsToProject?: (
+		project: ProjectsListViewProps["projects"][0],
+	) => boolean;
 	onUpdate: () => void;
 	isDeleted?: boolean;
 	isSelectionMode?: boolean;
@@ -96,6 +100,7 @@ function ProjectListItem({
 	isSelected = false,
 	onSelect,
 	canDelete = false,
+	belongsToProject = true,
 }: {
 	project: ProjectsListViewProps["projects"][0];
 	onUpdate: () => void;
@@ -104,6 +109,7 @@ function ProjectListItem({
 	isSelected?: boolean;
 	onSelect?: (id: string, selected: boolean) => void;
 	canDelete?: boolean;
+	belongsToProject?: boolean;
 }) {
 	const router = useRouter();
 	const queryClient = useQueryClient();
@@ -391,7 +397,7 @@ function ProjectListItem({
 
 						{/* Quick-access favorite (#1694) — same conditions as the
 						    grid card, so the two views never disagree. */}
-						{!isDeleted && !isSelectionMode && (
+						{!isDeleted && !isSelectionMode && belongsToProject && (
 							<ProjectFavoriteToggle
 								projectId={project.id}
 								projectName={project.name}
@@ -462,45 +468,52 @@ function ProjectListItem({
 												<FolderIcon className="h-4 w-4 mr-2" />
 												Open Project
 											</DropdownMenuItem>
-											<DropdownMenuSeparator />
-											{project.status !== "ACTIVE" && (
-												<DropdownMenuItem
-													onClick={(e) => {
-														e.stopPropagation();
-														handleStatusChange(
-															"ACTIVE",
-														);
-													}}
-												>
-													<PlayIcon className="h-4 w-4 mr-2" />
-													Mark as Active
-												</DropdownMenuItem>
-											)}
-											{project.status !== "COMPLETED" && (
-												<DropdownMenuItem
-													onClick={(e) => {
-														e.stopPropagation();
-														handleStatusChange(
-															"COMPLETED",
-														);
-													}}
-												>
-													<CheckCircle2Icon className="h-4 w-4 mr-2" />
-													Mark as Completed
-												</DropdownMenuItem>
-											)}
-											{project.status !== "ARCHIVED" && (
-												<DropdownMenuItem
-													onClick={(e) => {
-														e.stopPropagation();
-														handleStatusChange(
-															"ARCHIVED",
-														);
-													}}
-												>
-													<ArchiveIcon className="h-4 w-4 mr-2" />
-													Archive
-												</DropdownMenuItem>
+											{belongsToProject && (
+												<>
+													<DropdownMenuSeparator />
+													{project.status !==
+														"ACTIVE" && (
+														<DropdownMenuItem
+															onClick={(e) => {
+																e.stopPropagation();
+																handleStatusChange(
+																	"ACTIVE",
+																);
+															}}
+														>
+															<PlayIcon className="h-4 w-4 mr-2" />
+															Mark as Active
+														</DropdownMenuItem>
+													)}
+													{project.status !==
+														"COMPLETED" && (
+														<DropdownMenuItem
+															onClick={(e) => {
+																e.stopPropagation();
+																handleStatusChange(
+																	"COMPLETED",
+																);
+															}}
+														>
+															<CheckCircle2Icon className="h-4 w-4 mr-2" />
+															Mark as Completed
+														</DropdownMenuItem>
+													)}
+													{project.status !==
+														"ARCHIVED" && (
+														<DropdownMenuItem
+															onClick={(e) => {
+																e.stopPropagation();
+																handleStatusChange(
+																	"ARCHIVED",
+																);
+															}}
+														>
+															<ArchiveIcon className="h-4 w-4 mr-2" />
+															Archive
+														</DropdownMenuItem>
+													)}
+												</>
 											)}
 											{canDelete && (
 												<>
@@ -532,6 +545,7 @@ function ProjectListItem({
 export function ProjectsListView({
 	projects,
 	canDeleteProject,
+	belongsToProject,
 	onUpdate,
 	isDeleted = false,
 	isSelectionMode = false,
@@ -545,6 +559,7 @@ export function ProjectsListView({
 					key={project.id}
 					project={project}
 					canDelete={canDeleteProject?.(project.id) ?? false}
+					belongsToProject={belongsToProject?.(project) ?? true}
 					onUpdate={onUpdate}
 					isDeleted={isDeleted}
 					isSelectionMode={isSelectionMode}

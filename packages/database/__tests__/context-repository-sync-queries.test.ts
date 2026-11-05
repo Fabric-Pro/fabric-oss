@@ -2098,7 +2098,11 @@ describe("mergeContextRepositorySyncRunOutcomes (§4.3)", () => {
 // The writer: apply
 // =============================================================================
 
-function applyBatch(files: RepositoryContextFile[], decided: string[] = []) {
+function applyBatch(
+	files: RepositoryContextFile[],
+	decided: string[] = [],
+	firstSync?: boolean,
+) {
 	return inTx((tx) =>
 		applyRepositoryContextBatch(tx as never, {
 			projectId: PROJECT,
@@ -2107,6 +2111,7 @@ function applyBatch(files: RepositoryContextFile[], decided: string[] = []) {
 			actingUserId: "user-2",
 			files,
 			decided: new Set(decided),
+			...(firstSync === undefined ? {} : { firstSync }),
 		}),
 	);
 }
@@ -2120,6 +2125,35 @@ const file = (
 	contentHash,
 	content: `content of ${storageKey} at ${contentHash}`,
 	...extra,
+});
+
+describe("applyRepositoryContextBatch — the first sync's decision scan", () => {
+	it("marks a file the first sync creates as not read for decisions", async () => {
+		await applyBatch([file("docs/new.md", "h-new")], [], true);
+
+		expect(committed().context[0]).toMatchObject({
+			sourcePath: "docs/new.md",
+			decisionScanSkippedHash: "h-new",
+		});
+	});
+
+	it("leaves a file a later sync creates to be read as usual", async () => {
+		await applyBatch([file("docs/new.md", "h-new")], [], false);
+
+		expect(committed().context[0]?.decisionScanSkippedHash).toBeUndefined();
+	});
+
+	it("does not mark a file the first sync updates", async () => {
+		seedContext({
+			sourcePath: "docs/a.md",
+			contentHash: "h-old",
+			repositorySyncId: SYNC,
+		});
+
+		await applyBatch([file("docs/a.md", "h-new")], [], true);
+
+		expect(committed().context[0]?.decisionScanSkippedHash).toBeUndefined();
+	});
 });
 
 describe("applyRepositoryContextBatch — the blob a row was read from", () => {

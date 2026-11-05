@@ -37,6 +37,7 @@ import { createInstructionStorageCleanupReceipt } from "./instruction-pending-st
 import {
 	approvalProgressOf,
 	approvalRefusal,
+	approversStillPermitted,
 	countedApprovals,
 	type InstructionReviewPolicy,
 	listProposalApproverIds,
@@ -299,6 +300,8 @@ const proposalSelect = {
 	...summarySelect,
 	proposalDestination: true,
 	proposalNote: true,
+	// The stale proposal a rebase replaces once this one is READY.
+	supersedesSnapshotId: true,
 	pullRequestOperationId: true,
 	pullRequestState: true,
 	pullRequestAttempt: true,
@@ -316,16 +319,20 @@ const proposalSelect = {
 } satisfies Prisma.ProjectInstructionSnapshotSelect;
 
 /**
- * A proposal's "2 of 3", counted against the policy the project holds now.
- * A REPOSITORY proposal is decided on its pull request and has no Fabric
- * approvals; it reads 0 of the policy, which nothing shows.
+ * A proposal's "2 of 3", counted against the policy the project holds now
+ * and only for approvers who still hold the publish permission
+ * (`permittedUserIds`, from `approversStillPermitted`). A REPOSITORY
+ * proposal is decided on its pull request and has no Fabric approvals; it
+ * reads 0 of the policy, which nothing shows.
  */
 function proposalApprovalProgress(
 	proposal: { userId: string; approvals: Array<{ userId: string }> },
 	settings: unknown,
+	permittedUserIds: ReadonlySet<string>,
 ) {
 	return approvalProgressOf({
 		approverUserIds: proposal.approvals.map((approval) => approval.userId),
+		permittedUserIds,
 		proposerUserId: proposal.userId,
 		settings,
 	});
@@ -1086,29 +1093,18 @@ type CreateDerivedInstructionSnapshotInput = {
 	 * Requires `proposal` and no `destination`.
 	 *
 	 * The replaced row must be the same proposer's PENDING, READY,
-	 * FULL_SNAPSHOT FABRIC proposal on a base other than this one. It is
-	 * closed as REJECTED in the same transaction that writes the new row,
-	 * with `audit` recorded beside it, so the proposer's slot moves from the
-	 * old proposal to the new one at once: the admission counts leave the
-	 * replaced row out. A replaced row that moved meanwhile refuses the whole
-	 * derivation as `supersede_unavailable` and nothing is written.
+	 * FULL_SNAPSHOT FABRIC proposal on a base other than this one, and no
+	 * other unfinished rebase may already be replacing it. The new row
+	 * records it as `supersedesSnapshotId`, and it stays pending until the
+	 * new row is READY: `markInstructionSnapshotReady` closes it then, with
+	 * its `proposal_rebased` audit row. A rebase whose upload or checks fail
+	 * therefore leaves the stale proposal as it was. The admission counts
+	 * leave the replaced row out, so the proposer's slot moves to the new
+	 * one. A replaced row that does not qualify refuses the derivation as
+	 * `supersede_unavailable` and nothing is written.
 	 */
-	supersedes?: {
-		snapshotId: string;
-		audit: (created: { id: string; version: number }) => RecordAuditInput;
-	};
+	supersedes?: { snapshotId: string };
 };
-
-/**
- * Thrown inside the create transaction when the proposal a rebase replaces
- * could not be closed, so the new row rolls back with it.
- */
-class SupersededProposalMovedError extends Error {
-	constructor() {
-		super("The proposal being rebased moved during the rebase");
-		this.name = "SupersededProposalMovedError";
-	}
-}
 
 /** `proposalNote`: the shape `proposalNoteSchema` produces. */
 export type ProposalNoteJson = { title?: string; body?: string };
@@ -1328,16 +1324,7 @@ export async function createDerivedInstructionSnapshot(
 			"createDerivedInstructionSnapshot: a rebase is a FABRIC proposal",
 		);
 	}
-	try {
-		return await withVersionRetry(() =>
-			allocateAndCreateDerivedSnapshot(input),
-		);
-	} catch (error) {
-		if (error instanceof SupersededProposalMovedError) {
-			return { ok: false, reason: "supersede_unavailable" };
-		}
-		throw error;
-	}
+	return withVersionRetry(() => allocateAndCreateDerivedSnapshot(input));
 }
 
 /**
@@ -1359,6 +1346,36 @@ function supersededProposalWhere(
 		status: "READY" as const,
 		baseSnapshotId: { not: input.baseSnapshotId },
 	} satisfies Prisma.ProjectInstructionSnapshotWhereInput;
+}
+
+/**
+ * Whether a rebase may replace `snapshotId`: it is the proposal
+ * `supersededProposalWhere` describes, and no other rebase that is still
+ * pending already replaces it. Two would each close it on READY and leave
+ * the proposer with both.
+ */
+async function supersedableProposal(
+	tx: Prisma.TransactionClient,
+	input: CreateDerivedInstructionSnapshotInput,
+	snapshotId: string,
+): Promise<boolean> {
+	const replaced = await tx.projectInstructionSnapshot.findFirst({
+		where: supersededProposalWhere(input, snapshotId),
+		select: { id: true },
+	});
+	if (!replaced) {
+		return false;
+	}
+	const replacing = await tx.projectInstructionSnapshot.findFirst({
+		where: {
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			supersedesSnapshotId: snapshotId,
+			proposalStatus: "PENDING",
+		},
+		select: { id: true },
+	});
+	return replacing === null;
 }
 
 function allocateAndCreateDerivedSnapshot(
@@ -1412,20 +1429,8 @@ function allocateAndCreateDerivedSnapshot(
 				}
 			}
 			const supersedes = input.supersedes;
-			if (supersedes) {
-				const replaced = await tx.projectInstructionSnapshot.findFirst({
-					where: supersededProposalWhere(
-						input,
-						supersedes.snapshotId,
-					),
-					select: { id: true },
-				});
-				if (!replaced) {
-					return { ok: false, reason: "supersede_unavailable" };
-				}
-			}
 			// The replaced proposal's slot is the new one's: it is closed
-			// below, in this transaction.
+			// when the new one is READY (`markInstructionSnapshotReady`).
 			const notReplaced = supersedes
 				? { id: { not: supersedes.snapshotId } }
 				: {};
@@ -1547,6 +1552,19 @@ function allocateAndCreateDerivedSnapshot(
 							proposalIntentOrder: existing.proposalIntentOrder,
 						},
 					};
+				}
+				// AFTER the duplicate lookup: a retried rebase finds the row its
+				// first attempt wrote, which is still replacing the stale
+				// proposal, instead of a refusal.
+				if (
+					supersedes &&
+					!(await supersedableProposal(
+						tx,
+						input,
+						supersedes.snapshotId,
+					))
+				) {
+					return { ok: false, reason: "supersede_unavailable" };
 				}
 				const proposerCount = await tx.projectInstructionSnapshot.count(
 					{
@@ -1883,6 +1901,9 @@ function allocateAndCreateDerivedSnapshot(
 					// records which change set made it" — rather than a
 					// column whose presence depends on a flag.
 					changeSetDigest: digest,
+					...(supersedes
+						? { supersedesSnapshotId: supersedes.snapshotId }
+						: {}),
 					settingsFrozen:
 						base.settingsFrozen as Prisma.InputJsonValue,
 					// Proposal publication is review-only. Persist both halves of
@@ -2027,25 +2048,6 @@ function allocateAndCreateDerivedSnapshot(
 						keptCount: fileCount,
 					},
 				});
-			}
-			if (supersedes) {
-				// Closed as the proposer's own cancel closes a READY proposal:
-				// REJECTED, reviewed now, its bytes left for retention. A row
-				// that moved since the read above rolls this one back.
-				const closed = await tx.projectInstructionSnapshot.updateMany({
-					where: supersededProposalWhere(
-						input,
-						supersedes.snapshotId,
-					),
-					data: {
-						proposalStatus: "REJECTED",
-						reviewedAt: new Date(),
-					},
-				});
-				if (closed.count !== 1) {
-					throw new SupersededProposalMovedError();
-				}
-				await recordAuditTx(tx, supersedes.audit(snapshot));
 			}
 			return {
 				ok: true,
@@ -2199,11 +2201,18 @@ export async function listInstructionProposals(
 	}
 	const hasMore = proposals.length > options.limit;
 	const page = hasMore ? proposals.slice(0, options.limit) : proposals;
+	const permitted = await approversStillPermitted(
+		projectId,
+		page.flatMap((proposal) =>
+			proposal.approvals.map((approval) => approval.userId),
+		),
+	);
 	const items = page.map((proposal) => ({
 		...proposal,
 		approvals: proposalApprovalProgress(
 			proposal,
 			project.instructionSettings,
+			permitted,
 		),
 		isStale:
 			proposal.contentKind === "FULL_SNAPSHOT" &&
@@ -2257,11 +2266,16 @@ export async function getInstructionProposal(
 	if (!project || !proposal) {
 		return null;
 	}
+	const permitted = await approversStillPermitted(
+		projectId,
+		proposal.approvals.map((approval) => approval.userId),
+	);
 	return {
 		...proposal,
 		approvals: proposalApprovalProgress(
 			proposal,
 			project.instructionSettings,
+			permitted,
 		),
 		isStale:
 			proposal.contentKind === "FULL_SNAPSHOT" &&
@@ -3238,6 +3252,11 @@ function ownedByAttempt(validationAttemptId: string | undefined) {
  * write while the row is still RECEIVING, and a "Try again" run can reach it
  * while the row is still FAILED. Matching only VALIDATING would drop the
  * verdict in exactly those races and strand the snapshot.
+ *
+ * A rebased proposal (`supersedesSnapshotId`) closes the stale proposal it
+ * replaces in the same transaction (`closeSupersededProposalTx`), so the
+ * stale one stays pending through every failure before this point and is
+ * closed exactly once, by the call that made the transition.
  */
 export async function markInstructionSnapshotReady(input: {
 	snapshotId: string;
@@ -3273,8 +3292,9 @@ export async function markInstructionSnapshotReady(input: {
 			? Prisma.sql`, "deferredScanStatus" = 'PENDING'`
 			: Prisma.empty;
 	const notAfter = input.notAfter ?? null;
-	const rows = await db.$queryRaw<Array<{ updated: number }>>(
-		Prisma.sql`WITH target AS MATERIALIZED (
+	return db.$transaction(async (tx) => {
+		const rows = await tx.$queryRaw<Array<ReadyTransitionRow>>(
+			Prisma.sql`WITH target AS MATERIALIZED (
 				SELECT "id"
 				FROM "project_instruction_snapshot"
 				WHERE "id" = ${input.snapshotId}
@@ -3307,9 +3327,117 @@ export async function markInstructionSnapshotReady(input: {
 				${deferred}
 			FROM live
 			WHERE s."id" = live."id"
-			RETURNING 1 AS "updated"`,
-	);
-	return { changed: rows.length > 0 };
+			RETURNING 1 AS "updated",
+				s."userId" AS "userId",
+				s."version" AS "version",
+				s."baseVersion" AS "baseVersion",
+				s."proposalStatus"::text AS "proposalStatus",
+				s."supersedesSnapshotId" AS "supersedesSnapshotId"`,
+		);
+		const ready = rows[0];
+		if (!ready) {
+			return { changed: false };
+		}
+		// A rebased proposal replaces its stale one only now that it is
+		// READY, and only while it is itself still awaiting review: one the
+		// proposer canceled meanwhile replaces nothing.
+		if (
+			ready.supersedesSnapshotId !== null &&
+			ready.proposalStatus === "PENDING"
+		) {
+			await closeSupersededProposalTx(tx, {
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				rebased: {
+					id: input.snapshotId,
+					userId: ready.userId,
+					version: ready.version,
+					baseVersion: ready.baseVersion,
+				},
+				supersededSnapshotId: ready.supersedesSnapshotId,
+			});
+		}
+		return { changed: true };
+	});
+}
+
+/** What the READY transition returns about the row it moved. */
+type ReadyTransitionRow = {
+	updated: number;
+	userId: string;
+	version: number;
+	baseVersion: number | null;
+	proposalStatus: string | null;
+	supersedesSnapshotId: string | null;
+};
+
+/**
+ * Closes the stale proposal a rebased one replaces, inside the transaction
+ * that made the rebased one READY. Closed as the proposer's own cancel closes
+ * a READY proposal: REJECTED, reviewed now, its bytes left for retention,
+ * with the `proposal_rebased` audit row beside it. A stale proposal that is
+ * no longer the proposer's pending one (decided, canceled meanwhile) is left
+ * as it is, silently: the rebased proposal is valid either way, and a READY
+ * verdict must never fail over it.
+ */
+async function closeSupersededProposalTx(
+	tx: Prisma.TransactionClient,
+	input: {
+		projectId: string;
+		organizationId: string;
+		rebased: {
+			id: string;
+			userId: string;
+			version: number;
+			baseVersion: number | null;
+		};
+		supersededSnapshotId: string;
+	},
+): Promise<void> {
+	const scope = {
+		id: input.supersededSnapshotId,
+		projectId: input.projectId,
+		organizationId: input.organizationId,
+	};
+	const closed = await tx.projectInstructionSnapshot.updateMany({
+		where: {
+			...scope,
+			userId: input.rebased.userId,
+			proposalStatus: "PENDING",
+			proposalDestination: "FABRIC",
+			contentKind: "FULL_SNAPSHOT",
+			status: "READY",
+		},
+		data: { proposalStatus: "REJECTED", reviewedAt: new Date() },
+	});
+	if (closed.count !== 1) {
+		return;
+	}
+	const superseded = await tx.projectInstructionSnapshot.findFirst({
+		where: scope,
+		select: { version: true, baseVersion: true },
+	});
+	await recordAuditTx(tx, {
+		action: "project.instructions.proposal_rebased",
+		category: "project",
+		outcome: "success",
+		// The proposer asked for the rebase; the close lands when its checks
+		// pass, outside any request.
+		actor: { type: "user", userId: input.rebased.userId },
+		organizationId: input.organizationId,
+		projectId: input.projectId,
+		resource: {
+			type: "project_instruction_snapshot",
+			id: input.supersededSnapshotId,
+			name: superseded ? `v${superseded.version}` : null,
+		},
+		metadata: {
+			rebasedSnapshotId: input.rebased.id,
+			rebasedVersion: input.rebased.version,
+			fromBaseVersion: superseded?.baseVersion ?? null,
+			toBaseVersion: input.rebased.baseVersion,
+		},
+	});
 }
 
 /**
@@ -4035,14 +4163,24 @@ export async function approveInstructionProposal(input: {
 			projectId: input.projectId,
 			organizationId: input.organizationId,
 		};
-		const approvalsNow = async () => ({
-			count: countedApprovals({
-				approverUserIds: await listProposalApproverIds(scope, tx),
-				proposerUserId: proposal.userId,
-				policy,
-			}),
-			required: policy.requiredApprovals,
-		});
+		const approvalsNow = async () => {
+			const approverUserIds = await listProposalApproverIds(scope, tx);
+			return {
+				count: countedApprovals({
+					approverUserIds,
+					// Re-checked under the project lock: an approver who has
+					// since lost the publish permission no longer counts.
+					permittedUserIds: await approversStillPermitted(
+						input.projectId,
+						approverUserIds,
+						tx,
+					),
+					proposerUserId: proposal.userId,
+					policy,
+				}),
+				required: policy.requiredApprovals,
+			};
+		};
 		if (proposal.proposalStatus === "APPROVED") {
 			return {
 				ok: true as const,

@@ -185,16 +185,14 @@ Focus on:
 
 	// RAG: Retrieve project context (requirements, architecture, decisions)
 	try {
-		const {
-			retrieveProjectContexts,
-			contextMetaHeader,
-			projectContextSourceName,
-		} = await import("@repo/rag");
+		const { retrieveProjectContexts, formatContextPassagesForPrompt } =
+			await import("@repo/rag");
 
 		const userMessage =
 			state.messages[state.messages.length - 1]?.content || "";
 		config.signal?.throwIfAborted();
 		const results = await retrieveProjectContexts({
+			includeMatchedPassages: true,
 			projectId: state.projectContext.projectId,
 			query: [
 				typeof userMessage === "string"
@@ -211,28 +209,9 @@ Focus on:
 		});
 
 		if (results && results.length > 0) {
-			const ragContent = results
-				.map(
-					(
-						r: {
-							content: string;
-							sourcePath?: string;
-							filename?: string;
-							sourceTitle?: string;
-							sourceUrl?: string;
-							metadata?: { filename?: string; type?: string };
-							sourceType?: string;
-							aiInstructions?: string;
-						},
-						i: number,
-					) => {
-						const source = projectContextSourceName(r, i);
-						// Type label + AI guidance (#1888): metadata arrives
-						// flag-gated; header is "" when unset.
-						return `### ${source}\n${contextMetaHeader(r)}${r.content}`;
-					},
-				)
-				.join("\n\n");
+			const ragContent = formatContextPassagesForPrompt(results, {
+				maxChars: PROJECT_CONTEXT_MAX_CHARS,
+			});
 			sections.push(`## Project context (RAG)\n${ragContent}`);
 		}
 	} catch {
@@ -425,3 +404,6 @@ const workflow = new StateGraph(PatternState)
 	.addEdge("savePlanNode", END);
 
 export const patternGraph = workflow.compile();
+
+// Bounds the project-context prompt section.
+const PROJECT_CONTEXT_MAX_CHARS = 20000;

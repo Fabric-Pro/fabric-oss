@@ -101,6 +101,7 @@ const REACHABLE = [
 	"POST /projects/:projectId/context-quality/runs/:runId/cancel",
 	"POST /projects/:projectId/contexts/assemble",
 	"POST /projects/:projectId/contexts/reset",
+	"POST /projects/:projectId/contexts/synced-files/missing",
 	"POST /projects/:projectId/contexts/workspace-documents",
 	"POST /projects/:projectId/documents",
 	"POST /projects/:projectId/features",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	countAgenticRecords,
+	everySourceSkipped,
 	hasNoUsableData,
 	mapAgenticGatheredData,
 } from "../src/activities/template-instance/report-data-gate";
@@ -118,5 +119,55 @@ describe("mapAgenticGatheredData (gate input — Codex finding 3)", () => {
 		);
 		expect(totalRecords).toBe(0);
 		expect(hasNoUsableData(true, totalRecords)).toBe(true);
+	});
+});
+
+describe("everySourceSkipped", () => {
+	const optional = [
+		{ id: "project-management", type: "mcp", required: false },
+		{ id: "repository", type: "mcp", required: false },
+	];
+
+	it("is true when every source is optional and none is connected", () => {
+		expect(everySourceSkipped(optional, {})).toBe(true);
+		expect(everySourceSkipped(optional, null)).toBe(true);
+		expect(
+			everySourceSkipped(optional, {
+				mcpConfigs: [],
+				mcpBindings: { repository: "" },
+			}),
+		).toBe(true);
+	});
+
+	it("is false when a source is connected", () => {
+		expect(
+			everySourceSkipped(optional, { mcpConfigs: ["example-config"] }),
+		).toBe(false);
+		expect(
+			everySourceSkipped(optional, {
+				mcpBindings: { repository: "example-config" },
+			}),
+		).toBe(false);
+	});
+
+	it("is false when a source is required, or required by default", () => {
+		expect(
+			everySourceSkipped(
+				[...optional, { type: "mcp", required: true }],
+				{},
+			),
+		).toBe(false);
+		expect(everySourceSkipped([{ type: "mcp" }], {})).toBe(false);
+	});
+
+	it("is false for a source that does not read through a tool", () => {
+		expect(
+			everySourceSkipped([{ type: "fabric", required: false }], {}),
+		).toBe(false);
+	});
+
+	it("is false for a template with no sources: it has nothing to skip", () => {
+		expect(everySourceSkipped([], {})).toBe(false);
+		expect(everySourceSkipped(undefined, {})).toBe(false);
 	});
 });

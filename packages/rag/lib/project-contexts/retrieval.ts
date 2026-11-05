@@ -1,3 +1,4 @@
+import { compactProjectContextPassages } from "./project-context-passages";
 import { projectContextSourceName } from "./source-name";
 /**
  * Project Context Retrieval with RAG Settings
@@ -406,6 +407,33 @@ exist, and the newest item here is not necessarily the most recent one on record
 ${formattedContexts.join("\n\n")}
 </project_context>
 `.trim();
+}
+
+/** Format matched passages within a prompt character budget. */
+export function formatContextPassagesForPrompt(
+	contexts: RetrievedContext[],
+	options: {
+		maxChars: number;
+		fullSourceNote?: (sourceId: string) => string;
+	},
+): string {
+	if (contexts.length === 0) {
+		return "";
+	}
+	const whole = formatContextsForPrompt(contexts);
+	const header = whole
+		? whole.slice(0, whole.indexOf("\n\n--- "))
+		: "<project_context>";
+	const compact = compactProjectContextPassages(
+		contexts,
+		header,
+		contextMetaHeader,
+		{
+			maxChars: options.maxChars - 20,
+			fullSourceNote: options.fullSourceNote ?? (() => "Excerpts only."),
+		},
+	).context;
+	return compact ? `${compact}\n</project_context>` : "";
 }
 
 /**

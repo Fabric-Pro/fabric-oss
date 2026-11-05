@@ -579,6 +579,40 @@ describe("InstructionProposals", () => {
 		expect(state.reject).not.toHaveBeenCalled();
 	});
 
+	it("calls a proposal rejected only when a reviewer rejected it", async () => {
+		state.rows = [
+			row({
+				id: "withdrawn",
+				version: 8,
+				proposalStatus: "REJECTED",
+				reviewedAt: new Date(),
+			}),
+			row({
+				id: "reviewed",
+				version: 9,
+				proposalStatus: "REJECTED",
+				reviewedAt: new Date(),
+				reviewer: { id: "reviewer", name: "Reviewer" },
+			}),
+		];
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		expect(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		).toHaveTextContent("Closed");
+		expect(
+			screen.getByRole("button", { name: "Proposal version 9" }),
+		).toHaveTextContent("Rejected");
+	});
+
 	it("withholds review actions for a stale proposal", async () => {
 		const user = userEvent.setup();
 		state.rows = [row({ isStale: true })];
@@ -2762,6 +2796,43 @@ describe("the review policy on the proposal card", () => {
 				name: "You approved (1 of 2)",
 			}),
 		).toBeDisabled();
+	});
+
+	it("offers a plain, enabled Approve to a reviewer who approved once the count already meets a lowered policy", async () => {
+		const user = userEvent.setup();
+		const counted = {
+			approvals: { count: 2, required: 2 },
+			viewerApproved: true,
+		};
+		state.rows = [row(counted)];
+		state.detail = { ...row(counted), changes: [] };
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+
+		const approve = await screen.findByRole("button", {
+			name: reviewCopy.approve,
+		});
+		expect(approve).toBeEnabled();
+		expect(
+			screen.queryByRole("button", { name: "You approved (2 of 2)" }),
+		).toBeNull();
+		await user.click(approve);
+		await waitFor(() =>
+			expect(state.approve).toHaveBeenCalledWith({
+				projectId: "p",
+				snapshotId: "proposal-8",
+			}),
+		);
 	});
 
 	it("keeps today's single Approve, with no count, under the default policy", async () => {

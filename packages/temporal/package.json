@@ -69,6 +69,7 @@
 		"./fabric-page-discovery-tool-definitions": "./src/lib/fabric-page-discovery-tool-definitions.ts",
 		"./fabric-frame-version-tool-definitions": "./src/lib/fabric-frame-version-tool-definitions.ts",
 		"./fabric-report-tool-definitions": "./src/lib/fabric-report-tool-definitions.ts",
+		"./report-ai-tasks": "./src/activities/template-instance/report-ai-tasks.ts",
 		"./fabric-gateway-tools": "./src/lib/fabric-gateway-tools.ts",
 		"./fabric-portal-tools": "./src/lib/fabric-portal-tools.ts",
 		"./workflows": "./src/workflows/index.ts",

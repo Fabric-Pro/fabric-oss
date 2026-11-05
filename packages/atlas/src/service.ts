@@ -32,7 +32,7 @@ import {
 } from "@repo/database";
 import {
 	forceReExchangeRepoCredentials,
-	GIT_AUTH_UNSAFE,
+	GIT_AUTH_OPTIONS,
 	gitAuthForClone,
 	isGitAuthError,
 	markRepoReauthRequired,
@@ -4281,7 +4281,7 @@ export class AtlasService {
 		// present so the no-signal path keeps the original behaviour. Applied to
 		// EVERY git invocation below so a "Cancel" kills whichever step is live.
 		const gitOptions: Partial<SimpleGitOptions> = {
-			unsafe: GIT_AUTH_UNSAFE,
+			...GIT_AUTH_OPTIONS,
 			...(abortSignal ? { abort: abortSignal } : {}),
 		};
 		const git = simpleGit(gitOptions).env(auth.env);

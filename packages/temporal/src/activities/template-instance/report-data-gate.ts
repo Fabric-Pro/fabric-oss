@@ -4,6 +4,16 @@
  * — keep this file free of @repo/ai, @repo/database, logger, Buffer, Date, etc.
  */
 
+/** Reserved `gatheredData` key: counts computed over every card read. */
+export const BOARD_FACTS_KEY = "_board_facts";
+/** Reserved `gatheredData` key: per-listing pagination coverage. */
+export const COVERAGE_KEY = "_coverage";
+
+/** The source id `mapAgenticGatheredData` gives a gathered key with no template source. */
+export function agenticSourceId(key: string): string {
+	return `agentic_${key}`;
+}
+
 export type AgenticDataSourceResult = {
 	sourceId: string;
 	sourceType: "agentic";
@@ -73,7 +83,8 @@ export function mapAgenticGatheredData(
 		const recordCount = toolName.startsWith("_")
 			? 0
 			: countAgenticRecords(data);
-		const sourceId = opts.toolToSourceId[toolName] || `agentic_${toolName}`;
+		const sourceId =
+			opts.toolToSourceId[toolName] || agenticSourceId(toolName);
 		results.push({
 			sourceId,
 			sourceType: "agentic",
@@ -84,6 +95,30 @@ export function mapAgenticGatheredData(
 		totalRecords += recordCount;
 	}
 	return { results, totalRecords };
+}
+
+/**
+ * Whether a report reads no source at all: every source its template declares
+ * is an optional MCP source and none is connected, as a prompt-driven report may
+ * leave them. A run then has nothing to gather, and nothing has failed.
+ */
+export function everySourceSkipped(
+	dataSources:
+		| ReadonlyArray<{ type?: string; required?: unknown }>
+		| undefined,
+	connections:
+		| { mcpConfigs?: string[]; mcpBindings?: Record<string, string> }
+		| null
+		| undefined,
+): boolean {
+	return (
+		!!dataSources?.length &&
+		dataSources.every(
+			(source) => source.type === "mcp" && source.required === false,
+		) &&
+		!connections?.mcpConfigs?.length &&
+		!Object.values(connections?.mcpBindings ?? {}).some(Boolean)
+	);
 }
 
 /**

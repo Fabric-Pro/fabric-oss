@@ -103,6 +103,12 @@ interface UseUpdateDocumentWithContextOptions {
 	 * not unlocked — its own rule unlocks it once that review is answered.
 	 */
 	heldElsewhere?: () => boolean;
+	/**
+	 * Whether what holds it is a proposal the room holds that nobody reviews
+	 * any more, rather than another editor's review (Fizzy #2946): said so
+	 * when it holds.
+	 */
+	heldUnanswered?: () => boolean;
 	/** Called right before the preview's diff goes into the editor. */
 	beforePreview?: () => void;
 }
@@ -120,6 +126,7 @@ export function useUpdateDocumentWithContext({
 	onSaved,
 	resolveBase,
 	heldElsewhere,
+	heldUnanswered,
 	beforePreview,
 }: UseUpdateDocumentWithContextOptions) {
 	// Everything this hook says is in the reader's locale, a refused confirm
@@ -137,6 +144,8 @@ export function useUpdateDocumentWithContext({
 	// Read when they are needed, not when the callbacks were made.
 	const heldElsewhereRef = useRef(heldElsewhere);
 	heldElsewhereRef.current = heldElsewhere;
+	const heldUnansweredRef = useRef(heldUnanswered);
+	heldUnansweredRef.current = heldUnanswered;
 	const beforePreviewRef = useRef(beforePreview);
 	beforePreviewRef.current = beforePreview;
 	const isHeldElsewhere = useCallback(
@@ -163,7 +172,13 @@ export function useUpdateDocumentWithContext({
 			}
 		};
 		if (isHeldElsewhere()) {
-			toast.info(t("heldElsewhere"));
+			toast.info(
+				t(
+					heldUnansweredRef.current?.() === true
+						? "heldUnanswered"
+						: "heldElsewhere",
+				),
+			);
 			return;
 		}
 
@@ -243,7 +258,13 @@ export function useUpdateDocumentWithContext({
 			if (isHeldElsewhere()) {
 				setPhase("idle");
 				setPreview(null);
-				toast.info(t("heldElsewhere"));
+				toast.info(
+					t(
+						heldUnansweredRef.current?.() === true
+							? "heldUnanswered"
+							: "heldElsewhere",
+					),
+				);
 				return;
 			}
 			// The body changed while the preview was drafted — in a room, a
@@ -310,7 +331,13 @@ export function useUpdateDocumentWithContext({
 		}
 		// Not while another editor reviews a proposal: the review stays open.
 		if (isHeldElsewhere()) {
-			toast.info(t("heldElsewhere"));
+			toast.info(
+				t(
+					heldUnansweredRef.current?.() === true
+						? "heldUnanswered"
+						: "heldElsewhere",
+				),
+			);
 			return;
 		}
 
@@ -410,7 +437,13 @@ export function useUpdateDocumentWithContext({
 		// Nor a reject, which puts the body from before it back over the
 		// room — and the proposal under review there.
 		if (isHeldElsewhere()) {
-			toast.info(t("heldElsewhere"));
+			toast.info(
+				t(
+					heldUnansweredRef.current?.() === true
+						? "heldUnanswered"
+						: "heldElsewhere",
+				),
+			);
 			return;
 		}
 

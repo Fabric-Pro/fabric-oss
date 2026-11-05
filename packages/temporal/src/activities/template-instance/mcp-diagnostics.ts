@@ -5,6 +5,10 @@ export type { McpConnectionOutcome, McpServerDiagnostic } from "./types";
 // place instead of re-implementing it.
 export { isRecoverableOutcome } from "./types";
 
+/** How Generate's refusal starts, so the report page shows it word for word. */
+export const REPORT_CONNECTION_REFUSAL_PREFIX =
+	"A required data source did not connect";
+
 // =============================================================================
 // Provider + outcome helpers (shared by the agentic run and the pre-flight)
 // =============================================================================
@@ -85,6 +89,8 @@ const GENERIC_READ_PATTERNS: RegExp[] = [
 	/^query[_\s-]/i,
 	// Handle prefixed tools like fizzy_get_boards, trello_list_cards, etc.
 	/^[a-z]+[_-](?:get|list|search|fetch|read|query)[_\s-]/i,
+	// Handle camelCase tools like getJiraIssue, searchJiraIssuesUsingJql.
+	/^(?:get|list|search|fetch|read|query)[A-Z]/,
 ];
 
 /**

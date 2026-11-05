@@ -80,7 +80,12 @@ export function InstructionReviewPolicySection({
 	);
 
 	const memberList = members.data?.members ?? [];
-	const tooFewApprovers = restricted && approvers.length < required;
+	// A listed approver cannot approve their own proposal above one required
+	// approval, so the list needs one more name than the count, as the server
+	// requires.
+	const tooFewApprovers =
+		restricted &&
+		approvers.length < (required > 1 ? required + 1 : required);
 
 	return (
 		<fieldset

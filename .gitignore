@@ -207,6 +207,7 @@ packages/database/publishing-suite-schema-results.json
 packages/database/role-tag-trigger-results.json
 packages/database/sync-prompt-migrations-apply-results.json
 packages/database/verify-publishing-prompt-sync-integration-results.json
+packages/database/report-access-roles-results.json
 packages/temporal/publishing-notify-activity-results.json
 packages/temporal/publishing-email-delivery-results.json
 packages/temporal/publishing-reconcile-activity-results.json

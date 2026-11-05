@@ -11,7 +11,9 @@ import "../DocumentEditor.css";
  * editor's own diff (`diffPartialText`, the pipeline `VersionDiffViewer`
  * uses) drawn by a read-only editor, so added and removed text is marked
  * inside its paragraph, heading or list item. Direction is (before, after),
- * so additions are what the proposal brings.
+ * so additions are what the proposal brings. The `streaming-diff-active`
+ * ancestor is what the editor's diff CSS is gated on: without it additions and
+ * removals are in the DOM with no visible highlight. `prose` draws the lists.
  *
  * Its own module, loaded lazily: the editor and its extensions are heavy,
  * and most reviews never open a Markdown change.
@@ -46,7 +48,11 @@ export default function RenderedMarkdownDiff({
 			className="max-h-64 overflow-auto rounded-md border bg-card text-sm"
 			data-testid="proposal-rendered-diff"
 		>
-			<EditorContent editor={editor} />
+			<div className="streaming-diff-active">
+				<div className="prose prose-sm dark:prose-invert max-w-none">
+					<EditorContent editor={editor} />
+				</div>
+			</div>
 		</section>
 	);
 }

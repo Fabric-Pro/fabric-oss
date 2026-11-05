@@ -315,7 +315,7 @@ describe("fabric context reset", () => {
 
 		expect(result.code).toBe(5);
 		expect(result.stderr).toContain(
-			"This API key is missing the projects:write scope. Create an API key with the projects:write scope",
+			"This credential is missing the projects:write scope, which a browser sign-in does not carry. Create an API key with the projects:write scope and sign in with it: fabric auth login --key <api-key>",
 		);
 	});
 

@@ -12,6 +12,8 @@ import {
 	buildReportExecutionSnapshot,
 	getProjectReportSetupReason,
 	getTemplateInstance,
+	getTemplateInstanceExecution,
+	isFeatureEnabled,
 	REPORT_EXECUTION_SNAPSHOT_KEY,
 	reportExecutionAdmissionId,
 	updateTemplateInstanceExecution,
@@ -22,30 +24,21 @@ import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import {
 	canGenerateReportInstance,
-	GENERATE_OWNER_ONLY_MESSAGE,
 	type ReportCaller,
+	reportGenerationRefusal,
 } from "./report-access";
-
-type ReportGenerationErrorCode = "NOT_FOUND" | "FORBIDDEN" | "BAD_REQUEST";
-
-/** A refusal written for the person, raised before anything was admitted. */
-export class ReportGenerationError extends Error {
-	constructor(
-		readonly code: ReportGenerationErrorCode,
-		message: string,
-	) {
-		super(message);
-		this.name = "ReportGenerationError";
-	}
-}
+import { reportSourceConnectionFailure } from "./report-connection-test";
+import { reportGenerationBlockedReason } from "./report-generation-readiness";
+import { ReportGenerationError } from "./report-refusal";
 
 type GeneratableReport = NonNullable<
 	Awaited<ReturnType<typeof getTemplateInstance>>
 >;
 
 /**
- * The report, when the caller may see it, owns it (a report runs on its
- * owner's connections), its project setup is complete and it is switched on.
+ * The report, when the caller may see it, may generate it (they own it, as a
+ * report runs on its owner's connections, and the project role allows it), its
+ * project setup is complete and it is switched on.
  */
 export async function loadGeneratableReport(
 	instanceId: string,
@@ -63,10 +56,10 @@ export async function loadGeneratableReport(
 			"Template instance not found or access denied",
 		);
 	}
-	if (!canGenerateReportInstance(instance, caller)) {
+	if (!(await canGenerateReportInstance(instance, caller))) {
 		throw new ReportGenerationError(
 			"FORBIDDEN",
-			GENERATE_OWNER_ONLY_MESSAGE,
+			reportGenerationRefusal(instance, caller),
 		);
 	}
 	const setupReason = getProjectReportSetupReason(
@@ -98,6 +91,11 @@ export type ReportGenerationStart = {
  * Admits one run of the report and starts its workflow. The admission is
  * durable BEFORE the remote start, keyed by the idempotency key, so a retry
  * with the same key attaches to the same run instead of starting another.
+ * Where the report suite is on, a new run first passes what the page checks: a
+ * required source left unbound or a required parameter left empty is refused
+ * (a stored binding that has gone stale passes here, because a run repairs it),
+ * and its required data sources pass the live connection test, so a run that
+ * would fail on one is refused, naming it, before it spends credits.
  *
  * `planEligible` is the caller's: true when a person started the run and
  * waits for it, so its AI steps may use their own ChatGPT plan; false for a
@@ -121,6 +119,41 @@ export async function startReportGeneration({
 	assertPublicReportParameters(parameters);
 	const requestId = idempotencyKey ?? randomUUID();
 	const workflowId = `template-instance-${reportExecutionAdmissionId(JSON.stringify([organizationId, caller.id, instance.id, requestId]))}`;
+	const executionId = reportExecutionAdmissionId(workflowId);
+	// A retry attaches to the run it admitted, whatever the connection does now.
+	const alreadyAdmitted =
+		idempotencyKey !== undefined &&
+		(await getTemplateInstanceExecution(executionId, {
+			userId: caller.id,
+			organizationId,
+		})) !== null;
+	if (
+		!alreadyAdmitted &&
+		(await isFeatureEnabled("REPORT_SUITE_V2", organizationId))
+	) {
+		const stored = instance.parameterDefaults;
+		const blockedReason = reportGenerationBlockedReason({
+			...instance,
+			parameterDefaults: {
+				...(stored &&
+				typeof stored === "object" &&
+				!Array.isArray(stored)
+					? stored
+					: undefined),
+				...parameters,
+			},
+		});
+		if (blockedReason) {
+			throw new ReportGenerationError("BAD_REQUEST", blockedReason);
+		}
+		const connectionFailure = await reportSourceConnectionFailure(
+			instance,
+			{ userId: caller.id, organizationId },
+		);
+		if (connectionFailure) {
+			throw new ReportGenerationError("BAD_REQUEST", connectionFailure);
+		}
+	}
 	const snapshot = await buildReportExecutionSnapshot({
 		instance,
 		organizationId,
@@ -129,7 +162,7 @@ export async function startReportGeneration({
 		origin: "manual",
 	});
 	const execution = await admitTemplateInstanceExecution({
-		id: reportExecutionAdmissionId(workflowId),
+		id: executionId,
 		instanceId: instance.id,
 		userId: caller.id,
 		organizationId,

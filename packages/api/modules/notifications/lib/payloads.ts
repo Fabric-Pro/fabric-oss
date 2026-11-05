@@ -429,6 +429,18 @@ const codingInstructionsPublishedPayload = z.object({
 });
 
 /**
+ * DECISION_CANDIDATES_READY is written by
+ * `createDecisionCandidatesReadyNotifications` in `@repo/database` (its
+ * `DecisionCandidatesReadyPayload`), from the Living Memory extraction
+ * activity; keep the two in step.
+ */
+const decisionCandidatesReadyPayload = z.object({
+	projectId: z.string(),
+	candidateCount: z.number().int().positive(),
+	fileCount: z.number().int().positive(),
+});
+
+/**
  * A prompt was proposed as a shared default and is waiting for review (FR16).
  *
  * `summaryDegraded` travels with the summary so the queue can say whether it is
@@ -602,6 +614,8 @@ const NotificationPayloadByType = {
 	[NotificationType.WORKFLOW_RUN_FAILED]: workflowRunPayload,
 	[NotificationType.CODING_INSTRUCTIONS_PUBLISHED]:
 		codingInstructionsPublishedPayload,
+	[NotificationType.DECISION_CANDIDATES_READY]:
+		decisionCandidatesReadyPayload,
 } as const;
 
 export function validatePayload(

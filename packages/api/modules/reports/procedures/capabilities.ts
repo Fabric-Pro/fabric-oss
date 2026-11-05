@@ -6,7 +6,10 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import { canEditProjectReport } from "../lib/report-access";
+import {
+	canCreateProjectReport,
+	canEditProjectReport,
+} from "../lib/report-access";
 
 const capabilitiesInputSchema = z.object({
 	projectId: z.string().optional(),
@@ -19,8 +22,13 @@ const capabilitiesInputSchema = z.object({
  * - `isPlatformAdmin`: may create, edit and archive SYSTEM and public templates.
  * - `isOrganizationAdmin`: admin or owner of the active organization; may edit
  *   and archive ORGANIZATION templates and any report in the organization.
- * - `canEditProjectReports`: for `projectId`, whether the caller may create and
- *   edit that project's reports; `null` when no project was named.
+ * - `canEditProjectReports`: for `projectId`, whether the caller may add reports
+ *   to that project and generate samples; `null` when no project was named.
+ *   Editing an existing report is the report's own `canEdit`, which an
+ *   organization Viewer with an Editor project row also holds.
+ * - `canSetProjectDefaults`: for `projectId`, whether the caller may set that
+ *   project's defaults for its reports, which that same Viewer also may;
+ *   `null` when no project was named.
  */
 export const reportCapabilitiesProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.REPORT_READ))
@@ -31,21 +39,29 @@ export const reportCapabilitiesProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		const [platformAdmin, membership, canEditProjectReports] =
-			await Promise.all([
-				isPlatformAdmin(context.user),
-				organizationId
-					? getOrganizationMembership(organizationId, context.user.id)
-					: null,
-				input.projectId
-					? canEditProjectReport(input.projectId, context.user)
-					: null,
-			]);
+		const [
+			platformAdmin,
+			membership,
+			canEditProjectReports,
+			canSetProjectDefaults,
+		] = await Promise.all([
+			isPlatformAdmin(context.user),
+			organizationId
+				? getOrganizationMembership(organizationId, context.user.id)
+				: null,
+			input.projectId
+				? canCreateProjectReport(input.projectId, context.user)
+				: null,
+			input.projectId
+				? canEditProjectReport(input.projectId, context.user)
+				: null,
+		]);
 
 		return {
 			isPlatformAdmin: platformAdmin,
 			isOrganizationAdmin:
 				membership?.role === "admin" || membership?.role === "owner",
 			canEditProjectReports,
+			canSetProjectDefaults,
 		};
 	});

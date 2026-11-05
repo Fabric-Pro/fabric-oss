@@ -111,7 +111,7 @@ describe("asFixedFailure", () => {
 				ORIGIN,
 			).message,
 		).toBe(
-			"This credential is missing the instructions:publish permission. Create a key that carries it, or run: fabric auth login --base-url https://fabric.pro",
+			"This credential is missing the instructions:publish permission, which a browser sign-in does not carry. Create a key that carries it and sign in with it: fabric auth login --base-url https://fabric.pro --key <api-key>",
 		);
 		expect(
 			asFixedFailure(

@@ -112,7 +112,6 @@ export async function createInstructionPublishedNotifications(
 		}
 		const recipients = await resolveInstructionPublishRecipients({
 			projectId: args.projectId,
-			organizationId: args.organizationId,
 			ownerUserId: snapshot.project.userId,
 			actorUserId: args.actorUserId,
 		});
@@ -177,38 +176,31 @@ export async function createInstructionPublishedNotifications(
 const READ_CHECK_BATCH = 20;
 
 /**
- * Everyone who may read the project's instructions, minus the actor, minus
- * anyone who switched project notifications off. Candidates are the owner,
- * the project's members and the organization's members: in an organization a
- * project is often read by people who were never added to it, and each
- * candidate still has to pass the instructions read check.
+ * Everyone on the project who may read its instructions, minus the actor,
+ * minus anyone who switched project notifications off. Candidates are the
+ * owner and the project's accepted, unexpired members: the people who can see
+ * the project at all. An organization member who was never added to the
+ * project can hold an organization-wide read permission without being able
+ * to see the project, so the organization roster is never a candidate source.
  */
 export async function resolveInstructionPublishRecipients(input: {
 	projectId: string;
-	organizationId: string;
 	ownerUserId: string;
 	actorUserId: string | null;
 }): Promise<string[]> {
 	const now = new Date();
-	const [members, orgMembers] = await Promise.all([
-		db.projectMember.findMany({
-			where: {
-				projectId: input.projectId,
-				acceptedAt: { not: null },
-				OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-			},
-			select: { userId: true },
-		}),
-		db.member.findMany({
-			where: { organizationId: input.organizationId },
-			select: { userId: true },
-		}),
-	]);
+	const members = await db.projectMember.findMany({
+		where: {
+			projectId: input.projectId,
+			acceptedAt: { not: null },
+			OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+		},
+		select: { userId: true },
+	});
 	const candidates = [
 		...new Set([
 			input.ownerUserId,
 			...members.map((member) => member.userId),
-			...orgMembers.map((member) => member.userId),
 		]),
 	].filter((userId) => userId !== input.actorUserId);
 	const readable: string[] = [];

@@ -120,9 +120,15 @@ export const FABRIC_PORTAL_EXCLUDED_TOOL_NAMES: readonly string[] = [
 	"fabric_memory_write",
 	"fabric_memory_write_status",
 	// A project's reports: generating one spends the report owner's AI credits
-	// and only the owner may start it, so a meeting's grant reaches neither tool.
+	// and only the owner may start it, and they are created and their
+	// instructions changed from a person's chat or the report page, so a
+	// meeting's grant reaches none of the report tools.
 	"fabric_list_project_reports",
+	"fabric_list_report_templates",
+	"fabric_create_project_report",
 	"fabric_generate_report",
+	"fabric_get_report_content",
+	"fabric_update_report_prompt",
 	// The Coding Instructions plugin's own tools (specs/2026-10-21-ai-artifacts-hub):
 	// a person's coding tool uses them, the agent runtime does not.
 	"fabric_change_instructions",

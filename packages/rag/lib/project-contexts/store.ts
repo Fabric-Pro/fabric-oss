@@ -300,18 +300,20 @@ export async function searchSimilarProjectContexts(
 		}
 
 		// Source-only retrieval: keep only points that did NOT come from a
-		// ProjectDocument. `storeProjectContext` writes
-		// `documentId: metadata?.documentId || null`, and only document chunks
-		// populate it — so `documentId IS NULL` is an exact discriminator that does
-		// not depend on enumerating document types.
+		// ProjectDocument. Document chunks always carry a string `documentId`
+		// (project-documents/embed.ts). Source points carry null
+		// (`storeProjectContext` writes `documentId || null`) or no key at all:
+		// `storeContextsInQdrant` (temporal project-context-embedding.ts) and
+		// wizard points (wizard-contexts/store.ts) never set it. `is_empty`
+		// matches missing, null and `[]`; `is_null` would match only an
+		// explicit null and silently drop those sources.
 		//
-		// Filtering on the `DOCUMENT_*` payload `type` prefix would have been the
-		// obvious move, and it is wrong: it cannot tell an AI-generated document
-		// from a user-uploaded one (both are ProjectDocument rows), so it would
-		// silently discard legitimately imported source documents.
+		// Filtering on the `DOCUMENT_*` payload `type` prefix would be wrong: it
+		// cannot tell an AI-generated document from a user-uploaded one (both are
+		// ProjectDocument rows), so it would discard imported source documents.
 		if (excludeDocumentChunks) {
 			filter.must.push({
-				is_null: { key: "documentId" },
+				is_empty: { key: "documentId" },
 			});
 		}
 

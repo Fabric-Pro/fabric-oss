@@ -284,8 +284,16 @@ const WRITE_EXEMPT = new Map<string, string>([
 		"returns a handler that delegates to the frame service, which gates on WORKSPACE_CREATE and opens the source page as the caller",
 	],
 	[
+		"handleCreateProjectReport",
+		"delegates to createProjectReportForAgent, which checks REPORT_CREATE on the caller's organization role and canCreateProjectReport on the project; the project is asked of resolveGatewayReportProjectAccess, which keeps a project-bound session to its project",
+	],
+	[
 		"handleGenerateReport",
-		"delegates to generateReportForAgent, which checks REPORT_EXECUTE on the caller's organization role and refuses anyone but the report's owner; the report's project is asked of resolveGatewayProjectReadAccess, which keeps a project-bound session to its project",
+		"delegates to generateReportForAgent, which checks REPORT_EXECUTE on the caller's organization role and refuses anyone but the report's owner; the report's project is asked of resolveGatewayReportProjectAccess, which keeps a project-bound session to its project",
+	],
+	[
+		"handleUpdateReportPrompt",
+		"delegates to updateReportPromptForAgent, which checks REPORT_READ on the caller's organization role and canEditReportInstance and the project write check the report page's save makes; the report's project is asked of resolveGatewayReportProjectAccess, which keeps a project-bound session to its project",
 	],
 	[
 		"handleRequestAuthority",
@@ -530,7 +538,20 @@ describe("platform tool authorization coverage", () => {
 	it("wires the report tools through the canonical project guard and the API's report commands", () => {
 		const platform = readFileSync(SOURCES[0], "utf8");
 		expect(platform).toContain(
-			"const REPORT_TOOLS = createReportTools(resolveGatewayProjectReadAccess);",
+			"const REPORT_TOOLS = createReportTools(resolveGatewayReportProjectAccess);",
+		);
+		// The report gate is the canonical guard plus the organization admin's
+		// inheritance, under the same session and credential bindings.
+		const reportGate =
+			platform.match(
+				/async function resolveGatewayReportProjectAccess\(([\s\S]*?)\n\}\n/,
+			)?.[1] ?? "";
+		expect(reportGate).toContain("await resolveGatewayProjectReadAccess(");
+		expect(reportGate).toContain(
+			"sessionMayReachProject(session, projectId)",
+		);
+		expect(reportGate).toContain(
+			"credentialMayReachHost(session, administered.organizationId)",
 		);
 		expect(platform).toContain("...REPORT_TOOLS.definitions");
 		expect(platform).toContain("...REPORT_TOOLS.handlers");
@@ -542,13 +563,46 @@ describe("platform tool authorization coverage", () => {
 			list.indexOf("await authorize(parsed.data.projectId, session)"),
 		);
 		expect(list.indexOf("await authorize(")).toBeGreaterThan(-1);
-		const generate = bodies.get("handleGenerateReport") ?? "";
-		expect(generate).toContain("await authorize(projectId, session)");
-		expect(generate).toContain("sessionMayReachProject(session, null)");
-		expect(generate.indexOf("generateReportForAgent(")).toBeGreaterThan(
-			generate.indexOf("!organizationId"),
+		// A report found by id has its project asked of `authorize`, or of
+		// the session's own binding when it has none.
+		const reportTools = readFileSync(
+			resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/report-tools.ts"),
+			"utf8",
 		);
-		// The exemption for handleGenerateReport rests on these API checks.
+		const reach =
+			reportTools.match(
+				/function reportProjectReach\(([\s\S]*?)\n\}\n/,
+			)?.[1] ?? "";
+		expect(reach).toContain("await authorize(projectId, session)");
+		expect(reach).toContain("sessionMayReachProject(session, null)");
+		const templates = bodies.get("handleListReportTemplates") ?? "";
+		expect(
+			templates.indexOf("listReportTemplatesForAgent("),
+		).toBeGreaterThan(
+			templates.indexOf(
+				"await authorize(parsed.data.projectId, session)",
+			),
+		);
+		expect(templates.indexOf("await authorize(")).toBeGreaterThan(-1);
+		for (const [handler, command] of [
+			["handleCreateProjectReport", "createProjectReportForAgent("],
+			["handleGenerateReport", "generateReportForAgent("],
+			["handleGetReportContent", "getReportContentForAgent("],
+			["handleUpdateReportPrompt", "updateReportPromptForAgent("],
+		]) {
+			const body = bodies.get(handler) ?? "";
+			expect(body, handler).toContain(
+				"reportProjectReach(session, authorize, organizationId)",
+			);
+			expect(body.indexOf(command), handler).toBeGreaterThan(
+				body.indexOf("!organizationId"),
+			);
+			expect(body.indexOf("!organizationId"), handler).toBeGreaterThan(
+				-1,
+			);
+		}
+		// The exemptions for handleCreateProjectReport, handleGenerateReport and
+		// handleUpdateReportPrompt rest on these API checks.
 		const commands = readFileSync(
 			resolve(
 				process.cwd(),
@@ -556,13 +610,29 @@ describe("platform tool authorization coverage", () => {
 			),
 			"utf8",
 		);
-		expect(commands).toContain(
-			"await assertAgentMayReachReports(actor, Permissions.REPORT_EXECUTE);",
+		expect(commands).toMatch(
+			/await assertAgentMayReachReports\(\s*actor,\s*Permissions\.REPORT_EXECUTE,?\s*\)/,
 		);
 		expect(commands).toContain("await loadGeneratableReport(");
+		expect(commands).toContain(
+			"await assertAgentMayReachReports(actor, Permissions.REPORT_READ);",
+		);
+		expect(commands).toContain(
+			"!(await canEditReportInstance(instance, caller))",
+		);
+		expect(commands).toMatch(
+			/await assertAgentMayReachReports\(\s*actor,\s*Permissions\.REPORT_CREATE,?\s*\)/,
+		);
+		expect(commands).toContain(
+			"!(await canCreateProjectReport(input.projectId, caller))",
+		);
 		for (const tool of [
 			"fabric_list_project_reports",
+			"fabric_list_report_templates",
+			"fabric_create_project_report",
 			"fabric_generate_report",
+			"fabric_get_report_content",
+			"fabric_update_report_prompt",
 		]) {
 			expect(PLATFORM_TOOL_DEFINITIONS.map(({ name }) => name)).toContain(
 				tool,
@@ -677,6 +747,8 @@ describe("platform tools classified for a project-bound session", () => {
 			"sessionMayReachProject",
 			"boundProjectId",
 			"await authorize(",
+			// The report tools' shared reach check; its body is asserted above.
+			"reportProjectReach(",
 		];
 		const bodies = new Map(
 			handlerBodies().map(({ name, body }) => [name, body]),

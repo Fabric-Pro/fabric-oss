@@ -1,5 +1,130 @@
 import { describe, expect, it } from "vitest";
-import { mergeReportTemplateOverrides } from "../prisma/queries/lib/report-template-defaults";
+import {
+	mergeReportTemplateOverrides,
+	promptDefaultsWrittenByOthers,
+	readReportTemplatePromptDefaults,
+} from "../prisma/queries/lib/report-template-defaults";
+
+describe("promptDefaultsWrittenByOthers", () => {
+	const prompts = { userPrompt: "Example instructions" };
+	const applies = { organizationPromptsApply: true };
+
+	it("says so for a project's or an organization's prompts someone else wrote", () => {
+		const row = { prompts, updatedById: "example-teammate" };
+
+		expect(
+			promptDefaultsWrittenByOthers(
+				{ organization: null, project: row },
+				"example-caller",
+				applies,
+			),
+		).toBe(true);
+		expect(
+			promptDefaultsWrittenByOthers(
+				{ organization: row, project: null },
+				"example-caller",
+				applies,
+			),
+		).toBe(true);
+	});
+
+	it("counts prompts whose writer is gone as someone else's", () => {
+		expect(
+			promptDefaultsWrittenByOthers(
+				{
+					organization: null,
+					project: { prompts, updatedById: null },
+				},
+				"example-caller",
+				applies,
+			),
+		).toBe(true);
+	});
+
+	it("says no for the caller's own prompts, and for none", () => {
+		expect(
+			promptDefaultsWrittenByOthers(
+				{
+					organization: null,
+					project: { prompts, updatedById: "example-caller" },
+				},
+				"example-caller",
+				applies,
+			),
+		).toBe(false);
+		expect(
+			promptDefaultsWrittenByOthers(
+				{ organization: null, project: null },
+				"example-caller",
+				applies,
+			),
+		).toBe(false);
+		expect(
+			promptDefaultsWrittenByOthers(
+				{
+					organization: null,
+					project: { prompts: null, updatedById: "example-teammate" },
+				},
+				"example-caller",
+				applies,
+			),
+		).toBe(false);
+	});
+
+	it("still asks about someone else's project prompts when the caller also wrote the organization's", () => {
+		expect(
+			promptDefaultsWrittenByOthers(
+				{
+					organization: { prompts, updatedById: "example-caller" },
+					project: { prompts, updatedById: "example-teammate" },
+				},
+				"example-caller",
+				applies,
+			),
+		).toBe(true);
+	});
+
+	it("ignores an organization's prompts where they do not apply", () => {
+		expect(
+			promptDefaultsWrittenByOthers(
+				{
+					organization: { prompts, updatedById: "example-teammate" },
+					project: null,
+				},
+				"example-caller",
+				{ organizationPromptsApply: false },
+			),
+		).toBe(false);
+	});
+});
+
+describe("the default system prompt", () => {
+	const row = (systemPrompt: string) => ({
+		parameterDefaults: null,
+		context: null,
+		schedule: null,
+		prompts: { systemPrompt },
+	});
+
+	it("is read like the other prompts", () => {
+		expect(
+			readReportTemplatePromptDefaults({ systemPrompt: "Example" }),
+		).toEqual({ systemPrompt: "Example" });
+	});
+
+	it("takes the project's over the organization's", () => {
+		expect(
+			mergeReportTemplateOverrides(
+				row("Organization prompt"),
+				row("Project prompt"),
+			).prompts?.systemPrompt,
+		).toBe("Project prompt");
+		expect(
+			mergeReportTemplateOverrides(row("Organization prompt"), null)
+				.prompts?.systemPrompt,
+		).toBe("Organization prompt");
+	});
+});
 
 describe("mergeReportTemplateOverrides", () => {
 	it("takes project values over organization values, key by key", () => {
@@ -42,6 +167,84 @@ describe("mergeReportTemplateOverrides", () => {
 			context: {},
 			schedule: undefined,
 		});
+	});
+
+	it("takes a project's prompts over the organization's, each prompt on its own", () => {
+		const merged = mergeReportTemplateOverrides(
+			{
+				parameterDefaults: null,
+				context: null,
+				schedule: null,
+				prompts: {
+					userPrompt: "Organization instructions",
+					aiTasks: {
+						summary: "Organization summary",
+						risks: "Organization risks",
+					},
+				},
+			},
+			{
+				parameterDefaults: null,
+				context: null,
+				schedule: null,
+				prompts: {
+					userPrompt: "Project instructions",
+					aiTasks: { risks: "Project risks" },
+				},
+			},
+		);
+
+		expect(merged.prompts).toEqual({
+			userPrompt: "Project instructions",
+			aiTasks: {
+				summary: "Organization summary",
+				risks: "Project risks",
+			},
+		});
+		expect(merged.projectPrompts).toEqual({
+			userPrompt: "Project instructions",
+			aiTasks: { risks: "Project risks" },
+		});
+	});
+
+	it("keeps the organization's prompts where the project has none, and reads blanks as none", () => {
+		const merged = mergeReportTemplateOverrides(
+			{
+				parameterDefaults: null,
+				context: null,
+				schedule: null,
+				prompts: {
+					userPrompt: "Lead with the risks.",
+					aiTasks: {
+						summary: "Summarize for leadership.",
+						risks: "  ",
+					},
+				},
+			},
+			{
+				parameterDefaults: null,
+				context: null,
+				schedule: null,
+				prompts: null,
+			},
+		);
+
+		expect(merged.prompts).toEqual({
+			userPrompt: "Lead with the risks.",
+			aiTasks: { summary: "Summarize for leadership." },
+		});
+		expect(merged.projectPrompts).toBeUndefined();
+	});
+
+	it("reads blank or malformed prompts as none", () => {
+		expect(readReportTemplatePromptDefaults({ userPrompt: "  " })).toBe(
+			undefined,
+		);
+		expect(readReportTemplatePromptDefaults({ aiTasks: { a: 1 } })).toBe(
+			undefined,
+		);
+		expect(readReportTemplatePromptDefaults("text")).toBe(undefined);
+		expect(readReportTemplatePromptDefaults(null)).toBe(undefined);
 	});
 
 	it("drops values a report cannot hold", () => {

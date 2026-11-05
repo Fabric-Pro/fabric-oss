@@ -87,6 +87,9 @@ jobs:
       - name: Verify multipart parser security fixes
         run: node --test tooling/scripts/src/busboy-security.node-test.mjs
 
+      - name: Verify external review assignment
+        run: node --test .github/scripts/request-external-review.test.mjs
+
       - name: Decision Replay dashboard isolation and gold SQL
         run: |
           node --test scripts/__tests__/check-decision-replay-dashboards.test.mjs

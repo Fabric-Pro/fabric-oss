@@ -60,12 +60,31 @@ function resolutionOf(path: string, choice: Choice): Resolution {
 }
 
 /**
+ * The refusal reason the rebase procedure put on its error, if any.
+ * `REBASE_PUBLISHED_CHANGED` means a newer version was published after the
+ * conflicts on screen were read, so the answers resolve the wrong merge.
+ */
+function rebaseRefusalReason(error: unknown): string | null {
+	const data =
+		error && typeof error === "object" && "data" in error
+			? error.data
+			: undefined;
+	if (!data || typeof data !== "object" || !("reason" in data)) {
+		return null;
+	}
+	return typeof data.reason === "string" ? data.reason : null;
+}
+
+/**
  * "Rebase onto current version" for the proposer's own stale upload-mode
- * proposal. A clean rebase replaces the proposal at once. Conflicts open in
- * a dialog with their markers: the proposer edits each file's text, keeps the
+ * proposal. A clean rebase is proposed at once. Conflicts open in a dialog
+ * with their markers: the proposer edits each file's text, keeps the
  * published version or deletes the file, and submitting sends those answers
- * back so the server merges again and replaces the proposal in one step. The
- * stale proposal stays pending until then.
+ * back so the server merges again and proposes the result in one step. The
+ * stale proposal stays pending until the new one passes its checks. The
+ * answers name the published version their conflicts were read against; when
+ * a newer one landed in the meantime the server refuses them, and the dialog
+ * reads the conflicts again.
  */
 export function ProposalRebaseAction({
 	projectId,
@@ -83,6 +102,9 @@ export function ProposalRebaseAction({
 	const actionError = useInstructionActionError();
 	const [conflicts, setConflicts] = useState<RebaseConflict[] | null>(null);
 	const [publishedVersion, setPublishedVersion] = useState(0);
+	const [publishedSnapshotId, setPublishedSnapshotId] = useState<
+		string | null
+	>(null);
 	const [cleanCount, setCleanCount] = useState(0);
 	const [choices, setChoices] = useState<Record<string, Choice>>({});
 	const rebase = useMutation(
@@ -104,6 +126,7 @@ export function ProposalRebaseAction({
 					case "conflicts":
 						setConflicts(result.conflicts);
 						setPublishedVersion(result.publishedVersion);
+						setPublishedSnapshotId(result.publishedSnapshotId);
 						setCleanCount(result.clean.length);
 						setChoices(
 							Object.fromEntries(
@@ -122,9 +145,18 @@ export function ProposalRebaseAction({
 					}
 				}
 			},
-			onError: (error) => toast.error(actionError(error)),
+			onError: (error) => {
+				if (rebaseRefusalReason(error) === "REBASE_PUBLISHED_CHANGED") {
+					toast.info(t("publishedChanged"));
+					readConflicts();
+					return;
+				}
+				toast.error(actionError(error));
+			},
 		}),
 	);
+	const readConflicts = () =>
+		rebase.mutate({ projectId, snapshotId, resolutions: [] });
 	const unresolved = (conflicts ?? []).some((conflict) => {
 		const choice = choices[conflict.path];
 		return choice?.kind === "text" && hasConflictMarkers(choice.text);
@@ -139,13 +171,7 @@ export function ProposalRebaseAction({
 					size="sm"
 					variant="outline"
 					disabled={rebase.isPending}
-					onClick={() =>
-						rebase.mutate({
-							projectId,
-							snapshotId,
-							resolutions: [],
-						})
-					}
+					onClick={readConflicts}
 				>
 					<GitMergeIcon className="size-3.5" aria-hidden="true" />
 					{t("button")}
@@ -289,6 +315,12 @@ export function ProposalRebaseAction({
 								rebase.mutate({
 									projectId,
 									snapshotId,
+									...(publishedSnapshotId
+										? {
+												expectedPublishedSnapshotId:
+													publishedSnapshotId,
+											}
+										: {}),
 									resolutions: (conflicts ?? []).map(
 										(conflict) =>
 											resolutionOf(

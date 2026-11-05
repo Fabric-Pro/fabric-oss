@@ -29,6 +29,7 @@ import { requireStructuredOutput } from "@repo/ai/lib/structured-output";
 import {
 	computeTodoItemKey,
 	db,
+	draftProblemsFromContext,
 	type MeetingActionItem,
 	type MeetingDecision,
 	type MeetingOpenQuestion,
@@ -106,7 +107,24 @@ const LlmInsightSchema = z.object({
 			sourceQuote: z.string().optional(),
 		}),
 	),
+	// Problem Log drafts (Fizzy #2277). Defaulted, so a model that omits the
+	// array cannot fail the whole extraction.
+	problems: z
+		.array(
+			z.object({
+				kind: z.enum(["ISSUE", "BLOCKER", "RISK"]),
+				text: z.string().min(1),
+				sourceQuote: z.string().optional(),
+			}),
+		)
+		.default([]),
 });
+
+const PROBLEM_KIND_CATEGORY = {
+	ISSUE: "PROJECT_ISSUE",
+	BLOCKER: "PROJECT_BLOCKER",
+	RISK: "PROJECT_RISK",
+} as const;
 
 export function buildExtractionPrompt(input: {
 	meetingSubject: string | null;
@@ -120,12 +138,13 @@ export function buildExtractionPrompt(input: {
 		transcriptText.length > PROMPT_CHAR_CAP
 			? `${transcriptText.slice(0, PROMPT_CHAR_CAP)}\n[truncated at ${PROMPT_CHAR_CAP} chars]`
 			: transcriptText;
-	return `Extract structured insights from this meeting transcript. Return a summary and three arrays:
+	return `Extract structured insights from this meeting transcript. Return a summary and these arrays:
 
 1. summary — a concise markdown summary of the meeting (3-8 bullet points covering what was discussed and concluded). No heading, no participant list, no date — just the substance.
 2. decisions — explicit choices the group made. Cite only decisions that are stated. If the transcript is purely status, return [].
 3. actionItems — commitments to do something after the meeting. Include tentative owner if named. Use free-text dueHint (e.g. "by Friday") only when stated; never invent one.
 4. openQuestions — questions raised that were NOT resolved in the meeting.
+5. problems — issues, blockers and risks to the project that were raised. kind is ISSUE (something already going wrong), BLOCKER (something stopping work) or RISK (something that may go wrong). Not routine status, not resolved problems, not decisions.
 
 Rules:
 - Do not invent content. If unsure, omit.
@@ -472,6 +491,27 @@ export async function extractMeetingInsightsActivity(
 			]);
 
 			extractedCount += 1;
+
+			// Problem Log (Fizzy #2277): drafts await a member's review; none
+			// is a log item until confirmed. Never throws, and idempotent per
+			// transcript, so an activity retry or a forced re-extraction adds
+			// nothing twice. Written here rather than from a workflow body for
+			// the reason the matcher start below gives.
+			await draftProblemsFromContext({
+				organizationId,
+				projectId,
+				sourceType: "MEETING_TRANSCRIPT",
+				sourceId: t.id,
+				drafts: (result.output.problems ?? []).map((p) => ({
+					category: PROBLEM_KIND_CATEGORY[p.kind],
+					title: p.text,
+					sourceQuote: p.sourceQuote ?? null,
+					metadata: {
+						meetingSubject: t.meetingSubject,
+						meetingDate: t.meetingDate?.toISOString() ?? null,
+					},
+				})),
+			});
 
 			// #2340: this run just rewrote the action items the To Do list binds
 			// to, so start the owner matcher for THIS transcript and do not await

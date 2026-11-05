@@ -4,6 +4,7 @@ import {
 	classifyConnectionError,
 	classifyToolOutcome,
 	deriveProviders,
+	isReadOnlyTool,
 	redactMessage,
 } from "../src/activities/template-instance/mcp-diagnostics";
 
@@ -160,5 +161,29 @@ describe("buildNoToolsErrorMessage", () => {
 		expect(msg).not.toContain(configId);
 		expect(msg).toContain("a data source");
 		expect(msg).toContain("connection error");
+	});
+});
+
+describe("isReadOnlyTool with no provider named", () => {
+	it.each([
+		"get_issue",
+		"list_cards",
+		"fizzy_get_cards",
+		"getJiraIssue",
+		"searchJiraIssuesUsingJql",
+		"listIssues",
+	])("reads with %s", (toolName) => {
+		expect(isReadOnlyTool(toolName, [])).toBe(true);
+	});
+
+	it.each([
+		"create_issue",
+		"updateCard",
+		"deleteIssue",
+		"getter",
+		"listen",
+		"readme",
+	])("does not read with %s", (toolName) => {
+		expect(isReadOnlyTool(toolName, [])).toBe(false);
 	});
 });

@@ -11,6 +11,10 @@ import {
 	getWorkflowIntegrationById,
 	resolveReportMcpConfig,
 } from "@repo/database";
+import {
+	genericSourceDataType,
+	serverSuppliesDataType,
+} from "@repo/database/prisma/queries/lib/report-data-types";
 import { z } from "zod";
 
 /**
@@ -52,7 +56,21 @@ export type ReportDataSourceMeta = {
 	id?: string;
 	key?: string;
 	provider?: string;
+	dataType?: unknown;
+	config?: { mcpServerKey?: unknown };
 };
+
+function bindingSource(
+	bindingKey: string,
+	dataSources?: ReportDataSourceMeta[],
+): ReportDataSourceMeta | undefined {
+	return dataSources?.find(
+		(d) =>
+			d.id === bindingKey ||
+			d.key === bindingKey ||
+			d.provider === bindingKey,
+	);
+}
 
 /**
  * Candidate server keys for a binding, used by the self-heal fallback. A binding
@@ -60,18 +78,17 @@ export type ReportDataSourceMeta = {
  * ("task-board") — only the former matches the MCP server, so we map through the
  * template to also include the data source's `provider`/`key` (the real server
  * identity). Without this, a binding keyed by the data source id can't self-heal.
+ * A generic source names no server, so nothing can stand in for what is bound.
  */
 export function serverKeysForBinding(
 	bindingKey: string,
 	dataSources?: ReportDataSourceMeta[],
 ): string[] {
+	const ds = bindingSource(bindingKey, dataSources);
+	if (genericSourceDataType(ds)) {
+		return [];
+	}
 	const keys = new Set<string>([bindingKey]);
-	const ds = dataSources?.find(
-		(d) =>
-			d.id === bindingKey ||
-			d.key === bindingKey ||
-			d.provider === bindingKey,
-	);
 	if (ds) {
 		if (ds.provider) {
 			keys.add(ds.provider);
@@ -82,26 +99,46 @@ export function serverKeysForBinding(
 		if (ds.id) {
 			keys.add(ds.id);
 		}
+		if (typeof ds.config?.mcpServerKey === "string") {
+			keys.add(ds.config.mcpServerKey);
+		}
 	}
 	return [...keys];
 }
 
 /**
- * Whether a config connects to the data source's own server. Any connected
- * tool may fill a data source, but only the report's owner chooses one of
- * another tool: an editor may not repoint the owner's connections.
+ * Whether a config connects to the data source's own server, or for a generic
+ * source to a tool of its data type. Any connected tool may fill a data source,
+ * but only the report's owner chooses one of another tool. That is one half of
+ * keeping an editor from repointing the owner's connections; `instances.update`
+ * holds the other, refusing a non-owner's change to what a connected report's
+ * connections read (its context, resource bindings and parameter bindings). An
+ * editor still edits the prompts, and an edited prompt runs on the owner's
+ * read-only tools when the owner generates the report.
  */
 async function bindsToOwnServer(
 	configId: string,
-	serverKeys: string[],
+	bindingKey: string,
+	dataSources: ReportDataSourceMeta[] | undefined,
 	userId: string,
 	organizationId?: string,
 ): Promise<boolean> {
 	const config = await getMcpConfigById(configId, { userId, organizationId });
-	const serverKey = config?.mcpServer.key.trim().toLowerCase();
+	if (!config) {
+		return false;
+	}
+	const dataType = genericSourceDataType(
+		bindingSource(bindingKey, dataSources),
+	);
+	if (dataType) {
+		return serverSuppliesDataType(config.mcpServer, dataType);
+	}
+	const serverKey = config.mcpServer.key.trim().toLowerCase();
 	return (
 		!!serverKey &&
-		serverKeys.some((key) => key.trim().toLowerCase() === serverKey)
+		serverKeysForBinding(bindingKey, dataSources).some(
+			(key) => key.trim().toLowerCase() === serverKey,
+		)
 	);
 }
 
@@ -174,7 +211,8 @@ async function validateMcpBindings(
 				sameServerOnly &&
 				!(await bindsToOwnServer(
 					resolved.configId,
-					serverKeysForBinding(bindingKey, dataSources),
+					bindingKey,
+					dataSources,
 					userId,
 					organizationId,
 				))
@@ -274,6 +312,54 @@ async function validateIntegrationBindings(
 	return result;
 }
 
+/**
+ * Validate the raw `mcpConfigs` list, which a run falls back to. An entry the
+ * submitted bindings hold was checked as a binding, and an entry the report
+ * already stores stays allowed, so older reports keep working. Any other is a
+ * new connection: it must resolve for the owner, and a caller who is not the
+ * owner may not add one at all.
+ */
+async function validateAddedMcpConfigs(
+	mcpConfigs: string[],
+	mcpBindings: Record<string, string> | undefined,
+	previousMcpConfigs: string[] | undefined,
+	userId: string,
+	organizationId: string | undefined,
+	sameServerOnly: boolean,
+): Promise<ValidationResult> {
+	const known = new Set([
+		...Object.values(mcpBindings ?? {}),
+		...(previousMcpConfigs ?? []),
+	]);
+	const added = [...new Set(mcpConfigs)].filter((id) => !known.has(id));
+	const errors = await Promise.all(
+		added.map(async (configId) => {
+			if (sameServerOnly) {
+				return `Only the report's owner can add the connection "${configId}".`;
+			}
+			const config = await getMcpConfigById(configId, {
+				userId,
+				organizationId,
+			});
+			if (!config) {
+				return `No available connection for "${configId}". Reconnect the data source, then re-select it.`;
+			}
+			return config.enabled
+				? null
+				: `The connection "${configId}" is disabled. Enable it or re-select a connection.`;
+		}),
+	);
+	const invalid = added.flatMap((configId, index) => {
+		const error = errors[index];
+		return error ? [{ configId, error }] : [];
+	});
+	return {
+		valid: invalid.length === 0,
+		errors: invalid.map(({ error }) => error),
+		invalidBindings: invalid.map(({ configId }) => configId),
+	};
+}
+
 function changedBindings(
 	next: Record<string, string> | undefined,
 	previous: Record<string, string> | undefined,
@@ -331,33 +417,50 @@ export async function validateReportConnections(
 		previousConnections ?? {},
 	).data;
 
-	// Validate MCP bindings and integration bindings in parallel
-	const [mcpResult, integrationResult] = await Promise.all([
-		validateMcpBindings(
-			changedBindings(
+	// Validate MCP bindings, raw MCP configs and integration bindings in parallel
+	const [mcpResult, addedConfigsResult, integrationResult] =
+		await Promise.all([
+			validateMcpBindings(
+				changedBindings(
+					parsedConnections.mcpBindings,
+					previous?.mcpBindings,
+				),
+				userId,
+				organizationId,
+				dataSources,
+				sameServerOnly,
+			),
+			validateAddedMcpConfigs(
+				parsedConnections.mcpConfigs,
 				parsedConnections.mcpBindings,
-				previous?.mcpBindings,
+				previous?.mcpConfigs,
+				userId,
+				organizationId,
+				sameServerOnly,
 			),
-			userId,
-			organizationId,
-			dataSources,
-			sameServerOnly,
-		),
-		validateIntegrationBindings(
-			changedBindings(
-				parsedConnections.integrationBindings,
-				previous?.integrationBindings,
+			validateIntegrationBindings(
+				changedBindings(
+					parsedConnections.integrationBindings,
+					previous?.integrationBindings,
+				),
+				userId,
+				organizationId,
 			),
-			userId,
-			organizationId,
-		),
-	]);
+		]);
 
 	return {
-		valid: mcpResult.valid && integrationResult.valid,
-		errors: [...mcpResult.errors, ...integrationResult.errors],
+		valid:
+			mcpResult.valid &&
+			addedConfigsResult.valid &&
+			integrationResult.valid,
+		errors: [
+			...mcpResult.errors,
+			...addedConfigsResult.errors,
+			...integrationResult.errors,
+		],
 		invalidBindings: [
 			...mcpResult.invalidBindings,
+			...addedConfigsResult.invalidBindings,
 			...integrationResult.invalidBindings,
 		],
 	};

@@ -16,6 +16,24 @@ const base: ReadinessInput = {
 };
 
 describe("computeReportReadiness", () => {
+	it("does not block a report whose sources are all optional and unconnected", () => {
+		const r = computeReportReadiness({
+			...base,
+			requiredDataSources: [
+				{
+					key: "project-management",
+					name: "Project management tool",
+					required: false,
+				},
+				{ key: "repository", name: "Repository", required: false },
+			],
+			bindings: {},
+			diagnostics: [],
+			requiredParams: [],
+		});
+		expect(r.hardBlocked).toBe(false);
+	});
+
 	it("blocks when a required data source is unbound", () => {
 		const r = computeReportReadiness({
 			...base,

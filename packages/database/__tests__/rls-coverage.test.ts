@@ -652,6 +652,38 @@ describe("Proposal artifact registration (Fizzy #2801)", () => {
 	);
 });
 
+/**
+ * Problem Log registration (Fizzy #2277).
+ *
+ * Organization-owned audit material: plain `org_only`, never project-scoped
+ * in tenant-db.ts, so a project guest cannot reach the organization's problem
+ * log through an invited project. `projectId` is a filter, not a tenant route.
+ */
+describe("Problem Log registration (Fizzy #2277)", () => {
+	const orgOnlyBlock =
+		tenantDbSrc.match(
+			/const ORG_ONLY_TABLES = new Set\(\[([\s\S]*?)\]\);/,
+		)?.[1] ?? "";
+	const projectScopedBlock =
+		tenantDbSrc.match(
+			/const PROJECT_SCOPED_TABLES:[^{]+\{([\s\S]*?)\n\};/,
+		)?.[1] ?? "";
+
+	it("problem_log_entry is a real table under org_only RLS, not exempted or project-scoped", () => {
+		expect(physicals.has("problem_log_entry")).toBe(true);
+		expect(allowlist.has("problem_log_entry")).toBe(true);
+		expect(EXEMPT.has("problem_log_entry")).toBe(false);
+		expect(applySrc).toMatch(
+			/name:\s*"problem_log_entry"\s*,\s*policy:\s*"org_only"\s*}/,
+		);
+		expect(orgOnlyBlock).toMatch(/"ProblemLogEntry",/);
+		expect(projectScopedBlock).not.toMatch(/\bProblemLogEntry:/);
+		const parsed = models.find((m) => m.name === "ProblemLogEntry");
+		expect(parsed?.hasOrg).toBe(true);
+		expect(parsed?.hasUser).toBe(false);
+	});
+});
+
 describe("tenant-db allowlist parity with the RLS registration", () => {
 	const userOwnedBlock =
 		tenantDbSrc.match(

@@ -36,6 +36,7 @@ import { CorrelationActivityInboundInterceptor } from "./lib/correlation-interce
 import { validatePmSyncLogRetentionDays } from "./lib/pm-sync-log-env";
 import { ProjectContextActivityInboundInterceptor } from "./lib/project-context-interceptor";
 import { TurnDispatchActivityInboundInterceptor } from "./lib/turn-dispatch-interceptor";
+import { startWorkerMemoryLog } from "./lib/worker-memory-log";
 import { selectTaskQueues } from "./lib/worker-task-queue-selection";
 import { buildWorkflowBundleOptions } from "./lib/workflow-bundle-options";
 import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
@@ -237,6 +238,15 @@ type TaskQueueWorkerOptions = Omit<
 > & {
 	taskQueue: string;
 	maxConcurrentActivityTaskExecutions: number;
+	/**
+	 * This queue only ever runs activities, so its worker gets no workflow
+	 * bundle. A worker given one spawns a thread holding its own copy of the
+	 * bundle and all the workflow code, about 100 MiB each in a deployed worker,
+	 * whether or not a workflow ever runs there. Set this only when nothing
+	 * starts a workflow on the queue: a workflow started here would wait forever
+	 * with nothing polling for it. `activity-only-task-queues.test.ts` guards that.
+	 */
+	activitiesOnly?: true;
 };
 
 const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
@@ -259,7 +269,7 @@ const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
 		taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 		maxConcurrentActivityTaskExecutions:
 			ACTIVITY_SLOTS.projectDocumentGeneration,
-		maxConcurrentWorkflowTaskExecutions: 5,
+		activitiesOnly: true,
 	},
 	{
 		taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
@@ -274,7 +284,7 @@ const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
 	{
 		taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.projectOperations,
-		maxConcurrentWorkflowTaskExecutions: 5,
+		activitiesOnly: true,
 	},
 	// Living Documents auto-refresh gets its OWN queue and its own slots.
 	//
@@ -639,6 +649,10 @@ async function run() {
 	// + safe; no-ops when APPLICATIONINSIGHTS_CONNECTION_STRING is unset.
 	initAppInsights();
 
+	// Started before bundling and connecting, so a worker that dies during
+	// startup or its first replays still leaves a line.
+	startWorkerMemoryLog();
+
 	// Start the Prometheus scrape server. Bound to METRICS_PORT (or 9464).
 	const metricsPort = Number.parseInt(process.env.METRICS_PORT ?? "9464", 10);
 	try {
@@ -729,12 +743,14 @@ async function run() {
 		// Assigned to activeWorkers as each is created, so a signal arriving
 		// mid-startup still drains whatever is already polling.
 		activeWorkers = [];
-		for (const queue of SELECTED_TASK_QUEUE_WORKERS) {
+		for (const queueWorker of SELECTED_TASK_QUEUE_WORKERS) {
+			const { activitiesOnly, ...queue } = queueWorker;
 			activeWorkers.push(
 				await Worker.create({
 					connection,
 					namespace: config.namespace,
-					workflowBundle, // Use pre-bundled workflows with publicPath fix
+					// Use pre-bundled workflows with publicPath fix
+					...(activitiesOnly ? {} : { workflowBundle }),
 					activities, // Activity implementations
 					// Reuse V8 context across workflow executions — major RAM/CPU
 					// reduction with no behavior change (sandbox isolation is preserved).

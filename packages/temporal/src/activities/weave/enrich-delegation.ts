@@ -116,14 +116,12 @@ export async function enrichWeaveDelegationMessage(input: {
 	// 2. Retrieve RAG context for eligible agents
 	if (RAG_ELIGIBLE_AGENTS.has(input.agentId) && input.projectId) {
 		try {
-			const {
-				retrieveProjectContexts,
-				contextMetaHeader,
-				projectContextSourceName,
-			} = await import("@repo/rag");
+			const { retrieveProjectContexts, formatContextPassagesForPrompt } =
+				await import("@repo/rag");
 
 			// Use the delegation message as the RAG query for relevance
 			const results = await retrieveProjectContexts({
+				includeMatchedPassages: true,
 				projectId: input.projectId,
 				query: input.message,
 				userId: input.userId,
@@ -132,28 +130,9 @@ export async function enrichWeaveDelegationMessage(input: {
 			});
 
 			if (results && results.length > 0) {
-				const ragContent = results
-					.map(
-						(
-							r: {
-								content: string;
-								sourcePath?: string;
-								filename?: string;
-								sourceTitle?: string;
-								sourceUrl?: string;
-								metadata?: { filename?: string; type?: string };
-								sourceType?: string;
-								aiInstructions?: string;
-							},
-							i: number,
-						) => {
-							const source = projectContextSourceName(r, i);
-							// Type label + AI guidance (#1888): metadata
-							// arrives flag-gated; header is "" when unset.
-							return `### ${source}\n${contextMetaHeader(r)}${r.content}`;
-						},
-					)
-					.join("\n\n---\n\n");
+				const ragContent = formatContextPassagesForPrompt(results, {
+					maxChars: PROJECT_CONTEXT_MAX_CHARS,
+				});
 
 				parts.push(
 					`<project-rag-context agent="${input.agentId.replace("weave_", "")}">\n${ragContent}\n</project-rag-context>`,
@@ -208,3 +187,6 @@ export async function enrichWeaveDelegationMessage(input: {
 
 	return `${parts.join("\n\n")}\n\n${input.message}`;
 }
+
+// Bounds the project-context prompt section.
+const PROJECT_CONTEXT_MAX_CHARS = 20000;

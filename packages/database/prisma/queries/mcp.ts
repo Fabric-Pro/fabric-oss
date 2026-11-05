@@ -589,6 +589,58 @@ export async function createCustomMcpServer({
 	});
 }
 
+/**
+ * The custom MCP server `userId` owns in `organizationId`, or null. Never a
+ * system or catalog server, never another member's, never a server outside
+ * the organization: the same ownership `updateCustomMcpServer` requires.
+ */
+export async function findOwnedCustomMcpServer({
+	id,
+	userId,
+	organizationId,
+}: {
+	id: string;
+	userId: string;
+	organizationId: string;
+}) {
+	return db.mCPServer.findFirst({
+		where: { id, isSystemProvided: false, userId, organizationId },
+		select: { id: true, name: true, iconUrl: true, defaultUrl: true },
+	});
+}
+
+/**
+ * Stores the icon a custom server listed for itself. Conditional on the same
+ * ownership as `findOwnedCustomMcpServer` and on `iconUrl` still holding
+ * `expectedIconUrl`, so a concurrent change is never overwritten. Returns
+ * whether a row changed.
+ */
+export async function setOwnedCustomMcpServerIcon({
+	id,
+	userId,
+	organizationId,
+	expectedIconUrl,
+	iconUrl,
+}: {
+	id: string;
+	userId: string;
+	organizationId: string;
+	expectedIconUrl: string | null;
+	iconUrl: string;
+}): Promise<boolean> {
+	const result = await db.mCPServer.updateMany({
+		where: {
+			id,
+			isSystemProvided: false,
+			userId,
+			organizationId,
+			iconUrl: expectedIconUrl,
+		},
+		data: { iconUrl },
+	});
+	return result.count > 0;
+}
+
 export async function updateCustomMcpServer({
 	id,
 	userId,

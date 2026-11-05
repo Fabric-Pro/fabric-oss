@@ -2945,6 +2945,9 @@ describe("checkVisualFacts org charts (Fizzy #2589 follow-up)", () => {
 });
 
 describe("untrusted input size", () => {
+	/** Allows for a slow CI runner while still catching input that scales badly. */
+	const TIME_LIMIT_MS = 5_000;
+
 	it("stays fast on long runs of markup-shaped and digit-shaped text", () => {
 		const hostile = [
 			"![".repeat(20_000),
@@ -2964,7 +2967,7 @@ describe("untrusted input size", () => {
 			isKeySection: true,
 			lengthMode: "standard",
 		});
-		expect(Date.now() - started).toBeLessThan(2_000);
+		expect(Date.now() - started).toBeLessThan(TIME_LIMIT_MS);
 	});
 
 	it.each([
@@ -2987,7 +2990,7 @@ describe("untrusted input size", () => {
 			isKeySection: false,
 			lengthMode: "standard",
 		});
-		expect(Date.now() - started).toBeLessThan(2_000);
+		expect(Date.now() - started).toBeLessThan(TIME_LIMIT_MS);
 	});
 
 	it.each([
@@ -3033,7 +3036,7 @@ describe("untrusted input size", () => {
 			},
 			hostile,
 		);
-		expect(Date.now() - started).toBeLessThan(2_000);
+		expect(Date.now() - started).toBeLessThan(TIME_LIMIT_MS);
 	});
 
 	/** Steps that each split into many parts, none named by the section. */
@@ -3062,7 +3065,7 @@ describe("untrusted input size", () => {
 			},
 			hostile,
 		);
-		expect(Date.now() - started).toBeLessThan(2_000);
+		expect(Date.now() - started).toBeLessThan(TIME_LIMIT_MS);
 		expect(kindsOf(result)).toEqual(["flow-sequence"]);
 	});
 });

@@ -1,8 +1,7 @@
 {
-	"title": "Tutorials",
+	"title": "Walkthroughs",
 	"pages": [
 		"first-document",
-		"first-agent",
 		"first-workflow",
 		"testing-a-work-item",
 		"setup-integrations",

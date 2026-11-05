@@ -3,13 +3,16 @@
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
+import { Label } from "@ui/components/label";
 import { SearchInput } from "@ui/components/search-input";
+import { Switch } from "@ui/components/switch";
 import { TooltipProvider } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
@@ -22,7 +25,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { type ComponentProps, useState } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
 import { shouldShowSharedProjects } from "../lib/shared-projects-visibility";
@@ -40,6 +43,9 @@ type FilterMode =
 	| "ARCHIVED"
 	| "deleted";
 type ProjectStatusFilter = Exclude<FilterMode, "all" | "deleted">;
+type ListedProject = ComponentProps<typeof ProjectCard>["project"];
+
+const SHOW_ALL_PROJECTS_STORAGE_KEY = "fabric-projects-show-all";
 
 export function ProjectsList() {
 	const router = useRouter();
@@ -63,6 +69,30 @@ export function ProjectsList() {
 		}
 		setIsCreatingProject(true);
 		router.push(`${projectsBasePath}/new`);
+	};
+
+	// Admins inherit Project Editor on the reports of every live project, so they
+	// may list projects they hold no row on. Off until they ask, so the list
+	// stays their own. The server decides again.
+	const reportSuite = useFeatureFlag("REPORT_SUITE_V2");
+	const { data: reportCapabilities } = useQuery({
+		...orpc.reports.capabilities.queryOptions({ input: {} }),
+		enabled: reportSuite && organizationId !== null,
+		retry: false,
+	});
+	const canListAllProjects =
+		reportCapabilities?.isOrganizationAdmin === true ||
+		reportCapabilities?.isPlatformAdmin === true;
+	// Kept for this browser tab, so Back from a project finds the same list.
+	const showAllProjectsKey = `${SHOW_ALL_PROJECTS_STORAGE_KEY}-${organizationId}`;
+	const [showAllProjects, setShowAllProjects] = useState(
+		() =>
+			typeof window !== "undefined" &&
+			sessionStorage.getItem(showAllProjectsKey) === "true",
+	);
+	const changeShowAllProjects = (show: boolean) => {
+		setShowAllProjects(show);
+		sessionStorage.setItem(showAllProjectsKey, String(show));
 	};
 
 	// Fetch projects - organizationId is null for personal context (safe)
@@ -91,7 +121,39 @@ export function ProjectsList() {
 		}),
 	);
 
-	const projects = data?.projects ?? [];
+	const listsAllProjects =
+		canListAllProjects &&
+		showAllProjects &&
+		!isShowingDeleted &&
+		statusFilter !== "DRAFT";
+	const {
+		data: allProjectsData,
+		isLoading: isLoadingAllProjects,
+		refetch: refetchAllProjects,
+	} = useQuery({
+		...orpc.reports.organizationProjects.queryOptions({
+			input: {
+				organizationId,
+				limit: 50,
+				offset: 0,
+				search: debouncedSearch || undefined,
+				status:
+					statusFilter === "all" || statusFilter === "deleted"
+						? undefined
+						: (statusFilter as "ACTIVE" | "COMPLETED" | "ARCHIVED"),
+			},
+		}),
+		enabled: listsAllProjects,
+	});
+	const refetchProjects = () => {
+		refetch();
+		if (listsAllProjects) {
+			refetchAllProjects();
+		}
+	};
+
+	const projects: ListedProject[] =
+		(listsAllProjects ? allProjectsData?.projects : data?.projects) ?? [];
 	const ownerDeletedCount = data?.ownerDeletedCount ?? 0;
 
 	// "Shared with me" — org projects where the user is a project-scoped
@@ -111,7 +173,10 @@ export function ProjectsList() {
 
 	// Per-status tab counts now come from the single list query above
 	// (includeStatusCounts), instead of one extra list query per status.
-	const statusCounts = data?.statusCounts ?? {};
+	const statusCounts =
+		(listsAllProjects
+			? allProjectsData?.statusCounts
+			: data?.statusCounts) ?? {};
 
 	const getStatusTotal = (status: ProjectStatusFilter) =>
 		statusCounts[status as string] ?? 0;
@@ -127,6 +192,10 @@ export function ProjectsList() {
 	const ownerProjects = projects.filter((project) =>
 		ownerProjectIds.has(project.id),
 	);
+	// An admin's list holds projects they reach through their organization role
+	// alone: only Reports opens for them there, so nothing else is offered.
+	const belongsToProject = (project: ListedProject) =>
+		project.userId === user?.id || (project.members?.length ?? 0) > 0;
 	const visibleProjects = isShowingDeleted ? ownerProjects : projects;
 
 	const bulkDeleteMutation = useMutation({
@@ -362,7 +431,26 @@ export function ProjectsList() {
 					/>
 				</div>
 
-				<div className="flex gap-2 items-center">
+				<div className="flex flex-wrap items-center gap-2">
+					{/* Under Draft the list stays the person's own, so it would do nothing. */}
+					{canListAllProjects &&
+						!isShowingDeleted &&
+						statusFilter !== "DRAFT" && (
+							<div className="flex items-center gap-2 pr-2">
+								<Switch
+									id="all-organization-projects"
+									checked={showAllProjects}
+									onCheckedChange={changeShowAllProjects}
+								/>
+								<Label
+									htmlFor="all-organization-projects"
+									className="text-muted-foreground text-sm"
+								>
+									All organization projects
+								</Label>
+							</div>
+						)}
+
 					{/* View Toggle */}
 					<div className="flex gap-1 border rounded-md p-1">
 						<Button
@@ -414,7 +502,7 @@ export function ProjectsList() {
 			</div>
 
 			{/* Projects Display */}
-			{isLoading ? (
+			{isLoading || (listsAllProjects && isLoadingAllProjects) ? (
 				<div className="flex items-center justify-center py-12">
 					<Spinner />
 				</div>
@@ -444,7 +532,8 @@ export function ProjectsList() {
 								key={project.id}
 								project={project}
 								canDelete={ownerProjectIds.has(project.id)}
-								onUpdate={refetch}
+								belongsToProject={belongsToProject(project)}
+								onUpdate={refetchProjects}
 								isDeleted={isShowingDeleted}
 								isSelectionMode={isSelectionMode}
 								isSelected={selectedIds.has(project.id)}
@@ -460,7 +549,8 @@ export function ProjectsList() {
 						canDeleteProject={(projectId) =>
 							ownerProjectIds.has(projectId)
 						}
-						onUpdate={refetch}
+						belongsToProject={belongsToProject}
+						onUpdate={refetchProjects}
 						isDeleted={isShowingDeleted}
 						isSelectionMode={isSelectionMode}
 						selectedIds={selectedIds}

@@ -128,15 +128,20 @@ describe("Direct chat and the Orchestrator ask about a Fabric tool the same way"
 		});
 	}
 
-	it("asks for every call of a workflow write, of a share, of a version restore, of a delete of a page's data or files and of a report run, and for no read", async () => {
+	it("asks for every call of a workflow write, of a share, of a version restore, of a delete of a page's data or files, of a report run and of a report's new instructions, and for no read", async () => {
 		const ALWAYS_ASKING_FRAME_TOOLS = [
 			"fabric_share_frame",
 			"fabric_restore_frame_version",
 			"fabric_page_data_delete",
 			"fabric_page_file_delete",
 		];
-		// A report run spends AI credits, so it is asked about every time.
-		const ALWAYS_ASKING_REPORT_TOOLS = ["fabric_generate_report"];
+		// A new report joins the project, a report run spends AI credits and new
+		// instructions change every later run, so each is asked about every time.
+		const ALWAYS_ASKING_REPORT_TOOLS = [
+			"fabric_create_project_report",
+			"fabric_generate_report",
+			"fabric_update_report_prompt",
+		];
 		for (const tool of FABRIC_CHAT_TOOL_DEFINITIONS) {
 			const asksEveryCall =
 				(tool.name.endsWith("_workflow") &&

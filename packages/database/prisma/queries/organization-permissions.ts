@@ -351,6 +351,23 @@ export async function canConnectOrganizationMcpConfigs(
 	);
 }
 
+/**
+ * Returns `true` if `userId` may edit custom MCP servers in `organizationId`,
+ * matching `requirePermission(MCP_UPDATE)` on `mcp.registry.update`. Asked by
+ * the test-connection route before it stores the icon a server lists for
+ * itself.
+ */
+export async function canUpdateOrganizationMcpServers(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.MCP_UPDATE,
+	);
+}
+
 /** Matches the agent template API's AGENT_TEMPLATE_READ gate for background callers. */
 export async function canReadOrganizationAgentTemplates(
 	userId: string,

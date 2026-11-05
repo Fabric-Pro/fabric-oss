@@ -6,7 +6,7 @@ import {
 	type McpTool,
 } from "@saas/projects/lib/pm-tool-analyzer";
 import {
-	findMatchingMcpConfigs,
+	findConfigsForSource,
 	getMcpConfigDisplayName,
 	type McpConfigForDisplay,
 } from "@saas/reports/lib/mcp-utils";
@@ -17,13 +17,13 @@ import {
 	contextFieldsForProviders,
 	contextWithListedBoard,
 	isRequiredDataSource,
+	ownProjectPmConfig,
 	pickPrefillContext,
 	projectConnectionDefaults,
+	sourceProviderKey,
 } from "@saas/reports/lib/report-template-definition";
-import {
-	type DataSourceDefinition,
-	PROVIDER_CONTEXT_FIELDS,
-} from "@saas/shared/components/DataSourceDefinitionBuilder";
+import type { DataSourceDefinition } from "@saas/shared/components/DataSourceDefinitionBuilder";
+import { PROVIDER_CONTEXT_FIELDS } from "@saas/shared/components/provider-context-fields";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
@@ -62,6 +62,12 @@ export type InstanceDataSourceSetupOptions = {
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+/**
+ * Whether the list of connected tools has answered: an empty answer means none
+ * is connected, no answer yet says nothing about them.
+ */
+export type ReportConnectionsState = "loading" | "failed" | "answered";
 
 /** The account slug an identity tool (e.g. `fizzy_get_identity`) reports. */
 function accountSlugFromIdentity(payload: unknown): string | null {
@@ -114,13 +120,28 @@ export function useInstanceDataSourceSetup({
 	const [boardsMcpConfigId, setBoardsMcpConfigId] = useState<string | null>(
 		null,
 	);
+	// The account the board list came from, for when a project's board is not on it.
+	const detectedAccountSlugRef = useRef<string | null>(null);
 
-	const { data: mcpConfigsData, isError: mcpConfigsFailed } = useQuery({
+	const {
+		data: mcpConfigsData,
+		isError: mcpConfigsFailed,
+		refetch: refetchMcpConfigs,
+	} = useQuery({
 		...orpc.mcp.configs.list.queryOptions({
 			input: { organizationId, limit: 100 },
 		}),
 		enabled,
+		// Connect opens in a new tab, so a tool connected there shows up here
+		// when the person comes back, with the form and project as they left them.
+		...(suggestDefaults ? { refetchOnWindowFocus: "always" as const } : {}),
 	});
+	const connectionsState: ReportConnectionsState =
+		mcpConfigsData !== undefined
+			? "answered"
+			: mcpConfigsFailed
+				? "failed"
+				: "loading";
 	const userMcpConfigs: McpConfigForDisplay[] = useMemo(
 		() =>
 			Array.isArray(mcpConfigsData)
@@ -129,7 +150,22 @@ export function useInstanceDataSourceSetup({
 		[mcpConfigsData],
 	);
 
-	// An optional source the person has not connected asks for no context.
+	/** A data source's provider, or for a generic one its bound server's. */
+	const providerOf = useCallback(
+		(ds: DataSourceDefinition, configId?: string) =>
+			sourceProviderKey(
+				ds,
+				userMcpConfigs.find(
+					(config) =>
+						config.id ===
+						(configId ?? bindings[ds.id]?.mcpConfigId),
+				),
+			),
+		[userMcpConfigs, bindings],
+	);
+
+	// An optional source the person has not connected asks for no context, and
+	// a generic source has none until a tool is bound.
 	const contextFields: ContextField[] = useMemo(
 		() =>
 			contextFieldsForProviders(
@@ -141,12 +177,12 @@ export function useInstanceDataSourceSetup({
 									isRequiredDataSource(ds) ||
 									bindings[ds.id]?.mcpConfigId,
 							)
-							.map((ds) => ds.provider),
+							.flatMap((ds) => providerOf(ds) ?? []),
 					),
 				),
 				PROVIDER_CONTEXT_FIELDS,
 			),
-		[dataSources, bindings],
+		[dataSources, bindings, providerOf],
 	);
 
 	const allConfigured = useMemo(() => {
@@ -175,6 +211,16 @@ export function useInstanceDataSourceSetup({
 			prev[key]?.trim() ? prev : { ...prev, [key]: value },
 		);
 	}, []);
+
+	/** The organization's and project's saved context, below anything typed. */
+	const offerContext = useCallback(
+		(context: Record<string, string>) => {
+			for (const [key, value] of Object.entries(context)) {
+				offerContextValue(key, value);
+			}
+		},
+		[offerContextValue],
+	);
 
 	// Fetch boards/containers and identity from an MCP server
 	const fetchBoards = useCallback(
@@ -230,6 +276,7 @@ export function useInstanceDataSourceSetup({
 							? accountSlugFromIdentity(identityData)
 							: null;
 						if (slug) {
+							detectedAccountSlugRef.current = slug;
 							offerContextValue("accountSlug", slug);
 						}
 					} catch {
@@ -257,6 +304,7 @@ export function useInstanceDataSourceSetup({
 				const slugFromContext =
 					accountSlugFromContext(additionalContext);
 				if (slugFromContext) {
+					detectedAccountSlugRef.current ??= slugFromContext;
 					offerContextValue("accountSlug", slugFromContext);
 				}
 			} catch (err) {
@@ -279,7 +327,13 @@ export function useInstanceDataSourceSetup({
 		if (!selectedBoardId) {
 			return;
 		}
-		setContextValues((prev) => contextWithListedBoard(prev, boards));
+		setContextValues((prev) =>
+			contextWithListedBoard(
+				prev,
+				boards,
+				detectedAccountSlugRef.current,
+			),
+		);
 	}, [boards, selectedBoardId]);
 
 	const selectMcpConfig = useCallback(
@@ -300,7 +354,7 @@ export function useInstanceDataSourceSetup({
 			if (
 				autoDetect &&
 				ds &&
-				isBoardSelectableProvider(ds.provider) &&
+				isBoardSelectableProvider(providerOf(ds, configId) ?? "") &&
 				configId !== boardsMcpConfigId
 			) {
 				void fetchBoards(configId);
@@ -312,6 +366,7 @@ export function useInstanceDataSourceSetup({
 			autoDetect,
 			boardsMcpConfigId,
 			fetchBoards,
+			providerOf,
 		],
 	);
 
@@ -324,14 +379,18 @@ export function useInstanceDataSourceSetup({
 		});
 	}, []);
 
-	// A project's report starts from the project's own PM connection and
-	// board. It waits for the project so the suggestion below cannot bind a
-	// different server first; a connection the creator cannot use is skipped.
+	// A project's report starts from the creator's connection to the project's
+	// PM tool and board, and to its repository. It waits for the project so the
+	// suggestion below cannot bind a different server first. It tries again when
+	// the connections change, since the creator may connect the tool from here.
 	const projectDefaultsEnabled =
 		enabled && suggestDefaults && Boolean(projectId);
 	const { data: projectData, isFetched: projectFetched } = useQuery({
-		...orpc.projects.get.queryOptions({
-			input: { id: projectId ?? "", organizationId },
+		...orpc.reports.project.queryOptions({
+			input: {
+				id: projectId ?? "",
+				organizationId,
+			},
 		}),
 		enabled: projectDefaultsEnabled,
 	});
@@ -347,13 +406,16 @@ export function useInstanceDataSourceSetup({
 		) {
 			return;
 		}
-		projectDefaultsAppliedRef.current = true;
 		const defaults = projectConnectionDefaults(
 			dataSources,
 			project,
 			userMcpConfigs,
 			isBoardSelectableProvider,
 		);
+		if (Object.keys(defaults.bindings).length === 0) {
+			return;
+		}
+		projectDefaultsAppliedRef.current = true;
 		for (const [dataSourceId, config] of Object.entries(
 			defaults.bindings,
 		)) {
@@ -373,7 +435,8 @@ export function useInstanceDataSourceSetup({
 
 	// Bind a data source to its MCP server when exactly one recommended server
 	// matches, so the board list and account slug load without a click. Each
-	// data source is suggested once; the person can still pick another.
+	// data source is suggested once it has a match; the person can still pick
+	// another, or skip it.
 	useEffect(() => {
 		if (
 			!suggestDefaults ||
@@ -390,8 +453,11 @@ export function useInstanceDataSourceSetup({
 			) {
 				continue;
 			}
+			const matches = findConfigsForSource(userMcpConfigs, ds);
+			if (matches.length === 0) {
+				continue;
+			}
 			suggestedRef.current.add(ds.id);
-			const matches = findMatchingMcpConfigs(userMcpConfigs, ds.provider);
 			if (matches.length === 1) {
 				selectMcpConfig(ds.id, matches[0].id);
 			}
@@ -443,6 +509,7 @@ export function useInstanceDataSourceSetup({
 		const prefill = pickPrefillContext(
 			latestInstance.connections,
 			contextFields,
+			userMcpConfigs,
 		);
 		for (const [key, value] of Object.entries(prefill)) {
 			offerContextValue(key, value);
@@ -452,7 +519,28 @@ export function useInstanceDataSourceSetup({
 		projectDefaultsPending,
 		contextFields,
 		offerContextValue,
+		userMcpConfigs,
 	]);
+
+	// The project's board, when the creator has no connection to read it through
+	// yet: shown read-only with a prompt to connect, never bound through someone
+	// else's config.
+	const projectBoard = useMemo(() => {
+		const project = projectData?.project;
+		const name = project?.projectManagementContainerName?.trim();
+		if (
+			!project ||
+			!name ||
+			mcpConfigsData === undefined ||
+			ownProjectPmConfig(project, userMcpConfigs)
+		) {
+			return null;
+		}
+		return {
+			name,
+			mcpServerId: project.projectManagementMcpServerId ?? null,
+		};
+	}, [projectData, mcpConfigsData, userMcpConfigs]);
 
 	/** The `connections` fields `reports.instances.create` takes from this setup. */
 	const buildConnections = useCallback(() => {
@@ -478,15 +566,22 @@ export function useInstanceDataSourceSetup({
 			}
 		}
 		const resourceBindings = boardResourceBindings(
-			dataSources.filter((ds) => bindings[ds.id]),
+			dataSources
+				.filter((ds) => bindings[ds.id])
+				.flatMap((ds) => {
+					const provider = providerOf(ds);
+					return provider ? [{ id: ds.id, provider }] : [];
+				}),
 			context,
 			isBoardSelectableProvider,
 		);
 		return { mcpConfigs, mcpBindings, resourceBindings, context };
-	}, [bindings, contextValues, dataSources]);
+	}, [bindings, contextValues, dataSources, providerOf]);
 
 	return {
 		userMcpConfigs,
+		connectionsState,
+		retryConnections: () => void refetchMcpConfigs(),
 		bindings,
 		selectMcpConfig,
 		clearMcpConfig,
@@ -494,13 +589,21 @@ export function useInstanceDataSourceSetup({
 		contextValues,
 		setContextValue,
 		setContextValues,
+		offerContext,
 		allConfigured,
 		boards,
 		isLoadingBoards,
 		boardsError,
 		boardsMcpConfigId,
+		retryBoards: () => {
+			if (boardsMcpConfigId) {
+				void fetchBoards(boardsMcpConfigId);
+			}
+		},
 		autoDetect,
 		suggestDefaults,
+		organizationId,
+		projectBoard,
 		buildConnections,
 	};
 }

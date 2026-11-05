@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/server";
 import { getReportTemplate, updateReportTemplate } from "@repo/database";
 import type { Prisma } from "@repo/database/prisma/generated/client";
+import { REPORT_DATA_TYPES } from "@repo/database/prisma/queries/lib/report-data-types";
 import { z } from "zod";
 import {
 	Permissions,
@@ -11,6 +12,7 @@ import {
 import {
 	assertCanManageReportTemplate,
 	assertCanPublishReportTemplate,
+	assertReportPermission,
 } from "../../lib/report-access";
 
 // Evidence.dev theme configuration schema
@@ -75,6 +77,8 @@ const requiredDataSourceSchema = z.object({
 	name: z.string(), // Display name
 	description: z.string().optional(),
 	required: z.boolean().default(true),
+	// A generic source: `key` is its id, and the person chooses the tool
+	dataType: z.enum(REPORT_DATA_TYPES).optional(),
 });
 
 // Schema for template connection requirements
@@ -138,13 +142,20 @@ const updateInputSchema = z.object({
 	isPublic: z.boolean().optional(),
 });
 
+// The middleware only admits members: a platform admin manages system templates
+// from any project's Reports tab, whatever their organization role there.
 export const updateTemplateProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.REPORT_UPDATE))
+	.use(requirePermission(Permissions.REPORT_READ))
 	.input(updateInputSchema)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolveOrganizationId(
 			undefined,
 			context.session,
+		);
+		await assertReportPermission(
+			organizationId,
+			context.user,
+			Permissions.REPORT_UPDATE,
 		);
 
 		// First get the template to check ownership

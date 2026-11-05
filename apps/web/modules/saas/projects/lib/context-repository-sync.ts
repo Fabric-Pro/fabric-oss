@@ -16,6 +16,7 @@ import {
 	contextSyncPathSpellingProblem,
 	defaultRuleForDirectlySelectedFile,
 	isInContextSyncFabricDirectory,
+	MAX_CONTEXT_SYNC_PATH_LENGTH,
 } from "@repo/instructions/context-sync-rules";
 
 // Not exported: only used to shape `ContextSyncRunView.status`/`.error`
@@ -912,6 +913,7 @@ function isStrictlyInsideContextSyncPath(a: string, b: string): boolean {
 }
 
 export type ContextSyncPathValidationError =
+	| { code: "PATH_TOO_LONG" }
 	| { code: "INVALID_PATH"; path: string }
 	| { code: "EXCLUDED_PATH"; path: string }
 	| { code: "TOO_MANY_PATHS" }
@@ -936,7 +938,11 @@ export function validateContextSyncPathAddition(
 	| { ok: true; path: string }
 	| { ok: false; error: ContextSyncPathValidationError } {
 	const path = raw;
-	if (contextSyncPathSpellingProblem(path) !== null) {
+	const spelling = contextSyncPathSpellingProblem(path);
+	if (spelling === "too-long") {
+		return { ok: false, error: { code: "PATH_TOO_LONG" } };
+	}
+	if (spelling !== null) {
 		return { ok: false, error: { code: "INVALID_PATH", path } };
 	}
 	if (
@@ -965,6 +971,11 @@ export function contextSyncPathValidationMessage(
 	error: ContextSyncPathValidationError,
 ): ContextSyncMessage {
 	switch (error.code) {
+		case "PATH_TOO_LONG":
+			return {
+				key: "pathErrors.PATH_TOO_LONG",
+				values: { max: MAX_CONTEXT_SYNC_PATH_LENGTH },
+			};
 		case "INVALID_PATH":
 			return {
 				key: "pathErrors.INVALID_PATH",

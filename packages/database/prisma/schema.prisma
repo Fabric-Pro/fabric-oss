@@ -1144,6 +1144,9 @@ model Organization {
   deletedMeetingArchives          DeletedMeetingArchive[]
   nonMemberContacts               NonMemberContact[]
 
+  // Problem Log (Fizzy #2277); cascade on org delete (tenant erasure).
+  problemLogEntries ProblemLogEntry[]
+
   // Serves the daily purge scan for organizations past their retention window
   // (#2462). Created CONCURRENTLY in its own migration — see
   // migrations/20260910140100_organization_purge_index.
@@ -2747,6 +2750,9 @@ model Project {
   documentFindingResponses ProjectDocumentFindingResponse[]
   documentVisualSpecs      ProjectDocumentVisualSpec[]
 
+  // Problem Log (Fizzy #2277)
+  problemLogEntries ProblemLogEntry[]
+
   // AI Chat (project-scoped conversations)
   aiChats AiChat[]
 
@@ -3359,6 +3365,12 @@ model ProjectContext {
   // rows written before this column existed (read once, then stamped).
   sourceBlobOid String?
 
+  // The content version a repository's first sync wrote and did not read for
+  // decisions, because reading a whole repository costs one AI request per
+  // file. A member can ask for these files to be scanned from the Decisions
+  // tab. Compared with `contentHash`, so any later edit is read as usual.
+  decisionScanSkippedHash String?
+
   // Who last changed the CONTENT of a synced file, and when — so a conflict
   // can name them. Stamped on create and on every content replace through
   // the synced-file path, never by the metadata edit above (which has its
@@ -3437,6 +3449,9 @@ model ProjectContext {
   conversationClaims       ProjectContextConversationClaim[]
   ownedConversationBundles ProjectContextConversationBundle[] @relation("ProjectContextConversationBundleOwner") @ignore
   ownedConversationClaims  ProjectContextConversationClaim[]  @relation("ProjectContextConversationClaimOwner") @ignore
+
+  // Decisions extracted from each confirmed content version of a synced file
+  decisionExtractions ProjectContextDecisionExtraction[]
 
   /// The owner-inclusive identity a conversation child's composite foreign key
   /// points at. Unique rather than a plain index because a foreign key needs a
@@ -3776,6 +3791,47 @@ model ProjectContextConversationClaim {
   @@index([userId])
   @@index([organizationId])
   @@map("project_context_conversation_claim")
+}
+
+// The decisions an AI found in one content version of a synced knowledge file
+// (a `ProjectContext` row with a `sourcePath`), recorded once the embedding
+// confirmed that version. Keyed on (contextId, contentHash): a version is
+// extracted at most once, and an empty `decisions` array is a recorded "this
+// version holds no decision", not a pending one. The Decisions tab offers the
+// entries of the row whose hash equals the context's current hash as review
+// candidates; nothing becomes a decision until a reviewer creates it.
+model ProjectContextDecisionExtraction {
+  id        String         @id @default(cuid())
+  contextId String
+  context   ProjectContext @relation(fields: [contextId], references: [id], onDelete: Cascade)
+  projectId String
+
+  /// The content version these decisions were read from.
+  contentHash      String
+  /// The file's path when it was extracted, copied for display.
+  sourcePath       String
+  /// `[{ text, rationale?, sourceQuote? }]`, in the order the model returned them.
+  decisions        Json      @default("[]")
+  /// Positions in `decisions` a reviewer declined.
+  dismissedIndexes Int[]     @default([])
+  /// The model that read the file.
+  model            String?
+  extractedAt      DateTime  @default(now())
+  /// The at-most-once claim for the "decision candidates ready" notification.
+  notifiedAt       DateTime?
+
+  // Tenant isolation (copied from the parent ProjectContext)
+  userId         String?
+  organizationId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([contextId, contentHash])
+  @@index([projectId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("project_context_decision_extraction")
 }
 
 // The ids whose VECTORS still have to be deleted, after the rows that held them
@@ -8195,6 +8251,116 @@ model ProjectActivity {
   @@index([userId])
   @@index([organizationId])
   @@map("project_activity")
+}
+
+// ============================================================================
+// Problem Log (Fizzy #2277)
+// ============================================================================
+
+/// What kind of problem an entry records. The first seven are system events
+/// and are always logged; the PROJECT_* values are drafted from ingested
+/// project context (meetings, chats, documents) and await review.
+enum ProblemLogCategory {
+  SYSTEM_ERROR
+  INTEGRATION_FAILURE
+  BACKGROUND_JOB_FAILURE
+  NOTIFICATION_FAILURE
+  SECURITY_EVENT
+  DATA_PIPELINE_FAILURE
+  SLA_BREACH
+  PROJECT_ISSUE
+  PROJECT_BLOCKER
+  PROJECT_RISK
+
+  @@map("problem_log_category")
+}
+
+/// Syslog-style severity. Only WARNING and above are written.
+enum ProblemLogSeverity {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+
+  @@map("problem_log_severity")
+}
+
+/// Resolution lifecycle. Every change is an immutable audit_log row
+/// (`project.problem_log.status_changed`), which is the transition history.
+enum ProblemLogStatus {
+  OPEN
+  RESOLVED
+
+  @@map("problem_log_status")
+}
+
+/// System entries are CONFIRMED on creation; context-drafted entries start
+/// PENDING. DISMISSED is a tombstone so a re-extraction cannot re-draft it.
+enum ProblemLogReviewState {
+  PENDING
+  CONFIRMED
+  DISMISSED
+
+  @@map("problem_log_review_state")
+}
+
+enum ProblemLogSourceType {
+  SYSTEM_EVENT
+  MEETING_TRANSCRIPT
+  CHAT_THREAD
+  DOCUMENT
+
+  @@map("problem_log_source_type")
+}
+
+/// One logged problem, aggregated by `dedupKey`.
+///
+/// `dedupKey` is a hash over (category, source, fingerprint, project, affected
+/// user) for system events, or over (source item, normalized text) for drafted
+/// entries — so a recurrence affecting a different user or project becomes its
+/// own entry, and a recurrence of a RESOLVED entry reopens it.
+///
+/// TENANCY: organization-owned, `org_only` RLS. Not project-scoped in
+/// tenant-db: project guests never read the log. `projectId` is null for
+/// organization-level events (only organization admins see those). User ids are
+/// plain columns: they are references for display, not owners.
+model ProblemLogEntry {
+  id              String                @id @default(cuid())
+  organizationId  String
+  projectId       String?
+  affectedUserId  String?
+  category        ProblemLogCategory
+  severity        ProblemLogSeverity
+  status          ProblemLogStatus      @default(OPEN)
+  reviewState     ProblemLogReviewState @default(CONFIRMED)
+  title           String
+  description     String?               @db.Text
+  // Originating subsystem, e.g. "api:projects.get", "job:CODE_INDEXING".
+  source          String
+  sourceType      ProblemLogSourceType  @default(SYSTEM_EVENT)
+  // Transcript / conversation bundle / context id, or the audit_log row id.
+  sourceId        String?
+  sourceQuote     String?               @db.Text
+  dedupKey        String
+  occurrenceCount Int                   @default(1)
+  firstSeenAt     DateTime              @default(now())
+  lastSeenAt      DateTime              @default(now())
+  resolvedAt      DateTime?
+  resolvedById    String?
+  reviewedAt      DateTime?
+  reviewedById    String?
+  metadata        Json?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // SetNull: the log outlives a deleted project for audit.
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, dedupKey])
+  @@index([organizationId, projectId, lastSeenAt(sort: Desc)])
+  @@index([projectId, reviewState])
+  @@map("problem_log_entry")
 }
 
 // AuditLog — append-only ledger of security-relevant events across auth, org,
@@ -17361,6 +17527,10 @@ model ReportTemplate {
   // Archived templates are hidden from template pickers; existing instances keep running.
   archivedAt DateTime?
 
+  // The catalog lists it before any report made from it has completed: a named
+  // standard template, or one a person authored (see report-template-catalog).
+  isGeneric Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -17372,6 +17542,7 @@ model ReportTemplate {
   instances    TemplateInstance[]
   skills       ReportTemplateSkill[]
   overrides    ReportTemplateOverride[]
+  samples      ReportTemplateSample[]
 
   @@index([userId])
   @@index([organizationId])
@@ -17399,6 +17570,9 @@ model ReportTemplateOverride {
   context           Json?
   // Raw schedule input (reportScheduleInputSchema); normalized onto each new report
   schedule          Json?
+  // The prompts new reports start with: { userPrompt?, aiTasks?: { [taskKey]: prompt } },
+  // task keys as `reportAiTaskKey` (outputVariable, or agent-<index>)
+  prompts           Json?
 
   // Attribution, not ownership: who last saved these defaults
   updatedById String
@@ -17414,6 +17588,25 @@ model ReportTemplateOverride {
   @@index([organizationId])
   @@index([projectId])
   @@map("report_template_override")
+}
+
+// An AI-written sample of what a template produces, with invented data,
+// written once per distinct sample prompt and shown until a real report has
+// run. contentHash identifies the exact prompt the sample was written from,
+// so a changed template or sample prompt writes a new one. No tenant columns:
+// whoever may read the template may read its samples.
+model ReportTemplateSample {
+  id          String   @id @default(cuid())
+  templateId  String
+  contentHash String
+  content     String   @db.Text
+  generatedAt DateTime @default(now())
+
+  template ReportTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  // Leads with templateId, so it also serves lookups by template.
+  @@unique([templateId, contentHash])
+  @@map("report_template_sample")
 }
 
 // Template instance lifecycle status
@@ -20995,6 +21188,13 @@ model ProjectInstructionSnapshot {
   /// cleared `baseSnapshotId`.
   baseVersion    Int?
 
+  /// A rebased proposal: the stale proposal it replaces. That proposal stays
+  /// pending until this one is READY and is closed in the transaction that
+  /// writes READY, so a rebase whose upload or checks fail leaves it as it
+  /// was. Deliberately not a foreign key, like `baseVersion`: the link is
+  /// history, and a pruned row must not clear it.
+  supersedesSnapshotId String?
+
   /// Proposal pull requests (Fizzy #2563 spec §4.1). `FABRIC` for every row
   /// that predates them and for every non-proposal snapshot.
   proposalDestination          ProjectInstructionProposalDestination @default(FABRIC)
@@ -22129,6 +22329,15 @@ enum NotificationType {
   /// published it, so they update their local copy. Category PROJECT, gated
   /// by the `syncProject` toggle.
   CODING_INSTRUCTIONS_PUBLISHED
+
+  /// An AI found decisions in a new version of a synced Living Memory file,
+  /// and they wait in the project's Decisions tab as review candidates. One
+  /// unread row per person per project, refreshed by each extraction that found
+  /// at least one (`ProjectContextDecisionExtraction.notifiedAt`), for the
+  /// people who can create decisions on the project, minus whoever last wrote
+  /// the file.
+  /// Category PROJECT, gated by the `syncProject` toggle.
+  DECISION_CANDIDATES_READY
 }
 
 model Notification {

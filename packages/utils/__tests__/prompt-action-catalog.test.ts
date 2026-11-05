@@ -15,6 +15,7 @@ import {
 	COMPLETION_CLAIM_JUDGE_AGENT_KEY,
 } from "../lib/completion-claim-prompts";
 import { DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY } from "../lib/direct-chat-memory-prompt";
+import { LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY } from "../lib/living-memory-decisions-prompt";
 import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "../lib/orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "../lib/page-ask-prompt";
 import {
@@ -480,6 +481,35 @@ describe("Workspace Page Ask prompt", () => {
 		expect(
 			byId(promptActionId(PAGE_ASK_PROMPT_AGENT_KEY, "GENERAL", null)),
 		).toMatchObject({ featureType: "WORKSPACES" });
+	});
+});
+
+describe("Living Memory decision extraction prompt", () => {
+	// A prompt the seed binds and the catalog omits is one nobody can find or
+	// re-bind from the UI.
+	it("is bindable from the prompt library under Meetings & Intake", () => {
+		const target = findPromptAgentTarget(
+			LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
+		);
+
+		expect(target?.label).toBe("Living Memory Decision Extractor");
+		expect(target?.featureType).toBe("MEETINGS");
+	});
+
+	it("is bound for GENERAL with no story kind, where the activity resolves it", () => {
+		expect(
+			findPromptAgentTarget(LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY)
+				?.actions,
+		).toEqual([{ documentType: "GENERAL", storyKind: null }]);
+		expect(
+			byId(
+				promptActionId(
+					LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
+					"GENERAL",
+					null,
+				),
+			),
+		).toMatchObject({ featureType: "MEETINGS" });
 	});
 });
 

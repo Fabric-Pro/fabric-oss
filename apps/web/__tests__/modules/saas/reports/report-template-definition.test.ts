@@ -11,9 +11,13 @@ import {
 	projectConnectionDefaults,
 	promptOverrideFields,
 	promptOverrideFor,
+	providerForServerKey,
+	reportDataSourceLabel,
+	reportProviderLabel,
+	sourceProviderKey,
 	templateSystemPrompt,
 } from "@saas/reports/lib/report-template-definition";
-import type { ProviderContextField } from "@saas/shared/components/DataSourceDefinitionBuilder";
+import type { ProviderContextField } from "@saas/shared/components/provider-context-fields";
 import { describe, expect, it } from "vitest";
 
 const FIELDS: Record<string, ProviderContextField[]> = {
@@ -89,6 +93,143 @@ describe("parseTemplateDefinition", () => {
 		expect(parsed.dataSources[0]?.type).toBe("mcp");
 	});
 
+	it("keeps a source that asks for a data type, and names no provider for it", () => {
+		const parsed = parseTemplateDefinition({
+			dataSources: [
+				{
+					id: "project-management",
+					type: "mcp",
+					dataType: "project-management",
+					required: true,
+				},
+				{
+					id: "repository",
+					type: "mcp",
+					dataType: "repository",
+					required: false,
+				},
+			],
+		});
+		expect(parsed.dataSources).toEqual([
+			{
+				id: "project-management",
+				type: "mcp",
+				dataType: "project-management",
+				operation: undefined,
+			},
+			{
+				id: "repository",
+				type: "mcp",
+				dataType: "repository",
+				operation: undefined,
+				required: false,
+			},
+		]);
+	});
+
+	it("reads a server key as the provider", () => {
+		const parsed = parseTemplateDefinition({
+			dataSources: [
+				{
+					id: "ds-1",
+					type: "mcp",
+					config: { mcpServerKey: "fizzy" },
+				},
+			],
+		});
+		expect(parsed.dataSources[0]).toMatchObject({
+			id: "ds-1",
+			provider: "fizzy",
+		});
+	});
+
+	it("reads a source naming a tool as that tool, whatever data type it declares", () => {
+		const parsed = parseTemplateDefinition({
+			dataSources: [
+				{
+					id: "ds-1",
+					type: "mcp",
+					provider: "fizzy",
+					dataType: "project-management",
+				},
+			],
+		});
+		expect(parsed.dataSources[0]).toMatchObject({ provider: "fizzy" });
+		expect(parsed.dataSources[0]).not.toHaveProperty("dataType");
+	});
+
+	describe("without the report suite", () => {
+		const off = { reportSuite: false };
+
+		it("adds no connection for a source naming only a server key", () => {
+			expect(
+				parseTemplateDefinition(
+					{
+						dataSources: [
+							{
+								id: "github-prs",
+								type: "mcp",
+								config: {
+									toolName: "list_pull_requests",
+									mcpServerKey: "github",
+								},
+							},
+						],
+					},
+					off,
+				).dataSources,
+			).toEqual([]);
+		});
+
+		it("adds no connection for a source asking for a data type", () => {
+			expect(
+				parseTemplateDefinition(
+					{
+						dataSources: [
+							{
+								id: "project-management",
+								type: "mcp",
+								dataType: "project-management",
+								required: false,
+							},
+						],
+					},
+					off,
+				).dataSources,
+			).toEqual([]);
+		});
+
+		it("still reads a source naming a provider", () => {
+			expect(
+				parseTemplateDefinition(
+					{
+						dataSources: [
+							{ id: "ds-1", type: "mcp", provider: "fizzy" },
+						],
+					},
+					off,
+				).dataSources,
+			).toEqual([
+				{
+					id: "ds-1",
+					type: "mcp",
+					provider: "fizzy",
+					operation: undefined,
+				},
+			]);
+		});
+	});
+
+	it("drops a source with an unknown data type and no tool", () => {
+		expect(
+			parseTemplateDefinition({
+				dataSources: [
+					{ id: "ds-1", type: "mcp", dataType: "documents" },
+				],
+			}).dataSources,
+		).toEqual([]);
+	});
+
 	it("returns no data sources for a missing or malformed definition", () => {
 		expect(parseTemplateDefinition(null).dataSources).toEqual([]);
 		expect(parseTemplateDefinition("x").dataSources).toEqual([]);
@@ -150,6 +291,24 @@ describe("pickPrefillContext", () => {
 			adoFields,
 		);
 		expect(prefill).toEqual({});
+	});
+
+	it("copies a saved context when the bound config says a generic source is that provider", () => {
+		const connections = {
+			mcpBindings: { "project-management": "cfg-1" },
+			context: { boardId: "42" },
+		};
+		expect(pickPrefillContext(connections, fizzyFields)).toEqual({});
+		expect(
+			pickPrefillContext(connections, fizzyFields, [
+				{ id: "cfg-1", mcpServer: { key: "fizzy" } },
+			]),
+		).toEqual({ boardId: "42" });
+		expect(
+			pickPrefillContext(connections, fizzyFields, [
+				{ id: "cfg-1", mcpServer: { key: "linear" } },
+			]),
+		).toEqual({});
 	});
 
 	it("ignores empty values and malformed connections", () => {
@@ -284,6 +443,81 @@ describe("data source requirement", () => {
 			],
 		});
 		expect(dataSources.map(isRequiredDataSource)).toEqual([true, false]);
+	});
+});
+
+describe("reportProviderLabel", () => {
+	it("labels registry and seeded-template provider keys", () => {
+		expect(reportProviderLabel("azure_devops")).toBe("Azure DevOps");
+		expect(reportProviderLabel("fizzy")).toBe("Fizzy");
+		expect(reportProviderLabel("slack")).toBe("Slack");
+	});
+
+	it("keeps a name that is already a label or unknown", () => {
+		expect(reportProviderLabel("Fizzy")).toBe("Fizzy");
+		expect(reportProviderLabel("custom_server")).toBe("custom_server");
+	});
+});
+
+describe("reportDataSourceLabel", () => {
+	it("names a provider source by its label, never its generated id", () => {
+		expect(
+			reportDataSourceLabel({
+				id: "ds-1793816924540",
+				type: "mcp",
+				provider: "fizzy",
+			}),
+		).toBe("Fizzy");
+		expect(
+			reportDataSourceLabel({
+				id: "ds-1793816941644",
+				type: "mcp",
+				provider: "azure_devops",
+			}),
+		).toBe("Azure DevOps");
+	});
+
+	it("adds the tool for a source pinned to one", () => {
+		expect(
+			reportDataSourceLabel({
+				id: "sprint-items",
+				type: "mcp",
+				config: { mcpServerKey: "fizzy", toolName: "fizzy_get_cards" },
+			}),
+		).toBe("Fizzy → fizzy_get_cards");
+	});
+
+	it("marks an integration source as an API", () => {
+		expect(
+			reportDataSourceLabel({
+				id: "ds-3",
+				type: "integration",
+				provider: "azure_devops",
+			}),
+		).toBe("Azure DevOps API");
+	});
+
+	it("names a source that asks for a data type after the type", () => {
+		expect(
+			reportDataSourceLabel({
+				id: "project-management",
+				type: "mcp",
+				dataType: "project-management",
+			}),
+		).toBe("Project management");
+	});
+
+	it("falls back to a generic name when the provider is unknown", () => {
+		expect(reportDataSourceLabel({ id: "ds-4", type: "mcp" })).toBe(
+			"MCP server",
+		);
+		expect(
+			reportDataSourceLabel({
+				id: "ds-5",
+				type: "mcp",
+				provider: "custom_server",
+			}),
+		).toBe("custom_server");
 	});
 });
 
@@ -458,6 +692,80 @@ describe("projectConnectionDefaults", () => {
 		).toEqual({ bindings: { "ds-issues": fizzyConfig }, context: {} });
 	});
 
+	describe("a source that asks for a data type", () => {
+		const fizzyTool = {
+			id: "config-fizzy",
+			mcpServer: {
+				key: "fizzy",
+				name: "Fizzy",
+				category: "Project Management",
+				tags: [],
+			},
+		};
+		const projectManagement = {
+			id: "project-management",
+			type: "mcp" as const,
+			dataType: "project-management" as const,
+		};
+		const repository = {
+			id: "repository",
+			type: "mcp" as const,
+			dataType: "repository" as const,
+		};
+
+		it("takes the project's tool of that type, and its board", () => {
+			expect(
+				projectConnectionDefaults(
+					[projectManagement],
+					project,
+					[fizzyTool],
+					isBoardProvider,
+				),
+			).toEqual({
+				bindings: { "project-management": fizzyTool },
+				context: {
+					boardId: "board-7",
+					boardName: "Example Board",
+					accountSlug: "123456",
+				},
+			});
+		});
+
+		it("does not take a tool of another data type", () => {
+			expect(
+				projectConnectionDefaults(
+					[repository],
+					project,
+					[fizzyTool],
+					isBoardProvider,
+				),
+			).toEqual({ bindings: {}, context: {} });
+		});
+
+		it("takes a repository host by its tags", () => {
+			const gitTool = {
+				id: "config-fizzy",
+				mcpServer: {
+					key: "gitlab",
+					name: "GitLab",
+					category: "Developer Tools",
+					tags: ["git"],
+				},
+			};
+			expect(
+				projectConnectionDefaults(
+					[projectManagement, repository],
+					project,
+					[gitTool],
+					isBoardProvider,
+				),
+			).toEqual({
+				bindings: { repository: gitTool },
+				context: {},
+			});
+		});
+	});
+
 	it("names the board by its id when the project saved no name", () => {
 		expect(
 			projectConnectionDefaults(
@@ -470,6 +778,39 @@ describe("projectConnectionDefaults", () => {
 				isBoardProvider,
 			).context,
 		).toEqual({ boardId: "board-7", boardName: "board-7" });
+	});
+});
+
+describe("providerForServerKey", () => {
+	it("maps a server key to the provider key the setup screens use", () => {
+		expect(providerForServerKey("atlassian")).toBe("jira");
+		expect(providerForServerKey("github-remote")).toBe("github");
+		expect(providerForServerKey("azure-devops")).toBe("azure_devops");
+	});
+
+	it("keeps a key it does not know, and is null without one", () => {
+		expect(providerForServerKey("example-tracker")).toBe("example-tracker");
+		expect(providerForServerKey(null)).toBeNull();
+		expect(providerForServerKey("")).toBeNull();
+	});
+});
+
+describe("sourceProviderKey", () => {
+	it("is the provider a source names, whatever is bound", () => {
+		expect(
+			sourceProviderKey(
+				{ provider: "fizzy" },
+				{ mcpServer: { key: "github" } },
+			),
+		).toBe("fizzy");
+	});
+
+	it("follows the bound server for a generic source, and is null until one is bound", () => {
+		expect(sourceProviderKey({}, { mcpServer: { key: "atlassian" } })).toBe(
+			"jira",
+		);
+		expect(sourceProviderKey({})).toBeNull();
+		expect(sourceProviderKey({}, null)).toBeNull();
 	});
 });
 
@@ -494,7 +835,17 @@ describe("contextWithListedBoard", () => {
 				{ accountSlug: "123", boardId: "gone", boardName: "Old board" },
 				boards,
 			),
-		).toEqual({ accountSlug: "123" });
+		).toEqual({});
+	});
+
+	it("falls back to the account the board list came from", () => {
+		expect(
+			contextWithListedBoard(
+				{ accountSlug: "123", boardId: "gone", boardName: "Old board" },
+				boards,
+				"456",
+			),
+		).toEqual({ accountSlug: "456" });
 	});
 
 	it("keeps a board the list offers, unchanged", () => {

@@ -28,7 +28,10 @@ import {
 	getProjectReposForCodeSearch,
 	getProjectScanConfig,
 } from "@repo/database";
-import { GIT_AUTH_UNSAFE, gitAuthForClone } from "@repo/integrations/repo-auth";
+import {
+	GIT_AUTH_OPTIONS,
+	gitAuthForClone,
+} from "@repo/integrations/repo-auth";
 import { logger } from "@repo/logs";
 import { decryptApiKey } from "@repo/utils";
 import { Context } from "@temporalio/activity";
@@ -412,7 +415,7 @@ export async function withHeartbeat<T>(fn: () => Promise<T>): Promise<T> {
  * convention), so the token never reaches argv or the clone's `.git/config`.
  * Every git call on the clone — the clone, a later `fetch origin`, an
  * `ls-remote` — runs with `env` through `simpleGit(...).env(env)` and
- * `GIT_AUTH_UNSAFE`. Returns null when the repo's auth could not be resolved
+ * `GIT_AUTH_OPTIONS`. Returns null when the repo's auth could not be resolved
  * (skipped upstream).
  */
 export async function resolveCloneAuth(
@@ -592,7 +595,7 @@ export async function runSemgrepScanActivity(
 
 			const { simpleGit } = await import("simple-git");
 			const gitAt = (baseDir?: string) =>
-				simpleGit({ baseDir, unsafe: GIT_AUTH_UNSAFE }).env(auth.env);
+				simpleGit({ baseDir, ...GIT_AUTH_OPTIONS }).env(auth.env);
 			// Resolve the branch to clone: the workflow-provided branch (kept in
 			// sync with the SHA the resolve step read for the diff), else the
 			// project's configured scanBranch, else the repo's default, else "main".

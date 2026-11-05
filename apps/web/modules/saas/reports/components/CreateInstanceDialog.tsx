@@ -7,7 +7,14 @@ import {
 	reportEvidenceConfigSchema,
 } from "@repo/database/prisma/queries/lib/report-evidence";
 import { useEffectiveOrganizationId } from "@saas/organizations/hooks";
+import { useDialogFocusReturn } from "@saas/reports/hooks/use-dialog-focus-return";
 import { useInstanceDataSourceSetup } from "@saas/reports/hooks/use-instance-data-source-setup";
+import {
+	generateProblem,
+	useReportSuiteCreation,
+} from "@saas/reports/hooks/use-report-suite-creation";
+import { promptFieldRows } from "@saas/reports/lib/report-parameter-values";
+import type { ReportPromptDefaults } from "@saas/reports/lib/report-template-defaults";
 import {
 	parseTemplateDefinition,
 	parseTemplateWorkspaces,
@@ -25,7 +32,6 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@ui/components/dialog";
-import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import {
 	Select,
@@ -35,6 +41,7 @@ import {
 	SelectValue,
 } from "@ui/components/select";
 import { Textarea } from "@ui/components/textarea";
+import { cn } from "@ui/lib";
 import {
 	FolderOpenIcon,
 	Loader2Icon,
@@ -42,14 +49,19 @@ import {
 	SettingsIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { CreateReportReadiness } from "./CreateReportReadiness";
 import {
 	InstanceContextFields,
 	InstanceDataSourcePicker,
 } from "./InstanceDataSourceFields";
+import { InstanceNameField } from "./InstanceNameField";
+import { RefinePromptButton } from "./RefinePromptButton";
 import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
+import { ReportParameterFields } from "./ReportParameterFields";
 import { ReportTemplatePreview } from "./ReportTemplatePreview";
+import { TemplatePromptPreview } from "./TemplatePromptPreview";
 
 type ReportTemplate = {
 	id: string;
@@ -62,6 +74,10 @@ type ReportTemplate = {
 	definition?: unknown;
 	/** Connection requirements JSON (legacy, derived from definition). */
 	connections?: unknown;
+	/** The parameters' JSON Schema. */
+	parameters?: unknown;
+	/** Fabric settings JSON, the system prompt among them. */
+	fabricConfig?: unknown;
 };
 
 type Props = {
@@ -92,6 +108,8 @@ export function CreateInstanceDialog({
 	const queryClient = useQueryClient();
 	const organizationId = useEffectiveOrganizationId(propOrgId);
 	const reportSuite = useFeatureFlag("REPORT_SUITE_V2");
+	const suiteProjectId = reportSuite ? projectId : undefined;
+	const suite = Boolean(suiteProjectId);
 	const [name, setName] = useState(`My ${template.name}`);
 	const [description, setDescription] = useState("");
 	const [reporting, setReporting] = useState<ReportEvidenceConfig>();
@@ -99,10 +117,12 @@ export function CreateInstanceDialog({
 
 	// Shown pre-filled with the template's prompt; saved only once edited.
 	const [promptOverride, setPromptOverride] = useState("");
+	const [promptDefaults, setPromptDefaults] =
+		useState<ReportPromptDefaults | null>(null);
 
 	const definition = useMemo(
-		() => parseTemplateDefinition(template.definition),
-		[template.definition],
+		() => parseTemplateDefinition(template.definition, { reportSuite }),
+		[template.definition, reportSuite],
 	);
 	const workspaces = useMemo(
 		() => parseTemplateWorkspaces(template.connections),
@@ -134,9 +154,9 @@ export function CreateInstanceDialog({
 	const setup = useInstanceDataSourceSetup({
 		dataSources,
 		organizationId,
-		autoDetect: true,
+		autoDetect: reportSuite,
 		suggestDefaults: reportSuite,
-		projectId: reportSuite ? projectId : undefined,
+		projectId: suiteProjectId,
 	});
 
 	// Fetch user's workspaces
@@ -158,17 +178,32 @@ export function CreateInstanceDialog({
 		},
 	);
 
+	const creation = useReportSuiteCreation({
+		suite,
+		dataSources,
+		bindings: setup.bindings,
+		organizationId,
+		basePath,
+		onLeave: onClose,
+	});
+	// A draft waits for its project sources; anything else runs once it exists.
+	const generates = suite && !projectSetupReason;
+
 	const createMutation = useMutation(
 		orpc.reports.instances.create.mutationOptions({
 			onSuccess: (data) => {
+				queryClient.invalidateQueries({
+					queryKey: ["reports", "instances"],
+				});
+				if (generates) {
+					void creation.startGeneration(data.id);
+					return;
+				}
 				toast.success(
 					projectSetupReason
 						? "Project report draft created; source setup required"
 						: "Instance created successfully",
 				);
-				queryClient.invalidateQueries({
-					queryKey: ["reports", "instances"],
-				});
 				onClose();
 				if (onSuccess) {
 					onSuccess(data.id);
@@ -182,7 +217,33 @@ export function CreateInstanceDialog({
 		}),
 	);
 
+	const isWorking = createMutation.isPending || creation.isStarting;
+	const generateOff =
+		isWorking ||
+		(requiresProjectKnowledge && !reporting?.projectId) ||
+		(generates
+			? !setup.allConfigured || creation.blocked || !name.trim()
+			: !setup.allConfigured && !reporting?.projectId);
+	const problem = suite
+		? generateProblem({
+				connections: setup.connectionsState,
+				missingSources: creation.missingSources,
+				connectionFailure: generates
+					? creation.connectionFailure
+					: null,
+				missingParameters:
+					generates && creation.parameters.missing.length > 0,
+				setupIncomplete: generates && !setup.allConfigured,
+				nameMissing: generates && !name.trim(),
+			})
+		: null;
+	const problemId = useId();
+	const focusReturn = useDialogFocusReturn();
+
 	const handleCreate = () => {
+		if (generateOff) {
+			return;
+		}
 		if (requiresProjectKnowledge && !reporting?.projectId) {
 			toast.error("Choose a project for Project knowledge");
 			return;
@@ -208,7 +269,8 @@ export function CreateInstanceDialog({
 			name: name.trim(),
 			description: description.trim() || undefined,
 			organizationId,
-			projectId: reportSuite ? projectId : undefined,
+			projectId: suiteProjectId,
+			...(suite ? { parameterDefaults: creation.parameters.toSave } : {}),
 			connections: {
 				mcpConfigs,
 				mcpBindings,
@@ -227,42 +289,46 @@ export function CreateInstanceDialog({
 	const emoji = template.heroEmojis?.[0] || "📊";
 
 	return (
-		<Dialog open onOpenChange={onClose}>
-			<DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+		<Dialog
+			open
+			onOpenChange={() => {
+				// Closing now would look like cancelling a run that still starts.
+				if (!suite || !isWorking) {
+					onClose();
+				}
+			}}
+		>
+			<DialogContent
+				className="max-w-2xl max-h-[90vh] overflow-y-auto"
+				{...(suite ? focusReturn : {})}
+			>
 				<DialogHeader>
 					<DialogTitle className="flex items-center gap-2">
 						<span className="text-xl">{emoji}</span>
-						Use Template: {template.name}
+						{suite ? "Generate report" : "Use Template"}:{" "}
+						{template.name}
 					</DialogTitle>
 					<DialogDescription>
-						Configure your data sources with connection and
-						parameters for this report instance.
+						{suite
+							? "Check what is filled in, connect anything missing, and generate."
+							: "Configure your data sources with connection and parameters for this report instance."}
 					</DialogDescription>
 				</DialogHeader>
 
-				<div className="space-y-6 py-4">
-					{reportSuite && projectId && (
+				<div className="min-w-0 space-y-6 py-4">
+					{suiteProjectId && (
 						<ReportTemplatePreview
 							templateId={template.id}
-							projectId={projectId}
+							projectId={suiteProjectId}
 							organizationId={organizationId}
 						/>
 					)}
 
-					{/* Instance Name */}
-					<div className="space-y-2">
-						<Label htmlFor="instance-name">Instance Name *</Label>
-						<Input
-							id="instance-name"
-							value={name}
-							onChange={(e) => setName(e.target.value)}
-							placeholder="e.g., My Weekly Sprint Report"
-						/>
-						<p className="text-xs text-muted-foreground">
-							Give this instance a name to identify it in your
-							reports list
-						</p>
-					</div>
+					<InstanceNameField
+						value={name}
+						onChange={setName}
+						invalid={suite && !name.trim()}
+					/>
 
 					{/* Description */}
 					<div className="space-y-2">
@@ -294,6 +360,9 @@ export function CreateInstanceDialog({
 							<InstanceDataSourcePicker
 								setup={setup}
 								dataSources={dataSources}
+								generateProblemId={
+									problem ? problemId : undefined
+								}
 							/>
 						</div>
 					)}
@@ -315,15 +384,38 @@ export function CreateInstanceDialog({
 						</div>
 					)}
 
+					{suiteProjectId && (
+						<ReportParameterFields
+							templateId={template.id}
+							parameters={template.parameters}
+							projectId={suiteProjectId}
+							organizationId={organizationId}
+							onChange={creation.setParameters}
+							onContextDefaults={setup.offerContext}
+							onPromptDefaults={setPromptDefaults}
+						/>
+					)}
+
 					{/* Prompt Override */}
 					{dataSources.length > 0 && (
 						<div className="space-y-2">
-							<Label
-								htmlFor="instance-prompt"
-								className="text-sm"
-							>
-								Custom Instructions (Optional)
-							</Label>
+							<div className="flex flex-wrap items-center justify-between gap-2">
+								<Label
+									htmlFor="instance-prompt"
+									className="text-sm"
+								>
+									Custom Instructions (Optional)
+								</Label>
+								{suite && (
+									<RefinePromptButton
+										id="report-custom-instructions"
+										label="Custom Instructions"
+										content={promptOverride}
+										organizationId={organizationId ?? null}
+										onApply={setPromptOverride}
+									/>
+								)}
+							</div>
 							<Textarea
 								id="instance-prompt"
 								value={promptOverride}
@@ -331,13 +423,23 @@ export function CreateInstanceDialog({
 									setPromptOverride(e.target.value)
 								}
 								placeholder="Add specific instructions to customize how data is gathered..."
-								rows={2}
+								rows={
+									suite ? promptFieldRows(promptOverride) : 2
+								}
 							/>
 							<p className="text-xs text-muted-foreground">
 								Override or add to the default data gathering
 								instructions
 							</p>
 						</div>
+					)}
+
+					{suite && (
+						<TemplatePromptPreview
+							definition={template.definition}
+							fabricConfig={template.fabricConfig}
+							promptDefaults={promptDefaults}
+						/>
 					)}
 
 					<div className="space-y-4 border-t pt-4">
@@ -399,38 +501,81 @@ export function CreateInstanceDialog({
 							</p>
 						</div>
 					)}
+
+					{suite && (
+						<CreateReportReadiness
+							templateId={template.id}
+							dataSources={dataSources}
+							setup={setup}
+							requiredParams={creation.parameters.requiredParams}
+							outputFormat={template.outputFormat}
+							onConnectionFailure={creation.setConnectionFailure}
+						/>
+					)}
 				</div>
 
-				<DialogFooter>
-					<Button variant="outline" onClick={onClose}>
-						Cancel
-					</Button>
-					<Button
-						onClick={handleCreate}
-						disabled={
-							createMutation.isPending ||
-							(requiresProjectKnowledge &&
-								!reporting?.projectId) ||
-							(!setup.allConfigured && !reporting?.projectId)
-						}
-					>
-						{createMutation.isPending ? (
-							<>
-								<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
-								Creating...
-							</>
-						) : (
-							<>
-								<PlusIcon className="mr-2 h-4 w-4" />
-								{projectSetupReason
-									? "Create draft"
-									: reporting?.projectId
-										? "Create report"
-										: "Create Instance"}
-							</>
-						)}
-					</Button>
-				</DialogFooter>
+				{/* Stays in view, so Generate is reachable after a long prompt. */}
+				<div
+					className={cn(
+						suite &&
+							"sticky -bottom-6 z-10 -mx-6 -mb-6 space-y-2 border-t bg-popover px-6 py-4",
+					)}
+				>
+					{suite && (
+						<p
+							id={problemId}
+							aria-live="polite"
+							className={cn(
+								"text-sm",
+								!problem && "sr-only",
+								problem?.urgent === true && "text-destructive",
+								problem?.urgent === false &&
+									"text-muted-foreground",
+							)}
+						>
+							{problem?.message}
+						</p>
+					)}
+					<DialogFooter>
+						<Button
+							variant="outline"
+							onClick={onClose}
+							disabled={suite && isWorking}
+						>
+							{creation.missingSources.length > 0 &&
+							setup.connectionsState === "answered"
+								? "Abandon setup"
+								: "Cancel"}
+						</Button>
+						<Button
+							onClick={handleCreate}
+							disabled={!suite && generateOff}
+							aria-disabled={(suite && generateOff) || undefined}
+							aria-describedby={problem ? problemId : undefined}
+							className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+						>
+							{isWorking ? (
+								<>
+									<Loader2Icon className="mr-2 h-4 w-4 motion-safe:animate-spin" />
+									{generates
+										? "Generating..."
+										: "Creating..."}
+								</>
+							) : (
+								<>
+									<PlusIcon className="mr-2 h-4 w-4" />
+									{projectSetupReason
+										? "Create draft"
+										: generates
+											? "Generate report"
+											: reporting?.projectId
+												? "Create report"
+												: "Create Instance"}
+								</>
+							)}
+						</Button>
+					</DialogFooter>
+				</div>
 			</DialogContent>
 		</Dialog>
 	);

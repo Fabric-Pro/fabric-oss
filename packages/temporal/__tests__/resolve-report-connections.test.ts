@@ -149,6 +149,62 @@ describe("resolveReportConnections (self-heal)", () => {
 		expect(r.mcpConfigs).toEqual(["legacy-cfg"]);
 	});
 
+	describe("a source that asks for a data type", () => {
+		const GENERIC_DS = [
+			{
+				id: "project-management",
+				type: "mcp",
+				dataType: "project-management",
+			},
+		];
+
+		it("runs on the config bound under its id, naming no server to fall back on", async () => {
+			resolveReportMcpConfig.mockResolvedValue({
+				configId: "cfg-tool",
+				healed: false,
+				enabled: true,
+			});
+			const r = await resolveReportConnections({
+				connections: {
+					mcpConfigs: ["cfg-tool"],
+					mcpBindings: { "project-management": "cfg-tool" },
+				},
+				dataSources: GENERIC_DS,
+				userId: "u1",
+			});
+			expect(resolveReportMcpConfig).toHaveBeenCalledWith(
+				expect.objectContaining({
+					storedConfigId: "cfg-tool",
+					serverKeys: [],
+				}),
+			);
+			expect(r.mcpConfigs).toEqual(["cfg-tool"]);
+			expect(r.mcpBindings).toEqual({ "project-management": "cfg-tool" });
+			expect(r.unresolved).toEqual([]);
+		});
+
+		it("is unresolved when required and unbound", async () => {
+			resolveReportMcpConfig.mockResolvedValue(null);
+			const r = await resolveReportConnections({
+				connections: { mcpConfigs: [], mcpBindings: {} },
+				dataSources: GENERIC_DS,
+				userId: "u1",
+			});
+			expect(r.unresolved).toEqual(["project-management"]);
+		});
+
+		it("is skipped when optional and unbound", async () => {
+			const r = await resolveReportConnections({
+				connections: { mcpConfigs: [], mcpBindings: {} },
+				dataSources: [{ ...GENERIC_DS[0], required: false }],
+				userId: "u1",
+			});
+			expect(resolveReportMcpConfig).not.toHaveBeenCalled();
+			expect(r.mcpBindings).toEqual({});
+			expect(r.unresolved).toEqual([]);
+		});
+	});
+
 	it("dedupes multiple data sources that resolve to the same config", async () => {
 		resolveReportMcpConfig.mockResolvedValue({
 			configId: "cfg-x",

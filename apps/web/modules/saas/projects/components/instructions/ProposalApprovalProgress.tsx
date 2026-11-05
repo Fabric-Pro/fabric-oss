@@ -10,10 +10,30 @@ import { useTranslations } from "next-intl";
  */
 export type ProposalApprovals = { count: number; required: number };
 
-export function needsSeveralApprovals(
+function needsSeveralApprovals(
 	approvals: ProposalApprovals | undefined,
 ): approvals is ProposalApprovals {
 	return approvals !== undefined && approvals.required > 1;
+}
+
+/**
+ * What the Approve button offers the viewer. A viewer who already approved
+ * cannot add a second approval, so it reads "You approved" and is disabled,
+ * except once the counted approvals meet the requirement (the policy was
+ * lowered under the proposal): the server publishes on a repeated approval,
+ * so it is the plain Approve again rather than a dead end for every approver.
+ */
+export function approveButtonState(
+	approvals: ProposalApprovals | undefined,
+	viewerApproved: boolean,
+): "approve" | "approveCounted" | "youApproved" {
+	if (
+		!needsSeveralApprovals(approvals) ||
+		approvals.count >= approvals.required
+	) {
+		return "approve";
+	}
+	return viewerApproved ? "youApproved" : "approveCounted";
 }
 
 export function ProposalApprovalBadge({

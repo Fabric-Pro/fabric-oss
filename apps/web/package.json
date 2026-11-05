@@ -233,6 +233,6 @@
 		"type-check": "tsgo --noEmit --checkers 2",
 		"typegen": "next typegen"
 	},
-	"version": "0.0.21",
+	"version": "0.0.22",
 	"license": "Apache-2.0"
 }

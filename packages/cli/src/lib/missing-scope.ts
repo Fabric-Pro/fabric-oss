@@ -8,6 +8,16 @@
  * the message, and only when it has the shape of one, a closed vocabulary,
  * never free text.
  */
+import { REQUESTED_SCOPES } from "./oauth/flow.js";
+
+/**
+ * Whether signing in again could fix a refusal for this scope. A browser
+ * sign-in carries only `REQUESTED_SCOPES`, the server's ceiling; any other
+ * scope takes an API key, so a hint to sign in would send a person in a circle.
+ */
+export function signInCanGrant(scope: string): boolean {
+	return REQUESTED_SCOPES.some((requested) => requested === scope);
+}
 
 function readProperty(error: unknown, name: string): unknown {
 	return typeof error === "object" && error !== null && name in error

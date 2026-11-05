@@ -1,8 +1,21 @@
-import { findMatchingMcpConfigs } from "@saas/reports/lib/mcp-utils";
-import type {
-	DataSourceDefinition,
-	ProviderContextField,
+import {
+	genericSourceDataType,
+	REPORT_DATA_TYPE_INFO,
+} from "@repo/database/prisma/queries/lib/report-data-types";
+import {
+	type ProjectPmContainer,
+	type ProjectRepository,
+	projectPmContext,
+	projectRepositoryContext,
+	providerForServerKey,
+	serverReadsRepository,
+} from "@repo/database/prisma/queries/lib/report-provider-context";
+import { findConfigsForSource } from "@saas/reports/lib/mcp-utils";
+import {
+	DATA_SOURCE_PROVIDERS,
+	type DataSourceDefinition,
 } from "@saas/shared/components/DataSourceDefinitionBuilder";
+import type { ProviderContextField } from "@saas/shared/components/provider-context-fields";
 
 /**
  * Typed reads of the JSON a report template and instance store, for the
@@ -41,14 +54,35 @@ function isDataSourceType(
 	return DATA_SOURCE_TYPES.some((type) => type === value);
 }
 
+/** The tool a stored data source names, by its provider or its server key. */
+function sourceProviderName(source: Record<string, unknown>): string {
+	if (typeof source.provider === "string" && source.provider) {
+		return source.provider;
+	}
+	const serverKey = isRecord(source.config)
+		? source.config.mcpServerKey
+		: undefined;
+	return typeof serverKey === "string" ? serverKey : "";
+}
+
 export type ParsedTemplateDefinition = {
-	/** Data sources that name a provider; the others need no connection. */
+	/**
+	 * Data sources that name a provider or a server key (read as the provider),
+	 * and generic ones that declare a data type. The others need no connection.
+	 */
 	dataSources: DataSourceDefinition[];
 	userPrompt?: string;
 };
 
+/**
+ * Reads a stored template definition. Without the report suite (`reportSuite:
+ * false`) only a source naming a `provider` asks for a connection, as it always
+ * has: a server key or a data type alone must not add a required picker that
+ * blocks Create for someone who has no such connection.
+ */
 export function parseTemplateDefinition(
 	definition: unknown,
+	{ reportSuite = true }: { reportSuite?: boolean } = {},
 ): ParsedTemplateDefinition {
 	if (!isRecord(definition)) {
 		return { dataSources: [] };
@@ -58,24 +92,29 @@ export function parseTemplateDefinition(
 		: [];
 	const dataSources: DataSourceDefinition[] = [];
 	for (const source of rawSources) {
-		if (
-			isRecord(source) &&
-			typeof source.id === "string" &&
-			typeof source.provider === "string" &&
-			source.provider.length > 0
-		) {
-			dataSources.push({
-				id: source.id,
-				// Setup reads only the provider; an older template may omit the type.
-				type: isDataSourceType(source.type) ? source.type : "mcp",
-				provider: source.provider,
-				operation:
-					typeof source.operation === "string"
-						? source.operation
-						: undefined,
-				...(source.required === false ? { required: false } : {}),
-			});
+		if (!isRecord(source) || typeof source.id !== "string") {
+			continue;
 		}
+		const provider = sourceProviderName(source);
+		const dataType = genericSourceDataType(source);
+		const asksForConnection = reportSuite
+			? provider || dataType
+			: typeof source.provider === "string" && source.provider;
+		if (!asksForConnection) {
+			continue;
+		}
+		dataSources.push({
+			id: source.id,
+			// Setup reads only the provider; an older template may omit the type.
+			type: isDataSourceType(source.type) ? source.type : "mcp",
+			...(provider ? { provider } : {}),
+			...(dataType ? { dataType } : {}),
+			operation:
+				typeof source.operation === "string"
+					? source.operation
+					: undefined,
+			...(source.required === false ? { required: false } : {}),
+		});
 	}
 	return {
 		dataSources,
@@ -99,6 +138,58 @@ export function templateSystemPrompt(
 /** A data source is required unless its template marks it optional. */
 export function isRequiredDataSource(source: { required?: boolean }): boolean {
 	return source.required !== false;
+}
+
+/** Providers that seeded templates use but the source picker does not offer. */
+const INTEGRATION_PROVIDER_LABELS: Record<string, string> = {
+	microsoft_graph: "Microsoft Teams / Graph",
+	slack: "Slack",
+	github: "GitHub",
+	linear: "Linear",
+	jira: "Jira",
+};
+
+/**
+ * A data source provider's display name: the registry label for a known
+ * provider key ("azure_devops" → "Azure DevOps"), otherwise the name as
+ * given, so a template's own wording is kept.
+ */
+export function reportProviderLabel(nameOrKey: string): string {
+	return (
+		DATA_SOURCE_PROVIDERS[nameOrKey]?.label ||
+		INTEGRATION_PROVIDER_LABELS[nameOrKey] ||
+		nameOrKey
+	);
+}
+
+/**
+ * The name a report shows for one of its template's data sources: the
+ * provider's label ("Fizzy"), plus the tool for a source pinned to one.
+ * The source id is generated and never shown.
+ */
+export function reportDataSourceLabel(source: {
+	id: string;
+	type?: string;
+	provider?: string;
+	dataType?: unknown;
+	config?: Record<string, unknown>;
+}): string {
+	const dataType = genericSourceDataType(source);
+	if (dataType) {
+		return REPORT_DATA_TYPE_INFO[dataType].label;
+	}
+	const toolName = source.config?.toolName;
+	const serverKey = source.config?.mcpServerKey;
+	const providerKey =
+		source.provider || (typeof serverKey === "string" ? serverKey : "");
+	const label = reportProviderLabel(providerKey);
+	if (typeof toolName === "string" && toolName) {
+		return `${label || "MCP"} → ${toolName}`;
+	}
+	if (!label) {
+		return source.type === "mcp" ? "MCP server" : "Data source";
+	}
+	return source.type === "integration" ? `${label} API` : label;
 }
 
 /**
@@ -169,6 +260,19 @@ export function parseTemplateWorkspaces(
 	};
 }
 
+export { providerForServerKey };
+
+/**
+ * The provider a data source's context fields and board picker follow: its own,
+ * or for a generic source the server bound to it (none until one is bound).
+ */
+export function sourceProviderKey(
+	source: { provider?: string },
+	boundConfig?: { mcpServer?: { key?: string | null } | null } | null,
+): string | null {
+	return source.provider || providerForServerKey(boundConfig?.mcpServer?.key);
+}
+
 export type ContextField = ProviderContextField & { provider: string };
 
 /**
@@ -232,11 +336,15 @@ export function boardResourceBindings(
 /**
  * The context without a board the loaded board list no longer offers, so the
  * picker shows its placeholder instead of a blank value and readiness asks for
- * a board. An empty list (not loaded, or none returned) keeps the context.
+ * a board. The account goes with it: the board came from someone else's account
+ * or an earlier report, and the slug that names it would read the wrong account.
+ * `detectedSlug` is the account the list came from, when it told us. An empty
+ * list (not loaded, or none returned) keeps the context.
  */
 export function contextWithListedBoard(
 	context: Record<string, string>,
 	boards: ReadonlyArray<{ id: string }>,
+	detectedSlug?: string | null,
 ): Record<string, string> {
 	const boardId = context.boardId?.trim();
 	if (!boardId || boards.length === 0) {
@@ -245,8 +353,13 @@ export function contextWithListedBoard(
 	if (boards.some((board) => board.id === boardId)) {
 		return context;
 	}
-	const { boardId: _boardId, boardName: _boardName, ...rest } = context;
-	return rest;
+	const {
+		boardId: _boardId,
+		boardName: _boardName,
+		accountSlug: _accountSlug,
+		...rest
+	} = context;
+	return detectedSlug ? { ...rest, accountSlug: detectedSlug } : rest;
 }
 
 /**
@@ -289,18 +402,30 @@ export function contextWithBoundBoard(
  * Context values to start a new report with, copied from a report the
  * project already has. Only fields of a provider that report is bound to are
  * copied, so a value never crosses providers (a Jira "project" is not an
- * Azure DevOps one).
+ * Azure DevOps one). A generic source's binding names the data source rather
+ * than the tool, so the configs say which tool it is.
  */
 export function pickPrefillContext(
 	existingConnections: unknown,
 	fields: ContextField[],
+	configs: ReadonlyArray<{
+		id: string;
+		mcpServer?: { key?: string | null } | null;
+	}> = [],
 ): Record<string, string> {
 	if (!isRecord(existingConnections)) {
 		return {};
 	}
-	const boundProviders = new Set(
-		Object.keys(stringRecord(existingConnections.mcpBindings)),
-	);
+	const mcpBindings = stringRecord(existingConnections.mcpBindings);
+	const boundProviders = new Set(Object.keys(mcpBindings));
+	for (const configId of Object.values(mcpBindings)) {
+		const provider = providerForServerKey(
+			configs.find((config) => config.id === configId)?.mcpServer?.key,
+		);
+		if (provider) {
+			boundProviders.add(provider);
+		}
+	}
 	const savedContext = stringRecord(existingConnections.context);
 	const prefill: Record<string, string> = {};
 	for (const field of fields) {
@@ -321,25 +446,64 @@ export function accountSlugFromContext(
 	return raw.replace(/^\/+/, "") || null;
 }
 
-/** The project-management connection a project saved in its settings. */
-export type ProjectPmConnection = {
+/** The connections a project saved: its project-management tool and repositories. */
+export type ProjectPmConnection = ProjectPmContainer & {
 	projectManagementMcpConfigId?: string | null;
-	projectManagementContainerId?: string | null;
-	projectManagementContainerName?: string | null;
-	projectManagementAdditionalContext?: unknown;
+	projectManagementMcpServerId?: string | null;
+	repositoryIntegrations?: ReadonlyArray<
+		ProjectRepository & { status: string }
+	>;
 };
 
 /**
- * What a new report of a project starts from: the project's own PM
- * connection bound to every data source of that tool, and the project's
- * board as the report's board. Nothing when the creator cannot use the
- * project's connection (an MCP config belongs to whoever added it), so the
- * person picks one as before.
+ * The creator's connection to the project's project-management tool: the one
+ * the project pinned when it is theirs, else their own for the same server. The
+ * list holds only the creator's configs, and a config holds its owner's
+ * credentials, so another person's is never bound.
+ */
+export function ownProjectPmConfig<
+	C extends {
+		id: string;
+		mcpServerId?: string | null;
+		enabled?: boolean;
+	},
+>(project: ProjectPmConnection, availableConfigs: C[]): C | undefined {
+	const usable = availableConfigs.filter(
+		(config) => config.enabled !== false,
+	);
+	return (
+		usable.find(
+			(config) => config.id === project.projectManagementMcpConfigId,
+		) ??
+		(project.projectManagementMcpServerId
+			? usable.find(
+					(config) =>
+						config.mcpServerId ===
+						project.projectManagementMcpServerId,
+				)
+			: undefined)
+	);
+}
+
+/**
+ * What a new report of a project starts from: the creator's connection to the
+ * project's tool bound to every data source of that tool, with the project's
+ * board or project as the report's; and their connection to the host of the
+ * project's first active repository bound to its repository sources, with that
+ * repository as the context. Nothing when the creator has no such connection,
+ * so the person picks one as before.
  */
 export function projectConnectionDefaults<
 	C extends {
 		id: string;
-		mcpServer?: { key?: string | null; name?: string | null } | null;
+		mcpServerId?: string | null;
+		enabled?: boolean;
+		mcpServer?: {
+			key?: string | null;
+			name?: string | null;
+			category?: string | null;
+			tags?: string[] | null;
+		} | null;
 	},
 >(
 	dataSources: DataSourceDefinition[],
@@ -347,37 +511,77 @@ export function projectConnectionDefaults<
 	availableConfigs: C[],
 	isBoardProvider: (provider: string) => boolean,
 ): { bindings: Record<string, C>; context: Record<string, string> } {
-	const config = availableConfigs.find(
-		(candidate) => candidate.id === project.projectManagementMcpConfigId,
-	);
-	if (!config) {
-		return { bindings: {}, context: {} };
-	}
 	const bindings: Record<string, C> = {};
-	for (const ds of dataSources) {
-		if (
-			ds.type !== "fabric" &&
-			findMatchingMcpConfigs([config], ds.provider).length > 0
-		) {
+	const context: Record<string, string> = {};
+	const config = ownProjectPmConfig(project, availableConfigs);
+	if (config) {
+		for (const ds of dataSources) {
+			if (
+				ds.type === "fabric" ||
+				findConfigsForSource([config], ds).length === 0
+			) {
+				continue;
+			}
 			bindings[ds.id] = config;
+			const provider = sourceProviderKey(ds, config) ?? "";
+			const answers = projectPmContext(provider, project);
+			if (!answers.boardId || isBoardProvider(provider)) {
+				Object.assign(context, answers);
+			}
 		}
 	}
-	const boundBoardSource = dataSources.some(
-		(ds) => bindings[ds.id] && isBoardProvider(ds.provider),
+
+	const repository = project.repositoryIntegrations?.find(
+		(integration) => integration.status === "ACTIVE",
 	);
-	const boardId = project.projectManagementContainerId?.trim();
-	if (!boundBoardSource || !boardId) {
-		return { bindings, context: {} };
-	}
-	const context: Record<string, string> = {
-		boardId,
-		boardName: project.projectManagementContainerName?.trim() || boardId,
-	};
-	const accountSlug = accountSlugFromContext(
-		stringRecord(project.projectManagementAdditionalContext),
-	);
-	if (accountSlug) {
-		context.accountSlug = accountSlug;
+	if (repository) {
+		const repositoryConfig = availableConfigs.find(
+			(candidate) =>
+				candidate.enabled !== false &&
+				serverReadsRepository(
+					candidate.mcpServer?.key,
+					repository.provider,
+				),
+		);
+		const open = dataSources.filter(
+			(ds) =>
+				ds.type !== "fabric" &&
+				!bindings[ds.id] &&
+				(ds.dataType === "repository" ||
+					(!ds.dataType &&
+						serverReadsRepository(
+							ds.provider,
+							repository.provider,
+						))),
+		);
+		if (repositoryConfig && open.length > 0) {
+			for (const ds of open) {
+				bindings[ds.id] = repositoryConfig;
+			}
+			Object.assign(context, projectRepositoryContext(repository));
+		}
 	}
 	return { bindings, context };
+}
+
+/**
+ * The required data sources still without a connection: what generating waits
+ * for, in the words the footer asks with.
+ */
+export function unboundRequiredSources(
+	dataSources: DataSourceDefinition[],
+	bindings: Record<string, { mcpConfigId: string } | undefined>,
+): string[] {
+	return dataSources
+		.filter(
+			(ds) =>
+				ds.type !== "fabric" &&
+				isRequiredDataSource(ds) &&
+				!bindings[ds.id]?.mcpConfigId,
+		)
+		.map((ds) =>
+			ds.dataType
+				? REPORT_DATA_TYPE_INFO[ds.dataType].sourceName
+				: reportDataSourceLabel(ds),
+		);
 }

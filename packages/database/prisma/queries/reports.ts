@@ -26,9 +26,14 @@ import {
 	readReportEvidenceConfig,
 	reportExecutionSnapshotSchema,
 } from "./lib/report-evidence";
+import {
+	REPORT_SUITE_ONLY_TEMPLATE_NAMES,
+	runGatheredRecords,
+} from "./lib/report-template-catalog";
 
 export * from "./lib/report-access";
 export * from "./lib/report-evidence";
+export * from "./lib/report-template-catalog";
 export * from "./reports-project-knowledge";
 
 import { ownerScopedTemplateSchedule } from "./lib/owner-scoped-schedule";
@@ -52,10 +57,51 @@ export interface ListReportTemplatesParams {
 	isPublic?: boolean;
 	/** Archived templates are excluded unless this is true. */
 	includeArchived?: boolean;
+	/**
+	 * SYSTEM and public templates are listed only once known to work (see
+	 * `report-template-catalog`) unless this is true. Callers pass it only
+	 * for platform admins, who manage the whole catalog.
+	 */
+	includeUnproven?: boolean;
+	/**
+	 * Leave out the standard templates that only the report suite offers, for
+	 * an organization without the suite: its catalog stays the one it had.
+	 */
+	excludeSuiteOnly?: boolean;
 	limit?: number;
 	offset?: number;
 	sortBy?: "name" | "createdAt" | "updatedAt" | "useCount" | "lastUsedAt";
 	sortOrder?: "asc" | "desc";
+}
+
+/**
+ * The templates a report made from has worked for, in any tenant: one of its
+ * runs completed and gathered records (`runGatheredRecords`, here in SQL). A
+ * run that found nothing completes too, so completion alone proves nothing.
+ * Each completed run records a `recordCount` per data source; a run without
+ * that record does not count.
+ */
+async function listProvenReportTemplateIds(): Promise<Set<string>> {
+	const rows = await db.$queryRaw<Array<{ templateId: string }>>`
+		SELECT DISTINCT i."templateId"
+		FROM "template_instance_execution" e
+		JOIN "template_instance" i ON i."id" = e."instanceId"
+		WHERE e."status" = 'COMPLETED'
+			AND jsonb_path_exists(e."dataSources", '$[*] ? (@.recordCount > 0)')
+	`;
+	return new Set(rows.map((row) => row.templateId));
+}
+
+/**
+ * The shared catalog's rule: a standard template or one a person authored
+ * (`isGeneric`), or one that has worked at least once.
+ */
+function listedInCatalogWhere(
+	provenIds: ReadonlySet<string>,
+): Prisma.ReportTemplateWhereInput {
+	return {
+		OR: [{ isGeneric: true }, { id: { in: [...provenIds] } }],
+	};
 }
 
 export async function listReportTemplates({
@@ -68,47 +114,73 @@ export async function listReportTemplates({
 	search,
 	isPublic,
 	includeArchived = false,
+	includeUnproven = false,
+	excludeSuiteOnly = false,
 	limit = 50,
 	offset = 0,
 	sortBy = "updatedAt",
 	sortOrder = "desc",
 }: ListReportTemplatesParams) {
 	const where: any = {};
+	const provenIds = await listProvenReportTemplateIds();
+	const listedWhenShared = includeUnproven
+		? {}
+		: listedInCatalogWhere(provenIds);
 
 	// Scope filtering with XOR tenant isolation
 	if (scope) {
 		where.scope = scope;
 		if (scope === "USER") {
-			// USER scope REQUIRES personal context (no organizationId)
-			if (organizationId || !userId) {
+			// The caller's own templates made in this context: in this
+			// organization, or personal ones (no organizationId) in personal context
+			if (!userId) {
 				return { templates: [], total: 0 };
 			}
 			where.userId = userId;
+			where.organizationId = organizationId ?? null;
 		} else if (scope === "ORGANIZATION") {
 			// ORGANIZATION scope REQUIRES org context
 			if (!organizationId) {
 				return { templates: [], total: 0 };
 			}
 			where.organizationId = organizationId;
+		} else {
+			where.AND = [listedWhenShared];
 		}
 	} else {
 		// XOR PATTERN: Show templates based on context
 		// Personal and organization contexts are MUTUALLY EXCLUSIVE
-		const conditions: any[] = [{ scope: "SYSTEM" }];
+		const conditions: any[] = [{ scope: "SYSTEM", ...listedWhenShared }];
 
 		if (organizationId) {
-			// ORGANIZATION CONTEXT: SYSTEM + ORG templates only
-			// User's personal templates are NOT accessible in org context
+			// ORGANIZATION CONTEXT: SYSTEM + ORG templates, and the caller's
+			// own templates made in this organization (not yet published to it)
 			conditions.push({ scope: "ORGANIZATION", organizationId });
+			if (userId) {
+				conditions.push({ scope: "USER", userId, organizationId });
+			}
 		} else if (userId) {
-			// PERSONAL CONTEXT: SYSTEM + USER templates only
+			// PERSONAL CONTEXT: SYSTEM + the caller's personal templates only
 			// Org templates are NOT accessible in personal context
-			conditions.push({ scope: "USER", userId });
+			conditions.push({ scope: "USER", userId, organizationId: null });
 		}
 
-		// Public templates are always accessible (read-only showcase)
-		conditions.push({ isPublic: true });
+		// Public templates are always accessible (read-only showcase), under
+		// the same catalog rule as SYSTEM ones
+		conditions.push({ isPublic: true, ...listedWhenShared });
 		where.OR = conditions;
+	}
+
+	if (excludeSuiteOnly) {
+		where.AND = [
+			...(where.AND || []),
+			{
+				NOT: {
+					scope: "SYSTEM",
+					name: { in: [...REPORT_SUITE_ONLY_TEMPLATE_NAMES] },
+				},
+			},
+		];
 	}
 
 	// Template type filter
@@ -150,7 +222,7 @@ export async function listReportTemplates({
 		];
 	}
 
-	const [templates, total] = await Promise.all([
+	const [rows, total] = await Promise.all([
 		db.reportTemplate.findMany({
 			where,
 			orderBy: { [sortBy]: sortOrder },
@@ -164,6 +236,12 @@ export async function listReportTemplates({
 		}),
 		db.reportTemplate.count({ where }),
 	]);
+
+	// `proven`: a report made from the template has worked, in any tenant.
+	const templates = rows.map((template) => ({
+		...template,
+		proven: provenIds.has(template.id),
+	}));
 
 	return { templates, total };
 }
@@ -266,6 +344,9 @@ export async function createReportTemplate(params: CreateReportTemplateParams) {
 			organizationId: params.organizationId,
 			scope: params.scope || "USER",
 			isPublic: params.isPublic || false,
+			// A person authored it, so once shared the catalog lists it before
+			// any report has run
+			isGeneric: true,
 		},
 	});
 }
@@ -296,10 +377,12 @@ export async function updateReportTemplate({
 	id,
 	...data
 }: UpdateReportTemplateParams) {
-	// Increment version if definition changes
+	// Increment version if definition changes. The seed keeps a definition
+	// past version 1, and the catalog lists what a person wrote.
 	const updateData: any = { ...data };
 	if (data.definition) {
 		updateData.version = { increment: 1 };
+		updateData.isGeneric = true;
 	}
 	// An explicit `schedule: null` clears it to SQL NULL (so the inheritance query's
 	// `{ not: Prisma.DbNull }` no longer matches). `undefined`/omitted leaves it unchanged
@@ -329,6 +412,60 @@ export async function setReportTemplateArchivedAt(
 		where: { id },
 		data: { archivedAt },
 	});
+}
+
+/**
+ * Whether another SYSTEM template, archived or not, already has this name.
+ * The report-template seed finds system templates by exact name, so a
+ * published one sharing a seeded name would be overwritten by the seed.
+ */
+export async function systemReportTemplateNameTaken(
+	name: string,
+	excludeId: string,
+): Promise<boolean> {
+	const match = await db.reportTemplate.findFirst({
+		where: { name, scope: "SYSTEM", id: { not: excludeId } },
+		select: { id: true },
+	});
+	return match !== null;
+}
+
+/**
+ * Publish a template to a wider scope. ORGANIZATION keeps its organization
+ * and author. SYSTEM takes the shape of a seeded system template — no owning
+ * organization or user, so neither one's deletion removes it — and the catalog
+ * lists it, since a person authored it. Callers authorize first.
+ */
+export async function publishReportTemplate(
+	params:
+		| { id: string; target: "ORGANIZATION"; organizationId: string }
+		| { id: string; target: "SYSTEM" },
+) {
+	switch (params.target) {
+		case "ORGANIZATION":
+			return db.reportTemplate.update({
+				where: { id: params.id },
+				data: {
+					scope: "ORGANIZATION",
+					organizationId: params.organizationId,
+				},
+			});
+		case "SYSTEM":
+			return db.reportTemplate.update({
+				where: { id: params.id },
+				data: {
+					scope: "SYSTEM",
+					organizationId: null,
+					userId: null,
+					isPublic: true,
+					isGeneric: true,
+				},
+			});
+		default: {
+			const unreachable: never = params;
+			return unreachable;
+		}
+	}
 }
 
 export async function incrementTemplateUsage(id: string) {
@@ -877,6 +1014,12 @@ export async function getTemplateInstance({
 					fabricConfig: true,
 					outputFormat: true,
 					heroEmojis: true,
+					// Who may change the template, for the report page's save-to-template choices
+					scope: true,
+					isPublic: true,
+					userId: true,
+					organizationId: true,
+					archivedAt: true,
 				},
 			},
 			executions: {
@@ -955,6 +1098,8 @@ export interface ListTemplateInstancesParams {
 	 * already be authorized to read the project's reports.
 	 */
 	projectId?: string;
+	/** With `projectId`: only the reports the caller owns in that project. */
+	ownedByCaller?: boolean;
 	templateId?: string;
 	/** @deprecated Use status instead */
 	isActive?: boolean;
@@ -974,6 +1119,7 @@ export async function listTemplateInstances({
 	userId,
 	organizationId,
 	projectId,
+	ownedByCaller = false,
 	templateId,
 	isActive,
 	status,
@@ -990,7 +1136,11 @@ export async function listTemplateInstances({
 	// their personal instances. A project's reports are shared with everyone
 	// who may read the project, still inside the XOR tenant filter.
 	const where: Prisma.TemplateInstanceWhereInput = projectId
-		? { projectId, organizationId: organizationId ?? null }
+		? {
+				projectId,
+				organizationId: organizationId ?? null,
+				...(ownedByCaller ? { userId } : {}),
+			}
 		: organizationId
 			? { userId, organizationId }
 			: { userId, organizationId: null };
@@ -1094,6 +1244,7 @@ export async function listTemplateInstances({
 					select: {
 						status: true,
 						startedAt: true,
+						error: true,
 					},
 					orderBy: { createdAt: "desc" },
 					take: 1,
@@ -1161,6 +1312,7 @@ export async function getLatestProjectTemplateRun({
 			id: true,
 			completedAt: true,
 			parameters: true,
+			dataSources: true,
 			instance: {
 				select: {
 					id: true,
@@ -1191,8 +1343,11 @@ export async function getLatestProjectTemplateRun({
 		userId,
 		organizationId: organizationId ?? undefined,
 	});
-	for (const { parameters, ...run } of candidates) {
-		if (await canRead(run.instance, parameters)) {
+	for (const { parameters, dataSources, ...run } of candidates) {
+		if (
+			runGatheredRecords(dataSources) &&
+			(await canRead(run.instance, parameters))
+		) {
 			return run;
 		}
 	}
@@ -1833,6 +1988,7 @@ export async function getTemplateInstanceExecution(
 					templateId: true,
 					userId: true,
 					organizationId: true,
+					projectId: true,
 					fabricConfig: true,
 					connections: true,
 					isActive: true,

@@ -125,6 +125,24 @@ it("disables Generate with a visible owner-only explanation for a non-owner", ()
 	expect(generate).toHaveAccessibleDescription(explanation.textContent ?? "");
 });
 
+it("tells an owner who may not generate that their role is why, not ownership", () => {
+	render(
+		<ReportReadinessRail
+			{...baseProps}
+			canGenerate={false}
+			viewerIsOwner
+		/>,
+	);
+	expect(
+		screen.getByRole("button", { name: "Generate Report" }),
+	).toHaveAccessibleDescription(
+		"You own this report, but your role on this project does not let you generate it.",
+	);
+	expect(
+		screen.queryByText(/Only the report's owner can generate it/),
+	).not.toBeInTheDocument();
+});
+
 it("shows no owner-only explanation to the owner", () => {
 	render(<ReportReadinessRail {...baseProps} canGenerate />);
 	expect(

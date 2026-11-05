@@ -34,6 +34,7 @@ import {
 } from "./completion-claim-prompts";
 import { DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY } from "./direct-chat-memory-prompt";
 import { documentTypeShortLabel } from "./document-type-catalog";
+import { LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY } from "./living-memory-decisions-prompt";
 import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "./orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "./page-ask-prompt";
 import { PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY } from "./parlume-realtime-voice-prompt";
@@ -50,6 +51,7 @@ import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "./publishing-stakeholder
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "./publishing-suggestion-prompt";
 import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "./publishing-webinar-script-prompt";
 import { RECURRING_ERROR_BUG_PROMPT_AGENT_KEY } from "./recurring-error-bug-prompt";
+import { REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY } from "./report-parameter-defaults-prompt";
 import { REPORT_SAMPLE_PROMPT_AGENT_KEY } from "./report-sample-prompt";
 
 export type PromptStoryKind = "FEATURE" | "BUG" | null;
@@ -530,6 +532,15 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		actions: nonStage("GENERAL"),
 	},
 	{
+		// The starting values a new report's settings take from its project.
+		// Editing it changes how they read; the person can change each one, and
+		// a template can mark a setting the prompt must never fill.
+		key: REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY,
+		label: "Report parameter defaults",
+		featureType: "REPORTS",
+		actions: nonStage("GENERAL"),
+	},
+	{
 		// The pre-meeting agenda prompt. Editing it changes the persona, the
 		// section layout and every tuning rule; it cannot remove the grounding
 		// and carried-forward classification clauses, appended code-side.
@@ -544,6 +555,16 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// it changes how readily Fabric enriches rather than creates.
 		key: "action_item_routing_judge",
 		label: "Action Item Routing Judge",
+		featureType: "MEETINGS",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// Reads the decisions a synced Living Memory file records, which the
+		// Decisions tab offers as review candidates. Editing it changes what
+		// counts as a decision and how each is worded; the file is fenced as
+		// untrusted data and the output fields are fixed code-side.
+		key: LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
+		label: "Living Memory Decision Extractor",
 		featureType: "MEETINGS",
 		actions: nonStage("GENERAL"),
 	},

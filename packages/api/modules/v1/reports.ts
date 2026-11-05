@@ -6,6 +6,7 @@
  */
 import {
 	getReportTemplate,
+	isFeatureEnabled,
 	listReportExecutions,
 	listReportTemplates,
 } from "@repo/database";
@@ -36,11 +37,19 @@ export function registerReportRoutes(
 		const search = c.req.query("search");
 		const category = c.req.query("category");
 
+		const suiteEnabled = await isFeatureEnabled(
+			"REPORT_SUITE_V2",
+			ctx.organizationId ?? undefined,
+		);
 		const result = await listReportTemplates({
 			userId: ctx.userId,
 			organizationId: ctx.organizationId ?? undefined,
 			search,
 			category,
+			// The report suite's catalog applies only where the suite is on;
+			// elsewhere the list stays the one the organization had.
+			includeUnproven: !suiteEnabled,
+			excludeSuiteOnly: !suiteEnabled,
 			limit,
 			offset,
 		});

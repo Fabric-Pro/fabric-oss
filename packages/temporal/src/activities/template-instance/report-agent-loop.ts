@@ -24,12 +24,14 @@ import {
 	getTemplateInstanceExecution,
 	resolveReportMcpConfig,
 } from "@repo/database";
+import { genericSourceDataType } from "@repo/database/prisma/queries/lib/report-data-types";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
 import { heartbeat } from "@temporalio/activity";
 import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import {
 	boundGatheredData,
 	DEFAULT_GATHERED_DATA_MAX_BYTES,
+	REPORT_CARD_PAYLOAD_MAX_BYTES,
 } from "./gathered-data-budget";
 import {
 	buildNoToolsErrorMessage,
@@ -38,7 +40,38 @@ import {
 	isReadOnlyTool,
 	redactMessage,
 } from "./mcp-diagnostics";
+import {
+	attachBoardFacts,
+	hasIncompleteListing,
+	isBoardFullyRead,
+} from "./report-board-facts";
+import {
+	declaresClosedListing,
+	extractCardsArray,
+	extractPageMeta,
+	extractSchemaProperties,
+	fitCardsToContext,
+	fitListToContext,
+	isCardListTool,
+	isPlainObject,
+	isSingleCardTool,
+	type ListingWalk,
+	listingCoverageKey,
+	planBoardSweep,
+	projectCardForContext,
+	shrinkToolResultForStorage,
+	walkCardPages,
+	withSummaryProjection,
+} from "./report-card-pages";
+import { mapAgenticGatheredData } from "./report-data-gate";
 import type { McpServerDiagnostic } from "./types";
+
+export {
+	extractCardsArray,
+	extractPageMeta,
+	fitCardsToContext,
+	projectCardForContext,
+} from "./report-card-pages";
 
 /** Never trim below this — avoids a misconfigured tiny budget gutting reports. */
 const GATHERED_DATA_MIN_BYTES = 100_000;
@@ -75,25 +108,50 @@ function readGatheredDataMaxBytes(): number {
 	);
 }
 
+/** The ids of the cards the run fetched on their own, for their full text. */
+function collectFetchedCardIds(toolResults: ToolCallResult[]): Set<string> {
+	const ids = new Set<string>();
+	for (const { toolName, result, error } of toolResults) {
+		if (!error && isSingleCardTool(toolName) && isPlainObject(result)) {
+			ids.add(String(result.id));
+		}
+	}
+	return ids;
+}
+
 /**
- * Bound `gatheredData` to the payload budget just before returning it from the
- * activity. When trimming happens the run is marked partial (existing render
- * notice) and a diagnostic marker + warn log record what was cut, so the
- * truncation is visible in Temporal history and worker logs.
+ * Add the board facts, computed over every card, then bound `gatheredData` to
+ * the payload budget just before returning it from the activity. A diagnostic
+ * marker + warn log record what was cut, so any truncation is visible in
+ * Temporal history and worker logs. `recordsDropped` says whether the run lost
+ * records, which is what marks it partial. `wholeBoardKept` says the source
+ * confirmed every listing and no card was lost, so how the model's turns ended
+ * says nothing about the data.
  */
 function finalizeGatheredData(
 	gatheredData: Record<string, unknown>,
+	toolResults: ToolCallResult[],
+	closedListingTools: ReadonlySet<string>,
 	executionId: string,
 ): {
 	data: Record<string, unknown>;
-	trimmed: boolean;
+	recordsDropped: boolean;
+	wholeBoardKept: boolean;
 	truncation?: GatheredDataTruncation;
 } {
+	attachBoardFacts(gatheredData, new Date(), closedListingTools);
+	const boardRead = isBoardFullyRead(gatheredData);
 	const bounded = boundGatheredData(gatheredData, {
 		maxBytes: readGatheredDataMaxBytes(),
+		maxCardBytes: REPORT_CARD_PAYLOAD_MAX_BYTES,
+		fetchedCardIds: collectFetchedCardIds(toolResults),
 	});
 	if (!bounded.trimmed) {
-		return { data: bounded.data, trimmed: false };
+		return {
+			data: bounded.data,
+			recordsDropped: false,
+			wholeBoardKept: boardRead,
+		};
 	}
 	console.warn(
 		"[AgentLoop] Trimmed gathered data to fit the Temporal activity result limit",
@@ -106,7 +164,8 @@ function finalizeGatheredData(
 	);
 	return {
 		data: bounded.data,
-		trimmed: true,
+		recordsDropped: bounded.recordsDropped,
+		wholeBoardKept: boardRead && !bounded.recordsDropped,
 		truncation: {
 			originalBytes: bounded.originalBytes,
 			finalBytes: bounded.finalBytes,
@@ -530,7 +589,8 @@ export interface AgentLoopResult {
 	streamDiagnostics?: StreamDiagnostics;
 	/**
 	 * Set when the returned `gatheredData` was trimmed to fit Temporal's
-	 * activity-result payload limit. Present ⇒ `isPartial` is true.
+	 * activity-result payload limit. `isPartial` follows only if records were
+	 * lost: shortened cards still count every card through `_board_facts`.
 	 */
 	gatheredDataTruncation?: GatheredDataTruncation;
 }
@@ -563,8 +623,6 @@ export interface ExecuteAgentLoopInput {
 	enrichedSystemPrompt?: string;
 	/** Custom system prompt override from instance (replaces default system instructions) */
 	customSystemPrompt?: string;
-	/** Skills content to append to system prompt */
-	skillsContent?: string;
 	/** User ID */
 	userId: string;
 	/** Organization ID */
@@ -587,6 +645,8 @@ interface ToolCallResult {
 	toolName: string;
 	result: unknown;
 	error?: string;
+	/** The card listing this page belongs to. */
+	coverageKey?: string;
 }
 
 // =============================================================================
@@ -595,6 +655,18 @@ interface ToolCallResult {
 
 /** Maximum number of tool calls allowed per single AI iteration */
 const MAX_TOOL_CALLS_PER_ITERATION = 20;
+
+/** Largest tool result kept whole in the model's context. */
+const MAX_RESULT_CHARS = 12000;
+
+/** Longest one MCP tool call may take. Shorter than the activity's heartbeat timeout. */
+const MCP_TOOL_TIMEOUT_MS = 90_000;
+
+/**
+ * How often the run heartbeats, whatever it is waiting on. Must stay well under
+ * the activity's heartbeat timeout in `template-instance-execution.ts`.
+ */
+const KEEP_ALIVE_INTERVAL_MS = 30_000;
 
 // =============================================================================
 // Helper Functions
@@ -615,16 +687,13 @@ function jsonSchemaToZod(schema: Record<string, unknown>): unknown {
  * Fabric AI will use Strategy → Context → Pattern system to dynamically
  * build the system prompt based on template configuration.
  */
-const REPORT_AGENT_SYSTEM_PROMPT = `You are an expert report generation assistant. Your job is to gather data using the available tools and then analyze it to generate comprehensive reports.
+const REPORT_AGENT_SYSTEM_PROMPT = `You gather the data for a report using read-only tools. A later step writes the report from the tool results, so do not analyse, summarize or format anything here.
 
 ## Your Capabilities
 - You have access to read-only tools for gathering data from connected systems
 - You can search, list, and retrieve data but cannot modify anything
-- You MUST gather ALL relevant data before providing your analysis
 
-## CRITICAL: Multi-Step Data Gathering Strategy
-
-You MUST follow this strategy. Do NOT skip steps.
+## Data Gathering Strategy
 
 ### Step 1: Discover Structure
 If specific context values (board ID, account slug, project ID, etc.) are already provided below, use them directly instead of re-discovering them — but still call structural tools (e.g., get_columns) to find the segments within a provided target. Otherwise, call discovery/listing tools first:
@@ -633,37 +702,24 @@ If specific context values (board ID, account slug, project ID, etc.) are alread
 - Get tags, labels, or other classification data
 
 ### Step 2: Fetch Data Per Segment
-Many APIs return one page per call, so a single call rarely covers a segment. Read each tool's own description first, then use the strategy it calls for:
+Read each tool's own description first, then use the strategy it calls for:
+- A card listing is read to its end for you: one call fetches every page, and its result says so under \`_listing\`. Never ask for a \`page\` of a card listing yourself, and never repeat one
 - If a tool's description says its result is COMPLETE (it fetches every upstream page server-side), trust it: use the result as-is and do NOT re-query it with filters to "check" for more
-- If the tool returns pagination metadata (has_more/next_page/total_count), page through results — stop when has_more is false OR a page comes back empty — instead of guessing from page size
+- If another tool returns pagination metadata (has_more/next_page/total_count), page through results — stop when has_more is false OR a page comes back empty — instead of guessing from page size
 - If results are not pageable and you have column IDs, call get_cards/get_items for EACH column individually using the \`column_id\` filter
 - If the tool supports a status filter, fetch for EACH status separately
 - If you have categories/groups, fetch for each one
 - Only when a tool returns a full-looking batch AND declares neither pagination metadata nor completeness should you assume more data exists — then try additional filters (column, status, tag, assignee) to reach the rest
 - If columns returned empty, use OTHER filter strategies the tool supports: tags, assignees, search (status only if the tool schema exposes it)
 
-### Step 3: Deduplicate, Aggregate, and Verify
-- Merge results from all fetches and remove duplicates (by ID)
-- Count total UNIQUE items across all fetches
-- If the user mentioned an expected count and your total is lower, try additional filters or broader queries
-- Use search tools as a cross-check if available
-- If you suspect missing items, try fetching individual items by ID if you know specific IDs
-
-### Step 4: Analyze
-Only after gathering the data the report needs — complete, or capped with the coverage stated — provide your analysis.
-
 ## Instructions
 1. When calling tools, use the context values provided (e.g., project name, team name, board ID) to find the right resources
-2. ALWAYS call multiple tools — a single tool call is almost never sufficient for a complete report
-3. If a tool needs an ID that was not provided in context, first call a listing tool to discover it
-4. If you cannot find certain data, note what's missing and continue with available data
+2. If a tool needs an ID that was not provided in context, first call a listing tool to discover it
+3. If you cannot find certain data, continue with the data you have`;
 
-## Output Format
-Provide clear, well-structured analysis with:
-- Key findings and insights
-- Relevant metrics and data points
-- Total count of items found
-- Actionable recommendations where appropriate`;
+/** Applies to a custom or enriched prompt too: those can still ask for analysis. */
+const GATHERING_STOP_INSTRUCTION = `## When To Stop
+The report is written in a later step, only from what the tools returned. Any text you write here is discarded, so write no analysis, summary or report, whatever the instructions above ask for. As soon as you have called the tools the report needs, reply with the single word DONE.`;
 
 /**
  * Convert camelCase to snake_case
@@ -676,10 +732,12 @@ function toSnakeCase(str: string): string {
  * Build system prompt for data gathering
  * @param context - Instance context (project, team, etc.)
  * @param basePrompt - Base system prompt (custom, enriched, or default)
+ * @param sweptListings - One line per card listing already read for this board
  */
 function buildDataGatheringPrompt(
 	context: Record<string, string | undefined>,
 	basePrompt: string = REPORT_AGENT_SYSTEM_PROMPT,
+	sweptListings: string[] = [],
 ): string {
 	const parts: string[] = [basePrompt];
 
@@ -718,37 +776,33 @@ function buildDataGatheringPrompt(
 		if (hasBoard) {
 			const boardId = context.boardId || context.board_id || "";
 			parts.push("");
-			parts.push("## Recommended Strategy for Board Data");
-			parts.push(
-				"The `get_cards` tool supports a `board_id` parameter to scope results to a specific board, " +
-					"and it combines freely with `column_id`, `indexed_by`, and `search`.",
-			);
-			parts.push("");
-			parts.push("### Fetching board cards");
-			if (!boardId) {
+			parts.push("## Board Data");
+			if (sweptListings.length > 0) {
 				parts.push(
-					"First call `get_boards` and match the board name to resolve its `board_id`.",
+					"This board's cards were already read before this conversation started, and they will reach the report without you repeating them:",
+				);
+				parts.push(...sweptListings.map((line) => `- ${line}`));
+				parts.push(
+					"Do not call the card listing again for this board, whether whole or per column. Listed cards carry only a short preview of their description, so when the report will quote or summarize a card's text, fetch that card in full with the single-card tool, if there is one. Do not fetch cards to count or group them, or any card the report will not quote. Call other tools only for what the report needs beyond the cards, such as columns or users.",
+				);
+			} else {
+				parts.push(
+					"The `get_cards` tool supports a `board_id` parameter to scope results to a specific board.",
+				);
+				if (!boardId) {
+					parts.push(
+						"First call `get_boards` and match the board name to resolve its `board_id`.",
+					);
+				}
+				parts.push(
+					"Call it once with `board_id`" +
+						(boardId ? ` (\`${boardId}\`)` : "") +
+						": every page of the listing is read for you. Call it once more with `indexed_by='closed'`, because closed cards never appear in the default listing. Do not also list per column.",
+				);
+				parts.push(
+					"**IMPORTANT**: `get_cards` cannot filter by status or due dates — passing `status`, `due_before`, or `due_after` is an error.",
 				);
 			}
-			parts.push(
-				"1. Call `get_columns` with the board_id to discover workflow columns",
-			);
-			parts.push(
-				"2. `get_cards` returns one PAGE as an object {cards, page, total_count, has_more, next_page} (server-controlled page size). Call it with `board_id`" +
-					(boardId ? ` (\`${boardId}\`)` : "") +
-					", then keep calling with `page: next_page` until `has_more` is false OR `cards` comes back empty (an out-of-range page can report has_more=true with empty cards), up to at most 10 pages. Cite `total_count` as the true total — when you fetched fewer, present your data as a sample of total_count",
-			);
-			parts.push(
-				"3. For closed/archived cards, combine `indexed_by='closed'` with `board_id` and paginate the same way — closed cards never appear in the default listing. Stalled/golden cards: `indexed_by='stalled'` or `indexed_by='golden'` with `board_id`",
-			);
-			parts.push(
-				"4. Derive per-column breakdowns by grouping the cards you already fetched by their `column.id` (or `column.name`). Do NOT also issue per-column `get_cards` calls after paginating the board — that re-fetches the same cards and wastes the run's time budget. Reserve `column_id` calls for the rare case where you skipped board-level pagination entirely",
-			);
-			parts.push("");
-			parts.push(
-				"**IMPORTANT**: `get_cards` cannot filter by status or due dates — passing `status`, `due_before`, or `due_after` is an error. " +
-					"The default listing already contains only published cards; use `indexed_by='closed'` for closed ones.",
-			);
 		} else if (hasProject) {
 			parts.push("");
 			parts.push("## Recommended Strategy for Project Data");
@@ -756,9 +810,11 @@ function buildDataGatheringPrompt(
 				"1. First discover the project structure (iterations, areas, teams)",
 			);
 			parts.push("2. Then fetch work items per iteration or category");
-			parts.push("3. Aggregate all results before analyzing");
 		}
 	}
+
+	parts.push("");
+	parts.push(GATHERING_STOP_INSTRUCTION);
 
 	// Date context last — keeps the stable base prompt at position 0 so
 	// provider prompt caching can match on it across turns.
@@ -766,33 +822,6 @@ function buildDataGatheringPrompt(
 	parts.push(getCurrentDateContext());
 
 	return parts.join("\n");
-}
-
-/**
- * The raw `properties` bag of a tool's JSON input schema.
- *
- * On the `mcpClient.tools()` path the AI SDK wraps the server's schema in a
- * `jsonSchema(...)` container, so the real JSON Schema sits behind an
- * (enumerable, synchronous) `jsonSchema` getter; a bare JSON Schema is accepted
- * too. Anything else — absent, a Zod schema, a thenable — yields null.
- */
-function extractSchemaProperties(
-	inputSchema: unknown,
-): Record<string, unknown> | null {
-	if (!inputSchema || typeof inputSchema !== "object") {
-		return null;
-	}
-	const container = inputSchema as { jsonSchema?: unknown };
-	const raw =
-		container.jsonSchema && typeof container.jsonSchema === "object"
-			? (container.jsonSchema as { properties?: unknown })
-			: (inputSchema as { properties?: unknown });
-	const properties = raw.properties;
-	return properties &&
-		typeof properties === "object" &&
-		!Array.isArray(properties)
-		? (properties as Record<string, unknown>)
-		: null;
 }
 
 /** True when a JSON Schema property declares a numeric type, bare or in a `type` array. */
@@ -836,123 +865,6 @@ export function coerceToolArgs(
 			: String(value);
 	}
 	return args;
-}
-
-/**
- * Tools whose list results may arrive as a fizzy-mcp 1.1.0 page envelope.
- * Anchored at the end of the name so `fizzy_get_cards` / `trello_list_cards`
- * match but a differently-shaped `get_cards_summary` does not.
- */
-function isCardListTool(toolName: string): boolean {
-	return /(?:get|list)_cards$/i.test(toolName);
-}
-
-/**
- * Unwrap a card-list result that may be a fizzy-mcp 1.1.0 page envelope
- * ({ cards, page, total_count, has_more, next_page }) or a bare card array.
- * Returns null when the value is neither. Exported for tests.
- */
-export function extractCardsArray(value: unknown): unknown[] | null {
-	if (Array.isArray(value)) {
-		return value;
-	}
-	if (value && typeof value === "object") {
-		const cards = (value as { cards?: unknown }).cards;
-		if (Array.isArray(cards)) {
-			return cards;
-		}
-	}
-	return null;
-}
-
-/**
- * Pagination fields of a fizzy-mcp page envelope, when present. Only reads
- * envelope-shaped values (object with an array `cards`). Exported for tests.
- */
-export function extractPageMeta(
-	value: unknown,
-): Record<string, unknown> | null {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return null;
-	}
-	const bag = value as Record<string, unknown>;
-	if (!Array.isArray(bag.cards)) {
-		return null;
-	}
-	const meta: Record<string, unknown> = {};
-	for (const key of ["page", "total_count", "has_more", "next_page"]) {
-		if (key in bag) {
-			meta[key] = bag[key];
-		}
-	}
-	return Object.keys(meta).length > 0 ? meta : null;
-}
-
-/**
- * Slim a card down to the fields reports reason about, so a ~33KB raw card
- * (HTML description, avatar URLs, nested creator objects) becomes a few
- * hundred bytes before summarization. Applied to the LLM-context copy only —
- * `gatheredData` keeps the full cards for rendering. Exported for tests.
- */
-export function projectCardForContext(card: unknown): unknown {
-	if (!card || typeof card !== "object" || Array.isArray(card)) {
-		return card;
-	}
-	const c = card as Record<string, unknown>;
-	const projected: Record<string, unknown> = {};
-	for (const key of [
-		"id",
-		"number",
-		"title",
-		"status",
-		"closed",
-		"golden",
-		"due_on",
-		"created_at",
-		"last_active_at",
-		"url",
-	]) {
-		if (c[key] !== undefined) {
-			projected[key] = c[key];
-		}
-	}
-	const board = c.board;
-	if (board && typeof board === "object" && !Array.isArray(board)) {
-		projected.board = {
-			id: (board as { id?: unknown }).id,
-			name: (board as { name?: unknown }).name,
-		};
-	}
-	const column = c.column;
-	if (column && typeof column === "object" && !Array.isArray(column)) {
-		projected.column = {
-			id: (column as { id?: unknown }).id,
-			name: (column as { name?: unknown }).name,
-		};
-	}
-	if (Array.isArray(c.assignees)) {
-		projected.assignees = c.assignees.map((a) =>
-			a && typeof a === "object" && !Array.isArray(a)
-				? {
-						id: (a as { id?: unknown }).id,
-						name: (a as { name?: unknown }).name,
-					}
-				: a,
-		);
-	}
-	if (Array.isArray(c.tags)) {
-		projected.tags = c.tags;
-	}
-	if (typeof c.description === "string" && c.description.length > 0) {
-		// Slice by code point, not UTF-16 unit: `slice(0, 280)` can cut an emoji
-		// (or any astral character) in half and leave a lone surrogate behind.
-		const codePoints = Array.from(c.description);
-		projected.description =
-			codePoints.length > 280
-				? `${codePoints.slice(0, 280).join("")}…`
-				: c.description;
-	}
-	return projected;
 }
 
 /**
@@ -1027,16 +939,15 @@ export function applyBoardPreFilter(params: {
 }
 
 /**
- * Accumulate pagination coverage for a card-list tool under the reserved
+ * Accumulate pagination coverage for one card listing under the reserved
  * `_coverage` key: `total_count` (last non-null wins), the distinct pages
- * fetched, and whether the highest fetched page still reported more.
- * `_`-prefixed keys count as zero records in the data gate but are forwarded
- * to the report prompt, so the final report can cite the true total instead
- * of the fetched sample size.
+ * fetched, whether the highest fetched page still reported more, and whether
+ * the listing is known to be complete. `_`-prefixed keys count as zero records
+ * in the data gate but are forwarded to the report prompt.
  */
 function recordPageCoverage(
 	gatheredData: Record<string, unknown>,
-	toolName: string,
+	coverageKey: string,
 	envelope: unknown,
 ): void {
 	const meta = extractPageMeta(envelope);
@@ -1047,7 +958,7 @@ function recordPageCoverage(
 		gatheredData._coverage = {};
 	}
 	const coverageRoot = gatheredData._coverage as Record<string, unknown>;
-	const prior = (coverageRoot[toolName] ?? {}) as {
+	const prior = (coverageRoot[coverageKey] ?? {}) as {
 		total_count?: unknown;
 		pages_fetched?: unknown;
 		has_more_at_last_page?: unknown;
@@ -1063,28 +974,32 @@ function recordPageCoverage(
 	}
 	const sortedPages = [...pages].sort((a, b) => a - b);
 	const highest = sortedPages[sortedPages.length - 1];
-	coverageRoot[toolName] = {
+	const hasMoreAtLastPage =
+		page !== null && page === highest
+			? (meta.has_more ?? null)
+			: ((prior.has_more_at_last_page as unknown) ?? null);
+	coverageRoot[coverageKey] = {
 		total_count:
 			meta.total_count != null
 				? meta.total_count
 				: ((prior.total_count as unknown) ?? null),
 		pages_fetched: sortedPages,
-		has_more_at_last_page:
-			page !== null && page === highest
-				? (meta.has_more ?? null)
-				: ((prior.has_more_at_last_page as unknown) ?? null),
+		has_more_at_last_page: hasMoreAtLastPage,
+		complete: hasMoreAtLastPage === false,
 	};
 }
 
 /**
  * Merge a tool result into the gathered data dictionary.
  * When the same tool is called multiple times (e.g., fizzy_get_cards with
- * different column_id filters), array results are merged and deduplicated by `id`.
+ * different column_id filters), array results are merged and deduplicated by
+ * `id`. `coverageKey` names the listing a page belongs to.
  */
 export function mergeToolResult(
 	gatheredData: Record<string, unknown>,
 	toolName: string,
 	result: unknown,
+	coverageKey: string = toolName,
 ): void {
 	// fizzy-mcp 1.1.0 wraps card listings in a page envelope; store the bare
 	// card array so every downstream consumer (consolidation, board fix, data
@@ -1094,7 +1009,7 @@ export function mergeToolResult(
 	if (isCardListTool(toolName)) {
 		const cards = extractCardsArray(result);
 		if (cards && !Array.isArray(result)) {
-			recordPageCoverage(gatheredData, toolName, result);
+			recordPageCoverage(gatheredData, coverageKey, result);
 			normalized = cards;
 		}
 	}
@@ -1142,6 +1057,8 @@ export function mergeToolResult(
  *
  * This function merges all `fizzy_get_card*` objects into the `fizzy_get_cards`
  * (plural) array so all card data is unified for table rendering and AI analysis.
+ * A fetched card overlays its listed copy: a listing carries only a preview of
+ * the description, and the model fetched the card for the whole of it.
  */
 export function consolidateIndividualCards(
 	gatheredData: Record<string, unknown>,
@@ -1176,21 +1093,22 @@ export function consolidateIndividualCards(
 	const existingCards = Array.isArray(gatheredData[bulkKey])
 		? (gatheredData[bulkKey] as unknown[])
 		: [];
-	const merged = [...existingCards, ...individualCards];
 
 	// Deduplicate by id
-	const seenIds = new Set<string>();
+	const positionById = new Map<string, number>();
 	const deduped: unknown[] = [];
-	for (const item of merged) {
-		const id =
-			item && typeof item === "object" && "id" in item
-				? String((item as { id: unknown }).id)
-				: null;
+	for (const item of [...existingCards, ...individualCards]) {
+		const id = isPlainObject(item) && "id" in item ? String(item.id) : null;
+		const position = id ? positionById.get(id) : undefined;
+		if (position !== undefined) {
+			deduped[position] = {
+				...(deduped[position] as Record<string, unknown>),
+				...(item as Record<string, unknown>),
+			};
+			continue;
+		}
 		if (id) {
-			if (seenIds.has(id)) {
-				continue;
-			}
-			seenIds.add(id);
+			positionById.set(id, deduped.length);
 		}
 		deduped.push(item);
 	}
@@ -1205,6 +1123,315 @@ export function consolidateIndividualCards(
 	console.log(
 		`[AgentLoop:Consolidate] Result: ${deduped.length} total unique cards (was ${existingCards.length} bulk + ${individualCards.length} individual)`,
 	);
+}
+
+/**
+ * Write what each walk learned over the per-page coverage: a walk knows why it
+ * stopped, and an out-of-range empty page ends a listing while still reporting
+ * `has_more`. A listing whose first page failed has no pages to merge, so its
+ * entry starts here.
+ */
+function recordListingOutcomes(
+	gatheredData: Record<string, unknown>,
+	listings: ReadonlyMap<string, ListingWalk>,
+): void {
+	for (const [coverageKey, walk] of listings) {
+		const coverageRoot = (gatheredData._coverage ?? {}) as Record<
+			string,
+			unknown
+		>;
+		// With no pagination reported there is nothing to say about coverage,
+		// unless the page was an envelope that already has an entry.
+		if (walk.status === "unpaginated" && !coverageRoot[coverageKey]) {
+			continue;
+		}
+		gatheredData._coverage = coverageRoot;
+		coverageRoot[coverageKey] = {
+			total_count: null,
+			pages_fetched: [],
+			has_more_at_last_page: null,
+			...(coverageRoot[coverageKey] as object | undefined),
+			complete:
+				walk.status === "unpaginated"
+					? null
+					: walk.status === "complete",
+			cards_read: walk.cards,
+			...(walk.reason ? { reason: walk.reason } : {}),
+		};
+	}
+}
+
+/** Merge everything read so far into the gathered-data dictionary. */
+function compileGatheredData(
+	toolResults: ToolCallResult[],
+	listings: ReadonlyMap<string, ListingWalk>,
+): Record<string, unknown> {
+	const gatheredData: Record<string, unknown> = {};
+	for (const tr of toolResults) {
+		if (!tr.error) {
+			mergeToolResult(
+				gatheredData,
+				tr.toolName,
+				tr.result,
+				tr.coverageKey,
+			);
+		}
+	}
+	recordListingOutcomes(gatheredData, listings);
+	consolidateIndividualCards(gatheredData);
+	return gatheredData;
+}
+
+/** True when the dictionary holds anything but gathering metadata. */
+function hasGatheredRecords(gatheredData: Record<string, unknown>): boolean {
+	return (
+		mapAgenticGatheredData(gatheredData, {
+			toolToSourceId: {},
+			provider: "unknown",
+		}).totalRecords > 0
+	);
+}
+
+/** What the model sees when it asks again for a listing that was already read. */
+function describeReadListing(walk: ListingWalk): Record<string, unknown> {
+	return {
+		_listing: walk,
+		note: "Every card this listing could provide was already read in this run and will reach the report. Do not request it again.",
+	};
+}
+
+/**
+ * Tell the model where a listing ended, overriding the first page's
+ * `has_more`/`next_page`, so it does not try to page a finished listing.
+ */
+function withListingStatus(copy: unknown, walk: ListingWalk): unknown {
+	if (
+		walk.status === "unpaginated" ||
+		!copy ||
+		typeof copy !== "object" ||
+		Array.isArray(copy)
+	) {
+		return copy;
+	}
+	return {
+		...copy,
+		...(walk.status === "complete"
+			? { has_more: false, next_page: null }
+			: {}),
+		_listing: walk,
+	};
+}
+
+/**
+ * Build the copy of a tool result the model keeps in its context. It only steers
+ * from this copy, so JSON that can be cut deterministically is: an LLM summary
+ * took 55 s for 13 KB of tags and 20 s for each card. Only what has no structure
+ * to cut goes to the summarizer.
+ */
+async function buildToolContextCopy(params: {
+	toolName: string;
+	parsedOutput: unknown;
+	resultStr: string;
+	userMessage: string;
+	jobType?: AiJobKey;
+	userId: string;
+	organizationId?: string;
+}): Promise<unknown> {
+	const { toolName, parsedOutput, resultStr } = params;
+	if (resultStr.length <= MAX_RESULT_CHARS) {
+		return parsedOutput;
+	}
+	// A page envelope carries the pagination fields the model reads.
+	// Whatever happens to the body below, these survive verbatim.
+	const pageMeta = extractPageMeta(parsedOutput) ?? {};
+	// The board pre-filter's honesty marker matters most on exactly these large
+	// pages — carry it through every shrunken shape below, same as the meta.
+	const boardFiltered =
+		parsedOutput &&
+		typeof parsedOutput === "object" &&
+		!Array.isArray(parsedOutput)
+			? (parsedOutput as Record<string, unknown>)._board_filtered
+			: undefined;
+	const carried = {
+		_originalLength: resultStr.length,
+		...pageMeta,
+		...(boardFiltered !== undefined
+			? { _board_filtered: boardFiltered }
+			: {}),
+	};
+
+	const contextCards = isCardListTool(toolName)
+		? extractCardsArray(parsedOutput)
+		: null;
+	if (contextCards) {
+		const projected = contextCards.map(projectCardForContext);
+		const fitted =
+			JSON.stringify(projected).length > MAX_RESULT_CHARS
+				? fitCardsToContext(projected, MAX_RESULT_CHARS)
+				: null;
+		return {
+			_projected: true,
+			...carried,
+			cards: fitted?.cards ?? projected,
+			...(fitted ? { _omittedCards: fitted.omitted } : {}),
+		};
+	}
+	if (
+		isSingleCardTool(toolName) &&
+		parsedOutput &&
+		typeof parsedOutput === "object" &&
+		!Array.isArray(parsedOutput)
+	) {
+		return {
+			_projected: true,
+			...carried,
+			...(projectCardForContext(parsedOutput) as object),
+		};
+	}
+	if (Array.isArray(parsedOutput)) {
+		const { items, omitted } = fitListToContext(
+			parsedOutput,
+			MAX_RESULT_CHARS,
+		);
+		return {
+			_projected: true,
+			...carried,
+			items,
+			...(omitted > 0 ? { _omittedItems: omitted } : {}),
+		};
+	}
+
+	try {
+		const { summarizeLargeToolResult } = await import(
+			"../orchestrator/execution/summarize-tool-result"
+		);
+		const summary = await summarizeLargeToolResult({
+			featureKey: "report-generation",
+			jobType: params.jobType,
+			toolName,
+			toolResult: resultStr,
+			userQuery: params.userMessage,
+			maxOutputLength: MAX_RESULT_CHARS,
+			userId: params.userId,
+			organizationId: params.organizationId,
+		});
+		console.log("[AgentLoop] Summarized tool result", {
+			toolName,
+			originalLength: resultStr.length,
+			summaryLength: summary.length,
+		});
+		return { _summarized: true, ...carried, summary };
+	} catch (summarizeError) {
+		// Fallback to simple truncation if summarization fails
+		console.log(
+			"[AgentLoop] Summarization failed, falling back to truncation",
+			{
+				toolName,
+				error:
+					summarizeError instanceof Error
+						? summarizeError.message
+						: summarizeError,
+				stack:
+					summarizeError instanceof Error
+						? summarizeError.stack
+						: undefined,
+			},
+		);
+		return {
+			_truncated: true,
+			...carried,
+			data: resultStr.substring(0, MAX_RESULT_CHARS),
+		};
+	}
+}
+
+/**
+ * Run one tool call under a deadline. A server that accepts a call and never
+ * answers would otherwise hold the whole activity until its 30-minute limit.
+ * Exported for tests.
+ */
+export async function withToolTimeout<T>(
+	run: (signal: AbortSignal) => Promise<T>,
+	toolName: string,
+	timeoutMs: number = MCP_TOOL_TIMEOUT_MS,
+): Promise<T> {
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timedOut = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => {
+			controller.abort();
+			reject(
+				new Error(
+					`Tool ${toolName} did not answer within ${Math.round(timeoutMs / 1000)} seconds`,
+				),
+			);
+		}, timeoutMs);
+	});
+	try {
+		return await Promise.race([run(controller.signal), timedOut]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+type McpToolCaller = (
+	toolName: string,
+	args: Record<string, unknown>,
+	toolCallId: string,
+) => Promise<unknown>;
+
+/**
+ * A run's way to call MCP tools. The client is re-fetched from the cache on every
+ * call, which keeps its access re-checks and handles a reconnect. Listing a
+ * server's tools costs a round trip, so that happens once per client: a
+ * reconnected client is a new object and lists its tools again.
+ */
+function createMcpToolCaller(params: {
+	toolConfigMap: Record<string, string>;
+	userId: string;
+	organizationId?: string;
+}): McpToolCaller {
+	const { toolConfigMap, userId, organizationId } = params;
+	const toolsByClient = new WeakMap<object, Promise<unknown>>();
+	return async (toolName, args, toolCallId) => {
+		const configId = toolConfigMap[toolName];
+		if (!configId) {
+			throw new Error(`Tool ${toolName} not found`);
+		}
+		const { client } = await getCachedMcpClientForConfig({
+			configId,
+			userId,
+			organizationId,
+		});
+		let listed = toolsByClient.get(client);
+		if (!listed) {
+			listed = client.tools();
+			toolsByClient.set(client, listed);
+			listed.catch(() => toolsByClient.delete(client));
+		}
+		const mcpTool = ((await listed) as Record<string, unknown>)[toolName] as
+			| {
+					execute?: (
+						args: Record<string, unknown>,
+						context: {
+							toolCallId: string;
+							messages: unknown[];
+							abortSignal: AbortSignal;
+						},
+					) => Promise<unknown>;
+			  }
+			| undefined;
+		const execute = mcpTool?.execute;
+		if (!execute) {
+			throw new Error(`Tool ${toolName} does not have execute method`);
+		}
+		const output = await withToolTimeout(
+			(abortSignal) =>
+				execute(args, { toolCallId, messages: [], abortSignal }),
+			toolName,
+		);
+		return parseMcpResponse(output);
+	};
 }
 
 /**
@@ -1441,12 +1668,13 @@ export async function resolveReportConnections(input: {
 		if (!stored && ds.required === false) {
 			continue;
 		}
-		const serverKeys = [
-			ds.provider,
-			ds.key,
-			ds.id,
-			ds.config?.mcpServerKey,
-		].filter(Boolean) as string[];
+		// A generic source names no server: it runs on the config bound to it,
+		// and nothing can stand in for that one.
+		const serverKeys = genericSourceDataType(ds)
+			? []
+			: ([ds.provider, ds.key, ds.id, ds.config?.mcpServerKey].filter(
+					Boolean,
+				) as string[]);
 
 		const resolved = await resolveReportMcpConfig({
 			storedConfigId: stored,
@@ -1574,7 +1802,6 @@ export async function executeAgentDataGatheringLoop(
 		maxIterations = 15,
 		enrichedSystemPrompt,
 		customSystemPrompt,
-		skillsContent,
 		userId,
 		organizationId,
 		jobType,
@@ -1613,11 +1840,26 @@ export async function executeAgentDataGatheringLoop(
 	// Normalize context: coerce all values to strings (JSON parsing can produce numbers)
 	const context = normalizeContext(rawContext);
 	const toolResults: ToolCallResult[] = [];
+	const listings = new Map<string, ListingWalk>();
+	const closedListingTools = new Set<string>();
 	const toolsUsed: string[] = [];
+	let toolCallCount = 0;
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
 	// Outer-scoped so the catch block can include diagnostics collected so far
 	let diagnostics: McpServerDiagnostic[] = [];
+
+	// Everything that waits below is either bounded by its own timeout or
+	// heartbeats itself while streaming, so this only has to prove the worker is
+	// alive. After a worker restart it stops, and the heartbeat timeout moves the
+	// run to a new attempt within minutes instead of at the activity's limit.
+	const keepAlive = setInterval(() => {
+		try {
+			heartbeat();
+		} catch {
+			/* heartbeat called outside an activity context (tests) — ignore */
+		}
+	}, KEEP_ALIVE_INTERVAL_MS);
 
 	try {
 		// 1. Connect to MCP servers and discover tools
@@ -1697,9 +1939,120 @@ export async function executeAgentDataGatheringLoop(
 				params: paramNames,
 				description: toolDef.description?.substring(0, 100),
 			});
+			if (isCardListTool(toolName) && declaresClosedListing(schema)) {
+				closedListingTools.add(toolName);
+			}
 		}
 
-		// 3. Build system prompt
+		const callTool = createMcpToolCaller({
+			toolConfigMap,
+			userId,
+			organizationId,
+		});
+		const targetBoardId = context.boardId || context.board_id;
+
+		// Read a card listing to its end. Each page is scoped and shrunk as it
+		// arrives, so a large board's raw pages are never all in memory.
+		const readCardListing = async (
+			toolName: string,
+			args: Record<string, unknown>,
+			toolCallId: string,
+		): Promise<{ walk: ListingWalk; firstPage: unknown }> => {
+			const coverageKey = listingCoverageKey(
+				toolName,
+				args,
+				targetBoardId,
+			);
+			let firstPage: unknown;
+			let pageNumber = 0;
+			const walk = await walkCardPages({
+				args,
+				fetchPage: (pageArgs) =>
+					callTool(
+						toolName,
+						coerceToolArgs(
+							pageArgs,
+							allTools[toolName]?.inputSchema,
+						),
+						`${toolCallId}-${++pageNumber}`,
+					),
+				onPage: (page) => {
+					const scoped = applyBoardPreFilter({
+						parsedOutput: page,
+						toolName,
+						targetBoardId,
+						serverScoped: Boolean(args.board_id || args.column_id),
+					});
+					if (pageNumber === 1) {
+						firstPage = scoped;
+					}
+					toolResults.push({
+						toolName,
+						coverageKey,
+						result: shrinkToolResultForStorage(toolName, scoped),
+					});
+				},
+				beat: heartbeat,
+			});
+			if (walk.status === "partial") {
+				console.warn("[AgentLoop] Card listing stopped early", {
+					coverageKey,
+					pages: walk.pages,
+					reason: walk.reason,
+				});
+			}
+			return {
+				walk: walk.reason
+					? { ...walk, reason: redactMessage(walk.reason) }
+					: walk,
+				firstPage,
+			};
+		};
+
+		// 3. Read the whole board before the model's first turn, inside this
+		// activity: no model turn per page and no new workflow commands.
+		const sweepPlan = planBoardSweep({ tools: allTools, context });
+		const sweptListings: string[] = [];
+		if (sweepPlan) {
+			const { toolName } = sweepPlan;
+			toolsUsed.push(toolName);
+			let firstListing: ListingWalk | undefined;
+			for (const args of sweepPlan.listings) {
+				const coverageKey = listingCoverageKey(
+					toolName,
+					args,
+					targetBoardId,
+				);
+				const { walk } = await readCardListing(
+					toolName,
+					args,
+					`board-sweep-${coverageKey}`,
+				);
+				toolCallCount += walk.pages;
+				listings.set(coverageKey, walk);
+				firstListing ??= walk;
+				sweptListings.push(
+					`\`${coverageKey}\`: ${walk.cards} cards over ${walk.pages} page(s)${walk.reason ? `, incomplete: ${walk.reason}` : ""}`,
+				);
+			}
+			console.log("[AgentLoop] Board sweep finished", {
+				executionId,
+				sweptListings,
+			});
+			// The source refused its first page and gave nothing else: a model turn
+			// cannot help, and a new attempt can.
+			if (
+				firstListing?.pages === 0 &&
+				!hasGatheredRecords(compileGatheredData(toolResults, listings))
+			) {
+				throw new Error(
+					firstListing.reason ??
+						"The board's cards could not be read",
+				);
+			}
+		}
+
+		// 4. Build system prompt
 		// Priority: customSystemPrompt > enrichedSystemPrompt > default hardcoded prompt
 		let baseSystemPrompt =
 			customSystemPrompt ||
@@ -1710,10 +2063,6 @@ export async function executeAgentDataGatheringLoop(
 		if (promptOverride) {
 			baseSystemPrompt = `${baseSystemPrompt}\n\n## Additional Instructions\n${promptOverride}`;
 		}
-		// Append skills content if provided
-		if (skillsContent) {
-			baseSystemPrompt = `${baseSystemPrompt}\n\n${skillsContent}`;
-		}
 		const promptSource = customSystemPrompt
 			? "custom"
 			: enrichedSystemPrompt
@@ -1722,9 +2071,10 @@ export async function executeAgentDataGatheringLoop(
 		const systemPrompt = buildDataGatheringPrompt(
 			context,
 			baseSystemPrompt,
+			sweptListings,
 		);
 
-		// 4. Get AI model
+		// 5. Get AI model
 		const { getAiModelWithSelection } = await import(
 			"../orchestrator/utils/model-selector"
 		);
@@ -1754,14 +2104,14 @@ export async function executeAgentDataGatheringLoop(
 			systemPrompt,
 		});
 
-		// 5. Run agentic loop
+		// 6. Run agentic loop
 		// taskDescription is always the actionable task (what data to gather/report to produce)
 		// promptOverride is folded into system prompt above as role/behavior instructions
 		// Include context values in the user message so the LLM uses them immediately
 		// instead of ignoring them in the system prompt and doing unnecessary discovery
 		let userMessage =
 			taskDescription ||
-			"Gather the data needed and provide a comprehensive analysis. Use the available tools to collect information, then summarize what you found.";
+			"Gather the data needed for a report using the available tools.";
 
 		if (Object.keys(context).length > 0) {
 			const contextLines: string[] = [];
@@ -1788,10 +2138,23 @@ export async function executeAgentDataGatheringLoop(
 		];
 
 		let iterationCount = 0;
-		let toolCallCount = 0;
 		let salvagedFromEmptyTurn = false;
-		const gatheredData: Record<string, unknown> = {};
 		let lastStreamDiagnostics: StreamDiagnostics | undefined;
+
+		// A listing the run has read does not need the per-column refetch, whose
+		// page-1-only result would replace a complete card set with a smaller one.
+		const repairBoardCards = async (
+			gatheredData: Record<string, unknown>,
+		): Promise<boolean> =>
+			sweepPlan ||
+			[...listings.values()].some((walk) => walk.status === "complete")
+				? false
+				: fetchBoardSpecificCards({
+						gatheredData,
+						context,
+						toolConfigMap,
+						callTool,
+					});
 
 		while (iterationCount < maxIterations) {
 			heartbeat();
@@ -1864,24 +2227,10 @@ export async function executeAgentDataGatheringLoop(
 					truncated: responseText.length > 2000,
 				});
 
-				// Compile gathered data from tool results (merge multiple calls to same tool)
-				for (const tr of toolResults) {
-					if (!tr.error) {
-						mergeToolResult(gatheredData, tr.toolName, tr.result);
-					}
-				}
-
-				// Consolidate individual card results into the bulk cards array
-				consolidateIndividualCards(gatheredData);
+				const gatheredData = compileGatheredData(toolResults, listings);
 
 				// Post-processing: fix board-specific card data if needed
-				const boardFixApplied = await fetchBoardSpecificCards({
-					gatheredData,
-					context,
-					toolConfigMap,
-					userId,
-					organizationId,
-				});
+				const boardFixApplied = await repairBoardCards(gatheredData);
 
 				console.log("[AgentLoop] Execution completed", { executionId });
 				console.log("[AgentLoop] Summary", {
@@ -1896,19 +2245,31 @@ export async function executeAgentDataGatheringLoop(
 					keys: Object.keys(gatheredData),
 				});
 
+				const listingStopped = hasIncompleteListing(gatheredData);
+				const failedRead =
+					listingStopped && !hasGatheredRecords(gatheredData)
+						? [...listings.values()].find((walk) => walk.reason)
+						: undefined;
+
 				// Bound the payload so a large board's data cannot exceed
 				// Temporal's activity-result blob limit.
 				const budgeted = finalizeGatheredData(
 					gatheredData,
+					toolResults,
+					closedListingTools,
 					executionId,
 				);
 				return {
 					gatheredData: budgeted.data,
 					toolCallCount,
-					// A trimmed run is partial (renders the existing partial notice).
-					// So is a board fix: it swapped in page-1-per-column fetches
-					// whose coverage against the board total is unknown.
-					isPartial: budgeted.trimmed || boardFixApplied,
+					// A run that lost records is partial (renders the existing
+					// partial notice). So is one whose listing stopped early, and
+					// a board fix: it swapped in page-1-per-column fetches whose
+					// coverage against the board total is unknown.
+					isPartial:
+						budgeted.recordsDropped ||
+						listingStopped ||
+						boardFixApplied,
 					toolsUsed,
 					usage: {
 						inputTokens: totalInputTokens,
@@ -1918,6 +2279,11 @@ export async function executeAgentDataGatheringLoop(
 					streamDiagnostics: lastStreamDiagnostics,
 					...(budgeted.truncation
 						? { gatheredDataTruncation: budgeted.truncation }
+						: {}),
+					...(failedRead
+						? {
+								error: `The board's cards could not be read: ${failedRead.reason}`,
+							}
 						: {}),
 				};
 			}
@@ -1996,10 +2362,8 @@ export async function executeAgentDataGatheringLoop(
 					input: args,
 				});
 
-				// Execute the tool — re-fetch client from cache each time to keep
-				// connections alive and handle reconnection if cache TTL expired
-				const toolConfigId = toolConfigMap[toolName];
-				if (!toolConfigId) {
+				// Execute the tool
+				if (!toolConfigMap[toolName]) {
 					const errorResult: ToolCallResult = {
 						toolName,
 						result: null,
@@ -2020,187 +2384,84 @@ export async function executeAgentDataGatheringLoop(
 				}
 
 				try {
-					const { client: mcpClient } =
-						await getCachedMcpClientForConfig({
-							configId: toolConfigId,
-							userId,
-							organizationId,
-						});
-					const mcpTools = await mcpClient.tools();
-					const mcpTool = mcpTools[toolName] as unknown as {
-						execute?: (
-							args: Record<string, unknown>,
-							context: {
-								toolCallId: string;
-								messages: unknown[];
-							},
-						) => Promise<unknown>;
-					};
-
-					let toolOutput: unknown;
-					if (mcpTool?.execute) {
-						toolOutput = await mcpTool.execute(args, {
-							toolCallId: typedToolCall.toolCallId,
-							messages: [],
-						});
-					} else {
-						throw new Error(
-							`Tool ${toolName} does not have execute method`,
+					let parsedOutput: unknown;
+					let listing: ListingWalk | undefined;
+					if (isCardListTool(toolName)) {
+						const coverageKey = listingCoverageKey(
+							toolName,
+							args,
+							targetBoardId,
 						);
-					}
-
-					const rawParsedOutput = parseMcpResponse(toolOutput);
-
-					// Pre-filter: if this is a card list and we have a target boardId,
-					// remove cards from other boards BEFORE summarization
-					const targetBoardId = context.boardId || context.board_id;
-					const parsedOutput = applyBoardPreFilter({
-						parsedOutput: rawParsedOutput,
-						toolName,
-						targetBoardId: targetBoardId
-							? String(targetBoardId)
-							: undefined,
-						serverScoped: Boolean(args.board_id || args.column_id),
-					});
-
-					const successResult: ToolCallResult = {
-						toolName,
-						result: parsedOutput,
-					};
-					toolResults.push(successResult);
-
-					// Summarize large results using LLM to preserve relevant context
-					let resultForContext = parsedOutput;
-					const resultStr = JSON.stringify(parsedOutput);
-					const MAX_RESULT_CHARS = 12000;
-					if (resultStr.length > MAX_RESULT_CHARS) {
-						// A fizzy-mcp page envelope carries the pagination fields the
-						// model needs to keep paginating (has_more/next_page/total_count).
-						// Whatever happens to the body below, these survive verbatim.
-						const pageMeta = extractPageMeta(parsedOutput) ?? {};
-						// The board pre-filter's honesty marker matters most on
-						// exactly these large pages — carry it through every
-						// shrunken shape below, same as the pagination meta.
-						const boardFiltered =
-							parsedOutput &&
-							typeof parsedOutput === "object" &&
-							!Array.isArray(parsedOutput)
-								? (parsedOutput as Record<string, unknown>)
-										._board_filtered
-								: undefined;
-						// Cards are ~33KB each raw; project them down before summarizing
-						// so a 1MB page becomes a single summarizer call — or none, when
-						// the projection already fits.
-						const contextCards = isCardListTool(toolName)
-							? extractCardsArray(parsedOutput)
-							: null;
-						const projected = contextCards?.map(
-							projectCardForContext,
-						);
-						const projectedStr = projected
-							? JSON.stringify(projected)
-							: null;
-						if (
-							projected &&
-							projectedStr &&
-							projectedStr.length <= MAX_RESULT_CHARS
-						) {
-							console.log(
-								"[AgentLoop] Projected tool result without summarization",
-								{
-									toolName,
-									originalLength: resultStr.length,
-									projectedLength: projectedStr.length,
+						const alreadyRead = listings.get(coverageKey);
+						if (alreadyRead && alreadyRead.pages > 0) {
+							toolResultsForHistory.push({
+								type: "tool-result",
+								toolCallId: typedToolCall.toolCallId,
+								toolName,
+								output: {
+									type: "json",
+									value: describeReadListing(alreadyRead),
 								},
-							);
-							resultForContext = {
-								_projected: true,
-								_originalLength: resultStr.length,
-								...pageMeta,
-								...(boardFiltered !== undefined
-									? { _board_filtered: boardFiltered }
-									: {}),
-								cards: projected,
-							};
-						} else {
-							const summarizerInput = projectedStr ?? resultStr;
-							try {
-								const { summarizeLargeToolResult } =
-									await import(
-										"../orchestrator/execution/summarize-tool-result"
-									);
-								console.log(
-									"[AgentLoop] Summarizing large tool result",
-									{
-										toolName,
-										length: summarizerInput.length,
-										targetLength: MAX_RESULT_CHARS,
-									},
-								);
-								const summary = await summarizeLargeToolResult({
-									featureKey: "report-generation",
-									jobType,
-									toolName,
-									toolResult: summarizerInput,
-									userQuery: userMessage,
-									maxOutputLength: MAX_RESULT_CHARS,
-									userId,
-									organizationId,
-								});
-								resultForContext = {
-									_summarized: true,
-									_originalLength: resultStr.length,
-									...pageMeta,
-									...(boardFiltered !== undefined
-										? { _board_filtered: boardFiltered }
-										: {}),
-									summary,
-								};
-								console.log(
-									"[AgentLoop] Summarized tool result",
-									{
-										toolName,
-										originalLength: summarizerInput.length,
-										summaryLength: summary.length,
-									},
-								);
-							} catch (summarizeError) {
-								// Fallback to simple truncation if summarization fails
-								console.log(
-									"[AgentLoop] Summarization failed, falling back to truncation",
-									{
-										toolName,
-										error:
-											summarizeError instanceof Error
-												? summarizeError.message
-												: summarizeError,
-										stack:
-											summarizeError instanceof Error
-												? summarizeError.stack
-												: undefined,
-									},
-								);
-								resultForContext = {
-									_truncated: true,
-									_originalLength: resultStr.length,
-									...pageMeta,
-									...(boardFiltered !== undefined
-										? { _board_filtered: boardFiltered }
-										: {}),
-									data: (projectedStr ?? resultStr).substring(
-										0,
-										MAX_RESULT_CHARS,
-									),
-								};
-							}
+							});
+							continue;
 						}
+						// A listing always starts at its first page: whichever page
+						// the model asked for, the walk reads them all.
+						const { page: _requestedPage, ...listingArgs } = args;
+						const { walk, firstPage } = await readCardListing(
+							toolName,
+							withSummaryProjection(
+								listingArgs,
+								allTools[toolName]?.inputSchema,
+							),
+							typedToolCall.toolCallId,
+						);
+						// The model's own call failed outright, often on bad
+						// arguments: an ordinary tool error it can correct, and no
+						// statement about the board's coverage.
+						if (walk.pages === 0) {
+							throw new Error(walk.reason ?? "Tool call failed");
+						}
+						toolCallCount += walk.pages - 1;
+						listings.set(coverageKey, walk);
+						listing = walk;
+						parsedOutput = firstPage;
+					} else {
+						parsedOutput = await callTool(
+							toolName,
+							args,
+							typedToolCall.toolCallId,
+						);
+						toolResults.push({
+							toolName,
+							result: shrinkToolResultForStorage(
+								toolName,
+								parsedOutput,
+							),
+						});
 					}
+
+					const resultStr = JSON.stringify(parsedOutput) ?? "null";
+					const contextCopy = await buildToolContextCopy({
+						toolName,
+						parsedOutput,
+						resultStr,
+						userMessage,
+						jobType,
+						userId,
+						organizationId,
+					});
 
 					toolResultsForHistory.push({
 						type: "tool-result",
 						toolCallId: typedToolCall.toolCallId,
 						toolName,
-						output: { type: "json", value: resultForContext },
+						output: {
+							type: "json",
+							value: listing
+								? withListingStatus(contextCopy, listing)
+								: contextCopy,
+						},
 					});
 
 					const resultSize = resultStr.length;
@@ -2270,30 +2531,19 @@ export async function executeAgentDataGatheringLoop(
 			}
 		}
 
-		// 6. If we hit the iteration limit, compile what we have
+		// 7. If we hit the iteration limit, compile what we have
 		console.log(
 			`[AgentLoop] Iteration limit (${maxIterations}) reached, compiling gathered data`,
 		);
 
-		for (const tr of toolResults) {
-			if (!tr.error) {
-				mergeToolResult(gatheredData, tr.toolName, tr.result);
-			}
-		}
-
-		// Consolidate individual card results into the bulk cards array
-		consolidateIndividualCards(gatheredData);
+		const gatheredData = compileGatheredData(toolResults, listings);
 
 		// Post-processing: fix board-specific card data if needed
-		await fetchBoardSpecificCards({
-			gatheredData,
-			context,
-			toolConfigMap,
-			userId,
-			organizationId,
-		});
+		await repairBoardCards(gatheredData);
 
-		const compiledEmpty = Object.keys(gatheredData).length === 0;
+		const compiledEmpty = !Object.keys(gatheredData).some(
+			(key) => !key.startsWith("_"),
+		);
 		console.log("[AgentLoop] Execution completed with partial data", {
 			executionId,
 			reason: salvagedFromEmptyTurn
@@ -2316,12 +2566,18 @@ export async function executeAgentDataGatheringLoop(
 		});
 
 		// Bound the payload so a large board's data cannot exceed Temporal's
-		// activity-result blob limit. Already a partial run.
-		const budgeted = finalizeGatheredData(gatheredData, executionId);
+		// activity-result blob limit. Running out of turns leaves a run partial
+		// unless every card was already read and kept.
+		const budgeted = finalizeGatheredData(
+			gatheredData,
+			toolResults,
+			closedListingTools,
+			executionId,
+		);
 		return {
 			gatheredData: budgeted.data,
 			toolCallCount,
-			isPartial: true,
+			isPartial: !budgeted.wholeBoardKept,
 			toolsUsed,
 			usage: {
 				inputTokens: totalInputTokens,
@@ -2352,10 +2608,25 @@ export async function executeAgentDataGatheringLoop(
 			error: error instanceof Error ? error.message : error,
 			stack: error instanceof Error ? error.stack : undefined,
 		});
+		// What the tools already returned survives a model or provider failure:
+		// the report still renders, carrying the error, and is marked partial
+		// unless every card was already read and kept. With nothing gathered
+		// there is nothing to save, so Temporal retries the activity and, once
+		// its attempts run out, the workflow names the failure.
+		const gatheredData = compileGatheredData(toolResults, listings);
+		if (!hasGatheredRecords(gatheredData)) {
+			throw error;
+		}
+		const budgeted = finalizeGatheredData(
+			gatheredData,
+			toolResults,
+			closedListingTools,
+			executionId,
+		);
 		return {
-			gatheredData: {},
-			toolCallCount: toolResults.length,
-			isPartial: true,
+			gatheredData: budgeted.data,
+			toolCallCount,
+			isPartial: !budgeted.wholeBoardKept,
 			toolsUsed,
 			usage: {
 				inputTokens: totalInputTokens,
@@ -2363,8 +2634,12 @@ export async function executeAgentDataGatheringLoop(
 			},
 			error: error instanceof Error ? error.message : "Unknown error",
 			mcpDiagnostics: diagnostics,
+			...(budgeted.truncation
+				? { gatheredDataTruncation: budgeted.truncation }
+				: {}),
 		};
 	} finally {
+		clearInterval(keepAlive);
 		// Don't close MCP clients here — they are managed by the cache layer
 		// (getCachedMcpClientForConfig). Closing them here invalidates the cache
 		// entry, causing "closed client" errors on subsequent executions.
@@ -2394,11 +2669,9 @@ async function fetchBoardSpecificCards(params: {
 	gatheredData: Record<string, unknown>;
 	context: Record<string, string | undefined>;
 	toolConfigMap: Record<string, string>;
-	userId: string;
-	organizationId?: string;
+	callTool: McpToolCaller;
 }): Promise<boolean> {
-	const { gatheredData, context, toolConfigMap, userId, organizationId } =
-		params;
+	const { gatheredData, context, toolConfigMap, callTool } = params;
 
 	// Determine target board ID and account slug from context
 	const targetBoardId = context.boardId || context.board_id;
@@ -2451,11 +2724,7 @@ async function fetchBoardSpecificCards(params: {
 		"[AgentLoop:BoardFix] Majority of cards from wrong board — starting per-column fetch strategy",
 	);
 
-	// Find config IDs for fizzy tools
-	const columnsConfigId = toolConfigMap.fizzy_get_columns;
-	const cardsConfigId = toolConfigMap.fizzy_get_cards;
-
-	if (!columnsConfigId || !cardsConfigId) {
+	if (!toolConfigMap.fizzy_get_columns || !toolConfigMap.fizzy_get_cards) {
 		console.log(
 			"[AgentLoop:BoardFix] fizzy_get_columns or fizzy_get_cards not in toolConfigMap, skipping",
 		);
@@ -2477,36 +2746,11 @@ async function fetchBoardSpecificCards(params: {
 				`[AgentLoop:BoardFix] Reusing ${columns.length} columns from gathered data`,
 			);
 		} else {
-			const { client: columnsClient } = await getCachedMcpClientForConfig(
-				{
-					configId: columnsConfigId,
-					userId,
-					organizationId,
-				},
-			);
-			const columnsTools = await columnsClient.tools();
-			const columnsTool = columnsTools.fizzy_get_columns as unknown as {
-				execute?: (
-					args: Record<string, unknown>,
-					context: { toolCallId: string; messages: unknown[] },
-				) => Promise<unknown>;
-			};
-
-			if (!columnsTool?.execute) {
-				console.log(
-					"[AgentLoop:BoardFix] fizzy_get_columns not executable, skipping",
-				);
-				return false;
-			}
-
-			const columnsResult = await columnsTool.execute(
+			const parsed = await callTool(
+				"fizzy_get_columns",
 				{ account_slug: accountSlug, board_id: targetBoardId },
-				{
-					toolCallId: `board-fix-columns-${Date.now()}`,
-					messages: [],
-				},
+				`board-fix-columns-${Date.now()}`,
 			);
-			const parsed = parseMcpResponse(columnsResult);
 
 			if (!Array.isArray(parsed) || parsed.length === 0) {
 				console.log(
@@ -2548,33 +2792,12 @@ async function fetchBoardSpecificCards(params: {
 			}
 
 			try {
-				const { client: cardsClient } =
-					await getCachedMcpClientForConfig({
-						configId: cardsConfigId,
-						userId,
-						organizationId,
-					});
-				const cardsTools = await cardsClient.tools();
-				const cardsTool = cardsTools.fizzy_get_cards as unknown as {
-					execute?: (
-						args: Record<string, unknown>,
-						context: { toolCallId: string; messages: unknown[] },
-					) => Promise<unknown>;
-				};
-
-				if (!cardsTool?.execute) {
-					continue;
-				}
-
-				const cardsResult = await cardsTool.execute(
-					{ account_slug: accountSlug, column_id: columnId },
-					{
-						toolCallId: `board-fix-cards-${columnId}-${Date.now()}`,
-						messages: [],
-					},
-				);
 				const columnCards = extractCardsArray(
-					parseMcpResponse(cardsResult),
+					await callTool(
+						"fizzy_get_cards",
+						{ account_slug: accountSlug, column_id: columnId },
+						`board-fix-cards-${columnId}-${Date.now()}`,
+					),
 				);
 
 				if (columnCards) {
@@ -2625,8 +2848,14 @@ async function fetchBoardSpecificCards(params: {
 			const coverage = gatheredData._coverage as
 				| Record<string, unknown>
 				| undefined;
-			if (coverage) {
-				delete coverage.fizzy_get_cards;
+			for (const listing of Object.keys(coverage ?? {})) {
+				if (
+					coverage &&
+					(listing === "fizzy_get_cards" ||
+						listing.startsWith("fizzy_get_cards["))
+				) {
+					delete coverage[listing];
+				}
 			}
 			// Underscore key: 0 records in the data gate, forwarded to the report prompt.
 			gatheredData._board_fix = { partial: true, coverage: "unknown" };

@@ -1389,6 +1389,7 @@ async function applyPlannedKeys(
 					actingUserId: context.actingUserId,
 					files,
 					decided,
+					firstSync: locked.sync.lastAppliedCommitSha === null,
 				})),
 			};
 			// A file that arrived, moved between folders or was adopted is
@@ -1673,7 +1674,10 @@ async function fenced<T>(
 	run: SyncAttempt,
 	fn: (
 		tx: Prisma.TransactionClient,
-		locked: { run: ContextRepositorySyncRunLedger },
+		locked: {
+			sync: LockedContextRepositorySync;
+			run: ContextRepositorySyncRunLedger;
+		},
 	) => Promise<T>,
 ): Promise<T> {
 	const { context } = run;

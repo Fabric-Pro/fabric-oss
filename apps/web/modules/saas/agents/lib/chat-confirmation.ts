@@ -276,8 +276,12 @@ export function describeConsequence(request: ChatConfirmationRequest): string {
 			return "Approving resumes the workflow's schedule.";
 		case "fabric_execute_workflow":
 			return "Approving starts one run now.";
+		case "fabric_create_project_report":
+			return "Approving adds this report to the project, owned by you. Nothing is generated until the report runs.";
 		case "fabric_generate_report":
 			return "Approving generates this report once now, and the run spends your AI credits.";
+		case "fabric_update_report_prompt":
+			return "Approving replaces this report's instructions with the userPrompt text for every later run. Nothing is generated until the report runs again.";
 		case "fabric_create_frame":
 		case "fabric_edit_frame_block":
 		case "fabric_update_frame": {

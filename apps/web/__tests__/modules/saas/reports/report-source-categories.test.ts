@@ -1,4 +1,5 @@
 import {
+	connectableServersForSource,
 	groupReportConnections,
 	type ReportConnectionOption,
 	reportCategoryLabel,
@@ -7,6 +8,57 @@ import {
 	UNCATEGORIZED_LABEL,
 } from "@saas/reports/lib/report-source-categories";
 import { describe, expect, it } from "vitest";
+
+describe("connectableServersForSource", () => {
+	const fizzy = {
+		id: "server-fizzy",
+		key: "fizzy",
+		name: "Fizzy",
+		category: "Project Management",
+		tags: [],
+	};
+	const linear = {
+		id: "server-linear",
+		key: "linear",
+		name: "Linear",
+		category: "Project Management",
+		tags: [],
+	};
+	const slack = {
+		id: "server-slack",
+		key: "slack",
+		name: "Slack",
+		category: "Communication",
+		tags: [],
+	};
+	const servers = [fizzy, linear, slack];
+
+	it("lists the registry's tools of a generic source's data type", () => {
+		expect(
+			connectableServersForSource(
+				servers,
+				{ dataType: "project-management" },
+				[],
+			),
+		).toEqual([fizzy, linear]);
+	});
+
+	it("lists a named source's own tool only", () => {
+		expect(
+			connectableServersForSource(servers, { provider: "slack" }, []),
+		).toEqual([slack]);
+	});
+
+	it("leaves out a tool the person has already connected", () => {
+		expect(
+			connectableServersForSource(
+				servers,
+				{ dataType: "project-management" },
+				[{ mcpServer: { key: "fizzy" } }],
+			),
+		).toEqual([linear]);
+	});
+});
 
 describe("reportCategoryLabel", () => {
 	it("title-cases a keyword category", () => {
@@ -40,6 +92,13 @@ const own: ReportConnectionOption[] = [
 ];
 
 describe("reportSourceCategory", () => {
+	it("reads the category of a data type", () => {
+		expect(reportSourceCategory("project-management", {})).toBe(
+			"Project Management",
+		);
+		expect(reportSourceCategory("repository", {})).toBe("Repository");
+	});
+
 	it("reads the category the provider declares, whatever the key spelling", () => {
 		expect(reportSourceCategory("azure-devops", PROVIDERS)).toBe(
 			"Project Management",

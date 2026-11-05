@@ -25,6 +25,7 @@ import {
 	COMPLETION_CLAIM_JUDGE_AGENT_KEY,
 } from "@repo/utils/completion-claim-prompts";
 import { DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY } from "@repo/utils/direct-chat-memory-prompt";
+import { LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY } from "@repo/utils/living-memory-decisions-prompt";
 import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "@repo/utils/orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "@repo/utils/page-ask-prompt";
 import { PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY } from "@repo/utils/parlume-realtime-voice-prompt";
@@ -46,6 +47,7 @@ import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "@repo/utils/publishing-s
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "@repo/utils/publishing-suggestion-prompt";
 import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "@repo/utils/publishing-webinar-script-prompt";
 import { RECURRING_ERROR_BUG_PROMPT_AGENT_KEY } from "@repo/utils/recurring-error-bug-prompt";
+import { REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY } from "@repo/utils/report-parameter-defaults-prompt";
 import { REPORT_SAMPLE_PROMPT_AGENT_KEY } from "@repo/utils/report-sample-prompt";
 import { describe, expect, it } from "vitest";
 
@@ -88,6 +90,7 @@ const KEY_CONSTANTS: Record<string, string> = {
 	DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY,
 	COMPLETION_CLAIM_JUDGE_AGENT_KEY,
 	COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
+	LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
 	PAGE_ASK_PROMPT_AGENT_KEY,
 	PARLUME_SUGGESTION_PROMPT_AGENT_KEY,
 	PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
@@ -104,6 +107,7 @@ const KEY_CONSTANTS: Record<string, string> = {
 	PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
 	RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
 	REPORT_SAMPLE_PROMPT_AGENT_KEY,
+	REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY,
 };
 
 function resolveKeyConstant(name: string): string {
@@ -412,6 +416,50 @@ describe("the Workflow Agent Task prompt is fully seeded", () => {
 			seededSlots()
 				.filter(
 					(slot) => slot.targetKey === AGENT_TASK_PROMPT_AGENT_KEY,
+				)
+				.map(({ documentType, storyKind }) => ({
+					documentType,
+					storyKind,
+				})),
+		).toEqual([{ documentType: "GENERAL", storyKind: null }]);
+	});
+});
+
+describe("the Living Memory decision extraction prompt is fully seeded", () => {
+	// The extraction activity reads its instructions from the Prompt Library:
+	// a catalog target with no binding or no SYSTEM_PROMPTS row would leave it
+	// on the in-code fallback with nothing to edit in the UI.
+	it("has a binding, a SYSTEM_PROMPTS row and a catalog target under the shared key", () => {
+		expect(seededTargetKeys()).toContain(
+			LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
+		);
+		expect(seededSystemPromptKeys()).toContain(
+			LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
+		);
+		expect(PROMPT_AGENT_TARGETS.map((target) => target.key)).toContain(
+			LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
+		);
+	});
+
+	it("seeds the shared body as a HANDLEBARS structured prompt", () => {
+		const row = SEED.slice(
+			SEED.indexOf(
+				"key: LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,\n\t\tname:",
+			),
+		).slice(0, 1200);
+
+		expect(row).toContain('format: "HANDLEBARS"');
+		expect(row).toContain('promptType: "STRUCTURED"');
+		expect(row).toContain("content: LIVING_MEMORY_DECISIONS_FALLBACK_BODY");
+	});
+
+	it("binds it for GENERAL with no story kind", () => {
+		expect(
+			seededSlots()
+				.filter(
+					(slot) =>
+						slot.targetKey ===
+						LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
 				)
 				.map(({ documentType, storyKind }) => ({
 					documentType,

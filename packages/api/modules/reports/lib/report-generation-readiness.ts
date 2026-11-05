@@ -1,3 +1,7 @@
+import {
+	genericSourceDataType,
+	REPORT_DATA_TYPE_INFO,
+} from "@repo/database/prisma/queries/lib/report-data-types";
 import { getProjectReportSetupReason } from "@repo/database/prisma/queries/lib/report-evidence";
 
 /**
@@ -33,18 +37,20 @@ function hasText(value: unknown): boolean {
 	return value !== undefined && value !== null;
 }
 
-/** The required data sources a template declares, by binding key. */
+/**
+ * The required data sources a template declares, by binding key: its connection
+ * requirements, and each required generic source of its definition, which is
+ * bound by its own id whatever tool the person chose.
+ */
 function requiredSources(
 	templateConnections: unknown,
+	definition: unknown,
 ): Array<{ key: string; name: string }> {
-	if (!isRecord(templateConnections)) {
-		return [];
-	}
 	const sources: Array<{ key: string; name: string }> = [];
-	for (const group of [
-		templateConnections.mcpServers,
-		templateConnections.integrations,
-	]) {
+	const groups = isRecord(templateConnections)
+		? [templateConnections.mcpServers, templateConnections.integrations]
+		: [];
+	for (const group of groups) {
 		if (!Array.isArray(group)) {
 			continue;
 		}
@@ -62,6 +68,25 @@ function requiredSources(
 							: source.key,
 				});
 			}
+		}
+	}
+	const dataSources =
+		isRecord(definition) && Array.isArray(definition.dataSources)
+			? definition.dataSources.filter(isRecord)
+			: [];
+	for (const source of dataSources) {
+		const dataType = genericSourceDataType(source);
+		const { id } = source;
+		if (
+			dataType &&
+			source.required !== false &&
+			typeof id === "string" &&
+			!sources.some((declared) => declared.key === id)
+		) {
+			sources.push({
+				key: id,
+				name: REPORT_DATA_TYPE_INFO[dataType].sourceName,
+			});
 		}
 	}
 	return sources;
@@ -149,9 +174,10 @@ export function reportGenerationBlockedReason(
 		return "Switch this report on to generate it.";
 	}
 	const bound = boundKeys(instance.connections, instance.template.definition);
-	const unbound = requiredSources(instance.template.connections).filter(
-		(source) => !bound.has(source.key),
-	);
+	const unbound = requiredSources(
+		instance.template.connections,
+		instance.template.definition,
+	).filter((source) => !bound.has(source.key));
 	if (unbound.length > 0) {
 		return `Connect ${unbound.map((source) => source.name).join(", ")} to generate this report.`;
 	}

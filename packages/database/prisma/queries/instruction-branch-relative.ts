@@ -75,3 +75,56 @@ export async function readMemberBranchWrittenPaths(i: {
 	}
 	return written;
 }
+
+/** Which stored proposal file Fabric wrote as one blob on a member's branch. */
+export type MemberBranchBlobSource = {
+	/** The proposal whose stored file at the path Fabric wrote. */
+	snapshotId: string;
+	/** The hash Fabric recorded for the write, when it recorded one. */
+	sha256: string | null;
+};
+
+/**
+ * Where Fabric wrote blob `objectId` at `path` on the member's accepting
+ * branch: the newest established write of exactly that blob, by an append or
+ * by a revert that restored bytes Fabric holds. The "before" side of a
+ * branch-relative entry, which froze that blob when it was submitted; the
+ * branch's CURRENT state is not the answer, because the entry's own proposal
+ * may have been appended over it since. Null when the member has no
+ * accepting branch or no such write there.
+ */
+export async function findMemberBranchWrite(i: {
+	projectId: string;
+	userId: string;
+	organizationId: string;
+	path: string;
+	objectId: string;
+}): Promise<MemberBranchBlobSource | null> {
+	const branch = await getAcceptingBranchForMember({
+		projectId: i.projectId,
+		userId: i.userId,
+		organizationId: i.organizationId,
+	});
+	if (!branch || branch.userId !== i.userId) {
+		return null;
+	}
+	const ops = await listEstablishedBranchOps({
+		branchId: branch.id,
+		organizationId: i.organizationId,
+	});
+	for (const op of [...ops].sort((a, b) => b.executionSeq - a.executionSeq)) {
+		for (const e of op.entries) {
+			if (e.path !== i.path) {
+				continue;
+			}
+			const [entry, source, sha256] =
+				op.kind === "APPEND"
+					? [e.after, e.afterSource, e.afterSha256]
+					: [e.before, e.beforeSource, null];
+			if (entry?.oid === i.objectId && source !== null) {
+				return { snapshotId: source, sha256 };
+			}
+		}
+	}
+	return null;
+}

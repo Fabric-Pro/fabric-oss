@@ -87,6 +87,7 @@ import { loadCodingInstructionsTab } from "./instructions/lib/coding-instruction
 import { PausedSetupNotice, usePausedSetup } from "./PausedSetupNotice";
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectPresenceProvider } from "./ProjectPresenceProvider";
+import { ProjectReportsOnlyFallback } from "./ProjectReportsOnlyFallback";
 import { ProjectRepositoryIntegrationSettings } from "./ProjectRepositoryIntegrationSettings";
 import { ProjectSectionHero } from "./ProjectSectionHero";
 import { ProjectTabButton } from "./ProjectTabButton";
@@ -217,6 +218,11 @@ const ReleaseNotesList = dynamic(
 	{ loading: () => <TabContentSkeleton />, ssr: false },
 );
 
+const ProblemLogTab = dynamic(
+	() => import("./problem-log/ProblemLogTab").then((m) => m.ProblemLogTab),
+	{ loading: () => <TabContentSkeleton />, ssr: false },
+);
+
 const DecisionsList = dynamic(
 	() => import("./decisions/DecisionsList").then((m) => m.DecisionsList),
 	{ loading: () => <TabContentSkeleton />, ssr: false },
@@ -280,7 +286,7 @@ const TAB_GROUPS: ReadonlyArray<{ label: string; ids: readonly TabId[] }> = [
 			"reports",
 		],
 	},
-	{ label: "Manage", ids: ["usage", "settings"] },
+	{ label: "Manage", ids: ["usage", "problem-log", "settings"] },
 ];
 
 /**
@@ -784,9 +790,13 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 	// Include tab-preference loading in the overall gate so neither the tab
 	// bar nor a content branch paints a set it is about to hide. The
 	// preference queries run in parallel with projects.get and are cached
-	// across consumers, so this adds no extra round trip.
-	const isLoading = isQueryLoading || !tabCustomization.ready;
+	// across consumers, so this adds no extra round trip. Without a project there
+	// is no tab bar to wait for. A viewer with no project row is refused these
+	// documents, and a panel mounting in the fallback refetches the refusal, so
+	// waiting here would swap the fallback for the skeleton in an endless loop.
 	const project = data?.project;
+	const isLoading =
+		isQueryLoading || (project !== undefined && !tabCustomization.ready);
 	// Same gate as Settings → Repositories' Add Repository button.
 	const canConnectRepositories =
 		project?.canEditSettings ?? project?.userRole === "owner";
@@ -980,11 +990,17 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 
 	if (!project) {
 		return (
-			<ProjectUnavailable
+			<ProjectReportsOnlyFallback
+				projectId={projectId}
 				error={projectError}
-				basePath={basePath}
-				onRetry={() => refetch()}
-				isRetrying={isProjectFetching}
+				unavailable={
+					<ProjectUnavailable
+						error={projectError}
+						basePath={basePath}
+						onRetry={() => refetch()}
+						isRetrying={isProjectFetching}
+					/>
+				}
 			/>
 		);
 	}
@@ -1621,6 +1637,19 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 						)}
 						{activeTab === "usage" && (
 							<ProjectUsage projectId={projectId} />
+						)}
+						{activeTab === "problem-log" && (
+							<ProblemLogTab
+								projectId={projectId}
+								// The server is the gate (PROBLEM_LOG_MANAGE); this only
+								// hides a button the caller could not use.
+								canManage={[
+									"owner",
+									"admin",
+									"project_admin",
+									"PROJECT_ADMIN",
+								].includes(project.userRole as string)}
+							/>
 						)}
 						{activeTab === "artifacts" && (
 							<ProjectArtifactsList

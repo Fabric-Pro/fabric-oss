@@ -106,10 +106,14 @@ export const PROJECT_BOUND_TOOL_NAMES = [
 	"fabric_memory_read",
 	"fabric_memory_write",
 	"fabric_memory_write_status",
-	// Reports: listing names the project; generating resolves the report's
-	// project and asks the project-access helper about it.
+	// Reports: listing and creating name the project; generating, reading and
+	// changing instructions resolve the report's project and ask the
+	// project-access helper about it.
 	"fabric_list_project_reports",
+	"fabric_create_project_report",
 	"fabric_generate_report",
+	"fabric_get_report_content",
+	"fabric_update_report_prompt",
 ] as const;
 
 /**
@@ -118,6 +122,8 @@ export const PROJECT_BOUND_TOOL_NAMES = [
  * servers or the session's own authority, and reaches past one project.
  */
 export const PROJECT_BOUND_HIDDEN_TOOL_NAMES: readonly string[] = [
+	// Lists the organization's templates and the person's own, not one project's.
+	"fabric_list_report_templates",
 	"fabric_get_identity",
 	"fabric_list_agent_runs",
 	"fabric_search_agent_runs",

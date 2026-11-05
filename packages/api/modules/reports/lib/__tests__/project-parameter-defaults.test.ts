@@ -20,6 +20,36 @@ describe("projectParameterDefaults", () => {
 		});
 	});
 
+	it("fills owner and repository parameters from the project's repository", () => {
+		expect(
+			projectParameterDefaults(
+				{
+					properties: {
+						owner: { type: "string" },
+						repo: { type: "string" },
+						sprintId: { type: "string" },
+					},
+				},
+				{
+					name: "Example Project",
+					repository: {
+						repositoryOwner: "example-org",
+						repositoryName: "example-repo",
+					},
+				},
+			),
+		).toEqual({ owner: "example-org", repo: "example-repo" });
+	});
+
+	it("leaves them empty for a project without a repository", () => {
+		expect(
+			projectParameterDefaults(
+				{ properties: { owner: { type: "string" } } },
+				{ name: "Example Project", repository: null },
+			),
+		).toBeUndefined();
+	});
+
 	it("leaves a template without a project name parameter alone", () => {
 		expect(
 			projectParameterDefaults(

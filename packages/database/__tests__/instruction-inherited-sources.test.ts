@@ -150,6 +150,9 @@ beforeEach(() => {
 		cb({
 			projectInstructionSnapshot: m.snapshot,
 			projectInstructionFile: m.file,
+			// The READY transition runs its conditional write inside a
+			// transaction.
+			$queryRaw: (...a: unknown[]) => m.$queryRaw(...a),
 		}),
 	);
 	m.snapshot.findFirst.mockResolvedValue({ version: 7 });

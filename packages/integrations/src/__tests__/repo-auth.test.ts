@@ -201,6 +201,19 @@ describe("gitAuthForClone", () => {
 		}
 	});
 
+	it("keeps an operator's CA settings for a provider behind an internal certificate authority, never the verify switch", () => {
+		const { env } = gitAuthForClone("GITLAB", url, "T", {
+			GIT_SSL_CAINFO: "/etc/ssl/internal-ca.pem",
+			GIT_SSL_CAPATH: "/etc/ssl/certs",
+			GIT_SSL_NO_VERIFY: "1",
+			GIT_SSL_CERT: "/etc/ssl/client.pem",
+		});
+		expect(env.GIT_SSL_CAINFO).toBe("/etc/ssl/internal-ca.pem");
+		expect(env.GIT_SSL_CAPATH).toBe("/etc/ssl/certs");
+		expect(env).not.toHaveProperty("GIT_SSL_NO_VERIFY");
+		expect(env).not.toHaveProperty("GIT_SSL_CERT");
+	});
+
 	it("puts the token nowhere but the header value", () => {
 		const { url: cloneUrl, env } = gitAuthForClone(
 			"GITHUB",

@@ -97,6 +97,32 @@ describe("instructionActionErrorKey", () => {
 		expect(instructionActionErrorKey({ code })).toBe(key);
 	});
 
+	it.each([
+		["OWN_PROPOSAL", "ownProposal"],
+		["NOT_AN_APPROVER", "notAnApprover"],
+		["SOMETHING_ELSE", "forbidden"],
+	] as const)(
+		"words a FORBIDDEN approval with reason %s as %s",
+		(reason, key) => {
+			expect(
+				instructionActionErrorKey({
+					code: "FORBIDDEN",
+					data: { reason },
+					message: "TEXT THAT MUST NOT BE SHOWN",
+				}),
+			).toBe(key);
+		},
+	);
+
+	it("reads an approval reason only from a FORBIDDEN error", () => {
+		expect(
+			instructionActionErrorKey({
+				code: "CONFLICT",
+				data: { reason: "OWN_PROPOSAL" },
+			}),
+		).toBe("conflict");
+	});
+
 	// A project in Read-only mode refuses every write to its connected sources.
 	// It arrives as a CONFLICT, which alone would read as "this changed while
 	// you were working": the typed errorCode is what says what it is.

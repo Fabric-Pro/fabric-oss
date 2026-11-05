@@ -25,7 +25,7 @@ import {
 	getProjectReposForCodeSearch,
 	getScanCheckpoint,
 } from "@repo/database";
-import { GIT_AUTH_UNSAFE } from "@repo/integrations/repo-auth";
+import { GIT_AUTH_OPTIONS } from "@repo/integrations/repo-auth";
 import { logger } from "@repo/logs";
 import { resolveCloneAuth } from "./semgrep-scan";
 
@@ -123,7 +123,7 @@ export async function resolveScanCommitActivity(
 			});
 			if (auth) {
 				const { simpleGit } = await import("simple-git");
-				const output = await simpleGit({ unsafe: GIT_AUTH_UNSAFE })
+				const output = await simpleGit(GIT_AUTH_OPTIONS)
 					.env(auth.env)
 					.listRemote([auth.url, `refs/heads/${trimmedBranch}`]);
 				targetSha = parseLsRemoteSha(output ?? "");

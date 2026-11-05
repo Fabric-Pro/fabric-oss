@@ -447,7 +447,7 @@ export const FEATURE_FLAG_REGISTRY = {
 		envVar: "FABRIC_FEATURE_REPORT_SUITE_V2",
 		default: false,
 		orgScopable: true,
-		note: "Gates the user interface only. The report permission checks (system and public templates limited to platform admins; report changes limited to the owner, organization admins and owners, platform admins and project editors) apply with the flag off too. Reports created on a project while it was on stay attached to that project when it is turned off.",
+		note: "Gates the suite's user interface, and on the server: applying an organization's and a project's defaults to a new report, including ones already stored; saving to a template and publishing a template; one-click generation, sample reports and AI parameter suggestions; the checks that refuse a run before it starts; and an organization admin's reach to projects they hold no row on. Off, an organization creates reports as it did before. The report permission checks (system and public templates limited to platform admins; report changes limited to the owner, organization admins and owners, platform admins and project editors) apply with the flag off too, and so do the improvements to how a report's worker gathers its data, which reach every organization. Reports created on a project while it was on stay attached to that project when it is turned off, and keep the prompts and values they copied from its defaults.",
 	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 

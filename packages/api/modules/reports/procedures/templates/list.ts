@@ -1,4 +1,8 @@
-import { listReportTemplates } from "@repo/database";
+import {
+	isFeatureEnabled,
+	isPlatformAdmin,
+	listReportTemplates,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -28,6 +32,11 @@ const listInputSchema = z.object({
 	isPublic: z.boolean().optional(),
 	// Template management views list archived templates too; pickers never do.
 	includeArchived: z.boolean().default(false),
+	// Where the report suite is on, the catalog leaves out seeded system
+	// templates that are not a named standard and have never completed a report;
+	// platform admins may ask for them to manage the catalog. Ignored for
+	// everyone else. Organizations without the suite keep the list they had.
+	includeUnproven: z.boolean().default(false),
 	limit: z.number().min(1).max(100).default(50),
 	offset: z.number().min(0).default(0),
 	sortBy: z
@@ -45,6 +54,10 @@ export const listTemplatesProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
+		const suiteEnabled = await isFeatureEnabled(
+			"REPORT_SUITE_V2",
+			organizationId ?? undefined,
+		);
 		const { templates, total } = await listReportTemplates({
 			userId: context.user.id,
 			organizationId,
@@ -55,6 +68,11 @@ export const listTemplatesProcedure = tenantProtectedProcedure
 			search: input.search,
 			isPublic: input.isPublic,
 			includeArchived: input.includeArchived,
+			includeUnproven:
+				!suiteEnabled ||
+				(input.includeUnproven &&
+					(await isPlatformAdmin(context.user))),
+			excludeSuiteOnly: !suiteEnabled,
 			limit: input.limit,
 			offset: input.offset,
 			sortBy: input.sortBy,

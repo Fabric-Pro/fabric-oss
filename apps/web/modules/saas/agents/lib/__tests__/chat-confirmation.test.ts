@@ -199,7 +199,9 @@ describe("the words around a request", () => {
 		["fabric_unpublish_workflow", "reverts the workflow to a draft"],
 		["fabric_pause_workflow", "pauses the workflow's schedule"],
 		["fabric_resume_workflow", "resumes the workflow's schedule"],
+		["fabric_create_project_report", "adds this report to the project"],
 		["fabric_generate_report", "spends your AI credits"],
+		["fabric_update_report_prompt", "replaces this report's instructions"],
 	])("says what %s does", (toolName, consequence) => {
 		expect(describeConsequence(request(toolName))).toContain(consequence);
 	});

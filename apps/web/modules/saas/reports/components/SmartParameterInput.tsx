@@ -4,6 +4,7 @@ import {
 	classifyDateParameter,
 	isLegacyDateParameter,
 } from "@saas/reports/lib/date-parameter";
+import { parameterDisplayName } from "@saas/reports/lib/report-template-defaults";
 import { Badge } from "@ui/components/badge";
 import { DatePicker } from "@ui/components/date-picker";
 import { Input } from "@ui/components/input";
@@ -125,11 +126,7 @@ export function SmartParameterInput({
 	const isBoolean = schema.type === "boolean";
 
 	// Format display name
-	const displayName = name
-		.replace(/([A-Z])/g, " $1")
-		.replace(/[_-]/g, " ")
-		.replace(/^\w/, (c) => c.toUpperCase())
-		.trim();
+	const displayName = parameterDisplayName(name);
 
 	return (
 		<div className={cn("space-y-2", className)}>
@@ -209,6 +206,8 @@ export function SmartParameterInput({
 				/>
 			) : isDate ? (
 				<DatePicker
+					id={`param-${name}`}
+					{...fieldA11y}
 					value={value || undefined}
 					onChange={(date) => {
 						onChange(date ? format(date, "yyyy-MM-dd") : "");

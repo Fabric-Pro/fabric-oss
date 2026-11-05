@@ -17,6 +17,7 @@ import {
 	getDeliveryPreferences,
 	type NotificationCategory,
 	type NotificationType,
+	recordProblem,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { sendEmail } from "@repo/mail";
@@ -26,6 +27,7 @@ import {
 	getUnsafeUrlReason,
 	safeFetchOutbound,
 } from "@repo/utils/url-security";
+import { Context } from "@temporalio/activity";
 
 export type NotificationDeliveryActivityInput = {
 	notificationId: string;
@@ -263,6 +265,7 @@ export async function sendNotificationEmailActivity(
 			},
 			"[notification-delivery] email send failed",
 		);
+		await recordDeliveryProblem(notification, "email", "send-failed");
 		return { delivered: false, reason: "send-failed" };
 	}
 
@@ -370,6 +373,13 @@ export async function sendNotificationWebhookActivity(
 			},
 			"[notification-delivery] webhook request failed",
 		);
+		if (isFinalWebhookAttempt()) {
+			await recordDeliveryProblem(
+				notification,
+				"webhook",
+				"request-failed",
+			);
+		}
 		throw error;
 	}
 
@@ -384,8 +394,47 @@ export async function sendNotificationWebhookActivity(
 			},
 			"[notification-delivery] webhook returned non-2xx",
 		);
+		if (isFinalWebhookAttempt()) {
+			await recordDeliveryProblem(
+				notification,
+				"webhook",
+				`http-${response.status}`,
+			);
+		}
 		throw new Error(`Webhook endpoint returned ${response.status}`);
 	}
 
 	return { delivered: true };
+}
+
+/**
+ * Must match `maximumAttempts` of the webhook activity in
+ * `workflows/notification-delivery.ts`: only the last attempt's failure is
+ * terminal, and a failure a retry recovers from is not a problem.
+ */
+const WEBHOOK_MAX_ATTEMPTS = 3;
+
+function isFinalWebhookAttempt(): boolean {
+	return Context.current().info.attempt >= WEBHOOK_MAX_ATTEMPTS;
+}
+
+/** Problem Log (Fizzy #2277): a notification that did not reach its channel. */
+function recordDeliveryProblem(
+	notification: DeliveryNotification,
+	channel: "email" | "webhook",
+	reason: string,
+): Promise<void> {
+	return recordProblem({
+		organizationId: notification.organizationId,
+		projectId: notification.projectId,
+		affectedUserId: notification.userId,
+		category: "NOTIFICATION_FAILURE",
+		severity: "WARNING",
+		source: `notification:${channel}`,
+		title: `${channel === "email" ? "Email" : "Webhook"} notification could not be delivered`,
+		description: `"${notification.title}" (${notification.type}) failed: ${reason}.`,
+		fingerprint: `${notification.type}|${reason}`,
+		sourceId: notification.id,
+		metadata: { channel, reason, notificationType: notification.type },
+	});
 }

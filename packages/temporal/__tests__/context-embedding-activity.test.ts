@@ -46,6 +46,7 @@ const {
 	mockRecordContextIndexingFailure,
 	mockActivityLogger,
 	mockHeartbeat,
+	mockStartDecisionExtraction,
 	TestAIProviderNotConfiguredError,
 } = vi.hoisted(() => {
 	class TestAIProviderNotConfiguredError extends Error {
@@ -66,6 +67,7 @@ const {
 			debug: vi.fn(),
 		},
 		mockHeartbeat: vi.fn(),
+		mockStartDecisionExtraction: vi.fn(),
 		TestAIProviderNotConfiguredError,
 	};
 });
@@ -95,6 +97,10 @@ vi.mock("../src/activities/lib/activity-logger", () => ({
 	activityLogger: mockActivityLogger,
 }));
 
+vi.mock("../src/activities/lib/living-memory-decision-start", () => ({
+	startLivingMemoryDecisionExtraction: mockStartDecisionExtraction,
+}));
+
 import { embedSingleContextActivity } from "../src/activities/context-embedding";
 
 const baseInput = {
@@ -119,6 +125,38 @@ beforeEach(() => {
 	});
 	mockUpdateContextExtractionStatus.mockResolvedValue(undefined);
 	mockRecordContextIndexingFailure.mockResolvedValue(undefined);
+	mockStartDecisionExtraction.mockResolvedValue("not_eligible");
+});
+
+describe("embedSingleContextActivity — Living Memory decision extraction", () => {
+	it("asks for decision extraction once the embed succeeded", async () => {
+		const result = await embedSingleContextActivity(baseInput);
+
+		expect(result).toEqual({ success: true, qdrantId: "qdrant-abc" });
+		expect(mockStartDecisionExtraction).toHaveBeenCalledWith({
+			contextId: "ctx-1",
+		});
+	});
+
+	it("does not ask when the embed failed", async () => {
+		mockEmbedProjectContext.mockRejectedValue(
+			new Error("Qdrant unreachable"),
+		);
+
+		await expect(embedSingleContextActivity(baseInput)).rejects.toThrow(
+			"Qdrant unreachable",
+		);
+		expect(mockStartDecisionExtraction).not.toHaveBeenCalled();
+	});
+
+	it("keeps the embed's success when the start reports a failure", async () => {
+		mockStartDecisionExtraction.mockResolvedValue("failed");
+
+		await expect(embedSingleContextActivity(baseInput)).resolves.toEqual({
+			success: true,
+			qdrantId: "qdrant-abc",
+		});
+	});
 });
 
 describe("embedSingleContextActivity — status writeback", () => {

@@ -6,6 +6,7 @@ import {
 	FALLBACK_OUTPUT_TOKEN_CAP,
 	MAXIMAL_OUTPUT_TOKEN_CEILING,
 	MIN_OUTPUT_TOKEN_BUDGET,
+	maxPromptCharsForContext,
 } from "../output-token-budget";
 
 describe("computeScaledOutputTokenBudget", () => {
@@ -198,6 +199,60 @@ describe("computeMaxOutputTokenBudget", () => {
 				{ promptChars: 3_000 },
 			),
 		).toBe(17_476);
+	});
+});
+
+describe("maxPromptCharsForContext", () => {
+	it("leaves the full output cap and the margin, at 2 characters per token", () => {
+		const metadata = {
+			provider: "DATABRICKS",
+			contextWindow: 128_000,
+			maxOutputTokens: 8_192,
+		};
+
+		const limit = maxPromptCharsForContext(metadata);
+
+		expect(limit).toBe(237_568);
+		expect(
+			computeMaxOutputTokenBudget(metadata, {
+				promptChars: limit as number,
+			}),
+		).toBe(8_192);
+	});
+
+	it("reserves the quota-safe ceiling when the catalog cap is higher", () => {
+		expect(
+			maxPromptCharsForContext({
+				provider: "DATABRICKS",
+				contextWindow: 1_000_000,
+				maxOutputTokens: 128_000,
+			}),
+		).toBe(1_932_416);
+	});
+
+	it("reserves the ceiling when the provider takes no explicit budget", () => {
+		expect(
+			maxPromptCharsForContext({
+				provider: "EXAMPLE",
+				contextWindow: 128_000,
+			}),
+		).toBe((128_000 - MAXIMAL_OUTPUT_TOKEN_CEILING - 1_024) * 2);
+	});
+
+	it("keeps half of a small window for the prompt", () => {
+		expect(
+			maxPromptCharsForContext({
+				provider: "DATABRICKS",
+				contextWindow: 32_000,
+				maxOutputTokens: 128_000,
+			}),
+		).toBe((16_000 - 1_024) * 2);
+	});
+
+	it("is undefined when the window is unknown", () => {
+		expect(
+			maxPromptCharsForContext({ provider: "DATABRICKS" }),
+		).toBeUndefined();
 	});
 });
 

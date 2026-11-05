@@ -10,9 +10,11 @@
  * names, file paths, `TypeError`, …) NEVER reach the UI — only human-readable,
  * actionable copy does.
  *
- * Pure + dependency-free so it can be unit-tested in isolation and reused by any
- * surface that shows a report error (toasts, the execution-history row, …).
+ * Pure so it can be unit-tested in isolation and reused by any surface that
+ * shows a report error (toasts, the execution-history row, …).
  */
+
+import { REPORT_CONNECTION_REFUSAL_PREFIX } from "@repo/temporal/report-diagnostics";
 
 export type ReportErrorContext = "generate" | "save" | "delete" | "test";
 
@@ -41,6 +43,13 @@ const PATTERNS: { match: RegExp; message: string }[] = [
 			"This data source needs to be reconnected. Step 1 — reconnect it (its access has expired). Step 2 — re-select your project in the Data Source Connections section below. Reports fail silently after step 1 alone, so don’t skip step 2.",
 	},
 	{
+		// Temporal's own timeout for the run's activity, which usually means the
+		// worker restarted mid-run. The data source was not at fault.
+		match: /\bactivity task timed out\b/i,
+		message:
+			"This report’s run stopped before it finished, usually because the service restarted. Generate the report again.",
+	},
+	{
 		match: /\b(ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|timed[_ ]?out|timeout|unreachable|network error|fetch failed|socket hang up|502|503|504)\b/i,
 		message:
 			"Fabric couldn’t reach the data source — it may be temporarily unavailable. Please try again shortly.",
@@ -63,6 +72,12 @@ const PATTERNS: { match: RegExp; message: string }[] = [
 ];
 
 /**
+ * Opaque ids (cuid/cuid2, such as a leaked MCP config or instance id like
+ * "cmnj4fcfm000i04l5s69i0gil") must never reach a user-facing toast.
+ */
+const OPAQUE_ID = /\bc[a-z0-9]{20,}\b/i;
+
+/**
  * Heuristic for "this string is raw/technical and must not be shown verbatim".
  * Conservative on purpose — when unsure we prefer the safe generic message over
  * leaking internals.
@@ -80,9 +95,7 @@ function looksTechnical(raw: string): boolean {
 		/\b(workflow|activity|temporal|orchestrat\w*|undefined|null|NaN|ECONN\w+|ENOTFOUND|ETIMEDOUT)\b/i.test(
 			raw,
 		) ||
-		// opaque ids (cuid/cuid2 — e.g. a leaked MCP config / instance id like
-		// "cmnj4fcfm000i04l5s69i0gil") must never reach a user-facing toast
-		/\bc[a-z0-9]{20,}\b/i.test(raw)
+		OPAQUE_ID.test(raw)
 	);
 }
 
@@ -93,6 +106,14 @@ export function humanizeReportError(
 	const text = (raw ?? "").trim();
 	if (!text) {
 		return GENERIC[context];
+	}
+	// Generate's refusal is written for the person and names each data source
+	// that failed, which no pattern or generic message below can say.
+	if (
+		text.startsWith(REPORT_CONNECTION_REFUSAL_PREFIX) &&
+		!OPAQUE_ID.test(text)
+	) {
+		return text;
 	}
 	for (const { match, message } of PATTERNS) {
 		if (match.test(text)) {

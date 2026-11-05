@@ -565,6 +565,23 @@ describe("paths editor validation (§2, §5.1)", () => {
 		});
 	});
 
+	it("says a path past the storage limit is too long, not misspelled", () => {
+		const refusal = validateContextSyncPathAddition("x".repeat(513), []);
+		expect(refusal).toEqual({
+			ok: false,
+			error: { code: "PATH_TOO_LONG" },
+		});
+		expect(
+			!refusal.ok && contextSyncPathValidationMessage(refusal.error),
+		).toEqual({
+			key: "pathErrors.PATH_TOO_LONG",
+			values: { max: 512 },
+		});
+		expect(validateContextSyncPathAddition("x".repeat(512), []).ok).toBe(
+			true,
+		);
+	});
+
 	it("accepts the whole repository, or a folder holding selected paths, which the reducer then absorbs (Fizzy #2750 §5.7)", () => {
 		expect(validateContextSyncPathAddition("", [])).toEqual({
 			ok: true,

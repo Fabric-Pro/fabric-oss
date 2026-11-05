@@ -112,3 +112,30 @@ export function classifyError(err: unknown): ErrorClassification {
 
 	return UNHANDLED_CLASSIFICATION;
 }
+
+/**
+ * Problem Log (Fizzy #2277) category for a classified request error, or null
+ * when the error is not a problem: validation, not-found, conflict and rate
+ * limiting are expected rejections the ticket excludes.
+ */
+export function problemLogClassification(classification: ErrorClassification): {
+	category: "SYSTEM_ERROR" | "SECURITY_EVENT";
+	severity: "WARNING" | "ERROR" | "CRITICAL";
+} | null {
+	switch (classification.action) {
+		case "error.internal":
+		case "error.unavailable":
+		case "error.timeout":
+			return {
+				category: "SYSTEM_ERROR",
+				severity:
+					classification.severity === "critical"
+						? "CRITICAL"
+						: "ERROR",
+			};
+		case "error.permission_denied":
+			return { category: "SECURITY_EVENT", severity: "WARNING" };
+		default:
+			return null;
+	}
+}

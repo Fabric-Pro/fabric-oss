@@ -5,9 +5,12 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 const m = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...a: unknown[]) => unknown>,
+	/** The procedure's input schema, captured from the builder. */
+	input: { current: null as unknown },
 	updateProjectInstructionSettings: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	recordAuditFromRequest: vi.fn(),
@@ -41,6 +44,9 @@ vi.mock("@repo/database", () => ({
 		m.canUpdateProjectInstructions(...a),
 	MAX_REQUIRED_INSTRUCTION_APPROVALS: 10,
 	MAX_INSTRUCTION_APPROVERS: 50,
+	// The rule itself is unit-tested beside it in `@repo/database`.
+	minimumInstructionApprovers: (required: number) =>
+		required > 1 ? required + 1 : required,
 	InstructionMigrationOpenError: m.MigrationOpenError,
 }));
 vi.mock("../../../../../lib/audit", () => ({
@@ -54,7 +60,10 @@ vi.mock("../../../../../orpc/procedures", () => {
 	const builder = {
 		use: () => builder,
 		route: () => builder,
-		input: () => builder,
+		input: (schema: unknown) => {
+			m.input.current = schema;
+			return builder;
+		},
 		handler: (fn: (...a: unknown[]) => unknown) => {
 			m.handlers.updateSettings = fn;
 			return fn;
@@ -90,6 +99,59 @@ beforeEach(() => {
 	m.canUpdateProjectInstructions.mockResolvedValue(true);
 });
 
+/** Parses `reviewPolicy` through the procedure's own input schema. */
+function parseReviewPolicy(reviewPolicy: unknown) {
+	const schema = m.input.current;
+	if (!(schema instanceof z.ZodType)) {
+		throw new Error("The procedure's input schema was not captured");
+	}
+	return schema.safeParse({ projectId: "proj_1", reviewPolicy });
+}
+
+describe("the review policy input", () => {
+	it("needs one more listed approver than required above one, so a listed approver's own proposal can still pass", () => {
+		expect(
+			parseReviewPolicy({
+				requiredApprovals: 2,
+				approverUserIds: ["lead_1", "lead_2"],
+			}).success,
+		).toBe(false);
+		expect(
+			parseReviewPolicy({
+				requiredApprovals: 2,
+				approverUserIds: ["lead_1", "lead_2", "lead_3"],
+			}).success,
+		).toBe(true);
+	});
+
+	it("needs exactly one listed approver for one required approval", () => {
+		expect(
+			parseReviewPolicy({
+				requiredApprovals: 1,
+				approverUserIds: ["lead_1"],
+			}).success,
+		).toBe(true);
+	});
+
+	it("counts duplicates once", () => {
+		expect(
+			parseReviewPolicy({
+				requiredApprovals: 2,
+				approverUserIds: ["lead_1", "lead_2", "lead_1"],
+			}).success,
+		).toBe(false);
+	});
+
+	it("accepts any requirement without a list", () => {
+		expect(parseReviewPolicy({ requiredApprovals: 3 })).toMatchObject({
+			success: true,
+			data: {
+				reviewPolicy: { requiredApprovals: 3, approverUserIds: null },
+			},
+		});
+	});
+});
+
 describe("projects.instructions.updateSettings review policy", () => {
 	it("saves a review policy alone, without the move pre-check or touching the ignore rules", async () => {
 		await m.handlers.updateSettings!({
@@ -97,7 +159,7 @@ describe("projects.instructions.updateSettings review policy", () => {
 				projectId: "proj_1",
 				reviewPolicy: {
 					requiredApprovals: 2,
-					approverUserIds: ["lead_1", "lead_2"],
+					approverUserIds: ["lead_1", "lead_2", "lead_3"],
 				},
 			},
 			context: ctx,
@@ -110,7 +172,7 @@ describe("projects.instructions.updateSettings review policy", () => {
 			{
 				reviewPolicy: {
 					requiredApprovals: 2,
-					approverUserIds: ["lead_1", "lead_2"],
+					approverUserIds: ["lead_1", "lead_2", "lead_3"],
 				},
 			},
 		);
@@ -122,7 +184,7 @@ describe("projects.instructions.updateSettings review policy", () => {
 			ctx,
 			expect.objectContaining({
 				action: "project.instructions.settings_updated",
-				metadata: { requiredApprovals: 2, approverCount: 2 },
+				metadata: { requiredApprovals: 2, approverCount: 3 },
 			}),
 		);
 	});

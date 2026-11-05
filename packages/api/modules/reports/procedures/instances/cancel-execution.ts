@@ -14,6 +14,10 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	assertReportPermission,
+	canGenerateReportInstance,
+} from "../../lib/report-access";
 
 const cancelExecutionInputSchema = z.object({
 	executionId: z.string(),
@@ -23,7 +27,9 @@ const cancelExecutionInputSchema = z.object({
 /**
  * Cancel an in-progress report execution. Ordering matters:
  *   1. tenant-isolation gate (NOT_FOUND on any cross-tenant / non-owner personal access)
- *   2. authorization: the execution owner, or an org admin/owner for org-context runs
+ *   2. authorization: the execution owner while they may still generate the report, or
+ *      an org admin/owner for org-context runs, holding REPORT_EXECUTE from their role
+ *      or as a platform admin who is a member
  *   3. guarded compare-and-set flip to CANCELLED (only while PENDING/RUNNING); a lost
  *      race / already-terminal run returns { cancelled: false } so the caller shows the
  *      real outcome
@@ -34,7 +40,7 @@ const cancelExecutionInputSchema = z.object({
  * lookup — is what enforces isolation; it must run before any owner/admin check.
  */
 export const cancelExecutionProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.REPORT_EXECUTE))
+	.use(requirePermission(Permissions.REPORT_READ))
 	.input(cancelExecutionInputSchema)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolveOrganizationId(
@@ -87,7 +93,21 @@ export const cancelExecutionProcedure = tenantProtectedProcedure
 					message: "You cannot cancel this report execution",
 				});
 			}
+		} else if (
+			!(await canGenerateReportInstance(execution.instance, context.user))
+		) {
+			// Stopping a run takes what starting it does: an owner demoted to a
+			// Viewer row reads the report, and the worker ends the run itself at
+			// its next authorization check.
+			throw new ORPCError("FORBIDDEN", {
+				message: "You cannot cancel this report execution",
+			});
 		}
+		await assertReportPermission(
+			execution.organizationId,
+			context.user,
+			Permissions.REPORT_EXECUTE,
+		);
 
 		// 3. Guarded compare-and-set flip. A lost race (the run reached a terminal
 		// state first) leaves the row untouched and is reported as a no-op.

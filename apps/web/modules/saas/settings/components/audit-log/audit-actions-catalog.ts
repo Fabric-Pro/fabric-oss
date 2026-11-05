@@ -2147,6 +2147,21 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			"A workspace document link was removed from a project's context sources while leaving the underlying workspace document intact.",
 	},
+	{
+		key: "project.problem_log.status_changed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.problem_log.status_changed",
+		description:
+			"A Problem Log entry moved between Open and Resolved — by a member, or by the system when a resolved problem happened again. Records the previous and new status and the optional note.",
+	},
+	{
+		key: "project.problem_log.reviewed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.problem_log.reviewed",
+		description:
+			"A member confirmed or dismissed a Problem Log entry Fabric drafted from a meeting. Records the decision, the source type and which fields the reviewer edited, never the edited text.",
+	},
 ];
 
 /**

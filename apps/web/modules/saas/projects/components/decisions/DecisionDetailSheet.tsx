@@ -46,6 +46,10 @@ import {
 	downloadMarkdown,
 } from "./decisionMarkdown";
 import {
+	LIVING_MEMORY_SOURCE_KIND,
+	LivingMemorySourceNote,
+} from "./LivingMemoryBadge";
+import {
 	allRelationships,
 	type RelationshipIndex,
 	type RelRef,
@@ -340,6 +344,12 @@ export function DecisionDetailSheet({
 										<SparklesIcon className="size-3" />
 										captured from a meeting
 									</span>
+								)}
+								{decision.sourceKind ===
+									LIVING_MEMORY_SOURCE_KIND && (
+									<LivingMemorySourceNote
+										sourceMetadata={decision.sourceMetadata}
+									/>
 								)}
 								{sourceReference && (
 									<span className="truncate text-muted-foreground">

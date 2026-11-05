@@ -94,10 +94,12 @@ export function allRelationships(rec: DecisionLite, index: RelationshipIndex) {
 		const target = index.byId.get(rec.supersededById);
 		supersededBy = target ? toRelRef(target) : null;
 	}
+	// An accepted update names its target as related and then supersedes it: one
+	// line for that pair, under the stronger relationship.
 	const related: RelRef[] = [];
 	for (const id of rec.relatedDecisionIds ?? []) {
 		const target = index.byId.get(id);
-		if (target) {
+		if (target && !supersedes.some((ref) => ref.id === id)) {
 			related.push(toRelRef(target));
 		}
 	}

@@ -6,6 +6,9 @@ import { Permissions as P, type Permission } from "./permissions";
  */
 export type OrgRole = "owner" | "admin" | "member" | "viewer";
 
+/** The organization roles that administer it, as `Member.role` stores them. */
+export const ORG_ADMIN_ROLES: ReadonlySet<string> = new Set(["owner", "admin"]);
+
 export const ORG_ROLES: readonly OrgRole[] = [
 	"owner",
 	"admin",
@@ -75,6 +78,7 @@ const VIEWER_ORG_PERMISSIONS: readonly Permission[] = [
 	P.USER_UPDATE_SELF,
 	P.NOTIFICATIONS_READ,
 	P.ARCHITECTURE_DECISION_READ,
+	P.PROBLEM_LOG_READ,
 	P.TEST_CASE_READ,
 	P.PUBLISHING_TOPIC_READ,
 	// An API key carries its creator's own access and nobody else's, so
@@ -189,6 +193,7 @@ const ADMIN_ORG_PERMISSIONS: readonly Permission[] = [
 	P.INTEGRATION_DISCONNECT,
 	P.WORKSPACE_DELETE,
 	P.ARCHITECTURE_DECISION_DELETE,
+	P.PROBLEM_LOG_MANAGE,
 	P.TEST_CASE_DELETE,
 	P.PUBLISHING_TOPIC_DELETE,
 ];
@@ -221,6 +226,7 @@ const VIEWER_PROJECT_PERMISSIONS: readonly Permission[] = [
 	P.AGENT_READ,
 	P.REPORT_READ,
 	P.ARCHITECTURE_DECISION_READ,
+	P.PROBLEM_LOG_READ,
 	P.TEST_CASE_READ,
 	P.PUBLISHING_TOPIC_READ,
 ];
@@ -276,6 +282,7 @@ const PROJECT_ADMIN_PROJECT_PERMISSIONS: readonly Permission[] = [
 	P.COMMENT_DELETE,
 	P.REPORT_DELETE,
 	P.ARCHITECTURE_DECISION_DELETE,
+	P.PROBLEM_LOG_MANAGE,
 	P.TEST_CASE_DELETE,
 	P.PUBLISHING_TOPIC_DELETE,
 ];

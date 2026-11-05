@@ -23,17 +23,34 @@ vi.mock("@saas/get-started/components/ProjectRoleConfirmationPrompt", () => ({
 	ProjectRoleConfirmationPrompt: () => null,
 }));
 
-const { nav, projectRead } = vi.hoisted(() => ({
-	nav: {
-		router: {
-			replace: vi.fn(),
-			push: vi.fn(),
-			prefetch: vi.fn(),
-			back: vi.fn(),
+const { flags, nav, projectRead, reportsProjectRead, tabDocumentRead } =
+	vi.hoisted(() => ({
+		flags: { reportSuite: false },
+		nav: {
+			router: {
+				replace: vi.fn(),
+				push: vi.fn(),
+				prefetch: vi.fn(),
+				back: vi.fn(),
+			},
 		},
-	},
-	projectRead: vi.fn(),
-}));
+		projectRead: vi.fn(),
+		reportsProjectRead: vi.fn(),
+		tabDocumentRead: vi.fn(),
+	}));
+
+// The real panel reads the tab documents the same way, on mount.
+vi.mock("../readiness/ProjectReadinessPanel", async () => {
+	const { useProjectTabCustomization } = await import(
+		"@saas/projects/lib/project-tab-preferences"
+	);
+	return {
+		ProjectReadinessPanel: () => {
+			useProjectTabCustomization({ projectId: "proj-1" });
+			return null;
+		},
+	};
+});
 
 vi.mock("next/navigation", () => ({
 	useRouter: () => nav.router,
@@ -79,7 +96,7 @@ vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
 }));
 
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
-	useFeatureFlag: () => false,
+	useFeatureFlag: () => flags.reportSuite,
 }));
 
 vi.mock("@saas/shared/components/PageBreadcrumbs", () => ({
@@ -111,6 +128,14 @@ vi.mock("@shared/lib/orpc-client", () => ({
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
+		reports: {
+			project: {
+				queryOptions: ({ input }: { input: unknown }) => ({
+					queryKey: ["reports", "project", input],
+					queryFn: () => reportsProjectRead(),
+				}),
+			},
+		},
 		projects: {
 			members: {
 				list: {
@@ -150,7 +175,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				get: {
 					queryOptions: ({ input }: { input: unknown }) => ({
 						queryKey: ["projects.tabVisibility.get", input],
-						queryFn: async () => ({ config: null }),
+						queryFn: () => tabDocumentRead(),
 					}),
 				},
 			},
@@ -158,7 +183,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				get: {
 					queryOptions: ({ input }: { input: unknown }) => ({
 						queryKey: ["projects.tabPreferences.get", input],
-						queryFn: async () => ({ prefs: null }),
+						queryFn: () => tabDocumentRead(),
 					}),
 				},
 			},
@@ -200,7 +225,40 @@ function renderProjectDetails() {
 beforeEach(() => {
 	nav.router.push.mockClear();
 	projectRead.mockReset();
+	flags.reportSuite = false;
+	reportsProjectRead.mockReset();
+	reportsProjectRead.mockResolvedValue({ project: null });
+	tabDocumentRead.mockReset();
+	tabDocumentRead.mockResolvedValue({ config: null, prefs: null });
 	window.sessionStorage.clear();
+});
+
+describe("ProjectDetails — reports through an organization role, no project row", () => {
+	it("stays on the reports page when the tab documents are refused", async () => {
+		const notFound = new ORPCError("NOT_FOUND", {
+			message: "Project not found",
+		});
+		flags.reportSuite = true;
+		projectRead.mockRejectedValue(notFound);
+		tabDocumentRead.mockRejectedValue(notFound);
+		reportsProjectRead.mockResolvedValue({
+			project: { id: "proj-1", name: "Reports only" },
+		});
+
+		renderProjectDetails();
+
+		expect(
+			await screen.findByRole("heading", { name: "Reports only" }),
+		).toBeInTheDocument();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		expect(
+			screen.getByRole("heading", { name: "Reports only" }),
+		).toBeInTheDocument();
+		// Each of the two documents is read for the page and once more when the
+		// panel mounts. A remount loop would keep reading them.
+		expect(tabDocumentRead.mock.calls.length).toBeLessThanOrEqual(4);
+	});
 });
 
 describe("ProjectDetails — a project that did not load", () => {
