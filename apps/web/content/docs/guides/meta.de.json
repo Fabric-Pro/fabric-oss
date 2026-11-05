@@ -1,4 +1,4 @@
 {
-	"title": "Anleitungen",
+	"title": "Betrieb",
 	"pages": ["configuration", "deployment", "tenant-isolation"]
 }

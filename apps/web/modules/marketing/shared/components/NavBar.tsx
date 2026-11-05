@@ -52,6 +52,10 @@ export function NavBar() {
 	const isDocsPage = localePathname.startsWith("/docs");
 	const isMarketingPage = !isDocsPage;
 
+	if (isDocsPage) {
+		return null;
+	}
+
 	const menuItems: {
 		label: string;
 		href: string;

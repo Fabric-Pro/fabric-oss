@@ -670,6 +670,9 @@
 	},
 	"documentation": {
 		"title": "Documentation",
+		"copyPage": "Copy page",
+		"collapseSidebar": "Hide sidebar",
+		"expandSidebar": "Show sidebar",
 		"fallbackNotice": "This page is not yet available in your selected language. Showing the English version."
 	},
 	"faq": {

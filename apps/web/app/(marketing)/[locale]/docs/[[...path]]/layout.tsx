@@ -1,8 +1,13 @@
+import { DocsManualHeader } from "@marketing/shared/components/DocsManualHeader";
 import { config } from "@repo/config";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { getTranslations } from "next-intl/server";
-import type { PropsWithChildren } from "react";
+import type { CSSProperties, PropsWithChildren } from "react";
 import { docsSource } from "../../../../docs-source";
+
+const docsLayoutStyle = {
+	"--fd-docs-row-1": "3.5rem",
+} as CSSProperties;
 
 export default async function DocumentationLayout({
 	children,
@@ -14,26 +19,31 @@ export default async function DocumentationLayout({
 	const { locale } = await params;
 
 	return (
-		<div className="pt-[4.5rem]">
-			<DocsLayout
-				tree={
-					docsSource.pageTree[locale] ??
-					docsSource.pageTree[config.i18n.defaultLocale]
-				}
-				themeSwitch={{
-					enabled: false,
-				}}
-				i18n
-				nav={{
-					title: <strong>{t("documentation.title")}</strong>,
-					url: "/docs",
-				}}
-				sidebar={{
-					defaultOpenLevel: 1,
-				}}
-			>
-				{children}
-			</DocsLayout>
-		</div>
+		<DocsLayout
+			tree={
+				docsSource.pageTree[locale] ??
+				docsSource.pageTree[config.i18n.defaultLocale]
+			}
+			themeSwitch={{
+				enabled: false,
+			}}
+			i18n
+			nav={{
+				title: <strong>{t("documentation.title")}</strong>,
+				url: "/docs",
+			}}
+			sidebar={{
+				defaultOpenLevel: 0,
+			}}
+			containerProps={{
+				className: "pt-14",
+				style: docsLayoutStyle,
+			}}
+			slots={{
+				header: DocsManualHeader,
+			}}
+		>
+			{children}
+		</DocsLayout>
 	);
 }

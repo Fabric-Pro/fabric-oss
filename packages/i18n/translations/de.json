@@ -2949,6 +2949,9 @@
 	},
 	"documentation": {
 		"title": "Dokumentation",
+		"copyPage": "Seite kopieren",
+		"collapseSidebar": "Seitenleiste ausblenden",
+		"expandSidebar": "Seitenleiste einblenden",
 		"fallbackNotice": "Diese Seite ist in Ihrer gewählten Sprache noch nicht verfügbar. Es wird die englische Version angezeigt."
 	},
 	"workflows": {

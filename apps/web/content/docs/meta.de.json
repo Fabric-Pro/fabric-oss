@@ -1,0 +1,28 @@
+{
+	"pages": [
+		"---Start---",
+		"index",
+		"getting-started/overview",
+		"tutorials/first-agent",
+		"getting-started/ai-configuration",
+		"---Anleitungen---",
+		"tutorials/first-document",
+		"tutorials/first-workflow",
+		"tutorials/testing-a-work-item",
+		"tutorials/setup-integrations",
+		"tutorials/organization-setup",
+		"---Produkt---",
+		"features",
+		"agents",
+		"integrations",
+		"---Verwaltung---",
+		"guides",
+		"---Entwicklung---",
+		"[Fabric selbst betreiben](/docs/getting-started/installation)",
+		"api",
+		"core-concepts",
+		"---Nachschlagen---",
+		"glossary",
+		"faq"
+	]
+}

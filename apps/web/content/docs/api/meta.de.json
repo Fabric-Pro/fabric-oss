@@ -1,1 +1,4 @@
-{ "title": "API-Referenz", "pages": ["overview", "authentication"] }
+{
+	"title": "API-Referenz",
+	"pages": ["overview", "authentication", "mcp-gateway", "external-agents"]
+}
