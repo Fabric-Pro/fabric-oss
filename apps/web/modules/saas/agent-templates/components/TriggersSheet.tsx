@@ -520,6 +520,7 @@ export function TriggersSheet({
 										</button>
 										{!trigger.alwaysEnabled && (
 											<Switch
+												aria-label={`Enable ${trigger.label}`}
 												checked={isEnabled}
 												disabled={Boolean(
 													needsIntegration &&
@@ -635,12 +636,7 @@ export function TriggersSheet({
 							>
 								Cancel
 							</Button>
-							<Button
-								onClick={handleSave}
-								className="bg-emerald-500 hover:bg-emerald-600"
-							>
-								Save Triggers
-							</Button>
+							<Button onClick={handleSave}>Save Triggers</Button>
 						</div>
 					</div>
 				</SheetFooter>
@@ -829,6 +825,7 @@ function SlackConfigPanel({
 						</p>
 					</div>
 					<Switch
+						aria-label="Reply in Slack threads"
 						checked={config.replyInThreads ?? true}
 						onCheckedChange={(checked) =>
 							onChange({ ...config, replyInThreads: checked })
@@ -889,6 +886,7 @@ function SlackConfigPanel({
 						</p>
 					</div>
 					<Switch
+						aria-label="Respond to @Fabric mentions"
 						checked={config.mentionOnly ?? true}
 						onCheckedChange={(checked) =>
 							onChange({ ...config, mentionOnly: checked })
@@ -906,6 +904,7 @@ function SlackConfigPanel({
 						</p>
 					</div>
 					<Switch
+						aria-label="Respond to direct messages"
 						checked={config.respondToDms ?? true}
 						onCheckedChange={(checked) =>
 							onChange({ ...config, respondToDms: checked })

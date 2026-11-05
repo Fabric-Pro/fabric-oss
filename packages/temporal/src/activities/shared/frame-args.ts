@@ -395,6 +395,7 @@ export function validateUpdateFrameArgs(
 			ok: true;
 			value: {
 				frameId: string;
+				expectedUpdatedAt?: Date;
 				title?: string;
 				description?: string;
 				blocks?: FrameBlock[];
@@ -408,6 +409,29 @@ export function validateUpdateFrameArgs(
 		return {
 			ok: false,
 			error: "Frame ID is required. Provide `frameId` for the frame to update.",
+		};
+	}
+
+	const revision = args?.expectedUpdatedAt;
+	if (
+		revision !== undefined &&
+		(typeof revision !== "string" ||
+			!/^\d{4}-\d{2}-\d{2}T/.test(revision) ||
+			!Number.isFinite(Date.parse(revision)))
+	) {
+		return {
+			ok: false,
+			error: "expectedUpdatedAt must be an ISO timestamp.",
+		};
+	}
+	if (
+		["isPublic", "shareScope", "shareToken", "sharingGrants"].some(
+			(key) => args?.[key] !== undefined,
+		)
+	) {
+		return {
+			ok: false,
+			error: "Change sharing through the explicit sharing controls, separately from content.",
 		};
 	}
 
@@ -443,6 +467,9 @@ export function validateUpdateFrameArgs(
 		ok: true,
 		value: {
 			frameId,
+			...(typeof revision === "string"
+				? { expectedUpdatedAt: new Date(revision) }
+				: {}),
 			title,
 			description,
 			blocks: blocks.value,

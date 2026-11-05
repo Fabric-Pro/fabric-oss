@@ -119,6 +119,7 @@ export type OnboardingArea =
 	| "welcome"
 	| "aiKey"
 	| "assistant"
+	| "skills"
 	| "projects"
 	| "todos"
 	| "overview"
@@ -128,6 +129,7 @@ export type OnboardingArea =
 	| "proposals"
 	| "atlas"
 	| "coding-instructions"
+	| "context"
 	| "apiKey"
 	| "wrapup";
 
@@ -304,6 +306,22 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 			side: "bottom",
 		},
 	},
+	{
+		// Full history shows complete agent names; builder Insights includes saved runs and reusable exact-text tests.
+		id: "agent-runs",
+		area: "assistant",
+		icon: SparklesIcon,
+		target: {
+			kind: "center",
+			navigate: (base) => `${base}/agents?tab=tasks`,
+		},
+	},
+	{
+		id: "skills",
+		area: "skills",
+		icon: BookOpenCheckIcon,
+		target: { kind: "center", navigate: (base) => `${base}/skills` },
+	},
 	// Fizzy #2340. Gated: the To Do page ships to named organizations first,
 	// and for everyone else the sidebar entry this step points at is not
 	// rendered at all.
@@ -328,6 +346,17 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 			kind: "projectComponent",
 			tab: "overview",
 			anchorId: "overview-readiness",
+			side: "bottom",
+		},
+	},
+	{
+		id: "contextWorkspaceDocuments",
+		area: "context",
+		icon: FileTextIcon,
+		target: {
+			kind: "projectComponent",
+			tab: "context",
+			anchorId: "context-workspace-documents",
 			side: "bottom",
 		},
 	},
@@ -584,6 +613,7 @@ export function resolveTourPosition(
 export const ONBOARDING_REQUIRED_AREAS: readonly OnboardingArea[] = [
 	"aiKey",
 	"assistant",
+	"skills",
 	"projects",
 	"overview",
 	"documents",

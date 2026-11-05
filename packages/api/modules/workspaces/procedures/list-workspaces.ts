@@ -3,7 +3,7 @@ import { z } from "zod";
 import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -12,7 +12,11 @@ import {
  * List workspaces accessible to the current user
  */
 export const listWorkspacesProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/document-workspaces",
@@ -74,7 +78,11 @@ export const listWorkspacesProcedure = tenantProtectedProcedure
  * Get workspace statistics for the current user
  */
 export const getWorkspaceStatsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/document-workspaces/stats",

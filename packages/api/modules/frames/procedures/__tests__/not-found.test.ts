@@ -31,7 +31,7 @@ const { handlers, db } = vi.hoisted(() => ({
 		duplicateFrame: vi.fn(),
 		updateFrame: vi.fn(),
 		publishFrame: vi.fn(),
-		revokeFrameShare: vi.fn(),
+		revokeFrameSharing: vi.fn(),
 		getFrameEditHistory: vi.fn(),
 		listSharingGrants: vi.fn(),
 	},
@@ -74,6 +74,7 @@ vi.mock("../../../../orpc/procedures", () => {
 		tenantProtectedProcedure: chainable,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
 		resolveOrganizationId: vi.fn(
 			(organizationId: string | null | undefined) =>
 				organizationId ?? undefined,
@@ -172,7 +173,7 @@ describe.each([
 	[
 		"frames.revokeShare",
 		"POST /frames/{id}/revoke-share",
-		db.revokeFrameShare,
+		db.revokeFrameSharing,
 	],
 	["frames.getHistory", "GET /frames/{id}/history", db.getFrameById],
 	["frames.listGrants", "GET /frames/{id}/grants", db.getFrameById],

@@ -2,8 +2,36 @@ import { logger } from "@repo/logs";
 import { promptDocumentTypeLabel } from "@repo/utils/prompt-action-catalog";
 import { db, Prisma } from "../client";
 import type { PromptFormat, PromptScope, StoryKind } from "../generated/client";
+import { recordAuditTx } from "./audit-log";
 import { advisoryObjectKey } from "./lib/refresh-lock-key";
 
+async function auditResponseContract(
+	tx: Prisma.TransactionClient,
+	parent: { id: string; organizationId: string | null },
+	versionId: string,
+	createdBy: string,
+	contract: Prisma.InputJsonValue,
+	organizationId?: string,
+) {
+	const format =
+		typeof contract === "object" &&
+		!Array.isArray(contract) &&
+		contract !== null &&
+		"format" in contract
+			? contract.format
+			: undefined;
+	await recordAuditTx(tx, {
+		action: "prompt.response_contract_changed",
+		category: "prompt",
+		actor: { type: "user", userId: createdBy },
+		organizationId: organizationId ?? parent.organizationId,
+		resource: { type: "prompt", id: parent.id },
+		metadata: {
+			versionId,
+			responseFormat: typeof format === "string" ? format : undefined,
+		},
+	});
+}
 /**
  * Normalize a tag for case-insensitive comparison
  * Converts to lowercase and replaces hyphens/spaces with underscores
@@ -458,6 +486,8 @@ export async function createPrompt({
 	createdBy,
 	initialContent,
 	initialVariables,
+	responseContract,
+	auditOrganizationId,
 }: {
 	key: string;
 	name: string;
@@ -472,7 +502,15 @@ export async function createPrompt({
 	createdBy: string;
 	initialContent?: string;
 	initialVariables?: any;
+	responseContract?: Prisma.InputJsonValue;
+	auditOrganizationId?: string;
 }) {
+	if (responseContract !== undefined && !initialContent?.trim()) {
+		throw new Error(
+			"Save prompt instructions before configuring a response.",
+		);
+	}
+
 	const data = {
 		key,
 		name,
@@ -495,6 +533,7 @@ export async function createPrompt({
 		version: 1,
 		content,
 		variables: initialVariables ?? {},
+		responseContract,
 		createdBy,
 		scope,
 		userId: scope === "USER" ? (userId ?? null) : null,
@@ -510,9 +549,19 @@ export async function createPrompt({
 			insert: async (tx) => {
 				const created = await tx.prompt.create({ data });
 				if (initialContent) {
-					await tx.promptVersion.create({
+					const version = await tx.promptVersion.create({
 						data: versionData(created.id, initialContent),
 					});
+					if (responseContract !== undefined) {
+						await auditResponseContract(
+							tx,
+							created,
+							version.id,
+							createdBy,
+							responseContract,
+							auditOrganizationId,
+						);
+					}
 				}
 				return created;
 			},
@@ -523,6 +572,24 @@ export async function createPrompt({
 		}
 
 		return prompt;
+	}
+
+	if (responseContract !== undefined && initialContent) {
+		return db.$transaction(async (tx) => {
+			const prompt = await tx.prompt.create({ data });
+			const version = await tx.promptVersion.create({
+				data: versionData(prompt.id, initialContent),
+			});
+			await auditResponseContract(
+				tx,
+				prompt,
+				version.id,
+				createdBy,
+				responseContract,
+				auditOrganizationId,
+			);
+			return prompt;
+		});
 	}
 
 	const prompt = await db.prompt.create({ data });
@@ -1337,6 +1404,9 @@ export async function forkPrompt({
 				version: 1,
 				content: latest.content,
 				variables: (latest.variables ?? undefined) as any,
+				responseContract: (latest.responseContract ?? undefined) as
+					| Prisma.InputJsonValue
+					| undefined,
 				createdBy: userId,
 				scope: targetScope,
 				userId: targetScope === "USER" ? userId : null,
@@ -1380,11 +1450,15 @@ async function insertPromptVersionAndAdvanceBindings(
 	{
 		content,
 		variables,
+		responseContract,
+		auditOrganizationId,
 		changeNote,
 		createdBy,
 	}: {
-		content: string;
+		content?: string;
 		variables?: any;
+		responseContract?: Prisma.InputJsonValue;
+		auditOrganizationId?: string;
 		changeNote?: string;
 		createdBy: string;
 	},
@@ -1392,16 +1466,37 @@ async function insertPromptVersionAndAdvanceBindings(
 	const latest = await tx.promptVersion.findFirst({
 		where: { promptId: parent.id },
 		orderBy: { version: "desc" },
-		select: { id: true, version: true },
+		select: {
+			id: true,
+			version: true,
+			responseContract: true,
+			content: true,
+			variables: true,
+		},
 	});
 	const next = (latest?.version ?? 0) + 1;
+	const versionContent = content ?? latest?.content;
+	if (versionContent === undefined) {
+		throw new Error(
+			"Save instructions before setting an expected response.",
+		);
+	}
 
 	const newVersion = await tx.promptVersion.create({
 		data: {
 			promptId: parent.id,
 			version: next,
-			content,
-			variables: variables ?? {},
+			content: versionContent,
+			variables:
+				variables ??
+				(content === undefined ? latest?.variables : undefined) ??
+				{},
+			responseContract:
+				responseContract ??
+				(latest?.responseContract as
+					| Prisma.InputJsonValue
+					| undefined) ??
+				undefined,
 			changeNote,
 			createdBy,
 			scope: parent.scope,
@@ -1424,6 +1519,16 @@ async function insertPromptVersionAndAdvanceBindings(
 		});
 	}
 
+	if (responseContract !== undefined) {
+		await auditResponseContract(
+			tx,
+			parent,
+			newVersion.id,
+			createdBy,
+			responseContract,
+			auditOrganizationId,
+		);
+	}
 	return newVersion;
 }
 
@@ -1432,12 +1537,16 @@ export async function createPromptVersion({
 	promptId,
 	content,
 	variables,
+	responseContract,
+	auditOrganizationId,
 	changeNote,
 	createdBy,
 }: {
 	promptId: string;
 	content: string;
 	variables?: any;
+	responseContract?: Prisma.InputJsonValue;
+	auditOrganizationId?: string;
 	changeNote?: string;
 	createdBy: string;
 }) {
@@ -1460,6 +1569,8 @@ export async function createPromptVersion({
 				insertPromptVersionAndAdvanceBindings(tx, parent, {
 					content,
 					variables,
+					responseContract,
+					auditOrganizationId,
 					changeNote,
 					createdBy,
 				}),
@@ -1498,6 +1609,8 @@ export async function updatePromptWithVersion({
 	updatedBy,
 	content,
 	variables,
+	responseContract,
+	auditOrganizationId,
 	changeNote,
 }: {
 	id: string;
@@ -1510,6 +1623,8 @@ export async function updatePromptWithVersion({
 	updatedBy: string;
 	content?: string;
 	variables?: any;
+	responseContract?: Prisma.InputJsonValue;
+	auditOrganizationId?: string;
 	changeNote?: string;
 }) {
 	const MAX_ATTEMPTS = 5;
@@ -1529,14 +1644,20 @@ export async function updatePromptWithVersion({
 					},
 				});
 
-				if (content === undefined) {
+				if (content === undefined && responseContract === undefined) {
 					return { prompt, version: null };
 				}
-
 				const version = await insertPromptVersionAndAdvanceBindings(
 					tx,
 					prompt,
-					{ content, variables, changeNote, createdBy: updatedBy },
+					{
+						content,
+						variables,
+						responseContract,
+						auditOrganizationId,
+						changeNote,
+						createdBy: updatedBy,
+					},
 				);
 
 				return { prompt, version };

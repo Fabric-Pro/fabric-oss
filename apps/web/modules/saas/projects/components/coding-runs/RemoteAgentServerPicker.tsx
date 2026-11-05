@@ -16,19 +16,76 @@ import { cn } from "@ui/lib";
 import {
 	Building2Icon,
 	CheckCircle2Icon,
-	CopyIcon,
 	ExternalLinkIcon,
 	HelpCircleIcon,
 	KeyRoundIcon,
 	LaptopIcon,
 	PlusCircleIcon,
 	ServerIcon,
-	TerminalIcon,
 	Trash2Icon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useId, useState } from "react";
-import { toast } from "sonner";
+import { useEffect, useId, useState } from "react";
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const LOOPBACK_PRESET_URLS = new Set([
+	"http://localhost:9100",
+	"http://127.0.0.1:9100",
+	"http://[::1]:9100",
+]);
+
+function normalizeLoopbackHost(hostname?: string): string | null {
+	if (!hostname) {
+		return null;
+	}
+	const trimmed = hostname.trim().toLowerCase();
+	if (!trimmed) {
+		return null;
+	}
+	return trimmed === "::1" ? "[::1]" : trimmed;
+}
+
+export function resolvePersonalLoopbackUrl(portalHostname?: string): string {
+	const host = normalizeLoopbackHost(portalHostname);
+	if (host === "127.0.0.1") {
+		return "http://127.0.0.1:9100";
+	}
+	if (host === "[::1]") {
+		return "http://[::1]:9100";
+	}
+	return "http://localhost:9100";
+}
+
+export function getLoopbackHostMismatchUrl(
+	candidateUrl: string,
+	portalHostname?: string,
+): string | null {
+	const portalHost = normalizeLoopbackHost(portalHostname);
+	if (!portalHost || !LOOPBACK_HOSTS.has(portalHost)) {
+		return null;
+	}
+	let parsed: URL;
+	try {
+		parsed = new URL(candidateUrl.trim());
+	} catch {
+		return null;
+	}
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		return null;
+	}
+	const candidateHost = normalizeLoopbackHost(parsed.hostname);
+	if (
+		!candidateHost ||
+		!LOOPBACK_HOSTS.has(candidateHost) ||
+		candidateHost === portalHost
+	) {
+		return null;
+	}
+	parsed.hostname = portalHost;
+	return parsed.pathname === "/" && !parsed.search && !parsed.hash
+		? parsed.origin
+		: parsed.href;
+}
 
 function generateServerSecret(): string {
 	const bytes = new Uint8Array(24);
@@ -74,6 +131,23 @@ export function RemoteAgentServerPicker({
 	const [scope, setScope] = useState<"PRIVATE" | "TEAM">("PRIVATE");
 	const [scopeFilter, setScopeFilter] = useState<"ALL" | "PRIVATE" | "TEAM">(
 		"ALL",
+	);
+	const [portalHostname, setPortalHostname] = useState<string | undefined>(
+		undefined,
+	);
+
+	useEffect(() => {
+		setPortalHostname(window.location.hostname);
+	}, []);
+
+	const personalPresetUrl = resolvePersonalLoopbackUrl(portalHostname);
+	const personalPresetHostPort = personalPresetUrl.replace(
+		/^https?:\/\//,
+		"",
+	);
+	const suggestedLoopbackUrl = getLoopbackHostMismatchUrl(
+		url,
+		portalHostname,
 	);
 
 	const selected = servers.find((server) => server.id === value);
@@ -127,7 +201,11 @@ export function RemoteAgentServerPicker({
 		if (!name.trim()) {
 			setName("Personal Fabric Agents Remote Server");
 		}
-		setUrl("http://127.0.0.1:9100");
+		const currentHostname =
+			typeof window === "undefined"
+				? portalHostname
+				: window.location.hostname;
+		setUrl(resolvePersonalLoopbackUrl(currentHostname));
 		setScope("PRIVATE");
 		if (secret.length < 32) {
 			setSecret(generateServerSecret());
@@ -138,7 +216,7 @@ export function RemoteAgentServerPicker({
 		if (!name.trim()) {
 			setName("Organization Fabric Agents Remote Server");
 		}
-		if (!url.trim() || url === "http://127.0.0.1:9100") {
+		if (!url.trim() || LOOPBACK_PRESET_URLS.has(url.trim())) {
 			setUrl("https://agents.example.com");
 		}
 		if (canShare) {
@@ -148,13 +226,6 @@ export function RemoteAgentServerPicker({
 			setSecret(generateServerSecret());
 		}
 	};
-
-	const effectiveSecretForCommand =
-		secret.length >= 32 ? secret : "<your-32+-char-secret>";
-	const setupCommand =
-		scope === "TEAM"
-			? `docker run -d --name fabric-agents-server -p 9100:9100 -e FABRIC_SERVER_TOKEN="${effectiveSecretForCommand}" ghcr.io/fabric-pro/fabric-agent-server:latest`
-			: `FABRIC_SERVER_TOKEN="${effectiveSecretForCommand}" npx -y @fabricorg/agent-server --port 9100`;
 
 	return (
 		<section
@@ -201,7 +272,7 @@ export function RemoteAgentServerPicker({
 					</TooltipProvider>
 				</div>
 
-				<div className="inline-flex items-center rounded-md border border-border/70 bg-muted/30 p-0.5 text-xs">
+				<div className="inline-flex max-w-full flex-wrap items-center rounded-md border border-border/70 bg-muted/30 p-0.5 text-xs">
 					<button
 						type="button"
 						onClick={() => setScopeFilter("ALL")}
@@ -399,7 +470,7 @@ export function RemoteAgentServerPicker({
 						<li>
 							Copy the endpoint URL (e.g.{" "}
 							<code className="font-mono text-foreground">
-								http://127.0.0.1:9100
+								{personalPresetUrl}
 							</code>{" "}
 							for a Personal Fabric Agents Remote Server or{" "}
 							<code className="font-mono text-foreground">
@@ -427,8 +498,8 @@ export function RemoteAgentServerPicker({
 							onClick={applyLocalPreset}
 						>
 							<LaptopIcon className="size-3 text-primary" />
-							Personal Fabric Agents Remote Server
-							(127.0.0.1:9100)
+							Personal Fabric Agents Remote Server (
+							{personalPresetHostPort})
 						</Button>
 						<Button
 							type="button"
@@ -468,6 +539,33 @@ export function RemoteAgentServerPicker({
 								value={url}
 								onChange={(event) => setUrl(event.target.value)}
 							/>
+							{suggestedLoopbackUrl && (
+								<div
+									data-testid="loopback-host-mismatch-hint"
+									className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground"
+								>
+									<span>
+										Match this tab&apos;s loopback hostname
+										so embedded Server Web UI sessions keep
+										their{" "}
+										<code className="font-mono text-foreground">
+											SameSite=Strict
+										</code>{" "}
+										sign-in cookie.
+									</span>
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										className="h-6 px-2 text-xs"
+										onClick={() =>
+											setUrl(suggestedLoopbackUrl)
+										}
+									>
+										Use {suggestedLoopbackUrl}
+									</Button>
+								</div>
+							)}
 						</div>
 					</div>
 					<div className="grid gap-3 sm:grid-cols-2">
@@ -525,49 +623,17 @@ export function RemoteAgentServerPicker({
 						</div>
 					</div>
 
-					{/* 1-Click Copyable Bootstrap Command */}
-					<div className="space-y-1.5 rounded-md border border-primary/20 bg-primary/[0.03] p-2.5">
-						<div className="flex flex-wrap items-center justify-between gap-2">
-							<span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
-								<TerminalIcon className="size-3.5 text-primary" />
-								{scope === "TEAM"
-									? "1-Line Organization Server Setup (uses team pooled seats / org subscription plan)"
-									: "1-Line Personal Server Setup (uses your local subscription CLIs)"}
-							</span>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								className="h-6 gap-1 px-2 text-[11px]"
-								onClick={async () => {
-									try {
-										let tokenToUse = secret;
-										if (tokenToUse.length < 32) {
-											tokenToUse = generateServerSecret();
-											setSecret(tokenToUse);
-										}
-										const cmd =
-											scope === "TEAM"
-												? `docker run -d --name fabric-agents-server -p 9100:9100 -e FABRIC_SERVER_TOKEN="${tokenToUse}" ghcr.io/fabric-pro/fabric-agent-server:latest`
-												: `FABRIC_SERVER_TOKEN="${tokenToUse}" npx -y @fabricorg/agent-server --port 9100`;
-										await navigator.clipboard.writeText(
-											cmd,
-										);
-										toast.success(
-											"Copied server startup command with generated secret token",
-										);
-									} catch {
-										toast.error("Failed to copy command");
-									}
-								}}
-							>
-								<CopyIcon className="size-3" />
-								Copy setup command
-							</Button>
-						</div>
-						<code className="block break-all rounded border border-border/60 bg-background px-2 py-1.5 font-mono text-[11px] text-foreground">
-							{setupCommand}
-						</code>
+					<div className="space-y-2 text-sm text-muted-foreground">
+						<p>{t("setupHelp")}</p>
+						<a
+							className="inline-flex items-center gap-1 text-primary underline underline-offset-4"
+							href="/docs/features/projects#personal-vs-organization-remote-servers"
+							target="_blank"
+							rel="noopener noreferrer"
+						>
+							<ExternalLinkIcon className="size-3.5" />
+							{t("setupGuide")}
+						</a>
 					</div>
 
 					<Button

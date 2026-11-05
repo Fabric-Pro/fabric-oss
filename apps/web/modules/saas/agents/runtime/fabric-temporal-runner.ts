@@ -13,6 +13,10 @@ import {
 	type AgentRunnerRunRequest,
 	type AgentRunnerStopRequest,
 } from "@copilotkit/runtime/v2";
+import {
+	DIRECT_APPROVAL_CAPABILITIES,
+	DIRECT_RUNTIME_AGENT_ID,
+} from "@repo/temporal/direct-approval-policy";
 import { Observable } from "rxjs";
 import type { RunStream, RuntimeEngine } from "./engine";
 
@@ -58,14 +62,18 @@ export class FabricRuntimeAgent extends AbstractAgent {
 	}
 
 	async getCapabilities(): Promise<AgentCapabilities> {
+		const approvals =
+			this.agentId === DIRECT_RUNTIME_AGENT_ID
+				? DIRECT_APPROVAL_CAPABILITIES.approvalResume
+				: Boolean(this.agentId);
 		return {
 			transport: { streaming: true, resumable: true },
 			state: { snapshots: true, deltas: true },
 			reasoning: { supported: true, streaming: true },
 			humanInTheLoop: {
-				supported: true,
-				approvals: true,
-				interrupts: true,
+				supported: approvals,
+				approvals,
+				interrupts: approvals,
 			},
 		};
 	}

@@ -1,7 +1,6 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
-import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -23,6 +22,7 @@ import type { WorkflowEdge, WorkflowNode } from "../lib/types";
 import type { WorkflowStatus } from "../lib/workflow-status-display";
 import { ExecutionPanel } from "./ExecutionPanel";
 import { RunOverlayPill } from "./editor/RunOverlayPill";
+import { StarterRunDialog } from "./StarterRunDialog";
 import {
 	ValidationErrorsPanel,
 	type ValidationResult,
@@ -33,13 +33,22 @@ import { WorkflowRunHistory } from "./WorkflowRunHistory";
 
 interface WorkflowEditorProps {
 	workflowId: string;
+	onDirtyChange?: (dirty: boolean) => void;
 }
 
-export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
+export function WorkflowEditor({
+	workflowId,
+	onDirtyChange,
+}: WorkflowEditorProps) {
 	const queryClient = useQueryClient();
 	const { organizationId, basePath } = useOrganizationContext();
+	const [starterRunOpen, setStarterRunOpen] = useState(false);
+	const starterRunGraph = useRef<{
+		nodes: WorkflowNode[];
+		edges: WorkflowEdge[];
+	} | null>(null);
 	const [showExecutionPanel, setShowExecutionPanel] = useState(false);
-	const [showRunHistory, setShowRunHistory] = useState(true);
+	const [showRunHistory, setShowRunHistory] = useState(false);
 	// The run shown on the canvas (and in the execution panel).
 	const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(
 		null,
@@ -51,19 +60,10 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 		useState<ValidationResult | null>(null);
 	const [isPhoneViewport, setIsPhoneViewport] = useState(false);
 
-	// The canvas needs the width: collapse the app sidebar to its icon rail
-	// while the editor is open, the way the other full-screen pages do.
-	const { setIsFullscreen } = useFullscreen();
-	useEffect(() => {
-		setIsFullscreen(true);
-		return () => {
-			setIsFullscreen(false);
-		};
-	}, [setIsFullscreen]);
-
 	// Fetch workflow data
 	const { data, isLoading, error } = useQuery(
 		orpc.workflows.get.queryOptions({
+			enabled: Boolean(organizationId),
 			input: { id: workflowId, organizationId },
 		}),
 	);
@@ -78,7 +78,22 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 	// Update mutation
 	const updateMutation = useMutation(
 		orpc.workflows.update.mutationOptions({
-			onSuccess: () => {
+			onSuccess: (saved) => {
+				queryClient.setQueryData(
+					orpc.workflows.get.queryOptions({
+						input: { id: workflowId, organizationId },
+					}).queryKey,
+					(current) =>
+						current
+							? {
+									workflow: {
+										...current.workflow,
+										...saved.workflow,
+										name: current.workflow.name,
+									},
+								}
+							: undefined,
+				);
 				toast.success("Workflow saved");
 			},
 			onError: (error) => {
@@ -141,15 +156,15 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 
 	// Handle save
 	const handleSave = useCallback(
-		(nodes: WorkflowNode[], edges: WorkflowEdge[]) => {
-			updateMutation.mutate({
+		async (nodes: WorkflowNode[], edges: WorkflowEdge[]) => {
+			await updateMutation.mutateAsync({
 				id: workflowId,
 				organizationId,
 				nodes: nodes as unknown[],
 				edges: edges as unknown[],
 			});
 		},
-		[workflowId, organizationId, updateMutation],
+		[workflowId, organizationId, updateMutation, queryClient],
 	);
 
 	// One idempotency key per run *intent*. The toolbar disables the button
@@ -164,9 +179,14 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 	// hands back that run rather than starting another.
 	const runIdempotencyKeyRef = useRef<string | null>(null);
 
-	// Handle run - pass current nodes/edges to execute with unsaved changes
+	// A run starts only after the displayed graph has been saved successfully.
 	const handleRun = useCallback(
-		(nodes: WorkflowNode[], edges: WorkflowEdge[]) => {
+		async (
+			nodes: WorkflowNode[],
+			edges: WorkflowEdge[],
+			notes?: string,
+		) => {
+			await handleSave(nodes, edges);
 			const idempotencyKey =
 				runIdempotencyKeyRef.current ?? crypto.randomUUID();
 			runIdempotencyKeyRef.current = idempotencyKey;
@@ -174,6 +194,7 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 				{
 					id: workflowId,
 					organizationId,
+					triggerData: notes ? { notes } : undefined,
 					// Pass current nodes/edges so execution uses latest state
 					nodes: nodes as unknown[],
 					edges: edges as unknown[],
@@ -188,20 +209,62 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 				},
 			);
 		},
-		[workflowId, organizationId, executeMutation],
+		[workflowId, organizationId, executeMutation, handleSave],
 	);
 
-	// Handle name change
-	const handleNameChange = useCallback(
-		(name: string) => {
-			updateMutation.mutate({
-				id: workflowId,
-				organizationId,
-				name,
-			});
-		},
-		[workflowId, organizationId, updateMutation],
+	const [nameRetryValue, setNameRetryValue] = useState<string | undefined>();
+	const renameInFlight = useRef<Promise<void> | null>(null);
+	const renameMutation = useMutation(
+		orpc.workflows.update.mutationOptions({
+			onError: (_error, variables) => setNameRetryValue(variables.name),
+			onSuccess: (saved) => {
+				setNameRetryValue(undefined);
+				queryClient.setQueryData(
+					orpc.workflows.get.queryOptions({
+						input: { id: workflowId, organizationId },
+					}).queryKey,
+					(current) =>
+						current
+							? {
+									workflow: {
+										...current.workflow,
+										name: saved.workflow.name,
+										updatedAt: saved.workflow.updatedAt,
+									},
+								}
+							: undefined,
+				);
+				void queryClient.invalidateQueries({
+					queryKey: orpc.workflows.list.key(),
+				});
+			},
+		}),
 	);
+	const handleNameChange = useCallback(
+		(name: string): Promise<void> => {
+			if (renameInFlight.current) {
+				return renameInFlight.current;
+			}
+			const pending = renameMutation
+				.mutateAsync({ id: workflowId, organizationId, name })
+				.then(() => {});
+			renameInFlight.current = pending;
+			void pending
+				.finally(() => {
+					renameInFlight.current = null;
+				})
+				.catch(() => {});
+			return pending;
+		},
+		[workflowId, organizationId, renameMutation],
+	);
+	const nameSaveStatus = renameMutation.isPending
+		? "saving"
+		: renameMutation.isError
+			? "error"
+			: renameMutation.isSuccess
+				? "saved"
+				: "idle";
 
 	// Selecting the run already on the canvas returns to editing.
 	const handleSelectExecution = useCallback(
@@ -287,6 +350,11 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 		() =>
 			currentExecutionId
 				? {
+						executionId: currentExecutionId,
+						status:
+							execution?.id === currentExecutionId
+								? execution.status
+								: undefined,
 						shortId: shortRunId(currentExecutionId),
 						steps: buildStepRuns(
 							execution?.id === currentExecutionId
@@ -323,39 +391,35 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 		);
 	}
 
-	if (isPhoneViewport) {
-		return (
-			<div className="flex-1 p-4 sm:p-6">
-				<Card className="mx-auto max-w-lg space-y-4 p-4 sm:p-6">
-					<h2 className="text-lg font-semibold">Workflow Editor</h2>
-					<p className="text-sm text-muted-foreground">
-						The drag-and-drop workflow canvas is currently optimized
-						for desktop and tablets. On phones, you can still view
-						workflows from the list and continue editing on a larger
-						screen.
-					</p>
-					<div className="flex flex-col gap-2 sm:flex-row">
-						<Button
-							asChild
-							className="w-full sm:w-auto"
-							variant="outline"
-						>
-							<Link href={`${basePath}/workflows`}>
-								<ArrowLeftIcon className="mr-2 h-4 w-4" />
-								Back to Workflows
-							</Link>
-						</Button>
-						<Button asChild className="w-full sm:w-auto">
-							<Link href={`${basePath}/settings/integrations`}>
-								Manage Integrations
-							</Link>
-						</Button>
-					</div>
-				</Card>
-			</div>
-		);
-	}
-
+	const phoneFallback = (
+		<div className="flex-1 p-4 sm:p-6">
+			<Card className="mx-auto max-w-lg space-y-4 p-4 sm:p-6">
+				<h2 className="text-lg font-semibold">Workflow Editor</h2>
+				<p className="text-sm text-muted-foreground">
+					The drag-and-drop workflow canvas is currently optimized for
+					desktop and tablets. On phones, you can still view workflows
+					from the list and continue editing on a larger screen.
+				</p>
+				<div className="flex flex-col gap-2 sm:flex-row">
+					<Button
+						asChild
+						className="w-full sm:w-auto"
+						variant="outline"
+					>
+						<Link href={`${basePath}/workflows`}>
+							<ArrowLeftIcon className="mr-2 h-4 w-4" />
+							Back to Workflows
+						</Link>
+					</Button>
+					<Button asChild className="w-full sm:w-auto">
+						<Link href={`${basePath}/settings/integrations`}>
+							Manage Integrations
+						</Link>
+					</Button>
+				</div>
+			</Card>
+		</div>
+	);
 	const canvasOverlay = (
 		<>
 			{!showRunHistory && (
@@ -393,16 +457,23 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 
 	return (
 		<div className="flex-1 flex flex-col min-h-0">
+			{isPhoneViewport && phoneFallback}
 			{/* Pre-flight Validation Errors Panel */}
-			{validationResult && !validationResult.valid && (
-				<ValidationErrorsPanel
-					validation={validationResult}
-					onDismiss={() => setValidationResult(null)}
-					className="mx-auto mt-4"
-				/>
-			)}
+			{!isPhoneViewport &&
+				validationResult &&
+				!validationResult.valid && (
+					<ValidationErrorsPanel
+						validation={validationResult}
+						onDismiss={() => setValidationResult(null)}
+						className="mx-auto mt-4"
+					/>
+				)}
 
-			<div className="flex-1 flex relative min-h-0">
+			<div
+				className={
+					isPhoneViewport ? "hidden" : "flex-1 flex relative min-h-0"
+				}
+			>
 				<WorkflowErrorBoundary
 					onError={(error, errorInfo) => {
 						console.error(
@@ -416,11 +487,37 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 					}}
 				>
 					<WorkflowBuilder
+						key={`${organizationId}:${workflowId}`}
+						onDirtyChange={onDirtyChange}
 						initialNodes={nodes}
 						initialEdges={edges}
 						onSave={handleSave}
-						onRun={handleRun}
+						onRun={async (nodes, edges) => {
+							if (
+								[
+									"delivery-brief",
+									"action-plan",
+									"release-notes",
+									"decision-digest",
+									"risk-review",
+								].includes(
+									(
+										workflow.settings as {
+											deliveryStarterId?: string;
+										} | null
+									)?.deliveryStarterId ?? "",
+								)
+							) {
+								await handleSave(nodes, edges);
+								starterRunGraph.current = { nodes, edges };
+								setStarterRunOpen(true);
+							} else {
+								await handleRun(nodes, edges);
+							}
+						}}
 						onNameChange={handleNameChange}
+						nameSaveStatus={nameSaveStatus}
+						nameRetryValue={nameRetryValue}
 						isLoading={
 							updateMutation.isPending ||
 							executeMutation.isPending
@@ -433,7 +530,12 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 						publishedVersion={workflow.publishedVersion}
 						onPublished={() => {
 							queryClient.invalidateQueries({
-								queryKey: ["workflow", workflowId],
+								queryKey: orpc.workflows.list.key(),
+							});
+							queryClient.invalidateQueries({
+								queryKey: orpc.workflows.get.queryOptions({
+									input: { id: workflowId, organizationId },
+								}).queryKey,
 							});
 						}}
 						runsPanel={
@@ -453,6 +555,20 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 					/>
 				</WorkflowErrorBoundary>
 
+				<StarterRunDialog
+					open={starterRunOpen}
+					onOpenChange={setStarterRunOpen}
+					onRun={(notes) => {
+						const graph = starterRunGraph.current;
+						if (!graph) {
+							return;
+						}
+						setStarterRunOpen(false);
+						void handleRun(graph.nodes, graph.edges, notes).catch(
+							() => {},
+						);
+					}}
+				/>
 				{/* Execution details float over the editor */}
 				{showExecutionPanel && currentExecutionId && (
 					<ExecutionPanel

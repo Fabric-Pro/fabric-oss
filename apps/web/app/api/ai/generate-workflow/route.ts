@@ -12,8 +12,9 @@ import {
 	forbiddenOrganizationResponse,
 	resolveRequestedOrganization,
 } from "@repo/api/lib/requested-organization";
+import { normalizeGeneratedNodes } from "@repo/api/modules/workflows/lib/generated-nodes";
 import { auth } from "@repo/auth";
-import { generateText } from "ai";
+import { generateText, Output } from "ai";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
@@ -298,7 +299,11 @@ Available node types:
 14. publish-frame - Save a result as a versioned frame on the project's Artifacts tab (title, content, format, surface: artifact or workspace, mode: new-version or new-frame). Place it after agent-task with content "{{Agent Task.html}}"; label it "Publish Frame".
 
 Position nodes from left to right (x: 0, 250, 500, etc.) with staggered y positions.
-Use variable syntax {{NodeLabel.field}} to reference previous node outputs.`;
+Use variable syntax {{NodeLabel.field}} to reference previous node outputs.
+Every node MUST use this shape: {"id":"start","type":"trigger","position":{"x":0,"y":0},"data":{"label":"Start","config":{"triggerType":"manual"}}}.
+Put label and config inside data, never beside id or type. Put step configuration inside data.config.
+An AI Generate Text node uses data.config.aiPrompt; omit aiModel to use the configured default provider.
+Never invent connection ids or credentials. Keep missing connection choices for the user to configure.`;
 
 // System prompt for creating new workflows
 const CREATE_SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT}
@@ -416,6 +421,10 @@ Respond with a JSON object only, no markdown or code fences.`;
 			model,
 			instructions: systemPrompt,
 			prompt: userPrompt,
+			output: Output.json(),
+			maxOutputTokens: 8192,
+			maxRetries: 0,
+			abortSignal: AbortSignal.timeout(90000),
 		});
 
 		// Parse JSON from text response
@@ -436,7 +445,20 @@ Respond with a JSON object only, no markdown or code fences.`;
 		}
 
 		// Validate with Zod schema
-		return GeneratedWorkflowSchema.parse(parsed);
+
+		if (parsed && typeof parsed === "object" && "nodes" in parsed) {
+			const draft = parsed as Record<string, unknown>;
+			if (Array.isArray(draft.nodes)) {
+				draft.nodes = normalizeGeneratedNodes(draft.nodes);
+			}
+		}
+		const validated = GeneratedWorkflowSchema.safeParse(parsed);
+		if (!validated.success) {
+			throw new Error(
+				"AI returned an incomplete workflow draft. Your workflow is unchanged. Try describing the trigger and steps more specifically.",
+			);
+		}
+		return validated.data;
 	} catch (error: unknown) {
 		// A usage-limit refusal goes on unwrapped, so the handler answers
 		// with the limit rather than a generic failure.

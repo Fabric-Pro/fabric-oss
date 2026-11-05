@@ -1,3 +1,4 @@
+import { frameReadDto } from "../lib/frame-read-dto";
 /**
  * List frames attached to a story (plan Slice 3: spike demos).
  *
@@ -38,7 +39,7 @@ export const listFramesForStoryProcedure = tenantProtectedProcedure
 			limit: input.limit,
 		});
 		return frames.map((frame) => ({
-			...frame,
+			...frameReadDto(frame),
 			createdAt: frame.createdAt.toISOString(),
 			updatedAt: frame.updatedAt.toISOString(),
 		}));

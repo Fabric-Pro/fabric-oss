@@ -165,6 +165,30 @@ describe("upsertWorkflowSchedule", () => {
 		expect(updateMock).toHaveBeenCalledOnce();
 	});
 
+	it("resuming an existing paused schedule clears its pause without replacing history", async () => {
+		const already = new Error("schedule already running");
+		already.name = "ScheduleAlreadyRunning";
+		createMock.mockRejectedValue(already);
+		let updated: any;
+		updateMock.mockImplementation(async (fn: any) => {
+			updated = fn({
+				spec: { cronExpressions: ["0 9 * * *"] },
+				state: { paused: true, note: "Example pause" },
+			});
+		});
+		await upsertWorkflowSchedule(
+			{
+				workflowId: "example-workflow",
+				userId: "example-user",
+				organizationId: "example-org",
+				cron: "0 9 * * *",
+			},
+			client,
+		);
+		expect(updated.state).toEqual({ paused: false, note: "Example pause" });
+		expect(updateMock).toHaveBeenCalledOnce();
+	});
+
 	it("refuses an implausible cron before touching Temporal", async () => {
 		await expect(
 			upsertWorkflowSchedule(

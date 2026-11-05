@@ -1,3 +1,4 @@
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 /**
  * Deploy Agent Procedure
  *
@@ -6,25 +7,27 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { ORPCError } from "@orpc/server";
 import {
 	checkDeploymentQuota,
 	createAgentDeployment,
 	db,
 	getAgentDeploymentByInstanceId,
 	getAgentTemplateInstance,
-	incrementDeploymentQuota,
 	type Prisma,
 	resolveWorkflowIntegrationForProvider,
 	setDeploymentSupervisor,
 } from "@repo/database";
+import { isManagedAgentRunSchedule } from "@repo/database/prisma/queries/lib/managed-agent-run-schedule";
 import { getScheduleClient, getTemporalClient } from "@repo/temporal";
 import { decryptApiKeyMaybe, encryptApiKey } from "@repo/utils";
+import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import { CronExpressionParser } from "cron-parser";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -58,7 +61,11 @@ function generateSlug(name: string): string {
 }
 
 export const deployProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(deployInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
@@ -86,12 +93,19 @@ export const deployProcedure = tenantProtectedProcedure
 			throw new Error("Agent instance not found");
 		}
 
-		// Verify ownership/access
-		const isOwner = instance.userId === userId;
-		const isOrgInstance = instance.organizationId === organizationId;
+		if (!organizationId || instance.organizationId !== organizationId) {
+			throw new ORPCError("NOT_FOUND", {
+				message: "Agent instance not found",
+			});
+		}
 
-		if (!isOwner && !isOrgInstance) {
-			throw new Error("You don't have access to this agent instance");
+		const availability = getAgentImplementationAvailability(
+			instance.customInstructions,
+		);
+		if (!availability.available) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: availability.reason,
+			});
 		}
 
 		// Check if already deployed
@@ -100,116 +114,160 @@ export const deployProcedure = tenantProtectedProcedure
 			{ userId, organizationId },
 		);
 
-		// Trigger-only flows (Slack mention, lifecycle) create a PENDING
-		// placeholder deployment via syncDeploymentTriggers. Treat that row as
-		// promotable: the user is now performing a real deploy. A row with a
-		// supervisorWorkflowId is genuinely deployed and must be terminated
-		// first.
+		// A saved receipt makes repeated deployment idempotent, including recovery
+		// after trigger synchronization failed. It never admits a second supervisor.
+		if (
+			existingDeployment?.supervisorRunId &&
+			existingDeployment.supervisorWorkflowId &&
+			["PENDING", "DEPLOYING", "ACTIVE"].includes(
+				existingDeployment.status,
+			)
+		) {
+			const activatedTriggers = await activateInstanceTriggers({
+				deploymentId: existingDeployment.id,
+				supervisorWorkflowId: existingDeployment.supervisorWorkflowId,
+				taskQueue: "agents",
+				instanceTriggers: instance.triggers as InstanceTrigger[] | null,
+				userId,
+				organizationId,
+			});
+			return {
+				deployment: existingDeployment,
+				triggers: activatedTriggers,
+			};
+		}
 		const placeholderDeployment =
 			existingDeployment &&
-			existingDeployment.status === "PENDING" &&
-			!existingDeployment.supervisorWorkflowId
+			["PENDING", "DEPLOYING", "ACTIVE"].includes(
+				existingDeployment.status,
+			) &&
+			!existingDeployment.supervisorRunId
 				? existingDeployment
 				: null;
-
 		if (existingDeployment && !placeholderDeployment) {
-			if (
-				existingDeployment.status === "ACTIVE" ||
-				existingDeployment.status === "PAUSED"
-			) {
-				throw new Error(
-					"This agent instance is already deployed. Terminate the existing deployment first.",
-				);
-			}
+			throw new ORPCError("CONFLICT", {
+				message:
+					"Inspect or terminate the existing deployment before deploying again.",
+			});
 		}
-
-		// Check quota
 		const quotaCheck = await checkDeploymentQuota(userId, organizationId);
-		if (!quotaCheck.allowed) {
-			throw new Error(quotaCheck.reason || "Deployment quota exceeded");
+		// Recovering an already-admitted intent must not create new quota usage.
+		if (
+			!quotaCheck.allowed &&
+			!placeholderDeployment?.supervisorWorkflowId
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: quotaCheck.reason || "Deployment quota exceeded",
+			});
 		}
 
 		// Create deployment record (or reuse the trigger-only placeholder)
 		const slug = generateSlug(instance.name);
 		const config = input.config;
 
-		const deployment = placeholderDeployment
-			? await db.agentDeployment.update({
-					where: { id: placeholderDeployment.id },
-					data: {
+		const deployment = placeholderDeployment?.supervisorWorkflowId
+			? placeholderDeployment
+			: placeholderDeployment
+				? await db.agentDeployment.update({
+						where: { id: placeholderDeployment.id },
+						data: {
+							name: instance.name,
+							maxConcurrentExecutions:
+								config?.maxConcurrentExecutions ?? 5,
+							rateLimitPerMinute:
+								config?.rateLimitPerMinute ?? 60,
+							rateLimitPerHour: config?.rateLimitPerHour ?? 500,
+							dailyExecutionLimit: config?.dailyExecutionLimit,
+							monthlyExecutionLimit:
+								config?.monthlyExecutionLimit,
+						},
+						include: {
+							instance: { include: { template: true } },
+						},
+					})
+				: await createAgentDeployment({
+						instanceId: input.instanceId,
+						userId,
+						organizationId,
 						name: instance.name,
+						slug: `${slug}-${Date.now()}`,
 						maxConcurrentExecutions:
 							config?.maxConcurrentExecutions ?? 5,
 						rateLimitPerMinute: config?.rateLimitPerMinute ?? 60,
 						rateLimitPerHour: config?.rateLimitPerHour ?? 500,
 						dailyExecutionLimit: config?.dailyExecutionLimit,
 						monthlyExecutionLimit: config?.monthlyExecutionLimit,
-					},
-					include: {
-						instance: { include: { template: true } },
-					},
-				})
-			: await createAgentDeployment({
-					instanceId: input.instanceId,
-					userId,
-					organizationId,
-					name: instance.name,
-					slug: `${slug}-${Date.now()}`,
-					maxConcurrentExecutions:
-						config?.maxConcurrentExecutions ?? 5,
-					rateLimitPerMinute: config?.rateLimitPerMinute ?? 60,
-					rateLimitPerHour: config?.rateLimitPerHour ?? 500,
-					dailyExecutionLimit: config?.dailyExecutionLimit,
-					monthlyExecutionLimit: config?.monthlyExecutionLimit,
-				});
+					});
 
 		// Select task queue based on user/org context
-		const taskQueue = selectTaskQueueForDeployment(userId, organizationId);
+		const taskQueue = "agents";
+		const workflowId = `agent-supervisor-${deployment.id}`;
+		// Persist the admission identity before contacting Temporal. A retry attaches
+		// to this same supervisor even if start succeeded but its receipt was lost.
+		await db.agentDeployment.update({
+			where: { id: deployment.id },
+			data: { supervisorWorkflowId: workflowId, taskQueue },
+		});
 
 		try {
 			// Start supervisor workflow
 			const temporalClient = await getTemporalClient();
 
-			const workflowId = `agent-supervisor-${deployment.id}`;
-			const handle = await temporalClient.workflow.start(
-				"agentSupervisorWorkflow",
-				withCorrelationMemo({
-					taskQueue,
-					workflowId,
-					args: [
-						{
-							deploymentId: deployment.id,
-							instanceId: input.instanceId,
-							userId,
-							organizationId,
-							// Every run the supervisor starts inherits this job, so
-							// the deployment's model calls may run on the
-							// organization's shared ChatGPT plans (Fizzy #2770).
-							jobType: "external-agent",
-							config: {
-								maxConcurrentExecutions:
-									deployment.maxConcurrentExecutions,
-								rateLimitPerMinute:
-									deployment.rateLimitPerMinute,
-								rateLimitPerHour: deployment.rateLimitPerHour,
-								healthCheckIntervalMs: 60000, // 1 minute
-								executionTimeoutMs: 30 * 60 * 1000, // 30 minutes
-							},
+			const startOptions = withCorrelationMemo({
+				taskQueue,
+				workflowId,
+				workflowIdReusePolicy: "REJECT_DUPLICATE" as const,
+				workflowIdConflictPolicy: "FAIL" as const,
+				args: [
+					{
+						deploymentId: deployment.id,
+						instanceId: input.instanceId,
+						userId,
+						organizationId,
+						jobType: "external-agent",
+						config: {
+							maxConcurrentExecutions:
+								deployment.maxConcurrentExecutions,
+							rateLimitPerMinute: deployment.rateLimitPerMinute,
+							rateLimitPerHour: deployment.rateLimitPerHour,
+							healthCheckIntervalMs: 60000,
+							executionTimeoutMs: 30 * 60 * 1000,
 						},
-					],
-				}),
-			);
+					},
+				],
+			});
+			let runId: string;
+			try {
+				const handle = await temporalClient.workflow.start(
+					"agentSupervisorWorkflow",
+					startOptions,
+				);
+				runId = handle.firstExecutionRunId;
+			} catch (error) {
+				if (!(error instanceof WorkflowExecutionAlreadyStartedError)) {
+					throw error;
+				}
+				const description = await temporalClient.workflow
+					.getHandle(workflowId)
+					.describe();
+				if (description.status.name !== "RUNNING") {
+					throw new ORPCError("CONFLICT", {
+						message:
+							"The previous supervisor has closed. Inspect its outcome before deploying again.",
+					});
+				}
+				runId = description.runId;
+			}
 
 			// Update deployment with workflow info
 			await setDeploymentSupervisor(
 				deployment.id,
 				workflowId,
-				handle.firstExecutionRunId,
+				runId,
 				taskQueue,
 			);
 
-			// Increment quota
-			await incrementDeploymentQuota(userId, organizationId);
+			// Receipt and quota are committed atomically and only once.
 
 			// Activate triggers from instance configuration
 			const activatedTriggers = await activateInstanceTriggers({
@@ -230,42 +288,16 @@ export const deployProcedure = tenantProtectedProcedure
 				triggers: activatedTriggers,
 			};
 		} catch (error) {
-			// Clean up on failure - mark deployment as failed
-			// This would be handled by a compensation in production
-			throw new Error(
-				`Failed to start supervisor workflow: ${error instanceof Error ? error.message : "Unknown error"}`,
-			);
+			if (error instanceof ORPCError) {
+				throw error;
+			}
+			throw new ORPCError("SERVICE_UNAVAILABLE", {
+				message:
+					"Deployment admission or receipt is unresolved. Inspect this deployment or retry deployment to reconcile the same supervisor.",
+				data: { deploymentId: deployment.id, workflowId },
+			});
 		}
 	});
-
-/**
- * Select task queue based on tenant context
- */
-function selectTaskQueueForDeployment(
-	userId: string,
-	organizationId?: string,
-): string {
-	// Simple hash-based sharding
-	const hashCode = (str: string): number => {
-		let hash = 0;
-		for (let i = 0; i < str.length; i++) {
-			const char = str.charCodeAt(i);
-			hash = (hash << 5) - hash + char;
-			hash = hash & hash;
-		}
-		return Math.abs(hash);
-	};
-
-	if (organizationId) {
-		// Organization: use shared pool with 10 shards
-		const shardNumber = hashCode(organizationId) % 10;
-		return `agents-org-shared-shard-${shardNumber}`;
-	}
-
-	// Personal: use personal pool with 5 shards
-	const shardNumber = hashCode(userId) % 5;
-	return `agents-personal-shard-${shardNumber}`;
-}
 
 // =============================================================================
 // TRIGGER ACTIVATION
@@ -427,6 +459,9 @@ async function activateInstanceTriggers(
 	const triggerKey = (type: string, slackChannelId: string | null) =>
 		`${type}:${slackChannelId ?? ""}`;
 	for (const row of existingTriggerRows) {
+		if (isManagedAgentRunSchedule(row.config)) {
+			continue;
+		}
 		existingByKey.set(triggerKey(row.type, row.slackChannelId), row);
 	}
 	const seenKeys = new Set<string>();

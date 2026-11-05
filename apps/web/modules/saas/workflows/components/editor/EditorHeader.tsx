@@ -26,6 +26,7 @@ import {
 	WORKFLOW_STATUS_DISPLAY,
 	type WorkflowStatus,
 } from "../../lib/workflow-status-display";
+import type { NameSaveStatus } from "./NameSaveFeedback";
 
 function ToolbarIconButton({
 	label,
@@ -100,9 +101,11 @@ export function WorkflowStatusPill({
 function WorkflowTitle({
 	workflowName,
 	onRename,
+	nameSaveStatus = "idle",
 }: {
 	workflowName: string;
-	onRename?: (name: string) => void;
+	onRename?: (name: string) => void | Promise<void>;
+	nameSaveStatus?: NameSaveStatus;
 }) {
 	const tTooltips = useTranslations("tooltips.common");
 	const [isEditing, setIsEditing] = useState(false);
@@ -112,10 +115,14 @@ function WorkflowTitle({
 		setDraft(workflowName);
 	}, [workflowName]);
 
-	const commit = () => {
+	const commit = async () => {
 		const name = draft.trim();
 		if (name && name !== workflowName) {
-			onRename?.(name);
+			try {
+				await onRename?.(name);
+			} catch {
+				return;
+			}
 		}
 		setIsEditing(false);
 	};
@@ -124,11 +131,14 @@ function WorkflowTitle({
 		return (
 			<Input
 				aria-label="Workflow name"
+				maxLength={255}
+				readOnly={nameSaveStatus === "saving"}
 				value={draft}
 				onChange={(e) => setDraft(e.target.value)}
 				onKeyDown={(e) => {
 					if (e.key === "Enter") {
-						commit();
+						e.preventDefault();
+						e.currentTarget.blur();
 					} else if (e.key === "Escape") {
 						setDraft(workflowName);
 						setIsEditing(false);
@@ -143,12 +153,12 @@ function WorkflowTitle({
 
 	return (
 		<>
-			<span
+			<h2
 				title={workflowName}
 				className="min-w-0 truncate text-[15px] font-medium"
 			>
 				{workflowName}
-			</span>
+			</h2>
 			{onRename ? (
 				<Tooltip>
 					<TooltipTrigger asChild>
@@ -176,7 +186,8 @@ function WorkflowTitle({
 interface EditorHeaderProps {
 	workflowsPath: string;
 	workflowName: string;
-	onRename?: (name: string) => void;
+	onRename?: (name: string) => void | Promise<void>;
+	nameSaveStatus?: NameSaveStatus;
 	status: WorkflowStatus;
 	version: number;
 	publishedVersion?: number | null;
@@ -193,6 +204,8 @@ interface EditorHeaderProps {
 	onRun: () => void;
 	hasSteps: boolean;
 	isBusy: boolean;
+	isDirty?: boolean;
+	onBeforeLeave?: () => boolean;
 }
 
 /**
@@ -203,6 +216,7 @@ export function EditorHeader({
 	workflowsPath,
 	workflowName,
 	onRename,
+	nameSaveStatus = "idle",
 	status,
 	version,
 	publishedVersion,
@@ -217,13 +231,19 @@ export function EditorHeader({
 	onRun,
 	hasSteps,
 	isBusy,
+	isDirty = false,
+	onBeforeLeave,
 }: EditorHeaderProps) {
 	return (
-		<header className="flex h-[52px] shrink-0 items-center gap-3 border-b bg-background pl-2 pr-3">
+		<header className="flex min-h-[52px] shrink-0 flex-wrap items-center gap-2 border-b bg-background px-3 py-2">
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<Link
 						href={workflowsPath}
+						onClick={(e) => {
+							if (onBeforeLeave && !onBeforeLeave())
+								e.preventDefault();
+						}}
 						aria-label="Back to workflows"
 						className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
 					>
@@ -235,10 +255,14 @@ export function EditorHeader({
 
 			<nav
 				aria-label="Breadcrumb"
-				className="flex min-w-0 flex-1 items-center gap-2"
+				className="flex min-w-0 basis-[calc(100%-3rem)] flex-1 items-center gap-2"
 			>
 				<Link
 					href={workflowsPath}
+					onClick={(e) => {
+						if (onBeforeLeave && !onBeforeLeave())
+							e.preventDefault();
+					}}
 					className="shrink-0 text-[13px] text-muted-foreground hover:text-foreground"
 				>
 					Workflows
@@ -252,7 +276,20 @@ export function EditorHeader({
 				<WorkflowTitle
 					workflowName={workflowName}
 					onRename={onRename}
+					nameSaveStatus={nameSaveStatus}
 				/>
+				<span
+					role="status"
+					className="shrink-0 text-xs text-muted-foreground"
+				>
+					{nameSaveStatus === "saving"
+						? "Saving name…"
+						: nameSaveStatus === "error"
+							? "Name not saved"
+							: isDirty
+								? "Unsaved changes"
+								: "Saved draft"}
+				</span>
 				<WorkflowStatusPill
 					status={status}
 					version={version}
@@ -303,7 +340,7 @@ export function EditorHeader({
 				variant="outline"
 				size="sm"
 				onClick={onSave}
-				disabled={isBusy || !hasSteps}
+				disabled={isBusy}
 				data-testid="workflow-save"
 				aria-keyshortcuts="Meta+S Control+S"
 				className="rounded-lg"

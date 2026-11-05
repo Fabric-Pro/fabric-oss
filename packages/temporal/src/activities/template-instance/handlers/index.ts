@@ -10,6 +10,7 @@ import type {
 	DataSourceHandler,
 	DataSourceType,
 } from "../types";
+import { FabricDataSourceHandler } from "./fabric-handler";
 import { IntegrationDataSourceHandler } from "./integration-handler";
 import { McpDataSourceHandler } from "./mcp-handler";
 
@@ -23,7 +24,7 @@ const handlers: Record<DataSourceType, DataSourceHandler> = {
 	integration: integrationHandler,
 	workspace: null as unknown as DataSourceHandler, // TODO: Implement
 	"user-input": null as unknown as DataSourceHandler, // TODO: Implement
-	fabric: null as unknown as DataSourceHandler, // TODO: Implement
+	fabric: new FabricDataSourceHandler(),
 };
 
 /**

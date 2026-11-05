@@ -6,6 +6,11 @@
  * and materialized as AgentMemoryFile entries on instance creation.
  */
 
+import {
+	hasPermission,
+	Permissions,
+	resolveOrgPermissions,
+} from "@repo/permissions";
 import { db } from "../client";
 import type {
 	AgentTemplateScope,
@@ -36,117 +41,132 @@ export interface ListSkillsParams {
 	sortOrder?: "asc" | "desc";
 }
 
-export async function listSkills(params: ListSkillsParams): Promise<{
-	skills: Skill[];
-	total: number;
-}> {
-	const {
-		userId,
-		organizationId,
-		scope,
-		category,
-		tags,
-		search,
-		isPublished = true,
-		limit = 50,
-		offset = 0,
-		sortBy = "updatedAt",
-		sortOrder = "desc",
-	} = params;
-
+/** Organization contexts never include the legacy USER/null namespace. Drafts are owner-private. */
+export function skillVisibilityWhere(
+	actor: { userId?: string; organizationId?: string | null },
+	includeArchived = false,
+): Prisma.SkillWhereInput {
+	const visible: Prisma.SkillWhereInput[] = [
+		{
+			scope: "SYSTEM",
+			userId: null,
+			organizationId: null,
+			isPublished: true,
+			archivedAt: null,
+		},
+	];
+	if (actor.organizationId) {
+		visible.push({
+			scope: "ORGANIZATION",
+			organizationId: actor.organizationId,
+			...(!includeArchived ? { archivedAt: null } : {}),
+			OR: [
+				...(actor.userId ? [{ userId: actor.userId }] : []),
+				{ isPublished: true, archivedAt: null },
+			],
+		});
+	}
+	return { OR: visible };
+}
+/** Live permission floors also apply to background source reads. */
+export async function assertSkillReadAccess(
+	actor: {
+		userId?: string;
+		organizationId?: string | null;
+	},
+	client: Prisma.TransactionClient = db,
+) {
+	if (!actor.userId || !actor.organizationId) {
+		throw new Error("Current organization skill access is required.");
+	}
+	const member = await client.member.findFirst({
+		where: {
+			userId: actor.userId,
+			organizationId: actor.organizationId,
+			organization: { deletedAt: null },
+		},
+		select: { role: true },
+	});
+	if (
+		!member ||
+		!hasPermission(
+			resolveOrgPermissions(member.role),
+			Permissions.SKILL_READ,
+		)
+	) {
+		throw new Error("Current skill access is unavailable.");
+	}
+}
+export async function listSkills(
+	params: ListSkillsParams,
+): Promise<{ skills: Skill[]; total: number }> {
+	if (params.organizationId) {
+		await assertSkillReadAccess(params);
+	}
 	const where: Prisma.SkillWhereInput = {
-		isPublished,
+		AND: [skillVisibilityWhere(params)],
+		isPublished: params.isPublished ?? true,
+		...(params.scope ? { scope: params.scope } : {}),
+		...(params.category ? { category: params.category } : {}),
+		...(params.tags?.length ? { tags: { hasSome: params.tags } } : {}),
 	};
-
-	// XOR PATTERN: Strict context isolation
-	// Always constrain by tenant context, even when scope is provided.
-	// SYSTEM skills are visible to everyone; ORG/USER skills are tenant-isolated.
-	{
-		const scopeConditions: Prisma.SkillWhereInput[] = [{ scope: "SYSTEM" }];
-
-		if (organizationId) {
-			scopeConditions.push({
-				scope: "ORGANIZATION" as const,
-				organizationId,
-			});
-		} else if (userId) {
-			scopeConditions.push({ scope: "USER" as const, userId });
-		}
-
-		where.OR = scopeConditions;
-
-		// If caller also wants a specific scope, narrow further
-		if (scope) {
-			where.scope = scope;
-		}
+	if (params.search) {
+		(where.AND as Prisma.SkillWhereInput[]).push({
+			OR: [
+				{ name: { contains: params.search, mode: "insensitive" } },
+				{ slug: { contains: params.search, mode: "insensitive" } },
+				{
+					description: {
+						contains: params.search,
+						mode: "insensitive",
+					},
+				},
+			],
+		});
 	}
-
-	if (category) {
-		where.category = category;
-	}
-
-	if (tags && tags.length > 0) {
-		where.tags = { hasSome: tags };
-	}
-
-	if (search) {
-		where.AND = [
-			where.OR ? { OR: where.OR } : {},
-			{
-				OR: [
-					{ name: { contains: search, mode: "insensitive" } },
-					{ slug: { contains: search, mode: "insensitive" } },
-					{ description: { contains: search, mode: "insensitive" } },
-				],
-			},
-		];
-		// Remove top-level OR to avoid conflict with AND
-		delete where.OR;
-	}
-
 	const [skills, total] = await Promise.all([
 		db.skill.findMany({
 			where,
-			orderBy: { [sortBy]: sortOrder },
-			skip: offset,
-			take: limit,
+			orderBy: [
+				{ [params.sortBy ?? "updatedAt"]: params.sortOrder ?? "desc" },
+				{ id: "asc" },
+			],
+			skip: params.offset ?? 0,
+			take: Math.min(params.limit ?? 50, 100),
 		}),
 		db.skill.count({ where }),
 	]);
-
+	if (params.organizationId) {
+		await assertSkillReadAccess(params);
+	}
 	return { skills, total };
 }
-
-export async function getSkill(idOrSlug: string): Promise<Skill | null> {
+export async function getSkill(
+	idOrSlug: string,
+	actor: { userId?: string; organizationId?: string | null } = {},
+): Promise<Skill | null> {
+	if (actor.organizationId) {
+		await assertSkillReadAccess(actor);
+	}
 	return db.skill.findFirst({
 		where: {
-			OR: [{ id: idOrSlug }, { slug: idOrSlug }],
+			AND: [
+				skillVisibilityWhere(actor),
+				{ OR: [{ id: idOrSlug }, { slug: idOrSlug }] },
+			],
 		},
 	});
 }
-
 export async function getSkillById(
 	id: string,
-	opts: { userId?: string; organizationId?: string },
+	actor: { userId?: string; organizationId?: string | null },
+	client: Prisma.TransactionClient = db,
 ): Promise<Skill | null> {
-	return db.skill.findFirst({
-		where: {
-			id,
-			OR: [
-				{ scope: "SYSTEM" },
-				...(opts.organizationId
-					? [
-							{
-								scope: "ORGANIZATION" as const,
-								organizationId: opts.organizationId,
-							},
-						]
-					: []),
-				...(opts.userId
-					? [{ scope: "USER" as const, userId: opts.userId }]
-					: []),
-			],
-		},
+	if (actor.organizationId) {
+		await assertSkillReadAccess(actor, client);
+	}
+	return client.skill.findFirst({
+		where: { id, AND: [skillVisibilityWhere(actor)] },
 	});
 }
 
@@ -257,9 +277,13 @@ export async function detachSkillFromTemplate(
 
 export async function listTemplateSkills(
 	templateId: string,
+	actor: { userId?: string; organizationId?: string | null } = {},
 ): Promise<(AgentTemplateSkill & { skill: Skill })[]> {
+	if (actor.organizationId) {
+		await assertSkillReadAccess(actor);
+	}
 	return db.agentTemplateSkill.findMany({
-		where: { templateId },
+		where: { templateId, skill: { is: skillVisibilityWhere(actor) } },
 		include: { skill: true },
 		orderBy: { sortOrder: "asc" },
 	});
@@ -310,10 +334,59 @@ export async function detachSkillFromReportTemplate(
 
 export async function listReportTemplateSkills(
 	templateId: string,
+	actor: { userId?: string; organizationId?: string | null } = {},
 ): Promise<(ReportTemplateSkill & { skill: Skill })[]> {
+	if (actor.organizationId) {
+		await assertSkillReadAccess(actor);
+	}
 	return db.reportTemplateSkill.findMany({
-		where: { templateId },
+		where: { templateId, skill: { is: skillVisibilityWhere(actor) } },
 		include: { skill: true },
 		orderBy: { sortOrder: "asc" },
 	});
+}
+
+/** Pinned instructions confer no authority after publication/source access changes. */
+export async function assertPinnedSkillAccess(
+	actor: { userId: string; organizationId?: string | null },
+	skills: ReadonlyArray<{
+		id: string;
+		version: number;
+		name: string;
+		content: string;
+	}>,
+) {
+	if (!skills.length) {
+		return;
+	}
+	if (
+		skills.length > 32 ||
+		new Set(skills.map((s) => s.id)).size !== skills.length
+	) {
+		throw new Error("Invalid pinned skill selection.");
+	}
+	await assertSkillReadAccess(actor);
+	// Compare exact source bytes inside SQL; never load a newly enlarged or changed body.
+	const current = await db.skill.findMany({
+		where: {
+			AND: [
+				skillVisibilityWhere(actor),
+				{
+					OR: skills.map(({ id, version, name, content }) => ({
+						id,
+						version,
+						name,
+						content,
+					})),
+				},
+			],
+		},
+		select: { id: true },
+	});
+	await assertSkillReadAccess(actor);
+	if (current.length !== skills.length) {
+		throw new Error(
+			"A selected skill is unavailable or changed. Refresh its attachment and start a new run.",
+		);
+	}
 }

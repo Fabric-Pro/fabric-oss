@@ -1,3 +1,4 @@
+import type { NativeTestAuthority } from "../../activities/shared/native-agent-test-authority";
 /**
  * Goal-Oriented Agent Workflow Types
  *
@@ -32,6 +33,7 @@ export type {
 export interface GoalOrientedAgentInput {
 	/** Only server-admitted native executions use the durable receipt protocol. */
 	nativeAdmission?: NativeAgentAdmission;
+	testAuthority?: NativeTestAuthority;
 	executionId: string;
 	deploymentId: string;
 	instanceId: string;
@@ -234,6 +236,7 @@ export interface GoalOrientedProgressUpdate {
 		| "executing"
 		| "verifying"
 		| "recovering"
+		| "cancelled"
 		| "completed"
 		| "failed";
 	message: string;

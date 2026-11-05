@@ -47,10 +47,6 @@ import {
 import { recordOrganizationRefusal } from "@saas/mcp/lib/record-organization-refusal";
 import type { NextRequest } from "next/server";
 import {
-	executePlatformTool,
-	PLATFORM_TOOL_DEFINITIONS,
-} from "../../modules/saas/mcp/lib/gateway/platform-tools";
-import {
 	attachFabricMcpAppMeta,
 	executeWithDurableEnvelope,
 	FABRIC_MCP_APP_RESOURCES,
@@ -59,6 +55,15 @@ import {
 	isStatelessMcpRequest,
 	readFabricMcpAppResource,
 } from "../../modules/saas/mcp/lib/gateway/mcp-apps";
+import {
+	executePlatformTool,
+	PLATFORM_TOOL_DEFINITIONS,
+} from "../../modules/saas/mcp/lib/gateway/platform-tools";
+import {
+	credentialSubject,
+	scopeSatisfied,
+	type ToolScope,
+} from "../../modules/saas/mcp/lib/gateway/tool-scope";
 import type {
 	GatewayCredential,
 	GatewaySession,
@@ -147,7 +152,8 @@ interface AuthResult {
 type OrganizationRefusal =
 	| { reason: "not_a_member"; requestedOrganizationId: string }
 	| { reason: "ambiguous_organization"; organizationIds: string[] }
-	| { reason: "no_membership" };
+	| { reason: "no_membership" }
+	| { reason: "wrong_resource"; projectId?: string | null };
 
 /**
  * What authenticating one request concluded. Three answers, not two.
@@ -698,21 +704,31 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 				appUrl: getBaseUrl(),
 				audience: "mcp",
 			});
-			if (
-				token?.valid &&
-				token.audience !== "api" &&
-				token.organizationId
-			) {
-				return authenticatedAs({
-					userId: token.userId,
-					organizationId: token.organizationId,
-					userName: token.userName || "Unknown",
-					email: token.email,
-					role: (token.role as "user" | "admin") || "user",
-					credential: "oauth",
-					scopes: token.scopes,
-					keyIdentity: toOAuthClientIdentity(token.clientRowId),
-				});
+			if (token?.valid) {
+				if (
+					token.audience === "api" ||
+					(token.projectId !== undefined && token.projectId !== null)
+				) {
+					return {
+						status: "refused",
+						refusal: {
+							reason: "wrong_resource",
+							projectId: token.projectId ?? null,
+						},
+					};
+				}
+				if (token.organizationId) {
+					return authenticatedAs({
+						userId: token.userId,
+						organizationId: token.organizationId,
+						userName: token.userName || "Unknown",
+						email: token.email,
+						role: (token.role as "user" | "admin") || "user",
+						credential: "oauth",
+						scopes: token.scopes,
+						keyIdentity: toOAuthClientIdentity(token.clientRowId),
+					});
+				}
 			}
 			return ANONYMOUS_AUTH;
 		}
@@ -1301,6 +1317,20 @@ function createOrganizationRefusalResponse(
 				"Access denied: this key resolves to no organization, because its owner belongs to none. " +
 					"Nothing this session can send will supply one — its owner has to join or create an organization first.",
 				{ reason: "no_membership" },
+			);
+		case "wrong_resource":
+			return createJsonRpcErrorResponse(
+				403,
+				-32000,
+				refusal.projectId
+					? `Access denied: this OAuth token is bound to project ${refusal.projectId} and cannot be used on the organization-wide /mcp endpoint. Connect to /api/mcp-gateway/projects/${refusal.projectId} instead.`
+					: "Access denied: this OAuth token is not valid for the /mcp resource.",
+				{
+					reason: "wrong_resource",
+					...(refusal.projectId
+						? { projectId: refusal.projectId }
+						: {}),
+				},
 			);
 	}
 }
@@ -1955,6 +1985,22 @@ async function handleBrowserToolCall(
 	toolArgs: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<McpToolResult> {
+	const requiredScope: ToolScope =
+		name === "list_templates"
+			? { scope: "workflows:read", kind: "read" }
+			: { scope: "workflows:run", kind: "write" };
+	if (!scopeSatisfied(session.scopes, requiredScope, session.credential)) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: `This ${credentialSubject(session.credential)} does not have the "${requiredScope.scope}" scope required by ${name}.`,
+				},
+			],
+			isError: true,
+		};
+	}
+
 	const workflowCaller: McpWorkflowCaller = {
 		userId: session.userId,
 		organizationId: session.organizationId ?? undefined,

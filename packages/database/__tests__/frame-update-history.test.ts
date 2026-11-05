@@ -18,6 +18,7 @@ const store = vi.hoisted(() => ({
 	frames: [] as Row[],
 	history: [] as Row[],
 	failFrameUpdate: false,
+	failAudit: false,
 	transactions: 0,
 	directHistoryWrites: 0,
 	beforeTransaction: undefined as (() => void) | undefined,
@@ -46,17 +47,23 @@ vi.mock("../prisma/client", async (importOriginal) => {
 				where,
 				data,
 			}: {
-				where: { id: string };
+				where: { id: string; updatedAt?: Date };
 				data: Row;
 			}) => {
 				if (store.failFrameUpdate) {
 					throw new Error("the update failed");
 				}
 				const row = frames.find(
-					(candidate) => candidate.id === where.id,
+					(candidate) =>
+						candidate.id === where.id &&
+						(!where.updatedAt ||
+							(candidate.updatedAt as Date).getTime() ===
+								where.updatedAt.getTime()),
 				);
 				if (!row) {
-					throw new Error("no such frame");
+					throw Object.assign(new Error("no such frame"), {
+						code: "P2025",
+					});
 				}
 				Object.assign(row, data, { updatedAt: new Date() });
 				return row;
@@ -88,6 +95,14 @@ vi.mock("../prisma/client", async (importOriginal) => {
 				const stagedHistory: Row[] = [];
 				const stagedFrames = store.frames.map((row) => ({ ...row }));
 				const tx = {
+					auditLog: {
+						create: async ({ data }: { data: Row }) => {
+							if (store.failAudit) {
+								throw Error("Audit unavailable");
+							}
+							return { id: "example-audit", ...data };
+						},
+					},
 					$queryRaw: async () => [],
 					frameEditHistory: {
 						create: async ({ data }: { data: Row }) => {
@@ -177,6 +192,7 @@ beforeEach(() => {
 	store.history.length = 0;
 	store.frames.push(frameRow());
 	store.failFrameUpdate = false;
+	store.failAudit = false;
 	store.transactions = 0;
 	store.directHistoryWrites = 0;
 	store.beforeTransaction = undefined;
@@ -291,4 +307,44 @@ describe("updateFrame and the history of the page", () => {
 		expect(store.transactions).toBe(0);
 		expect(store.history).toEqual([]);
 	});
+});
+
+it("refuses a concurrent content write and rolls its staged history back", async () => {
+	const newer = JSON.stringify({
+		version: 1,
+		kind: "frame",
+		title: "Newer",
+		blocks: [{ id: "page", type: "html", content: "<p>newer</p>" }],
+	});
+	store.beforeTransaction = () => {
+		Object.assign(store.frames[0], {
+			content: newer,
+			updatedAt: new Date(Date.now() + 10000),
+		});
+	};
+	await expect(
+		updateFrame({
+			id: "frame-1",
+			userId: USER,
+			organizationId: ORG,
+			title: "Stale",
+		}),
+	).rejects.toMatchObject({ name: "FrameUpdateConflictError" });
+	expect(store.history).toHaveLength(0);
+	expect(store.frames[0].content).toBe(newer);
+});
+
+it("rolls content and history back when the audit insert fails", async () => {
+	const before = store.frames[0].content;
+	store.failAudit = true;
+	await expect(
+		updateFrame({
+			id: "frame-1",
+			userId: USER,
+			organizationId: ORG,
+			title: "Unsaved",
+		}),
+	).rejects.toThrow("Audit unavailable");
+	expect(store.frames[0].content).toBe(before);
+	expect(store.history).toHaveLength(0);
 });

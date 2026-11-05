@@ -19,8 +19,18 @@ import {
 	updateFrameProcedure,
 	validateFrameCodeProcedure,
 } from "./procedures";
+import {
+	cancelFrameExportProcedure,
+	downloadFrameExportProcedure,
+	getFrameExportProcedure,
+	startFrameExportProcedure,
+} from "./procedures/exports";
 
 export const framesRouter = {
+	startExport: startFrameExportProcedure,
+	getExport: getFrameExportProcedure,
+	cancelExport: cancelFrameExportProcedure,
+	downloadExport: downloadFrameExportProcedure,
 	create: createFrameProcedure,
 	createFromTemplate: createFrameFromTemplateProcedure,
 	delete: deleteFrameProcedure,

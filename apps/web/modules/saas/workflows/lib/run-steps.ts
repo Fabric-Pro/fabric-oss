@@ -7,6 +7,7 @@
 type StepRunStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED";
 
 export interface StepRun {
+	nodeType?: string;
 	status: StepRunStatus;
 	duration: number | null;
 	output: unknown;
@@ -15,11 +16,14 @@ export interface StepRun {
 
 /** The run being viewed on the canvas. */
 export interface ViewedRun {
+	executionId?: string;
+	status?: string;
 	shortId: string;
 	steps: ReadonlyMap<string, StepRun>;
 }
 
 interface StepLog {
+	nodeType?: string;
 	nodeId: string;
 	status: string;
 	duration?: number | null;
@@ -49,6 +53,7 @@ export function buildStepRuns(
 	const steps = new Map<string, StepRun>();
 	for (const log of logs) {
 		steps.set(log.nodeId, {
+			...(log.nodeType ? { nodeType: log.nodeType } : {}),
 			status: toStepStatus(log.status),
 			duration: log.duration ?? null,
 			output: log.output ?? null,

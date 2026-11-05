@@ -8,18 +8,21 @@
  *   - loadSkillBundle      → full SKILL.md + manifest (load_skill tool)
  *   - readSkillFile        → file bytes (read_skill_file tool, eager inline)
  *
- * Scope filter follows Fabric's tenant XOR convention:
- *   (scope = SYSTEM) OR
- *   (scope = USER AND userId = ctx.userId) OR
- *   (scope = ORGANIZATION AND organizationId = ctx.organizationId)
- *
- * A 5-minute in-process LRU cache keyed on (scope, tenant, slug, version)
- * keeps hot SYSTEM skills out of the DB/S3 path on every chat turn.
+ * Published builtins and current-organization skills are readable after a live
+ * membership check. Automatic discovery additionally requires agent availability.
+ * Only immutable file bytes are cached; each cache hit repeats current source ACLs.
  */
 
+import { createHash } from "node:crypto";
 import { config } from "@repo/config";
-import { db } from "@repo/database";
+import {
+	db,
+	hasPermission,
+	Permissions,
+	skillVisibilityWhere,
+} from "@repo/database";
 import { logger } from "@repo/logs";
+import { resolveOrgPermissions } from "@repo/permissions";
 import { downloadFile } from "@repo/storage";
 
 export interface SkillContext {
@@ -124,47 +127,52 @@ export function invalidateSkillCache(): void {
 	fileCache.invalidate("");
 }
 
-function tenantKey(ctx: SkillContext): string {
-	// Strict XOR: org and user must NEVER share a cache namespace. Otherwise
-	// the first user's USER-scoped skills would be cached under `org:<id>`
-	// and served to every other member of that org.
-	if (ctx.organizationId) {
-		return `org:${ctx.organizationId}`;
-	}
-	if (ctx.userId) {
-		return `user:${ctx.userId}`;
-	}
-	return "anon";
+function tenantKey(ctx: SkillContext) {
+	return `org:${ctx.organizationId ?? ""}:actor:${ctx.userId ?? ""}`;
 }
-
-// ---------------------------------------------------------------------------
-// Scope filter
-// ---------------------------------------------------------------------------
-
-function scopeWhere(ctx: SkillContext) {
-	// Strict XOR between ORG and USER scopes — org contexts must NOT see
-	// personal skills, even when the caller has a userId. This matches
-	// Fabric's tenant isolation contract: personal-and-org are separate
-	// namespaces, not additive.
-	const clauses: Array<Record<string, unknown>> = [
-		{ scope: "SYSTEM" as const, userId: null, organizationId: null },
-	];
-	if (ctx.organizationId) {
-		clauses.push({
-			scope: "ORGANIZATION" as const,
+/** Permissions are deliberately never cached with skill bytes. */
+async function assertCurrentSkillAccess(ctx: SkillContext) {
+	if (!ctx.organizationId || !ctx.userId) {
+		throw new Error(
+			"A current organization and member are required to load skills.",
+		);
+	}
+	const member = await db.member.findFirst({
+		where: {
 			organizationId: ctx.organizationId,
-			userId: null,
-		});
-	} else if (ctx.userId) {
-		clauses.push({
-			scope: "USER" as const,
 			userId: ctx.userId,
-			organizationId: null,
+			organization: { deletedAt: null },
+		},
+		select: { role: true },
+	});
+	if (
+		!member ||
+		!hasPermission(
+			resolveOrgPermissions(member.role),
+			Permissions.SKILL_READ,
+		)
+	) {
+		throw new Error("Current skill access is unavailable.");
+	}
+}
+function scopeWhere(ctx: SkillContext, discover = false) {
+	if (!discover) {
+		return skillVisibilityWhere({
+			userId: ctx.userId ?? undefined,
+			organizationId: ctx.organizationId,
 		});
 	}
 	return {
 		isPublished: true,
-		OR: clauses,
+		archivedAt: null,
+		OR: [
+			{ scope: "SYSTEM" as const, userId: null, organizationId: null },
+			{
+				scope: "ORGANIZATION" as const,
+				organizationId: ctx.organizationId ?? "",
+				...(discover ? { isDiscoverable: true } : {}),
+			},
+		],
 	};
 }
 
@@ -175,15 +183,17 @@ function scopeWhere(ctx: SkillContext) {
 export async function listAvailableSkills(
 	ctx: SkillContext,
 ): Promise<SkillSummary[]> {
-	const cacheKey = `summaries:${tenantKey(ctx)}`;
-	const cached = summariesCache.get(cacheKey);
-	if (cached) {
-		return cached;
-	}
+	await assertCurrentSkillAccess(ctx);
 
 	const skills = await db.skill.findMany({
-		where: scopeWhere(ctx),
-		include: {
+		where: scopeWhere(ctx, true),
+		select: {
+			slug: true,
+			name: true,
+			description: true,
+			version: true,
+			category: true,
+			tags: true,
 			files: {
 				select: { path: true, contentType: true, sizeBytes: true },
 				orderBy: { path: "asc" },
@@ -206,25 +216,38 @@ export async function listAvailableSkills(
 		})),
 	}));
 
-	summariesCache.set(cacheKey, summaries);
+	await assertCurrentSkillAccess(ctx);
 	return summaries;
 }
 
+/** Slugs are aliases, not authority: reject a readable duplicate before any body read. */
+async function resolveSkillAlias(slug: string, ctx: SkillContext) {
+	const matches = await db.skill.findMany({
+		where: { ...scopeWhere(ctx), slug },
+		select: { id: true, version: true },
+		take: 2,
+	});
+	if (matches.length > 1) {
+		throw new Error(
+			"This skill identifier is ambiguous. Use a unique skill identifier before loading it.",
+		);
+	}
+	if (!matches[0]) {
+		throw new Error("Skill not found or not accessible in this scope.");
+	}
+	return matches[0];
+}
 export async function loadSkillBundle(
 	slug: string,
 	ctx: SkillContext,
 	options: SkillReadOptions = {},
 ): Promise<SkillBundle> {
-	const cacheKey = `bundle:${tenantKey(ctx)}:${slug}`;
-	const cached = bundleCache.get(cacheKey);
-	if (cached && !options.fresh && options.expectedVersion === undefined) {
-		return cached;
-	}
-
+	await assertCurrentSkillAccess(ctx);
+	const selected = await resolveSkillAlias(slug, ctx);
 	const skill = await db.skill.findFirst({
 		where: {
 			...scopeWhere(ctx),
-			slug,
+			id: selected.id,
 			...(options.expectedVersion === undefined
 				? {}
 				: { version: options.expectedVersion }),
@@ -258,7 +281,18 @@ export async function loadSkillBundle(
 		})),
 	};
 
-	bundleCache.set(cacheKey, bundle);
+	await assertCurrentSkillAccess(ctx);
+	if (
+		!(await db.skill.findFirst({
+			where: { ...scopeWhere(ctx), id: skill.id, version: skill.version },
+			select: { id: true },
+		}))
+	) {
+		throw new Error("Skill access or its saved revision changed.");
+	}
+	if ((await resolveSkillAlias(slug, ctx)).id !== selected.id) {
+		throw new Error("Skill identity changed during read.");
+	}
 	return bundle;
 }
 
@@ -268,23 +302,20 @@ export async function readSkillFile(
 	ctx: SkillContext,
 	options: SkillReadOptions = {},
 ): Promise<SkillFileContent> {
-	const cacheKey = `file:${tenantKey(ctx)}:${slug}:${path}`;
-	const cached = fileCache.get(cacheKey);
-	if (cached && !options.fresh && options.expectedVersion === undefined) {
-		return cached;
-	}
-
+	await assertCurrentSkillAccess(ctx);
+	const selected = await resolveSkillAlias(slug, ctx);
 	const file = await db.skillFile.findFirst({
 		where: {
 			path,
 			skill: {
 				...scopeWhere(ctx),
-				slug,
+				id: selected.id,
 				...(options.expectedVersion === undefined
 					? {}
 					: { version: options.expectedVersion }),
 			},
 		},
+		include: { skill: { select: { version: true } } },
 	});
 	if (!file) {
 		throw new Error(
@@ -298,11 +329,49 @@ export async function readSkillFile(
 		);
 	}
 
+	const cacheKey = `file:${tenantKey(ctx)}:${file.id}:${file.version}:${file.sha256}:${file.skill.version}`;
+	const revalidate = async () => {
+		await assertCurrentSkillAccess(ctx);
+		if ((await resolveSkillAlias(slug, ctx)).id !== selected.id) {
+			throw new Error("Skill identity changed during read.");
+		}
+		if (
+			!(await db.skillFile.findFirst({
+				where: {
+					id: file.id,
+					version: file.version,
+					sha256: file.sha256,
+					skill: {
+						...scopeWhere(ctx),
+						id: selected.id,
+						version: file.skill.version,
+					},
+				},
+				select: { id: true },
+			}))
+		) {
+			throw new Error("Skill access or its file revision changed.");
+		}
+	};
+	const cached = fileCache.get(cacheKey);
+	if (cached && !options.fresh) {
+		await revalidate();
+		return cached;
+	}
 	const bucket = config.storage.bucketNames.skills;
 	const { data, contentType } = await downloadFile(file.storageKey, {
 		bucket,
 	});
 
+	if (
+		data.length !== file.sizeBytes ||
+		createHash("sha256").update(data).digest("hex") !== file.sha256
+	) {
+		throw new Error(
+			"Skill file content does not match its saved revision.",
+		);
+	}
+	await revalidate();
 	const isText = isTextContentType(file.contentType || contentType);
 	const result: SkillFileContent = {
 		path,
@@ -334,6 +403,7 @@ export async function listAvailableSkillPage(
 	ctx: SkillContext,
 	options: { offset: number; limit: number },
 ) {
+	await assertCurrentSkillAccess(ctx);
 	if (
 		!Number.isInteger(options.offset) ||
 		options.offset < 0 ||
@@ -344,7 +414,7 @@ export async function listAvailableSkillPage(
 		throw new Error("Invalid skill page");
 	}
 	const skills = await db.skill.findMany({
-		where: scopeWhere(ctx),
+		where: scopeWhere(ctx, true),
 		select: {
 			slug: true,
 			name: true,
@@ -359,6 +429,7 @@ export async function listAvailableSkillPage(
 		skip: options.offset,
 		take: options.limit + 1,
 	});
+	await assertCurrentSkillAccess(ctx);
 	return {
 		skills: skills.slice(0, options.limit).map((skill) => ({
 			...skill,

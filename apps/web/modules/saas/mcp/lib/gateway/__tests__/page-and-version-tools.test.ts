@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => ({
 	restoreFirstClassFrameVersion: vi.fn(),
 	duplicateFirstClassFrame: vi.fn(),
 	shareFirstClassFrame: vi.fn(),
+	shareFrame: vi.fn(),
+	getFrameById: vi.fn(),
 	readConnectedTool: vi.fn(),
 	connectedDeclarationRefusal: vi.fn(),
 }));
@@ -37,6 +39,9 @@ vi.mock("@repo/database", () => ({
 	FRAME_SURFACES: ["artifact", "workspace"],
 	getAccessibleFrameById: mocks.getAccessibleFrameById,
 	canUpdateOrganizationFrames: mocks.canUpdateOrganizationFrames,
+	shareFrame: mocks.shareFrame,
+	getFrameById: mocks.getFrameById,
+	FrameUpdateConflictError: class extends Error {},
 	getFrameEditHistory: mocks.getFrameEditHistory,
 	db: {
 		frameEditHistory: { count: mocks.editCount },
@@ -97,6 +102,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.getAccessibleFrameById.mockResolvedValue(pageRecord());
 	mocks.canUpdateOrganizationFrames.mockResolvedValue(true);
+	mocks.getFrameById.mockResolvedValue(pageRecord());
 	mocks.organizationFindUnique.mockResolvedValue({ slug: "example-org" });
 	mocks.connectedDeclarationRefusal.mockResolvedValue(null);
 	mocks.restoreFirstClassFrameVersion.mockResolvedValue({
@@ -343,6 +349,7 @@ describe("fabric_list_frame_versions", () => {
 	beforeEach(() => {
 		mocks.getFrameEditHistory.mockResolvedValue([
 			{
+				id: "example-entry-3",
 				editType: "REVERT",
 				editedBy: "owner-9",
 				editedAt: new Date("2026-10-03T10:00:00Z"),
@@ -383,6 +390,8 @@ describe("fabric_list_frame_versions", () => {
 		).toEqual([3, 2, 1]);
 		expect(versions[0]).toEqual({
 			version: 3,
+			historyEntryId: "example-entry-3",
+			canRestore: false,
 			editType: "REVERT",
 			editedBy: { id: "owner-9", name: "Grace Hopper" },
 			editedAt: "2026-10-03T10:00:00.000Z",
@@ -460,12 +469,20 @@ describe("fabric_restore_frame_version", () => {
 	it("restores as the caller, in their organization, and says where the page is", async () => {
 		const result = await executePlatformTool(
 			"fabric_restore_frame_version",
-			{ frameId: "frame-1", version: 2 },
+			{
+				frameId: "frame-1",
+				version: 2,
+				expectedUpdatedAt: "2026-11-01T00:00:00Z",
+			},
 			session,
 		);
 
 		expect(mocks.restoreFirstClassFrameVersion).toHaveBeenCalledWith({
-			args: { frameId: "frame-1", version: 2 },
+			args: {
+				frameId: "frame-1",
+				version: 2,
+				expectedUpdatedAt: "2026-11-01T00:00:00Z",
+			},
 			userId: "viewer-1",
 			userEmail: "ada@example.com",
 			organizationId: "org-1",
@@ -473,20 +490,24 @@ describe("fabric_restore_frame_version", () => {
 		expect(payload(result)).toMatchObject({
 			frameId: "frame-1",
 			restoredVersion: 2,
-			pageUrl: "/app/example-org/workspaces/frame-1",
+			pageUrl: "/app/example-org/pages/frame-1",
 		});
 	});
 
 	it("restores the Workspace the person has open when no page is named", async () => {
 		await executePlatformTool(
 			"fabric_restore_frame_version",
-			{ version: 1 },
+			{ version: 1, expectedUpdatedAt: "2026-11-01T00:00:00Z" },
 			onWorkspace("workspace-7"),
 		);
 
 		expect(
 			mocks.restoreFirstClassFrameVersion.mock.calls[0][0].args,
-		).toEqual({ version: 1, frameId: "workspace-7" });
+		).toEqual({
+			version: 1,
+			frameId: "workspace-7",
+			expectedUpdatedAt: "2026-11-01T00:00:00Z",
+		});
 	});
 
 	it("reports the service's refusal as an error", async () => {
@@ -496,7 +517,11 @@ describe("fabric_restore_frame_version", () => {
 
 		const result = await executePlatformTool(
 			"fabric_restore_frame_version",
-			{ frameId: "frame-1", version: 2 },
+			{
+				frameId: "frame-1",
+				version: 2,
+				expectedUpdatedAt: "2026-11-01T00:00:00Z",
+			},
 			session,
 		);
 
@@ -507,7 +532,11 @@ describe("fabric_restore_frame_version", () => {
 	it("needs the frames:write scope", async () => {
 		const result = await executePlatformTool(
 			"fabric_restore_frame_version",
-			{ frameId: "frame-1", version: 2 },
+			{
+				frameId: "frame-1",
+				version: 2,
+				expectedUpdatedAt: "2026-11-01T00:00:00Z",
+			},
 			{ ...session, credential: "personal-key", scopes: ["frames:read"] },
 		);
 
@@ -537,7 +566,7 @@ describe("fabric_duplicate_frame", () => {
 		});
 		expect(payload(result)).toMatchObject({
 			frameId: "frame-2",
-			pageUrl: "/app/example-org/workspaces/frame-2",
+			pageUrl: "/app/example-org/pages/frame-2",
 		});
 	});
 
@@ -639,7 +668,9 @@ describe("fabric_duplicate_frame", () => {
 
 describe("fabric_share_frame", () => {
 	it("hands the scope and the emails to the service, as the caller, and answers what it did", async () => {
-		mocks.shareFirstClassFrame.mockResolvedValue({
+		mocks.shareFrame.mockResolvedValue({
+			ok: true,
+			updatedAt: new Date("2026-11-01T00:00:00Z"),
 			frameId: "frame-1",
 			scope: "EMAILS_ONLY",
 			invited: ["lee@example.com"],
@@ -647,6 +678,7 @@ describe("fabric_share_frame", () => {
 		const args = {
 			frameId: "frame-1",
 			scope: "EMAILS_ONLY",
+			expectedUpdatedAt: "2026-11-01T00:00:00Z",
 			emails: ["lee@example.com"],
 		};
 
@@ -656,8 +688,10 @@ describe("fabric_share_frame", () => {
 			session,
 		);
 
-		expect(mocks.shareFirstClassFrame).toHaveBeenCalledWith({
-			args,
+		expect(mocks.shareFrame).toHaveBeenCalledWith({
+			...args,
+			expectedUpdatedAt: new Date(args.expectedUpdatedAt),
+			userEmail: session.email,
 			userId: "viewer-1",
 			organizationId: "org-1",
 		});
@@ -668,13 +702,19 @@ describe("fabric_share_frame", () => {
 	});
 
 	it("reports the service's refusal as an error", async () => {
-		mocks.shareFirstClassFrame.mockResolvedValue({
-			error: "Public sharing is disabled for this organization.",
+		mocks.shareFrame.mockResolvedValue({
+			ok: false,
+			reason: "PUBLIC_SHARING_DISABLED",
+			message: "Public sharing is disabled for this organization.",
 		});
 
 		const result = await executePlatformTool(
 			"fabric_share_frame",
-			{ frameId: "frame-1" },
+			{
+				frameId: "frame-1",
+				scope: "PUBLIC",
+				expectedUpdatedAt: "2026-11-01T00:00:00Z",
+			},
 			session,
 		);
 

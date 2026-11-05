@@ -47,6 +47,7 @@ export function ThemeToggle({
 				variant="ghost"
 				size="icon"
 				className={buttonClasses}
+				aria-label="Toggle color theme"
 				disabled
 			>
 				<SunIcon className="size-4" aria-hidden="true" />

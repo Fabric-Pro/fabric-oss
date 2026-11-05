@@ -13,6 +13,7 @@ import {
 import { AgentBuilderSidekick } from "@saas/agents/sidekick/AgentBuilderSidekick";
 import { SidekickFormProvider } from "@saas/agents/sidekick/SidekickFormContext";
 import { SidekickSuggestionsProvider } from "@saas/agents/sidekick/SidekickSuggestionsContext";
+import { useSession } from "@saas/auth/hooks/use-session";
 import { McpLogo } from "@saas/mcp/components/McpLogo";
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
@@ -28,8 +29,23 @@ import {
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@ui/components/alert-dialog";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from "@ui/components/collapsible";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -38,7 +54,15 @@ import {
 } from "@ui/components/dropdown-menu";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@ui/components/select";
 import { Switch } from "@ui/components/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { Textarea } from "@ui/components/textarea";
 import {
 	Tooltip,
@@ -56,6 +80,7 @@ import {
 	ChevronDownIcon,
 	CodeIcon,
 	CopyIcon,
+	FlaskConicalIcon,
 	GlobeIcon,
 	HeadphonesIcon,
 	LightbulbIcon,
@@ -66,7 +91,6 @@ import {
 	ScaleIcon,
 	ServerIcon,
 	SettingsIcon,
-	SparklesIcon,
 	WalletIcon,
 	XIcon,
 	ZapIcon,
@@ -74,8 +98,10 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { AgentBuilderInsights } from "./AgentBuilderInsights";
+import { AgentBuilderPreview } from "./AgentBuilderPreview";
 import { AgentDefinitionImportDialog } from "./AgentDefinitionDialog";
 import { DataSourcesSheet } from "./DataSourcesSheet";
 import { ToolsSheet } from "./ToolsSheet";
@@ -141,8 +167,11 @@ export interface StarterMessage {
 
 export type AgentBuilderInitialValues = {
 	name?: string;
+	projectId?: string | null;
+	expectedOutput?: string;
 	description?: string;
 	instructions?: string;
+	model?: string;
 	selectedDataSources?: string[];
 	selectedTools?: string[];
 	selectedSkillIds?: string[];
@@ -266,7 +295,21 @@ const EMPTY_KNOWLEDGE_RESOURCES: Record<
 > = {};
 const DEFAULT_TRIGGERS: TriggerConfig[] = [{ type: "manual", enabled: true }];
 
-export function CreateAgentPage({
+export function CreateAgentPage(props: Props) {
+	return (
+		<AgentCreationForm
+			key={JSON.stringify([
+				props.organizationId,
+				props.instanceId,
+				props.mode,
+				props.template.id,
+			])}
+			{...props}
+		/>
+	);
+}
+
+function AgentCreationForm({
 	template,
 	organizationId,
 	basePath = "/app/agent-templates",
@@ -277,6 +320,8 @@ export function CreateAgentPage({
 	initialValues,
 }: Props) {
 	const router = useRouter();
+	const { user } = useSession();
+	const agentsPath = useContextPath("agents");
 	const queryClient = useQueryClient();
 	const tooltipT = useTranslations("tooltips.agents");
 	const isEditMode = mode === "edit";
@@ -314,6 +359,26 @@ export function CreateAgentPage({
 	const [name, setName] = useState(getDefaultName);
 	const [description, setDescription] = useState(getDefaultDescription);
 	const [instructions, setInstructions] = useState(getDefaultInstructions);
+	const [projectId, setProjectId] = useState<string | null>(
+		initialValues?.projectId ?? null,
+	);
+	const [expectedOutput, setExpectedOutput] = useState(
+		initialValues?.expectedOutput ?? "",
+	);
+	const [advancedOpen, setAdvancedOpen] = useState(false);
+	const { data: projectsData, isError: projectsFailed } = useQuery({
+		queryKey: ["agent-builder-projects", organizationId],
+		queryFn: () =>
+			orpcClient.projects.list({
+				organizationId,
+				limit: 100,
+				offset: 0,
+				includeDraft: true,
+			}),
+		enabled: !!organizationId,
+		retry: false,
+	});
+	const projects = projectsData?.projects ?? [];
 	const [selectedDataSources, setSelectedDataSources] =
 		useState<string[]>(initialDataSources);
 	const [knowledgeResources, setKnowledgeResources] = useState<
@@ -409,16 +474,15 @@ export function CreateAgentPage({
 	const [selectedSkillIds, setSelectedSkillIds] =
 		useState<string[]>(initialSkillIds);
 
-	// Right panel tab state
-	const [rightPanelTab, setRightPanelTab] = useState<"sidekick" | "guide">(
-		"sidekick",
-	);
+	const [sidekickRequest, setSidekickRequest] = useState<{
+		id: string;
+		text: string;
+	}>();
 
-	// AI generation state
-	const [isGeneratingName, setIsGeneratingName] = useState(false);
-	const [isGeneratingDesc, setIsGeneratingDesc] = useState(false);
-	const [isGeneratingInstructions, setIsGeneratingInstructions] =
-		useState(false);
+	// Right panel tab state
+	const [rightPanelTab, setRightPanelTab] = useState<
+		"sidekick" | "preview" | "insights" | "guide"
+	>("sidekick");
 
 	// Get category icon for this template
 	const { icon: CategoryIcon } = getCategoryIcon(template.category);
@@ -444,7 +508,11 @@ export function CreateAgentPage({
 	// Fetch the system custom-agent template when in custom agent mode
 	// This allows us to create instances from a single system template
 	// instead of creating a new template for each custom agent
-	const { data: systemCustomAgentTemplate } = useQuery({
+	const {
+		data: systemCustomAgentTemplate,
+		isPending: customTemplateLoading,
+		refetch: retryCustomTemplate,
+	} = useQuery({
 		queryKey: ["agent-template", "custom-agent"],
 		queryFn: async () => {
 			try {
@@ -747,6 +815,82 @@ export function CreateAgentPage({
 		}
 	}, [requiredMcpKeys]);
 
+	const previewDraft = {
+		instanceId,
+		name,
+		instructions,
+		expectedOutput,
+		projectId: projectId ?? undefined,
+		workspaceIds: selectedDataSources.filter(
+			(value) =>
+				!getIntegrationTypes().includes(value as IntegrationType),
+		),
+		workspaceDocumentFilters: workspaceDocumentFilters
+			.filter((value) => selectedDataSources.includes(value.workspaceId))
+			.map((value) => ({
+				workspaceId: value.workspaceId,
+				documentIds: value.documentIds ?? [],
+			})),
+		skillIds: selectedSkillIds,
+		capabilityIds: selectedTools.filter(
+			(value) => !value.startsWith("mcp:"),
+		),
+		mcpConfigIds: selectedTools
+			.filter((value) => value.startsWith("mcp:"))
+			.map((value) => value.slice(4)),
+		integrationIds: selectedDataSources.filter((value) =>
+			getIntegrationTypes().includes(value as IntegrationType),
+		),
+		executionMode,
+		goal: executionMode === "goal_oriented" ? goal || undefined : undefined,
+		// Preview has a separate bounded read budget; hidden goal-loop settings must not affect it.
+		maxIterations: 5,
+		model: initialValues?.model ?? template.suggestedModel ?? undefined,
+	};
+
+	const draftFingerprint = JSON.stringify({
+		name,
+		description,
+		instructions,
+		projectId,
+		expectedOutput,
+		selectedDataSources,
+		knowledgeResources,
+		pinnedDatabricksIntegrationId,
+		selectedTools,
+		toolConfigs,
+		toolConnections,
+		triggers,
+		starterMessages,
+		workspaceDocumentFilters,
+		executionMode,
+		goal,
+		maxIterations,
+		isApiExposed,
+		selectedSkillIds,
+	});
+	const initialDraft = useRef(draftFingerprint);
+	const hasUnsavedChanges = draftFingerprint !== initialDraft.current;
+	const [confirmClose, setConfirmClose] = useState(false);
+	const closeEditor = () => {
+		if (hasUnsavedChanges) {
+			setConfirmClose(true);
+		} else {
+			router.back();
+		}
+	};
+	useEffect(() => {
+		if (!hasUnsavedChanges) {
+			return;
+		}
+		const warn = (event: BeforeUnloadEvent) => {
+			event.preventDefault();
+			event.returnValue = "";
+		};
+		window.addEventListener("beforeunload", warn);
+		return () => window.removeEventListener("beforeunload", warn);
+	}, [hasUnsavedChanges]);
+
 	// Mutation for creating an instance from an existing template
 	const createInstanceMutation = useMutation(
 		orpc.agentTemplates.instances.create.mutationOptions(),
@@ -897,8 +1041,29 @@ export function CreateAgentPage({
 					return;
 				}
 
+				const existingSkillIds = new Set(
+					existingSkillFiles
+						.map((file) => file.sourceSkillId)
+						.filter((id): id is string => Boolean(id)),
+				);
+				// List entries omit instructions. Resolve each newly selected skill
+				// with current permissions before changing the saved agent version.
+				const newSkills = await Promise.all(
+					selectedSkillIds
+						.filter((id) => !existingSkillIds.has(id))
+						.map(async (id) => {
+							const { skill } = await orpcClient.skills.get({
+								id,
+								organizationId: organizationId ?? null,
+							});
+							return skill;
+						}),
+				);
+
 				const result = await updateInstanceMutation.mutateAsync({
 					id: instanceId,
+					projectId,
+					expectedOutput,
 					organizationId: organizationId ?? undefined,
 					name: trimmedName,
 					description: trimmedDescription,
@@ -936,11 +1101,6 @@ export function CreateAgentPage({
 				});
 
 				const savedInstanceId = result.instance?.id ?? instanceId;
-				const existingSkillIds = new Set(
-					existingSkillFiles
-						.map((file) => file.sourceSkillId)
-						.filter((id): id is string => Boolean(id)),
-				);
 
 				await Promise.all(
 					existingSkillFiles
@@ -959,22 +1119,16 @@ export function CreateAgentPage({
 				);
 
 				await Promise.all(
-					catalogSkills
-						.filter(
-							(skill) =>
-								selectedSkillIds.includes(skill.id) &&
-								!existingSkillIds.has(skill.id),
-						)
-						.map((skill) =>
-							orpcClient.agentMemory.files.write({
-								organizationId: organizationId ?? null,
-								agentInstanceId: savedInstanceId,
-								path: `skills/${skill.slug}/SKILL.md`,
-								content: skill.content,
-								isEnabled: true,
-								sourceSkillId: skill.id,
-							}),
-						),
+					newSkills.map((skill) =>
+						orpcClient.agentMemory.files.write({
+							organizationId: organizationId ?? null,
+							agentInstanceId: savedInstanceId,
+							path: `skills/${skill.slug}/SKILL.md`,
+							content: skill.content,
+							isEnabled: true,
+							sourceSkillId: skill.id,
+						}),
+					),
 				);
 
 				await queryClient.invalidateQueries({
@@ -995,6 +1149,8 @@ export function CreateAgentPage({
 					? systemCustomAgentTemplate?.template?.id
 					: template.id,
 				name: trimmedName,
+				projectId,
+				expectedOutput,
 				description: trimmedDescription,
 				organizationId: organizationId ?? undefined,
 				heroEmojis: template.heroEmojis,
@@ -1065,61 +1221,6 @@ export function CreateAgentPage({
 	};
 
 	// AI Generation handlers
-	const handleGenerateName = async () => {
-		setIsGeneratingName(true);
-		try {
-			// Generate a name based on template
-			const baseName = template.displayName
-				.toLowerCase()
-				.replace(/\s+/g, "-");
-			const suggestions = [
-				`${baseName}-agent`,
-				`my-${template.category.toLowerCase()}-assistant`,
-				`${baseName}-v1`,
-				`${template.category.toLowerCase()}-helper`,
-			];
-			// Simulate AI delay
-			await new Promise((resolve) => setTimeout(resolve, 500));
-			setName(
-				suggestions[Math.floor(Math.random() * suggestions.length)],
-			);
-			toast.success("Name generated!");
-		} catch {
-			toast.error("Failed to generate name");
-		} finally {
-			setIsGeneratingName(false);
-		}
-	};
-
-	const handleGenerateDescription = async () => {
-		setIsGeneratingDesc(true);
-		try {
-			await new Promise((resolve) => setTimeout(resolve, 500));
-			const desc = `AI-powered ${template.category.toLowerCase()} assistant based on ${template.displayName}. ${template.description}`;
-			setDescription(desc);
-			toast.success("Description generated!");
-		} catch {
-			toast.error("Failed to generate description");
-		} finally {
-			setIsGeneratingDesc(false);
-		}
-	};
-
-	const handleGenerateInstructions = async () => {
-		setIsGeneratingInstructions(true);
-		try {
-			await new Promise((resolve) => setTimeout(resolve, 800));
-			// Enhance existing instructions with template context
-			const enhanced = `${instructions}\n\n## Additional Context\nThis agent is configured for ${template.category.toLowerCase()} tasks. Please ensure responses are professional and accurate.`;
-			setInstructions(enhanced);
-			toast.success("Instructions enhanced!");
-		} catch {
-			toast.error("Failed to enhance instructions");
-		} finally {
-			setIsGeneratingInstructions(false);
-		}
-	};
-
 	const effectiveAgentId = instanceId ?? "new";
 	// Saved instances use the "instance" entity type so the Sidekick stream
 	// authz path looks them up in AgentTemplateInstance rather than the
@@ -1178,1110 +1279,563 @@ export function CreateAgentPage({
 					}
 				}}
 			>
-				<div className="bg-background">
-					{/* Sticky action bar */}
-					<div className="sticky top-0 z-10 border-b border-border bg-card">
-						<div className="w-full px-6 py-3">
-							<div className="flex items-center justify-between">
-								<div className="flex items-center gap-3">
-									<div className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
-										<RobotIcon className="h-4 w-4 text-primary" />
-									</div>
-									<div className="h-4 w-px bg-border" />
-									<div>
-										<p className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-											Agent Builder
-										</p>
-										<h1 className="font-sans text-base font-semibold leading-tight">
-											{isEditMode
-												? "Edit Agent"
-												: isCustomAgent
-													? "Create Custom Agent"
-													: "Create New Agent"}
-										</h1>
-									</div>
-								</div>
-								<div className="flex items-center gap-2">
-									{!isEditMode && organizationId && (
-										<AgentDefinitionImportDialog
-											key={organizationId}
-											organizationId={organizationId}
-											onImported={(id) => {
-												queryClient.invalidateQueries({
-													queryKey:
-														orpc.agentTemplates.instances.key(),
-												});
-												router.push(
-													`${basePath.replace(/\/agents$/, "")}/agents/${id}`,
-												);
-											}}
-										/>
-									)}
-									<Button
-										variant="outline"
-										onClick={() => router.back()}
-									>
-										Cancel
-									</Button>
-									<Button
-										onClick={handleSubmit}
-										disabled={
-											createInstanceMutation.isPending ||
-											updateInstanceMutation.isPending ||
-											!hasRequiredText ||
-											(executionMode ===
-												"goal_oriented" &&
-												!goal.trim()) ||
-											(!isEditMode &&
-												isCustomAgent &&
-												!systemCustomAgentTemplate
-													?.template?.id)
+				<div
+					className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background"
+					data-onboarding-target="agent-builder-workspace"
+				>
+					<Tabs
+						defaultValue="configuration"
+						className="flex min-h-0 flex-1 flex-col"
+					>
+						<TabsList
+							className="shrink-0 md:hidden"
+							aria-label="Editor panes"
+						>
+							<TabsTrigger value="configuration">
+								Configuration
+							</TabsTrigger>
+							<TabsTrigger value="assistance">
+								Assistant
+							</TabsTrigger>
+						</TabsList>
+						<div className="flex min-h-0 w-full flex-1 md:flex-row">
+							{/* Assistance stays separate from the configuration scroll area. */}
+							<TabsContent
+								value="assistance"
+								forceMount
+								asChild
+								className="m-0"
+							>
+								<aside
+									aria-label="Agent assistance"
+									className="m-0 flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden border-border bg-card/50 data-[state=inactive]:hidden md:order-last md:border-l md:data-[state=inactive]:flex"
+								>
+									<Tabs
+										value={rightPanelTab}
+										onValueChange={(value) =>
+											setRightPanelTab(
+												value as typeof rightPanelTab,
+											)
 										}
-										className="bg-primary px-6 text-primary-foreground hover:bg-primary/90"
+										className="flex min-h-0 flex-1 flex-col"
 									>
-										{createInstanceMutation.isPending ||
-										updateInstanceMutation.isPending ? (
-											<>
-												<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
-												{isEditMode
-													? "Saving..."
-													: "Creating..."}
-											</>
-										) : isEditMode ? (
-											"Save Changes"
-										) : isCustomAgent ? (
-											"Create Custom Agent"
-										) : (
-											"Create Agent"
-										)}
-									</Button>
-								</div>
-							</div>
-						</div>
-					</div>
-
-					{/* Two-column layout */}
-					<div className="flex w-full">
-						{/* Main content */}
-						<div className="flex-1">
-							<div className="p-6 space-y-8">
-								{/* Section 1: Instructions */}
-								<section>
-									<div className="flex items-center justify-between mb-4">
-										<div>
-											<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-												<span className="inline-block h-3 w-px bg-[--mkt-red]" />
-												Step 1
-											</p>
-											<h3 className="text-base font-semibold">
-												Instructions
-												<span className="ml-1 text-destructive">
-													*
-												</span>
-											</h3>
-											<p className="text-sm text-muted-foreground">
-												Edit the starting instructions
-												from this template before
-												{isEditMode
-													? " saving your agent."
-													: " creating your agent."}
-											</p>
-										</div>
-									</div>
-
-									<div className="relative">
-										<Textarea
-											value={instructions}
-											onChange={(e) =>
-												setInstructions(e.target.value)
-											}
-											className="min-h-[400px] rounded-lg border-border bg-muted/40 p-4 font-mono text-sm"
-											placeholder={
-												instructionsPlaceholder ||
-												"Describe how this agent should behave, what context it should use, and how it should respond."
-											}
-										/>
-										<Button
-											variant="ghost"
-											size="icon"
-											className="absolute bottom-3 right-3 h-8 w-8 bg-background hover:bg-muted"
-											title="Generate with AI"
-											onClick={handleGenerateInstructions}
-											disabled={isGeneratingInstructions}
-										>
-											{isGeneratingInstructions ? (
-												<Loader2Icon className="h-4 w-4 animate-spin" />
-											) : (
-												<SparklesIcon className="h-4 w-4" />
-											)}
-										</Button>
-									</div>
-								</section>
-
-								{/* Starter Messages */}
-								<section>
-									<div className="mb-4">
-										<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-											<span className="inline-block h-3 w-px bg-[--mkt-red]" />
-											Optional
-										</p>
-										<h3 className="text-base font-semibold">
-											Starter Messages
-										</h3>
-										<p className="mt-0.5 text-sm text-muted-foreground">
-											Clickable suggestions shown when a
-											user opens a new chat with this
-											agent.
-										</p>
-									</div>
-
-									{starterMessages.length > 0 && (
-										<div className="flex flex-wrap gap-2 mb-3">
-											{starterMessages.map((msg, idx) => (
-												<div
-													key={idx}
-													className="group flex items-center gap-1.5 rounded-full border bg-muted/40 px-3 py-1.5 text-sm"
-												>
-													<span>{msg.emoji}</span>
-													<span>{msg.label}</span>
-													<button
-														type="button"
-														className="ml-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
-														onClick={() =>
-															setStarterMessages(
-																starterMessages.filter(
-																	(_, i) =>
-																		i !==
-																		idx,
-																),
-															)
-														}
-													>
-														&times;
-													</button>
-												</div>
-											))}
-										</div>
-									)}
-
-									{starterMessages.length < 6 && (
-										<Button
-											type="button"
-											variant="outline"
-											size="sm"
-											onClick={() => {
-												setStarterMessages([
-													...starterMessages,
-													{
-														label: "",
-														emoji: "💡",
-														prompt: "",
-													},
-												]);
-											}}
-										>
-											<PlusIcon className="mr-1.5 h-3.5 w-3.5" />
-											Add Starter Message
-										</Button>
-									)}
-
-									{starterMessages.length > 0 && (
-										<div className="mt-3 space-y-3">
-											{starterMessages.map((msg, idx) => (
-												<div
-													key={idx}
-													className="grid grid-cols-[60px_1fr_1fr] gap-2 items-start rounded-lg border bg-card p-3"
-												>
-													<div>
-														<label
-															htmlFor={`starter-message-emoji-${idx}`}
-															className="text-xs text-muted-foreground"
-														>
-															Emoji
-														</label>
-														<input
-															id={`starter-message-emoji-${idx}`}
-															type="text"
-															value={msg.emoji}
-															maxLength={2}
-															className="mt-1 w-full rounded border bg-muted/40 px-2 py-1 text-center text-lg"
-															onChange={(e) => {
-																const updated =
-																	[
-																		...starterMessages,
-																	];
-																updated[idx] = {
-																	...updated[
-																		idx
-																	],
-																	emoji: e
-																		.target
-																		.value,
-																};
-																setStarterMessages(
-																	updated,
-																);
-															}}
-														/>
-													</div>
-													<div>
-														<label
-															htmlFor={`starter-message-label-${idx}`}
-															className="text-xs text-muted-foreground"
-														>
-															Label
-														</label>
-														<input
-															id={`starter-message-label-${idx}`}
-															type="text"
-															value={msg.label}
-															placeholder="e.g. Plan a feature"
-															maxLength={40}
-															className="mt-1 w-full rounded border bg-muted/40 px-2 py-1.5 text-sm"
-															onChange={(e) => {
-																const updated =
-																	[
-																		...starterMessages,
-																	];
-																updated[idx] = {
-																	...updated[
-																		idx
-																	],
-																	label: e
-																		.target
-																		.value,
-																};
-																setStarterMessages(
-																	updated,
-																);
-															}}
-														/>
-													</div>
-													<div>
-														<label
-															htmlFor={`starter-message-prompt-${idx}`}
-															className="text-xs text-muted-foreground"
-														>
-															Prompt
-														</label>
-														<input
-															id={`starter-message-prompt-${idx}`}
-															type="text"
-															value={msg.prompt}
-															placeholder="Full message sent on click"
-															className="mt-1 w-full rounded border bg-muted/40 px-2 py-1.5 text-sm"
-															onChange={(e) => {
-																const updated =
-																	[
-																		...starterMessages,
-																	];
-																updated[idx] = {
-																	...updated[
-																		idx
-																	],
-																	prompt: e
-																		.target
-																		.value,
-																};
-																setStarterMessages(
-																	updated,
-																);
-															}}
-														/>
-													</div>
-												</div>
-											))}
-										</div>
-									)}
-								</section>
-
-								{/* Section 2: Required Integrations Warning (only show when creating from template) */}
-								{!isCustomAgent &&
-									requiredIntegrations.length > 0 && (
-										<section>
-											<div className="mb-4">
-												<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-													<span className="inline-block h-3 w-px bg-[--mkt-red]" />
-													Step 2
-												</p>
-												<h3 className="text-base font-semibold">
-													Required Integrations
-												</h3>
-												<p className="text-sm text-muted-foreground">
-													This template requires the
-													following integrations to
-													work properly.
-												</p>
-											</div>
-
-											<div
-												className={cn(
-													"rounded-lg border p-4",
-													hasAllRequiredIntegrations
-														? "border-success/20 bg-success/5"
-														: "border-destructive/20 bg-destructive/5",
-												)}
+										<div className="flex shrink-0 items-center border-b border-border">
+											<TabsList
+												aria-label="Agent assistant tools"
+												className="flex h-15 min-w-0 flex-1 justify-start gap-1 overflow-x-auto border-b-0 px-2 lg:px-4"
 											>
-												<div className="flex flex-wrap gap-3 mb-4">
-													{requiredIntegrations.map(
-														({
-															type,
-															plugin,
-															isConfigured,
-														}) => {
-															if (!plugin) {
-																return null;
-															}
-															return (
-																<div
-																	key={type}
-																	className={cn(
-																		"flex items-center gap-2 rounded-lg border px-3 py-2",
-																		isConfigured
-																			? "border-success/30 bg-card"
-																			: "border-destructive/30 bg-card",
-																	)}
-																>
-																	<IntegrationBrandIcon
-																		icon={
-																			plugin.icon
-																		}
-																		label={
-																			plugin.label
-																		}
-																		color={
-																			plugin.color
-																		}
-																		brandColor={
-																			plugin.brandColor
-																		}
-																		size={
-																			24
-																		}
-																		className="rounded-md"
-																		iconClassName="h-3.5 w-3.5"
-																	/>
-																	<span className="text-sm font-medium">
-																		{
-																			plugin.label
-																		}
-																	</span>
-																	{isConfigured ? (
-																		<CheckCircle2Icon className="h-4 w-4 text-success" />
-																	) : (
-																		<AlertCircleIcon className="h-4 w-4 text-amber-600" />
-																	)}
-																</div>
-															);
-														},
-													)}
-												</div>
+												<TabsTrigger
+													value="sidekick"
+													className="h-full gap-2"
+												>
+													<RobotIcon className="hidden size-4 lg:block" />
+													Sidekick
+												</TabsTrigger>
+												<TabsTrigger
+													value="preview"
+													className="h-full gap-2"
+												>
+													<FlaskConicalIcon className="hidden size-4 lg:block" />
+													Preview
+												</TabsTrigger>
+												<TabsTrigger
+													value="insights"
+													className="h-full gap-2"
+												>
+													<BarChart3Icon className="hidden size-4 lg:block" />
+													Insights
+												</TabsTrigger>
+												<TabsTrigger
+													value="guide"
+													className="h-full gap-2"
+												>
+													Guide
+												</TabsTrigger>
+											</TabsList>
+											<Button
+												type="button"
+												variant="ghost"
+												size="icon"
+												className="mr-2 shrink-0 md:hidden"
+												aria-label="Close agent editor from assistant"
+												onClick={closeEditor}
+											>
+												<XIcon className="size-4" />
+											</Button>
+										</div>
 
-												{!hasAllRequiredIntegrations && (
-													<div className="flex items-center justify-between">
-														<p className="text-sm text-highlight">
-															{
-																missingIntegrations.length
-															}{" "}
-															integration
-															{missingIntegrations.length !==
-															1
-																? "s"
-																: ""}{" "}
-															need
-															{missingIntegrations.length ===
-															1
-																? "s"
-																: ""}{" "}
-															to be configured
+										{/* Tab content */}
+										<div className="min-h-0 flex-1 overflow-hidden">
+											<TabsContent
+												value="sidekick"
+												forceMount
+												className="m-0 h-full min-h-0 data-[state=inactive]:hidden"
+											>
+												<AgentBuilderSidekick
+													requestDraft={
+														sidekickRequest
+													}
+													agentId={effectiveAgentId}
+													organizationId={
+														organizationId
+													}
+													entityType={
+														sidekickEntityType
+													}
+												/>
+											</TabsContent>
+											<TabsContent
+												value="preview"
+												forceMount
+												className="m-0 h-full min-h-0 data-[state=inactive]:hidden"
+											>
+												{organizationId && (
+													<AgentBuilderPreview
+														key={`${organizationId}-${effectiveAgentId}`}
+														organizationId={
+															organizationId
+														}
+														userId={user?.id}
+														draft={previewDraft}
+														savedAgentHref={
+															instanceId
+																? `${agentsPath}?agentId=${encodeURIComponent(instanceId)}&agentView=new`
+																: undefined
+														}
+													/>
+												)}
+											</TabsContent>
+											<TabsContent
+												value="insights"
+												className="m-0 h-full min-h-0"
+											>
+												{organizationId &&
+													rightPanelTab ===
+														"insights" && (
+														<AgentBuilderInsights
+															hasUnsavedChanges={
+																hasUnsavedChanges
+															}
+															onImprove={(
+																message,
+															) => {
+																setSidekickRequest(
+																	{
+																		id: crypto.randomUUID(),
+																		text: message,
+																	},
+																);
+																setRightPanelTab(
+																	"sidekick",
+																);
+															}}
+															instanceSId={
+																instanceSId
+															}
+															key={`${organizationId}-${effectiveAgentId}`}
+															organizationId={
+																organizationId
+															}
+															instanceId={
+																instanceId
+															}
+															agentsHref={
+																agentsPath
+															}
+														/>
+													)}
+											</TabsContent>
+											<TabsContent
+												value="guide"
+												className="m-0 h-full overflow-y-auto"
+											>
+												{/* Header */}
+												<div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
+													<div>
+														<p className="mb-0.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+															<span className="inline-block h-3 w-px bg-[--mkt-red]" />
+															Guidance
 														</p>
-														<Button
-															variant="outline"
-															size="sm"
-															className="border-border text-foreground hover:bg-muted"
+														<h3 className="flex items-center gap-1.5 text-sm font-semibold">
+															<LightbulbIcon className="h-3.5 w-3.5 text-[--mkt-red]" />
+															Agent Setup Guide
+														</h3>
+													</div>
+													<DropdownMenu>
+														<DropdownMenuTrigger
 															asChild
 														>
-															<Link
-																href={
-																	integrationsSettingsUrl
-																}
+															<Button
+																variant="ghost"
+																size="sm"
+																className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
 															>
-																<SettingsIcon className="h-4 w-4 mr-2" />
-																Configure
-																Integrations
-															</Link>
-														</Button>
-													</div>
-												)}
-
-												{hasAllRequiredIntegrations && (
-													<p className="text-sm text-success flex items-center gap-2">
-														<CheckCircle2Icon className="h-4 w-4" />
-														All required
-														integrations are
-														configured!
-													</p>
-												)}
-											</div>
-										</section>
-									)}
-
-								{/* Section 2b: Required MCP Servers (only show when template has requiredMcpServers) */}
-								{!isCustomAgent &&
-									requiredMcpServerKeys.length > 0 && (
-										<section>
-											<div className="mb-4">
-												<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-													<span className="inline-block h-3 w-px bg-[--mkt-red]" />
-													Step 2b
-												</p>
-												<h3 className="text-base font-semibold">
-													Required MCP Integrations
-												</h3>
-												<p className="text-sm text-muted-foreground">
-													Select which MCP connection
-													to use for each required
-													integration.
-												</p>
-											</div>
-
-											<div className="space-y-4">
-												{requiredMcpServerKeys.map(
-													(key) => {
-														const keyData =
-															requiredMcpKeys.find(
-																(k) =>
-																	k.key ===
-																	key,
-															);
-														const hasConfigs =
-															keyData &&
-															keyData.configs
-																.length > 0;
-														const selectedConfigId =
-															toolConnections[
-																`mcp:${key}`
-															]?.mcpConfigId;
-														const selectedConfig =
-															keyData?.configs.find(
-																(c) =>
-																	c.configId ===
-																	selectedConfigId,
-															);
-
-														return (
-															<div
-																key={key}
-																className={cn(
-																	"rounded-lg border p-4",
-																	hasConfigs
-																		? "border-success/20 bg-success/5"
-																		: "border-destructive/20 bg-destructive/5",
-																)}
+																Reset
+																<ChevronDownIcon className="h-3 w-3" />
+															</Button>
+														</DropdownMenuTrigger>
+														<DropdownMenuContent align="end">
+															<DropdownMenuItem
+																onClick={() => {
+																	setInstructions(
+																		getDefaultInstructions(),
+																	);
+																	setName(
+																		getDefaultName(),
+																	);
+																	setDescription(
+																		getDefaultDescription(),
+																	);
+																	setSelectedDataSources(
+																		initialDataSources,
+																	);
+																	setPinnedDatabricksIntegrationId(
+																		initialDatabricksIntegrationId,
+																	);
+																	setKnowledgeResources(
+																		initialKnowledgeResources,
+																	);
+																	setSelectedTools(
+																		initialTools,
+																	);
+																	setSelectedSkillIds(
+																		initialSkillIds,
+																	);
+																	setTriggers(
+																		initialTriggers,
+																	);
+																	setExecutionMode(
+																		initialExecutionMode,
+																	);
+																	setGoal(
+																		initialGoal,
+																	);
+																	setMaxIterations(
+																		initialMaxIterations,
+																	);
+																}}
 															>
-																<div className="flex items-center justify-between">
-																	<div className="flex items-center gap-3">
+																Reset to
+																template
+																defaults
+															</DropdownMenuItem>
+															<DropdownMenuItem
+																onClick={() => {
+																	setInstructions(
+																		"",
+																	);
+																	setName("");
+																	setDescription(
+																		"",
+																	);
+																}}
+															>
+																Clear all
+															</DropdownMenuItem>
+														</DropdownMenuContent>
+													</DropdownMenu>
+												</div>
+
+												<div className="space-y-0 divide-y divide-border/60">
+													{/* ── 1. Setup checklist ── */}
+													<div className="px-5 py-4">
+														<p className="mb-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+															Setup checklist
+														</p>
+														<ul className="space-y-2">
+															{[
+																{
+																	label: "Agent name",
+																	done:
+																		name.trim()
+																			.length >
+																		0,
+																	required: true,
+																	hint: "Give it a clear, recognisable name",
+																},
+																{
+																	label: "Instructions written",
+																	done:
+																		instructions.trim()
+																			.length >
+																		30,
+																	required: true,
+																	hint: "Be specific — context beats brevity",
+																},
+																{
+																	label: "Knowledge source",
+																	done:
+																		selectedDataSources.length >
+																		0,
+																	required: false,
+																	hint: "Connect a workspace or integration",
+																},
+																{
+																	label: "Tools (MCP)",
+																	done:
+																		selectedTools.length >
+																		0,
+																	required: false,
+																	hint: "Add MCP servers to extend capabilities",
+																},
+															].map(
+																({
+																	label,
+																	done,
+																	required,
+																	hint,
+																}) => (
+																	<li
+																		key={
+																			label
+																		}
+																		className="flex items-start gap-2.5"
+																	>
 																		<div
 																			className={cn(
-																				"flex h-8 w-8 items-center justify-center rounded-lg",
-																				hasConfigs
-																					? "bg-success/10"
-																					: "bg-destructive/10",
+																				"mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors",
+																				done
+																					? "bg-primary/15 text-primary"
+																					: required
+																						? "border border-border bg-background"
+																						: "border border-dashed border-border/50 bg-background",
 																			)}
 																		>
-																			<SettingsIcon
-																				className={cn(
-																					"h-4 w-4",
-																					hasConfigs
-																						? "text-success"
-																						: "text-amber-600",
-																				)}
-																			/>
+																			{done && (
+																				<CheckIcon className="h-2.5 w-2.5 text-primary" />
+																			)}
 																		</div>
-																		<div>
-																			<p className="font-medium capitalize">
-																				{
-																					key
-																				}
-																			</p>
-																			{hasConfigs ? (
-																				<p className="text-xs text-muted-foreground">
+																		<div className="min-w-0 flex-1">
+																			<div className="flex items-center gap-1.5">
+																				<span
+																					className={cn(
+																						"text-xs font-medium",
+																						done
+																							? "text-foreground line-through decoration-muted-foreground/40"
+																							: "text-foreground",
+																					)}
+																				>
 																					{
-																						keyData
-																							.configs
-																							.length
-																					}{" "}
-																					connection
-																					{keyData
-																						.configs
-																						.length !==
-																					1
-																						? "s"
-																						: ""}{" "}
-																					available
-																				</p>
-																			) : (
-																				<p className="text-xs text-amber-600">
-																					No
-																					connections
-																					found
-																				</p>
-																			)}
-																		</div>
-																	</div>
-
-																	{hasConfigs ? (
-																		<div className="flex items-center gap-2">
-																			{keyData
-																				.configs
-																				.length ===
-																			1 ? (
-																				<div className="flex items-center gap-2 rounded-lg border border-success/30 bg-card px-3 py-1.5">
-																					<CheckCircle2Icon className="h-4 w-4 text-success" />
-																					<span className="text-sm">
-																						{
-																							selectedConfig?.configName
-																						}
+																						label
+																					}
+																				</span>
+																				{!required && (
+																					<span className="text-[10px] text-muted-foreground/60">
+																						optional
 																					</span>
-																				</div>
-																			) : (
-																				<DropdownMenu>
-																					<DropdownMenuTrigger
-																						asChild
-																					>
-																						<Button
-																							variant="outline"
-																							size="sm"
-																							className="gap-2"
-																						>
-																							{selectedConfig?.configName ||
-																								"Select connection"}
-																							<ChevronDownIcon className="h-4 w-4" />
-																						</Button>
-																					</DropdownMenuTrigger>
-																					<DropdownMenuContent align="end">
-																						{keyData.configs.map(
-																							(
-																								config,
-																							) => (
-																								<DropdownMenuItem
-																									key={
-																										config.configId
-																									}
-																									onClick={() => {
-																										setToolConnections(
-																											{
-																												...toolConnections,
-																												[`mcp:${key}`]:
-																													{
-																														enabled: true,
-																														mcpConfigId:
-																															config.configId,
-																													},
-																											},
-																										);
-																									}}
-																								>
-																									<div className="flex items-center gap-2">
-																										{config.configId ===
-																											selectedConfigId && (
-																											<CheckIcon className="h-4 w-4 text-success" />
-																										)}
-																										<span>
-																											{
-																												config.configName
-																											}
-																										</span>
-																										{config.isSystemServer && (
-																											<Badge
-																												variant="secondary"
-																												className="text-xs"
-																											>
-																												System
-																											</Badge>
-																										)}
-																									</div>
-																								</DropdownMenuItem>
-																							),
-																						)}
-																					</DropdownMenuContent>
-																				</DropdownMenu>
+																				)}
+																			</div>
+																			{!done && (
+																				<p className="mt-0.5 text-[11px] text-muted-foreground">
+																					{
+																						hint
+																					}
+																				</p>
 																			)}
 																		</div>
-																	) : (
-																		<Button
-																			variant="outline"
-																			size="sm"
-																			className="border-border text-foreground hover:bg-muted"
-																			asChild
-																		>
-																			<Link
-																				href={`${mcpServersUrl}?search=${key}`}
-																			>
-																				<PlusIcon className="h-4 w-4 mr-1" />
-																				Add
-																				Connection
-																			</Link>
-																		</Button>
-																	)}
-																</div>
-															</div>
-														);
-													},
-												)}
-											</div>
-
-											{hasAllRequiredMcpServers && (
-												<p className="mt-4 text-sm text-success flex items-center gap-2">
-													<CheckCircle2Icon className="h-4 w-4" />
-													All required MCP
-													integrations are configured!
-												</p>
-											)}
-										</section>
-									)}
-
-								{/* Section 2: Knowledge & Tools */}
-								<section>
-									<div className="mb-4 flex items-start justify-between">
-										<div>
-											<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-												<span className="inline-block h-3 w-px bg-[--mkt-red]" />
-												Step 2
-											</p>
-											<h3 className="text-base font-semibold">
-												Knowledge & Tools
-											</h3>
-											<p className="mt-0.5 text-sm text-muted-foreground">
-												Connect knowledge sources and
-												tools to enhance your
-												agent&apos;s abilities.
-											</p>
-										</div>
-									</div>
-
-									<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-										{/* ── Searchable knowledge card ── */}
-										<div className="flex flex-col rounded-lg border border-border bg-card">
-											<div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
-												<div className="flex items-center gap-2.5">
-													<div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-														<Square3Stack3DIcon className="h-3.5 w-3.5 text-primary" />
+																	</li>
+																),
+															)}
+														</ul>
 													</div>
-													<div>
-														<h4 className="text-sm font-semibold">
-															Knowledge
-														</h4>
-														<p className="text-xs text-muted-foreground">
-															Libraries &
-															integrations
+
+													{/* ── 2. Template tips ── */}
+													{/* ── 3. Writing good instructions ── */}
+													<div className="px-5 py-4">
+														<p className="mb-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+															Writing good
+															instructions
 														</p>
-													</div>
-												</div>
-												<div className="flex items-center gap-1.5">
-													{selectedWorkspaces.length >
-														0 && (
-														<span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-															{
-																selectedWorkspaces.length
-															}
-														</span>
-													)}
-													<Button
-														variant="outline"
-														size="sm"
-														className="h-7 gap-1 px-2.5 text-xs"
-														onClick={() =>
-															setWorkspacesSheetOpen(
-																true,
-															)
-														}
-													>
-														<PlusIcon className="h-3 w-3" />
-														Add
-													</Button>
-												</div>
-											</div>
-
-											<div className="flex-1 p-3">
-												{selectedWorkspaces.length >
-												0 ? (
-													<div className="space-y-1.5">
-														{selectedWorkspaces.map(
-															(workspace) => (
-																<div
-																	key={
-																		workspace.id
-																	}
-																	className="flex items-center gap-2.5 rounded-lg bg-muted/40 px-3 py-2"
-																>
-																	<Square3Stack3DIcon className="h-3.5 w-3.5 shrink-0 text-primary" />
-																	<span className="flex-1 truncate text-sm">
-																		{
-																			workspace.name
-																		}
-																	</span>
-																	{workspace.documentCount >
-																		0 && (
-																		<span className="shrink-0 text-xs text-muted-foreground">
-																			{
-																				workspace.documentCount
-																			}{" "}
-																			docs
-																		</span>
-																	)}
-																	<Button
-																		variant="ghost"
-																		size="icon"
-																		type="button"
-																		className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
-																		onClick={() =>
-																			setSelectedDataSources(
-																				selectedDataSources.filter(
-																					(
-																						id,
-																					) =>
-																						id !==
-																						workspace.id,
-																				),
-																			)
-																		}
-																	>
-																		<XIcon className="h-3 w-3" />
-																	</Button>
-																</div>
-															),
-														)}
-													</div>
-												) : (
-													<div className="rounded-lg border border-dashed border-border p-4 text-center">
-														<Square3Stack3DIcon className="mx-auto mb-2 h-5 w-5 text-muted-foreground/30" />
-														<p className="text-xs text-muted-foreground">
-															No searchable
-															knowledge added yet
-														</p>
-														<button
-															type="button"
-															className="mt-1.5 text-xs text-primary hover:underline"
-															onClick={() =>
-																setWorkspacesSheetOpen(
-																	true,
-																)
-															}
-														>
-															Browse libraries →
-														</button>
-													</div>
-												)}
-											</div>
-											<div className="border-t border-border/60 px-3 py-2.5">
-												<button
-													type="button"
-													className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-													onClick={() =>
-														setDataSourcesSheetOpen(
-															true,
-														)
-													}
-												>
-													<GlobeIcon className="h-3.5 w-3.5 shrink-0" />
-													<span>
-														Connect external sources
-													</span>
-													<span className="text-muted-foreground/50">
-														(Notion, Drive,
-														Confluence…)
-													</span>
-													<span className="ml-auto text-muted-foreground/60">
-														→
-													</span>
-												</button>
-											</div>
-										</div>
-
-										{/* ── Capabilities card ── */}
-										<div className="flex flex-col rounded-lg border border-border bg-card">
-											<div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
-												<div className="flex items-center gap-2.5">
-													<div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary/10">
-														<McpLogo size={14} />
-													</div>
-													<div>
-														<h4 className="text-sm font-semibold">
-															Capabilities
-														</h4>
-														<p className="text-xs text-muted-foreground">
-															Skills and tools
-															available to this
-															agent
-														</p>
-													</div>
-												</div>
-												<div className="flex items-center gap-1.5">
-													{selectedTools.length +
-														selectedSkillIds.length >
-														0 && (
-														<span className="rounded-full bg-secondary/10 px-2 py-0.5 text-[11px] font-medium text-secondary-foreground">
-															{selectedTools.length +
-																selectedSkillIds.length}
-														</span>
-													)}
-													<Button
-														variant="outline"
-														size="sm"
-														className="h-7 gap-1 px-2.5 text-xs"
-														onClick={() =>
-															setToolsSheetOpen(
-																true,
-															)
-														}
-													>
-														<PlusIcon className="h-3 w-3" />
-														Add capabilities
-													</Button>
-												</div>
-											</div>
-
-											<div className="flex-1 p-3">
-												{selectedTools.length > 0 ||
-												selectedSkills.length > 0 ? (
-													<div className="space-y-1.5">
-														{selectedSkills.map(
-															(skill) => (
-																<div
-																	key={
-																		skill.id
-																	}
-																	className="flex items-center gap-2.5 rounded-lg bg-muted/40 px-3 py-2"
-																>
-																	<PuzzleIcon className="h-3.5 w-3.5 shrink-0 text-secondary" />
-																	<span className="flex-1 truncate text-sm">
-																		{
-																			skill.name
-																		}
-																	</span>
-																	<span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-																		Skill
-																	</span>
-																	<Button
-																		variant="ghost"
-																		size="icon"
-																		type="button"
-																		className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
-																		onClick={() =>
-																			setSelectedSkillIds(
-																				(
-																					ids,
-																				) =>
-																					ids.filter(
-																						(
-																							id,
-																						) =>
-																							id !==
-																							skill.id,
-																					),
-																			)
-																		}
-																	>
-																		<XIcon className="h-3 w-3" />
-																	</Button>
-																</div>
-															),
-														)}
-														{selectedTools.map(
-															(toolId) => {
-																const config =
-																	mcpConfigs.find(
-																		(
-																			c: any,
-																		) =>
-																			`mcp:${c.id}` ===
-																			toolId,
-																	);
-																const toolName =
-																	(
-																		config as any
-																	)
-																		?.displayName ||
-																	(
-																		config as any
-																	)?.mcpServer
-																		?.name ||
-																	getBuiltInCapability(
-																		toolId,
-																	)?.name ||
-																	getToolDisplayName(
-																		toolId,
-																	);
-																const isMcp =
-																	toolId.startsWith(
-																		"mcp:",
-																	);
-																const builtinIcon =
-																	!isMcp
-																		? getCapabilityIcon(
-																				toolId,
-																				"h-3.5 w-3.5 text-success shrink-0",
-																			)
-																		: null;
-																return (
-																	<div
+														<ul className="space-y-3">
+															{[
+																{
+																	title: "Set context first",
+																	body: "Open with who the agent is and what it’s for. One clear paragraph beats five vague ones.",
+																},
+																{
+																	title: "Give examples",
+																	body: "Show the format you expect. “Respond like this: …” is far more effective than “be concise”.",
+																},
+																{
+																	title: "Define the boundaries",
+																	body: "Explicitly list what the agent should not do to prevent drift.",
+																},
+															].map(
+																({
+																	title,
+																	body,
+																}) => (
+																	<li
 																		key={
-																			toolId
+																			title
 																		}
-																		className="flex items-center gap-2.5 rounded-lg bg-muted/40 px-3 py-2"
 																	>
-																		{isMcp ? (
-																			<ServerIcon className="h-3.5 w-3.5 shrink-0 text-success" />
-																		) : (
-																			builtinIcon
-																		)}
-																		<span className="flex-1 truncate text-sm">
+																		<p className="text-xs font-semibold text-foreground">
 																			{
-																				toolName
+																				title
 																			}
-																		</span>
-																		<span className="shrink-0 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
-																			Active
-																		</span>
-																		<Button
-																			variant="ghost"
-																			size="icon"
-																			type="button"
-																			className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
-																			onClick={() =>
-																				setSelectedTools(
-																					selectedTools.filter(
-																						(
-																							t,
-																						) =>
-																							t !==
-																							toolId,
-																					),
-																				)
+																		</p>
+																		<p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+																			{
+																				body
 																			}
-																		>
-																			<XIcon className="h-3 w-3" />
-																		</Button>
-																	</div>
-																);
-															},
-														)}
+																		</p>
+																	</li>
+																),
+															)}
+														</ul>
 													</div>
-												) : (
-													<div className="rounded-lg border border-dashed border-border p-4 text-center">
-														<McpLogo
-															size={20}
-															className="mx-auto mb-2 opacity-30"
-														/>
-														<p className="text-xs text-muted-foreground">
-															No capabilities
-															added yet
-														</p>
-														<button
-															type="button"
-															className="mt-1.5 text-xs text-primary hover:underline"
-															onClick={() =>
-																setToolsSheetOpen(
-																	true,
-																)
-															}
-														>
-															Browse capabilities
-															→
-														</button>
+
+													{/* ── 4. Ready to test callout ── */}
+													<div className="px-5 py-4">
+														<div className="rounded-lg bg-muted/60 p-3.5">
+															<p className="mb-1 text-xs font-semibold text-foreground">
+																After you create
+															</p>
+															<p className="text-[11px] leading-relaxed text-muted-foreground">
+																Chat with your
+																agent
+																immediately.
+																Start simple,
+																then push edge
+																cases. Refine
+																the instructions
+																based on where
+																it gets
+																confused.
+															</p>
+														</div>
 													</div>
-												)}
+												</div>
+											</TabsContent>
+										</div>
+									</Tabs>
+								</aside>
+							</TabsContent>
+
+							{/* Main content */}
+							<TabsContent
+								value="configuration"
+								forceMount
+								className="m-0 min-h-0 min-w-0 flex-1 basis-0 flex flex-col overflow-hidden data-[state=inactive]:hidden md:data-[state=inactive]:flex"
+								aria-label="Agent configuration"
+							>
+								{/* Sticky action bar */}
+								<div className="shrink-0 border-b border-border bg-card">
+									<div className="w-full px-6 py-3">
+										<div className="flex items-center justify-between gap-3">
+											<div className="flex min-w-0 items-center gap-3">
+												<div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
+													<RobotIcon className="h-4 w-4 text-primary" />
+												</div>
+												<div className="h-4 w-px bg-border" />
+												<div className="min-w-0">
+													<h1 className="truncate font-sans text-base font-semibold leading-tight">
+														{isEditMode
+															? `Edit ${name.trim() || "agent"}`
+															: isCustomAgent
+																? "Create Custom Agent"
+																: "Create New Agent"}
+													</h1>
+												</div>
 											</div>
+											<Button
+												type="button"
+												variant="ghost"
+												size="icon"
+												aria-label="Close agent editor"
+												onClick={closeEditor}
+											>
+												<XIcon className="size-4" />
+											</Button>
 										</div>
 									</div>
-								</section>
+								</div>
 
-								{/* Section 4: Triggers */}
-								<section>
-									<div className="mb-4 flex items-start justify-between">
-										<div>
-											<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-												<span className="inline-block h-3 w-px bg-[--mkt-red]" />
-												Optional
-											</p>
-											<h3 className="flex items-center gap-2 text-base font-semibold">
-												<ZapIcon className="h-[18px] w-[18px] text-primary" />
-												Triggers
-											</h3>
-											<p className="mt-0.5 text-sm text-muted-foreground">
-												Automate this agent based on
-												events.
-											</p>
-										</div>
-										<Button
-											variant="outline"
-											size="sm"
-											className="mt-1 shrink-0 gap-1.5"
-											onClick={() =>
-												setTriggersSheetOpen(true)
-											}
+								{isCustomAgent &&
+									!customTemplateLoading &&
+									!systemCustomAgentTemplate?.template
+										?.id && (
+										<div
+											role="alert"
+											className="m-6 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm"
 										>
-											<SettingsIcon className="h-3.5 w-3.5" />
-											Configure
-										</Button>
-									</div>
-
-									{triggers.filter((t) => t.enabled).length >
-									0 ? (
-										<div className="space-y-2">
-											{triggers
-												.filter((t) => t.enabled)
-												.map((trigger) => (
-													<div
-														key={trigger.type}
-														className="flex items-center gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2.5"
-													>
-														<div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
-															<ZapIcon className="h-3.5 w-3.5 text-primary" />
-														</div>
-														<div className="min-w-0 flex-1">
-															<div className="text-sm font-medium capitalize">
-																{trigger.type.replace(
-																	/_/g,
-																	" ",
-																)}
-															</div>
-														</div>
-														<Badge
-															variant="secondary"
-															className="shrink-0 text-xs"
-														>
-															Active
-														</Badge>
-													</div>
-												))}
-										</div>
-									) : (
-										<div className="rounded-lg border border-dashed border-border p-5 text-center">
-											<ZapIcon className="mx-auto mb-2 h-5 w-5 text-muted-foreground/40" />
-											<p className="text-sm text-muted-foreground">
-												No triggers configured. The
-												agent runs when manually
-												invoked.
+											<p className="font-medium">
+												Agent creation is temporarily
+												unavailable
 											</p>
+											<p className="mt-1 text-muted-foreground">
+												The base agent template could
+												not be loaded. Your draft is
+												preserved. Retry, or ask your
+												team administrator to restore
+												the agent template catalog.
+											</p>
+											<Button
+												variant="outline"
+												size="sm"
+												className="mt-3"
+												onClick={() =>
+													void retryCustomTemplate()
+												}
+											>
+												Retry loading template
+											</Button>
 										</div>
 									)}
-								</section>
 
-								{/* Section 4: Settings */}
-								<section>
-									<div className="mb-4">
-										<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-											<span className="inline-block h-3 w-px bg-[--mkt-red]" />
-											Step 4
-										</p>
-										<h3 className="text-base font-semibold">
-											Settings
-										</h3>
-									</div>
+								<section
+									aria-label="Agent configuration form"
+									// biome-ignore lint/a11y/noNoninteractiveTabindex: The independently scrolling form must be keyboard reachable.
+									tabIndex={0}
+									className="min-h-0 flex-1 space-y-8 overflow-y-auto overscroll-contain p-6 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+								>
+									{/* Section 1: Instructions */}
+									<section>
+										<div className="flex items-center justify-between mb-4">
+											<div>
+												<h3 className="text-base font-semibold">
+													Instructions
+													<span className="ml-1 text-destructive">
+														*
+													</span>
+												</h3>
+												<p className="text-sm text-muted-foreground">
+													Write the instructions for
+													this agent before
+													{isEditMode
+														? " saving your agent."
+														: " creating your agent."}
+												</p>
+											</div>
+										</div>
 
-									<div className="space-y-5">
+										<div className="relative">
+											<Textarea
+												id="agent-instructions"
+												aria-label="Instructions"
+												value={instructions}
+												onChange={(e) =>
+													setInstructions(
+														e.target.value,
+													)
+												}
+												className="min-h-64 md:min-h-80 rounded-lg border-border bg-muted/40 p-4 text-sm"
+												placeholder={
+													instructionsPlaceholder ||
+													"Describe how this agent should behave, what context it should use, and how it should respond."
+												}
+											/>
+										</div>
+									</section>
+
+									<section
+										aria-label="Agent details"
+										className="space-y-5"
+									>
+										<h2 className="text-lg font-semibold">
+											Agent details
+										</h2>
 										{/* Name with category icon */}
 										<div>
 											<Label
@@ -2310,24 +1864,6 @@ export function CreateAgentPage({
 																: "e.g., Customer Support Assistant"
 														}
 													/>
-													<Button
-														variant="ghost"
-														size="icon"
-														className="absolute right-1 top-1/2 -translate-y-1/2 h-8 w-8"
-														title="Generate with AI"
-														onClick={
-															handleGenerateName
-														}
-														disabled={
-															isGeneratingName
-														}
-													>
-														{isGeneratingName ? (
-															<Loader2Icon className="h-4 w-4 animate-spin" />
-														) : (
-															<SparklesIcon className="h-4 w-4" />
-														)}
-													</Button>
 												</div>
 
 												{/* Category icon — not interactive, so the
@@ -2389,582 +1925,1557 @@ export function CreateAgentPage({
 													}
 													rows={3}
 												/>
-												<Button
-													variant="ghost"
-													size="icon"
-													className="absolute right-2 top-2 h-8 w-8"
-													title="Generate with AI"
-													onClick={
-														handleGenerateDescription
-													}
-													disabled={isGeneratingDesc}
-												>
-													{isGeneratingDesc ? (
-														<Loader2Icon className="h-4 w-4 animate-spin" />
-													) : (
-														<SparklesIcon className="h-4 w-4" />
-													)}
-												</Button>
 											</div>
 										</div>
 
-										{/* Execution Mode */}
-										<div>
-											<Label className="text-sm font-medium mb-2 block">
-												Execution Mode
+										<div className="space-y-2">
+											<Label htmlFor="agent-project">
+												Project (optional)
 											</Label>
-											<div className="space-y-3">
-												<div className="grid grid-cols-2 gap-1.5 rounded-lg border border-border bg-muted/40 p-1.5">
-													<button
-														type="button"
-														className={cn(
-															"flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors",
-															executionMode ===
-																"single_turn"
-																? "bg-card shadow-sm ring-1 ring-border/60"
-																: "hover:bg-muted/60",
-														)}
-														onClick={() =>
-															setExecutionMode(
-																"single_turn",
-															)
-														}
-													>
-														<div
-															className={cn(
-																"flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors",
-																executionMode ===
-																	"single_turn"
-																	? "bg-primary/10"
-																	: "bg-muted",
-															)}
-														>
-															<RobotIcon
-																className={cn(
-																	"h-4 w-4 transition-colors",
-																	executionMode ===
-																		"single_turn"
-																		? "text-primary"
-																		: "text-muted-foreground",
-																)}
-															/>
-														</div>
-														<div>
-															<div
-																className={cn(
-																	"text-sm font-medium transition-colors",
-																	executionMode ===
-																		"single_turn"
-																		? "text-foreground"
-																		: "text-muted-foreground",
-																)}
+											<Select
+												value={projectId ?? "none"}
+												onValueChange={(value) =>
+													setProjectId(
+														value === "none"
+															? null
+															: value,
+													)
+												}
+											>
+												<SelectTrigger id="agent-project">
+													<SelectValue placeholder="No project selected" />
+												</SelectTrigger>
+												<SelectContent>
+													<SelectItem value="none">
+														No project selected
+													</SelectItem>
+													{projectId &&
+														!projects.some(
+															(project) =>
+																project.id ===
+																projectId,
+														) && (
+															<SelectItem
+																value={
+																	projectId
+																}
 															>
-																Single Turn
-															</div>
-															<div className="text-xs text-muted-foreground">
-																Simple Q&amp;A
-															</div>
-														</div>
-													</button>
-													<button
-														type="button"
-														className={cn(
-															"flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors",
-															executionMode ===
-																"goal_oriented"
-																? "bg-card shadow-sm ring-1 ring-border/60"
-																: "hover:bg-muted/60",
+																Selected project
+															</SelectItem>
 														)}
-														onClick={() =>
-															setExecutionMode(
-																"goal_oriented",
-															)
-														}
-													>
-														<div
-															className={cn(
-																"flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors",
-																executionMode ===
-																	"goal_oriented"
-																	? "bg-secondary/10"
-																	: "bg-muted",
-															)}
+													{projects.map((project) => (
+														<SelectItem
+															key={project.id}
+															value={project.id}
 														>
-															<RocketIcon
-																className={cn(
-																	"h-4 w-4 transition-colors",
-																	executionMode ===
-																		"goal_oriented"
-																		? "text-secondary-foreground"
-																		: "text-muted-foreground",
-																)}
-															/>
-														</div>
-														<div>
-															<div
-																className={cn(
-																	"text-sm font-medium transition-colors",
-																	executionMode ===
-																		"goal_oriented"
-																		? "text-foreground"
-																		: "text-muted-foreground",
-																)}
-															>
-																Goal Oriented
-															</div>
-															<div className="text-xs text-muted-foreground">
-																Multi-step tasks
-															</div>
-														</div>
-													</button>
+															{project.name}
+														</SelectItem>
+													))}
+												</SelectContent>
+											</Select>
+											{projectsFailed && (
+												<output className="block text-sm text-muted-foreground">
+													Project choices could not be
+													loaded. Your existing
+													selection is retained.
+												</output>
+											)}
+											<p className="text-xs text-muted-foreground">
+												Associate the agent with a
+												project. Choose its permitted
+												knowledge sources below.
+											</p>
+										</div>
+										<div className="space-y-2">
+											<Label htmlFor="agent-expected-output">
+												Expected output (optional)
+											</Label>
+											<Textarea
+												id="agent-expected-output"
+												value={expectedOutput}
+												maxLength={4000}
+												onChange={(event) =>
+													setExpectedOutput(
+														event.target.value,
+													)
+												}
+												placeholder="Describe the result this agent should produce."
+											/>
+											<p className="text-xs text-muted-foreground">
+												Describe the result you will
+												review, such as a cited answer
+												or documentation proposal.
+											</p>
+										</div>
+									</section>
+									{/* Section 2: Required Integrations Warning (only show when creating from template) */}
+									{!isCustomAgent &&
+										requiredIntegrations.length > 0 && (
+											<section>
+												<div className="mb-4">
+													<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+														<span className="inline-block h-3 w-px bg-[--mkt-red]" />
+														Step 2
+													</p>
+													<h3 className="text-base font-semibold">
+														Required Integrations
+													</h3>
+													<p className="text-sm text-muted-foreground">
+														This template requires
+														the following
+														integrations to work
+														properly.
+													</p>
 												</div>
 
-												{/* Goal input - shown when goal_oriented is selected */}
-												{executionMode ===
-													"goal_oriented" && (
-													<div className="space-y-4 rounded-lg border border-secondary/20 bg-secondary/5 p-4">
-														<div>
-															<Label
-																htmlFor="agent-goal"
-																className="mb-2 block text-sm font-medium"
-															>
-																Goal
-															</Label>
-															<Textarea
-																id="agent-goal"
-																value={goal}
-																onChange={(e) =>
-																	setGoal(
-																		e.target
-																			.value,
-																	)
+												<div
+													className={cn(
+														"rounded-lg border p-4",
+														hasAllRequiredIntegrations
+															? "border-success/20 bg-success/5"
+															: "border-destructive/20 bg-destructive/5",
+													)}
+												>
+													<div className="flex flex-wrap gap-3 mb-4">
+														{requiredIntegrations.map(
+															({
+																type,
+																plugin,
+																isConfigured,
+															}) => {
+																if (!plugin) {
+																	return null;
 																}
-																className="min-h-[80px] resize-none rounded-lg border-border bg-background"
-																placeholder="Describe the goal this agent should achieve, e.g., 'Analyze customer feedback and generate a summary report with key insights and recommendations'"
-																rows={3}
-															/>
-															<p className="mt-1 text-xs text-muted-foreground">
-																The agent will
-																iteratively
-																plan, execute,
-																and verify until
-																this goal is
-																achieved.
-															</p>
-														</div>
-
-														<div>
-															<Label
-																htmlFor="max-iterations"
-																className="mb-2 block text-sm font-medium"
-															>
-																Max Iterations:{" "}
-																{maxIterations}
-															</Label>
-															<input
-																id="max-iterations"
-																type="range"
-																min={1}
-																max={50}
-																value={
-																	maxIterations
-																}
-																onChange={(e) =>
-																	setMaxIterations(
-																		Number(
-																			e
-																				.target
-																				.value,
-																		),
-																	)
-																}
-																className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-muted accent-primary"
-															/>
-															<div className="mt-1 flex justify-between text-xs text-muted-foreground">
-																<span>1</span>
-																<span>
-																	Max attempts
-																	before
-																	stopping
-																</span>
-																<span>50</span>
-															</div>
-														</div>
+																return (
+																	<div
+																		key={
+																			type
+																		}
+																		className={cn(
+																			"flex items-center gap-2 rounded-lg border px-3 py-2",
+																			isConfigured
+																				? "border-success/30 bg-card"
+																				: "border-destructive/30 bg-card",
+																		)}
+																	>
+																		<IntegrationBrandIcon
+																			icon={
+																				plugin.icon
+																			}
+																			label={
+																				plugin.label
+																			}
+																			color={
+																				plugin.color
+																			}
+																			brandColor={
+																				plugin.brandColor
+																			}
+																			size={
+																				24
+																			}
+																			className="rounded-md"
+																			iconClassName="h-3.5 w-3.5"
+																		/>
+																		<span className="text-sm font-medium">
+																			{
+																				plugin.label
+																			}
+																		</span>
+																		{isConfigured ? (
+																			<CheckCircle2Icon className="h-4 w-4 text-success" />
+																		) : (
+																			<AlertCircleIcon className="h-4 w-4 text-amber-600" />
+																		)}
+																	</div>
+																);
+															},
+														)}
 													</div>
-												)}
-											</div>
-										</div>
 
-										{/* External API Access - only in edit mode */}
-										{isEditMode && instanceId && (
-											<div>
-												<Label className="text-sm font-medium mb-2 block">
-													External API Access
-												</Label>
-												<div className="space-y-3 rounded-lg border border-border bg-muted/40 p-4">
-													<div className="flex items-center justify-between">
-														<div>
-															<p className="text-sm font-medium">
-																Expose via API
+													{!hasAllRequiredIntegrations && (
+														<div className="flex items-center justify-between">
+															<p className="text-sm text-highlight">
+																{
+																	missingIntegrations.length
+																}{" "}
+																integration
+																{missingIntegrations.length !==
+																1
+																	? "s"
+																	: ""}{" "}
+																need
+																{missingIntegrations.length ===
+																1
+																	? "s"
+																	: ""}{" "}
+																to be configured
 															</p>
-															<p className="text-xs text-muted-foreground">
-																Allow external
-																systems to
-																execute this
-																agent
-															</p>
-														</div>
-														<Switch
-															checked={
-																isApiExposed
-															}
-															onCheckedChange={
-																setIsApiExposed
-															}
-														/>
-													</div>
-													{isApiExposed ? (
-														<div className="space-y-2">
-															<p className="text-xs text-muted-foreground">
-																Endpoint URL
-															</p>
-															<div className="flex items-center gap-2">
-																<code className="flex-1 text-xs bg-background px-3 py-2 rounded-md break-all border border-border">
-																	{typeof window !==
-																	"undefined"
-																		? `${window.location.origin}/api/v1/external/agents/${apiIdentifier}/execute`
-																		: `/api/v1/external/agents/${apiIdentifier}/execute`}
-																</code>
-																<Button
-																	variant="outline"
-																	size="icon"
-																	className="shrink-0"
-																	onClick={() => {
-																		const url = `${window.location.origin}/api/v1/external/agents/${apiIdentifier}/execute`;
-																		navigator.clipboard.writeText(
-																			url,
-																		);
-																		toast.success(
-																			"URL copied to clipboard",
-																		);
-																	}}
+															<Button
+																variant="outline"
+																size="sm"
+																className="border-border text-foreground hover:bg-muted"
+																asChild
+															>
+																<Link
+																	href={
+																		integrationsSettingsUrl
+																	}
 																>
-																	<CopyIcon className="h-4 w-4" />
-																</Button>
-															</div>
-															<p className="text-xs text-muted-foreground">
-																Requires an API
-																key (
-																<code className="text-xs">
-																	fab_*
-																</code>{" "}
-																or{" "}
-																<code className="text-xs">
-																	org_*
-																</code>
-																) in the{" "}
-																<code className="text-xs">
-																	Authorization:
-																	Bearer
-																</code>{" "}
-																header.
-															</p>
+																	<SettingsIcon className="h-4 w-4 mr-2" />
+																	Configure
+																	Integrations
+																</Link>
+															</Button>
 														</div>
-													) : (
-														<p className="text-xs text-muted-foreground">
-															Enable to allow this
-															agent to be executed
-															via the external
-															REST API.
+													)}
+
+													{hasAllRequiredIntegrations && (
+														<p className="text-sm text-success flex items-center gap-2">
+															<CheckCircle2Icon className="h-4 w-4" />
+															All required
+															integrations are
+															configured!
 														</p>
 													)}
 												</div>
-											</div>
+											</section>
 										)}
-									</div>
-								</section>
-							</div>
-						</div>
 
-						{/* Right Panel: Sidekick + Guide */}
-						<div className="sticky top-[53px] flex h-[calc(100vh-53px)] w-[346px] shrink-0 flex-col border-l border-border bg-card/50">
-							{/* Tab bar */}
-							<div className="flex border-b border-border/60">
-								<button
-									type="button"
-									onClick={() => setRightPanelTab("sidekick")}
-									className={cn(
-										"flex-1 px-4 py-2.5 text-sm font-medium transition-colors",
-										rightPanelTab === "sidekick"
-											? "border-b-2 border-primary text-foreground"
-											: "text-muted-foreground hover:text-foreground",
-									)}
-								>
-									Sidekick
-								</button>
-								<button
-									type="button"
-									onClick={() => setRightPanelTab("guide")}
-									className={cn(
-										"flex-1 px-4 py-2.5 text-sm font-medium transition-colors",
-										rightPanelTab === "guide"
-											? "border-b-2 border-primary text-foreground"
-											: "text-muted-foreground hover:text-foreground",
-									)}
-								>
-									Guide
-								</button>
-							</div>
+									{/* Section 2b: Required MCP Servers (only show when template has requiredMcpServers) */}
+									{!isCustomAgent &&
+										requiredMcpServerKeys.length > 0 && (
+											<section>
+												<div className="mb-4">
+													<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+														<span className="inline-block h-3 w-px bg-[--mkt-red]" />
+														Step 2b
+													</p>
+													<h3 className="text-base font-semibold">
+														Required MCP
+														Integrations
+													</h3>
+													<p className="text-sm text-muted-foreground">
+														Select which MCP
+														connection to use for
+														each required
+														integration.
+													</p>
+												</div>
 
-							{/* Tab content */}
-							<div className="flex-1 overflow-hidden">
-								{rightPanelTab === "sidekick" ? (
-									<AgentBuilderSidekick
-										agentId={effectiveAgentId}
-										entityType={sidekickEntityType}
-									/>
-								) : (
-									<div
-										className="overflow-y-auto"
-										style={{
-											height: "calc(100vh - 170px)",
-										}}
-									>
-										{/* Header */}
-										<div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
-											<div>
-												<p className="mb-0.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-													<span className="inline-block h-3 w-px bg-[--mkt-red]" />
-													Guidance
-												</p>
-												<h3 className="flex items-center gap-1.5 text-sm font-semibold">
-													<LightbulbIcon className="h-3.5 w-3.5 text-[--mkt-red]" />
-													Agent Setup Guide
-												</h3>
-											</div>
-											<DropdownMenu>
-												<DropdownMenuTrigger asChild>
-													<Button
-														variant="ghost"
-														size="sm"
-														className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-													>
-														Reset
-														<ChevronDownIcon className="h-3 w-3" />
-													</Button>
-												</DropdownMenuTrigger>
-												<DropdownMenuContent align="end">
-													<DropdownMenuItem
-														onClick={() => {
-															setInstructions(
-																getDefaultInstructions(),
-															);
-															setName(
-																getDefaultName(),
-															);
-															setDescription(
-																getDefaultDescription(),
-															);
-															setSelectedDataSources(
-																initialDataSources,
-															);
-															setPinnedDatabricksIntegrationId(
-																initialDatabricksIntegrationId,
-															);
-															setKnowledgeResources(
-																initialKnowledgeResources,
-															);
-															setSelectedTools(
-																initialTools,
-															);
-															setSelectedSkillIds(
-																initialSkillIds,
-															);
-															setTriggers(
-																initialTriggers,
-															);
-															setExecutionMode(
-																initialExecutionMode,
-															);
-															setGoal(
-																initialGoal,
-															);
-															setMaxIterations(
-																initialMaxIterations,
-															);
-														}}
-													>
-														Reset to template
-														defaults
-													</DropdownMenuItem>
-													<DropdownMenuItem
-														onClick={() => {
-															setInstructions("");
-															setName("");
-															setDescription("");
-														}}
-													>
-														Clear all
-													</DropdownMenuItem>
-												</DropdownMenuContent>
-											</DropdownMenu>
-										</div>
+												<div className="space-y-4">
+													{requiredMcpServerKeys.map(
+														(key) => {
+															const keyData =
+																requiredMcpKeys.find(
+																	(k) =>
+																		k.key ===
+																		key,
+																);
+															const hasConfigs =
+																keyData &&
+																keyData.configs
+																	.length > 0;
+															const selectedConfigId =
+																toolConnections[
+																	`mcp:${key}`
+																]?.mcpConfigId;
+															const selectedConfig =
+																keyData?.configs.find(
+																	(c) =>
+																		c.configId ===
+																		selectedConfigId,
+																);
 
-										<div className="space-y-0 divide-y divide-border/60">
-											{/* ── 1. Setup checklist ── */}
-											<div className="px-5 py-4">
-												<p className="mb-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-													Setup checklist
-												</p>
-												<ul className="space-y-2">
-													{[
-														{
-															label: "Agent name",
-															done:
-																name.trim()
-																	.length > 0,
-															required: true,
-															hint: "Give it a clear, recognisable name",
-														},
-														{
-															label: "Instructions written",
-															done:
-																instructions.trim()
-																	.length >
-																30,
-															required: true,
-															hint: "Be specific — context beats brevity",
-														},
-														{
-															label: "Knowledge source",
-															done:
-																selectedDataSources.length >
-																0,
-															required: false,
-															hint: "Connect a library or integration",
-														},
-														{
-															label: "Tools (MCP)",
-															done:
-																selectedTools.length >
-																0,
-															required: false,
-															hint: "Add MCP servers to extend capabilities",
-														},
-													].map(
-														({
-															label,
-															done,
-															required,
-															hint,
-														}) => (
-															<li
-																key={label}
-																className="flex items-start gap-2.5"
-															>
+															return (
 																<div
+																	key={key}
 																	className={cn(
-																		"mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors",
-																		done
-																			? "bg-primary/15 text-primary"
-																			: required
-																				? "border border-border bg-background"
-																				: "border border-dashed border-border/50 bg-background",
+																		"rounded-lg border p-4",
+																		hasConfigs
+																			? "border-success/20 bg-success/5"
+																			: "border-destructive/20 bg-destructive/5",
 																	)}
 																>
-																	{done && (
-																		<CheckIcon className="h-2.5 w-2.5 text-primary" />
-																	)}
-																</div>
-																<div className="min-w-0 flex-1">
-																	<div className="flex items-center gap-1.5">
-																		<span
-																			className={cn(
-																				"text-xs font-medium",
-																				done
-																					? "text-foreground line-through decoration-muted-foreground/40"
-																					: "text-foreground",
-																			)}
-																		>
-																			{
-																				label
-																			}
-																		</span>
-																		{!required && (
-																			<span className="text-[10px] text-muted-foreground/60">
-																				optional
-																			</span>
+																	<div className="flex items-center justify-between">
+																		<div className="flex items-center gap-3">
+																			<div
+																				className={cn(
+																					"flex h-8 w-8 items-center justify-center rounded-lg",
+																					hasConfigs
+																						? "bg-success/10"
+																						: "bg-destructive/10",
+																				)}
+																			>
+																				<SettingsIcon
+																					className={cn(
+																						"h-4 w-4",
+																						hasConfigs
+																							? "text-success"
+																							: "text-amber-600",
+																					)}
+																				/>
+																			</div>
+																			<div>
+																				<p className="font-medium capitalize">
+																					{
+																						key
+																					}
+																				</p>
+																				{hasConfigs ? (
+																					<p className="text-xs text-muted-foreground">
+																						{
+																							keyData
+																								.configs
+																								.length
+																						}{" "}
+																						connection
+																						{keyData
+																							.configs
+																							.length !==
+																						1
+																							? "s"
+																							: ""}{" "}
+																						available
+																					</p>
+																				) : (
+																					<p className="text-xs text-amber-600">
+																						No
+																						connections
+																						found
+																					</p>
+																				)}
+																			</div>
+																		</div>
+
+																		{hasConfigs ? (
+																			<div className="flex items-center gap-2">
+																				{keyData
+																					.configs
+																					.length ===
+																				1 ? (
+																					<div className="flex items-center gap-2 rounded-lg border border-success/30 bg-card px-3 py-1.5">
+																						<CheckCircle2Icon className="h-4 w-4 text-success" />
+																						<span className="text-sm">
+																							{
+																								selectedConfig?.configName
+																							}
+																						</span>
+																					</div>
+																				) : (
+																					<DropdownMenu>
+																						<DropdownMenuTrigger
+																							asChild
+																						>
+																							<Button
+																								variant="outline"
+																								size="sm"
+																								className="gap-2"
+																							>
+																								{selectedConfig?.configName ||
+																									"Select connection"}
+																								<ChevronDownIcon className="h-4 w-4" />
+																							</Button>
+																						</DropdownMenuTrigger>
+																						<DropdownMenuContent align="end">
+																							{keyData.configs.map(
+																								(
+																									config,
+																								) => (
+																									<DropdownMenuItem
+																										key={
+																											config.configId
+																										}
+																										onClick={() => {
+																											setToolConnections(
+																												{
+																													...toolConnections,
+																													[`mcp:${key}`]:
+																														{
+																															enabled: true,
+																															mcpConfigId:
+																																config.configId,
+																														},
+																												},
+																											);
+																										}}
+																									>
+																										<div className="flex items-center gap-2">
+																											{config.configId ===
+																												selectedConfigId && (
+																												<CheckIcon className="h-4 w-4 text-success" />
+																											)}
+																											<span>
+																												{
+																													config.configName
+																												}
+																											</span>
+																											{config.isSystemServer && (
+																												<Badge
+																													variant="secondary"
+																													className="text-xs"
+																												>
+																													System
+																												</Badge>
+																											)}
+																										</div>
+																									</DropdownMenuItem>
+																								),
+																							)}
+																						</DropdownMenuContent>
+																					</DropdownMenu>
+																				)}
+																			</div>
+																		) : (
+																			<Button
+																				variant="outline"
+																				size="sm"
+																				className="border-border text-foreground hover:bg-muted"
+																				asChild
+																			>
+																				<Link
+																					href={`${mcpServersUrl}?search=${key}`}
+																				>
+																					<PlusIcon className="h-4 w-4 mr-1" />
+																					Add
+																					Connection
+																				</Link>
+																			</Button>
 																		)}
 																	</div>
-																	{!done && (
-																		<p className="mt-0.5 text-[11px] text-muted-foreground">
-																			{
-																				hint
-																			}
-																		</p>
-																	)}
 																</div>
-															</li>
-														),
+															);
+														},
 													)}
-												</ul>
-											</div>
+												</div>
 
-											{/* ── 2. Template tips ── */}
-											{/* ── 3. Writing good instructions ── */}
-											<div className="px-5 py-4">
-												<p className="mb-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-													Writing good instructions
+												{hasAllRequiredMcpServers && (
+													<p className="mt-4 text-sm text-success flex items-center gap-2">
+														<CheckCircle2Icon className="h-4 w-4" />
+														All required MCP
+														integrations are
+														configured!
+													</p>
+												)}
+											</section>
+										)}
+
+									{/* Section 2: Knowledge & Tools */}
+									<section>
+										<div className="mb-4 flex items-start justify-between">
+											<div>
+												<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+													<span className="inline-block h-3 w-px bg-[--mkt-red]" />
+													Step 2
 												</p>
-												<ul className="space-y-3">
-													{[
-														{
-															title: "Set context first",
-															body: "Open with who the agent is and what it’s for. One clear paragraph beats five vague ones.",
-														},
-														{
-															title: "Give examples",
-															body: "Show the format you expect. “Respond like this: …” is far more effective than “be concise”.",
-														},
-														{
-															title: "Define the boundaries",
-															body: "Explicitly list what the agent should not do to prevent drift.",
-														},
-													].map(({ title, body }) => (
-														<li key={title}>
-															<p className="text-xs font-semibold text-foreground">
-																{title}
+												<h3 className="text-base font-semibold">
+													Knowledge & Tools
+												</h3>
+												<p className="mt-0.5 text-sm text-muted-foreground">
+													Connect knowledge sources
+													and tools to enhance your
+													agent&apos;s abilities.
+												</p>
+											</div>
+										</div>
+
+										<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+											{/* ── Searchable knowledge card ── */}
+											<div className="flex flex-col rounded-lg border border-border bg-card">
+												<div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
+													<div className="flex items-center gap-2.5">
+														<div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+															<Square3Stack3DIcon className="h-3.5 w-3.5 text-primary" />
+														</div>
+														<div>
+															<h4 className="text-sm font-semibold">
+																Knowledge
+															</h4>
+															<p className="text-xs text-muted-foreground">
+																Workspaces &
+																integrations
 															</p>
-															<p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-																{body}
+														</div>
+													</div>
+													<div className="flex items-center gap-1.5">
+														{selectedWorkspaces.length >
+															0 && (
+															<span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+																{
+																	selectedWorkspaces.length
+																}
+															</span>
+														)}
+														<Button
+															variant="outline"
+															size="sm"
+															className="h-7 gap-1 px-2.5 text-xs"
+															onClick={() =>
+																setWorkspacesSheetOpen(
+																	true,
+																)
+															}
+														>
+															<PlusIcon className="h-3 w-3" />
+															Add
+														</Button>
+													</div>
+												</div>
+
+												<div className="flex-1 p-3">
+													{selectedWorkspaces.length >
+													0 ? (
+														<div className="space-y-1.5">
+															{selectedWorkspaces.map(
+																(workspace) => (
+																	<div
+																		key={
+																			workspace.id
+																		}
+																		className="flex items-center gap-2.5 rounded-lg bg-muted/40 px-3 py-2"
+																	>
+																		<Square3Stack3DIcon className="h-3.5 w-3.5 shrink-0 text-primary" />
+																		<span className="flex-1 truncate text-sm">
+																			{
+																				workspace.name
+																			}
+																		</span>
+																		{workspace.documentCount >
+																			0 && (
+																			<span className="shrink-0 text-xs text-muted-foreground">
+																				{
+																					workspace.documentCount
+																				}{" "}
+																				docs
+																			</span>
+																		)}
+																		<Button
+																			variant="ghost"
+																			size="icon"
+																			type="button"
+																			className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+																			onClick={() =>
+																				setSelectedDataSources(
+																					selectedDataSources.filter(
+																						(
+																							id,
+																						) =>
+																							id !==
+																							workspace.id,
+																					),
+																				)
+																			}
+																		>
+																			<XIcon className="h-3 w-3" />
+																		</Button>
+																	</div>
+																),
+															)}
+														</div>
+													) : (
+														<div className="rounded-lg border border-dashed border-border p-4 text-center">
+															<Square3Stack3DIcon className="mx-auto mb-2 h-5 w-5 text-muted-foreground/30" />
+															<p className="text-xs text-muted-foreground">
+																No searchable
+																knowledge added
+																yet
 															</p>
-														</li>
-													))}
-												</ul>
+															<button
+																type="button"
+																className="mt-1.5 text-xs text-primary hover:underline"
+																onClick={() =>
+																	setWorkspacesSheetOpen(
+																		true,
+																	)
+																}
+															>
+																Browse
+																workspaces →
+															</button>
+														</div>
+													)}
+												</div>
+												<div className="border-t border-border/60 px-3 py-2.5">
+													<button
+														type="button"
+														className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+														onClick={() =>
+															setDataSourcesSheetOpen(
+																true,
+															)
+														}
+													>
+														<GlobeIcon className="h-3.5 w-3.5 shrink-0" />
+														<span>
+															Connect external
+															sources
+														</span>
+														<span className="text-muted-foreground">
+															(Notion, Drive,
+															Confluence…)
+														</span>
+														<span className="ml-auto text-muted-foreground/60">
+															→
+														</span>
+													</button>
+												</div>
 											</div>
 
-											{/* ── 4. Ready to test callout ── */}
-											<div className="px-5 py-4">
-												<div className="rounded-lg bg-muted/60 p-3.5">
-													<p className="mb-1 text-xs font-semibold text-foreground">
-														After you create
-													</p>
-													<p className="text-[11px] leading-relaxed text-muted-foreground">
-														Chat with your agent
-														immediately. Start
-														simple, then push edge
-														cases. Refine the
-														instructions based on
-														where it gets confused.
-													</p>
+											{/* ── Capabilities card ── */}
+											<div className="flex flex-col rounded-lg border border-border bg-card">
+												<div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
+													<div className="flex items-center gap-2.5">
+														<div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary/10">
+															<McpLogo
+																size={14}
+															/>
+														</div>
+														<div>
+															<h4 className="text-sm font-semibold">
+																Capabilities
+															</h4>
+															<p className="text-xs text-muted-foreground">
+																Skills and tools
+																available to
+																this agent
+															</p>
+														</div>
+													</div>
+													<div className="flex items-center gap-1.5">
+														{selectedTools.length +
+															selectedSkillIds.length >
+															0 && (
+															<span className="rounded-full bg-secondary/10 px-2 py-0.5 text-[11px] font-medium text-secondary-foreground">
+																{selectedTools.length +
+																	selectedSkillIds.length}
+															</span>
+														)}
+														<Button
+															variant="outline"
+															size="sm"
+															className="h-7 gap-1 px-2.5 text-xs"
+															onClick={() =>
+																setToolsSheetOpen(
+																	true,
+																)
+															}
+														>
+															<PlusIcon className="h-3 w-3" />
+															Add capabilities
+														</Button>
+													</div>
+												</div>
+
+												<div className="flex-1 p-3">
+													{selectedTools.length > 0 ||
+													selectedSkills.length >
+														0 ? (
+														<div className="space-y-1.5">
+															{selectedSkills.map(
+																(skill) => (
+																	<div
+																		key={
+																			skill.id
+																		}
+																		className="flex items-center gap-2.5 rounded-lg bg-muted/40 px-3 py-2"
+																	>
+																		<PuzzleIcon className="h-3.5 w-3.5 shrink-0 text-secondary" />
+																		<span className="flex-1 truncate text-sm">
+																			{
+																				skill.name
+																			}
+																		</span>
+																		<span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+																			Skill
+																		</span>
+																		<Button
+																			aria-label={`Remove skill ${skill.name}`}
+																			variant="ghost"
+																			size="icon"
+																			type="button"
+																			className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+																			onClick={() =>
+																				setSelectedSkillIds(
+																					(
+																						ids,
+																					) =>
+																						ids.filter(
+																							(
+																								id,
+																							) =>
+																								id !==
+																								skill.id,
+																						),
+																				)
+																			}
+																		>
+																			<XIcon className="h-3 w-3" />
+																		</Button>
+																	</div>
+																),
+															)}
+															{selectedTools.map(
+																(toolId) => {
+																	const config =
+																		mcpConfigs.find(
+																			(
+																				c: any,
+																			) =>
+																				`mcp:${c.id}` ===
+																				toolId,
+																		);
+																	const toolName =
+																		(
+																			config as any
+																		)
+																			?.displayName ||
+																		(
+																			config as any
+																		)
+																			?.mcpServer
+																			?.name ||
+																		getBuiltInCapability(
+																			toolId,
+																		)
+																			?.name ||
+																		getToolDisplayName(
+																			toolId,
+																		);
+																	const isMcp =
+																		toolId.startsWith(
+																			"mcp:",
+																		);
+																	const builtinIcon =
+																		!isMcp
+																			? getCapabilityIcon(
+																					toolId,
+																					"h-3.5 w-3.5 text-success shrink-0",
+																				)
+																			: null;
+																	return (
+																		<div
+																			key={
+																				toolId
+																			}
+																			className="flex items-center gap-2.5 rounded-lg bg-muted/40 px-3 py-2"
+																		>
+																			{isMcp ? (
+																				<ServerIcon className="h-3.5 w-3.5 shrink-0 text-success" />
+																			) : (
+																				builtinIcon
+																			)}
+																			<span className="flex-1 truncate text-sm">
+																				{
+																					toolName
+																				}
+																			</span>
+																			<Badge
+																				variant="success"
+																				className="bg-background"
+																			>
+																				Active
+																			</Badge>
+																			<Button
+																				aria-label={`Remove capability ${toolName}`}
+																				variant="ghost"
+																				size="icon"
+																				type="button"
+																				className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+																				onClick={() =>
+																					setSelectedTools(
+																						selectedTools.filter(
+																							(
+																								t,
+																							) =>
+																								t !==
+																								toolId,
+																						),
+																					)
+																				}
+																			>
+																				<XIcon className="h-3 w-3" />
+																			</Button>
+																		</div>
+																	);
+																},
+															)}
+														</div>
+													) : (
+														<div className="rounded-lg border border-dashed border-border p-4 text-center">
+															<McpLogo
+																size={20}
+																className="mx-auto mb-2 opacity-30"
+															/>
+															<p className="text-xs text-muted-foreground">
+																No capabilities
+																added yet
+															</p>
+															<button
+																type="button"
+																className="mt-1.5 text-xs text-primary hover:underline"
+																onClick={() =>
+																	setToolsSheetOpen(
+																		true,
+																	)
+																}
+															>
+																Browse
+																capabilities →
+															</button>
+														</div>
+													)}
 												</div>
 											</div>
 										</div>
+									</section>
+
+									<Collapsible
+										open={advancedOpen}
+										onOpenChange={setAdvancedOpen}
+										className="space-y-4"
+									>
+										<CollapsibleTrigger asChild>
+											<Button
+												type="button"
+												variant="outline"
+											>
+												Advanced configuration
+											</Button>
+										</CollapsibleTrigger>
+										<p className="text-sm text-muted-foreground">
+											{executionMode === "goal_oriented"
+												? `Goal-oriented execution · up to ${maxIterations} iterations`
+												: "Single-turn execution"}
+											. Configure loops, starter messages,
+											triggers and API access when needed.
+										</p>
+										<CollapsibleContent className="space-y-8">
+											{/* Starter Messages */}
+											<section>
+												<div className="mb-4">
+													<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+														<span className="inline-block h-3 w-px bg-[--mkt-red]" />
+														Optional
+													</p>
+													<h3 className="text-base font-semibold">
+														Starter Messages
+													</h3>
+													<p className="mt-0.5 text-sm text-muted-foreground">
+														Clickable suggestions
+														shown when a user opens
+														a new chat with this
+														agent.
+													</p>
+												</div>
+
+												{starterMessages.length > 0 && (
+													<div className="flex flex-wrap gap-2 mb-3">
+														{starterMessages.map(
+															(msg, idx) => (
+																<div
+																	key={idx}
+																	className="group flex items-center gap-1.5 rounded-full border bg-muted/40 px-3 py-1.5 text-sm"
+																>
+																	<span>
+																		{
+																			msg.emoji
+																		}
+																	</span>
+																	<span>
+																		{
+																			msg.label
+																		}
+																	</span>
+																	<button
+																		type="button"
+																		aria-label={`Remove starter message ${msg.label || idx + 1}`}
+																		className="ml-1 text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive transition-opacity"
+																		onClick={() =>
+																			setStarterMessages(
+																				starterMessages.filter(
+																					(
+																						_,
+																						i,
+																					) =>
+																						i !==
+																						idx,
+																				),
+																			)
+																		}
+																	>
+																		&times;
+																	</button>
+																</div>
+															),
+														)}
+													</div>
+												)}
+
+												{starterMessages.length < 6 && (
+													<Button
+														type="button"
+														variant="outline"
+														size="sm"
+														onClick={() => {
+															setStarterMessages([
+																...starterMessages,
+																{
+																	label: "",
+																	emoji: "💡",
+																	prompt: "",
+																},
+															]);
+														}}
+													>
+														<PlusIcon className="mr-1.5 h-3.5 w-3.5" />
+														Add Starter Message
+													</Button>
+												)}
+
+												{starterMessages.length > 0 && (
+													<div className="mt-3 space-y-3">
+														{starterMessages.map(
+															(msg, idx) => (
+																<div
+																	key={idx}
+																	className="grid grid-cols-[60px_1fr_1fr] gap-2 items-start rounded-lg border bg-card p-3"
+																>
+																	<div>
+																		<label
+																			htmlFor={`starter-message-emoji-${idx}`}
+																			className="text-xs text-muted-foreground"
+																		>
+																			Emoji
+																		</label>
+																		<input
+																			id={`starter-message-emoji-${idx}`}
+																			type="text"
+																			value={
+																				msg.emoji
+																			}
+																			maxLength={
+																				2
+																			}
+																			className="mt-1 w-full rounded border bg-muted/40 px-2 py-1 text-center text-lg"
+																			onChange={(
+																				e,
+																			) => {
+																				const updated =
+																					[
+																						...starterMessages,
+																					];
+																				updated[
+																					idx
+																				] =
+																					{
+																						...updated[
+																							idx
+																						],
+																						emoji: e
+																							.target
+																							.value,
+																					};
+																				setStarterMessages(
+																					updated,
+																				);
+																			}}
+																		/>
+																	</div>
+																	<div>
+																		<label
+																			htmlFor={`starter-message-label-${idx}`}
+																			className="text-xs text-muted-foreground"
+																		>
+																			Label
+																		</label>
+																		<input
+																			id={`starter-message-label-${idx}`}
+																			type="text"
+																			value={
+																				msg.label
+																			}
+																			placeholder="e.g. Plan a feature"
+																			maxLength={
+																				40
+																			}
+																			className="mt-1 w-full rounded border bg-muted/40 px-2 py-1.5 text-sm"
+																			onChange={(
+																				e,
+																			) => {
+																				const updated =
+																					[
+																						...starterMessages,
+																					];
+																				updated[
+																					idx
+																				] =
+																					{
+																						...updated[
+																							idx
+																						],
+																						label: e
+																							.target
+																							.value,
+																					};
+																				setStarterMessages(
+																					updated,
+																				);
+																			}}
+																		/>
+																	</div>
+																	<div>
+																		<label
+																			htmlFor={`starter-message-prompt-${idx}`}
+																			className="text-xs text-muted-foreground"
+																		>
+																			Prompt
+																		</label>
+																		<input
+																			id={`starter-message-prompt-${idx}`}
+																			type="text"
+																			value={
+																				msg.prompt
+																			}
+																			placeholder="Full message sent on click"
+																			className="mt-1 w-full rounded border bg-muted/40 px-2 py-1.5 text-sm"
+																			onChange={(
+																				e,
+																			) => {
+																				const updated =
+																					[
+																						...starterMessages,
+																					];
+																				updated[
+																					idx
+																				] =
+																					{
+																						...updated[
+																							idx
+																						],
+																						prompt: e
+																							.target
+																							.value,
+																					};
+																				setStarterMessages(
+																					updated,
+																				);
+																			}}
+																		/>
+																	</div>
+																</div>
+															),
+														)}
+													</div>
+												)}
+											</section>
+											{/* Section 4: Triggers */}
+											<section>
+												<div className="mb-4 flex items-start justify-between">
+													<div>
+														<p className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+															<span className="inline-block h-3 w-px bg-[--mkt-red]" />
+															Optional
+														</p>
+														<h3 className="flex items-center gap-2 text-base font-semibold">
+															<ZapIcon className="h-[18px] w-[18px] text-primary" />
+															Triggers
+														</h3>
+														<p className="mt-0.5 text-sm text-muted-foreground">
+															Automate this agent
+															based on events.
+														</p>
+													</div>
+													<Button
+														variant="outline"
+														size="sm"
+														className="mt-1 shrink-0 gap-1.5"
+														onClick={() =>
+															setTriggersSheetOpen(
+																true,
+															)
+														}
+													>
+														<SettingsIcon className="h-3.5 w-3.5" />
+														Configure
+													</Button>
+												</div>
+
+												{triggers.filter(
+													(t) => t.enabled,
+												).length > 0 ? (
+													<div className="space-y-2">
+														{triggers
+															.filter(
+																(t) =>
+																	t.enabled,
+															)
+															.map((trigger) => (
+																<div
+																	key={
+																		trigger.type
+																	}
+																	className="flex items-center gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2.5"
+																>
+																	<div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
+																		<ZapIcon className="h-3.5 w-3.5 text-primary" />
+																	</div>
+																	<div className="min-w-0 flex-1">
+																		<div className="text-sm font-medium capitalize">
+																			{trigger.type.replace(
+																				/_/g,
+																				" ",
+																			)}
+																		</div>
+																	</div>
+																	<Badge
+																		variant="secondary"
+																		className="shrink-0 text-xs"
+																	>
+																		Active
+																	</Badge>
+																</div>
+															))}
+													</div>
+												) : (
+													<div className="rounded-lg border border-dashed border-border p-5 text-center">
+														<ZapIcon className="mx-auto mb-2 h-5 w-5 text-muted-foreground/40" />
+														<p className="text-sm text-muted-foreground">
+															No triggers
+															configured. The
+															agent runs when
+															manually invoked.
+														</p>
+													</div>
+												)}
+											</section>
+											<section aria-label="Execution settings">
+												<h3 className="mb-4 text-base font-semibold">
+													Execution settings
+												</h3>
+												<div className="space-y-5">
+													{/* Execution Mode */}
+													<div>
+														<Label className="text-sm font-medium mb-2 block">
+															Execution Mode
+														</Label>
+														<div className="space-y-3">
+															<div className="grid grid-cols-2 gap-1.5 rounded-lg border border-border bg-muted/40 p-1.5">
+																<button
+																	type="button"
+																	aria-pressed={
+																		executionMode ===
+																		"single_turn"
+																	}
+																	className={cn(
+																		"flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors",
+																		executionMode ===
+																			"single_turn"
+																			? "bg-card shadow-sm ring-1 ring-border/60"
+																			: "hover:bg-muted/60",
+																	)}
+																	onClick={() =>
+																		setExecutionMode(
+																			"single_turn",
+																		)
+																	}
+																>
+																	<div
+																		className={cn(
+																			"flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors",
+																			executionMode ===
+																				"single_turn"
+																				? "bg-primary/10"
+																				: "bg-muted",
+																		)}
+																	>
+																		<RobotIcon
+																			className={cn(
+																				"h-4 w-4 transition-colors",
+																				executionMode ===
+																					"single_turn"
+																					? "text-primary"
+																					: "text-muted-foreground",
+																			)}
+																		/>
+																	</div>
+																	<div>
+																		<div
+																			className={cn(
+																				"text-sm font-medium transition-colors",
+																				executionMode ===
+																					"single_turn"
+																					? "text-foreground"
+																					: "text-muted-foreground",
+																			)}
+																		>
+																			Single
+																			Turn
+																		</div>
+																		<div className="text-xs text-muted-foreground">
+																			Simple
+																			Q&amp;A
+																		</div>
+																	</div>
+																</button>
+																<button
+																	type="button"
+																	aria-pressed={
+																		executionMode ===
+																		"goal_oriented"
+																	}
+																	className={cn(
+																		"flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors",
+																		executionMode ===
+																			"goal_oriented"
+																			? "bg-card shadow-sm ring-1 ring-border/60"
+																			: "hover:bg-muted/60",
+																	)}
+																	onClick={() =>
+																		setExecutionMode(
+																			"goal_oriented",
+																		)
+																	}
+																>
+																	<div
+																		className={cn(
+																			"flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors",
+																			executionMode ===
+																				"goal_oriented"
+																				? "bg-secondary/10"
+																				: "bg-muted",
+																		)}
+																	>
+																		<RocketIcon
+																			className={cn(
+																				"h-4 w-4 transition-colors",
+																				executionMode ===
+																					"goal_oriented"
+																					? "text-secondary-foreground"
+																					: "text-muted-foreground",
+																			)}
+																		/>
+																	</div>
+																	<div>
+																		<div
+																			className={cn(
+																				"text-sm font-medium transition-colors",
+																				executionMode ===
+																					"goal_oriented"
+																					? "text-foreground"
+																					: "text-muted-foreground",
+																			)}
+																		>
+																			Goal
+																			Oriented
+																		</div>
+																		<div className="text-xs text-muted-foreground">
+																			Multi-step
+																			tasks
+																		</div>
+																	</div>
+																</button>
+															</div>
+
+															{/* Goal input - shown when goal_oriented is selected */}
+															{executionMode ===
+																"goal_oriented" && (
+																<div className="space-y-4 rounded-lg border border-secondary/20 bg-secondary/5 p-4">
+																	<div>
+																		<Label
+																			htmlFor="agent-goal"
+																			className="mb-2 block text-sm font-medium"
+																		>
+																			Goal
+																		</Label>
+																		<Textarea
+																			id="agent-goal"
+																			value={
+																				goal
+																			}
+																			onChange={(
+																				e,
+																			) =>
+																				setGoal(
+																					e
+																						.target
+																						.value,
+																				)
+																			}
+																			className="min-h-[80px] resize-none rounded-lg border-border bg-background"
+																			placeholder="Describe the goal this agent should achieve, e.g., 'Analyze customer feedback and generate a summary report with key insights and recommendations'"
+																			rows={
+																				3
+																			}
+																		/>
+																		<p className="mt-1 text-xs text-muted-foreground">
+																			The
+																			agent
+																			will
+																			iteratively
+																			plan,
+																			execute,
+																			and
+																			verify
+																			until
+																			this
+																			goal
+																			is
+																			achieved.
+																		</p>
+																	</div>
+
+																	<div>
+																		<Label
+																			htmlFor="max-iterations"
+																			className="mb-2 block text-sm font-medium"
+																		>
+																			Max
+																			Iterations:{" "}
+																			{
+																				maxIterations
+																			}
+																		</Label>
+																		<input
+																			id="max-iterations"
+																			type="range"
+																			min={
+																				1
+																			}
+																			max={
+																				50
+																			}
+																			value={
+																				maxIterations
+																			}
+																			onChange={(
+																				e,
+																			) =>
+																				setMaxIterations(
+																					Number(
+																						e
+																							.target
+																							.value,
+																					),
+																				)
+																			}
+																			className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-muted accent-primary"
+																		/>
+																		<div className="mt-1 flex justify-between text-xs text-muted-foreground">
+																			<span>
+																				1
+																			</span>
+																			<span>
+																				Max
+																				attempts
+																				before
+																				stopping
+																			</span>
+																			<span>
+																				50
+																			</span>
+																		</div>
+																	</div>
+																</div>
+															)}
+														</div>
+													</div>
+
+													{/* External API Access - only in edit mode */}
+													{isEditMode &&
+														instanceId && (
+															<div>
+																<Label className="text-sm font-medium mb-2 block">
+																	External API
+																	Access
+																</Label>
+																<div className="space-y-3 rounded-lg border border-border bg-muted/40 p-4">
+																	<div className="flex items-center justify-between">
+																		<div>
+																			<p className="text-sm font-medium">
+																				Expose
+																				via
+																				API
+																			</p>
+																			<p className="text-xs text-muted-foreground">
+																				Allow
+																				external
+																				systems
+																				to
+																				execute
+																				this
+																				agent
+																			</p>
+																		</div>
+																		<Switch
+																			aria-label="Expose via API"
+																			checked={
+																				isApiExposed
+																			}
+																			onCheckedChange={
+																				setIsApiExposed
+																			}
+																		/>
+																	</div>
+																	{isApiExposed ? (
+																		<div className="space-y-2">
+																			<p className="text-xs text-muted-foreground">
+																				Endpoint
+																				URL
+																			</p>
+																			<div className="flex items-center gap-2">
+																				<code className="flex-1 text-xs bg-background px-3 py-2 rounded-md break-all border border-border">
+																					{typeof window !==
+																					"undefined"
+																						? `${window.location.origin}/api/v1/external/agents/${apiIdentifier}/execute`
+																						: `/api/v1/external/agents/${apiIdentifier}/execute`}
+																				</code>
+																				<Button
+																					variant="outline"
+																					size="icon"
+																					className="shrink-0"
+																					onClick={() => {
+																						const url = `${window.location.origin}/api/v1/external/agents/${apiIdentifier}/execute`;
+																						navigator.clipboard.writeText(
+																							url,
+																						);
+																						toast.success(
+																							"URL copied to clipboard",
+																						);
+																					}}
+																				>
+																					<CopyIcon className="h-4 w-4" />
+																				</Button>
+																			</div>
+																			<p className="text-xs text-muted-foreground">
+																				Requires
+																				an
+																				API
+																				key
+																				(
+																				<code className="text-xs">
+																					fab_*
+																				</code>{" "}
+																				or{" "}
+																				<code className="text-xs">
+																					org_*
+																				</code>
+																				)
+																				in
+																				the{" "}
+																				<code className="text-xs">
+																					Authorization:
+																					Bearer
+																				</code>{" "}
+																				header.
+																			</p>
+																		</div>
+																	) : (
+																		<p className="text-xs text-muted-foreground">
+																			Enable
+																			to
+																			allow
+																			this
+																			agent
+																			to
+																			be
+																			executed
+																			via
+																			the
+																			external
+																			REST
+																			API.
+																		</p>
+																	)}
+																</div>
+															</div>
+														)}
+												</div>
+											</section>
+										</CollapsibleContent>
+									</Collapsible>
+								</section>
+								<fieldset
+									className="min-w-0 shrink-0 border-t border-border bg-card p-4"
+									aria-label="Agent actions"
+								>
+									{!hasRequiredText && (
+										<p className="mb-2 text-xs text-muted-foreground">
+											Complete the required fields to
+											save:{" "}
+											{[
+												!name.trim() && "name",
+												!description.trim() &&
+													"description",
+												!instructions.trim() &&
+													"instructions",
+											]
+												.filter(Boolean)
+												.join(", ")}
+											.
+										</p>
+									)}
+									<div className="flex w-full flex-wrap items-center justify-between gap-2">
+										{!isEditMode && organizationId && (
+											<AgentDefinitionImportDialog
+												key={organizationId}
+												organizationId={organizationId}
+												onImported={(id) => {
+													queryClient.invalidateQueries(
+														{
+															queryKey:
+																orpc.agentTemplates.instances.key(),
+														},
+													);
+													router.push(
+														`${basePath.replace(/\/agents$/, "")}/agents/${id}`,
+													);
+												}}
+											/>
+										)}
+										<Button
+											variant="outline"
+											className="min-w-32"
+											onClick={closeEditor}
+										>
+											Cancel
+										</Button>
+										<Button
+											onClick={handleSubmit}
+											disabled={
+												createInstanceMutation.isPending ||
+												updateInstanceMutation.isPending ||
+												!hasRequiredText ||
+												(executionMode ===
+													"goal_oriented" &&
+													!goal.trim()) ||
+												(!isEditMode &&
+													isCustomAgent &&
+													!systemCustomAgentTemplate
+														?.template?.id)
+											}
+											className="w-full bg-primary px-6 text-primary-foreground hover:bg-primary/90 sm:w-auto"
+										>
+											{createInstanceMutation.isPending ||
+											updateInstanceMutation.isPending ? (
+												<>
+													<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+													{isEditMode
+														? "Saving..."
+														: "Creating..."}
+												</>
+											) : isEditMode ? (
+												"Save Changes"
+											) : isCustomAgent ? (
+												"Create Custom Agent"
+											) : (
+												"Create Agent"
+											)}
+										</Button>
 									</div>
-								)}
-							</div>
+								</fieldset>
+							</TabsContent>
 						</div>
-					</div>
+					</Tabs>
 				</div>
 
 				{/* Workspaces Sheet (for MCP-based templates) */}
@@ -2979,6 +3490,28 @@ export function CreateAgentPage({
 				/>
 
 				{/* Data Sources Sheet (for non-MCP templates) */}
+				<AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
+					<AlertDialogContent>
+						<AlertDialogHeader>
+							<AlertDialogTitle>
+								Discard your unsaved changes?
+							</AlertDialogTitle>
+							<AlertDialogDescription>
+								Your agent configuration has changed. Keep
+								editing to review and save your draft.
+							</AlertDialogDescription>
+						</AlertDialogHeader>
+						<AlertDialogFooter>
+							<AlertDialogCancel>Keep editing</AlertDialogCancel>
+							<AlertDialogAction
+								variant="destructive"
+								onClick={() => router.back()}
+							>
+								Discard changes
+							</AlertDialogAction>
+						</AlertDialogFooter>
+					</AlertDialogContent>
+				</AlertDialog>
 				<DataSourcesSheet
 					open={dataSourcesSheetOpen}
 					onOpenChange={setDataSourcesSheetOpen}

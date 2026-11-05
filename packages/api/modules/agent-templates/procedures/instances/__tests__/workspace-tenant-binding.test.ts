@@ -308,3 +308,54 @@ it("preserves unresolved import requirements when editing agent instructions", a
 		}),
 	);
 });
+
+describe("unavailable implementation publication boundaries", () => {
+	it.each([
+		{ createNewVersion: true },
+		{ isApiExposed: true },
+		{ createNewVersion: true, isApiExposed: true },
+		{ status: "ACTIVE" },
+		{ status: "PENDING" },
+		{ isActive: true },
+	])(
+		"rejects a Harness draft activation path %j before persistence",
+		async (activation) => {
+			mockGetAgentTemplateInstance.mockResolvedValue({
+				id: "instance-1",
+				organizationId: ORG_A,
+				userId: USER_ID,
+				customInstructions: {
+					portableImplementation: { kind: "harness_finite" },
+				},
+			});
+			await expect(
+				updateHandler({
+					input: {
+						id: "instance-1",
+						organizationId: ORG_A,
+						...activation,
+					},
+					context,
+				}),
+			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+			expect(mockUpdateAgentTemplateInstance).not.toHaveBeenCalled();
+		},
+	);
+	it("retains native version creation and API exposure", async () => {
+		await updateHandler({
+			input: {
+				id: "instance-1",
+				organizationId: ORG_A,
+				createNewVersion: true,
+				isApiExposed: true,
+			},
+			context,
+		});
+		expect(mockUpdateAgentTemplateInstance).toHaveBeenCalledWith(
+			expect.objectContaining({
+				createNewVersion: true,
+				isApiExposed: true,
+			}),
+		);
+	});
+});

@@ -9,7 +9,7 @@ import {
 	PopoverTrigger,
 } from "@ui/components/popover";
 import { Loader2Icon, SparklesIcon, XIcon } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 // Schema for node updates (preserves ID, changes config)
@@ -79,6 +79,14 @@ export function TextToWorkflow({
 	const [open, setOpen] = useState(false);
 	const [prompt, setPrompt] = useState("");
 	const [isGenerating, setIsGenerating] = useState(false);
+	const inFlight = useRef(false);
+	const fingerprint = JSON.stringify({
+		organizationId,
+		currentNodes,
+		currentEdges,
+	});
+	const currentFingerprint = useRef(fingerprint);
+	currentFingerprint.current = fingerprint;
 
 	// Determine if we have an existing workflow (excluding placeholder nodes)
 	const hasExistingWorkflow = currentNodes.some(
@@ -86,6 +94,9 @@ export function TextToWorkflow({
 	);
 
 	const handleGenerate = async () => {
+		if (inFlight.current) {
+			return;
+		}
 		if (!prompt.trim()) {
 			toast.error("Please enter a workflow description");
 			return;
@@ -98,6 +109,8 @@ export function TextToWorkflow({
 			return;
 		}
 
+		inFlight.current = true;
+		const requestedFingerprint = currentFingerprint.current;
 		setIsGenerating(true);
 
 		try {
@@ -131,6 +144,7 @@ export function TextToWorkflow({
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify(requestBody),
+				signal: AbortSignal.timeout(95000),
 			});
 
 			if (!response.ok) {
@@ -140,14 +154,20 @@ export function TextToWorkflow({
 
 			const workflow: GeneratedWorkflowResponse = await response.json();
 
-			// Notify parent component
+			// Never overwrite edits made while the provider was generating the draft.
+			if (currentFingerprint.current !== requestedFingerprint) {
+				toast.warning(
+					"Your workflow changed while AI was drafting. Ask again using the current draft.",
+				);
+				return;
+			}
 			onWorkflowGenerated(workflow);
 
 			// Show success message based on action
 			const actionMessages = {
-				replace: "Workflow created successfully!",
-				update: "Workflow updated successfully!",
-				append: "Nodes added to workflow!",
+				replace: "Draft created. Review the steps, then save and run.",
+				update: "Draft updated. Review the changes before saving.",
+				append: "Steps added to your draft. Review them before saving.",
 			};
 			toast.success(
 				workflow.description || actionMessages[workflow.action],
@@ -164,6 +184,7 @@ export function TextToWorkflow({
 			console.error("Error generating workflow:", error);
 			toast.error(errorMessage);
 		} finally {
+			inFlight.current = false;
 			setIsGenerating(false);
 		}
 	};

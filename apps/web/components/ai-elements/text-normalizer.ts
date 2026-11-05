@@ -1,3 +1,7 @@
+import MarkdownIt from "markdown-it";
+
+const normalizerParser = new MarkdownIt();
+
 /**
  * Text Normalizer for AI Responses
  *
@@ -164,7 +168,7 @@ function normalizeEmphasis(text: string): string {
  * Applies all text normalizations to convert Unicode formatting
  * to standard markdown syntax.
  */
-export function normalizeTextToMarkdown(text: string): string {
+function normalizeProse(text: string): string {
 	if (!text) {
 		return text;
 	}
@@ -179,4 +183,38 @@ export function normalizeTextToMarkdown(text: string): string {
 	result = normalizeEmphasis(result);
 
 	return result;
+}
+
+/** Normalize prose while preserving fenced, nested, indented and unfinished code blocks. */
+export function normalizeTextToMarkdown(text: string): string {
+	if (!text) {
+		return text;
+	}
+	const offsets = [0];
+	for (let index = 0; index < text.length; index++) {
+		if (text[index] === "\n") {
+			offsets.push(index + 1);
+		}
+	}
+	const codeBlocks = normalizerParser
+		.parse(text, {})
+		.filter(
+			(token) =>
+				(token.type === "fence" || token.type === "code_block") &&
+				token.map,
+		);
+	let cursor = 0;
+	let result = "";
+	for (const token of codeBlocks) {
+		if (!token.map) {
+			continue;
+		}
+		const [first, last] = token.map;
+		const start = offsets[first];
+		const end = offsets[last] ?? text.length;
+		result +=
+			normalizeProse(text.slice(cursor, start)) + text.slice(start, end);
+		cursor = end;
+	}
+	return result + normalizeProse(text.slice(cursor));
 }

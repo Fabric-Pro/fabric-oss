@@ -20,6 +20,12 @@ import {
 	useVoiceDictation,
 } from "@saas/shared/components/copilot/use-voice-dictation";
 import { Button } from "@ui/components/button";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuTrigger,
+} from "@ui/components/dropdown-menu";
 import { Textarea } from "@ui/components/textarea";
 import {
 	Tooltip,
@@ -32,6 +38,7 @@ import {
 	Loader2,
 	MicIcon,
 	Paperclip,
+	Plus,
 	Send,
 	StopCircle,
 } from "lucide-react";
@@ -169,6 +176,14 @@ export interface ChatInputProps {
 	/** Whether to show attachment button */
 	showAttachButton?: boolean;
 
+	/** Existing, authorized controls exposed through the composer Add menu. */
+	additionalActions?: ReadonlyArray<{
+		id: string;
+		label: string;
+		onSelect: () => void;
+		disabled?: boolean;
+	}>;
+
 	// Slots for additional content
 	/** Content to render above the input (e.g., attached files, tool suggestions) */
 	topSlot?: React.ReactNode;
@@ -246,6 +261,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 			attachTooltip = "Attach files",
 			attachDisabled = false,
 			showAttachButton = true,
+			additionalActions = [],
 			topSlot,
 			headerSlot,
 			organizationId,
@@ -383,6 +399,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 		// the same SpeechRecognition state machine. See
 		// `apps/web/modules/saas/shared/components/copilot/use-voice-dictation.ts`.
 		const tTooltips = useTranslations("tooltips.copilot");
+		const tGenie = useTranslations("genieExperience");
 		const {
 			isRecording,
 			hasSpeechSupport,
@@ -954,25 +971,73 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 						)}
 					>
 						{/* Attachment button */}
-						{showAttachButton && (
-							<Tooltip>
-								<TooltipTrigger asChild>
+						{showAttachButton && additionalActions.length > 0 ? (
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
 									<Button
 										type="button"
 										variant="ghost"
 										size="icon"
-										aria-label={attachTooltip}
-										className="h-8 w-8 shrink-0 rounded-full border border-border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-										onClick={onAttachClick}
-										disabled={isLoading || attachDisabled}
+										aria-label={tGenie("addMenu")}
+										disabled={disabled}
+										className="h-8 w-8 shrink-0 rounded-full border border-border bg-card text-muted-foreground"
 									>
-										<Paperclip className="h-4 w-4" />
+										<Plus className="size-4" aria-hidden />
 									</Button>
-								</TooltipTrigger>
-								<TooltipContent side="top">
-									<p>{attachTooltip}</p>
-								</TooltipContent>
-							</Tooltip>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent side="top" align="start">
+									{onAttachClick && (
+										<DropdownMenuItem
+											onSelect={onAttachClick}
+											disabled={
+												attachDisabled ||
+												isLoading ||
+												disabled
+											}
+										>
+											<Paperclip
+												className="size-4"
+												aria-hidden
+											/>
+											{attachTooltip}
+										</DropdownMenuItem>
+									)}
+									{additionalActions.map((action) => (
+										<DropdownMenuItem
+											key={action.id}
+											onSelect={action.onSelect}
+											disabled={action.disabled}
+										>
+											{action.label}
+										</DropdownMenuItem>
+									))}
+								</DropdownMenuContent>
+							</DropdownMenu>
+						) : (
+							showAttachButton && (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											aria-label={attachTooltip}
+											className="h-8 w-8 shrink-0 rounded-full border border-border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+											onClick={onAttachClick}
+											disabled={
+												isLoading ||
+												disabled ||
+												attachDisabled
+											}
+										>
+											<Paperclip className="h-4 w-4" />
+										</Button>
+									</TooltipTrigger>
+									<TooltipContent side="top">
+										<p>{attachTooltip}</p>
+									</TooltipContent>
+								</Tooltip>
+							)
 						)}
 
 						{/* Textarea */}
@@ -998,7 +1063,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 									? "h-9 min-h-[36px] px-2 py-1.5 text-base md:text-sm leading-5 placeholder:text-muted-foreground"
 									: "min-h-[40px] px-2 py-1.5 text-base md:text-sm leading-5 placeholder:text-muted-foreground",
 							)}
-							disabled={isLoading || disabled}
+							disabled={disabled}
 						/>
 
 						{/* Right cluster — timer + mic + send/stop share the

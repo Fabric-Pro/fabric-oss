@@ -201,8 +201,8 @@ export {
 	type DeploymentExecutionInput,
 	type DeploymentExecutionOutput,
 	deploymentExecutionWorkflow,
-	nativeDeploymentExecutionWorkflow,
 	type ExecutionProgress,
+	nativeDeploymentExecutionWorkflow,
 	progressQuery as deploymentProgressQuery,
 } from "./deployment-execution";
 // Automatic duplicate detection (fire-and-forget background scan of new stories)
@@ -708,6 +708,7 @@ export {
 } from "./scan-finding-review";
 // Schedule Trigger workflow (lightweight workflow for scheduled executions)
 export {
+	managedAgentRunScheduleWorkflow,
 	type ScheduleTriggerInput,
 	type ScheduleTriggerOutput,
 	scheduleTriggerWorkflow,
@@ -918,7 +919,18 @@ export {
 	workspaceDocumentDeletionWorkflow,
 	workspaceDocumentProcessingWorkflow,
 } from "./workspace-document-processing";
+
 // Weave: Loom/Tapestry workflows removed — weave agents are now orchestrated
 // by Fabric Loom via A2A agent delegation.
 
+export { agentDraftPreviewWorkflow } from "./agent-draft-preview";
+export { agentExecutionReceiptRecoveryWorkflow } from "./agent-execution-receipt-recovery";
 export { codingRunFollowUpWorkflow } from "./coding-run-follow-up";
+export {
+	type ContextQualityEvaluationWorkflowInput,
+	type ContextQualityEvaluationWorkflowOutput,
+	contextQualityEvaluationWorkflow,
+} from "./context-quality-evaluation";
+export { contextQualityRecoveryWorkflow } from "./context-quality-recovery";
+
+export { agentTestAssessmentWorkflow } from "./agent-test-assessment";

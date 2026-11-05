@@ -78,6 +78,7 @@ export {
 	// unify against the same class.
 	NoObjectGeneratedError,
 	NoSuchToolError,
+	Output,
 	pipeTextStreamToResponse,
 	streamObject,
 	streamText,

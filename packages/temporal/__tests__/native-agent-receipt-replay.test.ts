@@ -16,7 +16,7 @@ const entrySchema = z.object({
 	workflowId: z.string().startsWith("example-native-"),
 	eventCount: z.number().int(),
 	sha256: z.string(),
-	status: z.enum(["COMPLETED", "FAILED"]),
+	status: z.enum(["COMPLETED", "FAILED", "CANCELLED"]),
 	receiptAttempts: z.number(),
 	modelCalls: z.number(),
 	terminalAttempts: z.number().optional(),
@@ -62,6 +62,8 @@ describe("native saved-agent receipt history compatibility", () => {
 		"goal-refusal",
 		"deployment-durable",
 		"goal-durable",
+		"deployment-cancelled",
+		"goal-cancelled",
 	])(
 		"replays genuine synthetic SDK history %s without services",
 		async (name) => {
@@ -137,6 +139,54 @@ describe("native saved-agent receipt history compatibility", () => {
 				);
 				expect(attempts).toContain(3);
 				expect(attempts).toContain(2);
+			}
+			if (name.endsWith("-cancelled")) {
+				expect(entry.status).toBe("CANCELLED");
+				expect(entry.receiptAttempts).toBe(3);
+				expect(entry.terminalAttempts).toBe(2);
+				expect(entry.modelCalls).toBe(1);
+				expect(entry.toolCalls).toBe(1);
+				expect(
+					scheduled.filter(
+						(type) => type === "executeSavedAgentModelStep",
+					),
+				).toHaveLength(1);
+				expect(
+					scheduled.filter(
+						(type) => type === "executeSavedAgentToolStep",
+					),
+				).toHaveLength(1);
+				expect(
+					history.events?.some(
+						(event) =>
+							event.workflowExecutionSignaledEventAttributes
+								?.signalName ===
+							(name.startsWith("deployment")
+								? "cancelExecution"
+								: "cancel"),
+					),
+				).toBe(true);
+				const payload =
+					history.events?.at(-1)
+						?.workflowExecutionCompletedEventAttributes?.result
+						?.payloads?.[0]?.data;
+				expect(payload).toBeDefined();
+				if (!payload)
+					throw Error("Missing completed cancellation result");
+				expect(
+					JSON.parse(Buffer.from(payload).toString("utf8")),
+				).toMatchObject({
+					status: "CANCELLED",
+					output: {
+						cancelled: true,
+						toolCalls: [
+							{
+								status: "success",
+								result: { value: "Example evidence" },
+							},
+						],
+					},
+				});
 			}
 			if (name.endsWith("-refusal")) {
 				expect(scheduled).not.toContain("loadDeploymentConfiguration");

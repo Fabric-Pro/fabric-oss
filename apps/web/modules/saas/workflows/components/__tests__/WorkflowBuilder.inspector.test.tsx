@@ -63,8 +63,7 @@ function renderBuilder() {
 	);
 }
 
-const inspector = () =>
-	screen.getByRole("complementary", { name: "Inspector" });
+const inspector = () => screen.getByRole("region", { name: "Inspector" });
 
 describe("WorkflowBuilder — inspector", () => {
 	it("opens on the workflow overview, with the steps numbered in flow order", () => {

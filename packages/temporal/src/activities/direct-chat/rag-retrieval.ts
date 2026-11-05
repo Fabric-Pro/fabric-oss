@@ -16,6 +16,10 @@ import {
 import { withDefaultFeature } from "@repo/rag/lib/embedding/usage";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import {
+	type WorkspaceDocumentFilter,
+	workspaceSearchGroups,
+} from "../../lib/workspace-document-selection";
+import {
 	type SecondaryUsageInput,
 	secondaryUsageFields,
 } from "../../workflows/orchestrator/usage-attribution";
@@ -24,6 +28,7 @@ import {
 	startTurnHeartbeat,
 	type TurnScope,
 } from "../orchestrator/turn-dispatch";
+import { assertWorkspaceDocumentSelections } from "../shared/workspace-document-access";
 
 const logger = {
 	info: (message: string, data?: Record<string, unknown>) =>
@@ -309,6 +314,7 @@ export async function retrieveWorkspaceDocumentsActivity(
 	minSimilarityOverride?: number,
 	options?: SecondaryUsageInput & {
 		turnScope?: TurnScope;
+		workspaceDocumentFilters?: WorkspaceDocumentFilter[];
 	},
 ): Promise<{
 	context: string;
@@ -321,8 +327,18 @@ export async function retrieveWorkspaceDocumentsActivity(
 		return await runWithTurnDispatch(turnScope, () =>
 			runWithAiCallPurpose(
 				AI_CALL_PURPOSES.workspaceRetrievalEmbedding,
-				() =>
-					retrieveWorkspaceDocuments(
+				async () => {
+					const scope = {
+						userId,
+						organizationId,
+						workspaceIds: requestedWorkspaceIds ?? [],
+						workspaceDocumentFilters:
+							options?.workspaceDocumentFilters,
+					};
+					if (options?.workspaceDocumentFilters !== undefined) {
+						await assertWorkspaceDocumentSelections(scope);
+					}
+					const result = await retrieveWorkspaceDocuments(
 						message,
 						userId,
 						organizationId,
@@ -331,7 +347,12 @@ export async function retrieveWorkspaceDocumentsActivity(
 						topKOverride,
 						minSimilarityOverride,
 						options,
-					),
+					);
+					if (options?.workspaceDocumentFilters !== undefined) {
+						await assertWorkspaceDocumentSelections(scope);
+					}
+					return result;
+				},
 			),
 		);
 	} finally {
@@ -347,7 +368,9 @@ async function retrieveWorkspaceDocuments(
 	documentIds: string[] | undefined,
 	topKOverride: number | undefined,
 	minSimilarityOverride: number | undefined,
-	usage?: SecondaryUsageInput,
+	usage?: SecondaryUsageInput & {
+		workspaceDocumentFilters?: WorkspaceDocumentFilter[];
+	},
 ): Promise<{
 	context: string;
 	chunkCount: number;
@@ -377,6 +400,15 @@ async function retrieveWorkspaceDocuments(
 		);
 	}
 	if (workspaceIds.length === 0) {
+		return { context: "", chunkCount: 0 };
+	}
+
+	const selectionGroups = workspaceSearchGroups(
+		workspaceIds,
+		usage?.workspaceDocumentFilters,
+		documentIds,
+	);
+	if (!selectionGroups.length) {
 		return { context: "", chunkCount: 0 };
 	}
 
@@ -483,16 +515,24 @@ async function retrieveWorkspaceDocuments(
 			topK,
 			minSimilarity,
 		});
-		const searchResults = await searchMultipleWorkspaces({
-			workspaceIds,
-			userId,
-			organizationId: organizationId || undefined,
-			queryEmbedding,
-			querySparseVector: generateSparseVector(message),
-			topK,
-			minSimilarity,
-			documentIds,
-		});
+		const batches = await Promise.all(
+			selectionGroups.map((group) =>
+				searchMultipleWorkspaces({
+					workspaceIds: group.workspaceIds,
+					userId,
+					organizationId: organizationId || undefined,
+					queryEmbedding,
+					querySparseVector: generateSparseVector(message),
+					topK,
+					minSimilarity,
+					documentIds: group.documentIds,
+				}),
+			),
+		);
+		const searchResults = batches
+			.flat()
+			.sort((a, b) => b.score - a.score)
+			.slice(0, topK);
 
 		logger.info("[WorkspaceRAG] Qdrant search completed", {
 			resultCount: searchResults.length,
@@ -606,6 +646,15 @@ async function retrieveWorkspaceDocuments(
 
 		const chunks = await db.workspaceDocumentChunk.findMany({
 			where: {
+				document: {
+					workspace: { organizationId: organizationId ?? null },
+					OR: selectionGroups.map((group) => ({
+						workspaceId: { in: group.workspaceIds },
+						...(group.documentIds
+							? { id: { in: group.documentIds } }
+							: {}),
+					})),
+				},
 				OR: chunkLookups.map(({ documentId, chunkIndex }) => ({
 					documentId,
 					chunkIndex,

@@ -3,10 +3,14 @@
 import { useSession } from "@saas/auth/hooks/use-session";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button } from "@ui/components/button";
 import { useParams } from "next/navigation";
+import { useTranslations } from "next-intl";
+import { useState } from "react";
 import { useOpenFrameAgent } from "../hooks/use-open-frame-agent";
 import { agentContextOfFrame, frameEmbedUrl } from "../lib/frame-tool-types";
 import { isUnattendedFrame } from "../lib/strict-sandbox";
+import { FrameRevisionDialog } from "./FrameRevisionDialog";
 import { FrameVizShell } from "./FrameVizShell";
 
 export function FrameViewer({
@@ -18,9 +22,14 @@ export function FrameViewer({
 }) {
 	const { organizationSlug } = useParams<{ organizationSlug: string }>();
 	const { user } = useSession();
+	const t = useTranslations("frameRevisions");
+	const [revisionTab, setRevisionTab] = useState<"edit" | "history" | null>(
+		null,
+	);
 	const queryClient = useQueryClient();
 	const frameQuery = useQuery({
-		queryKey: ["frame", frameId, organizationId ?? null],
+		queryKey: ["frame", frameId, organizationId ?? null, user?.id ?? null],
+		enabled: Boolean(organizationId && user?.id),
 		queryFn: () =>
 			orpcClient.frames.get({
 				id: frameId,
@@ -36,7 +45,7 @@ export function FrameViewer({
 		}),
 	);
 
-	if (frameQuery.isLoading) {
+	if (!organizationId || !user?.id || frameQuery.isLoading) {
 		return (
 			<div className="p-6 text-sm text-muted-foreground">
 				Loading frame…
@@ -57,16 +66,52 @@ export function FrameViewer({
 
 	const frame = frameQuery.data;
 	const frameUrl = `/app/${organizationSlug}/frames/${frame.id}`;
-	const shareUrl = frame.shareToken
-		? `${window.location.origin}/share/frame/${frame.shareToken}`
-		: undefined;
 	const embedUrl = frameEmbedUrl(frame.id, organizationSlug);
 
 	return (
 		<div className="mx-auto max-w-7xl p-6">
+			{frame.userId === user?.id && organizationId && (
+				<div className="mb-3 flex justify-end gap-2">
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setRevisionTab("history")}
+					>
+						{t("history")}
+					</Button>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setRevisionTab("edit")}
+					>
+						{t("edit")}
+					</Button>
+				</div>
+			)}
+			{revisionTab &&
+				organizationId &&
+				user?.id &&
+				frame.userId === user.id && (
+					<FrameRevisionDialog
+						frame={frame}
+						organizationId={organizationId}
+						userId={user.id}
+						initialTab={revisionTab}
+						onClose={() => setRevisionTab(null)}
+						onSaved={async () => {
+							await queryClient.invalidateQueries({
+								queryKey: ["frame", frameId, organizationId],
+							});
+							await queryClient.invalidateQueries({
+								queryKey: ["frames", organizationId],
+							});
+						}}
+					/>
+				)}
 			<FrameVizShell
 				key={`${frame.id}:${frame.updatedAt}`}
 				frameId={frame.id}
+				updatedAt={frame.updatedAt}
 				surface={frame.surface}
 				runtimeTools={frame.runtimeTools}
 				onOpenAgent={openAgent}
@@ -77,7 +122,6 @@ export function FrameViewer({
 				frameDocument={frame.document}
 				embedUrl={embedUrl}
 				frameUrl={frameUrl}
-				shareUrl={shareUrl}
 				isPublic={frame.isPublic}
 				canManageSharing={frame.userId === user?.id}
 				onSharingChanged={() => {

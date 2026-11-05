@@ -18,6 +18,7 @@ import {
 } from "../agent-execution-core";
 
 export interface ExecuteGoalStepInput {
+	nativeTestBoundary?: ExecuteAgentTurnInput["nativeTestBoundary"];
 	step: TaskStep;
 	systemPrompt: string;
 	knowledgeContext?: string;
@@ -34,6 +35,8 @@ export interface ExecuteGoalStepInput {
 	projectId?: string;
 	agentInstanceId?: string;
 	builtInToolNames?: string[];
+	workspaceIds?: string[];
+	workspaceDocumentFilters?: ExecuteAgentTurnInput["workspaceDocumentFilters"];
 	integrationConfigurations?: ExecuteAgentTurnInput["integrationConfigurations"];
 	imageRefs?: Array<{
 		storagePath: string;
@@ -127,6 +130,9 @@ If this task requires specific data from previous steps, it should be available 
 		projectId: input.projectId,
 		agentInstanceId: input.agentInstanceId,
 		builtInToolNames: input.builtInToolNames,
+		nativeTestBoundary: input.nativeTestBoundary,
+		workspaceIds: input.workspaceIds,
+		workspaceDocumentFilters: input.workspaceDocumentFilters,
 		integrationConfigurations: input.integrationConfigurations,
 	};
 }

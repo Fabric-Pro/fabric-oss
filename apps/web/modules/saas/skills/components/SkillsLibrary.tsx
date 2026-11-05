@@ -1,9 +1,10 @@
 "use client";
-
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
-import { Spinner } from "@shared/components/Spinner";
-import { orpc } from "@shared/lib/orpc-query-utils";
+import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
+import { Pagination } from "@saas/shared/components/Pagination";
+import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
+import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
 import { SearchInput } from "@ui/components/search-input";
 import {
@@ -13,296 +14,310 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
-import { cn } from "@ui/lib";
+import { Skeleton } from "@ui/components/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
+import Link from "next/link";
 import {
-	ArrowUpDownIcon,
-	LayoutGridIcon,
-	PlusIcon,
-	PuzzleIcon,
-	SearchIcon,
-	SparklesIcon,
-	StarIcon,
-	TrendingUpIcon,
-} from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+	parseAsBoolean,
+	parseAsInteger,
+	parseAsString,
+	parseAsStringLiteral,
+	useQueryState,
+} from "nuqs";
+import { useEffect } from "react";
 import { useDebounceValue } from "usehooks-ts";
+import { skillUiError } from "../lib/skill-ui";
 import { SkillCard } from "./SkillCard";
+import { SkillDetailsSheet } from "./SkillDetailsSheet";
+import { SkillImportDialog } from "./SkillImportDialog";
+import { SkillsCreateMenu } from "./SkillsCreateMenu";
 import { SkillsHero } from "./SkillsHero";
 
-const sortOptions = [
-	{
-		label: "Recently Updated",
-		value: "updatedAt-desc",
-		sortBy: "updatedAt" as const,
-		sortOrder: "desc" as const,
-	},
-	{
-		label: "Name",
-		value: "name-asc",
-		sortBy: "name" as const,
-		sortOrder: "asc" as const,
-	},
-	{
-		label: "Popular",
-		value: "useCount-desc",
-		sortBy: "useCount" as const,
-		sortOrder: "desc" as const,
-	},
-] as const;
-
-type Props = {
+const TABS = ["organization", "builtin", "drafts", "archived"] as const;
+const SORTS = ["updatedAt-desc", "name-asc", "useCount-desc"] as const;
+const LIMIT = 20;
+export function SkillsLibrary({
+	organizationId: propOrgId,
+}: {
 	organizationId?: string;
-};
-
-export function SkillsLibrary({ organizationId: propOrgId }: Props) {
-	const router = useRouter();
-	const { organizationId: contextOrgId, basePath } = useOrganizationContext();
-	const organizationId = propOrgId ?? contextOrgId;
-
-	const [searchQuery, setSearchQuery] = useState("");
-	const [debouncedSearch] = useDebounceValue(searchQuery, 300);
-	const [scopeFilter, setScopeFilter] = useState<string>("all");
-	const [categoryFilter, setCategoryFilter] = useState<string>("all");
-	const [sortValue, setSortValue] = useState<string>("updatedAt-desc");
-	const [isFeatured, setIsFeatured] = useState(false);
-
-	const activeSort =
-		sortOptions.find((o) => o.value === sortValue) ?? sortOptions[0];
-
-	const { data, isLoading, refetch } = useQuery(
-		orpc.skills.list.queryOptions({
-			input: {
-				organizationId: organizationId ?? null,
-				limit: 50,
-				offset: 0,
-				search: debouncedSearch || undefined,
-				scope: isFeatured
-					? "SYSTEM"
-					: scopeFilter === "all"
-						? undefined
-						: (scopeFilter as "SYSTEM" | "ORGANIZATION" | "USER"),
-				category: categoryFilter === "all" ? undefined : categoryFilter,
-				sortBy: activeSort.sortBy,
-				sortOrder: activeSort.sortOrder,
-			},
-		}),
+}) {
+	const { organizationId: contextId, basePath } = useOrganizationContext();
+	const organizationId = propOrgId ?? contextId;
+	const [tab, setTab] = useQueryState(
+		"tab",
+		parseAsStringLiteral(TABS).withDefault("organization"),
 	);
-
-	const skills = data?.skills ?? [];
-
-	// Extract unique categories from loaded skills
-	const categories = [
-		...new Set(
-			skills
-				.map((s) => s.category)
-				.filter((c): c is string => c !== null),
-		),
-	];
-
+	const [selectedId, setSelectedId] = useQueryState(
+		"skill",
+		parseAsString.withOptions({ history: "push" }),
+	);
+	const [search, setSearch] = useQueryState(
+		"search",
+		parseAsString.withDefault(""),
+	);
+	const [debounced] = useDebounceValue(search, 300);
+	const [sort, setSort] = useQueryState(
+		"sort",
+		parseAsStringLiteral(SORTS).withDefault("updatedAt-desc"),
+	);
+	const [rawPage, setPage] = useQueryState(
+		"page",
+		parseAsInteger.withDefault(1),
+	);
+	const page = Math.max(1, rawPage);
+	const [importOpen, setImportOpen] = useQueryState(
+		"import",
+		parseAsBoolean.withDefault(false),
+	);
+	const sortBy =
+		sort === "name-asc"
+			? "name"
+			: sort === "useCount-desc"
+				? "useCount"
+				: "updatedAt";
+	const sortOrder = sort === "name-asc" ? "asc" : "desc";
+	const query = useQuery({
+		queryKey: ["skills", organizationId, tab, debounced, sort, page],
+		queryFn: () =>
+			orpcClient.skills.list({
+				organizationId: organizationId ?? undefined,
+				tab,
+				search: debounced || undefined,
+				sortBy,
+				sortOrder,
+				limit: LIMIT,
+				offset: (page - 1) * LIMIT,
+			}),
+		enabled: !!organizationId,
+		retry: false,
+		placeholderData: (old, previous) =>
+			previous?.queryKey[1] === organizationId ? old : undefined,
+	});
+	const governance = useQuery({
+		queryKey: ["skill-governance", organizationId],
+		queryFn: () =>
+			orpcClient.skills.governance.get({
+				organizationId: organizationId ?? undefined,
+			}),
+		enabled: !!organizationId,
+		retry: false,
+	});
+	const skills = query.isError ? [] : (query.data?.skills ?? []);
+	const canCreate = governance.data?.capabilities.canCreate === true;
+	const returnParams = new URLSearchParams();
+	if (tab !== "organization") {
+		returnParams.set("tab", tab);
+	}
+	if (search) {
+		returnParams.set("search", search);
+	}
+	if (sort !== "updatedAt-desc") {
+		returnParams.set("sort", sort);
+	}
+	if (page > 1) {
+		returnParams.set("page", String(page));
+	}
+	const returnTo = `${basePath}/skills${returnParams.size ? `?${returnParams}` : ""}`;
+	useEffect(() => {
+		if (
+			query.data &&
+			!query.isFetching &&
+			page > Math.max(1, Math.ceil(query.data.total / LIMIT))
+		) {
+			void setPage(Math.max(1, Math.ceil(query.data.total / LIMIT)));
+		}
+	}, [query.data, query.isFetching, page, setPage]);
+	if (!organizationId) {
+		return (
+			<p className="text-sm text-muted-foreground">
+				Select an organization to view skills.
+			</p>
+		);
+	}
 	return (
-		<div className="space-y-4">
+		<div className="space-y-5">
 			<SkillsHero />
-
-			{/* Filter Pills + Actions Bar (Databricks Workspace DuBois toolbar) */}
-			<div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-				<div className="flex flex-wrap items-center gap-2">
-					<button
-						type="button"
-						onClick={() => {
-							setCategoryFilter("all");
-							setIsFeatured(false);
-							setSortValue("updatedAt-desc");
-						}}
-						aria-pressed={
-							categoryFilter === "all" &&
-							!isFeatured &&
-							sortValue !== "useCount-desc"
-						}
-						className={cn(
-							"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
-							categoryFilter === "all" &&
-								!isFeatured &&
-								sortValue !== "useCount-desc"
-								? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
-								: "border-border bg-card text-foreground hover:bg-muted/60",
-						)}
+			<Tabs
+				value={tab}
+				onValueChange={(value) => {
+					void setTab(value as typeof tab);
+					void setPage(1);
+				}}
+			>
+				<div className="flex flex-wrap items-end justify-between gap-3">
+					<TabsList
+						aria-label="Skill collections"
+						className="flex flex-wrap"
 					>
-						<SparklesIcon className="size-4 text-foreground" />
-						All
-					</button>
-					<button
-						type="button"
-						onClick={() => {
-							setIsFeatured(!isFeatured);
-							setCategoryFilter("all");
-						}}
-						aria-pressed={isFeatured}
-						className={cn(
-							"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
-							isFeatured
-								? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
-								: "border-border bg-card text-foreground hover:bg-muted/60",
-						)}
-					>
-						<StarIcon className="size-4 text-foreground" />
-						Featured
-					</button>
-					<button
-						type="button"
-						onClick={() => {
-							setIsFeatured(false);
-							setCategoryFilter("all");
-							setSortValue(
-								sortValue === "useCount-desc"
-									? "updatedAt-desc"
-									: "useCount-desc",
-							);
-						}}
-						aria-pressed={
-							!isFeatured &&
-							categoryFilter === "all" &&
-							sortValue === "useCount-desc"
-						}
-						className={cn(
-							"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
-							!isFeatured &&
-								categoryFilter === "all" &&
-								sortValue === "useCount-desc"
-								? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
-								: "border-border bg-card text-foreground hover:bg-muted/60",
-						)}
-					>
-						<TrendingUpIcon className="size-4 text-foreground" />
-						Popular
-					</button>
-					{categories.map((cat) => {
-						const selected = categoryFilter === cat && !isFeatured;
-						return (
-							<button
-								key={cat}
-								type="button"
-								onClick={() => {
-									setCategoryFilter(cat);
-									setIsFeatured(false);
-								}}
-								aria-pressed={selected}
-								className={cn(
-									"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
-									selected
-										? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
-										: "border-border bg-card text-foreground hover:bg-muted/60",
-								)}
-							>
-								<LayoutGridIcon className="size-4 text-foreground" />
-								{cat}
-							</button>
-						);
-					})}
+						<TabsTrigger value="organization">
+							Organization
+						</TabsTrigger>
+						<TabsTrigger value="builtin">Built-in</TabsTrigger>
+						<TabsTrigger value="drafts">Your drafts</TabsTrigger>
+						<TabsTrigger value="archived">Archived</TabsTrigger>
+					</TabsList>
+					<SkillsCreateMenu
+						basePath={basePath}
+						disabled={!canCreate}
+						onImport={() => void setImportOpen(true)}
+					/>
 				</div>
-
-				<div className="flex flex-wrap items-center gap-2 shrink-0">
-					<div
+				<div className="mt-4 flex flex-wrap items-center gap-3">
+					<SearchInput
+						aria-label="Search skills"
 						data-onboarding-target="skills-search"
-						className="relative w-full sm:w-56"
+						placeholder="Search skills…"
+						className="min-w-0 flex-1 sm:max-w-sm"
+						value={search}
+						onChange={(e) => {
+							void setSearch(e.target.value);
+							void setPage(1);
+						}}
+					/>
+					<Select
+						value={sort}
+						onValueChange={(value) => {
+							void setSort(value as typeof sort);
+							void setPage(1);
+						}}
 					>
-						<SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-						<SearchInput
-							placeholder="Search skills..."
-							value={searchQuery}
-							onChange={(e) => setSearchQuery(e.target.value)}
-							className="h-8 pl-8"
-						/>
-					</div>
-
-					<Select value={scopeFilter} onValueChange={setScopeFilter}>
-						<SelectTrigger className="h-8 w-[140px]">
-							<SelectValue placeholder="Scope" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="all">All Scopes</SelectItem>
-							<SelectItem value="SYSTEM">System</SelectItem>
-							<SelectItem value="ORGANIZATION">
-								Organization
-							</SelectItem>
-							<SelectItem value="USER">Personal</SelectItem>
-						</SelectContent>
-					</Select>
-
-					<Select value={sortValue} onValueChange={setSortValue}>
 						<SelectTrigger
+							aria-label="Sort skills"
 							data-onboarding-target="skills-sort"
-							className="h-8 w-[160px]"
+							className="w-44"
 						>
-							<ArrowUpDownIcon className="size-3.5 mr-1.5 text-muted-foreground" />
-							<SelectValue placeholder="Sort" />
+							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
-							{sortOptions.map((opt) => (
-								<SelectItem key={opt.value} value={opt.value}>
-									{opt.label}
-								</SelectItem>
-							))}
+							<SelectItem value="updatedAt-desc">
+								Recently updated
+							</SelectItem>
+							<SelectItem value="name-asc">Name</SelectItem>
+							<SelectItem value="useCount-desc">
+								Most used
+							</SelectItem>
 						</SelectContent>
 					</Select>
-
-					<Button
-						data-onboarding-target="skills-new"
-						size="sm"
-						onClick={() => router.push(`${basePath}/skills/new`)}
-					>
-						<PlusIcon className="size-3.5" />
-						New Skill
+					<Button variant="ghost" size="sm" asChild>
+						<Link href={`${basePath}/settings/skill-governance`}>
+							Skill governance
+						</Link>
 					</Button>
 				</div>
-			</div>
-
-			{/* Skills Grid */}
-			{isLoading ? (
-				<div className="flex items-center justify-center py-16">
-					<Spinner />
-				</div>
-			) : skills.length === 0 ? (
-				<div className="flex flex-col items-center justify-center py-16 text-center space-y-3">
-					<PuzzleIcon
-						className="size-10 text-muted-foreground/45"
-						strokeWidth={1.5}
-						aria-hidden="true"
-					/>
-					<p className="text-sm text-muted-foreground">
-						{searchQuery ||
-						scopeFilter !== "all" ||
-						categoryFilter !== "all" ||
-						isFeatured
-							? "No skills found matching your filters"
-							: "No skills yet"}
+				{!governance.isPending && !canCreate && (
+					<p className="mt-3 text-sm text-muted-foreground">
+						{governance.isError
+							? "Creation permissions could not be checked. Refresh to try again."
+							: "Your current role or organization policy does not permit creating skills."}
 					</p>
-					{!searchQuery &&
-						scopeFilter === "all" &&
-						categoryFilter === "all" &&
-						!isFeatured && (
-							<Button
-								size="sm"
-								variant="outline"
-								onClick={() =>
-									router.push(`${basePath}/skills/new`)
-								}
-							>
-								<PlusIcon className="size-3.5" />
-								Create Your First Skill
-							</Button>
-						)}
-				</div>
-			) : (
-				<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-					{skills.map((skill) => (
-						<SkillCard
-							key={skill.id}
-							skill={skill}
-							onUpdate={refetch}
+				)}
+				<TabsContent value={tab} className="mt-5 space-y-4">
+					{query.isError ? (
+						<Alert variant="error">
+							<AlertTitle>Skills could not be loaded</AlertTitle>
+							<AlertDescription>
+								{skillUiError(query.error)}
+								<Button
+									type="button"
+									variant="link"
+									size="sm"
+									onClick={() => void query.refetch()}
+								>
+									Try again
+								</Button>
+							</AlertDescription>
+						</Alert>
+					) : query.isPending ? (
+						<div aria-busy="true" className="space-y-3">
+							<span className="sr-only">Loading skills…</span>
+							<Skeleton className="h-20 w-full" />
+							<Skeleton className="h-20 w-full" />
+						</div>
+					) : !skills.length ? (
+						<div className="flex flex-col items-center gap-3 py-12 text-center">
+							<PuzzleIcon
+								className="size-10 text-muted-foreground"
+								aria-hidden="true"
+							/>
+							<h2 className="text-base font-semibold">
+								{search
+									? "No matching skills"
+									: tab === "drafts"
+										? "No drafts yet"
+										: tab === "archived"
+											? "No archived skills"
+											: tab === "builtin"
+												? "No built-in skills available"
+												: "No shared skills yet"}
+							</h2>
+							<p className="max-w-lg text-sm text-muted-foreground">
+								{search
+									? "Try another search or collection."
+									: tab === "drafts"
+										? "Create a skill from a conversation, start with your instructions, or import an existing skill. It stays private until you share it."
+										: tab === "archived"
+											? "Archived skills appear here and can be restored by their owner."
+											: tab === "organization"
+												? "Share a reviewed draft with your organization when it is ready."
+												: "Built-in skills appear here when provided by your Fabric installation."}
+							</p>
+							{search && (
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() => {
+										void setSearch("");
+										void setPage(1);
+									}}
+								>
+									Clear search
+								</Button>
+							)}
+						</div>
+					) : (
+						<ul className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+							{skills.map((skill) => (
+								<SkillCard
+									key={skill.id}
+									skill={skill}
+									onSelect={(id) => void setSelectedId(id)}
+								/>
+							))}
+						</ul>
+					)}
+					{!query.isError && !!query.data?.total && (
+						<Pagination
+							totalItems={query.data.total}
+							itemsPerPage={LIMIT}
+							currentPage={page}
+							onChangeCurrentPage={(next) => void setPage(next)}
+							navigationLabel="Skill pages"
+							goToPageLabel="Go to skill page"
 						/>
-					))}
-				</div>
+					)}
+					{query.isFetching && !query.isPending && (
+						<output className="block text-xs text-muted-foreground">
+							Updating skills…
+						</output>
+					)}
+				</TabsContent>
+			</Tabs>
+			{selectedId && (
+				<SkillDetailsSheet
+					key={`${organizationId}:${selectedId}`}
+					skillId={selectedId}
+					returnTo={returnTo}
+					onClose={() => void setSelectedId(null)}
+				/>
+			)}
+			{importOpen && (
+				<SkillImportDialog
+					key={organizationId}
+					organizationId={organizationId}
+					basePath={basePath}
+					onClose={() => void setImportOpen(false)}
+				/>
 			)}
 		</div>
 	);

@@ -371,3 +371,53 @@ describe("read-only native execution observation", () => {
 		expect(h.handle).not.toHaveBeenCalled();
 	});
 });
+
+describe("metadata-only native observation", () => {
+	it("describes running work without querying progress or downloading results", async () => {
+		h.describe.mockResolvedValue({
+			...description,
+			status: { name: "RUNNING" },
+			closeTime: undefined,
+		});
+		expect(
+			await readNativeExecutionState(row, { metadataOnly: true }),
+		).toMatchObject({
+			status: "RUNNING",
+			workflowClosed: false,
+			nativeReadStatus: "AVAILABLE",
+		});
+		expect(h.query).not.toHaveBeenCalled();
+		expect(h.result).not.toHaveBeenCalled();
+	});
+	it("keeps a closed wrapper's business outcome unknown without fetching its result", async () => {
+		h.result.mockResolvedValue({
+			executionId: row.executionId,
+			status: "FAILED",
+		});
+		const state = await readNativeExecutionState(row, {
+			metadataOnly: true,
+		});
+		expect(state).toMatchObject({
+			status: "UNKNOWN",
+			workflowClosed: true,
+			nativeReadStatus: "AVAILABLE",
+		});
+		expect(state).not.toHaveProperty("output");
+		expect(state).not.toHaveProperty("result");
+		expect(h.query).not.toHaveBeenCalled();
+		expect(h.result).not.toHaveBeenCalled();
+	});
+	it("retains identity verification before metadata can be returned", async () => {
+		h.describe.mockResolvedValue({
+			...description,
+			memo: {
+				fabricAgentAdmission: { ...memo, userId: "example-other" },
+			},
+		});
+		expect(
+			await readNativeExecutionState(row, { metadataOnly: true }),
+		).toEqual({ nativeReadStatus: "IDENTITY_UNVERIFIED" });
+		expect(h.query).not.toHaveBeenCalled();
+		expect(h.result).not.toHaveBeenCalled();
+	});
+});

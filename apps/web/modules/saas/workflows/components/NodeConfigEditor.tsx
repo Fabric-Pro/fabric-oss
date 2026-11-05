@@ -12,6 +12,7 @@ import {
 import { Textarea } from "@ui/components/textarea";
 import type { Node } from "@xyflow/react";
 import { getNodeDefinition } from "../lib/node-definitions";
+import type { OutputOption } from "../lib/output-options";
 import { findActionById } from "../lib/plugins/registry";
 import type { ConfigField, WorkflowNodeData } from "../lib/types";
 import { ActionConfigPanel } from "./ActionConfigPanel";
@@ -19,17 +20,23 @@ import { AiModelSelector } from "./config-fields/AiModelSelector";
 import { CapabilitySelector } from "./config-fields/CapabilitySelector";
 import { McpServerSelector } from "./config-fields/McpServerSelector";
 import { McpToolSelector } from "./config-fields/McpToolSelector";
+import { WorkflowTemplateField } from "./config-fields/WorkflowTemplateField";
 
 interface NodeConfigEditorProps {
 	node: Node<WorkflowNodeData>;
 	onUpdate: (nodeId: string, data: Partial<WorkflowNodeData>) => void;
+	availableVariables?: OutputOption[];
 }
 
 /**
  * A step's editable fields. The step's identity (icon, kind) and its delete
  * action belong to the inspector around it, not to this form.
  */
-export function NodeConfigEditor({ node, onUpdate }: NodeConfigEditorProps) {
+export function NodeConfigEditor({
+	node,
+	onUpdate,
+	availableVariables = [],
+}: NodeConfigEditorProps) {
 	const definition = node.type ? getNodeDefinition(node.type) : undefined;
 	// Plugin-backed nodes render their config from the integration's own
 	// action declaration; system nodes (trigger, http-request, condition)
@@ -62,11 +69,12 @@ export function NodeConfigEditor({ node, onUpdate }: NodeConfigEditorProps) {
 								<span className="text-destructive ml-1">*</span>
 							)}
 						</Label>
-						<Input
+						<WorkflowTemplateField
+							options={availableVariables}
 							id={field.name}
 							value={(value as string) || ""}
-							onChange={(e) =>
-								handleFieldChange(field.name, e.target.value)
+							onChange={(value) =>
+								handleFieldChange(field.name, value)
 							}
 							placeholder={field.placeholder}
 						/>
@@ -78,6 +86,32 @@ export function NodeConfigEditor({ node, onUpdate }: NodeConfigEditorProps) {
 				);
 
 			case "textarea":
+				if (node.type === "script-transform")
+					return (
+						<div key={field.name} className="space-y-2">
+							<Label htmlFor={field.name}>{field.label}</Label>
+							<Textarea
+								id={field.name}
+								value={
+									typeof value === "string"
+										? value
+										: value === undefined
+											? ""
+											: JSON.stringify(value, null, 2)
+								}
+								onChange={(e) =>
+									handleFieldChange(
+										field.name,
+										e.target.value,
+									)
+								}
+								rows={4}
+							/>
+							<p className="text-xs text-muted-foreground">
+								{field.description}
+							</p>
+						</div>
+					);
 				return (
 					<div key={field.name} className="space-y-2">
 						<Label htmlFor={field.name}>
@@ -86,7 +120,9 @@ export function NodeConfigEditor({ node, onUpdate }: NodeConfigEditorProps) {
 								<span className="text-destructive ml-1">*</span>
 							)}
 						</Label>
-						<Textarea
+						<WorkflowTemplateField
+							multiline
+							options={availableVariables}
 							id={field.name}
 							value={
 								typeof value === "string"
@@ -95,8 +131,8 @@ export function NodeConfigEditor({ node, onUpdate }: NodeConfigEditorProps) {
 										? ""
 										: JSON.stringify(value, null, 2)
 							}
-							onChange={(e) =>
-								handleFieldChange(field.name, e.target.value)
+							onChange={(value) =>
+								handleFieldChange(field.name, value)
 							}
 							placeholder={field.placeholder}
 							rows={4}
@@ -270,6 +306,7 @@ export function NodeConfigEditor({ node, onUpdate }: NodeConfigEditorProps) {
 					<h4 className="text-sm font-medium">Configuration</h4>
 					<ActionConfigPanel
 						action={action}
+						availableVariables={availableVariables}
 						config={
 							(node.data.config as Record<string, unknown>) || {}
 						}

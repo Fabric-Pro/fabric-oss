@@ -29,6 +29,17 @@ const mocks = vi.hoisted(() => ({
 	listFirstClassFrames: vi.fn(),
 	shareFirstClassFrame: vi.fn(),
 	organizationFindUnique: vi.fn(),
+	canUpdate: vi.fn(),
+	canRead: vi.fn(),
+	canDelete: vi.fn(),
+	ownedFrame: vi.fn(),
+	share: vi.fn(),
+	revoke: vi.fn(),
+	grants: vi.fn(),
+	startExport: vi.fn(),
+	getExport: vi.fn(),
+	cancelExport: vi.fn(),
+	downloadExport: vi.fn(),
 }));
 
 vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
@@ -48,7 +59,26 @@ vi.mock("@repo/temporal/frame-service", () => ({
 
 vi.mock("@repo/database", () => ({
 	FRAME_SURFACES: ["artifact", "workspace"],
+	canUpdateOrganizationFrames: mocks.canUpdate,
+	canReadOrganizationFrames: mocks.canRead,
+	canDeleteOrganizationFrames: mocks.canDelete,
+	getFrameById: mocks.ownedFrame,
+	shareFrame: mocks.share,
+	revokeFrameSharing: mocks.revoke,
+	listSharingGrants: mocks.grants,
+	FrameUpdateConflictError: class extends Error {},
 	db: { organization: { findUnique: mocks.organizationFindUnique } },
+}));
+
+vi.mock("@repo/api/modules/frames/lib/frame-export-service", () => ({
+	startFrameExport: mocks.startExport,
+	getFrameExport: mocks.getExport,
+	cancelFrameExport: mocks.cancelExport,
+	downloadFrameExport: mocks.downloadExport,
+	FrameExportError: class extends Error {
+		code = "CONFLICT";
+		status = 409;
+	},
 }));
 
 import {
@@ -101,6 +131,14 @@ beforeEach(() => {
 	mocks.getFirstClassFrame.mockResolvedValue({ frameId: "frame-1" });
 	mocks.listFirstClassFrames.mockResolvedValue({ frames: [] });
 	mocks.organizationFindUnique.mockResolvedValue({ slug: "example-org" });
+	mocks.canUpdate.mockResolvedValue(true);
+	mocks.canRead.mockResolvedValue(true);
+	mocks.canDelete.mockResolvedValue(true);
+	mocks.ownedFrame.mockResolvedValue({
+		id: "frame-1",
+		shareScope: "PRIVATE",
+		updatedAt: new Date("2026-11-01T00:00:00Z"),
+	});
 });
 
 describe("frame tool definitions", () => {
@@ -180,7 +218,9 @@ describe("frame tool definitions", () => {
 
 	it("does not require a frame id to update or read the open Workspace", () => {
 		for (const name of ["fabric_update_frame", "fabric_get_frame"]) {
-			expect(definition(name).inputSchema.required).toBeUndefined();
+			expect(definition(name).inputSchema.required ?? []).not.toContain(
+				"frameId",
+			);
 		}
 	});
 
@@ -412,7 +452,7 @@ describe("fabric_create_frame", () => {
 
 		expect(payload(result)).toMatchObject({
 			frameId: "frame-1",
-			pageUrl: "/app/example-org/workspaces/frame-1",
+			pageUrl: "/app/example-org/pages/frame-1",
 		});
 	});
 
@@ -647,7 +687,7 @@ describe("fabric_update_frame", () => {
 	it("updates the Workspace the user has open when no frame is named", async () => {
 		await executePlatformTool(
 			"fabric_update_frame",
-			{ blocks },
+			{ blocks, expectedUpdatedAt: "2026-11-01T00:00:00Z" },
 			onWorkspace("workspace-1"),
 		);
 
@@ -658,6 +698,7 @@ describe("fabric_update_frame", () => {
 				args: expect.objectContaining({
 					frameId: "workspace-1",
 					blocks,
+					expectedUpdatedAt: "2026-11-01T00:00:00Z",
 				}),
 			}),
 		);
@@ -666,7 +707,11 @@ describe("fabric_update_frame", () => {
 	it("updates the frame the caller names, not the open Workspace", async () => {
 		await executePlatformTool(
 			"fabric_update_frame",
-			{ frameId: "frame-9", blocks },
+			{
+				frameId: "frame-9",
+				blocks,
+				expectedUpdatedAt: "2026-11-01T00:00:00Z",
+			},
 			onWorkspace("workspace-1"),
 		);
 
@@ -678,7 +723,11 @@ describe("fabric_update_frame", () => {
 	});
 
 	it("asks for a frame id when none is named and no Workspace is open", async () => {
-		await executePlatformTool("fabric_update_frame", { blocks }, session);
+		await executePlatformTool(
+			"fabric_update_frame",
+			{ blocks, expectedUpdatedAt: "2026-11-01T00:00:00Z" },
+			session,
+		);
 
 		const { args } = mocks.updateFirstClassFrame.mock.calls[0][0];
 		expect(args.frameId).toBeUndefined();
@@ -801,6 +850,9 @@ describe("fabric_list_frames", () => {
 			organizationId: "org-1",
 			surface: undefined,
 			projectId: undefined,
+			conversationId: undefined,
+			limit: undefined,
+			offset: 0,
 		});
 	});
 
@@ -880,7 +932,7 @@ describe("fabric_list_frames", () => {
 			{
 				frameId: "workspace-1",
 				surface: "workspace",
-				pageUrl: "/app/example-org/workspaces/workspace-1",
+				pageUrl: "/app/example-org/pages/workspace-1",
 			},
 			{
 				frameId: "artifact-1",
@@ -931,5 +983,152 @@ describe("fabric_edit_frame_block gateway registration", () => {
 			userId: session.userId,
 			organizationId: session.organizationId,
 		});
+	});
+});
+
+describe("conversation-scoped frame discovery", () => {
+	it("forwards conversation and pagination with the authorized actor", async () => {
+		await executePlatformTool(
+			"fabric_list_frames",
+			{ conversationId: "example-thread", limit: 21, offset: 20 },
+			session,
+		);
+		expect(mocks.listFirstClassFrames).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: session.userId,
+				organizationId: session.organizationId,
+				conversationId: "example-thread",
+				limit: 21,
+				offset: 20,
+			}),
+		);
+	});
+	it.each([
+		{ limit: 0 },
+		{ limit: 201 },
+		{ limit: 1.2 },
+		{ offset: -1 },
+		{ offset: "20" },
+		{ conversationId: " " },
+		{ conversationId: "x".repeat(201) },
+	])("refuses invalid discovery input %j before reading", async (input) => {
+		const result = await executePlatformTool(
+			"fabric_list_frames",
+			input,
+			session,
+		);
+		expect(result.isError).toBe(true);
+		expect(mocks.listFirstClassFrames).not.toHaveBeenCalled();
+	});
+});
+
+it("preserves the surface service's default page size when MCP omits limit", async () => {
+	await executePlatformTool(
+		"fabric_list_frames",
+		{ surface: "workspace" },
+		session,
+	);
+	expect(mocks.listFirstClassFrames).toHaveBeenCalledWith(
+		expect.objectContaining({ surface: "workspace", limit: undefined }),
+	);
+});
+
+describe("durable exports and explicit sharing", () => {
+	it("requires exact credential scope and refuses project/page-bound calls", async () => {
+		const args = {
+			frameId: "frame-1",
+			expectedUpdatedAt: "2026-11-01T00:00:00Z",
+			requestId: "12345678-1234-4123-8123-123456789abc",
+		};
+		const refused = await executePlatformTool(
+			"fabric_start_frame_export",
+			args,
+			{
+				...session,
+				credential: "organization-key",
+				scopes: ["mcp:write"],
+			},
+		);
+		expect(refused.isError).toBe(true);
+		expect(mocks.startExport).not.toHaveBeenCalled();
+		const bound = await executePlatformTool(
+			"fabric_start_frame_export",
+			args,
+			{ ...session, pinnedProjectId: "example-project" },
+		);
+		expect(bound.isError).toBe(true);
+		expect(mocks.startExport).not.toHaveBeenCalled();
+		mocks.startExport.mockResolvedValue({
+			exportId: "example-export",
+			status: "pending",
+		});
+		const ok = await executePlatformTool(
+			"fabric_start_frame_export",
+			args,
+			session,
+		);
+		expect(ok.isError).not.toBe(true);
+		expect(mocks.startExport).toHaveBeenCalledWith(
+			{
+				userId: session.userId,
+				userEmail: session.email,
+				organizationId: session.organizationId,
+			},
+			args,
+		);
+	});
+	it("does not issue a download link during status reads", async () => {
+		mocks.getExport.mockResolvedValue({
+			exportId: "example-export",
+			status: "completed",
+		});
+		await executePlatformTool(
+			"fabric_get_frame_export",
+			{ frameId: "frame-1", exportId: "example-export" },
+			session,
+		);
+		expect(mocks.downloadExport).not.toHaveBeenCalled();
+		mocks.downloadExport.mockResolvedValue({
+			url: "https://example.com/download",
+			expiresAt: "2026-11-01T00:01:00Z",
+		});
+		await executePlatformTool(
+			"fabric_download_frame_export",
+			{ frameId: "frame-1", exportId: "example-export" },
+			session,
+		);
+		expect(mocks.downloadExport).toHaveBeenCalledOnce();
+	});
+	it("always checks current revocation permission even for wildcard credentials", async () => {
+		mocks.canUpdate.mockResolvedValue(true);
+		mocks.canDelete.mockResolvedValue(false);
+		const result = await executePlatformTool(
+			"fabric_revoke_frame_sharing",
+			{
+				frameId: "frame-1",
+				mode: "all",
+				expectedUpdatedAt: "2026-11-01T00:00:00Z",
+			},
+			{ ...session, credential: "organization-key" },
+		);
+		expect(result.isError).toBe(true);
+		expect(mocks.revoke).not.toHaveBeenCalled();
+	});
+	it("blocks page scripts from issuing credentials or managing sharing", async () => {
+		for (const name of [
+			"fabric_start_frame_export",
+			"fabric_get_frame_export",
+			"fabric_cancel_frame_export",
+			"fabric_download_frame_export",
+			"fabric_get_frame_sharing",
+			"fabric_revoke_frame_sharing",
+		]) {
+			const result = await executePlatformTool(
+				"fabric_create_frame",
+				{ title: "Example", blocks, runtimeTools: [name] },
+				session,
+			);
+			expect(result.isError, name).toBe(true);
+		}
 	});
 });

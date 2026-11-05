@@ -1,3 +1,5 @@
+import { commitWorkflowVersion } from "./commit-workflow-version";
+import { updateWorkflowWithProtectedChecks } from "./protected-check-settings";
 /**
  * The workflow commands — create, edit, publish, unpublish, pause, resume.
  *
@@ -33,8 +35,8 @@ import {
 	requireWorkflowMembership,
 	requireWorkflowPermission,
 	requireWritableProject,
-	WorkflowCommandError,
 	type WorkflowActor,
+	WorkflowCommandError,
 } from "./workflow-command-context";
 import { validateWorkflowBeforeExecution } from "./workflow-validation";
 
@@ -159,6 +161,33 @@ export async function applyWorkflowUpdateWithSchedule(
 	input: UpdateWorkflowInput,
 	options?: { expectedUpdatedAt: Date },
 ) {
+	// Status transitions resume a publication, never the mutable editor draft.
+	let activationNodes: unknown;
+	if (input.status !== undefined && isWorkflowLive(input.status)) {
+		if (!current.publishedAt) {
+			throw new WorkflowCommandError(
+				"BAD_REQUEST",
+				"Workflow has never been published; publish it before activating it",
+			);
+		}
+		const snapshot = await db.workflowVersion.findFirst({
+			where: {
+				workflowId: current.id,
+				version: current.publishedVersion ?? current.version,
+				isPublished: true,
+				userId: current.userId,
+				organizationId: actor.organizationId,
+			},
+			select: { nodes: true },
+		});
+		if (!snapshot) {
+			throw new WorkflowCommandError(
+				"BAD_REQUEST",
+				"Published workflow version is missing; publish before activating it",
+			);
+		}
+		activationNodes = snapshot.nodes;
+	}
 	const configProblems = [
 		...workflowScriptProblems(input.nodes ?? current.nodes),
 		...workflowWorkspaceDataProblems(input.nodes ?? current.nodes),
@@ -170,15 +199,14 @@ export async function applyWorkflowUpdateWithSchedule(
 			configProblems.join("\n"),
 		);
 	}
-	// A live workflow's graph is held to the same agentic checks as publish:
-	// editing nodes in place, or reviving a paused workflow, must not let an
-	// unvalidated agent onto its schedule.
+	// Re-check agent access when editing or resuming. A resume validates the
+	// published graph that will execute, independently of saved draft edits.
 	if (
 		(input.nodes !== undefined || input.status !== undefined) &&
 		isWorkflowLive(input.status ?? current.status)
 	) {
 		const { problems } = await findAgenticPublishProblems({
-			nodes: input.nodes ?? current.nodes,
+			nodes: activationNodes ?? input.nodes ?? current.nodes,
 			userId: current.userId,
 			organizationId: actor.organizationId,
 			projectId: current.projectId ?? null,
@@ -192,32 +220,30 @@ export async function applyWorkflowUpdateWithSchedule(
 	const updateOptions: [] | [{ expectedUpdatedAt: Date }] = options
 		? [options]
 		: [];
-	const workflow = await updateWorkflow(
-		id,
-		actor.userId,
-		patch,
-		actor.organizationId,
-		...updateOptions,
-	);
+	const workflow =
+		input.settings !== undefined
+			? await updateWorkflowWithProtectedChecks(
+					actor,
+					{ ...input, settings: input.settings },
+					options,
+				)
+			: await updateWorkflow(
+					id,
+					actor.userId,
+					patch,
+					actor.organizationId,
+					...updateOptions,
+				);
 
-	// Editing a PUBLISHED workflow's trigger must take effect immediately:
-	// changing the cron, or switching the trigger away from Schedule,
-	// should not require an unpublish/republish cycle.
-	//
-	// A status change has to sync too, and in both directions. Pausing a
-	// workflow used to leave its schedule running — this branch only fired
-	// for PUBLISHED/ACTIVE, so moving to PAUSED simply skipped it and the
-	// cron kept firing against a workflow the author believed was stopped.
-	// Autosave is the reason this is not unconditional: a draft save posts
-	// no status, and reaching for Temporal on every keystroke would be a
-	// round trip for nothing.
+	// Saving a draft must not change production triggers. Publish/rollback
+	// updates the schedule; explicit pause/resume still synchronizes it here.
 	const scheduleShouldBeLive = isWorkflowLive(workflow.status);
 	let schedule: Awaited<ReturnType<typeof syncWorkflowSchedule>> | null =
 		null;
-	if (scheduleShouldBeLive || input.status !== undefined) {
+	if (input.status !== undefined) {
 		schedule = await syncWorkflowSchedule({
 			workflowId: id,
-			nodes: workflow.nodes,
+			nodes: activationNodes ?? workflow.nodes,
 			userId: workflow.userId,
 			organizationId: workflow.organizationId,
 			projectId: workflow.projectId,
@@ -327,13 +353,6 @@ export async function publishWorkflowCommand(
 		);
 	}
 
-	const latestVersion = await db.workflowVersion.findFirst({
-		where: { workflowId },
-		orderBy: { version: "desc" },
-		select: { version: true },
-	});
-	const newVersion = (latestVersion?.version ?? 0) + 1;
-
 	// Generate a webhook secret only when enabling webhooks for the first
 	// time. `existingSecret` may already be encrypted at rest; only a freshly
 	// generated secret is plaintext and must be encrypted on write (SOC 2
@@ -347,38 +366,24 @@ export async function publishWorkflowCommand(
 	// TENANT ISOLATION: the version row carries the workflow's own userId and
 	// organizationId for tenant filtering on child tables.
 	const publishedAt = new Date();
-	await db.workflowVersion.create({
-		data: {
-			workflowId,
-			version: newVersion,
+	const scheduleCron = findScheduleCron(workflow.nodes);
+	const newVersion = await commitWorkflowVersion({
+		operation: "publish",
+		workflowId,
+		userId: actor.userId,
+		organizationId: actor.organizationId,
+		expectedUpdatedAt: workflow.updatedAt,
+		publishedAt,
+		changelog,
+		content: {
 			nodes: workflow.nodes ?? {},
 			edges: workflow.edges ?? {},
 			variables: workflow.variables ?? undefined,
 			settings: workflow.settings ?? undefined,
 			triggerConfig: workflow.triggerConfig ?? undefined,
-			changelog,
-			isPublished: true,
-			publishedAt,
-			createdBy: actor.userId,
-			userId: workflow.userId,
-			organizationId: workflow.organizationId,
 		},
-	});
-
-	// A workflow whose trigger node carries a cron becomes SCHEDULE-triggered
-	// on publish. `enableWebhook` still wins when both are set: an explicit
-	// webhook request is a deliberate act, a leftover cron on the trigger node
-	// is not.
-	const scheduleCron = findScheduleCron(workflow.nodes);
-
-	await db.workflow.update({
-		where: { id: workflowId },
-		data: {
+		patch: {
 			status: "PUBLISHED",
-			version: newVersion,
-			publishedAt,
-			publishedBy: actor.userId,
-			publishedVersion: newVersion,
 			webhookSecret: enableWebhook
 				? newPlaintextSecret
 					? encryptApiKey(newPlaintextSecret)
@@ -469,10 +474,7 @@ export async function pauseWorkflowCommand(
 	workflowId: string,
 ) {
 	const workflow = await loadEditableWorkflow(actor, workflowId, "pause");
-	if (workflow.status === "PAUSED") {
-		return workflow;
-	}
-	if (!isWorkflowLive(workflow.status)) {
+	if (workflow.status !== "PAUSED" && !isWorkflowLive(workflow.status)) {
 		throw new WorkflowCommandError(
 			"BAD_REQUEST",
 			`Workflow is ${workflow.status}; only a published workflow can be paused`,
@@ -490,10 +492,7 @@ export async function resumeWorkflowCommand(
 	workflowId: string,
 ) {
 	const workflow = await loadEditableWorkflow(actor, workflowId, "resume");
-	if (isWorkflowLive(workflow.status)) {
-		return workflow;
-	}
-	if (workflow.status !== "PAUSED") {
+	if (workflow.status !== "PAUSED" && !isWorkflowLive(workflow.status)) {
 		throw new WorkflowCommandError(
 			"BAD_REQUEST",
 			`Workflow is ${workflow.status}; only a paused workflow can be resumed`,

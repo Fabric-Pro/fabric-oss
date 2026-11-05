@@ -1,5 +1,7 @@
 "use client";
 
+import { effectiveToolStatus } from "./shared/tool-activity";
+
 /**
  * FabricDirectChat - Direct chat component with streaming MCP tool execution
  *
@@ -41,6 +43,11 @@ import { CopilotSidebarAttachments } from "@saas/shared/components/copilot/Copil
 import type { AttachedFile as CopilotAttachedFile } from "@saas/shared/components/copilot/use-copilot-document-upload";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { SparklesIcon as GenieSparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
+import {
+	type SkillCreateAttempt,
+	SkillCreationRecovery,
+} from "@saas/skills/components/SkillCreationRecovery";
+import { skillSlug } from "@saas/skills/lib/skill-ui";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -213,10 +220,10 @@ interface PendingSkillDraft {
 	description: string;
 	content: string;
 	tags: string[];
-	scope: "USER" | "ORGANIZATION";
 }
 
 interface SavedSkillAutomationPrompt {
+	messageId: string;
 	skillId: string;
 	skillName: string;
 	existingTags: string[];
@@ -349,7 +356,7 @@ const ADVISOR_STARTERS: QuickSuggestion[] = [
 			"Review the last 7 days of sessions and suggest configuration changes.",
 		icon: <SlidersHorizontal />,
 		color: "#dc2828",
-		value: "Review my Advisor sessions from the last 7 days and suggest configuration changes: agents, connections, skills and workflows we should add or adjust.",
+		value: "Review my Genie conversations from the last 7 days and suggest configuration changes: agents, connections, skills and workflows we should add or adjust.",
 	},
 ];
 
@@ -603,6 +610,7 @@ export const FabricDirectChat = forwardRef<
 ) {
 	const { user } = useSession();
 	const tooltipT = useTranslations("tooltips.agents");
+	const genieT = useTranslations("genieExperience");
 	const userAvatarSrc = user?.image ?? "";
 	const userDisplayName = user?.name ?? user?.email ?? "Me";
 
@@ -680,6 +688,10 @@ export const FabricDirectChat = forwardRef<
 		setIsStartingImplementationSession,
 	] = useState(false);
 	const [isSavingSkillDraft, setIsSavingSkillDraft] = useState(false);
+	const skillCreateInFlight = useRef(false);
+	const [unconfirmedSkillCreate, setUnconfirmedSkillCreate] = useState<
+		SkillCreateAttempt & { organizationId: string }
+	>();
 	const [isSavingAutomationTag, setIsSavingAutomationTag] = useState(false);
 	// Track loaded messages from history (separate from streaming)
 	const [loadedMessages, setLoadedMessages] = useState<DirectStreamMessage[]>(
@@ -1941,6 +1953,13 @@ export const FabricDirectChat = forwardRef<
 
 	// Save conversation as a reusable Skill
 	const handleSaveAsSkill = useCallback(async () => {
+		if (skillCreateInFlight.current || unconfirmedSkillCreate) {
+			return;
+		}
+		if (!organizationId) {
+			toast.error("Open an organization before saving a skill");
+			return;
+		}
 		if (messages.length < 2) {
 			toast.error("Have a conversation first before saving as a Skill");
 			return;
@@ -1962,11 +1981,7 @@ export const FabricDirectChat = forwardRef<
 		const firstUserMsg = userMessages[0].content;
 		const skillName =
 			firstUserMsg.slice(0, 60) + (firstUserMsg.length > 60 ? "..." : "");
-		const skillSlug = firstUserMsg
-			.toLowerCase()
-			.replace(/[^a-z0-9]+/g, "-")
-			.replace(/^-|-$/g, "")
-			.slice(0, 40);
+		const conversationSlug = skillSlug(firstUserMsg, 40);
 
 		// Build skill content from the conversation
 		const skillContent = messages
@@ -1977,24 +1992,37 @@ export const FabricDirectChat = forwardRef<
 			)
 			.join("\n\n---\n\n");
 
+		const attempt = {
+			name: skillName,
+			slug: conversationSlug || `skill-${Date.now()}`,
+			organizationId,
+		};
+		skillCreateInFlight.current = true;
+		setIsSavingSkillDraft(true);
 		try {
 			await orpcClient.skills.create({
-				organizationId: organizationId ?? null,
+				organizationId,
 				name: skillName,
-				slug: skillSlug || `skill-${Date.now()}`,
+				slug: attempt.slug,
 				description: `Saved from conversation: ${firstUserMsg.slice(0, 120)}`,
 				content: skillContent,
+				isPublished: false,
+				isDiscoverable: false,
 			});
-			toast.success("Conversation saved as Skill", {
-				description: `"${skillName}" is now available via /slash-commands`,
+			toast.success("Conversation saved as a skill draft", {
+				description: `Review "${skillName}" in Skills → Your drafts before sharing it.`,
 			});
 		} catch (error) {
+			setUnconfirmedSkillCreate(attempt);
 			toast.error("Failed to save Skill", {
 				description:
 					error instanceof Error ? error.message : "Unknown error",
 			});
+		} finally {
+			skillCreateInFlight.current = false;
+			setIsSavingSkillDraft(false);
 		}
-	}, [messages, organizationId]);
+	}, [messages, organizationId, unconfirmedSkillCreate]);
 
 	// Export conversation as Markdown file download
 	const handleExportConversation = useCallback(() => {
@@ -2020,7 +2048,9 @@ export const FabricDirectChat = forwardRef<
 				lines.push("**Tools used:**");
 				for (const tc of msg.toolCalls) {
 					const status =
-						tc.status === "complete" ? "done" : tc.status;
+						effectiveToolStatus(tc) === "complete"
+							? "done"
+							: effectiveToolStatus(tc);
 					lines.push(`- \`${tc.name}\` (${status})`);
 				}
 				lines.push("");
@@ -2709,11 +2739,7 @@ export const FabricDirectChat = forwardRef<
 	};
 
 	const slugifySkillName = (value: string) =>
-		value
-			.toLowerCase()
-			.replace(/[^a-z0-9]+/g, "-")
-			.replace(/^-|-$/g, "")
-			.slice(0, 48) || `skill-${Date.now()}`;
+		skillSlug(value, 48) || `skill-${Date.now()}`;
 
 	const buildSkillNameFromMessage = (message: DirectStreamMessage) => {
 		const firstHeading = message.content
@@ -2802,31 +2828,42 @@ export const FabricDirectChat = forwardRef<
 				message.content.trim(),
 			].join("\n"),
 			tags,
-			scope: organizationId ? "ORGANIZATION" : "USER",
 		});
 	};
 
 	const handleSaveApprovedSkill = async () => {
-		if (!pendingSkillDraft) {
+		if (
+			!pendingSkillDraft ||
+			!organizationId ||
+			skillCreateInFlight.current ||
+			unconfirmedSkillCreate
+		) {
 			return;
 		}
 
 		setIsSavingSkillDraft(true);
+		skillCreateInFlight.current = true;
+		const attempt = {
+			name: pendingSkillDraft.name,
+			slug: pendingSkillDraft.slug,
+			organizationId,
+		};
 		try {
 			const { skill } = await orpcClient.skills.create({
-				organizationId: organizationId ?? null,
+				organizationId,
 				name: pendingSkillDraft.name,
 				slug: pendingSkillDraft.slug,
 				description: pendingSkillDraft.description,
 				content: pendingSkillDraft.content,
 				tags: pendingSkillDraft.tags,
-				scope: pendingSkillDraft.scope,
-				isPublished: true,
+				isPublished: false,
+				isDiscoverable: false,
 			});
-			toast.success("Skill saved", {
-				description: `"${pendingSkillDraft.name}" is now available from the skills menu.`,
+			toast.success("Skill draft saved", {
+				description: `Review "${pendingSkillDraft.name}" in Skills → Your drafts before sharing it.`,
 			});
 			setSavedSkillAutomationPrompt({
+				messageId: pendingSkillDraft.messageId,
 				skillId: skill.id,
 				skillName: skill.name,
 				existingTags: skill.tags ?? pendingSkillDraft.tags,
@@ -2834,11 +2871,13 @@ export const FabricDirectChat = forwardRef<
 			});
 			setPendingSkillDraft(null);
 		} catch (error) {
+			setUnconfirmedSkillCreate(attempt);
 			toast.error("Failed to save Skill", {
 				description:
 					error instanceof Error ? error.message : "Unknown error",
 			});
 		} finally {
+			skillCreateInFlight.current = false;
 			setIsSavingSkillDraft(false);
 		}
 	};
@@ -2869,8 +2908,9 @@ export const FabricDirectChat = forwardRef<
 				organizationId: organizationId ?? null,
 				tags,
 			});
-			toast.success("Automation trigger saved", {
-				description: `Skill will run when a feature enters a column tagged "${columnTag}".`,
+			toast.success("Skill tag saved", {
+				description:
+					"Review, publish, and make the skill discoverable in Skills before automatic use.",
 			});
 			setSavedSkillAutomationPrompt(null);
 		} catch (error) {
@@ -3028,6 +3068,7 @@ export const FabricDirectChat = forwardRef<
 		isSavingProjectUpdateDraft,
 		isStartingImplementationSession,
 		isSavingSkillDraft,
+		unconfirmedSkillCreate,
 		isSavingAutomationTag,
 		workflowConfirmationDisabled,
 		activeFrame?.frameId,
@@ -3171,13 +3212,27 @@ export const FabricDirectChat = forwardRef<
 								? "Ask about your documents..."
 								: isWelcome
 									? composerFocused
-										? "Ask Advisor..."
+										? genieT("ask")
 										: typedPlaceholder
 									: repositoryUrl
 										? "Ask Fabric anything... Type / for skills or mention file.ts:42"
 										: "Ask Fabric anything... Type / for skills"
 						}
 						onAttachClick={() => fileInputRef.current?.click()}
+						additionalActions={
+							showToolPicker
+								? [
+										{
+											id: "tools",
+											label: genieT("chatTools"),
+											onSelect: () =>
+												setConversationToolPickerOpen(
+													true,
+												),
+										},
+									]
+								: []
+						}
 						attachTooltip="Attach documents or images"
 						enableImagePaste={true}
 						imageUploader={pastedImageUploader}
@@ -3306,22 +3361,6 @@ export const FabricDirectChat = forwardRef<
 												{formatCodeReference(ref)}
 											</Badge>
 										))}
-										{showToolPicker ? (
-											<Button
-												type="button"
-												variant="ghost"
-												size="sm"
-												className="h-6 gap-1.5 rounded-full border border-border/80 bg-muted/40 px-2.5 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-												onClick={() =>
-													setConversationToolPickerOpen(
-														true,
-													)
-												}
-											>
-												<Wrench className="h-3 w-3" />
-												Chat tools
-											</Button>
-										) : null}
 									</div>
 									{attachedCodeContext?.filePath ||
 									resolvedCodeReferencePreviews.length > 0 ? (
@@ -3554,6 +3593,20 @@ export const FabricDirectChat = forwardRef<
 	return (
 		<div className="flex h-full overflow-hidden">
 			<div className="flex min-w-0 flex-1 flex-col">
+				{unconfirmedSkillCreate && (
+					<div className="shrink-0 max-h-72 overflow-y-auto p-3">
+						<SkillCreationRecovery
+							key={`${unconfirmedSkillCreate.organizationId}:${unconfirmedSkillCreate.slug}`}
+							organizationId={
+								unconfirmedSkillCreate.organizationId
+							}
+							attempt={unconfirmedSkillCreate}
+							onReviewed={() =>
+								setUnconfirmedSkillCreate(undefined)
+							}
+						/>
+					</div>
+				)}
 				{/* Messages Area */}
 				{messages.length === 0 ? (
 					compactMode ? (
@@ -3753,97 +3806,9 @@ export const FabricDirectChat = forwardRef<
 														 */}
 														{message.toolCalls &&
 															message.toolCalls
-																.length > 0 &&
-															(showTrajectorySteps &&
-															trajectorySteps.length >
-																0 ? (
-																/* The trace above already names every step, so the cards fold
-		   into one line: count, failures, and a chevron to inspect. */
-																<Collapsible className="group/tools">
-																	<CollapsibleTrigger
-																		asChild
-																	>
-																		<button
-																			type="button"
-																			className="flex items-center gap-1.5 rounded-[4px] px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-																		>
-																			<Wrench className="size-3.5" />
-																			<span>
-																				{
-																					message
-																						.toolCalls
-																						.length
-																				}{" "}
-																				{message
-																					.toolCalls
-																					.length ===
-																				1
-																					? "tool call"
-																					: "tool calls"}
-																			</span>
-																			{message.toolCalls.some(
-																				(
-																					tc,
-																				) =>
-																					tc.status ===
-																					"error",
-																			) && (
-																				<span className="text-destructive">
-																					·{" "}
-																					{
-																						message.toolCalls.filter(
-																							(
-																								tc,
-																							) =>
-																								tc.status ===
-																								"error",
-																						)
-																							.length
-																					}{" "}
-																					failed
-																				</span>
-																			)}
-																			<ChevronDown className="size-3.5 transition-transform group-data-[state=open]/tools:rotate-180" />
-																		</button>
-																	</CollapsibleTrigger>
-																	<CollapsibleContent className="mt-2">
-																		<ToolCallList
-																			toolCalls={toToolCallItems(
-																				message.toolCalls,
-																				message.id,
-																				(
-																					tc,
-																					idx,
-																				): ToolCallItem => ({
-																					id: `${message.id}-${idx}`,
-																					name: tc.name,
-																					serverName:
-																						tc.serverName,
-																					args: tc.args,
-																					result: tc.result,
-																					status: tc.status,
-																				}),
-																			)}
-																			defaultOpen={
-																				false
-																			}
-																			expandable={
-																				false
-																			}
-																			getDisplayName={
-																				getOriginalToolName
-																			}
-																			activeFrameId={
-																				activeFrame?.frameId
-																			}
-																			onOpenFrame={
-																				rowActions.openFrame
-																			}
-																		/>
-																	</CollapsibleContent>
-																</Collapsible>
-															) : (
+																.length > 0 && (
 																<ToolCallList
+																	groupActivity
 																	toolCalls={toToolCallItems(
 																		message.toolCalls,
 																		message.id,
@@ -3876,7 +3841,7 @@ export const FabricDirectChat = forwardRef<
 																		rowActions.openFrame
 																	}
 																/>
-															))}
+															)}
 
 														{/* MCP App interactive UIs */}
 														{message.toolCalls
@@ -4061,6 +4026,7 @@ export const FabricDirectChat = forwardRef<
 												    bubble. */}
 														{message.content ? (
 															<Response
+																normalizeHeadings
 																streaming={
 																	message.isStreaming
 																}
@@ -4598,13 +4564,11 @@ export const FabricDirectChat = forwardRef<
 																		</div>
 																		<div>
 																			<p className="font-medium text-foreground">
-																				Scope
+																				Availability
 																			</p>
 																			<p className="text-muted-foreground">
-																				{pendingSkillDraft.scope ===
-																				"ORGANIZATION"
-																					? "Organization"
-																					: "Personal"}
+																				Private
+																				draft
 																			</p>
 																		</div>
 																	</div>
@@ -4651,7 +4615,8 @@ export const FabricDirectChat = forwardRef<
 																			}
 																			disabled={
 																				isLoading ||
-																				isSavingSkillDraft
+																				isSavingSkillDraft ||
+																				!!unconfirmedSkillCreate
 																			}
 																			className="bg-green-600 text-white hover:bg-green-700"
 																		>
@@ -4680,29 +4645,31 @@ export const FabricDirectChat = forwardRef<
 															</Confirmation>
 														)}
 
-														{savedSkillAutomationPrompt && (
+														{savedSkillAutomationPrompt?.messageId ===
+															message.id && (
 															<Confirmation
 																approvalState="requested"
 																className="mt-3"
 															>
 																<ConfirmationTitle>
 																	<ConfirmationIcon />
-																	Add triage
-																	automation
-																	trigger
+																	Add
+																	feature-column
+																	tag
 																</ConfirmationTitle>
 																<ConfirmationDescription>
-																	Fabric can
-																	tag this
-																	Skill so the
-																	existing
-																	column
-																	automation
-																	runs it when
-																	a feature
-																	enters a
-																	matching
-																	column.
+																	Save a
+																	column tag
+																	for this
+																	draft.
+																	Publish it
+																	and enable
+																	agent
+																	discovery in
+																	Skills
+																	before
+																	automatic
+																	use.
 																</ConfirmationDescription>
 																<div className="mt-3 rounded-lg border border-border/70 bg-background/70 p-3 text-xs">
 																	<p className="font-medium text-foreground">
@@ -4756,7 +4723,7 @@ export const FabricDirectChat = forwardRef<
 																		>
 																			<CheckCircle2 className="mr-2 h-4 w-4" />
 																			Save
-																			trigger
+																			tag
 																		</ConfirmationAction>
 																		<ConfirmationAction
 																			onClick={() =>
@@ -4916,6 +4883,11 @@ export const FabricDirectChat = forwardRef<
 													variant="ghost"
 													size="sm"
 													onClick={handleSaveAsSkill}
+													aria-label="Save conversation as skill"
+													disabled={
+														isSavingSkillDraft ||
+														!!unconfirmedSkillCreate
+													}
 													className="h-8 w-8 p-0"
 												>
 													<BookmarkIcon className="h-4 w-4" />

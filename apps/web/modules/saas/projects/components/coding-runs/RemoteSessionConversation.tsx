@@ -11,7 +11,101 @@ import {
 } from "@ui/components/tooltip";
 import { ExternalLinkIcon, HelpCircleIcon, MonitorIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const MULTI_PART_PUBLIC_SUFFIXES = new Set([
+	"co.uk",
+	"org.uk",
+	"gov.uk",
+	"ac.uk",
+	"com.au",
+	"net.au",
+	"org.au",
+	"co.jp",
+	"co.nz",
+	"com.br",
+	"co.in",
+]);
+
+function normalizeHost(hostname?: string): string | null {
+	if (!hostname) {
+		return null;
+	}
+	const trimmed = hostname.trim().toLowerCase().replace(/\.$/, "");
+	if (!trimmed) {
+		return null;
+	}
+	return trimmed === "::1" ? "[::1]" : trimmed;
+}
+
+function isIpLiteral(host: string): boolean {
+	return host.startsWith("[") || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+}
+
+function registrableSiteKey(host: string): string {
+	if (LOOPBACK_HOSTS.has(host) || isIpLiteral(host)) {
+		return host;
+	}
+	const labels = host.split(".").filter(Boolean);
+	if (labels.length <= 2) {
+		return host;
+	}
+	const lastTwo = labels.slice(-2).join(".");
+	if (MULTI_PART_PUBLIC_SUFFIXES.has(lastTwo) && labels.length >= 3) {
+		return labels.slice(-3).join(".");
+	}
+	return lastTwo;
+}
+
+export function isCrossSiteWebUiUrl(
+	targetUrl: string,
+	portalLocation?: string,
+): boolean {
+	if (!portalLocation) {
+		return false;
+	}
+	let targetParsed: URL;
+	try {
+		targetParsed = new URL(targetUrl);
+	} catch {
+		return false;
+	}
+	if (
+		targetParsed.protocol !== "http:" &&
+		targetParsed.protocol !== "https:"
+	) {
+		return false;
+	}
+	const targetHost = normalizeHost(targetParsed.hostname);
+	if (!targetHost) {
+		return false;
+	}
+
+	let portalHost: string | null = null;
+	let portalProtocol: string | null = null;
+	if (/^https?:\/\//i.test(portalLocation.trim())) {
+		try {
+			const parsedPortal = new URL(portalLocation.trim());
+			portalHost = normalizeHost(parsedPortal.hostname);
+			portalProtocol = parsedPortal.protocol;
+		} catch {
+			return false;
+		}
+	} else {
+		portalHost = normalizeHost(portalLocation);
+	}
+	if (!portalHost) {
+		return false;
+	}
+	if (portalProtocol && targetParsed.protocol !== portalProtocol) {
+		return true;
+	}
+	if (targetHost === portalHost) {
+		return false;
+	}
+	return registrableSiteKey(targetHost) !== registrableSiteKey(portalHost);
+}
 
 export function RemoteSessionConversation({
 	codingRunId,
@@ -26,6 +120,12 @@ export function RemoteSessionConversation({
 }) {
 	const t = useTranslations("projects.remoteAgents");
 	const [embedWebUi, setEmbedWebUi] = useState(false);
+	const [portalOrigin, setPortalOrigin] = useState<string | undefined>(
+		undefined,
+	);
+	useEffect(() => {
+		setPortalOrigin(window.location.origin);
+	}, []);
 	const query = useQuery({
 		queryKey: ["remoteSessionMessages", codingRunId, organizationId],
 		gcTime: 0,
@@ -35,6 +135,9 @@ export function RemoteSessionConversation({
 		retry: false,
 	});
 	const liveWebUrl = query.data?.webUrl || fallbackWebUrl || null;
+	const crossSiteWebUi = liveWebUrl
+		? isCrossSiteWebUiUrl(liveWebUrl, portalOrigin)
+		: false;
 	return (
 		<section
 			className="space-y-3 border-t border-border pt-4"
@@ -112,6 +215,32 @@ export function RemoteSessionConversation({
 							{liveWebUrl}
 						</span>
 					</div>
+					{crossSiteWebUi && (
+						<p
+							data-testid="cross-site-webui-cookie-note"
+							className="border-b border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+						>
+							This server runs on a different site from the
+							Portal, so browsers block its{" "}
+							<code className="font-mono text-foreground">
+								SameSite=Strict
+							</code>{" "}
+							session cookie inside an embedded frame. If it stays
+							on the sign-in screen, use{" "}
+							<strong className="font-medium text-foreground">
+								{t("openBrowser")}
+							</strong>{" "}
+							or connect using a matching hostname (for example{" "}
+							<code className="font-mono text-foreground">
+								localhost
+							</code>{" "}
+							vs{" "}
+							<code className="font-mono text-foreground">
+								127.0.0.1
+							</code>
+							).
+						</p>
+					)}
 					<iframe
 						src={liveWebUrl}
 						title="Fabric Agents Remote Server Web UI"

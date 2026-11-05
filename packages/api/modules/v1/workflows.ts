@@ -29,6 +29,9 @@ import {
 	startReservedExecution,
 } from "../workflows/lib/start-reserved-execution";
 import { badRequest, notFound, ok, resolveV1Context } from "./helpers";
+import { registerWorkflowAuthoringRoutes } from "./workflow-authoring";
+import { registerWorkflowLifecycleRoutes } from "./workflow-lifecycle";
+import { registerWorkflowResultCheckRoutes } from "./workflow-result-checks";
 
 const TERMINAL_EXECUTION_STATUSES = new Set([
 	"COMPLETED",
@@ -49,6 +52,9 @@ const EXECUTION_STATUS_VALUES = new Set([
 export function registerWorkflowRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
 ) {
+	registerWorkflowAuthoringRoutes(app);
+	registerWorkflowLifecycleRoutes(app);
+	registerWorkflowResultCheckRoutes(app);
 	// List workflows
 	app.get("/workflows", requireScope("workflows:read"), async (c) => {
 		const apiCtx = c.get("externalApiContext");
@@ -169,8 +175,8 @@ export function registerWorkflowRoutes(
 				organizationId: ctx.organizationId ?? null,
 				data: {
 					workflowId: workflow.id,
-					version: workflow.version,
-					triggerType: "MANUAL",
+					version: workflow.publishedVersion ?? workflow.version,
+					triggerType: "EVENT",
 					triggerInput: body.triggerInput ?? {},
 				},
 			});

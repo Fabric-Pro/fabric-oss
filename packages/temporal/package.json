@@ -7,8 +7,13 @@
 	"types": "./**/*.ts",
 	"exports": {
 		".": "./index.ts",
+		"./direct-approval-policy": "./src/lib/direct-approval-policy.ts",
 		"./ai-configuration-refusal": "./src/lib/ai-configuration-refusal.ts",
 		"./client": "./src/client.ts",
+		"./agent-test-access": "./src/lib/agent-test-access.ts",
+		"./agent-test-contracts": "./src/lib/agent-test-contracts.ts",
+		"./agent-preview-contracts": "./src/lib/agent-preview-contracts.ts",
+		"./agent-preview-access": "./src/lib/agent-preview-access.ts",
 		"./agent-execution-dispatch": "./src/lib/agent-execution-dispatch.ts",
 		"./activities": "./src/activities/index.ts",
 		"./activities/publishing-suggestion": "./src/activities/publishing-suggestion/index.ts",
@@ -39,6 +44,7 @@
 		"./test-case-context-sync": "./src/lib/test-case-context-sync.ts",
 		"./test-case-context": "./src/lib/test-case-context-content.ts",
 		"./frame-service": "./src/activities/shared/frame-service.ts",
+ "./frame-export-contract": "./src/lib/frame-export-contract.ts",
 		"./project-pm-input": "./src/lib/project-pm-input.ts",
 		"./project-pm-service": "./src/activities/shared/project-pm-service.ts",
 		"./project-pm-snapshot-result": "./src/activities/shared/project-pm-snapshot-result.ts",
@@ -77,7 +83,9 @@
 		"./repository-sync-subjects": "./src/activities/lib/repository-sync-subjects.ts",
 		"./report-diagnostics": "./src/activities/template-instance/mcp-diagnostics.ts",
 		"./approval-rollout": "./src/lib/approval-rollout.ts",
-		"./coding-execution-rollout": "./src/lib/coding-execution/bridge-rollout.ts"
+		"./coding-execution-rollout": "./src/lib/coding-execution/bridge-rollout.ts",
+		"./task-queues": "./src/task-queues.ts",
+		"./node-config-validator": "./src/activities/lib/node-config-validator.ts"
 	},
 	"scripts": {
 		"dev": "tsx src/worker.ts",
@@ -121,6 +129,7 @@
 		"@repo/config": "workspace:*",
 		"@repo/connectors": "workspace:*",
 		"@repo/database": "workspace:*",
+		"@repo/databricks": "workspace:*",
 		"@repo/evidence": "workspace:*",
 		"@repo/fabric-ai": "workspace:*",
 		"@repo/instructions": "workspace:*",

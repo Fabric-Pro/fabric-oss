@@ -8,8 +8,17 @@ import { wrapLanguageModel } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { beforeEach, expect, it, vi } from "vitest";
 
-const h = vi.hoisted(() => ({ rows: vi.fn() }));
-vi.mock("@repo/database", () => ({ logAiUsageAsync: h.rows }));
+const h = vi.hoisted(() => ({
+	rows: vi.fn(),
+	access: vi.fn(),
+	execution: vi.fn(),
+	generate: vi.fn(),
+}));
+vi.mock("@repo/database", () => ({
+	logAiUsageAsync: h.rows,
+	canExecuteReportInstance: h.access,
+	getTemplateInstanceExecution: h.execution,
+}));
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -46,49 +55,58 @@ vi.mock("@repo/ai", async () => ({
 	getAIModelWithMetadata: async (
 		_options: unknown,
 		context: Record<string, unknown>,
-	) => ({
-		model: wrapLanguageModel({
-			model: new MockLanguageModelV4({
-				doStream: async () => ({
-					stream: simulateReadableStream({
-						chunks: [
-							{ type: "text-start", id: "example" },
-							{
-								type: "text-delta",
-								id: "example",
-								delta: "Example report",
-							},
-							{ type: "text-end", id: "example" },
-							{
-								type: "finish",
-								finishReason: { unified: "stop", raw: "stop" },
-								usage: {
-									inputTokens: {
-										total: 2,
-										noCache: 2,
-										cacheRead: 0,
-										cacheWrite: 0,
+	) => {
+		h.generate();
+		return {
+			model: wrapLanguageModel({
+				model: new MockLanguageModelV4({
+					doStream: async () => ({
+						stream: simulateReadableStream({
+							chunks: [
+								{ type: "text-start", id: "example" },
+								{
+									type: "text-delta",
+									id: "example",
+									delta: "Example report",
+								},
+								{ type: "text-end", id: "example" },
+								{
+									type: "finish",
+									finishReason: {
+										unified: "stop",
+										raw: "stop",
 									},
-									outputTokens: {
-										total: 1,
-										text: 1,
-										reasoning: 0,
+									usage: {
+										inputTokens: {
+											total: 2,
+											noCache: 2,
+											cacheRead: 0,
+											cacheWrite: 0,
+										},
+										outputTokens: {
+											total: 1,
+											text: 1,
+											reasoning: 0,
+										},
 									},
 								},
-							},
-						],
+							],
+						}),
 					}),
 				}),
+				middleware: createUsageLoggingMiddleware({
+					...context,
+					provider: "VERCEL_GATEWAY",
+					providerModelId: "example-analysis",
+				}),
 			}),
-			middleware: createUsageLoggingMiddleware({
-				...context,
+			metadata: {
 				provider: "VERCEL_GATEWAY",
-				providerModelId: "example-analysis",
-			}),
-		}),
-		metadata: { provider: "VERCEL_GATEWAY", modelString: "example-model" },
-		trackUsage: vi.fn(),
-	}),
+				modelString: "example-model",
+			},
+			trackUsage: vi.fn(),
+		};
+	},
 }));
 vi.mock("@repo/rag/lib/vector-store/client", () => ({
 	DISTANCE_METRIC: "Cosine",
@@ -103,7 +121,16 @@ vi.mock("@repo/rag/lib/vector-store/client", () => ({
 
 import { executeAiAnalysis } from "../data-fetching";
 
-beforeEach(() => h.rows.mockClear());
+beforeEach(() => {
+	vi.clearAllMocks();
+	h.access.mockResolvedValue(true);
+	h.execution.mockResolvedValue({
+		userId: "example-user",
+		status: "RUNNING",
+		instance: {},
+		parameters: {},
+	});
+});
 it.each([false, true])(
 	"report analysis records report-generation with RAG=%s",
 	async (rag) => {
@@ -161,4 +188,55 @@ it("report data indexing records report-generation", async () => {
 	expect(h.rows.mock.calls.map(([row]) => row.featureKey)).toEqual([
 		"report-generation",
 	]);
+});
+
+it("does not invoke a model when an admitted report skill or current actor access is revoked", async () => {
+	h.access.mockResolvedValue(false);
+	await expect(
+		new MockActivityEnvironment().run(() =>
+			executeAiAnalysis({
+				reportingProtocol: 1,
+				executionId: "example-execution",
+				skillsContent: "Example instructions",
+				aiAgents: [{ agentId: "default", task: "Summarize" }],
+				dataResults: [],
+				userId: "example-user",
+				organizationId: "example-org",
+			}),
+		),
+	).rejects.toThrow("access was revoked");
+	expect(h.generate).not.toHaveBeenCalled();
+});
+it("withholds the activity result if skill authority changes after generation", async () => {
+	h.access
+		.mockResolvedValue(false)
+		.mockResolvedValueOnce(true)
+		.mockResolvedValueOnce(true)
+		.mockResolvedValueOnce(true);
+	await expect(
+		new MockActivityEnvironment().run(() =>
+			executeAiAnalysis({
+				reportingProtocol: 1,
+				executionId: "example-execution",
+				skillsContent: "Example instructions",
+				aiAgents: [{ agentId: "default", task: "Summarize" }],
+				dataResults: [],
+				userId: "example-user",
+				organizationId: "example-org",
+			}),
+		),
+	).rejects.toThrow("access was revoked");
+	expect(h.generate).toHaveBeenCalledTimes(1);
+});
+it("does not infer source authority for queued legacy analysis with copied skill text", async () => {
+	await expect(
+		executeAiAnalysis({
+			skillsContent: "Legacy instructions",
+			aiAgents: [{ agentId: "default", task: "Summarize" }],
+			dataResults: [],
+			userId: "example-user",
+			organizationId: "example-org",
+		}),
+	).rejects.toThrow("Start a new report run");
+	expect(h.generate).not.toHaveBeenCalled();
 });

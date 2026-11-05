@@ -135,6 +135,23 @@ beforeEach(() => {
 });
 
 describe("/api/agents/runtime", () => {
+	it("reports accurate named engine capabilities from /info before the first run", async () => {
+		const response = await GET(new Request(`${BASE}/info`));
+		expect(response.status).toBe(200);
+		const info = await response.json();
+		expect(info.agents["fabric-direct"].capabilities).toMatchObject({
+			transport: { streaming: true, resumable: true },
+			humanInTheLoop: {
+				supported: false,
+				approvals: false,
+				interrupts: false,
+			},
+		});
+		expect(
+			info.agents["fabric-orchestrator"].capabilities.humanInTheLoop,
+		).toEqual({ supported: true, approvals: true, interrupts: true });
+	});
+
 	it("answers 401 without a session and builds no runtime", async () => {
 		m.getSession.mockResolvedValue(null);
 

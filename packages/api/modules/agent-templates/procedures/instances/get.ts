@@ -4,6 +4,7 @@ import {
 	getActiveInstanceVersion,
 	getInstanceVersion,
 	getInstanceVersionHistory,
+	memorySourceBoundary,
 } from "@repo/database";
 import { z } from "zod";
 import {
@@ -58,15 +59,6 @@ export const getInstanceProcedure = tenantProtectedProcedure
 							},
 						},
 					},
-					memoryFiles: {
-						where: { fileType: "SKILL", isEnabled: true },
-						select: {
-							id: true,
-							path: true,
-							content: true,
-							sourceSkillId: true,
-						},
-					},
 				},
 			});
 		} else if (input.sId) {
@@ -88,7 +80,26 @@ export const getInstanceProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Instance not found" });
 		}
 
-		return { instance };
+		const boundary = await memorySourceBoundary(
+			{ userId: context.user.id, organizationId },
+			{
+				agentInstanceId: instance.id,
+				organizationId,
+				fileType: "SKILL",
+				isEnabled: true,
+			},
+		);
+		const memoryFiles = await db.agentMemoryFile.findMany({
+			where: boundary.where,
+			select: {
+				id: true,
+				path: true,
+				content: true,
+				sourceSkillId: true,
+			},
+		});
+		await boundary.revalidate();
+		return { instance: { ...instance, memoryFiles } };
 	});
 
 // Version history endpoint

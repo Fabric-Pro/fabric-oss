@@ -28,7 +28,7 @@ export interface AgentToolRuntime {
 	prepared?: (
 		tools: Record<string, unknown>,
 		sources: Record<string, AgentToolSource>,
-	) => Promise<string>;
+	) => Promise<string | undefined>;
 	/**
 	 * The run answers the person while it works (a voice meeting), so a tool
 	 * that drafts a work item with a model creates it at once and leaves the

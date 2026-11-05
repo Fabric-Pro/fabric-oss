@@ -6,15 +6,21 @@
  * without hitting Postgres or S3.
  */
 
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock @repo/database BEFORE loader import
+const mockMemberFindFirst = vi.fn();
 const mockSkillFindMany = vi.fn();
 const mockSkillFindFirst = vi.fn();
 const mockSkillFileFindFirst = vi.fn();
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	...(await import("@repo/permissions")),
+	skillVisibilityWhere: (await import("../../database/prisma/queries/skills"))
+		.skillVisibilityWhere,
 	db: {
+		member: { findFirst: mockMemberFindFirst },
 		skill: {
 			findMany: mockSkillFindMany,
 			findFirst: mockSkillFindFirst,
@@ -89,7 +95,20 @@ function mockedSkill(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 beforeEach(() => {
-	vi.clearAllMocks();
+	vi.resetAllMocks();
+	mockMemberFindFirst.mockResolvedValue({ role: "member" });
+	mockSkillFindFirst.mockResolvedValue(mockedSkill());
+	mockSkillFindMany.mockResolvedValue([mockedSkill()]);
+	mockSkillFileFindFirst.mockResolvedValue({
+		id: "example-file",
+		version: 1,
+		sha256: hash("old"),
+		sizeBytes: 3,
+		path: "rubric.md",
+		contentType: "text/markdown",
+		storageKey: "skills/example/rubric.md",
+		skill: { version: 1 },
+	});
 	invalidateSkillCache();
 });
 
@@ -108,280 +127,249 @@ describe("stripFrontmatter", () => {
 	});
 });
 
-describe("listAvailableSkills", () => {
-	it("scopes query to SYSTEM for anonymous context", async () => {
-		mockSkillFindMany.mockResolvedValueOnce([mockedSkill()]);
-		const result = await listAvailableSkills({});
+const context = { userId: "example-member", organizationId: "example-org" };
+function hash(value: string | Buffer) {
+	return createHash("sha256").update(value).digest("hex");
+}
+function file(data: string | Buffer = "old", contentType = "text/markdown") {
+	return {
+		id: "example-file",
+		version: 1,
+		sha256: hash(data),
+		sizeBytes: Buffer.byteLength(data),
+		path: "rubric.md",
+		contentType,
+		storageKey: "skills/example/rubric.md",
+		skill: { version: 1 },
+	};
+}
 
-		expect(mockSkillFindMany).toHaveBeenCalledTimes(1);
-		const whereArg = mockSkillFindMany.mock.calls[0][0].where;
-		expect(whereArg.isPublished).toBe(true);
-		expect(whereArg.OR).toHaveLength(1);
-		expect(whereArg.OR[0]).toEqual({
-			scope: "SYSTEM",
-			userId: null,
-			organizationId: null,
-		});
-
-		expect(result).toHaveLength(1);
+describe("governed skill runtime", () => {
+	it("requires an organization and current member before any catalog query", async () => {
+		await expect(listAvailableSkills({})).rejects.toThrow(
+			"current organization",
+		);
+		await expect(
+			listAvailableSkills({ userId: "example-user" }),
+		).rejects.toThrow("current organization");
+		mockMemberFindFirst.mockResolvedValue(null);
+		await expect(listAvailableSkills(context)).rejects.toThrow(
+			"access is unavailable",
+		);
+		expect(mockSkillFindMany).not.toHaveBeenCalled();
+	});
+	it("discovers published builtins and discoverable organization skills, including creator-owned skills", async () => {
+		mockSkillFindMany.mockResolvedValue([mockedSkill()]);
+		const result = await listAvailableSkills(context);
 		expect(result[0].slug).toBe("architecture-diagram");
-		expect(result[0].files).toHaveLength(1);
-	});
-
-	it("org context admits SYSTEM + ORG only, never USER (strict XOR)", async () => {
-		mockSkillFindMany.mockResolvedValueOnce([]);
-		await listAvailableSkills({ userId: "u1", organizationId: "o1" });
-
-		const whereArg = mockSkillFindMany.mock.calls[0][0].where;
-		expect(whereArg.OR).toHaveLength(2);
-		expect(whereArg.OR).toContainEqual({
-			scope: "SYSTEM",
-			userId: null,
-			organizationId: null,
+		expect(mockSkillFindMany.mock.calls[0][0].where).toEqual({
+			isPublished: true,
+			archivedAt: null,
+			OR: [
+				{ scope: "SYSTEM", userId: null, organizationId: null },
+				{
+					scope: "ORGANIZATION",
+					organizationId: "example-org",
+					isDiscoverable: true,
+				},
+			],
 		});
-		expect(whereArg.OR).toContainEqual({
+	});
+	it("does not cache catalog membership, publication or discovery", async () => {
+		mockSkillFindMany
+			.mockResolvedValueOnce([mockedSkill()])
+			.mockResolvedValueOnce([]);
+		expect(await listAvailableSkills(context)).toHaveLength(1);
+		expect(await listAvailableSkills(context)).toHaveLength(0);
+		expect(mockSkillFindMany).toHaveBeenCalledTimes(2);
+	});
+	it("withholds an answer if membership is removed during catalog read", async () => {
+		mockSkillFindMany.mockResolvedValue([mockedSkill()]);
+		mockMemberFindFirst
+			.mockResolvedValueOnce({ role: "member" })
+			.mockResolvedValueOnce(null);
+		await expect(listAvailableSkills(context)).rejects.toThrow(
+			"access is unavailable",
+		);
+	});
+	it("loads explicit members-only skills without granting automatic discovery", async () => {
+		const bundle = await loadSkillBundle("architecture-diagram", context);
+		expect(bundle.skillMd).not.toContain("---");
+		expect(bundle.files[0].path).toBe("assets/template.html");
+		expect(mockSkillFindFirst.mock.calls[0][0].where.OR).toContainEqual({
 			scope: "ORGANIZATION",
-			organizationId: "o1",
-			userId: null,
-		});
-		// USER-scoped skills must NOT appear in org context — they'd leak
-		// personal skills across org members via the org-keyed cache.
-		expect(
-			(whereArg.OR as Array<Record<string, unknown>>).some(
-				(c) => c.scope === "USER",
-			),
-		).toBe(false);
-	});
-
-	it("personal context admits SYSTEM + USER only, never ORG", async () => {
-		mockSkillFindMany.mockResolvedValueOnce([]);
-		await listAvailableSkills({ userId: "u1" });
-
-		const whereArg = mockSkillFindMany.mock.calls[0][0].where;
-		expect(whereArg.OR).toHaveLength(2);
-		expect(whereArg.OR).toContainEqual({
-			scope: "USER",
-			userId: "u1",
-			organizationId: null,
+			organizationId: "example-org",
+			archivedAt: null,
+			OR: [
+				{ userId: "example-member" },
+				{ isPublished: true, archivedAt: null },
+			],
 		});
 	});
-
-	it("caches subsequent calls within TTL", async () => {
-		mockSkillFindMany.mockResolvedValueOnce([mockedSkill()]);
-		await listAvailableSkills({ userId: "u1" });
-		await listAvailableSkills({ userId: "u1" });
-
-		expect(mockSkillFindMany).toHaveBeenCalledTimes(1);
-	});
-});
-
-describe("loadSkillBundle", () => {
-	it("rechecks publication/visibility for fresh reads even after a bundle was cached", async () => {
-		const context = { userId: "user-1", organizationId: "org-1" };
+	it("rechecks publication and the pinned revision after loading instructions", async () => {
 		mockSkillFindFirst
 			.mockResolvedValueOnce(mockedSkill())
 			.mockResolvedValueOnce(null);
-		await loadSkillBundle("architecture-diagram", context);
 		await expect(
-			loadSkillBundle("architecture-diagram", context, { fresh: true }),
-		).rejects.toThrow("not found");
-		expect(mockSkillFindFirst).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				where: expect.objectContaining({
-					isPublished: true,
-					slug: "architecture-diagram",
-					OR: [
-						{ scope: "SYSTEM", userId: null, organizationId: null },
-						{
-							scope: "ORGANIZATION",
-							userId: null,
-							organizationId: "org-1",
-						},
-					],
-				}),
-			}),
-		);
+			loadSkillBundle("architecture-diagram", context),
+		).rejects.toThrow("access or its saved revision changed");
 	});
-	it("returns SKILL.md with frontmatter stripped + manifest", async () => {
-		mockSkillFindFirst.mockResolvedValueOnce(mockedSkill());
-		const bundle = await loadSkillBundle("architecture-diagram", {});
-
-		expect(bundle.skillMd).not.toContain("---");
-		expect(
-			bundle.skillMd.trim().startsWith("# Architecture Diagram Skill"),
-		).toBe(true);
-		expect(bundle.files[0].path).toBe("assets/template.html");
-	});
-
-	it("throws when skill is out of scope", async () => {
+	it("does not return cached instructions after unpublication", async () => {
+		await loadSkillBundle("architecture-diagram", context);
 		mockSkillFindFirst.mockResolvedValueOnce(null);
-		await expect(loadSkillBundle("ghost", {})).rejects.toThrow(
-			/not found or not accessible/,
-		);
+		await expect(
+			loadSkillBundle("architecture-diagram", context),
+		).rejects.toThrow("not found");
 	});
-});
-
-describe("readSkillFile", () => {
-	it("fresh version-aware file reads cannot reuse cached bytes after unpublication or version change", async () => {
-		const context = { userId: "user-1", organizationId: "org-1" };
-		mockSkillFileFindFirst.mockResolvedValueOnce({
-			path: "rubric.md",
-			contentType: "text/markdown",
-			sizeBytes: 3,
-			storageKey: "skills/example/rubric.md",
+	it("enforces expected revision at instruction lookup", async () => {
+		await loadSkillBundle("architecture-diagram", context, {
+			expectedVersion: 3,
 		});
-		mockDownloadFile.mockResolvedValueOnce({
+		expect(mockSkillFindFirst.mock.calls[0][0].where.version).toBe(3);
+	});
+	it("returns UTF-8 text and verifies saved byte size and checksum", async () => {
+		const data = "<html></html>";
+		mockSkillFileFindFirst.mockResolvedValue(file(data, "text/html"));
+		mockDownloadFile.mockResolvedValue({
+			data: Buffer.from(data),
+			contentType: "text/html",
+		});
+		const result = await readSkillFile("example", "rubric.md", context);
+		expect(result.encoding).toBe("utf-8");
+		expect(result.data).toBe(data);
+	});
+	it("returns base64 for binary content", async () => {
+		const data = Buffer.from([0x89, 0x50, 0x4e]);
+		mockSkillFileFindFirst.mockResolvedValue(file(data, "image/png"));
+		mockDownloadFile.mockResolvedValue({ data, contentType: "image/png" });
+		const result = await readSkillFile("example", "rubric.md", context);
+		expect(result.encoding).toBe("base64");
+		expect(result.data).toBe(data.toString("base64"));
+	});
+	it("rejects corrupted storage bytes", async () => {
+		mockDownloadFile.mockResolvedValue({
+			data: Buffer.from("new"),
+			contentType: "text/markdown",
+		});
+		await expect(
+			readSkillFile("example", "rubric.md", context),
+		).rejects.toThrow("does not match");
+	});
+	it("rejects oversized files before S3 is read", async () => {
+		mockSkillFileFindFirst.mockResolvedValue({
+			...file(),
+			sizeBytes: MAX_SKILL_FILE_READ_BYTES + 1,
+		});
+		await expect(
+			readSkillFile("example", "rubric.md", context),
+		).rejects.toThrow("exceeds per-call limit");
+		expect(mockDownloadFile).not.toHaveBeenCalled();
+	});
+	it("rechecks parent publication after storage read and before returning bytes", async () => {
+		mockSkillFileFindFirst
+			.mockResolvedValueOnce(file())
+			.mockResolvedValueOnce(null);
+		mockDownloadFile.mockResolvedValue({
+			data: Buffer.from("old"),
+			contentType: "text/markdown",
+		});
+		await expect(
+			readSkillFile("example", "rubric.md", context),
+		).rejects.toThrow("access or its file revision changed");
+	});
+	it("rechecks source and current member even on byte-cache hits", async () => {
+		mockDownloadFile.mockResolvedValue({
 			data: Buffer.from("old"),
 			contentType: "text/markdown",
 		});
 		await readSkillFile("example", "rubric.md", context);
-		mockSkillFileFindFirst.mockResolvedValueOnce(null);
+		mockSkillFileFindFirst
+			.mockResolvedValueOnce(file())
+			.mockResolvedValueOnce(null);
 		await expect(
-			readSkillFile("example", "rubric.md", context, {
-				fresh: true,
-				expectedVersion: 1,
-			}),
-		).rejects.toThrow("not found");
-		expect(mockSkillFileFindFirst).toHaveBeenLastCalledWith({
-			where: {
-				path: "rubric.md",
-				skill: {
-					slug: "example",
-					version: 1,
-					isPublished: true,
-					OR: [
-						{ scope: "SYSTEM", userId: null, organizationId: null },
-						{
-							scope: "ORGANIZATION",
-							userId: null,
-							organizationId: "org-1",
-						},
-					],
-				},
-			},
-		});
+			readSkillFile("example", "rubric.md", context),
+		).rejects.toThrow("access or its file revision changed");
 		expect(mockDownloadFile).toHaveBeenCalledTimes(1);
 	});
-	it("returns utf-8 text for text content types", async () => {
-		mockSkillFileFindFirst.mockResolvedValueOnce({
-			id: "file_1",
-			skillId: "skill_1",
-			path: "assets/template.html",
-			contentType: "text/html; charset=utf-8",
-			storageKey: "skills/skill_1/file_1/template.html",
-			sizeBytes: 20,
-			sha256: "abc",
-			version: 1,
+	it("enforces expected saved skill revision on file lookup", async () => {
+		mockDownloadFile.mockResolvedValue({
+			data: Buffer.from("old"),
+			contentType: "text/markdown",
 		});
-		mockDownloadFile.mockResolvedValueOnce({
-			data: Buffer.from("<html></html>"),
-			contentType: "text/html",
-			size: 13,
+		await readSkillFile("example", "rubric.md", context, {
+			expectedVersion: 1,
 		});
-
-		const out = await readSkillFile(
-			"architecture-diagram",
-			"assets/template.html",
-			{},
-		);
-		expect(out.encoding).toBe("utf-8");
-		expect(out.data).toBe("<html></html>");
+		expect(
+			mockSkillFileFindFirst.mock.calls[0][0].where.skill,
+		).toMatchObject({ version: 1 });
 	});
-
-	it("base64-encodes non-text content", async () => {
-		mockSkillFileFindFirst.mockResolvedValueOnce({
-			id: "file_1",
-			skillId: "skill_1",
-			path: "assets/logo.png",
-			contentType: "image/png",
-			storageKey: "skills/skill_1/file_1/logo.png",
-			sizeBytes: 3,
-			sha256: "abc",
-			version: 1,
-		});
-		mockDownloadFile.mockResolvedValueOnce({
-			data: Buffer.from([0x89, 0x50, 0x4e]),
-			contentType: "image/png",
-			size: 3,
-		});
-
-		const out = await readSkillFile(
-			"architecture-diagram",
-			"assets/logo.png",
-			{},
-		);
-		expect(out.encoding).toBe("base64");
-		expect(out.data).toBe(
-			Buffer.from([0x89, 0x50, 0x4e]).toString("base64"),
-		);
-	});
-
-	it("rejects files larger than MAX_SKILL_FILE_READ_BYTES", async () => {
-		mockSkillFileFindFirst.mockResolvedValueOnce({
-			id: "file_1",
-			skillId: "skill_1",
-			path: "assets/huge.bin",
-			contentType: "application/octet-stream",
-			storageKey: "skills/skill_1/file_1/huge.bin",
-			sizeBytes: MAX_SKILL_FILE_READ_BYTES + 1,
-			sha256: "abc",
-			version: 1,
-		});
-
-		await expect(
-			readSkillFile("architecture-diagram", "assets/huge.bin", {}),
-		).rejects.toThrow(/exceeds per-call limit/);
-	});
-});
-
-describe("fresh published skill selector pages", () => {
-	it("uses the canonical tenant filter and bounded metadata-only queries without summary-cache reuse", async () => {
-		const context = { userId: "user-1", organizationId: "org-1" };
-		mockSkillFindMany.mockResolvedValueOnce([mockedSkill()]);
-		await listAvailableSkills(context);
-		const files = Array.from({ length: 101 }, (_, index) => ({
-			path: `file-${index}.md`,
+	it("returns bounded metadata-only pages and accurate file manifest truncation", async () => {
+		const files = Array.from({ length: 101 }, (_, n) => ({
+			path: `file-${n}.md`,
 			contentType: "text/markdown",
 			sizeBytes: 2,
 		}));
-		mockSkillFindMany.mockResolvedValueOnce([
-			{ slug: "example-skill", name: "Example Skill", version: 2, files },
-			{ slug: "next-skill", name: "Next Skill", version: 1, files: [] },
+		mockSkillFindMany.mockResolvedValue([
+			{ slug: "example", name: "Example", version: 1, files },
+			{ slug: "next", name: "Next", version: 1, files: [] },
 		]);
-		const page = await listAvailableSkillPage(context, {
+		const result = await listAvailableSkillPage(context, {
 			offset: 2,
 			limit: 1,
 		});
-		expect(page.hasMore).toBe(true);
-		expect(page.skills).toHaveLength(1);
-		expect(page.skills[0].files).toHaveLength(100);
-		expect(page.skills[0].fileManifestComplete).toBe(false);
-		expect(mockSkillFindMany).toHaveBeenLastCalledWith({
+		expect(result.hasMore).toBe(true);
+		expect(result.skills).toHaveLength(1);
+		expect(result.skills[0].files).toHaveLength(100);
+		expect(result.skills[0].fileManifestComplete).toBe(false);
+		expect(mockSkillFindMany.mock.calls[0][0]).toMatchObject({
+			skip: 2,
+			take: 2,
+			select: { slug: true, name: true, version: true },
 			where: {
 				isPublished: true,
+				archivedAt: null,
 				OR: [
 					{ scope: "SYSTEM", userId: null, organizationId: null },
 					{
 						scope: "ORGANIZATION",
-						organizationId: "org-1",
-						userId: null,
+						organizationId: "example-org",
+						isDiscoverable: true,
 					},
 				],
 			},
-			select: {
-				slug: true,
-				name: true,
-				version: true,
-				files: {
-					select: { path: true, contentType: true, sizeBytes: true },
-					orderBy: { path: "asc" },
-					take: 101,
-				},
-			},
-			orderBy: { slug: "asc" },
-			skip: 2,
-			take: 2,
 		});
+		expect(
+			mockSkillFindMany.mock.calls[0][0].select.content,
+		).toBeUndefined();
+	});
+});
+
+describe("runtime aliases never substitute readable skill bodies", () => {
+	it("rejects a discoverable/builtin and members-only duplicate before instructions or files are read", async () => {
+		mockSkillFindMany.mockResolvedValue([
+			{ id: "example-builtin", version: 1 },
+			{ id: "example-members", version: 1 },
+		]);
+		await expect(loadSkillBundle("example", context)).rejects.toThrow(
+			"ambiguous",
+		);
+		await expect(
+			readSkillFile("example", "rubric.md", context),
+		).rejects.toThrow("ambiguous");
+		expect(mockSkillFindFirst).not.toHaveBeenCalled();
+		expect(mockSkillFileFindFirst).not.toHaveBeenCalled();
+		expect(mockDownloadFile).not.toHaveBeenCalled();
+	});
+	it("withholds a body if its alias becomes ambiguous during the read", async () => {
+		mockSkillFindMany
+			.mockResolvedValueOnce([{ id: "skill_1", version: 1 }])
+			.mockResolvedValueOnce([
+				{ id: "skill_1", version: 1 },
+				{ id: "example-shadow", version: 1 },
+			]);
+		await expect(
+			loadSkillBundle("architecture-diagram", context),
+		).rejects.toThrow("ambiguous");
 	});
 });
 

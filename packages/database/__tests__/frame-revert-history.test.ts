@@ -46,6 +46,12 @@ vi.mock("../prisma/client", async (importOriginal) => {
 				const stagedHistory: Row[] = [];
 				const stagedFrames = store.frames.map((row) => ({ ...row }));
 				const tx = {
+					auditLog: {
+						create: async ({ data }: { data: Row }) => ({
+							id: "example-audit",
+							...data,
+						}),
+					},
 					$queryRaw: async (...args: unknown[]) => {
 						store.locks.push(args);
 						store.events.push("lock");
@@ -191,6 +197,7 @@ beforeEach(() => {
 		organizationId: "org-1",
 		fileType: "FRAME",
 		content: CURRENT,
+		updatedAt: new Date("2026-11-01T00:00:00Z"),
 		size: CURRENT.length,
 	});
 	store.history.push(firstEdit());
@@ -223,6 +230,7 @@ describe("revertFrameToVersion", () => {
 		expect(result).toEqual({
 			success: true,
 			newContent: BEFORE_FIRST_EDIT,
+			updatedAt: expect.any(String),
 		});
 		expect(store.frames[0]?.content).toBe(BEFORE_FIRST_EDIT);
 		expect(store.frames[0]?.size).toBe(

@@ -88,8 +88,12 @@ export async function resolveExecutionGraph(
 	},
 ) {
 	const execution = await loadOwnedWorkflowExecution(input);
-	const needsPublishedGraph =
+	const unattended =
 		execution.triggerType === "SCHEDULE" ||
+		execution.triggerType === "WEBHOOK" ||
+		execution.triggerType === "EVENT";
+	const needsPublishedGraph =
+		unattended ||
 		requiresPublishedGraph(input.nodes) ||
 		requiresPublishedGraph(input.override?.nodes);
 	if (!needsPublishedGraph) {
@@ -108,6 +112,7 @@ export async function resolveExecutionGraph(
 		execution.version,
 	);
 	if (
+		!unattended &&
 		input.override &&
 		(!isDeepStrictEqual(input.override.nodes, snapshot.nodes) ||
 			!isDeepStrictEqual(input.override.edges, snapshot.edges))

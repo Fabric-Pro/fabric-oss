@@ -15,6 +15,12 @@ import type {
 	AgentMemoryFileType,
 	Prisma,
 } from "../generated/client";
+import {
+	assertSkillReadAccess,
+	getSkillById,
+	listTemplateSkills,
+	skillVisibilityWhere,
+} from "./skills";
 
 // Re-export types for external use
 export type {
@@ -115,6 +121,90 @@ function buildTenantFilter(
 /**
  * List memory files for an agent instance
  */
+
+/** Every memory read shares current catalog ACLs; copied source bytes remain pinned. */
+export async function memorySourceBoundary(
+	ctx: MemoryFileContext,
+	where: Prisma.AgentMemoryFileWhereInput,
+) {
+	// Read provenance metadata first, never historical materialized content. Every
+	// physical content read below is bounded by current source ACL and content hash.
+	const provenance = await db.agentMemoryFile.findMany({
+		where: { ...where, sourceSkillId: { not: null } },
+		select: { sourceSkillId: true, contentHash: true },
+	});
+	const sourceIds = [
+		...new Set(
+			provenance
+				.map((f) => f.sourceSkillId)
+				.filter((id): id is string => typeof id === "string"),
+		),
+	];
+	const readSources = async () => {
+		if (!sourceIds.length) {
+			return [];
+		}
+		await assertSkillReadAccess(ctx);
+		const sources = await db.skill.findMany({
+			where: {
+				AND: [skillVisibilityWhere(ctx), { id: { in: sourceIds } }],
+			},
+			select: { id: true, content: true },
+		});
+		return sources.map((source) => ({
+			sourceSkillId: source.id,
+			contentHash: generateContentHash(source.content),
+		}));
+	};
+	const sources = await readSources();
+	const currentHashes = new Map(
+		sources.map((s) => [s.sourceSkillId, s.contentHash]),
+	);
+	if (
+		provenance.some(
+			(file) =>
+				file.sourceSkillId &&
+				currentHashes.has(file.sourceSkillId) &&
+				currentHashes.get(file.sourceSkillId) !== file.contentHash,
+		)
+	) {
+		throw new Error(
+			"A materialized skill source changed. Refresh this agent's skills before running again.",
+		);
+	}
+
+	const sourceBoundary: Prisma.AgentMemoryFileWhereInput = {
+		OR: [{ sourceSkillId: null }, ...sources],
+	};
+	const scopedWhere = {
+		...where,
+		AND: [
+			...(Array.isArray(where.AND)
+				? where.AND
+				: where.AND
+					? [where.AND]
+					: []),
+			sourceBoundary,
+		],
+	};
+	return {
+		where: scopedWhere,
+		revalidate: async () => {
+			const currentSources = await readSources();
+			const fingerprint = (items: typeof sources) =>
+				items
+					.map((x) => `${x.sourceSkillId}:${x.contentHash}`)
+					.sort()
+					.join("|");
+			if (fingerprint(currentSources) !== fingerprint(sources)) {
+				throw new Error(
+					"A materialized skill source changed. Refresh this agent's skills before running again.",
+				);
+			}
+		},
+	};
+}
+
 export async function listMemoryFiles(
 	params: ListMemoryFilesParams,
 ): Promise<{ files: MemoryFileWithMeta[]; total: number }> {
@@ -131,14 +221,15 @@ export async function listMemoryFiles(
 		where.fileType = fileType;
 	}
 
+	const boundary = await memorySourceBoundary(ctx, where);
 	const [files, total] = await Promise.all([
 		db.agentMemoryFile.findMany({
-			where,
+			where: boundary.where,
 			orderBy: { path: "asc" },
 			skip: offset,
 			take: limit,
 		}),
-		db.agentMemoryFile.count({ where }),
+		db.agentMemoryFile.count({ where: boundary.where }),
 	]);
 
 	// Add pending edit counts
@@ -154,6 +245,7 @@ export async function listMemoryFiles(
 		}),
 	);
 
+	await boundary.revalidate();
 	return { files: filesWithMeta, total };
 }
 
@@ -164,12 +256,13 @@ export async function readMemoryFile(
 	ctx: MemoryFileContext,
 	path: string,
 ): Promise<AgentMemoryFile | null> {
-	return db.agentMemoryFile.findFirst({
-		where: {
-			...buildTenantFilter(ctx),
-			path,
-		},
+	const boundary = await memorySourceBoundary(ctx, {
+		...buildTenantFilter(ctx),
+		path,
 	});
+	const file = await db.agentMemoryFile.findFirst({ where: boundary.where });
+	await boundary.revalidate();
+	return file;
 }
 
 /**
@@ -179,12 +272,12 @@ export async function memoryFileExists(
 	ctx: MemoryFileContext,
 	path: string,
 ): Promise<boolean> {
-	const count = await db.agentMemoryFile.count({
-		where: {
-			...buildTenantFilter(ctx),
-			path,
-		},
+	const boundary = await memorySourceBoundary(ctx, {
+		...buildTenantFilter(ctx),
+		path,
 	});
+	const count = await db.agentMemoryFile.count({ where: boundary.where });
+	await boundary.revalidate();
 	return count > 0;
 }
 
@@ -202,7 +295,31 @@ export async function writeMemoryFile(
 	const contentHash = generateContentHash(content);
 	const fileType = getFileTypeFromPath(path);
 
-	const existing = await readMemoryFile(ctx, path);
+	const sourceSkillId = options?.sourceSkillId;
+	const existing = sourceSkillId
+		? await (async () => {
+				const source = await getSkillById(sourceSkillId, ctx);
+				if (!source || source.content !== content) {
+					throw new Error(
+						"Refresh requires the current authorized skill instructions.",
+					);
+				}
+				return db.agentMemoryFile.findFirst({
+					where: { ...buildTenantFilter(ctx), path },
+					select: { id: true },
+				});
+			})()
+		: await readMemoryFile(ctx, path);
+	if (
+		!existing &&
+		(await db.agentMemoryFile.count({
+			where: { ...buildTenantFilter(ctx), path },
+		}))
+	) {
+		throw new Error(
+			"This linked skill is unavailable. Restore access or remove its attachment before writing.",
+		);
+	}
 
 	if (existing) {
 		// Update existing file
@@ -220,10 +337,45 @@ export async function writeMemoryFile(
 		if (options?.sourceSkillId !== undefined) {
 			updateData.sourceSkillId = options.sourceSkillId;
 		}
-		const updated = await db.agentMemoryFile.update({
-			where: { id: existing.id },
-			data: updateData,
-		});
+		const update = (client: Prisma.TransactionClient) =>
+			client.agentMemoryFile.update({
+				where: { ...buildTenantFilter(ctx), id: existing.id },
+				data: updateData,
+			});
+		const updated = sourceSkillId
+			? await db.$transaction(async (tx) => {
+					const current = await getSkillById(sourceSkillId, ctx, tx);
+					if (!current || current.content !== content) {
+						throw new Error(
+							"Current skill access changed before refresh.",
+						);
+					}
+					// A refreshed parent must not grant access to an earlier confidential edit.
+					await tx.agentMemoryEdit.deleteMany({
+						where: {
+							memoryFileId: existing.id,
+							userId: ctx.userId,
+							organizationId: ctx.organizationId ?? null,
+						},
+					});
+					const refreshed = await update(tx);
+					const after = await getSkillById(sourceSkillId, ctx, tx);
+					if (!after || after.content !== content) {
+						throw new Error(
+							"Current skill access changed before refresh commit.",
+						);
+					}
+					return refreshed;
+				})
+			: await update(db);
+		if (sourceSkillId) {
+			const source = await getSkillById(sourceSkillId, ctx);
+			if (!source || source.content !== content) {
+				throw new Error(
+					"Skill access changed during refresh. Start a new refresh.",
+				);
+			}
+		}
 		return { file: updated, created: false };
 	}
 
@@ -246,6 +398,14 @@ export async function writeMemoryFile(
 			}),
 		},
 	});
+	if (sourceSkillId) {
+		const source = await getSkillById(sourceSkillId, ctx);
+		if (!source || source.content !== content) {
+			throw new Error(
+				"Skill access changed during materialization. Start a new refresh.",
+			);
+		}
+	}
 	return { file: created, created: true };
 }
 
@@ -256,13 +416,16 @@ export async function deleteMemoryFile(
 	ctx: MemoryFileContext,
 	path: string,
 ): Promise<boolean> {
-	const file = await readMemoryFile(ctx, path);
+	// Removing an owned attachment reduces access and does not reveal its content.
+	const file = await db.agentMemoryFile.findFirst({
+		where: { ...buildTenantFilter(ctx), path },
+		select: { id: true },
+	});
 	if (!file) {
 		return false;
 	}
-
 	await db.agentMemoryFile.delete({
-		where: { id: file.id },
+		where: { ...buildTenantFilter(ctx), id: file.id },
 	});
 	return true;
 }
@@ -286,11 +449,14 @@ export async function searchMemoryFiles(
 		where.fileType = { in: fileTypes };
 	}
 
-	return db.agentMemoryFile.findMany({
-		where,
+	const boundary = await memorySourceBoundary(ctx, where);
+	const found = await db.agentMemoryFile.findMany({
+		where: boundary.where,
 		orderBy: { updatedAt: "desc" },
 		take: limit,
 	});
+	await boundary.revalidate();
+	return found;
 }
 
 // ============================================
@@ -357,37 +523,92 @@ export async function createMemoryEdit(params: {
 export async function listPendingEdits(
 	ctx: MemoryFileContext,
 ): Promise<AgentMemoryEdit[]> {
-	return db.agentMemoryEdit.findMany({
+	const boundary = await memorySourceBoundary(ctx, buildTenantFilter(ctx));
+	const edits = await db.agentMemoryEdit.findMany({
 		where: {
 			agentInstanceId: ctx.agentInstanceId,
 			userId: ctx.userId,
 			organizationId: ctx.organizationId ?? null,
 			status: "PENDING",
+			OR: [
+				{ memoryFileId: null },
+				{ memoryFile: { is: boundary.where } },
+			],
 		},
 		orderBy: { createdAt: "desc" },
 	});
+	await boundary.revalidate();
+	return edits;
 }
 
-/**
- * Get a specific edit by ID
- */
+/** Current actor and source access are required even for a direct edit ID. */
 export async function getMemoryEdit(
 	editId: string,
+	actor?: { userId: string; organizationId?: string | null },
 ): Promise<AgentMemoryEdit | null> {
-	return db.agentMemoryEdit.findUnique({
-		where: { id: editId },
+	if (!actor?.organizationId) {
+		return null;
+	}
+	const metadata = await db.agentMemoryEdit.findFirst({
+		where: { id: editId, ...actor },
+		select: { agentInstanceId: true },
 	});
+	if (!metadata) {
+		return null;
+	}
+	const boundary = await memorySourceBoundary(
+		{ ...actor, agentInstanceId: metadata.agentInstanceId ?? undefined },
+		buildTenantFilter({
+			...actor,
+			agentInstanceId: metadata.agentInstanceId ?? undefined,
+		}),
+	);
+	const edit = await db.agentMemoryEdit.findFirst({
+		where: {
+			id: editId,
+			...actor,
+			OR: [
+				{ memoryFileId: null },
+				{ memoryFile: { is: boundary.where } },
+			],
+		},
+	});
+	await boundary.revalidate();
+	return edit;
 }
 
 /**
  * Approve and apply a memory edit
  */
+async function requireCurrentEdit(editId: string, userId: string) {
+	const metadata = await db.agentMemoryEdit.findFirst({
+		where: { id: editId, userId },
+		select: { organizationId: true },
+	});
+	const edit = metadata
+		? await getMemoryEdit(editId, {
+				userId,
+				organizationId: metadata.organizationId,
+			})
+		: null;
+	if (!edit) {
+		throw new Error(
+			"Memory edit not found or its source access is unavailable.",
+		);
+	}
+	return edit;
+}
 export async function approveMemoryEdit(
 	editId: string,
 	approvedBy: string,
 ): Promise<{ edit: AgentMemoryEdit; file: AgentMemoryFile | null }> {
+	const authorized = await requireCurrentEdit(editId, approvedBy);
 	const edit = await db.agentMemoryEdit.update({
-		where: { id: editId },
+		where: {
+			id: editId,
+			userId: approvedBy,
+			organizationId: authorized.organizationId,
+		},
 		data: {
 			status: "APPROVED",
 			approvedBy,
@@ -397,6 +618,7 @@ export async function approveMemoryEdit(
 
 	const file = await applyMemoryEdit(editId, approvedBy);
 
+	await requireCurrentEdit(editId, approvedBy);
 	return { edit, file };
 }
 
@@ -408,8 +630,13 @@ export async function rejectMemoryEdit(
 	rejectedBy: string,
 	reason?: string,
 ): Promise<AgentMemoryEdit> {
-	return db.agentMemoryEdit.update({
-		where: { id: editId },
+	const authorized = await requireCurrentEdit(editId, rejectedBy);
+	const edit = await db.agentMemoryEdit.update({
+		where: {
+			id: editId,
+			userId: rejectedBy,
+			organizationId: authorized.organizationId,
+		},
 		data: {
 			status: "REJECTED",
 			approvedBy: rejectedBy, // Reuse field for who rejected
@@ -417,6 +644,8 @@ export async function rejectMemoryEdit(
 			rejectionReason: reason,
 		},
 	});
+	await requireCurrentEdit(editId, rejectedBy);
+	return edit;
 }
 
 /**
@@ -505,10 +734,9 @@ export async function initializeMemoryFromTemplate(params: {
 	createdFiles.push(agentsMd);
 
 	// Materialize template skills as instance SKILL memory files
-	const templateSkills = await db.agentTemplateSkill.findMany({
-		where: { templateId },
-		include: { skill: true },
-		orderBy: { sortOrder: "asc" },
+	const templateSkills = await listTemplateSkills(templateId, {
+		userId,
+		organizationId,
 	});
 
 	for (const ts of templateSkills) {
@@ -702,39 +930,101 @@ export function validateMemoryFile(
 // CONTEXT BUILDING (for execution)
 // ============================================
 
+/** The exact enabled memory revisions captured by native test admission. */
+export interface FrozenAgentMemoryFile {
+	id: string;
+	version: number;
+	contentHash: string;
+	sourceSkillId?: string | null;
+}
+
 /**
- * Load all memory for an agent instance into an execution context
+ * Load execution memory. A supplied manifest constrains all five physical
+ * content queries to the admitted revisions; no newly enabled or edited file
+ * can enter the prompt between admission and the actual read.
  */
-export async function loadAgentMemoryContext(ctx: MemoryFileContext): Promise<{
+export async function loadAgentMemoryContext(
+	ctx: MemoryFileContext,
+	frozenMemoryFiles?: ReadonlyArray<FrozenAgentMemoryFile>,
+): Promise<{
 	agentsMd: string | null;
 	mcpJson: Record<string, unknown> | null;
 	skills: Array<{ path: string; content: string }>;
 	knowledge: Array<{ path: string; content: string }>;
 	recentConversations: Array<{ path: string; content: string }>;
 }> {
+	if (
+		frozenMemoryFiles !== undefined &&
+		(!Array.isArray(frozenMemoryFiles) ||
+			frozenMemoryFiles.some(
+				(file) =>
+					!file ||
+					typeof file.id !== "string" ||
+					!file.id ||
+					!Number.isSafeInteger(file.version) ||
+					file.version < 1 ||
+					typeof file.contentHash !== "string" ||
+					!/^[a-f0-9]{64}$/.test(file.contentHash) ||
+					(file.sourceSkillId !== undefined &&
+						file.sourceSkillId !== null &&
+						typeof file.sourceSkillId !== "string"),
+			))
+	) {
+		throw new Error("Invalid frozen agent memory manifest");
+	}
+	if (frozenMemoryFiles?.length === 0) {
+		return {
+			agentsMd: null,
+			mcpJson: null,
+			skills: [],
+			knowledge: [],
+			recentConversations: [],
+		};
+	}
+	const where: Prisma.AgentMemoryFileWhereInput = {
+		...buildTenantFilter(ctx),
+		...(frozenMemoryFiles === undefined
+			? {}
+			: {
+					isEnabled: true,
+					OR: frozenMemoryFiles.map((file) => ({
+						id: file.id,
+						version: file.version,
+						contentHash: file.contentHash,
+						...(file.sourceSkillId === undefined
+							? {}
+							: { sourceSkillId: file.sourceSkillId }),
+					})),
+				}),
+	};
+	const source = await memorySourceBoundary(ctx, where);
+	const scopedWhere = source.where;
+	const contextFile = (path: string) =>
+		db.agentMemoryFile.findFirst({ where: { ...scopedWhere, path } });
 	const [agentsFile, mcpFile, skillFiles, knowledgeFiles, conversationFiles] =
 		await Promise.all([
-			readMemoryFile(ctx, "AGENTS.md"),
-			readMemoryFile(ctx, "mcp.json"),
+			contextFile("AGENTS.md"),
+			contextFile("mcp.json"),
 			db.agentMemoryFile.findMany({
 				where: {
-					...buildTenantFilter(ctx),
+					...scopedWhere,
 					fileType: "SKILL",
 					isEnabled: true,
 				},
 				orderBy: { path: "asc" },
 			}),
 			db.agentMemoryFile.findMany({
-				where: { ...buildTenantFilter(ctx), fileType: "KNOWLEDGE" },
+				where: { ...scopedWhere, fileType: "KNOWLEDGE" },
 				orderBy: { path: "asc" },
 			}),
 			db.agentMemoryFile.findMany({
-				where: { ...buildTenantFilter(ctx), fileType: "CONVERSATION" },
+				where: { ...scopedWhere, fileType: "CONVERSATION" },
 				orderBy: { updatedAt: "desc" },
 				take: 5, // Last 5 conversations
 			}),
 		]);
 
+	await source.revalidate();
 	return {
 		agentsMd: agentsFile?.content ?? null,
 		mcpJson: mcpFile ? JSON.parse(mcpFile.content) : null,

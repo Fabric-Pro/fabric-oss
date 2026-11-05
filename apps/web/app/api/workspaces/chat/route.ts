@@ -9,12 +9,76 @@ import {
 } from "@repo/ai";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
-import { db, hasWorkspaceAccess } from "@repo/database";
+import {
+	appendWorkspaceDocumentChat,
+	db,
+	getEffectiveRagSettings,
+	getWorkspaceDocumentChat,
+	hasWorkspaceAccess,
+} from "@repo/database";
 import { generateSparseVector, searchWorkspaceChunks } from "@repo/rag";
 import { getSession } from "@saas/auth/lib/server";
 import { embed } from "ai";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { z } from "zod";
+
+const chatInput = z.object({
+	workspaceId: z.string().min(1).max(128),
+	message: z.string().trim().min(1).max(20000),
+});
+
+export async function GET(request: NextRequest) {
+	try {
+		const session = await getSession();
+		if (!session)
+			return NextResponse.json(
+				{ error: "Unauthorized" },
+				{ status: 401 },
+			);
+		const workspaceId = new URL(request.url).searchParams.get(
+			"workspaceId",
+		);
+		if (!workspaceId)
+			return NextResponse.json(
+				{ error: "workspaceId is required" },
+				{ status: 400 },
+			);
+		if (!(await hasWorkspaceAccess(workspaceId, session.user.id)))
+			return NextResponse.json(
+				{ error: "Workspace not found or access denied" },
+				{ status: 404 },
+			);
+		const workspace = await db.workspace.findUnique({
+			where: { id: workspaceId },
+			select: { organizationId: true },
+		});
+		if (!workspace?.organizationId)
+			return NextResponse.json(
+				{ error: "Workspace not found or access denied" },
+				{ status: 404 },
+			);
+		const conversation = await getWorkspaceDocumentChat({
+			workspaceId,
+			userId: session.user.id,
+			organizationId: workspace.organizationId,
+		});
+		return NextResponse.json(conversation);
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			error.name === "WorkspaceDocumentChatAccessError"
+		)
+			return NextResponse.json(
+				{ error: "Workspace not found or access denied" },
+				{ status: 404 },
+			);
+		return NextResponse.json(
+			{ error: "Document chat history could not be loaded" },
+			{ status: 500 },
+		);
+	}
+}
 
 /**
  * Workspace Document Chat API
@@ -41,14 +105,16 @@ export async function POST(request: NextRequest) {
 		// The body may still carry an `organizationId`; it is not read. The
 		// tenant is the workspace's own (`effectiveOrgId` below), never the
 		// request's.
-		const { workspaceId, message, history = [] } = await request.json();
-
-		if (!workspaceId || !message) {
+		const parsed = chatInput.safeParse(await request.json());
+		if (!parsed.success) {
 			return NextResponse.json(
-				{ error: "workspaceId and message are required" },
+				{
+					error: "A workspaceId and message of 1–20000 characters are required",
+				},
 				{ status: 400 },
 			);
 		}
+		const { workspaceId, message } = parsed.data;
 
 		// Verify workspace access
 		const hasAccess = await hasWorkspaceAccess(workspaceId, userId);
@@ -79,6 +145,17 @@ export async function POST(request: NextRequest) {
 
 		// Use the workspace's actual organizationId (null for personal workspaces)
 		const effectiveOrgId = workspace.organizationId || undefined;
+		if (!effectiveOrgId)
+			return NextResponse.json(
+				{ error: "Workspace not found" },
+				{ status: 404 },
+			);
+		const actor = { workspaceId, userId, organizationId: effectiveOrgId };
+		const [conversation, ragSettings] = await Promise.all([
+			getWorkspaceDocumentChat(actor),
+			getEffectiveRagSettings(workspaceId),
+		]);
+		const history = conversation.messages.slice(-20);
 
 		// Resolve AI access against the workspace's actual tenant, not the request payload.
 		const {
@@ -145,8 +222,8 @@ export async function POST(request: NextRequest) {
 		console.log("[Workspace Chat] Searching workspace documents...", {
 			workspaceId,
 			organizationId: effectiveOrgId || "(none - personal workspace)",
-			topK: 8,
-			minSimilarity: 0.2,
+			topK: ragSettings.topK,
+			minSimilarity: ragSettings.similarityThreshold,
 		});
 		const searchResults = await searchWorkspaceChunks({
 			workspaceId,
@@ -154,8 +231,8 @@ export async function POST(request: NextRequest) {
 			organizationId: effectiveOrgId, // Use workspace's actual orgId, not request's
 			queryEmbedding,
 			querySparseVector: generateSparseVector(message),
-			topK: 8,
-			minSimilarity: 0.2, // Lower threshold for better recall
+			topK: ragSettings.topK,
+			minSimilarity: ragSettings.similarityThreshold,
 		});
 
 		console.log(
@@ -212,6 +289,7 @@ export async function POST(request: NextRequest) {
 			const chunks = await db.workspaceDocumentChunk.findMany({
 				where: {
 					OR: chunkQueries,
+					document: { workspaceId },
 				},
 				select: {
 					id: true,
@@ -350,13 +428,45 @@ ${getCurrentDateContext()}`;
 			latencyMs: Date.now() - generationStart,
 		});
 
+		const response =
+			result.text || "I couldn't generate a response. Please try again.";
+		let conversationId: string | undefined;
+		let historyPersisted = true;
+		try {
+			conversationId = (
+				await appendWorkspaceDocumentChat({
+					...actor,
+					question: message,
+					answer: response,
+					sources,
+				})
+			).id;
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.name === "WorkspaceDocumentChatAccessError"
+			)
+				throw error;
+			historyPersisted = false;
+			console.error(
+				"[Workspace Chat] Could not persist document chat history",
+			);
+		}
 		return NextResponse.json({
-			response:
-				result.text ||
-				"I couldn't generate a response. Please try again.",
+			conversationId,
+			historyPersisted,
+			response,
 			sources: sources.length > 0 ? sources : undefined,
 		});
 	} catch (error) {
+		if (
+			error instanceof Error &&
+			error.name === "WorkspaceDocumentChatAccessError"
+		)
+			return NextResponse.json(
+				{ error: "Workspace not found or access denied" },
+				{ status: 404 },
+			);
 		// AI usage-limit chokepoint hit a HARD limit, at model resolution or
 		// at the check the model repeats before each request (inside the AI
 		// SDK's RetryError when it refused a retry). Surface the rich payload
@@ -382,7 +492,7 @@ ${getCurrentDateContext()}`;
 		}
 		console.error("[Workspace Chat] Error:", error);
 		return NextResponse.json(
-			{ error: error instanceof Error ? error.message : "Chat failed" },
+			{ error: "Document chat could not complete. Please try again." },
 			{ status: 500 },
 		);
 	}

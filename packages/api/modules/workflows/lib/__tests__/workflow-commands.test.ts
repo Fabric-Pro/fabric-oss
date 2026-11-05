@@ -32,7 +32,16 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	recordAuditTx: vi.fn(),
 	db: {
+		$transaction: async (callback: any) =>
+			callback({
+				workflow: { update: mocks.workflowUpdate },
+				workflowVersion: {
+					create: mocks.versionCreate,
+					findFirst: mocks.versionFindFirst,
+				},
+			}),
 		workflow: { update: mocks.workflowUpdate },
 		workflowVersion: {
 			create: mocks.versionCreate,
@@ -147,6 +156,7 @@ function workflow(overrides: Record<string, unknown> = {}) {
 		status: "DRAFT",
 		version: 1,
 		publishedAt: null,
+		publishedVersion: 2,
 		triggerType: "MANUAL",
 		nodes: [TRIGGER_NODE, ACTION_NODE],
 		edges: EDGES,
@@ -203,7 +213,10 @@ beforeEach(() => {
 	mocks.canEditProject.mockResolvedValue(true);
 	mocks.workflowUpdate.mockResolvedValue({});
 	mocks.versionCreate.mockResolvedValue({});
-	mocks.versionFindFirst.mockResolvedValue({ version: 2 });
+	mocks.versionFindFirst.mockResolvedValue({
+		version: 2,
+		nodes: [TRIGGER_NODE, ACTION_NODE],
+	});
 	mocks.syncSchedule.mockResolvedValue({ outcome: "none", reason: "test" });
 	mocks.findScheduleCron.mockReturnValue("0 9 * * 1");
 	mocks.reserve.mockResolvedValue({
@@ -469,6 +482,77 @@ describe("publish", () => {
 });
 
 describe("unpublish, pause and resume", () => {
+	it("saving a published draft cannot change or remove its live schedule", async () => {
+		mocks.getWorkflowById.mockResolvedValue(
+			workflow({ status: "PUBLISHED", publishedAt: new Date() }),
+		);
+		await updateWorkflowCommand(actor, {
+			id: "wf-1",
+			nodes: [
+				{
+					...TRIGGER_NODE,
+					data: { config: { triggerType: "manual" } },
+				},
+			],
+		});
+		expect(mocks.updateWorkflow).toHaveBeenCalledOnce();
+		expect(mocks.syncSchedule).not.toHaveBeenCalled();
+	});
+
+	it("refuses activating an unpublished draft without writing or scheduling", async () => {
+		const error = await refusal(
+			updateWorkflowCommand(actor, {
+				id: "wf-1",
+				status: "ACTIVE",
+			}),
+		);
+		expect(error.message).toContain("publish it before activating");
+		expectNoWrite();
+	});
+
+	it("resume restores only the tenant-bound published trigger despite draft edits", async () => {
+		mocks.getWorkflowById.mockResolvedValue(
+			workflow({
+				status: "PAUSED",
+				publishedAt: new Date(),
+				version: 7,
+				nodes: [
+					{
+						...TRIGGER_NODE,
+						data: { config: { triggerType: "manual" } },
+					},
+				],
+			}),
+		);
+		await resumeWorkflowCommand(actor, "wf-1");
+		expect(mocks.versionFindFirst).toHaveBeenCalledWith({
+			where: {
+				workflowId: "wf-1",
+				version: 2,
+				isPublished: true,
+				userId: USER,
+				organizationId: ORG_A,
+			},
+			select: { nodes: true },
+		});
+		expect(mocks.syncSchedule).toHaveBeenCalledWith(
+			expect.objectContaining({
+				nodes: [TRIGGER_NODE, ACTION_NODE],
+				active: true,
+			}),
+		);
+	});
+
+	it("refuses a missing published snapshot before resuming", async () => {
+		mocks.getWorkflowById.mockResolvedValue(
+			workflow({ status: "PAUSED", publishedAt: new Date() }),
+		);
+		mocks.versionFindFirst.mockResolvedValue(null);
+		await expect(resumeWorkflowCommand(actor, "wf-1")).rejects.toThrow(
+			"Published workflow version is missing",
+		);
+		expectNoWrite();
+	});
 	it("unpublish reverts to draft and takes the schedule down", async () => {
 		await unpublishWorkflowCommand(actor, "wf-1");
 
@@ -498,7 +582,7 @@ describe("unpublish, pause and resume", () => {
 		);
 	});
 
-	it("pause on a paused workflow and resume on a live one change nothing", async () => {
+	it("retries schedule synchronization for already paused or published workflows", async () => {
 		mocks.getWorkflowById.mockResolvedValue(
 			workflow({ status: "PAUSED", publishedAt: new Date() }),
 		);
@@ -509,7 +593,16 @@ describe("unpublish, pause and resume", () => {
 		);
 		await resumeWorkflowCommand(actor, "wf-1");
 
-		expectNoWrite();
+		expect(mocks.syncSchedule).toHaveBeenCalledTimes(2);
+		expect(mocks.syncSchedule).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ active: false }),
+		);
+		expect(mocks.syncSchedule).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ active: true }),
+		);
+		expect(mocks.versionCreate).not.toHaveBeenCalled();
 	});
 
 	it("pause refuses a draft", async () => {

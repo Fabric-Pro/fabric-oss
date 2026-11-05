@@ -43,8 +43,8 @@ export function InspectorPanel({
 	};
 
 	return (
-		<aside
-			className="flex w-[340px] shrink-0 flex-col border-l bg-background"
+		<section
+			className="flex min-h-0 max-h-[45%] w-full shrink-0 flex-col border-t bg-background lg:max-h-none lg:w-[340px] lg:border-l lg:border-t-0"
 			aria-label="Inspector"
 		>
 			<div
@@ -95,6 +95,6 @@ export function InspectorPanel({
 			>
 				{children}
 			</div>
-		</aside>
+		</section>
 	);
 }

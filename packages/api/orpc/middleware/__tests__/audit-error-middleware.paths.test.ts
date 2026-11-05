@@ -1,5 +1,5 @@
 /**
- * REDACTED_BODY_FIELDS and REDACTED_SECRET_FIELDS are keyed by dotted router
+ * REDACTED_BODY_FIELDS, REDACTED_SECRET_FIELDS and REDACTED_INPUT_PATHS use dotted router
  * path and list fields by name, all hardcoded. A renamed procedure or field would silently stop being
  * redacted, so every entry is checked against the real router: the path must
  * resolve to a procedure, and each field must be declared by its input
@@ -12,6 +12,7 @@ import { z } from "zod";
 import { router } from "../../router";
 import {
 	REDACTED_BODY_FIELDS,
+	REDACTED_INPUT_PATHS,
 	REDACTED_SECRET_FIELDS,
 } from "../audit-error-middleware";
 
@@ -132,7 +133,7 @@ function checkEntry(
 		.map((field) => `${path}: no input field ${field}`);
 }
 
-describe("REDACTED_BODY_FIELDS and REDACTED_SECRET_FIELDS against the router", () => {
+describe("audit input redaction registries against the router", () => {
 	let resolved: unknown;
 
 	beforeAll(async () => {
@@ -146,6 +147,26 @@ describe("REDACTED_BODY_FIELDS and REDACTED_SECRET_FIELDS against the router", (
 		].flatMap(([path, fields]) => checkEntry(resolved, path, fields));
 
 		expect(problems).toEqual([]);
+	});
+
+	it("registers whole-input redaction by real procedure path without field-name fallback", () => {
+		expect([...REDACTED_INPUT_PATHS]).toEqual([
+			"skills.assist",
+			"skills.import.preview",
+			"skills.import.create",
+			"skills.import.readFile",
+			"contextQuality.agentResults.inspect",
+			"contextQuality.agentResults.evaluate",
+			"contextQuality.evaluate",
+			"contextQuality.runs.create",
+		]);
+		const problems = [...REDACTED_INPUT_PATHS]
+			.filter((path) => !isProcedure(procedureAt(resolved, path)))
+			.map((path) => `${path}: no such procedure`);
+		expect(problems).toEqual([]);
+		expect(isProcedure(procedureAt(resolved, "contextQuality.nope"))).toBe(
+			false,
+		);
 	});
 
 	it("reports a missing procedure or field, and accepts a path through a record", () => {

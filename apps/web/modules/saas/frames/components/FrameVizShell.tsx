@@ -18,12 +18,14 @@ import type {
 } from "../lib/frame-embed-protocol";
 import { frameShellLabels } from "../lib/frame-shell-labels";
 import type { FrameSurfaceName } from "../lib/frame-tool-types";
+import { FrameExportDialog } from "./FrameExportDialog";
 import { FrameRuntimeConfirmDialog } from "./FrameRuntimeConfirmDialog";
 import { type FrameShareControl, FrameShellHeader } from "./FrameShellHeader";
 import { ShareFrameSheet } from "./ShareFrameSheet";
 
 interface FrameVizShellProps {
 	frameId?: string;
+	updatedAt?: string | Date;
 	title: string;
 	description?: string;
 	kind: "frame" | "slideshow";
@@ -93,6 +95,7 @@ function FrameLoadingState({ label }: { label: string }) {
 
 export function FrameVizShell({
 	frameId,
+	updatedAt,
 	title,
 	description,
 	kind,
@@ -126,6 +129,11 @@ export function FrameVizShell({
 	const [isFullscreen, setIsFullscreen] = useState(false);
 	const [currentSlide, setCurrentSlide] = useState(0);
 	const [shareSheetOpen, setShareSheetOpen] = useState(false);
+	const [exportDialogOpen, setExportDialogOpen] = useState(false);
+	const [exportDialogViewed, setExportDialogViewed] = useState(false);
+	const nativePdf = Boolean(
+		frameId && organizationId && updatedAt && headerMode !== "public",
+	);
 
 	const isPanelPresentation = presentation === "panel";
 	const totalSlides = frameDocument?.blocks.length ?? 0;
@@ -316,7 +324,13 @@ export function FrameVizShell({
 							available: codeView !== null,
 							isExporting: exporter.isExporting,
 							onPng: exporter.exportPng,
-							onPdf: exporter.exportPdf,
+							onPdf: nativePdf
+								? () => {
+										setExportDialogViewed(true);
+										setExportDialogOpen(true);
+									}
+								: exporter.exportPdf,
+							nativePdf,
 							onJson: exporter.exportJson,
 						}}
 						exportNotice={exporter.exportNotice}
@@ -499,6 +513,22 @@ export function FrameVizShell({
 						</div>
 					</div>,
 					document.body,
+				)}
+
+			{nativePdf &&
+				frameId &&
+				organizationId &&
+				updatedAt &&
+				exportDialogViewed && (
+					<FrameExportDialog
+						frameId={frameId}
+						organizationId={organizationId}
+						updatedAt={updatedAt}
+						title={title}
+						kind={kind}
+						open={exportDialogOpen}
+						onOpenChange={setExportDialogOpen}
+					/>
 				)}
 
 			<FrameRuntimeConfirmDialog

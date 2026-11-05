@@ -41,7 +41,10 @@ export const listArtifactDeliveriesProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		const artifact = await getTemplateInstanceArtifact(input.artifactId);
+		const artifact = await getTemplateInstanceArtifact(input.artifactId, {
+			userId: context.user.id,
+			organizationId,
+		});
 
 		if (!artifact) {
 			throw new ORPCError("NOT_FOUND", {

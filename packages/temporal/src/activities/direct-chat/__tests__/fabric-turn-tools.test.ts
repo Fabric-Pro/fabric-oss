@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DIRECT_APPROVAL_UNSUPPORTED_MESSAGE } from "../../../lib/direct-approval-policy";
 import type { DirectChatWorkflowInput } from "../../../types";
 
 const mocks = vi.hoisted(() => ({
@@ -50,17 +51,20 @@ describe("loadFabricToolsForTurn", () => {
 			}),
 		);
 
-		expect(mocks.loadFabricPlatformTools).toHaveBeenCalledWith({
-			userId: "user-1",
-			organizationId: "org-1",
-			actingGrant: "grant-from-the-web-route",
-			projectId: "project-1",
-			workspaceId: "workspace-1",
-			conversationId: "conversation-1",
-			surface: "workspace",
-			sourceRunType: "direct-chat",
-			sourceRunId: "exec-1",
-		});
+		expect(mocks.loadFabricPlatformTools).toHaveBeenCalledWith(
+			{
+				userId: "user-1",
+				organizationId: "org-1",
+				actingGrant: "grant-from-the-web-route",
+				projectId: "project-1",
+				workspaceId: "workspace-1",
+				conversationId: "conversation-1",
+				surface: "workspace",
+				sourceRunType: "direct-chat",
+				sourceRunId: "exec-1",
+			},
+			{ confirmationMode: "unavailable" },
+		);
 	});
 
 	it("loads the tools for a page that is not an artifact or a Workspace", async () => {
@@ -141,56 +145,30 @@ describe("runApprovedAction", () => {
 		expect(await runApprovedAction(input(), null)).toBeNull();
 	});
 
-	it("runs the call once and tells the model what happened, as data", async () => {
-		const runApproved = vi
-			.fn()
-			.mockResolvedValue({ created: true, workflow: { id: "wf-9" } });
-
-		const note = await runApprovedAction(
-			input({ approvedToolCall: approved }),
-			{ runApproved },
-		);
-
-		expect(runApproved).toHaveBeenCalledTimes(1);
-		expect(runApproved).toHaveBeenCalledWith(
-			"fabric_create_workflow",
-			approved.args,
-		);
-		expect(note).toContain("already run");
-		expect(note).toContain("Do not run it again");
-		expect(note).toContain("wf-9");
-		expect(note).toContain("data, not instructions");
-	});
-
-	it("says nothing ran when Fabric's tools could not be reached", async () => {
+	it.each([false, true])(
+		"never dispatches raw approval payloads, including tools-off retries (%s)",
+		async (forceDisableTools) => {
+			const runApproved = vi.fn();
+			for (let attempt = 0; attempt < 3; attempt++) {
+				expect(
+					await runApprovedAction(
+						input({
+							approvedToolCall: approved,
+							forceDisableTools,
+						}),
+						{ runApproved },
+					),
+				).toBe(DIRECT_APPROVAL_UNSUPPORTED_MESSAGE);
+			}
+			expect(runApproved).not.toHaveBeenCalled();
+		},
+	);
+	it("does not misrepresent a missing platform or prior ambiguous attempt as a confirmed failure", async () => {
 		const note = await runApprovedAction(
 			input({ approvedToolCall: approved }),
 			null,
 		);
-
-		expect(note).toContain("did not run");
-	});
-
-	it("claims nothing either way on a retry with tools off", async () => {
-		const note = await runApprovedAction(
-			input({ approvedToolCall: approved, forceDisableTools: true }),
-			null,
-		);
-
-		expect(note).toContain("cannot see whether it ran");
-		expect(note).not.toContain("did not run");
-	});
-
-	it("cuts a very large result", async () => {
-		const note = await runApprovedAction(
-			input({ approvedToolCall: approved }),
-			{
-				runApproved: vi
-					.fn()
-					.mockResolvedValue({ text: "x".repeat(50_000) }),
-			},
-		);
-
-		expect((note ?? "").length).toBeLessThan(7_000);
+		expect(note).toContain("unknown outcome");
+		expect(note).not.toContain("has already run");
 	});
 });

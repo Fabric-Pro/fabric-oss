@@ -2,7 +2,6 @@
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { Spinner } from "@shared/components/Spinner";
-import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Badge } from "@ui/components/badge";
 import {
 	DropdownMenu,
@@ -12,42 +11,35 @@ import {
 	DropdownMenuTrigger,
 } from "@ui/components/dropdown-menu";
 import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "@ui/components/tooltip";
-import {
+	ArrowRightIcon,
 	Copy,
 	CopyIcon,
 	EditIcon,
+	EyeIcon,
 	ImageIcon,
 	LibraryIcon,
 	Link2Icon,
-	Lock,
 	MoreVerticalIcon,
-	Play,
 	TrashIcon,
 	Video,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { usePromptDeletion } from "../hooks/use-prompt-deletion";
-import { hasVariables } from "../lib/variable-detection";
 import { PromptDefaultBadge } from "./PromptDefaultBadge";
 import { PromptPreviewSheet } from "./PromptPreviewSheet";
-import { PromptTag } from "./PromptTag";
+import { PromptScopeBadge } from "./PromptScopeBadge";
 import { SetAsDefaultDialog } from "./SetAsDefaultDialog";
 import { UpvoteButton } from "./UpvoteButton";
 
 // Get display name for format
 function getFormatDisplayName(format: string): string {
 	const formatNames: Record<string, string> = {
-		PLAIN_TEXT: "Plain",
-		MARKDOWN: "MD",
-		HANDLEBARS: "HBS",
+		PLAIN_TEXT: "Plain text",
+		MARKDOWN: "Markdown",
+		HANDLEBARS: "Handlebars",
 		MUSTACHE: "Mustache",
 		LIQUID: "Liquid",
 		JINJA2: "Jinja2",
@@ -122,46 +114,6 @@ type Props = {
 	storyKindContext?: import("@repo/database").StoryKind;
 };
 
-// Render content with variable highlighting
-function renderContentWithVariables(content: string): React.ReactNode[] {
-	const parts: React.ReactNode[] = [];
-	const regex = /\$\{([^:}]+)(?::([^}]*))?\}/g;
-	let lastIndex = 0;
-	let match: RegExpExecArray | null;
-	let keyIndex = 0;
-
-	while (
-		// biome-ignore lint/suspicious/noAssignInExpressions: standard regex iteration idiom
-		(match = regex.exec(content)) !== null
-	) {
-		if (match.index > lastIndex) {
-			parts.push(
-				<span key={keyIndex++}>
-					{content.slice(lastIndex, match.index)}
-				</span>,
-			);
-		}
-
-		const name = match[1].trim();
-		parts.push(
-			<span
-				key={keyIndex++}
-				className="bg-primary/10 text-primary px-0.5 rounded text-[10px]"
-			>
-				{name}
-			</span>,
-		);
-
-		lastIndex = match.index + match[0].length;
-	}
-
-	if (lastIndex < content.length) {
-		parts.push(<span key={keyIndex++}>{content.slice(lastIndex)}</span>);
-	}
-
-	return parts;
-}
-
 export function PromptCard({
 	prompt,
 	onUpdate,
@@ -170,8 +122,7 @@ export function PromptCard({
 	storyKindContext,
 }: Props) {
 	const router = useRouter();
-	const tTooltips = useTranslations("tooltips.common");
-	const { basePath } = useOrganizationContext();
+	const { basePath, userRole } = useOrganizationContext();
 	const [setDefaultOpen, setSetDefaultOpen] = useState(false);
 	const [previewOpen, setPreviewOpen] = useState(false);
 
@@ -180,7 +131,11 @@ export function PromptCard({
 	// the delete predicate would quietly turn Edit on for SYSTEM prompts, which
 	// R3 forbids. Delete gets its own answer, from the shared hook every
 	// listing surface asks (Fizzy #2328).
-	const isEditable = prompt.scope !== "SYSTEM";
+	const isEditable =
+		prompt.scope !== "SYSTEM" &&
+		(prompt.scope !== "ORG" ||
+			userRole === "owner" ||
+			userRole === "admin");
 	const latestVersionId = prompt.versions?.[0]?.id;
 
 	const deletion = usePromptDeletion({ prompt, onDeleted: onUpdate });
@@ -203,7 +158,6 @@ export function PromptCard({
 		(isStructuredInput && !!prompt.mediaUrl && !isAudio);
 
 	const content = prompt.versions?.[0]?.content || "";
-	const contentHasVariables = hasVariables(content);
 
 	// Autoplay video when visible
 	useEffect(() => {
@@ -228,18 +182,17 @@ export function PromptCard({
 	}, [isVideo]);
 
 	const copyToClipboard = async () => {
-		await navigator.clipboard.writeText(content);
-		toast.success("Copied to clipboard");
+		try {
+			await navigator.clipboard.writeText(content);
+			toast.success("Copied to clipboard");
+		} catch {
+			toast.error(
+				"Could not copy the prompt. Open it to select and copy the text.",
+			);
+		}
 	};
 
 	const getPromptUrl = () => `${basePath}/prompts/${prompt.id}`;
-
-	const authorName =
-		prompt.author?.name ||
-		prompt.author?.username ||
-		prompt.createdBy ||
-		"Unknown";
-	const authorInitial = authorName.charAt(0).toUpperCase();
 
 	return (
 		<div
@@ -315,15 +268,20 @@ export function PromptCard({
 					<div className="flex items-start justify-between gap-2">
 						<Link
 							href={getPromptUrl()}
+							onClick={(event) => {
+								if (
+									!event.metaKey &&
+									!event.ctrlKey &&
+									!event.shiftKey &&
+									!event.altKey
+								) {
+									event.preventDefault();
+									setPreviewOpen(true);
+								}
+							}}
 							prefetch={false}
-							className="min-w-0 flex-1 font-medium text-sm leading-snug hover:underline line-clamp-2"
+							className="min-w-0 flex-1 font-semibold text-base leading-snug hover:underline line-clamp-2"
 						>
-							{!prompt.isPublic && (
-								<Lock
-									className="mr-1 inline h-3 w-3 text-muted-foreground"
-									aria-label="Private"
-								/>
-							)}
 							{prompt.name}
 						</Link>
 						<div className="flex items-center gap-1 shrink-0">
@@ -352,19 +310,25 @@ export function PromptCard({
 									<DropdownMenuItem
 										onClick={() => setPreviewOpen(true)}
 									>
-										<Play className="mr-2 h-4 w-4" />
+										<EyeIcon className="mr-2 h-4 w-4" />
 										Preview
 									</DropdownMenuItem>
 									{isEditable && (
 										<DropdownMenuItem
 											onClick={() =>
-												router.push(getPromptUrl())
+												router.push(
+													`${getPromptUrl()}?edit=1&returnTo=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`,
+												)
 											}
 										>
 											<EditIcon className="mr-2 h-4 w-4" />
 											Edit
 										</DropdownMenuItem>
 									)}
+									<DropdownMenuItem onClick={copyToClipboard}>
+										<Copy className="mr-2 h-4 w-4" />
+										Copy prompt text
+									</DropdownMenuItem>
 									<DropdownMenuItem onClick={handleDuplicate}>
 										<CopyIcon className="mr-2 h-4 w-4" />
 										Duplicate
@@ -415,101 +379,58 @@ export function PromptCard({
 							defaultScope={prompt.defaultScope}
 							className="text-[10px]"
 						/>
+						<PromptScopeBadge scope={prompt.scope} />
 						{!hasMediaBackground && (
-							<>
-								<Badge
-									variant="outline"
-									className="text-[10px]"
-								>
-									{promptType.toLowerCase()}
-								</Badge>
-								{prompt.format &&
-									prompt.format !== "PLAIN_TEXT" && (
-										<Badge
-											variant="secondary"
-											className="text-[10px]"
-										>
-											{getFormatDisplayName(
-												prompt.format,
-											)}
-										</Badge>
-									)}
-							</>
+							<span className="text-xs text-muted-foreground">
+								{getFormatDisplayName(prompt.format)}
+							</span>
 						)}
 					</div>
 				</div>
 
 				{/* Description */}
 				{prompt.description && (
-					<p className="text-xs text-muted-foreground line-clamp-2 mb-2">
+					<p className="text-sm leading-6 text-muted-foreground line-clamp-3 mb-5">
 						{prompt.description}
 					</p>
 				)}
 
-				{/* Content Preview */}
-				<div className="relative flex-1 mb-3 min-h-0">
-					<pre
-						className={`text-xs text-muted-foreground bg-muted p-2 rounded overflow-hidden font-mono h-full whitespace-pre-wrap break-words ${hasMediaBackground ? "line-clamp-2" : "line-clamp-4"}`}
-					>
-						{contentHasVariables
-							? renderContentWithVariables(content)
-							: content || "No content yet"}
-					</pre>
-				</div>
-
-				{/* Tags */}
-				{prompt.tags && prompt.tags.length > 0 && (
-					<div className="flex flex-wrap gap-1 mb-3">
-						{prompt.tags.slice(0, 3).map((tag) => (
-							<PromptTag key={tag}>{tag}</PromptTag>
-						))}
-						{prompt.tags.length > 3 && (
-							<span className="text-[10px] text-muted-foreground">
-								+{prompt.tags.length - 3}
-							</span>
-						)}
-					</div>
-				)}
-
 				{/* Footer */}
 				<div className="flex items-center justify-between text-[11px] text-muted-foreground pt-2 border-t mt-auto">
-					<div className="flex items-center gap-1.5">
-						<Avatar className="h-4 w-4">
-							<AvatarImage
-								src={prompt.author?.avatar || undefined}
-							/>
-							<AvatarFallback className="text-[8px]">
-								{authorInitial}
-							</AvatarFallback>
-						</Avatar>
-						<span>{authorName}</span>
-					</div>
+					<span className="text-xs">
+						{prompt.category?.replaceAll("-", " ") ||
+							"Reusable prompt"}
+					</span>
 					<div className="flex items-center gap-2">
-						<UpvoteButton
-							promptId={prompt.id}
-							initialVoted={false}
-							initialCount={prompt.voteCount ?? 0}
-							size="sm"
-						/>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<button
-									type="button"
-									onClick={copyToClipboard}
-									className="p-1 rounded hover:bg-accent"
-									aria-label={tTooltips("copy")}
-								>
-									<Copy className="h-3 w-3" />
-								</button>
-							</TooltipTrigger>
-							<TooltipContent>{tTooltips("copy")}</TooltipContent>
-						</Tooltip>
+						{(prompt.voteCount ?? 0) > 0 && (
+							<UpvoteButton
+								promptId={prompt.id}
+								initialVoted={false}
+								initialCount={prompt.voteCount ?? 0}
+								size="sm"
+							/>
+						)}
 						<Link
 							href={getPromptUrl()}
-							className="h-6 w-6 rounded hover:bg-accent flex items-center justify-center"
-							title="View prompt"
+							onClick={(event) => {
+								if (
+									!event.metaKey &&
+									!event.ctrlKey &&
+									!event.shiftKey &&
+									!event.altKey
+								) {
+									event.preventDefault();
+									setPreviewOpen(true);
+								}
+							}}
+							className="inline-flex min-h-9 items-center gap-1 rounded px-2 text-sm font-medium text-foreground hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+							aria-label={`Open ${prompt.name}`}
 						>
-							<Play className="h-4 w-4" />
+							Open{" "}
+							<ArrowRightIcon
+								className="h-4 w-4"
+								aria-hidden="true"
+							/>
 						</Link>
 					</div>
 				</div>
@@ -532,6 +453,7 @@ export function PromptCard({
 			<PromptPreviewSheet
 				open={previewOpen}
 				onOpenChange={setPreviewOpen}
+				fullPageEdit
 				promptId={prompt.id}
 				onPromptUpdated={onUpdate}
 			/>

@@ -1,0 +1,3 @@
+# Workspace identities, deployment state and CLI-generated private bindings.
+.databricks/
+__pycache__/

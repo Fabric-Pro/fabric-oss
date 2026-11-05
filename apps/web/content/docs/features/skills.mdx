@@ -1,159 +1,67 @@
 ---
 title: Skills
-description: Browse and create reusable skill modules that extend agent capabilities.
+description: Create, review and share reusable instructions for your delivery team.
+audience: Organization members and delivery-team administrators
+owner: Fabric product engineering
 ---
 
-Skills are modular, self-contained instruction sets in Markdown format. Attach them to agent templates or report templates to give agents specialized capabilities without rewriting instructions.
+Skills package a repeatable procedure, such as reviewing a pull request or preparing a weekly delivery brief. They contain instructions and may include reference files. A skill is not an autonomous agent, and sharing it does not grant access to its referenced documents, tools or connections.
 
-## What is a Skill?
+## Find a skill
 
-A skill is a Markdown document containing focused instructions for a specific capability. When attached to an agent, the skill content becomes part of the agent's memory as a file (`skills/{slug}/SKILL.md`).
+Open **Skills** in the left sidebar. Use **Organization**, **Built-in**, **Your drafts** and **Archived** to find the right material. Search and page through the catalog. Built-in skills are read-only; private drafts belong to their creator within the organization.
 
-**Example:** A "research-methodology" skill might contain instructions for systematic literature review, source evaluation criteria, and citation formatting rules.
+## Create a skill
 
-## Browsing the Catalog
+The **Create skill** menu offers three starting points that lead to the same editor:
 
-Navigate to **Skills** in the left sidebar to access the skill catalog.
+- **From conversation**: describe the procedure in the assistant. Send a message to request help, inspect the proposed instructions, then choose **Apply** to update your unsaved draft. Suggestions never save or publish automatically.
+- **From scratch**: write when the skill should be used and its Markdown instructions. Give it a clear name and description.
+- **From existing**: upload a `SKILL.md`, `.zip` or `.skill` package, or import a public GitHub repository. Review the available skills, instructions, files and warnings before creating a private draft. For private repositories, upload the selected package instead.
 
-### Filtering
+GitHub imports resolve to a specific commit. File imports show a content hash; if the package changes after review, preview it again. Supported packages use YAML frontmatter with `name` and `description`, followed by Markdown instructions. Extra metadata is shown as a warning rather than silently enabling runtime permissions.
 
-- **Search** — Find skills by name or description
-- **Scope** — Filter by All, System, Organization, or Personal
-- **Category** — Quick filter by category tags
+Repository imports include files inside skill folders; unrelated repository files and links are excluded. Review the warnings for skipped candidates that exceed the supported limits.
 
-### Skill Scopes
+Runtime files can be inspected or downloaded. Importing and previewing a package never runs its scripts. Uploads are limited to 8 MiB, with bounded extraction and individual file sizes; credential files, unsafe paths, symbolic links and corrupt archives are rejected.
 
-| Scope | Visibility | Editable By |
-|-------|------------|-------------|
-| **System** | Everyone | Read-only (built-in) |
-| **Organization** | Org members only | Org owners and admins |
-| **User** | Only you | Only you |
+## Review and share
 
-## Creating a Skill
+Save creates a private organization draft. Publication and automatic discovery are separate choices:
 
-<Steps>
-  <Step>
-    ### Click "Create Skill"
+| Availability | Who can find or use it |
+|---|---|
+| Private draft | Its creator, subject to current organization permissions |
+| Published to members | Organization members with skill access; agents can use explicitly selected skills |
+| Discoverable by agents | Published skills also appear in automatic skill discovery |
+| Archived | Hidden from normal use; the creator can restore it as a private draft |
 
-    From the Skills catalog, click the create button.
-  </Step>
+Publication does not expand source access. A person or agent still needs current permission for every referenced project, workspace, document and connection. Automatic discovery is a catalog setting, not a security boundary for a known, authorized reference.
 
-  <Step>
-    ### Define the Skill
+If a save cannot be confirmed, another create is paused. Use **Check saved drafts** to open a matching draft or review the catalog before choosing another attempt; the original request may still finish.
 
-    Fill in the details:
+Changes use version checks. If someone changes a skill while you are editing or inspecting a file, refresh before applying further changes. Permanently deleting a skill requires its creator's current delete permission and removes its linked memory copies.
 
-    - **Name** — Descriptive name (e.g., "Code Review Best Practices")
-    - **Slug** — URL-friendly identifier (e.g., `code-review-best-practices`)
-    - **Description** — What this skill enables
-    - **Category** — Organizational category (e.g., "engineering", "research")
-    - **Tags** — Additional labels for filtering
-  </Step>
+## Use with agents and reports
 
-  <Step>
-    ### Write the Content
+Attach authorized skills to an agent or report template. Agent instances materialize instructions in `skills/{slug}/SKILL.md` and retain the source link. Execution and memory reads recheck current source access. A stale or unavailable source copy is withheld rather than returning old content after publication or permissions change.
 
-    Write the skill instructions in Markdown. Be clear and specific:
+To recover an outdated attachment, remove it and attach the current authorized skill again. Editing a linked memory copy does not silently turn it into an independent skill. Reports pin authorized skill instructions to the admitted execution and check current access before using them.
 
-    ```markdown
-    # Code Review Best Practices
+## Governance
 
-    ## Review Checklist
-    - Check for security vulnerabilities (OWASP Top 10)
-    - Verify error handling covers edge cases
-    - Ensure tests cover new functionality
-    - Check for performance implications
+Administrators can open **Organization settings → Skill governance** to restrict:
 
-    ## Communication Style
-    - Be constructive, not critical
-    - Suggest improvements with examples
-    - Acknowledge good patterns
-    ```
-  </Step>
+- creating skills;
+- publishing skills to members;
+- making skills discoverable by agents.
 
-  <Step>
-    ### Set Scope and Publish
+Each policy permits either members with the required role capability or administrators. Policies can restrict a role's existing permissions; they do not add permissions. Built-in roles and organization membership are enforced on the server. Group-specific rules are not currently available.
 
-    Choose the scope:
-    - **Personal** — Only you can use it
-    - **Organization** — Share with your team
+## API, CLI and MCP
 
-    Toggle **Published** to make it available in the catalog.
-  </Step>
-</Steps>
+The same operations are available through the API, SDK, CLI and MCP: catalog and detail reads, create/update, archive/restore, publication, assistance, import preview/create, runtime-file inspection and governance.
 
-## Using Skills
+API keys require the declared scope **and** their creator's current permissions. Relevant scopes are `skills:read`, `skills:write`, `skills:publish`, `governance:read` and `governance:write`. A wildcard key does not bypass live membership or role checks. Runtime and project-bound credentials do not gain global authoring or governance privileges.
 
-### With Agent Templates
-
-1. Open an agent template's detail page
-2. Go to the **Skills** section
-3. Click **Attach** and select skills from the catalog
-4. Set the **sort order** (determines priority)
-5. Mark skills as **required** or optional
-
-When an instance is created from the template, attached skills are materialized into the agent's memory.
-
-### With Report Templates
-
-1. Open a report template's detail page
-2. Go to the **Skills** section
-3. Attach relevant skills
-4. Skills provide additional instructions for AI-powered report enrichment
-
-### Scope Rules for Attachment
-
-- **System skills** can attach to any template
-- **Organization skills** only attach to templates in the same organization
-- **User skills** only attach to your personal templates
-
-## Skill Materialization
-
-When you create an agent instance from a template with attached skills:
-
-1. Each skill is copied into the instance's memory as `skills/{slug}/SKILL.md`
-2. The agent reads these files as part of its instructions
-3. You can edit materialized skills in the instance without affecting the original
-4. The original skill is tracked via a `sourceSkillId` link
-
-## Versioning
-
-Skills support simple version tracking:
-
-- Each update increments the version number
-- Agent instances that materialized an older version are not automatically updated
-- To update an instance's skills, re-initialize its memory from the template
-
-## Best Practices
-
-### Writing Effective Skills
-
-- **Be focused** — One capability per skill
-- **Use clear structure** — Headings, checklists, and examples
-- **Include examples** — Show the agent what good output looks like
-- **Define boundaries** — Specify what the skill should and should not do
-
-### Organization
-
-- **Descriptive slugs** — `data-analysis-methodology` not `skill-1`
-- **Consistent categories** — Use the same categories across your team
-- **Tag generously** — Multiple tags make skills easier to find
-
-### Maintenance
-
-- **Review periodically** — Update skills as best practices evolve
-- **Track usage** — The catalog shows how often each skill is used
-- **Archive unused skills** — Unpublish skills that are no longer relevant
-
----
-
-## Next Steps
-
-<Cards>
-  <Card title="Agent Templates" href="/docs/features/agent-templates">
-    Attach skills to agent templates
-  </Card>
-  <Card title="Reports" href="/docs/features/reports">
-    Use skills to enhance report generation
-  </Card>
-</Cards>
+Use `fabric skills --help` for commands and `fabric skills import --help` for the reviewed import flow. Import creation requires the candidate and hash returned by preview; mutation commands do not automatically retry uncertain writes.

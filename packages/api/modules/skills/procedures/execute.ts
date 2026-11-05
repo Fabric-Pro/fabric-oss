@@ -1,75 +1,62 @@
-import { ORPCError } from "@orpc/client";
-import { getSkillById, incrementSkillUseCount } from "@repo/database";
+import { ORPCError } from "@orpc/server";
+import { SkillError, skillGetSchema } from "@repo/ai/skill-contracts";
+import { incrementSkillUseCount } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
-	resolveOrganizationId,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../organizations/lib/membership";
-
-const executeInputSchema = z.object({
-	id: z.string().min(1),
-	organizationId: z.string().nullable().optional(),
-});
-
-/**
- * AUTHORIZATION: Uses tenantProtectedProcedure with XOR pattern.
- * Verifies skill is accessible to user (SYSTEM, ORG with membership, or USER owned)
- * before returning content and incrementing useCount.
- */
+import { resolvedOrganizationId } from "../../agents/procedures/conversations/resolved-organization";
+import { getSkillCommand } from "../lib/skill-commands";
+/** Compatibility operation: loading content is not a shell/script execution. */
 export const executeSkillProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.SKILL_READ))
+	.use(
+		requireInputOrgPermission(Permissions.SKILL_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/skills/{id}/execute",
 		tags: ["Skills"],
-		summary: "Load skill content for execution",
+		summary: "Load an authorized skill for explicit use",
 	})
-	.input(executeInputSchema)
+	.input(
+		skillGetSchema.safeExtend({
+			organizationId: z.string().min(1).nullable().optional(),
+		}),
+	)
 	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
-
-		// Fetch skill with tenant isolation
-		const skill = await getSkillById(input.id, {
-			userId: context.user.id,
-			organizationId: organizationId ?? undefined,
-		});
-
-		if (!skill) {
-			throw new ORPCError("NOT_FOUND", { message: "Skill not found" });
-		}
-
-		// Verify access for ORGANIZATION-scoped skills
-		if (skill.scope === "ORGANIZATION" && skill.organizationId) {
-			const membership = await verifyOrganizationMembership(
-				skill.organizationId,
-				context.user.id,
+		try {
+			const { skill } = await getSkillCommand(
+				{
+					userId: context.user.id,
+					organizationId: resolvedOrganizationId(
+						input,
+						context.session,
+					),
+				},
+				{ id: input.id },
 			);
-			if (!membership) {
-				throw new ORPCError("NOT_FOUND", {
-					message: "Skill not found",
-				});
+			if (skill.archivedAt) {
+				throw new SkillError(
+					"NOT_FOUND",
+					"Skill not found or access denied.",
+				);
 			}
+			await incrementSkillUseCount(skill.id);
+			return {
+				id: skill.id,
+				name: skill.name,
+				slug: skill.slug,
+				description: skill.description,
+				content: skill.content,
+			};
+		} catch (error) {
+			if (error instanceof SkillError) {
+				throw new ORPCError(error.code, { message: error.message });
+			}
+			throw error;
 		}
-
-		// Verify access for USER-scoped skills
-		if (skill.scope === "USER" && skill.userId !== context.user.id) {
-			throw new ORPCError("NOT_FOUND", { message: "Skill not found" });
-		}
-
-		// Increment use count
-		await incrementSkillUseCount(skill.id);
-
-		return {
-			id: skill.id,
-			name: skill.name,
-			slug: skill.slug,
-			description: skill.description,
-			content: skill.content,
-		};
 	});

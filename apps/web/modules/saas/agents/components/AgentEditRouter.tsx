@@ -4,6 +4,9 @@ import { AgentInstanceEdit } from "@saas/agent-templates/components/AgentInstanc
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
+import { Button } from "@ui/components/button";
+import { XIcon } from "lucide-react";
+import Link from "next/link";
 import { EditRegisteredAgentPage } from "./EditRegisteredAgentPage";
 
 type Props = {
@@ -57,11 +60,32 @@ export function AgentEditRouter({ agentId, organizationId, basePath }: Props) {
 
 	if (agent) {
 		return (
-			<EditRegisteredAgentPage
-				agentId={agentId}
-				organizationId={organizationId}
-				basePath={basePath}
-			/>
+			<div
+				className="flex h-full min-h-0 flex-1 flex-col"
+				data-onboarding-target="agent-builder-workspace"
+			>
+				<div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-6 py-3">
+					<h1 className="font-semibold">Edit external agent</h1>
+					<Button variant="ghost" size="icon" asChild>
+						<Link
+							href={`${basePath}/agents/${encodeURIComponent(agentId)}`}
+							aria-label="Close agent editor"
+						>
+							<XIcon className="size-4" />
+						</Link>
+					</Button>
+				</div>
+				<section
+					aria-label="External agent configuration"
+					className="min-h-0 flex-1 overflow-y-auto p-6"
+				>
+					<EditRegisteredAgentPage
+						agentId={agentId}
+						organizationId={organizationId}
+						basePath={basePath}
+					/>
+				</section>
+			</div>
 		);
 	}
 

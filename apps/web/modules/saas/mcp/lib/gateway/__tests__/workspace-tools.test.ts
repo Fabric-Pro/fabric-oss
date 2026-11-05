@@ -38,6 +38,8 @@ const mocks = vi.hoisted(() => ({
 	generateEmbedding: vi.fn(),
 	generateSparseVector: vi.fn(),
 	searchWorkspaceChunks: vi.fn(),
+	readContent: vi.fn(),
+	catalog: vi.fn(),
 }));
 
 const databaseMocks = vi.hoisted(() => ({
@@ -49,6 +51,7 @@ const databaseMocks = vi.hoisted(() => ({
 	),
 	// The real query re-checks the same membership-only access internally.
 	getWorkspaceById: vi.fn(),
+	readDocument: vi.fn(),
 }));
 
 vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
@@ -61,7 +64,17 @@ vi.mock("@repo/database", () => ({
 	getWorkspaceAccessContext: mocks.getWorkspaceAccessContext,
 	hasWorkspaceAccess: databaseMocks.hasWorkspaceAccess,
 	getWorkspaceById: databaseMocks.getWorkspaceById,
+	db: { workspaceDocument: { findFirst: databaseMocks.readDocument } },
 }));
+
+vi.mock(
+	"@repo/database/prisma/queries/workspaces/document-content",
+	async () => ({
+		...(await import("@repo/database/src/workspace-document-content")),
+		readWorkspaceDocumentContent: mocks.readContent,
+		getWorkspaceDocumentCatalog: mocks.catalog,
+	}),
+);
 
 vi.mock("@repo/rag", () => ({
 	generateEmbedding: mocks.generateEmbedding,
@@ -107,6 +120,14 @@ function workspaceHostedBy(organizationId: string | null) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.readContent.mockReset();
+	mocks.catalog.mockReset();
+	mocks.catalog.mockResolvedValue({
+		...WORKSPACE_ROW,
+		documents: [],
+		documentCount: 0,
+		nextOffset: null,
+	});
 	databaseMocks.getWorkspaceById.mockImplementation(
 		async (workspaceId: string, userId: string) =>
 			(await mocks.getWorkspaceAccessContext(workspaceId, userId))
@@ -162,9 +183,9 @@ describe("fabric_get_workspace binds an organization key to the workspace's orga
 			id: "ws-1",
 			name: "Example knowledge base",
 		});
-		expect(databaseMocks.getWorkspaceById).toHaveBeenCalledWith(
-			"ws-1",
-			"user-1",
+		expect(mocks.catalog).toHaveBeenCalledWith(
+			{ userId: "user-1", organizationId: "org-b" },
+			{ workspaceId: "ws-1", limit: undefined, offset: undefined },
 		);
 	});
 
@@ -314,4 +335,150 @@ it("shows the embedding width refusal in the knowledge search message", async ()
 	);
 	expect(payload(result).message).toBe(error.message);
 	expect(mocks.searchWorkspaceChunks).not.toHaveBeenCalled();
+});
+
+describe("workspace documents through Portal MCP", () => {
+	const document = {
+		id: "doc-1",
+		originalFilename: "onboarding.txt",
+		mimeType: "text/plain",
+		status: "READY",
+		extractedText: "The support rotation changes every Monday.",
+	};
+
+	it("lists bounded document IDs and processing state through the shared safe catalog", async () => {
+		workspaceHostedBy("org-a");
+		mocks.catalog.mockResolvedValueOnce({
+			...WORKSPACE_ROW,
+			documents: [
+				{
+					id: "doc-1",
+					filename: "onboarding.txt",
+					status: "READY",
+					chunkCount: 1,
+				},
+			],
+			documentCount: 2,
+			nextOffset: 1,
+			paginationMode: "live_offset",
+			snapshotConsistent: false,
+		});
+		const result = await executePlatformTool(
+			"fabric_get_workspace",
+			{ workspaceId: "ws-1", limit: 1, offset: 0 },
+			orgKeyInA,
+		);
+		expect(payload(result)).toMatchObject({
+			documentCount: 2,
+			nextOffset: 1,
+			paginationMode: "live_offset",
+			snapshotConsistent: false,
+			documents: [
+				{ id: "doc-1", filename: "onboarding.txt", status: "READY" },
+			],
+		});
+		expect(mocks.catalog).toHaveBeenCalledWith(
+			{ userId: "user-1", organizationId: "org-a" },
+			{ workspaceId: "ws-1", limit: 1, offset: 0 },
+		);
+		expect(databaseMocks.getWorkspaceById).not.toHaveBeenCalled();
+	});
+
+	it("refuses a cross-tenant read before loading document text", async () => {
+		workspaceHostedBy("org-b");
+		const result = await executePlatformTool(
+			"fabric_get_workspace_document",
+			{ workspaceId: "ws-1", documentId: "doc-1" },
+			orgKeyInA,
+		);
+		expect(result.isError).toBe(true);
+		expect(databaseMocks.readDocument).not.toHaveBeenCalled();
+		expect(mocks.readContent).not.toHaveBeenCalled();
+	});
+
+	it("forwards the authorized actor and bounded revision options to the shared reader", async () => {
+		workspaceHostedBy("org-a");
+		const page = {
+			id: "doc-1",
+			workspaceId: "ws-1",
+			text: "Hello",
+			revision: "a".repeat(64),
+			nextOffset: 15,
+		};
+		mocks.readContent.mockResolvedValueOnce(page);
+		const result = await executePlatformTool(
+			"fabric_get_workspace_document",
+			{
+				workspaceId: "ws-1",
+				documentId: "doc-1",
+				offset: 10,
+				limit: 5,
+				expectedRevision: "a".repeat(64),
+			},
+			orgKeyInA,
+		);
+		expect(payload(result)).toEqual(page);
+		expect(mocks.readContent).toHaveBeenCalledWith(
+			{ userId: "user-1", organizationId: "org-a" },
+			{
+				workspaceId: "ws-1",
+				documentId: "doc-1",
+				offset: 10,
+				limit: 5,
+				expectedRevision: "a".repeat(64),
+			},
+		);
+		expect(databaseMocks.readDocument).not.toHaveBeenCalled();
+	});
+
+	it("keeps the organization resolved through the credential's workspace gate", async () => {
+		workspaceHostedBy("org-b");
+		mocks.readContent.mockResolvedValueOnce({ text: "Allowed" });
+		await executePlatformTool(
+			"fabric_get_workspace_document",
+			{ workspaceId: "ws-1", documentId: "doc-1" },
+			personalKeyInA,
+		);
+		expect(mocks.readContent).toHaveBeenCalledWith(
+			{ userId: "user-1", organizationId: "org-b" },
+			expect.anything(),
+		);
+	});
+
+	it.each([
+		"NOT_FOUND",
+		"NOT_READY",
+		"STALE_REVISION",
+		"REVISION_REQUIRED",
+	] as const)(
+		"preserves the shared %s refusal instead of returning empty success",
+		async (code) => {
+			workspaceHostedBy("org-a");
+			const { WorkspaceDocumentContentError } = await import(
+				"@repo/database/src/workspace-document-content"
+			);
+			mocks.readContent.mockRejectedValueOnce(
+				new WorkspaceDocumentContentError(code),
+			);
+			const result = await executePlatformTool(
+				"fabric_get_workspace_document",
+				{ workspaceId: "ws-1", documentId: "doc-1" },
+				orgKeyInA,
+			);
+			expect(result.isError).toBe(true);
+			expect(payload(result)).toMatchObject({ code });
+			expect(payload(result)).not.toHaveProperty("text");
+		},
+	);
+
+	it("requires the declared workspace read scope even for an accessible workspace", async () => {
+		workspaceHostedBy("org-a");
+		const result = await executePlatformTool(
+			"fabric_get_workspace_document",
+			{ workspaceId: "ws-1", documentId: "doc-1" },
+			{ ...orgKeyInA, scopes: ["projects:read"] },
+		);
+		expect(result.isError).toBe(true);
+		expect(databaseMocks.readDocument).not.toHaveBeenCalled();
+	});
 });

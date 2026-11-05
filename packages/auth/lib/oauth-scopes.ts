@@ -8,7 +8,10 @@
  * purpose, and an agent can never be registered with them
  * (`clientRegistrationAllowedScopes`).
  *
- * The one deliberate exception to propose-only is `memory:write` (ADR-022): it
+ * Explicit agent controls are additional nondefault grants. Read/execute/schedule
+ * are independently consented; grant-time and request-time role checks apply.
+ *
+ * The other deliberate exception to propose-only is `memory:write` (ADR-022): it
  * writes files into the Living Memory folders an administrator named, and on a
  * folder set to direct push the commit lands on the synced branch with no
  * review. It is never a default, and a person approves it by name.
@@ -38,6 +41,9 @@ export const OAUTH_SCOPES = [
 	OAUTH_SCOPE_INSTRUCTIONS_WRITE,
 	OAUTH_SCOPE_REPOSITORIES_READ,
 	OAUTH_SCOPE_MEMORY_WRITE,
+	"agents:read",
+	"agents:execute",
+	"agents:schedule",
 	OAUTH_SCOPE_OFFLINE_ACCESS,
 ] as const;
 
@@ -88,6 +94,8 @@ export function oauthValidAudiences(appUrl: string): string[] {
 	return [
 		`${origin}${OAUTH_GATEWAY_RESOURCE_PATH}`,
 		`${origin}${OAUTH_GATEWAY_RESOURCE_PATH}/`,
+		`${origin}/mcp`,
+		`${origin}/mcp/`,
 		`${origin}${OAUTH_API_RESOURCE_PATH}`,
 	];
 }

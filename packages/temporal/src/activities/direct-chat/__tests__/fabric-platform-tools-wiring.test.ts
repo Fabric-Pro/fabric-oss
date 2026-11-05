@@ -12,7 +12,7 @@
  *     there is no in-process fallback — while the in-process frame tools stay;
  *   - a caller that did not ask for Fabric MCP (a meeting, a mention reply)
  *     keeps the tools it always had and never touches the gateway;
- *   - a call the person approved runs once, first, and the model is told so;
+ *   - legacy raw approved-call payloads are refused before tools/model dispatch;
  *   - the Fabric client is closed when the turn ends.
  *
  * Boundaries mocked as in `system-prompt-wiring.test.ts`.
@@ -195,7 +195,7 @@ function systemText(): string {
 
 async function runTurn(overrides: Partial<DirectChatWorkflowInput> = {}) {
 	state.captured = undefined;
-	await executeDirectChatActivity(
+	const result = await executeDirectChatActivity(
 		{
 			executionId: "exec-1",
 			message: "Hello",
@@ -211,7 +211,8 @@ async function runTurn(overrides: Partial<DirectChatWorkflowInput> = {}) {
 		"",
 		"",
 	);
-	expect(state.captured).toBeDefined();
+	if (!overrides.approvedToolCall) expect(state.captured).toBeDefined();
+	return result;
 }
 
 const IN_PROCESS_FRAME_TOOL = { description: "in-process frame tool" };
@@ -276,6 +277,7 @@ describe("the interactive chat takes its workflow tools from Fabric MCP", () => 
 				surface: "workspace",
 				workspaceId: "workspace-1",
 			}),
+			{ confirmationMode: "unavailable" },
 		);
 	});
 
@@ -283,7 +285,9 @@ describe("the interactive chat takes its workflow tools from Fabric MCP", () => 
 		await runTurn({ message: "mark the task done" });
 
 		expect(state.loadFabricPlatformTools).toHaveBeenCalledTimes(1);
-		expect(state.loadFabricPlatformTools.mock.calls[0]).toHaveLength(1);
+		expect(state.loadFabricPlatformTools.mock.calls[0][1]).toEqual({
+			confirmationMode: "unavailable",
+		});
 	});
 
 	it("does not offer the portal schemas to a meeting turn that only asks a question", async () => {
@@ -294,7 +298,7 @@ describe("the interactive chat takes its workflow tools from Fabric MCP", () => 
 
 		expect(state.loadFabricPlatformTools).toHaveBeenCalledWith(
 			expect.anything(),
-			{ portal: { offer: false } },
+			{ confirmationMode: "unavailable", portal: { offer: false } },
 		);
 	});
 
@@ -306,7 +310,7 @@ describe("the interactive chat takes its workflow tools from Fabric MCP", () => 
 
 		expect(state.loadFabricPlatformTools).toHaveBeenCalledWith(
 			expect.anything(),
-			{ portal: { offer: true } },
+			{ confirmationMode: "unavailable", portal: { offer: true } },
 		);
 	});
 
@@ -322,7 +326,7 @@ describe("the interactive chat takes its workflow tools from Fabric MCP", () => 
 
 		expect(state.loadFabricPlatformTools).toHaveBeenCalledWith(
 			expect.anything(),
-			{ portal: { offer: true } },
+			{ confirmationMode: "unavailable", portal: { offer: true } },
 		);
 	});
 
@@ -458,15 +462,17 @@ describe("a call the person approved", () => {
 		args: { preset: { name: "Weekly digest" } },
 	};
 
-	it("runs once, with the exact arguments, before the model answers", async () => {
-		await runTurn({ approvedToolCall });
-
-		expect(state.fabric?.runApproved).toHaveBeenCalledTimes(1);
-		expect(state.fabric?.runApproved).toHaveBeenCalledWith(
-			"fabric_create_workflow",
-			approvedToolCall.args,
-		);
-		expect(systemText()).toContain("has already run");
+	it("refuses the raw approval before model resolution, tool loading or dispatch", async () => {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const result = await runTurn({ approvedToolCall });
+			expect(result).toMatchObject({
+				success: false,
+				error: expect.stringContaining("Advisor Simple (Orchestrator)"),
+			});
+		}
+		expect(state.fabric?.runApproved).not.toHaveBeenCalled();
+		expect(state.loadFabricPlatformTools).not.toHaveBeenCalled();
+		expect(state.captured).toBeUndefined();
 	});
 
 	it("is not run on a turn nobody approved", async () => {

@@ -25,6 +25,7 @@ const store = vi.hoisted(() => ({
 	projects: [] as Row[],
 	projectMembers: [] as Row[],
 	frames: [] as Row[],
+	organizations: [] as Row[],
 }));
 
 function matchesScalar(value: unknown, condition: unknown): boolean {
@@ -88,18 +89,44 @@ function table(rows: () => Row[]) {
 			where,
 			take,
 			skip,
+			orderBy,
 		}: {
 			where: Row;
 			take?: number;
 			skip?: number;
+			orderBy?: Row | Row[];
 		}) =>
 			rows()
 				.filter((row) => matches(row, where))
-				.sort(
-					(a, b) =>
-						((b.updatedAt as Date | undefined)?.getTime() ?? 0) -
-						((a.updatedAt as Date | undefined)?.getTime() ?? 0),
-				)
+
+				.sort((a, b) => {
+					for (const order of Array.isArray(orderBy)
+						? orderBy
+						: [orderBy ?? {}]) {
+						for (const [field, direction] of Object.entries(
+							order,
+						)) {
+							const left =
+								a[field] instanceof Date
+									? (a[field] as Date).getTime()
+									: a[field];
+							const right =
+								b[field] instanceof Date
+									? (b[field] as Date).getTime()
+									: b[field];
+							if (left === right) {
+								continue;
+							}
+							const compared = String(left).localeCompare(
+								String(right),
+								"en",
+								{ numeric: true },
+							);
+							return direction === "desc" ? -compared : compared;
+						}
+					}
+					return 0;
+				})
 				.slice(skip ?? 0, (skip ?? 0) + (take ?? rows().length)),
 	};
 }
@@ -110,6 +137,11 @@ vi.mock("../prisma/client", async (importOriginal) => {
 		...actual,
 		db: {
 			member: table(() => store.members),
+			organization: {
+				findUnique: async ({ where }: { where: Row }) =>
+					store.organizations.find((row) => matches(row, where)) ??
+					null,
+			},
 			project: table(() => store.projects),
 			projectMember: table(() => store.projectMembers),
 			agentWorkspaceFile: {
@@ -122,8 +154,12 @@ vi.mock("../prisma/client", async (importOriginal) => {
 	};
 });
 
-const { getAccessibleFrameById, listProjectFrames, listWorkspaceFrames } =
-	await import("../prisma/queries/frames");
+const {
+	getAccessibleFrameById,
+	listFrames,
+	listProjectFrames,
+	listWorkspaceFrames,
+} = await import("../prisma/queries/frames");
 
 const ORG = "org-a";
 const OTHER_ORG = "org-b";
@@ -207,6 +243,10 @@ function accepted(projectId: string, userId: string, extra: Row = {}): Row {
 
 beforeEach(() => {
 	tick = 0;
+	store.organizations = [
+		{ id: ORG, canShareFramesPublicly: true, deletedAt: null },
+		{ id: OTHER_ORG, canShareFramesPublicly: true, deletedAt: null },
+	];
 	store.members = [
 		{ organizationId: ORG, userId: "owner" },
 		{ organizationId: ORG, userId: "colleague" },
@@ -650,7 +690,62 @@ describe("getAccessibleFrameById", () => {
 		});
 	});
 
+	it("refuses public ID access after the current organization policy is disabled", async () => {
+		store.organizations[0].canShareFramesPublicly = false;
+		expect(await open("L-public", "invited")).toBeNull();
+	});
+	it("refuses public ID access after the owning organization is deleted", async () => {
+		store.organizations[0].deletedAt = new Date("2026-11-01T00:00:00Z");
+		expect(await open("L-public", "invited")).toBeNull();
+	});
 	it("finds nothing for an id that is not a frame", async () => {
 		expect(await open("missing", "owner")).toBeNull();
 	});
+});
+
+describe("conversation and stable surface pagination", () => {
+	it.each(["workspace", "artifact", "owned"] as const)(
+		"keeps equal-timestamp %s pages stable and filters conversation",
+		async (surface) => {
+			const sameTime = new Date("2026-11-01T00:00:00Z");
+			store.frames = Array.from({ length: 22 }, (_, index) => ({
+				...frame(`example-${String(index).padStart(2, "0")}`, {
+					userId: "owner",
+					projectId: "P1",
+					surface: surface === "owned" ? "artifact" : surface,
+				}),
+				conversationId:
+					index === 21 ? "example-other" : "example-thread",
+				updatedAt: sameTime,
+			}));
+			const query =
+				surface === "workspace"
+					? listWorkspaceFrames
+					: surface === "owned"
+						? listFrames
+						: listProjectFrames;
+			const input = {
+				userId: "owner",
+				organizationId: ORG,
+				projectId: "P1",
+				conversationId: "example-thread",
+				surface: surface === "owned" ? "artifact" : surface,
+				limit: 21,
+				offset: 0,
+			};
+			const first = await query(input);
+			const next = await query({ ...input, offset: 20 });
+			expect(first.map((row) => row.id)).toEqual(
+				Array.from(
+					{ length: 21 },
+					(_, index) =>
+						`example-${String(20 - index).padStart(2, "0")}`,
+				),
+			);
+			expect(
+				first.slice(0, 20).some((row) => row.id === next[0]?.id),
+			).toBe(false);
+			expect(next.map((row) => row.id)).toEqual(["example-00"]);
+		},
+	);
 });

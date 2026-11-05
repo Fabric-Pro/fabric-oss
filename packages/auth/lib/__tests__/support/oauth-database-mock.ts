@@ -23,6 +23,7 @@ interface StoredBinding {
 }
 
 interface OAuthFixtures {
+	agentRole: "owner" | "viewer" | "removed";
 	/** How many organizations the signed-in person belongs to. */
 	organizationCount: number;
 	/** The signed-in person's `mustChangePassword`. */
@@ -36,6 +37,7 @@ interface OAuthFixtures {
 }
 
 export const oauthFixtures: OAuthFixtures = {
+	agentRole: "owner",
 	organizationCount: 1,
 	mustChangePassword: false,
 	readableProjects: new Set(),
@@ -44,6 +46,7 @@ export const oauthFixtures: OAuthFixtures = {
 };
 
 export function resetOAuthFixtures(): void {
+	oauthFixtures.agentRole = "owner";
 	oauthFixtures.organizationCount = 1;
 	oauthFixtures.mustChangePassword = false;
 	oauthFixtures.readableProjects = new Set([
@@ -66,6 +69,15 @@ export async function createDatabaseMock() {
 	);
 	return {
 		...format,
+		canReadOrganizationAgents: vi.fn(
+			async () => oauthFixtures.agentRole !== "removed",
+		),
+		canExecuteOrganizationAgents: vi.fn(
+			async () => oauthFixtures.agentRole === "owner",
+		),
+		canScheduleOrganizationAgents: vi.fn(
+			async () => oauthFixtures.agentRole === "owner",
+		),
 		db: {
 			member: {
 				count: vi.fn(async () => oauthFixtures.organizationCount),

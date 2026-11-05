@@ -1,62 +1,97 @@
 import {
+	admitTemplateInstanceExecution,
+	assertProjectReportSourcesReady,
+	buildReportExecutionSnapshot,
+	canExecuteReportInstance,
 	claimAndAdvanceScheduledInstance,
 	computeNextRunAt,
-	createTemplateInstanceExecution,
-	findExecutionByWorkflowId,
-	getInstanceScheduleMode,
+	getProjectReportSetupReason,
+	getTemplateInstance,
+	REPORT_EXECUTION_SNAPSHOT_KEY,
+	reportExecutionAdmissionId,
 	updateTemplateInstanceExecution,
 } from "@repo/database";
+import type { Prisma } from "@repo/database/prisma/generated/client";
 import { heartbeat } from "@temporalio/activity";
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import { getTemporalClient } from "../../client";
 import type { DueReportInstance } from "./find-due-report-instances";
 
-/**
- * Start a report-generation run for one due instance, idempotently:
- *
- *  1. Deterministic workflowId keyed on instanceId + the observed dueAt — stable across
- *     retries and poll ticks.
- *  2. create-or-get the execution row by that workflowId (durable occurrence record FIRST).
- *  3. Start templateInstanceExecutionWorkflow with the SAME args the manual Generate button
- *     uses, with REJECT_DUPLICATE + FAIL so a closed or running prior run is a no-op
- *     (WorkflowExecutionAlreadyStartedError → success).
- *  4. Advance nextRunAt LAST via compare-and-swap, so a crash before this point simply
- *     re-runs the same occurrence next tick (no lost occurrence, no double-run).
- *
- * A non-AlreadyStarted start error is rethrown (transient) so Temporal retries — the
- * occurrence is NOT marked terminally failed and nextRunAt is NOT advanced.
- *
- * Tenant fidelity (D11): the swept row's OWN userId/organizationId are used verbatim
- * (organizationId null → undefined), never a fallback tenant.
+/** Durable admission first; the immutable occurrence ID never contains configuration hashes.
+ * On an uncertain start/receipt, retry the SAME occurrence. Advance its due time last.
  */
 export async function dispatchScheduledReportActivity(
 	row: DueReportInstance,
 ): Promise<void> {
 	heartbeat(`dispatchScheduledReport: ${row.id}`);
-
-	// In-flight Off guard: an instance switched OFF after find-due selected it must not
-	// still fire. Cheap PK read, placed BEFORE the execution row is created so OFF is a true
-	// no-op (no orphan execution, no workflow.start). nextRunAt was already nulled by the Off
-	// update, so the trailing CAS would no-op regardless.
-	if ((await getInstanceScheduleMode(row.id)) === "OFF") {
+	if (!row.organizationId) {
 		return;
 	}
-
-	const now = new Date();
+	const instance = await getTemplateInstance({
+		id: row.id,
+		userId: row.userId,
+		organizationId: row.organizationId,
+	});
+	if (
+		!instance ||
+		!instance.isActive ||
+		instance.status !== "ACTIVE" ||
+		instance.scheduleMode === "OFF"
+	) {
+		return;
+	}
+	// Do not dispatch a stale sweep row after a schedule edit.
+	if (instance.nextRunAt?.getTime() !== new Date(row.nextRunAt).getTime()) {
+		return;
+	}
+	if (
+		getProjectReportSetupReason(
+			instance.fabricConfig,
+			instance.template.definition,
+			instance.connections,
+		)
+	) {
+		return;
+	}
+	const caller = { userId: row.userId, organizationId: row.organizationId };
+	if (!(await canExecuteReportInstance(instance, caller))) {
+		return;
+	}
 	const dueAt = new Date(row.nextRunAt);
-	const organizationId = row.organizationId ?? undefined;
 	const workflowId = `scheduled-report-${row.id}-${dueAt.getTime()}`;
-
-	const existing = await findExecutionByWorkflowId(workflowId);
-	const execution =
-		existing ??
-		(await createTemplateInstanceExecution({
-			instanceId: row.id,
-			userId: row.userId,
-			organizationId,
-			workflowId,
-		}));
-
+	const snapshot = await buildReportExecutionSnapshot({
+		instance,
+		organizationId: row.organizationId,
+		userId: row.userId,
+		occurrenceAt: dueAt,
+		origin: "scheduled",
+	});
+	const execution = await admitTemplateInstanceExecution({
+		id: reportExecutionAdmissionId(workflowId),
+		instanceId: row.id,
+		userId: row.userId,
+		organizationId: row.organizationId,
+		workflowId,
+		parameters: JSON.parse(
+			JSON.stringify({ [REPORT_EXECUTION_SNAPSHOT_KEY]: snapshot }),
+		) as Prisma.InputJsonValue,
+	});
+	// An edit cannot broaden the original occurrence's audience or revive revoked access.
+	if (
+		!(await canExecuteReportInstance(
+			instance,
+			caller,
+			execution.parameters,
+		))
+	) {
+		return;
+	}
+	assertProjectReportSourcesReady(
+		instance.fabricConfig,
+		execution.parameters,
+		instance.template.definition,
+		instance.connections,
+	);
 	const client = await getTemporalClient();
 	try {
 		const handle = await client.workflow.start(
@@ -71,9 +106,16 @@ export async function dispatchScheduledReportActivity(
 						executionId: execution.id,
 						instanceId: row.id,
 						userId: row.userId,
-						organizationId,
+						organizationId: row.organizationId,
 						jobType: "scheduled-report",
-						parameters: undefined,
+						...((
+							execution.parameters as Record<
+								string,
+								unknown
+							> | null
+						)?.[REPORT_EXECUTION_SNAPSHOT_KEY]
+							? { reportingProtocol: 1 }
+							: {}),
 					},
 				],
 			},
@@ -83,18 +125,23 @@ export async function dispatchScheduledReportActivity(
 			workflowId,
 			runId: handle.firstExecutionRunId,
 		});
-	} catch (err) {
-		// A closed/running prior run with the same id → idempotent success.
-		// Any other error is transient: rethrow so Temporal retries (do NOT advance).
-		if (!(err instanceof WorkflowExecutionAlreadyStartedError)) {
-			throw err;
+	} catch (error) {
+		if (!(error instanceof WorkflowExecutionAlreadyStartedError)) {
+			throw error;
 		}
+		// Repair a receipt lost after a successful start, including a closed execution.
+		const description = await client.workflow
+			.getHandle(workflowId)
+			.describe();
+		await updateTemplateInstanceExecution({
+			id: execution.id,
+			workflowId,
+			runId: description.runId,
+		});
 	}
-
-	// Advance LAST: compare-and-swap so a concurrent schedule edit isn't clobbered.
 	await claimAndAdvanceScheduledInstance(
 		row.id,
 		dueAt,
-		computeNextRunAt(row.schedule, now),
+		computeNextRunAt(row.schedule, new Date()),
 	);
 }

@@ -55,12 +55,16 @@ const TOKEN = "fat_example-access-token";
  *     project gate before reading pinned file content;
  *   - the memory routes go through `resolveContextProject`, which asks
  *     `credentialMayReachProject` first;
+ *   - context-quality inspection and recorded-output scoring use that same
+ *     `resolveContextProject`/`credentialMayReachProject` gate and then repeat
+ *     current source permission/revision checks in the shared reader;
  *   - the project's document routes call `resolveV1Context` without a project
  *     and so refuse a bound credential.
  */
 const REACHABLE = [
 	"DELETE /projects/:projectId/contexts/synced-files",
 	"GET /auth/whoami",
+	"GET /projects/:projectId/context-quality/sources/:sourceId",
 	"GET /projects/:projectId/documents",
 	"GET /projects/:projectId/features",
 	"GET /projects/:projectId/features/:id",
@@ -78,6 +82,7 @@ const REACHABLE = [
 	"GET /projects/:projectId/memory/writes/:writeId",
 	"PATCH /projects/:projectId/features/:id",
 	"POST /instructions/checkouts/resolve",
+	"POST /projects/:projectId/context-quality/evaluate",
 	"POST /projects/:projectId/documents",
 	"POST /projects/:projectId/features",
 	"POST /projects/:projectId/instructions/changes",

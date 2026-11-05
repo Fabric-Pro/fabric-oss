@@ -13,6 +13,12 @@ import {
 	useCapabilityGates,
 } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { useProjectContextCountSync } from "@saas/projects/hooks/use-project-context-count-sync";
+import {
+	consumeLocationSearchParam,
+	consumePendingReadinessAction,
+	PROJECT_READINESS_ACTION_EVENT,
+	type ProjectReadinessActionEventDetail,
+} from "@saas/projects/lib/readiness-actions";
 import { ConfluenceIcon } from "@saas/workflows/lib/plugins/confluence/icon";
 import { MicrosoftTeamsIcon } from "@saas/workflows/lib/plugins/microsoft-teams/icon";
 import { TruncatedText } from "@shared/components/TruncatedText";
@@ -110,6 +116,8 @@ import {
 	triggerBlobDownload,
 	triggerUrlDownload,
 } from "../lib/markdown-to-document";
+import { ContextQualityDialog } from "./ContextQualityDialog";
+import { ContextSelectionPanel } from "./ContextSelectionPanel";
 import {
 	ContextSourceDetailsDialog,
 	ContextSourceMetaLine,
@@ -126,6 +134,7 @@ import {
 } from "./LinkContextManagePanel";
 import { LivingMemorySection } from "./LivingMemorySection";
 import { ProjectSectionHero } from "./ProjectSectionHero";
+import { ProjectWorkspaceDocuments } from "./ProjectWorkspaceDocuments";
 import { getPmToolBrandIcon } from "./stories/pm-sync/pm-tool-brand-icon";
 
 /** Context types that can be read as a customer scope document (plan §Slice 1). */
@@ -945,6 +954,43 @@ export function ProjectContextsList({ projectId }: Props) {
 	const { trackEvent } = useAnalytics();
 	const router = useRouter();
 	const pathname = usePathname();
+
+	useEffect(() => {
+		const pending = consumePendingReadinessAction(
+			projectId,
+			"open-context-uploader",
+		);
+		const urlAddContext = consumeLocationSearchParam("addContext");
+		if (pending || urlAddContext === "1") {
+			setUploaderOpen(true);
+		}
+		const handleReadinessAction = (event: Event) => {
+			const detail = (
+				event as CustomEvent<ProjectReadinessActionEventDetail>
+			).detail;
+			if (
+				detail?.projectId === projectId &&
+				detail.action.kind === "open-context-uploader"
+			) {
+				consumePendingReadinessAction(
+					projectId,
+					"open-context-uploader",
+				);
+				consumeLocationSearchParam("addContext");
+				setUploaderOpen(true);
+			}
+		};
+		window.addEventListener(
+			PROJECT_READINESS_ACTION_EVENT,
+			handleReadinessAction,
+		);
+		return () => {
+			window.removeEventListener(
+				PROJECT_READINESS_ACTION_EVENT,
+				handleReadinessAction,
+			);
+		};
+	}, [projectId]);
 
 	// Scope intake: one active extraction is tracked at a time; progress is
 	// polled from the deterministic workflow (keyed by contextId).
@@ -2506,6 +2552,23 @@ export function ProjectContextsList({ projectId }: Props) {
 									totalContexts={contexts.length}
 									totalBytesEstimate={totalBytesEstimate}
 								/>
+								<span data-onboarding-target="context-quality">
+									<ContextQualityDialog
+										projectId={projectId}
+										organizationId={organizationId}
+										sources={contexts.map((source) => ({
+											id: source.id,
+											title: getContextDisplayTitle(
+												source,
+											),
+											version: [
+												source.contentHash,
+												source.updatedAt,
+												source.extractionStatus,
+											].join(":"),
+										}))}
+									/>
+								</span>
 							</div>
 						</div>
 					</div>
@@ -2534,6 +2597,24 @@ export function ProjectContextsList({ projectId }: Props) {
 			/>
 
 			<ContextSummaryPanel projectId={projectId} />
+			<ProjectWorkspaceDocuments
+				projectId={projectId}
+				organizationId={organizationId}
+				organizationSlug={organizationSlug}
+			/>
+			<ContextSelectionPanel
+				projectId={projectId}
+				organizationId={organizationId}
+				sources={contexts.map((source) => ({
+					id: source.id,
+					title: getContextDisplayTitle(source),
+					version: [
+						source.contentHash,
+						source.updatedAt,
+						source.extractionStatus,
+					].join(":"),
+				}))}
+			/>
 			{/* Scope intake progress */}
 			{scopeIntakeContextId && intakeProgressQuery.data && (
 				<output className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-foreground/10 bg-muted px-4 py-3 text-sm">

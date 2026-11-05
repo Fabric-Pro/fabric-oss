@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	handlers,
 	mockGetFrameById,
+	mockGetAccessibleFrameById,
 	mockGetProjectFrameById,
 	mockHasProjectAccess,
 	mockListFramesForStory,
@@ -19,6 +20,7 @@ const {
 	return {
 		handlers,
 		mockGetFrameById: vi.fn(),
+		mockGetAccessibleFrameById: vi.fn(),
 		mockGetProjectFrameById: vi.fn(),
 		mockHasProjectAccess: vi.fn(),
 		mockListFramesForStory: vi.fn(),
@@ -27,6 +29,7 @@ const {
 
 vi.mock("@repo/database", () => ({
 	getFrameById: mockGetFrameById,
+	getAccessibleFrameById: mockGetAccessibleFrameById,
 	getProjectFrameById: mockGetProjectFrameById,
 	hasProjectAccess: mockHasProjectAccess,
 	listFramesForStory: mockListFramesForStory,
@@ -51,6 +54,7 @@ vi.mock("../../../../orpc/procedures", () => {
 		tenantProtectedProcedure: chainable,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
 		requireProjectPermission: () => (c: unknown) => c,
 		resolveOrganizationId: vi.fn(
 			(organizationId: string | null | undefined) =>
@@ -82,6 +86,7 @@ const get = (userId: string) =>
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockGetAccessibleFrameById.mockResolvedValue(null);
 	// The caller is not the creator: the personal lookup finds nothing.
 	mockGetFrameById.mockResolvedValue(null);
 	mockGetProjectFrameById.mockResolvedValue(projectFrame);
@@ -89,10 +94,16 @@ beforeEach(() => {
 
 describe("frames.get — project frames", () => {
 	it("returns a project frame to a project member who is not the creator", async () => {
-		mockHasProjectAccess.mockResolvedValue(true);
+		mockGetAccessibleFrameById.mockResolvedValue(projectFrame);
 		const result = (await get("member-2")) as { id: string };
 		expect(result.id).toBe("frame-1");
-		expect(mockHasProjectAccess).toHaveBeenCalledWith("proj-1", "member-2");
+		expect(mockGetAccessibleFrameById).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "frame-1",
+				userId: "member-2",
+				organizationId: "org-1",
+			}),
+		);
 	});
 
 	it("does not return a project frame to a non-member (fail closed)", async () => {
@@ -116,8 +127,8 @@ describe("frames.get — project frames", () => {
 		expect(mockHasProjectAccess).not.toHaveBeenCalled();
 	});
 
-	it("still serves the creator through the personal lookup first", async () => {
-		mockGetFrameById.mockResolvedValue(projectFrame);
+	it("serves the creator through the same organization-scoped access query", async () => {
+		mockGetAccessibleFrameById.mockResolvedValue(projectFrame);
 		const result = (await get("creator-1")) as { id: string };
 		expect(result.id).toBe("frame-1");
 		expect(mockGetProjectFrameById).not.toHaveBeenCalled();

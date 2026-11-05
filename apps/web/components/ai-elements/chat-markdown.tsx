@@ -75,7 +75,7 @@ function extractCodeBlock(children: unknown): {
 	const match =
 		/language-([A-Za-z0-9+#-]+)/.exec(className || "") ??
 		/lang-([A-Za-z0-9+#-]+)/.exec(className || "");
-	const language = dataLang || match?.[1] || "plaintext";
+	const language = dataLang || match?.[1] || "";
 
 	return { code, language };
 }
@@ -83,6 +83,9 @@ function extractCodeBlock(children: unknown): {
 function isMermaidBlock(language: string, code: string): boolean {
 	if (language.toLowerCase() === "mermaid") {
 		return true;
+	}
+	if (language) {
+		return false;
 	}
 
 	const trimmed = code.trimStart();
@@ -256,7 +259,7 @@ export const chatMarkdownComponents = {
 		return (
 			<CodeBlock
 				code={code}
-				language={language}
+				language={language || "plaintext"}
 				className="my-3"
 				style={{ color: "inherit" }}
 				{...props}

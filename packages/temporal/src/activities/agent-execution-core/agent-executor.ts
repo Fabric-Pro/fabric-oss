@@ -383,6 +383,7 @@ export async function executeAgentTurn(
 				currentDepth,
 				projectId,
 				input.workspaceIds,
+				input.workspaceDocumentFilters,
 				conversationId,
 				input.frameId || input.workflowExecutionId
 					? usageOriginFields(input)
@@ -877,6 +878,7 @@ async function loadBuiltInToolsForAgent(
 	currentDepth = 0,
 	projectId?: string,
 	workspaceIds?: string[],
+	workspaceDocumentFilters?: ExecuteAgentTurnInput["workspaceDocumentFilters"],
 	usageConversationId?: string,
 	usageOrigin?: UsageOrigin,
 ): Promise<Record<string, unknown>> {
@@ -890,6 +892,7 @@ async function loadBuiltInToolsForAgent(
 		organizationId,
 		projectId,
 		workspaceIds,
+		workspaceDocumentFilters,
 		enabledFabricToolIds: [...fabricToolIds],
 	});
 	const fabricToolDefinitions = getFabricToolDefinitionMap(

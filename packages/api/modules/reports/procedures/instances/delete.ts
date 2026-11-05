@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/server";
-import { deleteTemplateInstance, getTemplateInstance } from "@repo/database";
+import {
+	canAccessReportInstance,
+	deleteTemplateInstance,
+	getTemplateInstance,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -32,6 +36,19 @@ export const deleteInstanceProcedure = tenantProtectedProcedure
 		if (!existing) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Template instance not found or access denied",
+			});
+		}
+
+		if (
+			!(await canAccessReportInstance(
+				existing,
+				{ userId: context.user.id, organizationId },
+				undefined,
+				true,
+			))
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Project report write access denied",
 			});
 		}
 

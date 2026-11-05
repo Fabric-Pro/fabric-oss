@@ -3,10 +3,10 @@
  * GET  /agents        list agents for caller's tenant
  * GET  /agents/:id    get agent details
  */
-import { createAgentTask, db, getAgentById, listAgents } from "@repo/database";
-import { getTemporalClient } from "@repo/temporal";
+
+import { REGISTERED_AGENT_EXECUTION_UNSUPPORTED } from "@repo/agent-types";
+import { db, getAgentById, listAgents } from "@repo/database";
 import type { Hono } from "hono";
-import { withCorrelationMemo } from "../../lib/temporal-correlation";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { notFound, ok, resolveV1Context } from "./helpers";
@@ -87,6 +87,12 @@ export function registerAgentRoutes(
 				return c.json({ error: { message: ctx.error } }, ctx.status);
 			}
 
+			if (!ctx.organizationId) {
+				return c.json(
+					{ error: { message: "An organization is required" } },
+					403,
+				);
+			}
 			// Verify agent exists and is accessible
 			const agent = await db.agent.findFirst({
 				where: {
@@ -106,65 +112,10 @@ export function registerAgentRoutes(
 				);
 			}
 
-			let body: { input?: Record<string, unknown> };
-			try {
-				body = await c.req.json().catch(() => ({}));
-			} catch {
-				body = {};
-			}
-
-			const task = await createAgentTask({
-				agentId: agent.agentId,
-				userId: ctx.userId,
-				organizationId: ctx.organizationId ?? undefined,
-				status: "PENDING",
-				stage: "INITIALIZING",
-				input: body.input ?? {},
-				framework: agent.framework,
-			});
-
-			try {
-				const temporal = await getTemporalClient();
-				const workflowId = `agent-execution-${task.id}`;
-				const handle = await temporal.workflow.start(
-					"agentExecutionWorkflow",
-					withCorrelationMemo({
-						taskQueue: "agents",
-						workflowId,
-						args: [
-							{
-								taskId: task.id,
-								agentId: agent.agentId,
-								userId: ctx.userId,
-								organizationId: ctx.organizationId ?? undefined,
-								input: body.input ?? {},
-							},
-						],
-					}),
-				);
-
-				return c.json(
-					ok({
-						taskId: task.id,
-						workflowId: handle.workflowId,
-						runId: handle.firstExecutionRunId,
-						status: "PENDING",
-					}),
-					202,
-				);
-			} catch (_e) {
-				return c.json(
-					ok({
-						taskId: task.id,
-						workflowId: `agent-execution-${task.id}`,
-						runId: null,
-						status: "PENDING",
-						warning:
-							"Workflow scheduling failed; task queued for retry",
-					}),
-					202,
-				);
-			}
+			return c.json(
+				{ error: REGISTERED_AGENT_EXECUTION_UNSUPPORTED },
+				409,
+			);
 		},
 	);
 }

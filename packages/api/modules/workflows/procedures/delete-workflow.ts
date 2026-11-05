@@ -3,7 +3,7 @@ import { deleteWorkflow, hasWorkflowAccess } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -11,7 +11,11 @@ import { verifyOrganizationMembership } from "../../organizations/lib/membership
 import { syncWorkflowSchedule } from "../lib/sync-workflow-schedule";
 
 export const deleteWorkflowProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_DELETE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_DELETE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "DELETE",
 		path: "/workflows/{id}",

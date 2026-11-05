@@ -70,6 +70,7 @@ const zendeskPlugin: IntegrationPlugin = {
 					key: "description",
 					label: "Description",
 					type: "template-textarea",
+					required: true,
 					rows: 4,
 					placeholder: "Ticket details",
 				},

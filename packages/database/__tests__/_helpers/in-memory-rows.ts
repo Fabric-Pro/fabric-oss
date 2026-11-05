@@ -28,6 +28,10 @@ function matchesField(actual: unknown, condition: unknown): boolean {
 		const operators = condition as Record<string, unknown>;
 		return Object.entries(operators).every(([operator, expected]) => {
 			switch (operator) {
+				case "not":
+					return !matchesField(actual, expected);
+				case "has":
+					return Array.isArray(actual) && actual.includes(expected);
 				case "in":
 					return (expected as unknown[]).includes(actual);
 				case "gt":

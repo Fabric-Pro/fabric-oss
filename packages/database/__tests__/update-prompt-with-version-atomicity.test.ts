@@ -22,13 +22,17 @@ const {
 	versionCreate,
 	bindingUpdateMany,
 	transaction,
+	audit,
 } = vi.hoisted(() => ({
 	promptUpdate: vi.fn(),
 	versionFindFirst: vi.fn(),
 	versionCreate: vi.fn(),
 	bindingUpdateMany: vi.fn(),
 	transaction: vi.fn(),
+	audit: vi.fn(),
 }));
+
+vi.mock("../prisma/queries/audit-log", () => ({ recordAuditTx: audit }));
 
 vi.mock("../prisma/client", () => {
 	const tx = {
@@ -71,6 +75,7 @@ beforeEach(() => {
 		versionCreate,
 		bindingUpdateMany,
 		transaction,
+		audit,
 	]) {
 		m.mockReset();
 	}
@@ -152,5 +157,77 @@ describe("content omitted: metadata-only save creates no version", () => {
 		expect(versionCreate).not.toHaveBeenCalled();
 		expect(bindingUpdateMany).not.toHaveBeenCalled();
 		expect(result).toEqual({ prompt: PARENT, version: null });
+	});
+});
+
+describe("versioned response settings", () => {
+	it("carries the body and variables from the same latest read for a contract-only save", async () => {
+		versionFindFirst.mockResolvedValue({
+			id: "latest",
+			version: 7,
+			content: "newer instructions",
+			variables: { topic: "release" },
+			responseContract: { format: "TEXT" },
+		});
+		await updatePromptWithVersion({
+			id: PARENT.id,
+			updatedBy: "example-user",
+			responseContract: { format: "XML" },
+			auditOrganizationId: "example-org",
+		});
+		expect(versionFindFirst).toHaveBeenCalledTimes(1);
+		expect(versionCreate).toHaveBeenCalledWith({
+			data: expect.objectContaining({
+				version: 8,
+				content: "newer instructions",
+				variables: { topic: "release" },
+				responseContract: { format: "XML" },
+			}),
+		});
+		expect(audit).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				organizationId: "example-org",
+				action: "prompt.response_contract_changed",
+				metadata: { versionId: "v-new", responseFormat: "XML" },
+			}),
+		);
+	});
+	it("inherits the response contract without changing legacy content-only variable semantics", async () => {
+		versionFindFirst.mockResolvedValue({
+			id: "latest",
+			version: 2,
+			content: "old",
+			variables: { old: "value" },
+			responseContract: { format: "XML" },
+		});
+		await updatePromptWithVersion({
+			id: PARENT.id,
+			updatedBy: "example-user",
+			content: "replacement",
+		});
+		expect(versionCreate).toHaveBeenCalledWith({
+			data: expect.objectContaining({
+				content: "replacement",
+				variables: {},
+				responseContract: { format: "XML" },
+			}),
+		});
+		expect(audit).not.toHaveBeenCalled();
+	});
+	it("does not treat an audit failure as a successful save", async () => {
+		audit.mockRejectedValueOnce(new Error("audit unavailable"));
+		versionFindFirst.mockResolvedValue({
+			id: "latest",
+			version: 2,
+			content: "body",
+		});
+		await expect(
+			updatePromptWithVersion({
+				id: PARENT.id,
+				updatedBy: "example-user",
+				responseContract: { format: "XML" },
+			}),
+		).rejects.toThrow("audit unavailable");
 	});
 });

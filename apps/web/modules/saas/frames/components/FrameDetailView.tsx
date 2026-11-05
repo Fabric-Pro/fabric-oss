@@ -63,13 +63,14 @@ export function FrameDetailView({
 			key={`${frame.frameId}:${frame.updatedAt}`}
 			surface={surface}
 			frameId={frame.frameId}
+			updatedAt={frame.updatedAt}
 			title={frame.title}
 			description={frame.description}
 			kind={frame.kind}
 			embedUrl={frameEmbedUrl(frame.frameId, organizationSlug)}
 			shareUrl={frame.shareUrl}
 			frameDocument={document}
-			isPublic={Boolean(frame.shareUrl)}
+			isPublic={frame.isPublic ?? frame.shareScope === "PUBLIC"}
 			isProjectFrame={Boolean(frame.projectId)}
 			interactive={!isUnattendedFrame(frame)}
 			organizationId={organizationId}

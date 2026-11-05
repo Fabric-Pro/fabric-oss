@@ -103,3 +103,13 @@ describe("ReportReadinessRail — artifact suppression for CANCELLED (R10)", () 
 		expect(artifactButton()).toBeInTheDocument();
 	});
 });
+
+it("omits the external connection test when its report only reads Project knowledge", () => {
+	render(<ReportReadinessRail {...baseProps} showConnectionTest={false} />);
+	expect(
+		screen.queryByRole("button", { name: "Test connections" }),
+	).not.toBeInTheDocument();
+	expect(
+		screen.getByRole("button", { name: "Generate Report" }),
+	).toBeEnabled();
+});

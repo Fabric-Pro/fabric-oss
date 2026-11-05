@@ -32,6 +32,7 @@ const FrameSummarySchema = z.object({
 	surface: FrameSurfaceSchema.optional(),
 	projectId: z.string().optional(),
 	shareScope: FrameShareScopeSchema.optional(),
+	isPublic: z.boolean().optional(),
 	ownedByCaller: z.boolean().optional(),
 	/** What produced the page; a page a workflow wrote is shown without scripts. */
 	sourceRunType: z.string().optional(),

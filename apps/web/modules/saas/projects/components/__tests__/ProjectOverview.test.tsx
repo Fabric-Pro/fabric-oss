@@ -12,9 +12,13 @@
  * next-intl is mocked globally in apps/web/vitest.setup.ts.
  */
 
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+
+const { editDialogSectionRef } = vi.hoisted(() => ({
+	editDialogSectionRef: { current: null as string | null },
+}));
 
 // The overview renders the page-tour compass directly now (it used to sit
 // inside ProjectSectionHero, which this file mocked). The real button reads a
@@ -23,7 +27,12 @@ vi.mock("@saas/get-started/components/PageTourButton", () => ({
 	PageTourButton: () => null,
 }));
 vi.mock("../ProjectSectionEditDialog", () => ({
-	ProjectSectionEditDialog: () => null,
+	ProjectSectionEditDialog: ({ section }: { section: string | null }) => {
+		editDialogSectionRef.current = section;
+		return section ? (
+			<div data-testid="section-edit-dialog">{section}</div>
+		) : null;
+	},
 }));
 // The pipeline rows link to their documents, and the link is built from the
 // organization's route base.
@@ -35,7 +44,12 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	}),
 }));
 
+import { dispatchReadinessItemAction } from "../../lib/readiness-actions";
 import { ProjectOverview } from "../ProjectOverview";
+import {
+	NAVIGATE_TO_SETTINGS_TAB_EVENT,
+	type NavigateToSettingsTabDetail,
+} from "../settings-tab-navigation";
 
 type Doc = {
 	id: string;
@@ -224,29 +238,62 @@ describe("ProjectOverview — opening a document from the pipeline", () => {
 		expect(screen.queryByRole("link")).not.toBeInTheDocument();
 	});
 
-	it("allows switching remote server target, subscription harness, and quota fallback choice from the Project Overview", async () => {
+	it("renders a quiet Agent runtime summary bar and deep-links Manage remote servers directly to Settings -> Agent Runtime", async () => {
 		const onNavigateToTab = vi.fn();
-		renderOverview([], onNavigateToTab);
-
-		const localButton = screen.getByRole("button", {
-			name: /Local \(:9100\)/i,
-		});
-		await userEvent.click(localButton);
-		expect(localButton).toHaveAttribute("aria-pressed", "true");
-
-		const claudeButton = screen.getByRole("button", { name: "Claude" });
-		await userEvent.click(claudeButton);
-		expect(screen.getByText("claude-sonnet-5-5")).toBeInTheDocument();
-
-		const paidApiFallbackButton = screen.getByRole("button", {
-			name: /Use organization's paid API provider/i,
-		});
-		await userEvent.click(paidApiFallbackButton);
-		expect(paidApiFallbackButton).toHaveAttribute("aria-pressed", "true");
-
-		await userEvent.click(
-			screen.getByRole("button", { name: /Manage remote servers/i }),
+		const settingsEvents: NavigateToSettingsTabDetail[] = [];
+		const onSettingsEvent = (event: Event) => {
+			settingsEvents.push(
+				(event as CustomEvent<NavigateToSettingsTabDetail>).detail,
+			);
+		};
+		window.addEventListener(
+			NAVIGATE_TO_SETTINGS_TAB_EVENT,
+			onSettingsEvent,
 		);
-		expect(onNavigateToTab).toHaveBeenCalledWith("settings");
+
+		try {
+			renderOverview([], onNavigateToTab);
+
+			expect(
+				screen.getByRole("region", { name: "Agent runtime" }),
+			).toBeInTheDocument();
+
+			await userEvent.click(
+				screen.getByRole("button", { name: /Manage remote servers/i }),
+			);
+
+			expect(onNavigateToTab).toHaveBeenCalledWith("settings");
+			expect(
+				sessionStorage.getItem("fabric-project-settings-tab-p1"),
+			).toBe("agent-runtime");
+			expect(settingsEvents).toEqual([
+				{ projectId: "p1", settingsTab: "agent-runtime" },
+			]);
+		} finally {
+			window.removeEventListener(
+				NAVIGATE_TO_SETTINGS_TAB_EVENT,
+				onSettingsEvent,
+			);
+			sessionStorage.clear();
+		}
+	});
+
+	it("opens ProjectSectionEditDialog immediately when a Readiness direct action targets features or techStack", () => {
+		renderOverview([]);
+		expect(
+			screen.queryByTestId("section-edit-dialog"),
+		).not.toBeInTheDocument();
+
+		act(() => {
+			dispatchReadinessItemAction(
+				"p1",
+				{ kind: "tab", tab: "overview" },
+				"feature-snapshot",
+			);
+		});
+		expect(editDialogSectionRef.current).toBe("features");
+		expect(screen.getByTestId("section-edit-dialog")).toHaveTextContent(
+			"features",
+		);
 	});
 });

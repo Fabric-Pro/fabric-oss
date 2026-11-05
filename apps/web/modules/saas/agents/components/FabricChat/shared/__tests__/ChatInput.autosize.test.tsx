@@ -5,6 +5,7 @@
  */
 
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { TooltipProvider } from "@ui/components/tooltip";
 import { describe, expect, it, vi } from "vitest";
 import { ChatInput } from "../ChatInput";
@@ -124,4 +125,60 @@ describe("ChatInput textarea auto-size", () => {
 
 		expect(textarea.style.height).toBe(`${2 * LINE_HEIGHT}px`);
 	});
+});
+
+it("opens existing memory and file controls from the Add menu without submitting a turn", async () => {
+	const user = userEvent.setup();
+	const memory = vi.fn();
+	const attach = vi.fn();
+	const send = vi.fn();
+	render(
+		<TooltipProvider>
+			<ChatInput
+				value="Unsent question"
+				onChange={vi.fn()}
+				onSend={send}
+				onAttachClick={attach}
+				additionalActions={[
+					{ id: "memory", label: "Manage memory", onSelect: memory },
+				]}
+			/>
+		</TooltipProvider>,
+	);
+	await user.click(screen.getByRole("button", { name: "addMenu" }));
+	await user.click(
+		await screen.findByRole("menuitem", { name: "Manage memory" }),
+	);
+	expect(memory).toHaveBeenCalledOnce();
+	expect(send).not.toHaveBeenCalled();
+	expect(screen.getByRole("textbox")).toHaveValue("Unsent question");
+	await user.click(screen.getByRole("button", { name: "addMenu" }));
+	await user.click(
+		await screen.findByRole("menuitem", { name: "Attach files" }),
+	);
+	expect(attach).toHaveBeenCalledOnce();
+});
+it("keeps memory available during a run while attachment changes stay disabled", async () => {
+	const user = userEvent.setup();
+	const memory = vi.fn();
+	render(
+		<TooltipProvider>
+			<ChatInput
+				value="Question"
+				onChange={vi.fn()}
+				onSend={vi.fn()}
+				isLoading
+				onAttachClick={vi.fn()}
+				additionalActions={[
+					{ id: "memory", label: "Manage memory", onSelect: memory },
+				]}
+			/>
+		</TooltipProvider>,
+	);
+	await user.click(screen.getByRole("button", { name: "addMenu" }));
+	expect(
+		screen.getByRole("menuitem", { name: "Attach files" }),
+	).toHaveAttribute("aria-disabled", "true");
+	await user.click(screen.getByRole("menuitem", { name: "Manage memory" }));
+	expect(memory).toHaveBeenCalledOnce();
 });

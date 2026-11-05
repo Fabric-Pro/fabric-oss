@@ -5,7 +5,13 @@
  * It signals the supervisor workflow to queue a new execution.
  */
 
-import { ApplicationFailure, log, proxyActivities } from "@temporalio/workflow";
+import {
+	ApplicationFailure,
+	log,
+	patched,
+	proxyActivities,
+	workflowInfo,
+} from "@temporalio/workflow";
 import type * as scheduleTriggerActivities from "../activities/schedule-trigger";
 
 // =============================================================================
@@ -13,6 +19,9 @@ import type * as scheduleTriggerActivities from "../activities/schedule-trigger"
 // =============================================================================
 
 export interface ScheduleTriggerInput {
+	managedRunSchedule?: 1;
+	userId?: string;
+	organizationId?: string;
 	supervisorWorkflowId: string;
 	deploymentId: string;
 	triggerId: string;
@@ -40,6 +49,21 @@ const activities = proxyActivities<typeof scheduleTriggerActivities>({
 	},
 });
 
+export const MANAGED_AGENT_SCHEDULE_ACTIVITY_PATCH =
+	"managed-agent-schedule-activity-v1";
+const managedActivities = proxyActivities<typeof scheduleTriggerActivities>({
+	startToCloseTimeout: "1 minute",
+	heartbeatTimeout: "15 seconds",
+	// Unknown handlers on older workers and transient storage outages retry until
+	// a capable worker can reconcile this exact occurrence. Permanent fences
+	// return false or throw a nonretryable admission refusal before any effect.
+	retry: {
+		initialInterval: "1s",
+		backoffCoefficient: 2,
+		maximumInterval: "30s",
+	},
+});
+
 // =============================================================================
 // WORKFLOW IMPLEMENTATION
 // =============================================================================
@@ -58,12 +82,31 @@ export async function scheduleTriggerWorkflow(
 
 	try {
 		// Create execution record and signal supervisor
-		const result = await activities.signalSupervisorForScheduledExecution({
+		const activityInput = {
 			supervisorWorkflowId,
 			deploymentId,
 			triggerId,
 			triggerType,
-		});
+			...(input.managedRunSchedule === 1
+				? {
+						managedRunSchedule: 1 as const,
+						userId: input.userId,
+						organizationId: input.organizationId,
+						occurrenceWorkflowId: workflowInfo().workflowId,
+						occurrenceFirstRunId:
+							workflowInfo().firstExecutionRunId,
+					}
+				: {}),
+		};
+		const result =
+			input.managedRunSchedule === 1 &&
+			patched(MANAGED_AGENT_SCHEDULE_ACTIVITY_PATCH)
+				? await managedActivities.dispatchManagedAgentScheduledExecution(
+						activityInput,
+					)
+				: await activities.signalSupervisorForScheduledExecution(
+						activityInput,
+					);
 
 		if (result.success) {
 			log.info("Successfully queued scheduled execution", {
@@ -96,4 +139,17 @@ export async function scheduleTriggerWorkflow(
 			"SCHEDULE_TRIGGER_FAILED",
 		);
 	}
+}
+
+/** Distinct type fences older workers from consuming the native managed protocol. */
+export async function managedAgentRunScheduleWorkflow(
+	input: ScheduleTriggerInput,
+): Promise<ScheduleTriggerOutput> {
+	if (input.managedRunSchedule !== 1) {
+		throw ApplicationFailure.nonRetryable(
+			"Managed agent schedule protocol is required",
+			"INVALID_MANAGED_SCHEDULE",
+		);
+	}
+	return scheduleTriggerWorkflow(input);
 }

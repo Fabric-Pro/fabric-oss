@@ -11,7 +11,7 @@ import {
 const inputSchema = z.object({
 	id: z.string(),
 	organizationId: z.string().nullable().optional(),
-	limit: z.number().default(50),
+	limit: z.number().int().min(1).max(200).default(50),
 });
 
 const outputSchema = z.object({
@@ -19,6 +19,7 @@ const outputSchema = z.object({
 		z.object({
 			id: z.string(),
 			editType: z.string(),
+			canRestore: z.boolean(),
 			oldString: z.string().nullable(),
 			newString: z.string().nullable(),
 			editedBy: z.string(),
@@ -67,6 +68,7 @@ export const getFrameHistoryProcedure = tenantProtectedProcedure
 			history: history.map((entry, index) => ({
 				id: entry.id,
 				editType: entry.editType,
+				canRestore: Boolean(entry.contentSnapshot),
 				oldString: entry.oldString,
 				newString: entry.newString,
 				editedBy: entry.editedBy,

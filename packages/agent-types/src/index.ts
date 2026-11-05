@@ -6,6 +6,7 @@
  * that communicates via AG-UI protocol.
  */
 
+export { agentRunText } from "./agent-run-text";
 export {
 	anthropicModelRejectsForcedToolChoice,
 	isAnthropicAdaptiveOnlyModel,
@@ -383,3 +384,10 @@ export function getExamplePromptForDocumentType(
 
 	return examples[documentType];
 }
+
+/** Registry discovery/interactive readiness is not a background execution contract. */
+export const REGISTERED_AGENT_EXECUTION_UNSUPPORTED = {
+	code: "AGENT_EXECUTION_UNSUPPORTED",
+	message:
+		"This registered agent supports its interactive runtime. Background execution is not configured. Open its chat, or invoke an API-enabled saved agent instance.",
+} as const;

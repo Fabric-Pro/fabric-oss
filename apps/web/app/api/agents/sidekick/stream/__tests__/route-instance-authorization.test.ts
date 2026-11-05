@@ -59,7 +59,7 @@ beforeEach(() => {
 		organizationId: "example-org-b",
 	});
 	h.membership.mockResolvedValue({
-		role: "viewer",
+		role: "admin",
 		organization: { deletedAt: null },
 	});
 	h.tools.mockReturnValue({});
@@ -102,7 +102,7 @@ beforeEach(() => {
 	});
 });
 
-async function invoke() {
+async function invoke(overrides: Record<string, unknown> = {}) {
 	return POST(
 		new Request("https://example.com/api/agents/sidekick/stream", {
 			method: "POST",
@@ -111,6 +111,7 @@ async function invoke() {
 				agentId: "example-instance",
 				entityType: "instance",
 				formSnapshot: {},
+				...overrides,
 				messages: [
 					{
 						id: "example-message",
@@ -153,12 +154,16 @@ describe("Sidekick instance organization authorization", () => {
 		h.membership.mockResolvedValue(null);
 		await refused(403, "Forbidden");
 	});
-	it("admits a viewer whose role grants AGENT_TEMPLATE_READ", async () => {
+	it("refuses a viewer who can read the agent but cannot configure it", async () => {
+		h.membership.mockResolvedValue({
+			role: "viewer",
+			organization: { deletedAt: null },
+		});
 		h.findInstance.mockResolvedValue({
 			userId: "example-other-user",
 			organizationId: "example-org-b",
 		});
-		await admitted();
+		await refused(403, "Forbidden");
 	});
 	it("refuses a null-organization instance, including its creator", async () => {
 		h.findInstance.mockResolvedValue({
@@ -217,4 +222,23 @@ describe("Sidekick instance organization authorization", () => {
 			log.mockRestore();
 		}
 	});
+});
+
+it("authorizes an unsaved builder in its explicitly selected organization before spending", async () => {
+	const response = await invoke({
+		agentId: "new",
+		entityType: "new",
+		organizationId: "example-org-b",
+	});
+	expect(response.status).toBe(200);
+	await response.text();
+	expect(h.model).toHaveBeenCalledWith(
+		expect.anything(),
+		expect.objectContaining({ organizationId: "example-org-b" }),
+	);
+});
+it("refuses an explicit organization that disagrees with the saved agent", async () => {
+	const response = await invoke({ organizationId: "example-org-a" });
+	expect(response.status).toBe(404);
+	expect(h.model).not.toHaveBeenCalled();
 });

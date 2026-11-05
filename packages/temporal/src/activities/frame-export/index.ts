@@ -6,4 +6,5 @@
 
 export { generatePDFActivity } from "./generate-pdf";
 export { getFrameContentActivity } from "./get-frame-content";
-export { uploadToS3Activity } from "./upload-to-s3";
+export { renderAndStoreFrameExportActivity } from "./render-and-store";
+export { deleteFrameExportActivity, uploadToS3Activity } from "./upload-to-s3";

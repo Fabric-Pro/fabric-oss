@@ -1,3 +1,4 @@
+import type { PromptResponseContract } from "@repo/ai/lib/prompt-response-contract";
 import { orpcClient } from "@shared/lib/orpc-client";
 
 type PromptFormatValue =
@@ -16,6 +17,7 @@ export type PromptUpdateInput = {
 	tags?: string[];
 	isPublic?: boolean;
 	content?: string;
+	responseContract?: PromptResponseContract;
 	changeNote?: string;
 };
 

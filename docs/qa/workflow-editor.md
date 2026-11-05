@@ -22,7 +22,7 @@ run-through against a deployed environment), **gap** (neither).
 | # | Scenario | Expected | Status |
 |---|---|---|---|
 | 1.1 | Create workflow from the empty state | Lands in the editor, `DRAFT`, version 1 | manual |
-| 1.2 | List reflects personal vs organization context | Personal listing pins `organizationId: null`; count uses the same filter as the page | auto |
+| 1.2 | List resolves organization context | Current organization membership and workflow owner filters apply to the list and count | auto |
 | 1.3 | Rename / edit description | Persists across reload | manual |
 | 1.4 | Duplicate | Fresh `DRAFT` owned by the caller; never inherits the source's published state or webhook secret | auto |
 | 1.5 | Delete (card menu: Activate / Duplicate / Delete) | Row gone; any schedule removed | manual |
@@ -190,3 +190,21 @@ pnpm --filter @repo/temporal test --run workflow-builder
 # Browser pass (self-skips when the environment is unavailable)
 pnpm --filter web e2e tests/workflow-builder.spec.ts
 ```
+
+## Lifecycle transport checks
+
+Focused lifecycle tests cover the shared commands, REST, SDK, CLI and MCP authority checks. Schedule dialog tests distinguish a saved draft from an active schedule and retain typed changes during refresh. Publication uses an atomic version transaction with optimistic concurrency. Live acceptance should verify clock-triggered execution, draft cadence isolation, pause/resume, rollback, unpublish and cleanup against the local Temporal service. Connector protocol tests do not certify a live third-party account.
+
+### Local lifecycle acceptance
+
+Verify against an isolated organization and remove temporary workflows and keys afterward:
+
+1. Save a minute cadence to a draft. Confirm there is no active schedule until publishing.
+2. Publish, change the draft cadence and result marker, and wait for a real clock tick. Confirm the run uses the published marker and version.
+3. Pause and resume twice. Confirm future triggers stop and recover without another publication.
+4. Restore an older publication while paused. Confirm a new version is recorded, the paused state persists, and live runtime settings are preserved.
+5. Change the owned Temporal schedule's cadence or pause state independently. Confirm Fabric detects the drift and Retry synchronization repairs it.
+6. Unpublish. Confirm no active schedule remains. Check a read-only key cannot publish, and mutation audit rows exist.
+7. Run a public HTTP GET workflow and inspect its recorded response. Confirm a private URL is refused. These checks do not certify unrelated third-party accounts.
+
+The Portal dialog should remain usable at desktop, tablet and phone widths. Check focus, visible field labels, loading/error states, cached-data refresh, save feedback and time-zone labels with an accessibility scan. A successful connection configuration check alone is not proof of live execution.

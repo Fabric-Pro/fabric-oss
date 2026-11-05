@@ -1,3 +1,4 @@
+import type { NativeTestBoundary } from "../shared/native-agent-test-authority";
 /**
  * Agent Execution Types
  *
@@ -6,6 +7,7 @@
 
 import type { AiFeatureKey, AiJobKey } from "@repo/ai";
 import type { ModelMessage } from "ai";
+import type { WorkspaceDocumentFilter } from "../../lib/workspace-document-selection";
 
 /**
  * Knowledge source configuration
@@ -52,6 +54,7 @@ export interface AgentExecutionContext {
 	knowledgeSources: KnowledgeSourceConfig[];
 	/** Workspace IDs for document search */
 	workspaceIds: string[];
+	workspaceDocumentFilters?: WorkspaceDocumentFilter[];
 	/** User ID */
 	userId: string;
 	/** Organization ID */
@@ -66,6 +69,7 @@ export interface FetchKnowledgeInput {
 	knowledgeSources: KnowledgeSourceConfig[];
 	/** Workspace IDs for document search */
 	workspaceIds: string[];
+	workspaceDocumentFilters?: WorkspaceDocumentFilter[];
 	/** Query for semantic search */
 	query: string;
 	/** User ID */
@@ -140,6 +144,7 @@ export interface ToolCallRecord {
  * Input for agent turn execution
  */
 export interface ExecuteAgentTurnInput {
+	nativeTestBoundary?: NativeTestBoundary;
 	/** Internal Temporal step protocol: model decisions only; tools never execute in this call. */
 	durableStep?: { continuationMessages: ModelMessage[] };
 	/** System prompt */
@@ -197,6 +202,7 @@ export interface ExecuteAgentTurnInput {
 	/** Built-in tool names to load (e.g., "image-generation") */
 	builtInToolNames?: string[];
 	workspaceIds?: string[];
+	workspaceDocumentFilters?: WorkspaceDocumentFilter[];
 	/** Agent instance ID for capabilities that need scoped state (e.g. memory) */
 	agentInstanceId?: string;
 	/** Calling agent ID for run-agent delegation loop protection */

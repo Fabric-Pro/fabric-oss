@@ -1,16 +1,19 @@
 "use client";
 
+import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
 import type { Node } from "@xyflow/react";
 import { formatDistanceToNow } from "date-fns";
 import { ChevronRightIcon, CopyIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { formatDuration } from "../../lib/format-duration";
 import { getNodeAppearance, stepLabel } from "../../lib/node-appearance";
 import type { WorkflowStatus } from "../../lib/workflow-status-display";
 import { WorkflowStatusPill } from "./EditorHeader";
+import { NameSaveFeedback, type NameSaveStatus } from "./NameSaveFeedback";
 
 export interface LastRun {
 	startedAt: Date | string | null;
@@ -20,20 +23,28 @@ export interface LastRun {
 function NameField({
 	workflowName,
 	onRename,
+	nameSaveStatus = "idle",
+	nameRetryValue,
 }: {
 	workflowName: string;
-	onRename?: (name: string) => void;
+	onRename?: (name: string) => void | Promise<void>;
+	nameSaveStatus?: NameSaveStatus;
+	nameRetryValue?: string;
 }) {
-	const [draft, setDraft] = useState(workflowName);
+	const [draft, setDraft] = useState(nameRetryValue ?? workflowName);
 
 	useEffect(() => {
-		setDraft(workflowName);
-	}, [workflowName]);
+		setDraft(nameRetryValue ?? workflowName);
+	}, [workflowName, nameRetryValue]);
 
-	const commit = () => {
+	const commit = async () => {
 		const name = draft.trim();
 		if (name && name !== workflowName) {
-			onRename?.(name);
+			try {
+				await onRename?.(name);
+			} catch {
+				/* Keep the typed value for retry. */
+			}
 		} else {
 			setDraft(workflowName);
 		}
@@ -50,8 +61,9 @@ function NameField({
 			<Textarea
 				id="workflow-overview-name"
 				rows={2}
+				maxLength={255}
 				value={draft}
-				readOnly={!onRename}
+				readOnly={!onRename || nameSaveStatus === "saving"}
 				onChange={(e) => setDraft(e.target.value)}
 				onBlur={commit}
 				onKeyDown={(e) => {
@@ -65,6 +77,13 @@ function NameField({
 					}
 				}}
 				className="min-h-0 resize-none rounded-lg leading-[1.45]"
+			/>
+			<NameSaveFeedback
+				status={
+					nameSaveStatus === "saved" && draft !== workflowName
+						? "idle"
+						: nameSaveStatus
+				}
 			/>
 		</div>
 	);
@@ -96,9 +115,12 @@ async function copyId(workflowId: string) {
  * the workflow is in, and its steps in order (click one to select it).
  */
 export function WorkflowOverview({
+	onConfigureSchedule,
 	workflowId,
 	workflowName,
 	onRename,
+	nameSaveStatus = "idle",
+	nameRetryValue,
 	status,
 	version,
 	publishedVersion,
@@ -107,9 +129,12 @@ export function WorkflowOverview({
 	steps,
 	onSelectStep,
 }: {
+	onConfigureSchedule?: () => void;
 	workflowId: string;
 	workflowName: string;
-	onRename?: (name: string) => void;
+	onRename?: (name: string) => void | Promise<void>;
+	nameSaveStatus?: NameSaveStatus;
+	nameRetryValue?: string;
 	status: WorkflowStatus;
 	version: number;
 	publishedVersion?: number | null;
@@ -118,10 +143,27 @@ export function WorkflowOverview({
 	steps: Node[];
 	onSelectStep: (nodeId: string) => void;
 }) {
+	const t = useTranslations("workflows.lifecycle");
 	return (
 		<div className="flex flex-col gap-5 p-4">
-			<NameField workflowName={workflowName} onRename={onRename} />
+			<NameField
+				workflowName={workflowName}
+				onRename={onRename}
+				nameSaveStatus={nameSaveStatus}
+				nameRetryValue={nameRetryValue}
+			/>
 
+			{onConfigureSchedule && (
+				<Button
+					variant="outline"
+					size="sm"
+					onClick={onConfigureSchedule}
+				>
+					{t.has("scheduleTitle")
+						? t("scheduleTitle")
+						: "Schedule workflow"}
+				</Button>
+			)}
 			<dl className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-y-2.5 text-[13px]">
 				<dt className="text-muted-foreground">Status</dt>
 				<dd>

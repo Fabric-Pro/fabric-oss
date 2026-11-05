@@ -39,6 +39,9 @@ const context: ExecutionContext = {
 		},
 	],
 	workspaceIds: ["example-workspace"],
+	workspaceDocumentFilters: [
+		{ workspaceId: "example-workspace", documentIds: ["example-document"] },
+	],
 	mcpConfigIds: ["example-mcp"],
 	builtInToolNames: ["project-context"],
 	projectId: "example-project",
@@ -68,6 +71,8 @@ const goal: ExecuteGoalStepInput = {
 	userId: "example-user",
 	organizationId: "example-org",
 	mcpConfigIds: ["example-mcp"],
+	workspaceIds: context.workspaceIds,
+	workspaceDocumentFilters: context.workspaceDocumentFilters,
 	executionId: "example-execution",
 };
 const result = {
@@ -102,6 +107,8 @@ describe("saved agent preparation/result projection parity", () => {
 			projectId: context.projectId,
 			agentInstanceId: context.agentInstanceId,
 			conversationHistory: deployment.conversationHistory,
+			workspaceIds: context.workspaceIds,
+			workspaceDocumentFilters: context.workspaceDocumentFilters,
 		});
 		expect(prepared.userMessage).toContain("Exact task");
 		const expected = await finishDeploymentAgentTurn({
@@ -119,6 +126,10 @@ describe("saved agent preparation/result projection parity", () => {
 		expect(prepared.userMessage).toContain(goal.step.description);
 		expect(prepared.userMessage).toContain("Exact step input");
 		expect(prepared.knowledgeContext).toBe(goal.knowledgeContext);
+		expect(prepared.workspaceIds).toEqual(goal.workspaceIds);
+		expect(prepared.workspaceDocumentFilters).toEqual(
+			goal.workspaceDocumentFilters,
+		);
 		expect(m.turn).not.toHaveBeenCalled();
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));

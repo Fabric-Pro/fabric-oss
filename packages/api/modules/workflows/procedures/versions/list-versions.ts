@@ -1,16 +1,20 @@
-import { ORPCError } from "@orpc/client";
-import { getWorkflowVersions, hasWorkflowAccess } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { listWorkflowVersionsCommand } from "../../lib/workflow-lifecycle-commands";
+import { workflowActor, workflowCommandErrors } from "../workflow-actor";
 
 export const listWorkflowVersionsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(workflowCommandErrors)
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/workflows/{id}/versions",
@@ -33,41 +37,8 @@ export const listWorkflowVersionsProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
-
-		// Check workflow access
-		const hasAccess = await hasWorkflowAccess(
-			input.id,
-			user.id,
-			organizationId,
+		return listWorkflowVersionsCommand(
+			workflowActor(user.id, organizationId),
+			{ workflowId: input.id, limit: input.limit, offset: input.offset },
 		);
-
-		if (!hasAccess) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Workflow not found",
-			});
-		}
-
-		// Get versions
-		const result = await getWorkflowVersions(
-			input.id,
-			user.id,
-			organizationId,
-			input.limit,
-			input.offset,
-		);
-
-		return result;
 	});

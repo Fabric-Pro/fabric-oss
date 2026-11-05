@@ -29,6 +29,8 @@ type NativeState = {
 	startedAt?: Date;
 	completedAt?: Date;
 	durationMs?: number;
+	/** Native closure does not imply the business task succeeded. */
+	workflowClosed?: boolean;
 };
 const workflowTypes = new Set([
 	"deploymentExecutionWorkflow",
@@ -54,7 +56,10 @@ function bounded(value: unknown): boolean {
 /** Read only: a missing receipt may be observed, but this module never dispatches work. */
 export async function readNativeExecutionState(
 	execution: ExecutionIdentity,
-	dependencies = { getClient: getTemporalClient },
+	dependencies: {
+		getClient?: typeof getTemporalClient;
+		metadataOnly?: boolean;
+	} = {},
 ): Promise<NativeState> {
 	const admission = readAgentExecutionAdmission(execution);
 	if (
@@ -68,7 +73,7 @@ export async function readNativeExecutionState(
 		const deadline = Date.now() + 3_000;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const client = await Promise.race([
-			dependencies.getClient(),
+			(dependencies.getClient ?? getTemporalClient)(),
 			new Promise<never>((_, reject) => {
 				timer = setTimeout(
 					() => reject(new Error("Native read timed out")),
@@ -127,13 +132,6 @@ export async function readNativeExecutionState(
 				) {
 					return { nativeReadStatus: "IDENTITY_UNVERIFIED" };
 				}
-				// Pin the observed run after verification. Never follow an unverified newer
-				// run or Continue-As-New while reading a saved invocation's result.
-				const pinned = client.workflow.getHandle(
-					execution.workflowId as string,
-					description.runId,
-					{ followRuns: false },
-				);
 				const state: NativeState = {
 					nativeReadStatus: "AVAILABLE",
 					runId: description.runId,
@@ -147,6 +145,36 @@ export async function readNativeExecutionState(
 							)
 						: undefined,
 				};
+				if (dependencies.metadataOnly) {
+					// A completed Temporal wrapper can contain a failed business outcome.
+					// Leave that outcome unknown until its receipt or explicit result read.
+					const statuses: Record<string, string> = {
+						RUNNING: "RUNNING",
+						FAILED: "FAILED",
+						CANCELLED: "CANCELLED",
+						TERMINATED: "CANCELLED",
+						TIMED_OUT: "TIMED_OUT",
+					};
+					return {
+						...state,
+						workflowClosed: [
+							"COMPLETED",
+							"FAILED",
+							"CANCELLED",
+							"TERMINATED",
+							"TIMED_OUT",
+							"CONTINUED_AS_NEW",
+						].includes(description.status.name),
+						status: statuses[description.status.name] ?? "UNKNOWN",
+					};
+				}
+				// Pin the observed run after verification. Never follow an unverified newer
+				// run or Continue-As-New while reading a saved invocation's result.
+				const pinned = client.workflow.getHandle(
+					execution.workflowId as string,
+					description.runId,
+					{ followRuns: false },
+				);
 				if (description.status.name === "RUNNING") {
 					state.status = "RUNNING";
 					try {

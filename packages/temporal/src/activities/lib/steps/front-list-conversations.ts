@@ -5,6 +5,7 @@
 
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { connectorErrorMessage } from "../connector-error";
 import { interpolateTemplate } from "./utils";
 
 export async function executeFrontListConversationsStep(
@@ -60,8 +61,10 @@ export async function executeFrontListConversationsStep(
 		if (!response.ok) {
 			return {
 				success: false,
-				error:
-					result.error || `Front returned status ${response.status}`,
+				error: connectorErrorMessage(
+					result.error,
+					`Front returned status ${response.status}`,
+				),
 			};
 		}
 

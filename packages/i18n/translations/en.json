@@ -1,4 +1,109 @@
 {
+	"frameSharing": {
+		"addAccess": "Add access",
+		"addingAccess": "Adding access…",
+		"accessAdded": "Access added",
+		"accessError": "Access could not be added. Check the current sharing settings and try again.",
+		"addAccessByEmail": "Add access by email",
+		"noEmailSent": "These addresses receive access. Fabric does not send them an email.",
+		"publicDisabledLabel": "Public link (disabled)",
+		"publicPolicyDisabled": "Your organization has disabled public sharing.",
+		"retainedLinkDisabled": "This saved public link is disabled by your organization. You can remove it.",
+		"revokePermission": "Your current role cannot remove an individual public link or invitation.",
+		"removePublicLink": "Remove public link",
+		"makePrivate": "Make private (revoke all)",
+		"confirmAll": "Remove the public link and every email invitation? Only you will retain access.",
+		"confirmAllProject": "Remove the public link and every email invitation? You and accepted project members retain existing project access.",
+		"confirmPublic": "Remove the public link? Email invitations and project access will stay unchanged.",
+		"keepAccess": "Keep access",
+		"confirmMakePrivate": "Revoke all sharing",
+		"confirmRemovePublic": "Remove link",
+		"removing": "Removing access…",
+		"removeInvitation": "Remove invitation for {email}",
+		"removed": "Sharing access updated",
+		"removeError": "Access could not be changed. Refresh the sharing settings before trying again."
+	},
+	"frameExport": {
+		"browserPng": "PNG (browser capture)",
+		"browserPdf": "PDF (browser capture)",
+		"title": "Export PDF",
+		"description": "Create a PDF of the saved revision of {title}.",
+		"staticCopy": "The PDF is a static copy. Interactive controls and scripts are not included.",
+		"signIn": "Sign in to export this page.",
+		"pending": "Export queued",
+		"running": "Preparing your PDF…",
+		"completed": "Your PDF is ready",
+		"failed": "The export failed. Start a new export after reviewing the page.",
+		"cancelled": "Export cancelled",
+		"expired": "This export has expired. Create a new one.",
+		"cancelling": "Cancellation requested. Waiting for confirmation…",
+		"canClose": "You can close this window and return to follow this export.",
+		"expires": "Available until {date}. Downloading checks your current page access.",
+		"startError": "The export request could not be confirmed. Retry to check the same request without creating a duplicate. If the page changed, close this window and review the latest page first.",
+		"cancelError": "Cancellation could not be confirmed. Refresh the status before trying again.",
+		"downloadError": "The PDF could not be downloaded. Check your access and whether the page or export has expired.",
+		"statusError": "The export status is unavailable. Your job has not been restarted.",
+		"retryStatus": "Refresh status",
+		"close": "Close",
+		"starting": "Requesting export…",
+		"retryStart": "Check export request",
+		"create": "Create PDF",
+		"cancel": "Cancel export",
+		"download": "Download PDF",
+		"downloading": "Preparing download…",
+		"newExport": "Create a new export"
+	},
+	"frameRevisions": {
+		"refresh": "Saved successfully. The page could not refresh. Reload the saved page before making more changes.",
+		"retryRefresh": "Reload saved page",
+
+		"title": "Review {name}",
+		"boundary": "Content changes preserve sharing and tool access. Changes are saved only when you confirm.",
+		"edit": "Edit page",
+		"history": "Version history",
+		"pageTitle": "Title",
+		"block": "Block {number} · {type}",
+		"loading": "Loading saved versions…",
+		"empty": "No earlier versions yet. Your first saved edit will appear here.",
+		"historyError": "Saved versions could not be loaded.",
+		"retry": "Try again",
+		"restore": "Restore",
+		"restored": "Restored content",
+		"saved": "Saved edit",
+		"unavailable": "This older edit has no restorable snapshot",
+		"restoreQuestion": "Restore this saved content? The current content is kept in history. Sharing and tool access stay as they are now.",
+		"confirmRestore": "Restore saved content",
+		"cancel": "Cancel",
+		"save": "Save changes",
+		"saving": "Saving…",
+		"conflict": "This page changed since you opened it. Your draft is still here. Copy anything you want to keep before reloading.",
+		"failure": "The save could not be confirmed. Your draft is still here. Check the latest page before trying again.",
+		"reload": "Reload and discard this draft",
+		"discardQuestion": "Discard your unsaved changes?",
+		"keepEditing": "Keep editing",
+		"discard": "Discard draft",
+		"unsavedHistory": "Save or discard your draft before restoring a version."
+	},
+	"genieFrames": {
+		"title": "Frames",
+		"organizationRequired": "Choose an organization to view frames.",
+		"refresh": "Refresh frames",
+		"scope": "Show frames from",
+		"conversation": "This conversation",
+		"all": "All my frames",
+		"loading": "Loading frames…",
+		"error": "Frames could not be loaded. Try again.",
+		"retry": "Try again",
+		"emptyConversation": "No frames in this conversation yet",
+		"emptyAll": "No frames yet",
+		"hint": "Ask Genie to create a page, report or slideshow.",
+		"slides": "Slides",
+		"shared": "Shared",
+		"pagination": "Frame pages",
+		"previous": "Previous",
+		"next": "Next",
+		"page": "Page {number}"
+	},
 	"appUpdate": {
 		"banner": {
 			"title": "A new version of Fabric is available",
@@ -373,11 +478,14 @@
 				"failed": "The request could not be completed. Start again from your agent.",
 				"signInRequired": "Sign in to continue.",
 				"scopes": {
-					"mcp:read": "Read this organization's projects, features, decisions, documents, project context, document libraries, workflows and frames. Your personal AI chats are not included.",
+					"mcp:read": "Read this organization's projects, features, decisions, documents, project context, document workspaces, workflows and frames. Your personal AI chats are not included.",
 					"instructions:read": "Read coding instructions.",
 					"instructions:write": "Suggest changes to coding instructions. Suggestions are held for review and are never published by the agent.",
 					"repositories:read": "Read the attached repository's files and history to clone or update it through Fabric.",
 					"memory:write": "Write files to this organization's project Living Memory folders in their repositories; may commit directly to the synced branch where a project admin allowed it.",
+					"agents:read": "Read your saved agents' background runs, results and recurring schedules in this organization.",
+					"agents:execute": "Run API-enabled saved agents and request cancellation of your background runs. Completed actions are not undone.",
+					"agents:schedule": "Create and change recurring runs for your API-enabled agents, or pause an existing schedule. Also requires Agents Execute.",
 					"offline_access": "Stay signed in until you revoke it."
 				},
 				"scopesProject": {
@@ -666,6 +774,9 @@
 	},
 	"documentation": {
 		"title": "Documentation",
+		"copyPage": "Copy page",
+		"collapseSidebar": "Hide sidebar",
+		"expandSidebar": "Show sidebar",
 		"fallbackNotice": "This page is not yet available in your selected language. Showing the English version."
 	},
 	"faq": {
@@ -982,6 +1093,10 @@
 			"skipTour": "Skip tour",
 			"stepCounter": "Step {current} of {total}",
 			"steps": {
+				"contextWorkspaceDocuments": {
+					"title": "Reuse Workspace documents",
+					"body": "Link original requirements and shared documents to project context without another upload. Everyone still needs access to the original source. Preview the current version or remove a link while preserving the document."
+				},
 				"aiKey": {
 					"body": "Fabric runs on an AI provider you connect — without a key, most features stay quiet. Add one in Settings, for the whole organization if you are an admin or just for yourself otherwise; a personal key applies wherever your organization has none.",
 					"title": "First, add an AI provider key"
@@ -1041,6 +1156,14 @@
 				"welcome": {
 					"body": "This quick tour shows where the core tools live — your AI assistant, projects, documents, roadmap, and code map. It takes under a minute, and you can skip or replay it anytime.",
 					"title": "Welcome to Fabric"
+				},
+				"agent-runs": {
+					"title": "Run an agent and follow its work",
+					"body": "Open a saved agent to try it in chat or run a background task with its project context and connections. The agent drawer keeps Overview, Runs and Triggers together. Edit opens the full-height builder with Sidekick, instruction Preview, and saved-run Insights. Save a completed preview as a reusable test with exact text checks. In Insights, Your tests runs saved versions with their normal permissions and compares outcomes; live sources can change between runs. From failed checks, Ask Sidekick to improve prepares an editable request; send it deliberately and review suggestions before applying them. Runs & History shows complete agent names on every row, with columns that grow and wrap long names. Select an agent name to narrow its history, or All agents to return to the combined view; select a run for progress, output and steps. Start small, inspect the result, then schedule recurring work. On a completed project-bound run, Check this result tests exact phrases in the real recorded answer. Results stay private and do not rerun the agent. Edit current agent changes future runs only."
+				},
+				"skills": {
+					"title": "Turn useful know-how into a skill",
+					"body": "Start from a conversation, write instructions, or review an imported skill. Drafts stay private within your organization until explicitly shared. Inspect runtime files without executing them, and use Skill governance in organization settings to control creation, sharing, and agent discovery."
 				}
 			},
 			"welcome": {
@@ -2534,7 +2657,8 @@
 				"title": "Org",
 				"dangerZone": "Danger zone",
 				"companyContext": "Company context",
-				"meetingAssistant": "Meeting assistant"
+				"meetingAssistant": "Meeting assistant",
+				"skillGovernance": "Skill governance"
 			}
 		},
 		"save": "Save",
@@ -2998,7 +3122,7 @@
 					},
 					"CHAT": {
 						"name": "Chat",
-						"hint": "Library document chat, Atlas assistant, Agent Builder Sidekick"
+						"hint": "Workspace document chat, Atlas assistant, Agent Builder Sidekick"
 					},
 					"EVAL": {
 						"name": "Evaluation",
@@ -3256,6 +3380,44 @@
 	},
 	"projects": {
 		"remoteAgents": {
+			"board": {
+				"title": "Assign coding work from your project",
+				"description": "Choose a published Roadmap feature, then use Start work to select a registered personal or team Fabric Agents server. Provider and Git credentials stay on the execution host.",
+				"assign": "Choose a feature to assign",
+				"desktop": "Open Fabric Desktop",
+				"setupGuide": "Remote-server setup guide",
+				"optionalBoard": "About the optional local board",
+				"boardHelp": "This optional board checks a separate Fabric Kanban runtime at localhost:3484. Starting Fabric Agents Desktop or a Fabric Agents server on port 9100 does not start this board. Remote assignment remains available through Start work.",
+				"checkBoard": "Check local board"
+			},
+			"setupHelp": "Configure the execution service secret on the server as BACKGROUND_AGENTS_INTERNAL_SECRET. The Web UI token (FABRIC_SERVER_TOKEN) is separate. Sign in to the selected coding backend on that host, then verify this connection.",
+			"setupGuide": "Server setup and connection guide",
+			"launcher": {
+				"title": "Fabric Desktop and remote agents",
+				"description": "Work in the desktop app or assign a feature to a registered personal or team server.",
+				"launch": "Launch Fabric Desktop",
+				"delegate": "Delegate to Remote Server",
+				"ai": "AI Connections",
+				"sources": "Desktop Sources",
+				"signIn": "Connect MCP",
+				"copy": "Copy MCP URL",
+				"copied": "Project MCP URL copied",
+				"copyFailed": "Could not copy the MCP URL. Allow clipboard access and try again.",
+				"remoteHelp": "Connect or select a server below, then choose a feature and use Start work to assign it. The selected server is saved for that assignment dialog. Provider sign-in and usage limits are managed on the remote host.",
+				"organizationRequired": "Open this project in an organization to connect a server.",
+				"loading": "Loading remote servers…",
+				"loadFailed": "Could not load remote servers. Try again.",
+				"retry": "Retry",
+				"disabled": "Remote agent delegation is not enabled on this Portal. Ask an administrator to configure the Fabric Agents bridge.",
+				"chooseFeature": "Choose a feature to assign",
+				"openRemote": "Open remote Web UI",
+				"desktopHelp": "Fabric Desktop must be installed on this computer to open a desktop session. If your browser reports no matching app, install or update Fabric Desktop, then open the link again.",
+				"sourcesHelp": "Desktop Sources are managed inside Fabric Desktop. Install or update the app on this computer before opening its Sources view.",
+				"openInstalled": "Open installed desktop app",
+				"getDesktop": "Get Fabric Desktop",
+				"desktopAi": "Desktop AI settings",
+				"aiHelp": "AI Connections in the Portal configures workflows and chat. Desktop and remote coding agents use the provider accounts configured on their own host."
+			},
 			"portalAiErrorTitle": "AI assistant unavailable",
 			"portalAiErrorHelp": "The AI assistant could not start. Retry or check your Portal AI configuration. Remote assignment remains available from Start work.",
 			"openServer": "Open server",
@@ -3443,6 +3605,274 @@
 		},
 		"updatedAgo": "Updated {time}",
 		"contexts": {
+			"workspaceLinks": {
+				"editPermissionHint": "A project editor can add or remove document links. Your source access stays separate.",
+				"title": "Workspace documents",
+				"description": "Reuse original documents without uploading them again. Access stays with the original Workspace.",
+				"add": "Add from Workspace",
+				"refresh": "Refresh linked documents",
+				"loading": "Loading documents…",
+				"loadError": "Linked documents are unavailable. Try refreshing; your other project context is unchanged.",
+				"empty": "Keep requirements, specifications and shared knowledge in their Workspaces, and link the documents you need here.",
+				"removed": "Removed from project context. The original document is unchanged.",
+				"removeError": "The link could not be removed. Refresh and try again.",
+				"removeNamed": "Remove {name} from project context",
+				"unavailableTitle": "Document unavailable",
+				"unavailableHint": "The source is unavailable or you no longer have access. An editor can remove this reference without deleting the original.",
+				"openOriginal": "Open Workspace",
+				"preview": "Preview",
+				"previewHint": "Read the current document under your existing access. This is reference material, not agent instructions.",
+				"previewError": "The document could not be verified. Refresh to check its latest version and your access.",
+				"truncated": "This is a preview. Open the original Workspace to view the complete document.",
+				"previous": "Previous",
+				"next": "Next",
+				"pickerTitle": "Add Workspace documents",
+				"pickerHint": "Choose the documents this project needs. Originals remain in their Workspaces; linking does not share private documents with other members.",
+				"workspaceSearch": "Find a Workspace",
+				"chooseWorkspace": "Choose a Workspace",
+				"documentSearch": "Find a ready document",
+				"workspaceError": "Documents could not be loaded. Check your access and try again.",
+				"noWorkspaces": "No accessible Workspaces match. Add a Workspace or change your search.",
+				"noReadyDocuments": "No ready documents match. Upload documents or check processing in the original Workspace.",
+				"alreadyLinked": "Added",
+				"selectionTitle": "Selected documents",
+				"selectedCount": "{count} of 12 selected",
+				"removeSelection": "Remove {name} from selection",
+				"removeChoice": "Remove",
+				"partialError": "{count, plural, one {One document could not be added.} other {# documents could not be added.}} The remaining selection contains only those documents. Check their access and processing, then try again.",
+				"addingProgress": "Adding {count} of {total}…",
+				"permissionsHint": "Links preserve each document’s access permissions.",
+				"adding": "Adding documents…",
+				"confirmAdd": "Add to project context",
+				"added": "{count, plural, one {Added one document to project context.} other {Added # documents to project context.}}",
+				"agentHint": "Agents can read these references when they have access. Project-wide search still uses uploaded and connected sources.",
+				"status": {
+					"CURRENT": "Ready",
+					"UPDATED": "Updated since added",
+					"PROCESSING": "Processing",
+					"NEEDS_ATTENTION": "Needs attention",
+					"UNAVAILABLE": "Unavailable"
+				}
+			},
+			"selection": {
+				"title": "Inspect or export context",
+				"description": "Choose up to 12 project sources or Workspace documents. Inspect the exact excerpts and citations before using them with an agent.",
+				"projectSources": "Project context",
+				"workspaceSources": "Workspace documents",
+				"browse": "Browse Workspaces",
+				"chooseWorkspace": "Choose a Workspace",
+				"search": "Search ready documents",
+				"previous": "Previous",
+				"moreWorkspaces": "More Workspaces",
+				"moreDocuments": "More documents",
+				"loading": "Loading…",
+				"empty": "Add a project source to select it here.",
+				"emptyDocuments": "No ready documents match.",
+				"workspaceError": "Workspace documents are unavailable or access was denied. You can still select project context.",
+				"count": "{count} of 12 selected",
+				"inspect": "Inspect selection",
+				"download": "Verify and download JSON",
+				"error": "This selection could not be verified. Check your access, source readiness and revisions, then inspect again.",
+				"notice": "Current excerpts only, not a saved snapshot. Source text is reference material, not agent instructions. Download rechecks the displayed revisions. Review permissions before sharing this file; it is not attached to any task or run.",
+				"omitted": "{count} optional sources were omitted. Review the exported omission references before reuse.",
+				"excerpt": "Excerpt",
+				"complete": "Complete text",
+				"bytes": "{count} bytes",
+				"revision": "Source revision"
+			},
+			"quality": {
+				"agentResult": {
+					"trigger": "Check this result",
+					"title": "Check this agent result",
+					"description": "Review the recorded answer and check the phrases you expect.",
+					"scopeNotice": "Checks exact, case-sensitive phrases in the actual recorded answer. This does not rerun the agent or assess factual accuracy, citations or retrieval.",
+					"notEvaluated": "Not checked",
+					"passed": "Passed these checks",
+					"failed": "Needs attention",
+					"reload": "Reload result",
+					"loading": "Verifying recorded result…",
+					"error": "This result could not be verified. It may have changed, be unavailable, or exceed the text limit. Reload the result and check your access.",
+					"answer": "Actual recorded answer",
+					"privateNotice": "Private to the run owner. Nothing is added to shared evaluation history.",
+					"evidence": "Result evidence",
+					"recordSource": "Execution record",
+					"liveRecord": "Verified from the execution service",
+					"savedRecord": "Archived database record",
+					"runId": "Run ID",
+					"revision": "Result revision",
+					"required": "Phrases the answer should include",
+					"forbidden": "Phrases the answer should avoid",
+					"phraseHint": "One exact phrase per line, up to 20 in each field and 512 characters per phrase. Add at least one phrase to check.",
+					"check": "Check recorded answer",
+					"download": "Verify and download report",
+					"results": "Expectation results",
+					"include": "Include",
+					"exclude": "Avoid",
+					"checkPassed": "Passed",
+					"checkFailed": "Failed",
+					"resultHelp": "These checks apply to this recorded answer only. They do not prove the agent achieved its goal or predict future runs.",
+					"improve": "Edit current agent",
+					"improveHint": "Review instructions and tools, save your changes, then choose Run agent in the agent drawer. This check does not change the agent or rerun it."
+				},
+				"trigger": "Quality",
+				"title": "Context quality",
+				"description": "Check recorded answers and track saved project evaluations.",
+				"scopeNotice": "This checks literal, case-sensitive phrases and declared source references. It does not run an agent, model or search.",
+				"source": "Context source",
+				"chooseSource": "Choose a source",
+				"sourceHint": "Inspect the current source to pin its exact text before checking. The selected source is declared as supplied context; no retrieval is performed.",
+				"inspectionRequired": "Inspect this source before checking the recorded answer.",
+				"inspect": "Inspect source",
+				"inspecting": "Inspecting…",
+				"bytes": "{count} bytes",
+				"storeOnly": "Store only · direct read",
+				"revision": "Source revision (SHA-256)",
+				"preview": "Current source preview",
+				"previewTruncated": "The preview shows the first {count} characters. The full inspected source is used for the check.",
+				"recordedAnswer": "Recorded answer",
+				"required": "Required phrases (optional)",
+				"forbidden": "Forbidden phrases (optional)",
+				"phraseHint": "One phrase per line. Literal and case-sensitive; up to 20 phrases of 512 characters per list.",
+				"requireCitation": "Require the selected source to be cited",
+				"expectationHint": "Add a required or forbidden phrase, or require a source citation, to define what this check should verify.",
+				"citation": "The recorded answer cites the selected source.",
+				"citationHint": "References are your declaration. Fabric does not extract or verify citations from the answer text.",
+				"run": "Check recorded answer",
+				"running": "Checking…",
+				"close": "Close check",
+				"result": "Recorded-answer check result",
+				"passed": "Checks passed",
+				"failed": "Checks failed",
+				"checkPassed": "Passed",
+				"checkFailed": "Failed",
+				"resultHelp": "This result applies only to the recorded answer, declared references and pinned source revision. It does not establish semantic correctness or retrieval quality.",
+				"reportDetails": "Report details",
+				"stateless": "Checks run in Fabric without Databricks export. Results are not saved; download the report to keep it. Reports omit source text, answers and phrase values.",
+				"download": "Download report",
+				"noSources": "Add a readable context source before checking an answer. Saved run history remains available.",
+				"errorDenied": "You no longer have access to this source. Choose another source or ask a project administrator.",
+				"errorUnavailable": "The source is unavailable. Choose another source and inspect it again.",
+				"errorStale": "The source changed or is not ready. Inspect it again before checking.",
+				"errorTooLarge": "This check exceeds the size limit. Shorten the answer or expectations, or choose a smaller source.",
+				"errorInvalid": "Check the answer and phrase limits, then try again.",
+				"errorGeneric": "Could not complete the check. Try again.",
+				"checks": {
+					"recorded-answer-present": "Recorded answer is present",
+					"retrieved-sources-available": "Declared context sources are available",
+					"cited-sources-available": "Declared cited sources are available",
+					"citations-retrieved": "Citations refer to declared supplied context",
+					"expected-sources-available": "Expected sources are available",
+					"expected-sources-retrieved": "Expected sources were declared as supplied context",
+					"expected-sources-cited": "Expected sources were declared as cited",
+					"citation-precision": "Citations match expected source references",
+					"required-phrases": "Required literal phrases are present",
+					"forbidden-phrases": "Forbidden literal phrases are absent"
+				},
+				"saved": {
+					"views": "Quality views",
+					"quick": "Quick check",
+					"title": "Saved runs",
+					"create": "Save and run evaluation",
+					"creating": "Saving…",
+					"name": "Name",
+					"nameOptional": "Evaluation name (optional)",
+					"execution": "Execution",
+					"created": "Started",
+					"open": "View",
+					"openNamed": "View {name}",
+					"refresh": "Refresh",
+					"loading": "Loading saved evaluations…",
+					"empty": "No saved evaluations yet. Check an answer, then save an evaluation to track its execution and results.",
+					"details": "Saved evaluation details",
+					"cancellationPending": "Cancellation was requested. Execution may continue until the remote server confirms it has stopped.",
+					"evidenceUnavailable": "Report evidence is unavailable. A source may have been removed or its access changed.",
+					"executionFailed": "The evaluation could not finish. Review the execution status before starting another run.",
+					"counts": "{passed} of {total} cases passed.",
+					"remoteRun": "Databricks execution",
+					"mlflowRun": "MLflow result",
+					"cancel": "Cancel execution",
+					"cancelling": "Requesting cancellation…",
+					"compare": "Compare runs",
+					"comparing": "Comparing…",
+					"baseline": "Baseline",
+					"candidate": "Candidate",
+					"chooseRun": "Choose a completed run",
+					"comparison": "Difference in passed cases: {delta}.",
+					"incompatible": "These runs use different data or scoring settings. A numeric comparison is unavailable.",
+					"error": "Could not load or update the saved evaluation. Check access and try Refresh.",
+					"historyNotice": "Saved runs use pinned snapshots. Source access is checked again before reports are shown.",
+					"exportNotice": "Saving an evaluation sends the selected context, recorded answer and expectations to your project’s approved Databricks connection. Results are retained in Fabric. No model or search is run.",
+					"capabilityError": "Could not check saved evaluation availability. Close and reopen Quality to try again.",
+					"notConfigured": "A project administrator needs to configure an approved evaluation connection before runs can be saved.",
+					"readOnly": "You can view saved results. Project edit permission is required to start or cancel evaluations.",
+					"statuses": {
+						"QUEUED": "Queued",
+						"EXPORTING": "Preparing input",
+						"DISPATCHING": "Starting execution",
+						"RUNNING": "Running",
+						"CANCEL_REQUESTED": "Cancellation requested",
+						"SUCCEEDED": "Completed",
+						"FAILED": "Failed",
+						"CANCELLED": "Cancelled",
+						"RECONCILIATION_REQUIRED": "Execution status unknown"
+					},
+					"older": "Older runs",
+					"firstPage": "Newest runs",
+					"cancellationConfirmed": "Cancellation is confirmed. The evaluation has stopped.",
+					"cleanup": "Export cleanup: {status}.",
+					"cleanupStatuses": {
+						"NOT_REQUIRED": "not required",
+						"PENDING": "pending",
+						"CONFIRMED": "confirmed",
+						"BLOCKED": "blocked, administrator action needed"
+					},
+					"differences": {
+						"dataset": "The evaluation data differs.",
+						"configuration": "The evaluation configuration differs.",
+						"scorer": "The scorer version differs."
+					},
+					"createError": "Could not confirm that the evaluation was saved. Retry with the same unchanged form to reuse its request key, or inspect Saved runs before starting another evaluation."
+				},
+				"setup": {
+					"title": "Settings",
+					"loading": "Loading evaluation settings…",
+					"description": "Choose where this project runs saved evaluations. Credentials are managed in Connections; only explicitly shared Databricks Platform connections are eligible.",
+					"error": "The evaluation settings could not be loaded. Check your access and try again.",
+					"saveError": "The destination could not be saved. Your edits are unchanged. Try again.",
+					"disableError": "Saved evaluations could not be disabled. Your settings are unchanged. Try again.",
+					"deleteError": "The destination and saved history could not be deleted. Your settings are unchanged. Try again.",
+					"errorDenied": "You do not have permission to change evaluation settings. A project administrator must make this change.",
+					"errorUnavailable": "The project or evaluation destination is no longer available. Your edits are unchanged.",
+					"errorInvalid": "The request was not accepted. Check the destination fields. Your edits are unchanged.",
+					"errorConflict": "This change conflicts with the current evaluation state. Your edits are unchanged.",
+					"errorQualification": "The destination could not be verified. Check connection sharing, resource permissions and the approved job template. Your edits are unchanged.",
+					"invalidIds": "Job and experiment IDs must be positive decimal integers no greater than 9007199254740991.",
+					"disable": "Disable saved evaluations",
+					"disabling": "Disabling saved evaluations…",
+					"disabled": "Saved evaluations disabled. The destination, saved history and cleanup receipts are retained.",
+					"disconnect": "Disconnect and delete saved history",
+					"deleteTitle": "Disconnect destination and delete saved history?",
+					"deleteDescription": "This permanently deletes this project's saved evaluation history and destination binding. This cannot be undone. All executions must be settled and remote snapshot cleanup must be confirmed before deletion is allowed. This action does not perform remote cleanup. To keep history, cancel and disable saved evaluations instead.",
+					"confirmDelete": "Disconnect and permanently delete history",
+					"deleting": "Deleting destination and history…",
+					"deleteBlocked": "The destination and history were kept because an execution or remote cleanup is unresolved. Wait for executions to settle and remote cleanup to be confirmed, then try again.",
+					"cancel": "Cancel",
+					"retry": "Reload settings",
+					"saved": "Evaluation destination verified and saved.",
+					"noConnections": "Add a Databricks Platform connection in Connections, then share it with this organization and reload these settings.",
+					"connection": "Organization connection",
+					"select": "Select a shared connection",
+					"workspace": "Databricks workspace URL",
+					"job": "Evaluation job ID",
+					"experiment": "MLflow experiment ID",
+					"volume": "Isolated snapshot volume",
+					"resources": "Use a dedicated job, experiment and volume for this project. The server verifies and pins the notebook code before accepting work.",
+					"enabled": "Allow saved evaluations for this project",
+					"approval": "I approve sending selected source snapshots and recorded answers to these Databricks resources. Snapshots expire within one hour; cleanup receipts remain until deletion is confirmed.",
+					"save": "Verify and save destination",
+					"saving": "Verifying destination…"
+				}
+			},
 			"contextRetry": {
 				"action": "Retry",
 				"actionForRow": "Retry {title}",
@@ -9311,9 +9741,155 @@
 		}
 	},
 	"workflows": {
+		"results": {
+			"stepOutput": "Step output",
+			"rawOutput": "Raw output",
+			"rawStepOutput": "Raw step output",
+			"draftConfiguration": "Current draft configuration"
+		},
 		"list": {
 			"scheduled": "Scheduled",
 			"scheduledTitle": "Runs on a schedule"
+		},
+		"studio": {
+			"filterActive": "Active",
+			"filterDraft": "Draft",
+			"filterPaused": "Paused",
+			"filterArchived": "Archived",
+			"filterScheduled": "Scheduled",
+			"statusLabel": "Workflow status",
+			"allStatuses": "All statuses",
+			"welcomeTitle": "Build a workflow",
+			"welcomeBody": "Describe what you want to automate, or start with a trigger. Connect steps on the visual canvas and inspect the results of every run.",
+			"composeTitle": "Connect and compose",
+			"composeBody": "Add executable steps using your personal or team connections.",
+			"publishTitle": "Save and publish",
+			"publishBody": "Keep a saved draft, then publish a version to enable schedules and webhook triggers.",
+			"inspectTitle": "Run and inspect",
+			"inspectBody": "Follow execution status, step outputs, and history alongside your workflow.",
+			"buildWithAi": "Build with AI",
+			"startFromScratch": "Start from scratch",
+			"reviewDraft": "AI helps draft and change steps. Review connections and settings, then save, test, and publish when ready.",
+			"ideasTitle": "What could you automate?",
+			"ideaBrief": "Turn release notes into a delivery brief.",
+			"ideaEvent": "Summarize an incoming project event.",
+			"ideaRouting": "Route work based on a condition.",
+			"canvasTitle": "What should this workflow do?",
+			"canvasBody": "Describe your automation with AI, or add a trigger and connect your first steps.",
+			"addFirstStep": "Add first step"
+		},
+		"authoring": {
+			"savingName": "Saving name…",
+			"savedName": "Name saved",
+			"nameFailed": "Name was not saved. Press Enter or leave the field to retry.",
+			"nameAutomatic": "Name saves automatically when you leave the field.",
+			"formatted": "Formatted",
+			"raw": "Raw output",
+			"copy": "Copy result",
+			"copied": "Copied",
+			"copyFailed": "Could not copy. Try again.",
+			"insert": "Insert output",
+			"searchOutputs": "Search step outputs",
+			"searchPlaceholder": "Search step outputs…",
+			"noOutputs": "Connect an earlier step to use its output here.",
+			"noMatches": "No matching outputs.",
+			"startersTitle": "Start with a delivery workflow",
+			"starterInfo": "Creates a draft. Review instructions and supply notes when running. Nothing runs or publishes automatically.",
+			"loadingStarters": "Loading starters…",
+			"retryStarters": "Retry loading starters",
+			"useStarter": "Use starter",
+			"configuration": "Configuration check",
+			"checkAgain": "Check again",
+			"checking": "Checking saved configuration…",
+			"checkFailed": "Could not check configuration. Try again before publishing.",
+			"noIssues": "No setup issues found in the checks below.",
+			"setupIssues": "Review these setup issues before publishing.",
+			"configured": "Configured",
+			"needsSetup": "Needs setup",
+			"runtimeCheck": "Checked at runtime",
+			"runNotesTitle": "Run with project notes",
+			"runNotesInfo": "Supply the notes for this run. The agent uses these notes to prepare its result; it does not look up documents automatically.",
+			"notesLabel": "Project notes",
+			"notesPlaceholder": "Paste progress, decisions, risks and source labels…",
+			"cancel": "Cancel",
+			"runWorkflow": "Run workflow"
+		},
+		"lifecycle": {
+			"scheduleTitle": "Schedule workflow",
+			"scheduleDescription": "Choose when this workflow should run. Saving updates the draft; publishing activates the schedule.",
+			"loading": "Checking schedule…",
+			"loadError": "Could not load the schedule. Try again.",
+			"active": "Schedule active",
+			"paused": "Schedule paused",
+			"inactive": "No active schedule",
+			"missing": "Schedule needs synchronization",
+			"unavailable": "Schedule status unavailable",
+			"nextRun": "Next run",
+			"cadence": "Repeat",
+			"daily": "Every day at 09:00",
+			"weekly": "Every Monday at 09:00",
+			"monthly": "First day of each month at 09:00",
+			"custom": "Custom schedule",
+			"cron": "Cron expression",
+			"timezone": "Time zone",
+			"timezoneHelp": "Use UTC or an IANA time zone, such as Europe/Berlin. The repeat time uses this zone; live schedule times use the published zone.",
+			"draftSaved": "Schedule saved. Publish to activate it.",
+			"close": "Close",
+			"saving": "Saving…",
+			"saveDraft": "Save schedule draft",
+			"updating": "Updating…",
+			"resume": "Resume triggers",
+			"pause": "Pause triggers",
+			"currentRuns": "These controls affect future triggers. Current runs keep their state.",
+			"unverified": "Schedule exists; cadence could not be verified",
+			"retrySync": "Retry synchronization",
+			"nextRunZone": "Next-run time uses the published schedule’s time zone.",
+			"alreadyPublished": "Schedule saved. This cadence is already published.",
+			"webhookSchedule": "This workflow starts from a webhook. Duplicate it to create a scheduled workflow."
+		},
+		"checks": {
+			"checkResults": "Check results",
+			"passed": "All checks passed",
+			"attention": "Needs attention",
+			"include": "Must include",
+			"exclude": "Must not include",
+			"saved": "Check saved. Compare it with future runs from their step results.",
+			"title": "Check this result",
+			"description": "Check exact phrases in a completed result. Save a passing baseline to compare future runs and versions.",
+			"loading": "Loading recorded result…",
+			"retry": "Try again",
+			"checkMode": "Result checks",
+			"new": "New check",
+			"savedChecks": "Saved checks",
+			"required": "Must include — one exact phrase per line",
+			"requiredExample": "For example: Next steps",
+			"forbidden": "Must not include — one exact phrase per line",
+			"forbiddenExample": "For example: No risks remain",
+			"limits": "Phrases are case-sensitive and spaces count. Add at least one phrase, up to 20 in each field.",
+			"checking": "Checking…",
+			"preview": "Check recorded result",
+			"name": "Check name",
+			"nameExample": "Delivery brief includes next steps",
+			"savedShort": "Saved",
+			"saving": "Saving…",
+			"save": "Save check",
+			"empty": "Save a passing result as a check to compare future runs of this step.",
+			"choose": "Choose a check",
+			"baseline": "Baseline",
+			"compare": "Compare with baseline",
+			"regressed": "A previously passing check now fails",
+			"improved": "Result improved",
+			"unchanged": "Same check outcome",
+			"improve": "Review the workflow’s instructions or context, run it again, and compare the new result.",
+			"removeQuestion": "Remove this saved check? The original run stays available.",
+			"confirmRemove": "Remove check",
+			"cancel": "Cancel",
+			"remove": "Remove saved check",
+			"boundary": "These checks verify exact phrases, not factual accuracy or retrieval quality. No workflow, model or external service is invoked.",
+			"close": "Close",
+			"open": "Check result",
+			"tooLong": "Checks support results up to 16,384 characters. This full result is still available below.",
+			"phraseLimits": "Use up to 20 phrases in each field, each no longer than 512 characters."
 		}
 	},
 	"choosePlan": {
@@ -9321,6 +9897,18 @@
 		"description": "To continue, please select a plan."
 	},
 	"prompts": {
+		"workbench": {
+			"formatted": "Formatted",
+			"rawText": "Raw text",
+			"resultDisplay": "Result display",
+			"copyResult": "Copy result",
+			"copied": "Copied",
+			"copyFailed": "Could not copy. Open Raw text to select the result.",
+			"purpose": "Run preview sends this draft and your supplied inputs to your configured AI provider. Use the response to check instructions and wording before saving. It does not access workspace documents or tools, or publish your draft.",
+			"singleResponse": "This is a single live response. It does not create a saved evaluation, quality score, agent run or workflow run.",
+			"modelOutput": "Model output",
+			"emptyOutput": "The model returned no text."
+		},
 		"title": "Prompts",
 		"subtitle": "Manage your prompt templates for AI agents, workflows, and documents",
 		"createPrompt": "New Prompt",
@@ -9420,6 +10008,39 @@
 		"viewMode": {
 			"grid": "Grid view",
 			"list": "List view"
+		},
+		"response": {
+			"settings": "Expected response settings",
+			"label": "Expected response",
+			"automatic": "Let the prompt decide",
+			"text": "Plain text",
+			"markdown": "Markdown",
+			"json": "JSON with expected fields",
+			"xml": "XML (advanced)",
+			"help": "Save the prompt to keep this setting with its version. Preview checks JSON structure or XML syntax; it does not judge factual accuracy.",
+			"fields": "Response fields",
+			"name": "Field {number} name",
+			"type": "Type for {name}",
+			"require": "Require {name}",
+			"required": "Required",
+			"remove": "Remove {name}",
+			"add": "Add field",
+			"advanced": "Advanced JSON schema",
+			"schema": "Response JSON schema",
+			"unique": "Use a non-empty, unique field name.",
+			"invalid": "Enter a supported JSON object schema before saving or running this prompt.",
+			"supported": "Object fields, arrays, primitive types, required fields, enums and bounds are supported. References, regexes and executable expressions are not supported.",
+			"xmlHelp": "Checks one well-formed XML document. DTDs and entity declarations are refused. This does not validate against XSD.",
+			"stringType": "Text",
+			"numberType": "Number",
+			"integerType": "Integer",
+			"booleanType": "Yes / No",
+			"jsonPassed": "JSON schema passed",
+			"xmlPassed": "XML syntax passed",
+			"failed": "Response needs correction",
+			"unsupported": "This prompt uses response settings this editor cannot read. Its saved configuration is preserved. Update the application before editing.",
+			"namedInputs": "Use named inputs",
+			"namedHelp": "Write inputs such as {example} in your instructions. Try prompt asks for their values. Choose another template engine under Details when required."
 		}
 	},
 	"tooltips": {
@@ -10184,6 +10805,12 @@
 		}
 	},
 	"readiness": {
+		"indicator": {
+			"assumed": "assumed",
+			"ariaCollapse": "Project readiness: {level}. Select to collapse the checklist.",
+			"ariaExpandZero": "Project readiness: {level}. No open items. Select to expand the checklist.",
+			"ariaExpandOpen": "Project readiness: {level}. {count} open items. Select to expand the checklist."
+		},
 		"panel": {
 			"label": "Project readiness",
 			"progress": "{completed} / {total} complete · {percent}%",
@@ -10197,7 +10824,8 @@
 			"helpRequestFailed": "Could not request help. Please try again.",
 			"assumedPhase": "Phase assumed from your setup.",
 			"requiredOutstanding": "{count, plural, one {# required item outstanding} other {# required items outstanding}}",
-			"intro": "Complete these steps to get your project ready — Fabric detects each one automatically, so nothing here needs ticking off by hand. Not everything applies to every project: snooze what's early, and mark what you'll never use as not applicable.",
+			"intro": "Fabric checks off completed steps automatically. Snooze what is early or mark items that do not apply.",
+			"introReadOnly": "Fabric checks off completed steps automatically as this project is configured.",
 			"phaseTransition": "Discovery and planning are done. Switch this project to Development / Execution readiness?",
 			"switchPhase": "Switch",
 			"phaseTransitionDismiss": "Not yet",
@@ -10224,7 +10852,9 @@
 			"stateInProgress": "In progress",
 			"targetUnavailable": "This step's destination is switched off for this project, so there is nowhere to send you. An administrator can re-enable the tab in project settings.",
 			"nextUp": "Next: {item}",
-			"unlockedBy": "Complete {prerequisite} to unlock {items}.",
+			"lockedToggle": "Unlocks later ({count})",
+			"lockedAfter": "After {prerequisite}",
+			"lockedChained": "+{count} more after downstream prerequisites",
 			"itemActions": "Actions for this item",
 			"changeCOMPLETED": "Done",
 			"changeREGRESSED": "Needs attention",
@@ -10244,23 +10874,23 @@
 			},
 			"featureSnapshot": {
 				"name": "Feature Snapshot",
-				"description": "Define the major capabilities or feature areas Fabric should understand.",
-				"tooltip": "Feature context helps Fabric generate better documents, roadmap items, and recommendations. For early projects, this can be lightweight and refined over time."
+				"description": "List core capabilities on Overview to scope specs.",
+				"tooltip": "Feature context grounds generated documents, roadmap items, and recommendations. For early projects, a lightweight list you refine later works well."
 			},
 			"techStack": {
 				"name": "Tech Stack",
-				"description": "Tech stack context helps Fabric tailor architecture, API, QA, and engineering handoff outputs. For Discovery / Planning projects, this can be preliminary.",
-				"tooltip": "Visit the overview page to define your project's tech stack."
+				"description": "Name your languages, frameworks, and runtime stack.",
+				"tooltip": "Visit the Overview tab to record your project's tech stack. One entry satisfies this step; more makes generated architecture and API docs sharper."
 			},
 			"contextSource": {
 				"name": "At least one context source added",
-				"description": "Add at least one meaningful context source.",
-				"tooltip": "Fabric needs project context to produce useful documents, recommendations, and AI answers. Context can include uploaded files, pasted notes, transcripts, links, connected tools, or repositories."
+				"description": "Upload docs, notes, or links to ground outputs.",
+				"tooltip": "Fabric needs project context to produce grounded documents, recommendations, and answers. Context can include uploaded files, pasted notes, transcripts, links, connected tools, or repositories."
 			},
 			"additionalContextSources": {
 				"name": "Additional context sources added",
-				"description": "Add multiple meaningful context sources.",
-				"tooltip": "Additional sources improve Fabric’s ability to cross-check assumptions, identify gaps, and generate higher-quality outputs.",
+				"description": "Add a second source to cross-check project context.",
+				"tooltip": "Multiple sources let Fabric cross-check assumptions, spot contradictions, and ground generated documents in more than a single file.",
 				"unmet": {
 					"first": "Still needed: add a context source.",
 					"second": "Still needed: add a second context source — this item wants two."
@@ -10268,26 +10898,26 @@
 			},
 			"chatAppConnected": {
 				"name": "Chat app connected",
-				"description": "Connect a relevant Slack or Teams workspace/channel.",
-				"tooltip": "Chat context helps Fabric capture decisions, urgency, requirements, and follow-up work discussed outside formal documents.",
+				"description": "Link a Slack or Teams channel to capture decisions.",
+				"tooltip": "Linked channels let Fabric surface decisions, scope changes, and follow-up work discussed in Slack or Teams.",
 				"unmet": {
 					"link": "Still needed: link a Slack or Teams channel in Settings → Knowledge. Connecting the workspace alone is not enough; a channel has to be linked to this project."
 				}
 			},
 			"meetingTranscripts": {
 				"name": "Meeting transcripts available",
-				"description": "Add or connect relevant meeting transcripts.",
-				"tooltip": "Meeting transcripts help Fabric recover decisions, rationale, open questions, and requirements that may not exist in formal documents."
+				"description": "Sync or upload call transcripts to capture rationale.",
+				"tooltip": "Meeting transcripts preserve rationale, edge cases, and requirements that rarely make it into written specs."
 			},
 			"pmSystemConnected": {
 				"name": "PM system connected",
-				"description": "Connect the project’s work management system.",
-				"tooltip": "PM-system context helps Fabric import existing work, reduce duplicate planning, and align Roadmap with execution."
+				"description": "Link your issue tracker to import existing backlog.",
+				"tooltip": "Connecting your PM tool lets Fabric read existing issues, avoid duplicate work items, and keep Roadmap aligned with execution."
 			},
 			"codebaseConnected": {
 				"name": "Codebase connected",
-				"description": "Connect a readable codebase when development has started.",
-				"tooltip": "Codebase access helps Fabric ground technical documents, validate requirements against implementation, and support engineering handoff.",
+				"description": "Attach and index a repository for specs and scans.",
+				"tooltip": "Codebase access grounds technical documents against the real implementation and unlocks Atlas and security scans.",
 				"unmet": {
 					"analysis": "Still needed: the repository is connected, but its first analysis has not finished successfully yet.",
 					"connect": "Still needed: connect a repository in Settings → Development."
@@ -10295,16 +10925,16 @@
 			},
 			"wikiConnected": {
 				"name": "Wiki Connected",
-				"description": "Connect a relevant project wiki.",
-				"tooltip": "Wiki context can improve long-lived documents and reduce missing background information.",
+				"description": "Connect Notion so team pages stay indexed.",
+				"tooltip": "Indexed wiki pages keep background context current without manual uploads.",
 				"unmet": {
 					"notion": "Still needed: connect a Notion source and let it index. Confluence records a source but cannot yet be ingested, so it will not satisfy this."
 				}
 			},
 			"knowledgeBase": {
 				"name": "Knowledge Base",
-				"description": "Connect a relevant project knowledge base.",
-				"tooltip": "Knowledge base context can improve long-lived documents and reduce missing background information.",
+				"description": "Add a link source classified as Knowledge Base / Wiki.",
+				"tooltip": "Indexing your team knowledge base fills in domain rules and architecture history automatically.",
 				"unmet": {
 					"classify": "Still needed: add a link source classified as Knowledge Base / Wiki, and let it finish indexing. The other seven categories do not count."
 				}
@@ -10316,56 +10946,56 @@
 			},
 			"businessCase": {
 				"name": "Business Case Document",
-				"description": "Create a Business Case when the project needs value or investment framing.",
-				"tooltip": "A Business Case helps Fabric understand why the project matters, what value it should deliver, and how success may be evaluated."
+				"description": "Frame the problem, investment case, and outcomes.",
+				"tooltip": "A Business Case captures why the project matters, what value it delivers, and how outcomes will be measured."
 			},
 			"proposal": {
 				"name": "Proposal Document",
-				"description": "Create a Proposal when scope or commitments need to be captured.",
-				"tooltip": "A Proposal helps Fabric understand agreed scope, delivery expectations, assumptions, and commitments that should shape downstream work."
+				"description": "Record agreed scope, deliverables, and commitments.",
+				"tooltip": "A Proposal captures agreed scope, delivery expectations, assumptions, and commitments that shape downstream specs."
 			},
 			"prd": {
 				"name": "Product Requirement Document (PRD)",
-				"description": "Create a PRD to anchor product scope, goals, and requirements.",
-				"tooltip": "A PRD gives Fabric a strong source of truth for users, scope, requirements, expected behavior, and acceptance criteria."
+				"description": "Define users, scope, and acceptance criteria. Unlocks Architecture and QA Strategy.",
+				"tooltip": "A PRD is the primary source of truth for target users, scope, requirements, expected behavior, and acceptance criteria."
 			},
 			"architecture": {
 				"name": "Architecture document",
-				"description": "Create or add an Architecture document for the product’s technical structure.",
-				"tooltip": "Architecture context helps Fabric understand system components, dependencies, integrations, and technical constraints."
+				"description": "Map system components, boundaries, and data flow.",
+				"tooltip": "An Architecture document defines system components, dependencies, integrations, and technical constraints."
 			},
 			"designDocument": {
 				"name": "Design document",
-				"description": "Create or add a Design System document for the product’s visual language.",
+				"description": "Capture UI tokens, components, and layout patterns.",
 				"tooltip": "A design system gives Fabric the colors, spacing, components and patterns your UI already uses, so generated work matches the product instead of inventing a new look."
 			},
 			"apiSpec": {
 				"name": "API specification exists",
-				"description": "API spec exists when API behavior is in scope.",
-				"tooltip": "API specs help engineering and QA understand contracts, integrations, and edge cases."
+				"description": "Document endpoints, payload schemas, and errors.",
+				"tooltip": "API specs give engineering and QA explicit contracts, payloads, and edge cases before implementation."
 			},
 			"technicalSpec": {
 				"name": "Technical Specification",
-				"description": "Create a Technical Specification when implementation details need to be defined.",
-				"tooltip": "A Technical Specification helps engineers understand the implementation approach, technical constraints, and system behavior needed to build the product."
+				"description": "Specify data models, control flow, and edge cases.",
+				"tooltip": "A Technical Specification details the concrete implementation approach, data structures, and runtime behavior needed to build the feature."
 			},
 			"qaStrategy": {
 				"name": "QA Strategy exists",
-				"description": "QA strategy or testing plan exists.",
-				"tooltip": "QA planning improves release confidence and clarifies quality gates before delivery.",
+				"description": "Define test coverage and release gates in Documents.",
+				"tooltip": "A QA Strategy sets test plans, environments, and release gates before delivery.",
 				"unmet": {
 					"document": "Still needed: create a QA Strategy document under Documents. The Testing tab and Settings → Testing do not satisfy this."
 				}
 			},
 			"roadmapPopulated": {
 				"name": "Roadmap Populated",
-				"description": "Add or import Roadmap work items.",
-				"tooltip": "Roadmap items help Fabric understand planned work and connect requirements, recommendations, and execution."
+				"description": "Import or create epics and work items on Roadmap.",
+				"tooltip": "Roadmap work items connect requirements to concrete deliverables and execution progress."
 			},
 			"pmSyncEnabled": {
 				"name": "PM-system sync enabled",
-				"description": "Sync work items to your project management system.",
-				"tooltip": "Sync keeps Fabric and your connected project management system aligned so work can be managed in both places when configured.",
+				"description": "Push Roadmap status updates back to your PM tool.",
+				"tooltip": "Two-way sync keeps Roadmap and your issue tracker aligned without manual status updates.",
 				"unmet": {
 					"autoPush": "Still needed: turn on “Auto-push status changes to PM tool” in Settings → Development. Connecting the system does not start syncing on its own.",
 					"connect": "Still needed: connect a project management system first.",
@@ -10374,24 +11004,24 @@
 			},
 			"terminalStatuses": {
 				"name": "Terminal statuses defined",
-				"description": "Map completed or closed PM-system statuses.",
-				"tooltip": "Terminal statuses help Fabric recognize completed, canceled, or removed work and keep Roadmap clean.",
+				"description": "Define which PM statuses mark work as closed.",
+				"tooltip": "Terminal statuses tell Fabric which PM statuses represent completed or canceled work.",
 				"unmet": {
 					"define": "Still needed: name at least one terminal status in Settings → Development — the statuses your PM tool uses for closed work."
 				}
 			},
 			"teamMembers": {
 				"name": "Add Team Members",
-				"description": "Add project team members to Fabric.",
-				"tooltip": "Fabric’s value increases when the team can share context, review outputs, and collaborate in the same project workspace.",
+				"description": "Invite a teammate to share context and review docs.",
+				"tooltip": "Shared project access lets teammates contribute context, review specs, and work from the same source of truth.",
 				"unmet": {
 					"accept": "Still needed: a second member who has accepted their invitation. Pending invitations do not count yet."
 				}
 			},
 			"workCaptureTranscripts": {
 				"name": "Work capture from transcripts enabled",
-				"description": "Fabric can capture work items discussed on discovery and team meetings.",
-				"tooltip": "Fabric can propose new or updated work items from meeting transcripts when transcript capture is configured.",
+				"description": "Propose candidate work items from call transcripts.",
+				"tooltip": "Transcript capture extracts candidate stories and action items after each synced call.",
 				"unmet": {
 					"autoAnalyze": "Still needed: turn on automatic transcript analysis in Settings → Knowledge.",
 					"transcript": "Still needed: a meeting transcript on this project."
@@ -10399,8 +11029,8 @@
 			},
 			"workCaptureChat": {
 				"name": "Work capture from Chat",
-				"description": "Work capture from chat enabled.",
-				"tooltip": "Fabric can propose new or updated work items from monitored chat channels when chat capture is configured.",
+				"description": "Monitor linked channels for action items and bugs.",
+				"tooltip": "Continuous channel monitoring proposes new or updated work items directly from team discussions.",
 				"unmet": {
 					"link": "Still needed: link a chat channel first.",
 					"monitor": "Still needed: switch the channel monitor on. Linked channels can be scanned on demand, but work capture needs continuous watching."
@@ -10408,13 +11038,13 @@
 			},
 			"releaseNotes": {
 				"name": "Release notes configured",
-				"description": "Fabric can generate and distribute release notes.",
-				"tooltip": "Fabric can help generate release notes so stakeholders stay informed about delivered work."
+				"description": "Draft release summaries from shipped work and commits.",
+				"tooltip": "Automated release notes draft stakeholder updates directly from completed work items and commits."
 			},
 			"atlasExplored": {
 				"name": "Codebase explored in Atlas",
-				"description": "Fabric can help you understand your codebase.",
-				"tooltip": "Atlas helps users understand code structure, dependencies, and implementation details after a codebase is connected.",
+				"description": "Run an Atlas scan to map module dependencies.",
+				"tooltip": "Atlas maps your repository's architecture, call graphs, and module boundaries once code is indexed.",
 				"unmet": {
 					"analysis": "Still needed: the codebase analysis has not completed yet.",
 					"run": "Still needed: open Atlas and run an analysis for this project."
@@ -10422,8 +11052,8 @@
 			},
 			"securityScan": {
 				"name": "Security scan completed",
-				"description": "Fabric can help you understand vulnerabilities in your codebase.",
-				"tooltip": "Security scanning helps identify vulnerabilities or risks in the connected codebase.",
+				"description": "Run a baseline vulnerability scan on the repository.",
+				"tooltip": "Security scans surface dependency and code vulnerabilities in the connected repository.",
 				"unmet": {
 					"run": "Still needed: run a security scan that completes successfully. A scan that started and failed does not count."
 				}
@@ -10461,9 +11091,9 @@
 			"securityScan": "Scan codebase"
 		},
 		"needLevel": {
-			"MUST": "Must",
-			"SHOULD": "Should",
-			"COULD": "Could",
+			"MUST": "Required",
+			"SHOULD": "Recommended",
+			"COULD": "Optional",
 			"NOT_APPLICABLE": "Not needed in this phase"
 		}
 	},
@@ -10653,5 +11283,37 @@
 			"title": "Nothing to do",
 			"description": "Action items from your meetings, and to-dos you add yourself, will show up here."
 		}
+	},
+	"agentDirectory": {
+		"agents": "Agents",
+		"runs": "Runs & History",
+		"inbox": "Inbox"
+	},
+	"genieExperience": {
+		"toolFailuresTitle": "Some steps need attention",
+		"toolFailuresDescription": "Review the failed steps before relying on this result. A completed run does not mean every tool succeeded.",
+		"toolNeedsInspection": "Needs inspection",
+		"toolRunning": "Running",
+		"toolCancelled": "Cancelled",
+		"toolSkipped": "Skipped",
+		"toolRecorded": "Recorded",
+		"toolFailed": "Failed",
+		"toolAwaitingConfirmation": "Awaiting confirmation",
+		"toolCompleted": "Completed",
+		"details": "Details",
+		"capabilitiesTitle": "Available capabilities",
+		"capabilitiesDescription": "Tools and agents enabled for this conversation. Access is checked when they run.",
+		"addMenu": "Add context and tools",
+		"chatTools": "Choose chat tools",
+		"memory": "Manage memory",
+		"ask": "Ask Genie… Type @ to add context",
+		"reportedSources": "Agent-reported references. These labels do not verify that a document was read.",
+		"activity": "Activity · {count}",
+		"workingActions": "{count} working",
+		"failedActions": "{count} failed",
+		"completedActions": "{count} completed",
+		"viewDocument": "View {title}",
+		"copyDocument": "Copy {title}",
+		"downloadDocument": "Download {title}"
 	}
 }

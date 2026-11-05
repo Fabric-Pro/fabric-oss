@@ -26,7 +26,7 @@ import {
 // Parameters and context are configured at instance level
 export type DataSourceDefinition = {
 	id: string;
-	type: "integration" | "mcp" | "workspace" | "user-input";
+	type: "integration" | "mcp" | "workspace" | "user-input" | "fabric";
 	provider: string;
 	// Operation is optional - only used for legacy non-agentic templates
 	operation?: string;
@@ -45,10 +45,22 @@ export const DATA_SOURCE_PROVIDERS: Record<
 	string,
 	{
 		label: string;
-		type: "integration" | "mcp";
+		type: "integration" | "mcp" | "fabric";
 		operations: { value: string; label: string; description: string }[];
 	}
 > = {
+	fabric_project: {
+		label: "Project knowledge",
+		type: "fabric",
+		operations: [
+			{
+				value: "project_knowledge",
+				label: "Read project knowledge",
+				description:
+					"Read completed generated documents and shared project text notes using the report project audience.",
+			},
+		],
+	},
 	// Azure DevOps MCP Server - Primary provider for sprint and work item reports
 	// Tool names from: https://github.com/microsoft/azure-devops-mcp (actual MCP tool names)
 	azure_devops: {
@@ -633,6 +645,12 @@ function DataSourceItem({
 			icon: "text-muted-foreground",
 			iconBg: "bg-blue-100 dark:bg-blue-900",
 		},
+		fabric: {
+			bg: "bg-muted",
+			border: "border-border",
+			icon: "text-muted-foreground",
+			iconBg: "bg-muted",
+		},
 		workspace: {
 			bg: "bg-amber-50 dark:bg-amber-950/30",
 			border: "border-amber-200 dark:border-amber-800",
@@ -690,7 +708,9 @@ function DataSourceItem({
 							colors.icon,
 						)}
 					>
-						{dataSource.type === "integration" ? (
+						{dataSource.type === "fabric" ? (
+							<DatabaseIcon className="h-4 w-4" />
+						) : dataSource.type === "integration" ? (
 							<PlugIcon className="h-4 w-4" />
 						) : (
 							<ServerIcon className="h-4 w-4" />
@@ -707,6 +727,10 @@ function DataSourceItem({
 								onUpdate({
 									provider: value,
 									type: newProvider?.type || "mcp",
+									operation:
+										newProvider?.type === "fabric"
+											? "project_knowledge"
+											: undefined,
 								});
 							}}
 							disabled={readOnly}

@@ -63,6 +63,10 @@ vi.mock("../../organizations/lib/membership", () => ({
 }));
 
 vi.mock("../../../orpc/procedures", () => ({
+	resolveOrganizationId: (
+		_: unknown,
+		session: { activeOrganizationId?: string },
+	) => session.activeOrganizationId,
 	Permissions: { PROMPT_CREATE: "prompt:create" },
 	requirePermission: () => (next: unknown) => next,
 	tenantProtectedProcedure: {
@@ -80,7 +84,10 @@ import { versionProcedures } from "../procedures/version";
 
 type Handler = (args: {
 	input: Record<string, unknown>;
-	context: { user: { id: string; role?: string | null } };
+	context: {
+		user: { id: string; role?: string | null };
+		session: { activeOrganizationId: string };
+	};
 }) => Promise<unknown>;
 
 const createVersion = (
@@ -90,6 +97,7 @@ const createVersion = (
 	(versionProcedures.create as unknown as Handler)({
 		input: { id: prompt.id as string, content: "revised body" },
 		context: {
+			session: { activeOrganizationId: "org-a" },
 			user: { id: user.id ?? "admin-1", role: user.role ?? "admin" },
 		},
 	});

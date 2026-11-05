@@ -7,7 +7,11 @@
  *   fabric workflows status <id> <execId>      Get execution status
  */
 
-import type { FabricExecution, FabricWorkflow } from "@fabricorg/sdk";
+import type {
+	FabricExecution,
+	FabricWorkflow,
+	WorkflowStarter,
+} from "@fabricorg/sdk";
 import { Command } from "commander";
 import { getClient } from "../../lib/client.js";
 import { resolveContext } from "../../lib/context.js";
@@ -20,6 +24,194 @@ import {
 
 export function buildWorkflowsCommand(): Command {
 	const workflows = new Command("workflows").description("Manage workflows");
+
+	workflows
+		.command("starters")
+		.description("List delivery workflow starters")
+		.option("--org <slug>", "Organization context")
+		.action(async (opts) => {
+			const ctx = resolveContext(false, opts.org, false);
+			try {
+				printOutput(
+					await getClient().workflows.listStarters({
+						org: ctx?.type === "org" ? ctx.slug : undefined,
+					}),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError((error as Error).message, 1);
+			}
+		});
+	workflows
+		.command("from-starter <starterId>")
+		.description(
+			"Create a draft from a delivery starter; does not run or publish",
+		)
+		.option("--org <slug>", "Organization context")
+		.option("--name <name>", "Draft name")
+		.action(async (starterId: WorkflowStarter["id"], opts) => {
+			const ctx = resolveContext(false, opts.org, false);
+			try {
+				printOutput(
+					await getClient().workflows.createFromStarter(
+						{ starterId, name: opts.name },
+						{ org: ctx?.type === "org" ? ctx.slug : undefined },
+					),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError((error as Error).message, 1);
+			}
+		});
+	workflows
+		.command("check <id>")
+		.description("Check saved configuration; no live external requests")
+		.option("--org <slug>", "Organization context")
+		.action(async (id: string, opts) => {
+			const ctx = resolveContext(false, opts.org, false);
+			try {
+				printOutput(
+					await getClient().workflows.checkReadiness(id, {
+						org: ctx?.type === "org" ? ctx.slug : undefined,
+					}),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError((error as Error).message, 1);
+			}
+		});
+	for (const action of ["publish", "unpublish", "pause", "resume"] as const) {
+		const command = workflows
+			.command(`${action} <id>`)
+			.description(
+				action === "publish"
+					? "Publish the saved graph as a version and enable its triggers"
+					: `${action} future workflow triggers; current runs keep their state`,
+			)
+			.option("--org <slug>", "Organization context");
+		if (action === "publish") {
+			command
+				.option("--changelog <text>", "Publish change note")
+				.option(
+					"--enable-webhook",
+					"Enable a webhook and return its signing secret",
+				);
+		}
+		command.action(async (id: string, opts) => {
+			const context = resolveContext(false, opts.org, false);
+			const options = {
+				org: context?.type === "org" ? context.slug : undefined,
+			};
+			try {
+				const resource = getClient().workflows;
+				const result =
+					action === "publish"
+						? await resource.publish(
+								id,
+								{
+									changelog: opts.changelog,
+									enableWebhook: opts.enableWebhook,
+								},
+								options,
+							)
+						: await resource[action](id, options);
+				printOutput(result, { format: "json" });
+				if (result.success === false) {
+					printError(
+						"Publication was refused. Fix the reported validation issues.",
+						1,
+					);
+				}
+			} catch (error) {
+				printError((error as Error).message, 1);
+			}
+		});
+	}
+	workflows
+		.command("versions <id>")
+		.description("List saved workflow versions")
+		.option("--org <slug>", "Organization context")
+		.option("--limit <n>", "Page size", "20")
+		.option("--offset <n>", "Page offset", "0")
+		.action(async (id: string, opts) => {
+			const context = resolveContext(false, opts.org, false);
+			try {
+				printOutput(
+					await getClient().workflows.listVersions(id, {
+						org: context?.type === "org" ? context.slug : undefined,
+						limit: Number(opts.limit),
+						offset: Number(opts.offset),
+					}),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError((error as Error).message, 1);
+			}
+		});
+	workflows
+		.command("rollback <id> <version>")
+		.description(
+			"Restore a published version after current authorization and validation checks",
+		)
+		.option("--org <slug>", "Organization context")
+		.action(async (id: string, version: string, opts) => {
+			const context = resolveContext(false, opts.org, false);
+			try {
+				printOutput(
+					await getClient().workflows.rollback(id, Number(version), {
+						org: context?.type === "org" ? context.slug : undefined,
+					}),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError((error as Error).message, 1);
+			}
+		});
+	const schedule = workflows
+		.command("schedule")
+		.description("Inspect live schedules and configure draft schedules");
+	schedule
+		.command("show <id>")
+		.option("--org <slug>", "Organization context")
+		.action(async (id: string, opts) => {
+			const context = resolveContext(false, opts.org, false);
+			try {
+				printOutput(
+					await getClient().workflows.getSchedule(id, {
+						org: context?.type === "org" ? context.slug : undefined,
+					}),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError((error as Error).message, 1);
+			}
+		});
+	schedule
+		.command("set <id>")
+		.description("Save a draft schedule; publish separately to activate it")
+		.requiredOption("--cron <expression>", "Cron expression")
+		.option("--timezone <zone>", "IANA time zone", "UTC")
+		.option("--org <slug>", "Organization context")
+		.action(async (id: string, opts) => {
+			const context = resolveContext(false, opts.org, false);
+			try {
+				printOutput(
+					await getClient().workflows.configureSchedule(
+						id,
+						{ cron: opts.cron, timezone: opts.timezone },
+						{
+							org:
+								context?.type === "org"
+									? context.slug
+									: undefined,
+						},
+					),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError((error as Error).message, 1);
+			}
+		});
 
 	// -- list ----------------------------------------------------------------
 	workflows
@@ -214,6 +406,146 @@ export function buildWorkflowsCommand(): Command {
 				});
 			},
 		);
+
+	const checks = workflows
+		.command("checks")
+		.description(
+			"Check recorded workflow results; no workflow or model is invoked",
+		);
+	const collect = (value: string, previous: string[]) => [...previous, value];
+	const orgOptions = (org?: string) => {
+		const ctx = resolveContext(false, org, false);
+		return { org: ctx?.type === "org" ? ctx.slug : undefined };
+	};
+	checks
+		.command("list <id>")
+		.option("--org <slug>", "Organization context")
+		.action(async (id: string, opts) => {
+			try {
+				printOutput(
+					await getClient().workflows.listChecks(
+						id,
+						orgOptions(opts.org),
+					),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError((error as Error).message, 1);
+			}
+		});
+	checks
+		.command("inspect <id> <executionId> <nodeId>")
+		.option("--org <slug>", "Organization context")
+		.action(
+			async (id: string, executionId: string, nodeId: string, opts) => {
+				try {
+					printOutput(
+						await getClient().workflows.inspectResult(
+							id,
+							{ executionId, nodeId },
+							orgOptions(opts.org),
+						),
+						{ format: "json" },
+					);
+				} catch (error) {
+					printError((error as Error).message, 1);
+				}
+			},
+		);
+	for (const action of ["preview", "save"] as const) {
+		const command = checks
+			.command(`${action} <id> <executionId> <nodeId>`)
+			.option("--org <slug>", "Organization context")
+			.requiredOption("--revision <sha256>", "Inspected result revision")
+			.option(
+				"--require <phrase>",
+				"Required exact phrase; repeat for more",
+				collect,
+				[],
+			)
+			.option(
+				"--forbid <phrase>",
+				"Forbidden exact phrase; repeat for more",
+				collect,
+				[],
+			);
+		if (action === "save") {
+			command.requiredOption("--name <name>", "Saved check name");
+		}
+		command.action(
+			async (id: string, executionId: string, nodeId: string, opts) => {
+				const input = {
+					executionId,
+					nodeId,
+					expectedRevision: opts.revision,
+					requiredPhrases: opts.require,
+					forbiddenPhrases: opts.forbid,
+				};
+				try {
+					const resource = getClient().workflows;
+					printOutput(
+						await (action === "save"
+							? resource.saveCheck(
+									id,
+									{ ...input, name: opts.name },
+									orgOptions(opts.org),
+								)
+							: resource.previewCheck(
+									id,
+									input,
+									orgOptions(opts.org),
+								)),
+						{ format: "json" },
+					);
+				} catch (error) {
+					printError((error as Error).message, 1);
+				}
+			},
+		);
+	}
+	checks
+		.command("compare <id> <checkId> <executionId>")
+		.option("--org <slug>", "Organization context")
+		.requiredOption("--revision <sha256>", "Saved check revision")
+		.action(
+			async (id: string, checkId: string, executionId: string, opts) => {
+				try {
+					printOutput(
+						await getClient().workflows.applyCheck(
+							id,
+							{
+								checkId,
+								executionId,
+								expectedCaseRevision: opts.revision,
+							},
+							orgOptions(opts.org),
+						),
+						{ format: "json" },
+					);
+				} catch (error) {
+					printError((error as Error).message, 1);
+				}
+			},
+		);
+	checks
+		.command("remove <id> <checkId>")
+		.description("Remove a saved check; original run remains available")
+		.option("--org <slug>", "Organization context")
+		.requiredOption("--revision <sha256>", "Saved check revision")
+		.action(async (id: string, checkId: string, opts) => {
+			try {
+				printOutput(
+					await getClient().workflows.removeCheck(
+						id,
+						{ checkId, expectedCaseRevision: opts.revision },
+						orgOptions(opts.org),
+					),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError((error as Error).message, 1);
+			}
+		});
 
 	return workflows;
 }

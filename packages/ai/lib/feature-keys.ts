@@ -131,6 +131,9 @@ export const AI_FEATURE_KEYS = [
 	"decision-precheck",
 	/** Interactive prompt rewriting. */
 	"prompt-enhancement",
+	/** Reviewed library authoring and explicit live previews. */
+	"prompt-assistance",
+	"prompt-preview",
 	/** Verdicts on drafts from the organization agents' document editor (built-in
 	 * document_generator and custom agents). No AGENT_FEATURE_KEYS mapping: the
 	 * editor runs custom agents too, so its usage rows have no single key. */

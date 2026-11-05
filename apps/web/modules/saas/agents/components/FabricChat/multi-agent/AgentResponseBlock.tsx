@@ -51,6 +51,7 @@ import {
 } from "../../../../../../components/ai-elements/McpAppFrame";
 import { Response } from "../../../../../../components/ai-elements/response";
 import { TypingResponse } from "../../../../../../components/ai-elements/typing-response";
+import { effectiveToolStatus } from "../shared/tool-activity";
 
 /**
  * One agent's answer in a multi-agent turn: its avatar or vendor logo, the
@@ -306,7 +307,7 @@ export function AgentResponseBlock({
 			args: tc.args,
 			result: tc.result,
 			serverName: tc.serverName,
-			status: tc.status,
+			status: effectiveToolStatus(tc),
 			mcpAppResourceUri: tc.mcpAppResourceUri,
 			mcpAppConfigId: tc.mcpAppConfigId,
 		}),
@@ -532,11 +533,17 @@ export function AgentResponseBlock({
 						)}
 						<div className="text-base text-foreground leading-relaxed">
 							{response.isLoading ? (
-								<TypingResponse animate streaming>
+								<TypingResponse
+									normalizeHeadings
+									animate
+									streaming
+								>
 									{response.content}
 								</TypingResponse>
 							) : (
-								<Response>{response.content}</Response>
+								<Response normalizeHeadings>
+									{response.content}
+								</Response>
 							)}
 						</div>
 						{/* Editorial "Stopped" chip — rendered directly under

@@ -17,8 +17,10 @@ import { renderProcedure } from "./procedures/render";
 import { testProcedures } from "./procedures/test";
 import { updateProcedure } from "./procedures/update";
 import { versionProcedures } from "./procedures/version";
+import { promptWorkbenchProcedures } from "./procedures/workbench";
 
 export const promptsRouter = {
+	...promptWorkbenchProcedures,
 	// Existing procedures
 	browse: browseProcedures,
 	fork: forkProcedures,

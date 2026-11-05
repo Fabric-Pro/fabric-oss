@@ -33,6 +33,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { formatDuration } from "../lib/format-duration";
 
+import { WorkflowResult } from "./editor/WorkflowResult";
+
 const MIN_PANEL_WIDTH = 320;
 const MAX_PANEL_WIDTH = 1200;
 const DEFAULT_PANEL_WIDTH = 420;
@@ -215,9 +217,10 @@ function NodeLogItem({ log }: { log: ExecutionLog }) {
 										)}
 									/>
 								</div>
-								<pre className="max-h-48 overflow-auto rounded-md border bg-background p-3 text-xs font-mono whitespace-pre-wrap break-all">
-									{JSON.stringify(log.output, null, 2)}
-								</pre>
+								<WorkflowResult
+									output={log.output}
+									nodeType={log.nodeType}
+								/>
 							</div>
 						)}
 

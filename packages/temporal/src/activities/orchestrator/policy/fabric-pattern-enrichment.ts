@@ -20,7 +20,6 @@
 import {
 	type ComposeResult,
 	composeFabricPrompt,
-	detectAndCompose,
 	detectFabricComponents,
 	FABRIC_CONTEXTS,
 	FABRIC_PATTERNS,
@@ -97,9 +96,43 @@ export async function applyFabricPatternEnrichment(
 	});
 
 	try {
-		// Check availability first
-		const available = await isFabricAvailable();
-		if (!available) {
+		const detected =
+			input.enableAutoDetection !== false
+				? detectFabricComponents(input.message)
+				: {};
+		const effectiveStrategy = input.strategy || detected.strategy;
+		const effectiveContext = input.context || detected.context;
+		const effectivePattern = input.pattern || detected.pattern;
+
+		// Short-circuit before probing the Fabric AI server when no explicit or
+		// auto-detected component applies to this message. Simple conversational
+		// or grounded document questions ("what does this document say?") avoid
+		// network /health round-trips completely while advanced queries still
+		// compose full Strategy → Context → Pattern prompts below.
+		if (!effectiveStrategy && !effectiveContext && !effectivePattern) {
+			logger.debug(
+				"[FabricPattern] No Fabric components matched; skipping server probe",
+				{
+					enableAutoDetection: input.enableAutoDetection ?? true,
+				},
+			);
+			return {
+				composedPrompt: input.basePrompt || "",
+				components: { strategy: null, context: null, pattern: null },
+				fabricAvailable: false,
+				cacheHits: { strategy: false, context: false, pattern: false },
+			};
+		}
+
+		const result: ComposeResult = await composeFabricPrompt({
+			basePrompt: input.basePrompt,
+			strategy: effectiveStrategy,
+			context: effectiveContext,
+			pattern: effectivePattern,
+			variables: input.variables,
+		});
+
+		if (!result.fabricAvailable) {
 			logger.warn("[FabricPattern] Fabric AI server is not available");
 			return {
 				composedPrompt: input.basePrompt || "",
@@ -110,23 +143,15 @@ export async function applyFabricPatternEnrichment(
 			};
 		}
 
-		let result: ComposeResult;
-
 		if (
 			input.enableAutoDetection !== false &&
 			!input.strategy &&
 			!input.context &&
 			!input.pattern
 		) {
-			// Auto-detect components from message
-			result = await detectAndCompose({
-				userMessage: input.message,
-				basePrompt: input.basePrompt,
-			});
-
-			const detected = detectFabricComponents(input.message);
-			const hasDetection =
-				detected.strategy || detected.context || detected.pattern;
+			const hasDetection = Boolean(
+				detected.strategy || detected.context || detected.pattern,
+			);
 			logger[hasDetection ? "info" : "debug"](
 				"[FabricPattern] Auto-detection result",
 				{
@@ -134,26 +159,6 @@ export async function applyFabricPatternEnrichment(
 					used: result.components,
 				},
 			);
-		} else {
-			// Use explicit components (with auto-detection for missing ones if enabled)
-			if (input.enableAutoDetection !== false) {
-				const detected = detectFabricComponents(input.message);
-				result = await composeFabricPrompt({
-					basePrompt: input.basePrompt,
-					strategy: input.strategy || detected.strategy,
-					context: input.context || detected.context,
-					pattern: input.pattern || detected.pattern,
-					variables: input.variables,
-				});
-			} else {
-				result = await composeFabricPrompt({
-					basePrompt: input.basePrompt,
-					strategy: input.strategy,
-					context: input.context,
-					pattern: input.pattern,
-					variables: input.variables,
-				});
-			}
 		}
 
 		const hasComposition =

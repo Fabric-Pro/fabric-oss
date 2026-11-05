@@ -4,6 +4,8 @@ import { AI_FEATURE_KEYS, featureKeyForAgentId } from "../lib/feature-keys";
 describe("draft feature keys", () => {
 	it("maps prompt enhancement usage including suffixed calls", () => {
 		expect(AI_FEATURE_KEYS).toContain("prompt-enhancement");
+		expect(AI_FEATURE_KEYS).toContain("prompt-assistance");
+		expect(AI_FEATURE_KEYS).toContain("prompt-preview");
 		expect(featureKeyForAgentId("prompt_enhancer")).toBe(
 			"prompt-enhancement",
 		);

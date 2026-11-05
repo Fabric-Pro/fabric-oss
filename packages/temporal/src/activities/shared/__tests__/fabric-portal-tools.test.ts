@@ -136,8 +136,30 @@ describe("which portal tools the model is given", () => {
 		expect(isFabricPortalTool(name)).toBe(false);
 	});
 
-	it("is 38 tools, every platform tool of the gateway but the three that manage delegated authority and the memory tools", () => {
-		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(38);
+	it("includes context quality in the project-granted portal tools", () => {
+		// The existing saved-evaluation family extends the original 41 tools.
+		const savedEvaluationTools = [
+			"fabric_context_quality_run_capabilities",
+			"fabric_create_context_quality_run",
+			"fabric_list_context_quality_runs",
+			"fabric_get_context_quality_run",
+			"fabric_cancel_context_quality_run",
+			"fabric_compare_context_quality_runs",
+		];
+		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(
+			41 + savedEvaluationTools.length + 2,
+		);
+		expect(
+			FABRIC_PORTAL_TOOL_NAMES.filter((name) =>
+				savedEvaluationTools.includes(name),
+			).sort(),
+		).toEqual(savedEvaluationTools.sort());
+		expect(FABRIC_PORTAL_TOOL_NAMES).toContain(
+			"fabric_inspect_context_quality_source",
+		);
+		expect(FABRIC_PORTAL_TOOL_NAMES).toContain(
+			"fabric_evaluate_context_quality",
+		);
 		for (const name of FABRIC_PORTAL_EXCLUDED_TOOL_NAMES) {
 			expect(FABRIC_PORTAL_TOOL_NAMES).not.toContain(name);
 		}

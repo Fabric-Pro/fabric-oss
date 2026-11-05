@@ -2,13 +2,13 @@
  * Keeps a workflow's Temporal Schedule in step with its definition.
  *
  * Called wherever a workflow's schedule-relevant state changes: publish makes
- * it live, unpublish and delete take it away, and saving an already-published
- * workflow updates the cron in place.
+ * it live, unpublish and delete take it away, and resume restores the published
+ * trigger. Saving draft edits never changes the live schedule.
  *
  * Never throws. A schedule that fails to sync must not block the publish or
  * delete that triggered it — the workflow itself is the source of truth, and
- * the reconciler repairs drift on its next pass. The outcome is returned so
- * callers can surface it.
+ * callers must surface synchronization failures and arrange a retry. The
+ * reconciler removes orphan schedules; it does not recreate missing schedules.
  */
 
 import {
@@ -53,7 +53,7 @@ export async function syncWorkflowSchedule(
 		if (!(await isTemporalAvailable())) {
 			return {
 				outcome: "none",
-				reason: "Temporal unavailable; reconciler will repair",
+				reason: "Temporal unavailable; retry publishing or resuming when it is available",
 			};
 		}
 

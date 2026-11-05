@@ -138,7 +138,7 @@ exactly what the page showed: if the organization the server would use differs,
 nothing is approved and the tool has to start the sign-in again. `mcp:read`,
 the scope behind "Read this organization's projects and context", covers that
 organization's projects, features and bugs with their decisions and revisions,
-documents, project context, coding instructions, document libraries,
+documents, project context, coding instructions, document workspaces,
 workflows and frames, plus the list of connected servers. It does not cover your personal AI
 chats, and the identity tools list only the organization you signed in for.
 An OAuth sign-in never holds `mcp:write`, so it cannot call a connected server's
@@ -897,9 +897,9 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_memory_read` | List the files under a Living Memory write folder, or read one file's text a page at a time; works with a coding tool's default sign-in |
 | `fabric_memory_write` | Write or delete plain files in a Living Memory write folder as one commit or pull request; needs the `memory:write` scope |
 | `fabric_memory_write_status` | Read the receipt of a Living Memory write |
-| `fabric_list_workspaces` | List your document libraries (the Libraries page). The tool keeps its name for existing clients |
-| `fabric_get_workspace` | Get a document library's details and document list |
-| `fabric_query_workspace` | Semantic search (RAG) across a document library's documents |
+| `fabric_list_workspaces` | List your document workspaces (the Libraries page). The tool keeps its name for existing clients |
+| `fabric_get_workspace` | Get a document workspace's details and document list |
+| `fabric_query_workspace` | Semantic search (RAG) across a document workspace's documents |
 | `fabric_list_frames` | List your frames; with `surface: "workspace"` the organization's Workspaces you can open, with `surface: "artifact"` and a `projectId` a project's Artifacts |
 | `fabric_get_frame` | Read a frame's blocks, surface and runtime tools; outline:true returns block sizes without content for partial editing |
 | `fabric_create_frame` | Create a page. Pass the whole page in `blocks`, a `surface` (`artifact` or `workspace`), and the tools its script calls in `runtimeTools`. A Workspace is shared with the organization unless `sharedWithOrganization` is `false`; any other page is private to its creator. `shareOnCreate: true` also makes a public link, where the organization allows public links. Asks the person in chat first when `runtimeTools` is set |

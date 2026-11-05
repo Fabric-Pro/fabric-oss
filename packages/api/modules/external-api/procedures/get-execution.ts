@@ -17,13 +17,18 @@ import { getSignedUrl } from "@repo/storage";
 import { readNativeExecutionState } from "../lib/native-execution-state";
 import type { ExternalApiContext } from "../types";
 
+export type AgentExecutionReadActor = Pick<
+	ExternalApiContext,
+	"userId" | "organizationId" | "boundProjectId"
+> & { scopes: readonly string[] };
+
 /**
  * Validate that a storage path belongs to the caller's tenant.
  * Prevents cross-tenant artifact access via forged storagePath values.
  */
 function isOwnedByTenant(
 	storagePath: string,
-	ctx: ExternalApiContext,
+	ctx: AgentExecutionReadActor,
 ): boolean {
 	const expectedPrefix = ctx.organizationId || ctx.userId;
 	return storagePath.startsWith(`${expectedPrefix}/`);
@@ -31,7 +36,7 @@ function isOwnedByTenant(
 
 export async function canReadAgentExecution(
 	executionId: string,
-	ctx: ExternalApiContext,
+	ctx: AgentExecutionReadActor,
 ) {
 	if (!ctx.organizationId) {
 		return false;
@@ -95,7 +100,7 @@ export async function canReadAgentExecution(
 export function authorizeAgentExecutionStream(
 	stream: ReadableStream<Uint8Array>,
 	executionId: string,
-	ctx: ExternalApiContext,
+	ctx: AgentExecutionReadActor,
 ) {
 	return stream.pipeThrough(
 		new TransformStream<Uint8Array, Uint8Array>({
@@ -111,7 +116,7 @@ export function authorizeAgentExecutionStream(
 
 export async function getExecution(
 	executionId: string,
-	ctx: ExternalApiContext,
+	ctx: AgentExecutionReadActor,
 ) {
 	if (!ctx.scopes.includes("agents:read") && !ctx.scopes.includes("*")) {
 		return null;
@@ -252,6 +257,8 @@ export async function getExecution(
 
 	return {
 		executionId: execution.id,
+		projectId:
+			readAgentExecutionAdmission(execution)?.dispatch.projectId ?? null,
 		deploymentId: execution.deploymentId,
 		workflowId: execution.workflowId,
 		runId: native.runId ?? execution.runId,

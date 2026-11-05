@@ -2,6 +2,8 @@ import { ORPCError } from "@orpc/server";
 import { createId } from "@paralleldrive/cuid2";
 import {
 	createTemplateInstanceArtifactEmailDeliveries,
+	canAccessReportInstance,
+	readReportProjectBindings,
 	db,
 	getTemplateInstanceArtifact,
 } from "@repo/database";
@@ -62,7 +64,10 @@ export const sendArtifactEmailProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		const artifact = await getTemplateInstanceArtifact(input.artifactId);
+		const artifact = await getTemplateInstanceArtifact(input.artifactId, {
+			userId: context.user.id,
+			organizationId,
+		});
 
 		if (!artifact) {
 			throw new ORPCError("NOT_FOUND", {
@@ -74,6 +79,43 @@ export const sendArtifactEmailProcedure = tenantProtectedProcedure
 			userId: context.user.id,
 			organizationId,
 		});
+
+		// Sharing permission does not make restricted project evidence visible to
+		// every member or an arbitrary external address. Authorize the audience
+		// before reading attachment bytes or producing an external effect.
+		let projectBindings: string[];
+		try {
+			projectBindings = readReportProjectBindings(
+				artifact.execution.instance.fabricConfig,
+				artifact.execution.parameters,
+			);
+		} catch {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Report audience could not be verified",
+			});
+		}
+		if (projectBindings.length > 0) {
+			if (input.recipientEmails.length > 0) {
+				throw new ORPCError("FORBIDDEN", {
+					message:
+						"Project reports can only be shared with authorized project members",
+				});
+			}
+			const allowed = await Promise.all(
+				[...new Set(input.recipientUserIds)].map((userId) =>
+					canAccessReportInstance(
+						artifact.execution.instance,
+						{ userId, organizationId },
+						artifact.execution.parameters,
+					),
+				),
+			);
+			if (allowed.some((value) => !value)) {
+				throw new ORPCError("FORBIDDEN", {
+					message: "One or more recipients cannot access this report",
+				});
+			}
+		}
 
 		// Resolve the attachment payload from whichever storage backend the
 		// artifact was written to. Mirrors `downloadArtifactProcedure` so the

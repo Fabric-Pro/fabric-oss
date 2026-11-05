@@ -78,7 +78,10 @@ export const listReportTemplateSkillsProcedure = tenantProtectedProcedure
 		}
 		// SYSTEM templates are readable from any context
 
-		const templateSkills = await listReportTemplateSkills(input.templateId);
+		const templateSkills = await listReportTemplateSkills(
+			input.templateId,
+			{ userId: context.user.id, organizationId },
+		);
 
 		// Filter attached skills by tenant visibility to prevent cross-tenant leaks
 		const visibleSkills = templateSkills.filter((ts) => {

@@ -456,7 +456,6 @@ export function DataSourcesSheet({
 													}
 													setConfiguring(null);
 												}}
-												className="bg-emerald-500 hover:bg-emerald-600"
 											>
 												Done
 											</Button>
@@ -591,7 +590,6 @@ export function DataSourcesSheet({
 														disabled={
 															saveMutation.isPending
 														}
-														className="bg-emerald-500 hover:bg-emerald-600"
 													>
 														{saveMutation.isPending && (
 															<Loader2Icon className="h-4 w-4 animate-spin mr-2" />
@@ -744,9 +742,12 @@ export function DataSourcesSheet({
 												}
 
 												return (
-													<Card
+													<Button
+														type="button"
+														variant="outline"
+														aria-label={`Configure ${plugin.label}`}
 														key={plugin.type}
-														className="p-3 cursor-pointer hover:border-primary/50 transition-colors"
+														className="h-auto w-full rounded-lg p-3 text-left whitespace-normal font-normal hover:border-primary/50 transition-colors"
 														onClick={() =>
 															handleAddSource(
 																plugin.type,
@@ -782,14 +783,14 @@ export function DataSourcesSheet({
 																		plugin.description
 																	}
 																</p>
-																<p className="text-xs text-amber-600 dark:text-amber-400 mt-1 font-medium flex items-center gap-1">
+																<p className="text-xs text-highlight-ink mt-1 font-medium flex items-center gap-1">
 																	<SettingsIcon className="h-3 w-3" />
 																	Click to
 																	configure
 																</p>
 															</div>
 														</div>
-													</Card>
+													</Button>
 												);
 											})}
 										</div>
@@ -817,10 +818,7 @@ export function DataSourcesSheet({
 							>
 								Cancel
 							</Button>
-							<Button
-								onClick={() => onOpenChange(false)}
-								className="bg-emerald-500 hover:bg-emerald-600"
-							>
+							<Button onClick={() => onOpenChange(false)}>
 								Add sources
 							</Button>
 						</div>

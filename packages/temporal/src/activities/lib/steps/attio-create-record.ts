@@ -5,6 +5,7 @@
 
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { connectorErrorMessage } from "../connector-error";
 
 export async function executeAttioCreateRecordStep(
 	params: StepParams,
@@ -63,8 +64,10 @@ export async function executeAttioCreateRecordStep(
 		if (!response.ok) {
 			return {
 				success: false,
-				error:
-					result.error || `Attio returned status ${response.status}`,
+				error: connectorErrorMessage(
+					result.error,
+					`Attio returned status ${response.status}`,
+				),
 			};
 		}
 

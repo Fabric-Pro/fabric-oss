@@ -1,386 +1,396 @@
-/**
- * Who can open a frame is changed by one command, `shareFrame`, which the app's
- * share and invite procedures and the Fabric Agent's `fabric_share_frame` all
- * call. What it owns, and what these cases pin: a public link needs the
- * organization to allow public links; an email is invited only from a domain
- * the organization allows, whether it arrives with a scope change or on its
- * own; emails are not invited on a private or public frame; the frame must be
- * the caller's own; and an email already invited is not invited twice.
- *
- * The store is faked; what these cases assert on is what would be written.
- *
- * Run with: pnpm --filter @repo/database test __tests__/frame-share
- */
-
+/** Canonical sharing policy and atomic revocation, with transactional fake storage. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({
-	findFrame: vi.fn(),
-	findOrganization: vi.fn(),
-	updateScope: vi.fn(),
-	listGrants: vi.fn(),
-	createGrants: vi.fn(),
+const store = vi.hoisted(() => ({
+	frame: null as any,
+	grants: [] as any[],
+	audits: [] as any[],
+	policy: null as any,
+	failAudit: false,
 }));
-
-vi.mock("../prisma/client", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../prisma/client")>()),
-	db: {
-		agentWorkspaceFile: { findFirst: mocks.findFrame },
-		organization: { findUnique: mocks.findOrganization },
-	},
+const calls = vi.hoisted(() => ({
+	update: vi.fn(),
+	create: vi.fn(),
+	remove: vi.fn(),
+	audit: vi.fn(),
+	lock: vi.fn(),
 }));
+vi.mock("../prisma/client", async (original) => {
+	const actual = await original<typeof import("../prisma/client")>();
+	const tx = {
+		$queryRaw: calls.lock,
+		agentWorkspaceFile: {
+			findFirst: async ({ where }: any) =>
+				store.frame &&
+				where.id === store.frame.id &&
+				where.userId === store.frame.userId &&
+				where.organizationId === store.frame.organizationId
+					? structuredClone(store.frame)
+					: null,
+			update: calls.update,
+		},
+		organization: { findUnique: async () => store.policy },
+		frameSharingGrant: {
+			findMany: async ({ where }: any) =>
+				store.grants.filter(
+					(g) =>
+						g.frameId === where.frameId &&
+						(!where.email?.in || where.email.in.includes(g.email)),
+				),
+			createMany: calls.create,
+			deleteMany: calls.remove,
+		},
+		auditLog: { create: calls.audit },
+	};
+	return {
+		...actual,
+		db: {
+			...tx,
+			$transaction: async (fn: any) => {
+				const before = structuredClone({
+					frame: store.frame,
+					grants: store.grants,
+					audits: store.audits,
+				});
+				try {
+					return await fn(tx);
+				} catch (e) {
+					Object.assign(store, before);
+					throw e;
+				}
+			},
+		},
+	};
+});
 
-vi.mock("../prisma/queries/frame-sharing", () => ({
-	updateFrameShareScope: mocks.updateScope,
-	listSharingGrants: mocks.listGrants,
-	createMultipleSharingGrants: mocks.createGrants,
-}));
-
+import { FrameUpdateConflictError } from "../prisma/queries/frame-revision";
 import {
 	PUBLIC_SHARING_DISABLED_MESSAGE,
 	publicSharingRefusal,
+	revokeFrameSharing,
 	shareFrame,
 } from "../prisma/queries/frame-share";
 
-const NOW = new Date("2026-10-15T10:00:00Z");
-
-function policy(overrides: Record<string, unknown> = {}) {
-	return {
-		canShareFramesPublicly: false,
-		allowedFrameShareDomains: [] as string[],
-		...overrides,
-	};
-}
-
+const revision = new Date("2026-11-01T00:00:00Z");
+const actor = {
+	frameId: "example-frame",
+	userId: "example-owner",
+	organizationId: "example-org",
+};
 const grant = (email: string) => ({
-	id: `grant-${email}`,
-	frameId: "frame-1",
+	id: `example-${email}`,
+	frameId: actor.frameId,
 	email,
-	invitedBy: "owner-1",
-	invitedAt: NOW,
+	invitedBy: actor.userId,
+	invitedAt: revision,
 	lastAccessedAt: null,
 	accessCount: 0,
 });
-
 const share = (input: Partial<Parameters<typeof shareFrame>[0]> = {}) =>
-	shareFrame({
-		frameId: "frame-1",
-		userId: "owner-1",
-		organizationId: "org-1",
-		...input,
-	});
-
+	shareFrame({ ...actor, ...input });
+const revoke = (
+	mode: Parameters<typeof revokeFrameSharing>[0]["mode"],
+	extra: Partial<Parameters<typeof revokeFrameSharing>[0]> = {},
+) => revokeFrameSharing({ ...actor, mode, ...extra });
 beforeEach(() => {
 	vi.clearAllMocks();
-	mocks.findFrame.mockResolvedValue({ shareScope: "PRIVATE" });
-	mocks.findOrganization.mockResolvedValue(policy());
-	mocks.updateScope.mockResolvedValue({ success: true });
-	mocks.listGrants.mockResolvedValue([]);
-	mocks.createGrants.mockImplementation(
-		async (_frameId: string, emails: string[]) => emails.map(grant),
-	);
+	store.frame = {
+		id: actor.frameId,
+		userId: actor.userId,
+		organizationId: actor.organizationId,
+		projectId: null,
+		shareScope: "PRIVATE",
+		shareToken: null,
+		isPublic: false,
+		updatedAt: revision,
+		content: "example private content",
+	};
+	store.grants = [];
+	store.audits = [];
+	store.failAudit = false;
+	store.policy = {
+		canShareFramesPublicly: false,
+		allowedFrameShareDomains: [],
+	};
+	calls.update.mockImplementation(async ({ where, data }: any) => {
+		if (where.updatedAt.getTime() !== store.frame.updatedAt.getTime()) {
+			throw Object.assign(new Error("Stale"), { code: "P2025" });
+		}
+		store.frame = { ...store.frame, ...data };
+		return structuredClone(store.frame);
+	});
+	calls.create.mockImplementation(async ({ data }: any) => {
+		store.grants.push(...data.map((g: any) => grant(g.email)));
+		return { count: data.length };
+	});
+	calls.remove.mockImplementation(async ({ where }: any) => {
+		const before = store.grants.length;
+		store.grants = store.grants.filter(
+			(g) =>
+				!(
+					g.frameId === where.frameId &&
+					(!where.email || g.email === where.email)
+				),
+		);
+		return { count: before - store.grants.length };
+	});
+	calls.audit.mockImplementation(async ({ data }: any) => {
+		if (store.failAudit) {
+			throw new Error("Audit unavailable");
+		}
+		store.audits.push(data);
+		return { id: "example-audit", ...data };
+	});
 });
 
-describe("shareFrame", () => {
-	describe("the frame", () => {
-		it("is looked up as the caller's own, in their organization", async () => {
-			await share({ scope: "EMAILS_ONLY" });
-
-			expect(mocks.findFrame).toHaveBeenCalledWith(
-				expect.objectContaining({
-					where: expect.objectContaining({
-						id: "frame-1",
-						userId: "owner-1",
-						organizationId: "org-1",
-					}),
-				}),
-			);
+describe("sharing policy", () => {
+	it.each([
+		{ userId: "example-stranger" },
+		{ organizationId: "example-other-org" },
+		{ organizationId: undefined },
+	])("rejects a caller outside ownership and tenant: %s", async (input) => {
+		expect(await share({ scope: "EMAILS_ONLY", ...input })).toMatchObject({
+			ok: false,
+			reason: "frame_not_found",
 		});
-
-		it("is not found, and nothing changes, when it is not the caller's", async () => {
-			mocks.findFrame.mockResolvedValue(null);
-
-			const outcome = await share({
+		expect(calls.update).not.toHaveBeenCalled();
+		expect(calls.audit).not.toHaveBeenCalled();
+	});
+	it("refuses public links without policy and without mutating the audience", async () => {
+		expect(await share({ scope: "PUBLIC" })).toMatchObject({
+			ok: false,
+			reason: "public_sharing_disabled",
+			message: PUBLIC_SHARING_DISABLED_MESSAGE,
+		});
+		expect(store.frame.shareScope).toBe("PRIVATE");
+		expect(calls.update).not.toHaveBeenCalled();
+	});
+	it("does not invite or change audiences for a deleted or missing organization", async () => {
+		store.policy = null;
+		expect(
+			await share({
 				scope: "EMAILS_ONLY",
-				emails: ["colleague@example.com"],
-			});
-
-			expect(outcome).toMatchObject({
-				ok: false,
-				reason: "frame_not_found",
-			});
-			expect(mocks.updateScope).not.toHaveBeenCalled();
-			expect(mocks.createGrants).not.toHaveBeenCalled();
-		});
-
-		it("is not found when the scope change finds no frame to change", async () => {
-			mocks.updateScope.mockResolvedValue({
-				success: false,
-				error: "Frame not found",
-			});
-
-			const outcome = await share({ scope: "EMAILS_ONLY" });
-
-			expect(outcome).toMatchObject({
-				ok: false,
-				reason: "frame_not_found",
-			});
+				emails: ["person@example.com"],
+			}),
+		).toMatchObject({ ok: false, reason: "frame_not_found" });
+		expect(calls.update).not.toHaveBeenCalled();
+		expect(store.grants).toEqual([]);
+	});
+	it("refuses a missing organization's public policy", async () => {
+		store.policy = null;
+		expect(await share({ scope: "PUBLIC" })).toMatchObject({
+			ok: false,
+			reason: "public_sharing_disabled",
 		});
 	});
-
-	describe("a public link", () => {
-		it("is refused when the organization does not allow public links, and the scope is left as it was", async () => {
-			mocks.findOrganization.mockResolvedValue(
-				policy({ canShareFramesPublicly: false }),
-			);
-
-			const outcome = await share({ scope: "PUBLIC" });
-
-			expect(outcome).toMatchObject({
-				ok: false,
-				reason: "public_sharing_disabled",
-			});
-			expect(mocks.updateScope).not.toHaveBeenCalled();
+	it("creates a public token only through an explicit share command", async () => {
+		store.policy.canShareFramesPublicly = true;
+		const result = await share({
+			scope: "PUBLIC",
+			expectedUpdatedAt: revision,
 		});
-
-		it("is made, with its token, when the organization allows it", async () => {
-			mocks.findOrganization.mockResolvedValue(
-				policy({ canShareFramesPublicly: true }),
-			);
-			mocks.updateScope.mockResolvedValue({
-				success: true,
-				shareToken: "link-token",
-			});
-
-			const outcome = await share({ scope: "PUBLIC" });
-
-			expect(outcome).toMatchObject({
-				ok: true,
-				scope: "PUBLIC",
-				shareToken: "link-token",
-			});
-			expect(mocks.updateScope).toHaveBeenCalledWith({
-				frameId: "frame-1",
-				userId: "owner-1",
-				organizationId: "org-1",
-				shareScope: "PUBLIC",
-			});
+		expect(result).toMatchObject({
+			ok: true,
+			scope: "PUBLIC",
+			shareToken: expect.any(String),
 		});
-
-		it("is not part of an unrelated scope change: no token comes back for emails only", async () => {
-			mocks.updateScope.mockResolvedValue({
-				success: true,
-				shareToken: "stale-token",
-			});
-
-			const outcome = await share({ scope: "EMAILS_ONLY" });
-
-			expect(outcome).toMatchObject({ ok: true, scope: "EMAILS_ONLY" });
-			expect(outcome).not.toHaveProperty("shareToken");
-		});
+		expect(store.frame.isPublic).toBe(true);
+		expect(store.frame.shareToken).toBeTruthy();
+		expect(store.audits[0].action).toBe("frame.sharing.updated");
 	});
-
-	describe("an invitation", () => {
-		beforeEach(() => {
-			mocks.findOrganization.mockResolvedValue(
-				policy({ allowedFrameShareDomains: ["example.com"] }),
-			);
-		});
-
-		it("is refused for an address outside the allowed domains, with the scope change that came with it", async () => {
-			const outcome = await share({
+	it("never returns an existing token from an unrelated invitation request", async () => {
+		store.frame.shareScope = "PUBLIC";
+		store.frame.isPublic = true;
+		store.frame.shareToken = "example-bearer";
+		const result = await share();
+		expect(result).not.toHaveProperty("shareToken");
+	});
+	it("keeps domain checks exact, normalized, and atomic with the scope change", async () => {
+		store.policy.allowedFrameShareDomains = ["@Example.com"];
+		expect(
+			await share({
 				scope: "EMAILS_ONLY",
-				emails: ["colleague@example.com", "stranger@outside.test"],
-			});
-
-			expect(outcome).toMatchObject({
-				ok: false,
-				reason: "email_domain_not_allowed",
-				emails: ["stranger@outside.test"],
-			});
-			expect(mocks.updateScope).not.toHaveBeenCalled();
-			expect(mocks.createGrants).not.toHaveBeenCalled();
+				emails: ["one@example.com", "other@example.com.outside.test"],
+			}),
+		).toMatchObject({
+			ok: false,
+			reason: "email_domain_not_allowed",
+			emails: ["other@example.com.outside.test"],
 		});
-
-		it("is refused for an address outside the allowed domains when it arrives on its own, as the app's invite does", async () => {
-			mocks.findFrame.mockResolvedValue({ shareScope: "EMAILS_ONLY" });
-
-			const outcome = await share({ emails: ["stranger@outside.test"] });
-
-			expect(outcome).toMatchObject({
-				ok: false,
-				reason: "email_domain_not_allowed",
-			});
-			expect(mocks.createGrants).not.toHaveBeenCalled();
+		expect(store.frame.shareScope).toBe("PRIVATE");
+		expect(store.grants).toEqual([]);
+	});
+	it("normalizes and deduplicates allowed invitations without adding duplicates", async () => {
+		store.policy.allowedFrameShareDomains = ["example.com"];
+		store.grants = [grant("first@example.com")];
+		const result = await share({
+			scope: "WORKSPACE_AND_EMAILS",
+			emails: [
+				"First@Example.com",
+				"SECOND@example.com",
+				"second@example.com",
+			],
 		});
-
-		it("is not fooled by a look-alike domain or letter case", async () => {
-			mocks.findFrame.mockResolvedValue({ shareScope: "EMAILS_ONLY" });
-
-			const outcome = await share({
-				emails: [
-					"a@example.com.outside.test",
-					"b@notexample.com",
-					"c@Example.com",
-				],
-			});
-
-			expect(outcome).toMatchObject({
-				ok: false,
-				reason: "email_domain_not_allowed",
-				emails: ["a@example.com.outside.test", "b@notexample.com"],
-			});
+		expect(result).toMatchObject({
+			ok: true,
+			invited: ["second@example.com"],
+			grants: [expect.objectContaining({ email: "second@example.com" })],
 		});
-
-		it("is made for an allowed address, and the scope is changed with it", async () => {
-			const outcome = await share({
-				scope: "WORKSPACE_AND_EMAILS",
-				emails: ["Colleague@Example.com"],
-			});
-
-			expect(outcome).toMatchObject({
-				ok: true,
-				scope: "WORKSPACE_AND_EMAILS",
-				invited: ["colleague@example.com"],
-			});
-			expect(mocks.updateScope).toHaveBeenCalledTimes(1);
-			expect(mocks.createGrants).toHaveBeenCalledWith(
-				"frame-1",
-				["colleague@example.com"],
-				"owner-1",
-			);
-		});
-
-		it("takes an organization's domains as it wrote them, with or without a leading @", async () => {
-			mocks.findOrganization.mockResolvedValue(
-				policy({ allowedFrameShareDomains: ["@Example.com"] }),
-			);
-
-			const outcome = await share({
-				scope: "EMAILS_ONLY",
-				emails: ["colleague@example.com"],
-			});
-
-			expect(outcome).toMatchObject({ ok: true });
-		});
-
-		it("is open to any address when the organization lists no domains", async () => {
-			mocks.findOrganization.mockResolvedValue(
-				policy({ allowedFrameShareDomains: [] }),
-			);
-
-			const outcome = await share({
-				scope: "EMAILS_ONLY",
-				emails: ["anyone@outside.test"],
-			});
-
-			expect(outcome).toMatchObject({ ok: true });
-		});
-
-		it("is not made twice for an address already invited", async () => {
-			mocks.listGrants.mockResolvedValue([
-				grant("colleague@example.com"),
-			]);
-
-			const outcome = await share({
-				scope: "EMAILS_ONLY",
-				emails: ["colleague@example.com", "second@example.com"],
-			});
-
-			expect(outcome).toMatchObject({
-				ok: true,
-				invited: ["second@example.com"],
-			});
-			expect(mocks.createGrants).toHaveBeenCalledWith(
-				"frame-1",
-				["second@example.com"],
-				"owner-1",
-			);
-		});
-
-		it("writes no grant when every address is invited already", async () => {
-			mocks.listGrants.mockResolvedValue([
-				grant("colleague@example.com"),
-			]);
-
-			const outcome = await share({
-				scope: "EMAILS_ONLY",
-				emails: ["colleague@example.com"],
-			});
-
-			expect(outcome).toMatchObject({
-				ok: true,
-				invited: [],
-				grants: [],
-			});
-			expect(mocks.createGrants).not.toHaveBeenCalled();
-		});
-
-		it.each(["PRIVATE", "PUBLIC"] as const)(
-			"is refused on a frame that is %s already, with the scope left as it was",
-			async (current) => {
-				mocks.findFrame.mockResolvedValue({ shareScope: current });
-
-				const outcome = await share({
-					emails: ["colleague@example.com"],
-				});
-
-				expect(outcome).toMatchObject({
-					ok: false,
-					reason: "emails_need_an_inviting_scope",
-				});
-				expect(mocks.createGrants).not.toHaveBeenCalled();
-			},
-		);
-
-		it("is refused together with a scope change to private or public", async () => {
-			mocks.findFrame.mockResolvedValue({ shareScope: "EMAILS_ONLY" });
-
-			const outcome = await share({
-				scope: "PRIVATE",
-				emails: ["colleague@example.com"],
-			});
-
-			expect(outcome).toMatchObject({
+		expect(store.grants).toHaveLength(2);
+		expect(store.frame.shareScope).toBe("WORKSPACE_AND_EMAILS");
+	});
+	it.each(["PRIVATE", "PUBLIC"] as const)(
+		"refuses invitations while %s, including a scope change",
+		async (scope) => {
+			expect(
+				await share({ scope, emails: ["person@example.com"] }),
+			).toMatchObject({
 				ok: false,
 				reason: "emails_need_an_inviting_scope",
 			});
-			expect(mocks.updateScope).not.toHaveBeenCalled();
+			expect(store.grants).toEqual([]);
+			expect(calls.update).not.toHaveBeenCalled();
+		},
+	);
+	it("requires an inviting audience before adding an email to a project-scoped page", async () => {
+		store.frame.shareScope = "PROJECT";
+		expect(await share({ emails: ["person@example.com"] })).toMatchObject({
+			ok: false,
+			reason: "emails_need_an_inviting_scope",
 		});
+		expect(store.grants).toEqual([]);
 	});
-});
-
-describe("publicSharingRefusal: the same rule, for a frame made public when created", () => {
-	it("refuses where the organization does not allow public links, in the sentence shareFrame uses", async () => {
-		mocks.findOrganization.mockResolvedValue(
-			policy({ canShareFramesPublicly: false }),
+	it("refuses invalid invitation addresses before changing data", async () => {
+		expect(
+			await share({ scope: "EMAILS_ONLY", emails: ["invalid"] }),
+		).toMatchObject({ ok: false, reason: "invalid_email" });
+		expect(calls.create).not.toHaveBeenCalled();
+	});
+	it("uses the same public policy for creation and sharing", async () => {
+		expect(await publicSharingRefusal(actor.organizationId)).toBe(
+			PUBLIC_SHARING_DISABLED_MESSAGE,
 		);
-
-		const message = await publicSharingRefusal("org-1");
-		const outcome = await share({ scope: "PUBLIC" });
-
-		expect(message).toBe(PUBLIC_SHARING_DISABLED_MESSAGE);
-		expect(outcome).toMatchObject({ ok: false, message });
-	});
-
-	it("allows it where the organization does", async () => {
-		mocks.findOrganization.mockResolvedValue(
-			policy({ canShareFramesPublicly: true }),
-		);
-
-		expect(await publicSharingRefusal("org-1")).toBeNull();
-	});
-
-	it("refuses an organization it cannot find, as shareFrame does", async () => {
-		mocks.findOrganization.mockResolvedValue(null);
-
-		expect(await publicSharingRefusal("org-1")).toBe(
+		store.policy.canShareFramesPublicly = true;
+		expect(await publicSharingRefusal(actor.organizationId)).toBeNull();
+		expect(await publicSharingRefusal(undefined)).toBe(
 			PUBLIC_SHARING_DISABLED_MESSAGE,
 		);
 	});
+});
 
-	it("has no policy to apply without an organization", async () => {
-		expect(await publicSharingRefusal(undefined)).toBeNull();
-		expect(mocks.findOrganization).not.toHaveBeenCalled();
+describe("revocation and revisions", () => {
+	beforeEach(() => {
+		store.frame.shareScope = "PUBLIC";
+		store.frame.isPublic = true;
+		store.frame.shareToken = "example-old-bearer";
+		store.grants = [
+			grant("first@example.com"),
+			grant("second@example.com"),
+		];
 	});
+	it("removes only the public link and preserves explicit email invitations", async () => {
+		expect(await revoke("public-link")).toMatchObject({
+			ok: true,
+			scope: "EMAILS_ONLY",
+			revokedInvitations: 0,
+		});
+		expect(store.frame).toMatchObject({
+			isPublic: false,
+			shareToken: null,
+		});
+		expect(store.grants).toHaveLength(2);
+	});
+	it("removes one invitation without altering unrelated access", async () => {
+		expect(
+			await revoke("invitation", { email: "FIRST@Example.com" }),
+		).toMatchObject({ ok: true, scope: "PUBLIC", revokedInvitations: 1 });
+		expect(store.frame).toMatchObject({
+			isPublic: true,
+			shareToken: "example-old-bearer",
+		});
+		expect(store.grants.map((g) => g.email)).toEqual([
+			"second@example.com",
+		]);
+	});
+	it("revokes all legacy and modern access paths atomically", async () => {
+		expect(await revoke("all")).toMatchObject({
+			ok: true,
+			scope: "PRIVATE",
+			revokedInvitations: 2,
+		});
+		expect(store.frame).toMatchObject({
+			shareScope: "PRIVATE",
+			shareToken: null,
+			isPublic: false,
+		});
+		expect(store.grants).toEqual([]);
+	});
+	it("PRIVATE clears dormant grants so a future scope change cannot resurrect them", async () => {
+		await share({ scope: "PRIVATE" });
+		await share({ scope: "EMAILS_ONLY" });
+		expect(store.grants).toEqual([]);
+		expect(store.frame.shareToken).toBeNull();
+	});
+	it("rejects stale share and revoke without changing any access", async () => {
+		const stale = new Date(revision.getTime() - 1);
+		await expect(
+			share({ scope: "PRIVATE", expectedUpdatedAt: stale }),
+		).rejects.toBeInstanceOf(FrameUpdateConflictError);
+		await expect(
+			revoke("all", { expectedUpdatedAt: stale }),
+		).rejects.toBeInstanceOf(FrameUpdateConflictError);
+		expect(store.grants).toHaveLength(2);
+		expect(store.frame.shareToken).toBe("example-old-bearer");
+		expect(store.audits).toEqual([]);
+	});
+	it("rolls scope, grant, and token changes back when audit recording fails", async () => {
+		store.failAudit = true;
+		await expect(revoke("all")).rejects.toThrow("Audit unavailable");
+		expect(store.frame).toMatchObject({
+			shareScope: "PUBLIC",
+			shareToken: "example-old-bearer",
+			isPublic: true,
+		});
+		expect(store.grants).toHaveLength(2);
+		await expect(
+			share({ scope: "EMAILS_ONLY", emails: ["third@example.com"] }),
+		).rejects.toThrow("Audit unavailable");
+		expect(store.grants).toHaveLength(2);
+		expect(store.frame.shareScope).toBe("PUBLIC");
+	});
+	it("increments revision for invitation removal and excludes bearer/email/content from audit", async () => {
+		const result = await revoke("invitation", {
+			email: "first@example.com",
+		});
+		expect(result.ok && result.updatedAt.getTime()).toBeGreaterThan(
+			revision.getTime(),
+		);
+		const audit = JSON.stringify(store.audits);
+		expect(audit).not.toContain("example-old-bearer");
+		expect(audit).not.toContain("first@example.com");
+		expect(audit).not.toContain("example private content");
+	});
+	it("rejects an invalid revoke action without writing", async () => {
+		expect(await revoke("unknown" as "all")).toMatchObject({
+			ok: false,
+			reason: "invalid_revoke_mode",
+		});
+		expect(calls.update).not.toHaveBeenCalled();
+	});
+	it("does not recreate a removed public token when publishing again", async () => {
+		await revoke("public-link");
+		store.policy.canShareFramesPublicly = true;
+		const result = await share({ scope: "PUBLIC" });
+		expect(result.ok && result.shareToken).not.toBe("example-old-bearer");
+	});
+});
+
+it("never admits an organization-less public share even for a legacy owner record", async () => {
+	store.frame.organizationId = null;
+	store.policy.canShareFramesPublicly = true;
+	expect(
+		await share({ scope: "PUBLIC", organizationId: undefined }),
+	).toMatchObject({ ok: false, reason: "frame_not_found" });
+	expect(calls.update).not.toHaveBeenCalled();
+	expect(store.frame.shareToken).toBeNull();
 });

@@ -5,6 +5,7 @@
 
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { connectorErrorMessage } from "../connector-error";
 import { interpolateTemplate } from "./utils";
 
 export async function executeSlackSendStep(
@@ -72,7 +73,10 @@ export async function executeSlackSendStep(
 		const result = await response.json();
 
 		if (!result.ok) {
-			let errorMessage = result.error || "Failed to send Slack message";
+			let errorMessage = connectorErrorMessage(
+				result.error,
+				"Failed to send Slack message",
+			);
 			if (result.error === "not_allowed_token_type") {
 				errorMessage =
 					"Token type not allowed. Make sure you're using a Bot User OAuth Token (xoxb-) with 'chat:write' scope.";

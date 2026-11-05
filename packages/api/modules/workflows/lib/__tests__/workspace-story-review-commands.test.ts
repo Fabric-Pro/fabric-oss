@@ -13,6 +13,10 @@ const mocks = vi.hoisted(() => ({
 	project: vi.fn(),
 	sync: vi.fn(),
 	validation: vi.fn(),
+	commit: vi.fn(),
+}));
+vi.mock("../commit-workflow-version", () => ({
+	commitWorkflowVersion: mocks.commit,
 }));
 vi.mock("@repo/database", () => ({
 	db: {},
@@ -46,8 +50,8 @@ vi.mock("@repo/utils", () => ({
 }));
 
 import { ADO_STORY_REVIEW_NODE_TYPE } from "@repo/temporal/workflow-node-types";
-import { applyWorkflowUpdate } from "../workflow-commands";
 import { loadEditableWorkflow } from "../workflow-command-context";
+import { applyWorkflowUpdate } from "../workflow-commands";
 import {
 	configureWorkspaceStoryReviewCommand,
 	getWorkspaceStoryReviewCommand,
@@ -142,6 +146,21 @@ beforeEach(() => {
 		updatedAt: new Date("2026-01-01T13:00:00Z"),
 	}));
 	mocks.sync.mockResolvedValue({ outcome: "updated", cron: "0 10 * * *" });
+	mocks.commit.mockImplementation(async (input) => {
+		const saved = await mocks.update(
+			input.workflowId,
+			input.userId,
+			input.patch,
+			input.organizationId,
+			{ expectedUpdatedAt: input.expectedUpdatedAt },
+		);
+		mocks.load.mockResolvedValue({
+			...saved,
+			version: 3,
+			publishedVersion: 3,
+		});
+		return 3;
+	});
 });
 
 const executionBinding = { ...binding, updatedAt };
@@ -613,6 +632,13 @@ describe("Workspace review configuration", () => {
 			"org-1",
 			{ expectedUpdatedAt: updatedAt },
 		);
+		expect(mocks.commit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				expectedUpdatedAt: updatedAt,
+				content: expect.objectContaining({ nodes: patch.nodes }),
+				patch: { nodes: patch.nodes },
+			}),
+		);
 		expect(result.schedule).toEqual({
 			outcome: "updated",
 			cron: "0 10 * * *",
@@ -708,4 +734,24 @@ describe("Workspace review configuration", () => {
 		expect(result).not.toHaveProperty("schedule");
 		expect(mocks.update.mock.calls[0]).toHaveLength(4);
 	});
+});
+it("applies paused review configuration to a new immutable publication without activating it", async () => {
+	mocks.load.mockResolvedValueOnce({ ...workflow(), status: "PAUSED" });
+	mocks.update.mockResolvedValueOnce({
+		...workflow(),
+		status: "PAUSED",
+		updatedAt: new Date("2026-01-01T13:00:00Z"),
+	});
+	const result = await configureWorkspaceStoryReviewCommand(
+		actor,
+		binding,
+		input(),
+	);
+	expect(mocks.commit).toHaveBeenCalledWith(
+		expect.objectContaining({
+			patch: expect.not.objectContaining({ status: expect.anything() }),
+		}),
+	);
+	expect(mocks.sync).not.toHaveBeenCalled();
+	expect(result.workflow.status).toBe("PAUSED");
 });

@@ -39,7 +39,6 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import DOMPurify from "dompurify";
 import {
 	AlertCircle,
 	Check,
@@ -66,10 +65,6 @@ import {
 	useRef,
 	useState,
 } from "react";
-import {
-	cleanDiagramStylesheet,
-	isInertDiagramAttribute,
-} from "./diagram-svg-url-guard";
 import { getEditorMarkdownForSave } from "./editor-markdown-save";
 import {
 	diagramEditVisualId,
@@ -87,6 +82,7 @@ import {
 	livePrintability,
 } from "./mermaid-proposal-figure";
 import { useMermaidVisualContext } from "./mermaid-visual-context";
+import { sanitizeDiagramSvg } from "./sanitize-diagram-svg";
 import { useMermaidDiagramSizing } from "./use-mermaid-diagram-sizing";
 
 /**
@@ -120,49 +116,14 @@ import { useMermaidDiagramSizing } from "./use-mermaid-diagram-sizing";
  * dropped, and every `<style>` loses its at-rules and loading declarations.
  * The instance is the sanitizer's own, so no other DOMPurify caller sees them.
  */
-export function sanitizeDiagramSvg(dirty: string): string {
-	return diagramPurifier().sanitize(dirty, {
-		USE_PROFILES: { svg: true, svgFilters: true },
-		// The SVG profile drops `role`, an HTML attribute; a figure template
-		// names itself an image with it, and it carries no behaviour.
-		ADD_ATTR: ["role"],
-	});
-}
-
-let purifier: typeof DOMPurify | null = null;
-
-/** The diagram sanitizer's own DOMPurify, made on first use in the browser. */
-function diagramPurifier(): typeof DOMPurify {
-	if (purifier === null) {
-		const instance = DOMPurify();
-		instance.addHook("uponSanitizeElement", (node, data) => {
-			if (data.tagName === "style") {
-				node.textContent = cleanDiagramStylesheet(
-					node.textContent ?? "",
-				);
-			}
-		});
-		instance.addHook("uponSanitizeAttribute", (node, data) => {
-			if (
-				!isInertDiagramAttribute(
-					node.nodeName,
-					data.attrName,
-					data.attrValue,
-				)
-			) {
-				data.keepAttr = false;
-			}
-		});
-		purifier = instance;
-	}
-	return purifier;
-}
+export { sanitizeDiagramSvg } from "./sanitize-diagram-svg";
 
 // Initialize mermaid as fallback only — beautiful-mermaid is the primary renderer
 mermaid.initialize({
 	startOnLoad: false,
 	theme: "default",
 	securityLevel: "loose",
+	htmlLabels: false,
 	fontFamily: "ui-sans-serif, system-ui, sans-serif",
 	flowchart: {
 		useMaxWidth: true,
@@ -206,6 +167,7 @@ export async function renderNativeMermaidSvg(
 				startOnLoad: false,
 				theme: isDark ? "dark" : "default",
 				securityLevel: "loose",
+				htmlLabels: false,
 				fontFamily: "ui-sans-serif, system-ui, sans-serif",
 				themeVariables: isDark
 					? {

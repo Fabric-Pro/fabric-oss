@@ -29,6 +29,10 @@ import { logger } from "@repo/logs";
 import { ApplicationFailure } from "@temporalio/common";
 import { getTemporalClient } from "../client";
 import { prismaErrorCode } from "../lib/database-error";
+import {
+	readWorkspaceDocumentFilters,
+	type WorkspaceDocumentFilter,
+} from "../lib/workspace-document-selection";
 // Import shared agent execution utilities
 import {
 	buildAgentExecutionContext,
@@ -44,12 +48,24 @@ import {
 	type ToolCallRecord,
 } from "./agent-execution-core";
 import { withHeartbeatTicker } from "./lib/activity-liveness";
+import {
+	assertFrozenAgentTestWorkspaceSelection,
+	type NativeTestBoundary,
+	withNativeAgentTestBoundary,
+} from "./shared/native-agent-test-authority";
 
 // =============================================================================
 // TYPES
 // =============================================================================
 
 export interface DeploymentConfig {
+	nativeTestBoundary?: NativeTestBoundary;
+	frozenMemoryFiles?: Array<{
+		id: string;
+		version: number;
+		contentHash: string;
+		sourceSkillId?: string | null;
+	}>;
 	deploymentId: string;
 	template: {
 		id: string;
@@ -78,9 +94,11 @@ export interface DeploymentConfig {
 	mcpConfigIds: string[];
 	toolConnections: Record<string, Record<string, unknown>>;
 	workspaceIds: string[];
+	workspaceDocumentFilters?: WorkspaceDocumentFilter[];
 }
 
 export interface ExecutionContext {
+	nativeTestBoundary?: NativeTestBoundary;
 	agentInstanceId: string;
 	systemPrompt: string;
 	/** Unset: the executor resolves the tenant's task default. */
@@ -101,6 +119,7 @@ export interface ExecutionContext {
 		allowedResources?: unknown;
 	}>;
 	workspaceIds: string[];
+	workspaceDocumentFilters?: WorkspaceDocumentFilter[];
 	mcpConfigIds: string[];
 	builtInToolNames: string[];
 	/**
@@ -140,7 +159,95 @@ export interface InvokeAgentResult {
  * - Personal context (no orgId): Only loads deployments where organizationId IS NULL
  * - Org context (with orgId): Only loads deployments for that specific org
  */
-export async function loadDeploymentConfiguration(params: {
+export async function loadDeploymentConfiguration(
+	params: Parameters<typeof loadDeploymentConfigurationInScope>[0],
+): Promise<DeploymentConfig | null> {
+	return withNativeAgentTestBoundary(params, async (snapshot) => {
+		const config =
+			snapshot && params.nativeTestBoundary
+				? frozenTestDeploymentConfig(
+						params.deploymentId,
+						params.nativeTestBoundary,
+						snapshot,
+					)
+				: await loadDeploymentConfigurationInScope(params);
+		if (config && params.nativeTestBoundary) {
+			assertFrozenAgentTestWorkspaceSelection(
+				params.nativeTestBoundary.authority,
+				config,
+			);
+			config.nativeTestBoundary = params.nativeTestBoundary;
+		}
+		return config;
+	});
+}
+function frozenTestDeploymentConfig(
+	deploymentId: string,
+	boundary: NativeTestBoundary,
+	snapshot: Awaited<
+		ReturnType<typeof import("../lib/agent-test-access").loadAgentTestScope>
+	>,
+): DeploymentConfig {
+	const { instance, template, bindings, integrations, memoryFiles } =
+		snapshot.configuration;
+	if (!template) {
+		throw new Error("The saved test template is unavailable");
+	}
+	return {
+		deploymentId,
+		nativeTestBoundary: boundary,
+		frozenMemoryFiles: memoryFiles.map((file) => ({
+			id: file.id,
+			version: file.version,
+			contentHash: file.contentHash,
+			sourceSkillId: file.sourceSkillId,
+		})),
+		template: {
+			id: template.id,
+			name: template.name,
+			slug: template.slug,
+			displayName: template.displayName,
+			description: template.description,
+			instructions: template.instructions,
+			knowledgeSources: [],
+			tools: [],
+			suggestedModel: template.suggestedModel,
+		},
+		instance: {
+			id: instance.id,
+			name: instance.name,
+			description: instance.description,
+			customInstructions: instance.customInstructions as Record<
+				string,
+				unknown
+			> | null,
+			modelOverride: instance.modelOverride,
+			modelConfig: instance.modelConfig as Record<string, unknown> | null,
+		},
+		integrationConfigurations: integrations
+			.filter((binding) => binding.isEnabled)
+			.map((binding) => ({
+				integrationId: binding.integrationId,
+				integrationType: binding.integrationType,
+				allowedResources: binding.allowedResources ?? undefined,
+			})),
+		mcpConfigIds: bindings
+			.filter((binding) => binding.isEnabled)
+			.map((binding) => binding.mcpConfigId),
+		toolConnections:
+			(instance.toolConnections as Record<
+				string,
+				Record<string, unknown>
+			>) ?? {},
+		workspaceIds: [...boundary.authority.execution.workspaceIds],
+		workspaceDocumentFilters: readWorkspaceDocumentFilters(
+			boundary.authority.execution.workspaceDocumentFilters,
+			boundary.authority.execution.workspaceIds,
+		),
+	};
+}
+async function loadDeploymentConfigurationInScope(params: {
+	nativeTestBoundary?: NativeTestBoundary;
 	deploymentId: string;
 	userId: string;
 	organizationId?: string;
@@ -271,6 +378,11 @@ export async function loadDeploymentConfiguration(params: {
 				Record<string, unknown>
 			>) || {},
 		workspaceIds,
+		workspaceDocumentFilters: readWorkspaceDocumentFilters(
+			(instance.customInstructions as Record<string, unknown> | null)
+				?.knowledgeFilters,
+			workspaceIds,
+		),
 	};
 }
 
@@ -280,7 +392,29 @@ export async function loadDeploymentConfiguration(params: {
  *
  * Also loads agent memory (AGENTS.md, skills, knowledge) if available
  */
-export async function buildExecutionContext(params: {
+export async function buildExecutionContext(
+	params: Parameters<typeof buildExecutionContextInScope>[0],
+): Promise<ExecutionContext> {
+	const boundary = {
+		userId: params.userId,
+		organizationId: params.organizationId,
+		nativeTestBoundary: params.config.nativeTestBoundary,
+	};
+	return withNativeAgentTestBoundary(boundary, async () => {
+		if (boundary.nativeTestBoundary) {
+			assertFrozenAgentTestWorkspaceSelection(
+				boundary.nativeTestBoundary.authority,
+				params.config,
+			);
+		}
+		const context = await buildExecutionContextInScope(params);
+		if (boundary.nativeTestBoundary) {
+			context.nativeTestBoundary = boundary.nativeTestBoundary;
+		}
+		return context;
+	});
+}
+async function buildExecutionContextInScope(params: {
 	config: DeploymentConfig;
 	input: Record<string, unknown>;
 	userId: string;
@@ -308,6 +442,7 @@ export async function buildExecutionContext(params: {
 			integrationConfigurations: config.integrationConfigurations,
 			toolConnections: config.toolConnections,
 			workspaceIds: config.workspaceIds,
+			workspaceDocumentFilters: config.workspaceDocumentFilters,
 		},
 		userId,
 		organizationId,
@@ -326,11 +461,14 @@ export async function buildExecutionContext(params: {
 	if (loadAgentMemory) {
 		try {
 			const { loadAgentMemoryContext } = await import("@repo/database");
-			const memoryContext = await loadAgentMemoryContext({
-				agentInstanceId: config.instance.id,
-				userId,
-				organizationId,
-			});
+			const memoryContext = await loadAgentMemoryContext(
+				{
+					agentInstanceId: config.instance.id,
+					userId,
+					organizationId,
+				},
+				config.frozenMemoryFiles,
+			);
 
 			// Build system prompt addition from memory
 			if (memoryContext.agentsMd) {
@@ -370,6 +508,10 @@ export async function buildExecutionContext(params: {
 				});
 			}
 		} catch (error) {
+			// A frozen test must not silently lose a selected memory source.
+			if (config.nativeTestBoundary) {
+				throw error;
+			}
 			// Memory loading is optional - continue without it
 			logger.debug("[DeploymentExecution] Agent memory not available", {
 				instanceId: config.instance.id,
@@ -457,6 +599,7 @@ export async function buildExecutionContext(params: {
 		})),
 		integrationConfigurations: config.integrationConfigurations,
 		workspaceIds: agentContext.workspaceIds,
+		workspaceDocumentFilters: agentContext.workspaceDocumentFilters,
 		mcpConfigIds,
 		builtInToolNames,
 		projectId,
@@ -476,7 +619,25 @@ export async function buildExecutionContext(params: {
  *   collection (org vs personal).
  * - Integrations: fetchCredentialsById enforces strict tenant filtering
  */
-export async function fetchKnowledge(params: {
+export async function fetchKnowledge(
+	params: Parameters<typeof fetchKnowledgeInScope>[0],
+): Promise<FetchKnowledgeResult> {
+	const boundary = {
+		userId: params.userId,
+		organizationId: params.organizationId,
+		nativeTestBoundary: params.context.nativeTestBoundary,
+	};
+	return withNativeAgentTestBoundary(boundary, () => {
+		if (boundary.nativeTestBoundary) {
+			assertFrozenAgentTestWorkspaceSelection(
+				boundary.nativeTestBoundary.authority,
+				params.context,
+			);
+		}
+		return fetchKnowledgeInScope(params);
+	});
+}
+async function fetchKnowledgeInScope(params: {
 	executionId: string;
 	context: ExecutionContext;
 	query: string;
@@ -500,6 +661,7 @@ export async function fetchKnowledge(params: {
 			integrationId: ks.integrationId,
 		})),
 		workspaceIds: context.workspaceIds,
+		workspaceDocumentFilters: context.workspaceDocumentFilters,
 		query,
 		userId,
 		organizationId,
@@ -617,6 +779,9 @@ export async function prepareDeploymentAgentTurn(
 		executionId,
 		imageRefs,
 		builtInToolNames: context.builtInToolNames,
+		workspaceIds: context.workspaceIds,
+		workspaceDocumentFilters: context.workspaceDocumentFilters,
+		nativeTestBoundary: context.nativeTestBoundary,
 		agentInstanceId: context.agentInstanceId,
 		callingAgentId: context.agentInstanceId,
 		currentDepth: 0,
@@ -710,11 +875,12 @@ export function completeDurableDeploymentProjection(
 			try {
 				await completeExecution(params);
 			} catch (error) {
-				if (prismaErrorCode(error) === "P2025")
+				if (prismaErrorCode(error) === "P2025") {
 					throw ApplicationFailure.nonRetryable(
 						"The execution row is unavailable; completed agent effects were retained in workflow history.",
 						"SAVED_AGENT_EXECUTION_ROW_MISSING",
 					);
+				}
 				throw error;
 			}
 		},

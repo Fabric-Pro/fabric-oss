@@ -17,14 +17,17 @@ type InputSchema = {
 	};
 };
 
-const { handlers, schemas, mockShareFrame } = vi.hoisted(() => ({
-	handlers: {} as Record<string, (...args: unknown[]) => unknown>,
-	schemas: {} as Record<string, InputSchema>,
-	mockShareFrame: vi.fn(),
-}));
+const { handlers, schemas, mockShareFrame, mockRevokeFrameSharing } =
+	vi.hoisted(() => ({
+		handlers: {} as Record<string, (...args: unknown[]) => unknown>,
+		schemas: {} as Record<string, InputSchema>,
+		mockShareFrame: vi.fn(),
+		mockRevokeFrameSharing: vi.fn(),
+	}));
 
 vi.mock("@repo/database", () => ({
 	shareFrame: mockShareFrame,
+	revokeFrameSharing: mockRevokeFrameSharing,
 }));
 
 vi.mock("../../../../orpc/procedures", () => {
@@ -49,6 +52,7 @@ vi.mock("../../../../orpc/procedures", () => {
 		tenantProtectedProcedure: chainable,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
 		resolveOrganizationId: vi.fn(
 			(organizationId: string | null | undefined) =>
 				organizationId ?? undefined,
@@ -58,6 +62,8 @@ vi.mock("../../../../orpc/procedures", () => {
 
 import "../invite-email";
 import "../share";
+import "../revoke-share";
+import "../revoke-invite";
 
 const SHARE = "/frames/{id}/share";
 const INVITE = "/frames/{id}/invite";
@@ -95,6 +101,7 @@ describe("frames.share", () => {
 	it("changes the scope of the caller's own frame in their organization, and nothing else", async () => {
 		mockShareFrame.mockResolvedValue({
 			ok: true,
+			updatedAt: new Date("2026-11-01T00:00:00Z"),
 			scope: "EMAILS_ONLY",
 			invited: [],
 			grants: [],
@@ -110,6 +117,7 @@ describe("frames.share", () => {
 		});
 		expect(result).toEqual({
 			success: true,
+			updatedAt: "2026-11-01T00:00:00.000Z",
 			shareToken: undefined,
 			shareUrl: undefined,
 		});
@@ -118,6 +126,7 @@ describe("frames.share", () => {
 	it("hands back the public link when one is made", async () => {
 		mockShareFrame.mockResolvedValue({
 			ok: true,
+			updatedAt: new Date("2026-11-01T00:00:00Z"),
 			scope: "PUBLIC",
 			shareToken: "link-token",
 			invited: [],
@@ -128,6 +137,7 @@ describe("frames.share", () => {
 
 		expect(result).toMatchObject({
 			success: true,
+			updatedAt: "2026-11-01T00:00:00.000Z",
 			shareToken: "link-token",
 			shareUrl: expect.stringMatching(/\/share\/frame\/link-token$/),
 		});
@@ -165,6 +175,7 @@ describe("frames.invite", () => {
 	it("invites on the frame's own scope: it names no scope, so it cannot change one", async () => {
 		mockShareFrame.mockResolvedValue({
 			ok: true,
+			updatedAt: new Date("2026-11-01T00:00:00Z"),
 			scope: "EMAILS_ONLY",
 			invited: ["a@example.com"],
 			grants: [],
@@ -186,6 +197,7 @@ describe("frames.invite", () => {
 		const invitedAt = new Date("2026-10-15T10:00:00Z");
 		mockShareFrame.mockResolvedValue({
 			ok: true,
+			updatedAt: new Date("2026-11-01T00:00:00Z"),
 			scope: "EMAILS_ONLY",
 			invited: ["a@example.com"],
 			grants: [
@@ -205,6 +217,7 @@ describe("frames.invite", () => {
 
 		expect(result).toEqual({
 			success: true,
+			updatedAt: "2026-11-01T00:00:00.000Z",
 			grants: [
 				{
 					id: "grant-1",
@@ -230,5 +243,67 @@ describe("frames.invite", () => {
 			success: false,
 			error: "This organization allows invitations only to the domains example.com.",
 		});
+	});
+});
+
+describe("explicit revocation", () => {
+	it.each(["public-link", "all"])(
+		"forwards %s with the reviewed revision and current actor",
+		async (mode) => {
+			mockRevokeFrameSharing.mockResolvedValue({
+				ok: true,
+				scope: "PRIVATE",
+				revokedInvitations: 2,
+				updatedAt: new Date("2026-11-02T00:00:00Z"),
+			});
+			await run("/frames/{id}/revoke-share", {
+				mode,
+				expectedUpdatedAt: "2026-11-01T00:00:00Z",
+			});
+			expect(mockRevokeFrameSharing).toHaveBeenCalledWith({
+				frameId: "frame-1",
+				userId: "owner-1",
+				organizationId: "org-1",
+				mode,
+				expectedUpdatedAt: new Date("2026-11-01T00:00:00Z"),
+			});
+		},
+	);
+	it("invitation removal cannot broaden into revoke-all", async () => {
+		mockRevokeFrameSharing.mockResolvedValue({
+			ok: true,
+			scope: "EMAILS_ONLY",
+			revokedInvitations: 1,
+			updatedAt: new Date("2026-11-02T00:00:00Z"),
+		});
+		await run("/frames/{id}/revoke-invite", {
+			email: "person@example.com",
+			expectedUpdatedAt: "2026-11-01T00:00:00Z",
+		});
+		expect(mockRevokeFrameSharing).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mode: "invitation",
+				email: "person@example.com",
+				expectedUpdatedAt: new Date("2026-11-01T00:00:00Z"),
+			}),
+		);
+	});
+	it("forwards the reviewed revision for scope changes", async () => {
+		mockShareFrame.mockResolvedValue({
+			ok: true,
+			scope: "EMAILS_ONLY",
+			invited: [],
+			grants: [],
+			updatedAt: new Date("2026-11-02T00:00:00Z"),
+		});
+		await run(SHARE, {
+			shareScope: "EMAILS_ONLY",
+			expectedUpdatedAt: "2026-11-01T00:00:00Z",
+		});
+		expect(mockShareFrame).toHaveBeenCalledWith(
+			expect.objectContaining({
+				expectedUpdatedAt: new Date("2026-11-01T00:00:00Z"),
+			}),
+		);
 	});
 });

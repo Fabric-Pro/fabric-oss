@@ -288,7 +288,7 @@ export async function POST(
 			);
 
 			const executionRequest: ExecutionRequest = {
-				executionId: execution.id,
+				executionId: execution.executionId,
 				input: executionInput,
 				triggerType: "WEBHOOK",
 				triggerId: trigger.id,

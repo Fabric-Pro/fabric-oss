@@ -95,6 +95,7 @@ export function ReportReadinessRail({
 	onGenerate,
 	isGenerating,
 	onTest,
+	showConnectionTest = true,
 	isTesting,
 	latestExecution,
 	executionCount,
@@ -110,6 +111,7 @@ export function ReportReadinessRail({
 	onGenerate: () => void;
 	isGenerating: boolean;
 	onTest: () => void;
+	showConnectionTest?: boolean;
 	isTesting: boolean;
 	latestExecution?: RailExecution;
 	executionCount: number;
@@ -194,20 +196,24 @@ export function ReportReadinessRail({
 					)}
 					Generate Report
 				</Button>
-				<Button
-					variant="outline"
-					className="w-full"
-					onClick={onTest}
-					disabled={isTesting}
-					autoLoading={false}
-				>
-					{isTesting ? (
-						<Loader2Icon className="size-4 animate-spin" />
-					) : (
-						<PlugIcon className="size-4" />
-					)}
-					{isTesting ? "Testing connections…" : "Test connections"}
-				</Button>
+				{showConnectionTest && (
+					<Button
+						variant="outline"
+						className="w-full"
+						onClick={onTest}
+						disabled={isTesting}
+						autoLoading={false}
+					>
+						{isTesting ? (
+							<Loader2Icon className="size-4 animate-spin" />
+						) : (
+							<PlugIcon className="size-4" />
+						)}
+						{isTesting
+							? "Testing connections…"
+							: "Test connections"}
+					</Button>
+				)}
 				{readiness.hardBlocked && readiness.blockReason && (
 					<p className="px-1 pt-0.5 text-center text-xs leading-relaxed text-muted-foreground">
 						{readiness.blockReason}

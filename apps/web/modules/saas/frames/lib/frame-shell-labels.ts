@@ -2,7 +2,7 @@ import type { FrameSurfaceName } from "./frame-tool-types";
 
 const SURFACE_LABELS: Record<FrameSurfaceName, string> = {
 	artifact: "Artifact",
-	workspace: "Workspace",
+	workspace: "Page",
 };
 
 /**

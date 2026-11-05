@@ -1587,47 +1587,28 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 											<p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
 												Quick start
 											</p>
-											<ol className="space-y-3 text-sm text-muted-foreground">
-												<li className="flex items-start gap-2">
-													<span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
-														1
-													</span>
-													<span>
-														Launch Fabric Agents
-														Desktop or start your
-														remote server
-														<code className="ml-1.5 block mt-1 rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">
-															npx -y
-															@fabricorg/agent-server
-															--port 9100
-														</code>
-													</span>
+											<ol className="list-decimal space-y-3 pl-5 text-sm text-muted-foreground">
+												<li>
+													Open Launch Fabric Desktop
+													for installation and launch
+													options, or use Delegate to
+													Remote Server to connect a
+													personal or team server.
 												</li>
-												<li className="flex items-start gap-2">
-													<span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
-														2
-													</span>
-													<span>
-														Sign in with your
-														subscription harness
-														(Claude Max, Codex,
-														Grok, Droid, Kimi)
-														<code className="ml-1.5 block mt-1 rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">
-															fabric agents
-															delegate --project{" "}
-															{projectId}
-														</code>
-													</span>
+												<li>
+													Sign in to a coding backend
+													and configure Git access on
+													the execution host. Portal
+													AI Connections configures
+													workflows and chat
+													separately.
 												</li>
-												<li className="flex items-start gap-2">
-													<span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
-														3
-													</span>
-													<span>
-														Board loads below —
-														agents pick up tasks
-														automatically
-													</span>
+												<li>
+													Choose a published feature
+													in Roadmap and use Start
+													work to assign it. Follow
+													the actual run and remote
+													session from that feature.
 												</li>
 											</ol>
 											{kanbanStandaloneUrl && (

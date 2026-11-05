@@ -15,7 +15,11 @@ import { orchestratorApprovalProtocol } from "@repo/temporal/approval-rollout";
  */
 
 import { createHash } from "node:crypto";
-import { db } from "@repo/database";
+import {
+	assertSkillReadAccess,
+	db,
+	skillVisibilityWhere,
+} from "@repo/database";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 
 interface StoryTransition {
@@ -115,19 +119,22 @@ export async function fireColumnAutomations(
 			return;
 		}
 
-		// Find published Skills tagged with the target column name
+		const actor = { userId: transition.userId, organizationId };
+		await assertSkillReadAccess(actor);
+		// Automatic triggers require agent availability, unlike explicit attachments.
 		const matchedSkills = await db.skill.findMany({
 			where: {
-				isPublished: true,
-				tags: { has: columnTag },
-				OR: [
-					{ scope: "SYSTEM" },
+				AND: [
+					skillVisibilityWhere(actor),
 					{
-						scope: "ORGANIZATION" as const,
-						organizationId,
-						userId: transition.userId,
+						isPublished: true,
+						archivedAt: null,
+						tags: { has: columnTag },
+						OR: [
+							{ scope: "SYSTEM" },
+							{ scope: "ORGANIZATION", isDiscoverable: true },
+						],
 					},
-					{ scope: "USER" as const, userId: transition.userId },
 				],
 			},
 			select: {
@@ -139,6 +146,7 @@ export async function fireColumnAutomations(
 			take: 5,
 		});
 
+		await assertSkillReadAccess(actor);
 		if (matchedSkills.length === 0) {
 			return;
 		}

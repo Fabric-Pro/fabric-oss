@@ -1,4 +1,9 @@
 "use client";
+import {
+	DEFAULT_PROMPT_RESPONSE,
+	type PromptResponseContract,
+	promptResponseContract,
+} from "@repo/ai/lib/prompt-response-contract";
 
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
@@ -40,6 +45,7 @@ import { toast } from "sonner";
 import { useOfferedPromptActions } from "../hooks/use-offered-prompt-actions";
 import { forkTarget, isProposalCandidate } from "../lib/fork-scope";
 import { isPromptInaccessible } from "../lib/prompt-inaccessible";
+import { promptReturnHref } from "../lib/prompt-navigation";
 import { savePromptAtomically } from "../lib/save-prompt-atomically";
 import { savePromptContentWithReachWarning } from "../lib/shared-edit-warning";
 import {
@@ -85,7 +91,9 @@ export function PromptDetails({
 	const queryClient = useQueryClient();
 	const { user } = useSession();
 	const { isOrganizationAdmin } = useActiveOrganization();
-	const [isEditing, setIsEditing] = useState(false);
+	const [isEditing, setIsEditing] = useState(
+		searchParams.get("edit") === "1",
+	);
 	const [copied, setCopied] = useState(false);
 	// Version currently open in the compare/restore dialog, by version id.
 	const [compareVersionId, setCompareVersionId] = useState<string | null>(
@@ -140,6 +148,7 @@ export function PromptDetails({
 	// so where it is opened and edited. Its other bindings do not matter: a
 	// prompt serving the PRD too still runs for the PRD, but not for Proposals.
 	const { isSuperseded } = useOfferedPromptActions();
+	const tResponse = useTranslations("prompts.response");
 	const tSuperseded = useTranslations(
 		"projects.proposalArtifact.supersededAction",
 	);
@@ -221,12 +230,20 @@ export function PromptDetails({
 			tags?: string[];
 			isPublic?: boolean;
 			content?: string;
+			responseContract?: PromptResponseContract;
 			changeNote?: string;
 		}) => savePromptAtomically(promptId, updateData, content),
 		onSuccess: () => {
 			toast.success("Prompt updated successfully");
 			queryClient.invalidateQueries({ queryKey: promptQueryKey });
 			setIsEditing(false);
+			if (searchParams.get("edit") === "1") {
+				const query = new URLSearchParams(searchParams.toString());
+				query.delete("edit");
+				router.replace(
+					`${basePath}/${encodeURIComponent(promptId)}${query.size ? `?${query}` : ""}`,
+				);
+			}
 		},
 		onError: (error) => {
 			toast.error("Failed to update prompt", {
@@ -254,6 +271,11 @@ export function PromptDetails({
 				id: promptId,
 				content,
 				changeNote: `Restored from v${fromVersion}`,
+				responseContract: promptResponseContract.parse(
+					prompt?.versions?.find(
+						(version: any) => version.version === fromVersion,
+					)?.responseContract ?? DEFAULT_PROMPT_RESPONSE,
+				),
 			}),
 		onSuccess: (_result, { fromVersion }) => {
 			toast.success(`Restored v${fromVersion}`, {
@@ -416,7 +438,12 @@ export function PromptDetails({
 	const hasVoted = false; // TODO: Get from API
 
 	// Same gate as the Edit button — the save path enforces it server-side too.
-	const canEditPrompt = prompt.scope !== "SYSTEM" || isAdmin;
+	const canEditPrompt =
+		prompt.scope === "SYSTEM"
+			? isAdmin
+			: prompt.scope === "ORG"
+				? isOrganizationAdmin
+				: prompt.userId === user?.id;
 	const comparedVersion = compareVersionId
 		? prompt.versions?.find((v: any) => v.id === compareVersionId)
 		: undefined;
@@ -431,6 +458,7 @@ export function PromptDetails({
 				tags: data.tags,
 				isPublic: data.isPublic,
 				content: data.content,
+				responseContract: data.responseContract,
 				changeNote: data.changeNote,
 			});
 
@@ -443,7 +471,7 @@ export function PromptDetails({
 			data.content && data.content !== content,
 		);
 
-		if (contentChanged) {
+		if (contentChanged || data.responseContract !== undefined) {
 			await savePromptContentWithReachWarning({
 				promptId,
 				organizationId: organizationId ?? null,
@@ -554,12 +582,16 @@ export function PromptDetails({
 							{!prompt.isPublic && (
 								<Badge variant="secondary" className="gap-1">
 									<Lock className="h-3 w-3" />
-									Private
+									{prompt.scope === "ORG"
+										? "Organization only"
+										: prompt.scope === "USER"
+											? "Owner only"
+											: "Built-in"}
 								</Badge>
 							)}
 						</div>
 						<div className="flex flex-wrap items-center gap-2 shrink-0">
-							{!isEditing && (
+							{(!isEditing || !canEditPrompt) && (
 								<>
 									{/* Fork button - show for SYSTEM or ORG prompts */}
 									{(prompt.scope === "SYSTEM" ||
@@ -688,7 +720,7 @@ export function PromptDetails({
 										</TooltipProvider>
 									)}
 									{/* Enhance button - only for non-SYSTEM prompts or admins */}
-									{(prompt.scope !== "SYSTEM" || isAdmin) && (
+									{canEditPrompt && (
 										<>
 											<Button
 												variant="outline"
@@ -717,7 +749,7 @@ export function PromptDetails({
 										</>
 									)}
 									{/* Edit metadata button - only for non-SYSTEM prompts or admins */}
-									{(prompt.scope !== "SYSTEM" || isAdmin) && (
+									{canEditPrompt && (
 										<>
 											<Button
 												variant="outline"
@@ -870,8 +902,15 @@ export function PromptDetails({
 				</div>
 			)}
 
+			{isEditing && !canEditPrompt && (
+				<p role="alert" className="mb-4 text-sm text-muted-foreground">
+					You can inspect this prompt. Editing organization prompts
+					requires an organization owner or administrator; system
+					prompts require platform administration.
+				</p>
+			)}
 			{/* Content */}
-			{isEditing ? (
+			{isEditing && canEditPrompt ? (
 				<div>
 					{boundActionsPending && (
 						<output className="mb-2 text-muted-foreground text-sm">
@@ -879,6 +918,17 @@ export function PromptDetails({
 						</output>
 					)}
 					<PromptEditor
+						key={`${organizationId}:${promptId}`}
+						organizationId={organizationId}
+						responseContractError={
+							promptResponseContract.safeParse(
+								prompt.versions?.[0]?.responseContract ??
+									DEFAULT_PROMPT_RESPONSE,
+							).success
+								? undefined
+								: tResponse("unsupported")
+						}
+						startWithAssistant
 						initialData={{
 							name: prompt.name,
 							description: prompt.description || undefined,
@@ -888,9 +938,24 @@ export function PromptDetails({
 							tags: prompt.tags,
 							isPublic: prompt.isPublic,
 							content: content,
+							responseContract: promptResponseContract.safeParse(
+								prompt.versions?.[0]?.responseContract ??
+									DEFAULT_PROMPT_RESPONSE,
+							).data,
 						}}
 						onSave={handleSave}
-						onCancel={handleCancel}
+						onCancel={() => {
+							if (searchParams.get("edit") === "1") {
+								router.push(
+									promptReturnHref(
+										`/app/${organizationSlug}`,
+										searchParams.get("returnTo"),
+									),
+								);
+							} else {
+								handleCancel();
+							}
+						}}
 						isLoading={updateMutation.isPending}
 						canEditScope={false}
 					/>

@@ -56,6 +56,18 @@ interface StepRegistryEntry {
  * 3. Add an entry here mapping the node type to the step
  */
 export const stepRegistry: Record<string, StepRegistryEntry> = {
+	"databricks-sql-query": {
+		name: "Databricks SQL",
+		load: async () =>
+			(await import("./steps/databricks-sql-query"))
+				.executeDatabricksSqlStep,
+	},
+	"databricks-sql-ai-query": {
+		name: "Databricks AI query",
+		load: async () =>
+			(await import("./steps/databricks-sql-ai-query"))
+				.executeDatabricksAiQueryStep,
+	},
 	[NATIVE_PLATFORM_READ_NODE_TYPE]: {
 		name: "Native Platform Read",
 		load: async () =>

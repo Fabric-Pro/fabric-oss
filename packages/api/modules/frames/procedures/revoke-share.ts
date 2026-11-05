@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/client";
-import { revokeFrameShare } from "@repo/database";
+import { revokeFrameSharing } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -7,14 +7,19 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { frameRevisionSchema } from "../lib/frame-edit-contract";
+import { frameEditErrors } from "../lib/frame-edit-errors";
 
 const inputSchema = z.object({
 	id: z.string(),
 	organizationId: z.string().nullable().optional(),
+	mode: z.enum(["public-link", "all"]).default("public-link"),
+	expectedUpdatedAt: frameRevisionSchema.optional(),
 });
 
 export const revokeFrameShareProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.WORKSPACE_DELETE))
+	.use(frameEditErrors)
 	.route({
 		method: "POST",
 		path: "/frames/{id}/revoke-share",
@@ -28,17 +33,24 @@ export const revokeFrameShareProcedure = tenantProtectedProcedure
 			input.organizationId,
 			context.session,
 		);
-		const frame = await revokeFrameShare({
-			...input,
+		const result = await revokeFrameSharing({
+			frameId: input.id,
 			userId: context.user.id,
 			organizationId,
+			mode: input.mode ?? "public-link",
+			expectedUpdatedAt: input.expectedUpdatedAt
+				? new Date(input.expectedUpdatedAt)
+				: undefined,
 		});
-		if (!frame) {
+		if (!result?.ok) {
 			throw new ORPCError("NOT_FOUND", { message: "Frame not found" });
 		}
 		return {
-			id: frame.id,
-			shareToken: frame.shareToken,
-			isPublic: frame.isPublic,
+			id: input.id,
+			shareToken: null,
+			isPublic: false,
+			shareScope: result.scope,
+			revokedInvitations: result.revokedInvitations,
+			updatedAt: result.updatedAt.toISOString(),
 		};
 	});

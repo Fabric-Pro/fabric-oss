@@ -487,3 +487,32 @@ export function buildFrameProjectOrUserPolicySQL(): string {
 							)
 						`;
 }
+
+/** Skills have owner-private drafts and published organization visibility. */
+export function buildSkillReadPolicySQL(file = false): string {
+	const alias = file ? "s." : '"skill".';
+	const visible = `current_tenant_type() = 'organization' AND current_user_id() IS NOT NULL AND (
+ (${alias}scope = 'SYSTEM' AND ${alias}"organizationId" IS NULL AND ${alias}"userId" IS NULL AND ${alias}"isPublished" AND ${alias}"archivedAt" IS NULL)
+ OR (${alias}scope = 'ORGANIZATION' AND ${alias}"organizationId" = current_tenant_id() AND
+ (${alias}"userId" = current_user_id() OR (${alias}"isPublished" AND ${alias}"archivedAt" IS NULL))))`;
+	const table = file ? "skill_file" : "skill";
+	const predicate = file
+		? `EXISTS (SELECT 1 FROM "skill" s WHERE s.id = "skill_file"."skillId" AND ${visible})`
+		: visible;
+	return `CREATE POLICY tenant_isolation ON "${table}" FOR SELECT USING (${predicate})`;
+}
+
+/** Published content remains immutable to other members, including administrators. */
+export function buildSkillWritePolicies(
+	file = false,
+): Array<{ name: string; sql: string }> {
+	const table = file ? "skill_file" : "skill";
+	const own = `current_tenant_type() = 'organization' AND current_user_id() IS NOT NULL AND ${file ? "s." : '"skill".'}scope = 'ORGANIZATION' AND ${file ? "s." : '"skill".'}"organizationId" = current_tenant_id() AND ${file ? "s." : '"skill".'}"userId" = current_user_id()`;
+	const predicate = file
+		? `EXISTS (SELECT 1 FROM "skill" s WHERE s.id = "skill_file"."skillId" AND ${own})`
+		: own;
+	return (["INSERT", "UPDATE", "DELETE"] as const).map((command) => ({
+		name: `skill_owner_${command.toLowerCase()}`,
+		sql: `CREATE POLICY skill_owner_${command.toLowerCase()} ON "${table}" FOR ${command} ${command === "INSERT" ? "" : `USING (${predicate})`} ${command === "DELETE" ? "" : `WITH CHECK (${predicate})`}`,
+	}));
+}

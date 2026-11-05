@@ -3098,47 +3098,50 @@ function FabricChatContent({
 							</>
 						)}
 
-						{/* Context Usage Indicator — hidden below md */}
-						<div className="hidden md:block">
-							<Context
-								maxTokens={tokenUsage.maxTokens}
-								usedTokens={tokenUsage.totalTokens}
-								usage={
-									tokenUsage.totalTokens > 0
-										? {
-												inputTokens:
-													tokenUsage.inputTokens,
-												outputTokens:
-													tokenUsage.outputTokens,
-												totalTokens:
-													tokenUsage.totalTokens,
-												reasoningTokens:
-													tokenUsage.reasoningTokens,
-												cachedInputTokens:
-													tokenUsage.cachedInputTokens,
-											}
-										: undefined
-								}
-								// The model that actually answered. Cost shows only
-								// when the pricing table knows it.
-								modelId={
-									tokenUsage.modelId
-										? (tokenUsage.modelId as ModelId)
-										: undefined
-								}
-							>
-								<ContextTrigger />
-								<ContextContent>
-									<ContextContentHeader />
-									<ContextContentBody>
-										<ContextInputUsage />
-										<ContextOutputUsage />
-										<ContextReasoningUsage />
-									</ContextContentBody>
-									<ContextContentFooter />
-								</ContextContent>
-							</Context>
-						</div>
+						{/* Usage is advanced detail; an unmeasured new turn has no percentage to report. */}
+						{chrome.showControlDeck &&
+							tokenUsage.totalTokens > 0 && (
+								<div className="hidden md:block">
+									<Context
+										maxTokens={tokenUsage.maxTokens}
+										usedTokens={tokenUsage.totalTokens}
+										usage={
+											tokenUsage.totalTokens > 0
+												? {
+														inputTokens:
+															tokenUsage.inputTokens,
+														outputTokens:
+															tokenUsage.outputTokens,
+														totalTokens:
+															tokenUsage.totalTokens,
+														reasoningTokens:
+															tokenUsage.reasoningTokens,
+														cachedInputTokens:
+															tokenUsage.cachedInputTokens,
+													}
+												: undefined
+										}
+										// The model that actually answered. Cost shows only
+										// when the pricing table knows it.
+										modelId={
+											tokenUsage.modelId
+												? (tokenUsage.modelId as ModelId)
+												: undefined
+										}
+									>
+										<ContextTrigger />
+										<ContextContent>
+											<ContextContentHeader />
+											<ContextContentBody>
+												<ContextInputUsage />
+												<ContextOutputUsage />
+												<ContextReasoningUsage />
+											</ContextContentBody>
+											<ContextContentFooter />
+										</ContextContent>
+									</Context>
+								</div>
+							)}
 					</div>
 				</header>
 
@@ -3740,7 +3743,7 @@ function DocumentWorkspacesSection({
 				<div className="flex items-center gap-2 mb-2">
 					<FolderOpen className="h-4 w-4 text-muted-foreground" />
 					<span className="text-xs font-medium">
-						Document Libraries
+						Document Workspaces
 					</span>
 				</div>
 				<div className="space-y-2">
@@ -3795,7 +3798,7 @@ function DocumentWorkspacesSection({
 				<div className="flex items-center gap-2">
 					<FolderOpen className="h-4 w-4 text-muted-foreground" />
 					<span className="text-xs font-medium">
-						Document Libraries
+						Document Workspaces
 					</span>
 				</div>
 				<Link

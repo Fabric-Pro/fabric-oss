@@ -47,6 +47,86 @@ const PM_HANDLER_BODY =
 		/handlers\.set\(tool\.name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
 	)?.[1] ?? "";
 
+const CONTEXT_QUALITY_FAMILY_SOURCE = readFileSync(
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/context-quality-tools.ts"),
+	"utf8",
+);
+
+// This is an explicit proof for this injected factory, not permission credit
+// for arbitrary functions named authorize. The wiring and both guarded calls
+// are verified below before these bodies participate in the coverage scan.
+const CONTEXT_QUALITY_HANDLERS = [
+	["fabric_inspect_context_quality_source", "inspectContextQualitySource"],
+	["fabric_evaluate_context_quality", "evaluateProjectContext"],
+].map(([tool, command]) => ({
+	tool,
+	command,
+	name: handlerOf(tool),
+	body:
+		CONTEXT_QUALITY_FAMILY_SOURCE.match(
+			new RegExp(
+				`handlers\\.set\\(\\s*"${tool}",\\s*async \\(args, session\\) => \\{([\\s\\S]*?)\\n\\t{1,2}\\},?\\s*\\);`,
+			),
+		)?.[1] ?? "",
+}));
+
+const SAVED_CONTEXT_QUALITY_HANDLER_BODY =
+	CONTEXT_QUALITY_FAMILY_SOURCE.match(
+		/handlers\.set\(name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	)?.[1] ?? "";
+const SAVED_CONTEXT_QUALITY_TOOLS = [
+	"fabric_context_quality_run_capabilities",
+	"fabric_create_context_quality_run",
+	"fabric_list_context_quality_runs",
+	"fabric_get_context_quality_run",
+	"fabric_cancel_context_quality_run",
+	"fabric_compare_context_quality_runs",
+] as const;
+
+// These injected factories use closure handlers rather than PascalCase function
+// declarations. Credit only their exact handler body, after proving the factory
+// is wired to the canonical project guard and retains its own binding check.
+const PROJECT_CLOSURE_FAMILIES = [
+	{
+		file: "context-selection-tools.ts",
+		factory: "createContextSelectionTools",
+		registry: "CONTEXT_SELECTION_TOOLS",
+		tools: ["fabric_assemble_project_context"],
+		pattern:
+			/const handler: PlatformToolHandler = async \(args, session\) => \{([\s\S]*?)\n\t\};/,
+	},
+	{
+		file: "agent-result-quality-tools.ts",
+		factory: "createAgentResultQualityTools",
+		registry: "AGENT_RESULT_QUALITY_TOOLS",
+		tools: [
+			"fabric_inspect_agent_run_result",
+			"fabric_check_agent_run_result",
+		],
+		pattern:
+			/handlers\.set\(name, async \(raw, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	},
+	{
+		file: "workspace-document-link-tools.ts",
+		factory: "createWorkspaceDocumentLinkTools",
+		registry: "WORKSPACE_DOCUMENT_LINK_TOOLS",
+		tools: [
+			"fabric_list_project_workspace_documents",
+			"fabric_read_project_workspace_document",
+			"fabric_link_workspace_document",
+			"fabric_unlink_workspace_document",
+		],
+		pattern:
+			/handlers\.set\(name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	},
+].map((family) => {
+	const source = readFileSync(
+		resolve(process.cwd(), GATEWAY_DIRECTORY, "tools", family.file),
+		"utf8",
+	);
+	return { ...family, source, body: source.match(family.pattern)?.[1] ?? "" };
+});
+
 function handlerOf(tool: string): string {
 	return `handle${tool
 		.replace(/^fabric_/, "")
@@ -236,6 +316,18 @@ function handlerBodies(): Array<{ name: string; body: string }> {
 			body: PM_HANDLER_BODY,
 		})),
 	);
+	out.push(
+		...CONTEXT_QUALITY_HANDLERS.map(({ name, body }) => ({ name, body })),
+		...SAVED_CONTEXT_QUALITY_TOOLS.map((tool) => ({
+			name: handlerOf(tool),
+			body: SAVED_CONTEXT_QUALITY_HANDLER_BODY,
+		})),
+	);
+	out.push(
+		...PROJECT_CLOSURE_FAMILIES.flatMap(({ tools, body }) =>
+			tools.map((tool) => ({ name: handlerOf(tool), body })),
+		),
+	);
 	return out;
 }
 
@@ -243,6 +335,98 @@ const isWrite = (name: string) =>
 	WRITE_PREFIXES.some((prefix) => name.startsWith(prefix));
 
 describe("platform tool authorization coverage", () => {
+	it.each(PROJECT_CLOSURE_FAMILIES)(
+		"proves the $file closure checks binding and canonical project authority before calling commands",
+		(family) => {
+			const platform = readFileSync(SOURCES[0], "utf8");
+			expect(platform).toMatch(
+				new RegExp(
+					`const ${family.registry} = ${family.factory}\\(\\s*resolveGatewayProjectReadAccess,?\\s*\\);`,
+				),
+			);
+			expect(family.body.length).toBeGreaterThan(100);
+			expect(family.body).toContain(
+				"sessionMayReachProject(session, projectId)",
+			);
+			expect(family.body).toContain(
+				"const access = await authorize(projectId, session)",
+			);
+			expect(family.body).toContain("if (!access?.organizationId)");
+			expect(family.body).toContain(
+				"organizationId: access.organizationId",
+			);
+			expect(family.body).toContain("userId: session.userId");
+			expect(family.body.indexOf("await authorize(")).toBeGreaterThan(
+				family.body.indexOf("sessionMayReachProject("),
+			);
+			const dispatch = family.body.indexOf("return jsonResult(");
+			expect(dispatch).toBeGreaterThan(
+				family.body.indexOf("if (!access?.organizationId)"),
+			);
+			for (const tool of family.tools) {
+				expect(PLATFORM_TOOL_DEFINITIONS.map((x) => x.name)).toContain(
+					tool,
+				);
+				expect(family.source).toContain(`"${tool}"`);
+			}
+			expect(platform).toContain(`${family.registry}.`);
+		},
+	);
+
+	it("wires both context-quality handlers through the canonical project guard before source/scoring access", () => {
+		const platform = readFileSync(SOURCES[0], "utf8");
+		expect(platform).toMatch(
+			/const CONTEXT_QUALITY_TOOLS = createContextQualityTools\(\s*resolveGatewayProjectReadAccess,\s*resolveGatewayProjectWriteAccessWithHost,?\s*\);/,
+		);
+		expect(platform).toContain("...CONTEXT_QUALITY_TOOLS.definitions");
+		expect(platform).toContain("...CONTEXT_QUALITY_TOOLS.handlers");
+		for (const { tool, command, body } of CONTEXT_QUALITY_HANDLERS) {
+			expect(PLATFORM_TOOL_DEFINITIONS.map(({ name }) => name)).toContain(
+				tool,
+			);
+			expect(body.length, tool).toBeGreaterThan(100);
+			expect(body, tool).toMatch(
+				/const access = await authorize\(input\.data\.projectId, session\);\s*if \(!access\?\.organizationId\) \{\s*return errorResult\("Project not found or access denied"\);\s*\}/,
+			);
+			expect(body, tool).toContain(
+				"organizationId: access.organizationId",
+			);
+			expect(body, tool).toContain("userId: session.userId");
+			expect(body.indexOf(`await ${command}(`), tool).toBeGreaterThan(
+				body.indexOf("await authorize("),
+			);
+		}
+	});
+
+	it("holds saved writes to the host-aware PROJECT_UPDATE gate before shared-command reauthorization", () => {
+		expect(SAVED_CONTEXT_QUALITY_HANDLER_BODY.length).toBeGreaterThan(100);
+		expect(SAVED_CONTEXT_QUALITY_HANDLER_BODY).toContain(
+			"if (!resolveGatewayProjectWriteAccessWithHost)",
+		);
+		expect(SAVED_CONTEXT_QUALITY_HANDLER_BODY).toMatch(
+			/await resolveGatewayProjectWriteAccessWithHost\(\s*input\.data\.projectId,\s*session,\s*"PROJECT_UPDATE",?\s*\)/,
+		);
+		expect(
+			SAVED_CONTEXT_QUALITY_HANDLER_BODY.indexOf("await command("),
+		).toBeGreaterThan(
+			SAVED_CONTEXT_QUALITY_HANDLER_BODY.indexOf(
+				"await resolveGatewayProjectWriteAccessWithHost(",
+			),
+		);
+		expect(SAVED_CONTEXT_QUALITY_HANDLER_BODY).toContain(
+			"organizationId = access.organizationId",
+		);
+		expect(SAVED_CONTEXT_QUALITY_HANDLER_BODY).toContain(
+			"userId: session.userId",
+		);
+		for (const tool of SAVED_CONTEXT_QUALITY_TOOLS) {
+			expect(CONTEXT_QUALITY_FAMILY_SOURCE).toContain(`"${tool}"`);
+			expect(PLATFORM_TOOL_DEFINITIONS.map(({ name }) => name)).toContain(
+				tool,
+			);
+		}
+	});
+
 	it("wires every PM definition through the canonical project guard before any PM lookup", () => {
 		const platform = readFileSync(SOURCES[0], "utf8");
 		expect(platform).toMatch(

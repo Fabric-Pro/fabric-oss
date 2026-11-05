@@ -9,6 +9,7 @@ import { useOrganizationContext } from "@saas/organizations/hooks/use-organizati
 import { BacklogChatPanel } from "@saas/projects/components/stories/BacklogChatPanel";
 import { useKanbanStatus } from "@saas/projects/hooks/use-kanban-status";
 import { shouldAutoOpenBacklogChat } from "@saas/projects/lib/backlog-chat-intake";
+import { buildFabricDesktopNewSessionUrl } from "@saas/projects/lib/implementation-session-labels";
 import { kanbanBridge } from "@saas/projects/lib/kanban-bridge";
 import { buildStandaloneKanbanUrl } from "@saas/projects/lib/kanban-launch";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
@@ -34,14 +35,11 @@ import {
 	ArrowDownIcon,
 	ArrowLeftIcon,
 	ArrowUpIcon,
-	CheckIcon,
 	ColumnsIcon,
-	CopyIcon,
 	ExternalLinkIcon,
 	Loader2Icon,
 	MessageSquareIcon,
 	RefreshCwIcon,
-	TerminalIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
@@ -56,37 +54,6 @@ interface ProjectKanbanRouteViewProps {
 	embedded?: boolean;
 	/** Called with the standalone URL once it is ready (embedded mode only) */
 	onStandaloneUrlReady?: (url: string) => void;
-}
-
-function CopyButton({ text }: { text: string }) {
-	const [copied, setCopied] = useState(false);
-	const tStories = useTranslations("tooltips.stories");
-
-	const handleCopy = useCallback(async () => {
-		await navigator.clipboard.writeText(text);
-		setCopied(true);
-		setTimeout(() => setCopied(false), 1500);
-	}, [text]);
-
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<button
-					type="button"
-					onClick={handleCopy}
-					className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
-					aria-label="Copy to clipboard"
-				>
-					{copied ? (
-						<CheckIcon className="h-3.5 w-3.5 text-green-500" />
-					) : (
-						<CopyIcon className="h-3.5 w-3.5" />
-					)}
-				</button>
-			</TooltipTrigger>
-			<TooltipContent>{tStories("kanbanCopyCommand")}</TooltipContent>
-		</Tooltip>
-	);
 }
 
 export function ProjectKanbanRouteView({
@@ -108,6 +75,7 @@ export function ProjectKanbanRouteView({
 
 	const router = useRouter();
 	const tStories = useTranslations("tooltips.stories");
+	const tBoard = useTranslations("projects.remoteAgents.board");
 	const { organizationId } = useOrganizationContext();
 	const queryClient = useQueryClient();
 	const { confirm } = useConfirmationAlert();
@@ -538,81 +506,73 @@ export function ProjectKanbanRouteView({
 				{headerBar}
 				{chatPanel}
 				<div className="flex flex-1 items-center justify-center overflow-auto p-8">
-					<div className="w-full max-w-sm space-y-8">
-						{/* Logo + heading */}
-						<div className="flex flex-col items-center gap-5 text-center">
-							<div className="relative flex h-16 w-16 items-center justify-center rounded-lg border border-border bg-card shadow-sm">
-								<FabricLogo size={36} />
-								{/* Offline indicator */}
-								<span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border-2 border-background bg-muted">
-									<span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
-								</span>
-							</div>
-							<div className="space-y-2">
-								<h2 className="font-semibold tracking-tight text-foreground">
-									Fabric Agents local bridge is not running
-								</h2>
-								<p className="text-sm leading-relaxed text-muted-foreground">
-									Launch Fabric Agents Desktop or start a
-									local Fabric Agents Remote Server to work
-									from this view.
-								</p>
-							</div>
+					<div
+						className="w-full max-w-lg space-y-6"
+						data-testid="coding-board-unavailable"
+					>
+						<div className="space-y-3">
+							<FabricLogo size={36} />
+							<h2 className="text-lg font-semibold text-foreground">
+								{tBoard("title")}
+							</h2>
+							<p className="text-sm leading-relaxed text-muted-foreground">
+								{tBoard("description")}
+							</p>
 						</div>
-
-						{/* Steps */}
-						<div className="rounded-lg border border-border bg-card divide-y divide-border overflow-hidden">
-							{/* Step 1 */}
-							<div className="px-4 py-3 space-y-2">
-								<div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-									<TerminalIcon className="h-3 w-3" />
-									Step 1 — Start Personal Fabric Agents Remote
-									Server
-								</div>
-								<div className="flex items-center justify-between gap-2">
-									<code className="select-all font-mono text-xs text-foreground">
-										npx -y @fabricorg/agent-server --port
-										9100
-									</code>
-									<CopyButton text="npx -y @fabricorg/agent-server --port 9100" />
-								</div>
-							</div>
-
-							{/* Step 2 */}
-							<div className="px-4 py-3 space-y-2">
-								<div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-									<TerminalIcon className="h-3 w-3" />
-									Step 2 — Or open Fabric Agents Desktop
-								</div>
-								<div className="flex items-center justify-between gap-2">
-									<code className="select-all font-mono text-xs text-foreground">
-										fabric agents desktop
-									</code>
-									<CopyButton text="fabric agents desktop" />
-								</div>
-								<p className="text-xs text-muted-foreground">
-									Uses your subscription tokens on your
-									workstation or remote server.
-								</p>
-							</div>
-						</div>
-
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									onClick={() => void launch()}
-									className="w-full"
-									variant="outline"
-									size="sm"
-								>
-									<RefreshCwIcon className="mr-2 h-3.5 w-3.5" />
-									Check again
+						<div className="flex flex-wrap gap-2">
+							{organizationSlug && (
+								<Button asChild size="sm">
+									<a
+										href={`${projectDetailsUrl}?tab=stories`}
+									>
+										{tBoard("assign")}
+									</a>
 								</Button>
-							</TooltipTrigger>
-							<TooltipContent>
-								{tStories("kanbanCheckAgain")}
-							</TooltipContent>
-						</Tooltip>
+							)}
+							<Button asChild variant="outline" size="sm">
+								<a
+									href={buildFabricDesktopNewSessionUrl({
+										projectId,
+										projectName:
+											projectData?.project?.name ??
+											"Project",
+										origin:
+											typeof window !== "undefined"
+												? window.location.origin
+												: null,
+									})}
+								>
+									{tBoard("desktop")}
+								</a>
+							</Button>
+							<Button asChild variant="ghost" size="sm">
+								<a
+									href="/docs/features/projects#personal-vs-organization-remote-servers"
+									target="_blank"
+									rel="noopener noreferrer"
+								>
+									{tBoard("setupGuide")}
+								</a>
+							</Button>
+						</div>
+						<details className="space-y-3 border-t border-border pt-4">
+							<summary className="cursor-pointer text-sm font-medium">
+								{tBoard("optionalBoard")}
+							</summary>
+							<p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+								{tBoard("boardHelp")}
+							</p>
+							<Button
+								type="button"
+								onClick={() => void launch()}
+								className="mt-3"
+								variant="outline"
+								size="sm"
+							>
+								<RefreshCwIcon className="mr-2 size-4" />
+								{tBoard("checkBoard")}
+							</Button>
+						</details>
 					</div>
 				</div>
 			</div>

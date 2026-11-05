@@ -1,0 +1,41 @@
+bundle:
+  name: fabric-context-quality-pilot
+
+# Generated locally by bind_workspace.py; never commit real workspace identifiers.
+include:
+  - .databricks/workspace-bindings.yml
+
+workspace:
+  # Missing target binding must not silently use DEFAULT or ambient credentials.
+  host: https://workspace-not-configured.invalid
+  root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+
+sync:
+  exclude:
+    - .databricks/**
+
+resources:
+  experiments:
+    context_quality_experiment:
+      name: /Users/${workspace.current_user.userName}/${bundle.name}-${bundle.target}
+  jobs:
+    context_quality_pilot:
+      name: fabric-context-quality-pilot-${bundle.target}
+      max_concurrent_runs: 1
+      timeout_seconds: 900
+      # No schedule, continuous trigger, notification or automatic retries.
+      tasks:
+        - task_key: evaluate_synthetic_answers
+          max_retries: 0
+          timeout_seconds: 600
+          notebook_task:
+            notebook_path: ./src/context_quality_pilot.py
+            base_parameters:
+              target: ${bundle.target}
+              experiment_path: ${resources.experiments.context_quality_experiment.name}
+
+targets:
+  test:
+    default: true
+  staging: {}
+  prod: {}

@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 /**
  * fabric prompts
  *
@@ -139,6 +140,48 @@ export function buildPromptsCommand(): Command {
 			},
 		);
 
+	prompts
+		.command("response <id>")
+		.description("Read or update a prompt's expected response contract")
+		.option("--org <slug>", "Organization context")
+		.option(
+			"--file <path>",
+			"Save a response contract JSON file as a new version; omit to read",
+		)
+		.action(async (id: string, opts: { org?: string; file?: string }) => {
+			try {
+				const ctx = resolveContext(false, opts.org, false);
+				const client = getClient();
+				const options = {
+					org: ctx?.type === "org" ? ctx.slug : undefined,
+				};
+				let result: Awaited<
+					ReturnType<typeof client.prompts.getResponseContract>
+				>;
+				if (opts.file) {
+					const raw = await readFile(opts.file, "utf8");
+					if (Buffer.byteLength(raw) > 512 * 1024) {
+						throw new Error(
+							"Response contract request exceeds 512 KiB.",
+						);
+					}
+					result = await client.prompts.setResponseContract(
+						id,
+						JSON.parse(raw),
+						options,
+					);
+				} else {
+					result = await client.prompts.getResponseContract(
+						id,
+						options,
+					);
+				}
+				printOutput(result, { format: "json" });
+			} catch (error: unknown) {
+				printError((error as Error).message, 1);
+			}
+		});
+
 	// -- create --------------------------------------------------------------
 	prompts
 		.command("create")
@@ -246,6 +289,49 @@ export function buildPromptsCommand(): Command {
 				});
 			},
 		);
+
+	for (const mode of ["assist", "preview"] as const) {
+		prompts
+			.command(`${mode} <request-file>`)
+			.description(
+				mode === "assist"
+					? "Propose prompt changes for review; does not save"
+					: "Try supplied prompt text and inputs with your configured AI provider; does not save",
+			)
+			.option("--org <slug>", "Organization context")
+			.action(async (file: string, opts: { org?: string }) => {
+				try {
+					const bytes = await readFile(file);
+					if (bytes.byteLength > 512 * 1024) {
+						throw new Error("The prompt request exceeds 512 KiB.");
+					}
+					const ctx = resolveContext(false, opts.org, false);
+					const input = JSON.parse(bytes.toString("utf8"));
+					const client = getClient();
+					const options = {
+						org: ctx?.type === "org" ? ctx.slug : undefined,
+					};
+					const result =
+						mode === "assist"
+							? await client.prompts.assist(input, options)
+							: await client.prompts.preview(input, options);
+					printOutput(result, { format: "json" });
+					if (
+						"validation" in result &&
+						result.validation.status === "failed"
+					) {
+						process.exitCode = 1;
+					}
+				} catch (error) {
+					printError(
+						error instanceof Error
+							? error.message
+							: "The prompt request could not finish.",
+						1,
+					);
+				}
+			});
+	}
 
 	return prompts;
 }

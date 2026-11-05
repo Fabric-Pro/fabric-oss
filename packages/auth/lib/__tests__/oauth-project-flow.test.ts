@@ -22,6 +22,7 @@ import {
 	hashOAuthToken,
 	OAUTH_REFRESH_TOKEN_PREFIX,
 } from "../../../database/prisma/queries/oauth-token-format";
+import { OAUTH_SCOPES } from "../oauth-scopes";
 import {
 	oauthFixtures as fixtures,
 	keyOf,
@@ -74,10 +75,18 @@ async function authorize(
 	clientId: string,
 	options: Parameters<typeof authorizeUrl>[1] = {},
 ) {
-	return ctx.call(await authorizeUrl(clientId, options), {
-		redirect: "manual",
-		headers: { accept: "text/html" },
-	});
+	return ctx.call(
+		await authorizeUrl(clientId, {
+			scopes: OAUTH_SCOPES.filter(
+				(scope) => !scope.startsWith("agents:"),
+			),
+			...options,
+		}),
+		{
+			redirect: "manual",
+			headers: { accept: "text/html" },
+		},
+	);
 }
 
 interface Displayed {
@@ -212,7 +221,12 @@ describe("authorizing an agent for one project", () => {
 		const { body: client } = await register(ctx.call);
 		const base = new URLSearchParams(
 			(
-				await authorizeUrl(client.client_id, { resource: PROJECT_ONE })
+				await authorizeUrl(client.client_id, {
+					resource: PROJECT_ONE,
+					scopes: OAUTH_SCOPES.filter(
+						(scope) => !scope.startsWith("agents:"),
+					),
+				})
 			).split("?")[1],
 		);
 		const bound = new URLSearchParams(base);
@@ -313,7 +327,12 @@ describe("authorizing an agent for one project", () => {
 		const { body: client } = await register(ctx.call);
 		const query = new URLSearchParams(
 			(
-				await authorizeUrl(client.client_id, { resource: PROJECT_ONE })
+				await authorizeUrl(client.client_id, {
+					resource: PROJECT_ONE,
+					scopes: OAUTH_SCOPES.filter(
+						(scope) => !scope.startsWith("agents:"),
+					),
+				})
 			).split("?")[1],
 		);
 		const response = await ctx.call("/oauth2/authorize", {
@@ -1467,5 +1486,19 @@ describe("checking a request before anything is written", () => {
 		});
 
 		expect(extendOAuthAuthorizationResource).not.toHaveBeenCalled();
+	});
+});
+
+describe("organization-only agent grants on a project authorization", () => {
+	it("refuses an explicit agent execution scope even when the actor can read the project", async () => {
+		const ctx = await boot();
+		const { body: client } = await register(ctx.call);
+		const response = await authorize(ctx, client.client_id, {
+			resource: PROJECT_ONE,
+			scopes: ["agents:read", "agents:execute"],
+		});
+		expect(response.status).toBe(403);
+		expect(await rowsOf(ctx, "oauthConsent")).toHaveLength(0);
+		expect(await rowsOf(ctx, "oauthAccessToken")).toHaveLength(0);
 	});
 });

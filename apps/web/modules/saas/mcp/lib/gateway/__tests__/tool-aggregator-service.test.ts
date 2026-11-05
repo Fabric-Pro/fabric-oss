@@ -1,3 +1,4 @@
+import { FABRIC_WORKSPACE_TOOL_DEFINITIONS } from "@repo/temporal/fabric-gateway-tools";
 /**
  * What Fabric's own agent runtime is offered through the gateway: the platform
  * tools its scopes reach, and none of the person's connected servers. It
@@ -75,6 +76,7 @@ describe("tools offered to the service credential", () => {
 			]),
 		);
 		const expected = [
+			...FABRIC_WORKSPACE_TOOL_DEFINITIONS,
 			...FABRIC_WORKFLOW_TOOL_DEFINITIONS,
 			...FABRIC_FRAME_TOOL_DEFINITIONS,
 			...FABRIC_FRAME_VERSION_TOOL_DEFINITIONS,

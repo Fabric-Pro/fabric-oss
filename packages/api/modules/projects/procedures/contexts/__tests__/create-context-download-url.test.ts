@@ -600,14 +600,17 @@ describe("createContextDownloadUrl — Class B URL Source (LINK)", () => {
 		expect(mockUrlPagesFindMany).toHaveBeenCalledTimes(1);
 		const findManyArgs = mockUrlPagesFindMany.mock.calls[0]?.[0] as {
 			where: Record<string, unknown>;
-			orderBy: { pageUrl: "asc" | "desc" };
+			orderBy: Array<{ pageUrl?: "asc" | "desc"; id?: "asc" | "desc" }>;
 		};
 		expect(findManyArgs.where).toMatchObject({
 			parentContextId: "ctx-link-prefix",
 			organizationId: null,
 			userId: "user-1",
 		});
-		expect(findManyArgs.orderBy).toEqual({ pageUrl: "asc" });
+		expect(findManyArgs.orderBy).toEqual([
+			{ pageUrl: "asc" },
+			{ id: "asc" },
+		]);
 
 		const [, body] = mockUploadFile.mock.calls[0] as [
 			string,

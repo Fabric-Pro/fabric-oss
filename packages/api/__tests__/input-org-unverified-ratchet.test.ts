@@ -80,7 +80,10 @@ function findProcedureFiles(dir: string): string[] {
 		}
 		if (
 			!dir.includes(`${sep}procedures${sep}`) &&
-			!dir.endsWith("procedures")
+			!dir.endsWith("procedures") &&
+			// Inline module router handlers are procedures too; omitting them
+			// would let a new module bypass this organization-authorization scan.
+			entry.name !== "router.ts"
 		) {
 			continue;
 		}
@@ -105,6 +108,11 @@ function unverifiedFiles(): string[] {
 }
 
 describe("input-org verification ratchet (SOC 2 CC6.1/CC6.3)", () => {
+	it("includes inline module router handlers in its discovery", () => {
+		expect(findProcedureFiles(modulesRoot)).toContain(
+			resolve(modulesRoot, "context-quality/router.ts"),
+		);
+	});
 	it("introduces no new procedure that trusts the caller-supplied organization", () => {
 		const known = new Set(baseline as string[]);
 		const added = unverifiedFiles().filter((file) => !known.has(file));

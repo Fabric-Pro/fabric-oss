@@ -41,10 +41,11 @@ import { PromptScopeBadge } from "./PromptScopeBadge";
 import { PromptTag } from "./PromptTag";
 
 interface PromptPreviewSheetProps {
+	fullPageEdit?: boolean;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	promptId: string;
-	/** Scope of the prompt being previewed — used to bypass org filter for USER prompts */
+	/** Legacy caller metadata; access always resolves in the current organization. */
 	promptScope?: string;
 	/** If true, open in edit mode directly */
 	initialEditMode?: boolean;
@@ -56,22 +57,22 @@ export function PromptPreviewSheet({
 	open,
 	onOpenChange,
 	promptId,
-	promptScope,
 	initialEditMode = false,
+	fullPageEdit = false,
 	onPromptUpdated,
 }: PromptPreviewSheetProps) {
 	const router = useRouter();
 	const queryClient = useQueryClient();
-	const { organizationId, basePath } = useOrganizationContext();
+	const { organizationId, basePath, userRole } = useOrganizationContext();
 	const { confirm } = useConfirmationAlert();
 	const [isEditing, setIsEditing] = useState(initialEditMode);
 	const [editContent, setEditContent] = useState("");
 	const contentErrorId = useId();
 
 	// Fetch full prompt details
-	// USER-scoped prompts are not visible when organizationId is set,
-	// so pass null to ensure the backend includes them.
-	const queryOrganizationId = promptScope === "USER" ? null : organizationId;
+	// Keep the current organization throughout. Retained USER content is checked
+	// by the server against its owner inside that organization context.
+	const queryOrganizationId = organizationId;
 	const {
 		data: prompt,
 		isPending,
@@ -147,7 +148,9 @@ export function PromptPreviewSheet({
 			onOpenChange(false);
 			// Navigate to the forked prompt for editing
 			if (forkedPrompt?.id) {
-				router.push(`${basePath}/prompts/${forkedPrompt.id}`);
+				router.push(
+					`${basePath}/prompts/${forkedPrompt.id}${fullPageEdit ? "?edit=1" : ""}`,
+				);
 			}
 		},
 		onError: (error) => {
@@ -367,7 +370,35 @@ export function PromptPreviewSheet({
 									<Button
 										variant="outline"
 										size="sm"
-										onClick={handleEditClick}
+										onClick={() => {
+											if (fullPageEdit) {
+												if (
+													(prompt?.scope === "ORG" ||
+														isSystemPrompt) &&
+													userRole !== "admin" &&
+													userRole !== "owner"
+												) {
+													handleOpenFullPage();
+													return;
+												}
+												if (isSystemPrompt) {
+													handleEditClick();
+													return;
+												}
+
+												const returnTo =
+													typeof window !==
+													"undefined"
+														? `${window.location.pathname}${window.location.search}`
+														: `${basePath}/prompts`;
+												onOpenChange(false);
+												router.push(
+													`${basePath}/prompts/${encodeURIComponent(promptId)}?edit=1&returnTo=${encodeURIComponent(returnTo)}`,
+												);
+											} else {
+												handleEditClick();
+											}
+										}}
 										disabled={forkMutation.isPending}
 									>
 										{forkMutation.isPending ? (
@@ -377,9 +408,15 @@ export function PromptPreviewSheet({
 										) : (
 											<EditIcon className="mr-2 h-4 w-4" />
 										)}
-										{isSystemPrompt
-											? "Fork & Edit"
-											: "Edit"}
+										{fullPageEdit &&
+										(prompt?.scope === "ORG" ||
+											isSystemPrompt) &&
+										userRole !== "admin" &&
+										userRole !== "owner"
+											? "View details"
+											: isSystemPrompt
+												? "Fork & Edit"
+												: "Edit"}
 									</Button>
 									<Button
 										variant="outline"

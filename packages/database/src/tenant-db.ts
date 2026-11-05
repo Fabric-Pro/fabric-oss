@@ -55,6 +55,8 @@ const STRICT_ISOLATION_TABLES = new Set([
  * credentials; AI chats are per-user conversations even in org context).
  */
 const PER_USER_ORG_TABLES = new Set([
+	"AgentTestCase",
+	"AgentTestRun",
 	"MCPServer", // Each user installs servers with their own credentials
 	"MCPConfig", // Each org member has their own MCP credentials
 	"OpenAPIService", // Each user has their own OpenAPI service installations
@@ -270,6 +272,7 @@ const USER_OWNED_TABLES = new Set([
  * Tables that are organization-only (no personal equivalent).
  */
 const ORG_ONLY_TABLES = new Set([
+	"ProjectWorkspaceDocumentLink", // References retain source permissions; projectId is independently authorized.
 	"NonMemberContact", // #2340 a contact has no owning user
 	"CloudProviderConfig",
 	"OrganizationRagProvider",
@@ -278,6 +281,11 @@ const ORG_ONLY_TABLES = new Set([
 	"OrganizationApiKey",
 	"OrganizationModelPreference",
 	"OrganizationEvalBudget",
+	// Saved evaluation state is organization-owned; requestedBy/createdBy are
+	// attribution, not per-user tenant columns. Only bindings/runs admit guests.
+	"ProjectContextQualityBinding",
+	"ProjectContextQualityRun",
+	"ProjectContextQualityPrincipal",
 	// What a published page keeps between visits: every viewer of the page
 	// reads and writes its shared records, so the organization is the
 	// boundary. The query layer checks access to the page itself first.
@@ -369,6 +377,9 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	BackgroundJob: "projectId",
 	ProjectRagSettings: "projectId",
 	ProjectDatabricksKnowledgeBinding: "projectId",
+	// Principal claims intentionally have no project guest carve-out.
+	ProjectContextQualityBinding: "projectId",
+	ProjectContextQualityRun: "projectId",
 	ProjectLinkedMeeting: "projectId",
 	DeletedMeetingArchive: "projectId",
 	ProjectMeetingTranscript: "projectId",

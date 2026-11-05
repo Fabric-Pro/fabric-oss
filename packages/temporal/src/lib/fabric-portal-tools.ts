@@ -4,7 +4,7 @@
  *
  * These are the gateway's platform tools: identity, organizations, projects,
  * features, tasks, bugs, documents, contexts, instructions, knowledge search,
- * workspaces, chats and connected servers, 38 in all. Fabric's agent runtime
+ * workspaces, chats and connected servers. Fabric's agent runtime
  * reaches them only through an acting grant the web app mints for one
  * meeting's project, and the gateway holds that session to this list, to the
  * grant's organization and to that project. The worker offers the model the
@@ -41,7 +41,17 @@ export const FABRIC_PORTAL_PROJECT_TOOL_NAMES = [
 	"fabric_create_document",
 	"fabric_update_document",
 	"fabric_list_project_contexts",
+	"fabric_list_project_workspace_documents",
+	"fabric_read_project_workspace_document",
 	"fabric_get_project_context",
+	"fabric_inspect_context_quality_source",
+	"fabric_evaluate_context_quality",
+	"fabric_context_quality_run_capabilities",
+	"fabric_create_context_quality_run",
+	"fabric_list_context_quality_runs",
+	"fabric_get_context_quality_run",
+	"fabric_cancel_context_quality_run",
+	"fabric_compare_context_quality_runs",
 	"fabric_update_project_context",
 	"fabric_upsert_project_context",
 	"fabric_list_project_instructions",
@@ -65,6 +75,7 @@ export const FABRIC_PORTAL_TENANT_TOOL_NAMES = [
 	"fabric_create_project",
 	"fabric_list_workspaces",
 	"fabric_get_workspace",
+	"fabric_get_workspace_document",
 	"fabric_query_workspace",
 	"fabric_list_chats",
 	"fabric_list_connected_servers",
@@ -82,6 +93,47 @@ export const FABRIC_PORTAL_TOOL_NAMES: readonly string[] = [
  * the gateway adds belongs in this list or in the two above.
  */
 export const FABRIC_PORTAL_EXCLUDED_TOOL_NAMES: readonly string[] = [
+	"fabric_list_skills",
+	"fabric_get_skill",
+	"fabric_create_skill",
+	"fabric_update_skill",
+	"fabric_archive_skill",
+	"fabric_restore_skill",
+	"fabric_publish_skill",
+	"fabric_delete_skill",
+	"fabric_get_skill_governance",
+	"fabric_update_skill_governance",
+	"fabric_assist_skill",
+	"fabric_preview_skill_import",
+	"fabric_create_skill_import",
+	"fabric_read_skill_file",
+	"fabric_read_skill_import_file",
+
+	"fabric_link_workspace_document",
+	"fabric_unlink_workspace_document",
+	// Caller-owned exports and saved-run controls need an explicit user connection;
+	// they do not extend the runtime service grant or attach private context automatically.
+	"fabric_assemble_project_context",
+	"fabric_inspect_agent_run_result",
+	"fabric_check_agent_run_result",
+	"fabric_list_agent_test_cases",
+	"fabric_create_agent_test_case",
+	"fabric_update_agent_test_case",
+	"fabric_archive_agent_test_case",
+	"fabric_start_agent_test_run",
+	"fabric_get_agent_test_run",
+	"fabric_list_agent_test_runs",
+	"fabric_cancel_agent_test_run",
+	"fabric_compare_agent_test_runs",
+	"fabric_start_agent_preview",
+	"fabric_get_agent_preview",
+	"fabric_cancel_agent_preview",
+	"fabric_list_agent_runs",
+	"fabric_search_agent_runs",
+	"fabric_get_agent_run",
+	"fabric_cancel_agent_run",
+	"fabric_get_agent_run_schedule",
+	"fabric_set_agent_run_schedule",
 	"fabric_list_project_pm_assigned_items",
 	"fabric_get_project_pm_item_snapshots",
 	"fabric_list_project_pm_work_item_types",
@@ -147,6 +199,7 @@ export function isFabricPortalProjectTool(name: string): boolean {
  * not carry the portal schemas.
  */
 const PORTAL_REQUEST_PATTERNS: readonly RegExp[] = [
+	/\bcontext[- ]quality\b|\b(?:saved|compare|cancel|create|list|show)\b[^.?!]{0,40}\b(?:context )?evaluations?\b/i,
 	/\b(?:update|change|set|move|mark|close|reopen|complete|finish|assign|rename|edit|rewrite|add|create|write|draft|record|propose|file)\b[^.?!]{0,60}\b(?:status|task|subtask|to-?do|checklist|document|doc|docs|spec|context|instruction|instructions|lesson|decision|estimate|priority)\b/i,
 	/\b(?:move|change|set|update|mark|put|flip)\b[^.?!]{0,60}\b(?:to|as)\s+(?:done|completed?|in progress|in review|ready(?: for dev)?|blocked|closed|open|backlog|published|declined)\b/i,
 	/\b(?:mark|set)\b[^.?!]{0,40}\b(?:done|completed?|blocked|closed)\b/i,

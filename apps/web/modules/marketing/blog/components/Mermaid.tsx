@@ -1,5 +1,7 @@
 "use client";
 
+import { withMermaidLock } from "@saas/projects/lib/mermaid-lock";
+import { sanitizeDiagramSvg } from "@saas/projects/lib/sanitize-diagram-svg";
 import {
 	Tooltip,
 	TooltipContent,
@@ -385,54 +387,66 @@ export function Mermaid({ chart }: MermaidProps) {
 				let nextBg = isDark ? "#1a1b26" : "#f5f5f5";
 				const mermaid = (await import("mermaid")).default;
 
-				mermaid.initialize({
-					startOnLoad: false,
-					theme: isDark ? "dark" : "default",
-					securityLevel: "loose",
+				await withMermaidLock(async () => {
+					const previous = mermaid.mermaidAPI.getSiteConfig();
+					try {
+						mermaid.initialize({
+							startOnLoad: false,
+							theme: isDark ? "dark" : "default",
+							securityLevel: "strict",
+							htmlLabels: false,
+							flowchart: { htmlLabels: false },
+						});
+
+						await mermaid.parse(normalizedChart);
+
+						try {
+							const beautifulMermaid = await import(
+								"beautiful-mermaid"
+							);
+							const theme =
+								(isDark
+									? beautifulMermaid.THEMES?.["tokyo-night"]
+									: beautifulMermaid.THEMES?.default) ??
+								beautifulMermaid.THEMES?.default ??
+								({
+									bg: isDark ? "#1a1b26" : "#f5f5f5",
+									fg: isDark ? "#a9b1d6" : "#333333",
+								} as const);
+							nextBg = theme.bg;
+							const renderedSvg =
+								await beautifulMermaid.renderMermaid(
+									normalizedChart,
+									theme,
+								);
+							if (looksLikeMermaidErrorSvg(renderedSvg)) {
+								throw new Error("Mermaid syntax error");
+							}
+							enhancedSvg = renderedSvg.replace(
+								/<svg /,
+								`<svg data-renderer="beautiful-mermaid" data-theme="${isDark ? "dark" : "light"}" `,
+							);
+						} catch {
+							const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+							const { svg: renderedSvg } = await mermaid.render(
+								id,
+								normalizedChart,
+							);
+							if (looksLikeMermaidErrorSvg(renderedSvg)) {
+								throw new Error("Mermaid syntax error");
+							}
+							enhancedSvg = renderedSvg.replace(
+								/<svg /,
+								`<svg data-renderer="mermaid" data-theme="${isDark ? "dark" : "light"}" `,
+							);
+						}
+					} finally {
+						mermaid.initialize(previous);
+					}
 				});
 
-				await mermaid.parse(normalizedChart);
-
-				try {
-					const beautifulMermaid = await import("beautiful-mermaid");
-					const theme =
-						(isDark
-							? beautifulMermaid.THEMES?.["tokyo-night"]
-							: beautifulMermaid.THEMES?.default) ??
-						beautifulMermaid.THEMES?.default ??
-						({
-							bg: isDark ? "#1a1b26" : "#f5f5f5",
-							fg: isDark ? "#a9b1d6" : "#333333",
-						} as const);
-					nextBg = theme.bg;
-					const renderedSvg = await beautifulMermaid.renderMermaid(
-						normalizedChart,
-						theme,
-					);
-					if (looksLikeMermaidErrorSvg(renderedSvg)) {
-						throw new Error("Mermaid syntax error");
-					}
-					enhancedSvg = renderedSvg.replace(
-						/<svg /,
-						`<svg data-renderer="beautiful-mermaid" data-theme="${isDark ? "dark" : "light"}" `,
-					);
-				} catch {
-					const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-					const { svg: renderedSvg } = await mermaid.render(
-						id,
-						normalizedChart,
-					);
-					if (looksLikeMermaidErrorSvg(renderedSvg)) {
-						throw new Error("Mermaid syntax error");
-					}
-					enhancedSvg = renderedSvg.replace(
-						/<svg /,
-						`<svg data-renderer="mermaid" data-theme="${isDark ? "dark" : "light"}" `,
-					);
-				}
-
 				if (!cancelled) {
-					setSvg(enhancedSvg);
+					setSvg(sanitizeDiagramSvg(enhancedSvg));
 					setDiagramBg(nextBg);
 					setError("");
 					hasManualViewRef.current = false;
@@ -705,7 +719,7 @@ export function Mermaid({ chart }: MermaidProps) {
 							transformOrigin: "top left",
 							minWidth: "fit-content",
 						}}
-						// biome-ignore lint/security/noDangerouslySetInnerHtml: Mermaid generates trusted SVG
+						// biome-ignore lint/security/noDangerouslySetInnerHtml: Diagram SVG is sanitized before entering state
 						dangerouslySetInnerHTML={{ __html: svg }}
 					/>
 				</div>

@@ -5,6 +5,7 @@
 
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { connectorErrorMessage } from "../connector-error";
 import { interpolateTemplate } from "./utils";
 
 export async function executeLinearCreateTicketStep(
@@ -98,6 +99,16 @@ export async function executeLinearCreateTicketStep(
 		});
 
 		const result = await response.json();
+
+		if (!response.ok) {
+			return {
+				success: false,
+				error: connectorErrorMessage(
+					result,
+					`Linear returned status ${response.status}`,
+				),
+			};
+		}
 
 		if (result.errors) {
 			return {

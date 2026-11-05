@@ -644,6 +644,10 @@ export {
 	getFrameContentActivity as getFrameContent,
 	uploadToS3Activity,
 	uploadToS3Activity as uploadToS3,
+	deleteFrameExportActivity,
+	deleteFrameExportActivity as deleteFrameExport,
+	renderAndStoreFrameExportActivity,
+	renderAndStoreFrameExportActivity as renderAndStoreFrameExport,
 } from "./frame-export";
 // Glossy edition build activities (Fizzy #2589)
 export {
@@ -1287,7 +1291,10 @@ export {
 	writeSandboxFile,
 } from "./sandbox";
 // Schedule trigger activities (for Temporal scheduled executions)
-export { signalSupervisorForScheduledExecution } from "./schedule-trigger";
+export {
+	signalSupervisorForScheduledExecution,
+	dispatchManagedAgentScheduledExecution,
+} from "./schedule-trigger";
 // Scheduled report activities (fire due report instances on a 15-min Temporal Schedule)
 export {
 	dispatchScheduledReportActivity,
@@ -1612,6 +1619,24 @@ export { preloadFrameToolsActivity } from "./orchestrator/tools/preload-frame-to
 export { deliverCodingRunFollowUp } from "./coding-run/follow-up";
 
 export {
+	executeSavedContextQualityEvaluation,
+	settleCancelledContextQualityEvaluation,
+} from "./context-quality-evaluation";
+
+export { recoverContextQualityEvaluations } from "./context-quality-recovery";
+export { recoverAgentExecutionReceipts } from "./agent-execution-receipt-recovery";
+export {
 	registerNativeAgentExecutionReceipt,
 	completeNativeAgentExecution,
 } from "./agent-execution-native-receipt";
+
+export {
+	prepareAgentPreview,
+	executeAgentPreviewModelStep,
+	executeAgentPreviewReadStep,
+} from "./agent-preview";
+
+export {
+	assessAgentTestRun,
+	failAgentTestAssessment,
+} from "./agent-test-assessment";

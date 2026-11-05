@@ -43,12 +43,12 @@ export function RunOverlayPill({
 		: [];
 
 	return (
-		<div className="pointer-events-auto absolute left-1/2 top-3 z-20 flex h-[34px] -translate-x-1/2 items-center gap-2.5 whitespace-nowrap rounded-full border bg-card pl-3 pr-1.5 text-xs">
+		<div className="pointer-events-auto absolute inset-x-3 top-3 z-20 flex flex-wrap items-center gap-2 rounded-lg border bg-card p-2 text-xs">
 			<RunStatusIcon
 				status={execution?.status ?? "PENDING"}
 				className="size-3"
 			/>
-			<output className="flex items-center gap-2.5">
+			<output className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
 				<span>
 					Viewing run <span className="font-mono">{shortId}</span>
 				</span>
@@ -62,7 +62,7 @@ export function RunOverlayPill({
 				<button
 					type="button"
 					onClick={onShowDetails}
-					className="h-6 rounded-full px-2.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+					className="h-6 shrink-0 rounded-full px-2.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
 				>
 					Details
 				</button>
@@ -70,7 +70,7 @@ export function RunOverlayPill({
 			<button
 				type="button"
 				onClick={onExit}
-				className="h-6 rounded-full bg-accent px-2.5 hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
+				className="h-6 shrink-0 rounded-full bg-accent px-2.5 hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
 			>
 				Back to editing
 			</button>

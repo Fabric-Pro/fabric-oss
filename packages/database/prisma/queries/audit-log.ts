@@ -44,6 +44,13 @@ import { db, type Prisma } from "../client";
  * is asserted by the audit-taxonomy test — update it there when adding keys.
  */
 export const AUDIT_ACTIONS = [
+	"frame.updated",
+	"frame.restored",
+	"frame.sharing.updated",
+	"frame.sharing.revoked",
+	"frame.export_started",
+	"frame.export_cancelled",
+	"frame.export_downloaded",
 	// auth (8)
 	"auth.login.success",
 	"auth.login.failure",
@@ -77,6 +84,22 @@ export const AUDIT_ACTIONS = [
 	"org.agent_definition.imported",
 	"org.agent_definition.exported",
 	"org.agent_execution.admitted",
+	"org.agent_execution.cancel_requested",
+	"org.agent_schedule.updated",
+	"org.agent_test_case.created",
+	"org.agent_test_case.updated",
+	"org.agent_test_case.archived",
+	"org.agent_test.started",
+	"org.agent_test.cancel_requested",
+	"org.agent_preview.started",
+	"org.skill.created",
+	"org.skill.updated",
+	"org.skill.published",
+	"org.skill.archived",
+	"org.skill.restored",
+	"org.skill.deleted",
+	"org.skill_governance.updated",
+	"org.agent_preview.cancel_requested",
 	"org.member.invited",
 	"org.member.role_changed",
 	"org.member.removed",
@@ -243,6 +266,11 @@ export const AUDIT_ACTIONS = [
 	"project.pull_request.comment_posted",
 	"project.created",
 	"project.updated",
+	"project.context_quality.binding_configured",
+	"project.context_quality.binding_disabled",
+	"project.context_quality.binding_deleted",
+	"project.context_quality.run_requested",
+	"project.context_quality.cancel_requested",
 	"project.archived",
 	"project.deleted",
 	"project.member.invited",
@@ -289,6 +317,8 @@ export const AUDIT_ACTIONS = [
 	// "who changed what the AI is told about this source" had no answer once an
 	// API key could make the edit as well as a person.
 	"project.context_source.metadata_updated",
+	"project.context_source.workspace_document_linked",
+	"project.context_source.workspace_document_unlinked",
 	// A synced knowledge file's content was created or replaced by its path
 	// (Fizzy #2616) — text every AI prompt that retrieves the project's context
 	// can now draw on. Written by `projects.contexts.upsertSyncedFile` and the
@@ -542,6 +572,7 @@ export const AUDIT_ACTIONS = [
 	// bucket shared with `audit.viewed` and `userActivity.viewed`) rather than
 	// derived from the action prefix.
 	"prompt.deletion_impact_viewed",
+	"prompt.response_contract_changed",
 	// prompt (1) — a SYSTEM prompt was deleted from the catalogue. The one
 	// action in the prompts module that removes rows belonging to organizations
 	// and individuals other than the caller's, and it takes every SYSTEM row
@@ -727,6 +758,8 @@ const AUDIT_ACTION_SET: ReadonlySet<string> = new Set([
  * `error` namespace populated by the error-capture middleware (D16).
  */
 export const AUDIT_CATEGORIES = [
+	"frame",
+	"prompt",
 	"auth",
 	"org",
 	"account",
@@ -1038,6 +1071,7 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 		case "account.ai_provider.default_changed":
 		case "account.ai_provider.embedding_changed":
 		case "account.ai_provider.enabled_providers_changed":
+		case "prompt.response_contract_changed":
 		case "account.integration.config_updated":
 			return "DATA_UPDATE";
 		case "audit.viewed":

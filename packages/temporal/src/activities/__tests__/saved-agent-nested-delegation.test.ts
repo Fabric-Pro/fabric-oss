@@ -98,6 +98,8 @@ const input = {
 	organizationId: "example-org",
 	projectId: "example-project",
 	agentInstanceId: "example-parent",
+	workspaceIds: [],
+	workspaceDocumentFilters: [],
 	stepIndex: 0,
 	effectId: "saved-agent:example-workflow:turn:0:example-call",
 	decision: {

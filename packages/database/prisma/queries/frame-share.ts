@@ -1,11 +1,9 @@
-import { db } from "../client";
-import {
-	createMultipleSharingGrants,
-	type FrameShareScope,
-	listSharingGrants,
-	type SharingGrant,
-	updateFrameShareScope,
-} from "./frame-sharing";
+import { randomUUID } from "node:crypto";
+import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import { db, type Prisma } from "../client";
+import { recordAuditTx } from "./audit-log";
+import { assertFrameRevision, nextFrameRevision } from "./frame-revision";
+import type { FrameShareScope, SharingGrant } from "./frame-sharing";
 
 /**
  * Who can open a frame, changed in one place.
@@ -31,6 +29,8 @@ export type ShareableFrameScope = Exclude<FrameShareScope, "PROJECT">;
 
 export type ShareFrameRefusal =
 	| "frame_not_found"
+	| "invalid_email"
+	| "invalid_revoke_mode"
 	| "public_sharing_disabled"
 	| "emails_need_an_inviting_scope"
 	| "email_domain_not_allowed";
@@ -44,6 +44,7 @@ export type ShareFrameOutcome =
 			/** The addresses invited by this call: the ones not invited already. */
 			invited: string[];
 			grants: SharingGrant[];
+			updatedAt: Date;
 	  }
 	| {
 			ok: false;
@@ -59,13 +60,13 @@ export const PUBLIC_SHARING_DISABLED_MESSAGE =
 /**
  * Whether a public link may be made in this organization: the one rule, read by
  * `shareFrame` and by whatever creates a frame that is public from the start.
- * A caller with no organization has no policy to hold it to.
+ * A missing organization has no authorized public-sharing policy and fails closed.
  */
 function allowsPublicLinks(
 	organizationId: string | undefined,
 	policy: { canShareFramesPublicly: boolean } | null,
 ): boolean {
-	return !organizationId || Boolean(policy?.canShareFramesPublicly);
+	return Boolean(organizationId && policy?.canShareFramesPublicly);
 }
 
 /**
@@ -78,7 +79,7 @@ export async function publicSharingRefusal(
 ): Promise<string | null> {
 	const policy = organizationId
 		? await db.organization.findUnique({
-				where: { id: organizationId },
+				where: { id: organizationId, deletedAt: null },
 				select: { canShareFramesPublicly: true },
 			})
 		: null;
@@ -144,104 +145,283 @@ function allowedDomains(domains: readonly string[]): Set<string> {
  * email can be invited on any scope but PRIVATE and PUBLIC. Emails already
  * invited are not invited twice.
  */
-export async function shareFrame(input: {
+export interface ShareFrameInput {
 	frameId: string;
 	userId: string;
 	organizationId?: string;
 	scope?: ShareableFrameScope;
 	emails?: readonly string[];
-}): Promise<ShareFrameOutcome> {
-	const { frameId, userId, organizationId, scope } = input;
-	const emails = normalizedEmails(input.emails);
+	expectedUpdatedAt?: Date;
+}
 
-	const frame = await db.agentWorkspaceFile.findFirst({
+/** Owner+tenant lookup repeated under the lock, shared by every sharing write. */
+async function lockedFrame(
+	tx: Prisma.TransactionClient,
+	input: {
+		frameId: string;
+		userId: string;
+		organizationId?: string;
+		expectedUpdatedAt?: Date;
+	},
+) {
+	if (!input.organizationId) {
+		return null;
+	}
+	await tx.$queryRaw`SELECT "id" FROM "agent_workspace_file" WHERE "id" = ${input.frameId} AND "organizationId" = ${input.organizationId} AND "userId" = ${input.userId} FOR UPDATE`;
+	const frame = await tx.agentWorkspaceFile.findFirst({
 		where: {
-			id: frameId,
-			userId,
-			organizationId: organizationId ?? null,
+			id: input.frameId,
+			userId: input.userId,
+			organizationId: input.organizationId,
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
 		},
-		select: { shareScope: true },
 	});
-	if (!frame) {
+	if (frame) {
+		assertFrameRevision(input.expectedUpdatedAt, frame.updatedAt);
+	}
+	return frame;
+}
+
+/**
+ * Set an audience and grant invitations atomically. The PRIVATE audience is an
+ * explicit revoke-all: dormant grants must never reappear after a later share.
+ * Callers still authorize their current capability before entering this command.
+ */
+export async function shareFrame(
+	input: ShareFrameInput,
+): Promise<ShareFrameOutcome> {
+	const organizationId = input.organizationId;
+	if (!organizationId) {
 		return refusal("frame_not_found", "Frame not found.");
 	}
-
-	const resulting = scope ?? frame.shareScope;
+	const emails = normalizedEmails(input.emails);
 	if (
-		emails.length > 0 &&
-		(resulting === "PRIVATE" || resulting === "PUBLIC")
+		emails.some((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) ||
+		emails.length > 50
 	) {
 		return refusal(
-			"emails_need_an_inviting_scope",
-			`Emails cannot be invited while the frame is ${resulting.toLowerCase()}. Share it with invited emails first.`,
+			"invalid_email",
+			"Provide up to 50 valid email addresses.",
 		);
 	}
-
-	const policy = organizationId
-		? await db.organization.findUnique({
-				where: { id: organizationId },
-				select: {
-					canShareFramesPublicly: true,
-					allowedFrameShareDomains: true,
-				},
-			})
-		: null;
-
-	if (scope === "PUBLIC" && !allowsPublicLinks(organizationId, policy)) {
-		return refusal(
-			"public_sharing_disabled",
-			PUBLIC_SHARING_DISABLED_MESSAGE,
+	return db.$transaction(async (tx) => {
+		const frame = await lockedFrame(tx, input);
+		if (!frame) {
+			return refusal("frame_not_found", "Frame not found.");
+		}
+		const resulting = input.scope ?? frame.shareScope;
+		if (
+			emails.length > 0 &&
+			!["EMAILS_ONLY", "WORKSPACE_AND_EMAILS"].includes(resulting)
+		) {
+			return refusal(
+				"emails_need_an_inviting_scope",
+				`Emails cannot be invited while the frame is ${resulting.toLowerCase()}. Share it with invited emails first.`,
+			);
+		}
+		const policy = await tx.organization.findUnique({
+			where: { id: input.organizationId, deletedAt: null },
+			select: {
+				canShareFramesPublicly: true,
+				allowedFrameShareDomains: true,
+			},
+		});
+		if (
+			input.scope === "PUBLIC" &&
+			!allowsPublicLinks(input.organizationId, policy)
+		) {
+			return refusal(
+				"public_sharing_disabled",
+				PUBLIC_SHARING_DISABLED_MESSAGE,
+			);
+		}
+		if (!policy) {
+			return refusal("frame_not_found", "Frame not found.");
+		}
+		const domains = allowedDomains(policy.allowedFrameShareDomains ?? []);
+		const outside = emails.filter(
+			(email) => domains.size > 0 && !domains.has(domainOf(email)),
 		);
-	}
-
-	const domains = allowedDomains(policy?.allowedFrameShareDomains ?? []);
-	if (emails.length > 0 && domains.size > 0) {
-		const outside = emails.filter((email) => !domains.has(domainOf(email)));
-		if (outside.length > 0) {
+		if (outside.length) {
 			return refusal(
 				"email_domain_not_allowed",
 				`This organization allows invitations only to the domains ${[...domains].join(", ")}.`,
 				outside,
 			);
 		}
-	}
-
-	let shareToken: string | undefined;
-	if (scope !== undefined) {
-		const changed = await updateFrameShareScope({
-			frameId,
-			userId,
-			organizationId,
-			shareScope: scope,
+		const current = emails.length
+			? await tx.frameSharingGrant.findMany({
+					where: { frameId: input.frameId },
+					orderBy: { invitedAt: "desc" },
+				})
+			: [];
+		const existing = new Set(current.map((grant) => grant.email));
+		const invited = emails.filter((email) => !existing.has(email));
+		if (invited.length) {
+			throwIfDispatchStopped();
+			await tx.frameSharingGrant.createMany({
+				data: invited.map((email) => ({
+					frameId: input.frameId,
+					email,
+					invitedBy: input.userId,
+				})),
+				skipDuplicates: true,
+			});
+		}
+		let removed = 0;
+		if (resulting === "PRIVATE" && input.scope !== undefined) {
+			throwIfDispatchStopped();
+			removed = (
+				await tx.frameSharingGrant.deleteMany({
+					where: { frameId: input.frameId },
+				})
+			).count;
+		}
+		const token =
+			resulting === "PUBLIC" ? (frame.shareToken ?? randomUUID()) : null;
+		throwIfDispatchStopped();
+		const updated = await tx.agentWorkspaceFile.update({
+			where: { id: frame.id, updatedAt: frame.updatedAt },
+			data: {
+				shareScope: resulting,
+				isPublic: resulting === "PUBLIC",
+				shareToken: token,
+				updatedAt: nextFrameRevision(frame.updatedAt),
+			},
 		});
-		if (!changed.success) {
-			return refusal("frame_not_found", "Frame not found.");
-		}
-		shareToken = scope === "PUBLIC" ? changed.shareToken : undefined;
-	}
+		await recordAuditTx(tx, {
+			action: "frame.sharing.updated",
+			organizationId,
+			actor: { type: "user", userId: input.userId },
+			resource: { type: "frame", id: frame.id },
+			projectId: frame.projectId,
+			metadata: {
+				previousScope: frame.shareScope,
+				scope: resulting,
+				invitedCount: invited.length,
+				revokedCount: removed,
+				revision: updated.updatedAt.toISOString(),
+			},
+		});
+		const grants = invited.length
+			? await tx.frameSharingGrant.findMany({
+					where: { frameId: input.frameId, email: { in: invited } },
+					orderBy: { invitedAt: "desc" },
+				})
+			: [];
+		return {
+			ok: true,
+			scope: resulting,
+			...(token && input.scope === "PUBLIC" ? { shareToken: token } : {}),
+			invited,
+			grants,
+			updatedAt: updated.updatedAt,
+		};
+	});
+}
 
-	let invited: string[] = [];
-	let grants: SharingGrant[] = [];
-	if (emails.length > 0) {
-		const already = new Set(
-			(await listSharingGrants(frameId)).map((grant) => grant.email),
-		);
-		invited = emails.filter((email) => !already.has(email));
-		if (invited.length > 0) {
-			grants = await createMultipleSharingGrants(
-				frameId,
-				invited,
-				userId,
-			);
-		}
-	}
+export interface RevokeFrameSharingInput {
+	frameId: string;
+	userId: string;
+	organizationId?: string;
+	mode: "public-link" | "invitation" | "all";
+	email?: string;
+	expectedUpdatedAt?: Date;
+}
+export type RevokeFrameSharingOutcome =
+	| {
+			ok: true;
+			scope: FrameShareScope;
+			revokedInvitations: number;
+			updatedAt: Date;
+	  }
+	| { ok: false; reason: ShareFrameRefusal; message: string };
 
-	return {
-		ok: true,
-		scope: resulting,
-		...(shareToken ? { shareToken } : {}),
-		invited,
-		grants,
-	};
+/** Remove exactly the chosen access path. Never silently remove unrelated invitations. */
+export async function revokeFrameSharing(
+	input: RevokeFrameSharingInput,
+): Promise<RevokeFrameSharingOutcome> {
+	const organizationId = input.organizationId;
+	if (!organizationId) {
+		return {
+			ok: false,
+			reason: "frame_not_found",
+			message: "Frame not found.",
+		};
+	}
+	if (!["public-link", "invitation", "all"].includes(input.mode)) {
+		return {
+			ok: false,
+			reason: "invalid_revoke_mode",
+			message: "Choose the access to remove.",
+		};
+	}
+	const email = input.email?.trim().toLowerCase();
+	if (
+		input.mode === "invitation" &&
+		(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+	) {
+		return {
+			ok: false,
+			reason: "invalid_email",
+			message: "Choose a valid invitation to remove.",
+		};
+	}
+	return db.$transaction(async (tx) => {
+		const frame = await lockedFrame(tx, input);
+		if (!frame) {
+			return {
+				ok: false,
+				reason: "frame_not_found",
+				message: "Frame not found.",
+			};
+		}
+		let revokedInvitations = 0;
+		if (input.mode === "all" || input.mode === "invitation") {
+			throwIfDispatchStopped();
+			revokedInvitations = (
+				await tx.frameSharingGrant.deleteMany({
+					where: {
+						frameId: frame.id,
+						...(input.mode === "invitation" ? { email } : {}),
+					},
+				})
+			).count;
+		}
+		const scope =
+			input.mode === "all"
+				? "PRIVATE"
+				: input.mode === "public-link" && frame.shareScope === "PUBLIC"
+					? "EMAILS_ONLY"
+					: frame.shareScope;
+		throwIfDispatchStopped();
+		const updated = await tx.agentWorkspaceFile.update({
+			where: { id: frame.id, updatedAt: frame.updatedAt },
+			data: {
+				...(input.mode !== "invitation"
+					? { shareScope: scope, isPublic: false, shareToken: null }
+					: {}),
+				updatedAt: nextFrameRevision(frame.updatedAt),
+			},
+		});
+		await recordAuditTx(tx, {
+			action: "frame.sharing.revoked",
+			organizationId,
+			actor: { type: "user", userId: input.userId },
+			resource: { type: "frame", id: frame.id },
+			projectId: frame.projectId,
+			metadata: {
+				mode: input.mode,
+				scope,
+				revokedCount: revokedInvitations,
+				revision: updated.updatedAt.toISOString(),
+			},
+		});
+		return {
+			ok: true,
+			scope,
+			revokedInvitations,
+			updatedAt: updated.updatedAt,
+		};
+	});
 }

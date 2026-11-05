@@ -1,3 +1,5 @@
+export { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
+
 import { parseYamlSafe, stringifyYaml } from "@repo/utils/safe-yaml";
 import { z } from "zod";
 
@@ -18,7 +20,7 @@ const requirementSchema = z.strictObject({
 const requirementsSchema = z.array(requirementSchema).max(500);
 
 /** Portable intent only. Connection IDs, credentials and approvals are not grants. */
-const agentDefinitionSchema = z.strictObject({
+const legacyAgentDefinitionSchema = z.strictObject({
 	apiVersion: z.literal("fabric.ai/v1"),
 	kind: z.literal("Agent"),
 	name: z.string().trim().min(1).max(200),
@@ -80,7 +82,210 @@ const agentDefinitionSchema = z.strictObject({
 		),
 	requirements: requirementsSchema,
 });
+const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const exactVersionSchema = z
+	.string()
+	.regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+const portablePathSchema = z
+	.string()
+	.min(1)
+	.max(300)
+	.refine(
+		(path) =>
+			!path.startsWith("/") &&
+			!path.includes("\\") &&
+			path
+				.split("/")
+				.every((part) => !!part && part !== "." && part !== "..") &&
+			/^[a-zA-Z0-9_./-]+$/.test(path),
+		"Use an explicit artifact-relative path without traversal",
+	);
+const artifactSchema = z.strictObject({
+	digest: digestSchema,
+	repository: z.strictObject({
+		url: z
+			.string()
+			.url()
+			.max(1000)
+			.refine((value) => {
+				const url = new URL(value);
+				return (
+					url.protocol === "https:" &&
+					!url.username &&
+					!url.password &&
+					!url.search &&
+					!url.hash
+				);
+			}, "Use an HTTPS repository URL without credentials or query parameters"),
+		revision: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
+	}),
+	packages: z.strictObject({
+		sdk: z.strictObject({
+			name: z.literal("@fabric-harness/sdk"),
+			version: exactVersionSchema,
+			entrypoint: z.literal("strict"),
+		}),
+		node: z.strictObject({
+			name: z.literal("@fabric-harness/node"),
+			version: exactVersionSchema,
+		}),
+		client: z
+			.strictObject({
+				name: z.literal("@fabric-harness/client"),
+				version: exactVersionSchema,
+			})
+			.optional(),
+	}),
+	buildManifestVersion: z.literal(2),
+});
+const schemaReference = z.strictObject({
+	path: portablePathSchema,
+	digest: digestSchema,
+});
+const harnessShape = {
+	artifact: artifactSchema,
+	entrypoint: z.strictObject({
+		module: portablePathSchema,
+		export: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]{0,199}$/),
+		identity: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,199}$/),
+	}),
+	protocol: z.strictObject({
+		// An exact release requirement, not a claim that a runtime was qualified.
+		generation: z
+			.string()
+			.min(1)
+			.max(100)
+			.regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:/-]*$/),
+		interface: z.enum(["finite_job", "persistent_submission", "responses"]),
+	}),
+	schemas: z.strictObject({
+		input: schemaReference,
+		output: schemaReference,
+		initialData: schemaReference.optional(),
+	}),
+};
+export const agentImplementationSchema = z
+	.discriminatedUnion("kind", [
+		z.strictObject({ kind: z.literal("native") }),
+		z.strictObject({ kind: z.literal("harness_finite"), ...harnessShape }),
+		z.strictObject({
+			kind: z.literal("harness_persistent"),
+			...harnessShape,
+		}),
+	])
+	.superRefine((value, context) => {
+		if (value.kind === "native") {
+			return;
+		}
+		if (
+			(value.kind === "harness_finite") !==
+			(value.protocol.interface === "finite_job")
+		) {
+			context.addIssue({
+				code: "custom",
+				path: ["protocol", "interface"],
+				message:
+					"Implementation kind and protocol interface must agree",
+			});
+		}
+		if (value.kind === "harness_finite" && value.schemas.initialData) {
+			context.addIssue({
+				code: "custom",
+				path: ["schemas", "initialData"],
+				message:
+					"Initial instance data belongs to persistent implementations",
+			});
+		}
+	});
+export type AgentImplementation = z.infer<typeof agentImplementationSchema>;
+const logicalBindingsSchema = z
+	.array(
+		z.strictObject({
+			name: z.string().regex(/^[a-z][a-z0-9_-]{0,79}$/),
+			kind: z.enum([
+				"tool",
+				"mcp",
+				"integration",
+				"knowledge",
+				"project",
+				"model",
+				"trigger",
+			]),
+			required: z.boolean(),
+			operations: z
+				.array(z.string().regex(/^[a-z][a-z0-9_.:-]{0,99}$/))
+				.max(100),
+		}),
+	)
+	.max(500)
+	.refine(
+		(bindings) =>
+			new Set(bindings.map((binding) => binding.name)).size ===
+			bindings.length,
+		"Logical binding names must be unique",
+	);
+const currentAgentDefinitionSchema = legacyAgentDefinitionSchema.extend({
+	apiVersion: z.literal("fabric.ai/v2"),
+	implementation: agentImplementationSchema,
+	logicalBindings: logicalBindingsSchema,
+	expectedOutput: z.string().trim().max(4000).optional(),
+});
+const agentDefinitionSchema = z.union([
+	legacyAgentDefinitionSchema,
+	currentAgentDefinitionSchema,
+]);
 export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;
+export type CurrentAgentDefinition = z.infer<
+	typeof currentAgentDefinitionSchema
+>;
+export const PORTABLE_IMPLEMENTATION_KEYS = [
+	"portableImplementation",
+	"portableBindings",
+	"portableDefinitionVersion",
+] as const;
+
+/** Generic configuration commands cannot mint a code release or change its code-owned intent. */
+export function assertAgentDefinitionConfigUpdate(
+	previousCustomInstructions: unknown,
+	input: Record<string, unknown>,
+): void {
+	const next = record(input.customInstructions);
+	if (PORTABLE_IMPLEMENTATION_KEYS.some((key) => Object.hasOwn(next, key))) {
+		throw new Error(
+			"Implementation release metadata can only be changed by importing a reviewed agent definition.",
+		);
+	}
+	const previous = record(previousCustomInstructions);
+	const implementation = previous.portableImplementation;
+	if (
+		implementation === undefined ||
+		(agentImplementationSchema.safeParse(implementation).success &&
+			record(implementation).kind === "native")
+	) {
+		return;
+	}
+	// These are executable source fields. Even an equal-looking generic write cannot
+	// prove it came from the pinned artifact; rebuild/import is the release boundary.
+	const sourceFields = [
+		"customInstructions",
+		"modelOverride",
+		"modelConfig",
+		"executionMode",
+		"goal",
+		"successCriteria",
+		"maxIterations",
+		"toolConnections",
+		"knowledgeConnections",
+		"knowledgeResources",
+		"workspaceIds",
+		"triggers",
+	];
+	if (sourceFields.some((key) => input[key] !== undefined)) {
+		throw new Error(
+			"Code-owned agent configuration is read-only. Rebuild and import a new implementation release to change it.",
+		);
+	}
+}
 export type AgentDefinitionFormat = "json" | "yaml";
 
 export function parseAgentDefinition(document: string): AgentDefinition {
@@ -142,7 +347,7 @@ export interface AgentDefinitionSource {
 /** Allowlist projection: never serialize a Prisma row or arbitrary settings object. */
 export function exportAgentDefinition(
 	source: AgentDefinitionSource,
-): AgentDefinition {
+): CurrentAgentDefinition {
 	const custom = record(source.customInstructions);
 	const policy = record(source.modelConfig ?? source.template.modelConfig);
 	const requirements: AgentDefinition["requirements"] = [];
@@ -203,8 +408,30 @@ export function exportAgentDefinition(
 			instructions[key] = custom[key];
 		}
 	}
-	return agentDefinitionSchema.parse({
-		apiVersion: "fabric.ai/v1",
+	const implementation = agentImplementationSchema.parse(
+		custom.portableImplementation ?? { kind: "native" },
+	);
+	const logicalBindings = logicalBindingsSchema.parse(
+		custom.portableBindings ?? [],
+	);
+	if (
+		typeof custom.projectId === "string" &&
+		custom.projectId &&
+		!logicalBindings.some((binding) => binding.kind === "project")
+	) {
+		// Preserve association intent, never a source organization's project identity or grant.
+		logicalBindings.push({
+			name: "associated-project",
+			kind: "project",
+			required: true,
+			operations: [],
+		});
+	}
+	return currentAgentDefinitionSchema.parse({
+		apiVersion: "fabric.ai/v2",
+		implementation,
+		logicalBindings,
+		expectedOutput: custom.expectedOutput,
 		kind: "Agent",
 		name: source.name,
 		description: source.description ?? "",
@@ -237,5 +464,31 @@ export function exportAgentDefinition(
 			(a, b) =>
 				a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name),
 		),
+	});
+}
+
+/** Explicit legacy export is safe only when every v2-only field is absent. */
+export function exportLegacyAgentDefinition(
+	source: AgentDefinitionSource,
+): AgentDefinition {
+	const definition = exportAgentDefinition(source);
+	if (
+		definition.implementation.kind !== "native" ||
+		definition.logicalBindings.length ||
+		definition.expectedOutput
+	) {
+		throw new Error(
+			"This agent requires fabric.ai/v2. Legacy export would discard implementation or output requirements.",
+		);
+	}
+	const {
+		implementation: _implementation,
+		logicalBindings: _bindings,
+		expectedOutput: _output,
+		...legacy
+	} = definition;
+	return legacyAgentDefinitionSchema.parse({
+		...legacy,
+		apiVersion: "fabric.ai/v1",
 	});
 }

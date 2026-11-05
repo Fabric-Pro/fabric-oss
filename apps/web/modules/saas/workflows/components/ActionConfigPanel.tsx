@@ -35,6 +35,8 @@ import type {
 	ActionWithContext,
 } from "../lib/plugins/types";
 
+import { WorkflowTemplateField } from "./config-fields/WorkflowTemplateField";
+
 // import { TemplateInput } from "./TemplateInput";
 // import { SchemaBuilder } from "./SchemaBuilder";
 
@@ -114,7 +116,7 @@ function ConfigField({
 	value,
 	onChange,
 	allConfig,
-	availableVariables: _availableVariables,
+	availableVariables,
 }: ConfigFieldProps) {
 	// Load available models for ai-model-selector field type
 	// organizationId is auto-injected from context by useAvailableModels
@@ -225,10 +227,11 @@ function ConfigField({
 							<span className="text-destructive ml-1">*</span>
 						)}
 					</Label>
-					<Input
+					<WorkflowTemplateField
+						options={availableVariables}
 						id={field.key}
 						value={stringValue}
-						onChange={(e) => onChange(e.target.value)}
+						onChange={onChange}
 						placeholder={field.placeholder}
 					/>
 					{field.example && (
@@ -248,10 +251,12 @@ function ConfigField({
 							<span className="text-destructive ml-1">*</span>
 						)}
 					</Label>
-					<Textarea
+					<WorkflowTemplateField
+						multiline
+						options={availableVariables}
 						id={field.key}
 						value={stringValue}
-						onChange={(e) => onChange(e.target.value)}
+						onChange={onChange}
 						placeholder={field.placeholder}
 						rows={field.rows || 3}
 					/>

@@ -26,18 +26,25 @@ import { createUserApiKey, db, listUserApiKeys } from "@repo/database";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import {
+	refusedSkillKeyScopes,
+	requiresSkillKeyConsent,
+} from "../../lib/skill-key-consent";
+import {
 	requireApiKey,
 	requireScope,
 } from "../external-api/middleware/api-key-auth";
 import { externalApiRateLimit } from "../external-api/middleware/api-rate-limit";
 import type { ExternalApiVariables } from "../external-api/types";
+import { registerAgentInstanceRoutes } from "./agent-instances";
 import { registerAgentRoutes } from "./agents";
 import { registerChannelRoutes } from "./channels";
 import { registerChatRoutes } from "./chats";
+import { registerContextQualityRoutes } from "./context-quality";
 import { registerContextRoutes } from "./contexts";
 import { registerDocumentRoutes } from "./documents";
 import { registerFeatureRoutes } from "./features";
 import { registerFrameRoutes } from "./frames";
+import { resolveV1Context } from "./helpers";
 import { registerInstructionCheckoutRoutes } from "./instruction-checkouts";
 import { registerInstructionRoutes } from "./instructions";
 import { registerIntegrationRoutes } from "./integrations";
@@ -77,10 +84,15 @@ const CLI_SCOPES = [
 	"reports:read",
 	"reports:write",
 	"skills:read",
+	"skills:write",
+	"skills:publish",
+	"governance:read",
+	"governance:write",
 	"chats:read",
 	"chats:write",
 	"workspaces:read",
 	"agents:read",
+	"agents:schedule", // Explicit permission to manage recurring agent execution
 	"agents:execute",
 	"agents:stream",
 	"mcp:read",
@@ -307,6 +319,35 @@ export function createPublicV1Routes() {
 			return c.json(err("expiresInDays must be between 1 and 365"), 400);
 		}
 
+		if (requiresSkillKeyConsent(requestedScopes)) {
+			const target = await resolveV1Context(ctx, c.req.query("org"));
+			if ("error" in target) {
+				return c.json(err(target.error), target.status);
+			}
+			const membership = target.organizationId
+				? await db.member.findFirst({
+						where: {
+							organizationId: target.organizationId,
+							userId: ctx.userId,
+							organization: { deletedAt: null },
+						},
+						select: { role: true },
+					})
+				: null;
+			const refused = refusedSkillKeyScopes(
+				requestedScopes,
+				membership?.role,
+			);
+			if (refused.length) {
+				return c.json(
+					err(
+						`Your current organization role cannot grant: ${refused.join(", ")}.`,
+					),
+					403,
+				);
+			}
+		}
+
 		// Generate key: fab_<8hex>_<24-byte base64url>
 		const secretBytes = randomBytes(24);
 		const secret = secretBytes.toString("base64url");
@@ -434,6 +475,7 @@ export function createPublicV1Routes() {
 	registerWorkflowRoutes(app);
 	registerPromptRoutes(app);
 	registerAgentRoutes(app);
+	registerAgentInstanceRoutes(app);
 	registerSkillRoutes(app);
 	registerMcpRoutes(app);
 	registerFrameRoutes(app);
@@ -446,6 +488,7 @@ export function createPublicV1Routes() {
 	registerInstructionRoutes(app);
 	registerInstructionCheckoutRoutes(app);
 	registerContextRoutes(app);
+	registerContextQualityRoutes(app);
 	registerMemoryWriteRoutes(app);
 
 	return app;

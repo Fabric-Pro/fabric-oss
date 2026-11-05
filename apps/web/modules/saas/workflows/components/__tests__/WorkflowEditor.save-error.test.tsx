@@ -44,18 +44,21 @@ vi.mock("@tanstack/react-query", () => ({
 		isLoading: false,
 		error: null,
 	}),
-	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+	useQueryClient: () => ({
+		invalidateQueries: vi.fn(),
+		setQueryData: vi.fn(),
+	}),
 	useMutation: (options: {
 		onError?: (error: unknown) => void;
 		onSuccess?: (result: unknown) => void;
 	}) => ({
 		isPending: false,
-		mutate: () => {
+		mutateAsync: async () => {
 			if (mocks.updateError !== undefined) {
 				options.onError?.(mocks.updateError);
-			} else {
-				options.onSuccess?.({});
+				throw mocks.updateError;
 			}
+			options.onSuccess?.({});
 		},
 	}),
 }));
@@ -72,9 +75,14 @@ vi.mock("../WorkflowBuilder", () => ({
 	WorkflowBuilder: ({
 		onSave,
 	}: {
-		onSave: (n: unknown[], e: unknown[]) => void;
+		onSave: (n: unknown[], e: unknown[]) => Promise<void>;
 	}) => (
-		<button type="button" onClick={() => onSave([], [])}>
+		<button
+			type="button"
+			onClick={() => {
+				void onSave([], []).catch(() => {});
+			}}
+		>
 			Save
 		</button>
 	),

@@ -358,6 +358,12 @@ export const ProjectDocumentVisualSpecScalarFieldEnumSchema = z.enum(['id', 'org
 
 export type ProjectDocumentVisualSpecScalarFieldEnum = z.infer<typeof ProjectDocumentVisualSpecScalarFieldEnumSchema>;
 
+// File: ProjectWorkspaceDocumentLinkScalarFieldEnum.schema.ts
+
+export const ProjectWorkspaceDocumentLinkScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'documentId', 'addedByUserId', 'sourceRevisionAtLink', 'createdAt', 'updatedAt'])
+
+export type ProjectWorkspaceDocumentLinkScalarFieldEnum = z.infer<typeof ProjectWorkspaceDocumentLinkScalarFieldEnumSchema>;
+
 // File: ProjectContextScalarFieldEnum.schema.ts
 
 export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'metadataUpdatedAt', 'metadataUpdatedByUserId', 'sourcePath', 'contentHash', 'sourceBlobOid', 'contentUpdatedAt', 'contentUpdatedByUserId', 'repositorySyncId', 'contextEnrichmentRetryAt', 'indexingExcluded', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
@@ -1434,7 +1440,7 @@ export type PromptScalarFieldEnum = z.infer<typeof PromptScalarFieldEnumSchema>;
 
 // File: PromptVersionScalarFieldEnum.schema.ts
 
-export const PromptVersionScalarFieldEnumSchema = z.enum(['id', 'promptId', 'version', 'content', 'variables', 'changeNote', 'createdBy', 'createdAt', 'userId', 'organizationId', 'scope'])
+export const PromptVersionScalarFieldEnumSchema = z.enum(['id', 'promptId', 'version', 'content', 'variables', 'responseContract', 'changeNote', 'createdBy', 'createdAt', 'userId', 'organizationId', 'scope'])
 
 export type PromptVersionScalarFieldEnum = z.infer<typeof PromptVersionScalarFieldEnumSchema>;
 
@@ -1623,6 +1629,24 @@ export type WorkflowIntegrationScalarFieldEnum = z.infer<typeof WorkflowIntegrat
 export const ProjectDatabricksKnowledgeBindingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'integrationId', 'allowedResources', 'isEnabled', 'createdAt', 'updatedAt', 'createdBy'])
 
 export type ProjectDatabricksKnowledgeBindingScalarFieldEnum = z.infer<typeof ProjectDatabricksKnowledgeBindingScalarFieldEnumSchema>;
+
+// File: ProjectContextQualityPrincipalScalarFieldEnum.schema.ts
+
+export const ProjectContextQualityPrincipalScalarFieldEnumSchema = z.enum(['fingerprint', 'organizationId', 'createdAt'])
+
+export type ProjectContextQualityPrincipalScalarFieldEnum = z.infer<typeof ProjectContextQualityPrincipalScalarFieldEnumSchema>;
+
+// File: ProjectContextQualityBindingScalarFieldEnum.schema.ts
+
+export const ProjectContextQualityBindingScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'integrationId', 'workspaceOrigin', 'jobId', 'experimentId', 'volumeRoot', 'notebookPath', 'notebookSha256', 'principalFingerprint', 'configHash', 'configVersion', 'isEnabled', 'exportApprovedAt', 'exportApprovedBy', 'createdBy', 'updatedBy', 'createdAt', 'updatedAt'])
+
+export type ProjectContextQualityBindingScalarFieldEnum = z.infer<typeof ProjectContextQualityBindingScalarFieldEnumSchema>;
+
+// File: ProjectContextQualityRunScalarFieldEnum.schema.ts
+
+export const ProjectContextQualityRunScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'bindingId', 'requestedBy', 'name', 'idempotencyKey', 'requestHash', 'sourceRefsJson', 'snapshotPayload', 'payloadHash', 'snapshotHash', 'scorerVersion', 'bindingConfigJson', 'bindingConfigHash', 'localResultJson', 'status', 'stateVersion', 'workflowId', 'dispatchToken', 'remoteRunId', 'remoteMlflowRunId', 'remoteLookupPageToken', 'remoteState', 'providerReceiptJson', 'resultJson', 'errorCode', 'remoteInputPath', 'cleanupStatus', 'cleanupErrorCode', 'cancelRequestedAt', 'startedAt', 'completedAt', 'deadlineAt', 'snapshotExpiresAt', 'snapshotPurgedAt', 'createdAt', 'updatedAt'])
+
+export type ProjectContextQualityRunScalarFieldEnum = z.infer<typeof ProjectContextQualityRunScalarFieldEnumSchema>;
 
 // File: WorkflowApiKeyScalarFieldEnum.schema.ts
 
@@ -2004,7 +2028,7 @@ export type AgentMemoryEditScalarFieldEnum = z.infer<typeof AgentMemoryEditScala
 
 // File: SkillScalarFieldEnum.schema.ts
 
-export const SkillScalarFieldEnumSchema = z.enum(['id', 'slug', 'name', 'description', 'content', 'category', 'tags', 'scope', 'userId', 'organizationId', 'version', 'isPublished', 'useCount', 'createdAt', 'updatedAt'])
+export const SkillScalarFieldEnumSchema = z.enum(['id', 'slug', 'name', 'description', 'content', 'category', 'tags', 'scope', 'userId', 'organizationId', 'version', 'isPublished', 'isDiscoverable', 'archivedAt', 'importProvenance', 'useCount', 'createdAt', 'updatedAt'])
 
 export type SkillScalarFieldEnum = z.infer<typeof SkillScalarFieldEnumSchema>;
 
@@ -2331,6 +2355,18 @@ export type FeatureFlagOverrideScalarFieldEnum = z.infer<typeof FeatureFlagOverr
 export const OrganizationFeatureFlagOverrideScalarFieldEnumSchema = z.enum(['key', 'organizationId', 'enabled', 'updatedAt', 'updatedBy'])
 
 export type OrganizationFeatureFlagOverrideScalarFieldEnum = z.infer<typeof OrganizationFeatureFlagOverrideScalarFieldEnumSchema>;
+
+// File: AgentTestCaseScalarFieldEnum.schema.ts
+
+export const AgentTestCaseScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'agentSId', 'originInstanceId', 'name', 'input', 'checksJson', 'sourceScopeJson', 'revision', 'archivedAt', 'createdAt', 'updatedAt'])
+
+export type AgentTestCaseScalarFieldEnum = z.infer<typeof AgentTestCaseScalarFieldEnumSchema>;
+
+// File: AgentTestRunScalarFieldEnum.schema.ts
+
+export const AgentTestRunScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'caseId', 'instanceId', 'agentSId', 'agentVersion', 'caseRevision', 'caseInput', 'checksJson', 'sourceScopeJson', 'requestKey', 'requestHash', 'status', 'verdict', 'executionId', 'nativeWorkflowId', 'nativeRunId', 'evaluationWorkflowId', 'evaluationRunId', 'reportJson', 'errorCode', 'createdAt', 'completedAt', 'updatedAt'])
+
+export type AgentTestRunScalarFieldEnum = z.infer<typeof AgentTestRunScalarFieldEnumSchema>;
 
 // File: SortOrder.schema.ts
 
@@ -3516,7 +3552,7 @@ export type WorkflowNodeStatus = z.infer<typeof WorkflowNodeStatusSchema>;
 
 // File: WorkflowIntegrationProvider.schema.ts
 
-export const WorkflowIntegrationProviderSchema = z.enum(['AI_GATEWAY', 'ASANA', 'ATTIO', 'BITBUCKET', 'BLOB', 'CANVA', 'CLERK', 'CLICKUP', 'CONFLUENCE', 'CUSTOM_WEBHOOK', 'DATABASE', 'DATABRICKS_VECTOR_SEARCH', 'FAL', 'FIRECRAWL', 'FRESHSERVICE', 'FRONT', 'GITHUB', 'GITLAB', 'GMAIL', 'GOOGLE_DRIVE', 'HUBSPOT', 'INTERCOM', 'JIRA', 'LINEAR', 'MCP', 'MICROSOFT_GRAPH', 'NHTSA_VPIC', 'NOTION', 'PERPLEXITY', 'RESEND', 'SALESFORCE', 'SLACK', 'STRIPE', 'SUPERAGENT', 'TELEGRAM', 'WEBFLOW', 'ZENDESK'])
+export const WorkflowIntegrationProviderSchema = z.enum(['AI_GATEWAY', 'ASANA', 'ATTIO', 'BITBUCKET', 'BLOB', 'CANVA', 'CLERK', 'CLICKUP', 'CONFLUENCE', 'CUSTOM_WEBHOOK', 'DATABASE', 'DATABRICKS_PLATFORM', 'DATABRICKS_SQL', 'DATABRICKS_VECTOR_SEARCH', 'FAL', 'FIRECRAWL', 'FRESHSERVICE', 'FRONT', 'GITHUB', 'GITLAB', 'GMAIL', 'GOOGLE_DRIVE', 'HUBSPOT', 'INTERCOM', 'JIRA', 'LINEAR', 'MCP', 'MICROSOFT_GRAPH', 'NHTSA_VPIC', 'NOTION', 'PERPLEXITY', 'RESEND', 'SALESFORCE', 'SLACK', 'STRIPE', 'SUPERAGENT', 'TELEGRAM', 'WEBFLOW', 'ZENDESK'])
 
 export type WorkflowIntegrationProvider = z.infer<typeof WorkflowIntegrationProviderSchema>;
 
@@ -5471,6 +5507,22 @@ export const ProjectDocumentVisualSpecSchema = z.object({
 });
 
 export type ProjectDocumentVisualSpecType = z.infer<typeof ProjectDocumentVisualSpecSchema>;
+
+
+// File: ProjectWorkspaceDocumentLink.schema.ts
+
+export const ProjectWorkspaceDocumentLinkSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  documentId: z.string(),
+  addedByUserId: z.string(),
+  sourceRevisionAtLink: z.string(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectWorkspaceDocumentLinkType = z.infer<typeof ProjectWorkspaceDocumentLinkSchema>;
 
 
 // File: ProjectContext.schema.ts
@@ -9819,6 +9871,7 @@ export const PromptVersionSchema = z.object({
   version: z.number().int(),
   content: z.string(),
   variables: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  responseContract: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   changeNote: z.string().nullish(),
   createdBy: z.string(),
   createdAt: z.date(),
@@ -10462,6 +10515,91 @@ export const ProjectDatabricksKnowledgeBindingSchema = z.object({
 });
 
 export type ProjectDatabricksKnowledgeBindingType = z.infer<typeof ProjectDatabricksKnowledgeBindingSchema>;
+
+
+// File: ProjectContextQualityPrincipal.schema.ts
+
+export const ProjectContextQualityPrincipalSchema = z.object({
+  fingerprint: z.string(),
+  organizationId: z.string(),
+  createdAt: z.date(),
+});
+
+export type ProjectContextQualityPrincipalType = z.infer<typeof ProjectContextQualityPrincipalSchema>;
+
+
+// File: ProjectContextQualityBinding.schema.ts
+
+export const ProjectContextQualityBindingSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  integrationId: z.string(),
+  workspaceOrigin: z.string(),
+  jobId: z.string(),
+  experimentId: z.string(),
+  volumeRoot: z.string(),
+  notebookPath: z.string(),
+  notebookSha256: z.string(),
+  principalFingerprint: z.string(),
+  configHash: z.string(),
+  configVersion: z.number().int().default(1),
+  isEnabled: z.boolean(),
+  exportApprovedAt: z.date().nullish(),
+  exportApprovedBy: z.string().nullish(),
+  createdBy: z.string(),
+  updatedBy: z.string(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectContextQualityBindingType = z.infer<typeof ProjectContextQualityBindingSchema>;
+
+
+// File: ProjectContextQualityRun.schema.ts
+
+export const ProjectContextQualityRunSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  bindingId: z.string(),
+  requestedBy: z.string(),
+  name: z.string(),
+  idempotencyKey: z.string(),
+  requestHash: z.string(),
+  sourceRefsJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  snapshotPayload: z.string().nullish(),
+  payloadHash: z.string(),
+  snapshotHash: z.string(),
+  scorerVersion: z.string(),
+  bindingConfigJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  bindingConfigHash: z.string(),
+  localResultJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  status: z.string().default("QUEUED"),
+  stateVersion: z.number().int(),
+  workflowId: z.string(),
+  dispatchToken: z.string(),
+  remoteRunId: z.string().nullish(),
+  remoteMlflowRunId: z.string().nullish(),
+  remoteLookupPageToken: z.string().nullish(),
+  remoteState: z.string().nullish(),
+  providerReceiptJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  resultJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  errorCode: z.string().nullish(),
+  remoteInputPath: z.string().nullish(),
+  cleanupStatus: z.string().default("NOT_REQUIRED"),
+  cleanupErrorCode: z.string().nullish(),
+  cancelRequestedAt: z.date().nullish(),
+  startedAt: z.date().nullish(),
+  completedAt: z.date().nullish(),
+  deadlineAt: z.date(),
+  snapshotExpiresAt: z.date(),
+  snapshotPurgedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectContextQualityRunType = z.infer<typeof ProjectContextQualityRunSchema>;
 
 
 // File: WorkflowApiKey.schema.ts
@@ -11912,6 +12050,9 @@ export const SkillSchema = z.object({
   organizationId: z.string().nullish(),
   version: z.number().int().default(1),
   isPublished: z.boolean().default(true),
+  isDiscoverable: z.boolean(),
+  archivedAt: z.date().nullish(),
+  importProvenance: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   useCount: z.number().int(),
   createdAt: z.date(),
   updatedAt: z.date(),
@@ -13221,4 +13362,58 @@ export const OrganizationFeatureFlagOverrideSchema = z.object({
 });
 
 export type OrganizationFeatureFlagOverrideType = z.infer<typeof OrganizationFeatureFlagOverrideSchema>;
+
+
+// File: AgentTestCase.schema.ts
+
+export const AgentTestCaseSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  agentSId: z.string(),
+  originInstanceId: z.string(),
+  name: z.string(),
+  input: z.string(),
+  checksJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  sourceScopeJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  revision: z.number().int().default(1),
+  archivedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type AgentTestCaseType = z.infer<typeof AgentTestCaseSchema>;
+
+
+// File: AgentTestRun.schema.ts
+
+export const AgentTestRunSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  caseId: z.string(),
+  instanceId: z.string(),
+  agentSId: z.string(),
+  agentVersion: z.number().int(),
+  caseRevision: z.number().int(),
+  caseInput: z.string(),
+  checksJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  sourceScopeJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  requestKey: z.string(),
+  requestHash: z.string(),
+  status: z.string().default("ADMITTING"),
+  verdict: z.string().nullish(),
+  executionId: z.string().nullish(),
+  nativeWorkflowId: z.string().nullish(),
+  nativeRunId: z.string().nullish(),
+  evaluationWorkflowId: z.string(),
+  evaluationRunId: z.string().nullish(),
+  reportJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  errorCode: z.string().nullish(),
+  createdAt: z.date(),
+  completedAt: z.date().nullish(),
+  updatedAt: z.date(),
+});
+
+export type AgentTestRunType = z.infer<typeof AgentTestRunSchema>;
 

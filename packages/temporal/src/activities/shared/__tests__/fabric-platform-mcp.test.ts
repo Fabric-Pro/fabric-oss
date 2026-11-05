@@ -879,3 +879,60 @@ describe("a grant that has run out", () => {
 		});
 	});
 });
+
+describe("Direct confirmation is unavailable without a durable action receipt", () => {
+	async function direct() {
+		const platform = await loadFabricPlatformTools(ACTOR, {
+			confirmationMode: "unavailable",
+		});
+		if (!platform) throw new Error("Expected tools");
+		return platform;
+	}
+	it("keeps read-only tool calls available", async () => {
+		const platform = await direct();
+		const read = platform.tools.fabric_get_workflow as ExecutableTool;
+		await expect(
+			read.execute({ workflowId: "example-workflow" }),
+		).resolves.toEqual({ ok: true });
+		expect(mocks.callTool).toHaveBeenCalledWith(
+			expect.objectContaining({ name: "fabric_get_workflow" }),
+		);
+	});
+	it("returns actionable unavailability instead of an approval card or real mutation", async () => {
+		mocks.callTool.mockResolvedValue(ok({ draft: { kind: "workflow" } }));
+		const platform = await direct();
+		const create = platform.tools.fabric_create_workflow as ExecutableTool;
+		await expect(
+			create.execute({ preset: { name: "Example report" } }),
+		).resolves.toMatchObject({
+			code: "DIRECT_APPROVAL_UNSUPPORTED",
+			requiresConfirmation: false,
+			error: expect.stringContaining("Advisor Simple (Orchestrator)"),
+		});
+		for (const [call] of mocks.callTool.mock.calls)
+			expect(call).toMatchObject({ arguments: { dryRun: true } });
+	});
+	it("never accepts runApproved on the unavailable surface", async () => {
+		const platform = await direct();
+		await expect(
+			platform.runApproved("fabric_create_workflow", {
+				preset: { name: "Example report" },
+			}),
+		).resolves.toMatchObject({ code: "DIRECT_APPROVAL_UNSUPPORTED" });
+		expect(mocks.callTool).not.toHaveBeenCalled();
+	});
+	it("preserves the trusted in-process authorization path used by Orchestrator", async () => {
+		const platform = await direct();
+		await expect(
+			platform.callAuthorized("fabric_execute_workflow", {
+				workflowId: "example-workflow",
+			}),
+		).resolves.toEqual({ ok: true });
+		expect(mocks.callTool).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: "fabric_execute_workflow",
+				arguments: { workflowId: "example-workflow" },
+			}),
+		);
+	});
+});

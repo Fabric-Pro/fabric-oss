@@ -137,6 +137,15 @@ export interface FetchResult {
 		operation: string;
 		fetchedAt: string;
 		latestTimestamp?: string;
+		provenance?: Array<{
+			id: string;
+			kind: string;
+			title?: string;
+			revision: string;
+			updatedAt: string;
+			excerptHash: string;
+			citation: string;
+		}>;
 	};
 	error?: string;
 }

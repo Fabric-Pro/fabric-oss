@@ -2,9 +2,7 @@
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { Spinner } from "@shared/components/Spinner";
-import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
-import { Card } from "@ui/components/card";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -13,11 +11,14 @@ import {
 	DropdownMenuTrigger,
 } from "@ui/components/dropdown-menu";
 import {
-	Tooltip,
-	TooltipContent,
-	TooltipProvider,
-	TooltipTrigger,
-} from "@ui/components/tooltip";
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@ui/components/table";
+import { TooltipProvider } from "@ui/components/tooltip";
 import { formatDistanceToNow } from "date-fns";
 import {
 	CopyIcon,
@@ -35,7 +36,6 @@ import { PromptDefaultBadge } from "./PromptDefaultBadge";
 import { PromptFormatBadge } from "./PromptFormatBadge";
 import { PromptPreviewSheet } from "./PromptPreviewSheet";
 import { PromptScopeBadge } from "./PromptScopeBadge";
-import { PromptTag } from "./PromptTag";
 import { SetAsDefaultDialog } from "./SetAsDefaultDialog";
 
 type Prompt = {
@@ -81,14 +81,35 @@ type Props = {
 export function PromptsListView({ prompts, onUpdate }: Props) {
 	return (
 		<TooltipProvider>
-			<div className="space-y-3">
-				{prompts.map((prompt) => (
-					<PromptListItem
-						key={prompt.id}
-						prompt={prompt}
-						onUpdate={onUpdate}
-					/>
-				))}
+			<div className="overflow-hidden rounded-md border border-border">
+				<Table aria-label="Prompts" className="table-fixed">
+					<TableHeader>
+						<TableRow>
+							<TableHead>Name & purpose</TableHead>
+							<TableHead className="hidden w-36 md:table-cell">
+								Access
+							</TableHead>
+							<TableHead className="hidden w-32 lg:table-cell">
+								Format
+							</TableHead>
+							<TableHead className="hidden w-40 md:table-cell">
+								Updated
+							</TableHead>
+							<TableHead className="w-14">
+								<span className="sr-only">Actions</span>
+							</TableHead>
+						</TableRow>
+					</TableHeader>
+					<TableBody>
+						{prompts.map((prompt) => (
+							<PromptListItem
+								key={prompt.id}
+								prompt={prompt}
+								onUpdate={onUpdate}
+							/>
+						))}
+					</TableBody>
+				</Table>
 			</div>
 		</TooltipProvider>
 	);
@@ -102,7 +123,7 @@ function PromptListItem({
 	onUpdate: () => void;
 }) {
 	const router = useRouter();
-	const { basePath: orgBasePath } = useOrganizationContext();
+	const { basePath: orgBasePath, userRole } = useOrganizationContext();
 	const [setDefaultOpen, setSetDefaultOpen] = useState(false);
 	const [previewOpen, setPreviewOpen] = useState(false);
 
@@ -113,7 +134,11 @@ function PromptListItem({
 	// the delete predicate would quietly turn Edit on for SYSTEM prompts, which
 	// R3 forbids. Delete gets its own answer, from the shared hook every
 	// listing surface asks (Fizzy #2328).
-	const isEditable = prompt.scope !== "SYSTEM";
+	const isEditable =
+		prompt.scope !== "SYSTEM" &&
+		(prompt.scope !== "ORG" ||
+			userRole === "owner" ||
+			userRole === "admin");
 	const latestVersionId = prompt.versions?.[0]?.id;
 
 	const deletion = usePromptDeletion({ prompt, onDeleted: onUpdate });
@@ -123,194 +148,141 @@ function PromptListItem({
 	};
 
 	return (
-		<Card
-			className="hover:shadow-md transition-all group cursor-pointer"
-			onClick={() => router.push(`${basePath}/${prompt.id}`)}
-		>
-			<div className="w-full p-4">
-				<div className="flex items-start justify-between gap-4">
-					<div className="flex-1 min-w-0">
-						<div className="mb-2 space-y-1.5">
-							<Tooltip delayDuration={500}>
-								<TooltipTrigger asChild>
-									<span className="inline-block">
-										<h3 className="font-semibold text-lg leading-snug line-clamp-2">
-											{prompt.name}
-										</h3>
-									</span>
-								</TooltipTrigger>
-								<TooltipContent>
-									<p>{prompt.name}</p>
-								</TooltipContent>
-							</Tooltip>
-							<div className="flex flex-wrap items-center gap-2">
-								<PromptDefaultBadge
-									isDefault={prompt.isDefault}
-									isBound={prompt.isBound}
-									defaultScope={prompt.defaultScope}
-									className="text-xs"
-								/>
-								<PromptScopeBadge scope={prompt.scope} />
-								<PromptFormatBadge format={prompt.format} />
-								{prompt.isPublic && (
-									<Badge variant="outline">
-										<EyeIcon className="mr-1 size-3" />
-										Public
-									</Badge>
-								)}
-							</div>
-						</div>
-
-						{/* Description */}
-						{prompt.description && (
-							<p className="text-sm text-muted-foreground line-clamp-1 mb-2">
-								{prompt.description}
-							</p>
-						)}
-
-						<div className="flex items-center gap-6 text-sm text-muted-foreground flex-wrap">
-							{/* Category */}
-							{prompt.category && (
-								<div className="flex items-center gap-2">
-									<Badge variant="secondary">
-										{prompt.category}
-									</Badge>
-								</div>
-							)}
-
-							{/* Tags */}
-							{prompt.tags && prompt.tags.length > 0 && (
-								<div className="flex items-center gap-2 flex-wrap">
-									{prompt.tags.slice(0, 3).map((tag) => (
-										<PromptTag key={tag}>{tag}</PromptTag>
-									))}
-									{prompt.tags.length > 3 && (
-										<Badge
-											variant="outline"
-											className="text-xs"
-										>
-											+{prompt.tags.length - 3}
-										</Badge>
-									)}
-								</div>
-							)}
-
-							{/* Stats */}
-							<div className="text-xs text-muted-foreground">
-								Used {prompt.usageCount} times
-							</div>
-
-							<div className="text-xs text-muted-foreground">
-								Updated{" "}
-								{formatDistanceToNow(
-									new Date(prompt.updatedAt),
-								)}{" "}
-								ago
-							</div>
-						</div>
-					</div>
-
-					<div className="flex items-center gap-2">
-						<DropdownMenu>
-							{/* Stays visible while it is busy: the menu has
+		<>
+			<TableRow className="group">
+				<TableCell className="py-4">
+					<button
+						type="button"
+						onClick={() => setPreviewOpen(true)}
+						className="max-w-full rounded text-left text-sm font-semibold leading-6 hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+					>
+						<span className="line-clamp-2 break-words">
+							{prompt.name}
+						</span>
+					</button>
+					{prompt.description && (
+						<p className="mt-1 line-clamp-2 break-words text-sm leading-6 text-muted-foreground">
+							{prompt.description}
+						</p>
+					)}
+					<PromptDefaultBadge
+						isDefault={prompt.isDefault}
+						isBound={prompt.isBound}
+						defaultScope={prompt.defaultScope}
+						className="mt-1 text-xs"
+					/>
+				</TableCell>
+				<TableCell className="hidden md:table-cell">
+					<PromptScopeBadge scope={prompt.scope} />
+				</TableCell>
+				<TableCell className="hidden lg:table-cell">
+					<PromptFormatBadge format={prompt.format} />
+				</TableCell>
+				<TableCell className="hidden text-xs text-muted-foreground md:table-cell">
+					{formatDistanceToNow(new Date(prompt.updatedAt), {
+						addSuffix: true,
+					})}
+				</TableCell>
+				<TableCell>
+					<DropdownMenu>
+						{/* Stays visible while it is busy: the menu has
 							    already closed, so a trigger that faded out
 							    would leave the wait with no on-screen home. */}
-							<DropdownMenuTrigger
-								asChild
-								onClick={(e) => e.stopPropagation()}
+						<DropdownMenuTrigger
+							asChild
+							onClick={(e) => e.stopPropagation()}
+						>
+							<Button
+								variant="ghost"
+								size="sm"
+								{...deletion.triggerProps}
+								className={`transition-opacity focus:opacity-100 ${
+									deletion.isPreparing
+										? "opacity-100"
+										: "opacity-100"
+								}`}
 							>
-								<Button
-									variant="ghost"
-									size="sm"
-									{...deletion.triggerProps}
-									className={`transition-opacity focus:opacity-100 ${
-										deletion.isPreparing
-											? "opacity-100"
-											: "md:opacity-0 md:group-hover:opacity-100"
-									}`}
-								>
-									{deletion.isPreparing ? (
-										<Spinner className="motion-reduce:animate-none" />
-									) : (
-										<MoreVerticalIcon className="h-4 w-4" />
-									)}
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end">
-								<DropdownMenuItem
-									onClick={(e) => {
-										e.stopPropagation();
-										setPreviewOpen(true);
-									}}
-								>
-									<EyeIcon className="mr-2 h-4 w-4" />
-									Preview
-								</DropdownMenuItem>
-								{isEditable && (
-									<DropdownMenuItem
-										onClick={(e) => {
-											e.stopPropagation();
-											router.push(
-												`${basePath}/${prompt.id}`,
-											);
-										}}
-									>
-										<EditIcon className="mr-2 h-4 w-4" />
-										Edit
-									</DropdownMenuItem>
+								{deletion.isPreparing ? (
+									<Spinner className="motion-reduce:animate-none" />
+								) : (
+									<MoreVerticalIcon className="h-4 w-4" />
 								)}
-								<DropdownMenuItem
-									onClick={(e) => {
-										e.stopPropagation();
-										handleDuplicate();
-									}}
-								>
-									<CopyIcon className="mr-2 h-4 w-4" />
-									Duplicate
-								</DropdownMenuItem>
-								{latestVersionId && (
-									<DropdownMenuItem
-										onClick={(e) => {
-											e.stopPropagation();
-											setSetDefaultOpen(true);
-										}}
-									>
-										<Link2Icon className="mr-2 h-4 w-4" />
-										Set as Default
-									</DropdownMenuItem>
-								)}
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="end">
+							<DropdownMenuItem
+								onClick={(e) => {
+									e.stopPropagation();
+									setPreviewOpen(true);
+								}}
+							>
+								<EyeIcon className="mr-2 h-4 w-4" />
+								Preview
+							</DropdownMenuItem>
+							{isEditable && (
 								<DropdownMenuItem
 									onClick={(e) => {
 										e.stopPropagation();
 										router.push(
-											`${basePath}/catalog?prompt=${prompt.id}`,
+											`${basePath}/${prompt.id}?edit=1&returnTo=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`,
 										);
 									}}
 								>
-									<LibraryIcon className="mr-2 h-4 w-4" />
-									View in Catalog
+									<EditIcon className="mr-2 h-4 w-4" />
+									Edit
 								</DropdownMenuItem>
-								{deletion.canDelete && (
-									<>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem
-											onClick={(e) => {
-												e.stopPropagation();
-												deletion.requestDelete();
-											}}
-											className="text-destructive"
-										>
-											<TrashIcon className="mr-2 h-4 w-4" />
-											Delete
-										</DropdownMenuItem>
-									</>
-								)}
-							</DropdownMenuContent>
-						</DropdownMenu>
-						{deletion.announcement}
-					</div>
-				</div>
-			</div>
+							)}
+							<DropdownMenuItem
+								onClick={(e) => {
+									e.stopPropagation();
+									handleDuplicate();
+								}}
+							>
+								<CopyIcon className="mr-2 h-4 w-4" />
+								Duplicate
+							</DropdownMenuItem>
+							{latestVersionId && (
+								<DropdownMenuItem
+									onClick={(e) => {
+										e.stopPropagation();
+										setSetDefaultOpen(true);
+									}}
+								>
+									<Link2Icon className="mr-2 h-4 w-4" />
+									Set as Default
+								</DropdownMenuItem>
+							)}
+							<DropdownMenuItem
+								onClick={(e) => {
+									e.stopPropagation();
+									router.push(
+										`${basePath}/catalog?prompt=${prompt.id}`,
+									);
+								}}
+							>
+								<LibraryIcon className="mr-2 h-4 w-4" />
+								View in Catalog
+							</DropdownMenuItem>
+							{deletion.canDelete && (
+								<>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem
+										onClick={(e) => {
+											e.stopPropagation();
+											deletion.requestDelete();
+										}}
+										className="text-destructive"
+									>
+										<TrashIcon className="mr-2 h-4 w-4" />
+										Delete
+									</DropdownMenuItem>
+								</>
+							)}
+						</DropdownMenuContent>
+					</DropdownMenu>
+					{deletion.announcement}
+				</TableCell>
+			</TableRow>
 
 			{/* Set as Default Dialog */}
 			{latestVersionId && (
@@ -328,9 +300,10 @@ function PromptListItem({
 			<PromptPreviewSheet
 				open={previewOpen}
 				onOpenChange={setPreviewOpen}
+				fullPageEdit
 				promptId={prompt.id}
 				onPromptUpdated={onUpdate}
 			/>
-		</Card>
+		</>
 	);
 }

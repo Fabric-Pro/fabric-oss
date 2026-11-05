@@ -47,6 +47,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const sidekickStreamSchema = z.object({
+	organizationId: z.string().min(1).max(200).optional(),
 	agentId: z.string().min(1).max(200),
 	// Discriminates server-side authz: "registered" looks up RegisteredAgent;
 	// "instance" looks up AgentTemplateInstance; "new" skips lookup entirely.
@@ -122,6 +123,7 @@ export async function POST(request: NextRequest) {
 		const {
 			agentId,
 			entityType,
+			organizationId: requestedOrganizationId,
 			formSnapshot,
 			messages: clientMessages,
 		} = parseResult.data;
@@ -132,7 +134,8 @@ export async function POST(request: NextRequest) {
 		// run model/tool resolution against that tenant, not the session's.
 		const sessionOrganizationId =
 			session.session?.activeOrganizationId ?? undefined;
-		let effectiveOrganizationId: string | undefined = sessionOrganizationId;
+		let effectiveOrganizationId: string | undefined =
+			requestedOrganizationId ?? sessionOrganizationId;
 
 		// Verify the user has access to the target entity before streaming.
 		// Branches by entityType so Sidekick can assist both RegisteredAgent
@@ -243,6 +246,43 @@ export async function POST(request: NextRequest) {
 				}
 				effectiveOrganizationId = instance.organizationId;
 			}
+		}
+
+		// New builders have no entity row to establish tenancy. Saved builders must
+		// also agree with the explicitly selected organization, never silently bill
+		// or discover connections in a different tenant.
+		if (
+			!effectiveOrganizationId ||
+			(requestedOrganizationId !== undefined &&
+				requestedOrganizationId !== effectiveOrganizationId)
+		) {
+			return Response.json(
+				{ error: "Agent not found or access denied" },
+				{ status: 404 },
+			);
+		}
+		try {
+			await authorizeInputOrganization(
+				entityType === "registered" && !isNewAgent
+					? Permissions.AGENT_UPDATE
+					: Permissions.AGENT_TEMPLATE_MANAGE,
+				effectiveOrganizationId,
+				{
+					user: { id: userId },
+					session: {
+						activeOrganizationId: sessionOrganizationId ?? null,
+					},
+				},
+				{ requireOrganization: true },
+			);
+		} catch (error) {
+			if (
+				!(error instanceof ORPCError) ||
+				!["FORBIDDEN", "UNAUTHORIZED"].includes(error.code)
+			) {
+				throw error;
+			}
+			return Response.json({ error: "Forbidden" }, { status: 403 });
 		}
 
 		// Convert client UIMessages to model messages (preserves tool call structure)

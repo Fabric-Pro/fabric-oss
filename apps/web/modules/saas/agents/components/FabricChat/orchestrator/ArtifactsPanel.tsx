@@ -60,7 +60,9 @@ import {
 	X,
 	Zap,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Response } from "../../../../../../components/ai-elements/response";
 
 // =============================================================================
 // Types
@@ -223,6 +225,7 @@ function DocumentItem({
 	document: DocumentArtifact;
 	onView: () => void;
 }) {
+	const t = useTranslations("genieExperience");
 	const [isExpanded, setIsExpanded] = useState(false);
 	const [showRaw, setShowRaw] = useState(false);
 
@@ -281,6 +284,9 @@ function DocumentItem({
 											size="sm"
 											className="size-7 p-0"
 											onClick={onView}
+											aria-label={t("viewDocument", {
+												title: document.title,
+											})}
 										>
 											<ExternalLink className="size-3.5" />
 										</Button>
@@ -297,6 +303,9 @@ function DocumentItem({
 											variant="ghost"
 											size="sm"
 											className="size-7 p-0"
+											aria-label={t("copyDocument", {
+												title: document.title,
+											})}
 											onClick={() =>
 												navigator.clipboard.writeText(
 													document.content,
@@ -318,6 +327,9 @@ function DocumentItem({
 											variant="ghost"
 											size="sm"
 											className="size-7 p-0"
+											aria-label={t("downloadDocument", {
+												title: document.title,
+											})}
 											onClick={() =>
 												downloadDocument(document)
 											}
@@ -416,12 +428,14 @@ function DocumentItem({
 							<pre className="text-xs font-mono bg-muted p-2 rounded overflow-x-auto">
 								<code>{document.content}</code>
 							</pre>
+						) : document.type === "markdown" ? (
+							<Response normalizeMarkdown={false}>
+								{document.content}
+							</Response>
 						) : (
-							<div className="prose prose-sm dark:prose-invert max-w-none text-xs">
-								<div className="whitespace-pre-wrap">
-									{document.content}
-								</div>
-							</div>
+							<pre className="whitespace-pre-wrap break-words text-sm">
+								{document.content}
+							</pre>
 						)}
 					</div>
 				</div>
@@ -607,9 +621,38 @@ export function ArtifactsPanel({
 	className,
 	defaultTab = "plan",
 }: ArtifactsPanelProps) {
-	const [activeTab, setActiveTab] = useState(defaultTab);
+	const t = useTranslations("genieExperience");
+	const availableTabs = {
+		plan: Boolean(plan?.steps.length),
+		documents: documents.length > 0,
+		sources: sources.length > 0,
+	};
+	const preferredTab = availableTabs[defaultTab]
+		? defaultTab
+		: availableTabs.documents
+			? "documents"
+			: availableTabs.sources
+				? "sources"
+				: defaultTab;
+	const [activeTab, setActiveTab] = useState(preferredTab);
 	const [selectedDocument, setSelectedDocument] =
 		useState<DocumentArtifact | null>(null);
+	const hasContent = Object.values(availableTabs).some(Boolean);
+	const waitingForContent = useRef(!hasContent);
+	const wasOpen = useRef(isOpen);
+	useEffect(() => {
+		if (isOpen && !wasOpen.current) {
+			setActiveTab(preferredTab);
+			waitingForContent.current = !hasContent;
+		} else if (isOpen && waitingForContent.current && hasContent) {
+			setActiveTab(preferredTab);
+			waitingForContent.current = false;
+		}
+		if (!isOpen) {
+			setSelectedDocument(null);
+		}
+		wasOpen.current = isOpen;
+	}, [isOpen, preferredTab, hasContent]);
 
 	// Resizable panel state
 	const [panelWidth, setPanelWidth] = useState(540);
@@ -716,9 +759,10 @@ export function ArtifactsPanel({
 
 						<Tabs
 							value={activeTab}
-							onValueChange={(v) =>
-								setActiveTab(v as typeof activeTab)
-							}
+							onValueChange={(v) => {
+								waitingForContent.current = false;
+								setActiveTab(v as typeof activeTab);
+							}}
 							className="flex-1 flex flex-col min-h-0"
 						>
 							<div className="border-b px-4">
@@ -869,6 +913,15 @@ export function ArtifactsPanel({
 								className="flex-1 m-0 overflow-hidden"
 							>
 								<ScrollArea className="h-full">
+									{sources.some(
+										(source) =>
+											source.metadata?.verification ===
+											"reported",
+									) && (
+										<p className="px-4 pt-3 text-xs text-muted-foreground">
+											{t("reportedSources")}
+										</p>
+									)}
 									<div className="p-4 space-y-3">
 										{sources.length > 0 ? (
 											sources.map((source) => (
@@ -921,12 +974,14 @@ export function ArtifactsPanel({
 							<pre className="bg-muted p-4 rounded-lg overflow-x-auto text-sm font-mono min-h-full">
 								<code>{selectedDocument.content}</code>
 							</pre>
+						) : selectedDocument?.type === "markdown" ? (
+							<Response normalizeMarkdown={false}>
+								{selectedDocument.content}
+							</Response>
 						) : (
-							<div className="prose prose-sm dark:prose-invert max-w-none">
-								<div className="whitespace-pre-wrap">
-									{selectedDocument?.content}
-								</div>
-							</div>
+							<pre className="whitespace-pre-wrap break-words text-sm">
+								{selectedDocument?.content}
+							</pre>
 						)}
 					</div>
 					<div className="flex justify-end gap-2 px-6 py-4 border-t flex-shrink-0 bg-background">

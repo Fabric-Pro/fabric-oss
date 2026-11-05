@@ -1,38 +1,52 @@
 "use client";
-
-import { Spinner } from "@shared/components/Spinner";
-import { orpc } from "@shared/lib/orpc-query-utils";
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
+import { Alert, AlertDescription } from "@ui/components/alert";
+import { Button } from "@ui/components/button";
+import { Skeleton } from "@ui/components/skeleton";
+import { skillReadCanRetry, skillUiError } from "../lib/skill-ui";
 import { SkillEditor } from "./SkillEditor";
-
-interface SkillEditLoaderProps {
+export function SkillEditLoader({
+	skillId,
+	returnTo,
+}: {
 	skillId: string;
-}
-
-export function SkillEditLoader({ skillId }: SkillEditLoaderProps) {
-	const { data, isLoading, error } = useQuery(
-		orpc.skills.get.queryOptions({
-			input: { id: skillId },
-		}),
-	);
-
-	if (isLoading) {
+	returnTo?: string;
+}) {
+	const { organizationId } = useOrganizationContext();
+	const query = useQuery({
+		queryKey: ["skills", organizationId, "detail", skillId],
+		queryFn: () =>
+			orpcClient.skills.get({
+				organizationId: organizationId ?? undefined,
+				id: skillId,
+			}),
+		enabled: !!organizationId,
+		retry: false,
+	});
+	if (query.isError) {
 		return (
-			<div className="flex items-center justify-center py-12">
-				<Spinner />
-			</div>
+			<Alert variant="error">
+				<AlertDescription>
+					{skillUiError(query.error)}
+					{skillReadCanRetry(query.error) && (
+						<Button
+							type="button"
+							variant="link"
+							size="sm"
+							disabled={query.isFetching}
+							onClick={() => void query.refetch()}
+						>
+							Retry
+						</Button>
+					)}
+				</AlertDescription>
+			</Alert>
 		);
 	}
-
-	if (error || !data?.skill) {
-		return (
-			<div className="text-center py-12">
-				<p className="text-muted-foreground">
-					{error?.message || "Skill not found"}
-				</p>
-			</div>
-		);
+	if (query.isPending) {
+		return <Skeleton className="h-52 w-full" />;
 	}
-
-	return <SkillEditor skill={data.skill} />;
+	return <SkillEditor skill={query.data.skill} returnTo={returnTo} />;
 }

@@ -68,6 +68,7 @@ vi.mock("../../../../orpc/procedures", () => {
 		tenantProtectedProcedure: proxy,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
 		resolveOrganizationId: vi.fn(
 			(organizationId: string | null | undefined) =>
 				organizationId ?? undefined,
@@ -81,11 +82,7 @@ import "../create";
 import "../publish";
 import "../update";
 
-const PUBLIC_SETTERS = [
-	"/frames",
-	"/frames/{id}",
-	"/frames/{id}/publish",
-] as const;
+const PUBLIC_SETTERS = ["/frames", "/frames/{id}/publish"] as const;
 
 beforeEach(() => {
 	vi.clearAllMocks();

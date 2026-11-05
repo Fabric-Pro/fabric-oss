@@ -117,6 +117,7 @@ function describeFrameSurface(frame: FrameRecord, userId: string) {
 		projectId: frame.projectId,
 		runtimeTools: frame.runtimeTools,
 		shareScope: frame.shareScope,
+		isPublic: frame.isPublic,
 		ownedByCaller: frame.userId === userId,
 		sourceRunType: frame.sourceRunType ?? undefined,
 	};
@@ -298,6 +299,7 @@ export async function updateFirstClassFrame(input: {
 		organizationId: input.organizationId,
 		projectId: agentToolProjectScope()?.projectId,
 		title: validated.value.title,
+		expectedUpdatedAt: validated.value.expectedUpdatedAt,
 		description: validated.value.description,
 		blocks: validated.value.blocks,
 		surface: validated.value.surface,
@@ -307,8 +309,6 @@ export async function updateFirstClassFrame(input: {
 		return persisted;
 	}
 	const frame = persisted.frame;
-
-	const shareToken = liveShareToken(frame);
 	return {
 		frameId: frame.id,
 		title: frame.title,
@@ -317,8 +317,8 @@ export async function updateFirstClassFrame(input: {
 		contentType: frame.contentType,
 		frameUrl: buildInternalFrameUrl(frame.id),
 		embedUrl: buildInternalFrameEmbedUrl(frame.id),
-		shareUrl: shareToken ? buildShareUrl(shareToken) : undefined,
-		shareEmbedUrl: shareToken ? buildShareEmbedUrl(shareToken) : undefined,
+		shareUrl: undefined,
+		shareEmbedUrl: undefined,
 		...describeFrameSurface(frame, input.userId),
 		updatedAt: frame.updatedAt.toISOString(),
 		response: `Frame "${frame.title}" updated successfully.`,
@@ -453,10 +453,6 @@ function liveShareToken(frame: FrameRecord) {
 }
 
 /** The share link is the owner's to hand out; a reader sees it once it is public. */
-function visibleShareToken(frame: FrameRecord, userId: string) {
-	return frame.userId === userId || frame.isPublic ? frame.shareToken : null;
-}
-
 export async function getFirstClassFrame(input: {
 	args: Record<string, unknown> | undefined;
 	userId: string;
@@ -509,7 +505,6 @@ export async function getFirstClassFrame(input: {
 	if (sourceWindow.value) {
 		return readFrameSource(frame, sourceWindow.value);
 	}
-	const shareToken = visibleShareToken(frame, input.userId);
 	return {
 		frameId: frame.id,
 		title: frame.title,
@@ -519,10 +514,10 @@ export async function getFirstClassFrame(input: {
 		blocks: frame.document.blocks,
 		frameUrl: buildInternalFrameUrl(frame.id),
 		embedUrl: buildInternalFrameEmbedUrl(frame.id),
-		shareUrl: shareToken ? buildShareUrl(shareToken) : undefined,
-		shareEmbedUrl: shareToken ? buildShareEmbedUrl(shareToken) : undefined,
 		version: frame.version,
 		updatedAt: frame.updatedAt.toISOString(),
+		shareUrl: undefined,
+		shareEmbedUrl: undefined,
 		...describeFrameSurface(frame, input.userId),
 	};
 }
@@ -531,6 +526,8 @@ async function readFramesForList(input: {
 	userId: string;
 	organizationId?: string;
 	conversationId?: string;
+	limit?: number;
+	offset?: number;
 	surface?: FrameSurface;
 	projectId?: string;
 }): Promise<FrameRecord[]> {
@@ -544,11 +541,17 @@ async function readFramesForList(input: {
 					userId: input.userId,
 					organizationId,
 					projectId: input.projectId,
+					conversationId: input.conversationId,
+					limit: input.limit,
+					offset: input.offset,
 				})
 			: listProjectFrames({
 					userId: input.userId,
 					organizationId,
 					projectId: input.projectId,
+					conversationId: input.conversationId,
+					limit: input.limit,
+					offset: input.offset,
 					surface: input.surface,
 				});
 	}
@@ -556,7 +559,8 @@ async function readFramesForList(input: {
 		userId: input.userId,
 		organizationId,
 		conversationId: input.conversationId,
-		limit: 25,
+		limit: input.limit ?? 25,
+		offset: input.offset,
 	});
 }
 
@@ -569,6 +573,8 @@ export async function listFirstClassFrames(input: {
 	userId: string;
 	organizationId?: string;
 	conversationId?: string;
+	limit?: number;
+	offset?: number;
 	surface?: FrameSurface;
 	projectId?: string;
 	projectRestrictionId?: string;
@@ -586,7 +592,6 @@ export async function listFirstClassFrames(input: {
 	});
 	return {
 		frames: frames.map((frame) => {
-			const shareToken = visibleShareToken(frame, input.userId);
 			return {
 				frameId: frame.id,
 				title: frame.title,
@@ -595,11 +600,9 @@ export async function listFirstClassFrames(input: {
 				contentType: frame.contentType,
 				frameUrl: buildInternalFrameUrl(frame.id),
 				embedUrl: buildInternalFrameEmbedUrl(frame.id),
-				shareUrl: shareToken ? buildShareUrl(shareToken) : undefined,
-				shareEmbedUrl: shareToken
-					? buildShareEmbedUrl(shareToken)
-					: undefined,
 				updatedAt: frame.updatedAt.toISOString(),
+				shareUrl: undefined,
+				shareEmbedUrl: undefined,
 				...describeFrameSurface(frame, input.userId),
 			};
 		}),
@@ -703,12 +706,23 @@ export async function shareFirstClassFrame(input: {
 	}
 
 	throwIfDispatchStopped();
+	const revision = input.args?.expectedUpdatedAt;
+	if (
+		revision !== undefined &&
+		(typeof revision !== "string" || !Number.isFinite(Date.parse(revision)))
+	) {
+		return { error: "Provide the reviewed page revision." };
+	}
 	const shared = await shareFrame({
 		frameId,
 		userId: input.userId,
 		organizationId: input.organizationId,
 		scope: scope.value,
 		emails: emails.value,
+		expectedUpdatedAt:
+			typeof revision === "string"
+				? new Date(revision)
+				: existing.updatedAt,
 	});
 	if (!shared.ok) {
 		return { error: shared.message };
@@ -758,10 +772,24 @@ export async function restoreFirstClassFrameVersion(input: {
 		return { error: "Frame ID is required. Provide `frameId`." };
 	}
 	const version = input.args?.version;
+	const historyEntryId = getNonEmptyString(input.args, ["historyEntryId"]);
+	if (historyEntryId && version !== undefined) {
+		return { error: "Choose one saved version." };
+	}
+	const revision = input.args?.expectedUpdatedAt;
 	if (
-		typeof version !== "number" ||
-		!Number.isInteger(version) ||
-		version < 1
+		revision !== undefined &&
+		(typeof revision !== "string" ||
+			!/^\d{4}-\d{2}-\d{2}T/.test(revision) ||
+			!Number.isFinite(Date.parse(revision)))
+	) {
+		return { error: "expectedUpdatedAt must be an ISO timestamp." };
+	}
+	if (
+		!historyEntryId &&
+		(typeof version !== "number" ||
+			!Number.isInteger(version) ||
+			version < 1)
 	) {
 		return {
 			error: "`version` must be a whole number from 1. fabric_list_frame_versions lists them.",
@@ -792,12 +820,25 @@ export async function restoreFirstClassFrameVersion(input: {
 	}
 
 	throwIfDispatchStopped();
-	const reverted = await revertFrameToVersion({
-		frameId,
-		userId: input.userId,
-		organizationId: input.organizationId,
-		toVersion: version,
-	});
+	let reverted: Awaited<ReturnType<typeof revertFrameToVersion>>;
+	try {
+		reverted = await revertFrameToVersion({
+			frameId,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			toVersion: typeof version === "number" ? version : undefined,
+			historyEntryId,
+			expectedUpdatedAt:
+				typeof revision === "string"
+					? new Date(revision)
+					: frame.updatedAt,
+		});
+	} catch (error) {
+		if (error instanceof FrameUpdateConflictError) {
+			return { error: error.message };
+		}
+		throw error;
+	}
 	if (!reverted.success) {
 		return {
 			error: reverted.error ?? "That version could not be restored.",
@@ -813,11 +854,16 @@ export async function restoreFirstClassFrameVersion(input: {
 	return {
 		frameId,
 		restoredVersion: version,
+		historyEntryId,
+		updatedAt: reverted.updatedAt,
 		title: restored?.title ?? frame.title,
 		surface: frame.surface,
 		projectId: frame.projectId,
 		runtimeTools: restored?.runtimeTools ?? frame.runtimeTools,
-		response: `Frame "${frame.title}" is back at version ${version}.`,
+		response:
+			typeof version === "number"
+				? `Frame "${restored?.title ?? frame.title}" is back at version ${version}.`
+				: `Frame "${restored?.title ?? frame.title}" was restored from the selected saved version.`,
 	};
 }
 

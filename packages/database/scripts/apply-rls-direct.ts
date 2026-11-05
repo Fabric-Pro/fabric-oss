@@ -19,6 +19,8 @@ import {
 	buildProjectSelfMemberOrTenantPolicySQL,
 	buildRemoteAgentServerPolicySQL,
 	buildRemoteAgentServerWritePolicies,
+	buildSkillReadPolicySQL,
+	buildSkillWritePolicies,
 	ORGANIZATION_SHARED_READ_POLICY,
 	PROJECT_GUEST_READ_POLICY,
 } from "./rls-policy-sql";
@@ -231,6 +233,8 @@ async function applyRLS() {
 			},
 			// One Advisor chat turn of a member's conversation — the same
 			// per-member scope as the conversation it belongs to.
+			{ name: "agent_test_case", policy: "per_user_within_org" },
+			{ name: "agent_test_run", policy: "per_user_within_org" },
 			{ name: "conversation_turn", policy: "per_user_within_org" },
 			{ name: "conversation_turn_event", policy: "per_user_within_org" },
 			// Advisor summaries and preferences belong to a user within a tenant.
@@ -520,6 +524,21 @@ async function applyRLS() {
 				name: "project_databricks_knowledge_binding",
 				policy: "project_scoped",
 			},
+			// Guests retain project access, but writes must copy the actual
+			// project's organization, not a caller-supplied tenant.
+			{
+				name: "project_context_quality_binding",
+				policy: "project_member_or_tenant_consistent",
+			},
+			{
+				name: "project_workspace_document_link",
+				policy: "project_member_or_tenant_consistent",
+			},
+			{ name: "project_context_quality_principal", policy: "org_only" },
+			{
+				name: "project_context_quality_run",
+				policy: "project_member_or_tenant_consistent",
+			},
 			{ name: "project_user_preference", policy: "per_user_within_org" },
 			// One person's dismissal of the CLI connection prompt (Fizzy #2457).
 			// Per-user within the org for the same reason the read markers below
@@ -800,13 +819,9 @@ async function applyRLS() {
 			{ name: "dynamic_agent_execution", policy: "user_owned" }, // Execution history
 			// Note: dynamic_agent_favorite only has userId - user-specific favorites
 
-			// Skill catalog - scope-based (SYSTEM visible to all)
-			{
-				name: "skill",
-				policy: "scope",
-				orgScope: "ORGANIZATION",
-			},
-			// Note: skill_file has no direct tenant columns — access controlled through parent skill via FK cascade
+			// Owner-private drafts; publication grants organization reads only.
+			{ name: "skill", policy: "skill_catalog" },
+			{ name: "skill_file", policy: "skill_file_parent" },
 
 			// Coding runs - Background agent execution
 			{ name: "coding_run", policy: "user_owned" },
@@ -1181,6 +1196,16 @@ async function applyRLS() {
 									)
 								)
 							`;
+						break;
+
+					case "skill_catalog":
+					case "skill_file_parent":
+						policySQL = buildSkillReadPolicySQL(
+							table.policy === "skill_file_parent",
+						);
+						extraPolicies = buildSkillWritePolicies(
+							table.policy === "skill_file_parent",
+						);
 						break;
 
 					case "remote_agent_server":

@@ -22,19 +22,61 @@ export class DatabricksApiError extends Error {
 // ---------------------------------------------------------------------------
 
 export interface DatabricksApiClientOptions {
-	/** Base host URL. Defaults to getDatabricksHost(). */
+	/** Workspace origin (no path, query or credentials). Defaults to getDatabricksHost(). */
 	host?: string;
 	/** Token provider. Defaults to getDatabricksTokenProvider(). */
 	tokenProvider?: DatabricksTokenProvider;
 	/** Custom fetch implementation (useful in tests). */
 	fetchImpl?: typeof fetch;
-	/** Maximum number of 429/503 retries. Defaults to 3. */
+	/** Maximum number of 429/503 retries for GET/HEAD only. Defaults to 3. */
 	maxRetries?: number;
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function workspaceRequestUrl(host: string, path: string): string {
+	// WHATWG URL parsing accepts network-path references and normalizes
+	// backslashes/control characters. Refuse those before attaching any token.
+	if (
+		typeof path !== "string" ||
+		!path.startsWith("/") ||
+		path.startsWith("//") ||
+		/[\p{Cc}\\]/u.test(path)
+	) {
+		throw new TypeError(
+			"Databricks API paths must start with a single slash and contain no backslashes or control characters.",
+		);
+	}
+	let workspace: URL;
+	try {
+		workspace = new URL(host);
+	} catch {
+		throw new TypeError("Databricks API host must be a workspace origin.");
+	}
+	if (
+		!/^https?:$/.test(workspace.protocol) ||
+		host.trim() !== host ||
+		/[\p{Cc}\\]/u.test(host) ||
+		workspace.username ||
+		workspace.password ||
+		workspace.pathname !== "/" ||
+		workspace.search ||
+		workspace.hash
+	) {
+		throw new TypeError(
+			"Databricks API host must be an HTTP(S) workspace origin without credentials.",
+		);
+	}
+	const url = new URL(path, workspace);
+	if (url.origin !== workspace.origin || url.username || url.password) {
+		throw new TypeError(
+			"Databricks API request must remain in its workspace origin.",
+		);
+	}
+	return url.href;
+}
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
@@ -127,6 +169,8 @@ export class DatabricksApiClient {
 	 * `options.signal` aborts the underlying HTTP request(s) (including
 	 * backoff waits), not just the caller's promise — a slow workspace must
 	 * not accumulate orphaned in-flight requests after the caller times out.
+	 * Only GET/HEAD are retried automatically. Effectful requests require an
+	 * operation-specific receipt/idempotency contract before a caller retries.
 	 */
 	async request<T>(
 		method: string,
@@ -152,6 +196,7 @@ export class DatabricksApiClient {
 			response.status === 204 ||
 			response.headers.get("content-length") === "0"
 		) {
+			await response.body?.cancel().catch(() => undefined);
 			return undefined as T;
 		}
 
@@ -165,7 +210,7 @@ export class DatabricksApiClient {
 
 	/**
 	 * Makes an authenticated request and returns the raw Response.
-	 * Applies the same auth + 401-retry-once semantics as request(),
+	 * Applies the same method-aware auth/retry semantics as request(),
 	 * but does not parse the body. Merges any caller-provided headers.
 	 */
 	async requestRaw(
@@ -176,9 +221,7 @@ export class DatabricksApiClient {
 		const mergedInit: RequestInit = {
 			...init,
 			method,
-			headers: {
-				...(init?.headers ?? {}),
-			},
+			headers: new Headers(init?.headers),
 		};
 
 		return this._requestWithRetries(path, mergedInit);
@@ -192,20 +235,32 @@ export class DatabricksApiClient {
 		path: string,
 		init: RequestInit,
 	): Promise<Response> {
-		const url = `${this.host}${path}`;
+		init.signal?.throwIfAborted();
+		const url = workspaceRequestUrl(this.host, path);
+		const canRetry = ["GET", "HEAD"].includes(
+			(init.method ?? "GET").toUpperCase(),
+		);
+		let authRetried = false;
 
-		// First attempt (with potential 401 retry-once).
+		// A generic transport cannot prove whether an effectful operation was
+		// admitted before an error. Invalidate its token for the next deliberate
+		// request, but never silently repeat the operation, including on 401.
 		let response = await this._requestWithAuth(url, init);
 
 		if (response.status === 401) {
-			// Invalidate cached token and retry exactly once.
 			this.tokenProvider.invalidate();
-			response = await this._requestWithAuth(url, init);
+			if (canRetry) {
+				authRetried = true;
+				await response.body?.cancel().catch(() => undefined);
+				response = await this._requestWithAuth(url, init);
+			}
 		}
 
-		// Exponential backoff on 429/503 up to maxRetries.
+		// Exponential backoff for safe reads only. Network/body errors remain
+		// visible to the caller; no implicit retries of ambiguous outcomes.
 		let attempt = 0;
 		while (
+			canRetry &&
 			(response.status === 429 || response.status === 503) &&
 			attempt < this.maxRetries
 		) {
@@ -221,6 +276,7 @@ export class DatabricksApiClient {
 				delayMs = 250 * 2 ** attempt;
 			}
 
+			await response.body?.cancel().catch(() => undefined);
 			await sleep(delayMs, init.signal ?? undefined);
 			attempt++;
 
@@ -228,7 +284,11 @@ export class DatabricksApiClient {
 
 			if (response.status === 401) {
 				this.tokenProvider.invalidate();
-				response = await this._requestWithAuth(url, init);
+				if (!authRetried) {
+					authRetried = true;
+					await response.body?.cancel().catch(() => undefined);
+					response = await this._requestWithAuth(url, init);
+				}
 			}
 		}
 
@@ -249,15 +309,20 @@ export class DatabricksApiClient {
 		url: string,
 		init: RequestInit,
 	): Promise<Response> {
+		init.signal?.throwIfAborted();
 		const token = await this.tokenProvider.getToken(
 			init.signal ?? undefined,
 		);
+		init.signal?.throwIfAborted();
 		const headers = new Headers(init.headers);
 		headers.set("Authorization", `Bearer ${token}`);
 
 		return this.fetchImpl(url, {
 			...init,
 			headers,
+			// Follow-up locations are not approved workspace operations. Keep
+			// callers from silently changing this through requestRaw options.
+			redirect: "error",
 		});
 	}
 }

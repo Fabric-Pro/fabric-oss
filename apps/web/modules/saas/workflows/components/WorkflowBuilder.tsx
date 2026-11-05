@@ -19,6 +19,7 @@ import "@xyflow/react/dist/style.css";
 import "../styles/reactflow-overrides.css";
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
+import { useSearchParams } from "next/navigation";
 import {
 	type ReactNode,
 	useCallback,
@@ -40,6 +41,7 @@ import {
 } from "../lib/graph-edits";
 import { triggerTypeLabel } from "../lib/node-appearance";
 import { nodeDefinitions } from "../lib/node-definitions";
+import { workflowOutputOptions } from "../lib/output-options";
 // Import plugins to auto-register them
 import "../lib/plugins";
 import type { ViewedRun } from "../lib/run-steps";
@@ -61,6 +63,7 @@ import { WorkflowCanvasProvider } from "./editor/canvas-context";
 import { EditorHeader } from "./editor/EditorHeader";
 import { InsertableEdge } from "./editor/InsertableEdge";
 import { InspectorPanel, type InspectorTab } from "./editor/InspectorPanel";
+import type { NameSaveStatus } from "./editor/NameSaveFeedback";
 import { StepInspector } from "./editor/StepInspector";
 import { type LastRun, WorkflowOverview } from "./editor/WorkflowOverview";
 import { AddNode } from "./nodes/AddNode";
@@ -69,16 +72,26 @@ import { WorkflowNodeComponent } from "./nodes/WorkflowNode";
 import { PublishDialog } from "./PublishDialog";
 import type { GeneratedWorkflowResponse } from "./TextToWorkflow";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
+import { WorkflowScheduleDialog } from "./WorkflowScheduleDialog";
 
 interface WorkflowBuilderProps {
 	initialNodes?: WorkflowNode[];
 	initialEdges?: WorkflowEdge[];
-	onSave?: (nodes: WorkflowNode[], edges: WorkflowEdge[]) => void;
-	onRun?: (nodes: WorkflowNode[], edges: WorkflowEdge[]) => void;
+	onSave?: (
+		nodes: WorkflowNode[],
+		edges: WorkflowEdge[],
+	) => void | Promise<void>;
+	onRun?: (
+		nodes: WorkflowNode[],
+		edges: WorkflowEdge[],
+	) => void | Promise<void>;
+	onDirtyChange?: (dirty: boolean) => void;
 	isLoading?: boolean;
 	workflowName?: string;
 	workflowId?: string;
-	onNameChange?: (name: string) => void;
+	onNameChange?: (name: string) => void | Promise<void>;
+	nameSaveStatus?: NameSaveStatus;
+	nameRetryValue?: string;
 	organizationId?: string | null;
 	// Publishing props
 	workflowStatus?: WorkflowStatus;
@@ -134,10 +147,13 @@ function WorkflowBuilderInner({
 	initialEdges = NO_EDGES,
 	onSave,
 	onRun,
+	onDirtyChange,
 	isLoading = false,
 	workflowName = "Untitled Workflow",
 	workflowId = "",
 	onNameChange,
+	nameSaveStatus = "idle",
+	nameRetryValue,
 	organizationId,
 	workflowStatus = "DRAFT",
 	workflowVersion = 1,
@@ -157,8 +173,12 @@ function WorkflowBuilderInner({
 	const [inspectorTab, setInspectorTab] = useState<InspectorTab>("workflow");
 	const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 	const [showPublishDialog, setShowPublishDialog] = useState(false);
+	const [showScheduleDialog, setShowScheduleDialog] = useState(false);
 	const [showVersionHistory, setShowVersionHistory] = useState(false);
-	const [showAIInput, setShowAIInput] = useState(false);
+	const searchParams = useSearchParams();
+	const [showAIInput, setShowAIInput] = useState(
+		searchParams.get("assistant") === "1",
+	);
 
 	// Undo/Redo state with debouncing
 	const [history, setHistory] = useState<
@@ -192,12 +212,63 @@ function WorkflowBuilderInner({
 	const [nodes, setNodes, onNodesChange] = useNodesState(getStartingNodes());
 	const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(initialEdges);
 
-	// Update nodes when initialNodes change
+	const signature = JSON.stringify(serializeGraph({ nodes, edges }));
+	const [savedSignature, setSavedSignature] = useState(() =>
+		JSON.stringify(
+			serializeGraph({ nodes: getStartingNodes(), edges: initialEdges }),
+		),
+	);
+	const incomingSignature = JSON.stringify({
+		nodes: initialNodes,
+		edges: initialEdges,
+	});
+	const lastIncoming = useRef(incomingSignature);
+	const dirty = signature !== savedSignature;
+	const [isCommitting, setIsCommitting] = useState(false);
+	const commitInFlight = useRef(false);
 	useEffect(() => {
-		if (initialNodes.length > 0) {
-			setNodes(withReadableLayout<Node>(initialNodes, initialEdges));
+		onDirtyChange?.(dirty);
+	}, [dirty, onDirtyChange]);
+	useEffect(() => {
+		if (!dirty) {
+			return;
 		}
-	}, [initialNodes, initialEdges, setNodes]);
+		const onBeforeUnload = (event: BeforeUnloadEvent) => {
+			event.preventDefault();
+			event.returnValue = "";
+		};
+		window.addEventListener("beforeunload", onBeforeUnload);
+		return () => window.removeEventListener("beforeunload", onBeforeUnload);
+	}, [dirty]);
+	// Refetches must never replace edits. Identity changes remount the entire builder.
+	useEffect(() => {
+		if (incomingSignature === lastIncoming.current) {
+			return;
+		}
+		lastIncoming.current = incomingSignature;
+		if (dirty || isCommitting) {
+			return;
+		}
+		const nextNodes = getStartingNodes();
+		setNodes(nextNodes);
+		setEdges(initialEdges);
+		setSavedSignature(
+			JSON.stringify(
+				serializeGraph({ nodes: nextNodes, edges: initialEdges }),
+			),
+		);
+		setSelectedNodeId(null);
+		setHistory([]);
+		setHistoryIndex(-1);
+	}, [
+		incomingSignature,
+		dirty,
+		isCommitting,
+		initialNodes,
+		initialEdges,
+		setNodes,
+		setEdges,
+	]);
 
 	// Save to history when nodes or edges change (for undo/redo)
 	// Uses debouncing to avoid creating too many history entries during rapid changes
@@ -428,16 +499,47 @@ function WorkflowBuilderInner({
 		[setNodes, reactFlowInstance],
 	);
 
+	const commitGraph = useCallback(
+		async (
+			action: "save" | "run" | "publish" | "versions" | "schedule",
+		) => {
+			if (commitInFlight.current || isLoading) {
+				return;
+			}
+			commitInFlight.current = true;
+			setIsCommitting(true);
+			const graph = serializeGraph({ nodes, edges });
+			try {
+				if (action === "run") {
+					await onRun?.(graph.nodes, graph.edges);
+				} else {
+					await onSave?.(graph.nodes, graph.edges);
+				}
+				setSavedSignature(JSON.stringify(graph));
+				if (action === "publish") {
+					setShowPublishDialog(true);
+				}
+				if (action === "schedule") {
+					setShowScheduleDialog(true);
+				}
+				if (action === "versions") {
+					setShowVersionHistory(true);
+				}
+			} catch {
+				// The command owner reports the error. Keep edits dirty and do not open publishing.
+			} finally {
+				commitInFlight.current = false;
+				setIsCommitting(false);
+			}
+		},
+		[nodes, edges, onSave, onRun, isLoading],
+	);
 	const handleSave = useCallback(() => {
-		const graph = serializeGraph({ nodes, edges });
-		onSave?.(graph.nodes, graph.edges);
-	}, [nodes, edges, onSave]);
-
-	// Runs the graph on the canvas, so unsaved changes run too.
+		void commitGraph("save");
+	}, [commitGraph]);
 	const handleRun = useCallback(() => {
-		const graph = serializeGraph({ nodes, edges });
-		onRun?.(graph.nodes, graph.edges);
-	}, [nodes, edges, onRun]);
+		void commitGraph("run");
+	}, [commitGraph]);
 
 	// Handler for updating node data
 	const handleUpdateNode = useCallback(
@@ -665,7 +767,11 @@ function WorkflowBuilderInner({
 			if (node.type === "add") {
 				return {
 					...node,
-					data: { ...node.data, onClick: handleAddFirstStep },
+					data: {
+						...node.data,
+						onClick: handleAddFirstStep,
+						onAskAi: () => setShowAIInput(true),
+					},
 				};
 			}
 			if (node.type === "empty-action") {
@@ -698,6 +804,20 @@ function WorkflowBuilderInner({
 			/>
 		) : selectedNode ? (
 			<StepInspector
+				resultCheckContext={
+					workflowId && organizationId
+						? { workflowId, organizationId }
+						: undefined
+				}
+				availableVariables={
+					selectedNode
+						? workflowOutputOptions(
+								selectedNode.id,
+								nodes as WorkflowNode[],
+								edges,
+							)
+						: []
+				}
 				node={selectedNode}
 				onBack={() => setSelectedNodeId(null)}
 				onUpdate={handleUpdateNode}
@@ -706,9 +826,16 @@ function WorkflowBuilderInner({
 			/>
 		) : (
 			<WorkflowOverview
+				onConfigureSchedule={
+					workflowId && organizationId && onSave
+						? () => void commitGraph("schedule")
+						: undefined
+				}
 				workflowId={workflowId}
 				workflowName={workflowName}
 				onRename={onNameChange}
+				nameSaveStatus={nameSaveStatus}
+				nameRetryValue={nameRetryValue}
 				status={workflowStatus}
 				version={workflowVersion}
 				publishedVersion={publishedVersion}
@@ -724,110 +851,141 @@ function WorkflowBuilderInner({
 		);
 
 	return (
-		<div className="h-full w-full flex flex-col overflow-hidden">
-			<EditorHeader
-				workflowsPath={workflowsPath}
-				workflowName={workflowName}
-				onRename={onNameChange}
-				status={workflowStatus}
-				version={workflowVersion}
-				publishedVersion={publishedVersion}
-				canUndo={historyIndex > 0}
-				canRedo={historyIndex < history.length - 1}
-				onUndo={handleUndo}
-				onRedo={handleRedo}
-				onOpenVersions={
-					workflowId ? () => setShowVersionHistory(true) : undefined
-				}
-				onExport={handleExportJSON}
-				onSave={handleSave}
-				onPublish={
-					workflowId ? () => setShowPublishDialog(true) : undefined
-				}
-				onRun={handleRun}
-				hasSteps={hasRealNodes}
-				isBusy={isLoading}
-			/>
-
-			<div className="flex min-h-0 flex-1 overflow-hidden">
-				{runsPanel}
-
-				<div className="workflow-canvas relative min-w-0 flex-1 overflow-hidden">
-					<div
-						className="h-full w-full"
-						data-testid="workflow-canvas"
-					>
-						<WorkflowCanvasProvider value={canvasContext}>
-							<ReactFlow
-								nodes={nodesWithHandlers}
-								edges={edges}
-								onNodesChange={onNodesChange}
-								onEdgesChange={onEdgesChange}
-								onConnect={onConnect}
-								onDragOver={onDragOver}
-								onDrop={onDrop}
-								nodeTypes={nodeTypes}
-								edgeTypes={edgeTypes}
-								defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
-								onNodeClick={(_, node) =>
-									selectStep(node.id, node.type)
+		<div className="flex h-full min-w-0 w-full flex-col overflow-hidden lg:flex-row">
+			<div className="flex min-h-0 min-w-0 flex-1 flex-col">
+				<EditorHeader
+					workflowsPath={workflowsPath}
+					workflowName={workflowName}
+					onRename={onNameChange}
+					nameSaveStatus={nameSaveStatus}
+					status={workflowStatus}
+					version={workflowVersion}
+					publishedVersion={publishedVersion}
+					canUndo={historyIndex > 0}
+					canRedo={historyIndex < history.length - 1}
+					onUndo={handleUndo}
+					onRedo={handleRedo}
+					onOpenVersions={
+						workflowId
+							? () => {
+									void commitGraph("versions");
 								}
-								onPaneClick={() => setSelectedNodeId(null)}
-								fitView
-								fitViewOptions={FIT_VIEW_OPTIONS}
-								snapToGrid
-								snapGrid={[15, 15]}
-								style={{ width: "100%", height: "100%" }}
-							>
-								<Background
-									variant={BackgroundVariant.Dots}
-									gap={16}
-									size={1}
-									color="var(--input)"
-									bgColor="var(--background)"
-								/>
-								<CanvasControls />
-								<AddStepAnchor onAddStep={handleAppendStep} />
-							</ReactFlow>
-						</WorkflowCanvasProvider>
+							: undefined
+					}
+					onExport={handleExportJSON}
+					onSave={handleSave}
+					onPublish={
+						workflowId
+							? () => {
+									void commitGraph("publish");
+								}
+							: undefined
+					}
+					onRun={handleRun}
+					hasSteps={hasRealNodes}
+					isBusy={isLoading || isCommitting}
+					isDirty={dirty}
+					onBeforeLeave={() =>
+						!dirty ||
+						window.confirm("Discard unsaved workflow changes?")
+					}
+				/>
+
+				<div className="relative flex min-h-0 flex-1 overflow-hidden">
+					{runsPanel && (
+						<div className="absolute inset-y-0 left-0 z-30 flex xl:static xl:z-auto">
+							{runsPanel}
+						</div>
+					)}
+
+					<div className="workflow-canvas relative min-w-0 flex-1 overflow-hidden">
+						<div
+							className="h-full w-full"
+							data-testid="workflow-canvas"
+						>
+							<WorkflowCanvasProvider value={canvasContext}>
+								<ReactFlow
+									nodes={nodesWithHandlers}
+									edges={edges}
+									onNodesChange={onNodesChange}
+									onEdgesChange={onEdgesChange}
+									onConnect={onConnect}
+									onDragOver={onDragOver}
+									onDrop={onDrop}
+									nodeTypes={nodeTypes}
+									edgeTypes={edgeTypes}
+									defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
+									onNodeClick={(_, node) =>
+										selectStep(node.id, node.type)
+									}
+									onPaneClick={() => setSelectedNodeId(null)}
+									fitView
+									fitViewOptions={FIT_VIEW_OPTIONS}
+									snapToGrid
+									snapGrid={[15, 15]}
+									style={{ width: "100%", height: "100%" }}
+								>
+									<Background
+										variant={BackgroundVariant.Dots}
+										gap={16}
+										size={1}
+										color="var(--input)"
+										bgColor="var(--background)"
+									/>
+									<CanvasControls />
+									<AddStepAnchor
+										onAddStep={handleAppendStep}
+									/>
+								</ReactFlow>
+							</WorkflowCanvasProvider>
+						</div>
+
+						{canvasOverlay}
+
+						<AskAiBar
+							open={showAIInput}
+							onOpenChange={setShowAIInput}
+							hasSteps={hasRealNodes}
+							organizationId={organizationId}
+							currentNodes={nodes.map((n) => ({
+								id: n.id,
+								type: n.type || "unknown",
+								position: n.position,
+								data: n.data,
+							}))}
+							currentEdges={edges.map((e) => ({
+								id: e.id,
+								source: e.source,
+								target: e.target,
+								sourceHandle: e.sourceHandle,
+								targetHandle: e.targetHandle,
+							}))}
+							onWorkflowGenerated={handleWorkflowGenerated}
+						/>
 					</div>
-
-					{canvasOverlay}
-
-					<AskAiBar
-						open={showAIInput}
-						onOpenChange={setShowAIInput}
-						hasSteps={hasRealNodes}
-						organizationId={organizationId}
-						currentNodes={nodes.map((n) => ({
-							id: n.id,
-							type: n.type || "unknown",
-							position: n.position,
-							data: n.data,
-						}))}
-						currentEdges={edges.map((e) => ({
-							id: e.id,
-							source: e.source,
-							target: e.target,
-							sourceHandle: e.sourceHandle,
-							targetHandle: e.targetHandle,
-						}))}
-						onWorkflowGenerated={handleWorkflowGenerated}
-					/>
 				</div>
-
-				<InspectorPanel
-					tab={inspectorTab}
-					onTabChange={setInspectorTab}
-					stepSelected={selectedNode !== null}
-				>
-					{inspectorContent}
-				</InspectorPanel>
 			</div>
 
+			<InspectorPanel
+				tab={inspectorTab}
+				onTabChange={setInspectorTab}
+				stepSelected={selectedNode !== null}
+			>
+				{inspectorContent}
+			</InspectorPanel>
+			{showScheduleDialog && workflowId && organizationId && (
+				<WorkflowScheduleDialog
+					open={showScheduleDialog}
+					onOpenChange={setShowScheduleDialog}
+					workflowId={workflowId}
+					organizationId={organizationId}
+					onConfigured={onPublished}
+				/>
+			)}
 			{/* Publish Dialog */}
 			{workflowId && (
 				<PublishDialog
+					organizationId={organizationId}
 					open={showPublishDialog}
 					onOpenChange={setShowPublishDialog}
 					workflowId={workflowId}
@@ -841,6 +999,8 @@ function WorkflowBuilderInner({
 			{/* Version History Panel */}
 			{workflowId && (
 				<VersionHistoryPanel
+					organizationId={organizationId}
+					onRestored={onPublished}
 					open={showVersionHistory}
 					onOpenChange={setShowVersionHistory}
 					workflowId={workflowId}
@@ -856,7 +1016,10 @@ function WorkflowBuilderInner({
 export function WorkflowBuilder(props: WorkflowBuilderProps) {
 	return (
 		<ReactFlowProvider>
-			<WorkflowBuilderInner {...props} />
+			<WorkflowBuilderInner
+				key={`${props.organizationId}:${props.workflowId}`}
+				{...props}
+			/>
 		</ReactFlowProvider>
 	);
 }

@@ -58,12 +58,6 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
-import { Button } from "@ui/components/button";
-import {
-	Collapsible,
-	CollapsibleContent,
-	CollapsibleTrigger,
-} from "@ui/components/collapsible";
 import {
 	Tooltip,
 	TooltipContent,
@@ -75,13 +69,11 @@ import {
 	AlertCircle,
 	CheckCircle2,
 	ChevronLeft,
-	ChevronRight,
 	Loader2,
 	NotebookPen,
 	ScrollText,
 	Search,
 	SquareCheckBig,
-	Wrench,
 	XIcon,
 } from "lucide-react";
 import Image from "next/image";
@@ -175,7 +167,6 @@ import {
 	hasDocumentArtifacts,
 	// Memory panel
 	MemoryPanel,
-	MemoryPanelTrigger,
 	// Phase indicator for sticky status display
 	PhaseIndicator,
 	// Planning transparency & visualization
@@ -343,6 +334,7 @@ export function FabricTemporalOrchestratorChat({
 }: FabricTemporalOrchestratorChatProps) {
 	const { user } = useSession();
 	const tooltipT = useTranslations("tooltips.agents");
+	const genieT = useTranslations("genieExperience");
 	const userAvatarSrc = user?.image ?? "";
 	const userDisplayName = user?.name ?? user?.email ?? "Me";
 	const { activeOrganization, isOrganizationAdmin } = useActiveOrganization();
@@ -3296,10 +3288,32 @@ export function FabricTemporalOrchestratorChat({
 					pendingApproval={isAwaitingApproval}
 					isLoading={isLoading}
 					variant={isWelcome ? "hero" : "default"}
-					placeholder="Ask your question... (type @ to mention a template)"
+					placeholder={genieT("ask")}
 					attachTooltip="Attach files"
 					attachDisabled={false}
 					onAttachClick={handleAttachClick}
+					additionalActions={[
+						...(!compactMode
+							? [
+									{
+										id: "memory",
+										label: genieT("memory"),
+										onSelect: () =>
+											setIsMemoryPanelOpen(true),
+									},
+								]
+							: []),
+						...(showToolPicker && !lockConversationToolPicker
+							? [
+									{
+										id: "tools",
+										label: genieT("chatTools"),
+										onSelect: () =>
+											setConversationToolPickerOpen(true),
+									},
+								]
+							: []),
+					]}
 					enableImagePaste={true}
 					imageUploader={pastedImageUploader}
 					onPasteNonImageFiles={onPasteNonImageFiles}
@@ -3479,23 +3493,6 @@ export function FabricTemporalOrchestratorChat({
 									}
 									organizationId={organizationId}
 								/>
-								{showToolPicker &&
-									!lockConversationToolPicker && (
-										<Button
-											type="button"
-											variant="ghost"
-											size="sm"
-											className="h-6 gap-1.5 rounded-full border border-border/80 bg-muted/40 px-2.5 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-											onClick={() =>
-												setConversationToolPickerOpen(
-													true,
-												)
-											}
-										>
-											<Wrench className="h-3 w-3" />
-											Chat tools
-										</Button>
-									)}
 								{!compactMode &&
 									(state.plan ||
 										artifactSources.length > 0 ||
@@ -3517,14 +3514,6 @@ export function FabricTemporalOrchestratorChat({
 											isActive={isArtifactsPanelOpen}
 										/>
 									)}
-								{!compactMode && (
-									<MemoryPanelTrigger
-										onClick={() =>
-											setIsMemoryPanelOpen(true)
-										}
-										isActive={isMemoryPanelOpen}
-									/>
-								)}
 							</div>
 						)
 					}
@@ -3747,7 +3736,9 @@ export function FabricTemporalOrchestratorChat({
 																				)}
 																			</div>
 																		)}
-																	<Response>
+																	<Response
+																		normalizeHeadings
+																	>
 																		{
 																			execution.userMessage
 																		}
@@ -3858,68 +3849,42 @@ export function FabricTemporalOrchestratorChat({
 																				.toolCalls
 																				.length >
 																				0 && (
-																				<Collapsible
+																				<ToolCallList
+																					groupActivity
+																					toolCalls={toToolCallItems(
+																						result.toolCalls,
+																						`${execution.id}-${result.stepId}`,
+																						(
+																							tc,
+																							idx,
+																						): ToolCallItem => ({
+																							id: `${execution.id}-${result.stepId}-${idx}`,
+																							name: tc.name,
+																							args: tc.args,
+																							result: tc.result,
+																							status: tc.status,
+																							error:
+																								tc.status ===
+																								"error"
+																									? String(
+																											tc.result,
+																										)
+																									: undefined,
+																						}),
+																					)}
 																					defaultOpen={
 																						false
 																					}
-																				>
-																					<CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer py-1 group">
-																						<ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
-																						<Wrench className="h-3 w-3" />
-																						<span>
-																							{
-																								result
-																									.toolCalls
-																									.length
-																							}{" "}
-																							tool
-																							call
-																							{result
-																								.toolCalls
-																								.length !==
-																							1
-																								? "s"
-																								: ""}
-																						</span>
-																					</CollapsibleTrigger>
-																					<CollapsibleContent>
-																						<ToolCallList
-																							toolCalls={toToolCallItems(
-																								result.toolCalls,
-																								`${execution.id}-${result.stepId}`,
-																								(
-																									tc,
-																									idx,
-																								): ToolCallItem => ({
-																									id: `${execution.id}-${result.stepId}-${idx}`,
-																									name: tc.name,
-																									args: tc.args,
-																									result: tc.result,
-																									status: tc.status,
-																									error:
-																										tc.status ===
-																										"error"
-																											? String(
-																													tc.result,
-																												)
-																											: undefined,
-																								}),
-																							)}
-																							defaultOpen={
-																								false
-																							}
-																							getInputSummary={
-																								orchestratorToolInputSummary
-																							}
-																							activeFrameId={
-																								activeFrame?.frameId
-																							}
-																							onOpenFrame={
-																								rowActions.openFrame
-																							}
-																						/>
-																					</CollapsibleContent>
-																				</Collapsible>
+																					getInputSummary={
+																						orchestratorToolInputSummary
+																					}
+																					activeFrameId={
+																						activeFrame?.frameId
+																					}
+																					onOpenFrame={
+																						rowActions.openFrame
+																					}
+																				/>
 																			)}
 
 																			{/* MCP App interactive UIs — persisted tool calls rendered after page refresh */}
@@ -4007,6 +3972,7 @@ export function FabricTemporalOrchestratorChat({
 																					{isLastStep ? (
 																						// Final answer - show prominently
 																						<Response
+																							normalizeHeadings
 																							className={
 																								ASSISTANT_RESPONSE_SHELL_CLASSNAME
 																							}
@@ -4125,6 +4091,7 @@ export function FabricTemporalOrchestratorChat({
 																			execution.stepResults,
 																		))) && (
 																	<Response
+																		normalizeHeadings
 																		className={
 																			ASSISTANT_RESPONSE_SHELL_CLASSNAME
 																		}
@@ -4162,6 +4129,7 @@ export function FabricTemporalOrchestratorChat({
 																				response
 																			</p>
 																			<Response
+																				normalizeHeadings
 																				className={
 																					ASSISTANT_RESPONSE_SHELL_CLASSNAME
 																				}
@@ -4370,7 +4338,7 @@ export function FabricTemporalOrchestratorChat({
 																)}
 															</div>
 														)}
-													<Response>
+													<Response normalizeHeadings>
 														{message.content}
 													</Response>
 												</MessageContent>
@@ -4585,68 +4553,42 @@ export function FabricTemporalOrchestratorChat({
 															{/* Tool calls - collapsible section */}
 															{result.toolCalls
 																.length > 0 && (
-																<Collapsible
+																<ToolCallList
+																	groupActivity
+																	toolCalls={toToolCallItems(
+																		result.toolCalls,
+																		result.stepId,
+																		(
+																			tc,
+																			idx,
+																		): ToolCallItem => ({
+																			id: `${result.stepId}-${idx}`,
+																			name: tc.name,
+																			args: tc.args,
+																			result: tc.result,
+																			status: tc.status,
+																			error:
+																				tc.status ===
+																				"error"
+																					? String(
+																							tc.result,
+																						)
+																					: undefined,
+																		}),
+																	)}
 																	defaultOpen={
 																		false
 																	}
-																>
-																	<CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer py-1 group">
-																		<ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
-																		<Wrench className="h-3 w-3" />
-																		<span>
-																			{
-																				result
-																					.toolCalls
-																					.length
-																			}{" "}
-																			tool
-																			call
-																			{result
-																				.toolCalls
-																				.length !==
-																			1
-																				? "s"
-																				: ""}
-																		</span>
-																	</CollapsibleTrigger>
-																	<CollapsibleContent>
-																		<ToolCallList
-																			toolCalls={toToolCallItems(
-																				result.toolCalls,
-																				result.stepId,
-																				(
-																					tc,
-																					idx,
-																				): ToolCallItem => ({
-																					id: `${result.stepId}-${idx}`,
-																					name: tc.name,
-																					args: tc.args,
-																					result: tc.result,
-																					status: tc.status,
-																					error:
-																						tc.status ===
-																						"error"
-																							? String(
-																									tc.result,
-																								)
-																							: undefined,
-																				}),
-																			)}
-																			defaultOpen={
-																				false
-																			}
-																			getInputSummary={
-																				orchestratorToolInputSummary
-																			}
-																			activeFrameId={
-																				activeFrame?.frameId
-																			}
-																			onOpenFrame={
-																				openFrame
-																			}
-																		/>
-																	</CollapsibleContent>
-																</Collapsible>
+																	getInputSummary={
+																		orchestratorToolInputSummary
+																	}
+																	activeFrameId={
+																		activeFrame?.frameId
+																	}
+																	onOpenFrame={
+																		openFrame
+																	}
+																/>
 															)}
 
 															{/* MCP App interactive UIs — rendered inline for tool calls with ui:// resource URIs */}
@@ -4730,6 +4672,7 @@ export function FabricTemporalOrchestratorChat({
 																	isComplete ? (
 																		// Final answer - show prominently
 																		<Response
+																			normalizeHeadings
 																			className={
 																				ASSISTANT_RESPONSE_SHELL_CLASSNAME
 																			}
@@ -4807,61 +4750,40 @@ export function FabricTemporalOrchestratorChat({
 													{/* Streaming tool calls - collapsible section */}
 													{streamingToolCalls.length >
 														0 && (
-														<Collapsible
+														<ToolCallList
+															groupActivity
+															toolCalls={toToolCallItems(
+																streamingToolCalls,
+																"streaming",
+																(
+																	tc,
+																	idx,
+																): ToolCallItem => ({
+																	id: `streaming-tool-${idx}-${tc.id}`,
+																	name: tc.name,
+																	args: tc.args,
+																	result: tc.result,
+																	status: tc.status,
+																	error:
+																		tc.status ===
+																		"error"
+																			? String(
+																					tc.result,
+																				)
+																			: undefined,
+																}),
+															)}
 															defaultOpen={false}
-														>
-															<CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer py-1 group">
-																<ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
-																<Wrench className="h-3 w-3" />
-																<span>
-																	{
-																		streamingToolCalls.length
-																	}{" "}
-																	tool call
-																	{streamingToolCalls.length !==
-																	1
-																		? "s"
-																		: ""}
-																</span>
-															</CollapsibleTrigger>
-															<CollapsibleContent>
-																<ToolCallList
-																	toolCalls={toToolCallItems(
-																		streamingToolCalls,
-																		"streaming",
-																		(
-																			tc,
-																			idx,
-																		): ToolCallItem => ({
-																			id: `streaming-tool-${idx}-${tc.id}`,
-																			name: tc.name,
-																			args: tc.args,
-																			result: tc.result,
-																			status: tc.status,
-																			error:
-																				tc.status ===
-																				"error"
-																					? String(
-																							tc.result,
-																						)
-																					: undefined,
-																		}),
-																	)}
-																	defaultOpen={
-																		false
-																	}
-																	getInputSummary={
-																		orchestratorToolInputSummary
-																	}
-																	activeFrameId={
-																		activeFrame?.frameId
-																	}
-																	onOpenFrame={
-																		openFrame
-																	}
-																/>
-															</CollapsibleContent>
-														</Collapsible>
+															getInputSummary={
+																orchestratorToolInputSummary
+															}
+															activeFrameId={
+																activeFrame?.frameId
+															}
+															onOpenFrame={
+																openFrame
+															}
+														/>
 													)}
 
 													{/* MCP App interactive UIs — rendered during streaming for immediate feedback */}
@@ -5052,6 +4974,7 @@ export function FabricTemporalOrchestratorChat({
 											{/* Streaming LLM response text */}
 											{hasStreamingText && (
 												<Response
+													normalizeHeadings
 													className={
 														ASSISTANT_RESPONSE_SHELL_CLASSNAME
 													}
@@ -5119,6 +5042,7 @@ export function FabricTemporalOrchestratorChat({
 								) && (
 									<div className="w-full min-w-0">
 										<Response
+											normalizeHeadings
 											className={
 												ASSISTANT_RESPONSE_SHELL_CLASSNAME
 											}
@@ -5144,6 +5068,7 @@ export function FabricTemporalOrchestratorChat({
 								>
 									{cancelledMessage.content && (
 										<Response
+											normalizeHeadings
 											className={
 												ASSISTANT_RESPONSE_SHELL_CLASSNAME
 											}

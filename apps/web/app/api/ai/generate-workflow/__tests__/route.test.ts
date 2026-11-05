@@ -247,3 +247,59 @@ describe("POST /api/ai/generate-workflow — usage limit reached during the call
 		});
 	});
 });
+
+describe("generated draft shape", () => {
+	it("keeps flat model labels and config when adapting nodes for the editor", async () => {
+		generateText.mockResolvedValue({
+			text: JSON.stringify({
+				action: "replace",
+				nodes: [
+					{
+						id: "example-trigger",
+						type: "trigger",
+						position: { x: 0, y: 0 },
+						label: "Start",
+						config: { triggerType: "manual" },
+					},
+				],
+				edges: [],
+			}),
+		});
+		const res = await generate({
+			prompt: "Create a manual trigger workflow",
+		});
+		expect(res.status).toBe(200);
+		expect((await res.json()).nodes[0]).toEqual({
+			id: "example-trigger",
+			type: "trigger",
+			position: { x: 0, y: 0 },
+			data: { label: "Start", config: { triggerType: "manual" } },
+		});
+		expect(generateText.mock.calls[0][0]).toMatchObject({
+			output: expect.any(Object),
+			maxRetries: 0,
+		});
+	});
+	it("refuses incomplete nodes with actionable copy without returning schema internals", async () => {
+		generateText.mockResolvedValue({
+			text: JSON.stringify({
+				action: "replace",
+				nodes: [
+					{
+						id: "example-invalid",
+						type: "trigger",
+						position: { x: 0, y: 0 },
+					},
+				],
+				edges: [],
+			}),
+		});
+		const res = await generate({
+			prompt: "Create a manual trigger workflow",
+		});
+		expect(res.status).toBe(500);
+		const body = await res.json();
+		expect(body.error).toContain("Your workflow is unchanged");
+		expect(body.error).not.toContain("invalid_type");
+	});
+});

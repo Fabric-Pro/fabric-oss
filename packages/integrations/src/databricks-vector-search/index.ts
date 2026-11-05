@@ -7,7 +7,6 @@
  */
 
 import { createHash } from "node:crypto";
-import { isIP } from "node:net";
 // This file runs as ESM ("type": "module") but @repo/ai and @repo/databricks
 // load as CJS, and Node's CJS lexer cannot see their named exports through
 // tsx's output — static named imports fail to link when the temporal worker
@@ -30,7 +29,11 @@ const databricksExports =
 		? databricksModule
 		: ((databricksModule as { default?: typeof databricksModule })
 				.default ?? databricksModule);
-const { createOAuthM2MProvider, DatabricksApiClient } = databricksExports;
+const {
+	createOAuthM2MProvider,
+	DatabricksApiClient,
+	validateDatabricksWorkspaceOrigin,
+} = databricksExports;
 type DatabricksApiClient = InstanceType<typeof DatabricksApiClient>;
 const { estimateEmbeddingRequestInputTokens } =
 	typeof turnBudgetEstimateModule.estimateEmbeddingRequestInputTokens ===
@@ -80,18 +83,6 @@ const QUERY_CONCURRENCY = 5;
 // Defensive cap on pages fetched per endpoints/indexes collection — a
 // misbehaving API returning an unending next_page_token must not hang forever.
 const MAX_PAGINATION_PAGES = 20;
-// Restrict tenant-supplied hosts to Databricks-controlled workspace domains;
-// DNS/IP-only checks can still permit rebinding to private infrastructure.
-const DATABRICKS_WORKSPACE_DOMAIN_SUFFIXES = [
-	"azuredatabricks.net",
-	"cloud.databricks.com",
-	"gcp.databricks.com",
-	"databricks.azure.cn",
-	"databricks.azure.us",
-	"cloud.databricks.us",
-	"cloud.databricks.mil",
-] as const;
-
 // Reuse token providers per host+clientId so the M2M token cache is shared
 // across calls within a worker process.
 const providerCache = new Map<string, DatabricksTokenProvider>();
@@ -172,43 +163,11 @@ function requireCredentials(credentials: Record<string, string>): {
 		);
 	}
 
-	let parsedHost: URL;
-	try {
-		parsedHost = new URL(host.trim());
-	} catch {
-		throw new Error(
-			"DATABRICKS_HOST must be an HTTPS Databricks workspace origin on a supported Databricks domain",
-		);
-	}
-
-	const hostname = parsedHost.hostname.toLowerCase();
-	const unbracketedHostname = hostname.replace(/^\[|\]$/g, "");
-	const isWorkspaceDomain = DATABRICKS_WORKSPACE_DOMAIN_SUFFIXES.some(
-		(suffix) => hostname.endsWith(`.${suffix}`),
-	);
-	const isObviouslyInternal =
-		hostname === "localhost" ||
-		hostname.endsWith(".localhost") ||
-		hostname.endsWith(".local") ||
-		hostname.endsWith(".internal");
-	if (
-		parsedHost.protocol !== "https:" ||
-		parsedHost.username ||
-		parsedHost.password ||
-		parsedHost.pathname !== "/" ||
-		parsedHost.search ||
-		parsedHost.hash ||
-		parsedHost.port ||
-		isIP(unbracketedHostname) !== 0 ||
-		isObviouslyInternal ||
-		!isWorkspaceDomain
-	) {
-		throw new Error(
-			"DATABRICKS_HOST must be an HTTPS Databricks workspace origin on a supported Databricks domain, without credentials, a path, query, fragment, IP address, or non-default port",
-		);
-	}
-
-	return { host: parsedHost.origin, clientId, clientSecret };
+	return {
+		host: validateDatabricksWorkspaceOrigin(host),
+		clientId,
+		clientSecret,
+	};
 }
 
 function buildClient(

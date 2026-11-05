@@ -27,6 +27,7 @@ import { z } from "zod";
 import { aiConfigurationRefusalMessage } from "../../lib/ai-configuration-refusal";
 import { dispatchLifecycleEvent } from "../../lib/lifecycle-dispatcher";
 import { synthesizeToolSpeech } from "../../lib/text-to-speech";
+import type { WorkspaceDocumentFilter } from "../../lib/workspace-document-selection";
 import { COMPANY_CONTEXT_SEARCH_TOOL_NAME } from "../../workflows/orchestrator/company-context-tool-schemas";
 import {
 	type SecondaryUsageInput,
@@ -94,6 +95,7 @@ interface BuiltInToolContext extends SecondaryUsageInput {
 	userId: string;
 	organizationId?: string;
 	workspaceIds?: string[];
+	workspaceDocumentFilters?: WorkspaceDocumentFilter[];
 	projectId?: string;
 	/**
 	 * The Advisor's company-context opt-in, carried by the Orchestrator's
@@ -829,6 +831,8 @@ export async function createFabricTool(
 							: undefined,
 						{
 							usageConversationId: context.usageConversationId,
+							workspaceDocumentFilters:
+								context.workspaceDocumentFilters,
 							...(context.usageOrigin
 								? { usageOrigin: context.usageOrigin }
 								: {}),
@@ -870,6 +874,8 @@ export async function createFabricTool(
 						undefined,
 						{
 							usageConversationId: context.usageConversationId,
+							workspaceDocumentFilters:
+								context.workspaceDocumentFilters,
 							...(context.usageOrigin
 								? { usageOrigin: context.usageOrigin }
 								: {}),
@@ -1755,6 +1761,7 @@ export async function createBuiltInTools(
 		enabledFabricToolIds,
 		additionalFabricToolIds = [],
 		workspaceIds,
+		workspaceDocumentFilters,
 		projectId,
 		includeProjectFeatureReads = false,
 		preferredRepositoryUrl,
@@ -1797,6 +1804,7 @@ export async function createBuiltInTools(
 					userId,
 					organizationId,
 					workspaceIds,
+					workspaceDocumentFilters,
 					projectId,
 				}),
 			);
@@ -1816,6 +1824,7 @@ export async function createBuiltInTools(
 					userId,
 					organizationId,
 					workspaceIds,
+					workspaceDocumentFilters,
 					projectId,
 					preferredRepositoryUrl,
 				}),
@@ -1823,6 +1832,7 @@ export async function createBuiltInTools(
 					userId,
 					organizationId,
 					workspaceIds,
+					workspaceDocumentFilters,
 					projectId,
 				}),
 			);
@@ -1846,6 +1856,7 @@ export async function createBuiltInTools(
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 			// Paired with project_rag_query deliberately: RAG cannot answer a
@@ -1855,54 +1866,63 @@ export async function createBuiltInTools(
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 			await createFabricTool("fabric_list_project_features", {
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 			await createFabricTool("fabric_get_project_feature", {
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 			await createFabricTool("fabric_list_project_documents", {
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 			await createFabricTool("fabric_get_project_document", {
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 			await createFabricTool("fabric_list_project_sources", {
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 			await createFabricTool("fabric_get_project_source", {
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 			await createFabricTool("search_slack_messages", {
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 			await createFabricTool("search_teams_messages", {
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 			await createCodeSearchTool({
@@ -1913,6 +1933,7 @@ export async function createBuiltInTools(
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 				preferredRepositoryUrl,
 			}),
@@ -1920,6 +1941,7 @@ export async function createBuiltInTools(
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 		);
@@ -1935,6 +1957,7 @@ export async function createBuiltInTools(
 				userId,
 				organizationId,
 				workspaceIds,
+				workspaceDocumentFilters,
 				projectId,
 			}),
 		);

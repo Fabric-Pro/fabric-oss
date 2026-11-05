@@ -5,6 +5,12 @@ import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuTrigger,
+} from "@ui/components/dropdown-menu";
 import { SearchInput } from "@ui/components/search-input";
 import {
 	Select,
@@ -15,6 +21,7 @@ import {
 } from "@ui/components/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import {
+	ChevronDownIcon,
 	GridIcon,
 	InboxIcon,
 	ListIcon,
@@ -25,6 +32,7 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useDebounceValue } from "usehooks-ts";
+import { CreatePromptMenu } from "./CreatePromptMenu";
 import { LoadFailure } from "./LoadFailure";
 import { PromptCard } from "./PromptCard";
 import { PromptCatalog } from "./PromptCatalog";
@@ -40,40 +48,98 @@ type Props = {
 export function PromptsList({ organizationId }: Props) {
 	const router = useRouter();
 	const searchParams = useSearchParams();
-	const { basePath } = useOrganizationContext();
+	const { basePath, userRole } = useOrganizationContext();
 
 	const promptsPath = `${basePath}/prompts`;
+
 	const [searchQuery, setSearchQuery] = useState("");
-	// Apply the `?search=` deep-link filter on mount so links (e.g. the project
-	// AI-settings "Customize these prompts in the Prompt Library" link) arrive
-	// pre-filtered. Done in an effect, not a useState initializer: under SSR
-	// `useSearchParams()` is empty, so an initializer would capture "" and never
-	// update once the client hydrates with the real query string.
-	const appliedUrlSearch = useRef(false);
-	useEffect(() => {
-		if (appliedUrlSearch.current) {
-			return;
-		}
-		const initial = searchParams.get("search");
-		if (initial) {
-			setSearchQuery(initial);
-			appliedUrlSearch.current = true;
-		}
-	}, [searchParams]);
 	const [debouncedSearch] = useDebounceValue(searchQuery, 300);
 	const [scopeFilter, setScopeFilter] = useState<
 		"all" | "SYSTEM" | "ORG" | "USER"
 	>("all");
-	const [viewMode, setViewMode] = useState<ViewMode>("grid");
-	// Fizzy #2068 (F6): most recently modified first, per the PM's ask.
+	const [viewMode, setViewMode] = useState<ViewMode>("list");
 	const [sortBy, setSortBy] = useState<"updatedAt" | "createdAt" | "name">(
 		"updatedAt",
 	);
-	// Fizzy #2068 (F13): prompts bound to no action at all.
 	const [unusedOnly, setUnusedOnly] = useState(false);
-	// Fizzy #2068 (F4): the page's primary split. "Prompts" is the library;
-	// "Actions" is the same browse-by-action grid the catalog page serves.
 	const [pageTab, setPageTab] = useState<"prompts" | "actions">("prompts");
+	const [page, setPage] = useState(0);
+	const [urlReady, setUrlReady] = useState(false);
+	const appliedUrl = useRef(false);
+	useEffect(() => {
+		if (appliedUrl.current) {
+			return;
+		}
+		appliedUrl.current = true;
+		setSearchQuery(searchParams.get("search") || "");
+		const scope = searchParams.get("scope");
+		if (scope === "SYSTEM" || scope === "ORG" || scope === "USER") {
+			setScopeFilter(scope);
+		}
+		if (searchParams.get("view") === "grid") {
+			setViewMode("grid");
+		}
+		const sort = searchParams.get("sort");
+		if (sort === "name" || sort === "createdAt") {
+			setSortBy(sort);
+		}
+		setUnusedOnly(searchParams.get("unused") === "1");
+		const initialPage = Number(searchParams.get("page"));
+		if (Number.isSafeInteger(initialPage) && initialPage >= 0) {
+			setPage(Math.min(initialPage, 10000));
+		}
+		if (
+			searchParams.get("tab") === "actions" ||
+			searchParams.get("action") ||
+			searchParams.get("prompt")
+		) {
+			setPageTab("actions");
+		}
+		setUrlReady(true);
+	}, [searchParams]);
+	useEffect(() => {
+		if (!urlReady) {
+			return;
+		}
+		const query = new URLSearchParams(window.location.search);
+		for (const [key, value] of Object.entries({
+			search: searchQuery,
+			scope: scopeFilter === "all" ? "" : scopeFilter,
+			view: viewMode === "list" ? "" : viewMode,
+			sort: sortBy === "updatedAt" ? "" : sortBy,
+			unused: unusedOnly ? "1" : "",
+			tab: pageTab === "prompts" ? "" : pageTab,
+			page: page ? String(page) : "",
+		})) {
+			if (value) {
+				query.set(key, value);
+			} else {
+				query.delete(key);
+			}
+		}
+		const url = `${promptsPath}${query.size ? `?${query}` : ""}`;
+		if (`${window.location.pathname}${window.location.search}` !== url) {
+			window.history.replaceState(window.history.state, "", url);
+		}
+	}, [
+		urlReady,
+		searchQuery,
+		scopeFilter,
+		viewMode,
+		sortBy,
+		unusedOnly,
+		pageTab,
+		page,
+		promptsPath,
+	]);
+
+	const incomingAction = searchParams.get("action");
+	const incomingPrompt = searchParams.get("prompt");
+	useEffect(() => {
+		if (incomingAction || incomingPrompt) {
+			setPageTab("actions");
+		}
+	}, [incomingAction, incomingPrompt]);
 
 	// Fetch prompts with optional scope filter
 	// IMPORTANT: Pass null for personal context to prevent session fallback
@@ -87,7 +153,7 @@ export function PromptsList({ organizationId }: Props) {
 			input: {
 				organizationId: organizationId ?? null,
 				limit: 50,
-				offset: 0,
+				offset: page * 50,
 				search: debouncedSearch || undefined,
 				scope: scopeFilter === "all" ? undefined : scopeFilter,
 				sortBy,
@@ -99,20 +165,6 @@ export function PromptsList({ organizationId }: Props) {
 	);
 
 	const prompts = data?.prompts ?? [];
-
-	// Deep-links that name an action or a prompt (?action=, ?prompt= — the FR8
-	// notification link and the FR14 selector link) are answers to "show me the
-	// actions view", so arriving with one opens that tab directly.
-	const appliedDeepLink = useRef(false);
-	useEffect(() => {
-		if (appliedDeepLink.current) {
-			return;
-		}
-		if (searchParams.get("action") || searchParams.get("prompt")) {
-			setPageTab("actions");
-			appliedDeepLink.current = true;
-		}
-	}, [searchParams]);
 
 	return (
 		<div className="space-y-6">
@@ -133,9 +185,10 @@ export function PromptsList({ organizationId }: Props) {
 			    in force matters more than what type it shapes. */}
 					<Tabs
 						value={scopeFilter}
-						onValueChange={(v) =>
-							setScopeFilter(v as typeof scopeFilter)
-						}
+						onValueChange={(v) => {
+							setScopeFilter(v as typeof scopeFilter);
+							setPage(0);
+						}}
 					>
 						<TabsList
 							data-onboarding-target="prompts-scope"
@@ -164,9 +217,10 @@ export function PromptsList({ organizationId }: Props) {
 								<SearchInput
 									placeholder="Search prompts..."
 									value={searchQuery}
-									onChange={(e) =>
-										setSearchQuery(e.target.value)
-									}
+									onChange={(e) => {
+										setSearchQuery(e.target.value);
+										setPage(0);
+									}}
 									className="pl-9"
 								/>
 							</div>
@@ -200,16 +254,17 @@ export function PromptsList({ organizationId }: Props) {
 							{/* Unused only (Fizzy #2068 F13): bound to no action */}
 							<Button
 								variant={unusedOnly ? "default" : "outline"}
-								onClick={() => setUnusedOnly((v) => !v)}
+								onClick={() => {
+									setUnusedOnly((v) => !v);
+									setPage(0);
+								}}
 								aria-pressed={unusedOnly}
 							>
 								Unused only
 							</Button>
 						</div>
 
-						{/* Wraps like its sibling above: in an org context this row
-						    carries the view toggle plus four labelled buttons, which
-						    overflows a phone viewport on one line. */}
+						{/* Less frequent default management stays in one menu. */}
 						<div className="flex flex-wrap items-center justify-end gap-2">
 							{/* View Toggle */}
 							<div className="flex gap-1 border rounded-md p-1">
@@ -222,6 +277,7 @@ export function PromptsList({ organizationId }: Props) {
 									size="icon-sm"
 									onClick={() => setViewMode("grid")}
 									aria-label="Grid view"
+									aria-pressed={viewMode === "grid"}
 								>
 									<GridIcon className="h-4 w-4" />
 								</Button>
@@ -234,64 +290,63 @@ export function PromptsList({ organizationId }: Props) {
 									size="icon-sm"
 									onClick={() => setViewMode("list")}
 									aria-label="List view"
+									aria-pressed={viewMode === "list"}
 								>
 									<ListIcon className="h-4 w-4" />
 								</Button>
 							</div>
 
-							{/* My personal defaults across all actions (F8). Personal
-					    defaults follow the user across organizations, so unlike
-					    Org Overrides this is not gated on an org context. */}
-							<Button
-								variant="outline"
-								onClick={() =>
-									router.push(`${promptsPath}/my-overrides`)
-								}
-								title="The prompts you personally chose for actions, in place of the organization's or Fabric's defaults. Follows you across organizations."
-							>
-								My Overrides
-							</Button>
-
-							{/* Org-wide coverage. Personal context has no org to govern. */}
-							{organizationId && (
-								<>
-									<Button
-										variant="outline"
-										onClick={() =>
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button variant="outline">
+										Defaults{" "}
+										<ChevronDownIcon
+											className="ml-2 size-4"
+											aria-hidden="true"
+										/>
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end">
+									<DropdownMenuItem
+										onSelect={() =>
 											router.push(
-												`${promptsPath}/governance`,
+												`${promptsPath}/my-overrides`,
 											)
 										}
-										title="Where this organization has replaced Fabric's default prompt for an action with its own, and which actions still run on Fabric's."
 									>
-										<ShieldCheckIcon className="mr-2 h-4 w-4" />
-										Org Overrides
-									</Button>
-									<Button
-										variant="outline"
-										onClick={() =>
-											router.push(
-												`${promptsPath}/nominations`,
-											)
-										}
-										title="Prompts members have proposed as the organization's default for an action, waiting for an admin to accept or decline."
-									>
-										<InboxIcon className="mr-2 h-4 w-4" />
-										Proposed defaults
-									</Button>
-								</>
-							)}
+										My Overrides
+									</DropdownMenuItem>
+									{organizationId && (
+										<>
+											<DropdownMenuItem
+												onSelect={() =>
+													router.push(
+														`${promptsPath}/governance`,
+													)
+												}
+											>
+												<ShieldCheckIcon className="mr-2 size-4" />
+												Org Overrides
+											</DropdownMenuItem>
+											<DropdownMenuItem
+												onSelect={() =>
+													router.push(
+														`${promptsPath}/nominations`,
+													)
+												}
+											>
+												<InboxIcon className="mr-2 size-4" />
+												Proposed defaults
+											</DropdownMenuItem>
+										</>
+									)}
+								</DropdownMenuContent>
+							</DropdownMenu>
 
-							{/* Create Button */}
-							<Button
-								data-onboarding-target="prompts-new"
-								onClick={() =>
-									router.push(`${promptsPath}/new`)
-								}
-							>
-								<PlusIcon className="h-4 w-4 mr-2" />
-								New Prompt
-							</Button>
+							<CreatePromptMenu
+								path={promptsPath}
+								returnTo={`${promptsPath}?${searchParams.toString()}`}
+							/>
 						</div>
 					</div>
 
@@ -311,20 +366,32 @@ export function PromptsList({ organizationId }: Props) {
 					) : prompts.length === 0 ? (
 						<div className="text-center py-12">
 							<p className="text-muted-foreground mb-4">
-								{searchQuery || scopeFilter !== "all"
-									? "No prompts found matching your filters"
-									: "No prompts yet. Create your first prompt to get started!"}
+								{page > 0
+									? "No prompts on this page. Go back to the previous page."
+									: searchQuery ||
+											scopeFilter !== "all" ||
+											unusedOnly
+										? "No prompts found matching your filters"
+										: "No prompts yet. Create your first prompt to get started!"}
 							</p>
-							{!searchQuery && scopeFilter === "all" && (
-								<Button
-									onClick={() =>
-										router.push(`${promptsPath}/new`)
-									}
-								>
-									<PlusIcon className="h-4 w-4 mr-2" />
-									Create Your First Prompt
-								</Button>
-							)}
+							{page === 0 &&
+								!unusedOnly &&
+								!searchQuery &&
+								scopeFilter === "all" && (
+									<Button
+										disabled={
+											userRole !== "owner" &&
+											userRole !== "admin"
+										}
+										title="Organization owners and administrators can create shared prompts."
+										onClick={() =>
+											router.push(`${promptsPath}/new`)
+										}
+									>
+										<PlusIcon className="h-4 w-4 mr-2" />
+										Create Your First Prompt
+									</Button>
+								)}
 						</div>
 					) : viewMode === "grid" ? (
 						<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -338,6 +405,32 @@ export function PromptsList({ organizationId }: Props) {
 						</div>
 					) : (
 						<PromptsListView prompts={prompts} onUpdate={refetch} />
+					)}
+					{((data?.total || 0) > 50 || page > 0) && (
+						<div className="flex flex-wrap items-center justify-between gap-3">
+							<p className="text-sm text-muted-foreground">
+								Page {page + 1} · {data?.total} prompts
+							</p>
+							<div className="flex gap-2">
+								<Button
+									variant="outline"
+									disabled={page === 0 || isLoading}
+									onClick={() => setPage((v) => v - 1)}
+								>
+									Previous
+								</Button>
+								<Button
+									variant="outline"
+									disabled={
+										(page + 1) * 50 >= (data?.total || 0) ||
+										isLoading
+									}
+									onClick={() => setPage((v) => v + 1)}
+								>
+									Next
+								</Button>
+							</div>
+						</div>
 					)}
 				</TabsContent>
 

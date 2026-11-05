@@ -124,7 +124,7 @@ const INTEGRATION_CATEGORIES: IntegrationCategory[] = [
 	{
 		id: "web",
 		label: "Web & Data",
-		integrations: ["FIRECRAWL", "GITHUB", "FAL"],
+		integrations: ["FIRECRAWL", "GITHUB", "FAL", "DATABRICKS_SQL"],
 	},
 	{
 		id: "dev-platforms",

@@ -1,4 +1,12 @@
+import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { db, type Prisma } from "../client";
+import { recordAuditTx } from "./audit-log";
+import { FrameDocumentSchema } from "./frame-document";
+import {
+	assertFrameRevision,
+	FrameUpdateConflictError,
+	nextFrameRevision,
+} from "./frame-revision";
 
 export interface SaveFrameEditInput {
 	frameId: string;
@@ -38,6 +46,7 @@ export async function saveFrameEdit(
 			newString: input.newString,
 			contentSnapshot: input.contentSnapshot,
 			editedBy: input.editedBy,
+			editedAt: new Date(),
 			revertedToVersion: input.revertedToVersion,
 		},
 	});
@@ -61,7 +70,7 @@ export async function getFrameEditHistory(
 ): Promise<FrameEditHistoryEntry[]> {
 	const entries = await db.frameEditHistory.findMany({
 		where: { frameId },
-		orderBy: { editedAt: "desc" },
+		orderBy: [{ editedAt: "desc" }, { id: "desc" }],
 		take: limit,
 	});
 
@@ -86,7 +95,7 @@ export async function getFrameEditByVersion(
 	// Version 0 is the current state, so we look for the Nth entry from the end
 	const entries = await client.frameEditHistory.findMany({
 		where: { frameId },
-		orderBy: { editedAt: "asc" },
+		orderBy: [{ editedAt: "asc" }, { id: "asc" }],
 		skip: version - 1,
 		take: 1,
 	});
@@ -113,6 +122,7 @@ export interface EditFrameStringInput {
 	frameId: string;
 	userId: string;
 	organizationId?: string;
+	expectedUpdatedAt?: Date;
 	oldString: string;
 	newString: string;
 	expectedReplacements?: number;
@@ -175,23 +185,81 @@ export async function editFrameString(
 	// Perform replacement
 	const newContent = content.split(input.oldString).join(input.newString);
 
-	// Save edit to history
-	await saveFrameEdit({
-		frameId: input.frameId,
-		editType: "string_replace",
-		oldString: input.oldString,
-		newString: input.newString,
-		editedBy: input.userId,
-	});
-
-	// Update frame content
-	await db.agentWorkspaceFile.update({
-		where: { id: input.frameId },
-		data: {
-			content: newContent,
-			size: Buffer.byteLength(newContent, "utf8"),
-		},
-	});
+	try {
+		const before = JSON.parse(content);
+		const after = JSON.parse(newContent);
+		if (
+			!FrameDocumentSchema.safeParse(after).success ||
+			JSON.stringify(before.metadata) !== JSON.stringify(after.metadata)
+		) {
+			return {
+				success: false,
+				replacementsMade: 0,
+				newContent: content,
+				error: "String edits must preserve a valid page and its tool access. Use the content editor instead.",
+			};
+		}
+	} catch {
+		return {
+			success: false,
+			replacementsMade: 0,
+			newContent: content,
+			error: "String edit would break the page document.",
+		};
+	}
+	// A legacy string edit is still a compare-and-swap, and its snapshot is restorable.
+	assertFrameRevision(input.expectedUpdatedAt, frame.updatedAt);
+	throwIfDispatchStopped();
+	await db
+		.$transaction(async (tx) => {
+			await tx.$queryRaw`SELECT id FROM agent_workspace_file WHERE id = ${input.frameId} FOR UPDATE`;
+			await saveFrameEdit(
+				{
+					frameId: input.frameId,
+					editType: "string_replace",
+					oldString: input.oldString,
+					newString: input.newString,
+					contentSnapshot: frame.content,
+					editedBy: input.userId,
+				},
+				tx,
+			);
+			const updated = await tx.agentWorkspaceFile.update({
+				where: {
+					id: input.frameId,
+					updatedAt: input.expectedUpdatedAt ?? frame.updatedAt,
+				},
+				data: {
+					content: newContent,
+					size: Buffer.byteLength(newContent, "utf8"),
+					updatedAt: nextFrameRevision(frame.updatedAt),
+				},
+			});
+			if (input.organizationId) {
+				await recordAuditTx(tx, {
+					action: "frame.updated",
+					organizationId: input.organizationId,
+					actor: { type: "user", userId: input.userId },
+					resource: { type: "frame", id: input.frameId },
+					projectId: frame.projectId,
+					metadata: {
+						revision: updated.updatedAt.toISOString(),
+						editType: "string_replace",
+					},
+				});
+			}
+		})
+		.catch((error: unknown) => {
+			if (
+				error &&
+				typeof error === "object" &&
+				"code" in error &&
+				error.code === "P2025"
+			) {
+				throw new FrameUpdateConflictError();
+			}
+			throw error;
+		});
 
 	return {
 		success: true,
@@ -204,12 +272,15 @@ export interface RevertFrameInput {
 	frameId: string;
 	userId: string;
 	organizationId?: string;
-	toVersion: number;
+	toVersion?: number;
+	historyEntryId?: string;
+	expectedUpdatedAt?: Date;
 }
 
 export interface RevertFrameResult {
 	success: boolean;
 	newContent?: string;
+	updatedAt?: string;
 	error?: string;
 }
 
@@ -282,16 +353,25 @@ export async function revertFrameToVersion(
 			};
 		}
 
-		const historyEntry = await getFrameEditByVersion(
-			input.frameId,
-			input.toVersion,
-			tx,
-		);
+		assertFrameRevision(input.expectedUpdatedAt, frame.updatedAt);
+		const historyEntry = input.historyEntryId
+			? await tx.frameEditHistory.findFirst({
+					where: { id: input.historyEntryId, frameId: input.frameId },
+				})
+			: input.toVersion
+				? await getFrameEditByVersion(
+						input.frameId,
+						input.toVersion,
+						tx,
+					)
+				: null;
 
 		if (!historyEntry || !historyEntry.contentSnapshot) {
 			return {
 				success: false,
-				error: `Version ${input.toVersion} not found or has no snapshot`,
+				error: input.historyEntryId
+					? "Saved version not found or has no snapshot"
+					: `Version ${input.toVersion} not found or has no snapshot`,
 			};
 		}
 
@@ -299,10 +379,16 @@ export async function revertFrameToVersion(
 			historyEntry.contentSnapshot,
 			frame.content,
 		);
-		if (restored === null) {
+		const restoredPage =
+			restored === null
+				? null
+				: FrameDocumentSchema.safeParse(JSON.parse(restored));
+		if (restored === null || !restoredPage?.success) {
 			return {
 				success: false,
-				error: `Version ${input.toVersion} cannot be restored`,
+				error: input.historyEntryId
+					? "Saved version cannot be restored"
+					: `Version ${input.toVersion} cannot be restored`,
 			};
 		}
 
@@ -319,16 +405,34 @@ export async function revertFrameToVersion(
 			tx,
 		);
 
-		await tx.agentWorkspaceFile.update({
-			where: { id: input.frameId },
+		throwIfDispatchStopped();
+		const updated = await tx.agentWorkspaceFile.update({
+			where: { id: input.frameId, updatedAt: frame.updatedAt },
 			data: {
+				updatedAt: nextFrameRevision(frame.updatedAt),
+				name: `${restoredPage.data.title}.frame.json`,
+				description: restoredPage.data.description ?? null,
 				content: restored,
 				size: Buffer.byteLength(restored, "utf8"),
 			},
 		});
 
+		if (input.organizationId) {
+			await recordAuditTx(tx, {
+				action: "frame.restored",
+				organizationId: input.organizationId,
+				actor: { type: "user", userId: input.userId },
+				resource: { type: "frame", id: input.frameId },
+				projectId: frame.projectId,
+				metadata: {
+					historyEntryId: historyEntry.id,
+					revision: updated.updatedAt.toISOString(),
+				},
+			});
+		}
 		return {
 			success: true,
+			updatedAt: updated.updatedAt.toISOString(),
 			newContent: restored,
 		};
 	});

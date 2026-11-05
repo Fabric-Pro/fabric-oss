@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
 	model: vi.fn(),
 	tool: vi.fn(),
+	patchEnabled: true,
 	options: [] as Array<Record<string, unknown>>,
 }));
 vi.mock("@temporalio/workflow", () => ({
+	patched: () => m.patchEnabled,
 	workflowInfo: () => ({ workflowId: "example-workflow" }),
 	proxyActivities: (options: Record<string, unknown>) => {
 		m.options.push(options);
@@ -48,6 +50,7 @@ const messages = [
 beforeEach(() => {
 	vi.resetAllMocks();
 	m.options.length = 0;
+	m.patchEnabled = true;
 	m.model
 		.mockResolvedValueOnce({
 			success: true,
@@ -192,6 +195,113 @@ describe("durable saved-agent workflow orchestration", () => {
 		});
 		expect(m.tool).toHaveBeenCalledTimes(1);
 		expect(m.model).toHaveBeenCalledTimes(2);
+	});
+	it("cancels before the first model without dispatching anything", async () => {
+		const result = await executeDurableSavedAgentTurn(input, {
+			isCancelled: () => true,
+		});
+		expect(result).toMatchObject({
+			success: false,
+			cancelled: true,
+			toolCalls: [],
+		});
+		expect(m.model).not.toHaveBeenCalled();
+		expect(m.tool).not.toHaveBeenCalled();
+	});
+	it("retains an acknowledged model result but starts no tool if cancelled during the model Activity", async () => {
+		let cancelled = false;
+		m.model.mockReset().mockImplementationOnce(async () => {
+			cancelled = true;
+			return {
+				success: true,
+				response: "Partial model result",
+				tokenUsage: { inputTokens: 3, outputTokens: 2 },
+				modelStep: { messages, toolCalls: calls },
+			};
+		});
+		const result = await executeDurableSavedAgentTurn(input, {
+			isCancelled: () => cancelled,
+		});
+		expect(result).toMatchObject({
+			cancelled: true,
+			response: "Partial model result",
+			tokenUsage: { inputTokens: 3, outputTokens: 2 },
+		});
+		expect(m.tool).not.toHaveBeenCalled();
+	});
+	it("awaits an in-flight effect acknowledgement before cancellation and never starts its sibling or another model", async () => {
+		let cancelled = false;
+		let acknowledge = () => {};
+		let markStarted = () => {};
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		const acknowledged = new Promise<void>((resolve) => {
+			acknowledge = resolve;
+		});
+		m.tool.mockImplementationOnce(async ({ decision, effectId }) => {
+			markStarted();
+			await acknowledged;
+			return {
+				...decision,
+				result: { acknowledged: true },
+				status: "success",
+				durationMs: 1,
+				effectId,
+			};
+		});
+		const running = executeDurableSavedAgentTurn(input, {
+			isCancelled: () => cancelled,
+		});
+		await started;
+		cancelled = true;
+		expect(m.tool).toHaveBeenCalledTimes(1);
+		acknowledge();
+		const result = await running;
+		expect(result).toMatchObject({
+			cancelled: true,
+			toolCalls: [
+				{
+					id: calls[0].id,
+					status: "success",
+					result: { acknowledged: true },
+				},
+			],
+		});
+		expect(m.tool).toHaveBeenCalledTimes(1);
+		expect(m.model).toHaveBeenCalledTimes(1);
+		expect(m.tool.mock.calls[0][0]).not.toHaveProperty("isCancelled");
+	});
+	it("retains an unacknowledged effect inspection record when cancellation arrives during dispatch", async () => {
+		let cancelled = false;
+		m.tool.mockImplementationOnce(async () => {
+			cancelled = true;
+			throw new Error("Example lost acknowledgement");
+		});
+		const result = await executeDurableSavedAgentTurn(input, {
+			isCancelled: () => cancelled,
+		});
+		expect(result).toMatchObject({
+			cancelled: true,
+			toolCalls: [
+				{ status: "pending", result: { inspectionRequired: true } },
+			],
+		});
+		expect(m.tool).toHaveBeenCalledTimes(1);
+		expect(m.model).toHaveBeenCalledTimes(1);
+	});
+	it("preserves the pre-cancellation-patch branch for recorded histories", async () => {
+		m.patchEnabled = false;
+		const result = await executeDurableSavedAgentTurn(input, {
+			isCancelled: () => true,
+		});
+		expect(result).toMatchObject({
+			success: true,
+			response: "Exact final response",
+		});
+		expect(result.cancelled).toBeUndefined();
+		expect(m.model).toHaveBeenCalledTimes(2);
+		expect(m.tool).toHaveBeenCalledTimes(2);
 	});
 	it("refuses oversized accumulated context before dispatching a model or effect", async () => {
 		expect(

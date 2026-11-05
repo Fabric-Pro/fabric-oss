@@ -20,11 +20,15 @@
  */
 
 import { type FabricClientOptions, FabricHttpClient } from "./client.js";
+import { AgentPreviewsResource } from "./resources/agent-previews.js";
+import { AgentRunsResource } from "./resources/agent-runs.js";
+import { AgentTestsResource } from "./resources/agent-tests.js";
 import { AgentsResource } from "./resources/agents.js";
 import { ApprovalsResource } from "./resources/approvals.js";
 import { AuthResource } from "./resources/auth.js";
 import { ChannelsResource } from "./resources/channels.js";
 import { ChatsResource } from "./resources/chats.js";
+import { ContextQualityResource } from "./resources/context-quality.js";
 import { ContextsResource } from "./resources/contexts.js";
 import { FramesResource } from "./resources/frames.js";
 import { InstructionsResource } from "./resources/instructions.js";
@@ -61,11 +65,15 @@ export class FabricClient {
 	readonly workflows: WorkflowsResource;
 	readonly prompts: PromptsResource;
 	readonly agents: AgentsResource;
+	readonly agentRuns: AgentRunsResource;
+	readonly agentPreviews: AgentPreviewsResource;
+	readonly agentTests: AgentTestsResource;
 	readonly skills: SkillsResource;
 	readonly mcp: McpResource;
 	readonly frames: FramesResource;
 	readonly instructions: InstructionsResource;
 	readonly contexts: ContextsResource;
+	readonly contextQuality: ContextQualityResource;
 	readonly memory: MemoryResource;
 	readonly workspaces: WorkspacesResource;
 	readonly chats: ChatsResource;
@@ -96,11 +104,15 @@ export class FabricClient {
 		this.workflows = new WorkflowsResource(this.http);
 		this.prompts = new PromptsResource(this.http);
 		this.agents = new AgentsResource(this.http);
+		this.agentRuns = new AgentRunsResource(this.http);
+		this.agentPreviews = new AgentPreviewsResource(this.http);
+		this.agentTests = new AgentTestsResource(this.http);
 		this.skills = new SkillsResource(this.http);
 		this.mcp = new McpResource(this.http);
 		this.frames = new FramesResource(this.http);
 		this.instructions = new InstructionsResource(this.http);
 		this.contexts = new ContextsResource(this.http);
+		this.contextQuality = new ContextQualityResource(this.http);
 		this.memory = new MemoryResource(this.http);
 		this.workspaces = new WorkspacesResource(this.http);
 		this.chats = new ChatsResource(this.http);
@@ -155,7 +167,36 @@ export {
 	projectRulePathFor,
 } from "./plugin-mapping.js";
 export type {
+	AgentPreviewCancelResult,
+	AgentPreviewDraft,
+	AgentPreviewOptions,
+	AgentPreviewResult,
+	AgentPreviewStartInput,
+} from "./resources/agent-previews.js";
+export type {
+	AgentRunCancelResult,
+	AgentRunHistory,
+	AgentRunHistoryOptions,
+	AgentRunList,
+	AgentRunOptions,
+	AgentRunScheduleInput,
+	AgentRunScheduleState,
+} from "./resources/agent-runs.js";
+export type {
+	AgentTestCase,
+	AgentTestCaseCreateInput,
+	AgentTestCaseUpdateInput,
+	AgentTestChecks,
+	AgentTestComparison,
+	AgentTestListOptions,
+	AgentTestOptions,
+	AgentTestReport,
+	AgentTestRun,
+	AgentTestRunStartInput,
+} from "./resources/agent-tests.js";
+export type {
 	ExecuteAgentOptions,
+	InvokeAgentInstanceOptions,
 	InvokeAgentOptions,
 	ListAgentsOptions,
 } from "./resources/agents.js";
@@ -177,10 +218,42 @@ export type {
 	SendMessageResult,
 	UpdateChatOptions,
 } from "./resources/chats.js";
+export type {
+	AgentResultCheck,
+	AgentResultCheckInput,
+	AgentResultSnapshot,
+	ContextQualityCheckId,
+	ContextQualityCleanupStatus,
+	ContextQualityCreateRunInput,
+	ContextQualityEvaluationInput,
+	ContextQualityOptions,
+	ContextQualityRecordedCase,
+	ContextQualityReport,
+	ContextQualityResult,
+	ContextQualityRunCapabilities,
+	ContextQualityRunComparison,
+	ContextQualityRunList,
+	ContextQualityRunListOptions,
+	ContextQualityRunResponse,
+	ContextQualityRunStatus,
+	ContextQualitySavedRun,
+	ContextQualitySourceSnapshot,
+} from "./resources/context-quality.js";
 export {
+	type ContextManifest,
+	type ContextManifestOptions,
+	type ContextManifestSource,
+	type ContextSelectionInput,
+	type ContextSelectionReference,
 	type DeletedSyncedContextFileResult,
 	type DeleteSyncedContextFileInput,
 	FabricContextConflictError,
+	type LinkedWorkspaceDocumentContent,
+	type LinkWorkspaceDocumentInput,
+	type ProjectWorkspaceDocumentLink,
+	type ProjectWorkspaceDocumentLinksPage,
+	type SelectedContextPacket,
+	type SelectedContextSource,
 	type SyncedContextFileConflict,
 	type SyncedContextFileCurrentVersion,
 	type SyncedContextFileMoveNotApplied,
@@ -189,7 +262,17 @@ export {
 	type UpsertSyncedContextFileInput,
 	type UpsertSyncedContextFileOptions,
 } from "./resources/contexts.js";
-export type { ListFramesOptions } from "./resources/frames.js";
+export type {
+	FrameContentEdit,
+	FrameExportInput,
+	FrameExportStatus,
+	FrameRevokeSharingInput,
+	FrameShareInput,
+	FrameSharingResult,
+	FrameSharingState,
+	FrameVersionEntry,
+	ListFramesOptions,
+} from "./resources/frames.js";
 export type {
 	DirectInstructionRepositoryFilesRead,
 	ReadDirectInstructionRepositoryFilesInput,
@@ -290,22 +373,65 @@ export {
 export type {
 	CreatePromptOptions,
 	ListPromptsOptions,
+	PromptAssistance,
+	PromptAssistanceInput,
+	PromptDraft,
+	PromptPreview,
+	PromptPreviewInput,
+	PromptResponseContract,
 	UpdatePromptOptions,
 } from "./resources/prompts.js";
 export type {
 	ListReportExecutionsOptions,
 	ListReportTemplatesOptions,
 } from "./resources/reports.js";
-export type { ListSkillsOptions } from "./resources/skills.js";
+export type {
+	ListSkillsOptions,
+	SkillAssistInput,
+	SkillAssistResult,
+	SkillAuthoringDraft,
+	SkillCatalogTab,
+	SkillContextOptions,
+	SkillCreateInput,
+	SkillFileContent,
+	SkillFileReadInput,
+	SkillGovernance,
+	SkillGovernancePolicy,
+	SkillGovernanceUpdateInput,
+	SkillImportCreateInput,
+	SkillImportFileReadInput,
+	SkillImportPreview,
+	SkillImportPreviewInput,
+	SkillImportSource,
+	SkillPage,
+	SkillPolicyAudience,
+	SkillPublishInput,
+	SkillSummary,
+	SkillUpdateInput,
+	SkillVersionInput,
+} from "./resources/skills.js";
 export type {
 	FabricExecutionStatus,
 	ListExecutionsOptions,
 	ListWorkflowsOptions,
 	TriggerOptions,
+	WorkflowCheck,
+	WorkflowCheckComparison,
+	WorkflowCheckScore,
+	WorkflowLifecycleResult,
+	WorkflowReadiness,
+	WorkflowResultInspection,
+	WorkflowScheduleState,
+	WorkflowStarter,
+	WorkflowVersionSummary,
 } from "./resources/workflows.js";
 export type {
+	ListWorkspaceDocumentsOptions,
 	ListWorkspacesOptions,
 	QueryWorkspaceOptions,
+	ReadWorkspaceDocumentOptions,
+	WorkspaceDocumentContentPage,
+	WorkspaceDocumentListPage,
 	WorkspaceQueryHit,
 } from "./resources/workspaces.js";
 // Re-export types for consumers

@@ -508,6 +508,8 @@ const FEATURE_LABELS: Record<string, string> = {
 	"document-generation": "Document generation",
 	"agent-document-generation": "Agent document generation",
 	"prompt-enhancement": "Prompt enhancement",
+	"prompt-assistance": "Prompt assistance",
+	"prompt-preview": "Prompt preview",
 	"generate-tasks": "Generate tasks",
 	"enhance-feature": "Enhance feature",
 	"regenerate-title": "Regenerate title",

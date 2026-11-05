@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { generateId } from "../../utils";
 import { db } from "../client";
 import {
@@ -10,8 +11,27 @@ import {
 	type ScheduleMode,
 	type TemplateExecutionStatus,
 	type TemplateInstance,
+	type TemplateInstanceExecution,
 	type TemplateInstanceStatus,
 } from "../generated/client";
+import {
+	canAccessReportInstance,
+	createReportAccessChecker,
+	type ReportCaller,
+	reportScopeWhere,
+} from "./lib/report-access";
+import {
+	buildReportExecutionSnapshot as buildReportSnapshot,
+	getProjectReportSetupReason,
+	readReportEvidenceConfig,
+	reportExecutionSnapshotSchema,
+} from "./lib/report-evidence";
+import { assertPinnedSkillAccess, assertSkillReadAccess } from "./skills";
+
+export * from "./lib/report-access";
+export * from "./lib/report-evidence";
+export * from "./reports-project-knowledge";
+
 import { ownerScopedTemplateSchedule } from "./lib/owner-scoped-schedule";
 import {
 	normalizeReportSchedule,
@@ -657,6 +677,17 @@ export interface CreateTemplateInstanceParams {
 export async function createTemplateInstance(
 	params: CreateTemplateInstanceParams,
 ) {
+	const template = readReportEvidenceConfig(params.fabricConfig)?.projectId
+		? await db.reportTemplate.findUnique({
+				where: { id: params.templateId },
+				select: { definition: true },
+			})
+		: null;
+	const setupRequired = !!getProjectReportSetupReason(
+		params.fabricConfig,
+		template?.definition,
+		params.connections,
+	);
 	// Generate a stable sId for this instance (remains constant across versions)
 	const sId = generateId();
 
@@ -674,7 +705,8 @@ export async function createTemplateInstance(
 			// Versioning fields
 			sId,
 			version: 1,
-			status: "ACTIVE",
+			status: setupRequired ? "DRAFT" : "ACTIVE",
+			isActive: !setupRequired,
 			// User customization
 			name: params.name,
 			description: params.description,
@@ -687,10 +719,15 @@ export async function createTemplateInstance(
 				: params.schedule === undefined
 					? undefined
 					: Prisma.DbNull,
-			nextRunAt: normalizedSchedule
-				? new Date(normalizedSchedule.anchorAt)
-				: undefined,
-			scheduleMode: params.scheduleMode ?? "INHERITED",
+			nextRunAt:
+				!setupRequired && normalizedSchedule
+					? new Date(normalizedSchedule.anchorAt)
+					: setupRequired
+						? null
+						: undefined,
+			scheduleMode: setupRequired
+				? "OFF"
+				: (params.scheduleMode ?? "INHERITED"),
 		},
 		include: {
 			template: {
@@ -833,6 +870,7 @@ export async function getTemplateInstance({
 					duration: true,
 					error: true,
 					mcpDiagnostics: true,
+					parameters: true,
 					createdAt: true,
 					artifacts: {
 						select: {
@@ -858,13 +896,23 @@ export async function getTemplateInstance({
 	}
 
 	// Check access
-	if (instance.userId !== userId) {
-		if (instance.organizationId !== organizationId) {
-			return null;
-		}
+	const canRead = await createReportAccessChecker({ userId, organizationId });
+	if (!(await canRead(instance))) {
+		return null;
 	}
 
-	return instance;
+	const visibleExecutions = [];
+	for (const execution of instance.executions) {
+		if (await canRead(instance, execution.parameters)) {
+			visibleExecutions.push(execution);
+		}
+	}
+	return {
+		...instance,
+		executions: visibleExecutions.map(
+			({ parameters: _parameters, ...execution }) => execution,
+		),
+	};
 }
 
 /** Read just the scheduleMode for a dispatch-time re-check. */
@@ -882,6 +930,7 @@ export interface ListTemplateInstancesParams {
 	userId: string;
 	organizationId?: string;
 	templateId?: string;
+	projectId?: string;
 	/** @deprecated Use status instead */
 	isActive?: boolean;
 	status?: TemplateInstanceStatus | TemplateInstanceStatus[];
@@ -898,6 +947,7 @@ export async function listTemplateInstances({
 	userId,
 	organizationId,
 	templateId,
+	projectId,
 	isActive,
 	status,
 	search,
@@ -913,6 +963,15 @@ export async function listTemplateInstances({
 	const where: Prisma.TemplateInstanceWhereInput = organizationId
 		? { userId, organizationId } // Org context: user's instances only
 		: { userId, organizationId: null }; // Personal context: user's personal instances
+
+	Object.assign(where, await reportScopeWhere({ userId, organizationId }));
+
+	if (projectId) {
+		where.fabricConfig = {
+			path: ["reporting", "projectId"],
+			equals: projectId,
+		};
+	}
 
 	if (templateId) {
 		where.templateId = templateId;
@@ -995,6 +1054,7 @@ export async function listTemplateInstances({
 						id: true,
 						name: true,
 						templateType: true,
+						definition: true,
 						heroEmojis: true,
 					},
 				},
@@ -1112,7 +1172,13 @@ export async function updateTemplateInstance({
 					organizationId: current.organizationId,
 					sId: current.sId, // Keep same sId
 					version: current.version + 1, // Increment version
-					status: "ACTIVE",
+					status: getProjectReportSetupReason(
+						data.fabricConfig ?? current.fabricConfig,
+						current.template.definition,
+						data.connections ?? current.connections,
+					)
+						? "DRAFT"
+						: "ACTIVE",
 					// Apply updates or keep current values
 					name: data.name ?? current.name,
 					description: data.description ?? current.description,
@@ -1315,7 +1381,11 @@ export async function getReportInstanceVersion(
  */
 export async function getReportInstanceVersionHistory(
 	sId: string,
-	options?: { limit?: number; includeArchived?: boolean },
+	options?: {
+		limit?: number;
+		includeArchived?: boolean;
+		caller?: ReportCaller;
+	},
 ): Promise<
 	Array<
 		TemplateInstance & {
@@ -1336,7 +1406,7 @@ export async function getReportInstanceVersionHistory(
 		where.status = { not: "ARCHIVED" };
 	}
 
-	return db.templateInstance.findMany({
+	const rows = await db.templateInstance.findMany({
 		where,
 		orderBy: { version: "desc" },
 		take: options?.limit,
@@ -1350,18 +1420,15 @@ export async function getReportInstanceVersionHistory(
 				},
 			},
 		},
-	}) as unknown as Promise<
-		Array<
-			TemplateInstance & {
-				template: {
-					id: string;
-					name: string;
-					templateType: string;
-					heroEmojis: string[];
-				};
-			}
-		>
-	>;
+	});
+	const visible = [];
+	const canRead = await createReportAccessChecker(options?.caller);
+	for (const row of rows) {
+		if (await canRead(row)) {
+			visible.push(row);
+		}
+	}
+	return visible;
 }
 
 /**
@@ -1394,6 +1461,7 @@ export async function restoreReportInstanceVersion(
 ): Promise<TemplateInstance> {
 	const archived = await db.templateInstance.findUnique({
 		where: { id },
+		include: { template: { select: { definition: true } } },
 	});
 
 	if (!archived) {
@@ -1422,7 +1490,13 @@ export async function restoreReportInstanceVersion(
 			organizationId: archived.organizationId,
 			sId: archived.sId,
 			version: newVersion,
-			status: "ACTIVE",
+			status: getProjectReportSetupReason(
+				archived.fabricConfig,
+				archived.template?.definition,
+				archived.connections,
+			)
+				? "DRAFT"
+				: "ACTIVE",
 			name: archived.name,
 			description: archived.description,
 			heroEmojis: archived.heroEmojis,
@@ -1430,9 +1504,19 @@ export async function restoreReportInstanceVersion(
 			parameterDefaults: archived.parameterDefaults ?? Prisma.DbNull,
 			fabricConfig: archived.fabricConfig ?? Prisma.DbNull,
 			schedule: archived.schedule ?? Prisma.DbNull,
-			scheduleMode: archived.scheduleMode,
+			scheduleMode: getProjectReportSetupReason(
+				archived.fabricConfig,
+				archived.template?.definition,
+				archived.connections,
+			)
+				? "OFF"
+				: archived.scheduleMode,
 			nextRunAt: null,
-			isActive: true,
+			isActive: !getProjectReportSetupReason(
+				archived.fabricConfig,
+				archived.template?.definition,
+				archived.connections,
+			),
 			runCount: 0,
 			lastRunAt: null,
 		},
@@ -1455,6 +1539,7 @@ export async function restoreReportInstanceVersion(
 // =============================================================================
 
 export interface CreateTemplateInstanceExecutionParams {
+	id?: string;
 	instanceId: string;
 	userId: string;
 	organizationId?: string;
@@ -1468,6 +1553,7 @@ export async function createTemplateInstanceExecution(
 ) {
 	return db.templateInstanceExecution.create({
 		data: {
+			id: params.id,
 			instanceId: params.instanceId,
 			userId: params.userId,
 			organizationId: params.organizationId,
@@ -1609,8 +1695,11 @@ export async function deleteTemplateInstanceArtifactsForExecution(
 	return result.count;
 }
 
-export async function getTemplateInstanceExecution(id: string) {
-	return db.templateInstanceExecution.findUnique({
+export async function getTemplateInstanceExecution(
+	id: string,
+	caller?: ReportCaller,
+) {
+	const execution = await db.templateInstanceExecution.findUnique({
 		where: { id },
 		include: {
 			instance: {
@@ -1618,12 +1707,20 @@ export async function getTemplateInstanceExecution(id: string) {
 					id: true,
 					name: true,
 					templateId: true,
+					userId: true,
+					organizationId: true,
+					fabricConfig: true,
+					connections: true,
+					isActive: true,
+					status: true,
+					scheduleMode: true,
 					template: {
 						select: {
 							id: true,
 							name: true,
 							templateType: true,
 							outputFormat: true,
+							definition: true,
 						},
 					},
 				},
@@ -1633,6 +1730,31 @@ export async function getTemplateInstanceExecution(id: string) {
 			},
 		},
 	});
+	if (!execution) {
+		return null;
+	}
+	// Existing internal callers may read unbound rows; project-bound rows always require an actor.
+	if (
+		caller ||
+		(
+			execution.instance.fabricConfig as {
+				reporting?: { projectId?: string };
+			} | null
+		)?.reporting?.projectId ||
+		(execution.parameters as Record<string, unknown> | null)
+			?.__fabricReportExecution
+	) {
+		if (
+			!(await canAccessReportInstance(
+				execution.instance,
+				caller,
+				execution.parameters,
+			))
+		) {
+			return null;
+		}
+	}
+	return execution;
 }
 
 export interface ListTemplateInstanceExecutionsParams {
@@ -1657,6 +1779,11 @@ export async function listTemplateInstanceExecutions({
 	// In personal context: user's personal executions (organizationId must be null)
 	const where: Prisma.TemplateInstanceExecutionWhereInput = {};
 
+	const allowedInstances = await reportScopeWhere({
+		userId: userId ?? "",
+		organizationId,
+	});
+	where.instance = allowedInstances;
 	if (instanceId) {
 		where.instanceId = instanceId;
 	}
@@ -1671,6 +1798,35 @@ export async function listTemplateInstanceExecutions({
 	if (status) {
 		where.status = status;
 	}
+
+	const candidates = await db.templateInstanceExecution.findMany({
+		where,
+		select: {
+			id: true,
+			parameters: true,
+			instance: {
+				select: {
+					userId: true,
+					organizationId: true,
+					fabricConfig: true,
+				},
+			},
+		},
+		take: 5001,
+	});
+	const visibleIds: string[] = [];
+	const canRead = await createReportAccessChecker({
+		userId: userId ?? "",
+		organizationId,
+	});
+	if (candidates.length <= 5000) {
+		for (const row of candidates) {
+			if (await canRead(row.instance, row.parameters)) {
+				visibleIds.push(row.id);
+			}
+		}
+	}
+	where.id = { in: visibleIds };
 
 	const [executions, total] = await Promise.all([
 		db.templateInstanceExecution.findMany({
@@ -1743,25 +1899,56 @@ export async function createTemplateInstanceArtifact(
 	});
 }
 
-export async function getTemplateInstanceArtifact(id: string) {
-	return db.templateInstanceArtifact.findUnique({
+export async function getTemplateInstanceArtifact(
+	id: string,
+	caller?: ReportCaller,
+) {
+	const artifact = await db.templateInstanceArtifact.findUnique({
 		where: { id },
 		include: {
 			execution: {
 				select: {
 					id: true,
 					status: true,
+					parameters: true,
 					createdAt: true,
 					instance: {
 						select: {
 							id: true,
 							name: true,
+							userId: true,
+							organizationId: true,
+							fabricConfig: true,
 						},
 					},
 				},
 			},
 		},
 	});
+	if (!artifact) {
+		return null;
+	}
+	if (
+		caller ||
+		(
+			artifact.execution.instance.fabricConfig as {
+				reporting?: { projectId?: string };
+			} | null
+		)?.reporting?.projectId ||
+		(artifact.execution.parameters as Record<string, unknown> | null)
+			?.__fabricReportExecution
+	) {
+		if (
+			!(await canAccessReportInstance(
+				artifact.execution.instance,
+				caller,
+				artifact.execution.parameters,
+			))
+		) {
+			return null;
+		}
+	}
+	return artifact;
 }
 
 export async function updateTemplateInstanceArtifactRag({
@@ -1831,6 +2018,7 @@ export async function getScheduledInstances(beforeTime: Date) {
 			// OFF rows retain their schedule but must never be swept — the user has
 			// explicitly paused scheduling for this instance.
 			scheduleMode: { not: "OFF" },
+			organizationId: { not: null },
 		},
 		include: {
 			template: {
@@ -2189,4 +2377,154 @@ export async function listTemplateInstanceArtifactEmailDeliveries(
 		.filter((entry): entry is ArtifactSendHistoryEntry => Boolean(entry));
 
 	return { sends, total };
+}
+
+/** One durable row per occurrence/request. Configuration edits never mint another key.
+ * The primary-key uniqueness fence handles concurrent dispatcher processes without locks.
+ */
+export function reportExecutionAdmissionId(workflowId: string): string {
+	return `report-${createHash("sha256").update(workflowId).digest("hex")}`;
+}
+export async function admitTemplateInstanceExecution(
+	params: CreateTemplateInstanceExecutionParams & {
+		id: string;
+		organizationId: string;
+		workflowId: string;
+	},
+) {
+	// Before this protocol, scheduled rows used random primary keys. Preserve the
+	// original row and workflow ID when such an occurrence crosses a deployment.
+	const prior = await db.templateInstanceExecution.findFirst({
+		where: { workflowId: params.workflowId },
+		orderBy: { createdAt: "asc" },
+	});
+	if (prior) {
+		if (
+			prior.instanceId !== params.instanceId ||
+			prior.organizationId !== params.organizationId ||
+			prior.userId !== params.userId
+		) {
+			throw new Error("Report admission identity mismatch");
+		}
+		return prior;
+	}
+
+	try {
+		return await createTemplateInstanceExecution(params);
+	} catch (error) {
+		if (
+			!error ||
+			typeof error !== "object" ||
+			!("code" in error) ||
+			error.code !== "P2002"
+		) {
+			throw error;
+		}
+		const existing = await db.templateInstanceExecution.findUnique({
+			where: { id: params.id },
+		});
+		if (
+			!existing ||
+			existing.instanceId !== params.instanceId ||
+			existing.organizationId !== params.organizationId ||
+			existing.userId !== params.userId ||
+			existing.workflowId !== params.workflowId
+		) {
+			throw new Error("Report admission identity mismatch");
+		}
+		return existing;
+	}
+}
+
+/** Fair bounded recovery claim. Last-attempt order (including skipped/revoked rows)
+ * advances durably before inspection, so an old poison prefix cannot starve later starts.
+ * No terminal status or uncertain remote receipt is discarded. Legacy admissions without
+ * a snapshot are handled by their existing occurrence dispatcher, not guessed here.
+ */
+export async function listPendingReportExecutionStarts(limit: number) {
+	const boundedLimit = Math.min(100, Math.max(1, Math.floor(limit)));
+	const attemptedAt = Date.now();
+	return db.$queryRaw<TemplateInstanceExecution[]>(Prisma.sql`
+	WITH candidates AS (
+		SELECT id FROM template_instance_execution
+		WHERE "organizationId" IS NOT NULL AND status IN ('PENDING', 'RUNNING') AND "runId" IS NULL AND "workflowId" IS NOT NULL
+		AND parameters #>> '{__fabricReportExecution,version}' = '1'
+		ORDER BY CASE WHEN jsonb_typeof(parameters #> '{__fabricReportRecovery,lastAttemptAtMillis}') = 'number'
+		THEN (parameters #>> '{__fabricReportRecovery,lastAttemptAtMillis}')::numeric ELSE 0 END ASC, "createdAt" ASC, id ASC
+		LIMIT ${boundedLimit} FOR UPDATE SKIP LOCKED
+	)
+	UPDATE template_instance_execution e SET parameters = jsonb_set(e.parameters, '{__fabricReportRecovery}', jsonb_build_object('lastAttemptAtMillis', ${attemptedAt}::bigint), true)
+	FROM candidates c WHERE e.id = c.id RETURNING e.*`);
+}
+
+/** Diagnostic hashes belong to the pinned payload, never the occurrence key or authorization. */
+export async function buildReportExecutionSnapshot(
+	input: Parameters<typeof buildReportSnapshot>[0],
+) {
+	const snapshot = buildReportSnapshot(input);
+	await assertSkillReadAccess(input);
+	const visible = Prisma.sql`(s."archivedAt" IS NULL AND ((s.scope = 'SYSTEM' AND s."organizationId" IS NULL AND s."userId" IS NULL AND s."isPublished" = true) OR (s.scope = 'ORGANIZATION' AND s."organizationId" = ${input.organizationId} AND (s."userId" = ${input.userId} OR s."isPublished" = true))))`;
+	const attached = await db.$queryRaw<
+		Array<{
+			id: string;
+			version: number;
+			updatedAt: Date;
+			name: string | null;
+			content: string | null;
+			authorized: boolean;
+		}>
+	>(Prisma.sql`
+	SELECT link."skillId" AS id, s.version, s."updatedAt", COALESCE(${visible}, false) AS authorized,
+	CASE WHEN ${visible} AND octet_length(s.name) <= 1024 THEN s.name ELSE NULL END AS name,
+	CASE WHEN ${visible} AND octet_length(s.content) <= 64000 THEN s.content ELSE NULL END AS content
+	FROM report_template_skill link LEFT JOIN skill s ON s.id = link."skillId"
+	WHERE link."templateId" = ${String(input.instance.templateId)}
+	ORDER BY link."sortOrder" ASC, s.id ASC LIMIT 33`);
+
+	if (attached.some((skill) => skill.authorized !== true)) {
+		throw new Error(
+			"A selected report skill is unavailable. Review its sharing and attachment before running.",
+		);
+	}
+	if (
+		attached.length > 32 ||
+		attached.some((skill) => skill.name === null || skill.content === null)
+	) {
+		throw new Error("Report skills exceed the snapshot limit");
+	}
+	snapshot.skills = reportExecutionSnapshotSchema.shape.skills.parse(
+		attached.map(({ authorized: _authorized, ...skill }) => ({
+			...skill,
+			updatedAt: new Date(skill.updatedAt).toISOString(),
+		})),
+	);
+	if (
+		Buffer.byteLength(JSON.stringify(snapshot.skills), "utf8") > 64_000 ||
+		Buffer.byteLength(JSON.stringify(snapshot), "utf8") > 127_500
+	) {
+		throw new Error("Report skills exceed the snapshot limit");
+	}
+
+	await assertPinnedSkillAccess(input, snapshot.skills);
+	await assertSkillReadAccess(input);
+	const hash = (value: unknown) =>
+		createHash("sha256")
+			.update(JSON.stringify(value) ?? "null")
+			.digest("hex");
+	return {
+		...snapshot,
+		hashes: {
+			config: hash({
+				instance: snapshot.instance,
+				skills: snapshot.skills,
+			}),
+			window: hash(snapshot.window),
+			target: hash({
+				organizationId: snapshot.organizationId,
+				userId: snapshot.userId,
+				instanceId: snapshot.instanceId,
+				projectId: snapshot.config?.projectId,
+			}),
+		},
+	};
 }

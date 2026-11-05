@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
 	Permissions,
 	requirePermission,
+	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireOrgMembership } from "../../../organizations/lib/membership";
@@ -19,6 +20,10 @@ export const attachTemplateSkillProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.AGENT_TEMPLATE_MANAGE))
 	.input(attachSkillInputSchema)
 	.handler(async ({ input, context }) => {
+		const organizationId = resolveOrganizationId(
+			undefined,
+			context.session,
+		);
 		// Verify template exists
 		const template = await db.agentTemplate.findUnique({
 			where: { id: input.templateId },
@@ -35,7 +40,10 @@ export const attachTemplateSkillProcedure = tenantProtectedProcedure
 
 		// Authorize template modification (matches update/delete pattern)
 		if (template.scope === "ORGANIZATION") {
-			if (!template.organizationId) {
+			if (
+				!template.organizationId ||
+				template.organizationId !== organizationId
+			) {
 				throw new Error(
 					"Organization template is missing organizationId",
 				);

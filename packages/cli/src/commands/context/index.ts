@@ -67,6 +67,10 @@ import {
 import { resolveExistingRoot } from "../../lib/instructions/safe-write.js";
 import { fabricCommand } from "../../lib/launcher.js";
 import { printOutput } from "../../lib/output.js";
+import { registerContextAssembleCommand } from "./assemble.js";
+import { registerContextDocumentCommands } from "./documents.js";
+import { registerContextManifestCommand } from "./manifest.js";
+import { registerContextQualityCommands } from "./quality.js";
 
 /**
  * Hook mode's one absolute deadline, the same bound `fabric instructions`
@@ -97,7 +101,7 @@ function collectPattern(value: string, previous: string[]): string[] {
 
 export function buildContextCommand(): Command {
 	const context = new Command("context").description(
-		"Sync local knowledge files into a project's Context",
+		"Manage project Context and check recorded-output quality",
 	);
 
 	context
@@ -135,6 +139,10 @@ export function buildContextCommand(): Command {
 			await run(opts, () => runPush(dir, opts, outputFormatFor(this)));
 		});
 
+	registerContextManifestCommand(context);
+	registerContextAssembleCommand(context);
+	registerContextDocumentCommands(context);
+	registerContextQualityCommands(context);
 	return context;
 }
 

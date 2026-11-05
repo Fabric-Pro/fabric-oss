@@ -142,6 +142,7 @@ describe("shareFirstClassFrame: who can open the page", () => {
 			organizationId: ORG,
 			scope: "PUBLIC",
 			emails: [],
+			expectedUpdatedAt: expect.any(Date),
 		});
 		expect(result).toMatchObject({
 			frameId: "frame-1",
@@ -323,6 +324,8 @@ describe("restoreFirstClassFrameVersion", () => {
 			userId: OWNER,
 			organizationId: ORG,
 			toVersion: 2,
+			historyEntryId: undefined,
+			expectedUpdatedAt: expect.any(Date),
 		});
 		expect(result).toMatchObject({
 			frameId: "frame-1",
@@ -565,4 +568,21 @@ describe("duplicateFirstClassFrame", () => {
 		});
 		expect(mocks.duplicateFrame).not.toHaveBeenCalled();
 	});
+});
+
+it("describes exact-entry restore without an undefined version", async () => {
+	const result = await restoreFirstClassFrameVersion({
+		args: {
+			frameId: "frame-1",
+			historyEntryId: "example-entry",
+			expectedUpdatedAt: "2026-10-14T10:00:00Z",
+		},
+		userId: OWNER,
+		organizationId: ORG,
+	});
+	expect(result).toMatchObject({
+		historyEntryId: "example-entry",
+		response: expect.stringContaining("selected saved version"),
+	});
+	expect(JSON.stringify(result)).not.toContain("version undefined");
 });

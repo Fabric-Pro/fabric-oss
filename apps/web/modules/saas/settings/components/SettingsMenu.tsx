@@ -103,7 +103,7 @@ export function SettingsMenu({
 														isActiveMenuItem(
 															subitem.href,
 														)
-															? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+															? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary-hover dark:text-primary"
 															: "text-foreground hover:bg-foreground/[0.06]",
 													)}
 													aria-current={
@@ -175,7 +175,7 @@ export function SettingsMenu({
 																isActiveMenuItem(
 																	subitem.href,
 																)
-																	? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+																	? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary-hover dark:text-primary"
 																	: "text-foreground hover:bg-foreground/[0.06]",
 															)}
 															aria-current={

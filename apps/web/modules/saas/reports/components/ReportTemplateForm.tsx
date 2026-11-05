@@ -4,6 +4,7 @@ import {
 	type DataSourceDefinition,
 	DataSourceDefinitionBuilder,
 } from "@saas/shared/components/DataSourceDefinitionBuilder";
+import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -235,6 +236,9 @@ export function ReportTemplateForm({
 		};
 
 		for (const ds of dataSources) {
+			if (ds.type === "fabric") {
+				continue;
+			}
 			if (!providerMap.has(ds.provider)) {
 				providerMap.set(ds.provider, {
 					type: ds.type === "mcp" ? "mcp" : "integration",
@@ -764,7 +768,7 @@ export function ReportTemplateForm({
 				<Card>
 					<CardContent className="pt-6">
 						<div className="flex items-center gap-2 mb-2">
-							<SparklesIcon className="h-5 w-5 text-highlight" />
+							<PuzzleIcon className="h-5 w-5 text-highlight" />
 							<h3 className="font-semibold">Skills</h3>
 						</div>
 						<p className="text-sm text-muted-foreground">

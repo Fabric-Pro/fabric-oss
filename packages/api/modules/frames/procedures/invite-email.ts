@@ -6,10 +6,13 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { frameRevisionSchema } from "../lib/frame-edit-contract";
+import { frameEditErrors } from "../lib/frame-edit-errors";
 
 const inputSchema = z.object({
 	id: z.string(),
 	organizationId: z.string().nullable().optional(),
+	expectedUpdatedAt: frameRevisionSchema.optional(),
 	emails: z
 		.array(z.string().email())
 		.min(1, "At least one email is required")
@@ -18,6 +21,7 @@ const inputSchema = z.object({
 
 const outputSchema = z.object({
 	success: z.boolean(),
+	updatedAt: z.string().optional(),
 	grants: z
 		.array(
 			z.object({
@@ -40,6 +44,7 @@ const outputSchema = z.object({
  */
 export const inviteFrameByEmailProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(frameEditErrors)
 	.route({
 		method: "POST",
 		path: "/frames/{id}/invite",
@@ -59,6 +64,9 @@ export const inviteFrameByEmailProcedure = tenantProtectedProcedure
 			frameId: input.id,
 			userId: context.user.id,
 			organizationId,
+			expectedUpdatedAt: input.expectedUpdatedAt
+				? new Date(input.expectedUpdatedAt)
+				: undefined,
 			emails: input.emails,
 		});
 
@@ -68,6 +76,7 @@ export const inviteFrameByEmailProcedure = tenantProtectedProcedure
 
 		return {
 			success: true,
+			updatedAt: result.updatedAt.toISOString(),
 			grants: result.grants.map((g) => ({
 				id: g.id,
 				email: g.email,

@@ -41,7 +41,15 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // contract: an agent must know before the call that oldText matches once and
 // which updatedAt to send. With fabric_get_frame's outline flag that is 894 net,
 // after shortening the frame read and update descriptions to make room.
-const TOTAL_BUDGET = 53_244 + 2_118 + 31 + 163 + 188 + 115 + 894;
+// The two context-quality tools add 501 (explicit source/revision inspection)
+// and 1,969 (bounded recorded-answer cases, source pins and expectations).
+// Both schemas are required before calling; descriptions were shortened by
+// 219 characters. Add exactly their measured sizes, without extra headroom.
+const CONTEXT_QUALITY_BUDGETS: Readonly<Record<string, number>> = {
+	fabric_inspect_context_quality_source: 501,
+	fabric_evaluate_context_quality: 1_969,
+};
+const TOTAL_BUDGET = 53_244 + 2_118 + 31 + 163 + 188 + 115 + 894 + 501 + 1_969;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;
@@ -82,7 +90,7 @@ describe("platform tool definition size", () => {
 					size >
 					(name === "fabric_page_configure_story_review"
 						? SPRINT_CONFIG_BUDGET
-						: PER_TOOL_BUDGET),
+						: (CONTEXT_QUALITY_BUDGETS[name] ?? PER_TOOL_BUDGET)),
 			)
 			.map(({ name, size }) => `${name}: ${size}`);
 		expect(over).toEqual([]);

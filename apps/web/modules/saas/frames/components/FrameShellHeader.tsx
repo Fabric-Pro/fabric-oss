@@ -23,6 +23,7 @@ import {
 	Sparkles,
 	X,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { Response } from "../../../../components/ai-elements/response";
 import type { frameShellLabels } from "../lib/frame-shell-labels";
 
@@ -40,6 +41,7 @@ export type FrameShareControl =
 interface FrameShellExport {
 	/** False when the frame's JSON is not known, which leaves a panel no menu. */
 	available: boolean;
+	nativePdf?: boolean;
 	isExporting: null | "png" | "pdf";
 	onPng: () => void;
 	onPdf: () => void;
@@ -85,6 +87,7 @@ function ExportMenu({
 	compact: boolean;
 }) {
 	const busy = exporter.isExporting !== null;
+	const t = useTranslations("frameExport");
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
@@ -116,10 +119,11 @@ function ExportMenu({
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
 				<DropdownMenuItem onClick={exporter.onPng}>
-					<PanelTop className="mr-2 h-4 w-4" /> Export PNG
+					<PanelTop className="mr-2 h-4 w-4" /> {t("browserPng")}
 				</DropdownMenuItem>
 				<DropdownMenuItem onClick={exporter.onPdf}>
-					<Download className="mr-2 h-4 w-4" /> Export PDF
+					<Download className="mr-2 h-4 w-4" />{" "}
+					{exporter.nativePdf ? t("title") : t("browserPdf")}
 				</DropdownMenuItem>
 				<DropdownMenuItem onClick={exporter.onJson}>
 					<FileJson className="mr-2 h-4 w-4" /> Download JSON

@@ -10,6 +10,7 @@ const {
 	mockUpdateTemplateInstance,
 	mockValidateReportConnections,
 	mockTemplateScheduleForInheritance,
+	mockCanAccess,
 } = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...args: unknown[]) => unknown>,
 	mockCreateTemplateInstance: vi.fn(),
@@ -18,6 +19,7 @@ const {
 	mockUpdateTemplateInstance: vi.fn(),
 	mockValidateReportConnections: vi.fn(),
 	mockTemplateScheduleForInheritance: vi.fn(),
+	mockCanAccess: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => {
@@ -25,6 +27,13 @@ vi.mock("@repo/database", async (importOriginal) => {
 	const real = await importOriginal<typeof import("@repo/database")>();
 	return {
 		reportScheduleInputSchema: real.reportScheduleInputSchema,
+		reportEvidenceConfigSchema: real.reportEvidenceConfigSchema,
+		readReportEvidenceConfig: real.readReportEvidenceConfig,
+		assertPublicReportParameters: real.assertPublicReportParameters,
+		publicReportParametersSchema: real.publicReportParametersSchema,
+		getProjectReportSetupReason: real.getProjectReportSetupReason,
+		hasProjectKnowledgeSource: real.hasProjectKnowledgeSource,
+		canAccessReportInstance: mockCanAccess,
 		createTemplateInstance: (...a: unknown[]) =>
 			mockCreateTemplateInstance(...a),
 		getReportTemplate: (...a: unknown[]) => mockGetReportTemplate(...a),
@@ -78,7 +87,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 		requireInputOrgPermission: () => (c: unknown) => c,
 		requireOrganizationMembership: vi.fn().mockResolvedValue(undefined),
 		resolveOrganizationId: (input: string | null | undefined) =>
-			input ?? null,
+			input ?? "org-1",
 	};
 });
 
@@ -150,12 +159,15 @@ describe("updateInstanceInputSchema — scheduleUpdate validation", () => {
 
 const ctx = {
 	user: { id: "u1", email: "u@example.com" },
-	session: { id: "s1", activeOrganizationId: null },
+	session: { id: "s1", activeOrganizationId: "org-1" },
 	headers: undefined,
 };
 
 const baseInstance = {
 	id: "inst-1",
+	organizationId: "org-1",
+	userId: "u1",
+	_count: { executions: 0 },
 	template: { definition: null },
 };
 
@@ -172,6 +184,7 @@ const baseUpdated = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockCanAccess.mockResolvedValue(true);
 	mockValidateReportConnections.mockResolvedValue({
 		valid: true,
 		errors: [],
@@ -222,9 +235,9 @@ describe("createInstanceProcedure — scheduleMode provenance (D2/§7.1)", () =>
 	beforeEach(() => {
 		mockGetReportTemplate.mockResolvedValue({
 			id: "t1",
-			scope: "USER",
+			scope: "ORGANIZATION",
 			userId: "u1",
-			organizationId: null,
+			organizationId: "org-1",
 			// Template has its own schedule — should be inherited but mode must still
 			// reflect the INSTANCE's own provenance, not the merged effectiveSchedule.
 			schedule: {
@@ -304,5 +317,95 @@ describe("createInstanceProcedure — scheduleMode provenance (D2/§7.1)", () =>
 		expect(mockCreateTemplateInstance).toHaveBeenCalledWith(
 			expect.objectContaining({ scheduleMode: "CUSTOM" }),
 		);
+	});
+});
+
+describe("report audience and reserved configuration", () => {
+	it("rejects a forged execution snapshot in parameter defaults", () => {
+		expect(
+			updateInstanceInputSchema.safeParse({
+				id: "inst-1",
+				parameterDefaults: { __fabricReportExecution: {} },
+			}).success,
+		).toBe(false);
+	});
+	it("rejects a project audience change once bound", async () => {
+		mockGetTemplateInstance.mockResolvedValue({
+			...baseInstance,
+			fabricConfig: {
+				reporting: {
+					version: 1,
+					period: "weekly",
+					projectId: "project-1",
+				},
+			},
+		});
+		await expect(
+			handlers.update({
+				input: {
+					id: "inst-1",
+					fabricConfig: {
+						reporting: {
+							version: 1,
+							period: "weekly",
+							projectId: "project-2",
+						},
+					},
+				},
+				context: ctx,
+			}),
+		).rejects.toThrow("audience cannot be changed");
+		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
+	});
+	it("does not make previously indexed organization results private retroactively", async () => {
+		mockGetTemplateInstance.mockResolvedValue({
+			...baseInstance,
+			_count: { executions: 1 },
+		});
+		await expect(
+			handlers.update({
+				input: {
+					id: "inst-1",
+					fabricConfig: {
+						reporting: {
+							version: 1,
+							period: "weekly",
+							projectId: "project-1",
+						},
+					},
+				},
+				context: ctx,
+			}),
+		).rejects.toThrow("audience cannot be changed");
+		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
+	});
+	it("checks project write access before changing an existing project report", async () => {
+		mockGetTemplateInstance.mockResolvedValue({
+			...baseInstance,
+			fabricConfig: {
+				reporting: {
+					version: 1,
+					period: "weekly",
+					projectId: "project-1",
+				},
+			},
+		});
+		mockCanAccess.mockResolvedValue(false);
+		await expect(
+			handlers.update({
+				input: {
+					id: "inst-1",
+					fabricConfig: {
+						reporting: {
+							version: 1,
+							period: "weekly",
+							projectId: "project-1",
+						},
+					},
+				},
+				context: ctx,
+			}),
+		).rejects.toThrow("access denied");
+		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
 	});
 });

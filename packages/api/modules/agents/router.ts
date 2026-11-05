@@ -6,6 +6,8 @@
  */
 
 import { listAgentActivity } from "./procedures/activity";
+import { agentPreviewProcedures } from "./procedures/agent-previews";
+import { agentTestProcedures } from "./procedures/agent-tests";
 import { getProjectCodeIndexStatus } from "./procedures/code-index";
 import { getCodeIndexPendingChanges } from "./procedures/code-index-pending-changes";
 import {
@@ -75,6 +77,8 @@ import { symbolSearchProcedure } from "./procedures/symbol-search";
 import { triggerAgent } from "./procedures/trigger-agent";
 
 export const agentsRouter = {
+	previews: agentPreviewProcedures,
+	tests: agentTestProcedures,
 	list: listAgents,
 	trigger: triggerAgent,
 	health: {

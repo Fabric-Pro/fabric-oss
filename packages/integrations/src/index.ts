@@ -44,3 +44,5 @@ export {
 	shouldProcessEvent,
 	verifySlackSignature,
 } from "./slack/index";
+
+export * from "./databricks-sql";

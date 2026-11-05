@@ -71,13 +71,13 @@ export function createSuggestPromptEditsTool(ctx: SidekickToolContext) {
 			agentDescription?: string;
 		}) => {
 			// For new agents AND instance-backed sessions, return content
-			// directly with a special marker so the frontend can auto-apply
+			// directly with a special marker so the frontend can present for explicit review
 			// it. Persisted suggestions are RegisteredAgent-only today.
 			const useAutoApply =
 				ctx.agentId === NEW_AGENT_ID || ctx.entityType !== "registered";
 
 			// Instance-backed forms render instructions in a single textarea
-			// (no block editor), and auto-apply replaces the entire prompt.
+			// (no block editor), and accepting the proposal replaces the entire prompt.
 			// If the LLM sent per-block edits, concatenating them would wipe
 			// the untouched sections. Force a full rewrite so the LLM
 			// reconstructs the whole prompt from <agent_context>. New agents

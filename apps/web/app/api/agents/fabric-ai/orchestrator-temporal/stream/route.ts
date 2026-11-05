@@ -356,26 +356,6 @@ export async function POST(request: NextRequest) {
 			}
 		}
 
-		// Inline attachments, document retrieval (up to two minutes of RAG
-		// pre-work), the effective tool sets and the input literal: see
-		// ../orchestrator-turn.ts. A client that went away during that
-		// pre-work is caught by the check below, before the start.
-		const workflowInput = await buildOrchestratorWorkflowInput({
-			request: turnRequest,
-			workspaceIds,
-			executionId,
-			temporalClient,
-		});
-
-		// A new run's input must fit Temporal's start frame (review F38). A
-		// reattach starts nothing, so it is not measured.
-		if (turnToStart || legacyExecutionId) {
-			const oversized = refuseOversizedOrchestratorInput(workflowInput);
-			if (oversized) {
-				return oversized;
-			}
-		}
-
 		if (await disconnectedBeforeStart()) {
 			return disconnectedResponse();
 		}
@@ -383,7 +363,8 @@ export async function POST(request: NextRequest) {
 		// Set up streaming response
 		const encoder = new TextEncoder();
 
-		// A turn that already ended: replay its stored result and close.
+		// A turn that already ended: replay its stored result and close
+		// before building workflow input or running RAG pre-work.
 		if (storedTerminalTurn) {
 			const turn = storedTerminalTurn;
 			const status = resultStatusForTurn(turn.status);
@@ -474,6 +455,34 @@ export async function POST(request: NextRequest) {
 					},
 				},
 			);
+		}
+
+		// Inline attachments, document retrieval (up to two minutes of RAG
+		// pre-work), the effective tool sets and the input literal: see
+		// ../orchestrator-turn.ts. Built only when starting a workflow; a
+		// reattach to an existing execution starts nothing and skips RAG and
+		// acting-grant pre-work completely.
+		const needsWorkflowStart =
+			Boolean(turnToStart) || Boolean(legacyExecutionId);
+		const workflowInput = needsWorkflowStart
+			? await buildOrchestratorWorkflowInput({
+					request: turnRequest,
+					workspaceIds,
+					executionId,
+					temporalClient,
+				})
+			: null;
+
+		// A new run's input must fit Temporal's start frame (review F38). A
+		// reattach starts nothing, so it is not measured.
+		if (workflowInput) {
+			const oversized = refuseOversizedOrchestratorInput(workflowInput);
+			if (oversized) {
+				return oversized;
+			}
+			if (await disconnectedBeforeStart()) {
+				return disconnectedResponse();
+			}
 		}
 
 		// Hoisted above `start()` so `cancel()` — a sibling method on the same
@@ -687,7 +696,7 @@ export async function POST(request: NextRequest) {
 					});
 
 					let resumed = Boolean(resumeExecutionId);
-					if (legacyExecutionId) {
+					if (legacyExecutionId && workflowInput) {
 						// A Weave run: no turn, the legacy start.
 						handle = await startLegacyChatWorkflow({
 							temporalClient,
@@ -703,7 +712,11 @@ export async function POST(request: NextRequest) {
 							"[Orchestrator Stream] Started workflow (no turn)",
 							{ executionId },
 						);
-					} else if (resumeExecutionId || !turnToStart) {
+					} else if (
+						resumeExecutionId ||
+						!turnToStart ||
+						!workflowInput
+					) {
 						// handle was already set and ownership verified above
 						console.log(
 							"[Orchestrator Stream] Attached to workflow",

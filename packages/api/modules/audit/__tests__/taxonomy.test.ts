@@ -309,7 +309,13 @@ describe("audit.taxonomy handler", () => {
 		// + 1 project.document_analysis.resolved (a saved revision applied a
 		// finding's recommendation and recorded it as Resolved; stable key,
 		// run id and version only, never text), plus native session continuation = 225.
-		expect(result.actions).toHaveLength(226);
+		// Include saved context-quality lifecycle and durable agent admission.
+		// Two background-run control actions: cancellation request and managed schedule save.
+		expect(result.actions).toHaveLength(233);
+		expect(result.actions).toContain(
+			"org.agent_execution.cancel_requested",
+		);
+		expect(result.actions).toContain("org.agent_schedule.updated");
 		expect(result.actions).toContain("org.agent_execution.admitted");
 		expect(result.actions).toContain("org.member.left");
 		expect(result.actions).toContain("org.chat_approval.decided");

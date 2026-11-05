@@ -32,6 +32,11 @@ import {
 	isExecutableAgentTool,
 	withAgentToolRuntime,
 } from "../shared/agent-tool-runtime";
+import {
+	assertFrozenAgentTestAuthority,
+	assertFrozenAgentTestWorkspaceSelection,
+} from "../shared/native-agent-test-authority";
+import { assertWorkspaceDocumentSelections } from "../shared/workspace-document-access";
 import { executeAgentTurn, isErrorResult } from "./agent-executor";
 import type {
 	ExecuteAgentTurnInput,
@@ -122,6 +127,16 @@ async function assertCurrentAuthority(input: ExecuteAgentTurnInput) {
 			"SAVED_AGENT_STEP_FORBIDDEN",
 		);
 	}
+	if (admission?.dispatch.testAuthority) {
+		await assertFrozenAgentTestAuthority(
+			{ userId, organizationId },
+			admission.dispatch.testAuthority,
+		);
+		assertFrozenAgentTestWorkspaceSelection(
+			admission.dispatch.testAuthority,
+			input,
+		);
+	}
 	if (
 		admission &&
 		(admission.dispatch.instanceId !== agentInstanceId ||
@@ -163,6 +178,17 @@ async function assertCurrentAuthority(input: ExecuteAgentTurnInput) {
 				"SAVED_AGENT_STEP_FORBIDDEN",
 			);
 		}
+
+		if (
+			input.workspaceDocumentFilters === undefined &&
+			(!Array.isArray(input.workspaceIds) ||
+				input.workspaceIds.length > 0)
+		) {
+			throw ApplicationFailure.nonRetryable(
+				"This older run has no verified workspace document snapshot. Start a new run to use the agent's current source selections.",
+				"SAVED_AGENT_STEP_FORBIDDEN",
+			);
+		}
 	} else if (!(await canExecuteOrganizationAgents(userId, organizationId))) {
 		throw ApplicationFailure.nonRetryable(
 			"The agent's current execution permission is unavailable.",
@@ -184,6 +210,21 @@ async function assertCurrentAuthority(input: ExecuteAgentTurnInput) {
 		) {
 			throw ApplicationFailure.nonRetryable(
 				"The agent's current project context permission is unavailable.",
+				"SAVED_AGENT_STEP_FORBIDDEN",
+			);
+		}
+	}
+	if (input.workspaceDocumentFilters !== undefined) {
+		try {
+			await assertWorkspaceDocumentSelections({
+				userId,
+				organizationId,
+				workspaceIds: input.workspaceIds ?? [],
+				workspaceDocumentFilters: input.workspaceDocumentFilters,
+			});
+		} catch {
+			throw ApplicationFailure.nonRetryable(
+				"The agent's current workspace or document access is unavailable.",
 				"SAVED_AGENT_STEP_FORBIDDEN",
 			);
 		}

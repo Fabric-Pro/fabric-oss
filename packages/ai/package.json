@@ -49,7 +49,9 @@
 		"./skills": "./skills/index.ts",
 		"./limits": "./limits/index.ts",
 		"./prompt-cache": "./lib/prompt-cache.ts",
-		"./lib/*": "./lib/*.ts"
+		"./lib/*": "./lib/*.ts",
+		"./skill-contracts": "./skills/contracts.ts",
+		"./skill-authoring-contracts": "./skills/authoring-contracts.ts"
 	},
 	"scripts": {
 		"type-check": "tsgo --noEmit",

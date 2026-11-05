@@ -218,3 +218,317 @@ describe("portable agent definitions", () => {
 		).toThrow();
 	});
 });
+
+const pinnedImplementation = {
+	kind: "harness_finite",
+	artifact: {
+		digest: `sha256:${"a".repeat(64)}`,
+		repository: {
+			url: "https://example.com/agents.git",
+			revision: "b".repeat(40),
+		},
+		packages: {
+			sdk: {
+				name: "@fabric-harness/sdk",
+				version: "6.9.0",
+				entrypoint: "strict",
+			},
+			node: { name: "@fabric-harness/node", version: "6.7.0" },
+			client: { name: "@fabric-harness/client", version: "6.3.1" },
+		},
+		buildManifestVersion: 2,
+	},
+	entrypoint: {
+		module: "dist/report.mjs",
+		export: "reportJob",
+		identity: "report-job",
+	},
+	protocol: { generation: "example-http-v1", interface: "finite_job" },
+	schemas: {
+		input: {
+			path: "schemas/input.json",
+			digest: `sha256:${"c".repeat(64)}`,
+		},
+		output: {
+			path: "schemas/output.json",
+			digest: `sha256:${"d".repeat(64)}`,
+		},
+	},
+};
+const logicalBindings = [
+	{
+		name: "project-context",
+		kind: "knowledge",
+		required: true,
+		operations: ["read"],
+	},
+];
+const harnessSource = () => ({
+	...source,
+	customInstructions: {
+		...(source.customInstructions as object),
+		portableDefinitionVersion: "fabric.ai/v2",
+		portableImplementation: structuredClone(pinnedImplementation),
+		portableBindings: logicalBindings,
+		expectedOutput: "Cited documentation proposal",
+	},
+});
+
+import {
+	assertAgentDefinitionConfigUpdate,
+	exportLegacyAgentDefinition,
+	getAgentImplementationAvailability,
+} from "../agent-definition";
+
+describe("pinned implementation definitions", () => {
+	it.each(["json", "yaml"] as const)(
+		"retains exact implementation identity, schemas and logical intent through %s export/import",
+		(format) => {
+			const exported = exportAgentDefinition(harnessSource());
+			expect(exported.apiVersion).toBe("fabric.ai/v2");
+			expect(exported.implementation).toEqual(pinnedImplementation);
+			expect(exported.logicalBindings).toEqual(logicalBindings);
+			expect(exported.expectedOutput).toBe(
+				"Cited documentation proposal",
+			);
+			expect(
+				parseAgentDefinition(
+					serializeAgentDefinition(exported, format),
+				),
+			).toEqual(exported);
+		},
+	);
+	it("never downgrades an advanced release or native output requirements into lossy v1", () => {
+		expect(() => exportLegacyAgentDefinition(harnessSource())).toThrow(
+			/v2/,
+		);
+		expect(() =>
+			exportLegacyAgentDefinition({
+				...source,
+				customInstructions: { expectedOutput: "Review the report" },
+			}),
+		).toThrow(/v2/);
+		expect(exportLegacyAgentDefinition(source).apiVersion).toBe(
+			"fabric.ai/v1",
+		);
+	});
+	it("refuses invalid stored metadata rather than exporting a native replacement", () => {
+		expect(() =>
+			exportAgentDefinition({
+				...source,
+				customInstructions: {
+					portableImplementation: { kind: "unknown" },
+				},
+			}),
+		).toThrow();
+	});
+	it.each([
+		[
+			"floating package",
+			(d: any) => {
+				d.implementation.artifact.packages.sdk.version = "^6.9.0";
+			},
+		],
+		[
+			"repository branch",
+			(d: any) => {
+				d.implementation.artifact.repository.revision = "main";
+			},
+		],
+		[
+			"repository credential",
+			(d: any) => {
+				d.implementation.artifact.repository.url =
+					"https://token@example.com/agents.git";
+			},
+		],
+		[
+			"missing identity",
+			(d: any) => {
+				delete d.implementation.entrypoint.identity;
+			},
+		],
+		[
+			"implicit entrypoint",
+			(d: any) => {
+				delete d.implementation.entrypoint.export;
+			},
+		],
+		[
+			"path traversal",
+			(d: any) => {
+				d.implementation.entrypoint.module = "../other.ts";
+			},
+		],
+		[
+			"missing output schema",
+			(d: any) => {
+				delete d.implementation.schemas.output;
+			},
+		],
+		[
+			"mismatched runtime",
+			(d: any) => {
+				d.implementation.kind = "harness_persistent";
+			},
+		],
+		[
+			"source destination grant",
+			(d: any) => {
+				d.logicalBindings[0].connectionId = "source-connection";
+			},
+		],
+		[
+			"duplicate bindings",
+			(d: any) => {
+				d.logicalBindings.push({ ...d.logicalBindings[0] });
+			},
+		],
+		[
+			"unsupported legacy implementation",
+			(d: any) => {
+				d.apiVersion = "fabric.ai/v1";
+			},
+		],
+	] as const)("rejects %s", (_, change) => {
+		const definition = exportAgentDefinition(harnessSource());
+		change(definition);
+		expect(() =>
+			parseAgentDefinition(JSON.stringify(definition)),
+		).toThrow();
+	});
+	it("preserves explicit persistent submission identity without pretending it can execute", () => {
+		const definition = exportAgentDefinition(harnessSource());
+		const persistent = {
+			...definition,
+			implementation: {
+				...pinnedImplementation,
+				kind: "harness_persistent",
+				protocol: {
+					...pinnedImplementation.protocol,
+					interface: "persistent_submission",
+				},
+			},
+		};
+		const parsed = parseAgentDefinition(JSON.stringify(persistent));
+		expect(parsed).toMatchObject({
+			implementation: {
+				kind: "harness_persistent",
+				entrypoint: pinnedImplementation.entrypoint,
+			},
+		});
+		expect(
+			getAgentImplementationAvailability({
+				portableImplementation: persistent.implementation,
+			}).available,
+		).toBe(false);
+	});
+	it.each(["harness_finite", "harness_persistent", "unknown", null])(
+		"blocks unsupported implementation admission: %s",
+		(kind) => {
+			expect(
+				getAgentImplementationAvailability({
+					portableImplementation: kind === null ? null : { kind },
+				}).available,
+			).toBe(false);
+		},
+	);
+	it("allows existing native agents but fails closed on malformed native metadata or missing v2 identity", () => {
+		expect(getAgentImplementationAvailability(null).available).toBe(true);
+		expect(
+			getAgentImplementationAvailability({
+				portableImplementation: { kind: "native" },
+			}).available,
+		).toBe(true);
+		expect(
+			getAgentImplementationAvailability({
+				portableDefinitionVersion: "fabric.ai/v2",
+			}).available,
+		).toBe(false);
+		expect(
+			getAgentImplementationAvailability({
+				portableImplementation: { kind: "native", artifact: {} },
+			}).available,
+		).toBe(false);
+	});
+	it("protects code-owned fields and reserved metadata across generic command paths", () => {
+		for (const field of [
+			"customInstructions",
+			"modelOverride",
+			"modelConfig",
+			"executionMode",
+			"goal",
+			"successCriteria",
+			"maxIterations",
+			"toolConnections",
+			"knowledgeConnections",
+			"knowledgeResources",
+			"workspaceIds",
+			"triggers",
+		]) {
+			expect(() =>
+				assertAgentDefinitionConfigUpdate(
+					harnessSource().customInstructions,
+					{ [field]: {} },
+				),
+			).toThrow(/read-only/);
+		}
+		for (const key of [
+			"portableImplementation",
+			"portableBindings",
+			"portableDefinitionVersion",
+		]) {
+			expect(() =>
+				assertAgentDefinitionConfigUpdate(null, {
+					customInstructions: { [key]: {} },
+				}),
+			).toThrow(/release metadata/);
+		}
+		expect(() =>
+			assertAgentDefinitionConfigUpdate(
+				harnessSource().customInstructions,
+				{
+					name: "Renamed report",
+					projectId: "example-project",
+					expectedOutput: "Review this result",
+				},
+			),
+		).not.toThrow();
+		expect(() =>
+			assertAgentDefinitionConfigUpdate(null, {
+				customInstructions: { role: "Native instructions" },
+				executionMode: "single_turn",
+			}),
+		).not.toThrow();
+	});
+});
+
+describe("portable project association", () => {
+	it("retains a logical project requirement while removing the source project identity", () => {
+		const definition = exportAgentDefinition({
+			...source,
+			customInstructions: {
+				projectId: "source-project",
+				expectedOutput: "Cited project report",
+			},
+		});
+		expect(definition.logicalBindings).toEqual([
+			{
+				name: "associated-project",
+				kind: "project",
+				required: true,
+				operations: [],
+			},
+		]);
+		expect(JSON.stringify(definition)).not.toContain("source-project");
+		expect(definition.expectedOutput).toBe("Cited project report");
+	});
+	it("does not qualify a different selected agent simply because the artifact digest matches", () => {
+		const custom = harnessSource().customInstructions;
+		custom.portableImplementation.entrypoint.identity =
+			"other-agent-in-same-bundle";
+		expect(getAgentImplementationAvailability(custom).available).toBe(
+			false,
+		);
+	});
+});

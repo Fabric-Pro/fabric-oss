@@ -31,6 +31,7 @@ const SETTINGS_TAB_STORAGE_KEY_PREFIX = "fabric-project-settings-tab-";
 export type NavigateToSettingsTabDetail = {
 	projectId: string;
 	settingsTab: SettingsTab;
+	anchorId?: string;
 };
 
 /**
@@ -66,7 +67,15 @@ export function navigateToProjectSettingsTab(
 	window.dispatchEvent(
 		new CustomEvent<NavigateToSettingsTabDetail>(
 			NAVIGATE_TO_SETTINGS_TAB_EVENT,
-			{ detail: { projectId, settingsTab } },
+			{
+				detail: {
+					projectId,
+					settingsTab,
+					...(options?.anchorId
+						? { anchorId: options.anchorId }
+						: {}),
+				},
+			},
 		),
 	);
 }
@@ -82,10 +91,14 @@ const ANCHOR_WAIT_MS = 3_000;
  * called. Polled per frame for a bounded time; an anchor that never appears
  * (a sub-tab gated off for this viewer) leaves the viewer on the sub-tab.
  */
-function scrollToWhenRendered(anchorId: string) {
+export function scrollToWhenRendered(anchorId: string) {
 	const deadline = Date.now() + ANCHOR_WAIT_MS;
 	const attempt = () => {
-		const element = document.getElementById(anchorId);
+		const element =
+			document.getElementById(anchorId) ??
+			document.querySelector<HTMLElement>(
+				`[data-onboarding-target="${anchorId}"]`,
+			);
 		if (element) {
 			element.scrollIntoView({ block: "start" });
 			return;

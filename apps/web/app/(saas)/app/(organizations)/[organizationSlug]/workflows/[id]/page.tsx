@@ -1,5 +1,5 @@
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
-import { WorkflowEditor } from "@saas/workflows/components/WorkflowEditor";
+import { WorkflowsList } from "@saas/workflows/components/WorkflowsList";
 import { redirect } from "next/navigation";
 
 type Props = {
@@ -26,7 +26,7 @@ export default async function WorkflowEditorPage({ params }: Props) {
 		// percentage height here resolves to `auto` and the whole editor
 		// collapses to its content — a ~211px canvas on a 900px viewport.
 		<div className="flex-1 min-h-0 flex flex-col">
-			<WorkflowEditor workflowId={id} />
+			<WorkflowsList workflowId={id} />
 		</div>
 	);
 }

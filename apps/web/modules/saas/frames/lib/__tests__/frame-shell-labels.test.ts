@@ -4,7 +4,7 @@ import { frameShellLabels } from "../frame-shell-labels";
 describe("frameShellLabels", () => {
 	it.each([
 		["artifact", "Artifact", "Loading artifact…"],
-		["workspace", "Workspace", "Loading workspace…"],
+		["workspace", "Page", "Loading page…"],
 	] as const)(
 		"names a page on the %s surface by the surface",
 		(surface, eyebrow, loading) => {
@@ -33,6 +33,6 @@ describe("frameShellLabels", () => {
 		expect(
 			frameShellLabels({ surface: "workspace", headerMode: "public" })
 				.eyebrow,
-		).toBe("Workspace");
+		).toBe("Page");
 	});
 });

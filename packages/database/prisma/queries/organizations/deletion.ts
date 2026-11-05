@@ -15,11 +15,13 @@
  * — mail, dialogs, settings copy — is handed the number rather than repeating
  * it. That is what made moving it from seven days to thirty a one-line change.
  */
+
 import { db } from "../../client";
 import {
 	demoteDepartingOperator,
 	getOperatorOrganizationId,
 } from "../platform-admin";
+import { deleteSettledContextQualityRunsForOrganizationInTransaction } from "../projects/context-quality-runs";
 
 /**
  * How long a deleted organization stays recoverable.
@@ -310,6 +312,10 @@ export async function permanentDeleteOrganization(organizationId: string) {
 				);
 			}
 		}
+		await deleteSettledContextQualityRunsForOrganizationInTransaction(
+			tx,
+			organizationId,
+		);
 		const organization = await tx.organization.delete({
 			where: {
 				id: organizationId,

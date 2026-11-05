@@ -1,8 +1,11 @@
 "use client";
 
-import { getCategoryIcon } from "@saas/agents/lib/category-icons";
-import { buildAgentInstanceChatHref } from "@saas/agents/lib/fabric-agent-links";
+import {
+	buildAgentDetailsHref,
+	buildAgentInstanceChatHref,
+} from "@saas/agents/lib/fabric-agent-links";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
+import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { Button } from "@ui/components/button";
 import {
 	DropdownMenu,
@@ -31,7 +34,6 @@ import {
 	Columns3,
 	CopyIcon,
 	EditIcon,
-	MessageSquare,
 	MoreVerticalIcon,
 	PlayIcon,
 	TrashIcon,
@@ -44,27 +46,37 @@ interface UnifiedAgentListViewProps {
 	items: any[];
 	basePath: string;
 	onDeleteInstance: (id: string) => void;
+	directoryQuery?: string;
 }
 
 export function UnifiedAgentListView({
 	items,
 	basePath,
 	onDeleteInstance,
+	directoryQuery,
 }: UnifiedAgentListViewProps) {
 	return (
 		<TooltipProvider>
 			<div className="overflow-hidden rounded-lg border border-border bg-card">
-				<Table>
+				<Table aria-label="Agents" className="table-fixed min-w-3xl">
 					<TableHeader>
 						<TableRow className="hover:bg-transparent">
-							<TableHead className="w-[32%]">Name</TableHead>
-							<TableHead className="w-[30%]">
+							<TableHead scope="col" className="w-[26%]">
+								Name
+							</TableHead>
+							<TableHead scope="col" className="w-[24%]">
 								Description
 							</TableHead>
-							<TableHead className="w-[14%]">Modified</TableHead>
-							<TableHead className="w-[14%]">Owner</TableHead>
-							<TableHead className="w-[10%]">Tags</TableHead>
-							<TableHead className="w-10 text-right">
+							<TableHead scope="col" className="w-[14%]">
+								Modified
+							</TableHead>
+							<TableHead scope="col" className="w-[14%]">
+								Owner
+							</TableHead>
+							<TableHead scope="col" className="w-[18%]">
+								Source
+							</TableHead>
+							<TableHead scope="col" className="w-10 text-right">
 								<span className="inline-flex items-center justify-end text-muted-foreground">
 									<Columns3
 										aria-hidden="true"
@@ -81,6 +93,7 @@ export function UnifiedAgentListView({
 								<InstanceTableRow
 									key={item.id}
 									instance={item}
+									directoryQuery={directoryQuery}
 									basePath={basePath}
 									onDelete={onDeleteInstance}
 								/>
@@ -99,7 +112,6 @@ export function UnifiedAgentListView({
 }
 
 function SystemAgentTableRow({ agent }: { agent: any }) {
-	const AgentIcon = agent.icon || MessageSquare;
 	const agentHref = agent.href || `/app/agents/${agent.id}/try`;
 	const modifiedLabel = agent.updatedAt
 		? formatDistanceToNow(new Date(agent.updatedAt), { addSuffix: true })
@@ -109,8 +121,8 @@ function SystemAgentTableRow({ agent }: { agent: any }) {
 		<TableRow className="group">
 			<TableCell className="py-2.5">
 				<div className="flex items-center gap-2.5 min-w-0">
-					<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-muted/40 text-muted-foreground">
-						<AgentIcon className="h-3.5 w-3.5 text-primary" />
+					<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-muted/40 text-foreground/80">
+						<RobotIcon className="h-3.5 w-3.5" />
 					</div>
 					<Tooltip delayDuration={400}>
 						<TooltipTrigger asChild>
@@ -146,7 +158,7 @@ function SystemAgentTableRow({ agent }: { agent: any }) {
 			<TableCell className="py-2.5">
 				<div className="flex items-center gap-1.5">
 					{agent.framework ? (
-						<span className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+						<span className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 whitespace-nowrap text-xs text-muted-foreground">
 							<FrameworkIcon
 								framework={agent.framework}
 								size={12}
@@ -178,37 +190,43 @@ function InstanceTableRow({
 	instance,
 	basePath,
 	onDelete,
+	directoryQuery,
 }: {
 	instance: any;
 	basePath: string;
 	onDelete: (id: string) => void;
+	directoryQuery?: string;
 }) {
-	const { icon: CategoryIcon } = getCategoryIcon(instance.template?.category);
 	const editHref = `${basePath}/agents/${instance.id}/edit`;
+	const detailHref = buildAgentDetailsHref({
+		basePath,
+		instanceId: instance.id,
+		directoryQuery,
+	});
 	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
 	const chatbotHref = buildAgentInstanceChatHref({
 		basePath,
 		instance,
 		unifiedAgentInterface,
 	});
-	const modifiedSource = instance.lastRunAt || instance.updatedAt;
+	const modifiedSource = instance.updatedAt;
 	const modifiedLabel = modifiedSource
 		? formatDistanceToNow(new Date(modifiedSource), { addSuffix: true })
 		: "Never";
 	const ownerLabel =
 		instance.createdBy?.name ||
 		(instance.organizationId ? "Organization" : "Personal");
-	const tagLabel = instance.template?.displayName;
+	const sourceLabel = instance.template?.displayName;
 
 	return (
 		<TableRow className="group">
 			<TableCell className="py-2.5">
 				<div className="flex items-center gap-2.5 min-w-0">
-					<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-muted/40 text-muted-foreground">
-						<CategoryIcon className="h-3.5 w-3.5 text-primary" />
+					<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-muted/40 text-foreground/80">
+						<RobotIcon className="h-3.5 w-3.5" />
 					</div>
 					<Link
-						href={chatbotHref}
+						href={detailHref}
 						className="truncate text-[13px] font-medium text-foreground hover:text-primary hover:underline"
 					>
 						{instance.name}
@@ -234,10 +252,18 @@ function InstanceTableRow({
 				</span>
 			</TableCell>
 			<TableCell className="py-2.5">
-				{tagLabel ? (
-					<span className="inline-flex items-center rounded bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
-						{tagLabel}
-					</span>
+				{sourceLabel ? (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<button
+								type="button"
+								className="block w-full truncate rounded bg-muted px-2 py-1 text-left text-xs text-muted-foreground"
+							>
+								{sourceLabel}
+							</button>
+						</TooltipTrigger>
+						<TooltipContent>Template: {sourceLabel}</TooltipContent>
+					</Tooltip>
 				) : (
 					<span className="text-[13px] text-muted-foreground">-</span>
 				)}

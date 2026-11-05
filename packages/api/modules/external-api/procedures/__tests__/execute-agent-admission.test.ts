@@ -32,7 +32,7 @@ vi.mock("../../../../lib/correlation-id", () => ({
 }));
 
 import type { ExternalApiContext } from "../../types";
-import { executeAgent } from "../execute-agent";
+import { executeAgent, executeAgentFromPortal } from "../execute-agent";
 
 const ctx: ExternalApiContext = {
 	userId: "example-user",
@@ -82,6 +82,28 @@ beforeEach(() => {
 	h.dispatch.mockResolvedValue({ execution: row, confirmed: true });
 });
 describe("real saved-agent execution entry point", () => {
+	it("keeps external API publication independent from owner Portal execution", async () => {
+		await call();
+		expect(h.find.mock.calls[0][0].where).toMatchObject({
+			isApiExposed: true,
+		});
+		h.find.mockClear();
+		const result = await executeAgentFromPortal(
+			"example-instance",
+			{ input: { message: "Example" }, idempotencyKey: "example-portal" },
+			{ userId: ctx.userId, organizationId: "example-org" },
+		);
+		expect(result.status).toBe(202);
+		expect(h.find.mock.calls[0][0].where).not.toHaveProperty(
+			"isApiExposed",
+		);
+		expect(h.admit).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				triggerType: "MANUAL",
+				actor: { type: "user", userId: ctx.userId },
+			}),
+		);
+	});
 	it.each([
 		["identity_mismatch", "does not match this request"],
 		["legacy_start_unconfirmed", "cannot confirm this older execution"],

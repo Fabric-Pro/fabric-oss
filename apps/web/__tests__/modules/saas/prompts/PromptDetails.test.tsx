@@ -84,6 +84,31 @@ vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
 	useConfirmationAlert: () => ({ confirm: confirmMock }),
 }));
 
+vi.mock("next-intl", async () => {
+	const { default: messages } = await import(
+		"../../../../../../packages/i18n/translations/en.json"
+	);
+	return {
+		useTranslations:
+			(namespace: string) =>
+			(key: string, values?: Record<string, string | number>) => {
+				const section =
+					namespace === "prompts.response"
+						? messages.prompts.response
+						: namespace === "prompts.workbench"
+							? messages.prompts.workbench
+							: undefined;
+				let text =
+					(section as Record<string, string> | undefined)?.[key] ??
+					key;
+				for (const [name, value] of Object.entries(values ?? {})) {
+					text = text.replaceAll(`{${name}}`, String(value));
+				}
+				return text;
+			},
+	};
+});
+
 vi.mock("sonner", () => ({
 	toast: { success: vi.fn(), error: vi.fn() },
 }));
@@ -138,6 +163,58 @@ describe("PromptDetails — load failure vs not found", () => {
 		createVersion.mockReset();
 		confirmMock.mockReset();
 		push.mockClear();
+	});
+
+	it("forwards response-only edits from the editor to the atomic version save", async () => {
+		getById.mockResolvedValue({
+			...basePrompt,
+			versions: [
+				{
+					...basePrompt.versions[0],
+					responseContract: {
+						format: "JSON",
+						schema: {
+							type: "object",
+							properties: { summary: { type: "string" } },
+						},
+					},
+				},
+			],
+		});
+		updatePrompt.mockResolvedValue({
+			prompt: { id: "p-1" },
+			version: { id: "example-v2" },
+		});
+		const user = userEvent.setup();
+		wrap(<PromptDetails promptId="p-1" organizationId="example-org" />);
+		await screen.findByText("Test Case Drafter Prompt");
+		await user.click(
+			screen.getByRole("button", { name: "Edit", exact: true }),
+		);
+		await user.click(
+			screen.getByRole("tab", { name: "Try prompt", exact: true }),
+		);
+		await user.click(
+			screen.getByRole("combobox", {
+				name: "Expected response",
+				exact: true,
+			}),
+		);
+		await user.click(
+			screen.getByRole("option", { name: "XML (advanced)", exact: true }),
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Save changes", exact: true }),
+		);
+		await waitFor(() =>
+			expect(updatePrompt).toHaveBeenCalledWith(
+				expect.objectContaining({
+					id: "p-1",
+					responseContract: { format: "XML" },
+					content: undefined,
+				}),
+			),
+		);
 	});
 
 	it("shows a retry state for a transport/500 failure, not a not-found dead end", async () => {

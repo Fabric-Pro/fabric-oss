@@ -32,7 +32,7 @@ export function ProjectReadinessIndicator() {
 	const tone =
 		data.level === "READY"
 			? {
-					dot: "bg-secondary",
+					dot: "bg-success",
 					text: "text-muted-foreground",
 					label: t("level.READY"),
 				}
@@ -53,46 +53,53 @@ export function ProjectReadinessIndicator() {
 					};
 
 	const gapCount = data.activeGaps.length;
-	// An assumed phase must never look like a chosen one.
+	// An assumed phase must never look like a chosen one when the expanded
+	// checklist isn't open right beneath the header explaining it.
 	const assumed = data.phaseSource === "inferred";
+	const ariaLabel = isExpanded
+		? t("indicator.ariaCollapse", { level: tone.label })
+		: gapCount === 0
+			? t("indicator.ariaExpandZero", { level: tone.label })
+			: t("indicator.ariaExpandOpen", {
+					level: tone.label,
+					count: gapCount,
+				});
 
 	return (
 		<button
 			type="button"
 			onClick={() => setExpanded(!isExpanded)}
 			aria-expanded={isExpanded}
-			aria-label={`Project readiness: ${tone.label}. ${
-				gapCount === 0 ? "No open items." : `${gapCount} open items.`
-			} Select to ${isExpanded ? "collapse" : "expand"} the checklist.`}
+			aria-label={ariaLabel}
 			className={cn(
-				"inline-flex items-center gap-2 rounded-full border border-border/60 px-2.5 py-1",
-				"text-xs transition-colors hover:bg-accent focus-visible:outline-hidden",
-				"focus-visible:ring-2 focus-visible:ring-ring",
+				"inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1",
+				"text-xs font-medium transition-colors duration-150 hover:bg-muted focus-visible:outline-hidden",
+				"focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background",
 				tone.text,
 			)}
 		>
 			<span
-				className={cn("size-2 rounded-full", tone.dot)}
+				className={cn("size-2 shrink-0 rounded-full", tone.dot)}
 				aria-hidden="true"
 			/>
 			<span>{tone.label}</span>
-			{assumed && (
-				<span className="text-muted-foreground text-[10px] uppercase tracking-wider">
-					assumed
+			{!isExpanded && assumed && (
+				<span className="text-muted-foreground text-xs">
+					· {t("indicator.assumed")}
 				</span>
 			)}
-			{data.level !== "READY" && gapCount > 0 && (
-				<span className="text-muted-foreground tabular-nums">
+			{!isExpanded && data.level !== "READY" && gapCount > 0 && (
+				<span className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground tabular-nums leading-none">
 					{gapCount}
 				</span>
 			)}
-			{/* The panel collapses into this pill, and on the 20 Aug review a
+			{/* The panel collapses into this chip, and on the 20 Aug review a
 			    collapsed panel had no visible way back — nothing said this was
 			    the control that reopens it. A chevron that points the way it
 			    will move says so without copy. */}
 			<ChevronDownIcon
 				className={cn(
-					"size-3 text-muted-foreground motion-safe:transition-transform",
+					"size-3.5 text-muted-foreground motion-safe:transition-transform",
 					isExpanded && "rotate-180",
 				)}
 				aria-hidden="true"

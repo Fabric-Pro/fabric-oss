@@ -61,6 +61,20 @@ still apply.
 | Release/changeset work | [fabric-app release contract](packages/fabric-app/README.md), [deployment flow](docs/deployment.md) | changeset status JSON or explicit skip decision |
 | Documentation | [Documentation standards](DOCUMENTATION_STANDARDS.md) | links, metadata, and canonical-location review |
 
+## Product operations and transport parity
+
+Every new product operation must be available through API/SDK, CLI and MCP,
+with an intuitive Portal experience. Reuse the same authorized command/query
+implementation across transports, including applicable status, results,
+cancellation and scheduling controls. Before calling a feature complete, verify
+transport parity and negative cases for credential scopes, current actor and
+object permissions, tenant isolation and mutation auditing. Document any
+unsupported operation explicitly; a UI-only path or advertised nonfunctional
+tool does not satisfy completion.
+
+Design for software delivery teams. Keep underlying Databricks resources and
+administration behind Fabric product terminology and operator-managed bindings.
+
 ## Tenancy and authorization
 
 An organization is the only tenant context.

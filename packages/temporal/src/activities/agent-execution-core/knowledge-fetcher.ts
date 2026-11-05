@@ -10,6 +10,7 @@
  */
 
 import { logger } from "@repo/logs";
+import { WorkspaceSelectionAccessError } from "../shared/workspace-document-access";
 import type {
 	FetchKnowledgeInput,
 	FetchKnowledgeResult,
@@ -41,6 +42,7 @@ export async function fetchKnowledgeSources(
 	const {
 		knowledgeSources,
 		workspaceIds,
+		workspaceDocumentFilters,
 		query,
 		userId,
 		organizationId,
@@ -68,6 +70,7 @@ export async function fetchKnowledgeSources(
 				userId,
 				organizationId,
 				maxResultsPerSource,
+				workspaceDocumentFilters,
 			);
 			allChunks.push(...workspaceChunks);
 			sourcesFetched.push("workspace");
@@ -75,6 +78,9 @@ export async function fetchKnowledgeSources(
 				count: workspaceChunks.length,
 			});
 		} catch (error) {
+			if (error instanceof WorkspaceSelectionAccessError) {
+				throw error;
+			}
 			const errorMsg =
 				error instanceof Error ? error.message : "Unknown error";
 			logger.error("[KnowledgeFetcher] Workspace fetch failed", {
@@ -138,6 +144,7 @@ async function fetchFromWorkspaces(
 	userId: string,
 	organizationId?: string,
 	maxResults: number = DEFAULT_MAX_RESULTS,
+	workspaceDocumentFilters?: FetchKnowledgeInput["workspaceDocumentFilters"],
 ): Promise<KnowledgeChunk[]> {
 	// Reuse existing workspace RAG retrieval activity
 	const { retrieveWorkspaceDocumentsActivity } = await import(
@@ -152,6 +159,7 @@ async function fetchFromWorkspaces(
 		undefined,
 		maxResults,
 		DEFAULT_MIN_SIMILARITY,
+		{ workspaceDocumentFilters },
 	);
 
 	if (!result.sources || result.sources.length === 0) {

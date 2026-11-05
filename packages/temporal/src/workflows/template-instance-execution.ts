@@ -148,6 +148,9 @@ export interface TemplateInstanceExecutionInput {
 	 */
 	jobType?: AiJobKey;
 	parameters?: Record<string, unknown>;
+	/** Set only by durable server admission; absence preserves existing histories. */
+	reportingProtocol?: 1;
+	planEligible?: boolean;
 	dateRange?: {
 		start: string;
 		end: string;
@@ -239,18 +242,70 @@ export async function templateInstanceExecutionWorkflow(
 			instanceId: input.instanceId,
 			userId: input.userId,
 			organizationId: input.organizationId,
+			...(input.reportingProtocol === 1
+				? { executionId: input.executionId }
+				: {}),
 		});
 
 		if (!instance) {
 			throw new Error("Template instance not found or access denied");
 		}
 
+		const reporting =
+			input.reportingProtocol === 1
+				? instance.reportingExecution
+				: undefined;
+		const dateRange = reporting?.window
+			? {
+					start: reporting.window.start,
+					end: reporting.window.end,
+					period: reporting.config?.period,
+				}
+			: input.dateRange;
+		// A cutoff is a query bound, not proof of a historical source snapshot. Existing
+		// connectors do not attest that contract, so strict-completeness runs fail closed.
+		if (reporting?.config?.partialData === "require_complete") {
+			throw new Error(
+				"Report requires complete historical evidence; connected sources do not attest cutoff completeness",
+			);
+		}
+		const reportingQuality = reporting?.config
+			? {
+					version: 1,
+					sourceRevisions: [] as Array<{
+						id: string;
+						kind: string;
+						title?: string;
+						revision: string;
+						updatedAt: string;
+						excerptHash: string;
+						citation: string;
+					}>,
+					state: "partial",
+					publication: reporting.config.publication,
+					issues: [
+						"source_cutoff_not_attested",
+						...(reporting.window?.comparison
+							? ["comparison_requires_source_verification"]
+							: []),
+					],
+					window: reporting.window,
+				}
+			: undefined;
+
 		const template = instance.template;
 
 		// Fetch skills attached to the template
-		const templateSkills = await fetchReportTemplateSkills({
-			templateId: template.id,
-		});
+		// Newly admitted snapshots pin effective skill contents. Recorded pre-pin
+		// activity results lack this field and retain their original command path.
+		const templateSkills =
+			input.reportingProtocol === 1 && reporting?.skills !== undefined
+				? reporting.skills
+				: await fetchReportTemplateSkills({
+						templateId: template.id,
+						userId: input.userId,
+						organizationId: input.organizationId,
+					});
 		const skillsContent = buildSkillsPromptSection(templateSkills);
 
 		const definition = template.definition as {
@@ -277,7 +332,12 @@ export async function templateInstanceExecutionWorkflow(
 		// Merge parameters: instance defaults + runtime overrides
 		const mergedParameters = {
 			...((instance.parameterDefaults as Record<string, unknown>) || {}),
-			...input.parameters,
+			...(input.reportingProtocol === 1
+				? instance.reportingParameters
+				: input.parameters),
+			...(reporting?.window
+				? { reportEvidenceWindow: reporting.window }
+				: {}),
 		};
 
 		// 3. Apply Fabric AI enrichment
@@ -442,13 +502,16 @@ export async function templateInstanceExecutionWorkflow(
 		const hasAgenticDataSource = (
 			definition.dataSources as DataSourceWithProcessing[] | undefined
 		)?.some((ds) => ds.useAgentic === true);
-		const useAgenticApproach = hasAgenticContext || hasAgenticDataSource;
+		const useAgenticApproach =
+			!reporting?.config?.projectId &&
+			(hasAgenticContext || hasAgenticDataSource);
 
 		let dataFetchResult: {
 			results: Array<{
 				sourceId: string;
 				sourceType: string;
 				provider: string;
+				provenance?: dataFetchingActivities.DataSourceResult["provenance"];
 				data: unknown;
 				recordCount: number;
 				error?: string;
@@ -495,9 +558,23 @@ export async function templateInstanceExecutionWorkflow(
 			const mcpConfigIds = effectiveConnections.mcpConfigs;
 			const agentLoopResult = await withPlanWait(() =>
 				executeAgentDataGatheringLoop({
+					...(input.reportingProtocol === 1
+						? { reportingProtocol: 1 as const }
+						: {}),
 					taskDescription,
 					promptOverride: effectiveConnections.promptOverride,
-					context: effectiveConnections.context || {},
+					context: {
+						...effectiveConnections.context,
+						...(reporting?.window
+							? {
+									evidenceWindow: JSON.stringify(
+										reporting.window,
+									),
+									evidenceRule:
+										"Use [start,end) for the primary period and separate comparison bounds. Do not claim historical cutoff completeness; clearly label unavailable evidence.",
+								}
+							: {}),
+					},
 					mcpConfigIds,
 					providers,
 					maxIterations: effectiveConnections.maxIterations || 15,
@@ -511,6 +588,9 @@ export async function templateInstanceExecutionWorkflow(
 					userId: input.userId,
 					organizationId: input.organizationId,
 					jobType: input.jobType,
+					...(input.planEligible !== undefined
+						? { planEligible: input.planEligible }
+						: {}),
 					executionId: input.executionId,
 				}),
 			);
@@ -591,6 +671,9 @@ export async function templateInstanceExecutionWorkflow(
 			}));
 
 			dataFetchResult = await fetchDataSources({
+				...(input.reportingProtocol === 1
+					? { reportingProtocol: 1 as const }
+					: {}),
 				dataSources: normalizedDataSources,
 				connections: {
 					mcpBindings: effectiveConnections?.mcpBindings,
@@ -607,13 +690,61 @@ export async function templateInstanceExecutionWorkflow(
 				organizationId: input.organizationId,
 				executionId: input.executionId,
 				parameters: mergedParameters,
-				dateRange: input.dateRange,
+				dateRange,
 				enableRag,
 			});
 
+			if (reporting?.window?.comparison) {
+				const comparison = await fetchDataSources({
+					...(input.reportingProtocol === 1
+						? { reportingProtocol: 1 as const }
+						: {}),
+					dataSources: normalizedDataSources,
+					connections: {
+						mcpBindings: effectiveConnections?.mcpBindings,
+						integrationBindings:
+							effectiveConnections?.integrationBindings,
+						resourceBindings:
+							effectiveConnections?.resourceBindings,
+						workspaceBindings:
+							effectiveConnections?.workspaceBindings,
+						parameterBindings:
+							effectiveConnections?.parameterBindings,
+						mcpConfigs: effectiveConnections?.mcpConfigs,
+						integrations: instanceConnections?.integrations,
+						workspaces: instanceConnections?.workspaces,
+					},
+					userId: input.userId,
+					organizationId: input.organizationId,
+					executionId: input.executionId,
+					parameters: {
+						...mergedParameters,
+						reportEvidenceRole: "comparison",
+					},
+					dateRange: reporting.window.comparison,
+					enableRag: false,
+				});
+				dataFetchResult.results.push(
+					...comparison.results.map((result) => ({
+						...result,
+						sourceId: `comparison:${result.sourceId}`,
+					})),
+				);
+				dataFetchResult.totalRecords += comparison.totalRecords;
+				if (comparison.isPartial) {
+					agentLoopMetadata.isPartial = true;
+				}
+			}
+
+			if ("isPartial" in dataFetchResult && dataFetchResult.isPartial) {
+				agentLoopMetadata.isPartial = true;
+			}
 			// Check if ALL data sources failed - if so, fail the execution
 			const successfulSources = dataFetchResult.results.filter(
-				(r) => !r.error && r.recordCount > 0,
+				(r) =>
+					!r.sourceId.startsWith("comparison:") &&
+					!r.error &&
+					r.recordCount > 0,
 			);
 			const failedSources = dataFetchResult.results.filter(
 				(r) => r.error,
@@ -637,7 +768,9 @@ export async function templateInstanceExecutionWorkflow(
 
 			if (
 				successfulSources.length === 0 &&
-				failedSources.length === normalizedDataSources.length
+				failedSources.filter(
+					(r) => !r.sourceId.startsWith("comparison:"),
+				).length === normalizedDataSources.length
 			) {
 				const errorMessages = failedSources
 					.map((r) => `${r.sourceId}: ${r.error}`)
@@ -648,6 +781,14 @@ export async function templateInstanceExecutionWorkflow(
 			}
 		}
 
+		if (
+			reporting?.config?.projectId &&
+			dataFetchResult.totalRecords === 0
+		) {
+			throw new Error(
+				"No completed documents or extracted project context were available before this report cutoff.",
+			);
+		}
 		// Convert to legacy format for backward compatibility with rendering
 		const dataResults = dataFetchResult.results.map((r) => ({
 			sourceId: r.sourceId,
@@ -671,7 +812,7 @@ export async function templateInstanceExecutionWorkflow(
 		let effectiveAiAgents = definition.aiAgents || [];
 
 		if (
-			useAgenticApproach &&
+			(useAgenticApproach || !!reporting?.config?.projectId) &&
 			effectiveAiAgents.length === 0 &&
 			dataFetchResult.totalRecords > 0
 		) {
@@ -680,7 +821,9 @@ export async function templateInstanceExecutionWorkflow(
 			const defaultTask =
 				instanceConnections?.promptOverride ||
 				definition.userPrompt ||
-				`Analyze the gathered data and generate a comprehensive report for "${template.name}". Include key findings, metrics, and actionable insights.`;
+				(reporting?.config?.projectId
+					? "Summarize the admitted project knowledge. Cite supplied project sources and revisions, distinguish observed delivery facts from unknowns, and do not infer missing historical metrics."
+					: `Analyze the gathered data and generate a comprehensive report for "${template.name}". Include key findings, metrics, and actionable insights.`);
 
 			effectiveAiAgents = [
 				{
@@ -706,6 +849,12 @@ export async function templateInstanceExecutionWorkflow(
 
 			aiResults = await withPlanWait(() =>
 				executeAiAnalysis({
+					...(input.reportingProtocol === 1
+						? {
+								reportingProtocol: 1 as const,
+								executionId: input.executionId,
+							}
+						: {}),
 					aiAgents: effectiveAiAgents,
 					dataResults: dataFetchResult.results,
 					qdrantCollectionId: dataFetchResult.qdrantCollectionId,
@@ -714,6 +863,9 @@ export async function templateInstanceExecutionWorkflow(
 					userId: input.userId,
 					organizationId: input.organizationId,
 					jobType: input.jobType,
+					...(input.planEligible !== undefined
+						? { planEligible: input.planEligible }
+						: {}),
 					parameters: mergedParameters,
 					sections: definition.sections,
 					outputFormat,
@@ -721,17 +873,64 @@ export async function templateInstanceExecutionWorkflow(
 			);
 		}
 
+		if (
+			reportingQuality &&
+			dataFetchResult.results.some((result) => result.error)
+		) {
+			reportingQuality.issues.push("source_unavailable");
+		}
+		if (reportingQuality && agentLoopMetadata.isPartial) {
+			reportingQuality.issues.push("evidence_truncated");
+		}
+		if (reportingQuality) {
+			reportingQuality.sourceRevisions = dataFetchResult.results
+				.flatMap((result) => result.provenance ?? [])
+				.slice(0, 40);
+		}
 		// 6. Render report content
 		const renderedReport = await renderInstanceReport({
 			instance,
-			template,
+			template:
+				reporting?.config?.projectId &&
+				!definition.sections?.some(
+					(section) => section.type === "ai-generated",
+				)
+					? {
+							...template,
+							definition: {
+								...definition,
+								sections: [
+									...(definition.sections ?? []),
+									{
+										id: "project_summary",
+										title: "Project summary",
+										type: "ai-generated",
+										config: { outputVariable: "analysis" },
+									},
+								],
+							},
+						}
+					: template,
 			dataResults,
 			aiResults,
 			parameters: mergedParameters,
-			dateRange: input.dateRange,
+			dateRange,
 			outputFormat,
 			isPartial: !!agentLoopMetadata.isPartial,
 		});
+
+		if (reportingQuality) {
+			renderedReport.markdown =
+				"> Evidence notice: source history at the report cutoff has not been independently verified. Treat this report as a draft for review.\n\n" +
+				renderedReport.markdown;
+		}
+
+		if (
+			reporting?.config?.projectId &&
+			reportingQuality?.sourceRevisions.length
+		) {
+			renderedReport.markdown += `\n\n## Sources\n${reportingQuality.sourceRevisions.map((reference) => `- [${(reference.title ?? "Project source").replace(/[[\]\\]/g, "\\$&")}](${reference.citation}) · revision ${reference.revision.slice(0, 40)}`).join("\n")}`;
+		}
 
 		if (outputFormat === "MARKDOWN" || outputFormat === "MULTI_FORMAT") {
 			const artifact = await storeInstanceArtifact({
@@ -745,7 +944,10 @@ export async function templateInstanceExecutionWorkflow(
 				mimeType: "text/markdown",
 				metadata: {
 					templateType: template.templateType,
-					dateRange: input.dateRange,
+					dateRange,
+					...(reportingQuality
+						? { reporting: reportingQuality }
+						: {}),
 					fabricEnrichment: enrichmentResult.components,
 				},
 			});
@@ -760,12 +962,14 @@ export async function templateInstanceExecutionWorkflow(
 
 			// Index for RAG
 			// TENANT ISOLATION: Pass userId and organizationId for proper tenant filtering
-			await indexInstanceArtifactForRag({
-				artifactId: artifact.id,
-				content: renderedReport.markdown,
-				userId: input.userId,
-				organizationId: input.organizationId,
-			});
+			if (!reporting?.config?.projectId) {
+				await indexInstanceArtifactForRag({
+					artifactId: artifact.id,
+					content: renderedReport.markdown,
+					userId: input.userId,
+					organizationId: input.organizationId,
+				});
+			}
 		}
 
 		if (outputFormat === "HTML" || outputFormat === "MULTI_FORMAT") {
@@ -787,7 +991,10 @@ export async function templateInstanceExecutionWorkflow(
 				mimeType: "text/html",
 				metadata: {
 					templateType: template.templateType,
-					dateRange: input.dateRange,
+					dateRange,
+					...(reportingQuality
+						? { reporting: reportingQuality }
+						: {}),
 				},
 			});
 
@@ -838,7 +1045,7 @@ export async function templateInstanceExecutionWorkflow(
 					error: r.error,
 				})),
 				parameters: mergedParameters,
-				dateRange: input.dateRange,
+				dateRange,
 			});
 
 			if (evidenceResult.success && evidenceResult.htmlContent) {
@@ -849,11 +1056,19 @@ export async function templateInstanceExecutionWorkflow(
 					name: `${instance.name}-dashboard.html`,
 					description: `Interactive Evidence dashboard from ${template.name}`,
 					artifactType: "HTML", // Use HTML type since it's valid HTML
-					content: evidenceResult.htmlContent,
+					content: reportingQuality
+						? evidenceResult.htmlContent.replace(
+								/<body([^>]*)>/i,
+								'<body$1><p role="note">Evidence notice: source history at the report cutoff has not been independently verified. This report is a draft for review.</p>',
+							)
+						: evidenceResult.htmlContent,
 					mimeType: "text/html",
 					metadata: {
 						templateType: template.templateType,
-						dateRange: input.dateRange,
+						dateRange,
+						...(reportingQuality
+							? { reporting: reportingQuality }
+							: {}),
 						evidenceGenerated: true,
 						evidenceBuildDuration: evidenceResult.buildDuration,
 						evidenceWarnings: evidenceResult.warnings,
@@ -878,12 +1093,14 @@ export async function templateInstanceExecutionWorkflow(
 					.trim();
 
 				// TENANT ISOLATION: Pass userId and organizationId for proper tenant filtering
-				await indexInstanceArtifactForRag({
-					artifactId: artifact.id,
-					content: textContent,
-					userId: input.userId,
-					organizationId: input.organizationId,
-				});
+				if (!reporting?.config?.projectId) {
+					await indexInstanceArtifactForRag({
+						artifactId: artifact.id,
+						content: textContent,
+						userId: input.userId,
+						organizationId: input.organizationId,
+					});
+				}
 			}
 		}
 
@@ -904,7 +1121,10 @@ export async function templateInstanceExecutionWorkflow(
 			status: "COMPLETED",
 			completedAt: new Date(),
 			duration,
-			fabricEnrichment: enrichmentResult.components,
+			fabricEnrichment: {
+				...enrichmentResult.components,
+				...(reportingQuality ? { reporting: reportingQuality } : {}),
+			},
 			dataSources: dataFetchResult.results.map((r) => ({
 				sourceId: r.sourceId,
 				sourceType: r.sourceType,

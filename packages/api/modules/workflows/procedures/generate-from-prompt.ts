@@ -25,6 +25,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { normalizeGeneratedNodes } from "../lib/generated-nodes";
 
 // Define the node type definitions for context with full config field details
 const NODE_TYPES = `
@@ -473,6 +474,9 @@ Respond with a JSON object only, no markdown or code fences:
 				parsedResponse.edges = cleanedEdges;
 			}
 
+			parsedResponse.nodes = normalizeGeneratedNodes(
+				parsedResponse.nodes,
+			);
 			const unknown = collectUnknownNodeTypes(parsedResponse.nodes);
 			if (unknown.length > 0) {
 				console.warn(

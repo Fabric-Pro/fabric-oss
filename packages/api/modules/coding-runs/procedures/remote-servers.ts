@@ -25,6 +25,60 @@ const base = tenantProtectedProcedure.use(
 	requireProjectPermission(Permissions.AGENT_EXECUTE),
 );
 
+const KNOWN_READINESS_CHECKS = new Set([
+	"workspace",
+	"registry",
+	"wholeRunCancellation",
+	"permissionPolicy",
+	"git",
+	"provider",
+]);
+
+const GENERIC_VERIFICATION_FAILURE_MESSAGE =
+	"Could not verify this server. Check its URL, service secret, protocol version, and network access.";
+
+function describeRemoteServerVerificationError(err: unknown): string {
+	const code =
+		typeof err === "object" && err !== null && "code" in err
+			? (err as { code?: unknown }).code
+			: undefined;
+	const message = err instanceof Error ? err.message : "";
+
+	if (
+		code === "AUTH_ERROR" ||
+		/Execution readiness authorization failed/i.test(message)
+	) {
+		return "The server rejected the execution service secret. Confirm that BACKGROUND_AGENTS_INTERNAL_SECRET on the server matches this secret (the Web UI token FABRIC_SERVER_TOKEN is separate) and try again.";
+	}
+
+	const readinessChecksMatch =
+		/^Execution readiness checks failed(?::\s*(.+))?$/.exec(message);
+	if (readinessChecksMatch) {
+		const rawChecks = readinessChecksMatch[1]
+			? readinessChecksMatch[1]
+					.split(",")
+					.map((item) => item.trim())
+					.filter((item) => KNOWN_READINESS_CHECKS.has(item))
+			: [];
+		const uniqueChecks = Array.from(new Set(rawChecks));
+		const missingWorkspace = uniqueChecks.includes("workspace");
+		const otherChecks = uniqueChecks.filter((item) => item !== "workspace");
+
+		if (missingWorkspace && otherChecks.length === 0) {
+			return "This Fabric Agents server is reachable, but it has no workspace yet. Open the server Web UI or Fabric Agents Desktop, create a workspace, and verify again.";
+		}
+		if (missingWorkspace && otherChecks.length > 0) {
+			return `This Fabric Agents server is reachable, but it has no workspace yet and failed readiness checks (${otherChecks.join(", ")}). Create a workspace on the server, check its configuration, and verify again.`;
+		}
+		if (otherChecks.length > 0) {
+			return `This Fabric Agents server is reachable, but readiness checks failed (${otherChecks.join(", ")}). Check the server configuration and version, then verify again.`;
+		}
+		return "This Fabric Agents server is reachable, but its readiness check reported not ready. Create a workspace on the server, check its configuration, and verify again.";
+	}
+
+	return GENERIC_VERIFICATION_FAILURE_MESSAGE;
+}
+
 async function projectOrganization(projectId: string) {
 	const project = await db.project.findUnique({
 		where: { id: projectId },
@@ -135,10 +189,9 @@ export const connectRemoteServerProcedure = base
 				secret: input.secret,
 			}).executionReadiness();
 			profileId = result.profileId;
-		} catch {
+		} catch (err) {
 			throw new ORPCError("SERVICE_UNAVAILABLE", {
-				message:
-					"Could not verify this server. Check its URL, service secret, protocol version, and network access.",
+				message: describeRemoteServerVerificationError(err),
 			});
 		}
 		const server = await createRemoteAgentServer({

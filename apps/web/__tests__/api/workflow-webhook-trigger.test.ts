@@ -25,6 +25,7 @@ const {
 	apiKeyUpdateMock,
 	startMock,
 	describeMock,
+	canRunMock,
 } = vi.hoisted(() => ({
 	rateLimitMock: vi.fn(),
 	reserveMock: vi.fn(),
@@ -35,6 +36,7 @@ const {
 	apiKeyUpdateMock: vi.fn(),
 	startMock: vi.fn(),
 	describeMock: vi.fn(),
+	canRunMock: vi.fn(),
 }));
 
 vi.mock("@repo/api/lib/rate-limit", () => ({ checkRateLimit: rateLimitMock }));
@@ -48,6 +50,7 @@ vi.mock("@repo/api/modules/workflows/lib/execution-concurrency", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	canRunOrganizationWorkflows: canRunMock,
 	db: {
 		workflow: { findUnique: workflowFindUniqueMock },
 		workflowExecution: {
@@ -145,6 +148,7 @@ function signatureFor(body: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	canRunMock.mockResolvedValue(true);
 	rateLimitMock.mockResolvedValue({ allowed: true, remaining: 59 });
 	reserveMock.mockResolvedValue({
 		allowed: true,
@@ -168,6 +172,7 @@ beforeEach(() => {
 		expiresAt: null,
 		userId: OWNER,
 		organizationId: ORG,
+		createdBy: "key-creator",
 	});
 	startMock.mockResolvedValue({ workflowId: "temporal-run-1" });
 	// Default: a start that threw really did not happen.
@@ -175,6 +180,29 @@ beforeEach(() => {
 });
 
 describe("authentication", () => {
+	it("refuses a signed request after its owner loses organization permission", async () => {
+		canRunMock.mockResolvedValue(false);
+		const body = JSON.stringify({ message: "example" });
+		const response = await callPost(
+			post(body, { "x-workflow-signature": signatureFor(body) }),
+		);
+		expect(response.status).toBe(403);
+		expect(canRunMock).toHaveBeenCalledWith(OWNER, ORG);
+		expect(reserveMock).not.toHaveBeenCalled();
+	});
+
+	it("checks the key creator's current rights before recording use or starting", async () => {
+		canRunMock.mockImplementation(
+			async (userId: string) => userId !== "key-creator",
+		);
+		const response = await callPost(
+			post("{}", { authorization: `Bearer ${RAW_KEY}` }),
+		);
+		expect(response.status).toBe(403);
+		expect(canRunMock).toHaveBeenCalledWith("key-creator", ORG);
+		expect(apiKeyUpdateMock).not.toHaveBeenCalled();
+		expect(reserveMock).not.toHaveBeenCalled();
+	});
 	it("starts a run for a valid API key", async () => {
 		const res = await callPost(
 			post("{}", { authorization: `Bearer ${RAW_KEY}` }),
@@ -470,11 +498,7 @@ describe("when Temporal will not take the run", () => {
 });
 
 describe("what the execution row records", () => {
-	it("stamps the version that ran, not the published one", async () => {
-		// The fixture is deliberately mid-edit: version 4 is the saved graph,
-		// publishedVersion 3 is the last snapshot. Every trigger path executes
-		// `workflow.nodes`, so a run labelled 3 pointed anyone debugging at a
-		// graph that did not run.
+	it("pins unattended execution to the publication despite a newer saved draft", async () => {
 		const body = JSON.stringify({ hello: "world" });
 		await callPost(
 			post(body, { "x-workflow-signature": signatureFor(body) }),
@@ -482,7 +506,7 @@ describe("what the execution row records", () => {
 
 		expect(reserveMock).toHaveBeenCalledWith(
 			expect.objectContaining({
-				data: expect.objectContaining({ version: 4 }),
+				data: expect.objectContaining({ version: 3 }),
 			}),
 		);
 	});

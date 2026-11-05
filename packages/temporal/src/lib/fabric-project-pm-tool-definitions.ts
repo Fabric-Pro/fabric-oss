@@ -11,7 +11,7 @@ export const FABRIC_PROJECT_PM_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_list_project_pm_assigned_items",
 		description:
-			"Reads up to 50 directly assigned ADO item IDs, default User Story/current connection user. Reuse returned cursor with the same filters; complete=false is partial. requirementsAsOf pins snapshot reads. No hierarchy traversal.",
+			"Reads max 50 directly assigned ADO IDs; default User Story/current user. Continue cursor with same filters; complete=false is partial. requirementsAsOf pins snapshots. No hierarchy traversal.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -68,7 +68,7 @@ export const FABRIC_PROJECT_PM_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_get_project_pm_item_snapshots",
 		description:
-			"Reads at most 10 ADO items: historical requirement fields plus separately captured current, versioned own comments. Use requirementsAsOf from assigned-items enumeration. Default fields include Description/AcceptanceCriteria; select Custom.BusinessRules when instructions require it. No parent/child comments. Incomplete/unreadIds and resultTruncated must be honored; result capped at 128 KiB, whole items omitted on overflow.",
+			"Reads max 10 ADO items: historical requirements + separately captured current/versioned own comments, never parent/child comments. Pin requirementsAsOf from assigned-items. Defaults Description/AcceptanceCriteria; request Custom.BusinessRules when required. Honor incomplete/unreadIds/resultTruncated; max 128 KiB, whole items omitted on overflow.",
 		inputSchema: {
 			type: "object",
 			properties: {

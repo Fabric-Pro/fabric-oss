@@ -25,6 +25,7 @@ import {
 	getDeploymentRateLimitProcedure,
 	getQuotaProcedure,
 } from "./procedures/quota";
+import { agentRunControls } from "./procedures/run-controls";
 import {
 	createTriggerProcedure,
 	deleteTriggerProcedure,
@@ -35,6 +36,7 @@ import {
 import { handleWebhookProcedure } from "./procedures/webhook-handler";
 
 export const agentDeploymentsRouter = {
+	runs: agentRunControls,
 	// Deployment CRUD
 	deploy: deployProcedure,
 	list: listDeploymentsProcedure,

@@ -6,11 +6,16 @@ import { redirect } from "next/navigation";
 
 type Props = {
 	params: Promise<{ organizationSlug: string; id: string }>;
+	searchParams: Promise<{ returnTo?: string | string[] }>;
 };
 
-export default async function OrganizationEditSkillPage({ params }: Props) {
+export default async function OrganizationEditSkillPage({
+	params,
+	searchParams,
+}: Props) {
 	const session = await getSession();
 	const { organizationSlug, id } = await params;
+	const query = await searchParams;
 
 	if (!session) {
 		redirect("/auth/login");
@@ -38,7 +43,14 @@ export default async function OrganizationEditSkillPage({ params }: Props) {
 					{ label: "Edit Skill" },
 				]}
 			/>
-			<SkillEditLoader skillId={id} />
+			<SkillEditLoader
+				skillId={id}
+				returnTo={
+					typeof query.returnTo === "string"
+						? query.returnTo
+						: undefined
+				}
+			/>
 		</div>
 	);
 }

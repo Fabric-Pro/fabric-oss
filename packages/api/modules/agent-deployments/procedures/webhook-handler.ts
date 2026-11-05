@@ -195,7 +195,7 @@ export const handleWebhookProcedure = publicProcedure
 			);
 
 			const executionRequest: ExecutionRequest = {
-				executionId: execution.id,
+				executionId: execution.executionId,
 				input: executionInput,
 				triggerType: "WEBHOOK",
 				triggerId: trigger.id,

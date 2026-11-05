@@ -51,11 +51,9 @@ import {
 	ChevronDownIcon,
 	ChevronRightIcon,
 	ClockIcon,
-	GlobeIcon,
 	LayoutTemplateIcon,
 	LightbulbIcon,
 	Loader2Icon,
-	LockIcon,
 	PlayIcon,
 	PlusIcon,
 	ScaleIcon,
@@ -183,7 +181,7 @@ export function CreateAgentDialog({
 		displayName: "",
 		description: "",
 		systemPrompt: "",
-		scope: "USER" as "USER" | "ORGANIZATION",
+		scope: "ORGANIZATION" as const,
 		capabilityIds: [] as string[],
 		skillIds: [] as string[],
 		mcpServers: [] as string[],
@@ -232,7 +230,7 @@ export function CreateAgentDialog({
 				displayName: editingAgent.displayName ?? "",
 				description: editingAgent.description ?? "",
 				systemPrompt: editingAgent.config?.systemPromptKey ?? "",
-				scope: editingAgent.scope ?? "USER",
+				scope: "ORGANIZATION",
 				capabilityIds: selectionSummary.capabilityIds,
 				skillIds: selectionSummary.skillIds,
 				mcpServers: editingAgent.config?.mcpServers ?? [],
@@ -288,26 +286,11 @@ export function CreateAgentDialog({
 		);
 	};
 
-	// Fetch configured MCP servers based on agent scope
+	// Every connection is resolved within the current organization.
 	const { data: mcpConfigs = [], isLoading: loadingMcpServers } = useQuery({
-		queryKey: [
-			"mcp-configs",
-			formData.scope === "ORGANIZATION" ? "org" : "user",
-			formData.scope === "ORGANIZATION" ? organizationId : undefined,
-		],
-		queryFn: async () => {
-			if (formData.scope === "ORGANIZATION") {
-				if (!organizationId) {
-					return [];
-				}
-				return await orpcClient.mcp.configs.list({
-					organizationId,
-				});
-			}
-			// User scope - no organizationId needed
-			return await orpcClient.mcp.configs.list();
-		},
-		enabled: open && (formData.scope === "USER" || !!organizationId),
+		queryKey: ["mcp-configs", "org", organizationId],
+		queryFn: () => orpcClient.mcp.configs.list({ organizationId }),
+		enabled: open && !!organizationId,
 	});
 
 	// Filter only enabled configs
@@ -315,36 +298,25 @@ export function CreateAgentDialog({
 
 	// Fetch skills for Dust-style capabilities picker
 	const { data: skillsCatalogData, isLoading: loadingSkills } = useQuery({
-		queryKey: [
-			"skills",
-			"catalog",
-			formData.scope,
-			formData.scope === "ORGANIZATION" ? organizationId : null,
-		],
-		queryFn: async () => {
-			return await orpcClient.skills.list({
-				organizationId:
-					formData.scope === "ORGANIZATION" ? organizationId : null,
+		queryKey: ["skills", "catalog", organizationId],
+		queryFn: () =>
+			orpcClient.skills.list({
+				organizationId,
 				limit: 100,
 				isPublished: true,
-			});
-		},
-		enabled: open,
+			}),
+		enabled: open && !!organizationId,
 	});
 
-	// Fetch workspaces for knowledge sources
-	// Use null for USER scope to explicitly signal personal context (not undefined which falls back to session)
 	const { data: workspacesData, isLoading: loadingWorkspaces } = useQuery({
-		queryKey: ["workspaces", organizationId, formData.scope],
-		queryFn: async () => {
-			return await orpcClient.documentWorkspaces.list({
-				organizationId:
-					formData.scope === "ORGANIZATION" ? organizationId : null,
+		queryKey: ["workspaces", organizationId],
+		queryFn: () =>
+			orpcClient.documentWorkspaces.list({
+				organizationId,
 				limit: 50,
 				status: "ACTIVE",
-			});
-		},
-		enabled: open,
+			}),
+		enabled: open && !!organizationId,
 	});
 
 	const workspaces = workspacesData?.workspaces ?? [];
@@ -414,6 +386,11 @@ export function CreateAgentDialog({
 	// Create/update agent mutation (instant - no deployment needed)
 	const saveMutation = useMutation({
 		mutationFn: async () => {
+			if (!organizationId) {
+				throw new Error(
+					"Select an organization before saving an agent.",
+				);
+			}
 			const selectedSkillsForConfig = selectedSkillDetails.map(
 				(skill) => ({
 					id: skill.id,
@@ -467,10 +444,7 @@ export function CreateAgentDialog({
 				description: formData.description,
 				framework: formData.framework,
 				scope: formData.scope,
-				organizationId:
-					formData.scope === "ORGANIZATION" && organizationId
-						? organizationId
-						: undefined,
+				organizationId,
 				config: {
 					model: formData.model,
 					temperature: formData.temperature,
@@ -523,7 +497,7 @@ export function CreateAgentDialog({
 			displayName: "",
 			description: "",
 			systemPrompt: "",
-			scope: "USER",
+			scope: "ORGANIZATION",
 			capabilityIds: [],
 			skillIds: [],
 			mcpServers: [],
@@ -1031,64 +1005,11 @@ export function CreateAgentDialog({
 								</h3>
 							</div>
 
-							{/* Visibility */}
-							<div className="space-y-3">
-								<Label className="text-xs text-muted-foreground">
-									Visibility
-								</Label>
-								<div className="flex gap-2">
-									<button
-										type="button"
-										onClick={() =>
-											setFormData({
-												...formData,
-												scope: "USER",
-											})
-										}
-										className={cn(
-											"flex-1 flex items-center gap-2 p-3 rounded-lg border-2 transition-all",
-											formData.scope === "USER"
-												? "border-primary bg-primary/5"
-												: "border-border hover:border-primary/30",
-										)}
-									>
-										<LockIcon className="h-4 w-4 text-highlight" />
-										<div className="text-left">
-											<p className="text-sm font-medium">
-												Personal
-											</p>
-											<p className="text-xs text-muted-foreground">
-												Only visible to you
-											</p>
-										</div>
-									</button>
-									<button
-										type="button"
-										onClick={() =>
-											setFormData({
-												...formData,
-												scope: "ORGANIZATION",
-											})
-										}
-										className={cn(
-											"flex-1 flex items-center gap-2 p-3 rounded-lg border-2 transition-all",
-											formData.scope === "ORGANIZATION"
-												? "border-primary bg-primary/5"
-												: "border-border hover:border-primary/30",
-										)}
-									>
-										<GlobeIcon className="h-4 w-4 text-blue-500" />
-										<div className="text-left">
-											<p className="text-sm font-medium">
-												Organization
-											</p>
-											<p className="text-xs text-muted-foreground">
-												Visible to all members
-											</p>
-										</div>
-									</button>
-								</div>
-							</div>
+							<p className="text-sm text-muted-foreground">
+								This agent belongs to your current organization.
+								Its connections and knowledge remain subject to
+								each caller’s access.
+							</p>
 						</div>
 
 						{/* Tags Section */}

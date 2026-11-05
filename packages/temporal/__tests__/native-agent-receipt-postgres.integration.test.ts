@@ -145,12 +145,18 @@ describe.skipIf(!enabled)(
 				await db.user.deleteMany({ where: { id: user } });
 			}
 		});
-		it.each(["deployment", "goal"])(
-			"%s retries a real failed receipt write and lost acknowledgements before/after one turn",
-			async (kind) => {
+		it.each([
+			{ kind: "deployment", cancel: false },
+			{ kind: "goal", cancel: false },
+			{ kind: "deployment", cancel: true },
+			{ kind: "goal", cancel: true },
+		])(
+			"$kind cancel=$cancel retains native database receipts and acknowledged effects",
+			async ({ kind, cancel }) => {
 				if (!env) {
 					throw Error("Missing isolated test connections");
 				}
+				const testClient = env.client;
 				const suffix = randomUUID();
 				const workflowId = `${prefix}-${kind}-${suffix}`;
 				const executionId = `${prefix}-execution-${suffix}`;
@@ -322,6 +328,15 @@ describe.skipIf(!enabled)(
 						},
 						executeSavedAgentToolStep: async () => {
 							toolCalls++;
+							if (cancel) {
+								await testClient.workflow
+									.getHandle(workflowId)
+									.signal(
+										kind === "deployment"
+											? "cancelExecution"
+											: "cancel",
+									);
+							}
 							return {
 								id: "example-call",
 								name: "example_read",
@@ -370,18 +385,18 @@ describe.skipIf(!enabled)(
 					],
 				});
 				const result = await worker.runUntil(handle.result());
-				expect(result.status).toBe("COMPLETED");
+				expect(result.status).toBe(cancel ? "CANCELLED" : "COMPLETED");
 				expect(receiptAttempts).toBe(3);
 				expect(terminalAttempts).toBe(2);
-				expect(modelCalls).toBe(2);
+				expect(modelCalls).toBe(cancel ? 1 : 2);
 				expect(toolCalls).toBe(1);
 				const row = await db.agentDeploymentExecution.findUniqueOrThrow(
 					{ where: { id: rowId } },
 				);
 				expect(row.runId).toBe(handle.firstExecutionRunId);
-				expect(row.status).toBe("COMPLETED");
+				expect(row.status).toBe(cancel ? "CANCELLED" : "COMPLETED");
 				expect(JSON.stringify(row.output)).toContain(
-					"Example verified result",
+					cancel ? "Example evidence" : "Example verified result",
 				);
 				const history = await handle.fetchHistory();
 				const scheduled = (history.events ?? []).flatMap(
@@ -398,6 +413,28 @@ describe.skipIf(!enabled)(
 				expect(scheduled).not.toContain("invokeDeploymentAgent");
 				expect(scheduled).not.toContain("executeGoalStep");
 				expect(scheduled).not.toContain("attemptStepRecovery");
+				if (cancel) {
+					expect(
+						history.events?.some(
+							(event) =>
+								event.workflowExecutionSignaledEventAttributes
+									?.signalName ===
+								(kind === "deployment"
+									? "cancelExecution"
+									: "cancel"),
+						),
+					).toBe(true);
+					expect(result.output).toMatchObject({
+						cancelled: true,
+						toolCalls: [
+							{
+								status: "success",
+								result: { value: "Example evidence" },
+							},
+						],
+					});
+				}
+
 				if (kind === "deployment") {
 					expect(scheduled).not.toContain(
 						"signalSupervisorCompletion",
@@ -430,7 +467,7 @@ describe.skipIf(!enabled)(
 					await writeFile(
 						resolve(
 							process.env.NATIVE_AGENT_HISTORY_DIR,
-							`${kind}-durable.json`,
+							`${kind}-${cancel ? "cancelled" : "durable"}.json`,
 						),
 						JSON.stringify(
 							{

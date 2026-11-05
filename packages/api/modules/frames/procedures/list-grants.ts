@@ -1,5 +1,10 @@
 import { ORPCError } from "@orpc/client";
-import { getFrameById, listSharingGrants } from "@repo/database";
+import {
+	canDeleteOrganizationFrames,
+	getFrameById,
+	listSharingGrants,
+	publicSharingRefusal,
+} from "@repo/database";
 import { FrameShareScopeSchema } from "@repo/database/prisma/zod";
 import { z } from "zod";
 import {
@@ -26,6 +31,11 @@ const outputSchema = z.object({
 		}),
 	),
 	shareScope: FrameShareScopeSchema,
+	hasPublicLink: z.boolean(),
+	canRevoke: z.boolean(),
+	canShareFramesPublicly: z.boolean(),
+	updatedAt: z.string(),
+	shareToken: z.string().optional(),
 });
 
 /**
@@ -64,6 +74,9 @@ export const listFrameGrantsProcedure = tenantProtectedProcedure
 
 		// Get sharing grants
 		const grants = await listSharingGrants(input.id);
+		const canShareFramesPublicly = organizationId
+			? !(await publicSharingRefusal(organizationId))
+			: false;
 
 		return {
 			grants: grants.map((g) => ({
@@ -75,5 +88,19 @@ export const listFrameGrantsProcedure = tenantProtectedProcedure
 				accessCount: g.accessCount,
 			})),
 			shareScope: frame.shareScope,
+			canShareFramesPublicly,
+			hasPublicLink: Boolean(frame.isPublic && frame.shareToken),
+			canRevoke: organizationId
+				? await canDeleteOrganizationFrames(
+						context.user.id,
+						organizationId,
+					)
+				: false,
+			updatedAt: frame.updatedAt.toISOString(),
+			...(canShareFramesPublicly &&
+			frame.shareScope === "PUBLIC" &&
+			frame.shareToken
+				? { shareToken: frame.shareToken }
+				: {}),
 		};
 	});

@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/server";
 /**
  * v1 Prompts routes
  * GET /prompts        list prompts visible to caller
@@ -9,9 +10,11 @@ import {
 	promptContentTooLongMessage,
 } from "@repo/utils/prompt-content";
 import type { Hono } from "hono";
+import { ZodError } from "zod";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { verifyOrganizationMembership } from "../organizations/lib/membership";
+import { readPromptWorkbenchBody } from "../prompts/lib/workbench-http";
 import {
 	badRequest,
 	forbidden,
@@ -42,6 +45,85 @@ async function isOrganizationPromptAdmin(
 export function registerPromptRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
 ) {
+	for (const [path, scope, command] of [
+		["/prompt-assistance", "prompts:write", "assistPrompt"],
+		["/prompt-previews", "prompts:read", "tryPrompt"],
+		["/prompt-responses/read", "prompts:read", "getPromptResponse"],
+		["/prompt-responses", "prompts:write", "updatePromptResponse"],
+	] as const) {
+		app.post(path, requireScope(scope), async (c) => {
+			c.header("Cache-Control", "private, no-store");
+			const api = c.get("externalApiContext");
+			if (api.boundProjectId) {
+				return c.json(
+					forbidden(
+						"This operation requires an organization connection.",
+					),
+					403,
+				);
+			}
+			const ctx = await resolveV1Context(api, c.req.query("org"));
+			if ("error" in ctx) {
+				return c.json({ error: { message: ctx.error } }, ctx.status);
+			}
+			if (!ctx.organizationId) {
+				return c.json(forbidden("An organization is required."), 403);
+			}
+			try {
+				const commands = await import("../prompts/lib/workbench");
+				return c.json(
+					ok(
+						await commands[command](
+							{
+								userId: ctx.userId,
+								organizationId: ctx.organizationId,
+							},
+							await readPromptWorkbenchBody(c.req.raw),
+						),
+					),
+				);
+			} catch (error) {
+				if (error instanceof ZodError) {
+					return c.json(
+						{
+							error: {
+								code: "BAD_REQUEST",
+								message:
+									"Use the declared prompt request schema.",
+							},
+						},
+						400,
+					);
+				}
+				if (error instanceof ORPCError) {
+					const status =
+						error.code === "NOT_FOUND"
+							? 404
+							: error.code === "FORBIDDEN"
+								? 403
+								: error.code === "BAD_REQUEST"
+									? 400
+									: error.code === "PAYLOAD_TOO_LARGE"
+										? 413
+										: 503;
+					return c.json(
+						{ error: { code: error.code, message: error.message } },
+						status,
+					);
+				}
+				return c.json(
+					{
+						error: {
+							code: "SERVICE_UNAVAILABLE",
+							message:
+								"The prompt request could not finish. Nothing was saved.",
+						},
+					},
+					503,
+				);
+			}
+		});
+	}
 	app.get("/prompts", requireScope("prompts:read"), async (c) => {
 		const apiCtx = c.get("externalApiContext");
 		const ctx = await resolveV1Context(
@@ -92,6 +174,7 @@ export function registerPromptRoutes(
 						version: true,
 						content: true,
 						variables: true,
+						responseContract: true,
 					},
 				},
 			},

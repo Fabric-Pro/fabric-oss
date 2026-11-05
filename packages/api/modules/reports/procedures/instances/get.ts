@@ -1,5 +1,8 @@
 import { ORPCError } from "@orpc/server";
-import { getTemplateInstance } from "@repo/database";
+import {
+	getProjectReportSetupReason,
+	getTemplateInstance,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -58,6 +61,11 @@ export const getInstanceProcedure = tenantProtectedProcedure
 			schedule: instance.schedule,
 			scheduleMode: instance.scheduleMode,
 			isActive: instance.isActive,
+			setupRequiredReason: getProjectReportSetupReason(
+				instance.fabricConfig,
+				instance.template.definition,
+				instance.connections,
+			),
 			lastRunAt: instance.lastRunAt?.toISOString() || null,
 			nextRunAt: instance.nextRunAt?.toISOString() || null,
 			createdAt: instance.createdAt.toISOString(),

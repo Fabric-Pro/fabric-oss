@@ -109,6 +109,8 @@ export interface ReportReadiness {
 }
 
 export interface ReadinessInput {
+	/** A persisted, supported Project knowledge source; execution rechecks access. */
+	projectKnowledge?: boolean;
 	/** Whether the template declares ANY data source requirement at all. */
 	templateNeedsDataSource: boolean;
 	requiredDataSources: ReadinessDataSource[];
@@ -207,6 +209,7 @@ export function computeReportReadiness(input: ReadinessInput): ReportReadiness {
 		outputFormat,
 		dataSourceLabel,
 		dataSourcesMissingProject,
+		projectKnowledge,
 	} = input;
 
 	const connectionTested =
@@ -270,7 +273,9 @@ export function computeReportReadiness(input: ReadinessInput): ReportReadiness {
 	const connectionNote: string = (() => {
 		switch (connection) {
 			case "not_required":
-				return "This template runs without an external connection";
+				return projectKnowledge
+					? "Reads shared generated documents and text notes; project access is checked when this report runs"
+					: "This template runs without an external connection";
 			case "connected":
 				return connectionTested
 					? "All checks passed"
@@ -303,7 +308,9 @@ export function computeReportReadiness(input: ReadinessInput): ReportReadiness {
 			case "error":
 				return "Connection test failed";
 			case "not_required":
-				return "No data source required";
+				return projectKnowledge
+					? "Project knowledge selected"
+					: "No data source required";
 			case "project_not_selected":
 				return "Project not selected";
 			case "connection_unavailable":
@@ -401,12 +408,18 @@ export function computeReportReadiness(input: ReadinessInput): ReportReadiness {
 			: {
 					tone: "success" as const,
 					title: "Ready to generate",
-					subtitle: "All checks passed",
+					subtitle:
+						projectKnowledge && !templateNeedsDataSource
+							? "Project access is checked when this report runs"
+							: "All checks passed",
 				};
 
 	return {
 		connection,
-		connectionLabel: CONNECTED_LABEL[connection],
+		connectionLabel:
+			projectKnowledge && connection === "not_required"
+				? "Project knowledge selected"
+				: CONNECTED_LABEL[connection],
 		connectionTone: CONNECTED_TONE[connection],
 		connectionTested,
 		missingRequiredParams: missingLabels,

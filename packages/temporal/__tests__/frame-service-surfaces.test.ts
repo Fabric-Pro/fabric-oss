@@ -756,7 +756,7 @@ describe("getFirstClassFrame", () => {
 		});
 	});
 
-	it("hands the owner the link", async () => {
+	it("requires an explicit sharing command even for the owner", async () => {
 		mocks.getAccessibleFrameById.mockResolvedValue(
 			frameRecord({ shareToken: "token-1" }),
 		);
@@ -768,7 +768,8 @@ describe("getFirstClassFrame", () => {
 		});
 
 		expect(result).toMatchObject({
-			shareUrl: expect.stringContaining("token-1"),
+			shareUrl: undefined,
+			shareEmbedUrl: undefined,
 		});
 	});
 
@@ -934,7 +935,7 @@ describe("the addresses a frame is handed back with", () => {
 		expect(frames[1].sourceRunType).toBeUndefined();
 	});
 
-	it("carry the share link only where the frame is the caller's own or public", async () => {
+	it("never carry a bearer link in ordinary reads, including public frames", async () => {
 		mocks.getAccessibleFrameById.mockResolvedValue(
 			frameRecord({ userId: "someone-else", shareToken: "tok-private" }),
 		);
@@ -961,10 +962,8 @@ describe("the addresses a frame is handed back with", () => {
 			shareEmbedUrl: undefined,
 		});
 		expect(shared).toMatchObject({
-			shareUrl: expect.stringMatching(/\/share\/frame\/tok-public$/),
-			shareEmbedUrl: expect.stringMatching(
-				/\/share\/frame\/tok-public\/embed$/,
-			),
+			shareUrl: undefined,
+			shareEmbedUrl: undefined,
 		});
 	});
 });
@@ -1111,7 +1110,7 @@ describe("partial frame block edit service", () => {
 					edits: [{ oldText: "page", newText: "page" }],
 				},
 			}),
-		).toMatchObject({ error: expect.stringContaining("Re-read") });
+		).toMatchObject({ error: expect.stringContaining("Reload") });
 		expect(mocks.updateFrame).not.toHaveBeenCalled();
 	});
 
@@ -1127,4 +1126,25 @@ describe("partial frame block edit service", () => {
 		});
 		expect(JSON.stringify(result)).not.toContain("content");
 	});
+});
+
+it("reports legacy public status without returning bearer links", async () => {
+	mocks.getAccessibleFrameById.mockResolvedValue(
+		frameRecord({
+			isPublic: true,
+			shareScope: "PRIVATE",
+			shareToken: "example-secret",
+		}),
+	);
+	const result = await getFirstClassFrame({
+		args: { frameId: "frame-1" },
+		userId: USER,
+		organizationId: ORG,
+	});
+	expect(result).toMatchObject({
+		isPublic: true,
+		shareScope: "PRIVATE",
+		shareUrl: undefined,
+	});
+	expect(JSON.stringify(result)).not.toContain("example-secret");
 });

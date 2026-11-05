@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import {
+	canAccessReportInstance,
 	getTemplateInstance,
 	restoreReportInstanceVersion,
 } from "@repo/database";
@@ -35,6 +36,19 @@ export const restoreInstanceProcedure = tenantProtectedProcedure
 		if (!existing) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Template instance not found or access denied",
+			});
+		}
+
+		if (
+			!(await canAccessReportInstance(
+				existing,
+				{ userId: context.user.id, organizationId },
+				undefined,
+				true,
+			))
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Project report write access denied",
 			});
 		}
 

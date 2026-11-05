@@ -30,8 +30,9 @@ Two invariants underpin most scenarios below:
 
 1. **Workflows are user-owned, including inside an organization.** Membership
    alone never grants access; every path resolves through `hasWorkflowAccess`.
-2. **Triggers execute the current graph, not the published snapshot.**
-   `WorkflowVersion` exists for history and rollback only.
+2. **Scheduled and webhook runs execute their recorded published snapshot.**
+   Manual editor runs can test the current draft. Saving a schedule draft does
+   not change its live cadence; publishing activates it.
 
 ## Edit and run timestamps
 
@@ -163,3 +164,105 @@ had; and a run Temporal refuses is recorded `FAILED` with a reason instead of
 being left `PENDING` forever. Webhook graph validation was deliberately not
 added — a published workflow was validated at publish time, and re-validating
 per request costs a graph walk on the hot path.
+
+## Delivery starters and configuration checks
+
+The welcome screen offers five delivery starters: delivery brief, notes to action
+plan, release notes, decision digest and delivery risk review. Choosing one creates
+an owned organization draft. It does not publish, schedule or run it. Run asks for
+project notes; these become the trigger's `data.notes` input. No documents are
+looked up automatically. The action-plan starter passes the summary to its next
+step using a stable ID reference, `{{$draft.text}}`.
+
+Names save on blur or Enter, separately from graph saves. The editor announces
+saving, success or failure and retains a failed name for retry. Runs opens a
+paginated history pane on demand. Select a run and a step to inspect its recorded
+result; text and Markdown agent documents are formatted safely, with the exact
+stored output available under Raw output. Copy uses the selected view. HTML is
+inert and Markdown images are not fetched. Insert output offers upstream values
+using stable step IDs; code fields continue to receive inputs separately.
+
+Before publication, the dialog checks the saved graph, supported node schemas,
+AI provider or eligible ChatGPT plan configuration, and accessible GitHub, Slack
+and Linear connections. Other connectivity checks remain at runtime. The result
+is informational: it does not live-test tokens, model availability, quotas or
+external services and does not replace publication or execution authorization.
+Refresh it after changing connections. Temporal remains the execution engine.
+
+| Operation | REST API | SDK | CLI | MCP |
+|---|---|---|---|---|
+| List starters | `GET /api/v1/workflows/starters` | `workflows.listStarters` | `fabric workflows starters` | `fabric_list_workflow_starters` |
+| Create a starter draft | `POST /api/v1/workflows/starters` | `workflows.createFromStarter` | `fabric workflows from-starter <starterId>` | `fabric_create_workflow_from_starter` |
+| Check saved configuration | `GET /api/v1/workflows/:id/readiness` | `workflows.checkReadiness` | `fabric workflows check <id>` | `fabric_check_workflow_readiness` |
+
+REST and CLI accept the usual organization selector. Reads require
+`workflows:read`; draft creation requires `workflows:write`. Every transport also
+checks the actor's current organization and object authority, including wildcard
+credentials. These organization operations reject project-bound credentials; MCP also rejects
+service credentials, which do not represent a current member. Starter creation is audited; creation is never automatically retried
+by the SDK because it is not idempotent. Lifecycle actions share the authorized command layer across Portal, REST, SDK, CLI and MCP. Mutation requests are not automatically retried by the SDK.
+
+| Operation | REST path under `/api/v1/workflows/:id` | SDK | CLI | MCP |
+|---|---|---|---|---|
+| Publish | `POST /publish` | `publish` | `workflows publish` | `fabric_publish_workflow` |
+| Unpublish | `POST /unpublish` | `unpublish` | `workflows unpublish` | `fabric_unpublish_workflow` |
+| Pause/resume future triggers | `POST /pause`, `POST /resume` | `pause`, `resume` | `workflows pause`, `workflows resume` | `fabric_pause_workflow`, `fabric_resume_workflow` |
+| Restore a publication | `POST /rollback` | `rollback` | `workflows rollback <id> <version>` | `fabric_rollback_workflow` |
+| List version metadata | `GET /versions` | `listVersions` | `workflows versions` | `fabric_list_workflow_versions` |
+| Inspect live schedule | `GET /schedule` | `getSchedule` | `workflows schedule show` | `fabric_get_workflow_schedule` |
+| Save schedule draft | `PUT /schedule` | `configureSchedule` | `workflows schedule set --cron <expression> --timezone <zone>` | `fabric_configure_workflow_schedule` |
+
+Lifecycle mutations require `workflows:write`; reads require `workflows:read`, together with the creator’s current object permission. Publishing and restoring a publication commit the immutable version and publication pointer in one transaction. Concurrent edits return a conflict rather than losing a draft. Restoring a publication creates a new version and retains the workflow’s paused/draft state and live runtime settings, including frame identities and failure bookkeeping. The schedule dialog shows actual engine state, verifies normalized calendar cadence against the publication, displays the next run in the published time zone, and keeps draft changes separate. Unsupported calendar forms are explicitly unverified. Reopening waits for a fresh read. Webhook workflows cannot silently be converted to schedules; duplicate them for a separate scheduled workflow. Pause and resume affect future triggers; existing runs continue. Repeating pause or resume retries schedule synchronization without creating another version. If synchronization fails, inspect the schedule and use Retry synchronization after recovery.
+
+## Saved result checks
+
+In a completed run, select a text-producing step and choose **Check result**.
+Add required or forbidden exact phrases, preview the checks, and save a passing
+baseline. In a later run of that step, choose the saved check and compare it
+with the original run. The comparison uses the same expectations for both
+recorded answers and shows their execution versions and any regression.
+
+Whitespace in exact phrases is preserved. Requests are bounded consistently at
+128 KiB across the REST surface and the shared scoring contract.
+
+These are deterministic recorded-output evaluations using the existing Fabric
+context-quality scorer. They do not invoke a workflow, model, retrieval, or
+external service, and they do not establish factual accuracy. The original
+answers are loaded from authorized execution logs and are never truncated for
+scoring. This operation does not export them to an evaluation destination.
+Existing governed evaluation destinations and their Temporal processing remain
+separate; cloud export and automatic evaluation of every scheduled run are not
+supported by these result-check commands.
+
+Checks are immutable, bounded workflow configuration (at most 20 per workflow,
+128 KiB including other settings). Only expectations and baseline references
+are stored; no answer is copied into the configuration. A namespaced collection
+is tied to its workflow so duplication does not import another workflow’s
+baselines. Check edits lock and re-read the settings row, preserving the latest
+runtime state and the definition’s edit timestamp. An unsupported configuration
+version fails closed with an upgrade/support message; it is never silently reset. General settings edits preserve the managed check collection and
+reject attempts to write its reserved field. Rollback retains live settings and
+therefore retains saved checks. Removing a check leaves its original run intact.
+
+| Operation | REST path under `/api/v1/workflows/:id/checks` | SDK method | CLI under `fabric workflows checks` | MCP tool |
+|---|---|---|---|---|
+| Inspect result | `POST /inspect` | `inspectResult` | `inspect <id> <executionId> <nodeId>` | `fabric_inspect_workflow_result` |
+| List checks | `GET /` | `listChecks` | `list <id>` | `fabric_list_workflow_checks` |
+| Preview expectations | `POST /preview` | `previewCheck` | `preview <id> <executionId> <nodeId> --revision <sha256> --require <phrase>` | `fabric_preview_workflow_check` |
+| Save passing baseline | `POST /save` | `saveCheck` | `save <id> <executionId> <nodeId> --revision <sha256> --name <name> --require <phrase>` | `fabric_save_workflow_check` |
+| Compare a later result | `POST /apply` | `applyCheck` | `compare <id> <checkId> <executionId> --revision <sha256>` | `fabric_apply_workflow_check` |
+| Remove check | `POST /remove` | `removeCheck` | `remove <id> <checkId> --revision <sha256>` | `fabric_remove_workflow_check` |
+
+Read actions require `workflows:read`; saved-check mutations require both
+`workflows:read` and `workflows:write`, since they derive information from private
+run evidence. Every request also checks current owner and organization authority,
+including wildcard keys. Project-linked workflows require current access to a
+non-deleted project hosted in the organization; mutation requires project edit
+permission. Organization-wide check operations reject project-bound credentials.
+Mutation audits contain check identifiers, not answers or phrase content. Revision
+pins refuse stale results or removed checks across all transports.
+
+Workspace story-review configuration is an explicit apply operation for existing
+published or paused bindings: it commits the validated graph as a new immutable
+publication without changing activation state, then synchronizes only an active
+schedule. Draft configuration remains a draft and performs no scheduling I/O.

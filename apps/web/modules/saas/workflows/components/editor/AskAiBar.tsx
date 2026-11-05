@@ -45,7 +45,7 @@ export function AskAiBar({
 	return (
 		// The left padding keeps the bar clear of the zoom pill, which sits at the
 		// bottom left of the same canvas.
-		<div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center pl-[232px] pr-4">
+		<div className="pointer-events-none absolute inset-x-0 bottom-16 z-10 flex justify-center px-3 lg:bottom-4 lg:pl-[232px] lg:pr-4">
 			{open ? (
 				<div className={BAR_CLASS}>
 					<SparklesIcon

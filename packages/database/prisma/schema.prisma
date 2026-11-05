@@ -149,6 +149,8 @@ model User {
   // Agent template relations
   agentTemplates         AgentTemplate[]
   agentTemplateInstances AgentTemplateInstance[]
+  agentTestCases         AgentTestCase[]
+  agentTestRuns          AgentTestRun[]
 
   // Agent deployment relations
   agentDeployments    AgentDeployment[]
@@ -766,9 +768,9 @@ model TwoFactor {
 }
 
 model Organization {
-  id                               String                        @id @default(cuid())
+  id                               String                           @id @default(cuid())
   name                             String
-  slug                             String?                       @unique
+  slug                             String?                          @unique
   logo                             String?
   createdAt                        DateTime
   metadata                         String?
@@ -778,7 +780,7 @@ model Organization {
   timezone                         String?
   azureAiApiKey                    String?
   azureAiConfiguredAt              DateTime?
-  azureAiEnabled                   Boolean                       @default(false)
+  azureAiEnabled                   Boolean                          @default(false)
   azureAiEndpoint                  String?
   azureAiLastUsedAt                DateTime?
   azureAiModelRouterName           String?
@@ -787,20 +789,20 @@ model Organization {
   azureAiResourceGroup             String?
   azureAiSubscriptionId            String?
   azureAiTenantId                  String?
-  azureAiUseModelRouter            Boolean                       @default(false)
-  useDelegatedExecution            Boolean                       @default(true) // Delegate Fabric AI operations to server instead of executing in Temporal
+  azureAiUseModelRouter            Boolean                          @default(false)
+  useDelegatedExecution            Boolean                          @default(true) // Delegate Fabric AI operations to server instead of executing in Temporal
   // Org-level kill switch for the persistent document-assistant chat history
   // feature. Default true so the feature is on
   // for every existing org; flip to false per-org if the SSR hydration path
   // regresses the document editor.
-  documentAssistantHistoryEnabled  Boolean                       @default(true)
+  documentAssistantHistoryEnabled  Boolean                          @default(true)
   // Org-level opt-in for the Feature Maturation V2 three-tab editor (Summary &
   // Questions / Decision Log / Clean Specification). Default true (#1797): V2 is
   // rolled out to all orgs now that every creation path drafts a Clean Spec (#1799).
   // Retained as the per-org kill-switch — flip an org back to false via SQL to
   // disable V2 for it without a deploy. The v1/v2 manual switch a flagged user
   // sees is session-scoped and separate.
-  featureMaturationV2Enabled       Boolean                       @default(true)
+  featureMaturationV2Enabled       Boolean                          @default(true)
   // SUPERSEDED (Fizzy #2300) — no code reads this column. AI answer
   // recommendations are gated by the AI_ANSWER_RECOMMENDATIONS runtime flag, set
   // from the admin console and resolved for a project's organization.
@@ -814,12 +816,12 @@ model Organization {
   // releases: first drop the field here and let that build fully replace every
   // older one, including as a rollback target, then drop the column itself in
   // a later migration.
-  aiAnswerRecommendationsEnabled   Boolean                       @default(false)
+  aiAnswerRecommendationsEnabled   Boolean                          @default(false)
   // SOC 2 CC6.1 — opt-in organization-wide MFA enforcement. When true, members
   // without two-factor enabled are redirected to enroll before they can access
   // this organization's resources. Default false so enabling the feature changes
   // nothing for any existing org until an owner/admin turns it on.
-  requireTwoFactor                 Boolean                       @default(false)
+  requireTwoFactor                 Boolean                          @default(false)
   /// Default retention window for soft-deleted attachments, in days (#1749).
   /// null = inherit the server default. Range enforced by a CHECK constraint.
   attachmentRetentionDays          Int?
@@ -866,6 +868,9 @@ model Organization {
   sdlcArtifacts                    SDLCArtifact[]
   sdlcPipelines                    SDLCPipeline[]
   evalBudget                       OrganizationEvalBudget?
+  contextQualityBindings           ProjectContextQualityBinding[]
+  contextQualityRuns               ProjectContextQualityRun[]
+  contextQualityPrincipals         ProjectContextQualityPrincipal[]
   workflows                        Workflow[]
   browserTasks                     BrowserTask[]
   automationTemplates              AutomationTemplate[]
@@ -898,6 +903,8 @@ model Organization {
   // Agent template relations
   agentTemplates         AgentTemplate[]
   agentTemplateInstances AgentTemplateInstance[]
+  agentTestCases         AgentTestCase[]
+  agentTestRuns          AgentTestRun[]
 
   // Frame template relations
   frameTemplates FrameTemplate[]
@@ -2505,6 +2512,7 @@ model Project {
   updatedAt                         DateTime                             @updatedAt
   organization                      Organization?                        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user                              User                                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceDocumentLinks            ProjectWorkspaceDocumentLink[]
   contexts                          ProjectContext[]                     @relation("ProjectContexts")
   contextPendingVectorCleanups      ProjectContextPendingVectorCleanup[]
   contextRepositorySync             ProjectContextRepositorySync?        @relation("ProjectContextRepositorySync")
@@ -2530,6 +2538,8 @@ model Project {
   documents                         ProjectDocument[]
   ragSettings                       ProjectRagSettings?
   databricksKnowledgeBinding        ProjectDatabricksKnowledgeBinding?
+  contextQualityBinding             ProjectContextQualityBinding?
+  contextQualityRuns                ProjectContextQualityRun[]
   scanConfig                        ProjectScanConfig?
   scans                             ProjectScan[]
   scanCheckpoints                   ProjectScanCheckpoint[]
@@ -3165,6 +3175,27 @@ enum ProjectDocumentFindingType {
   ARCHITECTURE
   BRANDING
   OPPORTUNITY
+}
+
+/// A reference to a Workspace document, never a content copy or a sharing grant.
+/// Current project and Workspace permissions are checked independently on every read.
+model ProjectWorkspaceDocumentLink {
+  id                   String   @id @default(cuid())
+  organizationId       String
+  projectId            String
+  documentId           String
+  addedByUserId        String
+  sourceRevisionAtLink String   @db.VarChar(64)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  project  Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document WorkspaceDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, documentId], map: "project_workspace_doc_link_project_document_key")
+  @@index([organizationId, projectId])
+  @@index([documentId])
+  @@map("project_workspace_document_link")
 }
 
 model ProjectContext {
@@ -6043,29 +6074,29 @@ model AtlasEdgeOverrideHistory {
 
 // Linked Meetings - Which recurring meetings are linked to a project for transcript sync
 model ProjectLinkedMeeting {
-  id                  String    @id @default(cuid())
-  projectId           String
-  joinUrl             String // Teams meeting join URL (stable across recurring instances)
-  subject             String?
-  organizer           String?
+  id                           String    @id @default(cuid())
+  projectId                    String
+  joinUrl                      String // Teams meeting join URL (stable across recurring instances)
+  subject                      String?
+  organizer                    String?
   // Admin toggle: whether this meeting appears in the project Meeting Digest. Default true so
   // all currently-linked meetings show up immediately.
-  includedInDigest    Boolean   @default(true)
-  linkedAt            DateTime  @default(now())
+  includedInDigest             Boolean   @default(true)
+  linkedAt                     DateTime  @default(now())
   // Stopped syncing but deliberately kept: the row, its transcripts and their
   // extracted context all stay live and readable — only the sync stops looking
   // at it. Distinct from unlinking, which destroys the context (Fizzy #2355).
   // Null = actively syncing.
-  deactivatedAt       DateTime?
-  deactivatedById     String?
+  deactivatedAt                DateTime?
+  deactivatedById              String?
   // Failure state, mirroring the three channel-monitor models. Meetings had
   // none, which is why a dead sync looked healthy: the fetch threw, the
   // activity swallowed it, and the run still stamped a clean lastRun (#2355).
-  consecutiveFailures Int       @default(0)
-  lastErrorMessage    String?
-  lastErrorAt         DateTime?
-  userId              String?
-  organizationId      String?
+  consecutiveFailures          Int       @default(0)
+  lastErrorMessage             String?
+  lastErrorAt                  DateTime?
+  userId                       String?
+  organizationId               String?
   /// Parlume joins every occurrence of this series at its start time.
   parlumeAutoJoin              Boolean   @default(false)
   /// Who turned auto-join on: their calendar, Microsoft connection and project
@@ -8981,8 +9012,8 @@ model UserStory {
   // Cached detection embedding for the incremental duplicate scan. One-to-one;
   // invalidated by a content-hash or embedding-model change and removed on
   // story delete (onDelete: Cascade on the child side).
-  duplicateEmbedding StoryDuplicateEmbedding?
-  routingEmbedding   StoryRoutingEmbedding?
+  duplicateEmbedding       StoryDuplicateEmbedding?
+  routingEmbedding         StoryRoutingEmbedding?
   // Scope / acceptance-criteria section vectors, one row per section kind.
   duplicateFocusEmbeddings StoryDuplicateFocusEmbedding[]
 
@@ -13420,6 +13451,7 @@ model PromptVersion {
   version    Int
   content    String
   variables  Json?
+  responseContract Json?
   changeNote String?
   createdBy  String
   createdAt  DateTime @default(now())
@@ -14667,6 +14699,8 @@ enum WorkflowIntegrationProvider {
   CONFLUENCE
   CUSTOM_WEBHOOK
   DATABASE
+  DATABRICKS_PLATFORM
+  DATABRICKS_SQL
   DATABRICKS_VECTOR_SEARCH
   FAL
   FIRECRAWL
@@ -14882,9 +14916,10 @@ model WorkflowIntegration {
   lastUsedAt     DateTime?
 
   // Relations
-  workflow                 Workflow?                           @relation(fields: [workflowId], references: [id], onDelete: Cascade)
-  agentConfigurations      AgentIntegrationConfiguration[] // Agent instances using this integration
-  projectKnowledgeBindings ProjectDatabricksKnowledgeBinding[] // Projects using this integration for read-only knowledge retrieval
+  workflow                      Workflow?                           @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  agentConfigurations           AgentIntegrationConfiguration[] // Agent instances using this integration
+  projectKnowledgeBindings      ProjectDatabricksKnowledgeBinding[] // Projects using this integration for read-only knowledge retrieval
+  projectContextQualityBindings ProjectContextQualityBinding[]
 
   // Partial unique index `workflow_integration_personal_gitlab_key`, owned by
   // migration 20261004120100_workflow_integration_personal_gitlab_unique and
@@ -14935,6 +14970,116 @@ model ProjectDatabricksKnowledgeBinding {
 
   @@index([integrationId])
   @@map("project_databricks_knowledge_binding")
+}
+
+/// Administrator-approved remote evaluation destination. Credentials remain in
+/// the explicitly shared WorkflowIntegration; resource/principal changes create
+/// a new configuration version and fence pending work.
+model ProjectContextQualityPrincipal {
+  fingerprint    String   @id @db.VarChar(64)
+  organizationId String
+  createdAt      DateTime @default(now())
+
+  organization Organization                   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  bindings     ProjectContextQualityBinding[]
+
+  @@unique([fingerprint, organizationId], map: "context_quality_principal_fingerprint_org_key")
+  @@index([organizationId])
+  @@map("project_context_quality_principal")
+}
+
+model ProjectContextQualityBinding {
+  id                   String    @id @default(cuid())
+  organizationId       String
+  projectId            String    @unique
+  integrationId        String
+  workspaceOrigin      String    @db.VarChar(512)
+  jobId                String    @db.VarChar(32)
+  experimentId         String    @db.VarChar(32)
+  volumeRoot           String    @db.VarChar(512)
+  notebookPath         String    @db.VarChar(768)
+  notebookSha256       String    @db.VarChar(64)
+  principalFingerprint String    @db.VarChar(64)
+  configHash           String    @db.VarChar(64)
+  configVersion        Int       @default(1)
+  isEnabled            Boolean   @default(false)
+  exportApprovedAt     DateTime?
+  exportApprovedBy     String?
+  createdBy            String
+  updatedBy            String
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  project      Project                        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  organization Organization                   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  integration  WorkflowIntegration            @relation(fields: [integrationId], references: [id], onDelete: Restrict)
+  principal    ProjectContextQualityPrincipal @relation(fields: [principalFingerprint, organizationId], references: [fingerprint, organizationId], onDelete: Restrict)
+  runs         ProjectContextQualityRun[]
+
+  @@unique([id, projectId, organizationId], map: "context_quality_binding_id_project_org_key")
+  @@unique([workspaceOrigin, jobId], map: "context_quality_binding_workspace_job_key")
+  @@unique([workspaceOrigin, experimentId], map: "context_quality_binding_workspace_experiment_key")
+  @@unique([workspaceOrigin, volumeRoot], map: "context_quality_binding_workspace_volume_key")
+  @@index([organizationId])
+  @@index([integrationId])
+  @@map("project_context_quality_binding")
+}
+
+/// Durable admission, immutable private scoring input and minimized result.
+/// Run rows also form the workflow-start and remote-cleanup queues. Restrict
+/// deletion until confirmed remote cleanup so receipts cannot silently vanish.
+/// Migration-owned CHECKs bound status, hashes and exact UTF-8 payload size.
+model ProjectContextQualityRun {
+  id                    String    @id @default(cuid())
+  organizationId        String
+  projectId             String
+  bindingId             String
+  requestedBy           String
+  name                  String    @db.VarChar(80)
+  idempotencyKey        String    @db.VarChar(128)
+  requestHash           String    @db.VarChar(64)
+  sourceRefsJson        Json
+  snapshotPayload       String?   @db.Text
+  payloadHash           String    @db.VarChar(64)
+  snapshotHash          String    @db.VarChar(64)
+  scorerVersion         String    @db.VarChar(128)
+  bindingConfigJson     Json
+  bindingConfigHash     String    @db.VarChar(64)
+  localResultJson       Json
+  status                String    @default("QUEUED") @db.VarChar(32)
+  stateVersion          Int       @default(0)
+  workflowId            String    @unique @db.VarChar(256)
+  dispatchToken         String    @unique @db.VarChar(64)
+  remoteRunId           String?   @db.VarChar(32)
+  remoteMlflowRunId     String?   @db.VarChar(64)
+  remoteLookupPageToken String?   @db.VarChar(2048)
+  remoteState           String?   @db.VarChar(64)
+  providerReceiptJson   Json?
+  resultJson            Json?
+  errorCode             String?   @db.VarChar(64)
+  remoteInputPath       String?   @db.VarChar(768)
+  cleanupStatus         String    @default("NOT_REQUIRED") @db.VarChar(32)
+  cleanupErrorCode      String?   @db.VarChar(64)
+  cancelRequestedAt     DateTime?
+  startedAt             DateTime?
+  completedAt           DateTime?
+  deadlineAt            DateTime
+  snapshotExpiresAt     DateTime
+  snapshotPurgedAt      DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  project      Project                      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  organization Organization                 @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  binding      ProjectContextQualityBinding @relation(fields: [bindingId, projectId, organizationId], references: [id, projectId, organizationId], onDelete: Restrict)
+
+  @@unique([projectId, requestedBy, idempotencyKey], map: "context_quality_run_actor_request_key")
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([organizationId, status])
+  @@index([status, createdAt])
+  @@index([snapshotExpiresAt, cleanupStatus])
+  @@index([bindingId, projectId, organizationId])
+  @@map("project_context_quality_run")
 }
 
 // API keys for triggering workflows externally
@@ -15556,10 +15701,11 @@ model WorkspaceDocument {
   uploadedBy String // User who uploaded
 
   // Relations
-  workspace      Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  chunks         WorkspaceDocumentChunk[]
-  uploader       User                     @relation("WorkspaceDocumentUploader", fields: [uploadedBy], references: [id])
-  syncedResource SyncedResource? // Link to external synced resource (if created from data connection)
+  workspace           Workspace                      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  chunks              WorkspaceDocumentChunk[]
+  uploader            User                           @relation("WorkspaceDocumentUploader", fields: [uploadedBy], references: [id])
+  projectContextLinks ProjectWorkspaceDocumentLink[]
+  syncedResource      SyncedResource? // Link to external synced resource (if created from data connection)
 
   @@index([workspaceId])
   @@index([status])
@@ -17189,6 +17335,9 @@ model AgentTemplateInstance {
   memoryEdits   AgentMemoryEdit[]
   toolApprovals MCPToolApproval[] // Approved tool+target combinations for this instance
 
+  testCases AgentTestCase[] @relation("AgentTestCaseOrigin")
+  testRuns  AgentTestRun[]  @relation("AgentTestRunVersion")
+
   // Enhanced configuration relations (replaces loose JSON fields)
   mcpServerConfigurations   AgentMCPServerConfiguration[] // MCP server bindings
   integrationConfigurations AgentIntegrationConfiguration[] // OAuth integration bindings
@@ -17574,6 +17723,7 @@ model AgentDeploymentExecution {
   // Relations
   deployment AgentDeployment      @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
   steps      AgentExecutionStep[]
+  testRun    AgentTestRun?
 
   @@index([deploymentId])
   @@index([status])
@@ -18084,6 +18234,9 @@ model Skill {
   // Publishing & versioning
   version     Int     @default(1)
   isPublished Boolean @default(true)
+  isDiscoverable Boolean @default(false)
+  archivedAt DateTime?
+  importProvenance Json?
 
   // Usage tracking
   useCount Int @default(0)
@@ -18105,6 +18258,8 @@ model Skill {
   @@index([organizationId])
   @@index([category])
   @@index([isPublished])
+  @@index([organizationId, isPublished, archivedAt])
+  @@index([userId, archivedAt])
   @@map("skill")
 }
 
@@ -21325,4 +21480,75 @@ model OrganizationFeatureFlagOverride {
 
   @@id([key, organizationId])
   @@map("organization_feature_flag_override")
+}
+
+/// Per-member regression examples for one agent family, shared across its versions.
+/// sourceScopeJson retains the original source-access boundary; reads never grant new access.
+model AgentTestCase {
+  id               String                @id @default(cuid())
+  organizationId   String
+  userId           String
+  agentSId         String                @db.VarChar(200)
+  originInstanceId String
+  name             String                @db.VarChar(120)
+  input            String                @db.Text
+  checksJson       Json
+  sourceScopeJson  Json
+  revision         Int                   @default(1)
+  archivedAt       DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  organization     Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  originInstance   AgentTemplateInstance @relation("AgentTestCaseOrigin", fields: [originInstanceId], references: [id], onDelete: Cascade)
+  runs             AgentTestRun[]
+
+  @@unique([id, organizationId, userId], map: "agent_test_case_id_org_user_key")
+  @@index([organizationId, userId, agentSId, createdAt(sort: Desc)])
+  @@index([originInstanceId])
+  @@index([userId])
+  @@map("agent_test_case")
+}
+
+/// An immutable case revision tested by the existing saved-agent executor.
+/// The assessment workflow waits for that native execution; it never runs another agent loop.
+/// Migration-owned CHECKs bound payload sizes, status and verdict.
+model AgentTestRun {
+  id                   String                    @id @default(cuid())
+  organizationId       String
+  userId               String
+  caseId               String
+  instanceId           String
+  agentSId             String                    @db.VarChar(200)
+  agentVersion         Int
+  caseRevision         Int
+  caseInput            String                    @db.Text
+  checksJson           Json
+  sourceScopeJson      Json
+  requestKey           String                    @db.VarChar(36)
+  requestHash          String                    @db.VarChar(64)
+  status               String                    @default("ADMITTING") @db.VarChar(20)
+  verdict              String?                   @db.VarChar(12)
+  executionId          String?                   @unique
+  nativeWorkflowId     String?                   @db.VarChar(256)
+  nativeRunId          String?                   @db.VarChar(64)
+  evaluationWorkflowId String                    @unique @db.VarChar(256)
+  evaluationRunId      String?                   @db.VarChar(64)
+  reportJson           Json?
+  errorCode            String?                   @db.VarChar(64)
+  createdAt            DateTime                  @default(now())
+  completedAt          DateTime?
+  updatedAt            DateTime                  @updatedAt
+  organization         Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                 User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  testCase             AgentTestCase             @relation(fields: [caseId, organizationId, userId], references: [id, organizationId, userId], onDelete: Cascade)
+  instance             AgentTemplateInstance     @relation("AgentTestRunVersion", fields: [instanceId], references: [id], onDelete: Cascade)
+  execution            AgentDeploymentExecution? @relation(fields: [executionId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, userId, requestKey], map: "agent_test_run_actor_request_key")
+  @@index([organizationId, userId, agentSId, createdAt(sort: Desc)])
+  @@index([caseId, createdAt(sort: Desc)])
+  @@index([instanceId])
+  @@index([userId])
+  @@map("agent_test_run")
 }

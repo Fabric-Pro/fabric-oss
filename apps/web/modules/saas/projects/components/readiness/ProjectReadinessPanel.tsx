@@ -27,11 +27,6 @@
  */
 import { useAnalytics } from "@analytics";
 import { CLI_ITEM_KEY } from "@repo/api/modules/projects/lib/readiness/thresholds";
-import {
-	GET_STARTED_SPOTLIGHT_EVENT,
-	type ProjectTabId,
-	type SpotlightEventDetail,
-} from "@saas/get-started/lib/tour-steps";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { ConnectCliDialog } from "@saas/projects/components/cli-connection/ConnectCliDialog";
 import { CLI_CHECKLIST_KEY_ISSUED_EVENT } from "@saas/projects/components/cli-connection/lib/cli-connection-nudge";
@@ -41,9 +36,19 @@ import {
 	useProjectTabGates,
 } from "@saas/projects/lib/project-tab-preferences";
 import { tabs as PROJECT_TABS } from "@saas/projects/lib/project-tabs";
+import {
+	buildReadinessActionHref,
+	dispatchReadinessItemAction,
+} from "@saas/projects/lib/readiness-actions";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation } from "@tanstack/react-query";
+import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from "@ui/components/collapsible";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -60,18 +65,32 @@ import {
 import { cn } from "@ui/lib";
 import { formatDistanceToNow } from "date-fns";
 import {
+	ArrowRightIcon,
+	CheckCircle2Icon,
 	CheckIcon,
 	ChevronDownIcon,
 	ChevronUpIcon,
+	ClockIcon,
+	FileTextIcon,
+	FolderGit2Icon,
+	FolderOpenIcon,
+	KanbanIcon,
+	LayersIcon,
+	Link2Icon,
 	Loader2Icon,
+	type LucideIcon,
+	MessageSquareIcon,
+	MinusCircleIcon,
 	MoreHorizontalIcon,
+	ShieldCheckIcon,
+	SparklesIcon,
+	TerminalIcon,
+	UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import type { SettingsTab } from "../ProjectSettingsNav";
-import { navigateToProjectSettingsTab } from "../settings-tab-navigation";
 import {
 	type ReadinessItem,
 	useProjectReadiness,
@@ -120,39 +139,78 @@ type ProjectPhase = "DISCOVERY_PLANNING" | "DEVELOPMENT_EXECUTION";
 /**
  * One colour scale for the whole panel, keyed to the readiness level.
  *
- * `destructive`, not `primary`, for NOT_READY. The running theme resolves
- * `--primary` to a teal (#0d9488) and `--secondary` to an emerald (#34d399),
- * so a panel coloured `primary` for "not ready" and `secondary` for "ready"
- * showed two greens — which is exactly the confusion the 20 Aug review opened
- * with: "it's showing green, but I don't think we're green. We're not ready.
- * It should be like red." Verified on staging before changing it.
+ * `destructive`, not `primary`, for NOT_READY, and `success`, not `secondary`,
+ * for READY. The running theme resolves `--primary` to a teal (#0d9488) and
+ * `--secondary` to a light neutral surface (#f1f3f6), so painting "not ready"
+ * with `primary` read as green and painting "ready" with `secondary` read as
+ * grey. Semantic status tokens (`destructive`, `highlight`, `success`) give
+ * every level an unambiguous signal.
  */
 const LEVEL_TONE = {
-	READY: "bg-secondary",
+	READY: "bg-success",
 	PARTIALLY_READY: "bg-highlight",
 	NOT_READY: "bg-destructive",
 } as const;
 
-/**
- * The panel's own surface. The UI Draft requires readiness be "salient and
- * expanded" while a project is not ready, and the review asked for it three
- * times — "even if it's ugly, like a shade of yellow… it shouldn't feel like
- * this is just something for your eyes to absorb."
- *
- * A tint plus a heavier left rail, held to /10 and /40 so it reads as an alert
- * rather than a poster. A Ready project gets no tint at all: it has nothing to
- * ask for, and the UI Draft wants that state "compact and quiet".
- */
-const LEVEL_SURFACE = {
-	READY: "border-l-secondary bg-muted/40",
-	PARTIALLY_READY: "border-l-highlight bg-highlight/10",
-	NOT_READY: "border-l-destructive bg-destructive/10",
+const LEVEL_BADGE = {
+	READY: "success",
+	PARTIALLY_READY: "warning",
+	NOT_READY: "destructive",
 } as const;
 
-const LEVEL_TEXT = {
-	READY: "text-secondary",
-	PARTIALLY_READY: "text-highlight",
-	NOT_READY: "text-destructive",
+/**
+ * Category-matched DuBois workspace icons for active readiness items, replacing
+ * uniform empty circles that looked like inert radio controls.
+ */
+function itemCategoryIcon(item: ReadinessItem): LucideIcon {
+	if (item.key === CLI_ITEM_KEY) {
+		return TerminalIcon;
+	}
+	if (item.key === "codebase-connected" || item.key === "atlas-explored") {
+		return FolderGit2Icon;
+	}
+	if (item.key === "security-scan") {
+		return ShieldCheckIcon;
+	}
+	if (item.key === "release-notes") {
+		return SparklesIcon;
+	}
+	if (
+		item.key === "chat-app-connected" ||
+		item.key === "work-capture-chat" ||
+		item.key === "meeting-transcripts" ||
+		item.key === "work-capture-transcripts"
+	) {
+		return MessageSquareIcon;
+	}
+	if (
+		item.key === "pm-system-connected" ||
+		item.key === "pm-sync-enabled" ||
+		item.key === "terminal-statuses" ||
+		item.key === "wiki-connected" ||
+		item.key === "knowledge-base"
+	) {
+		return Link2Icon;
+	}
+	switch (item.category) {
+		case "DOCUMENTS":
+			return FileTextIcon;
+		case "ROADMAP":
+			return KanbanIcon;
+		case "MEMBERS":
+			return UsersIcon;
+		case "PROJECT_BASICS":
+			return LayersIcon;
+		default:
+			return FolderOpenIcon;
+	}
+}
+
+const NEED_RANK = {
+	MUST: 0,
+	SHOULD: 1,
+	COULD: 2,
+	NOT_APPLICABLE: 3,
 } as const;
 
 /**
@@ -166,176 +224,24 @@ function toCamel(key: string): string {
 /**
  * Where an item's call-to-action points (Checklist AC-4).
  *
- * Project tabs and settings sub-tabs are both client state with no route of
- * their own, so `?tab=` is the only addressable form. It works from anywhere: on
- * the tabbed project page the deep-link hook consumes it in place, and from one
- * of the standalone project routes (the document editor, the feature workspace)
- * it navigates to the page that can honour it.
- *
- * Settings needs a second half — see {@link handleTargetClick} — because the
- * sub-tab is not expressible in the URL.
+ * Each CTA opens the actual editor, creation dialog, or settings section that
+ * satisfies the item — never a passive coach-mark tour that dims the page and
+ * snaps focus back on dismiss.
  */
 function readinessTargetHref(
 	projectBasePath: string,
 	target: ReadinessItem["target"],
+	itemKey: string,
 ): string {
-	return target.kind === "tab"
-		? `${projectBasePath}?tab=${target.tab}`
-		: `${projectBasePath}?tab=settings`;
+	return buildReadinessActionHref(projectBasePath, target, itemKey);
 }
 
-/**
- * Only the settings targets need this: the sub-tab is written to sessionStorage
- * (and announced) before the link navigates, so `ProjectSettings` opens on the
- * right sub-tab when it mounts. Plain tab targets are fully carried by the href.
- *
- * The cast is safe because every `subTab` in the rule registry is checked
- * against the live `SettingsTab` union by
- * `__tests__/modules/saas/projects/readiness/targets.test.ts` — nothing in the
- * type system links a string in `packages/api` to a union in `apps/web`, so that
- * test is the guard.
- */
-/**
- * Where each item's call-to-action should point the eye once it has navigated.
- *
- * Staging QA: the destinations were right and useless — "define feature leads
- * me here and i dont see where to define it", "same here with chat app, not
- * sure how to do that". Sending someone to a tab is only half an instruction.
- *
- * Only items whose target is a page with a real anchor appear here; the rest
- * navigate as before. Anchors are the existing `data-onboarding-target`s the
- * Get Started tours already place, so this adds no second highlight mechanism.
- */
-const ITEM_SPOTLIGHT: Record<
-	string,
-	{ anchorId: string; tab?: ProjectTabId; title: string; body: string }
-> = {
-	"context-source": {
-		anchorId: "context-add",
-		tab: "context",
-		title: "Add your first context source",
-		body: "Upload a file, paste a link or a note here. Anything Fabric can read makes its documents and recommendations better grounded.",
-	},
-	"additional-context-sources": {
-		anchorId: "context-add",
-		tab: "context",
-		title: "Add more source material",
-		body: "One source is a start. Add the rest of what the project runs on — specs, research, exports — from here.",
-	},
-	"wiki-connected": {
-		anchorId: "context-add",
-		tab: "context",
-		title: "Connect your wiki",
-		body: "Choose the wiki integration here. Fabric indexes the pages so it can answer from them.",
-	},
-	"knowledge-base": {
-		anchorId: "context-add",
-		tab: "context",
-		title: "Add your knowledge base",
-		body: "Add its URL here and classify it as Knowledge Base / Wiki — the classification is what satisfies this item.",
-	},
-	"business-case": {
-		anchorId: "documents-create",
-		tab: "documents",
-		title: "Create a business case",
-		body: "Generate it here. A PRD supersedes this item, so if you would rather go straight there, create that instead.",
-	},
-	proposal: {
-		anchorId: "documents-create",
-		tab: "documents",
-		title: "Create a proposal",
-		body: "Generate it here. A PRD supersedes this item, so if you would rather go straight there, create that instead.",
-	},
-	prd: {
-		anchorId: "documents-create",
-		tab: "documents",
-		title: "Create the PRD",
-		body: "Generate it here. It also clears the business case and proposal items, which it supersedes.",
-	},
-	architecture: {
-		anchorId: "documents-create",
-		tab: "documents",
-		title: "Create an architecture document",
-		body: "Generate it here. It unlocks the API and technical specification items, which depend on it.",
-	},
-	"api-spec": {
-		anchorId: "documents-create",
-		tab: "documents",
-		title: "Add an API specification",
-		body: "Generate one here, or upload an existing OpenAPI file on the Context tab.",
-	},
-	"technical-spec": {
-		anchorId: "documents-create",
-		tab: "documents",
-		title: "Create a technical specification",
-		body: "Generate it here, once an architecture document exists for it to build on.",
-	},
-	"qa-strategy": {
-		anchorId: "documents-create",
-		tab: "documents",
-		title: "Create a QA strategy",
-		body: "Generate it here. It is what the Testing tab plans against.",
-	},
-	// Settings sub-tabs carry no project tab: `handleTargetClick` opens the
-	// sub-tab, and the spotlight waits for the anchor to mount there.
-	"chat-app-connected": {
-		anchorId: "settings-chat-monitors",
-		title: "Connect a chat app",
-		body: "Turn on a Teams or Slack monitor here. Fabric watches the channel and turns what is discussed into work — connecting the workspace alone is not enough.",
-	},
-	"meeting-transcripts": {
-		anchorId: "settings-meeting-transcripts",
-		title: "Sync meeting transcripts",
-		body: "Link a Teams meeting here. Transcripts arrive 60–90 minutes after each call and become project context.",
-	},
-	"feature-snapshot": {
-		anchorId: "overview-feature-snapshot",
-		tab: "overview",
-		title: "Describe the main features",
-		body: "Edit this card to list the capabilities the project is being built around. Rough is fine — it is context, not a commitment.",
-	},
-	"tech-stack": {
-		anchorId: "overview-tech-stack",
-		tab: "overview",
-		title: "Record the tech stack",
-		body: "Edit this card and name at least one technology. One entry satisfies the item; more makes generated docs sharper.",
-	},
-};
-
-/**
- * Show someone where an item is satisfied.
- *
- * Opt-in, not automatic. Firing this on every call-to-action meant a dimmed
- * screen and a callout every time you acted on the checklist — a lot of
- * ceremony for a button you have already pressed nine times ("i dont think we
- * need this panel each time"). The primary action just navigates; this sits
- * behind its own control, for arriving somewhere and not seeing what to do.
- *
- * Only items whose target is a tab with a real anchor are in the map. An item
- * pointing at a Settings sub-tab has nothing to aim at yet, so it gets no help
- * control rather than a callout pointing at the wrong page.
- */
-function spotlightFor(itemKey: string) {
-	const spot = ITEM_SPOTLIGHT[itemKey];
-	if (!spot || typeof window === "undefined") {
-		return;
-	}
-	window.dispatchEvent(
-		new CustomEvent<SpotlightEventDetail>(GET_STARTED_SPOTLIGHT_EVENT, {
-			detail: {
-				anchorId: spot.anchorId,
-				projectTab: spot.tab,
-				title: spot.title,
-				body: spot.body,
-			},
-		}),
-	);
-}
-
-function handleTargetClick(projectId: string, target: ReadinessItem["target"]) {
-	if (target.kind === "settings") {
-		navigateToProjectSettingsTab(projectId, target.subTab as SettingsTab);
-	}
+function handleTargetClick(
+	projectId: string,
+	target: ReadinessItem["target"],
+	itemKey: string,
+) {
+	dispatchReadinessItemAction(projectId, target, itemKey);
 }
 
 /**
@@ -410,6 +316,7 @@ function ReadinessPanelBody() {
 	// no way to see what is already done, snoozed or marked not applicable —
 	// which makes the checklist unauditable.
 	const [showAll, setShowAll] = useState(false);
+	const [lockedOpen, setLockedOpen] = useState(false);
 	// A per-viewer "not yet" on the phase-transition offer. Browser-local on
 	// purpose: declining the suggestion is not a fact about the project, and one
 	// person deferring it should not hide it from their teammates.
@@ -546,13 +453,13 @@ function ReadinessPanelBody() {
 			<section
 				aria-label="Project readiness"
 				aria-busy="true"
-				className="border-border border-b bg-muted/40"
+				className="overflow-hidden rounded-lg border border-border bg-muted/40"
 			>
-				<div className="flex flex-col gap-3 px-4 py-4 sm:px-6">
-					<span className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.2em]">
+				<div className="flex flex-col gap-3 px-4 py-3.5 sm:px-5">
+					<span className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">
 						{t("panel.label")}
 					</span>
-					<div className="h-1 w-full animate-pulse bg-border" />
+					<div className="h-1.5 w-full animate-pulse rounded-full bg-border" />
 					<div className="flex flex-col gap-2">
 						{[0, 1, 2].map((i) => (
 							<div
@@ -569,6 +476,17 @@ function ReadinessPanelBody() {
 	if (!data?.enabled) {
 		return null;
 	}
+
+	// Prioritise required (`MUST`) gaps ahead of `SHOULD` / `COULD` in the
+	// default summary and collapsed strip so "2 required items outstanding"
+	// always puts those blockers first instead of burying them below earlier
+	// optional rows. `Show all` continues to use server checklist order.
+	const mustGapCount = data.activeGaps.filter(
+		(i) => i.needLevel === "MUST",
+	).length;
+	const prioritizedGaps = [...data.activeGaps].sort(
+		(a, b) => NEED_RANK[a.needLevel] - NEED_RANK[b.needLevel],
+	);
 
 	// Collapsed, the panel used to render nothing at all, leaving only a pill up
 	// beside the project title — far from where the panel was, and reading as a
@@ -589,12 +507,10 @@ function ReadinessPanelBody() {
 				t={t}
 				hasUnseenChanges={data.attention.changes.length > 0}
 				level={data.level}
-				requiredOutstanding={
-					data.activeGaps.filter((i) => i.needLevel === "MUST").length
-				}
+				requiredOutstanding={mustGapCount}
 				completedCount={data.completedCount}
 				totalCount={data.totalCount}
-				nextGapKey={data.activeGaps[0]?.key ?? null}
+				nextGapKey={prioritizedGaps[0]?.key ?? null}
 				onExpand={() => setExpanded(true)}
 			/>
 		);
@@ -606,17 +522,12 @@ function ReadinessPanelBody() {
 	// the sheet's order is the order of the work, so a row that jumps once it is
 	// done breaks the reader's map of where they are.
 	const visible = data.items.filter((i) => i.isVisible);
-	const rows = showAll
-		? visible
-		: data.activeGaps.slice(0, DEFAULT_GAP_COUNT);
-	// Why the level says what it says. The default view shows the next few gaps
-	// in checklist order, so the MUSTs holding a project at Not Ready can all sit
-	// below the fold — leaving a panel that reads "not ready" above a list of
-	// shoulds, with nothing connecting the two.
-	const mustGapCount = data.activeGaps.filter(
-		(i) => i.needLevel === "MUST",
-	).length;
-	const hiddenCount = visible.length - data.activeGaps.length;
+	const defaultRows = prioritizedGaps.slice(
+		0,
+		Math.max(DEFAULT_GAP_COUNT, mustGapCount),
+	);
+	const rows = showAll ? visible : defaultRows;
+	const hiddenCount = Math.max(0, visible.length - defaultRows.length);
 	// Tier 1 of the attention rules: a static marker on anything that changed
 	// since this person last opened the panel. Never animated, so it survives a
 	// reload — a pulse a user missed is gone, and the news with it.
@@ -624,17 +535,18 @@ function ReadinessPanelBody() {
 		data.attention.changes.map((change) => [change.key, change.kind]),
 	);
 
+	const visibleKeySet = new Set(visible.map((i) => i.key));
 	const blockedItems = data.items.filter(
 		(i) => !i.isVisible && i.needLevel !== "NOT_APPLICABLE",
 	);
-	// One warning per prerequisite rather than one per hidden item: a codebase
-	// unlocks three things at once, and three separate lines saying "connect a
-	// codebase" is the same sentence three times.
-	const blockedGroups = [
+	// Group first-tier locked items by their currently visible prerequisite;
+	// deeper chained prerequisites are summarised by count until their upstream
+	// step unlocks so the panel stays concise and actionable.
+	const firstTierBlockedGroups = [
 		...blockedItems
 			.reduce((groups, blockedItem) => {
 				const prerequisite = blockedItem.blockedBy;
-				if (!prerequisite) {
+				if (!prerequisite || !visibleKeySet.has(prerequisite)) {
 					return groups;
 				}
 				const existing = groups.get(prerequisite);
@@ -647,6 +559,14 @@ function ReadinessPanelBody() {
 			}, new Map<string, typeof blockedItems>())
 			.entries(),
 	];
+	const firstTierBlockedCount = firstTierBlockedGroups.reduce(
+		(sum, [, items]) => sum + items.length,
+		0,
+	);
+	const chainedBlockedCount = Math.max(
+		0,
+		blockedItems.length - firstTierBlockedCount,
+	);
 	const percent =
 		data.totalCount === 0
 			? 0
@@ -684,48 +604,47 @@ function ReadinessPanelBody() {
 	return (
 		<section
 			aria-label="Project readiness"
-			className={cn(
-				"border-border border-b border-l-4",
-				LEVEL_SURFACE[data.level],
-			)}
+			className="overflow-hidden rounded-lg border border-border bg-card"
 		>
-			<div className="flex flex-col gap-3 px-4 py-4 sm:px-6">
-				<div className="flex flex-wrap items-center justify-between gap-3">
-					<div className="flex flex-wrap items-baseline gap-2">
-						<span className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.2em]">
+			<div className="flex flex-col gap-2 border-border/70 border-b bg-muted/30 px-4 py-2.5 sm:px-5">
+				<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+					<div className="flex flex-wrap items-center gap-2">
+						<span
+							data-testid="readiness-status-dot"
+							className={cn(
+								"size-2 shrink-0 rounded-full",
+								LEVEL_TONE[data.level],
+							)}
+							aria-hidden="true"
+						/>
+						<span className="font-semibold text-foreground text-sm tracking-[-0.01em]">
 							{t("panel.label")}
 						</span>
 						{/* The level in words, in the panel itself. The header pill
 						    carried it, but a reader looking AT the checklist had to
 						    look away from it to learn what it added up to. */}
-						<span
-							className={cn(
-								"font-semibold text-[11px] uppercase tracking-[0.2em]",
-								LEVEL_TEXT[data.level],
-							)}
-						>
+						<Badge status={LEVEL_BADGE[data.level]}>
 							{t(`level.${data.level}` as never)}
-						</span>
+						</Badge>
 						{/* Say plainly that nobody chose this phase, and offer the
 						    correction, rather than presenting a guess as a decision. */}
 						{data.phaseSource === "inferred" && (
-							<span className="flex flex-wrap items-center gap-2 rounded-md border border-highlight/40 bg-highlight/10 px-2 py-1 text-xs">
-								<span className="text-foreground">
-									{t("panel.assumedPhase")}
-								</span>
+							<span className="flex flex-wrap items-center gap-1.5 text-muted-foreground text-xs">
+								<span aria-hidden="true">·</span>
+								<span>{t("panel.assumedPhase")}</span>
 								<DropdownMenu>
 									<DropdownMenuTrigger asChild>
 										<Button
 											variant="ghost"
 											size="sm"
-											className="h-6 px-2 text-primary underline underline-offset-2"
+											className="h-6 px-1.5 font-medium text-foreground text-xs underline decoration-border underline-offset-4 hover:decoration-foreground"
 											disabled={
 												setPhase.isPending ||
 												!data.canAct
 											}
 										>
 											{t("panel.setPhase")}
-											<ChevronDownIcon className="ml-1 size-3" />
+											<ChevronDownIcon className="ml-0.5 size-3" />
 										</Button>
 									</DropdownMenuTrigger>
 									<DropdownMenuContent align="start">
@@ -752,38 +671,51 @@ function ReadinessPanelBody() {
 							</span>
 						)}
 					</div>
-					<div className="flex items-center gap-3">
+					<div className="ml-auto flex flex-wrap items-center gap-3">
 						{mustGapCount > 0 && (
-							<span className="font-medium text-primary text-xs tabular-nums">
+							<span
+								className={cn(
+									"font-medium text-xs tabular-nums",
+									data.level === "NOT_READY"
+										? "text-destructive"
+										: "text-highlight-ink",
+								)}
+							>
 								{t("panel.requiredOutstanding", {
 									count: mustGapCount,
 								})}
 							</span>
 						)}
-						<span className="text-muted-foreground text-xs tabular-nums">
-							{t("panel.progress", {
-								completed: data.completedCount,
-								total: data.totalCount,
-								percent,
-							})}
-						</span>
-						{hiddenCount > 0 && (
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => setShowAll((v) => !v)}
-								aria-pressed={showAll}
+						<div className="flex items-center gap-2">
+							{/* Compact inline meter rather than a full-bleed banner rule. */}
+							<div
+								className="h-1.5 w-20 overflow-hidden rounded-full bg-muted ring-1 ring-border/60 sm:w-24"
+								role="progressbar"
+								aria-valuenow={percent}
+								aria-valuemin={0}
+								aria-valuemax={100}
+								aria-label={`${percent}% of readiness items complete`}
 							>
-								{showAll
-									? t("panel.showGapsOnly")
-									: t("panel.showAll", {
-											count: hiddenCount,
-										})}
-							</Button>
-						)}
+								<div
+									className={cn(
+										"h-full rounded-full motion-safe:transition-[width]",
+										LEVEL_TONE[data.level],
+									)}
+									style={{ width: `${percent}%` }}
+								/>
+							</div>
+							<span className="text-muted-foreground text-xs tabular-nums">
+								{t("panel.progress", {
+									completed: data.completedCount,
+									total: data.totalCount,
+									percent,
+								})}
+							</span>
+						</div>
 						<Button
 							variant="ghost"
 							size="sm"
+							className="size-7 p-0"
 							onClick={() => setExpanded(false)}
 							aria-label={t("panel.collapse")}
 						>
@@ -792,26 +724,13 @@ function ReadinessPanelBody() {
 					</div>
 				</div>
 
-				{/* A meter, not a divider. At h-1 in bg-border this was visually
-				    indistinguishable from the panel's own border, which is why
-				    the 20 Aug review asked for a progress bar that already
-				    existed. Height and a contrasting track are the whole fix. */}
-				<div
-					className="h-2 w-full overflow-hidden rounded-full bg-muted"
-					role="progressbar"
-					aria-valuenow={percent}
-					aria-valuemin={0}
-					aria-valuemax={100}
-					aria-label={`${percent}% of readiness items complete`}
-				>
-					<div
-						className={cn(
-							"h-full rounded-full motion-safe:transition-[width]",
-							LEVEL_TONE[data.level],
-						)}
-						style={{ width: `${percent}%` }}
-					/>
-				</div>
+				{/* Read-only viewers have no inline controls, so explain how
+				    steps resolve; editors already see direct actions on each row. */}
+				{data.level !== "READY" && !data.canAct && (
+					<p className="text-muted-foreground text-xs">
+						{t("panel.introReadOnly")}
+					</p>
+				)}
 
 				{/* UI Draft, Phase transition: once Discovery has nothing left
 				    owed, offer the next phase rather than leaving the project at
@@ -819,7 +738,7 @@ function ReadinessPanelBody() {
 				{data.suggestPhaseTransition &&
 					!transitionDismissed &&
 					data.canAct && (
-						<div className="flex flex-wrap items-center gap-3 rounded-md border border-secondary/40 bg-secondary/10 px-3 py-2 text-sm">
+						<div className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-sm">
 							<span className="text-foreground">
 								{t("panel.phaseTransition")}
 							</span>
@@ -854,56 +773,23 @@ function ReadinessPanelBody() {
 							</div>
 						</div>
 					)}
+			</div>
 
-				{/* What this panel is, for someone meeting it for the first time
-				    (20 Aug review). Only while there is work outstanding — a Ready
-				    project does not need the instructions. */}
-				{data.level !== "READY" && (
-					<p className="text-muted-foreground text-xs leading-relaxed">
-						{t("panel.intro")}
-					</p>
-				)}
-
-				{/* Items behind an unmet dependency are not rendered at all, so a
-				    reader could not tell "nothing left" from "not unlocked yet".
-				    Say how many are waiting and name them. */}
-				{/* Grouped by what would unlock them, so the count becomes an
-				    instruction. "6 more items appear once earlier steps are
-				    done" told a reader something was missing but never what to
-				    do about it — the blocked-capability warning the card asks
-				    for is this list, naming the prerequisite. Informational
-				    only: 4A warns, it never blocks the action (4B gates). */}
-				{blockedGroups.length > 0 && (
-					<div className="flex flex-col gap-1">
-						{blockedGroups.map(([prerequisite, blocked]) => (
-							<p
-								key={prerequisite}
-								className="text-muted-foreground text-xs"
-							>
-								{t("panel.unlockedBy", {
-									prerequisite: t(
-										`items.${toCamel(prerequisite)}.name` as never,
-									),
-									items: blocked
-										.map((i) =>
-											t(
-												`items.${toCamel(i.key)}.name` as never,
-											),
-										)
-										.join(", "),
-								})}
-							</p>
-						))}
-					</div>
-				)}
-
+			<div className="bg-card">
 				{rows.length === 0 ? (
-					<p className="text-muted-foreground text-sm">
+					<p className="px-4 py-3 text-muted-foreground text-sm sm:px-5">
 						{t("panel.empty")}
 					</p>
 				) : (
-					<ul className="flex flex-col">
-						{rows.map((item) => {
+					<ul
+						className={cn(
+							"bg-border/60",
+							showAll
+								? "grid grid-cols-1 gap-px"
+								: "grid grid-cols-1 gap-px lg:grid-cols-2",
+						)}
+					>
+						{rows.map((item, idx) => {
 							/**
 							 * The one row singled out (R15 / R21). Everything
 							 * below is per-item, in the same shape the
@@ -925,10 +811,26 @@ function ReadinessPanelBody() {
 							const isCliRow = item.key === CLI_ITEM_KEY;
 							const cliActionOffered =
 								isCliRow && cliActionAvailable;
+							const isMustGap =
+								item.needLevel === "MUST" && !item.isComplete;
+							const nonMustRowCount = rows.filter(
+								(r) => r.needLevel !== "MUST" || r.isComplete,
+							).length;
+							const fullWidth = showAll
+								? false
+								: isMustGap ||
+									(mustGapCount === 0 &&
+										rows.length % 2 === 1 &&
+										idx === 0) ||
+									(mustGapCount > 0 &&
+										nonMustRowCount % 2 === 1 &&
+										idx === rows.length - 1);
 							return (
 								<ReadinessGapRow
 									key={item.key}
 									item={item}
+									fullWidth={fullWidth}
+									compact={!showAll && !isMustGap}
 									label={t(
 										`items.${toCamel(item.key)}.name` as never,
 									)}
@@ -957,6 +859,7 @@ function ReadinessPanelBody() {
 									ctaHref={readinessTargetHref(
 										projectBasePath,
 										item.target,
+										item.key,
 									)}
 									/* The CLI row's action goes nowhere, so
 									   there is nothing for the viewer's tab set
@@ -977,8 +880,8 @@ function ReadinessPanelBody() {
 										handleTargetClick(
 											projectId,
 											item.target,
+											item.key,
 										);
-										spotlightFor(item.key);
 									}}
 									stateLabel={
 										item.manualState === "SNOOZED"
@@ -1041,6 +944,93 @@ function ReadinessPanelBody() {
 					</ul>
 				)}
 
+				{(hiddenCount > 0 || showAll || blockedItems.length > 0) && (
+					<Collapsible
+						open={lockedOpen}
+						onOpenChange={setLockedOpen}
+						className="border-border/60 border-t bg-muted/20"
+					>
+						<div className="flex flex-wrap items-center justify-between gap-2 px-4 py-1.5 sm:px-5">
+							<div className="flex flex-wrap items-center gap-2">
+								{(hiddenCount > 0 || showAll) && (
+									<Button
+										variant="ghost"
+										size="sm"
+										className="h-7 px-2.5 text-xs"
+										onClick={() => setShowAll((v) => !v)}
+										aria-pressed={showAll}
+									>
+										{showAll
+											? t("panel.showGapsOnly")
+											: t("panel.showAll", {
+													count: hiddenCount,
+												})}
+									</Button>
+								)}
+							</div>
+							{blockedItems.length > 0 && (
+								<CollapsibleTrigger asChild>
+									<Button
+										variant="ghost"
+										size="sm"
+										className="h-7 gap-1 px-2.5 text-muted-foreground text-xs hover:text-foreground"
+									>
+										{t("panel.lockedToggle", {
+											count: blockedItems.length,
+										})}
+										<ChevronDownIcon
+											className={cn(
+												"size-3.5 motion-safe:transition-transform",
+												lockedOpen && "rotate-180",
+											)}
+											aria-hidden="true"
+										/>
+									</Button>
+								</CollapsibleTrigger>
+							)}
+						</div>
+						{blockedItems.length > 0 && (
+							<CollapsibleContent className="border-border/60 border-t px-4 py-2.5 sm:px-5">
+								<dl className="flex flex-col gap-2 text-xs">
+									{firstTierBlockedGroups.map(
+										([prerequisite, blocked]) => (
+											<div
+												key={prerequisite}
+												className="flex flex-wrap items-baseline gap-x-2 gap-y-1"
+											>
+												<dt className="font-medium text-foreground">
+													{t("panel.lockedAfter", {
+														prerequisite: t(
+															`items.${toCamel(prerequisite)}.name` as never,
+														),
+													})}
+													:
+												</dt>
+												<dd className="text-muted-foreground">
+													{blocked
+														.map((i) =>
+															t(
+																`items.${toCamel(i.key)}.name` as never,
+															),
+														)
+														.join(" · ")}
+												</dd>
+											</div>
+										),
+									)}
+									{chainedBlockedCount > 0 && (
+										<p className="text-muted-foreground">
+											{t("panel.lockedChained", {
+												count: chainedBlockedCount,
+											})}
+										</p>
+									)}
+								</dl>
+							</CollapsibleContent>
+						)}
+					</Collapsible>
+				)}
+
 				{/* Rollup AC-3. Progress is otherwise invisible: the list only
 				    ever shows what is still owed, so a user who just finished
 				    something watches it vanish with no acknowledgement. The
@@ -1048,8 +1038,8 @@ function ReadinessPanelBody() {
 				    actually observed — an item that was already complete the
 				    first time Fabric looked is not news. */}
 				{data.recentlyCompleted.length > 0 && (
-					<div className="rounded-md border border-secondary/30 bg-secondary/10 px-3 py-2">
-						<p className="text-muted-foreground text-xs">
+					<div className="border-border/60 border-t bg-muted/15 px-4 py-2.5 sm:px-5">
+						<p className="font-medium text-muted-foreground text-xs">
 							{t("panel.recentlyCompleted")}
 						</p>
 						{/* One row per item rather than a comma-joined sentence.
@@ -1057,17 +1047,17 @@ function ReadinessPanelBody() {
 						    checked off — "I want to feel like I get more than
 						    just this number incrementing" — and a list reads as
 						    work finished where a sentence reads as a footnote. */}
-						<ul className="mt-1 flex flex-col gap-1">
+						<ul className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1">
 							{data.recentlyCompleted.map((entry) => (
 								<li
 									key={entry.key}
-									className="flex items-center gap-2 text-sm"
+									className="flex items-center gap-1.5 text-xs"
 								>
 									<CheckIcon
-										className="size-4 shrink-0 text-secondary"
+										className="size-3.5 shrink-0 text-success"
 										aria-hidden="true"
 									/>
-									<span className="font-medium text-foreground line-through decoration-muted-foreground/50">
+									<span className="font-medium text-muted-foreground line-through decoration-muted-foreground/60">
 										{t(
 											`items.${toCamel(entry.key)}.name` as never,
 										)}
@@ -1077,60 +1067,62 @@ function ReadinessPanelBody() {
 						</ul>
 					</div>
 				)}
-
-				{/* The issuing view, mounted HERE: at the panel body, outside
-				    the rows list, outside the `!canAct` branch and outside every
-				    eligibility check.
-
-				    That placement is load-bearing rather than tidy. The view
-				    holds the only copy of a secret the server stores as a
-				    hash, so anything that unmounts it destroys what the person
-				    came for — and everything inside the rows list is at the
-				    mercy of the next readiness read. Issuing a key is a
-				    successful mutation and the provider re-reads on any of
-				    those; that read can reorder the rows, take this one out of
-				    the gap list or change the eligibility that would have
-				    gated the mount. (What it will NOT do is complete the item:
-				    the rule detects a CLI that has actually reached Fabric,
-				    which minting a key is not, so the row stays outstanding
-				    until someone connects with it.) Here the view lives as
-				    long as the panel does, and the panel does not depend on
-				    this item at all. */}
-				{organizationId && projectId !== "" ? (
-					<ConnectCliDialog
-						open={connectCliOpen}
-						onOpenChange={setConnectCliOpen}
-						/* The other surface offering this key is the prompt
-						   above the project, and it has no way to see a key
-						   minted from here — it mounts its own issuing view.
-						   Left unwired, it went on telling a viewer holding a
-						   fresh key that nobody had connected a coding tool.
-						   Recorded on the shared readiness context, which both
-						   surfaces read; the row itself keeps its offer, since
-						   issuing a key is not connecting with it. */
-						onKeyIssued={() => {
-							readiness.markCliKeyIssued();
-							trackEvent(CLI_CHECKLIST_KEY_ISSUED_EVENT, {
-								projectId,
-							});
-						}}
-						organizationId={organizationId}
-						organizationSlug={organizationSlug ?? undefined}
-						projectId={projectId}
-						/* `||`, not `??`: the payload names the project with the
-						   empty string when there is no project to name — the
-						   disabled shape, and the first render before the read
-						   lands — and an empty string is not nullish. */
-						projectName={data?.projectName || UNNAMED_PROJECT}
-					/>
-				) : null}
 			</div>
+
+			{/* The issuing view, mounted HERE: at the panel body, outside
+			    the rows list, outside the `!canAct` branch and outside every
+			    eligibility check.
+
+			    That placement is load-bearing rather than tidy. The view
+			    holds the only copy of a secret the server stores as a
+			    hash, so anything that unmounts it destroys what the person
+			    came for — and everything inside the rows list is at the
+			    mercy of the next readiness read. Issuing a key is a
+			    successful mutation and the provider re-reads on any of
+			    those; that read can reorder the rows, take this one out of
+			    the gap list or change the eligibility that would have
+			    gated the mount. (What it will NOT do is complete the item:
+			    the rule detects a CLI that has actually reached Fabric,
+			    which minting a key is not, so the row stays outstanding
+			    until someone connects with it.) Here the view lives as
+			    long as the panel does, and the panel does not depend on
+			    this item at all. */}
+			{organizationId && projectId !== "" ? (
+				<ConnectCliDialog
+					open={connectCliOpen}
+					onOpenChange={setConnectCliOpen}
+					/* The other surface offering this key is the prompt
+					   above the project, and it has no way to see a key
+					   minted from here — it mounts its own issuing view.
+					   Left unwired, it went on telling a viewer holding a
+					   fresh key that nobody had connected a coding tool.
+					   Recorded on the shared readiness context, which both
+					   surfaces read; the row itself keeps its offer, since
+					   issuing a key is not connecting with it. */
+					onKeyIssued={() => {
+						readiness.markCliKeyIssued?.();
+						trackEvent(CLI_CHECKLIST_KEY_ISSUED_EVENT, {
+							projectId,
+						});
+					}}
+					organizationId={organizationId}
+					organizationSlug={organizationSlug ?? undefined}
+					projectId={projectId}
+					/* `||`, not `??`: the payload names the project with the
+					   empty string when there is no project to name — the
+					   disabled shape, and the first render before the read
+					   lands — and an empty string is not nullish. */
+					projectName={data?.projectName || UNNAMED_PROJECT}
+				/>
+			) : null}
 		</section>
 	);
 }
 
 function ReadinessGapRow({
 	item,
+	fullWidth,
+	compact,
 	label,
 	ctaLabel,
 	itemDescription,
@@ -1150,6 +1142,8 @@ function ReadinessGapRow({
 	ctaAvailable,
 }: {
 	item: ReadinessItem;
+	fullWidth: boolean;
+	compact: boolean;
 	label: string;
 	/** The spreadsheet's action label for this item, e.g. "Connect codebase". */
 	ctaLabel: string;
@@ -1225,6 +1219,8 @@ function ReadinessGapRow({
 	// nobody set it: it is derived, and the way to reverse it is to change the
 	// project.
 	const resolved = stateLabel !== null;
+	const isMustGap = item.needLevel === "MUST" && !resolved;
+	const CategoryIcon = itemCategoryIcon(item);
 	const remaining = snoozeRemaining(item.snoozeUntil);
 	// Whether the row still has work to point at, which is a question about the
 	// ITEM rather than about the viewer. A snooze quiets a reminder without
@@ -1240,68 +1236,121 @@ function ReadinessGapRow({
 	const showCta = ctaVisible && ctaPermitted;
 
 	return (
-		<li className="flex flex-wrap items-center gap-3 border-border/60 border-t py-2 first:border-t-0">
-			{/* The need level was rendered as the raw enum, so a row graded
-			    NOT_APPLICABLE for the phase read identically to one a person had
-			    marked Not applicable — two unrelated meanings sharing a word, on
-			    a row that also offered a "Not applicable" button. Phase
-			    non-applicability now says so in its own words. */}
+		<li
+			className={cn(
+				"flex flex-wrap items-center gap-3 bg-card px-4 transition-colors duration-150 hover:bg-muted/30 sm:px-5",
+				fullWidth && "lg:col-span-2",
+				compact ? "py-2.5" : "py-3",
+				isMustGap && "shadow-[inset_3px_0_0_var(--destructive)]",
+			)}
+		>
 			<span
 				className={cn(
-					"font-mono text-[10px] uppercase tracking-wider",
-					item.needLevel === "MUST"
-						? "text-primary"
-						: "text-muted-foreground",
+					"flex size-7 shrink-0 items-center justify-center rounded-md border",
+					item.isComplete
+						? "border-success/25 bg-success/10 text-success"
+						: item.isInProgress || item.manualState === "SNOOZED"
+							? "border-highlight/25 bg-highlight/10 text-highlight-ink"
+							: resolved || item.needLevel === "NOT_APPLICABLE"
+								? "border-border/70 bg-muted/50 text-muted-foreground"
+								: isMustGap
+									? "border-destructive/25 bg-destructive/[0.06] text-destructive"
+									: "border-border/70 bg-muted/60 text-muted-foreground",
 				)}
+				aria-hidden="true"
 			>
-				{t(`needLevel.${item.needLevel}` as never)}
+				{item.isComplete ? (
+					<CheckCircle2Icon className="size-4" />
+				) : item.isInProgress ? (
+					<Loader2Icon className="size-3.5 motion-safe:animate-spin" />
+				) : item.manualState === "SNOOZED" ? (
+					<ClockIcon className="size-3.5" />
+				) : item.manualState === "NOT_APPLICABLE" ||
+					item.needLevel === "NOT_APPLICABLE" ? (
+					<MinusCircleIcon className="size-3.5" />
+				) : (
+					<CategoryIcon className="size-3.5" />
+				)}
 			</span>
-			{changeKind && (
-				<span
-					className={cn(
-						"rounded px-1.5 py-0.5 font-medium text-[10px] uppercase tracking-wider",
-						changeKind === "REGRESSED"
-							? "bg-destructive/15 text-destructive"
-							: changeKind === "COMPLETED"
-								? "bg-secondary/15 text-secondary"
-								: "bg-highlight/15 text-highlight",
+			<div className="min-w-0 flex-1">
+				<div className="flex flex-wrap items-center gap-2">
+					{/* The sheet carries a short description and a tooltip for every row
+					    and neither was ever rendered — the whole explanation of what an
+					    item wants existed in the catalogue and never reached the page:
+					    "no understanding what do i need to setup". The name stays a
+					    focusable trigger; the short context also renders inline below. */}
+					<Tooltip delayDuration={150}>
+						<TooltipTrigger asChild>
+							{/* A button, not a span with a tabIndex: the explanation has
+							    to be reachable without a mouse, and only a genuinely
+							    interactive element earns focus. */}
+							<button
+								type="button"
+								className={cn(
+									"inline-flex cursor-help items-center rounded-xs text-left text-sm transition-colors duration-150 hover:underline hover:decoration-muted-foreground/60 hover:underline-offset-4",
+									"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+									resolved
+										? "font-medium text-muted-foreground"
+										: isMustGap
+											? "font-semibold text-foreground"
+											: "font-medium text-foreground",
+								)}
+							>
+								{label}
+							</button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom" className="max-w-sm">
+							<p className="font-medium text-muted-foreground text-xs">
+								{t(`needLevel.${item.needLevel}` as never)}
+							</p>
+							<p className="mt-0.5 font-medium">
+								{itemDescription}
+							</p>
+							<p className="mt-1 text-muted-foreground">
+								{itemTooltip}
+							</p>
+							{itemUnmet && (
+								<p className="mt-2 border-border/60 border-t pt-2 font-medium text-foreground">
+									{itemUnmet}
+								</p>
+							)}
+						</TooltipContent>
+					</Tooltip>
+					{/* Only required blockers and phase-excluded rows carry an inline
+					    tier badge so recommended items scan cleanly without repetitive
+					    badge clutter; every tier still surfaces in the tooltip. */}
+					{(isMustGap || item.needLevel === "NOT_APPLICABLE") && (
+						<Badge
+							status={
+								item.needLevel === "MUST"
+									? "destructive"
+									: "info"
+							}
+						>
+							{t(`needLevel.${item.needLevel}` as never)}
+						</Badge>
 					)}
-				>
-					{t(`panel.change${changeKind}` as never)}
-				</span>
-			)}
-			{/* The sheet carries a short description and a tooltip for every row
-			    and neither was ever rendered — the whole explanation of what an
-			    item wants existed in the catalogue and never reached the page:
-			    "no understanding what do i need to setup". The name stays the
-			    row; the reason is one hover away. */}
-			<Tooltip delayDuration={150}>
-				<TooltipTrigger asChild>
-					{/* A button, not a span with a tabIndex: the explanation has
-					    to be reachable without a mouse, and only a genuinely
-					    interactive element earns focus. */}
-					<button
-						type="button"
-						className={cn(
-							"cursor-help text-left text-sm underline decoration-dotted decoration-muted-foreground/40 underline-offset-4",
-							"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-							resolved && "text-muted-foreground",
-						)}
-					>
-						{label}
-					</button>
-				</TooltipTrigger>
-				<TooltipContent side="bottom" className="max-w-sm">
-					<p className="font-medium">{itemDescription}</p>
-					<p className="mt-1 text-muted-foreground">{itemTooltip}</p>
-					{itemUnmet && (
-						<p className="mt-2 border-border/60 border-t pt-2 font-medium text-foreground">
-							{itemUnmet}
-						</p>
+					{changeKind && (
+						<Badge
+							status={
+								changeKind === "REGRESSED"
+									? "destructive"
+									: changeKind === "COMPLETED"
+										? "success"
+										: "warning"
+							}
+						>
+							{t(`panel.change${changeKind}` as never)}
+						</Badge>
 					)}
-				</TooltipContent>
-			</Tooltip>
-			<div className="ml-auto flex flex-wrap items-center gap-2">
+				</div>
+				{!resolved && (
+					<p className="mt-0.5 line-clamp-1 text-muted-foreground text-xs">
+						{itemUnmet ?? itemDescription}
+					</p>
+				)}
+			</div>
+			<div className="ml-auto flex shrink-0 flex-wrap items-center gap-1.5 self-center">
 				{/* A viewer without edit rights kept every control and got a 403
 				    from each — the panel offered work it knew would fail. State
 				    still shows; only the verbs are withdrawn. Withheld where the
@@ -1310,7 +1359,7 @@ function ReadinessGapRow({
 				{!canAct && !ctaPermitted && (
 					<Tooltip delayDuration={150}>
 						<TooltipTrigger asChild>
-							<span className="text-muted-foreground text-xs">
+							<span className="rounded-sm bg-muted/60 px-1.5 py-0.5 text-muted-foreground text-xs">
 								{t("panel.readOnly")}
 							</span>
 						</TooltipTrigger>
@@ -1325,7 +1374,7 @@ function ReadinessGapRow({
 				    shown alongside the actions, so a slow scan does not take
 				    the item's controls away. */}
 				{item.isInProgress && (
-					<span className="flex items-center gap-1.5 font-medium text-highlight text-xs">
+					<span className="flex items-center gap-1.5 font-medium text-highlight-ink text-xs">
 						<Loader2Icon
 							className="size-3 motion-safe:animate-spin"
 							aria-hidden="true"
@@ -1337,7 +1386,7 @@ function ReadinessGapRow({
 					<>
 						{/* Snoozed reads amber because that is what the rollup
 						    shows while a snooze is holding the level down. */}
-						<span className="font-medium text-highlight text-xs">
+						<span className="font-medium text-highlight-ink text-xs">
 							{remaining
 								? t("panel.snoozedFor", { duration: remaining })
 								: t("panel.stateSnoozed")}
@@ -1354,21 +1403,21 @@ function ReadinessGapRow({
 						    the two snooze controls. */}
 						<Button
 							variant="ghost"
-							size="sm"
+							size="xs"
 							onClick={() => onSetNotApplicable(true)}
 						>
 							{t("panel.notApplicable")}
 						</Button>
 						<Button
 							variant="ghost"
-							size="sm"
+							size="xs"
 							onClick={() => onSnooze(null)}
 						>
 							{t("panel.unsnooze")}
 						</Button>
 						<Button
 							variant="ghost"
-							size="sm"
+							size="xs"
 							onClick={onRequestHelp}
 						>
 							{t("panel.requestHelp")}
@@ -1376,22 +1425,20 @@ function ReadinessGapRow({
 					</>
 				) : item.manualState === "NOT_APPLICABLE" ? (
 					<>
-						<span className="font-mono text-[10px] text-muted-foreground uppercase tracking-wider">
-							{stateLabel}
-						</span>
+						<Badge status="info">{stateLabel}</Badge>
 						<Button
 							variant="ghost"
-							size="sm"
+							size="xs"
 							onClick={() => onSetNotApplicable(false)}
 						>
 							{t("panel.markApplicable")}
 						</Button>
 					</>
 				) : resolved ? (
-					<span className="flex items-center gap-1.5 font-mono text-[10px] text-secondary uppercase tracking-wider">
-						<CheckIcon className="size-3" aria-hidden="true" />
+					<Badge status="success">
+						<CheckIcon aria-hidden="true" />
 						{stateLabel}
-					</span>
+					</Badge>
 				) : // Not graded in this phase: snoozing a reminder nobody is
 				// getting, or marking "not applicable" what already is, changes
 				// nothing observable, so this row is offered no actions. Its
@@ -1409,7 +1456,8 @@ function ReadinessGapRow({
 						<DropdownMenuTrigger asChild>
 							<Button
 								variant="ghost"
-								size="sm"
+								size="xs"
+								className="size-7 p-0 text-muted-foreground hover:text-foreground"
 								aria-label={t("panel.itemActions")}
 							>
 								<MoreHorizontalIcon className="size-4" />
@@ -1456,6 +1504,8 @@ function ReadinessGapRow({
 						reachable={ctaReachable}
 						href={ctaHref}
 						label={ctaLabel}
+						emphasized={isMustGap}
+						compact={compact && !resolved}
 						onAction={onCtaAction}
 						onClick={onCtaClick}
 					/>
@@ -1478,7 +1528,7 @@ function SnoozeMenu({
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
-				<Button variant="ghost" size="sm">
+				<Button variant="ghost" size="xs">
 					{label}
 					<ChevronDownIcon className="ml-1 size-3" />
 				</Button>
@@ -1511,6 +1561,8 @@ function ReadinessCta({
 	reachable,
 	href,
 	label,
+	emphasized = false,
+	compact = false,
 	onAction,
 	onClick,
 }: {
@@ -1518,10 +1570,14 @@ function ReadinessCta({
 	reachable: boolean;
 	href: string;
 	label: string;
+	emphasized?: boolean;
+	compact?: boolean;
 	/** Opens a view in place. Set on one row only — see {@link CLI_ITEM_KEY}. */
 	onAction?: () => void;
 	onClick: () => void;
 }) {
+	const variant = emphasized ? "default" : "outline";
+	const size = compact ? "xs" : "sm";
 	/**
 	 * One row acts rather than navigates (R15).
 	 *
@@ -1533,21 +1589,30 @@ function ReadinessCta({
 	 * one — following it would land the reader on a page that cannot show them
 	 * a secret returned exactly once.
 	 *
-	 * Same variant and size as every other row action, because it is the same
-	 * kind of control and must not read as a different affordance.
+	 * Same variant and size as every other row action in its tier, because it is
+	 * the same kind of control and must not read as a different affordance.
 	 */
 	if (onAction) {
 		return (
-			<Button variant="outline" size="sm" onClick={onAction}>
+			<Button variant={variant} size={size} onClick={onAction}>
 				{label}
+				{emphasized && (
+					<ArrowRightIcon className="size-3.5" aria-hidden="true" />
+				)}
 			</Button>
 		);
 	}
 	if (reachable) {
 		return (
-			<Button asChild variant="outline" size="sm">
+			<Button asChild variant={variant} size={size}>
 				<Link href={href} onClick={onClick}>
 					{label}
+					{emphasized && (
+						<ArrowRightIcon
+							className="size-3.5"
+							aria-hidden="true"
+						/>
+					)}
 				</Link>
 			</Button>
 		);
@@ -1556,7 +1621,7 @@ function ReadinessCta({
 		<Tooltip delayDuration={150}>
 			<TooltipTrigger asChild>
 				<span>
-					<Button variant="outline" size="sm" disabled>
+					<Button variant={variant} size={size} disabled>
 						{label}
 					</Button>
 				</span>
@@ -1596,52 +1661,64 @@ function ReadinessSummaryStrip({
 	nextGapKey: string | null;
 	onExpand: () => void;
 }) {
+	const percent =
+		totalCount === 0 ? 0 : Math.round((completedCount / totalCount) * 100);
 	return (
 		<section
 			aria-label="Project readiness"
-			className="border-border border-b"
+			className="overflow-hidden rounded-lg border border-border bg-card"
 		>
 			<button
 				type="button"
 				onClick={onExpand}
 				aria-expanded={false}
 				className={cn(
-					"flex w-full flex-wrap items-center gap-x-3 gap-y-1 border-l-4 px-4 py-2 text-left sm:px-6",
-					"transition-colors hover:bg-muted/50",
+					"flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 bg-card px-4 py-2 text-left sm:px-5",
+					"transition-colors duration-150 hover:bg-muted/40",
 					"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-					LEVEL_SURFACE[level],
 				)}
 			>
-				{hasUnseenChanges && (
-					<span
-						className="size-2 shrink-0 rounded-full bg-highlight"
-						aria-label={t("panel.unseenChanges")}
-					/>
-				)}
-				<span className="font-semibold text-[11px] uppercase tracking-[0.2em]">
-					{t(`level.${level}` as never)}
+				<span
+					data-testid="readiness-status-dot"
+					className={cn(
+						"size-2 shrink-0 rounded-full",
+						LEVEL_TONE[level],
+					)}
+					aria-hidden="true"
+				/>
+				<span className="font-semibold text-foreground text-sm tracking-[-0.01em]">
+					{t("panel.label")}
 				</span>
+				<Badge status={LEVEL_BADGE[level]}>
+					{t(`level.${level}` as never)}
+				</Badge>
+				{hasUnseenChanges && (
+					<>
+						<span
+							className="size-2 shrink-0 rounded-full bg-highlight"
+							aria-hidden="true"
+						/>
+						<span className="sr-only">
+							{t("panel.unseenChanges")}
+						</span>
+					</>
+				)}
 				{requiredOutstanding > 0 && (
-					<span className="text-muted-foreground text-xs">
+					<span
+						className={cn(
+							"font-medium text-xs tabular-nums",
+							level === "NOT_READY"
+								? "text-destructive"
+								: "text-highlight-ink",
+						)}
+					>
 						{t("panel.requiredOutstanding", {
 							count: requiredOutstanding,
 						})}
 					</span>
 				)}
-				<span className="text-muted-foreground text-xs">
-					{t("panel.progress", {
-						completed: completedCount,
-						total: totalCount,
-						percent:
-							totalCount === 0
-								? 0
-								: Math.round(
-										(completedCount / totalCount) * 100,
-									),
-					})}
-				</span>
 				{nextGapKey && (
-					<span className="hidden truncate text-muted-foreground text-xs sm:inline">
+					<span className="hidden truncate text-muted-foreground text-xs md:inline">
 						{t("panel.nextUp", {
 							item: t(
 								`items.${toCamel(nextGapKey)}.name` as never,
@@ -1649,10 +1726,31 @@ function ReadinessSummaryStrip({
 						})}
 					</span>
 				)}
-				<ChevronDownIcon
-					className="ml-auto size-4 text-muted-foreground"
-					aria-hidden="true"
-				/>
+				<div className="ml-auto flex items-center gap-2.5">
+					<div
+						className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-muted ring-1 ring-border/60 sm:block"
+						aria-hidden="true"
+					>
+						<div
+							className={cn(
+								"h-full rounded-full",
+								LEVEL_TONE[level],
+							)}
+							style={{ width: `${percent}%` }}
+						/>
+					</div>
+					<span className="text-muted-foreground text-xs tabular-nums">
+						{t("panel.progress", {
+							completed: completedCount,
+							total: totalCount,
+							percent,
+						})}
+					</span>
+					<ChevronDownIcon
+						className="size-4 text-muted-foreground"
+						aria-hidden="true"
+					/>
+				</div>
 				<span className="sr-only">{t("panel.expand")}</span>
 			</button>
 		</section>

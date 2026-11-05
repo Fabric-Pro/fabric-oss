@@ -1,4 +1,4 @@
-import { getFrameById, revokeSharingGrant } from "@repo/database";
+import { revokeFrameSharing } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -6,15 +6,19 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { frameRevisionSchema } from "../lib/frame-edit-contract";
+import { frameEditErrors } from "../lib/frame-edit-errors";
 
 const inputSchema = z.object({
 	id: z.string(),
 	organizationId: z.string().nullable().optional(),
+	expectedUpdatedAt: frameRevisionSchema.optional(),
 	email: z.string().email(),
 });
 
 const outputSchema = z.object({
 	success: z.boolean(),
+	updatedAt: z.string().optional(),
 	error: z.string().optional(),
 });
 
@@ -25,6 +29,7 @@ const outputSchema = z.object({
  */
 export const revokeFrameInviteProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.WORKSPACE_DELETE))
+	.use(frameEditErrors)
 	.route({
 		method: "POST",
 		path: "/frames/{id}/revoke-invite",
@@ -40,29 +45,18 @@ export const revokeFrameInviteProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		// Verify the frame exists and user owns it
-		const frame = await getFrameById({
-			id: input.id,
+		const result = await revokeFrameSharing({
+			frameId: input.id,
 			userId: context.user.id,
 			organizationId,
+			mode: "invitation",
+			email: input.email,
+			expectedUpdatedAt: input.expectedUpdatedAt
+				? new Date(input.expectedUpdatedAt)
+				: undefined,
 		});
-
-		if (!frame) {
-			return {
-				success: false,
-				error: "Frame not found",
-			};
+		if (!result.ok) {
+			return { success: false, error: result.message };
 		}
-
-		// Revoke the grant
-		const revoked = await revokeSharingGrant(input.id, input.email);
-
-		if (!revoked) {
-			return {
-				success: false,
-				error: "Email not found in sharing grants",
-			};
-		}
-
-		return { success: true };
+		return { success: true, updatedAt: result.updatedAt.toISOString() };
 	});

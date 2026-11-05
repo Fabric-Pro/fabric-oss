@@ -1,6 +1,12 @@
 "use client";
 
 import {
+	getProjectReportSetupReason,
+	hasProjectKnowledgeSource,
+	type ReportEvidenceConfig,
+	reportEvidenceConfigSchema,
+} from "@repo/database/prisma/queries/lib/report-evidence";
+import {
 	useContextPath,
 	useEffectiveOrganizationId,
 } from "@saas/organizations/hooks";
@@ -56,6 +62,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
 
 // Template definition containing data sources
 type TemplateDefinition = {
@@ -124,6 +131,7 @@ export function CreateInstanceDialog({
 	const [dataSourceBindings, setDataSourceBindings] = useState<
 		Record<string, DataSourceBinding>
 	>({});
+	const [reporting, setReporting] = useState<ReportEvidenceConfig>();
 	const [selectedWorkspaces, setSelectedWorkspaces] = useState<string[]>([]);
 
 	// Context values for AI-driven data gathering (project, team, etc.)
@@ -155,6 +163,17 @@ export function CreateInstanceDialog({
 	const dataSources = (template.definition?.dataSources || []).filter(
 		(ds) => ds.provider,
 	);
+	const requiresProjectKnowledge = hasProjectKnowledgeSource({ dataSources });
+	useEffect(() => {
+		if (requiresProjectKnowledge && !reporting) {
+			setReporting(
+				reportEvidenceConfigSchema.parse({
+					version: 1,
+					period: "weekly",
+				}),
+			);
+		}
+	}, [requiresProjectKnowledge, reporting]);
 	const requirements = template.connections || {};
 	const workspacesEnabled = requirements.workspaces?.enabled ?? false;
 
@@ -227,6 +246,9 @@ export function CreateInstanceDialog({
 
 		// Check that each data source has an MCP config selected
 		const hasMcpConfigs = dataSources.every((ds) => {
+			if (ds.type === "fabric") {
+				return true;
+			}
 			const binding = dataSourceBindings[ds.id];
 			return binding?.mcpConfigId;
 		});
@@ -243,10 +265,25 @@ export function CreateInstanceDialog({
 		return missingRequired.length === 0;
 	}, [dataSources, dataSourceBindings, requiredContextFields, contextValues]);
 
+	const projectSetupReason = getProjectReportSetupReason(
+		reporting ? { reporting } : undefined,
+		{ dataSources },
+		{
+			mcpConfigs: Object.values(dataSourceBindings)
+				.map((binding) => binding.mcpConfigId)
+				.filter(Boolean),
+			workspaces: selectedWorkspaces,
+		},
+	);
+
 	const createMutation = useMutation(
 		orpc.reports.instances.create.mutationOptions({
 			onSuccess: (data) => {
-				toast.success("Instance created successfully");
+				toast.success(
+					projectSetupReason
+						? "Project report draft created; source setup required"
+						: "Instance created successfully",
+				);
 				queryClient.invalidateQueries({
 					queryKey: ["reports", "instances"],
 				});
@@ -264,12 +301,16 @@ export function CreateInstanceDialog({
 	);
 
 	const handleCreate = () => {
+		if (requiresProjectKnowledge && !reporting?.projectId) {
+			toast.error("Choose a project for Project knowledge");
+			return;
+		}
 		if (!name.trim()) {
 			toast.error("Please enter a name for the instance");
 			return;
 		}
 
-		if (!allDataSourcesConfigured) {
+		if (!allDataSourcesConfigured && !reporting?.projectId) {
 			toast.error(
 				"Please configure MCP servers and fill required context fields",
 			);
@@ -307,6 +348,7 @@ export function CreateInstanceDialog({
 
 		createMutation.mutate({
 			templateId: template.id,
+			reporting,
 			name: name.trim(),
 			description: description.trim() || undefined,
 			organizationId,
@@ -532,13 +574,35 @@ export function CreateInstanceDialog({
 									Data Source Configuration
 								</h3>
 								<p className="text-sm text-muted-foreground">
-									Select your MCP server and configure
-									parameters for each data source.
+									Connect external sources, or use shared
+									project knowledge.
 								</p>
 							</div>
 
 							<div className="space-y-3">
 								{dataSources.map((ds) => {
+									if (ds.type === "fabric") {
+										return (
+											<Card key={ds.id}>
+												<CardContent className="pt-4 space-y-2">
+													<h3 className="font-medium">
+														Project knowledge
+													</h3>
+													<p className="text-sm text-muted-foreground">
+														Reads completed
+														Fabric-generated
+														documents and shared
+														text notes from the
+														selected project.
+														Imported files and
+														private notes are
+														excluded. No external
+														connection is needed.
+													</p>
+												</CardContent>
+											</Card>
+										);
+									}
 									const provider =
 										DATA_SOURCE_PROVIDERS[ds.provider];
 									const binding = dataSourceBindings[ds.id];
@@ -947,13 +1011,25 @@ export function CreateInstanceDialog({
 						</div>
 					)}
 
-					{/* Optional: document libraries for RAG context */}
+					<div className="space-y-4 border-t pt-4">
+						<h3 className="font-medium">
+							Reporting period and audience
+						</h3>
+						<ReportEvidenceSettings
+							value={reporting}
+							sourceDefinition={{ dataSources }}
+							requireProject={requiresProjectKnowledge}
+							onChange={setReporting}
+							organizationId={organizationId}
+						/>
+					</div>
+					{/* Optional: document workspaces for RAG context */}
 					{workspacesEnabled && userWorkspaces.length > 0 && (
 						<div className="space-y-3">
 							<div>
 								<h3 className="font-medium flex items-center gap-2">
 									<FolderOpenIcon className="h-4 w-4" />
-									Document Libraries
+									Document Workspaces
 								</h3>
 								<p className="text-sm text-muted-foreground">
 									{requirements.workspaces?.description ||
@@ -968,7 +1044,7 @@ export function CreateInstanceDialog({
 								}
 							>
 								<SelectTrigger>
-									<SelectValue placeholder="Select a library (optional)..." />
+									<SelectValue placeholder="Select a workspace (optional)..." />
 								</SelectTrigger>
 								<SelectContent>
 									{userWorkspaces.map((ws) => (
@@ -1003,7 +1079,9 @@ export function CreateInstanceDialog({
 						onClick={handleCreate}
 						disabled={
 							createMutation.isPending ||
-							!allDataSourcesConfigured
+							(requiresProjectKnowledge &&
+								!reporting?.projectId) ||
+							(!allDataSourcesConfigured && !reporting?.projectId)
 						}
 					>
 						{createMutation.isPending ? (
@@ -1014,7 +1092,11 @@ export function CreateInstanceDialog({
 						) : (
 							<>
 								<PlusIcon className="mr-2 h-4 w-4" />
-								Create Instance
+								{projectSetupReason
+									? "Create draft"
+									: reporting?.projectId
+										? "Create report"
+										: "Create Instance"}
 							</>
 						)}
 					</Button>

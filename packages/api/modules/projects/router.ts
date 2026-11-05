@@ -75,6 +75,7 @@ import { bulkDeleteProjectsProcedure } from "./procedures/bulk-delete-projects";
 import { bulkReviewPendingStateChangesProcedure } from "./procedures/bulk-review-pending-state-changes";
 import { githubPushWebhookProcedure } from "./procedures/code-indexing/github-webhook";
 import { addGoogleDocsContextProcedure } from "./procedures/contexts/add-google-docs-context";
+import { assembleContextProcedure } from "./procedures/contexts/assemble-context";
 import { cancelDraftCrawlsProcedure } from "./procedures/contexts/cancel-draft-crawls";
 import { cancelContextSummaryProcedure } from "./procedures/contexts/cancel-summary";
 import { cancelUrlSourceCrawlProcedure } from "./procedures/contexts/cancel-url-source-crawl";
@@ -85,6 +86,7 @@ import { createContextsBatchDownloadUrlProcedure } from "./procedures/contexts/c
 import { deleteContextProcedure } from "./procedures/contexts/delete-context";
 import { deleteSyncedFileProcedure } from "./procedures/contexts/delete-synced-file";
 import { embedProjectContextsProcedure } from "./procedures/contexts/embed-contexts";
+import { getContextManifestProcedure } from "./procedures/contexts/get-context-manifest";
 import { getContextSummaryProcedure } from "./procedures/contexts/get-summary";
 import { getContextSummaryVersionProcedure } from "./procedures/contexts/get-summary-version";
 import { getUrlPageContentProcedure } from "./procedures/contexts/get-url-page-content";
@@ -121,6 +123,12 @@ import { updateContextMetadataProcedure } from "./procedures/contexts/update-con
 import { updateContextSummaryProcedure } from "./procedures/contexts/update-summary";
 import { updateUrlSourceProcedure } from "./procedures/contexts/update-url-source";
 import { upsertSyncedFileProcedure } from "./procedures/contexts/upsert-synced-file";
+import {
+	addWorkspaceDocumentLinkProcedure,
+	listWorkspaceDocumentLinksProcedure,
+	readWorkspaceDocumentLinkProcedure,
+	removeWorkspaceDocumentLinkProcedure,
+} from "./procedures/contexts/workspace-document-links";
 // Conversation attachment procedures
 import {
 	attachProjectProcedure,
@@ -995,6 +1003,14 @@ export const projectsRouter = {
 
 	// Context operations
 	contexts: {
+		assemble: assembleContextProcedure,
+		workspaceDocuments: {
+			list: listWorkspaceDocumentLinksProcedure,
+			add: addWorkspaceDocumentLinkProcedure,
+			remove: removeWorkspaceDocumentLinkProcedure,
+			read: readWorkspaceDocumentLinkProcedure,
+		},
+		manifest: getContextManifestProcedure,
 		list: listContextsProcedure,
 		create: createContextProcedure,
 		delete: deleteContextProcedure,

@@ -5,6 +5,7 @@
  * Shows version history for a workflow with rollback capability
  */
 
+import { orpc } from "@shared/lib/orpc-query-utils";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -41,6 +42,8 @@ interface VersionHistoryPanelProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	workflowId: string;
+	organizationId?: string | null;
+	onRestored?: () => void;
 	currentVersion: number;
 	publishedVersion?: number | null;
 }
@@ -59,6 +62,8 @@ export function VersionHistoryPanel({
 	open,
 	onOpenChange,
 	workflowId,
+	organizationId,
+	onRestored,
 	currentVersion,
 	publishedVersion,
 }: VersionHistoryPanelProps) {
@@ -70,10 +75,11 @@ export function VersionHistoryPanel({
 
 	// Fetch version history
 	const { data: versions, isLoading } = useQuery({
-		queryKey: ["workflow-versions", workflowId],
+		queryKey: ["workflow-versions", workflowId, organizationId],
 		queryFn: async () => {
 			const result = await orpcClient.workflows.versions.list({
 				id: workflowId,
+				organizationId,
 			});
 			return result.versions as WorkflowVersion[];
 		},
@@ -85,16 +91,23 @@ export function VersionHistoryPanel({
 		mutationFn: async (targetVersion: number) => {
 			return await orpcClient.workflows.publish.rollback({
 				workflowId,
+				organizationId,
 				targetVersion,
 			});
 		},
 		onSuccess: (data) => {
 			toast.success(data.message);
+			onRestored?.();
+			queryClient.invalidateQueries({
+				queryKey: orpc.workflows.get.queryKey({
+					input: { id: workflowId, organizationId },
+				}),
+			});
 			queryClient.invalidateQueries({
 				queryKey: ["workflow", workflowId],
 			});
 			queryClient.invalidateQueries({
-				queryKey: ["workflow-versions", workflowId],
+				queryKey: ["workflow-versions", workflowId, organizationId],
 			});
 			setRollbackConfirmOpen(false);
 			setRollbackTarget(null);

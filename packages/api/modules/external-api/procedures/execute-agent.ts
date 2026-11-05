@@ -10,6 +10,7 @@ import { getAgentImplementationAvailability } from "@repo/agent-types/agent-impl
 import {
 	AgentExecutionAdmissionError,
 	type AgentExecutionDispatch,
+	type AuditActor,
 	admitAgentDeploymentExecution,
 	checkExecutionQuota,
 	createAgentDeployment,
@@ -38,7 +39,7 @@ interface ImageRef {
 	name: string;
 }
 
-interface ExecuteAgentInput {
+export interface ExecuteAgentInput {
 	input: Record<string, unknown>;
 	priority?: "LOW" | "NORMAL" | "HIGH" | "CRITICAL";
 	idempotencyKey?: string;
@@ -50,10 +51,11 @@ interface ExecuteAgentInput {
  * Get existing deployment or auto-create a lightweight one for API execution.
  * No supervisor workflow is started — executions run directly.
  */
-async function getOrCreateDeployment(
+/** Internal only: caller must already verify the current instance/credential owner. */
+export async function getOrCreateDeployment(
 	instanceId: string,
 	instanceName: string,
-	ctx: ExternalApiContext,
+	ctx: AgentExecutionActor,
 ) {
 	const existing = await db.agentDeployment.findFirst({
 		where: { instanceId },
@@ -113,10 +115,44 @@ async function getOrCreateDeployment(
 	};
 }
 
-export async function executeAgent(
+interface AgentExecutionActor {
+	userId: string;
+	organizationId: string | undefined;
+	boundProjectId?: string;
+}
+export function executeAgent(
 	instanceId: string,
 	body: ExecuteAgentInput,
 	ctx: ExternalApiContext,
+) {
+	return executeAgentForActor(instanceId, body, ctx, {
+		requireApiExposure: true,
+		actor: {
+			type: ctx.keyType === "oauth" ? "agent" : "api_key",
+			userId: ctx.userId,
+		},
+	});
+}
+/** Authenticated Portal callers share native admission without publishing an API. */
+export function executeAgentFromPortal(
+	instanceId: string,
+	body: ExecuteAgentInput,
+	actor: AgentExecutionActor,
+) {
+	return executeAgentForActor(instanceId, body, actor, {
+		requireApiExposure: false,
+		actor: { type: "user", userId: actor.userId },
+	});
+}
+export async function executeAgentForActor(
+	instanceId: string,
+	body: ExecuteAgentInput,
+	ctx: AgentExecutionActor,
+	policy: {
+		requireApiExposure: boolean;
+		actor: AuditActor;
+		testAuthority?: AgentExecutionDispatch["testAuthority"];
+	},
 ) {
 	if (!ctx.organizationId) {
 		return { error: "An organization is required", status: 403 as const };
@@ -148,7 +184,7 @@ export async function executeAgent(
 			where: {
 				sId: instanceId,
 				...tenantFilter,
-				isApiExposed: true,
+				...(policy.requireApiExposure ? { isApiExposed: true } : {}),
 				status: "ACTIVE",
 			},
 			select: {
@@ -171,7 +207,7 @@ export async function executeAgent(
 			where: {
 				id: instanceId,
 				...tenantFilter,
-				isApiExposed: true,
+				...(policy.requireApiExposure ? { isApiExposed: true } : {}),
 				status: "ACTIVE",
 			},
 			select: {
@@ -252,6 +288,9 @@ export async function executeAgent(
 		const request = normalizedRequest;
 		const target = {
 			instanceId: instance.id,
+			...(policy.testAuthority
+				? { testAuthority: policy.testAuthority }
+				: {}),
 			...(scoped.projectId ? { projectId: scoped.projectId } : {}),
 		};
 		const dispatch: AgentExecutionDispatch =
@@ -273,14 +312,11 @@ export async function executeAgent(
 			idempotencyKey: body.idempotencyKey,
 			request,
 			dispatch,
-			actor: {
-				type:
-					ctx.keyType === "oauth"
-						? ("agent" as const)
-						: ("api_key" as const),
-				userId: ctx.userId,
-			},
+			actor: policy.actor,
 			correlationId: getCorrelationIdFromContext(),
+			triggerType: policy.requireApiExposure
+				? ("API" as const)
+				: ("MANUAL" as const),
 		};
 		let execution = await findAgentExecutionAdmission(admission);
 		let reused = !!execution;

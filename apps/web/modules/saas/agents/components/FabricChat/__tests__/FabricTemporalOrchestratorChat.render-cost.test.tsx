@@ -373,3 +373,46 @@ describe("orchestrator completed-turn render cost", () => {
 		);
 	});
 });
+
+it("keeps failed tools visible through the actual persisted chat composition", async () => {
+	render(
+		ui({
+			...conversation,
+			metadata: {
+				mode: "orchestrator",
+				executions: [
+					{
+						...records[0],
+						stepResults: [
+							{
+								stepId: "example-step",
+								stepDescription: "Read notes",
+								status: "success",
+								response: "",
+								toolCalls: [
+									{
+										name: "example_read_notes",
+										args: {},
+										status: "complete",
+										result: {
+											isError: true,
+											content: [
+												{
+													type: "text",
+													text: "Example connection unavailable",
+												},
+											],
+										},
+									},
+								],
+							},
+						],
+					},
+				],
+			},
+		}),
+	);
+	expect(
+		await screen.findByText("Example connection unavailable"),
+	).toBeVisible();
+});

@@ -19,7 +19,11 @@ import {
 	createExecutionWithinConcurrencyCap,
 } from "@repo/api/modules/workflows/lib/execution-concurrency";
 import { startReservedExecution } from "@repo/api/modules/workflows/lib/start-reserved-execution";
-import { db, isWorkflowLive } from "@repo/database";
+import {
+	canRunOrganizationWorkflows,
+	db,
+	isWorkflowLive,
+} from "@repo/database";
 import { decryptApiKeyMaybe } from "@repo/utils";
 import { type NextRequest, NextResponse } from "next/server";
 
@@ -72,7 +76,7 @@ async function verifyApiKey(
 	workflowId: string,
 	apiKey: string,
 	workflow: { userId: string | null; organizationId: string | null },
-): Promise<{ valid: boolean; keyId?: string }> {
+): Promise<{ valid: boolean; keyId?: string; permissionDenied?: boolean }> {
 	// API keys have format: wfk_<prefix>_<secret>
 	const parts = apiKey.split("_");
 	if (parts.length < 3 || parts[0] !== "wfk") {
@@ -120,6 +124,15 @@ async function verifyApiKey(
 	// Check permissions
 	if (!storedKey.permissions.includes("trigger")) {
 		return { valid: false };
+	}
+	if (
+		!workflow.organizationId ||
+		!(await canRunOrganizationWorkflows(
+			storedKey.createdBy,
+			workflow.organizationId,
+		))
+	) {
+		return { valid: false, permissionDenied: true };
 	}
 
 	// Update usage stats
@@ -217,10 +230,22 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 		// Method 1: API Key authentication
 		if (authHeader?.startsWith("Bearer ")) {
 			const apiKey = authHeader.substring(7);
-			const { valid } = await verifyApiKey(workflowId, apiKey, {
-				userId: workflow.userId,
-				organizationId: workflow.organizationId,
-			});
+			const { valid, permissionDenied } = await verifyApiKey(
+				workflowId,
+				apiKey,
+				{
+					userId: workflow.userId,
+					organizationId: workflow.organizationId,
+				},
+			);
+			if (permissionDenied) {
+				return NextResponse.json(
+					{
+						error: "API key creator no longer has permission to run workflows",
+					},
+					{ status: 403 },
+				);
+			}
 			authenticated = valid;
 		}
 
@@ -241,6 +266,20 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 				{ status: 401 },
 			);
 		}
+		if (
+			!workflow.organizationId ||
+			!(await canRunOrganizationWorkflows(
+				workflow.userId,
+				workflow.organizationId,
+			))
+		) {
+			return NextResponse.json(
+				{
+					error: "Workflow owner no longer has permission to run workflows",
+				},
+				{ status: 403 },
+			);
+		}
 
 		// The per-tenant cap protects the workflow-builder queue from one
 		// tenant's backlog. The manual path refuses before creating a row; a
@@ -254,13 +293,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 			organizationId: workflow.organizationId,
 			data: {
 				workflowId,
-				// The graph that ran, not the one that was published. Every
-				// trigger path executes `workflow.nodes` — the version rows
-				// exist for history and rollback — so stamping
-				// `publishedVersion` labelled the run with a version whose
-				// content was not what executed. Anyone comparing a failed run
-				// against "version 3" was reading the wrong graph.
-				version: workflow.version,
+				// Unattended execution resolves this immutable publication in
+				// the worker, even when a newer draft has been saved.
+				version: workflow.publishedVersion ?? workflow.version,
 				triggerType: "WEBHOOK",
 				triggerInput: payload as object,
 			},
@@ -285,8 +320,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 			logTag: "Webhook Trigger",
 			start: {
 				workflowId,
-				nodes: workflow.nodes as never,
-				edges: workflow.edges as never,
 				triggerData: payload,
 				userId: workflow.userId,
 				organizationId: workflow.organizationId ?? undefined,

@@ -14,7 +14,9 @@
  */
 
 import type { FrameDocument } from "@repo/database";
+import { Context } from "@temporalio/activity";
 import { type BrowserContextOptions, chromium } from "playwright";
+import { FRAME_EXPORT_MAX_BYTES } from "../../lib/frame-export-contract";
 import { PRINT_CHROMIUM_ARGS } from "../../lib/print-chromium-args";
 import { sanitizeFrameHtml } from "./sanitize-frame-html";
 
@@ -178,14 +180,33 @@ function orientationToPageSize(_document: FrameDocument): string {
 export async function generatePDFActivity(
 	input: GeneratePDFInput,
 ): Promise<Buffer> {
+	if (
+		Buffer.byteLength(JSON.stringify(input.content), "utf8") >
+		FRAME_EXPORT_MAX_BYTES
+	) {
+		throw new Error("Page exceeds the export size limit.");
+	}
+	let signal: AbortSignal | undefined;
+	try {
+		signal = Context.current().cancellationSignal;
+	} catch {
+		/* Direct renderer use has no activity context. */
+	}
+	signal?.throwIfAborted();
 	const browser = await chromium.launch({
 		// The print flags every server-side PDF shares, font hinting off
 		// among them (see `print-chromium-args.ts`).
 		args: [...PRINT_CHROMIUM_ARGS, "--disable-setuid-sandbox"],
 	});
 
+	const abort = () => {
+		void browser.close().catch(() => undefined);
+	};
+	signal?.addEventListener("abort", abort, { once: true });
 	try {
+		signal?.throwIfAborted();
 		const context = await browser.newContext(PDF_EXPORT_CONTEXT_OPTIONS);
+		signal?.throwIfAborted();
 		// Nothing the content references is fetched: every request is
 		// aborted here, before Chromium resolves or connects anywhere.
 		await context.route("**/*", (route) => route.abort("blockedbyclient"));
@@ -193,7 +214,8 @@ export async function generatePDFActivity(
 
 		// Render HTML content
 		const html = renderFrameToHTML(input.content);
-		await page.setContent(html, { waitUntil: "load" });
+		await page.setContent(html, { waitUntil: "load", timeout: 30000 });
+		signal?.throwIfAborted();
 
 		// Generate PDF
 		const pdf = await page.pdf({
@@ -208,8 +230,13 @@ export async function generatePDFActivity(
 			},
 		});
 
+		signal?.throwIfAborted();
+		if (pdf.length > 20 * 1024 * 1024) {
+			throw new Error("Export exceeds the file size limit.");
+		}
 		return Buffer.from(pdf);
 	} finally {
+		signal?.removeEventListener("abort", abort);
 		await browser.close();
 	}
 }

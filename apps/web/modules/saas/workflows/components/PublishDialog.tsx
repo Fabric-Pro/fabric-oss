@@ -1,5 +1,7 @@
 "use client";
 
+import { WorkflowReadiness } from "./WorkflowReadiness";
+
 /**
  * Publish Workflow Dialog
  * Dialog for publishing workflows with options for webhooks and versioning
@@ -7,6 +9,7 @@
 
 import { isWorkflowLive } from "@repo/utils/workflow-status";
 import { orpcClient } from "@shared/lib/orpc-client";
+import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
@@ -37,6 +40,7 @@ interface PublishDialogProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	workflowId: string;
+	organizationId?: string | null;
 	workflowName: string;
 	currentVersion: number;
 	status: "DRAFT" | "PUBLISHED" | "ACTIVE" | "PAUSED" | "ARCHIVED";
@@ -47,6 +51,7 @@ export function PublishDialog({
 	open,
 	onOpenChange,
 	workflowId,
+	organizationId,
 	workflowName,
 	currentVersion,
 	status,
@@ -69,6 +74,7 @@ export function PublishDialog({
 		mutationFn: async () => {
 			return await orpcClient.workflows.publish.publish({
 				workflowId,
+				organizationId,
 				changelog: changelog || undefined,
 				enableWebhook,
 			});
@@ -97,9 +103,13 @@ export function PublishDialog({
 				webhookSecret: data.webhookSecret,
 			});
 			queryClient.invalidateQueries({
-				queryKey: ["workflow", workflowId],
+				queryKey: orpc.workflows.get.key({
+					input: { id: workflowId, organizationId },
+				}),
 			});
-			queryClient.invalidateQueries({ queryKey: ["workflows"] });
+			queryClient.invalidateQueries({
+				queryKey: orpc.workflows.list.key(),
+			});
 			onPublished?.();
 		},
 		onError: (error) => {
@@ -113,14 +123,22 @@ export function PublishDialog({
 
 	const unpublishMutation = useMutation({
 		mutationFn: async () => {
-			return await orpcClient.workflows.publish.unpublish({ workflowId });
+			return await orpcClient.workflows.publish.unpublish({
+				workflowId,
+				organizationId,
+			});
 		},
 		onSuccess: () => {
 			toast.success("Workflow unpublished");
+			onPublished?.();
 			queryClient.invalidateQueries({
-				queryKey: ["workflow", workflowId],
+				queryKey: orpc.workflows.get.key({
+					input: { id: workflowId, organizationId },
+				}),
 			});
-			queryClient.invalidateQueries({ queryKey: ["workflows"] });
+			queryClient.invalidateQueries({
+				queryKey: orpc.workflows.list.key(),
+			});
 			onOpenChange(false);
 		},
 		onError: (error) => {
@@ -158,7 +176,7 @@ export function PublishDialog({
 
 	return (
 		<Dialog open={open} onOpenChange={handleClose}>
-			<DialogContent className="sm:max-w-[500px]">
+			<DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-[500px]">
 				<DialogHeader>
 					<DialogTitle className="flex items-center gap-2">
 						<RocketIcon className="h-5 w-5" />
@@ -271,8 +289,8 @@ export function PublishDialog({
 									))}
 								</ul>
 								<p className="text-muted-foreground text-xs">
-									Publishing uses the last saved graph. Save
-									your changes, then publish again.
+									Publishing uses the saved draft. Save your
+									changes, then publish again.
 								</p>
 							</div>
 						)}
@@ -350,6 +368,12 @@ export function PublishDialog({
 					</div>
 				)}
 
+				{open && !publishResult && organizationId && (
+					<WorkflowReadiness
+						id={workflowId}
+						organizationId={organizationId}
+					/>
+				)}
 				<DialogFooter>
 					{publishResult ? (
 						<Button onClick={handleClose}>Done</Button>

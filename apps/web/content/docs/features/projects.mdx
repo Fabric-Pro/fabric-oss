@@ -295,8 +295,9 @@ Connect external tools:
 
 ### Delegating Coding Runs to Fabric Agents
 
-When your project is linked to a GitHub repository, you can delegate feature and task implementation directly to a **Fabric Agents Remote Server** (`fabric-agent-server`) or **Fabric Agents Desktop** (`fabricagents://`) using your existing subscription harnesses (**Claude Max**, **Codex Plus/Pro**, **Cursor Pro**, **Factory Droid**, **Kimi Code**, or **Grok CLI**) with zero per-token API fees.
+When your project is linked to a GitHub repository, use **Launch Fabric Desktop** for installation and native launch options, or **Delegate to Remote Server** to manage registered servers. **AI Connections** opens Portal provider settings for workflows and chat. Desktop and remote coding sessions use the accounts configured on their own execution host.
 
+Desktop links require an installed app registered for `fabricagents://`. If the browser reports no matching app, install or update Fabric Desktop from [Fabric Agents](https://agents.fabric.pro). The launch panel also links to the installed app's Settings and Sources views.
 The native execution bridge is opt-in (`FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED=true` on both the API and Temporal worker). See the deployment guide for operator cutover and rollback details.
 
 #### Personal vs. Organization Remote Servers
@@ -308,18 +309,15 @@ You can register and switch between **multiple Personal Servers** and **Organiza
 | **Personal (`PRIVATE`)** | Visible **only to you** within the project. Register as many personal machines as you use (e.g., `My MacBook Pro (:9100)`, `Linux Devbox (Tailscale)`). | Runs on your workstation or personal devbox using your own signed-in CLI subscriptions (`claude`, `codex`, `cursor`, `droid`, `kimi`, `grok`). |
 | **Organization (`TEAM`)** | Shared with **all authorized project members**. Registered once by an organization admin or project editor. | Runs on a shared team VM or container (`https://agents.example.com`) with team service accounts or shared subscription seats. |
 
-![The Fabric Agents Remote Servers picker showing filter tabs for All, Personal, and Organization servers, three registered server cards, and the inline drawer with 1-click presets, token generation, and a copyable 1-line startup command.](/images/docs/qa/fabric-agents-server-picker.png)
+To register an existing server:
 
-To register a server in one step:
+1. Open **Delegate to Remote Server** from the Coding Agents tab, or the server picker in **Start work → Send to Fabric Agents**.
+2. Start a matching Fabric Agents server with coding protocol 2, a private workspace profile, Git access, and a supported, signed-in coding backend. The Portal API and Temporal worker must be able to reach its execution endpoint.
+3. Configure a dedicated execution service secret of at least 32 characters as `BACKGROUND_AGENTS_INTERNAL_SECRET` on that host. Enter the same secret in the Portal connection form. The browser/Desktop RPC token (`FABRIC_SERVER_TOKEN`) is separate and does not authenticate execution requests.
+4. Enter a connection name, its real endpoint URL, and the execution service secret. Choose Personal or Organization visibility, then click **Verify and connect**. This checks authenticated server readiness; it does not verify subscription credits.
+5. Select the server and choose a published Roadmap feature. **Start work** uses that saved server selection and validates readiness for the actual assignment before starting it.
 
-1. Open **Send to Fabric Agents** on any feature or task (or go to **Project Settings → Implementation Defaults**) and expand **Register a personal or shared Fabric Agents server**.
-2. Click **Preset: Personal Local (:9100)** (pre-fills `http://127.0.0.1:9100` and `Personal (PRIVATE)`) or **Preset: Organization Remote Server** (selects `Organization (TEAM)`).
-3. Click **Generate token** to create a 64-character execution secret (`FABRIC_AGENT_SERVER_TOKEN`).
-4. Copy the generated **Step 2** terminal command and run it on your host:
-   ```bash
-   FABRIC_AGENT_SERVER_TOKEN="fab_srv_..." npx -y @fabricorg/agent-server --port 9100
-   ```
-5. Click **Save & Test Connection** to verify `/health` and select the server.
+**Open remote Web UI** opens the selected registered server's address. Sign in there using its own browser authentication. The actual execution link and recorded status are available from the assigned feature's coding run; opening the Web UI alone does not dispatch work.
 
 #### Triggering a Coding Run
 

@@ -34,8 +34,20 @@ export const FABRIC_FRAME_VERSION_TOOL_DEFINITIONS = defineFabricTools([
 			"Puts a page back to one of its saved versions. The current content is kept as a version, so this can be undone. Always asks.",
 		inputSchema: {
 			type: "object",
-			properties: { ...FRAME_ID, version: { type: "number" } },
-			required: ["version"],
+			properties: {
+				...FRAME_ID,
+				version: { type: "integer", minimum: 1 },
+				historyEntryId: { type: "string" },
+				expectedUpdatedAt: {
+					type: "string",
+					description: "Revision you reviewed from fabric_get_frame.",
+				},
+			},
+			required: ["expectedUpdatedAt"],
+			oneOf: [
+				{ required: ["version"] },
+				{ required: ["historyEntryId"] },
+			],
 		},
 		annotations: TOOL_ANNOTATIONS.rewrite,
 		scope: "frames:write",
@@ -44,7 +56,7 @@ export const FABRIC_FRAME_VERSION_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_duplicate_frame",
 		description:
-			"Forks a page you can open into a copy of your own, keeping its surface and project. Page data is not copied. The page's tools are copied only when you pass runtimeTools.",
+			"Forks an accessible page; keeps surface/project, not page data. Tools copy only with runtimeTools.",
 		inputSchema: {
 			type: "object",
 			properties: {

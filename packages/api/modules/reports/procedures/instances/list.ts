@@ -1,4 +1,7 @@
-import { listTemplateInstances } from "@repo/database";
+import {
+	getProjectReportSetupReason,
+	listTemplateInstances,
+} from "@repo/database";
 import type { TemplateInstanceStatus } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
 import {
@@ -12,6 +15,7 @@ const statusEnum = z.enum(["PENDING", "ACTIVE", "ARCHIVED", "DRAFT"]);
 
 const listInstancesInputSchema = z.object({
 	templateId: z.string().optional(),
+	projectId: z.string().min(1).max(128).optional(),
 	organizationId: z.string().nullable().optional(),
 	limit: z.number().min(1).max(100).default(20),
 	offset: z.number().min(0).default(0),
@@ -34,6 +38,7 @@ export const listInstancesProcedure = tenantProtectedProcedure
 			userId: context.user.id,
 			organizationId,
 			templateId: input.templateId,
+			projectId: input.projectId,
 			limit: input.limit,
 			offset: input.offset,
 			isActive: input.isActive,
@@ -58,6 +63,11 @@ export const listInstancesProcedure = tenantProtectedProcedure
 					templateId: instance.templateId,
 					templateName: instance.template.name,
 					isActive: instance.isActive,
+					setupRequiredReason: getProjectReportSetupReason(
+						instance.fabricConfig,
+						instance.template.definition,
+						instance.connections,
+					),
 					schedule: instance.schedule,
 					scheduleMode: instance.scheduleMode,
 					lastRunAt: instance.lastRunAt?.toISOString() || null,

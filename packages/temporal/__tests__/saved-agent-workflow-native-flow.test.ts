@@ -4,6 +4,7 @@ const m = vi.hoisted(() => ({
 	turn: vi.fn(),
 	externalSignal: vi.fn(),
 	cancelAtPatch: false,
+	candidatePatch: true,
 	cancelHook: undefined as undefined | (() => void),
 	acts: {
 		registerNativeAgentExecutionReceipt: vi.fn(),
@@ -35,11 +36,13 @@ vi.mock("@temporalio/workflow", async () => ({
 			m.cancelHook = handler;
 		}
 	},
-	patched: () => {
+	patched: (name: string) => {
 		if (m.cancelAtPatch) {
 			m.cancelHook?.();
 		}
-		return true;
+		return name === "saved-agent-goal-candidate-output-v1"
+			? m.candidatePatch
+			: true;
 	},
 	proxyActivities: () => m.acts,
 	getExternalWorkflowHandle: () => ({ signal: m.externalSignal }),
@@ -98,6 +101,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	m.externalSignal.mockResolvedValue(undefined);
 	m.cancelAtPatch = false;
+	m.candidatePatch = true;
 	m.cancelHook = undefined;
 	m.acts.loadDeploymentConfiguration.mockResolvedValue({
 		template: { name: "Example", displayName: "Example" },
@@ -132,6 +136,183 @@ beforeEach(() => {
 	m.turn.mockResolvedValue(failedTurn());
 });
 describe("new saved-agent workflow control flow", () => {
+	it.each([true, false])(
+		"retains a deliverable across a final tool-only step (candidate patch %s)",
+		async (candidate) => {
+			m.candidatePatch = candidate;
+			m.turn.mockResolvedValue({
+				success: true,
+				response: "Step output",
+				toolCalls: [],
+			});
+			m.acts.createGoalOrientedPlan.mockResolvedValue({
+				plan: {
+					strategy: "sequential",
+					steps: [
+						{
+							id: "answer",
+							description: "Produce report",
+							inputs: {},
+						},
+						{ id: "save", description: "Save report", inputs: {} },
+					],
+				},
+				routingDecision: {},
+			});
+			m.acts.finishGoalStep
+				.mockResolvedValueOnce({
+					response: "Final report",
+					outputs: { rawResponse: "Final report" },
+					toolCalls: [],
+				})
+				.mockResolvedValueOnce({
+					response: "",
+					outputs: {},
+					toolCalls: [],
+				});
+			m.acts.verifyGoalAchievement.mockResolvedValue({
+				achieved: true,
+				confidence: 1,
+				reasoning: "Report saved",
+			});
+			const result = await goalOrientedAgentWorkflow({
+				...input,
+				goal: "Write and save a report",
+				maxIterations: 1,
+			});
+			expect(result.response).toBe("Final report");
+			const verification = m.acts.verifyGoalAchievement.mock.calls[0][0];
+			expect(verification.accumulatedResponse).toBe(
+				candidate ? "Final report" : "Final report\n\n",
+			);
+			expect(verification.outputMode).toBe(
+				candidate ? "candidate" : undefined,
+			);
+		},
+	);
+
+	it("verifies the latest deliverable, retains the trace, and replaces a rejected draft when replanning", async () => {
+		m.turn.mockResolvedValue({
+			success: true,
+			response: "Step output",
+			toolCalls: [],
+		});
+		m.acts.createGoalOrientedPlan.mockResolvedValue({
+			plan: {
+				strategy: "sequential",
+				steps: [
+					{ id: "research", description: "Read sources", inputs: {} },
+					{
+						id: "deliver",
+						description: "Produce the complete deliverable",
+						inputs: {},
+					},
+				],
+			},
+			routingDecision: {},
+		});
+		for (const response of [
+			"Research notes",
+			"Rejected draft",
+			"Updated research",
+			"Final report",
+		]) {
+			m.acts.finishGoalStep.mockResolvedValueOnce({
+				response,
+				outputs: { rawResponse: response },
+				toolCalls: [],
+				variables: {
+					[`step.${response}.response`]: {
+						name: `step.${response}.response`,
+						value: response,
+						setBy: response,
+						setAt: "2026-01-01",
+						scope: "step",
+					},
+				},
+			});
+		}
+		m.acts.verifyGoalAchievement
+			.mockResolvedValueOnce({
+				achieved: false,
+				confidence: 1,
+				reasoning: "Revise the draft",
+			})
+			.mockResolvedValueOnce({
+				achieved: true,
+				confidence: 1,
+				reasoning: "Complete",
+			});
+		const result = await goalOrientedAgentWorkflow({
+			...input,
+			goal: "Write a complete report",
+			maxIterations: 2,
+		});
+		expect(
+			m.acts.verifyGoalAchievement.mock.calls.map(
+				([value]) => value.accumulatedResponse,
+			),
+		).toEqual(["Rejected draft", "Final report"]);
+		expect(result).toMatchObject({
+			status: "COMPLETED",
+			goalAchieved: true,
+			response: "Final report",
+			iterationsUsed: 2,
+		});
+		expect(
+			m.acts.verifyGoalAchievement.mock.calls[1][0].variables,
+		).not.toHaveProperty("step.Rejected draft.response");
+		expect(m.acts.verifyGoalAchievement.mock.calls[1][0]).toMatchObject({
+			outputMode: "candidate",
+		});
+		expect(m.acts.completeDurableGoalProjection).toHaveBeenCalledWith(
+			expect.objectContaining({
+				output: expect.objectContaining({
+					response: "Final report",
+					trajectorySteps: expect.arrayContaining([
+						expect.objectContaining({
+							output: { rawResponse: "Rejected draft" },
+						}),
+					]),
+				}),
+			}),
+		);
+		expect(result.stepsExecuted).toHaveLength(4);
+		expect(result.output?.trajectorySteps).toHaveLength(4);
+	});
+	it("records failure when the goal limit is reached without an achieved goal", async () => {
+		m.turn.mockResolvedValue({
+			success: true,
+			response: "Incomplete draft",
+			toolCalls: [],
+		});
+		m.acts.finishGoalStep.mockResolvedValue({
+			response: "Incomplete draft",
+			outputs: {},
+			toolCalls: [],
+		});
+		m.acts.verifyGoalAchievement.mockResolvedValue({
+			achieved: false,
+			confidence: 1,
+			reasoning: "Missing required evidence",
+		});
+		const result = await goalOrientedAgentWorkflow({
+			...input,
+			goal: "Produce verified evidence",
+			maxIterations: 1,
+		});
+		expect(result).toMatchObject({
+			status: "MAX_ITERATIONS_REACHED",
+			goalAchieved: false,
+		});
+		expect(m.acts.completeDurableGoalProjection).toHaveBeenCalledWith(
+			expect.objectContaining({
+				status: "FAILED",
+				goalAchieved: false,
+				error: "Goal not achieved after 1 iterations",
+			}),
+		);
+	});
 	it("uses durable steps for markerless supervisor work and releases the parent after an inspection stop", async () => {
 		const result = await deploymentExecutionWorkflow({
 			...input,
@@ -228,6 +409,108 @@ describe("new saved-agent workflow control flow", () => {
 			}),
 		);
 		expect(m.acts.attemptStepRecovery).not.toHaveBeenCalled();
+	});
+	it.each(["deployment", "goal"])(
+		"projects %s cancellation with acknowledged and ambiguous partial effects retained",
+		async (kind) => {
+			const acknowledged = {
+				id: "example-acknowledged",
+				name: "example_write",
+				args: {},
+				result: { created: true },
+				status: "success",
+				durationMs: 1,
+			};
+			const ambiguous = failedTurn().toolCalls[0];
+			m.turn.mockImplementationOnce(async (_input, options) => {
+				expect(typeof options.isCancelled).toBe("function");
+				return {
+					...failedTurn(),
+					cancelled: true,
+					response: "Partial response",
+					toolCalls: [acknowledged, ambiguous],
+				};
+			});
+			const result =
+				kind === "deployment"
+					? await deploymentExecutionWorkflow({
+							...input,
+							supervisorWorkflowId: "example-parent",
+						})
+					: await goalOrientedAgentWorkflow({
+							...input,
+							goal: "Example",
+							maxIterations: 1,
+						});
+			expect(result.status).toBe("CANCELLED");
+			expect(result.output).toMatchObject({
+				cancelled: true,
+				response: "Partial response",
+				inspectionRequired: true,
+				toolCalls: [acknowledged, ambiguous],
+			});
+			const writer =
+				kind === "deployment"
+					? m.acts.completeDurableDeploymentProjection
+					: m.acts.completeDurableGoalProjection;
+			expect(writer).toHaveBeenCalledWith(
+				expect.objectContaining({
+					status: "CANCELLED",
+					output: result.output,
+				}),
+			);
+			expect(m.acts.attemptStepRecovery).not.toHaveBeenCalled();
+			expect(m.acts.verifyGoalAchievement).not.toHaveBeenCalled();
+			if (kind === "deployment")
+				expect(m.externalSignal).toHaveBeenCalledWith(
+					"executionCompleted",
+					{ executionId: "example-execution", success: false },
+				);
+		},
+	);
+	it("returns the same combined goal token usage that cancellation persists, including earlier steps", async () => {
+		m.acts.createGoalOrientedPlan.mockResolvedValue({
+			plan: {
+				strategy: "sequential",
+				steps: [
+					{ id: "example-first", description: "First", inputs: {} },
+					{ id: "example-second", description: "Second", inputs: {} },
+				],
+			},
+			routingDecision: {},
+		});
+		m.turn
+			.mockResolvedValueOnce({
+				success: true,
+				response: "Earlier result",
+				toolCalls: [],
+				tokenUsage: { inputTokens: 3, outputTokens: 4 },
+			})
+			.mockResolvedValueOnce({
+				...failedTurn(),
+				cancelled: true,
+				response: "Partial result",
+				tokenUsage: { inputTokens: 5, outputTokens: 6 },
+			});
+		m.acts.finishGoalStep.mockResolvedValue({
+			response: "Earlier result",
+			outputs: {},
+			toolCalls: [],
+			tokenUsage: { inputTokens: 3, outputTokens: 4 },
+		});
+		const result = await goalOrientedAgentWorkflow({
+			...input,
+			goal: "Example",
+			maxIterations: 1,
+		});
+		expect(result.status).toBe("CANCELLED");
+		expect(result.tokenUsage).toEqual({ inputTokens: 8, outputTokens: 10 });
+		expect(m.acts.completeDurableGoalProjection).toHaveBeenCalledWith(
+			expect.objectContaining({
+				status: "CANCELLED",
+				tokenUsage: result.tokenUsage,
+			}),
+		);
 	});
 	it("does not enter the legacy failure writer after a durable terminal projection refusal", async () => {
 		const failure = new Error("Example terminal projection refusal");

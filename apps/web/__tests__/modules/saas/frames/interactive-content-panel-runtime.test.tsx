@@ -175,6 +175,28 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("saved artifact runtime authority", () => {
+	it("partitions saved content by current actor and defers unresolved-identity reads", () => {
+		const view = render(
+			<FrameViewer frameId="frame-1" organizationId="org-a" />,
+		);
+		expect(mocks.query.mock.calls.at(-1)?.[0]).toMatchObject({
+			queryKey: ["frame", "frame-1", "org-a", "user-a"],
+			enabled: true,
+		});
+		mocks.user.id = "other-user";
+		view.rerender(<FrameViewer frameId="frame-1" organizationId="org-a" />);
+		expect(mocks.query.mock.calls.at(-1)?.[0].queryKey).toEqual([
+			"frame",
+			"frame-1",
+			"org-a",
+			"other-user",
+		]);
+		mocks.user.id = null;
+		view.rerender(<FrameViewer frameId="frame-1" organizationId="org-a" />);
+		expect(mocks.query.mock.calls.at(-1)?.[0].enabled).toBe(false);
+		expect(view.container.querySelector("iframe")).toBeNull();
+	});
+
 	it("opens the owner's sharing sheet without publishing or revoking access", () => {
 		render(<FrameViewer frameId="frame-1" organizationId="org-a" />);
 		expect(screen.queryByRole("button", { name: "Publish" })).toBeNull();
@@ -200,7 +222,7 @@ describe("saved artifact runtime authority", () => {
 		expect(mocks.revokeShare).not.toHaveBeenCalled();
 	});
 
-	it.each(["other-user", null])(
+	it.each(["other-user"])(
 		"offers no sharing management to a non-owner session: %s",
 		(userId) => {
 			mocks.user.id = userId;

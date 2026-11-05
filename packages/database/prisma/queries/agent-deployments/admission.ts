@@ -23,10 +23,37 @@ const requestSchema = z
 		imageRefs: z.array(imageSchema).max(20),
 	})
 	.strict();
+// Server-admitted saved-test authority is metadata, never a caller input field.
+const testScopeSchema = z.strictObject({
+	instanceId: z.string().min(1).max(200),
+	configHash: z
+		.string()
+		.regex(/^[a-f0-9]{64}$/)
+		.optional(),
+	projectId: z.string().min(1).max(200).optional(),
+	workspaceIds: z.array(z.string().min(1).max(200)).max(30),
+	workspaceDocumentFilters: z
+		.array(
+			z.strictObject({
+				workspaceId: z.string().min(1).max(200),
+				documentIds: z.array(z.string().min(1).max(200)).max(1000),
+			}),
+		)
+		.max(30),
+	skillIds: z.array(z.string().min(1).max(200)).max(100),
+});
+const testAuthoritySchema = z.strictObject({
+	testRunId: z.string().min(1).max(200),
+	origin: testScopeSchema,
+	execution: testScopeSchema.extend({
+		configHash: z.string().regex(/^[a-f0-9]{64}$/),
+	}),
+});
 const dispatchSchema = z.discriminatedUnion("workflowType", [
 	z
 		.object({
 			instanceId: z.string().min(1).max(200),
+			testAuthority: testAuthoritySchema.optional(),
 			projectId: z.string().min(1).max(200).optional(),
 			workflowType: z.enum([
 				"deploymentExecutionWorkflow",
@@ -37,6 +64,7 @@ const dispatchSchema = z.discriminatedUnion("workflowType", [
 	z
 		.object({
 			instanceId: z.string().min(1).max(200),
+			testAuthority: testAuthoritySchema.optional(),
 			projectId: z.string().min(1).max(200).optional(),
 			workflowType: z.enum([
 				"goalOrientedAgentWorkflow",
@@ -181,6 +209,9 @@ interface AdmissionInput {
 	request: ReturnType<typeof normalizeAgentExecutionRequest>;
 	actor?: AuditActor;
 	correlationId?: string;
+	/** Trusted server entrypoint classification, never accepted from invocation input. */
+	triggerType?: "API" | "MANUAL" | "SCHEDULE";
+	triggerId?: string;
 	dispatch: AgentExecutionDispatch;
 }
 function object(value: unknown): Record<string, unknown> {
@@ -316,7 +347,8 @@ export async function admitAgentDeploymentExecution(input: AdmissionInput) {
 					userId: input.userId,
 					organizationId: input.organizationId,
 					executionId: randomUUID(),
-					triggerType: "API",
+					triggerType: input.triggerType ?? "API",
+					triggerId: input.triggerId,
 					input: input.request.value.input,
 					priority: input.request.value.priority,
 					status: "PENDING",
@@ -373,6 +405,30 @@ export async function admitAgentDeploymentExecution(input: AdmissionInput) {
 				},
 			});
 
+			// Count an occurrence exactly once, in the same transaction as its new admission.
+			if (input.triggerType === "SCHEDULE") {
+				const updated = await tx.agentDeploymentTrigger.updateMany({
+					where: {
+						id: input.triggerId ?? "",
+						deploymentId: input.deploymentId,
+						userId: input.userId,
+						organizationId: input.organizationId,
+						type: "SCHEDULE",
+						isActive: true,
+					},
+					data: {
+						lastRunAt: new Date(),
+						lastExecutionId: id,
+						totalExecutions: { increment: 1 },
+					},
+				});
+				if (updated.count !== 1) {
+					throw new AgentExecutionAdmissionError(
+						"INVALID_EXECUTION_REQUEST",
+						"The active schedule identity could not be verified",
+					);
+				}
+			}
 			await recordAuditTx(tx, {
 				action: "org.agent_execution.admitted",
 				actor: input.actor ?? { type: "system", userId: input.userId },

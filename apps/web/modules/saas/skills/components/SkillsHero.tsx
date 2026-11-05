@@ -1,14 +1,11 @@
 "use client";
-
 import { PageHeader } from "@saas/shared/components/PageHeader";
-
 export function SkillsHero() {
 	return (
 		<PageHeader
-			label="Agent capabilities"
-			title="Skill Catalog"
+			title="Skills"
 			getStartedPageId="skills"
-			description="Reusable capability modules for templates and agent instances."
+			description="Reusable know-how and files for your agents. Start with a private draft, then share it when it is ready."
 		/>
 	);
 }

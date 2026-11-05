@@ -1,49 +1,51 @@
 ---
-title: Libraries
-description: Shared document libraries with RAG-powered retrieval, member management, and AI chat integration.
+title: Workspaces
+description: Shared document workspaces with RAG-powered retrieval, member management, and AI chat integration.
+audience: Organization members working with Workspace documents
+owner: Platform team
 ---
 
-Libraries are shared document repositories that power Fabric's Retrieval-Augmented Generation (RAG) capabilities. Upload documents to a library, invite collaborators, attach it to AI conversations, and let the AI reference your documents when responding.
+Workspaces are shared document repositories that power Fabric's Retrieval-Augmented Generation (RAG) capabilities. Upload documents to a workspace, invite collaborators, attach it to AI conversations, and let the AI reference your documents when responding.
 
 <Callout type="info">
-  Libraries used to be called **Workspaces**. **Workspaces** in the sidebar are now [pages that Fabric Agent writes for your organization](/docs/features/workspace-pages). Links to `/workspaces/<library id>` still open the library, and the API and MCP tool names (`fabric_list_workspaces` and the others) are unchanged.
+  **Workspaces** organize uploaded documents for search and document chat. **[Pages](/docs/features/workspace-pages)** are the separate interactive experiences Fabric Agent builds. Older `/libraries` links redirect to Workspaces; existing Workspaces API and MCP tool names stay unchanged.
 </Callout>
 
-## What is a Library?
+## What is a Workspace?
 
-A library is a container for documents that can be shared with team members and attached to AI chat conversations. When a library is attached to a conversation, the AI can search and retrieve relevant content from all documents in that library.
+A workspace is a container for documents that can be shared with team members and attached to AI chat conversations. When a workspace is attached to a conversation, the AI can search and retrieve relevant content from all documents in that workspace.
 
 ```mermaid
 flowchart LR
-    A["Upload Documents"] --> B["Library"]
+    A["Upload Documents"] --> B["Workspace"]
     B --> C["Attach to Chat"]
     C --> D["AI Retrieves Context"]
     D --> E["Informed Responses"]
 ```
 
-## Creating a Library
+## Creating a Workspace
 
 <Steps>
   <Step>
-    ### Navigate to Libraries
+    ### Navigate to Workspaces
 
-    Click **Libraries** in the left sidebar to view your existing libraries.
+    Click **Workspaces** in the left sidebar to view your existing workspaces.
   </Step>
 
   <Step>
-    ### Create New Library
+    ### Create New Workspace
 
-    Click **New Library** and provide:
+    Click **New Workspace** and provide:
 
     - **Name** — A descriptive name (up to 100 characters)
-    - **Description** — Optional summary of the library purpose (up to 500 characters)
+    - **Description** — Optional summary of the workspace purpose (up to 500 characters)
     - **Document Limit** — Maximum number of documents allowed (1 to 100)
   </Step>
 
   <Step>
     ### Upload Documents
 
-    Add documents to your library using drag-and-drop or the upload button. Documents are automatically processed through a pipeline of extraction, chunking, and embedding.
+    Add documents to your workspace using drag-and-drop or the upload button. Documents are automatically processed through a pipeline of extraction, chunking, and embedding.
   </Step>
 </Steps>
 
@@ -73,17 +75,34 @@ If a document fails processing, you can retry it from the document list. Fabric 
 
 ### Document Statistics
 
-Each library shows document statistics including total count, status breakdown, and storage usage.
+Each workspace shows document statistics including total count, status breakdown, and storage usage.
+
+## Reuse documents in a project
+
+Open a project’s **Context** tab and choose **Add from Workspace** under **Workspace documents**.
+Select a Workspace, choose up to 12 ready documents and click **Add to project context**. You can
+select documents from several Workspaces before adding them.
+
+The original stays in its Workspace. **Preview** reads the current source, **Open Workspace** opens
+its home, and the unlink action removes only the project reference. **Updated since added** means
+the source changed; it does not mean Fabric retained the old document. Other members must already
+have access to the original Workspace to see its document details or read its contents. Unavailable
+sources appear without private names. Linking does not automatically add these documents to
+project-wide search or send them to a remote agent.
+
+External agents can use the same authorized references through the SDK’s `contexts` resource,
+`fabric context documents` commands, or the Portal MCP server’s project Workspace-document tools.
+Workspace and project permissions remain separate on every interface.
 
 ## Member Management
 
-Libraries support three access levels organized into groups:
+Workspaces support three access levels organized into groups:
 
 | Group | Permissions |
 |-------|-------------|
-| **Administrators** | Full control: manage members, upload/delete documents, update settings, archive/delete library |
-| **Contributors** | Upload and manage documents, view all library content |
-| **Stakeholders** | View-only access to library documents and content |
+| **Administrators** | Full control: manage members, upload/delete documents, update settings, archive/delete workspace |
+| **Contributors** | Upload and manage documents, view all workspace content |
+| **Stakeholders** | View-only access to workspace documents and content |
 
 ### Adding Members
 
@@ -91,7 +110,7 @@ Libraries support three access levels organized into groups:
   <Step>
     ### Open Members Panel
 
-    Navigate to your library and open the **Members** tab.
+    Navigate to your workspace and open the **Members** tab.
   </Step>
 
   <Step>
@@ -109,38 +128,38 @@ Libraries support three access levels organized into groups:
 
 ### Changing Roles
 
-Administrators can change a member's group at any time or remove them from the library entirely.
+Administrators can change a member's group at any time or remove them from the workspace entirely.
 
-## Agents in Libraries
+## Agents in Workspaces
 
-You can attach AI agents to a library, giving them access to the library's document context. Administrators can add or remove agents from a library.
+You can attach AI agents to a workspace, giving them access to the workspace's document context. Administrators can add or remove agents from a workspace.
 
-This enables agents to use library documents as reference material when executing tasks.
+This enables agents to use workspace documents as reference material when executing tasks.
 
 ## Conversation Integration
 
-Libraries can be attached to AI Chat conversations to provide document context during your interactions.
+Workspaces can be attached to AI Chat conversations to provide document context during your interactions.
 
-### Attaching a Library
+### Attaching a Workspace
 
 1. Open an AI Chat conversation
-2. Select the library attachment option
-3. Choose one or more libraries to attach
-4. The AI now has access to all ready documents in the attached libraries
+2. Select the workspace attachment option
+3. Choose one or more workspaces to attach
+4. The AI now has access to all ready documents in the attached workspaces
 
 ### How Retrieval Works
 
-When you send a message in a conversation with attached libraries:
+When you send a message in a conversation with attached workspaces:
 
 1. The AI identifies relevant document chunks using vector similarity search
 2. Matching content is included as context in the AI's prompt
 3. The AI references this context when generating its response
 
-You can detach a library from a conversation at any time without losing the conversation history.
+You can detach a workspace from a conversation at any time without losing the conversation history.
 
 ## RAG Settings
 
-Each library has configurable RAG settings that control how documents are processed and retrieved:
+Each workspace has configurable RAG settings that control how documents are processed and retrieved:
 
 | Setting | Description | Default Range |
 |---------|-------------|---------------|
@@ -154,32 +173,32 @@ Each library has configurable RAG settings that control how documents are proces
 
 Changing RAG settings affects future document processing. Existing documents retain their current embeddings unless reprocessed.
 
-## Library Lifecycle
+## Workspace Lifecycle
 
 | Status | Description |
 |--------|-------------|
-| **Active** | Library is in use, documents accessible |
-| **Archived** | Library hidden from default views, documents preserved |
+| **Active** | Workspace is in use, documents accessible |
+| **Archived** | Workspace hidden from default views, documents preserved |
 
-- **Archive** a library to hide it without deleting data
-- **Reactivate** an archived library to restore it
-- **Delete** a library to permanently remove it and all its documents
+- **Archive** a workspace to hide it without deleting data
+- **Reactivate** an archived workspace to restore it
+- **Delete** a workspace to permanently remove it and all its documents
 
-## Library Types
+## Workspace Types
 
 | Type | Description |
 |------|-------------|
-| **Personal** | Default library created for each user |
-| **Custom** | User-created library with configurable settings |
+| **Personal** | Default workspace created for each user |
+| **Custom** | User-created workspace with configurable settings |
 
 ## Multi-Tenant Support
 
-Libraries belong to an organization:
+Workspaces belong to an organization:
 
-- They live at `/app/{org}/libraries`, shared among the members you add
-- Each organization has separate libraries with strict data isolation
+- They live at `/app/{org}/workspaces`, shared among the members you add
+- Each organization has separate workspaces with strict data isolation
 - Members can only be added from the same organization
-- Document uploads are isolated by library ownership
+- Document uploads are isolated by workspace ownership
 
 ---
 
@@ -187,12 +206,12 @@ Libraries belong to an organization:
 
 <Cards>
   <Card title="AI Chat" href="/docs/features/ai-chat">
-    Attach libraries to conversations for document-aware AI
+    Attach workspaces to conversations for document-aware AI
   </Card>
   <Card title="AI Providers" href="/docs/features/ai-providers">
     Configure embedding models for document processing
   </Card>
   <Card title="Agent Templates" href="/docs/features/agent-templates">
-    Create agents that use library documents as context
+    Create agents that use workspace documents as context
   </Card>
 </Cards>

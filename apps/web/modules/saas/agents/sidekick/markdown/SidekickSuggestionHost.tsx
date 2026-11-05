@@ -49,6 +49,9 @@ export const SidekickSuggestionHost = memo(function SidekickSuggestionHost({
 				| { action: "add" | "remove"; toolId: string }
 				| null
 				| undefined;
+			if (!(await acceptSuggestion(s))) {
+				return false;
+			}
 			if (payload?.toolId) {
 				const toolEntry = { id: payload.toolId, name: s.title };
 
@@ -69,7 +72,7 @@ export const SidekickSuggestionHost = memo(function SidekickSuggestionHost({
 					});
 				}
 			}
-			return acceptSuggestion(s);
+			return true;
 		},
 		[acceptSuggestion, setFormField],
 	);

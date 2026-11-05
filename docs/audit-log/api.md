@@ -261,3 +261,12 @@ route through their own backend.
 both will run in parallel for at least one major release. The
 OpenAPI doc at `/api/v1/openapi.json` is the source of truth for the
 contract.
+
+## Prompt response settings
+
+Filter `actions=prompt.response_contract_changed` or `categories=prompt` for
+saved expected-response changes. Records use the request's organization context,
+including changes to shared system prompts or user-preference prompts. Metadata
+contains `versionId` and `responseFormat`; schemas, instructions, model output and
+credentials are excluded. A response-only change creates a prompt version and its
+audit record in one transaction.

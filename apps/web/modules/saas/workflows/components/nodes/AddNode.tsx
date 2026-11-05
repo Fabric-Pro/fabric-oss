@@ -2,32 +2,41 @@
 
 import { Button } from "@ui/components/button";
 import type { NodeProps } from "@xyflow/react";
-import { Plus } from "lucide-react";
+import { Plus, SparklesIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 type AddNodeData = {
 	onClick?: () => void;
+	onAskAi?: () => void;
 };
 
 export function AddNode({ data }: NodeProps & { data?: AddNodeData }) {
+	const t = useTranslations("workflows.studio");
 	return (
 		<div className="flex w-[360px] flex-col items-center justify-center gap-6 rounded-lg border border-dashed border-input bg-card p-8">
 			<div className="text-center">
-				<h1 className="mb-2 font-semibold text-2xl">
-					AI Workflow Builder
-				</h1>
+				<h2 className="mb-2 font-semibold text-2xl">
+					{t("canvasTitle")}
+				</h2>
 				<p className="text-muted-foreground text-sm">
-					Build powerful AI-powered automations with a visual
-					drag-and-drop interface.
+					{t("canvasBody")}
 				</p>
 			</div>
-			<Button
-				className="gap-2 cursor-pointer"
-				onClick={data?.onClick}
-				size="default"
-			>
-				<Plus className="size-4" />
-				Add a Step
-			</Button>
+			<div className="flex flex-wrap items-center justify-center gap-2">
+				<Button type="button" onClick={data?.onAskAi}>
+					<SparklesIcon className="mr-2 size-4" aria-hidden="true" />
+					{t("buildWithAi")}
+				</Button>
+				<Button
+					variant="outline"
+					className="gap-2 cursor-pointer"
+					onClick={data?.onClick}
+					size="default"
+				>
+					<Plus className="size-4" />
+					{t("addFirstStep")}
+				</Button>
+			</div>
 		</div>
 	);
 }

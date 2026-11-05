@@ -10,6 +10,10 @@ import type { Context } from "hono";
 import { formatSSE } from "../lib/event-types";
 import { createExecutionEventStream } from "../lib/execution-stream";
 import type { ExternalApiVariables } from "../types";
+import {
+	authorizeAgentExecutionStream,
+	canReadAgentExecution,
+} from "./get-execution";
 
 /**
  * Create an SSE stream handler for an execution.
@@ -23,9 +27,13 @@ export function createExecutionStreamHandler() {
 			return c.json({ error: "executionId is required" }, 400);
 		}
 
-		const tenantFilter = ctx.organizationId
-			? { organizationId: ctx.organizationId }
-			: { userId: ctx.userId, organizationId: null };
+		if (!(await canReadAgentExecution(executionId, ctx))) {
+			return c.json({ error: "Execution not found" }, 404);
+		}
+		const tenantFilter = {
+			organizationId: ctx.organizationId,
+			userId: ctx.userId,
+		};
 
 		// Verify access to this execution
 		const execution = await db.agentDeploymentExecution.findFirst({
@@ -52,7 +60,7 @@ export function createExecutionStreamHandler() {
 			)
 		) {
 			const result = await db.agentDeploymentExecution.findFirst({
-				where: { id: executionId },
+				where: { id: executionId, ...tenantFilter },
 				select: {
 					status: true,
 					output: true,
@@ -112,13 +120,16 @@ export function createExecutionStreamHandler() {
 				},
 			});
 
-			return new Response(stream, {
-				headers: {
-					"Content-Type": "text/event-stream",
-					"Cache-Control": "no-cache",
-					Connection: "keep-alive",
+			return new Response(
+				authorizeAgentExecutionStream(stream, executionId, ctx),
+				{
+					headers: {
+						"Content-Type": "text/event-stream",
+						"Cache-Control": "no-cache",
+						Connection: "keep-alive",
+					},
 				},
-			});
+			);
 		}
 
 		// For in-progress executions, use hybrid event stream
@@ -132,12 +143,15 @@ export function createExecutionStreamHandler() {
 			workflowId,
 		);
 
-		return new Response(eventStream, {
-			headers: {
-				"Content-Type": "text/event-stream",
-				"Cache-Control": "no-cache",
-				Connection: "keep-alive",
+		return new Response(
+			authorizeAgentExecutionStream(eventStream, executionId, ctx),
+			{
+				headers: {
+					"Content-Type": "text/event-stream",
+					"Cache-Control": "no-cache",
+					Connection: "keep-alive",
+				},
 			},
-		});
+		);
 	};
 }

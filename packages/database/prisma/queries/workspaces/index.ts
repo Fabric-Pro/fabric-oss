@@ -5,6 +5,7 @@
 
 export * from "./conversations";
 export * from "./documents";
+export * from "./document-chat";
 export * from "./members";
 export * from "./rag-settings";
 export * from "./workspaces";

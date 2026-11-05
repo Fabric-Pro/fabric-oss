@@ -2,6 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { Streamdown, type StreamdownProps } from "streamdown";
+import { normalizeChatHeadingOutline } from "./chat-heading-outline";
 import {
 	chatMarkdownComponents,
 	getChatMarkdownClassName,
@@ -21,6 +22,8 @@ interface ResponseProps {
 	 * Useful for reasoning models that output plain text with Unicode formatting.
 	 */
 	normalizeMarkdown?: boolean;
+	/** Normalize a chat answer beneath its page heading; authored documents keep their outline. */
+	normalizeHeadings?: boolean;
 }
 
 export const Response = memo(
@@ -31,6 +34,7 @@ export const Response = memo(
 		remarkPlugins,
 		streaming = false,
 		normalizeMarkdown = true,
+		normalizeHeadings = false,
 	}: ResponseProps) => {
 		const rehypePlugins = useMemo(getChatMarkdownRehypePlugins, []);
 		// Normalize text to convert Unicode formatting to markdown
@@ -38,11 +42,11 @@ export const Response = memo(
 			if (!children) {
 				return "";
 			}
-			if (!normalizeMarkdown || typeof children !== "string") {
-				return children;
-			}
-			return normalizeTextToMarkdown(children);
-		}, [children, normalizeMarkdown]);
+			const text = normalizeMarkdown
+				? normalizeTextToMarkdown(children)
+				: children;
+			return normalizeHeadings ? normalizeChatHeadingOutline(text) : text;
+		}, [children, normalizeMarkdown, normalizeHeadings]);
 
 		return (
 			<Streamdown
@@ -61,6 +65,7 @@ export const Response = memo(
 		prevProps.className === nextProps.className &&
 		prevProps.streaming === nextProps.streaming &&
 		prevProps.normalizeMarkdown === nextProps.normalizeMarkdown &&
+		prevProps.normalizeHeadings === nextProps.normalizeHeadings &&
 		prevProps.remarkPlugins === nextProps.remarkPlugins,
 );
 

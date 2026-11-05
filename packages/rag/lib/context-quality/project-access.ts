@@ -1,4 +1,4 @@
-import { db } from "@repo/database";
+import { db, type Prisma } from "@repo/database";
 import {
 	type Permission,
 	resolveOrgPermissions,
@@ -54,6 +54,7 @@ export type EffectiveProjectAccess = {
 export async function resolveEffectiveProjectPermissions(
 	projectId: string,
 	userId: string,
+	client: Prisma.TransactionClient = db,
 ): Promise<EffectiveProjectAccess | null> {
 	// The project row and the caller's ProjectMember row are keyed by the same two
 	// arguments and neither reads the other, so they go out together. This runs on
@@ -66,7 +67,7 @@ export async function resolveEffectiveProjectPermissions(
 	// round trip — it just also issues an indexed lookup it discards. Latency is
 	// equal or better everywhere; only that one path pays a query for it.
 	const [project, member] = await Promise.all([
-		db.project.findUnique({
+		client.project.findUnique({
 			where: { id: projectId },
 			select: {
 				id: true,
@@ -78,7 +79,7 @@ export async function resolveEffectiveProjectPermissions(
 				organization: { select: { deletedAt: true } },
 			},
 		}),
-		db.projectMember.findUnique({
+		client.projectMember.findUnique({
 			where: { projectId_userId: { projectId, userId } },
 			select: { role: true, acceptedAt: true, expiresAt: true },
 		}),
@@ -131,7 +132,7 @@ export async function resolveEffectiveProjectPermissions(
 	// "just a fallback" would make every organization project inert from
 	// birth.
 	if (project.organizationId) {
-		const orgMember = await db.member.findFirst({
+		const orgMember = await client.member.findFirst({
 			where: { organizationId: project.organizationId, userId },
 			select: { role: true },
 		});

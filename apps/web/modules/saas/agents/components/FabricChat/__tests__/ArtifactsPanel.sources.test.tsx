@@ -113,3 +113,9 @@ describe("all planning audit source categories", () => {
 		},
 	);
 });
+
+it("labels summary-only source references as reported rather than verified reads", () => {
+	const sources = showSources(["Example document"]);
+	expect(sources[0].metadata).toEqual({ verification: "reported" });
+	expect(screen.getByText("reportedSources")).toBeVisible();
+});

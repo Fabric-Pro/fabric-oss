@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { TooltipProvider } from "@ui/components/tooltip";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,10 +10,20 @@ vi.mock("@saas/organizations/hooks", () => ({
 	useEffectiveOrganizationId: (id: string | null | undefined) => id ?? null,
 }));
 
+const projectGet = vi.hoisted(() =>
+	vi.fn(async (input: { organizationId?: string | null }) => ({
+		project: {
+			name:
+				input.organizationId === "example-org-b"
+					? "Example B"
+					: "Atlas",
+		},
+	})),
+);
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {
-			get: vi.fn(async () => ({ project: { name: "Atlas" } })),
+			get: projectGet,
 		},
 	},
 }));
@@ -85,4 +96,53 @@ describe("ActiveContextIndicator — project pill (#2040)", () => {
 			screen.queryByRole("button", { name: /Remove project/ }),
 		).not.toBeInTheDocument();
 	});
+});
+
+it("keeps project context visible and makes capability details keyboard accessible", async () => {
+	const user = userEvent.setup();
+	render(
+		wrap(
+			<ActiveContextIndicator
+				projectId="example-project"
+				organizationId="example-org"
+				agentIds={["task_planner"]}
+				fabricToolIds={["fabric_web_search"]}
+			/>,
+		),
+	);
+	expect(await screen.findByText("Atlas")).toBeVisible();
+	expect(screen.queryByText("1 agent")).not.toBeInTheDocument();
+	const details = screen.getByRole("button", { name: "details" });
+	details.focus();
+	await user.keyboard("{Enter}");
+	expect(
+		screen.getByRole("dialog", { name: "capabilitiesTitle" }),
+	).toBeVisible();
+	const agents = await screen.findByRole("button", { name: "1 agent" });
+	expect(agents).toBeVisible();
+	agents.focus();
+	await user.keyboard("{Enter}");
+	expect(await screen.findByText("Task Planner")).toBeVisible();
+	expect(screen.getByRole("dialog", { name: "1 agent" })).toBeVisible();
+});
+
+it("does not reuse another organization's project label", async () => {
+	const client = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	const ui = (organizationId: string) => (
+		<QueryClientProvider client={client}>
+			<TooltipProvider>
+				<ActiveContextIndicator
+					projectId="example-project"
+					organizationId={organizationId}
+				/>
+			</TooltipProvider>
+		</QueryClientProvider>
+	);
+	const view = render(ui("example-org-a"));
+	expect(await screen.findByText("Atlas")).toBeVisible();
+	view.rerender(ui("example-org-b"));
+	expect(await screen.findByText("Example B")).toBeVisible();
+	expect(screen.queryByText("Atlas")).not.toBeInTheDocument();
 });

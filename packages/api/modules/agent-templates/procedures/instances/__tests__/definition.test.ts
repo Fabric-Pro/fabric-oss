@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	membership: vi.fn(),
+	memory: vi.fn(),
+	boundary: vi.fn(),
+	revalidate: vi.fn(),
 	validateMemoryFile: vi.fn(),
 	findFirst: vi.fn(),
 	templateCreate: vi.fn(),
@@ -13,7 +16,9 @@ const mocks = vi.hoisted(() => ({
 	transaction: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
+	memorySourceBoundary: mocks.boundary,
 	db: {
+		agentMemoryFile: { findMany: mocks.memory },
 		agentTemplateInstance: { findFirst: mocks.findFirst },
 		$transaction: mocks.transaction,
 	},
@@ -95,6 +100,15 @@ const context = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.boundary.mockImplementation(async (_actor, where) => ({
+		where: { ...where, AND: [{ sourceSkillId: null }] },
+		revalidate: mocks.revalidate,
+	}));
+	mocks.memory.mockImplementation(async () =>
+		((await mocks.findFirst())?.memoryFiles ?? []).filter(
+			(file: { sourceSkillId?: string | null }) => !file.sourceSkillId,
+		),
+	);
 	mocks.validateMemoryFile.mockReturnValue({ valid: true });
 	mocks.membership.mockResolvedValue({ role: "admin" });
 	mocks.templateCreate.mockResolvedValue({ id: "new-template" });
@@ -272,6 +286,13 @@ describe("agent definition boundaries", () => {
 			workspaceIds: [],
 			memoryFiles: [
 				{
+					path: "skills/private/SKILL.md",
+					content: "Private draft source instructions",
+					sourceSkillId: "example-private-source",
+					lastModifiedBy: "user",
+					isEnabled: true,
+				},
+				{
 					path: "skills/notes.md",
 					content: "Example notes",
 					isEnabled: true,
@@ -302,6 +323,20 @@ describe("agent definition boundaries", () => {
 		);
 		expect(exported.document).not.toContain("source-org");
 		expect(exported.document).not.toContain("Example learned skill");
+		expect(exported.document).not.toContain(
+			"Private draft source instructions",
+		);
+		expect(
+			mocks.findFirst.mock.calls[0][0].include.memoryFiles,
+		).toBeUndefined();
+		expect(mocks.boundary).toHaveBeenCalledWith(
+			{ userId: "example-user", organizationId: "source-org" },
+			{
+				agentInstanceId: "source-instance",
+				organizationId: "source-org",
+				fileType: "SKILL",
+			},
+		);
 		expect(exported.notices.join(" ")).toContain("skills/notes.md");
 		expect(exported.notices.join(" ")).toContain("skills/learned/SKILL.md");
 		expect(exported.document).not.toContain("source-instance");
@@ -340,5 +375,102 @@ describe("agent definition boundaries", () => {
 				{ context },
 			),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+});
+
+describe("implementation-aware portable draft import", () => {
+	const implementation = {
+		kind: "harness_persistent",
+		artifact: {
+			digest: `sha256:${"a".repeat(64)}`,
+			repository: {
+				url: "https://example.com/agents.git",
+				revision: "b".repeat(40),
+			},
+			packages: {
+				sdk: {
+					name: "@fabric-harness/sdk",
+					version: "6.9.0",
+					entrypoint: "strict",
+				},
+				node: { name: "@fabric-harness/node", version: "6.7.0" },
+			},
+			buildManifestVersion: 2,
+		},
+		entrypoint: {
+			module: "dist/report.mjs",
+			export: "reportAgent",
+			identity: "report-agent",
+		},
+		protocol: {
+			generation: "example-http-v1",
+			interface: "persistent_submission",
+		},
+		schemas: {
+			input: {
+				path: "schemas/input.json",
+				digest: `sha256:${"c".repeat(64)}`,
+			},
+			output: {
+				path: "schemas/output.json",
+				digest: `sha256:${"d".repeat(64)}`,
+			},
+		},
+	};
+	const advanced = {
+		...definition,
+		apiVersion: "fabric.ai/v2",
+		implementation,
+		logicalBindings: [
+			{
+				name: "reports-project",
+				kind: "project",
+				required: true,
+				operations: ["read"],
+			},
+		],
+		expectedOutput: "A cited report",
+	};
+	it("previews exact release metadata and unavailable runtime without starting work", async () => {
+		const result = await call(
+			previewAgentDefinitionProcedure,
+			{ ...input, document: JSON.stringify(advanced) },
+			{ context },
+		);
+		expect(result.definition).toEqual(advanced);
+		expect(result.implementationAvailability).toMatchObject({
+			available: false,
+		});
+		expect(result.notices.join(" ")).toContain(
+			"qualified execution adapter",
+		);
+		expect(result.notices.join(" ")).toContain("unresolved declarations");
+		expect(mocks.transaction).not.toHaveBeenCalled();
+	});
+	it("retains a pinned code release as a disconnected local draft with unresolved logical bindings", async () => {
+		const result = await call(
+			importAgentDefinitionProcedure,
+			{ ...input, document: JSON.stringify(advanced) },
+			{ context },
+		);
+		expect(result.implementationAvailability.available).toBe(false);
+		const data = mocks.instanceCreate.mock.calls[0][0].data;
+		expect(data).toMatchObject({
+			status: "DRAFT",
+			toolConnections: {},
+			triggers: [],
+			workspaceIds: [],
+			isApiExposed: false,
+			customInstructions: {
+				portableDefinitionVersion: "fabric.ai/v2",
+				portableImplementation: implementation,
+				portableBindings: advanced.logicalBindings,
+				expectedOutput: "A cited report",
+			},
+		});
+		expect(data.customInstructions).not.toHaveProperty("projectId");
+		expect(mocks.auditTx.mock.calls[0][1].metadata).not.toHaveProperty(
+			"implementation",
+		);
 	});
 });

@@ -18,17 +18,23 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { matchesWhere } from "../../../../../database/__tests__/_helpers/in-memory-rows";
 
 const dbMocks = vi.hoisted(() => ({
 	skillFindMany: vi.fn(),
 	skillUpdate: vi.fn(),
+	access: vi.fn(),
 }));
 
 const temporalMocks = vi.hoisted(() => ({
 	start: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	assertSkillReadAccess: dbMocks.access,
+	skillVisibilityWhere: (
+		await import("../../../../../database/prisma/queries/skills")
+	).skillVisibilityWhere,
 	db: {
 		skill: {
 			findMany: dbMocks.skillFindMany,
@@ -67,6 +73,7 @@ const ORCH_ID = /^orch-[a-f0-9-]{36}$/;
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	dbMocks.access.mockResolvedValue(undefined);
 	dbMocks.skillFindMany.mockResolvedValue([
 		{
 			id: "skill-1",
@@ -204,6 +211,55 @@ describe("fireColumnAutomations — one run per transition", () => {
 	it("counts a use only when the run actually started", async () => {
 		await fireColumnAutomations(transition);
 		expect(dbMocks.skillUpdate).toHaveBeenCalledTimes(1);
+	});
+	it("automatic skill triggers require agent availability and current source access", async () => {
+		await fireColumnAutomations(transition);
+		expect(
+			dbMocks.skillFindMany.mock.calls[0][0].where.AND[1],
+		).toMatchObject({
+			isPublished: true,
+			OR: [
+				{ scope: "SYSTEM" },
+				{ scope: "ORGANIZATION", isDiscoverable: true },
+			],
+			archivedAt: null,
+		});
+		dbMocks.access.mockRejectedValueOnce(new Error("Permission removed"));
+		temporalMocks.start.mockClear();
+		dbMocks.skillFindMany.mockClear();
+		await fireColumnAutomations(transition);
+		expect(dbMocks.skillFindMany).not.toHaveBeenCalled();
+		expect(temporalMocks.start).not.toHaveBeenCalled();
+	});
+	it("automatically uses a newly seeded builtin even when its discoverable flag defaults false", async () => {
+		const builtin = {
+			id: "example-new-builtin",
+			name: "Example builtin",
+			slug: "example-new-builtin",
+			content: "Example instructions",
+			scope: "SYSTEM",
+			userId: null,
+			organizationId: null,
+			isPublished: true,
+			isDiscoverable: false,
+			archivedAt: null,
+			tags: ["triage"],
+		};
+		const hiddenOrg = {
+			...builtin,
+			id: "example-members-only",
+			scope: "ORGANIZATION",
+			userId: transition.userId,
+			organizationId: transition.organizationId,
+		};
+		dbMocks.skillFindMany.mockImplementation(async ({ where }) =>
+			[builtin, hiddenOrg].filter((row) => matchesWhere(row, where)),
+		);
+		await fireColumnAutomations(transition);
+		expect(temporalMocks.start).toHaveBeenCalledTimes(1);
+		expect(temporalMocks.start.mock.calls[0][1].args[0].message).toContain(
+			"Example instructions",
+		);
 	});
 });
 

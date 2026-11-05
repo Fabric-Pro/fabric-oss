@@ -131,6 +131,13 @@ export async function dispatchAdmittedAgentExecution(
 								instanceId: admission.dispatch.instanceId,
 								userId: execution.userId,
 								organizationId: execution.organizationId,
+								...(admission.dispatch.testAuthority
+									? {
+											testAuthority:
+												admission.dispatch
+													.testAuthority,
+										}
+									: {}),
 								nativeAdmission: {
 									version: 1,
 									executionRowId: execution.id,

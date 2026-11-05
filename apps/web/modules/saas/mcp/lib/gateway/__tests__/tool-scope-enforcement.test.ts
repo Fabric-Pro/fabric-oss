@@ -10,7 +10,7 @@
  * circulation default to `["mcp:read", "mcp:write"]`, and enforcement that
  * demanded `projects:write` from them would break every one on the day it
  * deployed. So the coarse `mcp:*` scopes act as umbrellas over their direction,
- * and `legacy default reaches every tool` below is the assertion that says so.
+ * except deliberate Skills/governance and Frame sharing/export operations, which require their exact scopes. The compatibility test pins both the retained umbrella and those explicit refusals.
  *
  * Scopes only ever subtract. They cannot grant a caller more than their role
  * allows — that is what the permission checks do, and they have their own
@@ -85,7 +85,15 @@ function text(result: { content: Array<{ text: string }> }) {
 /** Did the call fail on scope, as opposed to succeeding or failing later? */
 async function refusedOnScope(tool: string, scopes: string[]) {
 	const result = await executePlatformTool(tool, {}, sessionWith(scopes));
-	return text(result).includes("does not have the");
+	const value = text(result);
+	try {
+		if (JSON.parse(value).code === "INSUFFICIENT_SCOPE") {
+			return true;
+		}
+	} catch {
+		/* Successful tools may return plain text. */
+	}
+	return value.includes("does not have the");
 }
 
 describe("a key is held to the scopes it was given", () => {
@@ -131,18 +139,71 @@ describe("a key is held to the scopes it was given", () => {
 });
 
 describe("keys already in circulation keep working", () => {
-	// The default every organization key is created with. If this ever goes
-	// red, enforcement has become a breaking change for every existing key.
+	// Existing general MCP scopes retain ordinary tools. Deliberate skill policy
+	// and workbench, evaluation and Frame sharing/export commands require exact scopes.
 	const LEGACY_DEFAULT = ["mcp:read", "mcp:write"];
 
-	it("the legacy default reaches every tool", async () => {
+	it("the legacy umbrella retains ordinary tools while workbench, evaluation, skills and export commands require exact consent", async () => {
 		const refused: string[] = [];
 		for (const tool of PLATFORM_TOOL_DEFINITIONS) {
 			if (await refusedOnScope(tool.name, LEGACY_DEFAULT)) {
 				refused.push(tool.name);
 			}
 		}
-		expect(refused).toEqual([]);
+		expect(refused.sort()).toEqual(
+			[
+				"fabric_apply_workflow_check",
+				"fabric_archive_agent_test_case",
+				"fabric_assist_prompt",
+				"fabric_cancel_agent_test_run",
+				"fabric_check_agent_run_result",
+				"fabric_check_workflow_readiness",
+				"fabric_compare_agent_test_runs",
+				"fabric_configure_workflow_schedule",
+				"fabric_create_agent_test_case",
+				"fabric_create_workflow_from_starter",
+				"fabric_get_agent_test_run",
+				"fabric_get_prompt_response",
+				"fabric_get_workflow_schedule",
+				"fabric_inspect_agent_run_result",
+				"fabric_inspect_workflow_result",
+				"fabric_list_agent_test_cases",
+				"fabric_list_agent_test_runs",
+				"fabric_list_workflow_checks",
+				"fabric_list_workflow_starters",
+				"fabric_list_workflow_versions",
+				"fabric_preview_prompt",
+				"fabric_preview_workflow_check",
+				"fabric_remove_workflow_check",
+				"fabric_rollback_workflow",
+				"fabric_save_workflow_check",
+				"fabric_start_agent_test_run",
+				"fabric_update_agent_test_case",
+				"fabric_update_prompt_response",
+				"fabric_list_skills",
+				"fabric_get_skill",
+				"fabric_create_skill",
+				"fabric_update_skill",
+				"fabric_archive_skill",
+				"fabric_restore_skill",
+				"fabric_publish_skill",
+				"fabric_delete_skill",
+				"fabric_get_skill_governance",
+				"fabric_update_skill_governance",
+				"fabric_assist_skill",
+				"fabric_preview_skill_import",
+				"fabric_create_skill_import",
+				"fabric_read_skill_file",
+				"fabric_read_skill_import_file",
+				"fabric_share_frame",
+				"fabric_get_frame_sharing",
+				"fabric_revoke_frame_sharing",
+				"fabric_start_frame_export",
+				"fabric_get_frame_export",
+				"fabric_cancel_frame_export",
+				"fabric_download_frame_export",
+			].sort(),
+		);
 	});
 
 	// Browser sessions carry `["*"]` — no key chose scopes for them, and the

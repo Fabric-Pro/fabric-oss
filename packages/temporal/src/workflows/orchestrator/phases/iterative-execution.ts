@@ -77,6 +77,7 @@ import {
 	recordAdvisorToolExecution,
 	recordAdvisorToolSet,
 } from "../advisor-request-log";
+import { resolveIntentUserMessage } from "../attachment-fast-path";
 import {
 	COMPANY_CONTEXT_SEARCH_DESCRIPTION,
 	COMPANY_CONTEXT_SEARCH_INPUT_SCHEMA,
@@ -2695,7 +2696,10 @@ async function runIterativeLoop(
 
 	const routingResult = await applyDefaultMcpEagerRouting({
 		surface: input.surface,
-		userMessage: state.enrichedMessage,
+		userMessage:
+			input.rawUserMessage !== undefined
+				? resolveIntentUserMessage(input)
+				: state.enrichedMessage,
 		enabledMcpConfigIds: input.enabledMcpConfigIds,
 		userId: input.userId,
 		organizationId: input.organizationId,
@@ -4172,7 +4176,7 @@ Never guess or use example values — always use real data from API responses.`;
 							? { usageConversationId: input.conversationId }
 							: {}),
 						query: (toolCall.args.query as string) || "",
-						originalQuery: input.message,
+						originalQuery: resolveIntentUserMessage(input),
 						category: toolCall.args.category as
 							| ToolCategory
 							| undefined,

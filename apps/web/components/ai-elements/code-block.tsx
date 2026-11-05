@@ -21,7 +21,6 @@ import {
 	WrapText,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useTheme } from "next-themes";
 import {
 	type ComponentProps,
 	createContext,
@@ -32,10 +31,6 @@ import {
 	useState,
 } from "react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import {
-	oneDark,
-	oneLight,
-} from "react-syntax-highlighter/dist/esm/styles/prism";
 import { toast } from "sonner";
 
 type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
@@ -356,7 +351,6 @@ export const CodeBlock = ({
 	const [isCopied, setIsCopied] = useState(false);
 	const [isWrapped, setIsWrapped] = useState(false);
 	const [showPreview, setShowPreview] = useState(false);
-	const { resolvedTheme } = useTheme();
 
 	const lineCount = useMemo(() => code.split("\n").length, [code]);
 	const normalizedLang = useMemo(
@@ -483,7 +477,7 @@ export const CodeBlock = ({
 				{/* Code content */}
 				<div
 					className={cn(
-						"subtle-scrollbar overflow-x-auto overflow-y-auto max-h-[400px]",
+						"chat-code-highlight subtle-scrollbar overflow-x-auto overflow-y-auto max-h-[400px]",
 						isWrapped &&
 							"[&_pre]:whitespace-pre-wrap [&_pre]:break-words",
 						"[&_pre]:!bg-transparent [&_code]:!bg-transparent",
@@ -491,7 +485,7 @@ export const CodeBlock = ({
 				>
 					<SyntaxHighlighter
 						language={normalizedLang}
-						style={resolvedTheme === "dark" ? oneDark : oneLight}
+						useInlineStyles={false}
 						customStyle={customStyle}
 						showLineNumbers={showLineNumbers}
 						wrapLines={isWrapped}

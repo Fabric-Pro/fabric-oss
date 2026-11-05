@@ -15,7 +15,13 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -101,8 +107,35 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 vi.mock("@analytics", () => ({
 	useAnalytics: () => ({ trackEvent: vi.fn() }),
 }));
+const { skillCreate, skillUpdate, skillList, toastSuccess } = vi.hoisted(
+	() => ({
+		skillCreate: vi.fn(),
+		skillUpdate: vi.fn(),
+		skillList: vi.fn(),
+		toastSuccess: vi.fn(),
+	}),
+);
+vi.mock("sonner", () => ({
+	toast: { success: toastSuccess, error: vi.fn(), info: vi.fn() },
+}));
 vi.mock("@shared/lib/orpc-client", () => ({
-	orpcClient: { projects: { diagrams: { createFromChat: vi.fn() } } },
+	orpcClient: {
+		projects: {
+			diagrams: { createFromChat: vi.fn() },
+			conversations: { attach: vi.fn() },
+		},
+		skills: {
+			create: (...args: unknown[]) => skillCreate(...args),
+			update: skillUpdate,
+			list: skillList,
+		},
+		agents: {
+			conversations: {
+				create: async () => ({ id: "example-conversation" }),
+				update: vi.fn(),
+			},
+		},
+	},
 }));
 
 interface StreamMessage {
@@ -294,7 +327,7 @@ function conversationWith(result: unknown, toolName: string) {
 	);
 }
 
-function renderChat() {
+function renderChat(withProject = false) {
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
@@ -305,6 +338,7 @@ function renderChat() {
 				reasoningMode="balanced"
 				activeConversationId={null}
 				compactMode={false}
+				attachedProjectId={withProject ? "example-project" : undefined}
 			/>
 		</QueryClientProvider>,
 	);
@@ -313,6 +347,129 @@ function renderChat() {
 beforeEach(() => {
 	streamMessages.length = 0;
 	sendMessageMock.mockReset();
+	skillUpdate.mockReset().mockResolvedValue({});
+	skillList.mockReset().mockResolvedValue({
+		skills: [],
+		total: 0,
+		hasMore: false,
+		nextCursor: null,
+	});
+	toastSuccess.mockClear();
+	skillCreate.mockReset().mockResolvedValue({
+		skill: {
+			id: "example-skill",
+			name: "Example reusable workflow",
+			tags: [],
+		},
+	});
+});
+
+describe("saving a reusable skill", () => {
+	it("uses a valid post-truncation identifier for a conversation title ending on a separator", async () => {
+		conversationWith(undefined, "example_tool");
+		streamMessages[0].content =
+			"Weekly sprint delivery readiness status check";
+		streamMessages[1].content =
+			"Review the supplied evidence and cite risks.";
+		renderChat();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Save conversation as skill" }),
+		);
+		await waitFor(() =>
+			expect(skillCreate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					slug: "weekly-sprint-delivery-readiness-status",
+					isPublished: false,
+					isDiscoverable: false,
+				}),
+			),
+		);
+	});
+	it("pauses another conversation create until an authorized draft check and explicit review", async () => {
+		skillCreate.mockRejectedValueOnce(
+			new Error("Create response unavailable"),
+		);
+		conversationWith(undefined, "example_tool");
+		streamMessages[1].content =
+			"Review the supplied evidence and cite risks.";
+		renderChat();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Save conversation as skill" }),
+		);
+		await screen.findByText("Check whether your draft was saved");
+		expect(
+			screen.getByRole("button", { name: "Save conversation as skill" }),
+		).toBeDisabled();
+		expect(skillCreate).toHaveBeenCalledTimes(1);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Check saved drafts" }),
+		);
+		fireEvent.click(
+			await screen.findByRole("button", {
+				name: "I reviewed drafts; allow another attempt",
+			}),
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Save conversation as skill" }),
+		);
+		await waitFor(() => expect(skillCreate).toHaveBeenCalledTimes(2));
+	});
+	it("keeps the created ID when a later explicit tag update fails and explains publication is still required", async () => {
+		skillUpdate.mockRejectedValueOnce(new Error("Tag update failed"));
+		conversationWith(undefined, "example_tool");
+		streamMessages[1].content =
+			"Prepare a cited delivery update from the supplied evidence.";
+		renderChat(true);
+		fireEvent.click(screen.getByRole("button", { name: "Save as Skill" }));
+		fireEvent.click(screen.getByRole("button", { name: "Save Skill" }));
+		const saveTag = await screen.findByRole("button", { name: "Save tag" });
+		expect(
+			screen.getByText(
+				/Publish it and enable agent discovery in Skills before automatic use/,
+			),
+		).toBeInTheDocument();
+		fireEvent.click(saveTag);
+		await waitFor(() => expect(skillUpdate).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(saveTag).toBeEnabled());
+		fireEvent.click(saveTag);
+		await waitFor(() => expect(skillUpdate).toHaveBeenCalledTimes(2));
+		expect(skillCreate).toHaveBeenCalledTimes(1);
+		expect(
+			skillUpdate.mock.calls.every(
+				([input]) => input.id === "example-skill",
+			),
+		).toBe(true);
+		await waitFor(() =>
+			expect(toastSuccess).toHaveBeenCalledWith(
+				"Skill tag saved",
+				expect.objectContaining({
+					description: expect.stringContaining(
+						"make the skill discoverable",
+					),
+				}),
+			),
+		);
+	});
+	it("requires explicit approval and creates an owner draft without implicit publishing or discovery", async () => {
+		conversationWith(undefined, "example_tool");
+		streamMessages[1].content =
+			"# Example reusable workflow\n\nFirst inspect project context, then prepare a report for the team.";
+		renderChat(true);
+		fireEvent.click(screen.getByRole("button", { name: "Save as Skill" }));
+		expect(skillCreate).not.toHaveBeenCalled();
+		expect(screen.getByText("Private draft")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Save Skill" }));
+		await waitFor(() =>
+			expect(skillCreate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					organizationId: "org_example",
+					isPublished: false,
+					isDiscoverable: false,
+				}),
+			),
+		);
+		expect(skillCreate.mock.calls[0][0]).not.toHaveProperty("scope");
+	});
 });
 
 describe("a workflow draft", () => {

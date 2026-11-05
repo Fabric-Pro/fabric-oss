@@ -130,7 +130,7 @@ describe("Fabric's tool definitions", () => {
 		expect(
 			GATEWAY_TOOLS.filter(
 				(tool) =>
-					!/^(workflows|frames|projects|instructions|mcp):(read|write|run)$/.test(
+					!/^(workflows|frames|projects|instructions|mcp|workspaces):(read|write|run)$/.test(
 						tool.scope,
 					),
 			).map((tool) => [tool.name, tool.scope]),
@@ -181,7 +181,7 @@ describe("Fabric's tool definitions", () => {
 		expect(writes.every((tool) => tool.confirm === "always")).toBe(true);
 	});
 
-	it("ask about a frame only when it is given page tools or shared, and about no other frame write", () => {
+	it("ask before changing sharing or export jobs, and when a frame is given page tools", () => {
 		const asking = FRAME_TOOLS.filter((tool) => tool.confirm !== undefined);
 
 		expect(asking.map((tool) => [tool.name, tool.confirm])).toEqual([
@@ -192,6 +192,9 @@ describe("Fabric's tool definitions", () => {
 				{ whenArgumentPresent: "runtimeTools" },
 			],
 			["fabric_share_frame", "always"],
+			["fabric_revoke_frame_sharing", "always"],
+			["fabric_start_frame_export", "always"],
+			["fabric_cancel_frame_export", "always"],
 		]);
 	});
 

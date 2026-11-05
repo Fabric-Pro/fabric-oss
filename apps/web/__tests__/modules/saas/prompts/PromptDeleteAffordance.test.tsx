@@ -21,7 +21,13 @@ import { PromptCard } from "@saas/prompts/components/PromptCard";
 import { PromptManagementPage } from "@saas/prompts/components/PromptManagementPage";
 import { PromptsListView } from "@saas/prompts/components/PromptsListView";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -279,14 +285,20 @@ describe.each(surfaces)("$name", (surface) => {
 		}
 	});
 
-	it("leaves edit visibility exactly as it was, for an ordinary member", async () => {
+	it("keeps organization editing restricted to owners and administrators", async () => {
 		asViewer(null, "member");
 		surface.render(orgPrompt);
 		await openMenu(surface.anchor);
 
-		// An ORG prompt is editable on every surface, whatever the role — the
-		// unchanged `isEditable` rule.
-		expect(screen.getByText(surface.editLabel)).toBeInTheDocument();
+		// Current library entries match prompts.update's owner/admin requirement.
+		// The legacy management table still opens its combined inspection view.
+		if (surface.editIsScopeGated) {
+			expect(
+				screen.queryByText(surface.editLabel),
+			).not.toBeInTheDocument();
+		} else {
+			expect(screen.getByText(surface.editLabel)).toBeInTheDocument();
+		}
 	});
 });
 
@@ -313,4 +325,69 @@ describe("the three surfaces agree (AE10)", () => {
 
 		expect(answers).toEqual([expected, expected, expected]);
 	});
+});
+
+it("closes the list inspection drawer without reopening from a portaled click", async () => {
+	asViewer(null, "admin");
+	wrap(<PromptsListView prompts={[orgPrompt]} onUpdate={() => {}} />);
+	const user = userEvent.setup();
+	await user.click(
+		screen.getByRole("button", { name: orgPrompt.name, exact: true }),
+	);
+	const drawer = await screen.findByRole("dialog");
+	await user.click(
+		within(drawer).getByRole("button", { name: "Close", exact: true }),
+	);
+	await waitFor(() =>
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+	);
+});
+
+it("keeps prompt instructions and opaque author identifiers out of compact cards", () => {
+	asViewer(null, "admin");
+	wrap(
+		<PromptCard
+			prompt={{
+				...orgPrompt,
+				isPublic: false,
+				createdBy: "example-author-id",
+				description: "A readable purpose",
+				versions: [
+					{
+						id: "example-version",
+						version: 1,
+						content: "Long raw prompt instructions",
+					},
+				],
+			}}
+		/>,
+	);
+	expect(
+		screen.getByRole("link", { name: orgPrompt.name, exact: true }),
+	).toBeInTheDocument();
+	expect(screen.getByText("A readable purpose")).toBeInTheDocument();
+	expect(
+		screen.getByText("Organization", { exact: true }),
+	).toBeInTheDocument();
+	expect(
+		screen.queryByText("Long raw prompt instructions"),
+	).not.toBeInTheDocument();
+	expect(screen.queryByText("example-author-id")).not.toBeInTheDocument();
+	expect(screen.queryByLabelText("Private")).not.toBeInTheDocument();
+	expect(
+		screen.getByRole("link", { name: `Open ${orgPrompt.name}` }),
+	).toBeInTheDocument();
+});
+
+it("keeps text copy reachable in compact card actions", async () => {
+	asViewer(null, "admin");
+	const user = userEvent.setup();
+	const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+	wrap(<PromptCard prompt={orgPrompt} />);
+	await openMenu("Duplicate");
+	await user.click(
+		screen.getByRole("menuitem", { name: "Copy prompt text" }),
+	);
+	expect(copy).toHaveBeenCalledWith("body");
+	copy.mockRestore();
 });

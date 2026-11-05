@@ -10,7 +10,9 @@ const stubs = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	db: {},
-	hasProjectAccess: vi.fn(),
+	canExecuteOrganizationAgents: vi.fn(async () => true),
+	getProjectAccessContext: vi.fn(),
+	isProjectSoftDeleted: vi.fn(),
 	isProjectReadOnly: vi.fn(),
 	resolveWorkflowIntegrationForProvider: vi.fn(),
 	getAgentDeploymentById: stubs.getAgentDeploymentById,
@@ -63,7 +65,13 @@ const LIMIT = new AiUsageLimitExceededError({
 beforeEach(() => {
 	vi.clearAllMocks();
 	stubs.getAgentDeploymentById.mockResolvedValue({
-		instance: { name: "Example agent", toolConnections: {}, template: {} },
+		organizationId: "org1",
+		instance: {
+			organizationId: "org1",
+			name: "Example agent",
+			toolConnections: {},
+			template: {},
+		},
 	});
 });
 

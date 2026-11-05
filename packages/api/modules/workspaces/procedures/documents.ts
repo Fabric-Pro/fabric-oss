@@ -1,3 +1,4 @@
+import { workspaceBoundaryMiddleware } from "../lib/workspace-boundary";
 import { ORPCError } from "@orpc/server";
 import {
 	canEditWorkspace,
@@ -19,7 +20,7 @@ import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -31,7 +32,11 @@ const WORKSPACE_DOCUMENTS_BUCKET =
  * List documents in a workspace
  */
 export const listDocumentsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/document-workspaces/{workspaceId}/documents",
@@ -41,6 +46,7 @@ export const listDocumentsProcedure = tenantProtectedProcedure
 	})
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 			status: z
 				.enum([
@@ -60,6 +66,7 @@ export const listDocumentsProcedure = tenantProtectedProcedure
 			search: z.string().max(INPUT_BOUNDS.name).optional(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -94,7 +101,11 @@ export const listDocumentsProcedure = tenantProtectedProcedure
  * Get document details
  */
 export const getDocumentProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/document-workspaces/documents/{documentId}",
@@ -104,9 +115,11 @@ export const getDocumentProcedure = tenantProtectedProcedure
 	})
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			documentId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -139,7 +152,11 @@ export const getDocumentProcedure = tenantProtectedProcedure
  * Get document statistics for a workspace
  */
 export const getDocumentStatsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/document-workspaces/{workspaceId}/documents/stats",
@@ -149,9 +166,11 @@ export const getDocumentStatsProcedure = tenantProtectedProcedure
 	})
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -169,7 +188,11 @@ export const getDocumentStatsProcedure = tenantProtectedProcedure
  * Create upload URL for a new document
  */
 export const createUploadUrlProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/document-workspaces/{workspaceId}/documents/upload-url",
@@ -179,6 +202,7 @@ export const createUploadUrlProcedure = tenantProtectedProcedure
 	})
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 			filename: z.string(),
 			mimeType: z.string(),
@@ -188,6 +212,7 @@ export const createUploadUrlProcedure = tenantProtectedProcedure
 				.max(50 * 1024 * 1024), // Max 50MB
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -248,7 +273,11 @@ export const createUploadUrlProcedure = tenantProtectedProcedure
  * Confirm document upload and start processing
  */
 export const confirmUploadProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/document-workspaces/{workspaceId}/documents/confirm",
@@ -268,6 +297,7 @@ export const confirmUploadProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user, session } = context;
 		const organizationId = resolveOrganizationId(
@@ -368,7 +398,11 @@ export const confirmUploadProcedure = tenantProtectedProcedure
  * Delete a document
  */
 export const deleteDocumentProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "DELETE",
 		path: "/document-workspaces/documents/{documentId}",
@@ -378,9 +412,11 @@ export const deleteDocumentProcedure = tenantProtectedProcedure
 	})
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			documentId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -420,7 +456,11 @@ export const deleteDocumentProcedure = tenantProtectedProcedure
  * Retry processing a failed document
  */
 export const retryDocumentProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/document-workspaces/documents/{documentId}/retry",
@@ -434,6 +474,7 @@ export const retryDocumentProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user, session } = context;
 		const organizationId = resolveOrganizationId(
@@ -490,7 +531,11 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
  * The client sends the file data to this endpoint, and we upload it to storage.
  */
 export const serverUploadProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/document-workspaces/{workspaceId}/documents/server-upload",
@@ -510,6 +555,7 @@ export const serverUploadProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user, session } = context;
 		const organizationId = resolveOrganizationId(

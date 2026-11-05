@@ -14,6 +14,7 @@ vi.mock("../rag-retrieval", () => ({
 }));
 
 import { createBuiltInTools } from "../built-in-tools";
+import { retrieveWorkspaceDocumentsActivity } from "../rag-retrieval";
 
 const WORKSPACE_TOOL_IDS = ["workspace_rag_query", "workspace_rag_summarize"];
 const base = { userId: "user-example", organizationId: "org-example" };
@@ -56,4 +57,46 @@ describe("workspace tools without an attached workspace", () => {
 		});
 		expect(Object.keys(tools).sort()).toEqual(WORKSPACE_TOOL_IDS);
 	});
+});
+
+describe("selected document filters in loaded workspace tools", () => {
+	it.each(WORKSPACE_TOOL_IDS)(
+		"binds %s to saved source selections, never model-provided replacements",
+		async (id) => {
+			vi.mocked(retrieveWorkspaceDocumentsActivity).mockResolvedValue({
+				context: "Example answer",
+				chunkCount: 1,
+			});
+			const workspaceDocumentFilters = [
+				{
+					workspaceId: "workspace-example",
+					documentIds: ["document-example"],
+				},
+			];
+			const tools = await createBuiltInTools({
+				...base,
+				workspaceIds: ["workspace-example"],
+				workspaceDocumentFilters,
+				enabledFabricToolIds: [id],
+			});
+			const selected = tools[id] as {
+				execute: (args: Record<string, unknown>) => Promise<unknown>;
+			};
+			await selected.execute({
+				query: "Example question",
+				workspaceIds: ["workspace-foreign"],
+				workspaceDocumentFilters: [],
+			});
+			expect(retrieveWorkspaceDocumentsActivity).toHaveBeenLastCalledWith(
+				"Example question",
+				base.userId,
+				base.organizationId,
+				["workspace-example"],
+				undefined,
+				id === "workspace_rag_summarize" ? 20 : undefined,
+				undefined,
+				expect.objectContaining({ workspaceDocumentFilters }),
+			);
+		},
+	);
 });

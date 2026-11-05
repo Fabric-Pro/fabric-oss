@@ -6,13 +6,21 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { ORPCError } from "@orpc/server";
 import { createUserApiKey } from "@repo/database";
 import { z } from "zod";
 import {
+	refusedSkillKeyScopes,
+	requiresSkillKeyConsent,
+} from "../../../../lib/skill-key-consent";
+import {
 	Permissions,
 	requirePermission,
+	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+
+import { requireOrgMembership } from "../../../organizations/lib/membership";
 
 // Available scopes for API keys
 const API_KEY_SCOPES = [
@@ -24,6 +32,7 @@ const API_KEY_SCOPES = [
 	"browser:write", // Execute browser automation tasks
 	// Agents
 	"agents:read", // Read agent metadata, list available agents
+	"agents:schedule", // Explicit permission to manage recurring agent execution
 	"agents:execute", // Trigger agent executions via API
 	"agents:stream", // Access real-time execution streams
 	// CLI / SDK scopes
@@ -42,6 +51,10 @@ const API_KEY_SCOPES = [
 	"reports:read", // Read report templates and executions
 	"reports:write", // Create and run reports
 	"skills:read", // Read skill definitions
+	"skills:write",
+	"skills:publish",
+	"governance:read",
+	"governance:write",
 	"chats:read", // Read AI chat threads
 	"chats:write", // Create and send chat messages
 	"workspaces:read", // Read workspaces and documents
@@ -117,7 +130,24 @@ export const createUserApiKeyProcedure = tenantProtectedProcedure
 			createdAt: z.date(),
 		}),
 	)
-	.handler(async ({ context: { user }, input }) => {
+	.handler(async ({ context: { user, session }, input }) => {
+		if (requiresSkillKeyConsent(input.scopes)) {
+			const org = resolveOrganizationId(undefined, session);
+			const membership = org
+				? await requireOrgMembership(user.id, org)
+				: null;
+			const refused = refusedSkillKeyScopes(
+				input.scopes,
+				membership && !membership.organization.deletedAt
+					? membership.role
+					: undefined,
+			);
+			if (refused.length) {
+				throw new ORPCError("FORBIDDEN", {
+					message: `Your current organization role cannot grant: ${refused.join(", ")}.`,
+				});
+			}
+		}
 		// Generate the API key
 		const { rawKey, keyHash, keyPrefix } = generateApiKey();
 

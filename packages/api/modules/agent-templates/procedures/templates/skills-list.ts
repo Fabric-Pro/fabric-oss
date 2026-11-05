@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
 	Permissions,
 	requirePermission,
+	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireOrgMembership } from "../../../organizations/lib/membership";
@@ -16,6 +17,10 @@ export const listTemplateSkillsProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.AGENT_TEMPLATE_READ))
 	.input(listTemplateSkillsInputSchema)
 	.handler(async ({ input, context }) => {
+		const organizationId = resolveOrganizationId(
+			undefined,
+			context.session,
+		);
 		// Verify template exists and caller has access
 		const template = await db.agentTemplate.findUnique({
 			where: { id: input.templateId },
@@ -27,7 +32,10 @@ export const listTemplateSkillsProcedure = tenantProtectedProcedure
 
 		// Authorize template access (matches update/delete pattern for ORG)
 		if (template.scope === "ORGANIZATION") {
-			if (!template.organizationId) {
+			if (
+				!template.organizationId ||
+				template.organizationId !== organizationId
+			) {
 				throw new Error(
 					"Organization template is missing organizationId",
 				);
@@ -45,7 +53,10 @@ export const listTemplateSkillsProcedure = tenantProtectedProcedure
 			}
 		}
 
-		const templateSkills = await listTemplateSkills(input.templateId);
+		const templateSkills = await listTemplateSkills(input.templateId, {
+			userId: context.user.id,
+			organizationId,
+		});
 
 		// Filter attached skills by tenant visibility to prevent cross-tenant leaks
 		// (e.g. if a cross-tenant association was created before this fix)

@@ -83,6 +83,8 @@ import { OrganizationApiKeysSettings } from "../OrganizationApiKeysSettings";
  */
 const READ_ONLY_SCOPES = new Set([
 	"mcp:read",
+	"skills:read",
+	"governance:read",
 	"projects:read",
 	"agents:read",
 	"agents:stream",
@@ -275,7 +277,7 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 		).not.toBeInTheDocument();
 	});
 
-	it("says MCP Write grants every write tool and points to the narrower scopes", async () => {
+	it("distinguishes the MCP umbrella from explicit Skills and governance consent", async () => {
 		userRole = "member";
 		const user = userEvent.setup();
 		renderSettings();
@@ -286,11 +288,39 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 
 		expect(
 			await screen.findByText(
-				/Grants every write tool, including workflows, pages and features/,
+				/Grants ordinary write tools, including workflows, pages and features/,
 			),
 		).toBeInTheDocument();
 		expect(
 			screen.getByText(/tick the narrower write scopes below instead/),
 		).toBeInTheDocument();
 	});
+	it.each(["member", "viewer"])(
+		"does not offer governance writes to a %s",
+		async (role) => {
+			userRole = role;
+			const user = userEvent.setup();
+			renderSettings();
+			await user.click(
+				screen.getByRole("button", { name: /create api key/i }),
+			);
+			expect(
+				screen.queryByLabelText("Governance Write"),
+			).not.toBeInTheDocument();
+		},
+	);
+	it.each(["admin", "owner"])(
+		"lets an %s deliberately select governance writes",
+		async (role) => {
+			userRole = role;
+			const user = userEvent.setup();
+			renderSettings();
+			await user.click(
+				screen.getByRole("button", { name: /create api key/i }),
+			);
+			expect(
+				await screen.findByLabelText("Governance Write"),
+			).not.toBeChecked();
+		},
+	);
 });

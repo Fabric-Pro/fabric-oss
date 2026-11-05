@@ -14,6 +14,7 @@ import {
 	isFrameToolName,
 } from "@saas/frames/lib/frame-result";
 import { memo } from "react";
+import { ResponseActivity } from "../../../../../../components/ai-elements/response-activity";
 import {
 	Tool,
 	ToolContent,
@@ -22,10 +23,13 @@ import {
 	ToolOutput,
 } from "../../../../../../components/ai-elements/tool";
 import { ChartCard, isChartArtifact } from "../cards/ChartCard";
+import { effectiveToolStatus } from "./tool-activity";
 import type { ToolCallItem } from "./types";
 
 export interface ToolCallListProps {
 	toolCalls: ToolCallItem[];
+	/** Fold routine logs while keeping deliverables and authority requests visible. */
+	groupActivity?: boolean;
 	defaultOpen?: boolean;
 	className?: string;
 	/** Function to get display name for tool (e.g., strip prefixes) */
@@ -253,11 +257,20 @@ function extractAuthorityState(result: unknown): {
 	pendingSessionId?: string;
 	hint?: string;
 } | null {
-	if (!result || typeof result !== "object") {
+	let parsed = result;
+	if (typeof result === "string") {
+		try {
+			parsed = JSON.parse(result);
+		} catch {
+			return null;
+		}
+	}
+
+	if (!parsed || typeof parsed !== "object") {
 		return null;
 	}
 
-	const obj = result as Record<string, unknown>;
+	const obj = parsed as Record<string, unknown>;
 	if (!obj.authorityRequired) {
 		return null;
 	}
@@ -299,6 +312,8 @@ const ToolCallRow = memo(function ToolCallRow({
 	activeFrameId,
 	onOpenFrame,
 }: ToolCallRowProps) {
+	const status = effectiveToolStatus(toolCall);
+	const successful = status === "complete" || status === "success";
 	const displayName = getDisplayName
 		? getDisplayName(toolCall.name)
 		: toolCall.name;
@@ -309,12 +324,12 @@ const ToolCallRow = memo(function ToolCallRow({
 
 	// Check if this is a chart tool with a chart artifact result
 	const isChart = isChartTool(toolCall.name);
-	const chartArtifact = isChart
-		? extractChartArtifact(toolCall.result)
-		: null;
-	const frameResult = isFrameToolName(toolCall.name)
-		? extractFrameToolResult(toolCall.result)
-		: null;
+	const chartArtifact =
+		isChart && successful ? extractChartArtifact(toolCall.result) : null;
+	const frameResult =
+		successful && isFrameToolName(toolCall.name)
+			? extractFrameToolResult(toolCall.result)
+			: null;
 	const authorityState = extractAuthorityState(toolCall.result);
 
 	// If we have a chart artifact, render ChartCard instead of tool output
@@ -329,7 +344,7 @@ const ToolCallRow = memo(function ToolCallRow({
 					<ToolHeader
 						title={title}
 						type="tool-invocation"
-						state={getToolState(toolCall.status)}
+						state={getToolState(status)}
 						inputSummary={
 							chartArtifact.config.title || "Chart created"
 						}
@@ -354,19 +369,18 @@ const ToolCallRow = memo(function ToolCallRow({
 				<ToolHeader
 					title={title}
 					type="tool-invocation"
-					state={getToolState(toolCall.status)}
+					state={getToolState(status)}
 					inputSummary={inputSummary}
 				/>
 				<ToolContent>
 					{Object.keys((toolCall.args as object) || {}).length >
 						0 && <ToolInput input={toolCall.args} />}
-					{toolCall.result !== undefined &&
-						toolCall.status !== "error" && (
-							<ToolOutput
-								output={toolCall.result}
-								errorText={undefined}
-							/>
-						)}
+					{toolCall.result !== undefined && status !== "error" && (
+						<ToolOutput
+							output={toolCall.result}
+							errorText={undefined}
+						/>
+					)}
 				</ToolContent>
 			</Tool>
 			{/*
@@ -387,7 +401,7 @@ const ToolCallRow = memo(function ToolCallRow({
 			 * small UX upgrade (errors no longer require a
 			 * click to see).
 			 */}
-			{toolCall.status === "error" && (
+			{status === "error" && (
 				<div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
 					<p className="font-medium">Error</p>
 					<p className="mt-1 wrap-break-word">
@@ -463,27 +477,57 @@ export const ToolCallList = memo(function ToolCallList({
 	activeFrameId,
 	onOpenFrame,
 	expandable = true,
+	groupActivity = false,
 }: ToolCallListProps) {
 	if (!toolCalls || toolCalls.length === 0) {
 		return null;
 	}
 
+	const renderRow = (toolCall: ToolCallItem) => (
+		<ToolCallRow
+			key={toolCall.id}
+			toolCall={toolCall}
+			defaultOpen={defaultOpen}
+			expandable={expandable}
+			getDisplayName={getDisplayName}
+			getInputSummary={getInputSummary}
+			activeFrameId={activeFrameId}
+			onOpenFrame={onOpenFrame}
+		/>
+	);
+	if (!groupActivity) {
+		return (
+			<div className={className}>
+				<div className="space-y-2">{toolCalls.map(renderRow)}</div>
+			</div>
+		);
+	}
+	const prominent = toolCalls.filter((tool) => {
+		if (
+			extractAuthorityState(tool.result) ||
+			effectiveToolStatus(tool) === "error"
+		) {
+			return true;
+		}
+		const status = effectiveToolStatus(tool);
+		if (status !== "complete" && status !== "success") {
+			return false;
+		}
+		return (
+			(isFrameToolName(tool.name) &&
+				Boolean(extractFrameToolResult(tool.result))) ||
+			(isChartTool(tool.name) &&
+				Boolean(extractChartArtifact(tool.result)))
+		);
+	});
+	const visible = new Set(prominent.map((tool) => tool.id));
+	const routine = toolCalls.filter((tool) => !visible.has(tool.id));
 	return (
 		<div className={className}>
-			<div className="space-y-2">
-				{toolCalls.map((toolCall) => (
-					<ToolCallRow
-						key={toolCall.id}
-						toolCall={toolCall}
-						defaultOpen={defaultOpen}
-						expandable={expandable}
-						getDisplayName={getDisplayName}
-						getInputSummary={getInputSummary}
-						activeFrameId={activeFrameId}
-						onOpenFrame={onOpenFrame}
-					/>
-				))}
-			</div>
+			<ResponseActivity statuses={routine.map(effectiveToolStatus)}>
+				{routine.map(renderRow)}
+			</ResponseActivity>
+			<div className="space-y-2">{prominent.map(renderRow)}</div>
 		</div>
 	);
 });

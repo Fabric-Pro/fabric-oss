@@ -82,4 +82,27 @@ describe("navigateToProjectSettingsTab", () => {
 
 		window.removeEventListener(NAVIGATE_TO_SETTINGS_TAB_EVENT, handler);
 	});
+
+	it("forwards optional anchorId in event detail so ProjectSettings can resolve dynamic sub-tabs", () => {
+		const received: NavigateToSettingsTabDetail[] = [];
+		const handler = (event: Event) => {
+			received.push(
+				(event as CustomEvent<NavigateToSettingsTabDetail>).detail,
+			);
+		};
+		window.addEventListener(NAVIGATE_TO_SETTINGS_TAB_EVENT, handler);
+
+		navigateToProjectSettingsTab("p1", "development", {
+			anchorId: "project-pm-settings",
+		});
+
+		expect(received).toEqual([
+			{
+				projectId: "p1",
+				settingsTab: "development",
+				anchorId: "project-pm-settings",
+			},
+		]);
+		window.removeEventListener(NAVIGATE_TO_SETTINGS_TAB_EVENT, handler);
+	});
 });

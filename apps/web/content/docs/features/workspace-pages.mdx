@@ -1,43 +1,43 @@
 ---
-title: Workspaces
+title: Pages
 description: Pages Fabric Agent writes for your organization from a description, shared with everyone in it by default, that can keep what people enter, hold files, ask the model and act through Fabric.
-audience: Organization members creating and using Workspaces
+audience: Organization members creating and using Pages
 owner: Platform team
 ---
 
-A Workspace is a page that Fabric Agent writes for your organization: a delivery board, a weekly digest, a list of open decisions, a small tool with a refresh button. You describe what you want to see, the agent writes the whole page, saves it, opens it and explains what it shows. Nothing on the page is a template, so asking for a new section or a different layout simply rewrites the page.
+A Page is a page that Fabric Agent writes for your organization: a delivery board, a weekly digest, a list of open decisions, a small tool with a refresh button. You describe what you want to see, the agent writes the whole page, saves it, opens it and explains what it shows. Nothing on the page is a template, so asking for a new section or a different layout simply rewrites the page.
 
 <Callout type="info">
-  Workspaces used to be the name of the document libraries. Those are called **Libraries** now, and their page is described in [Libraries](/docs/features/libraries). Workspaces are a different feature: pages, not documents.
+  **Pages** are interactive experiences built by Fabric Agent. To upload documents, search them, or chat with them, use **[Workspaces](/docs/features/libraries)**.
 </Callout>
 
-## Ask for a Workspace
+## Ask for a Page
 
 <Steps>
   <Step>
-    ### Open Workspaces
+    ### Open Pages
 
-    Click **Workspaces** in the left sidebar. The page lists every Workspace you can open.
+    Click **Pages** in the left sidebar. The page lists every Page you can open.
   </Step>
 
   <Step>
-    ### Click New workspace
+    ### Click New page
 
-    Fabric Agent opens with a draft such as "Create a new Workspace that shows". Finish the sentence — "this week's delivery status by project", "the decisions that are still open" — and send it.
+    Fabric Agent opens with a draft such as "Create a new Page that shows". Finish the sentence — "this week's delivery status by project", "the decisions that are still open" — and send it.
   </Step>
 
   <Step>
     ### Read what it wrote
 
-    The agent writes the page, saves it as a Workspace and opens it, with a short explanation of what each part shows. If something is wrong, say so in the same chat, or open the page and click **Ask Fabric Agent** to change it.
+    The agent writes the page, saves it as a Page and opens it, with a short explanation of what each part shows. If something is wrong, say so in the same chat, or open the page and click **Ask Fabric Agent** to change it.
   </Step>
 </Steps>
 
-You can also ask from any chat with Fabric Agent: "make me a Workspace with a board of this sprint's work". A chat opened from a Workspace knows which page you are on, so "add a column for blockers" changes that page.
+You can also ask from any chat with Fabric Agent: "make me a Page with a board of this sprint's work". A chat opened from a Page knows which page you are on, so "add a column for blockers" changes that page.
 
-## Who can open a Workspace
+## Who can open a Page
 
-**A new Workspace is shared with everyone in your organization.** To turn off organization-wide sharing, ask the agent to "keep it private". A page linked to a project still opens for accepted project members; a standalone private page opens only for its author. Each card in the list shows who the page is shared with.
+**A new Page is shared with everyone in your organization.** To turn off organization-wide sharing, ask the agent to "keep it private". A page linked to a project still opens for accepted project members; a standalone private page opens only for its author. Each card in the list shows who the page is shared with.
 
 | Shown as | Who can open it |
 |----------|-----------------|
@@ -47,41 +47,41 @@ You can also ask from any chat with Fabric Agent: "make me a Workspace with a bo
 | **Project** | The accepted members of its project |
 | **Public** | Anyone with the link, signed in or not |
 
-A public link exists only after the person who wrote the page has shared it publicly, and only if your organization allows public links; a page is never public just because it was created. A page written outside a project or a Workspace, for example from a chat with no project open, is private to the person who asked for it until they share it.
+A public link exists only after the person who wrote the page has shared it publicly, and only if your organization allows public links; a page is never public just because it was created. A page written outside a project or a Page, for example from a chat with no project open, is private to the person who asked for it until they share it.
 
-The list shows the Workspaces you wrote, the ones shared with your organization, and those linked to a project you can open. A guest of a single project, who is not a member of the organization, does not see the list; they can still open a page someone shares with them.
+The list shows the Pages you wrote, the ones shared with your organization, and those linked to a project you can open. A guest of a single project, who is not a member of the organization, does not see the list; they can still open a page someone shares with them.
 
-The person who wrote a Workspace changes who can open it from the **Share** control in the page header, and sees the page's earlier versions under **Version history**, where any version can be restored. Only the author can do either, and only the author's Fabric Agent chat can change the page. Everyone else who can open it can read it, comment on it and make a copy of their own.
+The person who wrote a Page changes who can open it from the **Share** control in the page header, and sees the page's earlier versions under **Version history**, where any version can be restored. Only the author can do either, and only the author's Fabric Agent chat can change the page. Everyone else who can open it can read it, comment on it and make a copy of their own.
 
 ## Comments
 
-Under every Workspace is a **Comments** section. Anyone who can open the page can read the comments, oldest first, and add one below them (up to 2,000 characters). Each comment carries the name Fabric recorded for the person who wrote it. Comments are kept with the page, so Fabric Agent can read them too. A page's own script can read its comments but cannot add one. Choose **Show more comments** to see beyond the first fifty.
+Under every Page is a **Comments** section. Anyone who can open the page can read the comments, oldest first, and add one below them (up to 2,000 characters). Each comment carries the name Fabric recorded for the person who wrote it. Comments are kept with the page, so Fabric Agent can read them too. A page's own script can read its comments but cannot add one. Choose **Show more comments** to see beyond the first fifty.
 
 ## Make a copy
 
-**Make a copy** in the page header creates a Workspace you own, in the same project, for you to change with Fabric Agent. The copy starts with **Private** sharing; members of its attached project can still open it. Nothing people saved in the page is copied. If the page uses Fabric tools, the copy keeps them, so Fabric lists them first and asks you to confirm.
+**Make a copy** in the page header creates a Page you own, in the same project, for you to change with Fabric Agent. The copy starts with **Private** sharing; members of its attached project can still open it. Nothing people saved in the page is copied. If the page uses Fabric tools, the copy keeps them, so Fabric lists them first and asks you to confirm.
 
 ## Azure DevOps work-item summaries
 
-Connect Azure DevOps under **Connections**, then open your Fabric project's **Settings → Development** and select its Azure DevOps project under **Project Management Integration**. Each person viewing the Workspace uses their own connection and permissions.
+Connect Azure DevOps under **Connections**, then open your Fabric project's **Settings → Development** and select its Azure DevOps project under **Project Management Integration**. Each person viewing the Page uses their own connection and permissions.
 
 Ask Fabric Agent:
 
-> Create a Workspace for this project with a team-member selector, a count of all assigned work items and a count in the exact state "In Development". Show the attached Coding Instructions file count too. Disable Refresh while Azure DevOps is unconfigured, and enable it automatically when the connection is ready.
+> Create a Page for this project with a team-member selector, a count of all assigned work items and a count in the exact state "In Development". Show the attached Coding Instructions file count too. Disable Refresh while Azure DevOps is unconfigured, and enable it automatically when the connection is ready.
 
 The selector lists members of the configured project's teams, including people with no assigned work items. Choose a member to read their counts. **Refresh** reads the latest counts and instruction files. A page that checks its connection can enable Refresh after you finish setup, without being rewritten.
 
 Counts apply to the selected project and the viewer's access. When a read cannot finish, the page should explain that the result is incomplete and leave exact totals unavailable. Coding Instructions counts come from the attached instruction source; repository reads identify the Git commit they used.
 
-## Run a workflow from a Workspace
+## Run a workflow from a Page
 
 Ask Fabric Agent to add controls for a workflow you already use:
 
-> Connect this Workspace to my published weekly summary workflow. Add input fields, a Run button, recent run status and a link to its result. Keep the layout editable through this chat.
+> Connect this Page to my published weekly summary workflow. Add input fields, a Run button, recent run status and a link to its result. Keep the layout editable through this chat.
 
-The Workspace and workflow must belong to you and be attached to the same project. Confirm the connection when the agent asks. The page can then start that workflow with the inputs you enter and show its recent runs. Scheduled runs continue to use the workflow's schedule.
+The Page and workflow must belong to you and be attached to the same project. Confirm the connection when the agent asks. The page can then start that workflow with the inputs you enter and show its recent runs. Scheduled runs continue to use the workflow's schedule.
 
-Describe changes to Fabric Agent, or open the workflow in the builder, to change its sources, instructions, model or schedule. Publish workflow changes and ask the agent to confirm the updated connection before running the changed version from the Workspace. Its status and run history remain available when it is paused or needs confirmation again.
+Describe changes to Fabric Agent, or open the workflow in the builder, to change its sources, instructions, model or schedule. Publish workflow changes and ask the agent to confirm the updated connection before running the changed version from the Page. Its status and run history remain available when it is paused or needs confirmation again.
 
 Making a copy does not copy permission to run the original workflow. Restoring an earlier page version does not restore a revoked workflow connection. Ask the agent to connect the workflow you want to use with that page.
 
@@ -95,7 +95,7 @@ inspect and edit the steps yourself.
 For example, ask:
 
 > Create a daily review for this project's assigned stories. Let me choose the assignee
-> and review model in the Workspace. Compare requirements and comments with the previous
+> and review model in the Page. Compare requirements and comments with the previous
 > run, reuse unchanged analysis, and add a button that forces a fresh review. Show links
 > to the stories, source instructions, workflow and report. Keep the schedule inactive
 > until I choose its settings.
@@ -107,7 +107,7 @@ and your current permissions determine which services it can call. Keep credenti
 Fabric's connection settings, outside the page and its scripts.
 
 After changing a workflow, save and publish it, then ask the agent to confirm its updated
-connection to the Workspace. Open **Settings → AI Usage** to inspect recorded model calls.
+connection to the Page. Open **Settings → AI Usage** to inspect recorded model calls.
 Use the workflow's run history to investigate failed steps and their available inputs,
 outputs and errors.
 
@@ -162,7 +162,7 @@ How a call is treated:
 
 ## What a page cannot do
 
-A Workspace runs in a locked frame, including when opened through a public link. It cannot make network requests, read your cookies or storage, load scripts, styles or fonts from another site, or open other pages inside itself. Images and fonts have to be embedded in the page. This keeps a page somebody else wrote from sending what it shows anywhere else.
+A Page runs in a locked frame, including when opened through a public link. It cannot make network requests, read your cookies or storage, load scripts, styles or fonts from another site, or open other pages inside itself. Images and fonts have to be embedded in the page. This keeps a page somebody else wrote from sending what it shows anywhere else.
 
 A page that a scheduled workflow wrote with nobody watching is shown without any script, so it reads as a static report, and so is a copy of it. Pages written in a chat keep their buttons. A page that loads a script from another site, such as a chart library from a CDN, shows without it; ask Fabric Agent to build the chart inside the page.
 

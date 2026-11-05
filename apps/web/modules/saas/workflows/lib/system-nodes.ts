@@ -135,6 +135,10 @@ export const SYSTEM_NODES: NodeTypeDefinition[] = [
 	},
 	{
 		type: "http-request",
+		outputFields: [
+			{ field: "status", description: "HTTP response status" },
+			{ field: "data", description: "HTTP response body" },
+		],
 		label: "HTTP Request",
 		description: "Make HTTP requests to external APIs",
 		icon: "Send",

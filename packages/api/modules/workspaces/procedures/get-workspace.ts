@@ -1,3 +1,4 @@
+import { workspaceBoundaryMiddleware } from "../lib/workspace-boundary";
 import { ORPCError } from "@orpc/server";
 import {
 	getOrCreatePersonalWorkspace,
@@ -7,7 +8,7 @@ import {
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -16,7 +17,11 @@ import {
  * Get a workspace by ID
  */
 export const getWorkspaceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/document-workspaces/{workspaceId}",
@@ -30,6 +35,7 @@ export const getWorkspaceProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -80,7 +86,11 @@ export const getWorkspaceProcedure = tenantProtectedProcedure
  * AUTHORIZATION: Uses tenantProtectedProcedure - resolves organizationId for proper context isolation
  */
 export const getPersonalWorkspaceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/document-workspaces/personal",

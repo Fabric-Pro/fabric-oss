@@ -25,7 +25,15 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../prisma/client", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../prisma/client")>();
 	const tx = {
-		agentWorkspaceFile: { update: mocks.updateFile },
+		$queryRaw: vi.fn().mockResolvedValue([]),
+		auditLog: {
+			create: vi.fn().mockResolvedValue({ id: "example-audit" }),
+		},
+		agentWorkspaceFile: {
+			findFirst: mocks.findFrame,
+			update: mocks.updateFile,
+		},
+		organization: { findUnique: mocks.findOrganization },
 		frameEditHistory: { create: mocks.historyCreate },
 	};
 	mocks.transaction.mockImplementation(
@@ -36,6 +44,7 @@ vi.mock("../prisma/client", async (importOriginal) => {
 		db: {
 			agentWorkspaceFile: {
 				findFirst: mocks.findFrame,
+				findUnique: mocks.findFrame,
 				create: mocks.createFile,
 				update: mocks.updateFile,
 			},
@@ -46,8 +55,10 @@ vi.mock("../prisma/client", async (importOriginal) => {
 });
 
 import { PUBLIC_SHARING_DISABLED_MESSAGE } from "../prisma/queries/frame-share";
+import { checkFrameAccess } from "../prisma/queries/frame-sharing";
 import {
 	createFrame,
+	getFrameByShareToken,
 	publishFrame,
 	updateFrame,
 } from "../prisma/queries/frames";
@@ -97,10 +108,10 @@ beforeEach(() => {
 		isPublic: true,
 		shareToken: "t",
 	});
-	mocks.updateFile.mockResolvedValue({
-		...ROW,
-		isPublic: true,
-		shareToken: "t",
+	mocks.updateFile.mockImplementation(async ({ data }) => {
+		const updated = { ...ROW, ...data };
+		mocks.findFrame.mockResolvedValue(updated);
+		return updated;
 	});
 	mocks.historyCreate.mockResolvedValue({});
 });
@@ -281,7 +292,7 @@ describe("frame update timestamp fence", () => {
 				requestedUpdatedAt: new Date(0),
 				title: "Example",
 			}),
-		).rejects.toThrow("Re-read");
+		).rejects.toThrow("Reload");
 		expect(mocks.historyCreate).not.toHaveBeenCalled();
 		expect(mocks.updateFile).not.toHaveBeenCalled();
 	});
@@ -295,7 +306,7 @@ describe("frame update timestamp fence", () => {
 				expectedUpdatedAt: ROW.updatedAt,
 				title: "Example",
 			}),
-		).rejects.toThrow("Re-read");
+		).rejects.toThrow("Reload");
 		expect(mocks.updateFile).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: expect.objectContaining({ updatedAt: ROW.updatedAt }),
@@ -314,5 +325,99 @@ describe("frame update timestamp fence", () => {
 			expectedUpdatedAt: ROW.updatedAt,
 		});
 		expect(mocks.historyCreate).not.toHaveBeenCalled();
+	});
+});
+
+describe("live public sharing policy on reads", () => {
+	beforeEach(() =>
+		mocks.findFrame.mockResolvedValue({
+			...ROW,
+			isPublic: true,
+			shareScope: "PUBLIC",
+			shareToken: "example-bearer",
+		}),
+	);
+	it("refuses an existing bearer and ID-based public read when policy is disabled", async () => {
+		organizationAllowsPublicLinks(false);
+		expect(await getFrameByShareToken("example-bearer")).toBeNull();
+		expect(
+			await checkFrameAccess({
+				frameId: ROW.id,
+				userId: "example-viewer",
+			}),
+		).toMatchObject({ hasAccess: false });
+	});
+	it("retains a legacy bearer only while its current organization policy allows it", async () => {
+		organizationAllowsPublicLinks(true);
+		expect(await getFrameByShareToken("example-bearer")).toMatchObject({
+			id: ROW.id,
+		});
+		expect(
+			await checkFrameAccess({
+				frameId: ROW.id,
+				userId: "example-viewer",
+			}),
+		).toMatchObject({ hasAccess: true });
+		expect(mocks.findOrganization).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: ROW.organizationId, deletedAt: null },
+			}),
+		);
+	});
+	it("refuses a missing or deleted organization and keeps the owner's private read", async () => {
+		mocks.findOrganization.mockResolvedValue(null);
+		expect(await getFrameByShareToken("example-bearer")).toBeNull();
+		expect(
+			await checkFrameAccess({ frameId: ROW.id, userId: ROW.userId }),
+		).toMatchObject({ hasAccess: true });
+	});
+});
+
+describe("legacy public admission without an organization", () => {
+	beforeEach(() => {
+		mocks.findFrame.mockResolvedValue({ ...ROW, organizationId: null });
+		organizationAllowsPublicLinks(true);
+	});
+	it("refuses creation of a public orphan Frame before writing a token", async () => {
+		await expect(
+			createFrame({
+				userId: ROW.userId,
+				title: "Example orphan",
+				blocks: BLOCKS,
+				isPublic: true,
+			}),
+		).rejects.toMatchObject({ name: "PublicSharingDisabledError" });
+		expect(mocks.createFile).not.toHaveBeenCalled();
+		expect(mocks.findOrganization).not.toHaveBeenCalled();
+	});
+	it("refuses a legacy public update of an orphan Frame", async () => {
+		await expect(
+			updateFrame({ id: ROW.id, userId: ROW.userId, isPublic: true }),
+		).rejects.toMatchObject({ name: "PublicSharingDisabledError" });
+		expect(mocks.updateFile).not.toHaveBeenCalled();
+		expect(mocks.historyCreate).not.toHaveBeenCalled();
+	});
+	it("refuses publication of an orphan Frame through the legacy adapter", async () => {
+		expect(
+			await publishFrame({ id: ROW.id, userId: ROW.userId }),
+		).toBeNull();
+		expect(mocks.updateFile).not.toHaveBeenCalled();
+	});
+	it("preserves private legacy creation without granting public access", async () => {
+		await createFrame({
+			userId: ROW.userId,
+			title: "Example private orphan",
+			blocks: BLOCKS,
+		});
+		expect(mocks.createFile).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					organizationId: null,
+					isPublic: false,
+					shareToken: null,
+				}),
+			}),
+		);
+		expect(mocks.findOrganization).not.toHaveBeenCalled();
 	});
 });

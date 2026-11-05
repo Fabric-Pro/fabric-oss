@@ -3,7 +3,24 @@ title: Prompt Library
 description: Create, manage, and version prompts for consistent AI interactions across your organization.
 ---
 
+- **Audience**: Delivery teams and integration developers
+- **Owner**: Fabric product engineering
+
 The Prompt Library is a powerful feature that lets you create, manage, and version prompts for AI agents. It ensures consistency across your organization and allows you to optimize prompts over time.
+
+## Browse and inspect
+
+The library opens in a compact list with each prompt's name, purpose, access,
+format, and last update. Switch to **Grid view** for compact cards. Search,
+filters, and the selected view stay in the URL so you can return to the same
+library view. Open a prompt to inspect its full instructions and metadata in a
+preview drawer; choose **Edit** when you want to change it. The **Defaults**
+menu groups your overrides, organization overrides, and proposed defaults.
+
+In the editor, **Assistant** and **Try prompt** sit at the top of the right pane,
+alongside the prompt title. Switch between them without losing your draft,
+assistant conversation, preview inputs, or results. On smaller screens, use
+**Assistant & Try** and **Edit prompt** to move between panes.
 
 ## Why Use a Prompt Library?
 
@@ -45,7 +62,7 @@ Custom prompts created by you or your organization:
 
 - Full editing control
 - Version history
-- Organization-wide or personal scope
+- Organization scope with separate user preferences for defaults
 - Can be based on system prompts
 
 ## Creating Prompts
@@ -54,7 +71,7 @@ Custom prompts created by you or your organization:
   <Step>
     ### Navigate to Prompt Library
 
-    Click **Settings → Prompt Library** in the sidebar.
+    Click **Prompts** in the sidebar.
   </Step>
 
   <Step>
@@ -91,13 +108,12 @@ Custom prompts created by you or your organization:
   <Step>
     ### Set Scope
 
-    Choose the visibility of this prompt:
+    New prompts are created in the current organization and shared with its members.
+    Platform system prompts remain managed by Fabric. A personal default is a
+    user preference within an organization, not a separate personal workspace.
 
-    - **Personal** — Only visible to you, in your personal workspace
-    - **Organization** — Visible to all members of your organization
-    - **System** — Platform-wide, managed by Fabric (read-only)
-
-    See [Prompt Scopes](#prompt-scopes) below for details on how scopes affect visibility and defaults.
+    See [Prompt Scopes](#prompt-scopes) for the distinction between content
+    visibility and the defaults used by actions.
   </Step>
 
   <Step>
@@ -122,7 +138,8 @@ Template variables make prompts dynamic and reusable.
 
 ### Built-in Variables
 
-Fabric automatically provides these variables:
+Document-generation runtimes may provide context variables such as these.
+Interactive **Try prompt** uses only the values you supply and injects none of them automatically:
 
 | Variable | Description |
 |----------|-------------|
@@ -156,23 +173,22 @@ System prompts are provided by Fabric and available to all users. They serve as 
 
 ### Organization
 
-Organization prompts are visible to every member of that organization. When you're working inside an organization workspace, you see System prompts and your organization's prompts. Personal prompts from your own workspace are not visible in this context.
+Organization prompts are visible to every member of their organization.
+The library is always opened within an organization; a prompt in another
+organization is not made visible by switching library filters.
 
-### Personal
+### User preferences
 
-Personal prompts are private to you and only appear in your personal workspace. When you switch to an organization workspace, your personal prompts are not visible there, and the organization's prompts are not visible in your personal workspace.
-
-### Visibility by context
-
-| Where you are | What you see |
-|---------------|-------------|
-| Personal workspace (`/app/prompts`) | System + your Personal prompts |
-| Organization workspace (`/app/acme/prompts`) | System + that organization's prompts |
-
-Personal and organization prompts are kept completely separate. A prompt created in one organization is never visible in another organization, even if you belong to both.
+The **My Prompts** filter can display retained user-owned prompt content.
+New prompt creation is organization-only. **My Overrides** is a user preference
+for action defaults within the current organization; it is not a personal
+workspace or a second tenant context. User preference precedence is retained.
 
 <Callout>
-Prompt scope controls **which prompts appear in the list**. It does not affect which default is used when generating a document — that is controlled by **binding scope**, described in the next section. For example, you can be in an organization workspace, see a System prompt in the list, and set a Personal default for it. That personal default takes highest precedence for you, even though your personal *prompts* are not visible in the organization list.
+Prompt content visibility and binding scope are separate. Saving or copying an
+organization prompt does not bind it to an action. A user's chosen default can
+take precedence over organization and system defaults without changing shared
+prompt content.
 </Callout>
 
 ## Prompt Bindings and Defaults
@@ -348,18 +364,14 @@ Before making a prompt organization-wide:
 4. Get feedback from team members
 5. Iterate based on results
 
-## Analytics
+## Inspect usage and results
 
-Track prompt performance:
-
-| Metric | Description |
-|--------|-------------|
-| Usage count | How many times used |
-| Satisfaction rate | User ratings |
-| Edit rate | How often output is edited |
-| Time to complete | Generation speed |
-
-Access analytics in **Settings → Prompt Library → Analytics**.
+The library shows recorded usage counts and last-used information when available.
+The details page keeps saved versions, comparisons and action bindings together.
+Use **Try prompt** to inspect a live output and its exact rendered input; this
+interactive preview does not assign a satisfaction score or create a saved
+evaluation. Where AI adoption reporting is enabled, assistance and previews
+have separate feature labels.
 
 ---
 
@@ -373,3 +385,111 @@ Access analytics in **Settings → Prompt Library → Analytics**.
     Generate your first document with custom prompts
   </Card>
 </Cards>
+
+
+## Create, inspect and try a prompt
+
+Use **Create prompt** to start **From conversation**, **From scratch**, or
+**From existing**. Existing prompts are copied only after their authorized
+content loads. Review the text and metadata before creating a separate prompt;
+its action bindings and defaults are not copied. Organization owners and administrators can create new prompts. New prompts belong to the
+current organization and are available to its members. They are not private
+skill drafts. Creating one does not replace an action default.
+
+Selecting a prompt opens its inspection drawer. **Edit** opens the focused
+editor; **X** and **Cancel** ask before discarding changed text. Library search,
+view, scope, sort and page are retained when returning from the editor.
+Existing versions, comparisons, restoration and action bindings remain on the
+full details page.
+
+The editor's **Assistant** begins with a question and sends nothing until you
+request help. It proposes text for review. **Apply proposal to draft** changes
+only the open draft; saving is a separate action. If the draft changes during
+or after a request, ask for a fresh proposal before applying it.
+
+**Try prompt** calls your configured AI provider with the current draft and
+supplied text inputs. Use it to check the response before saving your prompt.
+Results open in **Formatted** view, with Markdown headings, lists, tables and
+code blocks rendered for reading. **Raw text** shows the exact response, and
+**Copy result** copies that response. **Rendered input** shows the text sent to
+the model after substituting preview inputs.
+Plain text and Markdown are sent verbatim. Template formats support simple text
+placeholders such as `{{topic}}`; missing values are rejected. Interactive Try
+does not execute template programs, filters, includes, nested expressions,
+document retrieval or tools. Advanced template logic belongs in the existing
+workflow runtime. Changing the draft or inputs marks earlier output as stale.
+A preview is a single model response, not a saved evaluation, agent/workflow run,
+publication or action binding.
+
+Prompt text format and expected response format are separate concerns. Markdown
+and plain text describe the instructions; template formats describe input
+substitution. **Use named inputs** exposes input fields without asking you to
+choose a template engine. Existing template engines remain under **Details**.
+
+Choose **Expected response** in **Try prompt**:
+
+- **Let the prompt decide** keeps existing behavior.
+- **Plain text** and **Markdown** request that presentation without a quality score.
+- **JSON with expected fields** offers a field builder and an advanced JSON schema.
+  Preview requests JSON from the provider, then independently checks the actual
+  response against your schema. It never changes types, removes fields, inserts
+  defaults, or retries a failed check. Failed output remains available to inspect
+  and copy. Schemas support bounded object fields, arrays, primitive types,
+  required fields, enums and numeric/length bounds; references and regexes are
+  refused before calling the provider.
+- **XML (advanced)** checks exactly one well-formed XML document. DTDs and entity
+  declarations are refused. This is syntax validation, not XSD validation.
+
+Saving snapshots expectations with the prompt version. Metadata-only saves do not
+create a version; response-only saves preserve the latest instructions. Duplicate
+and restore retain the corresponding version's expectations. Changing a response
+setting marks prior preview results as stale. These checks apply to **Try prompt**;
+existing agent and Temporal workflow output policies remain in control of their
+own execution. A passing structure check does not establish factual accuracy.
+
+On a small screen, use **Assistant & Try** and **Edit prompt** to switch panes.
+The assistant input stays within its pane instead of following the full form.
+
+### API, CLI and MCP
+
+| Operation | REST | SDK | CLI | MCP |
+| --- | --- | --- | --- | --- |
+| Reviewed assistance | `POST /api/v1/prompt-assistance` | `client.prompts.assist(input)` | `fabric prompts assist request.json --org example-org` | `fabric_assist_prompt` |
+| Live preview | `POST /api/v1/prompt-previews` | `client.prompts.preview(input)` | `fabric prompts preview request.json --org example-org` | `fabric_preview_prompt` |
+| Read saved expectations | `POST /api/v1/prompt-responses/read` | `client.prompts.getResponseContract(promptId)` | `fabric prompts response <id> --org example-org` | `fabric_get_prompt_response` |
+| Save expectations as a version | `POST /api/v1/prompt-responses` | `client.prompts.setResponseContract(promptId, contract)` | `fabric prompts response <id> --file contract.json --org example-org` | `fabric_update_prompt_response` |
+
+Requests carry a `draft` with `name`, `description`, `format` and `content`.
+Assistance adds `message` and optional bounded `history`. Preview adds
+`variables`, an object of text values. Requests are bounded to 512 KiB.
+Assistance requires `prompts:write`; preview requires `prompts:read`.
+Both also check the actor's current organization permissions and AI access,
+including wildcard keys. Project-bound and service credentials cannot use the
+organization authoring tools. Neither operation saves or publishes anything,
+and SDK calls do not automatically retry model spending.
+
+Preview drafts optionally carry `responseContract`, for example:
+
+```json
+{
+  "format": "JSON",
+  "schema": {
+    "type": "object",
+    "properties": { "summary": { "type": "string" } },
+    "required": ["summary"],
+    "additionalProperties": false
+  }
+}
+```
+
+Preview returns the original `output`, `responseFormat`, and `validation` with
+`status` (`not_requested`, `passed`, or `failed`) and bounded issues. The CLI exits
+nonzero when a response fails its checks. Saved-expectation requests carry
+`promptId`; writes also carry `responseContract`. Reads require `prompts:read`,
+writes require `prompts:write`, and neither saved-settings operation requires AI
+access or calls a model. Organization writes require a current owner or admin;
+system writes require platform administration. MCP writes require confirmation.
+Changes are audited as `prompt.response_contract_changed` with only version id
+and response format, never prompt content or schemas. Older content-only clients
+inherit the prior expectations; explicitly save `{ "format": "AUTO" }` to clear
+them. Requests remain organization-bound and reject project/service credentials.

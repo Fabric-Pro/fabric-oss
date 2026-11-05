@@ -1,5 +1,6 @@
 import {
 	getAccessibleFrameById,
+	isWorkflowLive,
 	listWorkspaceReviewHistory,
 	type Prisma,
 	WorkspaceWorkflowBindingConflictError,
@@ -9,19 +10,21 @@ import {
 	adoStoryReviewConfigFieldsSchema,
 	adoStoryReviewConfigSchema,
 } from "@repo/temporal/ado-story-review-config";
-import { ADO_STORY_REVIEW_NODE_TYPE } from "@repo/temporal/workflow-node-types";
 import {
 	findScheduleCron,
 	findScheduleTimezone,
 } from "@repo/temporal/workflow-builder-schedule";
+import { ADO_STORY_REVIEW_NODE_TYPE } from "@repo/temporal/workflow-node-types";
 import { z } from "zod";
 import { findAgenticPublishProblems } from "./agentic-publish-validation";
+import { commitWorkflowVersion } from "./commit-workflow-version";
+import { syncWorkflowSchedule } from "./sync-workflow-schedule";
 import {
 	loadEditableWorkflow,
 	loadReadableWorkflow,
 	requireWritableProject,
-	WorkflowCommandError,
 	type WorkflowActor,
+	WorkflowCommandError,
 } from "./workflow-command-context";
 import {
 	applyWorkflowUpdateWithSchedule,
@@ -475,12 +478,54 @@ export async function configureWorkspaceStoryReviewCommand(
 		throw new WorkflowCommandError("BAD_REQUEST", problems.join("\n"));
 	}
 	try {
-		const { workflow, schedule } = await applyWorkflowUpdateWithSchedule(
-			actor,
-			current,
-			{ id: current.id, nodes },
-			{ expectedUpdatedAt: new Date(parsed.data.expectedUpdatedAt) },
-		);
+		let workflow: Omit<EditableWorkflow, "_count">;
+		if (current.status === "DRAFT" || current.status === "ARCHIVED") {
+			workflow = (
+				await applyWorkflowUpdateWithSchedule(
+					actor,
+					current,
+					{ id: current.id, nodes },
+					{
+						expectedUpdatedAt: new Date(
+							parsed.data.expectedUpdatedAt,
+						),
+					},
+				)
+			).workflow;
+		} else {
+			// Applying configuration to a published/paused binding must replace
+			// its immutable publication, so its next active run sees the edit.
+			await commitWorkflowVersion({
+				operation: "publish",
+				workflowId: current.id,
+				userId: actor.userId,
+				organizationId: actor.organizationId,
+				expectedUpdatedAt: new Date(parsed.data.expectedUpdatedAt),
+				publishedAt: new Date(),
+				changelog: "Apply workspace review configuration",
+				content: {
+					nodes,
+					edges: current.edges ?? [],
+					variables: current.variables ?? undefined,
+					settings: current.settings ?? undefined,
+					triggerConfig: current.triggerConfig ?? undefined,
+				},
+				patch: { nodes },
+			});
+			workflow = await loadEditableWorkflow(actor, current.id, "edit");
+		}
+		const schedule = isWorkflowLive(current.status)
+			? await syncWorkflowSchedule({
+					workflowId: current.id,
+					nodes,
+					userId: actor.userId,
+					organizationId: actor.organizationId,
+					projectId: current.projectId,
+					workflowName: current.name,
+					active: true,
+				})
+			: null;
+
 		return {
 			workflow: descriptor({ ...current, ...workflow }, binding),
 			schedule,

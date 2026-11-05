@@ -1,15 +1,18 @@
 import { ORPCError } from "@orpc/server";
 import {
+	canAccessReportInstance,
 	createTemplateInstance,
 	getReportTemplate,
+	hasProjectKnowledgeSource,
+	reportEvidenceConfigSchema,
 	reportScheduleInputSchema,
 } from "@repo/database";
 import type { Prisma } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
 import {
 	Permissions,
+	requireInputOrgPermission,
 	requireOrganizationMembership,
-	requirePermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
@@ -45,16 +48,44 @@ const createInstanceInputSchema = z.object({
 	}),
 	// Optional schedule for automated execution (shared schema — single source of truth).
 	schedule: reportScheduleInputSchema.optional(),
+	reporting: reportEvidenceConfigSchema.optional(),
 });
 
 export const createInstanceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.REPORT_CREATE))
+	.use(
+		requireInputOrgPermission(Permissions.REPORT_CREATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(createInstanceInputSchema)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
 		);
+
+		if (!organizationId) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "An organization is required",
+			});
+		}
+		if (
+			input.reporting?.projectId &&
+			!(await canAccessReportInstance(
+				{
+					userId: context.user.id,
+					organizationId,
+					fabricConfig: { reporting: input.reporting },
+				},
+				{ userId: context.user.id, organizationId },
+				undefined,
+				true,
+			))
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Project report access denied",
+			});
+		}
 
 		// Verify template exists and user has access
 		const template = await getReportTemplate({
@@ -66,6 +97,15 @@ export const createInstanceProcedure = tenantProtectedProcedure
 		if (!template) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Report template not found or access denied",
+			});
+		}
+
+		if (
+			hasProjectKnowledgeSource(template.definition) &&
+			!input.reporting?.projectId
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Choose a project audience for Project knowledge",
 			});
 		}
 
@@ -119,6 +159,9 @@ export const createInstanceProcedure = tenantProtectedProcedure
 			name: input.name,
 			description: input.description,
 			connections: input.connections,
+			fabricConfig: input.reporting
+				? { reporting: input.reporting }
+				: undefined,
 			schedule: effectiveSchedule as Prisma.InputJsonValue | undefined,
 			// CUSTOM iff the caller supplied an explicit per-instance schedule; otherwise the
 			// instance follows the template (INHERITED), even when a schedule was inherited. (D2/§7.1)

@@ -46,6 +46,9 @@ describe("Script Transform configuration", () => {
 				onUpdate={onUpdate}
 			/>,
 		);
+		expect(
+			screen.queryByRole("button", { name: "Insert output" }),
+		).not.toBeInTheDocument();
 		const code =
 			"return { literal: '{{source.data}}', value: inputs.source };";
 		const inputKeys = screen.getByLabelText(/Input keys/);

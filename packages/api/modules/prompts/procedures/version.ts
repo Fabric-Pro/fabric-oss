@@ -1,4 +1,5 @@
 import { ORPCError } from "@orpc/server";
+import { promptResponseContract } from "@repo/ai/lib/prompt-response-contract";
 import { createPromptVersion, getPromptById } from "@repo/database";
 import type { TemplateFormat } from "@repo/utils";
 import { z } from "zod";
@@ -8,9 +9,11 @@ import {
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { resolvedOrganizationId } from "../../agents/procedures/conversations/resolved-organization";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 import { announceDefaultChangeForWinningActions } from "../lib/announce-default-change";
 import { assertSavablePromptContent } from "../lib/assert-valid-template";
+import { prepareResponseContract } from "../lib/response-contract";
 
 export const versionProcedures = {
 	create: tenantProtectedProcedure
@@ -27,6 +30,7 @@ export const versionProcedures = {
 				content: z.string().min(1).max(INPUT_BOUNDS.text),
 				variables: z.record(z.string(), z.any()).optional(),
 				changeNote: z.string().max(500).optional(),
+				responseContract: promptResponseContract.optional(),
 			}),
 		)
 		.output(z.any())
@@ -88,11 +92,17 @@ export const versionProcedures = {
 				input.content,
 			);
 
+			prepareResponseContract(input.responseContract);
 			const version = await createPromptVersion({
 				promptId: input.id,
 				content: input.content,
 				variables: input.variables,
 				changeNote: input.changeNote,
+				responseContract: input.responseContract,
+				auditOrganizationId: resolvedOrganizationId(
+					{},
+					context.session,
+				),
 				createdBy: user.id,
 			});
 

@@ -9,6 +9,7 @@ import {
 	db,
 	decrementDeploymentQuota,
 	getAgentDeploymentById,
+	Prisma,
 } from "@repo/database";
 import { getScheduleClient, getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
@@ -80,7 +81,11 @@ export const pauseDeploymentProcedure = tenantProtectedProcedure
 		await handle.signal("pause");
 
 		// Pause all triggers for this deployment
-		await pauseDeploymentTriggers(input.deploymentId);
+		await pauseDeploymentTriggers({
+			deploymentId: input.deploymentId,
+			userId,
+			organizationId: deployment.organizationId,
+		});
 
 		return { success: true, message: "Deployment pause signal sent" };
 	});
@@ -145,7 +150,11 @@ export const resumeDeploymentProcedure = tenantProtectedProcedure
 		await handle.signal("resume");
 
 		// Resume all triggers for this deployment
-		await resumeDeploymentTriggers(input.deploymentId);
+		await resumeDeploymentTriggers({
+			deploymentId: input.deploymentId,
+			userId,
+			organizationId: deployment.organizationId,
+		});
 
 		return { success: true, message: "Deployment resume signal sent" };
 	});
@@ -230,11 +239,29 @@ export const terminateDeploymentProcedure = tenantProtectedProcedure
  * - Marks webhook triggers as inactive
  * - Pauses Temporal schedules for cron triggers
  */
-async function pauseDeploymentTriggers(deploymentId: string): Promise<void> {
+interface TriggerLifecycleOwner {
+	deploymentId: string;
+	userId: string;
+	organizationId: string | null;
+}
+function objectTriggerConfig(config: unknown): Record<string, unknown> {
+	if (config === null) {
+		return {};
+	}
+	if (typeof config !== "object" || Array.isArray(config)) {
+		throw new Error(
+			"Trigger configuration must be an object before changing its lifecycle state",
+		);
+	}
+	return config as Record<string, unknown>;
+}
+async function pauseDeploymentTriggers(
+	owner: TriggerLifecycleOwner,
+): Promise<void> {
 	// Get all active triggers
 	const triggers = await db.agentDeploymentTrigger.findMany({
 		where: {
-			deploymentId,
+			...owner,
 			isActive: true,
 		},
 	});
@@ -263,21 +290,26 @@ async function pauseDeploymentTriggers(deploymentId: string): Promise<void> {
 		}
 	}
 
-	// Mark all triggers as paused (via a metadata field, not isActive)
-	// We use isActive=false during pause so webhooks don't fire
-	await db.agentDeploymentTrigger.updateMany({
-		where: {
-			deploymentId,
-			isActive: true,
-		},
-		data: {
-			isActive: false,
-			config: {
-				// Store that this was paused (not manually disabled)
-				_pausedByLifecycle: true,
+	// Preserve each definition and add only the internal pause marker. The prior
+	// configuration and active state fence concurrent edits instead of overwriting them.
+	for (const trigger of triggers) {
+		const config = objectTriggerConfig(trigger.config);
+		await db.agentDeploymentTrigger.updateMany({
+			where: {
+				id: trigger.id,
+				...owner,
+				isActive: true,
+				config: { equals: trigger.config ?? Prisma.JsonNull },
 			},
-		},
-	});
+			data: {
+				isActive: false,
+				config: {
+					...config,
+					_pausedByLifecycle: true,
+				} as Prisma.InputJsonObject,
+			},
+		});
+	}
 }
 
 /**
@@ -285,18 +317,20 @@ async function pauseDeploymentTriggers(deploymentId: string): Promise<void> {
  * - Reactivates webhook triggers that were paused
  * - Resumes Temporal schedules for cron triggers
  */
-async function resumeDeploymentTriggers(deploymentId: string): Promise<void> {
+async function resumeDeploymentTriggers(
+	owner: TriggerLifecycleOwner,
+): Promise<void> {
 	// Get triggers that were paused by lifecycle
 	const triggers = await db.agentDeploymentTrigger.findMany({
 		where: {
-			deploymentId,
+			...owner,
 			isActive: false,
 		},
 	});
 
 	// Filter to only those paused by lifecycle
 	const pausedTriggers = triggers.filter((t) => {
-		const config = t.config as { _pausedByLifecycle?: boolean } | null;
+		const config = objectTriggerConfig(t.config);
 		return config?._pausedByLifecycle === true;
 	});
 
@@ -330,14 +364,19 @@ async function resumeDeploymentTriggers(deploymentId: string): Promise<void> {
 
 	// Reactivate triggers and clear the lifecycle pause flag
 	for (const trigger of pausedTriggers) {
-		const config = trigger.config as Record<string, unknown> | null;
+		const config = objectTriggerConfig(trigger.config);
 		const { _pausedByLifecycle, ...restConfig } = config || {};
 
-		await db.agentDeploymentTrigger.update({
-			where: { id: trigger.id },
+		await db.agentDeploymentTrigger.updateMany({
+			where: {
+				id: trigger.id,
+				...owner,
+				isActive: false,
+				config: { equals: trigger.config ?? Prisma.JsonNull },
+			},
 			data: {
 				isActive: true,
-				config: restConfig as object,
+				config: restConfig as Prisma.InputJsonObject,
 			},
 		});
 	}

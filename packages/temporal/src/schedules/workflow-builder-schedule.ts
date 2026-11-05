@@ -260,6 +260,7 @@ export async function upsertWorkflowSchedule(
 			const handle = scheduleClient.getHandle(scheduleId);
 			await handle.update((previous) => ({
 				...previous,
+				state: { ...previous.state, paused: false },
 				spec,
 				action,
 			}));

@@ -18,7 +18,10 @@ import {
 	SidebarCollapseProvider,
 	useSidebarCollapse,
 } from "@saas/shared/contexts/SidebarCollapseContext";
-import { isFullHeightPath } from "@saas/shared/lib/full-height-routes";
+import {
+	isAgentBuilderPath,
+	isFullHeightPath,
+} from "@saas/shared/lib/full-height-routes";
 import {
 	SHELL_DOCK_GUTTER_CLASS,
 	SHELL_DOCK_LAYER_CLASS,
@@ -40,18 +43,22 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 	const { isCollapsed } = useSidebarCollapse();
 	const pathname = usePathname();
 	const isFullHeightRoute = isFullHeightPath(pathname ?? "");
+	const isAgentBuilder = isAgentBuilderPath(pathname ?? "");
 
 	// All routes use full-width layout — no card wrapper or outer padding
 	const mainPaddingClasses = isFullHeightRoute
 		? "p-0"
 		: SHELL_LAUNCHER_CLEARANCE_CLASS;
 	const mainSurfaceClasses = cn(
-		"flex flex-col w-full flex-1",
+		"flex min-h-0 flex-col w-full flex-1",
 		isFullHeightRoute ? "h-full overflow-hidden" : "",
 	);
 	const innerSpacingClasses = "flex-1";
 	const showCompactRail = config.ui.saas.useSidebarLayout && isFullscreen;
 	const baseHeightClasses = (() => {
+		if (isAgentBuilder) {
+			return "min-h-0 flex-1";
+		}
 		if (config.ui.saas.useSidebarLayout && !isFullscreen) {
 			const sidebarOffset = shellContentOffsetClass(isCollapsed);
 			return isFullHeightRoute
@@ -75,9 +82,11 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 		<div
 			className={cn(
 				"flex flex-col min-w-0 bg-background",
-				isFullHeightRoute
-					? "h-screen overflow-hidden"
-					: "min-h-screen overflow-x-clip",
+				isAgentBuilder
+					? "h-dvh overflow-hidden"
+					: isFullHeightRoute
+						? "h-screen overflow-hidden"
+						: "min-h-screen overflow-x-clip",
 				[config.ui.saas.useSidebarLayout ? "" : ""],
 			)}
 		>
@@ -89,10 +98,11 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 				Skip to main content
 			</a>
 			{config.ui.saas.useSidebarLayout &&
+				!isAgentBuilder &&
 				(isFullscreen ? <NavBar forceCollapsed /> : <NavBar />)}
 			<div
 				className={cn(
-					"flex flex-col transition-[margin] duration-200 ease-in-out",
+					"flex min-h-0 flex-col transition-[margin] duration-200 ease-in-out",
 					innerSpacingClasses,
 					baseHeightClasses,
 				)}
@@ -105,7 +115,7 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 				>
 					<div
 						className={cn(
-							"min-w-0 max-w-full flex flex-col flex-1 w-full",
+							"min-h-0 min-w-0 max-w-full flex flex-col flex-1 w-full",
 							isFullHeightRoute
 								? "h-full overflow-hidden"
 								: "px-6",

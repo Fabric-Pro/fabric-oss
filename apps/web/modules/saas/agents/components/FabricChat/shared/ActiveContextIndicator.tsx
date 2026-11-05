@@ -13,18 +13,26 @@ import { useEffectiveOrganizationId } from "@saas/organizations/hooks";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
+import { Button } from "@ui/components/button";
 import {
-	HoverCard,
-	HoverCardContent,
-	HoverCardTrigger,
-} from "@ui/components/hover-card";
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@ui/components/popover";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
-import { FolderKanban, FolderOpen, Info, Plug2, Star, X } from "lucide-react";
+import {
+	FolderKanban,
+	FolderOpen,
+	Plug2,
+	SlidersHorizontal,
+	Star,
+	X,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useMemo } from "react";
 
@@ -285,11 +293,12 @@ function ContextPill({
 	).length;
 
 	return (
-		<HoverCard openDelay={200} closeDelay={100}>
-			<HoverCardTrigger asChild>
-				<span
+		<Popover>
+			<PopoverTrigger asChild>
+				<button
+					type="button"
 					className={cn(
-						"inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium cursor-default transition-colors",
+						"inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						colors.pill,
 					)}
 				>
@@ -305,9 +314,10 @@ function ContextPill({
 							)}
 						/>
 					)}
-				</span>
-			</HoverCardTrigger>
-			<HoverCardContent
+				</button>
+			</PopoverTrigger>
+			<PopoverContent
+				aria-label={`${count} ${count === 1 ? singularLabel : label}`}
 				side="top"
 				align="start"
 				className="w-64 p-3"
@@ -422,8 +432,8 @@ function ContextPill({
 						</div>
 					)}
 				</div>
-			</HoverCardContent>
-		</HoverCard>
+			</PopoverContent>
+		</Popover>
 	);
 }
 
@@ -449,10 +459,11 @@ export function ActiveContextIndicator({
 	className,
 }: ActiveContextIndicatorProps) {
 	const organizationId = useEffectiveOrganizationId(propOrgId);
+	const t = useTranslations("genieExperience");
 
 	// Fetch workspace details
 	const { data: workspacesData, isLoading: isLoadingWorkspaces } = useQuery({
-		queryKey: ["context-workspaces", workspaceIds],
+		queryKey: ["context-workspaces", workspaceIds, organizationId],
 		queryFn: async () => {
 			if (workspaceIds.length === 0) {
 				return [];
@@ -469,7 +480,7 @@ export function ActiveContextIndicator({
 				) || []
 			);
 		},
-		enabled: workspaceIds.length > 0,
+		enabled: Boolean(organizationId) && workspaceIds.length > 0,
 		staleTime: 30000,
 	});
 
@@ -490,7 +501,7 @@ export function ActiveContextIndicator({
 			// Filter to only enabled ones
 			return configs.filter((c: any) => mcpConfigIds.includes(c.id));
 		},
-		enabled: mcpConfigIds.length > 0,
+		enabled: Boolean(organizationId) && mcpConfigIds.length > 0,
 		staleTime: 30000,
 	});
 
@@ -559,7 +570,7 @@ export function ActiveContextIndicator({
 					integrationIds.includes(i.id),
 				);
 			},
-			enabled: integrationIds.length > 0,
+			enabled: Boolean(organizationId) && integrationIds.length > 0,
 			staleTime: 30000,
 		});
 
@@ -578,7 +589,7 @@ export function ActiveContextIndicator({
 
 	// Fetch project name when projectId is set
 	const { data: projectData } = useQuery({
-		queryKey: ["context-project", projectId],
+		queryKey: ["context-project", projectId, organizationId],
 		queryFn: async () => {
 			if (!projectId) {
 				return null;
@@ -589,7 +600,7 @@ export function ActiveContextIndicator({
 			});
 			return result;
 		},
-		enabled: !!projectId,
+		enabled: Boolean(organizationId && projectId),
 		staleTime: 30000,
 	});
 
@@ -627,62 +638,6 @@ export function ActiveContextIndicator({
 				/>
 			)}
 
-			{mcpConfigIds.length > 0 && (
-				<ContextPill
-					count={mcpConfigIds.length}
-					label="MCP servers"
-					singularLabel="MCP server"
-					color="blue"
-					icon={<McpLogo size={14} />}
-					items={mcpItems}
-					isLoading={isLoadingMcp}
-					prioritizedIds={prioritizedMcpConfigIds}
-					onPrioritize={onMcpPrioritize}
-				/>
-			)}
-
-			{agentIds.length > 0 && (
-				<ContextPill
-					count={agentIds.length}
-					label="agents"
-					singularLabel="agent"
-					color="purple"
-					icon={<FabricLogo size={14} />}
-					items={agentItems}
-					isLoading={false}
-					prioritizedIds={prioritizedAgentIds}
-					onPrioritize={onAgentPrioritize}
-				/>
-			)}
-
-			{fabricToolIds.length > 0 && (
-				<ContextPill
-					count={fabricToolIds.length}
-					label="tools"
-					singularLabel="tool"
-					color="orange"
-					icon={<FabricLogo size={14} />}
-					items={fabricToolItems}
-					isLoading={false}
-					prioritizedIds={prioritizedToolIds}
-					onPrioritize={onToolPrioritize}
-				/>
-			)}
-
-			{integrationIds.length > 0 && (
-				<ContextPill
-					count={integrationIds.length}
-					label="integrations"
-					singularLabel="integration"
-					color="emerald"
-					icon={<Plug2 className="h-3.5 w-3.5" />}
-					items={integrationItems}
-					isLoading={isLoadingIntegrations}
-					prioritizedIds={prioritizedIntegrationIds}
-					onPrioritize={onIntegrationPrioritize}
-				/>
-			)}
-
 			{projectId && (
 				<span className="inline-flex items-center gap-0.5 rounded-full border border-primary/25 bg-primary/10 pr-0.5 text-[11px] font-medium text-primary">
 					<button
@@ -713,37 +668,97 @@ export function ActiveContextIndicator({
 				</span>
 			)}
 
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<Info className="h-3 w-3 shrink-0 text-muted-foreground/50 hover:text-muted-foreground cursor-help" />
-				</TooltipTrigger>
-				<TooltipContent
-					side="top"
-					align="start"
-					className="max-w-[380px] p-3"
-				>
-					<div className="space-y-3 text-xs">
-						<p className="font-medium">How Genie Context Works</p>
-						<ul className="space-y-1.5 text-muted-foreground">
-							<li className="flex gap-2">
-								<span className="text-primary">•</span>
-								<span>
-									<strong>Hover</strong> on pills to see
-									available tools, agents, and workspaces
-								</span>
-							</li>
-							<li className="flex gap-2">
-								<Star className="h-3 w-3 text-primary flex-shrink-0 mt-0.5" />
-								<span>
-									<strong>Star items</strong> to prioritize
-									them — starred tools and agents are used
-									first
-								</span>
-							</li>
-						</ul>
-					</div>
-				</TooltipContent>
-			</Tooltip>
+			{(mcpConfigIds.length > 0 ||
+				agentIds.length > 0 ||
+				fabricToolIds.length > 0 ||
+				integrationIds.length > 0) && (
+				<Popover>
+					<PopoverTrigger asChild>
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							className="gap-1.5 text-muted-foreground"
+						>
+							<SlidersHorizontal
+								className="size-3.5"
+								aria-hidden
+							/>
+							{t("details")}
+						</Button>
+					</PopoverTrigger>
+					<PopoverContent
+						aria-label={t("capabilitiesTitle")}
+						align="start"
+						side="top"
+						className="max-h-80 overflow-y-auto space-y-3"
+					>
+						<p className="text-sm font-medium">
+							{t("capabilitiesTitle")}
+						</p>
+						<p className="text-xs text-muted-foreground">
+							{t("capabilitiesDescription")}
+						</p>
+						<div className="flex flex-wrap gap-2">
+							{mcpConfigIds.length > 0 && (
+								<ContextPill
+									count={mcpConfigIds.length}
+									label="MCP servers"
+									singularLabel="MCP server"
+									color="blue"
+									icon={<McpLogo size={14} />}
+									items={mcpItems}
+									isLoading={isLoadingMcp}
+									prioritizedIds={prioritizedMcpConfigIds}
+									onPrioritize={onMcpPrioritize}
+								/>
+							)}
+
+							{agentIds.length > 0 && (
+								<ContextPill
+									count={agentIds.length}
+									label="agents"
+									singularLabel="agent"
+									color="purple"
+									icon={<FabricLogo size={14} />}
+									items={agentItems}
+									isLoading={false}
+									prioritizedIds={prioritizedAgentIds}
+									onPrioritize={onAgentPrioritize}
+								/>
+							)}
+
+							{fabricToolIds.length > 0 && (
+								<ContextPill
+									count={fabricToolIds.length}
+									label="tools"
+									singularLabel="tool"
+									color="orange"
+									icon={<FabricLogo size={14} />}
+									items={fabricToolItems}
+									isLoading={false}
+									prioritizedIds={prioritizedToolIds}
+									onPrioritize={onToolPrioritize}
+								/>
+							)}
+
+							{integrationIds.length > 0 && (
+								<ContextPill
+									count={integrationIds.length}
+									label="integrations"
+									singularLabel="integration"
+									color="emerald"
+									icon={<Plug2 className="h-3.5 w-3.5" />}
+									items={integrationItems}
+									isLoading={isLoadingIntegrations}
+									prioritizedIds={prioritizedIntegrationIds}
+									onPrioritize={onIntegrationPrioritize}
+								/>
+							)}
+						</div>
+					</PopoverContent>
+				</Popover>
+			)}
 		</div>
 	);
 }

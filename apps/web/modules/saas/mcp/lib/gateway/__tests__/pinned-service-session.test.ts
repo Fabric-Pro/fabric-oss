@@ -136,7 +136,7 @@ describe("the scopes a service session holds", () => {
 		}
 	});
 
-	it("holds every scope the 38 portal tools need and nothing a tool does not", () => {
+	it("holds every scope the portal tools need and nothing a tool does not", () => {
 		const needed = new Set(
 			FABRIC_PORTAL_TOOL_NAMES.map(
 				(name) => platformToolScope(name).scope,
@@ -182,21 +182,85 @@ describe("which gateway tools Parlume gets", () => {
 	).filter((name) => !runtimeFamilies.has(name));
 
 	it("keeps connection reads, delegated authority and memory tools outside meeting grants", () => {
-		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(38);
+		// 41 included the bounded document reader and two direct context checks.
+		// Six saved evaluation lifecycle controls complement those base tools.
+		const savedEvaluationTools = [
+			"fabric_context_quality_run_capabilities",
+			"fabric_create_context_quality_run",
+			"fabric_list_context_quality_runs",
+			"fabric_get_context_quality_run",
+			"fabric_cancel_context_quality_run",
+			"fabric_compare_context_quality_runs",
+		];
+		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(
+			41 + savedEvaluationTools.length + 2,
+		);
+		expect(
+			FABRIC_PORTAL_TOOL_NAMES.filter((name) =>
+				savedEvaluationTools.includes(name),
+			).sort(),
+		).toEqual(savedEvaluationTools.sort());
+		expect(new Set(FABRIC_PORTAL_TOOL_NAMES).size).toBe(
+			FABRIC_PORTAL_TOOL_NAMES.length,
+		);
+		expect(FABRIC_PORTAL_TOOL_NAMES).toContain(
+			"fabric_inspect_context_quality_source",
+		);
+		expect(FABRIC_PORTAL_TOOL_NAMES).toContain(
+			"fabric_evaluate_context_quality",
+		);
 		expect([...FABRIC_PORTAL_EXCLUDED_TOOL_NAMES].sort()).toEqual([
+			"fabric_archive_agent_test_case",
+			"fabric_archive_skill",
+			"fabric_assemble_project_context",
+			"fabric_assist_skill",
+			"fabric_cancel_agent_preview",
+			"fabric_cancel_agent_run",
+			"fabric_cancel_agent_test_run",
+			"fabric_check_agent_run_result",
 			"fabric_check_authority",
+			"fabric_compare_agent_test_runs",
+			"fabric_create_agent_test_case",
+			"fabric_create_skill",
+			"fabric_create_skill_import",
+			"fabric_delete_skill",
+			"fabric_get_agent_preview",
+			"fabric_get_agent_run",
+			"fabric_get_agent_run_schedule",
+			"fabric_get_agent_test_run",
 			"fabric_get_project_pm_connection",
 			"fabric_get_project_pm_item_snapshots",
 			"fabric_get_project_work_item_counts",
+			"fabric_get_skill",
+			"fabric_get_skill_governance",
+			"fabric_inspect_agent_run_result",
+			"fabric_link_workspace_document",
+			"fabric_list_agent_runs",
+			"fabric_list_agent_test_cases",
+			"fabric_list_agent_test_runs",
 			"fabric_list_project_pm_assigned_items",
 			"fabric_list_project_pm_members",
 			"fabric_list_project_pm_work_item_types",
+			"fabric_list_skills",
 			"fabric_memory_read",
 			"fabric_memory_targets",
 			"fabric_memory_write",
 			"fabric_memory_write_status",
+			"fabric_preview_skill_import",
+			"fabric_publish_skill",
+			"fabric_read_skill_file",
+			"fabric_read_skill_import_file",
 			"fabric_request_authority",
+			"fabric_restore_skill",
 			"fabric_revoke_authority",
+			"fabric_search_agent_runs",
+			"fabric_set_agent_run_schedule",
+			"fabric_start_agent_preview",
+			"fabric_start_agent_test_run",
+			"fabric_unlink_workspace_document",
+			"fabric_update_agent_test_case",
+			"fabric_update_skill",
+			"fabric_update_skill_governance",
 		]);
 	});
 
@@ -256,7 +320,7 @@ describe("what the portal tools need", () => {
 		}
 	});
 
-	it("keeps ordinary chat to the six selected portal reads even with the MCP read umbrella", () => {
+	it("keeps ordinary chat to the selected project and document Workspace reads even with the MCP read umbrella", () => {
 		const allowed = FABRIC_PORTAL_TOOL_NAMES.filter((name) =>
 			serviceSessionHasTool({}, name),
 		);
@@ -264,9 +328,15 @@ describe("what the portal tools need", () => {
 			"fabric_get_project",
 			"fabric_get_project_instruction",
 			"fabric_get_project_instruction_bundle",
+			"fabric_get_workspace",
+			"fabric_get_workspace_document",
 			"fabric_list_connected_servers",
 			"fabric_list_project_instructions",
+			"fabric_list_project_workspace_documents",
 			"fabric_list_projects",
+			"fabric_list_workspaces",
+			"fabric_query_workspace",
+			"fabric_read_project_workspace_document",
 		]);
 	});
 
@@ -371,6 +441,11 @@ describe("the project a pinned session reaches", () => {
 		"fabric_request_authority",
 		"fabric_revoke_authority",
 		"fabric_check_authority",
+		"fabric_assemble_project_context",
+		"fabric_inspect_agent_run_result",
+		"fabric_check_agent_run_result",
+		"fabric_link_workspace_document",
+		"fabric_unlink_workspace_document",
 	])(
 		"refuses %s through the tool call itself, not only the binding",
 		async (tool) => {
@@ -466,6 +541,7 @@ describe("the tools a pinned session is offered", () => {
 
 		expect(offered).toHaveLength(FABRIC_PORTAL_TOOL_NAMES.length);
 		expect(characters).toBeGreaterThan(20_000);
-		expect(characters).toBeLessThan(32_000);
+		// Two source-authorized linked-document reads intentionally extend this catalog.
+		expect(characters).toBeLessThan(34_000);
 	});
 });

@@ -14,6 +14,7 @@ import {
 	type AgentTemplateScope,
 	Prisma,
 } from "../generated/client";
+import { memorySourceBoundary } from "./agent-memory";
 import { BUILT_IN_TO_FABRIC_TOOLS } from "./lib/built-in-tool-map";
 import { OAUTH_APP_ROW_NAMES } from "./lib/oauth-app-row";
 
@@ -1278,15 +1279,6 @@ export async function getInstanceVersion(
 					},
 				},
 			},
-			memoryFiles: {
-				where: { fileType: "SKILL", isEnabled: true },
-				select: {
-					id: true,
-					path: true,
-					content: true,
-					sourceSkillId: true,
-				},
-			},
 		},
 	}) as Promise<AgentTemplateInstance | null>;
 }
@@ -1312,15 +1304,6 @@ export async function getActiveInstanceVersion(
 							name: true,
 						},
 					},
-				},
-			},
-			memoryFiles: {
-				where: { fileType: "SKILL", isEnabled: true },
-				select: {
-					id: true,
-					path: true,
-					content: true,
-					sourceSkillId: true,
 				},
 			},
 		},
@@ -1455,6 +1438,15 @@ export async function searchTemplatesForMention(
 		];
 	}
 
+	const memoryBoundary = await memorySourceBoundary(
+		{ userId, organizationId },
+		{
+			userId,
+			organizationId: organizationId ?? null,
+			fileType: "SKILL",
+			isEnabled: true,
+		},
+	);
 	const instances = await db.agentTemplateInstance.findMany({
 		where,
 		select: {
@@ -1474,7 +1466,7 @@ export async function searchTemplatesForMention(
 			},
 			// Skills are materialized as memory files on the instance
 			memoryFiles: {
-				where: { fileType: "SKILL", isEnabled: true },
+				where: memoryBoundary.where,
 				select: {
 					path: true,
 					content: true,
@@ -1499,6 +1491,7 @@ export async function searchTemplatesForMention(
 	});
 
 	// Map instances to MentionableTemplate format
+	await memoryBoundary.revalidate();
 	return instances.map((instance) => {
 		// Extract integration IDs from integrationConfigurations relation
 		const enabledIntegrationIds = instance.integrationConfigurations.map(
@@ -1632,6 +1625,7 @@ export async function restoreInstanceVersion(
 		where: { id },
 		include: {
 			integrationConfigurations: true,
+			memoryFiles: true,
 		},
 	});
 
@@ -1686,11 +1680,34 @@ export async function restoreInstanceVersion(
 				successCriteria: archived.successCriteria ?? Prisma.DbNull,
 				maxIterations: archived.maxIterations,
 				memoryAutoApprove: archived.memoryAutoApprove,
+				apiConfig: archived.apiConfig ?? Prisma.DbNull,
+				// Restoring declaration does not reactivate an external API endpoint.
+				isApiExposed: false,
 				runCount: 0,
 				lastRunAt: null,
 			},
 			include: { template: true },
 		});
+
+		if (archived.memoryFiles.length > 0) {
+			await tx.agentMemoryFile.createMany({
+				data: archived.memoryFiles.map((file) => ({
+					agentInstanceId: newInstance.id,
+					userId: file.userId,
+					organizationId: file.organizationId,
+					path: file.path,
+					fileType: file.fileType,
+					content: file.content,
+					contentHash: file.contentHash,
+					version: file.version,
+					isValid: file.isValid,
+					validationError: file.validationError,
+					lastModifiedBy: file.lastModifiedBy,
+					sourceSkillId: file.sourceSkillId,
+					isEnabled: file.isEnabled,
+				})),
+			});
+		}
 
 		// Clone integrationConfigurations from archived instance
 		if (archived.integrationConfigurations.length > 0) {

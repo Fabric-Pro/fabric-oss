@@ -1,38 +1,63 @@
 "use client";
-
-import { Spinner } from "@shared/components/Spinner";
-import { orpc } from "@shared/lib/orpc-query-utils";
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
+import { Alert, AlertDescription } from "@ui/components/alert";
+import { Button } from "@ui/components/button";
+import { Skeleton } from "@ui/components/skeleton";
+import { skillReadCanRetry, skillUiError } from "../lib/skill-ui";
 import { SkillViewer } from "./SkillViewer";
-
-interface SkillViewLoaderProps {
+export function SkillViewLoader({
+	skillId,
+	embedded = false,
+	returnTo,
+	onDeleted,
+}: {
 	skillId: string;
-}
-
-export function SkillViewLoader({ skillId }: SkillViewLoaderProps) {
-	const { data, isLoading, error } = useQuery(
-		orpc.skills.get.queryOptions({
-			input: { id: skillId },
-		}),
+	embedded?: boolean;
+	returnTo?: string;
+	onDeleted?: () => void;
+}) {
+	const { organizationId } = useOrganizationContext();
+	const query = useQuery({
+		queryKey: ["skills", organizationId, "detail", skillId],
+		queryFn: () =>
+			orpcClient.skills.get({
+				organizationId: organizationId ?? undefined,
+				id: skillId,
+			}),
+		enabled: !!organizationId,
+		retry: false,
+	});
+	if (query.isError) {
+		return (
+			<Alert variant="error">
+				<AlertDescription>
+					{skillUiError(query.error)}
+					{skillReadCanRetry(query.error) && (
+						<Button
+							type="button"
+							variant="link"
+							size="sm"
+							disabled={query.isFetching}
+							onClick={() => void query.refetch()}
+						>
+							Retry
+						</Button>
+					)}
+				</AlertDescription>
+			</Alert>
+		);
+	}
+	if (query.isPending) {
+		return <Skeleton className="h-52 w-full" />;
+	}
+	return (
+		<SkillViewer
+			skill={query.data.skill}
+			embedded={embedded}
+			returnTo={returnTo}
+			onDeleted={onDeleted}
+		/>
 	);
-
-	if (isLoading) {
-		return (
-			<div className="flex items-center justify-center py-12">
-				<Spinner />
-			</div>
-		);
-	}
-
-	if (error || !data?.skill) {
-		return (
-			<div className="text-center py-12">
-				<p className="text-muted-foreground">
-					{error?.message || "Skill not found"}
-				</p>
-			</div>
-		);
-	}
-
-	return <SkillViewer skill={data.skill} />;
 }

@@ -117,8 +117,12 @@ async function handle(request: Request): Promise<Response> {
 	const requestedWindow = request.headers.get(STREAM_WINDOW_HEADER);
 	const runtime = new CopilotRuntime({
 		agents: {
-			[DIRECT_AGENT_ID]: new FabricRuntimeAgent(),
-			[ORCHESTRATOR_AGENT_ID]: new FabricRuntimeAgent(),
+			[DIRECT_AGENT_ID]: new FabricRuntimeAgent({
+				agentId: DIRECT_AGENT_ID,
+			}),
+			[ORCHESTRATOR_AGENT_ID]: new FabricRuntimeAgent({
+				agentId: ORCHESTRATOR_AGENT_ID,
+			}),
 		},
 		runner: new FabricTemporalRunner(
 			{

@@ -35,6 +35,7 @@ import {
 	SearchIcon,
 	Settings2Icon,
 	SettingsIcon,
+	ShieldCheckIcon,
 	SparklesIcon,
 	TriangleAlertIcon,
 	Users2Icon,
@@ -127,6 +128,11 @@ export default async function SettingsLayout({
 					title: t("settings.menu.organization.members"),
 					href: `${organizationSettingsBasePath}/members`,
 					icon: <Users2Icon className="size-4" />,
+				},
+				{
+					title: t("settings.menu.organization.skillGovernance"),
+					href: `${organizationSettingsBasePath}/skill-governance`,
+					icon: <ShieldCheckIcon className="size-4" />,
 				},
 				{
 					title: "API Keys",

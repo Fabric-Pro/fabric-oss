@@ -224,6 +224,10 @@ export function CodingRunTimeline({
 		null;
 	const isNativeSession =
 		_metadata?.executionRuntime === "fabric-agent-server";
+	const nativeCheckpoint =
+		isNativeSession &&
+		(run.status === "AWAITING_REVIEW" ||
+			liveStatus?.liveStatus?.providerStatus === "paused");
 	const isFabricAgentsSession =
 		run.provider === "BACKGROUND_AGENTS" ||
 		Boolean(sessionUrl?.startsWith("fabric-agent://"));
@@ -449,11 +453,20 @@ export function CodingRunTimeline({
 					/>
 				)}
 
+			{nativeCheckpoint && !privateSession && (
+				<p className="text-sm text-muted-foreground">
+					Resolve permission, sign-in, and tool-input requests in the
+					authenticated Fabric Agents client. Sending a reply here
+					does not approve them.
+				</p>
+			)}
+
 			{(run.status === "AWAITING_REVIEW" ||
 				run.status === "RUNNING" ||
 				liveStatus?.liveStatus?.providerStatus === "paused" ||
 				(isNativeSession && run.status === "COMPLETED")) &&
 				run.provider === "BACKGROUND_AGENTS" &&
+				!nativeCheckpoint &&
 				!privateSession && (
 					<div className="rounded-lg border border-highlight/30 bg-highlight/5 p-4">
 						<div className="flex items-start gap-3">

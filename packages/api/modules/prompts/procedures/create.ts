@@ -1,4 +1,5 @@
 import { ORPCError } from "@orpc/server";
+import { promptResponseContract } from "@repo/ai/lib/prompt-response-contract";
 import { createPrompt } from "@repo/database";
 import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
@@ -10,8 +11,10 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { resolvedOrganizationId } from "../../agents/procedures/conversations/resolved-organization";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 import { assertSavablePromptContent } from "../lib/assert-valid-template";
+import { prepareResponseContract } from "../lib/response-contract";
 
 const PromptFormatSchema = z.enum([
 	"PLAIN_TEXT",
@@ -91,6 +94,7 @@ export const createProcedure = tenantProtectedProcedure
 			isPublic: z.boolean().default(false),
 			initialContent: z.string().max(INPUT_BOUNDS.text).optional(),
 			initialVariables: z.record(z.string(), z.any()).optional(),
+			responseContract: promptResponseContract.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -146,6 +150,13 @@ export const createProcedure = tenantProtectedProcedure
 		}
 		// USER scope - any authenticated user can create
 
+		if (input.responseContract && !input.initialContent?.trim()) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Save prompt instructions before configuring a response.",
+			});
+		}
+		prepareResponseContract(input.responseContract);
 		try {
 			const prompt = await createPrompt({
 				key: input.key,
@@ -162,6 +173,11 @@ export const createProcedure = tenantProtectedProcedure
 				createdBy: user.id,
 				initialContent: input.initialContent,
 				initialVariables: input.initialVariables,
+				responseContract: input.responseContract,
+				auditOrganizationId: resolvedOrganizationId(
+					{},
+					context.session,
+				),
 			});
 
 			return { prompt };

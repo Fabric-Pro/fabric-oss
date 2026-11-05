@@ -206,7 +206,7 @@ const PICKER_SURFACES = {
 	"Library documents": {
 		path: join(
 			WEB_ROOT,
-			"modules/saas/libraries/components/DocumentUploader.tsx",
+			"modules/saas/workspaces/components/DocumentUploader.tsx",
 		),
 		acceptConstant: "WORKSPACE_DOCUMENT_ACCEPT_ATTR",
 		gateSymbol: "workspaceDocumentConfigFor",

@@ -1,16 +1,21 @@
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { TopRightControls } from "@saas/shared/components/TopRightControls";
-import { SkillEditor } from "@saas/skills/components/SkillEditor";
+import { SkillNewLoader } from "@saas/skills/components/SkillNewLoader";
 import { redirect } from "next/navigation";
 
 type Props = {
 	params: Promise<{ organizationSlug: string }>;
+	searchParams: Promise<{ mode?: string; source?: string }>;
 };
 
-export default async function OrganizationNewSkillPage({ params }: Props) {
+export default async function OrganizationNewSkillPage({
+	params,
+	searchParams,
+}: Props) {
 	const session = await getSession();
 	const { organizationSlug } = await params;
+	const query = await searchParams;
 
 	if (!session) {
 		redirect("/auth/login");
@@ -40,7 +45,16 @@ export default async function OrganizationNewSkillPage({ params }: Props) {
 					]}
 				/>
 			</div>
-			<SkillEditor />
+			<SkillNewLoader
+				mode={
+					query.mode === "conversation" ? "conversation" : "scratch"
+				}
+				sourceSkillId={
+					query.source && query.source.length <= 200
+						? query.source
+						: undefined
+				}
+			/>
 		</div>
 	);
 }

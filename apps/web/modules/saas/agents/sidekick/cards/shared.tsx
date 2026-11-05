@@ -2,6 +2,7 @@
 
 import { Button } from "@ui/components/button";
 import { Check, X } from "lucide-react";
+import { useState } from "react";
 
 /**
  * Visual state styles shared across all suggestion card types.
@@ -21,16 +22,30 @@ export function SuggestionActionButtons({
 	onAccept,
 	onReject,
 }: {
-	onAccept: () => void;
-	onReject: () => void;
+	onAccept: () => void | Promise<void>;
+	onReject: () => void | Promise<void>;
 }) {
+	const [busy, setBusy] = useState(false);
+	async function submit(action: () => void | Promise<void>) {
+		if (busy) {
+			return;
+		}
+		setBusy(true);
+		try {
+			await action();
+		} finally {
+			setBusy(false);
+		}
+	}
 	return (
 		<>
 			<Button
 				size="sm"
 				variant="ghost"
 				className="h-7 w-7 p-0 text-secondary hover:bg-secondary/10 hover:text-secondary"
-				onClick={onAccept}
+				onClick={() => void submit(onAccept)}
+				disabled={busy}
+				aria-busy={busy}
 				aria-label="Accept suggestion"
 			>
 				<Check className="h-3.5 w-3.5" />
@@ -39,7 +54,8 @@ export function SuggestionActionButtons({
 				size="sm"
 				variant="ghost"
 				className="h-7 w-7 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-				onClick={onReject}
+				onClick={() => void submit(onReject)}
+				disabled={busy}
 				aria-label="Reject suggestion"
 			>
 				<X className="h-3.5 w-3.5" />

@@ -36,6 +36,7 @@ export function buildArtifactSources(
 	return allSources.map((source, index) => ({
 		id: `source-${index}`,
 		title: source,
+		metadata: { verification: "reported" },
 		type:
 			sourceTypeMap[source.toLowerCase().replace(/ /g, "_")] ||
 			"document",

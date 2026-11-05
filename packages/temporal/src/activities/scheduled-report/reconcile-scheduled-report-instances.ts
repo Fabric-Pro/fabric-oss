@@ -7,6 +7,7 @@ import {
 	setInstanceSchedule,
 } from "@repo/database";
 import { heartbeat } from "@temporalio/activity";
+import { reconcileReportStarts } from "./reconcile-report-starts";
 
 /**
  * One-time-ish backfill, idempotent and safe to run every tick:
@@ -55,5 +56,6 @@ export async function reconcileScheduledReportInstancesActivity(input: {
 		computed++;
 	}
 
+	await reconcileReportStarts(Math.min(input.batchSize, 100));
 	return { inherited, computed };
 }

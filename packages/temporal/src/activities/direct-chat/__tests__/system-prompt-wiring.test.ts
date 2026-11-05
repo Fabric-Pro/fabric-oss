@@ -39,6 +39,7 @@ const state = vi.hoisted(() => ({
 		readySourceCount: number;
 	},
 	resolveCompanyContextAccess: vi.fn(),
+	scopedInstance: vi.fn(),
 }));
 
 vi.mock("@repo/agent-core/backend", () => ({
@@ -101,6 +102,8 @@ vi.mock("@repo/ai/skills", () => ({
 }));
 vi.mock("@repo/database", () => ({
 	ensureSensitiveOperationAuthority: vi.fn(),
+	getAgentTemplateInstanceForExecution: (...args: unknown[]) =>
+		state.scopedInstance(...args),
 	// Nothing bound: the recalled-executions rule renders its seeded body.
 	getBoundPromptForAgent: async () => null,
 	getDefaultRagSettings: () => ({ similarityThreshold: 0.5 }),
@@ -214,6 +217,10 @@ async function runTurn(
 const PERSONA = "You are Fabric Agent, the workspace's drawer assistant.";
 
 beforeEach(() => {
+	state.scopedInstance.mockReset();
+	state.scopedInstance.mockResolvedValue({
+		instance: { customInstructions: {} },
+	});
 	state.provider = "OPENAI";
 	state.modelString = "gpt-test";
 	state.builtInTools = {};
@@ -222,6 +229,45 @@ beforeEach(() => {
 	state.resolveCompanyContextAccess.mockReset();
 	state.resolveCompanyContextAccess.mockImplementation(
 		async () => state.companyContextAccess,
+	);
+});
+
+describe("named agent worker admission", () => {
+	it.each([
+		null,
+		{
+			instance: {
+				customInstructions: {
+					portableImplementation: { kind: "harness_finite" },
+				},
+			},
+		},
+		{ instance: { customInstructions: {} }, projectId: "example-project" },
+	])(
+		"refuses revoked, unavailable or unpropagated project scope before calling the model",
+		async (scope) => {
+			state.scopedInstance.mockResolvedValue(scope);
+			state.captured = undefined;
+			const result = executeDirectChatActivity(
+				{
+					executionId: "example-execution",
+					message: "Run",
+					history: [],
+					userId: "example-user",
+					organizationId: "example-org",
+					instanceId: "example-instance",
+					reasoningMode: "balanced",
+				} as DirectChatWorkflowInput,
+				[],
+				"",
+				"",
+			);
+			await expect(result).resolves.toMatchObject({
+				success: false,
+				error: "Agent implementation is unavailable or access was revoked",
+			});
+			expect(state.captured).toBeUndefined();
+		},
 	);
 });
 

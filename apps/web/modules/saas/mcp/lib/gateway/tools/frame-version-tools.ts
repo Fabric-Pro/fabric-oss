@@ -75,6 +75,8 @@ async function handleListFrameVersions(
 		note: "Version N is the page as it was before edit N; restoring it brings that back and keeps the current content as a version.",
 		versions: history.map((entry, index) => ({
 			version: total - index,
+			historyEntryId: entry.id,
+			canRestore: Boolean(entry.contentSnapshot),
 			editType: entry.editType,
 			editedBy: {
 				id: entry.editedBy,
@@ -92,6 +94,14 @@ async function handleRestoreFrameVersion(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
+	if (
+		typeof args.expectedUpdatedAt !== "string" ||
+		!Number.isFinite(Date.parse(args.expectedUpdatedAt))
+	) {
+		return errorResult(
+			"Read the frame and provide its expectedUpdatedAt revision before restoring.",
+		);
+	}
 	const frameId = frameIdOf(args, session);
 	if (!frameId) {
 		return errorResult(NO_PAGE_OPEN);

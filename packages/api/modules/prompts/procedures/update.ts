@@ -1,4 +1,5 @@
 import { ORPCError } from "@orpc/server";
+import { promptResponseContract } from "@repo/ai/lib/prompt-response-contract";
 import { getPromptById, updatePromptWithVersion } from "@repo/database";
 import type { TemplateFormat } from "@repo/utils";
 import { z } from "zod";
@@ -8,12 +9,14 @@ import {
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { resolvedOrganizationId } from "../../agents/procedures/conversations/resolved-organization";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 import { announceDefaultChangeForWinningActions } from "../lib/announce-default-change";
 import {
 	assertSavablePromptContent,
 	assertValidTemplate,
 } from "../lib/assert-valid-template";
+import { prepareResponseContract } from "../lib/response-contract";
 
 const PromptFormatSchema = z.enum([
 	"PLAIN_TEXT",
@@ -45,6 +48,7 @@ export const updateProcedure = tenantProtectedProcedure
 			isPublic: z.boolean().optional(),
 			content: z.string().max(INPUT_BOUNDS.text).optional(),
 			changeNote: z.string().max(500).optional(),
+			responseContract: promptResponseContract.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -121,6 +125,17 @@ export const updateProcedure = tenantProtectedProcedure
 			}
 		}
 
+		if (
+			input.responseContract &&
+			input.content === undefined &&
+			!existing.versions?.length
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Save prompt instructions before configuring a response.",
+			});
+		}
+		prepareResponseContract(input.responseContract);
 		const { prompt, version } = await updatePromptWithVersion({
 			id: input.id,
 			name: input.name,
@@ -132,6 +147,8 @@ export const updateProcedure = tenantProtectedProcedure
 			updatedBy: user.id,
 			content: input.content,
 			changeNote: input.changeNote,
+			responseContract: input.responseContract,
+			auditOrganizationId: resolvedOrganizationId({}, context.session),
 		});
 
 		// FR6: a new version repoints this prompt's same-scope bindings, so

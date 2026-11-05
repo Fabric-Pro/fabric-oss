@@ -23,13 +23,16 @@ export const approveEditProcedure = tenantProtectedProcedure
 	})
 	.input(approveEditInputSchema)
 	.handler(async ({ input, context }) => {
-		const _organizationId = resolveOrganizationId(
+		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
 		);
 
 		// Verify the edit exists and belongs to this user/org
-		const edit = await getMemoryEdit(input.editId);
+		const edit = await getMemoryEdit(input.editId, {
+			userId: context.user.id,
+			organizationId,
+		});
 		if (!edit) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Edit not found",

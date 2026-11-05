@@ -46,6 +46,14 @@ export const ORG_API_KEY_SCOPES = [
 	"projects:read", // Read project data
 	"projects:write", // Modify project data
 	"agents:read", // Read agent metadata, list available agents
+	"skills:read",
+	"prompts:read",
+	"skills:write",
+	"prompts:write",
+	"skills:publish",
+	"governance:read",
+	"governance:write",
+	"agents:schedule", // Explicit permission to manage recurring agent execution
 	"agents:execute", // Trigger agent executions via API
 	"agents:stream", // Access real-time execution streams
 	// The MCP tool surface. Until scopes were enforced there, `mcp:read` and
@@ -115,6 +123,8 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  *
  * | Scope                  | Permission behind it        | Viewer? |
  * |------------------------|-----------------------------|---------|
+ * | `prompts:read`         | `PROMPT_READ` (preview also checks `AI_CHAT`) | yes |
+ * | `prompts:write`        | `PROMPT_CREATE`/`PROMPT_UPDATE` | no |
  * | `mcp:read`             | `MCP_READ`                  | yes     |
  * | `mcp:write`            | `MCP_UPDATE`/`MCP_CONNECT`  | no      |
  * | `ai:models:read`       | `AI_MODEL_RESOLVE` (below)  | no      |
@@ -212,6 +222,9 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  */
 const READ_ONLY_ORG_API_KEY_SCOPES: ReadonlySet<OrgApiKeyScope> = new Set([
 	"mcp:read",
+	"skills:read",
+	"prompts:read",
+	"governance:read",
 	"projects:read",
 	"agents:read",
 	"agents:stream",
@@ -331,6 +344,16 @@ export const createOrganizationApiKeyProcedure = tenantProtectedProcedure
 		if (!membership) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "You must be a member of this organization",
+			});
+		}
+
+		if (
+			input.scopes.includes("governance:write") &&
+			!["owner", "admin"].includes(membership.role)
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message:
+					"Only organization owners and administrators can grant governance:write.",
 			});
 		}
 

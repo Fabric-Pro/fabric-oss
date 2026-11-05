@@ -43,11 +43,15 @@ export const DISCOVERY_MODE = "discovery";
 export const SEARCH_TOOLS_NAME = "search_tools";
 export const GET_TOOL_SCHEMA_NAME = "get_tool_schema";
 export const CALL_TOOL_NAME = "call_tool";
+export const MULTI_EXECUTE_TOOL_NAME = "multi_execute_tool";
+export const MANAGE_CONNECTIONS_NAME = "manage_connections";
 
 const DISCOVERY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	SEARCH_TOOLS_NAME,
 	GET_TOOL_SCHEMA_NAME,
 	CALL_TOOL_NAME,
+	MULTI_EXECUTE_TOOL_NAME,
+	MANAGE_CONNECTIONS_NAME,
 ]);
 
 /** How many matches `search_tools` returns without a `limit`, and at most. */
@@ -102,6 +106,17 @@ export const DISCOVERY_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					description:
 						'Keywords, such as "list projects" or "linear issue".',
 				},
+				queries: {
+					type: "array",
+					items: { type: "string" },
+					description:
+						"Optional array of search queries to evaluate in one call.",
+				},
+				server: {
+					type: "string",
+					description:
+						'Optional server filter (e.g. "fabric" or a connected server prefix).',
+				},
 				limit: {
 					type: "integer",
 					minimum: 1,
@@ -109,7 +124,6 @@ export const DISCOVERY_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					description: `How many matches to return. Default ${DEFAULT_SEARCH_LIMIT}.`,
 				},
 			},
-			required: ["query"],
 		},
 		annotations: { readOnlyHint: true },
 	},
@@ -132,7 +146,7 @@ export const DISCOVERY_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: CALL_TOOL_NAME,
 		description:
-			"Run a tool by name with its arguments. The call is checked and run exactly as a direct call to the tool would be.",
+			"Run a tool by name with its arguments (or a parallel batch via `calls`). The call is checked and run exactly as a direct call to the tool would be.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -145,8 +159,20 @@ export const DISCOVERY_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					description:
 						"The tool's own arguments, as get_tool_schema describes them.",
 				},
+				calls: {
+					type: "array",
+					description:
+						"Optional batch of tool calls to execute in parallel.",
+					items: {
+						type: "object",
+						properties: {
+							name: { type: "string" },
+							arguments: { type: "object" },
+						},
+						required: ["name"],
+					},
+				},
 			},
-			required: ["name"],
 		},
 	},
 ];
@@ -234,23 +260,48 @@ function parseLimit(
 	};
 }
 
+const SEARCH_SYNONYMS: Record<string, readonly string[]> = {
+	pr: ["pull", "request", "merge"],
+	pull: ["pr", "merge"],
+	bug: ["issue", "ticket", "story", "defect"],
+	ticket: ["issue", "story", "feature", "task"],
+	issue: ["ticket", "story", "bug"],
+	doc: ["document", "page", "context", "wiki"],
+	docs: ["document", "documents", "page", "context"],
+	repo: ["repository", "git", "code"],
+	msg: ["message", "chat", "post", "send"],
+	auth: ["authority", "oauth", "permission", "grant"],
+};
+
 /**
- * `search_tools`: the session's callable tools that match `query`, best first.
+ * `search_tools`: the session's callable tools that match `query` (or `queries`), best first.
  *
  * The query is split on whitespace into lowercased terms, and a tool matches
- * when its name or description contains at least one of them. Matches are
- * ordered by how many terms they contain, then by how many of those are in
- * the name, then by their order in the tool list, so the same query on the
- * same list returns the same order. Only tools the credential may call are
- * searched, so a tool it may not call is neither returned nor counted.
+ * when its name or description contains at least one of them (or a synonym when
+ * no direct substring matches). Matches are ordered by how many terms they
+ * contain, then by how many of those are in the name, then by synonym matches,
+ * then by their order in the tool list, so the same query on the same list
+ * returns the same order. Only tools the credential may call are searched, so a
+ * tool it may not call is neither returned nor counted.
  */
 export function searchTools(
 	session: Pick<GatewaySession, "credential" | "scopes">,
 	tools: readonly GatewayToolDefinition[],
 	args: Record<string, unknown>,
 ): ToolCallResult {
-	const query = typeof args.query === "string" ? args.query.trim() : "";
-	if (query === "") {
+	const singleQuery = typeof args.query === "string" ? args.query.trim() : "";
+	const multiQueries = Array.isArray(args.queries)
+		? args.queries
+				.filter((q): q is string => typeof q === "string")
+				.map((q) => q.trim())
+				.filter((q) => q.length > 0)
+		: [];
+	const combinedQuery = [singleQuery, ...multiQueries]
+		.filter((q) => q.length > 0)
+		.join(" ")
+		.trim();
+
+	if (combinedQuery === "") {
 		return errorResult(
 			`${SEARCH_TOOLS_NAME} needs search terms in "query", such as "list projects".`,
 		);
@@ -262,8 +313,18 @@ export function searchTools(
 		);
 	}
 
-	const terms = [...new Set(query.toLowerCase().split(/\s+/))];
-	const ranked = discoverableTools(session, tools)
+	const serverFilter =
+		typeof args.server === "string" && args.server.trim() !== ""
+			? args.server.trim().toLowerCase()
+			: null;
+
+	const terms = [...new Set(combinedQuery.toLowerCase().split(/\s+/))];
+	const candidates = discoverableTools(session, tools).filter((tool) =>
+		serverFilter
+			? serverOf(tool.name).toLowerCase() === serverFilter
+			: true,
+	);
+	const ranked = candidates
 		.map((tool, index) => {
 			const name = tool.name.toLowerCase();
 			const description = tool.description.toLowerCase();
@@ -271,13 +332,27 @@ export function searchTools(
 			const matched = terms.filter(
 				(term) => name.includes(term) || description.includes(term),
 			).length;
-			return { tool, index, inName, matched };
+			const synonymMatched =
+				matched > 0
+					? 0
+					: terms.filter((term) => {
+							const syns = SEARCH_SYNONYMS[term];
+							return syns
+								? syns.some(
+										(syn) =>
+											name.includes(syn) ||
+											description.includes(syn),
+									)
+								: false;
+						}).length;
+			return { tool, index, inName, matched, synonymMatched };
 		})
-		.filter((entry) => entry.matched > 0)
+		.filter((entry) => entry.matched > 0 || entry.synonymMatched > 0)
 		.sort(
 			(a, b) =>
 				b.matched - a.matched ||
 				b.inName - a.inName ||
+				b.synonymMatched - a.synonymMatched ||
 				a.index - b.index,
 		);
 
@@ -335,9 +410,55 @@ export function getToolSchema(
 		name: tool.name,
 		description: tool.description,
 		inputSchema: tool.inputSchema,
+		...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
 		annotations: { ...tool.annotations },
 		requiresAuthority: toolRequiresAuthority(session, tool),
 	});
+}
+
+export const MAX_MULTI_EXECUTE_CALLS = 10;
+
+export function parseMultiExecuteArguments(args: Record<string, unknown>):
+	| {
+			ok: true;
+			calls: Array<{ name: string; arguments: Record<string, unknown> }>;
+	  }
+	| { ok: false; result: ToolCallResult } {
+	const rawCalls = args.calls;
+	if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
+		return {
+			ok: false,
+			result: errorResult(
+				`"calls" must be a non-empty array of { name, arguments } objects (up to ${MAX_MULTI_EXECUTE_CALLS}).`,
+			),
+		};
+	}
+	if (rawCalls.length > MAX_MULTI_EXECUTE_CALLS) {
+		return {
+			ok: false,
+			result: errorResult(
+				`"calls" supports at most ${MAX_MULTI_EXECUTE_CALLS} tool calls per batch.`,
+			),
+		};
+	}
+	const calls: Array<{ name: string; arguments: Record<string, unknown> }> =
+		[];
+	for (const item of rawCalls) {
+		if (!item || typeof item !== "object" || Array.isArray(item)) {
+			return {
+				ok: false,
+				result: errorResult(
+					'Each entry in "calls" must be an object with "name" and optional "arguments".',
+				),
+			};
+		}
+		const parsed = parseCallToolArguments(item as Record<string, unknown>);
+		if (!parsed.ok) {
+			return parsed;
+		}
+		calls.push({ name: parsed.name, arguments: parsed.arguments });
+	}
+	return { ok: true, calls };
 }
 
 /**

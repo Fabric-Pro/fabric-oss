@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { db } from "../client";
 import type { FrameShareScope } from "../generated/client";
+import { publicSharingRefusal, shareFrame } from "./frame-share";
 
 // Re-export the enum type for use in other packages
 export type { FrameShareScope };
@@ -140,42 +140,21 @@ export interface UpdateFrameShareScopeInput {
 export async function updateFrameShareScope(
 	input: UpdateFrameShareScopeInput,
 ): Promise<{ success: boolean; shareToken?: string; error?: string }> {
-	// Verify ownership
-	const frame = await db.agentWorkspaceFile.findFirst({
-		where: {
-			id: input.frameId,
-			userId: input.userId,
-			organizationId: input.organizationId ?? null,
-			fileType: { in: ["FRAME", "SLIDESHOW"] },
-		},
-	});
-
-	if (!frame) {
-		return { success: false, error: "Frame not found" };
+	if (input.shareScope === "PROJECT") {
+		return {
+			success: false,
+			error: "Project access is managed by project membership.",
+		};
 	}
-
-	// Generate or clear share token based on scope
-	let shareToken: string | null = frame.shareToken;
-
-	if (input.shareScope === "PUBLIC") {
-		// Generate token if not exists
-		shareToken = frame.shareToken ?? randomUUID();
-	} else if (input.shareScope === "PRIVATE") {
-		// Clear token for private frames
-		shareToken = null;
-	}
-	// For EMAILS_ONLY and WORKSPACE_AND_EMAILS, keep existing token if any
-
-	await db.agentWorkspaceFile.update({
-		where: { id: input.frameId },
-		data: {
-			shareScope: input.shareScope,
-			shareToken,
-			isPublic: input.shareScope === "PUBLIC",
-		},
+	const result = await shareFrame({
+		frameId: input.frameId,
+		userId: input.userId,
+		organizationId: input.organizationId,
+		scope: input.shareScope,
 	});
-
-	return { success: true, shareToken: shareToken ?? undefined };
+	return result.ok
+		? { success: true, shareToken: result.shareToken }
+		: { success: false, error: result.message };
 }
 
 export interface CheckFrameAccessInput {
@@ -208,7 +187,14 @@ export async function checkFrameAccess(input: CheckFrameAccessInput): Promise<{
 	// Check based on share scope
 	switch (frame.shareScope) {
 		case "PUBLIC":
-			return { hasAccess: true, scope: "PUBLIC" };
+			return {
+				hasAccess:
+					Boolean(frame.organizationId) &&
+					!(await publicSharingRefusal(
+						frame.organizationId ?? undefined,
+					)),
+				scope: "PUBLIC",
+			};
 
 		case "WORKSPACE_AND_EMAILS": {
 			// Organization members have access

@@ -108,7 +108,7 @@ describe("FrameDetailView", () => {
 			kind: "frame",
 			embedUrl: "/app/example-org/frames/frame-1/embed",
 			shareUrl: "https://example.com/share/frame/token",
-			isPublic: true,
+			isPublic: false,
 			isProjectFrame: true,
 			organizationId: "org-1",
 			runtimeTools: ["fabric_list_workflows"],
@@ -209,5 +209,22 @@ describe("FrameDetailView", () => {
 		);
 		expect(shell.mounts.count).toBe(2);
 		expect(screen.getAllByTestId("frame-shell")).toHaveLength(1);
+	});
+});
+
+it("retains legacy public-link status without requiring a bearer URL", () => {
+	view({
+		isLoading: false,
+		isError: false,
+		data: {
+			...DETAIL,
+			shareUrl: undefined,
+			shareScope: "PRIVATE",
+			isPublic: true,
+		},
+	});
+	expect(shell.props.at(-1)).toMatchObject({
+		isPublic: true,
+		shareUrl: undefined,
 	});
 });

@@ -253,6 +253,7 @@ describe("a read-only role creating a key", () => {
 		"ai:models:resolve",
 		"projects:write",
 		"agents:execute",
+		"agents:schedule",
 		"features:write",
 		"workflows:write",
 		"workflows:run",

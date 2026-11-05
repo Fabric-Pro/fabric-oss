@@ -7,33 +7,17 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import { publicSharingErrors } from "../lib/public-sharing-errors";
+import { frameContentEditSchema } from "../lib/frame-edit-contract";
+import { frameEditErrors } from "../lib/frame-edit-errors";
+import { frameReadDto } from "../lib/frame-read-dto";
 
-const frameBlockSchema = z.object({
-	id: z.string(),
-	type: z.enum(["html", "json", "mermaid", "markdown"]),
-	title: z.string().optional(),
-	content: z.string(),
-	language: z.string().optional(),
-});
-
-const inputSchema = z.object({
+const inputSchema = frameContentEditSchema.extend({
 	id: z.string(),
 	organizationId: z.string().nullable().optional(),
-	title: z.string().min(1).optional(),
-	description: z.string().optional(),
-	blocks: z.array(frameBlockSchema).min(1).optional(),
-	theme: z
-		.object({
-			mode: z.enum(["light", "dark", "system"]).optional(),
-			accentColor: z.string().optional(),
-		})
-		.optional(),
-	isPublic: z.boolean().optional(),
 });
 
 export const updateFrameProcedure = tenantProtectedProcedure
-	.use(publicSharingErrors)
+	.use(frameEditErrors)
 	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
 	.route({
 		method: "POST",
@@ -49,7 +33,14 @@ export const updateFrameProcedure = tenantProtectedProcedure
 			context.session,
 		);
 		const frame = await updateFrame({
-			...input,
+			id: input.id,
+			title: input.title,
+			description: input.description,
+			blocks: input.blocks,
+			theme: input.theme,
+			expectedUpdatedAt: input.expectedUpdatedAt
+				? new Date(input.expectedUpdatedAt)
+				: undefined,
 			userId: context.user.id,
 			organizationId,
 		});
@@ -57,7 +48,7 @@ export const updateFrameProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Frame not found" });
 		}
 		return {
-			...frame,
+			...frameReadDto(frame),
 			createdAt: frame.createdAt.toISOString(),
 			updatedAt: frame.updatedAt.toISOString(),
 		};

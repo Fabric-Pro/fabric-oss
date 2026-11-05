@@ -1,6 +1,6 @@
 "use client";
 
-import { AgentInstanceDetail } from "@saas/agent-templates/components/AgentInstanceDetail";
+import { AgentDetailsRedirect } from "@saas/agents/components/AgentDetailsRedirect";
 import {
 	getAgentSelectionSummary,
 	getBuiltInCapability,
@@ -84,7 +84,7 @@ export default function OrganizationAgentDetailsPage() {
 	const params = useParams();
 	const router = useRouter();
 	const agentId = params.agentId as string;
-	const { basePath } = useOrganizationContext();
+	const { basePath, organizationId } = useOrganizationContext();
 
 	const agentsBasePath = `${basePath}/agents`;
 
@@ -277,9 +277,13 @@ export default function OrganizationAgentDetailsPage() {
 		router.push(`${agentsBasePath}/${agentId}/${routingInfo.route}`);
 	};
 
+	if (!organizationId) return <Spinner />;
+
 	// Render instance view immediately — no registry query needed
 	if (isInstanceId) {
-		return <AgentInstanceDetail instanceId={agentId} basePath={basePath} />;
+		return (
+			<AgentDetailsRedirect instanceId={agentId} basePath={basePath} />
+		);
 	}
 
 	if (isLoading) {
@@ -297,7 +301,10 @@ export default function OrganizationAgentDetailsPage() {
 		// Registry lookup failed — fall back to instance view
 		if (error || !agent) {
 			return (
-				<AgentInstanceDetail instanceId={agentId} basePath={basePath} />
+				<AgentDetailsRedirect
+					instanceId={agentId}
+					basePath={basePath}
+				/>
 			);
 		}
 		return (

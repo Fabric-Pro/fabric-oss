@@ -24,6 +24,8 @@ import {
  * `executeWorkflowNode`.
  */
 export const EXTERNAL_WRITE_NODE_TYPES: ReadonlySet<string> = new Set([
+	"databricks-sql-query",
+	"databricks-sql-ai-query",
 	"asana-create-task",
 	"attio-create-record",
 	"bitbucket-create-issue",

@@ -489,6 +489,40 @@ legacy signal-submission semantics and does not remove recorded Update events.
 
 ---
 
+## Connector qualification
+
+A saved draft does not change a published schedule. Publish or rollback applies trigger changes; pause removes the schedule, and resume restores the trigger from the published version. Schedule reconciliation also reads the published trigger, so changing a draft to Manual cannot delete its production schedule. Missing publication data stops reconciliation rather than authorizing deletion.
+
+Scheduled, webhook, and external API event executions record and resolve their immutable published version. Manual editor runs may preview draft graphs, subject to the stricter publication requirement for script and workspace data nodes. Webhook authentication also checks the current organization permissions of the workflow owner and, for API keys, the key creator. A successful publication does not by itself prove schedule synchronization; synchronization failures require a retry when Temporal is available.
+
+A successful connection test proves authentication and discovery, not that a workflow action can execute. Qualify the complete path from saved credentials to the worker, the remote response, and the next step's inputs.
+
+The [connector runtime tests](../../packages/temporal/src/activities/lib/steps/__tests__/connector-runtime.test.ts) exercise REST workflow actions with controlled HTTP responses and the real credential mapper. They use the credential fields and defaults declared by the editor, verify the transmitted credential, and check populated outputs, tenant propagation, empty or missing credentials, authentication failures, rate limits, server errors, and network failures. Provider errors must become bounded, redacted strings before execution logging. A registry drift assertion requires each new REST action to have a runtime fixture. AI, Databricks, GitLab, and MCP use their specialized suites.
+
+Blob, Clerk, Stripe, Superagent, and Webflow accept the editor's `apiKey` credential field and their legacy environment-named fields in saved connections and connection tests. When both exist, `apiKey` takes precedence. Firecrawl retains Search Provider precedence and falls back to an authorized workflow connection when no Search Provider key is configured. Blob uploads encode path segments under a fixed API origin and refuse redirects.
+
+The [action binding contract](../../apps/web/modules/saas/workflows/lib/plugins/__tests__/action-executor-contract.test.ts) checks action-to-executor and output-field wiring. Actions without an executor are excluded from the palette. Neither these contracts nor simulated HTTP responses certify a vendor account, permission scope, or current remote API behavior.
+
+For live qualification:
+
+1. Configure an organization-authorized personal or explicitly shared test connection. Confirm the actual workflow actor can use it.
+2. Execute a read-only action and inspect the recorded node output. Feed a returned field into a second action to verify template binding.
+3. Verify revoked or invalid credentials, a disabled connection, missing tools/resources, and provider errors produce a failed execution rather than a successful empty result.
+4. Publish a version and trigger its schedule. Verify the scheduled run uses the published graph and records its Temporal execution identifier.
+5. Exercise external write actions only against designated disposable targets. Confirm ambiguous outcomes do not cause automatic replay of an external write.
+
+Generic MCP workflow actions use the shared tenant-aware client factory for HTTP and SSE. An MCP `isError: true` response is a failed step. Discovery may continue to another selected server before any tool executes; after dispatch, a tool error or lost response terminates the attempt. A lost response cannot prove a remote write did not occur, so inspect the server before retrying. Tool arguments must resolve to an object, and a standalone text template is wrapped as a `query` argument without JSON-escaping its contents.
+
+Run the focused contracts with:
+
+```bash
+pnpm --filter @repo/temporal exec vitest run src/activities/lib/steps/__tests__/connector-runtime.test.ts src/activities/lib/steps/__tests__/mcp-tool.test.ts
+pnpm --filter @repo/api exec vitest run modules/workflows/procedures/integrations/__tests__/api-key-connection-shapes.test.ts
+pnpm --filter @repo/web exec vitest run modules/saas/workflows/lib/plugins/__tests__/action-executor-contract.test.ts modules/saas/workflows/lib/__tests__/node-definitions.test.ts
+pnpm --filter @repo/mcp test
+pnpm --filter @repo/integrations test
+```
+
 ## Related Documentation
 
 - [Publishing & Triggers](./publishing-and-triggers.md)

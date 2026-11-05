@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
+import { normalizeChatHeadingOutline } from "./chat-heading-outline";
 import {
 	chatMarkdownComponents,
 	getChatMarkdownClassName,
@@ -216,6 +217,7 @@ interface TypingResponseProps {
 	 * Useful for reasoning models that output plain text with Unicode formatting.
 	 */
 	normalizeMarkdown?: boolean;
+	normalizeHeadings?: boolean;
 	streaming?: boolean;
 }
 
@@ -243,17 +245,18 @@ export const TypingResponse = memo(
 		targetFps = 60,
 		components,
 		normalizeMarkdown = true,
+		normalizeHeadings = false,
 		streaming = false,
 	}: TypingResponseProps) => {
 		const rehypePlugins = useMemo(getChatMarkdownRehypePlugins, []);
 		// Normalize text to convert Unicode formatting to markdown
 		// This fixes rendering issues with reasoning models that output Unicode bullets, etc.
 		const normalizedText = useMemo(() => {
-			if (!normalizeMarkdown) {
-				return children;
-			}
-			return normalizeTextToMarkdown(children);
-		}, [children, normalizeMarkdown]);
+			const text = normalizeMarkdown
+				? normalizeTextToMarkdown(children)
+				: children;
+			return normalizeHeadings ? normalizeChatHeadingOutline(text) : text;
+		}, [children, normalizeMarkdown, normalizeHeadings]);
 
 		const { displayedText, isAnimating } = useTypingAnimation(
 			normalizedText,

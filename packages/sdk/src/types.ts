@@ -195,7 +195,14 @@ export interface FabricPrompt {
 	usageCount: number;
 	createdAt: string;
 	updatedAt: string;
-	versions?: Array<{ id: string; version: number; content: string }>;
+	versions?: Array<{
+		id: string;
+		version: number;
+		content: string;
+		responseContract?:
+			| import("./resources/prompts.js").PromptResponseContract
+			| null;
+	}>;
 }
 
 // ---- Agents ----
@@ -225,6 +232,27 @@ export interface FabricSkill {
 	tags: string[];
 	scope: string;
 	isPublished: boolean;
+	isDiscoverable?: boolean;
+	archivedAt?: string | null;
+	userId?: string | null;
+	organizationId?: string | null;
+	availability?: "draft" | "members" | "agents" | "builtin";
+	files?: Array<{
+		path: string;
+		contentType: string;
+		sizeBytes: number;
+		version: number;
+	}>;
+	fileManifestComplete?: boolean;
+	capabilities?: {
+		canEdit: boolean;
+		canArchive: boolean;
+		canRestore: boolean;
+		canPublish: boolean;
+		canDiscover: boolean;
+		canUnpublish: boolean;
+		canDelete: boolean;
+	};
 	useCount: number;
 	version: number;
 	createdAt: string;
@@ -360,6 +388,7 @@ export interface FabricFrame {
 	fileType: string;
 	status: string;
 	isPublic: boolean;
+	/** @deprecated General reads return null; obtain bearer links through explicit sharing controls. */
 	shareToken: string | null;
 	userId: string;
 	organizationId: string | null;
@@ -445,6 +474,8 @@ export interface FabricAgentInstanceInvocation {
 
 export interface FabricAgentInstanceExecution
 	extends Omit<FabricAgentInstanceInvocation, "idempotent"> {
+	/** Original admitted project; absent/null for legacy runs with no retained binding. */
+	projectId?: string | null;
 	/** Temporal is authoritative when available; database is an archival projection. */
 	executionStateSource?: "temporal" | "database";
 	nativeStateAvailable?: boolean;

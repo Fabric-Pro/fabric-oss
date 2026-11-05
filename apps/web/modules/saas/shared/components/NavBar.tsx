@@ -447,16 +447,16 @@ export function NavBar({
 				{
 					label: "Workspaces",
 					href: `${effectiveBasePath}/workspaces`,
-					icon: LayoutPanelTopIcon,
+					icon: Square3Stack3DIcon,
 					onboardingId: "nav-workspaces",
 					isActive: pathname.includes("/workspaces"),
 				},
 				{
-					label: "Libraries",
-					href: `${effectiveBasePath}/libraries`,
-					icon: Square3Stack3DIcon,
-					onboardingId: "nav-libraries",
-					isActive: pathname.includes("/libraries"),
+					label: "Pages",
+					href: `${effectiveBasePath}/pages`,
+					icon: LayoutPanelTopIcon,
+					onboardingId: "nav-pages",
+					isActive: pathname.includes("/pages"),
 				},
 			],
 		},
@@ -556,6 +556,7 @@ export function NavBar({
 						<div className="flex flex-col gap-2 border-b border-border/60 px-4 py-4">
 							<Link
 								href="/app"
+								aria-label="Fabric home"
 								onClick={() => setIsMobileMenuOpen(false)}
 								className="flex w-full items-center justify-center"
 							>
@@ -710,6 +711,7 @@ export function NavBar({
 							) : (
 								<Link
 									href="/app"
+									aria-label="Fabric home"
 									className={cn("block shrink-0", {
 										"md:flex md:w-full md:items-center md:justify-center":
 											useSidebarLayout,
@@ -1105,7 +1107,7 @@ function SidebarUtilityItem({
 		destructive
 			? "text-destructive hover:bg-destructive/10"
 			: isActive
-				? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+				? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary-hover dark:text-primary"
 				: "text-foreground hover:bg-foreground/[0.06]",
 	);
 
@@ -1285,7 +1287,7 @@ function SidebarNavItem({
 				"group relative flex min-h-[28px] items-center rounded-md px-2.5 py-1 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 				collapsed ? "justify-center" : "gap-2.5",
 				item.isActive
-					? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+					? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary-hover dark:text-primary"
 					: "text-foreground hover:bg-foreground/[0.06]",
 				isChild && "min-h-[26px] py-1",
 			)}

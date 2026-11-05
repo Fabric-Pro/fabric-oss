@@ -14,6 +14,11 @@ import {
 	listPendingApprovals,
 	respondToApproval,
 } from "./procedures/approvals";
+import {
+	checkReadinessProcedure,
+	createFromStarterProcedure,
+	listStartersProcedure,
+} from "./procedures/authoring";
 import { createWorkflowProcedure } from "./procedures/create-workflow";
 import { deleteWorkflowProcedure } from "./procedures/delete-workflow";
 import { duplicateWorkflowProcedure } from "./procedures/duplicate-workflow";
@@ -30,6 +35,10 @@ import { getWorkflowStatsProcedure } from "./procedures/get-workflow-stats";
 import { deleteIntegrationProcedure } from "./procedures/integrations/delete-integration";
 import { disconnectByTypeProcedure } from "./procedures/integrations/disconnect-by-type";
 import { listDatabricksIndexesProcedure } from "./procedures/integrations/list-databricks-indexes";
+import {
+	listDatabricksSqlConnectionsProcedure,
+	listDatabricksSqlWarehousesProcedure,
+} from "./procedures/integrations/list-databricks-sql-warehouses";
 import { listIntegrationStatusProcedure } from "./procedures/integrations/list-integration-status";
 import { listIntegrationsProcedure } from "./procedures/integrations/list-integrations";
 import { listSlackChannelsProcedure } from "./procedures/integrations/list-slack-channels";
@@ -41,17 +50,36 @@ import {
 } from "./procedures/integrations/sharing";
 import { testIntegrationConnectionProcedure } from "./procedures/integrations/test-connection";
 import { testSavedConnectionProcedure } from "./procedures/integrations/test-saved-connection";
+import {
+	configureScheduleProcedure,
+	getScheduleProcedure,
+	pauseWorkflowProcedure,
+	resumeWorkflowProcedure,
+} from "./procedures/lifecycle";
 import { listWorkflowsProcedure } from "./procedures/list-workflows";
 import {
 	publishWorkflow,
 	rollbackWorkflow,
 	unpublishWorkflow,
 } from "./procedures/publish";
+import { workflowResultChecks } from "./procedures/result-checks";
 import { updateWorkflowProcedure } from "./procedures/update-workflow";
 import { createWorkflowVersionProcedure } from "./procedures/versions/create-version";
 import { listWorkflowVersionsProcedure } from "./procedures/versions/list-versions";
 
 export const workflowsRouter = {
+	schedule: {
+		get: getScheduleProcedure,
+		configure: configureScheduleProcedure,
+	},
+	pause: pauseWorkflowProcedure,
+	resume: resumeWorkflowProcedure,
+	starters: {
+		list: listStartersProcedure,
+		create: createFromStarterProcedure,
+	},
+	readiness: checkReadinessProcedure,
+	checks: workflowResultChecks,
 	// Workflow CRUD operations
 	list: listWorkflowsProcedure,
 	get: getWorkflowProcedure,
@@ -113,6 +141,8 @@ export const workflowsRouter = {
 		listTeamsChats: listTeamsChatsProcedure,
 		listSlackChannels: listSlackChannelsProcedure,
 		listDatabricksIndexes: listDatabricksIndexesProcedure,
+		listDatabricksSqlWarehouses: listDatabricksSqlWarehousesProcedure,
+		listDatabricksSqlConnections: listDatabricksSqlConnectionsProcedure,
 	},
 
 	// Approval operations (Human-in-the-Loop)

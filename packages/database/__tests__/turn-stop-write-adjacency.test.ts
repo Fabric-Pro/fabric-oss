@@ -34,6 +34,7 @@ const h = vi.hoisted(() => ({
 	frameFindFirst: vi.fn(),
 	frameUpdate: vi.fn(),
 	frameHistoryCreate: vi.fn(),
+	auditCreate: vi.fn(),
 }));
 
 async function reading<T>(name: string, value: T): Promise<T> {
@@ -47,8 +48,13 @@ vi.mock("../prisma/client", async (importOriginal) => {
 	const tx = {
 		$queryRaw: h.allocate,
 		userStory: { findFirst: h.orderFindFirst, create: h.storyCreate },
-		agentWorkspaceFile: { update: h.frameUpdate },
+		agentWorkspaceFile: {
+			findFirst: h.frameFindFirst,
+			update: h.frameUpdate,
+		},
+		organization: { findUnique: h.organizationFindUnique },
 		frameEditHistory: { create: h.frameHistoryCreate },
+		auditLog: { create: h.auditCreate },
 	};
 	h.transaction.mockImplementation(
 		async (work: (client: typeof tx) => Promise<unknown>) => work(tx),
@@ -157,6 +163,7 @@ beforeEach(() => {
 		h.frameFindFirst,
 		h.frameUpdate,
 		h.frameHistoryCreate,
+		h.auditCreate,
 	]) {
 		mock.mockReset();
 	}
@@ -251,6 +258,7 @@ describe("frame writes inside a chat turn", () => {
 		);
 		expect(outcome).toMatchObject({ resolvedWith: { id: FRAME_ROW.id } });
 		expect(h.frameUpdate).toHaveBeenCalledTimes(1);
+		expect(h.auditCreate).toHaveBeenCalledOnce();
 	});
 
 	it("does not update the frame when the turn stops while it is read", async () => {
@@ -265,6 +273,7 @@ describe("frame writes inside a chat turn", () => {
 		expect(outcome).toBe(STOP);
 		expect(h.frameUpdate).not.toHaveBeenCalled();
 		expect(h.frameHistoryCreate).not.toHaveBeenCalled();
+		expect(h.auditCreate).not.toHaveBeenCalled();
 	});
 
 	it("keeps the previous content as a revertible snapshot before it updates the frame", async () => {

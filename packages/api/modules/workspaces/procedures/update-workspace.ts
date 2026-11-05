@@ -1,3 +1,4 @@
+import { workspaceBoundaryMiddleware } from "../lib/workspace-boundary";
 import { ORPCError } from "@orpc/server";
 import {
 	archiveWorkspace,
@@ -9,7 +10,7 @@ import {
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -17,15 +18,21 @@ import {
  * Update a workspace
  */
 export const updateWorkspaceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 			name: z.string().min(1).max(100).optional(),
 			description: z.string().max(500).optional(),
 			documentLimit: z.number().min(1).max(100).optional(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -55,12 +62,18 @@ export const updateWorkspaceProcedure = tenantProtectedProcedure
  * Archive a workspace
  */
 export const archiveWorkspaceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -77,12 +90,18 @@ export const archiveWorkspaceProcedure = tenantProtectedProcedure
  * Reactivate an archived workspace
  */
 export const reactivateWorkspaceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -99,12 +118,18 @@ export const reactivateWorkspaceProcedure = tenantProtectedProcedure
  * Delete a workspace
  */
 export const deleteWorkspaceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			workspaceId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 

@@ -8,15 +8,13 @@ import {
 	Building2Icon,
 	ChevronDownIcon,
 	ChevronUpIcon,
-	CpuIcon,
 	LaptopIcon,
 	PencilIcon,
 	PlusIcon,
-	RefreshCwIcon,
-	Settings2Icon,
+	ServerCogIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
 	getDocumentMeta,
 	getDocumentStatusView,
@@ -27,17 +25,22 @@ import {
 import {
 	DEFAULT_PROJECT_DELEGATION_PREFERENCES,
 	FABRIC_AGENT_CONNECTIONS,
-	FABRIC_AGENT_FALLBACK_POLICIES,
-	type FabricAgentFallbackPolicy,
 	loadProjectDelegationPreferences,
 	type ProjectDelegationPreferences,
-	saveProjectDelegationPreferences,
 } from "../lib/implementation-session-labels";
-import { LaunchFabricDesktopBar } from "./coding-runs/LaunchFabricDesktopBar";
+import {
+	consumeLocationSearchParam,
+	consumePendingReadinessAction,
+	isOverviewEditSection,
+	PROJECT_READINESS_ACTION_EVENT,
+	type ProjectReadinessActionEventDetail,
+} from "../lib/readiness-actions";
 import {
 	type EditSection,
 	ProjectSectionEditDialog,
 } from "./ProjectSectionEditDialog";
+import { useProjectReadiness } from "./readiness/ProjectReadinessProvider";
+import { navigateToProjectSettingsTab } from "./settings-tab-navigation";
 
 type Project = {
 	id: string;
@@ -171,6 +174,7 @@ export function ProjectOverview({
 	onNavigateToTab,
 }: Props) {
 	const { basePath } = useOrganizationContext();
+	const readiness = useProjectReadiness();
 	const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
 	const [editSection, setEditSection] = useState<EditSection | null>(null);
 	const [delegationPrefs, setDelegationPrefs] =
@@ -203,19 +207,6 @@ export function ProjectOverview({
 		};
 	}, [project.id]);
 
-	const updateDelegationPrefs = (
-		next: Partial<ProjectDelegationPreferences>,
-	) => {
-		setDelegationPrefs((prev) => {
-			const updated: ProjectDelegationPreferences = {
-				...prev,
-				...next,
-			};
-			saveProjectDelegationPreferences(project.id, updated);
-			return updated;
-		});
-	};
-
 	const activeHarnessOption =
 		FABRIC_AGENT_CONNECTIONS.find(
 			(item) => item.value === delegationPrefs.defaultConnection,
@@ -240,6 +231,55 @@ export function ProjectOverview({
 			// Storage can be unavailable; the default stands.
 		}
 	}, [project.id]);
+
+	const openOverviewSectionEditor = useCallback(
+		(section: EditSection) => {
+			setAboutOpen(true);
+			try {
+				window.localStorage.setItem(aboutStorageKey(project.id), "1");
+			} catch {
+				// ignore
+			}
+			setEditSection(section);
+		},
+		[project.id],
+	);
+
+	useEffect(() => {
+		const pending = consumePendingReadinessAction(
+			project.id,
+			"edit-overview",
+		);
+		const urlEdit = consumeLocationSearchParam("edit");
+		if (pending) {
+			openOverviewSectionEditor(pending.section);
+		} else if (isOverviewEditSection(urlEdit)) {
+			openOverviewSectionEditor(urlEdit);
+		}
+		const handleReadinessAction = (event: Event) => {
+			const detail = (
+				event as CustomEvent<ProjectReadinessActionEventDetail>
+			).detail;
+			if (
+				detail?.projectId === project.id &&
+				detail.action.kind === "edit-overview"
+			) {
+				consumePendingReadinessAction(project.id, "edit-overview");
+				consumeLocationSearchParam("edit");
+				openOverviewSectionEditor(detail.action.section);
+			}
+		};
+		window.addEventListener(
+			PROJECT_READINESS_ACTION_EVENT,
+			handleReadinessAction,
+		);
+		return () => {
+			window.removeEventListener(
+				PROJECT_READINESS_ACTION_EVENT,
+				handleReadinessAction,
+			);
+		};
+	}, [project.id, openOverviewSectionEditor]);
 	const toggleAbout = () => {
 		setAboutOpen((open) => {
 			try {
@@ -681,175 +721,54 @@ export function ProjectOverview({
 				)}
 			</section>
 
-			{/* Fabric Remote Server & Subscription Delegation Quick Control */}
+			{/* Quiet Agent Runtime summary — full configuration lives in Settings -> Agent Runtime */}
 			<section
-				aria-label="Remote execution and subscription delegation"
-				className="app-surface rounded-lg px-5 py-4 sm:px-6"
+				aria-label="Agent runtime"
+				className="app-surface rounded-lg px-5 py-3.5 sm:px-6"
 			>
 				<div className="flex flex-wrap items-center justify-between gap-3">
-					<div className="space-y-1">
-						<p className="app-editorial-label">
-							Remote execution &amp; subscription offload
-						</p>
-						<p className="text-xs text-muted-foreground">
-							Choose where coding tasks run and whether quota
-							fallbacks rotate across subscription harnesses or
-							use your organization’s paid API provider.
-						</p>
-					</div>
-					{onNavigateToTab && (
-						<button
-							type="button"
-							onClick={() => onNavigateToTab("settings")}
-							className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
-						>
-							<Settings2Icon className="size-3.5 text-primary" />
-							Manage remote servers
-						</button>
-					)}
-				</div>
-
-				<div className="mt-4 grid gap-3 border-t border-border pt-4 lg:grid-cols-3">
-					{/* 1. Target Server Scope */}
-					<div className="rounded-lg border border-border/70 bg-background p-3">
-						<p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-							Execution target
-						</p>
-						<div className="mt-2 grid grid-cols-2 gap-1.5">
-							<button
-								type="button"
-								onClick={() =>
-									updateDelegationPrefs({
-										preferredServerScope: "PRIVATE",
-									})
-								}
-								aria-pressed={
-									delegationPrefs.preferredServerScope ===
-									"PRIVATE"
-								}
-								className={cn(
-									"flex items-center justify-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors",
-									delegationPrefs.preferredServerScope ===
-										"PRIVATE"
-										? "border-primary bg-primary/10 text-primary"
-										: "border-border/60 bg-muted/20 text-muted-foreground hover:text-foreground",
-								)}
-							>
-								<LaptopIcon className="size-3.5" />
-								Local (:9100)
-							</button>
-							<button
-								type="button"
-								onClick={() =>
-									updateDelegationPrefs({
-										preferredServerScope: "TEAM",
-									})
-								}
-								aria-pressed={
-									delegationPrefs.preferredServerScope ===
-									"TEAM"
-								}
-								className={cn(
-									"flex items-center justify-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors",
-									delegationPrefs.preferredServerScope ===
-										"TEAM"
-										? "border-primary bg-primary/10 text-primary"
-										: "border-border/60 bg-muted/20 text-muted-foreground hover:text-foreground",
-								)}
-							>
-								<Building2Icon className="size-3.5" />
-								Company Server
-							</button>
-						</div>
-					</div>
-
-					{/* 2. Subscription Harness & Default Model */}
-					<div className="rounded-lg border border-border/70 bg-background p-3">
-						<div className="flex items-center justify-between gap-2">
-							<p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-								<CpuIcon className="size-3.5 text-primary" />
-								Subscription harness
-							</p>
-							<span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
-								{activeHarnessOption.defaultModel}
-							</span>
-						</div>
-						<div className="mt-2 flex flex-wrap gap-1">
-							{FABRIC_AGENT_CONNECTIONS.map((option) => {
-								const isSelected =
-									delegationPrefs.defaultConnection ===
-									option.value;
-								return (
-									<button
-										key={option.value}
-										type="button"
-										onClick={() =>
-											updateDelegationPrefs({
-												defaultConnection: option.value,
-												defaultModel: "default",
-											})
-										}
-										className={cn(
-											"rounded-md border px-2 py-1 text-[11px] font-medium transition-colors",
-											isSelected
-												? "border-primary bg-primary/10 text-primary"
-												: "border-border/60 bg-muted/20 text-muted-foreground hover:text-foreground",
-										)}
-									>
-										{option.shortLabel}
-									</button>
-								);
-							})}
-						</div>
-					</div>
-
-					{/* 3. Quota Fallback Choice */}
-					<div className="rounded-lg border border-border/70 bg-background p-3">
-						<p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-							<RefreshCwIcon className="size-3.5 text-primary" />
-							Quota fallback choice
-						</p>
-						<div className="mt-2 flex flex-col gap-1.5">
-							{FABRIC_AGENT_FALLBACK_POLICIES.slice(0, 2).map(
-								(policy) => {
-									const isSelected =
-										delegationPrefs.fallbackPolicy ===
-										policy.value;
-									return (
-										<button
-											key={policy.value}
-											type="button"
-											onClick={() =>
-												updateDelegationPrefs({
-													fallbackPolicy:
-														policy.value as FabricAgentFallbackPolicy,
-												})
-											}
-											aria-pressed={isSelected}
-											className={cn(
-												"flex items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs font-medium transition-colors",
-												isSelected
-													? "border-primary bg-primary/10 text-primary"
-													: "border-border/60 bg-muted/20 text-muted-foreground hover:text-foreground",
-											)}
-										>
-											<span className="truncate">
-												{policy.label}
-											</span>
-										</button>
-									);
-								},
+					<div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-xs">
+						<span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+							<ServerCogIcon className="size-3.5 text-primary" />
+							Agent runtime
+						</span>
+						<span aria-hidden="true" className="text-border">
+							·
+						</span>
+						<span className="inline-flex items-center gap-1 text-muted-foreground">
+							{delegationPrefs.preferredServerScope === "TEAM" ? (
+								<Building2Icon className="size-3" />
+							) : (
+								<LaptopIcon className="size-3" />
 							)}
-						</div>
+							{delegationPrefs.preferredServerScope === "TEAM"
+								? "Company Server"
+								: "Fabric Desktop (:9100)"}
+						</span>
+						<span aria-hidden="true" className="text-border">
+							·
+						</span>
+						<span className="text-muted-foreground">
+							Harness:{" "}
+							<span className="font-medium text-foreground">
+								{activeHarnessOption.shortLabel}
+							</span>
+						</span>
 					</div>
+					<button
+						type="button"
+						onClick={() => {
+							navigateToProjectSettingsTab(
+								projectId,
+								"agent-runtime",
+							);
+							onNavigateToTab?.("settings");
+						}}
+						className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+					>
+						Manage remote servers
+					</button>
 				</div>
-
-				<LaunchFabricDesktopBar
-					projectId={projectId}
-					projectName={project.name}
-					compact
-					className="mt-3"
-				/>
 			</section>
 
 			{/* Edit dialogs */}
@@ -859,7 +778,10 @@ export function ProjectOverview({
 				section={editSection}
 				currentValues={currentValues}
 				onClose={() => setEditSection(null)}
-				onSaved={() => onProjectUpdated?.()}
+				onSaved={() => {
+					onProjectUpdated?.();
+					void readiness?.refetch();
+				}}
 			/>
 		</div>
 	);

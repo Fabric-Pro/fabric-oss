@@ -5,6 +5,7 @@
  */
 
 import { db } from "../client";
+import { skillVisibilityWhere } from "./skills";
 
 function normalizeTaskStatus(status: string | null | undefined): string {
 	return status?.toLowerCase() ?? "";
@@ -1073,6 +1074,7 @@ export async function getOrganizationRecentActivity(
 					where: {
 						scope: "ORGANIZATION",
 						organizationId,
+						AND: [skillVisibilityWhere({ userId, organizationId })],
 						...dateFilter,
 					},
 					orderBy: { updatedAt: "desc" },

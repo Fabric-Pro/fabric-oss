@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/client";
-import { db, hasProjectAccess } from "@repo/database";
+import { db, hasProjectAccess, skillVisibilityWhere } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -148,19 +148,18 @@ export const listAgentActivity = tenantProtectedProcedure
 				.then((runs) => runs.map(stripRemoteCodingRunSummary)),
 			db.skill.findMany({
 				where: {
-					isPublished: true,
-					OR: [
-						{ scope: "USER", userId: context.user.id },
-						...(organizationId
-							? [
-									{
-										scope: "ORGANIZATION" as const,
-										organizationId,
-									},
-								]
-							: []),
+					AND: [
+						skillVisibilityWhere({
+							userId: context.user.id,
+							organizationId,
+						}),
+						{
+							isPublished: true,
+							tags: {
+								hasSome: ["project-workflow", "fabric-agent"],
+							},
+						},
 					],
-					tags: { hasSome: ["project-workflow", "fabric-agent"] },
 				},
 				orderBy: { updatedAt: "desc" },
 				take: input.limit,

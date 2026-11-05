@@ -175,3 +175,206 @@ export function buildContextDownloadManifest(
 	// Trailing newline for POSIX friendliness.
 	return `${lines.join("\n")}\n`;
 }
+
+/**
+ * Machine-readable inspection view of the same Project Context sources. This
+ * does not build/export an archive, mint a storage URL, or include source text.
+ * The archive manifest above remains a receipt of bytes actually exported.
+ */
+export interface ContextDiscoverySource {
+	sourceId: string;
+	sourceKind: "project_context";
+	title: string;
+	type: string;
+	readiness:
+		| "ready"
+		| "pending"
+		| "failed"
+		| "cancelled"
+		| "unavailable"
+		| "inspection_required";
+	extractionStatus: string;
+	revision: string | null;
+	revisionReason:
+		| "NOT_READY"
+		| "CANONICAL_READ_REQUIRED"
+		| "DIRECT_READ_LIMIT_EXCEEDED"
+		| null;
+	byteLength: number | null;
+	indexingExcluded: boolean;
+	readUrl: string | null;
+	readTool: {
+		name: "fabric_inspect_context_quality_source";
+		args: { projectId: string; sourceId: string };
+	} | null;
+	citation: {
+		sourceKind: "project_context";
+		sourceId: string;
+		projectId: string;
+		revision: string | null;
+	};
+	omissionReason:
+		| "SOURCE_PENDING"
+		| "EXTRACTION_FAILED"
+		| "EXTRACTION_CANCELLED"
+		| "NO_READABLE_CONTENT"
+		| "PRIVATE_CONVERSATION_EXCLUDED"
+		| "CANONICAL_BODY_NOT_INSPECTED"
+		| "DIRECT_READ_LIMIT_EXCEEDED"
+		| null;
+	updatedAt: string;
+}
+
+export interface ContextDiscoveryManifest {
+	version: 1;
+	organizationId: string;
+	projectId: string;
+	sources: ContextDiscoverySource[];
+	readPolicy: "compare_returned_revision";
+	pagination: {
+		offset: number;
+		limit: number;
+		nextOffset: number | null;
+		hasMore: boolean;
+		mode: "live_offset";
+		snapshotConsistent: false;
+	};
+	total: number;
+	omissions: {
+		sourceBodies: true;
+		excludedCodeContexts: number;
+		workspaceDocuments: "separate_scope";
+		historicalVersions: "unsupported";
+	};
+	relatedCatalogs: {
+		workspaces: "/api/v1/workspaces";
+		workspaceDocuments: "/api/v1/workspaces/{workspaceId}/documents";
+		workspaceDocumentLinks: "/api/v1/projects/{projectId}/contexts/workspace-documents";
+	};
+}
+
+export function buildContextDiscoveryManifest(input: {
+	organizationId: string;
+	projectId: string;
+	offset: number;
+	limit: number;
+	total: number;
+	hasMore: boolean;
+	excludedCodeContexts: number;
+	rows: ReadonlyArray<{
+		sourceId: string;
+		title: string;
+		type: string;
+		extractionStatus: string;
+		indexingExcluded: boolean;
+		updatedAt: Date;
+		hasLifecycle: boolean;
+		bodyKind: "inline" | "composite";
+		hasText: boolean;
+		privateConversation: boolean;
+		byteLength: number | null;
+		revision: string | null;
+	}>;
+}): ContextDiscoveryManifest {
+	return {
+		version: 1,
+		organizationId: input.organizationId,
+		projectId: input.projectId,
+		sources: input.rows.map((row): ContextDiscoverySource => {
+			let readiness: ContextDiscoverySource["readiness"] = "ready";
+			let omissionReason: ContextDiscoverySource["omissionReason"] = null;
+			let revisionReason: ContextDiscoverySource["revisionReason"] = null;
+			if (row.hasLifecycle && row.extractionStatus !== "COMPLETED") {
+				readiness =
+					row.extractionStatus === "FAILED"
+						? "failed"
+						: row.extractionStatus === "CANCELLED"
+							? "cancelled"
+							: "pending";
+				omissionReason =
+					readiness === "failed"
+						? "EXTRACTION_FAILED"
+						: readiness === "cancelled"
+							? "EXTRACTION_CANCELLED"
+							: "SOURCE_PENDING";
+				revisionReason = "NOT_READY";
+			} else if (!row.hasText) {
+				readiness = "unavailable";
+				omissionReason = row.privateConversation
+					? "PRIVATE_CONVERSATION_EXCLUDED"
+					: "NO_READABLE_CONTENT";
+				revisionReason = "NOT_READY";
+			} else if (row.bodyKind === "composite") {
+				readiness = "inspection_required";
+				omissionReason = "CANONICAL_BODY_NOT_INSPECTED";
+				revisionReason = "CANONICAL_READ_REQUIRED";
+			} else if (row.byteLength !== null && row.byteLength > 96 * 1024) {
+				readiness = "inspection_required";
+				omissionReason = "DIRECT_READ_LIMIT_EXCEEDED";
+				revisionReason = "DIRECT_READ_LIMIT_EXCEEDED";
+			}
+			const revision = revisionReason ? null : row.revision;
+			if (!revisionReason && !/^[a-f0-9]{64}$/.test(revision ?? ""))
+				throw new Error("Invalid context manifest canonical revision.");
+			const inspectable =
+				readiness === "ready" ||
+				(readiness === "inspection_required" &&
+					row.bodyKind === "composite");
+			return {
+				sourceId: row.sourceId,
+				sourceKind: "project_context",
+				title: row.title,
+				type: row.type,
+				readiness,
+				extractionStatus: row.extractionStatus,
+				revision,
+				revisionReason,
+				byteLength:
+					row.bodyKind === "composite" ? null : row.byteLength,
+				indexingExcluded: row.indexingExcluded,
+				readUrl: inspectable
+					? `/api/v1/projects/${encodeURIComponent(input.projectId)}/context-quality/sources/${encodeURIComponent(row.sourceId)}`
+					: null,
+				readTool: inspectable
+					? {
+							name: "fabric_inspect_context_quality_source",
+							args: {
+								projectId: input.projectId,
+								sourceId: row.sourceId,
+							},
+						}
+					: null,
+				citation: {
+					sourceKind: "project_context",
+					sourceId: row.sourceId,
+					projectId: input.projectId,
+					revision,
+				},
+				omissionReason,
+				updatedAt: row.updatedAt.toISOString(),
+			};
+		}),
+		readPolicy: "compare_returned_revision",
+		pagination: {
+			offset: input.offset,
+			limit: input.limit,
+			nextOffset: input.hasMore ? input.offset + input.rows.length : null,
+			hasMore: input.hasMore,
+			mode: "live_offset",
+			snapshotConsistent: false,
+		},
+		total: input.total,
+		omissions: {
+			sourceBodies: true,
+			excludedCodeContexts: input.excludedCodeContexts,
+			workspaceDocuments: "separate_scope",
+			historicalVersions: "unsupported",
+		},
+		relatedCatalogs: {
+			workspaces: "/api/v1/workspaces",
+			workspaceDocuments: "/api/v1/workspaces/{workspaceId}/documents",
+			workspaceDocumentLinks:
+				"/api/v1/projects/{projectId}/contexts/workspace-documents",
+		},
+	};
+}

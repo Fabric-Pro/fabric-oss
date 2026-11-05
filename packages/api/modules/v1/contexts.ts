@@ -43,6 +43,7 @@
  * HOSTING organization, never a caller-supplied one; an organization key must
  * be that organization's; and `?org=` still binds when it is sent.
  */
+
 import { db, hasProjectAccess } from "@repo/database";
 import { hasPermission, Permissions } from "@repo/permissions";
 import type { Hono } from "hono";
@@ -60,7 +61,10 @@ import {
 	syncedContextDeleteConflictMessage,
 } from "../projects/lib/synced-context-conflict";
 import { MAX_SYNCED_CONTEXT_BYTES } from "../projects/lib/synced-context-limits";
+import { registerContextAssemblyRoutes } from "./context-assembly";
+import { registerContextManifestRoutes } from "./context-manifest";
 import { badRequest, forbidden, notFound, ok } from "./helpers";
+import { registerWorkspaceDocumentLinkRoutes } from "./workspace-document-links";
 
 /**
  * Bound on the path as sent, before normalising — the oRPC twin's
@@ -107,6 +111,9 @@ export interface RequiredContextPermission {
 		| typeof Permissions.CONTEXT_DELETE;
 	/** The nested 403's sentence. */
 	refusal: string;
+	/** Consumer-specific copy; authorization remains identical across surfaces. */
+	organizationRefusal?: string;
+	personalRefusal?: string;
 }
 
 const PUSH_PERMISSION: RequiredContextPermission = {
@@ -160,6 +167,7 @@ export async function resolveContextProject(
 		return {
 			error: {
 				message:
+					required.personalRefusal ??
 					"Synced context files are an organization surface; ?personal=1 is not supported",
 			},
 			status: 403,
@@ -184,7 +192,9 @@ export async function resolveContextProject(
 	if (!hostingOrganizationId) {
 		return {
 			error: {
-				message: "Synced context files require an organization project",
+				message:
+					required.organizationRefusal ??
+					"Synced context files require an organization project",
 			},
 			status: 403,
 		};
@@ -374,6 +384,9 @@ function syncedFileRefusalStatus(error: unknown): 400 | 403 | null {
 export function registerContextRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
 ) {
+	registerContextManifestRoutes(app);
+	registerContextAssemblyRoutes(app);
+	registerWorkspaceDocumentLinkRoutes(app);
 	/**
 	 * PUT /projects/:projectId/contexts/synced-files
 	 *

@@ -38,6 +38,10 @@ vi.mock("../../organizations/lib/membership", () => ({
 }));
 
 vi.mock("../../../orpc/procedures", () => ({
+	resolveOrganizationId: (
+		_: unknown,
+		session: { activeOrganizationId?: string },
+	) => session.activeOrganizationId,
 	Permissions: { PROMPT_UPDATE: "prompt:update" },
 	requirePermission: () => (next: unknown) => next,
 	// Permissive builder: each link returns itself, so the chain works
@@ -56,13 +60,19 @@ import { updateProcedure } from "../procedures/update";
 
 type Handler = (args: {
 	input: Record<string, unknown>;
-	context: { user: { id: string; role?: string | null } };
+	context: {
+		user: { id: string; role?: string | null };
+		session: { activeOrganizationId: string };
+	};
 }) => Promise<{ prompt: unknown; version: { id: string } | null }>;
 
 const callUpdate = (input: Record<string, unknown>) =>
 	(updateProcedure as unknown as Handler)({
 		input: { id: "p-1", ...input },
-		context: { user: { id: "admin-1", role: "admin" } },
+		context: {
+			user: { id: "admin-1", role: "admin" },
+			session: { activeOrganizationId: "org-a" },
+		},
 	});
 
 const ORG_PROMPT_HANDLEBARS = {

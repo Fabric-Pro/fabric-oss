@@ -6,6 +6,7 @@ import {
 	getLatestConversationTurn,
 } from "@repo/database";
 import type { DirectChatWorkflowOutput } from "@repo/temporal";
+import { DIRECT_APPROVAL_CAPABILITIES } from "@repo/temporal/direct-approval-policy";
 import {
 	ChatRunAccessError,
 	getAuthorizedChatRun,
@@ -18,7 +19,9 @@ import type { RunStream, RuntimeCaller } from "./engine";
 import { approvalInterrupt, type PendingApproval } from "./turn-translator";
 
 /**
- * Approvals on the runtime. A Direct turn that stops on a tool's
+ * Legacy approval lookup is retained for historical turns, but the public
+ * capability gate suppresses interrupts/resume until action receipts exist.
+ * A Direct turn recorded before that gate stopped on a tool's
  * `requiresConfirmation` ends its run as an AG-UI interrupt with id
  * `<turnKey>:approval`. The interrupt is pending while that turn is still
  * the thread's latest and no answer is recorded; the answer is the turn
@@ -73,6 +76,7 @@ export async function unansweredApproval(
 	turn: ConversationTurn,
 	result: DirectChatWorkflowOutput,
 ): Promise<PendingApproval | null> {
+	if (!DIRECT_APPROVAL_CAPABILITIES.approvalResume) return null;
 	const pending = result.pendingConfirmation;
 	if (!pending || !("toolName" in pending) || !turn.conversationId) {
 		return null;
@@ -141,6 +145,7 @@ export async function pendingApprovalFor(
 	threadId: string,
 	interruptId: string,
 ): Promise<PendingApproval | null> {
+	if (!DIRECT_APPROVAL_CAPABILITIES.approvalResume) return null;
 	if (!interruptId.endsWith(APPROVAL_SUFFIX)) {
 		return null;
 	}
@@ -167,6 +172,7 @@ export async function raiseUnansweredApproval(
 	lastSaved: ConversationMessage | undefined,
 	stream: RunStream,
 ): Promise<void> {
+	if (!DIRECT_APPROVAL_CAPABILITIES.approvalResume) return;
 	const threadId = latest.conversationId;
 	if (
 		!threadId ||

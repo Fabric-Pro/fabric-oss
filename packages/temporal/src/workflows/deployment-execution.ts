@@ -1,3 +1,4 @@
+import type { NativeTestAuthority } from "../activities/shared/native-agent-test-authority";
 /**
  * Deployment Execution Workflow
  *
@@ -45,6 +46,7 @@ import {
 export interface DeploymentExecutionInput {
 	/** Only server-admitted native executions use the durable receipt protocol. */
 	nativeAdmission?: NativeAgentAdmission;
+	testAuthority?: NativeTestAuthority;
 	executionId: string;
 	deploymentId: string;
 	instanceId: string;
@@ -361,6 +363,14 @@ export async function deploymentExecutionWorkflow(
 		});
 
 		const config = await activities.loadDeploymentConfiguration({
+			...(input.testAuthority
+				? {
+						nativeTestBoundary: {
+							executionId: input.executionId,
+							authority: input.testAuthority,
+						},
+					}
+				: {}),
 			deploymentId: input.deploymentId,
 			userId: input.userId,
 			organizationId: input.organizationId,
@@ -576,7 +586,39 @@ export async function deploymentExecutionWorkflow(
 		if (nativeSteps) {
 			const prepared =
 				await activities.prepareDeploymentAgentTurn(invocation);
-			const turn = await executeDurableSavedAgentTurn(prepared);
+			const turn = await executeDurableSavedAgentTurn(prepared, {
+				isCancelled: () => cancelled,
+			});
+			if (turn.cancelled) {
+				const error = turn.error ?? "Execution cancelled";
+				const output = {
+					response: turn.response,
+					toolCalls: turn.toolCalls,
+					inspectionRequired: hasUnconfirmedAgentEffect(
+						turn.toolCalls,
+					),
+					cancelled: true,
+				};
+				await completeExecution({
+					executionId: input.executionId,
+					status: "CANCELLED",
+					output,
+					error,
+					tokenUsage: turn.tokenUsage,
+					durationMs: Date.now() - startTime,
+				});
+				await notifySupervisor(false);
+				updateProgress({ phase: "cancelled", message: error });
+				emitEvent("execution.cancelled", { output, reason: error });
+				return {
+					executionId: input.executionId,
+					status: "CANCELLED",
+					output,
+					error,
+					tokenUsage: turn.tokenUsage,
+					durationMs: Date.now() - startTime,
+				};
+			}
 			if (!turn.success) {
 				const error =
 					turn.error || "Native agent step requires inspection";

@@ -6,13 +6,16 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { frameRevisionSchema } from "../lib/frame-edit-contract";
+import { frameEditErrors } from "../lib/frame-edit-errors";
 
 const inputSchema = z.object({
 	id: z.string(),
 	organizationId: z.string().nullable().optional(),
-	oldString: z.string(),
+	expectedUpdatedAt: frameRevisionSchema,
+	oldString: z.string().min(1),
 	newString: z.string(),
-	expectedReplacements: z.number().default(1),
+	expectedReplacements: z.number().int().positive().default(1),
 });
 
 const outputSchema = z.object({
@@ -29,6 +32,7 @@ const outputSchema = z.object({
  */
 export const editFrameStringProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(frameEditErrors)
 	.route({
 		method: "POST",
 		path: "/frames/{id}/edit-string",
@@ -49,6 +53,7 @@ export const editFrameStringProcedure = tenantProtectedProcedure
 			frameId: input.id,
 			userId: context.user.id,
 			organizationId,
+			expectedUpdatedAt: new Date(input.expectedUpdatedAt),
 			oldString: input.oldString,
 			newString: input.newString,
 			expectedReplacements: input.expectedReplacements,

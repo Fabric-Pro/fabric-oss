@@ -74,6 +74,25 @@ body[data-scroll-locked] {
 	overflow-y: scroll !important;
 }
 
+/* The dedicated agent editor uses independent scrolling panes. Hide their
+ * scrollbar chrome without disabling wheel, touch, or keyboard scrolling.
+ * The root gutter returns automatically when the editor unmounts. */
+html:has([data-onboarding-target="agent-builder-workspace"]) {
+	scrollbar-gutter: auto;
+	scrollbar-width: none;
+}
+
+[data-onboarding-target="agent-builder-workspace"],
+[data-onboarding-target="agent-builder-workspace"] * {
+	scrollbar-width: none;
+}
+
+html:has([data-onboarding-target="agent-builder-workspace"])::-webkit-scrollbar,
+[data-onboarding-target="agent-builder-workspace"]::-webkit-scrollbar,
+[data-onboarding-target="agent-builder-workspace"] *::-webkit-scrollbar {
+	display: none;
+}
+
 /*
  * Fabric Workspace design system (design.md — Databricks DuBois aesthetics).
  * The reading face is the clean technical sans stack (Inter / system-ui).
@@ -968,25 +987,68 @@ pre.shiki {
 	@apply mb-4 rounded-lg p-6;
 }
 
-#nd-sidebar {
-	@apply bg-card! top-[4.5rem] md:h-[calc(100dvh-4.5rem)]!;
+/*
+ * Fumadocs neutral.css paints the manual in near-black and gray.
+ * Point its tokens at the product palette so links, the current
+ * section, and the table of contents use the same primary as the app.
+ */
+:root,
+.dark {
+	--color-fd-background: var(--background);
+	--color-fd-foreground: var(--foreground);
+	--color-fd-muted: var(--muted);
+	--color-fd-muted-foreground: var(--muted-foreground);
+	--color-fd-popover: var(--popover);
+	--color-fd-popover-foreground: var(--popover-foreground);
+	--color-fd-card: var(--card);
+	--color-fd-card-foreground: var(--card-foreground);
+	--color-fd-border: var(--border);
+	--color-fd-primary: var(--primary);
+	--color-fd-primary-foreground: var(--primary-foreground);
+	--color-fd-secondary: var(--secondary);
+	--color-fd-secondary-foreground: var(--secondary-foreground);
+	--color-fd-accent: var(--accent);
+	--color-fd-accent-foreground: var(--accent-foreground);
+	--color-fd-ring: var(--ring);
+}
 
-	button[data-search-full] {
-		@apply bg-transparent;
+#nd-sidebar {
+	@apply bg-sidebar;
+
+	/* Title, search, and collapse live in the docs header. */
+	> div:first-child {
+		display: none;
 	}
 }
 
-/*
- * Docs pages render the Fumadocs sidebar as `position: fixed` (z-index 20),
- * pinned full-height to the viewport. The shared marketing <footer> is a
- * full-width, statically-positioned sibling rendered after <main>, so at the
- * bottom of the scroll the fixed sidebar paints over the footer's left column
- * (logo + copyright). Lift the footer above the sidebar with an opaque
- * background so it reads as a full-width band below all content. Scoped via
- * `:has(#nd-sidebar)` so only docs pages (which have the sidebar) are affected.
- */
-body:has(#nd-sidebar) footer {
-	@apply relative z-30 bg-background;
+.dark #nd-sidebar {
+	--color-fd-muted: var(--muted);
+	--color-fd-secondary: var(--secondary);
+	--color-fd-muted-foreground: var(--muted-foreground);
+}
+
+#nd-sidebar,
+#nd-sidebar-mobile {
+	a[data-active="true"] {
+		@apply bg-primary/10 font-medium text-primary;
+	}
+
+	p.inline-flex.items-center {
+		@apply font-semibold text-foreground;
+	}
+}
+
+/* The docs header replaces the marketing nav and footer. */
+body:has(#nd-docs-layout) footer {
+	display: none;
+}
+
+#nd-page .docs-title {
+	@apply text-4xl font-bold tracking-tight text-foreground;
+}
+
+#nd-page .docs-lede {
+	color: var(--foreground);
 }
 
 #nd-page .prose {
@@ -997,8 +1059,12 @@ body:has(#nd-sidebar) footer {
 	h5,
 	h6 {
 		a {
-			@apply no-underline!;
+			@apply text-foreground no-underline!;
 		}
+	}
+
+	a:not([data-card]) {
+		@apply text-primary;
 	}
 }
 
@@ -1564,4 +1630,21 @@ html:root .copilotKitHeader {
  */
 html .text-secondary {
 	color: var(--muted-foreground);
+}
+
+/* Chat code uses the same contrast-qualified semantic ink as its surrounding UI.
+ * Prism supplies token classes; it no longer injects a separate low-contrast palette. */
+.chat-code-highlight code,
+.chat-code-highlight .token {
+ color: var(--foreground);
+}
+.chat-code-highlight .token.keyword,
+.chat-code-highlight .token.boolean,
+.chat-code-highlight .token.property,
+.chat-code-highlight .token.tag {
+ color: var(--primary-ink);
+}
+.chat-code-highlight .token.comment,
+.chat-code-highlight .token.prolog {
+ color: var(--muted-foreground);
 }

@@ -1,8 +1,8 @@
 import { getOrganizationBySlug } from "@repo/database";
 import { getSession } from "@saas/auth/lib/server";
+import { WorkspacesList } from "@saas/workspaces/components/WorkspacesList";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { TopRightControls } from "@saas/shared/components/TopRightControls";
-import { WorkspacesList } from "@saas/workspaces/components/WorkspacesList";
 import { redirect } from "next/navigation";
 
 interface OrganizationWorkspacesPageProps {
@@ -31,7 +31,7 @@ export default async function OrganizationWorkspacesPage({
 			<TopRightControls />
 			<PageBreadcrumbs items={[{ label: "Workspaces" }]} />
 
-			<WorkspacesList organizationSlug={organizationSlug} />
+			<WorkspacesList organizationId={organization.id} />
 		</div>
 	);
 }

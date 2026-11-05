@@ -6,10 +6,13 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { ORPCError } from "@orpc/server";
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 import {
 	checkExecutionQuota,
 	db,
 	getAgentDeploymentById,
+	getAgentTemplateInstanceForExecution,
 	type Prisma,
 } from "@repo/database";
 import type { ExecutionRequest } from "@repo/temporal";
@@ -17,7 +20,7 @@ import { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -40,8 +43,57 @@ const priorityMap: Record<string, number> = {
 	CRITICAL: 10,
 };
 
+async function executionDeployment(
+	deploymentId: string,
+	userId: string,
+	organizationId: string | null | undefined,
+) {
+	if (!organizationId) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "An organization is required to execute this deployment",
+		});
+	}
+	const deployment = await getAgentDeploymentById(deploymentId, {
+		userId,
+		organizationId,
+	});
+	if (
+		!deployment ||
+		deployment.id !== deploymentId ||
+		deployment.userId !== userId ||
+		deployment.organizationId !== organizationId
+	) {
+		throw new ORPCError("NOT_FOUND", { message: "Deployment not found" });
+	}
+	const scoped = await getAgentTemplateInstanceForExecution({
+		instanceId: deployment.instanceId,
+		userId,
+		organizationId,
+	});
+	if (
+		!scoped ||
+		scoped.instance.id !== deployment.instanceId ||
+		scoped.instance.organizationId !== organizationId
+	) {
+		throw new ORPCError("NOT_FOUND", {
+			message: "Agent instance not found or access denied",
+		});
+	}
+	const availability = getAgentImplementationAvailability(
+		scoped.instance.customInstructions,
+	);
+	if (!availability.available) {
+		throw new ORPCError("BAD_REQUEST", { message: availability.reason });
+	}
+	return deployment;
+}
+
 export const executeDeploymentProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_EXECUTE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_EXECUTE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(executeInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
@@ -63,14 +115,11 @@ export const executeDeploymentProcedure = tenantProtectedProcedure
 			}
 		}
 
-		const deployment = await getAgentDeploymentById(input.deploymentId, {
+		const deployment = await executionDeployment(
+			input.deploymentId,
 			userId,
 			organizationId,
-		});
-
-		if (!deployment) {
-			throw new Error("Deployment not found");
-		}
+		);
 
 		if (deployment.status !== "ACTIVE") {
 			throw new Error(
@@ -115,7 +164,7 @@ export const executeDeploymentProcedure = tenantProtectedProcedure
 		);
 
 		const executionRequest: ExecutionRequest = {
-			executionId: execution.id,
+			executionId: execution.executionId,
 			input: input.input || {},
 			triggerType: "MANUAL",
 			priority: priorityMap[input.priority] ?? 5,
@@ -147,7 +196,11 @@ const cancelExecutionInputSchema = z.object({
 });
 
 export const cancelExecutionProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_EXECUTE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_EXECUTE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(cancelExecutionInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
@@ -169,17 +222,40 @@ export const cancelExecutionProcedure = tenantProtectedProcedure
 			}
 		}
 
-		const deployment = await getAgentDeploymentById(input.deploymentId, {
+		const deployment = await executionDeployment(
+			input.deploymentId,
 			userId,
 			organizationId,
-		});
-
-		if (!deployment) {
-			throw new Error("Deployment not found");
-		}
+		);
 
 		if (!deployment.supervisorWorkflowId) {
 			throw new Error("Deployment has no active supervisor workflow");
+		}
+
+		const execution = await db.agentDeploymentExecution.findFirst({
+			where: {
+				id: input.executionId,
+				deploymentId: deployment.id,
+				userId,
+				organizationId: deployment.organizationId,
+			},
+			select: {
+				id: true,
+				executionId: true,
+				deploymentId: true,
+				userId: true,
+				organizationId: true,
+			},
+		});
+		if (
+			!execution ||
+			execution.deploymentId !== deployment.id ||
+			execution.userId !== userId ||
+			execution.organizationId !== deployment.organizationId
+		) {
+			throw new ORPCError("NOT_FOUND", {
+				message: "Execution not found",
+			});
 		}
 
 		// Signal the supervisor to cancel the execution
@@ -188,7 +264,9 @@ export const cancelExecutionProcedure = tenantProtectedProcedure
 			deployment.supervisorWorkflowId,
 		);
 
-		await handle.signal("cancelExecution", input.executionId);
+		await handle.signal("cancelExecution", {
+			executionId: execution.executionId,
+		});
 
 		return { success: true, message: "Execution cancellation requested" };
 	});

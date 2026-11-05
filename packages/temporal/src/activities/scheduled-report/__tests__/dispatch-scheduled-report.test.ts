@@ -1,173 +1,197 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const {
-	mockFindByWorkflowId,
-	mockCreateExecution,
-	mockUpdateExecution,
-	mockClaimAndAdvance,
-	mockComputeNext,
-	mockGetClient,
-	mockStart,
-	mockGetScheduleMode,
-} = vi.hoisted(() => ({
-	mockFindByWorkflowId: vi.fn(),
-	mockCreateExecution: vi.fn(),
-	mockUpdateExecution: vi.fn(),
-	mockClaimAndAdvance: vi.fn(),
-	mockComputeNext: vi.fn(),
-	mockGetClient: vi.fn(),
-	mockStart: vi.fn(),
-	mockGetScheduleMode: vi.fn(),
+const m = vi.hoisted(() => ({
+	admit: vi.fn(),
+	instance: vi.fn(),
+	authorize: vi.fn(),
+	receipt: vi.fn(),
+	advance: vi.fn(),
+	next: vi.fn(),
+	start: vi.fn(),
+	describe: vi.fn(),
 }));
-
-// heartbeat() throws outside a real activity context — no-op it.
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
-
-// Real instanceof-able error class so the activity's `err instanceof ...` branch works.
 vi.mock("@temporalio/client", () => ({
 	WorkflowExecutionAlreadyStartedError: class extends Error {},
 }));
-
-vi.mock("@repo/database", () => ({
-	findExecutionByWorkflowId: (...a: unknown[]) => mockFindByWorkflowId(...a),
-	createTemplateInstanceExecution: (...a: unknown[]) =>
-		mockCreateExecution(...a),
-	updateTemplateInstanceExecution: (...a: unknown[]) =>
-		mockUpdateExecution(...a),
-	claimAndAdvanceScheduledInstance: (...a: unknown[]) =>
-		mockClaimAndAdvance(...a),
-	computeNextRunAt: (...a: unknown[]) => mockComputeNext(...a),
-	getInstanceScheduleMode: (...a: unknown[]) => mockGetScheduleMode(...a),
+vi.mock("@repo/database", async () => {
+	const evidence = await import(
+		"../../../../../database/prisma/queries/lib/report-evidence"
+	);
+	return {
+		...evidence,
+		admitTemplateInstanceExecution: m.admit,
+		getTemplateInstance: m.instance,
+		canExecuteReportInstance: m.authorize,
+		updateTemplateInstanceExecution: m.receipt,
+		claimAndAdvanceScheduledInstance: m.advance,
+		computeNextRunAt: m.next,
+		reportExecutionAdmissionId: (id: string) => `admitted-${id}`,
+	};
+});
+vi.mock("../../../client", () => ({
+	getTemporalClient: async () => ({
+		workflow: {
+			start: m.start,
+			getHandle: () => ({ describe: m.describe }),
+		},
+	}),
 }));
-
-// From src/activities/scheduled-report/__tests__/ → ../../../client resolves to the
-// same src/client the activity imports as ../../client.
-vi.mock("../../../client", () => ({ getTemporalClient: mockGetClient }));
 
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import { dispatchScheduledReportActivity } from "../dispatch-scheduled-report";
 
 const row = {
-	id: "i1",
-	schedule: { frequency: "daily" } as never,
+	id: "instance-1",
+	userId: "user-1",
+	organizationId: "org-1",
 	nextRunAt: "2026-06-24T09:00:00.000Z",
-	userId: "u1",
-	organizationId: null,
+	schedule: { frequency: "daily" } as never,
 };
-const NEXT = new Date("2026-06-25T09:00:00.000Z");
-const wfId = `scheduled-report-i1-${new Date(row.nextRunAt).getTime()}`;
-
+const workflowId = `scheduled-report-${row.id}-${Date.parse(row.nextRunAt)}`;
+const instance = {
+	...row,
+	nextRunAt: new Date(row.nextRunAt),
+	isActive: true,
+	status: "ACTIVE",
+	scheduleMode: "CUSTOM",
+	name: "Delivery",
+	templateId: "template-1",
+	connections: {},
+	template: {},
+};
 beforeEach(() => {
 	vi.clearAllMocks();
-	mockFindByWorkflowId.mockResolvedValue(null);
-	mockCreateExecution.mockResolvedValue({ id: "e1" });
-	mockUpdateExecution.mockResolvedValue({});
-	mockClaimAndAdvance.mockResolvedValue(true);
-	mockComputeNext.mockReturnValue(NEXT);
-	mockStart.mockResolvedValue({ firstExecutionRunId: "r1" });
-	mockGetClient.mockResolvedValue({ workflow: { start: mockStart } });
-	mockGetScheduleMode.mockResolvedValue("INHERITED");
+	m.instance.mockResolvedValue(instance);
+	m.authorize.mockResolvedValue(true);
+	m.admit.mockImplementation(async (value) => ({
+		...value,
+		id: "execution-1",
+	}));
+	m.start.mockResolvedValue({ firstExecutionRunId: "run-1" });
+	m.describe.mockResolvedValue({ runId: "run-1" });
+	m.next.mockReturnValue(new Date("2026-06-25T09:00:00Z"));
+	m.receipt.mockResolvedValue({});
 });
-
-describe("dispatchScheduledReportActivity", () => {
-	it("uses a deterministic workflowId keyed on instanceId+dueAt, REJECT_DUPLICATE/FAIL, and the row's own tenant", async () => {
+describe("durable scheduled report admission", () => {
+	it("retains the existing occurrence key, pins tenant/evidence, and advances only after receipt", async () => {
 		await dispatchScheduledReportActivity(row);
-		expect(mockCreateExecution).toHaveBeenCalledWith(
+		expect(m.admit).toHaveBeenCalledWith(
 			expect.objectContaining({
-				instanceId: "i1",
-				userId: "u1",
-				organizationId: undefined,
-				workflowId: wfId,
+				organizationId: "org-1",
+				workflowId,
+				parameters: {
+					__fabricReportExecution: expect.objectContaining({
+						occurrenceAt: row.nextRunAt,
+						origin: "scheduled",
+						organizationId: "org-1",
+					}),
+				},
 			}),
 		);
-		expect(mockStart).toHaveBeenCalledWith(
+		expect(m.start).toHaveBeenCalledWith(
 			"templateInstanceExecutionWorkflow",
 			expect.objectContaining({
-				taskQueue: "fabric-worker",
-				workflowId: wfId,
+				workflowId,
 				workflowIdReusePolicy: "REJECT_DUPLICATE",
 				workflowIdConflictPolicy: "FAIL",
 				args: [
 					expect.objectContaining({
-						executionId: "e1",
-						instanceId: "i1",
-						userId: "u1",
-						organizationId: undefined,
+						executionId: "execution-1",
+						organizationId: "org-1",
+						reportingProtocol: 1,
+						jobType: "scheduled-report",
 					}),
 				],
 			}),
 		);
-	});
-
-	it("advances nextRunAt LAST via CAS using the observed dueAt", async () => {
-		await dispatchScheduledReportActivity(row);
-		expect(mockClaimAndAdvance).toHaveBeenCalledWith(
-			"i1",
+		expect(m.advance).toHaveBeenCalledWith(
+			row.id,
 			new Date(row.nextRunAt),
-			NEXT,
+			new Date("2026-06-25T09:00:00Z"),
 		);
-		// start happened before the advance
-		expect(mockStart.mock.invocationCallOrder[0]).toBeLessThan(
-			mockClaimAndAdvance.mock.invocationCallOrder[0],
-		);
-	});
-
-	it("labels schedule-dispatched runs as scheduled-report for usage attribution (Fizzy #1894)", async () => {
-		await dispatchScheduledReportActivity(row);
-
-		expect(mockStart).toHaveBeenCalledWith(
-			"templateInstanceExecutionWorkflow",
-			expect.objectContaining({
-				args: [
-					expect.objectContaining({ jobType: "scheduled-report" }),
-				],
-			}),
+		expect(m.receipt.mock.invocationCallOrder[0]).toBeLessThan(
+			m.advance.mock.invocationCallOrder[0],
 		);
 	});
-
-	it("reuses an existing execution row on retry (create-or-get by workflowId)", async () => {
-		mockFindByWorkflowId.mockResolvedValue({
-			id: "e1",
-			instanceId: "i1",
-			status: "PENDING",
-		});
-		await dispatchScheduledReportActivity(row);
-		expect(mockCreateExecution).not.toHaveBeenCalled();
-		expect(mockStart).toHaveBeenCalled();
-	});
-
-	it("treats WorkflowExecutionAlreadyStartedError as success and still advances", async () => {
-		mockStart.mockRejectedValue(
+	it("repairs AlreadyStarted receipts, including a closed execution, without another ID", async () => {
+		m.start.mockRejectedValue(
 			new WorkflowExecutionAlreadyStartedError(
-				"already started",
-				"wf",
-				"rt",
+				"Already started",
+				"workflow-1",
+				"templateInstanceExecutionWorkflow",
 			),
 		);
-		await expect(
-			dispatchScheduledReportActivity(row),
-		).resolves.toBeUndefined();
-		expect(mockClaimAndAdvance).toHaveBeenCalled();
+		await dispatchScheduledReportActivity(row);
+		expect(m.describe).toHaveBeenCalledOnce();
+		expect(m.receipt).toHaveBeenCalledWith({
+			id: "execution-1",
+			workflowId,
+			runId: "run-1",
+		});
+		expect(m.advance).toHaveBeenCalledOnce();
 	});
-
-	it("rethrows a transient start error (retryable) WITHOUT advancing nextRunAt", async () => {
-		mockStart.mockRejectedValue(new Error("temporal down"));
+	it("does not advance or mark FAILED on an uncertain start", async () => {
+		m.start.mockRejectedValue(new Error("transport timeout"));
 		await expect(dispatchScheduledReportActivity(row)).rejects.toThrow(
-			"temporal down",
+			"timeout",
 		);
-		expect(mockClaimAndAdvance).not.toHaveBeenCalled();
-		expect(mockUpdateExecution).not.toHaveBeenCalledWith(
-			expect.objectContaining({ status: "FAILED" }),
-		);
+		expect(m.advance).not.toHaveBeenCalled();
+		expect(m.receipt).not.toHaveBeenCalled();
 	});
+	it("does not advance or mark FAILED if the receipt write fails after start", async () => {
+		m.receipt.mockRejectedValue(new Error("database unavailable"));
+		await expect(dispatchScheduledReportActivity(row)).rejects.toThrow(
+			"database",
+		);
+		expect(m.advance).not.toHaveBeenCalled();
+		expect(m.receipt.mock.calls[0][0]).not.toHaveProperty("status");
+	});
+	it.each(["OFF", "ARCHIVED", "inactive", "stale", "revoked"])(
+		"does not admit a %s instance selected by a stale sweep",
+		async (state) => {
+			m.instance.mockResolvedValue({
+				...instance,
+				...(state === "OFF"
+					? { scheduleMode: "OFF" }
+					: state === "ARCHIVED"
+						? { status: "ARCHIVED" }
+						: state === "inactive"
+							? { isActive: false }
+							: state === "stale"
+								? {
+										nextRunAt: new Date(
+											"2026-07-01T00:00:00Z",
+										),
+									}
+								: {}),
+			});
+			if (state === "revoked") {
+				m.authorize.mockResolvedValue(false);
+			}
+			await dispatchScheduledReportActivity(row);
+			expect(m.admit).not.toHaveBeenCalled();
+			expect(m.start).not.toHaveBeenCalled();
+		},
+	);
+	it("rejects a null organization rather than executing in personal scope", async () => {
+		await dispatchScheduledReportActivity({ ...row, organizationId: null });
+		expect(m.instance).not.toHaveBeenCalled();
+		expect(m.admit).not.toHaveBeenCalled();
+	});
+	it("rechecks the original admitted audience after configuration edits", async () => {
+		m.authorize.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+		await dispatchScheduledReportActivity(row);
+		expect(m.admit).toHaveBeenCalledOnce();
+		expect(m.start).not.toHaveBeenCalled();
+	});
+});
 
-	it("no-ops (no execution row, no workflow.start) when the instance was switched OFF after find-due", async () => {
-		mockGetScheduleMode.mockResolvedValue("OFF");
-		await expect(
-			dispatchScheduledReportActivity(row),
-		).resolves.toBeUndefined();
-		expect(mockCreateExecution).not.toHaveBeenCalled();
-		expect(mockStart).not.toHaveBeenCalled();
-		expect(mockClaimAndAdvance).not.toHaveBeenCalled();
-	});
+it("preserves an already-admitted legacy occurrence across deployment without inventing a snapshot", async () => {
+	m.admit.mockResolvedValue({ id: "legacy-execution-1", parameters: null });
+	await dispatchScheduledReportActivity(row);
+	const args = m.start.mock.calls[0][1];
+	expect(args.workflowId).toBe(workflowId);
+	expect(args.args[0].executionId).toBe("legacy-execution-1");
+	expect(args.args[0]).not.toHaveProperty("reportingProtocol");
 });

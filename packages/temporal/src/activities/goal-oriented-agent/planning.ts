@@ -1,3 +1,7 @@
+import {
+	type NativeTestBoundary,
+	withNativeAgentTestBoundary,
+} from "../shared/native-agent-test-authority";
 /**
  * Goal-Oriented Planning Activity
  *
@@ -24,6 +28,7 @@ import type {
 import { getAiModel } from "../orchestrator/utils/model-selector";
 
 export interface CreateGoalOrientedPlanInput {
+	nativeTestBoundary?: NativeTestBoundary;
 	goal: string;
 	userMessage: string;
 	systemPrompt: string;
@@ -156,6 +161,9 @@ ${previousAttemptsContext}
 3. Each step should be verifiable (you can check if it was done correctly)
 4. Consider what tools are available and how to use them effectively
 5. If this is a retry, address the feedback from the previous attempt
+6. A separate verifier checks the goal after the plan. Do not add a step solely to repeat or verify an answer.
+7. The LAST step must produce the complete user-facing deliverable, combining any required data from earlier step variables. Only this latest deliverable is evaluated as the answer, not the concatenated work log.
+8. Use one step for a simple answer. On retry, produce a revised complete deliverable instead of appending a correction to an earlier draft.
 
 Create a focused plan that will achieve the goal. Keep it concise but complete.`;
 
@@ -298,7 +306,9 @@ async function loadMcpToolsForPlanning(
 export function createGoalOrientedPlan(
 	params: Parameters<typeof createGoalOrientedPlanInJob>[0],
 ): ReturnType<typeof createGoalOrientedPlanInJob> {
-	return runWithDefaultAiJobType("external-agent", () =>
-		createGoalOrientedPlanInJob(params),
+	return withNativeAgentTestBoundary(params, () =>
+		runWithDefaultAiJobType("external-agent", () =>
+			createGoalOrientedPlanInJob(params),
+		),
 	);
 }

@@ -290,3 +290,11 @@ describe("categories", () => {
 		expect(nodeCategories.filter((c) => c.nodes.length === 0)).toEqual([]);
 	});
 });
+
+it("exposes the HTTP response fields returned by the runtime to output insertion", () => {
+	expect(
+		getNodeDefinition("http-request")?.outputFields?.map(
+			(output) => output.field,
+		),
+	).toEqual(["status", "data"]);
+});

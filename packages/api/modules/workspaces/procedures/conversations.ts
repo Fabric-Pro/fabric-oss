@@ -1,3 +1,4 @@
+import { workspaceBoundaryMiddleware } from "../lib/workspace-boundary";
 import { ORPCError } from "@orpc/server";
 import {
 	attachWorkspaceToConversation,
@@ -11,7 +12,7 @@ import {
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -19,13 +20,19 @@ import {
  * Attach a workspace to a conversation
  */
 export const attachWorkspaceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			conversationId: z.string(),
 			workspaceId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -50,13 +57,19 @@ export const attachWorkspaceProcedure = tenantProtectedProcedure
  * Detach a workspace from a conversation
  */
 export const detachWorkspaceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			conversationId: z.string(),
 			workspaceId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 
@@ -73,12 +86,18 @@ export const detachWorkspaceProcedure = tenantProtectedProcedure
  * Get workspaces attached to a conversation
  */
 export const getConversationWorkspacesProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			conversationId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const conversation = await db.agentConversation.findFirst({
 			where: { id: input.conversationId, userId: context.user.id },
@@ -108,12 +127,18 @@ export const getConversationWorkspacesProcedure = tenantProtectedProcedure
  * Get available documents from attached workspaces
  */
 export const getAvailableDocumentsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			conversationId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const conversation = await db.agentConversation.findFirst({
 			where: { id: input.conversationId, userId: context.user.id },
@@ -157,12 +182,18 @@ export const getAvailableDocumentsProcedure = tenantProtectedProcedure
  * Get Qdrant point IDs for RAG retrieval
  */
 export const getQdrantPointIdsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
+			organizationId: z.string().nullable().optional(),
 			conversationId: z.string(),
 		}),
 	)
+	.use(workspaceBoundaryMiddleware)
 	.handler(async ({ input, context }) => {
 		const conversation = await db.agentConversation.findFirst({
 			where: { id: input.conversationId, userId: context.user.id },

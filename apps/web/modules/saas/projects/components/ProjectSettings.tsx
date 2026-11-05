@@ -32,6 +32,7 @@ import {
 	CHAT_MONITORS_SECTION_ID,
 	scrollToChatMonitors,
 } from "./ConnectChatChannelButton";
+import { LaunchFabricDesktopBar } from "./coding-runs/LaunchFabricDesktopBar";
 import { FieldMappingPanel } from "./field-mapping/FieldMappingPanel";
 import { GoogleDocsSelectorDialog } from "./GoogleDocsSelectorDialog";
 import { MeetingTranscriptSyncSettings } from "./MeetingTranscriptSyncSettings";
@@ -56,6 +57,8 @@ import { SlackChannelMonitorSettings } from "./SlackChannelMonitorSettings";
 import {
 	NAVIGATE_TO_SETTINGS_TAB_EVENT,
 	type NavigateToSettingsTabDetail,
+	PM_SETTINGS_ANCHOR_ID,
+	scrollToWhenRendered,
 } from "./settings-tab-navigation";
 import { resolveStoredSettingsTab } from "./settings-tab-storage";
 import { TeamsChannelMonitorSettings } from "./TeamsChannelMonitorSettings";
@@ -163,9 +166,47 @@ type Props = {
 // deep links still work (same tab) without leaking sub-tab state across browser tabs.
 const STORAGE_KEY_PREFIX = "fabric-project-settings-tab-";
 
-// Only ungated sub-tabs are deep-linkable from a notification/CTA (never route a
-// deep link into a role-gated tab like danger). Newsletter is ungated.
-const DEEP_LINKABLE_SETTINGS_TABS: SettingsTab[] = ["newsletter", "engagement"];
+// Non-destructive sub-tabs are deep-linkable from Readiness CTAs and notifications
+// (never route a deep link into a role-gated destructive tab like `danger`).
+// Feature-flag gates are enforced via `resolveStoredSettingsTab` before switching.
+const DEEP_LINKABLE_SETTINGS_TABS: SettingsTab[] = [
+	"general",
+	"engagement",
+	"ai-assistant",
+	"navigation",
+	"knowledge",
+	"development",
+	"project-management",
+	"agent-runtime",
+	"members",
+	"retrieval",
+	"environments",
+	"testing",
+	"newsletter",
+	"publishing",
+];
+
+function resolveRequestedSettingsTab(
+	requested: string | null,
+	anchorId: string | null | undefined,
+	pmFieldMappingEnabled: boolean,
+	publishingEnabled: boolean,
+): SettingsTab | null {
+	if (!requested) {
+		return null;
+	}
+	const effective =
+		requested === "development" &&
+		anchorId === PM_SETTINGS_ANCHOR_ID &&
+		pmFieldMappingEnabled
+			? "project-management"
+			: requested;
+	return resolveStoredSettingsTab(effective, {
+		pmFieldMappingEnabled,
+		qaEnabled: QA_SETTINGS_ENABLED,
+		publishingEnabled,
+	});
+}
 
 // The QA project tab is gated on this flag (`ProjectDetails.tsx`), and both QA
 // settings pages configure that tab and nothing else — `ProjectEnvironment` has
@@ -240,11 +281,12 @@ function useSettingsTab(
 			if (detail?.projectId !== projectId) {
 				return;
 			}
-			const resolved = resolveStoredSettingsTab(detail.settingsTab, {
+			const resolved = resolveRequestedSettingsTab(
+				detail.settingsTab,
+				detail.anchorId,
 				pmFieldMappingEnabled,
-				qaEnabled: QA_SETTINGS_ENABLED,
 				publishingEnabled,
-			});
+			);
 			// `null` means the requested tab is gated off for this viewer —
 			// leave them where they are rather than bouncing them to General.
 			if (resolved) {
@@ -278,21 +320,64 @@ export function ProjectSettings({
 		pmFieldMappingEnabled,
 		publishingSuiteEnabled,
 	);
-	// Honor a `?settingsTab=<id>` deep link so the approval notification (and any
-	// future cross-page CTA) can land directly on the Newsletter sub-tab instead
-	// of whatever sub-tab sessionStorage last recorded. Mirrors the `?tab`
-	// handling in `ProjectDetails.tsx` — only deep-linkable (ungated) sub-tabs
-	// switch, so a stray/malicious param can't route into a role-gated tab.
-	const settingsSearchParams = useSearchParams();
+	// Honor a `?settingsTab=<id>` (and optional `?settingsAnchor=<id>`) deep link
+	// so notifications and Readiness CTAs land directly on the target sub-tab and
+	// scroll to the matching card. Wait until `?tab=` has been stripped by
+	// `useProjectTabDeepLink` so URL cleanups never race, then strip the consumed
+	// settings params without requiring `usePathname` (which partial test mocks omit).
+	const router = useRouter();
+	const settingsSearch = useSearchParams().toString();
 	useEffect(() => {
-		const requested = settingsSearchParams.get("settingsTab");
+		const next = new URLSearchParams(settingsSearch);
+		if (next.has("tab")) {
+			return;
+		}
+		const requested = next.get("settingsTab");
+		const requestedAnchor = next.get("settingsAnchor");
+		let didConsume = false;
 		if (
 			requested &&
 			DEEP_LINKABLE_SETTINGS_TABS.includes(requested as SettingsTab)
 		) {
-			setSettingsTab(requested as SettingsTab);
+			const resolved = resolveRequestedSettingsTab(
+				requested,
+				requestedAnchor,
+				pmFieldMappingEnabled,
+				publishingSuiteEnabled,
+			);
+			if (resolved) {
+				setSettingsTab(resolved);
+			}
+			next.delete("settingsTab");
+			didConsume = true;
 		}
-	}, [settingsSearchParams]);
+		if (requestedAnchor) {
+			scrollToWhenRendered(requestedAnchor);
+			next.delete("settingsAnchor");
+			didConsume = true;
+		}
+		if (didConsume && typeof window !== "undefined") {
+			const query = next.toString();
+			const targetUrl = query
+				? `${window.location.pathname}?${query}`
+				: window.location.pathname;
+			if (typeof router.replace === "function") {
+				router.replace(targetUrl, { scroll: false });
+			} else {
+				window.history.replaceState(
+					window.history.state,
+					"",
+					targetUrl,
+				);
+			}
+		}
+	}, [
+		settingsSearch,
+		router,
+		pmFieldMappingEnabled,
+		publishingSuiteEnabled,
+		setSettingsTab,
+	]);
 	// Chat channels are LINKED on the Knowledge tab, but SELECTED on the
 	// Newsletter and Publishing cards. Switching the tab is not enough: the
 	// monitor cards sit well below the fold of a long tab, so a reader who
@@ -317,7 +402,6 @@ export function ProjectSettings({
 	const googleDocsContextEnabled = isMonitoringFeatureEnabled(
 		"feature-google-docs-context",
 	);
-	const router = useRouter();
 	const { basePath } = useOrganizationContext();
 	const { confirm } = useConfirmationAlert();
 	const t = useTranslations("tooltips.projectSettings");
@@ -369,6 +453,10 @@ export function ProjectSettings({
 		),
 		"project-management": !!(
 			pmFieldMappingEnabled && project.projectManagementMcpConfigId
+		),
+		"agent-runtime": !!(
+			project.implementationDefaultChannel ||
+			project.implementationDefaultProvider
 		),
 		members: true, // always has at least the owner
 	};
@@ -583,12 +671,14 @@ export function ProjectSettings({
 						<div>
 							<p className={sectionTitleClass}>Development</p>
 							<h3 className="mt-2 text-xl font-semibold text-foreground">
-								Project management and repository
+								{pmFieldMappingEnabled
+									? "Repositories"
+									: "Project management and repositories"}
 							</h3>
 							<p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-								Connect project management tools, repositories,
-								and configure the local development path Fabric
-								Agent should use when work is delegated.
+								{pmFieldMappingEnabled
+									? "Connect Git repositories, configure branches, and manage codebase indexing for this project."
+									: "Connect project management tools, Git repositories, and codebase indexing for this project."}
 							</p>
 						</div>
 						{/* When the field-mapping flag is on the PM card moves to
@@ -597,9 +687,6 @@ export function ProjectSettings({
 						{!pmFieldMappingEnabled && (
 							<ProjectManagementSettings project={project} />
 						)}
-						<ProjectImplementationDefaultsSettings
-							project={project}
-						/>
 						{currentUserId && (
 							<ProjectRepositoryIntegrationSettings
 								project={project}
@@ -630,6 +717,51 @@ export function ProjectSettings({
 							<FieldMappingPanel project={project} />
 						</div>
 					)}
+
+				{settingsTab === "agent-runtime" && (
+					<div className="space-y-6">
+						<div>
+							<p className={sectionTitleClass}>Agent Runtime</p>
+							<h3 className="mt-2 text-xl font-semibold text-foreground">
+								Remote servers, Fabric Desktop &amp; harness
+								defaults
+							</h3>
+							<p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+								Configure where coding tasks execute by default,
+								manage personal or team remote servers, and
+								connect Fabric Desktop on your machine.
+							</p>
+						</div>
+						<ProjectImplementationDefaultsSettings
+							project={project}
+						/>
+						<Card className="rounded-lg border p-6">
+							<div className="space-y-4">
+								<div className="space-y-1">
+									<div className="flex flex-wrap items-center gap-2">
+										<h4 className="text-base font-semibold text-foreground">
+											Personal machine &amp; MCP
+											connection
+										</h4>
+										<span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+											Personal to you
+										</span>
+									</div>
+									<p className="text-sm text-muted-foreground">
+										Launch Fabric Desktop locally, register
+										or delegate to a remote server, or copy
+										the MCP setup for your coding CLI.
+									</p>
+								</div>
+								<LaunchFabricDesktopBar
+									projectId={project.id}
+									projectName={project.name}
+									organizationId={project.organizationId}
+								/>
+							</div>
+						</Card>
+					</div>
+				)}
 
 				{settingsTab === "members" && (
 					<div className="space-y-4">

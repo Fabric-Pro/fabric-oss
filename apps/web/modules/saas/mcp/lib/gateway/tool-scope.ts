@@ -17,6 +17,7 @@ export type ToolScope = { scope: string; kind: "read" | "write" };
  * server proxy. Every call still requires a valid acting grant.
  */
 export const SERVICE_CREDENTIAL_SCOPES: readonly string[] = [
+	"workspaces:read",
 	"workflows:read",
 	"workflows:write",
 	"workflows:run",
@@ -103,7 +104,7 @@ function reachesPersonalData(required: ToolScope): boolean {
 }
 
 export function scopeSatisfied(
-	granted: string[],
+	granted: readonly string[],
 	required: ToolScope,
 	credential: GatewayCredential,
 ): boolean {
@@ -113,7 +114,26 @@ export function scopeSatisfied(
 	if (granted.includes("*") || granted.includes(required.scope)) {
 		return true;
 	}
+	// Skill publication and organization policy are deliberate consent, never
+	// implied by a general MCP read/write umbrella. Wildcard keys still undergo
+	// the same live actor/role/owner checks in the shared command.
+	if (
+		required.scope.startsWith("skills:") ||
+		required.scope.startsWith("governance:")
+	) {
+		return false;
+	}
 	if (granted.includes("mcp:write")) {
+		return true;
+	}
+	// Allow OAuth agents holding mcp:read to request/revoke runtime authority
+	// and reach connected-server write tools (which remain gated by enforceAuthority
+	// requiring explicit human approval in the Fabric UI).
+	if (
+		credential === "oauth" &&
+		required.scope === "mcp:write" &&
+		granted.includes("mcp:read")
+	) {
 		return true;
 	}
 	return required.kind === "read" && granted.includes("mcp:read");

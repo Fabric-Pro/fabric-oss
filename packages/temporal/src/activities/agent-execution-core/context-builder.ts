@@ -9,6 +9,10 @@
 
 import { getCurrentDateContext } from "@repo/ai";
 import { buildAgentInstructions } from "../../lib/agent-instructions";
+import {
+	readWorkspaceDocumentFilters,
+	type WorkspaceDocumentFilter,
+} from "../../lib/workspace-document-selection";
 import type {
 	AgentExecutionContext,
 	KnowledgeSourceConfig,
@@ -51,6 +55,7 @@ export interface ConnectionMappings {
 	}>;
 	toolConnections: Record<string, Record<string, unknown>>;
 	workspaceIds: string[];
+	workspaceDocumentFilters?: WorkspaceDocumentFilter[];
 }
 
 /**
@@ -92,6 +97,11 @@ export function buildAgentExecutionContext(
 		tools,
 		knowledgeSources,
 		workspaceIds: connections.workspaceIds,
+		workspaceDocumentFilters: readWorkspaceDocumentFilters(
+			connections.workspaceDocumentFilters ??
+				instance.customInstructions?.knowledgeFilters,
+			connections.workspaceIds,
+		),
 		userId,
 		organizationId,
 	};

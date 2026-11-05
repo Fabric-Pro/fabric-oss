@@ -1,4 +1,5 @@
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
+import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 import { getAIModelWithMetadata, getCurrentDateContext } from "@repo/ai";
 import {
 	chatGptPlanExhaustedChatResponse,
@@ -16,6 +17,7 @@ import {
 	resolveRequestedOrganization,
 } from "@repo/api/lib/requested-organization";
 import { stripRemoteCodingRunSummary } from "@repo/api/modules/projects/lib/strip-internal-story-fields";
+import { getAgentTemplateInstanceForExecution } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import {
 	type ActivityHeartbeatDetails,
@@ -27,6 +29,7 @@ import {
 	getTemporalClient,
 	isTemporalAvailable,
 } from "@repo/temporal";
+import { directApprovalRefusal } from "@repo/temporal/direct-approval-policy";
 import type { AssertAssignable } from "@saas/agents/lib/chat-stream-protocol";
 import type { DirectStreamInput } from "@saas/agents/lib/direct-stream-protocol";
 import { encodeDirectStreamEvent } from "@saas/agents/lib/direct-stream-protocol";
@@ -629,6 +632,50 @@ export async function admitDirectChatTurn(
 			return forbiddenOrganizationResponse(organizationResolution);
 		}
 		const organizationId = organizationResolution.organizationId;
+		const approvalRefusal = directApprovalRefusal(approvedToolCall);
+		if (approvalRefusal) {
+			return Response.json(
+				{ error: approvalRefusal.message, code: approvalRefusal.code },
+				{ status: approvalRefusal.status },
+			);
+		}
+		let instanceProjectId: string | undefined;
+		if (instanceId) {
+			const scoped = await getAgentTemplateInstanceForExecution({
+				instanceId,
+				userId,
+				organizationId,
+			});
+			if (!scoped) {
+				return Response.json(
+					{ error: "Agent not found or access denied" },
+					{ status: 404 },
+				);
+			}
+			const availability = getAgentImplementationAvailability(
+				scoped.instance.customInstructions,
+			);
+			if (!availability.available) {
+				return Response.json(
+					{
+						error: availability.reason,
+						code: "AGENT_IMPLEMENTATION_UNAVAILABLE",
+					},
+					{ status: 409 },
+				);
+			}
+			instanceProjectId = scoped.projectId;
+			if (
+				scoped.projectId &&
+				providedProjectId &&
+				scoped.projectId !== providedProjectId
+			) {
+				return Response.json(
+					{ error: "The selected project does not match this agent" },
+					{ status: 409 },
+				);
+			}
+		}
 
 		// A conversation id is only a lookup key for the caller's own
 		// conversations. Anything derived from it (attached workspaces, the
@@ -703,7 +750,7 @@ export async function admitDirectChatTurn(
 		}
 
 		// Resolve project ID from conversation if not provided
-		let projectId = providedProjectId ?? undefined;
+		let projectId = instanceProjectId ?? providedProjectId ?? undefined;
 		if (!projectId && conversationId) {
 			try {
 				const { getConversationProject } = await import(
@@ -755,6 +802,13 @@ export async function admitDirectChatTurn(
 				);
 				projectId = undefined;
 			}
+		}
+
+		if (instanceProjectId && projectId !== instanceProjectId) {
+			return Response.json(
+				{ error: "Agent project access was revoked" },
+				{ status: 403 },
+			);
 		}
 
 		const usageFrame = await resolveUsageFrame({

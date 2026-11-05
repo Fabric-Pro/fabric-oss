@@ -82,5 +82,29 @@
 		"sha256": "74cb126518a63430fd962bb42c9e692cc277902abfddc23e5426c3e95f801e60",
 		"status": "COMPLETED",
 		"baselineSourceHash": "3a41aaa3eedd79e87ec0a84edabe5b4cc1523c1be8328588d6cda8a441900b38"
+	},
+	"deployment-cancelled": {
+		"workflowType": "nativeDeploymentExecutionWorkflow",
+		"workflowId": "example-native-c384dfad-15f5-48ec-951b-d94ca5a06103-deployment-f801da7b-35c5-4213-87c6-51ddf637df33",
+		"receiptAttempts": 3,
+		"terminalAttempts": 2,
+		"modelCalls": 1,
+		"toolCalls": 1,
+		"eventCount": 64,
+		"sha256": "3d8d0feaa0a51169c83f97b066c8d2f2f738d54b197700cf8f9c23ef30842e09",
+		"status": "CANCELLED",
+		"baselineSourceHash": "461997fafa56f9f9c0834c6a1a645377c219287d44fcb97271711de35840ea5a"
+	},
+	"goal-cancelled": {
+		"workflowType": "nativeGoalOrientedAgentWorkflow",
+		"workflowId": "example-native-c384dfad-15f5-48ec-951b-d94ca5a06103-goal-8563d686-70ba-4d39-853d-73d28d169c3e",
+		"receiptAttempts": 3,
+		"terminalAttempts": 2,
+		"modelCalls": 1,
+		"toolCalls": 1,
+		"eventCount": 63,
+		"sha256": "a20ca4534e4377274fb0268222b68ac5d7aa0ff425a2e3d315e491d79e6ef333",
+		"status": "CANCELLED",
+		"baselineSourceHash": "3a41aaa3eedd79e87ec0a84edabe5b4cc1523c1be8328588d6cda8a441900b38"
 	}
 }

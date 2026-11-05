@@ -1,292 +1,136 @@
-/**
- * Tests for executeSkillProcedure
- *
- * Covers:
- * - Happy path: SYSTEM skill execution (visible to all)
- * - ORG skill execution with membership verification
- * - USER skill execution (owner only)
- * - useCount increment on every execution
- * - NOT_FOUND for missing skill
- * - NOT_FOUND for cross-tenant access (wrong org, wrong user)
- * - FORBIDDEN when organization membership check fails
- */
-
+import { SkillError } from "@repo/ai/skill-contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { z } from "zod";
 
-const {
-	handlers,
-	uses,
-	mockGetSkillById,
-	mockIncrementSkillUseCount,
-	mockVerifyOrganizationMembership,
-} = vi.hoisted(() => ({
-	handlers: {} as Record<string, (...args: unknown[]) => unknown>,
-	uses: [] as unknown[],
-	mockGetSkillById: vi.fn(),
-	mockIncrementSkillUseCount: vi.fn(),
-	mockVerifyOrganizationMembership: vi.fn(),
+const m = vi.hoisted(() => ({
+	get: vi.fn(),
+	increment: vi.fn(),
+	handler: undefined as unknown as (args: {
+		input: unknown;
+		context: unknown;
+	}) => Promise<unknown>,
+	schema: undefined as unknown as z.ZodType,
+	permission: "",
 }));
-
-vi.mock("@repo/database", () => ({
-	getSkillById: (...args: unknown[]) => mockGetSkillById(...args),
-	incrementSkillUseCount: (...args: unknown[]) =>
-		mockIncrementSkillUseCount(...args),
-	AI_PROVIDER_METADATA: {},
-	GATEWAY_PROVIDERS: [],
-	DB_GATEWAY_PROVIDERS: [],
-}));
-
-vi.mock("../../../organizations/lib/membership", () => ({
-	verifyOrganizationMembership: (...args: unknown[]) =>
-		mockVerifyOrganizationMembership(...args),
-}));
-
+vi.mock("@repo/database", () => ({ incrementSkillUseCount: m.increment }));
+vi.mock("../../lib/skill-commands", () => ({ getSkillCommand: m.get }));
 vi.mock("../../../../orpc/procedures", () => {
-	const chainable: Record<string, unknown> = {};
-	Object.assign(chainable, {
-		use: (...args: unknown[]) => {
-			uses.push(...args);
-			return chainable;
+	const chain = {
+		use: () => chain,
+		route: () => chain,
+		input: (schema: z.ZodType) => {
+			m.schema = schema;
+			return chain;
 		},
-		route: () => chainable,
-		input: (schema: unknown) => {
-			(chainable as { _input?: unknown })._input = schema;
-			return chainable;
+		handler: (handler: typeof m.handler) => {
+			m.handler = handler;
+			return { _handler: handler };
 		},
-		output: () => chainable,
-		handler: (fn: (...args: unknown[]) => unknown) => {
-			handlers.executeSkill = fn;
-			return {
-				_handler: fn,
-				_input: (chainable as { _input?: unknown })._input,
-			};
-		},
-	});
-
-	const Permissions = new Proxy({}, { get: (_t, p) => String(p) });
-
+	};
 	return {
-		tenantProtectedProcedure: chainable,
-		Permissions,
-		requirePermission: (perm: string) => {
-			uses.push({ requirePermission: perm });
-			return (c: unknown) => c;
+		tenantProtectedProcedure: chain,
+		Permissions: { SKILL_READ: "skill:read" },
+		requireInputOrgPermission: (
+			permission: string,
+			options: { requireOrganization: boolean },
+		) => {
+			if (!options.requireOrganization) {
+				throw Error("Organization required");
+			}
+			m.permission = permission;
+			return permission;
 		},
-		resolveOrganizationId: vi.fn(
-			(organizationId: string | null | undefined) =>
-				organizationId ?? null,
-		),
+		resolveOrganizationId: (
+			input: string | null | undefined,
+			session: { activeOrganizationId?: string },
+		) =>
+			input === null
+				? undefined
+				: (input ?? session.activeOrganizationId),
 	};
 });
-
-// Register the handler.
 import "../execute";
-
-const ctx = {
-	user: { id: "user-1" },
-	session: { id: "session-1", activeOrganizationId: null },
+const context = {
+	user: { id: "example-user" },
+	session: { activeOrganizationId: "example-org" },
 };
-
-const orgCtx = {
-	user: { id: "user-1" },
-	session: { id: "session-1", activeOrganizationId: "org-1" },
+const skill = {
+	id: "example-skill",
+	slug: "example-skill",
+	name: "Example skill",
+	description: "Check the change",
+	content: "Check tests and permissions.",
+	archivedAt: null,
 };
-
-function makeSkill(overrides: Partial<Record<string, unknown>> = {}) {
-	return {
-		id: "skill-1",
-		name: "Test Skill",
-		slug: "test-skill",
-		description: "A test skill",
-		content: "Skill content here",
-		scope: "SYSTEM",
-		userId: null,
-		organizationId: null,
-		...overrides,
-	};
-}
-
 beforeEach(() => {
 	vi.clearAllMocks();
+	m.get.mockResolvedValue({ skill });
+	m.increment.mockResolvedValue(undefined);
 });
-
-// ---------------------------------------------------------------------------
-// Happy paths
-// ---------------------------------------------------------------------------
-
-describe("executeSkillProcedure — happy paths", () => {
-	it("executes a SYSTEM skill and returns content", async () => {
-		mockGetSkillById.mockResolvedValue(makeSkill({ scope: "SYSTEM" }));
-		mockIncrementSkillUseCount.mockResolvedValue(undefined);
-
-		const result = (await handlers.executeSkill({
-			input: { id: "skill-1", organizationId: null },
-			context: ctx,
-		})) as { id: string; name: string; content: string };
-
-		expect(mockGetSkillById).toHaveBeenCalledWith("skill-1", {
-			userId: "user-1",
-			organizationId: undefined,
+describe("execute skill compatibility delegates current visibility to the shared command", () => {
+	it("loads visible content without executing files or bypassing publication visibility", async () => {
+		expect(m.permission).toBe("skill:read");
+		expect(
+			await m.handler({ input: { id: "example-skill" }, context }),
+		).toEqual({
+			id: skill.id,
+			slug: skill.slug,
+			name: skill.name,
+			description: skill.description,
+			content: skill.content,
 		});
-		expect(mockIncrementSkillUseCount).toHaveBeenCalledWith("skill-1");
-		expect(result.id).toBe("skill-1");
-		expect(result.name).toBe("Test Skill");
-		expect(result.content).toBe("Skill content here");
-	});
-
-	it("executes an ORG skill when user is a member", async () => {
-		mockGetSkillById.mockResolvedValue(
-			makeSkill({ scope: "ORGANIZATION", organizationId: "org-1" }),
+		expect(m.get).toHaveBeenCalledWith(
+			{ userId: "example-user", organizationId: "example-org" },
+			{ id: "example-skill" },
 		);
-		mockIncrementSkillUseCount.mockResolvedValue(undefined);
-		mockVerifyOrganizationMembership.mockResolvedValue({
-			organization: { id: "org-1" },
-			role: "member",
+		expect(m.increment).toHaveBeenCalledWith("example-skill");
+	});
+	it.each(["SYSTEM", "ORGANIZATION"])(
+		"retains explicit authorized use of a %s skill",
+		async (scope) => {
+			m.get.mockResolvedValue({ skill: { ...skill, scope } });
+			expect(
+				await m.handler({ input: { id: "example-skill" }, context }),
+			).toMatchObject({ content: skill.content });
+		},
+	);
+	it.each(["NOT_FOUND", "FORBIDDEN"] as const)(
+		"does not increment usage on current %s visibility/permission refusal",
+		async (code) => {
+			m.get.mockRejectedValue(new SkillError(code, "Skill unavailable"));
+			await expect(
+				m.handler({ input: { id: "example-skill" }, context }),
+			).rejects.toMatchObject({ code, message: "Skill unavailable" });
+			expect(m.increment).not.toHaveBeenCalled();
+		},
+	);
+	it("refuses archived content before recording a use", async () => {
+		m.get.mockResolvedValue({
+			skill: { ...skill, archivedAt: "2026-01-01T00:00:00.000Z" },
 		});
-
-		const result = (await handlers.executeSkill({
-			input: { id: "skill-1", organizationId: "org-1" },
-			context: orgCtx,
-		})) as { id: string; name: string };
-
-		expect(result.id).toBe("skill-1");
-		expect(mockVerifyOrganizationMembership).toHaveBeenCalledWith(
-			"org-1",
-			"user-1",
-		);
-		expect(mockIncrementSkillUseCount).toHaveBeenCalledWith("skill-1");
-	});
-
-	it("executes a USER skill when user is the owner", async () => {
-		mockGetSkillById.mockResolvedValue(
-			makeSkill({ scope: "USER", userId: "user-1" }),
-		);
-		mockIncrementSkillUseCount.mockResolvedValue(undefined);
-
-		const result = (await handlers.executeSkill({
-			input: { id: "skill-1", organizationId: null },
-			context: ctx,
-		})) as { id: string; name: string };
-
-		expect(result.id).toBe("skill-1");
-		expect(mockIncrementSkillUseCount).toHaveBeenCalledWith("skill-1");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Tenant isolation / authorization
-// ---------------------------------------------------------------------------
-
-describe("executeSkillProcedure — tenant isolation", () => {
-	it("throws NOT_FOUND when skill does not exist", async () => {
-		mockGetSkillById.mockResolvedValue(null);
-
 		await expect(
-			handlers.executeSkill({
-				input: { id: "missing-skill", organizationId: null },
-				context: ctx,
-			}),
-		).rejects.toThrow(/not found/i);
-
-		expect(mockIncrementSkillUseCount).not.toHaveBeenCalled();
+			m.handler({ input: { id: "example-skill" }, context }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(m.increment).not.toHaveBeenCalled();
 	});
-
-	it("throws NOT_FOUND for ORG skill when user is NOT a member", async () => {
-		mockGetSkillById.mockResolvedValue(
-			makeSkill({ scope: "ORGANIZATION", organizationId: "org-1" }),
-		);
-		mockVerifyOrganizationMembership.mockResolvedValue(null);
-
+	it("never restores a personal/null organization branch", async () => {
 		await expect(
-			handlers.executeSkill({
-				input: { id: "skill-1", organizationId: "org-1" },
-				context: orgCtx,
+			m.handler({
+				input: { id: "example-skill", organizationId: null },
+				context,
 			}),
-		).rejects.toThrow(/not found/i);
-
-		expect(mockIncrementSkillUseCount).not.toHaveBeenCalled();
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(m.get).not.toHaveBeenCalled();
+		expect(m.increment).not.toHaveBeenCalled();
 	});
-
-	it("throws NOT_FOUND for USER skill owned by another user", async () => {
-		mockGetSkillById.mockResolvedValue(
-			makeSkill({ scope: "USER", userId: "user-2" }),
-		);
-
-		await expect(
-			handlers.executeSkill({
-				input: { id: "skill-1", organizationId: null },
-				context: ctx,
-			}),
-		).rejects.toThrow(/not found/i);
-
-		expect(mockIncrementSkillUseCount).not.toHaveBeenCalled();
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Side effects
-// ---------------------------------------------------------------------------
-
-describe("executeSkillProcedure — useCount increment", () => {
-	it("increments useCount for every successful execution", async () => {
-		mockGetSkillById.mockResolvedValue(makeSkill({ scope: "SYSTEM" }));
-		mockIncrementSkillUseCount.mockResolvedValue(undefined);
-
-		await handlers.executeSkill({
-			input: { id: "skill-1", organizationId: null },
-			context: ctx,
-		});
-
-		expect(mockIncrementSkillUseCount).toHaveBeenCalledTimes(1);
-		expect(mockIncrementSkillUseCount).toHaveBeenCalledWith("skill-1");
-	});
-
-	it("does NOT increment useCount when skill is not found", async () => {
-		mockGetSkillById.mockResolvedValue(null);
-
-		try {
-			await handlers.executeSkill({
-				input: { id: "missing", organizationId: null },
-				context: ctx,
-			});
-		} catch {
-			// expected
-		}
-
-		expect(mockIncrementSkillUseCount).not.toHaveBeenCalled();
-	});
-
-	it("does NOT increment useCount when authorization fails", async () => {
-		mockGetSkillById.mockResolvedValue(
-			makeSkill({ scope: "USER", userId: "user-2" }),
-		);
-
-		try {
-			await handlers.executeSkill({
-				input: { id: "skill-1", organizationId: null },
-				context: ctx,
-			});
-		} catch {
-			// expected
-		}
-
-		expect(mockIncrementSkillUseCount).not.toHaveBeenCalled();
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Permission middleware
-// ---------------------------------------------------------------------------
-
-describe("executeSkillProcedure — permission wiring", () => {
-	it("requires the SKILL_READ permission", () => {
-		const found = uses.some(
-			(u) =>
-				typeof u === "object" &&
-				u !== null &&
-				(u as { requirePermission?: string }).requirePermission ===
-					"SKILL_READ",
-		);
-		expect(found).toBe(true);
+	it("rejects actor, permission and content overrides through the input contract", () => {
+		expect(
+			m.schema.safeParse({
+				id: "example-skill",
+				userId: "other-user",
+				scope: "SYSTEM",
+				content: "Injected",
+			}).success,
+		).toBe(false);
 	});
 });

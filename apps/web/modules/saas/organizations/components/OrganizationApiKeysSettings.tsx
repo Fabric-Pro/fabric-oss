@@ -51,6 +51,47 @@ import { toast } from "sonner";
 // Available scopes with descriptions
 export const AVAILABLE_SCOPES = [
 	{
+		id: "prompts:read",
+		label: "Prompts Read",
+		description:
+			"Read accessible prompts and preview supplied text with current AI access.",
+	},
+	{
+		id: "prompts:write",
+		label: "Prompts Write",
+		description:
+			"Request reviewed prompt proposals and manage prompts within your current permissions.",
+	},
+	{
+		id: "skills:read",
+		label: "Skills Read",
+		description:
+			"Read built-in, published organization and your own draft skills.",
+	},
+	{
+		id: "skills:write",
+		label: "Skills Write",
+		description:
+			"Create and maintain your own skill drafts; publication requires Skills Publish.",
+	},
+	{
+		id: "skills:publish",
+		label: "Skills Publish",
+		description:
+			"Publish your own skills or make them discoverable by agents, within organization policy.",
+	},
+	{
+		id: "governance:read",
+		label: "Governance Read",
+		description: "Read organization skill creation and publication policy.",
+	},
+	{
+		id: "governance:write",
+		label: "Governance Write",
+		description:
+			"Change organization skill policy. Owners and administrators only.",
+	},
+	{
 		id: "mcp:read",
 		label: "MCP Read",
 		description: "Read MCP server configurations and tools",
@@ -59,7 +100,7 @@ export const AVAILABLE_SCOPES = [
 		id: "mcp:write",
 		label: "MCP Write (all write tools)",
 		description:
-			"Grants every write tool, including workflows, pages and features, and modifies MCP configurations. To limit what a key can change, tick the narrower write scopes below instead.",
+			"Grants ordinary write tools, including workflows, pages and features, and modifies MCP configurations. Skills and governance require their explicit scopes. To limit what a key can change, tick the narrower write scopes below instead.",
 	},
 	{
 		id: "ai:models:read",
@@ -93,6 +134,12 @@ export const AVAILABLE_SCOPES = [
 		description: "Trigger agent executions via API",
 	},
 	{
+		id: "agents:schedule",
+		label: "Agents Schedule",
+		description:
+			"Manage recurring agent runs (also requires Agents Execute)",
+	},
+	{
 		id: "agents:stream",
 		label: "Agents Stream",
 		description: "Access real-time agent execution streams",
@@ -114,8 +161,8 @@ export const AVAILABLE_SCOPES = [
 	},
 	{
 		id: "workspaces:read",
-		label: "Libraries Read",
-		description: "Read document libraries and run knowledge queries",
+		label: "Workspaces Read",
+		description: "Read document workspaces and run knowledge queries",
 	},
 	{
 		id: "workflows:read",
@@ -215,7 +262,10 @@ type ApiKeyScope = (typeof AVAILABLE_SCOPES)[number]["id"];
  * whose names read as read-only and are not.
  */
 const READ_ONLY_SCOPES: ReadonlySet<ApiKeyScope> = new Set<ApiKeyScope>([
+	"prompts:read",
 	"mcp:read",
+	"skills:read",
+	"governance:read",
 	"projects:read",
 	"agents:read",
 	"agents:stream",
@@ -382,7 +432,10 @@ export function OrganizationApiKeysSettings() {
 	const isReadOnlyRole = userRole === "viewer";
 	const defaultScopes = defaultScopesForRole();
 	const canHoldScope = (scope: ApiKeyScope) =>
-		!isReadOnlyRole || READ_ONLY_SCOPES.has(scope);
+		(!isReadOnlyRole || READ_ONLY_SCOPES.has(scope)) &&
+		(scope !== "governance:write" ||
+			userRole === "owner" ||
+			userRole === "admin");
 
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const [newKeyName, setNewKeyName] = useState("");

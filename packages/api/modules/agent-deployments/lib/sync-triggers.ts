@@ -20,6 +20,7 @@
 
 import { randomBytes } from "node:crypto";
 import { type DeploymentTriggerType, db, type Prisma } from "@repo/database";
+import { isManagedAgentRunSchedule } from "@repo/database/prisma/queries/lib/managed-agent-run-schedule";
 import { encryptApiKey } from "@repo/utils";
 
 interface InstanceTriggerConfig {
@@ -227,6 +228,9 @@ export async function syncDeploymentTriggers(
 	});
 	const existingByKey = new Map<string, (typeof existingRows)[number]>();
 	for (const row of existingRows) {
+		if (isManagedAgentRunSchedule(row.config)) {
+			continue;
+		}
 		existingByKey.set(triggerKey(row.type, row.slackChannelId), row);
 	}
 

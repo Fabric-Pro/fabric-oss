@@ -1,10 +1,23 @@
 "use client";
 
 import {
+	DEFAULT_PROMPT_RESPONSE,
+	type PromptResponseContract,
+} from "@repo/ai/lib/prompt-response-contract";
+import {
 	PROMPT_CONTENT_MAX_LENGTH,
 	promptContentProblem,
 } from "@repo/utils/prompt-content";
 import { Button } from "@ui/components/button";
+import { Checkbox } from "@ui/components/checkbox";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@ui/components/dialog";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import {
@@ -14,10 +27,16 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
+import { Tabs } from "@ui/components/tabs";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
 import { ChevronDownIcon, Loader2, XIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useId, useRef, useState } from "react";
+import {
+	PromptWorkbenchPanel,
+	PromptWorkbenchTabs,
+} from "./PromptWorkbenchPanel";
 
 type PromptFormat =
 	| "PLAIN_TEXT"
@@ -43,7 +62,13 @@ const SCOPE_LABELS: Record<PromptScope, string> = {
 	SYSTEM: "System",
 };
 
+export type PromptEditorData = Props["initialData"];
 type Props = {
+	organizationId?: string;
+	error?: string;
+	responseContractError?: string;
+	creating?: boolean;
+	startWithAssistant?: boolean;
 	initialData: {
 		name: string;
 		description?: string;
@@ -53,6 +78,7 @@ type Props = {
 		tags: string[];
 		isPublic: boolean;
 		content: string;
+		responseContract?: PromptResponseContract;
 	};
 	onSave: (data: {
 		name: string;
@@ -63,6 +89,7 @@ type Props = {
 		tags: string[];
 		isPublic: boolean;
 		content: string;
+		responseContract?: PromptResponseContract;
 		changeNote?: string;
 	}) => void;
 	onCancel: () => void;
@@ -83,20 +110,46 @@ export function PromptEditor({
 	onCancel,
 	isLoading = false,
 	canEditScope = true,
+	organizationId,
+	creating = false,
+	startWithAssistant = false,
+	error,
+	responseContractError,
 }: Props) {
+	const tResponse = useTranslations("prompts.response");
 	const [name, setName] = useState(initialData.name);
 	const [description, setDescription] = useState(
 		initialData.description ?? "",
 	);
 	const [scope, setScope] = useState<PromptScope>(initialData.scope);
 	const [format, setFormat] = useState<PromptFormat>(initialData.format);
+	const plainFormat = useRef<PromptFormat>(
+		["PLAIN_TEXT", "MARKDOWN"].includes(initialData.format)
+			? initialData.format
+			: "MARKDOWN",
+	);
+	const namedFormat = useRef<PromptFormat>(
+		!["PLAIN_TEXT", "MARKDOWN"].includes(initialData.format)
+			? initialData.format
+			: "HANDLEBARS",
+	);
 	const [category, setCategory] = useState(initialData.category ?? "");
 	const [tags, setTags] = useState<string[]>(initialData.tags);
 	const [tagInput, setTagInput] = useState("");
 	const [isPublic] = useState(initialData.isPublic);
 	const [content, setContent] = useState(initialData.content);
+	const [responseContract, setResponseContract] =
+		useState<PromptResponseContract>(
+			initialData.responseContract ?? DEFAULT_PROMPT_RESPONSE,
+		);
+	const [configurationError, setConfigurationError] = useState<string>();
 	const [changeNote, setChangeNote] = useState("");
-	const [detailsOpen, setDetailsOpen] = useState(false);
+	const [detailsOpen, setDetailsOpen] = useState(creating);
+	const [leaving, setLeaving] = useState(false);
+	const [activeTab, setActiveTab] = useState<"assistant" | "try">(
+		startWithAssistant ? "assistant" : "try",
+	);
+	const [mobilePanel, setMobilePanel] = useState(startWithAssistant);
 	const detailsId = useId();
 	const contentErrorId = useId();
 	const contentRef = useRef<HTMLTextAreaElement>(null);
@@ -115,21 +168,62 @@ export function PromptEditor({
 	}, []);
 
 	const dirty =
+		(creating &&
+			Boolean(
+				name.trim() ||
+					description.trim() ||
+					content.trim() ||
+					tags.length,
+			)) ||
 		content !== initialData.content ||
 		name !== initialData.name ||
 		description !== (initialData.description ?? "") ||
 		format !== initialData.format ||
 		scope !== initialData.scope ||
 		category !== (initialData.category ?? "") ||
-		JSON.stringify(tags) !== JSON.stringify(initialData.tags);
+		JSON.stringify(tags) !== JSON.stringify(initialData.tags) ||
+		!!configurationError ||
+		JSON.stringify(responseContract) !==
+			JSON.stringify(
+				initialData.responseContract ?? DEFAULT_PROMPT_RESPONSE,
+			);
 	// Judged only once edited: a body saved before the length limit existed can
 	// exceed it, and renaming that prompt must not require shortening it first.
 	// The server applies the same rule — it validates content only when a save
 	// carries new content.
 	const contentProblem =
-		content === initialData.content ? null : promptContentProblem(content);
+		!creating && content === initialData.content
+			? null
+			: promptContentProblem(content);
 	const canSave =
-		!isLoading && name.trim().length > 0 && contentProblem === null;
+		!responseContractError &&
+		!isLoading &&
+		!configurationError &&
+		name.trim().length > 0 &&
+		contentProblem === null &&
+		(!creating || content.trim().length > 0);
+
+	useEffect(() => {
+		if (!dirty) {
+			return;
+		}
+		const handler = (event: BeforeUnloadEvent) => {
+			event.preventDefault();
+			event.returnValue = "";
+		};
+		window.addEventListener("beforeunload", handler);
+		return () => window.removeEventListener("beforeunload", handler);
+	}, [dirty]);
+	const close = () => {
+		if (isLoading) {
+			return;
+		}
+		if (dirty && organizationId) {
+			setLeaving(true);
+		} else {
+			onCancel();
+		}
+	};
 
 	const handleAddTag = () => {
 		const trimmedTag = tagInput.trim();
@@ -156,6 +250,17 @@ export function PromptEditor({
 			tags,
 			isPublic,
 			content,
+			...((
+				creating
+					? responseContract.format !== "AUTO"
+					: JSON.stringify(responseContract) !==
+						JSON.stringify(
+							initialData.responseContract ??
+								DEFAULT_PROMPT_RESPONSE,
+						)
+			)
+				? { responseContract }
+				: {}),
 			changeNote: changeNote || undefined,
 		});
 	};
@@ -167,7 +272,7 @@ export function PromptEditor({
 
 	const lineCount = content.length === 0 ? 0 : content.split("\n").length;
 
-	return (
+	const editor = (
 		<form
 			onSubmit={handleSubmit}
 			onKeyDown={(e) => {
@@ -179,10 +284,38 @@ export function PromptEditor({
 			}}
 			className="space-y-4"
 		>
+			{error && (
+				<p role="alert" className="text-sm text-destructive">
+					{error}
+				</p>
+			)}
+			<label
+				htmlFor={`${detailsId}-named-inputs`}
+				className="flex items-center gap-2 text-sm"
+			>
+				<Checkbox
+					id={`${detailsId}-named-inputs`}
+					checked={!["PLAIN_TEXT", "MARKDOWN"].includes(format)}
+					onCheckedChange={(checked) => {
+						if (checked === true) {
+							plainFormat.current = format;
+							setFormat(namedFormat.current);
+						} else {
+							namedFormat.current = format;
+							setFormat(plainFormat.current);
+						}
+					}}
+				/>
+				{tResponse("namedInputs")}
+			</label>
+			{!["PLAIN_TEXT", "MARKDOWN"].includes(format) && (
+				<p className="text-xs text-muted-foreground">
+					{tResponse("namedHelp", { example: "{{topic}}" })}
+				</p>
+			)}
 			{/* Editor bar: what is being edited, in what format, how long. */}
 			<div className="flex flex-wrap items-center justify-between gap-3">
 				<div className="flex items-center gap-3">
-					<p className="app-editorial-label">Editing</p>
 					<p className="fab-label">
 						{FORMAT_LABELS[format]} · {lineCount}{" "}
 						{lineCount === 1 ? "line" : "lines"} ·{" "}
@@ -395,17 +528,22 @@ export function PromptEditor({
 					<Button
 						type="button"
 						variant="outline"
-						onClick={onCancel}
+						onClick={close}
 						disabled={isLoading}
 					>
 						Cancel
 					</Button>
-					<Button type="submit" disabled={!canSave || !dirty}>
+					<Button
+						type="submit"
+						disabled={!canSave || (!creating && !dirty)}
+					>
 						{isLoading ? (
 							<>
 								<Loader2 className="mr-2 size-4 animate-spin" />
 								Saving
 							</>
+						) : creating ? (
+							"Create organization prompt"
 						) : (
 							"Save changes"
 						)}
@@ -413,5 +551,156 @@ export function PromptEditor({
 				</div>
 			</div>
 		</form>
+	);
+	if (!organizationId) {
+		return editor;
+	}
+	return (
+		<Dialog
+			open
+			onOpenChange={(open) => {
+				if (!open) {
+					close();
+				}
+			}}
+		>
+			<DialogContent
+				hideCloseButton
+				aria-describedby={undefined}
+				onEscapeKeyDown={(event) => {
+					event.preventDefault();
+					close();
+				}}
+				className="fixed inset-0 left-0 top-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 bg-background p-0 shadow-none data-[state=open]:animate-none"
+			>
+				<Tabs
+					value={activeTab}
+					onValueChange={(value) =>
+						setActiveTab(value as "assistant" | "try")
+					}
+					className="flex min-h-0 flex-1 flex-col"
+				>
+					<header className="grid shrink-0 border-b border-border lg:grid-cols-2">
+						<div className="flex h-16 min-w-0 items-center justify-between gap-3 px-5">
+							<DialogTitle asChild>
+								<h1 className="min-w-0 truncate text-lg font-semibold">
+									{creating
+										? "Create prompt"
+										: `Edit ${initialData.name}`}
+								</h1>
+							</DialogTitle>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								className="lg:hidden"
+								onClick={() => setMobilePanel((v) => !v)}
+							>
+								{mobilePanel
+									? "Edit prompt"
+									: "Assistant & Try"}
+							</Button>
+							<Button
+								type="button"
+								variant="ghost"
+								size="icon"
+								aria-label="Close prompt editor"
+								onClick={close}
+								disabled={isLoading}
+							>
+								<XIcon className="size-4" />
+							</Button>
+						</div>
+						<div
+							className={cn(
+								"h-16 min-w-0 border-border lg:block lg:border-l",
+								mobilePanel ? "block" : "hidden",
+							)}
+						>
+							<PromptWorkbenchTabs className="h-full border-b-0" />
+						</div>
+					</header>
+					<div className="grid min-h-0 flex-1 overflow-hidden lg:grid-cols-2">
+						<div
+							className={cn(
+								"min-w-0 overflow-auto p-5 lg:block lg:p-8",
+								mobilePanel && "hidden",
+							)}
+						>
+							{creating && (
+								<p className="mb-4 text-sm text-muted-foreground">
+									Creating an organization prompt makes it
+									available to organization members. It does
+									not replace any action default.
+								</p>
+							)}
+							{editor}
+						</div>
+						<aside
+							aria-label="Prompt assistant and preview"
+							className={cn(
+								"min-h-0 min-w-0 flex-col border-border lg:flex lg:border-l",
+								mobilePanel ? "flex" : "hidden",
+							)}
+						>
+							<PromptWorkbenchPanel
+								key={organizationId}
+								embedded
+								activeTab={activeTab}
+								organizationId={organizationId}
+								draft={{
+									name,
+									description,
+									format,
+									content,
+									responseContract,
+								}}
+								responseContractError={responseContractError}
+								onResponseChange={setResponseContract}
+								onConfigurationError={setConfigurationError}
+								onApply={(proposal) => {
+									setName(proposal.name);
+									setDescription(proposal.description);
+									setFormat(proposal.format);
+									setContent(proposal.content);
+								}}
+								initialTab={
+									startWithAssistant ? "assistant" : "try"
+								}
+							/>
+						</aside>
+					</div>
+				</Tabs>
+				<Dialog open={leaving} onOpenChange={setLeaving}>
+					<DialogContent>
+						<DialogHeader>
+							<DialogTitle>
+								Discard unsaved prompt changes?
+							</DialogTitle>
+							<DialogDescription>
+								Your draft changes have not been saved. Stay to
+								continue editing or discard them to leave.
+							</DialogDescription>
+						</DialogHeader>
+						<DialogFooter>
+							<Button
+								type="button"
+								variant="outline"
+								onClick={() => setLeaving(false)}
+							>
+								Keep editing
+							</Button>
+							<Button
+								type="button"
+								variant="destructive"
+								onClick={onCancel}
+							>
+								Discard changes
+							</Button>
+						</DialogFooter>
+					</DialogContent>
+				</Dialog>
+			</DialogContent>
+		</Dialog>
 	);
 }

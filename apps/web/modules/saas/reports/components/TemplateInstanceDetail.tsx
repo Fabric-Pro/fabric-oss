@@ -1,6 +1,11 @@
 "use client";
 
 import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
+import {
+	hasProjectKnowledgeSource,
+	type ReportEvidenceConfig,
+	readReportEvidenceConfig,
+} from "@repo/database/prisma/queries/lib/report-evidence";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { gitlabStatusQueryOptions } from "@saas/data-connections/lib/gitlab-status-query";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
@@ -15,7 +20,9 @@ import {
 	humanizeReportError,
 	type ReportErrorContext,
 } from "@saas/reports/lib/report-error-messages";
+import { createReportExecutionRequests } from "@saas/reports/lib/report-execution-request";
 import { computeReportReadiness } from "@saas/reports/lib/report-readiness";
+import { resolveReportSourceLink } from "@saas/reports/lib/report-source-link";
 import {
 	type ReportInstanceTab,
 	resolveActiveReportTab,
@@ -24,6 +31,7 @@ import {
 	OPERATION_PARAMS,
 	PROVIDER_CONTEXT_FIELDS,
 } from "@saas/shared/components/DataSourceDefinitionBuilder";
+import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
 import { TIME_ZONES } from "@saas/shared/lib/time-zones";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -154,6 +162,7 @@ import {
 	type IntegrationType,
 } from "./IntegrationSetupGuide";
 import { ReportConfigBanner } from "./ReportConfigBanner";
+import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
 import { ReportReadinessRail } from "./ReportReadinessRail";
 import { RunDiagnosticsPanel } from "./RunDiagnosticsPanel";
 import { SendArtifactEmailDialog } from "./SendArtifactEmailDialog";
@@ -234,6 +243,7 @@ export function TemplateInstanceDetail({
 	const _integrationsSettingsUrl = useContextPath("settings/integrations");
 	// Used by the connection issue banner's "Reconnect" action.
 	const mcpSettingsUrl = useContextPath("settings/mcp");
+	const projectSourcePath = useContextPath("projects");
 
 	const {
 		data: instance,
@@ -324,6 +334,7 @@ export function TemplateInstanceDetail({
 	const [hasChanges, setHasChanges] = useState(false);
 
 	// Scheduling state
+	const [reporting, setReporting] = useState<ReportEvidenceConfig>();
 	const [scheduleMode, setScheduleMode] = useState<ScheduleMode>("INHERITED");
 	const [scheduleFrequency, setScheduleFrequency] =
 		useState<ScheduleFrequency>("weekly");
@@ -562,6 +573,8 @@ export function TemplateInstanceDetail({
 				setParameterDefaults(stringDefaults);
 			}
 
+			setReporting(readReportEvidenceConfig(instance.fabricConfig));
+
 			// Initialize Fabric AI config from instance overrides
 			const fabricConfig = instance.fabricConfig as {
 				strategy?: string;
@@ -633,10 +646,20 @@ export function TemplateInstanceDetail({
 		}),
 	);
 
+	const executionRequests = useRef(createReportExecutionRequests());
 	const executeMutation = useMutation(
 		orpc.reports.instances.execute.mutationOptions({
-			onSuccess: () => {
-				toast.success("Report generation started!");
+			onSuccess: (result) => {
+				executionRequests.current.settle(instanceId, result.status);
+				if (result.status === "COMPLETED") {
+					toast.info("This report execution has already finished");
+				} else if (result.startConfirmed) {
+					toast.success("Report generation started");
+				} else {
+					toast.info(
+						"Report queued; waiting for execution confirmation",
+					);
+				}
 				// Start polling immediately
 				setExecutionInProgress(true);
 				refetch();
@@ -644,6 +667,7 @@ export function TemplateInstanceDetail({
 				goToTab("history");
 			},
 			onError: (error) => {
+				executionRequests.current.failed(instanceId);
 				showReportError(error.message, "generate");
 			},
 		}),
@@ -654,6 +678,10 @@ export function TemplateInstanceDetail({
 	const hasActiveExecution = executions.some(
 		(e) => e.status === "RUNNING" || e.status === "PENDING",
 	);
+
+	useEffect(() => {
+		executionRequests.current.observe(instanceId, executions[0]?.status);
+	}, [instanceId, executions[0]?.id, executions[0]?.status]);
 
 	// Clear executionInProgress flag when we detect the execution is no longer active
 	useEffect(() => {
@@ -918,6 +946,7 @@ export function TemplateInstanceDetail({
 		const hasCustomAiTasks = Object.keys(customAiTasks).length > 0;
 		const hasCustomSystemPrompt = customSystemPrompt.trim().length > 0;
 		const fabricConfig =
+			reporting ||
 			fabricStrategy ||
 			fabricContext ||
 			fabricPattern ||
@@ -925,6 +954,7 @@ export function TemplateInstanceDetail({
 			hasCustomAiTasks ||
 			hasCustomSystemPrompt
 				? {
+						reporting,
 						strategy: fabricStrategy || undefined,
 						context: fabricContext || undefined,
 						pattern: fabricPattern || undefined,
@@ -1031,7 +1061,22 @@ export function TemplateInstanceDetail({
 	};
 
 	const handleExecute = () => {
-		executeMutation.mutate({ instanceId, organizationId: instanceOrgId });
+		if (
+			executeMutation.isPending ||
+			executionInProgress ||
+			hasActiveExecution
+		) {
+			return;
+		}
+		const requestKey = executionRequests.current.begin(instanceId);
+		if (!requestKey) {
+			return;
+		}
+		executeMutation.mutate({
+			instanceId,
+			organizationId: instanceOrgId,
+			idempotencyKey: requestKey,
+		});
 	};
 
 	const handleDelete = () => {
@@ -1268,7 +1313,12 @@ export function TemplateInstanceDetail({
 		})
 		.map((d) => d.name);
 
-	const reportReadiness = computeReportReadiness({
+	const projectKnowledgeSelected =
+		hasProjectKnowledgeSource(instance.template.definition) &&
+		!!readReportEvidenceConfig(instance.fabricConfig)?.projectId &&
+		!instance.setupRequiredReason;
+	const sourceReadiness = computeReportReadiness({
+		projectKnowledge: projectKnowledgeSelected,
 		templateNeedsDataSource: hasAnyDataSources,
 		requiredDataSources: requiredDataSources.map((d) => ({
 			key: d.key,
@@ -1297,10 +1347,24 @@ export function TemplateInstanceDetail({
 		}),
 		skillsCount: inheritedSkills.length,
 		outputFormat: instance.template.outputFormat,
-		dataSourceLabel:
-			requiredDataSources.map((d) => d.name).join(", ") ||
-			instance.template.name,
+		dataSourceLabel: projectKnowledgeSelected
+			? "Project knowledge"
+			: requiredDataSources.map((d) => d.name).join(", ") ||
+				instance.template.name,
 	});
+
+	const reportReadiness = instance.setupRequiredReason
+		? {
+				...sourceReadiness,
+				hardBlocked: true,
+				blockReason: instance.setupRequiredReason,
+				verdict: {
+					tone: "warning" as const,
+					title: "Project report setup required",
+					subtitle: instance.setupRequiredReason,
+				},
+			}
+		: sourceReadiness;
 
 	const scrollToConnection = () =>
 		connectionCardRef.current?.scrollIntoView({
@@ -1357,6 +1421,9 @@ export function TemplateInstanceDetail({
 						onClick={handleExecute}
 						disabled={
 							executeMutation.isPending ||
+							executionInProgress ||
+							hasActiveExecution ||
+							executionRequests.current.isPending(instanceId) ||
 							reportReadiness.hardBlocked
 						}
 						title={
@@ -1372,14 +1439,16 @@ export function TemplateInstanceDetail({
 						)}
 						Generate Report
 					</Button>
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={() => testConnections.mutate()}
-						disabled={testConnections.isPending}
-					>
-						Test connections
-					</Button>
+					{!projectKnowledgeSelected && (
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => testConnections.mutate()}
+							disabled={testConnections.isPending}
+						>
+							Test connections
+						</Button>
+					)}
 					<AlertDialog>
 						<AlertDialogTrigger asChild>
 							<Button
@@ -1629,7 +1698,7 @@ export function TemplateInstanceDetail({
 								<Card>
 									<CardHeader className="pb-3">
 										<CardTitle className="flex items-center gap-2 text-lg">
-											<SparklesIcon className="h-5 w-5 text-highlight" />
+											<PuzzleIcon className="h-5 w-5 text-highlight" />
 											Skills
 										</CardTitle>
 										<CardDescription>
@@ -1645,7 +1714,7 @@ export function TemplateInstanceDetail({
 													className="flex items-center justify-between p-3 rounded-lg border bg-amber-50/30 border-amber-200/50 dark:bg-amber-950/10 dark:border-amber-900/30"
 												>
 													<div className="flex items-center gap-3 min-w-0">
-														<SparklesIcon className="h-4 w-4 text-highlight shrink-0" />
+														<PuzzleIcon className="h-4 w-4 text-highlight shrink-0" />
 														<div className="min-w-0">
 															<span className="font-medium text-sm block truncate">
 																{ts.skill.name}
@@ -1715,6 +1784,40 @@ export function TemplateInstanceDetail({
 											rows={2}
 										/>
 									</div>
+								</CardContent>
+							</Card>
+
+							<Card>
+								<CardHeader className="pb-3">
+									<CardTitle>
+										Reporting period and audience
+									</CardTitle>
+									<CardDescription>
+										Choose the evidence your report covers
+										and who can open it.
+									</CardDescription>
+								</CardHeader>
+								<CardContent>
+									<ReportEvidenceSettings
+										value={reporting}
+										sourceDefinition={
+											instance.template.definition
+										}
+										sourceConnections={instance.connections}
+										organizationId={instanceOrgId}
+										lockAudience={
+											instance.executionCount > 0
+										}
+										lockedProjectId={
+											readReportEvidenceConfig(
+												instance.fabricConfig,
+											)?.projectId
+										}
+										onChange={(next) => {
+											setReporting(next);
+											setHasChanges(true);
+										}}
+									/>
 								</CardContent>
 							</Card>
 
@@ -3833,6 +3936,7 @@ export function TemplateInstanceDetail({
 						onGenerate={handleExecute}
 						isGenerating={executeMutation.isPending}
 						onTest={() => testConnections.mutate()}
+						showConnectionTest={!projectKnowledgeSelected}
 						isTesting={testConnections.isPending}
 						latestExecution={latestExecution}
 						executionCount={
@@ -3841,10 +3945,11 @@ export function TemplateInstanceDetail({
 						onViewHistory={() => goToTab("history")}
 						meta={{
 							template: instance.template.name,
-							dataSource:
-								requiredDataSources
-									.map((d) => d.name)
-									.join(", ") || "—",
+							dataSource: projectKnowledgeSelected
+								? "Project knowledge"
+								: requiredDataSources
+										.map((d) => d.name)
+										.join(", ") || "—",
 							output: instance.template.outputFormat,
 							skillsCount: inheritedSkills.length,
 						}}
@@ -3929,6 +4034,17 @@ export function TemplateInstanceDetail({
 										<Markdown
 											remarkPlugins={[remarkGfm]}
 											components={{
+												a: ({ href, children }) => (
+													<a
+														className="text-primary-ink underline underline-offset-4"
+														href={resolveReportSourceLink(
+															href,
+															projectSourcePath,
+														)}
+													>
+														{children}
+													</a>
+												),
 												h1: ({ children }) => (
 													<h1 className="text-2xl font-bold mt-6 mb-4 pb-2 border-b">
 														{children}

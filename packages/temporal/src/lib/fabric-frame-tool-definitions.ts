@@ -74,7 +74,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_create_frame",
 		description:
-			"Creates html/json/mermaid/markdown blocks. surface=artifact uses projectId (default current project); workspace = org Workspace. Html: a designed page (inline <style>, light/dark, tiles/cards/tables, SVG charts); no network. Scripts act as viewer: window.fabric.call(tool, args)->Promise, fabric.openAgent(prompt), fabric.navigate('/app/...'); discover via fabric_list_page_tools, declare in runtimeTools. PRIVATE: owner-only outside projects, keeps linked project members. Artifact/Workspace grant project/organization access; shareOnCreate adds an allowed public link. Create only when asked; chat renders ```mermaid directly.",
+			"Creates html/json/mermaid/markdown blocks only when asked (chat renders ```mermaid). surface=artifact: current/projectId; workspace: organization Pages. Html: inline <style>, light/dark, tiles/cards/tables/SVG; no network. Scripts act as viewer: window.fabric.call(tool, args)->Promise, fabric.openAgent(prompt), fabric.navigate('/app/...'). Discover fabric_list_page_tools; declare runtimeTools. PRIVATE: owner-only outside projects, linked project members retain access. Artifact/Pages grant project/org access; shareOnCreate adds an allowed public link.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -104,17 +104,23 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_update_frame",
 		description:
-			"Updates title, description, blocks or runtimeTools; omitted fields stay. To change text inside a block use fabric_edit_frame_block. frameId defaults to open Workspace. Runtime: see fabric_create_frame.",
+			"Edits title/description/blocks/runtimeTools; omitted fields stay. Text edits: fabric_edit_frame_block. frameId defaults to open Page. Runtime: fabric_create_frame.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				frameId: { type: "string" },
+				expectedUpdatedAt: {
+					type: "string",
+					description:
+						"Revision from fabric_get_frame; re-read after conflicts.",
+				},
 				title: { type: "string" },
 				description: { type: "string" },
 				blocks: { ...BLOCKS_SCHEMA, description: "Replacement blocks" },
 				surface: SURFACE_SCHEMA,
 				runtimeTools: RUNTIME_TOOLS_SCHEMA,
 			},
+			required: ["expectedUpdatedAt"],
 		},
 		annotations: REWRITE,
 		scope: "frames:write",
@@ -123,7 +129,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_edit_frame_block",
 		description:
-			"Replaces exact text in one saved block without resending it. First read fabric_get_frame outline:true, then the block's source window. oldText must match once unless replaceAll. Pass the latest read or edit updatedAt as expectedUpdatedAt; on conflict re-read.",
+			"Replaces saved block text. Read fabric_get_frame outline:true then source window. oldText must match once unless replaceAll. Send latest read/edit updatedAt as expectedUpdatedAt; conflicts require re-read.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -154,7 +160,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_get_frame",
 		description:
-			"Reads blocks/surface/tools and published share URL. frameId defaults to open Workspace. outline:true lists block ids/types/sizes only. For edits read blockId with offset:0,limit:6000, follow nextOffset, restart on updatedAt change, then use fabric_edit_frame_block. Never edit summaries.",
+			"Reads blocks/surface/tools/share URL; default open Page. outline:true: ids/types/sizes only. Edit: read blockId offset:0,limit:6000, follow nextOffset, restart if updatedAt changes, then fabric_edit_frame_block. Never edit summaries.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -177,6 +183,12 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 			properties: {
 				surface: SURFACE_SCHEMA,
 				projectId: { type: "string" },
+				conversationId: {
+					type: "string",
+					description: "Only pages created in this conversation.",
+				},
+				limit: { type: "integer", minimum: 1, maximum: 200 },
+				offset: { type: "integer", minimum: 0 },
 			},
 		},
 		annotations: READ,
@@ -185,20 +197,122 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_share_frame",
 		description:
-			"Changes your Frame's sharing: PUBLIC if the organization allows it, PRIVATE, EMAILS_ONLY or WORKSPACE_AND_EMAILS (last two invite emails).",
+			"Change sharing after reviewing the current revision: PUBLIC if allowed, PRIVATE removes all explicit sharing, EMAILS_ONLY or WORKSPACE_AND_EMAILS grants the named recipients access. Does not send email.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				frameId: { type: "string" },
 				scope: { type: "string", enum: [...FRAME_SHARE_SCOPES] },
+				expectedUpdatedAt: { type: "string", format: "date-time" },
 				emails: { type: "array", items: { type: "string" } },
 			},
-			required: ["frameId", "scope"],
+			required: ["frameId", "scope", "expectedUpdatedAt"],
 		},
 		annotations: WRITE,
 		scope: "frames:write",
 		confirm: "always",
 	},
+	{
+		name: "fabric_get_frame_sharing",
+		description:
+			"Inspect the owned page's current sharing, invitation metadata and revision without revealing a public link credential.",
+		inputSchema: {
+			type: "object",
+			properties: { frameId: { type: "string" } },
+			required: ["frameId"],
+		},
+		annotations: READ,
+		scope: "frames:read",
+	},
+	{
+		name: "fabric_revoke_frame_sharing",
+		description:
+			"Remove the public link, one invitation, or all explicit sharing. Requires the reviewed revision. Project access remains governed by the project.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				expectedUpdatedAt: { type: "string", format: "date-time" },
+				mode: {
+					type: "string",
+					enum: ["public-link", "invitation", "all"],
+				},
+				email: { type: "string", format: "email" },
+			},
+			required: ["frameId", "expectedUpdatedAt", "mode"],
+		},
+		annotations: WRITE,
+		scope: "frames:write",
+		confirm: "always",
+	},
+	{
+		name: "fabric_start_frame_export",
+		description:
+			"Start a durable PDF export of the reviewed page revision. Keep requestId (UUID) unchanged when recovering a lost response; inspect the returned exportId for progress.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				expectedUpdatedAt: { type: "string", format: "date-time" },
+				requestId: { type: "string", format: "uuid" },
+				orientation: {
+					type: "string",
+					enum: ["portrait", "landscape"],
+				},
+			},
+			required: ["frameId", "expectedUpdatedAt", "requestId"],
+		},
+		annotations: { ...WRITE, idempotentHint: true },
+		scope: "frames:write",
+		confirm: "always",
+	},
+	{
+		name: "fabric_get_frame_export",
+		description:
+			"Inspect a page export's progress and expiry. Returns no download credential.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				exportId: { type: "string" },
+			},
+			required: ["frameId", "exportId"],
+		},
+		annotations: READ,
+		scope: "frames:read",
+	},
+	{
+		name: "fabric_cancel_frame_export",
+		description:
+			"Request cancellation of your page export and cleanup of its retained result. Inspect status to confirm cancellation.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				exportId: { type: "string" },
+			},
+			required: ["frameId", "exportId"],
+		},
+		annotations: { ...WRITE, idempotentHint: true },
+		scope: "frames:write",
+		confirm: "always",
+	},
+	{
+		name: "fabric_download_frame_export",
+		description:
+			"Explicitly request a short-lived PDF download link after rechecking the export actor, current page access and reviewed revision.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				exportId: { type: "string" },
+			},
+			required: ["frameId", "exportId"],
+		},
+		annotations: READ,
+		scope: "frames:read",
+	},
+
 	{
 		name: "fabric_create_slideshow",
 		description:

@@ -1,8 +1,11 @@
 import type { SVGProps } from "react";
 
 /**
- * Databricks Workspace Workflows / DAG glyph as a 1.5px stroke outline icon
- * inheriting `currentColor` across light and dark themes.
+ * Temporal/Workflows glyph as a `currentColor` icon so it inherits the
+ * surrounding text color and stays visible in every theme (light, dark, and
+ * the system-resolved state). The previous nav used an <Image> whose source
+ * was chosen from `resolvedTheme`, which rendered the dark-on-dark variant
+ * whenever the theme could not be resolved.
  */
 export function WorkflowsIcon(props: SVGProps<SVGSVGElement>) {
 	return (
@@ -11,19 +14,14 @@ export function WorkflowsIcon(props: SVGProps<SVGSVGElement>) {
 			width="1em"
 			height="1em"
 			fill="none"
-			viewBox="0 0 24 24"
-			stroke="currentColor"
-			strokeWidth={1.5}
-			strokeLinecap="round"
-			strokeLinejoin="round"
+			viewBox="380 362 410 410"
 			aria-hidden="true"
 			{...props}
 		>
-			<rect width="6" height="6" x="3" y="3" rx="1.5" />
-			<rect width="6" height="6" x="15" y="3" rx="1.5" />
-			<rect width="6" height="6" x="9" y="15" rx="1.5" />
-			<path d="M6 9v3a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V9" />
-			<path d="M12 14v1" />
+			<path
+				fill="currentColor"
+				d="M651.14,517.35C642.02,449.03,618.94,392,583.49,392s-58.53,57.03-67.65,125.35c-68.32,9.12-125.35,32.2-125.35,67.65s57.04,58.53,125.35,67.65c9.12,68.31,32.2,125.35,67.65,125.35s58.53-57.04,67.65-125.35c68.32-9.12,125.35-32.2,125.35-67.65S719.45,526.47,651.14,517.35z M513.61,632.75c-65.43-9.45-103.59-31.08-103.59-47.75s38.16-38.3,103.59-47.75c-1.44,15.75-2.19,31.83-2.19,47.75C511.42,600.92,512.17,617.01,513.61,632.75z M583.49,411.53c16.67,0,38.3,38.16,47.75,103.59c-15.74-1.44-31.83-2.19-47.75-2.19s-32.01,0.75-47.75,2.19C545.19,449.69,566.82,411.53,583.49,411.53z M653.37,632.75c-3.22,0.47-16.43,2.02-19.77,2.35c-0.33,3.35-1.89,16.55-2.35,19.77c-9.45,65.43-31.08,103.59-47.75,103.59s-38.3-38.16-47.75-103.59c-0.46-3.22-2.02-16.43-2.35-19.77c-1.52-15.51-2.44-32.17-2.44-50.1s0.92-34.59,2.44-50.11c15.51-1.52,32.17-2.44,50.1-2.44s34.59,0.92,50.1,2.44c3.35,0.33,16.55,1.89,19.77,2.35c65.43,9.45,103.6,31.09,103.6,47.75S718.8,623.3,653.37,632.75z"
+			/>
 		</svg>
 	);
 }

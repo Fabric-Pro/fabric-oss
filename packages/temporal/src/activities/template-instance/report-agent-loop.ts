@@ -17,7 +17,13 @@ import type { AiJobKey } from "@repo/ai";
 import { getCurrentDateContext, streamText, tool } from "@repo/ai";
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { withRollingCacheBreakpoint } from "@repo/ai/prompt-cache";
-import { db, resolveReportMcpConfig } from "@repo/database";
+import {
+	assertProjectReportSourcesReady,
+	canExecuteReportInstance,
+	db,
+	getTemplateInstanceExecution,
+	resolveReportMcpConfig,
+} from "@repo/database";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
 import { heartbeat } from "@temporalio/activity";
 import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
@@ -540,6 +546,7 @@ export interface GatheredDataTruncation {
 }
 
 export interface ExecuteAgentLoopInput {
+	reportingProtocol?: 1;
 	/** Task description - what data to gather */
 	taskDescription: string;
 	/** Optional user prompt override (replaces default user message) */
@@ -564,6 +571,7 @@ export interface ExecuteAgentLoopInput {
 	organizationId?: string;
 	/** Background-attribution label threaded from the workflow input (Fizzy #1894). */
 	jobType?: AiJobKey;
+	planEligible?: boolean;
 	/** Execution ID for tracking */
 	executionId: string;
 }
@@ -1564,8 +1572,45 @@ export async function executeAgentDataGatheringLoop(
 		userId,
 		organizationId,
 		jobType,
+		planEligible,
 		executionId,
 	} = input;
+	if (input.skillsContent && input.reportingProtocol !== 1) {
+		throw new Error(
+			"Legacy report skill authority cannot be verified. Start a new report run.",
+		);
+	}
+	const assertCurrentExecution = async () => {
+		if (input.reportingProtocol === 1) {
+			if (!organizationId) {
+				throw new Error("Report evidence requires an organization");
+			}
+			const caller = { userId, organizationId };
+			const execution = await getTemplateInstanceExecution(
+				executionId,
+				caller,
+			);
+			if (
+				!execution ||
+				execution.userId !== userId ||
+				execution.status === "CANCELLED" ||
+				!(await canExecuteReportInstance(
+					execution.instance,
+					caller,
+					execution.parameters,
+				))
+			) {
+				throw new Error("Report evidence access revoked");
+			}
+			assertProjectReportSourcesReady(
+				execution.instance.fabricConfig,
+				execution.parameters,
+				execution.instance.template.definition,
+				execution.instance.connections,
+			);
+		}
+	};
+	await assertCurrentExecution();
 	// Normalize context: coerce all values to strings (JSON parsing can produce numbers)
 	const context = normalizeContext(rawContext);
 	const toolResults: ToolCallResult[] = [];
@@ -1692,6 +1737,7 @@ export async function executeAgentDataGatheringLoop(
 			jobType,
 			{
 				featureKey: "report-generation",
+				...(planEligible !== undefined ? { planEligible } : {}),
 				callPurpose: AI_CALL_PURPOSES.dataGathering,
 			},
 		);
@@ -1749,6 +1795,7 @@ export async function executeAgentDataGatheringLoop(
 		let lastStreamDiagnostics: StreamDiagnostics | undefined;
 
 		while (iterationCount < maxIterations) {
+			await assertCurrentExecution();
 			heartbeat();
 			iterationCount++;
 
@@ -1774,6 +1821,7 @@ export async function executeAgentDataGatheringLoop(
 			const outcome = await runModelIterationWithRetry(makeStream, {
 				heartbeat,
 			});
+			await assertCurrentExecution();
 			lastStreamDiagnostics = {
 				...outcome.streamDiagnostics,
 				provider,
@@ -1916,6 +1964,7 @@ export async function executeAgentDataGatheringLoop(
 			}
 
 			for (const toolCall of toolCallsToProcess) {
+				await assertCurrentExecution();
 				heartbeat(); // Keep alive during multi-tool iterations with LLM summarization
 				const typedToolCall = toolCall as {
 					toolCallId: string;

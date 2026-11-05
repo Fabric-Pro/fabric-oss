@@ -19,14 +19,26 @@ import { claimReportExecutionEmail } from "../prisma/queries/report-execution-em
 const baseExec = {
 	status: "COMPLETED",
 	userId: "u1",
-	organizationId: null,
+	organizationId: "org1",
 	instanceId: "inst1",
 	emailSentAt: null,
-	instance: { name: "Q3 Report" },
+	instance: {
+		name: "Q3 Report",
+		userId: "u1",
+		organizationId: "org1",
+		fabricConfig: null,
+	},
 };
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.mocked(db.member.findUnique).mockResolvedValue({
+		id: "m1",
+		role: "owner",
+	} as any);
+	vi.mocked(db.organization.findUnique).mockResolvedValue({
+		slug: "example-team",
+	} as any);
 	vi.mocked(db.templateInstanceExecution.findUnique).mockResolvedValue({
 		...baseExec,
 	} as any);
@@ -41,7 +53,7 @@ beforeEach(() => {
 	} as any);
 });
 
-it("returns context and claims on the happy personal path", async () => {
+it("returns context and claims on the happy organization path", async () => {
 	const ctx = await claimReportExecutionEmail({
 		executionId: "e1",
 		status: "COMPLETED",
@@ -49,7 +61,7 @@ it("returns context and claims on the happy personal path", async () => {
 	expect(ctx).toMatchObject({
 		recipientEmail: "owner@example.com",
 		instanceName: "Q3 Report",
-		organizationSlug: null,
+		organizationSlug: "example-team",
 	});
 	expect(db.templateInstanceExecution.updateMany).toHaveBeenCalledWith(
 		expect.objectContaining({
@@ -118,7 +130,10 @@ it("resolves the org slug for a still-member org run", async () => {
 		...baseExec,
 		organizationId: "org1",
 	} as any);
-	vi.mocked(db.member.findUnique).mockResolvedValue({ id: "m1" } as any);
+	vi.mocked(db.member.findUnique).mockResolvedValue({
+		id: "m1",
+		role: "owner",
+	} as any);
 	vi.mocked(db.organization.findUnique).mockResolvedValue({
 		slug: "acme",
 	} as any);
@@ -134,7 +149,10 @@ it("skips an org run whose organization has no slug (cannot build org link, no c
 		...baseExec,
 		organizationId: "org1",
 	} as any);
-	vi.mocked(db.member.findUnique).mockResolvedValue({ id: "m1" } as any);
+	vi.mocked(db.member.findUnique).mockResolvedValue({
+		id: "m1",
+		role: "owner",
+	} as any);
 	vi.mocked(db.organization.findUnique).mockResolvedValue({
 		slug: null,
 	} as any);
@@ -157,4 +175,18 @@ it("skips when the atomic claim is lost (count===0)", async () => {
 			status: "COMPLETED",
 		}),
 	).toBeNull();
+});
+
+it("does not deliver an obsolete personal report", async () => {
+	vi.mocked(db.templateInstanceExecution.findUnique).mockResolvedValue({
+		...baseExec,
+		organizationId: null,
+	} as any);
+	expect(
+		await claimReportExecutionEmail({
+			executionId: "e1",
+			status: "COMPLETED",
+		}),
+	).toBeNull();
+	expect(db.templateInstanceExecution.updateMany).not.toHaveBeenCalled();
 });

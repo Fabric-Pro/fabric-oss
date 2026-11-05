@@ -25,8 +25,100 @@ export interface UpdatePromptOptions {
 	personal?: boolean;
 }
 
+export interface PromptResponseContract {
+	format: "AUTO" | "TEXT" | "MARKDOWN" | "JSON" | "XML";
+	schema?: Record<string, unknown>;
+}
+export interface PromptDraft {
+	responseContract?: PromptResponseContract;
+	name?: string;
+	description?: string;
+	content: string;
+	format?:
+		| "PLAIN_TEXT"
+		| "MARKDOWN"
+		| "HANDLEBARS"
+		| "MUSTACHE"
+		| "LIQUID"
+		| "JINJA2";
+}
+export interface PromptAssistanceInput {
+	draft: PromptDraft;
+	message: string;
+	history?: Array<{ role: "user" | "assistant"; content: string }>;
+}
+export interface PromptAssistance {
+	message: string;
+	proposal: Required<Omit<PromptDraft, "responseContract">> | null;
+}
+export interface PromptPreviewInput {
+	draft: PromptDraft;
+	variables?: Record<string, string>;
+}
+export interface PromptPreview {
+	responseFormat: PromptResponseContract["format"];
+	validation: {
+		status: "not_requested" | "passed" | "failed";
+		issues: Array<{ path: string; message: string }>;
+	};
+	output: string;
+	renderedPrompt: string;
+	draftHash: string;
+	mode: "live-model-preview";
+	sourceAccess: "provided-inputs-only";
+}
 export class PromptsResource {
 	constructor(private readonly http: FabricHttpClient) {}
+
+	getResponseContract(promptId: string, options: { org?: string } = {}) {
+		return this.workbench<{
+			promptId: string;
+			versionId: string | null;
+			responseContract: PromptResponseContract;
+		}>("/prompt-responses/read", { promptId }, options);
+	}
+	setResponseContract(
+		promptId: string,
+		responseContract: PromptResponseContract,
+		options: { org?: string } = {},
+	) {
+		return this.workbench<{
+			promptId: string;
+			versionId: string | null;
+			responseContract: PromptResponseContract;
+		}>("/prompt-responses", { promptId, responseContract }, options);
+	}
+	assist(
+		input: PromptAssistanceInput,
+		options: { org?: string } = {},
+	): Promise<PromptAssistance> {
+		return this.workbench("/prompt-assistance", input, options);
+	}
+	preview(
+		input: PromptPreviewInput,
+		options: { org?: string } = {},
+	): Promise<PromptPreview> {
+		return this.workbench("/prompt-previews", input, options);
+	}
+	private workbench<T>(
+		path: string,
+		body: unknown,
+		options: { org?: string },
+	): Promise<T> {
+		if (
+			new TextEncoder().encode(JSON.stringify(body)).byteLength >
+			512 * 1024
+		) {
+			return Promise.reject(
+				new Error("The prompt request exceeds 512 KiB."),
+			);
+		}
+		return this.http.request("POST", `${path}${buildQuery(options)}`, {
+			body,
+			retry: { maxRetries: 0 },
+			boundedRead: { maxResponseBytes: 512 * 1024 },
+		});
+	}
 
 	list(options: ListPromptsOptions = {}): Promise<FabricPrompt[]> {
 		const q = buildQuery(options);

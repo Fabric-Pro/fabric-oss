@@ -10,12 +10,14 @@ const h = vi.hoisted(() => ({
 	quota: vi.fn(),
 	reserve: vi.fn(),
 	counts: vi.fn(),
+	triggerStats: vi.fn(),
 }));
 vi.mock("../prisma/client", () => ({
 	db: {
 		$transaction: async (run: (tx: unknown) => unknown) =>
 			run({
 				agentDeployment: { findFirst: h.deployment, update: h.counts },
+				agentDeploymentTrigger: { updateMany: h.triggerStats },
 				organizationDeploymentQuota: {
 					findUnique: h.quota,
 					updateMany: h.reserve,
@@ -62,11 +64,48 @@ beforeEach(() => {
 		monthlyExecutionLimit: 20000,
 	});
 	h.reserve.mockResolvedValue({ count: 1 });
+	h.triggerStats.mockResolvedValue({ count: 1 });
 	h.find.mockResolvedValue(null);
 	h.legacy.mockResolvedValue(null);
 	h.create.mockImplementation(async ({ data }) => ({ ...data, runId: null }));
 });
 describe("durable execution admission contract", () => {
+	it("counts a scheduled occurrence once only on its first atomic admission", async () => {
+		const scheduled = {
+			...input,
+			triggerType: "SCHEDULE" as const,
+			triggerId: "example-trigger",
+		};
+		const first = await admitAgentDeploymentExecution(scheduled);
+		h.find.mockResolvedValue(first.execution);
+		await admitAgentDeploymentExecution(scheduled);
+		expect(h.triggerStats).toHaveBeenCalledOnce();
+		expect(h.triggerStats).toHaveBeenCalledWith({
+			where: {
+				id: "example-trigger",
+				deploymentId: input.deploymentId,
+				userId: input.userId,
+				organizationId: input.organizationId,
+				type: "SCHEDULE",
+				isActive: true,
+			},
+			data: expect.objectContaining({
+				lastExecutionId: first.execution.id,
+				totalExecutions: { increment: 1 },
+			}),
+		});
+	});
+	it("refuses a schedule deactivated before transaction admission", async () => {
+		h.triggerStats.mockResolvedValue({ count: 0 });
+		await expect(
+			admitAgentDeploymentExecution({
+				...input,
+				triggerType: "SCHEDULE",
+				triggerId: "example-trigger",
+			}),
+		).rejects.toThrow("active schedule identity");
+		expect(h.audit).not.toHaveBeenCalled();
+	});
 	it("pins one workflow identity before dispatch without storing a raw request key", async () => {
 		const result = await admitAgentDeploymentExecution(input);
 		expect(result.execution.workflowId).toBe(

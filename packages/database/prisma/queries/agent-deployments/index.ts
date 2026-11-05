@@ -10,3 +10,4 @@ export * from "./conversations";
 export * from "./deployments";
 export * from "./executions";
 export * from "./quotas";
+export * from "./receipt-recovery";

@@ -10,7 +10,12 @@
  * Called by the orchestrator before delegating to weave agents.
  */
 
-import { db, hasProjectAccess } from "@repo/database";
+import {
+	assertSkillReadAccess,
+	db,
+	hasProjectAccess,
+	skillVisibilityWhere,
+} from "@repo/database";
 
 const WEAVE_AGENT_IDS = new Set([
 	"weave_thread",
@@ -89,13 +94,22 @@ export async function enrichWeaveDelegationMessage(input: {
 
 			if (config && config.enabledSkills.length > 0) {
 				const agentName = input.agentId.replace("weave_", "");
+				const actor = {
+					userId: input.userId,
+					organizationId: input.organizationId,
+				};
+				await assertSkillReadAccess(actor);
 				const skills = await db.skill.findMany({
 					where: {
-						id: { in: config.enabledSkills },
+						AND: [
+							skillVisibilityWhere(actor),
+							{ id: { in: config.enabledSkills } },
+						],
 					},
 					select: { name: true, description: true, content: true },
 				});
 
+				await assertSkillReadAccess(actor);
 				if (skills.length > 0) {
 					const skillContent = skills
 						.map(

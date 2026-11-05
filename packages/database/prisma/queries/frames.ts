@@ -6,15 +6,30 @@ import {
 	isUnattendedFrame,
 	UNATTENDED_FRAME_SOURCE_RUN_TYPE,
 } from "@repo/utils/frame-surfaces";
-import { z } from "zod";
+import type { z } from "zod";
 import { db, type Prisma } from "../client";
 import type {
 	AgentFileType,
 	AgentWorkspaceFile,
 	FrameShareScope,
 } from "../generated/client";
+import { recordAuditTx } from "./audit-log";
+import {
+	assertFrameRevision,
+	FrameUpdateConflictError,
+	nextFrameRevision,
+} from "./frame-revision";
+
+export { FrameUpdateConflictError } from "./frame-revision";
+
 import { saveFrameEdit } from "./frame-edit-history";
-import { assertPublicSharingAllowed } from "./frame-share";
+import {
+	assertPublicSharingAllowed,
+	PublicSharingDisabledError,
+	publicSharingRefusal,
+	revokeFrameSharing,
+	shareFrame,
+} from "./frame-share";
 import { checkFrameAccess } from "./frame-sharing";
 import {
 	type ProjectPlacementRefusal,
@@ -30,46 +45,9 @@ export const FABRIC_FRAME_CONTENT_TYPE = "application/vnd.fabric.frame";
 export const FABRIC_FRAME_SLIDESHOW_CONTENT_TYPE =
 	"application/vnd.fabric.frame.slideshow";
 
-export const FrameBlockSchema = z.object({
-	id: z.string(),
-	type: z.enum(["html", "json", "mermaid", "markdown"]),
-	title: z.string().optional(),
-	content: z.string(),
-	language: z.string().optional(),
-});
+export { FrameBlockSchema, FrameDocumentSchema } from "./frame-document";
 
-export const FrameDocumentSchema = z.object({
-	version: z.literal(1),
-	kind: z.enum(["frame", "slideshow"]),
-	title: z.string(),
-	description: z.string().optional(),
-	blocks: z.array(FrameBlockSchema).min(1),
-	theme: z
-		.object({
-			mode: z.enum(["light", "dark", "system"]).optional(),
-			accentColor: z.string().optional(),
-		})
-		.optional(),
-	metadata: z
-		.object({
-			format: z.enum(["html", "json", "mermaid", "markdown"]).optional(),
-			generatedByTool: z.string().optional(),
-			conversationId: z.string().optional(),
-			authoritySessionId: z.string().optional(),
-			providerKeys: z.array(z.string()).optional(),
-			sourceRunType: z.string().optional(),
-			sourceRunId: z.string().optional(),
-			/**
-			 * Fabric MCP tools the frame's own script may call through the host
-			 * page runtime (`window.fabric.call`). Versioned with the content,
-			 * because the content is what calls them.
-			 */
-			runtime: z
-				.object({ tools: z.array(z.string().min(1)).max(50) })
-				.optional(),
-		})
-		.optional(),
-});
+import { type FrameBlockSchema, FrameDocumentSchema } from "./frame-document";
 
 /**
  * Where a frame is shown: a project's Artifacts tab, or an organization
@@ -124,15 +102,6 @@ export interface CreateFrameInput {
 	 * retried step finds its own frame again (see `findFrameForSourceRun`).
 	 */
 	sourceNodeId?: string;
-}
-
-export class FrameUpdateConflictError extends Error {
-	constructor() {
-		super(
-			"Frame conflict: the page changed. Re-read the frame before editing again.",
-		);
-		this.name = "FrameUpdateConflictError";
-	}
 }
 
 export interface UpdateFrameInput {
@@ -476,7 +445,7 @@ export async function listFrames(input: {
 			conversationId: input.conversationId,
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
 		},
-		orderBy: { updatedAt: "desc" },
+		orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
 		take: input.limit ?? 50,
 		skip: input.offset ?? 0,
 	});
@@ -565,6 +534,7 @@ export async function listWorkspaceFrames(input: {
 	userId: string;
 	organizationId: string;
 	projectId?: string;
+	conversationId?: string;
 	limit?: number;
 	offset?: number;
 }) {
@@ -573,6 +543,7 @@ export async function listWorkspaceFrames(input: {
 		where: {
 			organizationId: input.organizationId,
 			fileType: FRAME_FILE_TYPES,
+			conversationId: input.conversationId,
 			metadata: { path: ["surface"], equals: "workspace" },
 			...(input.projectId ? { projectId: input.projectId } : {}),
 			OR: [
@@ -585,7 +556,7 @@ export async function listWorkspaceFrames(input: {
 					: []),
 			],
 		},
-		orderBy: { updatedAt: "desc" },
+		orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
 		take: input.limit ?? SURFACE_LIST_DEFAULT_LIMIT,
 		skip: input.offset ?? 0,
 	});
@@ -635,8 +606,10 @@ export async function listProjectFrames(input: {
 	userId: string;
 	organizationId: string;
 	projectId?: string;
+	conversationId?: string;
 	surface?: FrameSurface;
 	limit?: number;
+	offset?: number;
 }) {
 	const { projectIds: accessible } = await readAccessScope(input);
 	const projectIds = input.projectId
@@ -649,11 +622,13 @@ export async function listProjectFrames(input: {
 		organizationId: input.organizationId,
 		projectId: { in: projectIds },
 		fileType: FRAME_FILE_TYPES,
+		conversationId: input.conversationId,
 	};
 	const files = await db.agentWorkspaceFile.findMany({
 		where: { ...scope, ...(await surfaceCondition(scope, input.surface)) },
-		orderBy: { updatedAt: "desc" },
+		orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
 		take: input.limit ?? SURFACE_LIST_DEFAULT_LIMIT,
+		skip: input.offset ?? 0,
 	});
 	return files.map(mapFrameRecord);
 }
@@ -725,6 +700,10 @@ export async function updateFrame(input: UpdateFrameInput) {
 		await assertPublicSharingAllowed(input.organizationId);
 	}
 
+	assertFrameRevision(
+		input.expectedUpdatedAt ?? input.requestedUpdatedAt,
+		existing.updatedAt,
+	);
 	const current = parseFrameContent(existing);
 	const nextDocument = FrameDocumentSchema.parse({
 		...current,
@@ -750,9 +729,9 @@ export async function updateFrame(input: UpdateFrameInput) {
 	// would shift the number of every version after it.
 	const updated = await db
 		.$transaction(async (tx) => {
+			await tx.$queryRaw`SELECT id FROM agent_workspace_file WHERE id = ${existing.id} FOR UPDATE`;
 			let surfaceMetadata: Prisma.InputJsonObject | undefined;
 			if (input.surface) {
-				await tx.$queryRaw`SELECT id FROM agent_workspace_file WHERE id = ${existing.id} FOR UPDATE`;
 				const latest = await tx.agentWorkspaceFile.findFirst({
 					where: {
 						id: existing.id,
@@ -800,15 +779,14 @@ export async function updateFrame(input: UpdateFrameInput) {
 					tx,
 				);
 			}
-			return tx.agentWorkspaceFile.update({
+			const saved = await tx.agentWorkspaceFile.update({
 				where: {
 					id: existing.id,
 					projectId: input.projectId,
-					...(input.expectedUpdatedAt
-						? { updatedAt: input.expectedUpdatedAt }
-						: {}),
+					updatedAt: input.expectedUpdatedAt ?? existing.updatedAt,
 				},
 				data: {
+					updatedAt: nextFrameRevision(existing.updatedAt),
 					name: `${nextDocument.title}.frame.json`,
 					content,
 					size: Buffer.byteLength(content, "utf8"),
@@ -817,10 +795,23 @@ export async function updateFrame(input: UpdateFrameInput) {
 					...(surfaceMetadata ? { metadata: surfaceMetadata } : {}),
 				},
 			});
+			if (input.organizationId) {
+				await recordAuditTx(tx, {
+					action: "frame.updated",
+					organizationId: input.organizationId,
+					actor: { type: "user", userId: input.userId },
+					resource: { type: "frame", id: existing.id },
+					projectId: existing.projectId,
+					metadata: {
+						previousRevision: existing.updatedAt.toISOString(),
+						revision: saved.updatedAt.toISOString(),
+					},
+				});
+			}
+			return saved;
 		})
 		.catch((error: unknown) => {
 			if (
-				input.expectedUpdatedAt &&
 				error &&
 				typeof error === "object" &&
 				"code" in error &&
@@ -852,17 +843,20 @@ export async function publishFrame(input: {
 	if (!existing) {
 		return null;
 	}
-	await assertPublicSharingAllowed(input.organizationId);
-	// Immediately before the write (see updateFrame).
-	throwIfDispatchStopped();
-	const updated = await db.agentWorkspaceFile.update({
-		where: { id: existing.id, projectId: input.projectId },
-		data: {
-			isPublic: true,
-			shareToken: existing.shareToken || randomUUID(),
-		},
+	const shared = await shareFrame({
+		frameId: input.id,
+		userId: input.userId,
+		organizationId: input.organizationId,
+		scope: "PUBLIC",
+		expectedUpdatedAt: existing.updatedAt,
 	});
-	return mapFrameRecord(updated);
+	if (!shared.ok) {
+		if (shared.reason === "public_sharing_disabled") {
+			throw new PublicSharingDisabledError();
+		}
+		return null;
+	}
+	return getFrameById(input);
 }
 
 export async function revokeFrameShare(input: {
@@ -870,25 +864,16 @@ export async function revokeFrameShare(input: {
 	userId: string;
 	organizationId?: string;
 }) {
-	const existing = await db.agentWorkspaceFile.findFirst({
-		where: {
-			id: input.id,
-			userId: input.userId,
-			organizationId: input.organizationId ?? null,
-			fileType: { in: ["FRAME", "SLIDESHOW"] },
-		},
+	const revoked = await revokeFrameSharing({
+		frameId: input.id,
+		userId: input.userId,
+		organizationId: input.organizationId,
+		mode: "public-link",
 	});
-	if (!existing) {
+	if (!revoked.ok) {
 		return null;
 	}
-	const updated = await db.agentWorkspaceFile.update({
-		where: { id: existing.id },
-		data: {
-			isPublic: false,
-			shareToken: null,
-		},
-	});
-	return mapFrameRecord(updated);
+	return getFrameById(input);
 }
 
 export async function getFrameByShareToken(token: string) {
@@ -899,7 +884,13 @@ export async function getFrameByShareToken(token: string) {
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
 		},
 	});
-	return file ? mapFrameRecord(file) : null;
+	if (
+		!file?.organizationId ||
+		(await publicSharingRefusal(file.organizationId))
+	) {
+		return null;
+	}
+	return mapFrameRecord(file);
 }
 
 export async function deleteFrame(input: {

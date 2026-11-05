@@ -24,7 +24,7 @@ type Props = {
 	projectId: string;
 };
 
-export function ProjectReports({ projectId: _projectId }: Props) {
+export function ProjectReports({ projectId }: Props) {
 	const { basePath, organizationId } = useOrganizationContext();
 	const reportTemplatesPath = `${basePath}/report-templates`;
 
@@ -46,6 +46,8 @@ export function ProjectReports({ projectId: _projectId }: Props) {
 		orpc.reports.instances.list.queryOptions({
 			input: {
 				organizationId,
+				projectId,
+				status: ["ACTIVE", "DRAFT"],
 				limit: 20,
 				offset: 0,
 			},
@@ -64,7 +66,7 @@ export function ProjectReports({ projectId: _projectId }: Props) {
 			<ProjectSectionHero
 				eyebrow="Project Reports"
 				title="Recurring analysis, snapshots, and decision support"
-				description="Use report templates to turn project activity into summaries, check-ins, and AI-assisted reporting rhythms that the team can revisit over time."
+				description="Keep project report drafts together. Project reports require sources with a verified project audience before they can run."
 				getStartedPageId="reports"
 				badges={
 					<>
@@ -104,7 +106,7 @@ export function ProjectReports({ projectId: _projectId }: Props) {
 										{pausedInstances}
 									</p>
 									<p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-										Paused
+										Inactive
 									</p>
 								</div>
 							</div>
@@ -208,9 +210,11 @@ export function ProjectReports({ projectId: _projectId }: Props) {
 														: "secondary"
 												}
 											>
-												{instance.isActive
-													? "Active"
-													: "Paused"}
+												{instance.setupRequiredReason
+													? "Setup required"
+													: instance.isActive
+														? "Active"
+														: "Paused"}
 											</Badge>
 										</div>
 									</CardHeader>
@@ -227,18 +231,20 @@ export function ProjectReports({ projectId: _projectId }: Props) {
 													Configure
 												</Link>
 											</Button>
-											<Button
-												variant="default"
-												size="sm"
-												asChild
-											>
-												<Link
-													href={`${reportTemplatesPath}/instances/${instance.id}`}
+											{!instance.setupRequiredReason && (
+												<Button
+													variant="default"
+													size="sm"
+													asChild
 												>
-													<PlayIcon className="mr-1 h-3 w-3" />
-													Execute
-												</Link>
-											</Button>
+													<Link
+														href={`${reportTemplatesPath}/instances/${instance.id}`}
+													>
+														<PlayIcon className="mr-1 h-3 w-3" />
+														Execute
+													</Link>
+												</Button>
+											)}
 										</div>
 									</CardFooter>
 								</Card>

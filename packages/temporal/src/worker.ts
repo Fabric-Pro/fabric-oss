@@ -42,6 +42,7 @@ import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
 import {
 	AGUI_RUN_TASK_QUEUE,
 	COMPANY_CONTEXT_TASK_QUEUE,
+	CONTEXT_QUALITY_TASK_QUEUE,
 	GLOSSY_EDITION_TASK_QUEUE,
 	ORCHESTRATOR_TASK_QUEUE,
 	PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
@@ -142,6 +143,7 @@ export const ACTIVITY_SLOTS = {
 	// The all-queue pool grows from 49 to 51 connections; the usual
 	// general process (excluding CPU queues) grows from 46 to 49.
 	projectOperations: 5,
+	contextQuality: 2,
 	documentRefresh: 3,
 	// Glossy edition builds (Fizzy #2589, KTD3). One build fans out at most
 	// four concurrent model calls (`GLOSSY_BUILD_POOL_SIZE`), so four slots run
@@ -263,6 +265,11 @@ const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
 		taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
 		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.projectEmbedding,
 		maxConcurrentWorkflowTaskExecutions: 5,
+	},
+	{
+		taskQueue: CONTEXT_QUALITY_TASK_QUEUE,
+		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.contextQuality,
+		maxConcurrentWorkflowTaskExecutions: 2,
 	},
 	{
 		taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,

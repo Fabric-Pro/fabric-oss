@@ -6,11 +6,12 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { frameReadDto } from "../lib/frame-read-dto";
 
 const inputSchema = z.object({
 	organizationId: z.string().nullable().optional(),
-	conversationId: z.string().optional(),
-	limit: z.number().int().positive().optional(),
+	conversationId: z.string().trim().min(1).max(200).optional(),
+	limit: z.number().int().positive().max(200).optional(),
 	offset: z.number().int().min(0).optional(),
 });
 
@@ -35,7 +36,7 @@ export const listFramesProcedure = tenantProtectedProcedure
 			organizationId,
 		});
 		return frames.map((frame) => ({
-			...frame,
+			...frameReadDto(frame),
 			createdAt: frame.createdAt.toISOString(),
 			updatedAt: frame.updatedAt.toISOString(),
 		}));

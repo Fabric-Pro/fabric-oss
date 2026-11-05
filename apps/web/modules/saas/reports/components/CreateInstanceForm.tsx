@@ -1,6 +1,12 @@
 "use client";
 
 import {
+	getProjectReportSetupReason,
+	hasProjectKnowledgeSource,
+	type ReportEvidenceConfig,
+	reportEvidenceConfigSchema,
+} from "@repo/database/prisma/queries/lib/report-evidence";
+import {
 	useContextPath,
 	useOrganizationContext,
 } from "@saas/organizations/hooks";
@@ -43,6 +49,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
 
 // Data source binding - MCP config + parameter values
 type DataSourceBinding = {
@@ -89,6 +96,7 @@ export function CreateInstanceForm({
 	const [dataSourceBindings, setDataSourceBindings] = useState<
 		Record<string, DataSourceBinding>
 	>({});
+	const [reporting, setReporting] = useState<ReportEvidenceConfig>();
 	const [selectedWorkspaces, setSelectedWorkspaces] = useState<string[]>([]);
 
 	// Context values for AI-driven data gathering (project, team, etc.)
@@ -116,6 +124,17 @@ export function CreateInstanceForm({
 	// Get data sources from template definition
 	const dataSources: DataSourceDefinition[] =
 		(template?.definition as any)?.dataSources || [];
+	const requiresProjectKnowledge = hasProjectKnowledgeSource({ dataSources });
+	useEffect(() => {
+		if (requiresProjectKnowledge && !reporting) {
+			setReporting(
+				reportEvidenceConfigSchema.parse({
+					version: 1,
+					period: "weekly",
+				}),
+			);
+		}
+	}, [requiresProjectKnowledge, reporting]);
 	const requirements = (template as any)?.connections || {};
 	const workspacesEnabled = requirements.workspaces?.enabled ?? false;
 
@@ -181,6 +200,9 @@ export function CreateInstanceForm({
 		}
 
 		const hasMcpConfigs = dataSources.every((ds) => {
+			if (ds.type === "fabric") {
+				return true;
+			}
 			const binding = dataSourceBindings[ds.id];
 			return binding?.mcpConfigId;
 		});
@@ -196,10 +218,25 @@ export function CreateInstanceForm({
 		return missingRequired.length === 0;
 	}, [dataSources, dataSourceBindings, requiredContextFields, contextValues]);
 
+	const projectSetupReason = getProjectReportSetupReason(
+		reporting ? { reporting } : undefined,
+		{ dataSources },
+		{
+			mcpConfigs: Object.values(dataSourceBindings)
+				.map((binding) => binding.mcpConfigId)
+				.filter(Boolean),
+			workspaces: selectedWorkspaces,
+		},
+	);
+
 	const createMutation = useMutation(
 		orpc.reports.instances.create.mutationOptions({
 			onSuccess: (data) => {
-				toast.success("Instance created successfully");
+				toast.success(
+					projectSetupReason
+						? "Project report draft created; source setup required"
+						: "Instance created successfully",
+				);
 				queryClient.invalidateQueries({
 					queryKey: ["reports", "instances"],
 				});
@@ -212,12 +249,16 @@ export function CreateInstanceForm({
 	);
 
 	const handleCreate = () => {
+		if (requiresProjectKnowledge && !reporting?.projectId) {
+			toast.error("Choose a project for Project knowledge");
+			return;
+		}
 		if (!name.trim()) {
 			toast.error("Please enter a name for the instance");
 			return;
 		}
 
-		if (!allDataSourcesConfigured) {
+		if (!allDataSourcesConfigured && !reporting?.projectId) {
 			toast.error(
 				"Please configure MCP servers and fill required context fields",
 			);
@@ -254,6 +295,7 @@ export function CreateInstanceForm({
 			name: name.trim(),
 			description: description.trim() || undefined,
 			organizationId,
+			reporting,
 			connections: {
 				mcpConfigs,
 				mcpBindings,
@@ -391,13 +433,36 @@ export function CreateInstanceForm({
 										Data Source Configuration
 									</h3>
 									<p className="text-sm text-muted-foreground">
-										Select your MCP server for each data
-										source.
+										Connect external sources, or use shared
+										project knowledge.
 									</p>
 								</div>
 
 								<div className="space-y-3">
 									{dataSources.map((ds) => {
+										if (ds.type === "fabric") {
+											return (
+												<Card key={ds.id}>
+													<CardContent className="pt-4 space-y-2">
+														<h3 className="font-medium">
+															Project knowledge
+														</h3>
+														<p className="text-sm text-muted-foreground">
+															Reads completed
+															Fabric-generated
+															documents and shared
+															text notes from the
+															selected project.
+															Imported files and
+															private notes are
+															excluded. No
+															external connection
+															is needed.
+														</p>
+													</CardContent>
+												</Card>
+											);
+										}
 										const provider =
 											DATA_SOURCE_PROVIDERS[ds.provider];
 										const binding =
@@ -660,6 +725,20 @@ export function CreateInstanceForm({
 						</Card>
 					)}
 
+					<Card>
+						<CardContent className="pt-6 space-y-4">
+							<h3 className="font-medium">
+								Reporting period and audience
+							</h3>
+							<ReportEvidenceSettings
+								value={reporting}
+								sourceDefinition={{ dataSources }}
+								requireProject={requiresProjectKnowledge}
+								onChange={setReporting}
+								organizationId={organizationId}
+							/>
+						</CardContent>
+					</Card>
 					{/* Workspaces */}
 					{workspacesEnabled && userWorkspaces.length > 0 && (
 						<Card>
@@ -667,7 +746,7 @@ export function CreateInstanceForm({
 								<div>
 									<h3 className="font-medium flex items-center gap-2">
 										<FolderOpenIcon className="h-4 w-4" />
-										Document Libraries
+										Document Workspaces
 									</h3>
 									<p className="text-sm text-muted-foreground">
 										{requirements.workspaces?.description ||
@@ -684,7 +763,7 @@ export function CreateInstanceForm({
 									}
 								>
 									<SelectTrigger>
-										<SelectValue placeholder="Select a library (optional)..." />
+										<SelectValue placeholder="Select a workspace (optional)..." />
 									</SelectTrigger>
 									<SelectContent>
 										{userWorkspaces.map((ws) => (
@@ -712,7 +791,10 @@ export function CreateInstanceForm({
 									onClick={handleCreate}
 									disabled={
 										createMutation.isPending ||
-										!allDataSourcesConfigured ||
+										(requiresProjectKnowledge &&
+											!reporting?.projectId) ||
+										(!allDataSourcesConfigured &&
+											!reporting?.projectId) ||
 										!name.trim()
 									}
 									className="w-full"
@@ -725,7 +807,11 @@ export function CreateInstanceForm({
 									) : (
 										<>
 											<PlusIcon className="mr-2 h-4 w-4" />
-											Create Instance
+											{projectSetupReason
+												? "Create draft"
+												: reporting?.projectId
+													? "Create report"
+													: "Create Instance"}
 										</>
 									)}
 								</Button>

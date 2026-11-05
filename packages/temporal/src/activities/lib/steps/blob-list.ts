@@ -49,6 +49,7 @@ export async function executeBlobListStep(
 		url.searchParams.set("limit", String(limit ?? 100));
 
 		const response = await fetch(url.toString(), {
+			redirect: "error",
 			headers: {
 				Authorization: `Bearer ${credentials.BLOB_READ_WRITE_TOKEN}`,
 				"x-api-version": "7",

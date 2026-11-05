@@ -5,6 +5,8 @@ import { z } from "zod";
 
 const m = vi.hoisted(() => ({
 	organization: vi.fn(),
+	workspaceAuthority: vi.fn(),
+	frozenAuthority: vi.fn(),
 	execution: vi.fn(),
 	scoped: vi.fn(),
 	execute: vi.fn(),
@@ -34,6 +36,15 @@ vi.mock("@repo/database", async (original) => ({
 	canExecuteOrganizationAgents: m.allowed,
 	hasProjectAccess: m.access,
 	isProjectSoftDeleted: m.deleted,
+}));
+vi.mock("../shared/workspace-document-access", () => ({
+	assertWorkspaceDocumentSelections: m.workspaceAuthority,
+}));
+vi.mock("../shared/native-agent-test-authority", async (original) => ({
+	...(await original<
+		typeof import("../shared/native-agent-test-authority")
+	>()),
+	assertFrozenAgentTestAuthority: m.frozenAuthority,
 }));
 vi.mock("@repo/rag/lib/context-quality/project-access", () => ({
 	resolveEffectiveProjectPermissions: m.project,
@@ -69,6 +80,8 @@ const turn = {
 	organizationId: "example-org",
 	projectId: "example-project",
 	agentInstanceId: "example-instance",
+	workspaceIds: [],
+	workspaceDocumentFilters: [],
 };
 const tool = {
 	...turn,
@@ -403,5 +416,222 @@ describe("isolated saved-agent durable activities", () => {
 			}),
 		).rejects.toMatchObject({ type: "SAVED_AGENT_STEP_FORBIDDEN" });
 		expect(m.turn).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("selected workspace authority in native durable steps", () => {
+	it("checks saved workspace/document selections before and after a model decision", async () => {
+		m.workspaceAuthority.mockResolvedValue(undefined);
+		m.turn.mockResolvedValue({
+			success: true,
+			response: "Example response",
+			toolCalls: [],
+			modelStep: {
+				messages: [{ role: "assistant", content: "Example response" }],
+				toolCalls: [],
+			},
+		});
+		const selected = {
+			...turn,
+			workspaceIds: ["example-workspace"],
+			workspaceDocumentFilters: [
+				{
+					workspaceId: "example-workspace",
+					documentIds: ["example-document"],
+				},
+			],
+			stepIndex: 0,
+			continuationMessages: [],
+		};
+		await executeSavedAgentModelStep(selected);
+		expect(m.workspaceAuthority).toHaveBeenCalledTimes(2);
+		expect(m.workspaceAuthority).toHaveBeenCalledWith({
+			userId: turn.userId,
+			organizationId: turn.organizationId,
+			workspaceIds: selected.workspaceIds,
+			workspaceDocumentFilters: selected.workspaceDocumentFilters,
+		});
+	});
+	it("withholds a model result if source authority is revoked while it runs", async () => {
+		m.workspaceAuthority
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error("Example access revoked"));
+		await expect(
+			executeSavedAgentModelStep({
+				...turn,
+				workspaceIds: ["example-workspace"],
+				workspaceDocumentFilters: [],
+				stepIndex: 0,
+				continuationMessages: [],
+			}),
+		).rejects.toMatchObject({
+			type: "SAVED_AGENT_STEP_FORBIDDEN",
+			nonRetryable: true,
+		});
+		expect(m.turn).toHaveBeenCalledTimes(1);
+	});
+	it("never dispatches a model when saved source access is already unavailable", async () => {
+		m.workspaceAuthority.mockRejectedValue(
+			new Error("Example access revoked"),
+		);
+		await expect(
+			executeSavedAgentModelStep({
+				...turn,
+				workspaceIds: ["example-workspace"],
+				workspaceDocumentFilters: [],
+				stepIndex: 0,
+				continuationMessages: [],
+			}),
+		).rejects.toMatchObject({
+			type: "SAVED_AGENT_STEP_FORBIDDEN",
+			nonRetryable: true,
+		});
+		expect(m.turn).not.toHaveBeenCalled();
+	});
+});
+
+describe("older native workspace snapshots", () => {
+	it.each([
+		{ filters: [] },
+		{ filters: [{ workspaceId: "example-workspace", documentIds: [] }] },
+		{
+			filters: [
+				{
+					workspaceId: "example-workspace",
+					documentIds: ["example-document"],
+				},
+			],
+		},
+	])(
+		"does not infer a missing original filter from today's saved selection %j",
+		async ({ filters }) => {
+			m.scoped.mockResolvedValue({
+				projectId: turn.projectId,
+				instance: {
+					status: "ACTIVE",
+					workspaceIds: ["example-workspace"],
+					customInstructions: { knowledgeFilters: filters },
+				},
+			});
+			await expect(
+				executeSavedAgentModelStep({
+					...turn,
+					workspaceIds: undefined,
+					workspaceDocumentFilters: undefined,
+					stepIndex: 0,
+					continuationMessages: [],
+				}),
+			).rejects.toMatchObject({
+				type: "SAVED_AGENT_STEP_FORBIDDEN",
+				message: expect.stringContaining("Start a new run"),
+			});
+			expect(m.turn).not.toHaveBeenCalled();
+		},
+	);
+	it("accepts positive recorded whole-workspace proof under current ACL checks", async () => {
+		m.turn.mockResolvedValue({
+			success: true,
+			response: "Example",
+			toolCalls: [],
+			modelStep: {
+				messages: [{ role: "assistant", content: "Example" }],
+				toolCalls: [],
+			},
+		});
+		await executeSavedAgentModelStep({
+			...turn,
+			workspaceIds: ["example-workspace"],
+			workspaceDocumentFilters: [],
+			stepIndex: 0,
+			continuationMessages: [],
+		});
+		expect(m.workspaceAuthority).toHaveBeenCalledWith({
+			userId: turn.userId,
+			organizationId: turn.organizationId,
+			workspaceIds: ["example-workspace"],
+			workspaceDocumentFilters: [],
+		});
+	});
+});
+
+describe("server-frozen test authority in durable provider/tool dispatch", () => {
+	const scope = {
+		instanceId: turn.agentInstanceId,
+		projectId: turn.projectId,
+		configHash: "a".repeat(64),
+		workspaceIds: [],
+		workspaceDocumentFilters: [],
+		skillIds: [],
+	};
+	const authority = {
+		testRunId: "example-test",
+		origin: scope,
+		execution: scope,
+	};
+	function admitted() {
+		return {
+			metadata: {
+				fabricAdmission: {
+					version: 1,
+					receiptOwner: "workflow",
+					requestHash: "a".repeat(64),
+					dispatch: {
+						instanceId: turn.agentInstanceId,
+						projectId: turn.projectId,
+						workflowType: m.info.workflowType,
+						testAuthority: authority,
+					},
+					imageRefs: [],
+				},
+			},
+			status: "RUNNING",
+			workflowId: m.info.workflowExecution.workflowId,
+			runId: m.info.workflowExecution.runId,
+			deployment: {
+				status: "ACTIVE",
+				instanceId: turn.agentInstanceId,
+				userId: turn.userId,
+				organizationId: turn.organizationId,
+			},
+		};
+	}
+	it("refuses stale source authority before a model request", async () => {
+		m.execution.mockResolvedValue(admitted());
+		m.frozenAuthority.mockRejectedValue(
+			new Error("Example source changed"),
+		);
+		await expect(
+			executeSavedAgentModelStep({
+				...turn,
+				stepIndex: 0,
+				continuationMessages: [],
+			}),
+		).rejects.toThrow();
+		expect(m.frozenAuthority).toHaveBeenCalledWith(
+			{ userId: turn.userId, organizationId: turn.organizationId },
+			authority,
+		);
+		expect(m.turn).not.toHaveBeenCalled();
+	});
+	it("refuses broader prepared workspace/tool context even while the saved metadata remains valid", async () => {
+		m.execution.mockResolvedValue(admitted());
+		m.frozenAuthority.mockResolvedValue({});
+		await expect(
+			executeSavedAgentModelStep({
+				...turn,
+				workspaceIds: ["example-new-workspace"],
+				stepIndex: 0,
+				continuationMessages: [],
+			}),
+		).rejects.toMatchObject({ type: "SAVED_AGENT_STEP_FORBIDDEN" });
+		expect(m.turn).not.toHaveBeenCalled();
+	});
+	it("refuses stale frozen source authority before an external tool effect", async () => {
+		m.execution.mockResolvedValue(admitted());
+		m.frozenAuthority.mockRejectedValue(
+			new Error("Example source changed"),
+		);
+		await expect(executeSavedAgentToolStep(tool)).rejects.toThrow();
+		expect(m.execute).not.toHaveBeenCalled();
 	});
 });

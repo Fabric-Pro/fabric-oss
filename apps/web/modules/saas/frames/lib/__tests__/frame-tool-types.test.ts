@@ -246,3 +246,14 @@ describe("frameDocumentOf", () => {
 		).not.toHaveProperty("description");
 	});
 });
+
+it("preserves public status separately from bearer links", () => {
+	const result = FrameDetailSchema.parse({
+		...SUMMARY,
+		blocks: [],
+		runtimeTools: [],
+		isPublic: true,
+	});
+	expect(result.isPublic).toBe(true);
+	expect(result.shareUrl).toBeUndefined();
+});

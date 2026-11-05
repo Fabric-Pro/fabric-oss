@@ -242,6 +242,10 @@ export async function goalOrientedAgentWorkflow(
 	// Keep native identity retries outside the legacy completion/failure writer.
 	await registerNativeAgentReceipt(input);
 	const nativeSteps = patched(SAVED_AGENT_DURABLE_STEPS_PATCH);
+	// Old histories retain transcript-based verification; new runs check a deliverable.
+	const candidateOutput = patched("saved-agent-goal-candidate-output-v1");
+	let latestCandidate = "";
+	let currentIterationVariables: typeof state.variables = {};
 	let nativeFinalizing = false;
 	async function completeGoalExecution(
 		params: Parameters<typeof goalActivities.completeGoalExecution>[0],
@@ -309,6 +313,14 @@ export async function goalOrientedAgentWorkflow(
 
 		const deploymentConfig =
 			await deploymentActs.loadDeploymentConfiguration({
+				...(input.testAuthority
+					? {
+							nativeTestBoundary: {
+								executionId: input.executionId,
+								authority: input.testAuthority,
+							},
+						}
+					: {}),
 				deploymentId: input.deploymentId,
 				userId: input.userId,
 				organizationId: input.organizationId,
@@ -409,6 +421,12 @@ export async function goalOrientedAgentWorkflow(
 			});
 
 			const planResult = await goalActivities.createGoalOrientedPlan({
+				...(executionContext.nativeTestBoundary
+					? {
+							nativeTestBoundary:
+								executionContext.nativeTestBoundary,
+						}
+					: {}),
 				goal: input.goal,
 				userMessage: extractUserMessage(input.input),
 				systemPrompt: state.agentContext.systemPrompt,
@@ -421,6 +439,8 @@ export async function goalOrientedAgentWorkflow(
 			});
 
 			state.taskPlan = planResult.plan;
+			latestCandidate = "";
+			currentIterationVariables = {};
 			state.routingDecision = planResult.routingDecision;
 			emitEvent("execution.plan_created", {
 				stepCount: state.taskPlan.steps.length,
@@ -497,10 +517,23 @@ export async function goalOrientedAgentWorkflow(
 					let stepResult: goalOrientedActivities.ExecuteGoalStepOutput;
 					if (nativeSteps) {
 						const prepared = await goalActivities.prepareGoalStep({
+							...(executionContext.nativeTestBoundary
+								? {
+										nativeTestBoundary:
+											executionContext.nativeTestBoundary,
+									}
+								: {}),
 							...stepInput,
 							projectId: executionContext.projectId,
 							agentInstanceId: executionContext.agentInstanceId,
 							builtInToolNames: executionContext.builtInToolNames,
+							workspaceIds: executionContext.workspaceIds,
+							...(executionContext.workspaceDocumentFilters
+								? {
+										workspaceDocumentFilters:
+											executionContext.workspaceDocumentFilters,
+									}
+								: {}),
 							integrationConfigurations:
 								executionContext.integrationConfigurations,
 						});
@@ -508,8 +541,60 @@ export async function goalOrientedAgentWorkflow(
 							prepared,
 							{
 								effectScope: `goal:${state.currentIteration}:${step.id}`,
+								isCancelled,
 							},
 						);
+						if (turn.cancelled) {
+							const error = turn.error ?? "Execution cancelled";
+							const output = {
+								response: [
+									state.accumulatedResponse.trim(),
+									turn.response,
+								]
+									.filter(Boolean)
+									.join("\n\n"),
+								stepsExecuted: state.executedSteps,
+								toolCalls: turn.toolCalls,
+								inspectionRequired: hasUnconfirmedAgentEffect(
+									turn.toolCalls,
+								),
+								cancelled: true,
+							};
+							const tokenUsage = {
+								inputTokens:
+									state.totalInputTokens +
+									(turn.tokenUsage?.inputTokens ?? 0),
+								outputTokens:
+									state.totalOutputTokens +
+									(turn.tokenUsage?.outputTokens ?? 0),
+							};
+							state.status = "cancelled";
+							await completeGoalExecution({
+								executionId: input.executionId,
+								status: "CANCELLED",
+								goalAchieved: false,
+								output,
+								error,
+								tokenUsage,
+								durationMs: Date.now() - state.startTime,
+							});
+							updateProgress("cancelled", error);
+							emitEvent("execution.cancelled", {
+								output,
+								reason: error,
+							});
+							return {
+								...buildOutput(
+									state,
+									"CANCELLED",
+									false,
+									error,
+								),
+								response: output.response,
+								tokenUsage,
+								output,
+							};
+						}
 						if (!turn.success) {
 							const error =
 								turn.error ||
@@ -567,13 +652,20 @@ export async function goalOrientedAgentWorkflow(
 
 					// Update variables with step outputs
 					if (stepResult.variables) {
+						Object.assign(
+							currentIterationVariables,
+							stepResult.variables,
+						);
 						state.variables = {
 							...state.variables,
 							...stepResult.variables,
 						};
 					}
 
-					// Accumulate response
+					// Keep the full trace for partial/failure results, but verify the latest deliverable.
+					if (stepResult.response?.trim()) {
+						latestCandidate = stepResult.response.trim();
+					}
 					if (stepResult.response) {
 						state.accumulatedResponse += `${stepResult.response}\n\n`;
 					}
@@ -687,11 +779,24 @@ export async function goalOrientedAgentWorkflow(
 
 				const verificationResult =
 					await goalActivities.verifyGoalAchievement({
+						...(executionContext.nativeTestBoundary
+							? {
+									nativeTestBoundary:
+										executionContext.nativeTestBoundary,
+								}
+							: {}),
 						goal: input.goal,
 						successCriteria: state.successCriteria,
 						executedSteps: state.executedSteps,
-						accumulatedResponse: state.accumulatedResponse,
-						variables: state.variables,
+						accumulatedResponse: candidateOutput
+							? latestCandidate
+							: state.accumulatedResponse,
+						variables: candidateOutput
+							? currentIterationVariables
+							: state.variables,
+						...(candidateOutput
+							? { outputMode: "candidate" as const }
+							: {}),
 						userId: input.userId,
 						organizationId: input.organizationId,
 					});
@@ -763,8 +868,13 @@ export async function goalOrientedAgentWorkflow(
 				status: "COMPLETED",
 				goalAchieved: true,
 				output: {
-					response: state.accumulatedResponse.trim(),
+					response: candidateOutput
+						? latestCandidate
+						: state.accumulatedResponse.trim(),
 					stepsExecuted: state.executedSteps,
+					...(candidateOutput
+						? { trajectorySteps: state.trajectorySteps }
+						: {}),
 				},
 				tokenUsage: {
 					inputTokens: state.totalInputTokens,
@@ -781,17 +891,31 @@ export async function goalOrientedAgentWorkflow(
 			});
 			state.status = "completed";
 
-			return buildOutput(state, "COMPLETED", true);
+			return buildOutput(
+				state,
+				"COMPLETED",
+				true,
+				undefined,
+				candidateOutput ? latestCandidate : undefined,
+			);
 		}
 
 		// Max iterations reached without achieving goal
 		await completeGoalExecution({
 			executionId: input.executionId,
-			status: "COMPLETED",
+			status: candidateOutput ? "FAILED" : "COMPLETED",
 			goalAchieved: false,
+			...(candidateOutput
+				? {
+						error: `Goal not achieved after ${state.maxIterations} iterations`,
+					}
+				: {}),
 			output: {
 				response: state.accumulatedResponse.trim(),
 				stepsExecuted: state.executedSteps,
+				...(candidateOutput
+					? { trajectorySteps: state.trajectorySteps }
+					: {}),
 			},
 			tokenUsage: {
 				inputTokens: state.totalInputTokens,
@@ -907,6 +1031,7 @@ function buildOutput(
 	status: GoalOrientedAgentOutput["status"],
 	goalAchieved: boolean,
 	error?: string,
+	finalResponse?: string,
 ): GoalOrientedAgentOutput {
 	const lastVerification =
 		state.verificationHistory.length > 0
@@ -917,8 +1042,11 @@ function buildOutput(
 		executionId: state.executionId,
 		status,
 		goalAchieved,
-		response: state.accumulatedResponse.trim() || "No response generated",
+		response:
+			(finalResponse ?? state.accumulatedResponse.trim()) ||
+			"No response generated",
 		output: {
+			response: finalResponse ?? state.accumulatedResponse.trim(),
 			variables: state.variables,
 			trajectorySteps: state.trajectorySteps,
 		},
