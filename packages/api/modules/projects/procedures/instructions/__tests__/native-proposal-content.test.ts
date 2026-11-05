@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
 	intent: vi.fn(),
@@ -9,11 +9,13 @@ const m = vi.hoisted(() => ({
 	current: vi.fn(),
 	files: vi.fn(),
 	assertPin: vi.fn(),
+	branchWrite: vi.fn(),
 }));
 vi.mock("@repo/database", async (original) => ({
 	...(await original<typeof import("@repo/database")>()),
 	loadGitIntent: m.intent,
 	listInstructionFiles: m.files,
+	findMemberBranchWrite: m.branchWrite,
 }));
 vi.mock("@repo/connectors", () => ({ readRepositoryFileAtCommit: m.read }));
 vi.mock("@repo/storage", () => ({
@@ -189,6 +191,156 @@ it("keeps a proposal viewable after the project moved to another branch or integ
 		);
 	}
 	expect(m.read).not.toHaveBeenCalled();
+});
+
+describe("branch-relative entries", () => {
+	const sha = (data: Buffer) =>
+		createHash("sha256").update(data).digest("hex");
+	const onBranch = Buffer.from("written on the branch\n");
+	const toRemove = Buffer.from("also on the branch\n");
+	const proposal = {
+		status: "READY",
+		userId: "proposer_example",
+		repositoryGeneration: 1,
+		sourceCommitSha: "a".repeat(40),
+		repositoryIntegrationId: "integration_example",
+		sourceRef: "main",
+		gitIntentEntries: [
+			{
+				operation: "PUT",
+				path: "notes/branch.md",
+				baseObjectId: null,
+				branchObjectId: "d".repeat(40),
+				storageKey: "changed/object",
+				sha256: sha(bytes),
+				size: bytes.length,
+				isText: true,
+			},
+			{
+				operation: "DELETE",
+				path: "notes/gone.md",
+				baseObjectId: null,
+				branchObjectId: "e".repeat(40),
+				storageKey: null,
+				sha256: null,
+				size: null,
+				isText: null,
+			},
+		],
+	};
+	/** The earlier proposal whose stored files Fabric wrote on the branch. */
+	const earlier = {
+		status: "READY",
+		gitIntentEntries: [
+			{
+				operation: "PUT",
+				path: "notes/branch.md",
+				storageKey: "branch/object",
+				sha256: sha(onBranch),
+				size: onBranch.length,
+				mimeType: "text/markdown",
+				isText: true,
+				mode: 0o100644,
+			},
+			{
+				operation: "PUT",
+				path: "notes/gone.md",
+				storageKey: "gone/object",
+				sha256: sha(toRemove),
+				size: toRemove.length,
+				mimeType: "text/markdown",
+				isText: true,
+				mode: 0o100644,
+			},
+		],
+	};
+
+	beforeEach(() => {
+		m.intent.mockImplementation(async ({ snapshotId }) =>
+			snapshotId === scope.snapshotId ? proposal : earlier,
+		);
+		m.branchWrite.mockImplementation(async ({ path }) => ({
+			snapshotId: "proposal_earlier",
+			sha256: sha(path === "notes/branch.md" ? onBranch : toRemove),
+		}));
+		m.download.mockImplementation(async (key: string) => ({
+			data:
+				key === "branch/object"
+					? onBranch
+					: key === "gone/object"
+						? toRemove
+						: bytes,
+		}));
+	});
+
+	it("shows an edit or delete of the branch's file, with the branch's bytes as the before side", async () => {
+		const changes = await buildNativeProposalChanges(scope);
+
+		expect(changes).toMatchObject([
+			{
+				path: "notes/branch.md",
+				op: "edit",
+				before: "written on the branch\n",
+				beforeOmitted: null,
+				after: "changed\r\n",
+			},
+			{
+				path: "notes/gone.md",
+				op: "delete",
+				before: "also on the branch\n",
+				beforeOmitted: null,
+				after: null,
+			},
+		]);
+		expect(m.branchWrite).toHaveBeenCalledWith({
+			projectId: scope.projectId,
+			userId: "proposer_example",
+			organizationId: scope.organizationId,
+			path: "notes/branch.md",
+			objectId: "d".repeat(40),
+		});
+		expect(m.read).not.toHaveBeenCalled();
+	});
+
+	it("pages the branch's before side", async () => {
+		await expect(
+			readNativeProposalFile({
+				...scope,
+				path: "notes/branch.md",
+				side: "before",
+				offset: 0,
+				maxLength: 7,
+			}),
+		).resolves.toMatchObject({ body: "written", truncated: true });
+	});
+
+	it("says the source changed, still as an edit, when Fabric no longer holds the branch's bytes", async () => {
+		m.branchWrite.mockResolvedValue(null);
+
+		const changes = await buildNativeProposalChanges(scope);
+
+		expect(changes[0]).toMatchObject({
+			path: "notes/branch.md",
+			op: "edit",
+			before: null,
+			beforeOmitted: "SOURCE_CHANGED",
+			after: "changed\r\n",
+		});
+	});
+
+	it("refuses stored branch bytes that no longer match the journal's hash", async () => {
+		m.branchWrite.mockResolvedValue({
+			snapshotId: "proposal_earlier",
+			sha256: "f".repeat(64),
+		});
+
+		const changes = await buildNativeProposalChanges(scope);
+
+		expect(changes[0]).toMatchObject({
+			before: null,
+			beforeOmitted: "SOURCE_CHANGED",
+		});
+	});
 });
 
 it("pages the changed side of a proposal whose configuration changed, and refuses its base", async () => {

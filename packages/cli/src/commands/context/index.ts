@@ -62,6 +62,11 @@ import {
 	writeContextLock,
 } from "../../lib/context-sync/lock.js";
 import {
+	findMissingOnServer,
+	type MissingOnServer,
+	NOTHING_MISSING,
+} from "../../lib/context-sync/missing-on-server.js";
+import {
 	type ContextPlan,
 	computeContextPlan,
 } from "../../lib/context-sync/plan.js";
@@ -421,6 +426,19 @@ async function runPush(
 		await writeContextLock(root, next);
 	}
 
+	// After the push and its lock, so the check can only add to what is said.
+	// A run that stopped early says why; this would only bury it.
+	const missingOnServer =
+		pushed.stoppedBy === null
+			? await findMissingOnServer({
+					client,
+					projectId: opts.project,
+					org: opts.org,
+					lock,
+					unchanged: plan.unchangedLocal,
+				})
+			: NOTHING_MISSING;
+
 	if (format === "json") {
 		printOutput(
 			jsonOutcome({
@@ -429,6 +447,7 @@ async function runPush(
 				plan,
 				results: pushed.results,
 				lockWritten: next !== null,
+				missingOnServer,
 			}),
 			{ format: "json" },
 		);
@@ -441,6 +460,7 @@ async function runPush(
 				results: pushed.results,
 				prune: Boolean(opts.prune),
 				pruneTargets: pushed.pruneTargets,
+				missingOnServer,
 			}),
 		);
 	}
@@ -465,6 +485,7 @@ function jsonOutcome(input: {
 	plan: ContextPlan;
 	results: ContextPushResult[];
 	lockWritten: boolean;
+	missingOnServer?: MissingOnServer;
 }) {
 	return contextPushJson({
 		projectId: input.opts.project,
@@ -476,6 +497,7 @@ function jsonOutcome(input: {
 		prune: Boolean(input.opts.prune),
 		plan: input.plan,
 		results: input.results,
+		missingOnServer: input.missingOnServer ?? NOTHING_MISSING,
 	});
 }
 

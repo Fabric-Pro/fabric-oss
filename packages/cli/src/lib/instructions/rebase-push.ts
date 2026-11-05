@@ -132,6 +132,14 @@ interface BaseFile {
 	url: string;
 }
 
+/** The server no longer keeps the version the lock names. */
+export class BaseVersionRemovedError extends Error {
+	constructor(readonly version: number) {
+		super(`Version ${version} is no longer kept.`);
+		this.name = "BaseVersionRemovedError";
+	}
+}
+
 function sha256Of(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
@@ -162,13 +170,23 @@ async function readBaseRecord(
 	for (let i = 0; i < paths.length; i += VERSION_FILES_CHUNK) {
 		const chunk = paths.slice(i, i + VERSION_FILES_CHUNK);
 		const asked = new Set(chunk);
-		const response =
-			await input.client.instructions.createVersionFileDownloadUrls(
+		const response = await input.client.instructions
+			.createVersionFileDownloadUrls(
 				input.projectId,
 				input.lock.snapshotId,
 				chunk,
 				{ org: input.org },
-			);
+			)
+			.catch((error: unknown) => {
+				// The project was just read successfully through the same gate, so
+				// a 404 here is the version, not the project.
+				if ((error as { status?: number }).status === 404) {
+					throw new BaseVersionRemovedError(
+						input.lock.snapshotVersion,
+					);
+				}
+				throw error;
+			});
 		if (response.snapshotId !== input.lock.snapshotId) {
 			throw new Error(
 				"The server answered for a different version than the one this checkout last synced. Nothing was sent.",

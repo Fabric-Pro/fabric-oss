@@ -30,6 +30,7 @@ import {
 import type * as agentLoopActivities from "../activities/template-instance/report-agent-loop";
 import { applyReportAiTaskOverrides } from "../activities/template-instance/report-ai-tasks";
 import {
+	everySourceSkipped,
 	hasNoUsableData,
 	mapAgenticGatheredData,
 } from "../activities/template-instance/report-data-gate";
@@ -38,6 +39,7 @@ import {
 	planSpentFailureAsError,
 	withChatGptPlanWait,
 } from "./lib/chatgpt-plan-wait";
+import { describeReportActivityFailure } from "./lib/report-activity-failure";
 
 // Activity proxies - core template instance activities
 const {
@@ -92,13 +94,18 @@ const { fetchDataSources, executeAiAnalysis, cleanupRagCollection } =
 // Activity proxies - agentic data gathering loop + self-healing connection resolution
 const { executeAgentDataGatheringLoop, resolveReportConnections } =
 	proxyActivities<typeof agentLoopActivities>({
-		startToCloseTimeout: "30 minutes", // Paginated card sweeps at ~2 min/iteration need headroom for all 15 iterations (a 15-min budget died at iteration ~8 and burned attempt 1 of 2)
-		heartbeatTimeout: "5 minutes", // Final HTML generation can take 3-5 min for large reports
+		startToCloseTimeout: "30 minutes",
+		// The loop heartbeats every 30 s and bounds each tool call at 90 s, so
+		// silence for this long means its worker is gone: a restart costs minutes,
+		// and the next attempts reread what was lost. Timeouts and retries are
+		// not compared on replay, so no `patched()` guard: only the activity's id
+		// and type are, and an activity already scheduled keeps its recorded options.
+		heartbeatTimeout: "2 minutes",
 		retry: {
 			initialInterval: "2s",
 			backoffCoefficient: 2,
 			maximumInterval: "60s",
-			maximumAttempts: 2, // Fewer retries for agentic loop
+			maximumAttempts: 4,
 			nonRetryableErrorTypes: ["SubscriptionPlanExhaustedError"],
 		},
 	});
@@ -507,6 +514,12 @@ export async function templateInstanceExecutionWorkflow(
 		const useAgenticApproach =
 			!reporting?.config?.projectId &&
 			(hasAgenticContext || hasAgenticDataSource);
+		// A report whose sources are all optional and unconnected runs on its
+		// instructions alone. A run recorded before this fetched those sources
+		// and failed, and keeps doing so on replay.
+		const skipsEverySource =
+			everySourceSkipped(definition.dataSources, effectiveConnections) &&
+			patched("report-skip-unconnected-optional-sources-v1");
 
 		let dataFetchResult: {
 			results: Array<{
@@ -586,7 +599,6 @@ export async function templateInstanceExecutionWorkflow(
 					customSystemPrompt:
 						instanceFabricConfig?.customSystemPrompt ||
 						templateFabricConfig?.defaultSystemPrompt,
-					skillsContent: skillsContent || undefined,
 					userId: input.userId,
 					organizationId: input.organizationId,
 					jobType: input.jobType,
@@ -632,7 +644,11 @@ export async function templateInstanceExecutionWorkflow(
 				agentLoopResult.gatheredData,
 				{
 					toolToSourceId,
-					provider: providers[0] || "unknown",
+					// A generic source names no provider: the server that answered does
+					provider:
+						providers[0] ||
+						mcpDiagnostics[0]?.serverName ||
+						"unknown",
 				},
 			);
 			dataFetchResult.results.push(...agentic.results);
@@ -652,7 +668,7 @@ export async function templateInstanceExecutionWorkflow(
 						"Agentic data gathering incomplete: no usable data was gathered",
 				);
 			}
-		} else if (definition.dataSources?.length) {
+		} else if (definition.dataSources?.length && !skipsEverySource) {
 			// Use traditional data fetching
 			// Cast data sources to the expected format
 			// The type field will be normalized by the handler if missing (legacy support)
@@ -890,6 +906,15 @@ export async function templateInstanceExecutionWorkflow(
 		if (reportingQuality && agentLoopMetadata.isPartial) {
 			reportingQuality.issues.push("evidence_truncated");
 		}
+		// A complete run can legitimately find nothing (an idle board). The
+		// report then says so instead of rendering empty sections.
+		const noRecords =
+			!!definition.dataSources?.length &&
+			!skipsEverySource &&
+			dataFetchResult.totalRecords === 0;
+		if (reportingQuality && noRecords) {
+			reportingQuality.issues.push("no_records_in_period");
+		}
 		if (reportingQuality) {
 			reportingQuality.sourceRevisions = dataFetchResult.results
 				.flatMap((result) => result.provenance ?? [])
@@ -925,6 +950,7 @@ export async function templateInstanceExecutionWorkflow(
 			dateRange,
 			outputFormat,
 			isPartial: !!agentLoopMetadata.isPartial,
+			noRecords,
 		});
 
 		if (reportingQuality) {
@@ -1212,8 +1238,11 @@ export async function templateInstanceExecutionWorkflow(
 		// new command, so no `patched()`.
 		const planSpent = planSpentFailureAsError(error);
 		const failure = planSpent ?? error;
+		// Any other activity failure also reads only "Activity task failed" or
+		// "Activity task timed out". Same reasoning: no new command.
 		const errorMessage =
-			failure instanceof Error ? failure.message : "Unknown error";
+			(planSpent ? null : describeReportActivityFailure(error)) ??
+			(failure instanceof Error ? failure.message : "Unknown error");
 		// A scheduled run every ChatGPT plan refused is tried again on its
 		// next tick, so telling its owner it failed is noise (Fizzy #2770);
 		// the run still reads FAILED with the plan's sentence. "Execute now"

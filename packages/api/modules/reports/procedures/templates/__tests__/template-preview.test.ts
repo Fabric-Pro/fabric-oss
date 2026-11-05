@@ -4,11 +4,14 @@ const mocks = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...args: unknown[]) => unknown>,
 	getLatestProjectTemplateRun: vi.fn(),
 	getReportTemplate: vi.fn(),
+	getReportTemplateSample: vi.fn(),
+	saveReportTemplateSample: vi.fn(),
 	getBoundPromptForAgent: vi.fn(),
 	isFeatureEnabled: vi.fn(),
 	enforceAiRateLimit: vi.fn(),
 	assertProjectPermission: vi.fn(),
-	canEditProjectReport: vi.fn(),
+	requireOrganizationMembership: vi.fn(),
+	canCreateProjectReport: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	generateText: vi.fn(),
 	logModelUsageAsync: vi.fn(),
@@ -19,6 +22,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	getLatestProjectTemplateRun: mocks.getLatestProjectTemplateRun,
 	getReportTemplate: mocks.getReportTemplate,
+	getReportTemplateSample: mocks.getReportTemplateSample,
+	saveReportTemplateSample: mocks.saveReportTemplateSample,
 	getBoundPromptForAgent: mocks.getBoundPromptForAgent,
 	isFeatureEnabled: mocks.isFeatureEnabled,
 }));
@@ -41,7 +46,7 @@ vi.mock("../../../../../lib/chatgpt-plan-errors", () => ({
 }));
 
 vi.mock("../../../lib/report-access", () => ({
-	canEditProjectReport: mocks.canEditProjectReport,
+	canCreateProjectReport: mocks.canCreateProjectReport,
 }));
 
 // Chainable oRPC procedure stub — captures each handler in module import order.
@@ -71,6 +76,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 		},
 		assertProjectPermission: mocks.assertProjectPermission,
 		enforceAiRateLimit: mocks.enforceAiRateLimit,
+		requireOrganizationMembership: mocks.requireOrganizationMembership,
 		requirePermission: () => (c: unknown) => c,
 		requireInputOrgPermission: () => (c: unknown) => c,
 		resolveOrganizationId: (input: string | null | undefined) =>
@@ -80,7 +86,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 
 import { REPORT_SAMPLE_PROMPT_AGENT_KEY } from "@repo/utils/report-sample-prompt";
 import "../preview";
-import { reportSampleVariables } from "../sample";
+import { reportSampleContentHash, reportSampleVariables } from "../sample";
 
 const ctx = {
 	user: { id: "example-member", role: "user" },
@@ -113,9 +119,10 @@ beforeEach(() => {
 		projectId: "example-project",
 		organizationId: "example-org",
 	});
+	mocks.requireOrganizationMembership.mockResolvedValue(undefined);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.enforceAiRateLimit.mockResolvedValue(undefined);
-	mocks.canEditProjectReport.mockResolvedValue(true);
+	mocks.canCreateProjectReport.mockResolvedValue(true);
 	mocks.getReportTemplate.mockResolvedValue(template);
 	mocks.getBoundPromptForAgent.mockResolvedValue(null);
 	mocks.getAIModelWithMetadata.mockResolvedValue({
@@ -130,6 +137,13 @@ beforeEach(() => {
 		text: "  # Weekly status\nExample  ",
 		usage: {},
 	});
+	mocks.getReportTemplateSample.mockResolvedValue(null);
+	mocks.saveReportTemplateSample.mockImplementation(
+		async ({ content }: { content: string }) => ({
+			content,
+			generatedAt: new Date("2026-11-05T09:00:00.000Z"),
+		}),
+	);
 });
 
 describe("reports.templates.preview", () => {
@@ -191,7 +205,7 @@ describe("reports.templates.preview", () => {
 });
 
 describe("reports.templates.sample", () => {
-	it("writes the sample from the bound prompt and stores nothing", async () => {
+	it("writes the sample from the bound prompt and stores it under the prompt's hash", async () => {
 		mocks.getBoundPromptForAgent.mockResolvedValue({
 			format: "HANDLEBARS",
 			version: { content: "Org prompt for {{template_name}}" },
@@ -204,6 +218,9 @@ describe("reports.templates.sample", () => {
 				agentName: REPORT_SAMPLE_PROMPT_AGENT_KEY,
 				documentType: "GENERAL",
 				organizationId: "example-org",
+				// So the project's binding in the Prompt Library wins over the
+				// organization's.
+				projectId: "example-project",
 			}),
 		);
 		expect(mocks.renderTemplate).toHaveBeenCalledWith(
@@ -220,17 +237,147 @@ describe("reports.templates.sample", () => {
 			"example-member",
 			undefined,
 		);
+		const contentHash = reportSampleContentHash(
+			"Org prompt for {{template_name}}",
+		);
+		expect(mocks.getReportTemplateSample).toHaveBeenCalledWith({
+			templateId: "example-template",
+			contentHash,
+		});
+		expect(mocks.saveReportTemplateSample).toHaveBeenCalledWith({
+			templateId: "example-template",
+			contentHash,
+			content: "# Weekly status\nExample",
+		});
 		expect(result).toEqual({
 			content: "# Weekly status\nExample",
-			generatedAt: expect.any(String),
+			generatedAt: "2026-11-05T09:00:00.000Z",
+			reused: false,
 		});
 	});
 
-	it("refuses someone who may not add reports to the project, before any AI call", async () => {
-		mocks.canEditProjectReport.mockResolvedValue(false);
+	it("returns a stored sample to a reader, with no AI call or rate limit", async () => {
+		mocks.canCreateProjectReport.mockResolvedValue(false);
+		mocks.getReportTemplateSample.mockResolvedValue({
+			content: "# Stored sample",
+			generatedAt: new Date("2026-11-01T08:00:00.000Z"),
+		});
+
+		const result = await mocks.handlers.sample({ input, context: ctx });
+
+		expect(result).toEqual({
+			content: "# Stored sample",
+			generatedAt: "2026-11-01T08:00:00.000Z",
+			reused: true,
+		});
+		expect(mocks.assertProjectPermission).toHaveBeenCalledWith(
+			"example-project",
+			"example-member",
+			"REPORT_READ",
+		);
+		expect(mocks.enforceAiRateLimit).not.toHaveBeenCalled();
+		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
+		expect(mocks.saveReportTemplateSample).not.toHaveBeenCalled();
+	});
+
+	it("reads a stored sample from the template alone, without a project", async () => {
+		mocks.getReportTemplateSample.mockResolvedValue({
+			content: "# Stored sample",
+			generatedAt: new Date("2026-11-01T08:00:00.000Z"),
+		});
+		const { projectId: _projectId, ...withoutProject } = input;
+
+		await expect(
+			mocks.handlers.sample({ input: withoutProject, context: ctx }),
+		).resolves.toMatchObject({ reused: true });
+		expect(mocks.assertProjectPermission).not.toHaveBeenCalled();
+	});
+
+	it("refuses someone who is no member of the organization, on the stored path too, before reading the template", async () => {
+		mocks.requireOrganizationMembership.mockRejectedValue(
+			Object.assign(new Error("Not a member"), { code: "FORBIDDEN" }),
+		);
+		mocks.getReportTemplateSample.mockResolvedValue({
+			content: "# Stored sample",
+			generatedAt: new Date("2026-11-01T08:00:00.000Z"),
+		});
+
 		await expect(
 			mocks.handlers.sample({ input, context: ctx }),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(mocks.requireOrganizationMembership).toHaveBeenCalledWith(
+			"example-org",
+			"example-member",
+		);
+		expect(mocks.getReportTemplate).not.toHaveBeenCalled();
+		expect(mocks.getReportTemplateSample).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
+	});
+
+	it("shows a sample without a project and stores nothing, since storing needs a project", async () => {
+		const { projectId: _projectId, ...withoutProject } = input;
+
+		await expect(
+			mocks.handlers.sample({ input: withoutProject, context: ctx }),
+		).resolves.toEqual({
+			content: "# Weekly status\nExample",
+			generatedAt: expect.any(String),
+			reused: false,
+		});
+		expect(mocks.enforceAiRateLimit).toHaveBeenCalledTimes(1);
+		expect(mocks.canCreateProjectReport).not.toHaveBeenCalled();
+		expect(mocks.saveReportTemplateSample).not.toHaveBeenCalled();
+	});
+
+	it("looks up a different sample once the template's instructions change", async () => {
+		mocks.renderTemplate.mockImplementation(
+			async ({ variables }: { variables: Record<string, string> }) => ({
+				rendered: `Prompt: ${variables.report_instructions}`,
+			}),
+		);
+		await mocks.handlers.sample({ input, context: ctx });
+		mocks.getReportTemplate.mockResolvedValue({
+			...template,
+			definition: { ...template.definition, userPrompt: "Changed." },
+		});
+		await mocks.handlers.sample({ input, context: ctx });
+
+		const [first, second] = mocks.getReportTemplateSample.mock.calls.map(
+			(call) => (call[0] as { contentHash: string }).contentHash,
+		);
+		expect(first).not.toBe(second);
+	});
+
+	it("shows someone who may not add reports a sample under the AI rate limit, and stores nothing", async () => {
+		mocks.canCreateProjectReport.mockResolvedValue(false);
+
+		await expect(
+			mocks.handlers.sample({ input, context: ctx }),
+		).resolves.toEqual({
+			content: "# Weekly status\nExample",
+			generatedAt: expect.any(String),
+			reused: false,
+		});
+		expect(mocks.enforceAiRateLimit).toHaveBeenCalledTimes(1);
+		expect(
+			mocks.enforceAiRateLimit.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.generateText.mock.invocationCallOrder[0]);
+		expect(mocks.generateText).toHaveBeenCalledWith(
+			expect.objectContaining({ maxOutputTokens: expect.any(Number) }),
+		);
+		expect(mocks.saveReportTemplateSample).not.toHaveBeenCalled();
+	});
+
+	it("stops someone who may not add reports at the AI rate limit, before any AI call", async () => {
+		mocks.canCreateProjectReport.mockResolvedValue(false);
+		mocks.enforceAiRateLimit.mockRejectedValue(
+			new Error("TOO_MANY_REQUESTS"),
+		);
+
+		await expect(
+			mocks.handlers.sample({ input, context: ctx }),
+		).rejects.toThrow("TOO_MANY_REQUESTS");
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
 		expect(mocks.generateText).not.toHaveBeenCalled();
 	});

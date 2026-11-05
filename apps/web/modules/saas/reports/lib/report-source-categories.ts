@@ -1,4 +1,12 @@
-import { normalizeKey } from "@saas/reports/lib/mcp-utils";
+import {
+	isReportDataType,
+	REPORT_DATA_TYPE_INFO,
+	type ReportDataType,
+} from "@repo/database/prisma/queries/lib/report-data-types";
+import {
+	findConfigsForSource,
+	normalizeKey,
+} from "@saas/reports/lib/mcp-utils";
 
 /**
  * The categorical data-source picker: a report's data source needs one kind
@@ -62,14 +70,18 @@ function sameCategory(
 }
 
 /**
- * The category a data source's provider needs: the one its provider entry
- * declares, else the category of a connected server for that provider.
+ * The category a data source needs: its data type's for a generic source (pass
+ * the data type as `provider`), the one its provider entry declares, else the
+ * category of a connected server for that provider.
  */
 export function reportSourceCategory(
 	provider: string,
 	providers: Readonly<Record<string, { category?: string }>>,
 	recommendedCategories: ReadonlyArray<string | null | undefined> = [],
 ): string | null {
+	if (isReportDataType(provider)) {
+		return REPORT_DATA_TYPE_INFO[provider].category;
+	}
 	const normalized = normalizeKey(provider);
 	const declared = Object.entries(providers).find(
 		([key]) => normalizeKey(key) === normalized,
@@ -148,4 +160,34 @@ export function startsWithAllTools(
 				group.options.some((option) => option.value === value),
 			),
 	);
+}
+
+/** The fields of a registry server that say what it is and how to connect it. */
+export type ConnectableServer = {
+	id: string;
+	key?: string | null;
+	name?: string | null;
+	category?: string | null;
+	tags?: string[] | null;
+};
+
+/**
+ * The tools of the registry a data source could read through and the person has
+ * not connected yet: the source's own provider, or for a generic source the
+ * tools of its data type.
+ */
+export function connectableServersForSource<S extends ConnectableServer>(
+	servers: S[],
+	source: { provider?: string; dataType?: ReportDataType },
+	connected: ReadonlyArray<{ mcpServer?: { key?: string | null } | null }>,
+): S[] {
+	const connectedKeys = new Set(
+		connected.flatMap((config) => config.mcpServer?.key ?? []),
+	);
+	return findConfigsForSource(
+		servers.map((server) => ({ id: server.id, mcpServer: server })),
+		source,
+	)
+		.map((match) => match.mcpServer)
+		.filter((server) => !server.key || !connectedKeys.has(server.key));
 }

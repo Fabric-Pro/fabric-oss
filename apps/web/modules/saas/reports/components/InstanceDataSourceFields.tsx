@@ -1,15 +1,19 @@
 "use client";
 
+import { REPORT_DATA_TYPE_INFO } from "@repo/database/prisma/queries/lib/report-data-types";
+import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import {
 	type InstanceDataSourceSetup,
 	isBoardSelectableProvider,
 } from "@saas/reports/hooks/use-instance-data-source-setup";
 import {
-	findMatchingMcpConfigs,
+	findConfigsForSource,
 	getMcpConfigDisplayName,
 	type McpConfigForDisplay,
 } from "@saas/reports/lib/mcp-utils";
 import {
+	type ConnectableServer,
+	connectableServersForSource,
 	groupReportConnections,
 	reportSourceCategory,
 } from "@saas/reports/lib/report-source-categories";
@@ -18,6 +22,8 @@ import {
 	DATA_SOURCE_PROVIDERS,
 	type DataSourceDefinition,
 } from "@saas/shared/components/DataSourceDefinitionBuilder";
+import { orpc } from "@shared/lib/orpc-query-utils";
+import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card, CardContent } from "@ui/components/card";
@@ -34,7 +40,9 @@ import { cn } from "@ui/lib";
 import {
 	AlertCircleIcon,
 	CheckCircle2Icon,
+	ExternalLinkIcon,
 	Loader2Icon,
+	RotateCcwIcon,
 	ServerIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -46,6 +54,9 @@ import { ReportConnectionSelect } from "./ReportConnectionSelect";
  * then the context the AI needs — shared by the create dialog and the create
  * page. State lives in `useInstanceDataSourceSetup`.
  */
+
+/** Enough to choose from; the all-tools view and Connections hold the rest. */
+const MAX_CONNECTABLE_TOOLS = 6;
 
 /** A data source's own servers, then its category's, then every other one. */
 function mcpConnectionGroups(
@@ -75,9 +86,12 @@ function mcpConnectionGroups(
 export function InstanceDataSourcePicker({
 	setup,
 	dataSources,
+	generateProblemId,
 }: {
 	setup: InstanceDataSourceSetup;
 	dataSources: DataSourceDefinition[];
+	/** The id of the sentence saying why Generate is off, for an empty choice. */
+	generateProblemId?: string;
 }) {
 	const { userMcpConfigs, bindings, selectMcpConfig, clearMcpConfig } = setup;
 
@@ -102,13 +116,28 @@ export function InstanceDataSourcePicker({
 						</Card>
 					);
 				}
-				const provider = DATA_SOURCE_PROVIDERS[ds.provider];
+				// A generic source asks which connected tool supplies its data.
+				const heading = ds.dataType
+					? REPORT_DATA_TYPE_INFO[ds.dataType].question
+					: (ds.provider &&
+							DATA_SOURCE_PROVIDERS[ds.provider]?.label) ||
+						ds.provider;
+				const connectHref = ds.provider
+					? `/app/mcp-servers?connect=${ds.provider}`
+					: "/app/mcp-servers";
 				const binding = bindings[ds.id];
 				const isConfigured = Boolean(binding?.mcpConfigId);
 				const required = isRequiredDataSource(ds);
-				const matchingConfigs = findMatchingMcpConfigs(
+				// The report suite's red treatment for a required choice left empty,
+				// once the list of connections says it really is.
+				const invalid =
+					setup.suggestDefaults &&
+					required &&
+					!isConfigured &&
+					setup.connectionsState === "answered";
+				const matchingConfigs = findConfigsForSource(
 					userMcpConfigs,
-					ds.provider,
+					ds,
 				);
 				const otherConfigs = userMcpConfigs.filter(
 					(c) => !matchingConfigs.some((m) => m.id === c.id),
@@ -122,9 +151,11 @@ export function InstanceDataSourcePicker({
 							"border transition-colors",
 							isConfigured
 								? "border-green-200 bg-green-50/50 dark:border-green-800 dark:bg-green-950/20"
-								: required
-									? "border-amber-200 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20"
-									: "border-border bg-muted/30",
+								: invalid
+									? "border-destructive/60 bg-destructive/5"
+									: required
+										? "border-amber-200 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20"
+										: "border-border bg-muted/30",
 						)}
 					>
 						<CardContent className="p-4">
@@ -135,10 +166,12 @@ export function InstanceDataSourcePicker({
 								<div className="flex-1 min-w-0">
 									<div className="flex items-center gap-2">
 										<span className="font-medium text-sm">
-											{provider?.label || ds.provider}
+											{heading}
 										</span>
 										{isConfigured ? (
 											<CheckCircle2Icon className="h-4 w-4 text-success" />
+										) : invalid ? (
+											<AlertCircleIcon className="h-4 w-4 text-destructive" />
 										) : required ? (
 											<AlertCircleIcon className="h-4 w-4 text-highlight" />
 										) : null}
@@ -172,7 +205,12 @@ export function InstanceDataSourcePicker({
 							<div className="mt-3">
 								<Label
 									htmlFor={selectId}
-									className="text-xs text-muted-foreground"
+									className={cn(
+										"text-xs",
+										invalid
+											? "text-destructive"
+											: "text-muted-foreground",
+									)}
 								>
 									{required ? "MCP Server *" : "MCP Server"}
 								</Label>
@@ -181,7 +219,9 @@ export function InstanceDataSourcePicker({
 										<ReportConnectionSelect
 											id={selectId}
 											groups={mcpConnectionGroups(
-												ds.provider,
+												ds.provider ??
+													ds.dataType ??
+													"",
 												matchingConfigs,
 												otherConfigs,
 											)}
@@ -190,9 +230,28 @@ export function InstanceDataSourcePicker({
 												selectMcpConfig(ds.id, value)
 											}
 											placeholder="Select MCP server..."
-											connectHref={`/app/mcp-servers?connect=${ds.provider}`}
+											connectHref={connectHref}
 											required={required}
+											invalid={invalid}
+											describedBy={
+												required && !isConfigured
+													? generateProblemId
+													: undefined
+											}
+											connectInNewTab
+											connections={setup.connectionsState}
+											onRetryConnections={
+												setup.retryConnections
+											}
 										/>
+										{!isConfigured &&
+											setup.connectionsState ===
+												"answered" && (
+												<ConnectableTools
+													source={ds}
+													setup={setup}
+												/>
+											)}
 									</div>
 								) : userMcpConfigs.length > 0 ? (
 									<Select
@@ -242,9 +301,7 @@ export function InstanceDataSourcePicker({
 											className="mt-2"
 											asChild
 										>
-											<Link
-												href={`/app/mcp-servers?connect=${ds.provider}`}
-											>
+											<Link href={connectHref}>
 												<ServerIcon className="mr-1 h-3 w-3" />
 												Connect MCP Server
 											</Link>
@@ -256,6 +313,99 @@ export function InstanceDataSourcePicker({
 					</Card>
 				);
 			})}
+		</div>
+	);
+}
+
+/**
+ * The tools of the registry this data source could read through and the person
+ * has not connected, each one link away. Connect opens in a new tab: the form
+ * and the project stay here, and the connections refetch on return. A project's
+ * board stays read-only until the person's own connection can read it.
+ */
+function ConnectableTools({
+	source,
+	setup,
+}: {
+	source: DataSourceDefinition;
+	setup: InstanceDataSourceSetup;
+}) {
+	const mcpServersPath = useContextPath("mcp-servers");
+	const { data: registry } = useQuery({
+		...orpc.mcp.registry.list.queryOptions({
+			input: { organizationId: setup.organizationId },
+		}),
+		staleTime: 5 * 60 * 1000,
+	});
+	const servers: ConnectableServer[] = Array.isArray(registry)
+		? registry
+		: [];
+	const connectable = connectableServersForSource(
+		servers,
+		source,
+		setup.userMcpConfigs,
+	);
+	const projectBoard = setup.projectBoard;
+	const projectServer = projectBoard
+		? connectable.find((server) => server.id === projectBoard.mcpServerId)
+		: undefined;
+	const showsProjectBoard =
+		projectBoard !== null &&
+		(source.dataType === "project-management" ||
+			projectServer !== undefined);
+	if (connectable.length === 0 && !showsProjectBoard) {
+		return null;
+	}
+	const ordered = projectServer
+		? [
+				projectServer,
+				...connectable.filter((server) => server !== projectServer),
+			]
+		: connectable;
+
+	return (
+		<div className="mt-3 space-y-2">
+			{showsProjectBoard && (
+				<p className="text-xs text-foreground/85">
+					This project reads the board{" "}
+					<span className="font-medium">{projectBoard.name}</span>
+					{projectServer?.name ? ` in ${projectServer.name}` : ""}.
+					Connect your own account to use it here.
+				</p>
+			)}
+			{ordered.length > 0 && (
+				<div className="flex flex-wrap gap-2">
+					{ordered.slice(0, MAX_CONNECTABLE_TOOLS).map((server) => (
+						<Button
+							key={server.id}
+							type="button"
+							variant="outline"
+							size="sm"
+							asChild
+						>
+							<a
+								href={`${mcpServersPath}?connect=${encodeURIComponent(server.key ?? server.id)}`}
+								target="_blank"
+								rel="noopener noreferrer"
+							>
+								<ExternalLinkIcon
+									aria-hidden="true"
+									className="mr-1 h-3 w-3"
+								/>
+								Connect {server.name ?? server.key}
+								<span className="sr-only">
+									{" "}
+									(opens in a new tab)
+								</span>
+							</a>
+						</Button>
+					))}
+				</div>
+			)}
+			<p className="text-xs text-muted-foreground">
+				Connecting opens in a new tab. Come back here and this form
+				picks it up.
+			</p>
 		</div>
 	);
 }
@@ -352,6 +502,9 @@ export function InstanceContextFields({
 							onType={(boardId) =>
 								setContextValue("boardId", boardId)
 							}
+							onRetry={
+								suggestDefaults ? setup.retryBoards : undefined
+							}
 						/>
 					);
 				}
@@ -383,6 +536,7 @@ function BoardPicker({
 	hasServer,
 	onSelect,
 	onType,
+	onRetry,
 }: {
 	/** Mark the board as required and show it red while it is unset. */
 	required: boolean;
@@ -393,9 +547,35 @@ function BoardPicker({
 	hasServer: boolean;
 	onSelect: (boardId: string, boardName: string) => void;
 	onType: (boardId: string) => void;
+	/** Asks the server for its boards again; typing an ID stays possible. */
+	onRetry?: () => void;
 }) {
 	const missing = required && !value.trim();
 	const id = "context-boardId";
+	const noteId = `${id}-note`;
+	const typedBoard = (
+		<Input
+			id={id}
+			value={value}
+			onChange={(e) => onType(e.target.value)}
+			placeholder="12345"
+			aria-required={required || undefined}
+			aria-invalid={missing || undefined}
+			aria-describedby={noteId}
+		/>
+	);
+	const retry = onRetry && (
+		<Button
+			type="button"
+			variant="outline"
+			size="sm"
+			className="h-7 text-xs"
+			onClick={onRetry}
+		>
+			<RotateCcwIcon aria-hidden="true" className="mr-1 h-3 w-3" />
+			Try again
+		</Button>
+	);
 
 	return (
 		<div className="space-y-1 sm:col-span-2">
@@ -448,15 +628,20 @@ function BoardPicker({
 				</Select>
 			) : error ? (
 				<>
-					<Input
-						id={id}
-						value={value}
-						onChange={(e) => onType(e.target.value)}
-						placeholder="12345"
-						aria-required={required || undefined}
-						aria-invalid={missing || undefined}
-					/>
-					<p className="text-[10px] text-highlight">{error}</p>
+					{typedBoard}
+					<p id={noteId} className="text-xs text-destructive">
+						{error}
+					</p>
+					{retry}
+				</>
+			) : hasServer && onRetry ? (
+				<>
+					{typedBoard}
+					<p id={noteId} className="text-xs text-muted-foreground">
+						No boards found from this server. Enter the board's ID,
+						or try again.
+					</p>
+					{retry}
 				</>
 			) : hasServer ? (
 				<p className="text-[10px] text-muted-foreground">

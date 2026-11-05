@@ -1,13 +1,16 @@
 "use client";
 
+import { useDialogFocusReturn } from "@saas/reports/hooks/use-dialog-focus-return";
 import {
 	DEFAULT_SCHEDULE_FREQUENCIES,
 	type DefaultScheduleFrequency,
 	defaultsFromDraft,
+	defaultsWithoutPrompts,
 	draftFromDefaults,
 	FREQUENCY_LABEL,
 	type ReportDefaultsDraft,
 	type ReportDefaultsScope,
+	type ReportPromptDefaults,
 	templateParameterFields,
 } from "@saas/reports/lib/report-template-defaults";
 import { Spinner } from "@shared/components/Spinner";
@@ -32,7 +35,7 @@ import {
 	SelectValue,
 } from "@ui/components/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
-import { RotateCcwIcon } from "lucide-react";
+import { RotateCcwIcon, Trash2Icon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -46,6 +49,18 @@ const SCOPE_LABEL: Record<ReportDefaultsScope, string> = {
 const SAVE_LABEL: Record<ReportDefaultsScope, string> = {
 	PROJECT: "Save project defaults",
 	ORGANIZATION: "Save organization defaults",
+};
+
+const PROMPTS_HEADING: Record<ReportDefaultsScope, string> = {
+	PROJECT: "Project default prompts",
+	ORGANIZATION: "Organization default prompts",
+};
+
+const PROMPTS_NOTE: Record<ReportDefaultsScope, string> = {
+	PROJECT:
+		"New reports from this template in this project start with these prompts, ahead of the organization's.",
+	ORGANIZATION:
+		"New reports from this template in the organization start with these prompts.",
 };
 
 type Props = {
@@ -65,16 +80,19 @@ function DefaultsForm({
 	scope,
 	fields,
 	draft,
+	scheduleLocked,
 	onChange,
 }: {
 	scope: ReportDefaultsScope;
 	fields: ReturnType<typeof templateParameterFields>;
 	draft: ReportDefaultsDraft;
+	scheduleLocked: boolean;
 	onChange: (
 		update: (draft: ReportDefaultsDraft) => ReportDefaultsDraft,
 	) => void;
 }) {
 	const idPrefix = `report-default-${scope.toLowerCase()}`;
+	const scheduleNoteId = `${idPrefix}-schedule-note`;
 	return (
 		<div className="space-y-5">
 			{fields.length > 0 && (
@@ -130,7 +148,17 @@ function DefaultsForm({
 
 			<section className="space-y-1">
 				<Label htmlFor={`${idPrefix}-schedule`}>Schedule</Label>
+				{scheduleLocked && (
+					<p
+						id={scheduleNoteId}
+						className="text-xs text-muted-foreground"
+					>
+						You can’t change this, because scheduled runs spend the
+						owner’s connections and credits.
+					</p>
+				)}
 				<Select
+					disabled={scheduleLocked}
 					value={draft.frequency ?? NO_SCHEDULE}
 					onValueChange={(value) =>
 						onChange((current) => ({
@@ -141,6 +169,9 @@ function DefaultsForm({
 				>
 					<SelectTrigger
 						id={`${idPrefix}-schedule`}
+						aria-describedby={
+							scheduleLocked ? scheduleNoteId : undefined
+						}
 						className="max-w-xs"
 					>
 						<SelectValue />
@@ -158,6 +189,88 @@ function DefaultsForm({
 				</Select>
 			</section>
 		</div>
+	);
+}
+
+/**
+ * A scope's default prompts, saved from a report page with "Set as organization
+ * default" or "Set as project default": read here, and cleared by whoever may
+ * set them.
+ */
+function PromptDefaults({
+	scope,
+	prompts,
+	showPrompts,
+	clearing,
+	onClear,
+}: {
+	scope: ReportDefaultsScope;
+	prompts: ReportPromptDefaults;
+	/**
+	 * False for prompts left from before the organization owned the template:
+	 * its own templates' prompts are edited on the template, so these can
+	 * only be cleared.
+	 */
+	showPrompts: boolean;
+	clearing: boolean;
+	onClear: () => void;
+}) {
+	const aiTasks = showPrompts ? Object.entries(prompts.aiTasks ?? {}) : [];
+	const headingId = `report-default-prompts-${scope.toLowerCase()}`;
+	return (
+		<section
+			aria-labelledby={headingId}
+			className="space-y-3 rounded-md border bg-muted/40 p-3"
+		>
+			<div className="flex flex-wrap items-center justify-between gap-2">
+				<h3
+					id={headingId}
+					className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground"
+				>
+					{PROMPTS_HEADING[scope]}
+				</h3>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					disabled={clearing}
+					onClick={onClear}
+					aria-label={`Clear default prompts: ${SCOPE_LABEL[scope]}`}
+				>
+					<Trash2Icon className="mr-2 h-4 w-4" />
+					Clear default prompts
+				</Button>
+			</div>
+			<p className="text-xs text-muted-foreground">
+				{showPrompts
+					? PROMPTS_NOTE[scope]
+					: "Default prompts are still stored for this template, which the organization now owns. Change its prompts on the template, and clear these."}
+			</p>
+			{showPrompts && prompts.systemPrompt && (
+				<div className="space-y-1">
+					<p className="text-xs font-medium">System prompt</p>
+					<p className="whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+						{prompts.systemPrompt}
+					</p>
+				</div>
+			)}
+			{showPrompts && prompts.userPrompt && (
+				<div className="space-y-1">
+					<p className="text-xs font-medium">Report instructions</p>
+					<p className="whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+						{prompts.userPrompt}
+					</p>
+				</div>
+			)}
+			{aiTasks.map(([key, task]) => (
+				<div key={key} className="space-y-1">
+					<p className="font-mono text-xs font-medium">{key}</p>
+					<p className="whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+						{task}
+					</p>
+				</div>
+			))}
+		</section>
 	);
 }
 
@@ -253,13 +366,21 @@ export function ReportTemplateDefaultsDialog({
 			scope={option}
 			fields={fields}
 			draft={draftFor(option)}
+			scheduleLocked={
+				option === "PROJECT" && data?.canSetProjectSchedule === false
+			}
 			onChange={updateDraft(option)}
 		/>
 	);
 
+	const focusReturn = useDialogFocusReturn();
+
 	return (
 		<Dialog open onOpenChange={(open) => !open && onClose()}>
-			<DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+			<DialogContent
+				className="max-w-lg max-h-[90vh] overflow-y-auto"
+				{...focusReturn}
+			>
 				<DialogHeader>
 					<DialogTitle>Defaults for {template.name}</DialogTitle>
 					<DialogDescription>
@@ -321,6 +442,50 @@ export function ReportTemplateDefaultsDialog({
 				) : (
 					formFor(activeScope)
 				)}
+
+				{/* Only for those who may set that scope's defaults. */}
+				{!isLoading &&
+					!isError &&
+					data?.canSetProject &&
+					data.project?.prompts && (
+						<PromptDefaults
+							scope="PROJECT"
+							prompts={data.project.prompts}
+							showPrompts
+							clearing={saveMutation.isPending}
+							onClear={() =>
+								saveMutation.mutate({
+									templateId: template.id,
+									projectId,
+									scope: "PROJECT",
+									defaults: defaultsWithoutPrompts(
+										data.project,
+									),
+								})
+							}
+						/>
+					)}
+				{!isLoading &&
+					!isError &&
+					data?.canSetOrganization &&
+					data.organization?.prompts && (
+						<PromptDefaults
+							scope="ORGANIZATION"
+							prompts={data.organization.prompts}
+							showPrompts={data.canSetOrganizationPrompts}
+							clearing={saveMutation.isPending}
+							onClear={() =>
+								saveMutation.mutate({
+									templateId: template.id,
+									projectId,
+									scope: "ORGANIZATION",
+									defaults: defaultsWithoutPrompts(
+										data.organization,
+									),
+								})
+							}
+						/>
+					)}
 
 				<DialogFooter>
 					<Button variant="outline" onClick={onClose}>

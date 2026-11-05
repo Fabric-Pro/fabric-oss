@@ -8,7 +8,13 @@ import {
 } from "@repo/database/prisma/queries/lib/report-evidence";
 import { useOrganizationContext } from "@saas/organizations/hooks";
 import { useInstanceDataSourceSetup } from "@saas/reports/hooks/use-instance-data-source-setup";
+import {
+	generateProblem,
+	useReportSuiteCreation,
+} from "@saas/reports/hooks/use-report-suite-creation";
 import { withProjectContext } from "@saas/reports/lib/project-report-suite";
+import { promptFieldRows } from "@saas/reports/lib/report-parameter-values";
+import type { ReportPromptDefaults } from "@saas/reports/lib/report-template-defaults";
 import {
 	parseTemplateDefinition,
 	parseTemplateWorkspaces,
@@ -29,6 +35,7 @@ import {
 	SelectValue,
 } from "@ui/components/select";
 import { Textarea } from "@ui/components/textarea";
+import { cn } from "@ui/lib";
 import {
 	AlertCircleIcon,
 	ArrowLeftIcon,
@@ -41,14 +48,19 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { CreateReportReadiness } from "./CreateReportReadiness";
 import {
 	InstanceContextFields,
 	InstanceDataSourcePicker,
 } from "./InstanceDataSourceFields";
+import { InstanceNameField } from "./InstanceNameField";
+import { RefinePromptButton } from "./RefinePromptButton";
 import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
+import { ReportParameterFields } from "./ReportParameterFields";
 import { ReportTemplatePreview } from "./ReportTemplatePreview";
+import { TemplatePromptPreview } from "./TemplatePromptPreview";
 
 type Props = {
 	templateId: string;
@@ -91,14 +103,16 @@ export function CreateInstanceForm({
 	const [selectedWorkspaces, setSelectedWorkspaces] = useState<string[]>([]);
 	// Shown pre-filled with the template's prompt; saved only once edited.
 	const [promptOverride, setPromptOverride] = useState("");
+	const [promptDefaults, setPromptDefaults] =
+		useState<ReportPromptDefaults | null>(null);
 	// Max iterations for agentic data gathering
 	const [maxIterations, setMaxIterations] = useState<number | undefined>(
 		undefined,
 	);
 
 	const definition = useMemo(
-		() => parseTemplateDefinition(template?.definition),
-		[template?.definition],
+		() => parseTemplateDefinition(template?.definition, { reportSuite }),
+		[template?.definition, reportSuite],
 	);
 	const workspaces = useMemo(
 		() => parseTemplateWorkspaces(template?.connections),
@@ -158,17 +172,32 @@ export function CreateInstanceForm({
 		},
 	);
 
+	const suite = Boolean(projectId);
+	const creation = useReportSuiteCreation({
+		suite,
+		dataSources,
+		bindings: setup.bindings,
+		organizationId,
+		basePath,
+	});
+	// A draft waits for its project sources; anything else runs once it exists.
+	const generates = suite && !projectSetupReason;
+
 	const createMutation = useMutation(
 		orpc.reports.instances.create.mutationOptions({
 			onSuccess: (data) => {
+				queryClient.invalidateQueries({
+					queryKey: ["reports", "instances"],
+				});
+				if (generates) {
+					void creation.startGeneration(data.id);
+					return;
+				}
 				toast.success(
 					projectSetupReason
 						? "Project report draft created; source setup required"
 						: "Instance created successfully",
 				);
-				queryClient.invalidateQueries({
-					queryKey: ["reports", "instances"],
-				});
 				router.push(`${basePath}/instances/${data.id}`);
 			},
 			onError: (error) => {
@@ -177,7 +206,33 @@ export function CreateInstanceForm({
 		}),
 	);
 
+	const isWorking = createMutation.isPending || creation.isStarting;
+	const generateOff =
+		isWorking ||
+		(requiresProjectKnowledge && !reporting?.projectId) ||
+		(generates
+			? !setup.allConfigured || creation.blocked
+			: !setup.allConfigured && !reporting?.projectId) ||
+		!name.trim();
+	const problem = suite
+		? generateProblem({
+				connections: setup.connectionsState,
+				missingSources: creation.missingSources,
+				connectionFailure: generates
+					? creation.connectionFailure
+					: null,
+				missingParameters:
+					generates && creation.parameters.missing.length > 0,
+				setupIncomplete: generates && !setup.allConfigured,
+				nameMissing: !name.trim(),
+			})
+		: null;
+	const problemId = useId();
+
 	const handleCreate = () => {
+		if (generateOff) {
+			return;
+		}
 		if (requiresProjectKnowledge && !reporting?.projectId) {
 			toast.error("Choose a project for Project knowledge");
 			return;
@@ -204,6 +259,7 @@ export function CreateInstanceForm({
 			organizationId,
 			projectId,
 			reporting,
+			...(suite ? { parameterDefaults: creation.parameters.toSave } : {}),
 			connections: {
 				mcpConfigs,
 				mcpBindings,
@@ -223,7 +279,7 @@ export function CreateInstanceForm({
 	if (!orgContextLoaded || templateLoading) {
 		return (
 			<div className="flex items-center justify-center py-12">
-				<Loader2Icon className="h-8 w-8 animate-spin text-muted-foreground" />
+				<Loader2Icon className="h-8 w-8 motion-safe:animate-spin text-muted-foreground" />
 			</div>
 		);
 	}
@@ -251,7 +307,8 @@ export function CreateInstanceForm({
 				<span className="text-3xl">{emoji}</span>
 				<div>
 					<h1 className="text-2xl font-bold">
-						Create Instance: {template.name}
+						{suite ? "Generate report" : "Create Instance"}:{" "}
+						{template.name}
 					</h1>
 					<p className="text-muted-foreground">
 						Configure your data sources and parameters for this
@@ -274,21 +331,11 @@ export function CreateInstanceForm({
 					{/* Instance Name */}
 					<Card>
 						<CardContent className="pt-6 space-y-4">
-							<div className="space-y-2">
-								<Label htmlFor="instance-name">
-									Instance Name *
-								</Label>
-								<Input
-									id="instance-name"
-									value={name}
-									onChange={(e) => setName(e.target.value)}
-									placeholder="e.g., My Weekly Sprint Report"
-								/>
-								<p className="text-xs text-muted-foreground">
-									Give this instance a name to identify it in
-									your reports list
-								</p>
-							</div>
+							<InstanceNameField
+								value={name}
+								onChange={setName}
+								invalid={suite && !name.trim()}
+							/>
 
 							<div className="space-y-2">
 								<Label htmlFor="instance-description">
@@ -324,6 +371,9 @@ export function CreateInstanceForm({
 								<InstanceDataSourcePicker
 									setup={setup}
 									dataSources={dataSources}
+									generateProblemId={
+										problem ? problemId : undefined
+									}
 								/>
 							</CardContent>
 						</Card>
@@ -348,17 +398,46 @@ export function CreateInstanceForm({
 						</Card>
 					)}
 
+					{projectId && (
+						<Card>
+							<CardContent className="pt-6">
+								<ReportParameterFields
+									templateId={templateId}
+									parameters={template.parameters}
+									projectId={projectId}
+									organizationId={organizationId}
+									onChange={creation.setParameters}
+									onContextDefaults={setup.offerContext}
+									onPromptDefaults={setPromptDefaults}
+								/>
+							</CardContent>
+						</Card>
+					)}
+
 					{/* Prompt Override & Advanced Settings */}
 					{dataSources.length > 0 && (
 						<Card>
 							<CardContent className="pt-6 space-y-4">
 								<div className="space-y-2">
-									<Label
-										htmlFor="instance-prompt"
-										className="text-sm"
-									>
-										Custom Instructions (Optional)
-									</Label>
+									<div className="flex flex-wrap items-center justify-between gap-2">
+										<Label
+											htmlFor="instance-prompt"
+											className="text-sm"
+										>
+											Custom Instructions (Optional)
+										</Label>
+										{suite && (
+											<RefinePromptButton
+												id="report-custom-instructions"
+												label="Custom Instructions"
+												content={promptOverride}
+												organizationId={
+													organizationId ?? null
+												}
+												onApply={setPromptOverride}
+											/>
+										)}
+									</div>
 									<Textarea
 										id="instance-prompt"
 										value={promptOverride}
@@ -366,7 +445,13 @@ export function CreateInstanceForm({
 											setPromptOverride(e.target.value)
 										}
 										placeholder="Add specific instructions to customize how data is gathered and analyzed..."
-										rows={4}
+										rows={
+											suite
+												? promptFieldRows(
+														promptOverride,
+													)
+												: 4
+										}
 									/>
 									<p className="text-xs text-muted-foreground">
 										Override or add to the default data
@@ -408,6 +493,18 @@ export function CreateInstanceForm({
 										(1-50).
 									</p>
 								</div>
+							</CardContent>
+						</Card>
+					)}
+
+					{suite && (
+						<Card>
+							<CardContent className="pt-6">
+								<TemplatePromptPreview
+									definition={template.definition}
+									fabricConfig={template.fabricConfig}
+									promptDefaults={promptDefaults}
+								/>
 							</CardContent>
 						</Card>
 					)}
@@ -471,35 +568,64 @@ export function CreateInstanceForm({
 
 				{/* Sidebar */}
 				<div className="space-y-4">
+					{suite && (
+						<CreateReportReadiness
+							templateId={templateId}
+							dataSources={dataSources}
+							setup={setup}
+							requiredParams={creation.parameters.requiredParams}
+							outputFormat={template.outputFormat}
+							onConnectionFailure={creation.setConnectionFailure}
+						/>
+					)}
 					<Card>
 						<CardContent className="pt-6 space-y-4">
 							<h3 className="font-medium">Actions</h3>
+							{suite && (
+								<p
+									id={problemId}
+									aria-live="polite"
+									className={cn(
+										"text-sm",
+										!problem && "sr-only",
+										problem?.urgent === true &&
+											"text-destructive",
+										problem?.urgent === false &&
+											"text-muted-foreground",
+									)}
+								>
+									{problem?.message}
+								</p>
+							)}
 							<div className="space-y-2">
 								<Button
 									onClick={handleCreate}
-									disabled={
-										createMutation.isPending ||
-										(requiresProjectKnowledge &&
-											!reporting?.projectId) ||
-										(!setup.allConfigured &&
-											!reporting?.projectId) ||
-										!name.trim()
+									disabled={!suite && generateOff}
+									aria-disabled={
+										(suite && generateOff) || undefined
 									}
-									className="w-full"
+									aria-describedby={
+										problem ? problemId : undefined
+									}
+									className="w-full aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
 								>
-									{createMutation.isPending ? (
+									{isWorking ? (
 										<>
-											<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
-											Creating...
+											<Loader2Icon className="mr-2 h-4 w-4 motion-safe:animate-spin" />
+											{generates
+												? "Generating..."
+												: "Creating..."}
 										</>
 									) : (
 										<>
 											<PlusIcon className="mr-2 h-4 w-4" />
 											{projectSetupReason
 												? "Create draft"
-												: reporting?.projectId
-													? "Create report"
-													: "Create Instance"}
+												: generates
+													? "Generate report"
+													: reporting?.projectId
+														? "Create report"
+														: "Create Instance"}
 										</>
 									)}
 								</Button>
@@ -515,7 +641,10 @@ export function CreateInstanceForm({
 										)}
 									>
 										<ArrowLeftIcon className="mr-2 h-4 w-4" />
-										Back to Template
+										{creation.missingSources.length > 0 &&
+										setup.connectionsState === "answered"
+											? "Abandon setup"
+											: "Back to Template"}
 									</Link>
 								</Button>
 							</div>

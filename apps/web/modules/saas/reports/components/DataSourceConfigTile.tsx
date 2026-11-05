@@ -1,6 +1,7 @@
 "use client";
 
 import { McpLogo } from "@saas/mcp/components/McpLogo";
+import type { ReportConnectionsState } from "@saas/reports/hooks/use-instance-data-source-setup";
 import {
 	groupReportConnections,
 	type ReportConnectionGroups,
@@ -146,6 +147,9 @@ type Props = {
 	 * own connection list cannot show or check.
 	 */
 	connectionLockedReason?: string;
+	/** Until the viewer's connections have answered, none is said to be missing. */
+	connectionsState?: ReportConnectionsState;
+	onRetryConnections?: () => void;
 
 	// Handlers
 	onConnectionChange: (
@@ -250,6 +254,8 @@ export function DataSourceConfigTile({
 	resources,
 	isLoadingResources,
 	connectionLockedReason,
+	connectionsState,
+	onRetryConnections,
 	onConnectionChange,
 	onResourceChange,
 }: Props) {
@@ -378,6 +384,8 @@ export function DataSourceConfigTile({
 							placeholder="Select connection..."
 							connectHref={connectHref ?? "/app/mcp-servers"}
 							required={required}
+							connections={connectionsState}
+							onRetryConnections={onRetryConnections}
 						/>
 					) : (
 						<Select

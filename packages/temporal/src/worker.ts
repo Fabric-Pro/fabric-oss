@@ -36,6 +36,7 @@ import { CorrelationActivityInboundInterceptor } from "./lib/correlation-interce
 import { validatePmSyncLogRetentionDays } from "./lib/pm-sync-log-env";
 import { ProjectContextActivityInboundInterceptor } from "./lib/project-context-interceptor";
 import { TurnDispatchActivityInboundInterceptor } from "./lib/turn-dispatch-interceptor";
+import { startWorkerMemoryLog } from "./lib/worker-memory-log";
 import { selectTaskQueues } from "./lib/worker-task-queue-selection";
 import { buildWorkflowBundleOptions } from "./lib/workflow-bundle-options";
 import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
@@ -638,6 +639,10 @@ async function run() {
 	// Azure Application Insights — metrics + alerting backend. Idempotent
 	// + safe; no-ops when APPLICATIONINSIGHTS_CONNECTION_STRING is unset.
 	initAppInsights();
+
+	// Started before bundling and connecting, so a worker that dies during
+	// startup or its first replays still leaves a line.
+	startWorkerMemoryLog();
 
 	// Start the Prometheus scrape server. Bound to METRICS_PORT (or 9464).
 	const metricsPort = Number.parseInt(process.env.METRICS_PORT ?? "9464", 10);

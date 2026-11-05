@@ -3,15 +3,22 @@
  */
 
 import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
+import {
+	type ReportDataType,
+	serverSuppliesDataType,
+} from "@repo/database/prisma/queries/lib/report-data-types";
 
 export interface McpConfigForDisplay {
 	id: string;
+	mcpServerId?: string | null;
+	enabled?: boolean;
 	displayName?: string | null;
 	commandArgs?: string[];
 	mcpServer?: {
 		key?: string | null;
 		name?: string | null;
 		category?: string | null;
+		tags?: string[] | null;
 	} | null;
 }
 
@@ -82,7 +89,7 @@ export function normalizeKey(key: string): string {
  * Matches by normalized key (handles azure_devops vs azure-devops)
  * or by name containing the search key
  */
-export function findMatchingMcpConfigs<
+function findMatchingMcpConfigs<
 	T extends {
 		id: string;
 		mcpServer?: { key?: string | null; name?: string | null } | null;
@@ -97,6 +104,34 @@ export function findMatchingMcpConfigs<
 			normalizeKey(serverName).includes(normalizedKey)
 		);
 	});
+}
+
+/**
+ * The MCP configs recommended for a data source: those of its provider, or for
+ * a generic source those of the data type it asks for.
+ */
+export function findConfigsForSource<
+	T extends {
+		id: string;
+		mcpServer?: {
+			key?: string | null;
+			name?: string | null;
+			category?: string | null;
+			tags?: string[] | null;
+		} | null;
+	},
+>(configs: T[], source: { provider?: string; dataType?: ReportDataType }): T[] {
+	if (source.provider) {
+		return findMatchingMcpConfigs(configs, source.provider);
+	}
+	const { dataType } = source;
+	return dataType
+		? configs.filter(
+				(config) =>
+					config.mcpServer &&
+					serverSuppliesDataType(config.mcpServer, dataType),
+			)
+		: [];
 }
 
 /** The fields `isReportMcpConfigAuthenticated` reads from an MCP config. */

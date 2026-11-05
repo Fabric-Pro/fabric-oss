@@ -696,6 +696,12 @@ project is brought up to date with git. `--dry-run` prints the merged change
 set and writes nothing. The lock is still never written, so run `sync`
 afterwards to take the new version, as after any push.
 
+The merge needs the version your last sync wrote, and the server keeps only
+recent versions. When that version has been removed, `--rebase` says so, sends
+nothing and exits 7. Run `sync`, which keeps your edits. A push then sends each
+edited file whole, so first check that those files still hold what was published
+since.
+
 A proposal that has gone stale in the Coding Instructions tab is rebased the
 same way by the person who proposed it, from the proposal itself.
 
@@ -1992,7 +1998,7 @@ forbidden, `6` rate limited, `7` refused or inconsistent.
 | not signed in | `Not signed in to <origin>. Run: fabric auth login --base-url <origin> --project <id>` (3), with `--project <id>` whenever the command names a project; `init` signs in on the spot through the browser, with no terminal needed (not under `CI`) | stdout: `fabric: coding instructions: not signed in to <origin> — run: fabric auth login --base-url <origin> --project <id>` |
 | sign-in expired or refused (401) | `Your sign-in to <origin> has expired. Run: fabric auth login --base-url <origin>` (3), with `--project <id>` whenever the command names a project | the same stdout line as not signed in |
 | an agent's MCP server | One registration result and any required sign-in action per selected tool. Exit 7 when requested registration is incomplete; exit 0 when registration succeeds, including an explicitly reported pending sign-in. `--no-mcp` intentionally omits registration. | nothing (a hook never registers anything) |
-| missing permission (403) | `This credential is missing the <scope> permission. Create a key that carries it, or run: fabric auth login --base-url <origin>`, or `You do not have access to this project's coding instructions. Ask a project maintainer for access.` (5) | stderr, skipped |
+| missing permission (403) | `This credential is missing the <scope> permission. Create a key that carries it, or run: fabric auth login --base-url <origin>`; for a scope a browser sign-in cannot carry, such as `instructions:publish`, `This credential is missing the <scope> permission, which a browser sign-in does not carry. Create a key that carries it and sign in with it: fabric auth login --base-url <origin> --key <api-key>`; or `You do not have access to this project's coding instructions. Ask a project maintainer for access.` (5) | stderr, skipped |
 | project not found (404) | `Project not found, or you cannot see it.` (4) | stderr: `… skipped: no project for this checkout` |
 | project unresolved | `This checkout's remote (<host>/<path>) is not connected to any project you can see. Connect the repository in Fabric first.` (4), or the list of `--project` choices (2) | stderr: `… skipped: this hook names no project. Run: fabric instructions init` |
 | rate limited (429) | `Too many requests. Wait a minute and try again.` (6) | stderr, skipped |

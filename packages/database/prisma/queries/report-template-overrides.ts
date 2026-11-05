@@ -23,6 +23,7 @@ const OVERRIDE_SELECT = {
 	parameterDefaults: true,
 	context: true,
 	schedule: true,
+	prompts: true,
 	updatedById: true,
 	updatedAt: true,
 } as const;
@@ -83,6 +84,7 @@ function jsonOrNull(
 /**
  * Sets one scope's defaults, creating the row on first save. A concurrent
  * first save loses the unique key race and is applied as an update.
+ * `prompts` left undefined keeps the stored prompts; null clears them.
  */
 export async function setReportTemplateOverride(
 	scope: ReportTemplateOverrideScope,
@@ -90,6 +92,7 @@ export async function setReportTemplateOverride(
 		parameterDefaults: Prisma.InputJsonValue | null;
 		context: Prisma.InputJsonValue | null;
 		schedule: Prisma.InputJsonValue | null;
+		prompts?: Prisma.InputJsonValue | null;
 		updatedById: string;
 	},
 ) {
@@ -97,6 +100,9 @@ export async function setReportTemplateOverride(
 		parameterDefaults: jsonOrNull(values.parameterDefaults),
 		context: jsonOrNull(values.context),
 		schedule: jsonOrNull(values.schedule),
+		...(values.prompts === undefined
+			? {}
+			: { prompts: jsonOrNull(values.prompts) }),
 		updatedById: values.updatedById,
 	};
 	const update = async () => {

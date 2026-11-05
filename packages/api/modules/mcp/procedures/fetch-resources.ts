@@ -22,9 +22,9 @@ import { isReadOnlyBlockedOutput } from "@repo/utils";
 // Note: getMcpConfigById is used with tenant context in this file
 import { z } from "zod";
 import {
+	authorizeInputOrganization,
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -488,12 +488,18 @@ export const fetchResourcesProcedure = tenantProtectedProcedure
 		let serverName: string | null = null;
 		let serverKey: string | null = null;
 
+		// The organization this request resolves to, with the caller's current
+		// membership and MCP_READ role there checked before the config is read
+		// and outside the try below, so a refusal is never reported as an
+		// ordinary fetch failure. Every lookup uses this returned value.
+		// Personal context (null) passes through to personal configs only.
+		const organizationId = await authorizeInputOrganization(
+			Permissions.MCP_READ,
+			input.organizationId,
+			context,
+		);
+
 		try {
-			// Use resolveOrganizationId for proper tenant isolation
-			const organizationId = resolveOrganizationId(
-				input.organizationId,
-				context.session,
-			);
 			const mcpConfig = await getMcpConfigById(configId, {
 				userId,
 				organizationId,

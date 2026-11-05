@@ -1,5 +1,40 @@
 # fabric-app
 
+## 1.16.43
+
+### Patch Changes
+
+- bfd8846: A refused proposal approval now says why, instead of "You don't have permission to do that".
+- bfd8846: Stop saying "you see the published version" above a file your proposal branch changes, where the viewer shows your branch's version.
+- bfd8846: Azure deployments now set the coding bridge flag in lowercase, so Temporal workers start instead of restarting at launch.
+- bfd8846: Stop `fabric instructions push --rebase` saying the project was not found when the version a folder last synced is no longer kept.
+- bfd8846: Stop the CLI sending people to `fabric auth login` for permissions a browser sign-in cannot grant, stop `check --verify` reporting local overrides as drift, and show a withdrawn proposal as closed rather than rejected.
+- bfd8846: A sync that changes many Living Memory files now sends each person one "decisions to review" notification with the total.
+- bfd8846: Open the documentation site as a product manual, with its own header, a task-first sidebar, and shorter pages for the first conversation and the first agent.
+- bfd8846: Show Coding Instructions, Living Memory and repository-import audit-log entries in German instead of English.
+- bfd8846: Code indexing, Atlas and security scans can clone repositories again after the move of the token out of the clone URL.
+- bfd8846: Teams, Slack huddle and meeting transcript monitors with nothing linked no longer grow without limit, and stop once their project is deleted.
+- bfd8846: Tighten coding-instruction reviews, rebases and Living Memory decision suggestions so each counts, closes and notifies only what it should.
+- bfd8846: Show additions, removals and list bullets in the rendered proposal diff, and stop the digest calling a withdrawn proposal "rejected by a teammate".
+- bfd8846: Accepting a Living Memory update now supersedes the old decision, and a repository's first sync no longer reads every file with AI unless a member asks.
+- bfd8846: Decisions found in synced Living Memory files now appear as review candidates in the project's Decisions tab, marked "From Living Memory".
+- bfd8846: Living Memory dialogs now say a repository path is too long instead of calling it misspelled, and the digest no longer reads "0 files changed".
+- bfd8846: Answer proposals, Weave delegations and the Weave planner now receive the matching passages of project documents within a size limit instead of whole documents.
+- bfd8846: Check the caller's current membership and role in the organization named by an MCP tool call, resource fetch or client-session request.
+- bfd8846: Custom MCP servers now show the icon the server lists for itself: after a successful connection test, Fabric stores the server's own icon (a light-background SVG first, then a large PNG) for servers your organization added, without replacing an icon from anywhere else.
+- bfd8846: Reports: organizations without the new report suite keep their full template list, without the suite's catalog filter or publish actions.
+- bfd8846: A report whose sources return no records now says so, report pages name data sources ("Fizzy") instead of internal ids, and the unused template "Default Prompt" box is gone.
+- bfd8846: Reports: the Refine with AI dialog keeps the prompt editor and its Save button clear of the assistant panel.
+- bfd8846: Reports: when Generate is refused, the report page names the data source that did not connect.
+- bfd8846: Reports: a catalog of working templates, template publishing, save-to-template prompts, instant samples, Refine with AI and agent report edits.
+- bfd8846: Reports: large boards generate faster, project Editors can edit reports, and agent-created reports use the project's connection.
+- bfd8846: Reports: one-click generate, seven standard templates that work with any connected tool, whole-board counts, and project prompt overrides.
+- bfd8846: Reports: Generate tests required connections first, Fabric Agent can create reports, and report parameters can become template or default values.
+- bfd8846: Project knowledge search and source cleanup now filter only on fields the vector database indexes, so the search that leaves out generated project documents is no longer rejected and still finds sources stored without a document link.
+- bfd8846: An assistant proposal left unanswered in a shared document, for example when the browser tab reviewing it crashed, is no longer saved as if it had been accepted: the other editors pause while nobody reviews it, then reject it automatically, keeping any text typed in the document, and say so once.
+- bfd8846: `fabric context push` now lists files its lock records as pushed that the server no longer holds, instead of calling them unchanged.
+- bfd8846: Temporal workers now log their memory use, so a worker that dies silently leaves a record of how close it came to its limit.
+
 ## 1.16.42
 
 ### Patch Changes

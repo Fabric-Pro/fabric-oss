@@ -3,6 +3,7 @@ import {
 	canUpdateProjectInstructions,
 	MAX_INSTRUCTION_APPROVERS,
 	MAX_REQUIRED_INSTRUCTION_APPROVALS,
+	minimumInstructionApprovers,
 	updateProjectInstructionSettings,
 } from "@repo/database";
 import { z } from "zod";
@@ -20,7 +21,8 @@ import { assertNoOpenMigration, withMigrationFreeze } from "./migration-freeze";
 /**
  * The upload-mode proposal review policy. `approverUserIds` absent or empty
  * means anyone who may review; when set it must name enough people to meet
- * `requiredApprovals`.
+ * `requiredApprovals` on any listed approver's own proposal too, which that
+ * approver cannot approve: one more than required, above one.
  */
 const reviewPolicySchema = z
 	.object({
@@ -45,10 +47,11 @@ const reviewPolicySchema = z
 	.refine(
 		(policy) =>
 			policy.approverUserIds === null ||
-			policy.approverUserIds.length >= policy.requiredApprovals,
+			policy.approverUserIds.length >=
+				minimumInstructionApprovers(policy.requiredApprovals),
 		{
 			message:
-				"Name at least as many approvers as the approvals you require",
+				"Name at least one more approver than the approvals you require, so a listed approver's own proposal can still be approved",
 		},
 	);
 

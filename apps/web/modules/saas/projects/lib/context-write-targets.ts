@@ -45,6 +45,7 @@ export type WriteFolderSelection = {
 
 /** Why a folder cannot be a write folder, as far as the client can tell. */
 export type WriteFolderProblem =
+	| "PATH_TOO_LONG"
 	| "INVALID_PATH"
 	| "TARGET_RESERVED"
 	| "TARGET_OUTSIDE_SELECTION"
@@ -66,7 +67,11 @@ export function writeFolderProblem(
 	selection: WriteFolderSelection,
 	siblings: readonly string[],
 ): WriteFolderProblem | null {
-	if (contextSyncPathSpellingProblem(folder) !== null) {
+	const spelling = contextSyncPathSpellingProblem(folder);
+	if (spelling === "too-long") {
+		return "PATH_TOO_LONG";
+	}
+	if (spelling !== null) {
 		return "INVALID_PATH";
 	}
 	if (folder === "" || folder.split("/").some((s) => s.startsWith("."))) {

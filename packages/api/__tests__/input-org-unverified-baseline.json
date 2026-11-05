@@ -70,8 +70,6 @@
 	"packages/api/modules/integrations/procedures/get-recent-teams-messages.ts",
 	"packages/api/modules/kanban/procedures/create-token.ts",
 	"packages/api/modules/kanban/procedures/sync.ts",
-	"packages/api/modules/mcp/procedures/execute-tool.ts",
-	"packages/api/modules/mcp/procedures/fetch-resources.ts",
 	"packages/api/modules/notifications/procedures/archive.ts",
 	"packages/api/modules/notifications/procedures/list.ts",
 	"packages/api/modules/notifications/procedures/mark-all-read.ts",

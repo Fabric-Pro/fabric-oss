@@ -63,6 +63,15 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // instanceId comes from. Owner-only, AI credits, polling and parameter rules
 // were moved to the list result, the refusal, the approval card and the
 // errors. Add exactly that, with no extra headroom.
+// fabric_get_report_content (304) and fabric_update_report_prompt (377) add
+// 681: one line each, where instanceId comes from, and the instructions'
+// length bound. What to do after a read or a change is said in the result.
+// fabric_list_report_templates (322) and fabric_create_project_report (472) add
+// 794: one line each, the schemas needed to call them, and where templateId
+// comes from. What to connect and what to do next is said in the result.
+// A report made from a prompt, with no template, adds 189: the optional prompt
+// property, its default template, and tool wording that says what the
+// instructions and the effective AI tasks are.
 const CONTEXT_QUALITY_BUDGETS: Readonly<Record<string, number>> = {
 	fabric_inspect_context_quality_source: 501,
 	fabric_evaluate_context_quality: 1_969,
@@ -81,7 +90,10 @@ const TOTAL_BUDGET =
 	501 +
 	1_969 +
 	8_938 +
-	697;
+	697 +
+	681 +
+	794 +
+	189;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;

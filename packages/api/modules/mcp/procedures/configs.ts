@@ -1173,12 +1173,26 @@ export const configProcedures = {
 		.output(z.object({ token: z.string(), expiresAt: z.date() }))
 		.handler(async ({ input, context }) => {
 			const user = context.user;
-			const { id, organizationId, ttlMinutes } = input;
+			const { id, ttlMinutes } = input;
+
+			// A named organization: check the caller's current membership and
+			// MCP_CONNECT role there before the config is read and a session
+			// token is minted for it (a saved config outlives its owner's
+			// membership). Both lookups use the authorized value. An omitted or
+			// null organization keeps its existing meaning here, the caller's
+			// personal configs, so it is not resolved to the session's.
+			const organizationId = input.organizationId
+				? await authorizeInputOrganization(
+						Permissions.MCP_CONNECT,
+						input.organizationId,
+						context,
+					)
+				: undefined;
 
 			// Use tenant-filtered query - access control is now handled at query level
 			const config = await getMcpConfigById(id, {
 				userId: user.id,
-				organizationId: organizationId ?? undefined,
+				organizationId,
 			});
 
 			if (!config) {
@@ -1190,7 +1204,7 @@ export const configProcedures = {
 			const { token, expiresAt } = await createMcpClientSession({
 				configId: id,
 				userId: user.id,
-				organizationId: organizationId ?? undefined,
+				organizationId,
 				ttlMinutes,
 			});
 			return { token, expiresAt };

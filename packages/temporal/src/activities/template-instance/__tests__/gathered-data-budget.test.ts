@@ -3,8 +3,11 @@ import {
 	boundGatheredData,
 	capRenderedReport,
 	DEFAULT_GATHERED_DATA_MAX_BYTES,
+	FETCHED_CARD_TEXT_MAX_BYTES,
 	MIN_GATHERED_DATA_BUDGET_BYTES,
+	REPORT_CARD_PAYLOAD_MAX_BYTES,
 } from "../gathered-data-budget";
+import { attachBoardFacts } from "../report-board-facts";
 import { countAgenticRecords } from "../report-data-gate";
 
 /** UTF-8 byte length of a value's JSON, mirroring the helper's own metric. */
@@ -108,60 +111,441 @@ describe("boundGatheredData", () => {
 		expect(result.notes.join(" ")).toMatch(/drop.*huge_blob|huge_blob/i);
 	});
 
-	it("Stage C: drops `_`-prefixed metadata before the data it describes", () => {
-		// One fat card that survives Stage A (every field < maxFieldChars) and
-		// Stage B (an array is never reduced below one item), so Stage C fires.
-		const fatCard: Record<string, string> = { id: "c1" };
+	it("Stage C: drops other `_`-prefixed metadata before the data it describes", () => {
+		const bigObj: Record<string, string> = {};
 		for (let i = 0; i < 300; i++) {
-			fatCard[`f${i}`] = "shortval";
+			bigObj[`f${i}`] = "shortval";
 		}
 		const data = {
-			fizzy_get_cards: [fatCard, { ...fatCard, id: "c2" }],
-			_coverage: {
-				fizzy_get_cards: {
-					total_count: 611,
-					pages_fetched: [1],
-					has_more_at_last_page: true,
-				},
-			},
+			some_tool: bigObj,
+			_board_fix: { partial: true, coverage: "unknown" },
 		};
 		const result = boundGatheredData(data, {
 			maxBytes: 1_500,
 			maxFieldChars: 1000,
 		});
 
-		expect(result.trimmed).toBe(true);
 		expect(result.finalBytes).toBeLessThanOrEqual(1_500);
-		// `_coverage` is far SMALLER than the card array — size-only ordering
-		// would have dropped the cards and kept a total_count describing records
-		// that are no longer there.
-		expect(result.data._coverage).toBeUndefined();
-		expect(result.data.fizzy_get_cards).toBeDefined();
-		expect(result.notes.join(" ")).toMatch(/dropped key _coverage/);
+		expect(result.data._board_fix).toBeUndefined();
+		expect(result.notes.join(" ")).toMatch(/dropped key _board_fix/);
 	});
 
-	it("never leaves `_coverage` behind once its records were dropped", () => {
-		// Several oversized data keys plus metadata: whatever else the cascade
-		// drops, metadata must never outlive the records it describes.
-		const bigObj: Record<string, string> = {};
-		for (let i = 0; i < 2000; i++) {
-			bigObj[`f${i}`] = "shortval";
-		}
-		const data = {
-			fizzy_get_cards: bigObj,
-			fizzy_get_boards: bigObj,
-			_coverage: { fizzy_get_cards: { total_count: 611 } },
+	describe("reserved board metadata", () => {
+		const reserved = {
+			_board_facts: { total: 5000, open: 1000, closed: 4000 },
+			_coverage: {
+				fizzy_get_cards: { total_count: 5000, complete: true },
+			},
 		};
-		const result = boundGatheredData(data, {
-			maxBytes: 2_000,
-			maxFieldChars: 1000,
+
+		it("keeps `_board_facts` and `_coverage` while card tail items are dropped", () => {
+			const data = {
+				fizzy_get_cards: Array.from({ length: 5000 }, (_, i) => ({
+					id: `c${i}`,
+					status: "Done",
+				})),
+				...reserved,
+			};
+			const result = boundGatheredData(data, { maxBytes: 8_000 });
+
+			expect(result.finalBytes).toBeLessThanOrEqual(8_000);
+			expect(result.data._board_facts).toEqual(reserved._board_facts);
+			expect(result.data._coverage).toEqual(reserved._coverage);
+			expect(result.recordsDropped).toBe(true);
 		});
 
-		expect(result.finalBytes).toBeLessThanOrEqual(2_000);
-		const coverageSurvived = result.data._coverage !== undefined;
-		const cardsSurvived = result.data.fizzy_get_cards !== undefined;
-		expect(coverageSurvived && !cardsSurvived).toBe(false);
-		expect(result.data._coverage).toBeUndefined();
+		it("keeps them even when every data key has to go", () => {
+			const bigObj: Record<string, string> = {};
+			for (let i = 0; i < 2000; i++) {
+				bigObj[`f${i}`] = "shortval";
+			}
+			const result = boundGatheredData(
+				{
+					fizzy_get_cards: bigObj,
+					fizzy_get_boards: bigObj,
+					...reserved,
+				},
+				{ maxBytes: 2_000, maxFieldChars: 1000 },
+			);
+
+			expect(result.finalBytes).toBeLessThanOrEqual(2_000);
+			expect(result.data._board_facts).toEqual(reserved._board_facts);
+			expect(result.data._coverage).toEqual(reserved._coverage);
+			expect(result.data.fizzy_get_boards).toBeUndefined();
+			expect(
+				(result.data.fizzy_get_cards as { _truncated?: boolean })
+					._truncated,
+			).toBe(true);
+		});
+
+		it("gives them up only when they alone exceed the budget", () => {
+			const huge = "x".repeat(5_000);
+			const result = boundGatheredData(
+				{
+					fizzy_get_cards: [{ id: "c1" }],
+					_board_facts: { byTag: huge },
+					_coverage: { note: huge },
+				},
+				{ maxBytes: 1_000 },
+			);
+
+			expect(result.finalBytes).toBeLessThanOrEqual(1_000);
+			expect(Object.keys(result.data).length).toBeGreaterThanOrEqual(1);
+		});
+	});
+
+	describe("card ladder", () => {
+		const fullCard = (i: number) => ({
+			id: `card-${i}`,
+			number: i,
+			title: `Card ${i}`,
+			status: "published",
+			closed: false,
+			created_at: "2026-01-01T00:00:00.000Z",
+			last_active_at: "2026-01-02T00:00:00.000Z",
+			url: `https://example.com/cards/${i}`,
+			description_preview: "p".repeat(200),
+			has_attachments: false,
+			creator: { id: "user-1", name: "Example Person" },
+			board: { id: "board-1", name: "Example board" },
+			column: { id: "column-1", name: "In progress" },
+			assignees: [{ id: "user-2", name: "Example Assignee" }],
+			tags: ["example"],
+		});
+		const cards = Array.from({ length: 200 }, (_, i) => fullCard(i));
+		const fullBytes = jsonBytes({ fizzy_get_cards: cards });
+
+		const bound = (maxBytes: number) => {
+			const result = boundGatheredData(
+				{ fizzy_get_cards: cards },
+				{ maxBytes },
+			);
+			return {
+				result,
+				kept: result.data.fizzy_get_cards as Array<
+					Record<string, unknown>
+				>,
+			};
+		};
+
+		it("projects cards first and keeps every card", () => {
+			const { result, kept } = bound(Math.floor(fullBytes * 0.9));
+
+			expect(kept).toHaveLength(200);
+			expect(kept[0].creator).toBeUndefined();
+			expect(kept[0].description_preview).toBe("p".repeat(200));
+			expect(result.recordsDropped).toBe(false);
+			expect(result.trimmed).toBe(true);
+			expect(result.notes.join(" ")).toMatch(/projected/);
+		});
+
+		it("then drops text and links, keeping what a report counts by", () => {
+			const { result, kept } = bound(Math.floor(fullBytes * 0.5));
+
+			expect(kept).toHaveLength(200);
+			expect(kept[0]).toMatchObject({
+				id: "card-0",
+				closed: false,
+				last_active_at: "2026-01-02T00:00:00.000Z",
+				column: { name: "In progress" },
+				assignees: [{ name: "Example Assignee" }],
+				tags: ["example"],
+			});
+			expect(kept[0].description_preview).toBeUndefined();
+			expect(kept[0].url).toBeUndefined();
+			expect(result.recordsDropped).toBe(false);
+		});
+
+		it("then cuts to the steering fields", () => {
+			const { result, kept } = bound(Math.floor(fullBytes * 0.2));
+
+			expect(kept).toHaveLength(200);
+			expect(kept[0]).toEqual({
+				id: "card-0",
+				number: 0,
+				title: "Card 0",
+				status: "published",
+				column: "In progress",
+			});
+			expect(result.recordsDropped).toBe(false);
+		});
+
+		it("then keeps only what names a card", () => {
+			const { result, kept } = bound(Math.floor(fullBytes * 0.05));
+
+			expect(kept).toHaveLength(200);
+			expect(kept[0]).toEqual({ number: 0, title: "Card 0" });
+			expect(result.recordsDropped).toBe(false);
+		});
+
+		it("drops cards only after the last rung, and says so", () => {
+			const { result, kept } = bound(Math.floor(fullBytes * 0.03));
+
+			expect(kept.length).toBeLessThan(200);
+			expect(result.recordsDropped).toBe(true);
+		});
+
+		it("leaves lists from other tools out of the ladder", () => {
+			const result = boundGatheredData(
+				{
+					fizzy_get_users: Array.from({ length: 200 }, (_, i) => ({
+						id: `user-${i}`,
+						email_address: `person-${i}@example.com`,
+					})),
+				},
+				{ maxBytes: 4_000 },
+			);
+			const users = result.data.fizzy_get_users as Array<
+				Record<string, unknown>
+			>;
+
+			expect(users[0].email_address).toBe("person-0@example.com");
+			expect(result.recordsDropped).toBe(true);
+		});
+	});
+
+	describe("report card payload", () => {
+		type Card = Record<string, unknown>;
+		const OPEN = 659;
+		const CLOSED = 1548;
+		const NOT_NOW = 132;
+		const TOTAL = OPEN + CLOSED + NOT_NOW;
+
+		// Shaped like a real summary-projection listing page, about 900 bytes a card.
+		const summaryCard = (i: number): Card => ({
+			id: `example${String(i).padStart(18, "0")}`,
+			number: 1000 + i,
+			title: `Example card title ${String(i).padStart(4, "0")} ${"t".repeat(50)}`,
+			status: "published",
+			golden: false,
+			closed: i >= OPEN && i < OPEN + CLOSED,
+			postponed: i >= OPEN + CLOSED,
+			last_active_at: "2026-10-01T00:00:00.000Z",
+			created_at: "2026-01-01T00:00:00.000Z",
+			url: `https://example.com/example-account/cards/${1000 + i}`,
+			description_preview: "p".repeat(200),
+			has_attachments: false,
+			has_more_assignees: false,
+			tags: ["example-tag"],
+			board: { id: "example-board-id-000000000", name: "Example board" },
+			creator: {
+				id: "example-user-id-0000000000",
+				name: "Example Person",
+			},
+			column: { id: "example-column-id-00000000", name: "In progress" },
+			assignees: [
+				{ id: "example-user-id-0000000000", name: "Example Person" },
+			],
+		});
+
+		const largeBoard = (): Record<string, unknown> => {
+			const data: Record<string, unknown> = {
+				fizzy_get_cards: Array.from({ length: TOTAL }, (_, i) =>
+					summaryCard(i),
+				),
+				_coverage: {
+					fizzy_get_cards: { complete: true },
+					"fizzy_get_cards[indexed_by=closed]": { complete: true },
+					"fizzy_get_cards[indexed_by=not_now]": { complete: true },
+				},
+			};
+			attachBoardFacts(data, new Date("2026-11-05T00:00:00.000Z"));
+			return data;
+		};
+		const board = largeBoard();
+		const allCards = board.fizzy_get_cards as Card[];
+
+		const boundBoard = (
+			maxCardBytes: number,
+			extra: { fetchedCardIds?: ReadonlySet<string> } = {},
+			data: Record<string, unknown> = board,
+		) => {
+			const result = boundGatheredData(data, { maxCardBytes, ...extra });
+			return {
+				result,
+				cards: result.data.fizzy_get_cards as Card[],
+			};
+		};
+
+		const steeringOf = (i: number) => ({
+			id: allCards[i].id,
+			number: allCards[i].number,
+			title: allCards[i].title,
+			status: "published",
+			column: "In progress",
+		});
+
+		it("keeps every card of a large board and its facts, under the budget", () => {
+			const { result, cards } = boundBoard(REPORT_CARD_PAYLOAD_MAX_BYTES);
+
+			expect(jsonBytes(board.fizzy_get_cards)).toBeGreaterThan(
+				DEFAULT_GATHERED_DATA_MAX_BYTES,
+			);
+			expect(new Set(cards.map((card) => card.id)).size).toBe(TOTAL);
+			expect(cards).toHaveLength(TOTAL);
+			expect(jsonBytes(cards)).toBeLessThanOrEqual(
+				REPORT_CARD_PAYLOAD_MAX_BYTES,
+			);
+			expect(result.recordsDropped).toBe(false);
+			expect(result.data._board_facts).toEqual(board._board_facts);
+			expect(result.data._board_facts).toMatchObject({
+				total: TOTAL,
+				open: OPEN,
+				closed: CLOSED,
+				postponed: NOT_NOW,
+				complete: true,
+			});
+		});
+
+		it("keeps open cards slim and cuts closed and not-now cards first", () => {
+			const { cards } = boundBoard(REPORT_CARD_PAYLOAD_MAX_BYTES);
+
+			expect(cards[0]).toMatchObject({
+				closed: false,
+				postponed: false,
+				last_active_at: "2026-10-01T00:00:00.000Z",
+				tags: ["example-tag"],
+				column: { name: "In progress" },
+				assignees: [{ name: "Example Person" }],
+			});
+			expect(cards[0].url).toBeUndefined();
+			expect(cards[0].description_preview).toBeUndefined();
+			expect(cards[OPEN]).toEqual(steeringOf(OPEN));
+			expect(cards[OPEN + CLOSED]).toEqual(steeringOf(OPEN + CLOSED));
+		});
+
+		it("cuts open cards to steering only after the settled ones", () => {
+			const { result, cards } = boundBoard(450_000);
+
+			expect(cards).toHaveLength(TOTAL);
+			expect(cards[0]).toEqual(steeringOf(0));
+			expect(cards[OPEN]).toEqual(steeringOf(OPEN));
+			expect(result.recordsDropped).toBe(false);
+		});
+
+		it("goes to the minimal rung before giving up a card", () => {
+			const { result, cards } = boundBoard(300_000);
+
+			expect(cards).toHaveLength(TOTAL);
+			expect(cards[0]).toEqual({
+				number: allCards[0].number,
+				title: allCards[0].title,
+			});
+			expect(result.recordsDropped).toBe(false);
+		});
+
+		it("drops tail cards only past the last rung, keeping the facts", () => {
+			const { result, cards } = boundBoard(200_000);
+
+			expect(cards.length).toBeLessThan(TOTAL);
+			expect(cards[0].number).toBe(allCards[0].number);
+			expect(jsonBytes(cards)).toBeLessThanOrEqual(200_000);
+			expect(result.recordsDropped).toBe(true);
+			expect(result.data._board_facts).toEqual(board._board_facts);
+		});
+
+		it("leaves a small board in full detail", () => {
+			const small = { fizzy_get_cards: allCards.slice(0, 50) };
+			const { result } = boundBoard(
+				REPORT_CARD_PAYLOAD_MAX_BYTES,
+				{},
+				small,
+			);
+
+			expect(result.trimmed).toBe(false);
+			expect(result.data).toBe(small);
+		});
+
+		it("applies no card budget unless the caller asks for one", () => {
+			const result = boundGatheredData(board, { maxBytes: 3_000_000 });
+
+			expect(result.trimmed).toBe(false);
+			expect(result.data).toBe(board);
+		});
+
+		it("keeps a fetched card's description on every rung", () => {
+			const text = "d".repeat(2000);
+			const fetchedIds = [0, OPEN, OPEN + CLOSED].map((i) =>
+				String(allCards[i].id),
+			);
+			const withText = {
+				...board,
+				fizzy_get_cards: allCards.map((card) =>
+					fetchedIds.includes(String(card.id)) || card.number === 1500
+						? { ...card, description: text }
+						: card,
+				),
+			};
+			const fetchedCardIds = new Set(fetchedIds);
+
+			// Open cards end up slim, at steering and at minimal.
+			for (const maxCardBytes of [
+				REPORT_CARD_PAYLOAD_MAX_BYTES,
+				450_000,
+				300_000,
+			]) {
+				const { result, cards } = boundBoard(
+					maxCardBytes,
+					{ fetchedCardIds },
+					withText,
+				);
+
+				expect(cards).toHaveLength(TOTAL);
+				expect(result.recordsDropped).toBe(false);
+				for (const i of [0, OPEN, OPEN + CLOSED]) {
+					expect(cards[i].description).toBe(text);
+				}
+				// A listed card with a description is not a fetched one.
+				expect(cards[500].description).toBeUndefined();
+			}
+		});
+
+		it("keeps open cards slim with 20 fetched cards on a large board", () => {
+			const text = "d".repeat(2000);
+			const fetched = allCards.slice(0, 20);
+			const withText = {
+				...board,
+				fizzy_get_cards: allCards.map((card, i) =>
+					i < 20 ? { ...card, description: text } : card,
+				),
+			};
+
+			const { result, cards } = boundBoard(
+				REPORT_CARD_PAYLOAD_MAX_BYTES,
+				{ fetchedCardIds: new Set(fetched.map((c) => String(c.id))) },
+				withText,
+			);
+
+			expect(cards[19].description).toBe(text);
+			expect(cards[20].closed).toBe(false);
+			expect(cards[OPEN]).toEqual(steeringOf(OPEN));
+			expect(jsonBytes(cards)).toBeLessThanOrEqual(
+				REPORT_CARD_PAYLOAD_MAX_BYTES,
+			);
+			expect(result.recordsDropped).toBe(false);
+		});
+
+		it("bounds the total fetched text", () => {
+			const text = "d".repeat(2000);
+			const fetched = Array.from({ length: 30 }, (_, i) => ({
+				id: `card-${i}`,
+				title: `Card ${i}`,
+				description: text,
+			}));
+			expect(fetched.length * text.length).toBeGreaterThan(
+				FETCHED_CARD_TEXT_MAX_BYTES,
+			);
+
+			const { cards } = boundBoard(
+				50_000,
+				{ fetchedCardIds: new Set(fetched.map((card) => card.id)) },
+				{ fizzy_get_cards: fetched },
+			);
+
+			expect(cards).toHaveLength(30);
+			expect(cards[19].description).toBe(text);
+			expect(String(cards[20].description).length).toBeLessThan(300);
+		});
 	});
 
 	it("guarantees finalBytes <= maxBytes for adversarial inputs", () => {

@@ -53,6 +53,23 @@ beforeEach(async () => {
 	});
 });
 describe("hybrid compatibility", () => {
+	it("waits for project-context payload backfills before returning a layout", async () => {
+		await getCollectionLayout("project-contexts", "example-org");
+		for (const field_name of [
+			"documentId",
+			"repositoryIntegrationId",
+			"parentContextId",
+		]) {
+			expect(h.createPayloadIndex).toHaveBeenCalledWith(
+				"project-contexts-org-example-org",
+				{
+					field_name,
+					field_schema: "keyword",
+					wait: true,
+				},
+			);
+		}
+	});
 	it("adds sparse in place without changing unnamed dense configuration", async () => {
 		const layout = await getCollectionLayout(
 			"project-contexts",

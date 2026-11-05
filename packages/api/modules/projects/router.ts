@@ -36,6 +36,12 @@ import {
 	vouchArchitectureDecisionProcedure,
 } from "./procedures/architecture-decisions/crud";
 import {
+	createDecisionFromLivingMemoryProcedure,
+	dismissLivingMemoryDecisionProcedure,
+	listLivingMemoryDecisionCandidatesProcedure,
+	scanLivingMemoryFirstSyncFilesProcedure,
+} from "./procedures/architecture-decisions/living-memory-decisions";
+import {
 	createDecisionFromMeetingProcedure,
 	dismissMeetingDecisionProcedure,
 	listMeetingDecisionCandidatesProcedure,
@@ -1590,6 +1596,12 @@ export const projectsRouter = {
 			list: listMeetingDecisionCandidatesProcedure,
 			createFrom: createDecisionFromMeetingProcedure,
 			dismiss: dismissMeetingDecisionProcedure,
+		},
+		livingMemoryDecisions: {
+			list: listLivingMemoryDecisionCandidatesProcedure,
+			createFrom: createDecisionFromLivingMemoryProcedure,
+			dismiss: dismissLivingMemoryDecisionProcedure,
+			scanFirstSync: scanLivingMemoryFirstSyncFilesProcedure,
 		},
 		types: {
 			list: listDecisionTypesProcedure,

@@ -103,7 +103,10 @@ describe("NOT_FOR_PAGES", () => {
 		"fabric_page_comment_add",
 		"fabric_list_project_pm_assigned_items",
 		"fabric_get_project_pm_item_snapshots",
+		"fabric_list_report_templates",
+		"fabric_create_project_report",
 		"fabric_generate_report",
+		"fabric_update_report_prompt",
 	])("keeps %s from pages", (name) => {
 		expect(NOT_FOR_PAGES.has(name)).toBe(true);
 	});
@@ -118,6 +121,8 @@ describe("NOT_FOR_PAGES", () => {
 		"fabric_page_comment_list",
 		"fabric_list_frame_versions",
 		"fabric_page_read_connected",
+		"fabric_list_project_reports",
+		"fabric_get_report_content",
 	])("leaves %s to pages", (name) => {
 		expect(NOT_FOR_PAGES.has(name)).toBe(false);
 	});

@@ -18,8 +18,10 @@ import {
 } from "@repo/mcp/lib/server-url-guard";
 import { decryptApiKey } from "@repo/utils";
 import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
+import type { McpServerIconEntry } from "@saas/mcp/lib/server-provided-icon";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { recordServerProvidedIcon } from "./record-server-icon";
 
 export const runtime = "nodejs";
 
@@ -56,6 +58,9 @@ interface TestResult {
 		serverInfo?: {
 			name?: string;
 			version?: string;
+			/** The icons the server lists for itself (MCP 2025-06-18). */
+			icons?: McpServerIconEntry[];
+			websiteUrl?: string;
 		};
 		capabilities?: Record<string, unknown>;
 		responseTime?: number;
@@ -131,6 +136,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
 		// If configId is provided, retrieve credentials from the stored config
 		let effectiveInput: TestConnectionInput = input;
+		// The saved custom server whose own icon a successful test may store
+		// (record-server-icon.ts). Set only for a saved config tested at its
+		// configured address, after the caller's access to it is checked.
+		let iconTarget: {
+			mcpServerId: string | null;
+			isSystemProvided: boolean | null;
+			organizationId: string | null;
+		} | null = null;
 		if (input.configId) {
 			try {
 				// Use internal version - authorization is done below based on config ownership
@@ -219,6 +232,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 					!hasRequestCredential
 				) {
 					return savedCredentialUrlMismatchResponse();
+				}
+				if (mayUseStoredCredential) {
+					iconTarget = {
+						mcpServerId: cfg.mcpServer?.id ?? null,
+						isSystemProvided:
+							cfg.mcpServer?.isSystemProvided ?? null,
+						organizationId: cfg.organizationId ?? null,
+					};
 				}
 				if (hasRequestCredential) {
 					// A credential entered for this test belongs to the requested
@@ -392,6 +413,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 				),
 			),
 		]);
+
+		if (result.success && iconTarget) {
+			// Never throws; a failure leaves the icon as it was.
+			await recordServerProvidedIcon({
+				headers: req.headers,
+				user: session.user,
+				session: session.session,
+				...iconTarget,
+				serverUrl: input.baseUrl,
+				icons: result.details?.serverInfo?.icons,
+				websiteUrl: result.details?.serverInfo?.websiteUrl,
+			});
+		}
 
 		return NextResponse.json(result, {
 			status: result.success ? 200 : 400,
@@ -634,6 +668,8 @@ async function testMcpConnection(
 					serverInfo: {
 						name: serverVersion?.name || "MCP Server",
 						version: serverVersion?.version || undefined,
+						icons: serverVersion?.icons,
+						websiteUrl: serverVersion?.websiteUrl,
 					},
 					capabilities: {
 						toolCount: toolNames.length,
@@ -659,6 +695,8 @@ async function testMcpConnection(
 				serverInfo: {
 					name: serverVersion?.name || "MCP Server",
 					version: serverVersion?.version || undefined,
+					icons: serverVersion?.icons,
+					websiteUrl: serverVersion?.websiteUrl,
 				},
 				capabilities: {
 					toolCount: toolNames.length,

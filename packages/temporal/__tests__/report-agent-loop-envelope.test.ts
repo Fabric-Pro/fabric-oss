@@ -27,9 +27,11 @@ import {
 	coerceToolArgs,
 	consolidateIndividualCards,
 	extractPageMeta,
+	fitCardsToContext,
 	mergeToolResult,
 	projectCardForContext,
 } from "../src/activities/template-instance/report-agent-loop";
+import { shrinkToolResultForStorage } from "../src/activities/template-instance/report-card-pages";
 
 type Coverage = {
 	total_count: unknown;
@@ -165,6 +167,7 @@ describe("mergeToolResult — fizzy-mcp 1.1.0 page envelopes", () => {
 			total_count: 611,
 			pages_fetched: [1],
 			has_more_at_last_page: true,
+			complete: false,
 		});
 		// No numbered-suffix key: the envelope was merged, not sidelined.
 		expect(gatheredData.fizzy_get_cards_2).toBeUndefined();
@@ -197,7 +200,48 @@ describe("mergeToolResult — fizzy-mcp 1.1.0 page envelopes", () => {
 			total_count: 611,
 			pages_fetched: [1, 2],
 			has_more_at_last_page: false,
+			complete: true,
 		});
+	});
+
+	it("keeps one coverage entry per listing, so a closed total never replaces the open one", () => {
+		const gatheredData: Record<string, unknown> = {};
+		mergeToolResult(
+			gatheredData,
+			"fizzy_get_cards",
+			{
+				cards: [{ id: "open-1" }],
+				page: 1,
+				total_count: 659,
+				has_more: false,
+				next_page: null,
+			},
+			"fizzy_get_cards",
+		);
+		mergeToolResult(
+			gatheredData,
+			"fizzy_get_cards",
+			{
+				cards: [{ id: "closed-1" }],
+				page: 1,
+				total_count: 1548,
+				has_more: false,
+				next_page: null,
+			},
+			"fizzy_get_cards[indexed_by=closed]",
+		);
+
+		expect(coverageFor(gatheredData, "fizzy_get_cards").total_count).toBe(
+			659,
+		);
+		expect(
+			coverageFor(gatheredData, "fizzy_get_cards[indexed_by=closed]")
+				.total_count,
+		).toBe(1548);
+		expect(gatheredData.fizzy_get_cards).toEqual([
+			{ id: "open-1" },
+			{ id: "closed-1" },
+		]);
 	});
 
 	it("merges a bare array with a later envelope", () => {
@@ -235,7 +279,7 @@ describe("mergeToolResult — fizzy-mcp 1.1.0 page envelopes", () => {
 });
 
 describe("consolidateIndividualCards after envelope normalization", () => {
-	it("merges individual cards into the normalized bulk array without overwriting it", () => {
+	it("merges individual cards into the normalized bulk array, in place for a listed card", () => {
 		const gatheredData: Record<string, unknown> = {};
 		mergeToolResult(gatheredData, "fizzy_get_cards", {
 			cards: [{ id: "a" }, { id: "b" }],
@@ -253,11 +297,68 @@ describe("consolidateIndividualCards after envelope normalization", () => {
 
 		expect(gatheredData.fizzy_get_cards).toEqual([
 			{ id: "a" },
-			{ id: "b" },
+			{ id: "b", extra: 1 },
 			{ id: "c" },
 		]);
 		expect(gatheredData.fizzy_get_card).toBeUndefined();
 		expect(gatheredData.fizzy_get_card_2).toBeUndefined();
+	});
+
+	it("keeps a fetched card's full description over the listing's preview", () => {
+		const gatheredData: Record<string, unknown> = {};
+		const description = "x".repeat(3000);
+		mergeToolResult(
+			gatheredData,
+			"fizzy_get_cards",
+			shrinkToolResultForStorage("fizzy_get_cards", {
+				cards: [
+					{
+						id: "a",
+						title: "Listed",
+						description_preview: "x".repeat(200),
+						column: { id: "column-1", name: "In progress" },
+					},
+				],
+				page: 1,
+				has_more: false,
+			}),
+		);
+		mergeToolResult(
+			gatheredData,
+			"fizzy_get_card",
+			shrinkToolResultForStorage("fizzy_get_card", {
+				id: "a",
+				title: "Listed",
+				description,
+				description_html: `<p>${description}</p>`,
+			}),
+		);
+
+		consolidateIndividualCards(gatheredData);
+
+		expect(gatheredData.fizzy_get_cards).toEqual([
+			{
+				id: "a",
+				title: "Listed",
+				description_preview: "x".repeat(200),
+				description,
+				column: { id: "column-1", name: "In progress" },
+			},
+		]);
+	});
+
+	it("still merges single cards when the run listed none", () => {
+		const gatheredData: Record<string, unknown> = {};
+		mergeToolResult(gatheredData, "fizzy_get_card", { id: "a", v: 1 });
+		mergeToolResult(gatheredData, "fizzy_get_card", { id: "b" });
+		mergeToolResult(gatheredData, "fizzy_get_card", { id: "a", v: 2 });
+
+		consolidateIndividualCards(gatheredData);
+
+		expect(gatheredData.fizzy_get_cards).toEqual([
+			{ id: "a", v: 2 },
+			{ id: "b" },
+		]);
 	});
 });
 
@@ -367,6 +468,62 @@ describe("projectCardForContext", () => {
 			true,
 		);
 		expect(Array.from(projected.description)).toHaveLength(281);
+	});
+});
+
+describe("fitCardsToContext", () => {
+	const projectedCard = (index: number) =>
+		projectCardForContext({
+			id: `card-${index}`,
+			number: index,
+			title: `Card ${index}`,
+			status: "published",
+			closed: false,
+			url: `https://example.com/cards/${index}`,
+			description: "x".repeat(280),
+			column: { id: `column-${index}`, name: "In progress" },
+			assignees: [{ id: "user-1", name: "Example person" }],
+		});
+
+	it("cuts each card to the fields the model steers by", () => {
+		const { cards, omitted } = fitCardsToContext([projectedCard(1)], 12000);
+
+		expect(cards).toEqual([
+			{
+				id: "card-1",
+				number: 1,
+				title: "Card 1",
+				status: "published",
+				column: "In progress",
+			},
+		]);
+		expect(omitted).toBe(0);
+	});
+
+	it("stays under the limit and counts what it left out", () => {
+		const projected = Array.from({ length: 500 }, (_, index) =>
+			projectedCard(index),
+		);
+
+		const { cards, omitted } = fitCardsToContext(projected, 12000);
+
+		expect(JSON.stringify(cards).length).toBeLessThanOrEqual(12000);
+		expect(cards.length).toBeGreaterThan(0);
+		expect(cards.length + omitted).toBe(500);
+		expect(omitted).toBeGreaterThan(0);
+	});
+
+	it("skips a card too large to fit and keeps the ones after it", () => {
+		const { cards, omitted } = fitCardsToContext(
+			[
+				{ id: "too-long", title: "x".repeat(500) },
+				{ id: "short", title: "Short" },
+			],
+			100,
+		);
+
+		expect(cards).toEqual([{ id: "short", title: "Short" }]);
+		expect(omitted).toBe(1);
 	});
 });
 

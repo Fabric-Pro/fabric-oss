@@ -1,6 +1,7 @@
 "use client";
 
 import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
+import type { ReportDataType } from "@repo/database/prisma/queries/lib/report-data-types";
 import {
 	hasProjectKnowledgeSource,
 	type ReportEvidenceConfig,
@@ -12,7 +13,7 @@ import { useActiveOrganization } from "@saas/organizations/hooks/use-active-orga
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import { useReportConnectionTest } from "@saas/reports/hooks/use-report-connection-test";
 import {
-	findMatchingMcpConfigs,
+	findConfigsForSource,
 	getMcpConfigDisplayName,
 	isReportMcpConfigAuthenticated,
 	normalizeKey,
@@ -22,24 +23,26 @@ import {
 	type ReportErrorContext,
 } from "@saas/reports/lib/report-error-messages";
 import { createReportExecutionRequests } from "@saas/reports/lib/report-execution-request";
+import { reportHasConnections } from "@saas/reports/lib/report-owner-connections";
 import { computeReportReadiness } from "@saas/reports/lib/report-readiness";
 import {
 	contextFieldsForProviders,
 	contextWithBoundBoard,
 	parseTemplateDefinition,
 	promptOverrideFields,
+	reportDataSourceLabel,
+	reportProviderLabel,
+	sourceProviderKey,
 	templateSystemPrompt,
 } from "@saas/reports/lib/report-template-definition";
 import {
 	type ReportInstanceTab,
 	resolveActiveReportTab,
 } from "@saas/reports/lib/resolve-active-report-tab";
-import {
-	OPERATION_PARAMS,
-	PROVIDER_CONTEXT_FIELDS,
-} from "@saas/shared/components/DataSourceDefinitionBuilder";
+import { OPERATION_PARAMS } from "@saas/shared/components/DataSourceDefinitionBuilder";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
+import { PROVIDER_CONTEXT_FIELDS } from "@saas/shared/components/provider-context-fields";
 import { TIME_ZONES } from "@saas/shared/lib/time-zones";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -160,7 +163,9 @@ import {
 	type IntegrationType,
 } from "./IntegrationSetupGuide";
 import {
+	CONNECTION_BINDINGS_OWNER_ONLY_MESSAGE,
 	CONNECTIONS_OWNER_ONLY_MESSAGE,
+	CONNECTIONS_ROLE_LOCKED_MESSAGE,
 	OwnerOnlyGenerate,
 } from "./OwnerOnlyGenerate";
 import { ReportArtifactContent } from "./ReportArtifactContent";
@@ -172,6 +177,7 @@ import { ReportSystemPromptCard } from "./ReportSystemPromptCard";
 import { ReportTabContent } from "./ReportTabContent";
 import { ReportTemplatePreview } from "./ReportTemplatePreview";
 import { RunDiagnosticsPanel } from "./RunDiagnosticsPanel";
+import { SaveReportConfigurationMenu } from "./SaveReportConfigurationMenu";
 import { SendArtifactEmailDialog } from "./SendArtifactEmailDialog";
 import {
 	type ParameterSchema,
@@ -188,6 +194,7 @@ type RequiredDataSource = {
 	name: string;
 	description?: string;
 	required: boolean;
+	dataType?: ReportDataType;
 };
 
 type ConnectionBinding = {
@@ -273,7 +280,11 @@ export function TemplateInstanceDetail({
 		: (organizationId ?? null); // Loading: use page context (convert undefined to null)
 
 	// Fetch user's MCP configs and integrations for editing
-	const { data: mcpConfigsData } = useQuery(
+	const {
+		data: mcpConfigsData,
+		isError: mcpConfigsFailed,
+		refetch: refetchMcpConfigs,
+	} = useQuery(
 		orpc.mcp.configs.list.queryOptions({
 			input: { organizationId: instanceOrgId },
 		}),
@@ -1162,12 +1173,14 @@ export function TemplateInstanceDetail({
 	const requiredMcpServers = (templateConnections?.mcpServers || []).map(
 		(ds) => ({
 			...ds,
+			name: reportProviderLabel(ds.name || ds.key),
 			sourceType: "mcp" as const,
 		}),
 	);
 	const requiredIntegrations = (templateConnections?.integrations || []).map(
 		(ds) => ({
 			...ds,
+			name: reportProviderLabel(ds.name || ds.key),
 			sourceType: "integration" as const,
 		}),
 	);
@@ -1250,6 +1263,7 @@ export function TemplateInstanceDetail({
 			key?: string | null;
 			name?: string | null;
 			category?: string | null;
+			tags?: string[] | null;
 		} | null;
 	};
 
@@ -1258,10 +1272,28 @@ export function TemplateInstanceDetail({
 	const isMcpConfigAuthenticated = (config: McpConfigItem): boolean =>
 		isReportMcpConfigAuthenticated(config, gitlabStatus?.state);
 
-	// Find matching MCP configs for a required key (using shared utility)
-	const getMatchingMcpConfigs = (key: string) => {
-		return findMatchingMcpConfigs(userMcpConfigs as McpConfigItem[], key);
+	// Find matching MCP configs for a required source (using shared utility):
+	// a generic source's data type, otherwise its key names the provider.
+	const getMatchingMcpConfigs = (source: RequiredDataSource) => {
+		return findConfigsForSource(
+			userMcpConfigs as McpConfigItem[],
+			source.dataType
+				? { dataType: source.dataType }
+				: { provider: source.key },
+		);
 	};
+
+	// The provider whose context fields a source asks for: its key, or for a
+	// generic source the tool bound to it.
+	const contextProviderKey = (source: RequiredDataSource) =>
+		source.dataType
+			? sourceProviderKey(
+					{},
+					(userMcpConfigs as McpConfigItem[]).find(
+						(config) => config.id === bindings[source.key]?.id,
+					),
+				)
+			: source.key;
 
 	// Every connected server, for the report suite's all-tools view.
 	const categorizedMcpConfigs = (): CategorizedConnection[] => {
@@ -1333,6 +1365,14 @@ export function TemplateInstanceDetail({
 	// A viewer who may read this report but not change it; the server refuses
 	// their edits whether or not the report suite is on.
 	const readOnly = !instance.canEdit;
+	const viewerOwnsReport = instance.userId === user?.id;
+	// What the connections read stays the owner's on a connected report; the
+	// server refuses those edits from anyone else, prompts stay editable.
+	const connectionsReadOnly =
+		!viewerOwnsReport && reportHasConnections(instance.connections);
+	// A schedule spends the owner's connections and credits, so editing a report
+	// does not by itself allow changing when it runs.
+	const scheduleLocked = !instance.canManageLifecycle;
 
 	// ── Readiness model ────────────────────────────────────────────────────────
 	// One source of truth behind the issue banner, the connection status pill and
@@ -1363,6 +1403,10 @@ export function TemplateInstanceDetail({
 		hasProjectKnowledgeSource(instance.template.definition) &&
 		!!readReportEvidenceConfig(instance.fabricConfig)?.projectId &&
 		!instance.setupRequiredReason;
+	// A test is for someone who can act on its answer: an editor, or the owner,
+	// whose connections the report runs on. The server refuses anyone else.
+	const showConnectionTest =
+		!projectKnowledgeSelected && (!readOnly || instance.canGenerate);
 	// A board picked on the data source tile counts as the Board ID field.
 	const readinessContext = contextWithBoundBoard(contextValues, bindings);
 	const sourceReadiness = computeReportReadiness({
@@ -1400,7 +1444,7 @@ export function TemplateInstanceDetail({
 			? contextFieldsForProviders(
 					requiredDataSources
 						.filter((d) => d.required || bindings[d.key]?.id)
-						.map((d) => d.key),
+						.flatMap((d) => contextProviderKey(d) ?? []),
 					PROVIDER_CONTEXT_FIELDS,
 				)
 					.filter((field) => field.required)
@@ -1453,6 +1497,7 @@ export function TemplateInstanceDetail({
 				onScrollToConnection={scrollToConnection}
 				onScrollToParams={scrollToParameters}
 				reconnectHref={mcpSettingsUrl}
+				readOnly={readOnly}
 			/>
 
 			{/* Header */}
@@ -1482,7 +1527,10 @@ export function TemplateInstanceDetail({
 							Save Changes
 						</Button>
 					)}
-					<OwnerOnlyGenerate canGenerate={instance.canGenerate}>
+					<OwnerOnlyGenerate
+						canGenerate={instance.canGenerate}
+						viewerIsOwner={viewerOwnsReport}
+					>
 						{(ownerOnlyId) => (
 							<Button
 								onClick={handleExecute}
@@ -1514,7 +1562,7 @@ export function TemplateInstanceDetail({
 						)}
 					</OwnerOnlyGenerate>
 					{/* The report suite keeps this in the readiness rail only. */}
-					{!reportSuite && !projectKnowledgeSelected && (
+					{!reportSuite && showConnectionTest && (
 						<Button
 							variant="outline"
 							size="sm"
@@ -1524,7 +1572,7 @@ export function TemplateInstanceDetail({
 							Test connections
 						</Button>
 					)}
-					{!readOnly && (
+					{instance.canDelete && (
 						<DeleteReportInstanceButton
 							instanceName={instance.name}
 							onDelete={handleDelete}
@@ -1687,13 +1735,9 @@ export function TemplateInstanceDetail({
 																variant="secondary"
 																className="text-xs"
 															>
-																{ds.type ===
-																"integration"
-																	? `${ds.provider || ds.id} API`
-																	: ds.type ===
-																			"mcp"
-																		? `${(ds.config?.mcpServerKey as string) || "MCP"} → ${(ds.config?.toolName as string) || ds.id}`
-																		: ds.id}
+																{reportDataSourceLabel(
+																	ds,
+																)}
 															</Badge>
 														),
 													)}
@@ -1752,6 +1796,16 @@ export function TemplateInstanceDetail({
 									customTasks={customAiTasks}
 									onCustomTaskChange={handleCustomTaskChange}
 									readOnly={readOnly}
+									refine={{ organizationId: instanceOrgId }}
+									actions={
+										!hasChanges &&
+										!readOnly && (
+											<SaveReportConfigurationMenu
+												report={instance}
+												onSaved={() => void refetch()}
+											/>
+										)
+									}
 								/>
 							)}
 							{reportSuite && (
@@ -1762,6 +1816,7 @@ export function TemplateInstanceDetail({
 									)}
 									onChange={handleSystemPromptChange}
 									readOnly={readOnly}
+									refine={{ organizationId: instanceOrgId }}
 								/>
 							)}
 
@@ -1903,10 +1958,18 @@ export function TemplateInstanceDetail({
 									<CardDescription>
 										Control when this report runs
 										automatically
+										{scheduleLocked && (
+											<span className="mt-1 block">
+												You can’t change this, because
+												scheduled runs spend the owner’s
+												connections and credits.
+											</span>
+										)}
 									</CardDescription>
 								</CardHeader>
 								<CardContent className="space-y-4">
 									<RadioGroup
+										disabled={scheduleLocked}
 										value={scheduleMode}
 										onValueChange={(v) => {
 											setScheduleMode(v as ScheduleMode);
@@ -1964,6 +2027,7 @@ export function TemplateInstanceDetail({
 													Frequency
 												</Label>
 												<Select
+													disabled={scheduleLocked}
 													value={scheduleFrequency}
 													onValueChange={(v) => {
 														setScheduleFrequency(
@@ -2010,6 +2074,9 @@ export function TemplateInstanceDetail({
 														Day of week
 													</Label>
 													<Select
+														disabled={
+															scheduleLocked
+														}
 														value={String(
 															scheduleDayOfWeek,
 														)}
@@ -2064,6 +2131,9 @@ export function TemplateInstanceDetail({
 														Day of month
 													</Label>
 													<Select
+														disabled={
+															scheduleLocked
+														}
 														value={String(
 															scheduleDayOfMonth,
 														)}
@@ -2112,6 +2182,9 @@ export function TemplateInstanceDetail({
 													</Label>
 													<Input
 														id="schedule-hour"
+														disabled={
+															scheduleLocked
+														}
 														type="number"
 														min={0}
 														max={23}
@@ -2147,6 +2220,9 @@ export function TemplateInstanceDetail({
 													</Label>
 													<Input
 														id="schedule-minute"
+														disabled={
+															scheduleLocked
+														}
 														type="number"
 														min={0}
 														max={59}
@@ -2190,6 +2266,9 @@ export function TemplateInstanceDetail({
 												>
 													<PopoverTrigger asChild>
 														<Button
+															disabled={
+																scheduleLocked
+															}
 															variant="outline"
 															role="combobox"
 															aria-expanded={
@@ -2945,14 +3024,19 @@ export function TemplateInstanceDetail({
 											Connect your data sources to this
 											report
 										</CardDescription>
+										{connectionsReadOnly && (
+											<p className="text-xs text-muted-foreground">
+												{
+													CONNECTION_BINDINGS_OWNER_ONLY_MESSAGE
+												}
+											</p>
+										)}
 									</CardHeader>
 									<CardContent>
 										<DataSourceConfigGrid>
 											{requiredDataSources.map((req) => {
 												const matchingMcp =
-													getMatchingMcpConfigs(
-														req.key,
-													);
+													getMatchingMcpConfigs(req);
 												const matchingIntegrations =
 													findMatchingIntegrations(
 														req.key,
@@ -3086,7 +3170,9 @@ export function TemplateInstanceDetail({
 												// Get context fields for this data source's provider
 												const providerContextFields =
 													PROVIDER_CONTEXT_FIELDS[
-														req.key
+														contextProviderKey(
+															req,
+														) ?? ""
 													] || [];
 
 												return (
@@ -3121,7 +3207,8 @@ export function TemplateInstanceDetail({
 																reportSuite &&
 																!isIntegrationSource
 																	? connectionGroupsForSource(
-																			req.key,
+																			req.dataType ??
+																				req.key,
 																			connectionOptions,
 																			categorizedMcpConfigs(),
 																		)
@@ -3129,6 +3216,17 @@ export function TemplateInstanceDetail({
 															}
 															connectHref={
 																mcpSettingsUrl
+															}
+															connectionsState={
+																mcpConfigsData !==
+																undefined
+																	? "answered"
+																	: mcpConfigsFailed
+																		? "failed"
+																		: "loading"
+															}
+															onRetryConnections={() =>
+																void refetchMcpConfigs()
 															}
 															resources={
 																resourceOptions
@@ -3139,7 +3237,9 @@ export function TemplateInstanceDetail({
 															connectionLockedReason={
 																instance.canGenerate
 																	? undefined
-																	: CONNECTIONS_OWNER_ONLY_MESSAGE
+																	: viewerOwnsReport
+																		? CONNECTIONS_ROLE_LOCKED_MESSAGE
+																		: CONNECTIONS_OWNER_ONLY_MESSAGE
 															}
 															onConnectionChange={(
 																connectionId,
@@ -3245,7 +3345,12 @@ export function TemplateInstanceDetail({
 																	the right
 																	data
 																</p>
-																<div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+																<fieldset
+																	disabled={
+																		connectionsReadOnly
+																	}
+																	className="m-0 grid min-w-0 grid-cols-1 gap-3 border-0 p-0 md:grid-cols-2"
+																>
 																	{providerContextFields.map(
 																		(
 																			field,
@@ -3288,7 +3393,7 @@ export function TemplateInstanceDetail({
 																			/>
 																		),
 																	)}
-																</div>
+																</fieldset>
 															</div>
 														)}
 													</div>
@@ -3331,100 +3436,114 @@ export function TemplateInstanceDetail({
 												each data source operation
 												(e.g., project, team, sprint)
 											</CardDescription>
+											{connectionsReadOnly && (
+												<p className="text-xs text-muted-foreground">
+													{
+														CONNECTION_BINDINGS_OWNER_ONLY_MESSAGE
+													}
+												</p>
+											)}
 										</CardHeader>
-										<CardContent className="space-y-6">
-											{definition.dataSources
-												.filter(
-													(ds) =>
-														ds.operation &&
-														OPERATION_PARAMS[
-															ds.operation
-														]?.length > 0,
-												)
-												.map((ds) => {
-													const params =
-														OPERATION_PARAMS[
-															// biome-ignore lint/style/noNonNullAssertion: operation is guaranteed by filter above
-															ds.operation!
-														] || [];
-													const dsParams =
-														dataSourceParams[
-															ds.id
-														] || {};
+										<CardContent>
+											<fieldset
+												disabled={connectionsReadOnly}
+												className="m-0 min-w-0 space-y-6 border-0 p-0"
+											>
+												{definition.dataSources
+													.filter(
+														(ds) =>
+															ds.operation &&
+															OPERATION_PARAMS[
+																ds.operation
+															]?.length > 0,
+													)
+													.map((ds) => {
+														const params =
+															OPERATION_PARAMS[
+																// biome-ignore lint/style/noNonNullAssertion: operation is guaranteed by filter above
+																ds.operation!
+															] || [];
+														const dsParams =
+															dataSourceParams[
+																ds.id
+															] || {};
 
-													return (
-														<div
-															key={ds.id}
-															className="space-y-3"
-														>
-															<div className="flex items-center gap-2">
-																<Badge
-																	variant="secondary"
-																	className="text-xs"
-																>
-																	{ds.provider ||
-																		"MCP"}
-																</Badge>
-																<span className="text-sm font-medium">
-																	{ds.operation?.replace(
-																		/_/g,
-																		" ",
-																	)}
-																</span>
-															</div>
-															<div className="grid grid-cols-1 md:grid-cols-2 gap-4 pl-4 border-l-2 border-muted">
-																{params.map(
-																	(param) => (
-																		<div
-																			key={
-																				param.key
-																			}
-																			className="space-y-1"
-																		>
-																			<Label
-																				htmlFor={`${ds.id}-${param.key}`}
-																				className="text-sm"
+														return (
+															<div
+																key={ds.id}
+																className="space-y-3"
+															>
+																<div className="flex items-center gap-2">
+																	<Badge
+																		variant="secondary"
+																		className="text-xs"
+																	>
+																		{ds.provider ||
+																			"MCP"}
+																	</Badge>
+																	<span className="text-sm font-medium">
+																		{ds.operation?.replace(
+																			/_/g,
+																			" ",
+																		)}
+																	</span>
+																</div>
+																<div className="grid grid-cols-1 md:grid-cols-2 gap-4 pl-4 border-l-2 border-muted">
+																	{params.map(
+																		(
+																			param,
+																		) => (
+																			<div
+																				key={
+																					param.key
+																				}
+																				className="space-y-1"
 																			>
-																				{
-																					param.label
-																				}
-																				{param.required && (
-																					<span className="text-destructive ml-1">
-																						*
-																					</span>
-																				)}
-																			</Label>
-																			<Input
-																				id={`${ds.id}-${param.key}`}
-																				value={
-																					dsParams[
-																						param
-																							.key
-																					] ||
-																					""
-																				}
-																				onChange={(
-																					e,
-																				) =>
-																					handleDataSourceParamChange(
-																						ds.id,
-																						param.key,
-																						e
-																							.target
-																							.value,
-																					)
-																				}
-																				placeholder={
-																					param.placeholder
-																				}
-																			/>
-																		</div>
-																	),
-																)}
+																				<Label
+																					htmlFor={`${ds.id}-${param.key}`}
+																					className="text-sm"
+																				>
+																					{
+																						param.label
+																					}
+																					{param.required && (
+																						<span className="text-destructive ml-1">
+																							*
+																						</span>
+																					)}
+																				</Label>
+																				<Input
+																					id={`${ds.id}-${param.key}`}
+																					value={
+																						dsParams[
+																							param
+																								.key
+																						] ||
+																						""
+																					}
+																					onChange={(
+																						e,
+																					) =>
+																						handleDataSourceParamChange(
+																							ds.id,
+																							param.key,
+																							e
+																								.target
+																								.value,
+																						)
+																					}
+																					placeholder={
+																						param.placeholder
+																					}
+																				/>
+																			</div>
+																		),
+																	)}
+																</div>
 															</div>
-														</div>
-													);
-												})}
+														);
+													})}
+											</fieldset>
 										</CardContent>
 									</Card>
 								)}
@@ -3700,21 +3819,8 @@ export function TemplateInstanceDetail({
 																		}
 																	</Badge>
 																	<span className="text-sm">
-																		{ds.type ===
-																		"mcp" ? (
-																			<>
-																				{(ds
-																					.config
-																					?.mcpServerKey as string) ||
-																					"MCP"}{" "}
-																				→{" "}
-																				{(ds
-																					.config
-																					?.toolName as string) ||
-																					ds.id}
-																			</>
-																		) : (
-																			ds.id
+																		{reportDataSourceLabel(
+																			ds,
 																		)}
 																	</span>
 																</div>
@@ -3996,7 +4102,9 @@ export function TemplateInstanceDetail({
 											<p className="text-sm text-muted-foreground text-center py-8">
 												{instance.canGenerate
 													? 'No executions yet. Click "Generate Report" to create your first report.'
-													: "No reports yet. The report's owner can generate it."}
+													: viewerOwnsReport
+														? "No reports yet. Your role on this project does not let you generate one."
+														: "No reports yet. The report's owner can generate it."}
 											</p>
 											{reportSuite &&
 												instance.projectId && (
@@ -4022,9 +4130,10 @@ export function TemplateInstanceDetail({
 						readiness={reportReadiness}
 						onGenerate={handleExecute}
 						canGenerate={instance.canGenerate}
+						viewerIsOwner={viewerOwnsReport}
 						isGenerating={executeMutation.isPending}
 						onTest={testConnections.test}
-						showConnectionTest={!projectKnowledgeSelected}
+						showConnectionTest={showConnectionTest}
 						isTesting={testConnections.isPending}
 						latestExecution={latestExecution}
 						executionCount={

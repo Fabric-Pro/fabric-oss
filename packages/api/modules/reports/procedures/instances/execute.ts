@@ -7,11 +7,12 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { assertReportPermission } from "../../lib/report-access";
 import {
 	loadGeneratableReport,
-	ReportGenerationError,
 	startReportGeneration,
 } from "../../lib/report-generation";
+import { ReportGenerationError } from "../../lib/report-refusal";
 
 const executeInstanceInputSchema = z.object({
 	instanceId: z.string(),
@@ -21,9 +22,13 @@ const executeInstanceInputSchema = z.object({
 	idempotencyKey: z.string().uuid().optional(),
 });
 
+// The middleware only admits members: the handler asks for `REPORT_EXECUTE`, which
+// a platform admin holds in any organization they belong to. Who may start a run
+// is still the report's owner alone, while the project role allows it
+// (`loadGeneratableReport`).
 export const executeInstanceProcedure = tenantProtectedProcedure
 	.use(
-		requireInputOrgPermission(Permissions.REPORT_EXECUTE, {
+		requireInputOrgPermission(Permissions.REPORT_READ, {
 			requireOrganization: true,
 		}),
 	)
@@ -39,6 +44,11 @@ export const executeInstanceProcedure = tenantProtectedProcedure
 				message: "An organization is required",
 			});
 		}
+		await assertReportPermission(
+			organizationId,
+			context.user,
+			Permissions.REPORT_EXECUTE,
+		);
 
 		try {
 			const instance = await loadGeneratableReport(

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { ORPCError } from "@orpc/server";
 import {
 	assertPublicReportParameters,
@@ -21,8 +22,18 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { assertCanEditReportInstance } from "../../lib/report-access";
-import { validateReportConnections } from "../../lib/validate-connections";
+import {
+	assertCanEditReportInstance,
+	canManageReportLifecycle,
+} from "../../lib/report-access";
+import {
+	type ReportDataSourceMeta,
+	validateReportConnections,
+} from "../../lib/validate-connections";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 export const updateInstanceInputSchema = z.object({
 	id: z.string(),
@@ -97,8 +108,59 @@ export const updateInstanceInputSchema = z.object({
 	createNewVersion: z.boolean().default(false),
 });
 
+/** A binding's stored form as the input schema reads it, an absent one being empty. */
+function comparableBinding(value: unknown): unknown {
+	if (!isRecord(value)) {
+		return {};
+	}
+	return Object.fromEntries(
+		Object.entries(value).flatMap(([key, entry]) => {
+			if (isRecord(entry)) {
+				return [[key, comparableBinding(entry)]];
+			}
+			const text =
+				entry === null || entry === undefined ? "" : String(entry);
+			return text.trim() ? [[key, text.trim()]] : [];
+		}),
+	);
+}
+
+/**
+ * Whether an edit changes what a connected report's owner connections read. A
+ * resent stored value changes nothing, whichever way the page normalized it. A
+ * report with no connection has nothing of the owner's to repoint.
+ */
+function repointsOwnerConnections(
+	stored: unknown,
+	next: Record<string, unknown>,
+): boolean {
+	const current = isRecord(stored) ? stored : {};
+	const connected = [
+		current.mcpConfigs,
+		current.mcpBindings,
+		current.integrations,
+		current.integrationBindings,
+	].some((bound) =>
+		Array.isArray(bound)
+			? bound.length > 0
+			: isRecord(bound) && Object.keys(bound).length > 0,
+	);
+	return (
+		connected &&
+		["context", "resourceBindings", "parameterBindings"].some(
+			(field) =>
+				!isDeepStrictEqual(
+					comparableBinding(current[field]),
+					comparableBinding(next[field]),
+				),
+		)
+	);
+}
+
+// The middleware only admits members: `assertCanEditReportInstance` decides per
+// report, since a project Editor who is an organization Viewer may edit theirs.
 export const updateInstanceProcedure = tenantProtectedProcedure
-	.use(requireInputOrgPermission(Permissions.REPORT_UPDATE))
+	.use(requireInputOrgPermission(Permissions.REPORT_READ))
 	.input(updateInstanceInputSchema)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolveOrganizationId(
@@ -126,6 +188,24 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 				message: "An organization is required",
 			});
 		}
+		// Editing a report does not take over when it runs or whether it exists:
+		// a schedule spends the owner's connections and credits, a status starts
+		// or stops its scheduled runs, and `instances.archive` and
+		// `instances.restore` have stricter gates. A new version comes out active,
+		// so it counts as switching the report on.
+		if (
+			(input.scheduleUpdate !== undefined ||
+				input.isActive !== undefined ||
+				input.createNewVersion ||
+				(input.status !== undefined &&
+					input.status !== existing.status)) &&
+			!(await canManageReportLifecycle(existing, context.user))
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message:
+					"Your organization role can edit this report, but not schedule, switch on, archive or restore it",
+			});
+		}
 		assertPublicReportParameters(input.parameterDefaults);
 		const originalReporting = readReportEvidenceConfig(
 			existing.fabricConfig,
@@ -141,13 +221,19 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			});
 		}
 
+		const storedFabricConfig = existing.fabricConfig as Record<
+			string,
+			unknown
+		> | null;
 		const mergedFabricConfig = input.fabricConfig
 			? {
-					...(existing.fabricConfig as Record<
-						string,
-						unknown
-					> | null),
+					...storedFabricConfig,
 					...input.fabricConfig,
+					// An explicit `undefined` must not drop the audience locked above.
+					...(input.fabricConfig.reporting === undefined &&
+					storedFabricConfig?.reporting !== undefined
+						? { reporting: storedFabricConfig.reporting }
+						: {}),
 				}
 			: undefined;
 		if (
@@ -183,6 +269,16 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 		) {
 			throw new ORPCError("BAD_REQUEST", { message: setupReason });
 		}
+		if (
+			input.connections &&
+			existing.userId !== context.user.id &&
+			repointsOwnerConnections(existing.connections, input.connections)
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message:
+					"Only the report's owner can change what its connections read: the board or resource, the data source parameters and the context. You can still edit its prompts.",
+			});
+		}
 
 		// Validate connections if provided. Pass the template's data sources so a
 		// binding keyed by a data source id (e.g. "task-board") can self-heal via
@@ -190,11 +286,7 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 		if (input.connections) {
 			const templateDataSources = (
 				existing.template?.definition as {
-					dataSources?: Array<{
-						id?: string;
-						key?: string;
-						provider?: string;
-					}>;
+					dataSources?: ReportDataSourceMeta[];
 				} | null
 			)?.dataSources;
 			const validation = await validateReportConnections(

@@ -26,6 +26,7 @@ import {
 } from "@temporalio/workflow";
 import type * as slackHuddleIngestActivities from "../activities/slack-channel-monitor/ingest-huddle-notes";
 import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
+import { resolveIdleMonitorAction } from "./lib/idle-monitor";
 
 // =============================================================================
 // Types
@@ -133,6 +134,13 @@ export async function slackHuddleIngestWorkflow(
 			progress = { ...progress, isRunning: false, channelsChecked: 0 };
 			if (isOneShot) {
 				break;
+			}
+			const idleAction = await resolveIdleMonitorAction(projectId);
+			if (idleAction === "end") {
+				break;
+			}
+			if (idleAction === "continue-as-new") {
+				await continueAsNew<typeof slackHuddleIngestWorkflow>(input);
 			}
 			continue;
 		}

@@ -12,6 +12,7 @@ import {
 import { Label } from "@ui/components/label";
 import { RotateCcwIcon } from "lucide-react";
 import { useState } from "react";
+import { RefinePromptButton } from "./RefinePromptButton";
 import { PromptText } from "./ReportPromptCard";
 
 type Props = {
@@ -21,6 +22,8 @@ type Props = {
 	templateSystemPrompt: string | undefined;
 	onChange: (value: string) => void;
 	readOnly: boolean;
+	/** Offers "Refine with AI", in this organization's context. */
+	refine?: { organizationId: string | null };
 };
 
 /**
@@ -33,6 +36,7 @@ export function ReportSystemPromptCard({
 	templateSystemPrompt,
 	onChange,
 	readOnly,
+	refine,
 }: Props) {
 	const templatePrompt = templateSystemPrompt?.trim() ?? "";
 	const isCustomized = customSystemPrompt.trim().length > 0;
@@ -41,6 +45,8 @@ export function ReportSystemPromptCard({
 	const [editing, setEditing] = useState<string | null>(null);
 	const value =
 		editing ?? (isCustomized ? customSystemPrompt : templatePrompt);
+	const change = (next: string) =>
+		onChange(next.trim() === templatePrompt ? "" : next);
 
 	return (
 		<Card>
@@ -61,27 +67,38 @@ export function ReportSystemPromptCard({
 							Customized
 						</Badge>
 					)}
-					{isCustomized && !readOnly && (
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							className="ml-auto h-7 text-xs"
-							onClick={() => onChange("")}
-						>
-							<RotateCcwIcon className="mr-1 h-3 w-3" />
-							{templatePrompt
-								? "Reset to template"
-								: "Use built-in instructions"}
-						</Button>
-					)}
+					<div className="ml-auto flex items-center gap-1">
+						{refine && !readOnly && (
+							<RefinePromptButton
+								id="report-system-prompt"
+								label="System prompt"
+								content={value}
+								organizationId={refine.organizationId}
+								onApply={change}
+							/>
+						)}
+						{isCustomized && !readOnly && (
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								className="h-7 text-xs"
+								onClick={() => onChange("")}
+							>
+								<RotateCcwIcon className="mr-1 h-3 w-3" />
+								{templatePrompt
+									? "Reset to template"
+									: "Use built-in instructions"}
+							</Button>
+						)}
+					</div>
 				</div>
 				<PromptText
 					id="report-system-prompt"
 					value={value}
 					onChange={(next) => {
 						setEditing(next);
-						onChange(next.trim() === templatePrompt ? "" : next);
+						change(next);
 					}}
 					onBlur={() => setEditing(null)}
 					readOnly={readOnly}

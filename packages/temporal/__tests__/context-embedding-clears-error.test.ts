@@ -81,6 +81,12 @@ vi.mock("../src/activities/lib/activity-logger", () => ({
 	activityLogger: mockActivityLogger,
 }));
 
+// Decision extraction is started after a successful embed; it never throws
+// and has no bearing on the status write pinned here.
+vi.mock("../src/activities/lib/living-memory-decision-start", () => ({
+	startLivingMemoryDecisionExtraction: vi.fn(async () => "not_eligible"),
+}));
+
 import { embedSingleContextActivity } from "../src/activities/context-embedding";
 
 const baseInput = {

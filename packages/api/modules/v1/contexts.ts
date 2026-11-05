@@ -4,6 +4,8 @@
  *   PUT    /projects/:projectId/contexts/synced-files   push one text file by its path
  *                                                      (or move it, `movedFromSourcePath`)
  *   DELETE /projects/:projectId/contexts/synced-files   delete one, in the version named
+ *   POST   /projects/:projectId/contexts/synced-files/missing
+ *                                                      which of the paths named hold no file
  *   POST   /projects/:projectId/contexts/reset          delete every synced file at once
  *
  * The key-backed twin of `projects.contexts.upsertSyncedFile`. That procedure
@@ -104,6 +106,16 @@ const MAX_SYNCED_FILE_BODY_BYTES = 6 * MAX_SYNCED_CONTEXT_BYTES + 64 * 1024;
  */
 const MAX_SYNCED_FILE_DELETE_BODY_BYTES = 16 * 1024;
 
+/** The most paths one missing-files check answers for. */
+const MAX_MISSING_CHECK_PATHS = 500;
+
+/** The longest path a server stores (`normalizeContextSourcePath`). */
+const MAX_STORED_SOURCE_PATH_LENGTH = 512;
+
+/** Every path at its longest, escaped to six bytes a character, plus punctuation. */
+const MAX_MISSING_CHECK_BODY_BYTES =
+	MAX_MISSING_CHECK_PATHS * (6 * MAX_STORED_SOURCE_PATH_LENGTH + 8) + 1024;
+
 /** What the object-level gate asks of the key's creator, per method. */
 export interface RequiredContextPermission {
 	permission:
@@ -125,6 +137,11 @@ const PUSH_PERMISSION: RequiredContextPermission = {
 const DELETE_PERMISSION: RequiredContextPermission = {
 	permission: Permissions.CONTEXT_DELETE,
 	refusal: "No permission to delete context sources from this project",
+};
+
+const READ_PERMISSION: RequiredContextPermission = {
+	permission: Permissions.CONTEXT_READ,
+	refusal: "No permission to read context sources in this project",
 };
 
 type ResolvedProject =
@@ -356,6 +373,39 @@ function readSyncedFileDeleteBody(
 		sourcePath: raw.sourcePath,
 		expectedContentHash: raw.expectedContentHash,
 	};
+}
+
+/** A missing-files check's body, shaped, or why it is not. */
+function readMissingCheckBody(
+	body: unknown,
+): { sourcePaths: string[] } | { error: string } {
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		return { error: "Body must be a JSON object." };
+	}
+	const { sourcePaths } = body as { sourcePaths?: unknown };
+	if (
+		!Array.isArray(sourcePaths) ||
+		sourcePaths.length === 0 ||
+		sourcePaths.length > MAX_MISSING_CHECK_PATHS
+	) {
+		return {
+			error: `sourcePaths is required: an array of 1 to ${MAX_MISSING_CHECK_PATHS} paths.`,
+		};
+	}
+	const paths: string[] = [];
+	for (const sourcePath of sourcePaths) {
+		if (
+			typeof sourcePath !== "string" ||
+			sourcePath.length === 0 ||
+			sourcePath.length > MAX_STORED_SOURCE_PATH_LENGTH
+		) {
+			return {
+				error: `Each path in sourcePaths must be a string of 1 to ${MAX_STORED_SOURCE_PATH_LENGTH} characters.`,
+			};
+		}
+		paths.push(sourcePath);
+	}
+	return { sourcePaths: paths };
 }
 
 /**
@@ -658,6 +708,83 @@ export function registerContextRoutes(
 			}
 
 			return c.json(ok(result));
+		},
+	);
+
+	/**
+	 * POST /projects/:projectId/contexts/synced-files/missing
+	 *
+	 * Body `{ sourcePaths }`, at most 500 paths as they are stored. Answers 200
+	 * `{ data: { missing } }`: the paths named that hold no file in this
+	 * project, in the order they were sent. It writes nothing. A POST so the
+	 * paths stay out of the URL and out of access logs.
+	 *
+	 * `fabric context push` asks this about files its lock records as pushed,
+	 * since it sends nothing for those: without it, a folder whose files were
+	 * removed by a reset reports them unchanged for as long as they stay
+	 * unchanged here. `projects:write`, as a push needs, so a key that can push
+	 * can always ask; the permission is the creator's live `CONTEXT_READ`.
+	 */
+	app.post(
+		"/projects/:projectId/contexts/synced-files/missing",
+		requireScope("projects:write"),
+		bodyLimit({
+			maxSize: MAX_MISSING_CHECK_BODY_BYTES,
+			onError: (c) =>
+				c.json(
+					{
+						error: `Request body is too large: at most ${MAX_MISSING_CHECK_BODY_BYTES} bytes, for ${MAX_MISSING_CHECK_PATHS} paths.`,
+					},
+					413,
+				),
+		}),
+		async (c) => {
+			const apiCtx = c.get("externalApiContext");
+			const projectId = c.req.param("projectId");
+			if (!projectId) {
+				return c.json(badRequest("projectId is required"), 400);
+			}
+
+			let rawBody: unknown;
+			try {
+				rawBody = await c.req.json();
+			} catch {
+				return c.json(badRequest("Invalid JSON body"), 400);
+			}
+			const body = readMissingCheckBody(rawBody);
+			if ("error" in body) {
+				return c.json(badRequest(body.error), 400);
+			}
+
+			const resolved = await resolveContextProject(
+				projectId,
+				apiCtx,
+				{
+					org: c.req.query("org"),
+					personal: c.req.query("personal") === "1",
+				},
+				READ_PERMISSION,
+			);
+			if ("error" in resolved) {
+				return c.json({ error: resolved.error }, resolved.status);
+			}
+
+			const stored = await db.projectContext.findMany({
+				where: {
+					projectId,
+					organizationId: resolved.organizationId,
+					sourcePath: { in: body.sourcePaths },
+				},
+				select: { sourcePath: true },
+			});
+			const present = new Set(stored.map((row) => row.sourcePath));
+			return c.json(
+				ok({
+					missing: body.sourcePaths.filter(
+						(sourcePath) => !present.has(sourcePath),
+					),
+				}),
+			);
 		},
 	);
 

@@ -68,6 +68,8 @@ export function buildSyncedContextCreateData(input: {
 	repositorySyncId?: string;
 	/** The git blob the content was read from; only the repository sync's writer knows it. */
 	sourceBlobOid?: string;
+	/** A repository's first sync: this version is not read for decisions. */
+	skipDecisionScan?: boolean;
 	now: Date;
 }) {
 	return {
@@ -85,6 +87,9 @@ export function buildSyncedContextCreateData(input: {
 			? { repositorySyncId: input.repositorySyncId }
 			: {}),
 		...(input.sourceBlobOid ? { sourceBlobOid: input.sourceBlobOid } : {}),
+		...(input.skipDecisionScan
+			? { decisionScanSkippedHash: input.contentHash }
+			: {}),
 	} satisfies Prisma.ProjectContextUncheckedCreateInput;
 }
 

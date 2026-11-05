@@ -16,15 +16,22 @@ vi.mock("@repo/agent-core", () => ({
 }));
 vi.mock("@repo/database/prisma/client", () => ({ db: {} }));
 vi.mock("@repo/rag", async () => ({
-	...(await import("@repo/rag/lib/project-contexts/source-name")),
+	...(await import("@repo/rag/lib/project-contexts/retrieval")),
 	contextMetaHeader: () => "",
 	retrieveProjectContexts: vi.fn(async () => [
 		{
-			content: "named body",
+			id: "example-source",
+			type: "TEXT",
+			score: 1,
+			content: "WHOLE_BODY".repeat(10000),
+			matchedPassages: [
+				{ content: "MATCHED_PASSAGE", score: 1 },
+				{ content: "x".repeat(30000), score: 0.5 },
+			],
 			sourcePath: "docs/plan.md",
 			metadata: { filename: "wrong" },
 		},
-		{ content: "unnamed body" },
+		{ id: "example-two", type: "TEXT", score: 1, content: "unnamed body" },
 	]),
 }));
 
@@ -74,8 +81,18 @@ it("opts both research reader calls into service authentication without using pl
 	expect(result.research).toContain(
 		"## Codebase grounding\nExample research",
 	);
-	expect(result.research).toContain("### docs/plan.md");
-	expect(result.research).toContain("### Context 2");
+	expect(retrieveProjectContexts).toHaveBeenCalledWith(
+		expect.objectContaining({ includeMatchedPassages: true }),
+	);
+	expect(result.research).not.toContain("WHOLE_BODY");
+	expect(result.research).toContain("MATCHED_PASSAGE");
+	expect(
+		result.research.match(
+			/<project_context>[\s\S]*?<\/project_context>/,
+		)?.[0].length,
+	).toBeLessThanOrEqual(20000);
+	expect(result.research).toContain("### From: docs/plan.md");
+	expect(result.research).toContain("### From: Context 2");
 	expect(plainFetch).not.toHaveBeenCalled();
 	expect(getAgentModelAsync).not.toHaveBeenCalled();
 });

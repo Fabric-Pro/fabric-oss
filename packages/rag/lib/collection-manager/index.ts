@@ -55,7 +55,7 @@ const DEFAULT_DISTANCE_METRIC: DistanceMetric =
 /**
  * Collection configurations for each base collection type
  */
-const COLLECTION_CONFIGS: Record<
+export const COLLECTION_CONFIGS: Record<
 	BaseCollectionName,
 	Omit<CollectionConfig, "baseCollection">
 > = {
@@ -93,6 +93,9 @@ const COLLECTION_CONFIGS: Record<
 			{ fieldName: "projectId", fieldSchema: "keyword" },
 			{ fieldName: "userId", fieldSchema: "keyword" },
 			{ fieldName: "organizationId", fieldSchema: "keyword" },
+			{ fieldName: "documentId", fieldSchema: "keyword" },
+			{ fieldName: "repositoryIntegrationId", fieldSchema: "keyword" },
+			{ fieldName: "parentContextId", fieldSchema: "keyword" },
 			{ fieldName: "contextId", fieldSchema: "keyword" },
 			// Required for filter-based deletion of chunked contexts — every
 			// stored chunk carries originalContextId pointing back to the base
@@ -619,6 +622,10 @@ async function ensurePayloadIndexes(
 			await qdrantClient.createPayloadIndex(collectionName, {
 				field_name: index.fieldName,
 				field_schema: index.fieldSchema,
+				// Project filters may run immediately after this backfill.
+				...(config === COLLECTION_CONFIGS["project-contexts"]
+					? { wait: true }
+					: {}),
 			});
 			logger.info(
 				`[CollectionManager] Backfilled payload index ${index.fieldName} on ${collectionName}`,

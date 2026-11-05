@@ -19,7 +19,11 @@ interface DatePickerProps {
 	placeholder?: string;
 	className?: string;
 	disabled?: boolean;
+	id?: string;
 	"aria-label"?: string;
+	"aria-required"?: boolean;
+	"aria-invalid"?: boolean;
+	"aria-describedby"?: string;
 }
 
 export function DatePicker({
@@ -28,7 +32,11 @@ export function DatePicker({
 	placeholder = "Pick a date",
 	className,
 	disabled,
+	id,
 	"aria-label": ariaLabel,
+	"aria-required": ariaRequired,
+	"aria-invalid": ariaInvalid,
+	"aria-describedby": ariaDescribedBy,
 }: DatePickerProps) {
 	// Convert string value to Date if needed
 	const dateValue = React.useMemo(() => {
@@ -48,8 +56,12 @@ export function DatePicker({
 		<Popover>
 			<PopoverTrigger asChild>
 				<Button
+					id={id}
 					variant="outline"
 					disabled={disabled}
+					aria-required={ariaRequired}
+					aria-invalid={ariaInvalid}
+					aria-describedby={ariaDescribedBy}
 					aria-label={
 						ariaLabel ? `${ariaLabel}: ${visibleLabel}` : undefined
 					}

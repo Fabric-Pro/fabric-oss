@@ -12,9 +12,13 @@
  * when it answered; run again to confirm); its conflicts and failures join
  * the push's under `conflict` and `failed`, each line saying "not deleted",
  * and a path it set out to delete but never reached is listed under
- * `removed` with its server entry kept (Fizzy #2636).
+ * `removed` with its server entry kept (Fizzy #2636). A file the lock records
+ * as pushed that the server no longer holds is listed under `missing on the
+ * server`, and is not counted as unchanged.
  */
+import { fabricCommand } from "../launcher.js";
 import type { SkippedContextFile } from "./classify.js";
+import { type MissingOnServer, NOTHING_MISSING } from "./missing-on-server.js";
 import type { ContextPlan } from "./plan.js";
 import { type ContextPushResult, DELETE_STATUSES } from "./push.js";
 
@@ -74,13 +78,17 @@ function managedSkips(
 function countOutcomes(
 	plan: ContextPlan,
 	results: readonly ContextPushResult[],
+	missingOnServer: readonly string[],
 ): ContextPushCounts {
 	const count = (status: ContextPushResult["status"]) =>
 		results.filter((r) => r.status === status).length;
 	return {
 		created: count("created"),
 		updated: count("updated"),
-		unchanged: count("unchanged") + plan.unchangedLocal.length,
+		unchanged:
+			count("unchanged") +
+			plan.unchangedLocal.length -
+			missingOnServer.length,
 		duplicate: count("duplicate"),
 		moved: count("moved"),
 		moveUnsupported: count("move-unsupported"),
@@ -257,8 +265,11 @@ export function formatPushReport(input: {
 	 * the server declined, is still listed.
 	 */
 	pruneTargets?: readonly string[];
+	/** Unchanged against the lock, and no longer on the server. */
+	missingOnServer?: MissingOnServer;
 }): string[] {
 	const { plan, results } = input;
+	const missing = input.missingOnServer ?? NOTHING_MISSING;
 	const prune = Boolean(input.prune);
 	// A move the server did not apply is listed once, under `not moved`.
 	const of = <S extends ContextPushResult["status"]>(status: S) =>
@@ -365,7 +376,18 @@ export function formatPushReport(input: {
 		"skipped",
 		[...plan.skipped, ...managedSkips(results)].map(skippedLine),
 	);
-	const unchanged = countOutcomes(plan, results).unchanged;
+	group(lines, "missing on the server", missing.paths);
+	if (missing.paths.length > 0) {
+		lines.push(
+			`These files are in this folder's lock but no longer on the server, so nothing was sent for them: a Living Memory reset or a delete removed them. To send them again, run: ${fabricCommand(`context push --init <dir> --project ${input.projectId}`)}`,
+		);
+	}
+	if (missing.incomplete) {
+		lines.push(
+			"Could not check whether the server still holds the files listed as unchanged, so some may be missing. Run this push again to check.",
+		);
+	}
+	const unchanged = countOutcomes(plan, results, missing.paths).unchanged;
 	if (unchanged > 0) {
 		lines.push(`unchanged (${unchanged})`);
 	}
@@ -435,6 +457,7 @@ export function contextPushJson(input: {
 	prune: boolean;
 	plan: ContextPlan;
 	results: readonly ContextPushResult[];
+	missingOnServer: MissingOnServer;
 }) {
 	return {
 		projectId: input.projectId,
@@ -463,6 +486,12 @@ export function contextPushJson(input: {
 			skipped: input.plan.skipped,
 		},
 		results: input.results,
-		counts: countOutcomes(input.plan, input.results),
+		missingOnServer: input.missingOnServer.paths,
+		missingCheckIncomplete: input.missingOnServer.incomplete,
+		counts: countOutcomes(
+			input.plan,
+			input.results,
+			input.missingOnServer.paths,
+		),
 	};
 }

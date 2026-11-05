@@ -1,5 +1,11 @@
 # @fabricorg/sdk
 
+## 0.8.1
+
+### Patch Changes
+
+- bfd8846: `fabric context push` now lists files its lock records as pushed that the server no longer holds, instead of calling them unchanged.
+
 ## 0.8.0
 
 ### Minor Changes

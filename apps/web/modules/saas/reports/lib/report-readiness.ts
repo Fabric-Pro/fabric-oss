@@ -298,11 +298,11 @@ export function computeReportReadiness(input: ReadinessInput): ReportReadiness {
 			case "unreachable":
 				return "Timed out — may be transient, try again";
 			case "error":
-				return "The data source returned an error — check the values below";
+				return "The data source returned an error — check its values in the connection settings";
 			case "project_not_selected":
-				return "Re-select your project in the connection settings below";
+				return "Re-select your project in the connection settings";
 			case "connection_unavailable":
-				return "This saved connection is no longer available — re-select it below";
+				return "This saved connection is no longer available — re-select it in the connection settings";
 		}
 	})();
 

@@ -101,6 +101,28 @@ describe("digest reads", () => {
 		);
 	});
 
+	it("keeps the newest versions when more than a page qualify, returned oldest first", async () => {
+		mocks.snapshotFindMany.mockResolvedValue([
+			{ id: "s-30", version: 30 },
+			{ id: "s-29", version: 29 },
+			{ id: "s-28", version: 28 },
+		]);
+
+		const versions = await listInstructionVersionsPublishedSince({
+			projectId: "p",
+			organizationId: "o",
+			afterVersion: 3,
+		});
+
+		expect(mocks.snapshotFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				orderBy: { version: "desc" },
+				take: 20,
+			}),
+		);
+		expect(versions.map((v) => v.version)).toEqual([28, 29, 30]);
+	});
+
 	it("falls back to a readable snapshot by version number", async () => {
 		await findReadableInstructionVersion({
 			projectId: "p",
@@ -138,6 +160,7 @@ describe("digest reads", () => {
 			projectId: "p",
 			organizationId: "o",
 			proposalStatus: { in: ["APPROVED", "REJECTED"] },
+			reviewerUserId: { not: null },
 			reviewedAt: { gt: since },
 			OR: [{ proposalStatus: "APPROVED" }, { userId: "u" }],
 		});

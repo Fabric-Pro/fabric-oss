@@ -428,6 +428,12 @@ export {
 	type LinkMeetingActionItemsWorkflowOutput,
 	linkMeetingActionItemsWorkflow,
 } from "./link-meeting-action-items";
+// Living Memory decision extraction (started after a synced file's embedding
+// confirms a content version; one run per version)
+export {
+	livingMemoryDecisionExtractionWorkflow,
+	livingMemoryDecisionFirstSyncScanWorkflow,
+} from "./living-memory-decisions";
 // Consolidated To Do list — assignment matcher (fire-and-forget: creates and
 // updates one meeting's to-do rows once its insights are ready). #2340
 export {

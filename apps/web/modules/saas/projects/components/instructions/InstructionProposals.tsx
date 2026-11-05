@@ -70,7 +70,7 @@ import {
 	useRefreshSettleWindow,
 } from "./lib/instructions-proposal-views";
 import {
-	needsSeveralApprovals,
+	approveButtonState,
 	ProposalApprovalBadge,
 	type ProposalApprovals,
 } from "./ProposalApprovalProgress";
@@ -415,13 +415,16 @@ function validationLabel(
 
 function proposalLabel(
 	status: ProposalStatus,
+	reviewer: ProposalRow["reviewer"],
 	t: (key: string) => string,
 ): string {
 	if (status === "APPROVED") {
 		return t("approved");
 	}
 	if (status === "REJECTED") {
-		return t("rejected");
+		// Withdrawing a proposal, or replacing it with a rebased one, stores
+		// REJECTED with no reviewer: nobody rejected it.
+		return t(reviewer === null ? "closed" : "rejected");
 	}
 	if (status === "MERGED") {
 		return t("merged");
@@ -854,6 +857,10 @@ export function InstructionProposals({
 		}),
 	);
 	const selected = detail.data as ProposalDetail | undefined;
+	const approveState = approveButtonState(
+		selected?.approvals,
+		selected?.viewerApproved === true,
+	);
 	const deciding =
 		approve.isPending ||
 		reject.isPending ||
@@ -1049,6 +1056,7 @@ export function InstructionProposals({
 													>
 														{proposalLabel(
 															proposal.proposalStatus,
+															proposal.reviewer,
 															t,
 														)}
 													</Badge>
@@ -1589,11 +1597,7 @@ export function InstructionProposals({
 									<Button
 										disabled={
 											deciding ||
-											(needsSeveralApprovals(
-												selected.approvals,
-											) &&
-												selected.viewerApproved ===
-													true)
+											approveState === "youApproved"
 										}
 										onClick={() =>
 											approve.mutate({
@@ -1602,25 +1606,16 @@ export function InstructionProposals({
 											})
 										}
 									>
-										{!needsSeveralApprovals(
-											selected.approvals,
-										)
+										{approveState === "approve" ||
+										selected.approvals === undefined
 											? t("approve")
-											: selected.viewerApproved
-												? t("youApproved", {
-														count: selected
-															.approvals.count,
-														required:
-															selected.approvals
-																.required,
-													})
-												: t("approveCounted", {
-														count: selected
-															.approvals.count,
-														required:
-															selected.approvals
-																.required,
-													})}
+											: t(approveState, {
+													count: selected.approvals
+														.count,
+													required:
+														selected.approvals
+															.required,
+												})}
 									</Button>
 								) : null}
 								<Button

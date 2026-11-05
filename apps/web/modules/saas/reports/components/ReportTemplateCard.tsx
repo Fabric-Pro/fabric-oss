@@ -5,6 +5,7 @@
  * Modern card design matching Agent Templates style
  */
 
+import type { ReportTemplatePublishTarget } from "@saas/reports/lib/report-template-publishing";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -37,10 +38,12 @@ import {
 	MessageSquareIcon,
 	MoreVerticalIcon,
 	ServerIcon,
+	Share2Icon,
 	TrashIcon,
 	VideoIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { PUBLISH_ACTION_LABEL } from "./PublishReportTemplateDialog";
 
 type Integration = {
 	name: string;
@@ -82,6 +85,11 @@ type Props = {
 	onDelete?: (id: string) => void;
 	basePath?: string;
 	configuredIntegrations?: string[];
+	/** Where the viewer may publish this template; none hides the actions. */
+	publishTargets?: ReportTemplatePublishTarget[];
+	onPublish?: (target: ReportTemplatePublishTarget) => void;
+	/** Marks a template the catalog leaves out, shown to platform admins on request. */
+	unproven?: boolean;
 };
 
 // Category-based gradient colors for card icons
@@ -120,6 +128,9 @@ export function ReportTemplateCard({
 	onDelete,
 	basePath = "/app/report-templates",
 	configuredIntegrations = [],
+	publishTargets = [],
+	onPublish,
+	unproven = false,
 }: Props) {
 	const requiredIntegrations =
 		template.definition?.requiredIntegrations || [];
@@ -184,7 +195,8 @@ export function ReportTemplateCard({
 								<Button
 									variant="ghost"
 									size="icon"
-									className="h-7 w-7 opacity-0 group-hover:opacity-100 -mt-1 -mr-1"
+									className="h-7 w-7 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 -mt-1 -mr-1"
+									aria-label={`Actions for ${template.name}`}
 								>
 									<MoreVerticalIcon className="h-4 w-4" />
 								</Button>
@@ -196,6 +208,15 @@ export function ReportTemplateCard({
 										View Details
 									</Link>
 								</DropdownMenuItem>
+								{publishTargets.map((target) => (
+									<DropdownMenuItem
+										key={target}
+										onClick={() => onPublish?.(target)}
+									>
+										<Share2Icon className="mr-2 h-4 w-4" />
+										{PUBLISH_ACTION_LABEL[target]}
+									</DropdownMenuItem>
+								))}
 								{template.scope !== "SYSTEM" && (
 									<>
 										<DropdownMenuSeparator />
@@ -236,6 +257,14 @@ export function ReportTemplateCard({
 			{/* Capability badges */}
 			<div className="flex flex-wrap gap-1.5 mt-4">
 				<TooltipProvider>
+					{unproven && (
+						<Badge
+							variant="outline"
+							className="text-xs font-normal text-muted-foreground"
+						>
+							Not yet proven
+						</Badge>
+					)}
 					{hasAiAgents && (
 						<Tooltip>
 							<TooltipTrigger asChild>

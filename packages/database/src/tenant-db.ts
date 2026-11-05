@@ -161,6 +161,7 @@ const USER_OWNED_TABLES = new Set([
 	// collection to aim at off the record — so it gets the same floor as the
 	// tables it cleans up after.
 	"ProjectContextPendingVectorCleanup",
+	"ProjectContextDecisionExtraction", // Decisions extracted from synced Living Memory files
 	"ProjectContextRepositorySync", // Living Memory repository sync configuration
 	"ProjectContextRepositorySyncRun", // Living Memory repository sync run receipts
 	"ProjectChunkingRun", // Content-type chunking runs (re-chunk, measure, tune)
@@ -386,6 +387,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectContextConversationBundle: "projectId",
 	ProjectContextConversationClaim: "projectId",
 	ProjectContextPendingVectorCleanup: "projectId",
+	ProjectContextDecisionExtraction: "projectId",
 	ProjectContextRepositorySync: "projectId",
 	ProjectContextRepositorySyncRun: "projectId",
 	ProjectChunkingRun: "projectId",

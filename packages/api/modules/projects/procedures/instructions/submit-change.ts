@@ -123,7 +123,6 @@ import {
 	getPublishedInstructionSnapshot,
 	type InstructionProposalStatus,
 	listInstructionFiles,
-	type RecordAuditInput,
 	rejectAbandonedInstructionSnapshot,
 } from "@repo/database";
 import {
@@ -274,13 +273,11 @@ type SubmitInstructionChangeSharedInput = {
 
 /**
  * A rebase (`rebase-proposal.ts`): the stale FABRIC proposal the new one
- * replaces, closed in the transaction that writes it. `audit` builds the
- * `proposal_rebased` row from the new proposal's id and version.
+ * replaces. The new row records it, and it is closed, with its
+ * `proposal_rebased` audit row, only when the new one is READY: an upload
+ * that fails below, or a rejection by the checks, leaves it pending.
  */
-type SupersededInstructionProposal = {
-	snapshotId: string;
-	audit: (created: { id: string; version: number }) => RecordAuditInput;
-};
+type SupersededInstructionProposal = { snapshotId: string };
 
 export type SubmitInstructionChangeInput =
 	| (SubmitInstructionChangeSharedInput & {

@@ -14,11 +14,7 @@ import {
 } from "@repo/instructions";
 import { getStorageProvider } from "@repo/storage";
 import { z } from "zod";
-import {
-	type AuditRequestContext,
-	auditRequestFields,
-	resolveActor,
-} from "../../../../lib/audit";
+import type { AuditRequestContext } from "../../../../lib/audit";
 import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
@@ -154,17 +150,26 @@ function differs(
  *
  * With no conflict left, the merged change is proposed on the published
  * version through `submitInstructionChange`, with the same validation, secret
- * scan, change-count and inline-size limits as any proposal, and the stale
- * proposal is closed in the transaction that writes the new one. With a
+ * scan, change-count and inline-size limits as any proposal. The stale
+ * proposal stays pending until the new one passes those checks and is READY,
+ * and is closed then; a new one that fails them leaves it as it was. With a
  * conflict, nothing is written: the conflicts come back with their markers
- * for the proposer to resolve, and a second call carries the resolutions.
- * The merge is run again then, against what is published at that moment.
+ * for the proposer to resolve, and a second call carries the resolutions
+ * together with the published version they were made against. The merge is
+ * run again then, and the resolutions are refused if another version was
+ * published in between.
  */
 export async function rebaseInstructionProposal(input: {
 	userId: string;
 	projectId: string;
 	snapshotId: string;
 	resolutions: readonly RebaseResolution[];
+	/**
+	 * The published version the resolutions were made against: the
+	 * `publishedSnapshotId` of the conflicts answer they resolve. Required
+	 * whenever there are resolutions.
+	 */
+	expectedPublishedSnapshotId?: string;
 	audit: AuditRequestContext;
 }): Promise<RebaseProposalResult> {
 	const organizationId = await requireHostingOrganizationId(
@@ -238,6 +243,20 @@ export async function rebaseInstructionProposal(input: {
 			"NOT_FOUND",
 			"NOTHING_PUBLISHED",
 			"This project has no published coding instructions to rebase onto.",
+		);
+	}
+	if (
+		input.resolutions.length > 0 &&
+		input.expectedPublishedSnapshotId !== published.id
+	) {
+		// The resolutions answer conflicts against the version they were shown
+		// for. Applied to a newer one they could overwrite what it changed, so
+		// they are refused and the conflicts are read again.
+		throw refusal(
+			"CONFLICT",
+			"REBASE_PUBLISHED_CHANGED",
+			"A newer version was published while you resolved the conflicts. Review the conflicts against it again.",
+			{ publishedSnapshotId: published.id },
 		);
 	}
 	if (!base || base.status !== "READY") {
@@ -375,7 +394,6 @@ export async function rebaseInstructionProposal(input: {
 		);
 	}
 
-	const requester = auditRequestFields(input.audit);
 	const result = await submitInstructionChange({
 		userId: input.userId,
 		projectId: input.projectId,
@@ -385,44 +403,19 @@ export async function rebaseInstructionProposal(input: {
 		note: proposal.proposalNote ?? undefined,
 		audit: input.audit,
 		via: "rebase",
-		supersedes: {
-			snapshotId: proposal.id,
-			audit: (created) => ({
-				action: "project.instructions.proposal_rebased",
-				category: "project",
-				outcome: "success",
-				actor: resolveActor(input.audit, undefined),
-				organizationId,
-				projectId: input.projectId,
-				ipAddress: requester.ipAddress,
-				userAgent: requester.userAgent,
-				requestId: requester.requestId,
-				sessionId: requester.sessionId,
-				correlationId: requester.correlationId,
-				resource: {
-					type: "project_instruction_snapshot",
-					id: proposal.id,
-					name: `v${proposal.version}`,
-				},
-				metadata: {
-					rebasedSnapshotId: created.id,
-					rebasedVersion: created.version,
-					fromBaseVersion: base.version,
-					toBaseVersion: published.version,
-					changeCount: changes.length,
-				},
-			}),
-		},
+		supersedes: { snapshotId: proposal.id },
 	});
-	// A duplicate is the one answer that closes nothing: the same rebased
-	// change was already proposed, and the stale proposal is still pending.
-	const after = await getInstructionProposal(
-		proposal.id,
+	// The proposal answered is a rebase of this one when it records it: the
+	// row this call wrote, or the one a retried call's first attempt wrote.
+	// Anything else is a duplicate, the same change already proposed on the
+	// published version, which replaces nothing.
+	const answered = await getInstructionProposal(
+		result.snapshotId,
 		input.projectId,
 		organizationId,
 		{ proposerUserId: input.userId },
 	);
-	if (after?.proposalStatus === "PENDING") {
+	if (answered?.supersedesSnapshotId !== proposal.id) {
 		return {
 			outcome: "duplicate",
 			snapshotId: result.snapshotId,
@@ -485,6 +478,13 @@ export const rebaseInstructionProposalProcedure = tenantProtectedProcedure
 				)
 				.max(MAX_CHANGES)
 				.default([]),
+			/**
+			 * The `publishedSnapshotId` of the conflicts answer the resolutions
+			 * resolve. Required with resolutions: when it is missing or another
+			 * version was published since, the call is refused as
+			 * `REBASE_PUBLISHED_CHANGED` and the conflicts must be read again.
+			 */
+			expectedPublishedSnapshotId: z.string().min(1).optional(),
 		}),
 	)
 	.handler(({ input, context }) =>
@@ -493,6 +493,7 @@ export const rebaseInstructionProposalProcedure = tenantProtectedProcedure
 			projectId: input.projectId,
 			snapshotId: input.snapshotId,
 			resolutions: input.resolutions,
+			expectedPublishedSnapshotId: input.expectedPublishedSnapshotId,
 			audit: context,
 		}),
 	);

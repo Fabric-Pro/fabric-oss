@@ -95,6 +95,7 @@ export function ReportReadinessRail({
 	readiness,
 	onGenerate,
 	canGenerate = true,
+	viewerIsOwner,
 	isGenerating,
 	onTest,
 	showConnectionTest = true,
@@ -113,6 +114,8 @@ export function ReportReadinessRail({
 	onGenerate: () => void;
 	/** False when the viewer does not own the report. */
 	canGenerate?: boolean;
+	/** Decides why a disabled Generate says it is disabled. */
+	viewerIsOwner?: boolean;
 	isGenerating: boolean;
 	onTest: () => void;
 	showConnectionTest?: boolean;
@@ -186,7 +189,11 @@ export function ReportReadinessRail({
 
 			{/* Primary actions */}
 			<div className="space-y-2 rounded-lg border bg-card p-4">
-				<OwnerOnlyGenerate canGenerate={canGenerate} className="w-full">
+				<OwnerOnlyGenerate
+					canGenerate={canGenerate}
+					viewerIsOwner={viewerIsOwner}
+					className="w-full"
+				>
 					{(ownerOnlyId) => (
 						<Button
 							className="w-full"

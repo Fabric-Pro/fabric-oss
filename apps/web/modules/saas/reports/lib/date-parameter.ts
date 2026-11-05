@@ -1,83 +1,16 @@
+import {
+	classifyDateParameter,
+	parameterNameWords,
+} from "@repo/database/prisma/queries/lib/report-parameter-ai-defaults";
 import { format } from "date-fns";
 
-/**
- * How a report template parameter that holds a date or a period is edited.
- *
- * - `date`: one calendar day, stored as `yyyy-MM-dd`.
- * - `period`: a span the AI reads as text, such as "Last 2 weeks",
- *   "Sprint 42" or "2026-03-01 to 2026-03-31".
- */
-export type DateParameterKind = "date" | "period";
+export { classifyDateParameter, parameterNameWords };
 
 type DateParameterSchema = {
 	format?: string;
 	description?: string;
 	default?: unknown;
 };
-
-/**
- * Words that mark a parameter as a date only when they are a whole word of its
- * name: "startDate" and "period_end" match, "format", "trend" and "backend"
- * do not.
- */
-const DATE_WORDS = new Set([
-	"date",
-	"dates",
-	"datetime",
-	"timestamp",
-	"deadline",
-	"due",
-	"since",
-	"until",
-	"start",
-	"end",
-]);
-const PERIOD_WORDS = new Set(["period", "timeframe", "timespan"]);
-/** Words that make a start/end name about something other than time. */
-const NON_DATE_WORDS = new Set(["with", "index", "offset", "position", "page"]);
-
-/** Split a parameter name into lower-case words at camelCase, snake_case and kebab-case boundaries. */
-export function parameterNameWords(name: string): string[] {
-	return name
-		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
-		.split(/[^A-Za-z0-9]+/)
-		.filter(Boolean)
-		.map((word) => word.toLowerCase());
-}
-
-export function classifyDateParameter(
-	name: string,
-	schema: DateParameterSchema,
-): DateParameterKind | null {
-	if (schema.format === "date" || schema.format === "date-time") {
-		return "date";
-	}
-
-	const words = parameterNameWords(name);
-	if (words.some((word) => PERIOD_WORDS.has(word))) {
-		return "period";
-	}
-	if (words.includes("range") && words.includes("date")) {
-		return "period";
-	}
-	if (words.some((word) => NON_DATE_WORDS.has(word))) {
-		return null;
-	}
-	if (words.some((word) => DATE_WORDS.has(word))) {
-		return "date";
-	}
-
-	// "from" and "to" are dates only on their own ("sendTo" is a recipient);
-	// "at" only as the last word of a longer name ("createdAt", "updated_at").
-	if (words.length === 1 && (words[0] === "from" || words[0] === "to")) {
-		return "date";
-	}
-	if (words.length > 1 && words[words.length - 1] === "at") {
-		return "date";
-	}
-	return null;
-}
 
 export function isDateParameter(
 	name: string,

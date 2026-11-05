@@ -1295,6 +1295,8 @@ export async function renderInstanceReport(input: {
 	};
 	outputFormat?: string;
 	isPartial?: boolean;
+	/** The template's data sources returned no records for this run. */
+	noRecords?: boolean;
 }): Promise<RenderedReport> {
 	const {
 		instance,
@@ -1305,6 +1307,7 @@ export async function renderInstanceReport(input: {
 		dateRange,
 		outputFormat = "MARKDOWN",
 		isPartial = false,
+		noRecords = false,
 	} = input;
 
 	const isHtmlFormat = outputFormat === "HTML" || outputFormat === "PDF";
@@ -1374,6 +1377,20 @@ export async function renderInstanceReport(input: {
 		}
 	}
 
+	if (noRecords) {
+		const notice =
+			"The connected sources returned no records for this period, so there was nothing to analyse. Check that the selected board or project had activity in the period, or choose a longer period.";
+		if (isHtmlFormat) {
+			lines.push(
+				`<p class="report-no-records-notice"><strong>No records found</strong> — ${notice}</p>`,
+			);
+			lines.push("<hr>");
+		} else {
+			lines.push(`> **No records found** — ${notice}`);
+			lines.push("");
+		}
+	}
+
 	// Render sections
 	const sections = definition.sections || [];
 
@@ -1396,6 +1413,11 @@ export async function renderInstanceReport(input: {
 						);
 					}
 				}
+				// The seeded footers ask for this, and it is never a parameter
+				content = content.replaceAll(
+					"{{generatedAt}}",
+					new Date().toLocaleString(),
+				);
 				if (isHtmlFormat) {
 					lines.push(`<p>${escapeHtml(content)}</p>`);
 				} else {

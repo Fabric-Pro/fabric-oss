@@ -378,7 +378,7 @@ export type ProjectWorkspaceDocumentLinkScalarFieldEnum = z.infer<typeof Project
 
 // File: ProjectContextScalarFieldEnum.schema.ts
 
-export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 'chunkProfile', 'chunkingVersion', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'metadataUpdatedAt', 'metadataUpdatedByUserId', 'sourcePath', 'contentHash', 'sourceBlobOid', 'contentUpdatedAt', 'contentUpdatedByUserId', 'repositorySyncId', 'contextEnrichmentRetryAt', 'indexingExcluded', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
+export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 'chunkProfile', 'chunkingVersion', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'metadataUpdatedAt', 'metadataUpdatedByUserId', 'sourcePath', 'contentHash', 'sourceBlobOid', 'decisionScanSkippedHash', 'contentUpdatedAt', 'contentUpdatedByUserId', 'repositorySyncId', 'contextEnrichmentRetryAt', 'indexingExcluded', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
 
 export type ProjectContextScalarFieldEnum = z.infer<typeof ProjectContextScalarFieldEnumSchema>;
 
@@ -411,6 +411,12 @@ export type ProjectContextConversationBundleScalarFieldEnum = z.infer<typeof Pro
 export const ProjectContextConversationClaimScalarFieldEnumSchema = z.enum(['id', 'parentContextId', 'projectId', 'providerMessageId', 'providerThreadId', 'messageCreatedAt', 'bundleId', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
 
 export type ProjectContextConversationClaimScalarFieldEnum = z.infer<typeof ProjectContextConversationClaimScalarFieldEnumSchema>;
+
+// File: ProjectContextDecisionExtractionScalarFieldEnum.schema.ts
+
+export const ProjectContextDecisionExtractionScalarFieldEnumSchema = z.enum(['id', 'contextId', 'projectId', 'contentHash', 'sourcePath', 'decisions', 'dismissedIndexes', 'model', 'extractedAt', 'notifiedAt', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+
+export type ProjectContextDecisionExtractionScalarFieldEnum = z.infer<typeof ProjectContextDecisionExtractionScalarFieldEnumSchema>;
 
 // File: ProjectContextPendingVectorCleanupScalarFieldEnum.schema.ts
 
@@ -1938,15 +1944,21 @@ export type AiUsageLimitCounterScalarFieldEnum = z.infer<typeof AiUsageLimitCoun
 
 // File: ReportTemplateScalarFieldEnum.schema.ts
 
-export const ReportTemplateScalarFieldEnumSchema = z.enum(['id', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'templateType', 'category', 'tags', 'definition', 'parameters', 'outputFormat', 'connections', 'fabricConfig', 'schedule', 'evidenceProjectId', 'evidenceReportSlug', 'evidenceConfig', 'userId', 'organizationId', 'scope', 'isPublic', 'version', 'useCount', 'lastUsedAt', 'archivedAt', 'createdAt', 'updatedAt'])
+export const ReportTemplateScalarFieldEnumSchema = z.enum(['id', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'templateType', 'category', 'tags', 'definition', 'parameters', 'outputFormat', 'connections', 'fabricConfig', 'schedule', 'evidenceProjectId', 'evidenceReportSlug', 'evidenceConfig', 'userId', 'organizationId', 'scope', 'isPublic', 'version', 'useCount', 'lastUsedAt', 'archivedAt', 'isGeneric', 'createdAt', 'updatedAt'])
 
 export type ReportTemplateScalarFieldEnum = z.infer<typeof ReportTemplateScalarFieldEnumSchema>;
 
 // File: ReportTemplateOverrideScalarFieldEnum.schema.ts
 
-export const ReportTemplateOverrideScalarFieldEnumSchema = z.enum(['id', 'templateId', 'organizationId', 'projectId', 'parameterDefaults', 'context', 'schedule', 'updatedById', 'createdAt', 'updatedAt'])
+export const ReportTemplateOverrideScalarFieldEnumSchema = z.enum(['id', 'templateId', 'organizationId', 'projectId', 'parameterDefaults', 'context', 'schedule', 'prompts', 'updatedById', 'createdAt', 'updatedAt'])
 
 export type ReportTemplateOverrideScalarFieldEnum = z.infer<typeof ReportTemplateOverrideScalarFieldEnumSchema>;
+
+// File: ReportTemplateSampleScalarFieldEnum.schema.ts
+
+export const ReportTemplateSampleScalarFieldEnumSchema = z.enum(['id', 'templateId', 'contentHash', 'content', 'generatedAt'])
+
+export type ReportTemplateSampleScalarFieldEnum = z.infer<typeof ReportTemplateSampleScalarFieldEnumSchema>;
 
 // File: TemplateInstanceScalarFieldEnum.schema.ts
 
@@ -2316,7 +2328,7 @@ export type DiagramScalarFieldEnum = z.infer<typeof DiagramScalarFieldEnumSchema
 
 // File: ProjectInstructionSnapshotScalarFieldEnum.schema.ts
 
-export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'contentKind', 'repositoryGeneration', 'repositoryBaseSha', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'publishBeforeScan', 'deferredScanStatus', 'deferredScanFindings', 'deferredScanCompletedAt', 'scanRulesVersion', 'fileCount', 'storedBytes', 'excludedCount', 'excludedPaths', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'validationAttemptId', 'progressPhase', 'progressDone', 'progressTotal', 'progressUpdatedAt', 'baseSnapshotId', 'baseVersion', 'proposalDestination', 'proposalNote', 'pullRequestOperationId', 'pullRequestState', 'pullRequestAttempt', 'pullRequestContext', 'pullRequestHeadSha', 'pullRequestRef', 'pullRequestAttempts', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'pullRequestFailure', 'pullRequestLastCheckedAt', 'pullRequestNextAttemptAt', 'pullRequestRefreshAdmittedAt', 'pullRequestObligationOpen', 'pullRequestConfirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'commitContext', 'commitOutcome', 'proposalBranchId', 'proposalBranchSequence', 'withdrawRequestedAt', 'withdrawScope', 'pendingCommand', 'pendingCommandSeq', 'proposalAssignment', 'proposalIntentOrder', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt', 'publishNotifiedAt'])
+export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'contentKind', 'repositoryGeneration', 'repositoryBaseSha', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'publishBeforeScan', 'deferredScanStatus', 'deferredScanFindings', 'deferredScanCompletedAt', 'scanRulesVersion', 'fileCount', 'storedBytes', 'excludedCount', 'excludedPaths', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'validationAttemptId', 'progressPhase', 'progressDone', 'progressTotal', 'progressUpdatedAt', 'baseSnapshotId', 'baseVersion', 'supersedesSnapshotId', 'proposalDestination', 'proposalNote', 'pullRequestOperationId', 'pullRequestState', 'pullRequestAttempt', 'pullRequestContext', 'pullRequestHeadSha', 'pullRequestRef', 'pullRequestAttempts', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'pullRequestFailure', 'pullRequestLastCheckedAt', 'pullRequestNextAttemptAt', 'pullRequestRefreshAdmittedAt', 'pullRequestObligationOpen', 'pullRequestConfirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'commitContext', 'commitOutcome', 'proposalBranchId', 'proposalBranchSequence', 'withdrawRequestedAt', 'withdrawScope', 'pendingCommand', 'pendingCommandSeq', 'proposalAssignment', 'proposalIntentOrder', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt', 'publishNotifiedAt'])
 
 export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
 
@@ -4302,7 +4314,7 @@ export type ChatArtifactType = z.infer<typeof ChatArtifactTypeSchema>;
 
 // File: NotificationType.schema.ts
 
-export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED', 'PUBLISHING_TOPIC_ASSIGNED', 'PUBLISHING_QUESTION_ASSIGNED', 'DOCUMENT_GENERATION_COMPLETED', 'DOCUMENT_GENERATION_FAILED', 'CLI_CONNECTION_REQUESTED', 'TODO_ASSIGNED', 'TODO_MEETING_ITEMS_ASSIGNED', 'CHATGPT_PLAN_ACCOUNT_NEEDS_RECONNECT', 'WORKFLOW_RUN_COMPLETED', 'WORKFLOW_RUN_FAILED', 'CHATGPT_PLAN_WORK_PAUSED', 'CHATGPT_PLAN_WORK_STOPPED', 'CODING_INSTRUCTIONS_PUBLISHED'])
+export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED', 'PUBLISHING_TOPIC_ASSIGNED', 'PUBLISHING_QUESTION_ASSIGNED', 'DOCUMENT_GENERATION_COMPLETED', 'DOCUMENT_GENERATION_FAILED', 'CLI_CONNECTION_REQUESTED', 'TODO_ASSIGNED', 'TODO_MEETING_ITEMS_ASSIGNED', 'CHATGPT_PLAN_ACCOUNT_NEEDS_RECONNECT', 'WORKFLOW_RUN_COMPLETED', 'WORKFLOW_RUN_FAILED', 'CHATGPT_PLAN_WORK_PAUSED', 'CHATGPT_PLAN_WORK_STOPPED', 'CODING_INSTRUCTIONS_PUBLISHED', 'DECISION_CANDIDATES_READY'])
 
 export type NotificationType = z.infer<typeof NotificationTypeSchema>;
 
@@ -5810,6 +5822,7 @@ export const ProjectContextSchema = z.object({
   sourcePath: z.string().nullish(),
   contentHash: z.string().nullish(),
   sourceBlobOid: z.string().nullish(),
+  decisionScanSkippedHash: z.string().nullish(),
   contentUpdatedAt: z.date().nullish(),
   contentUpdatedByUserId: z.string().nullish(),
   repositorySyncId: z.string().nullish(),
@@ -5935,6 +5948,28 @@ export const ProjectContextConversationClaimSchema = z.object({
 });
 
 export type ProjectContextConversationClaimType = z.infer<typeof ProjectContextConversationClaimSchema>;
+
+
+// File: ProjectContextDecisionExtraction.schema.ts
+
+export const ProjectContextDecisionExtractionSchema = z.object({
+  id: z.string(),
+  contextId: z.string(),
+  projectId: z.string(),
+  contentHash: z.string(),
+  sourcePath: z.string(),
+  decisions: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("[]"),
+  dismissedIndexes: z.array(z.number().int()),
+  model: z.string().nullish(),
+  extractedAt: z.date(),
+  notifiedAt: z.date().nullish(),
+  userId: z.string().nullish(),
+  organizationId: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectContextDecisionExtractionType = z.infer<typeof ProjectContextDecisionExtractionSchema>;
 
 
 // File: ProjectContextPendingVectorCleanup.schema.ts
@@ -11900,6 +11935,7 @@ export const ReportTemplateSchema = z.object({
   useCount: z.number().int(),
   lastUsedAt: z.date().nullish(),
   archivedAt: z.date().nullish(),
+  isGeneric: z.boolean(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -11916,12 +11952,26 @@ export const ReportTemplateOverrideSchema = z.object({
   parameterDefaults: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   context: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   schedule: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  prompts: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   updatedById: z.string(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
 
 export type ReportTemplateOverrideType = z.infer<typeof ReportTemplateOverrideSchema>;
+
+
+// File: ReportTemplateSample.schema.ts
+
+export const ReportTemplateSampleSchema = z.object({
+  id: z.string(),
+  templateId: z.string(),
+  contentHash: z.string(),
+  content: z.string(),
+  generatedAt: z.date(),
+});
+
+export type ReportTemplateSampleType = z.infer<typeof ReportTemplateSampleSchema>;
 
 
 // File: TemplateInstance.schema.ts
@@ -13413,6 +13463,7 @@ export const ProjectInstructionSnapshotSchema = z.object({
   progressUpdatedAt: z.date().nullish(),
   baseSnapshotId: z.string().nullish(),
   baseVersion: z.number().int().nullish(),
+  supersedesSnapshotId: z.string().nullish(),
   proposalDestination: ProjectInstructionProposalDestinationSchema.default("FABRIC"),
   proposalNote: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   pullRequestOperationId: z.string().nullish(),

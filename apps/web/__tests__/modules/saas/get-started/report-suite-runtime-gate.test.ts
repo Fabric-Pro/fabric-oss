@@ -53,8 +53,8 @@ describe("Get Started — report suite runtime gate", () => {
 		const tabs = page
 			? pageComponentsFor(page, ON).find((c) => c.id === "reports-tabs")
 			: undefined;
-		expect(tabs?.body).toContain("'Reports'");
-		expect(tabs?.body).not.toContain("'My Instances'");
+		expect(tabs?.body).toContain("'My Instances'");
+		expect(tabs?.body).not.toContain("'Reports'");
 		expect(tabs?.body).toContain("'Templates'");
 
 		const legacy = page

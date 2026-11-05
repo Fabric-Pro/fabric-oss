@@ -36,6 +36,7 @@ import {
 	isActiveProjectMember,
 	notifyDecisionOwner,
 } from "../../lib/decision-owner";
+import { acceptedUpdateTargetIds } from "./accepted-update";
 
 const statusEnum = z.enum([
 	"PROPOSED",
@@ -490,7 +491,12 @@ export const updateArchitectureDecisionProcedure = tenantProtectedProcedure
 		// assignment rather than a routine content update.
 		const prior = await db.architectureDecision.findFirst({
 			where: { id: input.id, projectId: input.projectId },
-			select: { ownerUserId: true },
+			select: {
+				ownerUserId: true,
+				status: true,
+				sourceKind: true,
+				sourceMetadata: true,
+			},
 		});
 
 		const actor = { userId: user.id, organizationId };
@@ -541,10 +547,19 @@ export const updateArchitectureDecisionProcedure = tenantProtectedProcedure
 			});
 		}
 
+		const acceptedUpdateTargets = prior
+			? await acceptedUpdateTargetIds({
+					projectId: input.projectId,
+					previousStatus: prior.status,
+					newStatus: decision.status,
+					sourceKind: prior.sourceKind,
+					sourceMetadata: prior.sourceMetadata,
+				})
+			: [];
 		await applySupersedes(
 			input.projectId,
 			decision.id,
-			input.supersedesIds,
+			[...(input.supersedesIds ?? []), ...acceptedUpdateTargets],
 			user,
 			organizationId,
 		);

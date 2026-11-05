@@ -50,9 +50,16 @@
  *     first frame there, holds every other tab that may edit still — no
  *     input, no saves, no regeneration, restore or proposal of its own, the
  *     status says why — and the room is not brought to a newer saved body
- *     underneath it; the answer, a run that ends without a card, the
- *     reviewing tab leaving or its state leaving the room ends the hold,
- *     and nothing the other tab typed before is lost;
+ *     underneath it; the answer, a run that ends without a card or the
+ *     reviewing tab leaving ends the hold, and nothing the other tab typed
+ *     before is lost;
+ *   - a proposal the room holds that nobody reviews — its tab died, its
+ *     state stayed out of the room, or its tab lost the sync — holds every
+ *     tab that may edit the same way, saying so, for the card's late limit;
+ *     a review back in time holds them as before, and past it the proposal
+ *     is rejected where it stands, typing around it kept, by however many
+ *     tabs at once, and nothing of it is ever saved; a reviewing tab whose
+ *     proposal was rejected under it answers its card as not applied;
  *   - with the flag off the editor seeds, saves and converges as before.
  *
  * Harness: one room Y.Doc and one Y.Doc per tab, linked by a relay a test
@@ -953,7 +960,12 @@ import {
 	writeRoomStamp,
 } from "@saas/projects/components/proposal-artifact/generation-run-awareness";
 import { transactionTouches } from "@saas/projects/components/proposal-artifact/room-convergence-helpers";
-import { fromMarkdown } from "@saas/projects/lib/diff-utils";
+import { diffPartialText, fromMarkdown } from "@saas/projects/lib/diff-utils";
+import {
+	acceptChange,
+	type DiffRange,
+	findDiffRanges,
+} from "@saas/projects/lib/editor-diff-marks";
 
 vi.mock("@saas/projects/lib/editor-markdown-save", async (importOriginal) => {
 	const actual =
@@ -7279,15 +7291,50 @@ describe("an assistant proposal under review in another tab (Fizzy #2946)", () =
 		);
 	}
 
+	function orphanedStatus(tab: Tab): HTMLElement | null {
+		return within(tab.syncSlot).queryByText("proposalOrphaned");
+	}
+
+	/**
+	 * A tab holds still for a proposal the room holds that nobody reviews any
+	 * more, and says so — not that another tab reviews it.
+	 */
+	async function expectHeldForUnanswered(tab: Tab) {
+		await waitFor(() => {
+			expect(mainEditor(tab)?.isEditable).toBe(false);
+		});
+		await waitFor(() => {
+			expect(orphanedStatus(tab)).not.toBeNull();
+		});
+		expect(heldStatus(tab)).toBeNull();
+		expect(saveButton(tab)).toBeDisabled();
+		expect(saveButton(tab)).toHaveAccessibleDescription(
+			"saveBlocked.proposalOrphaned",
+		);
+	}
+
 	/** The other tab takes input again, and no longer says it holds. */
 	async function expectResumed(tab: Tab) {
 		await waitFor(() => {
 			expect(mainEditor(tab)?.isEditable).toBe(true);
 		});
 		expect(heldStatus(tab)).toBeNull();
+		expect(orphanedStatus(tab)).toBeNull();
 		expect(saveButton(tab)).not.toHaveAccessibleDescription(
 			"saveBlocked.proposalElsewhere",
 		);
+		expect(saveButton(tab)).not.toHaveAccessibleDescription(
+			"saveBlocked.proposalOrphaned",
+		);
+	}
+
+	/** What the tabs said of a proposal nobody answered, taken out. */
+	function unansweredRemovedToasts() {
+		return vi
+			.mocked(toast.info)
+			.mock.calls.filter(
+				([message]) => message === "proposalOrphanedRemoved",
+			);
 	}
 
 	/** The reviewing tab's state leaves the room, as on a dropped connection. */
@@ -7300,6 +7347,23 @@ describe("an assistant proposal under review in another tab (Fizzy #2946)", () =
 				}
 			}
 		});
+	}
+
+	/**
+	 * The reviewing tab dies without leaving its page — a crash, a killed
+	 * browser: no `pagehide`, nothing put back. Its editor goes as on a sync
+	 * loss, which takes nothing out of the room, and its state times out of
+	 * the room. Unmounted by the test that killed it.
+	 */
+	async function killTab(tab: Tab) {
+		tab.synced = false;
+		rerender(tab);
+		await settle(50);
+		leaveRoomAwareness(tab);
+		const index = room.tabs.indexOf(tab);
+		if (index >= 0) {
+			room.tabs.splice(index, 1);
+		}
 	}
 
 	async function openRoom() {
@@ -7481,16 +7545,23 @@ describe("an assistant proposal under review in another tab (Fizzy #2946)", () =
 		card.unmount();
 	});
 
-	it("the reviewing tab's state leaves the room, as when its connection drops: the other tab resumes, and holds again when it is back", async () => {
+	it("the reviewing tab's state leaves the room, as when its connection drops: the other tab holds on for the proposal nobody reviews, holds for the review again when it is back, and withdraws nothing", async () => {
+		harness.timings.proposalCardLateLimitMs = 1500;
 		const { reviewing, other } = await openRoom();
 		const card = cardFor(reviewing);
 		await card.open();
 		await expectHeld(other);
 
+		// The room still holds the proposal, which a save from the other tab
+		// would write as accepted: it keeps holding, for a proposal nobody
+		// reviews now.
 		leaveRoomAwareness(reviewing);
-		await expectResumed(other);
+		await expectHeldForUnanswered(other);
+		expect(editorBody(other)).toContain(PROPOSED);
 
-		// Reconnected: its state, review included, reaches the room again.
+		// Reconnected within the wait: its state, review included, reaches
+		// the room again.
+		await settle(300);
 		act(() => {
 			other.awareness.view.set(
 				reviewing.awareness.clientID,
@@ -7499,6 +7570,241 @@ describe("an assistant proposal under review in another tab (Fizzy #2946)", () =
 			notify(other);
 		});
 		await expectHeld(other);
+		// Past the wait from when its state left: nothing is taken out.
+		await settle(1500);
+		await expectHeld(other);
+		expect(await roomBody()).toContain(PROPOSED);
+		expect(editorBody(reviewing)).toContain(PROPOSED);
+		expect(card.offersAnswers()).toBe(true);
+		expect(unansweredRemovedToasts()).toHaveLength(0);
+		expect(saveCalls).toEqual([]);
+		card.unmount();
+	});
+
+	it("the reviewing tab's state stays out of the room past the wait: the other tab rejects the proposal where it stands and says so once; the reviewing tab answers its card as not applied and stops holding anyone", async () => {
+		harness.timings.proposalCardLateLimitMs = 400;
+		const { reviewing, other } = await openRoom();
+		const card = cardFor(reviewing);
+		await card.open();
+		await expectHeld(other);
+
+		leaveRoomAwareness(reviewing);
+		await expectHeldForUnanswered(other);
+		await settle(200);
+		expect(await roomBody()).toContain(PROPOSED);
+
+		await settle(400);
+		await expectResumed(other);
+		expect(editorBody(other)).toBe(BODY_A);
+		expect(await roomBody()).toBe(BODY_A);
+		expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+		expect(unansweredRemovedToasts()).toHaveLength(1);
+		// The reviewing tab's proposal is gone from under its card: nothing of
+		// it can be accepted, so the card is answered as not applied, once,
+		// and its review leaves the room.
+		await waitFor(() => {
+			expect(card.respond).toHaveBeenCalledWith({ accepted: false });
+		});
+		expect(card.respond).toHaveBeenCalledTimes(1);
+		expect(toast.info).toHaveBeenCalledWith("ownProposalRemoved");
+		expect(harness.recordOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accepted: false,
+				summary:
+					"Not applied: it was removed from the document because nobody answered it in time.",
+			}),
+		);
+		expect(
+			reviewing.awareness.own[PROPOSAL_REVIEW_AWARENESS_FIELD],
+		).toBeNull();
+		expect(editorBody(reviewing)).toBe(BODY_A);
+
+		// Its state back in the room holds nobody.
+		act(() => {
+			other.awareness.view.set(
+				reviewing.awareness.clientID,
+				reviewing.awareness.own,
+			);
+			notify(other);
+		});
+		await settle(50);
+		await expectResumed(other);
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(BODY_A);
+		card.unmount();
+	});
+
+	it("the reviewing tab dies while the other tab's typing waits for its autosave: the proposal is rejected around that typing, which stays and saves without the proposal", async () => {
+		harness.autosave.delayMs = 1000;
+		harness.timings.proposalCardLateLimitMs = 400;
+		const { reviewing, other } = await openRoom();
+		await type(other, TYPED);
+		const card = cardFor(reviewing);
+		await card.open();
+		await expectHeld(other);
+
+		await killTab(reviewing);
+		await expectHeldForUnanswered(other);
+		expect(saveCalls).toEqual([]);
+
+		await settle(600);
+		await expectResumed(other);
+		expect(editorBody(other)).toContain(TYPED.trim());
+		expect(editorBody(other)).not.toContain(PROPOSED);
+		expect(unansweredRemovedToasts()).toHaveLength(1);
+		await waitFor(
+			() => {
+				expect(server.content).toContain(TYPED.trim());
+			},
+			{ timeout: 3000 },
+		);
+		expect(saveCalls).toHaveLength(1);
+		expect(saveCalls[0]).toMatchObject({ tab: "other" });
+		expect(server.content).not.toContain(PROPOSED);
+		expect(server.content).toContain("Phase one, then two.");
+		expect(offerBackCalls()).toHaveLength(0);
+		card.unmount();
+		reviewing.view?.unmount();
+	});
+
+	it("the reviewing tab dies with two other tabs held: both reject the proposal at once — what it added goes, what it deleted stays — and the room holds the body once", async () => {
+		harness.timings.proposalCardLateLimitMs = 400;
+		await persistRoom(BODY_A, savedStamp());
+		const reviewing = await openTab("reviewing", { clientId: 10 });
+		const first = await openTab("first", { clientId: 20 });
+		const second = await openTab("second", { clientId: 30 });
+		await settle(200);
+		harness.chatIn = "reviewing";
+		// It deletes words as well as adding a paragraph.
+		harness.agentState = {
+			document: `${BODY_A.replace("Phase one, then two.", "Phase one.")}\n\n${PROPOSED}`,
+		};
+		rerender(reviewing);
+		await settle(20);
+		const card = cardFor(reviewing);
+		await card.open({ streamed: true });
+		await expectHeld(first);
+		await expectHeld(second);
+		expect(editorBody(first)).toContain(PROPOSED);
+		expect(editorBody(first)).not.toContain("then two");
+
+		await killTab(reviewing);
+		await expectHeldForUnanswered(first);
+		await expectHeldForUnanswered(second);
+		// Neither hears of the other's reject before it rejects.
+		room.paused = true;
+		try {
+			await settle(600);
+			expect(unansweredRemovedToasts()).toHaveLength(2);
+		} finally {
+			await resume();
+		}
+		await settle(50);
+
+		for (const tab of [first, second]) {
+			await expectResumed(tab);
+			expect(editorBody(tab)).toBe(BODY_A);
+		}
+		expect(await roomBody()).toBe(BODY_A);
+		expect(occurrences(await roomBody(), "Phase one, then two.")).toBe(1);
+		expect(saveCalls).toEqual([]);
+		card.unmount();
+		reviewing.view?.unmount();
+	});
+
+	it("a reviewer that answers every change one by one keeps its card live: a write from the room afterwards does not take its proposal for removed", async () => {
+		const { reviewing, other } = await openRoom();
+		const card = cardFor(reviewing);
+		await card.open();
+		await expectHeld(other);
+		const editor = mainEditor(reviewing) as Editor;
+
+		// As the review bar's per-change Approve does, for every change.
+		await act(async () => {
+			for (
+				let ranges = findDiffRanges(editor.state.doc);
+				ranges.length > 0;
+				ranges = findDiffRanges(editor.state.doc)
+			) {
+				harness.reviewBarProps?.onBeforeChange?.();
+				acceptChange(editor, ranges[0] as DiffRange);
+				harness.reviewBarProps?.onAfterChange?.();
+			}
+		});
+		await settle(50);
+		expect(findDiffRanges(editor.state.doc)).toEqual([]);
+
+		// Any write from another client: here, the room's own record.
+		await act(async () => {
+			room.doc.transact(() => {
+				room.doc.getMap("probe-example").set("written", true);
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await settle(50);
+		expect(card.respond).not.toHaveBeenCalled();
+		expect(card.offersAnswers()).toBe(true);
+		expect(toast.info).not.toHaveBeenCalledWith("ownProposalRemoved");
+		expect(
+			reviewing.awareness.own[PROPOSAL_REVIEW_AWARENESS_FIELD],
+		).toEqual(expect.any(String));
+
+		// Its answer is its own, and goes as before.
+		await card.answer("confirm-button");
+		expect(card.respond).toHaveBeenCalledWith({ accepted: true });
+		await waitFor(() => {
+			expect(server.content).toContain(PROPOSED);
+		});
+		await expectResumed(other);
+		card.unmount();
+	});
+
+	it("a sync loss in the reviewing tab leaves its proposal to nobody: its card, rendered again, is answered as not applied and says why, and the proposal is rejected past the wait", async () => {
+		harness.timings.proposalCardLateLimitMs = 400;
+		const { reviewing, other } = await openRoom();
+		const card = cardFor(reviewing);
+		await card.open();
+		await expectHeld(other);
+
+		reviewing.synced = false;
+		rerender(reviewing);
+		await settle(50);
+		reviewing.synced = true;
+		rerender(reviewing);
+		await waitFor(() => {
+			expect(mainEditor(reviewing)).not.toBeNull();
+		});
+		await settle(50);
+		const respond = vi.fn();
+		await act(async () => {
+			render(
+				reviewing.actions
+					.get("confirm_changes")
+					?.renderAndWaitForResponse({
+						args: {},
+						respond,
+						status: "executing",
+					}),
+			);
+			await Promise.resolve();
+		});
+		await settle(50);
+		expect(respond).toHaveBeenCalledWith({ accepted: false });
+		expect(toast.info).toHaveBeenCalledWith("proposalOrphanedHeld");
+		expect(toast.info).not.toHaveBeenCalledWith("proposalElsewhereHeld");
+		expect(harness.recordOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accepted: false,
+				summary:
+					"Not applied: the document held an unanswered assistant proposal that nobody was reviewing.",
+			}),
+		);
+
+		await settle(600);
+		await expectResumed(other);
+		await expectResumed(reviewing);
+		expect(await roomBody()).toBe(BODY_A);
+		expect(saveCalls).toEqual([]);
 		card.unmount();
 	});
 
@@ -7818,6 +8124,63 @@ describe("an assistant proposal under review in another tab (Fizzy #2946)", () =
 			expect(await roomBody()).toContain(PROPOSED);
 			expect(saveCalls).toEqual([]);
 			card.unmount();
+		});
+
+		/**
+		 * A tab that dies without leaving its page takes nothing back out:
+		 * the persisted room keeps the proposal under the saved version's
+		 * stamp. A tab opened later on it must not take the proposal for the
+		 * saved body.
+		 */
+		it("the reviewing tab dies without leaving its page: a tab opened later holds and saves nothing, then takes the proposal out of the room once, and its typing saves without it", async () => {
+			harness.timings.proposalCardLateLimitMs = 500;
+			harness.autosave.delayMs = 300;
+			await persistRoom(BODY_A, savedStamp());
+			const reviewing = await openTab("reviewing", { clientId: 10 });
+			await settle(200);
+			harness.chatIn = "reviewing";
+			const card = cardFor(reviewing);
+			await card.open();
+			expect(await roomBody()).toContain(PROPOSED);
+
+			await killTab(reviewing);
+			expect(await roomBody()).toContain(PROPOSED);
+			expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+
+			const later = await openTab("later", { clientId: 30 });
+			await expectHeldForUnanswered(later);
+			expect(editorBody(later)).toContain(PROPOSED);
+			await settle(200);
+			expect(saveCalls).toEqual([]);
+			expect(await roomBody()).toContain(PROPOSED);
+
+			await settle(500);
+			await expectResumed(later);
+			expect(editorBody(later)).toBe(BODY_A);
+			expect(await roomBody()).toBe(BODY_A);
+			expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+			expect(unansweredRemovedToasts()).toHaveLength(1);
+			expect(saveCalls).toEqual([]);
+			expect(saveButton(later)).toBeDisabled();
+
+			await type(later, TYPED);
+			await waitFor(
+				() => {
+					expect(server.content).toContain(TYPED.trim());
+				},
+				{ timeout: 3000 },
+			);
+			expect(saveCalls).toHaveLength(1);
+			expect(saveCalls[0]).toMatchObject({
+				tab: "later",
+				expectedVersion: 7,
+				expectedContentHash: hashOf(BODY_A),
+			});
+			expect(server.content).not.toContain(PROPOSED);
+			expect(server.content).toContain("Phase one, then two.");
+			expect(unansweredRemovedToasts()).toHaveLength(1);
+			card.unmount();
+			reviewing.view?.unmount();
 		});
 	});
 
@@ -10037,6 +10400,44 @@ describe("with the room flag off (Fizzy #2946)", () => {
 		harness.flags = { DOCUMENT_ROOM_CONVERGENCE: false };
 	});
 
+	/**
+	 * A proposal the room holds that nobody reviews is held and rejected only
+	 * with the room's stamps: with the flag off the editor saves as it always
+	 * did, the flag being the way back to that.
+	 */
+	it("leaves a proposal the room holds to the editor as before: nothing holds, and a save goes", async () => {
+		const PROPOSED = "A paragraph the assistant proposes.";
+		await persistRoom(BODY_A, null);
+		const tab = await openTab("tab");
+		await type(tab, " Typed here.");
+
+		await act(async () => {
+			void persistRoom(
+				diffPartialText(BODY_A, `${BODY_A}\n\n${PROPOSED}`, true),
+				null,
+			);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await settle(100);
+		expect(editorBody(tab)).toContain(PROPOSED);
+		expect(mainEditor(tab)?.isEditable).toBe(true);
+		expect(within(tab.syncSlot).queryByText("proposalOrphaned")).toBeNull();
+		expect(saveButton(tab)).not.toHaveAccessibleDescription(
+			"saveBlocked.proposalOrphaned",
+		);
+
+		await type(tab, " More typing.");
+		await clickSave(tab);
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+		expect(toast.info).not.toHaveBeenCalledWith(
+			"saveBlocked.proposalOrphaned",
+		);
+		await settle(300);
+		expect(editorBody(tab)).toContain(PROPOSED);
+	});
+
 	it("sends nothing when the page is left within the app with typing unsaved", async () => {
 		await persistRoom(BODY_A, null);
 		const tab = await openTab("tab");
@@ -10300,6 +10701,76 @@ describe("an AI accept on a client-document Proposal in a room (Fizzy #2946)", (
 		expect(saveCalls[1]).toMatchObject({
 			aiReview: { kind: "CHAT", patchedSectionKeys: ["p1:pricing#0"] },
 		});
+	});
+
+	/**
+	 * A diagram proposed in a tab that died unanswered stayed in the room.
+	 * Taken for the saved body by the tab opened next, it was the base of
+	 * that tab's next proposal, which added the diagram again: its accept
+	 * saved both.
+	 */
+	it("a proposal left in the room by a tab that died is taken out before the next one: accepting that one saves the proposed diagram once", async () => {
+		harness.timings.proposalCardLateLimitMs = 400;
+		const DIAGRAM =
+			"```mermaid\nflowchart LR\n  Kickoff --> Design --> Build\n```";
+		const IN_DIAGRAM = "Kickoff --> Design";
+		await persistRoom(BODY_A, savedStamp());
+		const first = await openTab("first", { clientId: 10 });
+		await settle(200);
+		harness.chatIn = first.name;
+		harness.agentState = {
+			document: `${BODY_A}\n\n${DIAGRAM}`,
+			proposalPatchedSectionKeys: ["p1:pricing#0"],
+		};
+		rerender(first);
+		await settle(20);
+		await act(async () => {
+			first.actions.get("confirm_changes")?.renderAndWaitForResponse({
+				args: {},
+				respond: vi.fn(),
+				status: "executing",
+			});
+			await Promise.resolve();
+		});
+		await settle(50);
+		expect(await roomBody()).toContain(IN_DIAGRAM);
+
+		// The tab dies: no `pagehide`, nothing put back.
+		first.synced = false;
+		rerender(first);
+		await settle(50);
+		const index = room.tabs.indexOf(first);
+		if (index >= 0) {
+			room.tabs.splice(index, 1);
+		}
+		expect(await roomBody()).toContain(IN_DIAGRAM);
+
+		const later = await openTab("later", { clientId: 30 });
+		await waitFor(() => {
+			expect(mainEditor(later)?.isEditable).toBe(false);
+		});
+		await settle(600);
+		await waitFor(() => {
+			expect(mainEditor(later)?.isEditable).toBe(true);
+		});
+		expect(editorBody(later)).toBe(BODY_A);
+		expect(saveCalls).toEqual([]);
+
+		const respond = await acceptProposal(
+			later,
+			`${editorBody(later)}\n\n${DIAGRAM}`,
+		);
+		expect(respond).toHaveBeenCalledWith({ accepted: true });
+		await waitFor(() => {
+			expect(server.content).toContain(IN_DIAGRAM);
+		});
+		expect(occurrences(server.content, IN_DIAGRAM)).toBe(1);
+		expect(saveCalls).toHaveLength(1);
+		expect(saveCalls[0]).toMatchObject({
+			tab: "later",
+			aiReview: { kind: "CHAT", patchedSectionKeys: ["p1:pricing#0"] },
+		});
+		first.view?.unmount();
 	});
 
 	describe("a section revision under review", () => {

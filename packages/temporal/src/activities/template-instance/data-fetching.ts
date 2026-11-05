@@ -24,6 +24,13 @@ import {
 	processDataForRag,
 	searchReportCollection,
 } from "./rag-processing";
+import { buildBoardFactsHeader } from "./report-board-facts";
+import { isCardListTool, isPlainObject } from "./report-card-pages";
+import {
+	agenticSourceId,
+	BOARD_FACTS_KEY,
+	COVERAGE_KEY,
+} from "./report-data-gate";
 import type {
 	AiTaskDefinition,
 	DataProcessingConfig,
@@ -484,9 +491,8 @@ export async function executeAiAnalysis(
 	// Databricks/Anthropic-direct injected defaults without one.
 	// generateText replaced by streamText to prevent gateway idle timeouts.
 	const { getAIModelWithMetadata, streamText } = await import("@repo/ai");
-	const { computeMaxOutputTokenBudget } = await import(
-		"@repo/ai/lib/output-token-budget"
-	);
+	const { computeMaxOutputTokenBudget, maxPromptCharsForContext } =
+		await import("@repo/ai/lib/output-token-budget");
 
 	for (const agent of aiAgents) {
 		try {
@@ -554,6 +560,39 @@ export async function executeAiAnalysis(
 			const systemWithSkills = skillsContent
 				? `${systemWithFormat}\n\n${skillsContent}`
 				: systemWithFormat;
+
+			// A provider rejects a prompt over its window and fails the whole
+			// report; the board facts survive a shorter card list.
+			const maxPromptChars = maxPromptCharsForContext(modelMetadata);
+			if (!qdrantCollectionId && maxPromptChars !== undefined) {
+				const fittedPrompt = fitDirectContextPrompt({
+					prompt: contextPrompt,
+					maxChars: maxPromptChars - systemWithSkills.length,
+					dataResults,
+					rebuild: (reduced, notice) =>
+						buildDirectContextPrompt(
+							agent.task,
+							reduced,
+							parameters,
+							sections,
+							outputFormat,
+							notice,
+						),
+				});
+				if (fittedPrompt !== contextPrompt) {
+					logger.warn(
+						"[DataFetching] Reduced gathered data to fit the model's context window",
+						{
+							agentId: agent.agentId,
+							modelString: modelMetadata.modelString,
+							contextWindow: modelMetadata.contextWindow,
+							originalChars: contextPrompt.length,
+							finalChars: fittedPrompt.length,
+						},
+					);
+					contextPrompt = fittedPrompt;
+				}
+			}
 
 			// Whole HTML/markdown analysis from short prompts — maximal mode.
 			const maxOutputTokens = computeMaxOutputTokenBudget(modelMetadata, {
@@ -679,20 +718,32 @@ async function buildRagEnhancedPrompt(
 }
 
 /**
- * Build direct context prompt (for small datasets without RAG)
+ * Build direct context prompt (for small datasets without RAG). Exported for
+ * tests.
  */
-function buildDirectContextPrompt(
+export function buildDirectContextPrompt(
 	task: string,
 	dataResults: DataSourceResult[],
 	parameters: Record<string, unknown>,
 	sections: ReportSection[] = [],
 	outputFormat = "MARKDOWN",
+	dataNotice = "",
 ): string {
+	const factsSourceId = agenticSourceId(BOARD_FACTS_KEY);
+	const factsHeader = buildBoardFactsHeader(
+		dataResults.find((d) => d.sourceId === factsSourceId)?.data,
+	);
+	// Gathered cards can run to a megabyte, where indentation adds tokens and
+	// no information.
 	const successfulSources = dataResults
-		.filter((d) => d.data && !d.error)
+		.filter((d) => d.data && !d.error && d.sourceId !== factsSourceId)
 		.map(
 			(d) =>
-				`## Data from ${d.sourceId} (${d.provider}):\n${JSON.stringify(d.data, null, 2)}`,
+				`## Data from ${d.sourceId} (${d.provider}):\n${
+					d.sourceType === "agentic"
+						? JSON.stringify(d.data)
+						: JSON.stringify(d.data, null, 2)
+				}`,
 		);
 
 	const failedSources = dataResults
@@ -730,15 +781,109 @@ ${formatInstruction}
 `;
 	}
 
-	return `## Task
+	return `${factsHeader}## Task
 ${task}
 
 ## Available Data
-${contextSummary}
+${dataNotice ? `${dataNotice}\n\n` : ""}${contextSummary}
 
 ${Object.keys(parameters).length > 0 ? `## Parameters\n${JSON.stringify(parameters, null, 2)}\n` : ""}
 ${sectionGuidance}
 Please complete the task based on the available data.`;
+}
+
+/** Room kept for the notice `fitDirectContextPrompt` adds. */
+const FIT_NOTICE_MAX_CHARS = 300;
+
+/**
+ * Shorten a direct context prompt that is over `maxChars`. Gathered card lists
+ * go first and other gathered records only once the card list cannot give more.
+ * `_board_facts` and `_coverage` are never passed to the budget, so they stay
+ * whole. The data was read, so this changes neither `isPartial` nor the facts'
+ * `complete`; the notice in the prompt says what the model was given. Exported
+ * for tests.
+ */
+export function fitDirectContextPrompt(params: {
+	prompt: string;
+	maxChars: number;
+	dataResults: DataSourceResult[];
+	rebuild: (dataResults: DataSourceResult[], notice: string) => string;
+}): string {
+	const { prompt, maxChars, dataResults, rebuild } = params;
+	if (prompt.length <= maxChars) {
+		return prompt;
+	}
+
+	const factsSourceId = agenticSourceId(BOARD_FACTS_KEY);
+	const isReducible = (result: DataSourceResult) =>
+		result.sourceType === "agentic" &&
+		!!result.data &&
+		!result.error &&
+		result.sourceId !== factsSourceId &&
+		result.sourceId !== agenticSourceId(COVERAGE_KEY);
+	const reducible = Object.fromEntries(
+		dataResults
+			.filter(isReducible)
+			.map((result) => [result.sourceId, result.data]),
+	);
+	const cardLists = (data: Record<string, unknown>) =>
+		Object.entries(data).flatMap(([key, value]) =>
+			isCardListTool(key) && Array.isArray(value) ? [value] : [],
+		);
+	const jsonLength = (value: unknown) => JSON.stringify(value).length;
+
+	const dataChars = jsonLength(Object.values(reducible));
+	const otherChars = jsonLength(reducible) - jsonLength(cardLists(reducible));
+	const maxBytes = Math.max(
+		0,
+		maxChars - (prompt.length - dataChars) - FIT_NOTICE_MAX_CHARS,
+	);
+	const bounded = boundGatheredData(reducible, {
+		maxBytes,
+		maxCardBytes: Math.max(0, maxBytes - otherChars),
+		// By now a listed card carries a `description` only when it was fetched
+		// for it, or when its source has no summary listing.
+		fetchedCardIds: new Set(
+			cardLists(reducible)
+				.flat()
+				.filter(
+					(card): card is Record<string, unknown> =>
+						isPlainObject(card) &&
+						typeof card.description === "string",
+				)
+				.map((card) => String(card.id)),
+		),
+	});
+	if (!bounded.trimmed) {
+		return prompt;
+	}
+
+	const countCards = (data: Record<string, unknown>) =>
+		cardLists(data).reduce((sum, list) => sum + list.length, 0);
+	const facts = dataResults.find(
+		(result) => result.sourceId === factsSourceId,
+	)?.data;
+	const factsTotal = isPlainObject(facts) ? facts.total : undefined;
+	// A template may name a source anything, so a list under a custom id is not
+	// recognized here: then there is no count of cards to state.
+	const recognizedCards = countCards(reducible);
+	const total = typeof factsTotal === "number" ? factsTotal : recognizedCards;
+	const notice =
+		recognizedCards > 0 && total > 0
+			? `${countCards(bounded.data)} of ${total} cards are listed below, shortened to fit this model's context window.${facts ? " The Board Facts above count every card read and remain authoritative, so do not count from this list." : ""}`
+			: "The records below were shortened to fit this model's context window.";
+
+	return rebuild(
+		dataResults.flatMap((result) => {
+			if (!isReducible(result)) {
+				return [result];
+			}
+			return result.sourceId in bounded.data
+				? [{ ...result, data: bounded.data[result.sourceId] }]
+				: [];
+		}),
+		notice,
+	);
 }
 
 function getDefaultSystemPrompt(): string {

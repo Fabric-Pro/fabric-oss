@@ -123,7 +123,10 @@ export function BranchFileActionButton({
 
 /**
  * Above a published file the caller's branch changes or deletes: says so,
- * and offers to put the published version back on the branch.
+ * and offers to put the published version back on the branch. A changed
+ * file's notice does not say which version is shown: the viewer shows the
+ * branch's bytes when Fabric holds them and says so in its own toolbar,
+ * and otherwise says the branch version cannot be shown.
  */
 export function BranchFileNotice({
 	path,

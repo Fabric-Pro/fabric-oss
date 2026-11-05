@@ -21,9 +21,9 @@ import {
 } from "@repo/utils";
 import { z } from "zod";
 import {
+	authorizeInputOrganization,
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -81,11 +81,17 @@ export const executeToolProcedure = tenantProtectedProcedure
 		const userId = context.user.id;
 		const { configId, toolName, args } = input;
 
-		// Use resolveOrganizationId for proper tenant isolation
-		// This handles: explicit string (org context), null (personal context), undefined (session fallback)
-		const organizationId = resolveOrganizationId(
+		// The organization this request resolves to (the input's, else a guest
+		// write organization, else the session's), with the caller's current
+		// membership and MCP_CONNECT role there checked before the config is
+		// read: a saved config outlives its owner's membership. Every lookup
+		// below uses this returned value, so authorization and the reads cannot
+		// target different organizations. Personal context (null) passes
+		// through and reads only the caller's personal configs.
+		const organizationId = await authorizeInputOrganization(
+			Permissions.MCP_CONNECT,
 			input.organizationId,
-			context.session,
+			context,
 		);
 
 		let mcpClient: McpClientType | undefined;

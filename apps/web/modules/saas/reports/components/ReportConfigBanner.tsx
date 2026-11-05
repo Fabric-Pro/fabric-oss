@@ -193,6 +193,20 @@ function buildItems(
 	return items;
 }
 
+/** The same problem told to someone who can only read the report: no steps, no fixes. */
+function forReader(item: BannerItem): BannerItem {
+	return {
+		...item,
+		title:
+			item.id === "conn"
+				? "This report’s data source needs attention"
+				: "This report is missing required parameters",
+		message:
+			"Someone who can edit this report has to fix this before it can generate.",
+		actions: [],
+	};
+}
+
 /**
  * Top-of-page banner(s) that make any *blocking* config problem obvious before
  * the user tries to generate: connection issues (not configured / auth expired /
@@ -209,19 +223,23 @@ export function ReportConfigBanner({
 	onScrollToConnection,
 	onScrollToParams,
 	reconnectHref,
+	readOnly = false,
 }: {
 	readiness: ReportReadiness;
 	onTest: () => void;
 	onScrollToConnection: () => void;
 	onScrollToParams: () => void;
 	reconnectHref?: string;
+	/** The viewer cannot change this report, so nothing here is theirs to do. */
+	readOnly?: boolean;
 }) {
-	const items = buildItems(readiness, {
+	const fixes = buildItems(readiness, {
 		onTest,
 		onScrollToConnection,
 		onScrollToParams,
 		reconnectHref,
 	});
+	const items = readOnly ? fixes.map(forReader) : fixes;
 
 	// Reset dismissals whenever the underlying issue set changes, so a freshly
 	// surfaced (or re-surfaced) problem is never hidden by a stale dismissal.

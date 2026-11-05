@@ -2,15 +2,11 @@ import { ORPCError } from "@orpc/client";
 import {
 	createArchitectureDecision,
 	dismissMeetingDecision,
-	ensureDecisionType,
 	getMeetingTranscriptForDecision,
 	hasProjectAccess,
 	listMeetingDecisionCandidates,
-	updateArchitectureDecision,
 } from "@repo/database";
-import { logger } from "@repo/logs";
 import { z } from "zod";
-import { emitActivity } from "../../../../lib/realtime";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -18,27 +14,9 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import {
-	buildArchitectureDecisionContextContent,
-	syncArchitectureDecisionContext,
-} from "../../lib/architecture-decision-context";
-import {
-	isActiveProjectMember,
-	notifyDecisionOwner,
-} from "../../lib/decision-owner";
-import {
-	loadSuggestionContext,
-	suggestDecisionMetadata,
-} from "../../lib/suggest-decision-metadata";
-
-/** Derive a concise ADL title from a free-text meeting decision statement. */
-function deriveTitle(text: string): string {
-	const firstSentence = text.split(/[.!?\n]/)[0]?.trim() ?? "";
-	const base = firstSentence || text.trim();
-	if (!base) {
-		return "Untitled decision";
-	}
-	return base.length > 120 ? `${base.slice(0, 117)}…` : base;
-}
+	completeCapturedDecision,
+	deriveCapturedDecisionTitle,
+} from "../../lib/captured-decision";
 
 export const listMeetingDecisionCandidatesProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.ARCHITECTURE_DECISION_READ))
@@ -136,7 +114,7 @@ export const createDecisionFromMeetingProcedure = tenantProtectedProcedure
 			projectId: input.projectId,
 			createdById: user.id,
 			editedByName: user.name || user.email || "Unknown",
-			title: input.title?.trim() || deriveTitle(text),
+			title: input.title?.trim() || deriveCapturedDecisionTitle(text),
 			decision: text,
 			contextProblem: `Captured from the meeting "${meetingName}". Review and complete the context, rationale, and participants.`,
 			rationale: "",
@@ -157,63 +135,15 @@ export const createDecisionFromMeetingProcedure = tenantProtectedProcedure
 			organizationId,
 		});
 
-		// AC5: embed the new draft as AI context (no participants yet).
-		const content = buildArchitectureDecisionContextContent({
-			identifier: decision.identifier,
-			title: decision.title,
-			status: decision.status,
-			contextProblem: decision.contextProblem,
-			decision: decision.decision,
-			rationale: decision.rationale,
-			alternativesConsidered: decision.alternativesConsidered,
-			participantsText: decision.participantsText,
-			participantNames: [],
-			decisionDate: decision.decisionDate,
-			sourceKind: decision.sourceKind,
-		});
-		await syncArchitectureDecisionContext({
-			decisionId: decision.id,
-			projectId: input.projectId,
-			contextId: decision.contextId,
-			content,
-			sourceTitle: `${decision.identifier} ${decision.title}`,
-			userId: user.id,
-			organizationId,
-		});
-
-		await emitActivity({
-			projectId: input.projectId,
-			userId: user.id,
-			userName: user.name || user.email || "Anonymous",
-			activityType: "architecture_decision_created",
-			resourceType: "architecture_decision",
-			resourceId: decision.id,
-			resourceName: decision.title,
-			timestamp: new Date().toISOString(),
-		});
-
-		// Best-effort tagging at capture time (Fizzy #2029): suggest type,
-		// duration, priority flag and owner, then apply them to the draft.
-		//
-		// Capture deliberately does NOT depend on the model succeeding — a
-		// transcript conversion that failed because the AI was down would be a
-		// worse product than an untagged draft. The manual form enforces AC1's
-		// type+duration at the schema; this path cannot, because there is no
-		// honest value to fall back on when the model returns nothing, and
-		// inventing a type would pollute the project's taxonomy.
-		//
-		// So the guarantee here is visibility rather than enforcement: a
-		// decision missing a type or duration carries a "Needs classification"
-		// badge in the log (DecisionTagPills), which is what stops a failed
-		// tagging from reading as a decision nobody needed to classify.
-		const tagged = await applyMeetingDecisionTagging(
-			input.projectId,
-			decision,
-			user.id,
-			organizationId,
-		);
-
-		return { decision: tagged ?? decision };
+		// AC5: embed the new draft as AI context (no participants yet), then
+		// tag it best-effort.
+		return {
+			decision: await completeCapturedDecision(decision, {
+				projectId: input.projectId,
+				user,
+				organizationId,
+			}),
+		};
 	});
 
 export const dismissMeetingDecisionProcedure = tenantProtectedProcedure
@@ -260,86 +190,3 @@ export const dismissMeetingDecisionProcedure = tenantProtectedProcedure
 		}
 		return { success: true };
 	});
-
-/**
- * Suggest and apply tagging metadata to a freshly converted meeting draft.
- * Best-effort end to end: returns null when the suggestion or the write
- * fails, and the caller falls back to the untagged decision.
- */
-async function applyMeetingDecisionTagging(
-	projectId: string,
-	decision: {
-		id: string;
-		projectId: string;
-		title: string;
-		decision: string;
-		contextProblem: string;
-		currentVersion: number;
-	},
-	actorUserId: string,
-	organizationId: string | undefined,
-) {
-	try {
-		const { existingTypes, ownerCandidates } =
-			await loadSuggestionContext(projectId);
-
-		const suggestion = await suggestDecisionMetadata({
-			projectId,
-			title: decision.title,
-			decision: decision.decision,
-			contextProblem: decision.contextProblem,
-			participantsText: null,
-			existingTypes,
-			ownerCandidates,
-			tenantFilter: { userId: actorUserId, organizationId },
-		});
-		if (!suggestion) {
-			return null;
-		}
-
-		const type = await ensureDecisionType({
-			projectId,
-			name: suggestion.decisionType.slice(0, 60),
-			origin: "AI",
-			userId: actorUserId,
-			organizationId: organizationId ?? null,
-		});
-		// The roster was read before the model call; a member can leave while it
-		// runs. Re-check right before the write so a departed member is never
-		// made owner (and never notified about a project they cannot open).
-		const ownerStillActive =
-			suggestion.ownerUserId !== null &&
-			(await isActiveProjectMember(projectId, suggestion.ownerUserId));
-
-		const updated = await updateArchitectureDecision({
-			id: decision.id,
-			projectId,
-			editedById: actorUserId,
-			editedByName: "AI suggestion",
-			data: {
-				decisionTypeId: type.id,
-				duration: suggestion.duration,
-				priorityFlagged: suggestion.priorityFlagged,
-				...(ownerStillActive
-					? { ownerUserId: suggestion.ownerUserId }
-					: {}),
-			},
-		});
-		if (updated && ownerStillActive) {
-			await notifyDecisionOwner(
-				updated,
-				{ id: actorUserId },
-				organizationId,
-				true,
-			);
-		}
-		return updated;
-	} catch (error) {
-		logger.warn(
-			`[ADL] Meeting-decision tagging failed for ${decision.id}: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
-		return null;
-	}
-}

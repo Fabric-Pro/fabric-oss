@@ -8,6 +8,7 @@ import {
 	useConfirmChangesVerdict,
 	useConfirmChangesVerdictCard,
 } from "@saas/agents/copilot/useConfirmChangesVerdict";
+import { aiSidebarStartsOpen } from "@saas/shared/components/copilot/ai-sidebar-layout";
 import { CopilotAssistantMessageForPromptEnhancer } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import { useCopilotChatSessionSelector } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useReseedAgentStateOnRunStart } from "@saas/shared/components/copilot/use-agent-state-reseed";
@@ -139,6 +140,8 @@ export function PromptContentEnhancer({
 	isLoading = false,
 	showTitle = true,
 }: Props) {
+	// Read once: the sidebar takes `defaultOpen` when it mounts.
+	const [assistantStartsOpen] = useState(aiSidebarStartsOpen);
 	// State for editor content
 	const [currentContent, setCurrentContent] = useState(initialContent);
 	const [displayContent, setDisplayContent] = useState(() =>
@@ -448,13 +451,22 @@ export function PromptContentEnhancer({
 		[agentState?.streamingContent],
 	);
 
-	const handleSave = () => {
-		onSave(currentContent);
-	};
-
 	// Determine if we should show diff highlighting (during/after AI streaming)
 	// Use the ref to track post-streaming diff state
 	const showDiffHighlighting = isAILoading || showingDiffRef.current;
+
+	// Save writes what is on screen: while a finished AI change shows as a diff,
+	// that is the changed text, not the text the change started from.
+	const contentToSave = () =>
+		showingDiffRef.current &&
+		!isAILoading &&
+		agentState?.streamingContent?.trim()
+			? agentState.streamingContent
+			: currentContent;
+	const saveProblem = promptContentProblem(contentToSave());
+	const handleSave = () => {
+		onSave(contentToSave());
+	};
 
 	const chatLabels = useMemo(
 		() => ({
@@ -489,7 +501,7 @@ export function PromptContentEnhancer({
 	return (
 		<CopilotSidebar
 			AssistantMessage={CopilotAssistantMessageForPromptEnhancer}
-			defaultOpen={true}
+			defaultOpen={assistantStartsOpen}
 			clickOutsideToClose={false}
 			labels={chatLabels}
 			suggestions={chatSuggestions}
@@ -509,6 +521,7 @@ export function PromptContentEnhancer({
 								size="icon"
 								onClick={onCancel}
 								className="shrink-0"
+								aria-label="Close"
 							>
 								<X className="h-4 w-4" />
 							</Button>
@@ -563,19 +576,19 @@ export function PromptContentEnhancer({
 									size="icon"
 									onClick={onCancel}
 									disabled={isLoading}
+									aria-label="Close"
 								>
 									<X className="h-4 w-4" />
 								</Button>
 								<Button
 									onClick={handleSave}
-									disabled={
-										isLoading || contentProblem !== null
-									}
+									disabled={isLoading || saveProblem !== null}
 									size="sm"
+									aria-label={isLoading ? "Saving" : "Save"}
 								>
 									{isLoading ? (
 										<>
-											<Loader2 className="h-4 w-4 animate-spin" />
+											<Loader2 className="h-4 w-4 motion-safe:animate-spin" />
 											<span className="ml-2 hidden sm:inline">
 												Saving...
 											</span>
@@ -599,13 +612,13 @@ export function PromptContentEnhancer({
 					{/* Above the textarea, not below it: this area does not scroll,
 					    and a long body pushes whatever follows the textarea out of
 					    view — the reason Save is disabled must stay on screen. */}
-					{contentProblem && !showDiffHighlighting && (
+					{saveProblem && !isAILoading && (
 						<p
 							id={contentErrorId}
 							role="alert"
 							className="mb-3 shrink-0 text-sm text-destructive"
 						>
-							{contentProblem}
+							{saveProblem}
 						</p>
 					)}
 					{showDiffHighlighting ? (

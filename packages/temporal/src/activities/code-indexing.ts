@@ -19,7 +19,7 @@ import {
 } from "@repo/database";
 import {
 	forceReExchangeRepoCredentials,
-	GIT_AUTH_UNSAFE,
+	GIT_AUTH_OPTIONS,
 	gitAuthForClone,
 	isGitAuthError,
 	markRepoReauthRequired,
@@ -746,7 +746,7 @@ async function cloneRepository(
 		// in argv, the clone's `.git/config` or a git error.
 		const auth = gitAuthForClone(provider, repositoryUrl, token);
 		const gitAt = (baseDir?: string) =>
-			simpleGit({ baseDir, unsafe: GIT_AUTH_UNSAFE }).env(auth.env);
+			simpleGit({ baseDir, ...GIT_AUTH_OPTIONS }).env(auth.env);
 
 		const git = gitAt();
 

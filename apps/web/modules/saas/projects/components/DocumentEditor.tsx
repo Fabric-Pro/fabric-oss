@@ -90,6 +90,7 @@ import {
 } from "@tanstack/react-query";
 import { Editor as DetachedEditor } from "@tiptap/core";
 import { isChangeOrigin } from "@tiptap/extension-collaboration";
+import type { Transaction } from "@tiptap/pm/state";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import { Button } from "@ui/components/button";
@@ -177,6 +178,10 @@ import {
 	isSaveBaseRequiredRefusal,
 } from "../lib/document-save-input";
 import { describeDocumentWriteRefusal } from "../lib/document-write-refusal";
+import {
+	editorHoldsDiffMarks,
+	rejectAllChanges,
+} from "../lib/editor-diff-marks";
 import { getEditorMarkdownForSave } from "../lib/editor-markdown-save";
 import { extractMentionIdsFromHtml } from "../lib/extract-mention-ids";
 import {
@@ -243,6 +248,7 @@ import {
 	readRoomStamp,
 	roomHasOtherEditor,
 	roomReviewsProposal,
+	roomStampKey,
 	sameRoomStamp,
 	writeRoomStamp,
 } from "./proposal-artifact/generation-run-awareness";
@@ -443,12 +449,53 @@ const RAW_VIEW_FOLLOW_MS = 150;
  * when another editor in the room reviews a proposal (Fizzy #2946).
  */
 const REGENERATION_HELD_ELSEWHERE = "heldElsewhere";
+/**
+ * The same, when what the room holds is a proposal nobody reviews any more
+ * (Fizzy #2946).
+ */
+const REGENERATION_HELD_UNANSWERED = "heldUnanswered";
+
+/**
+ * Why the chat's proposal was answered as not applied, writing nothing into
+ * the room (Fizzy #2946): another editor reviewed one of its own, the room
+ * held a proposal nobody reviews any more, or this proposal was taken out
+ * of the room under its review — with what the editor says, as a key of
+ * `projects.documentEditorRun`, and what the chat records.
+ */
+type NotAppliedHold = "elsewhere" | "unanswered" | "removed";
+const NOT_APPLIED_HOLDS: Record<
+	NotAppliedHold,
+	{
+		message:
+			| "proposalElsewhereHeld"
+			| "proposalOrphanedHeld"
+			| "ownProposalRemoved";
+		summary: string;
+	}
+> = {
+	elsewhere: {
+		message: "proposalElsewhereHeld",
+		summary: ACCEPT_OUTCOME_SUMMARIES.heldElsewhere,
+	},
+	unanswered: {
+		message: "proposalOrphanedHeld",
+		summary: ACCEPT_OUTCOME_SUMMARIES.heldUnanswered,
+	},
+	removed: {
+		message: "ownProposalRemoved",
+		summary: ACCEPT_OUTCOME_SUMMARIES.removedUnanswered,
+	},
+};
 
 /**
  * What the chat says of an answered `regenerate_document` call, as keys of
  * `projects.documentEditorRun.regenerationCall`.
  */
-type RegenerationCallOutcome = "completed" | "notApplied" | "heldElsewhere";
+type RegenerationCallOutcome =
+	| "completed"
+	| "notApplied"
+	| "heldElsewhere"
+	| "heldUnanswered";
 
 /**
  * Whether the chat's last turn holds a `confirm_changes` call that nothing
@@ -543,7 +590,9 @@ function regenerationCallOutcome(result: unknown): RegenerationCallOutcome {
 	}
 	return reason === REGENERATION_HELD_ELSEWHERE
 		? "heldElsewhere"
-		: "notApplied";
+		: reason === REGENERATION_HELD_UNANSWERED
+			? "heldUnanswered"
+			: "notApplied";
 }
 
 /** Why the switch between the rich and the raw view waits (Fizzy #2946). */
@@ -802,6 +851,7 @@ type SaveBlockReason =
 	| "review"
 	| "proposal"
 	| "proposalElsewhere"
+	| "proposalOrphaned"
 	| "runLive"
 	| "reconnecting"
 	| "updatingToLatest"
@@ -2960,17 +3010,98 @@ function DocumentEditorInner({
 	// not edit: it holds still already.
 	// Nor does anything else write the body here meanwhile: a regeneration, a
 	// version restore, this editor's own assistant (see `assistantRunHeldRef`).
-	const proposalUnderReviewElsewhere = peerReviewing && canEdit !== false;
-	// The same, from the room's awareness as it stands at this moment, for
-	// what is decided when it goes — a save, a write into the body: a review
-	// reaches the room before its body does, and this editor renders it a
-	// moment later.
-	const peerReviewHoldsNow = (): boolean =>
+	//
+	// So does a proposal nobody reviews any more (Fizzy #2946). The room
+	// keeps a proposal's diff marks in its body, and only the editor that
+	// reviews it takes it back out — on an answer, on leaving the page, at
+	// the end of a run with no card. A tab that dies without `pagehide` (a
+	// crash, a killed browser, a lid closed offline) takes nothing out, and
+	// the room, persisted, still names the saved version: an editor opened
+	// later, or the one left in the room once the reviewer's state times
+	// out, would take the proposal for the saved body and its first save
+	// would write it as accepted. So an editor whose body holds diff marks
+	// while no review in the room publishes them, its own included, holds
+	// still exactly as for another editor's review — and says why
+	// differently, since nobody is reviewing it. From another editor a
+	// dropped connection and a dead tab look the same, so the proposal is
+	// rejected only once that has lasted `proposalCardLateLimitMs` (see
+	// the withdrawal below); a reviewer back in time holds this editor as
+	// before. Like the rest of the room's rules, only with the room's
+	// stamps: without them the editor behaves as it always did.
+	// Whether this editor's body holds diff marks, read when it changes
+	// (see below); and whether they are unanswered — no review of this
+	// editor's own holds them (see `proposalUnderReviewHere`): what a save
+	// from here would write as accepted.
+	const [bodyHoldsDiffMarks, setBodyHoldsDiffMarks] = useState(false);
+	const [proposalUnanswered, setProposalUnanswered] = useState(false);
+	const orphanedProposal =
+		roomStampsOn && proposalUnanswered && !roomReviewing;
+	const proposalUnderReviewElsewhere =
+		(peerReviewing || orphanedProposal) && canEdit !== false;
+	// What the hold says: another editor reviews the proposal, or nobody does.
+	const roomHoldReason: "proposalElsewhere" | "proposalOrphaned" =
+		peerReviewing ? "proposalElsewhere" : "proposalOrphaned";
+	// Whether this editor reviews a proposal of its own at this moment: its
+	// review state as last rendered (see `proposalUnderReviewHere`), or a
+	// review it has just begun and published, or a confirm card it holds.
+	const proposalUnderReviewHereRef = useRef(false);
+	const ownReviewNow = (): boolean =>
+		proposalUnderReviewHereRef.current ||
+		ownReviewRef.current !== null ||
+		confirmCallbacksRef.current !== null ||
+		sectionRevisionShownRef.current ||
+		isContextUpdateActiveRef.current;
+	// The editor's body holds a proposal no review of this editor's own
+	// holds, at this moment — one another editor reviews too: stripped of
+	// its marks, a save would write it as accepted.
+	const unansweredProposalNow = (): boolean =>
 		roomStampsOn &&
-		canEdit !== false &&
-		peerReviewsProposal(provider?.awareness);
+		!ownReviewNow() &&
+		editorHoldsDiffMarks(liveEditorOrNull(editorRef.current)?.state.doc);
+	const unansweredProposalNowRef = useRef(unansweredProposalNow);
+	unansweredProposalNowRef.current = unansweredProposalNow;
+	// The same as the holds above, from the room's awareness and the body
+	// as they stand at this moment, for what is decided when it goes — a
+	// save, a write into the body: a review reaches the room before its body
+	// does, and this editor renders it a moment later.
+	const roomHoldNow = (): "proposalElsewhere" | "proposalOrphaned" | null => {
+		if (!roomStampsOn || canEdit === false) {
+			return null;
+		}
+		const awareness = provider?.awareness;
+		if (peerReviewsProposal(awareness)) {
+			return "proposalElsewhere";
+		}
+		return isCollabSynced &&
+			!roomReviewsProposal(awareness) &&
+			unansweredProposalNow()
+			? "proposalOrphaned"
+			: null;
+	};
+	const peerReviewHoldsNow = (): boolean => roomHoldNow() !== null;
 	const peerReviewHoldsNowRef = useRef(peerReviewHoldsNow);
 	peerReviewHoldsNowRef.current = peerReviewHoldsNow;
+	// A proposal the body holds that nobody reviews at this moment: no
+	// review of this editor's own, nor another editor's in the room. Its
+	// stripped body is no saved body — not to take as the saved baseline,
+	// nor as the body the assistant works from. While another editor
+	// reviews it, that editor's answer settles the body.
+	const orphanedProposalNow = (): boolean =>
+		unansweredProposalNow() && roomHoldNow() !== "proposalElsewhere";
+	// What a write refused for that hold says, judged when it is refused.
+	const roomHeldMessage = ():
+		| "proposalElsewhereHeld"
+		| "proposalOrphanedHeld" =>
+		roomHoldNow() === "proposalOrphaned"
+			? "proposalOrphanedHeld"
+			: "proposalElsewhereHeld";
+	const roomHeldMessageRef = useRef(roomHeldMessage);
+	roomHeldMessageRef.current = roomHeldMessage;
+	// Whether the hold at this moment is for a proposal nobody reviews.
+	const heldUnansweredNow = (): boolean =>
+		roomHoldNow() === "proposalOrphaned";
+	const heldUnansweredNowRef = useRef(heldUnansweredNow);
+	heldUnansweredNowRef.current = heldUnansweredNow;
 	// This editor's own review, by its identity while it is published. The
 	// first write of a proposal into the room publishes it at once, before
 	// that write, so the other editors hold before its body reaches them
@@ -2997,7 +3128,8 @@ function DocumentEditorInner({
 	// would write before anyone accepted it, and a Reject would not undo.
 	// So do the frames a room's editor holds while their run's card is on
 	// its way: they are that proposal, unanswered. Also one under review in
-	// another editor in the room.
+	// another editor in the room, or one nobody reviews any more (see
+	// `orphanedProposal`).
 	// `runSaveBlockBesidesOwnReview` is the same without this editor's own
 	// review: what still holds a save once that review is taken back.
 	const ownReviewBlocksSaves =
@@ -3010,7 +3142,7 @@ function DocumentEditorInner({
 		: showConfirmDialog || isConfirming || rejectPending
 			? "review"
 			: proposalUnderReviewElsewhere
-				? "proposalElsewhere"
+				? roomHoldReason
 				: isRunStillWriting
 					? "runLive"
 					: enableCollaboration && (!provider || !isCollabSynced)
@@ -3032,9 +3164,11 @@ function DocumentEditorInner({
 		reject: () => boolean;
 		/**
 		 * Withdraws the proposal, writing nothing into the room: another
-		 * editor's review begun at the same moment holds over this one.
+		 * editor's review begun at the same moment holds over this one — or,
+		 * `takenOut`, the proposal was taken out of the room under its review
+		 * (see `ownProposalTakenOut`).
 		 */
-		withdraw: () => void;
+		withdraw: (takenOut?: boolean) => void;
 	} | null>(null);
 	// The proposal the confirm card under review holds, as the assistant
 	// proposed it: put into the room again if another editor that withdrew
@@ -3381,6 +3515,54 @@ function DocumentEditorInner({
 			}
 		};
 	}, [editor, liveEditorRef]);
+	// Whether the body holds diff marks (see `bodyHoldsDiffMarks`, Fizzy
+	// #2946), read once the editor is there and whenever its body changes —
+	// typed here, written by the room, or put in by a review. Also as a ref,
+	// with whether a change the room brought in took the last of them out:
+	// while this editor reviews a proposal, that took the proposal out under
+	// its review (see below). Only a change from the room raises it — never
+	// this editor's own, an Accept or a Reject of the last change included,
+	// nor its undo or redo: its own change reaches the editor's listeners
+	// after the room has seen it, and a flag it left standing would be read
+	// by the next change from the room, whatever that was.
+	const bodyHoldsDiffMarksRef = useRef(false);
+	const diffMarksJustLeftRef = useRef(false);
+	useEffect(() => {
+		if (!roomStampsOn || !editor || editor.isDestroyed) {
+			bodyHoldsDiffMarksRef.current = false;
+			setBodyHoldsDiffMarks(false);
+			return;
+		}
+		const read = (fromRoom: boolean) => {
+			if (editor.isDestroyed) {
+				return;
+			}
+			const holds = editorHoldsDiffMarks(editor.state.doc);
+			if (fromRoom && bodyHoldsDiffMarksRef.current && !holds) {
+				diffMarksJustLeftRef.current = true;
+			}
+			bodyHoldsDiffMarksRef.current = holds;
+			setBodyHoldsDiffMarks(holds);
+		};
+		read(false);
+		const onTransaction = ({
+			transaction,
+		}: {
+			transaction: Transaction;
+		}) => {
+			if (transaction.docChanged) {
+				read(
+					isChangeOrigin(transaction) &&
+						transaction.getMeta(ySyncPluginKey)
+							?.isUndoRedoOperation !== true,
+				);
+			}
+		};
+		editor.on("transaction", onTransaction);
+		return () => {
+			editor.off("transaction", onTransaction);
+		};
+	}, [editor, roomStampsOn]);
 
 	// Register this editor with the Excalidraw auto-insert resolver
 	// registry so the chat button can target it when it produces an
@@ -4134,7 +4316,14 @@ function DocumentEditorInner({
 		// This only mirrors editor content into the agent's
 		// context state (not a save) — `?? ""` is fine; a failed read just
 		// means the agent temporarily sees an empty document.
-		const markdown = getEditorMarkdownForSave(editor) ?? "";
+		// A proposal the editor holds that nobody answers here is no part of
+		// the document the assistant works from (Fizzy #2946): stripped of
+		// its marks it reads as accepted, and the assistant would build on
+		// it — and propose again what it holds. The saved body goes instead.
+		const markdown =
+			(orphanedProposalNow()
+				? document?.content
+				: getEditorMarkdownForSave(editor)) ?? "";
 		flushSync(() => {
 			setAgentStateRef.current({
 				document: markdown,
@@ -4509,7 +4698,13 @@ function DocumentEditorInner({
 		if (document?.content && editor && !agentStateInitializedRef.current) {
 			// Get properly converted markdown from the editor
 			// This uses Turndown with custom rules for TipTap tables
-			const editorMarkdown = getEditorMarkdownForSave(editor);
+			// Not while the room hands this editor a proposal nobody answers
+			// here (see `proposalUnanswered`, Fizzy #2946): stripped of its
+			// marks it reads as accepted, and taken as the saved body the
+			// first save would write it. The saved body is what was saved.
+			const editorMarkdown = orphanedProposalNow()
+				? document.content
+				: getEditorMarkdownForSave(editor);
 			// Use editor markdown if available, otherwise fall back to document
 			// content. Fizzy #1987: `editorMarkdown` is null on serialization
 			// failure (was "" before) — that already routes into this same
@@ -4575,6 +4770,15 @@ function DocumentEditorInner({
 		if (enableCollaboration && !isCollabSynced) {
 			return;
 		}
+		// Not while the room's body holds a proposal no review here holds
+		// (see `unansweredProposalNow`, Fizzy #2946): repaired from its
+		// stripped body, the proposal would go back into the room as plain
+		// text, accepted, its marks gone and with them any way to tell it
+		// from the saved body. The repair waits until the proposal is
+		// answered or taken out.
+		if (unansweredProposalNow()) {
+			return;
+		}
 
 		const currentMarkdown = getEditorMarkdownForSave(editor);
 		const fallbackMarkdown = repairMarkdownDocument(
@@ -4607,6 +4811,7 @@ function DocumentEditorInner({
 			updateSavedBaseline(repairedMarkdown);
 			baselineRef.current = repairedMarkdown;
 		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [
 		document?.content,
 		editor,
@@ -4614,6 +4819,7 @@ function DocumentEditorInner({
 		isCollabSynced,
 		isLoading,
 		isRegenerating,
+		bodyHoldsDiffMarks,
 	]);
 
 	// Typing from before a sync loss that no save covered is still unsaved
@@ -5467,7 +5673,11 @@ function DocumentEditorInner({
 			!assistantWritesHere &&
 			!sectionRevisionShownRef.current
 		) {
-			const editorMarkdown = getEditorMarkdownForSave(editor);
+			// A proposal nobody reviews is no body to start from (see
+			// `orphanedProposalNow`, Fizzy #2946): the saved body is.
+			const editorMarkdown = orphanedProposalNow()
+				? (document?.content ?? null)
+				: getEditorMarkdownForSave(editor);
 			// Null means serialization failed on this edit — skip
 			// the sync rather than overwriting currentDocument/baselineRef with
 			// "". Those values feed straight into save (handleSave/rawContent)
@@ -6564,6 +6774,7 @@ function DocumentEditorInner({
 		// proposal, judged when it would go; and this editor's own review
 		// is published before its diff does (Fizzy #2946).
 		heldElsewhere: () => peerReviewHoldsNowRef.current(),
+		heldUnanswered: () => heldUnansweredNowRef.current(),
 		beforePreview: () => publishOwnReviewNowRef.current(),
 		onSaved: (savedVersion) => {
 			// The hook puts the confirmed body in the editor.
@@ -6592,7 +6803,9 @@ function DocumentEditorInner({
 			return SECTION_REVISION_EDITOR_CODES.EDITOR_BUSY;
 		}
 		if (peerReviewHoldsNowRef.current()) {
-			return SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE;
+			return heldUnansweredNowRef.current()
+				? SECTION_REVISION_EDITOR_CODES.HELD_UNANSWERED
+				: SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE;
 		}
 		if (
 			isLoading ||
@@ -6636,6 +6849,7 @@ function DocumentEditorInner({
 		},
 		blockedReason: () => sectionRevisionBlockedRef.current(),
 		heldElsewhere: () => peerReviewHoldsNowRef.current(),
+		heldUnanswered: () => heldUnansweredNowRef.current(),
 		// Its review is said in the room, and its diff kept out of this
 		// editor's typing, from before the diff goes in.
 		beforePreview: () => {
@@ -6714,8 +6928,10 @@ function DocumentEditorInner({
 	// then, so typing elsewhere meanwhile would be replaced by it. A sync
 	// loss unmounts this editor and withdraws it, and the editor mounted
 	// again does not publish it again: the review's state is this editor's,
-	// and the call the chat renders again is armed anew against a body that
-	// already holds the proposal, which reads as no change.
+	// and the call the chat renders again finds the room holding a proposal
+	// nobody reviews, so it is answered as not applied and the proposal is
+	// rejected once the others have waited for a reviewer (see the
+	// withdrawal below).
 	// An AI accept on a client-document Proposal keeps it published until
 	// its save answers, and so does a section revision from its diff on
 	// (Fizzy #2946).
@@ -6737,6 +6953,96 @@ function DocumentEditorInner({
 			publishProposalReview(awareness, null);
 		};
 	}, [roomStampsOn, proposalUnderReviewHere, provider]);
+	proposalUnderReviewHereRef.current = proposalUnderReviewHere;
+	// The body holds a proposal no review of this editor's own holds (see
+	// `proposalUnanswered`, Fizzy #2946). Only once synced: before, the
+	// body is not the room's yet.
+	useEffect(() => {
+		setProposalUnanswered(
+			roomStampsOn &&
+				isCollabSynced &&
+				bodyHoldsDiffMarks &&
+				!proposalUnderReviewHere,
+		);
+	}, [
+		roomStampsOn,
+		isCollabSynced,
+		bodyHoldsDiffMarks,
+		proposalUnderReviewHere,
+	]);
+
+	// A proposal nobody reviews any more is rejected where it stands (Fizzy
+	// #2946), once this editor has held for it `proposalCardLateLimitMs`
+	// without a break: long enough for a reviewer whose connection dropped
+	// to come back and publish its review again. Anything that ends the hold
+	// meanwhile — a review in the room, the marks gone, the sync lost —
+	// starts the wait again. A sync loss in the reviewing tab is no
+	// exception: the editor mounted again does not take its own proposal
+	// over (its card, rendered again, finds the room held for a proposal
+	// nobody reviews and is answered as not applied), so that proposal is
+	// rejected too, there and in every other editor.
+	// The reject is the review bar's, for every change at once: what the
+	// proposal added goes, what it deleted stays, and everything else in the
+	// body — typing from before the proposal, changes the reviewer accepted
+	// one by one — is left as it is, unsaved, for the autosave. The room's
+	// stamp still names the saved body, which the proposal never changed.
+	// Several editors held for it may reject it at once: they write the same
+	// deletions and mark removals, which the room merges into one. The
+	// person is told once. Only while the room's stamp names the saved body
+	// this editor holds: a room behind or ahead of it is the convergence's
+	// to bring to the saved document, which replaces the proposal with the
+	// rest of the body.
+	const withdrawOrphanedProposal = () => {
+		const ed = liveEditorOrNull(editorRef.current);
+		// Only from a client that may edit: a read-only one never writes the
+		// room (see `convergenceRank`).
+		if (
+			!ed ||
+			!ydoc ||
+			canEdit !== true ||
+			!savedStamp ||
+			roomHoldNow() !== "proposalOrphaned" ||
+			!sameRoomStamp(readRoomStamp(ydoc), savedStamp)
+		) {
+			return;
+		}
+		isProgrammaticUpdateRef.current = true;
+		const rejected = rejectAllChanges(ed);
+		queueMicrotask(() => {
+			isProgrammaticUpdateRef.current = false;
+		});
+		if (!rejected) {
+			return;
+		}
+		scheduleDirtyCheck();
+		toast.info(tRun("proposalOrphanedRemoved"));
+	};
+	const withdrawOrphanedProposalRef = useRef(withdrawOrphanedProposal);
+	withdrawOrphanedProposalRef.current = withdrawOrphanedProposal;
+	const orphanedSinceRef = useRef<number | null>(null);
+	const savedStampKey = savedStamp ? roomStampKey(savedStamp) : null;
+	useEffect(() => {
+		if (!orphanedProposal || canEdit === false) {
+			orphanedSinceRef.current = null;
+			return;
+		}
+		orphanedSinceRef.current ??= Date.now();
+		if (canEdit !== true) {
+			return;
+		}
+		const timer = setTimeout(
+			() => withdrawOrphanedProposalRef.current(),
+			Math.max(
+				0,
+				orphanedSinceRef.current +
+					ROOM_CONVERGENCE_TIMINGS.proposalCardLateLimitMs -
+					Date.now(),
+			),
+		);
+		return () => clearTimeout(timer);
+		// A newer saved body this editor learns of is looked at again, from
+		// when the hold began.
+	}, [orphanedProposal, canEdit, savedStampKey]);
 
 	// Two editors that began a review before either heard of the other's
 	// settle it the same way everywhere (see `newProposalReview`, Fizzy
@@ -6744,8 +7050,14 @@ function DocumentEditorInner({
 	// is answered as not applied, its stream stops, its update using context
 	// is dropped — and none of them writes the room, which holds the other
 	// review's proposal.
+	// Only for another editor's review: a proposal nobody reviews holds no
+	// review of this editor's own over.
 	useEffect(() => {
-		if (!proposalUnderReviewElsewhere || !proposalUnderReviewHere) {
+		if (
+			!peerReviewing ||
+			!proposalUnderReviewElsewhere ||
+			!proposalUnderReviewHere
+		) {
 			return;
 		}
 		confirmCallbacksRef.current?.withdraw();
@@ -6758,7 +7070,7 @@ function DocumentEditorInner({
 			sectionReview.withdraw();
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [proposalUnderReviewElsewhere, proposalUnderReviewHere]);
+	}, [peerReviewing, proposalUnderReviewElsewhere, proposalUnderReviewHere]);
 
 	// The editor whose review holds puts its proposal into the room again
 	// whenever an editor that withdrew its own wrote into the room before it
@@ -6798,32 +7110,99 @@ function DocumentEditorInner({
 	};
 	const reassertOwnReviewRef = useRef(reassertOwnReview);
 	reassertOwnReviewRef.current = reassertOwnReview;
+
+	// This editor's own proposal was taken out of the room under its review
+	// (Fizzy #2946): its state stayed out of the room longer than the other
+	// editors wait for a reviewer — a connection that dropped and came back
+	// without a remount, a tab whose timers were held back in the
+	// background — and they rejected it as a proposal nobody reviews (see
+	// the withdrawal above). Its body is gone, so nothing of it can be
+	// accepted any more: the review ends as not applied — its card answered
+	// so, its frames, its update using context or its section revision
+	// dropped — and is withdrawn from the room, so the other editors do not
+	// hold for a proposal that is no longer there. Said once.
+	const ownProposalTakenOut = () => {
+		const ed = liveEditorOrNull(editorRef.current);
+		if (!ed || editorHoldsDiffMarks(ed.state.doc)) {
+			return;
+		}
+		const card = confirmCallbacksRef.current;
+		if (card) {
+			card.withdraw(true);
+		} else if (hasPendingConfirm) {
+			// Its card is being answered.
+			return;
+		} else if (assistantWritesHere && !isLoading) {
+			assistantRunHeldRef.current = true;
+			setAssistantWritesHere(false);
+			const body = getEditorMarkdownForSave(ed);
+			if (body !== null) {
+				setAgentStateRef.current((prev) => ({
+					...prev,
+					document: body,
+				}));
+			}
+			toast.info(tRun("ownProposalRemoved"));
+		} else if (
+			contextUpdate.showingDiff &&
+			!contextUpdate.isApplyingNow()
+		) {
+			contextUpdate.withdraw();
+			toast.info(tRun("ownProposalRemoved"));
+		} else if (
+			sectionReview.isReviewingNow() &&
+			!sectionReview.isApplyingNow()
+		) {
+			sectionReview.withdraw(
+				SECTION_REVISION_EDITOR_CODES.REMOVED_UNANSWERED,
+			);
+			toast.info(tRun("ownProposalRemoved"));
+		} else {
+			return;
+		}
+		ownReviewRef.current = null;
+		publishProposalReview(provider?.awareness, null);
+	};
+	const ownProposalTakenOutRef = useRef(ownProposalTakenOut);
+	ownProposalTakenOutRef.current = ownProposalTakenOut;
+
 	useEffect(() => {
 		if (!roomStampsOn || !ydoc || !proposalUnderReviewHere) {
 			return;
 		}
 		let due = false;
+		diffMarksJustLeftRef.current = false;
 		const onTransaction = (transaction: Y.Transaction) => {
+			// Whether this transaction took the last diff marks out of the
+			// body (see `diffMarksJustLeftRef`), read once per transaction.
+			const marksLeft = diffMarksJustLeftRef.current;
+			diffMarksJustLeftRef.current = false;
 			if (transaction.local || due) {
 				return;
 			}
 			const withdrawn = peerReviewsHeldOver(provider?.awareness);
-			if (withdrawn.size === 0) {
+			const wroteHere =
+				withdrawn.size > 0 &&
+				[...transaction.afterState].some(
+					([client, clock]) =>
+						withdrawn.has(client) &&
+						(transaction.beforeState.get(client) ?? 0) < clock,
+				);
+			if (wroteHere) {
+				due = true;
+				queueMicrotask(() => {
+					due = false;
+					reassertOwnReviewRef.current();
+				});
 				return;
 			}
-			const wroteHere = [...transaction.afterState].some(
-				([client, clock]) =>
-					withdrawn.has(client) &&
-					(transaction.beforeState.get(client) ?? 0) < clock,
-			);
-			if (!wroteHere) {
-				return;
+			if (marksLeft) {
+				due = true;
+				queueMicrotask(() => {
+					due = false;
+					ownProposalTakenOutRef.current();
+				});
 			}
-			due = true;
-			queueMicrotask(() => {
-				due = false;
-				reassertOwnReviewRef.current();
-			});
 		};
 		ydoc.on("afterTransaction", onTransaction);
 		return () => ydoc.off("afterTransaction", onTransaction);
@@ -7375,10 +7754,12 @@ function DocumentEditorInner({
 			// reviews a proposal — the room holds that proposal — judged by
 			// the room as it is when this save would go (Fizzy #2946). As
 			// for a room without a stamp, nothing goes and the text stays
-			// unsaved.
+			// unsaved. Nor while the editor holds a proposal no review of its
+			// own holds (see `proposalUnanswered`).
 			if (
 				request.savesEditor !== undefined &&
-				peerReviewHoldsNowRef.current()
+				(peerReviewHoldsNowRef.current() ||
+					unansweredProposalNowRef.current())
 			) {
 				saveInFlightRef.current = false;
 				saveAgainRef.current = null;
@@ -7565,10 +7946,17 @@ function DocumentEditorInner({
 		// in the text a save would carry — and typing here that no save
 		// covered is said to be unsaved, with the text to copy. The editor's
 		// text holds the proposal too, and the message says so; edits of the
-		// raw view's own are copied as they are.
+		// raw view's own are copied as they are. The same while it holds for
+		// a proposal nobody reviews (see `proposalUnanswered`).
+		const leaveHold =
+			saveBlockReason === "proposalElsewhere" ||
+			saveBlockReason === "proposalOrphaned"
+				? saveBlockReason
+				: saveBlockReason === null
+					? roomHoldNow()
+					: null;
 		if (
-			(saveBlockReason === "proposalElsewhere" ||
-				(saveBlockReason === null && peerReviewHoldsNow())) &&
+			leaveHold !== null &&
 			roomStampsOn &&
 			canEdit === true &&
 			hasLocalTyping()
@@ -7580,7 +7968,9 @@ function DocumentEditorInner({
 					text,
 					ownRawText
 						? tRoom("leaveSaveFailed")
-						: tRoom("leaveWhileProposalElsewhere"),
+						: leaveHold === "proposalOrphaned"
+							? tRoom("leaveWhileProposalOrphaned")
+							: tRoom("leaveWhileProposalElsewhere"),
 				);
 			}
 			return;
@@ -7790,6 +8180,11 @@ function DocumentEditorInner({
 				answer({ kind: "notApplied", code });
 			}
 		};
+		// What holds it, as the code its answer is said by.
+		const heldCodeNow = () =>
+			heldUnansweredNowRef.current()
+				? SECTION_REVISION_EDITOR_CODES.HELD_UNANSWERED
+				: SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE;
 		const base = resolveAiAcceptBaseRef.current();
 		if (!base || base === "unavailable") {
 			answer({
@@ -7799,10 +8194,7 @@ function DocumentEditorInner({
 			return;
 		}
 		if (peerReviewHoldsNowRef.current()) {
-			answer({
-				kind: "notApplied",
-				code: SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE,
-			});
+			answer({ kind: "notApplied", code: heldCodeNow() });
 			return;
 		}
 		setAiAcceptHeld(true);
@@ -7824,7 +8216,7 @@ function DocumentEditorInner({
 					aiReview: accept.aiReview,
 				}),
 			onUnavailable: () => notSent(SECTION_REVISION_EDITOR_CODES.NO_BASE),
-			onHeld: () => notSent(SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE),
+			onHeld: () => notSent(heldCodeNow()),
 			onSaved: () => {
 				// An offer left from an earlier refused accept is about the
 				// body before this one: it goes once this accept is saved.
@@ -8018,10 +8410,14 @@ function DocumentEditorInner({
 		// state stays, so the text is saved once the block lifts. Also while
 		// another editor reviews a proposal by the room as it is now, before
 		// this editor rendered it (see `peerReviewHoldsNow`): an autosave due
-		// then, or the save before an assistant run, would write it.
+		// then, or the save before an assistant run, would write it. And in
+		// a room, while its body holds a proposal no review of its own
+		// holds (see `proposalUnanswered`, Fizzy #2946):
+		// the save would write that proposal as accepted.
 		const blockReason: SaveBlockReason | null =
 			saveBlockReason ??
-			(peerReviewHoldsNow() ? "proposalElsewhere" : null);
+			roomHoldNow() ??
+			(unansweredProposalNow() ? "proposalOrphaned" : null);
 		if (blockReason !== null) {
 			if (isManualSaveRef.current) {
 				toast.info(tRun(`saveBlocked.${blockReason}`));
@@ -8726,7 +9122,7 @@ function DocumentEditorInner({
 		// Not while another editor reviews a proposal (Fizzy #2946): the run's
 		// body would replace it in the room before anyone answered it.
 		if (peerReviewHoldsNowRef.current()) {
-			toast.info(tRun("proposalElsewhereHeld"));
+			toast.info(tRun(roomHeldMessageRef.current()));
 			return;
 		}
 
@@ -9029,10 +9425,13 @@ function DocumentEditorInner({
 				) {
 					regenerationHeldRef.current = true;
 					queueMicrotask(() => {
-						toast.info(tRun("proposalElsewhereHeld"));
+						const unanswered = heldUnansweredNowRef.current();
+						toast.info(tRun(roomHeldMessageRef.current()));
 						respond?.({
 							accepted: false,
-							reason: REGENERATION_HELD_ELSEWHERE,
+							reason: unanswered
+								? REGENERATION_HELD_UNANSWERED
+								: REGENERATION_HELD_ELSEWHERE,
 						});
 					});
 					return <>{null}</>;
@@ -9208,27 +9607,37 @@ function DocumentEditorInner({
 				// to the body from before its proposal, which the editor may
 				// still hold a frame of: every answer resumes the agent for one
 				// more short run, which would otherwise stream the declined
-				// proposal in.
+				// proposal in. Said by what held it: another editor's review,
+				// a proposal in the room nobody reviews (see
+				// `orphanedProposal`), or this proposal itself taken out of the
+				// room under its review (see `ownProposalTakenOut`).
 				const answerNotApplied = (
 					kept: string = getEditorMarkdownForSave(
 						editorRef.current,
 					) ?? baselineRef.current,
+					held: NotAppliedHold = heldUnansweredNowRef.current()
+						? "unanswered"
+						: "elsewhere",
 				): boolean => {
 					setHasPendingConfirm(false);
 					confirmCallbacksRef.current = null;
-					toast.info(tRun("proposalElsewhereHeld"));
+					toast.info(tRun(NOT_APPLIED_HOLDS[held].message));
 					setAgentState((prev) => ({
 						...prev,
 						document: kept,
 					}));
 					void recordOutcomeRef.current({
 						accepted: false,
-						summary: ACCEPT_OUTCOME_SUMMARIES.heldElsewhere,
+						summary: NOT_APPLIED_HOLDS[held].summary,
 					});
 					return answer({ accepted: false });
 				};
-				const handleWithdraw = () => {
-					answerNotApplied(baselineRef.current);
+				const handleWithdraw = (takenOut = false) => {
+					if (takenOut) {
+						answerNotApplied(undefined, "removed");
+						return;
+					}
+					answerNotApplied(baselineRef.current, "elsewhere");
 				};
 				const handleReject = () => {
 					void recordVerdict(false);
@@ -9271,7 +9680,7 @@ function DocumentEditorInner({
 						if (isArtifactProposalRef.current) {
 							return answerNotApplied(baselineRef.current);
 						}
-						toast.info(tRun("proposalElsewhereHeld"));
+						toast.info(tRun(roomHeldMessageRef.current()));
 						return null;
 					}
 					// Confirm: Get the merged content from editor (strips diff tags)
@@ -9564,7 +9973,7 @@ function DocumentEditorInner({
 							// editor's review began: it stays in the editor,
 							// unsaved, for a later save.
 							onHeld: () => {
-								toast.info(tRun("proposalElsewhereHeld"));
+								toast.info(tRun(roomHeldMessageRef.current()));
 								recordNotSent();
 							},
 							onSaved: () => {
@@ -9781,8 +10190,11 @@ function DocumentEditorInner({
 				}
 				// Not while another editor reviews a proposal (Fizzy #2946).
 				if (peerReviewHoldsNowRef.current()) {
-					toast.info(tRun("proposalElsewhereHeld"));
-					return "Another tab is reviewing an assistant proposal for this document. The diagram was not inserted.";
+					const held = roomHeldMessageRef.current();
+					toast.info(tRun(held));
+					return held === "proposalOrphanedHeld"
+						? "This document holds an assistant proposal that nobody is reviewing right now. The diagram was not inserted."
+						: "Another tab is reviewing an assistant proposal for this document. The diagram was not inserted.";
 				}
 
 				// Insert Mermaid code block at cursor via the editor
@@ -11504,7 +11916,7 @@ function DocumentEditorInner({
 												isConfirming
 											? "regenerating"
 											: proposalUnderReviewElsewhere
-												? "proposalElsewhere"
+												? roomHoldReason
 												: null
 								}
 								onVersionRestored={(
@@ -11663,6 +12075,10 @@ function DocumentEditorInner({
 								roomStatus === "inSync" &&
 									proposalUnderReviewElsewhere ? (
 									<ProposalReviewElsewhereStatus
+										orphaned={
+											roomHoldReason ===
+											"proposalOrphaned"
+										}
 										reviewerName={peerReviewerName}
 									/>
 								) : roomStatus === "inSync" ? (
@@ -11993,13 +12409,18 @@ function DocumentEditorInner({
 								saveSlot,
 							)}
 						{/* Why Regenerate and Update using context wait while
-						    another editor reviews a proposal (Fizzy #2946). */}
+						    another editor reviews a proposal (Fizzy #2946), or while one
+						    nobody reviews holds this editor. */}
 						{proposalUnderReviewElsewhere && (
 							<span
 								id={proposalElsewhereHeldId}
 								className="sr-only"
 							>
-								{tRun("proposalElsewhereHeld")}
+								{tRun(
+									roomHoldReason === "proposalOrphaned"
+										? "proposalOrphanedHeld"
+										: "proposalElsewhereHeld",
+								)}
 							</span>
 						)}
 						{/* Polite live region — announces scroll-to-mention navigation to screen readers */}

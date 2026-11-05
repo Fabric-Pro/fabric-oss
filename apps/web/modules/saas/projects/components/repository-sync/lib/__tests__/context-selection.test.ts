@@ -492,6 +492,28 @@ describe("rows the run would never sync", () => {
 			action: null,
 		});
 	});
+
+	it("names the length when a listed path is too long, not its spelling", () => {
+		const long = "x".repeat(513);
+		const entries: ContextRepositoryTreeEntry[] = [
+			{
+				path: long,
+				type: "file",
+				selectRefusal: "INVALID_PATH",
+				excludeRefusal: "INVALID_PATH",
+			},
+		];
+		expect(
+			rowOf(build(EMPTY_CONTEXT_SELECTION, entries), long),
+		).toMatchObject({
+			membership: "out",
+			disabledReason: {
+				key: "tree.selection.pathTooLong",
+				values: { max: 512 },
+			},
+			action: null,
+		});
+	});
 });
 
 describe("the count and the summary", () => {

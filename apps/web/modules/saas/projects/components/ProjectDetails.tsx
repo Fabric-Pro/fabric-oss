@@ -87,6 +87,7 @@ import { loadCodingInstructionsTab } from "./instructions/lib/coding-instruction
 import { PausedSetupNotice, usePausedSetup } from "./PausedSetupNotice";
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectPresenceProvider } from "./ProjectPresenceProvider";
+import { ProjectReportsOnlyFallback } from "./ProjectReportsOnlyFallback";
 import { ProjectRepositoryIntegrationSettings } from "./ProjectRepositoryIntegrationSettings";
 import { ProjectSectionHero } from "./ProjectSectionHero";
 import { ProjectTabButton } from "./ProjectTabButton";
@@ -980,11 +981,17 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 
 	if (!project) {
 		return (
-			<ProjectUnavailable
+			<ProjectReportsOnlyFallback
+				projectId={projectId}
 				error={projectError}
-				basePath={basePath}
-				onRetry={() => refetch()}
-				isRetrying={isProjectFetching}
+				unavailable={
+					<ProjectUnavailable
+						error={projectError}
+						basePath={basePath}
+						onRetry={() => refetch()}
+						isRetrying={isProjectFetching}
+					/>
+				}
 			/>
 		);
 	}

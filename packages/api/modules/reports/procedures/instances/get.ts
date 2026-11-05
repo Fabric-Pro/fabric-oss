@@ -11,8 +11,13 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import {
+	canDeleteReportInstance,
+	canEditProjectReport,
 	canEditReportInstance,
 	canGenerateReportInstance,
+	canManageReportLifecycle,
+	canManageReportTemplate,
+	isOrganizationReportAdmin,
 } from "../../lib/report-access";
 
 const getInstanceInputSchema = z.object({
@@ -41,7 +46,41 @@ export const getInstanceProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const canEdit = await canEditReportInstance(instance, context.user);
+		const { template } = instance;
+		const [
+			canGenerate,
+			canEdit,
+			canDelete,
+			canManageLifecycle,
+			canSaveToTemplate,
+			canSetOrganizationDefault,
+			canSetProjectDefault,
+		] = await Promise.all([
+			canGenerateReportInstance(instance, context.user),
+			canEditReportInstance(instance, context.user),
+			canDeleteReportInstance(instance, context.user),
+			canManageReportLifecycle(instance, context.user),
+			// "Update template": whoever may change the template, while it is live
+			template.archivedAt
+				? false
+				: canManageReportTemplate(template, context.user),
+			// "Set as organization default": the organization's admins and owners
+			instance.organizationId
+				? isOrganizationReportAdmin(
+						instance.organizationId,
+						context.user.id,
+					)
+				: false,
+			// "Set as project default": whoever may edit the project's reports
+			instance.organizationId && instance.projectId
+				? canEditProjectReport(instance.projectId, context.user)
+				: false,
+		]);
+		// The organization's own templates' prompts are edited on the template,
+		// so its default holds only their parameter values.
+		const ownedByOrganization =
+			template.scope === "ORGANIZATION" &&
+			template.organizationId === instance.organizationId;
 
 		return {
 			id: instance.id,
@@ -49,12 +88,23 @@ export const getInstanceProcedure = tenantProtectedProcedure
 			projectId: instance.projectId,
 			userId: instance.userId,
 			canEdit,
-			canGenerate: canGenerateReportInstance(instance, context.user),
+			canDelete,
+			canManageLifecycle,
+			canGenerate,
+			// Saving back follows an edit, so someone who only reads the report
+			// is offered none of it, whichever template they also own.
+			canSaveToTemplate: canEdit && canSaveToTemplate,
+			canSetOrganizationDefault: canEdit && canSetOrganizationDefault,
+			canSetOrganizationPrompts:
+				canEdit && canSetOrganizationDefault && !ownedByOrganization,
+			canSetProjectDefault: canEdit && canSetProjectDefault,
 			name: instance.name,
 			description: instance.description,
 			templateId: instance.templateId,
 			template: {
 				id: instance.template.id,
+				scope: instance.template.scope,
+				isPublic: instance.template.isPublic,
 				name: instance.template.name,
 				description: instance.template.description,
 				heroEmojis: instance.template.heroEmojis,

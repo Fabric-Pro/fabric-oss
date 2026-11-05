@@ -45,16 +45,16 @@ const PLATFORM_ADMIN: ReportSuiteCapabilities = {
 };
 
 describe("pickDefaultProjectReportsTab", () => {
-	it("waits while the project's report count is loading", () => {
+	it("waits while the viewer's report count is loading", () => {
 		expect(pickDefaultProjectReportsTab(undefined)).toBeNull();
 	});
 
-	it("opens on the project's reports once it has one", () => {
+	it("opens on the reports once the viewer has one here, a draft included", () => {
 		expect(pickDefaultProjectReportsTab(1)).toBe("instances");
 		expect(pickDefaultProjectReportsTab(12)).toBe("instances");
 	});
 
-	it("opens on templates for a project without reports", () => {
+	it("opens on templates for a viewer without reports here", () => {
 		expect(pickDefaultProjectReportsTab(0)).toBe("templates");
 	});
 });

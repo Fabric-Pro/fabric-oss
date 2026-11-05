@@ -3,6 +3,7 @@
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { ProjectSectionHero } from "@saas/projects/components/ProjectSectionHero";
+import { useOneClickReport } from "@saas/reports/hooks/use-one-click-report";
 import {
 	type ProjectReportsTab,
 	pickDefaultProjectReportsTab,
@@ -14,7 +15,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { cn } from "@ui/lib";
-import { SparklesIcon } from "lucide-react";
+import { RotateCcwIcon, SparklesIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
 import { ProjectReportInstancesList } from "./ProjectReportInstancesList";
@@ -22,10 +23,14 @@ import { ProjectReportTemplatesList } from "./ProjectReportTemplatesList";
 
 const REPORTS_PER_PAGE = 20;
 
+// A report the project's list shows: running, or set up and waiting for a source.
+const LISTED_REPORT_STATUSES: Array<"ACTIVE" | "DRAFT"> = ["ACTIVE", "DRAFT"];
+
 const NO_CAPABILITIES = {
 	isPlatformAdmin: false,
 	isOrganizationAdmin: false,
 	canEditProjectReports: false,
+	canSetProjectDefaults: false,
 };
 
 function isProjectReportsTab(value: string): value is ProjectReportsTab {
@@ -33,8 +38,8 @@ function isProjectReportsTab(value: string): value is ProjectReportsTab {
 }
 
 /**
- * A project's Reports tab with the report suite on: the project's reports,
- * and the templates they start from, managed in one place.
+ * A project's Reports tab with the report suite on: the project's reports, its
+ * drafts included, and the templates they start from, managed in one place.
  */
 export function ProjectReportSuite({ projectId }: { projectId: string }) {
 	const { basePath, organizationId } = useOrganizationContext();
@@ -42,35 +47,55 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 	const reportTemplatesPath = `${basePath}/report-templates`;
 	const [chosenTab, setChosenTab] = useState<ProjectReportsTab | null>(null);
 	const [showArchived, setShowArchived] = useState(false);
+	// Platform admins may list the templates the catalog leaves out.
+	const [showUnproven, setShowUnproven] = useState(false);
 	const [reportsPage, setReportsPage] = useState(1);
 	const reportsTopRef = useRef<HTMLDivElement>(null);
 
 	const { data: capabilities } = useQuery(
 		orpc.reports.capabilities.queryOptions({ input: { projectId } }),
 	);
-	const {
-		data: instancesData,
-		isError: instancesFailed,
-		isPlaceholderData: isPreviousReportsPage,
-	} = useQuery({
-		...orpc.reports.instances.list.queryOptions({
+	const { data: instancesData, isPlaceholderData: isPreviousReportsPage } =
+		useQuery({
+			...orpc.reports.instances.list.queryOptions({
+				input: {
+					organizationId,
+					projectId,
+					status: LISTED_REPORT_STATUSES,
+					limit: REPORTS_PER_PAGE,
+					offset: (reportsPage - 1) * REPORTS_PER_PAGE,
+					countActive: true,
+				},
+			}),
+			placeholderData: keepPreviousData,
+		});
+	const { data: ownReportsData, isError: ownReportsFailed } = useQuery(
+		orpc.reports.instances.list.queryOptions({
 			input: {
 				organizationId,
 				projectId,
-				limit: REPORTS_PER_PAGE,
-				offset: (reportsPage - 1) * REPORTS_PER_PAGE,
-				countActive: true,
+				ownedByCaller: true,
+				status: LISTED_REPORT_STATUSES,
+				limit: 1,
+				offset: 0,
 			},
 		}),
-		placeholderData: keepPreviousData,
-	});
-	const { data: templatesData, isLoading: isLoadingTemplates } = useQuery(
+	);
+	const {
+		data: templatesData,
+		isLoading: isLoadingTemplates,
+		isError: templatesFailed,
+		isFetching: isFetchingTemplates,
+		refetch: refetchTemplates,
+	} = useQuery(
 		orpc.reports.templates.list.queryOptions({
 			input: {
 				organizationId,
 				// The list hides archived templates until asked, and offers
 				// to show them only to someone who may restore one.
 				includeArchived: true,
+				// Ignored by the API for anyone but a platform admin.
+				includeUnproven: showUnproven,
 				limit: 100,
 				offset: 0,
 			},
@@ -78,6 +103,12 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 	);
 	type TemplateRow = NonNullable<typeof templatesData>["templates"][number];
 	const [startingFrom, setStartingFrom] = useState<TemplateRow | null>(null);
+	const { generate, generatingTemplateId } = useOneClickReport<TemplateRow>({
+		projectId,
+		organizationId,
+		reportTemplatesPath,
+		onNeedsSetup: setStartingFrom,
+	});
 
 	const instances = instancesData?.instances ?? [];
 	const templates = templatesData?.templates ?? [];
@@ -96,13 +127,13 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 			setReportsPage(lastReportsPage);
 		}
 	}, [instancesData, isPreviousReportsPage, reportsPage, lastReportsPage]);
-	// The default waits for the project's report count, so the tab never
-	// flashes from Templates to Reports once the list arrives. A failed
-	// count opens on Templates rather than spinning forever.
+	// The default waits for the viewer's own report count, so the tab never
+	// flashes from Templates to My Instances once it arrives. A failed count
+	// opens on Templates rather than spinning forever.
 	const activeTab =
 		chosenTab ??
 		pickDefaultProjectReportsTab(
-			instancesFailed ? 0 : instancesData?.total,
+			ownReportsFailed ? 0 : ownReportsData?.total,
 		);
 	const canEdit = capabilities?.canEditProjectReports !== false;
 
@@ -165,7 +196,9 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 					className="w-full"
 				>
 					<TabsList data-onboarding-target="reports-tabs">
-						<TabsTrigger value="instances">Reports</TabsTrigger>
+						<TabsTrigger value="instances">
+							My Instances
+						</TabsTrigger>
 						<TabsTrigger value="templates">Templates</TabsTrigger>
 					</TabsList>
 
@@ -181,6 +214,7 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 						>
 							<ProjectReportInstancesList
 								instances={instances}
+								viewerUserId={user?.id}
 								organizationId={organizationId}
 								reportTemplatesPath={reportTemplatesPath}
 								onBrowseTemplates={
@@ -212,16 +246,40 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 							<div className="flex justify-center py-12">
 								<Spinner className="h-8 w-8" />
 							</div>
+						) : templatesFailed && templates.length === 0 ? (
+							<div className="space-y-2">
+								<p
+									role="alert"
+									className="text-sm text-destructive"
+								>
+									The templates could not be loaded.
+								</p>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									disabled={isFetchingTemplates}
+									onClick={() => void refetchTemplates()}
+								>
+									<RotateCcwIcon className="mr-2 h-4 w-4" />
+									Try again
+								</Button>
+							</div>
 						) : (
 							<ProjectReportTemplatesList
 								templates={templates}
 								capabilities={capabilities ?? NO_CAPABILITIES}
+								capabilitiesKnown={capabilities !== undefined}
 								viewerUserId={user?.id}
 								reportTemplatesPath={reportTemplatesPath}
 								projectId={projectId}
+								organizationId={organizationId}
 								showArchived={showArchived}
 								onShowArchivedChange={setShowArchived}
-								onUseTemplate={setStartingFrom}
+								showUnproven={showUnproven}
+								onShowUnprovenChange={setShowUnproven}
+								onGenerate={generate}
+								generatingTemplateId={generatingTemplateId}
 							/>
 						)}
 					</TabsContent>

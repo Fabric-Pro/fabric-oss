@@ -142,6 +142,7 @@ jobs:
               # nothing, and one account cannot read another's inbox), so the
               # only place it is ever proven is here, against real rows.
               - 'packages/api/modules/projects/**'
+              - 'packages/permissions/**'
               - '.github/workflows/db-integration.yml'
             temporal:
               # publishing-notify-activity.test.ts (Fizzy #1850) reads and
@@ -668,6 +669,46 @@ jobs:
           }
           EOF
 
+      - name: 'Report roles against the tenant checker (database package, real Postgres)'
+        # Who may read, write and run a project's reports is decided by rows:
+        # membership, project rows and the platform role. No second identity
+        # exists on a shared environment to prove these live, so they are proven
+        # here, including that a system admin who is no member stays refused and
+        # that an admin with no row still cannot read the project's own pages.
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/report-access-roles.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=report-access-roles-results.json
+
+      - name: 'Guard: assert the report roles suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 17: eleven identities against the checker, nobody running a report
+          // they do not own, the report surface's narrow project, the project's
+          // own read staying closed, a trashed and a foreign project refused, the
+          // organization-wide list and the caller's own list.
+          const EXPECTED = 17;
+          const report = JSON.parse(fs.readFileSync("packages/database/report-access-roles-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`report-access-roles: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (report-access-roles.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — DATABASE_URL is not a reachable Postgres — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
       - name: 'Duplicate-detection verdict and section caches (database package, real Postgres)'
         # What only Postgres shows for duplicate detection's caches: a verdict
         # stamps its hashes onto whatever link row exists, a distinct verdict
@@ -1062,6 +1103,8 @@ jobs:
         run: |
           pnpm --filter @repo/database exec vitest run \
             __tests__/instruction-proposal-approval.integration.test.ts \
+            __tests__/instruction-proposal-rebase.integration.test.ts \
+            __tests__/instruction-proposal-retention.integration.test.ts \
             --passWithNoTests=false \
             --reporter=dot \
             --reporter=json --outputFile=instruction-proposal-approval-results.json
@@ -1069,10 +1112,14 @@ jobs:
       - name: 'Guard: assert the instruction proposal decision suite executed (exact count, zero skips)'
         # Same anti-false-pass shape as the guards above: the file self-skips
         # without DATABASE_URL, so a green step proves nothing on its own, and
-        # the count is exact so a dropped case is noticed. 8 = the 6 decision
-        # cases plus the 2 review-policy cases (the second reviewer's approval
+        # the count is exact so a dropped case is noticed. 21 = the 6 decision
+        # cases, the 3 review-policy cases (the second reviewer's approval
         # publishes, never the proposer's; a lowered policy publishes on the
-        # next approval).
+        # next approval; an approver who left stops counting), the 7 rebase
+        # cases (the stale proposal stays pending until the rebase is READY,
+        # through an abandoned upload and a gate rejection), and the 5
+        # retention cases (nothing deletes a row whose pull request or member
+        # branch still owes work).
         run: |
           node <<'EOF'
           const fs = require("node:fs");
@@ -1081,9 +1128,9 @@ jobs:
           const passed = report.numPassedTests ?? 0;
           const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
           console.log(`instruction-proposal-approval-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
-          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/instruction-proposal-approval.integration.test.ts)"); process.exit(1); }
+          if (files !== 3) { console.error("::error::expected exactly 3 test files (instruction-proposal-approval + instruction-proposal-rebase + instruction-proposal-retention integration tests)"); process.exit(1); }
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
-          if (passed !== 8) { console.error(`::error::expected exactly 8 passing tests, got ${passed}`); process.exit(1); }
+          if (passed !== 21) { console.error(`::error::expected exactly 21 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
       - name: Run the workflow execution reservation suite against real Postgres

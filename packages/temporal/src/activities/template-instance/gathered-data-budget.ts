@@ -22,6 +22,17 @@
  * `Buffer` here is safe (unlike the workflow-safe `report-data-gate.ts`).
  */
 
+import { isSettledCard } from "./report-board-facts";
+import {
+	cardMinimalFields,
+	cardSteeringFields,
+	isCardListTool,
+	isPlainObject,
+	projectCardForContext,
+	slimCardForBudget,
+} from "./report-card-pages";
+import { BOARD_FACTS_KEY, COVERAGE_KEY } from "./report-data-gate";
+
 /**
  * Default cap for the serialized `gatheredData` payload. Temporal Cloud's
  * per-payload blob limit is 2 MiB (2 097 152 B); ~600 KB of headroom covers the
@@ -29,6 +40,62 @@
  * toolsUsed, error, usage) plus JSON→Payload encoding overhead.
  */
 export const DEFAULT_GATHERED_DATA_MAX_BYTES = 1_500_000;
+
+/**
+ * Keys the cascade keeps ahead of any record: they describe the whole board in a
+ * few kilobytes, however little of the card list fits.
+ */
+const RESERVED_KEYS: ReadonlySet<string> = new Set([
+	BOARD_FACTS_KEY,
+	COVERAGE_KEY,
+]);
+
+/**
+ * Cap for a report's card lists, which all go into the analysis prompt. The board
+ * facts carry the counts, so the cards need only be good enough to name and
+ * describe. The output budget's clamp assumes 2 characters per token, so it reads
+ * this as 300,000 tokens: within a 400,000-token context window with the full
+ * output ceiling and about 130 KB left for the rest of the prompt. A board of
+ * 2,300 cards fits with every card kept, open cards slim and the rest at their
+ * steering fields.
+ */
+export const REPORT_CARD_PAYLOAD_MAX_BYTES = 600_000;
+
+/**
+ * Total description text kept on cards fetched on their own while card lists are
+ * being shortened. Cards past this total shorten like any other. About 40 cards
+ * of 1,000 characters.
+ */
+export const FETCHED_CARD_TEXT_MAX_BYTES = 40_000;
+
+/** Each rung keeps every card and removes more of what is on it. */
+const CARD_LADDER: ReadonlyArray<{
+	note: string;
+	appliesTo?: (card: unknown) => boolean;
+	shrink: (card: unknown) => unknown;
+}> = [
+	{
+		note: "shortened cards to their projected fields",
+		shrink: projectCardForContext,
+	},
+	{
+		note: "shortened cards to their slim fields",
+		shrink: slimCardForBudget,
+	},
+	{
+		note: "shortened closed and postponed cards to their steering fields",
+		appliesTo: isSettledCard,
+		shrink: cardSteeringFields,
+	},
+	{
+		note: "shortened cards to their steering fields",
+		shrink: cardSteeringFields,
+	},
+	{
+		note: "shortened cards to their minimal fields",
+		shrink: cardMinimalFields,
+	},
+];
 
 /**
  * Floor for the effective gathered-data budget. The last-resort marker
@@ -52,6 +119,11 @@ export interface BoundResult {
 	data: Record<string, unknown>;
 	/** True when any trimming happened. */
 	trimmed: boolean;
+	/**
+	 * True when a record is gone rather than shortened. Shortening fields keeps
+	 * the run complete; losing records makes it partial.
+	 */
+	recordsDropped: boolean;
 	/** Serialized UTF-8 byte size of the input. */
 	originalBytes: number;
 	/** Serialized UTF-8 byte size of `data` (≤ the effective budget — see `boundGatheredData`). */
@@ -114,17 +186,56 @@ function truncateStringsDeep(
 }
 
 /**
- * Bound `gatheredData` so its serialized size never exceeds `maxBytes`.
+ * The cards whose full description survives shortening, in list order, up to
+ * `FETCHED_CARD_TEXT_MAX_BYTES` in total.
+ */
+function selectFetchedCardsToKeep(
+	cardLists: unknown[][],
+	fetchedCardIds: ReadonlySet<string>,
+): Set<string> {
+	const kept = new Set<string>();
+	let total = 0;
+	for (const card of cardLists.flat()) {
+		if (
+			!isPlainObject(card) ||
+			!fetchedCardIds.has(String(card.id)) ||
+			typeof card.description !== "string"
+		) {
+			continue;
+		}
+		const size = Buffer.byteLength(card.description, "utf8");
+		if (total + size <= FETCHED_CARD_TEXT_MAX_BYTES) {
+			kept.add(String(card.id));
+			total += size;
+		}
+	}
+	return kept;
+}
+
+/**
+ * Bound `gatheredData` so its serialized size never exceeds `maxBytes`, and its
+ * card lists never exceed `maxCardBytes` when that is given.
  *
  * Cascade (each stage re-measures; returns as soon as it fits):
  *   1. Under budget → return the input unchanged (`trimmed: false`).
- *   2. Stage A — truncate long string fields anywhere (drops `description_html`
- *      / comment blobs; keeps ids/status/title/dates).
- *   3. Stage B — cap the largest top-level arrays (drop tail items; never below
- *      one item, so a data-bearing run is never zeroed).
- *   4. Stage C — drop the largest top-level keys until one remains, then compact
- *      that last key's value to a tiny marker if it still exceeds the budget
- *      (never empties the payload — a data-bearing run stays non-empty).
+ *   2. Stage A — truncate long string fields (drops `description_html` / comment
+ *      blobs; keeps ids/status/title/dates). Only the card lists when they alone
+ *      are over.
+ *   3. Card ladder — shrink cards in a card list one rung at a time (projected,
+ *      slim, closed and postponed cards to steering, all to steering, minimal),
+ *      so a large board keeps all its cards. `fetchedCardIds` names the cards
+ *      fetched on their own, which keep their description through stage A and
+ *      every rung, within `FETCHED_CARD_TEXT_MAX_BYTES`.
+ *   4. Stage B — cap the largest card lists until they fit `maxCardBytes`, then
+ *      the largest top-level arrays (drop tail items; never below one item, so a
+ *      data-bearing run is never zeroed).
+ *   5. Stage C — drop the largest top-level keys until one data key remains,
+ *      then compact that last key's value to a tiny marker if it still exceeds
+ *      the budget (never empties the payload — a data-bearing run stays
+ *      non-empty).
+ *
+ * `_board_facts` and `_coverage` are reserved: stages A to C leave them alone,
+ * and they go only if they alone exceed the budget.
  *
  * The effective budget is `max(maxBytes, MIN_GATHERED_DATA_BUDGET_BYTES)`, so
  * `finalBytes ≤ maxBytes` holds for every realistic input (the minimal marker
@@ -133,13 +244,22 @@ function truncateStringsDeep(
  */
 export function boundGatheredData(
 	gatheredData: Record<string, unknown>,
-	opts: { maxBytes?: number; maxFieldChars?: number } = {},
+	opts: {
+		maxBytes?: number;
+		maxFieldChars?: number;
+		maxCardBytes?: number;
+		fetchedCardIds?: ReadonlySet<string>;
+	} = {},
 ): BoundResult {
 	const maxBytes = Math.max(
 		MIN_GATHERED_DATA_BUDGET_BYTES,
 		opts.maxBytes ?? DEFAULT_GATHERED_DATA_MAX_BYTES,
 	);
 	const maxFieldChars = opts.maxFieldChars ?? MAX_FIELD_CHARS;
+	const maxCardBytes = opts.maxCardBytes ?? maxBytes;
+	const cardListKeys = Object.keys(gatheredData).filter(
+		(key) => isCardListTool(key) && Array.isArray(gatheredData[key]),
+	);
 
 	const originalJson = (() => {
 		try {
@@ -153,10 +273,14 @@ export function boundGatheredData(
 			? Number.POSITIVE_INFINITY
 			: Buffer.byteLength(originalJson, "utf8");
 
-	if (originalBytes <= maxBytes) {
+	const cardBytes = (source: Record<string, unknown>) =>
+		cardListKeys.reduce((sum, key) => sum + byteLen(source[key]), 0);
+
+	if (originalBytes <= maxBytes && cardBytes(gatheredData) <= maxCardBytes) {
 		return {
 			data: gatheredData,
 			trimmed: false,
+			recordsDropped: false,
 			originalBytes,
 			finalBytes: originalBytes,
 			notes: [],
@@ -164,6 +288,7 @@ export function boundGatheredData(
 	}
 
 	const notes: string[] = [];
+	let recordsDropped = false;
 	// Clone so the caller's object is never mutated. Reuse the measured JSON when
 	// possible; fall back to structuredClone for unserializable-but-cloneable data.
 	const data: Record<string, unknown> =
@@ -171,10 +296,37 @@ export function boundGatheredData(
 			? JSON.parse(originalJson)
 			: (structuredClone(gatheredData) as Record<string, unknown>);
 
+	const fetchedCardsToKeep = selectFetchedCardsToKeep(
+		cardListKeys.map((key) => data[key] as unknown[]),
+		opts.fetchedCardIds ?? new Set<string>(),
+	);
+	// Read the description first: Stage A rewrites strings in place.
+	const shrinkCard = (card: unknown, shrink: (card: unknown) => unknown) => {
+		const description =
+			isPlainObject(card) && fetchedCardsToKeep.has(String(card.id))
+				? card.description
+				: undefined;
+		const shrunk = shrink(card);
+		return description !== undefined && isPlainObject(shrunk)
+			? { ...shrunk, description }
+			: shrunk;
+	};
+
 	// Stage A — truncate long string fields.
 	const counter = { n: 0 };
-	for (const key of Object.keys(data)) {
-		data[key] = truncateStringsDeep(data[key], maxFieldChars, counter, 0);
+	const truncate = (value: unknown) =>
+		truncateStringsDeep(value, maxFieldChars, counter, 0);
+	for (const key of cardListKeys) {
+		data[key] = (data[key] as unknown[]).map((card) =>
+			shrinkCard(card, truncate),
+		);
+	}
+	if (byteLen(data) > maxBytes) {
+		for (const key of Object.keys(data)) {
+			if (!RESERVED_KEYS.has(key) && !cardListKeys.includes(key)) {
+				data[key] = truncate(data[key]);
+			}
+		}
 	}
 	if (counter.n > 0) {
 		notes.push(
@@ -182,16 +334,34 @@ export function boundGatheredData(
 		);
 	}
 
-	// Stage B — cap the largest top-level arrays. Never reduce an array below one
+	// Card ladder — shorten every card before any card is given up. `_board_facts`
+	// already holds the counts, so what a card loses here is detail, not coverage.
+	for (const rung of CARD_LADDER) {
+		if (
+			cardListKeys.length === 0 ||
+			(byteLen(data) <= maxBytes && cardBytes(data) <= maxCardBytes)
+		) {
+			break;
+		}
+		for (const key of cardListKeys) {
+			data[key] = (data[key] as unknown[]).map((card) =>
+				!rung.appliesTo || rung.appliesTo(card)
+					? shrinkCard(card, rung.shrink)
+					: card,
+			);
+		}
+		notes.push(rung.note);
+	}
+
+	// Stage B — cap the largest of `keys`' arrays. Never reduce an array below one
 	// item (only arrays with >1 item are candidates), so trimming for size can
 	// never zero out the records a run actually gathered — a run that gathered
 	// abundant data must not be misread as "no usable data" and hard-failed
 	// (that is the #1750 class of failure this fix exists to prevent).
-	let guard = 0;
-	while (byteLen(data) > maxBytes && guard++ < 100_000) {
+	const capLargestArray = (keys: string[]): boolean => {
 		let bestKey: string | null = null;
 		let bestSize = -1;
-		for (const key of Object.keys(data)) {
+		for (const key of keys) {
 			const value = data[key];
 			if (Array.isArray(value) && value.length > 1) {
 				const size = byteLen(value);
@@ -205,12 +375,13 @@ export function boundGatheredData(
 			}
 		}
 		if (bestKey === null) {
-			break; // no array with >1 item left to reduce → Stage C
+			return false; // no array with >1 item left to reduce
 		}
 		const arr = data[bestKey] as unknown[];
 		const before = arr.length;
 		const remove = Math.max(1, Math.floor(before * 0.2));
 		arr.length = Math.max(1, before - remove); // keep at least one record
+		recordsDropped = true;
 		const omitted = before - arr.length;
 		const existing = notes.find((n) => n.startsWith(`capped ${bestKey}:`));
 		if (existing) {
@@ -224,27 +395,40 @@ export function boundGatheredData(
 				`capped ${bestKey}: ${before} → ${arr.length} items (${omitted} omitted)`,
 			);
 		}
+		return true;
+	};
+	let guard = 0;
+	while (cardBytes(data) > maxCardBytes && guard++ < 100_000) {
+		if (!capLargestArray(cardListKeys)) {
+			break;
+		}
+	}
+	guard = 0;
+	while (byteLen(data) > maxBytes && guard++ < 100_000) {
+		if (!capLargestArray(Object.keys(data))) {
+			break; // → Stage C
+		}
 	}
 
-	// Stage C — drop the largest top-level keys, but never the last one, so the
-	// payload never becomes `{}` when the input had content.
+	// Stage C — drop the largest top-level keys, but never the last data key, so
+	// the payload never becomes `{}` when the input had content.
 	//
-	// `_`-prefixed keys (gathering metadata such as `_coverage`) are dropped
-	// BEFORE any data key, regardless of size: metadata without its data is
-	// worthless — never let `_coverage` outlive the records it describes (it
-	// would claim a pagination total for a record set that is no longer there).
-	// Within each class the largest key still goes first, ties broken by key
-	// name, so the cascade stays deterministic.
+	// Other `_`-prefixed keys (gathering metadata such as `_board_fix`) are dropped
+	// BEFORE any data key, regardless of size. Within each class the largest key
+	// still goes first, ties broken by key name, so the cascade stays
+	// deterministic.
+	const droppableKeys = () =>
+		Object.keys(data).filter((key) => !RESERVED_KEYS.has(key));
 	guard = 0;
 	while (
 		byteLen(data) > maxBytes &&
-		Object.keys(data).length > 1 &&
+		droppableKeys().length > 1 &&
 		guard++ < 100_000
 	) {
 		let bestKey: string | null = null;
 		let bestSize = -1;
 		let bestIsMeta = false;
-		for (const key of Object.keys(data)) {
+		for (const key of droppableKeys()) {
 			const size = byteLen(data[key]);
 			const isMeta = key.startsWith("_");
 			const better =
@@ -264,6 +448,7 @@ export function boundGatheredData(
 			break;
 		}
 		delete data[bestKey];
+		recordsDropped ||= !bestIsMeta;
 		notes.push(
 			`dropped key ${bestKey} (~${bestSize} bytes) to fit size budget`,
 		);
@@ -273,24 +458,52 @@ export function boundGatheredData(
 	// (pathological — a single record too large to fit even after Stage A) is
 	// compacted to a tiny marker. This keeps the payload non-empty (still one
 	// contentful record for the no-usable-data gate) AND under budget.
-	if (byteLen(data) > maxBytes) {
-		const keys = Object.keys(data);
-		if (keys.length === 1) {
-			const key = keys[0] as string;
-			const approx = byteLen(data[key]);
-			data[key] = {
-				_truncated: true,
-				_reason: "record exceeds size budget",
-				_approxBytes: approx,
-			};
-			notes.push(
-				`compacted key ${key} (~${approx} bytes) to a marker to fit size budget`,
-			);
+	const compactToMarker = (key: string) => {
+		const approx = byteLen(data[key]);
+		data[key] = {
+			_truncated: true,
+			_reason: "record exceeds size budget",
+			_approxBytes: approx,
+		};
+		recordsDropped = true;
+		notes.push(
+			`compacted key ${key} (~${approx} bytes) to a marker to fit size budget`,
+		);
+	};
+	const remaining = droppableKeys();
+	if (byteLen(data) > maxBytes && remaining.length === 1) {
+		compactToMarker(remaining[0] as string);
+	}
+
+	// Reserved keys go only when they alone are over budget, which takes a
+	// pathologically small budget: production floors it at 100 KB.
+	while (byteLen(data) > maxBytes && Object.keys(data).length > 1) {
+		const reserved = Object.keys(data)
+			.filter((key) => RESERVED_KEYS.has(key))
+			.sort(
+				(a, b) =>
+					byteLen(data[b]) - byteLen(data[a]) || (a < b ? -1 : 1),
+			)[0];
+		if (reserved === undefined) {
+			break;
 		}
+		delete data[reserved];
+		notes.push(`dropped reserved key ${reserved} to fit size budget`);
+	}
+	const lastKeys = Object.keys(data);
+	if (byteLen(data) > maxBytes && lastKeys.length === 1) {
+		compactToMarker(lastKeys[0] as string);
 	}
 
 	const finalBytes = byteLen(data);
-	return { data, trimmed: true, originalBytes, finalBytes, notes };
+	return {
+		data,
+		trimmed: true,
+		recordsDropped,
+		originalBytes,
+		finalBytes,
+		notes,
+	};
 }
 
 /**

@@ -40,10 +40,10 @@ function capturedMust(): Array<Record<string, unknown>> {
 	return call?.filter?.must ?? [];
 }
 
-function hasDocumentIdIsNull(must: Array<Record<string, unknown>>): boolean {
+function hasDocumentIdIsEmpty(must: Array<Record<string, unknown>>): boolean {
 	return must.some(
 		(clause) =>
-			(clause.is_null as { key?: string } | undefined)?.key ===
+			(clause.is_empty as { key?: string } | undefined)?.key ===
 			"documentId",
 	);
 }
@@ -61,19 +61,19 @@ beforeEach(() => {
 });
 
 describe("excludeDocumentChunks", () => {
-	it("adds a documentId is-null clause when set", async () => {
+	it("adds a documentId is-empty clause when set", async () => {
 		await searchSimilarProjectContexts({
 			...BASE,
 			excludeDocumentChunks: true,
 		});
 
-		expect(hasDocumentIdIsNull(capturedMust())).toBe(true);
+		expect(hasDocumentIdIsEmpty(capturedMust())).toBe(true);
 	});
 
 	it("adds NO such clause when unset — the interactive path is unchanged", async () => {
 		await searchSimilarProjectContexts({ ...BASE });
 
-		expect(hasDocumentIdIsNull(capturedMust())).toBe(false);
+		expect(hasDocumentIdIsEmpty(capturedMust())).toBe(false);
 	});
 
 	it("adds NO such clause when explicitly false", async () => {
@@ -82,7 +82,7 @@ describe("excludeDocumentChunks", () => {
 			excludeDocumentChunks: false,
 		});
 
-		expect(hasDocumentIdIsNull(capturedMust())).toBe(false);
+		expect(hasDocumentIdIsEmpty(capturedMust())).toBe(false);
 	});
 
 	it("keeps the personal-tenant clauses alongside the exclusion", async () => {
@@ -100,7 +100,7 @@ describe("excludeDocumentChunks", () => {
 			match: { value: "proj_1" },
 		});
 		expect(must).toContainEqual({ is_null: { key: "organizationId" } });
-		expect(hasDocumentIdIsNull(must)).toBe(true);
+		expect(hasDocumentIdIsEmpty(must)).toBe(true);
 	});
 
 	it("keeps the organization-tenant clause alongside the exclusion", async () => {
@@ -115,7 +115,7 @@ describe("excludeDocumentChunks", () => {
 			key: "organizationId",
 			match: { value: "org_1" },
 		});
-		expect(hasDocumentIdIsNull(must)).toBe(true);
+		expect(hasDocumentIdIsEmpty(must)).toBe(true);
 	});
 
 	it("composes with an explicit contextIds filter", async () => {
@@ -130,7 +130,7 @@ describe("excludeDocumentChunks", () => {
 			key: "contextId",
 			match: { any: ["ctx_1", "ctx_2"] },
 		});
-		expect(hasDocumentIdIsNull(must)).toBe(true);
+		expect(hasDocumentIdIsEmpty(must)).toBe(true);
 	});
 });
 

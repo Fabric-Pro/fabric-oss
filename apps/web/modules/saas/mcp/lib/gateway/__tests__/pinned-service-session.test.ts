@@ -215,12 +215,14 @@ describe("which gateway tools Parlume gets", () => {
 			"fabric_change_instructions",
 			"fabric_check_agent_run_result",
 			"fabric_check_authority",
+			"fabric_create_project_report",
 			"fabric_generate_report",
 			"fabric_get_agent_run",
 			"fabric_get_agent_run_schedule",
 			"fabric_get_project_pm_connection",
 			"fabric_get_project_pm_item_snapshots",
 			"fabric_get_project_work_item_counts",
+			"fabric_get_report_content",
 			"fabric_inspect_agent_run_result",
 			"fabric_knowledge_add",
 			"fabric_knowledge_search",
@@ -234,6 +236,7 @@ describe("which gateway tools Parlume gets", () => {
 			"fabric_list_project_pm_members",
 			"fabric_list_project_pm_work_item_types",
 			"fabric_list_project_reports",
+			"fabric_list_report_templates",
 			"fabric_memory_read",
 			"fabric_memory_targets",
 			"fabric_memory_write",
@@ -245,6 +248,7 @@ describe("which gateway tools Parlume gets", () => {
 			"fabric_semantic_search",
 			"fabric_set_agent_run_schedule",
 			"fabric_unlink_workspace_document",
+			"fabric_update_report_prompt",
 		]);
 	});
 

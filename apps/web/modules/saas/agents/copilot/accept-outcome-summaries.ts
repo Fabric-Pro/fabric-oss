@@ -9,7 +9,7 @@ import type { ScopedRevisionRefusalCode } from "@repo/utils/proposal-artifact/sc
  * Recorded through `useConfirmChangesOperationResult`: `saved`, `advanced`
  * and `stageRequested` as a success, `failed`, `failedOfferedToCopy` and
  * `failedEditorClosed` as a failure, `unsaved` as partial, `undone` and
- * `heldElsewhere` as cancelled.
+ * `heldElsewhere`, `heldUnanswered` and `removedUnanswered` as cancelled.
  */
 export const ACCEPT_OUTCOME_SUMMARIES = {
 	saved: "Changes applied.",
@@ -45,6 +45,19 @@ export const ACCEPT_OUTCOME_SUMMARIES = {
 	heldElsewhere:
 		"Not applied: another tab was reviewing an assistant proposal.",
 	/**
+	 * Never put in: the document held an assistant proposal nobody reviewed
+	 * any more, which holds every editor until it is taken out (Fizzy #2946).
+	 */
+	heldUnanswered:
+		"Not applied: the document held an unanswered assistant proposal that nobody was reviewing.",
+	/**
+	 * Taken out of the document while it waited for its answer: the tab
+	 * reviewing it was out of touch with the other editors for too long, and
+	 * they removed it as unanswered (Fizzy #2946).
+	 */
+	removedUnanswered:
+		"Not applied: it was removed from the document because nobody answered it in time.",
+	/**
 	 * Not saved, and taken back out of the editor: an AI accept on a
 	 * client-document Proposal refused by the check its save runs, with no
 	 * saved base to be checked against, or whose save failed (Fizzy #2946).
@@ -58,7 +71,11 @@ export const ACCEPT_OUTCOME_SUMMARIES = {
  * of its save or the editor's own code; `unknown` for any other.
  */
 const ACCEPT_NOT_APPLIED_REASONS: Record<
-	ScopedRevisionRefusalCode | "NO_BASE" | "HELD_ELSEWHERE",
+	| ScopedRevisionRefusalCode
+	| "NO_BASE"
+	| "HELD_ELSEWHERE"
+	| "HELD_UNANSWERED"
+	| "REMOVED_UNANSWERED",
 	string
 > = {
 	REVISION_OUTSIDE_TARGET:
@@ -74,6 +91,10 @@ const ACCEPT_NOT_APPLIED_REASONS: Record<
 		"the revision had expired, or the accepted text differed from what was reviewed. Request it again.",
 	NO_BASE: "the editor was still syncing with the saved document.",
 	HELD_ELSEWHERE: "another tab was reviewing an assistant proposal.",
+	HELD_UNANSWERED:
+		"the document held an unanswered assistant proposal that nobody was reviewing.",
+	REMOVED_UNANSWERED:
+		"it was removed from the document because nobody answered it in time.",
 };
 const ACCEPT_NOT_APPLIED_UNKNOWN_REASON = "its save did not go through.";
 

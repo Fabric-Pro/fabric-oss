@@ -611,6 +611,51 @@ describe("instruction proposal decisions", () => {
 			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
 		});
 
+		it("stops counting an approver who has lost the publish permission, re-checked in the review transaction", async () => {
+			lockedWithPolicy({ requiredApprovals: 2 });
+			mocks.approval.findMany.mockResolvedValue([
+				{ userId: "departed" },
+				{ userId: "reviewer" },
+			]);
+			permissionMocks.canUpdateProjectInstructions.mockImplementation(
+				async (_projectId: string, userId: string) =>
+					userId !== "departed",
+			);
+
+			expect(await approveAs("reviewer")).toEqual({
+				ok: true,
+				changed: true,
+				version: 9,
+				published: false,
+				approvals: { count: 1, required: 2 },
+			});
+			expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+			const [, , client] =
+				permissionMocks.canUpdateProjectInstructions.mock.calls.find(
+					([, userId]) => userId === "departed",
+				) ?? [];
+			expect(client).toMatchObject({
+				projectInstructionProposalApproval: mocks.approval,
+			});
+		});
+
+		it("checks each approver once per approval", async () => {
+			lockedWithPolicy({ requiredApprovals: 3 });
+			mocks.approval.findMany.mockResolvedValue([
+				{ userId: "first" },
+				{ userId: "reviewer" },
+				{ userId: "first" },
+			]);
+
+			await approveAs("reviewer");
+
+			expect(
+				permissionMocks.canUpdateProjectInstructions.mock.calls.map(
+					([, userId]) => userId,
+				),
+			).toEqual(["first", "reviewer"]);
+		});
+
 		it("refuses a stale proposal before recording any approval", async () => {
 			mocks.$queryRaw.mockResolvedValue([
 				{
@@ -2586,6 +2631,118 @@ describe("markInstructionSnapshotReady", () => {
 		expect(
 			await markInstructionSnapshotReady({ ...input, notAfter }),
 		).toEqual({ changed: false });
+	});
+
+	describe("a rebased proposal", () => {
+		const rebasedRow = {
+			updated: 1,
+			userId: "proposer",
+			version: 9,
+			baseVersion: 8,
+			proposalStatus: "PENDING",
+			supersedesSnapshotId: "stale",
+		};
+
+		it("closes the stale proposal it replaces, with its audit row, in the READY transaction", async () => {
+			mocks.$queryRaw.mockResolvedValue([rebasedRow]);
+			mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+			mocks.snapshot.findFirst.mockResolvedValue({
+				version: 7,
+				baseVersion: 6,
+			});
+
+			expect(await markInstructionSnapshotReady(input)).toEqual({
+				changed: true,
+			});
+
+			expect(mocks.$transaction).toHaveBeenCalledOnce();
+			expect(mocks.snapshot.updateMany).toHaveBeenCalledWith({
+				where: {
+					id: "stale",
+					projectId: "p",
+					organizationId: "org_1",
+					userId: "proposer",
+					proposalStatus: "PENDING",
+					proposalDestination: "FABRIC",
+					contentKind: "FULL_SNAPSHOT",
+					status: "READY",
+				},
+				data: {
+					proposalStatus: "REJECTED",
+					reviewedAt: expect.any(Date),
+				},
+			});
+			expect(auditMocks.recordAuditTx).toHaveBeenCalledOnce();
+			expect(auditMocks.recordAuditTx).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectInstructionSnapshot: mocks.snapshot,
+				}),
+				expect.objectContaining({
+					action: "project.instructions.proposal_rebased",
+					actor: { type: "user", userId: "proposer" },
+					organizationId: "org_1",
+					projectId: "p",
+					resource: {
+						type: "project_instruction_snapshot",
+						id: "stale",
+						name: "v7",
+					},
+					metadata: {
+						rebasedSnapshotId: "s",
+						rebasedVersion: 9,
+						fromBaseVersion: 6,
+						toBaseVersion: 8,
+					},
+				}),
+			);
+			const [statement] = mocks.$queryRaw.mock.calls[0] as [
+				{ sql: string },
+			];
+			expect(statement.sql).toContain('s."supersedesSnapshotId"');
+		});
+
+		it("still reports READY, writing no audit, when the stale proposal was already closed", async () => {
+			mocks.$queryRaw.mockResolvedValue([rebasedRow]);
+			mocks.snapshot.updateMany.mockResolvedValue({ count: 0 });
+
+			expect(await markInstructionSnapshotReady(input)).toEqual({
+				changed: true,
+			});
+
+			expect(mocks.snapshot.updateMany).toHaveBeenCalledOnce();
+			expect(mocks.snapshot.findFirst).not.toHaveBeenCalled();
+			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+		});
+
+		it("replaces nothing when the rebased proposal itself was canceled before it was READY", async () => {
+			mocks.$queryRaw.mockResolvedValue([
+				{ ...rebasedRow, proposalStatus: "REJECTED" },
+			]);
+
+			expect(await markInstructionSnapshotReady(input)).toEqual({
+				changed: true,
+			});
+
+			expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+		});
+
+		it("closes nothing for a proposal that replaces none, or a retry that changed nothing", async () => {
+			mocks.$queryRaw.mockResolvedValueOnce([
+				{ ...rebasedRow, supersedesSnapshotId: null },
+			]);
+			expect(await markInstructionSnapshotReady(input)).toEqual({
+				changed: true,
+			});
+
+			mocks.$queryRaw.mockResolvedValueOnce([]);
+			expect(await markInstructionSnapshotReady(input)).toEqual({
+				changed: false,
+			});
+
+			expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+		});
 	});
 
 	it("reserves proposal staging cleanup when validation succeeds", async () => {

@@ -13,6 +13,8 @@
 export const AI_FEATURE_KEYS = [
 	/** Data gathering, analysis and tool-result summaries for report runs. */
 	"report-generation",
+	/** Starting values for a new report's settings, suggested from its project. */
+	"report-parameter-defaults",
 	/** Feature maturation runs: question extraction, spec analysis. */
 	"maturation",
 	/** AI recommended answers for maturation questions. */

@@ -446,7 +446,8 @@ var backgroundAgentsSecrets = [
 
 // Background Agents (Coding Runs) environment variables
 var backgroundAgentsEnv = [
-  { name: 'FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED', value: string(fabricAgentsExecutionBridgeEnabled) }
+  // string() on a bool yields 'False' at deployment, and the worker accepts only lowercase at startup.
+  { name: 'FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED', value: toLower(string(fabricAgentsExecutionBridgeEnabled)) }
   { name: 'FABRIC_AGENTS_DEFAULT_CONNECTION', value: fabricAgentsDefaultConnection }
   { name: 'FABRIC_AGENTS_DEFAULT_MODEL', value: fabricAgentsDefaultModel }
   { name: 'BACKGROUND_AGENTS_URL', secretRef: 'background-agents-url' }

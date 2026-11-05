@@ -41,6 +41,7 @@ import {
 	embeddingFailure,
 	throwIfPermanentProviderFailure,
 } from "./lib/embedding-provider-failure";
+import { startLivingMemoryDecisionExtraction } from "./lib/living-memory-decision-start";
 
 export interface EmbedSingleContextInput {
 	contextId: string;
@@ -445,6 +446,11 @@ export async function embedSingleContextActivity(
 				qdrantId: result.qdrantId,
 				chunksCreated: result.chunksCreated,
 			});
+
+			// A synced Living Memory file's confirmed version is read for
+			// decisions in a workflow of its own. Never throws, so it cannot
+			// fail or retry this embedding.
+			await startLivingMemoryDecisionExtraction({ contextId });
 
 			return {
 				success: true,

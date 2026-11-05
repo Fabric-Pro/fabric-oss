@@ -232,7 +232,7 @@ describe("the outcome lines", () => {
 			  "lessons-need-claude": "--lessons is not yet supported for codex; Codex hooks for lesson capture are not wired.",
 			  "lock-of-other-project": "This folder was synced from a different project, so nothing was changed. Use another --dest, or delete .fabric/instructions.lock to start over.",
 			  "lock-removed": "Removed .fabric/instructions.lock: this checkout follows github.com/example-org/rules through git now.",
-			  "missing-scope": "This credential is missing the instructions:publish permission. Create a key that carries it, or run: fabric auth login --base-url https://fabric.pro",
+			  "missing-scope": "This credential is missing the instructions:publish permission, which a browser sign-in does not carry. Create a key that carries it and sign in with it: fabric auth login --base-url https://fabric.pro --key <api-key>",
 			  "needs-project": "This folder is not a git checkout, so its project cannot be found. Run: fabric instructions check --project <id>",
 			  "no-clone-url": "This deployment did not say where to clone dev.azure.com/example-org/Example Project/_git/rules from. Clone it yourself, then run: fabric instructions init",
 			  "no-remote": "This checkout has no remote, so its project cannot be found. Run: fabric instructions sync --project <id>",
@@ -405,6 +405,20 @@ describe("the exit code of an outcome that stops a run", () => {
 			}).exitCode,
 		).toBe(code);
 	});
+
+	it.each([["instructions:write"], ["memory:write"], [null]] as const)(
+		"offers a new sign-in for a missing %s, which one can grant",
+		(scope) => {
+			expect(
+				outcomeFailure("missing-scope", {
+					scope,
+					origin: "https://fabric.pro",
+				}).message,
+			).toContain(
+				"or run: fabric auth login --base-url https://fabric.pro",
+			);
+		},
+	);
 
 	it("uses the deployment's own upgrade line when it sent one", () => {
 		expect(

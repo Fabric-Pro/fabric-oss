@@ -371,10 +371,10 @@ describe("ConfigureContextRepositorySyncDialog — typed paths", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("rejects a path longer than configure accepts inline", async () => {
+	it("says a path longer than configure accepts is too long, inline", async () => {
 		const user = userEvent.setup();
 		await renderTyped();
-		const long = `docs/${"x".repeat(1024)}`;
+		const long = "x".repeat(513);
 		await user.click(
 			screen.getByLabelText(`${NS}.configureDialog.typedPath.label`),
 		);
@@ -386,7 +386,7 @@ describe("ConfigureContextRepositorySyncDialog — typed paths", () => {
 		);
 		expect(
 			screen.getByText(
-				`${NS}.pathErrors.INVALID_PATH${JSON.stringify({ path: long })}`,
+				`${NS}.pathErrors.PATH_TOO_LONG${JSON.stringify({ max: 512 })}`,
 			),
 		).toBeInTheDocument();
 		expect(

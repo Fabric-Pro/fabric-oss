@@ -358,6 +358,12 @@ async function applyRLS() {
 				name: "project_context_pending_vector_cleanup",
 				policy: "user_owned",
 			},
+			// Decisions extracted from each confirmed version of a synced
+			// Living Memory file; tenant columns copied from the parent context.
+			{
+				name: "project_context_decision_extraction",
+				policy: "user_owned",
+			},
 			// Living Memory repository sync configuration (one row per project)
 			// and its run receipts. The receipts carry no foreign key to the
 			// configuration, so each table is registered in its own right.
@@ -844,6 +850,8 @@ async function applyRLS() {
 			// (updatedById is attribution) and no project guest path: only
 			// organization members change or apply them.
 			{ name: "report_template_override", policy: "org_only" },
+			// Note: report_template_sample has no direct tenant columns — access
+			// controlled through parent report_template via FK cascade
 
 			// Dynamic agents
 			{ name: "offloaded_tool_output", policy: "user_owned" }, // Large tool outputs

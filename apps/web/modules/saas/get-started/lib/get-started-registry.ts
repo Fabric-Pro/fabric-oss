@@ -1125,7 +1125,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				gatedCopy: {
 					runtimeGate: "reportSuite",
 					title: "Templates are recipes",
-					body: "A template is the shape of a report. Browse templates opens the Templates tab, where Use template starts a report for this project with its connection and board filled in where Fabric can find them. Each template previews its latest report here, or a sample when you ask. Admins create, edit and archive templates there.",
+					body: "A template is the shape of a report. Browse templates opens the Templates tab, where Generate report starts a report for this project in one click, with its connection, board and settings filled in where Fabric can find them; when something is still missing it asks. Preview on any template shows its latest report, or a sample labelled as sample data. Admins create, edit and archive templates there.",
 				},
 			},
 			{
@@ -1136,7 +1136,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				gatedCopy: {
 					runtimeGate: "reportSuite",
 					title: "This project's reports and templates",
-					body: "'Reports' lists every report of this project, whoever set it up, with its last run and Active/Paused state; its owner can Generate a ready one in one click, and a report that is not ready says what it still needs. 'Templates' lists what you can start a new report from. The tab opens on Reports once the project has a report, and on Templates until then.",
+					body: "'My Instances' lists this project's reports, whoever set them up, drafts included, with their last run and Active/Paused state; a report's owner can Generate a ready one in one click, and a report that is not ready says what it still needs. 'Templates' lists what you can start a new report from. The tab opens on My Instances once you have a report in this project, and on Templates until then.",
 				},
 			},
 		],

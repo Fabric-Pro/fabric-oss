@@ -225,6 +225,7 @@ export {
 	FabricContextConflictError,
 	type LinkedWorkspaceDocumentContent,
 	type LinkWorkspaceDocumentInput,
+	type MissingSyncedContextFilesResult,
 	type ProjectWorkspaceDocumentLink,
 	type ProjectWorkspaceDocumentLinksPage,
 	type ResetSyncedContextFilesResult,

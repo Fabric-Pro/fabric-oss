@@ -183,7 +183,7 @@ const FRAME_VERSION_TOOLS = createFrameVersionTools((name) =>
 );
 const PAGE_TOOLS = createPageTools();
 const PROJECT_PM_TOOLS = createProjectPmTools(resolveGatewayProjectReadAccess);
-const REPORT_TOOLS = createReportTools(resolveGatewayProjectReadAccess);
+const REPORT_TOOLS = createReportTools(resolveGatewayReportProjectAccess);
 const AGENT_RESULT_QUALITY_TOOLS = createAgentResultQualityTools(
 	resolveGatewayProjectReadAccess,
 );
@@ -2449,6 +2449,34 @@ async function resolveGatewayProjectReadAccess(
 		return null;
 	}
 	return access;
+}
+
+/**
+ * The project gate for the report tools: {@link resolveGatewayProjectReadAccess},
+ * or an admin or owner of the project's organization, who inherits Project
+ * Editor on its reports without a project row. The session's project binding
+ * and the credential binding hold for them too, and a project in the trash is
+ * not found.
+ */
+async function resolveGatewayReportProjectAccess(
+	projectId: string,
+	session: GatewaySession,
+): Promise<{ organizationId: string | null } | null> {
+	const access = await resolveGatewayProjectReadAccess(projectId, session);
+	if (access || !sessionMayReachProject(session, projectId)) {
+		return access;
+	}
+	const { getReportAdminProjectOrganization } = await import(
+		"@repo/database"
+	);
+	const administered = await getReportAdminProjectOrganization(
+		projectId,
+		session.userId,
+	);
+	return administered &&
+		credentialMayReachHost(session, administered.organizationId)
+		? administered
+		: null;
 }
 
 /** {@link resolveGatewayProjectReadAccess} for a handler that needs only the yes/no. */

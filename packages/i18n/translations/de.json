@@ -1538,6 +1538,56 @@
 						"content_upserted": "Synchronisierte Kontextdatei erstellt, aktualisiert oder verschoben",
 						"synced_file_deleted": "Synchronisierte Kontextdatei gelöscht",
 						"synced_files_reset": "Living Memory zurückgesetzt (alle synchronisierten Dateien gelöscht)"
+					},
+					"context": {
+						"repository_sync_configured": "Repository-Synchronisierung für Living Memory eingerichtet",
+						"repository_sync_started": "Repository-Synchronisierung für Living Memory gestartet",
+						"repository_sync_completed": "Repository-Synchronisierung für Living Memory abgeschlossen",
+						"repository_sync_disabled": "Repository-Synchronisierung für Living Memory ausgeschaltet",
+						"write_target_created": "Schreibordner für Living Memory hinzugefügt",
+						"write_target_updated": "Schreibordner für Living Memory geändert",
+						"write_target_deleted": "Schreibordner für Living Memory entfernt",
+						"memory_write_submitted": "Schreibvorgang in Living Memory angenommen",
+						"memory_write_settled": "Schreibvorgang in Living Memory abgeschlossen"
+					},
+					"import": {
+						"started": "Analyse für den Repository-Import gestartet",
+						"applied": "Repository-Import übernommen"
+					},
+					"instructions": {
+						"upload_started": "Upload von Coding-Instructions gestartet",
+						"published": "Version der Coding-Instructions veröffentlicht",
+						"rejected": "Upload von Coding-Instructions abgelehnt",
+						"deleted": "Version der Coding-Instructions gelöscht",
+						"settings_updated": "Einstellungen der Coding-Instructions aktualisiert",
+						"repository_sync_configured": "Repository-Synchronisierung für Coding-Instructions eingerichtet",
+						"repository_sync_started": "Repository-Synchronisierung für Coding-Instructions gestartet",
+						"repository_sync_completed": "Repository-Synchronisierung für Coding-Instructions abgeschlossen",
+						"repository_sync_disabled": "Repository-Synchronisierung für Coding-Instructions ausgeschaltet",
+						"pull_request_opened": "Pull Request für Coding-Instructions geöffnet",
+						"pull_request_reconciled": "Pull Request für Coding-Instructions abgeglichen",
+						"pull_request_close_requested": "Schließen des Pull Requests für Coding-Instructions angefordert",
+						"pull_request_retry_requested": "Neuer Versuch für den Pull Request für Coding-Instructions angefordert",
+						"pull_request_merge_sync_requested": "Synchronisierung nach dem Merge für Coding-Instructions angefordert",
+						"pull_request_merge_observed": "Merge des Pull Requests für Coding-Instructions erfasst",
+						"published_unscanned": "Coding-Instructions vor dem Secret-Scan veröffentlicht",
+						"proposal_approved": "Vorschlag für Coding-Instructions angenommen, weitere Zustimmungen erforderlich",
+						"proposal_rebased": "Vorschlag für Coding-Instructions auf die veröffentlichte Version aktualisiert",
+						"deferred_scan_issues_found": "Secret-Scan der Coding-Instructions hat nach der Veröffentlichung Probleme gefunden",
+						"deferred_scan_incomplete": "Secret-Scan der Coding-Instructions konnte nicht abgeschlossen werden",
+						"pull_request_branch_updated": "Vorschlags-Branch für Coding-Instructions aktualisiert",
+						"committed": "Commit für Coding-Instructions in den synchronisierten Branch gepusht",
+						"commit_fell_back_to_pull_request": "Commit für Coding-Instructions stattdessen als Pull Request geöffnet",
+						"repository_migration_started": "Verschieben der Coding-Instructions in ein Repository gestartet",
+						"consolidation_started": "KI-Dateien in ein neues Instructions-Repository verschoben",
+						"consolidation_cleanup_merged": "Pull Request zum Aufräumen der KI-Dateien gemergt",
+						"repository_migration_canceled": "Verschieben der Coding-Instructions in ein Repository ohne Merge beendet",
+						"repository_migration_completed": "Verschieben der Coding-Instructions in ein Repository abgeschlossen"
+					},
+					"instructions_access": {
+						"granted": "Zugriff auf das Instructions-Repository gewährt",
+						"revoked": "Zugriff auf das Instructions-Repository entzogen",
+						"failed": "Änderung des Zugriffs auf das Instructions-Repository fehlgeschlagen"
 					}
 				},
 				"story": {
@@ -2949,6 +2999,9 @@
 	},
 	"documentation": {
 		"title": "Dokumentation",
+		"copyPage": "Seite kopieren",
+		"collapseSidebar": "Seitenleiste ausblenden",
+		"expandSidebar": "Seitenleiste einblenden",
 		"fallbackNotice": "Diese Seite ist in Ihrer gewählten Sprache noch nicht verfügbar. Es wird die englische Version angezeigt."
 	},
 	"workflows": {
@@ -2985,6 +3038,52 @@
 		"description": "Um weiterzumachen, wähle bitte einen Plan aus."
 	},
 	"projects": {
+		"livingMemoryDecisions": {
+			"badge": "Aus Living Memory",
+			"badgeTooltip": "– von der KI in einer Living-Memory-Datei gefunden. Prüfe und ergänze die Details.",
+			"legend": "– von der KI in einer Living-Memory-Datei gefunden.",
+			"sourceNote": "aus Living Memory übernommen",
+			"strip": {
+				"count": "{count, plural, one {# Entscheidung} other {# Entscheidungen}}",
+				"detected": "in Living-Memory-Dateien gefunden",
+				"subtitle": "Mach aus den Notizen deines Teams nachverfolgte Einträge",
+				"review": "Prüfen",
+				"hide": "Ausblenden",
+				"toggleAria": "In Living-Memory-Dateien gefundene Entscheidungen ein- oder ausblenden",
+				"mayUpdate": "Aktualisiert womöglich {identifier}",
+				"dismiss": "Vorschlag verwerfen",
+				"dismissTitle": "Verwerfen – nicht erneut vorschlagen",
+				"paginationLabel": "Seitennavigation für Entscheidungsvorschläge aus Living Memory",
+				"previousPage": "Vorherige Seite, Vorschläge aus Living Memory",
+				"nextPage": "Nächste Seite, Vorschläge aus Living Memory",
+				"firstSyncSkipped": "{count, plural, one {# Datei} other {# Dateien}} aus der ersten Repository-Synchronisierung {count, plural, one {wurde} other {wurden}} nicht auf Entscheidungen gelesen. Der Scan nutzt eine KI-Anfrage pro Datei.",
+				"scanFirstSync": "Nach Entscheidungen scannen"
+			},
+			"dialog": {
+				"newBadge": "Neue Entscheidung",
+				"updateBadge": "Aktualisiert {identifier}",
+				"titleNew": "Vorgeschlagene Entscheidung prüfen",
+				"titleUpdate": "Vorgeschlagene Aktualisierung prüfen",
+				"descriptionNew": "Gefunden in {path} am {date}. Es wird nichts angelegt, bevor du zustimmst.",
+				"descriptionUpdate": "Gefunden in {path} am {date}. Sie liest sich wie eine Aktualisierung von {identifier}. Als Aktualisierung angelegt, werden beide verknüpft; wird die neue Entscheidung angenommen, gilt {identifier} als ersetzt.",
+				"current": "Aktuell · {identifier}",
+				"proposed": "Vorschlag · aus dieser Datei",
+				"rationale": "Begründung:",
+				"reject": "Vorschlag ablehnen",
+				"cancel": "Abbrechen",
+				"create": "Entscheidung anlegen",
+				"createAsUpdate": "Als Aktualisierung anlegen",
+				"createNew": "Als neue Entscheidung anlegen"
+			},
+			"toast": {
+				"created": "Entscheidungsentwurf aus Living Memory angelegt",
+				"scanStarted": "Scan gestartet. Entscheidungen erscheinen hier, sobald eine Datei gelesen wurde.",
+				"scanFailed": "Scan konnte nicht gestartet werden: {message}",
+				"createFailed": "Anlegen fehlgeschlagen: {message}",
+				"dismissed": "Vorschlag verworfen",
+				"dismissFailed": "Verwerfen fehlgeschlagen: {message}"
+			}
+		},
 		"remoteAgents": {
 			"recoveryWarning": "Das Ergebnis auf dem Server ist unbekannt. Prüfe den ursprünglichen Server auf eine verwaiste Sitzung und stoppe sie, bevor du einen neuen Lauf startest. Das Schließen dieses Eintrags stoppt keine entfernten Prozesse.",
 			"orphanCheck": "Ich habe den ursprünglichen Server auf verwaiste Prozesse geprüft.",
@@ -3075,7 +3174,7 @@
 			"branchFiles": {
 				"branchOnlyBadge": "Nur auf Ihrem Branch",
 				"branchOnlyNotice": "Diese Datei ist nur auf Ihrem Vorschlags-Branch. Die veröffentlichte Version hat sie noch nicht.",
-				"changedNotice": "Ihr Vorschlags-Branch ändert diese Datei. Hier sehen Sie die veröffentlichte Version.",
+				"changedNotice": "Ihr Vorschlags-Branch ändert diese Datei.",
 				"deletedNotice": "Ihr Vorschlags-Branch löscht diese Datei. Hier sehen Sie die veröffentlichte Version.",
 				"listHeading": "Dateien, die Ihr Branch ändert",
 				"restore": "Veröffentlichte Version wiederherstellen",
@@ -3190,7 +3289,7 @@
 					"requiredLabel": "Erforderliche Zustimmungen",
 					"proposerExcluded": "Wer eine Änderung vorschlägt, kann ihr nicht selbst zustimmen.",
 					"restrictLabel": "Nur ausgewählte Mitglieder dürfen zustimmen",
-					"tooFewApprovers": "Mindestens so viele Prüfer auswählen, wie Zustimmungen erforderlich sind.",
+					"tooFewApprovers": "Mindestens so viele Prüfer auswählen, wie Zustimmungen erforderlich sind, und einen mehr, wenn mehr als eine Zustimmung erforderlich ist, damit auch dem eigenen Vorschlag eines gelisteten Prüfers zugestimmt werden kann.",
 					"save": "Prüfregel speichern",
 					"saved": "Prüfregel gespeichert"
 				}
@@ -3208,7 +3307,7 @@
 				"rebase": {
 					"button": "Auf die aktuelle Version übertragen",
 					"hint": "Überträgt Ihre Änderungen auf die jetzt veröffentlichte Version. Wurde eine Datei auf beiden Seiten geändert, werden die Änderungen zusammengeführt, wenn sie verschiedene Zeilen betreffen.",
-					"success": "Als Vorschlag Version {version} übertragen. Er ersetzt den veralteten Vorschlag.",
+					"success": "Als Vorschlag Version {version} übertragen. Er ersetzt den veralteten Vorschlag, sobald seine Prüfungen bestanden sind.",
 					"duplicate": "Sie haben diese Änderung auf der veröffentlichten Version bereits vorgeschlagen (Vorschlag Version {version}). Ziehen Sie den veralteten Vorschlag zurück.",
 					"dialogTitle": "Konflikte auflösen",
 					"dialogDescription": "Diese Dateien wurden sowohl in Ihrem Vorschlag als auch in der veröffentlichten Version {version} geändert. Wählen Sie für jede Datei den Inhalt und senden Sie dann ab. Bis dahin ändert sich nichts.",
@@ -3223,6 +3322,7 @@
 					"deleteFile": "Datei löschen",
 					"textLabel": "Text von {path}",
 					"markersLeft": "Ein Text enthält noch Konfliktmarkierungen. Lösen Sie jeden Konfliktblock auf, bevor Sie absenden.",
+					"publishedChanged": "Während Sie die Konflikte aufgelöst haben, wurde eine neuere Version veröffentlicht. Die Konflikte werden erneut für diese Version angezeigt.",
 					"close": "Schließen",
 					"submit": "Übertragenen Vorschlag absenden"
 				}
@@ -3235,7 +3335,7 @@
 				"versionFromRepository": "Version {version}, synchronisiert aus {ref} {sha}",
 				"repository": "dem Repository",
 				"teammate": "einem Teammitglied",
-				"pathsTitle": "{count, plural, one {# Datei geändert} other {# Dateien geändert}} (Version {from} → Version {to})",
+				"pathsTitle": "{count, plural, =0 {Keine Dateiunterschiede} one {# Datei geändert} other {# Dateien geändert}} (Version {from} → Version {to})",
 				"change": {
 					"added": "Hinzugefügt",
 					"changed": "Geändert",
@@ -3903,10 +4003,12 @@
 						"TOO_MANY_PATHS": "Wählen Sie höchstens {max} Ordner oder Dateien aus.",
 						"PATH_PREFIX_OVERLAP": "„{path}“ liegt in „{withPath}“, das bereits ausgewählt ist.",
 						"INSIDE_WHOLE_REPOSITORY": "Das gesamte Repository ist bereits ausgewählt, also wird „{path}“ schon synchronisiert.",
-						"DUPLICATE_PATH": "„{path}“ ist bereits ausgewählt."
+						"DUPLICATE_PATH": "„{path}“ ist bereits ausgewählt.",
+						"PATH_TOO_LONG": "Dieser Pfad ist zu lang: Ein Repository-Pfad darf höchstens {max} Zeichen lang sein."
 					},
 					"excludeErrors": {
 						"WHOLE_REPOSITORY": "Lassen Sie einen Ordner oder eine Datei in einem ausgewählten Ordner aus, nicht das gesamte Repository.",
+						"PATH_TOO_LONG": "Dieser Pfad ist zu lang: Ein Repository-Pfad darf höchstens {max} Zeichen lang sein.",
 						"INVALID_PATH": "„{path}“ ist kein Repository-Pfad in seiner einfachen Form: verwenden Sie '/' zwischen Ordnern, ohne führendes './' oder '/', ohne abschließendes '/', ohne '.'- oder '..'-Segmente und ohne umgebende Leerzeichen.",
 						"EXCLUDED_FABRIC_PATH": "„{path}“ liegt in einem .fabric-Ordner, den Living Memory niemals synchronisiert, also gibt es nichts auszulassen.",
 						"EXCLUDED_PATH_POLICY_FILE": "„{path}“ ist die .contextignore eines Ordners, die die Synchronisierung als Richtlinie dieses Ordners liest; sie kann nicht ausgelassen werden.",
@@ -3941,6 +4043,7 @@
 							"policyFile": "Die .contextignore eines Ordners wird als dessen Richtlinie gelesen, nie synchronisiert",
 							"nonText": "Nur Textdateien werden synchronisiert (.md, .markdown, .txt, .json, .yaml, .yml)",
 							"invalidPath": "Kein Repository-Pfad in seiner einfachen Form",
+							"pathTooLong": "Pfad ist länger als {max} Zeichen",
 							"codingInstructionsFile": "Eine Coding-Instructions-Datei, die Living Memory niemals synchronisiert",
 							"defaultRule": "Von der Standardregel {rule} übersprungen",
 							"contextignoreRule": "Von {rule} in {file} übersprungen",
@@ -6660,6 +6763,8 @@
 					"NO_BASE": "der Editor gleicht sich noch mit dem gespeicherten Dokument ab.",
 					"SAVE_FAILED": "die Änderungen im Editor konnten nicht zuerst gespeichert werden.",
 					"HELD_ELSEWHERE": "ein anderer Tab prüft gerade einen KI-Vorschlag für dieses Dokument.",
+					"HELD_UNANSWERED": "das Dokument enthält einen unbeantworteten Vorschlag des Assistenten, den niemand prüft.",
+					"REMOVED_UNANSWERED": "er wurde aus dem Dokument entfernt, weil ihn niemand rechtzeitig beantwortet hat.",
 					"EDITOR_BUSY": "der Editor ist mit einer anderen Änderung beschäftigt.",
 					"NO_CHANGE": "die Überarbeitung hat den Abschnitt nicht verändert.",
 					"INTERRUPTED": "der Editor wurde geschlossen oder neu verbunden, bevor die Überarbeitung fertig war.",
@@ -6975,6 +7080,7 @@
 				"review": "Übernehmen oder verwerfen Sie die neu generierte Version, bevor Sie speichern.",
 				"proposal": "Übernehmen oder verwerfen Sie die vom Assistenten vorgeschlagenen Änderungen, bevor Sie speichern.",
 				"proposalElsewhere": "In einem anderen Tab wird ein Vorschlag des Assistenten für dieses Dokument geprüft. Speichern ist wieder möglich, sobald er beantwortet ist.",
+				"proposalOrphaned": "Speichern ist pausiert, solange dieses Dokument einen Vorschlag des Assistenten enthält, den gerade niemand prüft. Speichern ist wieder möglich, sobald er beantwortet oder entfernt ist.",
 				"runLive": "Speichern ist pausiert, während ein Generierungslauf dieses Dokument schreibt. Es ist wieder möglich, sobald der Lauf abgeschlossen ist.",
 				"reconnecting": "Speichern ist pausiert, bis der Editor wieder mit dem Kollaborationsserver verbunden ist.",
 				"updatingToLatest": "Speichern ist pausiert, während der Editor auf die zuletzt gespeicherte Version aktualisiert wird.",
@@ -6991,12 +7097,16 @@
 			"staleRunSave": "Die Generierung dieses Dokuments hat sich seit zehn Minuten nicht gemeldet. Wenn Sie jetzt speichern, wird dieser Lauf beendet.",
 			"assistantFinishing": "Der Assistent schließt ab …",
 			"proposalElsewhereHeld": "In einem anderen Tab wird ein Vorschlag des Assistenten für dieses Dokument geprüft. Versuchen Sie es erneut, sobald er beantwortet ist.",
+			"proposalOrphanedHeld": "Dieses Dokument enthält einen Vorschlag des Assistenten, den gerade niemand prüft. Versuchen Sie es erneut, sobald er beantwortet oder entfernt ist.",
+			"proposalOrphanedRemoved": "Ein unbeantworteter Vorschlag des Assistenten wurde aus diesem Dokument entfernt.",
+			"ownProposalRemoved": "Der Vorschlag des Assistenten wurde aus diesem Dokument entfernt, weil ihn niemand rechtzeitig beantwortet hat. Er wurde nicht übernommen.",
 			"proposalReviewTimedOut": "Die vom Assistenten vorgeschlagenen Änderungen wurden nicht übernommen, da sie 10 Minuten lang unbeantwortet blieben, während andere Tabs darauf warteten.",
 			"assistantRunTakenBack": "Der Assistent hat aufgehört, bevor er seine Änderungen angeboten hat. Was er bis dahin geschrieben hatte, wurde wieder aus dem Dokument entfernt.",
 			"regenerationCall": {
 				"completed": "Die Neugenerierung des Dokuments ist abgeschlossen.",
 				"notApplied": "Die Neugenerierung des Dokuments wurde nicht übernommen.",
-				"heldElsewhere": "Nicht gestartet: In einem anderen Tab wurde ein Vorschlag des Assistenten geprüft."
+				"heldElsewhere": "Nicht gestartet: In einem anderen Tab wurde ein Vorschlag des Assistenten geprüft.",
+				"heldUnanswered": "Nicht gestartet: Das Dokument enthielt einen unbeantworteten Vorschlag des Assistenten, den niemand prüfte."
 			},
 			"rejectEmptyBody": "Es gibt keine frühere Version, zu der zurückgekehrt werden kann. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
 			"rejectRunLive": "Eine neue Generierung dieses Dokuments hat begonnen. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
@@ -7010,6 +7120,7 @@
 			"updating": "Wird auf die neueste Version aktualisiert …",
 			"proposalElsewhere": "In einem anderen Tab wird ein Vorschlag des Assistenten geprüft. Sie können weiter bearbeiten, sobald er beantwortet ist.",
 			"proposalElsewhereBy": "{name} prüft in einem anderen Tab einen Vorschlag des Assistenten für dieses Dokument. Sie können weiter bearbeiten, sobald er beantwortet ist.",
+			"proposalOrphaned": "Dieses Dokument enthält einen Vorschlag des Assistenten, den gerade niemand prüft. Sie können weiter bearbeiten, sobald er beantwortet oder entfernt ist.",
 			"updateFailed": "Der Editor konnte nicht auf die neueste Version aktualisiert werden.",
 			"reloadLatest": "Neueste Version laden",
 			"reload": "Neu laden",
@@ -7018,6 +7129,7 @@
 			"saveConflictSolo": "Ihre Änderungen wurden nicht gespeichert: Das Dokument wurde zwischenzeitlich geändert. Kopieren Sie Ihren Text und laden Sie die Seite neu, um die neueste Version zu sehen.",
 			"leaveSaveFailed": "Ihre letzten Änderungen an diesem Dokument wurden nach dem Verlassen nicht gespeichert. Kopieren Sie sie, um sie zu behalten.",
 			"leaveWhileProposalElsewhere": "Ihre letzten Änderungen an diesem Dokument wurden nicht gespeichert: Sie haben es verlassen, während in einem anderen Tab ein Vorschlag des Assistenten geprüft wurde. Kopieren Sie sie, um sie zu behalten; die Kopie enthält auch diesen Vorschlag.",
+			"leaveWhileProposalOrphaned": "Ihre letzten Änderungen an diesem Dokument wurden nicht gespeichert: Es enthielt einen Vorschlag des Assistenten, den niemand prüfte. Kopieren Sie sie, um sie zu behalten; die Kopie enthält auch diesen Vorschlag.",
 			"rawEditsStale": {
 				"message": "Das Dokument wurde geändert, während Sie sein Markdown bearbeitet haben. Ihre Änderungen hier sind nicht gespeichert und werden nicht von selbst gespeichert: Kopieren Sie sie, um sie zu behalten."
 			},
@@ -7039,12 +7151,14 @@
 			"restoreBlocked": {
 				"runLive": "Die Wiederherstellung ist nicht verfügbar, solange ein Generierungslauf für dieses Dokument wartet oder es schreibt. Sie ist wieder verfügbar, sobald der Lauf abgeschlossen ist.",
 				"regenerating": "Die Wiederherstellung ist nicht verfügbar, solange eine hier gestartete Regenerierung läuft oder auf Ihre Prüfung wartet. Danach ist sie wieder verfügbar.",
-				"proposalElsewhere": "Die Wiederherstellung ist nicht verfügbar, solange in einem anderen Tab ein Vorschlag des Assistenten für dieses Dokument geprüft wird. Sie ist wieder verfügbar, sobald er beantwortet ist."
+				"proposalElsewhere": "Die Wiederherstellung ist nicht verfügbar, solange in einem anderen Tab ein Vorschlag des Assistenten für dieses Dokument geprüft wird. Sie ist wieder verfügbar, sobald er beantwortet ist.",
+				"proposalOrphaned": "Die Wiederherstellung ist nicht verfügbar, solange dieses Dokument einen Vorschlag des Assistenten enthält, den niemand prüft. Sie ist wieder verfügbar, sobald er beantwortet oder entfernt ist."
 			}
 		},
 		"updateWithContext": {
 			"readFailed": "Der Dokumentinhalt konnte nicht gelesen werden. Versuchen Sie es erneut oder laden Sie die Seite neu.",
 			"heldElsewhere": "In einem anderen Tab wird ein Vorschlag des Assistenten für dieses Dokument geprüft. Versuchen Sie es erneut, sobald er beantwortet ist.",
+			"heldUnanswered": "Dieses Dokument enthält einen Vorschlag des Assistenten, den gerade niemand prüft. Versuchen Sie es erneut, sobald er beantwortet oder entfernt ist.",
 			"changedMeanwhile": "Das Dokument wurde geändert, während diese Aktualisierung erstellt wurde, deshalb wurde sie nicht angezeigt. Versuchen Sie es erneut.",
 			"syncing": "Das Dokument wird noch mit der zuletzt gespeicherten Version abgeglichen. Versuchen Sie es gleich noch einmal.",
 			"noUpdates": "Keine Aktualisierungen gefunden — das Dokument spiegelt bereits den neuesten Kontext wider.",

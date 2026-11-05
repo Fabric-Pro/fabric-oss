@@ -441,3 +441,34 @@ describe("Report template override tenant registration", () => {
 		);
 	});
 });
+
+/**
+ * Decisions extracted from synced Living Memory files carry `organizationId`,
+ * `userId` and `projectId`, copied from the parent context; unregistered, they
+ * fail OPEN on the tenant path.
+ */
+describe("Living Memory decision extraction tenant registration", () => {
+	it("is user-owned and project-scoped, with a user_owned RLS policy", () => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).toContain("ProjectContextDecisionExtraction");
+		expect(tenantDb).toMatch(
+			/\bProjectContextDecisionExtraction: "projectId",/,
+		);
+		expect(rls).toMatch(
+			/\{\s*name: "project_context_decision_extraction",\s*policy: "user_owned",?\s*\}/,
+		);
+	});
+
+	it("maps to its physical name and carries both tenant columns", () => {
+		const body = schema.slice(
+			schema.indexOf("model ProjectContextDecisionExtraction {"),
+		);
+		const model = body.slice(0, body.indexOf("\n}"));
+
+		expect(model).toContain('@@map("project_context_decision_extraction")');
+		expect(model).toMatch(/^\s*userId\s+String\?/m);
+		expect(model).toMatch(/^\s*organizationId\s+String\?/m);
+		expect(model).toMatch(/^\s*@@unique\(\[contextId, contentHash\]\)/m);
+	});
+});

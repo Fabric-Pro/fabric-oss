@@ -106,7 +106,17 @@ describe("the catalogue's gateway tools", () => {
 			"fabric_get_project_work_item_counts",
 		],
 		["project reports list reports", "fabric_list_project_reports"],
+		["available report templates", "fabric_list_report_templates"],
+		[
+			"add a report new project report from template",
+			"fabric_create_project_report",
+		],
 		["regenerate report refresh the report", "fabric_generate_report"],
+		["read the report content", "fabric_get_report_content"],
+		[
+			"edit report instructions make the report shorter",
+			"fabric_update_report_prompt",
+		],
 	])("discovers %s as %s", async (query, name) => {
 		expect(await rank(query)).toContain(name);
 	});

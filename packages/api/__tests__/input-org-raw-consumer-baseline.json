@@ -17,7 +17,6 @@
 	"packages/api/modules/integrations/procedures/oauth.ts",
 	"packages/api/modules/mcp/procedures/available-configs.ts",
 	"packages/api/modules/mcp/procedures/available-pm-tools.ts",
-	"packages/api/modules/mcp/procedures/configs.ts",
 	"packages/api/modules/organizations/procedures/deletion/restore.ts",
 	"packages/api/modules/organizations/procedures/is-guest.ts",
 	"packages/api/modules/organizations/procedures/update-frame-sharing-policy.ts",

@@ -126,6 +126,38 @@ describe("prompt enhancer selected state", () => {
 			.soft(view.container.querySelector("ins"))
 			.toHaveTextContent("improved");
 	});
+	it("saves the AI's change while it still shows as a diff", () => {
+		const onSave = vi.fn();
+		h.loading = true;
+		const view = render(
+			<PromptContentEnhancer {...props} onSave={onSave} />,
+		);
+		act(() =>
+			fake.agent.setState({
+				...fake.agent.state,
+				streamingContent: "Original improved",
+			}),
+		);
+		h.loading = false;
+		view.rerender(<PromptContentEnhancer {...props} onSave={onSave} />);
+		act(() => {
+			for (const subscriber of fake.listeners) {
+				subscriber.onRunFinishedEvent?.({ outcome: "success" });
+			}
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+		expect(onSave).toHaveBeenCalledWith("Original improved");
+	});
+	it("saves the editor's text when no AI change is on screen", () => {
+		const onSave = vi.fn();
+		render(<PromptContentEnhancer {...props} onSave={onSave} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+		expect(onSave).toHaveBeenCalledWith("Original");
+	});
 	for (const accept of [true, false]) {
 		it(`preserves live fields on ${accept ? "accept" : "reject"} and editing writes`, () => {
 			render(<PromptContentEnhancer {...props} />);

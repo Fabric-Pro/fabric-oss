@@ -1,5 +1,14 @@
 # @fabricorg/cli
 
+## 0.9.1
+
+### Patch Changes
+
+- bfd8846: Stop `fabric instructions push --rebase` saying the project was not found when the version a folder last synced is no longer kept.
+- bfd8846: Stop the CLI sending people to `fabric auth login` for permissions a browser sign-in cannot grant, stop `check --verify` reporting local overrides as drift, and show a withdrawn proposal as closed rather than rejected.
+- bfd8846: `fabric context push` now lists files its lock records as pushed that the server no longer holds, instead of calling them unchanged.
+- @fabricorg/sdk-mcp@0.2.2
+
 ## 0.9.0
 
 ### Minor Changes

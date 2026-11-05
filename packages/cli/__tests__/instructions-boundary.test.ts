@@ -6,6 +6,8 @@
  * (on stdout under a hook, never acted on), and no text names an absolute path
  * the person did not type.
  */
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordUpgradeNotice } from "../src/lib/user-agent.js";
 import { useEmptyMachine } from "./helpers/empty-machine.js";
@@ -399,6 +401,37 @@ describe("no absolute path unless --dest was typed", () => {
 			"Every file in this folder matches the lock.",
 		);
 		expect(result.stdout).not.toContain(dest);
+	});
+
+	it("check --verify lists a local override apart from drift, with no hint to replace it", async () => {
+		const dest = await makeTree();
+		vi.spyOn(process, "cwd").mockReturnValue(dest);
+		await writeFile(path.join(dest, "AGENTS.md"), "my own copy\n");
+		await seedLock(dest, snapshotFor([]).digest, {
+			"AGENTS.md": { sha256: "0".repeat(64), mode: null },
+		});
+		await writeFile(
+			path.join(dest, ".fabric", "local-overrides.json"),
+			JSON.stringify({ version: 1, paths: ["AGENTS.md"], patterns: [] }),
+		);
+		mocks.getPublished.mockResolvedValue({
+			...published([]),
+			unchanged: true,
+			manifest: undefined,
+		});
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--verify",
+		]);
+
+		expect(result.stdout).toContain(
+			"Every file in this folder matches the lock, apart from your local overrides:",
+		);
+		expect(result.stdout).toContain("AGENTS.md");
+		expect(result.stdout).not.toContain("--repair");
 	});
 
 	it("sync no longer prints where its lock is, or any digest", async () => {

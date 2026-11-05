@@ -175,89 +175,118 @@ export interface CreateArchitectureDecisionInput {
 export async function createArchitectureDecision(
 	input: CreateArchitectureDecisionInput,
 ): Promise<ArchitectureDecisionDetail> {
-	// Retry on the rare identifier race (two concurrent creates) — the
-	// @@unique([projectId, identifier]) constraint is the integrity backstop.
-	for (let attempt = 0; ; attempt++) {
+	return retryOnIdentifierRace(() =>
+		db.$transaction((tx) => insertArchitectureDecision(tx, input)),
+	);
+}
+
+/**
+ * {@link createArchitectureDecision}, but only when `claim` answers true; null
+ * otherwise. `claim` runs first, inside the create's own transaction, so a
+ * create that must happen at most once per source can take a lock there and
+ * check that nothing was created from that source yet: a concurrent duplicate
+ * waits on the lock, then sees the first one's committed row.
+ */
+export async function createArchitectureDecisionWhen(
+	input: CreateArchitectureDecisionInput,
+	claim: (tx: Prisma.TransactionClient) => Promise<boolean>,
+): Promise<ArchitectureDecisionDetail | null> {
+	return retryOnIdentifierRace(() =>
+		db.$transaction(async (tx) =>
+			(await claim(tx)) ? insertArchitectureDecision(tx, input) : null,
+		),
+	);
+}
+
+/**
+ * Retry on the rare identifier race (two concurrent creates) — the
+ * @@unique([projectId, identifier]) constraint is the integrity backstop.
+ * `attempt` is one whole transaction, so a retry re-reads the last identifier.
+ */
+async function retryOnIdentifierRace<T>(attempt: () => Promise<T>): Promise<T> {
+	for (let tries = 0; ; tries++) {
 		try {
-			return await db.$transaction(async (tx) => {
-				const last = await tx.architectureDecision.findFirst({
-					where: { projectId: input.projectId },
-					orderBy: { createdAt: "desc" },
-					select: { identifier: true },
-				});
-				const identifier = nextIdentifierFrom(last?.identifier);
-
-				const created = await tx.architectureDecision.create({
-					data: {
-						projectId: input.projectId,
-						identifier,
-						createdById: input.createdById,
-						lastEditedById: input.createdById,
-						title: input.title,
-						contextProblem: input.contextProblem,
-						decision: input.decision,
-						rationale: input.rationale,
-						decisionDrivers: input.decisionDrivers ?? null,
-						alternativesConsidered:
-							input.alternativesConsidered ?? null,
-						consequences: input.consequences ?? null,
-						status: input.status ?? "PROPOSED",
-						domain: input.domain ?? null,
-						decisionDate: input.decisionDate ?? new Date(),
-						participantUserIds: input.participantUserIds ?? [],
-						participantsText: input.participantsText ?? null,
-						supersededById: input.supersededById ?? null,
-						relatedDecisionIds: input.relatedDecisionIds ?? [],
-						decisionTypeId: input.decisionTypeId ?? null,
-						ownerUserId: input.ownerUserId ?? null,
-						duration: input.duration ?? null,
-						priorityFlagged: input.priorityFlagged ?? false,
-						priorityFlaggedAt: input.priorityFlagged
-							? new Date()
-							: null,
-						sourceKind: input.sourceKind ?? null,
-						sourceMetadata: input.sourceMetadata,
-						userId: input.userId ?? null,
-						organizationId: input.organizationId ?? null,
-					},
-					select: decisionDetailSelect,
-				});
-
-				await tx.architectureDecisionVersion.create({
-					data: {
-						architectureDecisionId: created.id,
-						version: 1,
-						title: created.title,
-						contextProblem: created.contextProblem,
-						decision: created.decision,
-						rationale: created.rationale,
-						decisionDrivers: created.decisionDrivers,
-						alternativesConsidered: created.alternativesConsidered,
-						consequences: created.consequences,
-						status: created.status,
-						decisionDate: created.decisionDate,
-						participantUserIds: created.participantUserIds,
-						participantsText: created.participantsText,
-						decisionTypeId: created.decisionTypeId,
-						ownerUserId: created.ownerUserId,
-						duration: created.duration,
-						priorityFlagged: created.priorityFlagged,
-						editedById: input.createdById,
-						editedByName: input.editedByName,
-						userId: created.userId,
-						organizationId: created.organizationId,
-					},
-				});
-
-				return created;
-			});
+			return await attempt();
 		} catch (error) {
-			if (isUniqueIdentifierViolation(error) && attempt < 3) {
+			if (isUniqueIdentifierViolation(error) && tries < 3) {
 				continue;
 			}
 			throw error;
 		}
 	}
+}
+
+async function insertArchitectureDecision(
+	tx: Prisma.TransactionClient,
+	input: CreateArchitectureDecisionInput,
+): Promise<ArchitectureDecisionDetail> {
+	const last = await tx.architectureDecision.findFirst({
+		where: { projectId: input.projectId },
+		orderBy: { createdAt: "desc" },
+		select: { identifier: true },
+	});
+	const identifier = nextIdentifierFrom(last?.identifier);
+
+	const created = await tx.architectureDecision.create({
+		data: {
+			projectId: input.projectId,
+			identifier,
+			createdById: input.createdById,
+			lastEditedById: input.createdById,
+			title: input.title,
+			contextProblem: input.contextProblem,
+			decision: input.decision,
+			rationale: input.rationale,
+			decisionDrivers: input.decisionDrivers ?? null,
+			alternativesConsidered: input.alternativesConsidered ?? null,
+			consequences: input.consequences ?? null,
+			status: input.status ?? "PROPOSED",
+			domain: input.domain ?? null,
+			decisionDate: input.decisionDate ?? new Date(),
+			participantUserIds: input.participantUserIds ?? [],
+			participantsText: input.participantsText ?? null,
+			supersededById: input.supersededById ?? null,
+			relatedDecisionIds: input.relatedDecisionIds ?? [],
+			decisionTypeId: input.decisionTypeId ?? null,
+			ownerUserId: input.ownerUserId ?? null,
+			duration: input.duration ?? null,
+			priorityFlagged: input.priorityFlagged ?? false,
+			priorityFlaggedAt: input.priorityFlagged ? new Date() : null,
+			sourceKind: input.sourceKind ?? null,
+			sourceMetadata: input.sourceMetadata,
+			userId: input.userId ?? null,
+			organizationId: input.organizationId ?? null,
+		},
+		select: decisionDetailSelect,
+	});
+
+	await tx.architectureDecisionVersion.create({
+		data: {
+			architectureDecisionId: created.id,
+			version: 1,
+			title: created.title,
+			contextProblem: created.contextProblem,
+			decision: created.decision,
+			rationale: created.rationale,
+			decisionDrivers: created.decisionDrivers,
+			alternativesConsidered: created.alternativesConsidered,
+			consequences: created.consequences,
+			status: created.status,
+			decisionDate: created.decisionDate,
+			participantUserIds: created.participantUserIds,
+			participantsText: created.participantsText,
+			decisionTypeId: created.decisionTypeId,
+			ownerUserId: created.ownerUserId,
+			duration: created.duration,
+			priorityFlagged: created.priorityFlagged,
+			editedById: input.createdById,
+			editedByName: input.editedByName,
+			userId: created.userId,
+			organizationId: created.organizationId,
+		},
+	});
+
+	return created;
 }
 
 export async function getArchitectureDecision(input: {
@@ -1039,11 +1068,12 @@ function normalizeDecisionText(s: string): string {
 }
 
 /**
- * Heuristic "same decision" check used to de-dup meeting candidates against
- * decisions that already exist (e.g. logged manually). Matches on substring
- * containment or strong word-overlap (Jaccard ≥ 0.5) of the normalized text.
+ * Heuristic "same decision" check used to de-dup meeting and Living Memory
+ * candidates against decisions that already exist (e.g. logged manually).
+ * Matches on substring containment or strong word-overlap (Jaccard ≥ 0.5) of
+ * the normalized text.
  */
-function isSimilarDecision(a: string, b: string): boolean {
+export function isSimilarDecision(a: string, b: string): boolean {
 	if (!a || !b) {
 		return false;
 	}

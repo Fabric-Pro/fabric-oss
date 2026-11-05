@@ -111,6 +111,14 @@ vi.mock("@shared/lib/orpc-client", () => ({
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
+		reports: {
+			project: {
+				queryOptions: ({ input }: { input: unknown }) => ({
+					queryKey: ["reports", "project", input],
+					queryFn: async () => ({ project: null }),
+				}),
+			},
+		},
 		projects: {
 			members: {
 				list: {

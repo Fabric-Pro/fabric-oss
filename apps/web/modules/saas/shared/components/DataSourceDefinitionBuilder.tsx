@@ -1,5 +1,11 @@
 "use client";
 
+import {
+	isReportDataType,
+	REPORT_DATA_TYPE_INFO,
+	REPORT_DATA_TYPES,
+	type ReportDataType,
+} from "@repo/database/prisma/queries/lib/report-data-types";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card, CardContent } from "@ui/components/card";
@@ -22,6 +28,7 @@ import {
 	ServerIcon,
 	TrashIcon,
 } from "lucide-react";
+import { PROVIDER_CONTEXT_FIELDS } from "./provider-context-fields";
 
 // Data source definition for templates (provider only for agentic approach)
 // The AI agent will automatically use read-only tools based on the provider
@@ -29,12 +36,19 @@ import {
 export type DataSourceDefinition = {
 	id: string;
 	type: "integration" | "mcp" | "workspace" | "user-input" | "fabric";
-	provider: string;
+	// Absent on a generic source, whose `dataType` the person answers with a tool
+	provider?: string;
+	dataType?: ReportDataType;
 	// Operation is optional - only used for legacy non-agentic templates
 	operation?: string;
 	// `false` lets a report skip this source; absent means required
 	required?: boolean;
+	// A generic source always gathers through the tool bound to it
+	useAgentic?: boolean;
 };
+
+// How the source picker tells a data type from a provider key
+const DATA_TYPE_OPTION_PREFIX = "data-type:";
 
 // Operation parameter definition for instance-level configuration
 export type OperationParameter = {
@@ -502,119 +516,6 @@ export const OPERATION_PARAMS: Record<string, OperationParameter[]> = {
 	// jira_get_issue: [{ key: "issueKey", label: "Issue Key", placeholder: "PROJ-123", required: true }],
 };
 
-// Provider-level context fields for AI-driven data gathering
-// These are human-readable values that the AI uses to find specific resources
-export type ProviderContextField = {
-	key: string;
-	label: string;
-	placeholder: string;
-	required: boolean;
-	helpText: string;
-};
-
-export const PROVIDER_CONTEXT_FIELDS: Record<string, ProviderContextField[]> = {
-	azure_devops: [
-		{
-			key: "project",
-			label: "Project Name",
-			placeholder: "MyProject",
-			required: true,
-			helpText: "The Azure DevOps project name",
-		},
-		{
-			key: "team",
-			label: "Team Name",
-			placeholder: "MyTeam",
-			required: false,
-			helpText: "The team name within the project (optional)",
-		},
-	],
-	fizzy: [
-		{
-			key: "accountSlug",
-			label: "Account Slug",
-			placeholder: "123456",
-			required: true,
-			helpText:
-				"The Fizzy account slug (e.g., '123456'). Find it via fizzy_get_identity.",
-		},
-		{
-			key: "boardId",
-			label: "Board",
-			placeholder: "12345",
-			required: true,
-			helpText: "The Fizzy board to report on",
-		},
-		{
-			key: "boardName",
-			label: "Board Name",
-			placeholder: "My Board",
-			required: false,
-			helpText:
-				"Board name to help AI identify the right board (optional)",
-		},
-	],
-	github: [
-		{
-			key: "organization",
-			label: "Organization",
-			placeholder: "my-org",
-			required: true,
-			helpText: "GitHub organization or username",
-		},
-		{
-			key: "repository",
-			label: "Repository",
-			placeholder: "my-repo",
-			required: false,
-			helpText: "Repository name (optional, for repo-specific reports)",
-		},
-	],
-	slack: [
-		{
-			key: "channels",
-			label: "Channels",
-			placeholder: "general, engineering",
-			required: false,
-			helpText: "Comma-separated channel names to focus on (optional)",
-		},
-	],
-	linear: [
-		{
-			key: "team",
-			label: "Team Name",
-			placeholder: "Engineering",
-			required: true,
-			helpText: "Linear team name",
-		},
-	],
-	jira: [
-		{
-			key: "project",
-			label: "Project Key",
-			placeholder: "PROJ",
-			required: true,
-			helpText: "Jira project key",
-		},
-	],
-	microsoft_graph: [
-		{
-			key: "team",
-			label: "Team Name",
-			placeholder: "Engineering Team",
-			required: false,
-			helpText: "Microsoft Teams team name (optional)",
-		},
-		{
-			key: "channels",
-			label: "Channels",
-			placeholder: "General, Announcements",
-			required: false,
-			helpText: "Comma-separated channel names (optional)",
-		},
-	],
-};
-
 type DataSourceItemProps = {
 	dataSource: DataSourceDefinition;
 	index: number;
@@ -640,7 +541,9 @@ function DataSourceItem({
 	readOnly = false,
 	showRequired,
 }: DataSourceItemProps) {
-	const provider = DATA_SOURCE_PROVIDERS[dataSource.provider];
+	const provider = dataSource.provider
+		? DATA_SOURCE_PROVIDERS[dataSource.provider]
+		: undefined;
 
 	const typeColors = {
 		integration: {
@@ -678,7 +581,9 @@ function DataSourceItem({
 	const colors = typeColors[dataSource.type];
 
 	// Get context fields for this provider (for display)
-	const contextFields = PROVIDER_CONTEXT_FIELDS[dataSource.provider] || [];
+	const contextFields = dataSource.provider
+		? PROVIDER_CONTEXT_FIELDS[dataSource.provider] || []
+		: [];
 
 	return (
 		<Card className={cn("border transition-all", colors.bg, colors.border)}>
@@ -730,12 +635,35 @@ function DataSourceItem({
 					{/* Provider Select only - tools are auto-configured */}
 					<div className="flex-1">
 						<Select
-							value={dataSource.provider}
+							value={
+								dataSource.dataType
+									? `${DATA_TYPE_OPTION_PREFIX}${dataSource.dataType}`
+									: dataSource.provider
+							}
 							onValueChange={(value) => {
+								const dataType = value.startsWith(
+									DATA_TYPE_OPTION_PREFIX,
+								)
+									? value.slice(
+											DATA_TYPE_OPTION_PREFIX.length,
+										)
+									: undefined;
+								if (isReportDataType(dataType)) {
+									onUpdate({
+										provider: undefined,
+										dataType,
+										type: "mcp",
+										operation: undefined,
+										useAgentic: true,
+									});
+									return;
+								}
 								const newProvider =
 									DATA_SOURCE_PROVIDERS[value];
 								onUpdate({
 									provider: value,
+									dataType: undefined,
+									useAgentic: undefined,
 									type: newProvider?.type || "mcp",
 									operation:
 										newProvider?.type === "fabric"
@@ -754,6 +682,19 @@ function DataSourceItem({
 								<SelectValue placeholder="Select data source" />
 							</SelectTrigger>
 							<SelectContent>
+								{(showRequired || dataSource.dataType) &&
+									REPORT_DATA_TYPES.map((dataType) => (
+										<SelectItem
+											key={dataType}
+											value={`${DATA_TYPE_OPTION_PREFIX}${dataType}`}
+										>
+											Any{" "}
+											{REPORT_DATA_TYPE_INFO[
+												dataType
+											].label.toLowerCase()}{" "}
+											tool
+										</SelectItem>
+									))}
 								{Object.entries(DATA_SOURCE_PROVIDERS).map(
 									([key, prov]) => (
 										<SelectItem key={key} value={key}>

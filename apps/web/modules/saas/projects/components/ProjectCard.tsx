@@ -70,6 +70,8 @@ interface ProjectCardProps {
 		}>;
 	};
 	canDelete?: boolean;
+	/** False for a project the caller reaches only through their organization role. */
+	belongsToProject?: boolean;
 	onUpdate: () => void;
 	isDeleted?: boolean;
 	isSelectionMode?: boolean;
@@ -103,6 +105,7 @@ const statusConfig = {
 export function ProjectCard({
 	project,
 	canDelete = false,
+	belongsToProject = true,
 	onUpdate,
 	isDeleted = false,
 	isSelectionMode = false,
@@ -344,13 +347,15 @@ export function ProjectCard({
 							    when shortcuts filter deleted projects out — and
 							    during selection mode, where the card's click
 							    behaviour is replaced. */}
-							{!isDeleted && !isSelectionMode && (
-								<ProjectFavoriteToggle
-									projectId={project.id}
-									projectName={project.name}
-									isFavorite={project.isFavorite ?? false}
-								/>
-							)}
+							{!isDeleted &&
+								!isSelectionMode &&
+								belongsToProject && (
+									<ProjectFavoriteToggle
+										projectId={project.id}
+										projectName={project.name}
+										isFavorite={project.isFavorite ?? false}
+									/>
+								)}
 
 							{hasMenuActions && (
 								<DropdownMenu>
@@ -412,48 +417,59 @@ export function ProjectCard({
 													<FolderIcon className="h-4 w-4 mr-2" />
 													Open Project
 												</DropdownMenuItem>
-												<DropdownMenuSeparator />
-												{project.status !==
-													"ACTIVE" && (
-													<DropdownMenuItem
-														onClick={(e) => {
-															e.stopPropagation();
-															updateStatusMutation.mutate(
-																"ACTIVE",
-															);
-														}}
-													>
-														<PlayIcon className="h-4 w-4 mr-2" />
-														Mark as Active
-													</DropdownMenuItem>
-												)}
-												{project.status !==
-													"COMPLETED" && (
-													<DropdownMenuItem
-														onClick={(e) => {
-															e.stopPropagation();
-															updateStatusMutation.mutate(
-																"COMPLETED",
-															);
-														}}
-													>
-														<CheckCircle2Icon className="h-4 w-4 mr-2" />
-														Mark as Completed
-													</DropdownMenuItem>
-												)}
-												{project.status !==
-													"ARCHIVED" && (
-													<DropdownMenuItem
-														onClick={(e) => {
-															e.stopPropagation();
-															updateStatusMutation.mutate(
-																"ARCHIVED",
-															);
-														}}
-													>
-														<ArchiveIcon className="h-4 w-4 mr-2" />
-														Archive
-													</DropdownMenuItem>
+												{belongsToProject && (
+													<>
+														<DropdownMenuSeparator />
+														{project.status !==
+															"ACTIVE" && (
+															<DropdownMenuItem
+																onClick={(
+																	e,
+																) => {
+																	e.stopPropagation();
+																	updateStatusMutation.mutate(
+																		"ACTIVE",
+																	);
+																}}
+															>
+																<PlayIcon className="h-4 w-4 mr-2" />
+																Mark as Active
+															</DropdownMenuItem>
+														)}
+														{project.status !==
+															"COMPLETED" && (
+															<DropdownMenuItem
+																onClick={(
+																	e,
+																) => {
+																	e.stopPropagation();
+																	updateStatusMutation.mutate(
+																		"COMPLETED",
+																	);
+																}}
+															>
+																<CheckCircle2Icon className="h-4 w-4 mr-2" />
+																Mark as
+																Completed
+															</DropdownMenuItem>
+														)}
+														{project.status !==
+															"ARCHIVED" && (
+															<DropdownMenuItem
+																onClick={(
+																	e,
+																) => {
+																	e.stopPropagation();
+																	updateStatusMutation.mutate(
+																		"ARCHIVED",
+																	);
+																}}
+															>
+																<ArchiveIcon className="h-4 w-4 mr-2" />
+																Archive
+															</DropdownMenuItem>
+														)}
+													</>
 												)}
 												{canDelete && (
 													<>

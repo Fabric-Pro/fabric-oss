@@ -26,6 +26,7 @@ import {
 } from "@temporalio/workflow";
 import type * as teamsChannelMonitorActivities from "../activities/teams-channel-monitor";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
+import { resolveIdleMonitorAction } from "./lib/idle-monitor";
 
 // =============================================================================
 // Types
@@ -145,6 +146,13 @@ export async function teamsChannelMonitorWorkflow(
 			};
 			if (isOneShot) {
 				break;
+			}
+			const idleAction = await resolveIdleMonitorAction(projectId);
+			if (idleAction === "end") {
+				break;
+			}
+			if (idleAction === "continue-as-new") {
+				await continueAsNew<typeof teamsChannelMonitorWorkflow>(input);
 			}
 			continue;
 		}

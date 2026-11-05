@@ -670,6 +670,9 @@
 	},
 	"documentation": {
 		"title": "Documentation",
+		"copyPage": "Copy page",
+		"collapseSidebar": "Hide sidebar",
+		"expandSidebar": "Show sidebar",
 		"fallbackNotice": "This page is not yet available in your selected language. Showing the English version."
 	},
 	"faq": {
@@ -4003,7 +4006,7 @@
 					"action": "Reset Living Memory",
 					"disabledSyncConnected": "Disconnect the repository sync before resetting: while it is connected, its next run brings the files back.",
 					"title": "Reset Living Memory?",
-					"description": "This deletes every file synced into this project's Living Memory ({count, plural, one {# file} other {# files}}), for every member. Other context sources are not affected. This cannot be undone; push the files again to restore them.",
+					"description": "This deletes every file synced into this project's Living Memory ({count, plural, one {# file} other {# files}}), for every member. Other context sources are not affected. This cannot be undone. To restore the files, run fabric context push --init from the folder they came from.",
 					"confirmLabel": "Type the project name, {name}, to confirm",
 					"cancel": "Cancel",
 					"confirm": "Reset Living Memory",
@@ -4206,10 +4209,12 @@
 						"TOO_MANY_PATHS": "Select at most {max} folders or files.",
 						"PATH_PREFIX_OVERLAP": "“{path}” is inside “{withPath}”, which is already selected.",
 						"INSIDE_WHOLE_REPOSITORY": "The whole repository is already selected, so “{path}” syncs already.",
-						"DUPLICATE_PATH": "“{path}” is already selected."
+						"DUPLICATE_PATH": "“{path}” is already selected.",
+						"PATH_TOO_LONG": "That path is too long: a repository path can be at most {max} characters."
 					},
 					"excludeErrors": {
 						"WHOLE_REPOSITORY": "Leave out a folder or file inside a selected folder, not the whole repository.",
+						"PATH_TOO_LONG": "That path is too long: a repository path can be at most {max} characters.",
 						"INVALID_PATH": "“{path}” isn't a repository path in its plain form: use '/' between folders, with no leading './' or '/', no trailing '/', no '.' or '..' segments and no surrounding spaces.",
 						"EXCLUDED_FABRIC_PATH": "“{path}” is in a .fabric folder, which Living Memory never syncs, so there is nothing to leave out.",
 						"EXCLUDED_PATH_POLICY_FILE": "“{path}” is a folder's .contextignore, which the sync reads as that folder's policy, so it can't be left out.",
@@ -4241,6 +4246,7 @@
 							"truncated": "This branch is too large to list in full: only the first {max, number} entries are shown. Type the folder path below.",
 							"error": "Couldn't list this branch's folders. Type the folder path below, or try again later.",
 							"INVALID_PATH": "Not a usable folder path",
+							"PATH_TOO_LONG": "This folder's path is too long",
 							"TARGET_RESERVED": "Agents never write here: the root and folders starting with a dot hold tool configuration",
 							"TARGET_OUTSIDE_SELECTION": "Not inside what this project syncs, so nothing written here would be read back",
 							"TARGET_EXCLUDED": "Left out of the sync",
@@ -4254,6 +4260,7 @@
 							"policyFile": "A folder's .contextignore is read as its policy, never synced",
 							"nonText": "Only text files sync (.md, .markdown, .txt, .json, .yaml, .yml)",
 							"invalidPath": "Not a repository path in its plain form",
+							"pathTooLong": "Path is longer than {max} characters",
 							"codingInstructionsFile": "A coding-instructions file, which Living Memory never syncs",
 							"defaultRule": "Skipped by the default rule {rule}",
 							"contextignoreRule": "Skipped by {rule} in {file}",
@@ -4359,6 +4366,7 @@
 						"removed": "Removed {folder}"
 					},
 					"errors": {
+						"PATH_TOO_LONG": "That folder's path is too long: a repository path can be at most {max} characters.",
 						"INVALID_PATH": "That isn't a usable folder path. Use '/' between folders, with no leading or trailing '/', no '.' or '..' segments and no spaces around it.",
 						"TARGET_RESERVED": "Agents never write to the repository root or to folders whose name starts with a dot, such as .github, because those hold tool and CI configuration. Choose another folder.",
 						"TARGET_OUTSIDE_SELECTION": "{path} is not inside a folder this project syncs, so nothing written there would be read back. Choose a folder inside what the sync selects.",
@@ -5947,6 +5955,52 @@
 				"saveFailed": "Failed to update the log source"
 			}
 		},
+		"livingMemoryDecisions": {
+			"badge": "From Living Memory",
+			"badgeTooltip": "— found by AI in a Living Memory file. Review and complete the details.",
+			"legend": "— found by AI in a Living Memory file.",
+			"sourceNote": "captured from Living Memory",
+			"strip": {
+				"count": "{count, plural, one {# decision} other {# decisions}}",
+				"detected": "found in Living Memory files",
+				"subtitle": "Turn your team's notes into tracked records",
+				"review": "Review",
+				"hide": "Hide",
+				"toggleAria": "Toggle the decisions found in Living Memory files",
+				"mayUpdate": "May update {identifier}",
+				"dismiss": "Dismiss suggestion",
+				"dismissTitle": "Dismiss — don't suggest this again",
+				"paginationLabel": "Living Memory decision candidates pagination",
+				"previousPage": "Previous page, Living Memory candidates",
+				"nextPage": "Next page, Living Memory candidates",
+				"firstSyncSkipped": "{count, plural, one {# file} other {# files}} from the repository's first sync {count, plural, one {was} other {were}} not read for decisions. Scanning uses one AI request per file.",
+				"scanFirstSync": "Scan for decisions"
+			},
+			"dialog": {
+				"newBadge": "New decision",
+				"updateBadge": "Updates {identifier}",
+				"titleNew": "Review proposed decision",
+				"titleUpdate": "Review proposed update",
+				"descriptionNew": "Found in {path} on {date}. Nothing is created until you accept.",
+				"descriptionUpdate": "Found in {path} on {date}. It reads like an update to {identifier}. Creating it as an update links the two; accepting the new decision marks {identifier} as superseded.",
+				"current": "Current · {identifier}",
+				"proposed": "Proposed · from this file",
+				"rationale": "Rationale:",
+				"reject": "Reject suggestion",
+				"cancel": "Cancel",
+				"create": "Create decision",
+				"createAsUpdate": "Create as update",
+				"createNew": "Create as new decision"
+			},
+			"toast": {
+				"created": "Draft decision created from Living Memory",
+				"createFailed": "Failed to create: {message}",
+				"dismissed": "Suggestion dismissed",
+				"dismissFailed": "Failed to dismiss: {message}",
+				"scanStarted": "Scan started. Decisions appear here as each file is read.",
+				"scanFailed": "Failed to start the scan: {message}"
+			}
+		},
 		"decisionPrecheck": {
 			"proposalBanner": "This proposal contradicts {count, plural, one {# logged decision} other {# logged decisions}}",
 			"changeNoteLabel": "Conflicts with a logged decision",
@@ -7478,6 +7532,8 @@
 			},
 			"actionErrors": {
 				"forbidden": "You don't have permission to do that.",
+				"ownProposal": "This project needs approvals from reviewers other than the proposer. Ask a teammate to approve it.",
+				"notAnApprover": "This project's review policy names who may approve proposals, and you are not one of them.",
 				"notFound": "That no longer exists. Refresh and try again.",
 				"conflict": "This changed while you were working. Refresh and try again.",
 				"badRequest": "That wasn't accepted. Check it and try again.",
@@ -7605,7 +7661,7 @@
 			"branchFiles": {
 				"branchOnlyBadge": "Only on your branch",
 				"branchOnlyNotice": "This file is only on your proposal branch. The published version does not have it yet.",
-				"changedNotice": "Your proposal branch changes this file. You see the published version here.",
+				"changedNotice": "Your proposal branch changes this file.",
 				"deletedNotice": "Your proposal branch deletes this file. You see the published version here.",
 				"listHeading": "Files your branch changes",
 				"restore": "Restore published version",
@@ -7896,7 +7952,7 @@
 					"requiredLabel": "Approvals required",
 					"proposerExcluded": "The person who proposed a change cannot approve it.",
 					"restrictLabel": "Only selected members can approve",
-					"tooFewApprovers": "Select at least as many approvers as the approvals you require.",
+					"tooFewApprovers": "Select at least as many approvers as the approvals you require, and one more when you require more than one, so a listed approver's own proposal can still be approved.",
 					"save": "Save review policy",
 					"saved": "Review policy saved"
 				}
@@ -8490,7 +8546,7 @@
 				"rebase": {
 					"button": "Rebase onto current version",
 					"hint": "Carries your changes onto the version published now. Where a file changed on both sides, the changes are combined when they touch different lines.",
-					"success": "Rebased as proposal version {version}. It replaces the stale proposal.",
+					"success": "Rebased as proposal version {version}. It replaces the stale proposal once its checks pass.",
 					"duplicate": "You already proposed this change on the published version (proposal version {version}). Cancel the stale proposal.",
 					"dialogTitle": "Resolve the conflicts",
 					"dialogDescription": "These files changed both in your proposal and in published version {version}. Choose what each file should hold, then submit. Nothing changes until you submit.",
@@ -8505,6 +8561,7 @@
 					"deleteFile": "Delete the file",
 					"textLabel": "Text of {path}",
 					"markersLeft": "Some text still holds conflict markers. Resolve every conflict block before you submit.",
+					"publishedChanged": "A newer version was published while you resolved the conflicts. The conflicts are shown again against it.",
 					"close": "Close",
 					"submit": "Submit rebased proposal"
 				},
@@ -8720,7 +8777,7 @@
 				"versionFromRepository": "Version {version}, synced from {ref} {sha}",
 				"repository": "the repository",
 				"teammate": "a teammate",
-				"pathsTitle": "{count, plural, one {# file changed} other {# files changed}} (version {from} → version {to})",
+				"pathsTitle": "{count, plural, =0 {No files differ} one {# file changed} other {# files changed}} (version {from} → version {to})",
 				"change": {
 					"added": "Added",
 					"changed": "Changed",
@@ -9426,6 +9483,8 @@
 					"NO_BASE": "the editor is still syncing with the saved document.",
 					"SAVE_FAILED": "the editor's changes could not be saved first.",
 					"HELD_ELSEWHERE": "another tab is reviewing an AI proposal for this document.",
+					"HELD_UNANSWERED": "the document holds an unanswered assistant proposal that nobody is reviewing.",
+					"REMOVED_UNANSWERED": "it was removed from the document because nobody answered it in time.",
 					"EDITOR_BUSY": "the editor is busy with another change.",
 					"NO_CHANGE": "the revision left the section unchanged.",
 					"INTERRUPTED": "the editor closed or reconnected before the revision finished.",
@@ -9741,6 +9800,7 @@
 				"review": "Accept or reject the regenerated version before saving.",
 				"proposal": "Accept or reject the assistant's proposed changes before saving.",
 				"proposalElsewhere": "Another tab is reviewing an assistant proposal for this document. Saving resumes when it is answered.",
+				"proposalOrphaned": "Saving is paused while this document holds an assistant proposal that nobody is reviewing right now. Saving resumes once it is answered or removed.",
 				"runLive": "Saving is paused while a generation run writes this document. It resumes when the run finishes.",
 				"reconnecting": "Saving is paused until the editor is reconnected to the collaboration server.",
 				"updatingToLatest": "Saving is paused while the editor updates to the latest saved version.",
@@ -9757,12 +9817,16 @@
 			"staleRunSave": "This document's generation has not reported for ten minutes. Saving now ends that run.",
 			"assistantFinishing": "The assistant is finishing…",
 			"proposalElsewhereHeld": "Another tab is reviewing an assistant proposal for this document. Try again once it is answered.",
+			"proposalOrphanedHeld": "This document holds an assistant proposal that nobody is reviewing right now. Try again once it is answered or removed.",
+			"proposalOrphanedRemoved": "An unanswered assistant proposal was removed from this document.",
+			"ownProposalRemoved": "The assistant's proposal was removed from this document because nobody answered it in time, so it was not applied.",
 			"proposalReviewTimedOut": "The assistant's proposed changes were not applied: they waited 10 minutes without an answer, and other tabs were holding for them.",
 			"assistantRunTakenBack": "The assistant stopped before offering its changes, so what it had written so far was taken back out of the document.",
 			"regenerationCall": {
 				"completed": "Document regeneration completed.",
 				"notApplied": "Document regeneration was not applied.",
-				"heldElsewhere": "Not started: another tab was reviewing an assistant proposal."
+				"heldElsewhere": "Not started: another tab was reviewing an assistant proposal.",
+				"heldUnanswered": "Not started: the document held an unanswered assistant proposal that nobody was reviewing."
 			},
 			"rejectEmptyBody": "There is no earlier version to go back to, so the regenerated version was kept and nothing was changed.",
 			"rejectRunLive": "A new generation of this document has started, so the regenerated version was kept and nothing was changed.",
@@ -9776,6 +9840,7 @@
 			"updating": "Updating to the latest version…",
 			"proposalElsewhere": "An assistant proposal is under review in another tab. Editing resumes when it is answered.",
 			"proposalElsewhereBy": "{name} is reviewing an assistant proposal for this document in another tab. Editing resumes when it is answered.",
+			"proposalOrphaned": "This document holds an assistant proposal that nobody is reviewing right now. Editing resumes once it is answered or removed.",
 			"updateFailed": "The editor could not be updated to the latest version.",
 			"reloadLatest": "Reload latest version",
 			"reload": "Reload",
@@ -9784,6 +9849,7 @@
 			"saveConflictSolo": "Your changes were not saved: the document changed in the meantime. Copy your text, then reload to see the latest version.",
 			"leaveSaveFailed": "Your last changes to this document were not saved after you left it. Copy them to keep them.",
 			"leaveWhileProposalElsewhere": "Your last changes to this document were not saved: you left it while another tab was reviewing an assistant proposal. Copy them to keep them; the copy also holds that proposal.",
+			"leaveWhileProposalOrphaned": "Your last changes to this document were not saved: it held an assistant proposal that nobody was reviewing. Copy them to keep them; the copy also holds that proposal.",
 			"rawEditsStale": {
 				"message": "The document changed while you were editing its markdown. Your edits here are not saved, and they will not be saved on their own: copy them to keep them."
 			},
@@ -9805,12 +9871,14 @@
 			"restoreBlocked": {
 				"runLive": "Restore is unavailable while a generation run is queued or writing this document. It becomes available again when the run finishes.",
 				"regenerating": "Restore is unavailable while a regeneration started here is in progress or waiting for your review. It becomes available again once that is done.",
-				"proposalElsewhere": "Restore is unavailable while another tab reviews an assistant proposal for this document. It becomes available again once the proposal is answered."
+				"proposalElsewhere": "Restore is unavailable while another tab reviews an assistant proposal for this document. It becomes available again once the proposal is answered.",
+				"proposalOrphaned": "Restore is unavailable while this document holds an assistant proposal that nobody is reviewing. It becomes available again once the proposal is answered or removed."
 			}
 		},
 		"updateWithContext": {
 			"readFailed": "Couldn't read the document content. Try again or reload the page.",
 			"heldElsewhere": "Another tab is reviewing an assistant proposal for this document. Try again once it is answered.",
+			"heldUnanswered": "This document holds an assistant proposal that nobody is reviewing right now. Try again once it is answered or removed.",
 			"changedMeanwhile": "The document changed while this update was being drafted, so it was not shown. Try again.",
 			"syncing": "The document is still syncing with the latest saved version. Try again in a moment.",
 			"noUpdates": "No updates found — the document already reflects the latest context.",

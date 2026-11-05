@@ -11,7 +11,8 @@ const {
 	mockValidateReportConnections,
 	mockTemplateScheduleForInheritance,
 	mockAssertCanEditReportInstance,
-	mockCanEditProjectReport,
+	mockCanCreateProjectReport,
+	mockCanManageLifecycle,
 	mockAssertProjectPermission,
 	mockCanAccess,
 	mockFindProject,
@@ -27,7 +28,8 @@ const {
 	mockValidateReportConnections: vi.fn(),
 	mockTemplateScheduleForInheritance: vi.fn(),
 	mockAssertCanEditReportInstance: vi.fn(),
-	mockCanEditProjectReport: vi.fn(),
+	mockCanCreateProjectReport: vi.fn(),
+	mockCanManageLifecycle: vi.fn(),
 	mockAssertProjectPermission: vi.fn(),
 	mockCanAccess: vi.fn(),
 }));
@@ -44,6 +46,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 		getProjectReportSetupReason: real.getProjectReportSetupReason,
 		hasProjectKnowledgeSource: real.hasProjectKnowledgeSource,
 		canAccessReportInstance: mockCanAccess,
+		isFeatureEnabled: async () => true,
 		db: {
 			project: {
 				findUnique: (...a: unknown[]) => mockFindProject(...a),
@@ -72,9 +75,12 @@ vi.mock("../../../lib/validate-connections", () => ({
 }));
 
 vi.mock("../../../lib/report-access", () => ({
+	assertReportPermission: async () => undefined,
 	assertCanEditReportInstance: (...a: unknown[]) =>
 		mockAssertCanEditReportInstance(...a),
-	canEditProjectReport: (...a: unknown[]) => mockCanEditProjectReport(...a),
+	canCreateProjectReport: (...a: unknown[]) =>
+		mockCanCreateProjectReport(...a),
+	canManageReportLifecycle: (...a: unknown[]) => mockCanManageLifecycle(...a),
 }));
 
 // Chainable oRPC procedure stub — captures the handler fn by the order modules
@@ -217,7 +223,8 @@ beforeEach(() => {
 	mockGetTemplateInstance.mockResolvedValue(baseInstance);
 	mockUpdateTemplateInstance.mockResolvedValue(baseUpdated);
 	mockAssertCanEditReportInstance.mockResolvedValue(undefined);
-	mockCanEditProjectReport.mockResolvedValue(true);
+	mockCanCreateProjectReport.mockResolvedValue(true);
+	mockCanManageLifecycle.mockResolvedValue(true);
 	mockAssertProjectPermission.mockResolvedValue({
 		projectId: "example-project",
 		organizationId: "example-org",
@@ -391,6 +398,90 @@ describe("updateInstanceProcedure — who may change a report", () => {
 		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
 	});
 
+	describe("for an editor who may not manage the report's lifecycle", () => {
+		beforeEach(() => {
+			mockCanManageLifecycle.mockResolvedValue(false);
+		});
+
+		it("saves an ordinary edit without asking about the lifecycle", async () => {
+			await handlers.update({
+				input: { id: "inst-1", name: "renamed" },
+				context: ctx,
+			});
+			expect(mockUpdateTemplateInstance).toHaveBeenCalledTimes(1);
+			expect(mockCanManageLifecycle).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			["set a schedule", { scheduleUpdate: { mode: "inherit" } }],
+			["turn a schedule off", { scheduleUpdate: { mode: "off" } }],
+			["switch the report on", { isActive: true }],
+			["switch the report off", { isActive: false }],
+			["start a new active version", { createNewVersion: true }],
+			["archive through an edit", { status: "ARCHIVED" }],
+		])("refuses to %s", async (_case, change) => {
+			await expect(
+				handlers.update({
+					input: { id: "inst-1", ...change },
+					context: ctx,
+				}),
+			).rejects.toMatchObject({ code: "FORBIDDEN" });
+			expect(mockCanManageLifecycle).toHaveBeenCalledWith(
+				baseInstance,
+				ctx.user,
+			);
+			expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
+		});
+
+		it("refuses to restore through an edit", async () => {
+			mockGetTemplateInstance.mockResolvedValue({
+				...baseInstance,
+				status: "ARCHIVED",
+			});
+			await expect(
+				handlers.update({
+					input: { id: "inst-1", status: "ACTIVE" },
+					context: ctx,
+				}),
+			).rejects.toMatchObject({ code: "FORBIDDEN" });
+			expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			["start", "DRAFT", "ACTIVE"],
+			["stop", "ACTIVE", "DRAFT"],
+			["pause", "ACTIVE", "PENDING"],
+		])(
+			"refuses to %s the report's runs through its status",
+			async (_case, from, to) => {
+				mockGetTemplateInstance.mockResolvedValue({
+					...baseInstance,
+					status: from,
+				});
+				await expect(
+					handlers.update({
+						input: { id: "inst-1", status: to },
+						context: ctx,
+					}),
+				).rejects.toMatchObject({ code: "FORBIDDEN" });
+				expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
+			},
+		);
+
+		it("saves an edit that resends the report's status", async () => {
+			mockGetTemplateInstance.mockResolvedValue({
+				...baseInstance,
+				status: "DRAFT",
+			});
+			await handlers.update({
+				input: { id: "inst-1", name: "renamed", status: "DRAFT" },
+				context: ctx,
+			});
+			expect(mockUpdateTemplateInstance).toHaveBeenCalledTimes(1);
+			expect(mockCanManageLifecycle).not.toHaveBeenCalled();
+		});
+	});
+
 	it("validates an editor's connection changes against the report owner", async () => {
 		const storedConnections = {
 			...emptyConnections,
@@ -546,6 +637,124 @@ describe("createInstanceProcedure — project reports", () => {
 		);
 	});
 
+	it("starts from the organization's default prompts, marked as written by a person", async () => {
+		mockOverrides.mockResolvedValue({
+			parameterDefaults: {},
+			context: {},
+			schedule: undefined,
+			prompts: {
+				userPrompt: "Lead with the risks.",
+				aiTasks: { summary: "Summarize for leadership." },
+			},
+		});
+		await handlers.create({
+			input: {
+				templateId: "t1",
+				name: "Project Report",
+				projectId: "example-project",
+				connections: emptyConnections,
+			},
+			context: ctx,
+		});
+		expect(mockCreateTemplateInstance).toHaveBeenCalledWith(
+			expect.objectContaining({
+				connections: expect.objectContaining({
+					promptOverride: "Lead with the risks.",
+					promptOverrideSource: "user",
+				}),
+				fabricConfig: {
+					customAiTasks: { summary: "Summarize for leadership." },
+				},
+			}),
+		);
+	});
+
+	it("ignores stored organization prompts once the organization owns the template", async () => {
+		mockGetReportTemplate.mockResolvedValue({
+			id: "t1",
+			scope: "ORGANIZATION",
+			userId: "u1",
+			organizationId: "org-1",
+			archivedAt: null,
+			definition: null,
+		});
+		mockOverrides.mockResolvedValue({
+			parameterDefaults: {},
+			context: {},
+			schedule: undefined,
+			prompts: {
+				userPrompt: "Lead with the risks.",
+				aiTasks: { summary: "Summarize for leadership." },
+			},
+		});
+		await handlers.create({
+			input: {
+				templateId: "t1",
+				name: "Project Report",
+				projectId: "example-project",
+				connections: emptyConnections,
+			},
+			context: ctx,
+		});
+		const call = mockCreateTemplateInstance.mock.calls[0][0] as {
+			connections: Record<string, unknown>;
+			fabricConfig?: unknown;
+		};
+		expect(call.connections).not.toHaveProperty("promptOverride");
+		expect(call.connections).not.toHaveProperty("promptOverrideSource");
+		expect(call.fabricConfig).toBeUndefined();
+	});
+
+	it("keeps the creator's own instructions over the organization's", async () => {
+		mockOverrides.mockResolvedValue({
+			parameterDefaults: {},
+			context: {},
+			schedule: undefined,
+			prompts: { userPrompt: "Lead with the risks." },
+		});
+		await handlers.create({
+			input: {
+				templateId: "t1",
+				name: "Project Report",
+				projectId: "example-project",
+				connections: {
+					...emptyConnections,
+					promptOverride: "Only the blockers.",
+					promptOverrideSource: "user",
+				},
+			},
+			context: ctx,
+		});
+		const call = mockCreateTemplateInstance.mock.calls[0][0] as {
+			connections: Record<string, unknown>;
+			fabricConfig?: unknown;
+		};
+		expect(call.connections).toMatchObject({
+			promptOverride: "Only the blockers.",
+			promptOverrideSource: "user",
+		});
+		expect(call.fabricConfig).toBeUndefined();
+	});
+
+	it("leaves the prompts to the template when the organization sets none", async () => {
+		await handlers.create({
+			input: {
+				templateId: "t1",
+				name: "Project Report",
+				projectId: "example-project",
+				connections: emptyConnections,
+			},
+			context: ctx,
+		});
+		const call = mockCreateTemplateInstance.mock.calls[0][0] as {
+			connections: Record<string, unknown>;
+			fabricConfig?: unknown;
+		};
+		expect(call.connections).not.toHaveProperty("promptOverride");
+		expect(call.connections).not.toHaveProperty("promptOverrideSource");
+		expect(call.fabricConfig).toBeUndefined();
+	});
+
 	it("keeps an explicit schedule over the defaults' schedule", async () => {
 		mockOverrides.mockResolvedValue({
 			parameterDefaults: {},
@@ -576,7 +785,7 @@ describe("createInstanceProcedure — project reports", () => {
 	});
 
 	it("refuses a project Viewer and creates nothing", async () => {
-		mockCanEditProjectReport.mockResolvedValue(false);
+		mockCanCreateProjectReport.mockResolvedValue(false);
 		await expect(
 			handlers.create({
 				input: {
@@ -650,6 +859,29 @@ describe("report audience and reserved configuration", () => {
 			}),
 		).rejects.toThrow("audience cannot be changed");
 		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
+	});
+	it("keeps the stored audience when the input carries an undefined one", async () => {
+		const reporting = {
+			version: 1,
+			period: "weekly",
+			projectId: "project-1",
+		};
+		mockGetTemplateInstance.mockResolvedValue({
+			...baseInstance,
+			fabricConfig: { reporting, strategy: "stored" },
+		});
+		await handlers.update({
+			input: {
+				id: "inst-1",
+				fabricConfig: { reporting: undefined, strategy: "changed" },
+			},
+			context: ctx,
+		});
+		expect(mockUpdateTemplateInstance).toHaveBeenCalledWith(
+			expect.objectContaining({
+				fabricConfig: { reporting, strategy: "changed" },
+			}),
+		);
 	});
 	it("does not make previously indexed organization results private retroactively", async () => {
 		mockGetTemplateInstance.mockResolvedValue({

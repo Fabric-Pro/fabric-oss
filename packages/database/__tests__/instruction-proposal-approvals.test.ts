@@ -4,6 +4,7 @@ import {
 	approvalRefusal,
 	countedApprovals,
 	DEFAULT_INSTRUCTION_REVIEW_POLICY,
+	minimumInstructionApprovers,
 	reviewPolicyOfSettings,
 } from "../prisma/queries/instruction-proposal-approvals";
 
@@ -79,10 +80,13 @@ describe("approvalRefusal", () => {
 });
 
 describe("countedApprovals", () => {
+	const everyone = new Set(["author", "a", "b", "c"]);
+
 	it("counts the proposer's own approval only under one required approval", () => {
 		expect(
 			countedApprovals({
 				approverUserIds: ["author"],
+				permittedUserIds: everyone,
 				proposerUserId: "author",
 				policy: DEFAULT_INSTRUCTION_REVIEW_POLICY,
 			}),
@@ -90,6 +94,7 @@ describe("countedApprovals", () => {
 		expect(
 			countedApprovals({
 				approverUserIds: ["author", "b"],
+				permittedUserIds: everyone,
 				proposerUserId: "author",
 				policy: { requiredApprovals: 2, approverUserIds: null },
 			}),
@@ -100,10 +105,30 @@ describe("countedApprovals", () => {
 		expect(
 			countedApprovals({
 				approverUserIds: ["a", "b", "c"],
+				permittedUserIds: everyone,
 				proposerUserId: "author",
 				policy: { requiredApprovals: 2, approverUserIds: ["a", "c"] },
 			}),
 		).toBe(2);
+	});
+
+	it("never counts an approver who no longer holds the publish permission", () => {
+		expect(
+			countedApprovals({
+				approverUserIds: ["a", "b", "c"],
+				permittedUserIds: new Set(["a", "c"]),
+				proposerUserId: "author",
+				policy: { requiredApprovals: 3, approverUserIds: null },
+			}),
+		).toBe(2);
+	});
+});
+
+describe("minimumInstructionApprovers", () => {
+	it("needs one more approver than required above one, so a listed approver's own proposal can still pass", () => {
+		expect(minimumInstructionApprovers(1)).toBe(1);
+		expect(minimumInstructionApprovers(2)).toBe(3);
+		expect(minimumInstructionApprovers(10)).toBe(11);
 	});
 });
 
@@ -112,9 +137,25 @@ describe("approvalProgressOf", () => {
 		expect(
 			approvalProgressOf({
 				approverUserIds: ["a", "author"],
+				permittedUserIds: new Set(["a", "author"]),
 				proposerUserId: "author",
 				settings: { reviewPolicy: { requiredApprovals: 3 } },
 			}),
 		).toEqual({ count: 1, required: 3, approverUserIds: ["a", "author"] });
+	});
+
+	it("keeps a departed approver in the list of who approved while not counting them", () => {
+		expect(
+			approvalProgressOf({
+				approverUserIds: ["departed", "a"],
+				permittedUserIds: new Set(["a"]),
+				proposerUserId: "author",
+				settings: { reviewPolicy: { requiredApprovals: 2 } },
+			}),
+		).toEqual({
+			count: 1,
+			required: 2,
+			approverUserIds: ["departed", "a"],
+		});
 	});
 });

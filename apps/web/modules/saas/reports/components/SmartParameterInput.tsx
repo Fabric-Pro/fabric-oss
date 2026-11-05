@@ -209,6 +209,8 @@ export function SmartParameterInput({
 				/>
 			) : isDate ? (
 				<DatePicker
+					id={`param-${name}`}
+					{...fieldA11y}
 					value={value || undefined}
 					onChange={(date) => {
 						onChange(date ? format(date, "yyyy-MM-dd") : "");

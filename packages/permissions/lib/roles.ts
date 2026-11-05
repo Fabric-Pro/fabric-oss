@@ -6,6 +6,9 @@ import { Permissions as P, type Permission } from "./permissions";
  */
 export type OrgRole = "owner" | "admin" | "member" | "viewer";
 
+/** The organization roles that administer it, as `Member.role` stores them. */
+export const ORG_ADMIN_ROLES: ReadonlySet<string> = new Set(["owner", "admin"]);
+
 export const ORG_ROLES: readonly OrgRole[] = [
 	"owner",
 	"admin",
